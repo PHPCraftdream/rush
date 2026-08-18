@@ -99,6 +99,17 @@ if [ -n "$gcl" ]; then
 		step "golangci-lint run — GOOS=$goos"
 		GOOS="$goos" "$gcl" run || fail "lint failed for GOOS=$goos (CI lints all three)"
 	done
+
+	# One GOARCH pass, and it is not paranoia: internal/db picks its SQLite
+	# driver on a GOOS×GOARCH tag pair (connect_modernc.go lists the
+	# supported pairs, connect_ncruces.go is the negation). Every host and
+	# every CI runner lands on the modernc side, so the ncruces file is
+	# compiled and linted by NOBODY — not here, not on ubuntu, macos or
+	# windows. linux/mips64 is outside the modernc list, so this pass is
+	# the only thing that ever looks at it.
+	step "golangci-lint run — GOOS=linux GOARCH=mips64 (the SQLite driver nothing else covers)"
+	GOOS=linux GOARCH=mips64 "$gcl" run ./internal/db/... \
+		|| fail "lint failed for the ncruces SQLite driver branch"
 else
 	cross_goos_skipped="yes"
 	printf '\033[33m⚠ skipping the cross-GOOS lint passes — they need a native golangci-lint (go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@%s); CI still lints linux/macos/windows\033[0m\n' "$GOLANGCI_VERSION"
