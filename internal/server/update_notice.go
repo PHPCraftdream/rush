@@ -39,6 +39,15 @@ func broadcastUpdateNotice(ctx context.Context, h *Hub) {
 		slog.Debug("update check failed", "err", err)
 		return
 	}
+	// A development build has nothing to compare against. Available() treats
+	// any pre-release Current against a stable Latest as "an update exists",
+	// so without this a locally built binary — "devel-<commit>", or the
+	// current 0.2.0-alpha.0 — would raise the badge on EVERY start, forever.
+	// IsDevelopment already knows every shape internal/version emits.
+	if info.IsDevelopment() {
+		slog.Debug("skipping update notice: development build", "version", info.Current)
+		return
+	}
 	if !info.Available() {
 		return
 	}

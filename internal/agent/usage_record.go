@@ -69,10 +69,17 @@ func (a *sessionAgent) recordMessageUsage(
 		CacheReadTokens:     usage.CacheReadTokens,
 		TotalTokens:         usage.TotalTokens,
 		CostUSD:             costDelta,
-		Provider:            model.ModelCfg.Provider,
-		Model:               model.ModelCfg.Model,
-		CacheSupport:        providerCacheSupport(usage),
-		Estimated:           estimated,
+		// The EXECUTING model, matching the assistant message row itself
+		// (agent_turn.go) and the two summarize paths, which have always
+		// recorded it. These are the columns `crush sessions cache` and
+		// UsageByModelInRange actually group by; leaving them on the
+		// configured pair while the message row carried the executing one
+		// split a single message's identity across two columns, which is
+		// worse than the inconsistency that change set out to fix.
+		Provider:     model.Model.Provider(),
+		Model:        model.Model.Model(),
+		CacheSupport: providerCacheSupport(usage),
+		Estimated:    estimated,
 	}
 	// An estimate is a guess derived from message lengths, not a measurement;
 	// it can never be evidence about the cache.

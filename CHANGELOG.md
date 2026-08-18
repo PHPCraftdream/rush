@@ -94,12 +94,19 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   disagreeing with the identical component used elsewhere in the chat.
   The last burst of a message that is still streaming is now open; once
   the turn ends the transcript settles into collapsed history.
-- **Cost and usage reports attribute a message to the model that
-  produced it.** The per-turn write recorded the configured selection
-  while the summarisation paths recorded the executing model. Both feed
-  the same `GROUP BY model, provider`, so a provider whose canonical id
-  differs from the configured one would split one session into two rows
-  with neither number looking wrong enough to notice.
+- **A message is now attributed to the model that produced it,
+  consistently.** An assistant message carries the model twice: once on
+  the row itself (which `crush stats` counts by) and once on its usage
+  record (which `crush sessions cache` reports tokens and cost by). The
+  per-turn write recorded the configured selection in both, while the
+  summarisation paths recorded the executing model — so for a provider
+  whose canonical id differs from the configured one, the same messages
+  appeared under two names depending on which command you asked.
+  Both now record the executing model, which is the one that can be
+  checked against what the provider actually billed. Note `crush
+  sessions cost` is unaffected either way: it groups by the session's
+  model, not the message's. Rows written before this change keep their
+  old attribution — there is no migration.
 - **`crush sessions reap` removes a lock's `.pid` and `.gen`
   companions.** They were previously cleared only as a side effect of
   the probe's own background cleanup, which the process does not wait

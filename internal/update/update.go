@@ -12,7 +12,18 @@ import (
 )
 
 const (
-	githubApiUrl = "https://api.github.com/repos/charmbracelet/crush/releases/latest"
+	// The FORK's releases, not upstream's. This pointed at
+	// charmbracelet/crush, which is wrong for a fork that CLAUDE.md
+	// describes as "NOT a passive mirror": the versions are not comparable
+	// (this fork is 0.2.0-alpha.x while upstream is 0.89.x), and the update
+	// notice links the operator to this repository's releases page — so
+	// announcing an upstream tag would send them somewhere that tag does not
+	// exist, to install something they must not install.
+	//
+	// While this fork publishes no releases the endpoint 404s, Check returns
+	// an error, and the notice is simply never sent. That is the correct
+	// behaviour, and it starts working on its own the day a release is cut.
+	githubApiUrl = "https://api.github.com/repos/PHPCraftdream/crush/releases/latest"
 	userAgent    = "crush/1.0"
 
 	// maxReleaseBodyBytes caps how much of the GitHub releases API HTTP

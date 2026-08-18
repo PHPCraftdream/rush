@@ -28,8 +28,9 @@ func TestBackgroundShellManager_Start_AtomicLimitCheck(t *testing.T) {
 	// and on Windows the survivors block TempDir cleanup. Per-manager, so
 	// t.Parallel stays safe.
 	manager.SetMaxJobs(10)
+	cap := manager.MaxJobs()
 
-	attempts := manager.MaxJobs() + 20
+	attempts := cap + 20
 	var wg sync.WaitGroup
 	var succeeded atomic.Int64
 	for range attempts {
@@ -47,11 +48,16 @@ func TestBackgroundShellManager_Start_AtomicLimitCheck(t *testing.T) {
 	}
 	wg.Wait()
 
-	require.LessOrEqual(t, int(succeeded.Load()), MaxBackgroundJobs,
-		"concurrent Start calls must never overshoot MaxBackgroundJobs")
+	// Bound against THIS manager's cap, not the package constant. Lowering
+	// the cap to 10 while still asserting "<= 50" made the test vacuous:
+	// only 30 goroutines race, so 50 could never be exceeded and deleting
+	// startMu entirely would not have failed it. The cap is what the
+	// atomicity is protecting.
+	require.LessOrEqual(t, int(succeeded.Load()), cap,
+		"concurrent Start calls must never overshoot the cap")
 	require.Equal(t, manager.ActiveJobs(), int(succeeded.Load()),
 		"all retained jobs are still active here, so active count must equal succeeded")
-	require.LessOrEqual(t, manager.shells.Len(), MaxBackgroundJobs)
+	require.LessOrEqual(t, manager.shells.Len(), cap)
 
 	// Clean up any still-tracked shells.
 	manager.KillAll(t.Context())
@@ -103,15 +109,23 @@ func TestBackgroundShellManager_LimitBlocksWhenAllActive(t *testing.T) {
 
 	workingDir := t.TempDir()
 	manager := newBackgroundShellManager()
+	// Pin THIS manager's cap. newBackgroundShellManager honours
+	// CRUSH_MAX_BACKGROUND_JOBS, so asserting against the bare constant
+	// made the test fail on any host that had set the knob — measured:
+	// CRUSH_MAX_BACKGROUND_JOBS=200 turned the rejection assertion into
+	// "An error is expected but got nil". A low fixed cap also keeps the
+	// fill loop from spawning 50 real processes to prove one rejection.
+	manager.SetMaxJobs(6)
+	cap := manager.MaxJobs()
 
-	for range MaxBackgroundJobs {
+	for range cap {
 		_, err := manager.Start(t.Context(), workingDir, nil, "sleep 60", "")
 		require.NoError(t, err)
 	}
-	require.Equal(t, MaxBackgroundJobs, manager.ActiveJobs(),
+	require.Equal(t, cap, manager.ActiveJobs(),
 		"all started jobs are active")
 
-	// The (MaxBackgroundJobs+1)th job must be rejected.
+	// The (cap+1)th job must be rejected.
 	_, err := manager.Start(t.Context(), workingDir, nil, "sleep 60", "")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "maximum number of background jobs")
