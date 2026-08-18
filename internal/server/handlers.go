@@ -164,7 +164,12 @@ func autoApproveWebSession(a *appPkg.App, sessionID string) {
 
 func handleLogClientEvent(a *appPkg.App, c *Client, msg WSMessage) {
 	cfg := a.Config()
-	if cfg == nil || !cfg.Options.Debug {
+	// Options is a pointer and this was the only handler dereferencing it
+	// unguarded: handlers_config.go checks it in five places and config's own
+	// cloneOptions treats nil as a legal input. Nothing reachable produces a
+	// nil today — setDefaults (config/load.go) always installs an &Options{}
+	// — so this closes an inconsistency rather than a live crash.
+	if cfg == nil || cfg.Options == nil || !cfg.Options.Debug {
 		return
 	}
 	var p LogClientEventPayload
