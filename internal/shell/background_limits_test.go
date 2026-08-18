@@ -22,8 +22,14 @@ func TestBackgroundShellManager_Start_AtomicLimitCheck(t *testing.T) {
 
 	workingDir := t.TempDir()
 	manager := newBackgroundShellManager()
+	// Lower THIS manager's cap. What is under test is the atomicity of the
+	// check-and-insert, not the production value: racing 520 real processes
+	// to prove a mutex holds costs more than the property it demonstrates,
+	// and on Windows the survivors block TempDir cleanup. Per-manager, so
+	// t.Parallel stays safe.
+	manager.SetMaxJobs(10)
 
-	const attempts = MaxBackgroundJobs + 20
+	attempts := manager.MaxJobs() + 20
 	var wg sync.WaitGroup
 	var succeeded atomic.Int64
 	for range attempts {
@@ -63,8 +69,12 @@ func TestBackgroundShellManager_LimitIgnoresCompletedJobs(t *testing.T) {
 
 	workingDir := t.TempDir()
 	manager := newBackgroundShellManager()
+	// Same reasoning as above: the regression — completed jobs still
+	// counting against the cap — reproduces at any cap, and each iteration
+	// here waits for its job to finish.
+	manager.SetMaxJobs(10)
 
-	const n = MaxBackgroundJobs + 5 // 55: comfortably past the limit
+	n := manager.MaxJobs() + 5 // comfortably past the limit
 	for i := range n {
 		bg, err := manager.Start(t.Context(), workingDir, nil, "echo hi", "")
 		require.NoError(t, err,
@@ -109,4 +119,37 @@ func TestBackgroundShellManager_LimitBlocksWhenAllActive(t *testing.T) {
 	// Clean up the long-running jobs.
 	manager.KillAll(t.Context())
 	require.Zero(t, manager.ActiveJobs())
+}
+
+// The cap is the operator's to raise, and the env var is how.
+//
+// The default stays at 50 because raising it was measured to destabilise
+// this repository's own suite (internal/shell 5s -> 149s, timing-sensitive
+// siblings failing), so the escape hatch has to actually work — otherwise
+// the answer to "50 killed my session" is still "edit the source".
+func TestMaxJobsFromEnv(t *testing.T) {
+	t.Run("unset uses the default", func(t *testing.T) {
+		t.Setenv("CRUSH_MAX_BACKGROUND_JOBS", "")
+		require.Equal(t, MaxBackgroundJobs, maxJobsFromEnv())
+	})
+
+	t.Run("a positive value is honoured", func(t *testing.T) {
+		t.Setenv("CRUSH_MAX_BACKGROUND_JOBS", "500")
+		require.Equal(t, 500, maxJobsFromEnv())
+	})
+
+	t.Run("a new manager picks it up", func(t *testing.T) {
+		t.Setenv("CRUSH_MAX_BACKGROUND_JOBS", "7")
+		require.Equal(t, 7, newBackgroundShellManager().MaxJobs())
+	})
+
+	// Falling back rather than failing is deliberate: this is a convenience
+	// knob, and a typo in it must not stop crush from starting.
+	for _, bad := range []string{"nonsense", "0", "-5", "3.5"} {
+		t.Run("rejects "+bad, func(t *testing.T) {
+			t.Setenv("CRUSH_MAX_BACKGROUND_JOBS", bad)
+			require.Equal(t, MaxBackgroundJobs, maxJobsFromEnv(),
+				"a malformed value must fall back to the default, not disable the limit")
+		})
+	}
 }

@@ -42,15 +42,24 @@ func TestBashTool_BackgroundShellStartLimitIsModelVisibleNotFatal(t *testing.T) 
 	tool := newBashToolForTest(workingDir)
 	bgManager := shell.GetBackgroundShellManager()
 
+	// Lower the cap for this test. What is under test is the BEHAVIOUR at
+	// the limit — a model-visible error rather than a fatal one — not the
+	// production value. Filling the real 500-slot queue with `sleep 60`
+	// processes took 33s and left enough live children that TempDir cleanup
+	// failed on Windows.
+	originalMax := bgManager.MaxJobs()
+	bgManager.SetMaxJobs(5)
+	t.Cleanup(func() { bgManager.SetMaxJobs(originalMax) })
+
 	// Top the manager up to its cap regardless of what earlier tests left
 	// running. sleep 60 holds each slot for the whole test; the guard bounds
 	// the loop in case jobs unexpectedly complete mid-fill.
 	fillDir := t.TempDir()
-	for guard := 0; bgManager.ActiveJobs() < shell.MaxBackgroundJobs && guard < 2*shell.MaxBackgroundJobs; guard++ {
+	for guard := 0; bgManager.ActiveJobs() < bgManager.MaxJobs() && guard < 2*bgManager.MaxJobs(); guard++ {
 		_, err := bgManager.Start(context.Background(), fillDir, nil, "sleep 60", "job-limit fill")
 		require.NoError(t, err, "filling up to the cap must succeed while below it")
 	}
-	require.Equal(t, shell.MaxBackgroundJobs, bgManager.ActiveJobs(),
+	require.Equal(t, bgManager.MaxJobs(), bgManager.ActiveJobs(),
 		"manager must be at its cap before the tool is invoked, otherwise the test proves nothing")
 
 	t.Cleanup(func() {

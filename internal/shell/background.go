@@ -5,8 +5,10 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"runtime/debug"
 	"slices"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -15,8 +17,36 @@ import (
 )
 
 const (
-	// MaxBackgroundJobs is the maximum number of concurrent background jobs allowed
+	// MaxBackgroundJobs is the DEFAULT maximum number of concurrent
+	// background jobs. Override it per process with
+	// CRUSH_MAX_BACKGROUND_JOBS.
+	//
+	// 50 is reachable in real use, and reaching it is expensive: an
+	// orchestrator fanning work out to sub-agents while a 17-minute gate ran
+	// hit the cap, the session died on "maximum number of background jobs
+	// (50) reached", and the operator's next brief told the model to stop
+	// delegating altogether. The cap cost a whole workflow.
+	//
+	// The default stays at 50 anyway, and the reason is measured rather than
+	// cautious: raising it to 500 (and then 200) made the test suite itself
+	// unstable on a developer machine — internal/shell went from 5s to 149s
+	// and timing-sensitive siblings like
+	// TestBashTool_CtxCancelWaitsForConfirmedProcessKill began failing,
+	// because the jobs a higher cap admits are real processes competing for
+	// the same machine. A default that destabilises the suite would
+	// destabilise a busy agent host the same way.
+	//
+	// So the limit is now the operator's to raise, deliberately, on a
+	// machine they know can take it — and the warning below tells them when
+	// they are approaching it instead of letting the run die at the wall.
+	// Each live job can hold 2*maxStreamBufferBytes (6 MiB) resident, so the
+	// memory ceiling scales linearly: ~300 MiB at 50, ~3 GiB at 500.
 	MaxBackgroundJobs = 50
+
+	// warnBackgroundJobsThreshold is the fraction of MaxBackgroundJobs at
+	// which Start begins warning, so a run heading for the wall says so
+	// while its jobs can still be reaped.
+	warnBackgroundJobsThreshold = 0.8
 	// CompletedJobRetentionMinutes is how long to keep completed jobs before auto-cleanup (8 hours)
 	CompletedJobRetentionMinutes = 8 * 60
 
@@ -283,6 +313,15 @@ type BackgroundShellManager struct {
 	// non-atomic check-then-act race without this extra lock serializing the
 	// sequence.
 	startMu sync.Mutex
+
+	// maxJobs is this manager's concurrency cap, defaulting to
+	// MaxBackgroundJobs. It exists as a field rather than a bare use of the
+	// constant so a test can exercise limit BEHAVIOUR without paying the
+	// production limit's cost: filling a 500-slot queue with real processes
+	// is slower than the property being demonstrated, and on Windows the
+	// survivors block TempDir cleanup. Per-manager, so lowering it in one
+	// test cannot be observed by a parallel sibling.
+	maxJobs int
 }
 
 var (
@@ -294,7 +333,8 @@ var (
 // newBackgroundShellManager creates a new BackgroundShellManager instance.
 func newBackgroundShellManager() *BackgroundShellManager {
 	return &BackgroundShellManager{
-		shells: csync.NewMap[string, *BackgroundShell](),
+		shells:  csync.NewMap[string, *BackgroundShell](),
+		maxJobs: maxJobsFromEnv(),
 	}
 }
 
@@ -318,8 +358,22 @@ func (m *BackgroundShellManager) Start(ctx context.Context, workingDir string, b
 	// finished). Holding startMu across the check-and-insert below (and the
 	// activeJobs increment) makes this atomic with respect to other concurrent
 	// Start calls, so the limit can't be overshot by a check-then-act race.
-	if m.activeJobs.Load() >= int64(MaxBackgroundJobs) {
-		return nil, fmt.Errorf("maximum number of background jobs (%d) reached. Please terminate or wait for some jobs to complete", MaxBackgroundJobs)
+	limit := m.maxJobs
+	if limit <= 0 {
+		limit = MaxBackgroundJobs
+	}
+	active := m.activeJobs.Load()
+	if active >= int64(limit) {
+		return nil, fmt.Errorf("maximum number of background jobs (%d) reached. Please terminate or wait for some jobs to complete", limit)
+	}
+	// Warn on the approach, not only at the wall. Hitting the cap kills the
+	// run with one line and no warning; this gives the operator the count
+	// while there is still room to act.
+	if float64(active+1) >= warnBackgroundJobsThreshold*float64(limit) {
+		slog.Warn("background jobs approaching the limit",
+			"active", active+1,
+			"limit", limit,
+			"command", command)
 	}
 
 	id := fmt.Sprintf("%03X", idCounter.Add(1))
@@ -658,4 +712,54 @@ func (bs *BackgroundShell) WaitForChange(ctx context.Context, sinceLen int) {
 			}
 		}
 	}
+}
+
+// SetMaxJobs overrides this manager's concurrency cap. Intended for tests:
+// exercising the limit's behaviour does not require paying the production
+// limit's cost in real processes. A value <= 0 restores the default.
+func (m *BackgroundShellManager) SetMaxJobs(n int) {
+	m.startMu.Lock()
+	defer m.startMu.Unlock()
+	if n <= 0 {
+		n = MaxBackgroundJobs
+	}
+	m.maxJobs = n
+}
+
+// MaxJobs reports this manager's current concurrency cap.
+func (m *BackgroundShellManager) MaxJobs() int {
+	m.startMu.Lock()
+	defer m.startMu.Unlock()
+	if m.maxJobs <= 0 {
+		return MaxBackgroundJobs
+	}
+	return m.maxJobs
+}
+
+// maxJobsFromEnv resolves the concurrency cap for a new manager:
+// CRUSH_MAX_BACKGROUND_JOBS when it parses to a positive integer, otherwise
+// MaxBackgroundJobs.
+//
+// An env var rather than a bigger default because the cost of a higher cap
+// is machine-specific and real: the jobs it admits are processes, and
+// raising the default was measured to destabilise this repository's own test
+// suite. An operator raising it on a host they know can take it is making an
+// informed choice; a default doing it for everyone is not.
+//
+// A malformed or non-positive value falls back to the default rather than
+// failing: this is a convenience knob, and a typo in it should not stop
+// crush from starting. It is logged so the typo is visible.
+func maxJobsFromEnv() int {
+	raw := os.Getenv("CRUSH_MAX_BACKGROUND_JOBS")
+	if raw == "" {
+		return MaxBackgroundJobs
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		slog.Warn("ignoring CRUSH_MAX_BACKGROUND_JOBS: not a positive integer",
+			"value", raw, "using", MaxBackgroundJobs)
+		return MaxBackgroundJobs
+	}
+	slog.Info("background job limit overridden", "limit", n, "default", MaxBackgroundJobs)
+	return n
 }
