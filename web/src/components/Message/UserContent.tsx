@@ -38,7 +38,7 @@ export const UserContent = memo(function UserContent({
           ↻ auto-resumed
         </span>
       )}
-      {message.Parts.map((part, i) => <Part key={i} part={part} index={i} isUser messageID={message.ID} thinkingDone={false} sessionID={message.SessionID} />)}
+      {message.Parts.map((part, i) => <Part key={i} part={part} index={i} isUser messageID={message.ID} thinkingDone={false} partialWorkDone={false} sessionID={message.SessionID} />)}
     </div>
   );
 });

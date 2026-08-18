@@ -248,7 +248,7 @@ function buildRenderItems(messages: Msg[]): RenderItem[] {
   return out;
 }
 
-function ToolRun({ parts, firstMsgID, sessionID, isLive, isCurrent }: { parts: BurstPart[]; firstMsgID: string; sessionID: string; isLive: boolean; isCurrent: boolean }) {
+function ToolRun({ parts, firstMsgID, isLive, isCurrent }: { parts: BurstPart[]; firstMsgID: string; sessionID: string; isLive: boolean; isCurrent: boolean }) {
   const messages = useStore($messages);
   // ToolActivityGroup pairs call↔result by ToolCallID — no further prep
   // needed here, just give each part a stable index for its key. createdAt

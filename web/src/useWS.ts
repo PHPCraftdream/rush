@@ -25,7 +25,6 @@ import {
   setSummarizeQueued,
   registerSubAgentSession,
   isSubAgentSession,
-  getParentSessionID,
   upsertSubAgentMessage,
   setSubAgentMessages,
   trackMessageParts,

@@ -89,7 +89,16 @@ export const AssistantContent = memo(function AssistantContent({
             // collapsible row per call+result pair, last row open by default
             // (the "current action"), prior rows collapsed. User can pin any
             // row open/closed and the auto-rule stops touching that row.
-            <ToolActivityGroup items={block.items.map((it) => ({ ...it, messageID: message.ID }))} live={isLive} model={message.Model} effort={message.ReasoningEffort} />
+            //
+            // isCurrent={false} preserves today's behaviour EXACTLY: the prop
+            // was never passed here, so it arrived as undefined and the
+            // auto-rule read it as falsy — every group rendered through this
+            // path collapses. Note that contradicts the paragraph above, so
+            // it is very likely not what was intended; changing it is a
+            // visible UI change that needs to be looked at rather than
+            // guessed at from a type error. Made explicit so the typecheck
+            // passes without altering what users see.
+            <ToolActivityGroup items={block.items.map((it) => ({ ...it, messageID: message.ID }))} live={isLive} isCurrent={false} model={message.Model} effort={message.ReasoningEffort} />
           ) : (
             block.items.map(({ part, idx }) => (
               <Part key={idx} part={part} index={idx} isUser={false} messageID={message.ID} thinkingDone={block.thinkingDone} partialWorkDone={partialWorkDone} model={message.Model} effort={message.ReasoningEffort} sessionID={message.SessionID} />
