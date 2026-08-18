@@ -20,21 +20,21 @@ func noopResolve(s string) (string, string, error) {
 // declared levels array (not just prose describing them) — the core of this
 // task. coordinator.go only ever sends one of THREE wire values for any
 // Z.AI model (thinking disabled, reasoning_effort="high", or "max"), so
-// glm5_2 gets exactly those three real states ("off","high","max") rather
+// glm5_3 gets exactly those three real states ("off","high","max") rather
 // than Z.AI's wider documented-but-unproduced 7-value reasoning_effort
 // enum, and every other Z.AI atom gets the boolean thinking-toggle-only
 // array. Also checks atom.Levels() surfaces each.
 func TestAtom_ZAIHasReasoningLevels(t *testing.T) {
-	a, ok := atomRegistry["glm5_2"]
+	a, ok := atomRegistry["glm5_3"]
 	require.True(t, ok)
 	assert.Equal(t, []string{"off", "high", "max"}, a.ReasoningLevels)
-	assert.Nil(t, a.EffortSource, "Z.AI atom glm5_2 must not use the CLI-shelling EffortSource")
+	assert.Nil(t, a.EffortSource, "Z.AI atom glm5_3 must not use the CLI-shelling EffortSource")
 	assert.Equal(t, a.ReasoningLevels, a.Levels())
 
-	for _, key := range []string{"glm5_1", "glm5", "glm5_turbo", "glm4_7", "glm4_7_flash", "glm4_6", "glm4_6v"} {
+	for _, key := range []string{"glm5_turbo", "glm4_7", "glm4_7_flash", "glm4_6", "glm4_6v"} {
 		a, ok := atomRegistry[key]
 		require.True(t, ok, "expected atom %q in registry", key)
-		assert.Equal(t, []string{"off", "on"}, a.ReasoningLevels, "atom %q — only GLM-5.2 has graduated effort per Z.AI docs", key)
+		assert.Equal(t, []string{"off", "on"}, a.ReasoningLevels, "atom %q — only GLM-5.3 has graduated effort per Z.AI docs", key)
 		assert.Nil(t, a.EffortSource, "Z.AI atom %q must not use the CLI-shelling EffortSource", key)
 		assert.Equal(t, []string{"off", "on"}, a.Levels(), "atom %q .Levels()", key)
 	}
@@ -83,10 +83,10 @@ func TestParseAtom_AnthropicInvalidLevel(t *testing.T) {
 }
 
 func TestParseAtom_ZAINoLevel(t *testing.T) {
-	sm, err := parseAtom("glm5_1")
+	sm, err := parseAtom("glm5_turbo")
 	require.NoError(t, err)
 	assert.Equal(t, "zai", sm.Provider)
-	assert.Equal(t, "glm-5.1", sm.Model)
+	assert.Equal(t, "glm-5-turbo", sm.Model)
 	assert.Empty(t, sm.ReasoningEffort)
 }
 
@@ -97,60 +97,60 @@ func TestParseAtom_ZAINoLevel(t *testing.T) {
 // model's effort.
 //
 // That contract has deliberately changed (task: give every atom a real
-// ReasoningLevels array). glm5_1 (like every non-glm5_2 Z.AI atom) declares
+// ReasoningLevels array). glm5_turbo (like every non-glm5_3 Z.AI atom) declares
 // {"off", "on"} — Z.AI's own docs only document a boolean thinking toggle
 // for this model, not graduated reasoning_effort — and the long-form
 // "<atom>-<level>" suffix is validated against that array exactly like
 // Claude atoms are validated against EffortSource.Levels(). "low" is not one
-// of glm5_1's two valid values, so it is still rejected — but now with the
+// of glm5_turbo's two valid values, so it is still rejected — but now with the
 // more precise "not a valid level" error (listing the real off|on
 // vocabulary) instead of the old blanket "does not support effort levels"
 // message. See TestParseAtom_ZAIAcceptsKnownLevel below for the
 // now-succeeding case this test used to make impossible, and
-// TestParseAtom_ZAI52AcceptsGraduatedLevel for glm5_2's distinct, larger
+// TestParseAtom_ZAI53AcceptsGraduatedLevel for glm5_3's distinct, larger
 // vocabulary.
 func TestParseAtom_ZAIRejectsLevel(t *testing.T) {
-	_, err := parseAtom("glm5_1-low")
+	_, err := parseAtom("glm5_turbo-low")
 	require.Error(t, err)
 	assert.Contains(t, strings.ToLower(err.Error()), "not a valid level")
 	assert.Contains(t, err.Error(), "off|on")
 }
 
 // TestParseAtom_ZAIAcceptsKnownLevel is the new behavior enabled by giving
-// Z.AI atoms a real ReasoningLevels array: a level that IS one of glm5_1's
+// Z.AI atoms a real ReasoningLevels array: a level that IS one of glm5_turbo's
 // two valid boolean-toggle values (off/on) is now accepted via the same
 // "<atom>-<level>" long-form suffix Claude atoms already use, instead of
-// requiring the raw unvalidated "zai/glm-5.1@on" syntax.
+// requiring the raw unvalidated "zai/glm-5-turbo@on" syntax.
 func TestParseAtom_ZAIAcceptsKnownLevel(t *testing.T) {
-	sm, err := parseAtom("glm5_1-on")
+	sm, err := parseAtom("glm5_turbo-on")
 	require.NoError(t, err)
 	assert.Equal(t, "zai", sm.Provider)
-	assert.Equal(t, "glm-5.1", sm.Model)
+	assert.Equal(t, "glm-5-turbo", sm.Model)
 	assert.Equal(t, "on", sm.ReasoningEffort)
 }
 
-// TestParseAtom_ZAI52AcceptsGraduatedLevel proves glm5_2 specifically
+// TestParseAtom_ZAI53AcceptsGraduatedLevel proves glm5_3 specifically
 // validates against its own, larger vocabulary — a level like "max" that
-// would be invalid for glm5_1 (off/on only) is valid here.
-func TestParseAtom_ZAI52AcceptsGraduatedLevel(t *testing.T) {
-	sm, err := parseAtom("glm5_2-max")
+// would be invalid for glm5_turbo (off/on only) is valid here.
+func TestParseAtom_ZAI53AcceptsGraduatedLevel(t *testing.T) {
+	sm, err := parseAtom("glm5_3-max")
 	require.NoError(t, err)
 	assert.Equal(t, "zai", sm.Provider)
-	assert.Equal(t, "glm-5.2", sm.Model)
+	assert.Equal(t, "glm-5.3", sm.Model)
 	assert.Equal(t, "max", sm.ReasoningEffort)
 }
 
-// TestParseAtom_ZAI52RejectsWiderVendorVocabulary proves the deliberate,
+// TestParseAtom_ZAI53RejectsWiderVendorVocabulary proves the deliberate,
 // stricter-than-before behavior this task introduces: "xhigh" (and
 // similarly none/minimal/low/medium) is part of Z.AI's own documented
 // reasoning_effort enum, but this fork's coordinator.go collapses all of
 // those to the same "high" wire value as an unset effort — so they are no
-// longer accepted as distinct glm5_2 levels. Only the three levels that
+// longer accepted as distinct glm5_3 levels. Only the three levels that
 // produce genuinely different wire behavior (off/high/max) are valid now.
-func TestParseAtom_ZAI52RejectsWiderVendorVocabulary(t *testing.T) {
+func TestParseAtom_ZAI53RejectsWiderVendorVocabulary(t *testing.T) {
 	for _, level := range []string{"xhigh", "none", "minimal", "low", "medium"} {
 		t.Run(level, func(t *testing.T) {
-			_, err := parseAtom("glm5_2-" + level)
+			_, err := parseAtom("glm5_3-" + level)
 			require.Error(t, err)
 			assert.Contains(t, strings.ToLower(err.Error()), "not a valid level")
 			assert.Contains(t, err.Error(), "off|high|max")
@@ -163,26 +163,34 @@ func TestParseAtom_ZAI52RejectsWiderVendorVocabulary(t *testing.T) {
 // rejected with a clear error, instead of silently succeeding the way the
 // unvalidated raw "@effort" suffix does (see splitModelEffort/models_use.go).
 func TestParseAtom_ZAITypoRejected(t *testing.T) {
-	_, err := parseAtom("glm5_2-hgih")
+	_, err := parseAtom("glm5_3-hgih")
 	require.Error(t, err)
 	assert.Contains(t, strings.ToLower(err.Error()), "not a valid level")
 }
 
+// TestParseAtom_LongestMatchWins guards sortedAtomKeys' longest-first order:
+// when one atom key is a strict prefix of another, the parser must pick the
+// longer one rather than greedily matching the shorter and treating the
+// remainder as an effort suffix.
+//
+// This used to be exercised with glm5 / glm5_1 / glm5_turbo. glm5 and glm5_1
+// were removed from the registry on 2026-08-18, so that trio no longer
+// demonstrates anything — "glm5" is not an atom at all now. The hazard itself
+// is unchanged and still live for glm4_7 vs glm4_7_flash, which is what this
+// test now covers. Without longest-first ordering, "glm4_7_flash" would match
+// atom "glm4_7" and try to parse "_flash" as a level.
 func TestParseAtom_LongestMatchWins(t *testing.T) {
-	// glm5, glm5_1, glm5_turbo all share the "glm5" prefix; verify the
-	// parser picks the longest match rather than greedily stopping at the
-	// shortest.
-	sm, err := parseAtom("glm5_turbo")
+	sm, err := parseAtom("glm4_7_flash")
 	require.NoError(t, err)
-	assert.Equal(t, "glm-5-turbo", sm.Model)
+	assert.Equal(t, "glm-4.7-flash", sm.Model)
 
-	sm2, err := parseAtom("glm5_1")
+	sm2, err := parseAtom("glm4_7")
 	require.NoError(t, err)
-	assert.Equal(t, "glm-5.1", sm2.Model)
+	assert.Equal(t, "glm-4.7", sm2.Model)
 
-	sm3, err := parseAtom("glm5")
+	sm3, err := parseAtom("glm5_turbo")
 	require.NoError(t, err)
-	assert.Equal(t, "glm-5", sm3.Model)
+	assert.Equal(t, "glm-5-turbo", sm3.Model)
 }
 
 func TestParseAtom_UnknownAtom(t *testing.T) {

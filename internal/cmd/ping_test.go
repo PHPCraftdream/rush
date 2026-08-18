@@ -428,10 +428,10 @@ func TestResolvePingModel(t *testing.T) {
 	t.Run("atom with effort suffix resolves", func(t *testing.T) {
 		t.Parallel()
 		cfg := &config.Config{Providers: csync.NewMap[string, config.ProviderConfig]()}
-		sel, err := resolvePingModel(cfg, "glm5_2-max")
+		sel, err := resolvePingModel(cfg, "glm5_3-max")
 		require.NoError(t, err)
 		require.Equal(t, "zai", sel.Provider)
-		require.Equal(t, "glm-5.2", sel.Model)
+		require.Equal(t, "glm-5.3", sel.Model)
 		require.Equal(t, "max", sel.ReasoningEffort)
 	})
 

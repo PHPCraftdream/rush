@@ -502,9 +502,6 @@ ATOMS (combine as `crush models use <large> <small>`):
 
   Zai:
     glm5_3        GLM 5.3      (1M ctx)
-    glm5_2        GLM 5.2      (1M ctx)
-    glm5_1        GLM 5.1      (200k ctx)
-    glm5          GLM 5        (200k ctx)
     glm5_turbo    GLM 5 turbo  (200k ctx)
     ...
 ```
@@ -513,10 +510,10 @@ Anthropic atoms require a level suffix (`opus-high`, `sonnet-low`, etc.) —
 the level list comes from parsing `claude --help` at first use (falls back
 to a static `low/medium/high/xhigh/max` list if parsing fails).
 
-Z.AI atoms are **not** all effort-less: **GLM-5.3** and **GLM-5.2**
-(`glm5_3`, `glm5_2`) have 3 real wire states (`off`/`high`/`max`) settable
-via the long-form suffix (`glm5_2-max`) or raw `zai/glm-5.2@max` — one more
-than every *other* Z.AI/GLM model (5.1, 5, 5-turbo, 4.7, 4.6, ...), which
+Z.AI atoms are **not** all effort-less: **GLM-5.3** (`glm5_3`) has 3 real
+wire states (`off`/`high`/`max`) settable via the long-form suffix
+(`glm5_3-max`) or raw `zai/glm-5.3@max` — one more
+than every *other* Z.AI/GLM atom (5-turbo, 4.7, 4.6, ...), which
 exposes only a boolean thinking toggle (`off`/`on`). Both forms are
 validated against the atom's real levels; `crush models efforts <model>`
 prints the exact list and commands for any specific model. (GLM-5.3's
@@ -530,7 +527,7 @@ one), so both the CLI atom and the web picker agree.
 
 ```bash
 crush models use opus-high glm5_turbo                # mixed Anthropic large + Z.AI small
-crush models use --local glm5_1 glm5_turbo           # workspace-only override
+crush models use --local glm5_3 glm5_turbo           # workspace-only override
 crush models use openai/gpt-5@high zai/glm-5-turbo   # raw provider/model fallback for anything not in the atom list
 
 # Also set worker/reviewer in the same call (independent of large/small)
@@ -544,7 +541,7 @@ crush models use --large opus-high
 
 # Discover effort levels for a specific model (or run with no arg for the
 # full per-provider overview, including the Z.AI graduated-vs-boolean split)
-crush models efforts glm5_2
+crush models efforts glm5_3
 
 # Step a role's effort by one level instead of retyping the full atom name
 crush models bump reviewer up

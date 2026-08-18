@@ -277,7 +277,7 @@ func TestModelsUse_TwoPositionalRegression(t *testing.T) {
 	globalPath := isolatedModelsEnv(t)
 
 	resetModelsUseFlags(t)
-	_, runErr := runModelsCmd(t, modelsUseCmd, "glm5_1", "glm5_turbo")
+	_, runErr := runModelsCmd(t, modelsUseCmd, "glm4_6", "glm5_turbo")
 	require.NoError(t, runErr)
 
 	data, err := os.ReadFile(globalPath)
@@ -285,7 +285,7 @@ func TestModelsUse_TwoPositionalRegression(t *testing.T) {
 	content := string(data)
 
 	assert.Contains(t, content, `"large"`)
-	assert.Contains(t, content, `"glm-5.1"`)
+	assert.Contains(t, content, `"glm-4.6"`)
 	assert.Contains(t, content, `"small"`)
 	assert.Contains(t, content, `"glm-5-turbo"`)
 	// No worker/reviewer keys should appear when the flags are omitted.
@@ -303,7 +303,7 @@ func TestModelsUse_SmallFlagOnly_LeavesLargeUntouched(t *testing.T) {
 	globalPath := isolatedModelsEnv(t)
 
 	resetModelsUseFlags(t)
-	_, runErr := runModelsCmd(t, modelsUseCmd, "glm5_1", "glm5_turbo")
+	_, runErr := runModelsCmd(t, modelsUseCmd, "glm4_6", "glm5_turbo")
 	require.NoError(t, runErr)
 
 	resetModelsUseFlags(t)
@@ -322,7 +322,7 @@ func TestModelsUse_SmallFlagOnly_LeavesLargeUntouched(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(data, &doc))
 
-	assert.Contains(t, string(doc.Models["large"]), `"glm-5.1"`, "large must be untouched by a --small-only call")
+	assert.Contains(t, string(doc.Models["large"]), `"glm-4.6"`, "large must be untouched by a --small-only call")
 	assert.Contains(t, string(doc.Models["small"]), `"glm-4.7-flash"`, "small must reflect the new --small value")
 	assert.NotContains(t, string(doc.Models["small"]), `"glm-5-turbo"`, "the active small slot must not still be the OLD value")
 }
@@ -333,7 +333,7 @@ func TestModelsUse_LargeFlagOnly_LeavesSmallUntouched(t *testing.T) {
 	globalPath := isolatedModelsEnv(t)
 
 	resetModelsUseFlags(t)
-	_, runErr := runModelsCmd(t, modelsUseCmd, "glm5_1", "glm5_turbo")
+	_, runErr := runModelsCmd(t, modelsUseCmd, "glm4_6", "glm5_turbo")
 	require.NoError(t, runErr)
 
 	resetModelsUseFlags(t)
@@ -351,7 +351,7 @@ func TestModelsUse_LargeFlagOnly_LeavesSmallUntouched(t *testing.T) {
 
 	assert.Contains(t, string(doc.Models["large"]), `"glm-4.7-flash"`, "large must reflect the new --large value")
 	assert.Contains(t, string(doc.Models["small"]), `"glm-5-turbo"`, "small must be untouched by a --large-only call")
-	assert.NotContains(t, string(doc.Models["large"]), `"glm-5.1"`, "the active large slot must not still be the OLD value")
+	assert.NotContains(t, string(doc.Models["large"]), `"glm-4.6"`, "the active large slot must not still be the OLD value")
 }
 
 // TestModelsUse_LargeAndSmallFlagsTogether covers setting both via flags in
@@ -361,14 +361,14 @@ func TestModelsUse_LargeAndSmallFlagsTogether(t *testing.T) {
 	globalPath := isolatedModelsEnv(t)
 
 	resetModelsUseFlags(t)
-	_, runErr := runModelsCmd(t, modelsUseCmd, "--large", "glm5_1", "--small", "glm5_turbo")
+	_, runErr := runModelsCmd(t, modelsUseCmd, "--large", "glm4_6", "--small", "glm5_turbo")
 	require.NoError(t, runErr)
 
 	data, err := os.ReadFile(globalPath)
 	require.NoError(t, err)
 	content := string(data)
 
-	assert.Contains(t, content, `"glm-5.1"`)
+	assert.Contains(t, content, `"glm-4.6"`)
 	assert.Contains(t, content, `"glm-5-turbo"`)
 	assert.NotContains(t, content, `"worker"`)
 	assert.NotContains(t, content, `"reviewer"`)
@@ -381,7 +381,7 @@ func TestModelsUse_PositionalAndLargeFlagConflict_Rejected(t *testing.T) {
 	isolatedModelsEnv(t)
 
 	resetModelsUseFlags(t)
-	_, runErr := runModelsCmd(t, modelsUseCmd, "glm5_1", "glm5_turbo", "--large", "glm4_7_flash")
+	_, runErr := runModelsCmd(t, modelsUseCmd, "glm4_6", "glm5_turbo", "--large", "glm4_7_flash")
 	require.Error(t, runErr)
 	assert.Contains(t, runErr.Error(), "cannot combine positional")
 }
@@ -394,7 +394,7 @@ func TestModelsUse_OnePositionalArg_RejectedAsAmbiguous(t *testing.T) {
 	isolatedModelsEnv(t)
 
 	resetModelsUseFlags(t)
-	_, runErr := runModelsCmd(t, modelsUseCmd, "glm5_1")
+	_, runErr := runModelsCmd(t, modelsUseCmd, "glm4_6")
 	require.Error(t, runErr)
 	assert.Contains(t, runErr.Error(), "got 1")
 }
@@ -419,7 +419,7 @@ func TestModelsUse_WorkerOnlyViaFlags_NoPositionals(t *testing.T) {
 	globalPath := isolatedModelsEnv(t)
 
 	resetModelsUseFlags(t)
-	_, runErr := runModelsCmd(t, modelsUseCmd, "glm5_1", "glm5_turbo")
+	_, runErr := runModelsCmd(t, modelsUseCmd, "glm4_6", "glm5_turbo")
 	require.NoError(t, runErr)
 
 	resetModelsUseFlags(t)
@@ -430,7 +430,7 @@ func TestModelsUse_WorkerOnlyViaFlags_NoPositionals(t *testing.T) {
 	require.NoError(t, err)
 	content := string(data)
 
-	assert.Contains(t, content, `"glm-5.1"`, "large must be untouched")
+	assert.Contains(t, content, `"glm-4.6"`, "large must be untouched")
 	assert.Contains(t, content, `"glm-5-turbo"`, "small must be untouched")
 	assert.Contains(t, content, `"glm-4.7-flash"`, "worker must reflect the new value")
 }
@@ -440,17 +440,17 @@ func TestModelsUse_WorkerAndReviewerFlags(t *testing.T) {
 
 	resetModelsUseFlags(t)
 	_, runErr := runModelsCmd(t, modelsUseCmd,
-		"glm5_1", "glm5_turbo", "--worker", "glm4_7_flash", "--reviewer", "glm5_2")
+		"glm4_6", "glm5_turbo", "--worker", "glm4_7_flash", "--reviewer", "glm5_3")
 	require.NoError(t, runErr)
 
 	data, err := os.ReadFile(globalPath)
 	require.NoError(t, err)
 	content := string(data)
 
-	assert.Contains(t, content, `"glm-5.1"`)       // large
+	assert.Contains(t, content, `"glm-4.6"`)       // large
 	assert.Contains(t, content, `"glm-5-turbo"`)   // small
 	assert.Contains(t, content, `"glm-4.7-flash"`) // worker
-	assert.Contains(t, content, `"glm-5.2"`)       // reviewer
+	assert.Contains(t, content, `"glm-5.3"`)       // reviewer
 }
 
 func TestModelsUse_WorkerViaShortCode(t *testing.T) {
@@ -462,7 +462,7 @@ func TestModelsUse_WorkerViaShortCode(t *testing.T) {
 
 	resetModelsUseFlags(t)
 	_, runErr := runModelsCmd(t, modelsUseCmd,
-		"glm5_1", "glm5_turbo", "--worker", "fl")
+		"glm4_6", "glm5_turbo", "--worker", "fl")
 	require.NoError(t, runErr)
 
 	data, err := os.ReadFile(globalPath)
@@ -480,7 +480,7 @@ func TestModelsUse_UnknownWorkerAtomFailsCleanly(t *testing.T) {
 
 	resetModelsUseFlags(t)
 	_, runErr := runModelsCmd(t, modelsUseCmd,
-		"glm5_1", "glm5_turbo", "--worker", "not-a-real-atom-xyz")
+		"glm4_6", "glm5_turbo", "--worker", "not-a-real-atom-xyz")
 	require.Error(t, runErr)
 	assert.Contains(t, runErr.Error(), "worker:")
 }

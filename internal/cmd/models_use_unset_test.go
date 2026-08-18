@@ -16,7 +16,7 @@ func TestModelsUnset_ClearsWorkerOnly(t *testing.T) {
 
 	resetModelsUseFlags(t)
 	_, runErr := runModelsCmd(t, modelsUseCmd,
-		"glm5_1", "glm5_turbo", "--worker", "glm4_7_flash", "--reviewer", "glm5_2")
+		"glm4_6", "glm5_turbo", "--worker", "glm4_7_flash", "--reviewer", "glm5_3")
 	require.NoError(t, runErr)
 
 	resetModelsUnsetFlags(t)
@@ -45,7 +45,7 @@ func TestModelsUnset_AllClearsAllFourSlots(t *testing.T) {
 
 	resetModelsUseFlags(t)
 	_, runErr := runModelsCmd(t, modelsUseCmd,
-		"glm5_1", "glm5_turbo", "--worker", "glm4_7_flash", "--reviewer", "glm5_2")
+		"glm4_6", "glm5_turbo", "--worker", "glm4_7_flash", "--reviewer", "glm5_3")
 	require.NoError(t, runErr)
 
 	resetModelsUnsetFlags(t)

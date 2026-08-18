@@ -18,7 +18,7 @@ func TestModelsState_ReportsWorkerAndReviewer(t *testing.T) {
 
 	resetModelsUseFlags(t)
 	_, runErr := runModelsCmd(t, modelsUseCmd,
-		"glm5_1", "glm5_turbo", "--worker", "glm4_7_flash", "--reviewer", "glm5_2")
+		"glm5_turbo", "glm5_turbo", "--worker", "glm4_7_flash", "--reviewer", "glm5_3")
 	require.NoError(t, runErr)
 
 	resetModelsStateFlags(t)
@@ -28,7 +28,7 @@ func TestModelsState_ReportsWorkerAndReviewer(t *testing.T) {
 	assert.Contains(t, out, "worker:")
 	assert.Contains(t, out, "glm-4.7-flash")
 	assert.Contains(t, out, "reviewer:")
-	assert.Contains(t, out, "glm-5.2")
+	assert.Contains(t, out, "glm-5.3")
 }
 
 func TestModelsState_JSONReportsWorkerAndReviewer(t *testing.T) {
@@ -36,7 +36,7 @@ func TestModelsState_JSONReportsWorkerAndReviewer(t *testing.T) {
 
 	resetModelsUseFlags(t)
 	_, runErr := runModelsCmd(t, modelsUseCmd,
-		"glm5_1", "glm5_turbo", "--worker", "glm4_7_flash", "--reviewer", "glm5_2")
+		"glm5_turbo", "glm5_turbo", "--worker", "glm4_7_flash", "--reviewer", "glm5_3")
 	require.NoError(t, runErr)
 
 	resetModelsStateFlags(t)
@@ -46,7 +46,7 @@ func TestModelsState_JSONReportsWorkerAndReviewer(t *testing.T) {
 	assert.Contains(t, out, `"worker"`)
 	assert.Contains(t, out, `"reviewer"`)
 	assert.Contains(t, out, "glm-4.7-flash")
-	assert.Contains(t, out, "glm-5.2")
+	assert.Contains(t, out, "glm-5.3")
 }
 
 // TestModelsState_UnsetEffort_ShowsKnownZAIDefault covers the core case for
@@ -54,13 +54,13 @@ func TestModelsState_JSONReportsWorkerAndReviewer(t *testing.T) {
 // documented unset-default (Z.AI, "unset -> thinking on, high" per
 // coordinator.go's getProviderOptions and providerEffortDocs in
 // models_efforts.go) must show that default as a terse parenthetical.
-// "glm5_1" (large, in this test) is set with no @effort suffix, so
+// "glm5_turbo" (large, in this test) is set with no @effort suffix, so
 // m.ReasoningEffort == "" and effortEffectiveNote must fire.
 func TestModelsState_UnsetEffort_ShowsKnownZAIDefault(t *testing.T) {
 	isolatedModelsEnv(t)
 
 	resetModelsUseFlags(t)
-	_, runErr := runModelsCmd(t, modelsUseCmd, "glm5_1", "glm5_turbo")
+	_, runErr := runModelsCmd(t, modelsUseCmd, "glm5_turbo", "glm5_turbo")
 	require.NoError(t, runErr)
 
 	resetModelsStateFlags(t)
@@ -76,8 +76,8 @@ func TestModelsState_UnsetEffort_ShowsKnownZAIDefault(t *testing.T) {
 // not the provider's unset-default note — the two must never appear together
 // on the same slot's line, or a reader can't tell "you set this" from "this
 // merely happens by default". Uses glm4_7_flash (boolean off/on Z.AI atom) rather than
-// glm5_2: the embedded catwalk provider catalog this test env falls back to
-// in CRUSH_PROVIDER_CACHE_ONLY mode doesn't list glm-5.2 at all, which makes
+// glm5_3: the embedded catwalk provider catalog this test env falls back to
+// in CRUSH_PROVIDER_CACHE_ONLY mode doesn't list glm-5.3 at all, which makes
 // config's large/small validation silently substitute a different zai model
 // on load — an unrelated, pre-existing environmental quirk of the vendored
 // catwalk embedded data, not something this task touches. glm4_7_flash IS in
@@ -117,7 +117,7 @@ func TestModelsState_JSON_UnsetEffort_ShowsKnownDefault(t *testing.T) {
 	isolatedModelsEnv(t)
 
 	resetModelsUseFlags(t)
-	_, runErr := runModelsCmd(t, modelsUseCmd, "glm5_1", "glm5_turbo")
+	_, runErr := runModelsCmd(t, modelsUseCmd, "glm5_turbo", "glm5_turbo")
 	require.NoError(t, runErr)
 
 	resetModelsStateFlags(t)
@@ -138,7 +138,7 @@ func TestModelsState_JSON_UnsetEffort_ShowsKnownDefault(t *testing.T) {
 // field is null (not the fact string) when the slot has an explicit effort —
 // the machine-readable mirror of the text-mode precedence test above. See
 // the comment on TestModelsState_ExplicitEffort_TakesPrecedenceOverDefault
-// for why glm4_7_flash is used instead of glm5_2 here.
+// for why glm4_7_flash is used instead of glm5_3 here.
 func TestModelsState_JSON_ExplicitEffort_NullDefault(t *testing.T) {
 	isolatedModelsEnv(t)
 
@@ -188,11 +188,11 @@ func TestUnsetEffortNote_KnownAndUnknownProviders(t *testing.T) {
 // for an undocumented provider.
 func TestEffortEffectiveNote_ExplicitVsUnset(t *testing.T) {
 	// Explicit effort set: no default note, regardless of provider.
-	explicit := config.SelectedModel{Provider: "zai", Model: "glm-5.2", ReasoningEffort: "max"}
+	explicit := config.SelectedModel{Provider: "zai", Model: "glm-5.3", ReasoningEffort: "max"}
 	assert.Empty(t, effortEffectiveNote(explicit))
 
 	// Unset effort, known Z.AI default: note must appear.
-	unsetZAI := config.SelectedModel{Provider: "zai", Model: "glm-5.2"}
+	unsetZAI := config.SelectedModel{Provider: "zai", Model: "glm-5.3"}
 	assert.Contains(t, effortEffectiveNote(unsetZAI), "unset -> thinking on, high")
 
 	// Unset effort, undocumented provider: must stay silent, not guess.
@@ -203,10 +203,10 @@ func TestEffortEffectiveNote_ExplicitVsUnset(t *testing.T) {
 // TestNilOrEffortDefault_JSONCounterpart mirrors the text-mode test above
 // for the --json path's nilOrEffortDefault helper.
 func TestNilOrEffortDefault_JSONCounterpart(t *testing.T) {
-	explicit := config.SelectedModel{Provider: "zai", Model: "glm-5.2", ReasoningEffort: "max"}
+	explicit := config.SelectedModel{Provider: "zai", Model: "glm-5.3", ReasoningEffort: "max"}
 	assert.Nil(t, nilOrEffortDefault(true, explicit))
 
-	unsetZAI := config.SelectedModel{Provider: "zai", Model: "glm-5.2"}
+	unsetZAI := config.SelectedModel{Provider: "zai", Model: "glm-5.3"}
 	assert.Equal(t, "unset -> thinking on, high", nilOrEffortDefault(true, unsetZAI))
 
 	unsetUnknown := config.SelectedModel{Provider: "openai", Model: "gpt-5"}

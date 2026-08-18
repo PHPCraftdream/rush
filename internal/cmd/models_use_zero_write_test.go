@@ -18,13 +18,13 @@ import (
 // large/small silently persisted while only the reviewer write is rejected.
 // Before the fix, RunE wrote large and small to disk (and printed "set
 // large = ..." / "set small = ...") BEFORE it ever parsed/validated
-// --reviewer, so a typo'd effort like "glm5_2-hihg" left large/small durably
+// --reviewer, so a typo'd effort like "glm5_3-hihg" left large/small durably
 // changed even though the overall command reported failure. This asserts the
 // raw on-disk bytes are byte-identical to the pre-command state (the seed
 // `{}` isolatedModelsEnv wrote), not just crush state's "effective" view,
 // which could misleadingly inherit a prior write.
 //
-// Uses the atom form "glm5_2-hihg" rather than the raw "zai/glm-5.2@hihg"
+// Uses the atom form "glm5_3-hihg" rather than the raw "zai/glm-5.3@hihg"
 // string from the live bug report, because raw provider/model resolution
 // goes through a.ResolveModel against the (cached) provider catalog, which
 // this isolated test harness doesn't reliably resolve for every zai model id
@@ -40,7 +40,7 @@ func TestModelsUse_InvalidReviewerEffort_ZeroWrites(t *testing.T) {
 
 	resetModelsUseFlags(t)
 	_, runErr := runModelsCmd(t, modelsUseCmd,
-		"glm5_1", "glm5_turbo", "--reviewer", "glm5_2-hihg")
+		"glm4_6", "glm5_turbo", "--reviewer", "glm5_3-hihg")
 	require.Error(t, runErr)
 	assert.Contains(t, runErr.Error(), "reviewer:")
 	assert.Contains(t, runErr.Error(), "not a valid level")
@@ -63,9 +63,9 @@ func TestModelsUse_InvalidReviewerEffort_WorkerAlsoNotWritten(t *testing.T) {
 
 	resetModelsUseFlags(t)
 	_, runErr := runModelsCmd(t, modelsUseCmd,
-		"glm5_1", "glm5_turbo",
+		"glm4_6", "glm5_turbo",
 		"--worker", "glm4_7_flash",
-		"--reviewer", "glm5_2-hihg")
+		"--reviewer", "glm5_3-hihg")
 	require.Error(t, runErr)
 	assert.Contains(t, runErr.Error(), "reviewer:")
 
@@ -90,7 +90,7 @@ func TestModelsUse_InvalidLargePositional_ShortCircuitsBeforeWorkerReviewer(t *t
 	resetModelsUseFlags(t)
 	_, runErr := runModelsCmd(t, modelsUseCmd,
 		"not-a-real-atom-xyz", "glm5_turbo",
-		"--worker", "glm4_7_flash", "--reviewer", "glm5_2")
+		"--worker", "glm4_7_flash", "--reviewer", "glm5_3")
 	require.Error(t, runErr)
 	assert.Contains(t, runErr.Error(), "large:")
 
@@ -109,8 +109,8 @@ func TestModelsUse_AllFourValid_StillWritesAll(t *testing.T) {
 
 	resetModelsUseFlags(t)
 	_, runErr := runModelsCmd(t, modelsUseCmd,
-		"glm5_1", "glm5_turbo",
-		"--worker", "glm4_7_flash", "--reviewer", "glm5_2")
+		"glm4_6", "glm5_turbo",
+		"--worker", "glm4_7_flash", "--reviewer", "glm5_3")
 	require.NoError(t, runErr)
 
 	data, err := os.ReadFile(globalPath)
@@ -126,8 +126,8 @@ func TestModelsUse_AllFourValid_StillWritesAll(t *testing.T) {
 	assert.Contains(t, doc.Models, "reviewer")
 
 	content := string(data)
-	assert.Contains(t, content, `"glm-5.1"`)
+	assert.Contains(t, content, `"glm-4.6"`)
 	assert.Contains(t, content, `"glm-5-turbo"`)
 	assert.Contains(t, content, `"glm-4.7-flash"`)
-	assert.Contains(t, content, `"glm-5.2"`)
+	assert.Contains(t, content, `"glm-5.3"`)
 }

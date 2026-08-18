@@ -22,18 +22,18 @@ func TestRenderEffortsOverview_NoArg(t *testing.T) {
 
 	// Claude-only LETTER short-code asymmetry (o47x, h45l, ...) — Z.AI atoms
 	// now have their OWN validated levels array + long-form atom suffix
-	// (glm5_2-max), so the assertion here is scoped to "no letter short
+	// (glm5_3-max), so the assertion here is scoped to "no letter short
 	// code", not "no way at all to set effort with validation".
 	assert.Contains(t, out, "ASYMMETRY")
 	assert.Contains(t, out, "local-cli/")
-	assert.Contains(t, out, "`glm5_2xx`")
+	assert.Contains(t, out, "`glm5_3xx`")
 	assert.Contains(t, out, "no letter\nshort code for effort")
 
 	// Z.AI collapsing — the single most surprising fact.
 	assert.Contains(t, out, "Z.AI")
 	assert.Contains(t, out, `unset, low, medium, high     -> reasoning_effort: "high"`)
 	// Z.AI now has a real, validated levels array + long-form atom suffix.
-	assert.Contains(t, out, "glm5_2-max")
+	assert.Contains(t, out, "glm5_3-max")
 	assert.Contains(t, out, "validated")
 
 	// DeepSeek's differing unset default should also be documented.
@@ -50,28 +50,28 @@ func TestRenderEffortsOverview_NoArg(t *testing.T) {
 // states the low/medium→high collapsing explicitly, since that is the fact
 // most likely to waste a user's time if it's missing.
 func TestRenderEffortsForModel_ZAI(t *testing.T) {
-	out, err := renderEffortsForModel("glm5_2")
+	out, err := renderEffortsForModel("glm5_3")
 	require.NoError(t, err)
 
-	assert.Contains(t, out, "GLM 5.2")
-	assert.Contains(t, out, "zai/glm-5.2")
+	assert.Contains(t, out, "GLM 5.3")
+	assert.Contains(t, out, "zai/glm-5.3")
 	assert.Contains(t, out, `unset, low, medium, high     -> reasoning_effort: "high"`)
 	assert.Contains(t, out, "xhigh, max, ultracode        -> reasoning_effort: \"max\"")
 
 	// Must show the raw @effort command form, not a letter short code (none exist).
-	assert.Contains(t, out, "crush models use zai/glm-5.2@<level> <small>")
-	assert.Contains(t, out, "crush models use zai/glm-5.2@off <small>")
-	assert.Contains(t, out, "crush models use zai/glm-5.2@max <small>")
-	// "high" is glm5_2's third real state — must be rendered too, and no
+	assert.Contains(t, out, "crush models use zai/glm-5.3@<level> <small>")
+	assert.Contains(t, out, "crush models use zai/glm-5.3@off <small>")
+	assert.Contains(t, out, "crush models use zai/glm-5.3@max <small>")
+	// "high" is glm5_3's third real state — must be rendered too, and no
 	// wider vendor-only vocabulary (e.g. "xhigh") should appear as a settable row.
-	assert.Contains(t, out, "crush models use zai/glm-5.2@high <small>")
-	assert.NotContains(t, out, "crush models use zai/glm-5.2@xhigh <small>")
+	assert.Contains(t, out, "crush models use zai/glm-5.3@high <small>")
+	assert.NotContains(t, out, "crush models use zai/glm-5.3@xhigh <small>")
 
 	// New behavior for this task: the long-form atom suffix (validated,
 	// same mechanism as Claude atoms) is now also offered and the output
 	// says both forms are validated against the real levels array — not
 	// left as an unvalidated blind string split.
-	assert.Contains(t, out, "crush models use glm5_2-<level> <small>")
+	assert.Contains(t, out, "crush models use glm5_3-<level> <small>")
 	assert.Contains(t, out, "Validated")
 	assert.Contains(t, out, "3 real states")
 }
@@ -80,21 +80,21 @@ func TestRenderEffortsForModel_ZAI(t *testing.T) {
 // levels for a Z.AI atom come from the real zaiReasoningLevels array (used
 // for validation), not merely restated as prose that could drift from it.
 func TestRenderEffortsForModel_ZAI_LevelsFromRealArray(t *testing.T) {
-	out, err := renderEffortsForModel("glm5_2")
+	out, err := renderEffortsForModel("glm5_3")
 	require.NoError(t, err)
-	a := atomRegistry["glm5_2"]
+	a := atomRegistry["glm5_3"]
 	require.NotNil(t, a.ReasoningLevels)
 	for _, level := range a.ReasoningLevels {
-		assert.Contains(t, out, "crush models use zai/glm-5.2@"+level, "level %q from the real array must be rendered", level)
+		assert.Contains(t, out, "crush models use zai/glm-5.3@"+level, "level %q from the real array must be rendered", level)
 	}
 }
 
 // TestRenderEffortsForModel_ZAI_RawProviderModel verifies the same lookup
 // also works when addressed as raw "provider/model" instead of the atom key.
 func TestRenderEffortsForModel_ZAI_RawProviderModel(t *testing.T) {
-	out, err := renderEffortsForModel("zai/glm-5.2")
+	out, err := renderEffortsForModel("zai/glm-5.3")
 	require.NoError(t, err)
-	assert.Contains(t, out, "atom: glm5_2")
+	assert.Contains(t, out, "atom: glm5_3")
 	assert.Contains(t, out, `unset, low, medium, high     -> reasoning_effort: "high"`)
 }
 
@@ -146,11 +146,11 @@ func TestRenderEffortsForModel_UnknownModel(t *testing.T) {
 // shapes: atom key, full short code, and raw provider/model.
 func TestResolveEffortTarget_Variants(t *testing.T) {
 	t.Run("atom key", func(t *testing.T) {
-		target, ok := resolveEffortTarget("glm5_1")
+		target, ok := resolveEffortTarget("glm5_turbo")
 		require.True(t, ok)
-		assert.Equal(t, "glm5_1", target.AtomKey)
+		assert.Equal(t, "glm5_turbo", target.AtomKey)
 		assert.Equal(t, "zai", target.Provider)
-		assert.Equal(t, "glm-5.1", target.Model)
+		assert.Equal(t, "glm-5-turbo", target.Model)
 	})
 
 	t.Run("short code", func(t *testing.T) {
@@ -170,11 +170,11 @@ func TestResolveEffortTarget_Variants(t *testing.T) {
 	})
 
 	t.Run("raw provider/model with @effort suffix ignored for lookup", func(t *testing.T) {
-		target, ok := resolveEffortTarget("zai/glm-5.2@max")
+		target, ok := resolveEffortTarget("zai/glm-5.3@max")
 		require.True(t, ok)
-		assert.Equal(t, "glm5_2", target.AtomKey)
+		assert.Equal(t, "glm5_3", target.AtomKey)
 		assert.Equal(t, "zai", target.Provider)
-		assert.Equal(t, "glm-5.2", target.Model)
+		assert.Equal(t, "glm-5.3", target.Model)
 	})
 
 	t.Run("unrecognized", func(t *testing.T) {

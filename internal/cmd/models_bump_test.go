@@ -44,27 +44,34 @@ func setupBumpEnv(t *testing.T) (globalPath string) {
 	return globalPath
 }
 
-// Note on model choice: these tests deliberately put glm5_2 on the
-// worker/reviewer slot rather than large/small. `models use`'s large/small
-// positionals additionally require the resolved model to be found in the
-// provider catalog (a.ResolveModel / c.GetModel — see
-// configureSelectedModels in internal/config/load.go), and this isolated
-// test harness's shared provider cache (CRUSH_PROVIDER_CACHE_ONLY=1) does
-// not reliably resolve "zai/glm-5.2" specifically (same environmental quirk
-// already documented in models_use_test.go's TestModelsUse_RawZAIEffort_*
-// comments — it resolves glm-4.7-flash reliably but not every zai id). When
-// glm-5.2 fails that lookup for the LARGE slot specifically,
-// configureSelectedModels silently falls back to a default model AND
-// persists that fallback — corrupting the very file these tests read back.
-// worker/reviewer are read directly from cfg.Models by modelsBumpCmd without
-// going through that same default-substitution path, so they are unaffected
-// and safe to use for glm5_2's full graduated level set. large/small below
-// use glm4_7_flash (boolean off/on) instead, which resolves reliably.
-func TestModelsBump_GLM52FullStepUp(t *testing.T) {
+// Note on model choice: these tests put the graduated-effort atom on the
+// worker/reviewer slot rather than large/small, and large/small get
+// glm4_7_flash (boolean off/on) instead.
+//
+// The original reason was specific to glm5_2, which these tests used before
+// 2026-08-18: `models use`'s large/small positionals additionally require
+// the resolved model to be found in the provider catalog (a.ResolveModel /
+// c.GetModel — see configureSelectedModels in internal/config/load.go), the
+// isolated harness runs with CRUSH_PROVIDER_CACHE_ONLY=1, and glm-5.2 is not
+// in that catalog. The lookup failed, configureSelectedModels silently
+// substituted a default AND persisted it — corrupting the very file these
+// tests read back. worker/reviewer are read straight from cfg.Models by
+// modelsBumpCmd, bypassing that substitution, so they were safe.
+//
+// That hazard does NOT apply to glm5_3, the atom these tests use now:
+// load_providers.go synthesizes a provisional glm-5.3 entry into the Z.AI
+// provider's model list precisely because neither docs.z.ai nor catwalk
+// lists it, so it resolves on the large slot and round-trips intact
+// (measured directly — `models use glm5_3 glm5_turbo` writes
+// {"model":"glm-5.3","provider":"zai"} to the large slot under this exact
+// harness). The slot placement below is therefore no longer load-bearing;
+// it is left as-is because moving it would churn every assertion for no
+// gain, not because glm5_3 would break there.
+func TestModelsBump_GLM53FullStepUp(t *testing.T) {
 	globalPath := setupBumpEnv(t)
 
 	resetModelsUseFlags(t)
-	_, runErr := runModelsCmd(t, modelsUseCmd, "glm4_7_flash-off", "glm5_turbo", "--reviewer", "glm5_2-off")
+	_, runErr := runModelsCmd(t, modelsUseCmd, "glm4_7_flash-off", "glm5_turbo", "--reviewer", "glm5_3-off")
 	require.NoError(t, runErr)
 
 	levels := []string{"off", "high", "max"}
@@ -103,16 +110,16 @@ func TestModelsBump_GLM52FullStepUp(t *testing.T) {
 	resetModelsStateFlags(t)
 	state, runErr := runModelsCmd(t, modelsStateCmd)
 	require.NoError(t, runErr)
-	assert.Contains(t, state, "atom: glm5_2-max")
+	assert.Contains(t, state, "atom: glm5_3-max")
 }
 
-// TestModelsBump_GLM52FullStepDown is the symmetric downward walk, starting
+// TestModelsBump_GLM53FullStepDown is the symmetric downward walk, starting
 // from the top (max) and stepping down to off.
-func TestModelsBump_GLM52FullStepDown(t *testing.T) {
+func TestModelsBump_GLM53FullStepDown(t *testing.T) {
 	globalPath := setupBumpEnv(t)
 
 	resetModelsUseFlags(t)
-	_, runErr := runModelsCmd(t, modelsUseCmd, "glm4_7_flash-on", "glm5_turbo", "--reviewer", "glm5_2-max")
+	_, runErr := runModelsCmd(t, modelsUseCmd, "glm4_7_flash-on", "glm5_turbo", "--reviewer", "glm5_3-max")
 	require.NoError(t, runErr)
 
 	levels := []string{"off", "high", "max"}
@@ -120,7 +127,7 @@ func TestModelsBump_GLM52FullStepDown(t *testing.T) {
 		resetModelsBumpFlags(t)
 		_, runErr := runModelsCmd(t, modelsBumpCmd, "reviewer", "down")
 		require.NoError(t, runErr, "step down to index %d", i)
-		// See the comment in TestModelsBump_GLM52FullStepUp: release the
+		// See the comment in TestModelsBump_GLM53FullStepUp: release the
 		// per-data-dir SQLite connection between iterations to avoid a
 		// Windows-only TempDir-cleanup file-lock race — scoped to this
 		// test's own data dir, not the whole pool.
@@ -136,7 +143,7 @@ func TestModelsBump_GLM52FullStepDown(t *testing.T) {
 	resetModelsStateFlags(t)
 	state, runErr := runModelsCmd(t, modelsStateCmd)
 	require.NoError(t, runErr)
-	assert.Contains(t, state, "atom: glm5_2-off")
+	assert.Contains(t, state, "atom: glm5_3-off")
 }
 
 // TestModelsBump_TopBoundary_UpIsInformationalNotError confirms that
@@ -147,7 +154,7 @@ func TestModelsBump_TopBoundary_UpIsInformationalNotError(t *testing.T) {
 	setupBumpEnv(t)
 
 	resetModelsUseFlags(t)
-	_, runErr := runModelsCmd(t, modelsUseCmd, "glm4_7_flash-on", "glm5_turbo", "--reviewer", "glm5_2-max")
+	_, runErr := runModelsCmd(t, modelsUseCmd, "glm4_7_flash-on", "glm5_turbo", "--reviewer", "glm5_3-max")
 	require.NoError(t, runErr)
 
 	resetModelsBumpFlags(t)
@@ -158,7 +165,7 @@ func TestModelsBump_TopBoundary_UpIsInformationalNotError(t *testing.T) {
 	resetModelsStateFlags(t)
 	state, runErr := runModelsCmd(t, modelsStateCmd)
 	require.NoError(t, runErr)
-	assert.Contains(t, state, "atom: glm5_2-max")
+	assert.Contains(t, state, "atom: glm5_3-max")
 }
 
 // TestModelsBump_BottomBoundary_DownIsInformationalNotError is the symmetric
@@ -168,7 +175,7 @@ func TestModelsBump_BottomBoundary_DownIsInformationalNotError(t *testing.T) {
 	setupBumpEnv(t)
 
 	resetModelsUseFlags(t)
-	_, runErr := runModelsCmd(t, modelsUseCmd, "glm4_7_flash-off", "glm5_turbo", "--reviewer", "glm5_2-off")
+	_, runErr := runModelsCmd(t, modelsUseCmd, "glm4_7_flash-off", "glm5_turbo", "--reviewer", "glm5_3-off")
 	require.NoError(t, runErr)
 
 	resetModelsBumpFlags(t)
@@ -178,7 +185,7 @@ func TestModelsBump_BottomBoundary_DownIsInformationalNotError(t *testing.T) {
 	resetModelsStateFlags(t)
 	state, runErr := runModelsCmd(t, modelsStateCmd)
 	require.NoError(t, runErr)
-	assert.Contains(t, state, "atom: glm5_2-off")
+	assert.Contains(t, state, "atom: glm5_3-off")
 }
 
 // TestModelsBump_UnsetEffort_UpLandsOnLowestLevel confirms the chosen
@@ -189,10 +196,10 @@ func TestModelsBump_UnsetEffort_UpLandsOnLowestLevel(t *testing.T) {
 	globalPath := setupBumpEnv(t)
 
 	resetModelsUseFlags(t)
-	// "glm5_2" with no "-<level>" suffix -> ReasoningEffort left empty
+	// "glm5_3" with no "-<level>" suffix -> ReasoningEffort left empty
 	// (Z.AI/ReasoningLevels-backed atoms make the suffix optional; see
 	// parseAtom in models_atoms.go).
-	_, runErr := runModelsCmd(t, modelsUseCmd, "glm4_7_flash", "glm5_turbo", "--reviewer", "glm5_2")
+	_, runErr := runModelsCmd(t, modelsUseCmd, "glm4_7_flash", "glm5_turbo", "--reviewer", "glm5_3")
 	require.NoError(t, runErr)
 
 	resetModelsBumpFlags(t)
@@ -206,7 +213,7 @@ func TestModelsBump_UnsetEffort_UpLandsOnLowestLevel(t *testing.T) {
 	resetModelsStateFlags(t)
 	state, runErr := runModelsCmd(t, modelsStateCmd)
 	require.NoError(t, runErr)
-	assert.Contains(t, state, "atom: glm5_2-off")
+	assert.Contains(t, state, "atom: glm5_3-off")
 }
 
 // TestModelsBump_UnsetEffort_DownReportsAlreadyLowest confirms the symmetric
@@ -217,7 +224,7 @@ func TestModelsBump_UnsetEffort_DownReportsAlreadyLowest(t *testing.T) {
 	globalPath := setupBumpEnv(t)
 
 	resetModelsUseFlags(t)
-	_, runErr := runModelsCmd(t, modelsUseCmd, "glm4_7_flash", "glm5_turbo", "--reviewer", "glm5_2")
+	_, runErr := runModelsCmd(t, modelsUseCmd, "glm4_7_flash", "glm5_turbo", "--reviewer", "glm5_3")
 	require.NoError(t, runErr)
 
 	before, err := os.ReadFile(globalPath)
@@ -266,10 +273,10 @@ func TestModelsBump_NonAtomModel_ReportsCleanly(t *testing.T) {
 // TestModelsBump_AllFourRoles is a table test confirming the bump command
 // works uniformly across all four role slots. large/small use
 // glm4_7_flash (boolean off/on — resolves reliably in this harness, see the
-// note on TestModelsBump_GLM52FullStepUp); worker/reviewer use glm5_2's
+// note on TestModelsBump_GLM53FullStepUp); worker/reviewer use glm5_3's
 // high->max step, since worker/reviewer are read directly from cfg.Models
 // without going through the large/small default-substitution path that
-// makes glm-5.2 unreliable for THOSE two slots specifically in this
+// makes glm-5.3 unreliable for THOSE two slots specifically in this
 // harness.
 func TestModelsBump_AllFourRoles(t *testing.T) {
 	tests := []struct {
@@ -279,8 +286,8 @@ func TestModelsBump_AllFourRoles(t *testing.T) {
 	}{
 		{"large", "glm4_7_flash-off", `"on"`},
 		{"small", "glm4_7_flash-off", `"on"`},
-		{"worker", "glm5_2-high", `"max"`},
-		{"reviewer", "glm5_2-high", `"max"`},
+		{"worker", "glm5_3-high", `"max"`},
+		{"reviewer", "glm5_3-high", `"max"`},
 	}
 	for _, tc := range tests {
 		t.Run(tc.role, func(t *testing.T) {
@@ -326,7 +333,7 @@ func TestModelsBump_WritePersists_RawFileContent(t *testing.T) {
 	globalPath := setupBumpEnv(t)
 
 	resetModelsUseFlags(t)
-	_, runErr := runModelsCmd(t, modelsUseCmd, "glm4_7_flash-off", "glm5_turbo", "--reviewer", "glm5_2-high")
+	_, runErr := runModelsCmd(t, modelsUseCmd, "glm4_7_flash-off", "glm5_turbo", "--reviewer", "glm5_3-high")
 	require.NoError(t, runErr)
 
 	resetModelsBumpFlags(t)
@@ -337,7 +344,7 @@ func TestModelsBump_WritePersists_RawFileContent(t *testing.T) {
 	require.NoError(t, err)
 	content := string(data)
 	assert.Contains(t, content, `"reviewer"`)
-	assert.Contains(t, content, `"glm-5.2"`)
+	assert.Contains(t, content, `"glm-5.3"`)
 	assert.Contains(t, content, `"max"`)
 	assert.NotContains(t, content, `"high"`, "the old effort value should no longer be present for reviewer after the bump")
 }

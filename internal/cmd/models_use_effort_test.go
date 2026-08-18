@@ -97,7 +97,7 @@ func TestModelsUse_RawZAIEffort_TypoRejectedForWorkerSlot(t *testing.T) {
 
 	resetModelsUseFlags(t)
 	_, runErr := runModelsCmd(t, modelsUseCmd,
-		"glm5_1", "glm5_turbo", "--worker", "zai/glm-4.7-flash@ultramega")
+		"glm5_turbo", "glm5_turbo", "--worker", "zai/glm-4.7-flash@ultramega")
 	require.Error(t, runErr)
 	assert.Contains(t, runErr.Error(), "worker:")
 	assert.Contains(t, runErr.Error(), "not a valid effort level")
@@ -121,8 +121,8 @@ func TestValidateEffortForModel_NonAtomStillUnvalidated(t *testing.T) {
 // counterpart to TestModelsUse_RawZAIEffort_TypoNowFailsCleanly above: same
 // fact, asserted without going through the full CLI/config-write path.
 // Uses glm-4.7-flash (boolean off/on levels — see zaiBooleanThinkingLevels)
-// rather than glm-5.2, whose graduated 8-value set is covered separately by
-// TestValidateEffortForModel_GLM52AcceptsGraduatedLevel below.
+// rather than glm-5.3, whose graduated 8-value set is covered separately by
+// TestValidateEffortForModel_GLM53AcceptsGraduatedLevel below.
 func TestValidateEffortForModel_KnownAtomRejectsTypo(t *testing.T) {
 	err := validateEffortForModel("zai", "glm-4.7-flash", "hgih")
 	require.Error(t, err)
@@ -134,34 +134,34 @@ func TestValidateEffortForModel_KnownAtomRejectsTypo(t *testing.T) {
 // TestValidateEffortForModel_KnownAtomAcceptsRealLevel confirms every level
 // in a Z.AI atom's real declared array validates successfully, for a
 // boolean-thinking-only model (glm-4.7-flash: only off/on, per Z.AI's docs —
-// no documented graduated reasoning_effort outside GLM-5.2).
+// no documented graduated reasoning_effort outside GLM-5.3).
 func TestValidateEffortForModel_KnownAtomAcceptsRealLevel(t *testing.T) {
 	for _, level := range []string{"off", "on"} {
 		assert.NoError(t, validateEffortForModel("zai", "glm-4.7-flash", level), "level %q", level)
 	}
 }
 
-// TestValidateEffortForModel_GLM52AcceptsGraduatedLevel confirms GLM-5.2
+// TestValidateEffortForModel_GLM53AcceptsGraduatedLevel confirms GLM-5.3
 // specifically validates against its OWN, larger vocabulary (3 real wire
 // states: off/high/max — one more than every other Z.AI atom's off/on).
 // A wider Z.AI-documented value like "xhigh" is deliberately NOT accepted:
 // this fork's coordinator.go collapses it to the same "max" wire value as
 // an explicit "max", so it isn't a meaningful, distinct level to expose.
 // See the comment on zaiReasoningLevels in models_atoms.go.
-func TestValidateEffortForModel_GLM52AcceptsGraduatedLevel(t *testing.T) {
+func TestValidateEffortForModel_GLM53AcceptsGraduatedLevel(t *testing.T) {
 	for _, level := range []string{"off", "high", "max"} {
-		assert.NoError(t, validateEffortForModel("zai", "glm-5.2", level), "level %q", level)
+		assert.NoError(t, validateEffortForModel("zai", "glm-5.3", level), "level %q", level)
 	}
-	// "on" is a glm4_7_flash-style boolean value, not part of glm-5.2's
-	// vocabulary — must still be rejected for glm-5.2.
-	err := validateEffortForModel("zai", "glm-5.2", "on")
+	// "on" is a glm4_7_flash-style boolean value, not part of glm-5.3's
+	// vocabulary — must still be rejected for glm-5.3.
+	err := validateEffortForModel("zai", "glm-5.3", "on")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not a valid effort level")
 
 	// "xhigh" is part of Z.AI's own documented reasoning_effort enum but
 	// collapses to "max" on the wire — no longer accepted as a distinct
-	// glm5_2 level (deliberately stricter than before this task).
-	err = validateEffortForModel("zai", "glm-5.2", "xhigh")
+	// glm5_3 level (deliberately stricter than before this task).
+	err = validateEffortForModel("zai", "glm-5.3", "xhigh")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not a valid effort level")
 }
@@ -169,6 +169,6 @@ func TestValidateEffortForModel_GLM52AcceptsGraduatedLevel(t *testing.T) {
 // TestValidateEffortForModel_EmptyEffortAlwaysOK confirms omitting an
 // effort suffix entirely (the common case) is always valid, atom or not.
 func TestValidateEffortForModel_EmptyEffortAlwaysOK(t *testing.T) {
-	assert.NoError(t, validateEffortForModel("zai", "glm-5.2", ""))
+	assert.NoError(t, validateEffortForModel("zai", "glm-5.3", ""))
 	assert.NoError(t, validateEffortForModel("openai", "gpt-5", ""))
 }

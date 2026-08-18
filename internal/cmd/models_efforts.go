@@ -2,11 +2,11 @@
 // effort.
 //
 //   - Two syntaxes set effort: short codes / long-form atom suffix
-//     (opus-high, glm5_2-max, ...) and raw "provider/model@effort".
+//     (opus-high, glm5_3-max, ...) and raw "provider/model@effort".
 //   - Effort-bearing letter short codes (o47x, h45l, ...) exist ONLY for
 //     local-cli/Claude atoms. Z.AI atoms carry a static ReasoningLevels
 //     array instead (see models_atoms.go) and accept the long-form
-//     "<atom>-<level>" suffix, e.g. "glm5_2-max".
+//     "<atom>-<level>" suffix, e.g. "glm5_3-max".
 //   - The raw "@effort" suffix is validated (validateEffortForModel in
 //     models_atoms.go) against a known atom's Levels(); a typo is rejected.
 //     Models outside the atom registry accept any string, unvalidated.
@@ -57,7 +57,7 @@ var providerEffortDocs = []providerEffortDoc{
 	},
 	{
 		Key:   string(catwalk.InferenceProviderZAI),
-		Title: "Z.AI (all GLM models, e.g. glm5_2, glm5_1, glm4_7)",
+		Title: "Z.AI (all GLM models, e.g. glm5_3, glm5_turbo, glm4_7)",
 		Body: []string{
 			"Every Z.AI model sends the same wire values, collapsed to three",
 			"real states:",
@@ -66,12 +66,12 @@ var providerEffortDocs = []providerEffortDoc{
 			"  xhigh, max, ultracode        -> reasoning_effort: \"max\"",
 			"Older GLM-4.x models ignore reasoning_effort harmlessly.",
 			"",
-			"GLM-5.3 and GLM-5.2 (glm5_3, glm5_2) are the only Z.AI atoms with 3",
-			"real states (off/high/max — one more than the rest). Every other",
-			"Z.AI atom (glm5_1, glm5, glm5_turbo, glm4_7, glm4_7_flash, glm4_6,",
-			"glm4_6v) has 2 (off/on, a boolean thinking toggle). No letter short",
-			"codes exist for Z.AI (no `glm5_2xx`) — set with the long-form atom",
-			"suffix (`glm5_2-max`) or raw `zai/<model>@<level>` (`zai/glm-5.2@max`);",
+			"GLM-5.3 (glm5_3) is the only Z.AI atom with 3 real states",
+			"(off/high/max — one more than the rest). Every other Z.AI atom",
+			"(glm5_turbo, glm4_7, glm4_7_flash, glm4_6, glm4_6v) has 2 (off/on,",
+			"a boolean thinking toggle). No letter short codes exist for Z.AI",
+			"(no `glm5_3xx`) — set with the long-form atom suffix",
+			"(`glm5_3-max`) or raw `zai/<model>@<level>` (`zai/glm-5.3@max`);",
 			"both are validated against the atom's list.",
 		},
 	},
@@ -142,23 +142,23 @@ not visible from ` + "`crush models list`" + `.
 
 Two syntaxes set effort:
   1. Short codes, e.g. ` + "`o47x`" + `, ` + "`h45l`" + `, ` + "`sh`" + ` (local-cli/Claude atoms only) or
-     the long-form atom suffix, e.g. ` + "`glm5_2-max`" + `.
-  2. Raw ` + "`provider/model@effort`" + `, e.g. ` + "`zai/glm-5.2@max`" + `. Validated when the
+     the long-form atom suffix, e.g. ` + "`glm5_3-max`" + `.
+  2. Raw ` + "`provider/model@effort`" + `, e.g. ` + "`zai/glm-5.3@max`" + `. Validated when the
      target is a known atom; otherwise a blind, unvalidated string split.
 
 Run with no argument for per-provider semantics. Run with a model or atom
-argument (` + "`glm5_2`" + `, ` + "`zai/glm-5.2`" + `, ` + "`fl`" + `) for that model's exact levels and
+argument (` + "`glm5_3`" + `, ` + "`zai/glm-5.3`" + `, ` + "`fl`" + `) for that model's exact levels and
 the command to set each one.`,
 	Args: cobra.MaximumNArgs(1),
 	Example: `
 # Per-provider semantics, syntaxes, and the Claude-only short-code asymmetry.
 crush models efforts
 
-# What does glm5_2 (Z.AI) support, and how do I set it?
-crush models efforts glm5_2
+# What does glm5_3 (Z.AI) support, and how do I set it?
+crush models efforts glm5_3
 
 # Same, addressed as raw provider/model.
-crush models efforts zai/glm-5.2
+crush models efforts zai/glm-5.3
 
 # A Claude atom via its short-code base.
 crush models efforts fl
@@ -204,17 +204,17 @@ func renderEffortsOverview() string {
 	b.WriteString("SYNTAX:\n")
 	b.WriteString("  1. Short codes    e.g. `crush models use o47x h45l` — local-cli/Claude only.\n")
 	b.WriteString("                    Long-form atom suffix works for any atom with a known\n")
-	b.WriteString("                    levels array, e.g. `crush models use glm5_2-max`.\n")
-	b.WriteString("  2. Raw @effort    e.g. `crush models use zai/glm-5.2@max glm4_7`\n")
+	b.WriteString("                    levels array, e.g. `crush models use glm5_3-max`.\n")
+	b.WriteString("  2. Raw @effort    e.g. `crush models use zai/glm-5.3@max glm4_7`\n")
 	b.WriteString("     Validated against the atom's real levels when the target is a\n")
 	b.WriteString("     known atom (rejects a typo like `@hihg`); UNVALIDATED (blind string\n")
 	b.WriteString("     split) for any model outside the atom registry.\n\n")
 
 	b.WriteString("ASYMMETRY: LETTER short codes (o47x, h45l, ...) exist ONLY for the\n")
 	b.WriteString("local-cli/Claude atoms (opus, opus46, opus47, opus48, sonnet, haiku,\n")
-	b.WriteString("fable) — there is no `glm5_2xx`. Every other provider has no letter\n")
+	b.WriteString("fable) — there is no `glm5_3xx`. Every other provider has no letter\n")
 	b.WriteString("short code for effort; Z.AI atoms use the validated long-form atom\n")
-	b.WriteString("suffix instead (`glm5_2-max`). DeepSeek, io.net, Alibaba Singapore,\n")
+	b.WriteString("suffix instead (`glm5_3-max`). DeepSeek, io.net, Alibaba Singapore,\n")
 	b.WriteString("and hyper have no atom-level validation at all — only the unvalidated\n")
 	b.WriteString("raw `provider/model@effort` syntax works for them.\n\n")
 
@@ -238,7 +238,7 @@ type resolvedEffortTarget struct {
 	DisplayName string
 }
 
-// resolveEffortTarget accepts an atom key (glm5_2, fable, opus47), a
+// resolveEffortTarget accepts an atom key (glm5_3, fable, opus47), a
 // short-code base without the effort suffix is NOT accepted here (short
 // codes always include a level, e.g. "fl" not "f") — but a full short code
 // like "fl" or "o47x" IS accepted and resolved to its underlying atom, or a
@@ -380,7 +380,7 @@ func renderEffortsForModel(arg string) (string, error) {
 		// coordinator.go switch this whole doc restates). Render straight
 		// from the resolved atom's real array instead of a hardcoded copy.
 		// For a raw, non-atom zai/<model> the registry doesn't know, fall
-		// back to zaiReasoningLevels (glm5_2's 3-state array) as the most
+		// back to zaiReasoningLevels (glm5_3's 3-state array) as the most
 		// generically useful default — a documentation aid, not a
 		// validation source (validateEffortForModel only validates known
 		// atoms).

@@ -39,7 +39,7 @@ are ALWAYS flag-only, in both forms, and are resolved/written independently
 of large/small. Omit a flag to leave that slot untouched.
 
 Every one of the four slots accepts an effort suffix right here — either
-"<atom>-<level>" (e.g. "glm5_2-max") or "provider/model@level" — no separate
+"<atom>-<level>" (e.g. "glm5_3-max") or "provider/model@level" — no separate
 step needed. See ` + "`crush models efforts [model]`" + ` to list the levels a model
 supports, and ` + "`crush models bump <role> up|down`" + ` to nudge an already-set
 effort later.
@@ -57,7 +57,7 @@ crush models use s46h h45l
 crush models use o47xx h45l
 
 # Z.AI stack
-crush models use glm5_1 glm5_turbo
+crush models use glm5_3 glm5_turbo
 
 # Mixed: Opus xhigh (1M ctx) + Z.AI turbo
 crush models use o47x glm5_turbo
@@ -72,7 +72,7 @@ crush models use o47x h45l --worker glm5_turbo
 crush models use o47x h45l --reviewer oxx
 
 # Set effort on a role slot in the same call: "<atom>-<level>" or "provider/model@level"
-crush models use o47x h45l --reviewer glm5_2-max
+crush models use o47x h45l --reviewer glm5_3-max
 
 # Set worker and reviewer together with large/small
 crush models use o47x h45l --worker fl --reviewer oxx

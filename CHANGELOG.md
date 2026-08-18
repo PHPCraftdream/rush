@@ -76,6 +76,16 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   session has an explicit override for that slot, clearing it back to
   following the folder/system default instead of staying pinned forever.
 
+### Removed
+
+- **The `glm5_2`, `glm5_1` and `glm5` short codes.** GLM-5.3 supersedes
+  all three, and carrying four near-identical GLM-5 atoms made the list
+  harder to read than it made anything easier to reach. `glm5_3` and
+  `glm5_turbo` remain, as does the whole 4.x family. Nothing became
+  unreachable: the raw form (`crush models use zai/glm-5.2@max`) still
+  works for any Z.AI model id, whether or not it has a short code —
+  only the abbreviation is gone.
+
 ### Fixed
 
 - **A session title no longer goes missing when the model answers

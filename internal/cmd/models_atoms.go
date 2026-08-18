@@ -63,7 +63,7 @@ func (a atom) Levels() []string {
 var zaiReasoningLevels = []string{"off", "high", "max"}
 
 // zaiBooleanThinkingLevels is the levels array for every Z.AI (GLM) atom
-// OTHER than GLM-5.2. Per Z.AI's docs, these models only expose the boolean
+// OTHER than the 5.2-tier ones. Per Z.AI's docs, these models only expose the boolean
 // `thinking: {"type": "enabled"|"disabled"}` toggle — there is no graduated
 // `reasoning_effort` support documented for them at all. "off"/"on" here
 // stand in for that boolean, not for genuine effort gradations; validating
@@ -100,20 +100,19 @@ var atomRegistry = map[string]atom{
 	// CtxLabel values below are from docs.z.ai/guides/llm/<model> (fetched
 	// 2026-07-26): every current-generation GLM model (4.6, 4.7, 4.7-flash,
 	// 4.7-flashx, 5, 5-turbo, 5.1) has a 200K context / 128K max-output
-	// window; GLM-5.2 is the only one at 1M. The previous "204.8k"/"131.1k"
+	// window; GLM-5.2 was the only one at 1M. The previous "204.8k"/"131.1k"
 	// figures here were unverified guesses.
 	//
-	// GroupNote "openai-compat, no effort" on glm5_2 was also wrong: Z.AI
-	// accepts reasoning_effort=max on GLM-5.2 (confirmed live), it just has
-	// no effort-bearing SHORT CODE (see the Claude-only asymmetry documented
-	// in `crush models efforts`) — effort is set via the raw
-	// `zai/glm-5.2@max` syntax instead.
+	// GLM-5, GLM-5.1 and GLM-5.2 were dropped as atoms on 2026-08-18 at the
+	// operator's request — glm5_3 is the only GLM-5 generation kept, plus
+	// glm5_turbo. The raw `zai/glm-5.2` syntax still works for anyone who
+	// needs a removed one; only the short code is gone.
 	//
-	// Only glm5_2/glm5_3 get zaiReasoningLevels (off/high/max); glm5_1/glm5/
-	// glm5_turbo below get zaiBooleanThinkingLevels (off/on toggle) instead
-	// — coordinator.go sends the same reasoning_effort wire value to every
-	// Z.AI model uniformly, but only GLM-5.2 is documented by Z.AI as acting
-	// on it. See the SYNC WARNING on zaiReasoningLevels.
+	// glm5_3 gets zaiReasoningLevels (off/high/max); glm5_turbo below gets
+	// zaiBooleanThinkingLevels (off/on toggle) instead — coordinator.go
+	// sends the same reasoning_effort wire value to every Z.AI model
+	// uniformly, but Z.AI documents only the 5.2-tier models as acting on
+	// it. See the SYNC WARNING on zaiReasoningLevels.
 	//
 	// PARTIALLY VERIFIED (2026-08-14): `crush ping --model zai/glm-5.3`
 	// confirms the model id "glm-5.3" is real and reachable — a live call
@@ -128,9 +127,6 @@ var atomRegistry = map[string]atom{
 	// entry/comment with the real numbers once docs.z.ai publishes them,
 	// the same way the 204.8k/131.1k guesses above this were corrected.
 	"glm5_3":     {Provider: "zai", Model: "glm-5.3", DisplayName: "GLM 5.3", CtxLabel: "1M", Group: "zai", ReasoningLevels: zaiReasoningLevels},
-	"glm5_2":     {Provider: "zai", Model: "glm-5.2", DisplayName: "GLM 5.2", CtxLabel: "1M", Group: "zai", ReasoningLevels: zaiReasoningLevels},
-	"glm5_1":     {Provider: "zai", Model: "glm-5.1", DisplayName: "GLM 5.1", CtxLabel: "200k", Group: "zai", ReasoningLevels: zaiBooleanThinkingLevels},
-	"glm5":       {Provider: "zai", Model: "glm-5", DisplayName: "GLM 5", CtxLabel: "200k", Group: "zai", ReasoningLevels: zaiBooleanThinkingLevels},
 	"glm5_turbo": {Provider: "zai", Model: "glm-5-turbo", DisplayName: "GLM 5 turbo", CtxLabel: "200k", Group: "zai", ReasoningLevels: zaiBooleanThinkingLevels},
 	// GLM-4.7-FlashX is deliberately NOT an atom. Its model id
 	// ("glm-4.7-flashx") is real — verified by pinging it directly: it
@@ -158,14 +154,14 @@ var atomGroupOrder = []string{"anthropic", "zai"}
 var atomDisplayOrder = map[string][]string{
 	"anthropic": {"opus", "opus48", "opus47", "opus46", "fable", "sonnet", "haiku"},
 	"zai": {
-		"glm5_3", "glm5_2", "glm5_1", "glm5", "glm5_turbo",
+		"glm5_3", "glm5_turbo",
 		"glm4_7", "glm4_7_flash",
 		"glm4_6", "glm4_6v",
 	},
 }
 
 // sortedAtomKeys returns atom keys sorted longest-first for use by the parser
-// (so "glm5_turbo" wins over "glm5" as a prefix). NOT used for display order.
+// (so "glm4_7_flash" wins over "glm4_7" as a prefix). NOT used for display order.
 func sortedAtomKeys() []string {
 	keys := make([]string, 0, len(atomRegistry))
 	for k := range atomRegistry {
@@ -286,7 +282,7 @@ func renderAtomsBlock(cfg *config.Config) string {
 	b.WriteString("  crush models use o47x h45l       # Opus 4.7 xhigh + Haiku 4.5 low\n")
 	b.WriteString("  crush models use s46h h45l       # Sonnet 4.6 high + Haiku 4.5 low\n")
 	b.WriteString("  crush models use opus-high sonnet-low\n")
-	b.WriteString("  crush models use glm5_1 glm5_turbo\n")
+	b.WriteString("  crush models use glm5_3 glm5_turbo\n")
 	b.WriteString("  crush models use ox glm5_turbo    # mixed\n")
 	return b.String()
 }
@@ -323,7 +319,7 @@ func renderAtomsBlockFallback() string {
 	b.WriteString("EXAMPLES:\n")
 	b.WriteString("  crush models use o47x h45l\n")
 	b.WriteString("  crush models use s46h h45l\n")
-	b.WriteString("  crush models use glm5_1 glm5_turbo\n")
+	b.WriteString("  crush models use glm5_3 glm5_turbo\n")
 	return b.String()
 }
 
@@ -499,7 +495,7 @@ var shortCodeBasesByLength = func() []string {
 }()
 
 // parseAtom takes a string like "o47x", "opus-high", "glm5_turbo", or, as
-// fallback, "openai/gpt-5@high" / "zai/glm-5.1". Returns a SelectedModel
+// fallback, "openai/gpt-5@high" / "zai/glm-5.3". Returns a SelectedModel
 // ready for UpdatePreferredModel.
 func parseAtom(name string) (config.SelectedModel, error) {
 	// Try short-code notation first (o47x, h45l, oh, sl, …).
@@ -616,7 +612,7 @@ func parseAtomOrRaw(name string, resolveFunc func(string) (string, string, error
 // array, when one exists in the atom registry. This closes the exact gap
 // `crush models efforts`'s help text warns about: previously, splitModelEffort
 // was a blind string split with NO validation anywhere, so a typo like
-// "zai/glm-5.2@hihg" was silently accepted and either ignored or mismapped
+// "zai/glm-5.3@hihg" was silently accepted and either ignored or mismapped
 // by the wire-level provider code. If (provider, model) isn't a known atom
 // at all (e.g. a raw openai/gpt-5), there is no levels array to validate
 // against, so any effort string is still accepted — that's an existing,
