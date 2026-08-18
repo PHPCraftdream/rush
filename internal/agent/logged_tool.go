@@ -2,7 +2,9 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"unicode/utf8"
 
 	"charm.land/fantasy"
 	"github.com/charmbracelet/crush/internal/agent/tools"
@@ -63,6 +65,41 @@ func wrapToolsWithErrorLogging(list []fantasy.AgentTool) []fantasy.AgentTool {
 	return out
 }
 
+// maxLoggedContentRunes bounds the tool-error body written to the log.
+//
+// Only the recoverable side is truncated, and the asymmetry is the point.
+// An error RESPONSE is something the model is expected to produce
+// repeatedly — it can retry a malformed call in a loop — and the bodies are
+// not bounded anywhere: sourcegraph's JSON error quotes the offending byte
+// range of the remote reply, fetch and download embed server responses,
+// bash embeds the command line. Left whole, a retry loop appends multi-KB
+// records carrying remote payload fragments to crush.log. A returned ERROR
+// ends the run, so it is written at most once per run and stays whole:
+// that one record is the only account of why the run stopped.
+//
+// The limit is generous enough to keep the head of a message greppable,
+// which is what a log record is for; the full text still reaches the model,
+// which is who has to act on it.
+const maxLoggedContentRunes = 512
+
+// truncateForLog shortens s to at most maxRunes runes, counting in runes so
+// a multi-byte character is never split, and says how much it dropped —
+// a silently clipped message reads as a complete one.
+func truncateForLog(s string, maxRunes int) string {
+	if maxRunes <= 0 || utf8.RuneCountInString(s) <= maxRunes {
+		return s
+	}
+	kept := 0
+	for i := range s {
+		if kept == maxRunes {
+			return s[:i] + fmt.Sprintf("… (truncated, %d of %d runes shown)",
+				maxRunes, utf8.RuneCountInString(s))
+		}
+		kept++
+	}
+	return s
+}
+
 func (l *loggedTool) Info() fantasy.ToolInfo { return l.inner.Info() }
 
 func (l *loggedTool) ProviderOptions() fantasy.ProviderOptions {
@@ -102,7 +139,7 @@ func (l *loggedTool) Run(ctx context.Context, call fantasy.ToolCall) (fantasy.To
 			"tool_call_id", call.ID,
 			"level_kind", "recoverable",
 			"stop_turn", resp.StopTurn,
-			"content", resp.Content,
+			"content", truncateForLog(resp.Content, maxLoggedContentRunes),
 		)
 	}
 

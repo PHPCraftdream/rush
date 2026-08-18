@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"charm.land/fantasy"
 	"github.com/charmbracelet/crush/internal/agent/tools"
@@ -117,6 +118,44 @@ func TestLoggedTool_SuccessLogsNothing(t *testing.T) {
 		resp: fantasy.NewTextResponse("file contents"),
 	})
 	require.Empty(t, recs, "a successful tool call must not be logged")
+}
+
+// An unbounded error body must not reach the log. The model can retry a
+// malformed call in a loop, and these bodies carry whatever the far side
+// sent back, so whole ones would grow crush.log without limit.
+func TestLoggedTool_LongErrorContentIsTruncated(t *testing.T) {
+	long := strings.Repeat("x", maxLoggedContentRunes*3)
+	recs := runWrapped(t, stubTool{name: "fetch", resp: fantasy.NewTextErrorResponse(long)})
+
+	require.Len(t, recs, 1)
+	logged, ok := recs[0]["content"].(string)
+	require.True(t, ok)
+	require.Less(t, utf8.RuneCountInString(logged), utf8.RuneCountInString(long),
+		"the record must be shorter than the body it came from")
+	require.Contains(t, logged, "truncated",
+		"a clipped message that does not say so reads as the whole message")
+}
+
+// Control: a body inside the limit must survive byte-for-byte, or the
+// assertion above would also pass with a wrapper that mangles everything.
+func TestLoggedTool_ShortErrorContentIsUntouched(t *testing.T) {
+	recs := runWrapped(t, stubTool{
+		name: "view",
+		resp: fantasy.NewTextErrorResponse("File not found: nope.txt"),
+	})
+	require.Len(t, recs, 1)
+	require.Equal(t, "File not found: nope.txt", recs[0]["content"])
+}
+
+// Truncation counts runes, not bytes: cutting mid-rune would put invalid
+// UTF-8 into the log, and every non-ASCII message would be at risk.
+func TestTruncateForLog_NeverSplitsARune(t *testing.T) {
+	// Cyrillic is two bytes per rune, so a byte-based cut at an odd
+	// boundary would produce a replacement character.
+	s := strings.Repeat("щ", 100)
+	got := truncateForLog(s, 41)
+	require.True(t, utf8.ValidString(got), "the result must stay valid UTF-8")
+	require.Equal(t, 41, utf8.RuneCountInString(strings.Split(got, "…")[0]))
 }
 
 // Wrapping happens at the doors into a sessionAgent, not at the places a
