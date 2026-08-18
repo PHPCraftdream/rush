@@ -98,3 +98,77 @@ func TestSessionsReapCmdRun_SurvivesTransientSharingViolation(t *testing.T) {
 	_, statErr := os.Stat(lockPath)
 	require.True(t, os.IsNotExist(statErr), "the orphan lock file must actually be gone")
 }
+
+// The retry budget is shared by the whole sweep, and it is spent.
+//
+// The test above is the one that proves retrying HELPS, but it can only do
+// that by letting the handle go mid-sweep — so on a runner slow enough to
+// reach the unlink after the handle is already closed, it would pass
+// without the retry ever running and nothing would say so. This one cannot:
+// the handles are never released, so the assertions are only satisfiable if
+// the loop actually ran to its bound.
+//
+// Three locks, because that is what distinguishes the two designs with
+// room to spare. A budget granted per lock — which is what this started as
+// — takes ~3x the budget here and scales with the size of the crash backlog
+// reap exists for: 40 undeletable locks meant two silent minutes. One
+// shared budget takes ~1x no matter how many there are. Measured: 3.09s
+// shared vs 9s per-lock, against a 2x threshold, so neither a slow runner
+// nor a fast one lands near the line. (Two locks put the per-lock case at
+// 6.09s against a 6s threshold — correct, but decided by 90ms.)
+func TestSessionsReapCmdRun_RetryBudgetIsSharedAndBounded(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("only Windows refuses to unlink a file that still has an open handle")
+	}
+
+	tmp := isolateConfigEnvForTests(t)
+
+	workDir := t.TempDir()
+	orig, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(workDir))
+	t.Cleanup(func() { _ = os.Chdir(orig) })
+
+	configuredDataDir := filepath.Join(tmp, "reap-retry-budget")
+	ensureRootFlagStandIns(sessionsReapCmd, configuredDataDir)
+	if f := sessionsReapCmd.Flags().Lookup("cwd"); f == nil {
+		sessionsReapCmd.Flags().StringP("cwd", "c", "", "")
+	}
+	require.NoError(t, sessionsReapCmd.Flags().Set("cwd", ""))
+	require.NoError(t, sessionsReapCmd.Flags().Set("dry-run", "false"))
+	require.NoError(t, sessionsReapCmd.Flags().Set("all", "false"))
+	sessionsReapCmd.SetContext(context.Background())
+
+	lockDir := filepath.Join(configuredDataDir, "locks")
+	require.NoError(t, os.MkdirAll(lockDir, 0o755))
+	old := time.Now().Add(-time.Minute)
+	for _, id := range []string{"budget-lock-a", "budget-lock-b", "budget-lock-c"} {
+		lockPath := filepath.Join(lockDir, "session-"+sanitiseSessionIDForFilename(id)+".lock")
+		require.NoError(t, os.WriteFile(lockPath, []byte(fmt.Sprintf("%d\n", 999999)), 0o644))
+		require.NoError(t, os.Chtimes(lockPath, old, old))
+
+		// Held for the whole command — never released, so every attempt
+		// fails and the budget is genuinely exhausted rather than won.
+		held, openErr := os.Open(lockPath)
+		require.NoError(t, openErr)
+		t.Cleanup(func() { _ = held.Close() })
+	}
+
+	start := time.Now()
+	stderr := captureStderr(t, func() {
+		require.NoError(t, sessionsReapCmd.RunE(sessionsReapCmd, nil))
+	})
+	elapsed := time.Since(start)
+	t.Logf("sessions reap took %s, stderr:\n%s", elapsed, stderr)
+
+	require.GreaterOrEqual(t, elapsed, reapRemoveRetryBudget,
+		"the sweep must actually spend the budget retrying — an elapsed time below it "+
+			"means the removal was single-shot, which is the bug")
+	require.Less(t, elapsed, 2*reapRemoveRetryBudget,
+		"the budget must be shared by the sweep: granted per lock, three locks take ~3x, "+
+			"and a real crash backlog of 40 takes ~40x")
+	require.Contains(t, stderr, "retry budget",
+		"the operator has to be told the later locks got one attempt, or a failure "+
+			"below that line reads as 'retried and lost' rather than 'did not retry'")
+	require.Contains(t, stderr, "reclaimed 0 lock(s)")
+}

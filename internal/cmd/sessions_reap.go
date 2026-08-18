@@ -44,12 +44,13 @@ crush sessions reap --all      # also nuke locks with unreadable PIDs
 	RunE: sessionsReapCmdRun,
 }
 
-// reapRemoveRetryWindow bounds how long reap keeps retrying the unlink of a
-// lock it has already proven dead. It only has to outlast a handle that is
-// on its way out (see the call site), so seconds, not tens of seconds — a
-// handle still open after this is held by something that is not going to
-// let go, and reporting the failure beats hanging the sweep.
-const reapRemoveRetryWindow = 3 * time.Second
+// reapRemoveRetryBudget bounds how long a whole sweep may spend retrying
+// unlinks of locks it has already proven dead — shared across every lock,
+// not granted per lock. It only has to outlast a handle that is on its way
+// out (see the call site), so seconds, not tens of seconds: a handle still
+// open after this is held by something that is not going to let go, and
+// reporting the failure beats hanging the sweep.
+const reapRemoveRetryBudget = 3 * time.Second
 
 type reapItem struct {
 	Path   string
@@ -172,29 +173,42 @@ func sessionsReapCmdRun(cmd *cobra.Command, args []string) error {
 	}
 
 	removed := 0
+	// One retry budget for the WHOLE sweep, not one per lock.
+	//
+	// Not a bare os.Remove: on Windows the unlink fails with
+	// ERROR_SHARING_VIOLATION while ANY handle to the file is still open,
+	// and at this point one plausibly is. Release() above closes the lock
+	// handle synchronously but then clears the holder metadata in a
+	// goroutine that reopens the file, and only waits
+	// releaseMetadataCleanupBound (50ms) for it — on a loaded machine that
+	// reopened handle outlives the wait. An indexer or scanner touching a
+	// freshly written file does the same thing. Either way it clears on its
+	// own in milliseconds, so giving up after one attempt turns a transient
+	// handle into "reclaimed 0 lock(s)".
+	//
+	// But removeLockWithRetry only short-circuits on IsNotExist: a
+	// PERMANENT failure — ACCESS_DENIED, a read-only volume, a share
+	// without delete rights — is retried for the full window too. Per-lock,
+	// that made a crash backlog of 40 undeletable locks take two silent
+	// minutes instead of failing instantly, on Unix as well, where the
+	// sharing violation this exists for cannot happen. A shared budget
+	// keeps the transient case (one or two locks) fully covered while a
+	// hopeless sweep degrades to the old one-shot behaviour after the
+	// budget is spent, rather than multiplying the wait by the number of
+	// locks.
+	retryDeadline := time.Now().Add(reapRemoveRetryBudget)
+	budgetSpent := false
 	for _, it := range items {
 		switch it.Action {
 		case "remove-dead":
 			action := "would remove"
 			if !dryRun {
-				// Not a bare os.Remove: on Windows the unlink fails with
-				// ERROR_SHARING_VIOLATION while ANY handle to the file is
-				// still open, and at this point one plausibly is. Release()
-				// above closes the lock handle synchronously but then clears
-				// the holder metadata in a goroutine that reopens the file,
-				// and it only waits releaseMetadataCleanupBound (50ms) for
-				// that goroutine before returning — on a loaded machine the
-				// reopened handle outlives the wait. An indexer or scanner
-				// touching a freshly written file does the same thing.
-				//
-				// Either way the condition clears on its own in
-				// milliseconds, so giving up after one attempt turns a
-				// transient handle into "reclaimed 0 lock(s)" and leaves the
-				// orphan for the operator to delete by hand — which is the
-				// one thing this command exists to avoid. `sessions kill`
-				// already removes locks through this same helper for the
-				// same reason.
-				if err := removeLockWithRetry(it.Path, reapRemoveRetryWindow); err == nil {
+				retryFor := time.Until(retryDeadline)
+				if retryFor <= 0 {
+					retryFor = 0
+					budgetSpent = true
+				}
+				if err := removeLockWithRetry(it.Path, retryFor); err == nil {
 					action = "removed"
 					removed++
 				} else {
@@ -218,6 +232,14 @@ func sessionsReapCmdRun(cmd *cobra.Command, args []string) error {
 	if dryRun {
 		fmt.Fprintf(os.Stderr, "(dry-run; would have reclaimed %d lock(s))\n", countAction(items, "remove-dead"))
 	} else {
+		// Say it, rather than just going quiet: once the budget is gone the
+		// later locks got a single attempt each, so a failure below that
+		// line means "did not retry", not "retried and lost".
+		if budgetSpent {
+			fmt.Fprintf(os.Stderr,
+				"(retry budget of %s spent on earlier locks; the rest got one attempt each)\n",
+				reapRemoveRetryBudget)
+		}
 		fmt.Fprintf(os.Stderr, "reclaimed %d lock(s)\n", removed)
 	}
 	return nil
