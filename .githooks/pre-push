@@ -48,7 +48,6 @@ step() { printf '\033[36m▸ %s\033[0m\n' "$1"; }
 step "go build ./..."
 go build ./... || fail "build failed"
 
-step "golangci-lint run ($GOLANGCI_VERSION)"
 gcl=""
 if command -v golangci-lint >/dev/null 2>&1; then
 	gcl="golangci-lint"
@@ -59,8 +58,21 @@ elif [ -x "$(go env GOPATH)/bin/golangci-lint.exe" ]; then
 fi
 
 if [ -n "$gcl" ]; then
+	# Announce the version that will ACTUALLY run, not the pinned one. Only
+	# the `go run` fallback is pinned; a binary found on PATH is whatever
+	# happens to be installed, and printing "$GOLANGCI_VERSION" over it
+	# would claim a match with CI that nobody checked. A mismatch is not
+	# fatal — it is usually a newer local install — but it explains a
+	# finding CI does not report, or the reverse.
+	gcl_version="$("$gcl" version 2>/dev/null | head -1)"
+	step "golangci-lint run — ${gcl_version:-unknown version} (CI pins $GOLANGCI_VERSION)"
+	case "$gcl_version" in
+	*"$(printf '%s' "$GOLANGCI_VERSION" | tr -d v)"*) ;;
+	*) printf '\033[33m⚠ local golangci-lint is not %s; findings may differ from CI\033[0m\n' "$GOLANGCI_VERSION" ;;
+	esac
 	"$gcl" run || fail "lint failed"
 else
+	step "golangci-lint run ($GOLANGCI_VERSION, via go run)"
 	go run "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${GOLANGCI_VERSION}" run \
 		|| fail "lint failed (ran via 'go run'; install golangci-lint for speed)"
 fi
