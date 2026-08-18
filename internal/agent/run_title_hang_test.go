@@ -232,3 +232,101 @@ func TestRun_TitleGeneratesNormally_StillAwaitedBeforeReturn(t *testing.T) {
 	assert.Equal(t, "A Real Title", updated.Title,
 		"Run must still wait for a fast, successful title generation to land before returning")
 }
+
+// The title must survive the turn ending, not race it.
+//
+// #525: the flake TestRun_TitleGeneratesNormally_StillAwaitedBeforeReturn
+// showed under load — about 1 full-package run in 27, never in isolation —
+// with the session left as "Untitled Session" and the log showing
+// "Error generating title with small model; trying next err=context
+// canceled" for BOTH models.
+//
+// The cause is defer ordering in runTurn, not the provider. titleCtx is
+// derived from genCtx, and runTurn declares `defer cancel()` LAST, so by
+// LIFO it runs FIRST — before the bounded join that waits for the title
+// goroutine. Any title that has not already finished by the time the turn
+// returns is therefore cancelled and then waited for, which is the wrong
+// order: the wait exists precisely so a fast title can land.
+//
+// The existing test only passes because its mock answers instantly. This
+// one makes the race deterministic by delaying the title response past the
+// turn's own completion: without the fix it fails every time, with it,
+// never.
+func TestRun_SlowTitleIsNotCancelledByTheTurnEnding(t *testing.T) {
+	env := testEnv(t)
+
+	sess, err := env.sessions.Create(t.Context(), "")
+	require.NoError(t, err)
+
+	srv := singleTurnSSEServer(nil)
+	t.Cleanup(srv.Close)
+	provider, err := openaicompat.New(
+		openaicompat.WithBaseURL(srv.URL),
+		openaicompat.WithAPIKey("probe"),
+	)
+	require.NoError(t, err)
+	lm, err := provider.LanguageModel(context.Background(), "probe")
+	require.NoError(t, err)
+
+	// The delay is the whole point: long enough that the turn finishes
+	// first, far shorter than titleJoinGrace (5s) so a correctly ordered
+	// join still waits for it.
+	const titleDelay = 300 * time.Millisecond
+	titleSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-time.After(titleDelay):
+		case <-r.Context().Done():
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fl, _ := w.(http.Flusher)
+		chunks := []string{
+			`{"id":"c1","object":"chat.completion.chunk","created":1,"model":"probe","choices":[{"index":0,"delta":{"role":"assistant","content":"A Slow Title"},"finish_reason":null}]}`,
+			`{"id":"c1","object":"chat.completion.chunk","created":1,"model":"probe","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}`,
+		}
+		for _, c := range chunks {
+			fmt.Fprintf(w, "data: %s\n\n", c)
+			if fl != nil {
+				fl.Flush()
+			}
+		}
+		fmt.Fprint(w, "data: [DONE]\n\n")
+		if fl != nil {
+			fl.Flush()
+		}
+	}))
+	t.Cleanup(titleSrv.Close)
+	titleProvider, err := openaicompat.New(
+		openaicompat.WithBaseURL(titleSrv.URL),
+		openaicompat.WithAPIKey("probe"),
+	)
+	require.NoError(t, err)
+	titleLM, err := titleProvider.LanguageModel(context.Background(), "probe")
+	require.NoError(t, err)
+
+	a := NewSessionAgent(SessionAgentOptions{
+		LargeModel:           Model{Model: lm, CatwalkCfg: catwalk.Model{ContextWindow: 200000, DefaultMaxTokens: 1000}},
+		SmallModel:           Model{Model: titleLM, CatwalkCfg: catwalk.Model{ContextWindow: 200000, DefaultMaxTokens: 1000}},
+		SystemPrompt:         "you are a probe",
+		IsYolo:               true,
+		Sessions:             env.sessions,
+		Messages:             env.messages,
+		Tools:                []fantasy.AgentTool{},
+		DisableAutoSummarize: true,
+	})
+
+	res, err := a.Run(context.Background(), SessionAgentCall{
+		SessionID:       sess.ID,
+		Prompt:          "first message",
+		MaxOutputTokens: 1000,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, res)
+
+	updated, err := env.sessions.Get(context.Background(), sess.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "A Slow Title", updated.Title,
+		"a title that takes longer than the turn must still land: the bounded join "+
+			"exists to wait for it, and cancelling the turn's context before that wait "+
+			"makes the wait pointless")
+}

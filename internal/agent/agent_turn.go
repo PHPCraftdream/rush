@@ -443,40 +443,9 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 			a.generateTitle(titleCtx, call.SessionID, call.Prompt, cfg)
 		}()
 	}
-	// Bounded join (P1-B). This used to be a bare `defer wg.Wait()`, which
-	// is only as bounded as the goroutine it waits on. generateTitle's two
-	// attempts are each a blocking agent.Stream with no timeout of their
-	// own, so the titleCtx deadline above only helps for a provider that
-	// actually honours context cancellation. One that does not — a hung
-	// connection, a transport stuck outside context-aware I/O — never
-	// returns, and the bare Wait then held runTurn (and with it Run, the
-	// session's mailbox ownership and its OS lock) open forever, on a turn
-	// whose real work had already finished.
-	//
-	// The title is best-effort metadata; it must never be able to outlive
-	// the turn it decorates. So we wait for it only up to a grace period
-	// beyond its own deadline, and otherwise abandon it: titleCancel has
-	// already fired via genCtx, the goroutine will exit whenever its
-	// provider finally unblocks, and its own deferred Rename is written
-	// against a detached context so a late completion still persists.
-	defer func() {
-		if titleDone == nil {
-			return
-		}
-		grace := titleJoinGrace
-		if a.titleJoinGrace > 0 {
-			grace = a.titleJoinGrace
-		}
-		select {
-		case <-titleDone:
-		case <-time.After(grace):
-			slog.Warn(
-				"agent: abandoning title generation that outlived its deadline — the turn is not held open for it",
-				"session_id", call.SessionID,
-				"grace", grace,
-			)
-		}
-	}()
+	// The bounded join for this goroutine is declared AFTER `defer cancel()`
+	// below, which by LIFO makes it run BEFORE it. That ordering is the
+	// whole point — see the comment at the join itself.
 
 	// Stream-progress watchdog (see streamWatchdog doc in stream_watchdog.go
 	// for the invariant). Every fantasy stream callback below calls
@@ -525,6 +494,54 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	// Without this the wait would deadlock the function return.
 	defer func() { <-wd.done }()
 	defer cancel()
+
+	// Bounded join (P1-B) for the title goroutine.
+	//
+	// It is a named function called from TWO places, and #525 is why. The
+	// join used to exist only as a defer, and runTurn calls cancel()
+	// EXPLICITLY near its end — before any defer runs — so on the success
+	// path titleCtx (derived from genCtx) was already cancelled by the time
+	// anything waited for it. The observed failure: a session left
+	// "Untitled Session" with "Error generating title with small model;
+	// trying next err=context canceled" for both models. It surfaced as a
+	// ~1-in-27 flake only because the mock in the older test answers
+	// instantly and usually wins that race.
+	//
+	// So the success path joins BEFORE that explicit cancel, and the defer
+	// remains for every early return that never reaches it. sync.Once keeps
+	// a turn from paying the grace period twice.
+	//
+	// It stays bounded, which is what the original P1-B fix added:
+	// generateTitle's attempts are blocking agent.Stream calls with no
+	// timeout of their own, so a provider that ignores context cancellation
+	// never returns, and waiting unconditionally once held runTurn — and
+	// with it Run, the session's mailbox ownership and its OS lock — open
+	// forever on a turn whose work had finished. We wait up to a grace
+	// period and otherwise abandon it: the goroutine exits whenever its
+	// provider unblocks, and generateTitle's own deferred rename runs on a
+	// detached context, so a late completion still persists.
+	var titleJoinOnce sync.Once
+	joinTitle := func() {
+		titleJoinOnce.Do(func() {
+			if titleDone == nil {
+				return
+			}
+			grace := titleJoinGrace
+			if a.titleJoinGrace > 0 {
+				grace = a.titleJoinGrace
+			}
+			select {
+			case <-titleDone:
+			case <-time.After(grace):
+				slog.Warn(
+					"agent: abandoning title generation that outlived its deadline — the turn is not held open for it",
+					"session_id", call.SessionID,
+					"grace", grace,
+				)
+			}
+		})
+	}
+	defer joinTitle()
 	// NOTE: no `defer a.activeRequests.Del(call.SessionID)` here (unlike the
 	// pre-turn-loop code). The busy reservation for call.SessionID is
 	// claimed once and released once by Run(), covering every turn in the
@@ -1785,6 +1802,12 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 			slog.Warn("silent summarise failed", "session_id", call.SessionID, "err", silentErr)
 		}
 	}
+
+	// Wait for the title BEFORE cancelling: titleCtx is derived from genCtx,
+	// so cancelling first would kill a title that is merely slower than the
+	// turn — which is exactly what #525 was. Bounded, and a no-op when the
+	// title already landed or none was requested.
+	joinTitle()
 
 	cancel()
 
