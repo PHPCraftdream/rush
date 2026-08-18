@@ -11,7 +11,6 @@ import (
 	"github.com/charmbracelet/crush/internal/permission"
 )
 
-// Config returns the pure-data configuration.
 // subAgentToolNames lists every tool name that the default `crush run`
 // sub-agent ban strips from the coder agent's AllowedTools. Split out so
 // callers that want to restore a subset (see the smart+worker bypass in

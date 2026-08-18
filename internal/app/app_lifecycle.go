@@ -1,6 +1,5 @@
-// Lifecycle tail end: graceful/forced Shutdown (agent cancellation,
-// run-queue pump stop, bounded cleanup, DB release) and the background
-// update check launched from New.
+// Lifecycle tail end: graceful/forced Shutdown — agent cancellation,
+// run-queue pump stop, bounded cleanup, DB release.
 
 package app
 
@@ -12,8 +11,6 @@ import (
 
 	"github.com/charmbracelet/crush/internal/db"
 	"github.com/charmbracelet/crush/internal/shell"
-	"github.com/charmbracelet/crush/internal/update"
-	"github.com/charmbracelet/crush/internal/version"
 )
 
 // Shutdown performs a graceful shutdown of the application.
@@ -71,10 +68,6 @@ func (app *App) Shutdown() {
 	// Now run remaining cleanup tasks in parallel with an overall bounded timeout.
 	var wg sync.WaitGroup
 
-	// Send exit event
-	wg.Go(func() {
-	})
-
 	// Kill all background shells.
 	wg.Go(func() {
 		shell.GetBackgroundShellManager().KillAll(shutdownCtx)
@@ -130,13 +123,16 @@ func (app *App) Shutdown() {
 	}
 }
 
-// checkForUpdates checks for available updates.
-func (app *App) checkForUpdates(ctx context.Context) {
-	checkCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-
-	info, err := update.Check(checkCtx, version.Version, update.Default)
-	if err != nil || !info.Available() {
-		return
-	}
-}
+// The update check used to live here. It is gone rather than fixed,
+// because there is nothing left for it to tell.
+//
+// Upstream's version (afc8fd0b) ended by publishing a
+// pubsub.UpdateAvailableMsg, which the Bubble Tea TUI rendered. This fork
+// removed that TUI (7ff2292e) and the message type with it, leaving a
+// function that spent a 30-second-bounded HTTP request on every startup
+// and then discarded the answer — and doing so against the real network,
+// which is why a test had to isolate around it (see
+// p348_p0_1_pump_coordinator_wiring_test.go).
+//
+// Restoring the feature means routing it to the web UI, which is a design
+// decision and a piece of work, not a one-line repair. Filed separately.

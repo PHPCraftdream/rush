@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/crush/internal/pubsub"
 )
 
+// Config returns the pure-data configuration.
 func (app *App) Config() *config.Config {
 	return app.config.Config()
 }

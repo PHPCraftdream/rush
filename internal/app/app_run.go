@@ -243,6 +243,8 @@ func runAgentTurnRecovered(
 	}
 }
 
+// RunNonInteractive runs a single agent turn and writes its result to
+// `output`. See RunMode for the available output shapes.
 func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt string, overrides RunOverrides, hideSpinner bool, mode RunMode, continueSessionID string, useLast bool) error {
 	largeModel := overrides.LargeModel
 	smallModel := overrides.SmallModel

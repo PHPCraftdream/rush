@@ -14,8 +14,6 @@ import (
 	"github.com/charmbracelet/crush/internal/session"
 )
 
-// RunNonInteractive runs a single agent turn and writes its result to
-// `output`. See RunMode for the available output shapes.
 // runIncompleteError marks a non-interactive run that finished but did not
 // complete its work cleanly (in-band provider error / stall, cancellation,
 // timeout, or a max_tokens truncation). The envelope / final text was already
@@ -50,21 +48,9 @@ func runFailed(finalReason string, runErr error, isCanceled bool) bool {
 	}
 }
 
-// cancelledRunError builds the runIncompleteError for the terse/--stream
-// (non-JSON) isCanceled path.
-//
-// A forced abort (peak-hours mid-turn stop, max-cost, max-tokens, a DB
-// cancel-request) cancels the run's context to unblock the in-flight
-// generation — which races the specific error each of those paths already
-// persisted onto the assistant message via AddFinish (see agent.go's
-// OnStepFinish). Depending on that race, the run's returned error can end up
-// being the generic context.Canceled instead of the specific one, so this
-// must not drop the rich detail on the floor: if the last assistant message
-// finished with FinishReasonError and carries a message/details, surface
-// THAT instead of a bare "cancelled" that gives the operator no clue why. A
-// genuine, unrecorded Ctrl+C never runs AddFinish first, so finalErrTitle
-// stays empty and this falls through to the original bare behavior
-// unchanged.
+// sessionBusyGuidance turns a "session already in use" failure into the
+// sentence an operator can act on: who holds it, why a second `crush run`
+// cannot attach, and the inject command that can.
 func sessionBusyGuidance(sessionID string, err error) string {
 	var busyErr *session.SessionLockBusyError
 	holder := ""
@@ -85,6 +71,21 @@ func sessionBusyGuidance(sessionID string, err error) string {
 	)
 }
 
+// cancelledRunError builds the runIncompleteError for the terse/--stream
+// (non-JSON) isCanceled path.
+//
+// A forced abort (peak-hours mid-turn stop, max-cost, max-tokens, a DB
+// cancel-request) cancels the run's context to unblock the in-flight
+// generation — which races the specific error each of those paths already
+// persisted onto the assistant message via AddFinish (see agent.go's
+// OnStepFinish). Depending on that race, the run's returned error can end up
+// being the generic context.Canceled instead of the specific one, so this
+// must not drop the rich detail on the floor: if the last assistant message
+// finished with FinishReasonError and carries a message/details, surface
+// THAT instead of a bare "cancelled" that gives the operator no clue why. A
+// genuine, unrecorded Ctrl+C never runs AddFinish first, so finalErrTitle
+// stays empty and this falls through to the original bare behavior
+// unchanged.
 func cancelledRunError(runErr error, finalReason, finalErrTitle, finalErrDetails string) *runIncompleteError {
 	// 1. Check the raw runErr first: a forced mid-turn abort (peak-hours,
 	//    max-cost, max-tokens) returns a specific error via OnStepFinish

@@ -201,9 +201,6 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore) (*App, er
 	// config + CLI overrides on every run, so the run path is unaffected.
 	// Fork patch (run allowlist).
 
-	// Check for updates in the background.
-	go app.checkForUpdates(ctx)
-
 	// Startup recovery: any assistant message left without a finish part
 	// from a previous run is treated as an interrupted turn — we add a
 	// FinishReasonError to it so the UI/non-interactive callers don't see

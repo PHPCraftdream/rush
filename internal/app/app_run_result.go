@@ -16,8 +16,6 @@ import (
 	"github.com/charmbracelet/crush/internal/message"
 )
 
-// RunNonInteractive runs the application in non-interactive mode with the
-// given prompt, printing to stdout.
 // runResult is the JSON shape emitted by `crush run --json`. Wire-stable:
 // fields here are part of the public contract for wrapper scripts.
 type runResult struct {
