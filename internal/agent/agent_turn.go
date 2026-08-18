@@ -203,6 +203,52 @@ func (a *sessionAgent) handleWatchdogFire(
 	}
 }
 
+// normalizeTurnError folds the two out-of-band ways a turn can end into the
+// single error every downstream consumer reads, so nothing past this point
+// has to know either shape.
+//
+// Extracted from runTurn — one of only two blocks in that function that
+// cross no boundary worth worrying about: no defer, no early return, no
+// closure created, no lock held, two inputs and one output. See the
+// "runTurn is not being decomposed" commit for why the rest of runTurn
+// stays where it is.
+func normalizeTurnError(err error, getPeakHoursAbortErr func() error) error {
+	// If the peak-hours mid-turn check fired, it had to call cancelFn()
+	// to break fantasy's loop (OnStepFinish errors alone don't stop it).
+	// Depending on exactly when fantasy notices the cancellation relative
+	// to finishing the in-flight step, agent.Stream can come back with
+	// context.Canceled OR — if the step's own work had already fully
+	// completed by the time cancelFn() fired — a nil error, as if the
+	// turn ended cleanly. Either way, once peakHoursAbortErr is set it is
+	// authoritative for this Run() call: force it in unconditionally so
+	// the coordinator and RunNonInteractive never mistake this abort for
+	// a successful completion or a bare, unexplained cancellation.
+	if peakErr := getPeakHoursAbortErr(); peakErr != nil {
+		err = peakErr
+	}
+	// The ask_question tool reports "agent asked a question" as the Go
+	// error its Run() returns; fantasy's executeSingleTool treats a
+	// non-nil tool error as critical and propagates it as the whole
+	// Stream() call's error, so it surfaces here exactly like the
+	// peak-hours abort err normalized just above. tools.AskQuestionError
+	// (package tools) exists only because package tools cannot import
+	// this package back (this package already imports tools — see the
+	// comment on AskQuestionError in ask_question.go for the full import
+	// cycle rationale); normalize it into AwaitingAnswerError here so
+	// every downstream consumer — the errors.As(err, &awaitingErr) branch
+	// at the call site, RunNonInteractive's exit_reason mapping, sessions
+	// why/diff, … — only ever has to know about the one agent-level type.
+	var askErr *tools.AskQuestionError
+	if errors.As(err, &askErr) {
+		err = &AwaitingAnswerError{
+			Question:  askErr.Question,
+			Options:   askErr.Options,
+			SessionID: askErr.SessionID,
+		}
+	}
+	return err
+}
+
 // runTurn executes exactly one agent turn (one call into fantasy's
 // agent.Stream, plus all of Run's surrounding bookkeeping: DB preamble,
 // stream watchdog, checkpointing, error/cancel handling, and auto-summarize
@@ -1461,39 +1507,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	// so subsequent calls hit the nil guard and return immediately (no
 	// second wait, no double-close).
 	stopCheckpoint()
-	// If the peak-hours mid-turn check fired, it had to call cancelFn()
-	// to break fantasy's loop (OnStepFinish errors alone don't stop it).
-	// Depending on exactly when fantasy notices the cancellation relative
-	// to finishing the in-flight step, agent.Stream can come back with
-	// context.Canceled OR — if the step's own work had already fully
-	// completed by the time cancelFn() fired — a nil error, as if the
-	// turn ended cleanly. Either way, once peakHoursAbortErr is set it is
-	// authoritative for this Run() call: force it in unconditionally so
-	// the coordinator and RunNonInteractive never mistake this abort for
-	// a successful completion or a bare, unexplained cancellation.
-	if peakErr := getPeakHoursAbortErr(); peakErr != nil {
-		err = peakErr
-	}
-	// The ask_question tool reports "agent asked a question" as the Go
-	// error its Run() returns; fantasy's executeSingleTool treats a
-	// non-nil tool error as critical and propagates it as the whole
-	// Stream() call's error, so it surfaces here exactly like the
-	// peak-hours abort err normalized just above. tools.AskQuestionError
-	// (package tools) exists only because package tools cannot import
-	// this package back (this package already imports tools — see the
-	// comment on AskQuestionError in ask_question.go for the full import
-	// cycle rationale); normalize it into AwaitingAnswerError here so
-	// every downstream consumer — the errors.As(err, &awaitingErr) branch
-	// immediately below, RunNonInteractive's exit_reason mapping, sessions
-	// why/diff, … — only ever has to know about the one agent-level type.
-	var askErr *tools.AskQuestionError
-	if errors.As(err, &askErr) {
-		err = &AwaitingAnswerError{
-			Question:  askErr.Question,
-			Options:   askErr.Options,
-			SessionID: askErr.SessionID,
-		}
-	}
+	err = normalizeTurnError(err, getPeakHoursAbortErr)
 	if err != nil {
 		isHyper := largeModel.ModelCfg.Provider == hyper.Name
 		isCancelErr := errors.Is(err, context.Canceled)
