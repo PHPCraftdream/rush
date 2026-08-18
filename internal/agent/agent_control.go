@@ -188,7 +188,8 @@ func (a *sessionAgent) CancelAll() (stillBusy bool) {
 // read activeRequests directly, but releaseSessionReservation (mailbox.
 // drainOrRelease) stopped clearing the plain-sessionID activeRequests entry
 // once the mailbox migration (P0-3, task #282) landed — tryReserveSession/
-// Run's loop still WRITE it every turn (agent.go:949, :1194) via
+// Run's loop still WRITE it every turn (tryReserveSession in
+// agent_run.go, runTurn in agent_turn.go) via
 // activeRequests.Set, so after the FIRST turn any session ever ran,
 // activeRequests permanently holds a non-nil (already-fired, inert)
 // cancelFunc for it. The old activeRequests-based IsBusy therefore returned

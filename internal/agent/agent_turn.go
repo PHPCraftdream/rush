@@ -1304,7 +1304,19 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 
 			// Fork patch: batch 30 — cancel + runaway protection.
 			// Check DB cancel flag (cross-process signal) and cost/token caps.
-			if canc, cancErr := a.sessions.IsCancelRequested(ctx, call.SessionID); cancErr == nil && canc {
+			canc, cancErr := a.sessions.IsCancelRequested(ctx, call.SessionID)
+			if cancErr != nil {
+				// A failed read is NOT treated as a cancellation: a transient
+				// DB error is no evidence the operator asked for one, and
+				// aborting on it would turn every hiccup into what looks like
+				// a user abort. But it must not be silent either — if the
+				// operator did request a cancel and this is the read that
+				// failed, the turn runs on with nothing in the log to say why
+				// the request appeared to be ignored.
+				slog.Warn("could not read the cancel-requested flag; continuing the turn",
+					"session_id", call.SessionID, "err", cancErr)
+			}
+			if cancErr == nil && canc {
 				if cancelFn, ok := a.activeRequests.Get(call.SessionID); ok {
 					cancelFn()
 				}

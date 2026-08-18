@@ -21,7 +21,7 @@ import (
 //
 // The wrapping point is the earliest moment after which we can confidently
 // say the call "started executing": immediately after createUserMessage
-// succeeds (agent.go:1676). Errors from that point forward in runTurn are
+// succeeds (in runTurn, agent_turn.go). Errors from that point forward are
 // wrapped so the retry tails can check via errors.As and skip requeue.
 //
 // This is the typed signal designed to fix task #339 (P0, regression from

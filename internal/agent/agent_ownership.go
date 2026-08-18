@@ -302,7 +302,7 @@ func (a *sessionAgent) restartOrphanedWithRetry(calls []SessionAgentCall) error 
 	}
 
 	var wg sync.WaitGroup
-	errors := make([]error, len(calls))
+	callErrs := make([]error, len(calls))
 
 	for i, call := range calls {
 		i, call := i, call
@@ -347,7 +347,7 @@ func (a *sessionAgent) restartOrphanedWithRetry(calls []SessionAgentCall) error 
 			if err != nil {
 				slog.Error("agent: failed to serialize call data for durable enqueue",
 					"session_id", call.SessionID, "err", err)
-				errors[i] = fmt.Errorf("failed to serialize call data: %w", err)
+				callErrs[i] = fmt.Errorf("failed to serialize call data: %w", err)
 				return
 			}
 
@@ -399,7 +399,7 @@ func (a *sessionAgent) restartOrphanedWithRetry(calls []SessionAgentCall) error 
 						logFields = append(logFields, "prompt", call.Prompt)
 					}
 					slog.Error("agent: failed to write orphan call to outbox (data loss)", logFields...)
-					errors[i] = fmt.Errorf("failed to durably enqueue call and outbox write also failed: %w (enqueue error: %v)", outboxErr, enqueueErr)
+					callErrs[i] = fmt.Errorf("failed to durably enqueue call and outbox write also failed: %w (enqueue error: %v)", outboxErr, enqueueErr)
 					return
 				}
 				slog.Warn("agent: call written to orphan outbox for recovery",
@@ -412,7 +412,7 @@ func (a *sessionAgent) restartOrphanedWithRetry(calls []SessionAgentCall) error 
 				// We still return an error because the primary path failed, but
 				// the call is now durably persisted in the outbox and will be
 				// recovered by the pump.
-				errors[i] = fmt.Errorf("failed to durably enqueue call (written to orphan outbox for recovery): %w", enqueueErr)
+				callErrs[i] = fmt.Errorf("failed to durably enqueue call (written to orphan outbox for recovery): %w", enqueueErr)
 				return
 			}
 
@@ -425,7 +425,7 @@ func (a *sessionAgent) restartOrphanedWithRetry(calls []SessionAgentCall) error 
 	wg.Wait()
 
 	// Return first non-nil error, if any
-	for _, err := range errors {
+	for _, err := range callErrs {
 		if err != nil {
 			return err
 		}
