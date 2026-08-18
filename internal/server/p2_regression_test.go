@@ -30,7 +30,7 @@ func (f *fakeIsSessionBusyCoordinator) Run(ctx context.Context, sessionID string
 	return nil, nil
 }
 
-func (f *fakeIsSessionBusyCoordinator) RunWithOverrides(ctx context.Context, sessionID string, prompt string, large, small *agent.ModelOverride, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
+func (f *fakeIsSessionBusyCoordinator) RunWithOverrides(ctx context.Context, sessionID string, prompt string, smart, fast *agent.ModelOverride, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
 	f.runCalled = true
 	return nil, nil
 }
@@ -54,7 +54,7 @@ func (f *fakeIsSessionBusyCoordinator) QueuedPromptsList(sessionID string) []str
 func (f *fakeIsSessionBusyCoordinator) ClearQueue(sessionID string) {
 }
 
-func (f *fakeIsSessionBusyCoordinator) InterruptAndSend(ctx context.Context, sessionID string, prompt string, large, small *agent.ModelOverride, attachments ...message.Attachment) error {
+func (f *fakeIsSessionBusyCoordinator) InterruptAndSend(ctx context.Context, sessionID string, prompt string, smart, fast *agent.ModelOverride, attachments ...message.Attachment) error {
 	return nil
 }
 
@@ -127,7 +127,7 @@ func (f *fakeIsSessionBusyCoordinator) SetAllowPeakHours(allow bool) {}
 
 func (f *fakeIsSessionBusyCoordinator) SetPersistentMode(persistent bool) {}
 
-func (f *fakeIsSessionBusyCoordinator) SetModels(large, small agent.Model) {}
+func (f *fakeIsSessionBusyCoordinator) SetModels(smart, fast agent.Model) {}
 
 func (f *fakeIsSessionBusyCoordinator) SetTools(tools []fantasy.AgentTool) {}
 

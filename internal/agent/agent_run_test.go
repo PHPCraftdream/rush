@@ -24,20 +24,20 @@ var modelPairs = []modelPair{
 }
 
 func getModels(t *testing.T, r *vcr.Recorder, pair modelPair) (fantasy.LanguageModel, fantasy.LanguageModel) {
-	large, err := pair.largeModel(t, r)
+	smart, err := pair.smartModel(t, r)
 	require.NoError(t, err)
-	small, err := pair.smallModel(t, r)
+	fast, err := pair.fastModel(t, r)
 	require.NoError(t, err)
-	return large, small
+	return smart, fast
 }
 
 func setupAgent(t *testing.T, pair modelPair) (SessionAgent, fakeEnv) {
 	r := vcr.NewRecorder(t)
-	large, small := getModels(t, r, pair)
+	smart, fast := getModels(t, r, pair)
 	env := testEnv(t)
 
 	createSimpleGoProject(t, env.workingDir)
-	agent, err := coderAgent(r, env, large, small)
+	agent, err := coderAgent(r, env, smart, fast)
 	require.NoError(t, err)
 	return agent, env
 }

@@ -23,17 +23,17 @@ interface ScopedModelSlotWire {
 }
 
 interface ScopedModelsWire {
-  large: ScopedModelSlotWire;
-  small: ScopedModelSlotWire;
+  smart: ScopedModelSlotWire;
+  fast: ScopedModelSlotWire;
   worker: ScopedModelSlotWire;
   reviewer: ScopedModelSlotWire;
   hasWorkspace: boolean;
 }
 
-type Slot = "large" | "small" | "worker" | "reviewer";
+type Slot = "smart" | "fast" | "worker" | "reviewer";
 const SLOTS: { key: Slot; label: string }[] = [
-  { key: "large", label: "Large (strong)" },
-  { key: "small", label: "Small (fast)" },
+  { key: "smart", label: "Smart (strong)" },
+  { key: "fast", label: "Fast (cheap)" },
   { key: "worker", label: "Worker" },
   { key: "reviewer", label: "Reviewer" },
 ];

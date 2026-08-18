@@ -59,7 +59,7 @@ Four roles exist:
   reviewer           optional, no alias; the strongest slot, for explicit
                       review invocations. Never auto-selected anywhere —
                       reachable only via --role reviewer.
-worker/reviewer are configured with "crush models use <large> <small>
+worker/reviewer are configured with "crush models use <smart> <fast>
 --worker <model> --reviewer <model>" (or the web UI / crush.json's
 models.worker / models.reviewer directly). The actual model id behind
 each role comes from "crush models show"; --model overrides it for one
@@ -395,8 +395,8 @@ crush run --restrict-run --role fast \
 			timeout, _          = cmd.Flags().GetString("timeout")
 			role, _             = cmd.Flags().GetString("role")
 			effort, _           = cmd.Flags().GetString("effort")
-			largeModel, _       = cmd.Flags().GetString("model")
-			smallModel, _       = cmd.Flags().GetString("small-model")
+			smartModel, _       = cmd.Flags().GetString("model")
+			fastModel, _        = cmd.Flags().GetString("fast-model")
 			sessionID, _        = cmd.Flags().GetString("session")
 			useLast, _          = cmd.Flags().GetBool("continue")
 			systemPrompt, _     = cmd.Flags().GetString("system-prompt")
@@ -446,18 +446,18 @@ crush run --restrict-run --role fast \
 		// --role is required so a `crush run` invocation always declares
 		// its intent (cheap-and-fast vs strong-and-slow), instead of
 		// silently defaulting to large and burning tokens unintentionally.
-		// "smart" / "fast" are friendly aliases for "large" / "small". The
+		// "smart" / "fast" are friendly aliases for "smart" / "fast". The
 		// alias vocabulary and the invalid-value wording are shared with
 		// `crush ping` via resolveModelRole; only the empty-is-required
 		// rule is command-specific.
 		if role == "" {
-			return fmt.Errorf("--role is required: pass --role smart (large), --role fast (small), or, if configured, --role worker / --role reviewer")
+			return fmt.Errorf("--role is required: pass --role smart, --role fast, or, if configured, --role worker / --role reviewer")
 		}
 		modelType, err := resolveModelRole(role)
 		if err != nil {
 			return err
 		}
-		roleLarge := modelType == config.SelectedModelTypeLarge
+		roleSmart := modelType == config.SelectedModelTypeSmart
 
 		if systemPrompt != "" && systemPromptFile != "" {
 			return fmt.Errorf("--system-prompt and --system-prompt-file are mutually exclusive")
@@ -703,17 +703,17 @@ crush run --restrict-run --role fast \
 		}
 
 		// Fold --role into largeModel. When the user picked a role other than
-		// "smart"/"large" without also passing an explicit --model, we point
+		// "smart"/"smart" without also passing an explicit --model, we point
 		// the agent at whatever the config has saved for that role's slot
 		// (small/worker/reviewer) — that's the user's pre-declared choice for
 		// that role. The agent always uses its `large` slot for the turn;
 		// --role just decides which catalog entry fills it.
-		if modelType != config.SelectedModelTypeLarge && largeModel == "" {
+		if modelType != config.SelectedModelTypeSmart && smartModel == "" {
 			roleModel, ok := a.Config().Models[modelType]
 			if !ok || roleModel.Model == "" {
 				return fmt.Errorf("--role %s: no %s model configured (run \"crush models set %s <model>\" first)", role, modelType, modelType)
 			}
-			largeModel = roleModel.Provider + "/" + roleModel.Model
+			smartModel = roleModel.Provider + "/" + roleModel.Model
 		}
 
 		if verbose {
@@ -752,11 +752,11 @@ crush run --restrict-run --role fast \
 		// leak into stdout. The summary line on stderr we still emit.
 		hideSpinner := quiet || verbose || asJSON
 		overrides := app.RunOverrides{
-			LargeModel:               largeModel,
-			SmallModel:               smallModel,
+			SmartModel:               smartModel,
+			FastModel:                fastModel,
 			SystemPrompt:             systemPrompt,
 			ReasoningEffort:          effort,
-			RoleLarge:                roleLarge,
+			RoleSmart:                roleSmart,
 			ModelRole:                modelType,
 			DisableSubAgents:         agentsDisable,
 			StripJSONFences:          formatFlag == "json" || strings.HasPrefix(formatFlag, "json-schema:"),
@@ -784,13 +784,13 @@ func init() {
 	runCmd.SilenceUsage = true
 	runCmd.Flags().BoolP("quiet", "q", false, "Hide spinner")
 	runCmd.Flags().BoolP("verbose", "v", false, "Show logs")
-	runCmd.Flags().String("role", "", "REQUIRED. Which preselected model slot to use: smart|large (the strong default; --role smart + a configured worker also enables orchestrator-mode sub-agent delegation) | fast|small (the cheap slot) | worker (cheap slot for delegated sub-task work, never auto-selected) | reviewer (the strongest slot, for explicit review invocations, never auto-selected). The actual model id comes from `crush models show`; override with --model.")
+	runCmd.Flags().String("role", "", "REQUIRED. Which preselected model slot to use: smart (the strong default; --role smart + a configured worker also enables orchestrator-mode sub-agent delegation) | fast (the cheap slot) | worker (cheap slot for delegated sub-task work, never auto-selected) | reviewer (the strongest slot, for explicit review invocations, never auto-selected). The actual model id comes from `crush models show`; override with --model.")
 	runCmd.Flags().String("effort", "", "Reasoning effort for this turn: low|medium|high. Applies to whichever slot --role picked. Persisted on the session so subsequent runs inherit it.")
 	runCmd.Flags().Bool("stream", false, "Stream every assistant token to stdout. Default is terse: tool-call names on stderr + final answer on stdout.")
 	runCmd.Flags().Bool("json", false, "Emit one JSON object on stdout summarising the run (session_id, final_text, tool_calls, usage, duration, exit_reason). Mutually exclusive with --stream.")
 	runCmd.Flags().String("timeout", "60m", "Abort the run after this duration (e.g. 30s, 5m, 900 — plain number = seconds). A hard wall-clock kill force-exits the process 60s past this even on a freeze. Default 60m; pass 0 to disable the graceful deadline (a 6h default hard backstop still applies — override via CRUSH_RUN_DEFAULT_HARD_TIMEOUT).")
 	runCmd.Flags().StringP("model", "m", "", "Model to use. Accepts 'model' or 'provider/model' to disambiguate models with the same name across providers")
-	runCmd.Flags().String("small-model", "", "Small model to use. If not provided, uses the default small model for the provider")
+	runCmd.Flags().String("fast-model", "", "Fast model to use. If not provided, uses the default fast model for the provider")
 	runCmd.Flags().StringP("session", "s", "", "Session ID to continue OR create. If a session with this id exists it is continued; otherwise a new one is created with this id. Accepts a hash prefix for existing sessions only.")
 	runCmd.Flags().BoolP("continue", "C", false, "Continue the most recent session")
 	runCmd.Flags().String("system-prompt", "", "Override the session's system prompt with this string (persisted on the session)")

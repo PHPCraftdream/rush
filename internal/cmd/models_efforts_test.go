@@ -59,19 +59,19 @@ func TestRenderEffortsForModel_ZAI(t *testing.T) {
 	assert.Contains(t, out, "xhigh, max, ultracode        -> reasoning_effort: \"max\"")
 
 	// Must show the raw @effort command form, not a letter short code (none exist).
-	assert.Contains(t, out, "crush models use zai/glm-5.3@<level> <small>")
-	assert.Contains(t, out, "crush models use zai/glm-5.3@off <small>")
-	assert.Contains(t, out, "crush models use zai/glm-5.3@max <small>")
+	assert.Contains(t, out, "crush models use zai/glm-5.3@<level> <fast>")
+	assert.Contains(t, out, "crush models use zai/glm-5.3@off <fast>")
+	assert.Contains(t, out, "crush models use zai/glm-5.3@max <fast>")
 	// "high" is glm5_3's third real state — must be rendered too, and no
 	// wider vendor-only vocabulary (e.g. "xhigh") should appear as a settable row.
-	assert.Contains(t, out, "crush models use zai/glm-5.3@high <small>")
-	assert.NotContains(t, out, "crush models use zai/glm-5.3@xhigh <small>")
+	assert.Contains(t, out, "crush models use zai/glm-5.3@high <fast>")
+	assert.NotContains(t, out, "crush models use zai/glm-5.3@xhigh <fast>")
 
 	// New behavior for this task: the long-form atom suffix (validated,
 	// same mechanism as Claude atoms) is now also offered and the output
 	// says both forms are validated against the real levels array — not
 	// left as an unvalidated blind string split.
-	assert.Contains(t, out, "crush models use glm5_3-<level> <small>")
+	assert.Contains(t, out, "crush models use glm5_3-<level> <fast>")
 	assert.Contains(t, out, "Validated")
 	assert.Contains(t, out, "3 real states")
 }
@@ -114,7 +114,7 @@ func TestRenderEffortsForModel_Claude(t *testing.T) {
 	assert.Contains(t, out, "fable-low")
 	assert.Contains(t, out, "fable-high")
 	assert.Contains(t, out, "fable-max")
-	assert.Contains(t, out, "crush models use fable-high <small>")
+	assert.Contains(t, out, "crush models use fable-high <fast>")
 
 	// Must NOT suggest the @effort form for a Claude atom.
 	assert.NotContains(t, out, "fable@")

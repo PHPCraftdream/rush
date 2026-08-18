@@ -41,7 +41,7 @@ func findAllBalancedJSONValues(text string) []string {
 
 // Fork patch (multi-JSON extractor): stripAndExtractJSON is the new
 // runtime entry point that replaces stripAndValidateJSON. It handles
-// the common small-model failure mode where the model emits prose
+// the common fast-model failure mode where the model emits prose
 // preamble + one JSON value, or even MULTIPLE JSON values separated
 // by prose (observed with GLM-5-turbo and friends).
 //

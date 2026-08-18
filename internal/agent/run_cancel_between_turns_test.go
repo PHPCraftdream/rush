@@ -151,13 +151,13 @@ func TestRun_CancelDuringSecondTurnPreamble_ActuallyCancels(t *testing.T) {
 		Model:      lm,
 		CatwalkCfg: catwalk.Model{ContextWindow: 200000, DefaultMaxTokens: 1000},
 	}
-	smallModel := Model{
+	fastModel := Model{
 		Model:      titleLM,
 		CatwalkCfg: catwalk.Model{ContextWindow: 200000, DefaultMaxTokens: 1000},
 	}
 	agentIface := NewSessionAgent(SessionAgentOptions{
-		LargeModel:           model,
-		SmallModel:           smallModel,
+		SmartModel:           model,
+		FastModel:            fastModel,
 		SystemPrompt:         "you are a probe",
 		IsYolo:               true,
 		Sessions:             env.sessions,

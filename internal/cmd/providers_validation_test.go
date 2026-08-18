@@ -14,15 +14,15 @@ import (
 func TestProvidersDisable_WarnsIfPreferred(t *testing.T) {
 	t.Parallel()
 	models := map[config.SelectedModelType]config.SelectedModel{
-		config.SelectedModelTypeLarge: {Provider: "openai", Model: "gpt-4o"},
-		config.SelectedModelTypeSmall: {Provider: "anthropic", Model: "claude-sonnet"},
+		config.SelectedModelTypeSmart: {Provider: "openai", Model: "gpt-4o"},
+		config.SelectedModelTypeFast:  {Provider: "anthropic", Model: "claude-sonnet"},
 	}
 
 	for modelType, model := range models {
 		provider := model.Provider
 		assert.Equal(t, provider, provider)
 		slotName := "smart"
-		if modelType == config.SelectedModelTypeSmall {
+		if modelType == config.SelectedModelTypeFast {
 			slotName = "fast"
 		}
 		assert.NotEmpty(t, slotName)

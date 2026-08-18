@@ -28,7 +28,7 @@ func TestP0_2_FaultInjection_InterruptTickAtomicTransaction(t *testing.T) {
 		cfg, err := config.Init(env.workingDir, "", false)
 		require.NoError(t, err)
 		// handleInterruptTick resolves session models before buildCall
-		// (P0-2's atomic-handoff rewrite), so a resolvable large+small model
+		// (P0-2's atomic-handoff rewrite), so a resolvable smart+fast model
 		// is required — a bare provider ID falls through to config.Load's
 		// own CLI-provider auto-discovery default (environment-dependent:
 		// works on a machine with claude/gemini CLIs on PATH, panics on a
@@ -40,11 +40,11 @@ func TestP0_2_FaultInjection_InterruptTickAtomicTransaction(t *testing.T) {
 				{ID: "test-model", Name: "Test Model", DefaultMaxTokens: 4096},
 			},
 		})
-		cfg.Config().Models[config.SelectedModelTypeLarge] = config.SelectedModel{
+		cfg.Config().Models[config.SelectedModelTypeSmart] = config.SelectedModel{
 			Provider: providerID,
 			Model:    "test-model",
 		}
-		cfg.Config().Models[config.SelectedModelTypeSmall] = config.SelectedModel{
+		cfg.Config().Models[config.SelectedModelTypeFast] = config.SelectedModel{
 			Provider: providerID,
 			Model:    "test-model",
 		}

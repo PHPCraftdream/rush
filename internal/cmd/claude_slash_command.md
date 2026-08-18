@@ -162,7 +162,7 @@ externally; crush's own orchestrating model already owns that resume.
   mode, see below) and `--role reviewer` (the strongest configured
   slot, for an explicit one-off strong-review invocation, e.g. `--role
   reviewer --session "pr-42-review" "review this diff"`). Configure
-  them with `crush models use <large> <small> --worker <model>
+  them with `crush models use <smart> <fast> --worker <model>
   --reviewer <model>` (the two positional args are still required;
   `--worker`/`--reviewer` are additive flags on the same command) —
   not the plain two-positional form, which only touches smart/fast.
@@ -338,7 +338,7 @@ message, never commit/push, run the tests, surface ambiguity). Explicit
 `--system-prompt-file` always wins.
 
 `crush models efforts [model]` (list/validate reasoning-effort levels a
-model supports) and `crush models bump <large|small|worker|reviewer>
+model supports) and `crush models bump <smart|fast|worker|reviewer>
 <up|down>` (step a role's effort one level) also exist — see README.md's
 `crush models` section for the full picture, not repeated here.
 

@@ -45,11 +45,11 @@ func setupBumpEnv(t *testing.T) (globalPath string) {
 }
 
 // Note on model choice: these tests put the graduated-effort atom on the
-// worker/reviewer slot rather than large/small, and large/small get
+// worker/reviewer slot rather than smart/fast, and smart/fast get
 // glm4_7_flash (boolean off/on) instead.
 //
 // The original reason was specific to glm5_2, which these tests used before
-// 2026-08-18: `models use`'s large/small positionals additionally require
+// 2026-08-18: `models use`'s smart/fast positionals additionally require
 // the resolved model to be found in the provider catalog (a.ResolveModel /
 // c.GetModel — see configureSelectedModels in internal/config/load.go), the
 // isolated harness runs with CRUSH_PROVIDER_CACHE_ONLY=1, and glm-5.2 is not
@@ -61,9 +61,9 @@ func setupBumpEnv(t *testing.T) (globalPath string) {
 // That hazard does NOT apply to glm5_3, the atom these tests use now:
 // load_providers.go synthesizes a provisional glm-5.3 entry into the Z.AI
 // provider's model list precisely because neither docs.z.ai nor catwalk
-// lists it, so it resolves on the large slot and round-trips intact
+// lists it, so it resolves on the smart slot and round-trips intact
 // (measured directly — `models use glm5_3 glm5_turbo` writes
-// {"model":"glm-5.3","provider":"zai"} to the large slot under this exact
+// {"model":"glm-5.3","provider":"zai"} to the smart slot under this exact
 // harness). The slot placement below is therefore no longer load-bearing;
 // it is left as-is because moving it would churn every assertion for no
 // gain, not because glm5_3 would break there.
@@ -244,7 +244,7 @@ func TestModelsBump_UnsetEffort_DownReportsAlreadyLowest(t *testing.T) {
 // crashing or returning a Go error.
 //
 // This seeds the config file DIRECTLY with a raw (provider, model) pair
-// rather than going through `models use`, because `models use`'s large/small
+// rather than going through `models use`, because `models use`'s smart/fast
 // positionals require the model to resolve against the (cached) provider
 // catalog via a.ResolveModel — an extra, unrelated hurdle for a model that
 // isn't expected to be in the catalog at all here. Writing the JSON directly
@@ -254,8 +254,8 @@ func TestModelsBump_NonAtomModel_ReportsCleanly(t *testing.T) {
 	globalPath := setupBumpEnv(t)
 
 	require.NoError(t, os.WriteFile(globalPath, []byte(`{"models":{
-		"large":{"provider":"openai","model":"gpt-5"},
-		"small":{"provider":"openai","model":"gpt-5"},
+		"smart":{"provider":"openai","model":"gpt-5"},
+		"fast":{"provider":"openai","model":"gpt-5"},
 		"reviewer":{"provider":"openai","model":"gpt-5","reasoning_effort":"high"}
 	}}`), 0o644))
 
@@ -271,11 +271,11 @@ func TestModelsBump_NonAtomModel_ReportsCleanly(t *testing.T) {
 }
 
 // TestModelsBump_AllFourRoles is a table test confirming the bump command
-// works uniformly across all four role slots. large/small use
+// works uniformly across all four role slots. smart/fast use
 // glm4_7_flash (boolean off/on — resolves reliably in this harness, see the
 // note on TestModelsBump_GLM53FullStepUp); worker/reviewer use glm5_3's
 // high->max step, since worker/reviewer are read directly from cfg.Models
-// without going through the large/small default-substitution path that
+// without going through the smart/fast default-substitution path that
 // makes glm-5.3 unreliable for THOSE two slots specifically in this
 // harness.
 func TestModelsBump_AllFourRoles(t *testing.T) {
@@ -284,8 +284,8 @@ func TestModelsBump_AllFourRoles(t *testing.T) {
 		seedAtom  string
 		wantAfter string
 	}{
-		{"large", "glm4_7_flash-off", `"on"`},
-		{"small", "glm4_7_flash-off", `"on"`},
+		{"smart", "glm4_7_flash-off", `"on"`},
+		{"fast", "glm4_7_flash-off", `"on"`},
 		{"worker", "glm5_3-high", `"max"`},
 		{"reviewer", "glm5_3-high", `"max"`},
 	}
@@ -296,15 +296,15 @@ func TestModelsBump_AllFourRoles(t *testing.T) {
 			resetModelsUseFlags(t)
 			// small positional defaults to glm5_turbo (no declared effort
 			// levels — irrelevant for the large/worker/reviewer sub-tests),
-			// but the "small" sub-test itself needs an atom WITH levels in
+			// but the "fast" sub-test itself needs an atom WITH levels in
 			// that exact slot, so it seeds glm4_7_flash-off there too.
-			smallSeed := "glm5_turbo"
-			if tc.role == "small" {
-				smallSeed = tc.seedAtom
+			fastSeed := "glm5_turbo"
+			if tc.role == "fast" {
+				fastSeed = tc.seedAtom
 			}
-			args := []string{"glm4_7_flash-off", smallSeed}
+			args := []string{"glm4_7_flash-off", fastSeed}
 			switch tc.role {
-			case "large", "small":
+			case "smart", "fast":
 				// already seeded above.
 			case "worker":
 				args = append(args, "--worker", tc.seedAtom)
@@ -361,7 +361,7 @@ func TestModelsBump_InvalidRole_RejectedCleanly(t *testing.T) {
 	resetModelsBumpFlags(t)
 	_, runErr = runModelsCmd(t, modelsBumpCmd, "bogus-role", "up")
 	require.Error(t, runErr)
-	assert.Contains(t, runErr.Error(), "expected large|small|worker|reviewer")
+	assert.Contains(t, runErr.Error(), "expected smart|fast|worker|reviewer")
 }
 
 // TestModelsBump_InvalidDirection_RejectedCleanly confirms an unrecognized
@@ -374,7 +374,7 @@ func TestModelsBump_InvalidDirection_RejectedCleanly(t *testing.T) {
 	require.NoError(t, runErr)
 
 	resetModelsBumpFlags(t)
-	_, runErr = runModelsCmd(t, modelsBumpCmd, "large", "sideways")
+	_, runErr = runModelsCmd(t, modelsBumpCmd, "smart", "sideways")
 	require.Error(t, runErr)
 	assert.Contains(t, runErr.Error(), "expected up|down")
 }

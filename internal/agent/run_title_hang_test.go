@@ -56,8 +56,8 @@ func hangingSSEServer(release <-chan struct{}) *httptest.Server {
 // stream watchdog correctly cancelled genCtx for the main turn's own
 // purposes.
 //
-// This test drives Run() with a working large-model SSE server (completes
-// normally) and a title (small-model) SSE server whose handler blocks
+// This test drives Run() with a working smart-model SSE server (completes
+// normally) and a title (fast-model) SSE server whose handler blocks
 // forever without writing a byte. It sets SessionAgentOptions.
 // TitleGenerationMaxDuration on this agent instance so the backstop timeout
 // fires quickly instead of the test needing to wait out a production-sized
@@ -102,13 +102,13 @@ func TestRun_TitleProviderHangs_DoesNotBlockRunForever(t *testing.T) {
 		Model:      lm,
 		CatwalkCfg: catwalk.Model{ContextWindow: 200000, DefaultMaxTokens: 1000},
 	}
-	smallModel := Model{
+	fastModel := Model{
 		Model:      titleLM,
 		CatwalkCfg: catwalk.Model{ContextWindow: 200000, DefaultMaxTokens: 1000},
 	}
 	a := NewSessionAgent(SessionAgentOptions{
-		LargeModel:                 model,
-		SmallModel:                 smallModel,
+		SmartModel:                 model,
+		FastModel:                  fastModel,
 		SystemPrompt:               "you are a probe",
 		IsYolo:                     true,
 		Sessions:                   env.sessions,
@@ -204,13 +204,13 @@ func TestRun_TitleGeneratesNormally_StillAwaitedBeforeReturn(t *testing.T) {
 		Model:      lm,
 		CatwalkCfg: catwalk.Model{ContextWindow: 200000, DefaultMaxTokens: 1000},
 	}
-	smallModel := Model{
+	fastModel := Model{
 		Model:      titleLM,
 		CatwalkCfg: catwalk.Model{ContextWindow: 200000, DefaultMaxTokens: 1000},
 	}
 	a := NewSessionAgent(SessionAgentOptions{
-		LargeModel:           model,
-		SmallModel:           smallModel,
+		SmartModel:           model,
+		FastModel:            fastModel,
 		SystemPrompt:         "you are a probe",
 		IsYolo:               true,
 		Sessions:             env.sessions,
@@ -238,7 +238,7 @@ func TestRun_TitleGeneratesNormally_StillAwaitedBeforeReturn(t *testing.T) {
 // #525: the flake TestRun_TitleGeneratesNormally_StillAwaitedBeforeReturn
 // showed under load — about 1 full-package run in 27, never in isolation —
 // with the session left as "Untitled Session" and the log showing
-// "Error generating title with small model; trying next err=context
+// "Error generating title with fast model; trying next err=context
 // canceled" for BOTH models.
 //
 // The cause is defer ordering in runTurn, not the provider. titleCtx is
@@ -305,8 +305,8 @@ func TestRun_SlowTitleIsNotCancelledByTheTurnEnding(t *testing.T) {
 	require.NoError(t, err)
 
 	a := NewSessionAgent(SessionAgentOptions{
-		LargeModel:           Model{Model: lm, CatwalkCfg: catwalk.Model{ContextWindow: 200000, DefaultMaxTokens: 1000}},
-		SmallModel:           Model{Model: titleLM, CatwalkCfg: catwalk.Model{ContextWindow: 200000, DefaultMaxTokens: 1000}},
+		SmartModel:           Model{Model: lm, CatwalkCfg: catwalk.Model{ContextWindow: 200000, DefaultMaxTokens: 1000}},
+		FastModel:            Model{Model: titleLM, CatwalkCfg: catwalk.Model{ContextWindow: 200000, DefaultMaxTokens: 1000}},
 		SystemPrompt:         "you are a probe",
 		IsYolo:               true,
 		Sessions:             env.sessions,

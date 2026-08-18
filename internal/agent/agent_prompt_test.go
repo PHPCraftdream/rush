@@ -185,14 +185,14 @@ func TestWorkaroundProviderMediaLimitations_TextOnlyModel(t *testing.T) {
 
 	// Non-Anthropic provider, no image support — should replace media with
 	// a text placeholder and not create a synthetic user message.
-	largeModel := Model{
+	smartModel := Model{
 		ModelCfg: config.SelectedModel{Provider: "openai"},
 		CatwalkCfg: catwalk.Model{
 			SupportsImages: false,
 		},
 	}
 
-	result := agent.workaroundProviderMediaLimitations(messages, largeModel)
+	result := agent.workaroundProviderMediaLimitations(messages, smartModel)
 
 	// Should produce exactly one message: the tool message with a text
 	// placeholder. No synthetic user message with FilePart.
@@ -229,14 +229,14 @@ func TestWorkaroundProviderMediaLimitations_VisionModel(t *testing.T) {
 
 	// Non-Anthropic provider, image support — should create a synthetic
 	// user message with FilePart.
-	largeModel := Model{
+	smartModel := Model{
 		ModelCfg: config.SelectedModel{Provider: "openai"},
 		CatwalkCfg: catwalk.Model{
 			SupportsImages: true,
 		},
 	}
 
-	result := agent.workaroundProviderMediaLimitations(messages, largeModel)
+	result := agent.workaroundProviderMediaLimitations(messages, smartModel)
 
 	// Should produce two messages: tool message with placeholder text,
 	// and synthetic user message with FilePart.
@@ -282,14 +282,14 @@ func TestWorkaroundProviderMediaLimitations_AnthropicProvider(t *testing.T) {
 
 	// Anthropic provider — should return messages unchanged regardless of
 	// SupportsImages, since Anthropic handles media in tool results natively.
-	largeModel := Model{
+	smartModel := Model{
 		ModelCfg: config.SelectedModel{Provider: string(catwalk.InferenceProviderAnthropic)},
 		CatwalkCfg: catwalk.Model{
 			SupportsImages: true,
 		},
 	}
 
-	result := agent.workaroundProviderMediaLimitations(messages, largeModel)
+	result := agent.workaroundProviderMediaLimitations(messages, smartModel)
 	require.Len(t, result, 1)
 	require.Equal(t, fantasy.MessageRoleTool, result[0].Role)
 

@@ -91,8 +91,8 @@ func TestP0_2_CrossProcessInterrupt_RowRecreatedOnFailure(t *testing.T) {
 
 	env := testEnv(t)
 	sa := NewSessionAgent(SessionAgentOptions{
-		LargeModel:           model,
-		SmallModel:           model,
+		SmartModel:           model,
+		FastModel:            model,
 		SystemPrompt:         "you are a probe",
 		DataDirectory:        env.workingDir,
 		Sessions:             env.sessions,
@@ -243,8 +243,8 @@ func TestP0_2_CrossProcessInterrupt_RowRecreatedOnFailure(t *testing.T) {
 	// connection even though newEnv has a live one. Build a fresh
 	// sessionAgent on newEnv's reopened services instead.
 	saPhase2 := NewSessionAgent(SessionAgentOptions{
-		LargeModel:           model,
-		SmallModel:           model,
+		SmartModel:           model,
+		FastModel:            model,
 		SystemPrompt:         "you are a probe",
 		DataDirectory:        newEnv.workingDir,
 		Sessions:             newEnv.sessions,

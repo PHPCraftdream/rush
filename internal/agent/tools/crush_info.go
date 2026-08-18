@@ -93,8 +93,8 @@ func writeConfigStaleness(b *strings.Builder, cfg *config.ConfigStore) {
 }
 
 // writeModels prints the [model] section, one line per configured slot.
-// Crush resolves models through four named slots: "large" (smart, the
-// top-level default) and "small" (fast, cheap trivial work) are always
+// Crush resolves models through four named slots: "smart" (the strong
+// top-level default) and "fast" (cheap trivial work) are always
 // meaningful; "worker" (cheap sub-task delegation target) and "reviewer"
 // (strongest slot, explicit --role reviewer only) are optional — they are
 // skipped below via `if !ok { continue }` when unconfigured, so their
@@ -106,8 +106,8 @@ func writeModels(b *strings.Builder, cfg *config.ConfigStore) {
 	}
 	b.WriteString("[model]\n")
 	for _, typ := range []config.SelectedModelType{
-		config.SelectedModelTypeLarge,
-		config.SelectedModelTypeSmall,
+		config.SelectedModelTypeSmart,
+		config.SelectedModelTypeFast,
 		config.SelectedModelTypeWorker,
 		config.SelectedModelTypeReviewer,
 	} {

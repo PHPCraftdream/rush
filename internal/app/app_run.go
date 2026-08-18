@@ -55,20 +55,20 @@ const (
 // those flags continues with the same overrides. Empty fields are
 // left alone (they don't reset what's already on the session).
 type RunOverrides struct {
-	LargeModel   string // "model" or "provider/model"; overrides selected large
-	SmallModel   string // same as LargeModel, for the small slot
+	SmartModel   string // "model" or "provider/model"; overrides selected large
+	FastModel    string // same as SmartModel, for the fast slot
 	SystemPrompt string // persisted on the session (Sessions.UpdateSystemPrompt)
 	// ReasoningEffort applies to whichever slot is "active" for this run —
-	// the large one if RoleLarge is true, the small one otherwise. Persisted
+	// the smart one if RoleLarge is true, the fast one otherwise. Persisted
 	// via Sessions.UpdateReasoningEffort.
 	ReasoningEffort string
-	RoleLarge       bool
+	RoleSmart       bool
 	// ModelRole is the resolved --role slot for this invocation (large,
 	// small, worker, reviewer). "" (e.g. non-`crush run` paths) is treated
 	// as smart/large by the coordinator. Threaded through to
 	// AgentCoordinator.SetActiveModelRole so sub-agent spawns can decide
 	// whether to prefer the cheaper Worker slot instead of blindly
-	// inheriting the parent's Large model. Fork patch (reviewer/worker
+	// inheriting the parent's Smart model. Fork patch (reviewer/worker
 	// roles).
 	ModelRole config.SelectedModelType
 	// Fork patch (orchestrator UX): DisableSubAgents drops the `agent`
@@ -246,8 +246,8 @@ func runAgentTurnRecovered(
 // RunNonInteractive runs a single agent turn and writes its result to
 // `output`. See RunMode for the available output shapes.
 func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt string, overrides RunOverrides, hideSpinner bool, mode RunMode, continueSessionID string, useLast bool) error {
-	largeModel := overrides.LargeModel
-	smallModel := overrides.SmallModel
+	smartModel := overrides.SmartModel
+	fastModel := overrides.FastModel
 	systemPrompt := overrides.SystemPrompt
 	slog.Info("Running in non-interactive mode")
 
@@ -261,8 +261,8 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt 
 	// See cliprovider.NonInteractiveContextKey.
 	ctx = context.WithValue(ctx, cliprovider.NonInteractiveContextKey, true)
 
-	if largeModel != "" || smallModel != "" {
-		if err := app.overrideModelsForNonInteractive(ctx, largeModel, smallModel); err != nil {
+	if smartModel != "" || fastModel != "" {
+		if err := app.overrideModelsForNonInteractive(ctx, smartModel, fastModel); err != nil {
 			return fmt.Errorf("failed to override models: %w", err)
 		}
 	}
@@ -307,8 +307,8 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt 
 	// `--agents single` explicitly: a configured worker means delegation
 	// is the intended workflow. `agentic_fetch` stays stripped either
 	// way: it's a separate concern (web-fetch delegation that always
-	// runs on the small model, see
-	// internal/agent/agentic_fetch_tool.go's "Use small model for both"
+	// runs on the fast model, see
+	// internal/agent/agentic_fetch_tool.go's "Use fast model for both"
 	// comment) and has nothing to do with delegating hands-on work to a
 	// worker.
 	if overrides.DisableSubAgents {
@@ -357,14 +357,14 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt 
 	// stored value for the *other* slot through so we don't clobber it —
 	// UpdateReasoningEffort takes both fields as a single transaction.
 	if overrides.ReasoningEffort != "" {
-		large := sess.LargeModelReasoningEffort
-		small := sess.SmallModelReasoningEffort
-		if overrides.RoleLarge {
-			large = overrides.ReasoningEffort
+		smart := sess.SmartModelReasoningEffort
+		fast := sess.FastModelReasoningEffort
+		if overrides.RoleSmart {
+			smart = overrides.ReasoningEffort
 		} else {
-			small = overrides.ReasoningEffort
+			fast = overrides.ReasoningEffort
 		}
-		if err := app.Sessions.UpdateReasoningEffort(ctx, sess.ID, large, small); err != nil {
+		if err := app.Sessions.UpdateReasoningEffort(ctx, sess.ID, smart, fast); err != nil {
 			return fmt.Errorf("failed to set reasoning effort: %w", err)
 		}
 	}
@@ -529,7 +529,7 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt 
 			// jq. The original is preserved in assistant_notes.
 			//
 			// Fork patch (orchestrator UX): stripAndExtractJSON handles
-			// the common small-model failure mode: prose preamble + JSON,
+			// the common fast-model failure mode: prose preamble + JSON,
 			// or even multiple JSON values separated by prose (observed
 			// with GLM-5-turbo). Returns a wrapped JSON array when N≥2
 			// valid values are found, a single value for N=1, and

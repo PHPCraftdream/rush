@@ -1,4 +1,4 @@
-// Fork patch: batch 11 — `crush models state` shows the effective large/small
+// Fork patch: batch 11 — `crush models state` shows the effective smart/fast
 // pair, the scope each came from, and a per-scope breakdown of what is written
 // to disk. Replaces the implicit story (`models show` alone doesn't say WHERE
 // each slot came from).
@@ -29,7 +29,7 @@ var modelsStateCmd = &cobra.Command{
   4. For a slot with no explicit effort, the known unset-default (e.g.
      "unset -> thinking on, high" for Z.AI) — silent when undocumented.
 
-Set worker/reviewer with ` + "`crush models use <large> <small> --worker <m> --reviewer <m>`" + `
+Set worker/reviewer with ` + "`crush models use <smart> <fast> --worker <m> --reviewer <m>`" + `
 and clear them with ` + "`crush models unset worker`" + ` / ` + "`crush models unset reviewer`" + `.
 
 ` + "`--json`" + ` emits a structured object for orchestrators.`,
@@ -66,46 +66,46 @@ crush models show
 			return fmt.Errorf("read local scope: %w", lerr)
 		}
 
-		globalLarge, globalSmall := globalAll[config.SelectedModelTypeLarge], globalAll[config.SelectedModelTypeSmall]
-		localLarge, localSmall := localAll[config.SelectedModelTypeLarge], localAll[config.SelectedModelTypeSmall]
+		globalSmart, globalFast := globalAll[config.SelectedModelTypeSmart], globalAll[config.SelectedModelTypeFast]
+		localSmart, localFast := localAll[config.SelectedModelTypeSmart], localAll[config.SelectedModelTypeFast]
 		globalWorker, globalReviewer := globalAll[config.SelectedModelTypeWorker], globalAll[config.SelectedModelTypeReviewer]
 		localWorker, localReviewer := localAll[config.SelectedModelTypeWorker], localAll[config.SelectedModelTypeReviewer]
 
-		effLarge, hasLarge := cfg.Models[config.SelectedModelTypeLarge]
-		effSmall, hasSmall := cfg.Models[config.SelectedModelTypeSmall]
+		effSmart, hasSmart := cfg.Models[config.SelectedModelTypeSmart]
+		effFast, hasFast := cfg.Models[config.SelectedModelTypeFast]
 		effWorker, hasWorker := cfg.Models[config.SelectedModelTypeWorker]
 		effReviewer, hasReviewer := cfg.Models[config.SelectedModelTypeReviewer]
 
-		largeScope := whichScope(localLarge, globalLarge)
-		smallScope := whichScope(localSmall, globalSmall)
+		smartScope := whichScope(localSmart, globalSmart)
+		fastScope := whichScope(localFast, globalFast)
 		workerScope := whichScope(localWorker, globalWorker)
 		reviewerScope := whichScope(localReviewer, globalReviewer)
 
 		if asJSON {
 			payload := map[string]any{
 				"effective": map[string]any{
-					"large":                   nilOrModel(hasLarge, effLarge),
-					"small":                   nilOrModel(hasSmall, effSmall),
+					"smart":                   nilOrModel(hasSmart, effSmart),
+					"fast":                    nilOrModel(hasFast, effFast),
 					"worker":                  nilOrModel(hasWorker, effWorker),
 					"reviewer":                nilOrModel(hasReviewer, effReviewer),
-					"large_scope":             largeScope,
-					"small_scope":             smallScope,
+					"large_scope":             smartScope,
+					"small_scope":             fastScope,
 					"worker_scope":            workerScope,
 					"reviewer_scope":          reviewerScope,
-					"large_effort_default":    nilOrEffortDefault(hasLarge, effLarge),
-					"small_effort_default":    nilOrEffortDefault(hasSmall, effSmall),
+					"smart_effort_default":    nilOrEffortDefault(hasSmart, effSmart),
+					"fast_effort_default":     nilOrEffortDefault(hasFast, effFast),
 					"worker_effort_default":   nilOrEffortDefault(hasWorker, effWorker),
 					"reviewer_effort_default": nilOrEffortDefault(hasReviewer, effReviewer),
 				},
 				"global": map[string]any{
-					"large":    globalLarge,
-					"small":    globalSmall,
+					"smart":    globalSmart,
+					"fast":     globalFast,
 					"worker":   globalWorker,
 					"reviewer": globalReviewer,
 				},
 				"local": map[string]any{
-					"large":    localLarge,
-					"small":    localSmall,
+					"smart":    localSmart,
+					"fast":     localFast,
 					"worker":   localWorker,
 					"reviewer": localReviewer,
 				},
@@ -114,19 +114,19 @@ crush models show
 		}
 
 		fmt.Println("EFFECTIVE")
-		printEffectiveLine("large", hasLarge, effLarge, largeScope)
-		printEffectiveLine("small", hasSmall, effSmall, smallScope)
+		printEffectiveLine("smart", hasSmart, effSmart, smartScope)
+		printEffectiveLine("fast", hasFast, effFast, fastScope)
 		printEffectiveLine("worker", hasWorker, effWorker, workerScope)
 		printEffectiveLine("reviewer", hasReviewer, effReviewer, reviewerScope)
 		fmt.Println()
 		fmt.Println("SCOPES")
 		tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		printScopeLine(tw, "global", "large", globalLarge, localLarge, "global")
-		printScopeLine(tw, "global", "small", globalSmall, localSmall, "global")
+		printScopeLine(tw, "global", "smart", globalSmart, localSmart, "global")
+		printScopeLine(tw, "global", "fast", globalFast, localFast, "global")
 		printScopeLine(tw, "global", "worker", globalWorker, localWorker, "global")
 		printScopeLine(tw, "global", "reviewer", globalReviewer, localReviewer, "global")
-		printScopeLine(tw, "local", "large", localLarge, globalLarge, "local")
-		printScopeLine(tw, "local", "small", localSmall, globalSmall, "local")
+		printScopeLine(tw, "local", "smart", localSmart, globalSmart, "local")
+		printScopeLine(tw, "local", "fast", localFast, globalFast, "local")
 		printScopeLine(tw, "local", "worker", localWorker, globalWorker, "local")
 		printScopeLine(tw, "local", "reviewer", localReviewer, globalReviewer, "local")
 		tw.Flush()

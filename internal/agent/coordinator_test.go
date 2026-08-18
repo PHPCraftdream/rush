@@ -53,7 +53,7 @@ func (m *mockSessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fan
 }
 
 func (m *mockSessionAgent) Model() Model                        { return m.model }
-func (m *mockSessionAgent) SetModels(large, small Model)        {}
+func (m *mockSessionAgent) SetModels(smart, fast Model)         {}
 func (m *mockSessionAgent) SetTools(tools []fantasy.AgentTool)  {}
 func (m *mockSessionAgent) SetSystemPrompt(systemPrompt string) {}
 func (m *mockSessionAgent) Cancel(sessionID string) {
@@ -96,7 +96,7 @@ func (m *mockSessionAgent) SetTimeoutOptions(bool, time.Duration) {}
 // newTestCoordinator creates a minimal coordinator for unit testing runSubAgent.
 //
 // Registers providerCfg under providerID AND wires it as both the large and
-// small model default (config.SelectedModelType{Large,Small}), so any test
+// fast model default (config.SelectedModelType{Smart,Fast}), so any test
 // path that reaches resolveSessionModels (e.g. InterruptAndSend/Run without
 // explicit overrides) resolves successfully instead of falling through to
 // config.Load's own CLI-provider auto-discovery default — which depends on
@@ -113,8 +113,8 @@ func newTestCoordinator(t *testing.T, env fakeEnv, providerID string, providerCf
 	cfg.Config().Providers.Set(providerID, providerCfg)
 	if len(providerCfg.Models) > 0 {
 		selected := config.SelectedModel{Provider: providerID, Model: providerCfg.Models[0].ID}
-		cfg.Config().Models[config.SelectedModelTypeLarge] = selected
-		cfg.Config().Models[config.SelectedModelTypeSmall] = selected
+		cfg.Config().Models[config.SelectedModelTypeSmart] = selected
+		cfg.Config().Models[config.SelectedModelTypeFast] = selected
 	}
 	return &coordinator{
 		cfg:        cfg,

@@ -273,7 +273,7 @@ func getProviderOptions(model Model, providerCfg config.ProviderConfig) fantasy.
 			// so an unset effort defaults to thinking ON at "high" rather
 			// than silently disabling reasoning. Explicitly opt out with
 			// ReasoningEffort == "off" (e.g. `crush models use
-			// zai/glm-5.2@off <small>` — the raw provider/model@effort
+			// zai/glm-5.2@off <fast>` — the raw provider/model@effort
 			// syntax accepts any suffix, unvalidated against ReasoningLevels).
 			//
 			// We forward via `extra_body.reasoning_effort` — the

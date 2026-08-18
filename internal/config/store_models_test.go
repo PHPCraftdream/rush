@@ -90,7 +90,7 @@ func TestLoad_PersistingCorrectedModelDoesNotDeadlock(t *testing.T) {
 	resetProviderState()
 	t.Cleanup(resetProviderState)
 
-	// The configured large/small model ("not-a-real-model") does not exist
+	// The configured smart/fast model ("not-a-real-model") does not exist
 	// in the provider's model list, so configureSelectedModels must fall
 	// back to and persist gpt-4 (the provider's first model) — exactly the
 	// path that triggers the reentrant autoReload call.
@@ -104,8 +104,8 @@ func TestLoad_PersistingCorrectedModelDoesNotDeadlock(t *testing.T) {
 	initialConfig := `{
 		"options": {"disable_default_providers": true},
 		"models": {
-			"large": {"provider": "openai", "model": "not-a-real-model"},
-			"small": {"provider": "openai", "model": "not-a-real-model"}
+			"smart": {"provider": "openai", "model": "not-a-real-model"},
+			"fast": {"provider": "openai", "model": "not-a-real-model"}
 		},
 		"providers": {
 			"openai": {
@@ -133,8 +133,8 @@ func TestLoad_PersistingCorrectedModelDoesNotDeadlock(t *testing.T) {
 	}
 
 	require.NoError(t, loadErr)
-	require.Equal(t, "openai", store.Config().Models[SelectedModelTypeLarge].Provider)
-	require.Equal(t, "gpt-4", store.Config().Models[SelectedModelTypeLarge].Model,
+	require.Equal(t, "openai", store.Config().Models[SelectedModelTypeSmart].Provider)
+	require.Equal(t, "gpt-4", store.Config().Models[SelectedModelTypeSmart].Model,
 		"unresolvable configured model must fall back to and persist the provider's first model")
 
 	// The corrected selection must actually have reached disk (proving the

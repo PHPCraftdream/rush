@@ -56,7 +56,7 @@ func lookupConfigs(cwd string) []string {
 // jsons.Merge appends JSON arrays instead of overriding them (see
 // internal/merge/ordered.go in github.com/qjebbs/go-jsons), so re-merging
 // the same provider's "models" array against itself duplicates it, while
-// scalar fields like models.large.model are simply overwritten by the
+// scalar fields like models.smart.model are simply overwritten by the
 // second read — the two reads of the same file are not even guaranteed to
 // observe the same content if a concurrent writer lands between them,
 // producing a config whose Models selection and whose Providers model list

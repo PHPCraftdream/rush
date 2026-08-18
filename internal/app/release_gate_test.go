@@ -138,8 +138,8 @@ func TestReleaseGate_7_ShutdownWithNonCooperativeAgent(t *testing.T) {
 	// Create SessionAgent directly (bypasses coordinator which can't inject custom tools)
 	sa := agent.NewSessionAgent(agent.SessionAgentOptions{
 		DataDirectory: dataDir,
-		LargeModel:    model,
-		SmallModel:    model,
+		SmartModel:    model,
+		FastModel:     model,
 		Sessions:      sessions,
 		Messages:      messages,
 		Tools:         []fantasy.AgentTool{tool},
@@ -254,7 +254,7 @@ func (a *sessionAgentCoordinatorAdapter) Run(ctx context.Context, sessionID, pro
 }
 
 // RunWithOverrides - minimal implementation for test compatibility (not used by App.Shutdown())
-func (a *sessionAgentCoordinatorAdapter) RunWithOverrides(ctx context.Context, sessionID, prompt string, large, small *agent.ModelOverride, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
+func (a *sessionAgentCoordinatorAdapter) RunWithOverrides(ctx context.Context, sessionID, prompt string, smart, fast *agent.ModelOverride, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
 	// For this test, just use the base Run without overrides
 	return a.Run(ctx, sessionID, prompt, attachments...)
 }
@@ -295,7 +295,7 @@ func (a *sessionAgentCoordinatorAdapter) ClearQueue(sessionID string) {
 }
 
 // InterruptAndSend - minimal implementation for test compatibility (not used by App.Shutdown())
-func (a *sessionAgentCoordinatorAdapter) InterruptAndSend(ctx context.Context, sessionID, prompt string, large, small *agent.ModelOverride, attachments ...message.Attachment) error {
+func (a *sessionAgentCoordinatorAdapter) InterruptAndSend(ctx context.Context, sessionID, prompt string, smart, fast *agent.ModelOverride, attachments ...message.Attachment) error {
 	// For this test, just return error - not used by App.Shutdown()
 	return fmt.Errorf("InterruptAndSend not implemented in test adapter")
 }

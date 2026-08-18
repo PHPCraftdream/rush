@@ -44,8 +44,8 @@ func newLockTestSessionAgent(dataDir string, isSubAgent bool) *sessionAgent {
 		activeRequests:     csync.NewMap[string, context.CancelFunc](),
 		mailboxes:          csync.NewMap[string, *mailbox](),
 		tools:              csync.NewSliceFrom[fantasy.AgentTool](nil),
-		largeModel:         csync.NewValue(Model{}),
-		smallModel:         csync.NewValue(Model{}),
+		smartModel:         csync.NewValue(Model{}),
+		fastModel:          csync.NewValue(Model{}),
 		systemPrompt:       csync.NewValue(""),
 		systemPromptPrefix: csync.NewValue(""),
 	}

@@ -102,7 +102,7 @@ func newQueueDrainTestAgent(t *testing.T, env fakeEnv, dataDir string, callCount
 	lm, err := provider.LanguageModel(context.Background(), "probe")
 	require.NoError(t, err)
 
-	// Separate, uncounted server for the small model: generateTitle always
+	// Separate, uncounted server for the fast model: generateTitle always
 	// fires in the background on a session's first turn (needsTitle is true
 	// whenever len(msgs)==0) — that traffic must not pollute callCount,
 	// which counts only the main-turn requests callers of this helper care
@@ -121,13 +121,13 @@ func newQueueDrainTestAgent(t *testing.T, env fakeEnv, dataDir string, callCount
 		Model:      lm,
 		CatwalkCfg: catwalk.Model{ContextWindow: 200000, DefaultMaxTokens: 1000},
 	}
-	smallModel := Model{
+	fastModel := Model{
 		Model:      titleLM,
 		CatwalkCfg: catwalk.Model{ContextWindow: 200000, DefaultMaxTokens: 1000},
 	}
 	a := NewSessionAgent(SessionAgentOptions{
-		LargeModel:           model,
-		SmallModel:           smallModel,
+		SmartModel:           model,
+		FastModel:            fastModel,
 		SystemPrompt:         "you are a probe",
 		IsYolo:               true,
 		Sessions:             env.sessions,
@@ -208,7 +208,7 @@ func TestRun_QueueDrain_DoesNotDeadlockOnOwnSessionLock(t *testing.T) {
 	lm, err := provider.LanguageModel(context.Background(), "probe")
 	require.NoError(t, err)
 
-	// Separate, uncounted server for the small model: turn 1 always fires
+	// Separate, uncounted server for the fast model: turn 1 always fires
 	// generateTitle in the background (needsTitle is true whenever
 	// len(msgs)==0, i.e. on every session's first turn, regardless of the
 	// title passed to sessions.Create) — that traffic must not pollute
@@ -228,13 +228,13 @@ func TestRun_QueueDrain_DoesNotDeadlockOnOwnSessionLock(t *testing.T) {
 		Model:      lm,
 		CatwalkCfg: catwalk.Model{ContextWindow: 200000, DefaultMaxTokens: 1000},
 	}
-	smallModel := Model{
+	fastModel := Model{
 		Model:      titleLM,
 		CatwalkCfg: catwalk.Model{ContextWindow: 200000, DefaultMaxTokens: 1000},
 	}
 	agentIface := NewSessionAgent(SessionAgentOptions{
-		LargeModel:           model,
-		SmallModel:           smallModel,
+		SmartModel:           model,
+		FastModel:            fastModel,
 		SystemPrompt:         "you are a probe",
 		IsYolo:               true,
 		Sessions:             env.sessions,

@@ -49,7 +49,7 @@ func TestSetScopedModel_WritesGlobalAndIsReflectedInGet(t *testing.T) {
 
 	setPayload, err := json.Marshal(SetScopedModelPayload{
 		Scope:    "global",
-		Slot:     "large",
+		Slot:     "smart",
 		Provider: "acme",
 		Model:    "acme-large-v1",
 	})
@@ -59,21 +59,21 @@ func TestSetScopedModel_WritesGlobalAndIsReflectedInGet(t *testing.T) {
 	// On-disk, at the scope actually written.
 	onDisk, err := store.ReadAllModelsAtScope(config.ScopeGlobal)
 	require.NoError(t, err)
-	require.NotNil(t, onDisk[config.SelectedModelTypeLarge])
-	require.Equal(t, "acme", onDisk[config.SelectedModelTypeLarge].Provider)
-	require.Equal(t, "acme-large-v1", onDisk[config.SelectedModelTypeLarge].Model)
+	require.NotNil(t, onDisk[config.SelectedModelTypeSmart])
+	require.Equal(t, "acme", onDisk[config.SelectedModelTypeSmart].Provider)
+	require.Equal(t, "acme-large-v1", onDisk[config.SelectedModelTypeSmart].Model)
 
 	// The read API reports it as both the global value AND the effective
 	// value (nothing at workspace to shadow it).
 	wire, err := buildScopedModelsWire(a)
 	require.NoError(t, err)
-	require.NotNil(t, wire.Large.Global)
-	require.Equal(t, "acme", wire.Large.Global.Provider)
-	require.Equal(t, "acme-large-v1", wire.Large.Global.Model)
-	require.Nil(t, wire.Large.Workspace)
-	require.NotNil(t, wire.Large.Effective)
-	require.Equal(t, "acme-large-v1", wire.Large.Effective.Model)
-	require.Equal(t, "global", wire.Large.EffectiveScope)
+	require.NotNil(t, wire.Smart.Global)
+	require.Equal(t, "acme", wire.Smart.Global.Provider)
+	require.Equal(t, "acme-large-v1", wire.Smart.Global.Model)
+	require.Nil(t, wire.Smart.Workspace)
+	require.NotNil(t, wire.Smart.Effective)
+	require.Equal(t, "acme-large-v1", wire.Smart.Effective.Model)
+	require.Equal(t, "global", wire.Smart.EffectiveScope)
 }
 
 func TestSetScopedModel_WorkspaceShadowsGlobal(t *testing.T) {
@@ -85,26 +85,26 @@ func TestSetScopedModel_WorkspaceShadowsGlobal(t *testing.T) {
 	addTestProvider(t, a)
 
 	globalPayload, err := json.Marshal(SetScopedModelPayload{
-		Scope: "global", Slot: "small", Provider: "acme", Model: "small-global",
+		Scope: "global", Slot: "fast", Provider: "acme", Model: "small-global",
 	})
 	require.NoError(t, err)
 	handleSetScopedModel(a, newTestClient(), WSMessage{ID: "c1", Type: CmdSetScopedModel, Payload: globalPayload})
 
 	workspacePayload, err := json.Marshal(SetScopedModelPayload{
-		Scope: "workspace", Slot: "small", Provider: "acme", Model: "small-workspace",
+		Scope: "workspace", Slot: "fast", Provider: "acme", Model: "small-workspace",
 	})
 	require.NoError(t, err)
 	handleSetScopedModel(a, newTestClient(), WSMessage{ID: "c2", Type: CmdSetScopedModel, Payload: workspacePayload})
 
 	wire, err := buildScopedModelsWire(a)
 	require.NoError(t, err)
-	require.NotNil(t, wire.Small.Global)
-	require.Equal(t, "small-global", wire.Small.Global.Model)
-	require.NotNil(t, wire.Small.Workspace)
-	require.Equal(t, "small-workspace", wire.Small.Workspace.Model)
-	require.NotNil(t, wire.Small.Effective)
-	require.Equal(t, "small-workspace", wire.Small.Effective.Model, "workspace must win over global")
-	require.Equal(t, "workspace", wire.Small.EffectiveScope)
+	require.NotNil(t, wire.Fast.Global)
+	require.Equal(t, "small-global", wire.Fast.Global.Model)
+	require.NotNil(t, wire.Fast.Workspace)
+	require.Equal(t, "small-workspace", wire.Fast.Workspace.Model)
+	require.NotNil(t, wire.Fast.Effective)
+	require.Equal(t, "small-workspace", wire.Fast.Effective.Model, "workspace must win over global")
+	require.Equal(t, "workspace", wire.Fast.EffectiveScope)
 }
 
 func TestClearScopedModel_FallsBackToOtherScope(t *testing.T) {
@@ -112,33 +112,33 @@ func TestClearScopedModel_FallsBackToOtherScope(t *testing.T) {
 	addTestProvider(t, a)
 
 	globalPayload, err := json.Marshal(SetScopedModelPayload{
-		Scope: "global", Slot: "large", Provider: "acme", Model: "large-global",
+		Scope: "global", Slot: "smart", Provider: "acme", Model: "large-global",
 	})
 	require.NoError(t, err)
 	handleSetScopedModel(a, newTestClient(), WSMessage{ID: "c1", Type: CmdSetScopedModel, Payload: globalPayload})
 
 	workspacePayload, err := json.Marshal(SetScopedModelPayload{
-		Scope: "workspace", Slot: "large", Provider: "acme", Model: "large-workspace",
+		Scope: "workspace", Slot: "smart", Provider: "acme", Model: "large-workspace",
 	})
 	require.NoError(t, err)
 	handleSetScopedModel(a, newTestClient(), WSMessage{ID: "c2", Type: CmdSetScopedModel, Payload: workspacePayload})
 
 	before, err := buildScopedModelsWire(a)
 	require.NoError(t, err)
-	require.Equal(t, "large-workspace", before.Large.Effective.Model)
+	require.Equal(t, "large-workspace", before.Smart.Effective.Model)
 
-	clearPayload, err := json.Marshal(ClearScopedModelPayload{Scope: "workspace", Slot: "large"})
+	clearPayload, err := json.Marshal(ClearScopedModelPayload{Scope: "workspace", Slot: "smart"})
 	require.NoError(t, err)
 	handleClearScopedModel(a, newTestClient(), WSMessage{ID: "c3", Type: CmdClearScopedModel, Payload: clearPayload})
 
 	after, err := buildScopedModelsWire(a)
 	require.NoError(t, err)
-	require.Nil(t, after.Large.Workspace, "workspace override must be gone")
-	require.NotNil(t, after.Large.Global, "global value must be untouched")
-	require.Equal(t, "large-global", after.Large.Global.Model)
-	require.NotNil(t, after.Large.Effective)
-	require.Equal(t, "large-global", after.Large.Effective.Model, "must fall back to global once workspace is cleared")
-	require.Equal(t, "global", after.Large.EffectiveScope)
+	require.Nil(t, after.Smart.Workspace, "workspace override must be gone")
+	require.NotNil(t, after.Smart.Global, "global value must be untouched")
+	require.Equal(t, "large-global", after.Smart.Global.Model)
+	require.NotNil(t, after.Smart.Effective)
+	require.Equal(t, "large-global", after.Smart.Effective.Model, "must fall back to global once workspace is cleared")
+	require.Equal(t, "global", after.Smart.EffectiveScope)
 }
 
 func TestClearScopedModel_MissingKeyIsNoOp(t *testing.T) {
@@ -164,7 +164,7 @@ func TestSetScopedModel_RejectsUnknownScope(t *testing.T) {
 	a := newAttachmentsTestApp(t, t.TempDir(), t.TempDir())
 
 	payload, err := json.Marshal(SetScopedModelPayload{
-		Scope: "not-a-real-scope", Slot: "large", Provider: "acme", Model: "m",
+		Scope: "not-a-real-scope", Slot: "smart", Provider: "acme", Model: "m",
 	})
 	require.NoError(t, err)
 

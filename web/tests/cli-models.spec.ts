@@ -86,18 +86,18 @@ async function setup(page: Page, sessionID: string, title: string) {
   await expect(page.locator('[data-test-id="chat-input-textarea"]')).toBeEnabled({ timeout: 5000 });
 }
 
-/** Select a model from the "Large" model dropdown in the header. */
-async function selectLargeModel(page: Page, modelName: string) {
-  await expect(page.locator('[data-test-id="model-selector-large"]')).toBeVisible({ timeout: 3000 });
-  await page.locator('[data-test-id="model-selector-large"]').click();
+/** Select a model from the "Smart" model dropdown in the header. */
+async function selectSmartModel(page: Page, modelName: string) {
+  await expect(page.locator('[data-test-id="model-selector-smart"]')).toBeVisible({ timeout: 3000 });
+  await page.locator('[data-test-id="model-selector-smart"]').click();
   await page.locator('[data-test-id="model-dropdown"]').getByPlaceholder("Search models…").fill(modelName);
   await page.locator('[data-test-id="model-dropdown"]').getByRole("button", { name: modelName, exact: true }).click();
 }
 
-/** Select a model from the "Small" model dropdown in the header. */
-async function selectSmallModel(page: Page, modelName: string) {
-  await expect(page.locator('[data-test-id="model-selector-small"]')).toBeVisible({ timeout: 3000 });
-  await page.locator('[data-test-id="model-selector-small"]').click();
+/** Select a model from the "Fast" model dropdown in the header. */
+async function selectFastModel(page: Page, modelName: string) {
+  await expect(page.locator('[data-test-id="model-selector-fast"]')).toBeVisible({ timeout: 3000 });
+  await page.locator('[data-test-id="model-selector-fast"]').click();
   await page.locator('[data-test-id="model-dropdown"]').getByPlaceholder("Search models…").fill(modelName);
   await page.locator('[data-test-id="model-dropdown"]').getByRole("button", { name: modelName, exact: true }).click();
 }
@@ -131,13 +131,13 @@ for (const model of CLI_MODELS) {
       const sessionID = `sel-large-${model.id}`;
       await setup(page, sessionID, `Session ${sessionID}`);
 
-      await selectLargeModel(page, model.name);
+      await selectSmartModel(page, model.name);
 
       const cmd = await waitForWSSend(page, "set_session_models");
       const payload = cmd.payload as {
-        largeModel: { provider: string; model: string };
+        smartModel: { provider: string; model: string };
       };
-      expect(payload.largeModel).toEqual({
+      expect(payload.smartModel).toEqual({
         provider: model.provider,
         model: model.id,
       });
@@ -147,13 +147,13 @@ for (const model of CLI_MODELS) {
       const sessionID = `sel-small-${model.id}`;
       await setup(page, sessionID, `Session ${sessionID}`);
 
-      await selectSmallModel(page, model.name);
+      await selectFastModel(page, model.name);
 
       const cmd = await waitForWSSend(page, "set_session_models");
       const payload = cmd.payload as {
-        smallModel: { provider: string; model: string };
+        fastModel: { provider: string; model: string };
       };
-      expect(payload.smallModel).toEqual({
+      expect(payload.fastModel).toEqual({
         provider: model.provider,
         model: model.id,
       });
@@ -164,7 +164,7 @@ for (const model of CLI_MODELS) {
       await setup(page, sessionID, `Session ${sessionID}`);
 
       // Select this model
-      await selectLargeModel(page, model.name);
+      await selectSmartModel(page, model.name);
       await waitForWSSend(page, "set_session_models");
 
       // Confirm model switch via session_updated
@@ -172,8 +172,8 @@ for (const model of CLI_MODELS) {
         type: "session_updated",
         payload: makeSession({
           ID: sessionID,
-          LargeModelProvider: model.provider,
-          LargeModelID: model.id,
+          SmartModelProvider: model.provider,
+          SmartModelID: model.id,
         }),
       });
 

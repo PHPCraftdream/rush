@@ -88,7 +88,7 @@ func TestModelsUse_RawZAIEffort_TypoNowFailsCleanly(t *testing.T) {
 
 // TestModelsUse_RawZAIEffort_TypoRejectedForWorkerSlot proves the same
 // validation applies uniformly to the --worker/--reviewer role slots added
-// in task #68, not just the two positional large/small args.
+// in task #68, not just the two positional smart/fast args.
 func TestModelsUse_RawZAIEffort_TypoRejectedForWorkerSlot(t *testing.T) {
 	globalPath := isolatedModelsEnv(t)
 	// The model must resolve first for effort validation to be reached; seed

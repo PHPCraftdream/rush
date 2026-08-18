@@ -17,7 +17,7 @@ test("header shows model name from config without session", async ({ page }) => 
     type: "config",
     payload: makeConfig(),
   });
-  // When no session selected, shows static badge with "large" model
+  // When no session selected, shows static badge with "smart" model
   await expect(page.getByText("claude-opus-4")).toBeVisible({ timeout: 2000 });
 });
 
@@ -157,7 +157,7 @@ test("selecting a model from dropdown updates header display", async ({ page }) 
   await page.getByText("Pick Session").first().click();
   await expect(page.locator("header button").filter({ hasText: "claude-opus-4" })).toBeVisible({ timeout: 3000 });
 
-  // Open dropdown and select "small" model
+  // Open dropdown and select "fast" model
   await page.locator("header button").filter({ hasText: "claude-opus-4" }).click();
   // Click the claude-haiku-4 option in the dropdown
   await page.locator('[data-testid="model-dropdown"]').getByText("claude-haiku-4").click();
@@ -181,7 +181,7 @@ test("each session has independent model selection", async ({ page }) => {
   });
   await sendMockWSMessage(page, { type: "config", payload: makeConfig() });
 
-  // Select Session One and pick "small" model
+  // Select Session One and pick "fast" model
   await expect(page.getByText("Session One")).toBeVisible({ timeout: 3000 });
   await page.getByText("Session One").click();
   await expect(page.locator("header button").filter({ hasText: "claude-opus-4" })).toBeVisible({ timeout: 3000 });
@@ -191,13 +191,13 @@ test("each session has independent model selection", async ({ page }) => {
     page.locator("header button").filter({ hasText: "claude-haiku-4" }).first()
   ).toBeVisible({ timeout: 2000 });
 
-  // Switch to Session Two — should show default "large" model
+  // Switch to Session Two — should show default "smart" model
   await page.getByText("Session Two").click();
   await expect(
     page.locator("header button").filter({ hasText: "claude-opus-4" })
   ).toBeVisible({ timeout: 2000 });
 
-  // Switch back to Session One — should still show "small"
+  // Switch back to Session One — should still show "fast"
   await page.getByText("Session One").click();
   await expect(
     page.locator("header button").filter({ hasText: "claude-haiku-4" }).first()
@@ -220,8 +220,8 @@ test("settings shows session model dropdowns when session is active", async ({
   await page.getByTitle("Settings").click();
 
   await expect(page.getByText("Session Models")).toBeVisible({ timeout: 2000 });
-  await expect(page.getByText("Large model")).toBeVisible();
-  await expect(page.getByText("Small model")).toBeVisible();
+  await expect(page.getByText("Smart model")).toBeVisible();
+  await expect(page.getByText("Fast model")).toBeVisible();
 });
 
 test("settings model select changes displayed model", async ({ page }) => {
@@ -235,9 +235,9 @@ test("settings model select changes displayed model", async ({ page }) => {
   await page.getByText("Model Change").first().click();
   await page.getByTitle("Settings").click();
 
-  // Change large model to "small" key
+  // Change large model to "fast" key
   const largeSelect = page.locator("select").first();
-  await largeSelect.selectOption("small");
+  await largeSelect.selectOption("fast");
 
   // Close settings and verify header large model button shows new model
   await page.locator(".fixed.inset-0.z-40").click();
@@ -246,20 +246,20 @@ test("settings model select changes displayed model", async ({ page }) => {
   ).toBeVisible({ timeout: 2000 });
 });
 
-// ── Small model selector ────────────────────────────────────────────────────
+// ── Fast model selector ────────────────────────────────────────────────────
 
 test("header shows small model selector button when session is active", async ({ page }) => {
   await page.goto("/");
   await sendMockWSMessage(page, {
     type: "sessions_list",
-    payload: [makeSession({ ID: "sm-1", Title: "Small Model Session" })],
+    payload: [makeSession({ ID: "sm-1", Title: "Fast Model Session" })],
   });
   await sendMockWSMessage(page, { type: "config", payload: makeConfig() });
-  await expect(page.getByText("Small Model Session").first()).toBeVisible({ timeout: 3000 });
-  await page.getByText("Small Model Session").first().click();
-  // Small model button with ⚡ icon
+  await expect(page.getByText("Fast Model Session").first()).toBeVisible({ timeout: 3000 });
+  await page.getByText("Fast Model Session").first().click();
+  // Fast model button with ⚡ icon
   await expect(
-    page.locator("button[title='Small (fast) model']")
+    page.locator("button[title='Fast (cheap) model']")
   ).toBeVisible({ timeout: 2000 });
 });
 
@@ -267,12 +267,12 @@ test("clicking small model button opens its own dropdown", async ({ page }) => {
   await page.goto("/");
   await sendMockWSMessage(page, {
     type: "sessions_list",
-    payload: [makeSession({ ID: "sm-2", Title: "Small DD" })],
+    payload: [makeSession({ ID: "sm-2", Title: "Fast DD" })],
   });
   await sendMockWSMessage(page, { type: "config", payload: makeConfig() });
-  await expect(page.getByText("Small DD").first()).toBeVisible({ timeout: 3000 });
-  await page.getByText("Small DD").first().click();
-  await page.locator("button[title='Small (fast) model']").click();
+  await expect(page.getByText("Fast DD").first()).toBeVisible({ timeout: 3000 });
+  await page.getByText("Fast DD").first().click();
+  await page.locator("button[title='Fast (cheap) model']").click();
   await expect(page.getByPlaceholder("Search models…")).toBeVisible({ timeout: 2000 });
 });
 
@@ -280,7 +280,7 @@ test("selecting from small model dropdown updates small selector", async ({ page
   await page.goto("/");
   await sendMockWSMessage(page, {
     type: "sessions_list",
-    payload: [makeSession({ ID: "sm-3", Title: "Small Pick" })],
+    payload: [makeSession({ ID: "sm-3", Title: "Fast Pick" })],
   });
   await sendMockWSMessage(page, {
     type: "config",
@@ -297,18 +297,18 @@ test("selecting from small model dropdown updates small selector", async ({ page
       },
     }),
   });
-  await expect(page.getByText("Small Pick").first()).toBeVisible({ timeout: 3000 });
-  await page.getByText("Small Pick").first().click();
+  await expect(page.getByText("Fast Pick").first()).toBeVisible({ timeout: 3000 });
+  await page.getByText("Fast Pick").first().click();
   // Open small model dropdown
-  await page.locator("button[title='Small (fast) model']").click();
+  await page.locator("button[title='Fast (cheap) model']").click();
   // Pick gpt-4o-mini
   await page.locator('[data-testid="model-dropdown"]').getByText("gpt-4o-mini").click();
-  // Small model button now shows gpt-4o-mini
+  // Fast model button now shows gpt-4o-mini
   await expect(
-    page.locator("button[title='Small (fast) model']").filter({ hasText: "gpt-4o-mini" })
+    page.locator("button[title='Fast (cheap) model']").filter({ hasText: "gpt-4o-mini" })
   ).toBeVisible({ timeout: 2000 });
-  // Large model button unchanged
+  // Smart model button unchanged
   await expect(
-    page.locator("button[title='Large (strong) model']").filter({ hasText: "claude-opus-4" })
+    page.locator("button[title='Smart (strong) model']").filter({ hasText: "claude-opus-4" })
   ).toBeVisible({ timeout: 2000 });
 });

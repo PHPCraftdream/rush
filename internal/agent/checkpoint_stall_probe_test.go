@@ -60,8 +60,8 @@ func TestProbe_CheckpointStopDoesNotStallStep(t *testing.T) {
 		CatwalkCfg: catwalk.Model{ContextWindow: 200000, DefaultMaxTokens: 1000},
 	}
 	agent := NewSessionAgent(SessionAgentOptions{
-		LargeModel:           model,
-		SmallModel:           model,
+		SmartModel:           model,
+		FastModel:            model,
 		SystemPrompt:         "you are a probe",
 		IsYolo:               true,
 		Sessions:             env.sessions,
@@ -147,8 +147,8 @@ func TestProbe_CheckpointStallIsPerStep(t *testing.T) {
 		CatwalkCfg: catwalk.Model{ContextWindow: 200000, DefaultMaxTokens: 1000},
 	}
 	agent := NewSessionAgent(SessionAgentOptions{
-		LargeModel:           model,
-		SmallModel:           model,
+		SmartModel:           model,
+		FastModel:            model,
 		SystemPrompt:         "you are a probe",
 		IsYolo:               true,
 		Sessions:             env.sessions,

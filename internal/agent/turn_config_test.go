@@ -55,8 +55,8 @@ func TestResolveTurnConfig_ParallelSessionsGetIndependentSnapshots(t *testing.T)
 	t.Parallel()
 
 	a := &sessionAgent{
-		largeModel:         csync.NewValue(modelFor("shared-large")),
-		smallModel:         csync.NewValue(modelFor("shared-small")),
+		smartModel:         csync.NewValue(modelFor("shared-large")),
+		fastModel:          csync.NewValue(modelFor("shared-small")),
 		systemPrompt:       csync.NewValue("shared-prompt"),
 		systemPromptPrefix: csync.NewValue("shared-prefix"),
 	}
@@ -75,8 +75,8 @@ func TestResolveTurnConfig_ParallelSessionsGetIndependentSnapshots(t *testing.T)
 			default:
 			}
 			// Exactly what applyModelOverrides does to the shared agent.
-			a.largeModel.Set(modelFor(fmt.Sprintf("contaminant-large-%d", i)))
-			a.smallModel.Set(modelFor(fmt.Sprintf("contaminant-small-%d", i)))
+			a.smartModel.Set(modelFor(fmt.Sprintf("contaminant-large-%d", i)))
+			a.fastModel.Set(modelFor(fmt.Sprintf("contaminant-small-%d", i)))
 			a.systemPrompt.Set(fmt.Sprintf("contaminant-prompt-%d", i))
 			a.systemPromptPrefix.Set(fmt.Sprintf("contaminant-prefix-%d", i))
 		}
@@ -89,15 +89,15 @@ func TestResolveTurnConfig_ParallelSessionsGetIndependentSnapshots(t *testing.T)
 			defer wg.Done()
 
 			name := fmt.Sprintf("session-%d", s)
-			large := modelFor(name + "-large")
-			small := modelFor(name + "-small")
+			smart := modelFor(name + "-smart")
+			fast := modelFor(name + "-fast")
 			prefix := name + "-prefix"
 			prompt := name + "-prompt"
 
 			call := SessionAgentCall{
 				SessionID:          name,
-				LargeModel:         &large,
-				SmallModel:         &small,
+				SmartModel:         &smart,
+				FastModel:          &fast,
 				SystemPromptPrefix: &prefix,
 				SystemPrompt:       &prompt,
 			}
@@ -108,8 +108,8 @@ func TestResolveTurnConfig_ParallelSessionsGetIndependentSnapshots(t *testing.T)
 				// The whole point: not "some consistent value", but THIS
 				// session's value. A snapshot holding another session's model
 				// is the production bug.
-				assert.Equal(t, large, cfg.largeModel, "%s must see its own large model, never the shared/contaminated one", name)
-				assert.Equal(t, small, cfg.smallModel, "%s must see its own small model", name)
+				assert.Equal(t, smart, cfg.smartModel, "%s must see its own smart model, never the shared/contaminated one", name)
+				assert.Equal(t, fast, cfg.fastModel, "%s must see its own fast model", name)
 				assert.Equal(t, prefix, cfg.promptPrefix, "%s must see its own prompt prefix", name)
 				assert.Equal(t, prompt, cfg.systemPrompt, "%s must see its own system prompt", name)
 			}
@@ -127,8 +127,8 @@ func TestResolveTurnConfig_Precedence(t *testing.T) {
 
 	newAgent := func() *sessionAgent {
 		return &sessionAgent{
-			largeModel:         csync.NewValue(modelFor("shared-large")),
-			smallModel:         csync.NewValue(modelFor("shared-small")),
+			smartModel:         csync.NewValue(modelFor("shared-large")),
+			fastModel:          csync.NewValue(modelFor("shared-small")),
 			systemPrompt:       csync.NewValue("shared-prompt"),
 			systemPromptPrefix: csync.NewValue("shared-prefix"),
 		}
@@ -140,8 +140,8 @@ func TestResolveTurnConfig_Precedence(t *testing.T) {
 		// Backward compatibility: every caller that predates #265 passes no
 		// pins at all and must behave exactly as before.
 		cfg := newAgent().resolveTurnConfig(SessionAgentCall{SessionID: "s"})
-		assert.Equal(t, modelFor("shared-large"), cfg.largeModel)
-		assert.Equal(t, modelFor("shared-small"), cfg.smallModel)
+		assert.Equal(t, modelFor("shared-large"), cfg.smartModel)
+		assert.Equal(t, modelFor("shared-small"), cfg.fastModel)
 		assert.Equal(t, "shared-prompt", cfg.systemPrompt)
 		assert.Equal(t, "shared-prefix", cfg.promptPrefix)
 	})
@@ -171,13 +171,13 @@ func TestResolveTurnConfig_Precedence(t *testing.T) {
 	t.Run("pins are independent of each other", func(t *testing.T) {
 		t.Parallel()
 
-		// Pinning only the large model must not drag the others off the
+		// Pinning only the smart model must not drag the others off the
 		// shared values — that would be a different flavour of the same
 		// mixing bug.
-		large := modelFor("only-large")
-		cfg := newAgent().resolveTurnConfig(SessionAgentCall{SessionID: "s", LargeModel: &large})
-		assert.Equal(t, large, cfg.largeModel)
-		assert.Equal(t, modelFor("shared-small"), cfg.smallModel)
+		smart := modelFor("only-smart")
+		cfg := newAgent().resolveTurnConfig(SessionAgentCall{SessionID: "s", SmartModel: &smart})
+		assert.Equal(t, smart, cfg.smartModel)
+		assert.Equal(t, modelFor("shared-small"), cfg.fastModel)
 		assert.Equal(t, "shared-prompt", cfg.systemPrompt)
 		assert.Equal(t, "shared-prefix", cfg.promptPrefix)
 	})
@@ -222,18 +222,18 @@ func TestRunInternal_PinsResolvedOverridesOntoTheCall(t *testing.T) {
 	sess, err := env.sessions.Create(t.Context(), "pinned-overrides")
 	require.NoError(t, err)
 
-	pinnedLarge := modelFor("pinned")
-	pinnedLarge.ModelCfg.Provider = pinnedProvider
-	pinnedLarge.CatwalkCfg.DefaultMaxTokens = 777
-	pinnedSmall := modelFor("pinned-small")
+	pinnedSmart := modelFor("pinned")
+	pinnedSmart.ModelCfg.Provider = pinnedProvider
+	pinnedSmart.CatwalkCfg.DefaultMaxTokens = 777
+	pinnedFast := modelFor("pinned-fast")
 
 	pinned := &resolvedOverrides{
-		large: pinnedLarge,
-		small: pinnedSmall,
+		smart: pinnedSmart,
+		fast:  pinnedFast,
 		// providerCfg must come from the same pinned snapshot as `large`
 		// (task #341/P1-1) -- both real producers of resolvedOverrides
 		// (resolveSessionModels, applyModelOverrides) always populate this
-		// alongside large/small, so a hand-built pinned value that omits it
+		// alongside smart/fast, so a hand-built pinned value that omits it
 		// does not represent a real call and would trip runInternal's own
 		// pinned.providerCfg.ID == "" sentinel (task #436/H2).
 		providerCfg:  config.ProviderConfig{ID: pinnedProvider},
@@ -244,10 +244,10 @@ func TestRunInternal_PinsResolvedOverridesOntoTheCall(t *testing.T) {
 	_, err = coord.runInternal(t.Context(), sess.ID, "prompt", pinned)
 	require.NoError(t, err)
 
-	require.NotNil(t, gotCall.LargeModel, "the call must carry the model rather than leaving the turn to re-read shared state")
-	assert.Equal(t, pinnedLarge, *gotCall.LargeModel, "the turn must run the model the overrides resolved, not the shared agent's")
-	require.NotNil(t, gotCall.SmallModel)
-	assert.Equal(t, pinnedSmall, *gotCall.SmallModel, "the small model drives title generation and must be pinned too")
+	require.NotNil(t, gotCall.SmartModel, "the call must carry the model rather than leaving the turn to re-read shared state")
+	assert.Equal(t, pinnedSmart, *gotCall.SmartModel, "the turn must run the model the overrides resolved, not the shared agent's")
+	require.NotNil(t, gotCall.FastModel)
+	assert.Equal(t, pinnedFast, *gotCall.FastModel, "the fast model drives title generation and must be pinned too")
 	require.NotNil(t, gotCall.SystemPromptPrefix)
 	assert.Equal(t, "pinned-prefix", *gotCall.SystemPromptPrefix)
 	require.NotNil(t, gotCall.SystemPrompt)
@@ -276,19 +276,19 @@ func TestBuildCall_PinsModelEvenWithoutOverrides(t *testing.T) {
 		ID:   providerID,
 		Type: "openai",
 		Models: []catwalk.Model{
-			{ID: "test-large-model", Name: "Test Large", DefaultMaxTokens: 4096},
-			{ID: "test-small-model", Name: "Test Small", DefaultMaxTokens: 4096},
+			{ID: "test-smart-model", Name: "Test Smart", DefaultMaxTokens: 4096},
+			{ID: "test-fast-model", Name: "Test Fast", DefaultMaxTokens: 4096},
 		},
 	})
 
 	// Set up default models so resolveSessionModels can build them.
-	cfg.Config().Models[config.SelectedModelTypeLarge] = config.SelectedModel{
+	cfg.Config().Models[config.SelectedModelTypeSmart] = config.SelectedModel{
 		Provider: providerID,
-		Model:    "test-large-model",
+		Model:    "test-smart-model",
 	}
-	cfg.Config().Models[config.SelectedModelTypeSmall] = config.SelectedModel{
+	cfg.Config().Models[config.SelectedModelTypeFast] = config.SelectedModel{
 		Provider: providerID,
-		Model:    "test-small-model",
+		Model:    "test-fast-model",
 	}
 
 	coord := &coordinator{
@@ -309,8 +309,8 @@ func TestBuildCall_PinsModelEvenWithoutOverrides(t *testing.T) {
 	call, err := coord.buildCall(t.Context(), sess.ID, "prompt", pinned, nil)
 	require.NoError(t, err)
 
-	require.NotNil(t, call.LargeModel,
+	require.NotNil(t, call.SmartModel,
 		"a queued call must pin the model it computed its options from — by the time it runs, the shared agent may be on another session's model")
-	assert.Equal(t, providerID, call.LargeModel.ModelCfg.Provider)
+	assert.Equal(t, providerID, call.SmartModel.ModelCfg.Provider)
 	assert.Equal(t, int64(4096), call.MaxOutputTokens)
 }

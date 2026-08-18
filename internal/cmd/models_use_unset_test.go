@@ -36,8 +36,8 @@ func TestModelsUnset_ClearsWorkerOnly(t *testing.T) {
 	_, workerStillSet := doc.Models["worker"]
 	assert.False(t, workerStillSet, "models.worker should have been removed, got: %s", data)
 	assert.Contains(t, doc.Models, "reviewer") // reviewer survives
-	assert.Contains(t, doc.Models, "large")    // large survives
-	assert.Contains(t, doc.Models, "small")    // small survives
+	assert.Contains(t, doc.Models, "smart")    // large survives
+	assert.Contains(t, doc.Models, "fast")     // small survives
 }
 
 func TestModelsUnset_AllClearsAllFourSlots(t *testing.T) {
@@ -65,5 +65,5 @@ func TestModelsUnset_UnknownSlotFailsCleanly(t *testing.T) {
 	resetModelsUnsetFlags(t)
 	_, runErr := runModelsCmd(t, modelsUnsetCmd, "bogus-slot")
 	require.Error(t, runErr)
-	assert.Contains(t, runErr.Error(), "expected large|small|worker|reviewer|both|all")
+	assert.Contains(t, runErr.Error(), "expected smart|fast|worker|reviewer|both|all")
 }

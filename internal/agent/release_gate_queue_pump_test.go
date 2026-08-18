@@ -82,8 +82,8 @@ func TestReleaseGate_2_OSLockHeldPastRetryWindow(t *testing.T) {
 
 	env := testEnv(t)
 	sa := NewSessionAgent(SessionAgentOptions{
-		LargeModel:           model,
-		SmallModel:           model,
+		SmartModel:           model,
+		FastModel:            model,
 		SystemPrompt:         "you are a probe",
 		DataDirectory:        env.workingDir,
 		Sessions:             env.sessions,
@@ -261,8 +261,8 @@ func TestReleaseGate_3_CrossProcessInterruptAutoResumed(t *testing.T) {
 
 	env := testEnv(t)
 	sa := NewSessionAgent(SessionAgentOptions{
-		LargeModel:           model,
-		SmallModel:           model,
+		SmartModel:           model,
+		FastModel:            model,
 		SystemPrompt:         "you are a probe",
 		DataDirectory:        env.workingDir,
 		Sessions:             env.sessions,
@@ -492,8 +492,8 @@ func TestReleaseGate_9_DoubleFailureNoDuplicate(t *testing.T) {
 	}
 
 	sa := NewSessionAgent(SessionAgentOptions{
-		LargeModel:           model,
-		SmallModel:           model,
+		SmartModel:           model,
+		FastModel:            model,
 		SystemPrompt:         "you are a probe",
 		DataDirectory:        env.workingDir,
 		Sessions:             env.sessions,

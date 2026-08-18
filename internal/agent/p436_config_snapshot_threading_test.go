@@ -7,12 +7,12 @@ package agent
 // (the 401 credential-refresh rebuild in runInternal).
 //
 // This is a direct follow-on to the P1-3 fix that made buildAgentModels take
-// a single Snapshot() for its own three model lookups (large/small/worker):
+// a single Snapshot() for its own three model lookups (smart/fast/worker):
 // that fix missed that buildAgentModels' worker-preference branch calls
 // workerSubAgentActive(), which independently re-read c.cfg.Config() live —
 // so a reload landing between buildAgentModels' Snapshot() and the
 // workerSubAgentActive() call could still hand back a worker slot from a
-// DIFFERENT generation than the large/small models were built from.
+// DIFFERENT generation than the smart/fast models were built from.
 // resolveSessionModels had the same shape of gap around its system-prompt
 // build, and runInternal's 401 rebuildCall took a SECOND, separately-timed
 // Snapshot() purely to look up provider config/options for a model that
@@ -109,7 +109,7 @@ func TestWorkerSubAgentActive_UsesPinnedGeneration(t *testing.T) {
 // coordinator.go. That reintroduces a live re-read between buildAgentModels'
 // own Snapshot() and the worker decision, so under this test's concurrent
 // toggling some fraction of calls observe the Snapshot()-time generation for
-// large/small model selection but a DIFFERENT (later) generation for the
+// smart/fast model selection but a DIFFERENT (later) generation for the
 // worker gate — producing a large.ModelCfg.Provider that doesn't match
 // either registered provider's expected model ID pairing, which this test's
 // per-call shape assertion catches as a failure. With the fix restored,
@@ -161,11 +161,11 @@ func TestBuildAgentModels_ConcurrentReloadNeverTearsWorkerDecision(t *testing.T)
 	})
 
 	for i := 0; i < 500; i++ {
-		large, small, err := coord.buildAgentModels(t.Context(), true)
+		smart, fast, err := coord.buildAgentModels(t.Context(), true)
 		if err != nil {
 			// The only legitimate error here is "worker slot unset in THIS
 			// call's own pinned generation, so buildAgentModels correctly
-			// did NOT swap to it and instead used Large" -- that path
+			// did NOT swap to it and instead used Smart" -- that path
 			// never errors. Any error at all means buildAgentModels'
 			// worker branch tried to build from a mismatched/empty
 			// selection, i.e. exactly the torn read this test exists to
@@ -180,23 +180,23 @@ func TestBuildAgentModels_ConcurrentReloadNeverTearsWorkerDecision(t *testing.T)
 		// pairs, never an empty Provider with a non-empty Model or vice
 		// versa, which is what a torn read between the decision and the
 		// value would produce.
-		switch large.ModelCfg.Provider {
+		switch smart.ModelCfg.Provider {
 		case "worker-provider":
-			require.Equal(t, "worker-model", large.ModelCfg.Model)
-		case "large-provider":
-			require.Equal(t, "large-model", large.ModelCfg.Model)
+			require.Equal(t, "worker-model", smart.ModelCfg.Model)
+		case "smart-provider":
+			require.Equal(t, "smart-model", smart.ModelCfg.Model)
 		default:
-			t.Fatalf("buildAgentModels returned an impossible provider/model combination: %+v (torn generation read)", large.ModelCfg)
+			t.Fatalf("buildAgentModels returned an impossible provider/model combination: %+v (torn generation read)", smart.ModelCfg)
 		}
-		require.Equal(t, "small-provider", small.ModelCfg.Provider, "small slot must never be affected by the worker decision")
-		require.Equal(t, "small-model", small.ModelCfg.Model)
+		require.Equal(t, "fast-provider", fast.ModelCfg.Provider, "fast slot must never be affected by the worker decision")
+		require.Equal(t, "fast-model", fast.ModelCfg.Model)
 	}
 }
 
 // TestResolveSessionModels_ProviderCfgMatchesModelGeneration is the
 // regression test for seam #3 (the 401 rebuildCall path): resolveSessionModels
 // must return a resolvedOverrides whose providerCfg field was resolved from
-// the EXACT SAME snapshot as the large model it also returns. Before this
+// the EXACT SAME snapshot as the smart model it also returns. Before this
 // fix, runInternal's rebuildCall took its own, separately-timed
 // c.cfg.Snapshot() purely to look up provider options for the model
 // resolveSessionModels had already resolved — a credential refresh
@@ -212,7 +212,7 @@ func TestBuildAgentModels_ConcurrentReloadNeverTearsWorkerDecision(t *testing.T)
 // because resolved.providerCfg is then the zero value (APIKey == "") even
 // though a real provider was configured — proving the field is unpopulated
 // without the fix. With the fix restored, resolved.providerCfg carries the
-// exact same generation's credentials that produced resolved.large.
+// exact same generation's credentials that produced resolved.smart.
 func TestResolveSessionModels_ProviderCfgMatchesModelGeneration(t *testing.T) {
 	env := testEnv(t)
 	coord := newWorkerToolTestCoordinator(t, env, false)
@@ -221,28 +221,28 @@ func TestResolveSessionModels_ProviderCfgMatchesModelGeneration(t *testing.T) {
 	require.NoError(t, err)
 
 	// First resolve: captures generation N's provider config (API key "key-gen-0").
-	coord.cfg.Config().Providers.Set("large-provider", config.ProviderConfig{
-		ID:     "large-provider",
+	coord.cfg.Config().Providers.Set("smart-provider", config.ProviderConfig{
+		ID:     "smart-provider",
 		Type:   openai.Name,
 		APIKey: "key-gen-0",
-		Models: []catwalk.Model{{ID: "large-model"}},
+		Models: []catwalk.Model{{ID: "smart-model"}},
 	})
 	resolvedGen0, err := coord.resolveSessionModels(t.Context(), sess.ID)
 	require.NoError(t, err)
-	require.Equal(t, "large-provider", resolvedGen0.large.ModelCfg.Provider)
+	require.Equal(t, "smart-provider", resolvedGen0.smart.ModelCfg.Provider)
 	require.Equal(t, "key-gen-0", resolvedGen0.providerCfg.APIKey,
-		"providerCfg must be populated from the SAME snapshot that built resolved.large")
+		"providerCfg must be populated from the SAME snapshot that built resolved.smart")
 
 	// Simulate a credential refresh landing after resolveSessionModels
 	// returned generation N's snapshot — SetProviderRuntimeConfig is exactly
 	// what the coordinator's 401 handling calls to apply a freshly resolved
 	// API key/token in-memory, and it bumps the generation.
 	genBefore := coord.cfg.Generation()
-	coord.cfg.SetProviderRuntimeConfig("large-provider", config.ProviderConfig{
-		ID:     "large-provider",
+	coord.cfg.SetProviderRuntimeConfig("smart-provider", config.ProviderConfig{
+		ID:     "smart-provider",
 		Type:   openai.Name,
 		APIKey: "key-gen-1",
-		Models: []catwalk.Model{{ID: "large-model"}},
+		Models: []catwalk.Model{{ID: "smart-model"}},
 	})
 	require.Greater(t, coord.cfg.Generation(), genBefore, "SetProviderRuntimeConfig must publish a new generation")
 
@@ -263,7 +263,7 @@ func TestResolveSessionModels_ProviderCfgMatchesModelGeneration(t *testing.T) {
 
 	// And within THAT fresh resolve, large and providerCfg must still agree
 	// with each other (both generation N+1) — the core seam #3 property.
-	require.Equal(t, "large-provider", resolvedGen1.large.ModelCfg.Provider)
-	require.Equal(t, resolvedGen1.large.ModelCfg.Provider, resolvedGen1.providerCfg.ID,
-		"resolved.large and resolved.providerCfg must describe the same provider from the same resolve call")
+	require.Equal(t, "smart-provider", resolvedGen1.smart.ModelCfg.Provider)
+	require.Equal(t, resolvedGen1.smart.ModelCfg.Provider, resolvedGen1.providerCfg.ID,
+		"resolved.smart and resolved.providerCfg must describe the same provider from the same resolve call")
 }

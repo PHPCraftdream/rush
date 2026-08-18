@@ -38,15 +38,15 @@ func TestHandleInterruptTick(t *testing.T) {
 	})
 	// P0-2's atomic-handoff rewrite made handleInterruptTick call
 	// resolveSessionModels before buildCall (closing the same
-	// session-scoped-model bug P1-4 fixed elsewhere), so both large and
-	// small must be resolvable from config — the old nil-pinned buildCall
+	// session-scoped-model bug P1-4 fixed elsewhere), so both smart and
+	// fast must be resolvable from config — the old nil-pinned buildCall
 	// fallback (c.currentAgent.Model()) that let this test skip config
 	// entirely no longer exists.
-	cfg.Config().Models[config.SelectedModelTypeLarge] = config.SelectedModel{
+	cfg.Config().Models[config.SelectedModelTypeSmart] = config.SelectedModel{
 		Provider: providerID,
 		Model:    "test-model",
 	}
-	cfg.Config().Models[config.SelectedModelTypeSmall] = config.SelectedModel{
+	cfg.Config().Models[config.SelectedModelTypeFast] = config.SelectedModel{
 		Provider: providerID,
 		Model:    "test-model",
 	}

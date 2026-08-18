@@ -251,7 +251,7 @@ func formatAtomLine(w io.Writer, key string, a atom) {
 
 func renderAtomsBlock(cfg *config.Config) string {
 	var b strings.Builder
-	b.WriteString("ATOMS (combine as `crush models use <large> <small>`):\n\n")
+	b.WriteString("ATOMS (combine as `crush models use <smart> <fast>`):\n\n")
 	for _, group := range atomGroupOrder {
 		keys := enabledGroupAtomKeys(cfg, group)
 		if len(keys) == 0 {
@@ -289,7 +289,7 @@ func renderAtomsBlock(cfg *config.Config) string {
 
 func renderAtomsBlockFallback() string {
 	var b strings.Builder
-	b.WriteString("ATOMS (combine as `crush models use <large> <small>`):\n\n")
+	b.WriteString("ATOMS (combine as `crush models use <smart> <fast>`):\n\n")
 	for _, group := range atomGroupOrder {
 		keys := atomsByGroup(group)
 		if len(keys) == 0 {

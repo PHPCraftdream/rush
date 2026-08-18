@@ -27,7 +27,7 @@ func TestModelsUnset_InvalidPositional(t *testing.T) {
 	args := []string{"middle"}
 	which := args[0]
 	switch which {
-	case "large", "small", "both":
+	case "smart", "fast", "both":
 		t.Fatalf("unexpected: %q should NOT be accepted", which)
 	default:
 		// expected — match the exact error message text from RunE
@@ -50,10 +50,10 @@ func TestModelsUnset_DefaultsToBoth(t *testing.T) {
 
 // TestModelsUnset_AcceptedPositionals verifies the three legal positionals.
 func TestModelsUnset_AcceptedPositionals(t *testing.T) {
-	for _, ok := range []string{"large", "small", "both"} {
+	for _, ok := range []string{"smart", "fast", "both"} {
 		t.Run(ok, func(t *testing.T) {
 			switch ok {
-			case "large", "small", "both":
+			case "smart", "fast", "both":
 				// accepted
 			default:
 				t.Fatalf("%q should be accepted", ok)

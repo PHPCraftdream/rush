@@ -4,7 +4,7 @@
  * Model selection now persists in the database via set_session_models,
  * not via per-message overrides in send_message. These tests verify:
  *  1. Selecting a model sends set_session_models with correct provider/model.
- *  2. The send_message payload does NOT contain largeModel/smallModel overrides.
+ *  2. The send_message payload does NOT contain smartModel/fastModel overrides.
  *  3. The session_updated event from the server updates the displayed model.
  *  4. Per-session independence is maintained.
  */
@@ -38,7 +38,7 @@ test("selecting large model sends set_session_models with provider and model", a
   await page.goto("/");
   await sendMockWSMessage(page, {
     type: "sessions_list",
-    payload: [makeSession({ ID: "sw-lg", Title: "Large Switch" })],
+    payload: [makeSession({ ID: "sw-lg", Title: "Smart Switch" })],
   });
   await sendMockWSMessage(page, {
     type: "config",
@@ -54,24 +54,24 @@ test("selecting large model sends set_session_models with provider and model", a
       },
     }),
   });
-  await expect(page.getByText("Large Switch").first()).toBeVisible({ timeout: 3000 });
-  await page.getByText("Large Switch").first().click();
+  await expect(page.getByText("Smart Switch").first()).toBeVisible({ timeout: 3000 });
+  await page.getByText("Smart Switch").first().click();
 
-  await expect(page.locator("button[title='Large (strong) model']")).toBeVisible({ timeout: 3000 });
-  await page.locator("button[title='Large (strong) model']").click();
+  await expect(page.locator("button[title='Smart (strong) model']")).toBeVisible({ timeout: 3000 });
+  await page.locator("button[title='Smart (strong) model']").click();
   await page.locator('[data-testid="model-dropdown"]').getByText("claude-haiku-4").click();
 
   const cmd = await waitForWSSend(page, "set_session_models");
-  const p = cmd.payload as { sessionID: string; largeModel: { provider: string; model: string }; smallModel: unknown };
+  const p = cmd.payload as { sessionID: string; smartModel: { provider: string; model: string }; fastModel: unknown };
   expect(p.sessionID).toBe("sw-lg");
-  expect(p.largeModel).toEqual({ provider: "anthropic", model: "claude-haiku-4" });
+  expect(p.smartModel).toEqual({ provider: "anthropic", model: "claude-haiku-4" });
 });
 
 test("selecting small model sends set_session_models with correct small provider/model", async ({ page }) => {
   await page.goto("/");
   await sendMockWSMessage(page, {
     type: "sessions_list",
-    payload: [makeSession({ ID: "sw-sm", Title: "Small Switch" })],
+    payload: [makeSession({ ID: "sw-sm", Title: "Fast Switch" })],
   });
   await sendMockWSMessage(page, {
     type: "config",
@@ -88,17 +88,17 @@ test("selecting small model sends set_session_models with correct small provider
       },
     }),
   });
-  await expect(page.getByText("Small Switch").first()).toBeVisible({ timeout: 3000 });
-  await page.getByText("Small Switch").first().click();
+  await expect(page.getByText("Fast Switch").first()).toBeVisible({ timeout: 3000 });
+  await page.getByText("Fast Switch").first().click();
 
-  await expect(page.locator("button[title='Small (fast) model']")).toBeVisible({ timeout: 3000 });
-  await page.locator("button[title='Small (fast) model']").click();
+  await expect(page.locator("button[title='Fast (cheap) model']")).toBeVisible({ timeout: 3000 });
+  await page.locator("button[title='Fast (cheap) model']").click();
   await page.locator('[data-testid="model-dropdown"]').getByText("gpt-4o-mini").click();
 
   const cmd = await waitForWSSend(page, "set_session_models");
-  const p = cmd.payload as { sessionID: string; smallModel: { provider: string; model: string } };
+  const p = cmd.payload as { sessionID: string; fastModel: { provider: string; model: string } };
   expect(p.sessionID).toBe("sw-sm");
-  expect(p.smallModel).toEqual({ provider: "openai", model: "gpt-4o-mini" });
+  expect(p.fastModel).toEqual({ provider: "openai", model: "gpt-4o-mini" });
 });
 
 test("set_session_models includes both models", async ({ page }) => {
@@ -126,12 +126,12 @@ test("set_session_models includes both models", async ({ page }) => {
   await page.getByText("Both Switch").first().click();
 
   // Pick large model
-  await page.locator("button[title='Large (strong) model']").click();
+  await page.locator("button[title='Smart (strong) model']").click();
   await page.locator('[data-testid="model-dropdown"]').getByText("claude-haiku-4").click();
   await waitForWSSend(page, "set_session_models");
 
   // Pick small model — second set_session_models command
-  await page.locator("button[title='Small (fast) model']").click();
+  await page.locator("button[title='Fast (cheap) model']").click();
   await page.locator('[data-testid="model-dropdown"]').getByText("gpt-4o-mini").click();
 
   const secondCmd = await page.waitForFunction(
@@ -145,13 +145,13 @@ test("set_session_models includes both models", async ({ page }) => {
     },
     { timeout: 5_000 }
   );
-  const last = await secondCmd.jsonValue() as { payload: { smallModel: { provider: string; model: string } } };
-  expect(last.payload.smallModel).toEqual({ provider: "openai", model: "gpt-4o-mini" });
+  const last = await secondCmd.jsonValue() as { payload: { fastModel: { provider: string; model: string } } };
+  expect(last.payload.fastModel).toEqual({ provider: "openai", model: "gpt-4o-mini" });
 });
 
 // ── send_message has no overrides ────────────────────────────────────────────
 
-test("send_message does not include largeModel or smallModel overrides", async ({ page }) => {
+test("send_message does not include smartModel or fastModel overrides", async ({ page }) => {
   await page.goto("/");
   await sendMockWSMessage(page, {
     type: "sessions_list",
@@ -162,7 +162,7 @@ test("send_message does not include largeModel or smallModel overrides", async (
   await page.getByText("No Override").first().click();
 
   // Switch model
-  await page.locator("button[title='Large (strong) model']").click();
+  await page.locator("button[title='Smart (strong) model']").click();
   await page.locator('[data-testid="model-dropdown"]').getByText("claude-haiku-4").click();
   await waitForWSSend(page, "set_session_models");
 
@@ -172,8 +172,8 @@ test("send_message does not include largeModel or smallModel overrides", async (
 
   const sent = await waitForWSSend(page, "send_message");
   const payload = sent.payload as Record<string, unknown>;
-  expect(payload.largeModel).toBeUndefined();
-  expect(payload.smallModel).toBeUndefined();
+  expect(payload.smartModel).toBeUndefined();
+  expect(payload.fastModel).toBeUndefined();
   expect(payload.content).toBe("hello");
 });
 
@@ -192,8 +192,8 @@ test("send_message never contains model overrides even on default model", async 
 
   const sent = await waitForWSSend(page, "send_message");
   const payload = sent.payload as Record<string, unknown>;
-  expect(payload.largeModel).toBeUndefined();
-  expect(payload.smallModel).toBeUndefined();
+  expect(payload.smartModel).toBeUndefined();
+  expect(payload.fastModel).toBeUndefined();
   expect(payload.sessionID).toBe("sw-def");
 });
 
@@ -215,14 +215,14 @@ test("session_updated with model fields updates header model button", async ({ p
     payload: makeSession({
       ID: "sw-upd",
       Title: "Update Model",
-      LargeModelProvider: "anthropic",
-      LargeModelID: "claude-haiku-4",
+      SmartModelProvider: "anthropic",
+      SmartModelID: "claude-haiku-4",
     }),
   });
 
   // Header large model button should now show claude-haiku-4
   await expect(
-    page.locator("button[title='Large (strong) model']").filter({ hasText: "claude-haiku-4" })
+    page.locator("button[title='Smart (strong) model']").filter({ hasText: "claude-haiku-4" })
   ).toBeVisible({ timeout: 2000 });
 });
 
@@ -255,18 +255,18 @@ test("switching model in session A does not affect session B", async ({ page }) 
   // Change Session A model
   await expect(page.getByText("Session A").first()).toBeVisible({ timeout: 3000 });
   await page.getByText("Session A").first().click();
-  await page.locator("button[title='Large (strong) model']").click();
+  await page.locator("button[title='Smart (strong) model']").click();
   await page.locator('[data-testid="model-dropdown"]').getByText("claude-haiku-4").click();
 
   // Session A button shows haiku
   await expect(
-    page.locator("button[title='Large (strong) model']").filter({ hasText: "claude-haiku-4" })
+    page.locator("button[title='Smart (strong) model']").filter({ hasText: "claude-haiku-4" })
   ).toBeVisible({ timeout: 2000 });
 
   // Switch to Session B — should show opus (default)
   await page.getByText("Session B").click();
   await expect(
-    page.locator("button[title='Large (strong) model']").filter({ hasText: "claude-opus-4" })
+    page.locator("button[title='Smart (strong) model']").filter({ hasText: "claude-opus-4" })
   ).toBeVisible({ timeout: 2000 });
 });
 
@@ -296,7 +296,7 @@ test("model override persists for subsequent messages via DB", async ({ page }) 
   await page.getByText("Persist Session").first().click();
 
   // Switch model once
-  await page.locator("button[title='Large (strong) model']").click();
+  await page.locator("button[title='Smart (strong) model']").click();
   await page.locator('[data-testid="model-dropdown"]').getByText("claude-haiku-4").click();
   await waitForWSSend(page, "set_session_models");
 
@@ -306,8 +306,8 @@ test("model override persists for subsequent messages via DB", async ({ page }) 
     payload: makeSession({
       ID: "sw-persist",
       Title: "Persist Session",
-      LargeModelProvider: "anthropic",
-      LargeModelID: "claude-haiku-4",
+      SmartModelProvider: "anthropic",
+      SmartModelID: "claude-haiku-4",
     }),
   });
 
@@ -327,8 +327,8 @@ test("model override persists for subsequent messages via DB", async ({ page }) 
 
   const msgs = await getSentMessages(page) as Array<Record<string, unknown>>;
   for (const msg of msgs) {
-    expect(msg.largeModel).toBeUndefined();
-    expect(msg.smallModel).toBeUndefined();
+    expect(msg.smartModel).toBeUndefined();
+    expect(msg.fastModel).toBeUndefined();
   }
 });
 
@@ -357,7 +357,7 @@ test("Inherit option is only shown when the session has an explicit override", a
   await expect(page.getByText("No Override Yet").first()).toBeVisible({ timeout: 3000 });
   await page.getByText("No Override Yet").first().click();
 
-  await page.locator("button[title='Large (strong) model']").click();
+  await page.locator("button[title='Smart (strong) model']").click();
   await expect(page.locator('[data-testid="model-inherit-large"]')).toHaveCount(0);
 });
 
@@ -368,8 +368,8 @@ test("selecting Inherit clears the session's override with an explicit empty mod
     payload: [makeSession({
       ID: "sw-inherit",
       Title: "Has Override",
-      LargeModelProvider: "anthropic",
-      LargeModelID: "claude-haiku-4",
+      SmartModelProvider: "anthropic",
+      SmartModelID: "claude-haiku-4",
     })],
   });
   await sendMockWSMessage(page, {
@@ -389,15 +389,15 @@ test("selecting Inherit clears the session's override with an explicit empty mod
   await expect(page.getByText("Has Override").first()).toBeVisible({ timeout: 3000 });
   await page.getByText("Has Override").first().click();
 
-  await page.locator("button[title='Large (strong) model']").click();
+  await page.locator("button[title='Smart (strong) model']").click();
   await expect(page.locator('[data-testid="model-inherit-large"]')).toBeVisible({ timeout: 3000 });
   await page.locator('[data-testid="model-inherit-large"]').click();
 
   const cmd = await waitForWSSend(page, "set_session_models");
-  const p = cmd.payload as { sessionID: string; largeModel: { provider: string; model: string } };
+  const p = cmd.payload as { sessionID: string; smartModel: { provider: string; model: string } };
   expect(p.sessionID).toBe("sw-inherit");
   // Explicit empty object — distinct from an omitted/null field, which the
   // backend reads as "don't touch" rather than "clear" (see store.ts's
   // clearSessionModelSlot doc comment).
-  expect(p.largeModel).toEqual({ provider: "", model: "" });
+  expect(p.smartModel).toEqual({ provider: "", model: "" });
 });

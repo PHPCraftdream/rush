@@ -45,10 +45,10 @@ func TestCascade_GlobalOnly_ResolvesToGlobal(t *testing.T) {
 
 	globalProvider := cascadeTestProvider("cascade-global", "cascade-global-model")
 	store.Config().Providers.Set(string(globalProvider.ID), asProviderConfig(globalProvider))
-	require.NoError(t, store.UpdatePreferredModel(ScopeGlobal, SelectedModelTypeLarge,
+	require.NoError(t, store.UpdatePreferredModel(ScopeGlobal, SelectedModelTypeSmart,
 		SelectedModel{Provider: "cascade-global", Model: "cascade-global-model"}))
 
-	effective, ok := store.Config().Models[SelectedModelTypeLarge]
+	effective, ok := store.Config().Models[SelectedModelTypeSmart]
 	require.True(t, ok)
 	require.Equal(t, "cascade-global", effective.Provider)
 	require.Equal(t, "cascade-global-model", effective.Model)
@@ -62,12 +62,12 @@ func TestCascade_WorkspaceWinsOverGlobal(t *testing.T) {
 	store.Config().Providers.Set(string(globalProvider.ID), asProviderConfig(globalProvider))
 	store.Config().Providers.Set(string(workspaceProvider.ID), asProviderConfig(workspaceProvider))
 
-	require.NoError(t, store.UpdatePreferredModel(ScopeGlobal, SelectedModelTypeLarge,
+	require.NoError(t, store.UpdatePreferredModel(ScopeGlobal, SelectedModelTypeSmart,
 		SelectedModel{Provider: "cascade-global2", Model: "cascade-global-model2"}))
-	require.NoError(t, store.UpdatePreferredModel(ScopeWorkspace, SelectedModelTypeLarge,
+	require.NoError(t, store.UpdatePreferredModel(ScopeWorkspace, SelectedModelTypeSmart,
 		SelectedModel{Provider: "cascade-workspace", Model: "cascade-workspace-model"}))
 
-	effective, ok := store.Config().Models[SelectedModelTypeLarge]
+	effective, ok := store.Config().Models[SelectedModelTypeSmart]
 	require.True(t, ok)
 	require.Equal(t, "cascade-workspace", effective.Provider, "folder scope must win over system scope")
 	require.Equal(t, "cascade-workspace-model", effective.Model)
@@ -77,13 +77,13 @@ func TestCascade_WorkspaceWinsOverGlobal(t *testing.T) {
 	// just the merged winner.
 	globalAll, err := store.ReadAllModelsAtScope(ScopeGlobal)
 	require.NoError(t, err)
-	require.NotNil(t, globalAll[SelectedModelTypeLarge])
-	require.Equal(t, "cascade-global2", globalAll[SelectedModelTypeLarge].Provider)
+	require.NotNil(t, globalAll[SelectedModelTypeSmart])
+	require.Equal(t, "cascade-global2", globalAll[SelectedModelTypeSmart].Provider)
 
 	workspaceAll, err := store.ReadAllModelsAtScope(ScopeWorkspace)
 	require.NoError(t, err)
-	require.NotNil(t, workspaceAll[SelectedModelTypeLarge])
-	require.Equal(t, "cascade-workspace", workspaceAll[SelectedModelTypeLarge].Provider)
+	require.NotNil(t, workspaceAll[SelectedModelTypeSmart])
+	require.Equal(t, "cascade-workspace", workspaceAll[SelectedModelTypeSmart].Provider)
 }
 
 func TestCascade_ClearingWorkspaceFallsBackToGlobal(t *testing.T) {
@@ -94,27 +94,27 @@ func TestCascade_ClearingWorkspaceFallsBackToGlobal(t *testing.T) {
 	store.Config().Providers.Set(string(globalProvider.ID), asProviderConfig(globalProvider))
 	store.Config().Providers.Set(string(workspaceProvider.ID), asProviderConfig(workspaceProvider))
 
-	require.NoError(t, store.UpdatePreferredModel(ScopeGlobal, SelectedModelTypeSmall,
+	require.NoError(t, store.UpdatePreferredModel(ScopeGlobal, SelectedModelTypeFast,
 		SelectedModel{Provider: "cascade-global3", Model: "cascade-global-model3"}))
-	require.NoError(t, store.UpdatePreferredModel(ScopeWorkspace, SelectedModelTypeSmall,
+	require.NoError(t, store.UpdatePreferredModel(ScopeWorkspace, SelectedModelTypeFast,
 		SelectedModel{Provider: "cascade-workspace3", Model: "cascade-workspace-model3"}))
 
-	before, ok := store.Config().Models[SelectedModelTypeSmall]
+	before, ok := store.Config().Models[SelectedModelTypeFast]
 	require.True(t, ok)
 	require.Equal(t, "cascade-workspace3", before.Provider)
 
 	// Clear the workspace override — mirrors `crush models unset small
 	// --local` / the modal's per-slot clear (task #463).
-	require.NoError(t, store.RemoveConfigField(ScopeWorkspace, "models.small"))
+	require.NoError(t, store.RemoveConfigField(ScopeWorkspace, "models.fast"))
 
-	after, ok := store.Config().Models[SelectedModelTypeSmall]
+	after, ok := store.Config().Models[SelectedModelTypeFast]
 	require.True(t, ok)
 	require.Equal(t, "cascade-global3", after.Provider, "clearing the folder override must fall back to the system default")
 	require.Equal(t, "cascade-global-model3", after.Model)
 
 	workspaceAll, err := store.ReadAllModelsAtScope(ScopeWorkspace)
 	require.NoError(t, err)
-	require.Nil(t, workspaceAll[SelectedModelTypeSmall], "the workspace override must be gone, not merely shadowed")
+	require.Nil(t, workspaceAll[SelectedModelTypeFast], "the workspace override must be gone, not merely shadowed")
 }
 
 // asProviderConfig converts a catwalk.Provider into the ProviderConfig shape

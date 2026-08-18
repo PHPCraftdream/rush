@@ -71,7 +71,7 @@ func TestResolveSubAgentModelOverride_UsesSessionWorkerOverride(t *testing.T) {
 // to their OWN override, proving the per-call SessionAgentCall.LargeModel
 // pin (not a shared, mutable agent field) is what carries the value —
 // exactly the class of cross-session leak task #341/P0-1 fixed for
-// large/small, now guarded for worker too.
+// smart/fast, now guarded for worker too.
 func TestResolveSubAgentModelOverride_IsolatedAcrossSessions(t *testing.T) {
 	env := testEnv(t)
 	coord := newWorkerToolTestCoordinator(t, env, true)

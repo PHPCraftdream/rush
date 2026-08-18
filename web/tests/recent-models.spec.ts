@@ -7,7 +7,7 @@
  *  - Remove button removes model from recents
  *  - Remove sends remove_recent_model WS command
  *  - Assistant response tracks model as recently used
- *  - Config with recentLargeModels populates recent section
+ *  - Config with recentSmartModels populates recent section
  */
 
 import { test, expect } from "@playwright/test";
@@ -63,12 +63,12 @@ test("Recent section appears in dropdown after selecting a model", async ({ page
   await setupSession(page);
 
   // Select haiku from large dropdown
-  await page.locator('[data-test-id="model-selector-large"]').click();
+  await page.locator('[data-test-id="model-selector-smart"]').click();
   await page.locator('[data-test-id="model-dropdown"]').getByText("claude-haiku-4").first().click();
   await waitForWSSend(page, "set_session_models");
 
   // Re-open dropdown — should now have "Recent" section
-  await page.locator("button[title='Large (strong) model']").click();
+  await page.locator("button[title='Smart (strong) model']").click();
   await expect(page.locator('[data-test-id="model-dropdown"]').getByText("Recent")).toBeVisible({ timeout: 2000 });
 });
 
@@ -78,12 +78,12 @@ test("remove button removes model from recents and sends WS command", async ({ p
   await setupSession(page);
 
   // Select a model to add to recents
-  await page.locator('[data-test-id="model-selector-large"]').click();
+  await page.locator('[data-test-id="model-selector-smart"]').click();
   await page.locator('[data-test-id="model-dropdown"]').getByText("claude-haiku-4").first().click();
   await waitForWSSend(page, "set_session_models");
 
   // Re-open dropdown
-  await page.locator("button[title='Large (strong) model']").click();
+  await page.locator("button[title='Smart (strong) model']").click();
   await expect(page.locator('[data-test-id="model-dropdown"]').getByText("Recent")).toBeVisible({ timeout: 2000 });
 
   // Click remove (✕) button next to the recent model
@@ -91,7 +91,7 @@ test("remove button removes model from recents and sends WS command", async ({ p
 
   const cmd = await waitForWSSend(page, "remove_recent_model");
   const payload = cmd.payload as { modelType: string; provider: string; model: string };
-  expect(payload.modelType).toBe("large");
+  expect(payload.modelType).toBe("smart");
   expect(payload.provider).toBe("anthropic");
   expect(payload.model).toBe("claude-haiku-4");
 });
@@ -116,13 +116,13 @@ test("assistant response tracks model as recently used", async ({ page }) => {
   await expect(page.getByText("Response from gpt-4o")).toBeVisible({ timeout: 2000 });
 
   // Open large model dropdown — "Recent" should show gpt-4o
-  await page.locator("button[title='Large (strong) model']").click();
+  await page.locator("button[title='Smart (strong) model']").click();
   await expect(page.locator('[data-test-id="model-dropdown"]').getByText("Recent")).toBeVisible({ timeout: 2000 });
 });
 
 // ── Config populates recents ────────────────────────────────────────────
 
-test("config with recentLargeModels populates recent section", async ({ page }) => {
+test("config with recentSmartModels populates recent section", async ({ page }) => {
   await page.goto("/");
   await sendMockWSMessage(page, {
     type: "sessions_list",
@@ -132,7 +132,7 @@ test("config with recentLargeModels populates recent section", async ({ page }) 
     type: "config",
     payload: {
       ...multiModelConfig(),
-      recentLargeModels: [
+      recentSmartModels: [
         { Provider: "openai", Model: "gpt-4o" },
       ],
     },
@@ -141,6 +141,6 @@ test("config with recentLargeModels populates recent section", async ({ page }) 
   await page.getByText("Config Recents").first().click();
 
   // Open dropdown — should have Recent section pre-populated
-  await page.locator("button[title='Large (strong) model']").click();
+  await page.locator("button[title='Smart (strong) model']").click();
   await expect(page.locator('[data-test-id="model-dropdown"]').getByText("Recent")).toBeVisible({ timeout: 2000 });
 });

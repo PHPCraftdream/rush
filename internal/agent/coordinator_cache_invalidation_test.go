@@ -38,8 +38,8 @@ func TestResolveSessionModels_InvalidatesCacheOnConfigChange(t *testing.T) {
 	_, err = coord.resolveSessionModels(t.Context(), sess.ID)
 	require.NoError(t, err)
 	require.Equal(t, 1, coord.modelCache.Len(), "first resolve should populate cache with exactly one entry")
-	firstLargeCfg := coord.cfg.Config().Models[config.SelectedModelTypeLarge]
-	firstSmallCfg := coord.cfg.Config().Models[config.SelectedModelTypeSmall]
+	firstSmartCfg := coord.cfg.Config().Models[config.SelectedModelTypeSmart]
+	firstFastCfg := coord.cfg.Config().Models[config.SelectedModelTypeFast]
 
 	// Trigger a config change by setting the compact mode (this publishes a
 	// new generation). Using SetCompactMode instead of SetProviderAPIKey
@@ -61,7 +61,7 @@ func TestResolveSessionModels_InvalidatesCacheOnConfigChange(t *testing.T) {
 	// on the machine running this test (verified directly: printed the
 	// actual cache keys and saw the second resolve produce a completely
 	// different provider:model pair, e.g. "local-cli:cli-claude-haiku",
-	// instead of this test's own "large-provider:large-model" -- which
+	// instead of this test's own "smart-provider:smart-model" -- which
 	// would make Len()==2 pass for the wrong reason, an unrelated provider
 	// swap, regardless of whether the generation is actually in the cache
 	// key at all). Re-apply the same provider/model registration here so
@@ -77,10 +77,10 @@ func TestResolveSessionModels_InvalidatesCacheOnConfigChange(t *testing.T) {
 		})
 		return config.SelectedModel{Provider: providerID, Model: modelID}
 	}
-	coord.cfg.Config().Models[config.SelectedModelTypeLarge] = registerProvider("large-provider", "large-model")
-	coord.cfg.Config().Models[config.SelectedModelTypeSmall] = registerProvider("small-provider", "small-model")
-	require.Equal(t, firstLargeCfg, coord.cfg.Config().Models[config.SelectedModelTypeLarge], "provider config must be identical to the first resolve, isolating generation as the only variable")
-	require.Equal(t, firstSmallCfg, coord.cfg.Config().Models[config.SelectedModelTypeSmall], "provider config must be identical to the first resolve, isolating generation as the only variable")
+	coord.cfg.Config().Models[config.SelectedModelTypeSmart] = registerProvider("smart-provider", "smart-model")
+	coord.cfg.Config().Models[config.SelectedModelTypeFast] = registerProvider("fast-provider", "fast-model")
+	require.Equal(t, firstSmartCfg, coord.cfg.Config().Models[config.SelectedModelTypeSmart], "provider config must be identical to the first resolve, isolating generation as the only variable")
+	require.Equal(t, firstFastCfg, coord.cfg.Config().Models[config.SelectedModelTypeFast], "provider config must be identical to the first resolve, isolating generation as the only variable")
 
 	// Second resolve: because the cache key includes the generation, this
 	// should be a cache miss and build fresh models.
@@ -131,5 +131,5 @@ func TestUpdateModels_ClearsCacheOnCredentialRefresh(t *testing.T) {
 	// Resolve again: should rebuild models fresh, not return stale cached ones.
 	resolved, err := coord.resolveSessionModels(t.Context(), sess.ID)
 	require.NoError(t, err)
-	require.NotNil(t, resolved.large.Model, "should build a fresh client after cache clear")
+	require.NotNil(t, resolved.smart.Model, "should build a fresh client after cache clear")
 }

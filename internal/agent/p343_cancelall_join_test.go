@@ -104,8 +104,8 @@ func TestP343_CancelAllTrueJoinWaitsForRealBlockedRun(t *testing.T) {
 
 	env := testEnv(t)
 	sa := NewSessionAgent(SessionAgentOptions{
-		LargeModel:           model,
-		SmallModel:           model,
+		SmartModel:           model,
+		FastModel:            model,
 		SystemPrompt:         "you are a probe",
 		IsYolo:               true,
 		DataDirectory:        env.workingDir,

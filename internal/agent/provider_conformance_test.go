@@ -175,8 +175,8 @@ func runProviderCancellationConformanceTest(t *testing.T, cat providerTestCatego
 
 	env := testEnv(t)
 	a := NewSessionAgent(SessionAgentOptions{
-		LargeModel:           model,
-		SmallModel:           model,
+		SmartModel:           model,
+		FastModel:            model,
 		SystemPrompt:         "you are a test agent",
 		IsYolo:               true,
 		Sessions:             env.sessions,

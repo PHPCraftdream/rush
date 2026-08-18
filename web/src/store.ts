@@ -61,11 +61,11 @@ export function setSessions(sessions: Session[]) {
 // ── Model History ────────────────────────────────────────────────────────────
 // Recent models are stored on the backend and synced via WebSocket config.
 // Local state is initialized empty and populated when config arrives.
-export const $recentLargeModels = atom<string[]>([]);
-export const $recentSmallModels = atom<string[]>([]);
+export const $recentSmartModels = atom<string[]>([]);
+export const $recentFastModels = atom<string[]>([]);
 
-export function trackModelUsage(role: "large" | "small", modelKey: string) {
-  const store = role === "large" ? $recentLargeModels : $recentSmallModels;
+export function trackModelUsage(role: "smart" | "fast", modelKey: string) {
+  const store = role === "smart" ? $recentSmartModels : $recentFastModels;
 
   const current = store.get();
   const next = [modelKey, ...current.filter((k) => k !== modelKey)].slice(0, 5);
@@ -83,8 +83,8 @@ export function trackModelUsage(role: "large" | "small", modelKey: string) {
   }
 }
 
-export function removeRecentModel(role: "large" | "small", modelKey: string) {
-  const store = role === "large" ? $recentLargeModels : $recentSmallModels;
+export function removeRecentModel(role: "smart" | "fast", modelKey: string) {
+  const store = role === "smart" ? $recentSmartModels : $recentFastModels;
 
   const next = store.get().filter((k) => k !== modelKey);
   store.set(next);
@@ -315,7 +315,7 @@ export function setSessionBusy(sessionID: string, busy: boolean) {
 // Per-session model overrides: removed in favor of global selection
 // Now using the session object from DB as source of truth.
 
-export function getDefaultModelKey(role: "large" | "small", config: ConfigPayload | null): string {
+export function getDefaultModelKey(role: "smart" | "fast", config: ConfigPayload | null): string {
   const entry = config?.models?.[role];
   if (entry) return `${entry.Provider}:::${entry.Model}`;
   return "";
@@ -337,7 +337,7 @@ export function updateTodos(sessionID: string, todos: Todo[]) {
   ws.send("update_todos", { sessionID, todos });
 }
 
-export function setSessionModels(sessionID: string, largeKey: string | null, smallKey: string | null) {
+export function setSessionModels(sessionID: string, smartKey: string | null, fastKey: string | null) {
   const parse = (key: string | null) => {
     if (!key) return null;
     const idx = key.indexOf(":::");
@@ -345,8 +345,8 @@ export function setSessionModels(sessionID: string, largeKey: string | null, sma
     return { provider: key.slice(0, idx), model: key.slice(idx + 3) };
   };
 
-  const large = parse(largeKey);
-  const small = parse(smallKey);
+  const large = parse(smartKey);
+  const small = parse(fastKey);
 
   // Optimistic local update so the UI reflects the change immediately
   const sessions = $sessions.get();
@@ -355,16 +355,16 @@ export function setSessionModels(sessionID: string, largeKey: string | null, sma
     const next = [...sessions];
     next[idx] = {
       ...next[idx],
-      ...(large ? { LargeModelProvider: large.provider, LargeModelID: large.model } : {}),
-      ...(small ? { SmallModelProvider: small.provider, SmallModelID: small.model } : {}),
+      ...(large ? { SmartModelProvider: large.provider, SmartModelID: large.model } : {}),
+      ...(small ? { FastModelProvider: small.provider, FastModelID: small.model } : {}),
     };
     $sessions.set(next);
   }
 
   ws.send("set_session_models", {
     sessionID,
-    largeModel: large,
-    smallModel: small,
+    smartModel: large,
+    fastModel: small,
   });
 }
 
@@ -380,12 +380,12 @@ export function setSessionModels(sessionID: string, largeKey: string | null, sma
 // override" — distinct from a nil argument ("don't touch"). Only ONE of the
 // two commands is sent (the untouched slot key is omitted entirely), so the
 // other slot's override is left exactly as it was.
-export function clearSessionModelSlot(sessionID: string, modelType: "large" | "small" | "worker" | "reviewer") {
+export function clearSessionModelSlot(sessionID: string, modelType: "smart" | "fast" | "worker" | "reviewer") {
   const sessions = $sessions.get();
   const idx = sessions.findIndex((s) => s.ID === sessionID);
   const clearedFields: Record<string, string> = {
-    large: "LargeModel",
-    small: "SmallModel",
+    large: "SmartModel",
+    small: "FastModel",
     worker: "WorkerModel",
     reviewer: "ReviewerModel",
   };
@@ -404,8 +404,8 @@ export function clearSessionModelSlot(sessionID: string, modelType: "large" | "s
 
 export function setSessionReasoningEffort(
   sessionID: string,
-  largeEffort: string | null,
-  smallEffort: string | null,
+  smartEffort: string | null,
+  fastEffort: string | null,
 ) {
   const sessions = $sessions.get();
   const idx = sessions.findIndex((s) => s.ID === sessionID);
@@ -413,8 +413,8 @@ export function setSessionReasoningEffort(
     const next = [...sessions];
     next[idx] = {
       ...next[idx],
-      ...(largeEffort ? { LargeModelReasoningEffort: largeEffort } : {}),
-      ...(smallEffort ? { SmallModelReasoningEffort: smallEffort } : {}),
+      ...(smartEffort ? { SmartModelReasoningEffort: smartEffort } : {}),
+      ...(fastEffort ? { FastModelReasoningEffort: fastEffort } : {}),
     };
     $sessions.set(next);
   }
@@ -425,15 +425,15 @@ export function setSessionReasoningEffort(
     if (session) {
       ws.send("set_session_models", {
         sessionID,
-        largeModel: {
-          provider: session.LargeModelProvider,
-          model: session.LargeModelID,
-          reasoning_effort: largeEffort || undefined,
+        smartModel: {
+          provider: session.SmartModelProvider,
+          model: session.SmartModelID,
+          reasoning_effort: smartEffort || undefined,
         },
-        smallModel: {
-          provider: session.SmallModelProvider,
-          model: session.SmallModelID,
-          reasoning_effort: smallEffort || undefined,
+        fastModel: {
+          provider: session.FastModelProvider,
+          model: session.FastModelID,
+          reasoning_effort: fastEffort || undefined,
         },
       });
     }
@@ -580,18 +580,18 @@ export function collectTurnContent(anyMessageID: string): string {
   return chunks.join("\n\n");
 }
 
-export function sendWithSmallModel(sessionID: string, content: string) {
+export function sendWithFastModel(sessionID: string, content: string) {
   const config = $config.get();
   const sess = $sessions.get().find((s) => s.ID === sessionID);
-  let smallModel: { provider: string; model: string } | undefined;
-  if (sess && sess.SmallModelID) {
-    smallModel = { provider: sess.SmallModelProvider, model: sess.SmallModelID };
+  let fastModel: { provider: string; model: string } | undefined;
+  if (sess && sess.FastModelID) {
+    fastModel = { provider: sess.FastModelProvider, model: sess.FastModelID };
   } else if (config?.models?.small) {
-    smallModel = { provider: config.models.small.Provider, model: config.models.small.Model };
+    fastModel = { provider: config.models.small.Provider, model: config.models.small.Model };
   }
   const payload: Record<string, unknown> = { sessionID, content };
-  if (smallModel) {
-    payload.largeModel = smallModel;
+  if (fastModel) {
+    payload.smartModel = fastModel;
   }
   ws.send("send_message", payload);
 }

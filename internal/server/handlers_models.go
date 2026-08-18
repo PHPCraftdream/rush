@@ -23,26 +23,26 @@ func handleSetSessionModels(ctx context.Context, a *appPkg.App, c *Client, msg W
 		return
 	}
 
-	slog.Info("ws: handleSetSessionModels", "sessionID", p.SessionID, "large", p.LargeModel, "small", p.SmallModel)
+	slog.Info("ws: handleSetSessionModels", "sessionID", p.SessionID, "smart", p.SmartModel, "fast", p.FastModel)
 
 	// p.LargeModel/p.SmallModel being nil means "the caller didn't touch this
 	// slot" (task #461) — pass that straight through to UpdateModels as a nil
 	// *ModelSlotUpdate so the OTHER, untouched slot's session override is
 	// left exactly as it was rather than being silently pinned or cleared.
 	var lp, lm, lre, sp, sm, sre string
-	var largeUpdate, smallUpdate *session.ModelSlotUpdate
-	if p.LargeModel != nil {
-		lp, lm = p.LargeModel.Provider, p.LargeModel.Model
-		lre = p.LargeModel.ReasoningEffort
-		largeUpdate = &session.ModelSlotUpdate{Provider: lp, Model: lm}
+	var smartUpdate, fastUpdate *session.ModelSlotUpdate
+	if p.SmartModel != nil {
+		lp, lm = p.SmartModel.Provider, p.SmartModel.Model
+		lre = p.SmartModel.ReasoningEffort
+		smartUpdate = &session.ModelSlotUpdate{Provider: lp, Model: lm}
 	}
-	if p.SmallModel != nil {
-		sp, sm = p.SmallModel.Provider, p.SmallModel.Model
-		sre = p.SmallModel.ReasoningEffort
-		smallUpdate = &session.ModelSlotUpdate{Provider: sp, Model: sm}
+	if p.FastModel != nil {
+		sp, sm = p.FastModel.Provider, p.FastModel.Model
+		sre = p.FastModel.ReasoningEffort
+		fastUpdate = &session.ModelSlotUpdate{Provider: sp, Model: sm}
 	}
 
-	if err := a.Sessions.UpdateModels(ctx, p.SessionID, largeUpdate, smallUpdate); err != nil {
+	if err := a.Sessions.UpdateModels(ctx, p.SessionID, smartUpdate, fastUpdate); err != nil {
 		c.reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
@@ -96,10 +96,10 @@ func handleSetSessionModels(ctx context.Context, a *appPkg.App, c *Client, msg W
 		if lre == "" || sre == "" {
 			if sess, sessErr := a.Sessions.Get(ctx, p.SessionID); sessErr == nil {
 				if lre == "" {
-					lre = sess.LargeModelReasoningEffort
+					lre = sess.SmartModelReasoningEffort
 				}
 				if sre == "" {
-					sre = sess.SmallModelReasoningEffort
+					sre = sess.FastModelReasoningEffort
 				}
 			}
 		}
@@ -111,13 +111,13 @@ func handleSetSessionModels(ctx context.Context, a *appPkg.App, c *Client, msg W
 	// Record recently used models in the config (persists across restarts)
 	store := a.Store()
 	if store != nil && lp != "" && lm != "" {
-		if err := store.RecordRecentModel(config.ScopeGlobal, config.SelectedModelTypeLarge, config.SelectedModel{Provider: lp, Model: lm}); err != nil {
-			slog.Warn("ws: failed to record recent large model", "err", err)
+		if err := store.RecordRecentModel(config.ScopeGlobal, config.SelectedModelTypeSmart, config.SelectedModel{Provider: lp, Model: lm}); err != nil {
+			slog.Warn("ws: failed to record recent smart model", "err", err)
 		}
 	}
 	if store != nil && sp != "" && sm != "" {
-		if err := store.RecordRecentModel(config.ScopeGlobal, config.SelectedModelTypeSmall, config.SelectedModel{Provider: sp, Model: sm}); err != nil {
-			slog.Warn("ws: failed to record recent small model", "err", err)
+		if err := store.RecordRecentModel(config.ScopeGlobal, config.SelectedModelTypeFast, config.SelectedModel{Provider: sp, Model: sm}); err != nil {
+			slog.Warn("ws: failed to record recent fast model", "err", err)
 		}
 	}
 
@@ -191,8 +191,8 @@ func handleTrackModelUsage(a *appPkg.App, c *Client, msg WSMessage) {
 // scopedModelSlots is the fixed slot set the scoped-models API exposes, in
 // display order. Matches internal/cmd/models_state.go's four slots.
 var scopedModelSlots = []config.SelectedModelType{
-	config.SelectedModelTypeLarge,
-	config.SelectedModelTypeSmall,
+	config.SelectedModelTypeSmart,
+	config.SelectedModelTypeFast,
 	config.SelectedModelTypeWorker,
 	config.SelectedModelTypeReviewer,
 }
@@ -268,8 +268,8 @@ func buildScopedModelsWire(a *appPkg.App) (ScopedModelsWire, error) {
 	}
 
 	return ScopedModelsWire{
-		Large:        build(config.SelectedModelTypeLarge),
-		Small:        build(config.SelectedModelTypeSmall),
+		Smart:        build(config.SelectedModelTypeSmart),
+		Fast:         build(config.SelectedModelTypeFast),
 		Worker:       build(config.SelectedModelTypeWorker),
 		Reviewer:     build(config.SelectedModelTypeReviewer),
 		HasWorkspace: store.HasWorkspaceConfig(),

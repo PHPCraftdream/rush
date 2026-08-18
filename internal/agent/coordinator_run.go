@@ -66,7 +66,7 @@ func (c *coordinator) buildCall(ctx context.Context, sessionID, prompt string, p
 		return SessionAgentCall{}, errors.New("buildCall: pinned is required; caller must resolve session models first")
 	}
 
-	model := pinned.large
+	model := pinned.smart
 
 	maxTokens := model.CatwalkCfg.DefaultMaxTokens
 	if model.ModelCfg.MaxTokens != 0 {
@@ -83,7 +83,7 @@ func (c *coordinator) buildCall(ctx context.Context, sessionID, prompt string, p
 		attachments = filteredAttachments
 	}
 
-	// pinned.providerCfg was resolved from the SAME snapshot pinned.large
+	// pinned.providerCfg was resolved from the SAME snapshot pinned.smart
 	// came from (task #341/P1-1) -- a live c.cfg.Config() read here would
 	// reintroduce the torn-read this whole `pinned` threading exists to
 	// close, since buildCall may run well after resolveSessionModels did
@@ -99,7 +99,7 @@ func (c *coordinator) buildCall(ctx context.Context, sessionID, prompt string, p
 	mergedOptions, temp, topP, topK, freqPenalty, presPenalty := mergeCallOptions(model, providerCfg)
 	sessionSystemPrompt := c.resolveSessionSystemPrompt(ctx, sessionID)
 
-	pinnedLarge := model
+	pinnedSmart := model
 	call := SessionAgentCall{
 		SessionID:            sessionID,
 		Prompt:               prompt,
@@ -112,7 +112,7 @@ func (c *coordinator) buildCall(ctx context.Context, sessionID, prompt string, p
 		FrequencyPenalty:     freqPenalty,
 		PresencePenalty:      presPenalty,
 		SystemPromptOverride: sessionSystemPrompt,
-		LargeModel:           &pinnedLarge,
+		SmartModel:           &pinnedSmart,
 		LogicalCallID:        uuid.New().String(), // P2-1: generate stable ID once
 	}
 	// Pinning matters more here than in runInternal: this call is QUEUED as a
@@ -136,7 +136,7 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 		return nil, errors.New("runInternal: pinned is required; caller must resolve session models first")
 	}
 
-	model := pinned.large
+	model := pinned.smart
 	slog.Debug("Coordinator: running with model", "sessionID", sessionID, "model", model.ModelCfg.Model)
 
 	maxOutputTokens := model.CatwalkCfg.DefaultMaxTokens
@@ -154,7 +154,7 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 		attachments = filteredAttachments
 	}
 
-	// pinned.providerCfg was resolved from the SAME snapshot pinned.large
+	// pinned.providerCfg was resolved from the SAME snapshot pinned.smart
 	// came from (task #341/P1-1) -- reuse it rather than a second, live
 	// c.cfg.Config() read, which would reopen the exact torn-read gap the
 	// 401-rebuild path below already fixed, on the far more common
@@ -202,7 +202,7 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 	// concurrent session's applyModelOverrides landing in between makes the
 	// turn run one model with another model's options. Passing it down keeps
 	// the call internally consistent.
-	pinnedLarge := model
+	pinnedSmart := model
 	agentCall := SessionAgentCall{
 		SessionID:            sessionID,
 		Prompt:               prompt,
@@ -217,12 +217,12 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 		SystemPromptOverride: sessionSystemPrompt,
 		MaxCost:              maxCost,
 		MaxTokens:            maxTokensRunLimit,
-		LargeModel:           &pinnedLarge,
+		SmartModel:           &pinnedSmart,
 		LogicalCallID:        uuid.New().String(), // P2-1: generate stable ID once
 	}
-	// Overrides pin small model / prefix / base prompt too; pin() leaves
+	// Overrides pin fast model / prefix / base prompt too; pin() leaves
 	// LargeModel as set above when pinned is nil, and rewrites it to the same
-	// value when it isn't (model was taken FROM pinned.large).
+	// value when it isn't (model was taken FROM pinned.smart).
 	pinned.pin(&agentCall)
 
 	// trackCall is a pointer to the current call so we can rebuild it after
@@ -243,7 +243,7 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 		}
 
 		// Rebuild the call with the new models, preserving all logical fields.
-		model := pinned.large
+		model := pinned.smart
 		maxOutputTokens := model.CatwalkCfg.DefaultMaxTokens
 		if model.ModelCfg.MaxTokens != 0 {
 			maxOutputTokens = model.ModelCfg.MaxTokens
@@ -267,7 +267,7 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 		// resolveSessionModels above", a reload landing in the gap between
 		// resolveSessionModels returning and this second Snapshot() call
 		// could hand back provider options/credentials from a DIFFERENT
-		// generation than the model pinned.large was built from, i.e.
+		// generation than the model pinned.smart was built from, i.e.
 		// exactly the torn-read this whole rebuildCall path exists to
 		// avoid. pinned.providerCfg removes the second snapshot entirely.
 		providerCfg := pinned.providerCfg
@@ -277,7 +277,7 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 
 		mergedOptions, temp, topP, topK, freqPenalty, presPenalty := mergeCallOptions(model, providerCfg)
 
-		pinnedLarge := model
+		pinnedSmart := model
 		newCall := SessionAgentCall{
 			SessionID:            trackCall.SessionID,
 			Prompt:               trackCall.Prompt,
@@ -292,7 +292,7 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 			SystemPromptOverride: trackCall.SystemPromptOverride,
 			MaxCost:              trackCall.MaxCost,
 			MaxTokens:            trackCall.MaxTokens,
-			LargeModel:           &pinnedLarge,
+			SmartModel:           &pinnedSmart,
 			LogicalCallID:        trackCall.LogicalCallID, // Preserve logical ID
 			ExistingMessageID:    trackCall.ExistingMessageID,
 			InjectID:             trackCall.InjectID,
@@ -550,8 +550,8 @@ func (c *coordinator) shouldRetryTurn(ctx context.Context, sessionID string, err
 }
 
 // RunWithOverrides implements Coordinator. It is like Run but uses the given
-// large/small model overrides instead of the global config defaults.
-func (c *coordinator) RunWithOverrides(ctx context.Context, sessionID, prompt string, large, small *ModelOverride, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
+// smart/fast model overrides instead of the global config defaults.
+func (c *coordinator) RunWithOverrides(ctx context.Context, sessionID, prompt string, smart, fast *ModelOverride, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
 	if err := c.readyWg.Wait(); err != nil {
 		return nil, err
 	}
@@ -559,15 +559,15 @@ func (c *coordinator) RunWithOverrides(ctx context.Context, sessionID, prompt st
 	// Carry session-level reasoning effort into the overrides so that
 	// applyModelOverrides restores it after resetting the model config.
 	if sess, err := c.sessions.Get(ctx, sessionID); err == nil {
-		if large != nil && large.ReasoningEffort == "" && sess.LargeModelReasoningEffort != "" {
-			large.ReasoningEffort = sess.LargeModelReasoningEffort
+		if smart != nil && smart.ReasoningEffort == "" && sess.SmartModelReasoningEffort != "" {
+			smart.ReasoningEffort = sess.SmartModelReasoningEffort
 		}
-		if small != nil && small.ReasoningEffort == "" && sess.SmallModelReasoningEffort != "" {
-			small.ReasoningEffort = sess.SmallModelReasoningEffort
+		if fast != nil && fast.ReasoningEffort == "" && sess.FastModelReasoningEffort != "" {
+			fast.ReasoningEffort = sess.FastModelReasoningEffort
 		}
 	}
 
-	pinned, err := c.applyModelOverrides(ctx, large, small)
+	pinned, err := c.applyModelOverrides(ctx, smart, fast)
 	if err != nil {
 		return nil, err
 	}

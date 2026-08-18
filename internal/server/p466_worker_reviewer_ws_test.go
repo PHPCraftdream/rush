@@ -8,9 +8,9 @@ import (
 )
 
 // Task #466 — set_session_models's worker/reviewer plumbing. Mirrors
-// p461_model_slot_test.go's partial-update coverage for large/small: nil
+// p461_model_slot_test.go's partial-update coverage for smart/fast: nil
 // means "don't touch", and setting one of worker/reviewer must not touch
-// the large/small slots (and vice versa).
+// the smart/fast slots (and vice versa).
 
 func TestSetSessionModels_SetsWorkerSlot(t *testing.T) {
 	ctx := t.Context()
@@ -31,24 +31,24 @@ func TestSetSessionModels_SetsWorkerSlot(t *testing.T) {
 	require.Equal(t, "worker-provider", updated.WorkerModelProvider)
 	require.Equal(t, "worker-model", updated.WorkerModelID)
 	// Untouched slots must stay unset.
-	require.Empty(t, updated.LargeModelID)
-	require.Empty(t, updated.SmallModelID)
+	require.Empty(t, updated.SmartModelID)
+	require.Empty(t, updated.FastModelID)
 	require.Empty(t, updated.ReviewerModelID)
 }
 
-func TestSetSessionModels_WorkerUpdateDoesNotTouchLargeSmall(t *testing.T) {
+func TestSetSessionModels_WorkerUpdateDoesNotTouchSmartFast(t *testing.T) {
 	ctx := t.Context()
 	a := newAttachmentsTestApp(t, t.TempDir(), t.TempDir())
 
 	sess, err := a.Sessions.Create(ctx, "p466-worker-vs-large")
 	require.NoError(t, err)
 
-	largePayload, err := json.Marshal(SetSessionModelsPayload{
+	smartPayload, err := json.Marshal(SetSessionModelsPayload{
 		SessionID:  sess.ID,
-		LargeModel: &ModelOverrideWire{Provider: "large-provider", Model: "large-model"},
+		SmartModel: &ModelOverrideWire{Provider: "smart-provider", Model: "smart-model"},
 	})
 	require.NoError(t, err)
-	handleSetSessionModels(ctx, a, newTestClient(), WSMessage{ID: "c1", Type: CmdSetSessionModels, Payload: largePayload})
+	handleSetSessionModels(ctx, a, newTestClient(), WSMessage{ID: "c1", Type: CmdSetSessionModels, Payload: smartPayload})
 
 	workerPayload, err := json.Marshal(SetSessionModelsPayload{
 		SessionID:   sess.ID,
@@ -59,8 +59,8 @@ func TestSetSessionModels_WorkerUpdateDoesNotTouchLargeSmall(t *testing.T) {
 
 	updated, err := a.Sessions.Get(ctx, sess.ID)
 	require.NoError(t, err)
-	require.Equal(t, "large-provider", updated.LargeModelProvider, "setting worker must not clobber the earlier large override")
-	require.Equal(t, "large-model", updated.LargeModelID)
+	require.Equal(t, "smart-provider", updated.SmartModelProvider, "setting worker must not clobber the earlier large override")
+	require.Equal(t, "smart-model", updated.SmartModelID)
 	require.Equal(t, "worker-provider", updated.WorkerModelProvider)
 	require.Equal(t, "worker-model", updated.WorkerModelID)
 }

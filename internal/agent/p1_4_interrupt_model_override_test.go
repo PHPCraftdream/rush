@@ -23,12 +23,12 @@ func TestBuildCall_RequiresPinned(t *testing.T) {
 		ID:   providerID,
 		Type: "openai",
 		Models: []catwalk.Model{
-			{ID: "test-large-model", Name: "Test Large", DefaultMaxTokens: 4096},
+			{ID: "test-smart-model", Name: "Test Smart", DefaultMaxTokens: 4096},
 		},
 	})
-	cfg.Config().Models[config.SelectedModelTypeLarge] = config.SelectedModel{
+	cfg.Config().Models[config.SelectedModelTypeSmart] = config.SelectedModel{
 		Provider: providerID,
-		Model:    "test-large-model",
+		Model:    "test-smart-model",
 	}
 
 	coord := &coordinator{

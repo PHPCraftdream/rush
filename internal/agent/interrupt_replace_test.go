@@ -84,7 +84,7 @@ func TestInterruptAndReplace_ReplacementReachesNextTurn_P0_2(t *testing.T) {
 	lm, err := provider.LanguageModel(context.Background(), "probe")
 	require.NoError(t, err)
 
-	// Separate, uncounted server for the small model: turn 1 always fires
+	// Separate, uncounted server for the fast model: turn 1 always fires
 	// generateTitle in the background on a session's first turn, and that
 	// traffic must not pollute `calls`.
 	titleSrv := singleTurnSSEServer(nil)
@@ -98,8 +98,8 @@ func TestInterruptAndReplace_ReplacementReachesNextTurn_P0_2(t *testing.T) {
 	require.NoError(t, err)
 
 	agentIface := NewSessionAgent(SessionAgentOptions{
-		LargeModel:           Model{Model: lm, CatwalkCfg: catwalk.Model{ContextWindow: 200000, DefaultMaxTokens: 1000}},
-		SmallModel:           Model{Model: titleLM, CatwalkCfg: catwalk.Model{ContextWindow: 200000, DefaultMaxTokens: 1000}},
+		SmartModel:           Model{Model: lm, CatwalkCfg: catwalk.Model{ContextWindow: 200000, DefaultMaxTokens: 1000}},
+		FastModel:            Model{Model: titleLM, CatwalkCfg: catwalk.Model{ContextWindow: 200000, DefaultMaxTokens: 1000}},
 		SystemPrompt:         "you are a probe",
 		IsYolo:               true,
 		Sessions:             env.sessions,

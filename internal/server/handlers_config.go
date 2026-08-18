@@ -96,11 +96,11 @@ func buildConfigWire(a *appPkg.App) (ConfigWire, bool) {
 		wire.KeepAliveEnabled = *cfg.Options.KeepAliveEnabled
 	}
 
-	for _, m := range cfg.RecentModels[config.SelectedModelTypeLarge] {
-		wire.RecentLargeModels = append(wire.RecentLargeModels, ModelEntryWire{Provider: m.Provider, Model: m.Model})
+	for _, m := range cfg.RecentModels[config.SelectedModelTypeSmart] {
+		wire.RecentSmartModels = append(wire.RecentSmartModels, ModelEntryWire{Provider: m.Provider, Model: m.Model})
 	}
-	for _, m := range cfg.RecentModels[config.SelectedModelTypeSmall] {
-		wire.RecentSmallModels = append(wire.RecentSmallModels, ModelEntryWire{Provider: m.Provider, Model: m.Model})
+	for _, m := range cfg.RecentModels[config.SelectedModelTypeFast] {
+		wire.RecentFastModels = append(wire.RecentFastModels, ModelEntryWire{Provider: m.Provider, Model: m.Model})
 	}
 
 	wire.Version = version.FullVersion()

@@ -299,7 +299,7 @@ type Querier interface {
 	// Per-model token/cache/cost totals across ALL sessions in a time window.
 	//
 	// Grouped by the model that actually PRODUCED each message, not by the
-	// session's current model. `sessions cost` groups by sessions.large_model_id,
+	// session's current model. `sessions cost` groups by sessions.smart_model_id,
 	// so a session that switched models attributes every token to whichever model
 	// it happened to end on; this does not.
 	//
@@ -352,7 +352,7 @@ type Querier interface {
 	// untouched (COALESCE falls back to the current column value); a non-NULL
 	// arg (including an explicit empty string) overwrites it. This lets callers
 	// distinguish "don't touch this slot" from "clear this slot back to
-	// inheriting the folder/system default" (large_model_id = '' is the existing
+	// inheriting the folder/system default" (smart_model_id = '' is the existing
 	// "no override" convention the app layer already reads via != "").
 	UpdateSessionModels(ctx context.Context, arg UpdateSessionModelsParams) error
 	UpdateSessionReasoningEffort(ctx context.Context, arg UpdateSessionReasoningEffortParams) error

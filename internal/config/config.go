@@ -67,8 +67,8 @@ func (s SelectedModelType) String() string {
 }
 
 const (
-	SelectedModelTypeLarge SelectedModelType = "large"
-	SelectedModelTypeSmall SelectedModelType = "small"
+	SelectedModelTypeSmart SelectedModelType = "smart"
+	SelectedModelTypeFast  SelectedModelType = "fast"
 	// SelectedModelTypeWorker is a cheap model slot used for manual
 	// sub-task delegation (e.g. by an orchestrator dispatching work to a
 	// worker agent). Never selected automatically.
@@ -88,8 +88,8 @@ const (
 // `crush models preset use <name>`. Empty Large / Small means "leave the
 // current selection in that slot alone".
 type ModelPreset struct {
-	Large *SelectedModel `json:"large,omitempty" jsonschema:"description=Large/smart slot for this preset"`
-	Small *SelectedModel `json:"small,omitempty" jsonschema:"description=Small/fast slot for this preset"`
+	Smart *SelectedModel `json:"smart,omitempty" jsonschema:"description=Smart (strong) slot for this preset"`
+	Fast  *SelectedModel `json:"fast,omitempty" jsonschema:"description=Fast (cheap) slot for this preset"`
 }
 
 type SelectedModel struct {
@@ -601,7 +601,7 @@ type Agent struct {
 	// This is the id of the system prompt used by the agent
 	Disabled bool `json:"disabled,omitempty"`
 
-	Model SelectedModelType `json:"model" jsonschema:"required,description=The model type to use for this agent,enum=large,enum=small,enum=worker,enum=reviewer,default=large"`
+	Model SelectedModelType `json:"model" jsonschema:"required,description=The model type to use for this agent,enum=smart,enum=fast,enum=worker,enum=reviewer,default=smart"`
 
 	// The available tools for the agent
 	//  if this is nil, all tools are available
@@ -678,9 +678,9 @@ func (h *HookConfig) TimeoutDuration() time.Duration {
 type Config struct {
 	Schema string `json:"$schema,omitempty"`
 
-	// Supported keys: large (aka smart, default), small (aka fast), worker,
-	// reviewer. See SelectedModelType.
-	Models map[SelectedModelType]SelectedModel `json:"models,omitempty" jsonschema:"description=Model configurations for different model types (large\\, small\\, worker\\, reviewer),example={\"large\":{\"model\":\"gpt-4o\",\"provider\":\"openai\"}}"`
+	// Supported keys: smart (the default), fast, worker, reviewer.
+	// See SelectedModelType.
+	Models map[SelectedModelType]SelectedModel `json:"models,omitempty" jsonschema:"description=Model configurations for different model types (smart\\, fast\\, worker\\, reviewer),example={\"smart\":{\"model\":\"gpt-4o\",\"provider\":\"openai\"}}"`
 
 	// Recently used models stored in the data directory config.
 	RecentModels map[SelectedModelType][]SelectedModel `json:"recent_models,omitempty" jsonschema:"-"`
@@ -752,16 +752,16 @@ func (c *Config) GetModelByType(modelType SelectedModelType) *catwalk.Model {
 	return c.GetModel(model.Provider, model.Model)
 }
 
-func (c *Config) LargeModel() *catwalk.Model {
-	model, ok := c.Models[SelectedModelTypeLarge]
+func (c *Config) SmartModel() *catwalk.Model {
+	model, ok := c.Models[SelectedModelTypeSmart]
 	if !ok {
 		return nil
 	}
 	return c.GetModel(model.Provider, model.Model)
 }
 
-func (c *Config) SmallModel() *catwalk.Model {
-	model, ok := c.Models[SelectedModelTypeSmall]
+func (c *Config) FastModel() *catwalk.Model {
+	model, ok := c.Models[SelectedModelTypeFast]
 	if !ok {
 		return nil
 	}
@@ -838,7 +838,7 @@ func (c *Config) SetupAgents() {
 			ID:           AgentCoder,
 			Name:         "Coder",
 			Description:  "An agent that helps with executing coding tasks.",
-			Model:        SelectedModelTypeLarge,
+			Model:        SelectedModelTypeSmart,
 			ContextPaths: c.Options.ContextPaths,
 			AllowedTools: allowedTools,
 		},
@@ -847,7 +847,7 @@ func (c *Config) SetupAgents() {
 			ID:           AgentTask,
 			Name:         "Task",
 			Description:  "An agent that helps with searching for context and finding implementation details.",
-			Model:        SelectedModelTypeLarge,
+			Model:        SelectedModelTypeSmart,
 			ContextPaths: c.Options.ContextPaths,
 			AllowedTools: resolveReadOnlyTools(allowedTools),
 			// NO MCPs or LSPs by default

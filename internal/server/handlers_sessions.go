@@ -35,7 +35,7 @@ func handleCreateSession(ctx context.Context, a *appPkg.App, c *Client, msg WSMe
 	// Web sessions never prompt for permissions — arm auto-approve at birth.
 	autoApproveWebSession(a, sess.ID)
 
-	// Deliberately do NOT seed the new session's large/small model columns
+	// Deliberately do NOT seed the new session's smart/fast model columns
 	// from config here. A session is created with no override
 	// (LargeModelID/SmallModelID == "") so it INHERITS the system/folder
 	// default and keeps following it if that default changes later —

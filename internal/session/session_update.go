@@ -197,16 +197,16 @@ func (s *service) SetTodos(ctx context.Context, sessionID string, todos []Todo, 
 // the OTHER slot's override back to unset — before this signature, every
 // caller had to pass all four strings, so "leave the other slot alone" and
 // "no override" were indistinguishable at this layer, and the web UI ended
-// up pinning both large and small on every single-slot switch (task #461).
-func (s *service) UpdateModels(ctx context.Context, sessionID string, large, small *ModelSlotUpdate) error {
+// up pinning both smart and small on every single-slot switch (task #461).
+func (s *service) UpdateModels(ctx context.Context, sessionID string, smart, fast *ModelSlotUpdate) error {
 	params := db.UpdateSessionModelsParams{ID: sessionID}
-	if large != nil {
-		params.LargeModelProvider = sql.NullString{String: large.Provider, Valid: true}
-		params.LargeModelID = sql.NullString{String: large.Model, Valid: true}
+	if smart != nil {
+		params.SmartModelProvider = sql.NullString{String: smart.Provider, Valid: true}
+		params.SmartModelID = sql.NullString{String: smart.Model, Valid: true}
 	}
-	if small != nil {
-		params.SmallModelProvider = sql.NullString{String: small.Provider, Valid: true}
-		params.SmallModelID = sql.NullString{String: small.Model, Valid: true}
+	if fast != nil {
+		params.FastModelProvider = sql.NullString{String: fast.Provider, Valid: true}
+		params.FastModelID = sql.NullString{String: fast.Model, Valid: true}
 	}
 	err := s.q.UpdateSessionModels(ctx, params)
 	if err != nil {
@@ -244,7 +244,7 @@ func (s *service) UpdateWorkerReviewerModels(ctx context.Context, sessionID stri
 
 // UpdateWorkerReviewerReasoningEffort is UpdateReasoningEffort's sibling for
 // the worker/reviewer slots — same always-touch semantics (an empty string
-// clears the effort field) as the large/small original.
+// clears the effort field) as the smart/fast original.
 func (s *service) UpdateWorkerReviewerReasoningEffort(ctx context.Context, sessionID, workerEffort, reviewerEffort string) error {
 	err := s.q.UpdateSessionWorkerReviewerReasoningEffort(ctx, db.UpdateSessionWorkerReviewerReasoningEffortParams{
 		ID:                           sessionID,
@@ -260,12 +260,12 @@ func (s *service) UpdateWorkerReviewerReasoningEffort(ctx context.Context, sessi
 	return nil
 }
 
-// UpdateReasoningEffort updates the reasoning effort for large and small models.
-func (s *service) UpdateReasoningEffort(ctx context.Context, sessionID, largeEffort, smallEffort string) error {
+// UpdateReasoningEffort updates the reasoning effort for large and fast models.
+func (s *service) UpdateReasoningEffort(ctx context.Context, sessionID, smartEffort, fastEffort string) error {
 	err := s.q.UpdateSessionReasoningEffort(ctx, db.UpdateSessionReasoningEffortParams{
 		ID:                        sessionID,
-		LargeModelReasoningEffort: sql.NullString{String: largeEffort, Valid: largeEffort != ""},
-		SmallModelReasoningEffort: sql.NullString{String: smallEffort, Valid: smallEffort != ""},
+		SmartModelReasoningEffort: sql.NullString{String: smartEffort, Valid: smartEffort != ""},
+		FastModelReasoningEffort:  sql.NullString{String: fastEffort, Valid: fastEffort != ""},
 	})
 	if err != nil {
 		return err

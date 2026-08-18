@@ -51,8 +51,8 @@ type builderFunc func(t *testing.T, r *vcr.Recorder) (fantasy.LanguageModel, err
 
 type modelPair struct {
 	name       string
-	largeModel builderFunc
-	smallModel builderFunc
+	smartModel builderFunc
+	fastModel  builderFunc
 }
 
 func hyperBuilder(model string) builderFunc {
@@ -105,24 +105,24 @@ func testEnv(t *testing.T) fakeEnv {
 	}
 }
 
-func testSessionAgent(env fakeEnv, large, small fantasy.LanguageModel, systemPrompt string, tools ...fantasy.AgentTool) SessionAgent {
-	largeModel := Model{
-		Model: large,
+func testSessionAgent(env fakeEnv, smart, fast fantasy.LanguageModel, systemPrompt string, tools ...fantasy.AgentTool) SessionAgent {
+	smartModel := Model{
+		Model: smart,
 		CatwalkCfg: catwalk.Model{
 			ContextWindow:    200000,
 			DefaultMaxTokens: 10000,
 		},
 	}
-	smallModel := Model{
-		Model: small,
+	fastModel := Model{
+		Model: fast,
 		CatwalkCfg: catwalk.Model{
 			ContextWindow:    200000,
 			DefaultMaxTokens: 10000,
 		},
 	}
 	agent := NewSessionAgent(SessionAgentOptions{
-		LargeModel:   largeModel,
-		SmallModel:   smallModel,
+		SmartModel:   smartModel,
+		FastModel:    fastModel,
 		SystemPrompt: systemPrompt,
 		IsYolo:       true,
 		Sessions:     env.sessions,
@@ -132,7 +132,7 @@ func testSessionAgent(env fakeEnv, large, small fantasy.LanguageModel, systemPro
 	return agent
 }
 
-func coderAgent(r *vcr.Recorder, env fakeEnv, large, small fantasy.LanguageModel) (SessionAgent, error) {
+func coderAgent(r *vcr.Recorder, env fakeEnv, smart, fast fantasy.LanguageModel) (SessionAgent, error) {
 	fixedTime := func() time.Time {
 		t, _ := time.Parse("1/2/2006", "1/1/2025")
 		return t
@@ -163,14 +163,14 @@ func coderAgent(r *vcr.Recorder, env fakeEnv, large, small fantasy.LanguageModel
 	cfg.Config().Options.ContextPaths = nil
 	cfg.Config().Options.GlobalContextPaths = nil
 
-	systemPrompt, err := prompt.Build(context.TODO(), large.Provider(), large.Model(), cfg, false)
+	systemPrompt, err := prompt.Build(context.TODO(), smart.Provider(), smart.Model(), cfg, false)
 	if err != nil {
 		return nil, err
 	}
 
 	// Get the model name for the bash tool
-	modelName := large.Model() // fallback to ID if Name not available
-	if model := cfg.Config().GetModel(large.Provider(), large.Model()); model != nil {
+	modelName := smart.Model() // fallback to ID if Name not available
+	if model := cfg.Config().GetModel(smart.Provider(), smart.Model()); model != nil {
 		modelName = model.Name
 	}
 
@@ -188,7 +188,7 @@ func coderAgent(r *vcr.Recorder, env fakeEnv, large, small fantasy.LanguageModel
 		tools.NewWriteTool(env.permissions, env.history, *env.filetracker, env.workingDir),
 	}
 
-	return testSessionAgent(env, large, small, systemPrompt, allTools...), nil
+	return testSessionAgent(env, smart, fast, systemPrompt, allTools...), nil
 }
 
 // createSimpleGoProject creates a simple Go project structure in the given directory.

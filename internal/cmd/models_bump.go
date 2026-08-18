@@ -24,7 +24,7 @@ import (
 )
 
 var modelsBumpCmd = &cobra.Command{
-	Use:   "bump <large|small|worker|reviewer> <up|down>",
+	Use:   "bump <smart|fast|worker|reviewer> <up|down>",
 	Short: "Step a role's reasoning effort up or down by one level",
 	Long: `Step a role's effort one level up or down and print the before/after
 value. Unlike ` + "`crush models efforts [model]`" + ` (which only shows what levels
@@ -43,7 +43,7 @@ crush models bump reviewer up    # high -> max
 crush models bump reviewer up    # already at max, prints a message, exits 0
 
 crush models bump worker down    # one level down
-crush models bump --local large down   # workspace-scoped
+crush models bump --local smart down   # workspace-scoped
 
 crush models state   # see the full picture afterward
   `,
@@ -174,16 +174,16 @@ crush models state   # see the full picture afterward
 // parseBumpRole validates and maps the role positional to a SelectedModelType.
 func parseBumpRole(s string) (config.SelectedModelType, error) {
 	switch s {
-	case "large":
-		return config.SelectedModelTypeLarge, nil
-	case "small":
-		return config.SelectedModelTypeSmall, nil
+	case "smart":
+		return config.SelectedModelTypeSmart, nil
+	case "fast":
+		return config.SelectedModelTypeFast, nil
 	case "worker":
 		return config.SelectedModelTypeWorker, nil
 	case "reviewer":
 		return config.SelectedModelTypeReviewer, nil
 	default:
-		return "", fmt.Errorf("unexpected role %q — expected large|small|worker|reviewer", s)
+		return "", fmt.Errorf("unexpected role %q — expected smart|fast|worker|reviewer", s)
 	}
 }
 

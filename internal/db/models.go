@@ -103,14 +103,14 @@ type Session struct {
 	CreatedAt                    int64          `json:"created_at"`
 	SummaryMessageID             sql.NullString `json:"summary_message_id"`
 	Todos                        sql.NullString `json:"todos"`
-	LargeModelProvider           sql.NullString `json:"large_model_provider"`
-	LargeModelID                 sql.NullString `json:"large_model_id"`
-	SmallModelProvider           sql.NullString `json:"small_model_provider"`
-	SmallModelID                 sql.NullString `json:"small_model_id"`
+	SmartModelProvider           sql.NullString `json:"smart_model_provider"`
+	SmartModelID                 sql.NullString `json:"smart_model_id"`
+	FastModelProvider            sql.NullString `json:"fast_model_provider"`
+	FastModelID                  sql.NullString `json:"fast_model_id"`
 	SystemPrompt                 string         `json:"system_prompt"`
 	YoloEnabled                  int64          `json:"yolo_enabled"`
-	LargeModelReasoningEffort    sql.NullString `json:"large_model_reasoning_effort"`
-	SmallModelReasoningEffort    sql.NullString `json:"small_model_reasoning_effort"`
+	SmartModelReasoningEffort    sql.NullString `json:"smart_model_reasoning_effort"`
+	FastModelReasoningEffort     sql.NullString `json:"fast_model_reasoning_effort"`
 	CancelRequested              int64          `json:"cancel_requested"`
 	EndedReason                  string         `json:"ended_reason"`
 	BudgetMaxCost                float64        `json:"budget_max_cost"`

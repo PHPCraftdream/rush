@@ -1,6 +1,6 @@
 // Provider and model resolution: merging catwalk's known providers with
 // user config (plus local CLI providers and custom-provider model
-// discovery), and computing the effective large/small model selection
+// discovery), and computing the effective smart/fast model selection
 // written back into cfg.Models.
 package config
 
@@ -482,10 +482,10 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, bas
 	return nil
 }
 
-func (c *Config) defaultModelSelection(knownProviders []catwalk.Provider) (largeModel SelectedModel, smallModel SelectedModel, err error) {
+func (c *Config) defaultModelSelection(knownProviders []catwalk.Provider) (smartModel SelectedModel, fastModel SelectedModel, err error) {
 	if len(knownProviders) == 0 && c.Providers.Len() == 0 {
 		err = fmt.Errorf("no providers configured, please configure at least one provider")
-		return largeModel, smallModel, err
+		return smartModel, fastModel, err
 	}
 
 	// Use the first provider enabled based on the known providers order
@@ -495,38 +495,38 @@ func (c *Config) defaultModelSelection(knownProviders []catwalk.Provider) (large
 		if !ok || providerConfig.Disable {
 			continue
 		}
-		defaultLargeModel := c.GetModel(string(p.ID), p.DefaultLargeModelID)
-		if defaultLargeModel == nil {
-			slog.Warn("Default large model not found for provider, falling back to first available",
+		defaultSmartModel := c.GetModel(string(p.ID), p.DefaultLargeModelID)
+		if defaultSmartModel == nil {
+			slog.Warn("Default smart model not found for provider, falling back to first available",
 				"model", p.DefaultLargeModelID, "provider", p.ID)
 			if len(providerConfig.Models) == 0 {
-				return largeModel, smallModel, fmt.Errorf("default large model %s not found for provider %s", p.DefaultLargeModelID, p.ID)
+				return smartModel, fastModel, fmt.Errorf("default smart model %s not found for provider %s", p.DefaultLargeModelID, p.ID)
 			}
-			defaultLargeModel = &providerConfig.Models[0]
+			defaultSmartModel = &providerConfig.Models[0]
 		}
-		largeModel = SelectedModel{
+		smartModel = SelectedModel{
 			Provider:        string(p.ID),
-			Model:           defaultLargeModel.ID,
-			MaxTokens:       defaultLargeModel.DefaultMaxTokens,
-			ReasoningEffort: defaultLargeModel.DefaultReasoningEffort,
+			Model:           defaultSmartModel.ID,
+			MaxTokens:       defaultSmartModel.DefaultMaxTokens,
+			ReasoningEffort: defaultSmartModel.DefaultReasoningEffort,
 		}
 
-		defaultSmallModel := c.GetModel(string(p.ID), p.DefaultSmallModelID)
-		if defaultSmallModel == nil {
-			slog.Warn("Default small model not found for provider, falling back to first available",
+		defaultFastModel := c.GetModel(string(p.ID), p.DefaultSmallModelID)
+		if defaultFastModel == nil {
+			slog.Warn("Default fast model not found for provider, falling back to first available",
 				"model", p.DefaultSmallModelID, "provider", p.ID)
 			if len(providerConfig.Models) == 0 {
-				return largeModel, smallModel, fmt.Errorf("default small model %s not found for provider %s", p.DefaultSmallModelID, p.ID)
+				return smartModel, fastModel, fmt.Errorf("default fast model %s not found for provider %s", p.DefaultSmallModelID, p.ID)
 			}
-			defaultSmallModel = &providerConfig.Models[0]
+			defaultFastModel = &providerConfig.Models[0]
 		}
-		smallModel = SelectedModel{
+		fastModel = SelectedModel{
 			Provider:        string(p.ID),
-			Model:           defaultSmallModel.ID,
-			MaxTokens:       defaultSmallModel.DefaultMaxTokens,
-			ReasoningEffort: defaultSmallModel.DefaultReasoningEffort,
+			Model:           defaultFastModel.ID,
+			MaxTokens:       defaultFastModel.DefaultMaxTokens,
+			ReasoningEffort: defaultFastModel.DefaultReasoningEffort,
 		}
-		return largeModel, smallModel, err
+		return smartModel, fastModel, err
 	}
 
 	enabledProviders := c.EnabledProviders()
@@ -536,30 +536,30 @@ func (c *Config) defaultModelSelection(knownProviders []catwalk.Provider) (large
 
 	if len(enabledProviders) == 0 {
 		err = fmt.Errorf("no providers configured, please configure at least one provider")
-		return largeModel, smallModel, err
+		return smartModel, fastModel, err
 	}
 
 	providerConfig := enabledProviders[0]
 	if len(providerConfig.Models) == 0 {
 		err = fmt.Errorf("provider %s has no models configured", providerConfig.ID)
-		return largeModel, smallModel, err
+		return smartModel, fastModel, err
 	}
-	defaultLargeModel := c.GetModel(providerConfig.ID, providerConfig.Models[0].ID)
-	largeModel = SelectedModel{
+	defaultSmartModel := c.GetModel(providerConfig.ID, providerConfig.Models[0].ID)
+	smartModel = SelectedModel{
 		Provider:  providerConfig.ID,
-		Model:     defaultLargeModel.ID,
-		MaxTokens: defaultLargeModel.DefaultMaxTokens,
+		Model:     defaultSmartModel.ID,
+		MaxTokens: defaultSmartModel.DefaultMaxTokens,
 	}
-	defaultSmallModel := c.GetModel(providerConfig.ID, providerConfig.Models[0].ID)
-	smallModel = SelectedModel{
+	defaultFastModel := c.GetModel(providerConfig.ID, providerConfig.Models[0].ID)
+	fastModel = SelectedModel{
 		Provider:  providerConfig.ID,
-		Model:     defaultSmallModel.ID,
-		MaxTokens: defaultSmallModel.DefaultMaxTokens,
+		Model:     defaultFastModel.ID,
+		MaxTokens: defaultFastModel.DefaultMaxTokens,
 	}
-	return largeModel, smallModel, err
+	return smartModel, fastModel, err
 }
 
-// configureSelectedModels computes the effective large/small model
+// configureSelectedModels computes the effective smart/fast model
 // selection for cfg and writes the result back into cfg.Models. store is
 // only consulted when persist is true (the initial Load path), to persist
 // a corrected selection back to disk via UpdatePreferredModel — it is
@@ -569,126 +569,126 @@ func (c *Config) defaultModelSelection(knownProviders []catwalk.Provider) (large
 // persistence side effects (disk write + eventual reload) are used.
 func configureSelectedModels(store *ConfigStore, cfg *Config, knownProviders []catwalk.Provider, persist bool) error {
 	c := cfg
-	defaultLarge, defaultSmall, err := c.defaultModelSelection(knownProviders)
+	defaultSmart, defaultFast, err := c.defaultModelSelection(knownProviders)
 	if err != nil {
 		return fmt.Errorf("failed to select default models: %w", err)
 	}
-	large, small := defaultLarge, defaultSmall
+	smart, fast := defaultSmart, defaultFast
 
-	largeModelSelected, largeModelConfigured := c.Models[SelectedModelTypeLarge]
-	if largeModelConfigured {
-		if largeModelSelected.Model != "" {
-			large.Model = largeModelSelected.Model
+	smartModelSelected, smartModelConfigured := c.Models[SelectedModelTypeSmart]
+	if smartModelConfigured {
+		if smartModelSelected.Model != "" {
+			smart.Model = smartModelSelected.Model
 		}
-		if largeModelSelected.Provider != "" {
-			large.Provider = largeModelSelected.Provider
+		if smartModelSelected.Provider != "" {
+			smart.Provider = smartModelSelected.Provider
 		}
-		model := c.GetModel(large.Provider, large.Model)
+		model := c.GetModel(smart.Provider, smart.Model)
 		if model == nil {
-			large = defaultLarge
+			smart = defaultSmart
 			if persist {
 				// Use the Locked variant because Load (the only caller with
 				// persist=true) already holds publishMu. The public
 				// UpdatePreferredModel would deadlock re-acquiring it.
-				if err := store.updatePreferredModelLocked(ScopeGlobal, SelectedModelTypeLarge, large); err != nil {
-					return fmt.Errorf("failed to update preferred large model: %w", err)
+				if err := store.updatePreferredModelLocked(ScopeGlobal, SelectedModelTypeSmart, smart); err != nil {
+					return fmt.Errorf("failed to update preferred smart model: %w", err)
 				}
 			}
 		} else {
-			if largeModelSelected.MaxTokens > 0 {
-				large.MaxTokens = largeModelSelected.MaxTokens
+			if smartModelSelected.MaxTokens > 0 {
+				smart.MaxTokens = smartModelSelected.MaxTokens
 			} else {
-				large.MaxTokens = model.DefaultMaxTokens
+				smart.MaxTokens = model.DefaultMaxTokens
 			}
-			if largeModelSelected.ReasoningEffort != "" {
-				large.ReasoningEffort = largeModelSelected.ReasoningEffort
+			if smartModelSelected.ReasoningEffort != "" {
+				smart.ReasoningEffort = smartModelSelected.ReasoningEffort
 			} else {
-				large.ReasoningEffort = model.DefaultReasoningEffort
+				smart.ReasoningEffort = model.DefaultReasoningEffort
 			}
-			large.Think = largeModelSelected.Think
-			if largeModelSelected.Temperature != nil {
-				large.Temperature = largeModelSelected.Temperature
+			smart.Think = smartModelSelected.Think
+			if smartModelSelected.Temperature != nil {
+				smart.Temperature = smartModelSelected.Temperature
 			}
-			if largeModelSelected.TopP != nil {
-				large.TopP = largeModelSelected.TopP
+			if smartModelSelected.TopP != nil {
+				smart.TopP = smartModelSelected.TopP
 			}
-			if largeModelSelected.TopK != nil {
-				large.TopK = largeModelSelected.TopK
+			if smartModelSelected.TopK != nil {
+				smart.TopK = smartModelSelected.TopK
 			}
-			if largeModelSelected.FrequencyPenalty != nil {
-				large.FrequencyPenalty = largeModelSelected.FrequencyPenalty
+			if smartModelSelected.FrequencyPenalty != nil {
+				smart.FrequencyPenalty = smartModelSelected.FrequencyPenalty
 			}
-			if largeModelSelected.PresencePenalty != nil {
-				large.PresencePenalty = largeModelSelected.PresencePenalty
+			if smartModelSelected.PresencePenalty != nil {
+				smart.PresencePenalty = smartModelSelected.PresencePenalty
 			}
 		}
 	}
-	smallModelSelected, smallModelConfigured := c.Models[SelectedModelTypeSmall]
-	if smallModelConfigured {
-		if smallModelSelected.Model != "" {
-			small.Model = smallModelSelected.Model
+	fastModelSelected, fastModelConfigured := c.Models[SelectedModelTypeFast]
+	if fastModelConfigured {
+		if fastModelSelected.Model != "" {
+			fast.Model = fastModelSelected.Model
 		}
-		if smallModelSelected.Provider != "" {
-			small.Provider = smallModelSelected.Provider
+		if fastModelSelected.Provider != "" {
+			fast.Provider = fastModelSelected.Provider
 		}
 
-		model := c.GetModel(small.Provider, small.Model)
+		model := c.GetModel(fast.Provider, fast.Model)
 		if model == nil {
-			small = defaultSmall
+			fast = defaultFast
 			if persist {
-				if err := store.updatePreferredModelLocked(ScopeGlobal, SelectedModelTypeSmall, small); err != nil {
-					return fmt.Errorf("failed to update preferred small model: %w", err)
+				if err := store.updatePreferredModelLocked(ScopeGlobal, SelectedModelTypeFast, fast); err != nil {
+					return fmt.Errorf("failed to update preferred fast model: %w", err)
 				}
 			}
 		} else {
-			if smallModelSelected.MaxTokens > 0 {
-				small.MaxTokens = smallModelSelected.MaxTokens
+			if fastModelSelected.MaxTokens > 0 {
+				fast.MaxTokens = fastModelSelected.MaxTokens
 			} else {
-				small.MaxTokens = model.DefaultMaxTokens
+				fast.MaxTokens = model.DefaultMaxTokens
 			}
-			if smallModelSelected.ReasoningEffort != "" {
-				small.ReasoningEffort = smallModelSelected.ReasoningEffort
+			if fastModelSelected.ReasoningEffort != "" {
+				fast.ReasoningEffort = fastModelSelected.ReasoningEffort
 			} else {
-				small.ReasoningEffort = model.DefaultReasoningEffort
+				fast.ReasoningEffort = model.DefaultReasoningEffort
 			}
-			if smallModelSelected.Temperature != nil {
-				small.Temperature = smallModelSelected.Temperature
+			if fastModelSelected.Temperature != nil {
+				fast.Temperature = fastModelSelected.Temperature
 			}
-			if smallModelSelected.TopP != nil {
-				small.TopP = smallModelSelected.TopP
+			if fastModelSelected.TopP != nil {
+				fast.TopP = fastModelSelected.TopP
 			}
-			if smallModelSelected.TopK != nil {
-				small.TopK = smallModelSelected.TopK
+			if fastModelSelected.TopK != nil {
+				fast.TopK = fastModelSelected.TopK
 			}
-			if smallModelSelected.FrequencyPenalty != nil {
-				small.FrequencyPenalty = smallModelSelected.FrequencyPenalty
+			if fastModelSelected.FrequencyPenalty != nil {
+				fast.FrequencyPenalty = fastModelSelected.FrequencyPenalty
 			}
-			if smallModelSelected.PresencePenalty != nil {
-				small.PresencePenalty = smallModelSelected.PresencePenalty
+			if fastModelSelected.PresencePenalty != nil {
+				fast.PresencePenalty = fastModelSelected.PresencePenalty
 			}
-			small.Think = smallModelSelected.Think
+			fast.Think = fastModelSelected.Think
 		}
 	}
 
 	// When small isn't explicitly configured and the provider isn't a
-	// known built-in, use the large model as the small model. This
+	// known built-in, use the smart model as the fast model. This
 	// prevents two different models from being requested concurrently
 	// for local/openai-compat providers.
-	if !smallModelConfigured {
+	if !fastModelConfigured {
 		isKnownProvider := false
 		for _, kp := range knownProviders {
-			if string(kp.ID) == small.Provider {
+			if string(kp.ID) == fast.Provider {
 				isKnownProvider = true
 				break
 			}
 		}
 		if !isKnownProvider {
-			slog.Warn("Using large model as small model for unknown provider", "provider", large.Provider, "model", large.Model)
-			small = large
+			slog.Warn("Using smart model as fast model for unknown provider", "provider", smart.Provider, "model", smart.Model)
+			fast = smart
 		}
 	}
 
-	c.Models[SelectedModelTypeLarge] = large
-	c.Models[SelectedModelTypeSmall] = small
+	c.Models[SelectedModelTypeSmart] = smart
+	c.Models[SelectedModelTypeFast] = fast
 	return nil
 }

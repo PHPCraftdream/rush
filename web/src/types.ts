@@ -22,12 +22,12 @@ export interface Session {
   UpdatedAt: number;
   CWD: string;
 
-  LargeModelProvider: string;
-  LargeModelID: string;
-  LargeModelReasoningEffort: string; // "low", "medium", "high", or "max"
-  SmallModelProvider: string;
-  SmallModelID: string;
-  SmallModelReasoningEffort: string; // "low", "medium", "high", or "max"
+  SmartModelProvider: string;
+  SmartModelID: string;
+  SmartModelReasoningEffort: string; // "low", "medium", "high", or "max"
+  FastModelProvider: string;
+  FastModelID: string;
+  FastModelReasoningEffort: string; // "low", "medium", "high", or "max"
 
   // Optional sub-agent model slots (task #466). Empty means "inherit the
   // folder/system default" — same convention as large/small above.
@@ -163,8 +163,8 @@ export interface ConfigPayload {
   debug?: boolean;
   debugLsp?: boolean;
   theme?: string;
-  recentLargeModels?: Array<{ Provider: string; Model: string }>;
-  recentSmallModels?: Array<{ Provider: string; Model: string }>;
+  recentSmartModels?: Array<{ Provider: string; Model: string }>;
+  recentFastModels?: Array<{ Provider: string; Model: string }>;
   contextPaths?: string[];
   skillsPaths?: string[];
   initializeAs?: string;

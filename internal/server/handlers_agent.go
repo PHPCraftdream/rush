@@ -98,32 +98,32 @@ func handleSendMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMess
 	// 2. Models stored in the session record in DB
 	// 3. Global defaults from config
 
-	var largeOverride, smallOverride *agent.ModelOverride
+	var smartOverride, fastOverride *agent.ModelOverride
 
 	// Check payload first
-	if p.LargeModel != nil {
-		largeOverride = &agent.ModelOverride{Provider: p.LargeModel.Provider, Model: p.LargeModel.Model}
+	if p.SmartModel != nil {
+		smartOverride = &agent.ModelOverride{Provider: p.SmartModel.Provider, Model: p.SmartModel.Model}
 	}
-	if p.SmallModel != nil {
-		smallOverride = &agent.ModelOverride{Provider: p.SmallModel.Provider, Model: p.SmallModel.Model}
+	if p.FastModel != nil {
+		fastOverride = &agent.ModelOverride{Provider: p.FastModel.Provider, Model: p.FastModel.Model}
 	}
 
 	// If no payload override, check DB
-	if largeOverride == nil || smallOverride == nil {
+	if smartOverride == nil || fastOverride == nil {
 		sess, err := a.Sessions.Get(ctx, p.SessionID)
 		if err == nil {
-			if largeOverride == nil && sess.LargeModelID != "" {
-				slog.Info("ws: using models from DB", "sessionID", p.SessionID, "large", sess.LargeModelID)
-				largeOverride = &agent.ModelOverride{Provider: sess.LargeModelProvider, Model: sess.LargeModelID}
+			if smartOverride == nil && sess.SmartModelID != "" {
+				slog.Info("ws: using models from DB", "sessionID", p.SessionID, "smart", sess.SmartModelID)
+				smartOverride = &agent.ModelOverride{Provider: sess.SmartModelProvider, Model: sess.SmartModelID}
 			}
-			if smallOverride == nil && sess.SmallModelID != "" {
-				smallOverride = &agent.ModelOverride{Provider: sess.SmallModelProvider, Model: sess.SmallModelID}
+			if fastOverride == nil && sess.FastModelID != "" {
+				fastOverride = &agent.ModelOverride{Provider: sess.FastModelProvider, Model: sess.FastModelID}
 			}
 		}
 	}
 
-	if largeOverride != nil {
-		slog.Info("ws: final models for run", "sessionID", p.SessionID, "large", largeOverride.Model)
+	if smartOverride != nil {
+		slog.Info("ws: final models for run", "sessionID", p.SessionID, "smart", smartOverride.Model)
 	}
 
 	// Decouple the agent run from the WebSocket connection lifetime.
@@ -133,8 +133,8 @@ func handleSendMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMess
 
 	c.hub.Broadcast(EventAgentBusy, AgentBusyPayload{SessionID: p.SessionID, Busy: true})
 	var err error
-	if largeOverride != nil || smallOverride != nil {
-		_, err = a.AgentCoordinator.RunWithOverrides(agentCtx, p.SessionID, p.Content, largeOverride, smallOverride, attachments...)
+	if smartOverride != nil || fastOverride != nil {
+		_, err = a.AgentCoordinator.RunWithOverrides(agentCtx, p.SessionID, p.Content, smartOverride, fastOverride, attachments...)
 	} else {
 		_, err = a.AgentCoordinator.Run(agentCtx, p.SessionID, p.Content, attachments...)
 	}
@@ -203,20 +203,20 @@ func handleInterruptAndSend(ctx context.Context, a *appPkg.App, c *Client, msg W
 
 	// Model overrides follow the same priority as handleSendMessage:
 	// payload > DB session record > global defaults.
-	var largeOverride, smallOverride *agent.ModelOverride
-	if p.LargeModel != nil {
-		largeOverride = &agent.ModelOverride{Provider: p.LargeModel.Provider, Model: p.LargeModel.Model}
+	var smartOverride, fastOverride *agent.ModelOverride
+	if p.SmartModel != nil {
+		smartOverride = &agent.ModelOverride{Provider: p.SmartModel.Provider, Model: p.SmartModel.Model}
 	}
-	if p.SmallModel != nil {
-		smallOverride = &agent.ModelOverride{Provider: p.SmallModel.Provider, Model: p.SmallModel.Model}
+	if p.FastModel != nil {
+		fastOverride = &agent.ModelOverride{Provider: p.FastModel.Provider, Model: p.FastModel.Model}
 	}
-	if largeOverride == nil || smallOverride == nil {
+	if smartOverride == nil || fastOverride == nil {
 		if sess, err := a.Sessions.Get(ctx, p.SessionID); err == nil {
-			if largeOverride == nil && sess.LargeModelID != "" {
-				largeOverride = &agent.ModelOverride{Provider: sess.LargeModelProvider, Model: sess.LargeModelID}
+			if smartOverride == nil && sess.SmartModelID != "" {
+				smartOverride = &agent.ModelOverride{Provider: sess.SmartModelProvider, Model: sess.SmartModelID}
 			}
-			if smallOverride == nil && sess.SmallModelID != "" {
-				smallOverride = &agent.ModelOverride{Provider: sess.SmallModelProvider, Model: sess.SmallModelID}
+			if fastOverride == nil && sess.FastModelID != "" {
+				fastOverride = &agent.ModelOverride{Provider: sess.FastModelProvider, Model: sess.FastModelID}
 			}
 		}
 	}
@@ -227,7 +227,7 @@ func handleInterruptAndSend(ctx context.Context, a *appPkg.App, c *Client, msg W
 	agentCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
 
-	if err := a.AgentCoordinator.InterruptAndSend(agentCtx, p.SessionID, p.Content, largeOverride, smallOverride, attachments...); err != nil {
+	if err := a.AgentCoordinator.InterruptAndSend(agentCtx, p.SessionID, p.Content, smartOverride, fastOverride, attachments...); err != nil {
 		slog.Error("ws: interrupt-and-send failed", "err", err)
 		c.reply(msg.ID, EventError, nil, err.Error())
 		return
@@ -503,21 +503,21 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 	a.AgentCoordinator.ResetAutoResumeCounter(sessionID)
 
 	// 5. Resolve model overrides (same priority as handleSendMessage).
-	var largeOverride, smallOverride *agent.ModelOverride
+	var smartOverride, fastOverride *agent.ModelOverride
 	if sess, sessErr := a.Sessions.Get(ctx, sessionID); sessErr == nil {
-		if sess.LargeModelID != "" {
-			largeOverride = &agent.ModelOverride{Provider: sess.LargeModelProvider, Model: sess.LargeModelID}
+		if sess.SmartModelID != "" {
+			smartOverride = &agent.ModelOverride{Provider: sess.SmartModelProvider, Model: sess.SmartModelID}
 		}
-		if sess.SmallModelID != "" {
-			smallOverride = &agent.ModelOverride{Provider: sess.SmallModelProvider, Model: sess.SmallModelID}
+		if sess.FastModelID != "" {
+			fastOverride = &agent.ModelOverride{Provider: sess.FastModelProvider, Model: sess.FastModelID}
 		}
 	}
 
 	// 6. Run the agent with the same prompt.
 	agentCtx := context.WithoutCancel(ctx)
 	c.hub.Broadcast(EventAgentBusy, AgentBusyPayload{SessionID: sessionID, Busy: true})
-	if largeOverride != nil || smallOverride != nil {
-		_, err = a.AgentCoordinator.RunWithOverrides(agentCtx, sessionID, text, largeOverride, smallOverride)
+	if smartOverride != nil || fastOverride != nil {
+		_, err = a.AgentCoordinator.RunWithOverrides(agentCtx, sessionID, text, smartOverride, fastOverride)
 	} else {
 		_, err = a.AgentCoordinator.Run(agentCtx, sessionID, text)
 	}

@@ -30,7 +30,7 @@ func TestSessionsShow_TextOutput(t *testing.T) {
 	retrieved, err := s.Get(context.Background(), sess.ID)
 	require.NoError(t, err)
 	require.Equal(t, "test session", retrieved.Title)
-	require.Equal(t, "claude-3-5-sonnet", retrieved.LargeModelID)
+	require.Equal(t, "claude-3-5-sonnet", retrieved.SmartModelID)
 }
 
 func TestSessionsShow_WithMessages(t *testing.T) {
@@ -106,12 +106,12 @@ func newTestDB(t *testing.T) (*sql.DB, *db.Queries) {
 			summary_message_id TEXT,
 			todos TEXT,
 			deleted_todos TEXT NOT NULL DEFAULT '[]',
-			large_model_provider TEXT,
-			large_model_id TEXT,
-			large_model_reasoning_effort TEXT DEFAULT 'medium',
-			small_model_provider TEXT,
-			small_model_id TEXT,
-			small_model_reasoning_effort TEXT DEFAULT 'medium',
+			smart_model_provider TEXT,
+			smart_model_id TEXT,
+			smart_model_reasoning_effort TEXT DEFAULT 'medium',
+			fast_model_provider TEXT,
+			fast_model_id TEXT,
+			fast_model_reasoning_effort TEXT DEFAULT 'medium',
 			worker_model_provider TEXT,
 			worker_model_id TEXT,
 			worker_model_reasoning_effort TEXT,

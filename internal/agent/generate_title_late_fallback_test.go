@@ -76,7 +76,7 @@ func handshakeFailSSEServer(requestStarted chan<- struct{}, proceed <-chan struc
 //
 // This test drives generateTitle directly (not through Run()) so the
 // "later real title" write can be injected at the exact instant the
-// abandoned goroutine is paused inside its last (large-model) attempt, via
+// abandoned goroutine is paused inside its last (smart-model) attempt, via
 // a request-started/proceed handshake — deterministic, no time.Sleep, no
 // reliance on winning a race against a hung provider.
 func TestGenerateTitle_AbandonedFallbackDoesNotClobberLaterTitle(t *testing.T) {
@@ -86,36 +86,36 @@ func TestGenerateTitle_AbandonedFallbackDoesNotClobberLaterTitle(t *testing.T) {
 	require.NoError(t, err)
 
 	// Small-model attempt fails immediately so generateTitle moves straight
-	// to the large-model attempt without needing a second handshake.
-	smallSrv := failFastSSEServer()
-	t.Cleanup(smallSrv.Close)
-	smallProvider, err := openaicompat.New(
-		openaicompat.WithBaseURL(smallSrv.URL),
+	// to the smart-model attempt without needing a second handshake.
+	fastSrv := failFastSSEServer()
+	t.Cleanup(fastSrv.Close)
+	fastProvider, err := openaicompat.New(
+		openaicompat.WithBaseURL(fastSrv.URL),
 		openaicompat.WithAPIKey("probe"),
 	)
 	require.NoError(t, err)
-	smallLM, err := smallProvider.LanguageModel(context.Background(), "probe")
+	fastLM, err := fastProvider.LanguageModel(context.Background(), "probe")
 	require.NoError(t, err)
 
 	requestStarted := make(chan struct{})
 	proceed := make(chan struct{})
-	largeSrv := handshakeFailSSEServer(requestStarted, proceed)
-	t.Cleanup(largeSrv.Close)
-	largeProvider, err := openaicompat.New(
-		openaicompat.WithBaseURL(largeSrv.URL),
+	smartSrv := handshakeFailSSEServer(requestStarted, proceed)
+	t.Cleanup(smartSrv.Close)
+	smartProvider, err := openaicompat.New(
+		openaicompat.WithBaseURL(smartSrv.URL),
 		openaicompat.WithAPIKey("probe"),
 	)
 	require.NoError(t, err)
-	largeLM, err := largeProvider.LanguageModel(context.Background(), "probe")
+	smartLM, err := smartProvider.LanguageModel(context.Background(), "probe")
 	require.NoError(t, err)
 
 	cfg := turnConfig{
-		smallModel: Model{
-			Model:      smallLM,
+		fastModel: Model{
+			Model:      fastLM,
 			CatwalkCfg: catwalk.Model{ContextWindow: 200000, DefaultMaxTokens: 1000},
 		},
-		largeModel: Model{
-			Model:      largeLM,
+		smartModel: Model{
+			Model:      smartLM,
 			CatwalkCfg: catwalk.Model{ContextWindow: 200000, DefaultMaxTokens: 1000},
 		},
 	}
@@ -139,7 +139,7 @@ func TestGenerateTitle_AbandonedFallbackDoesNotClobberLaterTitle(t *testing.T) {
 	select {
 	case <-requestStarted:
 	case <-time.After(10 * time.Second):
-		t.Fatal("large-model title attempt never reached the server — handshake did not fire")
+		t.Fatal("smart-model title attempt never reached the server — handshake did not fire")
 	}
 
 	// While generateTitle is paused mid-attempt (i.e. exactly the window in
@@ -175,33 +175,33 @@ func TestGenerateTitle_FallbackStillFiresWhenSlotIsEmpty(t *testing.T) {
 	sess, err := env.sessions.Create(t.Context(), "")
 	require.NoError(t, err)
 
-	smallSrv := failFastSSEServer()
-	t.Cleanup(smallSrv.Close)
-	smallProvider, err := openaicompat.New(
-		openaicompat.WithBaseURL(smallSrv.URL),
+	fastSrv := failFastSSEServer()
+	t.Cleanup(fastSrv.Close)
+	fastProvider, err := openaicompat.New(
+		openaicompat.WithBaseURL(fastSrv.URL),
 		openaicompat.WithAPIKey("probe"),
 	)
 	require.NoError(t, err)
-	smallLM, err := smallProvider.LanguageModel(context.Background(), "probe")
+	fastLM, err := fastProvider.LanguageModel(context.Background(), "probe")
 	require.NoError(t, err)
 
-	largeSrv := failFastSSEServer()
-	t.Cleanup(largeSrv.Close)
-	largeProvider, err := openaicompat.New(
-		openaicompat.WithBaseURL(largeSrv.URL),
+	smartSrv := failFastSSEServer()
+	t.Cleanup(smartSrv.Close)
+	smartProvider, err := openaicompat.New(
+		openaicompat.WithBaseURL(smartSrv.URL),
 		openaicompat.WithAPIKey("probe"),
 	)
 	require.NoError(t, err)
-	largeLM, err := largeProvider.LanguageModel(context.Background(), "probe")
+	smartLM, err := smartProvider.LanguageModel(context.Background(), "probe")
 	require.NoError(t, err)
 
 	cfg := turnConfig{
-		smallModel: Model{
-			Model:      smallLM,
+		fastModel: Model{
+			Model:      fastLM,
 			CatwalkCfg: catwalk.Model{ContextWindow: 200000, DefaultMaxTokens: 1000},
 		},
-		largeModel: Model{
-			Model:      largeLM,
+		smartModel: Model{
+			Model:      smartLM,
 			CatwalkCfg: catwalk.Model{ContextWindow: 200000, DefaultMaxTokens: 1000},
 		},
 	}

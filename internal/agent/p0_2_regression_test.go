@@ -85,8 +85,8 @@ func TestP0_2_RetryExhaustion_QueuesCall(t *testing.T) {
 
 	env := testEnv(t)
 	sa := NewSessionAgent(SessionAgentOptions{
-		LargeModel:           model,
-		SmallModel:           model,
+		SmartModel:           model,
+		FastModel:            model,
 		SystemPrompt:         "you are a probe",
 		DataDirectory:        env.workingDir,
 		Sessions:             env.sessions,

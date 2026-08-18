@@ -300,7 +300,7 @@ func (a *sessionAgent) SummarizeQueued(sessionID string) bool {
 // testBuildSummarizeSnapshot is a test helper that creates a SummarizeSnapshot
 // from the agent's current shared state. Used by tests that call Summarize directly.
 func (a *sessionAgent) testBuildSummarizeSnapshot() *SummarizeSnapshot {
-	model := a.largeModel.Get()
+	model := a.smartModel.Get()
 	prefix := a.systemPromptPrefix.Get()
 
 	// Build minimal provider options (same as getProviderOptions but for tests).
@@ -335,7 +335,7 @@ func (a *sessionAgent) CancelQueuedSummarize(sessionID string) {
 // genCtx is the caller's already-cancel-scoped context (beginCompact's
 // cancel for manual /compact, or the turn's genCtx for inline
 // auto-summarize).
-func (a *sessionAgent) runSummarizeBody(ctx context.Context, sessionID string, opts fantasy.ProviderOptions, largeModel Model, systemPromptPrefix string) error {
+func (a *sessionAgent) runSummarizeBody(ctx context.Context, sessionID string, opts fantasy.ProviderOptions, smartModel Model, systemPromptPrefix string) error {
 	currentSession, err := a.sessions.Get(ctx, sessionID)
 	if err != nil {
 		return fmt.Errorf("failed to get session: %w", err)
@@ -362,15 +362,15 @@ func (a *sessionAgent) runSummarizeBody(ctx context.Context, sessionID string, o
 	aiMsgs, _ := a.preparePrompt(msgs, nil)
 
 	agent := fantasy.NewAgent(
-		largeModel.Model,
+		smartModel.Model,
 		fantasy.WithSystemPrompt(string(summaryPrompt)),
 		fantasy.WithUserAgent(userAgent),
 	)
 	summaryMessage, err := a.messages.Create(ctx, sessionID, message.CreateMessageParams{
 		Role:             message.Assistant,
-		Model:            largeModel.Model.Model(),
-		Provider:         largeModel.Model.Provider(),
-		ReasoningEffort:  currentSession.LargeModelReasoningEffort,
+		Model:            smartModel.Model.Model(),
+		Provider:         smartModel.Model.Provider(),
+		ReasoningEffort:  currentSession.SmartModelReasoningEffort,
 		IsSummaryMessage: true,
 	})
 	if err != nil {
@@ -481,7 +481,7 @@ func (a *sessionAgent) runSummarizeBody(ctx context.Context, sessionID string, o
 	if err != nil {
 		return fmt.Errorf("failed to re-fetch session before save: %w", err)
 	}
-	costDelta := a.updateSessionUsage(largeModel, &freshSession, resp.TotalUsage, openrouterCost)
+	costDelta := a.updateSessionUsage(smartModel, &freshSession, resp.TotalUsage, openrouterCost)
 	if costDelta != 0 {
 		if _, costErr := a.sessions.IncrementCost(commitCtx, freshSession.ID, costDelta); costErr != nil {
 			return costErr
@@ -492,7 +492,7 @@ func (a *sessionAgent) runSummarizeBody(ctx context.Context, sessionID string, o
 	// against resp.TotalUsage — the same figure updateSessionUsage just billed
 	// — so the summarization's own token cost is visible in analytics instead
 	// of appearing as an unattributed jump in the session total.
-	a.recordMessageUsage(commitCtx, summaryMessage.ID, largeModel, resp.TotalUsage, costDelta, false)
+	a.recordMessageUsage(commitCtx, summaryMessage.ID, smartModel, resp.TotalUsage, costDelta, false)
 
 	usage := resp.Response.Usage
 	if err := a.sessions.SetSummaryAndUsage(commitCtx, freshSession.ID, summaryMessage.ID, 0, summaryCompletionTokens(usage, summaryMessage)); err != nil {
@@ -523,7 +523,7 @@ func (a *sessionAgent) runSummarizeBody(ctx context.Context, sessionID string, o
 //  5. Updates session.SummaryMessageID so future runs start from the summary.
 //
 // Pinned messages are never deleted.
-func (a *sessionAgent) runSummarizeSilent(ctx context.Context, sessionID string, opts fantasy.ProviderOptions, largeModel Model, systemPromptPrefix string) error {
+func (a *sessionAgent) runSummarizeSilent(ctx context.Context, sessionID string, opts fantasy.ProviderOptions, smartModel Model, systemPromptPrefix string) error {
 	currentSession, err := a.sessions.Get(ctx, sessionID)
 	if err != nil {
 		return fmt.Errorf("failed to get session: %w", err)
@@ -556,15 +556,15 @@ func (a *sessionAgent) runSummarizeSilent(ctx context.Context, sessionID string,
 	aiMsgs, _ := a.preparePrompt(toSummarise, nil)
 
 	agent := fantasy.NewAgent(
-		largeModel.Model,
+		smartModel.Model,
 		fantasy.WithSystemPrompt(string(summaryPrompt)),
 	)
 	// Create the summary message as hidden so it is invisible in the UI.
 	summaryMessage, err := a.messages.Create(ctx, sessionID, message.CreateMessageParams{
 		Role:             message.Assistant,
-		Model:            largeModel.Model.Model(),
-		Provider:         largeModel.Model.Provider(),
-		ReasoningEffort:  currentSession.LargeModelReasoningEffort,
+		Model:            smartModel.Model.Model(),
+		Provider:         smartModel.Model.Provider(),
+		ReasoningEffort:  currentSession.SmartModelReasoningEffort,
 		IsSummaryMessage: true,
 		Hidden:           true,
 	})
@@ -668,7 +668,7 @@ func (a *sessionAgent) runSummarizeSilent(ctx context.Context, sessionID string,
 			*openrouterCost += *stepCost
 		}
 	}
-	costDelta := a.updateSessionUsage(largeModel, &freshSession, resp.TotalUsage, openrouterCost)
+	costDelta := a.updateSessionUsage(smartModel, &freshSession, resp.TotalUsage, openrouterCost)
 	if costDelta != 0 {
 		if _, costErr := a.sessions.IncrementCost(commitCtx, freshSession.ID, costDelta); costErr != nil {
 			return costErr
@@ -676,7 +676,7 @@ func (a *sessionAgent) runSummarizeSilent(ctx context.Context, sessionID string,
 	}
 	// Per-message usage for the silent-summarise turn (task #469), same
 	// rationale as the manual /compact path above.
-	a.recordMessageUsage(commitCtx, summaryMessage.ID, largeModel, resp.TotalUsage, costDelta, false)
+	a.recordMessageUsage(commitCtx, summaryMessage.ID, smartModel, resp.TotalUsage, costDelta, false)
 
 	if err := a.sessions.SetSummaryAndUsage(commitCtx, freshSession.ID, summaryMessage.ID, 0, resp.Response.Usage.OutputTokens); err != nil {
 		// Nothing has been deleted yet, so the session is still whole: the

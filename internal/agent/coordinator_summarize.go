@@ -37,19 +37,19 @@ func (c *coordinator) BuildSystemPrompt(ctx context.Context) (string, error) {
 		return "", nil
 	}
 
-	// Build the default large model from config for prompt building.
+	// Build the default smart model from config for prompt building.
 	cfg, _ := c.cfg.Snapshot()
-	largeCfg := cfg.Models[config.SelectedModelTypeLarge]
-	smallCfg := cfg.Models[config.SelectedModelTypeSmall]
+	smartCfg := cfg.Models[config.SelectedModelTypeSmart]
+	fastCfg := cfg.Models[config.SelectedModelTypeFast]
 
-	largeModel, _, err := c.buildModelsFromCfg(ctx, cfg, largeCfg, smallCfg, false)
+	smartModel, _, err := c.buildModelsFromCfg(ctx, cfg, smartCfg, fastCfg, false)
 	if err != nil {
-		return "", fmt.Errorf("failed to build default large model: %w", err)
+		return "", fmt.Errorf("failed to build default smart model: %w", err)
 	}
 
 	// Use the same pinned cfg captured above (task #341, P1-1) instead of
 	// re-reading c.cfg.Config() live inside workerSubAgentActive.
-	return c.prompt.Build(ctx, largeModel.ModelCfg.Provider, largeModel.ModelCfg.Model, c.cfg, c.workerSubAgentActive(cfg))
+	return c.prompt.Build(ctx, smartModel.ModelCfg.Provider, smartModel.ModelCfg.Model, c.cfg, c.workerSubAgentActive(cfg))
 }
 
 // BuildSystemPromptForSession builds a system prompt for a specific session,
@@ -71,7 +71,7 @@ func (c *coordinator) BuildSystemPromptForSession(ctx context.Context, sessionID
 	// it here from a second, separately-timed live cfg read
 	// (c.workerSubAgentActive() with no argument). A reload landing between
 	// the two builds could otherwise make this second build's
-	// WorkerAvailable flag disagree with resolved.large, which was pinned
+	// WorkerAvailable flag disagree with resolved.smart, which was pinned
 	// from an earlier generation.
 	return resolved.systemPrompt, nil
 }
@@ -138,13 +138,13 @@ func (c *coordinator) buildSummarizeSnapshot(ctx context.Context, sessionID stri
 	}
 
 	// Get the provider config for this model.
-	providerCfg, ok := c.cfg.Config().Providers.Get(resolved.large.ModelCfg.Provider)
+	providerCfg, ok := c.cfg.Config().Providers.Get(resolved.smart.ModelCfg.Provider)
 	if !ok {
 		return nil, errModelProviderNotConfigured
 	}
 
 	// Build provider options from the resolved model.
-	opts := getProviderOptions(resolved.large, providerCfg)
+	opts := getProviderOptions(resolved.smart, providerCfg)
 
 	// Use the prompt prefix from the resolved snapshot (provider config's
 	// prefix, already set by resolveSessionModels).
@@ -154,7 +154,7 @@ func (c *coordinator) buildSummarizeSnapshot(ctx context.Context, sessionID stri
 	}
 
 	return &SummarizeSnapshot{
-		model:           resolved.large,
+		model:           resolved.smart,
 		providerOptions: opts,
 		promptPrefix:    promptPrefix,
 	}, nil

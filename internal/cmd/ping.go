@@ -44,8 +44,8 @@ as ok because the local CLI injects its own system context).
 Auth/quota errors set status=error with exit code 1.
 Timeouts set status=timeout with exit code 2.
 
---role selects which model slot to ping: smart|large (the default, same as
-'crush ping') | fast|small (same as 'crush ping-fast') | worker (the
+--role selects which model slot to ping: smart (the default, same as
+'crush ping') | fast (same as 'crush ping-fast') | worker (the
 optional cheap delegated-work slot) | reviewer (the optional strongest
 slot). worker/reviewer ping as "not configured" unless already set via
 "crush models use --worker/--reviewer <model>" (or the web UI /
@@ -62,7 +62,7 @@ committing it anywhere. The provider prefix itself still has to be a
 configured provider, since real credentials come from there. Mutually
 exclusive with --role.`,
 	Example: `
-# Ping whichever large model is currently configured
+# Ping whichever smart model is currently configured
 crush ping
 
 # Ping the small/fast slot without switching to ping-fast
@@ -75,7 +75,7 @@ crush ping --role smart
 crush ping --role worker
 crush ping --role reviewer
 
-# Ping the small model slot
+# Ping the fast model slot
 crush ping-fast
 
 # First set the model, then ping (API provider)
@@ -133,14 +133,14 @@ crush ping --timeout 30s --prompt "Reply with yes or no"
 
 var pingFastCmd = &cobra.Command{
 	Use:   "ping-fast [--json] [--timeout 1m] [--prompt \"<custom>\"]",
-	Short: "Ping the small model to verify connectivity and API key",
+	Short: "Ping the fast model to verify connectivity and API key",
 	Long: `Same as 'crush ping' but for the configured small (fast) model slot.
 Works with any provider type — API or CLI.`,
 	Example: `
-# Ping the small model
+# Ping the fast model
 crush ping-fast
 
-# CLI model in the small slot
+# CLI model in the fast slot
 crush models use oh hl && crush ping-fast
 
 # Machine-readable JSON
@@ -155,7 +155,7 @@ crush ping-fast --timeout 30s
 			return err
 		}
 		defer a.Shutdown()
-		return runPing(cmd, a, config.SelectedModelTypeSmall, nil)
+		return runPing(cmd, a, config.SelectedModelTypeFast, nil)
 	},
 }
 
@@ -811,7 +811,7 @@ func resolvePingModel(cfg *config.Config, modelStr string) (config.SelectedModel
 // with identical wording.
 func resolvePingRole(role string) (config.SelectedModelType, error) {
 	if role == "" {
-		return config.SelectedModelTypeLarge, nil
+		return config.SelectedModelTypeSmart, nil
 	}
 	return resolveModelRole(role)
 }
@@ -822,22 +822,28 @@ func resolvePingRole(role string) (config.SelectedModelType, error) {
 // before calling. Keeping the vocabulary and error text in one place stops
 // the two commands' role parsing from drifting apart.
 //
+// This used to translate: "smart"/"fast" were friendly CLI aliases for the
+// slots, which were really called smart/fast everywhere below this line.
+// The slots are now named smart/fast themselves, so there is nothing left
+// to translate and the function is a plain validating parse. That collapse
+// was the point of the rename — one name per slot, not two.
+//
 // "reviewer" is the strongest model slot and is never selected
 // automatically — it must be requested explicitly via --role reviewer by
 // an operator or a senior agent. "worker" is a cheap slot intended for
 // manual sub-task delegation.
 func resolveModelRole(role string) (config.SelectedModelType, error) {
 	switch role {
-	case "large", "smart":
-		return config.SelectedModelTypeLarge, nil
-	case "small", "fast":
-		return config.SelectedModelTypeSmall, nil
-	case "worker":
+	case string(config.SelectedModelTypeSmart):
+		return config.SelectedModelTypeSmart, nil
+	case string(config.SelectedModelTypeFast):
+		return config.SelectedModelTypeFast, nil
+	case string(config.SelectedModelTypeWorker):
 		return config.SelectedModelTypeWorker, nil
-	case "reviewer":
+	case string(config.SelectedModelTypeReviewer):
 		return config.SelectedModelTypeReviewer, nil
 	default:
-		return "", fmt.Errorf("--role: invalid value %q (allowed: smart|large, fast|small, worker, reviewer)", role)
+		return "", fmt.Errorf("--role: invalid value %q (allowed: smart, fast, worker, reviewer)", role)
 	}
 }
 
@@ -845,7 +851,7 @@ func init() {
 	pingCmd.Flags().Bool("json", false, "Emit JSON output instead of human-readable text")
 	pingCmd.Flags().Duration("timeout", time.Minute, "Request timeout")
 	pingCmd.Flags().String("prompt", "", "Custom user prompt (default: \"ping\")")
-	pingCmd.Flags().String("role", "", "Which model slot to ping: smart|large (default) | fast|small | worker | reviewer (worker/reviewer are optional, set via `crush models use --worker/--reviewer`)")
+	pingCmd.Flags().String("role", "", "Which model slot to ping: smart (default) | fast | worker | reviewer (worker/reviewer are optional, set via `crush models use --worker/--reviewer`)")
 	pingCmd.Flags().String("model", "", "Ping an ad-hoc model directly (atom short code or provider/model[@effort]) instead of a persisted slot — nothing is written to config. Mutually exclusive with --role.")
 
 	pingFastCmd.Flags().Bool("json", false, "Emit JSON output instead of human-readable text")

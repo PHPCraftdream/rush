@@ -22,12 +22,12 @@ import (
 )
 
 func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, agent config.Agent, isSubAgent bool) (SessionAgent, error) {
-	large, small, err := c.buildAgentModels(ctx, isSubAgent)
+	smart, fast, err := c.buildAgentModels(ctx, isSubAgent)
 	if err != nil {
 		return nil, err
 	}
 
-	largeProviderCfg, _ := c.cfg.Config().Providers.Get(large.ModelCfg.Provider)
+	smartProviderCfg, _ := c.cfg.Config().Providers.Get(smart.ModelCfg.Provider)
 	opts := c.cfg.Config().Options
 	var streamIdleTimeout time.Duration
 	if opts != nil && opts.StreamIdleTimeoutSeconds > 0 {
@@ -51,9 +51,9 @@ func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, age
 		}
 	}
 	result := NewSessionAgent(SessionAgentOptions{
-		LargeModel:           large,
-		SmallModel:           small,
-		SystemPromptPrefix:   largeProviderCfg.SystemPromptPrefix,
+		SmartModel:           smart,
+		FastModel:            fast,
+		SystemPromptPrefix:   smartProviderCfg.SystemPromptPrefix,
 		SystemPrompt:         "",
 		IsSubAgent:           isSubAgent,
 		DisableAutoSummarize: c.cfg.Config().Options.DisableAutoSummarize,
@@ -71,7 +71,7 @@ func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, age
 		// so a peak_hours edit made by another process while this turn is
 		// running still takes effect.
 		PeakHoursCheck: func() error {
-			return c.checkLivePeakHours(large.ModelCfg.Provider)
+			return c.checkLivePeakHours(smart.ModelCfg.Provider)
 		},
 	})
 
@@ -81,7 +81,7 @@ func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, age
 		// taskPrompt, which doesn't reference WorkerAvailable, but guarding
 		// on !isSubAgent here keeps this call's intent explicit rather than
 		// relying on the template to ignore the field.
-		systemPrompt, err := prompt.Build(ctx, large.Model.Provider(), large.Model.Model(), c.cfg, !isSubAgent && c.workerSubAgentActive(c.cfg.Config()))
+		systemPrompt, err := prompt.Build(ctx, smart.Model.Provider(), smart.Model.Model(), c.cfg, !isSubAgent && c.workerSubAgentActive(c.cfg.Config()))
 		if err != nil {
 			return err
 		}

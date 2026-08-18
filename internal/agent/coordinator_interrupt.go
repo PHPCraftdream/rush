@@ -239,13 +239,13 @@ func (c *coordinator) handleInterruptTick(ctx context.Context, sessionID string)
 // message becomes the next Run() — with all assistant content produced so
 // far preserved in the DB (the cancel path writes a FinishReasonCanceled
 // to the in-flight assistant message before unwinding).
-func (c *coordinator) InterruptAndSend(ctx context.Context, sessionID, prompt string, large, small *ModelOverride, attachments ...message.Attachment) error {
+func (c *coordinator) InterruptAndSend(ctx context.Context, sessionID, prompt string, smart, fast *ModelOverride, attachments ...message.Attachment) error {
 	if err := c.readyWg.Wait(); err != nil {
 		return err
 	}
 	var pinned *resolvedOverrides
-	if large != nil || small != nil {
-		resolved, applyErr := c.applyModelOverrides(ctx, large, small)
+	if smart != nil || fast != nil {
+		resolved, applyErr := c.applyModelOverrides(ctx, smart, fast)
 		if applyErr != nil {
 			return applyErr
 		}
@@ -430,28 +430,28 @@ func (c *coordinator) recreatePendingInjectRow(originalCtx context.Context, call
 // reconstructed here — they are pure functions of (Model, ProviderConfig) computed
 // via mergeCallOptions during normal execution path.
 func (c *coordinator) RebuildSessionAgentCall(ctx context.Context, data session.SessionAgentCallData) (SessionAgentCall, error) {
-	var largeModel, smallModel Model
+	var smartModel, fastModel Model
 	var err error
 
 	// Determine which models to rebuild using a single atomic snapshot.
 	cfg, _ := c.cfg.Snapshot()
-	var largeCfg, smallCfg config.SelectedModel
-	if data.LargeModel != nil {
-		largeCfg = fromSessionModelCfg(*data.LargeModel)
+	var smartCfg, fastCfg config.SelectedModel
+	if data.SmartModel != nil {
+		smartCfg = fromSessionModelCfg(*data.SmartModel)
 	} else {
-		// Use default config for large model
-		largeCfg = cfg.Models[config.SelectedModelTypeLarge]
+		// Use default config for smart model
+		smartCfg = cfg.Models[config.SelectedModelTypeSmart]
 	}
 
-	if data.SmallModel != nil {
-		smallCfg = fromSessionModelCfg(*data.SmallModel)
+	if data.FastModel != nil {
+		fastCfg = fromSessionModelCfg(*data.FastModel)
 	} else {
-		// Use default config for small model
-		smallCfg = cfg.Models[config.SelectedModelTypeSmall]
+		// Use default config for fast model
+		fastCfg = cfg.Models[config.SelectedModelTypeFast]
 	}
 
 	// Build both models (buildModelsFromCfg requires both)
-	largeModel, smallModel, err = c.buildModelsFromCfg(ctx, cfg, largeCfg, smallCfg, false)
+	smartModel, fastModel, err = c.buildModelsFromCfg(ctx, cfg, smartCfg, fastCfg, false)
 	if err != nil {
 		return SessionAgentCall{}, fmt.Errorf("failed to rebuild models from config: %w", err)
 	}
@@ -462,8 +462,8 @@ func (c *coordinator) RebuildSessionAgentCall(ctx context.Context, data session.
 	// other call-site populates these via mergeCallOptions before the call ever
 	// reaches Run, so we must do the same here or every durably-recovered call
 	// silently loses its provider options and sampling knobs.
-	largeProviderCfg, _ := c.cfg.Config().Providers.Get(largeModel.ModelCfg.Provider)
-	providerOptions, temp, topP, topK, freqPenalty, presPenalty := mergeCallOptions(largeModel, largeProviderCfg)
+	smartProviderCfg, _ := c.cfg.Config().Providers.Get(smartModel.ModelCfg.Provider)
+	providerOptions, temp, topP, topK, freqPenalty, presPenalty := mergeCallOptions(smartModel, smartProviderCfg)
 
 	return SessionAgentCall{
 		SessionID:            data.SessionID,
@@ -483,8 +483,8 @@ func (c *coordinator) RebuildSessionAgentCall(ctx context.Context, data session.
 		MaxTokens:            data.MaxTokens,
 		ExistingMessageID:    data.ExistingMessageID,
 		InjectID:             data.InjectID,
-		LargeModel:           &largeModel,
-		SmallModel:           &smallModel,
+		SmartModel:           &smartModel,
+		FastModel:            &fastModel,
 		SystemPromptPrefix:   data.SystemPromptPrefix,
 		SystemPrompt:         data.SystemPrompt,
 		// Mark as originating from the durable queue so mailbox.submit can

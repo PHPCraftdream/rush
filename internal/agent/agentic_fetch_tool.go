@@ -145,19 +145,19 @@ func (c *coordinator) agenticFetchTool(_ context.Context, client *http.Client) (
 				return fantasy.ToolResponse{}, fmt.Errorf("error creating prompt: %s", err)
 			}
 
-			_, small, err := c.buildAgentModels(ctx, true)
+			_, fast, err := c.buildAgentModels(ctx, true)
 			if err != nil {
 				return fantasy.ToolResponse{}, fmt.Errorf("error building models: %s", err)
 			}
 
-			systemPrompt, err := promptTemplate.Build(ctx, small.Model.Provider(), small.Model.Model(), c.cfg, false)
+			systemPrompt, err := promptTemplate.Build(ctx, fast.Model.Provider(), fast.Model.Model(), c.cfg, false)
 			if err != nil {
 				return fantasy.ToolResponse{}, fmt.Errorf("error building system prompt: %s", err)
 			}
 
-			smallProviderCfg, ok := c.cfg.Config().Providers.Get(small.ModelCfg.Provider)
+			fastProviderCfg, ok := c.cfg.Config().Providers.Get(fast.ModelCfg.Provider)
 			if !ok {
-				return fantasy.ToolResponse{}, errors.New("small model provider not configured")
+				return fantasy.ToolResponse{}, errors.New("fast model provider not configured")
 			}
 
 			webFetchTool := tools.NewWebFetchTool(tmpDir, client)
@@ -181,9 +181,9 @@ func (c *coordinator) agenticFetchTool(_ context.Context, client *http.Client) (
 			// the user's hooks N times per delegated turn.
 
 			agent := NewSessionAgent(SessionAgentOptions{
-				LargeModel:           small, // Use small model for both (fetch doesn't need large)
-				SmallModel:           small,
-				SystemPromptPrefix:   smallProviderCfg.SystemPromptPrefix,
+				SmartModel:           fast, // Use fast model for both (fetch does not need the smart slot)
+				FastModel:            fast,
+				SystemPromptPrefix:   fastProviderCfg.SystemPromptPrefix,
 				SystemPrompt:         systemPrompt,
 				DisableAutoSummarize: c.cfg.Config().Options.DisableAutoSummarize,
 				IsYolo:               c.permissions.SkipRequests(),

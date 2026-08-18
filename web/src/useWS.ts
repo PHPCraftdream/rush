@@ -17,8 +17,8 @@ import {
   removeMessage,
   setSessionBusy,
   setActiveSession,
-  $recentLargeModels,
-  $recentSmallModels,
+  $recentSmartModels,
+  $recentFastModels,
   trackModelUsage,
   dequeueAllMessages,
   applyTheme,
@@ -181,7 +181,7 @@ export function useWS() {
         if (!activeID || m.SessionID !== activeID) return;
         upsertMessage(m);
         if (m.Role === "assistant" && m.Provider && m.Model) {
-          trackModelUsage("large", `${m.Provider}:::${m.Model}`);
+          trackModelUsage("smart", `${m.Provider}:::${m.Model}`);
         }
       }),
       ws.on("message_updated", (msg: WSMessage) => {
@@ -258,17 +258,17 @@ export function useWS() {
         if (wantOn && !isKeepAliveRunning()) startKeepAlive();
         else if (!wantOn && isKeepAliveRunning()) stopKeepAlive();
         // Restore recent models from server (persisted across restarts)
-        if (cfg.recentLargeModels?.length) {
-          const keys = cfg.recentLargeModels.map(m => `${m.Provider}:::${m.Model}`);
-          $recentLargeModels.set(keys);
+        if (cfg.recentSmartModels?.length) {
+          const keys = cfg.recentSmartModels.map(m => `${m.Provider}:::${m.Model}`);
+          $recentSmartModels.set(keys);
         } else {
-          $recentLargeModels.set([]);
+          $recentSmartModels.set([]);
         }
-        if (cfg.recentSmallModels?.length) {
-          const keys = cfg.recentSmallModels.map(m => `${m.Provider}:::${m.Model}`);
-          $recentSmallModels.set(keys);
+        if (cfg.recentFastModels?.length) {
+          const keys = cfg.recentFastModels.map(m => `${m.Provider}:::${m.Model}`);
+          $recentFastModels.set(keys);
         } else {
-          $recentSmallModels.set([]);
+          $recentFastModels.set([]);
         }
       }),
 

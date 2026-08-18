@@ -94,8 +94,8 @@ type ModelOverrideWire struct {
 
 type SetSessionModelsPayload struct {
 	SessionID  string             `json:"sessionID"`
-	LargeModel *ModelOverrideWire `json:"largeModel"`
-	SmallModel *ModelOverrideWire `json:"smallModel"`
+	SmartModel *ModelOverrideWire `json:"smartModel"`
+	FastModel  *ModelOverrideWire `json:"fastModel"`
 	// WorkerModel/ReviewerModel are optional (task #466) — omitted/nil means
 	// "don't touch", same convention as LargeModel/SmallModel above.
 	WorkerModel   *ModelOverrideWire `json:"workerModel,omitempty"`
@@ -109,7 +109,7 @@ type SetSessionModelsPayload struct {
 // the system -> folder -> session cascade resolves from. They are distinct
 // from set_session_models, which only ever touches one session's DB row.
 
-// ScopedModelSlotWire describes one model slot (large/small/worker/reviewer)
+// ScopedModelSlotWire describes one model slot (smart/fast/worker/reviewer)
 // across both scopes plus the resolved effective value, mirroring the
 // vocabulary `crush models state` already established
 // (internal/cmd/models_state.go) so the CLI and the web UI never drift.
@@ -122,8 +122,8 @@ type ScopedModelSlotWire struct {
 
 // ScopedModelsWire is the full get_scoped_models response.
 type ScopedModelsWire struct {
-	Large        ScopedModelSlotWire `json:"large"`
-	Small        ScopedModelSlotWire `json:"small"`
+	Smart        ScopedModelSlotWire `json:"smart"`
+	Fast         ScopedModelSlotWire `json:"fast"`
 	Worker       ScopedModelSlotWire `json:"worker"`
 	Reviewer     ScopedModelSlotWire `json:"reviewer"`
 	HasWorkspace bool                `json:"hasWorkspace"` // false when no .crush workspace config path resolves
@@ -132,7 +132,7 @@ type ScopedModelsWire struct {
 // SetScopedModelPayload writes one slot at one scope.
 type SetScopedModelPayload struct {
 	Scope           string `json:"scope"` // "global" | "workspace"
-	Slot            string `json:"slot"`  // "large" | "small" | "worker" | "reviewer"
+	Slot            string `json:"slot"`  // "smart" | "fast" | "worker" | "reviewer"
 	Provider        string `json:"provider"`
 	Model           string `json:"model"`
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
@@ -154,8 +154,8 @@ type SendMessagePayload struct {
 		Data     []byte `json:"data"`
 	} `json:"attachments,omitempty"`
 	// Optional per-call model overrides. When absent the global config is used.
-	LargeModel *ModelOverrideWire `json:"largeModel,omitempty"`
-	SmallModel *ModelOverrideWire `json:"smallModel,omitempty"`
+	SmartModel *ModelOverrideWire `json:"smartModel,omitempty"`
+	FastModel  *ModelOverrideWire `json:"fastModel,omitempty"`
 }
 
 type CancelAgentPayload struct {
@@ -424,13 +424,13 @@ type UpdateLSPServerPayload struct {
 }
 
 type RemoveRecentModelPayload struct {
-	ModelType string `json:"modelType"` // "large" or "small"
+	ModelType string `json:"modelType"` // "smart" or "fast"
 	Provider  string `json:"provider"`
 	Model     string `json:"model"`
 }
 
 type TrackModelUsagePayload struct {
-	ModelType string `json:"modelType"` // "large" or "small"
+	ModelType string `json:"modelType"` // "smart" or "fast"
 	Provider  string `json:"provider"`
 	Model     string `json:"model"`
 }
@@ -470,8 +470,8 @@ type ConfigWire struct {
 	Debug             bool                      `json:"debug"`
 	DebugLSP          bool                      `json:"debugLsp"`
 	Theme             string                    `json:"theme"`
-	RecentLargeModels []ModelEntryWire          `json:"recentLargeModels,omitempty"`
-	RecentSmallModels []ModelEntryWire          `json:"recentSmallModels,omitempty"`
+	RecentSmartModels []ModelEntryWire          `json:"recentLargeModels,omitempty"`
+	RecentFastModels  []ModelEntryWire          `json:"recentSmallModels,omitempty"`
 	ContextPaths      []string                  `json:"contextPaths,omitempty"`
 	SkillsPaths       []string                  `json:"skillsPaths,omitempty"`
 	InitializeAs      string                    `json:"initializeAs,omitempty"`
@@ -483,7 +483,7 @@ type ConfigWire struct {
 	KeepAliveEnabled bool `json:"keepAliveEnabled"`
 }
 
-// ModelEntryWire represents a selected model entry (large/small/etc).
+// ModelEntryWire represents a selected model entry (smart/fast/etc).
 type ModelEntryWire struct {
 	Provider string `json:"Provider"`
 	Model    string `json:"Model"`

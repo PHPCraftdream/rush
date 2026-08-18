@@ -88,8 +88,8 @@ test("default model: send_message has no overrides and response appears in chat"
   const payload = sent.payload as Record<string, unknown>;
   expect(payload.content).toBe("hello");
   // No model overrides — backend reads from session record in DB
-  expect(payload.largeModel).toBeUndefined();
-  expect(payload.smallModel).toBeUndefined();
+  expect(payload.smartModel).toBeUndefined();
+  expect(payload.fastModel).toBeUndefined();
 
   await sendMockWSMessage(page, {
     type: "message_created",
@@ -111,15 +111,15 @@ test("switching large model sends set_session_models and response appears in cha
   await setupSessionAndConfig(page, "mc-cli", "CLI Claude Chat");
 
   await expect(
-    page.locator('[data-test-id="model-selector-large"]')
+    page.locator('[data-test-id="model-selector-smart"]')
   ).toBeVisible({ timeout: 3000 });
-  await page.locator('[data-test-id="model-selector-large"]').click();
+  await page.locator('[data-test-id="model-selector-smart"]').click();
   await page.locator('[data-test-id="model-dropdown"]').getByText("claude-cli").click();
 
   // Verify set_session_models was sent
   const modelsCmd = await waitForWSSend(page, "set_session_models");
-  const mp = modelsCmd.payload as { largeModel: { provider: string; model: string } };
-  expect(mp.largeModel).toEqual({ provider: "cliprovider", model: "claude-cli" });
+  const mp = modelsCmd.payload as { smartModel: { provider: string; model: string } };
+  expect(mp.smartModel).toEqual({ provider: "cliprovider", model: "claude-cli" });
 
   // Simulate server confirming session model update
   await sendMockWSMessage(page, {
@@ -127,13 +127,13 @@ test("switching large model sends set_session_models and response appears in cha
     payload: makeSession({
       ID: "mc-cli",
       Title: "CLI Claude Chat",
-      LargeModelProvider: "cliprovider",
-      LargeModelID: "claude-cli",
+      SmartModelProvider: "cliprovider",
+      SmartModelID: "claude-cli",
     }),
   });
 
   await expect(
-    page.locator('[data-test-id="model-selector-large"]').filter({ hasText: "claude-cli" })
+    page.locator('[data-test-id="model-selector-smart"]').filter({ hasText: "claude-cli" })
   ).toBeVisible({ timeout: 2000 });
 
   // Send a message — no override in payload
@@ -143,7 +143,7 @@ test("switching large model sends set_session_models and response appears in cha
   await waitForWSSend(page, "send_message");
   const payload = await getLastSentMessage(page);
   expect(payload.content).toBe("what model are you?");
-  expect(payload.largeModel).toBeUndefined();
+  expect(payload.smartModel).toBeUndefined();
 
   // Simulate assistant response
   await sendMockWSMessage(page, {
@@ -165,12 +165,12 @@ test("switching large model sends set_session_models and response appears in cha
 test("switching small model sends set_session_models and response appears in chat", async ({ page }) => {
   await setupSessionAndConfig(page, "mc-glm", "GLM Chat");
 
-  await page.locator('[data-test-id="model-selector-small"]').click();
+  await page.locator('[data-test-id="model-selector-fast"]').click();
   await page.locator('[data-test-id="model-dropdown"]').getByText("glm-5").click();
 
   const modelsCmd = await waitForWSSend(page, "set_session_models");
-  const mp = modelsCmd.payload as { smallModel: { provider: string; model: string } };
-  expect(mp.smallModel).toEqual({ provider: "glm", model: "glm-5" });
+  const mp = modelsCmd.payload as { fastModel: { provider: string; model: string } };
+  expect(mp.fastModel).toEqual({ provider: "glm", model: "glm-5" });
 
   await page.locator('[data-test-id="chat-input-textarea"]').fill("respond fast");
   await page.locator('[data-test-id="chat-input-send-button"]').click();
@@ -178,7 +178,7 @@ test("switching small model sends set_session_models and response appears in cha
   await waitForWSSend(page, "send_message");
   const payload = await getLastSentMessage(page);
   expect(payload.content).toBe("respond fast");
-  expect(payload.smallModel).toBeUndefined();
+  expect(payload.fastModel).toBeUndefined();
 
   await sendMockWSMessage(page, {
     type: "message_created",
@@ -204,7 +204,7 @@ test("switching model mid-session: set_session_models sent each time, no send_me
   await page.locator('[data-test-id="chat-input-send-button"]').click();
   await waitForWSSend(page, "send_message");
   const first = await getLastSentMessage(page);
-  expect(first.largeModel).toBeUndefined();
+  expect(first.smartModel).toBeUndefined();
 
   await sendMockWSMessage(page, {
     type: "message_created",
@@ -218,7 +218,7 @@ test("switching model mid-session: set_session_models sent each time, no send_me
   await expect(page.getByText("Reply one.")).toBeVisible({ timeout: 3000 });
 
   // Switch large model to glm-5
-  await page.locator('[data-test-id="model-selector-large"]').click();
+  await page.locator('[data-test-id="model-selector-smart"]').click();
   await page.locator('[data-test-id="model-dropdown"]').getByText("glm-5").click();
   await waitForWSSend(page, "set_session_models");
 
@@ -235,7 +235,7 @@ test("switching model mid-session: set_session_models sent each time, no send_me
 
   const second = await getLastSentMessage(page);
   expect(second.content).toBe("second message");
-  expect(second.largeModel).toBeUndefined();
+  expect(second.smartModel).toBeUndefined();
 
   await sendMockWSMessage(page, {
     type: "message_created",

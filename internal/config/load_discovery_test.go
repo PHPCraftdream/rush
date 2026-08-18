@@ -33,8 +33,8 @@ func TestConfig_LoadFromBytes(t *testing.T) {
 func TestConfig_LoadFromBytes_WorkerAndReviewerModels(t *testing.T) {
 	data := []byte(`{
 		"models": {
-			"large": {"model": "gpt-4o", "provider": "openai"},
-			"small": {"model": "gpt-4o-mini", "provider": "openai"},
+			"smart": {"model": "gpt-4o", "provider": "openai"},
+			"fast": {"model": "gpt-4o-mini", "provider": "openai"},
 			"worker": {"model": "gpt-4o-mini", "provider": "openai"},
 			"reviewer": {"model": "o1", "provider": "openai"}
 		}
@@ -46,13 +46,13 @@ func TestConfig_LoadFromBytes_WorkerAndReviewerModels(t *testing.T) {
 	require.NotNil(t, loadedConfig)
 	require.Len(t, loadedConfig.Models, 4)
 
-	large, ok := loadedConfig.Models[SelectedModelTypeLarge]
+	smart, ok := loadedConfig.Models[SelectedModelTypeSmart]
 	require.True(t, ok)
-	require.Equal(t, "gpt-4o", large.Model)
+	require.Equal(t, "gpt-4o", smart.Model)
 
-	small, ok := loadedConfig.Models[SelectedModelTypeSmall]
+	fast, ok := loadedConfig.Models[SelectedModelTypeFast]
 	require.True(t, ok)
-	require.Equal(t, "gpt-4o-mini", small.Model)
+	require.Equal(t, "gpt-4o-mini", fast.Model)
 
 	worker, ok := loadedConfig.Models[SelectedModelTypeWorker]
 	require.True(t, ok)

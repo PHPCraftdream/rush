@@ -72,8 +72,8 @@ test("context % shown when model has contextWindow", async ({ page }) => {
       Title: "Pct Session",
       PromptTokens: 80_000,
       CompletionTokens: 20_000,
-      LargeModelProvider: "anthropic",
-      LargeModelID: "claude-opus-4",
+      SmartModelProvider: "anthropic",
+      SmartModelID: "claude-opus-4",
     })],
   });
   await sendMockWSMessage(page, {
@@ -95,8 +95,8 @@ test("context % not shown when model has no contextWindow", async ({ page }) => 
       Title: "No Window",
       PromptTokens: 10_000,
       CompletionTokens: 5_000,
-      LargeModelProvider: "unknown",
-      LargeModelID: "mystery-model",
+      SmartModelProvider: "unknown",
+      SmartModelID: "mystery-model",
     })],
   });
   await sendMockWSMessage(page, {
@@ -126,8 +126,8 @@ test("context % has green color class when below 60%", async ({ page }) => {
       Title: "Green Ctx",
       PromptTokens: 40_000,
       CompletionTokens: 10_000,
-      LargeModelProvider: "anthropic",
-      LargeModelID: "claude-opus-4",
+      SmartModelProvider: "anthropic",
+      SmartModelID: "claude-opus-4",
     })],
   });
   await sendMockWSMessage(page, { type: "config", payload: makeConfig() });
@@ -148,8 +148,8 @@ test("context % has yellow color class between 60% and 85%", async ({ page }) =>
       Title: "Yellow Ctx",
       PromptTokens: 100_000,
       CompletionTokens: 40_000,
-      LargeModelProvider: "anthropic",
-      LargeModelID: "claude-opus-4",
+      SmartModelProvider: "anthropic",
+      SmartModelID: "claude-opus-4",
     })],
   });
   await sendMockWSMessage(page, { type: "config", payload: makeConfig() });
@@ -170,8 +170,8 @@ test("context % has red color class at 85% or above", async ({ page }) => {
       Title: "Red Ctx",
       PromptTokens: 150_000,
       CompletionTokens: 30_000,
-      LargeModelProvider: "anthropic",
-      LargeModelID: "claude-opus-4",
+      SmartModelProvider: "anthropic",
+      SmartModelID: "claude-opus-4",
     })],
   });
   await sendMockWSMessage(page, { type: "config", payload: makeConfig() });
@@ -192,8 +192,8 @@ test("context % capped at 100% even if tokens exceed context window", async ({ p
       Title: "Capped Ctx",
       PromptTokens: 200_000,
       CompletionTokens: 20_000,
-      LargeModelProvider: "anthropic",
-      LargeModelID: "claude-opus-4",
+      SmartModelProvider: "anthropic",
+      SmartModelID: "claude-opus-4",
     })],
   });
   await sendMockWSMessage(page, { type: "config", payload: makeConfig() });
@@ -243,8 +243,8 @@ test("token badge tooltip shows exact/context ratio when context window availabl
       Title: "Ratio Session",
       PromptTokens: 80_000,
       CompletionTokens: 20_000,
-      LargeModelProvider: "anthropic",
-      LargeModelID: "claude-opus-4",
+      SmartModelProvider: "anthropic",
+      SmartModelID: "claude-opus-4",
     })],
   });
   await sendMockWSMessage(page, { type: "config", payload: makeConfig() });

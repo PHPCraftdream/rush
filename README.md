@@ -159,9 +159,9 @@ jq -r '.error' "$out"         # error.message if non-success
 
 #### Flags
 
-- **`--role` (required)** — four slots exist: `smart`/`large` (the
+- **`--role` (required)** — four slots exist: `smart` (the
   strong default; combined with a configured worker model this also
-  triggers orchestrator mode — see below), `fast`/`small` (the cheap
+  triggers orchestrator mode — see below), `fast` (the cheap
   slot), `worker` (optional, no alias, cheap slot for delegated
   hands-on sub-task work — reachable directly via `--role worker`, or
   indirectly when a worker is configured and a `--role smart` run
@@ -199,7 +199,7 @@ jq -r '.error' "$out"         # error.message if non-success
   AND a `worker` model is configured, the ban on the `agent` tool
   specifically is lifted automatically — this is "orchestrator mode"
   (see below); `agentic_fetch` stays banned regardless, since it always
-  runs on the small model and isn't part of hands-on delegation. An
+  runs on the fast model and isn't part of hands-on delegation. An
   explicit `--agents single` always overrides this and keeps both tools
   banned.
 - **`--aggregation summary | concat | attach`** — how sub-agent fan-out
@@ -464,7 +464,7 @@ file and strips any remaining legacy `CLAUDE.md` block.
 
 ### 6. `crush models` — picking and inspecting models
 
-Four model slots exist: `large`/`small` (the smart/fast pair every
+Four model slots exist: `smart`/`fast` (the pair every
 `crush run` uses by default) plus two optional ones, `worker` (cheap
 slot for delegated sub-task work — see orchestrator mode above) and
 `reviewer` (strongest slot, explicit-only). Commands covering the surface:
@@ -472,12 +472,12 @@ slot for delegated sub-task work — see orchestrator mode above) and
 ```bash
 crush models list             # show available atoms + raw provider/model ids (reads cache; no network)
 crush models list --refresh   # force a network refresh of provider data before listing
-crush models use <large> <small> [--worker <atom>] [--reviewer <atom>] [--global | --local]
-crush models use --small <atom>   # set just one slot — --large/--small/--worker/--reviewer are all independent
+crush models use <smart> <fast> [--worker <atom>] [--reviewer <atom>] [--global | --local]
+crush models use --fast <atom>   # set just one slot — --smart/--fast/--worker/--reviewer are all independent
 crush models state             # what's effective + per-scope breakdown (alias: `show`)
 crush models efforts [model]   # explain reasoning-effort levels and how to set them
 crush models bump <role> up|down  # step a role's effort by one level
-crush models unset [large|small|worker|reviewer|both|all] [--global|--local]
+crush models unset [smart|fast|worker|reviewer|both|all] [--global|--local]
 ```
 
 > **No side effects by default:** `crush models list` reads the on-disk
@@ -492,7 +492,7 @@ currently-enabled providers — disabled providers' atoms are hidden so the
 list only shows what actually works right now:
 
 ```
-ATOMS (combine as `crush models use <large> <small>`):
+ATOMS (combine as `crush models use <smart> <fast>`):
 
   Anthropic:
     via local `claude` CLI
@@ -526,18 +526,18 @@ once catwalk or your own `providers.zai.models` config actually provides
 one), so both the CLI atom and the web picker agree.
 
 ```bash
-crush models use opus-high glm5_turbo                # mixed Anthropic large + Z.AI small
+crush models use opus-high glm5_turbo                # mixed Anthropic smart + Z.AI fast
 crush models use --local glm5_3 glm5_turbo           # workspace-only override
 crush models use openai/gpt-5@high zai/glm-5-turbo   # raw provider/model fallback for anything not in the atom list
 
-# Also set worker/reviewer in the same call (independent of large/small)
+# Also set worker/reviewer in the same call (independent of smart/fast)
 crush models use opus-high haiku-low --worker glm5_turbo --reviewer opus-max
 
 # Change ONE slot only, leaving the other three exactly as they are —
-# --large/--small work just like --worker/--reviewer always have. The two
-# positional args and --large/--small are mutually exclusive per call.
-crush models use --small glm4_7_flash
-crush models use --large opus-high
+# --smart/--fast work just like --worker/--reviewer always have. The two
+# positional args and --smart/--fast are mutually exclusive per call.
+crush models use --fast glm4_7_flash
+crush models use --smart opus-high
 
 # Discover effort levels for a specific model (or run with no arg for the
 # full per-provider overview, including the Z.AI graduated-vs-boolean split)
@@ -555,7 +555,7 @@ overrides your global default or vice versa.
 **The cascade has a third level: session.** `--global`/`--local` (system/
 workspace) both live in a `crush.json` file and are what `models state`
 reports. On top of that, the **web UI** lets each open session pin its own
-large/small/worker/reviewer, stored in that session's DB row, not in any
+smart/fast/worker/reviewer, stored in that session's DB row, not in any
 `crush.json` — so it's invisible to `models state` and to other sessions.
 Resolution order is always **system → folder → session**: a session with no
 override inherits whatever `models state` would show; setting one there
@@ -571,8 +571,8 @@ unset, the inherited value and which level it's coming from.
 > commands now print a redirect notice pointing at `crush models use`.
 
 To clear an override and fall back to the other scope: `crush models unset
-[large|small|worker|reviewer|both|all] [--local|--global]`. `both` (the
-default when the arg is omitted) clears large+small only; `all` clears all
+[smart|fast|worker|reviewer|both|all] [--local|--global]`. `both` (the
+default when the arg is omitted) clears smart+fast only; `all` clears all
 four slots. Missing keys are a no-op.
 
 ## When NOT to use this fork

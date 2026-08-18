@@ -27,7 +27,7 @@ func (m *mockCoordinatorForShutdown) Run(ctx context.Context, sessionID, prompt 
 	panic("unexpected: Shutdown does not call Run")
 }
 
-func (m *mockCoordinatorForShutdown) RunWithOverrides(ctx context.Context, sessionID, prompt string, large, small *agent.ModelOverride, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
+func (m *mockCoordinatorForShutdown) RunWithOverrides(ctx context.Context, sessionID, prompt string, smart, fast *agent.ModelOverride, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
 	panic("unexpected: Shutdown does not call RunWithOverrides")
 }
 
@@ -59,7 +59,7 @@ func (m *mockCoordinatorForShutdown) ClearQueue(sessionID string) {
 	panic("unexpected: Shutdown does not call ClearQueue")
 }
 
-func (m *mockCoordinatorForShutdown) InterruptAndSend(ctx context.Context, sessionID, prompt string, large, small *agent.ModelOverride, attachments ...message.Attachment) error {
+func (m *mockCoordinatorForShutdown) InterruptAndSend(ctx context.Context, sessionID, prompt string, smart, fast *agent.ModelOverride, attachments ...message.Attachment) error {
 	panic("unexpected: Shutdown does not call InterruptAndSend")
 }
 

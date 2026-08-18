@@ -22,15 +22,15 @@ func TestConfig_configureProviders_HyperAPIKeyFromEnv(t *testing.T) {
 		{
 			ID:                  "hyper",
 			APIKey:              "", // No API key in provider definition
-			DefaultLargeModelID: "large-model",
-			DefaultSmallModelID: "small-model",
+			DefaultLargeModelID: "smart-model",
+			DefaultSmallModelID: "fast-model",
 			Models: []catwalk.Model{
 				{
-					ID:               "large-model",
+					ID:               "smart-model",
 					DefaultMaxTokens: 1000,
 				},
 				{
-					ID:               "small-model",
+					ID:               "fast-model",
 					DefaultMaxTokens: 500,
 				},
 			},
@@ -60,15 +60,15 @@ func TestConfig_configureProviders_HyperAPIKeyFromConfigOverrides(t *testing.T) 
 		{
 			ID:                  "hyper",
 			APIKey:              "provider-api-key",
-			DefaultLargeModelID: "large-model",
-			DefaultSmallModelID: "small-model",
+			DefaultLargeModelID: "smart-model",
+			DefaultSmallModelID: "fast-model",
 			Models: []catwalk.Model{
 				{
-					ID:               "large-model",
+					ID:               "smart-model",
 					DefaultMaxTokens: 1000,
 				},
 				{
-					ID:               "small-model",
+					ID:               "fast-model",
 					DefaultMaxTokens: 500,
 				},
 			},

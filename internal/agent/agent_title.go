@@ -127,8 +127,8 @@ func (a *sessionAgent) generateTitle(ctx context.Context, sessionID string, user
 	// title generated for session A must not pick up session B's model just
 	// because B applied an override while this goroutine was starting
 	// (task #265).
-	smallModel := cfg.smallModel
-	largeModel := cfg.largeModel
+	fastModel := cfg.fastModel
+	smartModel := cfg.smartModel
 	systemPromptPrefix := cfg.promptPrefix
 
 	newAgent := func(m fantasy.LanguageModel, p []byte, tok int64) fantasy.Agent {
@@ -154,7 +154,7 @@ func (a *sessionAgent) generateTitle(ctx context.Context, sessionID string, user
 		},
 	}
 
-	// Try the small model first, then fall back to the large one. A
+	// Try the fast model first, then fall back to the smart one. A
 	// response that hit the token limit (FinishReasonLength) is treated as
 	// a failure so we retry rather than save a truncated title.
 	type modelAttempt struct {
@@ -162,8 +162,8 @@ func (a *sessionAgent) generateTitle(ctx context.Context, sessionID string, user
 		model Model
 	}
 	attempts := []modelAttempt{
-		{"small", smallModel},
-		{"large", largeModel},
+		{"fast", fastModel},
+		{"smart", smartModel},
 	}
 
 	var resp *fantasy.AgentResult

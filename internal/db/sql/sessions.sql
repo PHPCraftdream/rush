@@ -10,10 +10,10 @@ INSERT INTO sessions (
     summary_message_id,
     updated_at,
     created_at,
-    large_model_provider,
-    large_model_id,
-    small_model_provider,
-    small_model_id,
+    smart_model_provider,
+    smart_model_id,
+    fast_model_provider,
+    fast_model_id,
     yolo_enabled
 ) VALUES (
     ?,
@@ -38,14 +38,14 @@ INSERT INTO sessions (
 -- untouched (COALESCE falls back to the current column value); a non-NULL
 -- arg (including an explicit empty string) overwrites it. This lets callers
 -- distinguish "don't touch this slot" from "clear this slot back to
--- inheriting the folder/system default" (large_model_id = '' is the existing
+-- inheriting the folder/system default" (smart_model_id = '' is the existing
 -- "no override" convention the app layer already reads via != "").
 UPDATE sessions
 SET
-    large_model_provider = COALESCE(sqlc.narg('large_model_provider'), large_model_provider),
-    large_model_id = COALESCE(sqlc.narg('large_model_id'), large_model_id),
-    small_model_provider = COALESCE(sqlc.narg('small_model_provider'), small_model_provider),
-    small_model_id = COALESCE(sqlc.narg('small_model_id'), small_model_id),
+    smart_model_provider = COALESCE(sqlc.narg('smart_model_provider'), smart_model_provider),
+    smart_model_id = COALESCE(sqlc.narg('smart_model_id'), smart_model_id),
+    fast_model_provider = COALESCE(sqlc.narg('fast_model_provider'), fast_model_provider),
+    fast_model_id = COALESCE(sqlc.narg('fast_model_id'), fast_model_id),
     updated_at = strftime('%s', 'now')
 WHERE id = sqlc.arg('id');
 
@@ -135,8 +135,8 @@ WHERE id = ?;
 -- name: UpdateSessionReasoningEffort :exec
 UPDATE sessions
 SET
-    large_model_reasoning_effort = ?,
-    small_model_reasoning_effort = ?,
+    smart_model_reasoning_effort = ?,
+    fast_model_reasoning_effort = ?,
     updated_at = strftime('%s', 'now')
 WHERE id = ?;
 

@@ -41,8 +41,8 @@ func TestRunSummarizeSilent_CallsActivityNotify(t *testing.T) {
 		CatwalkCfg: catwalk.Model{ContextWindow: 200000, DefaultMaxTokens: 1000},
 	}
 	a := NewSessionAgent(SessionAgentOptions{
-		LargeModel:           model,
-		SmallModel:           model,
+		SmartModel:           model,
+		FastModel:            model,
 		SystemPrompt:         "you are a probe",
 		IsYolo:               true,
 		Sessions:             env.sessions,
@@ -69,9 +69,9 @@ func TestRunSummarizeSilent_CallsActivityNotify(t *testing.T) {
 	}
 
 	// Run the silent summarize.
-	largeModel := sa.largeModel.Get()
+	smartModel := sa.smartModel.Get()
 	systemPromptPrefix := sa.systemPromptPrefix.Get()
-	err = sa.runSummarizeSilent(ctx, sess.ID, fantasy.ProviderOptions{}, largeModel, systemPromptPrefix)
+	err = sa.runSummarizeSilent(ctx, sess.ID, fantasy.ProviderOptions{}, smartModel, systemPromptPrefix)
 	require.NoError(t, err)
 
 	// Verify that the provider was called (the summary stream actually ran).
@@ -135,8 +135,8 @@ func TestRunSummarizeSilent_CallsWatchdogBump(t *testing.T) {
 		CatwalkCfg: catwalk.Model{ContextWindow: 200000, DefaultMaxTokens: 1000},
 	}
 	a := NewSessionAgent(SessionAgentOptions{
-		LargeModel:           model,
-		SmallModel:           model,
+		SmartModel:           model,
+		FastModel:            model,
 		SystemPrompt:         "you are a probe",
 		IsYolo:               true,
 		Sessions:             env.sessions,
@@ -163,9 +163,9 @@ func TestRunSummarizeSilent_CallsWatchdogBump(t *testing.T) {
 	}
 
 	// Run the silent summarize.
-	largeModel := sa.largeModel.Get()
+	smartModel := sa.smartModel.Get()
 	systemPromptPrefix := sa.systemPromptPrefix.Get()
-	err = sa.runSummarizeSilent(ctx, sess.ID, fantasy.ProviderOptions{}, largeModel, systemPromptPrefix)
+	err = sa.runSummarizeSilent(ctx, sess.ID, fantasy.ProviderOptions{}, smartModel, systemPromptPrefix)
 	require.NoError(t, err)
 
 	// Verify that the provider was called (the summary stream actually ran).
@@ -201,8 +201,8 @@ func TestRunSummarizeBody_CallsActivityNotify(t *testing.T) {
 		CatwalkCfg: catwalk.Model{ContextWindow: 200000, DefaultMaxTokens: 1000},
 	}
 	a := NewSessionAgent(SessionAgentOptions{
-		LargeModel:           model,
-		SmallModel:           model,
+		SmartModel:           model,
+		FastModel:            model,
 		SystemPrompt:         "you are a probe",
 		IsYolo:               true,
 		Sessions:             env.sessions,
@@ -229,9 +229,9 @@ func TestRunSummarizeBody_CallsActivityNotify(t *testing.T) {
 	}
 
 	// Run the summarize body.
-	largeModel := sa.largeModel.Get()
+	smartModel := sa.smartModel.Get()
 	systemPromptPrefix := sa.systemPromptPrefix.Get()
-	err = sa.runSummarizeBody(ctx, sess.ID, fantasy.ProviderOptions{}, largeModel, systemPromptPrefix)
+	err = sa.runSummarizeBody(ctx, sess.ID, fantasy.ProviderOptions{}, smartModel, systemPromptPrefix)
 	require.NoError(t, err)
 
 	// Verify that the provider was called (the summary stream actually ran).
@@ -295,8 +295,8 @@ func TestRunSummarizeBody_CallsWatchdogBump(t *testing.T) {
 		CatwalkCfg: catwalk.Model{ContextWindow: 200000, DefaultMaxTokens: 1000},
 	}
 	a := NewSessionAgent(SessionAgentOptions{
-		LargeModel:           model,
-		SmallModel:           model,
+		SmartModel:           model,
+		FastModel:            model,
 		SystemPrompt:         "you are a probe",
 		IsYolo:               true,
 		Sessions:             env.sessions,
@@ -323,9 +323,9 @@ func TestRunSummarizeBody_CallsWatchdogBump(t *testing.T) {
 	}
 
 	// Run the summarize body.
-	largeModel := sa.largeModel.Get()
+	smartModel := sa.smartModel.Get()
 	systemPromptPrefix := sa.systemPromptPrefix.Get()
-	err = sa.runSummarizeBody(ctx, sess.ID, fantasy.ProviderOptions{}, largeModel, systemPromptPrefix)
+	err = sa.runSummarizeBody(ctx, sess.ID, fantasy.ProviderOptions{}, smartModel, systemPromptPrefix)
 	require.NoError(t, err)
 
 	// Verify that the provider was called (the summary stream actually ran).

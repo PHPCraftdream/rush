@@ -59,9 +59,9 @@ async function setup(page: any) {
       makeSession({
         ID: sessionID,
         Title: "Reasoning Effort Test",
-        LargeModelProvider: "local-cli",
-        LargeModelID: "cli-claude-opus",
-        LargeModelReasoningEffort: "medium",
+        SmartModelProvider: "local-cli",
+        SmartModelID: "cli-claude-opus",
+        SmartModelReasoningEffort: "medium",
       }),
     ],
   });
@@ -79,7 +79,7 @@ test.describe("Reasoning Effort Controls", () => {
   test("effort controls are visible for CLI Claude models", async ({ page }) => {
     await setup(page);
 
-    // Large model selector should show effort controls
+    // Smart model selector should show effort controls
     await expect(page.locator('[data-test-id="reasoning-effort-large"]')).toBeVisible();
     await expect(
       page.locator('[data-test-id="reasoning-effort-large-decrease"]'),
@@ -91,7 +91,7 @@ test.describe("Reasoning Effort Controls", () => {
       page.locator('[data-test-id="reasoning-effort-large-increase"]'),
     ).toBeVisible();
 
-    // Small model selector should also show effort controls
+    // Fast model selector should also show effort controls
     await expect(page.locator('[data-test-id="reasoning-effort-small"]')).toBeVisible();
   });
 
@@ -118,7 +118,7 @@ test.describe("Reasoning Effort Controls", () => {
     // Verify set_session_models was sent
     const sentMsg = await waitForWSSend(page, "set_session_models");
     expect(sentMsg.type).toBe("set_session_models");
-    expect(sentMsg.payload.largeModel.reasoning_effort).toBe("high");
+    expect(sentMsg.payload.smartModel.reasoning_effort).toBe("high");
 
     // H (high) → X (max)
     await page.locator('[data-test-id="reasoning-effort-large-increase"]').click();
@@ -175,9 +175,9 @@ test.describe("Reasoning Effort Controls", () => {
       payload: makeSession({
         ID: sessionID,
         Title: "Reasoning Effort Test",
-        LargeModelProvider: "local-cli",
-        LargeModelID: "cli-claude-opus",
-        LargeModelReasoningEffort: "high",
+        SmartModelProvider: "local-cli",
+        SmartModelID: "cli-claude-opus",
+        SmartModelReasoningEffort: "high",
       }),
     });
 
@@ -237,12 +237,12 @@ test.describe("Reasoning Effort Controls", () => {
     // Set large to high
     await page.locator('[data-test-id="reasoning-effort-large-increase"]').click();
     await expect(largeLabel).toHaveText("H");
-    await expect(smallLabel).toHaveText("M"); // Small unchanged
+    await expect(smallLabel).toHaveText("M"); // Fast unchanged
 
     // Set small to max
     await page.locator('[data-test-id="reasoning-effort-small-increase"]').click();
     await page.locator('[data-test-id="reasoning-effort-small-increase"]').click();
     await expect(smallLabel).toHaveText("X");
-    await expect(largeLabel).toHaveText("H"); // Large unchanged
+    await expect(largeLabel).toHaveText("H"); // Smart unchanged
   });
 });

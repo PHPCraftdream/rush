@@ -244,8 +244,8 @@ func TestP339_NoDuplicateExecutionAfterHandoff(t *testing.T) {
 	}
 
 	sa := NewSessionAgent(SessionAgentOptions{
-		LargeModel:           model,
-		SmallModel:           model,
+		SmartModel:           model,
+		FastModel:            model,
 		SystemPrompt:         "you are a probe",
 		DataDirectory:        env.workingDir,
 		Sessions:             env.sessions,

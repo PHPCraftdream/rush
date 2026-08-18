@@ -1,4 +1,4 @@
-// Fork patch: batch 11 — `crush models use <large> <small>` replaces the older
+// Fork patch: batch 11 — `crush models use <smart> <fast>` replaces the older
 // `crush models set --large X --small Y` with positional args + atom registry.
 package cmd
 
@@ -11,7 +11,7 @@ import (
 )
 
 var modelsUseCmd = &cobra.Command{
-	Use:   "use [<large> <small>]",
+	Use:   "use [<smart> <fast>]",
 	Short: "Set any of the four model slots from atom names — all at once or one at a time",
 	Long: `Activate model slots using the atom syntax. Each value is either an atom
 name (e.g. "opus-high", "glm5_turbo") OR a raw "provider/model[@level]"
@@ -27,16 +27,16 @@ remains "local if set, else global".
 Two forms are supported — never mix them in the same call:
 
   1. Positional (sets large + small together):
-       crush models use <large> <small>
+       crush models use <smart> <fast>
 
   2. Flags (set any subset of the four slots independently — e.g. only the
-     fast/small model, leaving large/worker/reviewer untouched):
+     fast/fast model, leaving large/worker/reviewer untouched):
        crush models use --small <atom>
        crush models use --large <atom> --reviewer <atom>
 
 --worker and --reviewer (see ` + "`crush models --help`" + ` for what each is for)
 are ALWAYS flag-only, in both forms, and are resolved/written independently
-of large/small. Omit a flag to leave that slot untouched.
+of smart/fast. Omit a flag to leave that slot untouched.
 
 Every one of the four slots accepts an effort suffix right here — either
 "<atom>-<level>" (e.g. "glm5_3-max") or "provider/model@level" — no separate
@@ -74,7 +74,7 @@ crush models use o47x h45l --reviewer oxx
 # Set effort on a role slot in the same call: "<atom>-<level>" or "provider/model@level"
 crush models use o47x h45l --reviewer glm5_3-max
 
-# Set worker and reviewer together with large/small
+# Set worker and reviewer together with smart/fast
 crush models use o47x h45l --worker fl --reviewer oxx
 
 # Workspace-only override (writes ./.crush/crush.json, leaves global untouched).
@@ -83,10 +83,10 @@ crush models use --local o47x h45l
 # Raw "provider/model[@level]" syntax for models not in the registry.
 crush models use openai/gpt-5@high zai/glm-5-turbo
 
-# Change ONLY the fast/small model, leaving large/worker/reviewer untouched
+# Change ONLY the fast/fast model, leaving large/worker/reviewer untouched
 crush models use --small glm4_7_flash
 
-# Change ONLY the smart/large model
+# Change ONLY the smart/smart model
 crush models use --large o47x
 
 # --large and --small together, still without touching worker/reviewer
@@ -100,31 +100,31 @@ crush models state
 		if err != nil {
 			return err
 		}
-		largeFlag, _ := cmd.Flags().GetString("large")
-		smallFlag, _ := cmd.Flags().GetString("small")
+		smartFlag, _ := cmd.Flags().GetString("smart")
+		fastFlag, _ := cmd.Flags().GetString("fast")
 		workerArg, _ := cmd.Flags().GetString("worker")
 		reviewerArg, _ := cmd.Flags().GetString("reviewer")
 
 		// Exactly one of the two forms documented above may be used per
-		// call: positional <large> <small>, or --large/--small flags. Never
+		// call: positional <smart> <fast>, or --large/--small flags. Never
 		// both — a call with both would leave it ambiguous which value
 		// actually wins, and silently preferring one over the other is
 		// worse than just refusing.
-		var largeArg, smallArg string
+		var smartArg, fastArg string
 		switch len(args) {
 		case 2:
-			if largeFlag != "" || smallFlag != "" {
-				return fmt.Errorf("cannot combine positional <large> <small> args with --large/--small flags — use one form or the other (see `crush models use --help`)")
+			if smartFlag != "" || fastFlag != "" {
+				return fmt.Errorf("cannot combine positional <smart> <fast> args with --large/--small flags — use one form or the other (see `crush models use --help`)")
 			}
-			largeArg, smallArg = args[0], args[1]
+			smartArg, fastArg = args[0], args[1]
 		case 0:
-			largeArg, smallArg = largeFlag, smallFlag
+			smartArg, fastArg = smartFlag, fastFlag
 		default:
-			return fmt.Errorf("expected 0 positional args (use --large/--small to update individual slots) or exactly 2 (<large> <small>) — got %d", len(args))
+			return fmt.Errorf("expected 0 positional args (use --large/--small to update individual slots) or exactly 2 (<smart> <fast>) — got %d", len(args))
 		}
 
-		if largeArg == "" && smallArg == "" && workerArg == "" && reviewerArg == "" {
-			return fmt.Errorf("nothing to set — provide <large> <small> positionally, or at least one of --large/--small/--worker/--reviewer")
+		if smartArg == "" && fastArg == "" && workerArg == "" && reviewerArg == "" {
+			return fmt.Errorf("nothing to set — provide <smart> <fast> positionally, or at least one of --large/--small/--worker/--reviewer")
 		}
 
 		a, err := setupApp(cmd)
@@ -141,27 +141,27 @@ crush models state
 		// Pass 1: parse + validate EVERY provided argument before writing
 		// anything. This must have zero side effects — no config writes —
 		// so that a validation failure on a later field (e.g. --reviewer)
-		// can never leave an earlier field (large/small/--worker) already
+		// can never leave an earlier field (smart/fast/--worker) already
 		// persisted. See CLAUDE.md task tracking / bug report: previously
 		// large and small were written immediately after being parsed, so a
-		// bad --reviewer value failed the command AFTER large/small (and
+		// bad --reviewer value failed the command AFTER smart/fast (and
 		// worker) were already durably written to disk — a silent partial
 		// write masquerading as a no-op failure.
-		var largeSel config.SelectedModel
-		if largeArg != "" {
+		var smartSel config.SelectedModel
+		if smartArg != "" {
 			var lerr error
-			largeSel, lerr = parseAtomOrRaw(largeArg, resolve)
+			smartSel, lerr = parseAtomOrRaw(smartArg, resolve)
 			if lerr != nil {
-				return fmt.Errorf("large: %w", lerr)
+				return fmt.Errorf("smart: %w", lerr)
 			}
 		}
 
-		var smallSel config.SelectedModel
-		if smallArg != "" {
+		var fastSel config.SelectedModel
+		if fastArg != "" {
 			var serr error
-			smallSel, serr = parseAtomOrRaw(smallArg, resolve)
+			fastSel, serr = parseAtomOrRaw(fastArg, resolve)
 			if serr != nil {
-				return fmt.Errorf("small: %w", serr)
+				return fmt.Errorf("fast: %w", serr)
 			}
 		}
 
@@ -193,11 +193,11 @@ crush models state
 		// (config.ConfigStore.SetConfigFields), rather than inventing a new
 		// mechanism.
 		toWrite := map[config.SelectedModelType]config.SelectedModel{}
-		if largeArg != "" {
-			toWrite[config.SelectedModelTypeLarge] = largeSel
+		if smartArg != "" {
+			toWrite[config.SelectedModelTypeSmart] = smartSel
 		}
-		if smallArg != "" {
-			toWrite[config.SelectedModelTypeSmall] = smallSel
+		if fastArg != "" {
+			toWrite[config.SelectedModelTypeFast] = fastSel
 		}
 		if workerArg != "" {
 			toWrite[config.SelectedModelTypeWorker] = workerSel
@@ -210,13 +210,13 @@ crush models state
 			return fmt.Errorf("write models: %w", err)
 		}
 
-		if largeArg != "" {
+		if smartArg != "" {
 			fmt.Fprintf(os.Stderr, "set large = %s/%s%s in %s scope\n",
-				largeSel.Provider, largeSel.Model, effortSuffix(largeSel.ReasoningEffort), scope)
+				smartSel.Provider, smartSel.Model, effortSuffix(smartSel.ReasoningEffort), scope)
 		}
-		if smallArg != "" {
+		if fastArg != "" {
 			fmt.Fprintf(os.Stderr, "set small = %s/%s%s in %s scope\n",
-				smallSel.Provider, smallSel.Model, effortSuffix(smallSel.ReasoningEffort), scope)
+				fastSel.Provider, fastSel.Model, effortSuffix(fastSel.ReasoningEffort), scope)
 		}
 		if workerArg != "" {
 			fmt.Fprintf(os.Stderr, "set worker = %s/%s%s in %s scope\n",
@@ -242,8 +242,8 @@ func init() {
 	modelsUseCmd.Flags().Bool("global", false, "Target the global config (default when neither --global nor --local is given)")
 	modelsUseCmd.Flags().Bool("local", false, "Target the workspace config (./.crush/crush.json)")
 	modelsUseCmd.MarkFlagsMutuallyExclusive("global", "local")
-	modelsUseCmd.Flags().String("large", "", "Set only the large (\"smart\") slot (atom or provider/model[@level]) — cannot combine with positional args")
-	modelsUseCmd.Flags().String("small", "", "Set only the small (\"fast\") slot (atom or provider/model[@level]) — cannot combine with positional args")
+	modelsUseCmd.Flags().String("smart", "", "Set only the large (\"smart\") slot (atom or provider/model[@level]) — cannot combine with positional args")
+	modelsUseCmd.Flags().String("fast", "", "Set only the small (\"fast\") slot (atom or provider/model[@level]) — cannot combine with positional args")
 	modelsUseCmd.Flags().String("worker", "", "Also set the optional worker slot (atom or provider/model[@level])")
 	modelsUseCmd.Flags().String("reviewer", "", "Also set the optional reviewer slot (atom or provider/model[@level])")
 	modelsCmd.AddCommand(modelsUseCmd)

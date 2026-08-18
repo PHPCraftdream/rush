@@ -344,35 +344,35 @@ func TestResolvePingRole(t *testing.T) {
 		t.Parallel()
 		modelType, err := resolvePingRole("")
 		require.NoError(t, err)
-		require.Equal(t, config.SelectedModelTypeLarge, modelType)
+		require.Equal(t, config.SelectedModelTypeSmart, modelType)
 	})
 
 	t.Run("smart aliases to large", func(t *testing.T) {
 		t.Parallel()
 		modelType, err := resolvePingRole("smart")
 		require.NoError(t, err)
-		require.Equal(t, config.SelectedModelTypeLarge, modelType)
+		require.Equal(t, config.SelectedModelTypeSmart, modelType)
 	})
 
 	t.Run("large aliases to large", func(t *testing.T) {
 		t.Parallel()
-		modelType, err := resolvePingRole("large")
+		modelType, err := resolvePingRole("smart")
 		require.NoError(t, err)
-		require.Equal(t, config.SelectedModelTypeLarge, modelType)
+		require.Equal(t, config.SelectedModelTypeSmart, modelType)
 	})
 
 	t.Run("fast aliases to small", func(t *testing.T) {
 		t.Parallel()
 		modelType, err := resolvePingRole("fast")
 		require.NoError(t, err)
-		require.Equal(t, config.SelectedModelTypeSmall, modelType)
+		require.Equal(t, config.SelectedModelTypeFast, modelType)
 	})
 
 	t.Run("small aliases to small", func(t *testing.T) {
 		t.Parallel()
-		modelType, err := resolvePingRole("small")
+		modelType, err := resolvePingRole("fast")
 		require.NoError(t, err)
-		require.Equal(t, config.SelectedModelTypeSmall, modelType)
+		require.Equal(t, config.SelectedModelTypeFast, modelType)
 	})
 
 	t.Run("worker resolves to worker", func(t *testing.T) {
@@ -395,8 +395,8 @@ func TestResolvePingRole(t *testing.T) {
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "--role: invalid value")
 		require.Contains(t, err.Error(), "turbo")
-		require.Contains(t, err.Error(), "smart|large")
-		require.Contains(t, err.Error(), "fast|small")
+		require.Contains(t, err.Error(), "smart")
+		require.Contains(t, err.Error(), "fast")
 	})
 
 	t.Run("role is case-sensitive", func(t *testing.T) {
@@ -497,32 +497,32 @@ func TestPingCmd_ModelAndRoleMutuallyExclusive(t *testing.T) {
 func TestResolveModelRole(t *testing.T) {
 	t.Parallel()
 
-	t.Run("large", func(t *testing.T) {
+	t.Run("smart", func(t *testing.T) {
 		t.Parallel()
-		modelType, err := resolveModelRole("large")
+		modelType, err := resolveModelRole("smart")
 		require.NoError(t, err)
-		require.Equal(t, config.SelectedModelTypeLarge, modelType)
+		require.Equal(t, config.SelectedModelTypeSmart, modelType)
 	})
 
 	t.Run("smart aliases to large", func(t *testing.T) {
 		t.Parallel()
 		modelType, err := resolveModelRole("smart")
 		require.NoError(t, err)
-		require.Equal(t, config.SelectedModelTypeLarge, modelType)
+		require.Equal(t, config.SelectedModelTypeSmart, modelType)
 	})
 
-	t.Run("small", func(t *testing.T) {
+	t.Run("fast", func(t *testing.T) {
 		t.Parallel()
-		modelType, err := resolveModelRole("small")
+		modelType, err := resolveModelRole("fast")
 		require.NoError(t, err)
-		require.Equal(t, config.SelectedModelTypeSmall, modelType)
+		require.Equal(t, config.SelectedModelTypeFast, modelType)
 	})
 
 	t.Run("fast aliases to small", func(t *testing.T) {
 		t.Parallel()
 		modelType, err := resolveModelRole("fast")
 		require.NoError(t, err)
-		require.Equal(t, config.SelectedModelTypeSmall, modelType)
+		require.Equal(t, config.SelectedModelTypeFast, modelType)
 	})
 
 	t.Run("worker", func(t *testing.T) {

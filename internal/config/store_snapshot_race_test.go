@@ -37,8 +37,8 @@ func writeGenerationConfig(t *testing.T, path string, gen int) {
 			}
 		},
 		"models": {
-			"large": {"provider": "genprovider", "model": %q},
-			"small": {"provider": "genprovider", "model": %q}
+			"smart": {"provider": "genprovider", "model": %q},
+			"fast": {"provider": "genprovider", "model": %q}
 		}
 	}`, modelID, modelID, modelID, modelID)
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
@@ -161,12 +161,12 @@ func TestConcurrentReloadAndReads_NeverObservesTornGeneration(t *testing.T) {
 				readCount.Add(1)
 
 				if cfg != nil && resolver != nil {
-					if large, ok := cfg.Models[SelectedModelTypeLarge]; ok {
+					if smart, ok := cfg.Models[SelectedModelTypeSmart]; ok {
 						if pc, ok := cfg.Providers.Get("genprovider"); ok && len(pc.Models) > 0 {
-							// The model selected for "large" must always be
+							// The model selected for "smart" must always be
 							// exactly the one model this provider config
 							// carries — a same-cfg sanity check.
-							if large.Model != pc.Models[0].ID {
+							if smart.Model != pc.Models[0].ID {
 								tornGenerations.Add(1)
 							}
 						}
@@ -263,7 +263,7 @@ func TestFailedReload_DoesNotChangePublishedSnapshot(t *testing.T) {
 	store.CaptureStalenessSnapshot([]string{configPath})
 
 	before := store.Config()
-	beforeModel := before.Models[SelectedModelTypeLarge]
+	beforeModel := before.Models[SelectedModelTypeSmart]
 	require.Equal(t, "model-gen-1", beforeModel.Model)
 
 	// Write a config with an invalid hook matcher regex — ValidateHooks
@@ -277,7 +277,7 @@ func TestFailedReload_DoesNotChangePublishedSnapshot(t *testing.T) {
 			}
 		},
 		"models": {
-			"large": {"provider": "genprovider", "model": "model-gen-2"}
+			"smart": {"provider": "genprovider", "model": "model-gen-2"}
 		},
 		"hooks": {
 			"PreToolUse": [
@@ -292,7 +292,7 @@ func TestFailedReload_DoesNotChangePublishedSnapshot(t *testing.T) {
 
 	after := store.Config()
 	require.Same(t, before, after, "Config() must return the exact same *Config after a failed reload")
-	require.Equal(t, "model-gen-1", after.Models[SelectedModelTypeLarge].Model, "failed reload must not change the published model selection")
+	require.Equal(t, "model-gen-1", after.Models[SelectedModelTypeSmart].Model, "failed reload must not change the published model selection")
 }
 
 // TestCopyOnWrite_OldReaderUnaffectedByLaterMutation is the regression test
@@ -309,30 +309,30 @@ func TestCopyOnWrite_OldReaderUnaffectedByLaterMutation(t *testing.T) {
 
 	cfg := &Config{
 		Models: map[SelectedModelType]SelectedModel{
-			SelectedModelTypeLarge: {Provider: "openai", Model: "gpt-4o"},
+			SelectedModelTypeSmart: {Provider: "openai", Model: "gpt-4o"},
 		},
 	}
 	store := NewTestStore(cfg)
 
 	// Reader captures the config BEFORE the mutation.
 	oldCfg := store.Config()
-	oldModel := oldCfg.Models[SelectedModelTypeLarge]
+	oldModel := oldCfg.Models[SelectedModelTypeSmart]
 	require.Equal(t, "gpt-4o", oldModel.Model)
 
 	// Mutate via the runtime-only copy-on-write setter (mirrors app.go's
 	// overrideModelsForNonInteractive path).
-	store.SetSelectedModelRuntime(SelectedModelTypeLarge, SelectedModel{
+	store.SetSelectedModelRuntime(SelectedModelTypeSmart, SelectedModel{
 		Provider: "anthropic",
 		Model:    "claude-x",
 	})
 
 	// The OLD snapshot's Config, and the map inside it, must be completely
 	// unaffected by the mutation that came after it was captured.
-	require.Equal(t, "gpt-4o", oldCfg.Models[SelectedModelTypeLarge].Model, "a *Config captured before a copy-on-write mutation must not observe that mutation")
+	require.Equal(t, "gpt-4o", oldCfg.Models[SelectedModelTypeSmart].Model, "a *Config captured before a copy-on-write mutation must not observe that mutation")
 
 	// A fresh Config() call must see the new value.
 	newCfg := store.Config()
-	require.Equal(t, "claude-x", newCfg.Models[SelectedModelTypeLarge].Model)
+	require.Equal(t, "claude-x", newCfg.Models[SelectedModelTypeSmart].Model)
 
 	// And the two *Config pointers must differ — proof the mutation built
 	// a new top-level Config rather than writing through the old one.
@@ -372,8 +372,8 @@ func TestConcurrentUpdateConfig_DoesNotLoseUpdates(t *testing.T) {
 	// writers targeting the same key (which would have a legitimately
 	// ambiguous "last writer wins" outcome).
 	modelTypes := []SelectedModelType{
-		SelectedModelTypeLarge,
-		SelectedModelTypeSmall,
+		SelectedModelTypeSmart,
+		SelectedModelTypeFast,
 		SelectedModelTypeWorker,
 		SelectedModelTypeReviewer,
 	}
@@ -434,22 +434,22 @@ func TestConcurrentUpdatePreferredModels_SingleWriterSemantics(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		err := store.UpdatePreferredModels(ScopeGlobal, map[SelectedModelType]SelectedModel{
-			SelectedModelTypeLarge: {Provider: "p", Model: "global-large"},
+			SelectedModelTypeSmart: {Provider: "p", Model: "global-large"},
 		})
 		require.NoError(t, err)
 	}()
 	go func() {
 		defer wg.Done()
 		err := store.UpdatePreferredModels(ScopeWorkspace, map[SelectedModelType]SelectedModel{
-			SelectedModelTypeSmall: {Provider: "p", Model: "workspace-small"},
+			SelectedModelTypeFast: {Provider: "p", Model: "workspace-small"},
 		})
 		require.NoError(t, err)
 	}()
 	wg.Wait()
 
 	final := store.Config()
-	require.Equal(t, "global-large", final.Models[SelectedModelTypeLarge].Model, "global-scope update was lost")
-	require.Equal(t, "workspace-small", final.Models[SelectedModelTypeSmall].Model, "workspace-scope update was lost")
+	require.Equal(t, "global-large", final.Models[SelectedModelTypeSmart].Model, "global-scope update was lost")
+	require.Equal(t, "workspace-small", final.Models[SelectedModelTypeFast].Model, "workspace-scope update was lost")
 }
 
 // TestConcurrentUpdateConfig_DifferentNestedFields_BothVisible fires two
@@ -632,9 +632,9 @@ func TestUpdateConfigVsReload_ReloadDiskStateNotLostByStaleClone(t *testing.T) {
 	// not "model-gen-0" (which would mean the writer's stale clone
 	// overwrote the reload's fresh-from-disk generation).
 	final := store.Config()
-	large, ok := final.Models[SelectedModelTypeLarge]
-	require.True(t, ok, "large model missing from final config")
-	require.Equal(t, "model-gen-1", large.Model,
+	smart, ok := final.Models[SelectedModelTypeSmart]
+	require.True(t, ok, "smart model missing from final config")
+	require.Equal(t, "model-gen-1", smart.Model,
 		"reload's disk state was lost — a writer published a stale clone over the reload's fresh generation (reload finished before writer released=%v)",
 		reloadFinishedFirst)
 }

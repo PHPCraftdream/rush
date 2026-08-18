@@ -53,12 +53,12 @@ type ModelOverride struct {
 var (
 	errCoderAgentNotConfigured         = errors.New("coder agent not configured")
 	errModelProviderNotConfigured      = errors.New("model provider not configured")
-	errLargeModelNotSelected           = errors.New("large model not selected")
-	errSmallModelNotSelected           = errors.New("small model not selected")
-	errLargeModelProviderNotConfigured = errors.New("large model provider not configured")
-	errSmallModelProviderNotConfigured = errors.New("small model provider not configured")
-	errLargeModelNotFound              = errors.New("large model not found in provider config")
-	errSmallModelNotFound              = errors.New("small model not found in provider config")
+	errSmartModelNotSelected           = errors.New("smart model not selected")
+	errFastModelNotSelected            = errors.New("fast model not selected")
+	errSmartModelProviderNotConfigured = errors.New("smart model provider not configured")
+	errFastModelProviderNotConfigured  = errors.New("fast model provider not configured")
+	errSmartModelNotFound              = errors.New("smart model not found in provider config")
+	errFastModelNotFound               = errors.New("fast model not found in provider config")
 	// errProviderPeakHours is returned when a provider's peak_hours
 	// window refuses the request. It is operator-actionable (the user
 	// configured the window on purpose) and MUST NOT be retried: the
@@ -134,8 +134,8 @@ type Coordinator interface {
 	// INFO: (kujtim) this is not used yet we will use this when we have multiple agents
 	// SetMainAgent(string)
 	Run(ctx context.Context, sessionID, prompt string, attachments ...message.Attachment) (*fantasy.AgentResult, error)
-	// RunWithOverrides is like Run but allows overriding the large and/or small model for this call.
-	RunWithOverrides(ctx context.Context, sessionID, prompt string, large, small *ModelOverride, attachments ...message.Attachment) (*fantasy.AgentResult, error)
+	// RunWithOverrides is like Run but allows overriding the smart and/or fast model for this call.
+	RunWithOverrides(ctx context.Context, sessionID, prompt string, smart, fast *ModelOverride, attachments ...message.Attachment) (*fantasy.AgentResult, error)
 	Cancel(sessionID string)
 	CancelAll() (stillBusy bool)
 	IsSessionBusy(sessionID string) bool
@@ -146,7 +146,7 @@ type Coordinator interface {
 	// InterruptAndSend queues a new user message and cancels the running
 	// turn so the queued message picks up immediately with everything
 	// produced so far retained in history.
-	InterruptAndSend(ctx context.Context, sessionID, prompt string, large, small *ModelOverride, attachments ...message.Attachment) error
+	InterruptAndSend(ctx context.Context, sessionID, prompt string, smart, fast *ModelOverride, attachments ...message.Attachment) error
 	// InjectMessage persists a user message and, if the session is currently
 	// running, schedules it to be merged into the next provider request
 	// without cancelling the in-flight turn. See SessionAgent.InjectMessage.
@@ -176,14 +176,14 @@ type Coordinator interface {
 	// SetRunLimits sets cost and token caps for the next Run call.
 	// Fork patch: batch 30.
 	SetRunLimits(maxCost float64, maxTokens int64)
-	// SetActiveModelRole records which named model slot (large, small,
+	// SetActiveModelRole records which named model slot (smart, fast,
 	// worker, reviewer) is driving the CURRENT top-level run, so sub-agent
 	// spawns can decide whether to prefer the cheaper Worker slot instead of
-	// blindly inheriting the parent's Large model. An empty/unset value
+	// blindly inheriting the parent's Smart model. An empty/unset value
 	// means "unknown — treat as smart": the interactive TUI/web path never
-	// calls this, and for those the default behavior — use Large for
+	// calls this, and for those the default behavior — use Smart for
 	// everything, i.e. exactly today's behavior — is correct, since
-	// "Smart = large/default". Fork patch (reviewer/worker roles).
+	// "Smart" = the default slot. Fork patch (reviewer/worker roles).
 	SetActiveModelRole(role config.SelectedModelType)
 	// SetAllowPeakHours arms a one-shot bypass of the peak-hours refusal
 	// for the next Run call. It exists so `crush run --allow-peak-hours`
@@ -262,21 +262,21 @@ type coordinator struct {
 	autoResumeMu           sync.Mutex     // guards consecutiveAutoResumes.
 	consecutiveAutoResumes map[string]int // sessionID -> consecutive auto-resumes since last human message.
 
-	// modelCache caches resolved (large, small) Model pairs keyed by their
+	// modelCache caches resolved (smart, fast) Model pairs keyed by their
 	// combined provider+model+reasoning_effort tuple. Used by
 	// resolveSessionModels to avoid rebuilding the same pair repeatedly.
 	// Cached as a pair (not two independent per-slot entries) so a single
 	// buildModelsFromCfg call always fills both roles together — see
 	// resolveSessionModels's own comment for why a per-slot cache
-	// previously mismatched large/small roles.
+	// previously mismatched smart/fast roles.
 	modelCache *csync.Map[string, cachedModelPair]
 }
 
-// cachedModelPair holds a resolved (large, small) Model pair as built
+// cachedModelPair holds a resolved (smart, fast) Model pair as built
 // together by a single buildModelsFromCfg call.
 type cachedModelPair struct {
-	large Model
-	small Model
+	smart Model
+	fast  Model
 }
 
 func NewCoordinator(

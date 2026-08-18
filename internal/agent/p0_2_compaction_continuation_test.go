@@ -151,7 +151,7 @@ func TestP0_2_CompactionContinuation_DurableAckAfterContinuationExecutes(t *test
 	t.Cleanup(dispatchSrv.Close)
 	lm := languageModelFromServer(t, dispatchSrv)
 
-	// Separate, uncounted server for the small model / title generation, so
+	// Separate, uncounted server for the fast model / title generation, so
 	// the background needsTitle call can't steal a slot from the
 	// mainCalls/summarizeCalls/continuationCalls routing above (same
 	// isolation TestRunTurn_ShouldSummarize_QueuedMessageContinuesWithoutLockDeadlock
@@ -164,7 +164,7 @@ func TestP0_2_CompactionContinuation_DurableAckAfterContinuationExecutes(t *test
 		Model:      lm,
 		CatwalkCfg: catwalk.Model{ContextWindow: 1000, DefaultMaxTokens: 1000},
 	}
-	smallModel := Model{
+	fastModel := Model{
 		Model:      titleLM,
 		CatwalkCfg: catwalk.Model{ContextWindow: 1000, DefaultMaxTokens: 1000},
 	}
@@ -173,8 +173,8 @@ func TestP0_2_CompactionContinuation_DurableAckAfterContinuationExecutes(t *test
 
 	sa := NewSessionAgent(SessionAgentOptions{
 		DataDirectory: dataDir,
-		LargeModel:    model,
-		SmallModel:    smallModel,
+		SmartModel:    model,
+		FastModel:     fastModel,
 		SystemPrompt:  "you are a probe",
 		IsYolo:        true,
 		Sessions:      ackObserver,

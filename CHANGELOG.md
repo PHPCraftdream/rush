@@ -76,6 +76,36 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   session has an explicit override for that slot, clearing it back to
   following the folder/system default instead of staying pinned forever.
 
+### Changed
+
+- **BREAKING — the model slots are now called `smart` and `fast`**, not
+  `large` and `small`. There were already two names for each of these
+  two slots: `--role smart` / `--role fast` were the CLI's words, and
+  everything under them called the same things large/small, with a
+  translation layer in the middle. One vocabulary now runs end to end —
+  config key, CLI flag, HTTP/WebSocket field, database column, and the
+  description the agent itself reads when deciding which slot to ask
+  for.
+
+  **Existing configurations stop applying and must be edited.** A
+  `crush.json` (global or workspace) with `"models": {"large": …,
+  "small": …}` no longer matches either slot, so both fall back to
+  their defaults. Rename the two keys to `"smart"` and `"fast"`. There
+  is deliberately no alias-reading fallback: keeping one would have
+  preserved exactly the two-names-for-one-thing problem this change
+  exists to remove.
+
+  Also renamed, in the same sweep: `crush models use --large/--small`
+  → `--smart/--fast`; `crush models unset large|small` →
+  `smart|fast`; `crush models bump large|small` → `smart|fast`;
+  `crush run --small-model` → `--fast-model`; the `largeModel` /
+  `smallModel` WebSocket fields → `smartModel` / `fastModel`; and the
+  `sessions` table's six `large_model_*` / `small_model_*` columns →
+  `smart_model_*` / `fast_model_*` (a `RENAME COLUMN` migration —
+  existing session state is preserved, not rebuilt). `--role smart` and
+  `--role fast` are unchanged: they were already right, and the rest of
+  the system moved to meet them.
+
 ### Removed
 
 - **The `glm5_2`, `glm5_1` and `glm5` short codes.** GLM-5.3 supersedes

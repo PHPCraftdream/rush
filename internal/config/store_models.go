@@ -12,19 +12,19 @@ import (
 	"slices"
 )
 
-// ReadModelsAtScope reads the per-scope `models.large` / `models.small` entries
+// ReadModelsAtScope reads the per-scope `models.smart` / `models.fast` entries
 // directly from the on-disk file for the given scope, ignoring any merge with
 // the other scope. Returns (nil, nil) for a slot that the scope's file does not
 // define; returns an error only on read/parse failure. Used by `crush models
 // state` to show "what each scope says" alongside the effective merged view.
 //
 // Fork patch: batch 11 — `crush models state` needs per-scope visibility.
-func (s *ConfigStore) ReadModelsAtScope(scope Scope) (large, small *SelectedModel, err error) {
+func (s *ConfigStore) ReadModelsAtScope(scope Scope) (smart, fast *SelectedModel, err error) {
 	all, err := s.ReadAllModelsAtScope(scope)
 	if err != nil {
 		return nil, nil, err
 	}
-	return all[SelectedModelTypeLarge], all[SelectedModelTypeSmall], nil
+	return all[SelectedModelTypeSmart], all[SelectedModelTypeFast], nil
 }
 
 // ReadAllModelsAtScope reads the per-scope `models.*` entries for all four
@@ -33,7 +33,7 @@ func (s *ConfigStore) ReadModelsAtScope(scope Scope) (large, small *SelectedMode
 // absent from the returned map; returns an error only on read/parse failure.
 //
 // Fork patch: worker/reviewer CLI settability — `crush models state` needs
-// per-scope visibility into all four slots, not just large/small.
+// per-scope visibility into all four slots, not just smart/fast.
 func (s *ConfigStore) ReadAllModelsAtScope(scope Scope) (map[SelectedModelType]*SelectedModel, error) {
 	path, perr := s.configPath(scope)
 	if perr != nil {
@@ -55,7 +55,7 @@ func (s *ConfigStore) ReadAllModelsAtScope(scope Scope) (map[SelectedModelType]*
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
 	out := make(map[SelectedModelType]*SelectedModel, len(sm.Models))
-	for _, slot := range []SelectedModelType{SelectedModelTypeLarge, SelectedModelTypeSmall, SelectedModelTypeWorker, SelectedModelTypeReviewer} {
+	for _, slot := range []SelectedModelType{SelectedModelTypeSmart, SelectedModelTypeFast, SelectedModelTypeWorker, SelectedModelTypeReviewer} {
 		if v, ok := sm.Models[slot]; ok {
 			v := v
 			out[slot] = &v
@@ -71,7 +71,7 @@ func (s *ConfigStore) UpdatePreferredModel(scope Scope, modelType SelectedModelT
 }
 
 // UpdatePreferredModels updates and persists multiple model slots (e.g.
-// large/small/worker/reviewer) in a single write via SetConfigFields, so
+// smart/fast/worker/reviewer) in a single write via SetConfigFields, so
 // callers that need to set several slots at once (like `crush models use`)
 // get one atomic on-disk write instead of one write per slot. Callers are
 // responsible for validating every entry in models BEFORE calling this —
@@ -144,11 +144,11 @@ func (s *ConfigStore) updatePreferredModelsLocked(scope Scope, models map[Select
 	return nil
 }
 
-// SetSelectedModelRuntime overrides a single model slot (large/small/
+// SetSelectedModelRuntime overrides a single model slot (smart/fast/
 // worker/reviewer) in memory ONLY — no disk write, no autoReload, no
 // recent-models bookkeeping. It exists for callers that need a
 // process-lifetime override rather than a persisted preference, e.g.
-// `crush run --model=...`/--small-model=...`, which temporarily swaps the
+// `crush run --model=...`/--fast-model=...`, which temporarily swaps the
 // active model for one non-interactive invocation and must NOT leave that
 // override sitting in crush.json for the next run to inherit.
 //

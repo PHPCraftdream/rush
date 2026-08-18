@@ -164,8 +164,8 @@ func TestP0_4_StopCheckpointCancelsBlockedWrite(t *testing.T) {
 	blockingMsgs := newCheckpointBlockingMessages(env.messages)
 
 	sa := NewSessionAgent(SessionAgentOptions{
-		LargeModel:           model,
-		SmallModel:           model,
+		SmartModel:           model,
+		FastModel:            model,
 		SystemPrompt:         "you are a probe",
 		DataDirectory:        env.workingDir,
 		Sessions:             env.sessions,

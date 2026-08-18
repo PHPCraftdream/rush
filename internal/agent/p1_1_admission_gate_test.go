@@ -84,8 +84,8 @@ func TestP1_1_AdmissionGateRejectsRun(t *testing.T) {
 	model := newFastModel(t)
 
 	sa := NewSessionAgent(SessionAgentOptions{
-		LargeModel:    model,
-		SmallModel:    model,
+		SmartModel:    model,
+		FastModel:     model,
 		SystemPrompt:  "you are a probe",
 		DataDirectory: env.workingDir,
 		Sessions:      env.sessions,
@@ -137,8 +137,8 @@ func TestP1_1_AdmissionGateRejectsSummarize(t *testing.T) {
 	model := newFastModel(t)
 
 	sa := NewSessionAgent(SessionAgentOptions{
-		LargeModel:    model,
-		SmallModel:    model,
+		SmartModel:    model,
+		FastModel:     model,
 		SystemPrompt:  "you are a probe",
 		DataDirectory: env.workingDir,
 		Sessions:      env.sessions,
@@ -183,8 +183,8 @@ func TestP1_1_AdmissionGateAllowsBeforeShuttingDown(t *testing.T) {
 	model := newFastModel(t)
 
 	sa := NewSessionAgent(SessionAgentOptions{
-		LargeModel:    model,
-		SmallModel:    model,
+		SmartModel:    model,
+		FastModel:     model,
 		SystemPrompt:  "you are a probe",
 		DataDirectory: env.workingDir,
 		Sessions:      env.sessions,
@@ -237,8 +237,8 @@ func TestP1_1_TryAdmitRunWgSerializedAgainstAdmitMu(t *testing.T) {
 	model := newFastModel(t)
 
 	sa := NewSessionAgent(SessionAgentOptions{
-		LargeModel:    model,
-		SmallModel:    model,
+		SmartModel:    model,
+		FastModel:     model,
 		SystemPrompt:  "you are a probe",
 		DataDirectory: env.workingDir,
 		Sessions:      env.sessions,

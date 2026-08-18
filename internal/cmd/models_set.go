@@ -1,5 +1,5 @@
 // Fork patch: batch 11 — `crush models set` removed in favour of
-// `crush models use <large> <small>`. This file keeps only:
+// `crush models use <smart> <fast>`. This file keeps only:
 //  1. A hidden cobra command that prints a redirect notice + exits 2.
 //  2. `splitModelEffort`, the @level-suffix helper still used by atom parsing
 //     and a couple of tests.
@@ -20,7 +20,7 @@ var modelsSetCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		fmt.Fprintln(os.Stderr,
 			"`crush models set` was removed in batch 11.\n"+
-				"Use `crush models use <large> <small>` instead (add --worker/--reviewer to set\n"+
+				"Use `crush models use <smart> <fast>` instead (add --worker/--reviewer to set\n"+
 				"those optional slots too). See `crush models list` for atoms.")
 		os.Exit(2)
 	},

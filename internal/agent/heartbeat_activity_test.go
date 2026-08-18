@@ -260,14 +260,14 @@ func newActivityTestChildAgent(t *testing.T, env fakeEnv, providerID string, chu
 		CatwalkCfg: catwalk.Model{ContextWindow: 200000, DefaultMaxTokens: 1000},
 		ModelCfg:   config.SelectedModel{Provider: providerID},
 	}
-	smallModel := Model{
+	fastModel := Model{
 		Model:      titleLM,
 		CatwalkCfg: catwalk.Model{ContextWindow: 200000, DefaultMaxTokens: 1000},
 		ModelCfg:   config.SelectedModel{Provider: providerID},
 	}
 	a := NewSessionAgent(SessionAgentOptions{
-		LargeModel:           model,
-		SmallModel:           smallModel,
+		SmartModel:           model,
+		FastModel:            fastModel,
 		SystemPrompt:         "you are a probe sub-agent",
 		IsYolo:               true,
 		IsSubAgent:           true,

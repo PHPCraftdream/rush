@@ -90,8 +90,8 @@ type SessionAgentCallData struct {
 	// live fantasy.LanguageModel and CatwalkCfg) is reconstructed by the
 	// coordinator during pump execution (ROUND 3).
 	// Pointers, so "explicitly set" is distinguishable from "zero value"
-	LargeModel         *ModelCfg
-	SmallModel         *ModelCfg
+	SmartModel         *ModelCfg
+	FastModel          *ModelCfg
 	SystemPromptPrefix *string
 	SystemPrompt       *string
 }

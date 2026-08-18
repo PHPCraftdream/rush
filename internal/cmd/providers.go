@@ -494,10 +494,10 @@ func updateSingleProvider(a *app.App, id string) error {
 		for _, rm := range removed {
 			if rm.ID == model.Model {
 				slotName := "smart"
-				if modelType == config.SelectedModelTypeSmall {
+				if modelType == config.SelectedModelTypeFast {
 					slotName = "fast"
 				}
-				fmt.Fprintf(os.Stderr, "WARN: preferred %s = %s/%s no longer exists after update — your '%s' slot is broken. Run `crush models use <large> <small>` to fix.\n", slotName, id, model.Model, slotName)
+				fmt.Fprintf(os.Stderr, "WARN: preferred %s = %s/%s no longer exists after update — your '%s' slot is broken. Run `crush models use <smart> <fast>` to fix.\n", slotName, id, model.Model, slotName)
 			}
 		}
 	}
@@ -603,10 +603,10 @@ var providersDisableCmd = &cobra.Command{
 		for modelType, model := range cfg.Models {
 			if model.Provider == id {
 				slotName := "smart"
-				if modelType == config.SelectedModelTypeSmall {
+				if modelType == config.SelectedModelTypeFast {
 					slotName = "fast"
 				}
-				fmt.Fprintf(os.Stderr, "warning: %s slot was using %s/%s; that slot is now broken. Run `crush models use <large> <small>` to fix.\n", slotName, id, model.Model)
+				fmt.Fprintf(os.Stderr, "warning: %s slot was using %s/%s; that slot is now broken. Run `crush models use <smart> <fast>` to fix.\n", slotName, id, model.Model)
 			}
 		}
 
@@ -646,10 +646,10 @@ persistently suppress it.`,
 		for modelType, model := range cfg.Models {
 			if model.Provider == id {
 				slotName := "smart"
-				if modelType == config.SelectedModelTypeSmall {
+				if modelType == config.SelectedModelTypeFast {
 					slotName = "fast"
 				}
-				fmt.Fprintf(os.Stderr, "warning: %s slot was using %s/%s; that slot is now broken. Run `crush models use <large> <small>` to fix.\n", slotName, id, model.Model)
+				fmt.Fprintf(os.Stderr, "warning: %s slot was using %s/%s; that slot is now broken. Run `crush models use <smart> <fast>` to fix.\n", slotName, id, model.Model)
 			}
 		}
 

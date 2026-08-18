@@ -68,8 +68,8 @@ func TestAbandonOwnershipWithHandoff_ManualCompactionSuccess_SynchronousRun_Regr
 
 	env := testEnv(t)
 	sa := NewSessionAgent(SessionAgentOptions{
-		LargeModel:           model,
-		SmallModel:           model,
+		SmartModel:           model,
+		FastModel:            model,
 		SystemPrompt:         "you are a probe",
 		Sessions:             env.sessions,
 		Messages:             env.messages,

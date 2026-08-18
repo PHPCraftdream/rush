@@ -42,7 +42,7 @@ func TestShouldBypassSubAgentBan(t *testing.T) {
 		// --- The single most important case ---
 		{
 			name: "worker NOT configured + role smart => sub-agents still disabled, exactly as today",
-			role: config.SelectedModelTypeLarge,
+			role: config.SelectedModelTypeSmart,
 			cfg:  workerNotConfigured,
 			want: false,
 		},
@@ -50,13 +50,13 @@ func TestShouldBypassSubAgentBan(t *testing.T) {
 		// --- worker configured x role ---
 		{
 			name: "worker configured, role smart => bypass (covers both --agents unset and explicit --agents single)",
-			role: config.SelectedModelTypeLarge,
+			role: config.SelectedModelTypeSmart,
 			cfg:  workerConfigured,
 			want: true,
 		},
 		{
 			name: "worker configured, role fast => no bypass (non-large role never bypasses)",
-			role: config.SelectedModelTypeSmall,
+			role: config.SelectedModelTypeFast,
 			cfg:  workerConfigured,
 			want: false,
 		},
@@ -64,7 +64,7 @@ func TestShouldBypassSubAgentBan(t *testing.T) {
 		// --- worker with empty Model (not really configured) ---
 		{
 			name: "worker present but Model empty, role smart => no bypass",
-			role: config.SelectedModelTypeLarge,
+			role: config.SelectedModelTypeSmart,
 			cfg:  workerConfiguredEmptyModel,
 			want: false,
 		},
@@ -72,7 +72,7 @@ func TestShouldBypassSubAgentBan(t *testing.T) {
 		// --- nil config guard ---
 		{
 			name: "nil config never bypasses",
-			role: config.SelectedModelTypeLarge,
+			role: config.SelectedModelTypeSmart,
 			cfg:  nil,
 			want: false,
 		},
@@ -103,15 +103,15 @@ func TestShouldBypassSubAgentBan_BackwardCompatRequiresWorkerCondition(t *testin
 	}
 
 	// Real predicate: worker not configured => never bypass.
-	got := shouldBypassSubAgentBan(config.SelectedModelTypeLarge, workerNotConfigured)
+	got := shouldBypassSubAgentBan(config.SelectedModelTypeSmart, workerNotConfigured)
 	require.False(t, got, "worker not configured must never bypass the ban")
 
 	// Predicate with the worker check dropped, i.e. only role checked,
 	// mirroring what shouldBypassSubAgentBan would degrade to.
 	withoutWorkerCheck := func(role config.SelectedModelType) bool {
-		return role == config.SelectedModelTypeLarge
+		return role == config.SelectedModelTypeSmart
 	}
-	brokenResult := withoutWorkerCheck(config.SelectedModelTypeLarge)
+	brokenResult := withoutWorkerCheck(config.SelectedModelTypeSmart)
 	require.True(t, brokenResult,
 		"dropping the worker check would incorrectly bypass the ban for a bare --role smart with no worker configured")
 	require.NotEqual(t, got, brokenResult,

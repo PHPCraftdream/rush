@@ -13,12 +13,12 @@ import (
 )
 
 // TestModelsUse_InvalidReviewerEffort_ZeroWrites is the core regression test
-// for the partial-write bug: a valid large/small combined with an invalid
+// for the partial-write bug: a valid smart/fast combined with an invalid
 // --reviewer effort suffix must result in NO fields written at all — not
-// large/small silently persisted while only the reviewer write is rejected.
+// smart/fast silently persisted while only the reviewer write is rejected.
 // Before the fix, RunE wrote large and small to disk (and printed "set
 // large = ..." / "set small = ...") BEFORE it ever parsed/validated
-// --reviewer, so a typo'd effort like "glm5_3-hihg" left large/small durably
+// --reviewer, so a typo'd effort like "glm5_3-hihg" left smart/fast durably
 // changed even though the overall command reported failure. This asserts the
 // raw on-disk bytes are byte-identical to the pre-command state (the seed
 // `{}` isolatedModelsEnv wrote), not just crush state's "effective" view,
@@ -53,7 +53,7 @@ func TestModelsUse_InvalidReviewerEffort_ZeroWrites(t *testing.T) {
 
 // TestModelsUse_InvalidReviewerEffort_WorkerAlsoNotWritten is the same
 // scenario as above but with a valid --worker present too, confirming the
-// batch-write covers ALL provided slots, not just large/small: an invalid
+// batch-write covers ALL provided slots, not just smart/fast: an invalid
 // --reviewer must prevent --worker from being written as well.
 func TestModelsUse_InvalidReviewerEffort_WorkerAlsoNotWritten(t *testing.T) {
 	globalPath := isolatedModelsEnv(t)
@@ -80,8 +80,8 @@ func TestModelsUse_InvalidReviewerEffort_WorkerAlsoNotWritten(t *testing.T) {
 // before even attempting to parse/touch worker/reviewer, with the same
 // zero-write guarantee. This also guards against a regression where pass 1
 // validation order changes and worker/reviewer get parsed (and their errors
-// surface) before large/small, masking the actual first failure.
-func TestModelsUse_InvalidLargePositional_ShortCircuitsBeforeWorkerReviewer(t *testing.T) {
+// surface) before smart/fast, masking the actual first failure.
+func TestModelsUse_InvalidSmartPositional_ShortCircuitsBeforeWorkerReviewer(t *testing.T) {
 	globalPath := isolatedModelsEnv(t)
 
 	before, err := os.ReadFile(globalPath)
@@ -92,7 +92,7 @@ func TestModelsUse_InvalidLargePositional_ShortCircuitsBeforeWorkerReviewer(t *t
 		"not-a-real-atom-xyz", "glm5_turbo",
 		"--worker", "glm4_7_flash", "--reviewer", "glm5_3")
 	require.Error(t, runErr)
-	assert.Contains(t, runErr.Error(), "large:")
+	assert.Contains(t, runErr.Error(), "smart:")
 
 	after, err := os.ReadFile(globalPath)
 	require.NoError(t, err)
@@ -120,8 +120,8 @@ func TestModelsUse_AllFourValid_StillWritesAll(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(data, &doc))
 
-	assert.Contains(t, doc.Models, "large")
-	assert.Contains(t, doc.Models, "small")
+	assert.Contains(t, doc.Models, "smart")
+	assert.Contains(t, doc.Models, "fast")
 	assert.Contains(t, doc.Models, "worker")
 	assert.Contains(t, doc.Models, "reviewer")
 

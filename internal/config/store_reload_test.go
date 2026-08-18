@@ -32,7 +32,7 @@ func TestReloadFromDisk_UsesNewConfigValues(t *testing.T) {
 	// Create initial config with one model preference
 	initialConfig := `{
 		"models": {
-			"large": {"provider": "openai", "model": "gpt-4"}
+			"smart": {"provider": "openai", "model": "gpt-4"}
 		},
 		"providers": {
 			"openai": {
@@ -52,13 +52,13 @@ func TestReloadFromDisk_UsesNewConfigValues(t *testing.T) {
 	store.CaptureStalenessSnapshot([]string{configPath})
 
 	// Verify initial model
-	require.Equal(t, "openai", store.Config().Models[SelectedModelTypeLarge].Provider)
-	require.Equal(t, "gpt-4", store.Config().Models[SelectedModelTypeLarge].Model)
+	require.Equal(t, "openai", store.Config().Models[SelectedModelTypeSmart].Provider)
+	require.Equal(t, "gpt-4", store.Config().Models[SelectedModelTypeSmart].Model)
 
 	// Modify config on disk to change model
 	updatedConfig := `{
 		"models": {
-			"large": {"provider": "anthropic", "model": "claude-3"}
+			"smart": {"provider": "anthropic", "model": "claude-3"}
 		},
 		"providers": {
 			"openai": {
@@ -80,8 +80,8 @@ func TestReloadFromDisk_UsesNewConfigValues(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify the NEW config values are now in effect (regression check)
-	require.Equal(t, "anthropic", store.Config().Models[SelectedModelTypeLarge].Provider)
-	require.Equal(t, "claude-3", store.Config().Models[SelectedModelTypeLarge].Model)
+	require.Equal(t, "anthropic", store.Config().Models[SelectedModelTypeSmart].Provider)
+	require.Equal(t, "claude-3", store.Config().Models[SelectedModelTypeSmart].Model)
 }
 
 // TestAutoReloadDisabledDuringReload verifies that auto-reload is suppressed

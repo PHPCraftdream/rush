@@ -146,8 +146,8 @@ func TestP0_338_FinalizerReachableDespiteHungCleanup(t *testing.T) {
 	// the hung cleanup via LockOptions.
 	sa := agent.NewSessionAgent(agent.SessionAgentOptions{
 		DataDirectory: tmpDir,
-		LargeModel:    model,
-		SmallModel:    model,
+		SmartModel:    model,
+		FastModel:     model,
 		Sessions:      sessions,
 		Messages:      messages,
 		IsYolo:        true,

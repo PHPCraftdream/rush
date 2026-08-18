@@ -79,8 +79,8 @@ func TestP2_1_SummarizeQueueDrainedFromNonWebPath(t *testing.T) {
 	// Create the test environment with the model.
 	env := testEnv(t)
 	sa := NewSessionAgent(SessionAgentOptions{
-		LargeModel:           model,
-		SmallModel:           model,
+		SmartModel:           model,
+		FastModel:            model,
 		SystemPrompt:         "you are an assistant",
 		DataDirectory:        env.workingDir,
 		Sessions:             env.sessions,

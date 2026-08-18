@@ -168,22 +168,22 @@ export function ChatToolbar() {
   const isSummarized = !!activeSession?.SummaryMessageID;
 
   const allModels = useMemo(() => buildModelList(config), [config]);
-  const effectiveLargeKey = useMemo(() => {
-    if (!activeSession) return getDefaultModelKey("large", config);
-    const p = activeSession.LargeModelProvider;
-    const m = activeSession.LargeModelID;
+  const effectiveSmartKey = useMemo(() => {
+    if (!activeSession) return getDefaultModelKey("smart", config);
+    const p = activeSession.SmartModelProvider;
+    const m = activeSession.SmartModelID;
     if (p && m) return `${p}:::${m}`;
-    return getDefaultModelKey("large", config);
+    return getDefaultModelKey("smart", config);
   }, [activeSession, config]);
   const contextWindow = useMemo(() => {
-    if (!effectiveLargeKey) return 0;
-    return allModels.find(x => x.key === effectiveLargeKey)?.contextWindow ?? 0;
-  }, [effectiveLargeKey, allModels]);
+    if (!effectiveSmartKey) return 0;
+    return allModels.find(x => x.key === effectiveSmartKey)?.contextWindow ?? 0;
+  }, [effectiveSmartKey, allModels]);
 
-  const activeLargeModelName = useMemo(() => {
-    if (!effectiveLargeKey) return null;
-    return allModels.find(x => x.key === effectiveLargeKey)?.name ?? null;
-  }, [effectiveLargeKey, allModels]);
+  const activeSmartModelName = useMemo(() => {
+    if (!effectiveSmartKey) return null;
+    return allModels.find(x => x.key === effectiveSmartKey)?.name ?? null;
+  }, [effectiveSmartKey, allModels]);
 
   const contextPct = contextWindow > 0 ? Math.min(100, Math.round((totalTokens / contextWindow) * 100)) : null;
   // Read-only follow mode: another live crush process holds this session's
@@ -210,9 +210,9 @@ export function ChatToolbar() {
           </span>
         )}
         {isBusy && (
-          <div className="flex items-center gap-2 animate-pulse-dots px-2" title={activeLargeModelName ? `Running ${activeLargeModelName}…` : "Agent is working…"}>
-            {activeLargeModelName && (
-              <span className="text-xs text-text-subtle font-medium">{activeLargeModelName}</span>
+          <div className="flex items-center gap-2 animate-pulse-dots px-2" title={activeSmartModelName ? `Running ${activeSmartModelName}…` : "Agent is working…"}>
+            {activeSmartModelName && (
+              <span className="text-xs text-text-subtle font-medium">{activeSmartModelName}</span>
             )}
             <span className="w-2 h-2 rounded-full bg-accent inline-block" />
             <span className="w-2 h-2 rounded-full bg-accent inline-block" />
@@ -405,9 +405,9 @@ export function ChatToolbar() {
         )}
 
         {isBusy && (
-          <div className="flex items-center gap-2 animate-pulse-dots px-2" title={activeLargeModelName ? `Running ${activeLargeModelName}…` : "Agent is working…"}>
-            {activeLargeModelName && (
-              <span className="text-xs text-text-subtle font-medium">{activeLargeModelName}</span>
+          <div className="flex items-center gap-2 animate-pulse-dots px-2" title={activeSmartModelName ? `Running ${activeSmartModelName}…` : "Agent is working…"}>
+            {activeSmartModelName && (
+              <span className="text-xs text-text-subtle font-medium">{activeSmartModelName}</span>
             )}
             <span className="w-2 h-2 rounded-full bg-accent inline-block" />
             <span className="w-2 h-2 rounded-full bg-accent inline-block" />
@@ -419,8 +419,8 @@ export function ChatToolbar() {
         <div className="flex-1" />
 
         {/* RIGHT cluster */}
-        <ModelSelector session={activeSession} modelType="large" />
-        <ModelSelector session={activeSession} modelType="small" />
+        <ModelSelector session={activeSession} modelType="smart" />
+        <ModelSelector session={activeSession} modelType="fast" />
       </div>
 
       {/* Modal hosts */}

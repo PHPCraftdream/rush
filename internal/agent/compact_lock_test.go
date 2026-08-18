@@ -90,8 +90,8 @@ func TestP312_ManualCompactionHoldsOSLock_Deterministic(t *testing.T) {
 
 	a := NewSessionAgent(SessionAgentOptions{
 		DataDirectory:        dataDir,
-		LargeModel:           model,
-		SmallModel:           model,
+		SmartModel:           model,
+		FastModel:            model,
 		SystemPrompt:         "you are a probe",
 		IsYolo:               true,
 		Sessions:             env.sessions,
@@ -208,7 +208,7 @@ func TestP312_InlineCompactionDoesNotDeadlock(t *testing.T) {
 	lm, err := provider.LanguageModel(context.Background(), "probe")
 	require.NoError(t, err)
 
-	// Separate, UNCOUNTED server for the small model / title generation.
+	// Separate, UNCOUNTED server for the fast model / title generation.
 	// This is not optional: needsTitle fires in the background on a
 	// session's first turn, and pointing SmallModel at dispatchSrv lets
 	// that request race into the cumulative-call-count routing above and
@@ -225,15 +225,15 @@ func TestP312_InlineCompactionDoesNotDeadlock(t *testing.T) {
 		Model:      lm,
 		CatwalkCfg: catwalk.Model{ContextWindow: 1000, DefaultMaxTokens: 1000},
 	}
-	smallModel := Model{
+	fastModel := Model{
 		Model:      titleLM,
 		CatwalkCfg: catwalk.Model{ContextWindow: 1000, DefaultMaxTokens: 1000},
 	}
 
 	a := NewSessionAgent(SessionAgentOptions{
 		DataDirectory:        dataDir,
-		LargeModel:           model,
-		SmallModel:           smallModel,
+		SmartModel:           model,
+		FastModel:            fastModel,
 		SystemPrompt:         "you are a probe",
 		IsYolo:               true,
 		Sessions:             env.sessions,
@@ -345,8 +345,8 @@ func TestP312_ManualCompactionDrainsQueuedWork_WithDataDir(t *testing.T) {
 	}
 	a := NewSessionAgent(SessionAgentOptions{
 		DataDirectory:        dataDir,
-		LargeModel:           model,
-		SmallModel:           model,
+		SmartModel:           model,
+		FastModel:            model,
 		SystemPrompt:         "you are a probe",
 		IsYolo:               true,
 		Sessions:             env.sessions,
@@ -425,8 +425,8 @@ func TestP312_OSLockReleasedBeforeMailboxReportsIdle(t *testing.T) {
 
 	a := NewSessionAgent(SessionAgentOptions{
 		DataDirectory:        dataDir,
-		LargeModel:           model,
-		SmallModel:           model,
+		SmartModel:           model,
+		FastModel:            model,
 		SystemPrompt:         "you are a probe",
 		IsYolo:               true,
 		Sessions:             env.sessions,
@@ -557,8 +557,8 @@ func TestP312_ManualCompactionHeartbeatStaysAlive(t *testing.T) {
 
 	a := NewSessionAgent(SessionAgentOptions{
 		DataDirectory:        dataDir,
-		LargeModel:           model,
-		SmallModel:           model,
+		SmartModel:           model,
+		FastModel:            model,
 		SystemPrompt:         "you are a probe",
 		IsYolo:               true,
 		Sessions:             env.sessions,

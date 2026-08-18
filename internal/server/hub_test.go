@@ -104,16 +104,16 @@ func TestReplayBufferNoReallocationOnEviction(t *testing.T) {
 	lenBefore := len(r.buf)
 	require.Equal(t, maxBufferSize, capBefore, "backing slice pre-allocated to capacity")
 
-	small := make([]byte, 64)
+	fast := make([]byte, 64)
 	// Fill to capacity.
 	for i := 0; i < maxBufferSize; i++ {
-		r.push(small)
+		r.push(fast)
 	}
 	require.Equal(t, maxBufferSize, r.count, "buffer should be full")
 
 	// Push well past capacity — every push now evicts.
 	for i := 0; i < 500; i++ {
-		r.push(small)
+		r.push(fast)
 	}
 
 	// No reallocation, no reslicing: eviction never copies the underlying array.
@@ -124,7 +124,7 @@ func TestReplayBufferNoReallocationOnEviction(t *testing.T) {
 	// `small` slice is created once outside the measured closure, and push only
 	// does index arithmetic plus an in-place slot write.
 	allocs := testing.AllocsPerRun(100, func() {
-		r.push(small)
+		r.push(fast)
 	})
 	require.Equal(t, 0.0, allocs, "steady-state eviction must not allocate")
 }

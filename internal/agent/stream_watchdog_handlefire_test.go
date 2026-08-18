@@ -76,14 +76,14 @@ func TestSessionAgent_HandleWatchdogFire_StoresCauseAndDispatchesDumpAsync(t *te
 		<-release
 	})
 
-	largeModel := Model{
+	smartModel := Model{
 		ModelCfg: config.SelectedModel{
 			Provider: "test-provider",
 			Model:    "test-model",
 		},
 	}
 	a := &sessionAgent{
-		largeModel:     csync.NewValue(largeModel),
+		smartModel:     csync.NewValue(smartModel),
 		timeoutHardCap: 5 * time.Second,
 	}
 
@@ -96,7 +96,7 @@ func TestSessionAgent_HandleWatchdogFire_StoresCauseAndDispatchesDumpAsync(t *te
 
 	callReturned := make(chan struct{})
 	go func() {
-		a.handleWatchdogFire(causeToolTimeout, 7*time.Second, sessionID, &watchdogCauseVal, toolMaxDuration, idleTimeout, largeModel)
+		a.handleWatchdogFire(causeToolTimeout, 7*time.Second, sessionID, &watchdogCauseVal, toolMaxDuration, idleTimeout, smartModel)
 		close(callReturned)
 	}()
 
@@ -205,7 +205,7 @@ func (b *lockedBuffer) String() string {
 // snapshot, not the live field. Because the diagnostic goes through slog
 // (not a return value), the default slog.Logger is temporarily swapped for a
 // TextHandler writing to a mutex-guarded buffer.
-func TestSessionAgent_HandleWatchdogFire_UsesPassedLargeModelSnapshot(t *testing.T) {
+func TestSessionAgent_HandleWatchdogFire_UsesPassedSmartModelSnapshot(t *testing.T) {
 	// Redirect the goroutine-dump dir so the async WriteGoroutineDump inside
 	// handleWatchdogFire does not pollute the real log dir; a shallow tempdir
 	// also keeps that write near-instant.
@@ -214,7 +214,7 @@ func TestSessionAgent_HandleWatchdogFire_UsesPassedLargeModelSnapshot(t *testing
 	// a.largeModel's CURRENT value — what the BUGGY code would read at fire
 	// time via a.largeModel.Get().
 	a := &sessionAgent{
-		largeModel: csync.NewValue(Model{
+		smartModel: csync.NewValue(Model{
 			ModelCfg: config.SelectedModel{
 				Provider: "current-provider",
 				Model:    "current-model",

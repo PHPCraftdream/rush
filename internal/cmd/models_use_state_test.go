@@ -78,7 +78,7 @@ func TestModelsState_UnsetEffort_ShowsKnownZAIDefault(t *testing.T) {
 // merely happens by default". Uses glm4_7_flash (boolean off/on Z.AI atom) rather than
 // glm5_3: the embedded catwalk provider catalog this test env falls back to
 // in CRUSH_PROVIDER_CACHE_ONLY mode doesn't list glm-5.3 at all, which makes
-// config's large/small validation silently substitute a different zai model
+// config's smart/fast validation silently substitute a different zai model
 // on load — an unrelated, pre-existing environmental quirk of the vendored
 // catwalk embedded data, not something this task touches. glm4_7_flash IS in
 // that embedded list, so it round-trips through config load untouched.
@@ -93,10 +93,10 @@ func TestModelsState_ExplicitEffort_TakesPrecedenceOverDefault(t *testing.T) {
 	out, runErr := runModelsCmd(t, modelsStateCmd)
 	require.NoError(t, runErr)
 
-	largeLine, ok := lineContaining(out, "large:")
+	smartLine, ok := lineContaining(out, "smart:")
 	require.True(t, ok, "expected a 'large:' line in output:\n%s", out)
-	assert.Contains(t, largeLine, "effort=on")
-	assert.NotContains(t, largeLine, "unset ->")
+	assert.Contains(t, smartLine, "effort=on")
+	assert.NotContains(t, smartLine, "unset ->")
 }
 
 // lineContaining returns the first line of s containing substr, and whether
@@ -126,12 +126,12 @@ func TestModelsState_JSON_UnsetEffort_ShowsKnownDefault(t *testing.T) {
 
 	var doc struct {
 		Effective struct {
-			LargeEffortDefault *string `json:"large_effort_default"`
+			SmartEffortDefault *string `json:"smart_effort_default"`
 		} `json:"effective"`
 	}
 	require.NoError(t, json.Unmarshal([]byte(out), &doc))
-	require.NotNil(t, doc.Effective.LargeEffortDefault)
-	assert.Equal(t, "unset -> thinking on, high", *doc.Effective.LargeEffortDefault)
+	require.NotNil(t, doc.Effective.SmartEffortDefault)
+	assert.Equal(t, "unset -> thinking on, high", *doc.Effective.SmartEffortDefault)
 }
 
 // TestModelsState_JSON_ExplicitEffort_NullDefault verifies the JSON default
@@ -152,11 +152,11 @@ func TestModelsState_JSON_ExplicitEffort_NullDefault(t *testing.T) {
 
 	var doc struct {
 		Effective struct {
-			LargeEffortDefault *string `json:"large_effort_default"`
+			SmartEffortDefault *string `json:"smart_effort_default"`
 		} `json:"effective"`
 	}
 	require.NoError(t, json.Unmarshal([]byte(out), &doc))
-	assert.Nil(t, doc.Effective.LargeEffortDefault)
+	assert.Nil(t, doc.Effective.SmartEffortDefault)
 }
 
 // TestUnsetEffortNote_KnownAndUnknownProviders is the direct-unit-test

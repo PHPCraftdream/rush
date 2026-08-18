@@ -169,7 +169,7 @@ func costByModel(sessions []session.Session, asJSON bool) error {
 	var totalSessions int
 
 	for _, s := range sessions {
-		model := s.LargeModelID
+		model := s.SmartModelID
 		if model == "" {
 			model = "(unknown)"
 		}

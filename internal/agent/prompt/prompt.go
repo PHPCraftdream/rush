@@ -43,7 +43,7 @@ type PromptDat struct {
 	GlobalContextFiles []ContextFile
 	AvailSkillXML      string
 
-	// WorkerAvailable is true when this run is driven by the Large ("smart")
+	// WorkerAvailable is true when this run is driven by the Smart
 	// model slot AND a Worker model is configured — i.e. exactly the
 	// condition coordinator.workerSubAgentActive checks for sub-agents,
 	// reused here (not re-derived) for the top-level coder prompt so the

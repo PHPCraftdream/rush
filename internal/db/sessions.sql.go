@@ -22,10 +22,10 @@ INSERT INTO sessions (
     summary_message_id,
     updated_at,
     created_at,
-    large_model_provider,
-    large_model_id,
-    small_model_provider,
-    small_model_id,
+    smart_model_provider,
+    smart_model_id,
+    fast_model_provider,
+    fast_model_id,
     yolo_enabled
 ) VALUES (
     ?,
@@ -43,7 +43,7 @@ INSERT INTO sessions (
     ?,
     ?,
     0
-) RETURNING id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, large_model_provider, large_model_id, small_model_provider, small_model_id, system_prompt, yolo_enabled, large_model_reasoning_effort, small_model_reasoning_effort, cancel_requested, ended_reason, budget_max_cost, budget_max_tokens, budget_timeout_sec, deleted_todos, parent_cost_accounted, worker_model_provider, worker_model_id, worker_model_reasoning_effort, reviewer_model_provider, reviewer_model_id, reviewer_model_reasoning_effort
+) RETURNING id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, smart_model_provider, smart_model_id, fast_model_provider, fast_model_id, system_prompt, yolo_enabled, smart_model_reasoning_effort, fast_model_reasoning_effort, cancel_requested, ended_reason, budget_max_cost, budget_max_tokens, budget_timeout_sec, deleted_todos, parent_cost_accounted, worker_model_provider, worker_model_id, worker_model_reasoning_effort, reviewer_model_provider, reviewer_model_id, reviewer_model_reasoning_effort
 `
 
 type CreateSessionParams struct {
@@ -54,10 +54,10 @@ type CreateSessionParams struct {
 	PromptTokens       int64          `json:"prompt_tokens"`
 	CompletionTokens   int64          `json:"completion_tokens"`
 	Cost               float64        `json:"cost"`
-	LargeModelProvider sql.NullString `json:"large_model_provider"`
-	LargeModelID       sql.NullString `json:"large_model_id"`
-	SmallModelProvider sql.NullString `json:"small_model_provider"`
-	SmallModelID       sql.NullString `json:"small_model_id"`
+	SmartModelProvider sql.NullString `json:"smart_model_provider"`
+	SmartModelID       sql.NullString `json:"smart_model_id"`
+	FastModelProvider  sql.NullString `json:"fast_model_provider"`
+	FastModelID        sql.NullString `json:"fast_model_id"`
 }
 
 func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (Session, error) {
@@ -69,10 +69,10 @@ func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (S
 		arg.PromptTokens,
 		arg.CompletionTokens,
 		arg.Cost,
-		arg.LargeModelProvider,
-		arg.LargeModelID,
-		arg.SmallModelProvider,
-		arg.SmallModelID,
+		arg.SmartModelProvider,
+		arg.SmartModelID,
+		arg.FastModelProvider,
+		arg.FastModelID,
 	)
 	var i Session
 	err := row.Scan(
@@ -87,14 +87,14 @@ func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (S
 		&i.CreatedAt,
 		&i.SummaryMessageID,
 		&i.Todos,
-		&i.LargeModelProvider,
-		&i.LargeModelID,
-		&i.SmallModelProvider,
-		&i.SmallModelID,
+		&i.SmartModelProvider,
+		&i.SmartModelID,
+		&i.FastModelProvider,
+		&i.FastModelID,
 		&i.SystemPrompt,
 		&i.YoloEnabled,
-		&i.LargeModelReasoningEffort,
-		&i.SmallModelReasoningEffort,
+		&i.SmartModelReasoningEffort,
+		&i.FastModelReasoningEffort,
 		&i.CancelRequested,
 		&i.EndedReason,
 		&i.BudgetMaxCost,
@@ -123,7 +123,7 @@ func (q *Queries) DeleteSession(ctx context.Context, id string) error {
 }
 
 const getLastSession = `-- name: GetLastSession :one
-SELECT id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, large_model_provider, large_model_id, small_model_provider, small_model_id, system_prompt, yolo_enabled, large_model_reasoning_effort, small_model_reasoning_effort, cancel_requested, ended_reason, budget_max_cost, budget_max_tokens, budget_timeout_sec, deleted_todos, parent_cost_accounted, worker_model_provider, worker_model_id, worker_model_reasoning_effort, reviewer_model_provider, reviewer_model_id, reviewer_model_reasoning_effort
+SELECT id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, smart_model_provider, smart_model_id, fast_model_provider, fast_model_id, system_prompt, yolo_enabled, smart_model_reasoning_effort, fast_model_reasoning_effort, cancel_requested, ended_reason, budget_max_cost, budget_max_tokens, budget_timeout_sec, deleted_todos, parent_cost_accounted, worker_model_provider, worker_model_id, worker_model_reasoning_effort, reviewer_model_provider, reviewer_model_id, reviewer_model_reasoning_effort
 FROM sessions
 ORDER BY updated_at DESC
 LIMIT 1
@@ -144,14 +144,14 @@ func (q *Queries) GetLastSession(ctx context.Context) (Session, error) {
 		&i.CreatedAt,
 		&i.SummaryMessageID,
 		&i.Todos,
-		&i.LargeModelProvider,
-		&i.LargeModelID,
-		&i.SmallModelProvider,
-		&i.SmallModelID,
+		&i.SmartModelProvider,
+		&i.SmartModelID,
+		&i.FastModelProvider,
+		&i.FastModelID,
 		&i.SystemPrompt,
 		&i.YoloEnabled,
-		&i.LargeModelReasoningEffort,
-		&i.SmallModelReasoningEffort,
+		&i.SmartModelReasoningEffort,
+		&i.FastModelReasoningEffort,
 		&i.CancelRequested,
 		&i.EndedReason,
 		&i.BudgetMaxCost,
@@ -170,7 +170,7 @@ func (q *Queries) GetLastSession(ctx context.Context) (Session, error) {
 }
 
 const getSessionByID = `-- name: GetSessionByID :one
-SELECT id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, large_model_provider, large_model_id, small_model_provider, small_model_id, system_prompt, yolo_enabled, large_model_reasoning_effort, small_model_reasoning_effort, cancel_requested, ended_reason, budget_max_cost, budget_max_tokens, budget_timeout_sec, deleted_todos, parent_cost_accounted, worker_model_provider, worker_model_id, worker_model_reasoning_effort, reviewer_model_provider, reviewer_model_id, reviewer_model_reasoning_effort
+SELECT id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, smart_model_provider, smart_model_id, fast_model_provider, fast_model_id, system_prompt, yolo_enabled, smart_model_reasoning_effort, fast_model_reasoning_effort, cancel_requested, ended_reason, budget_max_cost, budget_max_tokens, budget_timeout_sec, deleted_todos, parent_cost_accounted, worker_model_provider, worker_model_id, worker_model_reasoning_effort, reviewer_model_provider, reviewer_model_id, reviewer_model_reasoning_effort
 FROM sessions
 WHERE id = ? LIMIT 1
 `
@@ -190,14 +190,14 @@ func (q *Queries) GetSessionByID(ctx context.Context, id string) (Session, error
 		&i.CreatedAt,
 		&i.SummaryMessageID,
 		&i.Todos,
-		&i.LargeModelProvider,
-		&i.LargeModelID,
-		&i.SmallModelProvider,
-		&i.SmallModelID,
+		&i.SmartModelProvider,
+		&i.SmartModelID,
+		&i.FastModelProvider,
+		&i.FastModelID,
 		&i.SystemPrompt,
 		&i.YoloEnabled,
-		&i.LargeModelReasoningEffort,
-		&i.SmallModelReasoningEffort,
+		&i.SmartModelReasoningEffort,
+		&i.FastModelReasoningEffort,
 		&i.CancelRequested,
 		&i.EndedReason,
 		&i.BudgetMaxCost,
@@ -243,7 +243,7 @@ SET
     cost = cost + ?,
     updated_at = strftime('%s', 'now')
 WHERE id = ?
-RETURNING id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, large_model_provider, large_model_id, small_model_provider, small_model_id, system_prompt, yolo_enabled, large_model_reasoning_effort, small_model_reasoning_effort, cancel_requested, ended_reason, budget_max_cost, budget_max_tokens, budget_timeout_sec, deleted_todos, parent_cost_accounted, worker_model_provider, worker_model_id, worker_model_reasoning_effort, reviewer_model_provider, reviewer_model_id, reviewer_model_reasoning_effort
+RETURNING id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, smart_model_provider, smart_model_id, fast_model_provider, fast_model_id, system_prompt, yolo_enabled, smart_model_reasoning_effort, fast_model_reasoning_effort, cancel_requested, ended_reason, budget_max_cost, budget_max_tokens, budget_timeout_sec, deleted_todos, parent_cost_accounted, worker_model_provider, worker_model_id, worker_model_reasoning_effort, reviewer_model_provider, reviewer_model_id, reviewer_model_reasoning_effort
 `
 
 type IncrementSessionCostParams struct {
@@ -270,14 +270,14 @@ func (q *Queries) IncrementSessionCost(ctx context.Context, arg IncrementSession
 		&i.CreatedAt,
 		&i.SummaryMessageID,
 		&i.Todos,
-		&i.LargeModelProvider,
-		&i.LargeModelID,
-		&i.SmallModelProvider,
-		&i.SmallModelID,
+		&i.SmartModelProvider,
+		&i.SmartModelID,
+		&i.FastModelProvider,
+		&i.FastModelID,
 		&i.SystemPrompt,
 		&i.YoloEnabled,
-		&i.LargeModelReasoningEffort,
-		&i.SmallModelReasoningEffort,
+		&i.SmartModelReasoningEffort,
+		&i.FastModelReasoningEffort,
 		&i.CancelRequested,
 		&i.EndedReason,
 		&i.BudgetMaxCost,
@@ -296,7 +296,7 @@ func (q *Queries) IncrementSessionCost(ctx context.Context, arg IncrementSession
 }
 
 const listAllSessions = `-- name: ListAllSessions :many
-SELECT id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, large_model_provider, large_model_id, small_model_provider, small_model_id, system_prompt, yolo_enabled, large_model_reasoning_effort, small_model_reasoning_effort, cancel_requested, ended_reason, budget_max_cost, budget_max_tokens, budget_timeout_sec, deleted_todos, parent_cost_accounted, worker_model_provider, worker_model_id, worker_model_reasoning_effort, reviewer_model_provider, reviewer_model_id, reviewer_model_reasoning_effort
+SELECT id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, smart_model_provider, smart_model_id, fast_model_provider, fast_model_id, system_prompt, yolo_enabled, smart_model_reasoning_effort, fast_model_reasoning_effort, cancel_requested, ended_reason, budget_max_cost, budget_max_tokens, budget_timeout_sec, deleted_todos, parent_cost_accounted, worker_model_provider, worker_model_id, worker_model_reasoning_effort, reviewer_model_provider, reviewer_model_id, reviewer_model_reasoning_effort
 FROM sessions
 ORDER BY updated_at DESC
 `
@@ -324,14 +324,14 @@ func (q *Queries) ListAllSessions(ctx context.Context) ([]Session, error) {
 			&i.CreatedAt,
 			&i.SummaryMessageID,
 			&i.Todos,
-			&i.LargeModelProvider,
-			&i.LargeModelID,
-			&i.SmallModelProvider,
-			&i.SmallModelID,
+			&i.SmartModelProvider,
+			&i.SmartModelID,
+			&i.FastModelProvider,
+			&i.FastModelID,
 			&i.SystemPrompt,
 			&i.YoloEnabled,
-			&i.LargeModelReasoningEffort,
-			&i.SmallModelReasoningEffort,
+			&i.SmartModelReasoningEffort,
+			&i.FastModelReasoningEffort,
 			&i.CancelRequested,
 			&i.EndedReason,
 			&i.BudgetMaxCost,
@@ -360,7 +360,7 @@ func (q *Queries) ListAllSessions(ctx context.Context) ([]Session, error) {
 }
 
 const listSessions = `-- name: ListSessions :many
-SELECT id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, large_model_provider, large_model_id, small_model_provider, small_model_id, system_prompt, yolo_enabled, large_model_reasoning_effort, small_model_reasoning_effort, cancel_requested, ended_reason, budget_max_cost, budget_max_tokens, budget_timeout_sec, deleted_todos, parent_cost_accounted, worker_model_provider, worker_model_id, worker_model_reasoning_effort, reviewer_model_provider, reviewer_model_id, reviewer_model_reasoning_effort
+SELECT id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, smart_model_provider, smart_model_id, fast_model_provider, fast_model_id, system_prompt, yolo_enabled, smart_model_reasoning_effort, fast_model_reasoning_effort, cancel_requested, ended_reason, budget_max_cost, budget_max_tokens, budget_timeout_sec, deleted_todos, parent_cost_accounted, worker_model_provider, worker_model_id, worker_model_reasoning_effort, reviewer_model_provider, reviewer_model_id, reviewer_model_reasoning_effort
 FROM sessions
 WHERE parent_session_id is NULL
 ORDER BY updated_at DESC
@@ -387,14 +387,14 @@ func (q *Queries) ListSessions(ctx context.Context) ([]Session, error) {
 			&i.CreatedAt,
 			&i.SummaryMessageID,
 			&i.Todos,
-			&i.LargeModelProvider,
-			&i.LargeModelID,
-			&i.SmallModelProvider,
-			&i.SmallModelID,
+			&i.SmartModelProvider,
+			&i.SmartModelID,
+			&i.FastModelProvider,
+			&i.FastModelID,
 			&i.SystemPrompt,
 			&i.YoloEnabled,
-			&i.LargeModelReasoningEffort,
-			&i.SmallModelReasoningEffort,
+			&i.SmartModelReasoningEffort,
+			&i.FastModelReasoningEffort,
 			&i.CancelRequested,
 			&i.EndedReason,
 			&i.BudgetMaxCost,
@@ -423,7 +423,7 @@ func (q *Queries) ListSessions(ctx context.Context) ([]Session, error) {
 }
 
 const listSubSessions = `-- name: ListSubSessions :many
-SELECT id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, large_model_provider, large_model_id, small_model_provider, small_model_id, system_prompt, yolo_enabled, large_model_reasoning_effort, small_model_reasoning_effort, cancel_requested, ended_reason, budget_max_cost, budget_max_tokens, budget_timeout_sec, deleted_todos, parent_cost_accounted, worker_model_provider, worker_model_id, worker_model_reasoning_effort, reviewer_model_provider, reviewer_model_id, reviewer_model_reasoning_effort
+SELECT id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, smart_model_provider, smart_model_id, fast_model_provider, fast_model_id, system_prompt, yolo_enabled, smart_model_reasoning_effort, fast_model_reasoning_effort, cancel_requested, ended_reason, budget_max_cost, budget_max_tokens, budget_timeout_sec, deleted_todos, parent_cost_accounted, worker_model_provider, worker_model_id, worker_model_reasoning_effort, reviewer_model_provider, reviewer_model_id, reviewer_model_reasoning_effort
 FROM sessions
 WHERE parent_session_id = ?
 ORDER BY created_at ASC
@@ -453,14 +453,14 @@ func (q *Queries) ListSubSessions(ctx context.Context, parentSessionID sql.NullS
 			&i.CreatedAt,
 			&i.SummaryMessageID,
 			&i.Todos,
-			&i.LargeModelProvider,
-			&i.LargeModelID,
-			&i.SmallModelProvider,
-			&i.SmallModelID,
+			&i.SmartModelProvider,
+			&i.SmartModelID,
+			&i.FastModelProvider,
+			&i.FastModelID,
 			&i.SystemPrompt,
 			&i.YoloEnabled,
-			&i.LargeModelReasoningEffort,
-			&i.SmallModelReasoningEffort,
+			&i.SmartModelReasoningEffort,
+			&i.FastModelReasoningEffort,
 			&i.CancelRequested,
 			&i.EndedReason,
 			&i.BudgetMaxCost,
@@ -531,19 +531,19 @@ func (q *Queries) SetParentCostAccounted(ctx context.Context, arg SetParentCostA
 const updateSessionModels = `-- name: UpdateSessionModels :exec
 UPDATE sessions
 SET
-    large_model_provider = COALESCE(?1, large_model_provider),
-    large_model_id = COALESCE(?2, large_model_id),
-    small_model_provider = COALESCE(?3, small_model_provider),
-    small_model_id = COALESCE(?4, small_model_id),
+    smart_model_provider = COALESCE(?1, smart_model_provider),
+    smart_model_id = COALESCE(?2, smart_model_id),
+    fast_model_provider = COALESCE(?3, fast_model_provider),
+    fast_model_id = COALESCE(?4, fast_model_id),
     updated_at = strftime('%s', 'now')
 WHERE id = ?5
 `
 
 type UpdateSessionModelsParams struct {
-	LargeModelProvider sql.NullString `json:"large_model_provider"`
-	LargeModelID       sql.NullString `json:"large_model_id"`
-	SmallModelProvider sql.NullString `json:"small_model_provider"`
-	SmallModelID       sql.NullString `json:"small_model_id"`
+	SmartModelProvider sql.NullString `json:"smart_model_provider"`
+	SmartModelID       sql.NullString `json:"smart_model_id"`
+	FastModelProvider  sql.NullString `json:"fast_model_provider"`
+	FastModelID        sql.NullString `json:"fast_model_id"`
 	ID                 string         `json:"id"`
 }
 
@@ -551,14 +551,14 @@ type UpdateSessionModelsParams struct {
 // untouched (COALESCE falls back to the current column value); a non-NULL
 // arg (including an explicit empty string) overwrites it. This lets callers
 // distinguish "don't touch this slot" from "clear this slot back to
-// inheriting the folder/system default" (large_model_id = ” is the existing
+// inheriting the folder/system default" (smart_model_id = ” is the existing
 // "no override" convention the app layer already reads via != "").
 func (q *Queries) UpdateSessionModels(ctx context.Context, arg UpdateSessionModelsParams) error {
 	_, err := q.exec(ctx, q.updateSessionModelsStmt, updateSessionModels,
-		arg.LargeModelProvider,
-		arg.LargeModelID,
-		arg.SmallModelProvider,
-		arg.SmallModelID,
+		arg.SmartModelProvider,
+		arg.SmartModelID,
+		arg.FastModelProvider,
+		arg.FastModelID,
 		arg.ID,
 	)
 	return err
@@ -567,20 +567,20 @@ func (q *Queries) UpdateSessionModels(ctx context.Context, arg UpdateSessionMode
 const updateSessionReasoningEffort = `-- name: UpdateSessionReasoningEffort :exec
 UPDATE sessions
 SET
-    large_model_reasoning_effort = ?,
-    small_model_reasoning_effort = ?,
+    smart_model_reasoning_effort = ?,
+    fast_model_reasoning_effort = ?,
     updated_at = strftime('%s', 'now')
 WHERE id = ?
 `
 
 type UpdateSessionReasoningEffortParams struct {
-	LargeModelReasoningEffort sql.NullString `json:"large_model_reasoning_effort"`
-	SmallModelReasoningEffort sql.NullString `json:"small_model_reasoning_effort"`
+	SmartModelReasoningEffort sql.NullString `json:"smart_model_reasoning_effort"`
+	FastModelReasoningEffort  sql.NullString `json:"fast_model_reasoning_effort"`
 	ID                        string         `json:"id"`
 }
 
 func (q *Queries) UpdateSessionReasoningEffort(ctx context.Context, arg UpdateSessionReasoningEffortParams) error {
-	_, err := q.exec(ctx, q.updateSessionReasoningEffortStmt, updateSessionReasoningEffort, arg.LargeModelReasoningEffort, arg.SmallModelReasoningEffort, arg.ID)
+	_, err := q.exec(ctx, q.updateSessionReasoningEffortStmt, updateSessionReasoningEffort, arg.SmartModelReasoningEffort, arg.FastModelReasoningEffort, arg.ID)
 	return err
 }
 

@@ -20,8 +20,8 @@ var modelsCmd = &cobra.Command{
 
 Crush resolves models through four named slots (` + "`config.SelectedModelType`" + `):
 
-  large     the strong default slot; the top-level agent runs on it ("smart").
-  small     the cheap slot for trivial work ("fast").
+  smart     the strong default slot; the top-level agent runs on it.
+  fast      the cheap slot for trivial work.
   worker    optional. A cheap slot for delegated hands-on sub-task work. Never
             auto-selected as a top-level model. When configured and the run
             uses --role smart, sub-agents spawned by the agent tool run on it.
@@ -29,7 +29,7 @@ Crush resolves models through four named slots (` + "`config.SelectedModelType`"
             Never auto-selected anywhere — reachable only via --role reviewer.
 
 worker and reviewer are both optional: with neither configured, everything
-behaves exactly as if only large/small existed. See ` + "`crush models use --help`" + `
+behaves exactly as if only smart/fast existed. See ` + "`crush models use --help`" + `
 to set any slot — including worker/reviewer via the ` + "`--worker`" + `/` + "`--reviewer`" + `
 flags, with effort settable in that same call — and ` + "`crush models state --help`" + `
 to see what's effective. ` + "`crush models unset --help`" + ` clears slots, worker/reviewer

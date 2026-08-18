@@ -81,15 +81,15 @@ func TestReleaseGate_P350_NewCoordinatorSelfHealsMissingAgentsMap(t *testing.T) 
 			{ID: "probe", Name: "probe", ContextWindow: 200000, DefaultMaxTokens: 1000},
 		},
 	})
-	// NewCoordinator's buildAgentModels needs a selected large/small model
+	// NewCoordinator's buildAgentModels needs a selected smart/fast model
 	// to construct the coordinator at all, independently of the
 	// Agents[AgentCoder] self-heal this test targets — found via a CI-only
-	// failure ("large model not selected") that never reproduced locally.
-	cfg.SetSelectedModelRuntime(config.SelectedModelTypeLarge, config.SelectedModel{
+	// failure ("smart model not selected") that never reproduced locally.
+	cfg.SetSelectedModelRuntime(config.SelectedModelTypeSmart, config.SelectedModel{
 		Provider: "openaicompat",
 		Model:    "probe",
 	})
-	cfg.SetSelectedModelRuntime(config.SelectedModelTypeSmall, config.SelectedModel{
+	cfg.SetSelectedModelRuntime(config.SelectedModelTypeFast, config.SelectedModel{
 		Provider: "openaicompat",
 		Model:    "probe",
 	})

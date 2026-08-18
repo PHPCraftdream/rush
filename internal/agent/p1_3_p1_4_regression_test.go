@@ -111,19 +111,19 @@ func TestP1_3_CoordinatorSummarizeSingleRead(t *testing.T) {
 			{ID: "model-a", Name: "model-a", ContextWindow: 200000, DefaultMaxTokens: 1000},
 		},
 	})
-	// NewCoordinator's buildAgentModels needs a selected large/small model
+	// NewCoordinator's buildAgentModels needs a selected smart/fast model
 	// to construct the coordinator at all — found via a CI-only failure
-	// ("large model not selected") that never reproduced locally (some
+	// ("smart model not selected") that never reproduced locally (some
 	// unidentified environment leak on the dev machine apparently made this
 	// already true). The actual value here is thrown away immediately below
 	// (coord.currentAgent is overwritten with spyAgent), so any provider/
 	// model pair that resolves cleanly is fine — reusing the same
 	// provider/model this test already built its spy model from.
-	cfg.SetSelectedModelRuntime(config.SelectedModelTypeLarge, config.SelectedModel{
+	cfg.SetSelectedModelRuntime(config.SelectedModelTypeSmart, config.SelectedModel{
 		Provider: "openaicompat",
 		Model:    "model-a",
 	})
-	cfg.SetSelectedModelRuntime(config.SelectedModelTypeSmall, config.SelectedModel{
+	cfg.SetSelectedModelRuntime(config.SelectedModelTypeFast, config.SelectedModel{
 		Provider: "openaicompat",
 		Model:    "model-a",
 	})
@@ -189,8 +189,8 @@ func (m *modelCallSpyAgent) Run(ctx context.Context, call SessionAgentCall) (*fa
 	return nil, nil
 }
 
-func (m *modelCallSpyAgent) SetModels(large, small Model) {
-	m.model = large
+func (m *modelCallSpyAgent) SetModels(smart, fast Model) {
+	m.model = smart
 }
 
 func (m *modelCallSpyAgent) SetTools(tools []fantasy.AgentTool)  {}
@@ -245,7 +245,7 @@ func (m *modelCallSpyAgent) QueuedPromptsList(sessionID string) []string {
 
 func (m *modelCallSpyAgent) ClearQueue(sessionID string) {}
 
-func (m *modelCallSpyAgent) InterruptAndSend(ctx context.Context, sessionID, prompt string, large, small *ModelOverride, attachments ...message.Attachment) error {
+func (m *modelCallSpyAgent) InterruptAndSend(ctx context.Context, sessionID, prompt string, smart, fast *ModelOverride, attachments ...message.Attachment) error {
 	return nil
 }
 
@@ -318,11 +318,11 @@ func (m *modelCallSpyAgent) InterruptAndReplace(sessionID string, call SessionAg
 	return false
 }
 
-func (m *modelCallSpyAgent) SmallModel() Model {
+func (m *modelCallSpyAgent) FastModel() Model {
 	return m.model
 }
 
-func (m *modelCallSpyAgent) LargeModel() Model {
+func (m *modelCallSpyAgent) SmartModel() Model {
 	return m.model
 }
 
@@ -382,8 +382,8 @@ func TestP1_4_CleanupUsesCancelImmuneContext(t *testing.T) {
 	}
 	env := testEnv(t)
 	a := NewSessionAgent(SessionAgentOptions{
-		LargeModel:           model,
-		SmallModel:           model,
+		SmartModel:           model,
+		FastModel:            model,
 		SystemPrompt:         "you are a summarizer",
 		SystemPromptPrefix:   "",
 		IsYolo:               true,
@@ -417,9 +417,9 @@ func TestP1_4_CleanupUsesCancelImmuneContext(t *testing.T) {
 	// Start the summary in a goroutine.
 	summarizeDone := make(chan error)
 	go func() {
-		largeModel := sa.largeModel.Get()
+		smartModel := sa.smartModel.Get()
 		systemPromptPrefix := sa.systemPromptPrefix.Get()
-		summarizeDone <- sa.runSummarizeSilent(ctx, sess.ID, fantasy.ProviderOptions{}, largeModel, systemPromptPrefix)
+		summarizeDone <- sa.runSummarizeSilent(ctx, sess.ID, fantasy.ProviderOptions{}, smartModel, systemPromptPrefix)
 	}()
 
 	// Wait for the stream to start.

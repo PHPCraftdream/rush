@@ -164,18 +164,18 @@ func TestP341_ConcurrentSetModelsSummarizeUsesTargetSessionSnapshot(t *testing.T
 	cfg, err := config.Init(env.workingDir, "", false)
 	require.NoError(t, err)
 	cfg.Config().Providers.Set("openaicompat", providerCfgA)
-	// NewCoordinator's buildAgentModels needs a selected large/small model
+	// NewCoordinator's buildAgentModels needs a selected smart/fast model
 	// to construct the coordinator at all — found via a CI-only failure
-	// ("large model not selected") that never reproduced locally (some
+	// ("smart model not selected") that never reproduced locally (some
 	// unidentified environment leak on the dev machine apparently made this
 	// already true). The actual value here only matters for this initial
 	// construction: coord.currentAgent.SetModels(modelA, modelA) right below
 	// immediately overwrites it with this test's own directly-built models.
-	cfg.SetSelectedModelRuntime(config.SelectedModelTypeLarge, config.SelectedModel{
+	cfg.SetSelectedModelRuntime(config.SelectedModelTypeSmart, config.SelectedModel{
 		Provider: "openaicompat",
 		Model:    "model-a",
 	})
-	cfg.SetSelectedModelRuntime(config.SelectedModelTypeSmall, config.SelectedModel{
+	cfg.SetSelectedModelRuntime(config.SelectedModelTypeFast, config.SelectedModel{
 		Provider: "openaicompat",
 		Model:    "model-a",
 	})

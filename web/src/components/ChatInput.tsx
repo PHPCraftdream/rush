@@ -9,7 +9,7 @@ import {
   $myPrompts,
   enqueueMessage,
   dequeueAllMessages,
-  sendWithSmallModel,
+  sendWithFastModel,
   setLastUsedSkill,
   jumpToMessage,
 } from "../store";
@@ -338,10 +338,10 @@ export function ChatInput() {
     if (textareaRef.current) textareaRef.current.style.height = "auto";
   }, [text, activeSessionID, agentBusy, attachments]);
 
-  const sendSmall = useCallback(() => {
+  const sendFast = useCallback(() => {
     const msg = text.trim();
     if (!msg || !activeSessionID || agentBusy) return;
-    sendWithSmallModel(activeSessionID, msg);
+    sendWithFastModel(activeSessionID, msg);
     setText("");
     setAttachments([]);
     setHistIdx(-1);
@@ -739,7 +739,7 @@ export function ChatInput() {
             )}
             {!agentBusy && (
               <button
-                onClick={sendSmall}
+                onClick={sendFast}
                 disabled={!canSend}
                 title="Send with lightweight model"
                 className="btn-input-action"

@@ -133,7 +133,7 @@ func (a *sessionAgent) handleWatchdogFire(
 	sessionID string,
 	watchdogCauseVal *atomic.Int32,
 	toolMaxDuration, idleTimeout time.Duration,
-	largeModel Model,
+	smartModel Model,
 ) {
 	watchdogCauseVal.Store(int32(cause))
 	// The watchdog firing IS the hang, caught at the only moment the
@@ -177,8 +177,8 @@ func (a *sessionAgent) handleWatchdogFire(
 		slog.Warn(
 			"agent: watchdog firing — tool execution exceeded cap, force-cancelling",
 			"session_id", sessionID,
-			"provider", largeModel.ModelCfg.Provider,
-			"model", largeModel.ModelCfg.Model,
+			"provider", smartModel.ModelCfg.Provider,
+			"model", smartModel.ModelCfg.Model,
 			"elapsed", elapsed.String(),
 			"cap", toolMaxDuration.String(),
 		)
@@ -186,8 +186,8 @@ func (a *sessionAgent) handleWatchdogFire(
 		slog.Warn(
 			"agent: watchdog firing — turn exceeded --timeout-hard-cap, force-cancelling",
 			"session_id", sessionID,
-			"provider", largeModel.ModelCfg.Provider,
-			"model", largeModel.ModelCfg.Model,
+			"provider", smartModel.ModelCfg.Provider,
+			"model", smartModel.ModelCfg.Model,
 			"elapsed", elapsed.String(),
 			"hard_cap", a.timeoutHardCap.String(),
 		)
@@ -195,8 +195,8 @@ func (a *sessionAgent) handleWatchdogFire(
 		slog.Warn(
 			"agent: stream watchdog firing — no provider activity, force-cancelling",
 			"session_id", sessionID,
-			"provider", largeModel.ModelCfg.Provider,
-			"model", largeModel.ModelCfg.Model,
+			"provider", smartModel.ModelCfg.Provider,
+			"model", smartModel.ModelCfg.Model,
 			"idle_duration", elapsed.String(),
 			"threshold", idleTimeout.String(),
 		)
@@ -270,11 +270,11 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	// with a mismatched model/prompt pair — and the next turn silently
 	// inherited another session's model.
 	cfg := a.resolveTurnConfig(call)
-	largeModel := cfg.largeModel
+	smartModel := cfg.smartModel
 	systemPrompt := cfg.systemPrompt
 	promptPrefix := cfg.promptPrefix
 
-	slog.Info("SessionAgent.Run: starting", "sessionID", call.SessionID, "model", largeModel.ModelCfg.Model, "promptLen", len(systemPrompt))
+	slog.Info("SessionAgent.Run: starting", "sessionID", call.SessionID, "model", smartModel.ModelCfg.Model, "promptLen", len(systemPrompt))
 
 	var instructions strings.Builder
 	for _, server := range mcp.GetStates() {
@@ -297,7 +297,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	}
 
 	agent := fantasy.NewAgent(
-		largeModel.Model,
+		smartModel.Model,
 		fantasy.WithSystemPrompt(systemPrompt),
 		fantasy.WithTools(agentTools...),
 		fantasy.WithUserAgent(userAgent),
@@ -383,7 +383,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	// Add the session to the context.
 	ctx = context.WithValue(ctx, tools.SessionIDContextKey, call.SessionID)
 	ctx = context.WithValue(ctx, cliprovider.SessionIDContextKey, call.SessionID)
-	ctx = context.WithValue(ctx, cliprovider.ReasoningEffortContextKey, currentSession.LargeModelReasoningEffort)
+	ctx = context.WithValue(ctx, cliprovider.ReasoningEffortContextKey, currentSession.SmartModelReasoningEffort)
 	// Compose this turn's activity-notify callback with any ancestor's (see
 	// withActivityNotify) BEFORE deriving genCtx, so every fantasy stream
 	// callback below — via bumpActivity -> notifyActivity(genCtx) — records
@@ -469,7 +469,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 		// a test-local copy of this shape that could silently drift from
 		// what agent.go actually does.
 		func(elapsed time.Duration, cause watchdogCause) {
-			a.handleWatchdogFire(cause, elapsed, call.SessionID, &watchdogCauseVal, toolMaxDuration, idleTimeout, largeModel)
+			a.handleWatchdogFire(cause, elapsed, call.SessionID, &watchdogCauseVal, toolMaxDuration, idleTimeout, smartModel)
 		},
 		a.timeoutExtendsOnProgress,        // Fork patch: batch 8
 		a.timeoutHardCap,                  // Fork patch: batch 8
@@ -502,7 +502,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	// EXPLICITLY near its end — before any defer runs — so on the success
 	// path titleCtx (derived from genCtx) was already cancelled by the time
 	// anything waited for it. The observed failure: a session left
-	// "Untitled Session" with "Error generating title with small model;
+	// "Untitled Session" with "Error generating title with fast model;
 	// trying next err=context canceled" for both models. It surfaced as a
 	// ~1-in-27 flake only because the mock in the older test answers
 	// instantly and usually wins that race.
@@ -1005,7 +1005,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 			// full, trim old messages so the agent can keep running without
 			// blocking on a synchronous summarisation call.
 			if !a.disableAutoSummarize {
-				cw := int64(largeModel.CatwalkCfg.ContextWindow)
+				cw := int64(smartModel.CatwalkCfg.ContextWindow)
 				if cw > 0 {
 					usedTokens := currentSession.CompletionTokens + currentSession.PromptTokens
 					remaining := cw - usedTokens
@@ -1030,7 +1030,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 				}
 			}
 
-			prepared.Messages = a.workaroundProviderMediaLimitations(prepared.Messages, largeModel)
+			prepared.Messages = a.workaroundProviderMediaLimitations(prepared.Messages, smartModel)
 
 			lastSystemRoleInx := 0
 			systemMessageUpdated := false
@@ -1071,16 +1071,16 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 			assistantMsg, err = a.messages.Create(callContext, call.SessionID, message.CreateMessageParams{
 				Role:            message.Assistant,
 				Parts:           []message.ContentPart{},
-				Model:           largeModel.Model.Model(),
-				Provider:        largeModel.Model.Provider(),
-				ReasoningEffort: currentSession.LargeModelReasoningEffort,
+				Model:           smartModel.Model.Model(),
+				Provider:        smartModel.Model.Provider(),
+				ReasoningEffort: currentSession.SmartModelReasoningEffort,
 			})
 			if err != nil {
 				return callContext, prepared, err
 			}
 			callContext = context.WithValue(callContext, tools.MessageIDContextKey, assistantMsg.ID)
-			callContext = context.WithValue(callContext, tools.SupportsImagesContextKey, largeModel.CatwalkCfg.SupportsImages)
-			callContext = context.WithValue(callContext, tools.ModelNameContextKey, largeModel.CatwalkCfg.Name)
+			callContext = context.WithValue(callContext, tools.SupportsImagesContextKey, smartModel.CatwalkCfg.SupportsImages)
+			callContext = context.WithValue(callContext, tools.ModelNameContextKey, smartModel.CatwalkCfg.Name)
 			sessionLock.Lock()
 			currentAssistant = &assistantMsg
 			sessionLock.Unlock()
@@ -1314,15 +1314,15 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 				slog.Warn(
 					"agent: empty stream from provider — recording as error",
 					"sessionID", call.SessionID,
-					"provider", largeModel.ModelCfg.Provider,
-					"model", largeModel.ModelCfg.Model,
+					"provider", smartModel.ModelCfg.Provider,
+					"model", smartModel.ModelCfg.Model,
 				)
 				currentAssistant.AddFinish(
 					message.FinishReasonError,
 					"Empty response",
 					fmt.Sprintf(
 						"Provider %q closed the stream for model %q without returning any content. This is usually a transient provider/network issue — please retry.",
-						largeModel.ModelCfg.Provider, largeModel.ModelCfg.Model,
+						smartModel.ModelCfg.Provider, smartModel.ModelCfg.Model,
 					),
 				)
 			} else if loopDetected {
@@ -1355,7 +1355,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 			// context window stays accurate. We drop the "estimated" flag
 			// (TUI marker — see CHANGELOG.fork.md Section 2).
 			usage, estimated := fallbackStepUsage(stepMessages, stepResult)
-			costDelta := a.updateSessionUsage(largeModel, &updatedSession, usage, a.openrouterCost(stepResult.ProviderMetadata))
+			costDelta := a.updateSessionUsage(smartModel, &updatedSession, usage, a.openrouterCost(stepResult.ProviderMetadata))
 			if costDelta != 0 {
 				if _, costErr := a.sessions.IncrementCost(ctx, updatedSession.ID, costDelta); costErr != nil {
 					return costErr
@@ -1373,7 +1373,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 			sessionLock.Lock()
 			assistantID := currentAssistant.ID
 			sessionLock.Unlock()
-			a.recordMessageUsage(ctx, assistantID, largeModel, usage, costDelta, estimated)
+			a.recordMessageUsage(ctx, assistantID, smartModel, usage, costDelta, estimated)
 			currentSession = updatedSession
 
 			// Fork patch: batch 30 — cancel + runaway protection.
@@ -1481,7 +1481,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 		},
 		StopWhen: []fantasy.StopCondition{
 			func(_ []fantasy.StepResult) bool {
-				cw := int64(largeModel.CatwalkCfg.ContextWindow)
+				cw := int64(smartModel.CatwalkCfg.ContextWindow)
 				// If context window is unknown (0), skip auto-summarize
 				// to avoid immediately truncating custom/local models.
 				if cw == 0 {
@@ -1526,7 +1526,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	stopCheckpoint()
 	err = normalizeTurnError(err, getPeakHoursAbortErr)
 	if err != nil {
-		isHyper := largeModel.ModelCfg.Provider == hyper.Name
+		isHyper := smartModel.ModelCfg.Provider == hyper.Name
 		isCancelErr := errors.Is(err, context.Canceled)
 		isWatchdogStall := isCancelErr && wd.stalled.Load()
 		// `crush run --timeout` bounds the whole invocation via
@@ -1626,7 +1626,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 					toolMaxDuration,
 					a.timeoutHardCap,
 					idleTimeout,
-					largeModel.ModelCfg.Provider,
+					smartModel.ModelCfg.Provider,
 				)
 			} else if isCancelErr {
 				content = "Error: user cancelled assistant tool calling"
@@ -1666,14 +1666,14 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 			slog.Info(
 				"agent: watchdog stall surfaced as FinishReasonError",
 				"session_id", call.SessionID,
-				"provider", largeModel.ModelCfg.Provider,
+				"provider", smartModel.ModelCfg.Provider,
 			)
 			title, body := watchdogFinishMessage(
 				watchdogCause(watchdogCauseVal.Load()),
 				toolMaxDuration,
 				a.timeoutHardCap,
 				idleTimeout,
-				largeModel.ModelCfg.Provider,
+				smartModel.ModelCfg.Provider,
 			)
 			currentAssistant.AddFinish(message.FinishReasonError, title, body)
 		} else if isCancelErr {
@@ -1695,7 +1695,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 				currentAssistant.AddFinish(
 					message.FinishReasonError,
 					"Copilot model not enabled",
-					fmt.Sprintf("%q is not enabled in Copilot. Go to the following page to enable it. Then, wait 5 minutes before trying again. %s", largeModel.CatwalkCfg.Name, url),
+					fmt.Sprintf("%q is not enabled in Copilot. Go to the following page to enable it. Then, wait 5 minutes before trying again. %s", smartModel.CatwalkCfg.Name, url),
 				)
 			} else {
 				currentAssistant.AddFinish(message.FinishReasonError, cmp.Or(stringext.Capitalize(providerErr.Title), defaultTitle), providerErr.Message)
@@ -1768,7 +1768,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 		// own end-of-turn drainOrRelease call, a few lines below, to pick up
 		// — the single true final drain point for the whole turn, summarize
 		// included.
-		summarizeErr := a.runSummarizeBody(genCtx, call.SessionID, call.ProviderOptions, largeModel, promptPrefix)
+		summarizeErr := a.runSummarizeBody(genCtx, call.SessionID, call.ProviderOptions, smartModel, promptPrefix)
 		if summarizeErr != nil {
 			return nil, SessionAgentCall{}, false, &ErrCallAlreadyAttempted{Err: summarizeErr}
 		}
@@ -1798,7 +1798,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	// SummaryMessageID). genCtx is still alive here (cancel() hasn't fired
 	// yet), so Cancel(sessionID) can interrupt this if needed.
 	if !shouldSummarize && silentCompactNeeded {
-		if silentErr := a.runSummarizeSilent(genCtx, call.SessionID, call.ProviderOptions, largeModel, promptPrefix); silentErr != nil {
+		if silentErr := a.runSummarizeSilent(genCtx, call.SessionID, call.ProviderOptions, smartModel, promptPrefix); silentErr != nil {
 			slog.Warn("silent summarise failed", "session_id", call.SessionID, "err", silentErr)
 		}
 	}

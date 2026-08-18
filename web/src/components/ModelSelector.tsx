@@ -3,8 +3,8 @@ import { useStore } from "@nanostores/react";
 import { BrainCircuit, Zap, ChevronLeft, ChevronRight, Undo2 } from "lucide-react";
 import {
   $config,
-  $recentLargeModels,
-  $recentSmallModels,
+  $recentSmartModels,
+  $recentFastModels,
   trackModelUsage,
   removeRecentModel,
   getDefaultModelKey,
@@ -109,10 +109,10 @@ function ModelRow({ model, isSelected, onSelect }: { model: ModelItem, isSelecte
 
 // ── ModelSelector ─────────────────────────────────────────────────────────────
 
-export function ModelSelector({ session, modelType }: { session: Session | null; modelType: "large" | "small" }) {
+export function ModelSelector({ session, modelType }: { session: Session | null; modelType: "smart" | "fast" }) {
   const config = useStore($config);
-  const recentLarge = useStore($recentLargeModels);
-  const recentSmall = useStore($recentSmallModels);
+  const recentSmart = useStore($recentSmartModels);
+  const recentFast = useStore($recentFastModels);
 
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
@@ -133,11 +133,11 @@ export function ModelSelector({ session, modelType }: { session: Session | null;
   const allModels = useMemo(() => buildModelList(config), [config]);
   const providerGroups = useMemo(() => buildProviderGroups(config), [config]);
   const defaultKey = useMemo(() => getDefaultModelKey(modelType, config), [modelType, config]);
-  const recentKeys = modelType === "large" ? recentLarge : recentSmall;
+  const recentKeys = modelType === "smart" ? recentSmart : recentFast;
 
   // Get current key from session record if available, else use global default
-  const sessionProvider = modelType === "large" ? session?.LargeModelProvider : session?.SmallModelProvider;
-  const sessionModelID = modelType === "large" ? session?.LargeModelID : session?.SmallModelID;
+  const sessionProvider = modelType === "smart" ? session?.SmartModelProvider : session?.FastModelProvider;
+  const sessionModelID = modelType === "smart" ? session?.SmartModelID : session?.FastModelID;
   const hasSessionOverride = !!(sessionProvider && sessionModelID);
   let currentKey = defaultKey;
   if (hasSessionOverride) {
@@ -157,7 +157,7 @@ export function ModelSelector({ session, modelType }: { session: Session | null;
   // to "high" (Max is opt-in for heavy work — same wording z.ai uses).
   let storedEffort = isZAIReasoningFlag ? "high" : "medium";
   if (session) {
-    const effort = modelType === "large" ? session.LargeModelReasoningEffort : session.SmallModelReasoningEffort;
+    const effort = modelType === "smart" ? session.SmartModelReasoningEffort : session.FastModelReasoningEffort;
     if (effort) storedEffort = effort;
   }
   const showEffortPicker = isCLIClaudeModelFlag || isZAIReasoningFlag;
@@ -174,8 +174,8 @@ export function ModelSelector({ session, modelType }: { session: Session | null;
     if (effortValid) return;
     setSessionReasoningEffort(
       session.ID,
-      modelType === "large" ? currentEffort : null,
-      modelType === "small" ? currentEffort : null,
+      modelType === "smart" ? currentEffort : null,
+      modelType === "fast" ? currentEffort : null,
     );
   }, [session?.ID, modelType, showEffortPicker, effortValid, currentEffort]);
 
@@ -187,8 +187,8 @@ export function ModelSelector({ session, modelType }: { session: Session | null;
     const newEffort = effortLevels[newIdx];
     setSessionReasoningEffort(
       session.ID,
-      modelType === "large" ? newEffort : null,
-      modelType === "small" ? newEffort : null,
+      modelType === "smart" ? newEffort : null,
+      modelType === "fast" ? newEffort : null,
     );
   }
 
@@ -228,8 +228,8 @@ export function ModelSelector({ session, modelType }: { session: Session | null;
     };
   }, [open]);
 
-  const Icon = modelType === "large" ? BrainCircuit : Zap;
-  const title = modelType === "large" ? "Large (strong) model" : "Small (fast) model";
+  const Icon = modelType === "smart" ? BrainCircuit : Zap;
+  const title = modelType === "smart" ? "Smart (strong) model" : "Fast (cheap) model";
 
   function onSelect(m: ModelItem) {
     if (!m.enabled) return; // CLI providers can't be selected without being enabled
@@ -239,10 +239,10 @@ export function ModelSelector({ session, modelType }: { session: Session | null;
       // other slot in from its current/default value here, like this used
       // to do, would re-write it on every switch and freeze it against
       // later folder/system default changes.
-      const largeKey = modelType === "large" ? m.key : null;
-      const smallKey = modelType === "small" ? m.key : null;
+      const smartKey = modelType === "smart" ? m.key : null;
+      const fastKey = modelType === "fast" ? m.key : null;
 
-      setSessionModels(session.ID, largeKey, smallKey);
+      setSessionModels(session.ID, smartKey, fastKey);
       trackModelUsage(modelType, m.key);
       setOpen(false);
     }
@@ -275,7 +275,7 @@ export function ModelSelector({ session, modelType }: { session: Session | null;
         onClick={() => { setOpen(o => !o); setSearch(""); }}
         className="flex items-center gap-1.5 text-xs text-text bg-base-overlay border border-surface rounded-lg px-2.5 py-1.5 hover:border-accent/50 hover:bg-base-subtle transition-colors"
         title={title}
-        data-test-id={modelType === "large" ? "model-selector-large" : "model-selector-small"}
+        data-test-id={modelType === "smart" ? "model-selector-smart" : "model-selector-fast"}
       >
         <Icon size={12} className="shrink-0" />
         <span className="font-medium truncate max-w-[180px]">{displayName}</span>

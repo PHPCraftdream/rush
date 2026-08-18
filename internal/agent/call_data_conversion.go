@@ -56,14 +56,14 @@ func fromSessionModelCfg(cfg session.ModelCfg) config.SelectedModel {
 // LogicalCallID is serialized to ensure the stable idempotency key survives
 // the durable serialization boundary (P2-1 fix, P0-1 release blocker).
 func ToSessionAgentCallData(call SessionAgentCall) session.SessionAgentCallData {
-	var largeModel, smallModel *session.ModelCfg
-	if call.LargeModel != nil {
-		cfg := toSessionModelCfg(call.LargeModel.ModelCfg)
-		largeModel = &cfg
+	var smartModel, fastModel *session.ModelCfg
+	if call.SmartModel != nil {
+		cfg := toSessionModelCfg(call.SmartModel.ModelCfg)
+		smartModel = &cfg
 	}
-	if call.SmallModel != nil {
-		cfg := toSessionModelCfg(call.SmallModel.ModelCfg)
-		smallModel = &cfg
+	if call.FastModel != nil {
+		cfg := toSessionModelCfg(call.FastModel.ModelCfg)
+		fastModel = &cfg
 	}
 
 	return session.SessionAgentCallData{
@@ -78,8 +78,8 @@ func ToSessionAgentCallData(call SessionAgentCall) session.SessionAgentCallData 
 		MaxTokens:            call.MaxTokens,
 		ExistingMessageID:    call.ExistingMessageID,
 		InjectID:             call.InjectID,
-		LargeModel:           largeModel,
-		SmallModel:           smallModel,
+		SmartModel:           smartModel,
+		FastModel:            fastModel,
 		SystemPromptPrefix:   call.SystemPromptPrefix,
 		SystemPrompt:         call.SystemPrompt,
 	}

@@ -37,11 +37,11 @@ func TestP1_4_SequentialInterrupts(t *testing.T) {
 			{ID: "test-model", Name: "Test Model", DefaultMaxTokens: 4096},
 		},
 	})
-	cfg.Config().Models[config.SelectedModelTypeLarge] = config.SelectedModel{
+	cfg.Config().Models[config.SelectedModelTypeSmart] = config.SelectedModel{
 		Provider: providerID,
 		Model:    "test-model",
 	}
-	cfg.Config().Models[config.SelectedModelTypeSmall] = config.SelectedModel{
+	cfg.Config().Models[config.SelectedModelTypeFast] = config.SelectedModel{
 		Provider: providerID,
 		Model:    "test-model",
 	}
@@ -122,11 +122,11 @@ func TestP1_4_TickerJoinsBeforeReturn(t *testing.T) {
 			{ID: "test-model", Name: "Test Model", DefaultMaxTokens: 4096},
 		},
 	})
-	cfg.Config().Models[config.SelectedModelTypeLarge] = config.SelectedModel{
+	cfg.Config().Models[config.SelectedModelTypeSmart] = config.SelectedModel{
 		Provider: providerID,
 		Model:    "test-model",
 	}
-	cfg.Config().Models[config.SelectedModelTypeSmall] = config.SelectedModel{
+	cfg.Config().Models[config.SelectedModelTypeFast] = config.SelectedModel{
 		Provider: providerID,
 		Model:    "test-model",
 	}

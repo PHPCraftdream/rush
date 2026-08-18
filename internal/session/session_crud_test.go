@@ -67,35 +67,35 @@ func TestUpdateReasoningEffort(t *testing.T) {
 
 		updated, err := svc.Get(ctx, session.ID)
 		require.NoError(t, err)
-		assert.Equal(t, "high", updated.LargeModelReasoningEffort)
-		assert.Equal(t, "low", updated.SmallModelReasoningEffort)
+		assert.Equal(t, "high", updated.SmartModelReasoningEffort)
+		assert.Equal(t, "low", updated.FastModelReasoningEffort)
 	})
 
-	t.Run("updates only large model effort", func(t *testing.T) {
+	t.Run("updates only smart model effort", func(t *testing.T) {
 		err := svc.UpdateReasoningEffort(ctx, session.ID, "max", "")
 		require.NoError(t, err)
 
 		updated, err := svc.Get(ctx, session.ID)
 		require.NoError(t, err)
-		assert.Equal(t, "max", updated.LargeModelReasoningEffort)
-		// Empty string overwrites, so small model becomes empty (not preserved)
-		assert.Equal(t, "", updated.SmallModelReasoningEffort)
+		assert.Equal(t, "max", updated.SmartModelReasoningEffort)
+		// Empty string overwrites, so fast model becomes empty (not preserved)
+		assert.Equal(t, "", updated.FastModelReasoningEffort)
 	})
 
-	t.Run("updates only small model effort", func(t *testing.T) {
+	t.Run("updates only fast model effort", func(t *testing.T) {
 		// First set both to known values
 		err := svc.UpdateReasoningEffort(ctx, session.ID, "high", "high")
 		require.NoError(t, err)
 
-		// Then update only small model
+		// Then update only fast model
 		err = svc.UpdateReasoningEffort(ctx, session.ID, "", "medium")
 		require.NoError(t, err)
 
 		updated, err := svc.Get(ctx, session.ID)
 		require.NoError(t, err)
-		// Empty string overwrites large model
-		assert.Equal(t, "", updated.LargeModelReasoningEffort)
-		assert.Equal(t, "medium", updated.SmallModelReasoningEffort)
+		// Empty string overwrites smart model
+		assert.Equal(t, "", updated.SmartModelReasoningEffort)
+		assert.Equal(t, "medium", updated.FastModelReasoningEffort)
 	})
 
 	t.Run("supports all valid effort levels", func(t *testing.T) {
@@ -106,8 +106,8 @@ func TestUpdateReasoningEffort(t *testing.T) {
 
 			updated, err := svc.Get(ctx, session.ID)
 			require.NoError(t, err)
-			assert.Equal(t, level, updated.LargeModelReasoningEffort)
-			assert.Equal(t, level, updated.SmallModelReasoningEffort)
+			assert.Equal(t, level, updated.SmartModelReasoningEffort)
+			assert.Equal(t, level, updated.FastModelReasoningEffort)
 		}
 	})
 
@@ -144,8 +144,8 @@ func TestCreateSession_DefaultReasoningEffort(t *testing.T) {
 	require.NoError(t, err)
 
 	// The DB has DEFAULT 'medium', so when we read back, we get "medium"
-	assert.Equal(t, "medium", session.LargeModelReasoningEffort)
-	assert.Equal(t, "medium", session.SmallModelReasoningEffort)
+	assert.Equal(t, "medium", session.SmartModelReasoningEffort)
+	assert.Equal(t, "medium", session.FastModelReasoningEffort)
 
 	// When we explicitly set a different value, it should override the default
 	err = svc.UpdateReasoningEffort(ctx, session.ID, "high", "high")
@@ -153,6 +153,6 @@ func TestCreateSession_DefaultReasoningEffort(t *testing.T) {
 
 	retrieved, err := svc.Get(ctx, session.ID)
 	require.NoError(t, err)
-	assert.Equal(t, "high", retrieved.LargeModelReasoningEffort)
-	assert.Equal(t, "high", retrieved.SmallModelReasoningEffort)
+	assert.Equal(t, "high", retrieved.SmartModelReasoningEffort)
+	assert.Equal(t, "high", retrieved.FastModelReasoningEffort)
 }

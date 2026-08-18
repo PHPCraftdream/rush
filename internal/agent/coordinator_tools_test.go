@@ -16,7 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// newRoleModelTestCoordinator builds a coordinator wired with distinct Large,
+// newRoleModelTestCoordinator builds a coordinator wired with distinct Smart,
 // Small, and (optionally) Worker model slots, each backed by its own
 // offline-safe openai-type provider (building an openai.Provider only
 // constructs a client, it never makes a network call, so this is safe to run
@@ -47,8 +47,8 @@ func newRoleModelTestCoordinator(t *testing.T, env fakeEnv, includeWorker bool) 
 		return config.SelectedModel{Provider: providerID, Model: modelID}
 	}
 
-	cfg.Config().Models[config.SelectedModelTypeLarge] = registerProvider("large-provider", "large-model")
-	cfg.Config().Models[config.SelectedModelTypeSmall] = registerProvider("small-provider", "small-model")
+	cfg.Config().Models[config.SelectedModelTypeSmart] = registerProvider("smart-provider", "smart-model")
+	cfg.Config().Models[config.SelectedModelTypeFast] = registerProvider("fast-provider", "fast-model")
 	if includeWorker {
 		cfg.Config().Models[config.SelectedModelTypeWorker] = registerProvider("worker-provider", "worker-model")
 	}
@@ -62,47 +62,47 @@ func newRoleModelTestCoordinator(t *testing.T, env fakeEnv, includeWorker bool) 
 // TestBuildAgentModels_WorkerPreference pins the "prefer Worker for
 // sub-agents when parent is Smart" behavior added alongside
 // SetActiveModelRole: buildAgentModels must swap in the Worker model config
-// as the sub-agent's large slot only when (a) this is a sub-agent build, (b)
-// the active role is unset/"large" (parent running smart, or unknown which
+// as the sub-agent's smart slot only when (a) this is a sub-agent build, (b)
+// the active role is unset/"smart" (parent running smart, or unknown which
 // is treated as smart), and (c) a Worker model is actually configured. Every
 // other combination must fall through to today's behavior (Large for
 // everything) unchanged.
 func TestBuildAgentModels_WorkerPreference(t *testing.T) {
-	t.Run("worker configured + isSubAgent + role unset uses Worker for large slot", func(t *testing.T) {
+	t.Run("worker configured + isSubAgent + role unset uses Worker for smart slot", func(t *testing.T) {
 		env := testEnv(t)
 		coord := newRoleModelTestCoordinator(t, env, true)
 		// activeModelRole left at zero value ("") deliberately: unset must be
-		// treated the same as "large" (smart).
+		// treated the same as "smart" (smart).
 
-		large, small, err := coord.buildAgentModels(t.Context(), true)
+		smart, fast, err := coord.buildAgentModels(t.Context(), true)
 		require.NoError(t, err)
-		assert.Equal(t, "worker-provider", large.ModelCfg.Provider, "sub-agent large slot must come from Worker")
-		assert.Equal(t, "worker-model", large.ModelCfg.Model)
-		assert.Equal(t, "small-provider", small.ModelCfg.Provider, "small slot must be unaffected")
+		assert.Equal(t, "worker-provider", smart.ModelCfg.Provider, "sub-agent smart slot must come from Worker")
+		assert.Equal(t, "worker-model", smart.ModelCfg.Model)
+		assert.Equal(t, "fast-provider", fast.ModelCfg.Provider, "fast slot must be unaffected")
 	})
 
-	t.Run("worker configured + isSubAgent + role explicitly large uses Worker for large slot", func(t *testing.T) {
+	t.Run("worker configured + isSubAgent + role explicitly smart uses Worker for smart slot", func(t *testing.T) {
 		env := testEnv(t)
 		coord := newRoleModelTestCoordinator(t, env, true)
-		coord.SetActiveModelRole(config.SelectedModelTypeLarge)
+		coord.SetActiveModelRole(config.SelectedModelTypeSmart)
 
-		large, _, err := coord.buildAgentModels(t.Context(), true)
+		smart, _, err := coord.buildAgentModels(t.Context(), true)
 		require.NoError(t, err)
-		assert.Equal(t, "worker-provider", large.ModelCfg.Provider)
+		assert.Equal(t, "worker-provider", smart.ModelCfg.Provider)
 	})
 
 	t.Run("worker NOT configured + isSubAgent falls back to Large (backward compat)", func(t *testing.T) {
 		env := testEnv(t)
 		coord := newRoleModelTestCoordinator(t, env, false)
 
-		large, _, err := coord.buildAgentModels(t.Context(), true)
+		smart, _, err := coord.buildAgentModels(t.Context(), true)
 		require.NoError(t, err)
-		assert.Equal(t, "large-provider", large.ModelCfg.Provider, "must fall back to Large when Worker isn't configured")
-		assert.Equal(t, "large-model", large.ModelCfg.Model)
+		assert.Equal(t, "smart-provider", smart.ModelCfg.Provider, "must fall back to Smart when Worker isn't configured")
+		assert.Equal(t, "smart-model", smart.ModelCfg.Model)
 	})
 
 	for _, role := range []config.SelectedModelType{
-		config.SelectedModelTypeSmall,
+		config.SelectedModelTypeFast,
 		config.SelectedModelTypeWorker,
 		config.SelectedModelTypeReviewer,
 	} {
@@ -111,25 +111,25 @@ func TestBuildAgentModels_WorkerPreference(t *testing.T) {
 			coord := newRoleModelTestCoordinator(t, env, true)
 			coord.SetActiveModelRole(role)
 
-			large, _, err := coord.buildAgentModels(t.Context(), true)
+			smart, _, err := coord.buildAgentModels(t.Context(), true)
 			require.NoError(t, err)
-			assert.Equal(t, "large-provider", large.ModelCfg.Provider, "an explicit non-large role for the whole run must not be second-guessed for sub-agents")
+			assert.Equal(t, "smart-provider", smart.ModelCfg.Provider, "an explicit non-smart role for the whole run must not be second-guessed for sub-agents")
 		})
 	}
 
-	t.Run("top-level agent (isSubAgent=false) always uses Large regardless of Worker config or active role", func(t *testing.T) {
+	t.Run("top-level agent (isSubAgent=false) always uses Smart regardless of Worker config or active role", func(t *testing.T) {
 		env := testEnv(t)
 		coord := newRoleModelTestCoordinator(t, env, true)
-		coord.SetActiveModelRole(config.SelectedModelTypeLarge)
+		coord.SetActiveModelRole(config.SelectedModelTypeSmart)
 
-		large, _, err := coord.buildAgentModels(t.Context(), false)
+		smart, _, err := coord.buildAgentModels(t.Context(), false)
 		require.NoError(t, err)
-		assert.Equal(t, "large-provider", large.ModelCfg.Provider)
-		assert.Equal(t, "large-model", large.ModelCfg.Model)
+		assert.Equal(t, "smart-provider", smart.ModelCfg.Provider)
+		assert.Equal(t, "smart-model", smart.ModelCfg.Model)
 	})
 }
 
-// newWorkerToolTestCoordinator builds a coordinator with distinct Large,
+// newWorkerToolTestCoordinator builds a coordinator with distinct Smart,
 // Small, and (optionally) Worker model slots plus every service buildTools
 // needs to actually construct tool instances (permissions/history/
 // filetracker/messages) — a superset of newRoleModelTestCoordinator (which
@@ -154,8 +154,8 @@ func newWorkerToolTestCoordinator(t *testing.T, env fakeEnv, includeWorker bool)
 		return config.SelectedModel{Provider: providerID, Model: modelID}
 	}
 
-	cfg.Config().Models[config.SelectedModelTypeLarge] = registerProvider("large-provider", "large-model")
-	cfg.Config().Models[config.SelectedModelTypeSmall] = registerProvider("small-provider", "small-model")
+	cfg.Config().Models[config.SelectedModelTypeSmart] = registerProvider("smart-provider", "smart-model")
+	cfg.Config().Models[config.SelectedModelTypeFast] = registerProvider("fast-provider", "fast-model")
 	if includeWorker {
 		cfg.Config().Models[config.SelectedModelTypeWorker] = registerProvider("worker-provider", "worker-model")
 	}
@@ -205,7 +205,7 @@ func buildSubAgentToolNames(t *testing.T, coord *coordinator) []string {
 // TestBuildTools_WorkerToolset is the BUG-2 fix's regression + behavior
 // suite: the AgentTask sub-agent (spawned by the "agent" tool) must stay
 // read-only in every case except when it is genuinely acting as a worker
-// (Worker model configured AND the parent run's active role is smart/large
+// (Worker model configured AND the parent run's active role is smart
 // or unset). Getting this wrong in either direction is bad: granting
 // edit/write/bash unconditionally would let a plain search-and-context
 // sub-agent mutate the filesystem in the ordinary interactive TUI/web path;
@@ -231,7 +231,7 @@ func TestBuildTools_WorkerToolset(t *testing.T) {
 		assert.NotContains(t, names, AgentToolName, "sub-agent must never get the agent tool")
 	})
 
-	activeSmartRoles := []config.SelectedModelType{"", config.SelectedModelTypeLarge}
+	activeSmartRoles := []config.SelectedModelType{"", config.SelectedModelTypeSmart}
 	for _, role := range activeSmartRoles {
 		t.Run("worker configured + active role "+string(role)+" (unset-or-large), sub-agent gets worker toolset", func(t *testing.T) {
 			env := testEnv(t)
@@ -240,7 +240,7 @@ func TestBuildTools_WorkerToolset(t *testing.T) {
 				coord.SetActiveModelRole(role)
 			}
 			// role == "" left unset deliberately: unset must be treated the
-			// same as "large" (smart), mirroring buildAgentModels semantics.
+			// same as "smart" (smart), mirroring buildAgentModels semantics.
 
 			names := buildSubAgentToolNames(t, coord)
 
@@ -256,7 +256,7 @@ func TestBuildTools_WorkerToolset(t *testing.T) {
 	}
 
 	nonSmartRoles := []config.SelectedModelType{
-		config.SelectedModelTypeSmall,
+		config.SelectedModelTypeFast,
 		config.SelectedModelTypeWorker,
 		config.SelectedModelTypeReviewer,
 	}
@@ -284,7 +284,7 @@ func TestBuildTools_WorkerToolset(t *testing.T) {
 			role          config.SelectedModelType
 		}{
 			{"no worker, role unset", false, ""},
-			{"worker configured, role large", true, config.SelectedModelTypeLarge},
+			{"worker configured, role large", true, config.SelectedModelTypeSmart},
 			{"worker configured, role unset", true, ""},
 			{"worker configured, role worker", true, config.SelectedModelTypeWorker},
 		} {
@@ -385,8 +385,8 @@ func TestBuildTools_CoderHasAskQuestion(t *testing.T) {
 		})
 		return config.SelectedModel{Provider: providerID, Model: modelID}
 	}
-	cfg.Config().Models[config.SelectedModelTypeLarge] = registerProvider("large-provider", "large-model")
-	cfg.Config().Models[config.SelectedModelTypeSmall] = registerProvider("small-provider", "small-model")
+	cfg.Config().Models[config.SelectedModelTypeSmart] = registerProvider("smart-provider", "smart-model")
+	cfg.Config().Models[config.SelectedModelTypeFast] = registerProvider("fast-provider", "fast-model")
 
 	// config.Load only calls SetupAgents when IsConfigured() — false on a
 	// from-scratch CI runner with no provider credentials and no CLI binaries
@@ -436,8 +436,8 @@ func TestBuildTools_CoderHasAskQuestion(t *testing.T) {
 // case).
 func TestBuildTools_CoderHasAskQuestion_AllRoles(t *testing.T) {
 	roles := []config.SelectedModelType{
-		config.SelectedModelTypeLarge,
-		config.SelectedModelTypeSmall,
+		config.SelectedModelTypeSmart,
+		config.SelectedModelTypeFast,
 		config.SelectedModelTypeWorker,
 		config.SelectedModelTypeReviewer,
 		"", // unset -- treated as smart by workerSubAgentActive/buildAgentModels

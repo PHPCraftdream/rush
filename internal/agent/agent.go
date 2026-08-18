@@ -243,8 +243,8 @@ type SessionAgentCall struct {
 	// Pointers, so "explicitly set" is distinguishable from "zero value":
 	// nil means "use the agent's shared value", which is exactly what every
 	// existing caller that never sets them keeps getting.
-	LargeModel         *Model
-	SmallModel         *Model
+	SmartModel         *Model
+	FastModel          *Model
 	SystemPromptPrefix *string
 
 	// SystemPrompt pins the BASE system prompt — the one applyModelOverrides
@@ -291,8 +291,8 @@ type SessionAgentCall struct {
 // then passed by value, so nothing downstream can observe a mid-run change
 // made by a concurrent session.
 type turnConfig struct {
-	largeModel   Model
-	smallModel   Model
+	smartModel   Model
+	fastModel    Model
 	systemPrompt string
 	promptPrefix string
 }
@@ -301,16 +301,16 @@ type turnConfig struct {
 // field exactly once; a value pinned on the call wins over the shared one.
 func (a *sessionAgent) resolveTurnConfig(call SessionAgentCall) turnConfig {
 	cfg := turnConfig{
-		largeModel:   a.largeModel.Get(),
-		smallModel:   a.smallModel.Get(),
+		smartModel:   a.smartModel.Get(),
+		fastModel:    a.fastModel.Get(),
 		systemPrompt: a.systemPrompt.Get(),
 		promptPrefix: a.systemPromptPrefix.Get(),
 	}
-	if call.LargeModel != nil {
-		cfg.largeModel = *call.LargeModel
+	if call.SmartModel != nil {
+		cfg.smartModel = *call.SmartModel
 	}
-	if call.SmallModel != nil {
-		cfg.smallModel = *call.SmallModel
+	if call.FastModel != nil {
+		cfg.fastModel = *call.FastModel
 	}
 	if call.SystemPromptPrefix != nil {
 		cfg.promptPrefix = *call.SystemPromptPrefix
@@ -328,7 +328,7 @@ func (a *sessionAgent) resolveTurnConfig(call SessionAgentCall) turnConfig {
 
 type SessionAgent interface {
 	Run(context.Context, SessionAgentCall) (*fantasy.AgentResult, error)
-	SetModels(large Model, small Model)
+	SetModels(smart Model, fast Model)
 	SetTools(tools []fantasy.AgentTool)
 	SetSystemPrompt(systemPrompt string)
 	SetSystemPromptPrefix(prefix string)
@@ -401,8 +401,8 @@ type Model struct {
 }
 
 type sessionAgent struct {
-	largeModel         *csync.Value[Model]
-	smallModel         *csync.Value[Model]
+	smartModel         *csync.Value[Model]
+	fastModel          *csync.Value[Model]
 	systemPromptPrefix *csync.Value[string]
 	systemPrompt       *csync.Value[string]
 	tools              *csync.Slice[fantasy.AgentTool]
@@ -570,7 +570,7 @@ type sessionAgent struct {
 	// forever" lifetime as activeRequests today.
 	mailboxes *csync.Map[string, *mailbox]
 	// peakHoursCheck, when non-nil, is called once per step from
-	// OnStepFinish to re-check whether the large model's provider has
+	// OnStepFinish to re-check whether the smart model's provider has
 	// entered its peak_hours refusal window mid-turn. Returns nil while
 	// outside the window. Plumbed from coordinator.buildAgent, which is
 	// the only layer with access to config.ProviderConfig — sessionAgent
@@ -580,8 +580,8 @@ type sessionAgent struct {
 }
 
 type SessionAgentOptions struct {
-	LargeModel           Model
-	SmallModel           Model
+	SmartModel           Model
+	FastModel            Model
 	SystemPromptPrefix   string
 	SystemPrompt         string
 	IsSubAgent           bool
@@ -648,7 +648,7 @@ type SessionAgentOptions struct {
 	// real default.
 	ToolCleanupGrace time.Duration
 	// PeakHoursCheck, when non-nil, is called once per step to re-check
-	// whether the large model's provider has entered its peak_hours
+	// whether the smart model's provider has entered its peak_hours
 	// window mid-turn. See the field doc on sessionAgent.peakHoursCheck.
 	PeakHoursCheck func() error
 	// SessionPreambleMaxDuration overrides sessionPreambleMaxDurationDefault
@@ -680,8 +680,8 @@ func NewSessionAgent(
 	opts SessionAgentOptions,
 ) SessionAgent {
 	return &sessionAgent{
-		largeModel:                 csync.NewValue(opts.LargeModel),
-		smallModel:                 csync.NewValue(opts.SmallModel),
+		smartModel:                 csync.NewValue(opts.SmartModel),
+		fastModel:                  csync.NewValue(opts.FastModel),
 		systemPromptPrefix:         csync.NewValue(opts.SystemPromptPrefix),
 		systemPrompt:               csync.NewValue(opts.SystemPrompt),
 		isSubAgent:                 opts.IsSubAgent,
@@ -711,9 +711,9 @@ func NewSessionAgent(
 	}
 }
 
-func (a *sessionAgent) SetModels(large Model, small Model) {
-	a.largeModel.Set(large)
-	a.smallModel.Set(small)
+func (a *sessionAgent) SetModels(smart Model, fast Model) {
+	a.smartModel.Set(smart)
+	a.fastModel.Set(fast)
 }
 
 // SetTools replaces the agent's tools. Like the constructor, it wraps them
@@ -736,5 +736,5 @@ func (a *sessionAgent) SystemPrompt() string {
 }
 
 func (a *sessionAgent) Model() Model {
-	return a.largeModel.Get()
+	return a.smartModel.Get()
 }

@@ -26,12 +26,12 @@ import (
 // concurrent sessions. Returning the values means the caller never has to
 // read them back.
 type resolvedOverrides struct {
-	large        Model
-	small        Model
+	smart        Model
+	fast         Model
 	promptPrefix string
 	systemPrompt string
-	// providerCfg is the large model's provider config, resolved from the
-	// SAME Snapshot()/Config() call that built `large` above. Callers that
+	// providerCfg is the smart model's provider config, resolved from the
+	// SAME Snapshot()/Config() call that built `smart` above. Callers that
 	// need provider options/credentials for this same model later in one
 	// logical resolve/build operation (runInternal's 401 rebuildCall) MUST
 	// read this field instead of taking their own, separately-timed
@@ -49,7 +49,7 @@ type resolvedOverrides struct {
 // the global config defaults. This method NEVER writes to shared state (c.currentAgent),
 // ensuring that per-session model choices don't affect other concurrent sessions.
 //
-// The returned snapshot includes both large and small models, the provider's system
+// The returned snapshot includes both smart and fast models, the provider's system
 // prompt prefix, and the built system prompt (if a prompt template is available).
 //
 // Results are cached per unique (config generation, provider+model+reasoning_effort) pair.
@@ -70,52 +70,52 @@ func (c *coordinator) resolveSessionModels(ctx context.Context, sessionID string
 	cfg, gen := c.cfg.Snapshot()
 
 	// Start with the global config defaults.
-	largeCfg := cfg.Models[config.SelectedModelTypeLarge]
-	smallCfg := cfg.Models[config.SelectedModelTypeSmall]
+	smartCfg := cfg.Models[config.SelectedModelTypeSmart]
+	fastCfg := cfg.Models[config.SelectedModelTypeFast]
 
 	// Apply session-level overrides from the DB if present.
-	var largeOverride, smallOverride *ModelOverride
-	if sess.LargeModelID != "" {
-		largeOverride = &ModelOverride{
-			Provider:        sess.LargeModelProvider,
-			Model:           sess.LargeModelID,
-			ReasoningEffort: sess.LargeModelReasoningEffort,
+	var smartOverride, fastOverride *ModelOverride
+	if sess.SmartModelID != "" {
+		smartOverride = &ModelOverride{
+			Provider:        sess.SmartModelProvider,
+			Model:           sess.SmartModelID,
+			ReasoningEffort: sess.SmartModelReasoningEffort,
 		}
 	}
-	if sess.SmallModelID != "" {
-		smallOverride = &ModelOverride{
-			Provider:        sess.SmallModelProvider,
-			Model:           sess.SmallModelID,
-			ReasoningEffort: sess.SmallModelReasoningEffort,
+	if sess.FastModelID != "" {
+		fastOverride = &ModelOverride{
+			Provider:        sess.FastModelProvider,
+			Model:           sess.FastModelID,
+			ReasoningEffort: sess.FastModelReasoningEffort,
 		}
 	}
 
 	// Merge overrides into the config copies.
-	if largeOverride != nil {
-		if largeCfg.Provider != largeOverride.Provider || largeCfg.Model != largeOverride.Model {
-			largeCfg.Think = false
-			largeCfg.ReasoningEffort = ""
+	if smartOverride != nil {
+		if smartCfg.Provider != smartOverride.Provider || smartCfg.Model != smartOverride.Model {
+			smartCfg.Think = false
+			smartCfg.ReasoningEffort = ""
 		}
-		largeCfg.Provider = largeOverride.Provider
-		largeCfg.Model = largeOverride.Model
-		if largeOverride.ReasoningEffort != "" {
-			largeCfg.ReasoningEffort = largeOverride.ReasoningEffort
+		smartCfg.Provider = smartOverride.Provider
+		smartCfg.Model = smartOverride.Model
+		if smartOverride.ReasoningEffort != "" {
+			smartCfg.ReasoningEffort = smartOverride.ReasoningEffort
 		}
 	}
-	if smallOverride != nil {
-		if smallCfg.Provider != smallOverride.Provider || smallCfg.Model != smallOverride.Model {
-			smallCfg.Think = false
-			smallCfg.ReasoningEffort = ""
+	if fastOverride != nil {
+		if fastCfg.Provider != fastOverride.Provider || fastCfg.Model != fastOverride.Model {
+			fastCfg.Think = false
+			fastCfg.ReasoningEffort = ""
 		}
-		smallCfg.Provider = smallOverride.Provider
-		smallCfg.Model = smallOverride.Model
-		if smallOverride.ReasoningEffort != "" {
-			smallCfg.ReasoningEffort = smallOverride.ReasoningEffort
+		fastCfg.Provider = fastOverride.Provider
+		fastCfg.Model = fastOverride.Model
+		if fastOverride.ReasoningEffort != "" {
+			fastCfg.ReasoningEffort = fastOverride.ReasoningEffort
 		}
 	}
 
 	// Build (or reuse from cache) both models TOGETHER in a single
-	// buildModelsFromCfg call, keyed by the combined large+small
+	// buildModelsFromCfg call, keyed by the combined smart+fast
 	// provider+model+reasoning_effort tuple PLUS the config generation.
 	// The generation is included so that any config change (reload, credential
 	// update, etc.) invalidates the cache, preventing stale clients from being
@@ -123,16 +123,16 @@ func (c *coordinator) resolveSessionModels(ctx context.Context, sessionID string
 	//
 	// An earlier version of this cache called buildModelsFromCfg once per
 	// slot, swapping (largeCfg, smallCfg) argument order to "select" which
-	// half of the pair to keep for the small slot. That swap silently
+	// half of the pair to keep for the fast slot. That swap silently
 	// mismatched roles: buildModelsFromCfg(ctx, smallCfg, largeCfg, false)
 	// returns (ModelBuiltFromSmallCfg, ModelBuiltFromLargeCfg) — i.e. its
-	// SECOND return value (labeled "small" only by the caller's own local
+	// SECOND return value (labeled "fast" only by the caller's own local
 	// variable name) is actually built from largeCfg. The old code then
-	// picked that second value as the small-model result, so
-	// resolved.small ended up holding a Model built from the LARGE
-	// config's provider/model whenever large and small differed — pinned
+	// picked that second value as the fast-model result, so
+	// resolved.fast ended up holding a Model built from the SMART
+	// config's provider/model whenever the smart and fast configs differed — pinned
 	// onto every call's SmallModel (title generation and any other
-	// small-model-driven path) via resolvedOverrides.pin. Caching the pair
+	// fast-model-driven path) via resolvedOverrides.pin. Caching the pair
 	// from one call, in the caller-supplied role order, removes the
 	// swap entirely.
 	//
@@ -140,8 +140,8 @@ func (c *coordinator) resolveSessionModels(ctx context.Context, sessionID string
 	// call, to ensure consistency (task #341, P1-3).
 	pairCacheKey := fmt.Sprintf("gen:%d|%s:%s:%s|%s:%s:%s",
 		gen,
-		largeCfg.Provider, largeCfg.Model, largeCfg.ReasoningEffort,
-		smallCfg.Provider, smallCfg.Model, smallCfg.ReasoningEffort)
+		smartCfg.Provider, smartCfg.Model, smartCfg.ReasoningEffort,
+		fastCfg.Provider, fastCfg.Model, fastCfg.ReasoningEffort)
 
 	// c.modelCache is nil for any *coordinator built as a struct literal
 	// instead of via NewCoordinator (several existing test fixtures in this
@@ -150,35 +150,35 @@ func (c *coordinator) resolveSessionModels(ctx context.Context, sessionID string
 	// Get/Set on a nil *csync.Map panics; treat a nil cache as "caching
 	// disabled" rather than requiring every coordinator constructor to
 	// remember to initialize it.
-	var largeModel, smallModel Model
+	var smartModel, fastModel Model
 	var cacheHit bool
 	if c.modelCache != nil {
 		if cached, ok := c.modelCache.Get(pairCacheKey); ok {
-			largeModel, smallModel, cacheHit = cached.large, cached.small, true
+			smartModel, fastModel, cacheHit = cached.smart, cached.fast, true
 		}
 	}
 	if !cacheHit {
-		largeModel, smallModel, err = c.buildModelsFromCfg(ctx, cfg, largeCfg, smallCfg, false)
+		smartModel, fastModel, err = c.buildModelsFromCfg(ctx, cfg, smartCfg, fastCfg, false)
 		if err != nil {
 			return nil, fmt.Errorf("failed to build models: %w", err)
 		}
 		if c.modelCache != nil {
-			c.modelCache.Set(pairCacheKey, cachedModelPair{large: largeModel, small: smallModel})
+			c.modelCache.Set(pairCacheKey, cachedModelPair{smart: smartModel, fast: fastModel})
 		}
 	}
 
 	resolved := &resolvedOverrides{
-		large: largeModel,
-		small: smallModel,
+		smart: smartModel,
+		fast:  fastModel,
 	}
 
 	// Resolve prompt prefix from provider config using the same atomic snapshot.
-	largeProviderCfg, ok := cfg.Providers.Get(largeModel.ModelCfg.Provider)
+	smartProviderCfg, ok := cfg.Providers.Get(smartModel.ModelCfg.Provider)
 	if !ok {
-		return nil, fmt.Errorf("large model provider %s not configured", largeModel.ModelCfg.Provider)
+		return nil, fmt.Errorf("smart model provider %s not configured", smartModel.ModelCfg.Provider)
 	}
-	if largeProviderCfg.SystemPromptPrefix != "" {
-		resolved.promptPrefix = largeProviderCfg.SystemPromptPrefix
+	if smartProviderCfg.SystemPromptPrefix != "" {
+		resolved.promptPrefix = smartProviderCfg.SystemPromptPrefix
 	}
 	// Carry the provider config resolved from THIS SAME snapshot (cfg/gen
 	// above) so callers that need provider options/credentials later in the
@@ -186,7 +186,7 @@ func (c *coordinator) resolveSessionModels(ctx context.Context, sessionID string
 	// don't have to take a second, independently-timed Snapshot() call that
 	// could observe a different generation than the model was built from
 	// (task #341, P1-1).
-	resolved.providerCfg = largeProviderCfg
+	resolved.providerCfg = smartProviderCfg
 
 	// Build system prompt if a template is available. workerSubAgentActive
 	// takes the SAME pinned cfg used for largeModel/largeProviderCfg above
@@ -196,7 +196,7 @@ func (c *coordinator) resolveSessionModels(ctx context.Context, sessionID string
 	// WorkerAvailable flag disagree with the model/prefix this call already
 	// resolved from an earlier generation.
 	if c.prompt != nil {
-		newSystemPrompt, err := c.prompt.Build(ctx, largeModel.ModelCfg.Provider, largeModel.ModelCfg.Model, c.cfg, c.workerSubAgentActive(cfg))
+		newSystemPrompt, err := c.prompt.Build(ctx, smartModel.ModelCfg.Provider, smartModel.ModelCfg.Model, c.cfg, c.workerSubAgentActive(cfg))
 		if err != nil {
 			// Leave resolved.systemPrompt empty rather than guessing: the
 			// caller treats "" as "nothing to pin", so the turn falls back to
@@ -220,13 +220,13 @@ func (c *coordinator) resolveSessionModels(ctx context.Context, sessionID string
 // including when the session never set a worker override — so callers can
 // cheaply fall back to the coordinator-wide default agent's own model
 // (already built from the merged system/folder config in buildAgentModels)
-// instead of rebuilding one. This mirrors resolveSessionModels' large/small
+// instead of rebuilding one. This mirrors resolveSessionModels' smart/fast
 // cascade (session DB override -> merged system/folder config) but is
 // intentionally a SEPARATE, lighter path: worker-slot resolution is only
 // needed when actually dispatching a sub-agent, not on every top-level turn,
 // so it isn't folded into the hot resolveSessionModels call.
 //
-// reviewer has no equivalent runtime hook: unlike large/small/worker, it is
+// reviewer has no equivalent runtime hook: unlike smart/fast/worker, it is
 // consumed only as a `crush run --role reviewer` CLI selection (an entire
 // top-level run's model choice), never read at sub-agent dispatch time —
 // see internal/cmd/run.go's --role docs. A session-level ReviewerModelID is
@@ -254,7 +254,7 @@ func (c *coordinator) resolveSubAgentModelOverride(ctx context.Context, sessionI
 		workerCfg.ReasoningEffort = sess.WorkerModelReasoningEffort
 	}
 
-	// buildModelsFromCfg builds a large+small PAIR; pass workerCfg for both
+	// buildModelsFromCfg builds a smart+fast PAIR; pass workerCfg for both
 	// slots and keep only the first result — there is no single-model
 	// variant, and building the (identical, discarded) second model is
 	// cheap relative to the provider round-trip this whole path exists for.
@@ -275,39 +275,39 @@ func (c *coordinator) resolveSubAgentModelOverride(ctx context.Context, sessionI
 //
 // The returned snapshot is what makes a TURN immune to the shared state moving
 // underneath it — no turn reads shared state after this point.
-func (c *coordinator) applyModelOverrides(ctx context.Context, large, small *ModelOverride) (*resolvedOverrides, error) {
+func (c *coordinator) applyModelOverrides(ctx context.Context, smart, fast *ModelOverride) (*resolvedOverrides, error) {
 	// Atomically capture config and generation up front (task #341, P1-1) so
 	// largeCfg/smallCfg below, the buildModelsFromCfg call further down, and
 	// the provider/prompt reads at the end of this function all agree on one
-	// generation. This function used to read Models[Large]/Models[Small] via
+	// generation. This function used to read Models[Smart]/Models[Fast] via
 	// a live c.cfg.Config() call here and take a SEPARATE Snapshot() call
 	// later just for buildModelsFromCfg's provider lookups — a reload
-	// landing between the two could hand back a large/small model selection
+	// landing between the two could hand back a smart/fast model selection
 	// from one generation built against provider config from another.
 	cfg, _ := c.cfg.Snapshot()
-	largeCfg := cfg.Models[config.SelectedModelTypeLarge]
-	smallCfg := cfg.Models[config.SelectedModelTypeSmall]
+	smartCfg := cfg.Models[config.SelectedModelTypeSmart]
+	fastCfg := cfg.Models[config.SelectedModelTypeFast]
 
-	if large != nil {
-		if largeCfg.Provider != large.Provider || largeCfg.Model != large.Model {
-			largeCfg.Think = false
-			largeCfg.ReasoningEffort = ""
+	if smart != nil {
+		if smartCfg.Provider != smart.Provider || smartCfg.Model != smart.Model {
+			smartCfg.Think = false
+			smartCfg.ReasoningEffort = ""
 		}
-		largeCfg.Provider = large.Provider
-		largeCfg.Model = large.Model
-		if large.ReasoningEffort != "" {
-			largeCfg.ReasoningEffort = large.ReasoningEffort
+		smartCfg.Provider = smart.Provider
+		smartCfg.Model = smart.Model
+		if smart.ReasoningEffort != "" {
+			smartCfg.ReasoningEffort = smart.ReasoningEffort
 		}
 	}
-	if small != nil {
-		if smallCfg.Provider != small.Provider || smallCfg.Model != small.Model {
-			smallCfg.Think = false
-			smallCfg.ReasoningEffort = ""
+	if fast != nil {
+		if fastCfg.Provider != fast.Provider || fastCfg.Model != fast.Model {
+			fastCfg.Think = false
+			fastCfg.ReasoningEffort = ""
 		}
-		smallCfg.Provider = small.Provider
-		smallCfg.Model = small.Model
-		if small.ReasoningEffort != "" {
-			smallCfg.ReasoningEffort = small.ReasoningEffort
+		fastCfg.Provider = fast.Provider
+		fastCfg.Model = fast.Model
+		if fast.ReasoningEffort != "" {
+			fastCfg.ReasoningEffort = fast.ReasoningEffort
 		}
 	}
 
@@ -319,21 +319,21 @@ func (c *coordinator) applyModelOverrides(ctx context.Context, large, small *Mod
 	// which is acceptable since overrides are explicitly opt-in per-call.
 	// Reuse the cfg captured at the top of this function (task #341, P1-1)
 	// instead of taking a second, separately-timed Snapshot() here.
-	largeModel, smallModel, err := c.buildModelsFromCfg(ctx, cfg, largeCfg, smallCfg, false)
+	smartModel, fastModel, err := c.buildModelsFromCfg(ctx, cfg, smartCfg, fastCfg, false)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build override models: %w", err)
 	}
 
-	resolved := &resolvedOverrides{large: largeModel, small: smallModel}
+	resolved := &resolvedOverrides{smart: smartModel, fast: fastModel}
 
-	if largeProviderCfg, ok := cfg.Providers.Get(largeModel.ModelCfg.Provider); ok {
-		resolved.promptPrefix = largeProviderCfg.SystemPromptPrefix
-		resolved.providerCfg = largeProviderCfg
+	if smartProviderCfg, ok := cfg.Providers.Get(smartModel.ModelCfg.Provider); ok {
+		resolved.promptPrefix = smartProviderCfg.SystemPromptPrefix
+		resolved.providerCfg = smartProviderCfg
 	}
 	// workerSubAgentActive takes the SAME pinned cfg used for largeModel
 	// above (task #341, P1-1) rather than re-reading c.cfg.Config() live.
 	if c.prompt != nil {
-		newSystemPrompt, err := c.prompt.Build(ctx, largeModel.ModelCfg.Provider, largeModel.ModelCfg.Model, c.cfg, c.workerSubAgentActive(cfg))
+		newSystemPrompt, err := c.prompt.Build(ctx, smartModel.ModelCfg.Provider, smartModel.ModelCfg.Model, c.cfg, c.workerSubAgentActive(cfg))
 		if err != nil {
 			slog.Error("applyModelOverrides: failed to rebuild system prompt", "err", err)
 		} else {
@@ -351,9 +351,9 @@ func (r *resolvedOverrides) pin(call *SessionAgentCall) {
 	if r == nil {
 		return
 	}
-	large, small := r.large, r.small
-	call.LargeModel = &large
-	call.SmallModel = &small
+	smart, fast := r.smart, r.fast
+	call.SmartModel = &smart
+	call.FastModel = &fast
 	if r.promptPrefix != "" {
 		prefix := r.promptPrefix
 		call.SystemPromptPrefix = &prefix
@@ -380,7 +380,7 @@ func (c *coordinator) resolveSessionSystemPrompt(ctx context.Context, sessionID 
 	}
 
 	// Resolve the session's model to use for prompt building.
-	// Use the large model since that's what the turn runs on.
+	// Use the smart model since that's what the turn runs on.
 	resolved, resolveErr := c.resolveSessionModels(ctx, sessionID)
 	if resolveErr != nil {
 		slog.Warn("coordinator: failed to resolve models for system prompt", "sessionID", sessionID, "err", resolveErr)
@@ -393,7 +393,7 @@ func (c *coordinator) resolveSessionSystemPrompt(ctx context.Context, sessionID 
 	// (c.workerSubAgentActive() with no argument, and c.cfg.Config()
 	// implicitly via prompt.Build's store). A reload landing between the
 	// two builds could otherwise make this second build's WorkerAvailable
-	// flag disagree with resolved.large/resolved.promptPrefix, which were
+	// flag disagree with resolved.smart/resolved.promptPrefix, which were
 	// pinned from an earlier generation.
 	built := resolved.systemPrompt
 	if built == "" {
@@ -406,7 +406,7 @@ func (c *coordinator) resolveSessionSystemPrompt(ctx context.Context, sessionID 
 }
 
 // workerSubAgentActive reports whether a sub-agent being built right now is
-// acting as a "worker": the parent run is driven by the Large ("smart") slot
+// acting as a "worker": the parent run is driven by the Smart slot
 // — or the active role is unknown, which for the interactive TUI/web path is
 // equivalent to smart — AND a Worker model is actually configured. This is
 // the single shared predicate for "the sub-agent should behave like a
@@ -420,7 +420,7 @@ func (c *coordinator) resolveSessionSystemPrompt(ctx context.Context, sessionID 
 // Snapshot() for the rest of its build/resolve operation (task #341, P1-1).
 // This method used to take no cfg argument and read c.cfg.Config() live
 // instead — a torn read: buildAgentModels captured one generation via
-// Snapshot() for the large/small/worker model lookups, then this method
+// Snapshot() for the smart/fast/worker model lookups, then this method
 // re-read Models[Worker] from whatever generation happened to be published
 // at the moment it ran. A reload landing in between could hand back a
 // worker slot from a DIFFERENT generation than the one buildAgentModels
@@ -431,7 +431,7 @@ func (c *coordinator) resolveSessionSystemPrompt(ctx context.Context, sessionID 
 //
 // Mirrors the semantics documented on buildAgentModels below: falls through
 // to false (today's behavior) when Worker isn't configured, or when the
-// operator explicitly chose a non-large role (fast/worker/reviewer) for the
+// operator explicitly chose a non-smart role (fast/worker/reviewer) for the
 // whole run — we don't second-guess that choice by force-upgrading/
 // downgrading sub-agents. Fork patch (reviewer/worker roles).
 func (c *coordinator) workerSubAgentActive(cfg *config.Config) bool {
@@ -439,7 +439,7 @@ func (c *coordinator) workerSubAgentActive(cfg *config.Config) bool {
 	activeRole := c.activeModelRole
 	c.activeModelRoleMu.Unlock()
 
-	if activeRole != "" && activeRole != config.SelectedModelTypeLarge {
+	if activeRole != "" && activeRole != config.SelectedModelTypeSmart {
 		return false
 	}
 
@@ -451,149 +451,149 @@ func (c *coordinator) workerSubAgentActive(cfg *config.Config) bool {
 func (c *coordinator) buildAgentModels(ctx context.Context, isSubAgent bool) (Model, Model, error) {
 	// Single atomic snapshot for every config read below (task #341/P1-3;
 	// gap found by independent review — this function used to read
-	// large/small/worker each via a separate c.cfg.Config() call, then take
+	// smart/fast/worker each via a separate c.cfg.Config() call, then take
 	// a fourth, separate Snapshot() just for buildModelsFromCfg's provider
 	// lookups. A reload landing between any of those reads could produce a
 	// cross-generation mix, exactly what Snapshot() exists to prevent.
 	cfg, _ := c.cfg.Snapshot()
 
-	largeModelCfg, ok := cfg.Models[config.SelectedModelTypeLarge]
+	smartModelCfg, ok := cfg.Models[config.SelectedModelTypeSmart]
 	if !ok {
-		return Model{}, Model{}, errLargeModelNotSelected
+		return Model{}, Model{}, errSmartModelNotSelected
 	}
-	smallModelCfg, ok := cfg.Models[config.SelectedModelTypeSmall]
+	fastModelCfg, ok := cfg.Models[config.SelectedModelTypeFast]
 	if !ok {
-		return Model{}, Model{}, errSmallModelNotSelected
+		return Model{}, Model{}, errFastModelNotSelected
 	}
 
 	// Fork patch (reviewer/worker roles): when spawning a sub-agent acting as
 	// a worker (see workerSubAgentActive), prefer the cheaper Worker slot for
-	// the sub-agent's large-model slot. This never touches the small-model
-	// slot, and falls through to today's behavior (Large for everything)
+	// the sub-agent's smart-model slot. This never touches the fast-model
+	// slot, and falls through to today's behavior (Smart for everything)
 	// otherwise.
 	if isSubAgent && c.workerSubAgentActive(cfg) {
-		largeModelCfg = cfg.Models[config.SelectedModelTypeWorker]
+		smartModelCfg = cfg.Models[config.SelectedModelTypeWorker]
 	}
 
-	return c.buildModelsFromCfg(ctx, cfg, largeModelCfg, smallModelCfg, isSubAgent)
+	return c.buildModelsFromCfg(ctx, cfg, smartModelCfg, fastModelCfg, isSubAgent)
 }
 
 // buildModelsFromCfg builds Model objects from explicit SelectedModel configs.
 // The cfg parameter must be from a single atomic Snapshot() call to ensure
 // consistency across all provider reads (task #341, P1-3).
-func (c *coordinator) buildModelsFromCfg(ctx context.Context, cfg *config.Config, largeModelCfg, smallModelCfg config.SelectedModel, isSubAgent bool) (Model, Model, error) {
-	largeProviderCfg, ok := cfg.Providers.Get(largeModelCfg.Provider)
+func (c *coordinator) buildModelsFromCfg(ctx context.Context, cfg *config.Config, smartModelCfg, fastModelCfg config.SelectedModel, isSubAgent bool) (Model, Model, error) {
+	smartProviderCfg, ok := cfg.Providers.Get(smartModelCfg.Provider)
 	if !ok {
-		return Model{}, Model{}, errLargeModelProviderNotConfigured
+		return Model{}, Model{}, errSmartModelProviderNotConfigured
 	}
 
-	largeProvider, err := c.buildProvider(largeProviderCfg, largeModelCfg, isSubAgent)
+	smartProvider, err := c.buildProvider(smartProviderCfg, smartModelCfg, isSubAgent)
 	if err != nil {
 		return Model{}, Model{}, err
 	}
 
-	smallProviderCfg, ok := cfg.Providers.Get(smallModelCfg.Provider)
+	fastProviderCfg, ok := cfg.Providers.Get(fastModelCfg.Provider)
 	if !ok {
-		return Model{}, Model{}, errSmallModelProviderNotConfigured
+		return Model{}, Model{}, errFastModelProviderNotConfigured
 	}
 
-	smallProvider, err := c.buildProvider(smallProviderCfg, smallModelCfg, true)
+	fastProvider, err := c.buildProvider(fastProviderCfg, fastModelCfg, true)
 	if err != nil {
 		return Model{}, Model{}, err
 	}
 
-	var largeCatwalkModel *catwalk.Model
-	var smallCatwalkModel *catwalk.Model
+	var smartCatwalkModel *catwalk.Model
+	var fastCatwalkModel *catwalk.Model
 
-	for _, m := range largeProviderCfg.Models {
-		if m.ID == largeModelCfg.Model {
-			largeCatwalkModel = &m
+	for _, m := range smartProviderCfg.Models {
+		if m.ID == smartModelCfg.Model {
+			smartCatwalkModel = &m
 		}
 	}
-	for _, m := range smallProviderCfg.Models {
-		if m.ID == smallModelCfg.Model {
-			smallCatwalkModel = &m
+	for _, m := range fastProviderCfg.Models {
+		if m.ID == fastModelCfg.Model {
+			fastCatwalkModel = &m
 		}
 	}
 
-	if largeCatwalkModel == nil {
-		return Model{}, Model{}, errLargeModelNotFound
+	if smartCatwalkModel == nil {
+		return Model{}, Model{}, errSmartModelNotFound
 	}
 
-	if smallCatwalkModel == nil {
-		return Model{}, Model{}, errSmallModelNotFound
+	if fastCatwalkModel == nil {
+		return Model{}, Model{}, errFastModelNotFound
 	}
 
-	largeModelID := largeModelCfg.Model
-	smallModelID := smallModelCfg.Model
+	smartModelID := smartModelCfg.Model
+	fastModelID := fastModelCfg.Model
 
-	if largeModelCfg.Provider == openrouter.Name && isExactoSupported(largeModelID) {
-		largeModelID += ":exacto"
+	if smartModelCfg.Provider == openrouter.Name && isExactoSupported(smartModelID) {
+		smartModelID += ":exacto"
 	}
 
-	if smallModelCfg.Provider == openrouter.Name && isExactoSupported(smallModelID) {
-		smallModelID += ":exacto"
+	if fastModelCfg.Provider == openrouter.Name && isExactoSupported(fastModelID) {
+		fastModelID += ":exacto"
 	}
 
-	largeModel, err := largeProvider.LanguageModel(ctx, largeModelID)
+	smartModel, err := smartProvider.LanguageModel(ctx, smartModelID)
 	if err != nil {
 		return Model{}, Model{}, err
 	}
-	smallModel, err := smallProvider.LanguageModel(ctx, smallModelID)
+	fastModel, err := fastProvider.LanguageModel(ctx, fastModelID)
 	if err != nil {
 		return Model{}, Model{}, err
 	}
 
 	return Model{
-			Model:      largeModel,
-			CatwalkCfg: *largeCatwalkModel,
-			ModelCfg:   largeModelCfg,
-			FlatRate:   largeProviderCfg.FlatRate,
+			Model:      smartModel,
+			CatwalkCfg: *smartCatwalkModel,
+			ModelCfg:   smartModelCfg,
+			FlatRate:   smartProviderCfg.FlatRate,
 		}, Model{
-			Model:      smallModel,
-			CatwalkCfg: *smallCatwalkModel,
-			ModelCfg:   smallModelCfg,
-			FlatRate:   smallProviderCfg.FlatRate,
+			Model:      fastModel,
+			CatwalkCfg: *fastCatwalkModel,
+			ModelCfg:   fastModelCfg,
+			FlatRate:   fastProviderCfg.FlatRate,
 		}, nil
 }
 
-// Model returns the globally configured large model from config.
+// Model returns the globally configured smart model from config.
 // This is used for display/status queries and does NOT reflect any per-session
 // model overrides. After the per-session model isolation fix, callers that need
 // the actual model for a specific session should use resolveSessionModels instead.
 func (c *coordinator) Model() Model {
-	// Build the default large model from config without caching (this is
+	// Build the default smart model from config without caching (this is
 	// called infrequently, mostly for status display).
 	cfg, _ := c.cfg.Snapshot()
-	largeCfg := cfg.Models[config.SelectedModelTypeLarge]
-	smallCfg := cfg.Models[config.SelectedModelTypeSmall]
+	smartCfg := cfg.Models[config.SelectedModelTypeSmart]
+	fastCfg := cfg.Models[config.SelectedModelTypeFast]
 
 	// Create a temporary context for model building.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	largeModel, _, err := c.buildModelsFromCfg(ctx, cfg, largeCfg, smallCfg, false)
+	smartModel, _, err := c.buildModelsFromCfg(ctx, cfg, smartCfg, fastCfg, false)
 	if err != nil {
 		// Return a zero-value model rather than panicking on status queries.
-		slog.Error("coordinator.Model: failed to build default large model", "err", err)
+		slog.Error("coordinator.Model: failed to build default smart model", "err", err)
 		return Model{}
 	}
-	return largeModel
+	return smartModel
 }
 
 func (c *coordinator) UpdateModels(ctx context.Context) error {
 	c.clearModelCache()
 
 	// build the models again so we make sure we get the latest config
-	large, small, err := c.buildAgentModels(ctx, false)
+	smart, fast, err := c.buildAgentModels(ctx, false)
 	if err != nil {
 		return err
 	}
-	c.currentAgent.SetModels(large, small)
+	c.currentAgent.SetModels(smart, fast)
 
-	// Update prompt prefix for the new large model provider
-	if largeProviderCfg, ok := c.cfg.Config().Providers.Get(large.ModelCfg.Provider); ok {
-		c.currentAgent.SetSystemPromptPrefix(largeProviderCfg.SystemPromptPrefix)
+	// Update prompt prefix for the new smart model provider
+	if smartProviderCfg, ok := c.cfg.Config().Providers.Get(smart.ModelCfg.Provider); ok {
+		c.currentAgent.SetSystemPromptPrefix(smartProviderCfg.SystemPromptPrefix)
 	}
 
 	agentCfg, ok := c.cfg.Config().Agents[config.AgentCoder]

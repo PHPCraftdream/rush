@@ -57,16 +57,16 @@ type Session struct {
 	CreatedAt        int64
 	UpdatedAt        int64
 
-	LargeModelProvider        string
-	LargeModelID              string
-	LargeModelReasoningEffort string // "low", "medium", "high", or "max"
-	SmallModelProvider        string
-	SmallModelID              string
-	SmallModelReasoningEffort string // "low", "medium", "high", or "max"
+	SmartModelProvider        string
+	SmartModelID              string
+	SmartModelReasoningEffort string // "low", "medium", "high", or "max"
+	FastModelProvider         string
+	FastModelID               string
+	FastModelReasoningEffort  string // "low", "medium", "high", or "max"
 
 	// Worker/reviewer overrides — empty means "inherit the folder/system
-	// default", same convention as the large/small fields above. Unlike
-	// large/small, most sessions never set these: worker/reviewer are
+	// default", same convention as the smart/fast fields above. Unlike
+	// smart/fast, most sessions never set these: worker/reviewer are
 	// optional sub-agent model slots (task #466).
 	WorkerModelProvider          string
 	WorkerModelID                string
@@ -173,8 +173,8 @@ type Service interface {
 	// charges zero. Replaces the old in-memory baseline scheme that lost cost
 	// on sub-agent error paths, process restarts, and failed charges.
 	TransferChildCostToParent(ctx context.Context, childSessionID, parentSessionID string) error
-	UpdateModels(ctx context.Context, sessionID string, large, small *ModelSlotUpdate) error
-	UpdateReasoningEffort(ctx context.Context, sessionID, largeEffort, smallEffort string) error
+	UpdateModels(ctx context.Context, sessionID string, smart, fast *ModelSlotUpdate) error
+	UpdateReasoningEffort(ctx context.Context, sessionID, smartEffort, fastEffort string) error
 	// UpdateWorkerReviewerModels and UpdateWorkerReviewerReasoningEffort are
 	// UpdateModels/UpdateReasoningEffort's siblings for the optional
 	// worker/reviewer slots (task #466).
@@ -366,12 +366,12 @@ func (s service) fromDBItem(item db.Session) Session {
 		CreatedAt:        item.CreatedAt,
 		UpdatedAt:        item.UpdatedAt,
 
-		LargeModelProvider:        item.LargeModelProvider.String,
-		LargeModelID:              item.LargeModelID.String,
-		LargeModelReasoningEffort: item.LargeModelReasoningEffort.String,
-		SmallModelProvider:        item.SmallModelProvider.String,
-		SmallModelID:              item.SmallModelID.String,
-		SmallModelReasoningEffort: item.SmallModelReasoningEffort.String,
+		SmartModelProvider:        item.SmartModelProvider.String,
+		SmartModelID:              item.SmartModelID.String,
+		SmartModelReasoningEffort: item.SmartModelReasoningEffort.String,
+		FastModelProvider:         item.FastModelProvider.String,
+		FastModelID:               item.FastModelID.String,
+		FastModelReasoningEffort:  item.FastModelReasoningEffort.String,
 
 		WorkerModelProvider:          item.WorkerModelProvider.String,
 		WorkerModelID:                item.WorkerModelID.String,

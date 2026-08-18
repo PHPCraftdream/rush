@@ -154,7 +154,7 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 			FrequencyPenalty: model.ModelCfg.FrequencyPenalty,
 			PresencePenalty:  model.ModelCfg.PresencePenalty,
 			NonInteractive:   true,
-			LargeModel:       &pinnedModel,
+			SmartModel:       &pinnedModel,
 		})
 	}
 	var result *fantasy.AgentResult

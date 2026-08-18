@@ -109,8 +109,8 @@ func newSummarizeCoreTestAgent(t *testing.T) (*sessionAgent, session.Session) {
 		CatwalkCfg: catwalk.Model{ContextWindow: 200000, DefaultMaxTokens: 1000},
 	}
 	a := NewSessionAgent(SessionAgentOptions{
-		LargeModel:           model,
-		SmallModel:           model,
+		SmartModel:           model,
+		FastModel:            model,
 		SystemPrompt:         "you are a probe",
 		IsYolo:               true,
 		Sessions:             env.sessions,
@@ -212,8 +212,8 @@ func TestRunSummarize_QueuedMessage_RunsAsFollowOnTurn(t *testing.T) {
 		CatwalkCfg: catwalk.Model{ContextWindow: 200000, DefaultMaxTokens: 1000},
 	}
 	a := NewSessionAgent(SessionAgentOptions{
-		LargeModel:           model,
-		SmallModel:           model,
+		SmartModel:           model,
+		FastModel:            model,
 		SystemPrompt:         "you are a probe",
 		IsYolo:               true,
 		Sessions:             env.sessions,
@@ -364,7 +364,7 @@ func TestRunTurn_ShouldSummarize_QueuedMessageContinuesWithoutLockDeadlock(t *te
 	t.Cleanup(dispatchSrv.Close)
 	lm := languageModelFromServer(t, dispatchSrv)
 
-	// Separate, uncounted server for the small model / title generation —
+	// Separate, uncounted server for the fast model / title generation —
 	// same rationale as run_queue_drain_test.go's newQueueDrainTestAgent:
 	// needsTitle fires in the background on a session's first turn and must
 	// not pollute the main-model call-count routing above.
@@ -376,13 +376,13 @@ func TestRunTurn_ShouldSummarize_QueuedMessageContinuesWithoutLockDeadlock(t *te
 		Model:      lm,
 		CatwalkCfg: catwalk.Model{ContextWindow: 1000, DefaultMaxTokens: 1000},
 	}
-	smallModel := Model{
+	fastModel := Model{
 		Model:      titleLM,
 		CatwalkCfg: catwalk.Model{ContextWindow: 1000, DefaultMaxTokens: 1000},
 	}
 	a := NewSessionAgent(SessionAgentOptions{
-		LargeModel:    model,
-		SmallModel:    smallModel,
+		SmartModel:    model,
+		FastModel:     fastModel,
 		SystemPrompt:  "you are a probe",
 		IsYolo:        true,
 		Sessions:      env.sessions,

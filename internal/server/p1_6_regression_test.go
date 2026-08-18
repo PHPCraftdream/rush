@@ -32,7 +32,7 @@ func (f *fakeAlwaysBusyCoordinator) Run(ctx context.Context, sessionID, prompt s
 	return nil, nil
 }
 
-func (f *fakeAlwaysBusyCoordinator) RunWithOverrides(ctx context.Context, sessionID, prompt string, large, small *agent.ModelOverride, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
+func (f *fakeAlwaysBusyCoordinator) RunWithOverrides(ctx context.Context, sessionID, prompt string, smart, fast *agent.ModelOverride, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
 	f.runWithOverride = true
 	return nil, nil
 }
@@ -65,7 +65,7 @@ func (f *fakeAlwaysBusyCoordinator) ClearQueue(sessionID string) {
 	f.clearQueueCalled = true
 }
 
-func (f *fakeAlwaysBusyCoordinator) InterruptAndSend(ctx context.Context, sessionID, prompt string, large, small *agent.ModelOverride, attachments ...message.Attachment) error {
+func (f *fakeAlwaysBusyCoordinator) InterruptAndSend(ctx context.Context, sessionID, prompt string, smart, fast *agent.ModelOverride, attachments ...message.Attachment) error {
 	return nil
 }
 

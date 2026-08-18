@@ -15,7 +15,7 @@ var modelsPresetCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		fmt.Fprintln(os.Stderr,
 			"`crush models preset` was removed in batch 11.\n"+
-				"Use `crush models list` to see atoms, then `crush models use <large> <small>`.")
+				"Use `crush models list` to see atoms, then `crush models use <smart> <fast>`.")
 		os.Exit(2)
 	},
 }

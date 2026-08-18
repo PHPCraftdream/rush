@@ -808,7 +808,7 @@ type SumMessageUsageByModelInRangeRow struct {
 // Per-model token/cache/cost totals across ALL sessions in a time window.
 //
 // Grouped by the model that actually PRODUCED each message, not by the
-// session's current model. `sessions cost` groups by sessions.large_model_id,
+// session's current model. `sessions cost` groups by sessions.smart_model_id,
 // so a session that switched models attributes every token to whichever model
 // it happened to end on; this does not.
 //

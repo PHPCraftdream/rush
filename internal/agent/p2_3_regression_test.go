@@ -95,8 +95,8 @@ func TestP2_3_HTTPProviderRespectsCancellation(t *testing.T) {
 
 	env := testEnv(t)
 	a := NewSessionAgent(SessionAgentOptions{
-		LargeModel:           model,
-		SmallModel:           model,
+		SmartModel:           model,
+		FastModel:            model,
 		SystemPrompt:         "you are a test agent",
 		IsYolo:               true,
 		Sessions:             env.sessions,
@@ -241,8 +241,8 @@ func TestP2_3_ManualCompactionWatchdogCatchesIdleStall(t *testing.T) {
 	shortIdleTimeout := 500 * time.Millisecond
 	shortTick := 100 * time.Millisecond
 	a := NewSessionAgent(SessionAgentOptions{
-		LargeModel:           model,
-		SmallModel:           model,
+		SmartModel:           model,
+		FastModel:            model,
 		SystemPrompt:         "you are a test agent",
 		IsYolo:               true,
 		Sessions:             env.sessions,

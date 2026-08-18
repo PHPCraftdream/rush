@@ -18,8 +18,8 @@ var modelsUnsetCmd = &cobra.Command{
 crush.json so the OTHER scope's value becomes effective again.
 
 Positional arg (optional):
-  large     — only the large slot
-  small     — only the small slot
+  smart     — only the smart slot
+  fast      — only the fast slot
   worker    — only the optional worker slot
   reviewer  — only the optional reviewer slot
   both      — large + small (default if omitted; matches ` + "`crush models use`" + `'s scope)
@@ -32,7 +32,7 @@ Scope flags (mutually exclusive):
 Missing keys are a no-op (exit 0). After the deletion, an empty
 "models" object is also stripped so the file stays clean.`,
 	Args:      cobra.MaximumNArgs(1),
-	ValidArgs: []string{"large", "small", "worker", "reviewer", "both", "all"},
+	ValidArgs: []string{"smart", "fast", "worker", "reviewer", "both", "all"},
 	Example: `
 # Clear the large+small workspace override so the global config takes effect again.
 crush models unset --local
@@ -40,10 +40,10 @@ crush models unset --local
 # Same but globally — wipes large+small from ~/.local/share/crush/crush.json.
 crush models unset --global
 
-# Drop just the large slot in the workspace; keep the small one.
+# Drop just the smart slot in the workspace; keep the fast one.
 crush models unset large --local
 
-# Drop just the small slot globally.
+# Drop just the fast slot globally.
 crush models unset small --global
 
 # Clear the worker slot globally (falls back to no worker — sub-agents use large).
@@ -64,10 +64,10 @@ crush models state
 			which = args[0]
 		}
 		switch which {
-		case "large", "small", "worker", "reviewer", "both", "all":
+		case "smart", "fast", "worker", "reviewer", "both", "all":
 			// ok
 		default:
-			return fmt.Errorf("unexpected positional %q — expected large|small|worker|reviewer|both|all", which)
+			return fmt.Errorf("unexpected positional %q — expected smart|fast|worker|reviewer|both|all", which)
 		}
 
 		scope, err := scopeFromFlags(cmd, config.ScopeGlobal)
@@ -90,8 +90,8 @@ crush models state
 			key   string
 			prior *config.SelectedModel
 		}{
-			{"large", "models.large", priorAll[config.SelectedModelTypeLarge]},
-			{"small", "models.small", priorAll[config.SelectedModelTypeSmall]},
+			{"smart", "models.smart", priorAll[config.SelectedModelTypeSmart]},
+			{"fast", "models.fast", priorAll[config.SelectedModelTypeFast]},
 			{"worker", "models.worker", priorAll[config.SelectedModelTypeWorker]},
 			{"reviewer", "models.reviewer", priorAll[config.SelectedModelTypeReviewer]},
 		}
@@ -101,7 +101,7 @@ crush models state
 		selected := func(label string) bool {
 			switch which {
 			case "both":
-				return label == "large" || label == "small"
+				return label == "smart" || label == "fast"
 			case "all":
 				return true
 			default:

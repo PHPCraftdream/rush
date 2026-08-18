@@ -348,14 +348,14 @@ func renderEffortsForModel(arg string) (string, error) {
 			levels := a.EffortSource.Levels()
 			tw := tabwriter.NewWriter(&b, 0, 0, 2, ' ', 0)
 			for _, l := range levels {
-				fmt.Fprintf(tw, "  %s-%s\t or  crush models use %s-%s <small>\n", target.AtomKey, l, target.AtomKey, l)
+				fmt.Fprintf(tw, "  %s-%s\t or  crush models use %s-%s <fast>\n", target.AtomKey, l, target.AtomKey, l)
 			}
 			tw.Flush()
 			b.WriteString("\n  (Levels detected from `claude --help`; falls back to a fixed\n")
 			b.WriteString("  low/medium/high/xhigh/max list if the CLI can't be reached.)\n")
 		} else {
 			b.WriteString("  This local-cli model was not found in the atom registry with an\n")
-			b.WriteString("  effort source; use `crush models use local-cli/" + target.Model + "@<level> <small>`.\n")
+			b.WriteString("  effort source; use `crush models use local-cli/" + target.Model + "@<level> <fast>`.\n")
 		}
 		return b.String(), nil
 	}
@@ -363,13 +363,13 @@ func renderEffortsForModel(arg string) (string, error) {
 	// Non-Claude: raw @effort syntax is the only option. List candidate
 	// levels from provider docs where we know them; otherwise show the
 	// generic form only.
-	fmt.Fprintf(&b, "  crush models use %s/%s@<level> <small>\n\n", target.Provider, target.Model)
+	fmt.Fprintf(&b, "  crush models use %s/%s@<level> <fast>\n\n", target.Provider, target.Model)
 
 	// Z.AI atoms additionally now support the long-form "<atom>-<level>"
 	// suffix (validated against ReasoningLevels), same mechanism Claude
 	// atoms already use for their EffortSource-detected levels.
 	if a, ok := atomRegistry[target.AtomKey]; ok && a.ReasoningLevels != nil && providerDocKeyFor(target.Provider) == string(catwalk.InferenceProviderZAI) {
-		fmt.Fprintf(&b, "  Or the validated long-form atom suffix: crush models use %s-<level> <small>\n\n", target.AtomKey)
+		fmt.Fprintf(&b, "  Or the validated long-form atom suffix: crush models use %s-<level> <fast>\n\n", target.AtomKey)
 	}
 
 	switch providerDocKeyFor(target.Provider) {
@@ -400,7 +400,7 @@ func renderEffortsForModel(arg string) (string, error) {
 		}
 		tw := tabwriter.NewWriter(&b, 0, 0, 2, ' ', 0)
 		for _, l := range levels {
-			fmt.Fprintf(tw, "  %s\t crush models use %s/%s@%s <small>\n", l, target.Provider, target.Model, l)
+			fmt.Fprintf(tw, "  %s\t crush models use %s/%s@%s <fast>\n", l, target.Provider, target.Model, l)
 		}
 		tw.Flush()
 		if target.AtomKey != "" {
@@ -410,9 +410,9 @@ func renderEffortsForModel(arg string) (string, error) {
 	case string(catwalk.InferenceProviderDeepSeek):
 		b.WriteString("  Meaningful levels for this provider (others collapse into these):\n")
 		tw := tabwriter.NewWriter(&b, 0, 0, 2, ' ', 0)
-		fmt.Fprintf(tw, "  (unset)\t crush models use %s/%s <small>\t(thinking OFF — different from Z.AI)\n", target.Provider, target.Model)
-		fmt.Fprintf(tw, "  high\t crush models use %s/%s@high <small>\t(also: low, medium)\n", target.Provider, target.Model)
-		fmt.Fprintf(tw, "  max\t crush models use %s/%s@max <small>\t(also: xhigh, ultracode)\n", target.Provider, target.Model)
+		fmt.Fprintf(tw, "  (unset)\t crush models use %s/%s <fast>\t(thinking OFF — different from Z.AI)\n", target.Provider, target.Model)
+		fmt.Fprintf(tw, "  high\t crush models use %s/%s@high <fast>\t(also: low, medium)\n", target.Provider, target.Model)
+		fmt.Fprintf(tw, "  max\t crush models use %s/%s@max <fast>\t(also: xhigh, ultracode)\n", target.Provider, target.Model)
 		tw.Flush()
 	case string(catwalk.InferenceProviderIoNet):
 		b.WriteString("  This provider ignores @effort entirely — it only reads the Think\n")

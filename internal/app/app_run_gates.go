@@ -86,7 +86,7 @@ func (app *App) disableToolsInConfig(toolNames []string) {
 // Bypasses only when ALL of:
 //   - role == SelectedModelTypeLarge: the run declared --role smart.
 //     --role fast (or worker/reviewer) never bypasses; we don't
-//     second-guess an explicit non-large role choice.
+//     second-guess an explicit non-smart role choice.
 //   - a Worker model slot is configured with a non-empty Model. No
 //     worker means there is nothing productive for the `agent` tool to
 //     delegate to, so the historical (safe) default — sub-agents off —
@@ -94,7 +94,7 @@ func (app *App) disableToolsInConfig(toolNames []string) {
 //     configured + role smart + flags unset must keep sub-agents
 //     disabled exactly as today.
 func shouldBypassSubAgentBan(role config.SelectedModelType, cfg *config.Config) bool {
-	if role != config.SelectedModelTypeLarge {
+	if role != config.SelectedModelTypeSmart {
 		return false
 	}
 	if cfg == nil {

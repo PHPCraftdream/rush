@@ -195,7 +195,7 @@ func TestBuild_WorkerNotConfigured_PromptByteIdentical(t *testing.T) {
 	store := testConfigStore(t)
 	p := newTestCoderPrompt(t, store.WorkingDir())
 
-	got, err := p.Build(context.Background(), "large-provider", "large-model", store, false)
+	got, err := p.Build(context.Background(), "smart-provider", "smart-model", store, false)
 	require.NoError(t, err)
 
 	if strings.Contains(got, "Orchestrator mode") {
@@ -207,7 +207,7 @@ func TestBuild_WorkerNotConfigured_PromptByteIdentical(t *testing.T) {
 
 	// Re-render with the exact same inputs and confirm determinism: two
 	// workerActive=false builds must match exactly, byte for byte.
-	got2, err := p.Build(context.Background(), "large-provider", "large-model", store, false)
+	got2, err := p.Build(context.Background(), "smart-provider", "smart-model", store, false)
 	require.NoError(t, err)
 	require.Equal(t, got, got2, "rendering twice with workerActive=false must be byte-identical")
 }
@@ -222,7 +222,7 @@ func TestBuild_WorkerConfiguredAndSmart_BlockPresent(t *testing.T) {
 
 	p := newTestCoderPrompt(t, store.WorkingDir())
 
-	got, err := p.Build(context.Background(), "large-provider", "large-model", store, true)
+	got, err := p.Build(context.Background(), "smart-provider", "smart-model", store, true)
 	require.NoError(t, err)
 
 	require.Contains(t, got, "Orchestrator mode", "block must be present when worker is configured and run is smart")
@@ -245,7 +245,7 @@ func TestBuild_WorkerConfiguredWithKnownContextWindow_NumberMatches(t *testing.T
 
 	p := newTestCoderPrompt(t, store.WorkingDir())
 
-	got, err := p.Build(context.Background(), "large-provider", "large-model", store, true)
+	got, err := p.Build(context.Background(), "smart-provider", "smart-model", store, true)
 	require.NoError(t, err)
 
 	require.Contains(t, got, "200k tokens", "rendered context window must reflect the configured worker model's actual ContextWindow (200_000)")
@@ -267,7 +267,7 @@ func TestBuild_WorkerConfiguredWithUnknownContextWindow_NoBogusNumber(t *testing
 
 	p := newTestCoderPrompt(t, store.WorkingDir())
 
-	got, err := p.Build(context.Background(), "large-provider", "large-model", store, true)
+	got, err := p.Build(context.Background(), "smart-provider", "smart-model", store, true)
 	require.NoError(t, err)
 
 	require.Contains(t, got, "Orchestrator mode", "block must still be present even when the context window is unknown")
@@ -286,7 +286,7 @@ func TestBuild_IOContract_ExemptsDiagnosisFromLineLimit(t *testing.T) {
 	store := testConfigStore(t)
 	p := newTestCoderPrompt(t, store.WorkingDir())
 
-	got, err := p.Build(context.Background(), "large-provider", "large-model", store, false)
+	got, err := p.Build(context.Background(), "smart-provider", "smart-model", store, false)
 	require.NoError(t, err)
 
 	require.Contains(t, got, "4 lines of prose per turn", "the line-limit rule must still be present")
@@ -308,7 +308,7 @@ func TestBuild_WorkerConfiguredAndSmart_VerifiesPerChunkNotJustAtEnd(t *testing.
 
 	p := newTestCoderPrompt(t, store.WorkingDir())
 
-	got, err := p.Build(context.Background(), "large-provider", "large-model", store, true)
+	got, err := p.Build(context.Background(), "smart-provider", "smart-model", store, true)
 	require.NoError(t, err)
 
 	require.Contains(t, got, "before counting any chunk done",
@@ -335,7 +335,7 @@ func TestBuild_WorkerConfiguredButModelUnregistered_NoBogusNumber(t *testing.T) 
 
 	p := newTestCoderPrompt(t, store.WorkingDir())
 
-	got, err := p.Build(context.Background(), "large-provider", "large-model", store, true)
+	got, err := p.Build(context.Background(), "smart-provider", "smart-model", store, true)
 	require.NoError(t, err)
 
 	require.Contains(t, got, "Orchestrator mode")

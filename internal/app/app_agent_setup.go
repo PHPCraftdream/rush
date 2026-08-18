@@ -1,6 +1,6 @@
 // Coordinator wiring and model selection: InitCoderAgent builds the
 // agent.Coordinator, and the model-override helpers resolve per-run
-// large/small model choices for `crush run`.
+// smart/fast model choices for `crush run`.
 
 package app
 
@@ -25,61 +25,61 @@ func (app *App) UpdateAgentModel(ctx context.Context) error {
 // overrides the model configurations, then rebuilds the agent.
 // Format: "model-name" (searches all providers) or "provider/model-name".
 // Model matching is case-insensitive.
-// If largeModel is provided but smallModel is not, the small model defaults to
-// the provider's default small model.
-func (app *App) overrideModelsForNonInteractive(ctx context.Context, largeModel, smallModel string) error {
+// If largeModel is provided but smallModel is not, the fast model defaults to
+// the provider's default fast model.
+func (app *App) overrideModelsForNonInteractive(ctx context.Context, smartModel, fastModel string) error {
 	providers := app.config.Config().Providers.Copy()
 
-	largeMatches, smallMatches, err := findModels(providers, largeModel, smallModel)
+	smartMatches, fastMatches, err := findModels(providers, smartModel, fastModel)
 	if err != nil {
 		return err
 	}
 
-	var largeProviderID string
+	var smartProviderID string
 
-	// Override large model.
-	if largeModel != "" {
-		found, err := validateMatches(largeMatches, largeModel, "large")
+	// Override smart model.
+	if smartModel != "" {
+		found, err := validateMatches(smartMatches, smartModel, "smart")
 		if err != nil {
 			return err
 		}
-		largeProviderID = found.provider
-		slog.Info("Overriding large model for non-interactive run", "provider", found.provider, "model", found.modelID)
-		app.config.SetSelectedModelRuntime(config.SelectedModelTypeLarge, config.SelectedModel{
+		smartProviderID = found.provider
+		slog.Info("Overriding smart model for non-interactive run", "provider", found.provider, "model", found.modelID)
+		app.config.SetSelectedModelRuntime(config.SelectedModelTypeSmart, config.SelectedModel{
 			Provider: found.provider,
 			Model:    found.modelID,
 		})
 	}
 
-	// Override small model.
+	// Override fast model.
 	switch {
-	case smallModel != "":
-		found, err := validateMatches(smallMatches, smallModel, "small")
+	case fastModel != "":
+		found, err := validateMatches(fastMatches, fastModel, "fast")
 		if err != nil {
 			return err
 		}
-		slog.Info("Overriding small model for non-interactive run", "provider", found.provider, "model", found.modelID)
-		app.config.SetSelectedModelRuntime(config.SelectedModelTypeSmall, config.SelectedModel{
+		slog.Info("Overriding fast model for non-interactive run", "provider", found.provider, "model", found.modelID)
+		app.config.SetSelectedModelRuntime(config.SelectedModelTypeFast, config.SelectedModel{
 			Provider: found.provider,
 			Model:    found.modelID,
 		})
 
-	case largeModel != "":
-		// No small model specified, but large model was - use provider's default.
-		smallCfg := app.GetDefaultSmallModel(largeProviderID)
-		app.config.SetSelectedModelRuntime(config.SelectedModelTypeSmall, smallCfg)
+	case smartModel != "":
+		// No fast model specified, but smart model was - use provider's default.
+		fastCfg := app.GetDefaultFastModel(smartProviderID)
+		app.config.SetSelectedModelRuntime(config.SelectedModelTypeFast, fastCfg)
 	}
 
 	return app.AgentCoordinator.UpdateModels(ctx)
 }
 
-// GetDefaultSmallModel returns the default small model for the given
-// provider. Falls back to the large model if no default is found.
-func (app *App) GetDefaultSmallModel(providerID string) config.SelectedModel {
+// GetDefaultSmallModel returns the default fast model for the given
+// provider. Falls back to the smart model if no default is found.
+func (app *App) GetDefaultFastModel(providerID string) config.SelectedModel {
 	cfg := app.config.Config()
-	largeModelCfg := cfg.Models[config.SelectedModelTypeLarge]
+	smartModelCfg := cfg.Models[config.SelectedModelTypeSmart]
 
-	// Find the provider in the known providers list to get its default small model.
+	// Find the provider in the known providers list to get its default fast model.
 	knownProviders, _ := config.Providers(cfg)
 	var knownProvider *catwalk.Provider
 	for _, p := range knownProviders {
@@ -89,23 +89,23 @@ func (app *App) GetDefaultSmallModel(providerID string) config.SelectedModel {
 		}
 	}
 
-	// For unknown/local providers, use the large model as small.
+	// For unknown/local providers, use the smart model as small.
 	if knownProvider == nil {
-		slog.Warn("Using large model as small model for unknown provider", "provider", providerID, "model", largeModelCfg.Model)
-		return largeModelCfg
+		slog.Warn("Using smart model as fast model for unknown provider", "provider", providerID, "model", smartModelCfg.Model)
+		return smartModelCfg
 	}
 
-	defaultSmallModelID := knownProvider.DefaultSmallModelID
-	model := cfg.GetModel(providerID, defaultSmallModelID)
+	defaultFastModelID := knownProvider.DefaultSmallModelID
+	model := cfg.GetModel(providerID, defaultFastModelID)
 	if model == nil {
-		slog.Warn("Default small model not found, using large model", "provider", providerID, "model", largeModelCfg.Model)
-		return largeModelCfg
+		slog.Warn("Default fast model not found, using smart model", "provider", providerID, "model", smartModelCfg.Model)
+		return smartModelCfg
 	}
 
-	slog.Info("Using provider default small model", "provider", providerID, "model", defaultSmallModelID)
+	slog.Info("Using provider default fast model", "provider", providerID, "model", defaultFastModelID)
 	return config.SelectedModel{
 		Provider:        providerID,
-		Model:           defaultSmallModelID,
+		Model:           defaultFastModelID,
 		MaxTokens:       model.DefaultMaxTokens,
 		ReasoningEffort: model.DefaultReasoningEffort,
 	}

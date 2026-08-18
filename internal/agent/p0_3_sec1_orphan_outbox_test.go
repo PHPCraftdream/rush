@@ -57,8 +57,8 @@ func TestP0_3_OrphanOutboxDurability(t *testing.T) {
 	failingSessions := &enqueueFailingSessions{Service: env.sessions}
 
 	sa := NewSessionAgent(SessionAgentOptions{
-		LargeModel:   model,
-		SmallModel:   model,
+		SmartModel:   model,
+		FastModel:    model,
 		SystemPrompt: "test system prompt",
 		Sessions:     failingSessions,
 		Messages:     env.messages,
@@ -119,8 +119,8 @@ func TestSEC1_PromptRedaction(t *testing.T) {
 	failingSessions := &enqueueFailingSessions{Service: env.sessions}
 
 	sa := NewSessionAgent(SessionAgentOptions{
-		LargeModel:   model,
-		SmallModel:   model,
+		SmartModel:   model,
+		FastModel:    model,
 		SystemPrompt: "test system prompt",
 		Sessions:     failingSessions,
 		Messages:     env.messages,
@@ -175,8 +175,8 @@ func TestSEC1_PromptRedaction_WithDiagnosticFlag(t *testing.T) {
 	failingSessions := &enqueueFailingSessions{Service: env.sessions}
 
 	sa := NewSessionAgent(SessionAgentOptions{
-		LargeModel:   model,
-		SmallModel:   model,
+		SmartModel:   model,
+		FastModel:    model,
 		SystemPrompt: "test system prompt",
 		Sessions:     failingSessions,
 		Messages:     env.messages,
@@ -221,8 +221,8 @@ func TestP0_3_OutboxWriteFailure(t *testing.T) {
 	failingSessions := &enqueueAndOutboxFailingSessions{Service: env.sessions}
 
 	sa := NewSessionAgent(SessionAgentOptions{
-		LargeModel:   model,
-		SmallModel:   model,
+		SmartModel:   model,
+		FastModel:    model,
 		SystemPrompt: "test system prompt",
 		Sessions:     failingSessions,
 		Messages:     env.messages,

@@ -99,11 +99,11 @@ func TestReleaseGate_1_MetadataCleanupBlockedForever(t *testing.T) {
 
 	sa2 := NewSessionAgent(SessionAgentOptions{
 		DataDirectory: tmpDir,
-		LargeModel: Model{
+		SmartModel: Model{
 			Model:      lm,
 			CatwalkCfg: catwalk.Model{ContextWindow: 200000, DefaultMaxTokens: 10000},
 		},
-		SmallModel: Model{
+		FastModel: Model{
 			Model:      lm,
 			CatwalkCfg: catwalk.Model{ContextWindow: 200000, DefaultMaxTokens: 10000},
 		},

@@ -295,7 +295,7 @@ func TestSetUsage_StoresMeasuredZeroCacheAsRecorded(t *testing.T) {
 // ── Period / cross-session aggregation (task #474) ───────────────────────────
 
 // TestUsageByModelInRange_GroupsByProducingModelAcrossSessions is the property
-// `sessions cost` cannot provide: it groups by sessions.large_model_id, so a
+// `sessions cost` cannot provide: it groups by sessions.smart_model_id, so a
 // session that switched models attributes every token to whichever model it
 // ended on. Per-message provenance fixes that.
 func TestUsageByModelInRange_GroupsByProducingModelAcrossSessions(t *testing.T) {

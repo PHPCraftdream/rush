@@ -114,10 +114,10 @@ func (s *service) ForkSessionTx(ctx context.Context, srcID string, o ForkOptions
 	// and todos onto the fork via column-scoped UPDATEs routed through qtx
 	// so they share the tx.
 	if err := qtx.UpdateSessionModels(ctx, db.UpdateSessionModelsParams{
-		LargeModelProvider: src.LargeModelProvider,
-		LargeModelID:       src.LargeModelID,
-		SmallModelProvider: src.SmallModelProvider,
-		SmallModelID:       src.SmallModelID,
+		SmartModelProvider: src.SmartModelProvider,
+		SmartModelID:       src.SmartModelID,
+		FastModelProvider:  src.FastModelProvider,
+		FastModelID:        src.FastModelID,
 		ID:                 forkID,
 	}); err != nil {
 		return Session{}, 0, fmt.Errorf("copy models into fork: %w", err)
@@ -138,8 +138,8 @@ func (s *service) ForkSessionTx(ctx context.Context, srcID string, o ForkOptions
 		return Session{}, 0, fmt.Errorf("copy system prompt into fork: %w", err)
 	}
 	if err := qtx.UpdateSessionReasoningEffort(ctx, db.UpdateSessionReasoningEffortParams{
-		LargeModelReasoningEffort: src.LargeModelReasoningEffort,
-		SmallModelReasoningEffort: src.SmallModelReasoningEffort,
+		SmartModelReasoningEffort: src.SmartModelReasoningEffort,
+		FastModelReasoningEffort:  src.FastModelReasoningEffort,
 		ID:                        forkID,
 	}); err != nil {
 		return Session{}, 0, fmt.Errorf("copy reasoning effort into fork: %w", err)

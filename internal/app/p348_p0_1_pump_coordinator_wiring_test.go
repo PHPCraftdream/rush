@@ -166,11 +166,11 @@ func TestAppNew_RunQueuePump_ExecutesRealEnqueuedCall(t *testing.T) {
 			{ID: "probe", Name: "probe", ContextWindow: 200000, DefaultMaxTokens: 1000},
 		},
 	})
-	store.SetSelectedModelRuntime(config.SelectedModelTypeLarge, config.SelectedModel{
+	store.SetSelectedModelRuntime(config.SelectedModelTypeSmart, config.SelectedModel{
 		Provider: "openaicompat",
 		Model:    "probe",
 	})
-	store.SetSelectedModelRuntime(config.SelectedModelTypeSmall, config.SelectedModel{
+	store.SetSelectedModelRuntime(config.SelectedModelTypeFast, config.SelectedModel{
 		Provider: "openaicompat",
 		Model:    "probe",
 	})

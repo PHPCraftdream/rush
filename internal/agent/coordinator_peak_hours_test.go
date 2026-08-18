@@ -87,17 +87,17 @@ func TestSetAllowPeakHours_BypassesRunInternal(t *testing.T) {
 	cfg, err := config.Init(env.workingDir, "", false)
 	require.NoError(t, err)
 	cfg.Config().Providers.Set(providerID, providerCfg)
-	cfg.Config().Models[config.SelectedModelTypeLarge] = config.SelectedModel{
+	cfg.Config().Models[config.SelectedModelTypeSmart] = config.SelectedModel{
 		Provider: providerID,
 		Model:    "test-model",
 	}
-	// resolveSessionModels always resolves both large AND small — leaving
-	// small unset works accidentally on a dev machine whose real global
+	// resolveSessionModels always resolves both smart AND fast — leaving
+	// fast unset works accidentally on a dev machine whose real global
 	// config (always merged in by config.Load regardless of workingDir)
-	// happens to provide a fallback small model, but fails cleanly on a
-	// clean CI sandbox with "small model provider not configured". Set it
+	// happens to provide a fallback fast model, but fails cleanly on a
+	// clean CI sandbox with "fast model provider not configured". Set it
 	// explicitly so this test doesn't depend on the local environment.
-	cfg.Config().Models[config.SelectedModelTypeSmall] = config.SelectedModel{
+	cfg.Config().Models[config.SelectedModelTypeFast] = config.SelectedModel{
 		Provider: providerID,
 		Model:    "test-model",
 	}

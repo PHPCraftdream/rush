@@ -85,12 +85,12 @@ func TestCoordinator_InterruptAndSend_IdleSession_ActuallyRuns(t *testing.T) {
 	require.NoError(t, err)
 
 	agentIface := NewSessionAgent(SessionAgentOptions{
-		LargeModel: Model{
+		SmartModel: Model{
 			Model:      lm,
 			CatwalkCfg: catwalk.Model{ContextWindow: 200000, DefaultMaxTokens: 1000},
 			ModelCfg:   config.SelectedModel{Provider: providerID, Model: "probe"},
 		},
-		SmallModel:           Model{Model: titleLM, CatwalkCfg: catwalk.Model{ContextWindow: 200000, DefaultMaxTokens: 1000}},
+		FastModel:            Model{Model: titleLM, CatwalkCfg: catwalk.Model{ContextWindow: 200000, DefaultMaxTokens: 1000}},
 		SystemPrompt:         "you are a probe",
 		IsYolo:               true,
 		Sessions:             env.sessions,
@@ -111,7 +111,7 @@ func TestCoordinator_InterruptAndSend_IdleSession_ActuallyRuns(t *testing.T) {
 	require.NoError(t, err)
 	// InterruptAndSend's no-explicit-overrides branch resolves session
 	// models via resolveSessionModels before enqueuing (P1-4 fix), so cfg
-	// needs a genuinely resolvable large+small model — not just a bare
+	// needs a genuinely resolvable smart+fast model — not just a bare
 	// provider ID. Point both slots at the same fake SSE server the
 	// SessionAgent itself already uses (srv), so resolution succeeds
 	// without depending on whatever provider config.Init's own CLI-provider
@@ -124,11 +124,11 @@ func TestCoordinator_InterruptAndSend_IdleSession_ActuallyRuns(t *testing.T) {
 			{ID: "probe", Name: "Probe", DefaultMaxTokens: 1000},
 		},
 	})
-	cfg.Config().Models[config.SelectedModelTypeLarge] = config.SelectedModel{
+	cfg.Config().Models[config.SelectedModelTypeSmart] = config.SelectedModel{
 		Provider: providerID,
 		Model:    "probe",
 	}
-	cfg.Config().Models[config.SelectedModelTypeSmall] = config.SelectedModel{
+	cfg.Config().Models[config.SelectedModelTypeFast] = config.SelectedModel{
 		Provider: providerID,
 		Model:    "probe",
 	}
