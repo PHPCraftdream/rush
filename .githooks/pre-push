@@ -74,9 +74,12 @@ fi
 #
 # `go run` cannot do this pass: with GOOS set it builds a foreign
 # golangci-lint binary and then cannot exec it. So when no native binary is
-# available this is skipped LOUDLY — silently covering only the host would
-# read as "lint is green" while saying nothing about two thirds of the CI
-# matrix.
+# available this is skipped — and the skip is carried all the way to the
+# final line. Warning here and then printing a bare green tick after
+# several minutes of test output would leave "everything passed" on screen
+# while a third of the CI lint matrix was never looked at, which is a
+# quieter version of the exact failure this pass was added to prevent.
+cross_goos_skipped=""
 if [ -n "$gcl" ]; then
 	host_goos="$(go env GOHOSTOS)"
 	for goos in linux darwin windows; do
@@ -85,6 +88,7 @@ if [ -n "$gcl" ]; then
 		GOOS="$goos" "$gcl" run || fail "lint failed for GOOS=$goos (CI lints all three)"
 	done
 else
+	cross_goos_skipped="yes"
 	printf '\033[33m⚠ skipping the cross-GOOS lint passes — they need a native golangci-lint (go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@%s); CI still lints linux/macos/windows\033[0m\n' "$GOLANGCI_VERSION"
 fi
 
@@ -108,4 +112,8 @@ else
 	printf '\033[33m(tests passed on retry)\033[0m\n'
 fi
 
-printf '\033[32m✓ pre-push checks passed\033[0m\n'
+if [ -n "$cross_goos_skipped" ]; then
+	printf '\033[33m✓ pre-push checks passed — but lint covered the HOST GOOS ONLY; the other two in the CI matrix were not checked\033[0m\n'
+else
+	printf '\033[32m✓ pre-push checks passed\033[0m\n'
+fi
