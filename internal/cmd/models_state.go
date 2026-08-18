@@ -19,7 +19,7 @@ var modelsStateCmd = &cobra.Command{
 	Aliases: []string{"show"}, // backwards-compat: `crush models show` used to exist.
 	Short:   "Show what's currently effective and from which scope",
 	Long: `Print three things:
-  1. EFFECTIVE — the (large, small, worker, reviewer) values that
+  1. EFFECTIVE — the (smart, fast, worker, reviewer) values that
      ` + "`crush run --role smart/fast/worker/reviewer`" + ` will actually use, and
      which scope each came from. worker and reviewer are optional; when unset
      in both scopes they print "(not set in any scope)".
@@ -88,8 +88,8 @@ crush models show
 					"fast":                    nilOrModel(hasFast, effFast),
 					"worker":                  nilOrModel(hasWorker, effWorker),
 					"reviewer":                nilOrModel(hasReviewer, effReviewer),
-					"large_scope":             smartScope,
-					"small_scope":             fastScope,
+					"smart_scope":             smartScope,
+					"fast_scope":              fastScope,
 					"worker_scope":            workerScope,
 					"reviewer_scope":          reviewerScope,
 					"smart_effort_default":    nilOrEffortDefault(hasSmart, effSmart),

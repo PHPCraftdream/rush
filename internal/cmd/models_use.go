@@ -211,11 +211,11 @@ crush models state
 		}
 
 		if smartArg != "" {
-			fmt.Fprintf(os.Stderr, "set large = %s/%s%s in %s scope\n",
+			fmt.Fprintf(os.Stderr, "set smart = %s/%s%s in %s scope\n",
 				smartSel.Provider, smartSel.Model, effortSuffix(smartSel.ReasoningEffort), scope)
 		}
 		if fastArg != "" {
-			fmt.Fprintf(os.Stderr, "set small = %s/%s%s in %s scope\n",
+			fmt.Fprintf(os.Stderr, "set fast = %s/%s%s in %s scope\n",
 				fastSel.Provider, fastSel.Model, effortSuffix(fastSel.ReasoningEffort), scope)
 		}
 		if workerArg != "" {

@@ -470,8 +470,8 @@ type ConfigWire struct {
 	Debug             bool                      `json:"debug"`
 	DebugLSP          bool                      `json:"debugLsp"`
 	Theme             string                    `json:"theme"`
-	RecentSmartModels []ModelEntryWire          `json:"recentLargeModels,omitempty"`
-	RecentFastModels  []ModelEntryWire          `json:"recentSmallModels,omitempty"`
+	RecentSmartModels []ModelEntryWire          `json:"recentSmartModels,omitempty"`
+	RecentFastModels  []ModelEntryWire          `json:"recentFastModels,omitempty"`
 	ContextPaths      []string                  `json:"contextPaths,omitempty"`
 	SkillsPaths       []string                  `json:"skillsPaths,omitempty"`
 	InitializeAs      string                    `json:"initializeAs,omitempty"`

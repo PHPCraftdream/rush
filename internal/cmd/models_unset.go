@@ -12,8 +12,8 @@ import (
 )
 
 var modelsUnsetCmd = &cobra.Command{
-	Use:   "unset [large|small|worker|reviewer|both|all]",
-	Short: "Remove a model override from the chosen scope (defaults to large+small, global scope)",
+	Use:   "unset [smart|fast|worker|reviewer|both|all]",
+	Short: "Remove a model override from the chosen scope (defaults to smart+fast, global scope)",
 	Long: `Delete the models.<slot> entry (or entries) from the chosen scope's
 crush.json so the OTHER scope's value becomes effective again.
 
@@ -41,7 +41,7 @@ crush models unset --local
 crush models unset --global
 
 # Drop just the smart slot in the workspace; keep the fast one.
-crush models unset large --local
+crush models unset smart --local
 
 # Drop just the fast slot globally.
 crush models unset small --global
