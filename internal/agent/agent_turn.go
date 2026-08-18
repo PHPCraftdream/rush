@@ -596,7 +596,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	// DB-writing callback would stall the whole streaming loop for the
 	// duration of a disk write. OnStepFinish drains the ticker and
 	// stops the goroutine (via stopCheckpoint) before its final write;
-	// the tail of Run() also calls stopCheckpoint() defensively before
+	// runTurn's own tail also calls stopCheckpoint() defensively before
 	// touching currentAssistant, in case agent.Stream returned before
 	// OnStepFinish ever ran (e.g. the very first provider call failed).
 	//
