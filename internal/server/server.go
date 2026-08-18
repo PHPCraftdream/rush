@@ -106,6 +106,9 @@ func (s *Server) Start(ctx context.Context, onReady func(addr string)) error {
 
 	go s.hub.Run(ctx)
 	go subscribeAndBroadcast(ctx, s.app, s.hub)
+	// Best-effort, once per start, in its own goroutine so a slow release
+	// API never delays the listener becoming usable.
+	go broadcastUpdateNotice(ctx, s.hub)
 
 	mux := http.NewServeMux()
 

@@ -11,6 +11,11 @@ export const $sessions = atom<Session[]>([]);
 export const $activeSessionID = atom<string | null>(null);
 export const $messages = atom<Message[]>([]);
 export const $config = atom<ConfigPayload | null>(null);
+// Set once per server start, and only when a newer release exists — the
+// backend sends nothing otherwise, so a non-null value always means
+// "there is an update". Replaces the notification path that was lost when
+// the TUI was removed.
+export const $updateAvailable = atom<{ current: string; latest: string } | null>(null);
 export const $mcpState = atom<MCPState | null>(null);
 export const $busySessions = atom<Set<string>>(new Set());
 // Sessions where the user has queued a compact/summarise request.

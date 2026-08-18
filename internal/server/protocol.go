@@ -28,10 +28,16 @@ const (
 	EventMessagesList   = "messages_list"
 	EventConfig         = "config"
 	EventLogs           = "logs"
-	EventResponse       = "response"
-	EventError          = "error"
-	EventSystemPrompt   = "system_prompt"
-	EventSkills         = "skills"
+	// EventUpdateAvailable is broadcast at most once per server start, and
+	// only when a newer release exists. It restores the delivery path that
+	// died with the TUI: upstream published a pubsub message the Bubble Tea
+	// UI rendered, this fork removed that UI, and the check was left
+	// computing an answer nobody read.
+	EventUpdateAvailable = "update_available"
+	EventResponse        = "response"
+	EventError           = "error"
+	EventSystemPrompt    = "system_prompt"
+	EventSkills          = "skills"
 	// EventSummarizeQueued is sent when a manual summarise is queued (busy=true)
 	// or dequeued/completed (busy=false) for a session.
 	EventSummarizeQueued = "summarize_queued"
@@ -603,4 +609,12 @@ type TodoWire struct {
 	Content    string `json:"content"`
 	Status     string `json:"status"`
 	ActiveForm string `json:"active_form,omitempty"`
+}
+
+// UpdateAvailableWire carries the newer release the server found at
+// startup. Sent only when one exists, so the client can render it
+// unconditionally on receipt.
+type UpdateAvailableWire struct {
+	Current string `json:"current"`
+	Latest  string `json:"latest"`
 }

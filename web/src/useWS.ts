@@ -3,6 +3,7 @@ import { ws } from "./ws";
 import {
   $connected,
   $config,
+  $updateAvailable,
   $mcpState,
   $agentError,
   $sessions,
@@ -231,6 +232,12 @@ export function useWS() {
         const activeID = $activeSessionID.get();
         if (sid && activeID && sid !== activeID) return;
         setMessages(msgs);
+      }),
+
+      ws.on("update_available", (msg: WSMessage) => {
+        // The backend only sends this when a newer release exists, so the
+        // payload never has to be interrogated for "is there an update".
+        $updateAvailable.set(msg.payload as { current: string; latest: string });
       }),
 
       ws.on("config", (msg: WSMessage) => {

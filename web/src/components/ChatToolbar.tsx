@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { useStore } from "@nanostores/react";
-import { Minimize2, X, CheckCheck, ScrollText, Plug, Sun, Moon, Settings, ServerCog, FileText, Headphones, Eye, ChevronsDownUp, SlidersHorizontal } from "lucide-react";
+import { Minimize2, X, CheckCheck, ScrollText, Plug, Sun, Moon, Settings, ServerCog, FileText, Headphones, Eye, ChevronsDownUp, SlidersHorizontal, ArrowUpCircle } from "lucide-react";
 import { $sitter, stopSitter } from "../sitter";
 import {
   $sessions,
@@ -8,6 +8,7 @@ import {
   $busySessions,
   $summarizeQueued,
   $config,
+  $updateAvailable,
   summarizeSession,
   cancelQueuedSummarize,
   setTheme,
@@ -133,6 +134,7 @@ export function ChatToolbar() {
   const busySessions = useStore($busySessions);
   const summarizeQueued = useStore($summarizeQueued);
   const config = useStore($config);
+  const updateInfo = useStore($updateAvailable);
   const sitter = useStore($sitter);
 
   // Modal state
@@ -307,6 +309,25 @@ export function ChatToolbar() {
           <ServerCog size={13} />
           <span>Providers</span>
         </button>
+
+        {updateInfo && (
+          // Rendered only when the server says a newer release exists — it
+          // sends nothing otherwise, so there is no "up to date" state to
+          // draw. A link, not a self-updater: the fork is installed by the
+          // operator and should not rewrite its own binary underneath a
+          // running agent session.
+          <a
+            data-test-id="header-update-available"
+            href="https://github.com/PHPCraftdream/crush/releases"
+            target="_blank"
+            rel="noreferrer"
+            title={`crush ${updateInfo.latest} is available (you have ${updateInfo.current})`}
+            className="flex items-center gap-1.5 text-xs font-medium rounded-lg px-2.5 py-1.5 border transition-colors bg-base-overlay border-accent/50 text-accent hover:border-accent"
+          >
+            <ArrowUpCircle size={13} />
+            <span>v{updateInfo.latest}</span>
+          </a>
+        )}
 
         <button
           data-test-id="header-default-models-button"
