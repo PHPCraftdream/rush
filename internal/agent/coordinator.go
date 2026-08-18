@@ -2049,12 +2049,12 @@ func (c *coordinator) buildTools(ctx context.Context, agent config.Agent, isSubA
 	// itself is still wrapped from the coder's side.
 	filteredTools = wrapToolsWithHooks(filteredTools, hookRunner, isSubAgent)
 
-	// Outermost, and unconditional: every tool failure must reach the log,
-	// including the ones wrapToolsWithHooks skips (no runner configured, or
-	// a sub-agent). See logged_tool.go — the incident that motivated it fell
-	// into exactly those gaps.
-	filteredTools = wrapToolsWithErrorLogging(filteredTools)
-
+	// Error logging is NOT applied here. It used to be, and that was the
+	// bug: this function is only one of the places a tool slice is built,
+	// so agentic_fetch's own tools were never covered. NewSessionAgent and
+	// SetTools wrap instead — every slice reaches the agent through one of
+	// them, and the wrapper still ends up outermost, since what they wrap
+	// is the already-hooked slice returned here. See logged_tool.go.
 	return filteredTools, nil
 }
 

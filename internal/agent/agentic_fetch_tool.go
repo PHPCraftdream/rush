@@ -162,6 +162,10 @@ func (c *coordinator) agenticFetchTool(_ context.Context, client *http.Client) (
 
 			webFetchTool := tools.NewWebFetchTool(tmpDir, client)
 			webSearchTool := tools.NewWebSearchTool(client)
+			// Not wrapped for error logging here: NewSessionAgent wraps
+			// whatever it is handed, so this slice is covered by
+			// construction rather than by remembering to do it at each
+			// site. See logged_tool.go.
 			fetchTools := []fantasy.AgentTool{
 				webFetchTool,
 				webSearchTool,

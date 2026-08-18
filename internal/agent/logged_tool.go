@@ -23,6 +23,16 @@ import (
 // above fell into, so hooking the logging onto that wrapper would have left
 // the original blind spot in place.
 //
+// It is applied inside NewSessionAgent and SetTools — the only two doors
+// tools have into a sessionAgent — rather than at each place a tool slice
+// is assembled. That distinction is not cosmetic: it was first applied at
+// the buildTools call site, which left agentic_fetch's own six tools
+// (assembled in agentic_fetch_tool.go, never passed through buildTools)
+// silently uncovered, so a fatal error inside a nested fetch logged as
+// tool=agentic_fetch and named neither the failing tool nor its message.
+// Wrapping at the door means a slice assembled somewhere new cannot miss
+// it by omission.
+//
 // It sits OUTSIDE the hook wrapper, so a tool call a hook refuses is logged
 // too: from an operator's point of view "the hook blocked it" and "the tool
 // rejected it" are the same question — why did this call not do anything.
@@ -35,11 +45,19 @@ func newLoggedTool(inner fantasy.AgentTool) *loggedTool {
 }
 
 // wrapToolsWithErrorLogging wraps every tool so its failures are logged.
-// Applied to all tools on every path — no runner, no sub-agent, no
-// configuration gates it.
+// Nothing gates it — no runner, no sub-agent, no configuration.
+//
+// Wrapping an already-wrapped tool is a no-op rather than a second layer:
+// the function is called from both doors into a sessionAgent, and a caller
+// that hands the same slice to both (or wraps defensively before calling)
+// would otherwise write every failure to the log twice.
 func wrapToolsWithErrorLogging(list []fantasy.AgentTool) []fantasy.AgentTool {
 	out := make([]fantasy.AgentTool, len(list))
 	for i, tool := range list {
+		if _, already := tool.(*loggedTool); already {
+			out[i] = tool
+			continue
+		}
 		out[i] = newLoggedTool(tool)
 	}
 	return out

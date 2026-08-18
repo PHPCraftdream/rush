@@ -119,6 +119,50 @@ func TestLoggedTool_SuccessLogsNothing(t *testing.T) {
 	require.Empty(t, recs, "a successful tool call must not be logged")
 }
 
+// Wrapping happens at the doors into a sessionAgent, not at the places a
+// tool slice is assembled. That is the whole point: the wrapper was first
+// applied at the buildTools call site, and agentic_fetch — which builds its
+// own six tools and never goes through buildTools — was silently left out.
+// These two tests fail if either door stops wrapping, which is what makes
+// "every tool, every path" checkable instead of a promise in a comment.
+func TestSessionAgent_ConstructorWrapsToolsForLogging(t *testing.T) {
+	agent := NewSessionAgent(SessionAgentOptions{
+		Tools: []fantasy.AgentTool{stubTool{name: "view"}, stubTool{name: "bash"}},
+	}).(*sessionAgent)
+
+	for _, tool := range agent.tools.Copy() {
+		require.IsType(t, &loggedTool{}, tool,
+			"a tool handed to NewSessionAgent must be wrapped; agentic_fetch reaches "+
+				"the agent this way and no other")
+	}
+}
+
+func TestSessionAgent_SetToolsWrapsToolsForLogging(t *testing.T) {
+	agent := NewSessionAgent(SessionAgentOptions{}).(*sessionAgent)
+	agent.SetTools([]fantasy.AgentTool{stubTool{name: "view"}})
+
+	tools := agent.tools.Copy()
+	require.Len(t, tools, 1)
+	require.IsType(t, &loggedTool{}, tools[0],
+		"the coordinator installs its tools through SetTools, not the constructor")
+}
+
+// Wrapping twice must not log twice. Both doors call the wrapper, so a
+// slice that passes through the constructor and then SetTools — or a caller
+// that wraps defensively — would otherwise double every record.
+func TestWrapToolsWithErrorLogging_IsIdempotent(t *testing.T) {
+	once := wrapToolsWithErrorLogging([]fantasy.AgentTool{stubTool{
+		name: "write",
+		err:  errors.New("disk is on fire"),
+	}})
+	twice := wrapToolsWithErrorLogging(once)
+	require.Same(t, once[0], twice[0], "re-wrapping must return the same tool, not nest")
+
+	records := captureLogs(t)
+	_, _ = twice[0].Run(context.Background(), fantasy.ToolCall{ID: "c", Name: "write"})
+	require.Len(t, records(), 1, "one failure must produce exactly one record")
+}
+
 // The wrapper must be transparent: whatever the inner tool returned has to
 // come back unchanged, or logging would have altered behaviour.
 func TestLoggedTool_PassesThroughUnchanged(t *testing.T) {

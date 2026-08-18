@@ -772,7 +772,7 @@ func NewSessionAgent(
 		sessions:                   opts.Sessions,
 		messages:                   opts.Messages,
 		disableAutoSummarize:       opts.DisableAutoSummarize,
-		tools:                      csync.NewSliceFrom(opts.Tools),
+		tools:                      csync.NewSliceFrom(wrapToolsWithErrorLogging(opts.Tools)),
 		isYolo:                     opts.IsYolo,
 		notify:                     opts.Notify,
 		activeRequests:             csync.NewMap[string, context.CancelFunc](),
@@ -4856,8 +4856,11 @@ func (a *sessionAgent) SetModels(large Model, small Model) {
 	a.smallModel.Set(small)
 }
 
+// SetTools replaces the agent's tools. Like the constructor, it wraps them
+// for error logging: these two are the only doors tools have into a
+// sessionAgent, so covering both means no assembly site can forget to.
 func (a *sessionAgent) SetTools(tools []fantasy.AgentTool) {
-	a.tools.SetSlice(tools)
+	a.tools.SetSlice(wrapToolsWithErrorLogging(tools))
 }
 
 func (a *sessionAgent) SetSystemPrompt(systemPrompt string) {
