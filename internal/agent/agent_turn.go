@@ -994,11 +994,22 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 			sessionLock.Unlock()
 
 			var assistantMsg message.Message
+			// Provenance is recorded from the model that ACTUALLY produced
+			// the message, not from the configuration that selected it.
+			//
+			// Both values feed `GROUP BY model, provider` in the usage and
+			// cost reports (internal/db/stats.sql.go, messages.sql.go), and
+			// the two summarize paths in agent_compaction.go have always
+			// recorded Model.Model()/Provider(). While this line recorded
+			// ModelCfg instead, a provider whose canonical id differs from
+			// the configured one would split a single session into two
+			// groups in `crush sessions cost` — with neither number looking
+			// wrong enough to notice.
 			assistantMsg, err = a.messages.Create(callContext, call.SessionID, message.CreateMessageParams{
 				Role:            message.Assistant,
 				Parts:           []message.ContentPart{},
-				Model:           largeModel.ModelCfg.Model,
-				Provider:        largeModel.ModelCfg.Provider,
+				Model:           largeModel.Model.Model(),
+				Provider:        largeModel.Model.Provider(),
 				ReasoningEffort: currentSession.LargeModelReasoningEffort,
 			})
 			if err != nil {
