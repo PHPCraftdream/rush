@@ -10,6 +10,36 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **A badge when a newer crush exists.** Since the TUI was removed
+  nothing told anyone about a new release: upstream published a message
+  the Bubble Tea UI rendered, this fork deleted that UI, and the startup
+  check was left computing an answer nobody read. The server now checks
+  once at startup and broadcasts only when a newer version exists — so
+  the UI has no "up to date" state to draw — and the header links to the
+  releases page. It does not self-update: this binary is installed by
+  the operator and must not rewrite itself under a running agent
+  session. A failed check is logged at debug, because an offline machine
+  is a legitimate state and warning on every offline start would cry
+  wolf about something nobody can act on.
+- **`CRUSH_MAX_BACKGROUND_JOBS`** raises the concurrent background-job
+  cap for one process. The default stays at 50, and that is a measured
+  decision rather than a cautious one: raising it to 500 made this
+  repository's own test suite unstable (one package went from 5s to
+  149s, and timing-sensitive tests in another began failing), because
+  the jobs a higher cap admits are real processes competing for the
+  machine. Raising it is now the operator's call, on a host they know
+  can take it. A malformed value falls back to the default and says so.
+- **A warning as the background-job cap approaches**, at 80%, with the
+  live count and the command being started. The cap itself is not new;
+  its invisibility was the problem. It previously gave no signal at all
+  until the run that hit it was already dead — one real session died
+  that way, and the next brief written for that project told the model
+  to stop delegating altogether.
+- **`pnpm typecheck` for the web UI**, wired into the pre-push hook.
+  Nothing checked TypeScript types before: `pnpm build` uses rsbuild,
+  which does not, and no script or workflow ran `tsc`. Five errors had
+  accumulated unnoticed, one of which changed what users saw.
+
 - **Per-message token & prompt-cache statistics** — every assistant
   message now records its own token accounting, split into three
   disjoint classes (fresh input / served from cache / written to cache)
@@ -48,6 +78,36 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **A session title no longer goes missing when the model answers
+  quickly.** Sessions could end up as "Untitled Session" with nothing in
+  the log but two `context canceled` errors. The turn cancels its own
+  context explicitly before returning, and title generation runs on a
+  context derived from it — so any title that had not already finished
+  was cancelled, and only then waited for. The wait exists precisely so
+  a title can land. It now happens before the cancellation. This looked
+  like a rare flake (about one test run in 27) purely because a fast
+  provider usually won the race; on a loaded machine it would lose it
+  more often.
+- **The current tool activity group stays open again in assistant
+  messages.** Every tool burst rendered in a message collapsed
+  immediately, contradicting the surrounding code's own description and
+  disagreeing with the identical component used elsewhere in the chat.
+  The last burst of a message that is still streaming is now open; once
+  the turn ends the transcript settles into collapsed history.
+- **Cost and usage reports attribute a message to the model that
+  produced it.** The per-turn write recorded the configured selection
+  while the summarisation paths recorded the executing model. Both feed
+  the same `GROUP BY model, provider`, so a provider whose canonical id
+  differs from the configured one would split one session into two rows
+  with neither number looking wrong enough to notice.
+- **`crush sessions reap` removes a lock's `.pid` and `.gen`
+  companions.** They were previously cleared only as a side effect of
+  the probe's own background cleanup, which the process does not wait
+  for — so a fast sweep could report `reclaimed 1 lock(s)` and leave two
+  files in the directory it exists to tidy.
+- **Two type errors in the web UI** that had been invisible for want of
+  a typecheck, plus three dead declarations. One of them is the
+  collapsed-tool-group bug above.
 - **`crush sessions reap` no longer abandons a lock because something
   held the file open for a moment.** On Windows a file cannot be
   unlinked while any handle to it is open, and reap tried exactly once:
