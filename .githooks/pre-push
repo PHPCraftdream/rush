@@ -115,6 +115,18 @@ else
 	printf '\033[33m⚠ skipping the cross-GOOS lint passes — they need a native golangci-lint (go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@%s); CI still lints linux/macos/windows\033[0m\n' "$GOLANGCI_VERSION"
 fi
 
+# The web UI's typecheck. rsbuild (pnpm build) does NOT check types, so
+# without this nothing in the project does — which is how five errors,
+# including a required prop that silently changed how tool groups render,
+# sat in the tree unnoticed. Skipped when the dependencies are not
+# installed: a Go-only change should not have to run pnpm install first.
+if [ -d web/node_modules ]; then
+	step "pnpm typecheck (web)"
+	(cd web && pnpm typecheck) || fail "web typecheck failed"
+else
+	printf '\033[33m⚠ skipping the web typecheck — web/node_modules is absent (run: cd web && pnpm install)\033[0m\n'
+fi
+
 step "go test -short -failfast ./..."
 test_log="$(mktemp)"
 trap 'rm -f "$test_log"' EXIT
