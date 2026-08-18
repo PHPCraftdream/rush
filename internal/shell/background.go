@@ -317,10 +317,12 @@ type BackgroundShellManager struct {
 	// maxJobs is this manager's concurrency cap, defaulting to
 	// MaxBackgroundJobs. It exists as a field rather than a bare use of the
 	// constant so a test can exercise limit BEHAVIOUR without paying the
-	// production limit's cost: filling a 500-slot queue with real processes
-	// is slower than the property being demonstrated, and on Windows the
-	// survivors block TempDir cleanup. Per-manager, so lowering it in one
-	// test cannot be observed by a parallel sibling.
+	// production limit's cost: filling the queue means one live process per
+	// slot, which is slower than the property being demonstrated and, on
+	// Windows, leaves survivors that block TempDir cleanup. It also keeps
+	// those tests honest when an operator has raised the cap via
+	// CRUSH_MAX_BACKGROUND_JOBS. Per-manager, so lowering it in one test
+	// cannot be observed by a parallel sibling.
 	maxJobs int
 }
 

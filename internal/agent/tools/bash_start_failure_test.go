@@ -44,9 +44,11 @@ func TestBashTool_BackgroundShellStartLimitIsModelVisibleNotFatal(t *testing.T) 
 
 	// Lower the cap for this test. What is under test is the BEHAVIOUR at
 	// the limit — a model-visible error rather than a fatal one — not the
-	// production value. Filling the real 500-slot queue with `sleep 60`
-	// processes took 33s and left enough live children that TempDir cleanup
-	// failed on Windows.
+	// production value. Filling the real queue with `sleep 60` processes
+	// costs one process per slot and leaves them all live for the duration
+	// — at the shipped default of 50 that is 50 spawns to prove one
+	// rejection, and CRUSH_MAX_BACKGROUND_JOBS can raise it much further on
+	// an operator's host.
 	originalMax := bgManager.MaxJobs()
 	bgManager.SetMaxJobs(5)
 	t.Cleanup(func() { bgManager.SetMaxJobs(originalMax) })
