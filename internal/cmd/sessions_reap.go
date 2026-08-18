@@ -211,6 +211,20 @@ func sessionsReapCmdRun(cmd *cobra.Command, args []string) error {
 				if err := removeLockWithRetry(it.Path, retryFor); err == nil {
 					action = "removed"
 					removed++
+					// The lock's sidecars go with it. They are normally
+					// cleared by the holder's own Release, but that runs in
+					// a goroutine Release only waits 50ms for, and Go does
+					// not wait for goroutines at process exit — so a crash
+					// or a fast exit leaves session-X.lock.pid and
+					// session-X.lock.gen behind. The scan filter only
+					// matches ".lock", so without this reap would report
+					// "reclaimed 1 lock(s)" and still leave two files in a
+					// directory it exists to keep tidy.
+					for _, sidecar := range []string{it.Path + ".pid", it.Path + ".gen"} {
+						if err := os.Remove(sidecar); err != nil && !os.IsNotExist(err) {
+							fmt.Fprintf(os.Stderr, "kept   sidecar %s (%v)\n", filepath.Base(sidecar), err)
+						}
+					}
 				} else {
 					action = "failed to remove (" + err.Error() + ")"
 				}
