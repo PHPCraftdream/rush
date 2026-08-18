@@ -49,12 +49,31 @@ func (p *RunQueuePump) executeEntrySync(ctx context.Context, leased *RunQueueEnt
 		return context.WithTimeout(context.Background(), p.dbWriteTimeout())
 	}
 
-	// Create a cancellable context for execution. This allows us to cancel
-	// Coordinator.Run if we lose lease ownership during the renewal loop (P1-2).
-	// Without this, the executor would continue doing real work (LLM calls,
-	// tool execution, writing messages) even after a different pump instance
-	// has taken ownership of the lease, potentially causing duplicate execution.
-	execCtx, execCancel := context.WithCancel(context.Background())
+	// The execution context is derived from the CALLER's ctx, not Background.
+	//
+	// It still allows cancelling Coordinator.Run when this executor loses
+	// lease ownership during the renewal loop (P1-2) — that is what the
+	// explicit cancel below is for. What changed is the parent.
+	//
+	// Rooting it in Background made the ctx parameter decorative: this
+	// function compiled with ctx entirely unused, so a caller's timeout or
+	// cancellation could not stop a continuation that had already begun.
+	// The consequences were not theoretical (P0-2, 2026-08-18
+	// release-readiness review): `crush run --timeout` did not bound a
+	// durable continuation, App.Shutdown could see an idle pump and close
+	// the DB underneath a live execution, and the goroutine could keep
+	// writing messages after the CLI had already returned an error to the
+	// operator. That is the "the command finished but the session is still
+	// alive" symptom.
+	//
+	// Callers must pass an execution-scoped parent: the pump passes its
+	// long-lived p.ctx, DrainSessionNow passes its caller's ctx. A scan
+	// context must never be passed here.
+	//
+	// The outcome writes below deliberately do NOT inherit this — see
+	// newDBCtx above. Ack/Nack/TerminalFail must still land after the
+	// execution context is cancelled, which is exactly when they matter most.
+	execCtx, execCancel := context.WithCancel(ctx)
 	defer execCancel()
 
 	// leaseLost tracks whether this execution lost its lease ownership during

@@ -181,8 +181,16 @@ func (p *RunQueuePump) processEntry(ctx context.Context, entry *RunQueueEntry) {
 	p.workerWg.Add(1)
 	p.admitMu.Unlock()
 
-	// Execute the call (detached, not blocking this pump tick)
-	go p.executeEntry(ctx, leased)
+	// Execute the call (detached, not blocking this pump tick).
+	//
+	// p.ctx, NOT the tick's ctx. The context threaded through processEntry
+	// is a SCAN context with a 5-second deadline (see tick()), sized for DB
+	// reads. Now that executeEntrySync actually honours its context
+	// parameter (P0-2 of the 2026-08-18 release-readiness review), passing
+	// the scan context here would cap every durable turn at five seconds.
+	// The execution parent has to be the pump's own lifetime, so that Stop()
+	// ends it and nothing else does.
+	go p.executeEntry(p.ctx, leased)
 }
 
 // executeEntry runs a leased entry and handles success/failure. Called

@@ -117,7 +117,42 @@ func (p *RunQueuePump) DrainSessionNow(ctx context.Context, sessionID string) (d
 				return drained, ctx.Err()
 			}
 
+			// Register with workerWg for the execution, so Stop() waits for
+			// this drain exactly as it waits for a background worker.
+			//
+			// Without it (P0-2 of the 2026-08-18 release-readiness review)
+			// Stop() could see an idle pump while this call was mid-turn,
+			// and App.Shutdown would then close the database underneath a
+			// live execution. The Add happens under admitMu, matching the
+			// ordering processEntry relies on: Stop sets `stopping` under
+			// that same mutex before calling Wait, so an Add can never race
+			// a Wait that has already begun.
+			//
+			// If a stop is already underway the lease is released instead of
+			// executed — starting a turn that Stop is known not to wait for
+			// is how the shutdown hole reopens.
+			p.admitMu.Lock()
+			stopping := p.stopping
+			if !stopping {
+				p.workerWg.Add(1)
+			}
+			p.admitMu.Unlock()
+
+			if stopping {
+				p.inFlightMu.Lock()
+				delete(p.inFlight, sessionID)
+				p.inFlightMu.Unlock()
+				<-p.execSem
+				nackCtx, nackCancel := context.WithTimeout(context.Background(), p.dbWriteTimeout())
+				if nackErr := p.cfg.Sessions.NackRunQueueEntryNoAttemptPenalty(nackCtx, leased.ID, p.cfg.PumpInstanceID, "run_queue_pump: DrainSessionNow declined to start because the pump is stopping"); nackErr != nil {
+					slog.Error("run_queue_pump: DrainSessionNow release-on-stopping nack failed", "id", leased.ID, "session_id", sessionID, "err", nackErr, "instance_id", p.cfg.PumpInstanceID)
+				}
+				nackCancel()
+				return drained, ErrCallQueuedNotExecuted
+			}
+
 			execErr := p.executeEntrySync(ctx, leased)
+			p.workerWg.Done()
 
 			<-p.execSem
 			p.inFlightMu.Lock()

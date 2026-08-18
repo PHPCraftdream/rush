@@ -23,10 +23,10 @@ func TestBackgroundShellManager_Start_AtomicLimitCheck(t *testing.T) {
 	workingDir := t.TempDir()
 	manager := newBackgroundShellManager()
 	// Lower THIS manager's cap. What is under test is the atomicity of the
-	// check-and-insert, not the production value: racing 520 real processes
-	// to prove a mutex holds costs more than the property it demonstrates,
-	// and on Windows the survivors block TempDir cleanup. Per-manager, so
-	// t.Parallel stays safe.
+	// check-and-insert, not the production value: racing cap+20 real
+	// processes to prove a mutex holds costs more than the property it
+	// demonstrates, and on Windows the survivors block TempDir cleanup.
+	// Per-manager, so t.Parallel stays safe.
 	manager.SetMaxJobs(10)
 	cap := manager.MaxJobs()
 
