@@ -90,15 +90,18 @@ export const AssistantContent = memo(function AssistantContent({
             // (the "current action"), prior rows collapsed. User can pin any
             // row open/closed and the auto-rule stops touching that row.
             //
-            // isCurrent={false} preserves today's behaviour EXACTLY: the prop
-            // was never passed here, so it arrived as undefined and the
-            // auto-rule read it as falsy — every group rendered through this
-            // path collapses. Note that contradicts the paragraph above, so
-            // it is very likely not what was intended; changing it is a
-            // visible UI change that needs to be looked at rather than
-            // guessed at from a type error. Made explicit so the typecheck
-            // passes without altering what users see.
-            <ToolActivityGroup items={block.items.map((it) => ({ ...it, messageID: message.ID }))} live={isLive} isCurrent={false} model={message.Model} effort={message.ReasoningEffort} />
+            // isCurrent marks the group the auto-rule should leave open. It
+            // is the LAST block of a message that is still streaming: while
+            // the turn runs, that burst is the work happening right now.
+            // Once the turn ends, isLive drops and every group collapses —
+            // the transcript settles into history. Earlier blocks of a live
+            // message are already past, so they collapse too.
+            //
+            // The prop used to be omitted entirely, which the auto-rule read
+            // as falsy and collapsed unconditionally, contradicting the
+            // paragraph above and diverging from Chat.tsx, which has always
+            // passed it.
+            <ToolActivityGroup items={block.items.map((it) => ({ ...it, messageID: message.ID }))} live={isLive} isCurrent={isLive && bi === blocks.length - 1} model={message.Model} effort={message.ReasoningEffort} />
           ) : (
             block.items.map(({ part, idx }) => (
               <Part key={idx} part={part} index={idx} isUser={false} messageID={message.ID} thinkingDone={block.thinkingDone} partialWorkDone={partialWorkDone} model={message.Model} effort={message.ReasoningEffort} sessionID={message.SessionID} />
