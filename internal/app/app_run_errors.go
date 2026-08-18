@@ -1,0 +1,117 @@
+// Outcome classification helpers for a finished non-interactive run:
+// runIncompleteError, the runFailed predicate, session-busy guidance,
+// and cancelledRunError, which preserves the richer abort reason.
+
+package app
+
+import (
+	"context"
+	"errors"
+	"fmt"
+
+	"github.com/charmbracelet/crush/internal/agent"
+	"github.com/charmbracelet/crush/internal/message"
+	"github.com/charmbracelet/crush/internal/session"
+)
+
+// RunNonInteractive runs a single agent turn and writes its result to
+// `output`. See RunMode for the available output shapes.
+// runIncompleteError marks a non-interactive run that finished but did not
+// complete its work cleanly (in-band provider error / stall, cancellation,
+// timeout, or a max_tokens truncation). The envelope / final text was already
+// emitted to stdout; this error exists only to drive a non-zero process exit
+// so orchestrators and CI can branch on success without parsing stdout.
+type runIncompleteError struct {
+	reason string
+	detail string
+}
+
+func (e *runIncompleteError) Error() string {
+	if e.detail != "" {
+		return fmt.Sprintf("run did not complete cleanly (%s): %s", e.reason, e.detail)
+	}
+	return fmt.Sprintf("run did not complete cleanly (%s)", e.reason)
+}
+
+// runFailed reports whether a finished non-interactive turn should map to a
+// non-zero exit code. A clean end_turn (or a bare finish with no captured
+// reason) is success; a hard error, a cancellation/timeout, an in-band error
+// finish (stall / provider error / empty stream), or a max_tokens truncation
+// are all "did not finish the work".
+func runFailed(finalReason string, runErr error, isCanceled bool) bool {
+	if runErr != nil || isCanceled {
+		return true
+	}
+	switch message.FinishReason(finalReason) {
+	case message.FinishReasonError, message.FinishReasonCanceled, message.FinishReasonMaxTokens:
+		return true
+	default:
+		return false
+	}
+}
+
+// cancelledRunError builds the runIncompleteError for the terse/--stream
+// (non-JSON) isCanceled path.
+//
+// A forced abort (peak-hours mid-turn stop, max-cost, max-tokens, a DB
+// cancel-request) cancels the run's context to unblock the in-flight
+// generation — which races the specific error each of those paths already
+// persisted onto the assistant message via AddFinish (see agent.go's
+// OnStepFinish). Depending on that race, the run's returned error can end up
+// being the generic context.Canceled instead of the specific one, so this
+// must not drop the rich detail on the floor: if the last assistant message
+// finished with FinishReasonError and carries a message/details, surface
+// THAT instead of a bare "cancelled" that gives the operator no clue why. A
+// genuine, unrecorded Ctrl+C never runs AddFinish first, so finalErrTitle
+// stays empty and this falls through to the original bare behavior
+// unchanged.
+func sessionBusyGuidance(sessionID string, err error) string {
+	var busyErr *session.SessionLockBusyError
+	holder := ""
+	switch {
+	case errors.As(err, &busyErr):
+		holder = "another live crush process"
+		if busyErr.HolderPID > 0 {
+			holder = fmt.Sprintf("crush process PID %d", busyErr.HolderPID)
+		}
+	case errors.Is(err, agent.ErrSessionBusy):
+		holder = "this crush process"
+	default:
+		return ""
+	}
+	return fmt.Sprintf(
+		"session %q is already running in %s. `crush run --session %s ...` starts a new turn and cannot attach to an active one. To push a message into the running turn, use: crush sessions inject %s -m <message>",
+		sessionID, holder, sessionID, sessionID,
+	)
+}
+
+func cancelledRunError(runErr error, finalReason, finalErrTitle, finalErrDetails string) *runIncompleteError {
+	// 1. Check the raw runErr first: a forced mid-turn abort (peak-hours,
+	//    max-cost, max-tokens) returns a specific error via OnStepFinish
+	//    and THEN calls cancel(). Because cancel() races the event-loop
+	//    that populates finalReason/finalErrTitle, the event-loop may
+	//    never see the FinishReasonError message — but the specific error
+	//    is always available in runErr. Use it when it's richer than a
+	//    bare context.Canceled.
+	if runErr != nil {
+		errText := runErr.Error()
+		if !errors.Is(runErr, context.Canceled) && !errors.Is(runErr, context.DeadlineExceeded) && errText != "" {
+			return &runIncompleteError{reason: "cancelled", detail: errText}
+		}
+	}
+	// 2. Fallback: check the finish detail from the event-loop (works when
+	//    the event-loop DID catch the updated message before the context
+	//    died). A genuine unrecorded Ctrl+C (no FinishReasonError persisted)
+	//    still falls through to bare "cancelled".
+	if finalReason == string(message.FinishReasonError) && (finalErrTitle != "" || finalErrDetails != "") {
+		detail := finalErrTitle
+		if finalErrDetails != "" {
+			if detail != "" {
+				detail += ": "
+			}
+			detail += finalErrDetails
+		}
+		return &runIncompleteError{reason: "cancelled", detail: detail}
+	}
+	return &runIncompleteError{reason: "cancelled"}
+}
