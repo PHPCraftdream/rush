@@ -37,11 +37,22 @@ func spawnGroupChild(t *testing.T, ownGroup bool) (*exec.Cmd, <-chan error) {
 	require.NoError(t, cmd.Start())
 
 	waited := make(chan error, 1)
-	go func() { waited <- cmd.Wait() }()
+	// reaped is closed after Wait returns, whether or not anyone read the
+	// result. Cleanup waits on THAT, not on `waited`: a test whose body
+	// already drained `waited` would otherwise find the channel empty and
+	// sit out the full timeout every time — measured at 2.08s for
+	// TestKillAllTrackedTrees_KillsTheGroupAndForgetsIt against 0.08-0.16s
+	// for its siblings, all of it spent waiting for a process that had
+	// already been reaped.
+	reaped := make(chan struct{})
+	go func() {
+		waited <- cmd.Wait()
+		close(reaped)
+	}()
 	t.Cleanup(func() {
 		_ = cmd.Process.Kill()
 		select {
-		case <-waited:
+		case <-reaped:
 		case <-time.After(2 * time.Second):
 		}
 	})
