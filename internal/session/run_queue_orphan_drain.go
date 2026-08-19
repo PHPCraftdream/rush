@@ -77,14 +77,14 @@ func (p *RunQueuePump) processOrphanOutboxEntry(_ context.Context, entry db.Orph
 	// The drain itself stays a single atomic transaction (insert-to-main-
 	// queue + delete-from-outbox) with no intermediate claim state: the
 	// older claim/mark-failed model (task #426) is gone and is not coming
-	// back. What DID come back is the retry budget — dropping the claim
+	// back. What DID come back is the retry budget -- dropping the claim
 	// model also dropped attempts/terminal-failed, so an entry whose
 	// call_data is genuinely malformed (the ONLY way the inner INSERT can
 	// keep failing forever, since the FK ON DELETE CASCADE on session_id
 	// already removes any entry whose session no longer exists) was logged
 	// at ERROR and retried every 15 seconds for the life of the process.
 	// Better than silent loss, but unbounded log and DB churn for a row
-	// that can never succeed — see the 2026-08-18 release-readiness review.
+	// that can never succeed -- see the 2026-08-18 release-readiness review.
 	//
 	// The budget is counted in a SEPARATE write on the failure path only
 	// (recordOrphanOutboxDrainFailure below), which is what keeps the two
@@ -93,25 +93,44 @@ func (p *RunQueuePump) processOrphanOutboxEntry(_ context.Context, entry db.Orph
 	drained, err := p.cfg.Sessions.DrainOrphanOutboxEntry(drainCtx, entry.ID)
 	if err != nil {
 		slog.Error("run_queue_pump: failed to drain orphan outbox entry", "id", entry.ID, "session_id", entry.SessionID, "err", err, "instance_id", p.cfg.PumpInstanceID)
-		// P1 fix (task #571 of the 2026-08-19 release-readiness review): a
-		// TRANSIENT failure (DB lock contention -- SQLITE_BUSY/SQLITE_LOCKED,
-		// the concrete shape being a losing writer in SQLite's single-writer
-		// model, exactly as multiple pump instances each running an
-		// immediate Start()-time drain would produce) must NOT be charged
-		// against max_attempts. That budget exists for a row that can NEVER
-		// succeed no matter how many times it is retried -- a session_id
-		// that fails session_run_queue's FK check being the concrete,
-		// reachable shape (see DrainOrphanOutboxEntry's own doc for why a
-		// normally FK-CASCADE-deleted session cannot reach this path, and
-		// isTransientOrphanOutboxDrainError's doc for how a row like that
-		// gets here anyway). A transient DB error says nothing about the
-		// row's data; the row is exactly as healthy after it as before.
-		// Charging it anyway means enough routine contention -- five ticks'
-		// worth, no backoff between them -- permanently quarantines a
-		// perfectly good, still-queued user call with nothing left to
-		// recover it.
-		if isTransientOrphanOutboxDrainError(err) {
-			slog.Warn("run_queue_pump: orphan outbox drain hit transient DB contention, not counted against the retry budget",
+		// P1 fix (task #589 of the 2026-08-19 release-readiness
+		// static-follow-up review, which corrected #571 part c's polarity
+		// after finding it still counted routine shutdown as permanent): a
+		// cancellation caused by p.ctx itself -- an ordinary Stop() landing
+		// mid-transaction, or this call's own 10s drainCtx deadline (which
+		// is derived from p.ctx, see drainCtx above) expiring on a slow
+		// disk -- must not be charged against max_attempts AT ALL, before
+		// the transient/permanent classifier below even runs. It says
+		// nothing about this row's data and nothing about the database
+		// being unhealthy; it is purely "the process is shutting down" or
+		// "this one attempt happened to run long". Checking p.ctx.Err()
+		// specifically (not drainCtx.Err(), and not by inspecting err's
+		// type) is what makes this precise: p.ctx is only ever cancelled by
+		// Stop() (see RunQueuePump.Stop), so a non-nil p.ctx.Err() here can
+		// only mean "shutdown is why this attempt did not finish", never
+		// "the database rejected this row's data".
+		if p.ctx.Err() != nil {
+			slog.Warn("run_queue_pump: orphan outbox drain aborted by shutdown, not counted against the retry budget",
+				"id", entry.ID, "session_id", entry.SessionID, "err", err, "instance_id", p.cfg.PumpInstanceID)
+			return
+		}
+		// The classifier below is inverted from the #571 version: instead
+		// of a narrow transient allow-list (SQLITE_BUSY/SQLITE_LOCKED) with
+		// everything else -- including a context deadline exceeded on this
+		// call's own budget, SQLITE_IOERR/FULL/a transient READONLY, and
+		// any error type this function has never seen -- defaulting to
+		// "permanent", it now POSITIVELY recognises the one cause that is
+		// actually proven permanent (a constraint/FK violation on the row's
+		// OWN data, see isPermanentOrphanOutboxDrainError's doc) and treats
+		// every other outcome, known-retryable or merely unrecognised
+		// alike, as transient: logged loudly (the slog.Error above already
+		// fired) but left pending for the next tick rather than spent from
+		// a budget that exists for a different, positively-diagnosed
+		// failure mode. A quarantine that cannot tell "this row is broken"
+		// from "something unexpected happened" has no business being the
+		// one that spends the budget.
+		if !isPermanentOrphanOutboxDrainError(err) {
+			slog.Warn("run_queue_pump: orphan outbox drain failed without a positively-recognised permanent cause, not counted against the retry budget",
 				"id", entry.ID, "session_id", entry.SessionID, "err", err, "instance_id", p.cfg.PumpInstanceID)
 			return
 		}
@@ -137,10 +156,18 @@ func (p *RunQueuePump) processOrphanOutboxEntry(_ context.Context, entry db.Orph
 // Deliberately best-effort. It runs on its own short-lived context rooted in
 // context.Background() rather than p.ctx: the drain that just failed may have
 // failed BECAUSE p.ctx was cancelled by Stop(), and in that case the counter
-// write must still land — otherwise a shutdown racing a poison row would
+// write must still land -- otherwise a shutdown racing a poison row would
 // reset its progress toward quarantine on every restart, which is exactly the
 // forever-retry this closes. The budget is small and monotonic, so counting
 // one attempt during shutdown is harmless; failing to count one is not.
+//
+// Only ever reached for a positively-recognised permanent cause (see
+// isPermanentOrphanOutboxDrainError) -- a p.ctx cancellation never reaches
+// here at all (processOrphanOutboxEntry returns before calling this), so
+// "shutdown racing a poison row" above means the SAME poison row failing
+// again on a genuinely permanent (constraint) error while a shutdown is
+// ALSO in flight for an unrelated reason, not the shutdown itself being
+// counted.
 //
 // If the counter write itself fails there is nothing further to do: the entry
 // stays pending and the next tick tries again. That degrades to the old
@@ -174,75 +201,75 @@ func (p *RunQueuePump) recordOrphanOutboxDrainFailure(entry db.OrphanCallOutbox,
 		"instance_id", p.cfg.PumpInstanceID)
 }
 
-// isTransientOrphanOutboxDrainError classifies a DrainOrphanOutboxEntry
-// failure as transient (says nothing about the row's own data, will very
-// likely clear on its own on a later tick) versus permanent (this exact
-// row, with this exact data, cannot ever succeed, no matter how many times
-// it is retried).
+// isPermanentOrphanOutboxDrainError classifies a DrainOrphanOutboxEntry
+// failure as PERMANENT (this exact row, with this exact data, cannot ever
+// succeed, no matter how many times it is retried) versus everything else,
+// which is treated as transient/unknown and left pending rather than
+// counted against the retry budget.
+//
+// This is the inverse polarity of the classifier's original (#571) shape,
+// corrected by the 2026-08-19 static-follow-up review (task #589): the
+// original function was named isTransientOrphanOutboxDrainError and
+// positively recognised only SQLITE_BUSY/SQLITE_LOCKED as transient, with
+// every other outcome -- including ctx.DeadlineExceeded/ctx.Canceled from
+// this call's OWN budget, SQLITE_IOERR, SQLITE_FULL, a transient
+// SQLITE_READONLY, an FS/network hiccup wrapped some other way, and any
+// error type this function has never seen -- silently defaulting to
+// "permanent" and spending the budget. Its own doc called that the "safe"
+// direction; it is not. A quarantine's job is to durably stop retrying work
+// that is PROVEN unrecoverable. A default-permanent classifier instead
+// quarantines on ignorance: five ordinary shutdown races, disk hiccups, or
+// future error shapes this function has never seen permanently strand
+// otherwise-healthy, already-accepted user work with the row moved to
+// 'failed' and never scanned again -- worse than the unbounded retry the
+// quarantine was built to replace.
+//
+// The correct polarity for a quarantine is to positively recognise the one
+// cause that IS proven permanent and default everything else to "keep
+// retrying, but say so loudly" (the slog.Error at the DrainOrphanOutboxEntry
+// call site already fires unconditionally before this classifier runs, so
+// an unrecognised failure is never silent -- it is diagnosed and visible,
+// just not spent from a budget it may not deserve to be spent from).
+//
+// What IS positively permanent: DrainOrphanOutboxEntry's own doc identifies
+// exactly one reachable this-row-can-never-succeed failure -- the
+// EnqueueRunQueueEntry insert failing session_run_queue's
+// "session_id TEXT NOT NULL REFERENCES sessions (id) ON DELETE CASCADE"
+// foreign key (see that function's doc for how such a row can exist despite
+// orphan_call_outbox sharing the identical FK+CASCADE, and
+// p556_orphan_outbox_quarantine_test.go for how it is constructed in
+// tests). That surfaces as a genuine *sqlite.Error with primary result code
+// SQLITE_CONSTRAINT (19) -- retrying changes nothing because the row's own
+// session_id will never start existing in the sessions table on its own.
+// Nothing else DrainOrphanOutboxEntry's transaction can fail on (BeginTx,
+// GetOrphanOutboxEntry, Commit) is a proven permanent condition -- each is
+// disk/lock/resource-shaped, which is exactly the kind of failure that can
+// clear on a later tick.
 //
 // Classification is by SQLite result code, not by pattern-matching the
-// error string: DrainOrphanOutboxEntry's only failure paths are (1) the
-// initial BeginTx, (2) the GetOrphanOutboxEntry read inside that
-// transaction, (3) the EnqueueRunQueueEntry insert (the one genuinely
-// permanent case -- a session_id that fails session_run_queue's FK check,
-// see that function's own doc for how such a row can exist despite
-// orphan_call_outbox sharing the identical FK+CASCADE), and (4) the final
-// Commit -- and every one of those is a real database/sql call against
-// modernc.org/sqlite, which wraps every SQLite-level failure in *sqlite.Error
-// with a concrete numeric Code(). That code is what SQLite itself uses to
-// distinguish "try again, nothing is wrong with your data" (SQLITE_BUSY,
-// SQLITE_LOCKED) from "this exact statement can never succeed with this
-// exact data" (SQLITE_CONSTRAINT and everything else) -- matching on it
-// directly is precise where matching on err.Error()'s text would not be:
-// driver wording is not a stable contract, and a string match would either
-// miss a real code (silently falling back to "permanent", which is the
-// SAFE direction to be wrong in) or accidentally match unrelated text (the
-// UNSAFE direction, since it could exempt a genuinely permanent failure
-// from ever being quarantined).
+// error string, for the same reason the original version gave: driver
+// wording is not a stable contract. Code() returns SQLite's raw result
+// code, which under default builds is the EXTENDED code (e.g. 787 for
+// SQLITE_CONSTRAINT_FOREIGNKEY, not the primary 19) -- masking with &0xff
+// recovers the primary code this comparison is written against, per
+// SQLite's own documented layout (see sqlite.org/rescode.html: "the
+// primary result code ... corresponds to the least significant 8 bits").
 //
-// Code() returns SQLite's raw result code, which under default builds is
-// the EXTENDED code (e.g. 787 for SQLITE_CONSTRAINT_FOREIGNKEY, not the
-// primary 19) -- masking with &0xff recovers the primary code these
-// comparisons are written against, per SQLite's own documented layout
-// (https://www.sqlite.org/rescode.html: "the primary result code ...
-// corresponds to the least significant 8 bits").
-//
-// What this catches: SQLITE_BUSY (the writer lost SQLite's single-writer
-// lock to a concurrent connection -- multiple pump instances, each running
-// an immediate Start()-time drain, is the concrete production shape named
-// in the 2026-08-19 release-readiness review) and SQLITE_LOCKED (a
-// same-connection/shared-cache lock conflict; rarer with this driver's
-// default connection setup, included because it is the other lock-status
-// code SQLite defines alongside SQLITE_BUSY and carries the identical
-// "retry later, nothing wrong with the data" meaning).
-//
-// What this deliberately does NOT catch, and why that is the safe
-// direction: ctx.DeadlineExceeded/ctx.Canceled (drainCtx's own 10s budget,
-// or Stop() during shutdown) are NOT classified as transient here, even
-// though a slow-but-otherwise-healthy DB could in principle produce them --
-// they are conflated with "no error information at all" instead
-// (err.(*sqlite.Error) fails the type assertion for a context error, so
-// this returns false, and the failure counts toward the budget exactly as
-// it did before this fix). A context deadline during a single row's own
-// 10s transaction window is unusual enough, and a false "permanent" classification
-// merely costs one MORE point off a five-attempt budget rather than losing the
-// row (it is still retried on the next tick either way, and the row is only ever
-// quarantined after genuinely repeated failures) -- unlike the false
-// "transient" direction, which would let a genuinely permanent failure (a
-// bug in this classifier, or a future non-SQLite Sessions implementation
-// wrapping errors in a type this function has never seen) retry forever,
-// which is the exact defect task #440/#556 already closed once. A future
-// change wiring ctx errors through explicitly would need to keep that
-// asymmetry: err.(*sqlite.Error) failing to match must never itself be
-// read as "retry forever".
-func isTransientOrphanOutboxDrainError(err error) bool {
+// A non-*sqlite.Error (including every context error: ctx.DeadlineExceeded
+// on this call's own 10s budget, or a p.ctx cancellation that -- for
+// defense in depth -- processOrphanOutboxEntry ALSO checks and short-
+// circuits on before this function is ever called) returns false: not
+// permanent, so not counted. Any future change tightening this list must
+// keep that asymmetry: a type or code this function has never seen must
+// stay in the "retry, don't quarantine" bucket, not fall through to
+// "permanent" by default.
+func isPermanentOrphanOutboxDrainError(err error) bool {
 	var sqliteErr *sqlitedriver.Error
 	if !errors.As(err, &sqliteErr) {
 		return false
 	}
 	switch sqliteErr.Code() & 0xff {
-	case 5, // SQLITE_BUSY
-		6: // SQLITE_LOCKED
+	case 19: // SQLITE_CONSTRAINT (covers the FK-violation extended codes too, masked with &0xff)
 		return true
 	default:
 		return false

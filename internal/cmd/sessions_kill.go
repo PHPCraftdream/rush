@@ -421,6 +421,9 @@ func reportChildGroupSweep(sb *strings.Builder, dataDir, sessionID string, pid i
 	if result.Implausible > 0 {
 		fmt.Fprintf(sb, "%d registered CLI-provider child process group(s) for session %s no longer look like the process that registered them; NOT reached -- check for it manually\n", result.Implausible, sessionID)
 	}
+	if result.Retained > 0 {
+		fmt.Fprintf(sb, "%d registered CLI-provider child process group(s) for session %s could not be confirmed killed or already dead this attempt; kept in the registry for a retry -- run sessions kill again\n", result.Retained, sessionID)
+	}
 }
 
 // acquireSessionLockForReset acquires the real OS session lock, killing the

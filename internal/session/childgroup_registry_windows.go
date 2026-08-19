@@ -24,6 +24,7 @@ type ChildGroupSweepResult struct {
 	Killed             int
 	GenerationMismatch bool
 	Implausible        int
+	Retained           int
 }
 
 func KillRegisteredChildGroups(dataDir, sessionID, lockPath string) ChildGroupSweepResult {

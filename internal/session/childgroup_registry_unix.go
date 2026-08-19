@@ -60,6 +60,28 @@
 //     group leader. This narrows, but as documented on
 //     verifyGroupStillPlausible, does not fully close, the residual
 //     pid-reuse race between validation and the signal itself.
+//
+// WRITE DURABILITY (2026-08-19 static-follow-up review, task #591 part 3):
+// the registry file is written via a temp-file-in-same-dir + fsync + rename
+// sequence (see writeChildGroupFileLocked), not a truncate-and-write
+// os.WriteFile. An external kill (or crash) landing mid-write of a plain
+// os.WriteFile could leave a later sweep reading an empty or partially
+// written registry at exactly the moment the registry exists to be read --
+// rename is atomic on POSIX filesystems (the readers this file has, all
+// under childGroupFileMu or a fresh process's first read, only ever see the
+// old complete file or the new complete file, never a half-written one).
+//
+// RETENTION ON SWEEP (same review, same task, part 3): KillRegisteredChildGroups
+// no longer removes the registry file unconditionally after one attempt.
+// Only entries that are CONFIRMED handled -- successfully killed, or
+// confirmed already dead (ESRCH, or verifyGroupStillPlausibleOutcome
+// reporting the pgid/start-time no longer matches what was registered) --
+// are dropped. An entry left in an INCONCLUSIVE state (a kill syscall
+// error that is neither "succeeded" nor "confirmed already gone", or a
+// plausibility check that could not be completed) is written BACK to the
+// registry, still fenced by the same (generation, start-time) pair, so a
+// second "sessions kill" has a durable pointer to retry against instead of
+// silently losing the only record of an unreached child tree.
 package session
 
 import (
@@ -225,6 +247,23 @@ func readChildGroupFileLocked(path string) []childGroupEntry {
 // writeChildGroupFileLocked overwrites the registry file for one session.
 // Caller must hold childGroupFileMu. Best-effort: a write failure is logged
 // only.
+//
+// Atomic temp-file + fsync + rename (2026-08-19 static-follow-up review,
+// task #591 part 3), replacing a prior truncate-and-write os.WriteFile. The
+// registry's whole purpose is to survive an external, out-of-process kill
+// landing at an arbitrary moment -- an ordinary os.WriteFile truncates the
+// file to zero length before writing the new bytes, so a kill (or crash)
+// landing in that window leaves a later sweep reading an empty or partial
+// file and concluding, wrongly, that nothing is registered. Writing to a
+// temp file in the SAME directory (so the final rename is same-filesystem
+// and therefore atomic on POSIX), fsync-ing it before the rename (so the
+// rename cannot be reordered ahead of the data actually landing on disk by
+// the OS's own write-back cache, which os.Rename's own atomicity guarantee
+// does not by itself cover), and then os.Rename over the final path (an
+// atomic directory-entry swap all POSIX filesystems this codebase targets
+// support) means any reader -- including one racing this exact write --
+// only ever observes the complete OLD file or the complete NEW file, never
+// a truncated or partially-written one.
 func writeChildGroupFileLocked(path string, entries []childGroupEntry) {
 	var sb strings.Builder
 	for _, e := range entries {
@@ -237,15 +276,60 @@ func writeChildGroupFileLocked(path string, entries []childGroupEntry) {
 		}
 		sb.WriteByte('\n')
 	}
-	if err := os.WriteFile(path, []byte(sb.String()), 0o644); err != nil {
-		slog.Warn("session: failed to write child-group registry file", "path", path, "err", err)
+
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
+	if err != nil {
+		slog.Warn("session: failed to create temp file for child-group registry write", "path", path, "err", err)
+		return
 	}
+	tmpPath := tmp.Name()
+	// Best-effort cleanup if anything below fails before the rename lands
+	// -- a leftover .tmp-* file is harmless (never read by
+	// readChildGroupFileLocked, which only ever opens the final path) but
+	// there is no reason to leave it.
+	succeeded := false
+	defer func() {
+		if !succeeded {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if _, err := tmp.WriteString(sb.String()); err != nil {
+		slog.Warn("session: failed to write temp file for child-group registry write", "path", path, "err", err)
+		tmp.Close()
+		return
+	}
+	if err := tmp.Sync(); err != nil {
+		slog.Warn("session: failed to fsync temp file for child-group registry write", "path", path, "err", err)
+		tmp.Close()
+		return
+	}
+	if err := tmp.Close(); err != nil {
+		slog.Warn("session: failed to close temp file for child-group registry write", "path", path, "err", err)
+		return
+	}
+	if err := os.Chmod(tmpPath, 0o644); err != nil {
+		// Non-fatal: os.CreateTemp already created the file 0o600, which is
+		// strictly tighter than the 0o644 os.WriteFile used before this
+		// change -- worth trying to match for consistency with the rest of
+		// this package's permission model, but not worth abandoning the
+		// write over.
+		slog.Warn("session: failed to chmod temp file for child-group registry write", "path", path, "err", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		slog.Warn("session: failed to rename temp file into place for child-group registry write", "path", path, "err", err)
+		return
+	}
+	succeeded = true
 }
 
 // RemoveChildGroupRegistry deletes the registry file for sessionID
-// unconditionally, regardless of contents. Called by sessions kill after
-// acting on (or attempting to act on) every group it found, so a stale file
-// cannot mislead a later, unrelated sessions kill invocation. Best-effort:
+// unconditionally, regardless of contents. Called by sessions kill only
+// after every entry it found has reached a CONFIRMED outcome (killed, or
+// confirmed already dead) -- see KillRegisteredChildGroups, which now calls
+// this only when nothing needs to be retained, and otherwise calls
+// writeChildGroupFileLocked with the retained subset instead. Best-effort:
 // a removal failure is logged only.
 func RemoveChildGroupRegistry(dataDir, sessionID string) {
 	path := childGroupRegistryPath(dataDir, sessionID)
@@ -258,11 +342,13 @@ func RemoveChildGroupRegistry(dataDir, sessionID string) {
 
 // ChildGroupSweepResult reports what KillRegisteredChildGroups actually
 // did, broken down by outcome, so a caller (sessions_kill.go) can tell an
-// operator the difference between three outcomes that must not be
-// collapsed into a single "0 swept" report: nothing was ever registered;
-// it was registered but a newer/different owner has since taken the
-// session (or this crush process restarted) so nothing was touched; or it
-// was registered, still looked plausible, and was killed.
+// operator the difference between outcomes that must not be collapsed into
+// a single "0 swept" report: nothing was ever registered; it was registered
+// but a newer/different owner has since taken the session (or this crush
+// process restarted) so nothing was touched; it was registered, still
+// looked plausible, and was killed; or it was registered, attempted, and
+// left in a genuinely unresolved state that a later retry might still
+// clear.
 type ChildGroupSweepResult struct {
 	// Killed is the number of groups actually SIGKILLed.
 	Killed int
@@ -270,22 +356,54 @@ type ChildGroupSweepResult struct {
 	// recorded generation did not match the CURRENT on-disk lock
 	// generation -- the session has a different (or no) live owner than
 	// the one that registered these groups, so nothing was signalled.
+	// These entries are CONFIRMED stale (a session's generation only moves
+	// forward, so a mismatched entry can never become valid again) and are
+	// dropped from the registry along with the killed/confirmed-dead ones.
 	GenerationMismatch bool
-	// Implausible counts entries whose generation matched but which
-	// failed the pre-signal plausibility check (see
-	// verifyGroupStillPlausible) -- most likely already exited and the
-	// pgid number reused for something else, so signalling it would be
-	// unrelated to the original CLI-provider child.
+	// Implausible counts entries whose generation matched but which were
+	// CONFIRMED not to be the originally-registered process any more
+	// (verifyGroupStillPlausibleOutcome reporting confirmedGone or
+	// confirmedMismatch -- see that type) -- most likely already exited
+	// and the pgid number reused for something else, so signalling it
+	// would be unrelated to the original CLI-provider child. These are
+	// also dropped: retrying against a pgid confirmed to be a DIFFERENT
+	// process would never become correct by waiting.
 	Implausible int
+	// Retained counts entries whose generation matched but whose outcome
+	// this attempt could not confirm one way or the other -- a
+	// plausibility check that itself failed to complete (see
+	// verifyGroupStillPlausibleOutcome's inconclusive case), or a kill
+	// syscall that returned neither success nor a confirmed-already-gone
+	// error (e.g. EPERM, or any error other than ESRCH). These entries are
+	// written BACK to the registry, unchanged, so a second "sessions kill"
+	// still has a durable pointer to retry against instead of the registry
+	// being deleted out from under an unresolved failure.
+	Retained int
 }
+
+// killpgFunc performs the actual kill(2) syscall used to signal a
+// registered process group, as a package-level variable so tests can
+// substitute a fake that returns an arbitrary error (EPERM, or anything
+// else that is neither success nor ESRCH) -- deterministically exercising
+// the retention branch below without needing root privileges or a real
+// permission-denied process group, neither of which this codebase's test
+// suite can reliably construct. Production always uses the real syscall;
+// only tests in this package (which can see this unexported variable)
+// override it, and always restore it via t.Cleanup.
+var killpgFunc = syscall.Kill
 
 // KillRegisteredChildGroups killpg's every process group registered for
 // sessionID whose recorded generation still matches the session's CURRENT
 // lock generation (read fresh from disk, right here, via
-// ReadLockGeneration) and which still passes verifyGroupStillPlausible. It
-// then removes the registry file regardless of outcome, since a registry
-// that no longer matches the live generation can never become valid again
-// (a session's generation only moves forward).
+// ReadLockGeneration) and which still passes the plausibility check. Unlike
+// the version this replaces, it does NOT remove the registry file
+// unconditionally: only entries with a CONFIRMED outcome (killed, or
+// confirmed already gone/mismatched) are dropped. An entry left in an
+// inconclusive state -- generation matched, but the kill or the
+// plausibility check itself could not confirm success OR death -- is
+// written back so a later retry (a second "sessions kill" invocation, most
+// likely) still has a durable record to act on, still fenced by the same
+// (generation, start-time) pair recorded at registration.
 //
 // lockPath is the session's own lock file path (sessions_kill.go already
 // computes this before calling in); dataDir/sessionID identify the
@@ -302,86 +420,176 @@ func KillRegisteredChildGroups(dataDir, sessionID, lockPath string) ChildGroupSw
 	}
 
 	currentGen := ReadLockGeneration(lockPath)
+	var retained []childGroupEntry
 	for _, e := range entries {
 		if currentGen == "" || e.Generation != currentGen {
+			// Confirmed stale: a session's generation only ever moves
+			// forward, so this entry can never again match a live owner.
+			// Safe to drop permanently.
 			result.GenerationMismatch = true
 			continue
 		}
-		if !verifyGroupStillPlausible(e.PGID, e.StartTime) {
+		switch verifyGroupStillPlausibleOutcome(e.PGID, e.StartTime) {
+		case plausibilityConfirmedGone, plausibilityConfirmedMismatch:
+			// Confirmed: either the process is gone (Getpgid/ESRCH-shaped
+			// failure) or a DIFFERENT process now holds this pgid (start
+			// time no longer matches what was registered). Either way,
+			// retrying later can never make this entry valid again.
 			result.Implausible++
 			continue
+		case plausibilityInconclusive:
+			// Could not determine liveness one way or the other (e.g. the
+			// start-time re-read failed for a reason other than the
+			// process being gone). Not safe to discard -- keep it for a
+			// retry.
+			result.Retained++
+			retained = append(retained, e)
+			continue
 		}
-		if err := syscall.Kill(-e.PGID, syscall.SIGKILL); err == nil {
+		// plausibilityConfirmedLive falls through to the actual signal.
+		killErr := killpgFunc(-e.PGID, syscall.SIGKILL)
+		switch {
+		case killErr == nil:
 			result.Killed++
-		} else {
+		case isErrno(killErr, syscall.ESRCH):
+			// Confirmed: the group is already gone (a benign race between
+			// the plausibility check above and this signal). Safe to drop.
 			result.Implausible++
+		default:
+			// Neither confirmed killed nor confirmed already dead (EPERM,
+			// or any other kill(2) failure) -- genuinely unresolved. Keep
+			// it for a retry rather than silently losing the only durable
+			// pointer to an unreached child tree.
+			result.Retained++
+			retained = append(retained, e)
 		}
 	}
 
-	RemoveChildGroupRegistry(dataDir, sessionID)
+	childGroupFileMu.Lock()
+	defer childGroupFileMu.Unlock()
+	if len(retained) == 0 {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			slog.Warn("session: failed to remove child-group registry file", "path", path, "err", err)
+		}
+	} else {
+		writeChildGroupFileLocked(path, retained)
+	}
 	return result
 }
 
-// verifyGroupStillPlausible re-checks, immediately before signalling, that
-// pgid still looks like a real process group leader rather than a stale
-// number the OS has since recycled for something unrelated.
+// plausibilityOutcome is the fine-grained result of checking whether a
+// registered pgid still looks like the process that was originally
+// registered -- distinguishing "confirmed not our target" (safe to
+// permanently discard the registry entry) from "could not tell" (must be
+// retained for a retry). A plain bool (the shape verifyGroupStillPlausible
+// used before task #591 part 3) could not make this distinction, which is
+// what caused KillRegisteredChildGroups to discard entries it had not
+// actually confirmed dead.
+type plausibilityOutcome int
+
+const (
+	// plausibilityConfirmedLive: still exists, still a group leader, and
+	// (if a start-time token was captured at registration) the start time
+	// still matches. Safe to signal.
+	plausibilityConfirmedLive plausibilityOutcome = iota
+	// plausibilityConfirmedGone: Getpgid failed or the pgid is no longer
+	// its own group's leader -- the original process-group leader is
+	// confirmed not reachable any more. Safe to drop the entry.
+	plausibilityConfirmedGone
+	// plausibilityConfirmedMismatch: still exists and is still a group
+	// leader, but the CURRENT start-time token does not match the one
+	// captured at registration -- a DIFFERENT process has since reused
+	// this exact pgid number. Safe to drop the entry: it will never again
+	// refer to the process this registry entry was written for.
+	plausibilityConfirmedMismatch
+	// plausibilityInconclusive: the group-leader check passed but the
+	// start-time re-read itself could not be completed for a reason other
+	// than the process being gone (e.g. a transient /proc read failure).
+	// NOT safe to treat as either confirmed-live or confirmed-gone -- must
+	// be retained for a retry rather than signalled or discarded.
+	plausibilityInconclusive
+)
+
+// verifyGroupStillPlausibleOutcome re-checks, immediately before
+// signalling, whether pgid still looks like a real, original process group
+// leader rather than a stale number the OS has since recycled for
+// something unrelated -- and, unlike a plain bool, reports WHICH of those
+// it confirmed, so the caller can decide whether a negative result is safe
+// to discard or must be retained. See verifyGroupStillPlausible (the
+// pre-#591-part-3 bool-returning wrapper, kept for any external caller that
+// only needs a yes/no) for the original two-layer design this refines.
 //
 // Two layers, in order:
 //
 //  1. syscall.Getpgid(pgid) == pgid: still exists and is still the leader
 //     of its own group. Rules out "no such process" and "exists but is no
-//     longer (or never was, for a freshly recycled number) a leader".
+//     longer (or never was, for a freshly recycled number) a leader" --
+//     both reported as plausibilityConfirmedGone, since both mean this
+//     specific registration can never be actioned again.
 //
 //  2. If wantStartTime is non-empty (Linux: captured from
 //     /proc/pid/stat field 22 at registration time, see startTimeToken),
 //     the CURRENT start time for pgid is re-read right here and must
-//     match EXACTLY. A process's start time is fixed at exec and the
-//     kernel does not reuse a pid for a new process without first fully
-//     reaping the old one, so an unrelated process that recycled this
-//     exact pgid number will almost certainly have a different start
-//     time; this closes the pid-reuse TOCTOU window on Linux to the
-//     residual case where the kernel recycles the pid AND field 22
-//     happens to collide, which does not happen in practice.
+//     match EXACTLY. A mismatch is plausibilityConfirmedMismatch (a
+//     different process now owns this pgid -- confirmed, safe to drop). A
+//     re-read that fails for a reason OTHER than confirmed process death
+//     (the only way startTimeToken signals failure on this codebase's
+//     supported platforms is "could not read /proc/pid/stat", which does
+//     not by itself distinguish "process just exited in this exact
+//     instant" from "a transient read failure") is
+//     plausibilityInconclusive -- deliberately NOT collapsed into
+//     confirmedGone, because layer 1 already independently confirmed the
+//     pgid was a live group leader a moment ago; treating an ambiguous
+//     failure at layer 2 as a hard "gone" would discard a registry entry
+//     this check never actually confirmed dead.
 //
 // On platforms without a start-time facility this codebase otherwise
 // depends on (macOS: no /proc, would need a sysctl/libproc binding not
-// currently vendored), wantStartTime is always "" and this function falls
-// back to layer 1 alone -- the same narrow, accepted TOCTOU window
-// documented on probeThenKillHolder in internal/cmd/sessions_kill.go for
-// the plain-pid case ("Given this is a manual rescue tool an operator runs
-// deliberately, that structural fix is not implemented; the window is
-// accepted as a narrow, known limitation"). Combined with the generation
-// check the caller already performed (which independently rules out the
-// far more likely failure mode of a stale registry from a dead or
-// superseded crush instance), the residual risk on macOS is a live,
-// actively running, freshly-spawned group leader recycling the exact pgid
-// in a multi-millisecond window -- materially narrower than the
-// unconditional kill-on-read this whole file replaces, and on Linux closed
-// by layer 2 above. THIS IS UNVERIFIED ON REAL LINUX/macOS FROM THIS
-// (Windows) DEVELOPMENT MACHINE -- see the package-level task notes for
-// the exact run that would confirm it.
-func verifyGroupStillPlausible(pgid int, wantStartTime string) bool {
+// currently vendored), wantStartTime is always "" and this function
+// returns plausibilityConfirmedLive on layer 1 alone -- the same narrow,
+// accepted TOCTOU window documented on probeThenKillHolder in
+// internal/cmd/sessions_kill.go for the plain-pid case ("Given this is a
+// manual rescue tool an operator runs deliberately, that structural fix is
+// not implemented; the window is accepted as a narrow, known
+// limitation"). THIS IS UNVERIFIED ON REAL LINUX/macOS FROM THIS (Windows)
+// DEVELOPMENT MACHINE -- see the package-level task notes for the exact
+// run that would confirm it.
+func verifyGroupStillPlausibleOutcome(pgid int, wantStartTime string) plausibilityOutcome {
 	pg, err := syscall.Getpgid(pgid)
 	if err != nil {
-		return false
+		return plausibilityConfirmedGone
 	}
 	if pg != pgid {
-		return false
+		return plausibilityConfirmedGone
 	}
 	if wantStartTime == "" {
 		// No start-time token was captured at registration (platform
 		// without the facility, or the capture failed) -- fall back to
 		// the group-leader check alone.
-		return true
+		return plausibilityConfirmedLive
 	}
 	gotStartTime, ok := startTimeToken(pgid)
 	if !ok {
 		// Could not re-read a start time now (process gone, or this
 		// platform cannot read it) but COULD read a getpgid a moment
-		// ago -- treat as inconclusive and fail closed rather than
-		// trusting the weaker check alone once a stronger one was
-		// available at registration time.
-		return false
+		// ago -- genuinely ambiguous: retained, not discarded.
+		return plausibilityInconclusive
 	}
-	return gotStartTime == wantStartTime
+	if gotStartTime != wantStartTime {
+		return plausibilityConfirmedMismatch
+	}
+	return plausibilityConfirmedLive
 }
+
+// verifyGroupStillPlausible is the plain-bool convenience wrapper over
+// verifyGroupStillPlausibleOutcome, kept for callers (existing tests) that
+// only need a live/not-live answer and do not need to distinguish
+// confirmed-dead from inconclusive.
+func verifyGroupStillPlausible(pgid int, wantStartTime string) bool {
+	return verifyGroupStillPlausibleOutcome(pgid, wantStartTime) == plausibilityConfirmedLive
+}
+
+// isErrno (used above to classify the SIGKILL syscall's own error) is
+// defined once in kill_unix.go -- same package, same //go:build !windows
+// constraint as this file, so it is reused directly rather than
+// duplicated.
