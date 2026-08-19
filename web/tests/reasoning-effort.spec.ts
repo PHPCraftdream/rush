@@ -80,28 +80,28 @@ test.describe("Reasoning Effort Controls", () => {
     await setup(page);
 
     // Smart model selector should show effort controls
-    await expect(page.locator('[data-test-id="reasoning-effort-large"]')).toBeVisible();
+    await expect(page.locator('[data-test-id="reasoning-effort-smart"]')).toBeVisible();
     await expect(
-      page.locator('[data-test-id="reasoning-effort-large-decrease"]'),
+      page.locator('[data-test-id="reasoning-effort-smart-decrease"]'),
     ).toBeVisible();
     await expect(
-      page.locator('[data-test-id="reasoning-effort-large-label"]'),
+      page.locator('[data-test-id="reasoning-effort-smart-label"]'),
     ).toBeVisible();
     await expect(
-      page.locator('[data-test-id="reasoning-effort-large-increase"]'),
+      page.locator('[data-test-id="reasoning-effort-smart-increase"]'),
     ).toBeVisible();
 
     // Fast model selector should also show effort controls
-    await expect(page.locator('[data-test-id="reasoning-effort-small"]')).toBeVisible();
+    await expect(page.locator('[data-test-id="reasoning-effort-fast"]')).toBeVisible();
   });
 
   test("effort label displays correct initial value (M for medium)", async ({ page }) => {
     await setup(page);
 
-    const largeLabel = page.locator('[data-test-id="reasoning-effort-large-label"]');
+    const largeLabel = page.locator('[data-test-id="reasoning-effort-smart-label"]');
     await expect(largeLabel).toHaveText("M");
 
-    const smallLabel = page.locator('[data-test-id="reasoning-effort-small-label"]');
+    const smallLabel = page.locator('[data-test-id="reasoning-effort-fast-label"]');
     await expect(smallLabel).toHaveText("M");
   });
 
@@ -109,10 +109,10 @@ test.describe("Reasoning Effort Controls", () => {
     await setup(page);
     const sessionID = "test-session-reasoning";
 
-    const label = page.locator('[data-test-id="reasoning-effort-large-label"]');
+    const label = page.locator('[data-test-id="reasoning-effort-smart-label"]');
 
     // M (medium) → H (high)
-    await page.locator('[data-test-id="reasoning-effort-large-increase"]').click();
+    await page.locator('[data-test-id="reasoning-effort-smart-increase"]').click();
     await expect(label).toHaveText("H");
 
     // Verify set_session_models was sent
@@ -121,15 +121,15 @@ test.describe("Reasoning Effort Controls", () => {
     expect(sentMsg.payload.smartModel.reasoning_effort).toBe("high");
 
     // H (high) → X (max)
-    await page.locator('[data-test-id="reasoning-effort-large-increase"]').click();
+    await page.locator('[data-test-id="reasoning-effort-smart-increase"]').click();
     await expect(label).toHaveText("X");
 
     // X (max) → L (low)
-    await page.locator('[data-test-id="reasoning-effort-large-increase"]').click();
+    await page.locator('[data-test-id="reasoning-effort-smart-increase"]').click();
     await expect(label).toHaveText("L");
 
     // L (low) → M (medium) - cycle completes
-    await page.locator('[data-test-id="reasoning-effort-large-increase"]').click();
+    await page.locator('[data-test-id="reasoning-effort-smart-increase"]').click();
     await expect(label).toHaveText("M");
   });
 
@@ -137,22 +137,22 @@ test.describe("Reasoning Effort Controls", () => {
     page,
   }) => {
     await setup(page);
-    const label = page.locator('[data-test-id="reasoning-effort-large-label"]');
+    const label = page.locator('[data-test-id="reasoning-effort-smart-label"]');
 
     // M (medium) → L (low)
-    await page.locator('[data-test-id="reasoning-effort-large-decrease"]').click();
+    await page.locator('[data-test-id="reasoning-effort-smart-decrease"]').click();
     await expect(label).toHaveText("L");
 
     // L (low) → X (max)
-    await page.locator('[data-test-id="reasoning-effort-large-decrease"]').click();
+    await page.locator('[data-test-id="reasoning-effort-smart-decrease"]').click();
     await expect(label).toHaveText("X");
 
     // X (max) → H (high)
-    await page.locator('[data-test-id="reasoning-effort-large-decrease"]').click();
+    await page.locator('[data-test-id="reasoning-effort-smart-decrease"]').click();
     await expect(label).toHaveText("H");
 
     // H (high) → M (medium) - cycle completes
-    await page.locator('[data-test-id="reasoning-effort-large-decrease"]').click();
+    await page.locator('[data-test-id="reasoning-effort-smart-decrease"]').click();
     await expect(label).toHaveText("M");
   });
 
@@ -161,9 +161,9 @@ test.describe("Reasoning Effort Controls", () => {
     const sessionID = "test-session-reasoning";
 
     // Change effort to high
-    await page.locator('[data-test-id="reasoning-effort-large-increase"]').click();
+    await page.locator('[data-test-id="reasoning-effort-smart-increase"]').click();
     await expect(
-      page.locator('[data-test-id="reasoning-effort-large-label"]'),
+      page.locator('[data-test-id="reasoning-effort-smart-label"]'),
     ).toHaveText("H");
 
     // Wait for the update to be sent
@@ -183,7 +183,7 @@ test.describe("Reasoning Effort Controls", () => {
 
     // Label should still show H after "reload"
     await expect(
-      page.locator('[data-test-id="reasoning-effort-large-label"]'),
+      page.locator('[data-test-id="reasoning-effort-smart-label"]'),
     ).toHaveText("H");
   });
 
@@ -191,10 +191,10 @@ test.describe("Reasoning Effort Controls", () => {
     const sessionID = await setup(page);
 
     // Set effort to max (M → H → X)
-    await page.locator('[data-test-id="reasoning-effort-large-increase"]').click();
-    await page.locator('[data-test-id="reasoning-effort-large-increase"]').click();
+    await page.locator('[data-test-id="reasoning-effort-smart-increase"]').click();
+    await page.locator('[data-test-id="reasoning-effort-smart-increase"]').click();
     await expect(
-      page.locator('[data-test-id="reasoning-effort-large-label"]'),
+      page.locator('[data-test-id="reasoning-effort-smart-label"]'),
     ).toHaveText("X");
 
     // Send a message
@@ -231,17 +231,17 @@ test.describe("Reasoning Effort Controls", () => {
   test("changing small model effort works independently", async ({ page }) => {
     await setup(page);
 
-    const largeLabel = page.locator('[data-test-id="reasoning-effort-large-label"]');
-    const smallLabel = page.locator('[data-test-id="reasoning-effort-small-label"]');
+    const largeLabel = page.locator('[data-test-id="reasoning-effort-smart-label"]');
+    const smallLabel = page.locator('[data-test-id="reasoning-effort-fast-label"]');
 
     // Set large to high
-    await page.locator('[data-test-id="reasoning-effort-large-increase"]').click();
+    await page.locator('[data-test-id="reasoning-effort-smart-increase"]').click();
     await expect(largeLabel).toHaveText("H");
     await expect(smallLabel).toHaveText("M"); // Fast unchanged
 
     // Set small to max
-    await page.locator('[data-test-id="reasoning-effort-small-increase"]').click();
-    await page.locator('[data-test-id="reasoning-effort-small-increase"]').click();
+    await page.locator('[data-test-id="reasoning-effort-fast-increase"]').click();
+    await page.locator('[data-test-id="reasoning-effort-fast-increase"]').click();
     await expect(smallLabel).toHaveText("X");
     await expect(largeLabel).toHaveText("H"); // Smart unchanged
   });
