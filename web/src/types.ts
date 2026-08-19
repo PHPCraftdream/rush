@@ -30,7 +30,7 @@ export interface Session {
   FastModelReasoningEffort: string; // "low", "medium", "high", or "max"
 
   // Optional sub-agent model slots (task #466). Empty means "inherit the
-  // folder/system default" — same convention as large/small above.
+  // folder/system default" — same convention as smart/fast above.
   WorkerModelProvider: string;
   WorkerModelID: string;
   WorkerModelReasoningEffort: string;

@@ -278,7 +278,7 @@ function SessionSlotRow({
   );
 }
 
-// setSessionModelSlot writes ONE session model slot (large/small/worker/
+// setSessionModelSlot writes ONE session model slot (smart/fast/worker/
 // reviewer), leaving every other slot untouched — same nil-means-untouched
 // wire convention as clearSessionModelSlot (task #467) and ModelSelector's
 // onSelect (task #461).

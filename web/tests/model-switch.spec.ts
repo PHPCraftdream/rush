@@ -197,6 +197,57 @@ test("send_message never contains model overrides even on default model", async 
   expect(payload.sessionID).toBe("sw-def");
 });
 
+// ── sendWithFastModel fallback (task #570, F6) ────────────────────────────────
+
+test("send-with-fast-model button sends the config FAST model when the session has no explicit fast override", async ({ page }) => {
+  await page.goto("/");
+  await sendMockWSMessage(page, {
+    type: "sessions_list",
+    // No FastModelID/FastModelProvider set — sendWithFastModel must fall
+    // back to config.models.fast.
+    payload: [makeSession({ ID: "sw-fast-fallback", Title: "Fast Fallback" })],
+  });
+  await sendMockWSMessage(page, {
+    type: "config",
+    payload: makeConfig({
+      models: {
+        smart: { Provider: "anthropic", Model: "claude-opus-4" },
+        fast: { Provider: "anthropic", Model: "claude-haiku-4" },
+      },
+      providers: {
+        anthropic: {
+          enabled: true,
+          models: [
+            { id: "claude-opus-4", name: "claude-opus-4", contextWindow: 200000 },
+            { id: "claude-haiku-4", name: "claude-haiku-4", contextWindow: 200000 },
+          ],
+        },
+      },
+    }),
+  });
+  await expect(page.getByText("Fast Fallback").first()).toBeVisible({ timeout: 3000 });
+  await page.getByText("Fast Fallback").first().click();
+
+  await page.getByPlaceholder("Message… (/ for skills, Enter to send)").fill("hello fast");
+  await page.locator("button[title='Send with lightweight model']").click();
+
+  const sent = await waitForWSSend(page, "send_message");
+  const payload = sent.payload as { sessionID: string; content: string; smartModel?: { provider: string; model: string } };
+  expect(payload.sessionID).toBe("sw-fast-fallback");
+  expect(payload.content).toBe("hello fast");
+  // F6 regression: sendWithFastModel's fallback used to read
+  // `config?.models?.small`, a key the server never sends (the wire uses
+  // `SelectedModelType` values "smart"/"fast" — see
+  // internal/server/handlers_config.go's buildConfigWire). With the stale
+  // key, `fastModel` stayed undefined and the message went out with NO
+  // override at all, silently running on the SMART model instead of FAST.
+  // The override rides on the `smartModel` wire field by protocol design
+  // (internal/server/protocol.go's SendMessagePayload) — sendWithFastModel
+  // puts the resolved fast model there so the agent actually uses it for
+  // this turn.
+  expect(payload.smartModel).toEqual({ provider: "anthropic", model: "claude-haiku-4" });
+});
+
 // ── session_updated reflects model change in header ──────────────────────────
 
 test("session_updated with model fields updates header model button", async ({ page }) => {
@@ -358,7 +409,12 @@ test("Inherit option is only shown when the session has an explicit override", a
   await page.getByText("No Override Yet").first().click();
 
   await page.locator("button[title='Smart (strong) model']").click();
-  await expect(page.locator('[data-testid="model-inherit-large"]')).toHaveCount(0);
+  // NB: this must be getByTestId (which respects playwright.config.ts's
+  // testIdAttribute: "data-test-id"), NOT a raw `[data-testid="..."]` CSS
+  // selector — ModelSelector.tsx renders the hyphenated `data-test-id`
+  // attribute, so a literal `data-testid` attribute selector never matches
+  // anything in the real DOM and every assertion built on it is vacuous.
+  await expect(page.getByTestId("model-inherit-smart")).toHaveCount(0);
 });
 
 test("selecting Inherit clears the session's override with an explicit empty model", async ({ page }) => {
@@ -390,8 +446,8 @@ test("selecting Inherit clears the session's override with an explicit empty mod
   await page.getByText("Has Override").first().click();
 
   await page.locator("button[title='Smart (strong) model']").click();
-  await expect(page.locator('[data-testid="model-inherit-large"]')).toBeVisible({ timeout: 3000 });
-  await page.locator('[data-testid="model-inherit-large"]').click();
+  await expect(page.getByTestId("model-inherit-smart")).toBeVisible({ timeout: 3000 });
+  await page.getByTestId("model-inherit-smart").click();
 
   const cmd = await waitForWSSend(page, "set_session_models");
   const p = cmd.payload as { sessionID: string; smartModel: { provider: string; model: string } };
@@ -400,4 +456,17 @@ test("selecting Inherit clears the session's override with an explicit empty mod
   // backend reads as "don't touch" rather than "clear" (see store.ts's
   // clearSessionModelSlot doc comment).
   expect(p.smartModel).toEqual({ provider: "", model: "" });
+
+  // F5 regression (task #570): clearSessionModelSlot's local optimistic
+  // update indexes a `clearedFields` map keyed by the OLD "large"/"small"
+  // slot names. With the stale keys, `clearedFields["smart"]` is undefined,
+  // so the optimistic write lands on `undefinedProvider`/`undefinedID`
+  // instead of `SmartModelProvider`/`SmartModelID`, and the header button
+  // keeps showing the pre-clear model (claude-haiku-4) until a server
+  // round-trip repaints it. Assert the LOCAL state directly — not just the
+  // outgoing WS payload above — by checking the header button text updates
+  // immediately, with no session_updated message sent.
+  await expect(
+    page.locator("button[title='Smart (strong) model']").filter({ hasText: "claude-haiku-4" })
+  ).toHaveCount(0, { timeout: 2000 });
 });

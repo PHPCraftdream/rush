@@ -384,8 +384,8 @@ export function clearSessionModelSlot(sessionID: string, modelType: "smart" | "f
   const sessions = $sessions.get();
   const idx = sessions.findIndex((s) => s.ID === sessionID);
   const clearedFields: Record<string, string> = {
-    large: "SmartModel",
-    small: "FastModel",
+    smart: "SmartModel",
+    fast: "FastModel",
     worker: "WorkerModel",
     reviewer: "ReviewerModel",
   };
@@ -586,8 +586,8 @@ export function sendWithFastModel(sessionID: string, content: string) {
   let fastModel: { provider: string; model: string } | undefined;
   if (sess && sess.FastModelID) {
     fastModel = { provider: sess.FastModelProvider, model: sess.FastModelID };
-  } else if (config?.models?.small) {
-    fastModel = { provider: config.models.small.Provider, model: config.models.small.Model };
+  } else if (config?.models?.fast) {
+    fastModel = { provider: config.models.fast.Provider, model: config.models.fast.Model };
   }
   const payload: Record<string, unknown> = { sessionID, content };
   if (fastModel) {
