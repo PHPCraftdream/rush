@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"runtime/debug"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -248,6 +249,24 @@ type Hub struct {
 	broadcast  chan []byte
 	register   chan *Client
 	unregister chan *Client
+
+	// sticky holds the latest envelope for each event type that must reach
+	// EVERY client, including ones that connect long after it was sent.
+	//
+	// The replay buffer cannot carry these. It is a bounded ring (2000
+	// events / 16 MiB), and a single streaming turn pushes thousands of
+	// delta events -- so an event sent at server start is the FIRST thing
+	// evicted. That is exactly what happened to the update-available badge
+	// (task #547): start the server, let one agent turn run, then open the
+	// browser, and the notice was already gone. Opening the UI when you
+	// need it rather than before is the common case, not the edge one.
+	//
+	// Keyed by event type, so a later send of the same event replaces the
+	// earlier one instead of accumulating. Written from BroadcastSticky
+	// (any goroutine) and read in Run's register case, hence the mutex --
+	// unlike buffer, which Run alone touches.
+	stickyMu sync.Mutex
+	sticky   map[string][]byte
 }
 
 func newHub() *Hub {
@@ -257,6 +276,7 @@ func newHub() *Hub {
 		broadcast:  make(chan []byte, 1024),
 		register:   make(chan *Client, 64),
 		unregister: make(chan *Client, 64),
+		sticky:     make(map[string][]byte),
 	}
 }
 
@@ -281,6 +301,17 @@ func (h *Hub) Run(ctx context.Context) {
 					// Client buffer full; skip older replayed events rather than block.
 				}
 			})
+			// Then the sticky events, which the ring cannot be trusted to
+			// still hold (see the sticky field's doc). Sent AFTER the replay
+			// so a sticky event that also happens to still be in the buffer
+			// arrives last and wins, rather than being overwritten by a
+			// stale copy of itself.
+			for _, msg := range h.stickyEvents() {
+				select {
+				case c.send <- msg:
+				default:
+				}
+			}
 
 		case c := <-h.unregister:
 			if _, ok := h.clients[c]; ok {
@@ -374,4 +405,56 @@ func (c *Client) writePump() {
 			}
 		}
 	}
+}
+
+// BroadcastSticky is Broadcast plus a promise: every client that connects
+// later also receives this event, regardless of how much traffic has passed
+// through the replay ring in between.
+//
+// Use it only for state a late-joining client genuinely needs and cannot ask
+// for -- there is no polling and no request/response path for it. The update
+// badge is the motivating case. Ordinary per-turn traffic must NOT be sticky:
+// each event type keeps exactly one entry, so a high-frequency event would
+// just churn the map while telling a new client something already stale.
+func (h *Hub) BroadcastSticky(msgType string, payload any) {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		slog.Error("ws: marshal sticky broadcast payload", "type", msgType, "err", err)
+		return
+	}
+	env, err := json.Marshal(WSMessage{Type: msgType, Payload: raw})
+	if err != nil {
+		slog.Error("ws: marshal sticky broadcast envelope", "err", err)
+		return
+	}
+
+	// Recorded BEFORE the send, so a client registering concurrently gets it
+	// from one path or the other -- never neither. Getting it twice is
+	// harmless (the same envelope, and the UI renders on receipt); getting it
+	// zero times is the bug this exists to close.
+	h.stickyMu.Lock()
+	h.sticky[msgType] = env
+	h.stickyMu.Unlock()
+
+	select {
+	case h.broadcast <- env:
+	default:
+		slog.Warn("ws: broadcast channel full, dropping", "type", msgType)
+	}
+}
+
+// stickyEvents returns a snapshot of the sticky envelopes for replay to a
+// newly registered client. Copied under the mutex so Run's loop never holds
+// it while writing to a client's channel.
+func (h *Hub) stickyEvents() [][]byte {
+	h.stickyMu.Lock()
+	defer h.stickyMu.Unlock()
+	if len(h.sticky) == 0 {
+		return nil
+	}
+	out := make([][]byte, 0, len(h.sticky))
+	for _, env := range h.sticky {
+		out = append(out, env)
+	}
+	return out
 }

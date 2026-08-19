@@ -53,7 +53,12 @@ func broadcastUpdateNotice(ctx context.Context, h *Hub) {
 	}
 
 	slog.Info("a newer crush is available", "current", info.Current, "latest", info.Latest)
-	h.Broadcast(EventUpdateAvailable, UpdateAvailableWire{
+	// Sticky, not a plain Broadcast: this is sent once at server start and
+	// the replay ring evicts it within a single streaming turn, so an
+	// operator who opens the browser after any real work would never see the
+	// badge (task #547). Sticky delivery re-sends it on every client
+	// register instead.
+	h.BroadcastSticky(EventUpdateAvailable, UpdateAvailableWire{
 		Current: info.Current,
 		Latest:  info.Latest,
 	})
