@@ -147,6 +147,20 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   again, in a separate write that takes no ownership of the row, so the
   atomic drain is unchanged. A quarantined row stays in the table with
   its last error for an operator to look at; nothing retries it.
+- **The update badge reaches a browser opened later.** It was sent once at
+  server start and then evicted: the replay buffer new clients receive is a
+  bounded ring, and one streaming turn pushes thousands of events past it.
+  Start the server, let an agent run, then open the UI - which is how people
+  actually use a UI - and the badge was already gone. It is now re-sent on
+  every connect, independently of the ring.
+- **No more spurious stall report at the end of a successful turn.** A turn
+  waits briefly for its session title after the work is done, and
+  `--timeout-hard-cap` is measured from turn start, so a turn finishing just
+  inside the cap could be pushed over it by that wait alone - producing a
+  stall dump for a turn that had succeeded, and killing the title it was
+  waiting for. Opt-in, and cosmetic when it fired, but it reported a failure
+  that had not happened.
+
 - **A guard against silently corrupted SQL codegen.** sqlc miscounts
   query spans when a `.sql` comment contains a multi-byte character,
   truncating the generated statement with a clean exit code — the failure
