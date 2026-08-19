@@ -118,6 +118,42 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **`crush run` no longer reports success for work it did not do.** Three
+  separate ways it could, all on the path that finishes a durable
+  continuation before the process exits. A session held by another live
+  owner counted as "completed here" the moment its row was leased, so a
+  cancelled run became exit code 0 with a success envelope while the work
+  sat queued for some later process. A turn whose commit failed after
+  running was also reported as complete, leaving the row to be recovered
+  and run a second time. And a run's own `--timeout` could not stop a
+  continuation that had already begun, because the execution context was
+  rooted in `context.Background()` and the passed-in one went unused
+  entirely — the CLI returned an error while the turn kept writing
+  messages behind it. That last one also let `App.Shutdown` close the
+  database underneath a live execution, since the synchronous drain was
+  not registered in the pump's shutdown accounting at all.
+- **Two executions for one session can no longer clear each other's
+  marker.** The background pump and the synchronous drain both read and
+  wrote one per-session boolean, and disagreed about when: one checked
+  then marked around a lease, the other leased first and marked
+  unconditionally. Whichever finished first cleared it, leaving the other
+  running while the session looked free to the next tick and to shutdown.
+  Both now go through one atomic gate, and the only way to clear a mark
+  is a closure held by whoever was admitted.
+- **A malformed orphan-outbox row is quarantined instead of retried
+  forever.** An entry that can never be enqueued was logged at ERROR and
+  retried every 15 seconds for the life of the process — the retry budget
+  had been dropped along with an older locking model. It is counted
+  again, in a separate write that takes no ownership of the row, so the
+  atomic drain is unchanged. A quarantined row stays in the table with
+  its last error for an operator to look at; nothing retries it.
+- **A guard against silently corrupted SQL codegen.** sqlc miscounts
+  query spans when a `.sql` comment contains a multi-byte character,
+  truncating the generated statement with a clean exit code — the failure
+  only surfaces at process start. Every query file was ASCII by luck; the
+  pre-push hook now makes it a rule.
+
+
 - **A session title no longer goes missing when the model answers
   quickly.** Sessions could end up as "Untitled Session" with nothing in
   the log but two `context canceled` errors. The turn cancels its own
