@@ -29,6 +29,13 @@ type PartWire struct {
 	Reason        string `json:"Reason,omitempty"`
 	FinishMessage string `json:"Message,omitempty"`
 	Details       string `json:"Details,omitempty"`
+	// Partial mirrors message.Finish.Partial: true when this Finish part was
+	// written by the auto-checkpoint ticker mid-stream, not a real step-end.
+	// The web UI uses this (task #590) to tell an in-flight assistant
+	// message apart from a terminally finished one, so it can hide the Edit
+	// control while editing it would be silently overwritten by the turn's
+	// next checkpoint or terminal write.
+	Partial bool `json:"Partial,omitempty"`
 }
 
 // UsageWire is the per-message token accounting sent to the browser.
@@ -106,7 +113,7 @@ func toPartWire(part message.ContentPart) PartWire {
 	case message.ToolResult:
 		return PartWire{Type: "tool_result", ToolCallID: p.ToolCallID, Name: p.Name, Content: p.Content, IsError: p.IsError, Metadata: p.Metadata}
 	case message.Finish:
-		return PartWire{Type: "finish", Reason: string(p.Reason), FinishMessage: p.Message, Details: p.Details}
+		return PartWire{Type: "finish", Reason: string(p.Reason), FinishMessage: p.Message, Details: p.Details, Partial: p.Partial}
 	default:
 		return PartWire{Type: "unknown"}
 	}

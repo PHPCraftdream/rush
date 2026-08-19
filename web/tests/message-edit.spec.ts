@@ -11,6 +11,7 @@
  *  - Cancel button cancels edit
  *  - Unchanged content does not send WS command
  *  - Empty content does not send WS command
+ *  - Edit button hidden for a still-streaming assistant message (task #590)
  */
 
 import { test, expect } from "@playwright/test";
@@ -64,7 +65,14 @@ test("edit button appears on hover for assistant message", async ({ page }) => {
   const msg = makeMessage({
     ID: "ea-1",
     Role: "assistant",
-    Parts: [{ type: "text", Text: "Editable assistant message" }],
+    // Assistant messages only show the Edit control once terminally
+    // finished (task #590): a message still mid-stream would have its edit
+    // silently overwritten by the turn's next checkpoint or terminal write,
+    // so a real Finish part (Partial unset/false) is required here.
+    Parts: [
+      { type: "text", Text: "Editable assistant message" },
+      { type: "finish", Reason: "end_turn", Message: "", Details: "" },
+    ],
   });
   await setupWithMessage(page, msg);
   await expect(page.getByText("Editable assistant message")).toBeVisible({ timeout: 2000 });
@@ -72,6 +80,44 @@ test("edit button appears on hover for assistant message", async ({ page }) => {
   const msgRow = page.getByText("Editable assistant message").locator("xpath=ancestor::div[contains(@class,'msg-row')]");
   await msgRow.hover();
   await expect(msgRow.getByTitle("Edit")).toBeVisible({ timeout: 2000 });
+});
+
+// Task #590: the server refuses edits to an assistant message that is still
+// mid-stream (no terminal Finish part, or only a Partial one from the
+// auto-checkpoint ticker) because the agent turn's next checkpoint or
+// terminal write would silently overwrite the edit. The Edit control must
+// not even be offered for such a message.
+test("edit button hidden for assistant message with no finish part (mid-stream, pre-checkpoint)", async ({ page }) => {
+  const msg = makeMessage({
+    ID: "stream-1",
+    Role: "assistant",
+    Parts: [{ type: "text", Text: "Still streaming, no finish yet" }],
+  });
+  await setupWithMessage(page, msg);
+  await expect(page.getByText("Still streaming, no finish yet")).toBeVisible({ timeout: 2000 });
+
+  const msgRow = page.getByText("Still streaming, no finish yet").locator("xpath=ancestor::div[contains(@class,'msg-row')]");
+  await msgRow.hover();
+  await expect(msgRow.getByTitle("Edit")).not.toBeVisible({ timeout: 2000 });
+  // Delete must remain available — only Edit is gated.
+  await expect(msgRow.getByTitle("Delete")).toBeVisible({ timeout: 2000 });
+});
+
+test("edit button hidden for assistant message with only a Partial finish (checkpoint ticker)", async ({ page }) => {
+  const msg = makeMessage({
+    ID: "stream-2",
+    Role: "assistant",
+    Parts: [
+      { type: "text", Text: "Checkpointed mid-stream text" },
+      { type: "finish", Reason: "", Message: "", Details: "", Partial: true },
+    ],
+  });
+  await setupWithMessage(page, msg);
+  await expect(page.getByText("Checkpointed mid-stream text")).toBeVisible({ timeout: 2000 });
+
+  const msgRow = page.getByText("Checkpointed mid-stream text").locator("xpath=ancestor::div[contains(@class,'msg-row')]");
+  await msgRow.hover();
+  await expect(msgRow.getByTitle("Edit")).not.toBeVisible({ timeout: 2000 });
 });
 
 // ── Starting edit ─────────────────────────────────────────────────────────
@@ -122,7 +168,12 @@ test("clicking Cancel button cancels edit", async ({ page }) => {
   const msg = makeMessage({
     ID: "ec-2",
     Role: "assistant",
-    Parts: [{ type: "text", Text: "Cancel assistant" }],
+    // See the "edit button appears on hover for assistant message" test
+    // above for why a terminal Finish part is required.
+    Parts: [
+      { type: "text", Text: "Cancel assistant" },
+      { type: "finish", Reason: "end_turn", Message: "", Details: "" },
+    ],
   });
   await setupWithMessage(page, msg);
 
@@ -165,7 +216,12 @@ test("Ctrl+Enter commits edit for assistant message", async ({ page }) => {
   const msg = makeMessage({
     ID: "ce-1",
     Role: "assistant",
-    Parts: [{ type: "text", Text: "Before ctrl-enter" }],
+    // See the "edit button appears on hover for assistant message" test
+    // above for why a terminal Finish part is required.
+    Parts: [
+      { type: "text", Text: "Before ctrl-enter" },
+      { type: "finish", Reason: "end_turn", Message: "", Details: "" },
+    ],
   });
   await setupWithMessage(page, msg);
 

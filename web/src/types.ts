@@ -83,6 +83,13 @@ export interface FinishPart {
   Reason: string;
   Message: string;
   Details: string;
+  // True when this Finish was written by the server's auto-checkpoint
+  // ticker mid-stream, not a real step-end (mirrors message.Finish.Partial
+  // / PartWire.Partial). A message whose only Finish part has Partial=true
+  // is still owned by an in-flight agent turn: editing it is refused
+  // server-side (task #590) because the turn's next checkpoint or terminal
+  // write will silently overwrite the edit.
+  Partial?: boolean;
 }
 
 export type ContentPart =

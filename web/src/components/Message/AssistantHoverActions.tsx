@@ -13,9 +13,9 @@ import { UsageBadge } from "./UsageBadge";
 import { EffortBadge } from "./EffortBadge";
 
 export const AssistantHoverActions = memo(function AssistantHoverActions({
-  message, copyText, onEdit, onDelete, onFork,
+  message, copyText, editable, onEdit, onDelete, onFork,
 }: {
-  message: Msg; copyText: string;
+  message: Msg; copyText: string; editable: boolean;
   onEdit: () => void; onDelete: () => void; onFork: () => void;
 }) {
   const handlePin = useCallback(() => togglePinMessage(message.ID, !message.Pinned), [message.ID, message.Pinned]);
@@ -26,7 +26,14 @@ export const AssistantHoverActions = memo(function AssistantHoverActions({
         <CopyTurnButton messageID={message.ID} />
         <button onClick={handlePin} title={message.Pinned ? "Unpin" : "Pin message"} className={`p-1.5 transition-colors rounded ${message.Pinned ? "text-yellow" : "text-text-subtle hover:text-yellow"}`}><Star size={13} fill={message.Pinned ? "currentColor" : "none"} /></button>
         <button onClick={onFork}    title="Fork session" className="btn-icon"><GitFork size={13} /></button>
-        <button onClick={onEdit}    title="Edit"         className="btn-icon"><Pencil  size={13} /></button>
+        {editable && (
+          // Hidden (not just disabled) while the message is still
+          // mid-stream: the server refuses this edit anyway (task #590 —
+          // an edit made before the turn's terminal write would be
+          // silently overwritten), so there is nothing useful the control
+          // could do here.
+          <button onClick={onEdit} title="Edit" className="btn-icon"><Pencil size={13} /></button>
+        )}
         <button onClick={onDelete}  title="Delete"       className="btn-icon-danger"><Trash2 size={13} /></button>
       </div>
       <div className="flex items-center gap-2 ml-auto">

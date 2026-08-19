@@ -32,40 +32,32 @@ func newMessageEditTestApp(t *testing.T) (*appPkg.App, string) {
 	return &appPkg.App{Messages: message.NewService(q)}, sess.ID
 }
 
-// TestUpdateMessageAndVerify_DetectsLostCheckpointFence covers task #569's
-// second half.
+// TestUpdateMessageAndVerify_RefusesEditToPartialMessage covers task #590
+// (P1-2 in docs/reviews/2026-08-19-release-readiness-static-follow-up-0635c631.md).
 //
-// message.Service.Update returns nil when a partial-checkpoint write loses
-// its conditional fence (0 rows affected) -- that is a pinned, deliberate
-// contract for the auto-checkpoint ticker (see
-// TestCheckpointFencing_P0_4Regression in
-// internal/agent/agent_checkpoint_test.go), not a bug: the ticker cannot
-// treat "a real finish already won" as an error without breaking a P0
-// guarantee that predates this task.
+// The previous fix (task #569 / commit 0cd26cb2) made updateMessageAndVerify
+// re-read the row after a write to a mid-stream message and report failure
+// if the checkpoint fence was lost. That proves the write landed AT THAT
+// INSTANT, but it does not make the edit durable: the agent turn that owns
+// the row keeps its own in-memory currentAssistant and, independently of
+// this handler, will write it back on the next checkpoint tick or --
+// unconditionally, no fence at all -- on the terminal write at the end of
+// the turn (see agent_turn.go's OnStepFinish -> a.messages.Update with a
+// non-Partial Finish, which takes message.Service.Update's unconditional
+// "terminal update always wins" branch). A same-instant read-back cannot
+// see that coming.
 //
-// But the four WS message-editing handlers are not the ticker. They call
-// Update on a message loaded via Get, expecting their own edit to land, and
-// nil from Update used to be reported to the client as {"status":"ok"} even
-// when the row never changed (release-blocker F1, reviewer-confirmed
-// probe). updateMessageAndVerify closes that gap on the handler side,
-// without touching Update's contract: when the message being written was
-// mid-stream (IsPartial()), it re-reads the row after Update and reports an
-// error unless the stored parts actually match what was just sent.
+// So the handler must refuse to write at all while the message is still
+// mid-stream (Role == Assistant && !IsFinished()), rather than write-and-
+// verify only for the moment right after the write.
 //
-// This test reproduces the fenced-loss scenario directly: write a genuine
-// mid-stream checkpoint row, then a genuine terminal finish (exactly like
-// the ticker followed by OnStepFinish), then call updateMessageAndVerify
-// with a stale in-memory copy of the pre-terminal partial message -- the
-// same shape a WS handler would have if it Got the message a moment before
-// the terminal finish landed. Update returns nil (fence lost, pinned
-// contract), and updateMessageAndVerify must still report failure to the
-// client instead of "ok".
-//
-// Revert-check: replace the body of updateMessageAndVerify with a bare
-// `return a.Messages.Update(...) == nil` (i.e. drop the post-write Get and
-// Parts comparison) and this fails -- the client is told "ok" even though
-// the row still holds the terminal text, not the stale edit.
-func TestUpdateMessageAndVerify_DetectsLostCheckpointFence(t *testing.T) {
+// Revert-check: replace the `if current.Role == message.Assistant &&
+// !current.IsFinished() { ... }` guard with the old write-then-verify body
+// and this test fails, because the write succeeds and the read-back matches
+// (nothing else raced it inside the test) -- but a real turn would still
+// clobber it moments later outside the test's control, which is exactly
+// the gap this test exists to close at the handler boundary.
+func TestUpdateMessageAndVerify_RefusesEditToPartialMessage(t *testing.T) {
 	a, sessionID := newMessageEditTestApp(t)
 	ctx := context.Background()
 
@@ -75,7 +67,8 @@ func TestUpdateMessageAndVerify_DetectsLostCheckpointFence(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// A genuine mid-stream checkpoint, written the way the ticker writes it.
+	// A genuine mid-stream checkpoint, written the way the ticker writes it:
+	// a Finish part with Partial=true, finished_at stays NULL.
 	checkpoint := created.Clone()
 	checkpoint.Parts = []message.ContentPart{message.TextContent{Text: "streamed so far"}}
 	checkpoint.CheckpointGeneration = 1
@@ -89,46 +82,36 @@ func TestUpdateMessageAndVerify_DetectsLostCheckpointFence(t *testing.T) {
 	}
 	require.NoError(t, a.Messages.Update(ctx, checkpoint))
 
-	// A genuine terminal finish lands next (simulating OnStepFinish), racing
-	// ahead of a WS handler that already Got the pre-terminal partial state.
-	terminal := created.Clone()
-	terminal.Parts = []message.ContentPart{message.TextContent{Text: "terminal state"}}
-	terminal.AddFinish(message.FinishReasonEndTurn, "", "")
-	require.NoError(t, a.Messages.Update(ctx, terminal))
-
-	// The WS handler's view: it Got the message BEFORE the terminal write
-	// (so it still has the partial Finish and generation 1), then applied an
-	// operator edit to the text, exactly like handleUpdateMessageContent.
-	staleView := checkpoint.Clone()
-	staleView.Parts = []message.ContentPart{message.TextContent{Text: "OPERATOR EDIT"}, staleView.Parts[len(staleView.Parts)-1]}
+	// A WS handler Gets the still-partial row (as handleUpdateMessageContent
+	// does) and tries to apply an operator edit to it.
+	edit := checkpoint.Clone()
+	edit.Parts = []message.ContentPart{message.TextContent{Text: "OPERATOR EDIT"}, edit.Parts[len(edit.Parts)-1]}
 
 	c := &Client{send: make(chan []byte, 4)}
-	ok := updateMessageAndVerify(ctx, a, c, "req-1", staleView)
-	require.False(t, ok, "updateMessageAndVerify must report failure when the write lost the checkpoint fence")
+	ok := updateMessageAndVerify(ctx, a, c, "req-1", edit)
+	require.False(t, ok, "updateMessageAndVerify must refuse an edit to a message that is still mid-stream")
 
-	// The client must have received an error reply, not {"status":"ok"}.
 	select {
 	case raw := <-c.send:
 		var env WSMessage
 		require.NoError(t, json.Unmarshal(raw, &env))
 		require.Equal(t, EventError, env.Type,
-			"client was told the edit succeeded even though the row still holds the terminal text, not the operator's edit")
+			"client was told the edit succeeded (or got no reply) for a message that is still streaming")
 	default:
 		t.Fatal("expected an error reply on the client's send channel")
 	}
 
-	// And the row itself must still hold the terminal text, confirming the
-	// edit truly did not land (this is what makes the false "ok" dangerous).
+	// The row must be untouched: the refusal happens before any write.
 	stored, err := a.Messages.Get(ctx, created.ID)
 	require.NoError(t, err)
-	require.Equal(t, "terminal state", stored.FullText(),
-		"row should still hold the terminal write; the stale operator edit must not have landed")
+	require.Equal(t, "streamed so far", stored.FullText(),
+		"row must be unchanged: the handler must refuse to write, not write-then-detect")
 }
 
-// TestUpdateMessageAndVerify_NormalEditLands is the control: a non-streaming
-// message (no Partial Finish) takes Update's unconditional path, and
-// updateMessageAndVerify must report success without needing (or paying
-// for) the extra re-read.
+// TestUpdateMessageAndVerify_NormalEditLands is the control: a terminally
+// finished assistant message takes Update's unconditional path (nothing is
+// streaming it anymore, so nothing can race the edit), and
+// updateMessageAndVerify must report success.
 func TestUpdateMessageAndVerify_NormalEditLands(t *testing.T) {
 	a, sessionID := newMessageEditTestApp(t)
 	ctx := context.Background()
@@ -138,15 +121,53 @@ func TestUpdateMessageAndVerify_NormalEditLands(t *testing.T) {
 		Parts: []message.ContentPart{message.TextContent{Text: "start"}},
 	})
 	require.NoError(t, err)
+	created.AddFinish(message.FinishReasonEndTurn, "", "")
+	require.NoError(t, a.Messages.Update(ctx, created))
 
 	edited := created.Clone()
-	edited.Parts = []message.ContentPart{message.TextContent{Text: "edited"}}
+	edited.Parts[0] = message.TextContent{Text: "edited"}
 
 	c := &Client{send: make(chan []byte, 4)}
 	ok := updateMessageAndVerify(ctx, a, c, "req-1", edited)
-	require.True(t, ok, "a normal (non-streaming) edit must succeed")
+	require.True(t, ok, "editing a terminally finished assistant message must succeed")
 
 	stored, err := a.Messages.Get(ctx, created.ID)
 	require.NoError(t, err)
 	require.Equal(t, "edited", stored.FullText())
+}
+
+// TestUpdateMessageAndVerify_UserMessageEditLands guards against the most
+// tempting wrong fix for #590: gating the mid-stream refusal on
+// !IsFinished() alone instead of Role == Assistant && !IsFinished().
+//
+// In practice message.Service.Create auto-appends a non-partial Finish{Reason:
+// "stop"} part to every non-Assistant row at creation time (see Create in
+// internal/message/message.go), so plain user messages happen to already be
+// IsFinished() == true and would pass a bare !IsFinished() check too. This
+// test's real job is guarding the Role gate itself, which is what actually
+// matters for any current or future non-Assistant row that is NOT
+// synthetically finished (e.g. a differently-constructed row, or if Create's
+// auto-Finish behavior ever changes) -- IsFinished() alone is a coincidence
+// of today's Create, not a substitute for checking Role == Assistant.
+func TestUpdateMessageAndVerify_UserMessageEditLands(t *testing.T) {
+	a, sessionID := newMessageEditTestApp(t)
+	ctx := context.Background()
+
+	created, err := a.Messages.Create(ctx, sessionID, message.CreateMessageParams{
+		Role:  message.User,
+		Parts: []message.ContentPart{message.TextContent{Text: "hello"}},
+	})
+	require.NoError(t, err)
+	require.Equal(t, message.User, created.Role, "precondition: this is a user message")
+
+	edited := created.Clone()
+	edited.Parts[0] = message.TextContent{Text: "hello, edited"}
+
+	c := &Client{send: make(chan []byte, 4)}
+	ok := updateMessageAndVerify(ctx, a, c, "req-1", edited)
+	require.True(t, ok, "editing a user message must succeed even though IsFinished() is always false for it")
+
+	stored, err := a.Messages.Get(ctx, created.ID)
+	require.NoError(t, err)
+	require.Equal(t, "hello, edited", stored.FullText())
 }

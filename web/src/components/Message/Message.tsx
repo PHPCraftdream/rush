@@ -12,7 +12,7 @@ import { BackgroundJobNotice } from "./BackgroundJobNotice";
 import { SummaryMessage } from "./SummaryMessage";
 import { UserContent } from "./UserContent";
 import { UserHoverActions } from "./UserHoverActions";
-import { extractText } from "./textParts";
+import { extractText, isTerminallyFinished } from "./textParts";
 
 // ── Message ───────────────────────────────────────────────────────────────────
 
@@ -39,6 +39,13 @@ export const Message = memo(function Message({
 
   const copyText     = useMemo(() => extractText(message.Parts), [message.Parts]);
   const hasContent   = useMemo(() => !isUser && message.Parts.some(p => ["text","tool_call","tool_result","finish"].includes(p.type)), [isUser, message.Parts]);
+  // An assistant message with no terminal Finish part is still owned by an
+  // in-flight agent turn: the server refuses edits to it (task #590,
+  // handlers_messages.go's updateMessageAndVerify) because the turn's next
+  // checkpoint or terminal write would silently overwrite the edit. Hide
+  // the control here so an operator doesn't hit that refusal in the first
+  // place. User messages are never streamed, so they stay always-editable.
+  const editable     = useMemo(() => isUser || isTerminallyFinished(message.Parts), [isUser, message.Parts]);
 
   const [editing, setEditing] = useState(false);
   const [forking, setForking] = useState(false);
@@ -123,6 +130,7 @@ export const Message = memo(function Message({
               <AssistantHoverActions
                 message={message}
                 copyText={copyText}
+                editable={editable}
                 onEdit={handleEditOpen}
                 onDelete={handleDelete}
                 onFork={handleForkOpen}

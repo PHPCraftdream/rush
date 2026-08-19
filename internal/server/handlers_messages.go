@@ -7,7 +7,6 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
-	"reflect"
 
 	appPkg "github.com/charmbracelet/crush/internal/app"
 	"github.com/charmbracelet/crush/internal/message"
@@ -15,59 +14,73 @@ import (
 
 // updateMessageAndVerify wraps a.Messages.Update for the four message-part
 // editing handlers below (update content, update thinking, delete part,
-// update part). It exists because Update's own return value is not a
-// trustworthy signal for these callers.
+// update part).
 //
-// Update deliberately routes a message that still carries a Partial Finish
-// part (i.e. one loaded off a row the checkpoint ticker still owns --
-// mid-stream, not yet terminally finished) through
-// UpdateMessageIfNotTerminal, a conditional write fenced on
-// checkpoint_generation and finished_at. When that fence is legitimately
-// lost -- a newer checkpoint generation or a concurrent terminal finish won
-// the race -- the write affects zero rows and Update returns nil: this is a
-// pinned, deliberate contract (see TestCheckpointFencing_P0_4Regression in
-// internal/agent/agent_checkpoint_test.go and
-// TestUpdate_TerminalWriteStillWinsOverAnyGeneration /
-// TestUpdate_StaleCheckpointGenerationCannotOverwriteNewer in
-// internal/message/p555_checkpoint_generation_test.go) that exists FOR the
-// auto-checkpoint ticker: a hung/stale checkpoint write racing a real finish
-// must be a silent no-op, not a turn-failing error, because the ticker
-// cannot distinguish "lost a legitimate race" from any other outcome and
-// must keep going regardless.
+// It proves ONE thing: at the moment this function returns true, the row
+// held the parts it just wrote. It does NOT prove the edit is durable. The
+// agent turn that owns a mid-stream message keeps its own in-memory
+// currentAssistant and, independently of anything this handler does, will
+// write that in-memory copy back to the same row -- either from the next
+// auto-checkpoint tick (conditional, fenced on checkpoint_generation) or,
+// unconditionally and unfenced, from the terminal write at the end of the
+// turn (internal/agent/agent_turn.go OnStepFinish -> a.messages.Update with
+// a non-Partial Finish, which takes Update's "terminal update always wins"
+// branch -- see internal/message/message.go's Update). Neither of those
+// writers has any way to know an edit landed in between, so an edit that
+// lands while the message is still mid-stream WILL be overwritten by
+// stale in-memory content, deterministically, at the very latest by that
+// terminal write. A client-side read-back cannot detect this because it
+// runs before the overwrite happens.
 //
-// The four WS editing handlers hit the exact same conditional-write branch
-// whenever the message a user is editing happens to still be mid-stream
-// (Get returned a row with a Partial Finish part) -- but unlike the ticker,
-// they are not best-effort: an operator's edit that is reported as "ok"
-// must actually be in the row (task #569 / release-blocker F1: this used to
-// silently vanish). Changing what Update returns to fix that would break
-// the pinned ticker contract for every caller, including the ticker itself,
-// so instead this helper re-reads the row ONLY when the message being
-// written was mid-stream (m.IsPartial()) -- the sole condition under which
-// Update's conditional branch can silently no-op -- and compares Parts
-// against what was just sent. A normal (non-streaming) edit takes zero
-// extra reads.
+// So instead of trying to make a mid-stream edit durable (that needs a real
+// edit protocol reconciled with the agent's in-memory state -- out of reach
+// from the WS handler layer, which has no visibility into currentAssistant),
+// this function refuses the edit outright while the message is still
+// mid-stream. It re-reads the row (never trusts the caller's possibly-stale
+// in-memory `m`) and rejects with a conflict unless the freshly-read row is
+// already terminally finished (!IsFinished() == still owned by the turn).
+// This makes the guarantee the caller gets honest: "ok" is only ever
+// returned for a row nothing else is going to touch again.
+//
+// task #569 / release-blocker F1 established that reporting "ok" over an
+// edit that silently vanished is the actual bug; task #590 established that
+// a same-instant read-back proves the write landed but not that it stays
+// landed. Refusing mid-stream edits closes both: there is no window left in
+// which the handler can reply "ok" and have the row change out from under
+// the operator afterward.
 func updateMessageAndVerify(ctx context.Context, a *appPkg.App, c *Client, msgID string, m message.Message) bool {
-	wasPartial := m.IsPartial()
-	if err := a.Messages.Update(ctx, m); err != nil {
-		c.reply(msgID, EventError, nil, err.Error())
-		return false
-	}
-	if !wasPartial {
-		return true
-	}
-	// m was mid-stream: Update may have silently lost the checkpoint fence
-	// (0 rows affected, nil error -- the ticker's contract). Re-read and
-	// confirm the parts we just sent are actually the parts now stored.
-	stored, err := a.Messages.Get(ctx, m.ID)
+	// Re-read the row rather than trusting m's Finish part: m was loaded by
+	// the caller (Get) before it mutated Parts for the edit, so it already
+	// reflects the row's state at that moment, but re-reading here keeps this
+	// check independent of caller discipline and closes the same race the
+	// verification step below closes -- a concurrent terminal finish landing
+	// between the caller's Get and this call.
+	current, err := a.Messages.Get(ctx, m.ID)
 	if err != nil {
 		c.reply(msgID, EventError, nil, err.Error())
 		return false
 	}
-	if !reflect.DeepEqual(stored.Parts, m.Parts) {
-		c.reply(msgID, EventError, nil, "message is still streaming and changed before this edit could be saved; please retry")
+	// Only assistant messages ever carry a Finish part -- user/system/tool
+	// rows are written once and never streamed, so IsFinished() on them is
+	// always false and must NOT be read as "still owned by a turn". Gate the
+	// mid-stream check on Role == Assistant, or every user-message edit
+	// would be refused too.
+	if current.Role == message.Assistant && !current.IsFinished() {
+		// The message is still owned by an in-flight agent turn (no terminal
+		// Finish yet, or only a Partial one from the checkpoint ticker). Any
+		// write here would be overwritten by that turn's next checkpoint or,
+		// unconditionally, its terminal write -- see the doc comment above.
+		// Refuse now rather than report an "ok" that will not stick.
+		c.reply(msgID, EventError, nil, "message is still streaming and cannot be edited yet; please wait for it to finish")
 		return false
 	}
+	if err := a.Messages.Update(ctx, m); err != nil {
+		c.reply(msgID, EventError, nil, err.Error())
+		return false
+	}
+	// current was already terminal, so Update took the unconditional
+	// "terminal update always wins" branch (message.Service.Update) -- no
+	// re-read needed to confirm the write landed.
 	return true
 }
 
