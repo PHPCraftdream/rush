@@ -1,0 +1,28 @@
+{
+  "disable_provider_auto_update": true,
+  "providers": {
+    "fakeprov": {
+      "id": "fakeprov",
+      "name": "Fake",
+      "base_url": "http://127.0.0.1:1/v1",
+      "type": "openai",
+      "api_key": "sk-fake",
+      "discover_models": false,
+      "models": [
+        {
+          "id": "fake-model",
+          "name": "fake-model",
+          "context_window": 8192,
+          "default_max_tokens": 1024
+        }
+      ]
+    }
+  },
+  "models": {
+    "smart": {"model": "fake-model", "provider": "fakeprov"},
+    "fast": {"model": "fake-model", "provider": "fakeprov"}
+  },
+  "options": {
+    "stream_stall_retries": 0
+  }
+}
