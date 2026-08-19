@@ -30,13 +30,25 @@ import (
 // loses, since RunNonInteractive's own completion path runs in
 // milliseconds after the cancellation.
 //
-// Returns drained=true if at least one entry was observed to execute for
-// this session during the call — either leased and run by this call
-// directly, or (see below) by this pump's own background tick racing ahead
-// of it. drained=false, err=nil means nothing was pending; callers must
+// Returns drained=true only if a continuation actually EXECUTED in this
+// process during the call — leased and run to completion by this call, or
+// (see below) run by this pump's own background tick racing ahead of it.
+// Leasing a row is not executing it, and this distinction is the whole of
+// P0-1 in the 2026-08-18 release-readiness review: drained used to be set
+// the moment LeaseRunQueueEntry returned a row, before any execution was
+// attempted. When the execution then turned out to be impossible because a
+// genuinely different live owner held the session (ErrCallQueuedNotExecuted
+// or *SessionLockBusyError), the row was correctly released without an
+// attempt penalty — and the function still answered (true, nil).
+// RunNonInteractive reads that pair as "the continuation ran here" and
+// converts the operator's cancelled run into exit code 0 with a success
+// envelope, while the work is still queued and will run later, in another
+// process, after the user was told it had finished.
+//
+// drained=false, err=nil means nothing ran and nothing failed; callers must
 // NOT treat that as having recovered anything (a plain user-initiated
 // cancel/timeout with no durable continuation looks identical to "nothing
-// to drain" and must be left as the caller's original outcome).
+// to drain", and both must leave the caller's original outcome standing).
 //
 // Race against the background tick: LeaseRunQueueEntry is atomic at the DB
 // level, so two callers racing for the same row can never both execute it
@@ -74,7 +86,10 @@ func (p *RunQueuePump) DrainSessionNow(ctx context.Context, sessionID string) (d
 		}
 
 		if leased != nil {
-			drained = true
+			// NOTE: drained is deliberately NOT set here. Holding a lease is
+			// not the same as having executed anything — see the P0-1 note in
+			// this function's doc. It is set below, once executeEntrySync has
+			// actually run a turn.
 
 			// Mirrors processEntry's own attempts-exhausted check (see
 			// there) — this call bypassed that check by leasing directly
@@ -162,12 +177,30 @@ func (p *RunQueuePump) DrainSessionNow(ctx context.Context, sessionID string) (d
 			if errors.Is(execErr, ErrCallQueuedNotExecuted) || isSessionLockBusyErr(execErr) {
 				// A genuinely different live owner has this session right
 				// now — not this call, not the background tick (see those
-				// errors' own docs on executeEntrySync). Waiting for a
-				// stranger's turn to finish is not this call's job: stop
-				// and let the caller's original outcome stand for
-				// whatever wasn't drained.
+				// errors' own docs on executeEntrySync). NOTHING RAN here:
+				// the call was appended to that owner's mailbox, or the OS
+				// session lock was held, and the row was released without an
+				// attempt penalty for someone else to pick up later.
+				//
+				// So drained stays as it was — false, unless an EARLIER
+				// iteration of this loop genuinely executed something. That
+				// is the P0-1 fix: this branch used to return (true, nil)
+				// because drained had already been set by the mere act of
+				// leasing, and the caller turned a cancelled run into a
+				// success for work that had not run and would not run here.
+				//
+				// Waiting for a stranger's turn to finish is not this call's
+				// job either: stop, and let the caller's original outcome
+				// stand for whatever wasn't drained.
 				return drained, nil
 			}
+
+			// The turn actually ran. Either it committed (execErr == nil) or
+			// it failed in a way that already wrote its own outcome for the
+			// row; both are executions that happened in this process, and
+			// both produced messages the caller has already seen. err
+			// carries the distinction upward.
+			drained = true
 			err = execErr
 			continue // more may be pending (e.g. a second stacked interrupt) — loop and check again
 		}
@@ -184,6 +217,20 @@ func (p *RunQueuePump) DrainSessionNow(ctx context.Context, sessionID string) (d
 		if !busy {
 			return drained, err
 		}
+
+		// The background tick is mid-execution for this session, in THIS
+		// process. Its messages reach the caller through the same
+		// subscription this call's own execution would have used, so from
+		// the caller's point of view the continuation did run here.
+		//
+		// The one thing this branch cannot see is that tick's own outcome:
+		// if its executeEntrySync returns ErrCallQueuedNotExecuted, nothing
+		// actually ran and this still reports drained=true. That residual is
+		// narrower than the P0-1 case fixed above (it needs the background
+		// tick to win the lease race AND then find the session externally
+		// owned) and closing it needs an outcome channel between the two
+		// paths, not a flag — see the review's note about unifying the two
+		// dispatchers rather than adding a third.
 		drained = true
 		select {
 		case <-ctx.Done():

@@ -756,8 +756,17 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt 
 						// cancellation.
 						drainDone <- nil
 					default:
-						// Nothing was pending. Restore the original
-						// cancellation — it was real, not a P0-1 artifact.
+						// Nothing ran here. Either nothing was pending, or
+						// something was but a genuinely different live owner
+						// holds the session, so the row was released without
+						// an attempt penalty for them (or a later process) to
+						// execute — see DrainSessionNow's own P0-1 note for
+						// why the busy case reports drained=false rather than
+						// the success it used to.
+						//
+						// Both cases mean the same thing to this command: no
+						// continuation completed in this process, so the
+						// original cancellation stands. It was real.
 						drainDone <- originalErr
 					}
 				}(runErr)
