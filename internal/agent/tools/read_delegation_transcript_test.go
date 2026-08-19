@@ -443,3 +443,96 @@ func TestRenderDelegationTranscript_HugeMessageBounded(t *testing.T) {
 	require.Contains(t, out, "truncated")
 	require.Contains(t, out, "bytes dropped")
 }
+
+// TestSummariseTranscriptResult_UnwrapsResultEnvelope is the regression test
+// for #582 defect 1: a sub-agent instructed to APPEND to a file overwrote it
+// instead, yet the transcript summary reported "(+2 lines)" -- a figure that
+// looked like a diff stat but was in fact just the line count of the
+// write/edit/multiedit tool's own "<result>\n...\n</result>" wrapper around a
+// single-line success message. Every successful write/edit/multiedit call
+// produced this exact same "(+2 lines)" tag regardless of what actually
+// changed on disk, because summariseTranscriptResult counted the wrapper's
+// own line breaks instead of the underlying message. Unwrapping the envelope
+// before summarising restores the true (single-line, in this case) shape of
+// the message.
+func TestSummariseTranscriptResult_UnwrapsResultEnvelope(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{
+			name:    "write success",
+			content: "<result>\nFile successfully written: /a/b.txt\n</result>",
+			want:    "File successfully written: /a/b.txt",
+		},
+		{
+			name:    "edit success with trailing newline after closing tag",
+			content: "<result>\nContent replaced in file: /a/b.txt\n</result>\n",
+			want:    "Content replaced in file: /a/b.txt",
+		},
+		{
+			name:    "multiedit success",
+			content: "<result>\nApplied 37 edits to file: /a/b.txt\n</result>\n",
+			want:    "Applied 37 edits to file: /a/b.txt",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := summariseTranscriptResult(tc.content)
+			require.Equal(t, tc.want, got,
+				"unwrapped single-line message must render as-is, with no phantom (+N lines) suffix")
+			require.NotContains(t, got, "(+2 lines)",
+				"must not report the wrapper's own line breaks as if they were content changes")
+		})
+	}
+}
+
+// TestSummariseTranscriptResult_PreservesGenuineMultilineContent proves the
+// fix does not over-correct: content that is GENUINELY multi-line (not just
+// wrapped-single-line) still gets the "(+N lines)" treatment, and content
+// that merely resembles the envelope tags without actually being wrapped is
+// left untouched.
+func TestSummariseTranscriptResult_PreservesGenuineMultilineContent(t *testing.T) {
+	t.Parallel()
+
+	got := summariseTranscriptResult("line one\nline two\nline three")
+	require.Equal(t, "line one (+2 lines)", got,
+		"genuinely multi-line content must still summarise with an accurate (+N lines) count")
+
+	// Content that only starts with "<result>" but isn't actually closed by
+	// "</result>" must not be unwrapped -- stripResultEnvelope must require
+	// both the prefix AND the suffix to match before treating it as wrapped.
+	got2 := summariseTranscriptResult("<result> this is not really wrapped\nsecond line")
+	require.Contains(t, got2, "(+1 lines)",
+		"content that isn't a genuine <result>...</result> envelope must not be silently unwrapped")
+}
+
+// TestSummariseTranscriptResult_WriteToolEndToEnd runs the real write tool
+// against a temp file and feeds its actual response content through
+// summariseTranscriptResult, proving the fix holds for the real tool output
+// shape (not just a hand-constructed string).
+func TestSummariseTranscriptResult_WriteToolEndToEnd(t *testing.T) {
+	t.Parallel()
+
+	workingDir := t.TempDir()
+	ctx := context.WithValue(context.Background(), SessionIDContextKey, "test-session")
+	tool := NewWriteTool(&mockPermissionService{}, &mockHistoryService{}, mockFileTrackerService{}, workingDir)
+
+	input, err := json.Marshal(WriteParams{FilePath: "notes.txt", Content: "hello"})
+	require.NoError(t, err)
+
+	resp, err := tool.Run(ctx, fantasy.ToolCall{ID: "call-1", Name: WriteToolName, Input: string(input)})
+	require.NoError(t, err)
+	require.False(t, resp.IsError)
+
+	summary := summariseTranscriptResult(resp.Content)
+	require.NotContains(t, summary, "(+2 lines)",
+		"the real write-tool success response must not be summarised with a phantom diff-shaped suffix")
+	require.Contains(t, summary, "File successfully written",
+		"the actual success message must be visible in the summary, not hidden behind the envelope")
+}

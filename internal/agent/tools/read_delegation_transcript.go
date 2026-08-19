@@ -475,8 +475,18 @@ func renderDelegationTranscript(sessionID string, msgs []message.Message, total 
 // summariseTranscriptResult collapses a tool result's content into a bounded
 // preview: single line as-is (capped), multiline as "first line (+N lines)".
 // Keeps the transcript readable without dumping a whole file a `view` returned.
+//
+// write/edit/multiedit wrap their success message in a literal
+// "<result>\n...\n</result>" envelope (see write.go/edit.go/multiedit.go).
+// That envelope turns even a genuinely single-line message like "File
+// successfully written: foo.txt" into 3 raw lines. Before this fix,
+// stripResultEnvelope was not applied here, so every successful write/edit/
+// multiedit reported an identical, content-independent "(+2 lines)" suffix --
+// counting the wrapper's own line breaks, not anything about the file that
+// was changed. Unwrapping first restores the real single-line vs. multi-line
+// shape of the underlying message before summarising it.
 func summariseTranscriptResult(content string) string {
-	trimmed := strings.TrimSpace(content)
+	trimmed := strings.TrimSpace(stripResultEnvelope(content))
 	if trimmed == "" {
 		return ""
 	}
@@ -486,6 +496,23 @@ func summariseTranscriptResult(content string) string {
 		return truncatePreview(first, 300)
 	}
 	return truncatePreview(first, 260) + fmt.Sprintf(" (+%d lines)", len(lines)-1)
+}
+
+// stripResultEnvelope removes a literal "<result>\n...\n</result>" wrapper
+// added by write/edit/multiedit around their success message (see write.go's
+// `result = fmt.Sprintf("<result>\n%s\n</result>", result)` and the
+// equivalent in edit.go/multiedit.go). It is a no-op for content that is not
+// wrapped this way. Without this, the wrapper's own line breaks get counted
+// as if they were part of the tool's actual message.
+func stripResultEnvelope(content string) string {
+	trimmed := strings.TrimSpace(content)
+	const open, closeTag = "<result>", "</result>"
+	if !strings.HasPrefix(trimmed, open) || !strings.HasSuffix(trimmed, closeTag) {
+		return content
+	}
+	inner := strings.TrimPrefix(trimmed, open)
+	inner = strings.TrimSuffix(inner, closeTag)
+	return inner
 }
 
 // collapseWhitespace flattens runs of whitespace (including newlines) into
