@@ -168,6 +168,15 @@ func TestP1_1_WatchdogCancelsBeforeExpiry(t *testing.T) {
 		TestLeaseWatchdogSafetyMargin: safetyMargin,
 	})
 	pump.Start()
+	// t.Cleanup (not a bare trailing call) so pump.Stop() still runs if a
+	// require.* below fails and unwinds via runtime.Goexit() before reaching
+	// the bottom of the function — otherwise the pump's 10ms tick loop keeps
+	// running after setupTestSessionWithDB's own t.Cleanup closes the
+	// *sql.DB (LIFO order runs this Cleanup first), flooding the log with
+	// "list pending failed err=\"sql: database is closed\"" for the rest of
+	// the test binary's life. Same pattern as run_queue_round2_test.go's
+	// stopPumpLoggingForcedShutdown.
+	t.Cleanup(func() { pump.Stop() })
 
 	// Wait for the coordinator to be called (worker started)
 	require.Eventually(t, func() bool {
@@ -233,9 +242,8 @@ func TestP1_1_WatchdogCancelsBeforeExpiry(t *testing.T) {
 	// Verify ctxCanceled flag is set
 	require.True(t, coord.ctxCanceled.Load(), "coordinator should have observed ctx.Done()")
 
-	// Unblock and let pump finish cleanly
+	// Unblock; pump.Stop() runs via the t.Cleanup registered above.
 	close(blockCh)
-	pump.Stop()
 }
 
 // TestP1_1_FastRenewalNoFalsePositive verifies that normal, fast renewals
@@ -300,6 +308,13 @@ func TestP1_1_FastRenewalNoFalsePositive(t *testing.T) {
 		TestLeaseWatchdogSafetyMargin: safetyMargin,
 	})
 	pump.Start()
+	// t.Cleanup safety net: Stop() is idempotent (guarded by p.started), so
+	// this is harmless alongside the explicit pump.Stop() below on the
+	// normal path, but still runs pump.Stop() if a require.* above that line
+	// fails and unwinds early — see TestP1_1_WatchdogCancelsBeforeExpiry's
+	// identical comment for why an unstopped pump matters (DB-closed log
+	// spam once setupTestSessionWithDB's own t.Cleanup closes the *sql.DB).
+	t.Cleanup(func() { pump.Stop() })
 
 	// Wait for the coordinator to be called
 	require.Eventually(t, func() bool {
@@ -390,6 +405,10 @@ func TestP1_1_WatchdogWithVeryShortTTL(t *testing.T) {
 		TestLeaseWatchdogSafetyMargin: safetyMargin,
 	})
 	pump.Start()
+	// See TestP1_1_WatchdogCancelsBeforeExpiry's identical comment: t.Cleanup
+	// guarantees pump.Stop() runs even if a require.* below fails early,
+	// avoiding DB-closed log spam from an unstopped pump's tick loop.
+	t.Cleanup(func() { pump.Stop() })
 
 	// Wait for the coordinator to be called
 	require.Eventually(t, func() bool {
@@ -499,6 +518,10 @@ func TestP1_1_DynamicRenewalTimeout(t *testing.T) {
 		TestLeaseWatchdogSafetyMargin: safetyMargin,
 	})
 	pump.Start()
+	// See TestP1_1_WatchdogCancelsBeforeExpiry's identical comment: t.Cleanup
+	// guarantees pump.Stop() runs even if a require.* below fails early,
+	// avoiding DB-closed log spam from an unstopped pump's tick loop.
+	t.Cleanup(func() { pump.Stop() })
 
 	// Wait for the coordinator to be called
 	require.Eventually(t, func() bool {

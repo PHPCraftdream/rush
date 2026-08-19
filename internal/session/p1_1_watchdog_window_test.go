@@ -120,6 +120,18 @@ func TestP1_1_WatchdogCancelsAtTTLMinusMargin(t *testing.T) {
 		TestLeaseWatchdogSafetyMargin: 2500 * time.Millisecond,
 	})
 	pump.Start()
+	// Registered via t.Cleanup (not a bare trailing call) so pump.Stop() still
+	// runs even if a require.* assertion below fails and unwinds the test via
+	// runtime.Goexit() before reaching the bottom of the function. Without
+	// this, a failing assertion here leaves the pump's 10ms tick loop running
+	// against setupTestSessionWithDB's own t.Cleanup-closed *sql.DB (LIFO:
+	// this Cleanup, registered after that one, runs first and stops the pump
+	// before the DB closes), which otherwise floods the log with repeated
+	// "list pending failed err=\"sql: database is closed\"" warnings for the
+	// rest of the test binary's life and can bury an unrelated failure's own
+	// --- FAIL line. Same pattern as run_queue_round2_test.go's
+	// stopPumpLoggingForcedShutdown.
+	t.Cleanup(func() { pump.Stop() })
 
 	// Wait for the coordinator to be called
 	require.Eventually(t, func() bool {
@@ -161,7 +173,6 @@ func TestP1_1_WatchdogCancelsAtTTLMinusMargin(t *testing.T) {
 	// Verify ctxCanceled flag is set
 	require.True(t, coord.ctxCanceled.Load(), "coordinator should have observed ctx.Done()")
 
-	// Unblock and stop
+	// Unblock; pump.Stop() runs via the t.Cleanup registered above.
 	close(blockCh)
-	pump.Stop()
 }
