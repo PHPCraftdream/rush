@@ -174,7 +174,7 @@ func (c *concurrencyTrackingCoordinator) Run(ctx context.Context, callData sessi
 //  4. Restore the inFlight guard and PASS.
 func TestReleaseGate_P350_NoDuplicateDispatchForSameSession(t *testing.T) {
 	t.Parallel()
-
+	limitParallel(t)
 	sess, svc := setupTestSession(t, "test-session-dup-dispatch")
 	ctx := t.Context()
 
@@ -278,7 +278,7 @@ func (c *queuedNotExecutedCoordinator) Run(ctx context.Context, callData session
 //  4. Restore the branch and PASS.
 func TestReleaseGate_P350_QueuedNotExecutedNeitherAcksNorSpamRetries(t *testing.T) {
 	t.Parallel()
-
+	limitParallel(t)
 	sess, svc := setupTestSession(t, "test-session-queued-not-executed")
 	ctx := t.Context()
 
@@ -366,7 +366,7 @@ func (c *slowCoordinator) Run(ctx context.Context, callData session.SessionAgent
 //  4. Restore the renewal loop and PASS.
 func TestReleaseGate_P350_LeaseRenewedDuringLongExecution(t *testing.T) {
 	t.Parallel()
-
+	limitParallel(t)
 	sess, svc := setupTestSession(t, "test-session-lease-renewal")
 	ctx := t.Context()
 
@@ -510,7 +510,7 @@ func (c *queuedNotExecutedThenSuccessCoordinator) Run(ctx context.Context, callD
 //  4. Restore the fix and PASS.
 func TestReleaseGate_P350_QueuedNotExecutedBacksOffWithoutAttemptPenalty(t *testing.T) {
 	t.Parallel()
-
+	limitParallel(t)
 	sess, svc := setupTestSession(t, "test-session-queued-backoff")
 	ctx := t.Context()
 

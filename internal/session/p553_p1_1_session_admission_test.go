@@ -138,6 +138,7 @@ func TestDrainSessionNow_DoesNotRunConcurrentlyWithBackgroundTick(t *testing.T) 
 // clear it is the closure handed to whoever was admitted.
 func TestAdmitSession_IsExclusiveAndOnlyItsOwnerReleases(t *testing.T) {
 	t.Parallel()
+	limitParallel(t)
 	_, svc := setupTestSession(t, "admission-unit")
 	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
 		Sessions:       svc,

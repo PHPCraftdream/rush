@@ -95,7 +95,7 @@ func (c *boundedPoolTestCoordinator) Run(ctx context.Context, callData session.S
 // (no semaphore), and maxInFlight exceeds TestMaxConcurrentExecutions.
 func TestP1_4_BoundedWorkerPoolRespectsLimit(t *testing.T) {
 	t.Parallel()
-
+	limitParallel(t)
 	ctx := t.Context()
 
 	// Create 10 sessions with different IDs to bypass per-session inFlight guard

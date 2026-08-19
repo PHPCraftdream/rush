@@ -78,6 +78,7 @@ import (
 // defaults foreign key enforcement to OFF per-connection).
 func TestOrphanOutbox_PoisonEntryQuarantinesInsteadOfRetryingForever(t *testing.T) {
 	t.Parallel()
+	limitParallel(t)
 	dataDir := t.TempDir()
 	ctx := context.Background()
 
@@ -246,6 +247,7 @@ func (s *transientBusySessions) DrainOrphanOutboxEntry(ctx context.Context, id s
 // never actually broken.
 func TestOrphanOutbox_TransientBusyDoesNotCountAgainstBudget(t *testing.T) {
 	t.Parallel()
+	limitParallel(t)
 	sess, svc := setupTestSession(t, "orphan-transient-busy")
 	ctx := context.Background()
 
@@ -353,6 +355,7 @@ func realSQLiteBusyErrorForTest(t *testing.T) error {
 // enqueued still moves to the main run queue untouched by any of this.
 func TestOrphanOutbox_HealthyEntryStillDrains(t *testing.T) {
 	t.Parallel()
+	limitParallel(t)
 	sess, svc := setupTestSession(t, "orphan-healthy")
 	ctx := context.Background()
 

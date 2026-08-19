@@ -36,6 +36,7 @@ import (
 // fails on the 5s guard below — the coordinator never observes the cancel.
 func TestDrainSessionNow_CallerCancellationStopsExecution(t *testing.T) {
 	t.Parallel()
+	limitParallel(t)
 	sess, svc := setupTestSession(t, "drain-now-ctx-cancel")
 	coord := &ctxObservingCoordinatorForDrain{
 		started: make(chan struct{}, 1),

@@ -146,6 +146,7 @@ func realConstraintErrorForCancellationTest(t *testing.T) error {
 // isPermanentOrphanOutboxDrainError and this fails.
 func TestIsPermanentOrphanOutboxDrainError_ConstraintViolationIsPermanent(t *testing.T) {
 	t.Parallel()
+	limitParallel(t)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "constraint-probe.db")
 	rawDB, err := sql.Open("sqlite", path+"?_pragma=foreign_keys(ON)")
@@ -173,6 +174,7 @@ func TestIsPermanentOrphanOutboxDrainError_ConstraintViolationIsPermanent(t *tes
 // and this fails.
 func TestIsPermanentOrphanOutboxDrainError_SQLiteBusyIsNotPermanent(t *testing.T) {
 	t.Parallel()
+	limitParallel(t)
 	busyErr := realSQLiteBusyErrorForCancellationTest(t)
 	require.False(t, isPermanentOrphanOutboxDrainError(busyErr), "a real SQLITE_BUSY must NOT be classified as permanent")
 }
@@ -182,6 +184,7 @@ func TestIsPermanentOrphanOutboxDrainError_SQLiteBusyIsNotPermanent(t *testing.T
 // polarity, exactly as it did before the fix.
 func TestIsPermanentOrphanOutboxDrainError_WrappedSQLiteBusyIsNotPermanent(t *testing.T) {
 	t.Parallel()
+	limitParallel(t)
 	busyErr := realSQLiteBusyErrorForCancellationTest(t)
 	wrapped := fmt.Errorf("enqueueing to main queue: %w", busyErr)
 	require.False(t, isPermanentOrphanOutboxDrainError(wrapped))
@@ -196,6 +199,7 @@ func TestIsPermanentOrphanOutboxDrainError_WrappedSQLiteBusyIsNotPermanent(t *te
 // this classifier and shows it would have failed this exact assertion.
 func TestIsPermanentOrphanOutboxDrainError_ContextErrorsAreNotPermanent(t *testing.T) {
 	t.Parallel()
+	limitParallel(t)
 	require.False(t, isPermanentOrphanOutboxDrainError(context.Canceled),
 		"context.Canceled (an ordinary Stop() mid-transaction) must not be classified as permanent")
 	require.False(t, isPermanentOrphanOutboxDrainError(context.DeadlineExceeded),
@@ -213,6 +217,7 @@ func TestIsPermanentOrphanOutboxDrainError_ContextErrorsAreNotPermanent(t *testi
 // retried an extra few times.
 func TestIsPermanentOrphanOutboxDrainError_UnknownErrorIsNotPermanent(t *testing.T) {
 	t.Parallel()
+	limitParallel(t)
 	require.False(t, isPermanentOrphanOutboxDrainError(errors.New("plain failure")))
 }
 

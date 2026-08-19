@@ -57,7 +57,7 @@ func (c *sleepingCoordinator) Run(ctx context.Context, callData session.SessionA
 // itself, not to the whole executeEntry call including Run().
 func TestP0_3_LongTurnOutcomeWriteSurvivesDBWriteTimeout(t *testing.T) {
 	t.Parallel()
-
+	limitParallel(t)
 	sess, svc, sqlDB := setupTestSessionWithDB(t, "test-session-p0-3-long-turn")
 	ctx := t.Context()
 

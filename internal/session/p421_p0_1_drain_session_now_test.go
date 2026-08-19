@@ -26,6 +26,7 @@ import (
 // alone instead of fabricating a success.
 func TestDrainSessionNow_NothingPending(t *testing.T) {
 	t.Parallel()
+	limitParallel(t)
 	sess, svc := setupTestSession(t, "drain-now-nothing-pending")
 	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
 		Sessions:       svc,
@@ -47,6 +48,7 @@ func TestDrainSessionNow_NothingPending(t *testing.T) {
 // finish a cross-process interrupt's continuation before the process exits.
 func TestDrainSessionNow_ExecutesPendingEntry(t *testing.T) {
 	t.Parallel()
+	limitParallel(t)
 	sess, svc := setupTestSession(t, "drain-now-executes")
 	coord := &countingCoordinatorForDrain{}
 	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{

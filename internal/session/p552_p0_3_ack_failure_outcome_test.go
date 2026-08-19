@@ -45,6 +45,7 @@ func (s *ackFailingService) AckRunQueueEntry(ctx context.Context, id, leasedBy s
 // exactly the false success the review found.
 func TestDrainSessionNow_AckFailureIsNotReportedAsSuccess(t *testing.T) {
 	t.Parallel()
+	limitParallel(t)
 	sess, svc := setupTestSession(t, "drain-ack-failure")
 	failing := &ackFailingService{Service: svc, ackErr: errors.New("disk on fire")}
 	coord := &countingCoordinatorForDrain{}
@@ -78,6 +79,7 @@ func TestDrainSessionNow_AckFailureIsNotReportedAsSuccess(t *testing.T) {
 // immediately and re-run a turn whose side effects already landed.
 func TestDrainSessionNow_AckFailureLeavesTheRowRecoverable(t *testing.T) {
 	t.Parallel()
+	limitParallel(t)
 	sess, svc := setupTestSession(t, "drain-ack-failure-row")
 	failing := &ackFailingService{Service: svc, ackErr: errors.New("disk on fire")}
 	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{

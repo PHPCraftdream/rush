@@ -262,7 +262,7 @@ func (c *contextAwareCoordinator) Run(ctx context.Context, callData session.Sess
 // be cancelled, so this test times out waiting for ctxCanceledCh to close.
 func TestP1_2_ExecCtxCanceledOnLeaseLoss(t *testing.T) {
 	t.Parallel()
-
+	limitParallel(t)
 	// Custom setup that also returns sqlDB for direct SQL manipulation
 	sess, svc, sqlDB := setupTestSessionWithDB(t, "test-session-p1-2-lease-loss")
 	ctx := t.Context()
@@ -351,7 +351,7 @@ func TestP1_2_ExecCtxCanceledOnLeaseLoss(t *testing.T) {
 // error logs. With the fix, no outcome write is attempted.
 func TestP1_2_OutcomeWriteSkippedOnLeaseLoss(t *testing.T) {
 	t.Parallel()
-
+	limitParallel(t)
 	// Custom setup that also returns sqlDB for direct SQL manipulation
 	sess, svc, sqlDB := setupTestSessionWithDB(t, "test-session-p1-2-outcome-skip")
 	ctx := t.Context()
@@ -442,7 +442,7 @@ func TestP1_2_OutcomeWriteSkippedOnLeaseLoss(t *testing.T) {
 // Coordinator.Run respects ctx.Done().
 func TestP1_2_ContextCanceledIsObservedInCoordinator(t *testing.T) {
 	t.Parallel()
-
+	limitParallel(t)
 	coord := newContextAwareCoordinator()
 	blockCh := make(chan struct{})
 	coord.mu.Lock()

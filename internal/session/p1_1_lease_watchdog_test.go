@@ -124,7 +124,7 @@ func (s *hangingRenewalsService) RenewRunQueueLease(ctx context.Context, id, pum
 // timing at this test's original sub-second scale.
 func TestP1_1_WatchdogCancelsBeforeExpiry(t *testing.T) {
 	t.Parallel()
-
+	limitParallel(t)
 	sess, svc, _ := setupTestSessionWithDB(t, "test-session-p1-1-watchdog")
 	ctx := t.Context()
 
@@ -253,7 +253,7 @@ func TestP1_1_WatchdogCancelsBeforeExpiry(t *testing.T) {
 // expanded from 200-500ms to 2s).
 func TestP1_1_FastRenewalNoFalsePositive(t *testing.T) {
 	t.Parallel()
-
+	limitParallel(t)
 	sess, svc, _ := setupTestSessionWithDB(t, "test-session-p1-1-false-positive")
 	ctx := t.Context()
 
@@ -351,7 +351,7 @@ func TestP1_1_FastRenewalNoFalsePositive(t *testing.T) {
 // ~1s of slack that dominates timing at sub-second TTL/margin scales.
 func TestP1_1_WatchdogWithVeryShortTTL(t *testing.T) {
 	t.Parallel()
-
+	limitParallel(t)
 	sess, svc, _ := setupTestSessionWithDB(t, "test-session-p1-1-short-ttl")
 	ctx := t.Context()
 
@@ -460,7 +460,7 @@ func TestP1_1_WatchdogWithVeryShortTTL(t *testing.T) {
 // new 10x scale, ~1s of slack is a small, tolerable fraction of a 3s TTL.
 func TestP1_1_DynamicRenewalTimeout(t *testing.T) {
 	t.Parallel()
-
+	limitParallel(t)
 	sess, svc, _ := setupTestSessionWithDB(t, "test-session-p1-1-dynamic-timeout")
 	ctx := t.Context()
 

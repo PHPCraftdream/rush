@@ -144,7 +144,7 @@ func (s *delayedRenewalService) RenewRunQueueLease(ctx context.Context, id, pump
 //     the real DB expiry (16s).
 func TestP0_3_WatchdogUsesAbsoluteDBExpiryNotPostCallTime(t *testing.T) {
 	t.Parallel()
-
+	limitParallel(t)
 	sess, svc, sqlDB := setupTestSessionWithDB(t, "test-session-p0-3-absolute-expiry")
 	ctx := t.Context()
 

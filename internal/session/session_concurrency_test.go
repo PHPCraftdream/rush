@@ -20,6 +20,7 @@ import (
 // silently overwritten (last-writer-wins).
 func TestConcurrentRenameAndUsage_NoDataLoss(t *testing.T) {
 	t.Parallel()
+	limitParallel(t)
 	sqlDB, q := newTestDB(t)
 	// Model production exactly: the real pool is single-connection
 	// (db/connect.go SetMaxOpenConns(1)), so SQL ops serialize and the race
@@ -78,6 +79,7 @@ func TestConcurrentRenameAndUsage_NoDataLoss(t *testing.T) {
 // column: a rename (title) and a todos edit racing must both survive.
 func TestConcurrentRenameAndTodos_NoDataLoss(t *testing.T) {
 	t.Parallel()
+	limitParallel(t)
 	sqlDB, q := newTestDB(t)
 	sqlDB.SetMaxOpenConns(1) // production-faithful single-connection pool; see TestConcurrentRenameAndUsage_NoDataLoss.
 	svc := NewService(q, sqlDB)
@@ -135,6 +137,7 @@ func TestConcurrentRenameAndTodos_NoDataLoss(t *testing.T) {
 // lose a concurrent writer's update to those columns.
 func TestBroadOverwriteLosesConcurrentUsage(t *testing.T) {
 	t.Parallel()
+	limitParallel(t)
 	sqlDB, q := newTestDB(t)
 	sqlDB.SetMaxOpenConns(1) // production-faithful single-connection pool; see TestConcurrentRenameAndUsage_NoDataLoss.
 	svc := NewService(q, sqlDB)
@@ -280,6 +283,7 @@ func TestTitleGenerationDoesNotRaceMainTurnTokens(t *testing.T) {
 // of true scheduling order.
 func TestTitleGenerationConcurrentWithMainTurn(t *testing.T) {
 	t.Parallel()
+	limitParallel(t)
 	sqlDB, q := newTestDB(t)
 	sqlDB.SetMaxOpenConns(1) // production-faithful single-connection pool; see TestConcurrentRenameAndUsage_NoDataLoss.
 	svc := NewService(q, sqlDB)

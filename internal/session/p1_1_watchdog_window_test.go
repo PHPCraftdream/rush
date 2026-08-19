@@ -86,7 +86,7 @@ func (s *blockingRenewalsService) RenewRunQueueLease(ctx context.Context, id, pu
 // asserted on; at 5x scale it's a small, tolerable fraction.
 func TestP1_1_WatchdogCancelsAtTTLMinusMargin(t *testing.T) {
 	t.Parallel()
-
+	limitParallel(t)
 	sess, svc, _ := setupTestSessionWithDB(t, "test-session-p1-1-watchdog-window")
 	ctx := t.Context()
 

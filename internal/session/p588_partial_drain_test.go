@@ -84,6 +84,7 @@ func enqueueTwoRows(t *testing.T, name string, sessions session.Service, session
 // this file's trailing comment block.
 func TestDrainSessionNow_PartialDrain_SuccessThenBusy_NeverReportsCleanSuccess(t *testing.T) {
 	t.Parallel()
+	limitParallel(t)
 	sess, svc := setupTestSession(t, "p588-success-then-busy")
 	coord := &twoRowCoordinator{firstFn: func() (*any, error) { return nil, nil }}
 	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
@@ -127,6 +128,7 @@ func TestDrainSessionNow_PartialDrain_SuccessThenBusy_NeverReportsCleanSuccess(t
 // retryable error must reach the caller -- not be discarded for a bare nil.
 func TestDrainSessionNow_PartialDrain_RetryableErrorThenBusy_PreservesError(t *testing.T) {
 	t.Parallel()
+	limitParallel(t)
 	sess, svc := setupTestSession(t, "p588-retryable-then-busy")
 	retryErr := errors.New("p588: simulated transient retryable failure for row A")
 	coord := &twoRowCoordinator{firstFn: func() (*any, error) { return nil, retryErr }}
@@ -172,6 +174,7 @@ func TestDrainSessionNow_PartialDrain_RetryableErrorThenBusy_PreservesError(t *t
 // found busy. The terminal failure must reach the caller.
 func TestDrainSessionNow_PartialDrain_TerminalErrorThenBusy_PreservesError(t *testing.T) {
 	t.Parallel()
+	limitParallel(t)
 	sess, svc := setupTestSession(t, "p588-terminal-then-busy")
 	termErr := &agent.ErrCallAlreadyAttempted{Err: errors.New("p588: row A already attempted")}
 	coord := &twoRowCoordinator{firstFn: func() (*any, error) { return nil, termErr }}
@@ -231,6 +234,7 @@ func (s *ackFailingServiceP588) AckRunQueueEntry(ctx context.Context, id, leased
 // fabricated success.
 func TestDrainSessionNow_PartialDrain_AckErrorThenBusy_PreservesError(t *testing.T) {
 	t.Parallel()
+	limitParallel(t)
 	sess, svc := setupTestSession(t, "p588-ack-then-busy")
 	failing := &ackFailingServiceP588{Service: svc, ackErr: errors.New("p588: disk on fire during row A's ack")}
 	coord := &twoRowCoordinator{firstFn: func() (*any, error) { return nil, nil }}

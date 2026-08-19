@@ -107,7 +107,7 @@ func (c *durableCallExecutionCounter) Run(ctx context.Context, callData session.
 // of merely deferring their single execution).
 func TestReleaseGate_P0_1_DurableCallExecutesExactlyOnce(t *testing.T) {
 	t.Parallel()
-
+	limitParallel(t)
 	sess, svc := setupTestSession(t, "test-session-p0-1-no-dup")
 	ctx := t.Context()
 

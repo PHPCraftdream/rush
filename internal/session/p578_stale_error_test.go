@@ -64,6 +64,7 @@ func (c *retryThenSucceedCoordinator) Run(ctx context.Context, callData session.
 // attempt's stale failure.
 func TestDrainSessionNow_SameRowRetrySucceedsClearsErr(t *testing.T) {
 	t.Parallel()
+	limitParallel(t)
 	sess, svc := setupTestSession(t, "p578-same-row-retry")
 	coord := &retryThenSucceedCoordinator{}
 	coord.failuresLeft.Store(1) // fail once, then succeed
@@ -142,6 +143,7 @@ func (c *failOnceCoordinator) Run(ctx context.Context, callData session.SessionA
 // catch.
 func TestDrainSessionNow_ExternalProcessStealAfterLocalNackReportsUnknown(t *testing.T) {
 	t.Parallel()
+	limitParallel(t)
 	sess, svc := setupTestSession(t, "p578-external-steal")
 	wrapped := &stealOnNackSessions{Service: svc, sessionID: sess.ID}
 	coord := &failOnceCoordinator{}
@@ -215,6 +217,7 @@ func (s *stealAndTerminalFailOnNackSessions) NackRunQueueEntry(ctx context.Conte
 // require.Error below.
 func TestDrainSessionNow_ExternalProcessTerminalFailAfterLocalNackReportsFailure(t *testing.T) {
 	t.Parallel()
+	limitParallel(t)
 	sess, svc := setupTestSession(t, "p578-external-terminal-fail")
 	wrapped := &stealAndTerminalFailOnNackSessions{Service: svc, sessionID: sess.ID}
 	coord := &failOnceCoordinator{}
@@ -261,6 +264,7 @@ func TestDrainSessionNow_ExternalProcessTerminalFailAfterLocalNackReportsFailure
 // NackRunQueueEntry call, not via a background goroutine racing on timing.
 func TestDrainSessionNow_ExternalProcessAckAfterLocalNackReportsUnconfirmed(t *testing.T) {
 	t.Parallel()
+	limitParallel(t)
 	sess, svc := setupTestSession(t, "p578-external-ack")
 	wrapped := &stealAndAckOnNackSessions{Service: svc, sessionID: sess.ID}
 	coord := &failOnceCoordinator{}

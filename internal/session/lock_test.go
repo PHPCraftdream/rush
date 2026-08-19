@@ -268,6 +268,7 @@ const testHeartbeatInterval = 1 * time.Second
 // CPU or I/O contention for the tests it now overlaps with.
 func TestHeartbeatTouchesFile(t *testing.T) {
 	t.Parallel()
+	limitParallel(t)
 	dir := t.TempDir()
 	lk, err := TryAcquireSessionLockWithOptions(dir, "audit-A", WithHeartbeatInterval(testHeartbeatInterval))
 	require.NoError(t, err)
@@ -302,6 +303,7 @@ func TestHeartbeatTouchesFile(t *testing.T) {
 // regardless of whether the process was making progress.
 func TestHeartbeat_NoActivity_DoesNotTouchMtime(t *testing.T) {
 	t.Parallel()
+	limitParallel(t)
 	dir := t.TempDir()
 	lk, err := TryAcquireSessionLockWithOptions(dir, "audit-A", WithHeartbeatInterval(testHeartbeatInterval))
 	require.NoError(t, err)
@@ -329,6 +331,7 @@ func TestHeartbeat_NoActivity_DoesNotTouchMtime(t *testing.T) {
 // genuinely idle intervals, it doesn't break the live/active case.
 func TestHeartbeat_RecordActivity_TouchesMtimeOnNextTick(t *testing.T) {
 	t.Parallel()
+	limitParallel(t)
 	dir := t.TempDir()
 	lk, err := TryAcquireSessionLockWithOptions(dir, "audit-A", WithHeartbeatInterval(testHeartbeatInterval))
 	require.NoError(t, err)

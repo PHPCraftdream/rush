@@ -60,7 +60,7 @@ import (
 // the test always passes.
 func TestReleaseGate_P1_3_FIFOOrderPreservedWithSameCreatedAt(t *testing.T) {
 	t.Parallel()
-
+	limitParallel(t)
 	sess, svc := setupTestSession(t, "test-session-fifo-same-created")
 	ctx := t.Context()
 

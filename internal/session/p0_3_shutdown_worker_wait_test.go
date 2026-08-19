@@ -82,7 +82,7 @@ func (c *blockingCoordinator) Run(ctx context.Context, callData session.SessionA
 // and this test times out because we verify Stop() blocks until the worker completes.
 func TestP0_3_StopWaitsForInFlightWorkers(t *testing.T) {
 	t.Parallel()
-
+	limitParallel(t)
 	sess, svc := setupTestSession(t, "test-session-p0-3-worker-wait")
 	ctx := t.Context()
 
@@ -161,7 +161,7 @@ func TestP0_3_StopWaitsForInFlightWorkers(t *testing.T) {
 // AckRunQueueEntry fails with "context canceled" and the row remains leased.
 func TestP0_3_DBAckSucceedsAfterStop(t *testing.T) {
 	t.Parallel()
-
+	limitParallel(t)
 	sess, svc := setupTestSession(t, "test-session-p0-3-db-ack")
 	ctx := t.Context()
 
@@ -218,7 +218,7 @@ func TestP0_3_DBAckSucceedsAfterStop(t *testing.T) {
 // REVERT CHECK: Without the fix (Stop has no return value), this test fails to compile.
 func TestP0_3_ForcedShutdownReturnsTrue(t *testing.T) {
 	t.Parallel()
-
+	limitParallel(t)
 	sess, svc := setupTestSession(t, "test-session-p0-3-forced")
 	ctx := t.Context()
 
@@ -275,7 +275,7 @@ func TestP0_3_ForcedShutdownReturnsTrue(t *testing.T) {
 // no-hang/no-panic smoke check under realistic pump timing.
 func TestP0_3_AddConcurrentlyWithWait_Race(t *testing.T) {
 	t.Parallel()
-
+	limitParallel(t)
 	sess, svc := setupTestSession(t, "test-session-p0-3-add-race")
 	ctx := t.Context()
 
@@ -352,7 +352,7 @@ func TestP0_3_AddConcurrentlyWithWait_Race(t *testing.T) {
 // can be spawned after Stop() is called, violating the drain-or-cancel policy.
 func TestP0_3_NewWorkersRejectedAfterShutdown(t *testing.T) {
 	t.Parallel()
-
+	limitParallel(t)
 	sess, svc := setupTestSession(t, "test-session-p0-3-no-new-workers")
 	ctx := t.Context()
 
@@ -425,7 +425,7 @@ func TestP0_3_NewWorkersRejectedAfterShutdown(t *testing.T) {
 // what WOULD happen if we used ctx instead of dbCtx for DB writes.
 func TestP0_3_ContextCanceledBeforeAck_DoesNotSilentlySucceed(t *testing.T) {
 	t.Parallel()
-
+	limitParallel(t)
 	// This test is informational only: with dbCtx in place, Ack always succeeds
 	// (or fails with a real DB error, not context canceled). The value of this
 	// test is to document the symptom we're preventing.

@@ -35,6 +35,7 @@ func countAllSessions(t *testing.T, ctx context.Context, sqlDB *sql.DB) int64 {
 // ForkSessionTx, which copies the union of both column sets.
 func TestForkSession_HappyPath(t *testing.T) {
 	t.Parallel()
+	limitParallel(t)
 	sqlDB, q := newTestDB(t)
 	svc := NewService(q, sqlDB)
 	ctx := t.Context()
@@ -90,6 +91,7 @@ func TestForkSession_HappyPath(t *testing.T) {
 // that ForkSession's defaults do not exercise.
 func TestForkSessionTx_AtTruncationAndChild(t *testing.T) {
 	t.Parallel()
+	limitParallel(t)
 	sqlDB, q := newTestDB(t)
 	svc := NewService(q, sqlDB)
 	ctx := t.Context()
@@ -121,6 +123,7 @@ func TestForkSessionTx_AtTruncationAndChild(t *testing.T) {
 // TestForkSessionCLI_EmptySourceNoAt for the underlying shared function.
 func TestForkSessionTx_EmptySourceNoLimit(t *testing.T) {
 	t.Parallel()
+	limitParallel(t)
 	sqlDB, q := newTestDB(t)
 	svc := NewService(q, sqlDB)
 	ctx := t.Context()
@@ -141,6 +144,7 @@ func TestForkSessionTx_EmptySourceNoLimit(t *testing.T) {
 // back and the caller receives the error — no partial fork survives.
 func TestForkSession_MidwayFailureRollsBack(t *testing.T) {
 	t.Parallel()
+	limitParallel(t)
 	sqlDB, q := newTestDB(t)
 	svc := NewService(q, sqlDB)
 	ctx := t.Context()

@@ -18,7 +18,7 @@ import (
 // to the main run queue and marks them as done.
 func TestOrphanOutbox_Drainage(t *testing.T) {
 	t.Parallel()
-
+	limitParallel(t)
 	sess, svc := setupTestSession(t, "test-orphan-drain")
 
 	// Write an entry directly to the orphan outbox (simulating a main queue write failure)
@@ -104,7 +104,7 @@ func TestOrphanOutbox_Drainage(t *testing.T) {
 // (drained=true), others see it as already drained (drained=false).
 func TestOrphanOutbox_ConcurrentDrainProtection(t *testing.T) {
 	t.Parallel()
-
+	limitParallel(t)
 	sess, svc := setupTestSession(t, "test-concurrent-drain")
 	ctx := t.Context()
 
@@ -236,7 +236,7 @@ func (s *transientDrainFailSessions) DrainOrphanOutboxEntry(ctx context.Context,
 // state that exists again once the atomic transaction is gone.
 func TestOrphanOutbox_RetryAfterTransientFailure(t *testing.T) {
 	t.Parallel()
-
+	limitParallel(t)
 	sess, svc := setupTestSession(t, "test-orphan-retry")
 	ctx := t.Context()
 
@@ -302,7 +302,7 @@ func TestOrphanOutbox_RetryAfterTransientFailure(t *testing.T) {
 // and the main tick goroutine can run concurrently without deadlocks or races.
 func TestOrphanOutbox_ConcurrentExecution(t *testing.T) {
 	t.Parallel()
-
+	limitParallel(t)
 	sess, svc := setupTestSession(t, "test-concurrent-exec")
 	ctx := t.Context()
 
@@ -419,7 +419,7 @@ func (c *countingCoordinator) Run(ctx context.Context, callData session.SessionA
 // demonstrating no entry can be left in a half-processed state.
 func TestOrphanOutbox_CrashSafety(t *testing.T) {
 	t.Parallel()
-
+	limitParallel(t)
 	sess, svc := setupTestSession(t, "test-crash-safety")
 	ctx := t.Context()
 
@@ -501,7 +501,7 @@ func TestOrphanOutbox_CrashSafety(t *testing.T) {
 // 10-minute TestDrainTick never fires within the test's lifetime).
 func TestOrphanOutbox_InitialDrainOnStart(t *testing.T) {
 	t.Parallel()
-
+	limitParallel(t)
 	sess, svc := setupTestSession(t, "test-initial-drain")
 
 	callData := map[string]any{

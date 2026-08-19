@@ -54,6 +54,7 @@ func (c *lockBusyCoordinatorForDrain) Run(ctx context.Context, callData session.
 // DrainSessionNow answers (true, nil), which is the false success itself.
 func TestDrainSessionNow_QueuedNotExecutedIsNotDrained(t *testing.T) {
 	t.Parallel()
+	limitParallel(t)
 	sess, svc := setupTestSession(t, "drain-busy-queued")
 	coord := &busyCoordinatorForDrain{}
 	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
@@ -87,6 +88,7 @@ func TestDrainSessionNow_QueuedNotExecutedIsNotDrained(t *testing.T) {
 // another live crush process holds the OS session lock.
 func TestDrainSessionNow_SessionLockBusyIsNotDrained(t *testing.T) {
 	t.Parallel()
+	limitParallel(t)
 	sess, svc := setupTestSession(t, "drain-busy-lock")
 	coord := &lockBusyCoordinatorForDrain{}
 	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
@@ -121,6 +123,7 @@ func TestDrainSessionNow_SessionLockBusyIsNotDrained(t *testing.T) {
 // error, and the one this whole function exists to prevent.
 func TestDrainSessionNow_ExecutedEntryStillReportsDrained(t *testing.T) {
 	t.Parallel()
+	limitParallel(t)
 	sess, svc := setupTestSession(t, "drain-busy-control")
 	coord := &countingCoordinatorForDrain{}
 	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
