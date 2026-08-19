@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { setupMockWS, sendMockWSMessage } from "./helpers/mock-ws";
+import { setupMockWS, sendMockWSMessage, waitForWSSend } from "./helpers/mock-ws";
 import { makeSession, makeConfig } from "./helpers/fixtures";
 
 test.beforeEach(async ({ page }) => {
@@ -11,22 +11,13 @@ test.beforeEach(async ({ page }) => {
 
 // ── Model display ──────────────────────────────────────────────────────────
 
-// GENUINELY BROKEN — left red on purpose, not stale and not a selector
-// problem. ModelSelector.tsx still contains its own `if (!session ||
-// allModels.length === 0)` fallback (line ~260) that renders a static
-// <span> badge with the model's displayName instead of the clickable
-// dropdown button. That code is dead: ModelSelector.tsx is mounted from
-// exactly one place, ChatToolbar.tsx:422-423, and ChatToolbar itself has
-// `if (!activeSessionID) return null;` (line ~195) — so ModelSelector never
-// gets a chance to run with session=null in the current app. Before commit
-// 89a07919 folded Header into ChatToolbar, the old standalone Header.tsx
-// rendered unconditionally and this fallback was reachable. This is the same
-// root cause as the toolbar-visibility regression documented at length in
-// ui.spec.ts, but it manifests differently here: not just "control
-// unreachable" but "an entire source-level conditional branch is now
-// provably unreachable in the running app". Real defect, out of this test
-// file's scope to fix (see task #567 report for the writeup); left failing
-// rather than deleted or weakened.
+// Was red on purpose as the marker for task #584: ChatToolbar.tsx had
+// `if (!activeSessionID) return null;`, so with no session selected
+// ModelSelector was never mounted and its `if (!session ||
+// allModels.length === 0)` static-badge branch (written for exactly this
+// case) was unreachable. Fixed by restoring a reduced no-session toolbar
+// in ChatToolbar (session-bound controls hidden individually); this test
+// now passes because the behaviour is back, not because it was weakened.
 test("header shows model name from config without session", async ({ page }) => {
   await page.goto("/");
   await sendMockWSMessage(page, {
@@ -35,6 +26,25 @@ test("header shows model name from config without session", async ({ page }) => 
   });
   // When no session selected, shows static badge with "smart" model
   await expect(page.getByText("claude-opus-4")).toBeVisible({ timeout: 2000 });
+});
+
+// Companion to the test above, covering a different control the old
+// `if (!activeSessionID) return null;` gate in ChatToolbar.tsx used to
+// hide: the theme toggle must be reachable with no session selected, as
+// it was in the pre-89a07919 Header. Clicking it must actually send
+// set_theme, not merely render.
+test("theme toggle reachable and functional without session", async ({ page }) => {
+  await page.goto("/");
+  await sendMockWSMessage(page, {
+    type: "config",
+    payload: makeConfig({ theme: "light" }),
+  });
+  const toggle = page.getByTitle("Switch to dark theme");
+  await expect(toggle).toBeVisible({ timeout: 2000 });
+  await toggle.click();
+  const msg = await waitForWSSend(page, "set_theme");
+  const payload = msg.payload as Record<string, unknown>;
+  expect(payload.theme).toBe("dark");
 });
 
 test("header shows model selector button when session is active", async ({

@@ -192,7 +192,17 @@ export function ChatToolbar() {
   // single inline notice so we don't fight the foreign agent.
   const foreignOwned = !!activeSession?.OwnedExternal;
 
-  if (!activeSessionID) return null;
+  // No `if (!activeSessionID) return null;` here — deliberately. This
+  // toolbar absorbed the old standalone Header.tsx in commit 89a07919,
+  // whose message claimed "No behaviour changes other than where each
+  // control physically renders", yet it also added exactly that early
+  // return, which Header never had. With it, the theme toggle, the
+  // settings / MCP / providers / logs / prompt buttons and the model
+  // badges were all unreachable until a session was selected. We render
+  // with no session again; only genuinely session-bound controls are
+  // hidden individually (Compact below; Prompt is disabled via its own
+  // `disabled={!activeSessionID}`; the token pill and busy dots are
+  // already gated on an active session existing).
 
   if (foreignOwned) {
     return (
@@ -247,7 +257,9 @@ export function ChatToolbar() {
           </span>
         )}
 
-        {isQueued ? (
+        {/* Compact operates on the active session's history — hidden with
+            no session selected. */}
+        {activeSessionID && (isQueued ? (
           <button
             onClick={() => cancelQueuedSummarize(activeSessionID)}
             title="Compact is queued — click to cancel"
@@ -267,7 +279,7 @@ export function ChatToolbar() {
             <Minimize2 size={13} />
             Compact
           </button>
-        )}
+        ))}
 
         <button
           data-test-id="header-collapse-all-button"
