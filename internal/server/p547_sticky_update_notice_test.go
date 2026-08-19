@@ -261,6 +261,97 @@ func TestHub_NonStickyEventIsNotReplayedToLateClients(t *testing.T) {
 		"an evicted ordinary event must stay evicted -- stickiness is opt-in")
 }
 
+// TestHub_StickyBroadcastChannel_SuppressesSupersededQueuedEnvelope covers
+// task #591/P2-2: BroadcastSticky replaces h.sticky[type] and THEN pushes the
+// marshalled envelope onto h.stickyBroadcast, a buffered (64-slot) channel
+// Run drains asynchronously.
+//
+// Reproducing the review's exact sequence requires the SAME condition
+// BroadcastSticky's own "sticky broadcast channel full, dropping" warning
+// covers: h.stickyBroadcast is bounded and the send is non-blocking
+// (select/default), so when it is momentarily full, a newer generation's
+// OWN queue entry can be dropped while an older generation's entry, queued
+// earlier when there was room, survives. h.sticky[type] (the map) is still
+// correctly updated to the newer generation regardless -- BroadcastSticky
+// writes it before ever touching the channel -- so a client registering at
+// that point legitimately receives the newer generation via the register
+// case's replay. But the OLDER generation is still sitting in the channel,
+// undrained, and once Run starts (or catches up), it drains that stale
+// entry and fans it out to the very client that already has the newer
+// value -- leaving the older generation "last received" for that client,
+// which is exactly the "latest per type" promise BroadcastSticky documents
+// being violated.
+//
+// This test constructs that state directly (fill the channel to its 64-slot
+// capacity with genuine BroadcastSticky sends for OTHER event types so the
+// LAST slot is taken by a real v1 send for EventUpdateAvailable, then issue
+// v2 for EventUpdateAvailable and confirm its own channel send was dropped
+// exactly like production's drop path) rather than trying to win a
+// goroutine-scheduling race, so it is deterministic. It still exercises the
+// real BroadcastSticky/Run code path end to end -- no direct field
+// manipulation of stickyMu-guarded state.
+//
+// This test uses newClient(), the production constructor with its real
+// 512-slot send buffer (see that constructor's own doc and the other tests
+// in this file for why an oversized hand-built channel would hide the bug);
+// the channel under test here is h.stickyBroadcast (64 slots), not
+// c.send, but newClient() is still used for the client itself for
+// consistency with the rest of this file's production-shaped setup.
+func TestHub_StickyBroadcastChannel_SuppressesSupersededQueuedEnvelope(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	h := newHub()
+
+	// Deliberately do NOT start h.Run yet: every BroadcastSticky call below
+	// only touches stickyMu-guarded state and does a non-blocking channel
+	// send, so filling h.stickyBroadcast (cap 64) to capacity does not
+	// require Run to be draining it concurrently, and NOT starting Run keeps
+	// the whole setup single-threaded and deterministic.
+	//
+	// Fill 63 of the 64 slots with a distinct event type so they do not
+	// interact with EventUpdateAvailable's own single entry per type.
+	for i := 0; i < 63; i++ {
+		h.BroadcastSticky("filler", map[string]int{"i": i})
+	}
+	require.Equal(t, 63, len(h.stickyBroadcast))
+
+	// Slot 64 (the last free one): a genuine v1 for EventUpdateAvailable.
+	// h.sticky[EventUpdateAvailable] and h.stickySeq[EventUpdateAvailable]
+	// are now both at v1's generation, and v1's envelope occupies the last
+	// free channel slot.
+	h.BroadcastSticky(EventUpdateAvailable, UpdateAvailableWire{Current: "1.0.0", Latest: "1.1.0"}) // v1
+	require.Equal(t, 64, len(h.stickyBroadcast), "channel must now be completely full")
+
+	// v2: h.sticky[EventUpdateAvailable] is updated to v2 (this always
+	// happens, unconditionally, before BroadcastSticky ever touches the
+	// channel), but the channel itself is full, so v2's own send hits the
+	// documented default: drop path and never enters the queue. v1's
+	// earlier entry is now a superseded, stale, but still-queued survivor.
+	h.BroadcastSticky(EventUpdateAvailable, UpdateAvailableWire{Current: "1.0.0", Latest: "1.2.0"}) // v2
+	require.Equal(t, 64, len(h.stickyBroadcast), "v2's own channel send must have been dropped (channel stayed full), leaving v1 as the only queued entry for this type")
+
+	// Register now, while the map already holds v2 but the channel still
+	// only holds the stale v1: the register-case replay correctly hands the
+	// client v2 immediately.
+	client := newClient(nil, nil)
+	h.register <- client
+
+	// Only now start Run, which first processes the registration (delivering
+	// v2 via replay) and then drains the 63 filler + 1 stale v1 entries.
+	go h.Run(ctx)
+	waitHubDrained(t, h)
+
+	_, payloads := drainClientPayloads(t, client, EventUpdateAvailable)
+	require.NotEmpty(t, payloads, "client must receive at least one update_available event")
+
+	var wire UpdateAvailableWire
+	require.NoError(t, json.Unmarshal(payloads[len(payloads)-1], &wire))
+	require.Equal(t, "1.2.0", wire.Latest,
+		"the last update_available payload the client received must be the newest generation (v2, from the register replay); the stale v1 still sitting in h.stickyBroadcast's queue when the client registered must be suppressed on drain, not fanned out afterwards as a stale 'last' value")
+}
+
 // fakeUpdateClient is a minimal update.Client stub so this test can drive
 // broadcastUpdateNoticeWithClientVersion without any real network call,
 // and deterministically report a fixed "latest" tag.

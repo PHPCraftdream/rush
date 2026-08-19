@@ -28,11 +28,13 @@ func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, age
 	// fields below and buildTools' many reads each took a fresh, separately
 	// timed c.cfg.Config(). A reload landing anywhere in between could hand
 	// back an agent whose model, prompt (WorkerAvailable) and toolset
-	// (worker tool layering, hooks, MCP, grep/ls options, attribution,
-	// skills paths) disagreed with each other -- an internally inconsistent
-	// agent built across two config generations. Threading this one cfg
-	// through closes that gap; only explicitly-declared live *policy* reads
-	// remain (see PeakHoursCheck below).
+	// (worker tool layering, hooks, grep/ls options, attribution, skills
+	// paths) disagreed with each other -- an internally inconsistent agent
+	// built across two config generations. Threading this one cfg through
+	// closes that gap for all of the above; only explicitly-declared live
+	// *policy* reads remain (see PeakHoursCheck below), plus MCP tools,
+	// which are deliberately NOT pinned -- see the MCP block in buildTools
+	// for why.
 	cfg, _ := c.cfg.Snapshot()
 
 	smart, fast, err := c.buildAgentModelsFromCfg(ctx, cfg, isSubAgent)
@@ -169,11 +171,31 @@ func (c *coordinator) buildToolsAgentConfig(cfg *config.Config, agent config.Age
 // *config.Config the caller captured for this whole buildAgent call (task
 // #576/P1-3) -- every config-derived choice below (worker tool layering,
 // SSRF escape hatch, model metadata, hooks, background-job notify,
-// attribution, grep/ls options, skills paths, MCP) now reads from this one
+// attribution, grep/ls options, skills paths) now reads from this one
 // generation instead of each taking its own, separately timed
 // c.cfg.Config() call. c.cfg.WorkingDir() stays live: it is process-stable
 // (does not change across a config reload), same precedent as
 // prompt.Build's store.WorkingDir()/store.Resolver() reads.
+//
+// MCP tools are the one deliberate exception (task #591/P2-1): the actual
+// tool set below still comes from tools.GetMCPTools, which enumerates the
+// package-level mcp.Tools() registry -- live MCP client connections and
+// their current tool schemas, refreshed asynchronously by each server's own
+// ToolListChangedHandler, EnableServer/DisableServer/RemoveServer, and
+// startup Initialize, none of which are driven by or synchronized with a
+// ConfigStore generation. That registry cannot be pinned to cfg without
+// either freezing it to a stale tool schema/connection set (breaking
+// reconnection and live tool-list updates) or snapshotting live network
+// state, which is not what config generations represent. So len(cfg.MCP)
+// (the presence gate for ListMCPResourcesTool/ReadMCPResourceTool, the only
+// MCP-derived value that IS plain config data) is pinned like everything
+// else here, but the MCP tool set itself, and the AllowedMCP filter applied
+// to it below, read whatever the live registry holds at call time. A reload
+// landing mid-build can therefore still pair this build's pinned
+// prompt/options/allow-list with MCP tool implementations from a different
+// generation than the rest of the agent -- narrower than the pre-#576
+// torn read (every other tool and the prompt agree with each other and with
+// cfg), but real. See tools.GetMCPTools's doc for the registry side of this.
 func (c *coordinator) buildTools(ctx context.Context, cfg *config.Config, agent config.Agent, isSubAgent bool) ([]fantasy.AgentTool, error) {
 	agent = c.buildToolsAgentConfig(cfg, agent, isSubAgent)
 
@@ -260,6 +282,9 @@ func (c *coordinator) buildTools(ctx context.Context, cfg *config.Config, agent 
 		tools.NewWriteTool(c.permissions, c.history, c.filetracker, c.cfg.WorkingDir()),
 	)
 
+	// cfg.MCP presence is pinned config data (any MCP server configured at
+	// all, enabled or not), unlike the tool set itself below -- see this
+	// function's doc comment.
 	if len(cfg.MCP) > 0 {
 		allTools = append(
 			allTools,
@@ -275,6 +300,11 @@ func (c *coordinator) buildTools(ctx context.Context, cfg *config.Config, agent 
 		}
 	}
 
+	// GetMCPTools reads the live mcp.Tools() registry, not cfg -- see this
+	// function's doc comment for why that is deliberate. agent.AllowedMCP
+	// below IS from the pinned cfg/agent, so the allow-list decision itself
+	// is consistent with the rest of this build; only the candidate tool set
+	// it is applied to can be from a different generation.
 	for _, tool := range tools.GetMCPTools(c.permissions, c.cfg, c.cfg.WorkingDir()) {
 		if agent.AllowedMCP == nil {
 			// No MCP restrictions

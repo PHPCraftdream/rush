@@ -21,6 +21,25 @@ var whitelistDockerTools = []string{
 }
 
 // GetMCPTools gets all the currently available MCP tools.
+//
+// "Currently available" is deliberately live, not pinned to any particular
+// config generation: this enumerates the package-level mcp.Tools() registry
+// (internal/agent/tools/mcp), which holds live MCP client connections and
+// their current tool schemas. That registry is refreshed asynchronously --
+// by each server's own ToolListChangedHandler, by EnableServer/
+// DisableServer/RemoveServer, and by startup Initialize -- independently of
+// any single agent build. A caller (see coordinator.buildTools) that has
+// otherwise pinned one *config.Config snapshot for the rest of an agent
+// build (task #576/P1-3) will still get whichever MCP tool generation is
+// live at the moment this is called, which can differ from that pinned
+// snapshot if a reload lands mid-build (task #591/P2-1). This is
+// intentional: the registry holds live network/process state (connections,
+// reconnection, server-pushed schema changes), not derived config data, so
+// pinning it to an older generation would mean serving stale tool schemas
+// or fighting the reconnection logic in the mcp package, not closing a
+// torn read. cfg is passed through to each returned *Tool for use at Run
+// time (permission requests, mcp.RunTool's getOrRenewClient) and stays live
+// for the same reason.
 func GetMCPTools(permissions permission.Service, cfg *config.ConfigStore, wd string) []*Tool {
 	var result []*Tool
 	for mcpName, tools := range mcp.Tools() {
