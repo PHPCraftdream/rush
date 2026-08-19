@@ -74,14 +74,6 @@ const RunQueueMaxConcurrentExecutions = 10
 // 40s (TTL + full timeout) after the lease expired. The watchdog closes this gap.
 const LeaseWatchdogSafetyMargin = 5 * time.Second
 
-// DrainSessionNowPollInterval is the production poll granularity
-// DrainSessionNow uses while waiting for a same-pump in-flight execution it
-// lost the lease race against (see DrainSessionNow's own doc). Kept short:
-// the wait is bounded by an ordinary turn's remaining duration, not a full
-// lease TTL, and this is the loop's only source of added latency in that
-// branch.
-const DrainSessionNowPollInterval = 25 * time.Millisecond
-
 // Coordinator interface is a minimal subset for executing queued calls.
 // We use this instead of importing the full agent.Coordinator to avoid
 // import cycles (session → agent → session). The real app's AgentCoordinator
@@ -187,8 +179,16 @@ var errLeaseLost = errors.New("run_queue_pump: lost lease ownership mid-executio
 // but never actually called executeEntrySync — e.g. processEntry's
 // early-return paths (busy-backoff, worker-pool-full, a lease attempt that
 // raced away to another pump instance, an attempts-exhausted terminal-fail,
-// no-coordinator scan mode, or a shutdown-in-progress nack), and
-// DrainSessionNow's own "nothing pending" bottom path.
+// or no-coordinator scan mode), and DrainSessionNow's own "nothing pending"
+// bottom path and pre-execution failure paths (a failed lease attempt, ctx
+// ending before an execution slot was available, or an attempts-exhausted
+// terminal-fail it performs directly).
+//
+// DrainSessionNow's OWN shutdown-in-progress path is NOT one of these
+// cases: when p.stopping is observed true after a successful lease (see
+// that branch below), it releases with ErrCallQueuedNotExecuted, not this
+// sentinel — matching processEntry's own stopping-gate behavior, which
+// also never reaches this file's early-return paths for that case.
 //
 // Found by the coordinator's review of task #575 (2026-08-19
 // release-readiness review): admitSession's release closure takes an
@@ -308,14 +308,6 @@ type RunQueuePumpConfig struct {
 	// nil = use production OrphanOutboxDrainInterval.
 	TestDrainTick func() time.Duration
 
-	// TestDrainSessionPollInterval is a test seam for overriding
-	// DrainSessionNowPollInterval, the poll granularity DrainSessionNow uses
-	// while waiting for a same-pump in-flight execution it lost the lease
-	// race against. 0 = use the production constant. Regression tests need
-	// this small (sub-millisecond) to observe the race deterministically
-	// without a real wall-clock wait.
-	TestDrainSessionPollInterval time.Duration
-
 	// TestAfterAdmissionRefusal is a test seam invoked by DrainSessionNow
 	// exactly once per loop iteration in which admitSession refuses
 	// admission — called with the sessionID, AFTER admitSession has
@@ -381,17 +373,6 @@ func (p *RunQueuePump) leaseWatchdogSafetyMargin() time.Duration {
 		margin = ttl / 2
 	}
 	return margin
-}
-
-// drainSessionPollInterval returns the effective poll interval
-// DrainSessionNow uses while waiting on a same-pump in-flight execution —
-// cfg.TestDrainSessionPollInterval if set, otherwise the production
-// DrainSessionNowPollInterval.
-func (p *RunQueuePump) drainSessionPollInterval() time.Duration {
-	if p.cfg.TestDrainSessionPollInterval > 0 {
-		return p.cfg.TestDrainSessionPollInterval
-	}
-	return DrainSessionNowPollInterval
 }
 
 // RunQueuePump is a background pump for the durable run queue.

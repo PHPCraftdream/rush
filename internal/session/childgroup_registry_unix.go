@@ -263,22 +263,52 @@ func readChildGroupFileLocked(path string) []childGroupEntry {
 // Caller must hold childGroupFileMu. Best-effort: a write failure is logged
 // only.
 //
-// Atomic temp-file + fsync + rename (2026-08-19 static-follow-up review,
-// task #591 part 3), replacing a prior truncate-and-write os.WriteFile. The
-// registry's whole purpose is to survive an external, out-of-process kill
-// landing at an arbitrary moment -- an ordinary os.WriteFile truncates the
-// file to zero length before writing the new bytes, so a kill (or crash)
-// landing in that window leaves a later sweep reading an empty or partial
-// file and concluding, wrongly, that nothing is registered. Writing to a
-// temp file in the SAME directory (so the final rename is same-filesystem
-// and therefore atomic on POSIX), fsync-ing it before the rename (so the
-// rename cannot be reordered ahead of the data actually landing on disk by
-// the OS's own write-back cache, which os.Rename's own atomicity guarantee
-// does not by itself cover), and then os.Rename over the final path (an
-// atomic directory-entry swap all POSIX filesystems this codebase targets
-// support) means any reader -- including one racing this exact write --
-// only ever observes the complete OLD file or the complete NEW file, never
-// a truncated or partially-written one.
+// Atomic temp-file + fsync + rename + directory fsync (2026-08-19
+// static-follow-up review, task #591 part 3; directory fsync added by the
+// fourth review's P2-3), replacing a prior truncate-and-write os.WriteFile.
+// The registry's whole purpose is to survive an external, out-of-process
+// kill landing at an arbitrary moment -- an ordinary os.WriteFile truncates
+// the file to zero length before writing the new bytes, so a kill (or
+// crash) landing in that window leaves a later sweep reading an empty or
+// partial file and concluding, wrongly, that nothing is registered. Writing
+// to a temp file in the SAME directory (so the final rename is
+// same-filesystem and therefore atomic on POSIX), fsync-ing it before the
+// rename (so the rename cannot be reordered ahead of the data actually
+// landing on disk by the OS's own write-back cache, which os.Rename's own
+// atomicity guarantee does not by itself cover), and then os.Rename over
+// the final path (an atomic directory-entry swap all POSIX filesystems this
+// codebase targets support) means any reader -- including one racing this
+// exact write -- only ever observes the complete OLD file or the complete
+// NEW file, never a truncated or partially-written one.
+//
+// DURABILITY SCOPE: the sequence above is sufficient for the failure modes
+// this registry actually exists to survive -- an external SIGKILL to the
+// crush process, or that process crashing -- because the directory entry
+// for `path` (pointing at the OLD inode, then the NEW one after rename)
+// only needs to be correct for readers of the SAME still-mounted
+// filesystem; a rename's directory-entry update is itself atomic content
+// the kernel keeps consistent in its own page/dentry cache regardless of
+// whether that cache has been flushed to the physical device yet. What the
+// sequence above does NOT guarantee is durability across a power loss (or
+// an unclean unmount) that happens before the kernel flushes the RENAME
+// operation itself -- as opposed to the file's DATA, which the tmp.Sync()
+// above already forces to disk -- to the underlying device: POSIX permits
+// a directory's own metadata (including which inode a name currently
+// points at) to be reordered independently of file data unless the
+// directory itself is fsynced too. This function now does that: after a
+// successful rename, it opens the parent directory and calls Sync on it,
+// which is the standard "fsync the directory to persist a rename" idiom on
+// Linux. fsync(2)'s NOTES put it plainly: calling fsync() on a file does
+// not necessarily ensure that the entry in the directory containing it has
+// also reached disk, and an explicit fsync() on a descriptor for the
+// directory is needed for that. This closes the gap for filesystems/configurations
+// where it matters; it remains a no-op in effect on filesystems where the
+// rename was already durable without it. A directory-sync failure is
+// logged only, exactly like every other step in this function -- the file
+// rename itself already fully succeeded by the time this runs, and this is
+// strictly an additional durability margin, not a correctness precondition
+// for any reader (see the "complete OLD or complete NEW, never partial"
+// guarantee above, which does not depend on the directory fsync at all).
 func writeChildGroupFileLocked(path string, entries []childGroupEntry) {
 	var sb strings.Builder
 	for _, e := range entries {
@@ -337,6 +367,23 @@ func writeChildGroupFileLocked(path string, entries []childGroupEntry) {
 		return
 	}
 	succeeded = true
+
+	// Fsync the parent directory so the rename itself (not just the file's
+	// data, already forced to disk by tmp.Sync() above) survives a power
+	// loss or unclean unmount -- see this function's own doc for why a
+	// file-data fsync alone does not cover the directory-entry update. Best
+	// effort and strictly additive: the write above already fully
+	// succeeded (succeeded is already true), so a failure here is logged
+	// and does not unwind or otherwise affect the write's own outcome.
+	dirHandle, err := os.Open(dir)
+	if err != nil {
+		slog.Warn("session: failed to open registry directory for fsync", "dir", dir, "err", err)
+		return
+	}
+	defer dirHandle.Close()
+	if err := dirHandle.Sync(); err != nil {
+		slog.Warn("session: failed to fsync registry directory after rename", "dir", dir, "err", err)
+	}
 }
 
 // RemoveChildGroupRegistry deletes the registry file for sessionID

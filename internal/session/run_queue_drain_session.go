@@ -824,10 +824,16 @@ func (p *RunQueuePump) DrainSessionNow(ctx context.Context, sessionID string) (D
 		//     "succeeded" costs them silently losing accepted work), so an
 		//     unresolvable ambiguity is reported through it rather than
 		//     guessing success.
-		//   - still present and 'leased' by a DIFFERENT leasedBy: someone
-		//     else has it right now and its outcome is genuinely UNKNOWN to
-		//     this call -- reported through errLeaseLost's own "nothing
-		//     further can be learned from this attempt" meaning.
+		//   - still present and 'leased' (status alone, NOT compared against
+		//     this call's own p.cfg.PumpInstanceID as leasedBy -- the code
+		//     does not distinguish "someone else has it" from "this same
+		//     pump instance's own background tick re-leased it"): outcome
+		//     is genuinely UNKNOWN to THIS call either way, so it is
+		//     reported through errLeaseLost's own "nothing further can be
+		//     learned from this attempt" meaning regardless of which one it
+		//     actually is -- the conservative answer is correct in both
+		//     cases, so the missing identity check costs nothing today, but
+		//     the label is "leased", not "leased by a different owner".
 		//   - still present and 'pending' (a lookup race with the lease
 		//     attempt just above, or the DB write hasn't settled from this
 		//     call's own perspective): the ledger's entry for it still
