@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync/atomic"
 	"time"
@@ -20,14 +21,28 @@ import (
 // executeEntry call site; each caller manages that bookkeeping itself, in
 // whatever shape fits its own concurrency model.
 //
-// Returns nil on ack'd success. On failure, returns the underlying error
-// (including the ErrCallQueuedNotExecuted sentinel, or an error matching
+// Returns nil ONLY on an ack'd success — the turn ran and its row was
+// committed (deleted). Nothing else may return nil.
+//
+// On failure, returns the underlying error (including the
+// ErrCallQueuedNotExecuted sentinel, or an error matching
 // AlreadyAttempted/*SessionLockBusyError) after already performing the
 // matching Ack/Nack/TerminalFail write — callers never need to interpret
 // the error to decide what to persist for the row, only what to do next on
-// their own side (retry, stop, surface as a failure). Returns errLeaseLost
-// if the lease was reassigned mid-execution (see leaseLost's own doc) — no
-// outcome write happens in that case; the new owner is responsible for it.
+// their own side (retry, stop, surface as a failure).
+//
+// Two outcomes have no row write behind them and must be distinguished from
+// both success and an ordinary failure:
+//
+//   - errLeaseLost — the lease was reassigned mid-execution (see leaseLost's
+//     own doc). The new owner writes the outcome; this attempt learns nothing.
+//   - ErrTurnCommitFailed — the turn SUCCEEDED but the Ack did not, so the
+//     row is still leased and will be recovered and re-run after its lease
+//     expires. Callers must not re-run the provider on their own, and must
+//     not report a terminal success. This used to return nil (P0-3 of the
+//     2026-08-18 release-readiness review), which made `crush run` tell the
+//     operator a durable continuation had completed when nothing had been
+//     committed at all.
 func (p *RunQueuePump) executeEntrySync(ctx context.Context, leased *RunQueueEntry) error {
 	// newDBCtx creates a fresh, short-lived (30s) context for a single DB
 	// write, deliberately rooted in context.Background() rather than p.ctx or
@@ -411,11 +426,38 @@ func (p *RunQueuePump) executeEntrySync(ctx context.Context, leased *RunQueueEnt
 		// unconditionally previously claimed success even when the row was
 		// never actually deleted, which is misleading for anyone debugging a
 		// row that keeps reappearing after an Ack failure.
+		//
+		// P0-3 of the 2026-08-18 release-readiness review: the ack failure was
+		// logged and then `return nil` — this function's own contract reserves
+		// nil for an ACKED success, so that was an outright false claim. The
+		// row is still leased; its lease will expire; CleanupExpiredLeases will
+		// return it to pending with an attempt charged; and the turn will run a
+		// SECOND time. Meanwhile DrainSessionNow reported (true, nil) and the
+		// CLI told the operator the work had completed.
+		//
+		// Returning ErrTurnCommitFailed does not prevent that second run —
+		// only fencing or idempotent side effects could, and both are beyond
+		// this function (see the SEMANTICS note on the watchdog above: the
+		// durable queue is at-least-once by construction). What it does do is
+		// stop the API from claiming a terminal commit that did not happen, so
+		// the caller can report the truth instead of a success.
+		//
+		// Deliberately NOT nacked. A nack would put the row back to pending
+		// immediately and re-run a turn whose side effects already landed. The
+		// lease-expiry path takes RunQueueLeaseTTL to do the same thing, but it
+		// charges an attempt each time, so a row whose ack is persistently
+		// failing eventually dead-letters at RunQueueMaxAttempts rather than
+		// re-running the same turn forever.
+		//
+		// A zero-rows ack (the row was re-leased by someone else between
+		// Coordinator.Run returning and this write) is already an error, not a
+		// silent no-op: AckRunQueueEntry maps sql.ErrNoRows to one — so it
+		// travels this same path rather than being mistaken for a commit.
 		if _, ackErr := p.cfg.Sessions.AckRunQueueEntry(dbCtx, leased.ID, p.cfg.PumpInstanceID); ackErr != nil {
-			slog.Error("run_queue_pump: ack failed after success", "id", leased.ID, "session_id", leased.SessionID, "err", ackErr, "instance_id", p.cfg.PumpInstanceID)
-		} else {
-			slog.Info("run_queue_pump: executed entry successfully", "id", leased.ID, "session_id", leased.SessionID, "instance_id", p.cfg.PumpInstanceID)
+			slog.Error("run_queue_pump: ack failed after success — the turn ran but was not committed, and may run again after the lease expires", "id", leased.ID, "session_id", leased.SessionID, "err", ackErr, "instance_id", p.cfg.PumpInstanceID)
+			return fmt.Errorf("%w: %w", ErrTurnCommitFailed, ackErr)
 		}
+		slog.Info("run_queue_pump: executed entry successfully", "id", leased.ID, "session_id", leased.SessionID, "instance_id", p.cfg.PumpInstanceID)
 		return nil
 	}
 

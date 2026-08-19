@@ -131,6 +131,22 @@ type Coordinator interface {
 // found not to work.
 var ErrCallQueuedNotExecuted = errors.New("run_queue_pump: call was queued into an already-owned session, not executed")
 
+// ErrTurnCommitFailed is returned by executeEntrySync when the turn itself
+// succeeded but its terminal commit — the Ack that deletes the row — did
+// not. It is a distinct outcome from both "the turn failed" and "the turn
+// committed", and conflating it with either is what P0-3 of the 2026-08-18
+// release-readiness review found: the ack error was logged and nil returned,
+// so callers were told a turn had terminally committed when the row was
+// still sitting there leased, waiting to be recovered and run again.
+//
+// Callers must NOT re-run the provider on seeing this. The side effects of
+// the turn already landed; only the bookkeeping is missing. The durable
+// queue is at-least-once by construction (see the SEMANTICS note in
+// executeEntrySync), so a duplicate execution after lease expiry remains
+// possible — this error exists so that possibility is reported rather than
+// hidden behind a success.
+var ErrTurnCommitFailed = errors.New("run_queue_pump: turn executed but its terminal commit failed")
+
 // errLeaseLost is returned by executeEntrySync when the entry's lease was
 // reassigned to a different owner during the renewal loop (see leaseLost's
 // doc there). It carries no outcome for the row itself — the new owner

@@ -212,11 +212,17 @@ func (p *RunQueuePump) executeEntry(ctx context.Context, leased *RunQueueEntry) 
 		p.inFlightMu.Unlock()
 	}()
 
-	// The returned error is deliberately discarded here: the background
-	// tick's own outcome handling (Ack/Nack/TerminalFail) already happened
-	// inside executeEntrySync, and nothing on this detached path needs to
-	// inspect the result further. DrainSessionNow (task #421/P0-1) is the
-	// caller that DOES need it, to decide whether to keep draining or
-	// surface a failure — see there.
+	// The returned error is deliberately discarded here: every outcome that
+	// CAN be written for the row (Ack/Nack/TerminalFail) already was, inside
+	// executeEntrySync, and this detached path has nobody to report to.
+	// DrainSessionNow (task #421/P0-1) is the caller that DOES need it, to
+	// decide whether to keep draining or surface a failure — see there.
+	//
+	// ErrTurnCommitFailed is the one outcome with no row write behind it
+	// (the Ack is precisely what failed). Discarding it here is still
+	// correct — executeEntrySync has already logged it at Error level, and
+	// recovery is the lease-expiry path's job, not this goroutine's — but it
+	// does mean the background path leaves a leased row that will be
+	// re-executed. That is the at-least-once contract, not an oversight.
 	_ = p.executeEntrySync(ctx, leased)
 }
