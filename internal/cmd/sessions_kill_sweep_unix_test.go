@@ -38,6 +38,7 @@ package cmd
 // from the moment-ordering assertions below.
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"os"
@@ -152,6 +153,124 @@ func spawnSweepGroupLeader(t *testing.T) *exec.Cmd {
 
 func sweepTestRegistryPath(dataDir, sessionID string) string {
 	return filepath.Join(dataDir, "locks", "session-"+sanitiseSessionIDForFilename(sessionID)+".childgroups")
+}
+
+// ---------------------------------------------------------------------
+// Crash-style lock holder (task #602): a helper that acquires the
+// session lock and then blocks with NO clean-release path at all, so the
+// only way to end it is a SIGKILL that never runs SessionLock.Release().
+// This is deliberately different from spawnKillTestLockHolder /
+// spawnSweepTestNewOwner, both of which release cleanly (Release() runs)
+// the instant their stdin pipe closes -- useful for modeling a live
+// process being asked to shut down, but WRONG for modeling a genuine
+// crash, because a clean Release() is exactly the thing that overwrites
+// (via the next acquirer) or clears (via clearHolderMetadata) the
+// generation sidecar this test needs to survive the holder's death.
+// ---------------------------------------------------------------------
+
+const crashTestHelperProcessEnv = "CRUSH_SESSIONS_CRASH_LOCK_HELPER"
+
+// TestHelperCrashTestLockHold is the re-exec entry point for
+// spawnCrashTestLockHolder: acquires the lock, prints LOCKED, then blocks
+// forever on a read from a pipe whose write end is never closed by the
+// test -- the ONLY way this process ends is the test's own
+// syscall.Kill(pid, SIGKILL), which bypasses Release() entirely, exactly
+// like a real crash.
+func TestHelperCrashTestLockHold(t *testing.T) {
+	if os.Getenv(crashTestHelperProcessEnv) != "1" {
+		return
+	}
+	dataDir := os.Getenv("CRUSH_SESSIONS_CRASH_LOCK_HELPER_DATADIR")
+	sessionID := os.Getenv("CRUSH_SESSIONS_CRASH_LOCK_HELPER_SESSIONID")
+	if dataDir == "" || sessionID == "" {
+		fmt.Println("FAILED missing-env")
+		os.Exit(2)
+	}
+	lk, err := session.TryAcquireSessionLock(dataDir, sessionID)
+	if err != nil {
+		fmt.Printf("FAILED %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("LOCKED %d\n", lk.HolderPID)
+
+	// Block forever. Deliberately no stdin read / no Release() call on any
+	// path -- this process must never voluntarily give up the lock or
+	// touch its own generation sidecar. select{} rather than blocking on
+	// stdin so there is no accidental release path via a closed pipe.
+	select {}
+}
+
+// spawnCrashTestLockHolder starts a real child process that acquires the
+// session lock and then hangs unconditionally. Blocks until the child
+// reports it actually holds the lock. Callers MUST end it with
+// crashKill(), never stop()/Kill() alone followed by Wait() without
+// reaping care -- see crashKill's own doc comment for why a SIGKILL'd
+// direct child of this test process still answers kill(pid,0) as "alive"
+// until explicitly reaped.
+func spawnCrashTestLockHolder(t *testing.T, dataDir, sessionID string) *killTestLockHolder {
+	t.Helper()
+
+	exe, err := os.Executable()
+	require.NoError(t, err)
+
+	c := exec.Command(exe, "-test.run=^TestHelperCrashTestLockHold$")
+	c.Env = append(os.Environ(),
+		crashTestHelperProcessEnv+"=1",
+		"CRUSH_SESSIONS_CRASH_LOCK_HELPER_DATADIR="+dataDir,
+		"CRUSH_SESSIONS_CRASH_LOCK_HELPER_SESSIONID="+sessionID,
+	)
+	stdoutR, err := c.StdoutPipe()
+	require.NoError(t, err)
+	c.Stderr = nil
+
+	require.NoError(t, c.Start())
+	// Safety net only: every test using this helper is expected to call
+	// crashKill explicitly (which SIGKILLs and reaps), but if the test
+	// fails/panics before reaching that call, this Cleanup still ensures
+	// the hung helper (it blocks in select{} forever, see
+	// TestHelperCrashTestLockHold) does not outlive the test binary.
+	// Best-effort Wait: if crashKill already reaped it, this Kill is a
+	// harmless no-op error against an already-dead pid, and Wait returns
+	// promptly either way.
+	t.Cleanup(func() {
+		_ = c.Process.Kill()
+		_ = c.Wait()
+	})
+
+	lineCh := make(chan string, 1)
+	go func() {
+		sc := bufio.NewScanner(stdoutR)
+		for sc.Scan() {
+			line := sc.Text()
+			if line == "" {
+				continue
+			}
+			lineCh <- line
+			return
+		}
+		lineCh <- ""
+	}()
+
+	select {
+	case line := <-lineCh:
+		require.True(t, strings.HasPrefix(line, "LOCKED"), "crash helper failed to lock: %s", line)
+	case <-time.After(15 * time.Second):
+		_ = c.Process.Kill()
+		t.Fatalf("timed out waiting for crash-test helper process to report lock status")
+	}
+
+	return &killTestLockHolder{cmd: c, pid: c.Process.Pid}
+}
+
+// crashKill SIGKILLs the holder started by spawnCrashTestLockHolder and
+// reaps it, WITHOUT ever closing a stdin pipe or otherwise giving it a
+// chance to run Release() -- modeling a genuine crash (or `kill -9` from
+// outside crush entirely), as opposed to killTestLockHolder.stop()'s
+// close-stdin-then-kill sequence, which races a real clean release.
+func crashKill(t *testing.T, h *killTestLockHolder) {
+	t.Helper()
+	require.NoError(t, syscall.Kill(h.pid, syscall.SIGKILL))
+	_ = h.cmd.Wait()
 }
 
 // TestProbeThenKillHolder_CapturesVictimGenerationWhileHolderAlive is
@@ -389,4 +508,213 @@ func TestSweepChildGroupsUnderOwnLock_BusyLockRefusesAndRetains(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return !session.IsProcessAlive(leader.Process.Pid)
 	}, 5*time.Second, 10*time.Millisecond, "the retained entry's process group must die once swept")
+}
+
+// TestProbeThenKillHolder_OrphanedGenerationCapturedBeforeProbeAcquire is
+// the direct regression test for task #602 (follow-up to #594/#591 P0-2):
+// when a holder crashes (or exits without running Release()) BEFORE
+// "sessions kill" ever runs against it, probeThenKillHolder's own
+// TryAcquireSessionLock succeeds (nobody holds the OS lock), which used to
+// report ConfirmedDead with an EMPTY VictimGeneration -- the busy branch
+// that captures a generation never ran, because there was no contention to
+// prove. With no VictimGeneration, sessionsKillCmdRun's sweep call was
+// skipped entirely (see its own "kr.VictimGeneration != ”" gate), so a
+// process-group tree orphaned by a crash could never be reached by
+// "sessions kill" at all, and its registry entry could never leave the
+// file either (a mismatched-generation sweep RETAINS, never discards, per
+// #594).
+//
+// This test builds exactly that scenario with a REAL crashed holder (see
+// spawnCrashTestLockHolder/crashKill: SIGKILL with no clean-release path
+// at all, so the holder's own generation sidecar is left exactly as it
+// wrote it, untouched by any Release()) and a real registered process
+// group, then asserts probeThenKillHolder reports a non-empty
+// VictimGeneration equal to the crashed holder's own token.
+//
+// Revert check: delete the "orphanedGeneration := session.ReadLockGeneration(...)"
+// line in probeThenKillHolder (the read that happens BEFORE its own
+// TryAcquireSessionLock call) and drop the "VictimGeneration: orphanedGeneration"
+// field from the holderAlreadyDead return -- this test fails on the
+// VictimGeneration assertion (it reverts to "").
+func TestProbeThenKillHolder_OrphanedGenerationCapturedBeforeProbeAcquire(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns real child processes; skipped in -short")
+	}
+	dir := t.TempDir()
+	dataDir := filepath.Join(dir, ".crush")
+	const sessionID = "orphan-gen-capture-id"
+
+	holder := spawnCrashTestLockHolder(t, dataDir, sessionID)
+	lockPath := session.SessionLockPath(dataDir, sessionID)
+	crashedGeneration := session.ReadLockGeneration(lockPath)
+	require.NotEmpty(t, crashedGeneration, "a live holder's lock must carry a generation token")
+
+	// Crash it: SIGKILL with no stdin/Release path at all. The generation
+	// sidecar this holder wrote is now permanently orphaned on disk --
+	// nothing will ever clear or overwrite it until a NEW acquirer does.
+	crashKill(t, holder)
+	require.Eventually(t, func() bool {
+		return !session.IsProcessAlive(holder.pid)
+	}, 5*time.Second, 10*time.Millisecond, "the crashed holder must actually be gone before the probe runs")
+
+	// Give the OS a moment to fully release the flock after the SIGKILL;
+	// TryAcquireSessionLock inside the probe below is the authoritative
+	// check, this just avoids a flaky race against kernel lock teardown.
+	require.Eventually(t, func() bool {
+		lk, err := session.TryAcquireSessionLock(dataDir, sessionID)
+		if err != nil {
+			return false
+		}
+		require.NoError(t, lk.Release())
+		return true
+	}, 5*time.Second, 10*time.Millisecond, "the OS lock must become free once the crashed holder is gone")
+	// The probe/release above just overwrote-then-cleared the sidecar via
+	// its OWN acquire+Release cycle -- exactly the destructive read this
+	// test exists to prove happens. Re-crash a SECOND holder under a WATCHED
+	// generation so the real assertion below observes a fresh, untouched
+	// sidecar exactly like a real "sessions kill" invocation would.
+	holder2 := spawnCrashTestLockHolder(t, dataDir, sessionID)
+	crashedGeneration = session.ReadLockGeneration(lockPath)
+	require.NotEmpty(t, crashedGeneration)
+	crashKill(t, holder2)
+	require.Eventually(t, func() bool {
+		return !session.IsProcessAlive(holder2.pid)
+	}, 5*time.Second, 10*time.Millisecond)
+
+	kr := probeThenKillHolder(dataDir, sessionID, holder2.pid, 5*time.Second)
+	t.Logf("report: %s", kr.Report)
+
+	require.Equal(t, holderAlreadyDead, kr.State)
+	require.True(t, kr.ConfirmedDead)
+	require.Equal(t, crashedGeneration, kr.VictimGeneration,
+		"VictimGeneration must be the crashed holder's own token, read before this probe's own acquire overwrote the sidecar")
+}
+
+// TestSessionsKillCmdRun_SweepsOrphanedGroupAfterCrash is the end-to-end
+// counterpart of the test above: a real registered CLI-provider child
+// process group, registered under a holder that then crashes (never runs
+// Release()), must actually be reached and killed by a real
+// sessionsKillCmdRun invocation -- not merely have probeThenKillHolder
+// report a non-empty VictimGeneration in isolation.
+//
+// Revert check: same as TestProbeThenKillHolder_OrphanedGenerationCapturedBeforeProbeAcquire
+// (delete the orphanedGeneration capture/threading in probeThenKillHolder)
+// and this test fails: the registered leader survives and the registry
+// file is left behind unchanged, because sessionsKillCmdRun's
+// "kr.VictimGeneration != ”" gate never fires.
+func TestSessionsKillCmdRun_SweepsOrphanedGroupAfterCrash(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns real child processes; skipped in -short")
+	}
+	isolateConfigEnvForTests(t)
+
+	workDir := t.TempDir()
+	orig, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(workDir))
+	t.Cleanup(func() { _ = os.Chdir(orig) })
+
+	dataDir := filepath.Join(workDir, ".crush")
+	const sessionID = "orphan-sweep-e2e-id"
+
+	holder := spawnCrashTestLockHolder(t, dataDir, sessionID)
+	lockPath := session.SessionLockPath(dataDir, sessionID)
+	generation := session.ReadLockGeneration(lockPath)
+	require.NotEmpty(t, generation)
+
+	leader := spawnSweepGroupLeader(t)
+	session.RegisterChildGroup(dataDir, sessionID, leader.Process.Pid, generation)
+
+	crashKill(t, holder)
+	require.Eventually(t, func() bool {
+		return !session.IsProcessAlive(holder.pid)
+	}, 5*time.Second, 10*time.Millisecond, "the crashed holder must actually be gone")
+
+	ensureRootFlagStandIns(sessionsKillCmd, dataDir)
+	if f := sessionsKillCmd.Flags().Lookup("cwd"); f == nil {
+		sessionsKillCmd.Flags().StringP("cwd", "c", "", "")
+	}
+	require.NoError(t, sessionsKillCmd.Flags().Set("cwd", ""))
+	require.NoError(t, sessionsKillCmd.Flags().Set("keep-lock", "true"))
+	require.NoError(t, sessionsKillCmd.Flags().Set("wait", "2s"))
+	sessionsKillCmd.SetContext(context.Background())
+
+	stderr := captureStderr(t, func() {
+		runErr := sessionsKillCmd.RunE(sessionsKillCmd, []string{sessionID})
+		require.NoError(t, runErr)
+	})
+	t.Logf("sessions kill stderr:\n%s", stderr)
+
+	require.Contains(t, stderr, "swept 1 registered",
+		"a process group registered under a holder that crashed before 'sessions kill' ran must still be reached and killed")
+	require.Eventually(t, func() bool {
+		return !session.IsProcessAlive(leader.Process.Pid)
+	}, 5*time.Second, 10*time.Millisecond,
+		"the registered process group must actually be dead once the sweep reports it killed")
+
+	_, statErr := os.Stat(sweepTestRegistryPath(dataDir, sessionID))
+	require.True(t, os.IsNotExist(statErr), "the registry file must be cleared once its only entry is confirmed killed")
+}
+
+// TestAcquireSessionLockForReset_SweepsOrphanedGroupAfterCrash is the
+// `sessions reset --force` counterpart of
+// TestSessionsKillCmdRun_SweepsOrphanedGroupAfterCrash (task #602,
+// coordinator follow-up review): acquireSessionLockForReset's OWN
+// TryAcquireSessionLock can equally succeed on the FIRST attempt when the
+// previous holder crashed (or exited without Release()) before reset
+// --force ever ran against it -- err == nil, no busy branch, so the
+// generation-capture line that branch relies on never executes. Before this
+// fix that meant VictimGeneration stayed empty and sweepChildGroupsWithHeldLock
+// was never called at all for this branch: a process-group tree orphaned by
+// a crash survived `sessions reset --force` exactly as it survived
+// `sessions kill` before the sibling fix.
+//
+// Uses acquireSessionLockForReset directly (unit-level), the same style
+// TestAcquireSessionLockForReset_SweepsOnlyAfterReacquire above already
+// uses for this function's busy-branch behavior -- this test exercises the
+// OTHER branch, the one that never goes through forceKillHolder at all.
+//
+// Revert check: move the "orphanedGeneration := session.ReadLockGeneration(...)"
+// read in acquireSessionLockForReset from BEFORE its TryAcquireSessionLock
+// call to AFTER it (mirroring the exact revert-check already applied to
+// probeThenKillHolder) and this test fails: the registered leader survives
+// and the registry file is left behind unchanged.
+func TestAcquireSessionLockForReset_SweepsOrphanedGroupAfterCrash(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns real child processes; skipped in -short")
+	}
+	dir := t.TempDir()
+	dataDir := filepath.Join(dir, ".crush")
+	const sessionID = "reset-orphan-sweep-id"
+
+	holder := spawnCrashTestLockHolder(t, dataDir, sessionID)
+	lockPath := session.SessionLockPath(dataDir, sessionID)
+	generation := session.ReadLockGeneration(lockPath)
+	require.NotEmpty(t, generation)
+
+	leader := spawnSweepGroupLeader(t)
+	session.RegisterChildGroup(dataDir, sessionID, leader.Process.Pid, generation)
+
+	crashKill(t, holder)
+	require.Eventually(t, func() bool {
+		return !session.IsProcessAlive(holder.pid)
+	}, 5*time.Second, 10*time.Millisecond, "the crashed holder must actually be gone")
+
+	lk, kr, err := acquireSessionLockForReset(dataDir, sessionID, holder.pid, 2*time.Second)
+	require.NoError(t, err)
+	require.NotNil(t, lk, "a free lock (no live holder) must still be returned held to the caller")
+	t.Cleanup(func() { _ = lk.Release() })
+	t.Logf("report: %s", kr.Report)
+
+	require.Equal(t, holderAlreadyDead, kr.State)
+	require.True(t, kr.ConfirmedDead)
+	require.Contains(t, kr.Report, "swept 1 registered",
+		"a process group registered under a holder that crashed before 'sessions reset --force' ran must still be reached and killed")
+	require.Eventually(t, func() bool {
+		return !session.IsProcessAlive(leader.Process.Pid)
+	}, 5*time.Second, 10*time.Millisecond,
+		"the registered process group must actually be dead once the sweep reports it killed")
+
+	_, statErr := os.Stat(sweepTestRegistryPath(dataDir, sessionID))
+	require.True(t, os.IsNotExist(statErr), "the registry file must be cleared once its only entry is confirmed killed")
 }

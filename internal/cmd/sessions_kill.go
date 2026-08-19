@@ -44,45 +44,63 @@ crush PID by itself does NOT reach that child tree on Unix.
 
 This command closes that gap, but ONLY when it can prove the process
 group it is about to signal is still the one that was actually spawned
-for THIS session's CURRENT lock holder. When crush registers a
-CLI-provider child group (automatic for every model run through the ` + "`cli`" + `
+for the holder just confirmed dead. When crush registers a CLI-provider
+child group (automatic for every model run through the ` + "`cli`" + `
 provider), the registration is written next to the session's own lock
 file, under its per-user ` + "`.crush/locks`" + ` directory (see
 internal/session/childgroup_registry_unix.go) -- NOT a shared, predictable
 path -- and it is stamped with the exact lock generation token that was
 current at registration time (the same generation mechanism
 internal/session/lock.go already uses to guard its own destructive
-cleanup). Once the crush PID itself is confirmed dead, this command:
+cleanup). Once the crush PID itself is confirmed dead -- whether this
+command killed it, or it had already crashed/exited on its own before
+this command ever ran -- this command:
 
-  1. re-reads the CURRENT generation for this session's lock and discards
-     any registered group whose recorded generation does not match
-     EXACTLY -- this is what makes the registry safe to trust across a
-     crashed crush process, a reused PID, or a different crush instance
-     having since taken over the same session id;
-  2. re-verifies each remaining candidate is still a live process-group
-     leader (and, on Linux, that its process start time still matches
-     what was recorded) immediately before signalling it; only then
+  1. sweeps only entries whose recorded generation EXACTLY matches the
+     token captured at the moment this specific holder was proven dead --
+     read from a live holder's lock right before it was killed, or, for a
+     holder that had already crashed, read before this command's own probe
+     could acquire the (now-free) lock and overwrite that token. This
+     value is fixed once and never re-read afterwards, so a brand-new
+     owner acquiring the session in the window right after this command's
+     kill (or right after it finds the lock already free) cannot silently
+     redirect the sweep at their own live child group. A registered group
+     whose generation does NOT match this target is left exactly as it
+     was found -- untouched in the registry, not discarded -- because a
+     mismatch here proves nothing about whether it might still be a valid
+     target for a LATER kill of its own holder;
+  2. re-verifies each remaining (generation-matched) candidate is still a
+     live process-group leader (and, on Linux, that its process start time
+     still matches what was recorded) immediately before signalling it;
+     only then
   3. killpg's what is left.
 
-The report tells you which of three things happened, because they must
+The report tells you which of four things happened, because they must
 not be read as the same outcome:
 
   - "swept N registered ... group(s)": reached and killed.
-  - "... generation no longer matches the current lock ... NOT reached":
-    a registration existed but could not be trusted for THIS kill (crush
-    process predates this feature, restarted, or a different owner has
-    since held the session) -- the child tree may still be running.
+  - "... registered ... under a generation different from the one just
+    confirmed dead ... left untouched": a registration existed but does
+    not belong to the holder just confirmed dead (a different owner
+    registered it, before or after) -- the child tree it points at may
+    still be running, and it remains in the registry for a future kill of
+    its own holder to act on.
   - "... no longer look like the process that registered them ... NOT
     reached": the generation matched but the process group itself no
     longer looks plausible (already exited, or the number was recycled).
+  - "... could not be confirmed killed or already dead this attempt ...
+    kept in the registry for a retry": the generation matched and the
+    process group still looked plausible, but the kill signal itself
+    returned neither success nor "already gone" (e.g. a permission
+    error) -- run this command again to retry.
 
 If none of those lines appear at all, no registration was ever found for
 this session, which most commonly means the CLI-provider child either
-never started or was never tracked. In every "NOT reached" case above, you
-would need to find and kill the child tree separately (e.g. ` + "`pkill -f claude`" + `).
-This whole paragraph does not apply on Windows, where ` + "`taskkill /F /T`" + ` plus
-the Job Object tracking described above already reaches the full tree
-unconditionally.
+never started or was never tracked. In every case above except the first,
+you would need to find and kill the child tree separately (e.g.
+` + "`pkill -f claude`" + `) or retry this command. This whole paragraph does
+not apply on Windows, where ` + "`taskkill /F /T`" + ` plus the Job Object
+tracking described above already reaches the full tree unconditionally.
 
 The lock FILE is only removed once the holder is PROVEN dead (either the
 OS lock was acquirable — nobody holds it — or the kill was issued and the
@@ -159,10 +177,16 @@ func sessionsKillCmdRun(cmd *cobra.Command, args []string) error {
 	// which acquires the session OS lock itself (the probe above already
 	// released its own) and holds it across the whole read/verify/kill/
 	// rewrite -- see that function doc comment for the full P0-2 rationale.
-	// kr.VictimGeneration is empty whenever no busy holder was ever proven
-	// (e.g. the lock was already free when probed), which the sweep helper
-	// itself also treats as a no-op -- this condition just avoids the
-	// acquire attempt entirely in that case.
+	// kr.VictimGeneration is empty whenever no generation sidecar existed to
+	// read at all (a lock file predating the generation mechanism, or one
+	// that never had a holder), which the sweep helper itself also treats
+	// as a no-op -- this condition just avoids the acquire attempt entirely
+	// in that case. As of task #602, this also covers the holderAlreadyDead
+	// state (the lock was already free when probed, e.g. the previous
+	// holder crashed instead of being killed by this command): see
+	// probeThenKillHolder's own comment for where that generation is
+	// captured and why it must be read before this command's own probe
+	// acquire, not after.
 	if kr.ConfirmedDead && kr.VictimGeneration != "" {
 		var sweepReport strings.Builder
 		sweepChildGroupsUnderOwnLock(&sweepReport, dataDir, id, kr.VictimGeneration)
@@ -288,21 +312,40 @@ type killResult struct {
 	KilledPID     int
 	ConfirmedDead bool
 	Report        string
-	// VictimGeneration is the session lock generation token that was
-	// current AT THE MOMENT probeThenKillHolder's busy probe proved a live
-	// holder existed (read via session.ReadLockGeneration, in the same
-	// branch that decided to kill KilledPID) — never re-read later. Empty
-	// when no busy holder was ever proven (the already-dead / probe-error /
-	// unidentified-holder states). This is the immutable identity token the
-	// P0-2 fix (2026-08-19 static-follow-up review) requires: the child-group
-	// sweep must act ONLY on entries carrying THIS exact generation, never
-	// "whatever generation happens to be on disk when the sweep runs" — see
-	// sweepChildGroupsUnderOwnLock / sweepChildGroupsWithHeldLock below and
+	// VictimGeneration is the session lock generation token belonging to
+	// whichever holder ConfirmedDead is being reported for — never re-read
+	// after the fact. Populated two different ways depending on which
+	// ConfirmedDead branch of probeThenKillHolder ran:
+	//
+	//   - holderKilled: read via session.ReadLockGeneration in the SAME
+	//     branch that decided to kill KilledPID, while busyErr still proved
+	//     the OLD holder owned the lock (the P0-2 fix, 2026-08-19
+	//     static-follow-up review) — this is the immutable identity token
+	//     that fix requires: the child-group sweep must act ONLY on entries
+	//     carrying THIS exact generation, never "whatever generation
+	//     happens to be on disk when the sweep runs".
+	//   - holderAlreadyDead: read BEFORE probeThenKillHolder's own
+	//     TryAcquireSessionLock call, which (on success) immediately
+	//     overwrites the ".gen" sidecar with its OWN new token — this is
+	//     the orphaned holder's generation, the only point at which it is
+	//     still readable at all (task #602, follow-up to #594: a holder
+	//     that crashed instead of being killed by this command never runs
+	//     Release(), so nothing else ever touches or clears its sidecar
+	//     until the NEXT acquirer, including this probe's own, overwrites
+	//     it).
+	//
+	// Empty when no generation sidecar existed to read (a lock file
+	// predating the generation mechanism, one that never had a holder, or
+	// the probe-error/unidentified-holder states, which are not
+	// ConfirmedDead at all). See sweepChildGroupsUnderOwnLock /
+	// sweepChildGroupsWithHeldLock below and
 	// session.KillRegisteredChildGroups' doc comment for the full defect
-	// this closes. A caller that got ConfirmedDead=true with a non-empty
-	// VictimGeneration is the only one authorized to sweep; callers must
-	// carry this value down to the sweep call themselves rather than
-	// recomputing it, since recomputing it is exactly the bug.
+	// the holderKilled case closes, and probeThenKillHolder's
+	// holderAlreadyDead branch for the orphaned-generation case. A caller
+	// that got ConfirmedDead=true with a non-empty VictimGeneration is the
+	// only one authorized to sweep; callers must carry this value down to
+	// the sweep call themselves rather than recomputing it, since
+	// recomputing it is exactly the bug both fixes closed.
 	VictimGeneration string
 }
 
@@ -348,6 +391,28 @@ type killResult struct {
 // a manual rescue tool an operator runs deliberately, that structural fix is
 // not implemented; the window is accepted as a narrow, known limitation.
 func probeThenKillHolder(dataDir, sessionID string, pid int, wait time.Duration) killResult {
+	// Read whatever generation token is CURRENTLY on disk before attempting
+	// the acquire below (task #602, follow-up to the P0-2 fix/#594). This
+	// is deliberately read BEFORE, not after, TryAcquireSessionLock: a
+	// successful acquire immediately overwrites the ".gen" sidecar with a
+	// brand-new token of its own (acquireSessionLockFileWithOptions writes
+	// it synchronously, before TryAcquireSessionLock ever returns to this
+	// function) and, once this probe releases below, the background
+	// clearHolderMetadata cleanup goroutine deletes that sidecar entirely.
+	// So this is the ONLY point at which a crashed holder's own generation
+	// -- untouched since the crash, because a crash means its own Release()
+	// never ran to overwrite or clear it -- can still be read at all.
+	//
+	// If the lock turns out to be BUSY (a live holder), this value is
+	// simply discarded below in favor of the one read inside the busy
+	// branch itself, which is the one actually proven to belong to the
+	// live holder being killed. If the lock turns out to be FREE (the
+	// branch immediately below), this value is the orphaned generation
+	// left behind by whatever process held it last and never released
+	// cleanly -- see the ConfirmedDead branch below for why sweeping that
+	// generation now is what task #602 fixes.
+	orphanedGeneration := session.ReadLockGeneration(session.SessionLockPath(dataDir, sessionID))
+
 	lk, err := session.TryAcquireSessionLock(dataDir, sessionID)
 	if err == nil {
 		// Proved nobody holds the OS lock. Whatever PID is recorded is stale.
@@ -358,7 +423,44 @@ func probeThenKillHolder(dataDir, sessionID string, pid int, wait time.Duration)
 		} else {
 			sb.WriteString("lock probe acquired the lock: no live holder; nothing to kill\n")
 		}
-		return killResult{State: holderAlreadyDead, ConfirmedDead: true, Report: sb.String()}
+		// task #602: the #594 fix made KillRegisteredChildGroups fence
+		// strictly on an immutable victimGeneration the caller proves
+		// belongs to a genuine holder -- correct, but it left the "the
+		// holder crashed instead of being killed by us" case with no
+		// victimGeneration at all, since this branch (the OS lock was
+		// already free when probed) never goes through the busy branch
+		// below that captures one. Without a victimGeneration here,
+		// sessionsKillCmdRun's sweep call is skipped entirely (see its own
+		// "kr.VictimGeneration != ''" gate), so a process-group tree
+		// orphaned by a crash was never reachable by "sessions kill" at
+		// all, and its registry entry could never be dropped either (the
+		// #594 fix retains, rather than discards, any entry whose
+		// generation does not match the sweep's target -- correct in
+		// general, but with no sweep ever running for this generation, the
+		// entry was retained forever).
+		//
+		// orphanedGeneration (read above, before this function's own
+		// acquire overwrote the sidecar) is exactly the identity this
+		// case needs: it is the generation of whichever process held the
+		// lock immediately before this probe found it free, captured
+		// while it was still the only thing on disk claiming that lock
+		// generation. It is empty when there was never a generation
+		// sidecar to read (a lock file predating the generation
+		// mechanism, or one that never had a holder at all) -- callers and
+		// KillRegisteredChildGroups itself both already treat an empty
+		// victimGeneration as "sweep nothing", so this stays safe by
+		// construction in that case.
+		//
+		// This does NOT reopen the SIGKILL-unverified-PID hazard the
+		// registry's own review history warns about: the sweep this value
+		// feeds into (KillRegisteredChildGroups) never signals a pgid on
+		// generation match alone -- every matching entry is independently
+		// re-verified via verifyGroupStillPlausibleOutcome (pgid group
+		// leadership plus, on Linux, start-time match) immediately before
+		// any kill(2) call. A generation match only selects WHICH entries
+		// are even considered; it never substitutes for the plausibility
+		// check.
+		return killResult{State: holderAlreadyDead, ConfirmedDead: true, Report: sb.String(), VictimGeneration: orphanedGeneration}
 	}
 	var busyErr *session.SessionLockBusyError
 	if errors.As(err, &busyErr) {
@@ -533,18 +635,22 @@ func sweepChildGroupsUnderOwnLock(sb *strings.Builder, dataDir, sessionID, victi
 
 // sweepChildGroupsWithHeldLock is the "sessions reset --force" half of the
 // P0-2 fix. Unlike sweepChildGroupsUnderOwnLock, the caller
-// (acquireSessionLockForReset) has ALREADY re-acquired and is already
-// holding the session OS lock by the time this runs -- that lock is what
-// "sessions reset --force" needs held across its own DB-wipe critical
-// section anyway (see acquireSessionLockForReset doc comment), so this
-// function does not acquire or release anything itself; it just performs
-// the sweep using the lock the caller already has, which is exactly the
-// same "hold the OS lock across the entire read/verify/kill/rewrite"
-// requirement session.KillRegisteredChildGroups documents. Calling this
-// BEFORE the re-acquire (as an earlier version of "reset --force" did, via
-// forceKillHolder inline sweep) is precisely the ordering half of P0-2: it
-// guaranteed the sweep ran in the exact window where a new owner could
-// already be in, with no lock held by anyone doing the sweeping.
+// (acquireSessionLockForReset) is already holding the session OS lock by
+// the time this runs -- either because it just re-acquired it after killing
+// a live holder, or because its very first TryAcquireSessionLock attempt
+// succeeded outright (no live holder at all, e.g. the previous holder had
+// already crashed; see acquireSessionLockForReset's task #602 comment) --
+// that lock is what "sessions reset --force" needs held across its own
+// DB-wipe critical section anyway (see acquireSessionLockForReset doc
+// comment), so this function does not acquire or release anything itself;
+// it just performs the sweep using the lock the caller already has, which
+// is exactly the same "hold the OS lock across the entire
+// read/verify/kill/rewrite" requirement session.KillRegisteredChildGroups
+// documents. Calling this BEFORE the (re-)acquire (as an earlier version of
+// "reset --force" did, via forceKillHolder inline sweep) is precisely the
+// ordering half of P0-2: it guaranteed the sweep ran in the exact window
+// where a new owner could already be in, with no lock held by anyone doing
+// the sweeping.
 //
 // lk is accepted (and required non-nil) purely to make the "the caller
 // must already hold the lock" precondition visible at every call site --
@@ -592,10 +698,40 @@ func sweepChildGroupsWithHeldLock(sb *strings.Builder, dataDir, sessionID, victi
 // before the kill (not whatever generation happens to be on disk when the
 // sweep runs), closes both the wrong-target-kill and the lost-durable-
 // pointer halves of that defect for the reset --force path specifically.
+//
+// task #602 follow-up: the branch immediately below (TryAcquireSessionLock
+// succeeds on the FIRST attempt -- nobody held the lock at all, e.g. the
+// previous holder crashed instead of being killed by this command) used to
+// return with an empty VictimGeneration, exactly the same gap probeThenKillHolder
+// had for `sessions kill`'s equivalent branch -- see that function's own
+// #602 comment for the full mechanism (a successful acquire immediately
+// overwrites the ".gen" sidecar with THIS acquire's own new token, so the
+// crashed holder's generation must be read BEFORE this call, never after).
+// Reading it here is actually cheaper than sessions kill's case: the lock
+// this function acquires is already held and returned to the caller, which
+// already holds it across the DB-wipe critical section that follows -- so
+// the sweep below reuses sweepChildGroupsWithHeldLock (the same helper the
+// busy/killed branch already uses), no second acquire/release cycle needed.
 func acquireSessionLockForReset(dataDir, sessionID string, pid int, wait time.Duration) (*session.SessionLock, killResult, error) {
+	// Read BEFORE the acquire attempt below, for the same reason
+	// probeThenKillHolder does: a successful TryAcquireSessionLock
+	// immediately overwrites the ".gen" sidecar with this call's own new
+	// generation, so any process that held the lock before this moment --
+	// including one that crashed and never got to run Release() -- has its
+	// generation token read here or not at all.
+	orphanedGeneration := session.ReadLockGeneration(session.SessionLockPath(dataDir, sessionID))
 	lk, err := session.TryAcquireSessionLock(dataDir, sessionID)
 	if err == nil {
-		return lk, killResult{State: holderAlreadyDead, ConfirmedDead: true, Report: "lock acquired; no live holder\n"}, nil
+		kr := killResult{State: holderAlreadyDead, ConfirmedDead: true, Report: "lock acquired; no live holder\n", VictimGeneration: orphanedGeneration}
+		// Sweep now, using the lock just acquired and about to be returned
+		// HELD to the caller -- exactly the same "hold across the whole
+		// read/verify/kill/rewrite" requirement session.KillRegisteredChildGroups
+		// documents, and the same helper (sweepChildGroupsWithHeldLock) the
+		// busy/killed branch below uses after its own re-acquire.
+		var sweepReport strings.Builder
+		sweepChildGroupsWithHeldLock(&sweepReport, dataDir, sessionID, orphanedGeneration, lk)
+		kr.Report += sweepReport.String()
+		return lk, kr, nil
 	}
 	var busyErr *session.SessionLockBusyError
 	if !errors.As(err, &busyErr) {

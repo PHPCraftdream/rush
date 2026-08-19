@@ -474,26 +474,39 @@ var killpgFunc = syscall.Kill
 // sessionID whose recorded generation matches victimGeneration and which
 // still passes the plausibility check.
 //
-// victimGeneration MUST be an IMMUTABLE token the caller captured at the
-// moment it proved (via a real OS-level lock attempt) that the process it
-// is about to kill was the genuine holder -- see
-// internal/cmd/sessions_kill.go's probeThenKillHolder, which reads
-// ReadLockGeneration(lockPath) in the busy branch, before forceKillHolder
-// ever signals anything, and threads that exact string down through
-// forceKillHolder to here. This function deliberately does NOT read
-// ReadLockGeneration itself: an earlier version did ("read fresh from disk,
-// right here"), which was the root cause of a real defect (2026-08-19
-// static-follow-up review, task #591 blocker P0-2, confirmed by running on
-// real Linux) -- on Unix, killing the holder PID releases the OS lock, so a
-// new crush run --session <id> can acquire it and register its OWN child
-// group under a NEW generation before this function ever runs. Re-reading
-// "current" generation at sweep time reads that NEW owner's token, not the
-// dead victim's, which both (a) signals the new owner's live process group
-// and (b) discards the actual victim's entries as "generation mismatch".
+// victimGeneration MUST be an IMMUTABLE token the caller captured at a
+// moment it proved the generation genuinely belongs to the holder whose
+// entries are being swept -- either of two shapes, both implemented in
+// internal/cmd/sessions_kill.go's probeThenKillHolder:
+//
+//   - A holder killed by this command: the token is read via
+//     ReadLockGeneration(lockPath) in the busy branch, before
+//     forceKillHolder ever signals anything, and threaded down through
+//     forceKillHolder to here.
+//   - A holder that had already crashed (or exited without cleanup) before
+//     this command ever ran: the token is read BEFORE this command's own
+//     TryAcquireSessionLock probe, because a successful acquire
+//     immediately overwrites the ".gen" sidecar with the prober's own new
+//     token -- reading it any later would read the PROBE's generation, not
+//     the crashed holder's (task #602).
+//
+// This function deliberately does NOT read ReadLockGeneration itself: an
+// earlier version did ("read fresh from disk, right here"), which was the
+// root cause of a real defect (2026-08-19 static-follow-up review, task
+// #591 blocker P0-2, confirmed by running on real Linux) -- on Unix,
+// killing the holder PID releases the OS lock, so a new crush run
+// --session <id> can acquire it and register its OWN child group under a
+// NEW generation before this function ever runs. Re-reading "current"
+// generation at sweep time reads that NEW owner's token, not the dead
+// victim's, which both (a) signals the new owner's live process group and
+// (b) discards the actual victim's entries as "generation mismatch".
 // Passing the generation down as a value captured before ownership changed
-// hands is the fix: the sweep target is fixed at the moment contention was
-// proven, not re-derived from whatever the lock file says when the sweep
-// happens to run.
+// hands (or, in the crash case, before this function's own probe could
+// overwrite the only remaining record of it) is the fix: the sweep target
+// is fixed at the moment contention was proven -- or, when there was no
+// contention because the holder already crashed, at the last moment its
+// own generation was still readable -- never re-derived from whatever the
+// lock file says when the sweep happens to run.
 //
 // CALLER MUST HOLD THE SESSION'S OS LOCK (session.SessionLock, acquired via
 // TryAcquireSessionLock) across this ENTIRE call -- read, verify, kill, AND
