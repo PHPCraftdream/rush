@@ -43,12 +43,37 @@ const titleGenerationMaxDurationDefault = 2 * time.Minute
 // session's mailbox ownership and its OS lock) open indefinitely, for a
 // turn whose real work had already completed.
 //
-// Short on purpose: by the time this is consulted the title's own
-// deadline has passed, so any further waiting is pure loss. Abandoning
-// the goroutine is safe — it is not leaked so much as detached: it exits
-// whenever its provider finally unblocks, and generateTitle's own
-// deferred rename runs on a context.WithoutCancel, so a late completion
-// still persists its result.
+// Abandoning the goroutine does not leak it: it exits whenever its provider
+// finally unblocks.
+//
+// It DOES, however, lose the title. An earlier version of this comment
+// claimed a late completion still persists its result because
+// generateTitle's deferred rename runs on a context.WithoutCancel. That is
+// wrong, and the mistake matters because it makes shortening this constant
+// look free: the WithoutCancel path is the FALLBACK, which stamps the
+// default "Untitled Session" name. The real generated title is saved by
+// a.sessions.Rename(ctx, ...) on the title's own (cancellable) context, so
+// once runTurn's cancel() fires, a title that completes afterwards fails to
+// save and the fallback stamps the default instead.
+//
+// So the wait is a real trade, not a formality: every second here is
+// latency the operator pays on the first turn of a session whose title
+// provider is slow, and every second cut is a session more likely to end up
+// named "Untitled Session".
+//
+// MEASURED (2026-08-19, task #546): with a wedged title provider, a turn
+// whose MAIN provider returns HTTP 500 takes 6.26s, of which this grace is
+// 5s. Note where that time is spent -- a provider error is recorded as a
+// finish part and the turn completes NORMALLY, so it pays the full grace on
+// the ordinary path. It does not take an early return, which is why
+// splitting the budget by return path was tried and discarded: it would
+// have bounded the rare paths and left the common one untouched.
+//
+// Kept at 5s deliberately. Shortening it globally trades a real title for
+// latency on every slow-title turn, and conditioning it on the turn's
+// outcome (runTurn's resErr is a named return, so a deferred join can read
+// it) is possible but decides that a failed turn deserves no title -- a
+// product call, not a cleanup.
 const titleJoinGrace = 5 * time.Second
 
 //go:embed templates/title.md
