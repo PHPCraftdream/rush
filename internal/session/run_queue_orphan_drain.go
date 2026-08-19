@@ -6,10 +6,12 @@ package session
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 
 	"github.com/charmbracelet/crush/internal/db"
+	sqlitedriver "modernc.org/sqlite"
 )
 
 // drainOrphanOutbox performs one scan of the orphan outbox and attempts
@@ -91,6 +93,28 @@ func (p *RunQueuePump) processOrphanOutboxEntry(_ context.Context, entry db.Orph
 	drained, err := p.cfg.Sessions.DrainOrphanOutboxEntry(drainCtx, entry.ID)
 	if err != nil {
 		slog.Error("run_queue_pump: failed to drain orphan outbox entry", "id", entry.ID, "session_id", entry.SessionID, "err", err, "instance_id", p.cfg.PumpInstanceID)
+		// P1 fix (task #571 of the 2026-08-19 release-readiness review): a
+		// TRANSIENT failure (DB lock contention -- SQLITE_BUSY/SQLITE_LOCKED,
+		// the concrete shape being a losing writer in SQLite's single-writer
+		// model, exactly as multiple pump instances each running an
+		// immediate Start()-time drain would produce) must NOT be charged
+		// against max_attempts. That budget exists for a row that can NEVER
+		// succeed no matter how many times it is retried -- a session_id
+		// that fails session_run_queue's FK check being the concrete,
+		// reachable shape (see DrainOrphanOutboxEntry's own doc for why a
+		// normally FK-CASCADE-deleted session cannot reach this path, and
+		// isTransientOrphanOutboxDrainError's doc for how a row like that
+		// gets here anyway). A transient DB error says nothing about the
+		// row's data; the row is exactly as healthy after it as before.
+		// Charging it anyway means enough routine contention -- five ticks'
+		// worth, no backoff between them -- permanently quarantines a
+		// perfectly good, still-queued user call with nothing left to
+		// recover it.
+		if isTransientOrphanOutboxDrainError(err) {
+			slog.Warn("run_queue_pump: orphan outbox drain hit transient DB contention, not counted against the retry budget",
+				"id", entry.ID, "session_id", entry.SessionID, "err", err, "instance_id", p.cfg.PumpInstanceID)
+			return
+		}
 		p.recordOrphanOutboxDrainFailure(entry, err)
 		return
 	}
@@ -148,4 +172,79 @@ func (p *RunQueuePump) recordOrphanOutboxDrainFailure(entry db.OrphanCallOutbox,
 		"id", entry.ID, "session_id", entry.SessionID,
 		"attempts", outcome.Attempts, "max_attempts", outcome.MaxAttempts,
 		"instance_id", p.cfg.PumpInstanceID)
+}
+
+// isTransientOrphanOutboxDrainError classifies a DrainOrphanOutboxEntry
+// failure as transient (says nothing about the row's own data, will very
+// likely clear on its own on a later tick) versus permanent (this exact
+// row, with this exact data, cannot ever succeed, no matter how many times
+// it is retried).
+//
+// Classification is by SQLite result code, not by pattern-matching the
+// error string: DrainOrphanOutboxEntry's only failure paths are (1) the
+// initial BeginTx, (2) the GetOrphanOutboxEntry read inside that
+// transaction, (3) the EnqueueRunQueueEntry insert (the one genuinely
+// permanent case -- a session_id that fails session_run_queue's FK check,
+// see that function's own doc for how such a row can exist despite
+// orphan_call_outbox sharing the identical FK+CASCADE), and (4) the final
+// Commit -- and every one of those is a real database/sql call against
+// modernc.org/sqlite, which wraps every SQLite-level failure in *sqlite.Error
+// with a concrete numeric Code(). That code is what SQLite itself uses to
+// distinguish "try again, nothing is wrong with your data" (SQLITE_BUSY,
+// SQLITE_LOCKED) from "this exact statement can never succeed with this
+// exact data" (SQLITE_CONSTRAINT and everything else) -- matching on it
+// directly is precise where matching on err.Error()'s text would not be:
+// driver wording is not a stable contract, and a string match would either
+// miss a real code (silently falling back to "permanent", which is the
+// SAFE direction to be wrong in) or accidentally match unrelated text (the
+// UNSAFE direction, since it could exempt a genuinely permanent failure
+// from ever being quarantined).
+//
+// Code() returns SQLite's raw result code, which under default builds is
+// the EXTENDED code (e.g. 787 for SQLITE_CONSTRAINT_FOREIGNKEY, not the
+// primary 19) -- masking with &0xff recovers the primary code these
+// comparisons are written against, per SQLite's own documented layout
+// (https://www.sqlite.org/rescode.html: "the primary result code ...
+// corresponds to the least significant 8 bits").
+//
+// What this catches: SQLITE_BUSY (the writer lost SQLite's single-writer
+// lock to a concurrent connection -- multiple pump instances, each running
+// an immediate Start()-time drain, is the concrete production shape named
+// in the 2026-08-19 release-readiness review) and SQLITE_LOCKED (a
+// same-connection/shared-cache lock conflict; rarer with this driver's
+// default connection setup, included because it is the other lock-status
+// code SQLite defines alongside SQLITE_BUSY and carries the identical
+// "retry later, nothing wrong with the data" meaning).
+//
+// What this deliberately does NOT catch, and why that is the safe
+// direction: ctx.DeadlineExceeded/ctx.Canceled (drainCtx's own 10s budget,
+// or Stop() during shutdown) are NOT classified as transient here, even
+// though a slow-but-otherwise-healthy DB could in principle produce them --
+// they are conflated with "no error information at all" instead
+// (err.(*sqlite.Error) fails the type assertion for a context error, so
+// this returns false, and the failure counts toward the budget exactly as
+// it did before this fix). A context deadline during a single row's own
+// 10s transaction window is unusual enough, and a false "permanent" classification
+// merely costs one MORE point off a five-attempt budget rather than losing the
+// row (it is still retried on the next tick either way, and the row is only ever
+// quarantined after genuinely repeated failures) -- unlike the false
+// "transient" direction, which would let a genuinely permanent failure (a
+// bug in this classifier, or a future non-SQLite Sessions implementation
+// wrapping errors in a type this function has never seen) retry forever,
+// which is the exact defect task #440/#556 already closed once. A future
+// change wiring ctx errors through explicitly would need to keep that
+// asymmetry: err.(*sqlite.Error) failing to match must never itself be
+// read as "retry forever".
+func isTransientOrphanOutboxDrainError(err error) bool {
+	var sqliteErr *sqlitedriver.Error
+	if !errors.As(err, &sqliteErr) {
+		return false
+	}
+	switch sqliteErr.Code() & 0xff {
+	case 5, // SQLITE_BUSY
+		6: // SQLITE_LOCKED
+		return true
+	default:
+		return false
+	}
 }

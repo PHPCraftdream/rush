@@ -291,6 +291,14 @@ type Service interface {
 	ListPendingRunQueueEntries(ctx context.Context) ([]RunQueueEntry, error)
 	ListStaleLeasedRunQueueEntries(ctx context.Context, beforeTime int64) ([]RunQueueEntry, error)
 	CleanupExpiredLeases(ctx context.Context, beforeTime int64) error
+	// GetRunQueueEntry looks up a single entry by ID, regardless of status.
+	// Returns (nil, nil) if the row no longer exists (acked/deleted), unlike
+	// most Get* methods on this interface which propagate sql.ErrNoRows --
+	// mirrors GetOrphanOutboxEntry's convention, chosen for the same reason:
+	// DrainSessionNow (run_queue_drain_session.go) uses this to distinguish
+	// "genuinely gone" from "still leased by someone else" for a row it no
+	// longer holds a lease on, and both are valid, error-free outcomes.
+	GetRunQueueEntry(ctx context.Context, id string) (*RunQueueEntry, error)
 
 	// Orphan call outbox (P0-3 fix): durable fallback when main run queue enqueue fails
 	WriteToOrphanOutbox(ctx context.Context, id, sessionID string, callData []byte) error

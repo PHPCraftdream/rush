@@ -147,6 +147,34 @@ var ErrCallQueuedNotExecuted = errors.New("run_queue_pump: call was queued into 
 // hidden behind a success.
 var ErrTurnCommitFailed = errors.New("run_queue_pump: turn executed but its terminal commit failed")
 
+// ErrRowOutcomeUnconfirmed is returned by DrainSessionNow's re-check (task
+// #578/P2-1 of the 2026-08-19 release-readiness review) when a row this
+// call previously Nacked for an ordinary retryable failure is found, on
+// re-check, to be GONE (deleted) — by a genuinely different process, since
+// this call's own admission map already ruled out same-process.
+//
+// Deliberately conservative, not a confirmed diagnosis: AckRunQueueEntry
+// and TerminalFailRunQueueEntry are both a plain `DELETE ... RETURNING id`
+// against session_run_queue (see sql/run_queue.sql) — a row that is gone
+// could equally be a genuine commit (Ack) or a permanent terminal-fail
+// (AlreadyAttempted, or the other process's own RunQueueMaxAttempts
+// exhaustion). Nothing in this schema survives to tell the two apart after
+// the fact (the terminal_failure COLUMN exists, but no query ever sets it
+// to 1 on a surviving row — TerminalFailRunQueueEntry deletes outright,
+// exactly like Ack). Reporting (true, nil) for an outcome that MIGHT be a
+// permanent loss of accepted work would tell the operator their run
+// finished when it may not have — the false-success class task #575
+// (commit 638bc777) closed, reopened through this re-check path instead of
+// the admission-wait path #575 fixed. ErrRowOutcomeUnconfirmed is the
+// conservative resolution of that ambiguity: a false "still might have
+// failed" costs the operator an unnecessary retry; a false "succeeded"
+// silently loses their work, which is the worse of the two failure modes.
+// Distinct from a bare retryable failure (which at least implies another
+// attempt may still happen) and from errLeaseLost (which means "someone
+// else currently holds it and the outcome is not yet known", not "the row
+// is already gone and its outcome cannot be recovered").
+var ErrRowOutcomeUnconfirmed = errors.New("run_queue_pump: row is gone after being handled by another process; outcome cannot be confirmed as a success")
+
 // errLeaseLost is returned by executeEntrySync when the entry's lease was
 // reassigned to a different owner during the renewal loop (see leaseLost's
 // doc there). It carries no outcome for the row itself — the new owner

@@ -332,6 +332,23 @@ func (s *service) ListPendingRunQueueEntries(ctx context.Context) ([]RunQueueEnt
 	return dbSliceToRunQueueEntries(rows), nil
 }
 
+// GetRunQueueEntry looks up a single entry by ID, regardless of status
+// (pending, leased, or -- since it is deleted on ack -- simply gone).
+// Returns (nil, nil) when the row does not exist, matching
+// GetOrphanOutboxEntry's convention: a caller checking whether a row it once
+// owned is still around, still leased by someone else, or genuinely
+// resolved must be able to tell 'gone' apart from a real error.
+func (s *service) GetRunQueueEntry(ctx context.Context, id string) (*RunQueueEntry, error) {
+	entry, err := s.q.GetRunQueueEntry(ctx, id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return dbToRunQueueEntry(entry), nil
+}
+
 // ListStaleLeasedRunQueueEntries returns all leased entries with expired leases.
 // Used by the pump to recover entries from crashed instances.
 func (s *service) ListStaleLeasedRunQueueEntries(ctx context.Context, beforeTime int64) ([]RunQueueEntry, error) {

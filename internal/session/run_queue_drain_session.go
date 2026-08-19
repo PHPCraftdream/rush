@@ -82,7 +82,58 @@ import (
 // RunQueueMaxAttempts directly so a truly poison entry terminal-fails
 // instead of being retried forever inside one call) and this call returns
 // with that error rather than looping unboundedly.
+// CONTRACT DECISION (task #578, P2-1 of the 2026-08-19 release-readiness
+// review): once a retry at the same logical row later resolves, that later
+// resolution supersedes an earlier retryable failure at the same row —
+// option (a) from the review, not (b). The loop keeps retrying rather than
+// stopping at the first error (needed for the ordinary "nack, then succeed
+// on the next tick" case every existing caller already depends on), but the
+// named return err must never keep asserting a LOCAL failure whose row this
+// call no longer has any way to vouch for. See the two places below that
+// implement this: the immediate overwrite `err = outcomeErr` on every
+// classified outcome (a success's nil already wins over a same-process
+// retry's earlier failure), and the lastErrRowID re-check just before the
+// final "nothing pending" return (which closes the cross-process variant:
+// a retryable local failure Nacks its row back to pending BEFORE this
+// function ever sees the error, and a genuinely different process's pump
+// instance can lease that same row before this loop's own next attempt —
+// this call's in-memory admission map cannot see that, so without the
+// re-check it would report its own stale failure for a row whose actual
+// fate is now unknown to it). Option (b) — stop at the first error — was
+// rejected: it would surface transient, already-superseded failures to
+// RunNonInteractive's caller even when the very next tick (in this process
+// or another) cleanly finishes the same work, which is worse for the
+// dominant case (a single retryable hiccup) than the bounded re-check below.
+//
+// "Supersedes" does NOT mean "clears to nil": the re-check NEVER produces
+// (drained=true, err=nil) for the cross-process case, because this schema
+// gives it no way to positively confirm a genuine commit happened —
+// AckRunQueueEntry and TerminalFailRunQueueEntry are both a plain `DELETE
+// ... RETURNING id` (see sql/run_queue.sql), so a row that is gone after a
+// different process touched it is exactly as ambiguous, after the fact, as
+// one still leased by a different process: it might be a real success, or
+// it might be accepted work permanently lost to a terminal failure. Both
+// outcomes surface as non-nil errors (ErrRowOutcomeUnconfirmed for "gone",
+// errLeaseLost's own meaning for "still leased elsewhere") — see the
+// re-check's own comment below for why "gone" cannot mean "succeeded" in
+// this schema. RunNonInteractive (internal/app/app_run.go) converts (true,
+// nil) directly into exit code 0 with a success envelope; treating an
+// unconfirmable outcome as one reopens exactly the false-success class
+// task #575 (commit 638bc777) closed, just through this re-check path
+// instead of the admission-wait path #575 fixed. The literal "nack, then
+// the SAME process's own retry succeeds" case this task names never
+// reaches the re-check at all — it clears err via the ordinary outcomeErr
+// overwrite above, backed by a real, locally-observed executeEntrySync
+// success.
 func (p *RunQueuePump) DrainSessionNow(ctx context.Context, sessionID string) (drained bool, err error) {
+	// lastErrRowID names the run-queue row (by ID) that err currently
+	// describes, so the 'nothing pending' branch below can re-check that
+	// SPECIFIC row's current state before handing err back to the caller as
+	// the final answer -- see the contract decision above. Set only for an
+	// ordinary retryable failure (the row Nacked back to pending); cleared
+	// on a clean success, a terminal resolution, or an outcome read from a
+	// wait on someone else's admissionEntry (already fully resolved).
+	var lastErrRowID string
 	for {
 		if ctx.Err() != nil {
 			return drained, ctx.Err()
@@ -134,6 +185,14 @@ func (p *RunQueuePump) DrainSessionNow(ctx context.Context, sessionID string) (d
 			if outcomeDrained {
 				drained = true
 				err = outcomeErr
+				// The outcome we just read came from admissionEntry.done,
+				// which only closes AFTER the other execution's own
+				// Ack/Nack/TerminalFail write has already landed (see
+				// admissionEntry's doc) -- it is a fully resolved, known
+				// outcome, not a row we are about to lose sight of. No
+				// row-recheck is needed for it, unlike the locally-executed
+				// branch below.
+				lastErrRowID = ""
 			}
 			if stopNow {
 				return drained, nil
@@ -270,6 +329,22 @@ func (p *RunQueuePump) DrainSessionNow(ctx context.Context, sessionID string) (d
 			if outcomeDrained {
 				drained = true
 				err = outcomeErr
+				// Only an ORDINARY RETRYABLE failure leaves the row back in
+				// 'pending' state via NackRunQueueEntry inside
+				// executeEntrySync (see its own doc) -- a clean success
+				// (outcomeErr == nil) deletes the row on Ack, and a terminal
+				// failure (AlreadyAttempted) or a lost lease also leave
+				// nothing for a different pump instance to race in on in
+				// the same way. Track the row's ID ONLY for the retryable
+				// case: it is the one whose 'nothing pending next iteration'
+				// resolution is genuinely ambiguous between 'fully resolved'
+				// and 'someone else has it now', and the only case the
+				// re-check below needs to run for.
+				if outcomeErr != nil && isOrdinaryRetryableOutcome(execErr) {
+					lastErrRowID = leased.ID
+				} else {
+					lastErrRowID = ""
+				}
 			}
 			if stopNow {
 				// A genuinely different live owner has this session right
@@ -310,8 +385,123 @@ func (p *RunQueuePump) DrainSessionNow(ctx context.Context, sessionID string) (d
 		// nil branch below is what runs, and the OLD nil here is exactly
 		// what a waiting drain would misread as success).
 		releaseSession(errNoExecutionAttempted)
+
+		// P2-1 fix: err may still describe a row this call Nacked on an
+		// EARLIER iteration and no longer has any claim over -- the Nack
+		// landed (inside executeEntrySync) before this function ever saw
+		// the error, so the row was already back in 'pending' the moment
+		// releaseSession ran above, open to a genuinely different process's
+		// pump instance leasing it before this loop's own next iteration
+		// got back around to it (in-memory admission -- p.inFlight -- only
+		// guards against races within THIS process; it cannot see another
+		// process's lease). Reaching this branch with lastErrRowID set means
+		// exactly that happened: LeaseRunQueueEntry just found nothing
+		// pending for a row we know we returned to pending ourselves.
+		//
+		// Re-check that SPECIFIC row before trusting err as the final
+		// answer -- but this re-check can NEVER clear err to nil. That is
+		// deliberate, not an oversight: an earlier version of this fix
+		// treated "the row is gone" (GetRunQueueEntry returns nil) as proof
+		// of a genuine commit and cleared err, but AckRunQueueEntry and
+		// TerminalFailRunQueueEntry are BOTH plain `DELETE FROM
+		// session_run_queue ... RETURNING id` (see sql/run_queue.sql) --
+		// there is no terminal_failure flag left behind to distinguish them
+		// by (the terminal_failure COLUMN exists in the schema, but no
+		// query ever sets it to 1 on a surviving row; TerminalFailRunQueueEntry
+		// deletes outright, exactly like Ack, so RunQueueEntry.TerminalFailure
+		// is always false in practice -- confirmed by reading every query in
+		// that file, not assumed). A row gone after a DIFFERENT process
+		// touched it is therefore EXACTLY as ambiguous as one still leased
+		// by a different process: it might be a genuine commit, or it might
+		// be a permanent terminal-fail for accepted work that will now
+		// never run. app_run.go's RunNonInteractive reads (drained=true,
+		// err=nil) as "a durable continuation completed here" and converts
+		// it directly into exit code 0 (see run_queue_pump.go's own
+		// DrainSessionNow doc and task #575/commit 638bc777, which closed
+		// five different ways a bare nil could misrepresent a non-success
+		// outcome as one) -- asserting success on an outcome this call
+		// cannot actually confirm reopens exactly that defect, just through
+		// this re-check path instead of the admission-wait path #575 fixed.
+		// The literal same-process "nack, then retry succeeds" case this
+		// task names does NOT go through this re-check at all: THAT case
+		// re-leases the SAME row itself on the next loop iteration and
+		// clears err via the ordinary outcomeErr overwrite above, with a
+		// real executeEntrySync outcome behind it. This re-check only
+		// covers the cross-process case, where a positive success can
+		// never be confirmed from this schema -- so it never fabricates one.
+		//   - gone entirely (current == nil): ambiguous between "acked" and
+		//     "terminal-failed by another process" -- ErrRowOutcomeUnconfirmed
+		//     is deliberately the more conservative of the two (a false
+		//     "still might fail" costs the operator a retry; a false
+		//     "succeeded" costs them silently losing accepted work), so an
+		//     unresolvable ambiguity is reported through it rather than
+		//     guessing success.
+		//   - still present and 'leased' by a DIFFERENT leasedBy: someone
+		//     else has it right now and its outcome is genuinely UNKNOWN to
+		//     this call -- reported through errLeaseLost's own "nothing
+		//     further can be learned from this attempt" meaning.
+		//   - still present and 'pending' (a lookup race with the lease
+		//     attempt just above, or the DB write hasn't settled from this
+		//     call's own perspective): err still describes it accurately,
+		//     since nobody else has touched it. Left as recorded.
+		//   - the recheck read itself fails: fall back to returning err as
+		//     originally recorded rather than losing it to a transient
+		//     lookup error -- see below.
+		if lastErrRowID != "" {
+			recheckCtx, recheckCancel := context.WithTimeout(context.Background(), p.dbWriteTimeout())
+			current, recheckErr := p.cfg.Sessions.GetRunQueueEntry(recheckCtx, lastErrRowID)
+			recheckCancel()
+			switch {
+			case recheckErr != nil:
+				// Could not confirm either way -- degrade to the pre-fix
+				// behavior (report what we last knew) rather than silently
+				// dropping a real error over a transient lookup failure.
+				slog.Warn("run_queue_pump: DrainSessionNow could not re-check a locally-nacked row's current state; reporting its last known local outcome", "id", lastErrRowID, "session_id", sessionID, "err", recheckErr, "instance_id", p.cfg.PumpInstanceID)
+			case current == nil:
+				// Ambiguous: acked (genuine success) or terminal-failed
+				// (permanent loss) by a different process -- both delete
+				// the row identically, and nothing else in this schema
+				// distinguishes them. Report the conservative outcome.
+				err = fmt.Errorf("%w (id=%s)", ErrRowOutcomeUnconfirmed, lastErrRowID)
+			case current.Status == "leased":
+				// A DIFFERENT owner holds it right now. Unknown, not
+				// resolved -- report that, not a fabricated success.
+				err = fmt.Errorf("%w (id=%s)", errLeaseLost, lastErrRowID)
+			}
+			// current != nil && current.Status == "pending": still ours to
+			// account for, and nobody else has touched it -- leave err as
+			// recorded.
+		}
+
 		return drained, err
 	}
+}
+
+// isOrdinaryRetryableOutcome reports whether execErr is the kind of failure
+// that leaves its row back in 'pending' state via a plain NackRunQueueEntry
+// (executeEntrySync's default failure branch) rather than one of the other
+// outcomes (clean success, terminal AlreadyAttempted failure, a
+// busy/queued/lock outcome handled by NackRunQueueEntryNoAttemptPenalty, or
+// errLeaseLost/ErrTurnCommitFailed, which leave the row leased or otherwise
+// don't reopen a plain 'pending' race the same way). Used by DrainSessionNow
+// to decide whether a row's ID is worth re-checking once the loop later
+// finds nothing pending for the session -- see the contract decision atop
+// DrainSessionNow.
+func isOrdinaryRetryableOutcome(execErr error) bool {
+	if execErr == nil {
+		return false
+	}
+	if errors.Is(execErr, errLeaseLost) || errors.Is(execErr, ErrTurnCommitFailed) {
+		return false
+	}
+	if errors.Is(execErr, ErrCallQueuedNotExecuted) || isSessionLockBusyErr(execErr) {
+		return false
+	}
+	var alreadyAttempted AlreadyAttempted
+	if errors.As(execErr, &alreadyAttempted) && alreadyAttempted.AlreadyAttempted() {
+		return false
+	}
+	return true
 }
 
 // classifyBackgroundOutcome interprets an admitSession release outcome —

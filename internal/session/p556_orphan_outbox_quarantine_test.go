@@ -1,41 +1,116 @@
 package session_test
 
 // Regression coverage for the orphan-outbox poison-row finding in the
-// 2026-08-18 release-readiness review (task #556).
+// 2026-08-18 release-readiness review (task #556), corrected by the
+// 2026-08-19 review (task #571) after that review CONFIRMED, by deleting
+// the production call and watching the suite stay green, that the original
+// version of this file was vacuous:
 //
-// Dropping the old claim/mark-failed model also dropped the retry budget, so
-// an entry that can never be enqueued was logged at ERROR and retried on
-// every drain tick — every 15 seconds, forever, for the life of the process.
+//   - The original test called svc.RecordOrphanOutboxFailure directly and
+//     never reached processOrphanOutboxEntry (run_queue_orphan_drain.go) at
+//     all -- deleting the recordOrphanOutboxDrainFailure call at that
+//     function's only production call site left the suite green, the exact
+//     revert the test's own "Revert-check" comment claimed would fail.
+//   - The row it built was also not actually poison: []byte("this is not
+//     json") for a VALID session ID drains into session_run_queue just
+//     fine, because DrainOrphanOutboxEntry carries call_data across as an
+//     opaque TEXT column with no format validation. Nothing in the
+//     original suite constructed a row the drain's own INSERT would
+//     actually keep failing on.
+//
+// This version drives the real pump (Start() -> drainOrphanOutbox ->
+// processOrphanOutboxEntry -> DrainOrphanOutboxEntry) against a row that IS
+// genuinely un-enqueueable: the INSERT into session_run_queue enforces
+// `session_id TEXT NOT NULL REFERENCES sessions (id) ON DELETE CASCADE`
+// (20260809000001_add_session_run_queue.sql), so a row whose session_id
+// does not exist in `sessions` fails that INSERT with a real SQLite
+// FOREIGN KEY constraint violation every single time, forever -- no amount
+// of retrying changes the outcome, because the row's OWN data is what is
+// wrong.
+//
+// That specific shape cannot be produced through WriteToOrphanOutbox: the
+// orphan_call_outbox table carries the IDENTICAL
+// `session_id ... REFERENCES sessions (id) ON DELETE CASCADE` constraint
+// (20260812000001_add_orphan_call_outbox.sql), so WriteToOrphanOutbox
+// itself already rejects a bogus session_id with the same FK violation
+// (confirmed directly: session.Service.WriteToOrphanOutbox against a real
+// db.Connect()-opened database, foreign_keys=ON as connect.go's own pragma
+// map sets it, returns "constraint failed: FOREIGN KEY constraint failed"
+// for a nonexistent session_id) -- and a session that legitimately existed
+// and was later deleted cascades its outbox row away in the SAME
+// transaction as the delete (session.Delete's own single BeginTx/Commit),
+// so there is no window where a real session deletion leaves a stale
+// outbox row behind either. This test therefore builds the poison row by
+// inserting it directly against the raw *sql.DB with foreign_keys
+// temporarily OFF for that one statement -- a faithful simulation of a row
+// that reached the table through a path other than the validated
+// WriteToOrphanOutbox API (a future write path lacking the same check, a
+// restored backup, manual DB surgery) rather than a claim about how likely
+// that path is. Once such a row exists, DrainOrphanOutboxEntry's own INSERT
+// has no way to know the difference, and retries it exactly as it would
+// retry any other pending entry.
 
 import (
 	"context"
+	"database/sql"
+	"fmt"
+	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/crush/internal/db"
 	"github.com/charmbracelet/crush/internal/session"
 	"github.com/stretchr/testify/require"
+	_ "modernc.org/sqlite"
 )
 
-// TestOrphanOutbox_PoisonEntryQuarantinesInsteadOfRetryingForever walks a
-// malformed entry through its whole retry budget and asserts it leaves the
-// pending scan afterwards.
-//
-// A malformed row is produced by writing an outbox entry for a session id
-// that does not satisfy the main queue's constraints, so the drain's inner
-// INSERT fails every time — the exact shape the review named as the only way
-// this can fail forever.
-//
-// Revert-check: remove the recordOrphanOutboxDrainFailure call from
-// processOrphanOutboxEntry's error path and this fails on the final
-// require.Empty — the entry is still pending after any number of ticks.
+// This test opens its database through the SAME db.Connect path production
+// uses (not a hand-rolled inline schema), so foreign_keys=ON and every
+// other pragma in connect.go's own map actually apply -- required for the
+// poison row below to behave as a genuine, permanent FK violation rather
+// than silently succeeding the way it would against the package's other
+// test harnesses (run_queue_round2_test.go's setupTestSession and
+// p1_2_lease_loss_test.go's setupTestSessionWithDB both open their DB via a
+// bare sql.Open with an inline CREATE TABLE, which never issues `PRAGMA
+// foreign_keys = ON` -- confirmed directly: a bogus session_id INSERT
+// against either of those succeeds with no error at all, since SQLite
+// defaults foreign key enforcement to OFF per-connection).
 func TestOrphanOutbox_PoisonEntryQuarantinesInsteadOfRetryingForever(t *testing.T) {
 	t.Parallel()
-	sess, svc := setupTestSession(t, "orphan-poison")
+	dataDir := t.TempDir()
 	ctx := context.Background()
 
-	// call_data that is not valid for the main queue: the drain's INSERT
-	// carries it across verbatim, and the entry can never be enqueued.
-	require.NoError(t, svc.WriteToOrphanOutbox(ctx, "poison-1", sess.ID, []byte("this is not json")))
+	conn, err := db.Connect(ctx, dataDir)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, db.Release(dataDir)) })
+
+	q := db.New(conn)
+	svc := session.NewService(q, conn)
+
+	_, err = svc.Create(ctx, "orphan-poison")
+	require.NoError(t, err)
+
+	// A genuinely un-enqueueable row: session_id references no row in
+	// `sessions` at all. session_run_queue's FK makes
+	// DrainOrphanOutboxEntry's inner INSERT fail this way every time -- see
+	// this file's header for why WriteToOrphanOutbox itself cannot be used
+	// to build it (its own identical FK rejects it immediately) and why a
+	// real session delete cannot produce it either (CASCADE removes the
+	// outbox row atomically in the same transaction). Built by inserting
+	// directly against the raw connection with foreign_keys temporarily OFF
+	// for this one statement, then restored immediately after -- the row is
+	// invalid DATA, not a side effect of a weakened connection; everything
+	// downstream (DrainOrphanOutboxEntry's own transaction) still runs
+	// under full FK enforcement.
+	_, err = conn.ExecContext(ctx, `PRAGMA foreign_keys = OFF`)
+	require.NoError(t, err)
+	_, err = conn.ExecContext(ctx,
+		`INSERT INTO orphan_call_outbox (id, session_id, call_data, status, attempts, max_attempts, created_at, updated_at) VALUES (?, ?, ?, 'pending', 0, 5, ?, ?)`,
+		"poison-1", "session-that-does-not-exist", `{"SessionID":"session-that-does-not-exist","Prompt":"x"}`, 1000, 1000)
+	require.NoError(t, err, "constructing the poison row directly must succeed (foreign_keys is off for this one statement)")
+	_, err = conn.ExecContext(ctx, `PRAGMA foreign_keys = ON`)
+	require.NoError(t, err)
 
 	pending, err := svc.ListPendingOrphanOutboxEntries(ctx)
 	require.NoError(t, err)
@@ -43,40 +118,167 @@ func TestOrphanOutbox_PoisonEntryQuarantinesInsteadOfRetryingForever(t *testing.
 	budget := pending[0].MaxAttempts
 	require.Greater(t, budget, int64(0), "the schema must define a retry budget for this test to mean anything")
 
-	// Charge the budget the same way a failing drain does, one attempt per
-	// simulated tick, and watch the counter climb.
-	var last session.OrphanOutboxFailureOutcome
-	for i := int64(1); i <= budget; i++ {
-		last, err = svc.RecordOrphanOutboxFailure(ctx, "poison-1", "inner INSERT failed: malformed call_data")
-		require.NoError(t, err)
-		require.Equal(t, i, last.Attempts, "attempt %d must be counted", i)
-		require.False(t, last.AlreadyTerminal)
-		if i < budget {
-			require.False(t, last.Quarantined, "the entry must survive until its budget is actually spent")
-		}
-	}
-	require.True(t, last.Quarantined, "the final attempt must quarantine the entry")
+	// Drive the REAL pump through drainOrphanOutbox -> processOrphanOutboxEntry
+	// -> DrainOrphanOutboxEntry, one simulated tick per iteration, exactly as
+	// production does -- not svc.RecordOrphanOutboxFailure called directly.
+	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
+		Sessions:       svc,
+		Coordinator:    nil, // no main-queue coordinator needed; this only exercises the orphan drain
+		PumpInstanceID: "test-pump-poison",
+		TestTick:       func() time.Duration { return time.Hour }, // keep the main tick out of the way
+		TestDrainTick:  func() time.Duration { return 20 * time.Millisecond },
+	})
+	pump.Start()
+	t.Cleanup(func() { pump.Stop() })
 
-	// The whole point: it stops being scanned.
-	pending, err = svc.ListPendingOrphanOutboxEntries(ctx)
-	require.NoError(t, err)
-	require.Empty(t, pending, "a quarantined entry must leave the pending scan, or the 15s retry loop continues forever")
+	// Each drain tick attempts the row, gets a real FK violation from
+	// DrainOrphanOutboxEntry, and counts one attempt against the budget.
+	// Wait for the row to leave the pending scan (quarantined) rather than
+	// asserting on a fixed number of ticks -- the exact tick count needed
+	// depends only on budget/DrainTick, but Eventually is the correct
+	// primitive for "N background ticks must have fired" regardless.
+	require.Eventually(t, func() bool {
+		pending, err := svc.ListPendingOrphanOutboxEntries(ctx)
+		return err == nil && len(pending) == 0
+	}, 5*time.Second, 20*time.Millisecond,
+		"a genuinely un-enqueueable entry must eventually leave the pending scan (be quarantined), or the drain tick retries it forever")
 
-	// But it is parked, not deleted — an operator can still see it and why.
+	// But it is parked, not deleted -- an operator can still see it and why.
 	stored, err := svc.GetOrphanOutboxEntry(ctx, "poison-1")
 	require.NoError(t, err)
 	require.NotNil(t, stored)
 	require.Equal(t, "failed", stored.Status)
 	require.True(t, stored.LastError.Valid, "the reason must be recorded on the row, not only in the log")
-	require.Contains(t, stored.LastError.String, "malformed call_data")
+	require.Contains(t, stored.LastError.String, "FOREIGN KEY", "the recorded failure must be the real DrainOrphanOutboxEntry error, not a synthetic message")
+	require.GreaterOrEqual(t, stored.Attempts, budget, "quarantine must not fire before the budget is actually spent")
 
-	// And it cannot be counted again or resurrected.
+	// And it cannot be counted again or resurrected by a later tick.
+	pump.Stop()
 	after, err := svc.RecordOrphanOutboxFailure(ctx, "poison-1", "another tick")
 	require.NoError(t, err)
 	require.True(t, after.AlreadyTerminal, "a terminal row must not be re-counted")
-	stored, err = svc.GetOrphanOutboxEntry(ctx, "poison-1")
+}
+
+// transientBusySessions wraps a real session.Service and makes
+// DrainOrphanOutboxEntry return a GENUINE, driver-issued SQLITE_BUSY error
+// (not a synthetic one -- see TestIsTransientOrphanOutboxDrainError_SQLiteBusyIsTransient's
+// own doc for why a real one is used everywhere in this round) for the
+// first N calls, then delegates. Used to prove the transient/permanent
+// classification (task #571 part c) end to end: a run of SQLITE_BUSY
+// failures across drain ticks must NOT count against max_attempts, unlike
+// the permanent FK-violation case covered above.
+type transientBusySessions struct {
+	session.Service
+	busyErr      error
+	failuresLeft atomic.Int32 // written by the pump's background goroutine, read by the test's polling goroutine -- must be atomic
+}
+
+func (s *transientBusySessions) DrainOrphanOutboxEntry(ctx context.Context, id string) (bool, error) {
+	if s.failuresLeft.Add(-1) >= 0 {
+		return false, fmt.Errorf("enqueueing to main queue: %w", s.busyErr)
+	}
+	return s.Service.DrainOrphanOutboxEntry(ctx, id)
+}
+
+// TestOrphanOutbox_TransientBusyDoesNotCountAgainstBudget is the P1 fix
+// this round adds (task #571 part c): max_attempts=5
+// (20260812000001_add_orphan_call_outbox.sql) with no backoff between
+// ticks means five ordinary SQLITE_BUSY hits -- exactly what several
+// concurrent `crush run` processes each running an immediate
+// Start()-time drain would produce -- used to permanently quarantine a
+// perfectly healthy, still-queued user call. This drives MORE than
+// max_attempts consecutive transient failures through the real pump and
+// asserts the row is still pending (not quarantined, attempts still 0)
+// afterward, then lets the next attempt succeed to prove the row was
+// never actually broken.
+func TestOrphanOutbox_TransientBusyDoesNotCountAgainstBudget(t *testing.T) {
+	t.Parallel()
+	sess, svc := setupTestSession(t, "orphan-transient-busy")
+	ctx := context.Background()
+
+	callData := []byte(`{"SessionID":"` + sess.ID + `","Prompt":"continue"}`)
+	require.NoError(t, svc.WriteToOrphanOutbox(ctx, "transient-1", sess.ID, callData))
+
+	busyErr := realSQLiteBusyErrorForTest(t)
+	// More than max_attempts (5) consecutive transient failures: if these
+	// were being counted, the row would quarantine well before this many
+	// ticks. failuresLeft is generous specifically to make that failure
+	// mode visible rather than borderline.
+	wrapped := &transientBusySessions{Service: svc, busyErr: busyErr}
+	wrapped.failuresLeft.Store(8)
+
+	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
+		Sessions:       wrapped,
+		Coordinator:    &countingCoordinatorForDrain{},
+		PumpInstanceID: "test-pump-transient-busy",
+		TestTick:       func() time.Duration { return time.Hour },
+		TestDrainTick:  func() time.Duration { return 10 * time.Millisecond },
+	})
+	pump.Start()
+	t.Cleanup(func() { pump.Stop() })
+
+	// Wait for at least 8 drain ticks' worth of wall-clock time so every
+	// injected transient failure has actually been attempted.
+	require.Eventually(t, func() bool {
+		return wrapped.failuresLeft.Load() <= 0
+	}, 3*time.Second, 10*time.Millisecond, "all injected transient failures must have been attempted")
+
+	// The row must STILL be pending with NO attempts counted -- transient
+	// failures are excluded from the budget entirely, not merely slow to
+	// exhaust it.
+	stored, err := svc.GetOrphanOutboxEntry(ctx, "transient-1")
 	require.NoError(t, err)
-	require.Equal(t, "failed", stored.Status, "recording against a terminal row must not flip it back to pending")
+	require.NotNil(t, stored, "the row must not have been quarantined or lost")
+	require.Equal(t, "pending", stored.Status, "repeated transient DB contention must never quarantine a healthy row")
+	require.Equal(t, int64(0), stored.Attempts, "transient failures must not be counted against max_attempts at all")
+
+	// And now that the injected failures are exhausted, the row drains
+	// normally on the very next tick -- proving it was never actually
+	// broken, only unlucky with DB contention.
+	require.Eventually(t, func() bool {
+		pending, err := svc.ListPendingOrphanOutboxEntries(ctx)
+		return err == nil && len(pending) == 0
+	}, 3*time.Second, 10*time.Millisecond, "the row must drain normally once transient contention clears")
+}
+
+// realSQLiteBusyErrorForTest is the session_test-package counterpart of
+// realSQLiteBusyError (package session, p571_transient_classifier_test.go)
+// -- duplicated rather than shared because the two live in different Go
+// packages (session vs session_test) and this file has no access to an
+// unexported helper across that boundary. Produces a genuine, driver-issued
+// *sqlite.Error with code SQLITE_BUSY by racing two independent raw
+// connections to the same on-disk file with the second's busy_timeout set
+// to 0, so it fails immediately with no sleep/retry loop.
+func realSQLiteBusyErrorForTest(t *testing.T) error {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "busy-probe.db")
+
+	db1, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(0)&_pragma=journal_mode(WAL)")
+	require.NoError(t, err)
+	db1.SetMaxOpenConns(1)
+	t.Cleanup(func() { db1.Close() })
+	_, err = db1.Exec(`CREATE TABLE t (id TEXT PRIMARY KEY)`)
+	require.NoError(t, err)
+
+	db2, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(0)&_pragma=journal_mode(WAL)")
+	require.NoError(t, err)
+	db2.SetMaxOpenConns(1)
+	t.Cleanup(func() { db2.Close() })
+
+	tx1, err := db1.BeginTx(context.Background(), nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { tx1.Rollback() })
+	_, err = tx1.Exec(`INSERT INTO t (id) VALUES ('a')`)
+	require.NoError(t, err)
+
+	tx2, err := db2.BeginTx(context.Background(), nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { tx2.Rollback() })
+	_, busyErr := tx2.Exec(`INSERT INTO t (id) VALUES ('b')`)
+	require.Error(t, busyErr, "the second writer must be rejected, or this test proves nothing")
+
+	return busyErr
 }
 
 // TestOrphanOutbox_HealthyEntryStillDrains is the control. Quarantine must

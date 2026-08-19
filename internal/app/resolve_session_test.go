@@ -247,6 +247,10 @@ func (m *mockSessionService) ListStaleLeasedRunQueueEntries(context.Context, int
 	return nil, nil
 }
 
+func (m *mockSessionService) GetRunQueueEntry(context.Context, string) (*session.RunQueueEntry, error) {
+	return nil, nil
+}
+
 func (m *mockSessionService) CleanupExpiredLeases(context.Context, int64) error {
 	return nil
 }
