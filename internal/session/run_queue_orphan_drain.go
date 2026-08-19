@@ -72,22 +72,26 @@ func (p *RunQueuePump) processOrphanOutboxEntry(_ context.Context, entry db.Orph
 	// This eliminates the vulnerable 'processing' intermediate state that could leave
 	// entries stranded after crashes (P0-4 fix).
 	//
-	// No attempts-counter/terminal-failed state on this path (task #440
-	// follow-up decision): an entry whose call_data is genuinely malformed
-	// -- the ONLY way DrainOrphanOutboxEntry's inner INSERT can keep
-	// failing forever, since the FK ON DELETE CASCADE on session_id
-	// already removes any entry whose session no longer exists -- retries
-	// on every drain tick indefinitely, logged at ERROR each time rather
-	// than silently dropped or auto-escalated to a terminal state. This
-	// was a deliberate choice to keep DrainOrphanOutboxEntry a single
-	// atomic transaction (insert-to-main-queue + delete-from-outbox) with
-	// no separate attempts-tracking write to race against; the older
-	// claim/mark-failed model this superseded (task #426) is gone. See
-	// internal/db/sql/orphan_outbox.sql's header comment for the full
-	// rationale.
+	// The drain itself stays a single atomic transaction (insert-to-main-
+	// queue + delete-from-outbox) with no intermediate claim state: the
+	// older claim/mark-failed model (task #426) is gone and is not coming
+	// back. What DID come back is the retry budget — dropping the claim
+	// model also dropped attempts/terminal-failed, so an entry whose
+	// call_data is genuinely malformed (the ONLY way the inner INSERT can
+	// keep failing forever, since the FK ON DELETE CASCADE on session_id
+	// already removes any entry whose session no longer exists) was logged
+	// at ERROR and retried every 15 seconds for the life of the process.
+	// Better than silent loss, but unbounded log and DB churn for a row
+	// that can never succeed — see the 2026-08-18 release-readiness review.
+	//
+	// The budget is counted in a SEPARATE write on the failure path only
+	// (recordOrphanOutboxDrainFailure below), which is what keeps the two
+	// compatible: nothing owns the row, nothing waits on the counter, and a
+	// crash between the two simply means the attempt was not counted.
 	drained, err := p.cfg.Sessions.DrainOrphanOutboxEntry(drainCtx, entry.ID)
 	if err != nil {
 		slog.Error("run_queue_pump: failed to drain orphan outbox entry", "id", entry.ID, "session_id", entry.SessionID, "err", err, "instance_id", p.cfg.PumpInstanceID)
+		p.recordOrphanOutboxDrainFailure(entry, err)
 		return
 	}
 	if !drained {
@@ -99,5 +103,49 @@ func (p *RunQueuePump) processOrphanOutboxEntry(_ context.Context, entry db.Orph
 	slog.Info("run_queue_pump: successfully drained orphan outbox entry to main queue",
 		"id", entry.ID,
 		"session_id", entry.SessionID,
+		"instance_id", p.cfg.PumpInstanceID)
+}
+
+// recordOrphanOutboxDrainFailure charges one failed drain attempt against an
+// entry's retry budget and reports, loudly and once, when that budget runs
+// out and the entry is quarantined.
+//
+// Deliberately best-effort. It runs on its own short-lived context rooted in
+// context.Background() rather than p.ctx: the drain that just failed may have
+// failed BECAUSE p.ctx was cancelled by Stop(), and in that case the counter
+// write must still land — otherwise a shutdown racing a poison row would
+// reset its progress toward quarantine on every restart, which is exactly the
+// forever-retry this closes. The budget is small and monotonic, so counting
+// one attempt during shutdown is harmless; failing to count one is not.
+//
+// If the counter write itself fails there is nothing further to do: the entry
+// stays pending and the next tick tries again. That degrades to the old
+// behaviour rather than losing the row.
+func (p *RunQueuePump) recordOrphanOutboxDrainFailure(entry db.OrphanCallOutbox, cause error) {
+	ctx, cancel := context.WithTimeout(context.Background(), p.dbWriteTimeout())
+	defer cancel()
+
+	outcome, err := p.cfg.Sessions.RecordOrphanOutboxFailure(ctx, entry.ID, cause.Error())
+	if err != nil {
+		slog.Warn("run_queue_pump: could not record an orphan outbox drain failure; the entry stays pending and will be retried",
+			"id", entry.ID, "session_id", entry.SessionID, "err", err, "instance_id", p.cfg.PumpInstanceID)
+		return
+	}
+	if outcome.AlreadyTerminal {
+		return
+	}
+	if outcome.Quarantined {
+		// ERROR, not WARN: this row's work is now durably parked and will
+		// never be enqueued. It is still in the table, with last_error set,
+		// for an operator to inspect -- but nothing will retry it.
+		slog.Error("run_queue_pump: orphan outbox entry exhausted its retry budget and was quarantined; its call will NOT be enqueued",
+			"id", entry.ID, "session_id", entry.SessionID,
+			"attempts", outcome.Attempts, "max_attempts", outcome.MaxAttempts,
+			"last_error", cause.Error(), "instance_id", p.cfg.PumpInstanceID)
+		return
+	}
+	slog.Warn("run_queue_pump: orphan outbox drain failed, attempt counted",
+		"id", entry.ID, "session_id", entry.SessionID,
+		"attempts", outcome.Attempts, "max_attempts", outcome.MaxAttempts,
 		"instance_id", p.cfg.PumpInstanceID)
 }

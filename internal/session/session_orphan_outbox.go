@@ -115,3 +115,55 @@ func (s *service) DrainOrphanOutboxEntry(ctx context.Context, id string) (bool, 
 	// Return whether we actually deleted a row (true = we drained it, false = another pump did)
 	return rowsDeleted > 0, nil
 }
+
+// OrphanOutboxFailureOutcome reports what one failed drain attempt did to an
+// entry's retry budget.
+type OrphanOutboxFailureOutcome struct {
+	// Attempts is the entry's failure count after this attempt.
+	Attempts int64
+	// MaxAttempts is the budget it is counted against.
+	MaxAttempts int64
+	// Quarantined is true when this attempt exhausted the budget and moved
+	// the entry to the terminal 'failed' state, so it will no longer be
+	// scanned by ListPendingOrphanOutboxEntries.
+	Quarantined bool
+	// AlreadyTerminal is true when the row was not in 'pending' state at
+	// all -- someone else quarantined or drained it first. Nothing was
+	// counted; there is nothing for the caller to do.
+	AlreadyTerminal bool
+}
+
+// RecordOrphanOutboxFailure counts one failed drain attempt against an entry
+// and quarantines it once it has used up max_attempts.
+//
+// Deliberately NOT part of DrainOrphanOutboxEntry's transaction. That
+// transaction is an atomic insert-to-main-queue plus delete-from-outbox and
+// must stay that way; this runs only after it has already failed and rolled
+// back. The point of the 2026-08-18 review finding was that dropping the old
+// claim/mark-failed model also dropped the retry budget, so a genuinely
+// malformed row was logged and retried every 15 seconds forever. This
+// restores the budget without restoring the claim.
+//
+// It takes no ownership: nothing waits on this write, and a crash between the
+// failed drain and this call simply means the attempt was not counted.
+func (s *service) RecordOrphanOutboxFailure(ctx context.Context, id, lastError string) (OrphanOutboxFailureOutcome, error) {
+	row, err := s.q.RecordOrphanOutboxFailure(ctx, db.RecordOrphanOutboxFailureParams{
+		ID:        id,
+		LastError: sql.NullString{String: lastError, Valid: lastError != ""},
+		UpdatedAt: time.Now().Unix(),
+	})
+	if errors.Is(err, sql.ErrNoRows) {
+		// The UPDATE is scoped to status = 'pending', so no rows means the
+		// entry was drained or quarantined by someone else in the meantime.
+		// Not an error: there is simply nothing left to count.
+		return OrphanOutboxFailureOutcome{AlreadyTerminal: true}, nil
+	}
+	if err != nil {
+		return OrphanOutboxFailureOutcome{}, err
+	}
+	return OrphanOutboxFailureOutcome{
+		Attempts:    row.Attempts,
+		MaxAttempts: row.MaxAttempts,
+		Quarantined: row.Status != "pending",
+	}, nil
+}

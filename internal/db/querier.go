@@ -277,6 +277,10 @@ type Querier interface {
 	// Scoped to the current lease owner, same as AckRunQueueEntry.
 	NackRunQueueEntryNoAttemptPenalty(ctx context.Context, arg NackRunQueueEntryNoAttemptPenaltyParams) (SessionRunQueue, error)
 	RecordFileRead(ctx context.Context, arg RecordFileReadParams) error
+	// Count one failed drain attempt and quarantine the row at max_attempts.
+	// See this file's header for why this is a separate write, why a double
+	// count across pump instances is acceptable, and why RETURNING is `*`.
+	RecordOrphanOutboxFailure(ctx context.Context, arg RecordOrphanOutboxFailureParams) (OrphanCallOutbox, error)
 	RenameSession(ctx context.Context, arg RenameSessionParams) error
 	// Extend a lease expiry while its owner is still genuinely working on it,
 	// or to back off a lease without counting a failed attempt. Scoped to
@@ -375,9 +379,40 @@ type Querier interface {
 	// ON DELETE CASCADE on session_id already closes the realistic failure
 	// mode (session deleted -> row cascades away on its own); what's left is
 	// an operationally-visible (slog.Error per tick), not silent, edge case
-	// for data that was malformed from the start. `attempts`/`max_attempts`/
-	// `status` values other than 'pending' are consequently unreachable going
-	// forward but left in the schema rather than a migration for this.
+	// for data that was malformed from the start.
+	//
+	// That last part was revisited (2026-08-18 release-readiness review): "forever"
+	// is unbounded log and DB churn every 15s for a row that can never succeed.
+	// RecordOrphanOutboxFailure below reinstates `attempts`/`max_attempts`/the
+	// 'failed' terminal state WITHOUT reintroducing the claim model: it is a
+	// separate, single UPDATE on the failure path only, never part of the atomic
+	// drain transaction, and it takes no ownership of the row. Nothing waits on
+	// it, nothing recovers it, and a crash between the failed drain and this
+	// write simply means the attempt was not counted.
+	//
+	// RecordOrphanOutboxFailure notes:
+	//
+	//   * It is a separate UPDATE on the failure path only, never part of the
+	//     atomic drain transaction, and takes no ownership of the row. Nothing
+	//     waits on it and nothing recovers it.
+	//   * Two pump instances can both count the same failed attempt, so a poison
+	//     row may quarantine after fewer than max_attempts real ticks. That is
+	//     the correct direction to be wrong in -- sooner, never later -- and
+	//     avoiding it would need exactly the per-instance claim state this
+	//     design removed.
+	//   * Scoped to status = 'pending', so an already-quarantined row cannot be
+	//     re-counted and this can never resurrect a terminal row.
+	//
+	// KEEP EVERY FILE UNDER internal/db/sql/ PURE ASCII. sqlc v1.30.0 miscounts
+	// query spans when a comment contains a multi-byte character: it appears to
+	// measure offsets in bytes and positions in runes, so each non-ASCII
+	// character shifts the generated SQL's end by the difference. Adding a
+	// comment with em-dashes here silently truncated this query's tail
+	// (RETURNING ... became RETURNING ... max_atte -- a statement that would
+	// have failed at Prepare time), and a longer block corrupted an unrelated
+	// query at the top of the file into invalid SQL. Every other .sql file in
+	// this package is ASCII-only, which is why nothing had hit it before.
+	// Reproduced and bisected directly; see the task filed against the bug.
 	// Write a call to the orphan outbox when main run queue enqueue fails.
 	// Returns the outbox row (or error on write failure).
 	WriteToOrphanOutbox(ctx context.Context, arg WriteToOrphanOutboxParams) (OrphanCallOutbox, error)

@@ -267,6 +267,10 @@ func (m *mockSessionService) DrainOrphanOutboxEntry(context.Context, string) (bo
 	return false, nil
 }
 
+func (m *mockSessionService) RecordOrphanOutboxFailure(context.Context, string, string) (session.OrphanOutboxFailureOutcome, error) {
+	return session.OrphanOutboxFailureOutcome{}, nil
+}
+
 func newTestApp(sessions session.Service) *App {
 	return &App{Sessions: sessions}
 }

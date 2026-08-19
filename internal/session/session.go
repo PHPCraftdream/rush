@@ -302,6 +302,10 @@ type Service interface {
 	// false if the entry was already drained by another pump or not in pending state.
 	DrainOrphanOutboxEntry(ctx context.Context, id string) (bool, error)
 	GetOrphanOutboxEntry(ctx context.Context, id string) (*db.OrphanCallOutbox, error)
+	// RecordOrphanOutboxFailure counts one failed drain attempt against an
+	// entry and quarantines it at max_attempts. Separate from the atomic
+	// drain transaction on purpose -- see its implementation.
+	RecordOrphanOutboxFailure(ctx context.Context, id, lastError string) (OrphanOutboxFailureOutcome, error)
 }
 
 type service struct {
