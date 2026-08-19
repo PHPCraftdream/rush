@@ -2024,3 +2024,76 @@ clean run, because it was exercised under plain `bash` while Actions uses
 
 Four comments were also found asserting the opposite of what their code
 did, and two claimed revert-checks they never performed.
+
+### 2026-08-19 (later) — the third review worked off (`547b0815` … `61c481c6`)
+
+A third static review landed on the sixteen commits above and returned
+NO-GO again, with two release blockers **inside the outcome handoff that
+had just been written to close the previous P0**. Both had been seen during
+review of that commit and argued away — once because a different
+execution's outcome is "still a real outcome", once because discarding an
+accumulated error "mirrors pre-existing behaviour". Neither survives
+contact with what the caller does: `RunNonInteractive` turns `(true, nil)`
+into exit code 0.
+
+- `b788eb01` — **admission ABA.** `admitSession` found the current holder's
+  entry under the mutex when it refused, threw it away, and the drain
+  re-read it in a second critical section. In between, the execution it
+  lost to could finish and be replaced, so the drain waited on and reported
+  a *different* execution's outcome. The refusal now returns the entry it
+  lost to, read in the same critical section, and the second lookup is
+  gone — reverting the fix no longer compiles, which is the point.
+- `b788eb01` — **partial drain reported success.** `drained` is cumulative
+  and both busy-return sites handed back `drained, nil`, so a stacked
+  continuation where row A committed and row B then found the session owned
+  elsewhere returned success with work still pending; when A had failed,
+  its error was discarded too. Neither site discards an error now, and a
+  still-nil error becomes `ErrDrainIncomplete` when an earlier row ran.
+- `547b0815` — **editing a streaming message.** The review described a race
+  with the checkpoint ticker. It is not a race: the terminal write at the
+  end of every turn takes the unconditional branch — "terminal update
+  always wins" — so an edit made mid-stream was overwritten every time,
+  deterministically. Edits to a partial assistant message are refused, in
+  the UI and independently in the handler. A CAS protocol was rejected with
+  its cost written down: it needs the WS handler to signal the running turn
+  goroutine, and it would have to weaken a contract the ticker depends on.
+- `d3ee9841` — **outbox quarantine polarity inverted.** Only a proven
+  permanent cause (`SQLITE_CONSTRAINT`) is charged; a `p.ctx` cancellation
+  short-circuits before the recorder runs at all. Previously a plain
+  `Stop()` mid-transaction, a slow disk, `IOERR`, `FULL` or any
+  unrecognised wrapper counted against a five-attempt budget, so routine
+  shutdowns could park accepted user work at `failed` forever.
+- `d3ee9841` — the kill registry is written atomically (temp, fsync,
+  rename) instead of truncate-and-write, and the sweep now retains entries
+  whose outcome was inconclusive instead of deleting the only durable
+  pointer after a failed `killpg`.
+- `ff9efec1` — **sticky envelopes carry a sequence number**, so a
+  superseded copy already sitting in the broadcast queue is dropped rather
+  than delivered after the current one. The MCP half of the same finding
+  went the other way deliberately: the registry holds live client sessions
+  and server-pushed schemas, so it cannot be pinned to a config snapshot —
+  the *claim* was narrowed instead, in `buildTools` and `GetMCPTools`.
+- `61c481c6` — `internal/session` gated to `GOMAXPROCS/4` concurrent
+  subtests. 79 parallel subtests, each with a one-connection SQLite DB, run
+  eight-wide under `-race` starve each other badly enough that a
+  lease-renewal goroutine missed a full 3s TTL and a row executed twice. No
+  timeout or TTL was widened; measured 3 failures per 8 runs before, 1
+  after — reported as 1, not 0.
+
+**A correction to the entry above.** It claimed "15 failures became 0" for
+the flake work at eight-way concurrency. That was a single sample. Measured
+properly at the same commit without the patch: 12 failures across 8 runs;
+with it, 3. The package is load-sensitive independently of any one change,
+and which tests fail varies per run. The numbers in this entry are all
+per-8-run counts from the same machine.
+
+Verification at `61c481c6`: `go test ./...` clean, `GOOS=linux` and
+`GOOS=darwin` builds clean, `go vet` clean apart from a pre-existing
+`csync` finding, both pre-push guards clean, and the web e2e suite at
+**314 passed / 0 failed**.
+
+Still open and deliberately not chased: the five new Unix registry tests
+cross-compile but have never been executed — they need a real Linux or
+macOS run. And the dynamic release gate the review asks for (multi-process
+inject/drain stress, repeated shutdown during an outbox transaction, a real
+Unix process-tree kill) does not exist.
