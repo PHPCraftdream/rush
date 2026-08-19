@@ -250,6 +250,13 @@ type Hub struct {
 	register   chan *Client
 	unregister chan *Client
 
+	// stickyBroadcast carries envelopes sent via BroadcastSticky. It fans out
+	// to already-connected clients exactly like broadcast, but Run's
+	// stickyBroadcast case deliberately does NOT push into buffer -- see
+	// BroadcastSticky's doc for why sticky envelopes must never enter the
+	// replay ring at all.
+	stickyBroadcast chan []byte
+
 	// sticky holds the latest envelope for each event type that must reach
 	// EVERY client, including ones that connect long after it was sent.
 	//
@@ -271,12 +278,13 @@ type Hub struct {
 
 func newHub() *Hub {
 	return &Hub{
-		clients:    make(map[*Client]struct{}),
-		buffer:     newReplayBuffer(),
-		broadcast:  make(chan []byte, 1024),
-		register:   make(chan *Client, 64),
-		unregister: make(chan *Client, 64),
-		sticky:     make(map[string][]byte),
+		clients:         make(map[*Client]struct{}),
+		buffer:          newReplayBuffer(),
+		broadcast:       make(chan []byte, 1024),
+		register:        make(chan *Client, 64),
+		unregister:      make(chan *Client, 64),
+		sticky:          make(map[string][]byte),
+		stickyBroadcast: make(chan []byte, 64),
 	}
 }
 
@@ -293,7 +301,51 @@ func (h *Hub) Run(ctx context.Context) {
 		case c := <-h.register:
 			// Add to active set first so no broadcasts are lost after this point.
 			h.clients[c] = struct{}{}
-			// Replay all buffered events to the new client (non-blocking per-event).
+			// Sticky events go FIRST, before the replay. c.send is a bounded
+			// channel (sendBufSize == 512 in production) and the replay below
+			// can be thousands of events for a single streaming turn -- if
+			// sticky went last, the replay alone fills every slot and the
+			// sticky send hits the `default:` drop. That is precisely the
+			// traffic pattern sticky exists to survive (see the sticky
+			// field's doc), so ordering it after the replay made the
+			// guarantee false under its own motivating case. Sending sticky
+			// first means it only competes with itself for the first few
+			// slots -- today that's a single event type
+			// (EventUpdateAvailable), so delivery is effectively guaranteed
+			// as long as the number of distinct sticky types stays small
+			// relative to sendBufSize.
+			//
+			// INVARIANT: a client must never end up with a superseded copy of
+			// a sticky event as the last one it received. This holds because
+			// (1) h.sticky keeps at most one -- the newest -- envelope per
+			// event type (see BroadcastSticky), and (2) sticky envelopes are
+			// NEVER stored in the replay ring (BroadcastSticky sends on
+			// stickyBroadcast, a channel Run drains WITHOUT calling
+			// buffer.push -- see that case below). So there is no older
+			// generation of a sticky event anywhere for the replay step to
+			// hand the client after this loop already sent the current one.
+			// No dedup bookkeeping is needed, unlike an earlier version of
+			// this code that sent sticky first but still stored every
+			// generation in the ring: that let a stale copy ride the replay
+			// in AFTER the current one and become "last received", which is
+			// exactly the bug this invariant rules out.
+			//
+			// Trade-off accepted: a late-joining client now sees the sticky
+			// event (e.g. the update badge) before the replayed history
+			// instead of after. That is the right UX for this feature --
+			// "you have an update" is a standing banner, not something that
+			// needs to slot into turn-by-turn history order -- and it is the
+			// only ordering that can be made reliable against a bounded
+			// channel without blocking or growing it unboundedly.
+			for _, msg := range h.stickyEvents() {
+				select {
+				case c.send <- msg:
+				default:
+					// Client buffer full already (e.g. many sticky types).
+				}
+			}
+			// Then replay buffered events. Sticky envelopes are never in
+			// here (see above), so no filtering is needed.
 			h.buffer.forEach(func(msg []byte) {
 				select {
 				case c.send <- msg:
@@ -301,17 +353,6 @@ func (h *Hub) Run(ctx context.Context) {
 					// Client buffer full; skip older replayed events rather than block.
 				}
 			})
-			// Then the sticky events, which the ring cannot be trusted to
-			// still hold (see the sticky field's doc). Sent AFTER the replay
-			// so a sticky event that also happens to still be in the buffer
-			// arrives last and wins, rather than being overwritten by a
-			// stale copy of itself.
-			for _, msg := range h.stickyEvents() {
-				select {
-				case c.send <- msg:
-				default:
-				}
-			}
 
 		case c := <-h.unregister:
 			if _, ok := h.clients[c]; ok {
@@ -334,6 +375,29 @@ func (h *Hub) Run(ctx context.Context) {
 				case c.send <- msg:
 				default:
 					slog.Debug("ws: slow client, dropping message")
+				}
+			}
+
+		case msg := <-h.stickyBroadcast:
+			// Deliberately NOT h.buffer.push(msg): sticky envelopes must
+			// never enter the replay ring. h.sticky (updated synchronously
+			// in BroadcastSticky, before this case ever runs) already keeps
+			// the one, newest copy for late-joining clients -- see the
+			// register case above. If a superseded copy also lived in the
+			// ring, a client connecting while both generations are still
+			// within the ring's window could receive the sticky send (newest)
+			// followed by the ring's older copy during replay, ending up
+			// with the stale value as "last received". Keeping sticky
+			// envelopes out of the ring entirely is what makes that
+			// impossible, without per-event bookkeeping on every replay.
+			//
+			// Fan-out to already-connected clients only; identical to the
+			// broadcast case's fan-out.
+			for c := range h.clients {
+				select {
+				case c.send <- msg:
+				default:
+					slog.Debug("ws: slow client, dropping sticky message")
 				}
 			}
 		}
@@ -409,7 +473,15 @@ func (c *Client) writePump() {
 
 // BroadcastSticky is Broadcast plus a promise: every client that connects
 // later also receives this event, regardless of how much traffic has passed
-// through the replay ring in between.
+// through the replay ring in between. Run's register case delivers sticky
+// envelopes to a newly connected client BEFORE replaying the ring, precisely
+// so a large replay (thousands of deltas from one streaming turn) cannot
+// fill the client's bounded send channel first and starve the sticky send
+// under a `default:` drop -- see the register case in Run for the full
+// reasoning. The promise is bounded by sendBufSize: it holds as long as the
+// number of distinct sticky event types stays small relative to it, since
+// sticky sends still compete with each other (not with the replay) for the
+// same non-blocking channel.
 //
 // Use it only for state a late-joining client genuinely needs and cannot ask
 // for -- there is no polling and no request/response path for it. The update
@@ -436,10 +508,16 @@ func (h *Hub) BroadcastSticky(msgType string, payload any) {
 	h.sticky[msgType] = env
 	h.stickyMu.Unlock()
 
+	// Sent on stickyBroadcast, NOT broadcast: Run's stickyBroadcast case
+	// fans this out to already-connected clients exactly like an ordinary
+	// broadcast, but skips buffer.push -- sticky envelopes must never enter
+	// the replay ring (see the register case and the stickyBroadcast case
+	// in Run for why: a superseded copy in the ring could otherwise reach a
+	// late client AFTER the current one and win as "last received").
 	select {
-	case h.broadcast <- env:
+	case h.stickyBroadcast <- env:
 	default:
-		slog.Warn("ws: broadcast channel full, dropping", "type", msgType)
+		slog.Warn("ws: sticky broadcast channel full, dropping", "type", msgType)
 	}
 }
 
