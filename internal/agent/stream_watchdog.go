@@ -82,6 +82,22 @@ type streamWatchdog struct {
 	// Ctrl-C" from "watchdog timed out" when crafting the finish-part
 	// message the user sees.
 	stalled *atomic.Bool
+	// disarm stops the watchdog from FIRING without stopping its goroutine.
+	//
+	// It exists for the window between "the turn's real work is finished"
+	// and "genCtx is cancelled" -- runTurn spends up to titleJoinGrace there
+	// waiting for a title, with no bump() calls, and the hard cap is
+	// absolute from turn start rather than idle-based, so a turn that
+	// finished just inside --timeout-hard-cap could be pushed over it by
+	// that wait alone. The result was a stall dump and a warning about a
+	// turn that had already succeeded, and the cancel killed the very title
+	// being waited for.
+	//
+	// Idempotent, and safe to never call: the goroutine still exits on ctx,
+	// and <-done still works. Disarming does NOT mean the turn is
+	// unprotected -- by the time it is called, there is nothing left to
+	// protect except a bounded wait.
+	disarm func()
 	// done is closed when the watchdog goroutine has exited. Callers
 	// MUST receive from it before returning to avoid a goroutine leak.
 	done <-chan struct{}
@@ -178,6 +194,8 @@ func startStreamWatchdog(
 	startTime := time.Now()
 	last.Store(startTime.UnixNano())
 	var stalled atomic.Bool
+	// disarmed suppresses every fire condition; see the struct field's doc.
+	var disarmed atomic.Bool
 	// toolsInFlight counts tool executions currently running. While > 0 the
 	// idle timer is paused (see toolStarted/toolFinished in the struct doc).
 	var toolsInFlight atomic.Int64
@@ -271,6 +289,13 @@ func startStreamWatchdog(
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
+				// Checked before any deadline is evaluated, so no cause can
+				// fire once disarmed -- not the idle stall, not the tool
+				// backstop, and not the hard cap, which is the one that
+				// actually bit (see the disarm field's doc).
+				if disarmed.Load() {
+					continue
+				}
 				now := time.Now()
 				// Pause while a tool is executing — provider silence during a
 				// long compile/test is expected, not a stall. Keep `last`
@@ -441,6 +466,7 @@ func startStreamWatchdog(
 		toolStarted:  toolStarted,
 		toolFinished: toolFinished,
 		stalled:      &stalled,
+		disarm:       func() { disarmed.Store(true) },
 		done:         done,
 	}
 }

@@ -1803,6 +1803,16 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 		}
 	}
 
+	// Disarm the watchdog before the title join. The turn's real work is
+	// finished here; all that remains is a bounded wait and the cancel
+	// below. The join makes no bump() calls, and --timeout-hard-cap is
+	// absolute from turn start rather than idle-based, so a turn that
+	// finished just inside the cap could be pushed over it by the wait
+	// alone -- firing a stall dump for a turn that had already succeeded,
+	// and cancelling the very title being waited for. The goroutine still
+	// exits on genCtx and is still joined by the deferred <-wd.done.
+	wd.disarm()
+
 	// Wait for the title BEFORE cancelling: titleCtx is derived from genCtx,
 	// so cancelling first would kill a title that is merely slower than the
 	// turn — which is exactly what #525 was. Bounded, and a no-op when the
