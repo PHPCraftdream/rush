@@ -456,13 +456,22 @@ func (c *coordinator) RebuildSessionAgentCall(ctx context.Context, data session.
 		return SessionAgentCall{}, fmt.Errorf("failed to rebuild models from config: %w", err)
 	}
 
+	// cfg here is the SAME atomic snapshot captured above (line ~437) for the
+	// smart/fast model rebuild -- NOT a fresh c.cfg.Config() read. A reload
+	// landing between the model rebuild above and this provider-options lookup
+	// used to be able to hand back provider options from a DIFFERENT config
+	// generation than the model itself was built from (task #577/P1-2) -- the
+	// entire point of durable recovery is that replaying a call reproduces
+	// exactly what was queued, which requires reading provider options from
+	// the same generation the model came from.
+	//
 	// sessionAgent.Run reads ProviderOptions/Temperature/TopP/TopK/FrequencyPenalty/
 	// PresencePenalty directly off the call (agent.go's fantasy.AgentStreamCall
-	// construction) — it does NOT recompute them from LargeModel itself. Every
+	// construction) -- it does NOT recompute them from LargeModel itself. Every
 	// other call-site populates these via mergeCallOptions before the call ever
 	// reaches Run, so we must do the same here or every durably-recovered call
 	// silently loses its provider options and sampling knobs.
-	smartProviderCfg, _ := c.cfg.Config().Providers.Get(smartModel.ModelCfg.Provider)
+	smartProviderCfg, _ := cfg.Providers.Get(smartModel.ModelCfg.Provider)
 	providerOptions, temp, topP, topK, freqPenalty, presPenalty := mergeCallOptions(smartModel, smartProviderCfg)
 
 	return SessionAgentCall{

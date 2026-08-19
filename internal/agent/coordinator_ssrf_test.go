@@ -46,7 +46,7 @@ func TestBuildTools_AllowPrivateNetworkFetchEscapeHatch(t *testing.T) {
 		t.Helper()
 		coderCfg, ok := coord.cfg.Config().Agents[config.AgentCoder]
 		require.True(t, ok, "coder agent must be configured")
-		built, err := coord.buildTools(t.Context(), coderCfg, false)
+		built, err := coord.buildTools(t.Context(), coord.cfg.Config(), coderCfg, false)
 		require.NoError(t, err)
 
 		downloadTool := findTool(t, built, tools.DownloadToolName)

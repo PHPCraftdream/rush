@@ -22,13 +22,26 @@ import (
 )
 
 func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, agent config.Agent, isSubAgent bool) (SessionAgent, error) {
-	smart, fast, err := c.buildAgentModels(ctx, isSubAgent)
+	// ONE snapshot for the entire build: models, prompt, and tools. Before
+	// this (task #576/P1-3), models came from buildAgentModels' own
+	// Snapshot() while the provider options/system-prompt-prefix/Options
+	// fields below and buildTools' many reads each took a fresh, separately
+	// timed c.cfg.Config(). A reload landing anywhere in between could hand
+	// back an agent whose model, prompt (WorkerAvailable) and toolset
+	// (worker tool layering, hooks, MCP, grep/ls options, attribution,
+	// skills paths) disagreed with each other -- an internally inconsistent
+	// agent built across two config generations. Threading this one cfg
+	// through closes that gap; only explicitly-declared live *policy* reads
+	// remain (see PeakHoursCheck below).
+	cfg, _ := c.cfg.Snapshot()
+
+	smart, fast, err := c.buildAgentModelsFromCfg(ctx, cfg, isSubAgent)
 	if err != nil {
 		return nil, err
 	}
 
-	smartProviderCfg, _ := c.cfg.Config().Providers.Get(smart.ModelCfg.Provider)
-	opts := c.cfg.Config().Options
+	smartProviderCfg, _ := cfg.Providers.Get(smart.ModelCfg.Provider)
+	opts := cfg.Options
 	var streamIdleTimeout time.Duration
 	if opts != nil && opts.StreamIdleTimeoutSeconds > 0 {
 		streamIdleTimeout = time.Duration(opts.StreamIdleTimeoutSeconds) * time.Second
@@ -56,7 +69,7 @@ func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, age
 		SystemPromptPrefix:   smartProviderCfg.SystemPromptPrefix,
 		SystemPrompt:         "",
 		IsSubAgent:           isSubAgent,
-		DisableAutoSummarize: c.cfg.Config().Options.DisableAutoSummarize,
+		DisableAutoSummarize: opts.DisableAutoSummarize,
 		IsYolo:               c.permissions.SkipRequests(),
 		Sessions:             c.sessions,
 		Messages:             c.messages,
@@ -64,12 +77,15 @@ func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, age
 		Notify:               c.notify,
 		StreamIdleTimeout:    streamIdleTimeout,
 		ToolMaxDuration:      toolMaxDuration,
-		DataDirectory:        c.cfg.Config().Options.DataDirectory,
+		DataDirectory:        opts.DataDirectory,
 		CheckpointInterval:   checkpointInterval, // Fork patch: batch 8
-		// Fork patch: peak-hours mid-turn re-check. Re-reads the provider
-		// config live, and reloads from disk when tracked config files change,
-		// so a peak_hours edit made by another process while this turn is
-		// running still takes effect.
+		// Fork patch: peak-hours mid-turn re-check. Deliberately LIVE, not
+		// pinned to cfg above: this is a runtime *policy* check re-evaluated
+		// on every mid-turn tick for the lifetime of the turn (see
+		// checkLivePeakHours), not a one-shot construction-time read, so
+		// pinning it to the build-time generation would defeat its purpose
+		// (a peak_hours edit made by another process while this turn is
+		// running must still take effect).
 		PeakHoursCheck: func() error {
 			return c.checkLivePeakHours(smart.ModelCfg.Provider)
 		},
@@ -81,12 +97,9 @@ func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, age
 		// taskPrompt, which doesn't reference WorkerAvailable, but guarding
 		// on !isSubAgent here keeps this call's intent explicit rather than
 		// relying on the template to ignore the field.
-		// ONE snapshot for both the worker predicate and the prompt itself.
-		// These used to be two independent c.cfg.Config() reads, so a reload
-		// between them could render a prompt whose WorkerAvailable flag
-		// disagreed with the config the rest of it was built from.
-		pinnedCfg := c.cfg.Config()
-		systemPrompt, err := prompt.Build(ctx, smart.Model.Provider(), smart.Model.Model(), c.cfg, pinnedCfg, !isSubAgent && c.workerSubAgentActive(pinnedCfg))
+		// Same pinned cfg as the models above and buildTools below — see
+		// this function's opening comment.
+		systemPrompt, err := prompt.Build(ctx, smart.Model.Provider(), smart.Model.Model(), c.cfg, cfg, !isSubAgent && c.workerSubAgentActive(cfg))
 		if err != nil {
 			return err
 		}
@@ -95,7 +108,7 @@ func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, age
 	})
 
 	c.readyWg.Go(func() error {
-		tools, err := c.buildTools(ctx, agent, isSubAgent)
+		tools, err := c.buildTools(ctx, cfg, agent, isSubAgent)
 		if err != nil {
 			return err
 		}
@@ -132,12 +145,12 @@ var workerToolNames = []string{"edit", "multiedit", "write", "bash", "todos", "d
 // every other case — including the top-level coder, and the sub-agent when
 // no Worker is configured or the active role isn't smart — it returns agent
 // unchanged, so behavior is byte-identical to before this method existed.
-func (c *coordinator) buildToolsAgentConfig(agent config.Agent, isSubAgent bool) config.Agent {
-	// buildTools (this method's only caller) does not thread a pinned
-	// snapshot through its own many live c.cfg.Config() reads, so this call
-	// stays consistent with its caller's existing (out of scope for task
-	// #341/P1-1) behavior rather than pinning a snapshot only here.
-	if !isSubAgent || !c.workerSubAgentActive(c.cfg.Config()) {
+// cfg is the caller's pinned snapshot (task #576/P1-3) — buildTools no
+// longer takes its own live c.cfg.Config() reads, so this decision now
+// agrees with every other config-derived choice buildAgent makes for the
+// same build (models, prompt's WorkerAvailable, hooks, MCP, etc.).
+func (c *coordinator) buildToolsAgentConfig(cfg *config.Config, agent config.Agent, isSubAgent bool) config.Agent {
+	if !isSubAgent || !c.workerSubAgentActive(cfg) {
 		return agent
 	}
 
@@ -152,14 +165,23 @@ func (c *coordinator) buildToolsAgentConfig(agent config.Agent, isSubAgent bool)
 	return agent
 }
 
-func (c *coordinator) buildTools(ctx context.Context, agent config.Agent, isSubAgent bool) ([]fantasy.AgentTool, error) {
-	agent = c.buildToolsAgentConfig(agent, isSubAgent)
+// buildTools builds the tool slice for agent. cfg is the pinned
+// *config.Config the caller captured for this whole buildAgent call (task
+// #576/P1-3) -- every config-derived choice below (worker tool layering,
+// SSRF escape hatch, model metadata, hooks, background-job notify,
+// attribution, grep/ls options, skills paths, MCP) now reads from this one
+// generation instead of each taking its own, separately timed
+// c.cfg.Config() call. c.cfg.WorkingDir() stays live: it is process-stable
+// (does not change across a config reload), same precedent as
+// prompt.Build's store.WorkingDir()/store.Resolver() reads.
+func (c *coordinator) buildTools(ctx context.Context, cfg *config.Config, agent config.Agent, isSubAgent bool) ([]fantasy.AgentTool, error) {
+	agent = c.buildToolsAgentConfig(cfg, agent, isSubAgent)
 
 	// SSRF guard escape hatch (Options.AllowPrivateNetworkFetch, off by
 	// default): when enabled, every model-facing HTTP tool below gets an
 	// explicit allowPrivate=true client instead of letting its own nil
 	// fallback build the guarded default. See ssrf_guard.go.
-	allowPrivateNetworkFetch := c.cfg.Config().Options.AllowPrivateNetworkFetch
+	allowPrivateNetworkFetch := cfg.Options.AllowPrivateNetworkFetch
 	fetchClient := func(timeout time.Duration) *http.Client {
 		if !allowPrivateNetworkFetch {
 			return nil
@@ -186,17 +208,17 @@ func (c *coordinator) buildTools(ctx context.Context, agent config.Agent, isSubA
 
 	// Get the model name for the agent
 	modelID := ""
-	if modelCfg, ok := c.cfg.Config().Models[agent.Model]; ok {
-		if model := c.cfg.Config().GetModel(modelCfg.Provider, modelCfg.Model); model != nil {
+	if modelCfg, ok := cfg.Models[agent.Model]; ok {
+		if model := cfg.GetModel(modelCfg.Provider, modelCfg.Model); model != nil {
 			modelID = model.ID
 		}
 	}
 
-	logFile := filepath.Join(c.cfg.Config().Options.DataDirectory, "logs", "crush.log")
+	logFile := filepath.Join(cfg.Options.DataDirectory, "logs", "crush.log")
 
 	// Build hook runner if PreToolUse hooks are configured.
 	var hookRunner *hooks.Runner
-	if preToolHooks := c.cfg.Config().Hooks[hooks.EventPreToolUse]; len(preToolHooks) > 0 {
+	if preToolHooks := cfg.Hooks[hooks.EventPreToolUse]; len(preToolHooks) > 0 {
 		hookRunner = hooks.NewRunner(preToolHooks, c.cfg.WorkingDir(), c.cfg.WorkingDir())
 	}
 
@@ -207,7 +229,7 @@ func (c *coordinator) buildTools(ctx context.Context, agent config.Agent, isSubA
 	// that is BUSY merges it into the running turn, IDLE sessions get a
 	// persisted message (no auto-resume). crush run is single-turn and
 	// never receives it.
-	opts := c.cfg.Config().Options
+	opts := cfg.Options
 	notifyDone := opts.NotifyOnBackgroundJobDone == nil || *opts.NotifyOnBackgroundJobDone
 	var onBgDone func(string, *shell.BackgroundShell)
 	if notifyDone {
@@ -219,7 +241,7 @@ func (c *coordinator) buildTools(ctx context.Context, agent config.Agent, isSubA
 	allTools = append(
 		allTools,
 		tools.NewAskQuestionTool(),
-		tools.NewBashTool(c.permissions, c.cfg.WorkingDir(), c.cfg.Config().Options.Attribution, modelID, onBgDone),
+		tools.NewBashTool(c.permissions, c.cfg.WorkingDir(), cfg.Options.Attribution, modelID, onBgDone),
 		tools.NewCrushInfoTool(c.cfg, c.allSkills, c.activeSkills, c.skillTracker),
 		tools.NewCrushLogsTool(logFile),
 		tools.NewJobOutputTool(),
@@ -229,16 +251,16 @@ func (c *coordinator) buildTools(ctx context.Context, agent config.Agent, isSubA
 		tools.NewMultiEditTool(c.permissions, c.history, c.filetracker, c.cfg.WorkingDir()),
 		tools.NewFetchTool(c.permissions, c.cfg.WorkingDir(), fetchClient(30*time.Second)),
 		tools.NewGlobTool(c.cfg.WorkingDir()),
-		tools.NewGrepTool(c.cfg.WorkingDir(), c.cfg.Config().Tools.Grep),
-		tools.NewLsTool(c.permissions, c.cfg.WorkingDir(), c.cfg.Config().Tools.Ls),
+		tools.NewGrepTool(c.cfg.WorkingDir(), cfg.Tools.Grep),
+		tools.NewLsTool(c.permissions, c.cfg.WorkingDir(), cfg.Tools.Ls),
 		tools.NewReadDelegationTranscriptTool(c.sessions, c.messages),
 		tools.NewSourcegraphTool(fetchClient(30*time.Second)),
 		tools.NewTodosTool(c.sessions),
-		tools.NewViewTool(c.permissions, c.filetracker, c.skillTracker, c.cfg.WorkingDir(), c.cfg.Config().Options.SkillsPaths...),
+		tools.NewViewTool(c.permissions, c.filetracker, c.skillTracker, c.cfg.WorkingDir(), cfg.Options.SkillsPaths...),
 		tools.NewWriteTool(c.permissions, c.history, c.filetracker, c.cfg.WorkingDir()),
 	)
 
-	if len(c.cfg.Config().MCP) > 0 {
+	if len(cfg.MCP) > 0 {
 		allTools = append(
 			allTools,
 			tools.NewListMCPResourcesTool(c.cfg, c.permissions),

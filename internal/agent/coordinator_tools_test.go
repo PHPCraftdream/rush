@@ -192,7 +192,7 @@ func buildSubAgentToolNames(t *testing.T, coord *coordinator) []string {
 	taskCfg, ok := coord.cfg.Config().Agents[config.AgentTask]
 	require.True(t, ok, "task agent must be configured")
 
-	built, err := coord.buildTools(t.Context(), taskCfg, true)
+	built, err := coord.buildTools(t.Context(), coord.cfg.Config(), taskCfg, true)
 	require.NoError(t, err)
 
 	names := make([]string, 0, len(built))
@@ -298,7 +298,7 @@ func TestBuildTools_WorkerToolset(t *testing.T) {
 				coderCfg, ok := coord.cfg.Config().Agents[config.AgentCoder]
 				require.True(t, ok, "coder agent must be configured")
 
-				built, err := coord.buildTools(t.Context(), coderCfg, false)
+				built, err := coord.buildTools(t.Context(), coord.cfg.Config(), coderCfg, false)
 				require.NoError(t, err)
 
 				names := make([]string, 0, len(built))
@@ -340,7 +340,7 @@ func TestBuildToolsAgentConfig_UnconditionalApplicationWouldBreakBackwardCompat(
 	original := append([]string(nil), taskCfg.AllowedTools...)
 
 	// The gated call: must be a no-op copy of taskCfg.
-	gated := coord.buildToolsAgentConfig(taskCfg, true)
+	gated := coord.buildToolsAgentConfig(coord.cfg.Config(), taskCfg, true)
 	assert.Equal(t, original, gated.AllowedTools, "gated call must leave AllowedTools untouched when Worker isn't configured")
 
 	// The unconditional variant this test guards against: manually apply the
@@ -408,7 +408,7 @@ func TestBuildTools_CoderHasAskQuestion(t *testing.T) {
 	require.Contains(t, coderCfg.AllowedTools, tools.AskQuestionToolName,
 		"allToolNames() must include ask_question or the coder agent will never be allowed to use it")
 
-	built, err := coord.buildTools(t.Context(), coderCfg, false)
+	built, err := coord.buildTools(t.Context(), cfg.Config(), coderCfg, false)
 	require.NoError(t, err)
 
 	names := make([]string, 0, len(built))
@@ -460,7 +460,7 @@ func TestBuildTools_CoderHasAskQuestion_AllRoles(t *testing.T) {
 			require.Contains(t, coderCfg.AllowedTools, tools.AskQuestionToolName,
 				"allToolNames() must include ask_question or the coder agent will never be allowed to use it")
 
-			built, err := coord.buildTools(t.Context(), coderCfg, false)
+			built, err := coord.buildTools(t.Context(), coord.cfg.Config(), coderCfg, false)
 			require.NoError(t, err)
 
 			names := make([]string, 0, len(built))

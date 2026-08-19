@@ -456,7 +456,17 @@ func (c *coordinator) buildAgentModels(ctx context.Context, isSubAgent bool) (Mo
 	// lookups. A reload landing between any of those reads could produce a
 	// cross-generation mix, exactly what Snapshot() exists to prevent.
 	cfg, _ := c.cfg.Snapshot()
+	return c.buildAgentModelsFromCfg(ctx, cfg, isSubAgent)
+}
 
+// buildAgentModelsFromCfg is buildAgentModels' body, taking the config
+// snapshot as a parameter instead of capturing its own (task #576/P1-3).
+// buildAgent (coordinator_tools.go) pins ONE *config.Config for its entire
+// build -- models, prompt, and tools -- and passes it here so the models it
+// builds always agree with the prompt/toolset built from the same call. A
+// caller with nothing to pin (buildAgentModels above) takes its own fresh
+// Snapshot() and delegates here, so behavior for those callers is unchanged.
+func (c *coordinator) buildAgentModelsFromCfg(ctx context.Context, cfg *config.Config, isSubAgent bool) (Model, Model, error) {
 	smartModelCfg, ok := cfg.Models[config.SelectedModelTypeSmart]
 	if !ok {
 		return Model{}, Model{}, errSmartModelNotSelected
@@ -585,23 +595,24 @@ func (c *coordinator) UpdateModels(ctx context.Context) error {
 	c.clearModelCache()
 
 	// build the models again so we make sure we get the latest config
-	smart, fast, err := c.buildAgentModels(ctx, false)
+	cfg, _ := c.cfg.Snapshot()
+	smart, fast, err := c.buildAgentModelsFromCfg(ctx, cfg, false)
 	if err != nil {
 		return err
 	}
 	c.currentAgent.SetModels(smart, fast)
 
 	// Update prompt prefix for the new smart model provider
-	if smartProviderCfg, ok := c.cfg.Config().Providers.Get(smart.ModelCfg.Provider); ok {
+	if smartProviderCfg, ok := cfg.Providers.Get(smart.ModelCfg.Provider); ok {
 		c.currentAgent.SetSystemPromptPrefix(smartProviderCfg.SystemPromptPrefix)
 	}
 
-	agentCfg, ok := c.cfg.Config().Agents[config.AgentCoder]
+	agentCfg, ok := cfg.Agents[config.AgentCoder]
 	if !ok {
 		return errCoderAgentNotConfigured
 	}
 
-	tools, err := c.buildTools(ctx, agentCfg, false)
+	tools, err := c.buildTools(ctx, cfg, agentCfg, false)
 	if err != nil {
 		return err
 	}
