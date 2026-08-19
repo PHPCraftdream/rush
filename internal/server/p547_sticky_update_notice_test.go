@@ -318,9 +318,8 @@ func TestHub_StickyBroadcastChannel_SuppressesSupersededQueuedEnvelope(t *testin
 	require.Equal(t, 63, len(h.stickyBroadcast))
 
 	// Slot 64 (the last free one): a genuine v1 for EventUpdateAvailable.
-	// h.sticky[EventUpdateAvailable] and h.stickySeq[EventUpdateAvailable]
-	// are now both at v1's generation, and v1's envelope occupies the last
-	// free channel slot.
+	// h.sticky[EventUpdateAvailable] now holds v1's envelope, and v1's
+	// envelope occupies the last free channel slot.
 	h.BroadcastSticky(EventUpdateAvailable, UpdateAvailableWire{Current: "1.0.0", Latest: "1.1.0"}) // v1
 	require.Equal(t, 64, len(h.stickyBroadcast), "channel must now be completely full")
 
@@ -350,6 +349,167 @@ func TestHub_StickyBroadcastChannel_SuppressesSupersededQueuedEnvelope(t *testin
 	require.NoError(t, json.Unmarshal(payloads[len(payloads)-1], &wire))
 	require.Equal(t, "1.2.0", wire.Latest,
 		"the last update_available payload the client received must be the newest generation (v2, from the register replay); the stale v1 still sitting in h.stickyBroadcast's queue when the client registered must be suppressed on drain, not fanned out afterwards as a stale 'last' value")
+}
+
+// TestHub_StickyOverflowStillReachesAlreadyConnectedClient covers the P2-1
+// defect from the fourth review of task #591. The pre-coalescing design had
+// h.stickyBroadcast carry marshalled envelopes directly, so when the channel
+// was full the NEWEST send's entry was dropped while an older generation's
+// entry, queued earlier when there was room, survived. That design also had the
+// envelope fan-out happen directly from the channel: each queued entry was
+// sent to all clients as it was drained. Under those conditions, an
+// already-connected client -- one present in h.clients before the overflow --
+// would receive NEITHER generation: v1 was correctly suppressed as superseded
+// (the map had v2), but v2's own envelope was never queued at all (the channel
+// was full), so the client never saw anything.
+//
+// The coalescing design makes this harmless: h.stickyBroadcast now carries
+// only wakeup tokens, and Run's stickyBroadcast case reads the CURRENT envelope
+// from h.sticky[type] (the map) for each pending type at drain time. When v2's
+// wakeup token is dropped on a full channel, the TYPE is still marked pending
+// (h.stickyPending[type] is set), so when Run eventually drains the channel it
+// still fans out the v2 envelope from the map. The drop is only the token; the
+// envelope survives in the map.
+//
+// This test constructs that state directly: a client is inserted into h.clients
+// before Run starts, then 63 filler broadcasts + v1 fill the 64-slot channel to
+// capacity, then v2's wakeup token is dropped on the full channel. Only then
+// does Run start, drain the channel, and fan out. It asserts the already-
+// connected client receives v2 (the newest generation) via the map read.
+//
+// Revert-check: remove the fan-out loop in Run's stickyBroadcast case (the
+// one that reads h.sticky[pendingType] and broadcasts it to all clients) and
+// this fails on the NotEmpty assertion -- the client receives nothing because
+// v1 was suppressed as superseded (map has v2) but v2's own token was dropped,
+// so the channel drain delivers no envelope at all.
+func TestHub_StickyOverflowStillReachesAlreadyConnectedClient(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	h := newHub()
+
+	// The client under test is ALREADY connected before any sticky send:
+	// it is present in h.clients when Run's drain fans out. Inserting it
+	// directly before `go h.Run` is race-free (happens-before via the go
+	// statement) and is the only deterministic way to have a client in the
+	// fan-out set while the stickyBroadcast channel is filled to capacity
+	// -- with Run already running it drains the 64-slot channel faster
+	// than any producer can fill it. h.clients is Run-goroutine state,
+	// not stickyMu state, and this test does not manipulate anything
+	// stickyMu-guarded.
+	client := newClient(nil, nil)
+	h.clients[client] = struct{}{}
+
+	// Fill 63 of the 64 token slots with a distinct filler type.
+	for i := 0; i < 63; i++ {
+		h.BroadcastSticky("filler", map[string]int{"i": i})
+	}
+	require.Equal(t, 63, len(h.stickyBroadcast))
+
+	// v1 takes the last free slot; the channel is now full.
+	h.BroadcastSticky(EventUpdateAvailable, UpdateAvailableWire{Current: "1.0.0", Latest: "1.1.0"})
+	require.Equal(t, 64, len(h.stickyBroadcast))
+
+	// v2: h.sticky[EventUpdateAvailable] is updated to 1.2.0 and the type
+	// is marked pending, but the channel is full so v2's own wakeup token
+	// is dropped -- exactly the overflow condition the coalescing design
+	// must survive.
+	h.BroadcastSticky(EventUpdateAvailable, UpdateAvailableWire{Current: "1.0.0", Latest: "1.2.0"})
+	require.Equal(t, 64, len(h.stickyBroadcast), "v2's wakeup token must have been dropped (channel full)")
+
+	go h.Run(ctx)
+	waitHubDrained(t, h)
+
+	_, payloads := drainClientPayloads(t, client, EventUpdateAvailable)
+	require.NotEmpty(t, payloads,
+		"an already-connected client must receive the sticky event even though the newest send's wakeup token was dropped on a full channel")
+	var wire UpdateAvailableWire
+	require.NoError(t, json.Unmarshal(payloads[len(payloads)-1], &wire))
+	require.Equal(t, "1.2.0", wire.Latest,
+		"the last update_available payload the already-connected client received must be the newest generation (1.2.0), read from h.sticky at drain time")
+}
+
+// TestHub_StickyOverflowNoQueuedTokenForType pins the critical difference
+// between the coalescing sticky-broadcast scheme and the deleted seq/envelope-in-channel
+// design: an already-connected client gets the newest version even when NO token of
+// this type ever entered the channel — the old design could not do this in principle
+// (a dropped send was a dropped envelope).
+//
+// Unlike TestHub_StickyOverflowStillReachesAlreadyConnectedClient (where v1's token
+// entered the channel and already marked the type pending, so the test passes even
+// under weaker schemes), here the 64 slots are ALL filler and the single
+// EventUpdateAvailable send's token is the one dropped — there is no earlier token
+// of this type in the queue. The coalescing scheme survives because the type is
+// marked pending BEFORE the token send, so the drop is only the token; the envelope
+// survives in h.sticky and is still read at drain time.
+//
+// Revert-check: move the stickyPending marking so it happens ONLY when the wakeup
+// token send succeeds (i.e. inside the `case h.stickyBroadcast <- struct{}{}:` arm,
+// after the send) and this fails — the type is never marked pending, the drain's
+// pending set is empty, and the client receives nothing.
+func TestHub_StickyOverflowNoQueuedTokenForType(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	h := newHub()
+	client := newClient(nil, nil)
+	h.clients[client] = struct{}{}
+
+	for i := 0; i < 64; i++ {
+		h.BroadcastSticky("filler", map[string]int{"i": i})
+	}
+	require.Equal(t, 64, len(h.stickyBroadcast))
+
+	h.BroadcastSticky(EventUpdateAvailable, UpdateAvailableWire{Current: "1.0.0", Latest: "1.2.0"})
+
+	go h.Run(ctx)
+	waitHubDrained(t, h)
+
+	_, payloads := drainClientPayloads(t, client, EventUpdateAvailable)
+	require.NotEmpty(t, payloads,
+		"an already-connected client must receive the sticky event even when the type's FIRST wakeup token is dropped on a full channel and no earlier token of this type is queued")
+	var wire UpdateAvailableWire
+	require.NoError(t, json.Unmarshal(payloads[len(payloads)-1], &wire))
+	require.Equal(t, "1.2.0", wire.Latest)
+}
+
+// TestHub_StickyExtraTokenWithEmptyPendingDeliversNothing pins that Run's drain
+// uses the swapped pending SNAPSHOT (fresh-map swap), not a direct read of the
+// live pending map or of h.sticky itself. Multiple queued tokens coalesce harmlessly:
+// later tokens find an empty pending set and no-op. Only types that were pending
+// at the moment of the swap are fanned out, not all of h.sticky.
+//
+// Revert-check: make the drain fan out every type in h.sticky instead of the
+// swapped pending set (or clear the pending map before copying it), and this fails
+// — the client receives update_available (and every other sticky type) again on each
+// spurious token. The test sends extra tokens directly to h.stickyBroadcast, which
+// is safe because the channel is buffered and Run is draining concurrently.
+func TestHub_StickyExtraTokenWithEmptyPendingDeliversNothing(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	h := newHub()
+	client := newClient(nil, nil)
+	h.clients[client] = struct{}{}
+
+	h.BroadcastSticky(EventUpdateAvailable, UpdateAvailableWire{Current: "1.0.0", Latest: "1.1.0"})
+	go h.Run(ctx)
+	waitHubDrained(t, h)
+
+	_, payloads := drainClientPayloads(t, client, EventUpdateAvailable)
+	require.Len(t, payloads, 1)
+
+	// Extra tokens with nothing pending must be no-ops.
+	h.stickyBroadcast <- struct{}{}
+	h.stickyBroadcast <- struct{}{}
+	waitHubDrained(t, h)
+
+	types2, payloads2 := drainClientPayloads(t, client, EventUpdateAvailable)
+	require.Empty(t, types2, "a drain with an empty pending set must fan out nothing")
+	require.Empty(t, payloads2)
 }
 
 // fakeUpdateClient is a minimal update.Client stub so this test can drive

@@ -238,18 +238,6 @@ func (r *replayBuffer) forEach(fn func([]byte)) {
 	}
 }
 
-// stickyEnvelope pairs a marshalled sticky event with the type and sequence
-// number it was recorded under in Hub.sticky/stickySeq at send time. Run's
-// stickyBroadcast case uses seq to detect a superseded entry still sitting
-// in the channel queue -- see the Hub.stickyBroadcast field doc and the
-// stickyBroadcast case in Run for the full race this closes (task
-// #591/P2-2).
-type stickyEnvelope struct {
-	msgType string
-	seq     uint64
-	env     []byte
-}
-
 // Hub maintains connected clients and an event replay buffer.
 //
 // All accesses to clients and buffer happen inside the single Run() goroutine,
@@ -262,27 +250,16 @@ type Hub struct {
 	register   chan *Client
 	unregister chan *Client
 
-	// stickyBroadcast carries envelopes sent via BroadcastSticky. It fans out
-	// to already-connected clients exactly like broadcast, but Run's
-	// stickyBroadcast case deliberately does NOT push into buffer -- see
-	// BroadcastSticky's doc for why sticky envelopes must never enter the
-	// replay ring at all.
+	// stickyBroadcast carries only coalescing wakeup tokens. When
+	// BroadcastSticky updates h.sticky, it non-blocking-sends a token here;
+	// Run's stickyBroadcast case drains the channel, locks stickyMu, swaps
+	// h.stickyPending with a fresh empty map, and fans out the current
+	// envelope for each type in the swapped set. Multiple queued tokens
+	// coalesce harmlessly: later tokens find an empty pending set and no-op.
 	//
-	// Carries stickyEnvelope, not a bare []byte: the channel is buffered
-	// (64 slots) and BroadcastSticky never blocks on it, so two sends of the
-	// SAME event type can both be sitting in the channel at once when a
-	// registration is handled in between (task #591/P2-2). h.sticky[type] is
-	// updated synchronously before either send, so a client that registers
-	// after the second BroadcastSticky call gets the newest envelope from
-	// the map immediately -- but Run must still drain both queued entries
-	// afterwards, and fan-out of the now-superseded first one would leave
-	// that client with the stale value as "last received" for that type
-	// (exactly the failure mode BroadcastSticky's "latest per type" promise
-	// is supposed to rule out). seq lets Run's stickyBroadcast case compare
-	// each dequeued envelope against the CURRENT latest sequence number for
-	// its type and silently drop it if a newer one has since been recorded,
-	// instead of fanning out a value the map has already moved past.
-	stickyBroadcast chan stickyEnvelope
+	// Sticky envelopes are NEVER pushed into h.buffer (the replay ring) --
+	// see BroadcastSticky's doc for why this is required.
+	stickyBroadcast chan struct{}
 
 	// sticky holds the latest envelope for each event type that must reach
 	// EVERY client, including ones that connect long after it was sent.
@@ -302,12 +279,12 @@ type Hub struct {
 	stickyMu sync.Mutex
 	sticky   map[string][]byte
 
-	// stickySeq tracks, per event type, the sequence number of the envelope
-	// currently held in sticky. Incremented and written under stickyMu in
-	// the same critical section as sticky itself, so a read of stickySeq[ty]
-	// always agrees with sticky[ty] -- see stickyEnvelope and the
-	// stickyBroadcast case in Run.
-	stickySeq map[string]uint64
+	// stickyPending is the set of sticky event types changed since Run last
+	// drained the stickyBroadcast channel. BroadcastSticky adds a type to
+	// this set (under stickyMu) and then non-blocking-sends a wakeup token.
+	// Run's stickyBroadcast case swaps this map with a fresh empty one and
+	// fans out the current envelope for each type in the swapped set.
+	stickyPending map[string]struct{}
 }
 
 func newHub() *Hub {
@@ -318,8 +295,8 @@ func newHub() *Hub {
 		register:        make(chan *Client, 64),
 		unregister:      make(chan *Client, 64),
 		sticky:          make(map[string][]byte),
-		stickySeq:       make(map[string]uint64),
-		stickyBroadcast: make(chan stickyEnvelope, 64),
+		stickyPending:   make(map[string]struct{}),
+		stickyBroadcast: make(chan struct{}, 64),
 	}
 }
 
@@ -413,50 +390,47 @@ func (h *Hub) Run(ctx context.Context) {
 				}
 			}
 
-		case sm := <-h.stickyBroadcast:
-			// Deliberately NOT h.buffer.push(sm.env): sticky envelopes must
-			// never enter the replay ring. h.sticky (updated synchronously
-			// in BroadcastSticky, before this case ever runs) already keeps
-			// the one, newest copy for late-joining clients -- see the
-			// register case above. If a superseded copy also lived in the
-			// ring, a client connecting while both generations are still
-			// within the ring's window could receive the sticky send (newest)
-			// followed by the ring's older copy during replay, ending up
-			// with the stale value as "last received". Keeping sticky
-			// envelopes out of the ring entirely is what makes that
-			// impossible, without per-event bookkeeping on every replay.
+		case <-h.stickyBroadcast:
+			// Deliberately NOT h.buffer.push: sticky envelopes must never
+			// enter the replay ring. h.sticky (updated synchronously in
+			// BroadcastSticky, before this case ever runs) already keeps the
+			// one, newest copy for late-joining clients -- see the register case
+			// above. If a superseded copy also lived in the ring, a client
+			// connecting while both generations are still within the ring's
+			// window could receive the sticky send (newest) followed by the
+			// ring's older copy during replay, ending up with the stale value
+			// as "last received". Keeping sticky envelopes out of the ring
+			// entirely is what makes that impossible, without per-event
+			// bookkeeping on every replay.
 			//
-			// Superseded-queue check (task #591/P2-2): stickyBroadcast is a
-			// buffered channel (64 slots) and BroadcastSticky never blocks on
-			// it, so two (or more) sends for the SAME msgType can already be
-			// queued here when a client registers in between. That client
-			// reads h.sticky[msgType] directly (via stickyEvents in the
-			// register case) and so immediately gets the newest generation --
-			// but this case would still go on to fan out every OLDER queued
-			// generation to that same client afterwards, leaving a stale copy
-			// as "last received" and breaking the "latest per type" promise
-			// BroadcastSticky documents. Comparing sm.seq against the CURRENT
-			// sequence number recorded for sm.msgType (read under stickyMu,
-			// the same lock BroadcastSticky writes both sticky and stickySeq
-			// under) detects exactly that: if a later BroadcastSticky call for
-			// the same type has already recorded a higher seq, this entry is
-			// superseded and is dropped without fan-out -- the newer entry
-			// still queued behind it (or already delivered via the map) is
-			// what every client ends up with.
+			// Coalescing wakeup signal: this channel only carries empty tokens.
+			// We swap h.stickyPending with a fresh empty map under stickyMu,
+			// then fan out the current envelope for each type in the swapped
+			// set. Multiple queued tokens coalesce harmlessly: later tokens
+			// find an empty pending set and no-op. A dropped token is harmless:
+			// it only occurs when the channel is full, meaning at least one
+			// token is already queued, and any drain reads stickyPending which
+			// already contains the changed types.
 			h.stickyMu.Lock()
-			current := h.stickySeq[sm.msgType]
+			pending := h.stickyPending
+			h.stickyPending = make(map[string]struct{})
 			h.stickyMu.Unlock()
-			if sm.seq != current {
-				slog.Debug("ws: superseded sticky envelope dropped", "type", sm.msgType, "seq", sm.seq, "current", current)
-				continue
-			}
-			// Fan-out to already-connected clients only; identical to the
-			// broadcast case's fan-out.
-			for c := range h.clients {
-				select {
-				case c.send <- sm.env:
-				default:
-					slog.Debug("ws: slow client, dropping sticky message")
+
+			for msgType := range pending {
+				h.stickyMu.Lock()
+				env, ok := h.sticky[msgType]
+				h.stickyMu.Unlock()
+				if !ok {
+					continue
+				}
+				// Fan-out to already-connected clients only; identical to the
+				// broadcast case's fan-out.
+				for c := range h.clients {
+					select {
+					case c.send <- env:
+					default:
+						slog.Debug("ws: slow client, dropping sticky message")
+					}
 				}
 			}
 		}
@@ -534,27 +508,22 @@ func (c *Client) writePump() {
 // later also receives this event, regardless of how much traffic has passed
 // through the replay ring in between, AND every already-connected client's
 // LAST received copy of the type is always the newest one sent -- never a
-// generation BroadcastSticky has since superseded. Run's register case
-// delivers sticky envelopes to a newly connected client BEFORE replaying the
-// ring, precisely so a large replay (thousands of deltas from one streaming
-// turn) cannot fill the client's bounded send channel first and starve the
-// sticky send under a `default:` drop -- see the register case in Run for
-// the full reasoning. The promise is bounded by sendBufSize: it holds as
-// long as the number of distinct sticky event types stays small relative to
-// it, since sticky sends still compete with each other (not with the
-// replay) for the same non-blocking channel.
-//
-// The "always newest last" half of the promise (task #591/P2-2) needs a
-// sequence number, not just the map: h.stickyBroadcast is a buffered channel
-// and this method never blocks on it, so a rapid v1-then-v2 call for the
-// same type can leave both queued when Run gets around to draining them --
-// a client that registered in between already read v2 from h.sticky, and
-// would then receive the queued v1 afterwards and end up with the stale
-// value as "last received" unless Run can tell v1 apart from v2 and drop it.
-// seq (assigned here, under the same stickyMu critical section that updates
-// sticky) is exactly that: Run's stickyBroadcast case compares each
-// dequeued envelope's seq against the CURRENT stickySeq[msgType] and drops
-// anything that no longer matches.
+// generation BroadcastSticky has since superseded. The "always newest last"
+// guarantee now holds even when the stickyBroadcast channel overflows:
+// every already-connected client's last received copy is the newest one at
+// drain time, because the envelope is read from h.sticky at drain (not
+// carried in the channel), and a dropped wakeup token is harmless (it only
+// occurs when the channel is full, meaning at least one token is already
+// queued, and any drain reads stickyPending which already contains the
+// changed types). Run's register case delivers sticky envelopes to a newly
+// connected client BEFORE replaying the ring, precisely so a large replay
+// (thousands of deltas from one streaming turn) cannot fill the client's
+// bounded send channel first and starve the sticky send under a `default:`
+// drop -- see the register case in Run for the full reasoning. The promise
+// is bounded by sendBufSize: it holds as long as the number of distinct
+// sticky event types stays small relative to it, since sticky sends still
+// compete with each other (not with the replay) for the same non-blocking
+// channel.
 //
 // Use it only for state a late-joining client genuinely needs and cannot ask
 // for -- there is no polling and no request/response path for it. The update
@@ -576,13 +545,11 @@ func (h *Hub) BroadcastSticky(msgType string, payload any) {
 	// Recorded BEFORE the send, so a client registering concurrently gets it
 	// from one path or the other -- never neither. Getting it twice is
 	// harmless (the same envelope, and the UI renders on receipt); getting it
-	// zero times is the bug this exists to close. seq is bumped in the same
-	// critical section so it always agrees with which envelope sticky[msgType]
-	// holds -- see the stickyBroadcast case in Run.
+	// zero times is the bug this exists to close. The envelope is stored in
+	// h.sticky under stickyMu, and the type is added to h.stickyPending.
 	h.stickyMu.Lock()
 	h.sticky[msgType] = env
-	h.stickySeq[msgType]++
-	seq := h.stickySeq[msgType]
+	h.stickyPending[msgType] = struct{}{}
 	h.stickyMu.Unlock()
 
 	// Sent on stickyBroadcast, NOT broadcast: Run's stickyBroadcast case
@@ -590,14 +557,15 @@ func (h *Hub) BroadcastSticky(msgType string, payload any) {
 	// broadcast, but skips buffer.push -- sticky envelopes must never enter
 	// the replay ring (see the register case and the stickyBroadcast case
 	// in Run for why: a superseded copy in the ring could otherwise reach a
-	// late client AFTER the current one and win as "last received"). seq
-	// travels with the envelope so Run can drop it there too if a later call
-	// for the same msgType has already superseded it before Run drains this
-	// one -- see the stickyEnvelope type and the stickyBroadcast case in Run.
+	// late client AFTER the current one and win as "last received"). Only
+	// an empty wakeup token is sent; the envelope is read from h.sticky at
+	// drain time. A dropped token is harmless: it only occurs when the
+	// channel is full, meaning at least one token is already queued, and any
+	// drain reads stickyPending which already contains this type.
 	select {
-	case h.stickyBroadcast <- stickyEnvelope{msgType: msgType, seq: seq, env: env}:
+	case h.stickyBroadcast <- struct{}{}:
 	default:
-		slog.Warn("ws: sticky broadcast channel full, dropping", "type", msgType)
+		slog.Debug("ws: sticky broadcast channel full, dropping harmless wakeup token", "type", msgType)
 	}
 }
 
