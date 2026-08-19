@@ -48,8 +48,8 @@ type CliModel = (typeof CLI_MODELS)[number];
 function makeCliConfig(models: readonly CliModel[] = CLI_MODELS) {
   return makeConfig({
     models: {
-      large: { Provider: "local-cli", Model: models[0].id },
-      small: { Provider: "local-cli", Model: models[0].id },
+      smart: { Provider: "local-cli", Model: models[0].id },
+      fast: { Provider: "local-cli", Model: models[0].id },
     },
     providers: {
       "local-cli": {

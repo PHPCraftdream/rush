@@ -25,8 +25,8 @@ function makeTwoModelConfig() {
   return makeConfig({
     enabled: true,
     models: {
-      large: { Provider: "cliprovider", Model: "claude-cli" },
-      small: { Provider: "glm", Model: "glm-5" },
+      smart: { Provider: "cliprovider", Model: "claude-cli" },
+      fast: { Provider: "glm", Model: "glm-5" },
     },
     providers: {
       cliprovider: {

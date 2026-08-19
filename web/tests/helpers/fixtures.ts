@@ -36,8 +36,8 @@ export function makeMessage(overrides: Record<string, unknown> = {}) {
 export function makeConfig(overrides: Record<string, unknown> = {}) {
   return {
     models: {
-      large: { Provider: "anthropic", Model: "claude-opus-4" },
-      small: { Provider: "anthropic", Model: "claude-haiku-4" },
+      smart: { Provider: "anthropic", Model: "claude-opus-4" },
+      fast: { Provider: "anthropic", Model: "claude-haiku-4" },
     },
     providers: {
       anthropic: {

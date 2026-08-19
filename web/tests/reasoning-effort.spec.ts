@@ -29,8 +29,8 @@ test.beforeEach(async ({ page }) => {
 function makeClaudeConfig() {
   return makeConfig({
     models: {
-      large: { Provider: "local-cli", Model: "cli-claude-opus" },
-      small: { Provider: "local-cli", Model: "cli-claude-sonnet" },
+      smart: { Provider: "local-cli", Model: "cli-claude-opus" },
+      fast: { Provider: "local-cli", Model: "cli-claude-sonnet" },
     },
     providers: {
       "local-cli": {

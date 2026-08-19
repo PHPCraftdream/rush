@@ -35,7 +35,7 @@ test("header shows model name from config", async ({ page }) => {
   await page.goto("/");
   await sendMockWSMessage(page, {
     type: "config",
-    payload: { models: { large: { Provider: "anthropic", Model: "claude-3-5-sonnet" } } },
+    payload: { models: { smart: { Provider: "anthropic", Model: "claude-3-5-sonnet" } } },
   });
   // Model name appears in the settings modal
   await page.getByTestId("header-settings-button").click();
