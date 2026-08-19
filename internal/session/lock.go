@@ -734,6 +734,18 @@ func readLockHolderPID(path string) int {
 	return pid
 }
 
+// SessionLockPath returns the on-disk path of sessionID's lock file under
+// dataDir, without creating any directory or touching the filesystem.
+// Exported so callers outside this package that need to locate (but not
+// necessarily acquire) a session's lock file -- e.g.
+// internal/agent/cliprovider's child-process-group registry, which reads
+// the lock's generation token via ReadLockGeneration -- can compute the
+// exact same path TryAcquireSessionLock itself uses, without duplicating
+// sanitiseSessionID's escaping rules.
+func SessionLockPath(dataDir, sessionID string) string {
+	return filepath.Join(dataDir, "locks", "session-"+sanitiseSessionID(sessionID)+".lock")
+}
+
 // ReadLockPID is the exported variant of readLockHolderPID, used by
 // `crush sessions kill` / `reset --force` to read the PID off a lock
 // file without having to re-implement the multi-line parse (the file
@@ -748,6 +760,30 @@ func ReadLockPID(path string) int {
 func ReadLockTimeoutSec(path string) int64 {
 	_, t := readLockFile(path)
 	return t
+}
+
+// ReadLockGeneration returns the generation token currently stamped in
+// path's ".gen" sidecar (see writeGenerationSidecar / the SessionLock
+// generation field), or "" if the sidecar is missing or unreadable. This is
+// the exported counterpart of the same read clearHolderMetadata performs
+// internally, made available to callers outside this package that need to
+// prove a piece of state they recorded still belongs to the CURRENT lock
+// holder rather than a since-superseded or since-dead one.
+//
+// Used by internal/agent/cliprovider's child-process-group registry
+// (see internal/session/childgroup_registry_unix.go): the registry records
+// this token alongside the pgids it tracks, and `crush sessions kill`
+// refuses to signal any of them unless this function, read again at kill
+// time, still returns the SAME token — proving the lock has not been
+// released and re-acquired (by this crush process restarting, or by an
+// entirely different one after a PID/session reuse) since the registration
+// was written.
+func ReadLockGeneration(path string) string {
+	data, err := os.ReadFile(generationSidecarPath(path))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
 }
 
 // LockState describes the inter-process ownership of a session: who holds

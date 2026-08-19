@@ -147,6 +147,7 @@ type cliSessionEntry struct {
 
 type cliProvider struct {
 	workingDir  string
+	dataDir     string
 	yoloFn      func() bool
 	perms       permission.Service
 	sessions    session.Service
@@ -174,17 +175,24 @@ type ExternalMCPProxy interface {
 
 // New creates a CLI provider that runs all specs from [All].
 // workingDir is set as the working directory for every CLI invocation.
+// dataDir is the session data directory (holds .crush/locks/*) -- used
+// only to durably register CLI-provider child process groups so
+// `crush sessions kill` can reach them cross-process (see
+// internal/session/childgroup_registry_unix.go); pass "" to disable that
+// registration (e.g. from a caller, like `crush ping`, that has no
+// meaningful per-session data directory context).
 // yoloFn is called at request time to decide whether to pass the auto-accept flag.
 // perms is used to show crush's permission dialog when UseCrushMCP specs are invoked.
 // sessions is used by the todos MCP tool to persist task lists.
 // mcpProxy, if non-nil, is used for proxying external MCP tools to CLI models.
-func New(workingDir string, yoloFn func() bool, perms permission.Service, sessions session.Service, mcpProxy ExternalMCPProxy) fantasy.Provider {
+func New(workingDir, dataDir string, yoloFn func() bool, perms permission.Service, sessions session.Service, mcpProxy ExternalMCPProxy) fantasy.Provider {
 	specs := make(map[string]CLISpec, len(All))
 	for _, s := range All {
 		specs[s.ModelID] = s
 	}
 	return &cliProvider{
 		workingDir:  workingDir,
+		dataDir:     dataDir,
 		yoloFn:      yoloFn,
 		perms:       perms,
 		sessions:    sessions,
@@ -201,7 +209,7 @@ func (p *cliProvider) LanguageModel(_ context.Context, modelID string) (fantasy.
 	if !ok {
 		return nil, fmt.Errorf("unknown CLI model: %q", modelID)
 	}
-	return &cliModel{spec: spec, workingDir: p.workingDir, yoloFn: p.yoloFn, perms: p.perms, sessions: p.sessions, mcpProxy: p.mcpProxy, cliSessions: p.cliSessions}, nil
+	return &cliModel{spec: spec, workingDir: p.workingDir, dataDir: p.dataDir, yoloFn: p.yoloFn, perms: p.perms, sessions: p.sessions, mcpProxy: p.mcpProxy, cliSessions: p.cliSessions}, nil
 }
 
 type cliModel struct {
@@ -209,6 +217,7 @@ type cliModel struct {
 	mcpProxy    ExternalMCPProxy
 	cliSessions *csync.Map[string, cliSessionEntry]
 	workingDir  string
+	dataDir     string
 	yoloFn      func() bool
 	perms       permission.Service
 	sessions    session.Service

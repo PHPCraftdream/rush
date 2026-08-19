@@ -21,7 +21,14 @@ import (
 // logged and otherwise ignored: the taskkill fallback inside
 // KillProcess still applies, which is exactly the pre-Job-Object
 // behavior.
-func trackChildTree(proc *os.Process) int {
+//
+// dataDir/sessionID are accepted (and ignored) only so this function's
+// signature matches the Unix build's -- see procgroup_unix.go, where they
+// are used to register the child's process group in the cross-process,
+// generation-checked registry sessions kill reads on Unix. Windows has no
+// equivalent need: KillProcess already reaches the whole tracked tree via
+// the Job Object above, directly by pid, with no separate handoff.
+func trackChildTree(proc *os.Process, _, _ string) int {
 	if proc == nil {
 		return 0
 	}

@@ -350,7 +350,7 @@ func (m *cliModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.Strea
 				// a session leader is by definition a process-group
 				// leader, so KillProcess's group-kill path already
 				// applies.
-				childPid = trackChildTree(ptycmd.Process)
+				childPid = trackChildTree(ptycmd.Process, m.dataDir, sessionID)
 				// Log command-line diagnostics. In production mode, args are sanitized
 				// to remove sensitive values (prompts, tokens). In diagnostic mode
 				// (CRUSH_CLIPROVIDER_LOG_RAW_PROMPT=1), the full args are logged.
@@ -580,7 +580,7 @@ func (m *cliModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.Strea
 			}
 			reader = pipe
 		}
-		childPid = trackChildTree(cmd.Process)
+		childPid = trackChildTree(cmd.Process, m.dataDir, sessionID)
 		slog.Info("cliprovider: process started", "binary", m.spec.Binary, "pid", cmd.Process.Pid)
 		// Do NOT start cmd.Wait() eagerly. Per Go docs on StdoutPipe:
 		//   "it is incorrect to call Wait before all reads from the pipe have
@@ -754,7 +754,10 @@ func (m *cliModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.Strea
 		// straggler descendants still inside the job; it must run
 		// after the wait below, hence the registration order (defers
 		// are LIFO).
-		defer func() { session.UntrackProcessTree(childPid) }()
+		defer func() {
+			session.UntrackProcessTree(childPid)
+			session.UnregisterChildGroup(m.dataDir, sessionID, childPid)
+		}()
 		// Ensure the child process is reaped and its output fds are cleaned up
 		// on EVERY exit path — including early returns from ctx-cancel and
 		// yield-false. proc.wait() is idempotent (sync.Once internally), so

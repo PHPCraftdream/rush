@@ -94,12 +94,12 @@ func TestRemoveLockWithRetry(t *testing.T) {
 // destructive follow-up is gated on, so a spurious true is precisely how a
 // live holder's lock file gets unlinked and two owners appear.
 func TestForceKillHolder_InvalidPID(t *testing.T) {
-	kr := forceKillHolder(0, time.Second)
+	kr := forceKillHolder("", "", 0, time.Second)
 	assert.Contains(t, kr.Report, "no usable PID")
 	assert.False(t, kr.ConfirmedDead,
 		"a live holder was proven to exist by the caller's probe; an unreadable PID cannot upgrade that to 'confirmed dead'")
 	assert.Equal(t, holderUnidentified, kr.State)
-	kr = forceKillHolder(-5, time.Second)
+	kr = forceKillHolder("", "", -5, time.Second)
 	assert.Contains(t, kr.Report, "no usable PID")
 	assert.False(t, kr.ConfirmedDead)
 }
@@ -113,7 +113,7 @@ func TestForceKillHolder_AlreadyDead(t *testing.T) {
 		cmd = exec.CommandContext(context.Background(), "true")
 	}
 	require.NoError(t, cmd.Run())
-	kr := forceKillHolder(cmd.Process.Pid, time.Second)
+	kr := forceKillHolder("", "", cmd.Process.Pid, time.Second)
 	assert.Contains(t, kr.Report, "already gone")
 	assert.True(t, kr.ConfirmedDead)
 	assert.Equal(t, holderAlreadyDead, kr.State)
@@ -215,7 +215,7 @@ func TestForceKillHolder_LiveProcess(t *testing.T) {
 	go func() { _, _ = cmd.Process.Wait() }()
 
 	require.True(t, session.IsProcessAlive(pid))
-	kr := forceKillHolder(pid, 5*time.Second)
+	kr := forceKillHolder("", "", pid, 5*time.Second)
 	t.Logf("report: %s", kr.Report)
 	assert.True(t, strings.Contains(kr.Report, "killed PID") || strings.Contains(kr.Report, "already gone"))
 	assert.Contains(t, kr.Report, "exited")

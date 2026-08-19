@@ -36,6 +36,54 @@ through OpenProcess(PROCESS_TERMINATE), which can fail with "Access is
 denied" for processes launched under Git Bash or MSYS — taskkill avoids
 that whole class of issue.
 
+On Unix (Linux/macOS) a CLI-provider child (the ` + "`claude`" + `/` + "`gemini`" + `/` + "`codex`" + `/` + "`qwen`" + ` process crush
+launched) is spawned as the leader of its OWN process group, deliberately
+separate from crush's, so an ordinary signal to crush does not also kill
+it (see internal/session/track_unix.go). Because of that, SIGKILL to the
+crush PID by itself does NOT reach that child tree on Unix.
+
+This command closes that gap, but ONLY when it can prove the process
+group it is about to signal is still the one that was actually spawned
+for THIS session's CURRENT lock holder. When crush registers a
+CLI-provider child group (automatic for every model run through the ` + "`cli`" + `
+provider), the registration is written next to the session's own lock
+file, under its per-user ` + "`.crush/locks`" + ` directory (see
+internal/session/childgroup_registry_unix.go) -- NOT a shared, predictable
+path -- and it is stamped with the exact lock generation token that was
+current at registration time (the same generation mechanism
+internal/session/lock.go already uses to guard its own destructive
+cleanup). Once the crush PID itself is confirmed dead, this command:
+
+  1. re-reads the CURRENT generation for this session's lock and discards
+     any registered group whose recorded generation does not match
+     EXACTLY -- this is what makes the registry safe to trust across a
+     crashed crush process, a reused PID, or a different crush instance
+     having since taken over the same session id;
+  2. re-verifies each remaining candidate is still a live process-group
+     leader (and, on Linux, that its process start time still matches
+     what was recorded) immediately before signalling it; only then
+  3. killpg's what is left.
+
+The report tells you which of three things happened, because they must
+not be read as the same outcome:
+
+  - "swept N registered ... group(s)": reached and killed.
+  - "... generation no longer matches the current lock ... NOT reached":
+    a registration existed but could not be trusted for THIS kill (crush
+    process predates this feature, restarted, or a different owner has
+    since held the session) -- the child tree may still be running.
+  - "... no longer look like the process that registered them ... NOT
+    reached": the generation matched but the process group itself no
+    longer looks plausible (already exited, or the number was recycled).
+
+If none of those lines appear at all, no registration was ever found for
+this session, which most commonly means the CLI-provider child either
+never started or was never tracked. In every "NOT reached" case above, you
+would need to find and kill the child tree separately (e.g. ` + "`pkill -f claude`" + `).
+This whole paragraph does not apply on Windows, where ` + "`taskkill /F /T`" + ` plus
+the Job Object tracking described above already reaches the full tree
+unconditionally.
+
 The lock FILE is only removed once the holder is PROVEN dead (either the
 OS lock was acquirable — nobody holds it — or the kill was issued and the
 PID was observed to exit) AND a fresh OS-lock probe still succeeds right
@@ -286,7 +334,7 @@ func probeThenKillHolder(dataDir, sessionID string, pid int, wait time.Duration)
 		if livePID <= 0 {
 			livePID = pid
 		}
-		return forceKillHolder(livePID, wait)
+		return forceKillHolder(dataDir, sessionID, livePID, wait)
 	}
 	// Unidentified probe failure — NOT proof of either state. Fail closed:
 	// never kill the recorded PID on an uncertain lock state.
@@ -300,7 +348,7 @@ func probeThenKillHolder(dataDir, sessionID string, pid int, wait time.Duration)
 // it to actually exit. Returns a structured killResult; ConfirmedDead is true
 // only when the PID is observed to be gone. Safe to call when the process is
 // already dead.
-func forceKillHolder(pid int, wait time.Duration) killResult {
+func forceKillHolder(dataDir, sessionID string, pid int, wait time.Duration) killResult {
 	var sb strings.Builder
 	if pid <= 0 {
 		// This function is ONLY ever reached from the busy branch of
@@ -316,6 +364,7 @@ func forceKillHolder(pid int, wait time.Duration) killResult {
 	}
 	if !session.IsProcessAlive(pid) {
 		fmt.Fprintf(&sb, "PID %d already gone\n", pid)
+		reportChildGroupSweep(&sb, dataDir, sessionID, pid)
 		return killResult{State: holderAlreadyDead, KilledPID: pid, ConfirmedDead: true, Report: sb.String()}
 	}
 	if err := session.KillProcess(pid); err != nil {
@@ -339,7 +388,39 @@ func forceKillHolder(pid int, wait time.Duration) killResult {
 		return killResult{State: holderStillAlive, KilledPID: pid, ConfirmedDead: false, Report: sb.String()}
 	}
 	fmt.Fprintf(&sb, "PID %d exited\n", pid)
+	reportChildGroupSweep(&sb, dataDir, sessionID, pid)
 	return killResult{State: holderKilled, KilledPID: pid, ConfirmedDead: true, Report: sb.String()}
+}
+
+// reportChildGroupSweep runs session.KillRegisteredChildGroups(pid) -- the
+// #580 cross-process child-tree teardown -- and appends a one-line summary
+// to sb if anything was actually swept. Called only once pid itself is
+// confirmed dead. Best-effort: a group-kill failure only means an operator
+// still has to find and stop a CLI-provider child by hand; it never blocks
+// the lock-file removal decision, which depends solely on the crush PID's
+// own ConfirmedDead state (see forceKillHolder's doc comment).
+//
+// No-op and always reports nothing on Windows (session.KillRegisteredChildGroups
+// there always returns 0): Windows already reaches the whole child tree
+// through KillProcess's Job Object teardown, so there is nothing left for
+// this sweep to do on that platform. On Unix this is the fix for #580: a
+// CLI provider child (claude/gemini/codex/qwen) is deliberately spawned in
+// its OWN process group (see internal/agent/cliprovider/procgroup_unix.go)
+// so an ordinary signal to the crush process does not also kill it --
+// which means killing the crush PID alone, as this command did before this
+// fix, silently left that child tree running.
+func reportChildGroupSweep(sb *strings.Builder, dataDir, sessionID string, pid int) {
+	lockPath := session.SessionLockPath(dataDir, sessionID)
+	result := session.KillRegisteredChildGroups(dataDir, sessionID, lockPath)
+	if result.Killed > 0 {
+		fmt.Fprintf(sb, "swept %d registered CLI-provider child process group(s) for session %s\n", result.Killed, sessionID)
+	}
+	if result.GenerationMismatch {
+		fmt.Fprintf(sb, "a CLI-provider child process group was registered for session %s but its recorded generation no longer matches the current lock; NOT reached -- check for it manually\n", sessionID)
+	}
+	if result.Implausible > 0 {
+		fmt.Fprintf(sb, "%d registered CLI-provider child process group(s) for session %s no longer look like the process that registered them; NOT reached -- check for it manually\n", result.Implausible, sessionID)
+	}
 }
 
 // acquireSessionLockForReset acquires the real OS session lock, killing the
@@ -378,7 +459,7 @@ func acquireSessionLockForReset(dataDir, sessionID string, pid int, wait time.Du
 	if livePID <= 0 {
 		livePID = pid
 	}
-	kr := forceKillHolder(livePID, wait)
+	kr := forceKillHolder(dataDir, sessionID, livePID, wait)
 	if !kr.ConfirmedDead {
 		return nil, kr, fmt.Errorf("could not confirm the lock holder (PID %d) is dead; session left untouched", livePID)
 	}

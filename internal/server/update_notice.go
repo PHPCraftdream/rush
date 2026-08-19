@@ -20,7 +20,9 @@ import (
 const updateCheckTimeout = 30 * time.Second
 
 // broadcastUpdateNotice checks for a newer release once and, if one exists,
-// tells every connected client.
+// tells every connected client. Thin production wrapper around
+// broadcastUpdateNoticeWithClientVersion, always using the real GitHub
+// client and the binary's own version.Version.
 //
 // Deliberately fire-and-forget with no retry and no schedule: the operator
 // restarts crush often enough, and a background poller would be a network
@@ -31,10 +33,23 @@ const updateCheckTimeout = 30 * time.Second
 // Sends nothing when no update is available, so the client can render on
 // receipt without deciding anything.
 func broadcastUpdateNotice(ctx context.Context, h *Hub) {
+	broadcastUpdateNoticeWithClientVersion(ctx, h, update.Default, version.Version)
+}
+
+// broadcastUpdateNoticeWithClientVersion is broadcastUpdateNotice's
+// injectable core: current is the version string to compare against (the
+// production caller always passes version.Version), and client is the
+// update.Client used to fetch the latest release (the production caller
+// always passes update.Default, the real GitHub API). Split out purely so
+// a test can exercise this exact function — including the h.BroadcastSticky
+// call at the bottom, the actual line that decides whether the update
+// notice is sticky at all — with a fake Client instead of hitting the
+// network or depending on this fork's actual current version string.
+func broadcastUpdateNoticeWithClientVersion(ctx context.Context, h *Hub, client update.Client, current string) {
 	checkCtx, cancel := context.WithTimeout(ctx, updateCheckTimeout)
 	defer cancel()
 
-	info, err := update.Check(checkCtx, version.Version, update.Default)
+	info, err := update.Check(checkCtx, current, client)
 	if err != nil {
 		slog.Debug("update check failed", "err", err)
 		return

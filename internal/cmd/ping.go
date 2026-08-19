@@ -575,7 +575,7 @@ func buildPingProvider(ctx context.Context, store *config.ConfigStore, providerC
 		return openaicompat.New(opts...)
 
 	case cliprovider.ProviderType:
-		return cliprovider.New(cwd, func() bool { return true }, nil, nil, nil), nil
+		return cliprovider.New(cwd, store.Config().Options.DataDirectory, func() bool { return true }, nil, nil, nil), nil
 
 	default:
 		return nil, fmt.Errorf("provider type not supported: %q", providerCfg.Type)

@@ -621,7 +621,7 @@ func (c *coordinator) buildProvider(providerCfg config.ProviderConfig, model con
 		}
 		return c.buildOpenaiCompatProvider(baseURL, apiKey, headers, providerCfg.ExtraBody, providerCfg.ID, isSubAgent)
 	case cliprovider.ProviderType:
-		return cliprovider.New(c.cfg.WorkingDir(), c.permissions.SkipRequests, c.permissions, c.sessions, &externalMCPProxy{cfg: c.cfg}), nil
+		return cliprovider.New(c.cfg.WorkingDir(), c.cfg.Config().Options.DataDirectory, c.permissions.SkipRequests, c.permissions, c.sessions, &externalMCPProxy{cfg: c.cfg}), nil
 	default:
 		// Known custom providers (litellm, ollama, omlx, lmstudio) are
 		// openai-compat under the hood.

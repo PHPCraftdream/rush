@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/crush/internal/update"
 	"github.com/stretchr/testify/require"
 )
 
@@ -258,4 +259,76 @@ func TestHub_NonStickyEventIsNotReplayedToLateClients(t *testing.T) {
 	types := drainClient(t, late)
 	require.NotContains(t, types, "ordinary",
 		"an evicted ordinary event must stay evicted -- stickiness is opt-in")
+}
+
+// fakeUpdateClient is a minimal update.Client stub so this test can drive
+// broadcastUpdateNoticeWithClientVersion without any real network call,
+// and deterministically report a fixed "latest" tag.
+type fakeUpdateClient struct{ latestTag string }
+
+// Latest implements update.Client.
+func (c fakeUpdateClient) Latest(_ context.Context) (*update.Release, error) {
+	return &update.Release{TagName: c.latestTag, HTMLURL: "https://example.invalid/release"}, nil
+}
+
+// TestBroadcastUpdateNotice_DeliversThroughTheProductionEntryPoint closes the
+// gap the other tests in this file leave open: every test above calls
+// h.BroadcastSticky directly, so none of them actually exercises
+// broadcastUpdateNotice / broadcastUpdateNoticeWithClientVersion in
+// internal/server/update_notice.go -- the code that decides whether the
+// update notice is sent sticky AT ALL (update_notice.go's h.BroadcastSticky
+// call). A prior version of this file carried a comment claiming a
+// revert-check against exactly that line, but no test here ever called
+// through it, so the claim did not hold: switching update_notice.go's
+// h.BroadcastSticky back to h.Broadcast left every test in this file green.
+//
+// This test drives the real broadcastUpdateNoticeWithClientVersion (the
+// injectable core broadcastUpdateNotice itself is a thin wrapper around),
+// with a fake update.Client so it needs no network access and no dependency
+// on this fork's actual current version string, then asserts a late client
+// still receives the notice -- the same replay-ring-eviction shape the
+// other tests in this file cover for a hand-constructed BroadcastSticky
+// call.
+//
+// Revert-check: change update_notice.go's h.BroadcastSticky(EventUpdateAvailable, ...)
+// call back to h.Broadcast(EventUpdateAvailable, ...) and this test fails --
+// the late client's replay-ring-overrun means the ordinary broadcast is long
+// gone by the time it registers, so EventUpdateAvailable never arrives.
+// Verified by literally doing that revert and running this test; see the
+// task notes for the captured failure output.
+func TestBroadcastUpdateNotice_DeliversThroughTheProductionEntryPoint(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	h := newHub()
+	go h.Run(ctx)
+
+	// "1.0.0" -> "1.1.0": both stable (no "-" prerelease marker), current !=
+	// latest, and neither is a devel/pseudo-version -- so IsDevelopment() is
+	// false and Available() is true, the same shape every other test in this
+	// file drives directly via BroadcastSticky's UpdateAvailableWire.
+	client := fakeUpdateClient{latestTag: "v1.1.0"}
+	broadcastUpdateNoticeWithClientVersion(ctx, h, client, "1.0.0")
+
+	// Overrun the replay ring exactly as the other sticky-survival tests in
+	// this file do, so a plain (non-sticky) broadcast of this same event
+	// could not possibly still be sitting in the ring by the time the late
+	// client registers.
+	for i := 0; i < maxBufferSize+50; i++ {
+		h.Broadcast("noise", map[string]int{"i": i})
+	}
+	waitHubDrained(t, h)
+
+	late := newClient(nil, nil)
+	h.register <- late
+
+	_, payloads := drainClientPayloads(t, late, EventUpdateAvailable)
+	require.Len(t, payloads, 1,
+		"a client connecting after one turn's worth of traffic must receive exactly one update_available event via the real broadcastUpdateNotice entry point, not zero (dropped) and not more than one")
+
+	var wire UpdateAvailableWire
+	require.NoError(t, json.Unmarshal(payloads[0], &wire))
+	require.Equal(t, "1.0.0", wire.Current)
+	require.Equal(t, "1.1.0", wire.Latest)
 }

@@ -37,14 +37,14 @@ func TestMain(m *testing.M) {
 }
 
 func TestNewProvider(t *testing.T) {
-	p := New("/tmp", nil, nil, nil, nil)
+	p := New("/tmp", "", nil, nil, nil, nil)
 	if p.Name() != ProviderID {
 		t.Errorf("Name() = %q, want %q", p.Name(), ProviderID)
 	}
 }
 
 func TestLanguageModelUnknown(t *testing.T) {
-	p := New("/tmp", nil, nil, nil, nil)
+	p := New("/tmp", "", nil, nil, nil, nil)
 	_, err := p.LanguageModel(context.Background(), "nonexistent")
 	if err == nil {
 		t.Fatal("expected error for unknown model")
@@ -55,7 +55,7 @@ func TestLanguageModelUnknown(t *testing.T) {
 }
 
 func TestLanguageModelKnown(t *testing.T) {
-	p := New("/tmp", nil, nil, nil, nil)
+	p := New("/tmp", "", nil, nil, nil, nil)
 	lm, err := p.LanguageModel(context.Background(), "cli-claude-sonnet")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
