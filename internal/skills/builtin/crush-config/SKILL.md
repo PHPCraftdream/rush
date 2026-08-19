@@ -92,12 +92,12 @@ reviewed.
 ```json
 {
   "models": {
-    "large": {
+    "smart": {
       "model": "claude-sonnet-4-20250514",
       "provider": "anthropic",
       "max_tokens": 16384
     },
-    "small": {
+    "fast": {
       "model": "claude-haiku-4-20250514",
       "provider": "anthropic"
     }
@@ -105,7 +105,7 @@ reviewed.
 }
 ```
 
-- `large` is the primary coding model; `small` is for summarization.
+- `smart` is the primary coding model; `fast` is for summarization. (Two more optional slots exist: `worker` for cheap delegated sub-task work, `reviewer` for the strongest slot on explicit review — see `crush models --help`.)
 - Only `model` and `provider` are required.
 - Optional tuning: `reasoning_effort`, `think`, `max_tokens`, `temperature`, `top_p`, `top_k`, `frequency_penalty`, `presence_penalty`, `provider_options`.
 

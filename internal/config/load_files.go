@@ -6,6 +6,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -113,5 +114,49 @@ func loadFromBytes(configs [][]byte) (*Config, error) {
 	if err := json.Unmarshal(data, &config); err != nil {
 		return nil, err
 	}
+	warnUnknownModelSlots(data)
 	return &config, nil
+}
+
+// knownModelSlots is the exhaustive set of keys the "models" object in
+// crush.json is read into (see the SelectedModelType* constants). Anything
+// else under "models" is not a typo Go will catch: json.Unmarshal into
+// Config.Models (map[SelectedModelType]SelectedModel) silently keeps an
+// unrecognized key as a map entry that is simply never looked up anywhere
+// -- Load never errors, "crush models state" just reports whatever the
+// defaults resolve to, and the operator has no signal that the key they
+// wrote did nothing. This bites hardest after a model-slot rename: a config
+// file still holding a pre-rename slot key under "models" loads
+// "successfully" and silently runs different models than the file claims.
+// This function is a diagnostic ONLY -- it must never change
+// which model gets selected, only warn when a written key cannot possibly
+// affect that selection.
+var knownModelSlots = map[string]bool{
+	string(SelectedModelTypeSmart):    true,
+	string(SelectedModelTypeFast):     true,
+	string(SelectedModelTypeWorker):   true,
+	string(SelectedModelTypeReviewer): true,
+}
+
+// warnUnknownModelSlots inspects the raw (pre-unmarshal) "models" object for
+// keys outside knownModelSlots and logs one warning per offender. It reads
+// the merged JSON bytes directly rather than the typed Config, because by
+// the time the data reaches a map[SelectedModelType]SelectedModel field the
+// unrecognized key has already been accepted as a valid (if unused) map
+// entry -- there is nothing left in the typed value to detect the mistake
+// from. Malformed "models" JSON is silently ignored here: loadFromBytes's
+// own json.Unmarshal into Config already surfaces a real parse error to the
+// caller, so this best-effort peek doesn't need to duplicate that.
+func warnUnknownModelSlots(data []byte) {
+	var probe struct {
+		Models map[string]json.RawMessage `json:"models"`
+	}
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return
+	}
+	for key := range probe.Models {
+		if !knownModelSlots[key] {
+			slog.Warn("unrecognized key under \"models\" in crush.json -- it is not one of the configured model slots and has no effect", "key", key, "known_slots", "smart, fast, worker, reviewer")
+		}
+	}
 }

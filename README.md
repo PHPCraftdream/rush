@@ -566,6 +566,8 @@ button opens a modal with three blocks — System, Folder, Session — each
 showing all four slots: what's explicitly set at that level, or, when
 unset, the inherited value and which level it's coming from.
 
+<!-- stale-slot-ok: historical record of the removed command's exact spelling -->
+
 > **Removed in batch 11:** `crush models set --large X --small Y` and the
 > entire `crush models preset` subtree (save/use/list/delete). Both
 > commands now print a redirect notice pointing at `crush models use`.

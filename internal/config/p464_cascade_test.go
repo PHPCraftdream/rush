@@ -103,7 +103,7 @@ func TestCascade_ClearingWorkspaceFallsBackToGlobal(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, "cascade-workspace3", before.Provider)
 
-	// Clear the workspace override — mirrors `crush models unset small
+	// Clear the workspace override — mirrors `crush models unset fast
 	// --local` / the modal's per-slot clear (task #463).
 	require.NoError(t, store.RemoveConfigField(ScopeWorkspace, "models.fast"))
 

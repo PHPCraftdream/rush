@@ -40,8 +40,8 @@ var runCmd = &cobra.Command{
 --role is REQUIRED: every invocation must declare which model slot it
 wants. This avoids silently burning premium tokens on a one-liner.
 Four roles exist:
-  smart | large      the strong default slot (top-level agent runs here)
-  fast  | small      the cheap slot, for trivial work
+  smart              the strong default slot (top-level agent runs here)
+  fast               the cheap slot, for trivial work
   worker             optional, no alias; cheap slot for delegated
                       hands-on sub-task work. Never auto-selected — only
                       reachable via --role worker directly, OR indirectly
@@ -445,11 +445,11 @@ crush run --restrict-run --role fast \
 
 		// --role is required so a `crush run` invocation always declares
 		// its intent (cheap-and-fast vs strong-and-slow), instead of
-		// silently defaulting to large and burning tokens unintentionally.
-		// "smart" / "fast" are friendly aliases for "smart" / "fast". The
-		// alias vocabulary and the invalid-value wording are shared with
-		// `crush ping` via resolveModelRole; only the empty-is-required
-		// rule is command-specific.
+		// silently defaulting to smart and burning tokens unintentionally.
+		// The role vocabulary (smart/fast/worker/reviewer) and the
+		// invalid-value wording are shared with `crush ping` via
+		// resolveModelRole; only the empty-is-required rule is
+		// command-specific.
 		if role == "" {
 			return fmt.Errorf("--role is required: pass --role smart, --role fast, or, if configured, --role worker / --role reviewer")
 		}
@@ -702,16 +702,16 @@ crush run --restrict-run --role fast \
 			return fmt.Errorf("no providers configured - please run 'crush' to set up a provider interactively")
 		}
 
-		// Fold --role into largeModel. When the user picked a role other than
-		// "smart"/"smart" without also passing an explicit --model, we point
-		// the agent at whatever the config has saved for that role's slot
-		// (small/worker/reviewer) — that's the user's pre-declared choice for
-		// that role. The agent always uses its `large` slot for the turn;
+		// Fold --role into smartModel. When the user picked a role other than
+		// "smart" without also passing an explicit --model, we point the
+		// agent at whatever the config has saved for that role's slot
+		// (fast/worker/reviewer) — that's the user's pre-declared choice for
+		// that role. The agent always uses its `smart` slot for the turn;
 		// --role just decides which catalog entry fills it.
 		if modelType != config.SelectedModelTypeSmart && smartModel == "" {
 			roleModel, ok := a.Config().Models[modelType]
 			if !ok || roleModel.Model == "" {
-				return fmt.Errorf("--role %s: no %s model configured (run \"crush models set %s <model>\" first)", role, modelType, modelType)
+				return fmt.Errorf("--role %s: no %s model configured (run \"crush models use --%s <model>\" first)", role, modelType, modelType)
 			}
 			smartModel = roleModel.Provider + "/" + roleModel.Model
 		}

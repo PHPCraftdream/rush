@@ -294,8 +294,8 @@ func TestModelsBump_AllFourRoles(t *testing.T) {
 			globalPath := setupBumpEnv(t)
 
 			resetModelsUseFlags(t)
-			// small positional defaults to glm5_turbo (no declared effort
-			// levels — irrelevant for the large/worker/reviewer sub-tests),
+			// fast positional defaults to glm5_turbo (no declared effort
+			// levels — irrelevant for the smart/worker/reviewer sub-tests),
 			// but the "fast" sub-test itself needs an atom WITH levels in
 			// that exact slot, so it seeds glm4_7_flash-off there too.
 			fastSeed := "glm5_turbo"

@@ -236,6 +236,7 @@ test("send-with-fast-model button sends the config FAST model when the session h
   expect(payload.sessionID).toBe("sw-fast-fallback");
   expect(payload.content).toBe("hello fast");
   // F6 regression: sendWithFastModel's fallback used to read
+  // stale-slot-ok: naming the dead key is the whole point of this test
   // `config?.models?.small`, a key the server never sends (the wire uses
   // `SelectedModelType` values "smart"/"fast" — see
   // internal/server/handlers_config.go's buildConfigWire). With the stale
@@ -458,6 +459,7 @@ test("selecting Inherit clears the session's override with an explicit empty mod
   expect(p.smartModel).toEqual({ provider: "", model: "" });
 
   // F5 regression (task #570): clearSessionModelSlot's local optimistic
+  // stale-slot-ok: naming the dead keys is the whole point of this test
   // update indexes a `clearedFields` map keyed by the OLD "large"/"small"
   // slot names. With the stale keys, `clearedFields["smart"]` is undefined,
   // so the optimistic write lands on `undefinedProvider`/`undefinedID`

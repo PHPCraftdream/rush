@@ -340,35 +340,21 @@ func TestPingCmd_CommandsRegistered(t *testing.T) {
 func TestResolvePingRole(t *testing.T) {
 	t.Parallel()
 
-	t.Run("empty defaults to large", func(t *testing.T) {
+	t.Run("empty defaults to smart", func(t *testing.T) {
 		t.Parallel()
 		modelType, err := resolvePingRole("")
 		require.NoError(t, err)
 		require.Equal(t, config.SelectedModelTypeSmart, modelType)
 	})
 
-	t.Run("smart aliases to large", func(t *testing.T) {
+	t.Run("smart resolves to smart", func(t *testing.T) {
 		t.Parallel()
 		modelType, err := resolvePingRole("smart")
 		require.NoError(t, err)
 		require.Equal(t, config.SelectedModelTypeSmart, modelType)
 	})
 
-	t.Run("large aliases to large", func(t *testing.T) {
-		t.Parallel()
-		modelType, err := resolvePingRole("smart")
-		require.NoError(t, err)
-		require.Equal(t, config.SelectedModelTypeSmart, modelType)
-	})
-
-	t.Run("fast aliases to small", func(t *testing.T) {
-		t.Parallel()
-		modelType, err := resolvePingRole("fast")
-		require.NoError(t, err)
-		require.Equal(t, config.SelectedModelTypeFast, modelType)
-	})
-
-	t.Run("small aliases to small", func(t *testing.T) {
+	t.Run("fast resolves to fast", func(t *testing.T) {
 		t.Parallel()
 		modelType, err := resolvePingRole("fast")
 		require.NoError(t, err)
@@ -504,21 +490,7 @@ func TestResolveModelRole(t *testing.T) {
 		require.Equal(t, config.SelectedModelTypeSmart, modelType)
 	})
 
-	t.Run("smart aliases to large", func(t *testing.T) {
-		t.Parallel()
-		modelType, err := resolveModelRole("smart")
-		require.NoError(t, err)
-		require.Equal(t, config.SelectedModelTypeSmart, modelType)
-	})
-
 	t.Run("fast", func(t *testing.T) {
-		t.Parallel()
-		modelType, err := resolveModelRole("fast")
-		require.NoError(t, err)
-		require.Equal(t, config.SelectedModelTypeFast, modelType)
-	})
-
-	t.Run("fast aliases to small", func(t *testing.T) {
 		t.Parallel()
 		modelType, err := resolveModelRole("fast")
 		require.NoError(t, err)

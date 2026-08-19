@@ -1,4 +1,4 @@
-// Fork patch: batch 13 — `crush models unset [large|small|both] [--global|--local]`
+// Fork patch: batch 13 — `crush models unset [smart|fast|both] [--global|--local]`
 // removes a model override from the chosen scope so the other scope takes
 // effect, without having to hand-edit crush.json or `rm` the whole file.
 package cmd
@@ -22,7 +22,7 @@ Positional arg (optional):
   fast      — only the fast slot
   worker    — only the optional worker slot
   reviewer  — only the optional reviewer slot
-  both      — large + small (default if omitted; matches ` + "`crush models use`" + `'s scope)
+  both      — smart + fast (default if omitted; matches ` + "`crush models use`" + `'s scope)
   all       — all four slots, including worker/reviewer
 
 Scope flags (mutually exclusive):
@@ -34,25 +34,25 @@ Missing keys are a no-op (exit 0). After the deletion, an empty
 	Args:      cobra.MaximumNArgs(1),
 	ValidArgs: []string{"smart", "fast", "worker", "reviewer", "both", "all"},
 	Example: `
-# Clear the large+small workspace override so the global config takes effect again.
+# Clear the smart+fast workspace override so the global config takes effect again.
 crush models unset --local
 
-# Same but globally — wipes large+small from ~/.local/share/crush/crush.json.
+# Same but globally — wipes smart+fast from ~/.local/share/crush/crush.json.
 crush models unset --global
 
 # Drop just the smart slot in the workspace; keep the fast one.
 crush models unset smart --local
 
 # Drop just the fast slot globally.
-crush models unset small --global
+crush models unset fast --global
 
-# Clear the worker slot globally (falls back to no worker — sub-agents use large).
+# Clear the worker slot globally (falls back to no worker — sub-agents use smart).
 crush models unset worker --global
 
 # Clear the reviewer slot in the workspace.
 crush models unset reviewer --local
 
-# Clear all four slots (large, small, worker, reviewer) globally.
+# Clear all four slots (smart, fast, worker, reviewer) globally.
 crush models unset all --global
 
 # Confirm what survived:
@@ -96,7 +96,7 @@ crush models state
 			{"reviewer", "models.reviewer", priorAll[config.SelectedModelTypeReviewer]},
 		}
 
-		// "both" (the default) only ever touched large+small; "all" is the new
+		// "both" (the default) only ever touched smart+fast; "all" is the new
 		// spelling for every slot including worker/reviewer.
 		selected := func(label string) bool {
 			switch which {

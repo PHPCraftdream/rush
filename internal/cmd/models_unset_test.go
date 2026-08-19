@@ -10,7 +10,7 @@ import (
 )
 
 // TestModelsUnset_InvalidPositional verifies cobra rejects something other than
-// large|small|both via ValidArgs.
+// smart|fast|worker|reviewer|both|all via ValidArgs.
 func TestModelsUnset_InvalidPositional(t *testing.T) {
 	// Re-validate via cobra's built-in mechanism rather than invoking the
 	// full RunE (which would need a real store + app). cobra.ValidArgs is
@@ -27,13 +27,13 @@ func TestModelsUnset_InvalidPositional(t *testing.T) {
 	args := []string{"middle"}
 	which := args[0]
 	switch which {
-	case "smart", "fast", "both":
+	case "smart", "fast", "worker", "reviewer", "both", "all":
 		t.Fatalf("unexpected: %q should NOT be accepted", which)
 	default:
 		// expected — match the exact error message text from RunE
 		// to lock the contract down.
-		got := "unexpected positional \"" + which + "\" — expected large|small|both"
-		assert.Contains(t, got, "expected large|small|both")
+		got := "unexpected positional \"" + which + "\" — expected smart|fast|worker|reviewer|both|all"
+		assert.Contains(t, got, "expected smart|fast|worker|reviewer|both|all")
 	}
 }
 

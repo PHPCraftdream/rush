@@ -65,10 +65,10 @@ exclusive with --role.`,
 # Ping whichever smart model is currently configured
 crush ping
 
-# Ping the small/fast slot without switching to ping-fast
+# Ping the fast slot without switching to ping-fast
 crush ping --role fast
 
-# Ping the large/smart slot explicitly
+# Ping the smart slot explicitly
 crush ping --role smart
 
 # Ping the optional worker/reviewer slots (if configured)
@@ -134,7 +134,7 @@ crush ping --timeout 30s --prompt "Reply with yes or no"
 var pingFastCmd = &cobra.Command{
 	Use:   "ping-fast [--json] [--timeout 1m] [--prompt \"<custom>\"]",
 	Short: "Ping the fast model to verify connectivity and API key",
-	Long: `Same as 'crush ping' but for the configured small (fast) model slot.
+	Long: `Same as 'crush ping' but for the configured fast model slot.
 Works with any provider type — API or CLI.`,
 	Example: `
 # Ping the fast model
@@ -805,7 +805,7 @@ func resolvePingModel(cfg *config.Config, modelStr string) (config.SelectedModel
 }
 
 // resolvePingRole maps a --role value to the model slot to ping. An empty
-// role keeps the historical `crush ping` default (the large/smart model);
+// role keeps the historical `crush ping` default (the smart model);
 // any non-empty value goes through the shared resolveModelRole so ping and
 // `crush run` accept exactly the same vocabulary and reject unknown values
 // with identical wording.

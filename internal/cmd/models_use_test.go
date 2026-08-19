@@ -293,11 +293,11 @@ func TestModelsUse_TwoPositionalRegression(t *testing.T) {
 	assert.NotContains(t, content, `"reviewer"`)
 }
 
-// TestModelsUse_SmallFlagOnly_LeavesLargeUntouched is the regression test for
-// task #249: previously the only way to change the small ("fast") slot was
-// the two-positional form, which always rewrote large too — there was no way
-// to touch just one of smart/fast. --small (mirroring the existing
-// --worker/--reviewer pattern) must set ONLY the fast slot, leaving large
+// TestModelsUse_FastFlagOnly_LeavesSmartUntouched is the regression test for
+// task #249: previously the only way to change the fast slot was the
+// two-positional form, which always rewrote smart too — there was no way
+// to touch just one of smart/fast. --fast (mirroring the existing
+// --worker/--reviewer pattern) must set ONLY the fast slot, leaving smart
 // (and worker/reviewer) exactly as they were before the call.
 func TestModelsUse_FastFlagOnly_LeavesSmartUntouched(t *testing.T) {
 	globalPath := isolatedModelsEnv(t)
@@ -322,12 +322,12 @@ func TestModelsUse_FastFlagOnly_LeavesSmartUntouched(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(data, &doc))
 
-	assert.Contains(t, string(doc.Models["smart"]), `"glm-4.6"`, "large must be untouched by a --small-only call")
-	assert.Contains(t, string(doc.Models["fast"]), `"glm-4.7-flash"`, "small must reflect the new --small value")
+	assert.Contains(t, string(doc.Models["smart"]), `"glm-4.6"`, "smart must be untouched by a --fast-only call")
+	assert.Contains(t, string(doc.Models["fast"]), `"glm-4.7-flash"`, "fast must reflect the new --fast value")
 	assert.NotContains(t, string(doc.Models["fast"]), `"glm-5-turbo"`, "the active fast slot must not still be the OLD value")
 }
 
-// TestModelsUse_LargeFlagOnly_LeavesSmallUntouched is the --large mirror of
+// TestModelsUse_SmartFlagOnly_LeavesFastUntouched is the --smart mirror of
 // the test above.
 func TestModelsUse_SmartFlagOnly_LeavesFastUntouched(t *testing.T) {
 	globalPath := isolatedModelsEnv(t)
@@ -342,19 +342,19 @@ func TestModelsUse_SmartFlagOnly_LeavesFastUntouched(t *testing.T) {
 
 	data, err := os.ReadFile(globalPath)
 	require.NoError(t, err)
-	// See TestModelsUse_SmallFlagOnly_LeavesLargeUntouched for why this
+	// See TestModelsUse_FastFlagOnly_LeavesSmartUntouched for why this
 	// parses the active "models" object rather than grepping raw content.
 	var doc struct {
 		Models map[string]json.RawMessage `json:"models"`
 	}
 	require.NoError(t, json.Unmarshal(data, &doc))
 
-	assert.Contains(t, string(doc.Models["smart"]), `"glm-4.7-flash"`, "large must reflect the new --large value")
-	assert.Contains(t, string(doc.Models["fast"]), `"glm-5-turbo"`, "small must be untouched by a --large-only call")
+	assert.Contains(t, string(doc.Models["smart"]), `"glm-4.7-flash"`, "smart must reflect the new --smart value")
+	assert.Contains(t, string(doc.Models["fast"]), `"glm-5-turbo"`, "fast must be untouched by a --smart-only call")
 	assert.NotContains(t, string(doc.Models["smart"]), `"glm-4.6"`, "the active smart slot must not still be the OLD value")
 }
 
-// TestModelsUse_LargeAndSmallFlagsTogether covers setting both via flags in
+// TestModelsUse_SmartAndFastFlagsTogether covers setting both via flags in
 // one call (still without touching worker/reviewer), as distinct from the
 // positional form.
 func TestModelsUse_SmartAndFastFlagsTogether(t *testing.T) {
@@ -374,8 +374,8 @@ func TestModelsUse_SmartAndFastFlagsTogether(t *testing.T) {
 	assert.NotContains(t, content, `"reviewer"`)
 }
 
-// TestModelsUse_PositionalAndLargeFlagConflict_Rejected proves the two forms
-// (positional <smart> <fast> vs. --large/--small flags) cannot be mixed —
+// TestModelsUse_PositionalAndSmartFlagConflict_Rejected proves the two forms
+// (positional <smart> <fast> vs. --smart/--fast flags) cannot be mixed —
 // silently preferring one over the other would be worse than refusing.
 func TestModelsUse_PositionalAndSmartFlagConflict_Rejected(t *testing.T) {
 	isolatedModelsEnv(t)
@@ -400,7 +400,7 @@ func TestModelsUse_OnePositionalArg_RejectedAsAmbiguous(t *testing.T) {
 }
 
 // TestModelsUse_NoArgsNoFlags_RejectedAsNoOp proves calling `models use` with
-// nothing at all (no positional args, no --large/--small/--worker/--reviewer
+// nothing at all (no positional args, no --smart/--fast/--worker/--reviewer
 // flags) fails clearly instead of silently doing nothing.
 func TestModelsUse_NoArgsNoFlags_RejectedAsNoOp(t *testing.T) {
 	isolatedModelsEnv(t)

@@ -11,7 +11,7 @@ import (
 // TestShouldBypassSubAgentBan is the table-level test for the Фаза 2
 // decision logic (docs/plans/2026-07-26-orchestrator-worker-e2e.md): the
 // default `crush run` sub-agent ban is bypassed for the `agent` tool
-// whenever --role resolved to smart/large AND a Worker model slot is
+// whenever --role resolved to smart AND a Worker model slot is
 // configured with a non-empty Model — regardless of whether --agents
 // single was passed explicitly or left unset, since a configured worker
 // means delegation is the operator's intent either way.

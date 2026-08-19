@@ -9,8 +9,8 @@ Get Crush's current runtime state: active models, provider, MCP status, skills, 
 </usage>
 
 <tips>
-- Check [model] for the configured model slots: "large" (smart, top-level
-  default) and "small" (fast, cheap work) are always meaningful; "worker"
+- Check [model] for the configured model slots: "smart" (top-level
+  default) and "fast" (cheap work) are always meaningful; "worker"
   (cheap sub-task delegation) and "reviewer" (strongest slot, explicit
   review only) are optional and only appear here when configured — their
   absence just means that slot isn't set, not that anything is broken

@@ -149,6 +149,19 @@ if offenders="$(grep -lP "[^[:ascii:]]" internal/db/sql/*.sql 2>/dev/null)" && [
 	fail "a non-ASCII character in a .sql file silently corrupts sqlc codegen -- replace it with an ASCII equivalent"
 fi
 
+# Stale model-slot-name guard (large/small -> smart/fast rename). See
+# .githooks/check_stale_model_slots.sh for the full rationale: two
+# independent reviews found the rename's hand-swept text pass (the
+# go/scanner tool deliberately only patched Go IDENT tokens, to avoid
+# mangling legitimate prose like "a large thinking budget") had missed
+# live --large/--small flag mentions, models.large/models.small config-key
+# docs, and quoted "large"/"small" slot names in --help text, error
+# strings, and the bundled crush-config skill. Nothing else in the
+# toolchain would catch this -- it is not a compile error and go vet does
+# not know these strings are supposed to be in sync with the Go identifiers.
+step "no stale large/small model-slot spelling (renamed to smart/fast)"
+bash .githooks/check_stale_model_slots.sh || fail "stale large/small model-slot text found -- see output above"
+
 # The web UI's typecheck. rsbuild (pnpm build) does NOT check types, so
 # without this nothing in the project does — which is how five errors,
 # including a required prop that silently changed how tool groups render,

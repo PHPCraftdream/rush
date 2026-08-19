@@ -1,5 +1,5 @@
 // Fork patch: batch 11 — `crush models use <smart> <fast>` replaces the older
-// `crush models set --large X --small Y` with positional args + atom registry.
+// `crush models set --smart X --fast Y` with positional args + atom registry.
 package cmd
 
 import (
@@ -26,13 +26,13 @@ remains "local if set, else global".
 
 Two forms are supported — never mix them in the same call:
 
-  1. Positional (sets large + small together):
+  1. Positional (sets smart + fast together):
        crush models use <smart> <fast>
 
   2. Flags (set any subset of the four slots independently — e.g. only the
-     fast/fast model, leaving large/worker/reviewer untouched):
-       crush models use --small <atom>
-       crush models use --large <atom> --reviewer <atom>
+     fast model, leaving smart/worker/reviewer untouched):
+       crush models use --fast <atom>
+       crush models use --smart <atom> --reviewer <atom>
 
 --worker and --reviewer (see ` + "`crush models --help`" + ` for what each is for)
 are ALWAYS flag-only, in both forms, and are resolved/written independently
@@ -53,7 +53,7 @@ crush models use o47x h45l
 # Sonnet 4.6 high (200k ctx) + Haiku 4.5 low — cheaper than Opus, still smart
 crush models use s46h h45l
 
-# Max thinking on large (1M ctx), fast on small
+# Max thinking on smart (1M ctx), fast on fast
 crush models use o47xx h45l
 
 # Z.AI stack
@@ -83,14 +83,14 @@ crush models use --local o47x h45l
 # Raw "provider/model[@level]" syntax for models not in the registry.
 crush models use openai/gpt-5@high zai/glm-5-turbo
 
-# Change ONLY the fast/fast model, leaving large/worker/reviewer untouched
-crush models use --small glm4_7_flash
+# Change ONLY the fast slot, leaving smart/worker/reviewer untouched
+crush models use --fast glm4_7_flash
 
-# Change ONLY the smart/smart model
-crush models use --large o47x
+# Change ONLY the smart slot
+crush models use --smart o47x
 
-# --large and --small together, still without touching worker/reviewer
-crush models use --large o47x --small h45l
+# --smart and --fast together, still without touching worker/reviewer
+crush models use --smart o47x --fast h45l
 
 # After running, verify with:
 crush models state
@@ -106,7 +106,7 @@ crush models state
 		reviewerArg, _ := cmd.Flags().GetString("reviewer")
 
 		// Exactly one of the two forms documented above may be used per
-		// call: positional <smart> <fast>, or --large/--small flags. Never
+		// call: positional <smart> <fast>, or --smart/--fast flags. Never
 		// both — a call with both would leave it ambiguous which value
 		// actually wins, and silently preferring one over the other is
 		// worse than just refusing.
@@ -114,17 +114,17 @@ crush models state
 		switch len(args) {
 		case 2:
 			if smartFlag != "" || fastFlag != "" {
-				return fmt.Errorf("cannot combine positional <smart> <fast> args with --large/--small flags — use one form or the other (see `crush models use --help`)")
+				return fmt.Errorf("cannot combine positional <smart> <fast> args with --smart/--fast flags — use one form or the other (see `crush models use --help`)")
 			}
 			smartArg, fastArg = args[0], args[1]
 		case 0:
 			smartArg, fastArg = smartFlag, fastFlag
 		default:
-			return fmt.Errorf("expected 0 positional args (use --large/--small to update individual slots) or exactly 2 (<smart> <fast>) — got %d", len(args))
+			return fmt.Errorf("expected 0 positional args (use --smart/--fast to update individual slots) or exactly 2 (<smart> <fast>) — got %d", len(args))
 		}
 
 		if smartArg == "" && fastArg == "" && workerArg == "" && reviewerArg == "" {
-			return fmt.Errorf("nothing to set — provide <smart> <fast> positionally, or at least one of --large/--small/--worker/--reviewer")
+			return fmt.Errorf("nothing to set — provide <smart> <fast> positionally, or at least one of --smart/--fast/--worker/--reviewer")
 		}
 
 		a, err := setupApp(cmd)
@@ -143,7 +143,7 @@ crush models state
 		// so that a validation failure on a later field (e.g. --reviewer)
 		// can never leave an earlier field (smart/fast/--worker) already
 		// persisted. See CLAUDE.md task tracking / bug report: previously
-		// large and small were written immediately after being parsed, so a
+		// smart and fast were written immediately after being parsed, so a
 		// bad --reviewer value failed the command AFTER smart/fast (and
 		// worker) were already durably written to disk — a silent partial
 		// write masquerading as a no-op failure.
@@ -242,8 +242,8 @@ func init() {
 	modelsUseCmd.Flags().Bool("global", false, "Target the global config (default when neither --global nor --local is given)")
 	modelsUseCmd.Flags().Bool("local", false, "Target the workspace config (./.crush/crush.json)")
 	modelsUseCmd.MarkFlagsMutuallyExclusive("global", "local")
-	modelsUseCmd.Flags().String("smart", "", "Set only the large (\"smart\") slot (atom or provider/model[@level]) — cannot combine with positional args")
-	modelsUseCmd.Flags().String("fast", "", "Set only the small (\"fast\") slot (atom or provider/model[@level]) — cannot combine with positional args")
+	modelsUseCmd.Flags().String("smart", "", "Set only the smart slot (atom or provider/model[@level]) — cannot combine with positional args")
+	modelsUseCmd.Flags().String("fast", "", "Set only the fast slot (atom or provider/model[@level]) — cannot combine with positional args")
 	modelsUseCmd.Flags().String("worker", "", "Also set the optional worker slot (atom or provider/model[@level])")
 	modelsUseCmd.Flags().String("reviewer", "", "Also set the optional reviewer slot (atom or provider/model[@level])")
 	modelsCmd.AddCommand(modelsUseCmd)

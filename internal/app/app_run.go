@@ -59,13 +59,13 @@ type RunOverrides struct {
 	FastModel    string // same as SmartModel, for the fast slot
 	SystemPrompt string // persisted on the session (Sessions.UpdateSystemPrompt)
 	// ReasoningEffort applies to whichever slot is "active" for this run —
-	// the smart one if RoleLarge is true, the fast one otherwise. Persisted
+	// the smart one if RoleSmart is true, the fast one otherwise. Persisted
 	// via Sessions.UpdateReasoningEffort.
 	ReasoningEffort string
 	RoleSmart       bool
-	// ModelRole is the resolved --role slot for this invocation (large,
-	// small, worker, reviewer). "" (e.g. non-`crush run` paths) is treated
-	// as smart/large by the coordinator. Threaded through to
+	// ModelRole is the resolved --role slot for this invocation (smart,
+	// fast, worker, reviewer). "" (e.g. non-`crush run` paths) is treated
+	// as smart by the coordinator. Threaded through to
 	// AgentCoordinator.SetActiveModelRole so sub-agent spawns can decide
 	// whether to prefer the cheaper Worker slot instead of blindly
 	// inheriting the parent's Smart model. Fork patch (reviewer/worker

@@ -428,7 +428,7 @@ func TestBuildTools_CoderHasAskQuestion(t *testing.T) {
 // for the coder agent) the AllowedTools passed through is always
 // allToolNames() verbatim (modulo DisabledTools, unset here) regardless of
 // SetActiveModelRole. This test exercises buildTools for the coder under
-// every SetActiveModelRole value (large, small, worker, reviewer, and the
+// every SetActiveModelRole value (smart, fast, worker, reviewer, and the
 // unset/"" case that TestBuildTools_CoderHasAskQuestion already covered
 // without a role) and asserts ask_question survives the AllowedTools filter
 // in every single one -- a regression guard one level more specific than

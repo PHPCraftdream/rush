@@ -28,7 +28,7 @@ func (s *ConfigStore) ReadModelsAtScope(scope Scope) (smart, fast *SelectedModel
 }
 
 // ReadAllModelsAtScope reads the per-scope `models.*` entries for all four
-// slots (large, small, worker, reviewer) directly from the on-disk file for
+// slots (smart, fast, worker, reviewer) directly from the on-disk file for
 // the given scope, ignoring any merge with the other scope. Missing slots are
 // absent from the returned map; returns an error only on read/parse failure.
 //
