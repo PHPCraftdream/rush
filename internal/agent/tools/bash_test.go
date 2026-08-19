@@ -162,13 +162,37 @@ func TestBashTool_CtxCancelWaitsForConfirmedProcessKill(t *testing.T) {
 			}
 		}
 		return false
-	}, 2*time.Second, 20*time.Millisecond, "expected a new background shell to appear for the slow command")
+		// 10s, not 2s: same reasoning as the select below -- this waits for a
+		// real process to start and register under whole-tree parallel load.
+	}, 10*time.Second, 20*time.Millisecond, "expected a new background shell to appear for the slow command")
 
 	cancel()
 
+	// The slack over killConfirmationTimeout is deliberately large. This
+	// guard exists to tell "bounded" apart from "hangs forever", and for
+	// that distinction 8s and 25s are equivalent -- but they are NOT
+	// equivalent to a loaded machine.
+	//
+	// It was 3s, and it flaked once (2026-08-18) during a whole-tree
+	// `go test ./internal/... -count=1`: the test failed at 8.86s, which is
+	// exactly killConfirmationTimeout (5s) + 3s slack plus setup, so this
+	// select is the guard that fired. It then passed 5/5 in isolation and
+	// 3/3 for the whole package, i.e. it only misses when Go is running many
+	// packages in parallel and this one is already spawning real processes.
+	// On Windows the confirmation path additionally shells out to
+	// taskkill /F /T, so "wait for the tree to be confirmed down" involves
+	// starting yet another process on a machine that is out of headroom.
+	//
+	// Widening it costs nothing the test was actually asserting. The
+	// properties under test are the two require()s below -- the call ends in
+	// context.Canceled, and the shell is CONFIRMED done by the time it
+	// returns -- and neither is weakened by allowing more wall-clock. The
+	// original bug (Kill waiting on the already-dead ctx) made the call
+	// return FAST and unconfirmed, so it is caught by IsDone(), not by this
+	// timer.
 	select {
 	case <-callDone:
-	case <-time.After(killConfirmationTimeout + 3*time.Second):
+	case <-time.After(killConfirmationTimeout + 20*time.Second):
 		t.Fatal("bash tool call did not return within killConfirmationTimeout + slack after ctx cancellation -- the fix should bound this wait, not remove it")
 	}
 
