@@ -115,6 +115,40 @@ else
 	printf '\033[33m⚠ skipping the cross-GOOS lint passes — they need a native golangci-lint (go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@%s); CI still lints linux/macos/windows\033[0m\n' "$GOLANGCI_VERSION"
 fi
 
+# ASCII-only guard for the sqlc query sources.
+#
+# sqlc v1.30.0 miscounts query spans when a .sql comment contains a
+# multi-byte character: it appears to measure offsets in bytes and positions
+# in runes, so each non-ASCII character shifts the generated SQL's end by the
+# difference. Adding a comment with two em-dashes to orphan_outbox.sql
+# silently truncated that query's tail (RETURNING ... became
+# RETURNING ... max_atte), and a longer non-ASCII block corrupted an
+# UNRELATED query at the top of the same file into invalid SQL. `sqlc
+# generate` exits 0 either way and the generated Go still compiles; the
+# statement fails at Prepare time, which for this codebase means at process
+# start.
+#
+# PCRE's [:ascii:] class, negated -- deliberately escape-free. Writing this
+# as a hex byte-range character class put REAL NUL and DEL bytes into this
+# hook, because the escapes were consumed before the file was written, and
+# it then matched every file. The POSIX [^[:print:][:space:]] alternative
+# was worse: it silently matched NOTHING here, so the check passed on a
+# file that did contain an em-dash.
+# Both were caught only by testing the guard against a deliberately violating
+# tree as well as a clean one -- do the same if you change this line.
+#
+# Nothing else in the toolchain notices, and this repository's prose style
+# uses em-dashes freely, so the only thing keeping it from recurring is this
+# check. Bytes > 0x7F only -- deliberately cruder than a Unicode-aware test,
+# because the failure is about bytes.
+step "internal/db/sql is ASCII-only (sqlc miscounts spans around multi-byte comments)"
+if offenders="$(grep -lP "[^[:ascii:]]" internal/db/sql/*.sql 2>/dev/null)" && [ -n "$offenders" ]; then
+	printf '[31mnon-ASCII bytes in:[0m
+%s
+' "$offenders"
+	fail "a non-ASCII character in a .sql file silently corrupts sqlc codegen -- replace it with an ASCII equivalent"
+fi
+
 # The web UI's typecheck. rsbuild (pnpm build) does NOT check types, so
 # without this nothing in the project does — which is how five errors,
 # including a required prop that silently changed how tool groups render,
