@@ -163,22 +163,27 @@ type streamWatchdog struct {
 // tool that runs past toolMaxDuration+toolCleanupGrace is still caught,
 // just toolCleanupGrace later than before.
 //
-// Fork patch: task #222 — recordActivity, if non-nil, is invoked on every
-// bump() (harmless duplication with the caller's own notify, see bump's
-// doc) AND, critically, once per tick while a tool is genuinely in flight
-// and still under its cap (see the toolsInFlight branch below). Without
-// the latter, a session blocked on a single long-running tool call (e.g.
-// a 45-minute toolExecutionMaxDefault-bounded sub-agent delegation)
-// recorded ZERO activity for the tool's entire duration — bumpActivity
-// only fires from fantasy stream callbacks, none of which fire while a
-// tool is synchronously executing. That starved SessionLock's
-// activity-gated heartbeat (RecordActivity/task #214) for up to 45
-// minutes on a perfectly healthy session, which several consumers
-// (`sessions locks` auto-delete, `sessions watch` liveness) mistake for a
-// dead holder. recordActivity is typically wired to the same
-// notifyActivity(genCtx) callback runTurn already composes via
-// withActivityNotify, so this requires no new plumbing beyond passing it
-// through.
+// Fork patch: task #222, superseded by task #300 — recordActivity, if
+// non-nil, is invoked on every bump() (harmless duplication with the
+// caller's own notify, see bump's doc). It is deliberately NOT invoked on
+// a timer while a tool is merely in flight (see the toolsInFlight branch
+// below): task #222 originally did that, on the theory that a long
+// synchronous tool call (e.g. a 45-minute sub-agent delegation) produces
+// no stream callbacks and would otherwise starve SessionLock's
+// activity-gated heartbeat (RecordActivity/task #214) for the tool's
+// whole duration. The cost was that the heartbeat then reported "alive"
+// purely because a tool call was OPEN, making a genuinely wedged tool
+// indistinguishable from a working one for its entire cap — observed live
+// as a session with a fresh heartbeat for 38 minutes while its sub-agent
+// sat stuck on a trivial command. Task #300 removed the timer-driven call:
+// #222's original concern is covered without it, because
+// withActivityNotify (agent.go) composes each session's activity callback
+// with its ancestors', so a delegated sub-agent's REAL stream callbacks
+// still walk back up and touch every ancestor's lock. A non-delegating
+// tool that emits nothing for a long time now goes heartbeat-quiet, which
+// is the honest signal. See the toolsInFlight branch below for where this
+// is enforced, and TestStreamWatchdog_NoTimerDrivenActivityWhileToolInFlight
+// for the regression coverage.
 func startStreamWatchdog(
 	ctx context.Context,
 	cancel context.CancelFunc,

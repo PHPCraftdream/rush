@@ -475,9 +475,11 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 		a.timeoutHardCap,                  // Fork patch: batch 8
 		toolMaxDuration,                   // never-freeze backstop, applies to every tool
 		toolCleanupGrace,                  // buffer for a nested watchdog to unwind first
-		func() { notifyActivity(genCtx) }, // task #222: keep the OS-lock heartbeat
-		// alive from tool-in-flight ticks too, not just stream callbacks —
-		// see startStreamWatchdog's recordActivity doc.
+		func() { notifyActivity(genCtx) }, // task #222/#300: recordActivity is
+		// invoked on every REAL bump() (stream progress) only — deliberately
+		// NOT on a timer while a tool is merely in flight. See
+		// startStreamWatchdog's recordActivity doc for why the tool-tick case
+		// was removed.
 	)
 	// The watchdog now calls recordActivity (== notifyActivity(genCtx))
 	// internally on every bump(), so this wrapper can be just wd.bump.
@@ -518,11 +520,40 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	// with it Run, the session's mailbox ownership and its OS lock — open
 	// forever on a turn whose work had finished. We wait up to a grace
 	// period and otherwise abandon it: the goroutine exits whenever its
-	// provider unblocks, and generateTitle's own deferred rename runs on a
-	// detached context, so a late completion still persists.
+	// provider unblocks, but abandoning it DOES lose the real title.
+	// generateTitle's actual a.sessions.Rename call runs on titleCtx itself
+	// (cancellable, derived from genCtx below), not a detached context —
+	// only its FALLBACK path (stamping the default "Untitled Session" name)
+	// uses context.WithoutCancel, precisely so that fallback can still land
+	// after the caller gives up. So once cancel() fires below, a
+	// late-finishing title attempt fails to save and the fallback stamps
+	// the default instead. See agent_title.go's titleJoinGrace doc for the
+	// full accounting.
 	var titleJoinOnce sync.Once
 	joinTitle := func() {
 		titleJoinOnce.Do(func() {
+			// Disarm the watchdog FIRST, on every path that reaches this
+			// Once body — not just the success path. joinTitle is called
+			// both explicitly (success path, right before the final
+			// cancel()) and via the deferred call registered right after
+			// this closure is declared, which is what actually runs on
+			// EVERY early return (error paths, cancel-drain, summarize
+			// failure, ...). Those early returns used to reach only the
+			// bare defer, with disarm() sitting after them on the
+			// success-path-only tail of runTurn — so an early return could
+			// leave the watchdog armed for the whole titleJoinGrace wait
+			// below. The turn's real work is finished by the time ANY
+			// caller of joinTitle runs (an early return means the turn is
+			// already ending; the success path has already produced its
+			// result); all that remains from here is this bounded wait and
+			// the eventual cancel(). --timeout-hard-cap is absolute from
+			// turn start rather than idle-based, so without this a turn
+			// that finished just inside the cap could be pushed over it by
+			// the wait alone -- firing a stall dump for a turn that had
+			// already finished, and cancelling the very title being waited
+			// for. The goroutine still exits on genCtx and is still joined
+			// by the deferred <-wd.done regardless of disarm.
+			wd.disarm()
 			if titleDone == nil {
 				return
 			}
@@ -1809,16 +1840,6 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 			slog.Warn("silent summarise failed", "session_id", call.SessionID, "err", silentErr)
 		}
 	}
-
-	// Disarm the watchdog before the title join. The turn's real work is
-	// finished here; all that remains is a bounded wait and the cancel
-	// below. The join makes no bump() calls, and --timeout-hard-cap is
-	// absolute from turn start rather than idle-based, so a turn that
-	// finished just inside the cap could be pushed over it by the wait
-	// alone -- firing a stall dump for a turn that had already succeeded,
-	// and cancelling the very title being waited for. The goroutine still
-	// exits on genCtx and is still joined by the deferred <-wd.done.
-	wd.disarm()
 
 	// Wait for the title BEFORE cancelling: titleCtx is derived from genCtx,
 	// so cancelling first would kill a title that is merely slower than the

@@ -385,7 +385,30 @@ func (a *sessionAgent) restartOrphanedWithRetry(calls []SessionAgentCall) error 
 				// If even the outbox write fails, the call is truly lost and we
 				// return an error to the caller (we do NOT mask data loss).
 				outboxID := fmt.Sprintf("orphan-%s-%s", call.SessionID, idempotencyKey)
-				if outboxErr := a.sessions.WriteToOrphanOutbox(enqueueCtx, outboxID, call.SessionID, callDataJSON); outboxErr != nil {
+				// P2-2 fix: give the fallback write its OWN fresh 30s budget
+				// instead of reusing enqueueCtx. Both tables live in the same
+				// database, so a fresh context does not guarantee this write
+				// succeeds where the primary one failed -- but reusing
+				// enqueueCtx unconditionally guaranteed it could NOT: a
+				// primary call that failed by exhausting its own 30s deadline
+				// (a hung or locked DB, not a fast constraint/serialization
+				// error) handed the fallback an already-expired context, so
+				// the very failure class this outbox exists to catch got zero
+				// attempt at the fallback. Rooted in context.Background(),
+				// matching enqueueCtx's own rationale just above: the caller
+				// is about to return control up its own call stack, and this
+				// is the last-resort durability net for "we do NOT mask data
+				// loss" (see the comment above) -- it must outlive the
+				// caller's context the same way the primary enqueue attempt
+				// already does, including surviving shutdown of the caller's
+				// own request scope. It does NOT need to outlive the pump's
+				// entire lifecycle the way run_queue_entry_exec.go's newDBCtx
+				// does (see that file's doc for why its outcome writes are
+				// even more detached) -- this is a one-shot write on a
+				// goroutine that is about to exit either way.
+				outboxCtx, outboxCancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer outboxCancel()
+				if outboxErr := a.sessions.WriteToOrphanOutbox(outboxCtx, outboxID, call.SessionID, callDataJSON); outboxErr != nil {
 					logFields := []any{
 						"session_id", call.SessionID,
 						"prompt_length", len(call.Prompt),
