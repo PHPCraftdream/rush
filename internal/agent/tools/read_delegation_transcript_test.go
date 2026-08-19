@@ -85,7 +85,8 @@ func newTranscriptTestDB(t *testing.T) (session.Service, message.Service) {
 			usage_provider TEXT,
 			usage_model TEXT,
 			cache_support TEXT,
-			usage_estimated INTEGER
+			usage_estimated INTEGER,
+			checkpoint_generation INTEGER NOT NULL DEFAULT 0
 		);
 		CREATE INDEX idx_messages_session_id ON messages(session_id);
 	`)

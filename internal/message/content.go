@@ -159,6 +159,21 @@ type Message struct {
 	// BackgroundJobNotice marks a system-injected background-job-completion
 	// notice so the web renders it as a notice, not a human message.
 	BackgroundJobNotice bool
+	// CheckpointGeneration fences mid-stream checkpoint writes (P1-3 of the
+	// 2026-08-18 release-readiness review). runTurn replaces its checkpoint
+	// writer per step and stopCheckpoint waits only a bounded grace for the
+	// old one, so a stale writer can still land a write after a newer one --
+	// the in-memory generation check runs before the write and the write
+	// happens after the session lock is released, which is the gap.
+	//
+	// Set ONLY by the checkpoint writer, on the partial snapshot it is about
+	// to persist, and read only by the conditional update. Zero everywhere
+	// else, which is correct: terminal writes take the unconditional path and
+	// are already protected from later partials by finished_at.
+	//
+	// Not part of the message's content -- it is bookkeeping about which
+	// writer produced this snapshot, not something the model or the UI sees.
+	CheckpointGeneration int64
 	// Usage is this message's own token accounting and prompt-cache
 	// breakdown, or nil when none was recorded (every message written before
 	// per-message tracking existed, and every non-assistant message).

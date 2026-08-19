@@ -303,10 +303,16 @@ func (s *service) Update(ctx context.Context, message Message) error {
 		// terminal finish landed concurrently, this returns 0 rows affected,
 		// meaning the stale partial checkpoint lost and must NOT be published
 		// to avoid reverting the UI to an incomplete state.
+		// Both generation parameters are the WRITER's own generation: the
+		// SET stamps the row with it, and the WHERE rejects the write if the
+		// row already carries a newer one. See the query's own comment for
+		// why the comparison is <= rather than <.
 		rowsAffected, dbErr = s.q.UpdateMessageIfNotTerminal(ctx, db.UpdateMessageIfNotTerminalParams{
-			ID:         message.ID,
-			Parts:      string(parts),
-			FinishedAt: finishedAt,
+			ID:                     message.ID,
+			Parts:                  string(parts),
+			FinishedAt:             finishedAt,
+			CheckpointGeneration:   message.CheckpointGeneration,
+			CheckpointGeneration_2: message.CheckpointGeneration,
 		})
 	} else {
 		dbErr = s.q.UpdateMessage(ctx, db.UpdateMessageParams{

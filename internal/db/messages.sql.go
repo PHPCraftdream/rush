@@ -79,7 +79,7 @@ INSERT INTO messages (
 ) VALUES (
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'), strftime('%s', 'now')
 )
-RETURNING id, session_id, role, parts, model, created_at, updated_at, finished_at, provider, is_summary_message, pinned, hidden, reasoning_effort, auto_resumed, background_job_notice, input_tokens, output_tokens, reasoning_tokens, cache_creation_tokens, cache_read_tokens, total_tokens, cost_usd, usage_provider, usage_model, cache_support, usage_estimated
+RETURNING id, session_id, role, parts, model, created_at, updated_at, finished_at, provider, is_summary_message, pinned, hidden, reasoning_effort, auto_resumed, background_job_notice, input_tokens, output_tokens, reasoning_tokens, cache_creation_tokens, cache_read_tokens, total_tokens, cost_usd, usage_provider, usage_model, cache_support, usage_estimated, checkpoint_generation
 `
 
 type CreateMessageParams struct {
@@ -138,6 +138,7 @@ func (q *Queries) CreateMessage(ctx context.Context, arg CreateMessageParams) (M
 		&i.UsageModel,
 		&i.CacheSupport,
 		&i.UsageEstimated,
+		&i.CheckpointGeneration,
 	)
 	return i, err
 }
@@ -163,7 +164,7 @@ func (q *Queries) DeleteSessionMessages(ctx context.Context, sessionID string) e
 }
 
 const getMessage = `-- name: GetMessage :one
-SELECT id, session_id, role, parts, model, created_at, updated_at, finished_at, provider, is_summary_message, pinned, hidden, reasoning_effort, auto_resumed, background_job_notice, input_tokens, output_tokens, reasoning_tokens, cache_creation_tokens, cache_read_tokens, total_tokens, cost_usd, usage_provider, usage_model, cache_support, usage_estimated
+SELECT id, session_id, role, parts, model, created_at, updated_at, finished_at, provider, is_summary_message, pinned, hidden, reasoning_effort, auto_resumed, background_job_notice, input_tokens, output_tokens, reasoning_tokens, cache_creation_tokens, cache_read_tokens, total_tokens, cost_usd, usage_provider, usage_model, cache_support, usage_estimated, checkpoint_generation
 FROM messages
 WHERE id = ? LIMIT 1
 `
@@ -198,6 +199,7 @@ func (q *Queries) GetMessage(ctx context.Context, id string) (Message, error) {
 		&i.UsageModel,
 		&i.CacheSupport,
 		&i.UsageEstimated,
+		&i.CheckpointGeneration,
 	)
 	return i, err
 }
@@ -265,7 +267,7 @@ func (q *Queries) GetTranscriptWindowCursor(ctx context.Context, arg GetTranscri
 }
 
 const listAllUserMessages = `-- name: ListAllUserMessages :many
-SELECT id, session_id, role, parts, model, created_at, updated_at, finished_at, provider, is_summary_message, pinned, hidden, reasoning_effort, auto_resumed, background_job_notice, input_tokens, output_tokens, reasoning_tokens, cache_creation_tokens, cache_read_tokens, total_tokens, cost_usd, usage_provider, usage_model, cache_support, usage_estimated
+SELECT id, session_id, role, parts, model, created_at, updated_at, finished_at, provider, is_summary_message, pinned, hidden, reasoning_effort, auto_resumed, background_job_notice, input_tokens, output_tokens, reasoning_tokens, cache_creation_tokens, cache_read_tokens, total_tokens, cost_usd, usage_provider, usage_model, cache_support, usage_estimated, checkpoint_generation
 FROM messages
 WHERE role = 'user'
 ORDER BY created_at DESC, rowid DESC
@@ -309,6 +311,7 @@ func (q *Queries) ListAllUserMessages(ctx context.Context) ([]Message, error) {
 			&i.UsageModel,
 			&i.CacheSupport,
 			&i.UsageEstimated,
+			&i.CheckpointGeneration,
 		); err != nil {
 			return nil, err
 		}
@@ -324,7 +327,7 @@ func (q *Queries) ListAllUserMessages(ctx context.Context) ([]Message, error) {
 }
 
 const listMessagesBySession = `-- name: ListMessagesBySession :many
-SELECT id, session_id, role, parts, model, created_at, updated_at, finished_at, provider, is_summary_message, pinned, hidden, reasoning_effort, auto_resumed, background_job_notice, input_tokens, output_tokens, reasoning_tokens, cache_creation_tokens, cache_read_tokens, total_tokens, cost_usd, usage_provider, usage_model, cache_support, usage_estimated
+SELECT id, session_id, role, parts, model, created_at, updated_at, finished_at, provider, is_summary_message, pinned, hidden, reasoning_effort, auto_resumed, background_job_notice, input_tokens, output_tokens, reasoning_tokens, cache_creation_tokens, cache_read_tokens, total_tokens, cost_usd, usage_provider, usage_model, cache_support, usage_estimated, checkpoint_generation
 FROM messages
 WHERE session_id = ?
 ORDER BY created_at ASC, rowid ASC
@@ -374,6 +377,7 @@ func (q *Queries) ListMessagesBySession(ctx context.Context, sessionID string) (
 			&i.UsageModel,
 			&i.CacheSupport,
 			&i.UsageEstimated,
+			&i.CheckpointGeneration,
 		); err != nil {
 			return nil, err
 		}
@@ -390,7 +394,7 @@ func (q *Queries) ListMessagesBySession(ctx context.Context, sessionID string) (
 
 const listMessagesBySessionAtCreatedAt = `-- name: ListMessagesBySessionAtCreatedAt :many
 SELECT
-    messages.id, messages.session_id, messages.role, messages.parts, messages.model, messages.created_at, messages.updated_at, messages.finished_at, messages.provider, messages.is_summary_message, messages.pinned, messages.hidden, messages.reasoning_effort, messages.auto_resumed, messages.background_job_notice, messages.input_tokens, messages.output_tokens, messages.reasoning_tokens, messages.cache_creation_tokens, messages.cache_read_tokens, messages.total_tokens, messages.cost_usd, messages.usage_provider, messages.usage_model, messages.cache_support, messages.usage_estimated,
+    messages.id, messages.session_id, messages.role, messages.parts, messages.model, messages.created_at, messages.updated_at, messages.finished_at, messages.provider, messages.is_summary_message, messages.pinned, messages.hidden, messages.reasoning_effort, messages.auto_resumed, messages.background_job_notice, messages.input_tokens, messages.output_tokens, messages.reasoning_tokens, messages.cache_creation_tokens, messages.cache_read_tokens, messages.total_tokens, messages.cost_usd, messages.usage_provider, messages.usage_model, messages.cache_support, messages.usage_estimated, messages.checkpoint_generation,
     CAST(rowid AS INTEGER) AS row_id
 FROM messages
 WHERE session_id = ?
@@ -452,6 +456,7 @@ func (q *Queries) ListMessagesBySessionAtCreatedAt(ctx context.Context, arg List
 			&i.Message.UsageModel,
 			&i.Message.CacheSupport,
 			&i.Message.UsageEstimated,
+			&i.Message.CheckpointGeneration,
 			&i.RowID,
 		); err != nil {
 			return nil, err
@@ -468,7 +473,7 @@ func (q *Queries) ListMessagesBySessionAtCreatedAt(ctx context.Context, arg List
 }
 
 const listMessagesBySessionOlderThanCreatedAt = `-- name: ListMessagesBySessionOlderThanCreatedAt :many
-SELECT id, session_id, role, parts, model, created_at, updated_at, finished_at, provider, is_summary_message, pinned, hidden, reasoning_effort, auto_resumed, background_job_notice, input_tokens, output_tokens, reasoning_tokens, cache_creation_tokens, cache_read_tokens, total_tokens, cost_usd, usage_provider, usage_model, cache_support, usage_estimated
+SELECT id, session_id, role, parts, model, created_at, updated_at, finished_at, provider, is_summary_message, pinned, hidden, reasoning_effort, auto_resumed, background_job_notice, input_tokens, output_tokens, reasoning_tokens, cache_creation_tokens, cache_read_tokens, total_tokens, cost_usd, usage_provider, usage_model, cache_support, usage_estimated, checkpoint_generation
 FROM messages
 WHERE session_id = ?
   AND created_at < ?
@@ -530,6 +535,7 @@ func (q *Queries) ListMessagesBySessionOlderThanCreatedAt(ctx context.Context, a
 			&i.UsageModel,
 			&i.CacheSupport,
 			&i.UsageEstimated,
+			&i.CheckpointGeneration,
 		); err != nil {
 			return nil, err
 		}
@@ -545,7 +551,7 @@ func (q *Queries) ListMessagesBySessionOlderThanCreatedAt(ctx context.Context, a
 }
 
 const listMessagesBySessionPaginated = `-- name: ListMessagesBySessionPaginated :many
-SELECT id, session_id, role, parts, model, created_at, updated_at, finished_at, provider, is_summary_message, pinned, hidden, reasoning_effort, auto_resumed, background_job_notice, input_tokens, output_tokens, reasoning_tokens, cache_creation_tokens, cache_read_tokens, total_tokens, cost_usd, usage_provider, usage_model, cache_support, usage_estimated
+SELECT id, session_id, role, parts, model, created_at, updated_at, finished_at, provider, is_summary_message, pinned, hidden, reasoning_effort, auto_resumed, background_job_notice, input_tokens, output_tokens, reasoning_tokens, cache_creation_tokens, cache_read_tokens, total_tokens, cost_usd, usage_provider, usage_model, cache_support, usage_estimated, checkpoint_generation
 FROM messages
 WHERE session_id = ?
 ORDER BY created_at DESC, rowid DESC
@@ -611,6 +617,7 @@ func (q *Queries) ListMessagesBySessionPaginated(ctx context.Context, arg ListMe
 			&i.UsageModel,
 			&i.CacheSupport,
 			&i.UsageEstimated,
+			&i.CheckpointGeneration,
 		); err != nil {
 			return nil, err
 		}
@@ -626,7 +633,7 @@ func (q *Queries) ListMessagesBySessionPaginated(ctx context.Context, arg ListMe
 }
 
 const listUserMessagesBySession = `-- name: ListUserMessagesBySession :many
-SELECT id, session_id, role, parts, model, created_at, updated_at, finished_at, provider, is_summary_message, pinned, hidden, reasoning_effort, auto_resumed, background_job_notice, input_tokens, output_tokens, reasoning_tokens, cache_creation_tokens, cache_read_tokens, total_tokens, cost_usd, usage_provider, usage_model, cache_support, usage_estimated
+SELECT id, session_id, role, parts, model, created_at, updated_at, finished_at, provider, is_summary_message, pinned, hidden, reasoning_effort, auto_resumed, background_job_notice, input_tokens, output_tokens, reasoning_tokens, cache_creation_tokens, cache_read_tokens, total_tokens, cost_usd, usage_provider, usage_model, cache_support, usage_estimated, checkpoint_generation
 FROM messages
 WHERE session_id = ? AND role = 'user'
 ORDER BY created_at DESC, rowid DESC
@@ -675,6 +682,7 @@ func (q *Queries) ListUserMessagesBySession(ctx context.Context, sessionID strin
 			&i.UsageModel,
 			&i.CacheSupport,
 			&i.UsageEstimated,
+			&i.CheckpointGeneration,
 		); err != nil {
 			return nil, err
 		}
@@ -961,15 +969,19 @@ UPDATE messages
 SET
     parts = ?,
     finished_at = ?,
+    checkpoint_generation = ?,
     updated_at = strftime('%s', 'now')
 WHERE id = ?
   AND finished_at IS NULL
+  AND checkpoint_generation <= ?
 `
 
 type UpdateMessageIfNotTerminalParams struct {
-	Parts      string        `json:"parts"`
-	FinishedAt sql.NullInt64 `json:"finished_at"`
-	ID         string        `json:"id"`
+	Parts                  string        `json:"parts"`
+	FinishedAt             sql.NullInt64 `json:"finished_at"`
+	CheckpointGeneration   int64         `json:"checkpoint_generation"`
+	ID                     string        `json:"id"`
+	CheckpointGeneration_2 int64         `json:"checkpoint_generation_2"`
 }
 
 // P0-4 fix: Only update if the message does NOT already have a non-partial finish.
@@ -977,8 +989,26 @@ type UpdateMessageIfNotTerminalParams struct {
 // A checkpoint writes with Partial=true (finished_at NULL), so this condition rejects
 // the update if finished_at is already non-NULL (real terminal finish).
 // Returns number of rows affected (0 = skipped because already terminal, 1 = updated).
+//
+// P1-3: finished_at alone cannot tell two PARTIAL generations apart. runTurn
+// replaces its checkpoint writer per step and stopCheckpoint waits only a
+// bounded grace for the old one, so a stale writer can still land after a
+// newer one and overwrite fresher parts. The in-memory generation check runs
+// before the write, and the write happens after the lock is released, which
+// is the whole gap. checkpoint_generation moves the check into the statement.
+//
+// <= and not <: one generation checkpoints many times and must be allowed to
+// rewrite its own row. Only a STRICTLY older generation is rejected, and a
+// rejection shows up as 0 rows affected, which the caller already treats as
+// "this write lost, do not publish it".
 func (q *Queries) UpdateMessageIfNotTerminal(ctx context.Context, arg UpdateMessageIfNotTerminalParams) (int64, error) {
-	result, err := q.exec(ctx, q.updateMessageIfNotTerminalStmt, updateMessageIfNotTerminal, arg.Parts, arg.FinishedAt, arg.ID)
+	result, err := q.exec(ctx, q.updateMessageIfNotTerminalStmt, updateMessageIfNotTerminal,
+		arg.Parts,
+		arg.FinishedAt,
+		arg.CheckpointGeneration,
+		arg.ID,
+		arg.CheckpointGeneration_2,
+	)
 	if err != nil {
 		return 0, err
 	}

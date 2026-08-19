@@ -95,7 +95,8 @@ func newTestDB(t *testing.T) (*sql.DB, *db.Queries) {
 			usage_provider TEXT,
 			usage_model TEXT,
 			cache_support TEXT,
-			usage_estimated INTEGER
+			usage_estimated INTEGER,
+			checkpoint_generation INTEGER NOT NULL DEFAULT 0
 		);
 
 		CREATE TABLE files (

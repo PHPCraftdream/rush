@@ -337,6 +337,18 @@ type Querier interface {
 	// A checkpoint writes with Partial=true (finished_at NULL), so this condition rejects
 	// the update if finished_at is already non-NULL (real terminal finish).
 	// Returns number of rows affected (0 = skipped because already terminal, 1 = updated).
+	//
+	// P1-3: finished_at alone cannot tell two PARTIAL generations apart. runTurn
+	// replaces its checkpoint writer per step and stopCheckpoint waits only a
+	// bounded grace for the old one, so a stale writer can still land after a
+	// newer one and overwrite fresher parts. The in-memory generation check runs
+	// before the write, and the write happens after the lock is released, which
+	// is the whole gap. checkpoint_generation moves the check into the statement.
+	//
+	// <= and not <: one generation checkpoints many times and must be allowed to
+	// rewrite its own row. Only a STRICTLY older generation is rejected, and a
+	// rejection shows up as 0 rows affected, which the caller already treats as
+	// "this write lost, do not publish it".
 	UpdateMessageIfNotTerminal(ctx context.Context, arg UpdateMessageIfNotTerminalParams) (int64, error)
 	UpdateMessagePinned(ctx context.Context, arg UpdateMessagePinnedParams) error
 	// Per-message token usage and prompt-cache accounting (task #469).

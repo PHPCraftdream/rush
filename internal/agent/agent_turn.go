@@ -754,6 +754,13 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 						// generations.
 						if currentPartsLen != lastPartsLen {
 							snap = currentAssistant.Clone()
+							// Stamp the snapshot with THIS writer's generation
+							// so the conditional update can reject it if a
+							// newer writer already wrote (P1-3). The isCurrentGen
+							// check above is not enough on its own: it runs
+							// here, under sessionLock, while the DB write below
+							// happens after the lock is released.
+							snap.CheckpointGeneration = myGeneration
 							snap.AddFinish(message.FinishReasonUnknown, "", "")
 							for i := len(snap.Parts) - 1; i >= 0; i-- {
 								if f, ok := snap.Parts[i].(message.Finish); ok {
