@@ -80,8 +80,45 @@ func (p *RunQueuePump) DrainSessionNow(ctx context.Context, sessionID string) (d
 			return drained, ctx.Err()
 		}
 
+		// Reserve the session through the SAME atomic gate the background
+		// tick uses, and do it BEFORE leasing (P1-1 of the 2026-08-18
+		// release-readiness review). This call used to lease first and then
+		// assign the shared marker unconditionally, which let a drain start
+		// row B for a session a background worker was already executing row
+		// A for — two executions, one boolean, and whichever finished first
+		// cleared it. See admitSession.
+		releaseSession, admitted := p.admitSession(sessionID)
+		if !admitted {
+			// Something in THIS pump instance is already executing for this
+			// session — the background tick, having won the lease race. Wait
+			// for it and re-check, because its outcome matters exactly as
+			// much as this call's own would: its messages reach the caller
+			// through the same subscription.
+			//
+			// This is the wait that used to sit at the bottom of the loop,
+			// reached only after a lease attempt came back empty. Hoisting it
+			// above the lease is what removes the window the old ordering
+			// left open.
+			//
+			// The one thing this branch cannot see is that other execution's
+			// OUTCOME: if its executeEntrySync returns
+			// ErrCallQueuedNotExecuted, nothing actually ran and this still
+			// reports drained=true. That residual is much narrower than the
+			// P0-1 case (it needs the background tick to win the lease race
+			// AND then find the session externally owned), and closing it
+			// needs an outcome handoff between the two paths, not a flag.
+			drained = true
+			select {
+			case <-ctx.Done():
+				return drained, ctx.Err()
+			case <-time.After(p.drainSessionPollInterval()):
+			}
+			continue
+		}
+
 		leased, leaseErr := p.cfg.Sessions.LeaseRunQueueEntry(ctx, sessionID, p.cfg.PumpInstanceID, p.leaseTTL())
 		if leaseErr != nil {
+			releaseSession()
 			return drained, leaseErr
 		}
 
@@ -106,12 +143,9 @@ func (p *RunQueuePump) DrainSessionNow(ctx context.Context, sessionID string) (d
 					slog.Error("run_queue_pump: DrainSessionNow terminal fail failed", "id", leased.ID, "session_id", sessionID, "err", termErr, "instance_id", p.cfg.PumpInstanceID)
 				}
 				err = fmt.Errorf("run queue entry %q exceeded max attempts", leased.ID)
+				releaseSession()
 				continue
 			}
-
-			p.inFlightMu.Lock()
-			p.inFlight[sessionID] = struct{}{}
-			p.inFlightMu.Unlock()
 
 			select {
 			case p.execSem <- struct{}{}:
@@ -121,9 +155,7 @@ func (p *RunQueuePump) DrainSessionNow(ctx context.Context, sessionID string) (d
 				// process or another) recovers it via the ordinary
 				// lease-expiry path regardless, but releasing promptly
 				// avoids waiting out a full TTL for no reason.
-				p.inFlightMu.Lock()
-				delete(p.inFlight, sessionID)
-				p.inFlightMu.Unlock()
+				releaseSession()
 				nackCtx, nackCancel := context.WithTimeout(context.Background(), p.dbWriteTimeout())
 				if nackErr := p.cfg.Sessions.NackRunQueueEntryNoAttemptPenalty(nackCtx, leased.ID, p.cfg.PumpInstanceID, "run_queue_pump: DrainSessionNow's ctx ended before an execution slot was available"); nackErr != nil {
 					slog.Error("run_queue_pump: DrainSessionNow release-on-ctx-done nack failed", "id", leased.ID, "session_id", sessionID, "err", nackErr, "instance_id", p.cfg.PumpInstanceID)
@@ -154,9 +186,7 @@ func (p *RunQueuePump) DrainSessionNow(ctx context.Context, sessionID string) (d
 			p.admitMu.Unlock()
 
 			if stopping {
-				p.inFlightMu.Lock()
-				delete(p.inFlight, sessionID)
-				p.inFlightMu.Unlock()
+				releaseSession()
 				<-p.execSem
 				nackCtx, nackCancel := context.WithTimeout(context.Background(), p.dbWriteTimeout())
 				if nackErr := p.cfg.Sessions.NackRunQueueEntryNoAttemptPenalty(nackCtx, leased.ID, p.cfg.PumpInstanceID, "run_queue_pump: DrainSessionNow declined to start because the pump is stopping"); nackErr != nil {
@@ -170,9 +200,7 @@ func (p *RunQueuePump) DrainSessionNow(ctx context.Context, sessionID string) (d
 			p.workerWg.Done()
 
 			<-p.execSem
-			p.inFlightMu.Lock()
-			delete(p.inFlight, sessionID)
-			p.inFlightMu.Unlock()
+			releaseSession()
 
 			if errors.Is(execErr, ErrCallQueuedNotExecuted) || isSessionLockBusyErr(execErr) {
 				// A genuinely different live owner has this session right
@@ -205,38 +233,16 @@ func (p *RunQueuePump) DrainSessionNow(ctx context.Context, sessionID string) (d
 			continue // more may be pending (e.g. a second stacked interrupt) — loop and check again
 		}
 
-		// Nothing pending for THIS call to lease. Someone else in this
-		// pump instance — the background tick, racing ahead of us — might
-		// already be executing this session's entry; if so, wait for it
-		// to finish and re-check, since its outcome matters exactly as
-		// much as this call's own would (see the race note in the doc
-		// comment above).
-		p.inFlightMu.Lock()
-		_, busy := p.inFlight[sessionID]
-		p.inFlightMu.Unlock()
-		if !busy {
-			return drained, err
-		}
-
-		// The background tick is mid-execution for this session, in THIS
-		// process. Its messages reach the caller through the same
-		// subscription this call's own execution would have used, so from
-		// the caller's point of view the continuation did run here.
+		// Nothing pending, and nothing else can be executing for this
+		// session either — this call currently holds its only admission.
 		//
-		// The one thing this branch cannot see is that tick's own outcome:
-		// if its executeEntrySync returns ErrCallQueuedNotExecuted, nothing
-		// actually ran and this still reports drained=true. That residual is
-		// narrower than the P0-1 case fixed above (it needs the background
-		// tick to win the lease race AND then find the session externally
-		// owned) and closing it needs an outcome channel between the two
-		// paths, not a flag — see the review's note about unifying the two
-		// dispatchers rather than adding a third.
-		drained = true
-		select {
-		case <-ctx.Done():
-			return drained, ctx.Err()
-		case <-time.After(p.drainSessionPollInterval()):
-		}
+		// The "is someone else busy with it?" check used to live HERE,
+		// reached only after a lease attempt came back empty, which is
+		// exactly what made the old ordering racy: by then this call had
+		// already leased and marked. It now runs before leasing, at the top
+		// of the loop.
+		releaseSession()
+		return drained, err
 	}
 }
 

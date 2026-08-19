@@ -366,6 +366,16 @@ type RunQueuePump struct {
 	// Run()-result handling for the narrower residual case neither
 	// mechanism covers: a genuinely external, non-pump owner (e.g. a live
 	// user-facing process) holding the session when the pump attempts it.
+	//
+	// ONLY admitSession may write this map. It used to be read and written
+	// directly from both dispatch paths, and the two disagreed about what
+	// the marker meant (P1-1 of the 2026-08-18 release-readiness review):
+	// processEntry checked-then-marked around a lease, which is safe only
+	// because tick() is single-threaded, while DrainSessionNow leased FIRST
+	// and then assigned the same key unconditionally. Two executions for one
+	// session could therefore both believe one boolean represented them, and
+	// whichever finished first deleted it — leaving the other running while
+	// the session looked free to the next tick or drain. See admitSession.
 	inFlight   map[string]struct{}
 	inFlightMu sync.Mutex
 

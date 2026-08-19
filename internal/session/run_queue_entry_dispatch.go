@@ -23,18 +23,33 @@ type AlreadyAttempted interface {
 
 // processEntry attempts to lease and execute a single run queue entry.
 func (p *RunQueuePump) processEntry(ctx context.Context, entry *RunQueueEntry) {
-	// Refuse to lease ANY entry for a session this pump instance already
-	// has an executeEntry goroutine running for — see the inFlight field's
-	// doc for why (self-inflicted lease-expiry race, and same-tick
-	// same-session double dispatch). Left pending; a later tick retries
-	// once that goroutine finishes and releases the session.
-	p.inFlightMu.Lock()
-	_, busy := p.inFlight[entry.SessionID]
-	p.inFlightMu.Unlock()
-	if busy {
+	// Reserve the session before touching the durable row at all. Refuses
+	// ANY entry for a session this pump instance is already executing for —
+	// see the inFlight field's doc for why (self-inflicted lease-expiry
+	// race, and same-tick same-session double dispatch). Left pending; a
+	// later tick retries once that execution finishes and releases it.
+	//
+	// This used to be a bare read here and a bare write after leasing, 100
+	// lines below. That was safe only against tick()'s own single-threaded
+	// loop, and DrainSessionNow is not that — see admitSession for the race
+	// it left open (P1-1). Admission now covers the lease attempt too, which
+	// is a few milliseconds a concurrent drain may have to wait, in exchange
+	// for there being no window at all.
+	releaseSession, admitted := p.admitSession(entry.SessionID)
+	if !admitted {
 		slog.Debug("run_queue_pump: session already has an execution in flight from this pump, deferring", "id", entry.ID, "session_id", entry.SessionID, "instance_id", p.cfg.PumpInstanceID)
 		return
 	}
+
+	// Every early return below gives the session back. The one path that
+	// does NOT is the successful dispatch at the end, which hands
+	// releaseSession to the executeEntry goroutine that now owns it.
+	sessionHandedOff := false
+	defer func() {
+		if !sessionHandedOff {
+			releaseSession()
+		}
+	}()
 
 	// Refuse to lease a pending entry for a session this pump instance
 	// backed off from after an ErrCallQueuedNotExecuted outcome — see the
@@ -135,16 +150,6 @@ func (p *RunQueuePump) processEntry(ctx context.Context, entry *RunQueueEntry) {
 		return
 	}
 
-	// Mark this session in flight BEFORE dispatching, under the same lock
-	// processEntry's own busy-check above uses — closes the check-then-act
-	// window between that check and this dispatch (both run synchronously
-	// within tick()'s single-threaded per-entry loop, so there is no
-	// concurrent processEntry call to race against, but the mark must still
-	// land before executeEntry's goroutine can possibly finish and unmark).
-	p.inFlightMu.Lock()
-	p.inFlight[leased.SessionID] = struct{}{}
-	p.inFlightMu.Unlock()
-
 	// Refuse to start a new worker once shutdown has begun, and register
 	// the one that IS started with workerWg — both under admitMu, so the
 	// check and the Add are one atomic operation relative to Stop()'s own
@@ -156,13 +161,11 @@ func (p *RunQueuePump) processEntry(ctx context.Context, entry *RunQueueEntry) {
 	p.admitMu.Lock()
 	if p.stopping {
 		p.admitMu.Unlock()
-		// inFlight was marked above (before this gate); it is only ever
-		// cleared by executeEntry's defer, which will now never run for
-		// this entry, so clear it here or the session would appear
-		// permanently busy to this pump instance.
-		p.inFlightMu.Lock()
-		delete(p.inFlight, leased.SessionID)
-		p.inFlightMu.Unlock()
+		// The session reservation is given back by this function's own
+		// deferred release (sessionHandedOff is still false here), so no
+		// explicit clear is needed — and, unlike the open-coded delete this
+		// replaced, it cannot clear a mark belonging to some other execution.
+		//
 		// Release the lease immediately instead of leaving the row
 		// "leased" for up to a full leaseTTL: any pump instance (this
 		// process on restart, or a different live process) can then pick
@@ -190,27 +193,28 @@ func (p *RunQueuePump) processEntry(ctx context.Context, entry *RunQueueEntry) {
 	// the scan context here would cap every durable turn at five seconds.
 	// The execution parent has to be the pump's own lifetime, so that Stop()
 	// ends it and nothing else does.
-	go p.executeEntry(p.ctx, leased)
+	sessionHandedOff = true
+	go p.executeEntry(p.ctx, leased, releaseSession)
 }
 
 // executeEntry runs a leased entry and handles success/failure. Called
 // detached (go executeEntry(...)) by the background tick's processEntry,
-// which has already reserved this call's execSem slot and workerWg
-// registration and marked the session inFlight before dispatching — this
-// releases all three via defer regardless of outcome, matching the
-// admission it assumes was already granted.
-func (p *RunQueuePump) executeEntry(ctx context.Context, leased *RunQueueEntry) {
+// which has already reserved this call's execSem slot, its workerWg
+// registration and its session admission before dispatching — this releases
+// all three via defer regardless of outcome, matching the admission it
+// assumes was already granted.
+//
+// releaseSession is processEntry's admitSession closure, handed over rather
+// than re-derived: only the caller that was admitted may clear the marker
+// (see admitSession), and after this handoff that caller is this goroutine.
+func (p *RunQueuePump) executeEntry(ctx context.Context, leased *RunQueueEntry, releaseSession func()) {
 	defer p.workerWg.Done()
 
 	// Release the semaphore slot when execution completes (P1-4).
 	// This guarantees the slot is returned even on panic or any error path.
 	defer func() { <-p.execSem }()
 
-	defer func() {
-		p.inFlightMu.Lock()
-		delete(p.inFlight, leased.SessionID)
-		p.inFlightMu.Unlock()
-	}()
+	defer releaseSession()
 
 	// The returned error is deliberately discarded here: every outcome that
 	// CAN be written for the row (Ack/Nack/TerminalFail) already was, inside
