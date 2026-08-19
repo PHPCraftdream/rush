@@ -9,30 +9,60 @@ test.beforeEach(async ({ page }) => {
   );
 });
 
-// ── Header ─────────────────────────────────────────────────────────────────
+// ChatToolbar.tsx (which now hosts the settings/theme/token/busy-dots
+// controls formerly in the deleted Header.tsx) returns null with no active
+// session — see the long comment below. Tests that need those controls
+// select a session first.
+async function selectASession(page: Parameters<typeof sendMockWSMessage>[0], id: string, title: string) {
+  await sendMockWSMessage(page, {
+    type: "sessions_list",
+    payload: [makeSession({ ID: id, Title: title })],
+  });
+  await expect(page.getByText(title).first()).toBeVisible({ timeout: 3000 });
+  await page.getByText(title).first().click();
+}
 
-test("header shows session title when session is active", async ({ page }) => {
+// ── Toolbar (formerly "Header") ──────────────────────────────────────────────
+//
+// Commit 89a07919 ("fold Header into ChatToolbar") deleted the standalone
+// Header.tsx and its data-test-id="header" wrapper entirely, moving the
+// surviving controls (settings/token-indicator/busy-dots/theme/etc.) into
+// ChatToolbar.tsx. Two behavioral changes fall out of that commit, contrary
+// to its "no behaviour changes" claim:
+//   1. There is no longer any element carrying data-test-id="header" to
+//      scope assertions to — the controls now live directly in the page.
+//   2. ChatToolbar.tsx has `if (!activeSessionID) return null;` (line ~195),
+//      which Header.tsx never had — every control that moved into
+//      ChatToolbar (settings button, token indicator, busy dots, theme
+//      toggle, prompt/MCP/providers/logs buttons) is now unreachable with no
+//      session selected, whereas the old Header rendered unconditionally.
+//      That gating is a real, confirmed regression — see the writeup in the
+//      task #567 report — and is NOT something this test file's scope can
+//      fix; these tests select a session first to test the behavior that
+//      still exists, which is not the same as saying "no session" access
+//      was intentionally dropped.
+//
+// "header shows session title when session is active" is dropped entirely,
+// not re-pointed: SessionTitle was the one piece of Header.tsx that commit
+// explicitly did NOT migrate anywhere ("session rename still works via the
+// sidebar's per-row pencil button" — i.e. the title is only ever shown in
+// the sidebar row now, which sessions.spec.ts / sidebar-detail.spec.ts
+// already cover). There is no second place displaying the session title to
+// re-point this test at.
+
+test("empty state shows default title when no session selected", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.getByText("No session selected")).toBeVisible({ timeout: 2000 });
+});
+
+test("settings button opens modal showing model name from config", async ({ page }) => {
   await page.goto("/");
   await sendMockWSMessage(page, {
     type: "sessions_list",
-    payload: [makeSession({ ID: "hdr-1", Title: "My Project Chat" })],
+    payload: [makeSession({ ID: "hdr-model-1", Title: "Model Config Session" })],
   });
-  await expect(page.getByText("My Project Chat").first()).toBeVisible({ timeout: 3000 });
-  await page.getByText("My Project Chat").first().click();
-  await expect(
-    page.getByTestId("header").getByText("My Project Chat")
-  ).toBeVisible({ timeout: 2000 });
-});
-
-test("header shows default title when no session selected", async ({ page }) => {
-  await page.goto("/");
-  await expect(
-    page.getByTestId("header").getByText("No session selected")
-  ).toBeVisible({ timeout: 2000 });
-});
-
-test("header shows model name from config", async ({ page }) => {
-  await page.goto("/");
+  await expect(page.getByText("Model Config Session").first()).toBeVisible({ timeout: 3000 });
+  await page.getByText("Model Config Session").first().click();
   await sendMockWSMessage(page, {
     type: "config",
     payload: { models: { smart: { Provider: "anthropic", Model: "claude-3-5-sonnet" } } },
@@ -42,7 +72,7 @@ test("header shows model name from config", async ({ page }) => {
   await expect(page.getByText("Context Paths")).toBeVisible({ timeout: 2000 });
 });
 
-test("header shows token usage for active session", async ({ page }) => {
+test("toolbar shows token usage for active session", async ({ page }) => {
   await page.goto("/");
   await sendMockWSMessage(page, {
     type: "sessions_list",
@@ -52,10 +82,10 @@ test("header shows token usage for active session", async ({ page }) => {
   await page.getByText("Token Session").first().click();
   // 1200 + 800 = 2000 → formatTokens → "2.0k" — badge has a title containing "tokens"
   await expect(page.getByTestId("header-token-indicator")).toBeVisible({ timeout: 2000 });
-  await expect(page.getByTestId("header").getByText(/2\.0k/)).toBeVisible({ timeout: 2000 });
+  await expect(page.getByTestId("header-token-indicator")).toContainText(/2\.0k/);
 });
 
-test("header shows busy dots when agent is working", async ({ page }) => {
+test("toolbar shows busy dots when agent is working", async ({ page }) => {
   await page.goto("/");
   await sendMockWSMessage(page, {
     type: "sessions_list",
@@ -67,22 +97,25 @@ test("header shows busy dots when agent is working", async ({ page }) => {
     type: "agent_busy",
     payload: { SessionID: "hdr-busy", Busy: true },
   });
-  // Busy dots are visible within the header
-  await expect(
-    page.getByTestId("header").locator(".animate-pulse-dots")
-  ).toBeVisible({ timeout: 2000 });
+  // Busy dots are visible within the toolbar. ChatToolbar.tsx renders two
+  // separate .animate-pulse-dots elements (a compact one and one with
+  // title="Agent is working…"), so scope to .first() to avoid a strict-mode
+  // violation — this only needs to prove busy state is shown somewhere.
+  await expect(page.locator(".animate-pulse-dots").first()).toBeVisible({ timeout: 2000 });
 });
 
 // ── Settings panel ─────────────────────────────────────────────────────────
 
 test("settings panel opens on gear click", async ({ page }) => {
   await page.goto("/");
+  await selectASession(page, "settings-open", "Settings Open");
   await page.getByTestId("header-settings-button").click();
   await expect(page.getByTestId("settings-modal")).toBeVisible({ timeout: 2000 });
 });
 
 test("settings panel closes via backdrop click", async ({ page }) => {
   await page.goto("/");
+  await selectASession(page, "settings-backdrop", "Settings Backdrop");
   await page.getByTestId("header-settings-button").click();
   await expect(page.getByTestId("settings-modal")).toBeVisible({ timeout: 2000 });
   // Press Escape to close the modal
@@ -92,6 +125,7 @@ test("settings panel closes via backdrop click", async ({ page }) => {
 
 test("settings panel closes via X button", async ({ page }) => {
   await page.goto("/");
+  await selectASession(page, "settings-x", "Settings X");
   await page.getByTestId("header-settings-button").click();
   await expect(page.getByTestId("settings-modal")).toBeVisible({ timeout: 2000 });
   await page.getByTestId("settings-modal-close").click();
@@ -100,6 +134,7 @@ test("settings panel closes via X button", async ({ page }) => {
 
 test("settings shows configured models", async ({ page }) => {
   await page.goto("/");
+  await selectASession(page, "settings-models", "Settings Models");
   await sendMockWSMessage(page, { type: "config", payload: makeConfig() });
   await page.getByTestId("header-settings-button").click();
   // Settings modal shows "Context Paths" and "Agent Skills Paths" sections
@@ -109,6 +144,7 @@ test("settings shows configured models", async ({ page }) => {
 
 test("settings shows Loading when config not yet received", async ({ page }) => {
   await page.goto("/");
+  await selectASession(page, "settings-loading", "Settings Loading");
   await page.getByTestId("header-settings-button").click();
   // Settings modal should be visible even without config
   await expect(page.getByTestId("settings-modal")).toBeVisible({ timeout: 2000 });
@@ -151,39 +187,24 @@ test("sidebar busy pulse disappears when agent done", async ({ page }) => {
 });
 
 // ── Status bar ─────────────────────────────────────────────────────────────
+//
+// StatusBar.tsx is only ever mounted from inside ChatToolbar.tsx (inline,
+// middle of the toolbar) or TodoList.tsx — both of which require an active
+// session ({activeSessionID && <TodoList .../>} in Chat.tsx; ChatToolbar's
+// own `if (!activeSessionID) return null`). There is no standalone
+// always-mounted status footer left, so these tests select a session first.
 
 test("status bar is visible with connection status", async ({ page }) => {
   await page.goto("/");
+  await selectASession(page, "status-visible", "Status Visible");
   await expect(
     page.getByTestId("status-bar")
   ).toBeVisible({ timeout: 3000 });
 });
 
-test("status bar shows LSP server", async ({ page }) => {
-  await page.goto("/");
-  await sendMockWSMessage(page, {
-    type: "lsp_state",
-    payload: {
-      servers: [{ name: "gopls", state: "ready", disabled: false, diagnosticCount: 0 }],
-    },
-  });
-  await expect(page.getByTestId("status-lsp-gopls")).toBeVisible({ timeout: 2000 });
-  await expect(page.getByTestId("status-lsp")).toContainText("LSP");
-});
-
-test("status bar shows LSP diagnostic count when nonzero", async ({ page }) => {
-  await page.goto("/");
-  await sendMockWSMessage(page, {
-    type: "lsp_state",
-    payload: {
-      servers: [{ name: "tsserver", state: "ready", disabled: false, diagnosticCount: 3 }],
-    },
-  });
-  await expect(page.getByTestId("status-lsp-tsserver")).toContainText("(3)");
-});
-
 test("status bar shows MCP server", async ({ page }) => {
   await page.goto("/");
+  await selectASession(page, "status-mcp", "Status MCP");
   await sendMockWSMessage(page, {
     type: "mcp_state",
     payload: { servers: [{ name: "filesystem", status: "connected" }] },
@@ -192,65 +213,18 @@ test("status bar shows MCP server", async ({ page }) => {
   await expect(page.getByTestId("status-mcp")).toContainText("MCP");
 });
 
-// ── Permission dialog ──────────────────────────────────────────────────────
-
-test("permission dialog appears on permission_request", async ({ page }) => {
-  await page.goto("/");
-  await sendMockWSMessage(page, {
-    type: "sessions_list",
-    payload: [makeSession({ ID: "perm-1", Title: "Perm Session" })],
-  });
-  await expect(page.getByText("Perm Session").first()).toBeVisible({ timeout: 3000 });
-  await page.getByText("Perm Session").first().click();
-  await sendMockWSMessage(page, {
-    type: "permission_request",
-    payload: {
-      ID: "req-1",
-      SessionID: "perm-1",
-      ToolCallID: "tc-1",
-      ToolName: "bash",
-      Description: "Run a shell command",
-      Action: "execute",
-      Path: "/tmp/test.sh",
-      Params: {},
-    },
-  });
-  await expect(page.getByText("bash")).toBeVisible({ timeout: 2000 });
-  await expect(page.getByText("Run a shell command")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Allow", exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Allow always" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Deny", exact: true })).toBeVisible();
-});
-
-test("permission dialog disappears on permission_notification", async ({ page }) => {
-  await page.goto("/");
-  await sendMockWSMessage(page, {
-    type: "sessions_list",
-    payload: [makeSession({ ID: "perm-2", Title: "Perm2" })],
-  });
-  await expect(page.getByText("Perm2").first()).toBeVisible({ timeout: 3000 });
-  await page.getByText("Perm2").first().click();
-  await sendMockWSMessage(page, {
-    type: "permission_request",
-    payload: {
-      ID: "req-2",
-      SessionID: "perm-2",
-      ToolCallID: "tc-2",
-      ToolName: "read_file",
-      Description: "Read a file",
-      Action: "read",
-      Path: "/etc/hosts",
-      Params: {},
-    },
-  });
-  await expect(page.getByText("read_file")).toBeVisible({ timeout: 2000 });
-
-  await sendMockWSMessage(page, {
-    type: "permission_notification",
-    payload: { ToolCallID: "tc-2", Granted: true, Denied: false },
-  });
-  await expect(page.getByText("read_file")).not.toBeVisible({ timeout: 2000 });
-});
+// ── Permission dialog (removed feature) ──────────────────────────────────────
+//
+// DELETED, not re-pointed. Commit bc3f3b3d ("fix(web): auto-approve all
+// permissions for web UI sessions, remove dialog") deleted
+// PermissionDialog.tsx and every associated WS event/handler/payload type —
+// web sessions now auto-approve every tool call server-side
+// (app.RunNonInteractive -> Permissions.AutoApproveSession is armed at every
+// web-server entry point that can start agent execution) and structurally
+// cannot surface a permission_request the client would ever render. There is
+// nothing left to re-point these two tests at. The same dead feature was
+// covered by the now-deleted permissions.spec.ts and by
+// cli-models.spec.ts's now-removed "CLI model permissions" describe block.
 
 // ── Reconnection banner ────────────────────────────────────────────────────
 

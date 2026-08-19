@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
 import { setupMockWS, sendMockWSMessage, waitForWSSend } from "./helpers/mock-ws";
-import { makeConfig } from "./helpers/fixtures";
+import { makeConfig, makeSession } from "./helpers/fixtures";
 
 test.beforeEach(async ({ page }) => {
   await setupMockWS(page);
@@ -9,10 +9,30 @@ test.beforeEach(async ({ page }) => {
   );
 });
 
+// The theme toggle used to live in the standalone Header.tsx, which rendered
+// unconditionally. Commit 89a07919 ("fold Header into ChatToolbar") moved it
+// into ChatToolbar.tsx, which has `if (!activeSessionID) return null;` — so,
+// contrary to that commit's "no behaviour changes" claim, the toggle (and
+// every other control that moved with it) is now unreachable until a session
+// is selected. That gating is a real product behavior, not a test artifact,
+// so these tests select a session first rather than asserting the toggle is
+// reachable with none selected — see docs/checkpoints or task #567 report for
+// the regression writeup; re-pointing here does not paper over it.
+
+async function selectSession(page: Parameters<typeof sendMockWSMessage>[0], title: string) {
+  await sendMockWSMessage(page, {
+    type: "sessions_list",
+    payload: [makeSession({ ID: "theme-sess", Title: title })],
+  });
+  await expect(page.getByText(title).first()).toBeVisible({ timeout: 3000 });
+  await page.getByText(title).first().click();
+}
+
 // ── Theme toggle visibility ──────────────────────────────────────────────────
 
-test("Theme toggle button visible in header", async ({ page }) => {
+test("Theme toggle button visible in toolbar", async ({ page }) => {
   await page.goto("/");
+  await selectSession(page, "Theme Session 1");
   await sendMockWSMessage(page, {
     type: "config",
     payload: makeConfig({ theme: "light" }),
@@ -26,6 +46,7 @@ test("Theme toggle button visible in header", async ({ page }) => {
 
 test("Clicking theme toggle sends set_theme command", async ({ page }) => {
   await page.goto("/");
+  await selectSession(page, "Theme Session 2");
   await sendMockWSMessage(page, {
     type: "config",
     payload: makeConfig({ theme: "light" }),
@@ -43,6 +64,7 @@ test("Clicking theme toggle sends set_theme command", async ({ page }) => {
 
 test("Dark theme config shows light toggle", async ({ page }) => {
   await page.goto("/");
+  await selectSession(page, "Theme Session 3");
   await sendMockWSMessage(page, {
     type: "config",
     payload: makeConfig({ theme: "dark" }),
@@ -56,6 +78,7 @@ test("Clicking theme toggle in dark mode sends light theme", async ({
   page,
 }) => {
   await page.goto("/");
+  await selectSession(page, "Theme Session 4");
   await sendMockWSMessage(page, {
     type: "config",
     payload: makeConfig({ theme: "dark" }),

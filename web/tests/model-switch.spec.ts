@@ -59,7 +59,7 @@ test("selecting large model sends set_session_models with provider and model", a
 
   await expect(page.locator("button[title='Smart (strong) model']")).toBeVisible({ timeout: 3000 });
   await page.locator("button[title='Smart (strong) model']").click();
-  await page.locator('[data-testid="model-dropdown"]').getByText("claude-haiku-4").click();
+  await page.getByTestId("model-dropdown").getByText("claude-haiku-4").click();
 
   const cmd = await waitForWSSend(page, "set_session_models");
   const p = cmd.payload as { sessionID: string; smartModel: { provider: string; model: string }; fastModel: unknown };
@@ -93,7 +93,7 @@ test("selecting small model sends set_session_models with correct small provider
 
   await expect(page.locator("button[title='Fast (cheap) model']")).toBeVisible({ timeout: 3000 });
   await page.locator("button[title='Fast (cheap) model']").click();
-  await page.locator('[data-testid="model-dropdown"]').getByText("gpt-4o-mini").click();
+  await page.getByTestId("model-dropdown").getByText("gpt-4o-mini").click();
 
   const cmd = await waitForWSSend(page, "set_session_models");
   const p = cmd.payload as { sessionID: string; fastModel: { provider: string; model: string } };
@@ -127,12 +127,12 @@ test("set_session_models includes both models", async ({ page }) => {
 
   // Pick large model
   await page.locator("button[title='Smart (strong) model']").click();
-  await page.locator('[data-testid="model-dropdown"]').getByText("claude-haiku-4").click();
+  await page.getByTestId("model-dropdown").getByText("claude-haiku-4").click();
   await waitForWSSend(page, "set_session_models");
 
   // Pick small model — second set_session_models command
   await page.locator("button[title='Fast (cheap) model']").click();
-  await page.locator('[data-testid="model-dropdown"]').getByText("gpt-4o-mini").click();
+  await page.getByTestId("model-dropdown").getByText("gpt-4o-mini").click();
 
   const secondCmd = await page.waitForFunction(
     () => {
@@ -163,12 +163,12 @@ test("send_message does not include smartModel or fastModel overrides", async ({
 
   // Switch model
   await page.locator("button[title='Smart (strong) model']").click();
-  await page.locator('[data-testid="model-dropdown"]').getByText("claude-haiku-4").click();
+  await page.getByTestId("model-dropdown").getByText("claude-haiku-4").click();
   await waitForWSSend(page, "set_session_models");
 
   // Send a message
-  await page.getByPlaceholder("Message… (Enter to send)").fill("hello");
-  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await page.getByTestId("chat-input-textarea").fill("hello");
+  await page.getByTestId("chat-input-send-button").click();
 
   const sent = await waitForWSSend(page, "send_message");
   const payload = sent.payload as Record<string, unknown>;
@@ -187,8 +187,8 @@ test("send_message never contains model overrides even on default model", async 
   await expect(page.getByText("Default Model").first()).toBeVisible({ timeout: 3000 });
   await page.getByText("Default Model").first().click();
 
-  await page.getByPlaceholder("Message… (Enter to send)").fill("hello default");
-  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await page.getByTestId("chat-input-textarea").fill("hello default");
+  await page.getByTestId("chat-input-send-button").click();
 
   const sent = await waitForWSSend(page, "send_message");
   const payload = sent.payload as Record<string, unknown>;
@@ -308,7 +308,7 @@ test("switching model in session A does not affect session B", async ({ page }) 
   await expect(page.getByText("Session A").first()).toBeVisible({ timeout: 3000 });
   await page.getByText("Session A").first().click();
   await page.locator("button[title='Smart (strong) model']").click();
-  await page.locator('[data-testid="model-dropdown"]').getByText("claude-haiku-4").click();
+  await page.getByTestId("model-dropdown").getByText("claude-haiku-4").click();
 
   // Session A button shows haiku
   await expect(
@@ -349,7 +349,7 @@ test("model override persists for subsequent messages via DB", async ({ page }) 
 
   // Switch model once
   await page.locator("button[title='Smart (strong) model']").click();
-  await page.locator('[data-testid="model-dropdown"]').getByText("claude-haiku-4").click();
+  await page.getByTestId("model-dropdown").getByText("claude-haiku-4").click();
   await waitForWSSend(page, "set_session_models");
 
   // Simulate server confirming the session model update
@@ -364,12 +364,12 @@ test("model override persists for subsequent messages via DB", async ({ page }) 
   });
 
   // Send two messages — neither should have model overrides in payload
-  await page.getByPlaceholder("Message… (Enter to send)").fill("msg one");
-  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await page.getByTestId("chat-input-textarea").fill("msg one");
+  await page.getByTestId("chat-input-send-button").click();
   await waitForWSSend(page, "send_message");
 
-  await page.getByPlaceholder("Message… (Enter to send)").fill("msg two");
-  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await page.getByTestId("chat-input-textarea").fill("msg two");
+  await page.getByTestId("chat-input-send-button").click();
   await page.waitForFunction(() => {
     const sent = ((window as unknown) as Record<string, unknown>)["__wsSent"] as Array<{
       type: string;

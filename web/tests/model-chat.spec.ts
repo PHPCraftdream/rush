@@ -165,7 +165,16 @@ test("switching large model sends set_session_models and response appears in cha
 test("switching small model sends set_session_models and response appears in chat", async ({ page }) => {
   await setupSessionAndConfig(page, "mc-glm", "GLM Chat");
 
-  await page.locator('[data-test-id="model-selector-fast"]').click();
+  // glm-5 is a z.ai reasoning model (isZAIReasoningModel), so
+  // model-selector-fast renders a reasoning-effort chevron widget inside the
+  // button, between the model name and the dropdown arrow. That widget has
+  // its own onClick={e => e.stopPropagation()} (by design — clicking the
+  // effort arrows must not also toggle the dropdown open/closed). Playwright
+  // clicks an element's bounding-box center by default, which for this
+  // button lands inside the effort widget once it's present, silently
+  // eating the click meant to open the dropdown. Click the model-name text
+  // directly instead — it's outside the effort widget's DOM subtree.
+  await page.locator('[data-test-id="model-selector-fast"]').getByText("glm-5", { exact: true }).click();
   await page.locator('[data-test-id="model-dropdown"]').getByText("glm-5").click();
 
   const modelsCmd = await waitForWSSend(page, "set_session_models");

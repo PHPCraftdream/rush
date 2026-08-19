@@ -111,6 +111,11 @@ test.describe("Reasoning Effort Controls", () => {
 
     const label = page.locator('[data-test-id="reasoning-effort-smart-label"]');
 
+    // effort.ts EFFORT_LEVELS is ["low", "medium", "high", "xhigh", "max"] —
+    // a 5-level cycle, not 4. The old assertions here (H → X → L, skipping
+    // "max"/"XX" entirely) never matched that source of truth; see effort.ts
+    // and ModelSelector.tsx's EFFORT_LABELS (max -> "XX").
+
     // M (medium) → H (high)
     await page.locator('[data-test-id="reasoning-effort-smart-increase"]').click();
     await expect(label).toHaveText("H");
@@ -120,11 +125,15 @@ test.describe("Reasoning Effort Controls", () => {
     expect(sentMsg.type).toBe("set_session_models");
     expect(sentMsg.payload.smartModel.reasoning_effort).toBe("high");
 
-    // H (high) → X (max)
+    // H (high) → X (xhigh)
     await page.locator('[data-test-id="reasoning-effort-smart-increase"]').click();
     await expect(label).toHaveText("X");
 
-    // X (max) → L (low)
+    // X (xhigh) → XX (max)
+    await page.locator('[data-test-id="reasoning-effort-smart-increase"]').click();
+    await expect(label).toHaveText("XX");
+
+    // XX (max) → L (low)
     await page.locator('[data-test-id="reasoning-effort-smart-increase"]').click();
     await expect(label).toHaveText("L");
 
@@ -139,15 +148,21 @@ test.describe("Reasoning Effort Controls", () => {
     await setup(page);
     const label = page.locator('[data-test-id="reasoning-effort-smart-label"]');
 
+    // Mirror of the increase test above — same 5-level cycle, reverse order.
+
     // M (medium) → L (low)
     await page.locator('[data-test-id="reasoning-effort-smart-decrease"]').click();
     await expect(label).toHaveText("L");
 
-    // L (low) → X (max)
+    // L (low) → XX (max)
+    await page.locator('[data-test-id="reasoning-effort-smart-decrease"]').click();
+    await expect(label).toHaveText("XX");
+
+    // XX (max) → X (xhigh)
     await page.locator('[data-test-id="reasoning-effort-smart-decrease"]').click();
     await expect(label).toHaveText("X");
 
-    // X (max) → H (high)
+    // X (xhigh) → H (high)
     await page.locator('[data-test-id="reasoning-effort-smart-decrease"]').click();
     await expect(label).toHaveText("H");
 
@@ -190,7 +205,12 @@ test.describe("Reasoning Effort Controls", () => {
   test("effort badge is displayed in assistant message", async ({ page }) => {
     const sessionID = await setup(page);
 
-    // Set effort to max (M → H → X)
+    // Set effort to xhigh (M → H → X). The mock assistant response below
+    // carries its own independent ReasoningEffort: "max" — the badge always
+    // reflects the message's own field (message.ReasoningEffort via
+    // EffortBadge.tsx), not whatever the selector happens to show, so this
+    // click sequence only needs to move off the default; it isn't asserting
+    // that the selector reaches "max".
     await page.locator('[data-test-id="reasoning-effort-smart-increase"]').click();
     await page.locator('[data-test-id="reasoning-effort-smart-increase"]').click();
     await expect(
@@ -221,11 +241,23 @@ test.describe("Reasoning Effort Controls", () => {
     // Wait for message text to appear
     await expect(page.getByText("Response with max effort")).toBeVisible({ timeout: 3000 });
 
-    // Check that the model badge shows effort level X
-    // The badge is a small span with the effort letter next to the model name
-    const effortBadge = page.locator("span[title='Reasoning effort: max']");
+    // EffortBadge lives inside AssistantHoverActions, which Message.tsx only
+    // mounts while the row is hovered ({hovered && <AssistantHoverActions .../>})
+    // — not just CSS-hidden, actually unmounted. Hover the row first. Message.tsx
+    // renders the row as `<div id={`msg-${message.ID}`} className="msg-row" ...>`
+    // (NB: not "group/msg" — that class doesn't exist here; other specs
+    // referencing it may themselves be stale, out of scope for this test).
+    const msgRow = page.locator("#msg-resp-max");
+    await msgRow.hover();
+
+    // Check that the model badge shows effort level XX (max).
+    // The badge is a small span with the effort letter(s) in brackets next to
+    // the model name — EffortBadge.tsx renders `[XX]` for effort === "max"
+    // and sets title={`Reasoning effort: ${effort}`} (the raw effort string,
+    // not the abbreviated label).
+    const effortBadge = msgRow.locator("span[title='Reasoning effort: max']");
     await expect(effortBadge).toBeVisible();
-    await expect(effortBadge).toHaveText("X");
+    await expect(effortBadge).toHaveText("[XX]");
   });
 
   test("changing small model effort works independently", async ({ page }) => {
