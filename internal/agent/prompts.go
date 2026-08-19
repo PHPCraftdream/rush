@@ -38,5 +38,8 @@ func InitializePrompt(cfg *config.ConfigStore) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return systemPrompt.Build(context.Background(), "", "", cfg, false)
+	// One-shot, not part of a turn: nothing was resolved against an earlier
+	// generation, so the current config IS the pinned config. Passed
+	// explicitly all the same -- Build no longer fetches it.
+	return systemPrompt.Build(context.Background(), "", "", cfg, cfg.Config(), false)
 }

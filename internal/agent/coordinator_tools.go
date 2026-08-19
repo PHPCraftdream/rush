@@ -81,7 +81,12 @@ func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, age
 		// taskPrompt, which doesn't reference WorkerAvailable, but guarding
 		// on !isSubAgent here keeps this call's intent explicit rather than
 		// relying on the template to ignore the field.
-		systemPrompt, err := prompt.Build(ctx, smart.Model.Provider(), smart.Model.Model(), c.cfg, !isSubAgent && c.workerSubAgentActive(c.cfg.Config()))
+		// ONE snapshot for both the worker predicate and the prompt itself.
+		// These used to be two independent c.cfg.Config() reads, so a reload
+		// between them could render a prompt whose WorkerAvailable flag
+		// disagreed with the config the rest of it was built from.
+		pinnedCfg := c.cfg.Config()
+		systemPrompt, err := prompt.Build(ctx, smart.Model.Provider(), smart.Model.Model(), c.cfg, pinnedCfg, !isSubAgent && c.workerSubAgentActive(pinnedCfg))
 		if err != nil {
 			return err
 		}

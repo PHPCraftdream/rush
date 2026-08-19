@@ -196,7 +196,7 @@ func (c *coordinator) resolveSessionModels(ctx context.Context, sessionID string
 	// WorkerAvailable flag disagree with the model/prefix this call already
 	// resolved from an earlier generation.
 	if c.prompt != nil {
-		newSystemPrompt, err := c.prompt.Build(ctx, smartModel.ModelCfg.Provider, smartModel.ModelCfg.Model, c.cfg, c.workerSubAgentActive(cfg))
+		newSystemPrompt, err := c.prompt.Build(ctx, smartModel.ModelCfg.Provider, smartModel.ModelCfg.Model, c.cfg, cfg, c.workerSubAgentActive(cfg))
 		if err != nil {
 			// Leave resolved.systemPrompt empty rather than guessing: the
 			// caller treats "" as "nothing to pin", so the turn falls back to
@@ -333,7 +333,7 @@ func (c *coordinator) applyModelOverrides(ctx context.Context, smart, fast *Mode
 	// workerSubAgentActive takes the SAME pinned cfg used for largeModel
 	// above (task #341, P1-1) rather than re-reading c.cfg.Config() live.
 	if c.prompt != nil {
-		newSystemPrompt, err := c.prompt.Build(ctx, smartModel.ModelCfg.Provider, smartModel.ModelCfg.Model, c.cfg, c.workerSubAgentActive(cfg))
+		newSystemPrompt, err := c.prompt.Build(ctx, smartModel.ModelCfg.Provider, smartModel.ModelCfg.Model, c.cfg, cfg, c.workerSubAgentActive(cfg))
 		if err != nil {
 			slog.Error("applyModelOverrides: failed to rebuild system prompt", "err", err)
 		} else {

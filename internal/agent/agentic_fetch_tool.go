@@ -150,7 +150,9 @@ func (c *coordinator) agenticFetchTool(_ context.Context, client *http.Client) (
 				return fantasy.ToolResponse{}, fmt.Errorf("error building models: %s", err)
 			}
 
-			systemPrompt, err := promptTemplate.Build(ctx, fast.Model.Provider(), fast.Model.Model(), c.cfg, false)
+			// Pinned explicitly: this tool resolves its model just above, and
+			// the prompt must come from the same generation.
+			systemPrompt, err := promptTemplate.Build(ctx, fast.Model.Provider(), fast.Model.Model(), c.cfg, c.cfg.Config(), false)
 			if err != nil {
 				return fantasy.ToolResponse{}, fmt.Errorf("error building system prompt: %s", err)
 			}

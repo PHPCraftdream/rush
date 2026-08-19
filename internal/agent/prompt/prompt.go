@@ -109,13 +109,25 @@ func NewPrompt(name, promptTemplate string, opts ...Option) (*Prompt, error) {
 // configured" predicate (coordinator.workerSubAgentActive for the top-level
 // coder; always false for sub-agent/other prompt builds) — Build does not
 // re-derive it, so there is exactly one place that decision is made.
-func (p *Prompt) Build(ctx context.Context, provider, model string, store *config.ConfigStore, workerActive bool) (string, error) {
+// cfg is the PINNED configuration this build must read, passed separately
+// from store rather than fetched from it (P1-2 of the 2026-08-18
+// release-readiness review). The caller has usually already resolved models
+// against one generation of the config; re-reading store.Config() here meant
+// a reload landing in between produced a model from generation N and a
+// prompt from N+1 -- different context paths, skills, options and Models map
+// than the model that will actually run. Making it a parameter forces every
+// call site to state which generation it means instead of silently taking
+// whatever is current.
+//
+// store is still needed, but only for process-stable things: WorkingDir()
+// and Resolver(). Neither changes with a config reload.
+func (p *Prompt) Build(ctx context.Context, provider, model string, store *config.ConfigStore, cfg *config.Config, workerActive bool) (string, error) {
 	t, err := template.New(p.name).Parse(p.template)
 	if err != nil {
 		return "", fmt.Errorf("parsing template: %w", err)
 	}
 	var sb strings.Builder
-	d, err := p.promptData(ctx, provider, model, store, workerActive)
+	d, err := p.promptData(ctx, provider, model, store, cfg, workerActive)
 	if err != nil {
 		return "", err
 	}
@@ -235,11 +247,17 @@ func dedupeContextFiles(files []ContextFile) []ContextFile {
 	return out
 }
 
-func (p *Prompt) promptData(ctx context.Context, provider, model string, store *config.ConfigStore, workerActive bool) (PromptDat, error) {
+func (p *Prompt) promptData(ctx context.Context, provider, model string, store *config.ConfigStore, cfg *config.Config, workerActive bool) (PromptDat, error) {
 	workingDir := cmp.Or(p.workingDir, store.WorkingDir())
 	platform := cmp.Or(p.platform, runtime.GOOS)
 
-	cfg := store.Config()
+	// cfg is the caller's pinned snapshot; store.Config() is deliberately NOT
+	// consulted here. See Build's doc for what mixing the two produced. The
+	// nil fallback is for callers with nothing to pin (one-shot renders that
+	// resolved nothing against an earlier generation).
+	if cfg == nil {
+		cfg = store.Config()
+	}
 	contextFiles := loadContextFiles(cfg.Options.ContextPaths, store)
 	globalContextFiles := loadContextFiles(cfg.Options.GlobalContextPaths, store)
 
