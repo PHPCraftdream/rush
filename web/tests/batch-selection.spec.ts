@@ -50,7 +50,23 @@ async function setupWithMessages(
 
 const twoMessages = [
   makeMessage({ ID: "b-m1", Role: "user", Parts: [{ type: "text", Text: "First batch msg" }] }),
-  makeMessage({ ID: "b-m2", Role: "assistant", Parts: [{ type: "text", Text: "Second batch msg" }] }),
+  // task #595: the assistant fixture needs a terminal (non-Partial) Finish
+  // part. Message.tsx's selection checkbox is now gated by the same
+  // streamGuardOK flag as Edit/Delete (a still-streaming assistant message
+  // can never be selected, so it can never reach the bulk delete_messages
+  // path) — without a Finish part here, this fixture would read as
+  // still-streaming and the checkbox would never reveal on hover, which is
+  // not what these batch-selection-mechanics tests are about. See
+  // message-delete.spec.ts's dedicated streaming-gate tests for coverage of
+  // the still-streaming case itself.
+  makeMessage({
+    ID: "b-m2",
+    Role: "assistant",
+    Parts: [
+      { type: "text", Text: "Second batch msg" },
+      { type: "finish", Reason: "end_turn", Message: "", Details: "" },
+    ],
+  }),
 ];
 
 // ── Checkbox visibility ─────────────────────────────────────────────────

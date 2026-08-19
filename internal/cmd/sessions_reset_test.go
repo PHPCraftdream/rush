@@ -29,6 +29,7 @@ import (
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/db"
 	crushlog "github.com/charmbracelet/crush/internal/log"
+	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/session"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
@@ -302,4 +303,67 @@ func TestSessionsReset_ForceStillKillsLiveHolder(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	require.False(t, session.IsProcessAlive(holder.pid), "a genuinely live holder must still be killed by reset --force")
+}
+
+// TestSessionsReset_ForceClearsUnfinishedAssistantMessages is the regression
+// test for task #595: `crush sessions reset --force` SIGKILLs the lock holder
+// and then calls DeleteSessionMessages to wipe the session. The killed turn's
+// assistant row is forever `finished_at IS NULL` (never gets a terminal Finish),
+// so the per-row DeleteMessageIfTerminal predicate would refuse deletion and
+// leave the session only partially wiped.
+//
+// This test creates a session with a user message and an UNFINISHED assistant
+// message (the exact shape after a SIGKILL), runs the real sessionsResetCmd.RunE
+// with --force, and asserts that ALL messages are gone and the command succeeds.
+//
+// Revert-check: restore the old per-row Delete loop in DeleteSessionMessages
+// and this test fails with ErrMessageStillStreaming and/or leftover messages.
+func TestSessionsReset_ForceClearsUnfinishedAssistantMessages(t *testing.T) {
+	a, _ := isolatedResetEnv(t)
+
+	ctx := context.Background()
+	sess, err := a.Sessions.CreateWithID(ctx, "reset-force-unfinished-assistant", "regression title")
+	require.NoError(t, err)
+
+	// Create a user message (auto-gets a Finish part).
+	_, err = a.Messages.Create(ctx, sess.ID, message.CreateMessageParams{
+		Role:  message.User,
+		Parts: []message.ContentPart{message.TextContent{Text: "user input"}},
+	})
+	require.NoError(t, err)
+
+	// Create an assistant message with NO Finish part — this is the orphaned
+	// streaming row that would be left behind by the old per-row Delete loop.
+	unfinished, err := a.Messages.Create(ctx, sess.ID, message.CreateMessageParams{
+		Role:  message.Assistant,
+		Parts: []message.ContentPart{message.TextContent{Text: "orphaned response, never finished"}},
+	})
+	require.NoError(t, err)
+	require.False(t, unfinished.IsFinished(), "precondition: assistant message must be unfinished")
+
+	// Verify we have 2 messages before the reset.
+	messagesBefore, err := a.Messages.List(ctx, sess.ID)
+	require.NoError(t, err)
+	require.Len(t, messagesBefore, 2, "session must have 2 messages before reset")
+
+	// Run reset --force with the real command.
+	require.NoError(t, resetSessionCmdFlags().Flags().Set("force", "true"))
+	stderr := captureStderr(t, func() {
+		err := sessionsResetCmd.RunE(sessionsResetCmd, []string{sess.ID})
+		require.NoError(t, err, "reset --force must succeed even with an unfinished assistant message")
+	})
+	t.Logf("reset --force stderr:\n%s", stderr)
+
+	// Verify all messages are gone.
+	messagesAfter, err := a.Messages.List(ctx, sess.ID)
+	require.NoError(t, err)
+	require.Empty(t, messagesAfter, "all messages must be deleted, including the unfinished assistant")
+
+	count, err := a.Messages.Count(ctx, sess.ID)
+	require.NoError(t, err)
+	require.Equal(t, int64(0), count, "message count must be 0 after reset --force")
+
+	// Verify the session row still exists (only its messages were wiped).
+	_, err = a.Sessions.Get(ctx, sess.ID)
+	require.NoError(t, err, "session row must still exist after reset")
 }

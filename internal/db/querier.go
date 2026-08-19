@@ -61,6 +61,49 @@ type Querier interface {
 	CreateSessionPermission(ctx context.Context, arg CreateSessionPermissionParams) error
 	DeleteFile(ctx context.Context, id string) error
 	DeleteMessage(ctx context.Context, id string) error
+	// task #595 (P1-1 of the 2026-08-19 static follow-up review): plain
+	// DeleteMessage above deletes an assistant message unconditionally, even
+	// while an agent turn still owns it (no terminal Finish yet, or only a
+	// Partial one from the auto-checkpoint ticker). The turn's terminal write
+	// lands afterward through UpdateMessage/UpdateMessageIfNotTerminal and, at
+	// the time this predicate was added, published UpdatedEvent regardless of
+	// whether the row still existed -- "resurrecting" a deleted message in the
+	// live UI only, absent from the DB, until the next reload wipes it again.
+	//
+	// A DB predicate is used instead of read-then-delete (Get, check
+	// IsFinished(), then DeleteMessage) because a Get-then-act pair is not
+	// atomic: nothing stops the turn's own write from landing in the gap between
+	// the read and the delete. The WHERE clause here makes the check and the
+	// delete a single statement.
+	//
+	// role != 'assistant' is deliberate, not merely permissive: only assistant
+	// rows are ever streamed (see message.Message.IsFinished's doc), so user/
+	// system/tool rows have no live turn that could contest a delete and must
+	// remain deletable exactly as before. finished_at IS NOT NULL is the same
+	// terminal test IsFinished() applies in Go, evaluated in SQL for atomicity.
+	//
+	// is_summary_message = 1 is ALSO exempt, and this is not merely permissive
+	// either: the risk this predicate defends against is an EXTERNAL actor (an
+	// operator's Trash click or bulk-selection delete, reached through the web
+	// UI) deleting a message a DIFFERENT, still-live turn intends to keep
+	// writing to. A summary message (internal/agent/agent_compaction.go's
+	// runSummarizeSilent/runSummarizeBody) is never reachable through that UI
+	// at all -- web/src/components/Message/Message.tsx routes IsSummaryMessage
+	// rows to SummaryMessage.tsx, which renders no Trash control and is outside
+	// the selection-checkbox tree entirely -- so the only caller that ever
+	// deletes one is the SAME turn that created it, cleaning up its own
+	// abandoned draft after its own stream was cancelled, before writing
+	// anything else to that id. That is single-writer self-cleanup, not the
+	// external race this predicate exists to prevent, and gating it here caused
+	// a real regression (TestP1_4_CleanupUsesCancelImmuneContext in
+	// internal/agent/p1_3_p1_4_regression_test.go) where the cancel-path
+	// cleanup delete of an unfinished summary message was wrongly refused.
+	//
+	// Returns rows affected: 0 means either the row didn't exist, or it exists
+	// but is a still-streaming (non-summary) assistant message and the delete
+	// was refused. Service.Delete disambiguates those two cases with a
+	// preceding Get.
+	DeleteMessageIfTerminal(ctx context.Context, id string) (int64, error)
 	// Delete an orphan outbox entry only if it's still pending (for atomic drain).
 	// Returns the number of rows deleted (0 or 1).
 	// Used by DrainOrphanOutboxEntry to atomically move entries to the main queue.
@@ -331,7 +374,18 @@ type Querier interface {
 	// Used for ErrCallAlreadyAttempted-type errors where retry would cause duplicates.
 	// Scoped to the current lease owner, same as AckRunQueueEntry.
 	TerminalFailRunQueueEntry(ctx context.Context, arg TerminalFailRunQueueEntryParams) (string, error)
-	UpdateMessage(ctx context.Context, arg UpdateMessageParams) error
+	// task #595: was :exec (rows-affected discarded). The terminal write path in
+	// message.Service.Update used to hardcode rowsAffected = 1 for this branch,
+	// which was true for the normal case (the row exists, one row updates) but
+	// false whenever the row was deleted concurrently -- a plain UPDATE against a
+	// WHERE id = ? that matches nothing affects 0 rows and returns no error.
+	// Reporting rows actually affected lets the caller stop publishing
+	// UpdatedEvent for a message that no longer exists (see the P1-1 finding in
+	// docs/reviews/2026-08-19-release-readiness-static-follow-up-d3ee9841.md: a
+	// streaming assistant message deleted mid-turn would otherwise "resurrect" in
+	// the live UI via this terminal write, absent from the DB, and vanish again
+	// on reload).
+	UpdateMessage(ctx context.Context, arg UpdateMessageParams) (int64, error)
 	// P0-4 fix: Only update if the message does NOT already have a non-partial finish.
 	// This prevents a hung checkpoint from overwriting a terminal finish after unblocking.
 	// A checkpoint writes with Partial=true (finished_at NULL), so this condition rejects

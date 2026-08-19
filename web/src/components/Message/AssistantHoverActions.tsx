@@ -13,9 +13,9 @@ import { UsageBadge } from "./UsageBadge";
 import { EffortBadge } from "./EffortBadge";
 
 export const AssistantHoverActions = memo(function AssistantHoverActions({
-  message, copyText, editable, onEdit, onDelete, onFork,
+  message, copyText, editable, deletable, onEdit, onDelete, onFork,
 }: {
-  message: Msg; copyText: string; editable: boolean;
+  message: Msg; copyText: string; editable: boolean; deletable: boolean;
   onEdit: () => void; onDelete: () => void; onFork: () => void;
 }) {
   const handlePin = useCallback(() => togglePinMessage(message.ID, !message.Pinned), [message.ID, message.Pinned]);
@@ -34,7 +34,20 @@ export const AssistantHoverActions = memo(function AssistantHoverActions({
           // could do here.
           <button onClick={onEdit} title="Edit" className="btn-icon"><Pencil size={13} /></button>
         )}
-        <button onClick={onDelete}  title="Delete"       className="btn-icon-danger"><Trash2 size={13} /></button>
+        {deletable && (
+          // Hidden (not just disabled) while the message is still
+          // mid-stream in a BUSY session: the server refuses this delete
+          // (task #595 — message.Service.Delete / DeleteMessageIfTerminal),
+          // because the live turn's own terminal write to this same row
+          // would otherwise race a delete and "resurrect" the message in
+          // the UI. Same rationale as the Edit gate above.
+          //
+          // Orphan exception: an unfinished assistant message in an IDLE
+          // session (i.e., the turn crashed or was killed) can be deleted —
+          // the server proves the session is idle before force-deleting it.
+          // The orphan detection is done in Message.tsx's deletable prop.
+          <button onClick={onDelete} title="Delete" className="btn-icon-danger"><Trash2 size={13} /></button>
+        )}
       </div>
       <div className="flex items-center gap-2 ml-auto">
         <TimeBadge epochSec={message.CreatedAt} />

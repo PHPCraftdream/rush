@@ -12,6 +12,8 @@
  *  - Unchanged content does not send WS command
  *  - Empty content does not send WS command
  *  - Edit button hidden for a still-streaming assistant message (task #590)
+ *  - Delete button ALSO hidden for a still-streaming assistant message
+ *    (task #595 — the P1-1 gap the edit-only guard left open)
  */
 
 import { test, expect } from "@playwright/test";
@@ -87,7 +89,21 @@ test("edit button appears on hover for assistant message", async ({ page }) => {
 // auto-checkpoint ticker) because the agent turn's next checkpoint or
 // terminal write would silently overwrite the edit. The Edit control must
 // not even be offered for such a message.
-test("edit button hidden for assistant message with no finish part (mid-stream, pre-checkpoint)", async ({ page }) => {
+//
+// Task #595 (P1-1 of the 2026-08-19 static follow-up review): commit
+// 547b0815 closed the edit path above but left delete unguarded — this test
+// used to assert "Delete must remain available — only Edit is gated", which
+// was exactly the gap the review found: the server now ALSO refuses to
+// delete a still-streaming assistant message (message.Service.Delete /
+// DeleteMessageIfTerminal), for the same reason (the live turn's terminal
+// write races a delete and can "resurrect" the message in the UI). Delete
+// must be hidden here too, not left available.
+//
+// With the orphan exception (task #595 follow-up): an unfinished assistant
+// message in an IDLE session (i.e., the turn crashed or was killed) can be
+// deleted, so we now mark the session as BUSY in this test to keep Delete
+// hidden. Edit stays hidden regardless.
+test("edit AND delete buttons hidden for assistant message with no finish part (mid-stream, BUSY session, pre-checkpoint)", async ({ page }) => {
   const msg = makeMessage({
     ID: "stream-1",
     Role: "assistant",
@@ -96,14 +112,29 @@ test("edit button hidden for assistant message with no finish part (mid-stream, 
   await setupWithMessage(page, msg);
   await expect(page.getByText("Still streaming, no finish yet")).toBeVisible({ timeout: 2000 });
 
+  // Mark session as busy (simulating a live streaming turn)
+  await sendMockWSMessage(page, {
+    type: "agent_busy",
+    payload: { SessionID: "edit-sess", Busy: true },
+  });
+
   const msgRow = page.getByText("Still streaming, no finish yet").locator("xpath=ancestor::div[contains(@class,'msg-row')]");
   await msgRow.hover();
   await expect(msgRow.getByTitle("Edit")).not.toBeVisible({ timeout: 2000 });
-  // Delete must remain available — only Edit is gated.
-  await expect(msgRow.getByTitle("Delete")).toBeVisible({ timeout: 2000 });
+  await expect(msgRow.getByTitle("Delete")).not.toBeVisible({ timeout: 2000 });
 });
 
-test("edit button hidden for assistant message with only a Partial finish (checkpoint ticker)", async ({ page }) => {
+// Task #595: this is the more realistic mid-stream shape (a Partial Finish
+// from the ~2s auto-checkpoint ticker, not the "no Finish part at all" case
+// above) and the same gate must hide Delete here too — a checkpointed but
+// not-yet-terminal message is exactly what the server-side
+// DeleteMessageIfTerminal predicate refuses.
+//
+// With the orphan exception (task #595 follow-up): an unfinished assistant
+// message in an IDLE session (i.e., the turn crashed or was killed) can be
+// deleted, so we now mark the session as BUSY in this test to keep Delete
+// hidden. Edit stays hidden regardless.
+test("edit AND delete buttons hidden for assistant message with only a Partial finish (checkpoint ticker, BUSY session)", async ({ page }) => {
   const msg = makeMessage({
     ID: "stream-2",
     Role: "assistant",
@@ -115,9 +146,40 @@ test("edit button hidden for assistant message with only a Partial finish (check
   await setupWithMessage(page, msg);
   await expect(page.getByText("Checkpointed mid-stream text")).toBeVisible({ timeout: 2000 });
 
+  // Mark session as busy (simulating a live streaming turn)
+  await sendMockWSMessage(page, {
+    type: "agent_busy",
+    payload: { SessionID: "edit-sess", Busy: true },
+  });
+
   const msgRow = page.getByText("Checkpointed mid-stream text").locator("xpath=ancestor::div[contains(@class,'msg-row')]");
   await msgRow.hover();
   await expect(msgRow.getByTitle("Edit")).not.toBeVisible({ timeout: 2000 });
+  await expect(msgRow.getByTitle("Delete")).not.toBeVisible({ timeout: 2000 });
+});
+
+// Orphan exception (task #595 follow-up): an unfinished assistant message
+// in an IDLE session (i.e., the turn crashed or was killed) can be deleted,
+// but Edit is still hidden because the server refuses edits to any
+// non-terminally-finished assistant message.
+test("edit hidden but delete visible for orphaned streaming assistant message (IDLE session)", async ({ page }) => {
+  const msg = makeMessage({
+    ID: "orphan-1",
+    Role: "assistant",
+    Parts: [{ type: "text", Text: "Orphaned message" }],
+  });
+  await setupWithMessage(page, msg);
+  await expect(page.getByText("Orphaned message")).toBeVisible({ timeout: 2000 });
+
+  // NO agent_busy message sent — session is IDLE, so this is an orphan
+  const msgRow = page.getByText("Orphaned message").locator("xpath=ancestor::div[contains(@class,'msg-row')]");
+  await msgRow.hover();
+  
+  // Edit should still be hidden (server refuses edits to any non-terminally-finished assistant message)
+  await expect(msgRow.getByTitle("Edit")).not.toBeVisible({ timeout: 2000 });
+  
+  // Delete should be visible (orphan can be deleted)
+  await expect(msgRow.getByTitle("Delete")).toBeVisible({ timeout: 2000 });
 });
 
 // ── Starting edit ─────────────────────────────────────────────────────────

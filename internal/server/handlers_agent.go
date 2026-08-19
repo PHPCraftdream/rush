@@ -489,7 +489,21 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 		if m.CreatedAt > targetMsg.CreatedAt ||
 			(m.CreatedAt == targetMsg.CreatedAt && m.ID != targetMsg.ID) {
 			if delErr := a.Messages.Delete(ctx, m.ID); delErr != nil {
-				slog.Warn("ws: rerun: failed to delete tail message", "id", m.ID, "err", delErr)
+				if errors.Is(delErr, message.ErrMessageStillStreaming) {
+					// The message is still streaming, but the session has been
+					// cancelled and waited for idle, so this is an orphaned row
+					// from a crashed/killed turn that will never receive a
+					// terminal Finish. Force-delete it to avoid corrupting the
+					// transcript by including partial text in LLM context forever.
+					slog.Info("ws: rerun: orphaned streaming message, force-deleting",
+						"id", m.ID, "err", delErr)
+					if forceErr := a.Messages.ForceDelete(ctx, m.ID); forceErr != nil {
+						slog.Warn("ws: rerun: failed to force-delete orphaned streaming message",
+							"id", m.ID, "err", forceErr)
+					}
+				} else {
+					slog.Warn("ws: rerun: failed to delete tail message", "id", m.ID, "err", delErr)
+				}
 			}
 		}
 	}

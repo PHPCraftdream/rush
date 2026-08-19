@@ -6,6 +6,8 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 
 	appPkg "github.com/charmbracelet/crush/internal/app"
@@ -109,6 +111,62 @@ func handleLoadMessages(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 	}, "")
 }
 
+// deleteMessageRescuingOrphan attempts to delete a message, with an orphan
+// rescue branch for unfinished assistant messages. If Delete fails with
+// ErrMessageStillStreaming, it checks whether the session is idle via
+// AgentCoordinator.IsSessionBusy; if so, it calls ForceDelete to clean up
+// the orphan. Returns nil on successful delete or rescue, or the original
+// Delete error if the message could not be deleted (busy session, nil
+// coordinator, or any other error).
+//
+// The orphan-rescue decision lives in the handler layer (not message.Service)
+// because message.Service cannot depend on agent.Coordinator (dependency
+// direction: agent → message). IsSessionBusy is the same discriminator
+// handleRerunMessage uses for its orphan cleanup. Nil coordinator fails
+// closed: "no coordinator to prove idle" must not weaken the streaming guard.
+func deleteMessageRescuingOrphan(ctx context.Context, a *appPkg.App, id string) error {
+	err := a.Messages.Delete(ctx, id)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, message.ErrMessageStillStreaming) {
+		return err
+	}
+
+	// Orphan rescue: the message is still streaming, but if the session is
+	// idle, this is a true orphan from a crashed/killed turn that will never
+	// receive a terminal Finish.
+	if a.AgentCoordinator == nil {
+		// Fail closed: no coordinator to prove the session is idle.
+		return err
+	}
+
+	// Get the message to retrieve its SessionID for the idle check.
+	m, getErr := a.Messages.Get(ctx, id)
+	if getErr != nil {
+		// Original Delete error is more relevant to the caller.
+		return err
+	}
+
+	if a.AgentCoordinator.IsSessionBusy(m.SessionID) {
+		// Session is still busy — not an orphan, fail with original error.
+		return err
+	}
+
+	// Session is idle and the message is still streaming: this is an orphan.
+	// Force-delete it to avoid corrupting the transcript with partial text.
+	slog.Info("ws: delete_message: orphaned streaming message, force-deleting",
+		"id", id, "session_id", m.SessionID)
+	if forceErr := a.Messages.ForceDelete(ctx, id); forceErr != nil {
+		slog.Warn("ws: delete_message: failed to force-delete orphaned streaming message",
+			"id", id, "err", forceErr)
+		// Return the original Delete error — the rescue failed.
+		return err
+	}
+	// Rescue succeeded: message is gone, report no error.
+	return nil
+}
+
 func handleDeleteMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMessage) {
 	var p DeleteMessagePayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil {
@@ -116,7 +174,7 @@ func handleDeleteMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMe
 		return
 	}
 	// Delete publishes DeletedEvent internally; events.go broadcasts EventMessageDeleted.
-	if err := a.Messages.Delete(ctx, p.MessageID); err != nil {
+	if err := deleteMessageRescuingOrphan(ctx, a, p.MessageID); err != nil {
 		c.reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
@@ -129,10 +187,37 @@ func handleDeleteMessages(ctx context.Context, a *appPkg.App, c *Client, msg WSM
 		c.reply(msg.ID, EventError, nil, "invalid payload")
 		return
 	}
+	// task #595 (P1-1): this used to swallow every per-ID error into a slog
+	// warning and unconditionally reply {"status":"ok"} regardless of how
+	// many of the requested deletes actually happened -- including the
+	// specific case this task closes, where one selected ID is a still-
+	// streaming assistant message that message.Service.Delete now correctly
+	// refuses (ErrMessageStillStreaming). The web client fires this request
+	// without waiting for a response (see web/src/components/Chat.tsx's
+	// requestDeleteSelected / store.ts's deleteMessages) and relies entirely
+	// on the per-message DeletedEvent -> EventMessageDeleted broadcast to
+	// update the UI, so a bare "ok" here does not by itself mislead the
+	// operator about individual rows -- but replying "ok" when some deletes
+	// failed is still a lie about the overall operation, and useWS.ts's
+	// generic `ws.on("error", ...)` handler surfaces ANY EventError reply as
+	// an 8s visible toast regardless of which request it answers, so
+	// reporting failures this way reaches the operator through an existing,
+	// already-wired path with no frontend change required.
+	var failed []string
 	for _, id := range p.MessageIDs {
-		if err := a.Messages.Delete(ctx, id); err != nil {
+		if err := deleteMessageRescuingOrphan(ctx, a, id); err != nil {
 			slog.Warn("ws: failed to delete message", "id", id, "err", err)
+			failed = append(failed, id)
 		}
+	}
+	if len(failed) > 0 {
+		c.reply(msg.ID, EventError, map[string]any{
+			"status":  "partial",
+			"failed":  failed,
+			"deleted": len(p.MessageIDs) - len(failed),
+			"total":   len(p.MessageIDs),
+		}, fmt.Sprintf("failed to delete %d of %d selected messages", len(failed), len(p.MessageIDs)))
+		return
 	}
 	c.reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
 }

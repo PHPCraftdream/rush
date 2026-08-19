@@ -98,6 +98,13 @@ type Service interface {
 	ListUserMessages(ctx context.Context, sessionID string) ([]Message, error)
 	ListAllUserMessages(ctx context.Context) ([]Message, error)
 	Delete(ctx context.Context, id string) error
+	// ForceDelete unconditionally deletes a message, bypassing the
+	// DeleteMessageIfTerminal streaming guard. This is ONLY for callers that
+	// have verified no live agent turn owns the row (session cancelled + idle,
+	// or crash recovery after holder death). The caller must ensure the row
+	// is truly orphaned before calling this method; otherwise it can corrupt
+	// the transcript by deleting a message a live turn is still writing to.
+	ForceDelete(ctx context.Context, id string) error
 	DeleteSessionMessages(ctx context.Context, sessionID string) error
 	SetPinned(ctx context.Context, id string, pinned bool) error
 	// SetUsage records this message's token accounting and prompt-cache
@@ -169,14 +176,62 @@ func NewServiceWithReader(q db.Querier, qRead *db.Queries) Service {
 	return svc
 }
 
+// ErrMessageStillStreaming is returned by Delete when the target is a
+// non-summary assistant message that is not yet terminally finished (no
+// Finish part, or only a Partial one from the auto-checkpoint ticker) --
+// i.e. it is still owned by an in-flight agent turn. See Delete's doc
+// comment for why this must be refused rather than raced, and for why
+// summary messages (IsSummaryMessage) are exempt.
+var ErrMessageStillStreaming = errors.New("message is still streaming and cannot be deleted yet; please wait for it to finish")
+
 func (s *service) Delete(ctx context.Context, id string) error {
 	message, err := s.Get(ctx, id)
 	if err != nil {
 		return err
 	}
-	err = s.q.DeleteMessage(ctx, message.ID)
+	// task #595 (P1-1 of the 2026-08-19 static follow-up review): commit
+	// 547b0815 refused content/part EDITS to an assistant message with no
+	// terminal Finish (updateMessageAndVerify in
+	// internal/server/handlers_messages.go), but delete went through this
+	// method unconditionally -- read, unconditional DELETE, publish a
+	// terminal DeletedEvent. The live turn keeps its own in-memory
+	// currentAssistant and, independently of this call, still writes its
+	// terminal state back to the same id via Update. Before this fix, that
+	// terminal write hardcoded rowsAffected = 1 and published UpdatedEvent
+	// regardless of whether the row still existed, so a deleted streaming
+	// message could "resurrect" in the live UI (absent from the DB, gone
+	// again on reload) and different subscribers could observe different
+	// event orders.
+	//
+	// DeleteMessageIfTerminal makes "is this row safe to delete" a single
+	// atomic DB predicate (role != 'assistant' OR finished_at IS NOT NULL OR
+	// is_summary_message = 1) rather than a read-then-act check racing the
+	// turn's own write: the Get above is ONLY used to build the DeletedEvent
+	// payload and to distinguish "row never existed" (Get already failed
+	// above) from "row exists but is still streaming" (rowsAffected == 0
+	// here) -- it is not itself the guard.
+	//
+	// Summary messages are exempt because the risk this predicate defends
+	// against is an EXTERNAL actor deleting a message a DIFFERENT live turn
+	// still owns -- a summary message is never reachable through the web
+	// delete UI at all (see the query's own comment in
+	// internal/db/sql/messages.sql for the full explanation), so its only
+	// deleter is the same call that created it, cleaning up its own
+	// abandoned draft. Gating that case too caused a real regression
+	// (internal/agent's TestP1_4_CleanupUsesCancelImmuneContext) that this
+	// exemption fixes.
+	rowsAffected, err := s.q.DeleteMessageIfTerminal(ctx, message.ID)
 	if err != nil {
 		return err
+	}
+	if rowsAffected == 0 {
+		// The row existed at the Get above (or this branch would already
+		// have returned) but the predicate rejected the delete: an
+		// assistant message with no terminal Finish yet. Report a distinct,
+		// actionable error rather than silently no-op'ing -- callers (the
+		// WS delete handlers) surface this to the operator instead of
+		// replying "ok" over a delete that did not happen.
+		return ErrMessageStillStreaming
 	}
 	// Clone the message before publishing to avoid race conditions with
 	// concurrent modifications to the Parts slice.
@@ -188,6 +243,27 @@ func (s *service) Delete(ctx context.Context, id string) error {
 	// else republishes this message's state afterward). Use
 	// PublishMustDeliver so the drop only happens after a bounded wait,
 	// not on the first full buffer.
+	s.PublishMustDeliver(ctx, pubsub.DeletedEvent, message.Clone())
+	return nil
+}
+
+// ForceDelete unconditionally deletes a message, bypassing the
+// DeleteMessageIfTerminal streaming guard. This is ONLY for callers that
+// have verified no live agent turn owns the row (session cancelled + idle,
+// or crash recovery after holder death). The caller must ensure the row
+// is truly orphaned before calling this method; otherwise it can corrupt
+// the transcript by deleting a message a live turn is still writing to.
+//
+// Implementation: Get the message (for the event payload; propagate error),
+// then call the unconditional DeleteMessage query, then publish DeletedEvent.
+func (s *service) ForceDelete(ctx context.Context, id string) error {
+	message, err := s.Get(ctx, id)
+	if err != nil {
+		return err
+	}
+	if err := s.q.DeleteMessage(ctx, message.ID); err != nil {
+		return err
+	}
 	s.PublishMustDeliver(ctx, pubsub.DeletedEvent, message.Clone())
 	return nil
 }
@@ -252,19 +328,45 @@ func (s *service) Create(ctx context.Context, sessionID string, params CreateMes
 	return message, nil
 }
 
+// DeleteSessionMessages deletes all messages for a session in a single DB
+// operation, bypassing the per-message DeleteMessageIfTerminal predicate.
+//
+// This is the only code path that intentionally bypasses the streaming guard:
+// total session teardown (called by `crush sessions reset --force`) has no notion
+// of a "live turn that will still write" — the caller holds the session lock and
+// has already killed the previous holder (via SIGKILL on Windows or Unix), so
+// any orphaned streaming row will never receive a terminal Finish. Using the
+// per-row Delete predicate here would strand that orphaned row forever.
+//
+// The unconditional DB delete (q.DeleteSessionMessages) is atomic with the
+// session lock held, and DeletedEvents are published for every message that
+// existed at the start of the call so subscribers can clean up their in-memory
+// state.
 func (s *service) DeleteSessionMessages(ctx context.Context, sessionID string) error {
+	// List messages first: needed for events and to distinguish "nothing to do"
+	// (an empty List is a no-op, not an error).
 	messages, err := s.List(ctx, sessionID)
 	if err != nil {
 		return err
 	}
-	for _, message := range messages {
-		if message.SessionID == sessionID {
-			err = s.Delete(ctx, message.ID)
-			if err != nil {
-				return err
-			}
-		}
+
+	// Unconditional delete of all session messages in one statement.
+	// This bypasses DeleteMessageIfTerminal by design: the caller holds the
+	// session lock and has killed any previous holder, so there is no live
+	// turn that could race this operation.
+	if err := s.q.DeleteSessionMessages(ctx, sessionID); err != nil {
+		return err
 	}
+
+	// Publish DeletedEvent for each message that existed before the wipe.
+	// Use PublishMustDeliver (not best-effort Publish) because deletion is
+	// terminal — if an event is dropped due to a full subscriber buffer, the
+	// UI will show a message that no longer exists in the DB with no further
+	// event to correct it.
+	for _, message := range messages {
+		s.PublishMustDeliver(ctx, pubsub.DeletedEvent, message.Clone())
+	}
+
 	return nil
 }
 
@@ -315,12 +417,24 @@ func (s *service) Update(ctx context.Context, message Message) error {
 			CheckpointGeneration_2: message.CheckpointGeneration,
 		})
 	} else {
-		dbErr = s.q.UpdateMessage(ctx, db.UpdateMessageParams{
+		// task #595: this used to hardcode rowsAffected = 1 with the comment
+		// "Terminal update always wins" -- true about PRECEDENCE (a terminal
+		// write is never fenced by finished_at/checkpoint_generation the way a
+		// partial checkpoint is) but not about EXISTENCE. A plain UPDATE ...
+		// WHERE id = ? against a row that no longer exists (e.g. an operator
+		// deleted this streaming assistant message out from under its own
+		// live turn -- see DeleteMessageIfTerminal / Delete below) affects 0
+		// rows and returns no error; the old hardcode reported success and
+		// published UpdatedEvent anyway, "resurrecting" the deleted message in
+		// the UI of whichever client received that event, with nothing in the
+		// DB to back it and no further event to correct it until reload.
+		// UpdateMessage is now :execrows so rowsAffected reflects what the DB
+		// actually did.
+		rowsAffected, dbErr = s.q.UpdateMessage(ctx, db.UpdateMessageParams{
 			ID:         message.ID,
 			Parts:      string(parts),
 			FinishedAt: finishedAt,
 		})
-		rowsAffected = 1 // Terminal update always wins
 	}
 	if dbErr != nil {
 		return dbErr
@@ -335,7 +449,11 @@ func (s *service) Update(ctx context.Context, message Message) error {
 	//   - Terminal (real non-Partial Finish, tool-result flush,
 	//     summary): PublishMustDeliver, so a momentarily full
 	//     subscriber buffer doesn't silently eat the final state. The
-	//     caller is bounded by mustDeliverTimeout per subscriber.
+	//     caller is bounded by mustDeliverTimeout per subscriber. BUT
+	//     only if rowsAffected > 0 (task #595) -- see the comment above
+	//     the UpdateMessage call for why a terminal write can legitimately
+	//     affect 0 rows (the row was deleted concurrently) and must not
+	//     publish a phantom update for a message that no longer exists.
 	//
 	//   - Partial checkpoint (Finish.Partial == true, written by the
 	//     auto-checkpoint ticker every ~2s during streaming):
@@ -354,7 +472,15 @@ func (s *service) Update(ctx context.Context, message Message) error {
 		if rowsAffected > 0 {
 			s.Publish(pubsub.UpdatedEvent, message.Clone())
 		}
-	} else {
+	} else if rowsAffected > 0 {
+		// task #595: rowsAffected == 0 here means the row was deleted
+		// (concurrently, by an operator or a rerun/tail-cleanup path) between
+		// whatever load produced this Message and this terminal write landing.
+		// Silently skipping the publish -- rather than erroring the caller,
+		// which is almost always an in-flight agent turn's OnStepFinish that
+		// should not fail the turn over a message the operator intentionally
+		// removed -- is the correct outcome: no event, no resurrection, and
+		// the DB and every subscriber agree the message is gone.
 		s.PublishMustDeliver(ctx, pubsub.UpdatedEvent, message.Clone())
 	}
 	return nil

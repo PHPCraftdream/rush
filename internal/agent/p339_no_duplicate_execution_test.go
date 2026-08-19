@@ -94,6 +94,10 @@ func (m *mockMessageService) Delete(ctx context.Context, messageID string) error
 	return m.inner.Delete(ctx, messageID)
 }
 
+func (m *mockMessageService) ForceDelete(ctx context.Context, messageID string) error {
+	return m.inner.ForceDelete(ctx, messageID)
+}
+
 func (m *mockMessageService) ListPaginated(ctx context.Context, sessionID string, limit, offset int) ([]message.Message, error) {
 	return m.inner.ListPaginated(ctx, sessionID, limit, offset)
 }

@@ -60,6 +60,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.deleteMessageStmt, err = db.PrepareContext(ctx, deleteMessage); err != nil {
 		return nil, fmt.Errorf("error preparing query DeleteMessage: %w", err)
 	}
+	if q.deleteMessageIfTerminalStmt, err = db.PrepareContext(ctx, deleteMessageIfTerminal); err != nil {
+		return nil, fmt.Errorf("error preparing query DeleteMessageIfTerminal: %w", err)
+	}
 	if q.deleteOrphanOutboxEntryIfPendingStmt, err = db.PrepareContext(ctx, deleteOrphanOutboxEntryIfPending); err != nil {
 		return nil, fmt.Errorf("error preparing query DeleteOrphanOutboxEntryIfPending: %w", err)
 	}
@@ -345,6 +348,11 @@ func (q *Queries) Close() error {
 	if q.deleteMessageStmt != nil {
 		if cerr := q.deleteMessageStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing deleteMessageStmt: %w", cerr)
+		}
+	}
+	if q.deleteMessageIfTerminalStmt != nil {
+		if cerr := q.deleteMessageIfTerminalStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing deleteMessageIfTerminalStmt: %w", cerr)
 		}
 	}
 	if q.deleteOrphanOutboxEntryIfPendingStmt != nil {
@@ -768,6 +776,7 @@ type Queries struct {
 	createSessionPermissionStmt                    *sql.Stmt
 	deleteFileStmt                                 *sql.Stmt
 	deleteMessageStmt                              *sql.Stmt
+	deleteMessageIfTerminalStmt                    *sql.Stmt
 	deleteOrphanOutboxEntryIfPendingStmt           *sql.Stmt
 	deletePendingInjectStmt                        *sql.Stmt
 	deletePermissionStmt                           *sql.Stmt
@@ -860,6 +869,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		createSessionPermissionStmt:                    q.createSessionPermissionStmt,
 		deleteFileStmt:                                 q.deleteFileStmt,
 		deleteMessageStmt:                              q.deleteMessageStmt,
+		deleteMessageIfTerminalStmt:                    q.deleteMessageIfTerminalStmt,
 		deleteOrphanOutboxEntryIfPendingStmt:           q.deleteOrphanOutboxEntryIfPendingStmt,
 		deletePendingInjectStmt:                        q.deletePendingInjectStmt,
 		deletePermissionStmt:                           q.deletePermissionStmt,
