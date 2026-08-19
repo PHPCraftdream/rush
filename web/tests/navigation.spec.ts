@@ -79,10 +79,12 @@ test("hash-based session restore loads correct session", async ({ page }) => {
   const cmd = await waitForWSSend(page, "load_messages");
   expect((cmd.payload as { sessionID: string }).sessionID).toBe("hash-sess");
 
-  // Header should show the correct session
-  await expect(
-    page.locator("header h1").getByText("Hash Session")
-  ).toBeVisible({ timeout: 2000 });
+  // There is no standalone header showing the active session's title (that
+  // affordance was removed along with Header.tsx in 89a07919 — the active
+  // session is only distinguishable in the sidebar itself, via the
+  // text-accent styling Sidebar.tsx applies to session-title-<id> when
+  // s.ID === activeSessionID). Assert that instead.
+  await expect(page.getByTestId("session-title-hash-sess")).toHaveClass(/text-accent/, { timeout: 2000 });
 });
 
 test("invalid hash falls back to most recent session", async ({ page }) => {
@@ -114,10 +116,10 @@ test("session_created event auto-selects the new session", async ({ page }) => {
     payload: makeSession({ ID: "new-auto", Title: "New Auto Session" }),
   });
 
-  // Should auto-select and show in header
-  await expect(
-    page.locator("header h1").getByText("New Auto Session")
-  ).toBeVisible({ timeout: 2000 });
+  // Should auto-select (no standalone header exists — see the
+  // "hash-based session restore" test above for why this checks the
+  // sidebar's own active-session styling instead).
+  await expect(page.getByTestId("session-title-new-auto")).toHaveClass(/text-accent/, { timeout: 2000 });
 
   // Hash should update
   const url = page.url();
@@ -141,8 +143,9 @@ test("deleting active session clears hash and shows no session", async ({ page }
     payload: { ID: "del-active" },
   });
 
-  // Header should show "No session selected"
+  // "No session selected" is Chat.tsx's own empty-state <p>, not inside a
+  // header/h1 (no standalone header exists anymore).
   await expect(
-    page.locator("header h1").getByText("No session selected")
+    page.getByText("No session selected")
   ).toBeVisible({ timeout: 2000 });
 });

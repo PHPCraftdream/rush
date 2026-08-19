@@ -33,7 +33,7 @@ test("token count appears in header when session has tokens", async ({ page }) =
   await expect(page.getByText("Token Session").first()).toBeVisible({ timeout: 3000 });
   await page.getByText("Token Session").first().click();
   // 1200 + 800 = 2000 → formatTokens → "2.0k"
-  await expect(page.locator("header").getByText(/2\.0k/)).toBeVisible({ timeout: 2000 });
+  await expect(page.getByTestId("header-token-indicator").getByText(/2\.0k/)).toBeVisible({ timeout: 2000 });
 });
 
 test("token count not shown when session has zero tokens", async ({ page }) => {
@@ -45,7 +45,7 @@ test("token count not shown when session has zero tokens", async ({ page }) => {
   await expect(page.getByText("Empty Tokens").first()).toBeVisible({ timeout: 3000 });
   await page.getByText("Empty Tokens").first().click();
   // No token badge shown for zero tokens
-  await expect(page.locator("header span[title*='token']")).not.toBeVisible({ timeout: 2000 });
+  await expect(page.getByTestId("header-token-indicator")).not.toBeVisible({ timeout: 2000 });
 });
 
 test("token count shows millions for large usage", async ({ page }) => {
@@ -57,7 +57,7 @@ test("token count shows millions for large usage", async ({ page }) => {
   await expect(page.getByText("Mega Tokens").first()).toBeVisible({ timeout: 3000 });
   await page.getByText("Mega Tokens").first().click();
   // 2.1M tokens
-  await expect(page.locator("header").getByText(/2\.1M/)).toBeVisible({ timeout: 2000 });
+  await expect(page.getByTestId("header-token-indicator").getByText(/2\.1M/)).toBeVisible({ timeout: 2000 });
 });
 
 // ── Context percentage ────────────────────────────────────────────────────────
@@ -83,7 +83,7 @@ test("context % shown when model has contextWindow", async ({ page }) => {
   await expect(page.getByText("Pct Session").first()).toBeVisible({ timeout: 3000 });
   await page.getByText("Pct Session").first().click();
   // 100k / 200k = 50%
-  await expect(page.locator("header").getByText("50%")).toBeVisible({ timeout: 2000 });
+  await expect(page.getByTestId("header-token-indicator").getByText("50%")).toBeVisible({ timeout: 2000 });
 });
 
 test("context % not shown when model has no contextWindow", async ({ page }) => {
@@ -110,8 +110,8 @@ test("context % not shown when model has no contextWindow", async ({ page }) => 
   await expect(page.getByText("No Window").first()).toBeVisible({ timeout: 3000 });
   await page.getByText("No Window").first().click();
   // Tokens shown but no %
-  await expect(page.locator("header").getByText(/15\.0k/)).toBeVisible({ timeout: 2000 });
-  await expect(page.locator("header").getByText(/%/)).not.toBeVisible({ timeout: 1000 });
+  await expect(page.getByTestId("header-token-indicator").getByText(/15\.0k/)).toBeVisible({ timeout: 2000 });
+  await expect(page.getByTestId("header-token-indicator").getByText(/%/)).not.toBeVisible({ timeout: 1000 });
 });
 
 // ── Color coding ──────────────────────────────────────────────────────────────
@@ -133,7 +133,7 @@ test("context % has green color class when below 60%", async ({ page }) => {
   await sendMockWSMessage(page, { type: "config", payload: makeConfig() });
   await expect(page.getByText("Green Ctx").first()).toBeVisible({ timeout: 3000 });
   await page.getByText("Green Ctx").first().click();
-  const pctEl = page.locator("header").getByText("25%");
+  const pctEl = page.getByTestId("header-token-indicator").getByText("25%");
   await expect(pctEl).toBeVisible({ timeout: 2000 });
   await expect(pctEl).toHaveClass(/text-green/);
 });
@@ -155,7 +155,7 @@ test("context % has yellow color class between 60% and 85%", async ({ page }) =>
   await sendMockWSMessage(page, { type: "config", payload: makeConfig() });
   await expect(page.getByText("Yellow Ctx").first()).toBeVisible({ timeout: 3000 });
   await page.getByText("Yellow Ctx").first().click();
-  const pctEl = page.locator("header").getByText("70%");
+  const pctEl = page.getByTestId("header-token-indicator").getByText("70%");
   await expect(pctEl).toBeVisible({ timeout: 2000 });
   await expect(pctEl).toHaveClass(/text-yellow/);
 });
@@ -177,7 +177,7 @@ test("context % has red color class at 85% or above", async ({ page }) => {
   await sendMockWSMessage(page, { type: "config", payload: makeConfig() });
   await expect(page.getByText("Red Ctx").first()).toBeVisible({ timeout: 3000 });
   await page.getByText("Red Ctx").first().click();
-  const pctEl = page.locator("header").getByText("90%");
+  const pctEl = page.getByTestId("header-token-indicator").getByText("90%");
   await expect(pctEl).toBeVisible({ timeout: 2000 });
   await expect(pctEl).toHaveClass(/text-red/);
 });
@@ -199,7 +199,7 @@ test("context % capped at 100% even if tokens exceed context window", async ({ p
   await sendMockWSMessage(page, { type: "config", payload: makeConfig() });
   await expect(page.getByText("Capped Ctx").first()).toBeVisible({ timeout: 3000 });
   await page.getByText("Capped Ctx").first().click();
-  await expect(page.locator("header").getByText("100%")).toBeVisible({ timeout: 2000 });
+  await expect(page.getByTestId("header-token-indicator").getByText("100%")).toBeVisible({ timeout: 2000 });
 });
 
 // ── Tooltip ───────────────────────────────────────────────────────────────────
@@ -228,7 +228,7 @@ test("token badge tooltip shows exact token count when no context window", async
   await expect(page.getByText("Tip Session").first()).toBeVisible({ timeout: 3000 });
   await page.getByText("Tip Session").first().click();
   // No model with contextWindow in session → title ends with "tokens used"
-  const badge = page.locator("header span[title*='tokens']");
+  const badge = page.getByTestId("header-token-indicator");
   await expect(badge).toBeVisible({ timeout: 2000 });
   const title = await badge.getAttribute("title");
   expect(title).toContain("tokens");
@@ -250,7 +250,7 @@ test("token badge tooltip shows exact/context ratio when context window availabl
   await sendMockWSMessage(page, { type: "config", payload: makeConfig() });
   await expect(page.getByText("Ratio Session").first()).toBeVisible({ timeout: 3000 });
   await page.getByText("Ratio Session").first().click();
-  const badge = page.locator("header span[title*='tokens']");
+  const badge = page.getByTestId("header-token-indicator");
   await expect(badge).toBeVisible({ timeout: 2000 });
   const title = await badge.getAttribute("title");
   // Should contain both the used tokens and context window
@@ -273,7 +273,7 @@ test("token count updates when session_updated arrives with more tokens", async 
   });
   await expect(page.getByText("Updating Session").first()).toBeVisible({ timeout: 3000 });
   await page.getByText("Updating Session").first().click();
-  await expect(page.locator("header").getByText("1.0k")).toBeVisible({ timeout: 2000 });
+  await expect(page.getByTestId("header-token-indicator").getByText("1.0k")).toBeVisible({ timeout: 2000 });
 
   // Server sends updated session with more tokens
   await sendMockWSMessage(page, {
@@ -285,5 +285,5 @@ test("token count updates when session_updated arrives with more tokens", async 
       CompletionTokens: 5_000,
     }),
   });
-  await expect(page.locator("header").getByText("55.0k")).toBeVisible({ timeout: 2000 });
+  await expect(page.getByTestId("header-token-indicator").getByText("55.0k")).toBeVisible({ timeout: 2000 });
 });

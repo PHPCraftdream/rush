@@ -38,7 +38,14 @@ async function setupWithMessages(
   });
   await expect(page.getByText("Batch Session").first()).toBeVisible({ timeout: 3000 });
   await page.getByText("Batch Session").first().click();
-  await sendMockWSMessage(page, { type: "messages_list", payload: messages });
+  // useWS.ts's messages_list handler drops the payload unless each
+  // message's SessionID matches the active session. twoMessages below uses
+  // makeMessage()'s "sess-1" default, which never matches the per-test
+  // sessionID ("batch-1", "batch-2", ...), so it must be pinned here.
+  await sendMockWSMessage(page, {
+    type: "messages_list",
+    payload: messages.map((m) => ({ ...m, SessionID: sessionID })),
+  });
 }
 
 const twoMessages = [
@@ -52,9 +59,16 @@ test("checkbox appears on message hover", async ({ page }) => {
   await setupWithMessages(page, "batch-1", twoMessages);
   await expect(page.getByText("First batch msg")).toBeVisible({ timeout: 2000 });
 
-  const msgRow = page.getByText("First batch msg").locator("xpath=ancestor::div[contains(@class,'group/msg')]");
+  const msgRow = page.getByText("First batch msg").locator("xpath=ancestor::div[contains(@class,'msg-row')]");
+  // Message.tsx has no <input type="checkbox"> — selection is a custom
+  // div.msg-checkbox-wrap / div.msg-checkbox pair, always mounted (to
+  // reserve layout space) and toggled via opacity-0/opacity-100, not
+  // display/visibility. Playwright's toBeVisible() doesn't see opacity, so
+  // assert the actual reveal state via the opacity-100 class instead.
+  const checkboxWrap = msgRow.locator(".msg-checkbox-wrap");
+  await expect(checkboxWrap).toHaveClass(/opacity-0/);
   await msgRow.hover();
-  await expect(msgRow.locator("input[type='checkbox']")).toBeVisible({ timeout: 2000 });
+  await expect(checkboxWrap).toHaveClass(/opacity-100/);
 });
 
 // ── Selection toolbar ───────────────────────────────────────────────────
@@ -62,9 +76,9 @@ test("checkbox appears on message hover", async ({ page }) => {
 test("selecting a message shows batch toolbar with count", async ({ page }) => {
   await setupWithMessages(page, "batch-2", twoMessages);
 
-  const msgRow = page.getByText("First batch msg").locator("xpath=ancestor::div[contains(@class,'group/msg')]");
+  const msgRow = page.getByText("First batch msg").locator("xpath=ancestor::div[contains(@class,'msg-row')]");
   await msgRow.hover();
-  await msgRow.locator("input[type='checkbox']").click();
+  await msgRow.locator(".msg-checkbox-wrap").click();
 
   await expect(page.getByText("1 selected")).toBeVisible({ timeout: 2000 });
   await expect(page.getByText("Delete selected")).toBeVisible();
@@ -74,15 +88,15 @@ test("selecting multiple messages updates count", async ({ page }) => {
   await setupWithMessages(page, "batch-3", twoMessages);
 
   // Select first message
-  const row1 = page.getByText("First batch msg").locator("xpath=ancestor::div[contains(@class,'group/msg')]");
+  const row1 = page.getByText("First batch msg").locator("xpath=ancestor::div[contains(@class,'msg-row')]");
   await row1.hover();
-  await row1.locator("input[type='checkbox']").click();
+  await row1.locator(".msg-checkbox-wrap").click();
   await expect(page.getByText("1 selected")).toBeVisible({ timeout: 2000 });
 
   // Select second message
-  const row2 = page.getByText("Second batch msg").locator("xpath=ancestor::div[contains(@class,'group/msg')]");
+  const row2 = page.getByText("Second batch msg").locator("xpath=ancestor::div[contains(@class,'msg-row')]");
   await row2.hover();
-  await row2.locator("input[type='checkbox']").click();
+  await row2.locator(".msg-checkbox-wrap").click();
   await expect(page.getByText("2 selected")).toBeVisible({ timeout: 2000 });
 });
 
@@ -91,13 +105,13 @@ test("selecting multiple messages updates count", async ({ page }) => {
 test("Delete selected triggers confirm dialog with count", async ({ page }) => {
   await setupWithMessages(page, "batch-4", twoMessages);
 
-  const row1 = page.getByText("First batch msg").locator("xpath=ancestor::div[contains(@class,'group/msg')]");
+  const row1 = page.getByText("First batch msg").locator("xpath=ancestor::div[contains(@class,'msg-row')]");
   await row1.hover();
-  await row1.locator("input[type='checkbox']").click();
+  await row1.locator(".msg-checkbox-wrap").click();
 
-  const row2 = page.getByText("Second batch msg").locator("xpath=ancestor::div[contains(@class,'group/msg')]");
+  const row2 = page.getByText("Second batch msg").locator("xpath=ancestor::div[contains(@class,'msg-row')]");
   await row2.hover();
-  await row2.locator("input[type='checkbox']").click();
+  await row2.locator(".msg-checkbox-wrap").click();
 
   await page.getByText("Delete selected").click();
   await expect(page.getByText("Delete 2 selected messages?")).toBeVisible({ timeout: 2000 });
@@ -106,13 +120,13 @@ test("Delete selected triggers confirm dialog with count", async ({ page }) => {
 test("confirming batch delete sends delete_messages with all IDs", async ({ page }) => {
   await setupWithMessages(page, "batch-5", twoMessages);
 
-  const row1 = page.getByText("First batch msg").locator("xpath=ancestor::div[contains(@class,'group/msg')]");
+  const row1 = page.getByText("First batch msg").locator("xpath=ancestor::div[contains(@class,'msg-row')]");
   await row1.hover();
-  await row1.locator("input[type='checkbox']").click();
+  await row1.locator(".msg-checkbox-wrap").click();
 
-  const row2 = page.getByText("Second batch msg").locator("xpath=ancestor::div[contains(@class,'group/msg')]");
+  const row2 = page.getByText("Second batch msg").locator("xpath=ancestor::div[contains(@class,'msg-row')]");
   await row2.hover();
-  await row2.locator("input[type='checkbox']").click();
+  await row2.locator(".msg-checkbox-wrap").click();
 
   await page.getByText("Delete selected").click();
   await page.getByRole("button", { name: "Delete", exact: true }).click();
@@ -128,9 +142,9 @@ test("confirming batch delete sends delete_messages with all IDs", async ({ page
 test("Cancel in toolbar clears selection and hides toolbar", async ({ page }) => {
   await setupWithMessages(page, "batch-6", twoMessages);
 
-  const row1 = page.getByText("First batch msg").locator("xpath=ancestor::div[contains(@class,'group/msg')]");
+  const row1 = page.getByText("First batch msg").locator("xpath=ancestor::div[contains(@class,'msg-row')]");
   await row1.hover();
-  await row1.locator("input[type='checkbox']").click();
+  await row1.locator(".msg-checkbox-wrap").click();
   await expect(page.getByText("1 selected")).toBeVisible({ timeout: 2000 });
 
   // Click Cancel in the batch toolbar (not the confirm dialog)
@@ -143,13 +157,13 @@ test("Cancel in toolbar clears selection and hides toolbar", async ({ page }) =>
 test("toggling checkbox deselects message", async ({ page }) => {
   await setupWithMessages(page, "batch-7", twoMessages);
 
-  const row1 = page.getByText("First batch msg").locator("xpath=ancestor::div[contains(@class,'group/msg')]");
+  const row1 = page.getByText("First batch msg").locator("xpath=ancestor::div[contains(@class,'msg-row')]");
   await row1.hover();
-  await row1.locator("input[type='checkbox']").click();
+  await row1.locator(".msg-checkbox-wrap").click();
   await expect(page.getByText("1 selected")).toBeVisible({ timeout: 2000 });
 
   // Click checkbox again to deselect
-  await row1.locator("input[type='checkbox']").click();
+  await row1.locator(".msg-checkbox-wrap").click();
   await expect(page.getByText("1 selected")).not.toBeVisible({ timeout: 2000 });
 });
 
@@ -158,9 +172,9 @@ test("toggling checkbox deselects message", async ({ page }) => {
 test("selection clears when switching sessions", async ({ page }) => {
   await setupWithMessages(page, "batch-8", twoMessages);
 
-  const row1 = page.getByText("First batch msg").locator("xpath=ancestor::div[contains(@class,'group/msg')]");
+  const row1 = page.getByText("First batch msg").locator("xpath=ancestor::div[contains(@class,'msg-row')]");
   await row1.hover();
-  await row1.locator("input[type='checkbox']").click();
+  await row1.locator(".msg-checkbox-wrap").click();
   await expect(page.getByText("1 selected")).toBeVisible({ timeout: 2000 });
 
   // Switch to other session

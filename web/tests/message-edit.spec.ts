@@ -35,7 +35,13 @@ async function setupWithMessage(
   });
   await expect(page.getByText("Edit Session").first()).toBeVisible({ timeout: 3000 });
   await page.getByText("Edit Session").first().click();
-  await sendMockWSMessage(page, { type: "messages_list", payload: [msg] });
+  // useWS.ts's messages_list handler drops the payload unless its SessionID
+  // matches the active session. makeMessage() defaults SessionID to
+  // "sess-1", which never matches "edit-sess", so it must be pinned here.
+  await sendMockWSMessage(page, {
+    type: "messages_list",
+    payload: [{ ...msg, SessionID: "edit-sess" }],
+  });
 }
 
 // ── Edit button visibility ──────────────────────────────────────────────────
@@ -49,9 +55,9 @@ test("edit button appears on hover for user message", async ({ page }) => {
   await setupWithMessage(page, msg);
   await expect(page.getByText("Editable user message")).toBeVisible({ timeout: 2000 });
 
-  const msgRow = page.getByText("Editable user message").locator("xpath=ancestor::div[contains(@class,'group/msg')]");
+  const msgRow = page.getByText("Editable user message").locator("xpath=ancestor::div[contains(@class,'msg-row')]");
   await msgRow.hover();
-  await expect(msgRow.getByTitle("Edit message")).toBeVisible({ timeout: 2000 });
+  await expect(msgRow.getByTitle("Edit")).toBeVisible({ timeout: 2000 });
 });
 
 test("edit button appears on hover for assistant message", async ({ page }) => {
@@ -63,9 +69,9 @@ test("edit button appears on hover for assistant message", async ({ page }) => {
   await setupWithMessage(page, msg);
   await expect(page.getByText("Editable assistant message")).toBeVisible({ timeout: 2000 });
 
-  const msgRow = page.getByText("Editable assistant message").locator("xpath=ancestor::div[contains(@class,'group/msg')]");
+  const msgRow = page.getByText("Editable assistant message").locator("xpath=ancestor::div[contains(@class,'msg-row')]");
   await msgRow.hover();
-  await expect(msgRow.getByTitle("Edit message")).toBeVisible({ timeout: 2000 });
+  await expect(msgRow.getByTitle("Edit")).toBeVisible({ timeout: 2000 });
 });
 
 // ── Starting edit ─────────────────────────────────────────────────────────
@@ -79,9 +85,9 @@ test("clicking edit opens textarea with current message content", async ({ page 
   await setupWithMessage(page, msg);
   await expect(page.getByText("Original content")).toBeVisible({ timeout: 2000 });
 
-  const msgRow = page.getByText("Original content").locator("xpath=ancestor::div[contains(@class,'group/msg')]");
+  const msgRow = page.getByText("Original content").locator("xpath=ancestor::div[contains(@class,'msg-row')]");
   await msgRow.hover();
-  await msgRow.getByTitle("Edit message").click();
+  await msgRow.getByTitle("Edit").click();
 
   const textarea = page.locator("textarea").first();
   await expect(textarea).toBeVisible({ timeout: 2000 });
@@ -98,9 +104,9 @@ test("pressing Escape cancels edit", async ({ page }) => {
   });
   await setupWithMessage(page, msg);
 
-  const msgRow = page.getByText("Cancel me").locator("xpath=ancestor::div[contains(@class,'group/msg')]");
+  const msgRow = page.getByText("Cancel me").locator("xpath=ancestor::div[contains(@class,'msg-row')]");
   await msgRow.hover();
-  await msgRow.getByTitle("Edit message").click();
+  await msgRow.getByTitle("Edit").click();
 
   const textarea = page.locator("textarea").first();
   await expect(textarea).toBeVisible({ timeout: 2000 });
@@ -120,9 +126,9 @@ test("clicking Cancel button cancels edit", async ({ page }) => {
   });
   await setupWithMessage(page, msg);
 
-  const msgRow = page.getByText("Cancel assistant").locator("xpath=ancestor::div[contains(@class,'group/msg')]");
+  const msgRow = page.getByText("Cancel assistant").locator("xpath=ancestor::div[contains(@class,'msg-row')]");
   await msgRow.hover();
-  await msgRow.getByTitle("Edit message").click();
+  await msgRow.getByTitle("Edit").click();
 
   await expect(msgRow.locator("textarea")).toBeVisible({ timeout: 2000 });
   await msgRow.locator("button", { hasText: "Cancel" }).click();
@@ -140,9 +146,9 @@ test("clicking Save commits edit and sends update_message_content", async ({ pag
   });
   await setupWithMessage(page, msg);
 
-  const msgRow = page.getByText("Before save").locator("xpath=ancestor::div[contains(@class,'group/msg')]");
+  const msgRow = page.getByText("Before save").locator("xpath=ancestor::div[contains(@class,'msg-row')]");
   await msgRow.hover();
-  await msgRow.getByTitle("Edit message").click();
+  await msgRow.getByTitle("Edit").click();
 
   const textarea = page.locator("textarea").first();
   await textarea.fill("After save");
@@ -163,9 +169,9 @@ test("Ctrl+Enter commits edit for assistant message", async ({ page }) => {
   });
   await setupWithMessage(page, msg);
 
-  const msgRow = page.getByText("Before ctrl-enter").locator("xpath=ancestor::div[contains(@class,'group/msg')]");
+  const msgRow = page.getByText("Before ctrl-enter").locator("xpath=ancestor::div[contains(@class,'msg-row')]");
   await msgRow.hover();
-  await msgRow.getByTitle("Edit message").click();
+  await msgRow.getByTitle("Edit").click();
 
   const textarea = page.locator("textarea").first();
   await textarea.fill("After ctrl-enter");
@@ -187,9 +193,9 @@ test("unchanged content does not send WS command", async ({ page }) => {
   });
   await setupWithMessage(page, msg);
 
-  const msgRow = page.getByText("Same text").locator("xpath=ancestor::div[contains(@class,'group/msg')]");
+  const msgRow = page.getByText("Same text").locator("xpath=ancestor::div[contains(@class,'msg-row')]");
   await msgRow.hover();
-  await msgRow.getByTitle("Edit message").click();
+  await msgRow.getByTitle("Edit").click();
 
   // Don't change the text, just click Save
   await msgRow.locator("button", { hasText: "Save" }).click();

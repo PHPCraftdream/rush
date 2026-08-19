@@ -156,15 +156,25 @@ test("message_updated for active session updates the message", async ({ page }) 
   });
   await expect(page.getByText("Original text")).toBeVisible({ timeout: 2000 });
 
-  // Update the message
+  // Update the message. store.ts's upsertMessage() runs assistant-to-assistant
+  // updates through mergePreserveContent(), a deliberate anti-flicker guard
+  // for streaming: if the incoming text is SHORTER than what's already
+  // rendered, it's treated as a regression and the existing (longer) text
+  // wins instead of being replaced. "Updated text" (12 chars) is shorter
+  // than "Original text" (14), so the original assertion here was silently
+  // exercising that guard rather than a plain update — the message never
+  // changed in the app, it just happened to still read differently.
+  // Lengthening the replacement avoids tripping the regression guard so
+  // this test actually verifies session-scoped update routing, which is
+  // its stated purpose.
   await sendMockWSMessage(page, {
     type: "message_updated",
-    payload: makeMessageForSession("sess-alpha", "Updated text", {
+    payload: makeMessageForSession("sess-alpha", "Updated text, now longer than before", {
       ID: "msg-1", // Must match the created message ID
     }),
   });
 
-  await expect(page.getByText("Updated text")).toBeVisible({ timeout: 2000 });
+  await expect(page.getByText("Updated text, now longer than before")).toBeVisible({ timeout: 2000 });
   await expect(page.getByText("Original text")).not.toBeVisible();
 });
 
@@ -234,97 +244,18 @@ test("message_deleted for different session is ignored", async ({ page }) => {
 });
 
 // ── permission_request Filtering ────────────────────────────────────────────────────
-
-test("permission_request for active session shows dialog", async ({ page }) => {
-  await setupMultiSession(page);
-  await switchToSession(page, "Alpha Session");
-
-  // Send permission request for Alpha
-  await sendMockWSMessage(page, {
-    type: "permission_request",
-    payload: {
-      ID: "perm-1",
-      SessionID: "sess-alpha",
-      ToolCallID: "tc-1",
-      ToolName: "bash",
-      Description: "Run command in Alpha",
-      Action: "execute",
-      Path: "/tmp/alpha.sh",
-      Params: {},
-    },
-  });
-
-  await expect(page.getByText("bash")).toBeVisible({ timeout: 2000 });
-  await expect(page.getByText("Run command in Alpha")).toBeVisible();
-});
-
-test("permission_request for different session is ignored", async ({ page }) => {
-  await setupMultiSession(page);
-  await switchToSession(page, "Alpha Session");
-
-  // Send permission request for Beta
-  await sendMockWSMessage(page, {
-    type: "permission_request",
-    payload: {
-      ID: "perm-2",
-      SessionID: "sess-beta",
-      ToolCallID: "tc-2",
-      ToolName: "write_file",
-      Description: "Write in Beta",
-      Action: "write",
-      Path: "/tmp/beta.txt",
-      Params: {},
-    },
-  });
-
-  // Should NOT show in Alpha session
-  await expect(page.getByText("write_file")).not.toBeVisible({ timeout: 2000 });
-  await expect(page.getByText("Write in Beta")).not.toBeVisible();
-});
-
-test("permission_request appears only in its session when multiple sessions active", async ({ page }) => {
-  await setupMultiSession(page);
-
-  // Send permission for Alpha while in Alpha
-  await switchToSession(page, "Alpha Session");
-  await sendMockWSMessage(page, {
-    type: "permission_request",
-    payload: {
-      ID: "perm-alpha",
-      SessionID: "sess-alpha",
-      ToolCallID: "tc-alpha",
-      ToolName: "read_file",
-      Description: "Read in Alpha",
-      Action: "read",
-      Path: "/alpha.txt",
-      Params: {},
-    },
-  });
-  await expect(page.getByText("read_file")).toBeVisible({ timeout: 2000 });
-
-  // Switch to Beta
-  await switchToSession(page, "Beta Session");
-
-  // Alpha's permission request should be gone
-  await expect(page.getByText("read_file")).not.toBeVisible({ timeout: 2000 });
-
-  // Send permission for Beta
-  await sendMockWSMessage(page, {
-    type: "permission_request",
-    payload: {
-      ID: "perm-beta",
-      SessionID: "sess-beta",
-      ToolCallID: "tc-beta",
-      ToolName: "bash",
-      Description: "Bash in Beta",
-      Action: "execute",
-      Path: "/tmp/beta.sh",
-      Params: {},
-    },
-  });
-  // Use locator for font-mono bash to avoid matching the description
-  await expect(page.locator(".font-mono").getByText("bash")).toBeVisible({ timeout: 2000 });
-});
+//
+// Deleted (3 tests): "permission_request for active session shows dialog",
+// "permission_request for different session is ignored", "permission_request
+// appears only in its session when multiple sessions active". There is no
+// "permission_request" handler anywhere in useWS.ts (confirmed by grepping
+// the entire message-type dispatch table there), and no "permission" string
+// anywhere else in src/ either. The permission-approval dialog this section
+// tested does not exist in this fork — matches CLAUDE.md's note that the
+// YOLO/auto-approve UI was removed (5c323b55): non-interactive `crush run`
+// auto-approves everything, so there is nothing to render a dialog for.
+// The "different session is ignored" test was passing, but only vacuously —
+// nothing ever renders for ANY permission_request, active session or not.
 
 // ── Global Events (No Filtering) ─────────────────────────────────────────────────────
 

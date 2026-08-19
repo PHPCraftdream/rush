@@ -3,16 +3,16 @@
  *
  * Covers:
  *  - Connection status dot color (green/red)
- *  - LSP state update replaces existing entry
- *  - Multiple LSP servers displayed
- *  - LSP dot colors for different states
  *  - MCP server statuses and dot colors
  *  - MCP not shown when no servers
- *  - LSP not shown when no servers
+ *
+ * LSP coverage was deleted entirely — see the note above the (former) LSP
+ * section below for why.
  */
 
 import { test, expect } from "@playwright/test";
 import { setupMockWS, sendMockWSMessage } from "./helpers/mock-ws";
+import { makeSession } from "./helpers/fixtures";
 
 test.beforeEach(async ({ page }) => {
   await setupMockWS(page);
@@ -21,111 +21,49 @@ test.beforeEach(async ({ page }) => {
   );
 });
 
+// StatusBar.tsx (data-test-id="status-bar", holding status-connection and
+// status-mcp-*) is only ever mounted from inside ChatToolbar.tsx (inline,
+// in the `foreignOwned` early-return branch only) or TodoList.tsx — and
+// TodoList itself is only rendered when `{activeSessionID && <TodoList
+// .../>}` in Chat.tsx. There is no standalone always-mounted status footer,
+// so every test here must select a session first (mirrors the identical
+// fix already applied in ui.spec.ts's "Status bar" section).
+async function selectASession(page: import("@playwright/test").Page, id: string, title: string) {
+  await sendMockWSMessage(page, {
+    type: "sessions_list",
+    payload: [makeSession({ ID: id, Title: title })],
+  });
+  await expect(page.getByText(title).first()).toBeVisible({ timeout: 3000 });
+  await page.getByText(title).first().click();
+}
+
 // ── Connection status ──────────────────────────────────────────────────
 
 test("shows Connected with green dot after WS connects", async ({ page }) => {
   await page.goto("/");
+  await selectASession(page, "status-conn", "Status Conn Session");
   await expect(page.getByTestId("status-connection")).toContainText("Connected", { timeout: 3000 });
   const dot = page.getByTestId("status-connection").locator("span.rounded-full");
   await expect(dot).toHaveClass(/bg-green/);
 });
 
 // ── LSP states ─────────────────────────────────────────────────────────
-
-test("multiple LSP servers displayed", async ({ page }) => {
-  await page.goto("/");
-  await sendMockWSMessage(page, {
-    type: "lsp_state",
-    payload: {
-      servers: [
-        { name: "gopls", state: "ready", disabled: false, diagnosticCount: 0 },
-        { name: "tsserver", state: "starting", disabled: false, diagnosticCount: 2 },
-      ],
-    },
-  });
-
-  await expect(page.getByTestId("status-lsp-gopls")).toBeVisible({ timeout: 2000 });
-  await expect(page.getByTestId("status-lsp-tsserver")).toBeVisible();
-  await expect(page.getByTestId("status-lsp-tsserver")).toContainText("(2)");
-});
-
-test("LSP state update replaces existing entry", async ({ page }) => {
-  await page.goto("/");
-  await sendMockWSMessage(page, {
-    type: "lsp_state",
-    payload: {
-      servers: [{ name: "gopls", state: "starting", disabled: false, diagnosticCount: 0 }],
-    },
-  });
-  await expect(page.getByTestId("status-lsp-gopls")).toBeVisible({ timeout: 2000 });
-
-  // Update same server with new state
-  await sendMockWSMessage(page, {
-    type: "lsp_state",
-    payload: {
-      servers: [{ name: "gopls", state: "ready", disabled: false, diagnosticCount: 5 }],
-    },
-  });
-
-  // Still only one "gopls" entry, now with diagnostics
-  await expect(page.getByTestId("status-lsp-gopls")).toBeVisible();
-  await expect(page.getByTestId("status-lsp-gopls")).toContainText("(5)", { timeout: 2000 });
-});
-
-test("LSP running/ready state shows green dot", async ({ page }) => {
-  await page.goto("/");
-  await sendMockWSMessage(page, {
-    type: "lsp_state",
-    payload: {
-      servers: [{ name: "gopls", state: "ready", disabled: false, diagnosticCount: 0 }],
-    },
-  });
-
-  const lspItem = page.getByTestId("status-lsp-gopls");
-  await expect(lspItem).toBeVisible({ timeout: 2000 });
-  await expect(lspItem.locator("span.rounded-full")).toHaveClass(/bg-green/);
-});
-
-test("LSP starting state shows yellow dot", async ({ page }) => {
-  await page.goto("/");
-  await sendMockWSMessage(page, {
-    type: "lsp_state",
-    payload: {
-      servers: [{ name: "tsserver", state: "starting", disabled: false, diagnosticCount: 0 }],
-    },
-  });
-
-  const lspItem = page.getByTestId("status-lsp-tsserver");
-  await expect(lspItem).toBeVisible({ timeout: 2000 });
-  await expect(lspItem.locator("span.rounded-full")).toHaveClass(/bg-yellow/);
-});
-
-test("LSP error state shows red dot", async ({ page }) => {
-  await page.goto("/");
-  await sendMockWSMessage(page, {
-    type: "lsp_state",
-    payload: {
-      servers: [{ name: "pyright", state: "error", disabled: false, diagnosticCount: 0 }],
-    },
-  });
-
-  const lspItem = page.getByTestId("status-lsp-pyright");
-  await expect(lspItem).toBeVisible({ timeout: 2000 });
-  await expect(lspItem.locator("span.rounded-full")).toHaveClass(/bg-red/);
-});
-
-test("LSP section not shown when no servers", async ({ page }) => {
-  await page.goto("/");
-  // Wait for connection
-  await expect(page.getByTestId("status-connection")).toContainText("Connected", { timeout: 3000 });
-  // LSP label should not be present
-  await expect(page.getByTestId("status-lsp")).not.toBeVisible({ timeout: 1000 });
-});
+//
+// Deleted (8 tests): "multiple LSP servers displayed", "LSP state update
+// replaces existing entry", "LSP running/ready state shows green dot",
+// "LSP starting state shows yellow dot", "LSP error state shows red dot",
+// "LSP section not shown when no servers", plus the two MCP-vs-LSP overlap
+// tests that referenced lsp_state. There is zero "lsp"/"LSP" anywhere in
+// src/ (confirmed by grep across the whole tree) — internal/lsp was
+// removed from the Go backend and StatusBar.tsx was rewritten to only
+// render connection + MCP. This matches CLAUDE.md's "What This Fork
+// REMOVED" table: LSP integration is fully gone, not just hidden.
 
 // ── MCP states ─────────────────────────────────────────────────────────
 
 test("MCP connected server shows green dot", async ({ page }) => {
   await page.goto("/");
+  await selectASession(page, "status-mcp-1", "Status MCP1 Session");
   await sendMockWSMessage(page, {
     type: "mcp_state",
     payload: { servers: [{ name: "filesystem", status: "connected" }] },
@@ -138,6 +76,7 @@ test("MCP connected server shows green dot", async ({ page }) => {
 
 test("MCP connecting server shows yellow dot", async ({ page }) => {
   await page.goto("/");
+  await selectASession(page, "status-mcp-2", "Status MCP2 Session");
   await sendMockWSMessage(page, {
     type: "mcp_state",
     payload: { servers: [{ name: "db-server", status: "connecting" }] },
@@ -150,6 +89,7 @@ test("MCP connecting server shows yellow dot", async ({ page }) => {
 
 test("MCP error server shows red dot", async ({ page }) => {
   await page.goto("/");
+  await selectASession(page, "status-mcp-3", "Status MCP3 Session");
   await sendMockWSMessage(page, {
     type: "mcp_state",
     payload: { servers: [{ name: "broken", status: "error" }] },
@@ -162,12 +102,14 @@ test("MCP error server shows red dot", async ({ page }) => {
 
 test("MCP section not shown when no servers", async ({ page }) => {
   await page.goto("/");
+  await selectASession(page, "status-mcp-4", "Status MCP4 Session");
   await expect(page.getByTestId("status-connection")).toContainText("Connected", { timeout: 3000 });
   await expect(page.getByTestId("status-mcp")).not.toBeVisible({ timeout: 1000 });
 });
 
 test("MCP section not shown when servers array is empty", async ({ page }) => {
   await page.goto("/");
+  await selectASession(page, "status-mcp-5", "Status MCP5 Session");
   await sendMockWSMessage(page, {
     type: "mcp_state",
     payload: { servers: [] },
@@ -177,6 +119,7 @@ test("MCP section not shown when servers array is empty", async ({ page }) => {
 
 test("multiple MCP servers displayed", async ({ page }) => {
   await page.goto("/");
+  await selectASession(page, "status-mcp-6", "Status MCP6 Session");
   await sendMockWSMessage(page, {
     type: "mcp_state",
     payload: {

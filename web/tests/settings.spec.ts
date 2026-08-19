@@ -119,7 +119,11 @@ test("Providers button opens providers modal", async ({ page }) => {
   await sendMockWSMessage(page, { type: "config", payload: makeConfig() });
   await page.getByTestId("header-providers-button").click();
   await expect(page.getByTestId("providers-modal")).toBeVisible({ timeout: 3000 });
-  await expect(page.getByTestId("providers-modal-header")).toContainText("Custom Providers");
+  // ProvidersModal.tsx's <h2> now reads "Providers" (with a "N provider(s)"
+  // count subtitle below it) rather than "Custom Providers" — the modal
+  // lists every configured provider (built-in + custom), not just custom
+  // ones (see the "Show every configured provider" comment in source).
+  await expect(page.getByTestId("providers-modal-header")).toContainText("Providers");
 });
 
 test("Providers modal shows custom providers", async ({ page }) => {
@@ -184,7 +188,12 @@ test("Providers modal - remove custom provider sends command", async ({ page }) 
   await page.getByTestId("header-providers-button").click();
   await expect(page.getByTestId("providers-modal")).toContainText("Ollama Local", { timeout: 2000 });
   await page.getByTitle("Remove provider").click();
-  await page.getByRole("button", { name: "Yes" }).click();
+  // The confirm step is no longer a plain "Yes"/"Cancel" pair — it's a
+  // scope picker ("Remove from: Global | Local | No") reflecting the
+  // fork's global-vs-local config scoping (ProvidersModal.tsx). Either
+  // scope calls removeCustomProvider(id, scope), which sends
+  // remove_custom_provider; "Global" is the more common real-world choice.
+  await page.getByTestId("provider-remove-global").click();
   const msg = await waitForWSSend(page, "remove_custom_provider");
   expect((msg.payload as Record<string, unknown>).id).toBe("ollama");
 });

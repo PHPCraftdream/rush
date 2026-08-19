@@ -204,9 +204,11 @@ test("selecting a session updates the header title", async ({ page }) => {
   });
   await expect(page.getByTestId("session-title-hdr-1")).toBeVisible({ timeout: 3000 });
   await page.getByTestId("session-hdr-1").click();
-  await expect(
-    page.locator("header h1").getByText("Header Test Session")
-  ).toBeVisible({ timeout: 2000 });
+  // There is no standalone header showing the active session's title —
+  // removed along with Header.tsx in 89a07919. The only place the active
+  // session is distinguishable is the sidebar's own text-accent styling on
+  // session-title-<id> (Sidebar.tsx: isActive ? "text-accent" : "text-text").
+  await expect(page.getByTestId("session-title-hdr-1")).toHaveClass(/text-accent/, { timeout: 2000 });
 });
 
 // ── Session creation ────────────────────────────────────────────────────────
@@ -291,16 +293,32 @@ test("deleted session disappears from sidebar immediately", async ({ page }) => 
 
 // ── Session rename ──────────────────────────────────────────────────────────
 
-test("clicking header title opens rename input", async ({ page }) => {
+// The old "click header title to rename" affordance was removed with
+// Header.tsx (89a07919). Rename now lives entirely in the sidebar row
+// itself (Sidebar.tsx): double-click the row, or click its hover-revealed
+// pencil button (data-test-id="session-rename-<id>"), either of which
+// calls startEditing() and swaps the row into an inline
+// data-test-id="session-edit-input". No session selection is needed first.
+
+test("double-clicking a session row opens rename input", async ({ page }) => {
   await page.goto("/");
   await sendMockWSMessage(page, {
     type: "sessions_list",
     payload: [makeSession({ ID: "ren-1", Title: "Old Name" })],
   });
   await expect(page.getByTestId("session-title-ren-1")).toBeVisible({ timeout: 3000 });
-  await page.getByTestId("session-ren-1").click();
-  // After selecting, click the header title to start rename
-  await page.locator("header button[title='Click to rename']").click();
+  await page.getByTestId("session-ren-1").dblclick();
+  await expect(page.getByTestId("session-edit-input")).toBeVisible({ timeout: 2000 });
+});
+
+test("rename button opens rename input", async ({ page }) => {
+  await page.goto("/");
+  await sendMockWSMessage(page, {
+    type: "sessions_list",
+    payload: [makeSession({ ID: "ren-1b", Title: "Old Name" })],
+  });
+  await expect(page.getByTestId("session-title-ren-1b")).toBeVisible({ timeout: 3000 });
+  await page.getByTestId("session-rename-ren-1b").click();
   await expect(page.getByTestId("session-edit-input")).toBeVisible({ timeout: 2000 });
 });
 
@@ -311,8 +329,7 @@ test("renaming session sends rename_session command", async ({ page }) => {
     payload: [makeSession({ ID: "ren-2", Title: "Original Title" })],
   });
   await expect(page.getByTestId("session-title-ren-2")).toBeVisible({ timeout: 3000 });
-  await page.getByTestId("session-ren-2").click();
-  await page.locator("header button[title='Click to rename']").click();
+  await page.getByTestId("session-ren-2").dblclick();
   await page.getByTestId("session-edit-input").fill("Renamed Title");
   await page.getByTestId("session-edit-input").press("Enter");
   const cmd = await waitForWSSend(page, "rename_session");
@@ -327,17 +344,16 @@ test("pressing Escape cancels rename without sending command", async ({ page }) 
     payload: [makeSession({ ID: "ren-3", Title: "Stay The Same" })],
   });
   await expect(page.getByTestId("session-title-ren-3")).toBeVisible({ timeout: 3000 });
-  await page.getByTestId("session-ren-3").click();
-  await page.locator("header button[title='Click to rename']").click();
+  await page.getByTestId("session-ren-3").dblclick();
   await page.getByTestId("session-edit-input").fill("Attempted Change");
   await page.getByTestId("session-edit-input").press("Escape");
   // Input should close
   await expect(page.getByTestId("session-edit-input")).not.toBeVisible({ timeout: 2000 });
-  // Title remains in button
-  await expect(page.locator("header button[title='Click to rename']")).toBeVisible({ timeout: 2000 });
+  // Title remains, unchanged, back in the plain (non-editing) row.
+  await expect(page.getByTestId("session-title-ren-3")).toHaveText("Stay The Same", { timeout: 2000 });
 });
 
-test("session_updated event updates title in header", async ({ page }) => {
+test("session_updated event updates title in sidebar", async ({ page }) => {
   await page.goto("/");
   await sendMockWSMessage(page, {
     type: "sessions_list",
@@ -349,9 +365,9 @@ test("session_updated event updates title in header", async ({ page }) => {
     type: "session_updated",
     payload: makeSession({ ID: "ren-4", Title: "After Update" }),
   });
-  await expect(
-    page.locator("header h1").getByText("After Update")
-  ).toBeVisible({ timeout: 2000 });
+  // No standalone header exists — the sidebar's own session-title-<id> is
+  // the only place the title renders.
+  await expect(page.getByTestId("session-title-ren-4")).toHaveText("After Update", { timeout: 2000 });
 });
 
 // ── Summarization indicator ──────────────────────────────────────────────────

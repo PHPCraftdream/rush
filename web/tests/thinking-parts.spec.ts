@@ -34,7 +34,16 @@ async function setupWithMessage(
   });
   await expect(page.getByText("Parts Session").first()).toBeVisible({ timeout: 3000 });
   await page.getByText("Parts Session").first().click();
-  await sendMockWSMessage(page, { type: "messages_list", payload: [msg] });
+  // useWS.ts's messages_list handler drops the payload unless its SessionID
+  // matches the active session (guards against a stale in-flight
+  // load_messages response for a session the user has since switched away
+  // from — see the "New envelope" comment in useWS.ts). makeMessage()
+  // defaults SessionID to "sess-1", which never matches "tp-sess", so every
+  // call here must pin it explicitly or the update is silently dropped.
+  await sendMockWSMessage(page, {
+    type: "messages_list",
+    payload: [{ ...msg, SessionID: "tp-sess" }],
+  });
 }
 
 // ── Thinking part ───────────────────────────────────────────────────────
@@ -112,18 +121,25 @@ test("tool call hides running indicator when finished", async ({ page }) => {
   await expect(page.getByTestId("tool-call-running")).not.toBeVisible();
 });
 
-test("tool call input is formatted as JSON", async ({ page }) => {
+test("tool call input is formatted as key: value pairs", async ({ page }) => {
   await setupWithMessage(page, makeMessage({
     ID: "tp-6",
     Role: "assistant",
+    // "write_file" is NOT in FileWriteTools (only "write"/"edit"/"multiedit"
+    // are — see fileWriteTools.ts), so this goes through the generic
+    // prettyToolInput() path in ToolCallBlock.tsx, which no longer emits
+    // raw JSON with quoted keys. Flat objects render as `key: value` lines
+    // (see the doc comment on prettyToolInput) so multiline string values
+    // keep real line breaks instead of literal "\n". Was asserting on
+    // '"path"' / '"content"' (quoted JSON keys), which this format never
+    // produces even for tools that predate the change.
     Parts: [
       { type: "tool_call", ID: "tc-3", Name: "write_file", Input: '{"path":"/tmp/test.txt","content":"hello"}', Finished: true },
     ],
   }));
 
-  // formatJSON should pretty-print the input
-  await expect(page.getByTestId("tool-call")).toContainText('"path"', { timeout: 2000 });
-  await expect(page.getByTestId("tool-call")).toContainText('"content"');
+  await expect(page.getByTestId("tool-call")).toContainText("path: /tmp/test.txt", { timeout: 2000 });
+  await expect(page.getByTestId("tool-call")).toContainText("content: hello");
 });
 
 // ── Tool result ────────────────────────────────────────────────────────
