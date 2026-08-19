@@ -213,9 +213,12 @@ var errNoExecutionAttempted = errors.New("run_queue_pump: admission was held but
 // ErrDrainIncomplete is returned by DrainSessionNow when this call stops
 // because the session became busy/contended (a genuinely different live
 // owner, or a foreign session lock) AFTER at least one earlier row in the
-// SAME call already executed and committed cleanly (drained=true, no error
-// of its own). Task #588/P0-2 of the 2026-08-19 release-readiness follow-up
-// review found DrainSessionNow's stopNow branches collapsing this case to
+// SAME call already executed and committed cleanly, with no other row in
+// the same call left in a failed/unconfirmed state (see rowLedger's own
+// doc in run_queue_drain_session.go for why a failed row instead produces
+// DrainFailed, not DrainPartial, regardless of what any other row did).
+// Task #588/P0-2 of the 2026-08-19 release-readiness follow-up review found
+// DrainSessionNow's stopNow branches collapsing this case to
 // (drained=true, err=nil) -- indistinguishable from "the whole continuation
 // finished" to app_run.go's RunNonInteractive, which converts exactly that
 // pair into exit code 0 with a success envelope (see app_run.go's `finish`
@@ -226,20 +229,27 @@ var errNoExecutionAttempted = errors.New("run_queue_pump: admission was held but
 // tells the operator their run finished when a real, still-pending row (B)
 // was left completely untouched.
 //
-// drained stays true (a row DID run) but err is no longer nil, so
-// app_run.go can no longer treat this outcome as a clean continuation --
-// see that file's own consumption of DrainSessionNow for how it now
-// distinguishes "genuinely nothing left to drain" (drained=false, err=nil,
-// unaffected by this sentinel) from "some rows ran, but the queue was not
-// fully drained" (drained=true, err=ErrDrainIncomplete).
+// DrainSessionNow's DrainResult is DrainPartial (not DrainComplete) in
+// exactly this case, and err is this sentinel, so app_run.go can no longer
+// treat this outcome as a clean continuation -- see that file's own
+// consumption of DrainSessionNow for how it distinguishes DrainNoWork
+// ("genuinely nothing left to drain", err=nil, unaffected by this
+// sentinel) from DrainPartial ("some rows ran and all of THOSE committed
+// cleanly, but the queue was not fully drained", err=ErrDrainIncomplete)
+// from DrainFailed ("at least one row ended in a failure or unconfirmed
+// outcome this call cannot vouch for", a DIFFERENT, non-nil err -- see
+// rowLedger.verdict, which checks for any surviving failure BEFORE it ever
+// considers contention, so DrainFailed always wins over DrainPartial when
+// both are true of the same call).
 //
-// Deliberately NOT returned when drained is still false at the point
+// Deliberately NOT returned when nothing has executed yet at the point
 // stopNow fires: a session that was busy from the very first row this call
-// looked at has nothing more to say than the pre-existing (false, nil)
+// looked at has nothing more to say than the pre-existing DrainNoWork/nil
 // "nothing happened here" contract already covers -- that case is not new
-// and every existing caller/test already depends on it staying (false,
-// nil).
+// and every existing caller/test already depends on it staying
+// (DrainNoWork, nil).
 var ErrDrainIncomplete = errors.New("run_queue_pump: session became busy/contended after only part of its pending run-queue work was drained")
+var ErrDrainFailureUnspecified = errors.New("drain failure recorded without an underlying error")
 
 // RunQueuePumpConfig configures a RunQueuePump instance.
 type RunQueuePumpConfig struct {

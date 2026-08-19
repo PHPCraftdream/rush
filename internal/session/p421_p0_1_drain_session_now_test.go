@@ -21,8 +21,8 @@ import (
 
 // TestDrainSessionNow_NothingPending verifies the no-op contract:
 // DrainSessionNow must not treat "nothing pending" as having recovered
-// anything (drained=false, err=nil). RunNonInteractive relies on this to
-// leave a genuine user/--timeout cancellation (no durable continuation)
+// anything (result=DrainNoWork, err=nil). RunNonInteractive relies on this
+// to leave a genuine user/--timeout cancellation (no durable continuation)
 // alone instead of fabricating a success.
 func TestDrainSessionNow_NothingPending(t *testing.T) {
 	t.Parallel()
@@ -36,9 +36,9 @@ func TestDrainSessionNow_NothingPending(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	drained, err := pump.DrainSessionNow(ctx, sess.ID)
+	result, err := pump.DrainSessionNow(ctx, sess.ID)
 	require.NoError(t, err)
-	require.False(t, drained, "nothing was pending — must not report anything drained")
+	require.Equal(t, session.DrainNoWork, result, "nothing was pending — must not report anything drained")
 }
 
 // TestDrainSessionNow_ExecutesPendingEntry verifies the core contract: a
@@ -63,9 +63,9 @@ func TestDrainSessionNow_ExecutesPendingEntry(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	drained, err := pump.DrainSessionNow(ctx, sess.ID)
+	result, err := pump.DrainSessionNow(ctx, sess.ID)
 	require.NoError(t, err)
-	require.True(t, drained)
+	require.Equal(t, session.DrainComplete, result)
 	require.Equal(t, int64(1), coord.calls.Load(), "the pending entry must have been executed exactly once")
 
 	pending, err := svc.ListPendingRunQueueEntries(context.Background())
@@ -78,7 +78,7 @@ func TestDrainSessionNow_ExecutesPendingEntry(t *testing.T) {
 // instance's own background tick wins the lease race for the pending entry
 // (fires concurrently with — and just ahead of — DrainSessionNow's own
 // attempt), DrainSessionNow must wait for that execution to finish and
-// still report drained=true, rather than concluding "nothing to drain"
+// still report DrainComplete, rather than concluding "nothing to drain"
 // just because ITS OWN lease attempt found the row already taken by a
 // goroutine it didn't start.
 func TestDrainSessionNow_WaitsForConcurrentBackgroundTick(t *testing.T) {
@@ -112,11 +112,11 @@ func TestDrainSessionNow_WaitsForConcurrentBackgroundTick(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	drainDone := make(chan struct{})
-	var drained bool
+	var result session.DrainResult
 	var drainErr error
 	go func() {
 		defer close(drainDone)
-		drained, drainErr = pump.DrainSessionNow(ctx, sess.ID)
+		result, drainErr = pump.DrainSessionNow(ctx, sess.ID)
 	}()
 
 	// Give DrainSessionNow time to find nothing pending (already leased by
@@ -132,7 +132,7 @@ func TestDrainSessionNow_WaitsForConcurrentBackgroundTick(t *testing.T) {
 	}
 
 	require.NoError(t, drainErr)
-	require.True(t, drained, "DrainSessionNow must report drained=true when the background tick executed the entry, even though its own lease attempt found nothing pending")
+	require.Equal(t, session.DrainComplete, result, "DrainSessionNow must report DrainComplete when the background tick executed the entry, even though its own lease attempt found nothing pending")
 	require.Equal(t, int64(1), coord.calls.Load(), "the entry must have executed exactly once (by the background tick), not a second time via DrainSessionNow")
 }
 

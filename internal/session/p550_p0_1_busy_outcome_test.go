@@ -50,8 +50,8 @@ func (c *lockBusyCoordinatorForDrain) Run(ctx context.Context, callData session.
 // contract for the in-process case.
 //
 // Revert-check: move `drained = true` back to immediately after the
-// LeaseRunQueueEntry success and this fails on the require.False below —
-// DrainSessionNow answers (true, nil), which is the false success itself.
+// LeaseRunQueueEntry success and this fails on the require.Equal below —
+// DrainSessionNow answers DrainComplete, which is the false success itself.
 func TestDrainSessionNow_QueuedNotExecutedIsNotDrained(t *testing.T) {
 	t.Parallel()
 	limitParallel(t)
@@ -69,11 +69,11 @@ func TestDrainSessionNow_QueuedNotExecutedIsNotDrained(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	drained, err := pump.DrainSessionNow(ctx, sess.ID)
+	result, err := pump.DrainSessionNow(ctx, sess.ID)
 
 	require.NoError(t, err, "an externally-owned session is ordinary contention, not a failure of this call")
-	require.False(t, drained,
-		"nothing executed here — the call was appended to another owner's mailbox. Reporting drained=true makes RunNonInteractive turn a cancelled run into exit code 0 for work that has not run and will not run in this process")
+	require.Equal(t, session.DrainNoWork, result,
+		"nothing executed here — the call was appended to another owner's mailbox. Reporting a completed drain makes RunNonInteractive turn a cancelled run into exit code 0 for work that has not run and will not run in this process")
 	require.Equal(t, int64(1), coord.calls.Load(), "the coordinator must have been consulted exactly once")
 
 	// The row must be back to pending with NO attempt charged, so the real
@@ -103,10 +103,10 @@ func TestDrainSessionNow_SessionLockBusyIsNotDrained(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	drained, err := pump.DrainSessionNow(ctx, sess.ID)
+	result, err := pump.DrainSessionNow(ctx, sess.ID)
 
 	require.NoError(t, err)
-	require.False(t, drained,
+	require.Equal(t, session.DrainNoWork, result,
 		"another process holds the session lock — this call ran nothing and must not claim it did")
 	require.Equal(t, int64(1), coord.calls.Load())
 
@@ -117,10 +117,11 @@ func TestDrainSessionNow_SessionLockBusyIsNotDrained(t *testing.T) {
 }
 
 // TestDrainSessionNow_ExecutedEntryStillReportsDrained is the control: the
-// fix must not have made drained unreachable. A turn that genuinely runs and
-// commits still has to report true, or RunNonInteractive would restore the
-// stale cancellation over a continuation that DID complete — the opposite
-// error, and the one this whole function exists to prevent.
+// fix must not have made a completed drain unreachable. A turn that
+// genuinely runs and commits still has to report DrainComplete, or
+// RunNonInteractive would restore the stale cancellation over a
+// continuation that DID complete — the opposite error, and the one this
+// whole function exists to prevent.
 func TestDrainSessionNow_ExecutedEntryStillReportsDrained(t *testing.T) {
 	t.Parallel()
 	limitParallel(t)
@@ -138,9 +139,9 @@ func TestDrainSessionNow_ExecutedEntryStillReportsDrained(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	drained, err := pump.DrainSessionNow(ctx, sess.ID)
+	result, err := pump.DrainSessionNow(ctx, sess.ID)
 
 	require.NoError(t, err)
-	require.True(t, drained, "a committed turn must still report drained=true")
+	require.Equal(t, session.DrainComplete, result, "a committed turn must still report a completed drain")
 	require.Equal(t, int64(1), coord.calls.Load())
 }

@@ -41,8 +41,8 @@ func (s *ackFailingService) AckRunQueueEntry(ctx context.Context, id, leasedBy s
 // durable continuation completed.
 //
 // Revert-check: change the ack branch back to logging and `return nil` and
-// this fails on the require.Error below — DrainSessionNow returns (true, nil),
-// exactly the false success the review found.
+// this fails on the require.Error below — DrainSessionNow returns
+// DrainComplete/nil, exactly the false success the review found.
 func TestDrainSessionNow_AckFailureIsNotReportedAsSuccess(t *testing.T) {
 	t.Parallel()
 	limitParallel(t)
@@ -61,12 +61,12 @@ func TestDrainSessionNow_AckFailureIsNotReportedAsSuccess(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	drained, err := pump.DrainSessionNow(ctx, sess.ID)
+	result, err := pump.DrainSessionNow(ctx, sess.ID)
 
 	require.Error(t, err, "a turn whose Ack failed was never committed — reporting success would tell the operator work landed that did not")
 	require.ErrorIs(t, err, session.ErrTurnCommitFailed)
 	require.ErrorContains(t, err, "disk on fire", "the underlying cause must survive wrapping, or the log is the only place it exists")
-	require.True(t, drained, "the turn DID execute — drained stays true; it is the commit that failed, not the run")
+	require.Equal(t, session.DrainFailed, result, "the turn DID execute; it is the commit that failed, not the run — but the call is not a completed drain")
 
 	require.Equal(t, int64(1), coord.calls.Load(), "the turn must have run exactly once")
 	require.Equal(t, int64(1), failing.ackCalls.Load(), "the ack must have been attempted exactly once — a failed commit must not be retried by re-running the turn")

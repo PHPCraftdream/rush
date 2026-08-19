@@ -136,12 +136,12 @@ func TestDrainSessionNow_AdmissionRefusal_NeverObservesReplacementEntry(t *testi
 	defer cancel()
 
 	drainDone := make(chan struct{})
-	var drained bool
+	var result session.DrainResult
 	var drainErr error
 	start := time.Now()
 	go func() {
 		defer close(drainDone)
-		drained, drainErr = pump.DrainSessionNow(ctx, sess.ID)
+		result, drainErr = pump.DrainSessionNow(ctx, sess.ID)
 	}()
 
 	select {
@@ -159,7 +159,7 @@ func TestDrainSessionNow_AdmissionRefusal_NeverObservesReplacementEntry(t *testi
 	elapsed := time.Since(start)
 
 	require.NoError(t, drainErr, "A's outcome was busy (ErrCallQueuedNotExecuted), which classifies to a nil error -- a non-nil error here would itself be evidence of an unexpected outcome source")
-	require.False(t, drained, "A's outcome was busy -- nothing actually ran for it, so drained must stay false")
+	require.Equal(t, session.DrainNoWork, result, "A's outcome was busy -- nothing actually ran for it, so the result must be DrainNoWork")
 	require.Less(t, elapsed, 3*time.Second, "DrainSessionNow must resolve promptly against A's already-closed done channel -- taking anywhere near ctx's 5s deadline means it waited on B (never released) instead of A, the exact ABA misattribution this test exists to catch")
 }
 
@@ -175,7 +175,7 @@ func TestDrainSessionNow_AdmissionRefusal_NeverObservesReplacementEntry(t *testi
 //	    p587_admission_aba_test.go:157: DrainSessionNow did not return within its own ctx deadline -- if this fires, it is itself evidence DrainSessionNow ended up waiting on B (never released) instead of A
 //	2026/08/19 18:23:55 WARN run_queue_pump: list pending failed err="context canceled" instance_id=test-pump-p587-aba
 //	2026/08/19 18:23:55 INFO run_queue_pump: stopped gracefully instance_id=test-pump-p587-aba
-//	    run_queue_round2_test.go:329: pump.Stop() graceful shutdown after 733.9µs
+//	    run_queue_round2_test.go:329: pump.Stop() graceful shutdown after 733.9us
 //	--- FAIL: TestDrainSessionNow_AdmissionRefusal_NeverObservesReplacementEntry (4.35s)
 //	FAIL
 //	FAIL	github.com/charmbracelet/crush/internal/session	4.512s

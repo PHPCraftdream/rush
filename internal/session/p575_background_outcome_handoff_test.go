@@ -5,7 +5,7 @@ package session_test
 // background worker, used to set drained=true the moment admission cleared
 // — without ever learning what that worker's execution actually produced.
 // "Admission cleared" is true for FIVE different real outcomes, and only
-// ONE of them (a clean commit) may legitimately produce (true, nil):
+// ONE of them (a clean commit) may legitimately produce a completed drain:
 //
 //  1. ErrCallQueuedNotExecuted / SessionLockBusyError — busy, nothing ran.
 //  2. A terminal AlreadyAttempted failure.
@@ -104,13 +104,14 @@ func oneEntrySetup(t *testing.T, name string, gate *gatedCoordinator) (*session.
 // TestDrainSessionNow_WaitedExecution_BusyIsNotDrained pins outcome (1): the
 // background worker's Run() reports the session was busy elsewhere
 // (ErrCallQueuedNotExecuted). A DrainSessionNow call that loses the
-// admission race and waits for that outcome must NOT report drained=true —
-// nothing actually ran.
+// admission race and waits for that outcome must NOT report a completed
+// drain — nothing actually ran.
 //
 // Revert-check: replace classifyBackgroundOutcome's use in the wait branch
 // with the pre-fix behavior (treat admission clearing as an unconditional
-// success) and this fails on the require.False below with "true" reported
-// instead — the exact false success task #575 exists to close.
+// success) and this fails on the require.Equal below with DrainComplete
+// reported instead of DrainNoWork — the exact false success task #575
+// exists to close.
 func TestDrainSessionNow_WaitedExecution_BusyIsNotDrained(t *testing.T) {
 	gate := newGatedCoordinator()
 	pump, sessID := oneEntrySetup(t, "wait-busy", gate)
@@ -118,11 +119,11 @@ func TestDrainSessionNow_WaitedExecution_BusyIsNotDrained(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	drainDone := make(chan struct{})
-	var drained bool
+	var result session.DrainResult
 	var drainErr error
 	go func() {
 		defer close(drainDone)
-		drained, drainErr = pump.DrainSessionNow(ctx, sessID)
+		result, drainErr = pump.DrainSessionNow(ctx, sessID)
 	}()
 
 	// Give DrainSessionNow time to lose the admission race and enter the
@@ -137,19 +138,19 @@ func TestDrainSessionNow_WaitedExecution_BusyIsNotDrained(t *testing.T) {
 	}
 
 	require.NoError(t, drainErr, "an externally-owned session is ordinary contention, not a failure of this call")
-	require.False(t, drained, "nothing ran for the observed execution — reporting drained=true here is the exact false success task #575 exists to close")
+	require.Equal(t, session.DrainNoWork, result, "nothing ran for the observed execution — reporting a completed/partial/failed drain here is the exact false success task #575 exists to close")
 }
 
 // TestDrainSessionNow_WaitedExecution_TerminalFailureIsSurfaced pins outcome
 // (2): the background worker's turn terminal-fails (AlreadyAttempted). The
-// waiting DrainSessionNow call must report drained=true (an execution DID
+// waiting DrainSessionNow call must report DrainFailed (an execution DID
 // happen and reach a resolution) AND surface the terminal error — not
 // silently report success.
 //
 // Revert-check: same as above — without routing the wait branch's observed
-// outcome through classifyBackgroundOutcome, DrainSessionNow returns (true,
-// nil) here instead of (true, non-nil), which is a false success over a
-// terminally-failed row.
+// outcome through classifyBackgroundOutcome, DrainSessionNow returns
+// DrainComplete/nil here instead of DrainFailed/non-nil, which is a false
+// success over a terminally-failed row.
 func TestDrainSessionNow_WaitedExecution_TerminalFailureIsSurfaced(t *testing.T) {
 	gate := newGatedCoordinator()
 	pump, sessID := oneEntrySetup(t, "wait-terminal", gate)
@@ -157,11 +158,11 @@ func TestDrainSessionNow_WaitedExecution_TerminalFailureIsSurfaced(t *testing.T)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	drainDone := make(chan struct{})
-	var drained bool
+	var result session.DrainResult
 	var drainErr error
 	go func() {
 		defer close(drainDone)
-		drained, drainErr = pump.DrainSessionNow(ctx, sessID)
+		result, drainErr = pump.DrainSessionNow(ctx, sessID)
 	}()
 
 	time.Sleep(150 * time.Millisecond)
@@ -176,7 +177,7 @@ func TestDrainSessionNow_WaitedExecution_TerminalFailureIsSurfaced(t *testing.T)
 
 	require.Error(t, drainErr, "the observed execution terminal-failed; reporting success would hide a row that will never be retried")
 	require.ErrorIs(t, drainErr, termErr)
-	require.True(t, drained, "an execution DID happen and reach a resolution in this process, even though it was a terminal failure")
+	require.Equal(t, session.DrainFailed, result, "an execution DID happen and reach a resolution in this process, even though it was a terminal failure")
 }
 
 // TestDrainSessionNow_WaitedExecution_AckFailureIsSurfaced pins outcome (3):
@@ -214,11 +215,11 @@ func TestDrainSessionNow_WaitedExecution_AckFailureIsSurfaced(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	drainDone := make(chan struct{})
-	var drained bool
+	var result session.DrainResult
 	var drainErr error
 	go func() {
 		defer close(drainDone)
-		drained, drainErr = pump.DrainSessionNow(ctx, sess.ID)
+		result, drainErr = pump.DrainSessionNow(ctx, sess.ID)
 	}()
 
 	time.Sleep(150 * time.Millisecond)
@@ -232,7 +233,7 @@ func TestDrainSessionNow_WaitedExecution_AckFailureIsSurfaced(t *testing.T) {
 
 	require.Error(t, drainErr, "the observed turn ran but its Ack failed — the row was never actually committed")
 	require.ErrorIs(t, drainErr, session.ErrTurnCommitFailed)
-	require.True(t, drained, "the turn DID execute in this process; it is only the commit that failed")
+	require.Equal(t, session.DrainFailed, result, "the turn DID execute in this process; it is only the commit that failed")
 }
 
 // ackFailingServiceP575 wraps a real session.Service and fails
@@ -298,11 +299,11 @@ func TestDrainSessionNow_WaitedExecution_LeaseLossIsSurfaced(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	drainDone := make(chan struct{})
-	var drained bool
+	var result session.DrainResult
 	var drainErr error
 	go func() {
 		defer close(drainDone)
-		drained, drainErr = pump.DrainSessionNow(ctx, sess.ID)
+		result, drainErr = pump.DrainSessionNow(ctx, sess.ID)
 	}()
 
 	// Give DrainSessionNow time to lose the admission race and enter the
@@ -317,17 +318,13 @@ func TestDrainSessionNow_WaitedExecution_LeaseLossIsSurfaced(t *testing.T) {
 	}
 
 	require.Error(t, drainErr, "the observed execution lost its lease mid-run — a new owner holds the row now, and this process learned nothing it can act on")
-	// errLeaseLost is package-private (session.errLeaseLost is unexported),
-	// so this test pins its observable message instead of the sentinel
-	// itself — still enough to prove the wait branch surfaced SOMETHING
-	// non-nil for this outcome rather than the (true, nil) false success.
 	require.ErrorContains(t, drainErr, "lost lease ownership", "the observed execution's lease-loss outcome must be surfaced, not silently treated as success")
-	require.True(t, drained, "an execution DID happen and reach SOME resolution (lease loss) in this process")
+	require.Equal(t, session.DrainFailed, result, "an execution DID happen and reach SOME resolution (lease loss) in this process")
 }
 
 // TestDrainSessionNow_WaitedExecution_SuccessIsDrained is the control for
-// all four tests above: the ONE outcome that may legitimately produce
-// (true, nil) is a genuine committed success. Losing the admission race
+// all four tests above: the ONE outcome that may legitimately produce a
+// completed drain is a genuine committed success. Losing the admission race
 // must not, by itself, prevent DrainSessionNow from correctly reporting a
 // success it merely observed rather than executed itself.
 func TestDrainSessionNow_WaitedExecution_SuccessIsDrained(t *testing.T) {
@@ -337,11 +334,11 @@ func TestDrainSessionNow_WaitedExecution_SuccessIsDrained(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	drainDone := make(chan struct{})
-	var drained bool
+	var result session.DrainResult
 	var drainErr error
 	go func() {
 		defer close(drainDone)
-		drained, drainErr = pump.DrainSessionNow(ctx, sessID)
+		result, drainErr = pump.DrainSessionNow(ctx, sessID)
 	}()
 
 	time.Sleep(150 * time.Millisecond)
@@ -354,5 +351,5 @@ func TestDrainSessionNow_WaitedExecution_SuccessIsDrained(t *testing.T) {
 	}
 
 	require.NoError(t, drainErr)
-	require.True(t, drained, "the observed execution committed cleanly — this is the one outcome that must report drained=true, err=nil")
+	require.Equal(t, session.DrainComplete, result, "the observed execution committed cleanly — this is the one outcome that must report a completed drain")
 }

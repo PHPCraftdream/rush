@@ -123,7 +123,7 @@ func (s *delayedRaceLeaseService) LeaseRunQueueEntry(ctx context.Context, sessio
 			// this outcome must retry admission rather than stop
 			// immediately — see classifyBackgroundOutcome's
 			// errNoExecutionAttempted branch) correctly finds NOTHING
-			// left to lease on its retry and reports drained=false
+			// left to lease on its retry and reports DrainNoWork
 			// truthfully. A faked (nil, nil) with the row still pending
 			// would instead let the waiter legitimately re-lease and
 			// execute the very same row itself — a DIFFERENT, correct
@@ -187,11 +187,11 @@ func TestProcessEntry_RacedLeaseNil_DoesNotFalselyDrainAWaiter(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	drainDone := make(chan struct{})
-	var drained bool
+	var result session.DrainResult
 	var drainErr error
 	go func() {
 		defer close(drainDone)
-		drained, drainErr = pump.DrainSessionNow(ctx, sess.ID)
+		result, drainErr = pump.DrainSessionNow(ctx, sess.ID)
 	}()
 
 	// Give DrainSessionNow time to lose the admission race and start
@@ -207,7 +207,7 @@ func TestProcessEntry_RacedLeaseNil_DoesNotFalselyDrainAWaiter(t *testing.T) {
 	}
 
 	require.NoError(t, drainErr, "nothing executed and nothing failed on this call's own side either")
-	require.False(t, drained, "processEntry's raced leased==nil early return executed NOTHING — a waiting DrainSessionNow reporting drained=true here is the coordinator's exact false-success scenario for task #575's first pass")
+	require.Equal(t, session.DrainNoWork, result, "processEntry's raced leased==nil early return executed NOTHING -- a waiting DrainSessionNow reporting anything other than DrainNoWork here is the coordinator's exact false-success scenario for task #575's first pass")
 }
 
 // TestProcessEntry_StoppingMidDispatch_DoesNotFalselyDrainAWaiter pins the
@@ -252,11 +252,11 @@ func TestProcessEntry_StoppingMidDispatch_DoesNotFalselyDrainAWaiter(t *testing.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	drainDone := make(chan struct{})
-	var drained bool
+	var result session.DrainResult
 	var drainErr error
 	go func() {
 		defer close(drainDone)
-		drained, drainErr = pump.DrainSessionNow(ctx, sess.ID)
+		result, drainErr = pump.DrainSessionNow(ctx, sess.ID)
 	}()
 	time.Sleep(150 * time.Millisecond)
 
@@ -308,10 +308,10 @@ func TestProcessEntry_StoppingMidDispatch_DoesNotFalselyDrainAWaiter(t *testing.
 	// loop iteration runs), so that retry correctly hits DrainSessionNow's
 	// OWN p.stopping branch and returns ErrCallQueuedNotExecuted — a real,
 	// meaningful "the pump is shutting down" error, not a fabricated
-	// success. drained must still be false: nothing executed across either
+	// success. result must still be DrainNoWork: nothing executed across either
 	// iteration of this call.
 	require.ErrorIs(t, drainErr, session.ErrCallQueuedNotExecuted, "DrainSessionNow's own retry, after correctly falling through instead of stopping early, hits the pump's own p.stopping gate and must report that truthfully")
-	require.False(t, drained, "processEntry's p.stopping early return executed NOTHING (the lease was released via Nack, executeEntrySync was never called), and neither did DrainSessionNow's own subsequent retry (also declined due to p.stopping) — a waiting DrainSessionNow reporting drained=true here is the coordinator's exact false-success scenario, reached via the shutdown path instead of a raced lease")
+	require.Equal(t, session.DrainNoWork, result, "processEntry's p.stopping early return executed NOTHING (the lease was released via Nack, executeEntrySync was never called), and neither did DrainSessionNow's own subsequent retry (also declined due to p.stopping) -- a waiting DrainSessionNow reporting anything other than DrainNoWork here is the coordinator's exact false-success scenario, reached via the shutdown path instead of a raced lease")
 
 	// The row must have been released back to pending (Nacked, no attempt
 	// penalty), not silently lost.
@@ -341,10 +341,13 @@ func TestProcessEntry_StoppingMidDispatch_DoesNotFalselyDrainAWaiter(t *testing.
 // What this test DOES verify: a first DrainSessionNow call runs the
 // session's one pending entry to a genuine success; a second, SEQUENTIAL
 // call (not concurrent) correctly finds nothing left pending and reports
-// drained=false rather than re-claiming the first call's work. That is real
+// What this test DOES verify: a first DrainSessionNow call runs the
+// session's one pending entry to a genuine success; a second, SEQUENTIAL
+// call (not concurrent) correctly finds nothing left pending and reports
+// DrainNoWork rather than re-claiming the first call's work. That is real
 // coverage for the ordinary, non-racing case, and it would fail if the
 // bottom path's classification were wrong in some OTHER way (e.g. if it
-// mistakenly set drained=true unconditionally) — it just does not
+// mistakenly reported a completed drain unconditionally) — it just does not
 // distinguish nil from the sentinel specifically, so it is not offered as
 // satisfying the coordinator's revert-check requirement for this call site.
 // The two processEntry tests above (raced lease and p.stopping) are what
@@ -368,13 +371,13 @@ func TestDrainSessionNow_SecondCallFindsNothingPending_ReportsNotDrained(t *test
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	firstDrained, firstErr := pump.DrainSessionNow(ctx, sess.ID)
+	firstResult, firstErr := pump.DrainSessionNow(ctx, sess.ID)
 	require.NoError(t, firstErr)
-	require.True(t, firstDrained, "the one pending entry must have executed under the first call")
+	require.Equal(t, session.DrainComplete, firstResult, "the one pending entry must have executed under the first call")
 	require.Equal(t, int64(1), coord.calls.Load())
 
-	secondDrained, secondErr := pump.DrainSessionNow(ctx, sess.ID)
+	secondResult, secondErr := pump.DrainSessionNow(ctx, sess.ID)
 	require.NoError(t, secondErr, "nothing pending and nothing failed — this call has nothing to report")
-	require.False(t, secondDrained, "the second call found nothing pending (leased == nil, bottom-path release) — it must not report drained=true for work it did not touch")
+	require.Equal(t, session.DrainNoWork, secondResult, "the second call found nothing pending (leased == nil, bottom-path release) — it must not report anything other than DrainNoWork for work it did not touch")
 	require.Equal(t, int64(1), coord.calls.Load(), "the second call must not have re-executed anything")
 }

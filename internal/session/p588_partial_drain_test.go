@@ -8,9 +8,9 @@ package session_test
 // and, even with no prior error, mislabelling "one row ran, then the next
 // hit a busy/contended session" as complete success.
 //
-// app_run.go's RunNonInteractive converts (drained=true, err=nil) directly
-// into exit code 0 with a success envelope. With stacked durable rows, an
-// OS session lock or in-process mailbox owner can legitimately change hands
+// app_run.go's RunNonInteractive converts a completed drain directly into
+// exit code 0 with a success envelope. With stacked durable rows, an OS
+// session lock or in-process mailbox owner can legitimately change hands
 // BETWEEN two rows processed by the SAME DrainSessionNow call -- this is
 // not hypothetical, see this file's header in
 // run_queue_drain_session.go's own doc and the review itself.
@@ -19,9 +19,13 @@ package session_test
 // row A to resolve with a specific outcome, then row B to report the "busy"
 // outcome (ErrCallQueuedNotExecuted) as if a different live owner grabbed
 // the session between the two rows. All four pin the same requirement: NO
-// combination may produce a successful exit (drained=true, err=nil), and
-// row B must remain durably pending afterward (never touched, no attempt
-// penalty).
+// combination may produce a completed drain (DrainComplete), and row B must
+// remain durably pending afterward (never touched, no attempt penalty).
+//
+// See p592_cross_row_identity_test.go for the SIBLING contract this file
+// does not cover: row A fails, then a DIFFERENT row B SUCCEEDS (rather than
+// hitting busy) in the same call -- task #592/P0-1 of the second
+// release-readiness follow-up review.
 
 import (
 	"context"
@@ -77,11 +81,10 @@ func enqueueTwoRows(t *testing.T, name string, sessions session.Service, session
 // never ran at all.
 //
 // Revert-check (see task prompt): change the executed-here stopNow branch's
-// `if err == nil && drained { err = ErrDrainIncomplete }` back to an
-// unconditional `return drained, nil` and this test fails on the
-// require.Error below -- exactly the false success task #588 exists to
-// close. VERBATIM output captured while validating this is recorded in
-// this file's trailing comment block.
+// ledger-verdict-preserving return back to an unconditional DrainComplete/
+// nil and this test fails on the require.Error below -- exactly the false
+// success task #588 exists to close. VERBATIM output captured while
+// validating this is recorded in this file's trailing comment block.
 func TestDrainSessionNow_PartialDrain_SuccessThenBusy_NeverReportsCleanSuccess(t *testing.T) {
 	t.Parallel()
 	limitParallel(t)
@@ -96,10 +99,10 @@ func TestDrainSessionNow_PartialDrain_SuccessThenBusy_NeverReportsCleanSuccess(t
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	drained, drainErr := pump.DrainSessionNow(ctx, sess.ID)
+	result, drainErr := pump.DrainSessionNow(ctx, sess.ID)
 
 	require.Equal(t, 2, coord.calls, "both row A and row B's Coordinator.Run must have been attempted")
-	require.True(t, drained, "row A genuinely executed and committed")
+	require.Equal(t, session.DrainPartial, result, "row A genuinely executed and committed, but row B was left undrained (busy)")
 	require.Error(t, drainErr, "row B was left undrained (busy) after row A succeeded -- this must NOT be reported as a clean success")
 	require.ErrorIs(t, drainErr, session.ErrDrainIncomplete, "the specific signal must be ErrDrainIncomplete: a row genuinely ran, but the queue was only partially drained")
 
@@ -149,10 +152,10 @@ func TestDrainSessionNow_PartialDrain_RetryableErrorThenBusy_PreservesError(t *t
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	drained, drainErr := pump.DrainSessionNow(ctx, sess.ID)
+	result, drainErr := pump.DrainSessionNow(ctx, sess.ID)
 
 	require.Equal(t, 2, coord.calls, "row A must have been attempted once (retryable failure), then re-leased and found busy on retry")
-	require.True(t, drained, "row A's first attempt genuinely executed and reached a resolution (the retryable failure)")
+	require.Equal(t, session.DrainFailed, result, "row A's first attempt genuinely executed and reached a resolution (the retryable failure), never superseded by a later resolution of the SAME row")
 	require.Error(t, drainErr, "a retryable failure was accumulated for row A; it must reach the caller, not be silently discarded for a bare nil")
 	require.ErrorIs(t, drainErr, retryErr, "the SPECIFIC retryable error must be preserved, not replaced by a generic sentinel")
 
@@ -187,10 +190,10 @@ func TestDrainSessionNow_PartialDrain_TerminalErrorThenBusy_PreservesError(t *te
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	drained, drainErr := pump.DrainSessionNow(ctx, sess.ID)
+	result, drainErr := pump.DrainSessionNow(ctx, sess.ID)
 
 	require.Equal(t, 2, coord.calls, "row A (terminal failure) and row B (busy) must both have been attempted")
-	require.True(t, drained, "row A genuinely executed and reached a resolution (a terminal one)")
+	require.Equal(t, session.DrainFailed, result, "row A genuinely executed and reached a resolution (a terminal one)")
 	require.Error(t, drainErr, "row A terminal-failed; that permanent loss must reach the caller, not be replaced by a bare nil")
 	require.ErrorIs(t, drainErr, termErr, "the SPECIFIC terminal error must be preserved")
 
@@ -247,18 +250,18 @@ func TestDrainSessionNow_PartialDrain_AckErrorThenBusy_PreservesError(t *testing
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	drained, drainErr := pump.DrainSessionNow(ctx, sess.ID)
+	result, drainErr := pump.DrainSessionNow(ctx, sess.ID)
 
 	require.Equal(t, 2, coord.calls, "row A's turn (Ack fails after) and row B (busy) must both have been attempted")
-	require.True(t, drained, "row A's turn genuinely ran, even though its Ack write failed")
+	require.Equal(t, session.DrainFailed, result, "row A's turn genuinely ran, even though its Ack write failed")
 	require.Error(t, drainErr, "row A's Ack failed -- the row was never actually committed; that must reach the caller, not be replaced by a bare nil")
 	require.ErrorIs(t, drainErr, session.ErrTurnCommitFailed, "the SPECIFIC Ack-failure sentinel must be preserved")
 }
 
 // VERBATIM revert-check output, captured by temporarily reverting the
-// executed-here stopNow branch (the second of the two `if err == nil &&
-// drained { err = ErrDrainIncomplete }` sites in run_queue_drain_session.go)
-// back to its pre-fix unconditional `return drained, nil`:
+// executed-here stopNow branch (the second of the two ledger-verdict-
+// preserving return sites in run_queue_drain_session.go) back to its
+// pre-fix unconditional DrainComplete/nil:
 //
 //	=== RUN   TestDrainSessionNow_PartialDrain_SuccessThenBusy_NeverReportsCleanSuccess
 //	=== RUN   TestDrainSessionNow_PartialDrain_RetryableErrorThenBusy_PreservesError
@@ -296,4 +299,7 @@ func TestDrainSessionNow_PartialDrain_AckErrorThenBusy_PreservesError(t *testing
 // task's contract requires: "an error is expected but got nil" -- the
 // pre-fix code discarded the accumulated error and reported a bare nil in
 // every one of the four cases. The fix was then restored and all four
-// tests re-run to confirm PASS again.)
+// tests re-run to confirm PASS again. Re-verified against the task #592
+// row-ledger rewrite -- see this session's own fresh revert-check evidence
+// recorded in the task report, not re-pasted here to avoid two conflicting
+// "VERBATIM" blocks for the same test file.)

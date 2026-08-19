@@ -15,7 +15,7 @@ package session_test
 // The coordinator's review of an earlier version of this fix found the
 // re-check collapsed err to nil whenever the row was simply gone, treating
 // that as a confirmed success. It is not: AckRunQueueEntry and
-// TerminalFailRunQueueEntry are both a plain `DELETE ... RETURNING id`
+// TerminalFailRunQueueEntry are both a plain DELETE ... RETURNING id query
 // against session_run_queue (see sql/run_queue.sql) -- a row gone after a
 // DIFFERENT process touched it is exactly as ambiguous, after the fact, as
 // one still leased by a different process, and nothing in this schema
@@ -23,12 +23,12 @@ package session_test
 // failure. Treating "gone" as "succeeded" reopened exactly the
 // false-success class task #575 (commit 638bc777) closed, through this new
 // re-check path instead of the admission-wait path #575 fixed --
-// app_run.go's RunNonInteractive reads (drained=true, err=nil) as "a
-// durable continuation completed here" and converts it directly into exit
-// code 0. The re-check therefore NEVER clears err for the cross-process
-// case; each reachable outcome below is pinned separately, mirroring
-// p575_background_outcome_handoff_test.go's per-outcome pattern, so this
-// class cannot come back silently through the re-check path either.
+// app_run.go's RunNonInteractive reads a completed drain as "a durable
+// continuation completed here" and converts it directly into exit code 0.
+// The re-check therefore NEVER clears a row's failure entry for the
+// cross-process case; each reachable outcome below is pinned separately,
+// mirroring p575_background_outcome_handoff_test.go's per-outcome pattern,
+// so this class cannot come back silently through the re-check path either.
 
 import (
 	"context"
@@ -60,8 +60,8 @@ func (c *retryThenSucceedCoordinator) Run(ctx context.Context, callData session.
 // TestDrainSessionNow_SameRowRetrySucceedsClearsErr covers the literal
 // scenario named in task #578: a retryable attempt is nacked, the SAME row
 // is retried by this same process's own DrainSessionNow loop, and that
-// retry commits cleanly. The final returned error must not be the earlier
-// attempt's stale failure.
+// retry commits cleanly. The final returned result must be a completed
+// drain, not the earlier attempt's stale failure.
 func TestDrainSessionNow_SameRowRetrySucceedsClearsErr(t *testing.T) {
 	t.Parallel()
 	limitParallel(t)
@@ -80,11 +80,11 @@ func TestDrainSessionNow_SameRowRetrySucceedsClearsErr(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	drained, drainErr := pump.DrainSessionNow(ctx, sess.ID)
+	result, drainErr := pump.DrainSessionNow(ctx, sess.ID)
 
 	require.Equal(t, int64(2), coord.calls.Load(), "must have retried after the transient failure and succeeded on the second attempt")
-	require.True(t, drained)
 	require.NoError(t, drainErr, "the LATEST outcome for the row was a commit -- a stale error from the earlier nacked attempt at the SAME row must not survive")
+	require.Equal(t, session.DrainComplete, result)
 }
 
 // stealOnNackSessions wraps a real session.Service and, the instant
@@ -128,19 +128,19 @@ func (c *failOnceCoordinator) Run(ctx context.Context, callData session.SessionA
 // before this loop's own next attempt (this process's in-memory admission
 // map cannot see a different process's DB-level lease). The row's ultimate
 // fate is then UNKNOWN to this call -- it must neither report its own
-// stale local failure as the final answer, nor fabricate a success (nil)
-// for an outcome it cannot confirm. It must report a distinct "unknown"
-// error (errLeaseLost's own meaning), matching this repo's existing
-// vocabulary for "someone else has it, nothing further can be learned
-// here" rather than misusing nil for "unknown".
+// stale local failure as the final answer, nor fabricate a completed drain
+// for an outcome it cannot confirm. It must report DrainFailed with a
+// distinct "unknown" error (errLeaseLost's own meaning), matching this
+// repo's existing vocabulary for "someone else has it, nothing further can
+// be learned here" rather than misusing success for "unknown".
 //
 // Deterministic: the steal happens synchronously inside the wrapped
 // NackRunQueueEntry call, not via a background goroutine racing on timing.
 //
 // Revert-check: change the `case current.Status == "leased":` branch in
-// DrainSessionNow's re-check back to `err = nil` and this fails on the
-// require.Error below -- exactly the false success this test exists to
-// catch.
+// DrainSessionNow's re-check back to clearing the ledger entry and this
+// fails on the require.Error below -- exactly the false success this test
+// exists to catch.
 func TestDrainSessionNow_ExternalProcessStealAfterLocalNackReportsUnknown(t *testing.T) {
 	t.Parallel()
 	limitParallel(t)
@@ -159,16 +159,16 @@ func TestDrainSessionNow_ExternalProcessStealAfterLocalNackReportsUnknown(t *tes
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	drained, drainErr := pump.DrainSessionNow(ctx, sess.ID)
+	result, drainErr := pump.DrainSessionNow(ctx, sess.ID)
 
 	require.True(t, wrapped.stolen.Load(), "the external steal must have succeeded (deterministic, not timing-dependent) -- otherwise this test proves nothing")
 	require.Equal(t, int64(1), coord.calls.Load(), "only the one local failing attempt should have run in this process; a second local run would itself be a duplicate-execution bug")
-	require.True(t, drained, "an execution genuinely happened in this process (the failed attempt) -- drained tracks that, independent of err")
-	require.Error(t, drainErr, "the row is now owned by a genuinely different process whose outcome is unknown to this call -- (true, nil) here would be app_run.go's exact false-success contract violation")
+	require.Equal(t, session.DrainFailed, result, "an execution genuinely happened in this process (the failed attempt) -- the row is now owned by a genuinely different process whose outcome is unknown to this call")
+	require.Error(t, drainErr, "a completed drain here would be app_run.go's exact false-success contract violation")
 	require.NotErrorIs(t, drainErr, context.DeadlineExceeded, "must not be conflated with a mere lookup failure")
 	// errLeaseLost is unexported; pin its observable message the same way
 	// p575_background_outcome_handoff_test.go's own lease-loss test does.
-	require.ErrorContains(t, drainErr, "lost lease ownership", "an UNKNOWN outcome (someone else holds the row) must be reported through the same 'nothing further can be learned' vocabulary this package already uses for that meaning, not nil")
+	require.ErrorContains(t, drainErr, "lost lease ownership", "an UNKNOWN outcome (someone else holds the row) must be reported through the same 'nothing further can be learned' vocabulary this package already uses for that meaning, not a fabricated success")
 }
 
 // stealAndTerminalFailOnNackSessions wraps a real session.Service and, the
@@ -203,18 +203,18 @@ func (s *stealAndTerminalFailOnNackSessions) NackRunQueueEntry(ctx context.Conte
 // success: a DIFFERENT process's pump instance takes the row over after
 // this process's own Nack, and TERMINAL-FAILS it (not merely holds it).
 // The row is now permanently deleted and will NEVER be retried by anyone
-// -- reporting (drained=true, err=nil) here would tell the operator their
-// run finished when their accepted work was in fact permanently dropped,
+// -- reporting a completed drain here would tell the operator their run
+// finished when their accepted work was in fact permanently dropped,
 // which is worse than surfacing the stale retryable error it replaces.
 // From DrainSessionNow's own perspective this is indistinguishable from a
-// genuine Ack (both are `current == nil` on re-check -- see this file's
+// genuine Ack (both are current == nil on re-check -- see this file's
 // header and TestDrainSessionNow_ExternalProcessAckAfterLocalNackReportsUnconfirmed's
 // own doc for why), which is exactly why the fix reports the conservative
 // ErrRowOutcomeUnconfirmed for BOTH rather than guessing.
 //
 // Revert-check: change the `case current == nil:` branch in
-// DrainSessionNow's re-check back to `err = nil` and this fails on the
-// require.Error below.
+// DrainSessionNow's re-check back to clearing the ledger entry and this
+// fails on the require.Error below.
 func TestDrainSessionNow_ExternalProcessTerminalFailAfterLocalNackReportsFailure(t *testing.T) {
 	t.Parallel()
 	limitParallel(t)
@@ -233,21 +233,21 @@ func TestDrainSessionNow_ExternalProcessTerminalFailAfterLocalNackReportsFailure
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	drained, drainErr := pump.DrainSessionNow(ctx, sess.ID)
+	result, drainErr := pump.DrainSessionNow(ctx, sess.ID)
 
 	require.True(t, wrapped.terminalFailed.Load(), "the external terminal-fail must have succeeded (deterministic, not timing-dependent) -- otherwise this test proves nothing")
 	require.Equal(t, int64(1), coord.calls.Load(), "only the one local failing attempt should have run in this process")
-	require.True(t, drained, "an execution genuinely happened in this process (the failed attempt) -- drained tracks that, independent of err")
-	require.Error(t, drainErr, "the row was terminal-failed by another process and will NEVER be retried -- (true, nil) here is a false success over permanently lost work, worse than the stale error it replaces")
+	require.Equal(t, session.DrainFailed, result, "an execution genuinely happened in this process (the failed attempt) -- the row was terminal-failed by another process and will NEVER be retried")
+	require.Error(t, drainErr, "a completed drain here is a false success over permanently lost work, worse than the stale error it replaces")
 	require.ErrorIs(t, drainErr, session.ErrRowOutcomeUnconfirmed)
 }
 
 // TestDrainSessionNow_ExternalProcessAckAfterLocalNackReportsUnconfirmed is
 // the control that proves the design decision is deliberate, not merely
 // untested: even a GENUINE Ack by another process (a real, successful
-// commit) reports ErrRowOutcomeUnconfirmed through this call's re-check
-// rather than (drained=true, err=nil) -- because AckRunQueueEntry and
-// TerminalFailRunQueueEntry are both a plain `DELETE ... RETURNING id`
+// commit) reports DrainFailed/ErrRowOutcomeUnconfirmed through this call's
+// re-check rather than a completed drain -- because AckRunQueueEntry and
+// TerminalFailRunQueueEntry are both a plain DELETE ... RETURNING id query
 // (see sql/run_queue.sql), and nothing survives in session_run_queue to
 // tell DrainSessionNow which of the two actually happened once the row is
 // gone. This call genuinely cannot confirm success here, so it must not
@@ -280,12 +280,12 @@ func TestDrainSessionNow_ExternalProcessAckAfterLocalNackReportsUnconfirmed(t *t
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	drained, drainErr := pump.DrainSessionNow(ctx, sess.ID)
+	result, drainErr := pump.DrainSessionNow(ctx, sess.ID)
 
 	require.True(t, wrapped.acked.Load(), "the external ack must have succeeded (deterministic, not timing-dependent) -- otherwise this test proves nothing")
 	require.Equal(t, int64(1), coord.calls.Load(), "only the one local failing attempt should have run in this process")
-	require.True(t, drained, "an execution genuinely happened in this process")
-	require.Error(t, drainErr, "even a genuine external Ack cannot be confirmed as success from this call's own re-check -- Ack and TerminalFail are indistinguishable once the row is gone, and this call must not guess")
+	require.Equal(t, session.DrainFailed, result, "an execution genuinely happened in this process -- even a genuine external Ack cannot be confirmed as success from this call's own re-check")
+	require.Error(t, drainErr, "Ack and TerminalFail are indistinguishable once the row is gone, and this call must not guess")
 	require.ErrorIs(t, drainErr, session.ErrRowOutcomeUnconfirmed)
 }
 

@@ -243,6 +243,43 @@ func runAgentTurnRecovered(
 	}
 }
 
+// drainOutcomeError translates DrainSessionNow's (result, drainErr) pair into the
+// final error that RunNonInteractive should return. It enforces the contract
+// that DrainPartial and DrainFailed must always carry a non-nil drainErr,
+// converting a violation into a wrapped ErrDrainFailureUnspecified so that the
+// run exits non-zero rather than silently treating a nil drain as success.
+func drainOutcomeError(sessID string, result session.DrainResult, drainErr, originalErr error) error {
+	switch result {
+	case session.DrainComplete:
+		// DrainComplete is the ONLY DrainResult DrainSessionNow ever pairs
+		// with a nil error (see its own doc), so drainErr is guaranteed nil
+		// here; asserted defensively rather than trusted blindly.
+		if drainErr != nil {
+			slog.Error("run: DrainSessionNow reported DrainComplete with a non-nil error -- contract violation, treating as failure", "session_id", sessID, "err", drainErr)
+			return drainErr
+		}
+		return nil
+	case session.DrainPartial, session.DrainFailed:
+		// At least one row genuinely executed, but the call did not end in a
+		// full, confirmed success -- surface that as the run's outcome. This
+		// guard closes the consumer-side hole where a nil drainErr would be
+		// forwarded as-is, causing finish(nil) to exit 0 despite a
+		// Partial/Failed result.
+		if drainErr == nil {
+			slog.Error("run: DrainSessionNow reported a partial/failed drain with a nil error -- contract violation, treating as failure", "session_id", sessID, "result", result.String())
+			return fmt.Errorf("%w (session=%s)", session.ErrDrainFailureUnspecified, sessID)
+		}
+		return drainErr
+	default:
+		// session.DrainNoWork: nothing ran here. Either nothing was pending,
+		// or something was but a genuinely different live owner holds the
+		// session. Both cases mean the same thing to this command: no
+		// continuation completed in this process, so the original
+		// cancellation stands. It was real.
+		return originalErr
+	}
+}
+
 // RunNonInteractive runs a single agent turn and writes its result to
 // `output`. See RunMode for the available output shapes.
 func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt string, overrides RunOverrides, hideSpinner bool, mode RunMode, continueSessionID string, useLast bool) error {
@@ -727,7 +764,7 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt 
 			// stale, cancelled-generation result.
 			//
 			// isCanceled gates this deliberately: DrainSessionNow itself is
-			// a no-op (drained=false) when nothing is pending, so a plain
+			// a no-op (DrainNoWork) when nothing is pending, so a plain
 			// user/--timeout cancellation with no durable continuation is
 			// unaffected — the drainDone case below restores the ORIGINAL
 			// runErr in that case, rather than fabricating a success.
@@ -737,67 +774,8 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt 
 			// servicing messageEvents (and ctx.Done()) the whole time.
 			if isCanceled && app.RunQueuePump != nil {
 				go func(originalErr error) {
-					drained, drainErr := app.RunQueuePump.DrainSessionNow(ctx, sess.ID)
-					switch {
-					case drainErr != nil:
-						// The drain itself failed OR only PARTIALLY
-						// completed — surface that as the run's
-						// outcome; it is more actionable than the stale
-						// cancellation it would otherwise replace.
-						//
-						// This is also where task #588/P0-2 of the
-						// 2026-08-19 release-readiness follow-up review
-						// is closed on THIS side of the boundary:
-						// DrainSessionNow can return drained=true with a
-						// non-nil err in two distinct shapes now, and
-						// this case correctly treats BOTH as "not a
-						// clean success" simply by checking drainErr
-						// first —
-						//   - a real accumulated failure from an earlier
-						//     row in the same drain call (retryable,
-						//     terminal, or failed-Ack outcome), or
-						//   - session.ErrDrainIncomplete, when an
-						//     earlier row genuinely committed but a
-						//     LATER row in the same call found the
-						//     session busy/contended before it could run
-						//     — see that sentinel's own doc.
-						// Before this fix, DrainSessionNow's own stopNow
-						// branches discarded err unconditionally in both
-						// shapes, so this case never had anything to
-						// catch — case drained below would fire
-						// instead and report success for a queue that
-						// still had real pending work. This switch's
-						// ordering (drainErr checked before drained) does
-						// not need to change: it was always doing the
-						// right thing GIVEN a correct drainErr — the
-						// fix belongs, and now lives, entirely on
-						// DrainSessionNow's side of the boundary.
-						drainDone <- drainErr
-					case drained:
-						// The durable continuation ran in this process
-						// AND the queue was fully drained (no
-						// session.ErrDrainIncomplete — see the case
-						// above). Its messages already updated
-						// finalText/finalReason/toolCallCounts via the
-						// SAME messageEvents subscription this loop
-						// keeps servicing — finish() just needs a nil
-						// error instead of the original
-						// interrupt-induced cancellation.
-						drainDone <- nil
-					default:
-						// Nothing ran here. Either nothing was pending, or
-						// something was but a genuinely different live owner
-						// holds the session, so the row was released without
-						// an attempt penalty for them (or a later process) to
-						// execute — see DrainSessionNow's own P0-1 note for
-						// why the busy case reports drained=false rather than
-						// the success it used to.
-						//
-						// Both cases mean the same thing to this command: no
-						// continuation completed in this process, so the
-						// original cancellation stands. It was real.
-						drainDone <- originalErr
-					}
+					result, drainErr := app.RunQueuePump.DrainSessionNow(ctx, sess.ID)
+					drainDone <- drainOutcomeError(sess.ID, result, drainErr, originalErr)
 				}(runErr)
 				continue
 			}
