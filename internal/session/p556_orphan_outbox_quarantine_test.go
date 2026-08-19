@@ -129,7 +129,7 @@ func TestOrphanOutbox_PoisonEntryQuarantinesInsteadOfRetryingForever(t *testing.
 		TestDrainTick:  func() time.Duration { return 20 * time.Millisecond },
 	})
 	pump.Start()
-	t.Cleanup(func() { pump.Stop() })
+	stopPumpLoggingForcedShutdown(t, pump)
 
 	// Each drain tick attempts the row, gets a real FK violation from
 	// DrainOrphanOutboxEntry, and counts one attempt against the budget.
@@ -169,13 +169,66 @@ func TestOrphanOutbox_PoisonEntryQuarantinesInsteadOfRetryingForever(t *testing.
 // the permanent FK-violation case covered above.
 type transientBusySessions struct {
 	session.Service
-	busyErr      error
-	failuresLeft atomic.Int32 // written by the pump's background goroutine, read by the test's polling goroutine -- must be atomic
+	busyErr error
+
+	// failuresLeft is written by the pump's background goroutine, read by
+	// the test's polling goroutine -- must be atomic. It gates which call
+	// returns the injected transient error vs falls through to the real
+	// service, but it is NOT a safe thing for a test to poll on by itself
+	// (see transientFailuresIssued below): Add(-1) going negative only
+	// means the 9th (real) call has STARTED, not that the 8 injected
+	// failures have all been durably recorded and nothing else has
+	// happened yet -- by the time a poller observes that transition, the
+	// real 9th call may already have completed and moved the row out of
+	// the orphan outbox entirely, which is a perfectly correct outcome
+	// but not the intermediate state a poller keyed on failuresLeft alone
+	// would expect to observe.
+	failuresLeft atomic.Int32
+
+	// transientFailuresIssued counts calls that actually returned the
+	// injected transient error, incremented BEFORE the return so it is
+	// only ever observed once that specific call's error is already on
+	// its way back to the caller. Task #583 (second attempt): the
+	// original test polled failuresLeft<=0 directly and, once in roughly
+	// 1-in-3 full-package -race runs, observed the row already gone
+	// (drained by the real 9th call, which is a legitimate outcome of
+	// that same failuresLeft transition) instead of still pending with
+	// zero attempts -- both are valid depending on exactly when the
+	// racing 9th call's own transaction lands relative to the test's
+	// read, so failuresLeft<=0 was never a safe signal for "the 8
+	// injected failures happened AND nothing else has yet" in the first
+	// place. Waiting for this counter to reach the injected failure count
+	// is satisfied strictly BEFORE the 9th (non-intercepted) call can
+	// even begin, closing that window instead of just documenting it.
+	transientFailuresIssued atomic.Int32
+
+	// releaseNinthCall, when non-nil, is closed by the test to let the
+	// first non-intercepted (9th) DrainOrphanOutboxEntry call proceed.
+	// Read once failuresLeft has gone negative (i.e. exactly when this
+	// call would otherwise immediately fall through to the real
+	// service), so the row is guaranteed to still reflect only the 8
+	// injected failures for as long as the test chooses to hold the gate
+	// shut. NEEDED because transientFailuresIssued alone is only a lower
+	// bound on when the 9th call could start, not a guarantee about when
+	// a polling goroutine actually observes it -- confirmed directly:
+	// switching this test from polling failuresLeft to polling
+	// transientFailuresIssued (task #583's first fix attempt) narrowed
+	// the original race but did not close it, and the SAME "Expected
+	// value not to be nil" failure reappeared under full-package -race
+	// load with that fix alone in place: the 9th call can start AND
+	// finish in the gap between two polls of a scheduling-starved test
+	// goroutine. This channel is the actual fix -- a real synchronization
+	// point instead of a poll racing wall-clock scheduling.
+	releaseNinthCall chan struct{}
 }
 
 func (s *transientBusySessions) DrainOrphanOutboxEntry(ctx context.Context, id string) (bool, error) {
 	if s.failuresLeft.Add(-1) >= 0 {
+		s.transientFailuresIssued.Add(1)
 		return false, fmt.Errorf("enqueueing to main queue: %w", s.busyErr)
+	}
+	if s.releaseNinthCall != nil {
+		<-s.releaseNinthCall
 	}
 	return s.Service.DrainOrphanOutboxEntry(ctx, id)
 }
@@ -204,7 +257,7 @@ func TestOrphanOutbox_TransientBusyDoesNotCountAgainstBudget(t *testing.T) {
 	// were being counted, the row would quarantine well before this many
 	// ticks. failuresLeft is generous specifically to make that failure
 	// mode visible rather than borderline.
-	wrapped := &transientBusySessions{Service: svc, busyErr: busyErr}
+	wrapped := &transientBusySessions{Service: svc, busyErr: busyErr, releaseNinthCall: make(chan struct{})}
 	wrapped.failuresLeft.Store(8)
 
 	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
@@ -215,22 +268,36 @@ func TestOrphanOutbox_TransientBusyDoesNotCountAgainstBudget(t *testing.T) {
 		TestDrainTick:  func() time.Duration { return 10 * time.Millisecond },
 	})
 	pump.Start()
-	t.Cleanup(func() { pump.Stop() })
+	stopPumpLoggingForcedShutdown(t, pump)
 
-	// Wait for at least 8 drain ticks' worth of wall-clock time so every
-	// injected transient failure has actually been attempted.
+	// Wait for EXACTLY the 8 injected transient failures to have been
+	// ISSUED (their error already returned to the caller). This alone
+	// only bounds the EARLIEST point the 9th (real) call could start --
+	// releaseNinthCall (held shut until this test explicitly closes it,
+	// below) is what actually keeps that 9th call from touching the row
+	// before the read below runs, no matter how long this goroutine
+	// takes to get scheduled. See releaseNinthCall's own doc for why a
+	// poll on transientFailuresIssued alone (task #583's first fix
+	// attempt here) was not sufficient by itself.
 	require.Eventually(t, func() bool {
-		return wrapped.failuresLeft.Load() <= 0
-	}, 3*time.Second, 10*time.Millisecond, "all injected transient failures must have been attempted")
+		return wrapped.transientFailuresIssued.Load() >= 8
+	}, 3*time.Second, 10*time.Millisecond, "all injected transient failures must have been issued")
 
 	// The row must STILL be pending with NO attempts counted -- transient
 	// failures are excluded from the budget entirely, not merely slow to
-	// exhaust it.
+	// exhaust it. Safe to read now: releaseNinthCall is still shut, so the
+	// 9th (real, non-intercepted) call is blocked inside
+	// DrainOrphanOutboxEntry and cannot have touched the row yet.
 	stored, err := svc.GetOrphanOutboxEntry(ctx, "transient-1")
 	require.NoError(t, err)
 	require.NotNil(t, stored, "the row must not have been quarantined or lost")
-	require.Equal(t, "pending", stored.Status, "repeated transient DB contention must never quarantine a healthy row")
-	require.Equal(t, int64(0), stored.Attempts, "transient failures must not be counted against max_attempts at all")
+	require.Equal(t, "pending", stored.Status, "repeated transient DB contention must never quarantine a healthy row (last_error=%q)", stored.LastError.String)
+	require.Equal(t, int64(0), stored.Attempts, "transient failures must not be counted against max_attempts at all (last_error=%q)", stored.LastError.String)
+
+	// Now let the 9th call (and the row's genuine drain to the main
+	// queue) proceed -- the assertions above have already observed the
+	// state they need to, so there is nothing left to protect.
+	close(wrapped.releaseNinthCall)
 
 	// And now that the injected failures are exhausted, the row drains
 	// normally on the very next tick -- proving it was never actually

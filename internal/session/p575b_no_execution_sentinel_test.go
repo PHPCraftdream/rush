@@ -170,7 +170,7 @@ func TestProcessEntry_RacedLeaseNil_DoesNotFalselyDrainAWaiter(t *testing.T) {
 	require.NoError(t, svc.EnqueueRunQueueEntry(context.Background(), "no-exec-raced-lease-idem-1", sess.ID, callData))
 
 	pump.Start()
-	t.Cleanup(func() { pump.Stop() })
+	stopPumpLoggingForcedShutdown(t, pump)
 
 	// Wait for the background tick's processEntry to have been admitted and
 	// be parked inside LeaseRunQueueEntry, holding admission for this

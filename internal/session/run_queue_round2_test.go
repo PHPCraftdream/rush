@@ -293,6 +293,44 @@ func (m *mockCoordinator) Run(ctx context.Context, callData session.SessionAgent
 	return nil, nil
 }
 
+// stopPumpLoggingForcedShutdown registers a t.Cleanup that calls pump.Stop()
+// and logs its return value plus how long the call took.
+//
+// Context (task #583, second attempt): setupTestSession's own t.Cleanup
+// closes the underlying sql.DB unconditionally, ignoring whatever a test's
+// own RunQueuePump.Stop() reports. Production does NOT do this --
+// internal/app/app_lifecycle.go:32-36 checks Stop()'s bool return and
+// deliberately SKIPS the DB close when Stop() reports a forced shutdown
+// ("DB will NOT be closed, in-progress work may be incomplete"), because a
+// forced Stop() means the 5s grace period elapsed while a worker was still
+// touching the DB -- not that the worker actually stopped touching it.
+//
+// Every call site in this package registers its pump cleanup AFTER calling
+// setupTestSession, so t.Cleanup's LIFO order already runs pump.Stop()
+// before sqlDB.Close() in the ordinary case -- but if Stop() itself reports
+// "forced" (true), that ordering guarantee is worthless: a worker goroutine
+// may still be mid-write when this function returns and the very next
+// cleanup (sqlDB.Close()) runs anyway, exactly mirroring production's
+// documented reason for skipping the close in that case.
+//
+// This helper does not change that behavior yet -- it only makes Stop()'s
+// return value observable, so repeated runs can show whether "forced" is
+// ever actually reached under load before deciding whether the test harness
+// needs the same skip-close policy production has.
+func stopPumpLoggingForcedShutdown(t *testing.T, pump *session.RunQueuePump) {
+	t.Helper()
+	t.Cleanup(func() {
+		start := time.Now()
+		forced := pump.Stop()
+		elapsed := time.Since(start)
+		if forced {
+			t.Logf("pump.Stop() FORCED shutdown after %s (a worker was still running when the 5s grace period elapsed -- sqlDB.Close() runs next and may race it)", elapsed)
+		} else {
+			t.Logf("pump.Stop() graceful shutdown after %s", elapsed)
+		}
+	})
+}
+
 // Helper: setup a test session and service
 func setupTestSession(t *testing.T, title string) (*session.Session, session.Service) {
 	// Use file-based database in temp dir to avoid connection pool issues with :memory:

@@ -92,7 +92,7 @@ func TestDrainSessionNow_WaitsForConcurrentBackgroundTick(t *testing.T) {
 		TestTick:       func() time.Duration { return 5 * time.Millisecond },
 	})
 	pump.Start()
-	t.Cleanup(func() { pump.Stop() })
+	stopPumpLoggingForcedShutdown(t, pump)
 
 	callData, err := json.Marshal(map[string]any{"SessionID": sess.ID, "Prompt": "continue"})
 	require.NoError(t, err)

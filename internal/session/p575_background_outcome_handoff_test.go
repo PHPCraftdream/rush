@@ -90,7 +90,7 @@ func oneEntrySetup(t *testing.T, name string, gate *gatedCoordinator) (*session.
 	require.NoError(t, svc.EnqueueRunQueueEntry(context.Background(), name+"-idem-1", sess.ID, callData))
 
 	pump.Start()
-	t.Cleanup(func() { pump.Stop() })
+	stopPumpLoggingForcedShutdown(t, pump)
 
 	select {
 	case <-gate.started:
@@ -203,7 +203,7 @@ func TestDrainSessionNow_WaitedExecution_AckFailureIsSurfaced(t *testing.T) {
 	require.NoError(t, svc.EnqueueRunQueueEntry(context.Background(), "wait-ack-failure-idem-1", sess.ID, callData))
 
 	pump.Start()
-	t.Cleanup(func() { pump.Stop() })
+	stopPumpLoggingForcedShutdown(t, pump)
 
 	select {
 	case <-gate.started:
@@ -287,7 +287,7 @@ func TestDrainSessionNow_WaitedExecution_LeaseLossIsSurfaced(t *testing.T) {
 	require.NoError(t, svc.EnqueueRunQueueEntry(context.Background(), "wait-lease-loss-idem-1", sess.ID, callData))
 
 	pump.Start()
-	t.Cleanup(func() { pump.Stop() })
+	stopPumpLoggingForcedShutdown(t, pump)
 
 	select {
 	case <-gate.started:
