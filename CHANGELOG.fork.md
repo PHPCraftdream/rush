@@ -1931,3 +1931,96 @@ package(s) green, reviewed by an independent agent before landing (per
 Files: too many to list per-commit here — see the individual commit
 messages (`git log --oneline fc55a67a^..4eeb72c3`) and the plan file for
 the full per-item detail.
+
+### 2026-08-19 — two NO-GO reviews worked off (`638bc777` … `3486ee0d`)
+
+Sixteen tasks from two independent release-readiness reviews of the same
+21 commits. Both returned NO-GO; they agreed on the shape of what was
+wrong and disagreed on severity, which is what made the pair useful —
+each caught things the other could not. One reviewed dynamically, by
+reverting production changes and running the tests; the other statically,
+over the same range plus the surrounding paths.
+
+**The six release blockers.**
+
+- `638bc777` — `DrainSessionNow`, on losing the admission race to a
+  same-pump background worker, set `drained=true` and polled until
+  admission cleared without ever learning what that worker produced.
+  "Admission cleared" was read as "a continuation completed here", true
+  for one of five outcomes. `RunNonInteractive` turns `(true, nil)` into
+  exit code 0 with a success envelope, so the other four surfaced to the
+  operator as a finished run over work that had not run, was
+  terminal-failed, or was never committed. Admission now publishes a done
+  channel and the execution's actual outcome; `errNoExecutionAttempted`
+  keeps a bare `nil` from meaning both "committed" and "never ran".
+- `0cd26cb2` — `Message.CheckpointGeneration` was write-only, so a
+  mid-stream message read back as generation 0 against a row carrying N,
+  the conditional update matched nothing, and `Update` returned nil. An
+  operator editing that message got `{"status":"ok"}` over an unchanged
+  row. Hydrated on read; the four editing handlers additionally re-read
+  and compare, but only when the message was mid-stream, because
+  `Update`'s zero-rows-returns-nil contract exists for the checkpoint
+  ticker and is pinned by a P0 test.
+- `ccbd19ce` — sticky WebSocket events were queued after a replay of up
+  to 2000 events into a 512-slot channel that nothing was draining, so
+  they were dropped under exactly the traffic they exist to survive. The
+  shipped test allocated a channel that could never fill. Sticky now goes
+  first and never enters the replay ring at all, which also rules out a
+  superseded copy arriving last and winning.
+- `c4d61a2c` — two rename misses in `web/src/store.ts`, both invisible to
+  `tsc` because the containers are `Record<string, …>`. One left the UI
+  showing a stale model after "inherit"; the other made "send with fast
+  model" send no override at all, so the message ran on the smart model.
+- `9e1d2c60` — the rename's text sweep followed the compiler, so stale
+  slot names survived wherever nothing compiles them: `--help` output
+  that errors when copied, and — worst — the builtin `crush-config` skill
+  and `crush_info.md`, which teach an agent to write a config the new
+  code does not read. Plus a warning on an unrecognised key under
+  `models`, and a mechanical guard so a third round cannot happen the
+  same way.
+- `f627cbac` — the orphan-outbox quarantine charged transient
+  SQLITE_BUSY against the same five-attempt budget as a permanent
+  failure, so lock contention could park healthy queued work at
+  `status='failed'` forever. Its test never reached the production call
+  site: deleting that call left the suite green.
+
+**The rest.** `066ccb8f` watchdog disarmed on every exit rather than the
+success path only, plus the outbox fallback given its own context budget
+instead of the one the failed call had already exhausted. `d6fc736b` one
+config snapshot threaded through agent construction and durable recovery,
+so an agent can no longer be built from two generations. `9048e840`
+`sessions kill` reaches the provider's process group on Unix — keyed by
+the session lock's generation and validated against `/proc` start time
+before signalling, because the first attempt would have `SIGKILL`ed
+whatever had inherited a recycled PID. `7963750e` the ASCII/sqlc and
+slot-name guards mirrored into CI, with a drift check pinned to sqlc
+v1.30.0. `68d14a5e` the delegation transcript reported `(+2 lines)` for
+every write — it was counting the result envelope's own newlines, not
+anything about the file.
+
+**Tests.** `22c6f767` + `0635c631` took the Playwright suite from 181
+passing with a long red tail to **312 passed / 0 failed**. Most of the
+tail was one fixture bug: `makeMessage()` defaults `SessionID` to
+`"sess-1"` while `useWS.ts` correctly drops messages for other sessions,
+so six spec files rendered an empty chat and timed out. Twenty-nine tests
+were deleted as stale — LSP and permission-dialog UI that this fork
+removed — each verified by grep first. `34f80494` fixed the one real UI
+regression the triage exposed: `ChatToolbar` returned null without an
+active session, which `89a07919` introduced while claiming no behaviour
+change. `0bd25e3c` and `3486ee0d` fixed three flaky `internal/session`
+tests, all the same shape: elapsed time used where a happens-before edge
+belonged. Measured at eight concurrent `-race` runs, 15 failures became 0.
+
+**Process note, because it is the reusable part.** Every fix above was
+delegated, and **eight diffs were sent back after the orchestrator
+verified them** — each time for a defect the agent's own report did not
+mention. Three are worth naming: the first drain fix reused `nil` for
+both "committed" and "never executed", recreating the P0 through a
+different door; the first `sessions kill` registry `SIGKILL`ed
+unvalidated PIDs read from a world-writable path, which is worse than the
+leak it fixed; and the first CI guard step would have failed on every
+clean run, because it was exercised under plain `bash` while Actions uses
+`bash -eo pipefail`. All three passed their own tests and read as correct.
+
+Four comments were also found asserting the opposite of what their code
+did, and two claimed revert-checks they never performed.
