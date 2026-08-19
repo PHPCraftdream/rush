@@ -60,6 +60,23 @@ import (
 // cancel/timeout with no durable continuation looks identical to "nothing
 // to drain", and both must leave the caller's original outcome standing).
 //
+// drained=true, err=nil is the ONLY pairing a caller may read as "the
+// continuation fully completed" and use to replace an original cancellation
+// with success. Task #588/P0-2 of the 2026-08-19 release-readiness follow-up
+// review found this pairing was ALSO being produced for a merely PARTIAL
+// drain: classifyBackgroundOutcome's busy/queued/foreign-lock outcome
+// (stopNow=true) used to make both return points here hand back
+// `drained, nil` unconditionally -- discarding whatever err an EARLIER row
+// in the same call had already accumulated, and, even with no prior error,
+// mislabelling "one row ran, then the next hit a busy session" as complete
+// success. With stacked durable rows this is not hypothetical: an OS
+// session lock or in-process mailbox owner can legitimately change hands
+// BETWEEN two rows processed by the SAME DrainSessionNow call. Both stopNow
+// return points now preserve any already-accumulated err verbatim, and
+// promote a still-nil err to ErrDrainIncomplete whenever drained is already
+// true at that point -- see that sentinel's own doc for the exact contract
+// and why drained=false is left untouched.
+//
 // Race against the background tick: LeaseRunQueueEntry is atomic at the DB
 // level, so two callers racing for the same row can never both execute it
 // — but if the background tick wins the race, THIS call's own lease
@@ -146,26 +163,35 @@ func (p *RunQueuePump) DrainSessionNow(ctx context.Context, sessionID string) (d
 		// row B for a session a background worker was already executing row
 		// A for — two executions, one boolean, and whichever finished first
 		// cleared it. See admitSession.
-		releaseSession, _, admitted := p.admitSession(sessionID)
+		releaseSession, otherEntry, admitted := p.admitSession(sessionID)
 		if !admitted {
 			// Something in THIS pump instance is already executing for this
 			// session — the background tick, having won the lease race, or
 			// (in principle) a second concurrent drain call. Wait for its
-			// SPECIFIC outcome via the admissionEntry it published, because
-			// that outcome matters exactly as much as this call's own would
-			// — its messages reach the caller through the same subscription,
-			// and its terminal fate (committed, terminal-failed, ack-failed,
-			// lease-lost, or genuinely just busy) determines whether this
-			// call may report drained=true at all.
+			// SPECIFIC outcome via the admissionEntry admitSession's refusal
+			// just handed back, because that outcome matters exactly as much
+			// as this call's own would — its messages reach the caller
+			// through the same subscription, and its terminal fate
+			// (committed, terminal-failed, ack-failed, lease-lost, or
+			// genuinely just busy) determines whether this call may report
+			// drained=true at all.
 			//
-			// waitForAdmission can return found=false if the other execution
-			// finished and released between admitSession's refusal above and
-			// this read — in that case there is nothing to wait on, so fall
-			// straight through to the top of the loop and retry admission,
-			// exactly as if this had been a spurious wakeup.
-			otherEntry, found := p.waitForAdmission(sessionID)
-			if !found {
-				continue
+			// otherEntry comes from admitSession's OWN refusal branch, read
+			// under the SAME lock as the refusal itself — not from a
+			// separate follow-up lookup. A separate lookup here used to be
+			// exactly how task #587/P0-1's ABA race got in: the entry that
+			// caused this refusal could finish and release, a completely
+			// different execution for the same sessionID could be admitted
+			// in its place, and a follow-up lookup would find and wait on
+			// THAT replacement instead — silently misattributing its outcome
+			// to the execution this call actually lost the race to. Because
+			// otherEntry is returned atomically with the refusal, that
+			// window no longer exists: this is provably the same entry the
+			// refusal observed, full stop. (Nothing needs to be done for a
+			// "not found" case any more, either — the map lookup and the
+			// refusal decision are now the same read.)
+			if p.cfg.TestAfterAdmissionRefusal != nil {
+				p.cfg.TestAfterAdmissionRefusal(sessionID)
 			}
 
 			select {
@@ -195,7 +221,28 @@ func (p *RunQueuePump) DrainSessionNow(ctx context.Context, sessionID string) (d
 				lastErrRowID = ""
 			}
 			if stopNow {
-				return drained, nil
+				// P0-2/task #588: err must NOT be silently discarded here.
+				// This is the SAME accumulated err the loop has been
+				// tracking all along -- if an EARLIER iteration (this call's
+				// own executed-here branch, or an earlier wait) already
+				// recorded a retryable/terminal/Ack-failure outcome, that
+				// outcome is still the truth about this session's queue and
+				// must reach the caller, not be replaced by a bare nil that
+				// looks like success. And even when err is still nil here
+				// (nothing has failed YET), if drained is already true --
+				// meaning some EARLIER row in this loop genuinely executed
+				// and committed cleanly -- reporting (true, nil) is exactly
+				// the false-success class task #588 exists to close: this
+				// row's busy outcome means the queue was NOT fully drained,
+				// only PARTIALLY, and the caller must not read that as "the
+				// continuation is complete". See ErrDrainIncomplete's own
+				// doc for the full contract and why drained=false is
+				// deliberately left alone (unaffected pre-existing "nothing
+				// happened" case).
+				if err == nil && drained {
+					err = ErrDrainIncomplete
+				}
+				return drained, err
 			}
 			continue
 		}
@@ -358,9 +405,26 @@ func (p *RunQueuePump) DrainSessionNow(ctx context.Context, sessionID string) (d
 				// iteration of this loop genuinely executed something.
 				//
 				// Waiting for a stranger's turn to finish is not this call's
-				// job either: stop, and let the caller's original outcome
-				// stand for whatever wasn't drained.
-				return drained, nil
+				// job either: stop, and report the truth about this
+				// session's queue instead of a bare nil that looks like
+				// success.
+				//
+				// P0-2/task #588: err must NOT be silently discarded here,
+				// for exactly the same reason as the wait branch above --
+				// see ErrDrainIncomplete's own doc. An earlier iteration in
+				// THIS SAME loop may have already recorded a real failure
+				// (err != nil: preserved as-is, already non-nil so already
+				// not a success), or may have committed a row cleanly
+				// (drained=true, err still nil: this row's busy outcome
+				// means the queue was only PARTIALLY drained, so err is
+				// promoted to ErrDrainIncomplete instead of staying nil).
+				// drained=false + err=nil (nothing has run in this call at
+				// all yet) is left alone -- the pre-existing, still-correct
+				// "nothing happened here" contract every caller depends on.
+				if err == nil && drained {
+					err = ErrDrainIncomplete
+				}
+				return drained, err
 			}
 			continue // more may be pending (e.g. a second stacked interrupt) — loop and check again
 		}

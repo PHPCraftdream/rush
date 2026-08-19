@@ -63,10 +63,30 @@ type admissionEntry struct {
 }
 
 // admitSession atomically reserves sessionID for exactly one execution by
-// this pump instance. It returns a release function, the admissionEntry that
-// was just published for it, and whether admission was granted; release and
-// entry are nil when admission was refused — see waitForAdmission to obtain
-// the CURRENT holder's entry in that case.
+// this pump instance. It returns a release function, an admissionEntry, and
+// whether admission was granted.
+//
+//   - admitted=true: entry is the one just published for THIS caller's own
+//     execution; release is that caller's closure.
+//   - admitted=false: release is nil (a refused caller must never be able to
+//     clear someone else's marker), and entry is the CURRENT holder's entry
+//     — the exact one this call lost the race to — read atomically in the
+//     SAME critical section as the refusal itself.
+//
+// The refused case used to return (nil, nil, false) and make the caller
+// perform a SEPARATE waitForAdmission lookup afterward. That reopened an ABA
+// race this function exists to close: between the refusal returning and the
+// follow-up lookup running, the entry that caused the refusal could finish
+// and release (deleting itself from p.inFlight), and a completely different
+// execution for the SAME sessionID could be admitted and registered in its
+// place. The follow-up lookup would then find and wait on that REPLACEMENT
+// entry, silently misattributing its outcome — including its terminal
+// failure, Ack failure, or lease loss — to the execution the caller actually
+// lost the race to (task #587/P0-1 of the 2026-08-19 release-readiness
+// follow-up review). Returning the observed entry directly, from inside the
+// same lock as the refusal, leaves no window for that swap: whatever this
+// call reports having lost to is provably the SAME entry a caller goes on to
+// wait on.
 //
 // This exists because a plain "check the map, then later write the map" is
 // only safe when there is a single sequential caller, and there are two
@@ -108,8 +128,13 @@ func (p *RunQueuePump) admitSession(sessionID string) (release func(outcome erro
 	p.inFlightMu.Lock()
 	defer p.inFlightMu.Unlock()
 
-	if _, busy := p.inFlight[sessionID]; busy {
-		return nil, nil, false
+	if existing, busy := p.inFlight[sessionID]; busy {
+		// Read and return the CURRENT holder's entry from inside the SAME
+		// critical section as the refusal itself — see this function's own
+		// doc for why a separate lookup after the fact reopens an ABA race
+		// (task #587/P0-1). There is no window here in which `existing`
+		// could stop being the entry that caused this exact refusal.
+		return nil, existing, false
 	}
 	e := &admissionEntry{done: make(chan struct{})}
 	p.inFlight[sessionID] = e
@@ -129,25 +154,6 @@ func (p *RunQueuePump) admitSession(sessionID string) (release func(outcome erro
 	}, e, true
 }
 
-// waitForAdmission returns the admissionEntry currently published for
-// sessionID, if any — the entry a concurrent admitSession call for the same
-// session lost the race against. Returns found=false once nothing is
-// currently admitted for the session (the caller should retry admitSession
-// itself in that case, not assume anything about what happened while it was
-// busy).
-//
-// Read-only, and deliberately not a substitute for admitSession's
-// check-and-mark: this only lets an ALREADY-REFUSED caller find the specific
-// entry to wait on. A caller that has not yet attempted admission must still
-// go through admitSession, or it recreates the same "check, then act" gap
-// admitSession itself exists to close.
-func (p *RunQueuePump) waitForAdmission(sessionID string) (entry *admissionEntry, found bool) {
-	p.inFlightMu.Lock()
-	defer p.inFlightMu.Unlock()
-	e, ok := p.inFlight[sessionID]
-	return e, ok
-}
-
 // AdmitSessionForTest exposes admitSession to the package's external test
 // binary (package session_test), so the gate's two properties — exclusivity,
 // and that only the admitted caller can clear the marker — can be asserted
@@ -158,4 +164,51 @@ func (p *RunQueuePump) waitForAdmission(sessionID string) (entry *admissionEntry
 func (p *RunQueuePump) AdmitSessionForTest(sessionID string) (release func(outcome error), admitted bool) {
 	rel, _, ok := p.admitSession(sessionID)
 	return rel, ok
+}
+
+// AdmissionEntryHandleForTest is an opaque, exported handle around the
+// package-private admissionEntry, letting the external test binary
+// (package session_test) hold a reference to a SPECIFIC entry across
+// multiple calls and block on its completion — without exposing
+// admissionEntry's internals generally.
+type AdmissionEntryHandleForTest struct {
+	e *admissionEntry
+}
+
+// Done returns the channel that closes when the referenced execution
+// releases (see admissionEntry.done's own doc). Test-only.
+func (h AdmissionEntryHandleForTest) Done() <-chan struct{} {
+	return h.e.done
+}
+
+// Err returns the referenced execution's outcome. Only valid to call after
+// Done() has closed — mirrors admissionEntry.err's own happens-before
+// contract. Test-only.
+func (h AdmissionEntryHandleForTest) Err() error {
+	return h.e.err
+}
+
+// AdmitSessionObservedEntryForTest exposes admitSession's REFUSED-branch
+// return value (the observed current holder's entry) to the package's
+// external test binary, so task #587/P0-1's atomic-handoff contract — the
+// refusal returns the SAME entry a caller goes on to wait on, with no
+// separate lookup in between — can be asserted directly.
+//
+// Test-only seam. Nothing in production calls it.
+func (p *RunQueuePump) AdmitSessionObservedEntryForTest(sessionID string) (entry AdmissionEntryHandleForTest, admitted bool) {
+	_, e, ok := p.admitSession(sessionID)
+	return AdmissionEntryHandleForTest{e: e}, ok
+}
+
+// SetTestAfterAdmissionRefusalForTest installs (or clears, with nil) the
+// TestAfterAdmissionRefusal hook on an already-constructed pump, so a test
+// can wire the hook up only once it has values (e.g. an admissionEntry
+// handle, an error) that are only available after Start() and the
+// background execution it is racing against have already begun. See
+// RunQueuePumpConfig.TestAfterAdmissionRefusal's own doc for what the hook
+// is for.
+//
+// Test-only seam. Nothing in production calls it.
+func (p *RunQueuePump) SetTestAfterAdmissionRefusalForTest(hook func(sessionID string)) {
+	p.cfg.TestAfterAdmissionRefusal = hook
 }

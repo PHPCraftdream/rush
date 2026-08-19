@@ -740,20 +740,49 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt 
 					drained, drainErr := app.RunQueuePump.DrainSessionNow(ctx, sess.ID)
 					switch {
 					case drainErr != nil:
-						// The drain itself failed (ctx expired, a poison
-						// entry exceeded max attempts, a DB error) —
-						// surface that as the run's outcome; it is more
-						// actionable than the stale cancellation it would
-						// otherwise replace.
+						// The drain itself failed OR only PARTIALLY
+						// completed — surface that as the run's
+						// outcome; it is more actionable than the stale
+						// cancellation it would otherwise replace.
+						//
+						// This is also where task #588/P0-2 of the
+						// 2026-08-19 release-readiness follow-up review
+						// is closed on THIS side of the boundary:
+						// DrainSessionNow can return drained=true with a
+						// non-nil err in two distinct shapes now, and
+						// this case correctly treats BOTH as "not a
+						// clean success" simply by checking drainErr
+						// first —
+						//   - a real accumulated failure from an earlier
+						//     row in the same drain call (retryable,
+						//     terminal, or failed-Ack outcome), or
+						//   - session.ErrDrainIncomplete, when an
+						//     earlier row genuinely committed but a
+						//     LATER row in the same call found the
+						//     session busy/contended before it could run
+						//     — see that sentinel's own doc.
+						// Before this fix, DrainSessionNow's own stopNow
+						// branches discarded err unconditionally in both
+						// shapes, so this case never had anything to
+						// catch — case drained below would fire
+						// instead and report success for a queue that
+						// still had real pending work. This switch's
+						// ordering (drainErr checked before drained) does
+						// not need to change: it was always doing the
+						// right thing GIVEN a correct drainErr — the
+						// fix belongs, and now lives, entirely on
+						// DrainSessionNow's side of the boundary.
 						drainDone <- drainErr
 					case drained:
-						// The durable continuation ran in this process.
-						// Its messages already updated finalText/
-						// finalReason/toolCallCounts via the SAME
-						// messageEvents subscription this loop keeps
-						// servicing — finish() just needs a nil error
-						// instead of the original interrupt-induced
-						// cancellation.
+						// The durable continuation ran in this process
+						// AND the queue was fully drained (no
+						// session.ErrDrainIncomplete — see the case
+						// above). Its messages already updated
+						// finalText/finalReason/toolCallCounts via the
+						// SAME messageEvents subscription this loop
+						// keeps servicing — finish() just needs a nil
+						// error instead of the original
+						// interrupt-induced cancellation.
 						drainDone <- nil
 					default:
 						// Nothing ran here. Either nothing was pending, or

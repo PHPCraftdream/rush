@@ -210,6 +210,37 @@ var errLeaseLost = errors.New("run_queue_pump: lost lease ownership mid-executio
 // processEntry's deferred release already promised.
 var errNoExecutionAttempted = errors.New("run_queue_pump: admission was held but no execution was attempted")
 
+// ErrDrainIncomplete is returned by DrainSessionNow when this call stops
+// because the session became busy/contended (a genuinely different live
+// owner, or a foreign session lock) AFTER at least one earlier row in the
+// SAME call already executed and committed cleanly (drained=true, no error
+// of its own). Task #588/P0-2 of the 2026-08-19 release-readiness follow-up
+// review found DrainSessionNow's stopNow branches collapsing this case to
+// (drained=true, err=nil) -- indistinguishable from "the whole continuation
+// finished" to app_run.go's RunNonInteractive, which converts exactly that
+// pair into exit code 0 with a success envelope (see app_run.go's `finish`
+// closure). With stacked durable rows, a session lock or mailbox owner can
+// legitimately change hands BETWEEN two rows in the same DrainSessionNow
+// call -- row A genuinely executes, then row B finds the session busy
+// before this call gets to it. Reporting unconditional success in that case
+// tells the operator their run finished when a real, still-pending row (B)
+// was left completely untouched.
+//
+// drained stays true (a row DID run) but err is no longer nil, so
+// app_run.go can no longer treat this outcome as a clean continuation --
+// see that file's own consumption of DrainSessionNow for how it now
+// distinguishes "genuinely nothing left to drain" (drained=false, err=nil,
+// unaffected by this sentinel) from "some rows ran, but the queue was not
+// fully drained" (drained=true, err=ErrDrainIncomplete).
+//
+// Deliberately NOT returned when drained is still false at the point
+// stopNow fires: a session that was busy from the very first row this call
+// looked at has nothing more to say than the pre-existing (false, nil)
+// "nothing happened here" contract already covers -- that case is not new
+// and every existing caller/test already depends on it staying (false,
+// nil).
+var ErrDrainIncomplete = errors.New("run_queue_pump: session became busy/contended after only part of its pending run-queue work was drained")
+
 // RunQueuePumpConfig configures a RunQueuePump instance.
 type RunQueuePumpConfig struct {
 	// Sessions is the session service for enqueue/lease/ack operations.
@@ -274,6 +305,24 @@ type RunQueuePumpConfig struct {
 	// this small (sub-millisecond) to observe the race deterministically
 	// without a real wall-clock wait.
 	TestDrainSessionPollInterval time.Duration
+
+	// TestAfterAdmissionRefusal is a test seam invoked by DrainSessionNow
+	// exactly once per loop iteration in which admitSession refuses
+	// admission — called with the sessionID, AFTER admitSession has
+	// returned but BEFORE the wait on otherEntry.done begins. nil = no-op
+	// (production default).
+	//
+	// Exists to deterministically provoke the ABA race task #587/P0-1
+	// closed: a test can use this hook to release the entry that caused
+	// the refusal and admit a REPLACEMENT entry for the same session
+	// before DrainSessionNow proceeds to wait, proving DrainSessionNow
+	// still waits on (and reports the outcome of) the ORIGINAL entry it
+	// was atomically handed, not whatever now happens to occupy
+	// p.inFlight[sessionID]. Without this hook, provoking that exact
+	// interleaving would require a wall-clock sleep sized to guess when
+	// DrainSessionNow is "between" the refusal and the wait — inherently
+	// racy and either flaky or too slow to run routinely.
+	TestAfterAdmissionRefusal func(sessionID string)
 }
 
 // leaseTTL returns the effective lease TTL for this pump instance —
