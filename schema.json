@@ -61,7 +61,14 @@
             "$ref": "#/$defs/SelectedModel"
           },
           "type": "object",
-          "description": "Model configurations for different model types"
+          "description": "Model configurations for different model types (smart, fast, worker, reviewer)"
+        },
+        "model_presets": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ModelPreset"
+          },
+          "type": "object",
+          "description": "Named (smart, fast) model pairs swappable with 'crush models preset use'"
         },
         "providers": {
           "additionalProperties": {
@@ -73,10 +80,6 @@
         "mcp": {
           "$ref": "#/$defs/MCPs",
           "description": "Model Context Protocol server configurations"
-        },
-        "lsp": {
-          "$ref": "#/$defs/LSPs",
-          "description": "Language Server Protocol configurations"
         },
         "options": {
           "$ref": "#/$defs/Options",
@@ -129,88 +132,6 @@
       "required": [
         "command"
       ]
-    },
-    "LSPConfig": {
-      "properties": {
-        "disabled": {
-          "type": "boolean",
-          "description": "Whether this LSP server is disabled",
-          "default": false
-        },
-        "command": {
-          "type": "string",
-          "description": "Command to execute for the LSP server",
-          "examples": [
-            "gopls"
-          ]
-        },
-        "args": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array",
-          "description": "Arguments to pass to the LSP server command"
-        },
-        "env": {
-          "additionalProperties": {
-            "type": "string"
-          },
-          "type": "object",
-          "description": "Environment variables to set to the LSP server command"
-        },
-        "filetypes": {
-          "items": {
-            "type": "string",
-            "examples": [
-              "go",
-              "mod",
-              "rs",
-              "c",
-              "js",
-              "ts"
-            ]
-          },
-          "type": "array",
-          "description": "File types this LSP server handles"
-        },
-        "root_markers": {
-          "items": {
-            "type": "string",
-            "examples": [
-              "go.mod",
-              "package.json",
-              "Cargo.toml"
-            ]
-          },
-          "type": "array",
-          "description": "Files or directories that indicate the project root"
-        },
-        "init_options": {
-          "type": "object",
-          "description": "Initialization options passed to the LSP server during initialize request"
-        },
-        "options": {
-          "type": "object",
-          "description": "LSP server-specific settings passed during initialization"
-        },
-        "timeout": {
-          "type": "integer",
-          "description": "Timeout in seconds for LSP server initialization",
-          "default": 30,
-          "examples": [
-            60,
-            120
-          ]
-        }
-      },
-      "additionalProperties": false,
-      "type": "object"
-    },
-    "LSPs": {
-      "additionalProperties": {
-        "$ref": "#/$defs/LSPConfig"
-      },
-      "type": "object"
     },
     "MCPConfig": {
       "properties": {
@@ -392,6 +313,41 @@
       "additionalProperties": false,
       "type": "object"
     },
+    "ModelPreset": {
+      "properties": {
+        "smart": {
+          "$ref": "#/$defs/SelectedModel",
+          "description": "Smart (strong) slot for this preset"
+        },
+        "fast": {
+          "$ref": "#/$defs/SelectedModel",
+          "description": "Fast (cheap) slot for this preset"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "OAuthClient": {
+      "properties": {
+        "client_id": {
+          "type": "string"
+        },
+        "client_secret": {
+          "type": "string"
+        },
+        "auth_url": {
+          "type": "string"
+        },
+        "token_url": {
+          "type": "string"
+        },
+        "auth_style": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
     "Options": {
       "properties": {
         "context_paths": {
@@ -434,11 +390,6 @@
         "debug": {
           "type": "boolean",
           "description": "Enable debug logging",
-          "default": false
-        },
-        "debug_lsp": {
-          "type": "boolean",
-          "description": "Enable debug logging for LSP servers",
           "default": false
         },
         "disable_auto_summarize": {
@@ -495,11 +446,6 @@
             "docs/LLMs.md"
           ]
         },
-        "auto_lsp": {
-          "type": "boolean",
-          "description": "Automatically setup LSPs based on root markers",
-          "default": true
-        },
         "progress": {
           "type": "boolean",
           "description": "Show indeterminate progress updates during long operations",
@@ -519,10 +465,85 @@
           },
           "type": "array",
           "description": "List of skill names to disable and hide from the agent"
+        },
+        "allow_private_network_fetch": {
+          "type": "boolean",
+          "description": "Allow download/fetch/web tools to reach loopback/private/link-local network addresses. Off by default as an SSRF defense-in-depth measure; enable only for trusted local-dev/self-hosted use.",
+          "default": false
+        },
+        "stream_idle_timeout_seconds": {
+          "type": "integer",
+          "description": "Override the stream watchdog idle timeout in seconds. Default 600 (10 min). Raise further for extreme extended-thinking models that pause longer than 10 min mid-reasoning; lower (e.g. 180) for the old aggressive behaviour. 0 = use default.",
+          "default": 0,
+          "examples": [
+            900
+          ]
+        },
+        "stream_tool_timeout_seconds": {
+          "type": "integer",
+          "description": "Max seconds a single tool may run while the stream watchdog is paused before it force-cancels the turn (never-freeze backstop). Omit to use the built-in default (2700s = 45m). Raise for very long synchronous tools.",
+          "default": 0,
+          "examples": [
+            3600
+          ]
+        },
+        "stream_stall_retries": {
+          "type": "integer",
+          "description": "Number of automatic retries after a transient provider failure (stream stall, empty stream, overload, 5xx, network). Omit to use the default (2 retries, 3 total attempts). 0 = disabled. Operator-actionable failures (quota, auth, context overflow) always surface immediately. Exponential backoff: 10s, 30s, 90s.",
+          "examples": [
+            3
+          ]
+        },
+        "checkpoint_interval_seconds": {
+          "type": "integer",
+          "description": "Mid-stream auto-checkpoint interval in seconds. Flushes in-progress assistant text to DB so SIGTERM during final composition does not lose work. Default 2. 0 = use default. -1 = disable.",
+          "default": 0,
+          "examples": [
+            5
+          ]
+        },
+        "keep_alive_enabled": {
+          "type": "boolean",
+          "description": "Web UI WebAudio keep-alive: emits an inaudible loop so Bluetooth headphones do not auto-suspend during long agent runs. Default true. Set false to disable.",
+          "default": true
+        },
+        "notify_on_background_job_done": {
+          "type": "boolean",
+          "description": "Push a completion message into the session when a background command finishes (web/interactive). Default true. Set false to disable.",
+          "default": true
+        },
+        "auto_resume_on_job_done": {
+          "type": "boolean",
+          "description": "Autonomously resume an idle session when a background job finishes (web/interactive). Default false (opt-in). Bounded by an internal consecutive-resume cap",
+          "default": false
         }
       },
       "additionalProperties": false,
       "type": "object"
+    },
+    "PeakHoursWindow": {
+      "properties": {
+        "start": {
+          "type": "string",
+          "description": "Window start in local time HH:MM",
+          "examples": [
+            "09:00"
+          ]
+        },
+        "end": {
+          "type": "string",
+          "description": "Window end in local time HH:MM",
+          "examples": [
+            "18:00"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "start",
+        "end"
+      ]
     },
     "Permissions": {
       "properties": {
@@ -574,10 +595,19 @@
           "enum": [
             "openai",
             "openai-compat",
+            "openrouter",
+            "vercel",
             "anthropic",
-            "gemini",
+            "google",
             "azure",
-            "vertexai"
+            "bedrock",
+            "google-vertex",
+            "hyper",
+            "litellm",
+            "llamacpp",
+            "lmstudio",
+            "ollama",
+            "omlx"
           ],
           "description": "Provider type that determines the API format",
           "default": "openai"
@@ -621,12 +651,21 @@
           "type": "boolean",
           "description": "Flat-rate mode for this provider"
         },
+        "discover_models": {
+          "type": "boolean",
+          "description": "Auto-discover models from /v1/models endpoint. When true with existing models they are merged (yours win)",
+          "default": true
+        },
         "models": {
           "items": {
             "$ref": "#/$defs/Model"
           },
           "type": "array",
           "description": "List of models available from this provider"
+        },
+        "peak_hours": {
+          "$ref": "#/$defs/PeakHoursWindow",
+          "description": "Optional local-time window during which this provider is refused. Times are HH:MM in the machine local clock, no timezone, no weekday mask. Overnight window (start \u003e end) wraps past midnight. Absent = feature off."
         }
       },
       "additionalProperties": false,
@@ -641,26 +680,26 @@
         },
         "allow_tools": {
           "items": {
-            "type": "string"
+            "type": "string",
+            "examples": [
+              "view",
+              "edit:write"
+            ]
           },
           "type": "array",
-          "description": "Non-bash tools (or tool:action pairs) auto-approved in restricted run mode. Entries for 'bash' / 'bash:execute' are ignored — use allow_bash for command-level bash control.",
-          "examples": [
-            "view",
-            "edit:write"
-          ]
+          "description": "Non-bash tools (or tool:action pairs) auto-approved in restricted run mode. Entries for 'bash' / 'bash:execute' are ignored — use allow_bash for command-level bash control."
         },
         "allow_bash": {
           "items": {
-            "type": "string"
+            "type": "string",
+            "examples": [
+              "git diff",
+              "glob:ls *",
+              "regex:^go (test|build)"
+            ]
           },
           "type": "array",
-          "description": "Bash command patterns permitted in restricted run mode. Forms: 'cmd args' (word-boundary prefix), 'exact:cmd', 'glob:pat' (only * and ? are special, cross-platform), 'regex:pat'. Every form except regex rejects compound commands (chaining, backgrounding, or substitution), so a permissive pattern cannot smuggle a second command.",
-          "examples": [
-            "git diff",
-            "glob:ls *",
-            "regex:^go (test|build)"
-          ]
+          "description": "Bash command patterns permitted in restricted run mode. Forms: 'cmd args' (word-boundary prefix), 'exact:cmd', 'glob:pat' (only * and ? are special, cross-platform), 'regex:pat'. Every form except regex rejects compound commands (chaining, backgrounding, or substitution), so a permissive pattern cannot smuggle a second command."
         }
       },
       "additionalProperties": false,
@@ -760,6 +799,14 @@
           ],
           "description": "Diff mode for the TUI interface"
         },
+        "theme": {
+          "type": "string",
+          "enum": [
+            "dark",
+            "light"
+          ],
+          "description": "Color theme override"
+        },
         "completions": {
           "$ref": "#/$defs/Completions",
           "description": "Completions UI options"
@@ -786,13 +833,15 @@
         },
         "expires_at": {
           "type": "integer"
+        },
+        "client": {
+          "$ref": "#/$defs/OAuthClient"
         }
       },
       "additionalProperties": false,
       "type": "object",
       "required": [
         "access_token",
-        "refresh_token",
         "expires_in",
         "expires_at"
       ]

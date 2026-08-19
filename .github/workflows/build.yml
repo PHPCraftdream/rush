@@ -26,6 +26,53 @@ jobs:
           go-version-file: go.mod
       - run: go mod tidy
       - run: git diff --exit-code
+      # Fork-only guards mirrored from .githooks/pre-push. Run once (ubuntu
+      # leg only) — they are pure text/byte checks with no OS-specific
+      # behavior, so tripling them across the matrix would only triple the
+      # cost, not the coverage. See .githooks/pre-push for the full
+      # rationale on why each of these exists; keep both in sync with it.
+      - name: internal/db/sql is ASCII-only (sqlc miscounts spans around multi-byte comments)
+        if: matrix.os == 'ubuntu-latest'
+        # GitHub Actions runs `run:` blocks with no `shell:` key on Linux as
+        # `bash --noprofile --norc -eo pipefail {0}` -- NOT plain bash. Under
+        # `-e`, `offenders="$(grep -l ... )"; rc=$?` aborts the step the
+        # instant grep's command substitution exits non-zero (the clean-tree
+        # case, since grep -l with no matches exits 1) -- `rc=$?` is never
+        # reached, so the step is red on every clean run and can never
+        # distinguish clean from violating. Putting the same command
+        # substitution inside an `if` condition sidesteps this: POSIX
+        # exempts the commands that make up an if/while/until/&&/||
+        # condition from errexit, so `grep`'s exit status only ever reaches
+        # `[ -n "$offenders" ]`, never aborts the shell. This mirrors how
+        # .githooks/pre-push already spells the same check (that hook runs
+        # under plain bash via `bash .githooks/pre-push`, so `-e` never
+        # applied there -- but the if-condition form is correct under both).
+        run: |
+          if offenders="$(grep -lP "[^[:ascii:]]" internal/db/sql/*.sql 2>/dev/null)" && [ -n "$offenders" ]; then
+            printf '\033[31mnon-ASCII bytes in:\033[0m\n%s\n' "$offenders"
+            echo "::error::a non-ASCII character in a .sql file silently corrupts sqlc codegen -- replace it with an ASCII equivalent"
+            exit 1
+          fi
+      - name: no stale large/small model-slot spelling (renamed to smart/fast)
+        if: matrix.os == 'ubuntu-latest'
+        run: bash .githooks/check_stale_model_slots.sh
+      # Regenerate the sqlc output and fail if it drifts from what's
+      # committed. Pinned to v1.30.0 — the exact version this repo's own
+      # sqlc.yaml targets and whose byte/rune span-counting bug the ASCII
+      # guard above exists to route around; a different sqlc version can
+      # produce spurious diffs unrelated to any real drift.
+      - name: install sqlc (pinned, matches sqlc.yaml / the ASCII guard's target version)
+        if: matrix.os == 'ubuntu-latest'
+        run: go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.30.0
+      - name: sqlc generate produces no diff (committed internal/db/*.sql.go matches internal/db/sql/*.sql)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          set -uo pipefail
+          "$(go env GOPATH)/bin/sqlc" generate
+          git diff --exit-code -- internal/db/ || {
+            echo "::error::internal/db/*.sql.go is stale relative to internal/db/sql/*.sql -- run 'sqlc generate' and commit the result"
+            exit 1
+          }
       - run: go build -race ./...
       # -short skips VCR/network integration tests (TestCoderAgent) whose
       # cassettes need a Charm hyper key to re-record — unavailable on the fork.

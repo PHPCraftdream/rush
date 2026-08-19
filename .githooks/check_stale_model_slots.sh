@@ -165,6 +165,32 @@
 # widened this guard.
 set -uo pipefail
 
+# Deliberately NOT `set -e`: this script is invoked two ways -- directly by
+# .githooks/pre-push (plain `bash .githooks/check_stale_model_slots.sh`,
+# no -e) and, as of the F12 CI hardening, by .github/workflows/build.yml's
+# "no stale large/small model-slot spelling" step, which itself runs under
+# GitHub Actions' default `bash --noprofile --norc -eo pipefail {0}` for a
+# `run:` block with no `shell:` override -- but that parent -e does NOT
+# propagate into this script, because it is invoked as a fresh `bash
+# <file>` subprocess, not sourced or inlined. Each invocation is governed
+# solely by this file's own `set` line.
+#
+# If `-e` is ever added here, `matches="$(git grep ... )"` below would
+# abort the script the instant `git grep` finds zero raw matches (exit 1)
+# -- the exact bug this repo's ASCII .sql guard shipped with once already
+# (see build.yml's history / .githooks/pre-push's comment on that guard).
+# It happens to not misfire *today* only because the current tree always
+# has at least one raw match for $PATTERN (the allow-listed README "batch
+# 11" note and the two `stale-slot-ok`-marked test comments in
+# web/tests/model-switch.spec.ts) -- git grep's own exit status is
+# irrelevant to this script's PASS/FAIL verdict, which is decided later by
+# the stale-slot-ok filtering loop, not by `matches`' assignment succeeding.
+# That is a coincidence of the current corpus, not a guarantee: if those
+# allow-listed strings are ever removed, `-e` would make this script
+# false-fail (or worse, silently skip real offenders) on a run where it
+# should legitimately report zero. Keep this line un-guarded by `-e`, or
+# rewrite it as `if matches="$(...)" ; then` first.
+
 cd "$(git rev-parse --show-toplevel)" || exit 1
 
 STRICT='(--large|--small|models\??\.large\>|models\??\.small\>|"large"|"small")'
