@@ -7,10 +7,69 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"reflect"
 
 	appPkg "github.com/charmbracelet/crush/internal/app"
 	"github.com/charmbracelet/crush/internal/message"
 )
+
+// updateMessageAndVerify wraps a.Messages.Update for the four message-part
+// editing handlers below (update content, update thinking, delete part,
+// update part). It exists because Update's own return value is not a
+// trustworthy signal for these callers.
+//
+// Update deliberately routes a message that still carries a Partial Finish
+// part (i.e. one loaded off a row the checkpoint ticker still owns --
+// mid-stream, not yet terminally finished) through
+// UpdateMessageIfNotTerminal, a conditional write fenced on
+// checkpoint_generation and finished_at. When that fence is legitimately
+// lost -- a newer checkpoint generation or a concurrent terminal finish won
+// the race -- the write affects zero rows and Update returns nil: this is a
+// pinned, deliberate contract (see TestCheckpointFencing_P0_4Regression in
+// internal/agent/agent_checkpoint_test.go and
+// TestUpdate_TerminalWriteStillWinsOverAnyGeneration /
+// TestUpdate_StaleCheckpointGenerationCannotOverwriteNewer in
+// internal/message/p555_checkpoint_generation_test.go) that exists FOR the
+// auto-checkpoint ticker: a hung/stale checkpoint write racing a real finish
+// must be a silent no-op, not a turn-failing error, because the ticker
+// cannot distinguish "lost a legitimate race" from any other outcome and
+// must keep going regardless.
+//
+// The four WS editing handlers hit the exact same conditional-write branch
+// whenever the message a user is editing happens to still be mid-stream
+// (Get returned a row with a Partial Finish part) -- but unlike the ticker,
+// they are not best-effort: an operator's edit that is reported as "ok"
+// must actually be in the row (task #569 / release-blocker F1: this used to
+// silently vanish). Changing what Update returns to fix that would break
+// the pinned ticker contract for every caller, including the ticker itself,
+// so instead this helper re-reads the row ONLY when the message being
+// written was mid-stream (m.IsPartial()) -- the sole condition under which
+// Update's conditional branch can silently no-op -- and compares Parts
+// against what was just sent. A normal (non-streaming) edit takes zero
+// extra reads.
+func updateMessageAndVerify(ctx context.Context, a *appPkg.App, c *Client, msgID string, m message.Message) bool {
+	wasPartial := m.IsPartial()
+	if err := a.Messages.Update(ctx, m); err != nil {
+		c.reply(msgID, EventError, nil, err.Error())
+		return false
+	}
+	if !wasPartial {
+		return true
+	}
+	// m was mid-stream: Update may have silently lost the checkpoint fence
+	// (0 rows affected, nil error -- the ticker's contract). Re-read and
+	// confirm the parts we just sent are actually the parts now stored.
+	stored, err := a.Messages.Get(ctx, m.ID)
+	if err != nil {
+		c.reply(msgID, EventError, nil, err.Error())
+		return false
+	}
+	if !reflect.DeepEqual(stored.Parts, m.Parts) {
+		c.reply(msgID, EventError, nil, "message is still streaming and changed before this edit could be saved; please retry")
+		return false
+	}
+	return true
+}
 
 func handleLoadMessages(ctx context.Context, a *appPkg.App, c *Client, msg WSMessage) {
 	var p LoadMessagesPayload
@@ -93,8 +152,7 @@ func handleUpdateMessageContent(ctx context.Context, a *appPkg.App, c *Client, m
 		newParts = append([]message.ContentPart{message.TextContent{Text: p.Content}}, newParts...)
 	}
 	m.Parts = newParts
-	if err := a.Messages.Update(ctx, m); err != nil {
-		c.reply(msg.ID, EventError, nil, err.Error())
+	if !updateMessageAndVerify(ctx, a, c, msg.ID, m) {
 		return
 	}
 	c.reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
@@ -131,8 +189,7 @@ func handleUpdateMessageThinking(ctx context.Context, a *appPkg.App, c *Client, 
 		c.reply(msg.ID, EventError, nil, "message has no thinking part")
 		return
 	}
-	if err := a.Messages.Update(ctx, m); err != nil {
-		c.reply(msg.ID, EventError, nil, err.Error())
+	if !updateMessageAndVerify(ctx, a, c, msg.ID, m) {
 		return
 	}
 	c.reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
@@ -154,8 +211,7 @@ func handleDeleteMessagePart(ctx context.Context, a *appPkg.App, c *Client, msg 
 		return
 	}
 	m.Parts = append(m.Parts[:p.PartIndex], m.Parts[p.PartIndex+1:]...)
-	if err := a.Messages.Update(ctx, m); err != nil {
-		c.reply(msg.ID, EventError, nil, err.Error())
+	if !updateMessageAndVerify(ctx, a, c, msg.ID, m) {
 		return
 	}
 	c.reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
@@ -207,8 +263,7 @@ func handleUpdateMessagePart(ctx context.Context, a *appPkg.App, c *Client, msg 
 		c.reply(msg.ID, EventError, nil, "part type not editable")
 		return
 	}
-	if err := a.Messages.Update(ctx, m); err != nil {
-		c.reply(msg.ID, EventError, nil, err.Error())
+	if !updateMessageAndVerify(ctx, a, c, msg.ID, m) {
 		return
 	}
 	c.reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")

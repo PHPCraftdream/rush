@@ -547,21 +547,22 @@ func (s *service) fromDBItem(item db.Message) (Message, error) {
 		return Message{}, err
 	}
 	return Message{
-		ID:                  item.ID,
-		SessionID:           item.SessionID,
-		Role:                MessageRole(item.Role),
-		Parts:               parts,
-		Model:               item.Model.String,
-		Provider:            item.Provider.String,
-		ReasoningEffort:     item.ReasoningEffort.String,
-		CreatedAt:           item.CreatedAt,
-		UpdatedAt:           item.UpdatedAt,
-		IsSummaryMessage:    item.IsSummaryMessage != 0,
-		Pinned:              item.Pinned != 0,
-		Hidden:              item.Hidden != 0,
-		AutoResumed:         item.AutoResumed != 0,
-		BackgroundJobNotice: item.BackgroundJobNotice != 0,
-		Usage:               usageFromDBItem(item),
+		ID:                   item.ID,
+		SessionID:            item.SessionID,
+		Role:                 MessageRole(item.Role),
+		Parts:                parts,
+		Model:                item.Model.String,
+		Provider:             item.Provider.String,
+		ReasoningEffort:      item.ReasoningEffort.String,
+		CreatedAt:            item.CreatedAt,
+		UpdatedAt:            item.UpdatedAt,
+		IsSummaryMessage:     item.IsSummaryMessage != 0,
+		Pinned:               item.Pinned != 0,
+		Hidden:               item.Hidden != 0,
+		AutoResumed:          item.AutoResumed != 0,
+		BackgroundJobNotice:  item.BackgroundJobNotice != 0,
+		CheckpointGeneration: item.CheckpointGeneration,
+		Usage:                usageFromDBItem(item),
 	}, nil
 }
 

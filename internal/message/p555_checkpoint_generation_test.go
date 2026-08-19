@@ -143,3 +143,78 @@ func TestUpdate_TerminalWriteStillWinsOverAnyGeneration(t *testing.T) {
 	require.Equal(t, "final answer", textOf(t, stored),
 		"a partial checkpoint overwrote a terminal finish -- the generation fence must not have weakened the finished_at guard")
 }
+
+// TestUpdate_GetMutateUpdate_EditLandsOnGenuineCheckpointRow is the
+// regression test for task #569 / release-blocker F1.
+//
+// Every test above builds its partial snapshot in memory via
+// partialCheckpoint() and never round-trips it through Get -- which is
+// exactly why they stayed green while production broke. Message.
+// CheckpointGeneration is write-only in fromDBItem before this fix: Get
+// never hydrated it, so a message a handler loaded off a genuinely
+// mid-stream row always came back with CheckpointGeneration == 0, no matter
+// what the row actually carried. handleUpdateMessageContent (and the other
+// three WS editing handlers in internal/server/handlers_messages.go) do
+// exactly Get -> mutate Parts -> Update, carrying CheckpointGeneration
+// through unexamined -- so every operator edit to a message the checkpoint
+// ticker still owned went out stamped generation 0, UpdateMessageIfNotTerminal's
+// "AND checkpoint_generation <= ?" fenced it out (0 rows affected), and the
+// old code path returned nil: the edit silently vanished while the client
+// was told "ok".
+//
+// This test starts from a row written the way the checkpoint ticker
+// actually writes it (Update with a Partial Finish and a real generation),
+// re-reads it through the service exactly like a handler would, mutates the
+// text exactly like handleUpdateMessageContent does, and asserts the
+// mutation is actually stored afterward -- not just that Update returned
+// nil.
+//
+// Revert-check: remove "CheckpointGeneration: item.CheckpointGeneration,"
+// from fromDBItem in message.go and this fails -- the mutated text never
+// reaches the row.
+func TestUpdate_GetMutateUpdate_EditLandsOnGenuineCheckpointRow(t *testing.T) {
+	_, q := newTestMessageDB(t)
+	svc := NewService(q).(*service)
+	ctx := t.Context()
+
+	created, err := svc.Create(ctx, "test-session-checkpoint-edit", CreateMessageParams{
+		Role:  Assistant,
+		Parts: []ContentPart{TextContent{Text: "start"}},
+	})
+	require.NoError(t, err)
+
+	// Step 1: the checkpoint ticker writes a genuine mid-stream row, exactly
+	// the way agent_turn.go's checkpoint goroutine does -- Partial Finish,
+	// checkpoint_generation stamped to the writer's generation (3 here,
+	// chosen to be > 0 so a still-zeroed CheckpointGeneration on read would
+	// provably fence out any later write).
+	require.NoError(t, svc.Update(ctx, partialCheckpoint(created, "streamed so far", 3)))
+
+	// Step 2: Get, exactly like handleUpdateMessageContent does. If Get does
+	// not hydrate CheckpointGeneration, loaded.CheckpointGeneration is 0
+	// here even though the row's checkpoint_generation column is 3.
+	loaded, err := svc.Get(ctx, created.ID)
+	require.NoError(t, err)
+	require.True(t, loaded.IsPartial(), "row must still be mid-stream for this test to exercise the fenced branch")
+	require.Equal(t, int64(3), loaded.CheckpointGeneration,
+		"Get did not hydrate CheckpointGeneration from the row -- every message-editing handler carries this field through Get -> Update unexamined, so a zeroed value here is what silently fences out real edits")
+
+	// Step 3: mutate the text in place, exactly like
+	// handleUpdateMessageContent's replace-the-text-part loop.
+	for i, part := range loaded.Parts {
+		if _, ok := part.(TextContent); ok {
+			loaded.Parts[i] = TextContent{Text: "OPERATOR EDIT"}
+			break
+		}
+	}
+
+	// Step 4: persist the edit through the exact same Service.Update call
+	// the handler makes.
+	require.NoError(t, svc.Update(ctx, loaded))
+
+	// Step 5: the edit must have actually landed.
+	stored, err := svc.Get(ctx, created.ID)
+	require.NoError(t, err)
+	require.Equal(t, "OPERATOR EDIT", textOf(t, stored),
+		"operator edit to a mid-stream message was discarded -- Update matched zero rows because the edit was stamped with a stale (zeroed) checkpoint_generation instead of the row's real one")
+}
