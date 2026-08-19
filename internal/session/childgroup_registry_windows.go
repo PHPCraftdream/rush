@@ -27,6 +27,6 @@ type ChildGroupSweepResult struct {
 	Retained           int
 }
 
-func KillRegisteredChildGroups(dataDir, sessionID, lockPath string) ChildGroupSweepResult {
+func KillRegisteredChildGroups(dataDir, sessionID, victimGeneration string) ChildGroupSweepResult {
 	return ChildGroupSweepResult{}
 }

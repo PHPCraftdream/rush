@@ -44,6 +44,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 
@@ -95,13 +96,32 @@ func TestWriteChildGroupFileLocked_NoStrayTempFileAfterSuccess(t *testing.T) {
 // a second goroutine continuously reads the SAME file directly with
 // os.ReadFile, outside childGroupFileMu -- exactly how an external
 // "sessions kill" process would read it, with no coordination available
-// across processes. Every read must be either empty (file briefly absent
-// between an old rename-away and... no: rename replaces atomically, so
-// "absent" should never happen once the file has been created once) or a
-// COMPLETE, parseable set of whole lines -- never a partial line, which is
+// across processes. Every read taken while the file is known to have at
+// least one entry registered must be a COMPLETE, parseable set of whole
+// lines -- never empty, never missing, and never a partial line -- which is
 // what a truncate-then-write (the pre-fix os.WriteFile shape) could produce
-// if a reader's os.ReadFile happened to land between the truncate and the
+// if a reader os.ReadFile happened to land between the truncate and the
 // new bytes landing.
+//
+// FIX (2026-08-19 static-follow-up review, second reviewer, verification
+// discipline pass): the original version of this test called continue on
+// BOTH os.IsNotExist AND an empty read unconditionally, for the entire
+// test duration -- which silently skipped past the EXACT observation
+// (empty or missing file) the atomic-rename fix exists to prevent, so the
+// test could not fail for its own stated reason. It could only ever fail
+// on a malformed 0/1-field line, a narrower corruption shape than
+// truncated to nothing. The fix tracks, via fileMustBePresent
+// (atomic.Bool, set true the instant the FIRST RegisterChildGroup call
+// returns -- that call writes synchronously before returning, see its doc
+// comment -- and set false again just before the LAST
+// UnregisterChildGroup call, which is the one expected to legitimately
+// delete the file once the registry becomes empty) whether an
+// empty/missing observation is legitimate (pre-first-write, or
+// post-last-unregister) or a genuine corruption. Once fileMustBePresent is
+// observed true, an empty or missing read is now reported as a failure
+// via readErrs, exactly like a malformed line already was. See this test
+// own revert-check note in the task report for the VERBATIM failure this
+// produces against a reverted (truncate-and-write) writeChildGroupFileLocked.
 func TestWriteChildGroupFileLocked_NeverObservedTruncated(t *testing.T) {
 	dataDir := t.TempDir()
 	sessionID := "childgroup-atomic-write-no-partial-reads"
@@ -122,6 +142,15 @@ func TestWriteChildGroupFileLocked_NeverObservedTruncated(t *testing.T) {
 		pgids = append(pgids, leader.Process.Pid)
 	}
 
+	// fileMustBePresent is true for the whole window during which the
+	// registry is known (from THIS goroutine own synchronous call
+	// ordering) to hold at least one entry, and therefore MUST exist on
+	// disk with valid content for any concurrent reader. False before the
+	// first Register call returns and from just before the final
+	// Unregister call onward, both of which are legitimate empty/missing
+	// windows, not corruption.
+	var fileMustBePresent atomic.Bool
+
 	stop := make(chan struct{})
 	readErrs := make(chan string, 1)
 	go func() {
@@ -131,12 +160,19 @@ func TestWriteChildGroupFileLocked_NeverObservedTruncated(t *testing.T) {
 				return
 			default:
 			}
+			mustBePresent := fileMustBePresent.Load()
 			data, err := os.ReadFile(path)
 			if err != nil {
-				// Not-yet-created is fine (first Register call has not run
-				// yet); any other error, or a file that exists but is
-				// mid-write-visible as some OTHER error, is not.
 				if os.IsNotExist(err) {
+					if mustBePresent {
+						select {
+						case readErrs <- "observed a MISSING registry file while at least one entry was known to be registered -- this is exactly the corruption the atomic-rename write exists to prevent":
+						default:
+						}
+						return
+					}
+					// Legitimate: before the first write, or after the
+					// registry has become empty and its file removed.
 					continue
 				}
 				select {
@@ -147,6 +183,13 @@ func TestWriteChildGroupFileLocked_NeverObservedTruncated(t *testing.T) {
 			}
 			content := strings.TrimRight(string(data), "\n")
 			if content == "" {
+				if mustBePresent {
+					select {
+					case readErrs <- "observed an EMPTY registry file while at least one entry was known to be registered -- this is exactly the corruption the atomic-rename write exists to prevent":
+					default:
+					}
+					return
+				}
 				continue
 			}
 			for _, line := range strings.Split(content, "\n") {
@@ -168,10 +211,26 @@ func TestWriteChildGroupFileLocked_NeverObservedTruncated(t *testing.T) {
 		}
 	}()
 
-	for _, pgid := range pgids {
+	for i, pgid := range pgids {
 		RegisterChildGroup(dataDir, sessionID, pgid, generation)
+		if i == 0 {
+			// The first write has now landed (RegisterChildGroup writes
+			// synchronously before returning) -- from this point on, an
+			// empty or missing read is a genuine corruption, not a
+			// legitimate pre-first-write state.
+			fileMustBePresent.Store(true)
+		}
 	}
-	for _, pgid := range pgids {
+	for i, pgid := range pgids {
+		if i == len(pgids)-1 {
+			// About to remove the LAST entry: UnregisterChildGroup deletes
+			// the file entirely once the registry becomes empty (see its
+			// doc comment), which is a legitimate transition to
+			// missing/absent, not corruption. Flip the flag BEFORE issuing
+			// the call so the reader never observes a stale must-be-present
+			// state during the in-flight deletion.
+			fileMustBePresent.Store(false)
+		}
 		UnregisterChildGroup(dataDir, sessionID, pgid)
 	}
 
@@ -276,7 +335,7 @@ func TestKillRegisteredChildGroups_UnresolvedKillIsRetainedNotDiscarded(t *testi
 	}
 	t.Cleanup(func() { killpgFunc = original })
 
-	result := KillRegisteredChildGroups(dataDir, sessionID, lockPath)
+	result := KillRegisteredChildGroups(dataDir, sessionID, generation)
 	require.Zero(t, result.Killed, "the injected kill failure must not be reported as a successful kill")
 	require.Zero(t, result.Implausible, "an unresolved kill error is not a confirmed-gone outcome")
 	require.Equal(t, 1, result.Retained, "the entry must be reported as retained, not silently dropped")
@@ -291,7 +350,7 @@ func TestKillRegisteredChildGroups_UnresolvedKillIsRetainedNotDiscarded(t *testi
 	// finish the job -- proving the retained entry was not just present
 	// on disk but genuinely re-actionable.
 	killpgFunc = original
-	result2 := KillRegisteredChildGroups(dataDir, sessionID, lockPath)
+	result2 := KillRegisteredChildGroups(dataDir, sessionID, generation)
 	require.Equal(t, 1, result2.Killed, "a second sweep with the real kill function must finish killing the retained entry")
 
 	select {
@@ -345,7 +404,7 @@ func TestKillRegisteredChildGroups_MixedOutcomesRetainOnlyUnresolvedEntries(t *t
 	}
 	t.Cleanup(func() { killpgFunc = original })
 
-	result := KillRegisteredChildGroups(dataDir, sessionID, lockPath)
+	result := KillRegisteredChildGroups(dataDir, sessionID, generation)
 	require.Equal(t, 1, result.Killed)
 	require.Equal(t, 1, result.Implausible)
 	require.Equal(t, 1, result.Retained)

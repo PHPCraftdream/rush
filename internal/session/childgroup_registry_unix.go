@@ -106,11 +106,26 @@ func childGroupRegistryPath(dataDir, sessionID string) string {
 }
 
 // childGroupFileMu serializes this process's own read-modify-write cycles
-// against its own session's registry file. It does not, and cannot,
-// protect against a concurrent writer for the SAME session in another
-// process -- but the session lock itself already guarantees only one
-// process holds a given session at a time, so there is only ever one
-// legitimate writer for a given (dataDir, sessionID) registry at once.
+// against its own session's registry file. It does not, and CANNOT, protect
+// against a concurrent writer for the SAME session in another process. An
+// earlier version of this comment claimed "the session lock itself already
+// guarantees only one process holds a given session at a time, so there is
+// only ever one legitimate writer" -- that is false, and was the root cause
+// of a real cross-process lost-update defect (2026-08-19 static-follow-up
+// review, task #591 blocker P0-2): KillRegisteredChildGroups is a RESCUE
+// TOOL that runs in a THIRD process, one that does not hold (and, in the
+// buggy version, never even tried to acquire) the session's own OS lock
+// while it read, verified, and wrote back the registry. That gap is exactly
+// where a live new owner's RegisterChildGroup could land and be clobbered
+// by the rescuer's stale retained-snapshot write. childGroupFileMu alone
+// cannot close that: it is a process-local sync.Mutex and provides zero
+// cross-process exclusion. The actual fix is at the call sites
+// (sweepChildGroupsWithHeldLock / sweepChildGroupsUnderOwnLock in
+// internal/cmd/sessions_kill.go), which now acquire (or already hold) the
+// real session.SessionLock OS lock across the entire
+// read/verify/kill/rewrite performed under this mutex, making the session
+// lock -- not this mutex -- the thing that actually serializes writers
+// across processes for the sweep's duration.
 var childGroupFileMu sync.Mutex
 
 // childGroupEntry is one recorded process group: the pgid, and the session
@@ -352,13 +367,29 @@ func RemoveChildGroupRegistry(dataDir, sessionID string) {
 type ChildGroupSweepResult struct {
 	// Killed is the number of groups actually SIGKILLed.
 	Killed int
-	// GenerationMismatch is true when a registry file existed but its
-	// recorded generation did not match the CURRENT on-disk lock
-	// generation -- the session has a different (or no) live owner than
-	// the one that registered these groups, so nothing was signalled.
-	// These entries are CONFIRMED stale (a session's generation only moves
-	// forward, so a mismatched entry can never become valid again) and are
-	// dropped from the registry along with the killed/confirmed-dead ones.
+	// GenerationMismatch is true when a registry entry's recorded
+	// generation did not match victimGeneration -- the caller's own proven
+	// target, not "whatever generation happens to be on disk right now".
+	// An earlier version of this doc claimed these entries are "CONFIRMED
+	// stale ... safe to drop" on the theory that a session's generation
+	// only ever moves forward. That reasoning is exactly backwards when
+	// the CALLER (not the entry) is the one reading a stale value: task
+	// #591 blocker P0-2 (2026-08-19 static-follow-up review, reproduced by
+	// running on real Linux) is the direct counter-proof -- an earlier
+	// version of KillRegisteredChildGroups re-read "current" generation
+	// from disk at sweep time, AFTER the victim holder had already died
+	// and a brand-new owner had already acquired the lock and registered
+	// its OWN live child group. That re-read observed the NEW owner's
+	// generation as "current", which made the ACTUAL VICTIM's entries --
+	// the live orphan tree this whole feature exists to reach -- mismatch
+	// and get discarded right here, while the new owner's live process
+	// group was signalled instead. With victimGeneration now fixed at the
+	// moment contention was proven (see KillRegisteredChildGroups' doc),
+	// a mismatch here means this specific entry does not belong to the
+	// generation THIS sweep was invoked to clean up, so it is left
+	// untouched in the registry rather than dropped -- a future sweep
+	// invoked for that entry's own generation (if it is ever the victim
+	// of one) is what may act on it, not this one.
 	GenerationMismatch bool
 	// Implausible counts entries whose generation matched but which were
 	// CONFIRMED not to be the originally-registered process any more
@@ -393,22 +424,43 @@ type ChildGroupSweepResult struct {
 var killpgFunc = syscall.Kill
 
 // KillRegisteredChildGroups killpg's every process group registered for
-// sessionID whose recorded generation still matches the session's CURRENT
-// lock generation (read fresh from disk, right here, via
-// ReadLockGeneration) and which still passes the plausibility check. Unlike
-// the version this replaces, it does NOT remove the registry file
-// unconditionally: only entries with a CONFIRMED outcome (killed, or
-// confirmed already gone/mismatched) are dropped. An entry left in an
-// inconclusive state -- generation matched, but the kill or the
-// plausibility check itself could not confirm success OR death -- is
-// written back so a later retry (a second "sessions kill" invocation, most
-// likely) still has a durable record to act on, still fenced by the same
-// (generation, start-time) pair recorded at registration.
+// sessionID whose recorded generation matches victimGeneration and which
+// still passes the plausibility check.
 //
-// lockPath is the session's own lock file path (sessions_kill.go already
-// computes this before calling in); dataDir/sessionID identify the
-// registry file itself.
-func KillRegisteredChildGroups(dataDir, sessionID, lockPath string) ChildGroupSweepResult {
+// victimGeneration MUST be an IMMUTABLE token the caller captured at the
+// moment it proved (via a real OS-level lock attempt) that the process it
+// is about to kill was the genuine holder -- see
+// internal/cmd/sessions_kill.go's probeThenKillHolder, which reads
+// ReadLockGeneration(lockPath) in the busy branch, before forceKillHolder
+// ever signals anything, and threads that exact string down through
+// forceKillHolder to here. This function deliberately does NOT read
+// ReadLockGeneration itself: an earlier version did ("read fresh from disk,
+// right here"), which was the root cause of a real defect (2026-08-19
+// static-follow-up review, task #591 blocker P0-2, confirmed by running on
+// real Linux) -- on Unix, killing the holder PID releases the OS lock, so a
+// new crush run --session <id> can acquire it and register its OWN child
+// group under a NEW generation before this function ever runs. Re-reading
+// "current" generation at sweep time reads that NEW owner's token, not the
+// dead victim's, which both (a) signals the new owner's live process group
+// and (b) discards the actual victim's entries as "generation mismatch".
+// Passing the generation down as a value captured before ownership changed
+// hands is the fix: the sweep target is fixed at the moment contention was
+// proven, not re-derived from whatever the lock file says when the sweep
+// happens to run.
+//
+// CALLER MUST HOLD THE SESSION'S OS LOCK (session.SessionLock, acquired via
+// TryAcquireSessionLock) across this ENTIRE call -- read, verify, kill, AND
+// the write-back at the end. childGroupFileMu below only serializes this
+// process's own goroutines; it provides no cross-process exclusion at all
+// (see its doc comment). Without the OS lock held externally, a concurrent
+// RegisterChildGroup from a live new owner can land between this
+// function's read and its write-back, and get silently clobbered by the
+// stale retained-snapshot write -- the same review's documented
+// cross-process lost-update race. See sweepChildGroupsWithHeldLock and
+// sweepChildGroupsUnderOwnLock in internal/cmd/sessions_kill.go, which are
+// the only production callers and both acquire/hold the lock before
+// calling in.
+func KillRegisteredChildGroups(dataDir, sessionID, victimGeneration string) ChildGroupSweepResult {
 	path := childGroupRegistryPath(dataDir, sessionID)
 	childGroupFileMu.Lock()
 	entries := readChildGroupFileLocked(path)
@@ -419,14 +471,36 @@ func KillRegisteredChildGroups(dataDir, sessionID, lockPath string) ChildGroupSw
 		return result
 	}
 
-	currentGen := ReadLockGeneration(lockPath)
+	if victimGeneration == "" {
+		// No target: a caller must always pass the specific generation it
+		// proved was the victim (see the doc comment above). An empty value
+		// here is a programming error in the caller, not "sweep whatever is
+		// current" -- treat it as matching nothing rather than guessing.
+		result.GenerationMismatch = len(entries) > 0
+		return result
+	}
 	var retained []childGroupEntry
 	for _, e := range entries {
-		if currentGen == "" || e.Generation != currentGen {
-			// Confirmed stale: a session's generation only ever moves
-			// forward, so this entry can never again match a live owner.
-			// Safe to drop permanently.
+		if e.Generation != victimGeneration {
+			// This entry does NOT belong to the generation this sweep was
+			// invoked to clean up. It is NOT thereby proven stale -- it may
+			// be an older, genuinely dead generation, OR it may belong to
+			// the CURRENT live owner (who registered their own child group,
+			// under their own generation, before or during this sweep --
+			// possible even though the caller holds the OS lock across this
+			// call, since the live owner's own RegisterChildGroup happened
+			// BEFORE the sweep proved contention and killed the victim, and
+			// is a record the current owner still needs for its OWN future
+			// cleanup). Retain it unconditionally rather than drop it: only
+			// a sweep whose OWN victim generation matches an entry may ever
+			// decide that entry's fate. See KillRegisteredChildGroups' doc
+			// comment for the P0-2 defect this replaces (a version of this
+			// function once treated "generation differs from what I deem
+			// current" as proof of permanent staleness, which is exactly
+			// backwards when the caller itself might be looking at a stale
+			// or otherwise non-authoritative target).
 			result.GenerationMismatch = true
+			retained = append(retained, e)
 			continue
 		}
 		switch verifyGroupStillPlausibleOutcome(e.PGID, e.StartTime) {

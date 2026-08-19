@@ -30,7 +30,7 @@ func TestChildGroupRegistry_RegisterReadKill_RealLock(t *testing.T) {
 	leader, waited := spawnGroupChild(t, true)
 	RegisterChildGroup(dataDir, sessionID, leader.Process.Pid, generation)
 
-	result := KillRegisteredChildGroups(dataDir, sessionID, lockPath)
+	result := KillRegisteredChildGroups(dataDir, sessionID, generation)
 	require.Equal(t, 1, result.Killed)
 	require.False(t, result.GenerationMismatch)
 	require.Zero(t, result.Implausible)
@@ -45,49 +45,90 @@ func TestChildGroupRegistry_RegisterReadKill_RealLock(t *testing.T) {
 	require.True(t, os.IsNotExist(statErr))
 }
 
-// TestChildGroupRegistry_StaleAfterPIDReuse_KillsNothing is the regression
-// test the coordinator's review asked for directly: a stale registry from
-// a dead crush must kill nothing. It reproduces the exact vulnerability
-// found in the previous (pid-keyed, world-writable-tmp-dir) version of
-// this file: a crush process registers a group then crashes -- skipping
-// UnregisterChildGroup/RemoveChildGroupRegistry -- leaving a registry
-// entry with a generation token that can never again match a live lock.
-// True OS-level pid reuse cannot be reproduced from user code (the kernel
-// controls it), so this models it at the level the registry actually
-// checks: no live generation currently on disk for the session at all,
-// which is exactly the observable state true pid/session reuse produces.
-func TestChildGroupRegistry_StaleAfterPIDReuse_KillsNothing(t *testing.T) {
+// TestChildGroupRegistry_UnrelatedGeneration_KillsNothingAndIsRetained is
+// the regression test for a registry entry that does not belong to the
+// generation a caller is sweeping for. Renamed and rewritten (2026-08-19
+// static-follow-up review, P0-2 fix) from the original
+// TestChildGroupRegistry_StaleAfterPIDReuse_KillsNothing: that version
+// called KillRegisteredChildGroups with the session own lock PATH, letting
+// the function re-derive "current generation" internally -- exactly the
+// defect this task fixes. The caller now supplies an explicit
+// victimGeneration token (captured at the moment it proved contention with
+// the process it is about to kill, see internal/cmd/sessions_kill.go), so
+// this test must supply one too: a generation that is NOT the one recorded
+// in the registry, modeling either a genuinely stale entry from a crashed
+// instance (true OS-level pid/generation reuse cannot be constructed from
+// user code) or simply a sweep invoked for a different victim than the one
+// that registered this entry.
+//
+// The entry must be left completely untouched: not signalled, and --
+// unlike the pre-fix behavior, which treated ANY generation mismatch as
+// "confirmed permanently stale, safe to drop" -- also RETAINED in the
+// registry rather than discarded, since a mismatch against THIS caller's
+// target proves nothing about whether the entry might still be validly
+// reachable by a future sweep for its own generation.
+func TestChildGroupRegistry_UnrelatedGeneration_KillsNothingAndIsRetained(t *testing.T) {
 	dataDir := t.TempDir()
-	sessionID := "childgroup-stale-after-pid-reuse"
-	lockPath := SessionLockPath(dataDir, sessionID)
+	sessionID := "childgroup-unrelated-generation"
 
 	leader, waited := spawnGroupChild(t, true)
-	staleGeneration := "99999-1234567890"
-	RegisterChildGroup(dataDir, sessionID, leader.Process.Pid, staleGeneration)
+	registeredGeneration := "11111-1111111111"
+	RegisterChildGroup(dataDir, sessionID, leader.Process.Pid, registeredGeneration)
 
-	require.Empty(t, ReadLockGeneration(lockPath))
+	unrelatedVictimGeneration := "99999-9999999999"
+	require.NotEqual(t, registeredGeneration, unrelatedVictimGeneration)
 
-	result := KillRegisteredChildGroups(dataDir, sessionID, lockPath)
+	result := KillRegisteredChildGroups(dataDir, sessionID, unrelatedVictimGeneration)
 	require.Zero(t, result.Killed)
 	require.True(t, result.GenerationMismatch)
 
 	require.False(t, isProcessDone(waited))
 	require.True(t, isProcessGroupLeaderAlive(leader.Process.Pid))
 
-	_, statErr := os.Stat(childGroupRegistryPath(dataDir, sessionID))
-	require.True(t, os.IsNotExist(statErr))
+	// The registry entry must SURVIVE: it was never proven to be the
+	// current sweep own target, so it is not this sweep call decision to
+	// make. A sweep invoked with registeredGeneration as ITS OWN victim
+	// target, later, must still be able to find and act on it.
+	entries := readChildGroupFileLockedForTest(t, dataDir, sessionID)
+	require.Len(t, entries, 1, "an entry that does not match this sweep victim generation must be retained, not dropped")
+	require.Equal(t, leader.Process.Pid, entries[0].PGID)
+	require.Equal(t, registeredGeneration, entries[0].Generation)
 }
 
-// TestChildGroupRegistry_StaleAfterNewOwnerReacquired covers the other
-// shape of the same bug: the SESSION ID is reused across two live crush
-// processes in sequence (old one released, or died and was reaped; a new
-// one later acquired the same id), producing a genuinely different
-// generation token. A registry entry from the OLD generation must not let
-// a sessions kill against the NEW owner reach a process group that has
-// nothing to do with it.
-func TestChildGroupRegistry_StaleAfterNewOwnerReacquired(t *testing.T) {
+// TestChildGroupRegistry_NewOwnerReacquired_VictimGenerationReachesOldEntry
+// is the DIRECT regression test for task #591 blocker P0-2 (2026-08-19
+// static-follow-up review, reproduced by running on real Linux). Renamed
+// and rewritten from TestChildGroupRegistry_StaleAfterNewOwnerReacquired,
+// whose ORIGINAL assertion -- that a sweep must NOT reach the old owner
+// entry once a new owner has reacquired the session -- was itself the bug:
+// the pre-fix KillRegisteredChildGroups took the session own lock PATH and
+// re-read "current" generation internally, which after a new owner
+// reacquires means the NEW owner generation, not the dead victim one. That
+// treated the actual victim entry -- the live orphan process-group tree
+// the whole feature exists to reach -- as "confirmed stale, safe to drop",
+// while (per the sibling defect proven in internal/cmd) a sweep running in
+// this exact window would separately have gone on to signal the NEW
+// owner own live process group instead, having read ITS generation as
+// "current".
+//
+// The fix requires the caller (internal/cmd/sessions_kill.go) to capture
+// victimGeneration -- here, oldGeneration -- at the moment it proves
+// contention with the OLD holder, BEFORE the kill, and pass that exact
+// value down. This test proves both directions with the SAME two-owner
+// setup:
+//
+//  1. Sweeping with victimGeneration = oldGeneration (what the FIXED
+//     caller actually does) reaches and kills the old owner own
+//     registered entry -- the corrected behavior.
+//  2. Sweeping with victimGeneration = newGeneration (what the OLD, BUGGY
+//     re-read-current-generation code was equivalent to doing) finds
+//     nothing under that generation and leaves the entry retained -- shown
+//     as a second, independent registration+sweep pair using a second
+//     process-group leader, so this half cannot be satisfied merely by
+//     the first sweep having already consumed the only entry.
+func TestChildGroupRegistry_NewOwnerReacquired_VictimGenerationReachesOldEntry(t *testing.T) {
 	dataDir := t.TempDir()
-	sessionID := "childgroup-stale-after-new-owner"
+	sessionID := "childgroup-new-owner-reacquired"
 	lockPath := SessionLockPath(dataDir, sessionID)
 
 	lk1, err := TryAcquireSessionLock(dataDir, sessionID)
@@ -95,8 +136,8 @@ func TestChildGroupRegistry_StaleAfterNewOwnerReacquired(t *testing.T) {
 	oldGeneration := ReadLockGeneration(lockPath)
 	require.NotEmpty(t, oldGeneration)
 
-	leader, waited := spawnGroupChild(t, true)
-	RegisterChildGroup(dataDir, sessionID, leader.Process.Pid, oldGeneration)
+	oldLeader, oldWaited := spawnGroupChild(t, true)
+	RegisterChildGroup(dataDir, sessionID, oldLeader.Process.Pid, oldGeneration)
 
 	require.NoError(t, lk1.Release())
 	lk2, err := TryAcquireSessionLock(dataDir, sessionID)
@@ -106,11 +147,41 @@ func TestChildGroupRegistry_StaleAfterNewOwnerReacquired(t *testing.T) {
 	require.NotEmpty(t, newGeneration)
 	require.NotEqual(t, oldGeneration, newGeneration)
 
-	result := KillRegisteredChildGroups(dataDir, sessionID, lockPath)
-	require.Zero(t, result.Killed)
-	require.True(t, result.GenerationMismatch)
-	require.False(t, isProcessDone(waited))
-	require.True(t, isProcessGroupLeaderAlive(leader.Process.Pid))
+	// Part 1: the FIXED caller behavior -- sweep with the captured victim
+	// generation (oldGeneration) -- reaches and kills the actual victim
+	// entry, exactly the process-group tree a real "sessions kill" run in
+	// this window is supposed to reach.
+	result := KillRegisteredChildGroups(dataDir, sessionID, oldGeneration)
+	require.Equal(t, 1, result.Killed, "the FIXED sweep must reach the old owner own entry when given its true victim generation")
+	require.False(t, result.GenerationMismatch)
+
+	select {
+	case <-oldWaited:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the old owner registered process group survived a sweep targeting its own victim generation")
+	}
+
+	// Part 2: the OLD, BUGGY equivalent -- sweeping with whatever
+	// generation happens to be "current" (here modeled directly as
+	// newGeneration, the new owner own token) -- must NOT reach an entry
+	// registered under a DIFFERENT generation, and must retain it rather
+	// than discard it. Uses a second, independent leader+registration so
+	// this assertion is not vacuously satisfied by part 1 having already
+	// removed the only entry in the registry.
+	newLeader, newWaited := spawnGroupChild(t, true)
+	t.Cleanup(func() { _ = newLeader.Process.Kill() })
+	RegisterChildGroup(dataDir, sessionID, newLeader.Process.Pid, oldGeneration)
+
+	result2 := KillRegisteredChildGroups(dataDir, sessionID, newGeneration)
+	require.Zero(t, result2.Killed, "sweeping with the NEW owner generation as target must not reach an entry registered under the OLD generation")
+	require.True(t, result2.GenerationMismatch)
+	require.False(t, isProcessDone(newWaited))
+	require.True(t, isProcessGroupLeaderAlive(newLeader.Process.Pid))
+
+	entries := readChildGroupFileLockedForTest(t, dataDir, sessionID)
+	require.Len(t, entries, 1, "the mismatched entry must be retained in the registry, not dropped")
+	require.Equal(t, newLeader.Process.Pid, entries[0].PGID)
+	require.Equal(t, oldGeneration, entries[0].Generation)
 }
 
 // TestChildGroupRegistry_ImplausibleEntry_NotSignalled: a generation-valid
@@ -131,7 +202,7 @@ func TestChildGroupRegistry_ImplausibleEntry_NotSignalled(t *testing.T) {
 	const bogusPGID = 999999
 	RegisterChildGroup(dataDir, sessionID, bogusPGID, generation)
 
-	result := KillRegisteredChildGroups(dataDir, sessionID, lockPath)
+	result := KillRegisteredChildGroups(dataDir, sessionID, generation)
 	require.Zero(t, result.Killed)
 	require.Equal(t, 1, result.Implausible)
 	require.False(t, result.GenerationMismatch)
