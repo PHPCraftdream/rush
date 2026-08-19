@@ -2097,3 +2097,99 @@ cross-compile but have never been executed — they need a real Linux or
 macOS run. And the dynamic release gate the review asks for (multi-process
 inject/drain stress, repeated shutdown during an outbox transaction, a real
 Unix process-tree kill) does not exist.
+
+### 2026-08-20 — the fourth and fifth reviews, and the gate that finally ran
+
+Two more independent reviews landed on the work above, both NO-GO, and
+their blockers are closed in `537d93df` … `377e4b94`. The open items at
+the end of the previous entry — "the Unix registry tests have never been
+executed" and "the dynamic release gate does not exist" — are both closed
+here, and closing them changed the conclusions.
+
+- `344dd37c` — **`DrainSessionNow` returns a typed `DrainResult`
+  (`NoWork/Complete/Partial/Failed`) built from a row-ID-keyed ledger.**
+  This contract had been wrong four times running: `nil` meaning both
+  "committed" and "never executed"; a busy second row after a successful
+  first reporting success; a later row's clean Ack erasing an earlier row's
+  terminal failure; and finally `(DrainFailed, nil)` still being
+  expressible. Each fix closed one combination and left the neighbour open,
+  because the whole session shared one flat `err` with no row identity
+  anywhere. A failure can now only be cleared by naming its exact row.
+  `RunNonInteractive`'s switch moved into `drainOutcomeError`, a pure
+  function, and now asserts a non-nil error on `Partial`/`Failed` — the
+  previous guard was on `Complete`, where `nil` is harmless, and absent
+  where `nil` means exit 0 over work that did not run.
+- `05a1708f`, `6fe0108b` — **the child-group sweep is fenced on the
+  victim's generation, captured before ownership is released.** The fence
+  existed but was read at sweep time, after the victim was dead and the
+  lock free: on Unix that is precisely the window a new `crush run` uses to
+  acquire the lock and register its own children, so the sweep signalled
+  the *new* owner's process group and discarded the real victim's entries.
+  The follow-up found the crash case reachable by nothing at all, and why a
+  naive fix would not work: `TryAcquireSessionLock` overwrites the
+  generation sidecar as part of acquiring, and `Release` clears it, so the
+  dead holder's identity is destroyed by the act of probing for it. The
+  read has to precede the acquire attempt. `reset --force` had the same
+  hole and is fixed the same way.
+- `537d93df` — **delete is guarded like edit was, and an orphan is
+  rescued.** `547b0815` refused edits to a streaming message but left
+  delete unguarded; the guard is now an atomic SQL predicate rather than a
+  read-then-act pair, and `UpdateMessage` reports real rows-affected
+  instead of a hardcoded 1, so a terminal write against a deleted row stops
+  resurrecting it in the UI. Two consequences surfaced only by exercising
+  it: `DeleteSessionMessages` was a fourth delete path, and `sessions reset
+  --force` on a SIGKILLed session could never satisfy the predicate, so the
+  wipe aborted half-done — deterministically, not as a race. And an orphan
+  became undeletable by the operator while rerun got an escape hatch; both
+  paths now use the same `IsSessionBusy` discriminator, fail-closed.
+- `b6549640` — **the sticky channel became a coalescing wakeup.** Sequence
+  suppression fixed the late-joining client and did nothing for one already
+  connected: a full buffer dropped the newest envelope and the queued stale
+  one was then correctly suppressed, so that client got neither. The
+  channel now carries tokens only and the current envelope is read from the
+  map at fan-out. `stickySeq` is gone — suppressing a superseded generation
+  is structurally impossible rather than handled by a heuristic.
+- `984b8cd9` — registry directory fsync after rename (the file's data was
+  already durable; the rename was not), dead poll seam removed, two
+  comments that outlived their code narrowed.
+- `377e4b94` — **the fence suites now run in CI on Linux without
+  `-short`.** This is the reason the gate's verdict is NO-GO: `-short`
+  skips every test that spawns a real child, and a `!windows` build tag
+  covers the rest, so the guards this entire effort produced ran on *no
+  platform*. Five reviews said so; this is the first commit to fix it.
+
+**The gate ran.** `docs/reviews/2026-08-20-dynamic-release-gate.md`, with
+its driver scripts committed alongside. 3622 sub-tests without `-short` on
+Linux; 15 rounds of six concurrent real `crush run` processes against one
+session id, exactly one winner every round and every loser rejected busy
+with a nonzero exit; 45 SIGKILLs aimed at outbox writes with no split write
+seen — reported as 3 of 25 landing near the write boundary rather than
+rounded up to "verified"; and a real Unix process-tree kill against a live
+holder, a crashed holder, and a new owner racing in, executed for the first
+time. One real defect: a session-*creation* race surfaces a raw SQLite
+UNIQUE error instead of a busy message, 11% of invocations, safe but
+misleading.
+
+`docs/design/session-lifecycle.md` was written so the fifth round does not
+happen. Its most useful section is the graveyard: all four drain defects,
+why each looked correct when it shipped, and which test catches it now.
+
+**On verification.** Eleven delegated diffs were sent back this round after
+being checked, each for a defect its own report did not mention — including
+three where the fix was correct but nothing pinned it: reverting the single
+site the task existed for left the tree green. One diff contained a
+*fabricated* `fsync(2)` citation supporting a correct change; a made-up
+reference in a durability argument is worse than none, because the next
+reader will trust it. The revert-check rule that caught most of this is
+narrow and worth repeating: revert **one site at a time**. Reverting two
+together proves the pair is covered, not either.
+
+Verification at `377e4b94`: `go test ./...` clean on Windows; the new CI
+command green on real Linux; Playwright **323 passed / 0 failed**.
+
+Still open, filed rather than left in prose: the watchdog margin overshoot
+at ~4 failures in 10 on Linux (`#604`, measured on native ext4 too, so not
+a filesystem artifact); the session-creation UNIQUE race (`#605`); and two
+kill tests that fail on Linux at any commit because their helper holder is
+never reaped and lingers as a zombie (`#606`) — named explicitly in the new
+CI step's exclusion list so a green run cannot be mistaken for coverage.
