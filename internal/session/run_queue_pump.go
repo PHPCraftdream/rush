@@ -154,6 +154,34 @@ var ErrTurnCommitFailed = errors.New("run_queue_pump: turn executed but its term
 // nothing further can be learned from this particular execution attempt.
 var errLeaseLost = errors.New("run_queue_pump: lost lease ownership mid-execution")
 
+// errNoExecutionAttempted is the outcome an admitSession release closure
+// must publish when the admitted caller held the session's admission slot
+// but never actually called executeEntrySync — e.g. processEntry's
+// early-return paths (busy-backoff, worker-pool-full, a lease attempt that
+// raced away to another pump instance, an attempts-exhausted terminal-fail,
+// no-coordinator scan mode, or a shutdown-in-progress nack), and
+// DrainSessionNow's own "nothing pending" bottom path.
+//
+// Found by the coordinator's review of task #575 (2026-08-19
+// release-readiness review): admitSession's release closure takes an
+// outcome error, and a nil outcome is classified by
+// classifyBackgroundOutcome as a CLEAN COMMIT — the same nil
+// executeEntrySync itself returns on success. Every early-return path in
+// processEntry passed nil for "nothing executed" (see the comment that used
+// to sit above processEntry's deferred release, which stated this
+// requirement correctly while the code did the opposite), which a
+// concurrent DrainSessionNow waiting on that admission would then read as
+// "a continuation completed here" — reproducing the exact class of false
+// success task #575 was written to close, just reached through admission's
+// early-return paths instead of executeEntrySync's outcome paths.
+//
+// classifyBackgroundOutcome maps this sentinel to (drained=false, nil,
+// stopNow=false): the waiter learns nothing happened and falls through to
+// retrying admission itself, rather than being handed a fabricated outcome
+// — exactly the behavior the pre-existing (but previously false) comment on
+// processEntry's deferred release already promised.
+var errNoExecutionAttempted = errors.New("run_queue_pump: admission was held but no execution was attempted")
+
 // RunQueuePumpConfig configures a RunQueuePump instance.
 type RunQueuePumpConfig struct {
 	// Sessions is the session service for enqueue/lease/ack operations.
@@ -376,7 +404,7 @@ type RunQueuePump struct {
 	// session could therefore both believe one boolean represented them, and
 	// whichever finished first deleted it — leaving the other running while
 	// the session looked free to the next tick or drain. See admitSession.
-	inFlight   map[string]struct{}
+	inFlight   map[string]*admissionEntry
 	inFlightMu sync.Mutex
 
 	// busyBackoffUntil tracks, per session ID, a local deadline before
@@ -433,7 +461,7 @@ func NewRunQueuePump(cfg RunQueuePumpConfig) *RunQueuePump {
 		cfg:              cfg,
 		ctx:              ctx,
 		cancel:           cancel,
-		inFlight:         make(map[string]struct{}),
+		inFlight:         make(map[string]*admissionEntry),
 		busyBackoffUntil: make(map[string]time.Time),
 		tickCh:           make(chan struct{}, 1),
 	}

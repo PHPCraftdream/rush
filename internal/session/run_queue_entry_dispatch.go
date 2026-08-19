@@ -6,6 +6,7 @@ package session
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 )
@@ -35,7 +36,7 @@ func (p *RunQueuePump) processEntry(ctx context.Context, entry *RunQueueEntry) {
 	// it left open (P1-1). Admission now covers the lease attempt too, which
 	// is a few milliseconds a concurrent drain may have to wait, in exchange
 	// for there being no window at all.
-	releaseSession, admitted := p.admitSession(entry.SessionID)
+	releaseSession, _, admitted := p.admitSession(entry.SessionID)
 	if !admitted {
 		slog.Debug("run_queue_pump: session already has an execution in flight from this pump, deferring", "id", entry.ID, "session_id", entry.SessionID, "instance_id", p.cfg.PumpInstanceID)
 		return
@@ -44,10 +45,25 @@ func (p *RunQueuePump) processEntry(ctx context.Context, entry *RunQueueEntry) {
 	// Every early return below gives the session back. The one path that
 	// does NOT is the successful dispatch at the end, which hands
 	// releaseSession to the executeEntry goroutine that now owns it.
+	//
+	// Every early-return release here passes errNoExecutionAttempted, NOT
+	// nil: nothing executed for the row on these paths (attempts-exhausted
+	// terminal-fail, no coordinator, lease raced away, shutdown-in-progress
+	// nack), so there is no executeEntrySync outcome to publish for a
+	// concurrent DrainSessionNow that may be waiting on this admission —
+	// and nil is NOT a safe stand-in for "nothing happened": it is also
+	// executeEntrySync's own return value for a clean commit, so a bare nil
+	// here would be classified by classifyBackgroundOutcome as a false
+	// success (task #575's coordinator review — this exact line used to say
+	// "passes nil" while explaining why nil must never reach the waiter,
+	// which is not the same claim as the code making it true). The waiter
+	// must fall through to retrying admission itself, not be handed a
+	// fabricated outcome — errNoExecutionAttempted is what
+	// classifyBackgroundOutcome maps to that fallthrough.
 	sessionHandedOff := false
 	defer func() {
 		if !sessionHandedOff {
-			releaseSession()
+			releaseSession(errNoExecutionAttempted)
 		}
 	}()
 
@@ -207,26 +223,49 @@ func (p *RunQueuePump) processEntry(ctx context.Context, entry *RunQueueEntry) {
 // releaseSession is processEntry's admitSession closure, handed over rather
 // than re-derived: only the caller that was admitted may clear the marker
 // (see admitSession), and after this handoff that caller is this goroutine.
-func (p *RunQueuePump) executeEntry(ctx context.Context, leased *RunQueueEntry, releaseSession func()) {
+// It now takes the executeEntrySync outcome (task #575 of the 2026-08-19
+// release-readiness review): DrainSessionNow, when it loses the admission
+// race against this goroutine, waits on the admissionEntry this release call
+// publishes and must be able to read the same outcome this function itself
+// observed, or it has no way to distinguish a committed turn from a
+// terminal failure, a failed Ack, or a lost lease — all four used to be
+// indistinguishable from outside this goroutine, and DrainSessionNow's own
+// doc used to call that out as a known, accepted residual gap. It no longer
+// needs to be one.
+func (p *RunQueuePump) executeEntry(ctx context.Context, leased *RunQueueEntry, releaseSession func(outcome error)) {
 	defer p.workerWg.Done()
 
 	// Release the semaphore slot when execution completes (P1-4).
 	// This guarantees the slot is returned even on panic or any error path.
 	defer func() { <-p.execSem }()
 
-	defer releaseSession()
+	// execErr is set by the ordinary return path below; the deferred
+	// recover just below can also set it if executeEntrySync panics. Either
+	// way, releaseSession is always the LAST thing this goroutine does,
+	// guaranteeing admission is released — and a waiting DrainSessionNow
+	// unblocked — even on a panic, exactly as the pre-#575 unconditional
+	// `defer releaseSession()` guaranteed before releaseSession needed an
+	// outcome argument to pass. A panic here would otherwise leave
+	// p.inFlight[sessionID] permanently marked busy for the rest of this
+	// pump instance's lifetime, AND strand any concurrent DrainSessionNow
+	// call forever on otherEntry.done — a panic must not be able to hang a
+	// caller that did nothing wrong.
+	var execErr error
+	defer func() {
+		if r := recover(); r != nil {
+			releaseSession(fmt.Errorf("run_queue_pump: executeEntrySync panicked: %v", r))
+			panic(r) // preserve normal panic propagation/crash behavior
+		}
+		releaseSession(execErr)
+	}()
 
-	// The returned error is deliberately discarded here: every outcome that
-	// CAN be written for the row (Ack/Nack/TerminalFail) already was, inside
-	// executeEntrySync, and this detached path has nobody to report to.
-	// DrainSessionNow (task #421/P0-1) is the caller that DOES need it, to
-	// decide whether to keep draining or surface a failure — see there.
-	//
-	// ErrTurnCommitFailed is the one outcome with no row write behind it
-	// (the Ack is precisely what failed). Discarding it here is still
-	// correct — executeEntrySync has already logged it at Error level, and
-	// recovery is the lease-expiry path's job, not this goroutine's — but it
-	// does mean the background path leaves a leased row that will be
-	// re-executed. That is the at-least-once contract, not an oversight.
-	_ = p.executeEntrySync(ctx, leased)
+	// executeEntrySync's return value already carries everything any
+	// interested party could need to know about this row's outcome — see
+	// its own doc. This detached background path has nobody of its own to
+	// report to (every outcome that CAN be written for the row already was,
+	// inside executeEntrySync), but a concurrent DrainSessionNow for the
+	// SAME session may be parked on this admission's done channel waiting
+	// for exactly this value, so it is always published via releaseSession,
+	// never silently discarded.
+	execErr = p.executeEntrySync(ctx, leased)
 }

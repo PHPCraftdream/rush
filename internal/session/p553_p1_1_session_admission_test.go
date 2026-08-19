@@ -153,12 +153,12 @@ func TestAdmitSession_IsExclusiveAndOnlyItsOwnerReleases(t *testing.T) {
 
 	releaseOther, okOther := pump.AdmitSessionForTest("s2")
 	require.True(t, okOther, "a different session must be unaffected")
-	releaseOther()
+	releaseOther(nil)
 
-	release()
-	release() // idempotent: call sites hand this closure between functions
+	release(nil)
+	release(nil) // idempotent: call sites hand this closure between functions
 
 	regained, ok3 := pump.AdmitSessionForTest("s1")
 	require.True(t, ok3, "once released, the session must be admissible again")
-	regained()
+	regained(nil)
 }
