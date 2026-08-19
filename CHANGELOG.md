@@ -161,6 +161,18 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   waiting for. Opt-in, and cosmetic when it fired, but it reported a failure
   that had not happened.
 
+- **A stale mid-stream snapshot can no longer overwrite a newer one.** The
+  turn replaces its checkpoint writer every step and waits only briefly for
+  the old one; that wait exists precisely for a database or filesystem that
+  ignores cancellation, so a stale write could still land last. Crashing in
+  that window left recovery reading an outdated checkpoint and replaying tool
+  actions that had already run. The check moved out of the writer's memory
+  and into the write itself.
+- **The system prompt is built from the same configuration the model was
+  chosen from.** A config reload landing mid-construction could produce a
+  model from one generation and a prompt from the next - different context
+  paths, skills and options than the model about to run them.
+
 - **A guard against silently corrupted SQL codegen.** sqlc miscounts
   query spans when a `.sql` comment contains a multi-byte character,
   truncating the generated statement with a clean exit code — the failure
