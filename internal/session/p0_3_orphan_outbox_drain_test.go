@@ -51,9 +51,28 @@ func TestOrphanOutbox_Drainage(t *testing.T) {
 
 	// Start the pump
 	pump.Start()
-	time.Sleep(200 * time.Millisecond) // Wait for at least a few drain ticks
 
-	// Stop the pump
+	// Wait for the entry to be genuinely drained rather than sleeping a
+	// fixed window and hoping it was enough. A fixed time.Sleep here used
+	// to be followed unconditionally by pump.Stop() below -- under
+	// concurrent full-package -race load, Stop() cancels p.ctx, and if
+	// the sleep elapsed before the drain goroutine actually got a real
+	// timeslice to attempt (let alone complete) the drain, Stop() aborted
+	// it mid-flight ("enqueueing to main queue: context canceled"),
+	// leaving the row durably 'pending' with one attempt charged against
+	// it -- not a synchronization bug in production code, but a test
+	// asking the pump to stop before it had proven it was actually done.
+	// Reproduced directly: 7/8 concurrent full-package -race runs failed
+	// on this exact assertion with that exact error before this fix (task
+	// #586). Waiting for the real outcome first means Stop() is only ever
+	// called once there is nothing left in flight for it to interrupt.
+	require.Eventually(t, func() bool {
+		pendingOutbox, err := svc.ListPendingOrphanOutboxEntries(t.Context())
+		return err == nil && len(pendingOutbox) == 0
+	}, 5*time.Second, 10*time.Millisecond, "outbox entry should be drained and marked done")
+
+	// Stop the pump now that the drain has already completed -- nothing
+	// left in flight for Stop()'s context cancellation to interrupt.
 	pump.Stop()
 
 	// Verify the outbox entry is gone (marked done and deleted)
@@ -243,7 +262,24 @@ func TestOrphanOutbox_RetryAfterTransientFailure(t *testing.T) {
 	})
 
 	pump.Start()
-	time.Sleep(300 * time.Millisecond) // several drain ticks: first fails, later succeeds
+
+	// Wait for the entry to be genuinely drained (first attempt fails
+	// transiently, released back to pending, second attempt succeeds)
+	// rather than sleeping a fixed window and hoping it was enough. The
+	// same pump.Stop()-cancels-p.ctx-mid-drain race documented on
+	// TestOrphanOutbox_Drainage applies here identically: a fixed
+	// time.Sleep(300ms) followed unconditionally by pump.Stop() left the
+	// row 'pending' with the injected failure's error still attached
+	// ("enqueueing to main queue: context canceled" from the retry
+	// itself being interrupted, not just the injected one) in 7/8
+	// concurrent full-package -race runs (task #586). Waiting for the
+	// real outcome first means Stop() is only ever called once there is
+	// nothing left in flight for it to interrupt.
+	require.Eventually(t, func() bool {
+		pendingOutbox, err := svc.ListPendingOrphanOutboxEntries(ctx)
+		return err == nil && len(pendingOutbox) == 0
+	}, 5*time.Second, 10*time.Millisecond, "entry should have been drained after the transient failure was retried")
+
 	pump.Stop()
 
 	// The entry must have been released back to pending after the first
