@@ -24,6 +24,22 @@ import (
 	"github.com/google/uuid"
 )
 
+// rerunTailDeleteSeam is a test-only hook (task #630): fires at the top
+// of every tail-deletion loop iteration in handleRerunMessage, with the
+// iteration index, BEFORE that iteration's Delete call. A test can cancel
+// the reservation hold at i==1 to land a Cancel precisely BETWEEN two tail
+// deletions and assert the tail is never left half-deleted. nil (a no-op)
+// in every production path.
+var rerunTailDeleteSeam func(i int)
+
+// rerunPreTargetDeleteSeam is a test-only hook (task #630 follow-up): fires
+// immediately BEFORE step 3 deletes the target user message, i.e. strictly
+// after the last honoured cancellation check and strictly after the tail
+// loop. A test can cancel the hold here to prove the handler is already
+// committed: it must proceed to the replacement turn, never return with the
+// user's own message deleted and no rerun. nil in every production path.
+var rerunPreTargetDeleteSeam func()
+
 // rerunPostIdlePollSeam is a test-only hook (task #614): see its call site in
 // handleRerunMessage for exactly which window it fires in. nil in every
 // production path.
@@ -713,8 +729,34 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 		rerunHoldingReservationSeam()
 	}
 
-	for _, m := range allMsgs[targetIdx+1:] {
-		if delErr := a.Messages.Delete(holdCtx, m.ID); delErr != nil {
+	// Final phase-boundary check before mutating history: once the loop
+	// below is entered it runs to completion (see deleteCtx), so a Cancel
+	// must be honoured HERE — tail untouched — rather than mid-loop, where
+	// honouring it would leave the tail half-deleted with no rerun in
+	// exchange (task #630).
+	if holdCtx.Err() != nil {
+		c.reply(msg.ID, EventError, nil, "cancelled")
+		return
+	}
+
+	// deleteCtx is the context the tail-deletion loop and step 3's target
+	// delete run under. It is holdCtx with cancellation stripped
+	// (context.WithoutCancel): a Cancel landing between two loop iterations
+	// must not kill the remaining Delete/ForceDelete calls, or the session's
+	// history is left partially truncated and the post-loop check replies
+	// "cancelled" with nothing to show for the lost messages (task #630).
+	// The invariant: the tail is either untouched (cancel honoured at a
+	// phase boundary above) or fully deleted — never half. WithoutCancel
+	// rather than context.Background() to keep holdCtx's values, matching
+	// the agentCtx idiom already used further down in this handler.
+	deleteCtx := context.WithoutCancel(holdCtx)
+
+	for i, m := range allMsgs[targetIdx+1:] {
+		// Test-only seam (task #630): see rerunTailDeleteSeam's declaration.
+		if rerunTailDeleteSeam != nil {
+			rerunTailDeleteSeam(i)
+		}
+		if delErr := a.Messages.Delete(deleteCtx, m.ID); delErr != nil {
 			if errors.Is(delErr, message.ErrMessageStillStreaming) {
 				// The message is still streaming, but THREE separate proofs
 				// back the orphan claim: the session was cancelled and polled
@@ -727,7 +769,7 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 				// text in LLM context forever.
 				slog.Info("ws: rerun: orphaned streaming message, force-deleting",
 					"id", m.ID, "err", delErr)
-				if forceErr := a.Messages.ForceDelete(holdCtx, m.ID); forceErr != nil {
+				if forceErr := a.Messages.ForceDelete(deleteCtx, m.ID); forceErr != nil {
 					slog.Warn("ws: rerun: failed to force-delete orphaned streaming message",
 						"id", m.ID, "err", forceErr)
 				}
@@ -737,21 +779,38 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 		}
 	}
 
-	// Check if the hold was cancelled during tail deletion
+	// Check if the hold was cancelled during tail deletion. This is the
+	// LAST cancellation point the handler honours (task #630): honouring
+	// here leaves the state "tail fully deleted, target intact, no rerun"
+	// — the operator's own prompt survives and a retry re-enters cleanly.
+	// Every step after this mutates the target itself; once step 3 has
+	// deleted it, only the replacement turn's Run() can recreate it, so
+	// from here on a Cancel is NOT honoured in this handler. It is already
+	// delivered to the mailbox (the holdCancel WAS the cancel target),
+	// where the agent layer rebinds and applies it to the replacement turn
+	// instead — the correct place for a mid-rerun Cancel to land.
 	if holdCtx.Err() != nil {
 		c.reply(msg.ID, EventError, nil, "cancelled")
 		return
 	}
 
-	// 3. Delete the original user message — Run() will recreate it.
-	if delErr := a.Messages.Delete(holdCtx, targetMsg.ID); delErr != nil {
+	// Test-only seam (task #630 follow-up): see rerunPreTargetDeleteSeam's
+	// declaration.
+	if rerunPreTargetDeleteSeam != nil {
+		rerunPreTargetDeleteSeam()
+	}
+
+	// 3. Delete the original user message — Run() will recreate it. Runs
+	// under deleteCtx (cancellation stripped) and is the COMMIT POINT: if
+	// this Delete succeeds and the handler returned early, the user's own
+	// words would be gone with nothing recreating them, so nothing below
+	// may return without first handing off into RunWithReservedOwnership.
+	// A Cancel arriving during or after this delete is left to the agent
+	// layer: RunWithReservedOwnership is invoked with agentCtx (derived
+	// from the request ctx, not holdCtx) and continues the same ownership
+	// era regardless of the hold's cancellation state.
+	if delErr := a.Messages.Delete(deleteCtx, targetMsg.ID); delErr != nil {
 		slog.Warn("ws: rerun: failed to delete original user message", "id", targetMsg.ID, "err", delErr)
-	}
-
-	// Check if the hold was cancelled while deleting the original message
-	if holdCtx.Err() != nil {
-		c.reply(msg.ID, EventError, nil, "cancelled")
-		return
 	}
 
 	// 4. Re-arm Phase 4 autonomy.
@@ -759,7 +818,10 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 
 	// 5. Resolve model overrides (same priority as handleSendMessage).
 	var smartOverride, fastOverride *agent.ModelOverride
-	if sess, sessErr := a.Sessions.Get(holdCtx, sessionID); sessErr == nil {
+	// Sessions.Get is read-only, but run it under deleteCtx too: holdCtx
+	// may already be cancelled past the commit point, and failing the Get
+	// would silently drop the session's model overrides for no reason.
+	if sess, sessErr := a.Sessions.Get(deleteCtx, sessionID); sessErr == nil {
 		if sess.SmartModelID != "" {
 			smartOverride = &agent.ModelOverride{Provider: sess.SmartModelProvider, Model: sess.SmartModelID}
 		}
