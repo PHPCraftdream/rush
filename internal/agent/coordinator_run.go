@@ -574,3 +574,77 @@ func (c *coordinator) RunWithOverrides(ctx context.Context, sessionID, prompt st
 
 	return c.runInternal(ctx, sessionID, prompt, pinned, attachments...)
 }
+
+// ReserveExclusive implements Coordinator — see the interface doc and
+// SessionAgent.ReserveExclusive for the full contract. Thin passthrough:
+// the reservation itself is pure mailbox state, nothing model/provider
+// related needs resolving to claim it.
+func (c *coordinator) ReserveExclusive(ctx context.Context, sessionID string) (epoch uint64, cancel context.CancelFunc, ok bool) {
+	return c.currentAgent.ReserveExclusive(ctx, sessionID)
+}
+
+// ReleaseExclusive implements Coordinator — thin passthrough, see
+// SessionAgent.ReleaseExclusive.
+func (c *coordinator) ReleaseExclusive(sessionID string, epoch uint64, cancel context.CancelFunc) {
+	c.currentAgent.ReleaseExclusive(sessionID, epoch, cancel)
+}
+
+// RunWithReservedOwnership implements Coordinator. It resolves models
+// exactly like Run/RunWithOverrides (buildCall, the same shared path every
+// other entry point uses) and then hands the call to
+// SessionAgent.RunWithReservedOwnership instead of SessionAgent.Run, so the
+// caller's already-held reservation (epoch, cancel from a prior
+// ReserveExclusive) is CONTINUED rather than dropped and re-claimed. See
+// SessionAgent.RunWithReservedOwnership's doc for why that distinction is
+// the entire point: re-claiming would race a concurrent caller for the
+// instant the mailbox is idle in between.
+//
+// THE SINGLE HANDOFF POINT at this layer is the same shape as
+// SessionAgent.RunWithReservedOwnership's: exactly one line —
+// `return c.currentAgent.RunWithReservedOwnership(...)` at the bottom —
+// transfers release-responsibility down into the sessionAgent layer (whose
+// own single handoff line then transfers it into runOwned's defer). Every
+// return ABOVE that line in THIS function is this function's own
+// responsibility to release via c.currentAgent.ReleaseExclusive before
+// returning (findings review, task #614 defect 1: readyWg.Wait, model
+// resolution, and buildCall failures previously fell through with no
+// release at all — resolveSessionModels in particular fails on an ordinary
+// misconfigured/unresolvable model, not just shutdown, so this was reachable
+// on a routine error and would wedge the session at mbOwned forever, worse
+// than the F5 race it was meant to close). There is no epoch-mismatch
+// exception at this layer the way there is one line down in
+// SessionAgent.RunWithReservedOwnership: nothing between ReserveExclusive
+// returning to the caller and this function running can move the epoch on
+// its own (only Cancel/CancelAll/a concurrent ReserveExclusive attempt that
+// FAILS can touch it, and none of those end this era) — so every early
+// return here really is this function's reservation to release.
+func (c *coordinator) RunWithReservedOwnership(ctx context.Context, sessionID, prompt string, epoch uint64, cancel context.CancelFunc, smart, fast *ModelOverride, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
+	if err := c.readyWg.Wait(); err != nil {
+		c.currentAgent.ReleaseExclusive(sessionID, epoch, cancel)
+		return nil, err
+	}
+
+	var pinned *resolvedOverrides
+	var err error
+	if smart != nil || fast != nil {
+		pinned, err = c.applyModelOverrides(ctx, smart, fast)
+	} else {
+		pinned, err = c.resolveSessionModels(ctx, sessionID)
+	}
+	if err != nil {
+		c.currentAgent.ReleaseExclusive(sessionID, epoch, cancel)
+		return nil, fmt.Errorf("failed to resolve session models: %w", err)
+	}
+
+	call, err := c.buildCall(ctx, sessionID, prompt, pinned, attachments)
+	if err != nil {
+		c.currentAgent.ReleaseExclusive(sessionID, epoch, cancel)
+		return nil, err
+	}
+
+	// HANDOFF LINE: from here on, SessionAgent.RunWithReservedOwnership (and,
+	// past ITS OWN handoff line, runOwned's defer) owns releasing this
+	// reservation exactly once. Nothing after this line may call
+	// ReleaseExclusive again for this epoch.
+	return c.currentAgent.RunWithReservedOwnership(ctx, call, epoch, cancel)
+}

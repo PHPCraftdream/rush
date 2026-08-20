@@ -328,6 +328,22 @@ func (a *sessionAgent) resolveTurnConfig(call SessionAgentCall) turnConfig {
 
 type SessionAgent interface {
 	Run(context.Context, SessionAgentCall) (*fantasy.AgentResult, error)
+	// ReserveExclusive atomically claims exclusive ownership of sessionID's
+	// mailbox without starting a turn (task #614). See the sessionAgent
+	// implementation's doc for the full contract: the returned epoch/cancel
+	// pair must be handed to exactly one of RunWithReservedOwnership or
+	// ReleaseExclusive, exactly once. ok is false (fail closed) when the
+	// session is already owned or the mailbox is stopped.
+	ReserveExclusive(ctx context.Context, sessionID string) (epoch uint64, cancel context.CancelFunc, ok bool)
+	// ReleaseExclusive drops a reservation taken by ReserveExclusive without
+	// running a turn, safely handing off anything that raced into the
+	// mailbox during the hold. Use on any bail-out path after a successful
+	// ReserveExclusive that will not call RunWithReservedOwnership.
+	ReleaseExclusive(sessionID string, epoch uint64, cancel context.CancelFunc)
+	// RunWithReservedOwnership executes call using ownership already claimed
+	// by ReserveExclusive, continuing the SAME ownership era instead of
+	// releasing and re-claiming — see its own doc for why that gap matters.
+	RunWithReservedOwnership(ctx context.Context, call SessionAgentCall, epoch uint64, cancel context.CancelFunc) (*fantasy.AgentResult, error)
 	SetModels(smart Model, fast Model)
 	SetTools(tools []fantasy.AgentTool)
 	SetSystemPrompt(systemPrompt string)

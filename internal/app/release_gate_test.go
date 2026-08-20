@@ -279,6 +279,26 @@ func (a *sessionAgentCoordinatorAdapter) IsBusy() bool {
 	return a.sessionAgent.IsBusy()
 }
 
+// ReserveExclusive - delegate to SessionAgent
+func (a *sessionAgentCoordinatorAdapter) ReserveExclusive(ctx context.Context, sessionID string) (epoch uint64, cancel context.CancelFunc, ok bool) {
+	return a.sessionAgent.ReserveExclusive(ctx, sessionID)
+}
+
+// ReleaseExclusive - delegate to SessionAgent
+func (a *sessionAgentCoordinatorAdapter) ReleaseExclusive(sessionID string, epoch uint64, cancel context.CancelFunc) {
+	a.sessionAgent.ReleaseExclusive(sessionID, epoch, cancel)
+}
+
+// RunWithReservedOwnership converts Coordinator's signature to
+// SessionAgent.RunWithReservedOwnership's, mirroring Run's own conversion above.
+func (a *sessionAgentCoordinatorAdapter) RunWithReservedOwnership(ctx context.Context, sessionID, prompt string, epoch uint64, cancel context.CancelFunc, smart, fast *agent.ModelOverride, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
+	return a.sessionAgent.RunWithReservedOwnership(ctx, agent.SessionAgentCall{
+		SessionID:   sessionID,
+		Prompt:      prompt,
+		Attachments: attachments,
+	}, epoch, cancel)
+}
+
 // QueuedPrompts - delegate to SessionAgent
 func (a *sessionAgentCoordinatorAdapter) QueuedPrompts(sessionID string) int {
 	return a.sessionAgent.QueuedPrompts(sessionID)

@@ -55,6 +55,96 @@ func (a *sessionAgent) tryReserveSession(call SessionAgentCall, reserveCancel co
 	return a.getMailbox(call.SessionID).submit(call, reserveCancel)
 }
 
+// ReserveExclusive atomically claims exclusive ownership of sessionID's
+// mailbox WITHOUT starting a turn — the same atomic mbIdle->mbOwned
+// check-and-set beginCompact already provides for manual /compact (#268/
+// P0-4), reused here for any caller that needs to hold ownership across a
+// span of serving-side work (task #614: handleRerunMessage must cancel the
+// old turn, delete the message tail, and delete the target message, all
+// while guaranteed no concurrent Send/Rerun can become owner and write a
+// new streaming message into the middle of that deletion).
+//
+// This is a single atomic operation, not "check IsSessionBusy, then
+// reserve": the check and the mbIdle->mbOwned transition happen inside one
+// mailbox.mu critical section (mailbox.beginCompact), so there is no window
+// between "observed idle" and "became owner" for a concurrent submit() to
+// slip through. Returns ok=false (fail closed) if the session is already
+// owned (a turn or compaction in progress) or the mailbox has been
+// hard-stopped — callers MUST treat that as "cannot proceed", not silently
+// retry with a weaker check.
+//
+// On success the caller holds the reservation until it calls EITHER
+// ReleaseExclusive (to drop ownership without running anything — e.g. the
+// caller hit an error partway through its held work and wants any mailbox
+// work that raced in during the hold handed off safely) OR
+// RunWithReservedOwnership (to hand ownership straight into a turn loop
+// with no gap). Exactly one of the two must be called, exactly once, or the
+// session is stuck reporting busy forever (mirrors every other
+// beginCompact/tryReserveSession caller's contract in this file). If the
+// caller's own held work fails partway through, ReleaseExclusive still
+// safely hands off anything that raced into the mailbox during the hold —
+// see its own doc.
+//
+// CORRECTED (findings review, task #614 defect 2 — an earlier version of
+// this doc paragraph claimed the opposite of what the code does): the
+// returned cancel is a MAILBOX-INTERNAL TOKEN, not a caller-observable
+// cancellation signal. It is stored as both mailbox.current.cancel and
+// mailbox.dispatcherCancel (exactly like beginCompact's own cancel), so
+// Cancel(sessionID)/CancelAll landing during the hold correctly find a
+// live, non-nil CancelFunc to invoke instead of silently no-op'ing — that
+// part is real and matters (see mailbox.go's mbReleasing doc for why a nil
+// current.cancel during an active era is itself a bug class this guards
+// against). But the context this CancelFunc controls is created via
+// `context.WithCancel(ctx)` and then the returned *context.Context is
+// immediately discarded (assigned to `_` below) — cancelling a child context
+// never cancels its parent, so invoking this cancel does NOT propagate
+// anything back to the caller's own ctx, and the caller has no way to
+// observe it via ctx.Done()/ctx.Err(). Concretely: a Cancel(sessionID) that
+// lands while handleRerunMessage is mid-deletion does NOT interrupt that
+// deletion loop — it only flips a mailbox-internal handle that
+// RunWithReservedOwnership later consults (via mb.rebindDispatcher's epoch
+// check) and that ReleaseExclusive/CancelAll can invoke without it being a
+// no-op. If a future caller needs the hold's own cancellation to actually
+// interrupt its held work, this function would need to return the derived
+// context too (currently thrown away) for that caller to select on
+// explicitly — nothing here provides that today.
+//
+// When RunWithReservedOwnership takes over, it invokes this cancel (to
+// release the now-superseded placeholder context, purely to avoid a
+// context.WithCancel leak — go vet's lostcancel-style leak, not a
+// functional signal) and immediately rebinds the mailbox (via
+// mailbox.rebindDispatcher, same epoch) to a fresh CancelFunc scoped to the
+// turn loop's own runCtx, which IS wired to something meaningful (the turn's
+// actual provider calls) — see rebindDispatcher's own doc for why the swap
+// is necessary and why it does not reopen any gap (rebindDispatcher never
+// changes mb.epoch/state, only which CancelFunc is live for the
+// still-continuous era).
+func (a *sessionAgent) ReserveExclusive(ctx context.Context, sessionID string) (epoch uint64, cancel context.CancelFunc, ok bool) {
+	_, holdCancel := context.WithCancel(ctx)
+	mb := a.getMailbox(sessionID)
+	epoch, ok = mb.beginCompact(holdCancel)
+	if !ok {
+		holdCancel()
+		return 0, nil, false
+	}
+	return epoch, holdCancel, true
+}
+
+// ReleaseExclusive drops a reservation taken by ReserveExclusive WITHOUT
+// running a turn — used on every "cannot proceed" bail-out path so the
+// session does not stay stuck reporting busy. Mirrors
+// abandonOwnershipWithHandoff's contract (same function Run's cleanup defer
+// uses): any work that raced into the mailbox's submitted/replacement
+// queues during the hold (a concurrent submit() or InterruptAndReplace,
+// both of which see mbOwned and queue rather than become owner) is handed
+// to a fresh detached run rather than silently dropped.
+func (a *sessionAgent) ReleaseExclusive(sessionID string, epoch uint64, cancel context.CancelFunc) {
+	if cancel != nil {
+		cancel()
+	}
+	a.abandonOwnershipWithHandoff(sessionID, epoch)
+}
+
 // releaseSessionReservation clears the busy slot claimed by
 // tryReserveSession, atomically checking for and returning any call queued
 // in the meantime via mailbox.drainOrRelease (design §3). Before this, the

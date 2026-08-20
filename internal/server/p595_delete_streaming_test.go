@@ -307,6 +307,34 @@ func (m *mockAgentCoordinator) IsBusy() bool {
 	return m.busy
 }
 
+// ReserveExclusive mirrors IsSessionBusy: succeeds (epoch 1) when the mock is
+// configured idle, fails when configured busy — consistent with the atomic
+// mbIdle->mbOwned contract ReserveExclusive documents (a real mailbox would
+// never let a reservation succeed while busy). The tests using this mock
+// (TestHandleRerunMessage_OrphanedStreamingMessageIsForceDeleted) configure
+// busy: false, so this returns ok=true and lets handleRerunMessage's tail
+// cleanup proceed exactly as before task #614's reservation was added.
+func (m *mockAgentCoordinator) ReserveExclusive(ctx context.Context, sessionID string) (epoch uint64, cancel context.CancelFunc, ok bool) {
+	if m.busy {
+		return 0, nil, false
+	}
+	return 1, func() {}, true
+}
+
+func (m *mockAgentCoordinator) ReleaseExclusive(sessionID string, epoch uint64, cancel context.CancelFunc) {
+}
+
+// RunWithReservedOwnership mirrors Run: unimplemented in this minimal mock.
+// handleRerunMessage calls this (not Run/RunWithOverrides) for the
+// replacement turn once task #614's reservation hand-off lands, so this must
+// return an error the same way Run/RunWithOverrides already do, for the same
+// reason the existing orphan test's comment already documents: "the function
+// will eventually fail when trying to actually run the agent... but the tail
+// cleanup should have succeeded."
+func (m *mockAgentCoordinator) RunWithReservedOwnership(ctx context.Context, sessionID, prompt string, epoch uint64, cancel context.CancelFunc, smart, fast *agent.ModelOverride, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
+	return nil, fmt.Errorf("mock coordinator: RunWithReservedOwnership not implemented")
+}
+
 func (m *mockAgentCoordinator) QueuedPrompts(sessionID string) int {
 	return 0
 }

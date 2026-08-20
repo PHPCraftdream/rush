@@ -93,6 +93,20 @@ func (m *mockSessionAgent) SetSystemPromptPrefix(string)          {}
 func (m *mockSessionAgent) SystemPrompt() string                  { return "" }
 func (m *mockSessionAgent) SetTimeoutOptions(bool, time.Duration) {}
 
+// ReserveExclusive/ReleaseExclusive/RunWithReservedOwnership: this mock's
+// IsSessionBusy always reports false, so ReserveExclusive always succeeds
+// (a fixed epoch of 1 is fine — no test here exercises epoch mismatches).
+// RunWithReservedOwnership reuses runFunc, same as Run, since none of the
+// coordinator-level tests using this mock distinguish the two call paths.
+func (m *mockSessionAgent) ReserveExclusive(ctx context.Context, sessionID string) (epoch uint64, cancel context.CancelFunc, ok bool) {
+	return 1, func() {}, true
+}
+func (m *mockSessionAgent) ReleaseExclusive(sessionID string, epoch uint64, cancel context.CancelFunc) {
+}
+func (m *mockSessionAgent) RunWithReservedOwnership(ctx context.Context, call SessionAgentCall, epoch uint64, cancel context.CancelFunc) (*fantasy.AgentResult, error) {
+	return m.runFunc(ctx, call)
+}
+
 // newTestCoordinator creates a minimal coordinator for unit testing runSubAgent.
 //
 // Registers providerCfg under providerID AND wires it as both the large and

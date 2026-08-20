@@ -23,6 +23,16 @@ import (
 	"github.com/google/uuid"
 )
 
+// rerunPostIdlePollSeam is a test-only hook (task #614): see its call site in
+// handleRerunMessage for exactly which window it fires in. nil in every
+// production path.
+var rerunPostIdlePollSeam func()
+
+// rerunHoldingReservationSeam is a test-only hook (task #614, reverse
+// direction): see its call site in handleRerunMessage for exactly which
+// window it fires in. nil in every production path.
+var rerunHoldingReservationSeam func()
+
 // saveAttachmentToDisk saves an attachment to <dataDir>/attachments/ with a
 // timestamped filename and returns the absolute path. dataDir must already be
 // the fully resolved data directory (e.g. cfg.Options.DataDirectory, which
@@ -454,7 +464,13 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 	// Web sessions never prompt for permissions.
 	autoApproveWebSession(a, sessionID)
 
-	// 1. Cancel + clear queue if busy, then poll until idle (up to 10s).
+	// 1. Cancel + clear queue if busy, then poll until idle (up to 10s). This
+	// is a courtesy wait, NOT the safety mechanism: IsSessionBusy is a
+	// snapshot, and a new Send/Rerun can legitimately start the instant after
+	// this loop observes idle, before step 1a below claims exclusive
+	// ownership. The wait exists purely so the common case (an old turn that
+	// is already winding down) doesn't fail closed on step 1a just because
+	// cancellation hasn't finished propagating yet.
 	a.AgentCoordinator.Cancel(sessionID)
 	a.AgentCoordinator.ClearQueue(sessionID)
 	idle := false
@@ -478,6 +494,55 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 		c.reply(msg.ID, EventError, nil, "session still stopping — please retry")
 		return
 	}
+
+	// Test-only seam (task #614 regression test): fires strictly AFTER the
+	// idle-poll above observed the session idle and strictly BEFORE
+	// ReserveExclusive below claims ownership — i.e. exactly the window a
+	// pre-fix rerun would have proceeded through unprotected. A test can pause
+	// here to start a concurrent new Send/Rerun and prove it observes the
+	// session busy (or fails its own reservation) instead of racing this
+	// handler's tail-delete loop. nil (a no-op) in every production path,
+	// mirroring the mailbox package's testDrainSeam/testLoopRearmSeam idiom.
+	if rerunPostIdlePollSeam != nil {
+		rerunPostIdlePollSeam()
+	}
+
+	// 1a. Task #614 (F5 of the 2026-08-20 readonly release review): claim
+	// EXCLUSIVE ownership of the session's mailbox before touching history.
+	// This is the actual safety mechanism, not the idle-poll above: it is a
+	// single atomic mbIdle->mbOwned transition (ReserveExclusive ->
+	// mailbox.beginCompact), so there is no window between "observed idle"
+	// and "became owner" for a concurrent Send/Rerun/InterruptAndSend to
+	// slip through and start writing a new streaming assistant message while
+	// this handler deletes the tail below. If the session is busy — even if
+	// it raced busy again in the instant after the idle-poll above returned
+	// — ReserveExclusive fails and this handler fails closed: nothing is
+	// deleted, and the operator is told to retry rather than risking a
+	// force-delete of a message a live new turn is writing.
+	//
+	// Ownership is held from here through the tail delete, the target
+	// delete, and the handoff into RunWithReservedOwnership below — it is
+	// never released and re-claimed in between, which is what closes the
+	// F5 hole: releasing after delete and re-reserving for the replacement
+	// Run would reopen exactly the same "another caller can become owner in
+	// the gap" window this reservation exists to close.
+	epoch, reserveCancel, reserved := a.AgentCoordinator.ReserveExclusive(ctx, sessionID)
+	if !reserved {
+		slog.Warn("ws: rerun: could not claim exclusive ownership (session became busy again)",
+			"sessionID", sessionID, "messageID", p.MessageID)
+		c.reply(msg.ID, EventError, nil, "session became busy again — please retry")
+		return
+	}
+	// releaseOnBailout is true on every return path below UNTIL step 6 hands
+	// ownership to RunWithReservedOwnership, which takes over final release
+	// itself (mirroring Run()'s own single-release contract) — see the
+	// defer's own check just before step 6.
+	releaseOnBailout := true
+	defer func() {
+		if releaseOnBailout {
+			a.AgentCoordinator.ReleaseExclusive(sessionID, epoch, reserveCancel)
+		}
+	}()
 
 	// 2. Delete every message AFTER the target, keep the target.
 	//
@@ -511,6 +576,20 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 		c.reply(msg.ID, EventError, nil, "target message not found in session")
 		return
 	}
+
+	// Test-only seam (task #614 regression test, reverse direction): fires
+	// strictly AFTER ReserveExclusive above claimed ownership and strictly
+	// BEFORE the tail-delete loop below runs. A test can pause here to prove
+	// that a concurrent Send/Rerun attempted WHILE this handler holds the
+	// reservation observes the session busy and cannot create a new
+	// streaming message — the direction of the F5 race that actually matters
+	// (a new turn starting mid-deletion), as opposed to
+	// rerunPostIdlePollSeam's "someone else grabs the reservation before we
+	// do" direction. nil (a no-op) in every production path.
+	if rerunHoldingReservationSeam != nil {
+		rerunHoldingReservationSeam()
+	}
+
 	for _, m := range allMsgs[targetIdx+1:] {
 		if delErr := a.Messages.Delete(ctx, m.ID); delErr != nil {
 			if errors.Is(delErr, message.ErrMessageStillStreaming) {
@@ -550,13 +629,20 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 		}
 	}
 
-	// 6. Run the agent with the same prompt.
+	// 6. Run the agent with the same prompt, handing off the reservation
+	// claimed in step 1a directly into the replacement turn — see
+	// RunWithReservedOwnership's own doc for why this must CONTINUE the same
+	// ownership era rather than release-then-reacquire. From this point on,
+	// RunWithReservedOwnership owns releasing the reservation on every return
+	// path (mirroring Run()'s own contract), so the bail-out defer above must
+	// stand down.
 	agentCtx := context.WithoutCancel(ctx)
+	releaseOnBailout = false
 	c.hub.Broadcast(EventAgentBusy, AgentBusyPayload{SessionID: sessionID, Busy: true})
 	if smartOverride != nil || fastOverride != nil {
-		_, err = a.AgentCoordinator.RunWithOverrides(agentCtx, sessionID, text, smartOverride, fastOverride)
+		_, err = a.AgentCoordinator.RunWithReservedOwnership(agentCtx, sessionID, text, epoch, reserveCancel, smartOverride, fastOverride)
 	} else {
-		_, err = a.AgentCoordinator.Run(agentCtx, sessionID, text)
+		_, err = a.AgentCoordinator.RunWithReservedOwnership(agentCtx, sessionID, text, epoch, reserveCancel, nil, nil)
 	}
 	// P2-2 fix: broadcast the actual busy state derived from mailbox ownership,
 	// not from this request handler's lifetime.

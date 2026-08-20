@@ -47,6 +47,18 @@ func (m *mockCoordinatorForShutdown) IsBusy() bool {
 	panic("unexpected: Shutdown does not call IsBusy")
 }
 
+func (m *mockCoordinatorForShutdown) ReserveExclusive(ctx context.Context, sessionID string) (epoch uint64, cancel context.CancelFunc, ok bool) {
+	panic("unexpected: Shutdown does not call ReserveExclusive")
+}
+
+func (m *mockCoordinatorForShutdown) ReleaseExclusive(sessionID string, epoch uint64, cancel context.CancelFunc) {
+	panic("unexpected: Shutdown does not call ReleaseExclusive")
+}
+
+func (m *mockCoordinatorForShutdown) RunWithReservedOwnership(ctx context.Context, sessionID, prompt string, epoch uint64, cancel context.CancelFunc, smart, fast *agent.ModelOverride, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
+	panic("unexpected: Shutdown does not call RunWithReservedOwnership")
+}
+
 func (m *mockCoordinatorForShutdown) QueuedPrompts(sessionID string) int {
 	panic("unexpected: Shutdown does not call QueuedPrompts")
 }

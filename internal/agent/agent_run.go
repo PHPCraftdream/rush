@@ -67,6 +67,146 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 	if !became {
 		return nil, nil
 	}
+	return a.runOwned(ctx, runCtx, call, epoch, runCancel)
+}
+
+// RunWithReservedOwnership executes call using an ownership era ALREADY
+// claimed by the caller (via ReserveExclusive/mailbox.beginCompact-shaped
+// atomic mbIdle->mbOwned transition), instead of claiming a fresh one via
+// tryReserveSession/mailbox.submit.
+//
+// This exists for task #614 (handleRerunMessage): a caller that must run
+// several serving-side operations (cancel the old turn, delete the message
+// tail, delete the target message) UNDER exclusive ownership before handing
+// off to a fresh turn needs that ownership to survive from the reservation
+// all the way through the replacement Run — with no window where the
+// mailbox is observably idle in between. Calling the ordinary Run() for the
+// handoff would re-invoke tryReserveSession, which only succeeds when the
+// mailbox is CURRENTLY mbIdle; since the caller is already the owner (mbOwned
+// under `epoch`), that call would misinterpret its own reservation as "busy"
+// and silently queue `call` behind itself instead of running it — the mailbox
+// has no way to tell "the current owner is submitting its own next turn"
+// apart from "a different caller is submitting while owned". Continuing the
+// caller's own `epoch` instead of re-reserving is what closes that hole:
+// ownership is transferred by CONTINUING the same era, never by dropping it
+// and re-acquiring, so there is no instant at which the mailbox is idle and
+// a third party could slip in and become owner instead.
+//
+// reserveCancel is the CancelFunc ReserveExclusive returned — it is tied to
+// a short-lived placeholder context that has nothing to do with this turn
+// loop's own lifetime, so it is invoked here (to release that placeholder
+// context, now unreferenced) and then REPLACED, via mailbox.rebindDispatcher,
+// by a fresh runCancel derived from ctx — the actual context this turn loop
+// (and every provider call inside it) will run under. rebindDispatcher keeps
+// mb.epoch/state/current.id untouched, so Cancel(sessionID)/CancelAll landing
+// either before or after this swap still target a live, correct CancelFunc
+// for the whole hold-to-turn transition; only the specific func changes, not
+// the era it belongs to.
+//
+// THE SINGLE HANDOFF POINT (read this before touching any return path in
+// this function): ownership transfers from "this function's responsibility
+// to release" to "runOwned's deferred abandonOwnershipWithHandoff is
+// responsible" at EXACTLY ONE LINE — the `return a.runOwned(...)` at the
+// bottom of this function, call it the handoff line. Every return ABOVE the
+// handoff line is this function's own responsibility to release explicitly
+// before returning (findings review, task #614 defect 1: four early returns
+// here previously fell straight through with no release at all, leaking the
+// reservation and permanently wedging the session at mbOwned on any ordinary
+// error — e.g. a ContainsTextAttachment/SessionID validation failure or an
+// admission-gate rejection during shutdown). Every return AT OR BELOW the
+// handoff line is runOwned's responsibility, not this function's — do not
+// add a release call after the handoff line, or the reservation would be
+// released twice (once here, once by runOwned's defer), corrupting a LATER
+// owner's era if one has already started under the bumped epoch.
+//
+// The ONE exception to "this function releases every early return" is the
+// rebindDispatcher failure branch: a failed rebind means the epoch this
+// caller thinks it owns has ALREADY ended (moved on to some other owner, or
+// this era already vacated some other way) — see mailbox.rebindDispatcher's
+// own doc: it returns false exactly when `mb.epoch != epoch || mb.state !=
+// mbOwned`. Calling abandonOwnershipWithHandoff(sessionID, epoch) in that
+// branch would present a STALE epoch that abandonOwnershipWithHandoff's own
+// epoch check (via abandonOwnershipAndPopSubmitted) will correctly refuse as
+// a no-op — so it would not corrupt anything — but it also would not be
+// releasing anything real: the era already isn't ours to release. Calling
+// it there would be misleading dead code, not a safety net, so that branch
+// intentionally does NOT call it; only runCancel/reserveCancel (both of
+// which are unconditionally ours regardless of mailbox state) are cleaned up.
+//
+// The caller must have obtained (epoch, reserveCancel) from ReserveExclusive
+// on call.SessionID's mailbox and must not call ReleaseExclusive itself
+// after calling this method — ownership (and who releases it) is entirely
+// determined by which side of the handoff line a given return sits on, per
+// the paragraph above.
+func (a *sessionAgent) RunWithReservedOwnership(ctx context.Context, call SessionAgentCall, epoch uint64, reserveCancel context.CancelFunc) (*fantasy.AgentResult, error) {
+	if call.Prompt == "" && !message.ContainsTextAttachment(call.Attachments) {
+		// Before the handoff line: this function must release what
+		// ReserveExclusive claimed. reserveCancel's placeholder context was
+		// never superseded (rebindDispatcher hasn't run yet), so cancel it
+		// too, mirroring ReleaseExclusive's own body.
+		a.abandonOwnershipWithHandoff(call.SessionID, epoch)
+		reserveCancel()
+		return nil, ErrEmptyPrompt
+	}
+	if call.SessionID == "" {
+		a.abandonOwnershipWithHandoff(call.SessionID, epoch)
+		reserveCancel()
+		return nil, ErrSessionMissing
+	}
+	// Unlike Run, admission (tryAdmitRunWg) and the reservation itself were
+	// already handled by the caller's ReserveExclusive call — ReserveExclusive
+	// itself does not register with runWg (it is not a turn loop yet), so
+	// register this execution now, symmetric with Run's own registration.
+	if !a.tryAdmitRunWg() {
+		// Shutdown has begun. Still release the reservation this call is
+		// holding — shuttingDown only refuses NEW admission, it does not
+		// itself release reservations already claimed, and a wedged mbOwned
+		// mailbox would make CancelAll's own hardStop sweep (which iterates
+		// existing mailboxes) the only thing that could ever clear it.
+		// abandonOwnershipWithHandoff is safe to call post-shutdown-latch:
+		// it only pops/restarts queued work if any is present and otherwise
+		// just flips the era to mbIdle.
+		a.abandonOwnershipWithHandoff(call.SessionID, epoch)
+		reserveCancel()
+		return nil, ErrAgentShuttingDown
+	}
+	defer a.runWg.Done()
+
+	// runCtx/runCancel span the whole dispatcher, exactly like Run's own —
+	// see Run's doc for why the turn loop needs its own cancelable context
+	// distinct from the caller's ctx.
+	runCtx, runCancel := context.WithCancel(ctx)
+
+	mb := a.getMailbox(call.SessionID)
+	if !mb.rebindDispatcher(epoch, runCancel) {
+		// EXCEPTION to "this function releases every early return" — see the
+		// doc paragraph above titled "THE SINGLE HANDOFF POINT" for why an
+		// epoch mismatch here means the era already isn't ours to release.
+		runCancel()
+		reserveCancel()
+		return nil, fmt.Errorf("agent.RunWithReservedOwnership: reservation for session %q is no longer valid (epoch mismatch)", call.SessionID)
+	}
+	// The placeholder context ReserveExclusive created is superseded by
+	// runCtx above (rebindDispatcher already repointed the mailbox at
+	// runCancel) — release it now so it doesn't leak.
+	reserveCancel()
+
+	// HANDOFF LINE: from here on, runOwned's own deferred
+	// abandonOwnershipWithHandoff owns releasing this reservation, exactly
+	// once, on every path out of runOwned (including panics that unwind
+	// through its defer). Nothing after this line may call
+	// abandonOwnershipWithHandoff/ReleaseExclusive again for this epoch.
+	return a.runOwned(ctx, runCtx, call, epoch, runCancel)
+}
+
+// runOwned is Run's body once ownership (epoch) and the dispatcher cancel
+// (runCancel) are already established — shared by Run (which claims them
+// itself via tryReserveSession) and RunWithReservedOwnership (which reuses
+// ones the caller already claimed via ReserveExclusive). ctx is the
+// caller-facing context (used for the inter-process lock acquisition log
+// fields and as InterruptAndSend-style callers expect); runCtx is the
+// cancelable context every turn in the loop derives from.
+func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCall, epoch uint64, runCancel context.CancelFunc) (*fantasy.AgentResult, error) {
 	// We now own call.SessionID's reservation, under ownership era `epoch`,
 	// for the entire loop below, including every queue-drain turn. Released
 	// exactly once, whichever way the loop ends, via THIS defer.

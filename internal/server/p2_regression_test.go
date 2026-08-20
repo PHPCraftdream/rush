@@ -141,6 +141,25 @@ func (f *fakeIsSessionBusyCoordinator) RunNonInteractive(ctx context.Context, se
 	return nil, nil
 }
 
+// ReserveExclusive follows isBusy for consistency with IsSessionBusy/IsBusy
+// above — this fake is not exercised by any rerun test today, but keeping
+// its "busy" signals consistent avoids a future rerun-path test silently
+// reserving against a coordinator that claims to be busy everywhere else.
+func (f *fakeIsSessionBusyCoordinator) ReserveExclusive(ctx context.Context, sessionID string) (epoch uint64, cancel context.CancelFunc, ok bool) {
+	if f.isBusy {
+		return 0, nil, false
+	}
+	return 1, func() {}, true
+}
+
+func (f *fakeIsSessionBusyCoordinator) ReleaseExclusive(sessionID string, epoch uint64, cancel context.CancelFunc) {
+}
+
+func (f *fakeIsSessionBusyCoordinator) RunWithReservedOwnership(ctx context.Context, sessionID, prompt string, epoch uint64, cancel context.CancelFunc, smart, fast *agent.ModelOverride, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
+	f.runCalled = true
+	return nil, nil
+}
+
 // TestP2_2_ConcurrentSend_DoesNotBroadcastBusyFalseWhileStillOwned tests that
 // a second concurrent send to an already-busy session does NOT broadcast busy=false
 // immediately after Run returns. Run may return early (queued) while the original

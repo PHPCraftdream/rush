@@ -132,6 +132,25 @@ func (f *fakeAlwaysBusyCoordinator) SetPersistentMode(persistent bool) {}
 
 func (f *fakeAlwaysBusyCoordinator) ResetAutoResumeCounter(sessionID string) {}
 
+// ReserveExclusive mirrors IsSessionBusy's always-busy behavior: this fake
+// simulates a session that never goes idle, so exclusive reservation must
+// fail too — consistent with the "always busy" contract every other method
+// on this fake already reports. Not expected to be reached by
+// TestP1_6_Rerun_FailsClosedWhenStillStopping (the idle-poll timeout in
+// handleRerunMessage returns before step 1a's ReserveExclusive call), but
+// must satisfy the interface and stay behaviorally consistent regardless.
+func (f *fakeAlwaysBusyCoordinator) ReserveExclusive(ctx context.Context, sessionID string) (epoch uint64, cancel context.CancelFunc, ok bool) {
+	return 0, nil, false
+}
+
+func (f *fakeAlwaysBusyCoordinator) ReleaseExclusive(sessionID string, epoch uint64, cancel context.CancelFunc) {
+}
+
+func (f *fakeAlwaysBusyCoordinator) RunWithReservedOwnership(ctx context.Context, sessionID, prompt string, epoch uint64, cancel context.CancelFunc, smart, fast *agent.ModelOverride, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
+	f.runCalled = true
+	return nil, nil
+}
+
 // TestP1_6_Rerun_FailsClosedWhenStillStopping is a regression test for Problem 1:
 // web rerun must not corrupt the transcript by proceeding while the old owner
 // is still stopping. After the 10s timeout, it must fail closed with an error
