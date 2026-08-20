@@ -8,11 +8,48 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/charmbracelet/crush/internal/agent"
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/session"
 )
+
+// isSessionsIDConstraintError reports whether err is a SQLite PRIMARY
+// KEY/UNIQUE constraint violation on sessions.id specifically — the shape
+// produced when two `crush run --session <id>` processes race the very
+// first INSERT for an id that has never existed before (task #605). Both
+// sqlite drivers this project can be built with (modernc.org/sqlite,
+// selected on nearly every real platform, and github.com/ncruces/go-sqlite3,
+// the fallback for everything else — see internal/db/connect_modernc.go /
+// connect_ncruces.go's build tags) render this failure as an error whose
+// Error() text contains "UNIQUE constraint failed: sessions.id" or
+// "PRIMARY KEY constraint failed: sessions.id" somewhere in the chain (the
+// modernc driver additionally prefixes its own "constraint failed:" wrapper
+// — see the gate report's captured text: "constraint failed: UNIQUE
+// constraint failed: sessions.id (1555)"). Matching on the driver-produced
+// substring, rather than asserting a concrete *sqlite.Error/*sqlite3.Error
+// type, works uniformly across both build-tag-selected drivers without a
+// second copy of this function behind build tags.
+//
+// Deliberately narrow: only sessions.id, and only a constraint failure.
+// This must NOT match every database error — a genuinely broken DB (disk
+// full, corruption, permission denied, a constraint violation on some
+// OTHER table/column) has to keep surfacing as-is so the operator sees a
+// real failure instead of a swallowed one. See resolveSession's caller for
+// why this matters: an earlier pass in this project quarantined entries on
+// ANY error instead of a proven-permanent one, which is exactly the
+// category of bug this narrow substring match exists to avoid repeating.
+func isSessionsIDConstraintError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "constraint failed") && !strings.Contains(msg, "constraint violation") {
+		return false
+	}
+	return strings.Contains(msg, "sessions.id")
+}
 
 // runIncompleteError marks a non-interactive run that finished but did not
 // complete its work cleanly (in-band provider error / stall, cancellation,
