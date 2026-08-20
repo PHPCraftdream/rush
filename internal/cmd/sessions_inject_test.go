@@ -148,7 +148,16 @@ func TestIsSessionLockAlive_StaleMtimeButLivePIDIsStillLive(t *testing.T) {
 	}
 
 	dataDir := t.TempDir()
-	holder := spawnKillTestLockHolder(t, dataDir, "inject-stale-live")
+	// reapInBackground=false: this test never kills the holder mid-test (it
+	// checks isSessionLockAlive against a genuinely live PID and only stops
+	// the holder in the deferred cleanup), so there is no forceKillHolder/
+	// probeThenKillHolder poll racing a zombie window here — the two
+	// reapInBackground modes are behaviorally equivalent for this test.
+	// false is kept to match this call site's pre-existing behavior (stop()
+	// reaping inline) rather than introducing an untested combination. See
+	// spawnKillTestLockHolder's doc comment in sessions_kill_test.go for the
+	// cases that actually depend on one mode or the other.
+	holder := spawnKillTestLockHolder(t, dataDir, "inject-stale-live", false)
 	defer holder.stop()
 
 	lockPath := filepath.Join(dataDir, "locks", "session-inject-stale-live.lock")

@@ -86,18 +86,19 @@ jobs:
       # Run them explicitly on Linux only, without -short and without -race
       # (real fork/exec under -race is slow enough to dominate the job).
       #
-      # NOT a blanket run of every test in these files. TestProbeThenKillHolder_
-      # LiveHolderStillKilled and TestSessionsReset_ForceStillKillsLiveHolder
-      # fail on Linux TODAY, identically at a clean HEAD: their helper holder
-      # is never reaped, so it lingers as a zombie and forceKillHolder never
-      # observes the exit inside its wait. That is a defect in those two tests,
-      # filed as its own task -- listing them here explicitly, rather than
-      # quietly widening the pattern around them, so the exclusion cannot be
-      # mistaken for coverage.
+      # This pattern covers every test in those suites, including
+      # TestProbeThenKillHolder_LiveHolderStillKilled and
+      # TestSessionsReset_ForceStillKillsLiveHolder, which used to be excluded
+      # here: their helper holder was never reaped, so it lingered as a zombie,
+      # kill(pid, 0) kept reporting it alive, and forceKillHolder never saw the
+      # exit inside its wait. That was a defect in the test helper, not in the
+      # product; it is fixed, and the exclusion is gone with it.
+      #
+      # .githooks/pre-push runs the same command on non-Windows hosts.
       - name: process-group and lock-fence suites (Linux, no -short)
         if: matrix.os == 'ubuntu-latest'
         run: |
-          go test -failfast -run 'ChildGroup|Registry|WriteChildGroupFile|VerifyGroupStillPlausible|Sweep|CapturesVictimGeneration|OrphanedGenerationCaptured|StalePIDNotKilled|ForceKillHolder' ./internal/session/ ./internal/cmd/
+          go test -failfast -run 'ChildGroup|Registry|WriteChildGroupFile|VerifyGroupStillPlausible|Sweep|ProbeThenKillHolder|AcquireSessionLockForReset|ForceKillHolder|ForceStillKillsLiveHolder' ./internal/session/ ./internal/cmd/
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: "22"

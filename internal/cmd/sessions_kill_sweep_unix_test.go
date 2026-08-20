@@ -297,7 +297,10 @@ func TestProbeThenKillHolder_CapturesVictimGenerationWhileHolderAlive(t *testing
 	// is our direct child and is deliberately NOT reaped until the test
 	// says so — after the probe SIGKILLs it, it stays a zombie, so
 	// forceKillHolder's liveness poll keeps waiting inside its budget.
-	holder := spawnKillTestLockHolder(t, dataDir, sessionID)
+	// reapInBackground=false is load-bearing here: this test's whole point
+	// is to occupy that zombie window with a second process stealing the
+	// lock generation. See spawnKillTestLockHolder's doc comment.
+	holder := spawnKillTestLockHolder(t, dataDir, sessionID, false)
 	require.True(t, session.IsProcessAlive(holder.pid))
 
 	lockPath := session.SessionLockPath(dataDir, sessionID)
@@ -376,7 +379,13 @@ func TestAcquireSessionLockForReset_SweepsOnlyAfterReacquire(t *testing.T) {
 	dataDir := filepath.Join(dir, ".crush")
 	const sessionID = "reset-sweep-order-id"
 
-	holder := spawnKillTestLockHolder(t, dataDir, sessionID)
+	// reapInBackground=false is load-bearing here too, for the same reason
+	// as TestProbeThenKillHolder_CapturesVictimGenerationWhileHolderAlive
+	// above: the test needs the killed holder to stay an unreaped zombie
+	// long enough for a second process to steal the session lock before
+	// acquireSessionLockForReset's own re-acquire is attempted (see
+	// spawnKillTestLockHolder's doc comment).
+	holder := spawnKillTestLockHolder(t, dataDir, sessionID, false)
 	require.True(t, session.IsProcessAlive(holder.pid))
 
 	lockPath := session.SessionLockPath(dataDir, sessionID)
@@ -456,7 +465,18 @@ func TestSweepChildGroupsUnderOwnLock_BusyLockRefusesAndRetains(t *testing.T) {
 	dataDir := filepath.Join(dir, ".crush")
 	const sessionID = "sweep-busy-refuse-id"
 
-	holder := spawnKillTestLockHolder(t, dataDir, sessionID)
+	// reapInBackground=false here too, but for a different reason than the
+	// two ordering tests above: this test never calls forceKillHolder or
+	// probeThenKillHolder against this holder at all (it exercises
+	// sweepChildGroupsUnderOwnLock's busy-lock refusal directly, while the
+	// holder is still alive, then calls holder.stop() once at the end and
+	// waits for the OS lock to become acquirable via TryAcquireSessionLock —
+	// a check that is independent of process-table zombie status). So the
+	// zombie window is neither needed nor harmful here; false is kept only
+	// to match this helper's pre-existing behavior (stop() reaping inline)
+	// rather than introducing a third, untested combination. See
+	// spawnKillTestLockHolder's doc comment for the two cases that DO care.
+	holder := spawnKillTestLockHolder(t, dataDir, sessionID, false)
 	require.True(t, session.IsProcessAlive(holder.pid))
 
 	lockPath := session.SessionLockPath(dataDir, sessionID)

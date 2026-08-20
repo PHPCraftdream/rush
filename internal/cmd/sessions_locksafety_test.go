@@ -140,7 +140,12 @@ func TestSessionsReap_LiveOSLockStaleRecordedPID_NotRemoved(t *testing.T) {
 
 	const sessionID = "reap-oslock-live-holder"
 	// A REAL second process holds the OS lock on this session.
-	holder := spawnKillTestLockHolder(t, dataDir, sessionID)
+	// reapInBackground=false: this test never kills the holder (it stays
+	// alive throughout as a live-PID fixture and is only stopped in the
+	// deferred cleanup). See spawnKillTestLockHolder's doc comment in
+	// sessions_kill_test.go for the cases that actually depend on one mode
+	// or the other.
+	holder := spawnKillTestLockHolder(t, dataDir, sessionID, false)
 	defer holder.stop()
 	require.True(t, session.IsProcessAlive(holder.pid))
 

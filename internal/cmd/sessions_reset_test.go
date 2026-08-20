@@ -286,7 +286,12 @@ func TestSessionsReset_ForceStillKillsLiveHolder(t *testing.T) {
 	require.NoError(t, err)
 
 	dataDir := filepath.Join(cwd, ".crush")
-	holder := spawnKillTestLockHolder(t, dataDir, sess.ID)
+	// reapInBackground=true: same rationale as
+	// TestProbeThenKillHolder_LiveHolderStillKilled — reset --force also
+	// drives forceKillHolder's SIGKILL-then-poll and needs the victim
+	// reaped concurrently so the poll can observe death within its wait
+	// budget (see spawnKillTestLockHolder's doc comment).
+	holder := spawnKillTestLockHolder(t, dataDir, sess.ID, true)
 	defer holder.stop()
 
 	require.True(t, session.IsProcessAlive(holder.pid))

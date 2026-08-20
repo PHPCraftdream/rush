@@ -173,7 +173,11 @@ func TestProbeThenKillHolder_LiveHolderStillKilled(t *testing.T) {
 	dir := t.TempDir()
 	dataDir := filepath.Join(dir, ".crush")
 
-	holder := spawnKillTestLockHolder(t, dataDir, "live-holder-id")
+	// reapInBackground=true: this test measures whether forceKillHolder's
+	// SIGKILL-then-poll observes death within its wait budget, which needs
+	// a concurrent reaper so the victim never sits as an unreaped zombie
+	// (see spawnKillTestLockHolder's doc comment).
+	holder := spawnKillTestLockHolder(t, dataDir, "live-holder-id", true)
 	defer holder.stop()
 
 	require.True(t, session.IsProcessAlive(holder.pid))
@@ -266,9 +270,10 @@ func TestHelperKillTestLockHold(t *testing.T) {
 }
 
 type killTestLockHolder struct {
-	cmd    *exec.Cmd
-	pid    int
-	stdinW io.WriteCloser
+	cmd     *exec.Cmd
+	pid     int
+	stdinW  io.WriteCloser
+	waitErr chan error
 }
 
 // spawnKillTestLockHolder starts a real child process that holds a
@@ -290,7 +295,40 @@ type killTestLockHolder struct {
 // holder that looked alive moments earlier. Giving the child a real pipe
 // that only closes in stop() makes "blocking until stop()" the helper's
 // doc comment promises actually true.
-func spawnKillTestLockHolder(t *testing.T, dataDir, sessionID string) *killTestLockHolder {
+//
+// reapInBackground controls whether the child is Wait()-ed concurrently
+// with whatever the caller does next, rather than only inside stop().
+// This is NOT a "better default" toggle — the two behaviors serve opposite
+// test intents and neither is strictly safer than the other:
+//
+//   - reapInBackground=true (used by TestProbeThenKillHolder_
+//     LiveHolderStillKilled and TestSessionsReset_ForceStillKillsLiveHolder):
+//     these tests measure whether forceKillHolder's SIGKILL-then-poll
+//     actually observes the victim's death within its wait budget. On
+//     Unix, a SIGKILL'd child that nobody has Wait()-ed is a zombie, and
+//     session.IsProcessAlive (kill(pid, 0)) reports a zombie as "alive"
+//     forever — so without a concurrent reaper these tests' own poll loop
+//     can never see the exit, independent of whether forceKillHolder's
+//     logic is correct. See TestForceKillHolder_LiveProcess's identical
+//     concurrent-reap rationale a few dozen lines above for the same
+//     mechanism against a plain (non-lock-holding) child.
+//   - reapInBackground=false (used by TestProbeThenKillHolder_
+//     CapturesVictimGenerationWhileHolderAlive and
+//     TestAcquireSessionLockForReset_SweepsOnlyAfterReacquire in
+//     sessions_kill_sweep_unix_test.go): these tests deliberately WANT the
+//     victim to remain an unreaped zombie for a while after the kill —
+//     that window is what lets a second process race in and steal the
+//     session lock (proving the generation-capture ordering fix) before
+//     the test's own explicit holder.stop() call finally reaps it. Reaping
+//     eagerly in the background would collapse that window and the race
+//     they exist to exercise would never happen, making forceKillHolder's
+//     poll return (and the test's own require.Eventually on the new
+//     owner's generation) racy or simply return before the steal occurs.
+//
+// If a future reader sees an unreaped holder here and "fixes" it by
+// flipping this to true unconditionally, they will silently break the
+// ordering tests above — read this comment first.
+func spawnKillTestLockHolder(t *testing.T, dataDir, sessionID string, reapInBackground bool) *killTestLockHolder {
 	t.Helper()
 
 	exe, err := os.Executable()
@@ -319,6 +357,16 @@ func spawnKillTestLockHolder(t *testing.T, dataDir, sessionID string) *killTestL
 	// stop() closes to signal the child.
 	_ = stdinR.Close()
 
+	// See reapInBackground's doc comment above for why this is opt-in
+	// rather than always-on. waitErr is buffered so the goroutine can never
+	// leak even if stop() ends up being the one to call Wait() instead (it
+	// never reads from waitErr when reapInBackground is false).
+	var waitErr chan error
+	if reapInBackground {
+		waitErr = make(chan error, 1)
+		go func() { waitErr <- c.Wait() }()
+	}
+
 	lineCh := make(chan string, 1)
 	go func() {
 		sc := bufio.NewScanner(stdoutR)
@@ -341,7 +389,7 @@ func spawnKillTestLockHolder(t *testing.T, dataDir, sessionID string) *killTestL
 		t.Fatalf("timed out waiting for kill-test helper process to report lock status")
 	}
 
-	return &killTestLockHolder{cmd: c, pid: c.Process.Pid, stdinW: stdinW}
+	return &killTestLockHolder{cmd: c, pid: c.Process.Pid, stdinW: stdinW, waitErr: waitErr}
 }
 
 func (h *killTestLockHolder) stop() {
@@ -351,6 +399,21 @@ func (h *killTestLockHolder) stop() {
 	if h.cmd.Process != nil {
 		_ = h.cmd.Process.Kill()
 	}
+	if h.waitErr != nil {
+		// A background reap goroutine (spawnKillTestLockHolder with
+		// reapInBackground=true) already claimed Wait() on this *exec.Cmd —
+		// calling it a second time here would be undefined behavior. Block
+		// until that goroutine has actually reaped the child instead, so
+		// stop() keeps its original promise that the process is gone by the
+		// time it returns.
+		<-h.waitErr
+		return
+	}
+	// No background reaper (reapInBackground=false, or this holder was
+	// built by a different constructor such as spawnSweepTestNewOwner that
+	// never sets waitErr at all): nobody has called Wait() on this cmd yet,
+	// so stop() is the first and only caller — reap it directly, exactly as
+	// before this file introduced the opt-in background reaper.
 	_ = h.cmd.Wait()
 }
 

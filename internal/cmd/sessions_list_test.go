@@ -146,7 +146,13 @@ func TestComputeSessionStatuses_PidReuseBeyondMaxFallbackAgeIsNotRunning(t *test
 	sess, err := a.Sessions.CreateWithID(ctx, "list-status-pid-reuse", "regression title")
 	require.NoError(t, err)
 
-	holder := spawnKillTestLockHolder(t, dataDir, sess.ID)
+	// reapInBackground=false: this test never kills the holder (it stays
+	// alive throughout as a live-PID fixture and is only stopped in the
+	// deferred cleanup), so there is no forceKillHolder/probeThenKillHolder
+	// poll racing a zombie window here. See spawnKillTestLockHolder's doc
+	// comment in sessions_kill_test.go for the cases that actually depend
+	// on one mode or the other.
+	holder := spawnKillTestLockHolder(t, dataDir, sess.ID, false)
 	defer holder.stop()
 	require.True(t, session.IsProcessAlive(holder.pid), "helper process must be alive for this test to be meaningful")
 
@@ -175,7 +181,13 @@ func TestComputeSessionStatuses_PidAliveWithinMaxFallbackAgeIsRunning(t *testing
 	sess, err := a.Sessions.CreateWithID(ctx, "list-status-pid-fresh", "regression title")
 	require.NoError(t, err)
 
-	holder := spawnKillTestLockHolder(t, dataDir, sess.ID)
+	// reapInBackground=false: this test never kills the holder (it stays
+	// alive throughout as a live-PID fixture and is only stopped in the
+	// deferred cleanup), so there is no forceKillHolder/probeThenKillHolder
+	// poll racing a zombie window here. See spawnKillTestLockHolder's doc
+	// comment in sessions_kill_test.go for the cases that actually depend
+	// on one mode or the other.
+	holder := spawnKillTestLockHolder(t, dataDir, sess.ID, false)
 	defer holder.stop()
 	require.True(t, session.IsProcessAlive(holder.pid), "helper process must be alive for this test to be meaningful")
 

@@ -194,6 +194,24 @@ else
 	printf '\033[33m(tests passed on retry)\033[0m\n'
 fi
 
+# The process-group and lock-fence suites, which -short deliberately skips
+# (they spawn real child processes). build.yml runs these on ubuntu; mirror
+# that here so the hook's claim at the top of this file stays true.
+#
+# On Windows the files are excluded by a !windows build tag, so there is
+# nothing to run and pretending otherwise would be worse than skipping —
+# say so out loud instead.
+case "$(go env GOOS)" in
+windows)
+	printf '\033[33m⚠ skipping the process-group/lock-fence suites — they are !windows-tagged, so this host cannot run them at all (CI covers them on ubuntu)\033[0m\n'
+	;;
+*)
+	step "process-group and lock-fence suites (no -short)"
+	go test -failfast -run 'ChildGroup|Registry|WriteChildGroupFile|VerifyGroupStillPlausible|Sweep|ProbeThenKillHolder|AcquireSessionLockForReset|ForceKillHolder|ForceStillKillsLiveHolder' \
+		./internal/session/ ./internal/cmd/ || fail "process-group/lock-fence suites failed"
+	;;
+esac
+
 if [ -n "$cross_goos_skipped" ]; then
 	printf '\033[33m✓ pre-push checks passed — but lint covered the HOST GOOS ONLY; the other two in the CI matrix were not checked\033[0m\n'
 else

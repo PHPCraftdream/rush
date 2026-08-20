@@ -120,7 +120,12 @@ func TestLockHolderProvablyDead_StaleMtimeButLiveHolder_NotDeleted(t *testing.T)
 	dir := t.TempDir()
 	dataDir := filepath.Join(dir, ".crush")
 
-	holder := spawnKillTestLockHolder(t, dataDir, "live-holder-stale-mtime")
+	// reapInBackground=false: this test never kills the holder (it stays
+	// alive throughout as a live-PID fixture and is only stopped in the
+	// deferred cleanup). See spawnKillTestLockHolder's doc comment in
+	// sessions_kill_test.go for the cases that actually depend on one mode
+	// or the other.
+	holder := spawnKillTestLockHolder(t, dataDir, "live-holder-stale-mtime", false)
 	defer holder.stop()
 
 	require.True(t, session.IsProcessAlive(holder.pid))
