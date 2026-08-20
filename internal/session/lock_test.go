@@ -766,3 +766,44 @@ func TestCrossProcess_ReadLockPIDWorksWhileHolderIsAlive(t *testing.T) {
 	assert.Equal(t, holder.pid, got,
 		"ReadLockPID (what `crush sessions kill` calls) must be able to name a genuinely live holder's PID, not just a dead one")
 }
+
+// TestInspectSessionLock_StatErrorDistinctFromAbsent proves that InspectSessionLock
+// distinguishes "could not check" (any stat error other than ENOENT) from
+// "verifiably absent". A non-ENOENT stat error returns StatErr != nil, while
+// genuine absence returns StatErr == nil — both return Exists:false, Live:false
+// (fail-open), so display consumers are unaffected; only diagnostics read StatErr.
+func TestInspectSessionLock_StatErrorDistinctFromAbsent(t *testing.T) {
+	// Forge a real non-ENOENT stat failure with a NUL byte in dataDir: Go's
+	// os package rejects NUL bytes in a path before any syscall, on every
+	// platform, so this can never be misclassified as "not found". A
+	// file-as-directory path component was tried first and rejected: on
+	// Windows it produces ERROR_PATH_NOT_FOUND, which os.IsNotExist treats
+	// as true — indistinguishable from genuine absence on this platform,
+	// which defeated the whole point of this test. Verified empirically
+	// before switching techniques.
+	dataDir := t.TempDir() + string([]byte{0}) + "bad"
+
+	// Verify the forgery: stat of the resulting path must fail with a
+	// non-ENOENT error.
+	bogusPath := filepath.Join(dataDir, "locks", "session-some-session.lock")
+	_, err := os.Stat(bogusPath)
+	require.Error(t, err, "stat of a NUL-containing path must fail")
+	require.False(t, os.IsNotExist(err),
+		"this failure must NOT be ENOENT — we need a different stat error class for this test")
+	t.Logf("Forged stat error: %v", err)
+
+	// InspectSessionLock must report StatErr != nil (to distinguish this from
+	// genuine absence) but still return Exists:false, Live:false (fail-open).
+	got := InspectSessionLock(dataDir, "some-session", externalOwnerLiveThresholdForTest)
+	require.NotNil(t, got.StatErr, "StatErr must be non-nil for non-ENOENT stat failures")
+	require.False(t, got.Exists, "Exists must be false when stat fails (fail-open)")
+	require.False(t, got.Live, "Live must be false when stat fails (fail-open)")
+
+	// Contrast: a genuinely absent lock file (no stat error at all, just
+	// ENOENT) must return StatErr == nil.
+	absentDir := t.TempDir()
+	absent := InspectSessionLock(absentDir, "missing", externalOwnerLiveThresholdForTest)
+	require.Nil(t, absent.StatErr, "StatErr must be nil for verifiably absent lock (os.IsNotExist)")
+	require.False(t, absent.Exists, "Exists must be false for absent lock")
+	require.False(t, absent.Live, "Live must be false for absent lock")
+}

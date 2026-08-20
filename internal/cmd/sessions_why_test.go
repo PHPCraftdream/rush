@@ -472,3 +472,71 @@ func TestExplainSessionStatus_PidAliveWithinMaxFallbackAgeIsRunning(t *testing.T
 	require.NotContains(t, out, "is not alive",
 		"a running session must not show any dead-case phrasing")
 }
+
+// TestExplainSessionStatus_StatFailureSaysCouldNotVerify proves that when the
+// lock file cannot be inspected due to a stat error other than ENOENT (e.g.
+// permission denied, I/O error, or an ENOTDIR because "locks" is a file),
+// explainSessionStatus reports "status: unknown (could not verify)" instead of
+// "status: at rest". This distinction matters for diagnostics: "could not
+// check" and "verifiably absent" are different answers.
+func TestExplainSessionStatus_StatFailureSaysCouldNotVerify(t *testing.T) {
+	t.Parallel()
+
+	conn, q := newTestDB(t)
+	s := session.NewService(q, conn)
+	m := message.NewService(q)
+
+	sess, err := s.Create(context.Background(), "stat-fail")
+	require.NoError(t, err)
+
+	_, err = m.Create(context.Background(), sess.ID, message.CreateMessageParams{
+		Role:  message.User,
+		Parts: []message.ContentPart{message.TextContent{Text: "hello"}},
+	})
+	require.NoError(t, err)
+
+	// Forge a real non-ENOENT stat failure with a NUL byte in dataDir: Go's
+	// os package rejects NUL bytes in a path before any syscall, on every
+	// platform, so this can never be misclassified as "not found". A
+	// file-as-directory path component was tried first and rejected: on
+	// Windows it produces ERROR_PATH_NOT_FOUND, which os.IsNotExist treats
+	// as true — indistinguishable from genuine absence on this platform,
+	// which defeated the whole point of this test. Verified empirically
+	// before switching techniques.
+	dataDir := t.TempDir() + string([]byte{0}) + "bad"
+
+	// Verify the forgery: stat of the expected lock path must fail with a
+	// non-ENOENT error.
+	lockPath := filepath.Join(dataDir, "locks", "session-"+sanitiseSessionIDForFilename(sess.ID)+".lock")
+	_, err = os.Stat(lockPath)
+	require.Error(t, err, "stat of a NUL-containing path must fail")
+	require.False(t, os.IsNotExist(err),
+		"this failure must NOT be ENOENT — we need a different stat error class for this test")
+	t.Logf("Forged stat error: %v", err)
+
+	a := &app.App{Messages: m, Sessions: s}
+	var buf bytes.Buffer
+	require.NoError(t, explainSessionStatus(context.Background(), a, dataDir, sess.ID, &buf))
+
+	out := buf.String()
+	require.Contains(t, out, "status: unknown (could not verify)",
+		"stat failure must report unknown status, not 'at rest'")
+	require.NotContains(t, out, "status: at rest",
+		"stat failure must NOT say 'at rest' — that's for verifiable absence only")
+	require.Contains(t, out, "could not inspect lock file",
+		"output must explain the stat failure reason")
+	require.Contains(t, out, lockPath,
+		"output must include the lock path that failed to stat")
+
+	// Control: a genuinely absent lock file (no stat error at all, just ENOENT)
+	// must still print "status: at rest".
+	a2 := &app.App{Messages: m, Sessions: s}
+	var buf2 bytes.Buffer
+	require.NoError(t, explainSessionStatus(context.Background(), a2, t.TempDir(), sess.ID, &buf2))
+
+	out2 := buf2.String()
+	require.Contains(t, out2, "status: at rest",
+		"verifiable absence (ENOENT) must still say 'at rest'")
+	require.NotContains(t, out2, "status: unknown (could not verify)",
+		"genuine absence must not say 'could not verify'")
+}

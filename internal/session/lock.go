@@ -937,6 +937,14 @@ type LockState struct {
 	// mtime-only, so an OS PID reused by an unrelated process long after
 	// the real holder died can't pin Live: true forever.
 	Live bool
+	// StatErr is non-nil when the lock file's existence could not be
+	// determined at all (permission denied, I/O error, unreachable path
+	// component, ...). It is nil both when the file exists and when it
+	// verifiably does not (os.IsNotExist) — "absent" and "could not check"
+	// are different answers. Display consumers intentionally ignore this
+	// and stay fail-open (Exists/Live both false); only diagnostics
+	// (sessions why) read it.
+	StatErr error
 }
 
 // InspectSessionLock reads the lock file for `sessionID` under `dataDir`
@@ -973,6 +981,14 @@ func InspectSessionLock(dataDir, sessionID string, liveThreshold time.Duration) 
 	path := filepath.Join(dataDir, "locks", "session-"+sanitiseSessionID(sessionID)+".lock")
 	st, err := os.Stat(path)
 	if err != nil {
+		// "Could not check" (any stat error other than verifiable absence)
+		// must not be indistinguishable from "verifiably absent". Both still
+		// return the same fail-open zero state below — Exists:false, Live:false
+		// — so display consumers are unaffected; only StatErr carries the
+		// distinction for diagnostics.
+		if !os.IsNotExist(err) {
+			return LockState{StatErr: err}
+		}
 		return LockState{}
 	}
 	pid := ReadLockPID(path)

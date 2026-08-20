@@ -106,6 +106,8 @@ func explainSessionStatus(ctx context.Context, a *app.App, dataDir, sessionID st
 	lockPath := filepath.Join(dataDir, "locks", "session-"+sanitiseSessionIDForFilename(sessionID)+".lock")
 	var (
 		hasLock          bool
+		statFailed       bool
+		statFailure      error
 		pid              int
 		pidAlive         bool
 		pidBoundExceeded bool
@@ -160,6 +162,9 @@ func explainSessionStatus(ctx context.Context, a *app.App, dataDir, sessionID st
 		default:
 			pidAlive = heartAge <= session.LockStaleDuration
 		}
+	} else if !os.IsNotExist(statErr) {
+		statFailed = true
+		statFailure = statErr
 	}
 
 	// Last assistant message + its finish part (if any). Same
@@ -179,6 +184,9 @@ func explainSessionStatus(ctx context.Context, a *app.App, dataDir, sessionID st
 	// Verdict + reason text. Four cases, matching the Long help above.
 	// "at rest" (no lock) is the one computeSessionStatuses can't express.
 	switch {
+	case statFailed:
+		fmt.Fprintf(out, "status: unknown (could not verify)\n")
+		fmt.Fprintf(out, "reason: could not inspect lock file (%s): %v — cannot confirm running, crashed, or at rest.\n", lockPath, statFailure)
 	case !hasLock:
 		fmt.Fprintf(out, "status: at rest\n")
 		fmt.Fprintf(out, "reason: no lock file present — not running, not crashed.\n")
