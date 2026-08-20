@@ -325,6 +325,56 @@ type RunQueuePumpConfig struct {
 	// DrainSessionNow is "between" the refusal and the wait — inherently
 	// racy and either flaky or too slow to run routinely.
 	TestAfterAdmissionRefusal func(sessionID string)
+
+	// TestOnWatchdogDeadlineStored is a test seam invoked by
+	// executeEntrySync's renewal loop synchronously, immediately after each
+	// successful RenewRunQueueLease call stores a new value into its
+	// internal watchdogDeadlineAtomic (see that variable's own doc in
+	// run_queue_entry_exec.go for the full history). nil = no-op
+	// (production default).
+	//
+	// It reports THREE independent values from the exact same renewal tick:
+	//   - stored: what was actually placed in watchdogDeadlineAtomic
+	//     (production: trueNewExpiresAt, the sub-second-precision,
+	//     pre-rounding deadline).
+	//   - trueDeadline: the sub-second-precision intended deadline computed
+	//     from time.Now().Add(TTL) BEFORE the DB round-trip — the value the
+	//     watchdog SHOULD be anchored to.
+	//   - roundedDeadline: ceilUnixSeconds(trueDeadline) — the whole-second,
+	//     ceiling-rounded value actually persisted to the DB column. This is
+	//     the value task #604 found being mistakenly re-used to seed the
+	//     watchdog atomic, silently donating up to ~1s of the safety margin
+	//     to the executor (see run_queue_entry_exec.go's watchdogDeadlineAtomic
+	//     doc for the measured 97ms-930ms magnitude on real hardware).
+	//
+	// Exists (task #611) to let a test assert the "gift" — the gap between
+	// what got stored and the true deadline — as a direct value comparison
+	// (stored == trueDeadline, stored != roundedDeadline whenever rounding
+	// actually changed anything) instead of inferring it from a broad
+	// wall-clock elapsed-time window. A window wide enough to absorb normal
+	// scheduWhite jitter is also wide enough to absorb the ~1s regression this
+	// hook exists to catch, which is exactly how the #604 regression escaped
+	// TestP1_1_WatchdogCancelsAtTTLMinusMargin's own 6-9s bounds. A window
+	// wide enough to absorb normal scheduling jitter is also wide enough to
+	// absorb the ~1s regression this hook exists to catch.
+	TestOnWatchdogDeadlineStored func(stored, trueDeadline, roundedDeadline time.Time)
+
+	// TestOnCancelCause is a test seam invoked once by executeEntrySync,
+	// synchronously, right after both the renewal and watchdog goroutines
+	// have fully joined (i.e. after their outcome, if any, is final and
+	// stable to read). nil = no-op (production default).
+	//
+	// Reports which of the two independent cancellation mechanisms —
+	// deadline-based watchdog, or the renewal loop's own `!ok` branch —
+	// actually cancelled this execution, or cancelCauseNone if neither did.
+	// See cancelCause's own doc in run_queue_entry_exec.go for why this
+	// matters (task #611): the two mechanisms produce an identical
+	// externally-visible effect (execCtx cancelled, outcome write skipped),
+	// so a test that only observes that effect cannot prove the `!ok`
+	// branch — the one P1-2 was actually written for — is what performed
+	// the cancellation, rather than the watchdog racing ahead of it for an
+	// unrelated reason (e.g. a short TestLeaseTTL).
+	TestOnCancelCause func(cause cancelCause)
 }
 
 // leaseTTL returns the effective lease TTL for this pump instance —

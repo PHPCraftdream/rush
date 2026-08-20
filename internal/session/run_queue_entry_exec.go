@@ -14,6 +14,43 @@ import (
 	"time"
 )
 
+// cancelCause identifies which of the two independent mechanisms inside
+// executeEntrySync cancelled execCtx and set leaseLost: the deadline-based
+// watchdog goroutine, or the renewal loop's own `!ok` branch (a
+// RenewRunQueueLease call that reached the DB and learned the row was
+// reassigned). See cancelCauseAtomic's doc at its declaration for why a
+// test needs to distinguish the two rather than only observing that some
+// cancellation occurred (task #611).
+type cancelCause int32
+
+const (
+	// cancelCauseNone means neither mechanism cancelled this execution —
+	// Coordinator.Run simply returned on its own.
+	cancelCauseNone cancelCause = iota
+	// cancelCauseWatchdog means the independent deadline-based watchdog
+	// goroutine fired first.
+	cancelCauseWatchdog
+	// cancelCauseRenewalNotOK means the renewal loop's own `!ok` branch —
+	// RenewRunQueueLease successfully reached the DB and learned the row
+	// had already been reassigned to a different owner — fired first. This
+	// is the branch P1-2 exists to cover.
+	cancelCauseRenewalNotOK
+)
+
+// CancelCauseForTest is an exported alias of the package-private cancelCause,
+// letting the external session_test package assert on the value reported by
+// RunQueuePumpConfig.TestOnCancelCause without exposing cancelCause itself
+// as part of the public API. Test-only seam (task #611).
+type CancelCauseForTest = cancelCause
+
+// Exported constants mirroring cancelCause's values, for use by the external
+// session_test package. Test-only seam (task #611).
+const (
+	CancelCauseNoneForTest         = cancelCauseNone
+	CancelCauseWatchdogForTest     = cancelCauseWatchdog
+	CancelCauseRenewalNotOKForTest = cancelCauseRenewalNotOK
+)
+
 // executeEntrySync is executeEntry's body, extracted (task #421/P0-1) so a
 // synchronous caller — DrainSessionNow — can invoke the exact same
 // lease/renew/watchdog/ack machinery without going through the async
@@ -97,6 +134,27 @@ func (p *RunQueuePump) executeEntrySync(ctx context.Context, leased *RunQueueEnt
 	// handle the outcome. This is a read-after-write flag: the renewal goroutine
 	// sets it atomically, and the main execution reads it after Coordinator.Run.
 	var leaseLost atomic.Bool
+
+	// cancelCauseAtomic records WHICH of the two independent mechanisms that
+	// can set leaseLost/execCancel actually fired first: the watchdog
+	// goroutine (deadline-based, fires even if the DB is unreachable) or the
+	// renewal loop's own `!ok` branch (RenewRunQueueLease succeeded in
+	// reaching the DB and learned the row had already been reassigned).
+	// Exactly one of the two CompareAndSwaps below can win per execution —
+	// both goroutines call execCancel()/leaseLost.Store(true) unconditionally
+	// on their own path, but only the first to reach its own
+	// cancelCauseAtomic.CompareAndSwap(0, ...) gets to record itself as the
+	// cause; the second writer's CAS is a no-op.
+	//
+	// Exists (task #611) because the two mechanisms produce the exact same
+	// externally-visible effect — execCtx is cancelled and no outcome write
+	// happens — so a test that only observes that effect cannot tell whether
+	// it is exercising the `!ok` branch (the one P1-2 was actually written
+	// for) or merely benefiting from the watchdog firing first for an
+	// unrelated reason (e.g. a short TestLeaseTTL making the watchdog's own
+	// deadline arrive before the stolen-lease renewal tick does). See
+	// CancelCauseForTest's own doc for how a test reads this value.
+	var cancelCauseAtomic atomic.Int32
 
 	// Parse the call data from JSON
 	var callData SessionAgentCallData
@@ -308,6 +366,10 @@ func (p *RunQueuePump) executeEntrySync(ctx context.Context, leased *RunQueueEnt
 				if !time.Now().Before(deadline) {
 					// Watchdog deadline passed: cancel execution
 					leaseLost.Store(true)
+					// task #611: record the watchdog as the cause, but only
+					// if the `!ok` renewal branch has not already claimed
+					// it — see cancelCauseAtomic's own doc above.
+					cancelCauseAtomic.CompareAndSwap(int32(cancelCauseNone), int32(cancelCauseWatchdog))
 					execCancel()
 					slog.Error("run_queue_pump: lease watchdog fired: canceling execution before expiry",
 						"id", leased.ID,
@@ -421,6 +483,21 @@ func (p *RunQueuePump) executeEntrySync(ctx context.Context, leased *RunQueueEnt
 				// #604 bug this atomic exists to close: see its doc above.
 				watchdogDeadlineAtomic.Store(trueNewExpiresAt.UnixNano())
 
+				// task #611: report what was just stored, plus both
+				// candidate deadlines, so a test can assert the stored
+				// value IS the true (pre-rounding) deadline and IS NOT
+				// the rounded one — a direct value comparison, not an
+				// inference from elapsed wall-clock time. See
+				// TestOnWatchdogDeadlineStored's own doc for why this
+				// closes a gap a broad timing window could not.
+				if p.cfg.TestOnWatchdogDeadlineStored != nil {
+					p.cfg.TestOnWatchdogDeadlineStored(
+						time.Unix(0, watchdogDeadlineAtomic.Load()),
+						trueNewExpiresAt,
+						time.Unix(newExpiresAt, 0),
+					)
+				}
+
 				if !ok {
 					// The lease was already reassigned to a different
 					// owner — this execution has lost the race and can no
@@ -438,6 +515,15 @@ func (p *RunQueuePump) executeEntrySync(ctx context.Context, leased *RunQueueEnt
 					// loss" message instead of a confusing "0 rows matched"
 					// error.
 					leaseLost.Store(true)
+					// task #611: record the `!ok` renewal branch as the
+					// cause, but only if the watchdog has not already
+					// claimed it — see cancelCauseAtomic's own doc above.
+					// This is the branch P1-2 was actually written for; a
+					// test asserting this specific value (not just that
+					// SOME cancellation happened) is the only way to prove
+					// this branch — rather than the watchdog racing ahead
+					// of it — is what performed the cancellation.
+					cancelCauseAtomic.CompareAndSwap(int32(cancelCauseNone), int32(cancelCauseRenewalNotOK))
 					execCancel()
 					slog.Error("run_queue_pump: lost lease ownership during renewal, canceling in-flight execution", "id", leased.ID, "session_id", leased.SessionID, "instance_id", p.cfg.PumpInstanceID)
 					return
@@ -465,6 +551,15 @@ func (p *RunQueuePump) executeEntrySync(ctx context.Context, leased *RunQueueEnt
 	stopRenewing()
 	<-renewalsDone
 	<-watchdogDone
+
+	// task #611: both goroutines have now fully joined, so cancelCauseAtomic
+	// (if either ever set it) is stable — report it to any test that wants
+	// to distinguish which mechanism performed a cancellation, rather than
+	// only observing that cancellation happened. cancelCauseNone means
+	// neither mechanism fired (the common case: the turn simply finished).
+	if p.cfg.TestOnCancelCause != nil {
+		p.cfg.TestOnCancelCause(cancelCause(cancelCauseAtomic.Load()))
+	}
 
 	// P1-2: If lease ownership was lost during the renewal loop, skip all
 	// outcome writes. The row no longer belongs to this executor (the new
