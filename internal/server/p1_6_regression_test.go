@@ -139,14 +139,14 @@ func (f *fakeAlwaysBusyCoordinator) ResetAutoResumeCounter(sessionID string) {}
 // TestP1_6_Rerun_FailsClosedWhenStillStopping (the idle-poll timeout in
 // handleRerunMessage returns before step 1a's ReserveExclusive call), but
 // must satisfy the interface and stay behaviorally consistent regardless.
-func (f *fakeAlwaysBusyCoordinator) ReserveExclusive(ctx context.Context, sessionID string) (epoch uint64, cancel context.CancelFunc, ok bool) {
-	return 0, nil, false
+func (f *fakeAlwaysBusyCoordinator) ReserveExclusive(ctx context.Context, sessionID string) (holdCtx context.Context, epoch uint64, cancel context.CancelFunc, ok bool) {
+	return nil, 0, nil, false
 }
 
 func (f *fakeAlwaysBusyCoordinator) ReleaseExclusive(sessionID string, epoch uint64, cancel context.CancelFunc) {
 }
 
-func (f *fakeAlwaysBusyCoordinator) RunWithReservedOwnership(ctx context.Context, sessionID, prompt string, epoch uint64, cancel context.CancelFunc, smart, fast *agent.ModelOverride, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
+func (f *fakeAlwaysBusyCoordinator) RunWithReservedOwnership(ctx context.Context, sessionID, prompt string, epoch uint64, cancel context.CancelFunc, onHandoff func(), smart, fast *agent.ModelOverride, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
 	f.runCalled = true
 	return nil, nil
 }

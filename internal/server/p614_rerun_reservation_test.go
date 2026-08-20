@@ -121,17 +121,17 @@ func (m *mailboxLikeCoordinator) RunSessionAgentCall(ctx context.Context, call a
 // ReserveExclusive is the atomic check-and-claim this whole test exists to
 // exercise: it holds m.mu for the ENTIRE check-then-set, exactly mirroring
 // mailbox.beginCompact's single critical section.
-func (m *mailboxLikeCoordinator) ReserveExclusive(ctx context.Context, sessionID string) (epoch uint64, cancel context.CancelFunc, ok bool) {
+func (m *mailboxLikeCoordinator) ReserveExclusive(ctx context.Context, sessionID string) (holdCtx context.Context, epoch uint64, cancel context.CancelFunc, ok bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.reserveHits++
 	if m.owned {
-		return 0, nil, false
+		return nil, 0, nil, false
 	}
 	m.owned = true
 	m.epochSeq++
 	m.epoch = m.epochSeq
-	return m.epoch, func() {}, true
+	return ctx, m.epoch, func() {}, true
 }
 
 func (m *mailboxLikeCoordinator) ReleaseExclusive(sessionID string, epoch uint64, cancel context.CancelFunc) {
@@ -143,7 +143,7 @@ func (m *mailboxLikeCoordinator) ReleaseExclusive(sessionID string, epoch uint64
 	m.owned = false
 }
 
-func (m *mailboxLikeCoordinator) RunWithReservedOwnership(ctx context.Context, sessionID, prompt string, epoch uint64, cancel context.CancelFunc, smart, fast *agent.ModelOverride, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
+func (m *mailboxLikeCoordinator) RunWithReservedOwnership(ctx context.Context, sessionID, prompt string, epoch uint64, cancel context.CancelFunc, onHandoff func(), smart, fast *agent.ModelOverride, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
 	if m.runSideEffect != nil {
 		m.runSideEffect()
 	}
@@ -237,7 +237,7 @@ func TestHandleRerunMessage_ConcurrentNewTurnCannotRaceReservation(t *testing.T)
 
 	// Simulate a concurrent new turn winning the reservation race in exactly
 	// this window.
-	epoch, cancel, ok := mockCoord.ReserveExclusive(ctx, sessionID)
+	_, epoch, cancel, ok := mockCoord.ReserveExclusive(ctx, sessionID)
 	require.True(t, ok, "the concurrent caller must win the reservation while the rerun handler is parked pre-reservation")
 
 	// Now let the rerun handler proceed. Its own ReserveExclusive call must
@@ -364,7 +364,7 @@ func TestHandleRerunMessage_HeldReservationBlocksConcurrentSend(t *testing.T) {
 	// Simulate a concurrent new Send/Rerun landing in exactly this window.
 	// It must NOT be able to become owner -- proving no new streaming
 	// message could be created while this handler holds ownership.
-	_, _, ok := mockCoord.ReserveExclusive(ctx, sessionID)
+	_, _, _, ok := mockCoord.ReserveExclusive(ctx, sessionID)
 	require.False(t, ok,
 		"a concurrent Send/Rerun must NOT be able to claim the reservation while handleRerunMessage still holds it")
 
@@ -393,7 +393,7 @@ func TestHandleRerunMessage_HeldReservationBlocksConcurrentSend(t *testing.T) {
 	// After the handler completes (RunWithReservedOwnership released via the
 	// fake's own ReleaseExclusive call), the session must be free again: a
 	// FOLLOW-UP reservation attempt must succeed.
-	_, followUpCancel, followUpOk := mockCoord.ReserveExclusive(ctx, sessionID)
+	_, _, followUpCancel, followUpOk := mockCoord.ReserveExclusive(ctx, sessionID)
 	require.True(t, followUpOk, "session must be free again once the rerun handler has fully completed")
 	mockCoord.ReleaseExclusive(sessionID, mockCoord.epoch, followUpCancel)
 }
@@ -429,7 +429,7 @@ func TestRunWithReservedOwnership_ModelResolutionFailureReleasesReservation(t *t
 	ctx := t.Context()
 
 	// Claim the reservation exactly like handleRerunMessage's step 1a does.
-	epoch, cancel, ok := a.AgentCoordinator.ReserveExclusive(ctx, sess.ID)
+	_, epoch, cancel, ok := a.AgentCoordinator.ReserveExclusive(ctx, sess.ID)
 	require.True(t, ok, "precondition: reservation must succeed on an idle session")
 
 	// Force model resolution to fail by pointing this session at a
@@ -438,14 +438,14 @@ func TestRunWithReservedOwnership_ModelResolutionFailureReleasesReservation(t *t
 	// there, which is the exact branch task #614 defect 1 identified as
 	// unreachable-by-shutdown but reachable-by-routine-error.
 	badOverride := &agent.ModelOverride{Provider: "does-not-exist", Model: "does-not-exist"}
-	_, runErr := a.AgentCoordinator.RunWithReservedOwnership(ctx, sess.ID, "hello", epoch, cancel, badOverride, nil)
+	_, runErr := a.AgentCoordinator.RunWithReservedOwnership(ctx, sess.ID, "hello", epoch, cancel, nil, badOverride, nil)
 	require.Error(t, runErr, "precondition: an unresolvable model override must fail RunWithReservedOwnership")
 
 	// The decisive assertion: the session must be FREE again, not wedged at
 	// mbOwned. A follow-up ReserveExclusive must succeed.
 	followUpDone := make(chan bool, 1)
 	go func() {
-		_, followUpCancel, followUpOk := a.AgentCoordinator.ReserveExclusive(ctx, sess.ID)
+		_, _, followUpCancel, followUpOk := a.AgentCoordinator.ReserveExclusive(ctx, sess.ID)
 		if followUpOk {
 			a.AgentCoordinator.ReleaseExclusive(sess.ID, 0, followUpCancel)
 		}

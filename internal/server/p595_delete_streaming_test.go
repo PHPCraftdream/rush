@@ -314,11 +314,11 @@ func (m *mockAgentCoordinator) IsBusy() bool {
 // (TestHandleRerunMessage_OrphanedStreamingMessageIsForceDeleted) configure
 // busy: false, so this returns ok=true and lets handleRerunMessage's tail
 // cleanup proceed exactly as before task #614's reservation was added.
-func (m *mockAgentCoordinator) ReserveExclusive(ctx context.Context, sessionID string) (epoch uint64, cancel context.CancelFunc, ok bool) {
+func (m *mockAgentCoordinator) ReserveExclusive(ctx context.Context, sessionID string) (holdCtx context.Context, epoch uint64, cancel context.CancelFunc, ok bool) {
 	if m.busy {
-		return 0, nil, false
+		return nil, 0, nil, false
 	}
-	return 1, func() {}, true
+	return ctx, 1, func() {}, true
 }
 
 func (m *mockAgentCoordinator) ReleaseExclusive(sessionID string, epoch uint64, cancel context.CancelFunc) {
@@ -331,7 +331,7 @@ func (m *mockAgentCoordinator) ReleaseExclusive(sessionID string, epoch uint64, 
 // reason the existing orphan test's comment already documents: "the function
 // will eventually fail when trying to actually run the agent... but the tail
 // cleanup should have succeeded."
-func (m *mockAgentCoordinator) RunWithReservedOwnership(ctx context.Context, sessionID, prompt string, epoch uint64, cancel context.CancelFunc, smart, fast *agent.ModelOverride, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
+func (m *mockAgentCoordinator) RunWithReservedOwnership(ctx context.Context, sessionID, prompt string, epoch uint64, cancel context.CancelFunc, onHandoff func(), smart, fast *agent.ModelOverride, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
 	return nil, fmt.Errorf("mock coordinator: RunWithReservedOwnership not implemented")
 }
 

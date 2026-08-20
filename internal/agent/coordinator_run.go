@@ -579,7 +579,7 @@ func (c *coordinator) RunWithOverrides(ctx context.Context, sessionID, prompt st
 // SessionAgent.ReserveExclusive for the full contract. Thin passthrough:
 // the reservation itself is pure mailbox state, nothing model/provider
 // related needs resolving to claim it.
-func (c *coordinator) ReserveExclusive(ctx context.Context, sessionID string) (epoch uint64, cancel context.CancelFunc, ok bool) {
+func (c *coordinator) ReserveExclusive(ctx context.Context, sessionID string) (holdCtx context.Context, epoch uint64, cancel context.CancelFunc, ok bool) {
 	return c.currentAgent.ReserveExclusive(ctx, sessionID)
 }
 
@@ -593,7 +593,7 @@ func (c *coordinator) ReleaseExclusive(sessionID string, epoch uint64, cancel co
 // exactly like Run/RunWithOverrides (buildCall, the same shared path every
 // other entry point uses) and then hands the call to
 // SessionAgent.RunWithReservedOwnership instead of SessionAgent.Run, so the
-// caller's already-held reservation (epoch, cancel from a prior
+// caller's already-held reservation (holdCtx, epoch, cancel from a prior
 // ReserveExclusive) is CONTINUED rather than dropped and re-claimed. See
 // SessionAgent.RunWithReservedOwnership's doc for why that distinction is
 // the entire point: re-claiming would race a concurrent caller for the
@@ -618,7 +618,12 @@ func (c *coordinator) ReleaseExclusive(sessionID string, epoch uint64, cancel co
 // its own (only Cancel/CancelAll/a concurrent ReserveExclusive attempt that
 // FAILS can touch it, and none of those end this era) — so every early
 // return here really is this function's reservation to release.
-func (c *coordinator) RunWithReservedOwnership(ctx context.Context, sessionID, prompt string, epoch uint64, cancel context.CancelFunc, smart, fast *ModelOverride, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
+//
+// onHandoff, if non-nil, is passed through to the agent layer and invoked
+// immediately before the handoff to runOwned. It is used by callers (e.g.
+// handleRerunMessage) to transfer release responsibility exactly when the
+// handoff occurs.
+func (c *coordinator) RunWithReservedOwnership(ctx context.Context, sessionID, prompt string, epoch uint64, cancel context.CancelFunc, onHandoff func(), smart, fast *ModelOverride, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
 	if err := c.readyWg.Wait(); err != nil {
 		c.currentAgent.ReleaseExclusive(sessionID, epoch, cancel)
 		return nil, err
@@ -646,5 +651,5 @@ func (c *coordinator) RunWithReservedOwnership(ctx context.Context, sessionID, p
 	// past ITS OWN handoff line, runOwned's defer) owns releasing this
 	// reservation exactly once. Nothing after this line may call
 	// ReleaseExclusive again for this epoch.
-	return c.currentAgent.RunWithReservedOwnership(ctx, call, epoch, cancel)
+	return c.currentAgent.RunWithReservedOwnership(ctx, call, epoch, cancel, onHandoff)
 }

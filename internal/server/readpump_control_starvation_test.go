@@ -56,14 +56,14 @@ func (f *blockingCoordinator) RunWithOverrides(ctx context.Context, sessionID, p
 // must refuse: a session this fake calls busy cannot simultaneously be
 // claimable. Nothing in this file reaches them -- it drives send_message and
 // cancel_agent frames, never rerun -- but they must not lie if it ever does.
-func (f *blockingCoordinator) ReserveExclusive(ctx context.Context, sessionID string) (epoch uint64, cancel context.CancelFunc, ok bool) {
-	return 0, nil, false
+func (f *blockingCoordinator) ReserveExclusive(ctx context.Context, sessionID string) (holdCtx context.Context, epoch uint64, cancel context.CancelFunc, ok bool) {
+	return nil, 0, nil, false
 }
 
 func (f *blockingCoordinator) ReleaseExclusive(sessionID string, epoch uint64, cancel context.CancelFunc) {
 }
 
-func (f *blockingCoordinator) RunWithReservedOwnership(ctx context.Context, sessionID, prompt string, epoch uint64, cancel context.CancelFunc, smart, fast *agent.ModelOverride, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
+func (f *blockingCoordinator) RunWithReservedOwnership(ctx context.Context, sessionID, prompt string, epoch uint64, cancel context.CancelFunc, onHandoff func(), smart, fast *agent.ModelOverride, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
 	<-f.release
 	return nil, nil
 }

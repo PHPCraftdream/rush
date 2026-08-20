@@ -133,12 +133,22 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 // intentionally does NOT call it; only runCancel/reserveCancel (both of
 // which are unconditionally ours regardless of mailbox state) are cleaned up.
 //
-// The caller must have obtained (epoch, reserveCancel) from ReserveExclusive
-// on call.SessionID's mailbox and must not call ReleaseExclusive itself
-// after calling this method — ownership (and who releases it) is entirely
-// determined by which side of the handoff line a given return sits on, per
-// the paragraph above.
-func (a *sessionAgent) RunWithReservedOwnership(ctx context.Context, call SessionAgentCall, epoch uint64, reserveCancel context.CancelFunc) (*fantasy.AgentResult, error) {
+// The caller must have obtained (holdCtx, epoch, reserveCancel) from
+// ReserveExclusive on call.SessionID's mailbox and must not call
+// ReleaseExclusive itself after calling this method — ownership (and who
+// releases it) is entirely determined by which side of the handoff line a
+// given return sits on, per the paragraph above.
+//
+// onHandoff, if non-nil, is invoked immediately before the handoff to
+// runOwned. It is used by callers (e.g. handleRerunMessage) to transfer
+// release responsibility exactly when the handoff occurs: the caller's
+// defer (which releases on early returns) is disarmed by invoking onHandoff,
+// and from that point forward runOwned's defer owns releasing the reservation.
+// Any early return BEFORE onHandoff fires will trigger both the agent-level
+// early release (in this function) AND the caller's still-armed defer — the
+// second release is a verified epoch-guarded no-op (idle mailbox, empty queues,
+// spent CancelFunc).
+func (a *sessionAgent) RunWithReservedOwnership(ctx context.Context, call SessionAgentCall, epoch uint64, reserveCancel context.CancelFunc, onHandoff func()) (*fantasy.AgentResult, error) {
 	if call.Prompt == "" && !message.ContainsTextAttachment(call.Attachments) {
 		// Before the handoff line: this function must release what
 		// ReserveExclusive claimed. reserveCancel's placeholder context was
@@ -176,6 +186,7 @@ func (a *sessionAgent) RunWithReservedOwnership(ctx context.Context, call Sessio
 	// see Run's doc for why the turn loop needs its own cancelable context
 	// distinct from the caller's ctx.
 	runCtx, runCancel := context.WithCancel(ctx)
+	defer runCancel()
 
 	mb := a.getMailbox(call.SessionID)
 	if !mb.rebindDispatcher(epoch, runCancel) {
@@ -190,6 +201,13 @@ func (a *sessionAgent) RunWithReservedOwnership(ctx context.Context, call Sessio
 	// runCtx above (rebindDispatcher already repointed the mailbox at
 	// runCancel) — release it now so it doesn't leak.
 	reserveCancel()
+
+	// Invoke onHandoff (if non-nil) to transfer release responsibility to
+	// runOwned's defer. This is the exact point where the caller's bail-out
+	// defer is disarmed.
+	if onHandoff != nil {
+		onHandoff()
+	}
 
 	// HANDOFF LINE: from here on, runOwned's own deferred
 	// abandonOwnershipWithHandoff owns releasing this reservation, exactly

@@ -82,10 +82,15 @@ func (mb *mailbox) beginCompact(cancel context.CancelFunc) (epoch uint64, ok boo
 // holds the reservation it thinks it does, so it must not treat its
 // runCancel as wired into the mailbox and should fail closed instead of
 // proceeding as if the rebind succeeded.
+//
+// Also returns false when mb.stopped is latched — rebinding onto a
+// hard-stopped mailbox would wire a fresh dispatcher CancelFunc into a
+// process that is exiting, which is unsafe. beginCompact already refuses
+// stopped, this matches it.
 func (mb *mailbox) rebindDispatcher(epoch uint64, cancel context.CancelFunc) bool {
 	mb.mu.Lock()
 	defer mb.mu.Unlock()
-	if mb.epoch != epoch || mb.state != mbOwned {
+	if mb.epoch != epoch || mb.state != mbOwned || mb.stopped {
 		return false
 	}
 	mb.dispatcherCancel = cancel

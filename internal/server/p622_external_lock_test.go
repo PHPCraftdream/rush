@@ -146,7 +146,7 @@ func TestHandleRerunMessage_ExternalLockHolderFailsClosed(t *testing.T) {
 
 	// Failing closed must not wedge the session: the handler released its
 	// reservation on the bailout path, so a follow-up claim succeeds.
-	_, cancel, ok := a.AgentCoordinator.ReserveExclusive(ctx, sessionID)
+	_, _, cancel, ok := a.AgentCoordinator.ReserveExclusive(ctx, sessionID)
 	require.True(t, ok, "refused rerun must release its reservation, not wedge the mailbox")
 	a.AgentCoordinator.ReleaseExclusive(sessionID, 1, cancel)
 }

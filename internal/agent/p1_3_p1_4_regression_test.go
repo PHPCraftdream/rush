@@ -191,14 +191,14 @@ func (m *modelCallSpyAgent) Run(ctx context.Context, call SessionAgentCall) (*fa
 
 // ReserveExclusive/ReleaseExclusive/RunWithReservedOwnership: IsSessionBusy
 // always reports false on this mock, so reservation always succeeds.
-func (m *modelCallSpyAgent) ReserveExclusive(ctx context.Context, sessionID string) (epoch uint64, cancel context.CancelFunc, ok bool) {
-	return 1, func() {}, true
+func (m *modelCallSpyAgent) ReserveExclusive(ctx context.Context, sessionID string) (holdCtx context.Context, epoch uint64, cancel context.CancelFunc, ok bool) {
+	return ctx, 1, func() {}, true
 }
 
 func (m *modelCallSpyAgent) ReleaseExclusive(sessionID string, epoch uint64, cancel context.CancelFunc) {
 }
 
-func (m *modelCallSpyAgent) RunWithReservedOwnership(ctx context.Context, call SessionAgentCall, epoch uint64, cancel context.CancelFunc) (*fantasy.AgentResult, error) {
+func (m *modelCallSpyAgent) RunWithReservedOwnership(ctx context.Context, call SessionAgentCall, epoch uint64, cancel context.CancelFunc, onHandoff func()) (*fantasy.AgentResult, error) {
 	return nil, nil
 }
 

@@ -98,12 +98,12 @@ func (m *mockSessionAgent) SetTimeoutOptions(bool, time.Duration) {}
 // (a fixed epoch of 1 is fine — no test here exercises epoch mismatches).
 // RunWithReservedOwnership reuses runFunc, same as Run, since none of the
 // coordinator-level tests using this mock distinguish the two call paths.
-func (m *mockSessionAgent) ReserveExclusive(ctx context.Context, sessionID string) (epoch uint64, cancel context.CancelFunc, ok bool) {
-	return 1, func() {}, true
+func (m *mockSessionAgent) ReserveExclusive(ctx context.Context, sessionID string) (holdCtx context.Context, epoch uint64, cancel context.CancelFunc, ok bool) {
+	return ctx, 1, func() {}, true
 }
 func (m *mockSessionAgent) ReleaseExclusive(sessionID string, epoch uint64, cancel context.CancelFunc) {
 }
-func (m *mockSessionAgent) RunWithReservedOwnership(ctx context.Context, call SessionAgentCall, epoch uint64, cancel context.CancelFunc) (*fantasy.AgentResult, error) {
+func (m *mockSessionAgent) RunWithReservedOwnership(ctx context.Context, call SessionAgentCall, epoch uint64, cancel context.CancelFunc, onHandoff func()) (*fantasy.AgentResult, error) {
 	return m.runFunc(ctx, call)
 }
 

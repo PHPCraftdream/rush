@@ -34,6 +34,13 @@ var rerunPostIdlePollSeam func()
 // window it fires in. nil in every production path.
 var rerunHoldingReservationSeam func()
 
+// rerunPreHandoffSeam is a test-only hook (task #614 F-2): fires right
+// before Broadcast in handleRerunMessage's step 6, i.e. before
+// RunWithReservedOwnership is called. Used to test that panics before
+// the onHandoff callback still release the reservation. nil in every
+// production path.
+var rerunPreHandoffSeam func()
+
 // externalSessionOwnerRefusal decides whether a history-destructive handler
 // (handleRerunMessage's tail delete, deleteMessageRescuingOrphan's
 // force-delete) may proceed for sessionID, and returns refuse=false only
@@ -619,7 +626,7 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 	// F5 hole: releasing after delete and re-reserving for the replacement
 	// Run would reopen exactly the same "another caller can become owner in
 	// the gap" window this reservation exists to close.
-	epoch, reserveCancel, reserved := a.AgentCoordinator.ReserveExclusive(ctx, sessionID)
+	holdCtx, epoch, reserveCancel, reserved := a.AgentCoordinator.ReserveExclusive(ctx, sessionID)
 	if !reserved {
 		slog.Warn("ws: rerun: could not claim exclusive ownership (session became busy again)",
 			"sessionID", sessionID, "messageID", p.MessageID)
@@ -667,9 +674,14 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 	// re-deriving an order from timestamps (which cannot distinguish
 	// same-second before/after), find the target's position in that
 	// already-ordered list and delete only the slice strictly after it.
-	allMsgs, listErr := a.Messages.List(ctx, sessionID)
+	allMsgs, listErr := a.Messages.List(holdCtx, sessionID)
 	if listErr != nil {
 		c.reply(msg.ID, EventError, nil, "failed to list messages")
+		return
+	}
+	// Check if the hold was cancelled while listing messages
+	if holdCtx.Err() != nil {
+		c.reply(msg.ID, EventError, nil, "cancelled")
 		return
 	}
 	targetIdx := -1
@@ -702,7 +714,7 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 	}
 
 	for _, m := range allMsgs[targetIdx+1:] {
-		if delErr := a.Messages.Delete(ctx, m.ID); delErr != nil {
+		if delErr := a.Messages.Delete(holdCtx, m.ID); delErr != nil {
 			if errors.Is(delErr, message.ErrMessageStillStreaming) {
 				// The message is still streaming, but THREE separate proofs
 				// back the orphan claim: the session was cancelled and polled
@@ -715,7 +727,7 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 				// text in LLM context forever.
 				slog.Info("ws: rerun: orphaned streaming message, force-deleting",
 					"id", m.ID, "err", delErr)
-				if forceErr := a.Messages.ForceDelete(ctx, m.ID); forceErr != nil {
+				if forceErr := a.Messages.ForceDelete(holdCtx, m.ID); forceErr != nil {
 					slog.Warn("ws: rerun: failed to force-delete orphaned streaming message",
 						"id", m.ID, "err", forceErr)
 				}
@@ -725,9 +737,21 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 		}
 	}
 
+	// Check if the hold was cancelled during tail deletion
+	if holdCtx.Err() != nil {
+		c.reply(msg.ID, EventError, nil, "cancelled")
+		return
+	}
+
 	// 3. Delete the original user message — Run() will recreate it.
-	if delErr := a.Messages.Delete(ctx, targetMsg.ID); delErr != nil {
+	if delErr := a.Messages.Delete(holdCtx, targetMsg.ID); delErr != nil {
 		slog.Warn("ws: rerun: failed to delete original user message", "id", targetMsg.ID, "err", delErr)
+	}
+
+	// Check if the hold was cancelled while deleting the original message
+	if holdCtx.Err() != nil {
+		c.reply(msg.ID, EventError, nil, "cancelled")
+		return
 	}
 
 	// 4. Re-arm Phase 4 autonomy.
@@ -735,7 +759,7 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 
 	// 5. Resolve model overrides (same priority as handleSendMessage).
 	var smartOverride, fastOverride *agent.ModelOverride
-	if sess, sessErr := a.Sessions.Get(ctx, sessionID); sessErr == nil {
+	if sess, sessErr := a.Sessions.Get(holdCtx, sessionID); sessErr == nil {
 		if sess.SmartModelID != "" {
 			smartOverride = &agent.ModelOverride{Provider: sess.SmartModelProvider, Model: sess.SmartModelID}
 		}
@@ -747,17 +771,25 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 	// 6. Run the agent with the same prompt, handing off the reservation
 	// claimed in step 1a directly into the replacement turn — see
 	// RunWithReservedOwnership's own doc for why this must CONTINUE the same
-	// ownership era rather than release-then-reacquire. From this point on,
-	// RunWithReservedOwnership owns releasing the reservation on every return
-	// path (mirroring Run()'s own contract), so the bail-out defer above must
-	// stand down.
+	// ownership era rather than release-then-reacquire. The onHandoff callback
+	// transfers release responsibility: when it fires, the defer above is
+	// disarmed and runOwned's defer takes over. Any panic before onHandoff fires
+	// is still covered by the defer, which releases via ReleaseExclusive.
+
+	// Test-only seam (task #614 F-2): fires right before Broadcast, i.e. before
+	// RunWithReservedOwnership is called. Used to test that panics before the
+	// onHandoff callback still release the reservation. nil (a no-op) in every
+	// production path.
+	if rerunPreHandoffSeam != nil {
+		rerunPreHandoffSeam()
+	}
+
 	agentCtx := context.WithoutCancel(ctx)
-	releaseOnBailout = false
 	c.hub.Broadcast(EventAgentBusy, AgentBusyPayload{SessionID: sessionID, Busy: true})
 	if smartOverride != nil || fastOverride != nil {
-		_, err = a.AgentCoordinator.RunWithReservedOwnership(agentCtx, sessionID, text, epoch, reserveCancel, smartOverride, fastOverride)
+		_, err = a.AgentCoordinator.RunWithReservedOwnership(agentCtx, sessionID, text, epoch, reserveCancel, func() { releaseOnBailout = false }, smartOverride, fastOverride)
 	} else {
-		_, err = a.AgentCoordinator.RunWithReservedOwnership(agentCtx, sessionID, text, epoch, reserveCancel, nil, nil)
+		_, err = a.AgentCoordinator.RunWithReservedOwnership(agentCtx, sessionID, text, epoch, reserveCancel, func() { releaseOnBailout = false }, nil, nil)
 	}
 	// P2-2 fix: broadcast the actual busy state derived from mailbox ownership,
 	// not from this request handler's lifetime.

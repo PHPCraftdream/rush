@@ -142,11 +142,11 @@ type Coordinator interface {
 	IsBusy() bool
 	// ReserveExclusive atomically claims exclusive ownership of sessionID
 	// without starting a turn (task #614). See SessionAgent.ReserveExclusive
-	// for the full contract — in particular that the returned epoch/cancel
-	// pair must be handed to exactly one of RunWithReservedOwnership or
+	// for the full contract — in particular that the returned holdCtx/epoch/cancel
+	// tuple must be handed to exactly one of RunWithReservedOwnership or
 	// ReleaseExclusive, exactly once. ok is false (fail closed) when the
 	// session is already busy or the coordinator is shutting down.
-	ReserveExclusive(ctx context.Context, sessionID string) (epoch uint64, cancel context.CancelFunc, ok bool)
+	ReserveExclusive(ctx context.Context, sessionID string) (holdCtx context.Context, epoch uint64, cancel context.CancelFunc, ok bool)
 	// ReleaseExclusive drops a reservation taken by ReserveExclusive without
 	// running a turn. Use on any bail-out path that will not call
 	// RunWithReservedOwnership.
@@ -158,8 +158,10 @@ type Coordinator interface {
 	// history and starting the replacement turn with no gap in between for
 	// a concurrent Send/Rerun to slip through. smart/fast follow the same
 	// override semantics as RunWithOverrides (nil means "use session/config
-	// defaults").
-	RunWithReservedOwnership(ctx context.Context, sessionID, prompt string, epoch uint64, cancel context.CancelFunc, smart, fast *ModelOverride, attachments ...message.Attachment) (*fantasy.AgentResult, error)
+	// defaults"). onHandoff, if non-nil, is invoked immediately before the
+	// handoff to the agent layer; it is used by the caller to transfer
+	// release responsibility.
+	RunWithReservedOwnership(ctx context.Context, sessionID, prompt string, epoch uint64, cancel context.CancelFunc, onHandoff func(), smart, fast *ModelOverride, attachments ...message.Attachment) (*fantasy.AgentResult, error)
 	QueuedPrompts(sessionID string) int
 	QueuedPromptsList(sessionID string) []string
 	ClearQueue(sessionID string)

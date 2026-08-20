@@ -333,8 +333,11 @@ type SessionAgent interface {
 	// implementation's doc for the full contract: the returned epoch/cancel
 	// pair must be handed to exactly one of RunWithReservedOwnership or
 	// ReleaseExclusive, exactly once. ok is false (fail closed) when the
-	// session is already owned or the mailbox is stopped.
-	ReserveExclusive(ctx context.Context, sessionID string) (epoch uint64, cancel context.CancelFunc, ok bool)
+	// session is already owned or the mailbox is stopped. Returns holdCtx
+	// (the derived context that cancellation signals), the epoch, a cancel
+	// func, and ok. The caller must present the epoch and cancel to exactly
+	// one of RunWithReservedOwnership or ReleaseExclusive.
+	ReserveExclusive(ctx context.Context, sessionID string) (holdCtx context.Context, epoch uint64, cancel context.CancelFunc, ok bool)
 	// ReleaseExclusive drops a reservation taken by ReserveExclusive without
 	// running a turn, safely handing off anything that raced into the
 	// mailbox during the hold. Use on any bail-out path after a successful
@@ -343,7 +346,9 @@ type SessionAgent interface {
 	// RunWithReservedOwnership executes call using ownership already claimed
 	// by ReserveExclusive, continuing the SAME ownership era instead of
 	// releasing and re-claiming — see its own doc for why that gap matters.
-	RunWithReservedOwnership(ctx context.Context, call SessionAgentCall, epoch uint64, cancel context.CancelFunc) (*fantasy.AgentResult, error)
+	// onHandoff, if non-nil, is invoked immediately before the handoff to
+	// runOwned; it is used by the caller to transfer release responsibility.
+	RunWithReservedOwnership(ctx context.Context, call SessionAgentCall, epoch uint64, cancel context.CancelFunc, onHandoff func()) (*fantasy.AgentResult, error)
 	SetModels(smart Model, fast Model)
 	SetTools(tools []fantasy.AgentTool)
 	SetSystemPrompt(systemPrompt string)

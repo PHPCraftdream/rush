@@ -85,29 +85,17 @@ func (a *sessionAgent) tryReserveSession(call SessionAgentCall, reserveCancel co
 // safely hands off anything that raced into the mailbox during the hold —
 // see its own doc.
 //
-// CORRECTED (findings review, task #614 defect 2 — an earlier version of
-// this doc paragraph claimed the opposite of what the code does): the
-// returned cancel is a MAILBOX-INTERNAL TOKEN, not a caller-observable
-// cancellation signal. It is stored as both mailbox.current.cancel and
-// mailbox.dispatcherCancel (exactly like beginCompact's own cancel), so
-// Cancel(sessionID)/CancelAll landing during the hold correctly find a
-// live, non-nil CancelFunc to invoke instead of silently no-op'ing — that
-// part is real and matters (see mailbox.go's mbReleasing doc for why a nil
-// current.cancel during an active era is itself a bug class this guards
-// against). But the context this CancelFunc controls is created via
-// `context.WithCancel(ctx)` and then the returned *context.Context is
-// immediately discarded (assigned to `_` below) — cancelling a child context
-// never cancels its parent, so invoking this cancel does NOT propagate
-// anything back to the caller's own ctx, and the caller has no way to
-// observe it via ctx.Done()/ctx.Err(). Concretely: a Cancel(sessionID) that
-// lands while handleRerunMessage is mid-deletion does NOT interrupt that
-// deletion loop — it only flips a mailbox-internal handle that
-// RunWithReservedOwnership later consults (via mb.rebindDispatcher's epoch
-// check) and that ReleaseExclusive/CancelAll can invoke without it being a
-// no-op. If a future caller needs the hold's own cancellation to actually
-// interrupt its held work, this function would need to return the derived
-// context too (currently thrown away) for that caller to select on
-// explicitly — nothing here provides that today.
+// CORRECTED (findings review, task #614 defect 2): the returned cancel is now a
+// REAL cancellation signal that the caller can observe. The function returns
+// holdCtx (the derived context created via context.WithCancel(ctx)) as the
+// first return value, and holdCancel (the CancelFunc for that context) as the
+// third. Cancel(sessionID)/CancelAll landing during the hold now cancel
+// holdCtx, so the holder can select on it and abort its held work when a
+// cancellation arrives. Concretely: a Cancel(sessionID) that lands while
+// handleRerunMessage is mid-deletion DOES interrupt that deletion loop — the
+// handler checks holdCtx.Err() after each failing operation (or once before
+// the deletes) and bails out if it's non-nil, replying with an error and
+// releasing the reservation via its armed defer.
 //
 // When RunWithReservedOwnership takes over, it invokes this cancel (to
 // release the now-superseded placeholder context, purely to avoid a
@@ -119,15 +107,15 @@ func (a *sessionAgent) tryReserveSession(call SessionAgentCall, reserveCancel co
 // is necessary and why it does not reopen any gap (rebindDispatcher never
 // changes mb.epoch/state, only which CancelFunc is live for the
 // still-continuous era).
-func (a *sessionAgent) ReserveExclusive(ctx context.Context, sessionID string) (epoch uint64, cancel context.CancelFunc, ok bool) {
-	_, holdCancel := context.WithCancel(ctx)
+func (a *sessionAgent) ReserveExclusive(ctx context.Context, sessionID string) (holdCtx context.Context, epoch uint64, cancel context.CancelFunc, ok bool) {
+	holdCtx, holdCancel := context.WithCancel(ctx)
 	mb := a.getMailbox(sessionID)
 	epoch, ok = mb.beginCompact(holdCancel)
 	if !ok {
 		holdCancel()
-		return 0, nil, false
+		return nil, 0, nil, false
 	}
-	return epoch, holdCancel, true
+	return holdCtx, epoch, holdCancel, true
 }
 
 // ReleaseExclusive drops a reservation taken by ReserveExclusive WITHOUT
