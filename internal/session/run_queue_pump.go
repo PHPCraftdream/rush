@@ -419,11 +419,9 @@ type RunQueuePumpConfig struct {
 	// (stored == trueDeadline, stored != roundedDeadline whenever rounding
 	// actually changed anything) instead of inferring it from a broad
 	// wall-clock elapsed-time window. A window wide enough to absorb normal
-	// scheduWhite jitter is also wide enough to absorb the ~1s regression this
-	// hook exists to catch, which is exactly how the #604 regression escaped
-	// TestP1_1_WatchdogCancelsAtTTLMinusMargin's own 6-9s bounds. A window
-	// wide enough to absorb normal scheduling jitter is also wide enough to
-	// absorb the ~1s regression this hook exists to catch.
+	// scheduling jitter is also wide enough to absorb the ~1s regression
+	// this hook exists to catch, which is exactly how the #604 regression
+	// escaped TestP1_1_WatchdogCancelsAtTTLMinusMargin's own 6-9s bounds.
 	TestOnWatchdogDeadlineStored func(stored, trueDeadline, roundedDeadline time.Time)
 
 	// TestOnCancelCause is a test seam invoked once by executeEntrySync,

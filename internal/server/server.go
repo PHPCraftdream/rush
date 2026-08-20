@@ -211,9 +211,14 @@ func (s *Server) readPump(ctx context.Context, c *Client) {
 
 	// Fork merge note (origin/main 9c35ee01 "fix(server): recover from handler panics"):
 	// upstream wraps the REST mux with recoverHandler; our WebSocket loop reads
-	// frames directly. The equivalent in our architecture is Client.dispatch
-	// (hub.go), which recovers panics around every `go handleX(...)` spawned
-	// from handleIncoming and bounds per-connection concurrency — see
+	// frames directly. The equivalent in our architecture lives one layer down
+	// from handleIncoming: every message handler is handed to Client.dispatch
+	// (hub.go), which enqueues it on a per-connection bounded work queue
+	// drained by a fixed worker pool whose runRecovered recovers any panic —
+	// with the control-plane exception (CmdCancelAgent/CmdInterruptAndSend)
+	// going through Client.dispatchControl, which does spawn a goroutine per
+	// command, semaphore-bounded, under the same runRecovered net. No handler
+	// runs as a bare `go handleX(...)` off the read loop. See
 	// CHANGELOG.fork.md section 4.A.
 	for {
 		_, raw, err := c.conn.ReadMessage()

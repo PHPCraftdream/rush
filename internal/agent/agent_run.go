@@ -121,18 +121,31 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 // owner's era if one has already started under the bumped epoch.
 //
 // The ONE exception to "this function releases every early return" is the
-// rebindDispatcher failure branch: a failed rebind means the epoch this
-// caller thinks it owns has ALREADY ended (moved on to some other owner, or
-// this era already vacated some other way) — see mailbox.rebindDispatcher's
-// own doc: it returns false exactly when `mb.epoch != epoch || mb.state !=
-// mbOwned`. Calling abandonOwnershipWithHandoff(sessionID, epoch) in that
-// branch would present a STALE epoch that abandonOwnershipWithHandoff's own
-// epoch check (via abandonOwnershipAndPopSubmitted) will correctly refuse as
-// a no-op — so it would not corrupt anything — but it also would not be
-// releasing anything real: the era already isn't ours to release. Calling
-// it there would be misleading dead code, not a safety net, so that branch
-// intentionally does NOT call it; only runCancel/reserveCancel (both of
-// which are unconditionally ours regardless of mailbox state) are cleaned up.
+// rebindDispatcher failure branch. A failed rebind has TWO distinct
+// causes (see mailbox.rebindDispatcher: it returns false when
+// `mb.epoch != epoch || mb.state != mbOwned || mb.stopped`):
+//
+//   - Epoch/state mismatch: the epoch this caller thinks it owns has
+//     ALREADY ended (moved on to some other owner, or this era vacated
+//     some other way). Calling abandonOwnershipWithHandoff(sessionID,
+//     epoch) would present a STALE epoch that its own epoch check (via
+//     abandonOwnershipAndPopSubmitted) will correctly refuse as a no-op —
+//     so it would not corrupt anything — but it also would not be
+//     releasing anything real: the era already isn't ours to release.
+//   - Mailbox hard-stopped (mb.stopped, task d4e64288's added clause):
+//     the era is STILL ours (epoch and state both match) but the process
+//     is shutting down — CancelAll's hardStop sweep has latched stopped
+//     and already fired the dispatcher cancel (which for a held
+//     reservation is the placeholder reserveCancel). Releasing here
+//     would also start detached runs for any queued work, exactly what
+//     the stopped latch exists to prevent during teardown, so not
+//     releasing is deliberate: the mbOwned-stopped mailbox dies with the
+//     exiting process, and every drain refuses on the latch anyway.
+//
+// In both cases calling abandonOwnershipWithHandoff there would be wrong
+// or dead, so that branch intentionally does NOT call it; only
+// runCancel/reserveCancel (both of which are unconditionally ours
+// regardless of mailbox state) are cleaned up.
 //
 // The caller must have obtained (holdCtx, epoch, reserveCancel) from
 // ReserveExclusive on call.SessionID's mailbox and must not call
@@ -192,11 +205,13 @@ func (a *sessionAgent) RunWithReservedOwnership(ctx context.Context, call Sessio
 	mb := a.getMailbox(call.SessionID)
 	if !mb.rebindDispatcher(epoch, runCancel) {
 		// EXCEPTION to "this function releases every early return" — see the
-		// doc paragraph above titled "THE SINGLE HANDOFF POINT" for why an
-		// epoch mismatch here means the era already isn't ours to release.
+		// doc paragraph above titled "THE SINGLE HANDOFF POINT": the refusal
+		// is either an epoch/state mismatch (the era already isn't ours to
+		// release) or a hard-stopped mailbox (shutdown; releasing would
+		// start detached runs during teardown).
 		runCancel()
 		reserveCancel()
-		return nil, fmt.Errorf("agent.RunWithReservedOwnership: reservation for session %q is no longer valid (epoch mismatch)", call.SessionID)
+		return nil, fmt.Errorf("agent.RunWithReservedOwnership: reservation for session %q is no longer valid (epoch mismatch or stopped mailbox)", call.SessionID)
 	}
 	// The placeholder context ReserveExclusive created is superseded by
 	// runCtx above (rebindDispatcher already repointed the mailbox at

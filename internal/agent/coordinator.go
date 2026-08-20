@@ -145,7 +145,11 @@ type Coordinator interface {
 	// for the full contract — in particular that the returned holdCtx/epoch/cancel
 	// tuple must be handed to exactly one of RunWithReservedOwnership or
 	// ReleaseExclusive, exactly once. ok is false (fail closed) when the
-	// session is already busy or the coordinator is shutting down.
+	// session is already busy or the session's mailbox is hard-stopped
+	// (the CancelAll/shutdown latch — see mailbox.hardStop). This is a
+	// pure mailbox-state check: it does NOT consult the coordinator's own
+	// readiness gate (readyWg), so a coordinator whose parent ctx has
+	// already been cancelled still grants reservations.
 	ReserveExclusive(ctx context.Context, sessionID string) (holdCtx context.Context, epoch uint64, cancel context.CancelFunc, ok bool)
 	// ReleaseExclusive drops a reservation taken by ReserveExclusive without
 	// running a turn. Use on any bail-out path that will not call

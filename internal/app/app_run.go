@@ -340,13 +340,14 @@ func drainOutcomeError(sessID string, result session.DrainResult, drainErr, orig
 		}
 		return drainErr
 	case session.DrainNoWork:
-		// Nothing ran here, AND this call never observed a same-pump
-		// admission for the session (session task #624/F-5: a call that
-		// DID observe one keeps its DrainNoWork even when an outstanding
-		// leased row exists, because that row is plausibly the local
-		// admission holder's in-flight work). Either nothing was pending,
-		// or something was but a live owner WITHIN THIS PUMP's admission
-		// held the session, or this call stopped for a call-scoped reason
+		// Nothing ran here. This case covers BOTH the shapes task
+		// #624/F-5 distinguishes: a call that never observed a same-pump
+		// admission, AND a call that DID observe one — the latter keeps
+		// its DrainNoWork even when an outstanding leased row exists,
+		// because that row is plausibly the local admission holder's
+		// in-flight work. Either nothing was pending, or something was
+		// but a live owner WITHIN THIS PUMP's admission held the session,
+		// or this call stopped for a call-scoped reason
 		// of its own (ctx already done, its own lease attempt failing at
 		// the DB layer, etc -- see session.DrainNoWork's own doc; drainErr
 		// may be non-nil in that case, but it describes why

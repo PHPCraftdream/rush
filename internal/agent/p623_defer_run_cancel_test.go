@@ -185,13 +185,16 @@ func TestRunWithReservedOwnership_DefersRunCancelOnPanicPath(t *testing.T) {
 		t.Fatal("RunWithReservedOwnership did not return within 10s")
 	}
 
-	// defer runCancel() has run by the time RunWithReservedOwnership
-	// returns (or panics through), so no wait is needed here.
+	// By the time RunWithReservedOwnership returns (or panics through),
+	// the unwinding defers have run — runOwned's defer runCancel() and/or
+	// runTurn's own deferred genCtx cancel (see this test's SCOPE CAVEAT:
+	// either can be the one observed here) — so no wait is needed.
 	capturedCtx := panicModel.getCapturedContext()
 	require.NotNil(t, capturedCtx, "panicking model should have captured a context")
 	require.ErrorIs(t, capturedCtx.Err(), context.Canceled,
 		"captured context must be cancelled after RunWithReservedOwnership panics — "+
-			"only defer runCancel() can cancel it on this path (turnCancel never ran)")
+			"cancelled by the unwinding defers (this asserts the user-visible "+
+			"invariant only; it does not discriminate WHICH defer did it)")
 
 	// The panic must not wedge the session: runOwned's defer released it.
 	require.False(t, agent.IsSessionBusy(sessionID),
