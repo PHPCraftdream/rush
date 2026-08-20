@@ -479,31 +479,54 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 		return
 	}
 
-	// 2. Delete every message AFTER the target (by CreatedAt), keep the target.
+	// 2. Delete every message AFTER the target, keep the target.
+	//
+	// task #615: created_at is stored in whole SECONDS (see
+	// internal/db/sql/messages.sql), so a message inserted just before the
+	// target and one inserted just after can share the same created_at
+	// value. Messages.List already returns the full session in a
+	// deterministic (created_at ASC, rowid ASC) total order (same file,
+	// ListMessagesBySession) — that rowid tiebreaker is exactly what a
+	// timestamp-only comparison here would be missing. So instead of
+	// re-deriving an order from timestamps (which cannot distinguish
+	// same-second before/after), find the target's position in that
+	// already-ordered list and delete only the slice strictly after it.
 	allMsgs, listErr := a.Messages.List(ctx, sessionID)
 	if listErr != nil {
 		c.reply(msg.ID, EventError, nil, "failed to list messages")
 		return
 	}
-	for _, m := range allMsgs {
-		if m.CreatedAt > targetMsg.CreatedAt ||
-			(m.CreatedAt == targetMsg.CreatedAt && m.ID != targetMsg.ID) {
-			if delErr := a.Messages.Delete(ctx, m.ID); delErr != nil {
-				if errors.Is(delErr, message.ErrMessageStillStreaming) {
-					// The message is still streaming, but the session has been
-					// cancelled and waited for idle, so this is an orphaned row
-					// from a crashed/killed turn that will never receive a
-					// terminal Finish. Force-delete it to avoid corrupting the
-					// transcript by including partial text in LLM context forever.
-					slog.Info("ws: rerun: orphaned streaming message, force-deleting",
-						"id", m.ID, "err", delErr)
-					if forceErr := a.Messages.ForceDelete(ctx, m.ID); forceErr != nil {
-						slog.Warn("ws: rerun: failed to force-delete orphaned streaming message",
-							"id", m.ID, "err", forceErr)
-					}
-				} else {
-					slog.Warn("ws: rerun: failed to delete tail message", "id", m.ID, "err", delErr)
+	targetIdx := -1
+	for i, m := range allMsgs {
+		if m.ID == targetMsg.ID {
+			targetIdx = i
+			break
+		}
+	}
+	if targetIdx == -1 {
+		// Fail closed: without a confirmed position in the ordered list we
+		// cannot safely tell "before" from "after", so delete nothing.
+		slog.Warn("ws: rerun: target message not found in session list",
+			"sessionID", sessionID, "messageID", targetMsg.ID)
+		c.reply(msg.ID, EventError, nil, "target message not found in session")
+		return
+	}
+	for _, m := range allMsgs[targetIdx+1:] {
+		if delErr := a.Messages.Delete(ctx, m.ID); delErr != nil {
+			if errors.Is(delErr, message.ErrMessageStillStreaming) {
+				// The message is still streaming, but the session has been
+				// cancelled and waited for idle, so this is an orphaned row
+				// from a crashed/killed turn that will never receive a
+				// terminal Finish. Force-delete it to avoid corrupting the
+				// transcript by including partial text in LLM context forever.
+				slog.Info("ws: rerun: orphaned streaming message, force-deleting",
+					"id", m.ID, "err", delErr)
+				if forceErr := a.Messages.ForceDelete(ctx, m.ID); forceErr != nil {
+					slog.Warn("ws: rerun: failed to force-delete orphaned streaming message",
+						"id", m.ID, "err", forceErr)
 				}
+			} else {
+				slog.Warn("ws: rerun: failed to delete tail message", "id", m.ID, "err", delErr)
 			}
 		}
 	}
