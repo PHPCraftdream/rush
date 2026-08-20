@@ -340,15 +340,36 @@ func drainOutcomeError(sessID string, result session.DrainResult, drainErr, orig
 		}
 		return drainErr
 	case session.DrainNoWork:
-		// Nothing ran here. Either nothing was pending, or something was but
-		// a genuinely different live owner holds the session, or this call
-		// stopped for a call-scoped reason of its own (ctx already done, its
-		// own lease attempt failing at the DB layer, etc -- see
-		// session.DrainNoWork's own doc; drainErr may be non-nil in that
-		// case, but it describes why DrainSessionNow itself did not run
-		// anything, not this run's outcome). All of those mean the same
-		// thing to this command: no continuation completed in this process,
-		// so the original cancellation stands. It was real.
+		// Nothing ran here, AND this call never observed a same-pump
+		// admission for the session (session task #624/F-5: a call that
+		// DID observe one keeps its DrainNoWork even when an outstanding
+		// leased row exists, because that row is plausibly the local
+		// admission holder's in-flight work). Either nothing was pending,
+		// or something was but a live owner WITHIN THIS PUMP's admission
+		// held the session, or this call stopped for a call-scoped reason
+		// of its own (ctx already done, its own lease attempt failing at
+		// the DB layer, etc -- see session.DrainNoWork's own doc; drainErr
+		// may be non-nil in that case, but it describes why
+		// DrainSessionNow itself did not run anything, not this run's
+		// outcome). All of those mean the same thing to this command: no
+		// continuation completed in this process, so the original
+		// cancellation stands. It was real.
+		//
+		// NOTE (task #624/F-5): a DIFFERENT kind of "different live
+		// owner" -- another PROCESS's pump holding a live DB lease on a
+		// row of this session, with no admission this call could ever
+		// observe -- no longer reaches this case. Leasing a row never
+		// consults the OS session lock, so such a row is indistinguishable
+		// from an orphaned one by the only query available, and
+		// DrainSessionNow now reports it as DrainFailed/
+		// ErrOutstandingRunQueueEntry instead (mirroring task #610's
+		// already-accepted reporting for calls that DID execute
+		// something). That lands in the DrainPartial/DrainFailed case
+		// above and returns drainErr instead of originalErr -- both are
+		// non-nil here, so the run exits non-zero either way; what changes
+		// is WHICH error the operator sees, and the outstanding-row one
+		// names the undrained durable work rather than repeating the
+		// original cancellation.
 		return originalErr
 	default:
 		// An unrecognized DrainResult -- a programming error (a new

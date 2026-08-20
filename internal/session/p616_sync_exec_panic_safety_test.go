@@ -103,9 +103,22 @@ func TestDrainSessionNow_SyncExecutionPanic_ReleasesWorkerWgExecSemAndAdmission(
 // isolates the admission-release assertion on its own pump (no Start()
 // involved at all), proving releaseSession specifically -- not merely
 // workerWg -- runs despite the panic: a second DrainSessionNow call for the
-// SAME session, issued after the first panicked, must proceed (finding
-// nothing pending, since the entry was consumed) rather than block forever
-// on the first call's still-held admission.
+// SAME session, issued after the first panicked, must proceed (return
+// promptly, not block forever on the first call's still-held admission)
+// rather than hang.
+//
+// What the follow-up call must REPORT changed with task #624/F-5: the
+// panicking call leased the row and never wrote any outcome (the panic
+// unwound past executeEntrySync's own Ack/Nack writes), so the row is still
+// durably LEASED -- an orphaned lease. This test previously asserted
+// (DrainNoWork, nil) for the follow-up call, which was only reachable
+// because the anyExecuted gate made the outstanding-entries query invisible
+// on a cold call; #624 relaxed that gate, and the follow-up call now
+// truthfully reports DrainFailed with ErrOutstandingRunQueueEntry over the
+// row its predecessor abandoned mid-execution. The assertion that actually
+// carries this test's regression value is the 4s deadline below: a leaked
+// admission would make the follow-up call HANG on an admissionEntry.done
+// that never closes.
 func TestDrainSessionNow_SyncExecutionPanic_AdmissionReleasedForFollowUpCall(t *testing.T) {
 	sess, svc := setupTestSession(t, "drain-now-sync-panic-admission")
 	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
@@ -128,12 +141,20 @@ func TestDrainSessionNow_SyncExecutionPanic_AdmissionReleasedForFollowUpCall(t *
 		_, _ = pump.DrainSessionNow(ctx, sess.ID)
 	}()
 
+	// The row the panicking call leased is still durably leased (orphaned)
+	// -- confirmed here directly, so the follow-up assertion below provably
+	// describes the orphaned-lease shape and not an empty queue.
+	current, err := svc.GetRunQueueEntry(context.Background(), "drain-now-sync-panic-admission-1")
+	require.NoError(t, err)
+	require.NotNil(t, current, "the panicking call never wrote an outcome -- the row must still exist")
+	require.Equal(t, session.RunQueueStatusLeased, current.Status, "the panicking call's lease is orphaned, not consumed")
+
 	followUpDone := make(chan struct{})
+	var followUpResult session.DrainResult
+	var followUpErr error
 	go func() {
 		defer close(followUpDone)
-		result, err := pump.DrainSessionNow(ctx, sess.ID)
-		require.NoError(t, err)
-		require.Equal(t, session.DrainNoWork, result, "the entry was already consumed by the panicking call; nothing left pending")
+		followUpResult, followUpErr = pump.DrainSessionNow(ctx, sess.ID)
 	}()
 
 	select {
@@ -141,4 +162,6 @@ func TestDrainSessionNow_SyncExecutionPanic_AdmissionReleasedForFollowUpCall(t *
 	case <-time.After(4 * time.Second):
 		t.Fatal("follow-up DrainSessionNow call hung -- admission was not released after the panic")
 	}
+	require.ErrorIs(t, followUpErr, session.ErrOutstandingRunQueueEntry, "the orphaned lease must be VISIBLE to the follow-up call (task #624/F-5), not silently skipped as (DrainNoWork, nil)")
+	require.Equal(t, session.DrainFailed, followUpResult)
 }

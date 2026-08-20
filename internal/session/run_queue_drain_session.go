@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 )
 
 // DrainResult is the session-scoped outcome of one DrainSessionNow call —
@@ -193,6 +194,19 @@ func newRowLedger() *rowLedger {
 	return &rowLedger{failed: make(map[string]error)}
 }
 
+// unattributedFailureKeyPrefix is the prefix of every synthetic key minted
+// by recordUnattributed. mostRecentFailure uses it to distinguish a
+// row-attributed failure entry (keyed by the leased row's own ID) from a
+// general, unattributed one, so the ledger's representative-error priority
+// rule (task #624/F-7) can rank the two tiers without a second map.
+const unattributedFailureKeyPrefix = "__unattributed_"
+
+// isUnattributedFailureKey reports whether key was minted by
+// recordUnattributed rather than carrying a leased row's own ID.
+func isUnattributedFailureKey(key string) bool {
+	return strings.HasPrefix(key, unattributedFailureKeyPrefix)
+}
+
 // recordSuccess marks rowID as having reached a genuine, confirmed commit —
 // clearing any prior failure recorded for THAT SAME rowID, and no other. An
 // empty rowID (the observed-admission branch's success case, which has no
@@ -236,7 +250,7 @@ func (l *rowLedger) recordUnattributed(outcomeErr error) {
 		outcomeErr = fmt.Errorf("%w (unattributed)", ErrDrainFailureUnspecified)
 	}
 	l.unattributedSeq++
-	key := fmt.Sprintf("__unattributed_%d", l.unattributedSeq)
+	key := fmt.Sprintf("%s%d", unattributedFailureKeyPrefix, l.unattributedSeq)
 	l.failed[key] = outcomeErr
 	l.order = append(l.order, key)
 }
@@ -299,19 +313,66 @@ func (l *rowLedger) hasFailures() bool {
 	return len(l.failed) > 0
 }
 
-// mostRecentFailure returns the failure ledger's most-recently-inserted
-// SURVIVING error — i.e. the last key in insertion order that is still
-// present in the failed map (recordSuccess may have deleted more recent
-// entries for OTHER rows without touching this one). Deterministic despite
-// Go's randomized map iteration, because it walks the parallel order slice
-// rather than ranging over the map directly.
+// mostRecentFailure returns the error the ledger should report as its
+// representative failure, chosen by a two-tier priority rule (task #624,
+// F-7 of the 2026-08-20 ninth review):
+//
+//   - Tier 1, ROW-ATTRIBUTED entries (recordFailure under a leased row's own
+//     ID): these carry a classified, row-identity-tied cause — a terminal
+//     AlreadyAttempted loss, ErrTurnCommitFailed, errLeaseLost, an ambiguous
+//     ErrRowOutcomeUnconfirmed re-check, or a max-attempts dead-letter — that
+//     names a specific durable row and that callers and this package's own
+//     tests match with errors.Is/errors.As. A row-attributed entry ALWAYS
+//     outranks an unattributed one, regardless of insertion order.
+//   - Tier 2, UNATTRIBUTED entries (recordUnattributed's synthetic keys):
+//     these carry a general, call-scoped reason this call stopped — ctx.Err()
+//     from any of the three ctx-death exits, a failed lease attempt, a
+//     pump-stopping decline, or a generic "still outstanding"/
+//     "outstanding check unconfirmed" from the terminal emptiness check.
+//     Those explain why the LOOP ended, not what happened to a row, so they
+//     are only ever the representative when no row-attributed failure
+//     survives.
+//
+// Within a tier, the FRESHEST surviving entry wins (unchanged from the
+// pre-#624 rule): walk the order slice backwards, skipping entries whose key
+// recordSuccess has since deleted. Deterministic despite Go's randomized map
+// iteration, because it walks the parallel order slice rather than ranging
+// over the map directly.
+//
+// Why the tier rule exists: before #624 the rule was purely freshest-wins,
+// which let a GENERAL cause recorded later — most typically ctx.Err() folded
+// in by verdictOnCtxDone or the execSem-wait exit, but equally a DB lease
+// error or the outstanding-entries check's result — MASK a more specific,
+// row-attributed failure already on record from an earlier iteration of the
+// same loop. The verdict's DrainFailed/DrainComplete classification was
+// never wrong (both tiers count toward hasFailures); what was wrong was the
+// REPORTED CAUSE, which is exactly what a caller reads to decide what to do
+// about the durable row. Substituting the general cause at the call sites
+// was considered and rejected by the orchestrator in an earlier round — the
+// fix belongs here, inside the ledger, so every exit path inherits it.
 func (l *rowLedger) mostRecentFailure() error {
+	var unattributedFallback error
 	for i := len(l.order) - 1; i >= 0; i-- {
-		if err, ok := l.failed[l.order[i]]; ok {
-			return err
+		key := l.order[i]
+		err, ok := l.failed[key]
+		if !ok {
+			// Deleted by a later recordSuccess for this exact key -- dead
+			// weight in the order slice, skip it.
+			continue
 		}
+		if isUnattributedFailureKey(key) {
+			// Tier 2: remember only the freshest one as a fallback; a
+			// row-attributed entry found earlier in the walk (i.e.
+			// inserted before it) still outranks it.
+			if unattributedFallback == nil {
+				unattributedFallback = err
+			}
+			continue
+		}
+		// Tier 1: a surviving row-attributed failure always wins.
+		return err
 	}
-	return nil
+	return unattributedFallback
 }
 
 // verdictOnCtxDone is the ONLY sanctioned way for DrainSessionNow to compute
@@ -560,6 +621,32 @@ func (p *RunQueuePump) DrainSessionNow(ctx context.Context, sessionID string) (D
 	// admissionEntry (already fully resolved, and not a row this call ever
 	// leased itself).
 	var lastRowID string
+
+	// sawOtherAdmission (task #624, F-5 of the 2026-08-20 ninth review) is
+	// set the first time this call loses the admission race and WAITS on
+	// another holder's admissionEntry for this session. It distinguishes
+	// the two shapes an outstanding-entries finding can arrive in at the
+	// bottom of the loop when nothing has executed yet:
+	//
+	//   - This call OBSERVED a live, same-pump admission for the session
+	//     (sawOtherAdmission == true): any outstanding leased row is
+	//     plausibly the one that admission's holder is working through
+	//     right now -- reporting it as this call's failure is the exact
+	//     false DrainNoWork-to-DrainFailed conversion the anyExecuted gate
+	//     was added to prevent (pinned by
+	//     TestProcessEntry_RacedLeaseNil_DoesNotFalselyDrainAWaiter).
+	//   - This call never saw ANY admission for the session
+	//     (sawOtherAdmission == false): nothing in this pump instance is
+	//     known to be working on the session, so a row sitting in 'leased'
+	//     (or 'pending') belongs to an owner this call has no visibility
+	//     into at all -- a foreign process, or an owner that died (e.g. a
+	//     prior DrainSessionNow whose executeEntrySync panicked and never
+	//     Nack'd) leaving an orphaned lease behind. Pre-#624, the
+	//     anyExecuted gate alone made that row INVISIBLE: the
+	//     outstanding-entries query was skipped entirely, and this call
+	//     reported (DrainNoWork, nil) over a durable row whose fate it
+	//     never even looked at.
+	var sawOtherAdmission bool
 	for {
 		if ctx.Err() != nil {
 			// task #607/P0: route through verdictOnCtxDone, NOT a bare
@@ -613,6 +700,7 @@ func (p *RunQueuePump) DrainSessionNow(ctx context.Context, sessionID string) (D
 			if p.cfg.TestAfterAdmissionRefusal != nil {
 				p.cfg.TestAfterAdmissionRefusal(sessionID)
 			}
+			sawOtherAdmission = true
 
 			select {
 			case <-ctx.Done():
@@ -1155,46 +1243,80 @@ func (p *RunQueuePump) DrainSessionNow(ctx context.Context, sessionID string) (D
 		// treat an expired lease as equivalent to "gone", that is a distinct,
 		// deliberate contract change -- not a fold-in here.
 		//
-		// Gated on TWO conditions, both required, mirroring
+		// Gated on THREE conditions, all required, mirroring
 		// verdictOnCtxDone's own anyExecuted gate a few dozen lines above
 		// (that function's doc explains why the analogous mistake there --
 		// recording unconditionally -- turned a genuine DrainNoWork into a
 		// false DrainFailed; the same shape of mistake is possible here):
 		//
-		//   - ledger.anyExecuted: if NOTHING has executed (or been observed)
-		//     in this call at all, this is the pre-existing, unaffected
-		//     DrainNoWork contract every caller already depends on -- a
-		//     session that was never touched by this call, where some
-		//     OTHER, unrelated row happens to be outstanding, is not this
-		//     call's business to report on any more than a busy/contended
-		//     session is (see rowLedger.verdict's own top branch, which
-		//     leaves DrainNoWork alone even when contended is true).
-		//     Skipping the query entirely here also avoids a real defect
-		//     this gate was found catching directly: a losing admission race
-		//     whose winner has not yet resolved ANYTHING (e.g. a background
-		//     processEntry parked mid-lease) leaves exactly such a row
-		//     outstanding for the ENTIRE session, and querying unconditionally
-		//     turned that pre-existing, correct DrainNoWork into a false
-		//     DrainFailed the moment this check was added -- caught by this
-		//     package's own TestProcessEntry_RacedLeaseNil_DoesNotFalselyDrainAWaiter.
+		//   - ledger.anyExecuted || !sawOtherAdmission (task #624/F-5 relaxed
+		//     this from a bare anyExecuted): when NOTHING has executed in
+		//     this call, the query still runs UNLESS this call observed a
+		//     same-pump admission for the session (see sawOtherAdmission's
+		//     own doc). The bare anyExecuted gate -- added with task #610 to
+		//     keep a losing admission race's correct DrainNoWork intact --
+		//     also hid a row this call has NO live local explanation for at
+		//     all: a leased row orphaned by a dead owner (the reviewer's
+		//     executed probe: a row left leased after a panic never enters
+		//     the drain's field of view, independent of what the caller maps
+		//     the result to). That cold-call case is now visible -- the
+		//     query runs, and an outstanding row is reported through
+		//     DrainFailed exactly as task #610 already reports it for a call
+		//     that DID execute -- while the raced-admission case keeps its
+		//     deliberate DrainNoWork: this call waited on the admission
+		//     holder, so an outstanding row is not silently orphaned from
+		//     its point of view. That distinction is pinned on BOTH sides:
+		//     TestProcessEntry_RacedLeaseNil_DoesNotFalselyDrainAWaiter
+		//     (observed admission => still DrainNoWork) and this file's own
+		//     #624/F-5 regression test (no admission ever observed =>
+		//     DrainFailed), so neither half can silently regress alone.
+		//
+		//     The cross-process LIVE-owner case is REACHABLE and
+		//     deliberately converts too (task #624 follow-up review):
+		//     LeaseRunQueueEntry is a pure DB write (leased_by = ?, see
+		//     sql/run_queue.sql) that never consults the OS session lock --
+		//     that lock is acquired one layer up, inside Coordinator.Run
+		//     (agent_run.go), and task #622 exists precisely because the
+		//     lock is not consulted everywhere it should be. A different
+		//     process's pump (the DB is shared per workspace) or a second
+		//     pump instance in this same process (p.inFlight is per-pump)
+		//     can therefore hold a live lease on a row of this session
+		//     with no admission this call could ever observe, and this
+		//     call reports that row as DrainFailed/
+		//     ErrOutstandingRunQueueEntry. That is not a new decision:
+		//     task #610's own fix already reports exactly that shape (a
+		//     live foreign owner, unexpired lease) as DrainFailed whenever
+		//     anyExecuted is true -- see
+		//     TestDrainSessionNow_ForeignLeasedRow_NeverReportsComplete,
+		//     whose foreign lease carries a 5-minute TTL. #624/F-5 only
+		//     extends the same reporting to the cold arm, because the
+		//     row's fate is equally unknown to this call whether or not
+		//     this call also executed some OTHER row first. Narrowing this
+		//     arm to "provably unowned rows only" was considered and ruled
+		//     out: the only query available
+		//     (HasOutstandingRunQueueEntriesForSession) deliberately does
+		//     not look at lease liveness -- an earlier round decided an
+		//     expired-but-not-swept lease still counts as outstanding --
+		//     so such narrowing would require reintroducing exactly the
+		//     liveness judgment that decision rejected.
 		//   - !ledger.hasFailures(): if the ledger already has a surviving
 		//     failure recorded, verdict(false) below is already going to
 		//     return DrainFailed regardless of what this check finds
 		//     (rowLedger.verdict checks len(failed) > 0 before it ever looks
 		//     at contended), so querying here would only ever add a
-		//     REDUNDANT, more-recently-inserted synthetic entry that could
-		//     SHADOW an already-diagnosed, row-specific cause via
-		//     mostRecentFailure's freshest-surviving-entry rule -- e.g. row
-		//     A's specific ErrTurnCommitFailed/errLeaseLost/AlreadyAttempted
-		//     failure, still sitting in the ledger under A's own ID
-		//     precisely so a caller (and this package's own tests) can see
-		//     it, getting replaced in the reported error by a generic
-		//     "still outstanding" message that names no specific row and
-		//     carries no specific cause. hasFailures() is the same
-		//     len(failed) > 0 test verdict() itself performs, kept in sync
-		//     with it deliberately (see hasFailures' own doc) rather than
-		//     re-derived here.
-		if ledger.anyExecuted && !ledger.hasFailures() {
+		//     REDUNDANT synthetic entry that could SHADOW an
+		//     already-diagnosed, row-specific cause via mostRecentFailure's
+		//     priority rule -- e.g. row A's specific
+		//     ErrTurnCommitFailed/errLeaseLost/AlreadyAttempted failure,
+		//     still sitting in the ledger under A's own ID precisely so a
+		//     caller (and this package's own tests) can see it, getting
+		//     replaced in the reported error by a generic "still
+		//     outstanding" message that names no specific row and carries
+		//     no specific cause. hasFailures() is the same len(failed) > 0
+		//     test verdict() itself performs, kept in sync with it
+		//     deliberately (see hasFailures' own doc) rather than re-derived
+		//     here.
+		if (ledger.anyExecuted || !sawOtherAdmission) && !ledger.hasFailures() {
 			hasOutstanding, outstandingErr := p.cfg.Sessions.HasOutstandingRunQueueEntriesForSession(ctx, sessionID)
 			switch {
 			case outstandingErr != nil:
