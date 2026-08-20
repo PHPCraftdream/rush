@@ -12,7 +12,6 @@ import (
 	"github.com/charmbracelet/crush/internal/db"
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/session"
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -197,14 +196,11 @@ func TestP1_5_ShutdownBoundedTimeout_ReturnsEvenWithBlockingCleanup(t *testing.T
 			t.Fatal("Shutdown did not complete within 12 seconds (should have returned within ~10s outer timeout)")
 		}
 
-		shutdownDuration := time.Since(shutdownStart)
-
-		// Verify that Shutdown returned within the expected bounded time.
-		// The outer timeout is 10 seconds, so we allow some overhead (12s).
-		assert.Less(t, shutdownDuration, 12*time.Second,
-			"Shutdown should have returned within bounded time; got %v", shutdownDuration)
-
-		t.Logf("Verified bounded exit: Shutdown returned in %v (within 10s outer timeout)", shutdownDuration)
+		// No separate elapsed assertion here: the select above already
+		// enforces the bound. Measuring elapsed time after done fires would
+		// only add a scheduling-jitter window between the select returning
+		// and time.Since running, with no extra invariant gained.
+		t.Logf("Verified bounded exit: Shutdown returned in %v (within 10s outer timeout)", time.Since(shutdownStart))
 
 		// Clean up: unblock the goroutine (even though we've already verified the invariant).
 		close(blockForever)
@@ -262,11 +258,9 @@ func TestP1_5_ForcedShutdownPolicy_SkipsDBCloseWhenStillBusy(t *testing.T) {
 			t.Fatal("Shutdown did not complete within 12 seconds")
 		}
 
-		shutdownDuration := time.Since(shutdownStart)
-
-		// Verify that Shutdown returned quickly (not blocked by busy agents).
-		assert.Less(t, shutdownDuration, 12*time.Second,
-			"Shutdown with stillBusy=true should still return within bounded time")
+		// No separate elapsed assertion: the select above already enforces
+		// the 12s bound via t.Fatal. A post-hoc time.Since would only add
+		// a scheduling-jitter window with no new invariant.
 
 		// CRITICAL: Verify DB was NOT closed because shutdown was forced.
 		// We verify this by trying to use the connection - it should still work.
@@ -282,6 +276,6 @@ func TestP1_5_ForcedShutdownPolicy_SkipsDBCloseWhenStillBusy(t *testing.T) {
 		require.NoError(t, db.Release(dataDir), "cleanup release should succeed")
 		require.NoError(t, db.Release(dataDir), "second cleanup release should succeed")
 
-		t.Logf("Verified forced-shutdown policy: Shutdown returned in %v and DB remains usable (not closed)", shutdownDuration)
+		t.Logf("Verified forced-shutdown policy: Shutdown returned in %v and DB remains usable (not closed)", time.Since(shutdownStart))
 	})
 }

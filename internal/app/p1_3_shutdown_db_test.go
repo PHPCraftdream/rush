@@ -27,7 +27,6 @@ import (
 	"time"
 
 	"github.com/charmbracelet/crush/internal/db"
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -125,9 +124,9 @@ func TestP1_3_ShutdownDoesNotCloseDBUnderLiveWriter(t *testing.T) {
 			t.Fatal("Shutdown did not complete within 15 seconds")
 		}
 
-		shutdownDuration := time.Since(shutdownStart)
-		assert.Less(t, shutdownDuration, 15*time.Second,
-			"Shutdown should return within bounded time")
+		// No separate elapsed assertion here: the select above already
+		// enforces the 15s bound via t.Fatal. A post-hoc time.Since would
+		// only add a scheduling-jitter window with no new invariant.
 
 		// Critical invariant: DB was NOT closed because shutdown was forced.
 		// We verify this by trying to use the connection - it should still work.
@@ -147,6 +146,6 @@ func TestP1_3_ShutdownDoesNotCloseDBUnderLiveWriter(t *testing.T) {
 		require.NoError(t, db.Release(dataDir), "cleanup release should succeed")
 		require.NoError(t, db.Release(dataDir), "second cleanup release should succeed")
 
-		t.Logf("Verified: App.Shutdown skipped DB close on forced shutdown (returned in %v)", shutdownDuration)
+		t.Logf("Verified: App.Shutdown skipped DB close on forced shutdown (returned in %v)", time.Since(shutdownStart))
 	})
 }
