@@ -291,6 +291,18 @@ func TestP1_2_ExecCtxCanceledOnLeaseLoss(t *testing.T) {
 		TestLeaseTTL:   100 * time.Millisecond, // Short TTL forces quick renewal
 	})
 	pump.Start()
+	// Registered via t.Cleanup (not a bare trailing call) so pump.Stop()
+	// still runs even if a require.* assertion below fails and unwinds the
+	// test via runtime.Goexit() before reaching the bottom of the function.
+	// Without this, a failing assertion here leaves the pump's 10ms tick
+	// loop running against setupTestSessionWithDB's own t.Cleanup-closed
+	// *sql.DB (LIFO: this Cleanup, registered after that one, runs first
+	// and stops the pump before the DB closes), which otherwise floods the
+	// log with repeated "list pending failed err=\"sql: database is
+	// closed\"" warnings for the rest of the test binary's life. Same
+	// pattern as p1_1_watchdog_window_test.go's TestP1_1_WatchdogCancelsAtTTLMinusMargin
+	// (commit d49573e8).
+	t.Cleanup(func() { pump.Stop() })
 
 	// Wait for the coordinator to be called (meaning the worker is in-flight)
 	require.Eventually(t, func() bool {
@@ -332,8 +344,7 @@ func TestP1_2_ExecCtxCanceledOnLeaseLoss(t *testing.T) {
 		// Expected: coordinator did NOT complete (it was canceled)
 	}
 
-	// Stop the pump (cleanup, don't assert on return value - timing varies)
-	pump.Stop()
+	// pump.Stop() runs via the t.Cleanup registered above.
 
 	// Release the stolen lease back to pending so the test session is clean
 	nackCtx, nackCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -379,6 +390,13 @@ func TestP1_2_OutcomeWriteSkippedOnLeaseLoss(t *testing.T) {
 		TestLeaseTTL:   100 * time.Millisecond,
 	})
 	pump.Start()
+	// Registered via t.Cleanup (not a bare trailing call) — see the matching
+	// comment in TestP1_2_ExecCtxCanceledOnLeaseLoss above for why: a
+	// failing require.* between here and the bare pump.Stop() call further
+	// down would otherwise skip it via runtime.Goexit(), leaving the pump's
+	// 10ms tick loop running against a *sql.DB that setupTestSessionWithDB's
+	// own t.Cleanup then closes.
+	t.Cleanup(func() { pump.Stop() })
 
 	// Wait for coordinator to be called
 	require.Eventually(t, func() bool {
@@ -403,8 +421,7 @@ func TestP1_2_OutcomeWriteSkippedOnLeaseLoss(t *testing.T) {
 		t.Fatal("coordinator did not observe cancellation")
 	}
 
-	// Stop the pump
-	pump.Stop()
+	// pump.Stop() runs via the t.Cleanup registered above.
 
 	// Verify the entry STILL EXISTS (it was NOT Acked by the original executor)
 	// Use a direct SQL query to check for the entry, since it's still in 'leased' status

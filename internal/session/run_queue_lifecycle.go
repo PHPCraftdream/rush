@@ -168,7 +168,7 @@ func (p *RunQueuePump) tick() {
 	// Step 1: Cleanup expired leases (recovery from crashed pumps)
 	expiredBefore := time.Now().Unix()
 	if err := p.cfg.Sessions.CleanupExpiredLeases(ctx, expiredBefore); err != nil {
-		slog.Warn("run_queue_pump: cleanup expired leases failed", "err", err, "instance_id", p.cfg.PumpInstanceID)
+		logTickDBErr(err, "run_queue_pump: cleanup expired leases failed", p.cfg.PumpInstanceID)
 	}
 
 	// Step 1.5: sweep expired busyBackoffUntil entries. processEntry's own
@@ -193,7 +193,7 @@ func (p *RunQueuePump) tick() {
 	// Step 2: Scan for pending entries (and now-recovered stale leases)
 	pending, err := p.cfg.Sessions.ListPendingRunQueueEntries(ctx)
 	if err != nil {
-		slog.Warn("run_queue_pump: list pending failed", "err", err, "instance_id", p.cfg.PumpInstanceID)
+		logTickDBErr(err, "run_queue_pump: list pending failed", p.cfg.PumpInstanceID)
 		return
 	}
 
@@ -217,4 +217,27 @@ func (p *RunQueuePump) tick() {
 	case p.tickCh <- struct{}{}:
 	default:
 	}
+}
+
+// logTickDBErr logs a tick()-path DB error at Warn, except for the one
+// specific, benign teardown race this pump's own shutdown sequence can
+// produce: the pump's ticker fires (or is already mid-tick) at the same
+// moment a test or caller closes the underlying *sql.DB out from under it
+// (see p1_1_watchdog_window_test.go's and p1_2_lease_loss_test.go's
+// t.Cleanup ordering notes for why this is expected, not a bug — Stop()
+// cancels p.ctx, but a tick already past its ctx check can still issue one
+// more query against an already-closed DB). That exact case — err.Error()
+// is precisely "sql: database is closed" (database/sql's own unexported
+// errDBClosed, not exposed as a testable sentinel via errors.Is, hence the
+// exact string match rather than a substring one, so this cannot
+// accidentally swallow a different, wrapped, or merely similar-looking DB
+// error) — is downgraded to Debug so it does not share Warn's level with
+// genuine DB errors (disk full, corruption, real connection failures)
+// during normal operation.
+func logTickDBErr(err error, msg string, instanceID string) {
+	if err.Error() == "sql: database is closed" {
+		slog.Debug(msg, "err", err, "instance_id", instanceID)
+		return
+	}
+	slog.Warn(msg, "err", err, "instance_id", instanceID)
 }
