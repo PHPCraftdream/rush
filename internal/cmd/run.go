@@ -53,9 +53,11 @@ Four roles exist:
                       is lifted so the orchestrator can delegate at all —
                       even against an explicit --agents single, since a
                       configured worker means delegation is the intent.
-                      The smart agent's system prompt also gains an
-                      "Orchestrator mode" nudge to delegate in context-sized chunks
-                      instead of implementing inline.
+                      The smart agent's edit/multiedit/write tools are
+                      also REMOVED (bash and read tools stay, for
+                      verification), and its system prompt gains an
+                      "Orchestrator mode" rule to delegate in
+                      context-sized chunks.
   reviewer           optional, no alias; the strongest slot, for explicit
                       review invocations. Never auto-selected anywhere —
                       reachable only via --role reviewer.
@@ -357,8 +359,8 @@ crush run --role smart --json --agents with-agents --aggregation attach \
 # Orchestrator mode: with a worker model configured (models.worker in
 # crush.json / web UI), --role smart on its own is enough — the default
 # sub-agent ban is lifted, sub-agents get a work-capable toolset and run
-# on the cheap worker slot, and the smart agent's system prompt is
-# nudged to delegate hands-on work instead of doing it inline.
+# on the cheap worker slot, and the smart agent's edit/multiedit/write
+# tools are removed so hands-on work has to be delegated.
 crush run --role smart --session "orchestrated-refactor" "..."
 
 # Bypass the strongest slot for an explicit one-off review (never picked

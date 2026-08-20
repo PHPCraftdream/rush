@@ -139,27 +139,63 @@ func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, age
 // round-trip design and why a synchronous blocking version is impossible.
 var workerToolNames = []string{"edit", "multiedit", "write", "bash", "todos", "download", "fetch", tools.AskQuestionToolName}
 
+// orchestratorStrippedToolNames are REMOVED from the top-level coder's
+// AllowedTools when workerSubAgentActive(cfg) is true (worker configured AND
+// active role empty-or-smart). The orchestrator must delegate all file
+// mutation to the worker: as long as edit/multiedit/write are present, rule
+// 7 in the prompt is only advice, and three real `crush run --role smart`
+// runs showed the smart model doing all the hands-on work itself (0 agent
+// calls out of 50/51/24 tool calls) with a configured worker never used.
+//
+// bash and every read tool are deliberately KEPT: rule 7's zero-trust pass
+// requires the orchestrator to re-read files and re-run tests itself, and
+// delegating verification would mean trusting a worker's report about
+// checking a worker's report. The resulting hole — bash can still write
+// files via sed, cat >, redirection — is accepted KNOWINGLY: it turns an
+// accidental edit into a deliberate act, it does not make the ban airtight.
+var orchestratorStrippedToolNames = []string{"edit", "multiedit", "write"}
+
 // buildToolsAgentConfig returns the config.Agent buildTools should use to
-// resolve AllowedTools for this build. For a sub-agent acting as a worker
-// (see workerSubAgentActive), it returns a copy of agent with the worker
-// toolset layered on top of whatever was already allowed (today's read-only
-// set, in practice, since this only affects the AgentTask sub-agent). In
-// every other case — including the top-level coder, and the sub-agent when
-// no Worker is configured or the active role isn't smart — it returns agent
-// unchanged, so behavior is byte-identical to before this method existed.
+// resolve AllowedTools for this build. Two mutations, both gated on
+// workerSubAgentActive (worker configured AND active role empty-or-smart):
+//
+//   - a sub-agent acting as a worker gets a copy of agent with the worker
+//     toolset layered on top of whatever was already allowed (today's
+//     read-only set, in practice, since this only affects the AgentTask
+//     sub-agent);
+//   - the top-level coder gets a copy of agent with the edit tools in
+//     orchestratorStrippedToolNames removed, so the orchestrator cannot
+//     mutate files directly and must go through the `agent` tool.
+//
+// In every other case — no Worker configured, or an explicit non-smart
+// active role (fast/worker/reviewer) — it returns agent unchanged, so
+// behavior is byte-identical to before orchestrator mode existed.
 // cfg is the caller's pinned snapshot (task #576/P1-3) — buildTools no
 // longer takes its own live c.cfg.Config() reads, so this decision now
 // agrees with every other config-derived choice buildAgent makes for the
 // same build (models, prompt's WorkerAvailable, hooks, MCP, etc.).
 func (c *coordinator) buildToolsAgentConfig(cfg *config.Config, agent config.Agent, isSubAgent bool) config.Agent {
-	if !isSubAgent || !c.workerSubAgentActive(cfg) {
+	if !c.workerSubAgentActive(cfg) {
 		return agent
 	}
 
-	allowed := make([]string, len(agent.AllowedTools), len(agent.AllowedTools)+len(workerToolNames))
-	copy(allowed, agent.AllowedTools)
-	for _, name := range workerToolNames {
-		if !slices.Contains(allowed, name) {
+	if isSubAgent {
+		allowed := make([]string, len(agent.AllowedTools), len(agent.AllowedTools)+len(workerToolNames))
+		copy(allowed, agent.AllowedTools)
+		for _, name := range workerToolNames {
+			if !slices.Contains(allowed, name) {
+				allowed = append(allowed, name)
+			}
+		}
+		agent.AllowedTools = allowed
+		return agent
+	}
+
+	// Top-level coder (buildAgent is only ever called with isSubAgent=false
+	// for the coder agent): strip the orchestrator's direct edit tools.
+	allowed := make([]string, 0, len(agent.AllowedTools))
+	for _, name := range agent.AllowedTools {
+		if !slices.Contains(orchestratorStrippedToolNames, name) {
 			allowed = append(allowed, name)
 		}
 	}

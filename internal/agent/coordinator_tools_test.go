@@ -277,43 +277,121 @@ func TestBuildTools_WorkerToolset(t *testing.T) {
 		})
 	}
 
-	t.Run("top-level coder agent is unaffected by Worker config or active role", func(t *testing.T) {
-		for _, tc := range []struct {
-			name          string
-			includeWorker bool
-			role          config.SelectedModelType
-		}{
-			{"no worker, role unset", false, ""},
-			{"worker configured, role large", true, config.SelectedModelTypeSmart},
-			{"worker configured, role unset", true, ""},
-			{"worker configured, role worker", true, config.SelectedModelTypeWorker},
-		} {
-			t.Run(tc.name, func(t *testing.T) {
-				env := testEnv(t)
-				coord := newWorkerToolTestCoordinator(t, env, tc.includeWorker)
-				if tc.role != "" {
-					coord.SetActiveModelRole(tc.role)
-				}
+	// The top-level coder's toolset under every Worker/role combination is
+	// covered by TestBuildTools_OrchestratorEditToolsStripped below.
+}
 
-				coderCfg, ok := coord.cfg.Config().Agents[config.AgentCoder]
-				require.True(t, ok, "coder agent must be configured")
+// TestBuildTools_OrchestratorEditToolsStripped is the #629 regression +
+// behavior suite for the top-level coder: when a Worker model is configured
+// AND the active role is smart or unset (workerSubAgentActive), the coder
+// must LOSE edit/multiedit/write (so rule 7 is structural, not advice —
+// three real `crush run --role smart` runs produced 0 agent-tool calls out
+// of 50/51/24 with the worker never used) while KEEPING bash, every read
+// tool, and the agent tool itself (zero-trust verification and delegation
+// both require them). In every other configuration the coder's toolset must
+// be byte-identical to before: no Worker configured, or an explicit
+// non-smart role (fast/worker/reviewer), keeps the edit tools.
+func TestBuildTools_OrchestratorEditToolsStripped(t *testing.T) {
+	editTools := []string{"edit", "multiedit", "write"}
+	keptTools := []string{"bash", "glob", "grep", "ls", "sourcegraph", "view", AgentToolName}
 
-				built, err := coord.buildTools(t.Context(), coord.cfg.Config(), coderCfg, false)
-				require.NoError(t, err)
+	buildCoderToolNames := func(t *testing.T, coord *coordinator) []string {
+		t.Helper()
+		coderCfg, ok := coord.cfg.Config().Agents[config.AgentCoder]
+		require.True(t, ok, "coder agent must be configured")
 
-				names := make([]string, 0, len(built))
-				for _, tool := range built {
-					names = append(names, tool.Info().Name)
-				}
-				for _, name := range workerOnlyTools {
-					assert.Contains(t, names, name, "coder already has %q unconditionally; worker logic must not remove it", name)
-				}
-				for _, name := range readOnlyTools {
-					assert.Contains(t, names, name, "coder already has %q unconditionally", name)
-				}
-			})
+		built, err := coord.buildTools(t.Context(), coord.cfg.Config(), coderCfg, false)
+		require.NoError(t, err)
+
+		names := make([]string, 0, len(built))
+		for _, tool := range built {
+			names = append(names, tool.Info().Name)
 		}
-	})
+		return names
+	}
+
+	// Byte-identical backward-compat cases: edit tools STAY.
+	unchangedCases := []struct {
+		name          string
+		includeWorker bool
+		role          config.SelectedModelType
+	}{
+		{"worker NOT configured, role unset (backward compat)", false, ""},
+		{"worker NOT configured, role smart (backward compat)", false, config.SelectedModelTypeSmart},
+		{"worker configured, role fast", true, config.SelectedModelTypeFast},
+		{"worker configured, role worker", true, config.SelectedModelTypeWorker},
+		{"worker configured, role reviewer", true, config.SelectedModelTypeReviewer},
+	}
+	for _, tc := range unchangedCases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := testEnv(t)
+			coord := newWorkerToolTestCoordinator(t, env, tc.includeWorker)
+			if tc.role != "" {
+				coord.SetActiveModelRole(tc.role)
+			}
+
+			names := buildCoderToolNames(t, coord)
+
+			for _, name := range editTools {
+				assert.Contains(t, names, name,
+					"coder must keep %q when no Worker is configured or the role is explicitly non-smart — behavior must be byte-identical to before orchestrator mode", name)
+			}
+			for _, name := range keptTools {
+				assert.Contains(t, names, name, "coder already has %q unconditionally; the strip must not touch it", name)
+			}
+		})
+	}
+
+	// Orchestrator-mode cases: edit tools REMOVED, everything else kept.
+	for _, role := range []config.SelectedModelType{"", config.SelectedModelTypeSmart} {
+		roleName := string(role)
+		if roleName == "" {
+			roleName = "unset"
+		}
+		t.Run("worker configured + role "+roleName+" - coder loses edit tools, keeps bash and read tools and agent", func(t *testing.T) {
+			env := testEnv(t)
+			coord := newWorkerToolTestCoordinator(t, env, true)
+			if role != "" {
+				coord.SetActiveModelRole(role)
+			}
+
+			names := buildCoderToolNames(t, coord)
+
+			for _, name := range editTools {
+				assert.NotContains(t, names, name,
+					"coder must NOT have %q when a Worker is configured and the role is smart/unset — the orchestrator must delegate file mutation", name)
+			}
+			for _, name := range keptTools {
+				assert.Contains(t, names, name,
+					"coder must keep %q in orchestrator mode: read tools and bash for the zero-trust pass, agent for delegation", name)
+			}
+		})
+	}
+}
+
+// TestBuildTools_WorkerResolvedToolsetByName reports, as an executable
+// assertion, the worker sub-agent's FINAL resolved toolset (AgentTask base
+// + workerToolNames layering): every search/read tool must survive the
+// layering. #629 required verifying the worker can search by test, not by
+// inspection. REVERT CHECK: remove any entry from workerToolNames (or from
+// resolveReadOnlyTools in internal/config) and this goes red naming it.
+func TestBuildTools_WorkerResolvedToolsetByName(t *testing.T) {
+	env := testEnv(t)
+	coord := newWorkerToolTestCoordinator(t, env, true)
+
+	names := buildSubAgentToolNames(t, coord)
+
+	// The worker's complete expected toolset, by name: read-only base
+	// (resolveReadOnlyTools) plus workerToolNames.
+	expected := []string{
+		"glob", "grep", "ls", "sourcegraph", "view", // read-only base
+		"edit", "multiedit", "write", "bash", // hands-on
+		"todos", "download", "fetch", tools.AskQuestionToolName,
+	}
+	for _, name := range expected {
+		assert.Contains(t, names, name, "worker must have %q in its resolved toolset", name)
+	}
+	assert.NotContains(t, names, AgentToolName, "worker must never get the agent tool (recursion guard)")
 }
 
 // TestBuildToolsAgentConfig_UnconditionalApplicationWouldBreakBackwardCompat
@@ -421,9 +499,9 @@ func TestBuildTools_CoderHasAskQuestion(t *testing.T) {
 
 // TestBuildTools_CoderHasAskQuestion_AllRoles pins the claim that
 // ask_question's presence in the TOP-LEVEL coder's tool set is
-// role-independent: buildToolsAgentConfig (coordinator.go) only ever
-// modifies AllowedTools when isSubAgent is true (see the early
-// `if !isSubAgent || !c.workerSubAgentActive() { return agent }` guard), so
+// role-independent: buildToolsAgentConfig (coordinator_tools.go) only ever
+// modifies the coder's AllowedTools to REMOVE edit/multiedit/write (see
+// orchestratorStrippedToolNames; it never removes ask_question), so
 // for the top-level coder (isSubAgent=false, as buildTools is always called
 // for the coder agent) the AllowedTools passed through is always
 // allToolNames() verbatim (modulo DisabledTools, unset here) regardless of
