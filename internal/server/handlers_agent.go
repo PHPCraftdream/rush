@@ -57,96 +57,89 @@ var rerunHoldingReservationSeam func()
 // production path.
 var rerunPreHandoffSeam func()
 
-// externalSessionOwnerRefusal decides whether a history-destructive handler
-// (handleRerunMessage's tail delete, deleteMessageRescuingOrphan's
-// force-delete) may proceed for sessionID, and returns refuse=false only
-// when no live OS-level session lock exists — or the only live one is
-// provably this process's own. Any other outcome returns refuse=true with
-// an operator-facing message. Task #622 (F-1 of the 2026-08-20 ninth
-// review): the coordinator's mailbox can only prove in-process ownership;
-// a `crush run --session S` in a DIFFERENT process is invisible to
-// ReserveExclusive/IsSessionBusy, so any handler about to force-delete a
-// still-streaming row must ALSO prove the absence of an OS-level owner
-// first.
+// holdExternalSilenceProof acquires the kernel-attested proof that no
+// external process owns sessionID: a non-blocking SHARED OS lock on the
+// session's lock file (session.TryHoldSessionLockShared), which the caller
+// must HOLD across its history-destructive work and Release afterwards.
+// It replaces ce3b418e's byte-heuristic (InspectSessionLock mtime/PID
+// inference) on the destructive path, per the #631 redesign: any encoding
+// of "held" vs "released" in disk bytes has an irreducible race — a
+// just-acquired holder whose PID hasn't landed in the file yet, a released
+// leftover whose truncate refreshed the mtime — while a shared range lock
+// conflicts with every exclusive holder on every platform and retracts
+// atomically with both process death and lock acquisition. Winning the
+// probe therefore proves no exclusive holder exists at this instant, AND —
+// because shared and exclusive range locks conflict — that none can appear
+// while it is held, which closes the old "owner arrives a moment after the
+// inspection" residual window too (the probe's O_CREATE pins the inode so
+// an arriving acquirer opens the same file and fails against us).
 //
-// This is deliberately NOT a mirror of annotateExternalOwnership, even
-// though both call InspectSessionLock with the same threshold: that is a
-// DISPLAY predicate — when it cannot identify an owner it leaves the
-// session unflagged and the worst outcome is a UI showing full controls.
-// This is a DESTRUCTION predicate — when it cannot identify an owner, the
-// worst outcome is force-deleting a row a live external writer is still
-// streaming into. Identical evidence, inverted safe default. The two
-// therefore CAN disagree: a session with a live lock but unreadable PID
-// shows as unowned in the session list yet refuses rerun/delete here.
+// Semantics, for the four states this file's history has enumerated:
+// released leftover (empty file, no sidecar) grants the probe — nobody
+// owns it; held-with-unreadable-identity (Windows mandatory lock, no
+// sidecar) denies the probe — a live owner exists regardless of what the
+// bytes say; held-with-known-PID denies, whether foreign OR OUR OWN —
+// strictly safer than the old heuristic's own-PID allow, since a genuinely
+// held in-process lock means a turn is running; mid-acquire (bytes still
+// empty) denies — the kernel already holds the exclusive lock even though
+// the disk hasn't caught up.
 //
-// Three fail-closed rules follow from that inversion:
+// Fail-closed rules carried over from #622:
 //
-//  1. Live lock + PID 0 means "owner alive, identity unreadable", not
-//     "nobody". On Windows (the dev platform) the lock file itself is
-//     unreadable for the holder's whole lifetime (mandatory LockFileEx,
-//     see readLockFile's doc in internal/session/lock.go), and the .pid
-//     sidecar that compensates is written best-effort — writePIDSidecar
-//     logs and swallows failures. The sidecar's "PID shown as 0 to a
-//     concurrent reader" promise was scoped to diagnosability; wired into
-//     a destructive decision, PID 0 must refuse. It could in principle be
-//     OUR PID rendered unreadable, but the caller arrives here holding the
-//     exclusive reservation with the session polled idle, so no in-process
-//     turn is running and a live fresh-heartbeat lock is not expected to
-//     be ours — and if it somehow is, the cost is one spurious "retry",
-//     not lost data.
+//  1. Contention refuses with an actionable message. The holder PID in the
+//     message is best-effort (sidecar, then primary; on Windows the
+//     primary is unreadable while held) and may be 0 or our own — the
+//     refusal itself does not depend on it.
 //  2. A data directory that cannot be resolved (nil store/config/options
 //     or empty DataDirectory) refuses outright. attachmentsDataDir paper
 //     over this edge with a workingDir fallback because a wrong guess only
-//     misplaces files; here a wrong guess inspects the wrong locks/
+//     misplaces files; here a wrong guess probes the wrong locks/
 //     directory, i.e. fails open. "Could not look" must not read as
 //     "looked and found nothing".
-//  3. The nil-store case is included in rule 2 rather than special-cased:
-//     if it is unreachable in production the fail-closed branch costs
-//     nothing, and if it is reachable it is exactly rule 2.
+//  3. Any probe error that is not contention (permission, IO, filesystems
+//     where range locks don't work — some NFS/SMB) refuses: the exclusive
+//     acquire path fails on such filesystems too, so refusing here is
+//     consistent, not a regression.
 //
-// Residual window, deliberately left open and distinct from the rules
-// above: this is a check, not a claim — a process that acquires the OS
-// lock a moment AFTER this inspection is still invisible until it surfaces
-// some other way. Fully closing that would require the handler itself to
-// hold the OS lock across the delete, which is agent-layer surgery
-// outside this file's reach.
+// The nil-store case is included in rule 2 rather than special-cased: if
+// it is unreachable in production the fail-closed branch costs nothing,
+// and if it is reachable it is exactly rule 2.
 //
-// Split into the App wrapper below plus externalSessionOwnerRefusalFromConfig
+// Split into the App wrapper below plus holdExternalSilenceProofFromConfig
 // so every branch is independently testable: an *appPkg.App with a non-nil
 // store but empty DataDirectory cannot be built through app.New from this
 // package (a config-Init'd store always resolves a directory via
 // setDefaults, and a hand-built &config.Config{Options: &config.Options{}}
 // panics inside app.New before returning), so the config-level guard is
 // pinned at the FromConfig seam instead.
-func externalSessionOwnerRefusal(a *appPkg.App, sessionID string) (refuse bool, message string) {
+func holdExternalSilenceProof(a *appPkg.App, sessionID string) (probe *session.SharedLockProbe, refuse bool, message string) {
 	if a == nil || a.Store() == nil {
-		return true, "cannot verify external session ownership (no config store) — please retry"
+		return nil, true, "cannot verify external session ownership (no config store) — please retry"
 	}
-	return externalSessionOwnerRefusalFromConfig(a.Config(), sessionID)
+	return holdExternalSilenceProofFromConfig(a.Config(), sessionID)
 }
 
-// externalSessionOwnerRefusalFromConfig is the config-level half of
-// externalSessionOwnerRefusal; see that function's doc for the fail-closed
+// holdExternalSilenceProofFromConfig is the config-level half of
+// holdExternalSilenceProof; see that function's doc for the fail-closed
 // rules. Split out (task #622, third review) so tests can reach the
 // nil-config / nil-Options / empty-DataDirectory guard directly — see the
 // wrapper's doc for why it cannot be driven through a real App.
-func externalSessionOwnerRefusalFromConfig(cfg *config.Config, sessionID string) (refuse bool, message string) {
+func holdExternalSilenceProofFromConfig(cfg *config.Config, sessionID string) (*session.SharedLockProbe, bool, string) {
 	if cfg == nil || cfg.Options == nil || cfg.Options.DataDirectory == "" {
-		return true, "cannot verify external session ownership (data directory unresolvable) — please retry"
+		return nil, true, "cannot verify external session ownership (data directory unresolvable) — please retry"
 	}
-	st := session.InspectSessionLock(cfg.Options.DataDirectory, sessionID, externalOwnerLiveThreshold)
-	if !st.Live {
-		return false, ""
+	probe, err := session.TryHoldSessionLockShared(cfg.Options.DataDirectory, sessionID)
+	if err == nil {
+		return probe, false, ""
 	}
-	if st.PID != 0 && st.PID == os.Getpid() {
-		// Provably ours: readable PID, this process, and (per the caller's
-		// reservation + idle poll) our own finished turn's leftover lock.
-		return false, ""
+	var busyErr *session.SessionLockBusyError
+	if errors.As(err, &busyErr) {
+		if busyErr.HolderPID != 0 {
+			return nil, true, fmt.Sprintf("session is owned by another process (PID %d) — wait for it to finish and retry", busyErr.HolderPID)
+		}
+		return nil, true, "session is owned by another process (holder identity unreadable) — wait for it to finish and retry"
 	}
-	if st.PID == 0 {
-		return true, "session may be owned by another process (live lock, holder PID unreadable) — wait for it to finish and retry"
-	}
-	return true, fmt.Sprintf("session is owned by another process (PID %d) — wait for it to finish and retry", st.PID)
+	return nil, true, "cannot verify external session ownership (lock probe failed: " + err.Error() + ") — please retry"
 }
 
 // saveAttachmentToDisk saves an attachment to <dataDir>/attachments/ with a
@@ -660,23 +653,36 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 		}
 	}()
 
-	// 1b. Task #622 (F-1): the reservation above proves no OTHER caller in
-	// THIS process can be writing to the session, but says nothing about a
-	// `crush run --session S` executing in a DIFFERENT process — its lock
-	// is only consulted later, inside runOwned. Without this check, the
-	// orphan-rescue branch in step 2 would happily force-delete a row that
-	// a live external owner is still streaming into. Fail closed, same as
-	// 6b2cd189 did for the in-process case: refuse the rerun with an
-	// actionable message. externalSessionOwnerRefusal's own doc spells out
-	// the three fail-closed rules (unknown-PID live lock, unresolvable
-	// data directory, nil store) and the one window deliberately left
-	// open: an owner acquiring the OS lock a moment AFTER the inspection.
-	if refuse, why := externalSessionOwnerRefusal(a, sessionID); refuse {
+	// 1b. Task #622 (F-1), redesigned in #631: the reservation above proves
+	// no OTHER caller in THIS process can be writing to the session, but
+	// says nothing about a `crush run --session S` executing in a DIFFERENT
+	// process. The old byte-heuristic inspection is replaced by a
+	// kernel-attested SHARED lock probe on the session's lock file,
+	// HELD from here through the tail delete and the target delete below:
+	// while the shared lock is held, no process — including this one — can
+	// acquire the exclusive lock, so no external writer can start mid-
+	// delete. It is released just before the step-6 handoff, because the
+	// replacement turn's own Run() takes the exclusive lock at its normal
+	// acquire point and a shared lock still held here would conflict with
+	// our own acquire. holdExternalSilenceProof's doc spells out the
+	// fail-closed rules (contention, unresolvable data directory, probe
+	// error).
+	probe, refuse, why := holdExternalSilenceProof(a, sessionID)
+	if refuse {
 		slog.Warn("ws: rerun: refusing: "+why,
 			"sessionID", sessionID, "messageID", p.MessageID)
 		c.reply(msg.ID, EventError, nil, why)
 		return
 	}
+	// probeHeld guards the bailout paths between here and the step-6
+	// handoff; probe.Release is nil-safe, so the no-lock-file case (probe
+	// == nil) defers cleanly too.
+	probeHeld := true
+	defer func() {
+		if probeHeld {
+			probe.Release()
+		}
+	}()
 
 	// 2. Delete every message AFTER the target, keep the target.
 	//
@@ -837,6 +843,20 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 	// transfers release responsibility: when it fires, the defer above is
 	// disarmed and runOwned's defer takes over. Any panic before onHandoff fires
 	// is still covered by the defer, which releases via ReleaseExclusive.
+
+	// Release the shared-ownership probe BEFORE the step-6 handoff: the
+	// replacement turn's Run() takes the EXCLUSIVE session lock at its
+	// normal acquire point (agent_run.go, runOwned), and a shared lock
+	// still held by this process would conflict with our own acquire and
+	// bounce the rerun we just set up. Everything destructive is done —
+	// the delete completed while provably owner-free — so releasing here
+	// reopens only the benign bounce window between this release and the
+	// acquire inside RunWithReservedOwnership (see holdExternalSilenceProof's
+	// doc: no data can be destroyed by an owner arriving after the commit
+	// point). Released before the rerunPreHandoffSeam below so the seam —
+	// which represents the handoff instant — observes no probe held.
+	probe.Release()
+	probeHeld = false
 
 	// Test-only seam (task #614 F-2): fires right before Broadcast, i.e. before
 	// RunWithReservedOwnership is called. Used to test that panics before the

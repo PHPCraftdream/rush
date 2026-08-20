@@ -15,6 +15,17 @@ func tryLockFile(f *os.File) error {
 	return syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
 }
 
+// tryLockFileShared takes a SHARED non-blocking advisory lock using
+// flock(2) — the probe half of TryHoldSessionLockShared. It conflicts
+// with any exclusive holder (LOCK_EX on another open file description,
+// including one in this same process) and succeeds when nobody holds
+// LOCK_EX, so winning it is kernel-attested proof no exclusive owner
+// exists right now. Contention surfaces as EWOULDBLOCK/EAGAIN, already
+// classified "busy" by isLockContentionError.
+func tryLockFileShared(f *os.File) error {
+	return syscall.Flock(int(f.Fd()), syscall.LOCK_SH|syscall.LOCK_NB)
+}
+
 // unlockFile releases the lock taken by tryLockFile.
 func unlockFile(f *os.File) error {
 	return syscall.Flock(int(f.Fd()), syscall.LOCK_UN)

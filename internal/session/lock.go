@@ -269,6 +269,99 @@ func TryAcquireSessionLockWithOptions(dataDir, sessionID string, opts ...LockOpt
 	return nil, busyErr
 }
 
+// SharedLockProbe is a SHARED, non-blocking OS lock held on a session's
+// lock file by a destructive consumer (web-server rerun / orphan-rescue)
+// for the duration of its history mutations. It exists because any
+// encoding of "held" vs "released" in disk BYTES has an irreducible race
+// — there is always an instant after a new holder wins tryLockFile and
+// before its first write completes where the disk still shows whatever
+// the previous release left, and symmetrically a marker whose removal is
+// release's last act survives taskkill /F. The only thing that retracts
+// atomically with BOTH process death AND lock acquisition is the kernel
+// lock itself, so this is how the destructive path asks the kernel
+// directly (task #631 redesign, following @fh's design review):
+// winning a SHARED lock is proof no exclusive holder exists at that
+// instant, and — because shared and exclusive range locks conflict — no
+// exclusive holder can APPEAR while the probe is held, on any platform.
+//
+// Deliberately invisible to display consumers (InspectSessionLock,
+// annotateExternalOwnership): no writes, no truncate, no sidecars, no
+// heartbeat, no Chtimes. A probe in flight may make the lock file
+// temporarily unreadable on Windows (mandatory range lock), which display
+// already tolerates as PID 0 — fail-open there, as designed.
+type SharedLockProbe struct {
+	f *os.File
+}
+
+// TryHoldSessionLockShared takes a non-blocking SHARED OS lock on
+// sessionID's lock file under <dataDir>/locks/. Success is kernel-
+// attested proof that no exclusive holder exists at this instant — and,
+// while the returned probe is held, that none can appear. Contention
+// (a live exclusive holder on any handle, in any process, including this
+// one) returns *SessionLockBusyError. Any other error is returned as-is;
+// destructive callers must treat "could not probe" as refuse, not allow.
+//
+// The file is opened O_CREATE: if no lock file exists yet, the probe
+// CREATES it and pins that inode with the shared lock, so an external
+// acquirer arriving during the hold opens the same inode and fails
+// against the probe — closing the "owner appears during the delete"
+// window that a stat-then-lock two-step would leave open. The empty file
+// this leaves behind after Release is inert (no holder, no sidecar;
+// acquire-side writePIDSidecar-first ordering keeps byte-heuristic
+// readers from misreading it as anything else).
+//
+// Release is nil-safe, matching SessionLock.Release's convention, so
+// callers can defer unconditionally.
+func TryHoldSessionLockShared(dataDir, sessionID string) (*SharedLockProbe, error) {
+	if dataDir == "" {
+		return nil, fmt.Errorf("TryHoldSessionLockShared: dataDir is empty")
+	}
+	if sessionID == "" {
+		return nil, fmt.Errorf("TryHoldSessionLockShared: sessionID is empty")
+	}
+	locksDir := filepath.Join(dataDir, "locks")
+	if err := os.MkdirAll(locksDir, 0o755); err != nil {
+		return nil, fmt.Errorf("TryHoldSessionLockShared: create locks dir: %w", err)
+	}
+	path := SessionLockPath(dataDir, sessionID)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, fmt.Errorf("TryHoldSessionLockShared: open lock file: %w", err)
+	}
+	if err := tryLockFileShared(f); err != nil {
+		holderPID := readLockHolderPID(path)
+		f.Close()
+		if isLockContentionError(err) {
+			return nil, &SessionLockBusyError{Path: path, HolderPID: holderPID}
+		}
+		// Not contention — permission, IO, filesystems where range locks
+		// don't work (some NFS/SMB). Surface as-is; callers fail closed.
+		return nil, fmt.Errorf("TryHoldSessionLockShared: lock file %s: %w", path, err)
+	}
+	return &SharedLockProbe{f: f}, nil
+}
+
+// Release drops the shared lock and closes the handle. Nil-safe and
+// idempotent-enough (a second call closes an already-closed file, which
+// returns an error that is deliberately ignored — callers use it once).
+func (p *SharedLockProbe) Release() error {
+	if p == nil {
+		return nil
+	}
+	_ = unlockFile(p.f)
+	return p.f.Close()
+}
+
+// acquireMidStampSeam is a test-only hook (task #631 follow-up): fires in
+// acquireSessionLockFileWithOptions after the OS lock is won and the .pid
+// sidecar is stamped, but while the primary lock file is still EMPTY (our
+// PID not yet written into it) — the exact on-disk state the fourth
+// ownership state (held, but byte-for-byte a "released leftover") used to
+// be observable in. Nil in every production path; receives the lock path so
+// a test can scope itself to its own acquire. See the ordering comment
+// on the writePIDSidecar call in acquireSessionLockFileWithOptions.
+var acquireMidStampSeam func(path string)
+
 // acquireSessionLockFileWithOptions is like acquireSessionLockFile but accepts
 // LockOption parameters for test configuration. It opens the lock file at
 // path and attempts to take the OS-level advisory lock on THAT SAME
@@ -314,11 +407,41 @@ func acquireSessionLockFileWithOptions(path string, opts []LockOption) (*Session
 
 	myPID := os.Getpid()
 	generation := fmt.Sprintf("%d-%d", myPID, time.Now().UnixNano())
+	// Task #631 follow-up: the .pid sidecar is stamped BEFORE the primary
+	// lock file is emptied. The OS lock is already held at this point, but
+	// byte-heuristic readers (display's InspectSessionLock consumers,
+	// `sessions why`/`sessions list`) see only on-disk state: with the old
+	// order (truncate, stamp, THEN sidecar) there was a window — several
+	// syscalls wide, including an f.Sync — where the primary was EMPTY and
+	// no sidecar existed, byte-for-byte the "released leftover" shape those
+	// readers classify as unowned. The DESTRUCTIVE path no longer depends
+	// on this (it now holds a shared kernel probe, TryHoldSessionLockShared,
+	// which conflicts with the exclusive lock already won here and so
+	// cannot be fooled by bytes at all) — this ordering is kept as
+	// defense-in-depth for the byte-heuristic consumers that remain.
+	// Writing the sidecar first means every state after tryLockFile
+	// succeeds that a byte-reader can observe carries either our sidecar
+	// (PID readable) or the previous holder's untouched content — never
+	// "empty and sidecar-less". Residual window, accepted: if this
+	// best-effort sidecar write FAILS (writePIDSidecar logs and swallows),
+	// the truncate below re-creates the empty-and-sidecarless shape until
+	// our PID lands in the primary a few syscalls later; on Windows the
+	// primary is independently unreadable-while-held, and the destructive
+	// path is unaffected on every platform.
+	writePIDSidecar(path, myPID, 0)
 	_ = f.Truncate(0)
 	_, _ = f.Seek(0, 0)
+	// acquireMidStampSeam fires mid-acquire — OS lock genuinely held,
+	// sidecar stamped, primary emptied but our PID not yet written into
+	// it — the worst observable point of the acquire sequence. Nil in
+	// every production path; task #631's window test proves here that the
+	// shared probe (not the bytes) is the source of truth: it must report
+	// busy at this instant.
+	if acquireMidStampSeam != nil {
+		acquireMidStampSeam(path)
+	}
 	_, _ = fmt.Fprintf(f, "%d\n", myPID)
 	_ = f.Sync()
-	writePIDSidecar(path, myPID, 0)
 	writeGenerationSidecar(path, generation)
 
 	// Touch the file now so mtime is fresh from the start. mtime is a

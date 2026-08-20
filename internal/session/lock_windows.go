@@ -31,6 +31,27 @@ func tryLockFile(f *os.File) error {
 	return err
 }
 
+// tryLockFileShared takes a SHARED non-blocking lock over the SAME
+// whole-file range tryLockFile uses — the probe half of
+// TryHoldSessionLockShared. Ranges must (and here do) overlap exactly, so
+// this conflicts with any exclusive holder on any handle — including one
+// in this same process — and succeeds only when no LOCKFILE_EXCLUSIVE_LOCK
+// exists on the file. Contention surfaces as ERROR_LOCK_VIOLATION, already
+// classified "busy" by isLockContentionError. Shared (not exclusive) so
+// any number of concurrent probes can coexist without blocking each other.
+func tryLockFileShared(f *os.File) error {
+	flags := uint32(windows.LOCKFILE_FAIL_IMMEDIATELY)
+	var overlapped windows.Overlapped
+	return windows.LockFileEx(
+		windows.Handle(f.Fd()),
+		flags,
+		0,          // reserved, must be 0
+		^uint32(0), // nNumberOfBytesToLockLow  — same range as tryLockFile
+		^uint32(0), // nNumberOfBytesToLockHigh
+		&overlapped,
+	)
+}
+
 // unlockFile releases the lock taken by tryLockFile.
 func unlockFile(f *os.File) error {
 	var overlapped windows.Overlapped

@@ -125,14 +125,15 @@ func handleLoadMessages(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 // handleRerunMessage uses for its orphan cleanup. Nil coordinator fails
 // closed: "no coordinator to prove idle" must not weaken the streaming guard.
 //
-// Task #622 (F-1) parity: in-process idle alone does not prove orphanhood —
-// a `crush run --session S` in a DIFFERENT process writing to the same row
-// is invisible to IsSessionBusy. The rescue therefore also refuses while a
-// live OS-level lock exists that is not provably this process's own
-// (externalSessionOwnerRefusal — including its fail-closed unknown-PID and
-// unresolvable-data-directory cases, see that doc), returning the original
-// Delete error instead of force-deleting a row the external owner may
-// still terminate cleanly.
+// Task #622 (F-1) parity, redesigned in #631: in-process idle alone does
+// not prove orphanhood — a `crush run --session S` in a DIFFERENT process
+// writing to the same row is invisible to IsSessionBusy. The rescue
+// therefore also holds the kernel-attested SHARED lock probe on the
+// session's OS lock file (holdExternalSilenceProof — including its
+// fail-closed unresolvable-data-directory and probe-error cases, see that
+// doc) across the ForceDelete below, returning the original Delete error
+// instead of force-deleting a row an external owner may still terminate
+// cleanly. The probe is released immediately after the single delete.
 func deleteMessageRescuingOrphan(ctx context.Context, a *appPkg.App, id string) error {
 	err := a.Messages.Delete(ctx, id)
 	if err == nil {
@@ -162,15 +163,20 @@ func deleteMessageRescuingOrphan(ctx context.Context, a *appPkg.App, id string) 
 		return err
 	}
 
-	// Task #622 (F-1): the session is idle in THIS process, but a live OS
-	// lock that is not provably ours means a writer we cannot see — the
-	// row may still receive its terminal Finish from there. Fail closed
-	// with the original Delete error rather than force-deleting it.
-	if refuse, why := externalSessionOwnerRefusal(a, m.SessionID); refuse {
+	// Task #622 (F-1)/#631: the session is idle in THIS process, but an
+	// exclusive OS lock holder — in any process, including one whose
+	// on-disk bytes still look unowned — means a writer we cannot see. The
+	// shared probe denies while any exclusive holder lives; fail closed
+	// with the original Delete error rather than force-deleting the row.
+	// Held across the ForceDelete below so no external writer can start
+	// mid-delete.
+	probe, refuse, why := holdExternalSilenceProof(a, m.SessionID)
+	if refuse {
 		slog.Warn("ws: delete_message: refusing orphan rescue: "+why,
 			"id", id, "session_id", m.SessionID)
 		return err
 	}
+	defer probe.Release() // nil-safe; released after the single delete below
 
 	// Session is idle and the message is still streaming: this is an orphan.
 	// Force-delete it to avoid corrupting the transcript with partial text.
