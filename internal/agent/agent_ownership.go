@@ -97,16 +97,17 @@ func (a *sessionAgent) tryReserveSession(call SessionAgentCall, reserveCancel co
 // the deletes) and bails out if it's non-nil, replying with an error and
 // releasing the reservation via its armed defer.
 //
-// When RunWithReservedOwnership takes over, it invokes this cancel (to
-// release the now-superseded placeholder context, purely to avoid a
-// context.WithCancel leak — go vet's lostcancel-style leak, not a
-// functional signal) and immediately rebinds the mailbox (via
-// mailbox.rebindDispatcher, same epoch) to a fresh CancelFunc scoped to the
-// turn loop's own runCtx, which IS wired to something meaningful (the turn's
-// actual provider calls) — see rebindDispatcher's own doc for why the swap
-// is necessary and why it does not reopen any gap (rebindDispatcher never
-// changes mb.epoch/state, only which CancelFunc is live for the
-// still-continuous era).
+// When RunWithReservedOwnership takes over, it rebinds the mailbox FIRST
+// (via mailbox.rebindDispatcher, same epoch) to a fresh CancelFunc scoped
+// to the turn loop's own runCtx, which IS wired to something meaningful
+// (the turn's actual provider calls) — and only AFTER that rebind succeeds
+// does it invoke this cancel, purely to release the now-superseded
+// placeholder context (a context.WithCancel leak — go vet's lostcancel-
+// style leak, not a functional signal). The rebind must win the epoch
+// check before anything of the old era is torn down — see
+// rebindDispatcher's own doc for why the swap is necessary and why it does
+// not reopen any gap (rebindDispatcher never changes mb.epoch/state, only
+// which CancelFunc is live for the still-continuous era).
 func (a *sessionAgent) ReserveExclusive(ctx context.Context, sessionID string) (holdCtx context.Context, epoch uint64, cancel context.CancelFunc, ok bool) {
 	holdCtx, holdCancel := context.WithCancel(ctx)
 	mb := a.getMailbox(sessionID)
@@ -193,12 +194,12 @@ func (a *sessionAgent) releaseSessionReservation(sessionID string, epoch uint64)
 // every hasNext==true return, which #296/P1-C's first draft violated by
 // adding a hand-back that returned hasNext==true AFTER lk had already been
 // released):
-//  1. mb.submitted (checked first) or mb.replacement is non-empty at the
+//  1. mb.replacement (checked first — matching drainAfterCancel's priority,
+//     see mailbox_ownership.go) or mb.submitted is non-empty at the
 //     time of the call, BEFORE any release attempt: pop and return it;
 //     state stays mbOwned; lk is NOT touched (still held for the reclaimed
 //     turn). The caller's loop runs it as the next turn under the SAME lk.
-//  2. Both empty: check mb.submitted (already checked in case 1). If
-//     still empty, this is the end-of-turn handoff — proceed to case 3.
+//  2. Both empty: this is the end-of-turn handoff — proceed to case 3.
 //  3. Both mb.submitted and mb.replacement are empty: release lk (if non-nil) — now OUTSIDE mb.mu (#296/
 //     P1-C: mb.state == mbReleasing stands in for the mutex so a hung
 //     filesystem cannot stall the control plane) — then flip mb.state to
@@ -351,8 +352,11 @@ func (a *sessionAgent) restartOrphaned(calls []SessionAgentCall) error {
 // restartOrphanedWithRetry durably enqueues calls for recovery by the run queue pump
 // (task #340, ROUND 3 migration). This replaces the previous in-memory retry approach.
 //
-// Each call is enqueued to the durable session_run_queue table with an idempotency key
-// derived from the session ID and a timestamp. The pump will retry the call until it
+// Each call is enqueued to the durable session_run_queue table with an
+// idempotency key derived from the session ID and the call's LogicalCallID
+// (stable per logical request); a timestamp-based key is used only as a
+// warned-about fallback when LogicalCallID is empty — see P2-1 below. The
+// pump will retry the call until it
 // succeeds or encounters a terminal failure (e.g., ErrCallAlreadyAttempted).
 //
 // P0-2 fix: made this function SYNCHRONOUS relative to its caller. It now waits for
@@ -369,11 +373,13 @@ func (a *sessionAgent) restartOrphaned(calls []SessionAgentCall) error {
 // enqueue operation. The pump's 3-second tick interval handles all retry timing,
 // and its lease TTL (30 seconds) handles crash recovery.
 //
-// Error handling: If any call fails to enqueue, we attempt to fall back to in-memory
-// queue with a warning, but this is NOT guaranteed to execute (if the session is idle,
-// there may be no runner to drain it). The function returns an error if any enqueue
-// fails, allowing the caller to log this as a critical failure. For marshal failures,
-// the call is truly lost — there is no recovery path possible.
+// Error handling: if any enqueue fails, the call is written to the durable
+// orphan outbox as a last-resort record the pump can recover (see the P0-3
+// note at the call site — deliberately NOT an in-memory queue, which an
+// idle session with no runner would never drain). The function returns an
+// error if any enqueue fails, allowing the caller to log this as a critical
+// failure. For marshal failures, the call is truly lost — there is no
+// recovery path possible.
 func (a *sessionAgent) restartOrphanedWithRetry(calls []SessionAgentCall) error {
 	if len(calls) == 0 {
 		return nil

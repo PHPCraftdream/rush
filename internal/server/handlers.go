@@ -9,11 +9,12 @@ import (
 )
 
 // handleIncoming dispatches an incoming WS message from a client.
-// Most operations are launched in goroutines via c.dispatch (hub.go), which
+// Most operations are launched via c.dispatch (hub.go), which
 // recovers panics inside the handler and bounds how many handlers may run
 // concurrently for this connection — see maxConcurrentHandlersPerConn.
-// handleIncoming itself never blocks except for the brief semaphore acquire
-// inside dispatch once that cap is hit.
+// handleIncoming itself never blocks: dispatch enqueues into the
+// connection's bounded work queue non-blockingly and, when that queue is
+// also full, replies with an overload error instead of waiting.
 //
 // Control-plane commands (CmdCancelAgent, CmdInterruptAndSend) are the
 // exception: they go through c.dispatchControl instead, which uses a

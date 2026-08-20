@@ -26,9 +26,13 @@ const (
 	// otherwise be able to exhaust the process's goroutine pool and DB
 	// connections. 12 is generous headroom above realistic UI concurrency (a
 	// handful of tabs each issuing a couple of in-flight requests) while still
-	// capping worst-case blast radius per connection; acquiring the semaphore
-	// applies natural backpressure to readPump once the cap is hit, so excess
-	// frames simply wait to be dispatched instead of spawning more goroutines.
+	// capping worst-case blast radius per connection. The cap is enforced by
+	// the fixed worker pool (see workerPoolSize/startWorkers): once every
+	// worker is busy, further work frames WAIT in the bounded work queue
+	// (workQueueDepth) instead of spawning more goroutines, and once that
+	// queue is also full, dispatch rejects the frame with an overload error
+	// rather than blocking readPump — see workQueueDepth and dispatch's own
+	// docs for why the reader must never be the backpressure point (#612).
 	maxConcurrentHandlersPerConn = 12
 
 	// maxConcurrentControlHandlersPerConn bounds control-plane dispatches (see

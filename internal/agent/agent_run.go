@@ -94,10 +94,11 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 //
 // reserveCancel is the CancelFunc ReserveExclusive returned — it is tied to
 // a short-lived placeholder context that has nothing to do with this turn
-// loop's own lifetime, so it is invoked here (to release that placeholder
-// context, now unreferenced) and then REPLACED, via mailbox.rebindDispatcher,
+// loop's own lifetime, so it is REPLACED FIRST, via mailbox.rebindDispatcher,
 // by a fresh runCancel derived from ctx — the actual context this turn loop
-// (and every provider call inside it) will run under. rebindDispatcher keeps
+// (and every provider call inside it) will run under — and only after that
+// rebind succeeds is it invoked, to release the now-superseded placeholder
+// context. rebindDispatcher keeps
 // mb.epoch/state/current.id untouched, so Cancel(sessionID)/CancelAll landing
 // either before or after this swap still target a live, correct CancelFunc
 // for the whole hold-to-turn transition; only the specific func changes, not

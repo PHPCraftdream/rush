@@ -18,20 +18,20 @@ import (
 // editing handlers below (update content, update thinking, delete part,
 // update part).
 //
-// It proves ONE thing: at the moment this function returns true, the row
-// held the parts it just wrote. It does NOT prove the edit is durable. The
-// agent turn that owns a mid-stream message keeps its own in-memory
-// currentAssistant and, independently of anything this handler does, will
-// write that in-memory copy back to the same row -- either from the next
-// auto-checkpoint tick (conditional, fenced on checkpoint_generation) or,
-// unconditionally and unfenced, from the terminal write at the end of the
-// turn (internal/agent/agent_turn.go OnStepFinish -> a.messages.Update with
-// a non-Partial Finish, which takes Update's "terminal update always wins"
-// branch -- see internal/message/message.go's Update). Neither of those
-// writers has any way to know an edit landed in between, so an edit that
-// lands while the message is still mid-stream WILL be overwritten by
-// stale in-memory content, deterministically, at the very latest by that
-// terminal write. A client-side read-back cannot detect this because it
+// Mid-stream edits are refused outright (see below), because they cannot be
+// made durable from this layer: the agent turn that owns a mid-stream
+// message keeps its own in-memory currentAssistant and, independently of
+// anything this handler does, will write that in-memory copy back to the
+// same row -- either from the next auto-checkpoint tick (conditional,
+// fenced on checkpoint_generation) or, unconditionally and unfenced, from
+// the terminal write at the end of the turn (internal/agent/agent_turn.go
+// OnStepFinish -> a.messages.Update with a non-Partial Finish, which takes
+// Update's "terminal update always wins" branch -- see
+// internal/message/message.go's Update). Neither of those writers has any
+// way to know an edit landed in between, so an edit that landed while the
+// message was still mid-stream WOULD be overwritten by stale in-memory
+// content, deterministically, at the very latest by that terminal write --
+// and a same-instant client-side read-back could not detect it, because it
 // runs before the overwrite happens.
 //
 // So instead of trying to make a mid-stream edit durable (that needs a real
@@ -55,8 +55,8 @@ func updateMessageAndVerify(ctx context.Context, a *appPkg.App, c *Client, msgID
 	// the caller (Get) before it mutated Parts for the edit, so it already
 	// reflects the row's state at that moment, but re-reading here keeps this
 	// check independent of caller discipline and closes the same race the
-	// verification step below closes -- a concurrent terminal finish landing
-	// between the caller's Get and this call.
+	// mid-stream gate below exists to close -- a concurrent terminal finish
+	// landing between the caller's Get and this call.
 	current, err := a.Messages.Get(ctx, m.ID)
 	if err != nil {
 		c.reply(msgID, EventError, nil, err.Error())
