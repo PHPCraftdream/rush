@@ -79,8 +79,17 @@ func TestHandleDeleteMessage_OrphanRescue_BusySession_RefusesDelete(t *testing.T
 //   - Expected failure: EventError response with "streaming" in the error,
 //     and the row still present in the database.
 //   - After restoring, the test passes: EventResponse ok, row gone.
+//
+// Task #622 note: this test now uses newAttachmentsTestApp (full app with
+// a config store) rather than newMessageEditTestApp: the orphan rescue
+// fails closed when external ownership cannot be verified (nil store = no
+// data directory), so a minimal app would be refused by design.
 func TestHandleDeleteMessage_OrphanRescue_IdleSession_DeletesOrphan(t *testing.T) {
-	a, sessionID := newMessageEditTestApp(t)
+	// Cannot use t.Parallel() because newAttachmentsTestApp calls t.Setenv.
+	a := newAttachmentsTestApp(t, t.TempDir(), t.TempDir())
+	sess, err := a.Sessions.Create(t.Context(), "orphan-rescue-idle")
+	require.NoError(t, err)
+	sessionID := sess.ID
 	ctx := context.Background()
 
 	// Create an unfinished assistant message (orphan candidate).
@@ -123,7 +132,12 @@ func TestHandleDeleteMessage_OrphanRescue_IdleSession_DeletesOrphan(t *testing.T
 //     (the orphan is reported as failed), and the orphan row still exists.
 //   - After restoring, the test passes: EventResponse ok, both rows gone.
 func TestHandleDeleteMessages_OrphanRescue_IdleSession_DeletesBoth(t *testing.T) {
-	a, sessionID := newMessageEditTestApp(t)
+	// Cannot use t.Parallel() because newAttachmentsTestApp calls t.Setenv
+	// (task #622: full app required — see the single-delete test's note).
+	a := newAttachmentsTestApp(t, t.TempDir(), t.TempDir())
+	sess, err := a.Sessions.Create(t.Context(), "orphan-rescue-bulk")
+	require.NoError(t, err)
+	sessionID := sess.ID
 	ctx := context.Background()
 
 	// Create a finished assistant message.

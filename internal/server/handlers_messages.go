@@ -124,6 +124,15 @@ func handleLoadMessages(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 // direction: agent → message). IsSessionBusy is the same discriminator
 // handleRerunMessage uses for its orphan cleanup. Nil coordinator fails
 // closed: "no coordinator to prove idle" must not weaken the streaming guard.
+//
+// Task #622 (F-1) parity: in-process idle alone does not prove orphanhood —
+// a `crush run --session S` in a DIFFERENT process writing to the same row
+// is invisible to IsSessionBusy. The rescue therefore also refuses while a
+// live OS-level lock exists that is not provably this process's own
+// (externalSessionOwnerRefusal — including its fail-closed unknown-PID and
+// unresolvable-data-directory cases, see that doc), returning the original
+// Delete error instead of force-deleting a row the external owner may
+// still terminate cleanly.
 func deleteMessageRescuingOrphan(ctx context.Context, a *appPkg.App, id string) error {
 	err := a.Messages.Delete(ctx, id)
 	if err == nil {
@@ -150,6 +159,16 @@ func deleteMessageRescuingOrphan(ctx context.Context, a *appPkg.App, id string) 
 
 	if a.AgentCoordinator.IsSessionBusy(m.SessionID) {
 		// Session is still busy — not an orphan, fail with original error.
+		return err
+	}
+
+	// Task #622 (F-1): the session is idle in THIS process, but a live OS
+	// lock that is not provably ours means a writer we cannot see — the
+	// row may still receive its terminal Finish from there. Fail closed
+	// with the original Delete error rather than force-deleting it.
+	if refuse, why := externalSessionOwnerRefusal(a, m.SessionID); refuse {
+		slog.Warn("ws: delete_message: refusing orphan rescue: "+why,
+			"id", id, "session_id", m.SessionID)
 		return err
 	}
 

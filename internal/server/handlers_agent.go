@@ -20,6 +20,7 @@ import (
 	appPkg "github.com/charmbracelet/crush/internal/app"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/message"
+	"github.com/charmbracelet/crush/internal/session"
 	"github.com/google/uuid"
 )
 
@@ -32,6 +33,98 @@ var rerunPostIdlePollSeam func()
 // direction): see its call site in handleRerunMessage for exactly which
 // window it fires in. nil in every production path.
 var rerunHoldingReservationSeam func()
+
+// externalSessionOwnerRefusal decides whether a history-destructive handler
+// (handleRerunMessage's tail delete, deleteMessageRescuingOrphan's
+// force-delete) may proceed for sessionID, and returns refuse=false only
+// when no live OS-level session lock exists — or the only live one is
+// provably this process's own. Any other outcome returns refuse=true with
+// an operator-facing message. Task #622 (F-1 of the 2026-08-20 ninth
+// review): the coordinator's mailbox can only prove in-process ownership;
+// a `crush run --session S` in a DIFFERENT process is invisible to
+// ReserveExclusive/IsSessionBusy, so any handler about to force-delete a
+// still-streaming row must ALSO prove the absence of an OS-level owner
+// first.
+//
+// This is deliberately NOT a mirror of annotateExternalOwnership, even
+// though both call InspectSessionLock with the same threshold: that is a
+// DISPLAY predicate — when it cannot identify an owner it leaves the
+// session unflagged and the worst outcome is a UI showing full controls.
+// This is a DESTRUCTION predicate — when it cannot identify an owner, the
+// worst outcome is force-deleting a row a live external writer is still
+// streaming into. Identical evidence, inverted safe default. The two
+// therefore CAN disagree: a session with a live lock but unreadable PID
+// shows as unowned in the session list yet refuses rerun/delete here.
+//
+// Three fail-closed rules follow from that inversion:
+//
+//  1. Live lock + PID 0 means "owner alive, identity unreadable", not
+//     "nobody". On Windows (the dev platform) the lock file itself is
+//     unreadable for the holder's whole lifetime (mandatory LockFileEx,
+//     see readLockFile's doc in internal/session/lock.go), and the .pid
+//     sidecar that compensates is written best-effort — writePIDSidecar
+//     logs and swallows failures. The sidecar's "PID shown as 0 to a
+//     concurrent reader" promise was scoped to diagnosability; wired into
+//     a destructive decision, PID 0 must refuse. It could in principle be
+//     OUR PID rendered unreadable, but the caller arrives here holding the
+//     exclusive reservation with the session polled idle, so no in-process
+//     turn is running and a live fresh-heartbeat lock is not expected to
+//     be ours — and if it somehow is, the cost is one spurious "retry",
+//     not lost data.
+//  2. A data directory that cannot be resolved (nil store/config/options
+//     or empty DataDirectory) refuses outright. attachmentsDataDir paper
+//     over this edge with a workingDir fallback because a wrong guess only
+//     misplaces files; here a wrong guess inspects the wrong locks/
+//     directory, i.e. fails open. "Could not look" must not read as
+//     "looked and found nothing".
+//  3. The nil-store case is included in rule 2 rather than special-cased:
+//     if it is unreachable in production the fail-closed branch costs
+//     nothing, and if it is reachable it is exactly rule 2.
+//
+// Residual window, deliberately left open and distinct from the rules
+// above: this is a check, not a claim — a process that acquires the OS
+// lock a moment AFTER this inspection is still invisible until it surfaces
+// some other way. Fully closing that would require the handler itself to
+// hold the OS lock across the delete, which is agent-layer surgery
+// outside this file's reach.
+//
+// Split into the App wrapper below plus externalSessionOwnerRefusalFromConfig
+// so every branch is independently testable: an *appPkg.App with a non-nil
+// store but empty DataDirectory cannot be built through app.New from this
+// package (a config-Init'd store always resolves a directory via
+// setDefaults, and a hand-built &config.Config{Options: &config.Options{}}
+// panics inside app.New before returning), so the config-level guard is
+// pinned at the FromConfig seam instead.
+func externalSessionOwnerRefusal(a *appPkg.App, sessionID string) (refuse bool, message string) {
+	if a == nil || a.Store() == nil {
+		return true, "cannot verify external session ownership (no config store) — please retry"
+	}
+	return externalSessionOwnerRefusalFromConfig(a.Config(), sessionID)
+}
+
+// externalSessionOwnerRefusalFromConfig is the config-level half of
+// externalSessionOwnerRefusal; see that function's doc for the fail-closed
+// rules. Split out (task #622, third review) so tests can reach the
+// nil-config / nil-Options / empty-DataDirectory guard directly — see the
+// wrapper's doc for why it cannot be driven through a real App.
+func externalSessionOwnerRefusalFromConfig(cfg *config.Config, sessionID string) (refuse bool, message string) {
+	if cfg == nil || cfg.Options == nil || cfg.Options.DataDirectory == "" {
+		return true, "cannot verify external session ownership (data directory unresolvable) — please retry"
+	}
+	st := session.InspectSessionLock(cfg.Options.DataDirectory, sessionID, externalOwnerLiveThreshold)
+	if !st.Live {
+		return false, ""
+	}
+	if st.PID != 0 && st.PID == os.Getpid() {
+		// Provably ours: readable PID, this process, and (per the caller's
+		// reservation + idle poll) our own finished turn's leftover lock.
+		return false, ""
+	}
+	if st.PID == 0 {
+		return true, "session may be owned by another process (live lock, holder PID unreadable) — wait for it to finish and retry"
+	}
+	return true, fmt.Sprintf("session is owned by another process (PID %d) — wait for it to finish and retry", st.PID)
+}
 
 // saveAttachmentToDisk saves an attachment to <dataDir>/attachments/ with a
 // timestamped filename and returns the absolute path. dataDir must already be
@@ -544,6 +637,24 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 		}
 	}()
 
+	// 1b. Task #622 (F-1): the reservation above proves no OTHER caller in
+	// THIS process can be writing to the session, but says nothing about a
+	// `crush run --session S` executing in a DIFFERENT process — its lock
+	// is only consulted later, inside runOwned. Without this check, the
+	// orphan-rescue branch in step 2 would happily force-delete a row that
+	// a live external owner is still streaming into. Fail closed, same as
+	// 6b2cd189 did for the in-process case: refuse the rerun with an
+	// actionable message. externalSessionOwnerRefusal's own doc spells out
+	// the three fail-closed rules (unknown-PID live lock, unresolvable
+	// data directory, nil store) and the one window deliberately left
+	// open: an owner acquiring the OS lock a moment AFTER the inspection.
+	if refuse, why := externalSessionOwnerRefusal(a, sessionID); refuse {
+		slog.Warn("ws: rerun: refusing: "+why,
+			"sessionID", sessionID, "messageID", p.MessageID)
+		c.reply(msg.ID, EventError, nil, why)
+		return
+	}
+
 	// 2. Delete every message AFTER the target, keep the target.
 	//
 	// task #615: created_at is stored in whole SECONDS (see
@@ -593,11 +704,15 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 	for _, m := range allMsgs[targetIdx+1:] {
 		if delErr := a.Messages.Delete(ctx, m.ID); delErr != nil {
 			if errors.Is(delErr, message.ErrMessageStillStreaming) {
-				// The message is still streaming, but the session has been
-				// cancelled and waited for idle, so this is an orphaned row
-				// from a crashed/killed turn that will never receive a
-				// terminal Finish. Force-delete it to avoid corrupting the
-				// transcript by including partial text in LLM context forever.
+				// The message is still streaming, but THREE separate proofs
+				// back the orphan claim: the session was cancelled and polled
+				// to idle (step 1), this handler holds the exclusive
+				// reservation (step 1a), and no OTHER process holds the
+				// session's OS lock (step 1b). Only under all three can this
+				// row truly never receive a terminal Finish — in-process idle
+				// alone would not prove that across processes. Force-delete
+				// it to avoid corrupting the transcript by including partial
+				// text in LLM context forever.
 				slog.Info("ws: rerun: orphaned streaming message, force-deleting",
 					"id", m.ID, "err", delErr)
 				if forceErr := a.Messages.ForceDelete(ctx, m.ID); forceErr != nil {
