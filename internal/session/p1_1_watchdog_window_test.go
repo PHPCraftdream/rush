@@ -41,6 +41,47 @@ type blockingRenewalsService struct {
 	renewalErrorCount int          // Number of consecutive renewals to return errors
 	renewalsAttempted atomic.Int64 // Counter for renewal attempts
 	firstRenewalOK    bool         // Whether the first renewal should succeed (sets lastSuccessfulRenewal)
+
+	// firstRenewalDone is closed at the START of the first renewal call —
+	// specifically, at the same point in wall-clock time production code
+	// samples time.Now() for trueNewExpiresAt (run_queue_entry_exec.go:
+	// `trueNewExpiresAt := time.Now().Add(p.leaseTTL())`, computed BEFORE
+	// the DB call is issued) — NOT when the call returns.
+	//
+	// This distinction matters because of what gets stored, not just when
+	// the store happens. watchdogDeadlineAtomic.Store(trueNewExpiresAt...)
+	// executes after the DB call returns, but the VALUE it stores was
+	// captured before the call. The watchdog fires at
+	// trueNewExpiresAt + TTL - margin, i.e. anchored to the PRE-call
+	// instant. A barrier that closes on RETURN measures
+	// fireTime - postCallTime = TTL - margin - (DB call duration), which
+	// is short by exactly the DB round-trip time — the same class of bug
+	// the production comment two screens up warns against ("NOT to
+	// time.Now() + TTL measured after the call returned ... a renewal
+	// that took D to complete would make this atomic believe the lease is
+	// D newer than it actually is"). An earlier version of this test
+	// signaled on return and reproduced exactly that skew, biasing
+	// measured elapsed short — the same "canceled too early" direction
+	// task #609 was filed to fix, just relocated from a polling artifact
+	// into the barrier itself.
+	//
+	// Signaling at call ENTRY (before forwarding to the real service)
+	// keeps the test's startTime and the production code's own
+	// time.Now() sample for trueNewExpiresAt within scheduler-jitter
+	// distance of each other, with no DB-call duration or poll-interval
+	// gap between them.
+	//
+	// task #609 (original polling bug): the previous version of this test
+	// polled renewalsAttempted (also incremented at call entry) via
+	// require.Eventually/20ms and captured startTime the moment its own
+	// poll happened to observe the counter >= 1 — not a happens-before
+	// edge, so scheduler delays under contention could push the observed
+	// startTime arbitrarily later than the true anchor, also biasing
+	// elapsed short. A closed channel removes that poll-interval slop;
+	// signaling pre-call (this version) additionally removes the
+	// DB-call-duration skew a naive post-call channel would still have.
+	firstRenewalDone chan struct{}
+	closeOnce        sync.Once
 }
 
 // RenewRunQueueLease returns errors for the first N calls (or all after first), then succeeds.
@@ -53,7 +94,17 @@ func (s *blockingRenewalsService) RenewRunQueueLease(ctx context.Context, id, pu
 	attemptNum := s.renewalsAttempted.Add(1)
 
 	if firstRenewalOK && attemptNum == 1 {
-		// First renewal: allow it to succeed (this sets lastSuccessfulRenewal)
+		// First renewal: allow it to succeed (this sets lastSuccessfulRenewal).
+		// Signal firstRenewalDone BEFORE forwarding to the real service —
+		// this is the same instant (modulo scheduler jitter) the
+		// production renewal goroutine samples time.Now() for
+		// trueNewExpiresAt, the value the watchdog's firing decision is
+		// actually anchored to. See firstRenewalDone's doc for why
+		// signaling on return (post-DB-call) would reintroduce a
+		// DB-duration-sized skew in the same "too early" direction.
+		if s.firstRenewalDone != nil {
+			s.closeOnce.Do(func() { close(s.firstRenewalDone) })
+		}
 		return s.Service.RenewRunQueueLease(ctx, id, pumpInstanceID, newExpiresAt)
 	}
 
@@ -109,6 +160,7 @@ func TestP1_1_WatchdogCancelsAtTTLMinusMargin(t *testing.T) {
 		Service:           svc,
 		renewalErrorCount: 100,
 		firstRenewalOK:    true,
+		firstRenewalDone:  make(chan struct{}),
 	}
 
 	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
@@ -138,10 +190,20 @@ func TestP1_1_WatchdogCancelsAtTTLMinusMargin(t *testing.T) {
 		return coord.entryCount.Load() > 0
 	}, 5*time.Second, 20*time.Millisecond)
 
-	// Wait for the first renewal to succeed, then start measuring from here
-	require.Eventually(t, func() bool {
-		return blockingSvc.renewalsAttempted.Load() >= 1
-	}, 5*time.Second, 20*time.Millisecond)
+	// Wait for the first renewal call to START (not return) — a channel
+	// barrier closed at the same instant the production renewal goroutine
+	// samples time.Now() for trueNewExpiresAt, which is what the
+	// watchdog's firing decision is actually anchored to. See
+	// firstRenewalDone's doc for why signaling on return instead would
+	// silently subtract the DB call's own duration from the measurement.
+	// startTime is captured immediately after the channel closes, with no
+	// polling interval or DB round-trip able to push it later than the
+	// true anchor point.
+	select {
+	case <-blockingSvc.firstRenewalDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first renewal did not start within 5s")
+	}
 	startTime := time.Now()
 
 	// Wait for the coordinator to observe context cancellation
