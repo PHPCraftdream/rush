@@ -2193,3 +2193,77 @@ a filesystem artifact); the session-creation UNIQUE race (`#605`); and two
 kill tests that fail on Linux at any commit because their helper holder is
 never reaped and lingers as a zombie (`#606`) — named explicitly in the new
 CI step's exclusion list so a green run cannot be mistaken for coverage.
+
+### 2026-08-20 — the sixth review, and everything it found
+
+`f8ffb68c` … `929f3bb8`. The sixth independent review ran against the state
+the previous entry describes and returned NO-GO, because there was a sixth
+form of the drain defect. There is now no seventh: all eight return sites
+were enumerated against "one row committed, context dead, work remaining"
+and the table is in `docs/design/session-lifecycle.md`.
+
+- `f8ffb68c` — **every ctx-death exit goes through one verdict.** Two exits
+  at the top of `DrainSessionNow`'s loop computed a verdict without
+  recording why the loop stopped, while three siblings did — so a call that
+  committed one row and then lost its context returned `(DrainComplete,
+  nil)`, the one pairing that authorises exit 0, with work still pending.
+  Reachable whenever `--timeout` fires during an interrupt-driven drain.
+  Full unification of all eight sites was rejected with the reason written
+  down: two already record a *more specific* cause, and since the ledger
+  reports the most recent failure, adding `ctx.Err()` there would mask the
+  better diagnosis behind the worse one.
+- `b7d50642` — **the lease watchdog fired on the DB's rounded deadline.**
+  `lease_expires_at` is a whole-seconds column, so a renewal rounds up;
+  rounding down could make a short-TTL lease look already expired. The
+  watchdog reused that rounded value to decide when to fire, quietly handing
+  the executor up to a full extra second out of its own safety margin —
+  measured at 97–930ms per renewal, up to 37% of the test's 2.5s margin.
+  It now tracks the true pre-rounding value. Scheduling and the 10ms poll
+  ticker were both measured and cleared first; the ticker contributed 1–9ms.
+- `f4d19ca8` — **a lost session-creation race reported a raw SQLite
+  constraint error.** `resolveSession` does get-or-create with no lock at
+  all; the OS session lock, which is what makes a contended *existing*
+  session say "busy", is acquired later. So the first creation of a
+  never-seen id had no admission gate and SQLite's unique index was the only
+  thing enforcing exclusivity. 14 of 120 real concurrent invocations leaked
+  `UNIQUE constraint failed: sessions.id`; now 0 of 120, every loser guided.
+  The match requires both a constraint marker and `sessions.id` — swallowing
+  a category was a defect shipped earlier in this same series, and a test
+  asserts a `messages.id` violation still surfaces raw.
+- `75c5ed52` — **the holder reap is opt-in, and pre-push finally mirrors
+  CI.** Two kill tests failed on Linux at every commit: `IsProcessAlive` is
+  `kill(pid, 0)`, which reports a zombie as alive, and the helper never
+  reaped concurrently with the kill. The first fix made reaping
+  unconditional and broke the opposite requirement —
+  `TestProbeThenKillHolder_CapturesVictimGenerationWhileHolderAlive`
+  *deliberately* lives in the zombie window, because that is the interval a
+  second process uses to steal the lock, which is what proves #594's
+  ordering. The suite went from 20 seconds to a ten-minute hang: in CI a
+  stuck job, not a red test. Neither half was visible alone — the first fix
+  was verified against its own two tests plus `-short` on Windows, where the
+  file is excluded by a build tag. All 14 call sites across 9 files were
+  then read individually: two need reaping, two need the window, ten are
+  indifferent.
+- `929f3bb8` — the watchdog test's own measurement was anchored on the
+  renewal call's *return*, while the deadline is sampled *before* it, so
+  elapsed came out short by the DB round-trip. Anchored at entry now:
+  30 samples under 2- and 3-way contention land in 7.5059–7.5077s, a 1.87ms
+  spread, always slightly above theoretical rather than below.
+
+**Two lessons from this round, both about verification rather than code.**
+
+The zombie regression appeared only when two independently-verified diffs
+were combined. Each agent's scope was correct and each ran its own tests;
+the interference lived in a helper they shared. Nothing but running the
+full suite after integration would have found it.
+
+And three fixes had to be returned because the *justification* was wrong
+while the change was right: a barrier placed at the wrong instant, a
+cancellation recorded unconditionally, and — earlier in the day — a
+fabricated `fsync(2)` citation. Reviewing the diff is not enough; the
+argument has to be checked too, because the next person will inherit the
+argument and extend it.
+
+Verification at `929f3bb8`: `go test ./...` clean on Windows; `internal/
+session`, `internal/app`, `internal/cmd` clean on real Linux without
+`-short`; linux and darwin cross-builds clean; `gofmt` clean.
