@@ -233,11 +233,36 @@ func TestHub_StickyEventKeepsOnlyTheLatestPerType(t *testing.T) {
 	require.Equal(t, "1.2.0", wire.Latest, "the retained entry must be the latest send, not the first")
 }
 
+// broadcastBlocking is Broadcast minus the drop-on-full admission: it sends
+// the marshalled envelope on h.broadcast with a BLOCKING send, so the event
+// is guaranteed to reach Hub.Run's broadcast case (Run drains the channel,
+// so the send always completes). Tests that assert on what the replay ring
+// retained must use this, not Broadcast: Broadcast's select/default drops
+// frames once the 1024-slot channel fills, and under parallel-test load Run
+// can fall behind enough that the producer overruns it. #621: the loop below
+// needs >= maxBufferSize noise events to actually reach the ring for
+// "ordinary" to be evicted; Broadcast's admission dropped 52 of them on a
+// loaded machine, leaving "ordinary" alive in the ring and failing the test
+// on exactly the frames it was asserting about.
+func broadcastBlocking(t *testing.T, h *Hub, msgType string, payload any) {
+	t.Helper()
+	raw, err := json.Marshal(payload)
+	require.NoError(t, err)
+	env, err := json.Marshal(WSMessage{Type: msgType, Payload: raw})
+	require.NoError(t, err)
+	h.broadcast <- env
+}
+
 // TestHub_NonStickyEventIsNotReplayedToLateClients is the control: ordinary
 // broadcasts must NOT become sticky, or every new client would be handed
 // arbitrary stale per-turn traffic. Uses newClient() (real production
 // capacity) for consistency with the other tests in this file, though the
 // assertion here doesn't depend on the buffer being large or small.
+//
+// The broadcasts below go through broadcastBlocking, not Broadcast, so that
+// every one of the maxBufferSize+50 noise events provably reaches the ring:
+// the assertion is about ring eviction, not about the (lossy, by design)
+// broadcast admission path.
 func TestHub_NonStickyEventIsNotReplayedToLateClients(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -246,9 +271,9 @@ func TestHub_NonStickyEventIsNotReplayedToLateClients(t *testing.T) {
 	h := newHub()
 	go h.Run(ctx)
 
-	h.Broadcast("ordinary", map[string]string{"k": "v"})
+	broadcastBlocking(t, h, "ordinary", map[string]string{"k": "v"})
 	for i := 0; i < maxBufferSize+50; i++ {
-		h.Broadcast("noise", map[string]int{"i": i})
+		broadcastBlocking(t, h, "noise", map[string]int{"i": i})
 	}
 	waitHubDrained(t, h)
 
