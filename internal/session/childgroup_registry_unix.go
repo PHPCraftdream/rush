@@ -47,14 +47,18 @@
 //     internal/session/lock.go's writeGenerationSidecar and
 //     ReadLockGeneration) captured at registration time.
 //     KillRegisteredChildGroups refuses to signal anything unless the
-//     CURRENT on-disk generation for that session still matches the
-//     recorded one -- proving the lock has not been released and
-//     re-acquired (by a restart, or a different session reusing the id
-//     after the first died and was reaped) since registration. This is the
-//     exact mechanism internal/session/lock.go's own clearHolderMetadata
-//     uses to guard its own destructive cleanup; see ReadLockGeneration's
-//     doc for why a bare pid is not an identity but a (session id,
-//     generation) pair is.
+//     recorded generation matches victimGeneration -- an IMMUTABLE token its
+//     caller captured for the dead/killed holder BEFORE that holder's lock
+//     was released, not whatever generation happens to be on disk at sweep
+//     time (see commit 05a1708f / task #594: an earlier version compared
+//     against a freshly re-read "current" on-disk generation, which raced a
+//     new owner's own acquire-and-register between the victim's death and
+//     the sweep) -- proving the lock has not been released and re-acquired
+//     (by a restart, or a different session reusing the id after the first
+//     died and was reaped) since registration. This is the exact mechanism
+//     internal/session/lock.go's own clearHolderMetadata uses to guard its
+//     own destructive cleanup; see ReadLockGeneration's doc for why a bare
+//     pid is not an identity but a (session id, generation) pair is.
 //   - Every pgid is re-validated for plausibility immediately before
 //     signalling (see verifyGroupStillPlausible): still a live process
 //     group leader. This narrows, but as documented on
@@ -152,8 +156,14 @@ type childGroupEntry struct {
 // generation MUST be the value session.ReadLockGeneration(lockPath) reports
 // for THIS session at (or immediately before) registration time -- see
 // ReadLockGeneration's doc for why a stale or empty generation makes this
-// entry permanently unusable by design (KillRegisteredChildGroups requires
-// an exact, non-empty match against the CURRENT on-disk generation).
+// entry permanently unusable by design. KillRegisteredChildGroups does NOT
+// compare this entry against whatever generation happens to be on disk at
+// sweep time -- it requires an exact, non-empty match against
+// victimGeneration, an IMMUTABLE token its caller captured at the moment it
+// proved contention with the dead/killed holder, before ownership (and the
+// on-disk generation) could change hands (see commit 05a1708f / task #594's
+// fix and KillRegisteredChildGroups' own doc for why matching against a
+// freshly re-read "current" generation was the bug this replaced).
 //
 // Best-effort: failures are logged, never returned as an error. A registry
 // write failure only means sessions kill cannot reach the child tree; it

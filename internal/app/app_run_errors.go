@@ -13,24 +13,61 @@ import (
 	"github.com/charmbracelet/crush/internal/agent"
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/session"
+	sqlitedriver "modernc.org/sqlite"
 )
+
+// sqliteConstraintCode is SQLite's primary result code for ANY constraint
+// violation (SQLITE_CONSTRAINT, https://sqlite.org/rescode.html) -- the
+// low 8 bits of the driver's reported code regardless of which more
+// specific extended code (UNIQUE, PRIMARYKEY, NOTNULL, ...) it actually
+// carries. Named so isSessionsIDConstraintError's masking logic below reads
+// as intent rather than a bare magic number -- mirrors
+// isPermanentOrphanOutboxDrainError's identical `Code() & 0xff == 19` check
+// in internal/session/run_queue_orphan_drain.go, which documents (having
+// verified it against this project's actual observed driver behavior) that
+// modernc.org/sqlite reports the EXTENDED code by default, so masking with
+// 0xff is what recovers the primary code this comparison needs.
+const sqliteConstraintCode = 19
 
 // isSessionsIDConstraintError reports whether err is a SQLite PRIMARY
 // KEY/UNIQUE constraint violation on sessions.id specifically — the shape
 // produced when two `crush run --session <id>` processes race the very
-// first INSERT for an id that has never existed before (task #605). Both
-// sqlite drivers this project can be built with (modernc.org/sqlite,
-// selected on nearly every real platform, and github.com/ncruces/go-sqlite3,
-// the fallback for everything else — see internal/db/connect_modernc.go /
-// connect_ncruces.go's build tags) render this failure as an error whose
-// Error() text contains "UNIQUE constraint failed: sessions.id" or
-// "PRIMARY KEY constraint failed: sessions.id" somewhere in the chain (the
-// modernc driver additionally prefixes its own "constraint failed:" wrapper
-// — see the gate report's captured text: "constraint failed: UNIQUE
-// constraint failed: sessions.id (1555)"). Matching on the driver-produced
-// substring, rather than asserting a concrete *sqlite.Error/*sqlite3.Error
-// type, works uniformly across both build-tag-selected drivers without a
-// second copy of this function behind build tags.
+// first INSERT for an id that has never existed before (task #605).
+//
+// Two layers, in order:
+//
+//  1. Typed fast path: modernc.org/sqlite's *sqlite.Error exposes a
+//     numeric Code() (see isPermanentOrphanOutboxDrainError in
+//     internal/session/run_queue_orphan_drain.go for the same &0xff
+//     masking, applied there against this exact codebase's confirmed
+//     driver behavior). A match narrows this to "some constraint was
+//     violated", not specifically sessions.id — SQLite's code alone does
+//     not carry the offending table/column, only sqlite3_errmsg's text
+//     does — so the substring check below still runs to confirm the
+//     column identity even when the typed check matches.
+//  2. Textual fallback: err's message chain must contain "constraint
+//     failed" (used verbatim by both drivers this project can be built
+//     with — see modernc.org/sqlite's error.go ErrorCodeString table and
+//     github.com/ncruces/go-sqlite3's internal/sqlite3_wrap.ErrorCodeString,
+//     both confirmed by reading the vendored driver source at the versions
+//     pinned in go.mod, v1.50.1 and v0.34.2 respectively) AND
+//     "sessions.id". This is the ONLY layer active when the typed check
+//     above cannot run (github.com/ncruces/go-sqlite3, the fallback driver
+//     on platforms connect_ncruces.go's build tag selects, is not
+//     type-asserted here to avoid a second build-tag-gated copy of this
+//     function; its errors fall straight through to this textual layer)
+//     and is what actually identifies WHICH column/table was violated on
+//     every path.
+//
+// A previous version of this comment additionally claimed the driver could
+// render this as "constraint violation" (not "failed"). That phrase does
+// not appear ANYWHERE in either driver's own error-text-producing code
+// (confirmed by reading both drivers' vendored source: modernc's
+// error.go/conn.go always use SQLite's own sqlite3_errstr wording, which is
+// "constraint failed", never "constraint violation"; ncruces's
+// internal/sqlite3_wrap.ErrorCodeString hard-codes "sqlite3: constraint
+// failed" for the same code) — it was never observed, only assumed, and is
+// removed rather than carried forward unverified.
 //
 // Deliberately narrow: only sessions.id, and only a constraint failure.
 // This must NOT match every database error — a genuinely broken DB (disk
@@ -39,13 +76,26 @@ import (
 // real failure instead of a swallowed one. See resolveSession's caller for
 // why this matters: an earlier pass in this project quarantined entries on
 // ANY error instead of a proven-permanent one, which is exactly the
-// category of bug this narrow substring match exists to avoid repeating.
+// category of bug this narrow match exists to avoid repeating -- and see
+// TestResolveSession_CreationRace_OtherConstraintNotSwallowed /
+// TestIsSessionsIDConstraintError_MessagesIDNotMatched for the regression
+// coverage proving a constraint violation on a DIFFERENT column (e.g.
+// messages.id) is never swallowed by either layer.
 func isSessionsIDConstraintError(err error) bool {
 	if err == nil {
 		return false
 	}
+
+	// Typed fast path (layer 1): narrows "is this a constraint violation at
+	// all" without depending on driver wording, but still cannot identify
+	// WHICH column by code alone -- the substring check below is not
+	// skipped, only reached with higher confidence.
+	var sqliteErr *sqlitedriver.Error
+	isTypedConstraint := errors.As(err, &sqliteErr) && sqliteErr.Code()&0xff == sqliteConstraintCode
+
 	msg := err.Error()
-	if !strings.Contains(msg, "constraint failed") && !strings.Contains(msg, "constraint violation") {
+	isTextualConstraint := strings.Contains(msg, "constraint failed")
+	if !isTypedConstraint && !isTextualConstraint {
 		return false
 	}
 	return strings.Contains(msg, "sessions.id")

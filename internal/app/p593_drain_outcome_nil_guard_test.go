@@ -87,6 +87,23 @@ func TestDrainOutcomeError_NilGuard(t *testing.T) {
 			wantErr:     orig,
 			wantIsOrig:  true,
 		},
+		{
+			// Task #616/P2-2: DrainSessionNow's own doc records that several
+			// of its early-exit paths pair DrainNoWork with a non-nil,
+			// call-scoped drainErr (this call's own ctx already done, its own
+			// lease attempt failing, etc — see session.DrainNoWork's doc).
+			// drainOutcomeError must still return originalErr unchanged in
+			// that case, exactly as it does when drainErr is nil: drainErr
+			// on a DrainNoWork pairing describes why DrainSessionNow itself
+			// did not run anything, not this run's own outcome, so it must
+			// never leak into the run's returned error.
+			name:        "DrainNoWork with non-nil drainErr -> originalErr, NOT drainErr",
+			result:      session.DrainNoWork,
+			drainErr:    someErr,
+			originalErr: orig,
+			wantErr:     orig,
+			wantIsOrig:  true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -112,7 +129,33 @@ func TestDrainOutcomeError_NilGuard(t *testing.T) {
 			}
 			if tt.wantIsOrig {
 				require.ErrorIs(t, got, orig, "error should wrap originalErr")
+				if tt.drainErr != nil && !errors.Is(tt.drainErr, orig) {
+					require.NotErrorIs(t, got, tt.drainErr, "a DrainNoWork pairing must never leak drainErr into the run's returned error -- drainErr on DrainNoWork describes why DrainSessionNow itself did not run anything, not the run's own outcome")
+				}
 			}
 		})
 	}
+}
+
+// TestDrainOutcomeError_UnrecognizedResult_FailsClosed is task #616/P2-2's
+// own regression coverage: drainOutcomeError's default branch used to catch
+// BOTH session.DrainNoWork and any genuinely invalid session.DrainResult
+// value, silently reusing DrainNoWork's "return originalErr unchanged"
+// behavior for both. DrainNoWork now has its own explicit case (see the
+// table above), so this test exercises what remains in default: an
+// out-of-range DrainResult (a stand-in for a future fifth enum value added
+// without a matching case here) must fail CLOSED -- a non-nil sentinel
+// distinct from originalErr -- rather than silently inheriting
+// DrainNoWork's success-preserving semantics.
+func TestDrainOutcomeError_UnrecognizedResult_FailsClosed(t *testing.T) {
+	t.Parallel()
+
+	sessID := "test-session-456"
+	orig := context.Canceled
+	unrecognized := session.DrainResult(99)
+
+	got := drainOutcomeError(sessID, unrecognized, nil, orig)
+	require.Error(t, got, "an unrecognized DrainResult must not silently succeed")
+	require.ErrorIs(t, got, session.ErrDrainFailureUnspecified, "must fail closed via the same sentinel used for other contract violations")
+	require.NotErrorIs(t, got, orig, "must NOT silently fall back to originalErr the way the old shared default/DrainNoWork case did")
 }

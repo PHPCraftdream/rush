@@ -26,10 +26,24 @@ import (
 //
 // The four values are deliberately exhaustive and mutually exclusive:
 //
-//   - DrainNoWork: nothing executed in this call, and nothing failed. This
+//   - DrainNoWork: nothing executed in this call, and no ROW ever reached a
+//     resolution this call could attribute to it (contrast DrainFailed,
+//     which requires a resolution the ledger could tie to something). This
 //     is the ONLY value under which a caller may leave an original
 //     cancellation/error standing without inspecting err further — it means
 //     "there was nothing for this call to do", not "everything succeeded".
+//     err is NOT always nil here (see DrainNoWork's own doc below): a few
+//     early-exit paths (this call's own ctx already done, a DB lease attempt
+//     itself failing, this call's own ctx ending before an execution slot
+//     was available, or this call declining to start because the pump is
+//     stopping) report DrainNoWork with a non-nil err describing WHY this
+//     call itself did not run anything — as opposed to DrainFailed's err,
+//     which always describes a ROW's outcome. Every caller today (the sole
+//     production one, app_run.go's drainOutcomeError) already treats
+//     DrainNoWork as "leave the original error standing" unconditionally,
+//     without reading err off this pairing at all, so this asymmetry is not
+//     presently observable — but a future caller inspecting err directly
+//     must not assume it is nil just because result is DrainNoWork.
 //   - DrainComplete: this call executed at least one row, and every row it
 //     is able to vouch for resolved as a genuine, confirmed commit. This is
 //     the ONLY value a caller may read as "the continuation fully
@@ -54,9 +68,25 @@ import (
 type DrainResult int
 
 const (
-	// DrainNoWork means nothing executed and nothing failed — the
-	// pre-existing, still-correct "nothing to drain" contract every caller
-	// already depends on. err is always nil when result is DrainNoWork.
+	// DrainNoWork means nothing executed and no row's outcome is on record —
+	// the pre-existing, still-correct "nothing to drain" contract every
+	// caller already depends on. err is OFTEN nil here (the pure-contention
+	// paths — see e.g. rowLedger.verdict's own DrainNoWork branch), but NOT
+	// ALWAYS: several early-exit sites in DrainSessionNow return DrainNoWork
+	// paired with a non-nil err that describes why THIS CALL stopped before
+	// touching anything (its own ctx already done, its own lease attempt
+	// failing at the DB layer, its own ctx ending before an execution slot
+	// opened up, or this call declining to start because the pump is
+	// stopping) — see verdictOnCtxDone's doc and the three
+	// `if result == DrainNoWork { return DrainNoWork, <call-scoped err> }`
+	// sites in DrainSessionNow itself. Every one of those errs is about this
+	// CALL, never about a row, which is what keeps DrainNoWork distinct from
+	// DrainFailed (whose err is always row-scoped). The sole production
+	// consumer (app_run.go's drainOutcomeError) reads DrainNoWork as "let the
+	// caller's own original error stand" and does not inspect err on this
+	// pairing at all, so this has no observable effect today — documented
+	// here so a future caller that DOES read err off a DrainNoWork result
+	// does not assume nil.
 	DrainNoWork DrainResult = iota
 	// DrainComplete means every row this call executed or waited on
 	// resolved as a genuine, confirmed commit. err is always nil when
@@ -822,11 +852,40 @@ func (p *RunQueuePump) DrainSessionNow(ctx context.Context, sessionID string) (D
 				return ledger.verdict(false)
 			}
 
-			execErr := p.executeEntrySync(ctx, leased)
-			p.workerWg.Done()
-
-			<-p.execSem
-			releaseSession(executedOutcome(leased.ID, execErr))
+			// Task #616/P2-1 (2026-08-20 read-only release review): the three
+			// releases below -- workerWg.Done, the execSem slot, and the
+			// session admission -- used to run only AFTER executeEntrySync
+			// returned normally, unlike executeEntry (run_queue_entry_dispatch.go),
+			// whose equivalent background path wraps the same three releases
+			// in a defer specifically so a panic inside executeEntrySync still
+			// unwinds them. A panic here currently crashes the whole process
+			// (Go's default handler), so today there is no OBSERVABLE gap --
+			// but if recovery is ever added at any outer boundary (a test
+			// harness, a future top-level recover in RunNonInteractive, etc.),
+			// an unrecovered panic on this synchronous path would otherwise
+			// leak workerWg's count (hanging a future Stop() forever), leave
+			// execSem permanently short one slot, and strand any concurrent
+			// DrainSessionNow waiting on this session's admissionEntry.done
+			// forever, since nothing would ever close it or record an
+			// outcome. Scoped in a defer, exactly mirroring executeEntry's own
+			// panic-recovery shape: publish executedOutcome(leased.ID, ...) so
+			// a waiter learns this row's fate instead of hanging, then
+			// re-panic to preserve normal crash/propagation behavior -- this
+			// function's job is only to make the release order panic-safe,
+			// not to swallow the panic.
+			var execErr error
+			func() {
+				defer p.workerWg.Done()
+				defer func() { <-p.execSem }()
+				defer func() {
+					if r := recover(); r != nil {
+						releaseSession(executedOutcome(leased.ID, fmt.Errorf("run_queue_pump: executeEntrySync panicked: %v", r)))
+						panic(r) // preserve normal panic propagation/crash behavior
+					}
+					releaseSession(executedOutcome(leased.ID, execErr))
+				}()
+				execErr = p.executeEntrySync(ctx, leased)
+			}()
 
 			// Classify through the same helper the wait branch above uses.
 			// Only the "busy, nothing ran" outcome returns immediately --
