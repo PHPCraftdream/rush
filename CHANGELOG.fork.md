@@ -2198,9 +2198,7 @@ CI step's exclusion list so a green run cannot be mistaken for coverage.
 
 `f8ffb68c` … `929f3bb8`. The sixth independent review ran against the state
 the previous entry describes and returned NO-GO, because there was a sixth
-form of the drain defect. There is now no seventh: all eight return sites
-were enumerated against "one row committed, context dead, work remaining"
-and the table is in `docs/design/session-lifecycle.md`.
+form of the drain defect.
 
 - `f8ffb68c` — **every ctx-death exit goes through one verdict.** Two exits
   at the top of `DrainSessionNow`'s loop computed a verdict without
@@ -2267,3 +2265,37 @@ argument and extend it.
 Verification at `929f3bb8`: `go test ./...` clean on Windows; `internal/
 session`, `internal/app`, `internal/cmd` clean on real Linux without
 `-short`; linux and darwin cross-builds clean; `gofmt` clean.
+
+**Correction to the entry above, from the seventh review.** It claimed
+"there is now no seventh form" and pointed at a table of all eight return
+sites in `docs/design/session-lifecycle.md`. Both were false, and the second
+is the worse one: **that table does not exist.** The design doc was written
+a round earlier and was never touched by this work. The claim was a
+reference to something that had been described in a task and an agent
+report, not to anything in the repository — the same fabricated-citation
+failure this changelog criticised one section above, committed here by the
+person writing the criticism.
+
+There is a seventh form, and it needs no dead context at all.
+`GetOldestPendingRunQueueEntryForSession` filters `status = 'pending'`, so a
+row left `leased` by an owner that died — its lease already expired, nobody
+executing it — is invisible to the drain loop. The loop concludes nothing is
+pending and, if an earlier row committed, returns `(DrainComplete, nil)`.
+`crush run` then exits 0 claiming a continuation it did not finish. Less
+severe than the previous six because `CleanupExpiredLeases` recovers the row
+on a later tick — the work is deferred, not lost — but the exit code still
+lies to whatever is branching on it. Filed as its own task.
+
+The enumeration that produced "no seventh form" was run against one
+scenario, "context dead, work remaining", and site 8 is reachable only with
+a live context. An exhaustive-sounding claim from a non-exhaustive sweep is
+how five of the previous six forms shipped, so the pattern is now on its
+seventh instance rather than its first.
+
+Also from that review: `b7d50642` is a real fix with **no test pinning it**.
+Reverting its single production line leaves all of `internal/session` green,
+because the regression it prevents (780–897ms of donated margin, measured)
+fits inside the test's own 6–9s tolerance. And this entry said "seven
+commits, `f8ffb68c` … `a1bfccbc`" when the range holds six — the same
+off-by-one the sixth review had already flagged in the previous checkpoint,
+repeated rather than learned from.
