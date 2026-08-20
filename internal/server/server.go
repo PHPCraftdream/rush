@@ -194,6 +194,13 @@ func (s *Server) readPump(ctx context.Context, c *Client) {
 		case <-ctx.Done():
 		}
 	}()
+	// Closing workQueue stops this connection's fixed worker pool (see
+	// startWorkers in hub.go) once no more items will ever be enqueued.
+	// Safe here specifically because dispatch is only ever called
+	// synchronously from within this function's read loop below — by the
+	// time this defer runs, the loop has already exited, so nothing can
+	// still be sending on workQueue concurrently with this close.
+	defer close(c.workQueue)
 
 	c.conn.SetReadLimit(maxMessageSize)
 	_ = c.conn.SetReadDeadline(time.Now().Add(pongWait))

@@ -33,115 +33,115 @@ func handleIncoming(ctx context.Context, a *appPkg.App, c *Client, raw []byte) {
 
 	switch msg.Type {
 	case CmdSendMessage:
-		c.dispatch("handleSendMessage", func() { handleSendMessage(ctx, a, c, msg) })
+		c.dispatch("handleSendMessage", msg.ID, func() { handleSendMessage(ctx, a, c, msg) })
 	case CmdInterruptAndSend:
 		// Control-plane: must cancel an in-flight (possibly stuck/long-running)
 		// turn promptly, so it cannot share sem with handleSendMessage — see
 		// dispatchControl's doc comment in hub.go for the full rationale.
-		c.dispatchControl("handleInterruptAndSend", func() { handleInterruptAndSend(ctx, a, c, msg) })
+		c.dispatchControl("handleInterruptAndSend", msg.ID, func() { handleInterruptAndSend(ctx, a, c, msg) })
 	case CmdInjectMessage:
-		c.dispatch("handleInjectMessage", func() { handleInjectMessage(ctx, a, c, msg) })
+		c.dispatch("handleInjectMessage", msg.ID, func() { handleInjectMessage(ctx, a, c, msg) })
 	case CmdCancelAgent:
 		// Control-plane: same rationale as CmdInterruptAndSend above.
-		c.dispatchControl("handleCancelAgent", func() { handleCancelAgent(ctx, a, c, msg) })
+		c.dispatchControl("handleCancelAgent", msg.ID, func() { handleCancelAgent(ctx, a, c, msg) })
 	case CmdCreateSession:
-		c.dispatch("handleCreateSession", func() { handleCreateSession(ctx, a, c, msg) })
+		c.dispatch("handleCreateSession", msg.ID, func() { handleCreateSession(ctx, a, c, msg) })
 	case CmdForkSession:
-		c.dispatch("handleForkSession", func() { handleForkSession(ctx, a, c, msg) })
+		c.dispatch("handleForkSession", msg.ID, func() { handleForkSession(ctx, a, c, msg) })
 	case CmdDeleteSession:
-		c.dispatch("handleDeleteSession", func() { handleDeleteSession(ctx, a, c, msg) })
+		c.dispatch("handleDeleteSession", msg.ID, func() { handleDeleteSession(ctx, a, c, msg) })
 	case CmdDeleteOtherSessions:
-		c.dispatch("handleDeleteOtherSessions", func() { handleDeleteOtherSessions(ctx, a, c, msg) })
+		c.dispatch("handleDeleteOtherSessions", msg.ID, func() { handleDeleteOtherSessions(ctx, a, c, msg) })
 	case CmdListSessions:
-		c.dispatch("handleListSessions", func() { handleListSessions(ctx, a, c, msg) })
+		c.dispatch("handleListSessions", msg.ID, func() { handleListSessions(ctx, a, c, msg) })
 	case CmdLoadMessages:
-		c.dispatch("handleLoadMessages", func() { handleLoadMessages(ctx, a, c, msg) })
+		c.dispatch("handleLoadMessages", msg.ID, func() { handleLoadMessages(ctx, a, c, msg) })
 	case CmdGetConfig:
-		c.dispatch("handleGetConfig", func() { handleGetConfig(a, c, msg) })
+		c.dispatch("handleGetConfig", msg.ID, func() { handleGetConfig(a, c, msg) })
 	case CmdGetLogs:
-		c.dispatch("handleGetLogs", func() { handleGetLogs(a, c, msg) })
+		c.dispatch("handleGetLogs", msg.ID, func() { handleGetLogs(a, c, msg) })
 	case CmdSetTheme:
-		c.dispatch("handleSetTheme", func() { handleSetTheme(a, c, msg) })
+		c.dispatch("handleSetTheme", msg.ID, func() { handleSetTheme(a, c, msg) })
 	case CmdSetKeepAlive:
-		c.dispatch("handleSetKeepAlive", func() { handleSetKeepAlive(a, c, msg) })
+		c.dispatch("handleSetKeepAlive", msg.ID, func() { handleSetKeepAlive(a, c, msg) })
 	case CmdRenameSession:
-		c.dispatch("handleRenameSession", func() { handleRenameSession(ctx, a, c, msg) })
+		c.dispatch("handleRenameSession", msg.ID, func() { handleRenameSession(ctx, a, c, msg) })
 	case CmdSetSessionModels:
-		c.dispatch("handleSetSessionModels", func() { handleSetSessionModels(ctx, a, c, msg) })
+		c.dispatch("handleSetSessionModels", msg.ID, func() { handleSetSessionModels(ctx, a, c, msg) })
 	case CmdRemoveRecentModel:
-		c.dispatch("handleRemoveRecentModel", func() { handleRemoveRecentModel(a, c, msg) })
+		c.dispatch("handleRemoveRecentModel", msg.ID, func() { handleRemoveRecentModel(a, c, msg) })
 	case CmdTrackModelUsage:
-		c.dispatch("handleTrackModelUsage", func() { handleTrackModelUsage(a, c, msg) })
+		c.dispatch("handleTrackModelUsage", msg.ID, func() { handleTrackModelUsage(a, c, msg) })
 	case CmdGetScopedModels:
-		c.dispatch("handleGetScopedModels", func() { handleGetScopedModels(a, c, msg) })
+		c.dispatch("handleGetScopedModels", msg.ID, func() { handleGetScopedModels(a, c, msg) })
 	case CmdSetScopedModel:
-		c.dispatch("handleSetScopedModel", func() { handleSetScopedModel(a, c, msg) })
+		c.dispatch("handleSetScopedModel", msg.ID, func() { handleSetScopedModel(a, c, msg) })
 	case CmdClearScopedModel:
-		c.dispatch("handleClearScopedModel", func() { handleClearScopedModel(a, c, msg) })
+		c.dispatch("handleClearScopedModel", msg.ID, func() { handleClearScopedModel(a, c, msg) })
 	case CmdSetProviderKey:
-		c.dispatch("handleSetProviderKey", func() { handleSetProviderKey(a, c, msg) })
+		c.dispatch("handleSetProviderKey", msg.ID, func() { handleSetProviderKey(a, c, msg) })
 	case CmdRemoveProviderKey:
-		c.dispatch("handleRemoveProviderKey", func() { handleRemoveProviderKey(a, c, msg) })
+		c.dispatch("handleRemoveProviderKey", msg.ID, func() { handleRemoveProviderKey(a, c, msg) })
 	case CmdDeleteMessage:
-		c.dispatch("handleDeleteMessage", func() { handleDeleteMessage(ctx, a, c, msg) })
+		c.dispatch("handleDeleteMessage", msg.ID, func() { handleDeleteMessage(ctx, a, c, msg) })
 	case CmdDeleteMessages:
-		c.dispatch("handleDeleteMessages", func() { handleDeleteMessages(ctx, a, c, msg) })
+		c.dispatch("handleDeleteMessages", msg.ID, func() { handleDeleteMessages(ctx, a, c, msg) })
 	case CmdUpdateMessageContent:
-		c.dispatch("handleUpdateMessageContent", func() { handleUpdateMessageContent(ctx, a, c, msg) })
+		c.dispatch("handleUpdateMessageContent", msg.ID, func() { handleUpdateMessageContent(ctx, a, c, msg) })
 	case CmdUpdateMessageThinking:
-		c.dispatch("handleUpdateMessageThinking", func() { handleUpdateMessageThinking(ctx, a, c, msg) })
+		c.dispatch("handleUpdateMessageThinking", msg.ID, func() { handleUpdateMessageThinking(ctx, a, c, msg) })
 	case CmdGetSystemPrompt:
-		c.dispatch("handleGetSystemPrompt", func() { handleGetSystemPrompt(ctx, a, c, msg) })
+		c.dispatch("handleGetSystemPrompt", msg.ID, func() { handleGetSystemPrompt(ctx, a, c, msg) })
 	case CmdSetSystemPrompt:
-		c.dispatch("handleSetSystemPrompt", func() { handleSetSystemPrompt(ctx, a, c, msg) })
+		c.dispatch("handleSetSystemPrompt", msg.ID, func() { handleSetSystemPrompt(ctx, a, c, msg) })
 	case CmdSummarizeSession:
-		c.dispatch("handleSummarizeSession", func() { handleSummarizeSession(ctx, a, c, msg) })
+		c.dispatch("handleSummarizeSession", msg.ID, func() { handleSummarizeSession(ctx, a, c, msg) })
 	case CmdCancelQueuedSummarize:
-		c.dispatch("handleCancelQueuedSummarize", func() { handleCancelQueuedSummarize(a, c, msg) })
+		c.dispatch("handleCancelQueuedSummarize", msg.ID, func() { handleCancelQueuedSummarize(a, c, msg) })
 	case CmdDeleteMessagePart:
-		c.dispatch("handleDeleteMessagePart", func() { handleDeleteMessagePart(ctx, a, c, msg) })
+		c.dispatch("handleDeleteMessagePart", msg.ID, func() { handleDeleteMessagePart(ctx, a, c, msg) })
 	case CmdUpdateMessagePart:
-		c.dispatch("handleUpdateMessagePart", func() { handleUpdateMessagePart(ctx, a, c, msg) })
+		c.dispatch("handleUpdateMessagePart", msg.ID, func() { handleUpdateMessagePart(ctx, a, c, msg) })
 	case CmdTogglePinMessage:
-		c.dispatch("handleTogglePinMessage", func() { handleTogglePinMessage(ctx, a, c, msg) })
+		c.dispatch("handleTogglePinMessage", msg.ID, func() { handleTogglePinMessage(ctx, a, c, msg) })
 	case CmdRerunMessage:
-		c.dispatch("handleRerunMessage", func() { handleRerunMessage(ctx, a, c, msg) })
+		c.dispatch("handleRerunMessage", msg.ID, func() { handleRerunMessage(ctx, a, c, msg) })
 	case CmdLogClientEvent:
-		c.dispatch("handleLogClientEvent", func() { handleLogClientEvent(a, c, msg) })
+		c.dispatch("handleLogClientEvent", msg.ID, func() { handleLogClientEvent(a, c, msg) })
 	case CmdLogClientError:
-		c.dispatch("handleLogClientError", func() { handleLogClientError(c, msg) })
+		c.dispatch("handleLogClientError", msg.ID, func() { handleLogClientError(c, msg) })
 	case CmdSetMCPDisabled:
-		c.dispatch("handleSetMCPDisabled", func() { handleSetMCPDisabled(ctx, a, c, msg) })
+		c.dispatch("handleSetMCPDisabled", msg.ID, func() { handleSetMCPDisabled(ctx, a, c, msg) })
 	case CmdAddMCPServer:
-		c.dispatch("handleAddMCPServer", func() { handleAddMCPServer(ctx, a, c, msg) })
+		c.dispatch("handleAddMCPServer", msg.ID, func() { handleAddMCPServer(ctx, a, c, msg) })
 	case CmdRemoveMCPServer:
-		c.dispatch("handleRemoveMCPServer", func() { handleRemoveMCPServer(a, c, msg) })
+		c.dispatch("handleRemoveMCPServer", msg.ID, func() { handleRemoveMCPServer(a, c, msg) })
 	case CmdUpdateMCPServer:
-		c.dispatch("handleUpdateMCPServer", func() { handleUpdateMCPServer(ctx, a, c, msg) })
+		c.dispatch("handleUpdateMCPServer", msg.ID, func() { handleUpdateMCPServer(ctx, a, c, msg) })
 	case CmdSetDebug:
-		c.dispatch("handleSetDebug", func() { handleSetDebug(a, c, msg) })
+		c.dispatch("handleSetDebug", msg.ID, func() { handleSetDebug(a, c, msg) })
 	case CmdAddContextPath:
-		c.dispatch("handleAddContextPath", func() { handleAddContextPath(a, c, msg) })
+		c.dispatch("handleAddContextPath", msg.ID, func() { handleAddContextPath(a, c, msg) })
 	case CmdRemoveContextPath:
-		c.dispatch("handleRemoveContextPath", func() { handleRemoveContextPath(a, c, msg) })
+		c.dispatch("handleRemoveContextPath", msg.ID, func() { handleRemoveContextPath(a, c, msg) })
 	case CmdGetSkills:
-		c.dispatch("handleGetSkills", func() { handleGetSkills(a, c, msg) })
+		c.dispatch("handleGetSkills", msg.ID, func() { handleGetSkills(a, c, msg) })
 	case CmdAddSkillsPath:
-		c.dispatch("handleAddSkillsPath", func() { handleAddSkillsPath(a, c, msg) })
+		c.dispatch("handleAddSkillsPath", msg.ID, func() { handleAddSkillsPath(a, c, msg) })
 	case CmdRemoveSkillsPath:
-		c.dispatch("handleRemoveSkillsPath", func() { handleRemoveSkillsPath(a, c, msg) })
+		c.dispatch("handleRemoveSkillsPath", msg.ID, func() { handleRemoveSkillsPath(a, c, msg) })
 	case CmdInitializeProject:
-		c.dispatch("handleInitializeProject", func() { handleInitializeProject(ctx, a, c, msg) })
+		c.dispatch("handleInitializeProject", msg.ID, func() { handleInitializeProject(ctx, a, c, msg) })
 	case CmdAddCustomProvider:
-		c.dispatch("handleAddCustomProvider", func() { handleAddCustomProvider(a, c, msg) })
+		c.dispatch("handleAddCustomProvider", msg.ID, func() { handleAddCustomProvider(a, c, msg) })
 	case CmdRemoveCustomProvider:
-		c.dispatch("handleRemoveCustomProvider", func() { handleRemoveCustomProvider(a, c, msg) })
+		c.dispatch("handleRemoveCustomProvider", msg.ID, func() { handleRemoveCustomProvider(a, c, msg) })
 	case CmdUpdateCustomProvider:
-		c.dispatch("handleUpdateCustomProvider", func() { handleUpdateCustomProvider(a, c, msg) })
+		c.dispatch("handleUpdateCustomProvider", msg.ID, func() { handleUpdateCustomProvider(a, c, msg) })
 	case CmdSetProviderPeakHours:
-		c.dispatch("handleSetProviderPeakHours", func() { handleSetProviderPeakHours(a, c, msg) })
+		c.dispatch("handleSetProviderPeakHours", msg.ID, func() { handleSetProviderPeakHours(a, c, msg) })
 	case CmdUpdateTodos:
-		c.dispatch("handleUpdateTodos", func() { handleUpdateTodos(ctx, a, c, msg) })
+		c.dispatch("handleUpdateTodos", msg.ID, func() { handleUpdateTodos(ctx, a, c, msg) })
 	default:
 		slog.Debug("ws: unknown command", "type", msg.Type)
 		c.reply(msg.ID, EventError, nil, "unknown command: "+msg.Type)

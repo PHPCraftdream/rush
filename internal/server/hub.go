@@ -42,6 +42,26 @@ const (
 	// frames — it is not expected to ever bind in practice.
 	maxConcurrentControlHandlersPerConn = 256
 
+	// workQueueDepth bounds how many work-shaped dispatches (see dispatch) may
+	// be queued, waiting for a free worker, on top of the
+	// maxConcurrentHandlersPerConn already running. Together with the fixed
+	// worker pool below this replaces the old "block the caller" backpressure
+	// (c.sem <- struct{}{} inside dispatch): that design blocked readPump
+	// itself once the cap was hit, which meant a Cancel/Interrupt frame sent
+	// right behind a 13th work frame could never even be read off the socket
+	// — see #612. The queue gives the same bounded-concurrency guarantee
+	// (never more than maxConcurrentHandlersPerConn handlers running at
+	// once) without ever blocking the reader: dispatch enqueues
+	// non-blockingly and replies with an overload error instead of blocking
+	// when the queue is also full.
+	workQueueDepth = 64
+
+	// workerPoolSize is the number of long-lived goroutines draining a
+	// Client's work queue. It equals maxConcurrentHandlersPerConn so the
+	// concurrency cap is unchanged from the old semaphore's behavior — at
+	// most this many handleX calls run at once for one connection.
+	workerPoolSize = maxConcurrentHandlersPerConn
+
 	// replayByteBudget bounds the total bytes held in the replay buffer across all
 	// events. Normal traffic (small JSON deltas) fits ~2000 events well under 8 MiB,
 	// so the per-event count limit stays the binding constraint and full history is
@@ -59,48 +79,97 @@ const (
 	replayMaxEventSize = 1024 * 1024 // 1 MiB per event
 )
 
+// workItem is one queued work-shaped dispatch waiting for a free worker.
+type workItem struct {
+	name string
+	fn   func()
+}
+
 // Client represents a single WebSocket connection.
 type Client struct {
 	hub  *Hub
 	conn *websocket.Conn
 	send chan []byte
 
-	// sem bounds the number of concurrently running handleX goroutines
-	// spawned for THIS connection (see maxConcurrentHandlersPerConn). It is
-	// a counting semaphore implemented as a buffered channel: acquire sends
-	// a token, release receives one.
-	sem chan struct{}
+	// workQueue is the bounded queue work-shaped dispatches (see dispatch)
+	// are handed to. A fixed pool of workerPoolSize worker goroutines (see
+	// startWorkers) drains it, so at most workerPoolSize handleX calls run
+	// concurrently for this connection — the same cap
+	// maxConcurrentHandlersPerConn enforced before. Unlike the old semaphore,
+	// enqueueing here is always non-blocking: dispatch does a `select` with
+	// a `default` and replies with an overload error instead of blocking
+	// the caller (readPump) when the queue is also full. See #612: blocking
+	// readPump itself meant a Cancel/Interrupt frame sent right behind a
+	// 13th work frame could never even be read off the socket.
+	workQueue chan workItem
 
 	// controlSem is the analogous semaphore for control-plane dispatches
 	// (see dispatchControl) — a separate, much larger pool so a control-plane
-	// frame (cancel/interrupt) is never queued behind sem's 12 long-running
-	// work slots. Keeping it a distinct channel (rather than sharing sem)
-	// is the whole point of the fix: control-plane commands must not compete
-	// with long-running handlers for the same bounded resource.
+	// frame (cancel/interrupt) is never queued behind long-running work
+	// slots. Keeping it a distinct resource (rather than sharing the work
+	// queue/pool) is the whole point of the fix: control-plane commands must
+	// not compete with long-running handlers for the same bounded resource.
+	// Admission is non-blocking (see dispatchControl): it never blocks
+	// readPump either, it just has enough headroom that overload should
+	// never be observed in practice.
 	controlSem chan struct{}
+
+	// workersOnce guards starting the work-queue worker pool exactly once
+	// per Client (see startWorkers).
+	workersOnce sync.Once
 }
 
-// newClient constructs a Client with its per-connection handler semaphores
-// initialised. Always use this instead of a bare &Client{} literal so the
-// semaphores are never nil.
+// newClient constructs a Client with its per-connection handler queue/
+// semaphore initialised. Always use this instead of a bare &Client{}
+// literal so they are never nil.
 func newClient(hub *Hub, conn *websocket.Conn) *Client {
-	return &Client{
+	c := &Client{
 		hub:        hub,
 		conn:       conn,
 		send:       make(chan []byte, sendBufSize),
-		sem:        make(chan struct{}, maxConcurrentHandlersPerConn),
+		workQueue:  make(chan workItem, workQueueDepth),
 		controlSem: make(chan struct{}, maxConcurrentControlHandlersPerConn),
 	}
+	c.startWorkers()
+	return c
 }
 
-// dispatch runs fn in a new goroutine, subject to two protections:
+// startWorkers launches the fixed pool of goroutines that drain workQueue.
+// Called once from newClient. Each worker loops for the connection's
+// lifetime, running one workItem at a time with the same panic-recovery
+// safety net dispatch always provided; the pool itself (rather than a
+// per-item goroutine) is what bounds concurrency to workerPoolSize without
+// ever blocking the producer (dispatch/readPump).
+func (c *Client) startWorkers() {
+	c.workersOnce.Do(func() {
+		for i := 0; i < workerPoolSize; i++ {
+			go func() {
+				for item := range c.workQueue {
+					runRecovered(item.name, func() {}, item.fn)
+				}
+			}()
+		}
+	})
+}
+
+// dispatch hands fn to the connection's bounded work queue, subject to two
+// protections:
 //
-//   - Concurrency limit: acquires a slot from the connection's semaphore
-//     before spawning, blocking the CALLER (readPump, via handleIncoming)
-//     once maxConcurrentHandlersPerConn handlers are already in flight for
-//     this connection. This is deliberate backpressure — once the cap is
-//     hit, further inbound frames simply wait to be dispatched rather than
-//     spawning unbounded goroutines.
+//   - Concurrency limit: at most workerPoolSize (== maxConcurrentHandlersPerConn)
+//     work items run at once for this connection, enforced by the fixed
+//     worker pool started in startWorkers. Once all workers are busy,
+//     further items simply wait IN THE QUEUE (not by blocking the caller —
+//     see below) — same bounded-concurrency guarantee as before.
+//   - Non-blocking admission: enqueueing is a `select` with a `default`
+//     branch. If the queue is also full (workQueueDepth items already
+//     waiting on top of workerPoolSize running), dispatch does NOT block
+//     the caller (readPump, via handleIncoming) — it replies with an
+//     overload error and drops the item. Blocking the caller here was the
+//     root cause of #612: while readPump was blocked acquiring a slot, it
+//     never called conn.ReadMessage() again, so a Cancel/Interrupt frame
+//     sent right behind the frame that filled the cap could never even be
+//     read off the socket, let alone dispatched via the separate
+//     control-plane path.
 //   - Panic isolation: recovers any panic inside fn, logs it (with a stack
 //     trace) instead of propagating it. Without this, a nil-deref or
 //     out-of-range index triggered by an unexpected payload in ANY handler
@@ -108,39 +177,48 @@ func newClient(hub *Hub, conn *websocket.Conn) *Client {
 //     connection and in-flight agent session with it.
 //
 // name is a short identifier (typically the WS command type or handler
-// function name) used only for logging.
-func (c *Client) dispatch(name string, fn func()) {
-	c.sem <- struct{}{}
-	go runRecovered(name, func() { <-c.sem }, fn)
+// function name) used only for logging. msgID is the originating message's
+// correlation ID, used only to shape the overload reply.
+func (c *Client) dispatch(name, msgID string, fn func()) {
+	select {
+	case c.workQueue <- workItem{name: name, fn: fn}:
+	default:
+		slog.Warn("ws: work queue full, rejecting", "handler", name)
+		c.reply(msgID, EventError, nil, "server busy, please retry")
+	}
 }
 
 // dispatchControl is dispatch's counterpart for control-plane commands —
 // currently CmdCancelAgent and CmdInterruptAndSend. It runs fn in a new
 // goroutine gated by controlSem (a separate, generously-sized semaphore)
-// instead of sem, and provides the SAME panic-recovery safety net as
-// dispatch.
+// instead of the work queue, and provides the SAME panic-recovery safety
+// net as dispatch.
 //
 // Why this needs to exist at all: handleIncoming (handlers.go) calls dispatch
-// synchronously from readPump's read loop (server.go) — the acquire
-// `c.sem <- struct{}{}` blocks the CALLER once maxConcurrentHandlersPerConn
-// long-running handlers (e.g. handleSendMessage, which can hold its slot for
-// an entire multi-minute agent turn) are already in flight. If a
-// cancel/interrupt command shared that same semaphore, it would queue behind
-// those 12 slots — exactly when the user most needs it to go through
-// immediately, e.g. to cancel one of the stuck turns. While readPump is
-// blocked acquiring a slot, it never calls conn.ReadMessage() again, so the
-// pong handler (registered in server.go) never runs to extend the read
+// synchronously from readPump's read loop (server.go). If a cancel/interrupt
+// command went through the same bounded work queue as long-running handlers
+// (e.g. handleSendMessage, which can hold a worker for an entire
+// multi-minute agent turn), it would queue behind however many work items
+// are already ahead of it — exactly when the user most needs it to go
+// through immediately, e.g. to cancel one of the stuck turns.
+//
+// Admission here is ALSO non-blocking (select/default), for the same reason
+// dispatch's is: readPump must never block acquiring a slot, or it stops
+// calling conn.ReadMessage(), the pong handler never runs to extend the read
 // deadline, and the connection is torn down by an i/o timeout ~60s later
 // (pongWait) — during which the user had no way to cancel anything on this
-// connection.
-//
-// Using a separate, much larger semaphore instead of no gate at all keeps a
-// bounded worst case (a buggy/malicious client flooding control-plane frames
-// still can't spawn unbounded goroutines) while making it practically
-// impossible for legitimate cancel/interrupt traffic to ever queue.
-func (c *Client) dispatchControl(name string, fn func()) {
-	c.controlSem <- struct{}{}
-	go runRecovered(name, func() { <-c.controlSem }, fn)
+// connection. controlSem's generous size (256) means the `default` branch
+// is not expected to ever be taken in practice; it exists as a bounded
+// worst case against a buggy/malicious client flooding control-plane
+// frames, consistent with never spawning unbounded goroutines.
+func (c *Client) dispatchControl(name, msgID string, fn func()) {
+	select {
+	case c.controlSem <- struct{}{}:
+		go runRecovered(name, func() { <-c.controlSem }, fn)
+	default:
+		slog.Warn("ws: control queue full, rejecting", "handler", name)
+		c.reply(msgID, EventError, nil, "server busy, please retry")
+	}
 }
 
 // runRecovered runs fn with panic isolation identical to dispatch's original

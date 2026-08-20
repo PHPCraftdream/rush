@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"encoding/json"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -34,7 +35,7 @@ func TestDispatchRecoversPanic(t *testing.T) {
 
 	var done sync.WaitGroup
 	done.Add(1)
-	c.dispatch("handlePanicky", func() {
+	c.dispatch("handlePanicky", "", func() {
 		defer done.Done()
 		var m map[string]int
 		m["boom"] = 1 //nolint:staticcheck // SA5000: deliberate nil-map write to trigger a real panic for this test
@@ -64,20 +65,20 @@ func TestDispatchConnectionSurvivesHandlerPanic(t *testing.T) {
 
 	var panicked sync.WaitGroup
 	panicked.Add(1)
-	c.dispatch("boom", func() {
+	c.dispatch("boom", "", func() {
 		defer panicked.Done()
 		panic("simulated handler panic")
 	})
 	waitWithTimeout(t, &panicked, 2*time.Second)
 
-	// The connection's semaphore and dispatch machinery must still work:
-	// run N more handlers after the panic and confirm every one executes.
+	// The connection's work queue/worker pool must still work: run N more
+	// handlers after the panic and confirm every one executes.
 	const n = 5
 	var ran int32
 	var rest sync.WaitGroup
 	rest.Add(n)
 	for i := 0; i < n; i++ {
-		c.dispatch("afterPanic", func() {
+		c.dispatch("afterPanic", "", func() {
 			defer rest.Done()
 			atomic.AddInt32(&ran, 1)
 		})
@@ -87,10 +88,14 @@ func TestDispatchConnectionSurvivesHandlerPanic(t *testing.T) {
 	require.EqualValues(t, n, atomic.LoadInt32(&ran), "handlers after a panic must still run")
 }
 
-// TestDispatchBoundsConcurrencyPerConnection verifies the per-connection
-// semaphore actually caps in-flight handlers at maxConcurrentHandlersPerConn:
-// a burst of far more than that many blocking handlers never has more than
-// the cap running at once.
+// TestDispatchBoundsConcurrencyPerConnection verifies the fixed worker pool
+// actually caps in-flight handlers at workerPoolSize
+// (== maxConcurrentHandlersPerConn): a burst of far more than that many
+// blocking handlers never has more than the cap running at once. Unlike the
+// old blocking semaphore, dispatch itself never blocks the caller now — the
+// burst is fired from many goroutines (not the connection's reader) purely
+// so a burst larger than workQueueDepth+workerPoolSize can still be
+// delivered without any one dispatch call being dropped as overload.
 func TestDispatchBoundsConcurrencyPerConnection(t *testing.T) {
 	t.Parallel()
 
@@ -105,7 +110,7 @@ func TestDispatchBoundsConcurrencyPerConnection(t *testing.T) {
 
 	for i := 0; i < burst; i++ {
 		go func() {
-			c.dispatch("slow", func() {
+			c.dispatch("slow", "", func() {
 				n := atomic.AddInt32(&inFlight, 1)
 				for {
 					old := atomic.LoadInt32(&maxObserved)
@@ -120,23 +125,80 @@ func TestDispatchBoundsConcurrencyPerConnection(t *testing.T) {
 		}()
 	}
 
-	// Give the burst time to saturate the semaphore, then confirm the
+	// Give the burst time to saturate the worker pool, then confirm the
 	// observed concurrency never exceeded the configured cap.
 	time.Sleep(300 * time.Millisecond)
-	require.LessOrEqual(t, atomic.LoadInt32(&maxObserved), int32(maxConcurrentHandlersPerConn),
-		"in-flight handlers for one connection must never exceed the per-connection cap")
+	require.LessOrEqual(t, atomic.LoadInt32(&maxObserved), int32(workerPoolSize),
+		"in-flight handlers for one connection must never exceed the per-connection worker pool size")
 
 	close(release)
 	waitWithTimeout(t, &started, 5*time.Second)
 }
 
+// TestDispatchQueueFullRepliesOverloadWithoutBlockingCaller is the direct
+// unit-level counterpart of the #612 fix: once workerPoolSize handlers are
+// running AND workQueueDepth more are already queued behind them, a further
+// dispatch call must not block its caller — admission is a non-blocking
+// select, and the excess item is dropped with an EventError overload reply
+// instead. This is what makes it safe for dispatch to be called synchronously
+// from readPump's read loop (see TestReadPumpCancelBypassesQueuedWorkFrame
+// for the full end-to-end version going through the actual socket).
+func TestDispatchQueueFullRepliesOverloadWithoutBlockingCaller(t *testing.T) {
+	t.Parallel()
+
+	c := newClient(newHub(), nil)
+	c.send = make(chan []byte, workQueueDepth+workerPoolSize+256)
+	warmUpWorkerPool(t, c)
+
+	release := make(chan struct{})
+	defer close(release)
+
+	overflowRaw := saturateUntilSteadyOverload(t, c, release)
+
+	var overflowMsg WSMessage
+	require.NoError(t, json.Unmarshal(overflowRaw, &overflowMsg))
+	require.Equal(t, EventError, overflowMsg.Type, "an item that doesn't fit must be rejected with an overload EventError, not silently admitted")
+	require.Equal(t, "filler-id", overflowMsg.ID)
+
+	// Confirm the SAME non-blocking behavior for one more probe dispatch,
+	// this time asserting explicitly that the caller (this goroutine) is
+	// never blocked acquiring a slot — the actual #612 property under test.
+	done := make(chan struct{})
+	go func() {
+		c.dispatch("overflow", "overflow-id", func() {})
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("dispatch blocked its caller once the queue was full — admission must always be non-blocking")
+	}
+
+	var seen []string
+	ok := false
+	for deadline := time.Now().Add(time.Second); time.Now().Before(deadline) && !ok; {
+		select {
+		case raw := <-c.send:
+			seen = append(seen, string(raw))
+			var m WSMessage
+			if err := json.Unmarshal(raw, &m); err == nil && m.ID == "overflow-id" && m.Type == EventError {
+				ok = true
+			}
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	require.Truef(t, ok, "overflowing dispatch must reply with an overload EventError (frames seen on c.send while waiting: %v)", seen)
+}
+
 // TestDispatchControlBypassesWorkSemaphore is the regression test for the
-// bug fixed here: with maxConcurrentHandlersPerConn work handlers already
-// blocked/held open on one Client (simulating 12 long-running agent turns
-// in flight, exactly like TestDispatchBoundsConcurrencyPerConnection does),
-// a control-plane-shaped dispatch (dispatchControl, which is what
-// CmdCancelAgent/CmdInterruptAndSend now go through instead of dispatch)
-// must still complete promptly instead of queuing behind those 12 slots.
+// bug fixed here: with the work queue's slots (workerPoolSize running +
+// workQueueDepth queued) already occupied/held open on one Client
+// (simulating long-running agent turns in flight, exactly like
+// TestDispatchBoundsConcurrencyPerConnection does), a control-plane-shaped
+// dispatch (dispatchControl, which is what CmdCancelAgent/CmdInterruptAndSend
+// now go through instead of dispatch) must still complete promptly instead
+// of queuing behind those slots.
 //
 // Before the fix, dispatchControl didn't exist and control-plane commands
 // were routed through dispatch/c.sem — this test would time out waiting for
@@ -149,28 +211,29 @@ func TestDispatchControlBypassesWorkSemaphore(t *testing.T) {
 
 	c := newClient(newHub(), nil)
 
-	// Saturate the WORK semaphore with maxConcurrentHandlersPerConn handlers
-	// that block until the test releases them.
+	// Saturate the WORK queue with workerPoolSize handlers that block until
+	// the test releases them.
 	release := make(chan struct{})
 	var blocked sync.WaitGroup
-	blocked.Add(maxConcurrentHandlersPerConn)
-	for i := 0; i < maxConcurrentHandlersPerConn; i++ {
-		c.dispatch("slowWork", func() {
+	blocked.Add(workerPoolSize)
+	for i := 0; i < workerPoolSize; i++ {
+		c.dispatch("slowWork", "", func() {
 			blocked.Done()
 			<-release
 		})
 	}
-	// Wait for all of them to actually be running (i.e. the work semaphore
-	// is fully saturated) before exercising the control-plane path.
+	// Wait for all of them to actually be running (i.e. the work queue's
+	// worker pool is fully saturated) before exercising the control-plane path.
 	waitWithTimeout(t, &blocked, 2*time.Second)
 	defer close(release)
 
-	// Now dispatch a control-plane-shaped command. If it shared c.sem with
-	// the 12 blocked handlers above, this would hang until release fires.
+	// Now dispatch a control-plane-shaped command. If it shared the work
+	// queue/pool with the workerPoolSize blocked handlers above, this would
+	// hang until release fires.
 	var controlRan sync.WaitGroup
 	controlRan.Add(1)
 	start := time.Now()
-	c.dispatchControl("handleCancelAgent", func() {
+	c.dispatchControl("handleCancelAgent", "", func() {
 		defer controlRan.Done()
 	})
 	waitWithTimeout(t, &controlRan, time.Second)
@@ -180,64 +243,196 @@ func TestDispatchControlBypassesWorkSemaphore(t *testing.T) {
 		"control-plane dispatch must not queue behind saturated work handlers")
 }
 
-// TestDispatchControlDoesNotStarveWorkSemaphore proves the fix doesn't cut
-// both ways: dispatching control-plane commands (even many of them) must
-// never let them interfere with, or starve, the legitimate backpressure
+// TestDispatchControlDoesNotStarveWorkQueue proves the fix doesn't cut both
+// ways: dispatching control-plane commands (even many of them) must never
+// let them interfere with, or starve, the legitimate bounded-concurrency
 // applied to long-running work handlers. Concretely: saturating the work
-// semaphore still blocks a 13th work-shaped dispatch's CALLER exactly as
-// before, regardless of how many control-plane dispatches ran concurrently.
-func TestDispatchControlDoesNotStarveWorkSemaphore(t *testing.T) {
+// queue's running slots still leaves the queue's bounded-admission semantics
+// intact regardless of how many control-plane dispatches ran concurrently —
+// a dispatch call made once BOTH the running slots and the queue slots are
+// full is rejected with an overload reply rather than silently blocking or
+// silently being admitted past the cap.
+func TestDispatchControlDoesNotStarveWorkQueue(t *testing.T) {
 	t.Parallel()
 
 	c := newClient(newHub(), nil)
+	c.send = make(chan []byte, workQueueDepth+workerPoolSize+256)
+	warmUpWorkerPool(t, c)
 
 	release := make(chan struct{})
 
-	var blocked sync.WaitGroup
-	blocked.Add(maxConcurrentHandlersPerConn)
-	for i := 0; i < maxConcurrentHandlersPerConn; i++ {
-		c.dispatch("slowWork", func() {
-			blocked.Done()
-			<-release
-		})
-	}
-	waitWithTimeout(t, &blocked, 2*time.Second)
+	// Saturate the queue+pool to steady-state overload — see
+	// saturateUntilSteadyOverload's doc for why a single overload reply
+	// isn't a reliable saturation signal under -race scheduling variance.
+	saturateUntilSteadyOverload(t, c, release)
 
 	// Fire a burst of control-plane dispatches concurrently with the
-	// saturated work semaphore — none of this should affect sem's state.
+	// saturated work queue — none of this should affect the work queue's
+	// admission state.
 	const controlBurst = 50
 	var controlDone sync.WaitGroup
 	controlDone.Add(controlBurst)
 	for i := 0; i < controlBurst; i++ {
-		c.dispatchControl("handleCancelAgent", func() {
+		c.dispatchControl("handleCancelAgent", "", func() {
 			controlDone.Done()
 		})
 	}
 	waitWithTimeout(t, &controlDone, 2*time.Second)
 
-	// A 13th WORK-shaped dispatch must still block its caller (the sem is
-	// still fully saturated by the 12 handlers held open above) — this is
-	// the backpressure semantics #154 introduced and must be preserved.
-	acquired := make(chan struct{})
+	// The work queue is still fully saturated (nothing above can have freed
+	// a slot: every admitted filler blocks on <-release, and control-plane
+	// dispatches never touch the work queue at all). One more work-shaped
+	// dispatch, sent now, must be rejected with an overload reply rather
+	// than blocking the caller or silently exceeding the cap.
+	done := make(chan struct{})
 	go func() {
-		c.dispatch("oneMoreWork", func() {})
-		close(acquired)
+		c.dispatch("oneMoreWork", "one-more-id", func() {})
+		close(done)
 	}()
 
 	select {
-	case <-acquired:
-		t.Fatal("13th work dispatch acquired a semaphore slot while all 12 were still held — backpressure regressed")
-	case <-time.After(200 * time.Millisecond):
-		// Expected: still blocked waiting for a slot.
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("dispatch blocked its caller instead of rejecting once the queue was full — admission must always be non-blocking")
 	}
 
-	// Release the held handlers; the queued 13th dispatch must now proceed.
-	close(release)
+	require.Eventually(t, func() bool {
+		select {
+		case raw := <-c.send:
+			var m WSMessage
+			if err := json.Unmarshal(raw, &m); err == nil && m.ID == "one-more-id" && m.Type == EventError {
+				return true
+			}
+		default:
+		}
+		return false
+	}, time.Second, 10*time.Millisecond, "work dispatch sent while saturated must be rejected with overload, not silently admitted")
 
+	// Release the held handlers so the pool can drain.
+	close(release)
+}
+
+// saturateUntilSteadyOverload dispatches "filler" items (name "filler",
+// msgID "filler-id") against c, one at a time, each blocking on <-release,
+// until it observes a run of steadyOverloadStreak consecutive overload
+// replies in a row with no successful admission in between. It returns the
+// raw bytes of the LAST overload reply in that streak.
+//
+// Why a streak, not just the first overload: under heavy -race scheduling
+// (many parallel tests contending for OS threads), a single early overload
+// reply can be a false signal that the pool/queue aren't actually
+// warmed up yet — even after warmUpWorkerPool's two-wave barrier, a probe
+// dispatch sent immediately after finding "the" overload has repeatedly
+// been observed (in this file's own iteration history — see the #612
+// test-fix notes) to be admitted into a queue that still had free slots,
+// proving the earlier overload was transient, not steady-state saturation.
+// Requiring several overloads in an unbroken row is a much stronger signal:
+// once genuinely saturated (workerPoolSize running on <-release forever +
+// workQueueDepth queued), EVERY subsequent dispatch must overload, forever,
+// until release closes — so a streak can only end by transitioning to
+// "still not saturated, one more got admitted", never by chance.
+// dispatchBounded calls c.dispatch and fails the test if it does not return
+// promptly, instead of letting a blocking admission hang the whole package.
+//
+// This exists because of how a regression here actually presents. Reverting
+// dispatch's select/default back to a plain blocking send makes the very
+// first filler that fills the queue block THIS goroutine forever, inside
+// saturateUntilSteadyOverload's loop -- before the caller ever reaches its
+// own bounded probe further down. Measured: `go test ./internal/server/`
+// then ran until the 10-minute package timeout and reported
+// `panic: test timed out after 10m0s` with the goroutine parked in
+// (*Client).dispatch on a chan send. In CI that is a stuck job for the full
+// timeout, not a red test -- the same failure shape that cost this project
+// ten minutes per run when an unrelated pair of fixes interacted earlier in
+// this series. A regression should say what broke, immediately.
+//
+// The goroutine is deliberately not waited on when it does block: it stays
+// parked on the channel send until release closes, which is fine in an
+// already-failing test and is the only way to report the hang at all.
+func dispatchBounded(t *testing.T, c *Client, name, msgID string, fn func()) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		c.dispatch(name, msgID, fn)
+		close(done)
+	}()
 	select {
-	case <-acquired:
-	case <-time.After(2 * time.Second):
-		t.Fatal("13th work dispatch never acquired a slot after handlers were released")
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("dispatch(%q) blocked its caller: admission must be non-blocking so readPump is never trapped behind in-flight work (#612)", name)
+	}
+}
+
+func saturateUntilSteadyOverload(t *testing.T, c *Client, release chan struct{}) []byte {
+	t.Helper()
+	const steadyOverloadStreak = 8
+
+	streak := 0
+	var lastOverload []byte
+	const maxAttempts = (workerPoolSize + workQueueDepth) * 3
+	for i := 0; i < maxAttempts; i++ {
+		dispatchBounded(t, c, "filler", "filler-id", func() { <-release })
+		select {
+		case raw := <-c.send:
+			var m WSMessage
+			if json.Unmarshal(raw, &m) == nil && m.Type == EventError {
+				streak++
+				lastOverload = raw
+				if streak >= steadyOverloadStreak {
+					return lastOverload
+				}
+				continue
+			}
+			// Got a non-overload frame unexpectedly (shouldn't happen for
+			// "filler" dispatches) — treat as a broken streak, same as an
+			// admission, and keep going.
+			streak = 0
+		default:
+			// Admitted (no reply at all) — resets the streak; the pool/queue
+			// had a free slot this time, so saturation isn't steady yet.
+			streak = 0
+		}
+	}
+	t.Fatalf("never observed %d consecutive overload replies within %d filler dispatches — "+
+		"queue+pool did not reach steady saturation", steadyOverloadStreak, maxAttempts)
+	return nil
+}
+
+// warmUpWorkerPool blocks until all workerPoolSize worker goroutines for c
+// (started lazily by newClient/startWorkers) have actually begun running —
+// i.e. each has pulled at least one item off c.workQueue and started
+// executing it. Without this, a test that immediately fires a tight,
+// synchronous burst of workerPoolSize+workQueueDepth dispatch calls can
+// outrun goroutine startup: if none of the workerPoolSize workers have been
+// scheduled by the Go runtime yet, the queue's workQueueDepth buffer alone
+// isn't enough room for `total` items and dispatch's overload branch fires
+// during what was meant to be pure saturation setup — flaky under -race,
+// where goroutine scheduling latency is highest. Calling this first pins
+// down "the pool is alive and ready to drain concurrently" as a precondition
+// instead of an assumption.
+func warmUpWorkerPool(t *testing.T, c *Client) {
+	t.Helper()
+	// Two waves, not one: after the first wave's workerPoolSize items each
+	// signal Done() and return, there is a brief window before every worker
+	// goroutine has actually looped back to `range c.workQueue` and is ready
+	// to receive again — a caller proceeding immediately after only the
+	// first wave can race ahead of that and observe fewer than
+	// workerPoolSize workers truly ready, undercounting how much of a
+	// saturating burst gets admitted before overload (found via repeated
+	// -race runs: a "queue full" reply for an early filler item was
+	// observed while len(c.workQueue) was still well under workQueueDepth,
+	// meaning saturation was declared before the pool had actually caught
+	// up). A second wave of exactly workerPoolSize items can only have ALL
+	// of its items start running if every one of the workerPoolSize workers
+	// independently reset and picked one up — that's the actual proof the
+	// pool is fully ready, not just "started once".
+	for wave := 0; wave < 2; wave++ {
+		var started sync.WaitGroup
+		started.Add(workerPoolSize)
+		for i := 0; i < workerPoolSize; i++ {
+			c.dispatch("warmup", "", func() { started.Done() })
+		}
+		waitWithTimeout(t, &started, 5*time.Second)
 	}
 }
 
