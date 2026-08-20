@@ -21,45 +21,132 @@ import "sync"
 // which is only true for ONE of (at least) five possible outcomes — see
 // classifyBackgroundOutcome in run_queue_drain_session.go.
 type admissionEntry struct {
-	// done is closed exactly once, after err has been written, by whichever
-	// release closure admitSession handed out for this session. Closing it
-	// (rather than e.g. a sync.WaitGroup) lets any number of waiters observe
-	// completion via select alongside their own ctx.Done(), so a caller
-	// waiting on someone else's execution is never stuck if its own context
-	// ends first.
+	// done is closed exactly once, after outcome has been written, by
+	// whichever release closure admitSession handed out for this session.
+	// Closing it (rather than e.g. a sync.WaitGroup) lets any number of
+	// waiters observe completion via select alongside their own ctx.Done(),
+	// so a caller waiting on someone else's execution is never stuck if its
+	// own context ends first.
 	done chan struct{}
 
-	// err is the terminal outcome of the admitted execution, valid to read
-	// only after done is closed — done's close is the happens-before edge,
-	// exactly like a context's Done/Err pair, so err itself needs no
-	// separate synchronization. It is either:
-	//
-	//   - whatever executeEntrySync returned for THIS row, if the admitted
-	//     caller actually called it: nil for an acked success, or one of
-	//     ErrCallQueuedNotExecuted, *SessionLockBusyError,
-	//     ErrTurnCommitFailed, errLeaseLost, an AlreadyAttempted-wrapping
-	//     terminal failure, or an ordinary retryable failure; or
-	//   - errNoExecutionAttempted, if the admitted caller held this slot but
-	//     never called executeEntrySync at all (an early-return path — see
-	//     that sentinel's own doc for the full enumeration).
-	//
-	// The two must never be conflated: nil is ALSO executeEntrySync's own
-	// "clean commit" return value, so a release call that has nothing
-	// executed to report must publish errNoExecutionAttempted, never a bare
-	// nil — a caller waiting on this entry cannot otherwise distinguish "a
-	// continuation committed" from "nothing happened here, go look
-	// elsewhere" (the hole task #575's coordinator review found and this
-	// sentinel closes).
-	//
-	// A caller that runs executeEntrySync itself (DrainSessionNow's own
-	// leasing branch, or processEntry's background dispatch) does not need
-	// to read this field for ITS OWN outcome — it already has execErr
-	// directly. This field matters only to a SECOND caller observing the
-	// FIRST caller's execution, and both DrainSessionNow branches funnel
-	// their outcome (self-executed or observed-via-wait) through the same
-	// classifyBackgroundOutcome helper, so the two paths cannot disagree
-	// about what a given error means.
+	// outcome is the terminal outcome of the admitted execution, valid to
+	// read only after done is closed — done's close is the happens-before
+	// edge, exactly like a context's Done/Err pair, so outcome itself needs
+	// no separate synchronization. See admissionOutcome's own doc for what
+	// it carries and why a bare error is not enough (task #613 of the
+	// 2026-08-20 read-only release review, F3/F4): the row-scoped
+	// `{rowID, kind, err}` shape is what lets a terminal deletion be
+	// published as a row-scoped failure instead of indistinguishable from
+	// "nothing happened", and lets an observed outcome be recorded under
+	// its OWN row ID instead of a synthetic one a later same-row success
+	// can never clear.
+	outcome admissionOutcome
+}
+
+// outcomeKind classifies what admitSession's admitted caller actually did
+// with the session before releasing it — the piece task #613 (F3/F4 of the
+// 2026-08-20 read-only release review) found missing from the pre-existing
+// bare `err error` handoff. A bare error can express "something went wrong"
+// but not WHICH of these fundamentally different situations produced it,
+// and two of them (outcomeNoRowTouched and outcomeTerminalFailed) used to be
+// published through the exact same errNoExecutionAttempted sentinel even
+// though one is a harmless early return and the other is a destructive,
+// row-scoped DELETE.
+type outcomeKind int
+
+const (
+	// outcomeNoRowTouched means the admitted caller held the session's
+	// admission slot but never durably touched any row — an early-return
+	// path (busy-backoff, worker-pool-full, a raced lease, no-coordinator
+	// scan mode, a shutdown-in-progress nack, DrainSessionNow's own
+	// "nothing pending" bottom path, or a pre-execution DB/ctx failure). No
+	// row identity to report; a waiter must retry admission itself.
+	outcomeNoRowTouched outcomeKind = iota
+
+	// outcomeExecuted means executeEntrySync actually ran the row and
+	// reached SOME resolution — success, a terminal AlreadyAttempted
+	// failure, ErrTurnCommitFailed, errLeaseLost, or an ordinary retryable
+	// failure. rowID is always set; err is nil only for a clean commit.
+	outcomeExecuted
+
+	// outcomeTerminalDeleted means a row was leased and terminal-failed
+	// (DELETEd) WITHOUT ever calling executeEntrySync — the
+	// attempts-exhausted fast path in processEntry and DrainSessionNow's
+	// mirror of it. Distinguishing this from outcomeNoRowTouched is the
+	// core of task #613/F3: this is destructive, row-scoped bookkeeping
+	// that a waiter must learn about, even though no model/tool call was
+	// ever attempted. rowID is always set. err is nil when the terminal
+	// write itself succeeded (still a real, row-scoped failure — the row
+	// this outcome is ABOUT ended in dead-letter, not a nil meaning
+	// "nothing happened"); non-nil when the terminal write ITSELF failed,
+	// in which case the row's fate is unconfirmed, not "no-op" (F3's second
+	// bad branch).
+	outcomeTerminalDeleted
+
+	// outcomeBusy means a genuinely different, live owner holds the session
+	// right now (ErrCallQueuedNotExecuted / SessionLockBusyError). No row
+	// was touched by THIS caller. Kept distinct from outcomeNoRowTouched
+	// only insofar as classifyBackgroundOutcome's stopNow semantics depend
+	// on it — see that function's own doc.
+	outcomeBusy
+)
+
+// admissionOutcome is the typed replacement for admitSession's release
+// closure's former bare `error` parameter (task #613 of the 2026-08-20
+// read-only release review, findings F3 and F4). The root cause both
+// findings shared: admissionEntry published only an error, with no row
+// identity and no outcome kind, so a destructive terminal deletion was
+// indistinguishable from a harmless early return (F3), and an observed
+// outcome had no row ID a later same-row success could use to clear it
+// (F4, forcing every observed failure into a synthetic, never-clearable
+// `__unattributed_N` ledger key even when the row ID was perfectly known).
+type admissionOutcome struct {
+	// rowID is the durable run_queue row this outcome is ABOUT, when known.
+	// Empty for outcomeNoRowTouched and outcomeBusy (no row was touched by
+	// this caller). Always set for outcomeExecuted and outcomeTerminalDeleted.
+	rowID string
+
+	// kind classifies what happened — see outcomeKind's own doc.
+	kind outcomeKind
+
+	// err is the specific error, if any. Its meaning depends on kind: for
+	// outcomeExecuted, nil means a clean commit (mirrors executeEntrySync's
+	// own nil-on-success return); for outcomeTerminalDeleted, nil means the
+	// terminal DELETE itself succeeded (the row is STILL a failure — see
+	// outcomeTerminalDeleted's own doc — nil here is not "nothing
+	// happened"); non-nil for outcomeTerminalDeleted means the terminal
+	// write itself failed, leaving the row's fate unconfirmed.
 	err error
+}
+
+// noRowTouched builds the outcome every early-return admission release must
+// publish: no durable row was touched, so a waiter must retry admission
+// itself. This replaces the bare errNoExecutionAttempted sentinel at call
+// sites, though that sentinel's error identity is preserved (see its own
+// doc) for any caller still matching on it directly.
+func noRowTouched() admissionOutcome {
+	return admissionOutcome{kind: outcomeNoRowTouched, err: errNoExecutionAttempted}
+}
+
+// busyOutcome builds the outcome an admission release must publish when a
+// genuinely different, live owner holds the session right now.
+func busyOutcome(err error) admissionOutcome {
+	return admissionOutcome{kind: outcomeBusy, err: err}
+}
+
+// executedOutcome builds the outcome an admission release must publish
+// after executeEntrySync actually ran rowID to some resolution.
+func executedOutcome(rowID string, err error) admissionOutcome {
+	return admissionOutcome{rowID: rowID, kind: outcomeExecuted, err: err}
+}
+
+// terminalDeletedOutcome builds the outcome an admission release must
+// publish when rowID was terminal-failed (deleted) WITHOUT ever calling
+// executeEntrySync. termErr is the terminal DELETE's own error, if the
+// write itself failed (nil means the write succeeded and the row is a
+// confirmed dead-letter) — see outcomeTerminalDeleted's own doc.
+func terminalDeletedOutcome(rowID string, termErr error) admissionOutcome {
+	return admissionOutcome{rowID: rowID, kind: outcomeTerminalDeleted, err: termErr}
 }
 
 // admitSession atomically reserves sessionID for exactly one execution by
@@ -124,7 +211,7 @@ type admissionEntry struct {
 // release racing an explicit one on a shared error path) contribute nothing
 // further, exactly like the previous struct{}-map version's once-only
 // delete.
-func (p *RunQueuePump) admitSession(sessionID string) (release func(outcome error), entry *admissionEntry, admitted bool) {
+func (p *RunQueuePump) admitSession(sessionID string) (release func(outcome admissionOutcome), entry *admissionEntry, admitted bool) {
 	p.inFlightMu.Lock()
 	defer p.inFlightMu.Unlock()
 
@@ -140,9 +227,9 @@ func (p *RunQueuePump) admitSession(sessionID string) (release func(outcome erro
 	p.inFlight[sessionID] = e
 
 	var once sync.Once
-	return func(outcome error) {
+	return func(outcome admissionOutcome) {
 		once.Do(func() {
-			e.err = outcome
+			e.outcome = outcome
 			close(e.done)
 
 			p.inFlightMu.Lock()
@@ -159,11 +246,23 @@ func (p *RunQueuePump) admitSession(sessionID string) (release func(outcome erro
 // and that only the admitted caller can clear the marker — can be asserted
 // directly instead of only inferred from a race that has to be provoked.
 //
+// The returned release closure keeps taking a plain `error` (not the
+// internal admissionOutcome type) so pre-existing tests calling
+// release(nil)/release(someErr) keep compiling unchanged — this seam wraps
+// the value into an executedOutcome with no row ID, which is an accurate
+// stand-in for "some outcome happened" for every existing caller of this
+// seam, none of which assert on outcome kind or row ID.
+//
 // Test-only seam. Nothing in the production paths calls it; they call
 // admitSession, which this forwards to unchanged.
 func (p *RunQueuePump) AdmitSessionForTest(sessionID string) (release func(outcome error), admitted bool) {
 	rel, _, ok := p.admitSession(sessionID)
-	return rel, ok
+	if rel == nil {
+		return nil, ok
+	}
+	return func(outcome error) {
+		rel(executedOutcome("", outcome))
+	}, ok
 }
 
 // AdmissionEntryHandleForTest is an opaque, exported handle around the
@@ -181,11 +280,11 @@ func (h AdmissionEntryHandleForTest) Done() <-chan struct{} {
 	return h.e.done
 }
 
-// Err returns the referenced execution's outcome. Only valid to call after
-// Done() has closed — mirrors admissionEntry.err's own happens-before
-// contract. Test-only.
+// Err returns the referenced execution's outcome error. Only valid to call
+// after Done() has closed — mirrors admissionEntry.outcome's own
+// happens-before contract. Test-only.
 func (h AdmissionEntryHandleForTest) Err() error {
-	return h.e.err
+	return h.e.outcome.err
 }
 
 // AdmitSessionObservedEntryForTest exposes admitSession's REFUSED-branch

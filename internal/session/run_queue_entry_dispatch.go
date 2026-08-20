@@ -46,24 +46,30 @@ func (p *RunQueuePump) processEntry(ctx context.Context, entry *RunQueueEntry) {
 	// does NOT is the successful dispatch at the end, which hands
 	// releaseSession to the executeEntry goroutine that now owns it.
 	//
-	// Every early-return release here passes errNoExecutionAttempted, NOT
-	// nil: nothing executed for the row on these paths (attempts-exhausted
-	// terminal-fail, no coordinator, lease raced away, shutdown-in-progress
-	// nack), so there is no executeEntrySync outcome to publish for a
-	// concurrent DrainSessionNow that may be waiting on this admission —
-	// and nil is NOT a safe stand-in for "nothing happened": it is also
-	// executeEntrySync's own return value for a clean commit, so a bare nil
-	// here would be classified by classifyBackgroundOutcome as a false
-	// success (task #575's coordinator review — this exact line used to say
-	// "passes nil" while explaining why nil must never reach the waiter,
-	// which is not the same claim as the code making it true). The waiter
-	// must fall through to retrying admission itself, not be handed a
-	// fabricated outcome — errNoExecutionAttempted is what
+	// Every early-return release here defaults to noRowTouched(), NOT a bare
+	// nil: nothing executed for the row on these paths (no coordinator,
+	// lease raced away, shutdown-in-progress nack), so there is no
+	// executeEntrySync outcome to publish for a concurrent DrainSessionNow
+	// that may be waiting on this admission — and nil is NOT a safe
+	// stand-in for "nothing happened": it is also executeEntrySync's own
+	// return value for a clean commit, so a bare nil here would be
+	// classified by classifyBackgroundOutcome as a false success (task
+	// #575's coordinator review). The waiter must fall through to retrying
+	// admission itself, not be handed a fabricated outcome —
+	// noRowTouched()'s outcomeNoRowTouched kind is what
 	// classifyBackgroundOutcome maps to that fallthrough.
+	//
+	// ONE early-return path below (attempts-exhausted terminal-fail)
+	// overrides this default explicitly via a named release variable
+	// (releaseOutcome), because task #613/F3 found that path was
+	// PUBLISHING THE SAME noRowTouched()/errNoExecutionAttempted default as
+	// every harmless early return here, even though it just DELETED the
+	// row — see that branch's own comment.
 	sessionHandedOff := false
+	releaseOutcome := noRowTouched()
 	defer func() {
 		if !sessionHandedOff {
-			releaseSession(errNoExecutionAttempted)
+			releaseSession(releaseOutcome)
 		}
 	}()
 
@@ -139,9 +145,25 @@ func (p *RunQueuePump) processEntry(ctx context.Context, entry *RunQueueEntry) {
 			releaseSlot()
 			return
 		}
-		if err := p.cfg.Sessions.TerminalFailRunQueueEntry(ctx, leased.ID, p.cfg.PumpInstanceID); err != nil {
-			slog.Error("run_queue_pump: terminal fail failed", "id", leased.ID, "session_id", leased.SessionID, "err", err, "instance_id", p.cfg.PumpInstanceID)
+		// task #613/F3: this row was just DELETED by TerminalFailRunQueueEntry
+		// (or, if that write itself failed, its fate is unconfirmed) — NOT
+		// "nothing happened". The pre-fix code published the SAME
+		// errNoExecutionAttempted default every harmless early return in
+		// this function uses, which a waiting DrainSessionNow mapped to
+		// "loop and inspect pending work" without ever recording a failure.
+		// If that waiter had already observed an earlier row's success, its
+		// next empty pending scan would then report DrainComplete — exit 0
+		// over a row that was actually discarded to dead-letter. Publish a
+		// row-scoped terminalDeletedOutcome instead: termErr nil means the
+		// DELETE itself succeeded (still a real failure — see
+		// outcomeTerminalDeleted's own doc), non-nil means even the
+		// terminal write failed, leaving the row's fate unconfirmed rather
+		// than silently swallowed.
+		termErr := p.cfg.Sessions.TerminalFailRunQueueEntry(ctx, leased.ID, p.cfg.PumpInstanceID)
+		if termErr != nil {
+			slog.Error("run_queue_pump: terminal fail failed", "id", leased.ID, "session_id", leased.SessionID, "err", termErr, "instance_id", p.cfg.PumpInstanceID)
 		}
+		releaseOutcome = terminalDeletedOutcome(leased.ID, termErr)
 		releaseSlot()
 		return
 	}
@@ -223,16 +245,19 @@ func (p *RunQueuePump) processEntry(ctx context.Context, entry *RunQueueEntry) {
 // releaseSession is processEntry's admitSession closure, handed over rather
 // than re-derived: only the caller that was admitted may clear the marker
 // (see admitSession), and after this handoff that caller is this goroutine.
-// It now takes the executeEntrySync outcome (task #575 of the 2026-08-19
-// release-readiness review): DrainSessionNow, when it loses the admission
-// race against this goroutine, waits on the admissionEntry this release call
-// publishes and must be able to read the same outcome this function itself
-// observed, or it has no way to distinguish a committed turn from a
-// terminal failure, a failed Ack, or a lost lease — all four used to be
-// indistinguishable from outside this goroutine, and DrainSessionNow's own
-// doc used to call that out as a known, accepted residual gap. It no longer
-// needs to be one.
-func (p *RunQueuePump) executeEntry(ctx context.Context, leased *RunQueueEntry, releaseSession func(outcome error)) {
+// It now takes a typed admissionOutcome carrying the executeEntrySync
+// outcome AND leased.ID (task #575 of the 2026-08-19 release-readiness
+// review, row identity added by task #613 of the 2026-08-20 read-only
+// release review): DrainSessionNow, when it loses the admission race
+// against this goroutine, waits on the admissionEntry this release call
+// publishes and must be able to read the same outcome — AND the same row
+// ID — this function itself observed, or it has no way to distinguish a
+// committed turn from a terminal failure, a failed Ack, or a lost lease
+// (all four used to be indistinguishable from outside this goroutine), and
+// no way to later supersede an observed failure with a same-row retry
+// success instead of stranding it under a synthetic, unclearable key (task
+// #613/F4).
+func (p *RunQueuePump) executeEntry(ctx context.Context, leased *RunQueueEntry, releaseSession func(outcome admissionOutcome)) {
 	defer p.workerWg.Done()
 
 	// Release the semaphore slot when execution completes (P1-4).
@@ -253,10 +278,10 @@ func (p *RunQueuePump) executeEntry(ctx context.Context, leased *RunQueueEntry, 
 	var execErr error
 	defer func() {
 		if r := recover(); r != nil {
-			releaseSession(fmt.Errorf("run_queue_pump: executeEntrySync panicked: %v", r))
+			releaseSession(executedOutcome(leased.ID, fmt.Errorf("run_queue_pump: executeEntrySync panicked: %v", r)))
 			panic(r) // preserve normal panic propagation/crash behavior
 		}
-		releaseSession(execErr)
+		releaseSession(executedOutcome(leased.ID, execErr))
 	}()
 
 	// executeEntrySync's return value already carries everything any

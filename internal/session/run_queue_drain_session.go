@@ -562,29 +562,59 @@ func (p *RunQueuePump) DrainSessionNow(ctx context.Context, sessionID string) (D
 			case <-otherEntry.done:
 			}
 
-			// otherEntry.err is now safe to read: done's close happens-after
-			// the write (see admissionEntry's own doc). Classify it through
-			// the exact same helper the executed-here branch below uses, and
-			// apply it with the exact same loop-vs-return shape: only the
-			// "busy, nothing ran" outcome returns immediately (see
-			// classifyBackgroundOutcome's own doc for why every other
-			// outcome instead loops back to check for more pending work).
-			outcomeDrained, outcomeErr, stopNow := classifyBackgroundOutcome(otherEntry.err)
+			// otherEntry.outcome is now safe to read: done's close
+			// happens-after the write (see admissionEntry's own doc).
+			// Classify it through the exact same helper the executed-here
+			// branch below uses, and apply it with the exact same
+			// loop-vs-return shape: only the "busy, nothing ran" outcome
+			// returns immediately (see classifyBackgroundOutcome's own doc
+			// for why every other outcome instead loops back to check for
+			// more pending work).
+			outcomeDrained, outcomeRowID, outcomeErr, stopNow := classifyBackgroundOutcome(otherEntry.outcome)
 			if outcomeDrained {
 				// This outcome came from admissionEntry.done, which only
 				// closes AFTER the other execution's own Ack/Nack/
 				// TerminalFail write has already landed (see
 				// admissionEntry's doc) -- it is a fully resolved, known
-				// outcome. It is NOT, however, a row this call leased
-				// itself, so there is no ID here this call could use to
-				// later supersede it via its OWN retry -- record it as
-				// unattributed rather than either fabricating an ID or
-				// (the pre-#592 bug) letting it share the single
-				// session-wide 'err' slot a later, unrelated row could
-				// silently overwrite.
-				if outcomeErr != nil {
+				// outcome.
+				//
+				// task #613/F4: when the OTHER execution's outcome carries a
+				// row ID (outcomeExecuted or outcomeTerminalDeleted --
+				// always true once execution genuinely happened, since
+				// admitSession's admitted caller always knows which row it
+				// leased), record it under THAT SAME row ID via the
+				// ordinary recordFailure/recordSuccess path -- exactly like
+				// the executed-here branch below -- so a LATER resolution of
+				// the SAME logical row (whether observed via a second wait,
+				// or locally leased and executed by THIS call's own retry)
+				// can supersede it via recordSuccess(rowID). The pre-#613
+				// code always fell back to a synthetic
+				// __unattributed_N key here regardless of whether the row ID
+				// was known, which made an observed retryable failure
+				// permanently unclearable even by a same-row success this
+				// call went on to execute itself -- see recordUnattributed's
+				// own doc for why a synthetic key can NEVER be cleared, and
+				// this file's own header comment for the false-DrainFailed
+				// sequence this produced (F4).
+				//
+				// A row ID is only ever absent here for outcomeNoRowTouched
+				// (never reaches this branch -- outcomeDrained is false for
+				// it) or outcomeBusy (also never reaches this branch --
+				// handled entirely by stopNow below), so outcomeRowID is
+				// unconditionally non-empty whenever outcomeDrained is true;
+				// the empty-ID fallback exists only as defense in depth
+				// against a future outcomeKind that reaches this branch
+				// without one.
+				switch {
+				case outcomeRowID != "":
+					if outcomeErr != nil {
+						ledger.recordFailure(outcomeRowID, outcomeErr)
+					} else {
+						ledger.recordSuccess(outcomeRowID)
+					}
+				case outcomeErr != nil:
 					ledger.recordUnattributed(outcomeErr)
-				} else {
+				default:
 					// A genuine observed success has no row identity to
 					// clear either -- but there is nothing in the ledger
 					// FOR this wait's own row to clear (unattributed
@@ -622,20 +652,20 @@ func (p *RunQueuePump) DrainSessionNow(ctx context.Context, sessionID string) (D
 		leased, leaseErr := p.cfg.Sessions.LeaseRunQueueEntry(ctx, sessionID, p.cfg.PumpInstanceID, p.leaseTTL())
 		if leaseErr != nil {
 			// The lease ATTEMPT failed (a DB error) -- executeEntrySync was
-			// never reached, so nothing executed. Publish
-			// errNoExecutionAttempted, not leaseErr itself: leaseErr is
-			// non-nil, but classifyBackgroundOutcome does not treat "err is
-			// non-nil" as the signal for "nothing happened" -- only
-			// ErrCallQueuedNotExecuted/SessionLockBusyError and
-			// errNoExecutionAttempted map to stopNow/no-drain. Publishing
-			// leaseErr directly would fall through to
-			// classifyBackgroundOutcome's default branch and tell a waiting
-			// DrainSessionNow that an execution genuinely happened here,
-			// which is false -- this call's own return value (leaseErr,
-			// non-nil) is what correctly reports the failure to THIS call's
-			// own caller; the outcome published to a DIFFERENT, waiting
-			// caller must instead say "nothing ran, retry admission".
-			releaseSession(errNoExecutionAttempted)
+			// never reached, so no durable row was touched. Publish
+			// noRowTouched(), not an outcome carrying leaseErr itself:
+			// leaseErr is non-nil, but classifyBackgroundOutcome does not
+			// treat "err is non-nil" as the signal for "nothing happened" --
+			// only outcomeBusy and outcomeNoRowTouched map to
+			// stopNow/no-drain. Publishing leaseErr directly (as an executed
+			// outcome) would fall through to classifyBackgroundOutcome's
+			// default branch and tell a waiting DrainSessionNow that an
+			// execution genuinely happened here, which is false -- this
+			// call's own return value (leaseErr, non-nil) is what correctly
+			// reports the failure to THIS call's own caller; the outcome
+			// published to a DIFFERENT, waiting caller must instead say
+			// "nothing ran, retry admission".
+			releaseSession(noRowTouched())
 			result, _ := ledger.verdict(false)
 			if result == DrainNoWork {
 				return DrainNoWork, leaseErr
@@ -670,17 +700,22 @@ func (p *RunQueuePump) DrainSessionNow(ctx context.Context, sessionID string) (D
 					slog.Error("run_queue_pump: DrainSessionNow terminal fail failed", "id", leased.ID, "session_id", sessionID, "err", termErr, "instance_id", p.cfg.PumpInstanceID)
 				}
 				ledger.recordFailure(leased.ID, fmt.Errorf("run queue entry %q exceeded max attempts", leased.ID))
-				// This row was terminal-failed by a DIRECT write here, not
-				// by executeEntrySync -- mirrors processEntry's own
-				// attempts-exhausted branch, which never calls
-				// executeEntrySync either and releases with
-				// errNoExecutionAttempted for the same reason (see that
-				// sentinel's doc). A waiter must not be told an execution
-				// happened: this call's OWN ledger already carries the
-				// max-attempts failure for its own caller; what a
-				// DIFFERENT, waiting caller needs is "nothing ran, retry
-				// admission and look for other pending work".
-				releaseSession(errNoExecutionAttempted)
+				// task #613/F3: this row was terminal-failed (DELETED) by a
+				// DIRECT write here, not by executeEntrySync -- mirrors
+				// processEntry's own attempts-exhausted branch (see its own
+				// comment). THIS call's own ledger already carries the
+				// max-attempts failure for its own caller (recordFailure
+				// above), so this call's own return value is correct
+				// regardless. But a DIFFERENT, waiting caller needs to learn
+				// the SAME thing: publishing noRowTouched() here (the pre-#613
+				// behavior) told a waiter "nothing ran, retry admission and
+				// look for other pending work" -- indistinguishable from a
+				// harmless early return, even though the row is now
+				// permanently gone. Publish a row-scoped
+				// terminalDeletedOutcome instead, so a waiter records the
+				// SAME failure this call just recorded, under the SAME row
+				// ID, instead of silently losing it.
+				releaseSession(terminalDeletedOutcome(leased.ID, termErr))
 				continue
 			}
 
@@ -695,10 +730,11 @@ func (p *RunQueuePump) DrainSessionNow(ctx context.Context, sessionID string) (D
 				//
 				// executeEntrySync was never reached -- this call's own ctx
 				// ended before an execution slot was even available -- so a
-				// waiter must be told errNoExecutionAttempted, not ctx.Err()
-				// itself: like the leaseErr case above, a non-nil error here
-				// is not the signal classifyBackgroundOutcome looks for.
-				releaseSession(errNoExecutionAttempted)
+				// waiter must be told noRowTouched(), not an outcome carrying
+				// ctx.Err() itself: like the leaseErr case above, a non-nil
+				// error here is not the signal classifyBackgroundOutcome
+				// looks for.
+				releaseSession(noRowTouched())
 				nackCtx, nackCancel := context.WithTimeout(context.Background(), p.dbWriteTimeout())
 				if nackErr := p.cfg.Sessions.NackRunQueueEntryNoAttemptPenalty(nackCtx, leased.ID, p.cfg.PumpInstanceID, "run_queue_pump: DrainSessionNow's ctx ended before an execution slot was available"); nackErr != nil {
 					slog.Error("run_queue_pump: DrainSessionNow release-on-ctx-done nack failed", "id", leased.ID, "session_id", sessionID, "err", nackErr, "instance_id", p.cfg.PumpInstanceID)
@@ -734,7 +770,7 @@ func (p *RunQueuePump) DrainSessionNow(ctx context.Context, sessionID string) (D
 			p.admitMu.Unlock()
 
 			if stopping {
-				releaseSession(ErrCallQueuedNotExecuted)
+				releaseSession(busyOutcome(ErrCallQueuedNotExecuted))
 				<-p.execSem
 				nackCtx, nackCancel := context.WithTimeout(context.Background(), p.dbWriteTimeout())
 				if nackErr := p.cfg.Sessions.NackRunQueueEntryNoAttemptPenalty(nackCtx, leased.ID, p.cfg.PumpInstanceID, "run_queue_pump: DrainSessionNow declined to start because the pump is stopping"); nackErr != nil {
@@ -753,7 +789,7 @@ func (p *RunQueuePump) DrainSessionNow(ctx context.Context, sessionID string) (D
 			p.workerWg.Done()
 
 			<-p.execSem
-			releaseSession(execErr)
+			releaseSession(executedOutcome(leased.ID, execErr))
 
 			// Classify through the same helper the wait branch above uses.
 			// Only the "busy, nothing ran" outcome returns immediately --
@@ -764,7 +800,7 @@ func (p *RunQueuePump) DrainSessionNow(ctx context.Context, sessionID string) (D
 			// stacked interrupt), exactly as the pre-existing "turn actually
 			// ran" branch below already did before this outcome could also
 			// arrive via a wait.
-			outcomeDrained, outcomeErr, stopNow := classifyBackgroundOutcome(execErr)
+			outcomeDrained, _, outcomeErr, stopNow := classifyBackgroundOutcome(executedOutcome(leased.ID, execErr))
 			if outcomeDrained {
 				if outcomeErr == nil {
 					// A clean success: THIS row's ID is known (leased.ID),
@@ -846,7 +882,7 @@ func (p *RunQueuePump) DrainSessionNow(ctx context.Context, sessionID string) (D
 		// already leased and marked. It now runs before leasing, at the top
 		// of the loop.
 		//
-		// errNoExecutionAttempted, not nil: nil is executeEntrySync's own
+		// noRowTouched(), not a bare nil: nil is executeEntrySync's own
 		// return value for a clean commit, and a nil outcome published here
 		// would be indistinguishable from one to a second, concurrent
 		// DrainSessionNow call that lost the admission race against THIS
@@ -856,7 +892,7 @@ func (p *RunQueuePump) DrainSessionNow(ctx context.Context, sessionID string) (D
 		// a second process leases the row first, this call's own leased ==
 		// nil branch below is what runs, and the OLD nil here is exactly
 		// what a waiting drain would misread as success).
-		releaseSession(errNoExecutionAttempted)
+		releaseSession(noRowTouched())
 
 		// P2-1 fix: the ledger's terminal read may still describe a row
 		// this call Nacked on an EARLIER iteration and no longer has any
@@ -993,112 +1029,152 @@ func isOrdinaryRetryableOutcome(execErr error) bool {
 // classifyBackgroundOutcome interprets an admitSession release outcome --
 // whether obtained by calling executeEntrySync directly, or by waiting on
 // another local execution's admissionEntry and reading what IT published --
-// into the three shapes DrainSessionNow's contract distinguishes. The input
-// is NOT always an executeEntrySync return value: it may also be
-// errNoExecutionAttempted, published by an admission holder that never
-// called executeEntrySync at all (see that sentinel's own doc) -- the three
-// input categories below are mutually exclusive and checked in this order:
+// into the shapes DrainSessionNow's contract distinguishes. The input is a
+// typed admissionOutcome (task #613 of the 2026-08-20 read-only release
+// review; previously a bare `error`, which is what let F3 conflate a
+// destructive terminal deletion with a harmless early return -- see
+// admissionOutcome's own doc), switched on outcome.kind:
 //
-//   - errNoExecutionAttempted (own branch, checked first): the admission
-//     holder never called executeEntrySync. Nothing happened, and nothing
-//     is known about whether the row is still pending. Result:
-//     (drained=false, outcomeErr=nil, stopNow=false) -- fall through and
-//     retry admission; the caller that lost this race is not entitled to
-//     assume there is nothing left to do just because ONE other holder did
-//     nothing.
-//   - ErrCallQueuedNotExecuted / SessionLockBusyError: a genuinely
-//     DIFFERENT, live owner holds the session right now (not a same-pump
-//     early return). Result: (drained=false, outcomeErr=nil, stopNow=true)
-//     -- stop immediately; waiting for a stranger's turn is not
-//     DrainSessionNow's job.
-//   - everything else (a clean commit via nil, a terminal AlreadyAttempted
-//     failure, ErrTurnCommitFailed, errLeaseLost, or an ordinary retryable
-//     failure): executeEntrySync genuinely ran and reached SOME resolution.
-//     Result: (drained=true, outcomeErr=execErr, stopNow=false) -- fold the
-//     outcome into the caller's row ledger and loop to check for more
+//   - outcomeNoRowTouched: the admission holder never durably touched any
+//     row. Nothing happened, and nothing is known about whether some OTHER
+//     row is still pending. Result: (drained=false, rowID="", outcomeErr=nil,
+//     stopNow=false) -- fall through and retry admission; the caller that
+//     lost this race is not entitled to assume there is nothing left to do
+//     just because ONE other holder touched nothing.
+//   - outcomeBusy: a genuinely DIFFERENT, live owner holds the session right
+//     now (not a same-pump early return). Result: (drained=false, rowID="",
+//     outcomeErr=nil, stopNow=true) -- stop immediately; waiting for a
+//     stranger's turn is not DrainSessionNow's job.
+//   - outcomeTerminalDeleted: task #613/F3's fix. A row was leased and
+//     terminal-failed (DELETEd) WITHOUT ever calling executeEntrySync. This
+//     is NOT "nothing happened" -- it is a row-scoped, destructive
+//     bookkeeping outcome that must reach a waiter as a FAILURE tied to
+//     outcome.rowID, exactly like a genuine execution's terminal failure
+//     would. Result: (drained=true, rowID=outcome.rowID, outcomeErr=a
+//     non-nil error describing the dead-letter (synthesized here if
+//     outcome.err was nil, i.e. the terminal DELETE itself succeeded),
+//     stopNow=false).
+//   - outcomeExecuted: executeEntrySync genuinely ran the row (leased by the
+//     admission holder, outcome.rowID always set) and reached SOME
+//     resolution -- a clean commit (outcome.err == nil), a terminal
+//     AlreadyAttempted failure, ErrTurnCommitFailed, errLeaseLost, or an
+//     ordinary retryable failure. Result: (drained=true,
+//     rowID=outcome.rowID, outcomeErr=outcome.err, stopNow=false) -- fold
+//     the outcome into the caller's row ledger and loop to check for more
 //     pending work, exactly as the pre-existing "turn actually ran"
 //     handling already did for the executed-here case before this helper
 //     existed.
 //
-// Only the middle category (busy) halts DrainSessionNow immediately.
-// errNoExecutionAttempted and "an execution happened" both loop -- for
-// entirely different reasons (nothing is known yet, vs. something IS known
-// and there may be more) -- which is why they cannot share stopNow=true
-// despite both being reachable from admission's early-return paths.
+// Only outcomeBusy halts DrainSessionNow immediately. outcomeNoRowTouched
+// and the two "something happened" kinds all loop -- for entirely different
+// reasons (nothing is known yet, vs. something IS known and there may be
+// more) -- which is why outcomeNoRowTouched cannot share stopNow=true with
+// outcomeBusy despite both being reachable from admission's early-return
+// paths.
 //
-// Centralizing this (task #575 of the 2026-08-19 release-readiness review,
-// both the initial pass and the coordinator's follow-up review that found
-// admission's early-return paths were publishing a bare nil instead of a
-// dedicated sentinel) is what makes DrainSessionNow's two branches -- "I ran
-// executeEntrySync myself" and "I waited for someone else's admission
-// release" -- agree on what a given outcome means. Before this helper
-// existed, only the first branch interpreted the error at all; the second
-// treated EVERY admission release (including terminal failure, a failed
-// Ack, a lost lease, AND a bare nil from an early return that never
-// executed anything) as an unconditional success, because it never looked
-// at the outcome in the first place -- see DrainSessionNow's own doc for the
-// enumerated false successes this closes.
-func classifyBackgroundOutcome(execErr error) (drained bool, outcomeErr error, stopNow bool) {
-	if errors.Is(execErr, errNoExecutionAttempted) {
+// Centralizing this (task #575 of the 2026-08-19 release-readiness review;
+// row identity and the terminal-deletion kind added by task #613 of the
+// 2026-08-20 read-only release review) is what makes DrainSessionNow's two
+// branches -- "I ran executeEntrySync myself" and "I waited for someone
+// else's admission release" -- agree on what a given outcome means. Before
+// task #575, only the first branch interpreted the error at all; the second
+// treated EVERY admission release as an unconditional success. Before task
+// #613, a terminal deletion (outcomeTerminalDeleted) was published through
+// the SAME sentinel as outcomeNoRowTouched, which is the F3 defect this
+// dedicated kind exists to close.
+func classifyBackgroundOutcome(outcome admissionOutcome) (drained bool, rowID string, outcomeErr error, stopNow bool) {
+	switch outcome.kind {
+	case outcomeNoRowTouched:
 		// The admitted caller held the session's admission slot but never
-		// called executeEntrySync at all -- a busy-backoff/worker-pool-full/
-		// raced-lease/attempts-exhausted/shutdown-nack/ctx-ended-early early
+		// durably touched any row -- a busy-backoff/worker-pool-full/
+		// raced-lease/no-coordinator/shutdown-nack/ctx-ended-early early
 		// return in processEntry, or DrainSessionNow's own "nothing
-		// pending" or pre-execution failure paths (see
-		// errNoExecutionAttempted's own doc for the full enumeration). This
-		// is deliberately its own branch, checked BEFORE the "did an
-		// execution happen" fallthrough below: nil and
-		// errNoExecutionAttempted must never be conflated, because nil is
-		// ALSO executeEntrySync's own return value for a clean commit, and
-		// treating a bare nil as "nothing happened" would require every
-		// call site to remember never to pass literal nil for "no
-		// execution" -- exactly the mistake task #575's coordinator review
-		// caught.
+		// pending" or pre-execution failure paths (see noRowTouched's own
+		// doc for the full enumeration).
 		//
-		// stopNow=false HERE (unlike the busy case immediately below,
-		// which is stopNow=true): a session that raced/backed-off/
-		// shut-down-nacked away is NOT known to be genuinely,
-		// legitimately owned by anyone else -- the row may still be
-		// sitting pending for THIS call to pick up itself (e.g. a
+		// stopNow=false HERE (unlike outcomeBusy below): a session that
+		// raced/backed-off/shut-down-nacked away is NOT known to be
+		// genuinely, legitimately owned by anyone else -- the row may still
+		// be sitting pending for THIS call to pick up itself (e.g. a
 		// different pump instance's processEntry lost its own lease
-		// attempt to yet a THIRD instance, but the row could equally
-		// still be unclaimed, or a completely different entry for the
-		// same session could have been enqueued since). A waiting
-		// DrainSessionNow call must fall through and retry admission
-		// itself -- exactly the behavior promised (and, before this fix,
-		// NOT delivered) by admitSession's own release-closure doc and by
-		// every early-return call site's comment. Returning immediately
-		// here (stopNow=true) would incorrectly treat "nothing happened
-		// in THAT attempt" as "nothing left to do", potentially leaving
-		// genuinely pending work undrained -- a narrower version of the
-		// same class of bug in the opposite direction (a false NEGATIVE
-		// instead of a false positive), and not something a caller that
-		// merely lost a race should conclude on someone else's behalf.
-		return false, nil, false
-	}
+		// attempt to yet a THIRD instance, but the row could equally still
+		// be unclaimed, or a completely different entry for the same
+		// session could have been enqueued since). A waiting DrainSessionNow
+		// call must fall through and retry admission itself -- exactly the
+		// behavior promised (and, before task #575's fix, NOT delivered) by
+		// admitSession's own release-closure doc and by every early-return
+		// call site's comment. Returning immediately here (stopNow=true)
+		// would incorrectly treat "nothing happened in THAT attempt" as
+		// "nothing left to do", potentially leaving genuinely pending work
+		// undrained -- a narrower version of the same class of bug in the
+		// opposite direction (a false NEGATIVE instead of a false
+		// positive), and not something a caller that merely lost a race
+		// should conclude on someone else's behalf.
+		return false, "", nil, false
 
-	if errors.Is(execErr, ErrCallQueuedNotExecuted) || isSessionLockBusyErr(execErr) {
+	case outcomeBusy:
 		// A genuinely different live owner has this session right now --
 		// not this call, not the background tick (see those errors' own
 		// docs on executeEntrySync). NOTHING RAN: the call was appended to
 		// that owner's mailbox, or the OS session lock was held, and the
 		// row was released without an attempt penalty for someone else to
 		// pick up later.
-		return false, nil, true
-	}
+		return false, "", nil, true
 
-	// Every remaining outcome -- a clean commit (execErr == nil), a terminal
-	// AlreadyAttempted failure, an ErrTurnCommitFailed (turn ran, Ack did
-	// not), errLeaseLost (a new owner now holds the row), or an ordinary
-	// retryable failure -- means an execution genuinely happened and reached
-	// a resolution in this process, whether or not that resolution was a
-	// clean success. The row's own bookkeeping (Ack/Nack/TerminalFail, or
-	// nothing at all for errLeaseLost -- see its own doc) was already
-	// written by executeEntrySync itself; this call's only remaining job is
-	// to make sure its caller learns the truth instead of a fabricated
-	// success, and to keep checking for more pending work rather than
-	// stopping early.
-	return true, execErr, false
+	case outcomeTerminalDeleted:
+		// task #613/F3: a row was leased and terminal-failed (DELETEd)
+		// WITHOUT ever calling executeEntrySync -- the attempts-exhausted
+		// fast path. This is destructive, row-scoped bookkeeping, not "no
+		// row touched": a waiter must learn the row is gone, tied to its
+		// own ID, exactly like a genuine execution's terminal failure would
+		// be. outcome.err is nil when the terminal DELETE itself succeeded
+		// (the row IS a confirmed dead-letter -- nil there is not "nothing
+		// happened", it is "the destructive write landed cleanly"), so a
+		// non-nil error is synthesized here for the ledger/caller to see;
+		// outcome.err is non-nil when the terminal write ITSELF failed,
+		// meaning the row's fate is unconfirmed rather than a clean no-op
+		// (F3's second bad branch) -- that error is surfaced as-is.
+		termErr := outcome.err
+		if termErr == nil {
+			termErr = fmt.Errorf("run queue entry %q exceeded max attempts and was terminal-failed", outcome.rowID)
+		} else {
+			termErr = fmt.Errorf("run queue entry %q exceeded max attempts and its terminal-fail write itself failed: %w", outcome.rowID, termErr)
+		}
+		return true, outcome.rowID, termErr, false
+
+	default: // outcomeExecuted
+		// executeEntrySync itself can ALSO return ErrCallQueuedNotExecuted
+		// or a *SessionLockBusyError as its own return value: the row was
+		// genuinely leased by the admission holder, but Coordinator.Run
+		// found the session already owned by a DIFFERENT, live process/turn
+		// when it actually tried to run it (see executeEntrySync's own
+		// handling of both). That is the SAME "genuinely different live
+		// owner" situation outcomeBusy describes at the admission level,
+		// just discovered one layer deeper (inside execution instead of
+		// before it) -- and it must classify identically (stopNow=true,
+		// drained=false), or DrainSessionNow's local-execution loop never
+		// stops retrying a session a different owner legitimately holds.
+		// This check must run BEFORE the generic "an execution happened"
+		// fallthrough below, exactly as it did when this function switched
+		// on a bare error via errors.Is instead of outcome.kind.
+		if errors.Is(outcome.err, ErrCallQueuedNotExecuted) || isSessionLockBusyErr(outcome.err) {
+			return false, "", nil, true
+		}
+
+		// Every remaining outcome -- a clean commit (outcome.err == nil), a
+		// terminal AlreadyAttempted failure, an ErrTurnCommitFailed (turn
+		// ran, Ack did not), errLeaseLost (a new owner now holds the row),
+		// or an ordinary retryable failure -- means an execution genuinely
+		// happened and reached a resolution in this process, whether or not
+		// that resolution was a clean success. The row's own bookkeeping
+		// (Ack/Nack/TerminalFail, or nothing at all for errLeaseLost -- see
+		// its own doc) was already written by executeEntrySync itself; this
+		// call's only remaining job is to make sure its caller learns the
+		// truth (tied to outcome.rowID) instead of a fabricated success,
+		// and to keep checking for more pending work rather than stopping
+		// early.
+		return true, outcome.rowID, outcome.err, false
+	}
 }
 
 // isSessionLockBusyErr reports whether err is (or wraps) a pointer to
