@@ -268,6 +268,86 @@ func (l *rowLedger) mostRecentFailure() error {
 	return nil
 }
 
+// verdictOnCtxDone is the ONLY sanctioned way for DrainSessionNow to compute
+// a verdict at the moment it discovers ITS OWN ctx has ended — task #607,
+// P0, the sixth review-cycle fix to this same contract. Five prior task
+// reviews (#575, #578, #588, #592, and #592's own nil-safety follow-up
+// #593) each closed one specific way this call's return value could
+// misrepresent outstanding work as a clean success; every one of those
+// fixes taught the SAME lesson in a different shape: a verdict computed
+// without first recording WHY the loop is stopping silently inherits
+// whatever the ledger already happened to hold, which is correct only by
+// accident.
+//
+// This function makes that class of mistake unrepresentable at its two
+// call sites (both immediately below the top-of-loop `if ctx.Err() != nil`
+// check and the admission-wait `case <-ctx.Done()`) rather than merely
+// checked by convention: unlike calling l.verdict(...) directly, there is
+// no path through this function that reaches a verdict without first
+// unconditionally folding ctx.Err() into the ledger as this call's own
+// reason for stopping. Concretely, this closes the exact defect task #607
+// reproduced — one row already recordSuccess'd, ctx dies before the next
+// row is even looked at, and the bare `ledger.verdict(false)` these two
+// sites used to call directly saw anyExecuted=true / failed empty and
+// returned (DrainComplete, nil): a caller-facing "the continuation fully
+// completed" for a call that in fact stopped because ITS OWN deadline (or
+// caller-cancelled ctx) fired, with whatever else was pending never even
+// looked at.
+//
+// This mirrors — deliberately — the THIRD ctx-death exit in this same
+// loop (the execSem-wait `case <-ctx.Done()` a few dozen lines below
+// admission-wait's), which already called `ledger.recordUnattributed(ctx.Err())`
+// before its own verdict() call and was therefore never part of any of the
+// five prior defects. The two sites this function replaces were the ONLY
+// two of DrainSessionNow's five early-exit branches that did not already
+// follow that pattern; this factors the pattern out so the two callers
+// cannot drift from the third's (or each other's) behavior again by a
+// future edit to just one of them.
+//
+// contended is always false here: both call sites reach this function
+// because CTX ended, not because a genuinely different live owner made the
+// session busy/contended (that is the separate, already-safe stopNow path,
+// which passes contended=true directly to l.verdict and is not routed
+// through this function — see DrainSessionNow's stopNow branches).
+//
+// GATED on l.anyExecuted, NOT unconditional (coordinator review of this
+// task's first pass caught this): recordUnattributed(ctx.Err()) must only
+// run when THIS call has already executed (or observed) at least one row.
+// A ctx that dies before ANYTHING ran is the pre-existing, unaffected
+// DrainNoWork contract every caller already depends on -- see rowLedger's
+// own verdict() doc, which deliberately leaves that case alone even when
+// contended is true. Recording unconditionally (this function's own first
+// version) made verdict(false) return DrainFailed instead of DrainNoWork
+// for that case: anyExecuted became true and a failed-map entry appeared
+// where neither existed a moment before, so a call that genuinely did
+// NOTHING started reporting "a row failed" -- overstating failure in
+// exactly the mirror-image way the five prior task reviews overstated
+// success. app_run.go's drainOutcomeError reads DrainNoWork as "let the
+// ORIGINAL cancellation stand" and DrainFailed as "a row genuinely ran and
+// did not resolve cleanly"; those are different claims about what
+// happened, even though both currently exit non-zero, and callers other
+// than today's app_run.go may reasonably rely on the distinction (that is
+// the whole reason DrainResult has four values instead of a boolean).
+func (l *rowLedger) verdictOnCtxDone(ctx context.Context) (DrainResult, error) {
+	if l.anyExecuted {
+		l.recordUnattributed(ctx.Err())
+	}
+	result, verdictErr := l.verdict(false)
+	if result == DrainNoWork {
+		// Reachable, and this IS its normal mode now: nothing had executed
+		// in this call by the time ctx died (the anyExecuted guard above
+		// left the ledger untouched), so verdict(false) takes its own
+		// DrainNoWork branch and returns (DrainNoWork, nil) -- reinstated
+		// here as ctx.Err() to preserve the historical "report ctx.Err()
+		// directly when nothing has happened yet" behavior the two former
+		// call sites both had: a caller cancelling THIS call's own ctx
+		// before anything ran still needs to see that as an error, not
+		// silence.
+		return DrainNoWork, ctx.Err()
+	}
+	return result, verdictErr
+}
+
 // DrainSessionNow synchronously executes every currently-pending run-queue
 // entry for sessionID, blocking the caller until the session's durable
 // queue is empty and no execution of it is in flight in this pump instance
@@ -415,16 +495,18 @@ func (p *RunQueuePump) DrainSessionNow(ctx context.Context, sessionID string) (D
 	var lastRowID string
 	for {
 		if ctx.Err() != nil {
-			result, verdictErr := ledger.verdict(false)
-			if result == DrainNoWork {
-				// Preserve the historical "report ctx.Err() directly when
-				// nothing has happened yet" behavior rather than a bare
-				// DrainNoWork/nil -- a caller cancelling THIS call's own ctx
-				// before anything ran still needs to see that as an error,
-				// not silence.
-				return DrainNoWork, ctx.Err()
-			}
-			return result, verdictErr
+			// task #607/P0: route through verdictOnCtxDone, NOT a bare
+			// ledger.verdict(false) — see that function's own doc. A bare
+			// verdict() call here trusts the ledger's PRE-EXISTING state
+			// (whatever an earlier iteration recorded) to already explain
+			// why this call is stopping, but "ctx died" is itself a new,
+			// this-call-scoped reason the ledger has not been told about
+			// yet: if an earlier row already recordSuccess'd and nothing
+			// else has failed, the bare call used to return (DrainComplete,
+			// nil) — a false "fully completed" for a call that in fact
+			// stopped here because its OWN deadline fired, with the row
+			// that triggered this loop iteration never even looked at.
+			return ledger.verdictOnCtxDone(ctx)
 		}
 
 		// Reserve the session through the SAME atomic gate the background
@@ -467,11 +549,16 @@ func (p *RunQueuePump) DrainSessionNow(ctx context.Context, sessionID string) (D
 
 			select {
 			case <-ctx.Done():
-				result, verdictErr := ledger.verdict(false)
-				if result == DrainNoWork {
-					return DrainNoWork, ctx.Err()
-				}
-				return result, verdictErr
+				// task #607/P0: see the top-of-loop ctx.Err() branch's
+				// comment above — same defect, same fix. This call is
+				// giving up on waiting for otherEntry's outcome because ITS
+				// OWN ctx ended, not because otherEntry resolved; that fact
+				// must be folded into the ledger before computing the
+				// verdict, or an earlier row's clean recordSuccess makes
+				// this return (DrainComplete, nil) while otherEntry's
+				// outcome — and whatever else might be pending — was never
+				// learned.
+				return ledger.verdictOnCtxDone(ctx)
 			case <-otherEntry.done:
 			}
 
