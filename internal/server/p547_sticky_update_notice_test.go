@@ -3,6 +3,9 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"runtime"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -54,18 +57,41 @@ func drainClientPayloads(t *testing.T, c *Client, wantType string) (types []stri
 	}
 }
 
+// hubDrainFailAfter is the purely-defensive upper bound on waitHubDrained.
+// It exists ONLY to turn "Hub.Run never drained at all" (a real regression:
+// Run not started, or stopped) into a fast, clearly-labelled test failure
+// instead of an infinitely spinning test that hangs CI. It is a var, not a
+// const, solely so the bound's own regression test can shrink it — 60s is
+// far beyond any legitimate drain (the drain itself completes in
+// microseconds once Run is scheduled; #632's original flake was a 5s
+// WALL-CLOCK bound racing transient machine stalls, which is why this
+// bound is deliberately an order of magnitude larger and is a floor on
+// failure, not a ceiling on success).
+// Stored as int64 nanoseconds for atomic access.
+var hubDrainFailAfter = int64((60 * time.Second).Nanoseconds())
+
 // waitHubDrained blocks until the hub has finished processing everything
 // producers have queued so far, on both the ordinary broadcast channel and
 // the sticky one. Sticky envelopes travel on their own channel
 // (h.stickyBroadcast, see BroadcastSticky doc), so a test that only waited
 // on h.broadcast could register a client before the hub had processed a
 // preceding BroadcastSticky call, making the test ordering assumptions
-// unreliable.
-func waitHubDrained(t *testing.T, h *Hub) {
+// unreliable. The wait is condition-based, not wall-clock-based: it returns
+// as soon as both channels are empty, so transient process-wide stalls that
+// outlast any small timer (#632: eight parallel tests failed together on a
+// 5s require.Eventually bound) cannot make it fail while the drain still
+// completes. The deadline below is an order-of-magnitude-larger safety net
+// that fires only if the drain GENUINELY never happens.
+func waitHubDrained(t testing.TB, h *Hub) {
 	t.Helper()
-	require.Eventually(t, func() bool {
-		return len(h.broadcast) == 0 && len(h.stickyBroadcast) == 0
-	}, 5*time.Second, 10*time.Millisecond)
+	deadline := time.Now().Add(time.Duration(atomic.LoadInt64(&hubDrainFailAfter)))
+	for len(h.broadcast) != 0 || len(h.stickyBroadcast) != 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("hub drain never completed within %s: len(broadcast)=%d len(stickyBroadcast)=%d — Hub.Run is not draining (never started, or stopped). This is a real drain regression, NOT the old #632 wall-clock flake: the wait is condition-based and cannot fire merely because the process stalled.",
+				time.Duration(atomic.LoadInt64(&hubDrainFailAfter)), len(h.broadcast), len(h.stickyBroadcast))
+		}
+		time.Sleep(time.Millisecond)
+	}
 }
 
 // TestHub_StickyEventSurvivesReplayBufferEviction covers task #547.
@@ -607,4 +633,103 @@ func TestBroadcastUpdateNotice_DeliversThroughTheProductionEntryPoint(t *testing
 	require.NoError(t, json.Unmarshal(payloads[0], &wire))
 	require.Equal(t, "1.0.0", wire.Current)
 	require.Equal(t, "1.1.0", wire.Latest)
+}
+
+// TestWaitHubDrained_ReturnsOnlyWhenDrained pins that waitHubDrained is
+// condition-driven: it does not return while the drain condition is false,
+// even under transient process stalls that would fire a wall-clock timer.
+// This uses a 250ms delay (instead of the old test's 5.5s) because the 60s
+// defensive bound is now large enough that this test no longer needs to
+// demonstrate outlasting a specific timer to prove it's not wall-clock-based.
+//
+// NOT t.Parallel: shrinks hubDrainFailAfter locally; must not race with
+// other parallel tests that call waitHubDrained.
+//
+// Revert-check: remove the deadline check inside waitHubDrained's loop and
+// this test hangs if the drain never completes (the old test had the same
+// issue, but the 60s bound makes the hang much longer than before).
+func TestWaitHubDrained_ReturnsOnlyWhenDrained(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	h := newHub()
+	// Queue real work before Run exists, so the drain condition is false.
+	h.BroadcastSticky(EventUpdateAvailable, UpdateAvailableWire{Current: "1.0.0", Latest: "1.1.0"})
+	broadcastBlocking(t, h, "noise", map[string]int{"i": 1})
+	require.NotZero(t, len(h.broadcast)+len(h.stickyBroadcast))
+
+	// Start draining only after a delay. The condition is false for that
+	// entire window.
+	go func() {
+		time.Sleep(250 * time.Millisecond)
+		go h.Run(ctx)
+	}()
+
+	start := time.Now()
+	waitHubDrained(t, h)
+	elapsed := time.Since(start)
+	require.GreaterOrEqual(t, elapsed, 250*time.Millisecond,
+		"waitHubDrained must have waited for the delayed drain, not returned early")
+	require.Less(t, elapsed, 60*time.Second,
+		"waitHubDrained must complete quickly once Run drains; the 60s bound should never fire in this test")
+}
+
+// TestWaitHubDrained_FailsFastWhenRunNeverDrains pins the defensive bound
+// added with #632's follow-up: if Hub.Run never drains (here: never
+// started), waitHubDrained must FAIL at the bound with the
+// "drain regression" message instead of spinning forever and hanging CI.
+// The bound is shrunk via hubDrainFailAfter so this test runs in
+// milliseconds; the production default is 60s.
+//
+// NOT t.Parallel: shrinks hubDrainFailAfter locally; must not race with
+// other parallel tests that call waitHubDrained.
+//
+// Revert-check: delete the deadline check inside waitHubDrained's loop and
+// this test hangs (the whole package times out) instead of failing — which
+// is exactly the oversight it exists to catch.
+func TestWaitHubDrained_FailsFastWhenRunNeverDrains(t *testing.T) {
+	h := newHub()
+	// Queue real work but never start h.Run: the drain condition stays
+	// false forever.
+	broadcastBlocking(t, h, "noise", map[string]int{"i": 1})
+	require.NotZero(t, len(h.broadcast))
+
+	// Shrink the bound using atomic operations to avoid data races.
+	old := atomic.LoadInt64(&hubDrainFailAfter)
+	atomic.StoreInt64(&hubDrainFailAfter, (50 * time.Millisecond).Nanoseconds())
+	defer atomic.StoreInt64(&hubDrainFailAfter, old)
+
+	// Create a separate test to capture the failure without affecting
+	// this test's status.
+	captureT := &captureT{T: t}
+	done := make(chan struct{})
+	go func() {
+		waitHubDrained(captureT, h)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		t.Fatal("waitHubDrained returned normally instead of calling t.Fatalf — the defensive deadline check is missing")
+	case <-time.After(200 * time.Millisecond):
+		// Success: waitHubDrained called t.Fatalf and exited via Goexit.
+		require.True(t, captureT.failed.Load(), "waitHubDrained must have called t.Fatalf")
+		msg, _ := captureT.msg.Load().(string)
+		require.Contains(t, msg, "hub drain never completed")
+		require.Contains(t, msg, "drain regression")
+	}
+}
+
+// captureT is a minimal testing.TB implementation that records Fatalf calls
+// without actually failing the test. Used by TestWaitHubDrained_FailsFastWhenRunNeverDrains.
+type captureT struct {
+	*testing.T
+	failed atomic.Bool
+	msg    atomic.Value // stores string
+}
+
+func (c *captureT) Fatalf(format string, args ...interface{}) {
+	c.failed.Store(true)
+	c.msg.Store(fmt.Sprintf(format, args...))
+	runtime.Goexit()
 }
