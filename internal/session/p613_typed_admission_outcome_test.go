@@ -432,6 +432,26 @@ func TestDrainSessionNow_F4_ObservedRetryable_ThenLocalSuccess_ReportsComplete(t
 	require.NoError(t, err)
 	require.NoError(t, svc.EnqueueRunQueueEntry(context.Background(), "p613-f4-retry-local-row-A", sess.ID, callData))
 
+	// Deterministic proof that THIS call was genuinely refused admission and
+	// entered the observed-admission wait branch before row A's retryable
+	// failure resolves — the hook below fires ONLY from that branch
+	// (run_queue_drain_session.go's !admitted path). Without this wait, the
+	// 150ms sleep this test used to rely on could expire before
+	// DrainSessionNow even attempted admission, and the call would then lease
+	// and execute row A ITSELF after the nack — resolving the queue through
+	// the local-execution branch, never observing any outcome, and passing
+	// both final assertions while the observed-admission branch never ran at
+	// all.
+	refusalCh := make(chan struct{}, 8)
+	pump.SetTestAfterAdmissionRefusalForTest(func(sessionID string) {
+		if sessionID == sess.ID {
+			select {
+			case refusalCh <- struct{}{}:
+			default:
+			}
+		}
+	})
+
 	pump.Start()
 	stopPumpLoggingForcedShutdown(t, pump)
 
@@ -451,10 +471,15 @@ func TestDrainSessionNow_F4_ObservedRetryable_ThenLocalSuccess_ReportsComplete(t
 		result, drainErr = pump.DrainSessionNow(ctx, sess.ID)
 	}()
 
-	// Give DrainSessionNow time to lose the admission race for row A and
-	// enter its wait branch before resolving row A's execution with an
-	// ordinary retryable failure (nacked back to pending, not terminal).
-	time.Sleep(150 * time.Millisecond)
+	// Park on the refusal before resolving row A's execution with an ordinary
+	// retryable failure (nacked back to pending, not terminal): only now is
+	// it guaranteed that this call will observe that failure through the
+	// wait on otherEntry.done rather than executing row A locally.
+	select {
+	case <-refusalCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("DrainSessionNow was never refused admission — test setup is broken, proves nothing about the observed-admission path under test")
+	}
 	retryableErr := errors.New("p613: simulated transient provider failure")
 	gate.gates[0] <- retryableErr
 
