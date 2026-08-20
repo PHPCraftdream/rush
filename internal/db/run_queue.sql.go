@@ -178,6 +178,30 @@ func (q *Queries) GetRunQueueEntry(ctx context.Context, id string) (SessionRunQu
 	return i, err
 }
 
+const hasOutstandingRunQueueEntryForSession = `-- name: HasOutstandingRunQueueEntryForSession :one
+SELECT EXISTS(
+    SELECT 1 FROM session_run_queue
+    WHERE session_id = ? AND status IN ('pending', 'leased')
+) AS has_outstanding
+`
+
+// Report whether ANY row for this session is still outstanding, in EITHER
+// status ('pending' or 'leased') -- not just 'pending'. Used by
+// DrainSessionNow's terminal check (task #610): a row leased by a
+// DIFFERENT owner (another process, or another pump instance racing this
+// one) is invisible to GetOldestPendingRunQueueEntryForSession, which only
+// ever looks at status = 'pending'. That gap let a drain conclude the
+// session's queue was empty while a 'leased' row for it still existed,
+// durable, with an unknown outcome. This query closes that gap by checking
+// both statuses explicitly rather than inferring queue state from a failed
+// pending-only lease attempt.
+func (q *Queries) HasOutstandingRunQueueEntryForSession(ctx context.Context, sessionID string) (int64, error) {
+	row := q.queryRow(ctx, q.hasOutstandingRunQueueEntryForSessionStmt, hasOutstandingRunQueueEntryForSession, sessionID)
+	var has_outstanding int64
+	err := row.Scan(&has_outstanding)
+	return has_outstanding, err
+}
+
 const leaseRunQueueEntryByID = `-- name: LeaseRunQueueEntryByID :one
 UPDATE session_run_queue
 SET status = 'leased',

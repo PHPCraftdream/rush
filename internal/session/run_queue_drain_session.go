@@ -253,6 +253,22 @@ func (l *rowLedger) verdict(contended bool) (DrainResult, error) {
 	return DrainComplete, nil
 }
 
+// hasFailures reports whether the ledger currently holds any surviving
+// failure entry (i.e. verdict(...) would resolve to DrainFailed regardless
+// of contended). Used by DrainSessionNow's terminal outstanding-row check
+// (task #610) to avoid recording a REDUNDANT, more-recently-inserted
+// unattributed entry for a row the ledger already has a specific,
+// identity-tied failure for -- see that check's own comment for why
+// querying HasOutstandingRunQueueEntriesForSession is skipped entirely once
+// a real failure is already on record: it cannot change DrainFailed into
+// anything else, and mostRecentFailure() picking the freshest SURVIVING
+// entry would otherwise let a generic "still outstanding" message shadow
+// the specific, already-diagnosed cause (e.g. ErrTurnCommitFailed,
+// errLeaseLost) a caller and its tests depend on seeing.
+func (l *rowLedger) hasFailures() bool {
+	return len(l.failed) > 0
+}
+
 // mostRecentFailure returns the failure ledger's most-recently-inserted
 // SURVIVING error — i.e. the last key in insertion order that is still
 // present in the failed map (recordSuccess may have deleted more recent
@@ -411,18 +427,39 @@ func (l *rowLedger) verdictOnCtxDone(ctx context.Context) (DrainResult, error) {
 // can legitimately change hands, or a row can resolve ambiguously, BETWEEN
 // two rows processed by the SAME DrainSessionNow call.
 //
-// Race against the background tick: LeaseRunQueueEntry is atomic at the DB
-// level, so two callers racing for the same row can never both execute it
-// -- but if the background tick wins the race, THIS call's own lease
-// attempt simply finds nothing pending, even though the row is genuinely
-// being executed right now by a goroutine this call didn't start. Silently
-// returning "nothing to drain" in that case would reproduce the exact bug
-// this function exists to close, just via a race instead of a certainty.
-// The fix: check admission for this session before concluding there is
-// nothing left to wait for. If busy, wait for that specific execution's
-// admissionEntry.done (bounded by ctx), then process its published outcome
-// through classifyBackgroundOutcome -- the same code path this function's
-// own leasing branch uses for an execution it ran itself.
+// Race against the background tick, WITHIN THIS PUMP INSTANCE: LeaseRunQueueEntry
+// is atomic at the DB level, so two callers racing for the same row can
+// never both execute it -- but if this pump instance's own background tick
+// wins the race, THIS call's own lease attempt simply finds nothing
+// pending, even though the row is genuinely being executed right now by a
+// goroutine this call didn't start. Silently returning "nothing to drain"
+// in that case would reproduce the exact bug this function exists to
+// close, just via a race instead of a certainty. The fix: check admission
+// for this session before concluding there is nothing left to wait for. If
+// busy, wait for that specific execution's admissionEntry.done (bounded by
+// ctx), then process its published outcome through
+// classifyBackgroundOutcome -- the same code path this function's own
+// leasing branch uses for an execution it ran itself.
+//
+// admitSession's in-process gate does NOT close the equivalent race against
+// a DIFFERENT process, or a different RunQueuePump instance in this same
+// process -- a prior version of this comment claimed otherwise, which was
+// simply wrong. p.inFlight is an in-memory map scoped to one *RunQueuePump
+// value; it has no visibility into any lease held by a different pump
+// instance's leased_by. If a foreign owner leases a row for sessionID
+// between this call's own lease attempts, GetOldestPendingRunQueueEntryForSession
+// (status = 'pending' only) simply cannot see it, admitSession has nothing
+// to refuse this call on (no in-process admissionEntry exists for a
+// foreign lease), and the bottom-of-loop "nothing pending" branch used to
+// fall straight through to ledger.verdict(false) -- reporting DrainComplete
+// while that row sat durable, leased, and unresolved (task #610, P0: the
+// seventh form of this same contract defect, and the first reachable with
+// a live, non-cancelled ctx rather than requiring ctx cancellation to
+// trigger). The fix is the explicit HasOutstandingRunQueueEntriesForSession
+// check immediately before this function's own terminal
+// ledger.verdict(false) call, at the bottom of the loop below -- it checks
+// BOTH 'pending' and 'leased' for the session, by ANY owner, not just this
+// call's own admission map or its own previously-leased rows.
 //
 // Deliberately does NOT replicate processEntry's RunQueueMaxAttempts
 // pre-check, busyBackoffUntil dedup, or admitMu/stopping shutdown gate --
@@ -993,6 +1030,140 @@ func (p *RunQueuePump) DrainSessionNow(ctx context.Context, sessionID string) (D
 			// current != nil && current.Status == "pending": still ours to
 			// account for, and nobody else has touched it -- leave the
 			// ledger's entry for it as recorded.
+		}
+
+		// task #610/P0: the SEVENTH form of this same contract defect, and
+		// the first reachable with a live, non-cancelled ctx. Everything
+		// above this point re-checks a row THIS call itself touched
+		// (lastRowID); it says nothing about a row this call never leased at
+		// all -- e.g. a genuinely different process (or a different pump
+		// instance in this same process, racing this call) that leased row B
+		// for sessionID between this call's last successful row and this
+		// exact iteration, and has not yet Ack'd, Nack'd, or terminal-failed
+		// it. LeaseRunQueueEntry only ever looks at status = 'pending'
+		// (see GetOldestPendingRunQueueEntryForSession in sql/run_queue.sql),
+		// so a leased-by-someone-else row is invisible to it: this call's own
+		// lease attempt above finds "nothing pending" and, without the check
+		// below, falls straight through to ledger.verdict(false) -- which
+		// resolves to (DrainComplete, nil) whenever the ledger otherwise has
+		// no failures recorded, even though row B is durable, outstanding,
+		// and its eventual outcome is completely unknown to this call.
+		//
+		// A reviewer reproduced this concretely: one row (A) genuinely
+		// executed and committed in this call, a second row (B) for the same
+		// session was leased by a different owner and never resolved, and
+		// DrainSessionNow returned (DrainComplete, nil) while B still sat in
+		// the DB with status=leased, attempts=0, and an expired lease --
+		// `crush run` had already exited 0 over durable, unconfirmed work.
+		//
+		// The fix is a dedicated, explicit service call --
+		// HasOutstandingRunQueueEntriesForSession -- rather than inferring
+		// "queue empty" from GetOldestPendingRunQueueEntryForSession's
+		// pending-only failure to find a row, precisely because that
+		// inference is exactly the gap being closed: a query scoped to
+		// 'pending' can never answer "is the queue empty" on its own, no
+		// matter how its failure is read. The new query checks BOTH
+		// 'pending' and 'leased' explicitly.
+		//
+		// An outstanding row here is reported as a FAILURE (never silently
+		// ignored, and never upgraded to a fabricated success) -- mirrors the
+		// lastRowID re-check's own "gone means ambiguous, not success" stance
+		// a few lines above: this call cannot Ack, Nack, or terminal-fail a
+		// row it does not hold the lease for, so DrainComplete must never be
+		// returned while one exists. A prior row's clean recordSuccess in
+		// THIS same call does not clear this: rowLedger's identity rule (see
+		// its own doc) means B's outstanding presence can only ever ADD to
+		// the verdict, never be subtracted by A's unrelated success.
+		//
+		// Deliberately keyed under a synthetic recordUnattributed entry, not
+		// under B's own row ID via recordFailure: this call never leased B,
+		// so it has no executeEntrySync-observed outcome to attach to B's
+		// identity, and inventing one here would incorrectly imply this call
+		// knows something about B's specific fate beyond "still outstanding"
+		// -- recordUnattributed's per-occurrence key is exactly the shape for
+		// "a failure this call observed but cannot tie to a row it leased
+		// itself" (see its own doc), which is precisely this situation.
+		//
+		// An expired-but-not-yet-recovered lease counts as outstanding here,
+		// same as a fresh one: CleanupExpiredLeases (the pump's periodic
+		// maintenance sweep) has not yet run on it, so from THIS call's point
+		// of view its outcome is still genuinely unknown -- it might resolve
+		// cleanly on the next sweep, or it might not. Treating expiry as
+		// equivalent to "gone" here would let this exact defect back in
+		// through the expiry window: exit code correctness cannot depend on
+		// timing a maintenance sweep that this call does not control and is
+		// not obligated to wait for. If this check should ever be relaxed to
+		// treat an expired lease as equivalent to "gone", that is a distinct,
+		// deliberate contract change -- not a fold-in here.
+		//
+		// Gated on TWO conditions, both required, mirroring
+		// verdictOnCtxDone's own anyExecuted gate a few dozen lines above
+		// (that function's doc explains why the analogous mistake there --
+		// recording unconditionally -- turned a genuine DrainNoWork into a
+		// false DrainFailed; the same shape of mistake is possible here):
+		//
+		//   - ledger.anyExecuted: if NOTHING has executed (or been observed)
+		//     in this call at all, this is the pre-existing, unaffected
+		//     DrainNoWork contract every caller already depends on -- a
+		//     session that was never touched by this call, where some
+		//     OTHER, unrelated row happens to be outstanding, is not this
+		//     call's business to report on any more than a busy/contended
+		//     session is (see rowLedger.verdict's own top branch, which
+		//     leaves DrainNoWork alone even when contended is true).
+		//     Skipping the query entirely here also avoids a real defect
+		//     this gate was found catching directly: a losing admission race
+		//     whose winner has not yet resolved ANYTHING (e.g. a background
+		//     processEntry parked mid-lease) leaves exactly such a row
+		//     outstanding for the ENTIRE session, and querying unconditionally
+		//     turned that pre-existing, correct DrainNoWork into a false
+		//     DrainFailed the moment this check was added -- caught by this
+		//     package's own TestProcessEntry_RacedLeaseNil_DoesNotFalselyDrainAWaiter.
+		//   - !ledger.hasFailures(): if the ledger already has a surviving
+		//     failure recorded, verdict(false) below is already going to
+		//     return DrainFailed regardless of what this check finds
+		//     (rowLedger.verdict checks len(failed) > 0 before it ever looks
+		//     at contended), so querying here would only ever add a
+		//     REDUNDANT, more-recently-inserted synthetic entry that could
+		//     SHADOW an already-diagnosed, row-specific cause via
+		//     mostRecentFailure's freshest-surviving-entry rule -- e.g. row
+		//     A's specific ErrTurnCommitFailed/errLeaseLost/AlreadyAttempted
+		//     failure, still sitting in the ledger under A's own ID
+		//     precisely so a caller (and this package's own tests) can see
+		//     it, getting replaced in the reported error by a generic
+		//     "still outstanding" message that names no specific row and
+		//     carries no specific cause. hasFailures() is the same
+		//     len(failed) > 0 test verdict() itself performs, kept in sync
+		//     with it deliberately (see hasFailures' own doc) rather than
+		//     re-derived here.
+		if ledger.anyExecuted && !ledger.hasFailures() {
+			hasOutstanding, outstandingErr := p.cfg.Sessions.HasOutstandingRunQueueEntriesForSession(ctx, sessionID)
+			switch {
+			case outstandingErr != nil:
+				// task #610's own review follow-up, P0 (the eighth form of
+				// this contract's recurring defect): unlike the lastRowID
+				// re-check a few dozen lines above, there is no "last known
+				// local outcome" to degrade to here -- this call never
+				// touched whatever row(s) this query would have found, so
+				// it has no prior knowledge of its own to fall back on.
+				// "The confirmation attempt itself failed" and "the queue
+				// is confirmed empty" are different claims; silently
+				// falling through to ledger.verdict(false) here would
+				// report the latter while only the former is true --
+				// reproducing task #610's own false-DrainComplete defect
+				// through the confirmation query's failure path instead of
+				// its result. SQLITE_BUSY here is not a hypothetical: it is
+				// exactly the failure mode a genuinely different live
+				// owner holding a row for this session, at this same
+				// moment, would produce. Record it as a distinct,
+				// unconfirmed-not-outstanding failure via
+				// ErrOutstandingCheckUnconfirmed (wrapping sessionID and
+				// the underlying DB error so a caller can recover the root
+				// cause), never silently swallowed.
+				slog.Warn("run_queue_pump: DrainSessionNow could not confirm the session's run queue is fully empty", "session_id", sessionID, "err", outstandingErr, "instance_id", p.cfg.PumpInstanceID)
+				ledger.recordUnattributed(fmt.Errorf("%w (session=%s): %w", ErrOutstandingCheckUnconfirmed, sessionID, outstandingErr))
+			case hasOutstanding:
+				ledger.recordUnattributed(fmt.Errorf("%w (session=%s)", ErrOutstandingRunQueueEntry, sessionID))
+			}
 		}
 
 		return ledger.verdict(false)

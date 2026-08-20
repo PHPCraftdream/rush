@@ -349,6 +349,17 @@ func (s *service) GetRunQueueEntry(ctx context.Context, id string) (*RunQueueEnt
 	return dbToRunQueueEntry(entry), nil
 }
 
+// HasOutstandingRunQueueEntriesForSession reports whether sessionID has any
+// durable run-queue row left, in EITHER status (pending or leased) -- see
+// the Service interface for the full rationale (task #610).
+func (s *service) HasOutstandingRunQueueEntriesForSession(ctx context.Context, sessionID string) (bool, error) {
+	has, err := s.q.HasOutstandingRunQueueEntryForSession(ctx, sessionID)
+	if err != nil {
+		return false, err
+	}
+	return has != 0, nil
+}
+
 // ListStaleLeasedRunQueueEntries returns all leased entries with expired leases.
 // Used by the pump to recover entries from crashed instances.
 func (s *service) ListStaleLeasedRunQueueEntries(ctx context.Context, beforeTime int64) ([]RunQueueEntry, error) {

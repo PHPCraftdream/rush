@@ -251,6 +251,73 @@ var errNoExecutionAttempted = errors.New("run_queue_pump: admission was held but
 var ErrDrainIncomplete = errors.New("run_queue_pump: session became busy/contended after only part of its pending run-queue work was drained")
 var ErrDrainFailureUnspecified = errors.New("drain failure recorded without an underlying error")
 
+// ErrOutstandingRunQueueEntry is returned by DrainSessionNow's terminal
+// "nothing pending" check (task #610, P0 -- the seventh form of this
+// contract's recurring defect, and the first reachable under a live,
+// non-cancelled ctx) when HasOutstandingRunQueueEntriesForSession finds a
+// durable row for the session that this call never leased, Ack'd, Nacked,
+// or terminal-failed itself -- most commonly a row leased by a genuinely
+// different owner (another process, or another pump instance in this same
+// process racing this call) that GetOldestPendingRunQueueEntryForSession's
+// pending-only lookup cannot see at all, since it only ever looks at
+// status = 'pending'.
+//
+// Distinct from ErrRowOutcomeUnconfirmed (which means a SPECIFIC row THIS
+// call previously touched is now gone, and its fate is ambiguous between
+// Ack and terminal-fail) and from errLeaseLost (which means THIS call's own
+// execution lost a lease it once held mid-turn): this sentinel means a row
+// this call never held at all is still outstanding, full stop -- there is
+// no "last known local outcome" for it to fall back on, because this call
+// never observed one.
+//
+// Deliberately conservative in the same direction as both of those: a false
+// "still might be outstanding" costs the operator an unnecessary retry; a
+// false DrainComplete over a row whose actual fate is unknown silently
+// tells them their run finished when durable, unconfirmed work may still be
+// sitting in the queue -- exactly the false-success class task #575 (commit
+// 638bc777) first closed, reopened here through a seventh, previously
+// unreachable-under-live-ctx path.
+var ErrOutstandingRunQueueEntry = errors.New("run_queue_pump: session still has an outstanding run-queue entry this call never resolved")
+
+// ErrOutstandingCheckUnconfirmed is returned by DrainSessionNow's terminal
+// "nothing pending" check (task #610's own review follow-up, P0 -- the
+// eighth form of this contract's recurring defect) when the
+// HasOutstandingRunQueueEntriesForSession call ITSELF fails -- e.g. a
+// SELECT EXISTS query returning SQLITE_BUSY under exactly the contention a
+// genuinely different live owner holding a row for this session would
+// produce.
+//
+// Deliberately a DISTINCT meaning from ErrOutstandingRunQueueEntry, not a
+// shared one: ErrOutstandingRunQueueEntry means "the question was asked and
+// answered yes, a row is outstanding". This sentinel means "the question
+// was never answered at all". Conflating the two would let a caller that
+// matches on ErrOutstandingRunQueueEntry specifically (to distinguish a
+// confirmed outstanding row from every other DrainFailed cause) silently
+// misread "unknown" as "confirmed outstanding", which is a smaller but
+// real version of the same false-precision mistake this whole file exists
+// to avoid.
+//
+// Critically, this is NOT the same shape as the pre-existing lastRowID
+// re-check's "degrade to last known local outcome" pattern a few dozen
+// lines above (the recheckErr != nil case): that re-check is asking about
+// a SPECIFIC row THIS call itself leased and already has a ledger entry
+// for -- degrading to "report what we already knew" is sound there because
+// there IS a last known outcome to fall back on. Here there is no such
+// thing: this call never touched the row(s) HasOutstandingRunQueueEntriesForSession
+// would have found, so it has no prior local knowledge to degrade to, and
+// silently falling through to ledger.verdict(false) with a ledger that
+// holds nothing but an earlier row's clean success reproduces the exact
+// false-DrainComplete defect task #610 exists to close, just through the
+// confirmation query's OWN failure path instead of its query result. "I
+// could not confirm the queue is empty" and "the queue is empty" are not
+// the same claim, and reporting the former as if it were the latter is
+// wrong regardless of why the confirmation attempt failed.
+//
+// Wraps the underlying DB error via %w (in addition to sessionID) so a
+// caller can distinguish this from ErrOutstandingRunQueueEntry via
+// errors.Is while still recovering the root cause from the error chain.
+var ErrOutstandingCheckUnconfirmed = errors.New("run_queue_pump: could not confirm whether the session's run queue is fully drained")
+
 // RunQueuePumpConfig configures a RunQueuePump instance.
 type RunQueuePumpConfig struct {
 	// Sessions is the session service for enqueue/lease/ack operations.

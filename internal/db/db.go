@@ -150,6 +150,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.getUsageByModelStmt, err = db.PrepareContext(ctx, getUsageByModel); err != nil {
 		return nil, fmt.Errorf("error preparing query GetUsageByModel: %w", err)
 	}
+	if q.hasOutstandingRunQueueEntryForSessionStmt, err = db.PrepareContext(ctx, hasOutstandingRunQueueEntryForSession); err != nil {
+		return nil, fmt.Errorf("error preparing query HasOutstandingRunQueueEntryForSession: %w", err)
+	}
 	if q.incrementSessionCostStmt, err = db.PrepareContext(ctx, incrementSessionCost); err != nil {
 		return nil, fmt.Errorf("error preparing query IncrementSessionCost: %w", err)
 	}
@@ -500,6 +503,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing getUsageByModelStmt: %w", cerr)
 		}
 	}
+	if q.hasOutstandingRunQueueEntryForSessionStmt != nil {
+		if cerr := q.hasOutstandingRunQueueEntryForSessionStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing hasOutstandingRunQueueEntryForSessionStmt: %w", cerr)
+		}
+	}
 	if q.incrementSessionCostStmt != nil {
 		if cerr := q.incrementSessionCostStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing incrementSessionCostStmt: %w", cerr)
@@ -806,6 +814,7 @@ type Queries struct {
 	getUsageByDayOfWeekStmt                        *sql.Stmt
 	getUsageByHourStmt                             *sql.Stmt
 	getUsageByModelStmt                            *sql.Stmt
+	hasOutstandingRunQueueEntryForSessionStmt      *sql.Stmt
 	incrementSessionCostStmt                       *sql.Stmt
 	leaseRunQueueEntryByIDStmt                     *sql.Stmt
 	listAllSessionPermissionsStmt                  *sql.Stmt
@@ -899,6 +908,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		getUsageByDayOfWeekStmt:                        q.getUsageByDayOfWeekStmt,
 		getUsageByHourStmt:                             q.getUsageByHourStmt,
 		getUsageByModelStmt:                            q.getUsageByModelStmt,
+		hasOutstandingRunQueueEntryForSessionStmt:      q.hasOutstandingRunQueueEntryForSessionStmt,
 		incrementSessionCostStmt:                       q.incrementSessionCostStmt,
 		leaseRunQueueEntryByIDStmt:                     q.leaseRunQueueEntryByIDStmt,
 		listAllSessionPermissionsStmt:                  q.listAllSessionPermissionsStmt,

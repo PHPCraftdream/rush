@@ -129,6 +129,22 @@ ORDER BY lease_expires_at ASC;
 SELECT * FROM session_run_queue
 WHERE id = ?;
 
+-- name: HasOutstandingRunQueueEntryForSession :one
+-- Report whether ANY row for this session is still outstanding, in EITHER
+-- status ('pending' or 'leased') -- not just 'pending'. Used by
+-- DrainSessionNow's terminal check (task #610): a row leased by a
+-- DIFFERENT owner (another process, or another pump instance racing this
+-- one) is invisible to GetOldestPendingRunQueueEntryForSession, which only
+-- ever looks at status = 'pending'. That gap let a drain conclude the
+-- session's queue was empty while a 'leased' row for it still existed,
+-- durable, with an unknown outcome. This query closes that gap by checking
+-- both statuses explicitly rather than inferring queue state from a failed
+-- pending-only lease attempt.
+SELECT EXISTS(
+    SELECT 1 FROM session_run_queue
+    WHERE session_id = ? AND status IN ('pending', 'leased')
+) AS has_outstanding;
+
 -- name: CleanupExpiredLeases :exec
 -- Reset stale leased entries back to pending (lease expiry recovery).
 -- Run periodically to recover from crashed pump instances.

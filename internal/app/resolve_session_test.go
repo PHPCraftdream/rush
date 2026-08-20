@@ -264,6 +264,10 @@ func (m *mockSessionService) GetRunQueueEntry(context.Context, string) (*session
 	return nil, nil
 }
 
+func (m *mockSessionService) HasOutstandingRunQueueEntriesForSession(context.Context, string) (bool, error) {
+	return false, nil
+}
+
 func (m *mockSessionService) CleanupExpiredLeases(context.Context, int64) error {
 	return nil
 }

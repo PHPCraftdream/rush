@@ -205,6 +205,17 @@ type Querier interface {
 	GetUsageByDayOfWeek(ctx context.Context) ([]GetUsageByDayOfWeekRow, error)
 	GetUsageByHour(ctx context.Context) ([]GetUsageByHourRow, error)
 	GetUsageByModel(ctx context.Context) ([]GetUsageByModelRow, error)
+	// Report whether ANY row for this session is still outstanding, in EITHER
+	// status ('pending' or 'leased') -- not just 'pending'. Used by
+	// DrainSessionNow's terminal check (task #610): a row leased by a
+	// DIFFERENT owner (another process, or another pump instance racing this
+	// one) is invisible to GetOldestPendingRunQueueEntryForSession, which only
+	// ever looks at status = 'pending'. That gap let a drain conclude the
+	// session's queue was empty while a 'leased' row for it still existed,
+	// durable, with an unknown outcome. This query closes that gap by checking
+	// both statuses explicitly rather than inferring queue state from a failed
+	// pending-only lease attempt.
+	HasOutstandingRunQueueEntryForSession(ctx context.Context, sessionID string) (int64, error)
 	// Atomic additive update for session cost. Safe under fan-out (multiple
 	// sub-agent goroutines finishing concurrently and each charging the
 	// parent) and across processes (orchestrator with parallel crush runs).

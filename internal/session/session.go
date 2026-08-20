@@ -299,6 +299,20 @@ type Service interface {
 	// "genuinely gone" from "still leased by someone else" for a row it no
 	// longer holds a lease on, and both are valid, error-free outcomes.
 	GetRunQueueEntry(ctx context.Context, id string) (*RunQueueEntry, error)
+	// HasOutstandingRunQueueEntriesForSession reports whether sessionID has
+	// ANY durable run-queue row left, in EITHER status ('pending' or
+	// 'leased') -- not just 'pending'. Added for task #610: the pending-only
+	// GetOldestPendingRunQueueEntryForSession lookup that DrainSessionNow's
+	// terminal path used to infer "queue empty" from is blind to a row
+	// currently leased by a DIFFERENT owner (another process, or another
+	// pump instance racing this one) -- that row is durable, outstanding,
+	// and its outcome is unknown to this call, yet the pending-only check
+	// cannot see it at all. This is an explicit query, not an inference from
+	// a failed lease attempt, precisely so DrainSessionNow's terminal
+	// DrainComplete decision does not depend on absence-of-evidence from a
+	// query that was never scoped to answer "is the queue empty" in the
+	// first place.
+	HasOutstandingRunQueueEntriesForSession(ctx context.Context, sessionID string) (bool, error)
 
 	// Orphan call outbox (P0-3 fix): durable fallback when main run queue enqueue fails
 	WriteToOrphanOutbox(ctx context.Context, id, sessionID string, callData []byte) error
