@@ -36,6 +36,7 @@ class WSClient {
     };
 
     sock.onclose = () => {
+      if (this.socket !== sock) return; // a superseded socket must not touch client state
       this.socket = null;
       this.emit("_disconnected", { type: "_disconnected" });
       if (!this.closed) {
@@ -57,7 +58,10 @@ class WSClient {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
-    this.socket?.close();
+    if (this.socket) {
+      this.socket.onclose = null; // close() is async; don't let the stale handler fire
+      this.socket.close();
+    }
     this.socket = null;
   }
 
