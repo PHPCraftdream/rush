@@ -269,8 +269,7 @@ func TestHandleRerunMessage_OrphanedStreamingMessageIsForceDeleted(t *testing.T)
 	_, getErr = a.Messages.Get(ctx, userMsg.ID)
 	require.Error(t, getErr, "user message must be deleted (to be recreated by Run)")
 
-	// Verify the session is now empty (or has only the recreated message if
-	// the run proceeded further than we care about).
+	// Verify the session now has exactly the recreated user message.
 	messagesAfter, err := a.Messages.List(ctx, sess.ID)
 	require.NoError(t, err)
 	// Task #638: the session should now have exactly 1 message (the

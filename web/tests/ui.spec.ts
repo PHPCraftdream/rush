@@ -28,20 +28,10 @@ async function openMoreMenu(page: import("@playwright/test").Page) {
 // Commit 89a07919 ("fold Header into ChatToolbar") deleted the standalone
 // Header.tsx and its data-test-id="header" wrapper entirely, moving the
 // surviving controls (settings/token-indicator/busy-dots/theme/etc.) into
-// ChatToolbar.tsx. Two behavioral changes fall out of that commit, contrary
+// ChatToolbar.tsx. A behavioral change falls out of that commit, contrary
 // to its "no behaviour changes" claim:
 //   1. There is no longer any element carrying data-test-id="header" to
 //      scope assertions to — the controls now live directly in the page.
-//   2. ChatToolbar.tsx has `if (!activeSessionID) return null;` (line ~195),
-//      which Header.tsx never had — every control that moved into
-//      ChatToolbar (settings button, token indicator, busy dots, theme
-//      toggle, prompt/MCP/providers/logs buttons) is now unreachable with no
-//      session selected, whereas the old Header rendered unconditionally.
-//      That gating is a real, confirmed regression — see the writeup in the
-//      task #567 report — and is NOT something this test file's scope can
-//      fix; these tests select a session first to test the behavior that
-//      still exists, which is not the same as saying "no session" access
-//      was intentionally dropped.
 //
 // "header shows session title when session is active" is dropped entirely,
 // not re-pointed: SessionTitle was the one piece of Header.tsx that commit
@@ -196,10 +186,10 @@ test("sidebar busy pulse disappears when agent done", async ({ page }) => {
 // ── Status bar ─────────────────────────────────────────────────────────────
 //
 // StatusBar.tsx is only ever mounted from inside ChatToolbar.tsx (inline,
-// middle of the toolbar) or TodoList.tsx — both of which require an active
-// session ({activeSessionID && <TodoList .../>} in Chat.tsx; ChatToolbar's
-// own `if (!activeSessionID) return null`). There is no standalone
-// always-mounted status footer left, so these tests select a session first.
+// middle of the toolbar) or TodoList.tsx — TodoList requires an active
+// session ({activeSessionID && <TodoList .../>} in Chat.tsx). These tests
+// select a session first to ensure the status bar is tested in an active
+// session context.
 
 test("status bar is visible with connection status", async ({ page }) => {
   await page.goto("/");

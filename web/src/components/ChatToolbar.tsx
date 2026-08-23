@@ -225,8 +225,8 @@ export function ChatToolbar() {
   // settings / MCP / providers / logs / prompt buttons and the model
   // badges were all unreachable until a session was selected. We render
   // with no session again; only genuinely session-bound controls are
-  // hidden individually (Compact below; Prompt is disabled via its own
-  // `disabled={!activeSessionID}`; the token pill and busy dots are
+  // hidden individually (Compact below; Prompt is conditionally rendered via
+  // `{activeSessionID && (` inside the "More" dropdown; the token pill and busy dots are
   // already gated on an active session existing).
 
   if (foreignOwned) {
