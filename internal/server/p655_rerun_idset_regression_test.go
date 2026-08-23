@@ -30,6 +30,13 @@ package server
 // TestHandleRerunMessage_SeedContentPinsEarlierIdenticalPromptOnFailedListPath;
 // deleting the seed loop at the capture site keeps every other test green,
 // and only that test goes red.
+//
+// Task #660 (seventeenth review, M-1): the post-delete UNION's content —
+// the mirror image of #659's seed finding, one loop further down — is
+// pinned at the handler level by
+// TestHandleRerunMessage_UnionLoopPinsForeignRowInsideWindowOnSuccessPath;
+// deleting the union loop's body at the capture site keeps every other
+// test green, and only that test goes red.
 
 import (
 	"context"
@@ -901,4 +908,162 @@ func TestHandleRerunMessage_SeedContentPinsEarlierIdenticalPromptOnFailedListPat
 		"the pre-delete seed must identify the earlier identical prompt as PRE-EXISTING so the recreate fires; "+
 			"got %d matching user messages, expected 2 — with an empty seed the earlier row is misread as the "+
 			"already-recreated prompt and the operator's rerun prompt is silently lost (sixteenth-review M-2, #644's shape)", count)
+}
+
+// TestHandleRerunMessage_UnionLoopPinsForeignRowInsideWindowOnSuccessPath is
+// the seventeenth review's M-1: nothing else in the suite pins the CONTENT
+// of the post-delete UNION. Delete only the union loop's body at the capture
+// site (keep the post-delete List call and its else warning branch) and
+// every other test stays green — including #659's failed-List-path seed
+// test, where the union never executes, and
+// TestHandleRerunMessage_ConcurrentUnrelatedWriterDoesNotSuppressRecreate,
+// whose concurrent row's text deliberately does not match. This test is the
+// one that goes red.
+//
+// The success-path mirror of #659's scenario: a FOREIGN User row with the
+// SAME text as the rerun prompt lands INSIDE the tail-delete window
+// (created at rerunTailDeleteSeam(0), i.e. after the pre-delete listing and
+// before the post-delete List) — exactly a concurrent handleInjectMessage
+// or `crush sessions inject` landing mid-delete. The post-delete List
+// SUCCEEDS (no decorator). The fake coordinator is handoffOnlyErrorCoordinator:
+// it fires onHandoff and errors without writing any row.
+//
+// History setup (targetIdx=0):
+//
+//	userMsg: "rerun me" (User, rerun target — deleted at step 3)
+//	tailMsg: "old reply" (Assistant, finished — deleted by the tail delete)
+//	foreign: "rerun me" (User — created by the seam at i==0, mid-delete)
+//
+// Against the real code the union puts foreign's ID in the baseline, so the
+// helper's scan reads it as pre-existing (in the baseline, not the target)
+// and the recreate fires — count=2 (foreign + the recreated prompt). With
+// the union loop's body deleted the foreign row's ID is not in the set, its
+// text matches, and the helper's !inBaseline disjunct misreads it as the
+// already-recreated prompt — the recreate is suppressed and the operator's
+// prompt is silently replaced by the foreign row: count=1, #644's loss
+// class on the success path this time.
+//
+// Revert-check: delete the union loop's body at the capture site in
+// handleRerunMessage and this test fails with count=1.
+func TestHandleRerunMessage_UnionLoopPinsForeignRowInsideWindowOnSuccessPath(t *testing.T) {
+	// Cannot use t.Parallel() because newAttachmentsTestApp calls t.Setenv.
+	workingDir := t.TempDir()
+	dataDir := t.TempDir()
+	a := newAttachmentsTestApp(t, workingDir, dataDir)
+	sess, err := a.Sessions.Create(t.Context(), "test-660-union-pins-foreign-row")
+	require.NoError(t, err)
+	sessionID := sess.ID
+	ctx := t.Context()
+
+	promptText := "rerun me"
+	userMsg, err := a.Messages.Create(ctx, sessionID, message.CreateMessageParams{
+		Role:  message.User,
+		Parts: []message.ContentPart{message.TextContent{Text: promptText}},
+	})
+	require.NoError(t, err)
+	tailMsg, err := a.Messages.Create(ctx, sessionID, message.CreateMessageParams{
+		Role:  message.Assistant,
+		Parts: []message.ContentPart{message.TextContent{Text: "old reply"}},
+	})
+	require.NoError(t, err)
+	tailMsg.AddFinish(message.FinishReasonEndTurn, "", "")
+	require.NoError(t, a.Messages.Update(ctx, tailMsg))
+
+	initialMsgs, err := a.Messages.List(ctx, sessionID)
+	require.NoError(t, err)
+	require.Len(t, initialMsgs, 2, "precondition: target, tail")
+	targetIdx := -1
+	for i, m := range initialMsgs {
+		if m.ID == userMsg.ID {
+			targetIdx = i
+		}
+	}
+	require.Equal(t, 0, targetIdx, "precondition: target is at index 0")
+
+	mockCoord := &handoffOnlyErrorCoordinator{}
+	a.AgentCoordinator = mockCoord
+
+	// The concurrent writer: a foreign same-text User row landing inside
+	// the tail-delete window — after the pre-delete listing (call #1),
+	// before the post-delete List (call #2). The seam fires at the top of
+	// tail iteration 0, strictly after allMsgs was captured and strictly
+	// before the tail's Delete runs. The row is therefore NOT in the tail
+	// slice the loop deletes (sliced from allMsgs) and not the target: it
+	// survives both deletes, exactly like a real handleInjectMessage /
+	// `crush sessions inject` row.
+	foreignCreated := make(chan message.Message, 1)
+	rerunTailDeleteSeam = func(i int) {
+		if i != 0 {
+			return
+		}
+		foreign, createErr := a.Messages.Create(ctx, sessionID, message.CreateMessageParams{
+			Role:  message.User,
+			Parts: []message.ContentPart{message.TextContent{Text: promptText}},
+		})
+		if createErr != nil {
+			t.Errorf("failed to create foreign row inside the window: %v", createErr)
+			return
+		}
+		foreignCreated <- foreign
+	}
+	t.Cleanup(func() { rerunTailDeleteSeam = nil })
+
+	hub := newHub()
+	client := newClient(hub, nil)
+	client.send = make(chan []byte, 10)
+	payload, err := json.Marshal(RerunMessagePayload{MessageID: userMsg.ID})
+	require.NoError(t, err)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		handleRerunMessage(ctx, a, client, WSMessage{ID: "req-1", Type: CmdRerunMessage, Payload: payload})
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("rerun handler never returned — something blocked unboundedly")
+	}
+
+	env := decodeReply(t, client)
+	require.Equal(t, EventError, env.Type,
+		"the fake returns an error, so the handler must reply with an error")
+	require.Contains(t, env.Error, "provider error before any prompt row")
+
+	// The seam fired and the foreign row landed inside the window.
+	var foreign message.Message
+	select {
+	case foreign = <-foreignCreated:
+	default:
+		t.Fatal("rerunTailDeleteSeam never fired at i==0; the test did not exercise the mid-delete window")
+	}
+	require.NotEqual(t, userMsg.ID, foreign.ID, "precondition: the foreign row is distinct from the rerun target")
+
+	// The handler's deletes did their job; the foreign row survived them.
+	_, getErr := a.Messages.Get(ctx, tailMsg.ID)
+	require.Error(t, getErr, "tail should be deleted by the handler's step 2")
+	_, getErr = a.Messages.Get(ctx, userMsg.ID)
+	require.Error(t, getErr, "target should be deleted by the handler's step 3")
+	_, getErr = a.Messages.Get(ctx, foreign.ID)
+	require.NoError(t, getErr, "the foreign same-text row lands after the pre-delete listing, outside the tail slice; it must survive")
+
+	// The decisive assertion: the recreate must FIRE — count=2 (the
+	// foreign row plus the recreated prompt). A missing union leaves the
+	// foreign row's ID out of the baseline; its text then matches and its
+	// ID reads as new, so the helper misreads it as the already-recreated
+	// prompt and the operator's rerun prompt is silently lost: count=1.
+	msgs, err := a.Messages.List(ctx, sessionID)
+	require.NoError(t, err)
+	count := 0
+	for _, m := range msgs {
+		if m.Role == message.User && m.Content().Text == promptText {
+			count++
+		}
+	}
+	require.Equal(t, 2, count,
+		"the post-delete union must identify the foreign same-text row (created between the two listings) as PRE-EXISTING so the recreate fires; "+
+			"got %d matching user messages, expected 2 — without the union the foreign row is misread as the already-recreated prompt "+
+			"and the operator's rerun prompt is silently lost (seventeenth-review M-1, #644's shape on the success path)", count)
+	require.Len(t, msgs, 2, "foreign row + recreated prompt; nothing else may remain")
 }

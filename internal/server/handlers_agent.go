@@ -660,13 +660,17 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 	// kernel-attested SHARED lock probe on the session's lock file,
 	// HELD from here through the tail delete and the target delete below:
 	// while the shared lock is held, no process — including this one — can
-	// acquire the exclusive lock, so no external writer can start mid-
-	// delete. It is released just before the step-6 handoff, because the
-	// replacement turn's own Run() takes the exclusive lock at its normal
-	// acquire point and a shared lock still held here would conflict with
-	// our own acquire. holdExternalSilenceProof's doc spells out the
-	// fail-closed rules (contention, unresolvable data directory, probe
-	// error).
+	// acquire the exclusive lock, so no external agent RUN (a lock-taking
+	// writer, e.g. another `crush run --session S`) can start mid-delete.
+	// Lock-free writers are NOT excluded by it: `crush sessions inject`
+	// (cmd/sessions_inject.go) writes a user row from a separate process
+	// without ever touching the lock — see the writer enumeration in the
+	// baseline-capture comment below. It is released just before the
+	// step-6 handoff, because the replacement turn's own Run() takes the
+	// exclusive lock at its normal acquire point and a shared lock still
+	// held here would conflict with our own acquire.
+	// holdExternalSilenceProof's doc spells out the fail-closed rules
+	// (contention, unresolvable data directory, probe error).
 	probe, refuse, why := holdExternalSilenceProof(a, sessionID)
 	if refuse {
 		slog.Warn("ws: rerun: refusing: "+why,
@@ -830,17 +834,23 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 	// exclusivity claim: the reservation and probe above exclude other
 	// agent RUNS, but handleDeleteMessage, handleDeleteMessages and
 	// handleUpdateMessageContent (handlers_messages.go) — all three of
-	// which can only delete or edit an existing row — and
-	// handleInjectMessage (via coordinator.InjectMessage, the only one
-	// of the four that can ADD a row: agent Run cannot land one here
-	// because it reserves the session before writing any row) mutate
-	// rows with no ownership check and may interleave here. The set does not need
-	// them excluded: a concurrent writer only adds a row whose ID was
-	// never in the set or removes one that was, and ID membership —
-	// unlike the index or count #651 used — is invariant under deletions
-	// anywhere in the list, which is exactly what in-turn compaction
-	// (deleting summarised rows below the replacement turn's prompt)
-	// invalidates positionally.
+	// which can only delete or edit an existing row — and the two
+	// production callers of coordinator.InjectMessage (the WS
+	// handleInjectMessage and notifyBackgroundJobDone's Phase-3 branch,
+	// coordinator_background.go, on a detached BackgroundShell.OnDone
+	// goroutine that outlives its turn) — the only writers in THIS
+	// process that can ADD a row, since agent Run reserves the session
+	// before writing any row — mutate rows with no ownership check and
+	// may interleave here. One adder is cross-process: `crush sessions
+	// inject` (cmd/sessions_inject.go, doInject) writes a User row in a
+	// separate process taking no lock at all, so the step-1b probe does
+	// not exclude it either. The set does not need any of them excluded:
+	// a concurrent writer only adds a row whose ID was never in the set
+	// or removes one that was, and ID membership — unlike the index or
+	// count #651 used — is invariant under deletions anywhere in the
+	// list, which is exactly what in-turn compaction (deleting
+	// summarised rows below the replacement turn's prompt) invalidates
+	// positionally.
 	//
 	// The set is SEEDED from allMsgs — the pre-delete listing captured at
 	// step 2, still in scope here — and the post-delete List's IDs are
