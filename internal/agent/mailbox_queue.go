@@ -54,6 +54,15 @@ func (mb *mailbox) popFirstSubmitted() (SessionAgentCall, bool) {
 // became owner — this is a safe no-op that returns nil and touches nothing,
 // since whatever is in submitted now belongs to that later owner.
 //
+// This method deliberately does NOT consult mb.stopped: the hard-stop
+// latch's job is to stop TURN-LOOP drains from handing a shutting-down
+// process another provider turn (drainAfterCancel, drainOrReleaseFinal's
+// finalize step, interruptAndReplace). Popping the queue here only feeds
+// restartOrphanedWithRetry, which durably enqueues to the run queue
+// rather than starting a turn — and any later pump execution is refused
+// by the shutdown admission gate (task #641 F-4; an earlier doc claimed
+// "every drain refuses on the latch", which was never true of this path).
+//
 // This method holds mb.mu for the entire operation: it first checks the epoch,
 // then folds any pending replacement into submitted, flips state to mbIdle,
 // clears current.cancel/dispatcherCancel, and finally copies and clears the

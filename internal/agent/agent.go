@@ -519,6 +519,13 @@ type sessionAgent struct {
 	// SessionAgentOptions. Used when the agent acquires inter-process locks
 	// via session.TryAcquireSessionLockWithOptions. Primarily for tests.
 	lockOptions []session.LockOption
+	// testReserveRebindSeam, when non-nil, is invoked by
+	// RunWithReservedOwnership strictly after tryAdmitRunWg succeeds and
+	// strictly before mailbox.rebindDispatcher runs — the narrow window in
+	// which a concurrent CancelAll can latch mb.stopped between admission
+	// and the rebind. Test-only (task #641 F-4); nil (a no-op) in every
+	// production path, mirroring mailbox.testLoopRearmSeam's idiom.
+	testReserveRebindSeam func()
 	// checkpointInterval is plumbed from SessionAgentOptions.
 	// When > 0 the Run method starts a coalescing ticker that flushes
 	// in-memory streaming Parts to DB mid-step, bounding text loss on

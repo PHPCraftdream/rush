@@ -136,16 +136,32 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 //     the era is STILL ours (epoch and state both match) but the process
 //     is shutting down — CancelAll's hardStop sweep has latched stopped
 //     and already fired the dispatcher cancel (which for a held
-//     reservation is the placeholder reserveCancel). Releasing here
-//     would also start detached runs for any queued work, exactly what
-//     the stopped latch exists to prevent during teardown, so not
-//     releasing is deliberate: the mbOwned-stopped mailbox dies with the
-//     exiting process, and every drain refuses on the latch anyway.
+//     reservation is the placeholder reserveCancel). Not releasing HERE
+//     does not, and is not meant to, keep the reservation latched: the
+//     sole production caller (handleRerunMessage) has a releaseOnBailout
+//     defer that fires on this very error and calls ReleaseExclusive
+//     with the still-matching epoch one stack frame later — which pops
+//     any queued work and durably enqueues it via
+//     restartOrphanedWithRetry. That is acceptable (and arguably better
+//     than the alternative) because "restart" since task #340 is a row
+//     in the durable session_run_queue, NOT a fresh provider turn: the
+//     shutdown admission gate (tryAdmitRunWg) refuses any Run the pump
+//     might attempt, and App.Shutdown stops the pump before closing the
+//     DB. The stopped latch's real teardown protections live in the
+//     turn-loop drains (drainAfterCancel, drainOrReleaseFinal's
+//     finalize step) and in interruptAndReplace's "nobody running"
+//     refusal — the abandon-path release is deliberately NOT one of
+//     them (task #641 F-4 corrected an earlier version of this
+//     paragraph that claimed "every drain refuses on the latch anyway",
+//     which was never true of abandonOwnershipAndPopSubmitted).
 //
-// In both cases calling abandonOwnershipWithHandoff there would be wrong
-// or dead, so that branch intentionally does NOT call it; only
-// runCancel/reserveCancel (both of which are unconditionally ours
-// regardless of mailbox state) are cleaned up.
+// For the epoch/state mismatch, calling abandonOwnershipWithHandoff
+// there would be dead (stale epoch: a verified no-op). For the stopped
+// case it would be redundant rather than wrong — the caller's own
+// bailout defer performs the same epoch-matched release one frame later
+// — so that branch leaves the release to the caller and cleans up only
+// runCancel/reserveCancel, both of which are unconditionally ours
+// regardless of mailbox state.
 //
 // The caller must have obtained (holdCtx, epoch, reserveCancel) from
 // ReserveExclusive on call.SessionID's mailbox and must not call
@@ -188,13 +204,25 @@ func (a *sessionAgent) RunWithReservedOwnership(ctx context.Context, call Sessio
 		// mailbox would make CancelAll's own hardStop sweep (which iterates
 		// existing mailboxes) the only thing that could ever clear it.
 		// abandonOwnershipWithHandoff is safe to call post-shutdown-latch:
-		// it only pops/restarts queued work if any is present and otherwise
-		// just flips the era to mbIdle.
+		// it does not consult mb.stopped (deliberately — see the rebind
+		// branch below), but "restarting" queued work means durably
+		// enqueueing it via restartOrphanedWithRetry, not starting a
+		// provider turn — the admission gate refuses any Run during
+		// shutdown, and the pump is stopped before the DB closes. With no
+		// queued work it just flips the era to mbIdle.
 		a.abandonOwnershipWithHandoff(call.SessionID, epoch)
 		reserveCancel()
 		return nil, ErrAgentShuttingDown
 	}
 	defer a.runWg.Done()
+
+	// Test-only seam (task #641 F-4): fires strictly after admission
+	// succeeded and strictly before rebindDispatcher runs — the exact
+	// window a concurrent CancelAll must land in to make the rebind below
+	// fail on mb.stopped. nil in every production path.
+	if a.testReserveRebindSeam != nil {
+		a.testReserveRebindSeam()
+	}
 
 	// runCtx/runCancel span the whole dispatcher, exactly like Run's own —
 	// see Run's doc for why the turn loop needs its own cancelable context
@@ -207,8 +235,9 @@ func (a *sessionAgent) RunWithReservedOwnership(ctx context.Context, call Sessio
 		// EXCEPTION to "this function releases every early return" — see the
 		// doc paragraph above titled "THE SINGLE HANDOFF POINT": the refusal
 		// is either an epoch/state mismatch (the era already isn't ours to
-		// release) or a hard-stopped mailbox (shutdown; releasing would
-		// start detached runs during teardown).
+		// release) or a hard-stopped mailbox (shutdown; the release — and
+		// the durable enqueue of any queued work — happens one frame later
+		// via the caller's releaseOnBailout defer, which see).
 		runCancel()
 		reserveCancel()
 		return nil, fmt.Errorf("agent.RunWithReservedOwnership: reservation for session %q is no longer valid (epoch mismatch or stopped mailbox)", call.SessionID)
