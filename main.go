@@ -24,9 +24,12 @@ import (
 )
 
 func main() {
-	// Guard against running from inside the source tree. This must be checked
-	// before any other initialization, because a stale dev binary can silently
-	// cause incorrect behavior even for --help and --version.
+	// Guard against running from inside the source tree. Package init()
+	// functions (godotenv autoload, internal/dns) necessarily run before
+	// main(), but everything else — cmd dispatch, job-object assignment, the
+	// pprof listener — runs strictly after this check, because a stale dev
+	// binary can silently cause incorrect behavior even for --help and
+	// --version.
 	if err := platform.GuardSourceTreeRun(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

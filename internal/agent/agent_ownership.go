@@ -255,7 +255,12 @@ func (a *sessionAgent) drainOrReleaseMerged(sessionID string, epoch uint64, lk *
 	// idle-session interrupt case, since that is
 	// exactly what this now is: from orphaned's perspective the session is
 	// idle (mbIdle, no lk held) the instant drainOrReleaseFinal returned.
-	a.restartOrphaned(orphaned)
+	if err := a.restartOrphaned(orphaned); err != nil {
+		slog.Error("agent.Run: failed to restart orphaned calls during ownership handoff",
+			"session_id", sessionID,
+			"num_calls", len(orphaned),
+			"err", err)
+	}
 	if !hasNext {
 		return SessionAgentCall{}, false
 	}
