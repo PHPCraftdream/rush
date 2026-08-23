@@ -207,20 +207,25 @@ func (a *sessionAgent) releaseSessionReservation(sessionID string, epoch uint64)
 //     genuinely is gone (mbReleasing reads as busy throughout), closing the
 //     HIGH-1 window described above.
 //  4. Work (a submit()/interruptAndReplace()) races into mb.submitted/
-//     mb.replacement WHILE case 3's release() is running. This is the ONLY
-//     case where drainOrReleaseFinal itself CANNOT decide "keep this turn
-//     loop running" — by the time it notices, release() has ALREADY run and
-//     lk is gone (or its fate unknown, on error/panic). It therefore drains
-//     that work out as `orphaned` and — critically — still ends at mbIdle
-//     with hasNext==false, exactly like case 3. hasNext==true now means,
-//     and only means, "lk is still held, keep the current turn loop going
-//     on it" — cases 1 and 2 exclusively. `orphaned` is a DIFFERENT signal:
-//     "this work has no lock and no turn loop; someone must start a fresh
-//     one for it", handled below exactly like coordinator.startDetachedRun's
-//     existing P0-B idle-session contract (mailbox.interruptAndReplace's own
-//     doc: "the caller should instead start a fresh Run() with call
-//     directly" — case 4 is that same contract, reached via a different
-//     door). Never treat orphaned as a queue the CURRENT lk can serve.
+//     mb.replacement WHILE case 3's release() is running, OR a hardStop
+//     landed during that window. This is the ONLY case where
+//     drainOrReleaseFinal itself CANNOT decide "keep this turn loop running"
+//     — by the time it notices, release() has ALREADY run and lk is gone
+//     (or its fate unknown, on error/panic), OR hardStop has latched and
+//     the process is shutting down. It therefore drains that work out as
+//     `orphaned` and — critically — still ends at mbIdle with
+//     hasNext==false, exactly like case 3. For the hardStop case, this is
+//     a durable enqueue (session_run_queue row) rather than starting a
+//     provider turn — see drainOrReleaseFinal's finalize step doc. hasNext==true
+//     now means, and only means, "lk is still held, keep the current turn
+//     loop going on it" — cases 1 and 2 exclusively. `orphaned` is a
+//     DIFFERENT signal: "this work has no lock and no turn loop; someone
+//     must start a fresh one for it", handled below exactly like
+//     coordinator.startDetachedRun's existing P0-B idle-session contract
+//     (mailbox.interruptAndReplace's own doc: "the caller should instead
+//     start a fresh Run() with call directly" — case 4 is that same
+//     contract, reached via a different door). Never treat orphaned as a
+//     queue the CURRENT lk can serve.
 //
 // lk is released only when no work is available to run next, avoiding the
 // HIGH-1 window where "not busy" appears true while the OS lock is still

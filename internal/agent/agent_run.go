@@ -153,7 +153,10 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 //     refusal — the abandon-path release is deliberately NOT one of
 //     them (task #641 F-4 corrected an earlier version of this
 //     paragraph that claimed "every drain refuses on the latch anyway",
-//     which was never true of abandonOwnershipAndPopSubmitted).
+//     which was never true of abandonOwnershipAndPopSubmitted). Note:
+//     the caller-side release ALSO drains summarizeQueue and spawns
+//     `go a.Summarize(context.Background(), ...)`, but Summarize's own
+//     admission gate refuses it during shutdown.
 //
 // For the epoch/state mismatch, calling abandonOwnershipWithHandoff
 // there would be dead (stale epoch: a verified no-op). For the stopped
@@ -164,20 +167,26 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 // regardless of mailbox state.
 //
 // The caller must have obtained (holdCtx, epoch, reserveCancel) from
-// ReserveExclusive on call.SessionID's mailbox and must not call
-// ReleaseExclusive itself after calling this method — ownership (and who
-// releases it) is entirely determined by which side of the handoff line a
-// given return sits on, per the paragraph above.
+// ReserveExclusive on call.SessionID's mailbox. The caller must not call
+// ReleaseExclusive after the handoff point (once onHandoff has fired),
+// because runOwned's defer owns releasing from that point forward. On early
+// error returns before the handoff, the caller's armed defer is the intended
+// (and on the mb.stopped rebind branch, the ONLY) release mechanism.
 //
 // onHandoff, if non-nil, is invoked immediately before the handoff to
 // runOwned. It is used by callers (e.g. handleRerunMessage) to transfer
 // release responsibility exactly when the handoff occurs: the caller's
 // defer (which releases on early returns) is disarmed by invoking onHandoff,
 // and from that point forward runOwned's defer owns releasing the reservation.
-// Any early return BEFORE onHandoff fires will trigger both the agent-level
-// early release (in this function) AND the caller's still-armed defer — the
-// second release is a verified epoch-guarded no-op (idle mailbox, empty queues,
-// spent CancelFunc).
+//
+// For MOST early returns (before onHandoff fires), this function itself
+// releases and the caller's still-armed defer's release is then an
+// epoch-mismatched/idle no-op. The EXCEPTION is the mb.stopped rebind
+// branch: this function deliberately does NOT release (the epoch still
+// matches, the mailbox is still mbOwned with possibly non-empty queues),
+// and the caller's later ReleaseExclusive (via its bailout defer) is what
+// actually releases and durably enqueues the queued work (proven by
+// p641_mbstopped_rebind_test.go).
 func (a *sessionAgent) RunWithReservedOwnership(ctx context.Context, call SessionAgentCall, epoch uint64, reserveCancel context.CancelFunc, onHandoff func()) (*fantasy.AgentResult, error) {
 	if call.Prompt == "" && !message.ContainsTextAttachment(call.Attachments) {
 		// Before the handoff line: this function must release what
@@ -210,6 +219,12 @@ func (a *sessionAgent) RunWithReservedOwnership(ctx context.Context, call Sessio
 		// provider turn — the admission gate refuses any Run during
 		// shutdown, and the pump is stopped before the DB closes. With no
 		// queued work it just flips the era to mbIdle.
+		//
+		// Note: abandonOwnershipWithHandoff ALSO unconditionally drains
+		// summarizeQueue and spawns `go a.Summarize(context.Background(), ...)`.
+		// The Summarize call IS a provider turn attempt, but it is harmless
+		// during shutdown because Summarize's own admission gate (tryAdmitRunWg,
+		// agent_compaction.go:54-55) refuses it with ErrAgentShuttingDown.
 		a.abandonOwnershipWithHandoff(call.SessionID, epoch)
 		reserveCancel()
 		return nil, ErrAgentShuttingDown

@@ -219,9 +219,10 @@ func (mb *mailbox) drainOrReleaseFinal(
 	// turn. Fall through to the mbReleasing path below (rather than an early
 	// return) so the OS lock is still released and the mailbox still lands
 	// on mbIdle — a shutdown must not leave the session marked busy with the
-	// lock held. Queued work is deliberately NOT consulted at all on this
-	// path (unlike the live branches below) — hardStop's own doc explains
-	// why a stopped mailbox must refuse to hand a turn loop more work.
+	// lock held. Queued work is NOT returned as "hasNext=true" for another
+	// turn loop (that would start a provider turn during shutdown), but it
+	// IS handed out as orphaned in the finalize step so drainOrReleaseMerged
+	// durably enqueues it via restartOrphaned — see the finalize step's doc.
 	if !mb.stopped {
 		// Seam for deterministic test interleaving: fires right after the epoch check,
 		// before ANY queue (replacement, submitted) is consulted — this is the
@@ -323,21 +324,30 @@ func (mb *mailbox) drainOrReleaseFinal(
 	// hardStop can land WHILE release() is in flight (hardStop only takes
 	// mb.mu for the instant it sets the latch and reads the cancel funcs —
 	// see its own doc — so it is never blocked by a concurrent release()).
-	// A hardStop landing in that window must win over anything that raced in
-	// alongside it: `orphaned` calls are restarted via a fresh detached
-	// Run() (see drainOrReleaseMerged's doc), and starting a fresh provider
-	// turn while the process is trying to exit is precisely the P0-C bug
-	// this mailbox already exists to prevent — restarting it as "orphaned"
-	// would be just as wrong as the rejected hand-back-to-mbOwned shape,
-	// just reached one step later. So a stopped mailbox DISCARDS whatever
-	// raced in here (mirroring hardStop's own pre-release contract: queued
-	// work is lost, not silently dropped without a trace — logged one level
-	// up, in drainOrReleaseMerged's caller, exactly like the pre-existing
-	// abandonOwnership discard path).
+	// A hardStop landing in that window still wins over handing work back
+	// to the turn loop (hasNext stays false — a shutdown must not run another
+	// turn in-process), but the raced-in work is now returned as `orphaned`
+	// so drainOrReleaseMerged durably enqueues it via restartOrphaned — a
+	// DB row, not a provider turn — exactly matching the abandon path's
+	// behavior on a latched mailbox (task #641 / twelfth review N-3).
+	//
+	// Historical note: this branch used to discard, justified by "restart =
+	// fresh provider turn", which stopped being true when task #340 made
+	// restartOrphaned/restartOrphanedWithRetry a durable enqueue into
+	// session_run_queue rather than starting a turn. The shutdown admission
+	// gate (tryAdmitRunWg) refuses any Run during shutdown, and App.Shutdown
+	// stops the pump before closing the DB, so the durable row is safely
+	// processed later.
 	if mb.stopped {
-		mb.submitted = nil
-		mb.replacement = nil
-		return SessionAgentCall{}, false, nil, releaseErr
+		if mb.replacement != nil {
+			orphaned = append(orphaned, *mb.replacement)
+			mb.replacement = nil
+		}
+		if len(mb.submitted) > 0 {
+			orphaned = append(orphaned, mb.submitted...)
+			mb.submitted = nil
+		}
+		return SessionAgentCall{}, false, orphaned, releaseErr
 	}
 
 	// Drain everything that raced into the mailbox during the release()

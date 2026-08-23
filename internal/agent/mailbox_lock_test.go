@@ -379,20 +379,15 @@ func TestMailbox_DrainOrReleaseFinal_ReleasePanicStillReachesIdle(t *testing.T) 
 	require.Nil(t, mb.current.cancel)
 }
 
-// TestMailbox_DrainOrReleaseFinal_HardStopDuringReleaseWindow_DiscardsWork
-// is the regression test for the #296/P1-C x P0-C interaction: hardStop
-// (CancelAll/shutdown) landing WHILE release() is in flight (state ==
-// mbReleasing) must not have its shutdown intent silently overridden by
-// work that lands in mb.submitted during that same window — neither handed
-// back to the turn loop (rejected per #297 — see this function's own doc)
-// NOR returned as orphaned to be restarted via a detached Run(), since a
-// detached restart is exactly as wrong as a hand-back would be: it starts a
-// fresh provider turn while the process is trying to exit, the original
-// P0-C bug. Before the finalize step re-checked mb.stopped after
-// reacquiring mb.mu, a submit() racing a concurrent hardStop inside the
-// release() window would have been handed back to the turn loop as a fresh
-// turn.
-func TestMailbox_DrainOrReleaseFinal_HardStopDuringReleaseWindow_DiscardsWork(t *testing.T) {
+// TestMailbox_DrainOrReleaseFinal_HardStopDuringReleaseWindow_HandsWorkToDurableEnqueue
+// proves the #646 fix: hardStop (CancelAll/shutdown) landing WHILE release()
+// is in flight (state == mbReleasing) must still hand out any work that
+// raced in as `orphaned` so drainOrReleaseMerged can durably enqueue it via
+// restartOrphaned. Before the fix, this branch discarded the work; after the
+// fix, it's handed out in the same order as the live branches (replacement
+// first, then submitted), and the caller (drainOrReleaseMerged) durably
+// enqueues it as a session_run_queue row rather than starting a provider turn.
+func TestMailbox_DrainOrReleaseFinal_HardStopDuringReleaseWindow_HandsWorkToDurableEnqueue(t *testing.T) {
 	mb := &mailbox{
 		state:            mbOwned,
 		epoch:            1,
@@ -400,13 +395,17 @@ func TestMailbox_DrainOrReleaseFinal_HardStopDuringReleaseWindow_DiscardsWork(t 
 		current:          generation{id: 1, cancel: func() {}},
 	}
 
-	// Simulate hardStop AND a concurrent submit() both landing during the
-	// release() window: the release callback itself (running with mb.mu
-	// free) does both, exactly as two separate real goroutines would.
+	// Simulate hardStop AND concurrent submit()/interruptAndReplace both
+	// landing during the release() window: the release callback itself
+	// (running with mb.mu free) does both, exactly as two separate real
+	// goroutines would.
+	replacedCall := SessionAgentCall{SessionID: "s1", Prompt: "replacement raced in during shutdown", LogicalCallID: "replacement-123"}
+	submittedCall := SessionAgentCall{SessionID: "s1", Prompt: "raced in during shutdown", LogicalCallID: "submitted-456"}
 	release := func() error {
 		mb.hardStop()
 		mb.mu.Lock()
-		mb.submitted = append(mb.submitted, SessionAgentCall{SessionID: "s1", Prompt: "raced in during shutdown"})
+		mb.replacement = &replacedCall
+		mb.submitted = append(mb.submitted, submittedCall)
 		mb.mu.Unlock()
 		return nil
 	}
@@ -417,9 +416,9 @@ func TestMailbox_DrainOrReleaseFinal_HardStopDuringReleaseWindow_DiscardsWork(t 
 	require.False(t, hasNext, "work that landed during the release window must NOT be handed back once hardStop "+
 		"has latched — a shutdown must not start a fresh turn")
 	require.Equal(t, SessionAgentCall{}, next)
-	require.Empty(t, orphaned, "work that races in alongside a shutdown must be discarded, not returned as "+
-		"orphaned — restarting it via a detached Run() would be exactly the P0-C bug hardStop exists to prevent, "+
-		"just reached one step later")
+	require.Len(t, orphaned, 2, "both replacement and submitted must be handed out as orphaned for durable enqueue")
+	require.Equal(t, "replacement-123", orphaned[0].LogicalCallID, "replacement must come first, matching live-branch priority")
+	require.Equal(t, "submitted-456", orphaned[1].LogicalCallID, "submitted must come after replacement")
 
 	mb.mu.Lock()
 	defer mb.mu.Unlock()

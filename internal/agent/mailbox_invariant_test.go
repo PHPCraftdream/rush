@@ -179,8 +179,8 @@ func TestMailbox_Invariant_NoStaleCancelHandleSurvivesAnyMutatorReturn(t *testin
 				require.False(t, hasNext, "a hard-stopped mailbox must not continue into another turn")
 				require.True(t, released,
 					"shutdown must still release the OS lock — refusing to continue is not a reason to leak it")
-				require.Empty(t, orphaned, "queued work must NOT be handed out as orphaned on a stopped mailbox — "+
-					"hardStop's own contract is that queued work is discarded (lost), not restarted")
+				require.NotEmpty(t, orphaned, "queued work must be handed out as orphaned on a stopped mailbox — "+
+					"since #646/#340 it is durably enqueued by the caller, not discarded")
 			},
 			want: expectation{stillOwned: false},
 		},
@@ -283,7 +283,7 @@ func TestMailbox_Invariant_NoStaleCancelHandleSurvivesAnyMutatorReturn(t *testin
 			want: expectation{stillOwned: false},
 		},
 		{
-			name: "drainOrReleaseFinal/hard-stopped during the release() window discards the race, not orphaned",
+			name: "drainOrReleaseFinal/hard-stopped during the release() window hands the race out as orphaned",
 			run: func(t *testing.T, mb *mailbox) {
 				release := func() error {
 					mb.hardStop()
@@ -296,8 +296,8 @@ func TestMailbox_Invariant_NoStaleCancelHandleSurvivesAnyMutatorReturn(t *testin
 				require.NoError(t, err)
 				require.False(t, hasNext, "hardStop landing during the release() window must override any work "+
 					"that also landed there — a shutdown must not hand the turn loop a fresh call")
-				require.Empty(t, orphaned, "work that races in alongside a shutdown must be discarded, not "+
-					"restarted — restarting it would defeat the shutdown exactly like handing it back would")
+				require.Equal(t, []SessionAgentCall{{SessionID: "s1"}}, orphaned, "work that races in alongside a shutdown must be "+
+					"returned as orphaned so the caller durably enqueues it (#646) — a DB row, not a fresh provider turn")
 			},
 			want: expectation{stillOwned: false},
 		},

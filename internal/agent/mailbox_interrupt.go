@@ -19,27 +19,22 @@ import (
 // dispatcherCancel unwinds Run() itself, and `stopped` guarantees that on
 // the way out no drain hands it another call to run.
 //
-// Anything still queued is left in place rather than discarded, but be
-// clear about what that does and does not buy (closing review, blocker
-// 3 — an earlier version of this comment claimed the queue was already
-// persisted, which is false).
-//
-// A queued SessionAgentCall is NOT a DB row: coordinator.buildCall does
-// not create one, and the user message is only written in runTurn's
-// preamble, i.e. after a turn has already started. mb.submitted and
-// mb.replacement live purely in this process (in-memory). So on shutdown a
-// prompt that never reached a turn IS lost, with only a slog.Error to show
-// for it.
-//
-// That is the accepted trade: losing an unstarted prompt is better than
-// starting a fresh provider turn while the process is tearing its
-// database down. The one case that does survive is interrupt tick's,
-// whose call carries an ExistingMessageID for
-// a row `crush sessions inject` already wrote.
-//
-// Making this genuinely lossless needs the queue to be durable, which is
-// a design change well beyond a shutdown latch — tracked separately, not
-// papered over here.
+// Anything still queued is left in place rather than discarded, and since
+// task #340 leaving it in place IS a save: when the latch refuses the
+// turn-loop drains and Run() unwinds, Run's deferred
+// abandonOwnershipWithHandoff pops the queue and durably enqueues every
+// queued call via restartOrphanedWithRetry — a session_run_queue row, not
+// a provider turn. (An earlier version of this comment claimed the queue
+// was "genuinely lost" because a queued SessionAgentCall is not a DB row;
+// that was true pre-#340, when restart meant a detached Run(), but is
+// obsolete now.) The only thing the latch itself must prevent is another
+// in-process turn: the shutdown admission gate (tryAdmitRunWg) refuses
+// any Run during shutdown, and App.Shutdown stops the pump before
+// closing the DB, so the durable rows are safely processed later — after
+// restart, in a fresh process. This includes interrupt tick's calls (an
+// ExistingMessageID for a row `crush sessions inject` already wrote):
+// they ride the same durable-enqueue path as everything else, they just
+// additionally already had a DB row.
 //
 // hardStop landing while state == mbReleasing (#296/P1-C: drainOrReleaseFinal
 // is between dropping mb.mu to run release() and reacquiring it to finalize)
@@ -280,11 +275,12 @@ func (mb *mailbox) drainAfterCancel() (SessionAgentCall, bool) {
 	// Hard-stopped (P0-C): the process is shutting down, so refuse to hand
 	// the turn loop another call. This is THE branch that made CancelAll
 	// start turn N+1 instead of stopping — it runs immediately after the
-	// cancel CancelAll itself caused. Queued work is left in place rather
-	// than discarded — but see hardStop's doc for what that does and does
-	// not buy: a queued call is NOT a DB row, so an unstarted prompt is
-	// genuinely lost when the process exits. Leaving it is the lesser evil,
-	// not a save.
+	// cancel CancelAll itself caused. Queued work is left in place — it will
+	// be durably enqueued when the turn loop exits and Run's deferred
+	// abandonOwnershipWithHandoff pops it (session_run_queue row, not a
+	// provider turn). The shutdown admission gate (tryAdmitRunWg) refuses
+	// any in-process Run during shutdown, and App.Shutdown stops the pump
+	// before closing the DB.
 	if mb.stopped {
 		// Clear the spent generation handle on the way out, like the two hit
 		// branches below (closing-review follow-up). This branch returns "no
