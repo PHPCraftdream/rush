@@ -824,6 +824,23 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 		slog.Warn("ws: rerun: failed to delete original user message", "id", targetMsg.ID, "err", delErr)
 	}
 
+	// Capture a precise baseline row count immediately after the target delete.
+	// While this handler still holds the exclusive reservation and the
+	// external-silence probe, no other writer can be modifying the session,
+	// so the list below captures the true post-delete count. On the happy path
+	// this equals targetIdx (everything at index >= targetIdx was deleted),
+	// but if a tail delete failed (P3-1 source 2) it captures the REAL count.
+	// Use a sensible fallback: if listing errors, log and fall back to targetIdx
+	// (the subsequent positional+textual scan in recreateRerunPromptIfLost still
+	// decides correctly — fail-open toward recreating).
+	baselineCount := targetIdx
+	if msgs, listErr := a.Messages.List(deleteCtx, sessionID); listErr == nil {
+		baselineCount = len(msgs)
+	} else {
+		slog.Warn("ws: rerun: failed to list messages for baseline count after target delete, falling back to targetIdx",
+			"sessionID", sessionID, "targetIdx", targetIdx, "err", listErr)
+	}
+
 	// Task #645 (twelfth-review N-2): recreate the user prompt if it was
 	// lost, on EVERY exit path past the commit point above — including a
 	// PANIC between the delete and the handoff (e.g. at rerunPreHandoffSeam
@@ -834,15 +851,20 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 	// above (before step 3 there is nothing to recreate). Idempotent and
 	// harmless on non-error paths: the positional check finds nothing to
 	// recreate once the replacement turn's own createUserMessage has run.
-	// It runs before the releaseOnBailout/probeHeld defers (LIFO), i.e.
-	// while this handler still holds the reservation, so no concurrent
-	// writer can interleave with the list-then-create. On the normal error
-	// path the recreate now happens AFTER c.reply instead of before; no
-	// test asserts that ordering and WebSocket delivery is async from the
-	// client's perspective, so the flip is accepted for the simplicity of
-	// a single unconditional defer.
+	// It runs before the releaseOnBailout/probeHeld defers (LIFO), so on
+	// the panic-before-handoff path it still runs while the reservation is
+	// held. But on the success and ordinary-error returns the agent layer
+	// has already released by the time it runs, so correctness does NOT
+	// depend on exclusivity — it depends on (a) the releaseOnBailout gating
+	// below (never recreate after a successful handoff+run) and (b) the
+	// baseline+text scan in recreateRerunPromptIfLost, which no unrelated
+	// concurrent writer can spoof.
+	recreateHandled := false
 	defer func() {
-		recreateRerunPromptIfLost(deleteCtx, a, sessionID, targetIdx, text)
+		if releaseOnBailout && !recreateHandled {
+			recreateHandled = true
+			recreateRerunPromptIfLost(deleteCtx, a, sessionID, baselineCount, text)
+		}
 	}()
 
 	// 4. Re-arm Phase 4 autonomy.
@@ -913,7 +935,8 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 		// client still sees the recreated message's CreatedEvent broadcast
 		// ahead of the error reply, matching the pre-#645 behaviour; the
 		// defer is idempotent and no-ops when the explicit call already ran.
-		recreateRerunPromptIfLost(deleteCtx, a, sessionID, targetIdx, text)
+		recreateHandled = true
+		recreateRerunPromptIfLost(deleteCtx, a, sessionID, baselineCount, text)
 		c.reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
@@ -922,26 +945,34 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 
 // recreateRerunPromptIfLost restores a rerun target deleted at step 3 of
 // handleRerunMessage when the replacement turn never recreated it (task
-// #638/#644, extended to panic paths by #645). The check is POSITIONAL,
-// not textual: steps 2/3 deleted everything at index >= targetIdx in the
-// original ordered list, so any row now present at or past that index was
-// necessarily created by the replacement turn — meaning createUserMessage
-// already ran and no recreate is needed. A text scan would wrongly match
-// an EARLIER identical prompt ("continue", "go on", …) that survives the
-// tail delete and suppress the recreate, dropping the rerun target from
-// the transcript (#644). Idempotent: once the prompt exists at or past
-// targetIdx it no-ops, so calling it twice (explicit call plus defer) is
-// harmless.
-func recreateRerunPromptIfLost(ctx context.Context, a *appPkg.App, sessionID string, targetIdx int, text string) {
+// #638/#644, extended to panic paths by #645). The check is POSITIONAL+TEXTUAL:
+// rows at index < baselineCount predate the commit point (survivors of a
+// failed tail delete), while any row at index >= baselineCount that is a User
+// message whose Content().Text equals the captured prompt text must be the
+// recreated prompt (or an earlier explicit call already handled it). This
+// makes the helper immune to unrelated concurrent writers adding rows that
+// don't match the captured text, and correctly handles earlier identical
+// prompts (like "continue") that survive the tail delete and must NOT
+// suppress the recreate (#644). Idempotent: once the prompt exists at or
+// past baselineCount with matching text, it no-ops.
+func recreateRerunPromptIfLost(ctx context.Context, a *appPkg.App, sessionID string, baselineCount int, text string) {
 	allMsgs, listErr := a.Messages.List(ctx, sessionID)
 	if listErr != nil {
 		slog.Error("Failed to list messages while checking if prompt needs recreation",
 			"sessionID", sessionID, "err", listErr)
 		return
 	}
-	if len(allMsgs) > targetIdx {
-		return
+
+	// Scan only messages at index >= baselineCount (rows that could only exist
+	// after the commit point). If ANY of them is a User message whose text
+	// matches the captured prompt, the replacement turn (or a prior explicit call)
+	// already recreated it — return without creating.
+	for i := baselineCount; i < len(allMsgs); i++ {
+		if allMsgs[i].Role == message.User && allMsgs[i].Content().Text == text {
+			return
+		}
 	}
+
 	_, createErr := a.Messages.Create(ctx, sessionID, message.CreateMessageParams{
 		Role:  message.User,
 		Parts: []message.ContentPart{message.TextContent{Text: text}},
