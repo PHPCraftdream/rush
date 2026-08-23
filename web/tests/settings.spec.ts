@@ -9,11 +9,17 @@ test.beforeEach(async ({ page }) => {
   );
 });
 
+async function openMoreMenu(page: import("@playwright/test").Page) {
+  await page.getByTestId("header-more-button").click();
+  await expect(page.getByTestId("header-logs-button")).toBeVisible({ timeout: 2000 });
+}
+
 // ── Settings modal ─────────────────────────────────────────────────────────
 
 test("Settings button opens settings modal", async ({ page }) => {
   await page.goto("/");
   await sendMockWSMessage(page, { type: "config", payload: makeConfig() });
+  await openMoreMenu(page);
   await page.getByTestId("header-settings-button").click();
   await expect(page.getByTestId("settings-modal")).toBeVisible({ timeout: 3000 });
   await expect(page.getByTestId("settings-modal-header")).toContainText("Settings");
@@ -22,6 +28,7 @@ test("Settings button opens settings modal", async ({ page }) => {
 test("Settings modal closes on Escape", async ({ page }) => {
   await page.goto("/");
   await sendMockWSMessage(page, { type: "config", payload: makeConfig() });
+  await openMoreMenu(page);
   await page.getByTestId("header-settings-button").click();
   await expect(page.getByTestId("settings-modal")).toBeVisible({ timeout: 2000 });
   await page.keyboard.press("Escape");
@@ -31,6 +38,7 @@ test("Settings modal closes on Escape", async ({ page }) => {
 test("Settings modal closes on backdrop click", async ({ page }) => {
   await page.goto("/");
   await sendMockWSMessage(page, { type: "config", payload: makeConfig() });
+  await openMoreMenu(page);
   await page.getByTestId("header-settings-button").click();
   await expect(page.getByTestId("settings-modal")).toBeVisible({ timeout: 2000 });
   await page.mouse.click(10, 10);
@@ -49,6 +57,7 @@ test("Context Paths section shows existing paths", async ({ page }) => {
     type: "config",
     payload: makeConfig({ contextPaths: ["docs/arch.md", ".cursorrules"] }),
   });
+  await openMoreMenu(page);
   await page.getByTestId("header-settings-button").click();
   await expect(page.getByTestId("settings-section-context")).toBeVisible({ timeout: 2000 });
   await expect(page.getByTestId("settings-context-paths")).toContainText("docs/arch.md");
@@ -58,6 +67,7 @@ test("Context Paths section shows existing paths", async ({ page }) => {
 test("Adding a context path sends add_context_path command", async ({ page }) => {
   await page.goto("/");
   await sendMockWSMessage(page, { type: "config", payload: makeConfig() });
+  await openMoreMenu(page);
   await page.getByTestId("header-settings-button").click();
   await page.getByTestId("settings-context-paths-input").fill("myfile.md");
   await page.getByTestId("settings-context-paths-input").press("Enter");
@@ -71,6 +81,7 @@ test("Removing a context path sends remove_context_path command", async ({ page 
     type: "config",
     payload: makeConfig({ contextPaths: ["docs/arch.md"] }),
   });
+  await openMoreMenu(page);
   await page.getByTestId("header-settings-button").click();
   await expect(page.getByTestId("settings-context-paths-item-0")).toContainText("docs/arch.md");
   await page.getByTestId("settings-context-paths-remove-0").click();
@@ -86,6 +97,7 @@ test("Skills Paths section shows existing paths", async ({ page }) => {
     type: "config",
     payload: makeConfig({ skillsPaths: ["./my-skills"] }),
   });
+  await openMoreMenu(page);
   await page.getByTestId("header-settings-button").click();
   await expect(page.getByTestId("settings-section-skills")).toBeVisible({ timeout: 2000 });
   await expect(page.getByTestId("settings-skills-paths")).toContainText("./my-skills");
@@ -94,6 +106,7 @@ test("Skills Paths section shows existing paths", async ({ page }) => {
 test("Adding a skills path sends add_skills_path command", async ({ page }) => {
   await page.goto("/");
   await sendMockWSMessage(page, { type: "config", payload: makeConfig() });
+  await openMoreMenu(page);
   await page.getByTestId("header-settings-button").click();
   await page.getByTestId("settings-skills-paths-input").fill("./new-skills");
   await page.getByTestId("settings-skills-paths-input").press("Enter");
@@ -106,6 +119,7 @@ test("Adding a skills path sends add_skills_path command", async ({ page }) => {
 test("Initialize Project button sends initialize_project command", async ({ page }) => {
   await page.goto("/");
   await sendMockWSMessage(page, { type: "config", payload: makeConfig() });
+  await openMoreMenu(page);
   await page.getByTestId("header-settings-button").click();
   await expect(page.getByTestId("settings-init-button")).toBeVisible({ timeout: 2000 });
   await page.getByTestId("settings-init-button").click();
@@ -117,6 +131,7 @@ test("Initialize Project button sends initialize_project command", async ({ page
 test("Providers button opens providers modal", async ({ page }) => {
   await page.goto("/");
   await sendMockWSMessage(page, { type: "config", payload: makeConfig() });
+  await openMoreMenu(page);
   await page.getByTestId("header-providers-button").click();
   await expect(page.getByTestId("providers-modal")).toBeVisible({ timeout: 3000 });
   // ProvidersModal.tsx's <h2> now reads "Providers" (with a "N provider(s)"
@@ -144,6 +159,7 @@ test("Providers modal shows custom providers", async ({ page }) => {
       },
     }),
   });
+  await openMoreMenu(page);
   await page.getByTestId("header-providers-button").click();
   await expect(page.getByTestId("providers-modal")).toBeVisible({ timeout: 3000 });
   await expect(page.getByTestId("providers-modal")).toContainText("Ollama");
@@ -152,6 +168,7 @@ test("Providers modal shows custom providers", async ({ page }) => {
 test("Providers modal - add custom provider sends command", async ({ page }) => {
   await page.goto("/");
   await sendMockWSMessage(page, { type: "config", payload: makeConfig() });
+  await openMoreMenu(page);
   await page.getByTestId("header-providers-button").click();
   await page.getByTestId("providers-modal-add").click();
   // Fill provider fields
@@ -185,6 +202,7 @@ test("Providers modal - remove custom provider sends command", async ({ page }) 
       },
     }),
   });
+  await openMoreMenu(page);
   await page.getByTestId("header-providers-button").click();
   await expect(page.getByTestId("providers-modal")).toContainText("Ollama Local", { timeout: 2000 });
   await page.getByTitle("Remove provider").click();

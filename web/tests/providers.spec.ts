@@ -28,6 +28,11 @@ async function primeSession(
   }
 }
 
+async function openMoreMenu(page: import("@playwright/test").Page) {
+  await page.getByTestId("header-more-button").click();
+  await expect(page.getByTestId("header-logs-button")).toBeVisible({ timeout: 2000 });
+}
+
 /** Config with a single custom provider. */
 function makeConfigWithProvider(overrides: Record<string, unknown> = {}) {
   return makeConfig({
@@ -54,6 +59,7 @@ function makeConfigWithProvider(overrides: Record<string, unknown> = {}) {
 
 async function openProvidersModal(page: Parameters<typeof sendMockWSMessage>[0]) {
   await primeSession(page, makeConfig());
+  await openMoreMenu(page);
   await page.getByTestId("header-providers-button").click();
   await expect(page.getByTestId("providers-modal")).toBeVisible({ timeout: 3000 });
 }
@@ -76,6 +82,7 @@ test("Providers modal closes on backdrop click", async ({ page }) => {
 
 test("Providers modal shows provider base URL", async ({ page }) => {
   await primeSession(page, makeConfigWithProvider());
+  await openMoreMenu(page);
   await page.getByTestId("header-providers-button").click();
   await expect(page.getByTestId("providers-modal")).toBeVisible({ timeout: 3000 });
   await expect(
@@ -100,6 +107,7 @@ test("Providers modal shows model count", async ({ page }) => {
         },
       },
     }));
+  await openMoreMenu(page);
   await page.getByTestId("header-providers-button").click();
   await expect(page.getByTestId("providers-modal")).toBeVisible({ timeout: 3000 });
   // The row subtitle shows "2 models"
@@ -112,6 +120,7 @@ test("Providers modal shows model count", async ({ page }) => {
 
 test("Edit provider button opens edit form", async ({ page }) => {
   await primeSession(page, makeConfigWithProvider());
+  await openMoreMenu(page);
   await page.getByTestId("header-providers-button").click();
   await expect(page.getByTestId("providers-modal")).toContainText("Ollama", { timeout: 3000 });
   await page.getByTestId("provider-edit-ollama").click();
@@ -122,6 +131,7 @@ test("Edit provider button opens edit form", async ({ page }) => {
 
 test("Edit provider form has ID field disabled", async ({ page }) => {
   await primeSession(page, makeConfigWithProvider());
+  await openMoreMenu(page);
   await page.getByTestId("header-providers-button").click();
   await expect(page.getByTestId("providers-modal")).toContainText("Ollama", { timeout: 3000 });
   await page.getByTestId("provider-edit-ollama").click();
@@ -135,6 +145,7 @@ test("Edit provider form has ID field disabled", async ({ page }) => {
 
 test("Edit provider sends update_custom_provider", async ({ page }) => {
   await primeSession(page, makeConfigWithProvider());
+  await openMoreMenu(page);
   await page.getByTestId("header-providers-button").click();
   await expect(page.getByTestId("providers-modal")).toContainText("Ollama", { timeout: 3000 });
   await page.getByTestId("provider-edit-ollama").click();
@@ -216,6 +227,7 @@ test("Add provider form with model saves correctly", async ({ page }) => {
 
 test("Remove provider - cancel hides confirm", async ({ page }) => {
   await primeSession(page, makeConfigWithProvider());
+  await openMoreMenu(page);
   await page.getByTestId("header-providers-button").click();
   await expect(page.getByTestId("providers-modal")).toContainText("Ollama", { timeout: 3000 });
   await page.getByTitle("Remove provider").click();
@@ -230,6 +242,7 @@ test("Remove provider - cancel hides confirm", async ({ page }) => {
 
 test("Remove provider - global button sends remove_custom_provider with global scope", async ({ page }) => {
   await primeSession(page, makeConfigWithProvider());
+  await openMoreMenu(page);
   await page.getByTestId("header-providers-button").click();
   await expect(page.getByTestId("providers-modal")).toContainText("Ollama", { timeout: 3000 });
   await page.getByTitle("Remove provider").click();
@@ -241,6 +254,7 @@ test("Remove provider - global button sends remove_custom_provider with global s
 
 test("Remove provider - local button sends remove_custom_provider with local scope", async ({ page }) => {
   await primeSession(page, makeConfigWithProvider());
+  await openMoreMenu(page);
   await page.getByTestId("header-providers-button").click();
   await expect(page.getByTestId("providers-modal")).toContainText("Ollama", { timeout: 3000 });
   await page.getByTitle("Remove provider").click();
@@ -256,6 +270,7 @@ test("Provider with peak_hours shows window badge in row", async ({ page }) => {
   await primeSession(page, makeConfigWithProvider({
       peakHours: { start: "09:00", end: "18:00" },
     }));
+  await openMoreMenu(page);
   await page.getByTestId("header-providers-button").click();
   await expect(page.getByTestId("providers-modal")).toContainText("Ollama", { timeout: 3000 });
   await expect(page.getByTestId("provider-peak-badge")).toBeVisible({ timeout: 3000 });
@@ -264,6 +279,7 @@ test("Provider with peak_hours shows window badge in row", async ({ page }) => {
 
 test("Provider without peak_hours shows no window badge", async ({ page }) => {
   await primeSession(page, makeConfigWithProvider());
+  await openMoreMenu(page);
   await page.getByTestId("header-providers-button").click();
   await expect(page.getByTestId("providers-modal")).toContainText("Ollama", { timeout: 3000 });
   await expect(page.getByTestId("provider-peak-badge")).toHaveCount(0);
@@ -336,6 +352,7 @@ test("Edit provider form prefills existing peak-hours window", async ({ page }) 
   await primeSession(page, makeConfigWithProvider({
       peakHours: { start: "08:00", end: "20:00" },
     }));
+  await openMoreMenu(page);
   await page.getByTestId("header-providers-button").click();
   await expect(page.getByTestId("providers-modal")).toContainText("Ollama", { timeout: 3000 });
   await page.getByTestId("provider-edit-ollama").click();
@@ -350,6 +367,7 @@ test("Edit provider clears peak-hours when toggled off", async ({ page }) => {
   await primeSession(page, makeConfigWithProvider({
       peakHours: { start: "08:00", end: "20:00" },
     }));
+  await openMoreMenu(page);
   await page.getByTestId("header-providers-button").click();
   await expect(page.getByTestId("providers-modal")).toContainText("Ollama", { timeout: 3000 });
   await page.getByTestId("provider-edit-ollama").click();
@@ -379,6 +397,7 @@ test("Provider with API key shows Key set badge", async ({ page }) => {
         },
       },
     }));
+  await openMoreMenu(page);
   await page.getByTestId("header-providers-button").click();
   await expect(page.getByTestId("providers-modal")).toBeVisible({ timeout: 3000 });
   await expect(page.getByText("Key set", { exact: false })).toBeVisible({
@@ -390,6 +409,7 @@ test("Provider with API key shows Key set badge", async ({ page }) => {
 
 test("Providers modal shows built-in providers, not just custom ones", async ({ page }) => {
   await primeSession(page, makeConfigWithProvider());
+  await openMoreMenu(page);
   await page.getByTestId("header-providers-button").click();
   await expect(page.getByTestId("providers-modal")).toContainText("Anthropic", { timeout: 3000 });
   await expect(page.getByTestId("providers-modal")).toContainText("Ollama", { timeout: 3000 });
@@ -412,6 +432,7 @@ test("Configured providers (API key set) sort before unconfigured ones", async (
       },
     },
   }));
+  await openMoreMenu(page);
   await page.getByTestId("header-providers-button").click();
   await expect(page.getByTestId("providers-modal")).toBeVisible({ timeout: 3000 });
   const rows = page.getByTestId("provider-row");
@@ -422,6 +443,7 @@ test("Configured providers (API key set) sort before unconfigured ones", async (
 
 test("Built-in provider has no remove button", async ({ page }) => {
   await primeSession(page, makeConfigWithProvider());
+  await openMoreMenu(page);
   await page.getByTestId("header-providers-button").click();
   await expect(page.getByTestId("providers-modal")).toContainText("Anthropic", { timeout: 3000 });
   // Two rows: Anthropic (built-in, first alphabetically) then Ollama (custom).
@@ -431,6 +453,7 @@ test("Built-in provider has no remove button", async ({ page }) => {
 
 test("Built-in provider edit opens peak-hours-only editor, not full form", async ({ page }) => {
   await primeSession(page, makeConfigWithProvider());
+  await openMoreMenu(page);
   await page.getByTestId("header-providers-button").click();
   await expect(page.getByTestId("providers-modal")).toContainText("Anthropic", { timeout: 3000 });
   await page.getByTestId("provider-edit-anthropic").click();
@@ -443,6 +466,7 @@ test("Built-in provider edit opens peak-hours-only editor, not full form", async
 
 test("Built-in provider peak-hours editor sends set_provider_peak_hours", async ({ page }) => {
   await primeSession(page, makeConfigWithProvider());
+  await openMoreMenu(page);
   await page.getByTestId("header-providers-button").click();
   await expect(page.getByTestId("providers-modal")).toContainText("Anthropic", { timeout: 3000 });
   await page.getByTestId("provider-edit-anthropic").click();
@@ -460,6 +484,7 @@ test("Built-in provider peak-hours editor sends set_provider_peak_hours", async 
 
 test("Built-in provider peak-hours editor can target local scope", async ({ page }) => {
   await primeSession(page, makeConfigWithProvider());
+  await openMoreMenu(page);
   await page.getByTestId("header-providers-button").click();
   await expect(page.getByTestId("providers-modal")).toContainText("Anthropic", { timeout: 3000 });
   await page.getByTestId("provider-edit-anthropic").click();
@@ -476,6 +501,7 @@ test("Built-in provider peak-hours editor can target local scope", async ({ page
 
 test("Built-in provider editor sends set_provider_key when a key is entered", async ({ page }) => {
   await primeSession(page, makeConfigWithProvider());
+  await openMoreMenu(page);
   await page.getByTestId("header-providers-button").click();
   await expect(page.getByTestId("providers-modal")).toContainText("Anthropic", { timeout: 3000 });
   await page.getByTestId("provider-edit-anthropic").click();
@@ -490,6 +516,7 @@ test("Built-in provider editor sends set_provider_key when a key is entered", as
 
 test("Built-in provider editor shows Remove button only when a key is already set", async ({ page }) => {
   await primeSession(page, makeConfigWithProvider());
+  await openMoreMenu(page);
   await page.getByTestId("header-providers-button").click();
   await expect(page.getByTestId("providers-modal")).toContainText("Anthropic", { timeout: 3000 });
   await page.getByTestId("provider-edit-anthropic").click();
@@ -504,6 +531,7 @@ test("Built-in provider editor Remove button sends remove_provider_key", async (
       anthropic: { name: "Anthropic", enabled: true, apiKeySet: true, models: [] },
     },
   }));
+  await openMoreMenu(page);
   await page.getByTestId("header-providers-button").click();
   await expect(page.getByTestId("providers-modal")).toContainText("Anthropic", { timeout: 3000 });
   await page.getByTestId("provider-edit-anthropic").click();

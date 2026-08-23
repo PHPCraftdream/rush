@@ -9,10 +9,6 @@ test.beforeEach(async ({ page }) => {
   );
 });
 
-// ChatToolbar.tsx (which now hosts the settings/theme/token/busy-dots
-// controls formerly in the deleted Header.tsx) returns null with no active
-// session — see the long comment below. Tests that need those controls
-// select a session first.
 async function selectASession(page: Parameters<typeof sendMockWSMessage>[0], id: string, title: string) {
   await sendMockWSMessage(page, {
     type: "sessions_list",
@@ -20,6 +16,11 @@ async function selectASession(page: Parameters<typeof sendMockWSMessage>[0], id:
   });
   await expect(page.getByText(title).first()).toBeVisible({ timeout: 3000 });
   await page.getByText(title).first().click();
+}
+
+async function openMoreMenu(page: import("@playwright/test").Page) {
+  await page.getByTestId("header-more-button").click();
+  await expect(page.getByTestId("header-logs-button")).toBeVisible({ timeout: 2000 });
 }
 
 // ── Toolbar (formerly "Header") ──────────────────────────────────────────────
@@ -68,6 +69,7 @@ test("settings button opens modal showing model name from config", async ({ page
     payload: { models: { smart: { Provider: "anthropic", Model: "claude-3-5-sonnet" } } },
   });
   // Model name appears in the settings modal
+  await openMoreMenu(page);
   await page.getByTestId("header-settings-button").click();
   await expect(page.getByText("Context Paths")).toBeVisible({ timeout: 2000 });
 });
@@ -109,6 +111,7 @@ test("toolbar shows busy dots when agent is working", async ({ page }) => {
 test("settings panel opens on gear click", async ({ page }) => {
   await page.goto("/");
   await selectASession(page, "settings-open", "Settings Open");
+  await openMoreMenu(page);
   await page.getByTestId("header-settings-button").click();
   await expect(page.getByTestId("settings-modal")).toBeVisible({ timeout: 2000 });
 });
@@ -116,6 +119,7 @@ test("settings panel opens on gear click", async ({ page }) => {
 test("settings panel closes via backdrop click", async ({ page }) => {
   await page.goto("/");
   await selectASession(page, "settings-backdrop", "Settings Backdrop");
+  await openMoreMenu(page);
   await page.getByTestId("header-settings-button").click();
   await expect(page.getByTestId("settings-modal")).toBeVisible({ timeout: 2000 });
   // Press Escape to close the modal
@@ -126,6 +130,7 @@ test("settings panel closes via backdrop click", async ({ page }) => {
 test("settings panel closes via X button", async ({ page }) => {
   await page.goto("/");
   await selectASession(page, "settings-x", "Settings X");
+  await openMoreMenu(page);
   await page.getByTestId("header-settings-button").click();
   await expect(page.getByTestId("settings-modal")).toBeVisible({ timeout: 2000 });
   await page.getByTestId("settings-modal-close").click();
@@ -136,6 +141,7 @@ test("settings shows configured models", async ({ page }) => {
   await page.goto("/");
   await selectASession(page, "settings-models", "Settings Models");
   await sendMockWSMessage(page, { type: "config", payload: makeConfig() });
+  await openMoreMenu(page);
   await page.getByTestId("header-settings-button").click();
   // Settings modal shows "Context Paths" and "Agent Skills Paths" sections
   await expect(page.getByText("Context Paths")).toBeVisible({ timeout: 2000 });
@@ -145,6 +151,7 @@ test("settings shows configured models", async ({ page }) => {
 test("settings shows Loading when config not yet received", async ({ page }) => {
   await page.goto("/");
   await selectASession(page, "settings-loading", "Settings Loading");
+  await openMoreMenu(page);
   await page.getByTestId("header-settings-button").click();
   // Settings modal should be visible even without config
   await expect(page.getByTestId("settings-modal")).toBeVisible({ timeout: 2000 });

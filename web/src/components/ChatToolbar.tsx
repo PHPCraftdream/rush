@@ -1,6 +1,6 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useStore } from "@nanostores/react";
-import { Minimize2, X, CheckCheck, ScrollText, Plug, Sun, Moon, Settings, ServerCog, FileText, Headphones, Eye, ChevronsDownUp, SlidersHorizontal, ArrowUpCircle } from "lucide-react";
+import { Minimize2, X, CheckCheck, ScrollText, Plug, Sun, Moon, Settings, ServerCog, FileText, Headphones, Eye, ChevronsDownUp, SlidersHorizontal, ArrowUpCircle, MoreHorizontal } from "lucide-react";
 import { $sitter, stopSitter } from "../sitter";
 import {
   $sessions,
@@ -151,6 +151,31 @@ export function ChatToolbar() {
   const [showLogs, setShowLogs] = useState(false);
   const closeLogs = useCallback(() => setShowLogs(false), []);
 
+  // More dropdown state
+  const [moreMenuOpen, setMoreMenuOpen] = useState(false);
+  const moreMenuRef = useRef<HTMLDivElement>(null);
+
+  // More dropdown close handlers
+  useEffect(() => {
+    if (!moreMenuOpen) return;
+    function handleOutsideClick(e: MouseEvent) {
+      if (moreMenuRef.current && !moreMenuRef.current.contains(e.target as Node)) {
+        setMoreMenuOpen(false);
+      }
+    }
+    function handleEscape(e: KeyboardEvent) {
+      if (e.key === "Escape") {
+        setMoreMenuOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleOutsideClick);
+    document.addEventListener("keydown", handleEscape);
+    return () => {
+      document.removeEventListener("mousedown", handleOutsideClick);
+      document.removeEventListener("keydown", handleEscape);
+    };
+  }, [moreMenuOpen]);
+
   const activeSession = sessions.find((s) => s.ID === activeSessionID) ?? null;
   const isBusy = activeSessionID ? busySessions.has(activeSessionID) : false;
   const isQueued = activeSessionID ? summarizeQueued.has(activeSessionID) : false;
@@ -291,36 +316,79 @@ export function ChatToolbar() {
           <span>Collapse all</span>
         </button>
 
-        <button
-          data-test-id="header-prompt-button"
-          onClick={() => setShowSystemPrompt(true)}
-          disabled={!activeSessionID}
-          title="View / edit system prompt"
-          className="flex items-center gap-1.5 text-xs font-medium rounded-lg px-2.5 py-1.5 border transition-colors bg-base-overlay border-surface text-text-subtle hover:border-accent/50 hover:text-text disabled:opacity-40 disabled:cursor-not-allowed"
-        >
-          <ScrollText size={13} />
-          <span>Prompt</span>
-        </button>
+        {/* More dropdown for rarely-used buttons */}
+        <div ref={moreMenuRef} className="relative">
+          <button
+            data-test-id="header-more-button"
+            onClick={() => setMoreMenuOpen(o => !o)}
+            title="More — prompt, MCP, providers, default models, settings, logs"
+            className="flex items-center gap-1.5 text-xs font-medium rounded-lg px-2.5 py-1.5 border transition-colors bg-base-overlay border-surface text-text-subtle hover:border-accent/50 hover:text-text"
+          >
+            <MoreHorizontal size={13} />
+            <span>More</span>
+          </button>
 
-        <button
-          data-test-id="header-mcp-button"
-          onClick={() => setShowMCPSettings(true)}
-          title="MCP server settings"
-          className="flex items-center gap-1.5 text-xs font-medium rounded-lg px-2.5 py-1.5 border transition-colors bg-base-overlay border-surface text-text-subtle hover:border-accent/50 hover:text-text"
-        >
-          <Plug size={13} />
-          <span>MCP</span>
-        </button>
-
-        <button
-          data-test-id="header-providers-button"
-          onClick={() => setShowProviders(true)}
-          title="Custom providers"
-          className="flex items-center gap-1.5 text-xs font-medium rounded-lg px-2.5 py-1.5 border transition-colors bg-base-overlay border-surface text-text-subtle hover:border-accent/50 hover:text-text"
-        >
-          <ServerCog size={13} />
-          <span>Providers</span>
-        </button>
+          {moreMenuOpen && (
+            <div className="absolute bottom-full mb-2 left-0 w-52 bg-canvas border border-surface rounded-xl shadow-xl z-50 py-1">
+              {activeSessionID && (
+                <button
+                  data-test-id="header-prompt-button"
+                  onClick={() => { setMoreMenuOpen(false); setShowSystemPrompt(true); }}
+                  className="w-full text-left px-3 py-2 flex items-center gap-2 text-sm text-text-subtle hover:bg-base-overlay hover:text-text transition-colors"
+                  title="View / edit system prompt"
+                >
+                  <ScrollText size={14} />
+                  <span>Prompt</span>
+                </button>
+              )}
+              <button
+                data-test-id="header-mcp-button"
+                onClick={() => { setMoreMenuOpen(false); setShowMCPSettings(true); }}
+                className="w-full text-left px-3 py-2 flex items-center gap-2 text-sm text-text-subtle hover:bg-base-overlay hover:text-text transition-colors"
+                title="MCP server settings"
+              >
+                <Plug size={14} />
+                <span>MCP</span>
+              </button>
+              <button
+                data-test-id="header-providers-button"
+                onClick={() => { setMoreMenuOpen(false); setShowProviders(true); }}
+                className="w-full text-left px-3 py-2 flex items-center gap-2 text-sm text-text-subtle hover:bg-base-overlay hover:text-text transition-colors"
+                title="Custom providers"
+              >
+                <ServerCog size={14} />
+                <span>Providers</span>
+              </button>
+              <button
+                data-test-id="header-default-models-button"
+                onClick={() => { setMoreMenuOpen(false); setShowScopedModels(true); }}
+                className="w-full text-left px-3 py-2 flex items-center gap-2 text-sm text-text-subtle hover:bg-base-overlay hover:text-text transition-colors"
+                title="Default models — System / Folder / Session"
+              >
+                <SlidersHorizontal size={14} />
+                <span>Default models</span>
+              </button>
+              <button
+                data-test-id="header-settings-button"
+                onClick={() => { setMoreMenuOpen(false); setShowSettings(true); }}
+                className="w-full text-left px-3 py-2 flex items-center gap-2 text-sm text-text-subtle hover:bg-base-overlay hover:text-text transition-colors"
+                title="Settings"
+              >
+                <Settings size={14} />
+                <span>Settings</span>
+              </button>
+              <button
+                data-test-id="header-logs-button"
+                onClick={() => { setMoreMenuOpen(false); setShowLogs(true); }}
+                className="w-full text-left px-3 py-2 flex items-center gap-2 text-sm text-text-subtle hover:bg-base-overlay hover:text-text transition-colors"
+                title="View logs"
+              >
+                <FileText size={14} />
+                <span>Logs</span>
+              </button>
+            </div>
+          )}
+        </div>
 
         {updateInfo && (
           // Rendered only when the server says a newer release exists — it
@@ -340,35 +408,6 @@ export function ChatToolbar() {
             <span>v{updateInfo.latest}</span>
           </a>
         )}
-
-        <button
-          data-test-id="header-default-models-button"
-          onClick={() => setShowScopedModels(true)}
-          title="Default models — System / Folder / Session"
-          className="flex items-center gap-1.5 text-xs font-medium rounded-lg px-2.5 py-1.5 border transition-colors bg-base-overlay border-surface text-text-subtle hover:border-accent/50 hover:text-text"
-        >
-          <SlidersHorizontal size={13} />
-          <span>Default models</span>
-        </button>
-
-        <button
-          data-test-id="header-settings-button"
-          onClick={() => setShowSettings(true)}
-          title="Settings"
-          className="flex items-center gap-1.5 text-xs font-medium rounded-lg px-2.5 py-1.5 border transition-colors bg-base-overlay border-surface text-text-subtle hover:border-accent/50 hover:text-text"
-        >
-          <Settings size={13} />
-          <span>Settings</span>
-        </button>
-
-        <button
-          onClick={() => setShowLogs(true)}
-          title="View logs"
-          className="flex items-center gap-1.5 text-xs font-medium rounded-lg px-2.5 py-1.5 border transition-colors bg-base-overlay border-surface text-text-subtle hover:border-accent/50 hover:text-text"
-        >
-          <FileText size={13} />
-          <span>Logs</span>
-        </button>
 
         <button
           data-test-id="header-theme-toggle"
