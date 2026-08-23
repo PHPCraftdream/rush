@@ -21,7 +21,7 @@ import (
 // calls (task #341, P1-1).
 //
 // This mirrors the resolvedOverrides pattern used for normal turns, but
-// specialized for summarize which doesn't need smallModel or systemPrompt.
+// specialized for summarize which doesn't need fastModel or systemPrompt.
 type SummarizeSnapshot struct {
 	model           Model
 	providerOptions fantasy.ProviderOptions

@@ -116,7 +116,7 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 	// model (built once from the merged system/folder config); a session
 	// override on the PARENT session — params.SessionID, not the freshly
 	// created sub-agent session.ID above — replaces it for THIS call only,
-	// via the same immutable per-call pin SessionAgentCall.LargeModel
+	// via the same immutable per-call pin SessionAgentCall.SmartModel
 	// already uses for top-level turns (task #341/P0-1). Never mutates
 	// params.Agent's own shared fields, so a session-scoped worker override
 	// cannot leak into a concurrent sub-agent dispatch from a different

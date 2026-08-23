@@ -198,7 +198,7 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 	// Pin the model this call already resolved (task #265). Everything above
 	// — maxOutputTokens, mergedOptions, temp/topP/topK/penalties — was
 	// derived from THIS `model` value. Without pinning it, the agent
-	// re-reads its shared largeModel when the turn actually starts, so a
+	// re-reads its shared smartModel when the turn actually starts, so a
 	// concurrent session's applyModelOverrides landing in between makes the
 	// turn run one model with another model's options. Passing it down keeps
 	// the call internally consistent.
@@ -221,7 +221,7 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 		LogicalCallID:        uuid.New().String(), // P2-1: generate stable ID once
 	}
 	// Overrides pin fast model / prefix / base prompt too; pin() leaves
-	// LargeModel as set above when pinned is nil, and rewrites it to the same
+	// SmartModel as set above when pinned is nil, and rewrites it to the same
 	// value when it isn't (model was taken FROM pinned.smart).
 	pinned.pin(&agentCall)
 

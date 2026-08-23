@@ -17,8 +17,7 @@ var sessionsGcCmd = &cobra.Command{
 	Short: "Garbage-collect stale sessions",
 	Long: `Delete sessions that are no longer useful:
 
-  1. Sessions older than --older-than (default 7 days) with zero messages
-     or only system messages.
+  1. Sessions older than --older-than (default 7 days) with zero messages.
   2. Sessions with ID prefix "ping-" older than 1 hour.
   3. Child sessions (parent_id != "") whose parent no longer exists,
      older than 24h.
@@ -106,9 +105,11 @@ func sessionsGcCmdRun(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// Collect messages to determine if a session has only system messages.
-	// We only need this for the "empty-or-system-only" classification which
-	// is already done in classifyForGC via MessageCount == 0.
+	// Rule 1's classification is exactly MessageCount == 0 (classifyForGC)
+	// and deliberately does NOT consider message roles: message_count is a
+	// plain row count maintained by unconditional insert/delete triggers,
+	// so a session holding only system messages has MessageCount > 0 and
+	// is kept.
 
 	for _, item := range toDelete {
 		if asJSON {

@@ -467,7 +467,7 @@ func (c *coordinator) RebuildSessionAgentCall(ctx context.Context, data session.
 	//
 	// sessionAgent.Run reads ProviderOptions/Temperature/TopP/TopK/FrequencyPenalty/
 	// PresencePenalty directly off the call (agent.go's fantasy.AgentStreamCall
-	// construction) -- it does NOT recompute them from LargeModel itself. Every
+	// construction) -- it does NOT recompute them from SmartModel itself. Every
 	// other call-site populates these via mergeCallOptions before the call ever
 	// reaches Run, so we must do the same here or every durably-recovered call
 	// silently loses its provider options and sampling knobs.

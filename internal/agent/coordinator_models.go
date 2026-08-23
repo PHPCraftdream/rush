@@ -131,7 +131,7 @@ func (c *coordinator) resolveSessionModels(ctx context.Context, sessionID string
 	// picked that second value as the fast-model result, so
 	// resolved.fast ended up holding a Model built from the SMART
 	// config's provider/model whenever the smart and fast configs differed — pinned
-	// onto every call's SmallModel (title generation and any other
+	// onto every call's FastModel (title generation and any other
 	// fast-model-driven path) via resolvedOverrides.pin. Caching the pair
 	// from one call, in the caller-supplied role order, removes the
 	// swap entirely.
@@ -189,7 +189,7 @@ func (c *coordinator) resolveSessionModels(ctx context.Context, sessionID string
 	resolved.providerCfg = smartProviderCfg
 
 	// Build system prompt if a template is available. workerSubAgentActive
-	// takes the SAME pinned cfg used for largeModel/largeProviderCfg above
+	// takes the SAME pinned cfg used for smartModel/smartProviderCfg above
 	// (task #341, P1-1) — it used to read c.cfg.Config() live here, which
 	// meant a reload landing between the Snapshot() at the top of this
 	// function and this Build call could make the system prompt's
@@ -213,7 +213,7 @@ func (c *coordinator) resolveSessionModels(ctx context.Context, sessionID string
 
 // resolveSubAgentModelOverride resolves sessionID's explicit worker-slot
 // override (if any) into a ready-to-pin Model, for runSubAgent's per-call
-// LargeModel pin (task #466). sessionID is the PARENT session dispatching
+// SmartModel pin (task #466). sessionID is the PARENT session dispatching
 // the sub-agent, not the freshly created child sub-agent session.
 //
 // Returns (nil, nil) whenever there is nothing session-specific to apply —
@@ -330,7 +330,7 @@ func (c *coordinator) applyModelOverrides(ctx context.Context, smart, fast *Mode
 		resolved.promptPrefix = smartProviderCfg.SystemPromptPrefix
 		resolved.providerCfg = smartProviderCfg
 	}
-	// workerSubAgentActive takes the SAME pinned cfg used for largeModel
+	// workerSubAgentActive takes the SAME pinned cfg used for smartModel
 	// above (task #341, P1-1) rather than re-reading c.cfg.Config() live.
 	if c.prompt != nil {
 		newSystemPrompt, err := c.prompt.Build(ctx, smartModel.ModelCfg.Provider, smartModel.ModelCfg.Model, c.cfg, cfg, c.workerSubAgentActive(cfg))

@@ -37,7 +37,7 @@ func handleCreateSession(ctx context.Context, a *appPkg.App, c *Client, msg WSMe
 
 	// Deliberately do NOT seed the new session's smart/fast model columns
 	// from config here. A session is created with no override
-	// (LargeModelID/SmallModelID == "") so it INHERITS the system/folder
+	// (SmartModelID/FastModelID == "") so it INHERITS the system/folder
 	// default and keeps following it if that default changes later —
 	// resolveSessionModels (internal/agent/coordinator.go) already falls
 	// back to cfg.Models on every call when the session has no override, and

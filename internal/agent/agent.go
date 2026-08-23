@@ -226,11 +226,11 @@ type SessionAgentCall struct {
 	// P0-2 fix.
 	InjectID string
 
-	// LargeModel/SmallModel/SystemPromptPrefix, when set, pin this call's
+	// SmartModel/FastModel/SystemPromptPrefix, when set, pin this call's
 	// model and prompt configuration instead of reading the agent's shared,
 	// mutable fields (task #265, P0-1).
 	//
-	// The agent's largeModel/smallModel/systemPromptPrefix are process-wide
+	// The agent's smartModel/fastModel/systemPromptPrefix are process-wide
 	// and get REWRITTEN in place by coordinator.applyModelOverrides, which
 	// any per-session model override triggers. Every turn re-reads them, so
 	// with two sessions running concurrently — the whole point of this fork

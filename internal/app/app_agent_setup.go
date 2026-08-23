@@ -25,7 +25,7 @@ func (app *App) UpdateAgentModel(ctx context.Context) error {
 // overrides the model configurations, then rebuilds the agent.
 // Format: "model-name" (searches all providers) or "provider/model-name".
 // Model matching is case-insensitive.
-// If largeModel is provided but smallModel is not, the fast model defaults to
+// If smartModel is provided but fastModel is not, the fast model defaults to
 // the provider's default fast model.
 func (app *App) overrideModelsForNonInteractive(ctx context.Context, smartModel, fastModel string) error {
 	providers := app.config.Config().Providers.Copy()
@@ -73,7 +73,7 @@ func (app *App) overrideModelsForNonInteractive(ctx context.Context, smartModel,
 	return app.AgentCoordinator.UpdateModels(ctx)
 }
 
-// GetDefaultSmallModel returns the default fast model for the given
+// GetDefaultFastModel returns the default fast model for the given
 // provider. Falls back to the smart model if no default is found.
 func (app *App) GetDefaultFastModel(providerID string) config.SelectedModel {
 	cfg := app.config.Config()

@@ -109,7 +109,7 @@ func FromSessionAgentCallData(callData session.SessionAgentCallData) SessionAgen
 		InjectID:             callData.InjectID,
 		SystemPromptPrefix:   callData.SystemPromptPrefix,
 		SystemPrompt:         callData.SystemPrompt,
-		// LargeModel and SmallModel are NOT set here — they will be reconstructed
+		// SmartModel and FastModel are NOT set here — they will be reconstructed
 		// by coordinator.RebuildSessionAgentCall.
 	}
 }

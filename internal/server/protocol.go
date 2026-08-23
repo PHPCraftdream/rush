@@ -97,7 +97,7 @@ type SetSessionModelsPayload struct {
 	SmartModel *ModelOverrideWire `json:"smartModel"`
 	FastModel  *ModelOverrideWire `json:"fastModel"`
 	// WorkerModel/ReviewerModel are optional (task #466) — omitted/nil means
-	// "don't touch", same convention as LargeModel/SmallModel above.
+	// "don't touch", same convention as SmartModel/FastModel above.
 	WorkerModel   *ModelOverrideWire `json:"workerModel,omitempty"`
 	ReviewerModel *ModelOverrideWire `json:"reviewerModel,omitempty"`
 }

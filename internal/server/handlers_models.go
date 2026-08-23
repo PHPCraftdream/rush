@@ -25,7 +25,7 @@ func handleSetSessionModels(ctx context.Context, a *appPkg.App, c *Client, msg W
 
 	slog.Info("ws: handleSetSessionModels", "sessionID", p.SessionID, "smart", p.SmartModel, "fast", p.FastModel)
 
-	// p.LargeModel/p.SmallModel being nil means "the caller didn't touch this
+	// p.SmartModel/p.FastModel being nil means "the caller didn't touch this
 	// slot" (task #461) — pass that straight through to UpdateModels as a nil
 	// *ModelSlotUpdate so the OTHER, untouched slot's session override is
 	// left exactly as it was rather than being silently pinned or cleared.

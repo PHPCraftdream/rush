@@ -20,7 +20,7 @@ var sessionsCostCmd = &cobra.Command{
 	Long: `Show cost and token usage broken down by model, day, or session.
 
 By default groups by model. Use --by to change the grouping:
-  model   — group by LargeModelID (default)
+  model   — group by SmartModelID (default)
   day     — group by date (YYYY-MM-DD)
   session — show per-session breakdown (top N by cost)
   total   — just print the grand total
