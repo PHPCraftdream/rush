@@ -107,13 +107,17 @@ func (a *sessionAgent) drainDueInjects(sessionID string, genID uint64, historyID
 // toolMaxDuration/idleTimeout are likewise runTurn locals (the resolved,
 // possibly-overridden effective durations for THIS turn) rather than
 // sessionAgent fields, so they are passed explicitly instead of read off a.
-// largeModel is the SAME kind of runTurn-local snapshot (taken once at turn
-// start, agent.go: `largeModel := a.largeModel.Get()`), NOT a fresh re-read
-// of a.largeModel here: a.largeModel is mutable mid-turn via SetModels
-// (coordinator.UpdateModels / web-UI override path), so re-reading at fire
-// time would name the model the user SWITCHED TO after the hang started
-// rather than the one that actually hung (task #252 — the #243 extraction
-// regressed exactly this by re-reading a.largeModel.Get() here).
+// smartModel follows the same rule, and then some: runTurn does NOT re-read
+// a.smartModel here at fire time — it passes in the value it took once,
+// before the turn, from the immutable turnConfig snapshot built by
+// resolveTurnConfig (agent.go:302-308), a per-call value copy of every
+// shared model/prompt field (task #265 P0-1) that runTurn reads as
+// `smartModel := cfg.smartModel`. a.smartModel is mutable mid-turn via
+// SetModels (coordinator.UpdateModels / web-UI override path), so
+// re-reading at fire time would name the model the user SWITCHED TO after
+// the hang started rather than the one that actually hung (task #252 —
+// the #243 extraction regressed exactly this by re-reading a.smartModel
+// here).
 //
 // INVARIANT (task #227 + #232, preserved verbatim by this extraction): the
 // cause is stored FIRST, synchronously, before any other work in this

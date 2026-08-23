@@ -54,8 +54,8 @@ func (e *AskQuestionError) Error() string {
 // as the agent loop's own error (see charm.land/fantasy's agent.go
 // executeSingleTool: a non-nil error from a tool's Run aborts the step and
 // is returned from Stream/Run verbatim). That is what lets agent.Run's
-// error-classification chain (agent.go) catch it and force-finish the turn
-// via AddFinish, exactly like the existing PeakHoursError path.
+// error-classification chain (agent_turn.go) catch it and force-finish the
+// turn via AddFinish, exactly like the existing PeakHoursError path.
 func NewAskQuestionTool() fantasy.AgentTool {
 	return fantasy.NewAgentTool(
 		AskQuestionToolName,

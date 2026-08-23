@@ -7,12 +7,12 @@ import (
 
 // Reasoning-effort dispatch.
 //
-// A session stores ONE reasoning effort (session.LargeModelReasoningEffort, a
-// persisted column) and agent.go:1916 puts it on the context for every model,
-// with no per-provider guard. That value therefore reaches CLIs that have
-// never heard of it, and CLIs whose model does not accept that particular
-// level. Both must be handled here, at the spec boundary, because neither the
-// agent nor the web UI can know a given binary's flag set.
+// A session stores ONE reasoning effort (session.SmartModelReasoningEffort, a
+// persisted column) and agent_turn.go:386 puts it on the context for every
+// model, with no per-provider guard. That value therefore reaches CLIs that
+// have never heard of it, and CLIs whose model does not accept that
+// particular level. Both must be handled here, at the spec boundary, because
+// neither the agent nor the web UI can know a given binary's flag set.
 //
 // Measured 2026-08-16 against the installed binaries:
 //

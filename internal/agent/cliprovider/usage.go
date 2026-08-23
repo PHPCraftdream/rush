@@ -14,9 +14,9 @@ import (
 // written INTO the cache live in CacheCreationTokens. The three are disjoint,
 // so the full prompt size is their sum. Downstream code relies on this:
 //
-//	internal/agent/agent.go:4544  PromptTokens = InputTokens + CacheReadTokens
-//	internal/agent/agent.go:4517  cost = in*InputTokens + inCached*CacheCreation
-//	                                     + outCached*CacheRead + out*OutputTokens
+//	internal/agent/agent_usage.go:88  PromptTokens = InputTokens + CacheReadTokens + CacheCreationTokens
+//	internal/agent/agent_usage.go:45-48  cost = in*InputTokens + inCached*CacheCreation
+//	                                       + outCached*CacheRead + out*OutputTokens
 //
 // The CLIs do NOT agree on this. Measured 2026-08-16 by running each binary
 // repeatedly against a fixed prompt and watching which counter moved:
