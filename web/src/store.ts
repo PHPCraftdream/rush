@@ -284,6 +284,21 @@ export function setSubAgentMessages(sessionID: string, msgs: Message[]) {
   $subAgentMessages.set(map);
 }
 
+// removeSubAgentMessage drops one message from a sub-agent session's
+// slice. The WS message_deleted handler routes compaction deletions here
+// so a compacted sub-agent block stops rendering messages the backend
+// already deleted (sub-agent slices are otherwise only replaced wholesale
+// by a fresh messages_list reply).
+export function removeSubAgentMessage(sessionID: string, messageID: string) {
+  const map = new Map($subAgentMessages.get());
+  const msgs = map.get(sessionID);
+  if (!msgs) return;
+  const next = msgs.filter((m) => m.ID !== messageID);
+  if (next.length === msgs.length) return;
+  map.set(sessionID, next);
+  $subAgentMessages.set(map);
+}
+
 const _msgPartTracker = new Map<string, { time: number; count: number }>();
 
 export function trackMessageParts(msgID: string, parts: { type: string }[]) {

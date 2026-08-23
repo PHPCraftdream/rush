@@ -8,6 +8,7 @@ import { Bot } from "lucide-react";
 import { $subAgentMessages, $busySessions } from "../store";
 import { ws } from "../ws";
 import type { Message, ContentPart } from "../types";
+import { SummaryMessage } from "./Message/SummaryMessage";
 
 const MD_REMARK = [remarkGfm, remarkBreaks];
 const MD_REHYPE = [rehypeHighlight];
@@ -88,11 +89,15 @@ export const SubAgentBlock = memo(function SubAgentBlock({
   // Lazy-load sub-agent messages on first mount when nothing is in the
   // store yet (the WS handler only auto-loads sub-sessions created during
   // the live session — past runs surfaced after a reload start empty).
-  const requested = useRef(false);
+  // Latch on the session ID rather than a bare boolean: ToolActivityGroup
+  // keys SubAgentBlock instances by parts-array index, so one instance can
+  // be handed a different subSessionID after a parts reorder. A boolean
+  // latch would then suppress the new session's lazy load forever.
+  const requested = useRef<string | null>(null);
   useEffect(() => {
-    if (requested.current) return;
+    if (requested.current === subSessionID) return;
     if (messages.length > 0) return;
-    requested.current = true;
+    requested.current = subSessionID;
     ws.send("load_messages", { sessionID: subSessionID });
   }, [subSessionID, messages.length]);
 
@@ -126,11 +131,19 @@ export const SubAgentBlock = memo(function SubAgentBlock({
           {messages.length === 0 && isRunning && (
             <div className="text-xs text-text-subtle animate-pulse py-2">Starting agent...</div>
           )}
+          {/* Lifecycle parity with the main renderer (Message/Message.tsx):
+              hidden messages (silent compaction summaries) are dropped,
+              visible compaction summaries render via the same SummaryMessage
+              card — previously both rendered here as ordinary agent prose. */}
           {messages
-            .filter((m) => m.Role === "assistant")
-            .map((m) => (
-              <SubAgentMessage key={m.ID} message={m} />
-            ))}
+            .filter((m) => m.Role === "assistant" && !m.Hidden)
+            .map((m) =>
+              m.IsSummaryMessage ? (
+                <SummaryMessage key={m.ID} message={m} />
+              ) : (
+                <SubAgentMessage key={m.ID} message={m} />
+              ),
+            )}
         </div>
       )}
     </div>

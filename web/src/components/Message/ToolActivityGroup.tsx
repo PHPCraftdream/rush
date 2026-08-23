@@ -190,11 +190,11 @@ export const ToolActivityGroup = memo(function ToolActivityGroup({ items, live, 
   // SubAgent parts always render in their own (existing) component, in their
   // original order at the END of the group so they don't get swallowed by the
   // collapse toggle. They're rare in practice — usually zero per group.
-  const renderAgents = () => rawAgentParts.map(({ part, idx, messageID }) => {
+  const renderAgents = () => rawAgentParts.map(({ part, messageID }) => {
     if (part.type === "tool_call") {
       let prompt = "";
       try { prompt = (JSON.parse(part.Input) as { prompt?: string }).prompt ?? part.Input; } catch { prompt = part.Input; }
-      return <SubAgentBlock key={`a-${idx}`} messageID={messageID ?? ""} toolCallID={part.ID} prompt={prompt} />;
+      return <SubAgentBlock key={`a-${part.ID}`} messageID={messageID ?? ""} toolCallID={part.ID} prompt={prompt} />;
     }
     return null;
   });

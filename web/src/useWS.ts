@@ -28,6 +28,7 @@ import {
   isSubAgentSession,
   upsertSubAgentMessage,
   setSubAgentMessages,
+  removeSubAgentMessage,
   trackMessageParts,
 } from "./store";
 import type { WSMessage, Session, Message, ConfigPayload, MCPState, AgentBusyPayload, SkillsSnapshot, SummarizeQueuedPayload } from "./types";
@@ -199,6 +200,13 @@ export function useWS() {
       }),
       ws.on("message_deleted", (msg: WSMessage) => {
         const m = msg.payload as Message;
+        // Mirror the message_created/updated sub-agent routing: compaction
+        // deletes sub-agent messages too, and the sub-agent block never
+        // re-fetches once populated, so deletes must be applied in place.
+        if (isSubAgentSession(m.SessionID)) {
+          removeSubAgentMessage(m.SessionID, m.ID);
+          return;
+        }
         // Only process messages for the active session
         const activeID = $activeSessionID.get();
         if (!activeID || m.SessionID !== activeID) return;
