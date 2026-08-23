@@ -824,46 +824,70 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 		slog.Warn("ws: rerun: failed to delete original user message", "id", targetMsg.ID, "err", delErr)
 	}
 
-	// Capture a precise baseline row count immediately after the target delete.
-	// While this handler still holds the exclusive reservation and the
-	// external-silence probe, no other writer can be modifying the session,
-	// so the list below captures the true post-delete count. On the happy path
-	// this equals targetIdx (everything at index >= targetIdx was deleted),
-	// but if a tail delete failed (P3-1 source 2) it captures the REAL count.
-	// Use a sensible fallback: if listing errors, log and fall back to targetIdx
-	// (the subsequent positional+textual scan in recreateRerunPromptIfLost still
-	// decides correctly — fail-open toward recreating).
-	baselineCount := targetIdx
+	// Capture the SET of message IDs present immediately after the target
+	// delete — the watermark recreateRerunPromptIfLost compares against (task
+	// #655, fourteenth-review P2-1/P3-1). This is not an exclusivity claim:
+	// the reservation and probe above exclude other agent RUNS, but
+	// handleDeleteMessage, handleDeleteMessages and handleUpdateMessageContent
+	// (handlers_messages.go) mutate rows with no ownership check and may
+	// interleave here. The set does not need them excluded: a concurrent
+	// writer only adds a row whose ID was never in the set or removes one
+	// that was, and ID membership — unlike the index or count #651 used — is
+	// invariant under deletions anywhere in the list, which is exactly what
+	// in-turn compaction (deleting summarised rows below the replacement
+	// turn's prompt) invalidates positionally.
+	//
+	// Fallback if listing errors: leave the set nil. A nil set means "the
+	// watermark is unknown", and recreateRerunPromptIfLost then errs toward
+	// RECREATING (it skips the scan and creates unconditionally): a false
+	// recreate costs a visible duplicate row, while a false suppress silently
+	// loses the operator's words — the strictly worse outcome throughout this
+	// mechanism's history (#638/#644/#645). In practice the helper's own List
+	// will most likely fail too (same store, same context) and nothing is
+	// created either way; the fallback only matters for a transient failure.
+	var baselineIDs map[string]struct{}
 	if msgs, listErr := a.Messages.List(deleteCtx, sessionID); listErr == nil {
-		baselineCount = len(msgs)
+		baselineIDs = make(map[string]struct{}, len(msgs))
+		for _, m := range msgs {
+			baselineIDs[m.ID] = struct{}{}
+		}
 	} else {
-		slog.Warn("ws: rerun: failed to list messages for baseline count after target delete, falling back to targetIdx",
-			"sessionID", sessionID, "targetIdx", targetIdx, "err", listErr)
+		slog.Warn("ws: rerun: failed to list messages for baseline ID set after target delete",
+			"sessionID", sessionID, "err", listErr)
 	}
 
 	// Task #645 (twelfth-review N-2): recreate the user prompt if it was
-	// lost, on EVERY exit path past the commit point above — including a
-	// PANIC between the delete and the handoff (e.g. at rerunPreHandoffSeam
-	// or in hub.Broadcast), which the old inline `if err != nil` check did
-	// not cover: a panic there left the session with zero messages and the
-	// operator's prompt unrecoverable (B-1's original bug). Registered
-	// strictly AFTER the delete so it never fires for the early returns
-	// above (before step 3 there is nothing to recreate). Idempotent and
-	// harmless on non-error paths: the positional check finds nothing to
-	// recreate once the replacement turn's own createUserMessage has run.
-	// It runs before the releaseOnBailout/probeHeld defers (LIFO), so on
-	// the panic-before-handoff path it still runs while the reservation is
-	// held. But on the success and ordinary-error returns the agent layer
-	// has already released by the time it runs, so correctness does NOT
-	// depend on exclusivity — it depends on (a) the releaseOnBailout gating
-	// below (never recreate after a successful handoff+run) and (b) the
-	// baseline+text scan in recreateRerunPromptIfLost, which no unrelated
-	// concurrent writer can spoof.
+	// lost, on every exit path past the commit point above that did not
+	// reach a returned run — including a PANIC anywhere between the delete
+	// and a normal return: before the handoff (e.g. at rerunPreHandoffSeam
+	// or in hub.Broadcast) and, since task #655 (fourteenth-review M-2), in
+	// the window where onHandoff has fired but the replacement turn's
+	// createUserMessage has not run yet (onHandoff fires before runOwned).
+	// Both unwind with runReturned still false, keeping this defer armed.
+	// Registered strictly AFTER the delete so it never fires for the early
+	// returns above (before step 3 there is nothing to recreate). It runs
+	// before the releaseOnBailout/probeHeld defers (LIFO), so on panic
+	// unwind it still runs while the reservation is held. On ordinary
+	// returns the agent layer has already released, so correctness does NOT
+	// depend on exclusivity — it depends on the gating here plus the
+	// baseline-ID+text scan in recreateRerunPromptIfLost, which no
+	// unrelated concurrent writer can spoof.
+	//
+	// The gate, restated from #651: a successful run must never be
+	// second-guessed — its transcript, including any in-turn compaction, is
+	// the completed turn's own business — so runReturned flips to true the
+	// moment RunWithReservedOwnership RETURNS, disarming this defer on the
+	// success path exactly as #651's releaseOnBailout gate did, and an
+	// error return disarms it via recreateHandled after the explicit call
+	// in the err != nil branch below. releaseOnBailout alone could not
+	// express the M-2 window: onHandoff has already cleared it there, so
+	// #651's gate let the prompt be lost.
 	recreateHandled := false
+	runReturned := false
 	defer func() {
-		if releaseOnBailout && !recreateHandled {
+		if (releaseOnBailout || !runReturned) && !recreateHandled {
 			recreateHandled = true
-			recreateRerunPromptIfLost(deleteCtx, a, sessionID, baselineCount, text)
+			recreateRerunPromptIfLost(deleteCtx, a, sessionID, baselineIDs, targetMsg.ID, text)
 		}
 	}()
 
@@ -921,6 +945,14 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 	} else {
 		_, err = a.AgentCoordinator.RunWithReservedOwnership(agentCtx, sessionID, text, epoch, reserveCancel, func() { releaseOnBailout = false }, nil, nil)
 	}
+
+	// The replacement run has RETURNED (success or error): from here the
+	// recreate defer is disarmed — on success the completed turn owns the
+	// transcript, on error the explicit call below handles the prompt. Every
+	// panic path (pre-handoff, the handoff→createUserMessage window, and
+	// mid-run) still unwinds with runReturned false and stays covered.
+	runReturned = true
+
 	// P2-2 fix: broadcast the actual busy state derived from mailbox ownership,
 	// not from this request handler's lifetime.
 	if !a.AgentCoordinator.IsSessionBusy(sessionID) {
@@ -934,9 +966,13 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 		// Run it explicitly here (BEFORE the error reply) so a watching
 		// client still sees the recreated message's CreatedEvent broadcast
 		// ahead of the error reply, matching the pre-#645 behaviour; the
-		// defer is idempotent and no-ops when the explicit call already ran.
+		// defer no-ops afterwards via recreateHandled.
+		// The flag is set AFTER the call (fourteenth-review M-5): if the
+		// call itself panics (List/Create on a closed DB), the defer stays
+		// armed wherever its gate allows and retries, instead of having
+		// been silently disarmed before the call.
+		recreateRerunPromptIfLost(deleteCtx, a, sessionID, baselineIDs, targetMsg.ID, text)
 		recreateHandled = true
-		recreateRerunPromptIfLost(deleteCtx, a, sessionID, baselineCount, text)
 		c.reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
@@ -945,17 +981,32 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 
 // recreateRerunPromptIfLost restores a rerun target deleted at step 3 of
 // handleRerunMessage when the replacement turn never recreated it (task
-// #638/#644, extended to panic paths by #645). The check is POSITIONAL+TEXTUAL:
-// rows at index < baselineCount predate the commit point (survivors of a
-// failed tail delete), while any row at index >= baselineCount that is a User
-// message whose Content().Text equals the captured prompt text must be the
-// recreated prompt (or an earlier explicit call already handled it). This
-// makes the helper immune to unrelated concurrent writers adding rows that
-// don't match the captured text, and correctly handles earlier identical
-// prompts (like "continue") that survive the tail delete and must NOT
-// suppress the recreate (#644). Idempotent: once the prompt exists at or
-// past baselineCount with matching text, it no-ops.
-func recreateRerunPromptIfLost(ctx context.Context, a *appPkg.App, sessionID string, baselineCount int, text string) {
+// #638/#644, extended to panic paths by #645, redesigned around message-ID
+// membership by #655 after the fourteenth review showed both the count- and
+// position-based watermarks break when rows are deleted below the prompt).
+// The check is ID-MEMBERSHIP+TEXTUAL: a row proves the prompt is present
+// iff it is a User message whose Content().Text equals the captured prompt
+// text AND either its ID was NOT in the baseline set captured right after
+// the target delete (so it can only be the replacement turn's
+// createUserMessage row or an earlier explicit call's) or its ID IS the
+// original target's (step 3's delete failed and the operator's own row
+// survived untouched — already present, nothing to restore). Membership
+// never depends on order or count, so deletions elsewhere in the list —
+// in-turn compaction deleting summarised rows below the prompt, a
+// concurrent handleDeleteMessage — cannot shift or spoof the watermark the
+// way #651's index window was shifted. Unrelated concurrent writers are
+// still ignored (their text does not match), and an EARLIER identical
+// prompt that survived the tail delete (#644's "continue" shape) still does
+// not suppress the recreate: its ID is in the baseline set and it is not
+// the target. Idempotent: once a qualifying row exists, this no-ops.
+//
+// baselineIDs == nil means the baseline List failed and the watermark is
+// unknown (see the capture site in handleRerunMessage): the helper then
+// skips the scan and creates unconditionally, erring toward recreating —
+// a false recreate costs a visible duplicate row, a false suppress loses
+// the operator's words silently, and this mechanism's history treats the
+// latter as strictly worse.
+func recreateRerunPromptIfLost(ctx context.Context, a *appPkg.App, sessionID string, baselineIDs map[string]struct{}, targetID string, text string) {
 	allMsgs, listErr := a.Messages.List(ctx, sessionID)
 	if listErr != nil {
 		slog.Error("Failed to list messages while checking if prompt needs recreation",
@@ -963,13 +1014,15 @@ func recreateRerunPromptIfLost(ctx context.Context, a *appPkg.App, sessionID str
 		return
 	}
 
-	// Scan only messages at index >= baselineCount (rows that could only exist
-	// after the commit point). If ANY of them is a User message whose text
-	// matches the captured prompt, the replacement turn (or a prior explicit call)
-	// already recreated it — return without creating.
-	for i := baselineCount; i < len(allMsgs); i++ {
-		if allMsgs[i].Role == message.User && allMsgs[i].Content().Text == text {
-			return
+	// A qualifying row — User, matching text, and either new since the
+	// baseline or the never-deleted target itself — means the prompt is
+	// already present; return without creating.
+	if baselineIDs != nil {
+		for _, m := range allMsgs {
+			_, inBaseline := baselineIDs[m.ID]
+			if m.Role == message.User && m.Content().Text == text && (!inBaseline || m.ID == targetID) {
+				return
+			}
 		}
 	}
 
