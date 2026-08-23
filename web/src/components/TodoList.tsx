@@ -40,17 +40,24 @@ function TodoRow({
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(todo.content);
   const inputRef = useRef<HTMLInputElement>(null);
+  const editStartContentRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (editing) inputRef.current?.focus();
   }, [editing]);
 
   function startEdit() {
+    editStartContentRef.current = todo.content;
     setDraft(todo.content);
     setEditing(true);
   }
 
   function commitEdit() {
+    // The row is keyed by array index, so a live session update can swap the todo under an open edit; committing then would overwrite that new todo, so drop the edit instead.
+    if (todo.content !== editStartContentRef.current) {
+      cancelEdit();
+      return;
+    }
     const trimmed = draft.trim();
     if (trimmed && trimmed !== todo.content) onChange({ ...todo, content: trimmed });
     setEditing(false);
