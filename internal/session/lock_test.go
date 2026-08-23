@@ -771,7 +771,9 @@ func TestCrossProcess_ReadLockPIDWorksWhileHolderIsAlive(t *testing.T) {
 // distinguishes "could not check" (any stat error other than ENOENT) from
 // "verifiably absent". A non-ENOENT stat error returns StatErr != nil, while
 // genuine absence returns StatErr == nil — both return Exists:false, Live:false
-// (fail-open), so display consumers are unaffected; only diagnostics read StatErr.
+// (fail-open) from InspectSessionLock itself; display consumers are unaffected,
+// but the startup recovery sweep (app.recoverInterruptedTurns) reads StatErr
+// to fail closed instead of treating "could not check" as "no live owner".
 func TestInspectSessionLock_StatErrorDistinctFromAbsent(t *testing.T) {
 	// Forge a real non-ENOENT stat failure with a NUL byte in dataDir: Go's
 	// os package rejects NUL bytes in a path before any syscall, on every
