@@ -273,10 +273,13 @@ func TestHandleRerunMessage_OrphanedStreamingMessageIsForceDeleted(t *testing.T)
 	// the run proceeded further than we care about).
 	messagesAfter, err := a.Messages.List(ctx, sess.ID)
 	require.NoError(t, err)
-	// The session should have 0 messages at this point (the original user and
-	// orphaned assistant are gone, and Run hasn't recreated the user message yet
-	// because we hit an error further down the path).
-	require.Empty(t, messagesAfter, "orphaned message must be removed from the session")
+	// Task #638: the session should now have exactly 1 message (the
+	// recreated user message). The original user message was deleted in step 3,
+	// and the error block recreates it to prevent losing the operator's prompt.
+	// The orphaned assistant was force-deleted during tail cleanup.
+	require.Len(t, messagesAfter, 1, "session should have exactly the recreated user message")
+	require.Equal(t, message.User, messagesAfter[0].Role, "the remaining message should be the recreated user message")
+	require.Equal(t, "original user input", messagesAfter[0].Content().Text, "the recreated user message should have the original text")
 }
 
 // mockAgentCoordinator is a minimal mock for testing handleRerunMessage's

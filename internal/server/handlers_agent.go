@@ -881,6 +881,34 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 
 	if err != nil {
 		slog.Error("ws: rerun agent error", "err", err)
+		// Task #638: recreate the user prompt if it was lost. The target
+		// message was deleted in step 3, and RunWithReservedOwnership may
+		// fail before createUserMessage runs (e.g. model resolution). We
+		// scan for an existing User message with the same text to avoid
+		// duplicating when createUserMessage already ran before the error.
+		allMsgs, listErr := a.Messages.List(deleteCtx, sessionID)
+		if listErr != nil {
+			slog.Error("Failed to list messages while checking if prompt needs recreation",
+				"sessionID", sessionID, "err", listErr)
+		} else {
+			promptExists := false
+			for _, m := range allMsgs {
+				if m.Role == message.User && m.Content().Text == text {
+					promptExists = true
+					break
+				}
+			}
+			if !promptExists {
+				_, createErr := a.Messages.Create(deleteCtx, sessionID, message.CreateMessageParams{
+					Role:  message.User,
+					Parts: []message.ContentPart{message.TextContent{Text: text}},
+				})
+				if createErr != nil {
+					slog.Error("Failed to recreate lost user prompt",
+						"sessionID", sessionID, "err", createErr)
+				}
+			}
+		}
 		c.reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
