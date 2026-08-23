@@ -257,19 +257,6 @@ func TestIsInSourceTree(t *testing.T) {
 		rootGoMod := filepath.Join(tmpDir, "go.mod")
 		require.NoError(t, os.WriteFile(rootGoMod, []byte("module github.com/charmbracelet/crush\n"), 0644))
 
-		// Create dev/ at root.
-		devDir := filepath.Join(tmpDir, "dev")
-		require.NoError(t, os.Mkdir(devDir, 0755))
-
-		// Create other/ with a different-module go.mod (interposed above dev/ if dev were under other/).
-		// But the actual case: dev is at root, so there's no interposition.
-		// Let's test the correct scenario: dev under other/, other under root (crush), root under parent (different).
-		// Actually, let's test a simpler case: dev/ at root, but a foreign go.mod exists at a parent level.
-		// Since tmpDir is the root of our test, we can't go higher. Instead, test:
-		// parent (different), tmpDir (crush), tmpDir/dev (exe) → should still detect (no interposition).
-		// But if dev is under a subdirectory that has a foreign go.mod ABOVE the crush module, it should NOT detect.
-		// Correct test: root (crush), root/interposed (different), root/interposed/dev (exe) → should NOT detect.
-
 		// Create interposed/ with different module.
 		interposedDir := filepath.Join(tmpDir, "interposed")
 		require.NoError(t, os.Mkdir(interposedDir, 0755))
@@ -277,7 +264,7 @@ func TestIsInSourceTree(t *testing.T) {
 		require.NoError(t, os.WriteFile(interposedGoMod, []byte("module example.com/other\n"), 0644))
 
 		// Create dev/ under interposed/.
-		devDir = filepath.Join(interposedDir, "dev")
+		devDir := filepath.Join(interposedDir, "dev")
 		require.NoError(t, os.Mkdir(devDir, 0755))
 		exePath := filepath.Join(devDir, "crush.exe")
 

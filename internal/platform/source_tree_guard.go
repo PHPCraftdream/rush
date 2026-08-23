@@ -154,7 +154,11 @@ func sourceTreeGuardMessage(absPath string) string {
 }
 
 // readModuleLine reads the first line from go.mod that starts with "module " or "module\t".
-// Returns ("", nil) if the file exists but has no recognizable module line (treated as a module boundary).
+// Returns ("", nil) if the file exists but has no recognizable module line; the caller
+// (IsInSourceTree) treats that like any other non-crush module: a boundary that stops
+// the walk when the go.mod sits ABOVE the marker directory, but "foreign, keep
+// looking" when it sits AT the marker itself (same treatment as an explicitly
+// foreign module at the marker; see the P3-5(a) comment in IsInSourceTree).
 // Returns an error if the file doesn't exist or can't be read.
 func readModuleLine(goModPath string) (string, error) {
 	f, err := os.Open(goModPath)
@@ -171,7 +175,9 @@ func readModuleLine(goModPath string) (string, error) {
 			return line, nil
 		}
 	}
-	// P3-5(d2): No module line found — file exists but is unparseable, treat as a module boundary.
+	// P3-5(d2): No module line found — file exists but is unparseable. The
+	// caller (IsInSourceTree) treats this the same as any other non-crush
+	// module: a boundary above the marker, "foreign, keep looking" at it.
 	return "", nil
 }
 
