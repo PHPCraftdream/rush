@@ -57,6 +57,20 @@ type connEntry struct {
 var (
 	pool   = make(map[string]*connEntry)
 	poolMu sync.Mutex
+
+	// pathLocks holds one mutex per resolved database path. Callers
+	// opening the SAME path serialize on their shared mutex (so a
+	// database is opened and migrated exactly once); callers opening
+	// DIFFERENT paths run concurrently instead of queueing behind one
+	// another's migrations. poolMu itself only guards the pool map's
+	// bookkeeping, never the (slow) open+migrate work.
+	pathLocks sync.Map // absPath -> *sync.Mutex
+
+	// onOpenNew runs after a cache miss, before the slow open+migrate
+	// work, for a database path not yet in the pool. Test seam only:
+	// lets tests pause one path mid-open to prove unrelated paths
+	// don't serialize behind it. Nil outside tests.
+	onOpenNew func(absPath string)
 )
 
 // Connect opens a SQLite database connection for the given data
@@ -119,12 +133,30 @@ func connect(ctx context.Context, dataDir string) (*connEntry, error) {
 		absPath = dbPath
 	}
 
-	poolMu.Lock()
-	defer poolMu.Unlock()
+	// Serialize openers of THIS path only. poolMu is deliberately NOT
+	// held across the open/ping/migrate work below: it used to be, and
+	// one global lock made every unrelated dataDir in the process
+	// queue up behind a single fresh database's full migration run —
+	// under -race this serialized dozens of parallel tests' fresh
+	// t.TempDir() databases badly enough to eat a whole package's
+	// 10-minute timeout (task #637). Same-path callers still serialize
+	// here, so the "one connection per database file" guarantee below
+	// is unchanged.
+	pmAny, _ := pathLocks.LoadOrStore(absPath, &sync.Mutex{})
+	pathMu := pmAny.(*sync.Mutex)
+	pathMu.Lock()
+	defer pathMu.Unlock()
 
+	poolMu.Lock()
 	if entry, ok := pool[absPath]; ok {
 		entry.refCount++
+		poolMu.Unlock()
 		return entry, nil
+	}
+	poolMu.Unlock()
+
+	if onOpenNew != nil {
+		onOpenNew(absPath)
 	}
 
 	conn, err := openDB(dbPath)
@@ -177,7 +209,9 @@ func connect(ctx context.Context, dataDir string) (*connEntry, error) {
 	}
 
 	entry := &connEntry{db: conn, readDB: readConn, refCount: 1}
+	poolMu.Lock()
 	pool[absPath] = entry
+	poolMu.Unlock()
 	return entry, nil
 }
 
