@@ -18,6 +18,12 @@ package server
 // clears. onHandoff fires BEFORE the turn's createUserMessage runs, so a
 // panic in that narrow window unwinds with the defer disarmed and the
 // prompt lost.
+//
+// Task #658 (fifteenth review, P3-1): a transient failure of the
+// baseline-capture List must not make the error-path recreate create blind;
+// the handler-level regression below pins that the helper still scans
+// (and thus recognizes the turn's own prompt row) when the baseline falls
+// back to the pre-delete listing.
 
 import (
 	"context"
@@ -36,6 +42,8 @@ import (
 // Compile-time guarantee that the fakes satisfy agent.Coordinator.
 var _ agent.Coordinator = (*compactingErrorCoordinator)(nil)
 var _ agent.Coordinator = (*postHandoffPanicCoordinator)(nil)
+var _ agent.Coordinator = (*promptThenErrorCoordinator)(nil)
+var _ message.Service = (*listCallFailingMessages)(nil)
 
 // compactingErrorCoordinator simulates a replacement turn that fires the
 // real onHandoff, creates the prompt + reply rows (mimicking
@@ -449,27 +457,78 @@ func TestRecreateRerunPromptIfLost_NewPromptRowSuppressesDespiteEarlierIdentical
 		"the fresh (non-baseline) prompt row proves the turn recreated it; no third copy may appear")
 }
 
-// TestRecreateRerunPromptIfLost_NilBaselineCreatesUnconditionally: a nil
-// baseline set means the watermark is unknown (the baseline List failed);
-// the helper errs toward recreating even though a matching row exists —
-// a visible duplicate beats silently losing the operator's words.
-func TestRecreateRerunPromptIfLost_NilBaselineCreatesUnconditionally(t *testing.T) {
+// TestRecreateRerunPromptIfLost_PreDeleteOnlyBaselineStillScans: when the
+// post-delete baseline List failed at the capture site, the set falls back
+// to the PRE-DELETE seed (task #658) instead of nil, so the helper must
+// still SCAN rather than create unconditionally: the replacement turn's
+// own prompt row — an ID absent from the pre-delete seed — must suppress
+// the recreate even though the set carries no post-delete contribution.
+//
+// The target row is deleted up front (a successful step 3) so suppression
+// can come only from the fresh row's non-baseline ID — otherwise the
+// targetID disjunct alone would make this pass vacuously. The seed also
+// carries a deleted tail row's ID, mirroring what the capture site's seed
+// contains and proving an ID of a row that no longer exists changes
+// nothing.
+//
+// Revert-check: make the helper skip the scan and create unconditionally
+// (what the pre-#658 nil-baseline branch did) and this test fails with
+// count=2. Restoring the nil fallback alone does NOT redden this test —
+// it passes a non-nil seed, which even the old helper scanned correctly;
+// the capture-site half of #658 is pinned at the handler level by
+// TestHandleRerunMessage_TransientBaselineListFailureDoesNotDuplicatePrompt.
+func TestRecreateRerunPromptIfLost_PreDeleteOnlyBaselineStillScans(t *testing.T) {
 	// Cannot use t.Parallel() because newAttachmentsTestApp calls t.Setenv.
 	workingDir := t.TempDir()
 	dataDir := t.TempDir()
 	a := newAttachmentsTestApp(t, workingDir, dataDir)
-	sess, err := a.Sessions.Create(t.Context(), "test-655-nil-baseline")
+	sess, err := a.Sessions.Create(t.Context(), "test-655-predelete-only-baseline")
 	require.NoError(t, err)
 	sessionID := sess.ID
 	ctx := t.Context()
 
+	earlier, err := a.Messages.Create(ctx, sessionID, message.CreateMessageParams{
+		Role:  message.User,
+		Parts: []message.ContentPart{message.TextContent{Text: "q1"}},
+	})
+	require.NoError(t, err)
 	target, err := a.Messages.Create(ctx, sessionID, message.CreateMessageParams{
 		Role:  message.User,
 		Parts: []message.ContentPart{message.TextContent{Text: "rerun me"}},
 	})
 	require.NoError(t, err)
+	tail, err := a.Messages.Create(ctx, sessionID, message.CreateMessageParams{
+		Role:  message.Assistant,
+		Parts: []message.ContentPart{message.TextContent{Text: "old reply"}},
+	})
+	require.NoError(t, err)
+	tail.AddFinish(message.FinishReasonEndTurn, "", "")
+	require.NoError(t, a.Messages.Update(ctx, tail))
 
-	recreateRerunPromptIfLost(ctx, a, sessionID, nil, target.ID, "rerun me")
+	// The handler's step 2 (tail delete) and step 3 (target delete) both
+	// succeeded — only the baseline-capture List failed.
+	require.NoError(t, a.Messages.Delete(ctx, tail.ID))
+	require.NoError(t, a.Messages.Delete(ctx, target.ID))
+
+	// The replacement turn's own createUserMessage row, written after
+	// every listing.
+	fresh, err := a.Messages.Create(ctx, sessionID, message.CreateMessageParams{
+		Role:  message.User,
+		Parts: []message.ContentPart{message.TextContent{Text: "rerun me"}},
+	})
+	require.NoError(t, err)
+	require.NotEqual(t, target.ID, fresh.ID)
+
+	// The pre-delete-only seed, exactly what the redesigned capture site
+	// builds when the post-delete List fails: every pre-delete row's ID,
+	// including IDs of rows the deletes have since removed.
+	baseline := map[string]struct{}{
+		earlier.ID: {},
+		target.ID:  {},
+		tail.ID:    {},
+	}
+
+	recreateRerunPromptIfLost(ctx, a, sessionID, baseline, target.ID, "rerun me")
 
 	msgs, err := a.Messages.List(ctx, sessionID)
 	require.NoError(t, err)
@@ -479,6 +538,197 @@ func TestRecreateRerunPromptIfLost_NilBaselineCreatesUnconditionally(t *testing.
 			count++
 		}
 	}
-	require.Equal(t, 2, count,
-		"unknown watermark (nil baseline) must err toward recreating, not suppressing")
+	require.Equal(t, 1, count,
+		"a pre-delete-only baseline must still suppress the recreate when the turn's own prompt row (an ID not in the seed) exists")
+	require.Len(t, msgs, 2, "earlier row + the turn's prompt row; no duplicate may be appended")
+}
+
+// listCallFailingMessages wraps message.Service and fails exactly ONE List
+// call — the n-th (1-based) — returning a transient error for it while
+// passing every other call through untouched. Used to reproduce the
+// fifteenth review's P3-1: a baseline-capture List failure (call #2) that
+// clears before the helper's own List (call #3) runs.
+type listCallFailingMessages struct {
+	message.Service
+	failOnNthList int // 1-based ordinal of the List call to fail
+	listCalls     int // number of List calls seen so far
+	failedAt      int // ordinal that actually failed (0 = none yet)
+}
+
+func (m *listCallFailingMessages) List(ctx context.Context, sessionID string) ([]message.Message, error) {
+	m.listCalls++
+	if m.listCalls == m.failOnNthList {
+		m.failedAt = m.listCalls
+		return nil, errors.New("transient DB error (probe)")
+	}
+	return m.Service.List(ctx, sessionID)
+}
+
+// promptThenErrorCoordinator fires the real onHandoff, creates the prompt
+// + reply rows (mimicking createUserMessage), and then returns an error —
+// the "replacement turn creates its own prompt row then errors" shape from
+// the fifteenth review's P3-1. Unlike compactingErrorCoordinator, it does
+// NOT perform in-turn compaction; the failure shape is purely "provider
+// error on first turn".
+type promptThenErrorCoordinator struct {
+	cancellableHoldCoordinator
+	a *appPkg.App
+}
+
+func (m *promptThenErrorCoordinator) RunWithReservedOwnership(ctx context.Context, sessionID, prompt string, epoch uint64, cancel context.CancelFunc, onHandoff func(), smart, fast *agent.ModelOverride, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
+	// Fire the handoff exactly as agent_run.go does, BEFORE any row is
+	// created (clears the handler's releaseOnBailout gate).
+	if onHandoff != nil {
+		onHandoff()
+	}
+	// The real turn installs its ownership-release defer right at the
+	// handoff point; mirror that so the reservation is freed on error.
+	defer m.ReleaseExclusive(sessionID, epoch, cancel)
+
+	// createUserMessage: the turn's own prompt row.
+	if _, err := m.a.Messages.Create(ctx, sessionID, message.CreateMessageParams{
+		Role:  message.User,
+		Parts: []message.ContentPart{message.TextContent{Text: prompt}},
+	}); err != nil {
+		return nil, err
+	}
+
+	// Partial assistant reply before the failure.
+	reply, err := m.a.Messages.Create(ctx, sessionID, message.CreateMessageParams{
+		Role:  message.Assistant,
+		Parts: []message.ContentPart{message.TextContent{Text: "first turn reply"}},
+	})
+	if err != nil {
+		return nil, err
+	}
+	reply.AddFinish(message.FinishReasonEndTurn, "", "")
+	if err := m.a.Messages.Update(ctx, reply); err != nil {
+		return nil, err
+	}
+
+	return nil, errors.New("second-turn provider error")
+}
+
+// TestHandleRerunMessage_TransientBaselineListFailureDoesNotDuplicatePrompt is
+// the fifteenth review's P3-1 reproduction: the baseline-capture List
+// (handlers_agent.go:849) fails transiently, the DB recovers, the replacement
+// run creates its own prompt row and then errors; the error-path recreate must
+// NOT append a second copy.
+//
+// History setup (targetIdx=0):
+//
+//	userMsg: "rerun me" (rerun target)
+//	tailMsg: "old reply" (finished; deleted by the handler's tail delete)
+//
+// The decorator fails List call #2 of exactly 3 (call #1 = step 2's tail list
+// at :704, call #2 = baseline capture at :849, call #3 = the helper's own List
+// at :1010 which MUST succeed — that is the "transient" premise). The fake
+// creates prompt "rerun me", reply "first turn reply", and returns an error.
+// Final rows: [prompt, reply]. The nil baseline (capture List failed) makes the
+// buggy code skip the scan and call Create unconditionally, appending a second
+// "rerun me".
+//
+// Revert-check: restore the nil-baseline fallback (skip the scan +
+// unconditional Create when the capture List fails) and this test fails with
+// count=2.
+func TestHandleRerunMessage_TransientBaselineListFailureDoesNotDuplicatePrompt(t *testing.T) {
+	// Cannot use t.Parallel() because newAttachmentsTestApp calls t.Setenv.
+	workingDir := t.TempDir()
+	dataDir := t.TempDir()
+	a := newAttachmentsTestApp(t, workingDir, dataDir)
+	sess, err := a.Sessions.Create(t.Context(), "test-655-transient-baseline-list")
+	require.NoError(t, err)
+	sessionID := sess.ID
+	ctx := t.Context()
+
+	userMsg, err := a.Messages.Create(ctx, sessionID, message.CreateMessageParams{
+		Role:  message.User,
+		Parts: []message.ContentPart{message.TextContent{Text: "rerun me"}},
+	})
+	require.NoError(t, err)
+
+	tailMsg, err := a.Messages.Create(ctx, sessionID, message.CreateMessageParams{
+		Role:  message.Assistant,
+		Parts: []message.ContentPart{message.TextContent{Text: "old reply"}},
+	})
+	require.NoError(t, err)
+	tailMsg.AddFinish(message.FinishReasonEndTurn, "", "")
+	require.NoError(t, a.Messages.Update(ctx, tailMsg))
+
+	initialMsgs, err := a.Messages.List(ctx, sessionID)
+	require.NoError(t, err)
+	require.Len(t, initialMsgs, 2, "precondition: target, tail")
+	targetIdx := -1
+	for i, m := range initialMsgs {
+		if m.ID == userMsg.ID {
+			targetIdx = i
+		}
+	}
+	require.Equal(t, 0, targetIdx, "precondition: target is at index 0")
+
+	mockCoord := &promptThenErrorCoordinator{a: a}
+	a.AgentCoordinator = mockCoord
+
+	// Install the decorator AFTER all setup rows are created and BEFORE
+	// launching the handler.
+	msgSvc := &listCallFailingMessages{Service: a.Messages, failOnNthList: 2}
+	a.Messages = msgSvc
+
+	hub := newHub()
+	client := newClient(hub, nil)
+	client.send = make(chan []byte, 10)
+	payload, err := json.Marshal(RerunMessagePayload{MessageID: userMsg.ID})
+	require.NoError(t, err)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		handleRerunMessage(ctx, a, client, WSMessage{ID: "req-1", Type: CmdRerunMessage, Payload: payload})
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("rerun handler never returned — something blocked unboundedly")
+	}
+
+	env := decodeReply(t, client)
+	require.Equal(t, EventError, env.Type,
+		"the fake returns an error, so the handler must reply with an error")
+	require.Contains(t, env.Error, "second-turn provider error")
+
+	// Assert the transient premise held: exactly three List calls, the
+	// failure hit the capture call (#2), and the helper's own List (#3)
+	// succeeded.
+	require.Equal(t, 3, msgSvc.listCalls,
+		"exactly three List calls must have occurred: step 2 tail list, baseline capture, helper's own scan")
+	require.Equal(t, 2, msgSvc.failedAt,
+		"the failure must have hit the baseline-capture List (call #2), not any other")
+
+	// The decisive assertion: exactly ONE user message with text "rerun me".
+	msgs, err := a.Messages.List(ctx, sessionID)
+	require.NoError(t, err)
+	count := 0
+	for _, m := range msgs {
+		if m.Role == message.User && m.Content().Text == "rerun me" {
+			count++
+		}
+	}
+	require.Equal(t, 1, count,
+		"the handler must NOT create a duplicate prompt when the baseline-capture List fails transiently; "+
+			"the helper must scan against the pre-delete baseline seed and recognize the turn's own prompt row; "+
+			"got %d matching user messages, expected 1 — this is fifteenth-review P3-1 (a spurious duplicate was appended)", count)
+
+	// The tail message must have been deleted by the handler's step 2.
+	_, getErr := a.Messages.Get(ctx, tailMsg.ID)
+	require.Error(t, getErr, "tail should be deleted by the handler's step 2")
+
+	// An assistant row with text "first turn reply" must exist.
+	hasReply := false
+	for _, m := range msgs {
+		if m.Content().Text == "first turn reply" {
+			hasReply = true
+		}
+	}
+	require.True(t, hasReply, "the replacement turn's assistant reply should exist")
 }

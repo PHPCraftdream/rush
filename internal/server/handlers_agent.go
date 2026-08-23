@@ -824,35 +824,57 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 		slog.Warn("ws: rerun: failed to delete original user message", "id", targetMsg.ID, "err", delErr)
 	}
 
-	// Capture the SET of message IDs present immediately after the target
-	// delete — the watermark recreateRerunPromptIfLost compares against (task
-	// #655, fourteenth-review P2-1/P3-1). This is not an exclusivity claim:
-	// the reservation and probe above exclude other agent RUNS, but
-	// handleDeleteMessage, handleDeleteMessages and handleUpdateMessageContent
-	// (handlers_messages.go) mutate rows with no ownership check and may
-	// interleave here. The set does not need them excluded: a concurrent
-	// writer only adds a row whose ID was never in the set or removes one
-	// that was, and ID membership — unlike the index or count #651 used — is
-	// invariant under deletions anywhere in the list, which is exactly what
-	// in-turn compaction (deleting summarised rows below the replacement
-	// turn's prompt) invalidates positionally.
+	// Capture the SET of message IDs the recreate watermark compares
+	// against (task #655, fourteenth-review P2-1/P3-1; seeded from the
+	// pre-delete listing by #658, fifteenth-review P3-1). This is not an
+	// exclusivity claim: the reservation and probe above exclude other
+	// agent RUNS, but handleDeleteMessage, handleDeleteMessages and
+	// handleUpdateMessageContent (handlers_messages.go) mutate rows with
+	// no ownership check and may interleave here. The set does not need
+	// them excluded: a concurrent writer only adds a row whose ID was
+	// never in the set or removes one that was, and ID membership —
+	// unlike the index or count #651 used — is invariant under deletions
+	// anywhere in the list, which is exactly what in-turn compaction
+	// (deleting summarised rows below the replacement turn's prompt)
+	// invalidates positionally.
 	//
-	// Fallback if listing errors: leave the set nil. A nil set means "the
-	// watermark is unknown", and recreateRerunPromptIfLost then errs toward
-	// RECREATING (it skips the scan and creates unconditionally): a false
-	// recreate costs a visible duplicate row, while a false suppress silently
-	// loses the operator's words — the strictly worse outcome throughout this
-	// mechanism's history (#638/#644/#645). In practice the helper's own List
-	// will most likely fail too (same store, same context) and nothing is
-	// created either way; the fallback only matters for a transient failure.
-	var baselineIDs map[string]struct{}
+	// The set is SEEDED from allMsgs — the pre-delete listing captured at
+	// step 2, still in scope here — and the post-delete List's IDs are
+	// unioned in when that call succeeds. Every row in allMsgs predates
+	// the replacement run, so the seed alone is a valid (superset)
+	// baseline, and seeding UNCONDITIONALLY means the set is never nil:
+	// the helper's scan always runs instead of it creating blind. On the
+	// normal path the union changes nothing — for any row still present
+	// when the helper scans, membership in the union equals membership in
+	// the post-delete set alone, because a row that predates the run and
+	// still exists was necessarily in the post-delete listing too. The
+	// seed's extra IDs are rows the deletes removed (a nonexistent ID
+	// suppresses nothing) or, when a tail delete failed, pre-existing
+	// rows that must not suppress the recreate anyway — exactly what set
+	// membership already gives them. The target's own ID is in the seed
+	// unconditionally, and the helper still admits it via its explicit
+	// targetID disjunct.
+	//
+	// When the post-delete List fails (e.g. a transient DB error that
+	// clears before the helper runs seconds later), the set falls back to
+	// the pre-delete seed alone, so the scan still recognises the
+	// replacement turn's own createUserMessage row (its ID is not in the
+	// seed) instead of appending a duplicate next to it once the turn
+	// later errors. The residual gap is a row created by a concurrent
+	// writer BETWEEN the two listings: on this failed-List path it is in
+	// neither set, so a same-text foreign row could suppress the
+	// recreate — the same concurrent-writer tolerance the helper's doc
+	// documents, in a microseconds-wide window.
+	baselineIDs := make(map[string]struct{}, len(allMsgs))
+	for _, m := range allMsgs {
+		baselineIDs[m.ID] = struct{}{}
+	}
 	if msgs, listErr := a.Messages.List(deleteCtx, sessionID); listErr == nil {
-		baselineIDs = make(map[string]struct{}, len(msgs))
 		for _, m := range msgs {
 			baselineIDs[m.ID] = struct{}{}
 		}
 	} else {
-		slog.Warn("ws: rerun: failed to list messages for baseline ID set after target delete",
+		slog.Warn("ws: rerun: failed to list messages after target delete; baseline ID set falls back to the pre-delete listing",
 			"sessionID", sessionID, "err", listErr)
 	}
 
@@ -968,9 +990,16 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 		// ahead of the error reply, matching the pre-#645 behaviour; the
 		// defer no-ops afterwards via recreateHandled.
 		// The flag is set AFTER the call (fourteenth-review M-5): if the
-		// call itself panics (List/Create on a closed DB), the defer stays
-		// armed wherever its gate allows and retries, instead of having
-		// been silently disarmed before the call.
+		// call itself panics (List/Create on a closed DB), recreateHandled
+		// stays false and the defer below runs on the unwind — but it can
+		// retry only on the error returns where onHandoff never fired
+		// (RunWithReservedOwnership's pre-handoff failures), where
+		// releaseOnBailout is still true and the defer's gate is open. On
+		// THIS dominant error path onHandoff has already fired and
+		// runReturned is true, so the gate is closed regardless: a panic
+		// in the call loses the prompt either way (28f37afc behaved
+		// identically here), and the ordering matters only for that
+		// narrow pre-handoff path.
 		recreateRerunPromptIfLost(deleteCtx, a, sessionID, baselineIDs, targetMsg.ID, text)
 		recreateHandled = true
 		c.reply(msg.ID, EventError, nil, err.Error())
@@ -983,14 +1012,19 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 // handleRerunMessage when the replacement turn never recreated it (task
 // #638/#644, extended to panic paths by #645, redesigned around message-ID
 // membership by #655 after the fourteenth review showed both the count- and
-// position-based watermarks break when rows are deleted below the prompt).
+// position-based watermarks break when rows are deleted below the prompt,
+// and made never-nil by #658 seeding the capture set from the pre-delete
+// listing).
 // The check is ID-MEMBERSHIP+TEXTUAL: a row proves the prompt is present
 // iff it is a User message whose Content().Text equals the captured prompt
-// text AND either its ID was NOT in the baseline set captured right after
-// the target delete (so it can only be the replacement turn's
-// createUserMessage row or an earlier explicit call's) or its ID IS the
-// original target's (step 3's delete failed and the operator's own row
-// survived untouched — already present, nothing to restore). Membership
+// text AND either its ID was NOT in the baseline set captured around the
+// target delete (so it was written after the baseline was captured —
+// normally the replacement turn's createUserMessage row or an earlier
+// explicit call's, though not ONLY those: a concurrent writer with no
+// ownership check, e.g. handleInjectMessage, can land a same-text row in
+// that window too) or its ID IS the original target's (step 3's delete
+// failed and the operator's own row survived untouched — already present,
+// nothing to restore). Membership
 // never depends on order or count, so deletions elsewhere in the list —
 // in-turn compaction deleting summarised rows below the prompt, a
 // concurrent handleDeleteMessage — cannot shift or spoof the watermark the
@@ -1000,12 +1034,15 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 // not suppress the recreate: its ID is in the baseline set and it is not
 // the target. Idempotent: once a qualifying row exists, this no-ops.
 //
-// baselineIDs == nil means the baseline List failed and the watermark is
-// unknown (see the capture site in handleRerunMessage): the helper then
-// skips the scan and creates unconditionally, erring toward recreating —
-// a false recreate costs a visible duplicate row, a false suppress loses
-// the operator's words silently, and this mechanism's history treats the
-// latter as strictly worse.
+// baselineIDs is never nil from the capture site (task #658): it is
+// seeded from the pre-delete listing and unioned with the post-delete
+// one, so even a failed post-delete List leaves a valid superset
+// baseline and the scan always runs. There is deliberately no "watermark
+// unknown, create unconditionally" branch: it minted a spurious
+// duplicate whenever a transient List failure cleared before a
+// replacement run that had written its own prompt errored
+// (fifteenth-review P3-1), and the seed removes the need to choose
+// between creating blind and suppressing blind.
 func recreateRerunPromptIfLost(ctx context.Context, a *appPkg.App, sessionID string, baselineIDs map[string]struct{}, targetID string, text string) {
 	allMsgs, listErr := a.Messages.List(ctx, sessionID)
 	if listErr != nil {
@@ -1017,12 +1054,10 @@ func recreateRerunPromptIfLost(ctx context.Context, a *appPkg.App, sessionID str
 	// A qualifying row — User, matching text, and either new since the
 	// baseline or the never-deleted target itself — means the prompt is
 	// already present; return without creating.
-	if baselineIDs != nil {
-		for _, m := range allMsgs {
-			_, inBaseline := baselineIDs[m.ID]
-			if m.Role == message.User && m.Content().Text == text && (!inBaseline || m.ID == targetID) {
-				return
-			}
+	for _, m := range allMsgs {
+		_, inBaseline := baselineIDs[m.ID]
+		if m.Role == message.User && m.Content().Text == text && (!inBaseline || m.ID == targetID) {
+			return
 		}
 	}
 
