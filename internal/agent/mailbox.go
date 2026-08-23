@@ -18,10 +18,12 @@ import (
 // activeRequests is retained for OnStepFinish abort-path cancel lookups
 // — the sessionID+"-summarize" synthetic key it used to hold has been
 // removed by #268. See the design doc for the full rationale; this file
-// implements the mailbox methods (submit, drainOrRelease,
-// drainOrReleaseFinal, interruptAndReplace, drainAfterCancel, inject,
-// drainInjects, beginGeneration, beginCompact, queue, popFirstSubmitted)
-// with no behavior deviation.
+// declares the mailbox type, its state constants and its fields only —
+// the methods (submit, drainOrRelease, drainOrReleaseFinal,
+// interruptAndReplace, drainAfterCancel, inject, drainInjects,
+// beginGeneration, beginCompact, queue, popFirstSubmitted) live in
+// mailbox_ownership.go, mailbox_interrupt.go, mailbox_inject.go,
+// mailbox_generation.go and mailbox_queue.go, with no behavior deviation.
 type mailboxState int
 
 // mbReleasing is drainOrReleaseFinal's terminal state, entered ONLY on the

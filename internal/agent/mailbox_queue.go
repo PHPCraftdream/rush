@@ -112,7 +112,7 @@ func (mb *mailbox) abandonOwnershipAndPopSubmitted(epoch uint64) []SessionAgentC
 // any remaining entries in place for the next owner's own end-of-turn
 // drain. This is the popFirstSubmitted counterpart to
 // abandonOwnershipAndPopSubmitted above: runSummarize's manual-compaction
-// success path (agent.go) needs exactly popFirstSubmitted's existing
+// success path (agent_compaction.go) needs exactly popFirstSubmitted's existing
 // "pop only the first entry, leave the rest queued" semantics, but
 // sequencing abandonOwnership() and popFirstSubmitted() as two separate
 // lock acquisitions there reopened the identical era-boundary reordering
