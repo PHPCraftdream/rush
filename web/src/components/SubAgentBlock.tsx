@@ -5,10 +5,11 @@ import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
 import rehypeHighlight from "rehype-highlight";
 import { Bot } from "lucide-react";
-import { $subAgentMessages, $busySessions } from "../store";
+import { $subAgentMessages, $messages, $activeSessionID, registerSubAgentSession } from "../store";
 import { ws } from "../ws";
-import type { Message, ContentPart } from "../types";
+import type { Message, ContentPart, FinishPart } from "../types";
 import { SummaryMessage } from "./Message/SummaryMessage";
+import { FinishErrorBlock } from "./Message/FinishErrorBlock";
 import { isTerminallyFinished } from "./Message/textParts";
 
 const MD_REMARK = [remarkGfm, remarkBreaks];
@@ -52,14 +53,16 @@ export const SubAgentBlock = memo(function SubAgentBlock({
   messageID,
   toolCallID,
   prompt,
+  finished,
 }: {
   messageID: string;
   toolCallID: string;
   prompt: string;
+  finished: boolean;
 }) {
   // Backend keys the sub-agent session as `${messageID}$$${toolCallID}`
   // (see internal/session/session.go CreateAgentToolSessionID), and the WS
-  // layer stores its messages + busy-state under that exact composite ID
+  // layer stores its messages under that exact composite ID
   // (useWS.ts: registerSubAgentSession / upsertSubAgentMessage). We MUST look
   // up by the same key — using toolCallID alone silently misses every event,
   // which left the block permanently empty ("Starting agent..."). Fall back
@@ -67,34 +70,74 @@ export const SubAgentBlock = memo(function SubAgentBlock({
   // should not happen for a live sub-agent).
   const subSessionID = messageID ? `${messageID}$$${toolCallID}` : toolCallID;
   const allSubMessages = useStore($subAgentMessages);
-  const busySessions = useStore($busySessions);
+  // The parent message (the one whose agent tool_call part rendered this
+  // block) lives in the active transcript whenever this block is mounted.
+  // Look it up by ID: its SessionID is the owning session used to register
+  // the lazy load below, and its finish state is the hard-kill fallback
+  // for `done`.
+  const parentMessages = useStore($messages);
+  const parent = useMemo(
+    () => parentMessages.find((m) => m.ID === messageID),
+    [parentMessages, messageID],
+  );
   const messages = allSubMessages.get(subSessionID) ?? [];
-  const isRunning = busySessions.has(subSessionID);
 
-  // "done" means this sub-agent's RUN is over — never true while it still
-  // works. Each available signal is wrong alone, so AND them:
+  // "done" means this sub-agent's RUN is over. Both signals are facts
+  // about the PARENT message, not inferences from the sub-agent's own
+  // transcript:
   //
-  // - busySessions alone lags for sub-agents: nothing broadcasts
-  //   agent_busy when the coordinator spawns one, so the client learns
-  //   busy state only from the 5s list_sessions poll. !isRunning by
-  //   itself would flash "done" during the first seconds of every run.
-  // - Finish parts alone lie mid-run: every turn-STEP ends with a real
-  //   non-Partial finish that stays in the store next to the next step's
-  //   live message, and the 2s checkpoint ticker stamps Partial=true
-  //   finishes on the streaming message. Only the LAST assistant
-  //   message's terminal finish counts, via the same shared
-  //   isTerminallyFinished the main renderer uses (Message.tsx).
+  // - `finished` (primary): the parent's agent tool_call part's Finished
+  //   flag — true exactly when the agent tool returned, which is the
+  //   whole sub-agent run. It arrives via the parent's own
+  //   message_updated and never flips at the sub-agent's internal step
+  //   boundaries.
+  // - parent terminally finished (fallback): a hard-killed run never
+  //   gets its tool call marked finished (FinishToolCall only runs on
+  //   the normal return path, internal/agent/agent_turn.go), but startup
+  //   recovery stamps a terminal error finish on the parent's message
+  //   (internal/app/app_recovery.go, "Process restarted"). Partial
+  //   checkpoint finishes on a live parent don't count —
+  //   isTerminallyFinished ignores them — so this stays false mid-run.
   //
-  // Every termination path (normal, error, loop-detected, canceled,
-  // halted-by-tool-result) stamps a non-Partial finish on the final
-  // assistant message, so done flips true once the coordinator releases
-  // the session. A run hard-killed mid-stream intentionally stays
-  // done=false — the block stays open instead of claiming success.
-  const done = useMemo(() => {
-    if (isRunning) return false;
+  // isRunning is !done. A busySessions lookup cannot be used here: a
+  // sub-agent session ID NEVER enters $busySessions — the only feeder
+  // (the agent_busy event) names client-chosen top-level sessions or the
+  // list_sessions correction loop, whose SQL (internal/db/sql/
+  // sessions.sql, ListSessions) filters `parent_session_id is NULL`, so
+  // sub-sessions are invisible to it. The previous predicate
+  // (!isRunning && isTerminallyFinished(sub's last assistant message))
+  // therefore flashed done at EVERY sub-agent step boundary (each step
+  // ends with a real non-Partial finish while the run continues), which
+  // also silently reset the operator's collapse override via the
+  // prevDone effect below.
+  const parentDone = parent ? isTerminallyFinished(parent.Parts ?? []) : false;
+  const done = finished || parentDone;
+  const isRunning = !done;
+
+  // A run that ended badly must not wear the green "done" badge: read
+  // the terminal finish of the sub-agent's last assistant message and
+  // apply the same rule as the main renderer's finish router
+  // (Message/Part.tsx): error or canceled renders an error block. When
+  // the tool call never returned (`finished` false — a hard kill),
+  // attribute the parent's terminal error finish instead; recovery
+  // stamps "Process restarted" there and the sub-agent's own transcript
+  // may have no finish at all.
+  const errorFinish = useMemo(() => {
     const lastAssistant = [...messages].reverse().find((m) => m.Role === "assistant");
-    return lastAssistant ? isTerminallyFinished(lastAssistant.Parts ?? []) : false;
-  }, [isRunning, messages]);
+    if (lastAssistant) {
+      const f = (lastAssistant.Parts ?? []).find(
+        (p): p is FinishPart => p.type === "finish" && !p.Partial,
+      );
+      if (f && (f.Reason === "error" || f.Reason === "canceled")) return f;
+    }
+    if (!finished && parent) {
+      const f = (parent.Parts ?? []).find(
+        (p): p is FinishPart => p.type === "finish" && !p.Partial,
+      );
+      if (f && (f.Reason === "error" || f.Reason === "canceled")) return f;
+    }
+    return undefined;
+  }, [messages, finished, parent]);
 
   const label = useMemo(() => {
     if (!prompt) return "";
@@ -116,8 +159,17 @@ export const SubAgentBlock = memo(function SubAgentBlock({
     if (requested.current === subSessionID) return;
     if (messages.length > 0) return;
     requested.current = subSessionID;
+    // Register before asking: the messages_list router (useWS.ts) only
+    // routes replies for sessions present in $subAgentSessions. After a
+    // reload a historical sub-session is registered only if its
+    // session_created survived the hub's replay ring — otherwise the
+    // reply fell through to the main-chat branch and was silently
+    // dropped, leaving this block empty forever. The owning session is
+    // the parent message's own SessionID.
+    const owner = parent?.SessionID ?? $activeSessionID.get();
+    if (owner) registerSubAgentSession(subSessionID, owner);
     ws.send("load_messages", { sessionID: subSessionID });
-  }, [subSessionID, messages.length]);
+  }, [subSessionID, messages.length, parent]);
 
   // Open while the sub-agent is still working (mirrors prior `open={!done}`
   // behaviour); the user's manual toggle wins once they touch the chevron.
@@ -141,7 +193,11 @@ export const SubAgentBlock = memo(function SubAgentBlock({
         <Bot size={15} className={`shrink-0 ${isRunning ? "text-accent animate-pulse" : "text-text-subtle"}`} />
         <span className="font-semibold text-sm">Agent</span>
         {isRunning && <span className="text-xs text-text-subtle animate-pulse">running...</span>}
-        {done && <span className="text-xs text-green font-medium">done</span>}
+        {done && (errorFinish ? (
+          <span className="text-xs text-red font-medium">error</span>
+        ) : (
+          <span className="text-xs text-green font-medium">done</span>
+        ))}
         <span className="text-xs text-text-muted truncate ml-1 max-w-[400px]">{label}</span>
       </button>
       {open && (
@@ -162,6 +218,9 @@ export const SubAgentBlock = memo(function SubAgentBlock({
                 <SubAgentMessage key={m.ID} message={m} />
               ),
             )}
+          {errorFinish && (
+            <FinishErrorBlock reason={errorFinish.Reason} message={errorFinish.Message} details={errorFinish.Details} />
+          )}
         </div>
       )}
     </div>

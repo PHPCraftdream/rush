@@ -23,7 +23,7 @@ export const Part = memo(function Part({ part, index, isUser, messageID, thinkin
       if (part.Name === "agent") {
         let prompt = "";
         try { prompt = JSON.parse(part.Input).prompt ?? part.Input; } catch { prompt = part.Input; }
-        return <SubAgentBlock messageID={messageID} toolCallID={part.ID} prompt={prompt} />;
+        return <SubAgentBlock messageID={messageID} toolCallID={part.ID} prompt={prompt} finished={part.Finished} />;
       }
       return <ToolCallBlock name={part.Name} input={part.Input} finished={part.Finished} />;
     }
