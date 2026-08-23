@@ -824,6 +824,27 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 		slog.Warn("ws: rerun: failed to delete original user message", "id", targetMsg.ID, "err", delErr)
 	}
 
+	// Task #645 (twelfth-review N-2): recreate the user prompt if it was
+	// lost, on EVERY exit path past the commit point above — including a
+	// PANIC between the delete and the handoff (e.g. at rerunPreHandoffSeam
+	// or in hub.Broadcast), which the old inline `if err != nil` check did
+	// not cover: a panic there left the session with zero messages and the
+	// operator's prompt unrecoverable (B-1's original bug). Registered
+	// strictly AFTER the delete so it never fires for the early returns
+	// above (before step 3 there is nothing to recreate). Idempotent and
+	// harmless on non-error paths: the positional check finds nothing to
+	// recreate once the replacement turn's own createUserMessage has run.
+	// It runs before the releaseOnBailout/probeHeld defers (LIFO), i.e.
+	// while this handler still holds the reservation, so no concurrent
+	// writer can interleave with the list-then-create. On the normal error
+	// path the recreate now happens AFTER c.reply instead of before; no
+	// test asserts that ordering and WebSocket delivery is async from the
+	// client's perspective, so the flip is accepted for the simplicity of
+	// a single unconditional defer.
+	defer func() {
+		recreateRerunPromptIfLost(deleteCtx, a, sessionID, targetIdx, text)
+	}()
+
 	// 4. Re-arm Phase 4 autonomy.
 	a.AgentCoordinator.ResetAutoResumeCounter(sessionID)
 
@@ -886,33 +907,47 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 
 	if err != nil {
 		slog.Error("ws: rerun agent error", "err", err)
-		// Task #638/#644: recreate the user prompt if it was lost. The
-		// target message was deleted in step 3, and
-		// RunWithReservedOwnership may fail before createUserMessage runs
-		// (e.g. model resolution). The check is POSITIONAL, not textual:
-		// steps 2/3 deleted everything at index >= targetIdx in the
-		// original ordered list, so any row now present at or past that
-		// index was necessarily created by the replacement turn — meaning
-		// createUserMessage already ran and no recreate is needed. A text
-		// scan would wrongly match an EARLIER identical prompt ("continue",
-		// "go on", …) that survives the tail delete and suppress the
-		// recreate, dropping the rerun target from the transcript (#644).
-		allMsgs, listErr := a.Messages.List(deleteCtx, sessionID)
-		if listErr != nil {
-			slog.Error("Failed to list messages while checking if prompt needs recreation",
-				"sessionID", sessionID, "err", listErr)
-		} else if len(allMsgs) <= targetIdx {
-			_, createErr := a.Messages.Create(deleteCtx, sessionID, message.CreateMessageParams{
-				Role:  message.User,
-				Parts: []message.ContentPart{message.TextContent{Text: text}},
-			})
-			if createErr != nil {
-				slog.Error("Failed to recreate lost user prompt",
-					"sessionID", sessionID, "err", createErr)
-			}
-		}
+		// Task #638/#644: recreate the user prompt if it was lost — see the
+		// defer registered after step 3's delete for the full rationale.
+		// Run it explicitly here (BEFORE the error reply) so a watching
+		// client still sees the recreated message's CreatedEvent broadcast
+		// ahead of the error reply, matching the pre-#645 behaviour; the
+		// defer is idempotent and no-ops when the explicit call already ran.
+		recreateRerunPromptIfLost(deleteCtx, a, sessionID, targetIdx, text)
 		c.reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
 	c.reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
+}
+
+// recreateRerunPromptIfLost restores a rerun target deleted at step 3 of
+// handleRerunMessage when the replacement turn never recreated it (task
+// #638/#644, extended to panic paths by #645). The check is POSITIONAL,
+// not textual: steps 2/3 deleted everything at index >= targetIdx in the
+// original ordered list, so any row now present at or past that index was
+// necessarily created by the replacement turn — meaning createUserMessage
+// already ran and no recreate is needed. A text scan would wrongly match
+// an EARLIER identical prompt ("continue", "go on", …) that survives the
+// tail delete and suppress the recreate, dropping the rerun target from
+// the transcript (#644). Idempotent: once the prompt exists at or past
+// targetIdx it no-ops, so calling it twice (explicit call plus defer) is
+// harmless.
+func recreateRerunPromptIfLost(ctx context.Context, a *appPkg.App, sessionID string, targetIdx int, text string) {
+	allMsgs, listErr := a.Messages.List(ctx, sessionID)
+	if listErr != nil {
+		slog.Error("Failed to list messages while checking if prompt needs recreation",
+			"sessionID", sessionID, "err", listErr)
+		return
+	}
+	if len(allMsgs) > targetIdx {
+		return
+	}
+	_, createErr := a.Messages.Create(ctx, sessionID, message.CreateMessageParams{
+		Role:  message.User,
+		Parts: []message.ContentPart{message.TextContent{Text: text}},
+	})
+	if createErr != nil {
+		slog.Error("Failed to recreate lost user prompt",
+			"sessionID", sessionID, "err", createErr)
+	}
 }

@@ -136,6 +136,74 @@ func TestHandleRerunMessage_PanicBeforeHandoffReleasesReservation(t *testing.T) 
 	require.True(t, mockCoord.released, "ReleaseExclusive must have been called by the defer")
 }
 
+// TestHandleRerunMessage_PanicBeforeHandoffRecreatesPrompt (task #645,
+// twelfth-review N-2): the #638/#644 prompt-recreate check used to live
+// inside `if err != nil`, which does not run when the function PANICS past
+// step 3's delete. A panic at rerunPreHandoffSeam left the session with
+// zero messages and the operator's prompt unrecoverable. The fix registers
+// a defer after the commit-point delete, so the prompt is recreated even
+// on panic unwind.
+//
+// Revert-check: make the defer a no-op (delete it) — the prompt-survival
+// assertion below goes red while the reservation-release assertions above
+// stay green.
+func TestHandleRerunMessage_PanicBeforeHandoffRecreatesPrompt(t *testing.T) {
+	// Cannot use t.Parallel() because newAttachmentsTestApp calls t.Setenv.
+	workingDir := t.TempDir()
+	dataDir := t.TempDir()
+	a := newAttachmentsTestApp(t, workingDir, dataDir)
+	sess, err := a.Sessions.Create(t.Context(), "test-panic-recreate")
+	require.NoError(t, err)
+	sessionID := sess.ID
+	ctx := t.Context()
+
+	promptText := "recreate me after panic"
+	userMsg, err := a.Messages.Create(ctx, sessionID, message.CreateMessageParams{
+		Role:  message.User,
+		Parts: []message.ContentPart{message.TextContent{Text: promptText}},
+	})
+	require.NoError(t, err)
+
+	rerunPreHandoffSeam = func() { panic("boom - panic before handoff") }
+	t.Cleanup(func() { rerunPreHandoffSeam = nil })
+
+	hub := newHub()
+	client := newClient(hub, nil)
+	client.send = make(chan []byte, 10)
+	payload, err := json.Marshal(RerunMessagePayload{MessageID: userMsg.ID})
+	require.NoError(t, err)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer func() {
+			if r := recover(); r != nil {
+				// Expected panic — mirrors hub.runRecovered.
+			}
+		}()
+		handleRerunMessage(ctx, a, client, WSMessage{ID: "req-1", Type: CmdRerunMessage, Payload: payload})
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("handler never returned after panic")
+	}
+
+	// The decisive assertion: the operator's prompt must have been
+	// recreated by the post-commit-point defer during panic unwind.
+	msgs, err := a.Messages.List(ctx, sessionID)
+	require.NoError(t, err)
+	found := false
+	for _, m := range msgs {
+		if m.Role == message.User && m.Content().Text == promptText {
+			found = true
+		}
+	}
+	require.True(t, found,
+		"original prompt must survive a pre-handoff panic (recreated by the defer); got %d messages", len(msgs))
+}
+
 // panicWindowCoordinator wraps a real coordinator and tracks whether
 // ReleaseExclusive was called.
 type panicWindowCoordinator struct {
