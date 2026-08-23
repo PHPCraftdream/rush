@@ -177,7 +177,7 @@ type streamWatchdog struct {
 // as a session with a fresh heartbeat for 38 minutes while its sub-agent
 // sat stuck on a trivial command. Task #300 removed the timer-driven call:
 // #222's original concern is covered without it, because
-// withActivityNotify (agent.go) composes each session's activity callback
+// withActivityNotify (agent_ownership.go) composes each session's activity callback
 // with its ancestors', so a delegated sub-agent's REAL stream callbacks
 // still walk back up and touch every ancestor's lock. A non-delegating
 // tool that emits nothing for a long time now goes heartbeat-quiet, which
@@ -373,7 +373,7 @@ func startStreamWatchdog(
 					// locks/why/list all calling it healthy.
 					//
 					// #222's concern is already covered without a timer:
-					// withActivityNotify (agent.go) composes each session's
+					// withActivityNotify (agent_ownership.go) composes each session's
 					// activity callback with its ancestors', so a delegated
 					// sub-agent's REAL stream callbacks walk back up and touch
 					// every ancestor's lock. A delegation that is genuinely

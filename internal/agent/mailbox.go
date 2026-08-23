@@ -182,7 +182,7 @@ type mailbox struct {
 	testDrainSeam func()
 
 	// testLoopRearmSeam, when non-nil, is invoked by Run's turn loop
-	// (agent.go) immediately BEFORE each iteration's beginGeneration(turnCancel)
+	// (agent_run.go) immediately BEFORE each iteration's beginGeneration(turnCancel)
 	// call — i.e. strictly after any end-of-turn drain (drainOrRelease/
 	// drainOrReleaseFinal/drainAfterCancel) has already released mb.mu, and
 	// strictly before the loop re-arms the mailbox's current generation for
@@ -208,7 +208,7 @@ type mailbox struct {
 	// production behavior — mirrors testDrainSeam's existing idiom.
 	testLoopRearmSeam func()
 
-	// testPreAbandonSeam, when non-nil, is invoked by runSummarize (agent.go)
+	// testPreAbandonSeam, when non-nil, is invoked by runSummarize (agent_compaction.go)
 	// strictly AFTER the manual-compaction OS session lock has been released
 	// and strictly BEFORE the mailbox is flipped to mbIdle via
 	// abandonOwnership. It exists to let a test deterministically observe,
@@ -225,7 +225,7 @@ type mailbox struct {
 	testPreAbandonSeam func()
 
 	// testPreSnapshotConsumeSeam, when non-nil, is invoked by runSummarize
-	// (agent.go) strictly AFTER the caller's SummarizeSnapshot has been
+	// (agent_compaction.go) strictly AFTER the caller's SummarizeSnapshot has been
 	// captured and strictly BEFORE it is consumed by runSummarizeBody. It
 	// exists to let a test deterministically land a concurrent SetModels (or
 	// any other shared-state mutation) exactly inside the window a pre-#341

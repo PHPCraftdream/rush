@@ -173,7 +173,7 @@ func (mb *mailbox) interruptAndReplace(call SessionAgentCall) (context.CancelFun
 	// The fix: return nil here instead of falling back to dispatcherCancel.
 	// mb.replacement is already recorded under this same lock, which
 	// is sufficient — nothing needs to be cancelled, because nothing is
-	// running. The loop's own testLoopRearmSeam window (agent.go) is where
+	// running. The loop's own testLoopRearmSeam window (agent_run.go) is where
 	// the replacement is reclaimed: see reclaimReplacementOrKeep, called
 	// there immediately before each iteration's beginGeneration, which
 	// atomically swaps the loop's stale `call` for a same-window replacement
@@ -187,7 +187,7 @@ func (mb *mailbox) interruptAndReplace(call SessionAgentCall) (context.CancelFun
 	return mb.current.cancel, true
 }
 
-// reclaimReplacementOrKeep is called by Run's turn loop (agent.go)
+// reclaimReplacementOrKeep is called by Run's turn loop (agent_run.go)
 // immediately before each iteration's beginGeneration call — the exact
 // point testLoopRearmSeam already parks a test at (see that seam's own doc)
 // — to atomically check whether an interrupt landed in the inter-turn
