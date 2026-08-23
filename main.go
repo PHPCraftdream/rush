@@ -11,6 +11,7 @@
 package main
 
 import (
+	"fmt"
 	"log/slog"
 	"net/http"
 	_ "net/http/pprof"
@@ -23,6 +24,14 @@ import (
 )
 
 func main() {
+	// Guard against running from inside the source tree. This must be checked
+	// before any other initialization, because a stale dev binary can silently
+	// cause incorrect behavior even for --help and --version.
+	if err := platform.GuardSourceTreeRun(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+
 	if err := platform.AssignToNewJobObject(); err != nil {
 		slog.Debug("Job object assignment skipped", "error", err)
 	}
