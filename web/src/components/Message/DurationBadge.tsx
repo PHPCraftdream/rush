@@ -5,6 +5,7 @@ import { useState, useEffect, useMemo, memo } from "react";
 import { useStore } from "@nanostores/react";
 import type { Message as Msg } from "../../types";
 import { $busySessions } from "../../store";
+import { isTerminallyFinished } from "./textParts";
 
 function formatDuration(s: number) {
   if (s < 60) return `${s.toFixed(1)}s`;
@@ -14,7 +15,7 @@ function formatDuration(s: number) {
 // ── Leaf components ───────────────────────────────────────────────────────────
 
 export const DurationBadge = memo(function DurationBadge({ message }: { message: Msg }) {
-  const isFinished = useMemo(() => message.Parts.some(p => p.type === "finish"), [message.Parts]);
+  const isFinished = useMemo(() => isTerminallyFinished(message.Parts), [message.Parts]);
   const busy = useStore($busySessions);
   const isLive = !isFinished && busy.has(message.SessionID);
   const [elapsed, setElapsed] = useState(0);

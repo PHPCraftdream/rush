@@ -11,13 +11,13 @@ import { EditForm } from "./EditForm";
 import { EffortBadge } from "./EffortBadge";
 import { MD_REMARK, MD_REHYPE } from "./mdPlugins";
 import { useCollapseAllSignal } from "./useCollapseAllSignal";
-import { extractText } from "./textParts";
+import { extractText, isTerminallyFinished } from "./textParts";
 
 // ── SummaryMessage ────────────────────────────────────────────────────────────
 
 export const SummaryMessage = memo(function SummaryMessage({ message }: { message: Msg }) {
   const text = useMemo(() => extractText(message.Parts), [message.Parts]);
-  const isFinished = useMemo(() => message.Parts.some(p => p.type === "finish"), [message.Parts]);
+  const isFinished = useMemo(() => isTerminallyFinished(message.Parts), [message.Parts]);
   const [editing, setEditing] = useState(false);
   const [open, setOpen] = useState(false);
   useCollapseAllSignal(() => setOpen(false));

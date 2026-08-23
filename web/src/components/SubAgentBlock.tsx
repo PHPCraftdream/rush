@@ -9,6 +9,7 @@ import { $subAgentMessages, $busySessions } from "../store";
 import { ws } from "../ws";
 import type { Message, ContentPart } from "../types";
 import { SummaryMessage } from "./Message/SummaryMessage";
+import { isTerminallyFinished } from "./Message/textParts";
 
 const MD_REMARK = [remarkGfm, remarkBreaks];
 const MD_REHYPE = [rehypeHighlight];
@@ -19,10 +20,6 @@ function extractTextFromParts(parts?: ContentPart[]): string {
     .filter((p) => p.type === "text")
     .map((p) => (p as { type: "text"; Text: string }).Text)
     .join("\n");
-}
-
-function isFinished(msg: Message): boolean {
-  return msg.Parts?.some((p) => p.type === "finish") ?? false;
 }
 
 const SubAgentMessage = memo(function SubAgentMessage({ message }: { message: Message }) {
@@ -74,10 +71,30 @@ export const SubAgentBlock = memo(function SubAgentBlock({
   const messages = allSubMessages.get(subSessionID) ?? [];
   const isRunning = busySessions.has(subSessionID);
 
-  const done = useMemo(
-    () => messages.some((m) => m.Role === "assistant" && isFinished(m)),
-    [messages],
-  );
+  // "done" means this sub-agent's RUN is over — never true while it still
+  // works. Each available signal is wrong alone, so AND them:
+  //
+  // - busySessions alone lags for sub-agents: nothing broadcasts
+  //   agent_busy when the coordinator spawns one, so the client learns
+  //   busy state only from the 5s list_sessions poll. !isRunning by
+  //   itself would flash "done" during the first seconds of every run.
+  // - Finish parts alone lie mid-run: every turn-STEP ends with a real
+  //   non-Partial finish that stays in the store next to the next step's
+  //   live message, and the 2s checkpoint ticker stamps Partial=true
+  //   finishes on the streaming message. Only the LAST assistant
+  //   message's terminal finish counts, via the same shared
+  //   isTerminallyFinished the main renderer uses (Message.tsx).
+  //
+  // Every termination path (normal, error, loop-detected, canceled,
+  // halted-by-tool-result) stamps a non-Partial finish on the final
+  // assistant message, so done flips true once the coordinator releases
+  // the session. A run hard-killed mid-stream intentionally stays
+  // done=false — the block stays open instead of claiming success.
+  const done = useMemo(() => {
+    if (isRunning) return false;
+    const lastAssistant = [...messages].reverse().find((m) => m.Role === "assistant");
+    return lastAssistant ? isTerminallyFinished(lastAssistant.Parts ?? []) : false;
+  }, [isRunning, messages]);
 
   const label = useMemo(() => {
     if (!prompt) return "";
@@ -89,10 +106,11 @@ export const SubAgentBlock = memo(function SubAgentBlock({
   // Lazy-load sub-agent messages on first mount when nothing is in the
   // store yet (the WS handler only auto-loads sub-sessions created during
   // the live session — past runs surfaced after a reload start empty).
-  // Latch on the session ID rather than a bare boolean: ToolActivityGroup
-  // keys SubAgentBlock instances by parts-array index, so one instance can
-  // be handed a different subSessionID after a parts reorder. A boolean
-  // latch would then suppress the new session's lazy load forever.
+  // Latch on the session ID rather than a bare boolean: a boolean latch
+  // cannot distinguish "already asked for THIS session" from "already
+  // asked for SOME session", so a reused instance handed a different
+  // subSessionID would never load. Latching on the value itself is
+  // correct independently of how callers key us.
   const requested = useRef<string | null>(null);
   useEffect(() => {
     if (requested.current === subSessionID) return;
@@ -121,7 +139,7 @@ export const SubAgentBlock = memo(function SubAgentBlock({
         className="sub-agent-toggle w-full text-left bg-transparent border-0"
       >
         <Bot size={15} className={`shrink-0 ${isRunning ? "text-accent animate-pulse" : "text-text-subtle"}`} />
-        <span className="font-semibold text-sm">{done ? "Agent" : "Agent"}</span>
+        <span className="font-semibold text-sm">Agent</span>
         {isRunning && <span className="text-xs text-text-subtle animate-pulse">running...</span>}
         {done && <span className="text-xs text-green font-medium">done</span>}
         <span className="text-xs text-text-muted truncate ml-1 max-w-[400px]">{label}</span>
