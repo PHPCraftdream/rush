@@ -195,7 +195,7 @@ func (a *sessionAgent) releaseSessionReservation(sessionID string, epoch uint64)
 // adding a hand-back that returned hasNext==true AFTER lk had already been
 // released):
 //  1. mb.replacement (checked first — matching drainAfterCancel's priority,
-//     see mailbox_ownership.go) or mb.submitted is non-empty at the
+//     see mailbox_interrupt.go) or mb.submitted is non-empty at the
 //     time of the call, BEFORE any release attempt: pop and return it;
 //     state stays mbOwned; lk is NOT touched (still held for the reclaimed
 //     turn). The caller's loop runs it as the next turn under the SAME lk.

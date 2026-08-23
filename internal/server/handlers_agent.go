@@ -675,8 +675,13 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 		return
 	}
 	// probeHeld guards the bailout paths between here and the step-6
-	// handoff; probe.Release is nil-safe, so the no-lock-file case (probe
-	// == nil) defers cleanly too.
+	// handoff. probe is never nil here: the refuse branch above (the only
+	// path holdExternalSilenceProof can return a nil probe on) already
+	// returned before this defer is registered, and TryHoldSessionLockShared
+	// opens with os.O_CREATE, so even an absent lock file yields a held,
+	// non-nil probe on every path that reaches this point.
+	// probe.Release's own nil-safety is defensive belt-and-suspenders, not
+	// load-bearing for any path reachable from here today.
 	probeHeld := true
 	defer func() {
 		if probeHeld {

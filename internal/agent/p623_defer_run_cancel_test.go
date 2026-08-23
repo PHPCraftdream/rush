@@ -98,7 +98,6 @@ func (m *panicAfterCaptureModel) Stream(ctx context.Context, call fantasy.Call) 
 	// call, which runs in a separate goroutine (spawned concurrently with
 	// the turn, so "first call" would be racy) where a panic would crash
 	// the test process. fantasy.Prompt is []Message; extract the text.
-	fmt.Printf("DEBUG model call prompt: %+v\n", call.Prompt)
 	if !promptContains(call.Prompt, "concise title") {
 		panic("boom: panic after capture")
 	}
