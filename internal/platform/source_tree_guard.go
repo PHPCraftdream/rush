@@ -12,7 +12,9 @@ import (
 // IsInSourceTree reports whether exePath (already an absolute, symlink-resolved
 // executable path) sits inside this repository's own source tree, i.e. under a
 // `dev/` or `.claude/worktrees/` path component within a directory tree whose
-// go.mod declares module github.com/charmbracelet/crush.
+// go.mod declares module github.com/charmbracelet/crush. Repo-root build outputs
+// (`go build .` writing to the clone root) are intentionally NOT covered: deploy
+// tooling builds there and copies the binary out, so guarding the root would break it.
 func IsInSourceTree(exePath string) bool {
 	// Check for marker directories in the path.
 	// We walk up the path looking for "dev" or ".claude/worktrees".
@@ -22,23 +24,46 @@ func IsInSourceTree(exePath string) bool {
 		}
 
 		base := filepath.Base(dir)
-		if base == "dev" || base == "worktrees" {
+		// P3-5(c): Case-insensitive marker directory comparison
+		if strings.EqualFold(base, "dev") || strings.EqualFold(base, "worktrees") {
 			// Found a potential marker. For "worktrees", verify it has a ".claude" parent.
-			if base == "worktrees" {
+			if strings.EqualFold(base, "worktrees") {
 				parent := filepath.Base(filepath.Dir(dir))
-				if parent != ".claude" {
+				if !strings.EqualFold(parent, ".claude") {
 					continue // Not a .claude/worktrees marker, keep looking.
 				}
 			}
 
-			// The ancestor candidate is the marker directory itself (for dev) or
-			// the parent of .claude (for worktrees). We start checking here and walk up.
+			// P3-5(a) & (b): Start the go.mod walk AT the marker directory itself for both markers.
+			// For worktrees, we also need to check if the exe is inside a specific worktree subdirectory
+			// (which has its own go.mod) and use that as the ancestor instead.
 			var ancestor string
-			if base == "dev" {
-				ancestor = dir // Check the dev directory itself first.
+			if strings.EqualFold(base, "worktrees") {
+				// Check if exe is inside a subdirectory of worktrees/
+				// If exePath starts with dir+separator, then exe is inside worktrees/
+				if strings.HasPrefix(exePath, dir+string(filepath.Separator)) {
+					// Extract the relative path from worktrees/ to exe
+					relPath := strings.TrimPrefix(exePath, dir+string(filepath.Separator))
+					// Get the first component (the worktree name)
+					parts := strings.SplitN(relPath, string(filepath.Separator), 2)
+					if len(parts) > 0 && parts[0] != "" {
+						worktreeName := parts[0]
+						worktreeDir := filepath.Join(dir, worktreeName)
+						// Check if this worktree dir has a go.mod
+						if _, err := os.Stat(filepath.Join(worktreeDir, "go.mod")); err == nil {
+							// Use the worktree dir as ancestor
+							ancestor = worktreeDir
+						} else {
+							ancestor = dir
+						}
+					} else {
+						ancestor = dir
+					}
+				} else {
+					ancestor = dir // exe is at worktrees/ level (unlikely)
+				}
 			} else {
-				// For .claude/worktrees, start at the parent of .claude (skip the marker dir).
-				ancestor = filepath.Dir(filepath.Dir(dir))
+				ancestor = dir // For dev/, use dev/ itself
 			}
 
 			// Walk up from the ancestor, checking each directory for go.mod.
@@ -60,10 +85,22 @@ func IsInSourceTree(exePath string) bool {
 
 				// Found a go.mod — check if it's the crush module.
 				module := parseModuleFromLine(moduleLine)
+
+				// P3-5(a): If this go.mod is at the marker dir itself (ancestor), and it's
+				// not the crush module, continue walking up. Otherwise, stop.
+				if checkDir == ancestor {
+					if module == "github.com/charmbracelet/crush" {
+						return true // Crush module at marker dir itself!
+					}
+					// Foreign or empty go.mod at marker dir — continue up.
+					continue
+				}
+
+				// For any level above the marker dir, stop if module is not crush.
 				if module == "github.com/charmbracelet/crush" {
 					return true // Detected!
 				}
-				// Different module — stop, don't walk past it.
+				// Different module (above marker dir) — stop, don't walk past it.
 				break
 			}
 		}
@@ -95,21 +132,29 @@ func GuardSourceTreeRun() error {
 	}
 
 	if IsInSourceTree(absPath) {
-		return fmt.Errorf("crush binary is running from inside its own source tree: %s\n\n"+
-			"This looks like a scratch dev build inside the crush repo that can "+
-			"silently go stale relative to the source it exercises.\n\n"+
-			"To run crush, use your installed/system crush instead, or rebuild and "+
-			"reinstall fresh via:\n"+
-			"  go install github.com/charmbracelet/crush@latest\n\n"+
-			"Or build from source with 'go build .' from a clone and move the binary "+
-			"OUT of the repo before use.\n",
-			absPath)
+		return fmt.Errorf("%s", sourceTreeGuardMessage(absPath))
 	}
 
 	return nil
 }
 
-// readModuleLine reads the first line from go.mod that starts with "module ".
+// sourceTreeGuardMessage returns the error message displayed when running
+// from inside the source tree.
+func sourceTreeGuardMessage(absPath string) string {
+	return fmt.Sprintf("crush binary is running from inside its own source tree: %s\n\n"+
+		"This looks like a scratch dev build inside the crush repo that can "+
+		"silently go stale relative to the source it exercises.\n\n"+
+		"To run crush, use your installed/system crush instead, or rebuild and "+
+		"reinstall fresh via:\n"+
+		"  npm install -g @phpcraftdream/crush\n\n"+
+		"Or rebuild from source with 'go run deploy.go' to build and replace "+
+		"your PATH binary, or use 'go build .' from a clone and move the binary "+
+		"OUT of the repo before use.",
+		absPath)
+}
+
+// readModuleLine reads the first line from go.mod that starts with "module " or "module\t".
+// Returns ("", nil) if the file exists but has no recognizable module line (treated as a module boundary).
 // Returns an error if the file doesn't exist or can't be read.
 func readModuleLine(goModPath string) (string, error) {
 	f, err := os.Open(goModPath)
@@ -121,21 +166,25 @@ func readModuleLine(goModPath string) (string, error) {
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
-		if strings.HasPrefix(line, "module ") {
+		// P3-5(d1): Accept both space and tab separators after "module"
+		if strings.HasPrefix(line, "module ") || strings.HasPrefix(line, "module\t") {
 			return line, nil
 		}
 	}
-	return "", os.ErrNotExist // No module line found, treat as not existing.
+	// P3-5(d2): No module line found — file exists but is unparseable, treat as a module boundary.
+	return "", nil
 }
 
 // parseModuleFromLine extracts the module name from a "module" line.
-// Handles both quoted and bare module names.
+// Handles both quoted and bare module names, and both space and tab separators.
 func parseModuleFromLine(line string) string {
 	// Trim leading/trailing whitespace first.
 	line = strings.TrimSpace(line)
 
-	// Remove the "module " prefix.
-	modulePart := strings.TrimSpace(strings.TrimPrefix(line, "module "))
+	// P3-5(d1): Remove the "module" prefix (handles both space and tab).
+	// Safe because readModuleLine already validated the prefix.
+	modulePart := strings.TrimPrefix(line, "module")
+	modulePart = strings.TrimSpace(modulePart)
 
 	// Strip optional surrounding quotes.
 	modulePart = strings.Trim(modulePart, `"`)

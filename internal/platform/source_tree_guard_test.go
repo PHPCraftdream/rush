@@ -144,6 +144,146 @@ func TestIsInSourceTree(t *testing.T) {
 		// Should NOT detect because worktrees must have .claude parent.
 		require.False(t, IsInSourceTree(exePath))
 	})
+
+	// P3-5(a): Stray foreign go.mod inside dev/ should NOT stop the walk
+	t.Run("stray foreign go.mod inside dev/", func(t *testing.T) {
+		t.Parallel()
+		tmpDir := t.TempDir()
+
+		// Create go.mod at root (crush module).
+		rootGoMod := filepath.Join(tmpDir, "go.mod")
+		require.NoError(t, os.WriteFile(rootGoMod, []byte("module github.com/charmbracelet/crush\n"), 0644))
+
+		// Create dev/ with a foreign go.mod.
+		devDir := filepath.Join(tmpDir, "dev")
+		require.NoError(t, os.Mkdir(devDir, 0755))
+		devGoMod := filepath.Join(devDir, "go.mod")
+		require.NoError(t, os.WriteFile(devGoMod, []byte("module example.com/stray\n"), 0644))
+
+		// Create exe in dev/.
+		exePath := filepath.Join(devDir, "crush.exe")
+
+		// Should detect because the marker dir's own go.mod is foreign, so walk continues up.
+		require.True(t, IsInSourceTree(exePath))
+	})
+
+	// P3-5(b): Worktrees marker without .claude parent but with crush go.mod at root
+	t.Run("worktrees without .claude parent but with crush go.mod", func(t *testing.T) {
+		t.Parallel()
+		tmpDir := t.TempDir()
+
+		// NO go.mod at tmpDir (no crush repo at parent level).
+		// Create home directory (no go.mod).
+		homeDir := filepath.Join(tmpDir, "home")
+		require.NoError(t, os.Mkdir(homeDir, 0755))
+
+		// Create .claude/worktrees/wt/ with crush go.mod.
+		worktreesDir := filepath.Join(homeDir, ".claude", "worktrees", "wt")
+		require.NoError(t, os.MkdirAll(worktreesDir, 0755))
+		wtGoMod := filepath.Join(worktreesDir, "go.mod")
+		require.NoError(t, os.WriteFile(wtGoMod, []byte("module github.com/charmbracelet/crush\n"), 0644))
+
+		// Create exe in worktrees/.
+		exePath := filepath.Join(worktreesDir, "crush.exe")
+
+		// Should detect because walk starts at worktrees marker dir itself.
+		require.True(t, IsInSourceTree(exePath))
+	})
+
+	// P3-5(c): Case-insensitive marker directory "Dev"
+	t.Run("case-insensitive marker Dev", func(t *testing.T) {
+		t.Parallel()
+		tmpDir := t.TempDir()
+
+		// Create go.mod at root (crush module).
+		rootGoMod := filepath.Join(tmpDir, "go.mod")
+		require.NoError(t, os.WriteFile(rootGoMod, []byte("module github.com/charmbracelet/crush\n"), 0644))
+
+		// Create directory literally named "Dev" (with capital D).
+		devDir := filepath.Join(tmpDir, "Dev")
+		require.NoError(t, os.Mkdir(devDir, 0755))
+		exePath := filepath.Join(devDir, "crush.exe")
+
+		// Should detect because marker comparison is case-insensitive.
+		require.True(t, IsInSourceTree(exePath))
+	})
+
+	// P3-5(d1): go.mod with tab separator
+	t.Run("go.mod with tab separator", func(t *testing.T) {
+		t.Parallel()
+		tmpDir := t.TempDir()
+
+		// Create go.mod at root with tab after "module".
+		rootGoMod := filepath.Join(tmpDir, "go.mod")
+		require.NoError(t, os.WriteFile(rootGoMod, []byte("module\tgithub.com/charmbracelet/crush\n"), 0644))
+
+		// Create dev directory and a fake exe.
+		devDir := filepath.Join(tmpDir, "dev")
+		require.NoError(t, os.Mkdir(devDir, 0755))
+		exePath := filepath.Join(devDir, "crush.exe")
+
+		// Should detect because readModuleLine now accepts tab separator.
+		require.True(t, IsInSourceTree(exePath))
+	})
+
+	// P3-5(d2): Empty go.mod (no module line) at marker dir continues up
+	t.Run("empty go.mod at marker continues up", func(t *testing.T) {
+		t.Parallel()
+		tmpDir := t.TempDir()
+
+		// Create go.mod at root (crush module).
+		rootGoMod := filepath.Join(tmpDir, "go.mod")
+		require.NoError(t, os.WriteFile(rootGoMod, []byte("module github.com/charmbracelet/crush\n"), 0644))
+
+		// Create dev/ with a go.mod that has no module line.
+		devDir := filepath.Join(tmpDir, "dev")
+		require.NoError(t, os.Mkdir(devDir, 0755))
+		devGoMod := filepath.Join(devDir, "go.mod")
+		require.NoError(t, os.WriteFile(devGoMod, []byte("// nothing\n"), 0644))
+
+		// Create exe in dev/.
+		exePath := filepath.Join(devDir, "crush.exe")
+
+		// Should detect because marker dir's go.mod has no module line (returns ""), walk continues up.
+		require.True(t, IsInSourceTree(exePath))
+	})
+
+	// Preserve false-positive-avoidance: different-module go.mod ABOVE dev/ should stop
+	t.Run("different go.mod above dev/ stops walk", func(t *testing.T) {
+		t.Parallel()
+		tmpDir := t.TempDir()
+
+		// Create go.mod at root (crush module).
+		rootGoMod := filepath.Join(tmpDir, "go.mod")
+		require.NoError(t, os.WriteFile(rootGoMod, []byte("module github.com/charmbracelet/crush\n"), 0644))
+
+		// Create dev/ at root.
+		devDir := filepath.Join(tmpDir, "dev")
+		require.NoError(t, os.Mkdir(devDir, 0755))
+
+		// Create other/ with a different-module go.mod (interposed above dev/ if dev were under other/).
+		// But the actual case: dev is at root, so there's no interposition.
+		// Let's test the correct scenario: dev under other/, other under root (crush), root under parent (different).
+		// Actually, let's test a simpler case: dev/ at root, but a foreign go.mod exists at a parent level.
+		// Since tmpDir is the root of our test, we can't go higher. Instead, test:
+		// parent (different), tmpDir (crush), tmpDir/dev (exe) → should still detect (no interposition).
+		// But if dev is under a subdirectory that has a foreign go.mod ABOVE the crush module, it should NOT detect.
+		// Correct test: root (crush), root/interposed (different), root/interposed/dev (exe) → should NOT detect.
+
+		// Create interposed/ with different module.
+		interposedDir := filepath.Join(tmpDir, "interposed")
+		require.NoError(t, os.Mkdir(interposedDir, 0755))
+		interposedGoMod := filepath.Join(interposedDir, "go.mod")
+		require.NoError(t, os.WriteFile(interposedGoMod, []byte("module example.com/other\n"), 0644))
+
+		// Create dev/ under interposed/.
+		devDir = filepath.Join(interposedDir, "dev")
+		require.NoError(t, os.Mkdir(devDir, 0755))
+		exePath := filepath.Join(devDir, "crush.exe")
+
+		// Should NOT detect because foreign go.mod at interposed/ (above dev/) stops the walk.
+		require.False(t, IsInSourceTree(exePath))
+	})
 }
 
 func TestGuardSourceTreeRun(t *testing.T) {
@@ -205,6 +345,49 @@ func TestParseModuleFromLine(t *testing.T) {
 			require.Equal(t, tt.want, got)
 		})
 	}
+}
+
+// P3-5(d): Test readModuleLine with tab separator and no module line
+func TestReadModuleLine(t *testing.T) {
+	t.Parallel()
+
+	t.Run("tab separator", func(t *testing.T) {
+		t.Parallel()
+		tmpDir := t.TempDir()
+		goModPath := filepath.Join(tmpDir, "go.mod")
+		require.NoError(t, os.WriteFile(goModPath, []byte("module\tgithub.com/charmbracelet/crush\n"), 0644))
+
+		line, err := readModuleLine(goModPath)
+		require.NoError(t, err)
+		require.Equal(t, "module\tgithub.com/charmbracelet/crush", line)
+	})
+
+	t.Run("no module line returns empty string", func(t *testing.T) {
+		t.Parallel()
+		tmpDir := t.TempDir()
+		goModPath := filepath.Join(tmpDir, "go.mod")
+		require.NoError(t, os.WriteFile(goModPath, []byte("// nothing\n"), 0644))
+
+		line, err := readModuleLine(goModPath)
+		require.NoError(t, err) // Should return ("", nil), not os.ErrNotExist
+		require.Equal(t, "", line)
+	})
+}
+
+// P3-4: Test that the guard message has the correct format
+func TestSourceTreeGuardMessage(t *testing.T) {
+	t.Parallel()
+
+	msg := sourceTreeGuardMessage("/path/to/crush.exe")
+
+	// Should NOT contain the old go install command
+	require.NotContains(t, msg, "go install github.com/charmbracelet/crush")
+	// Should contain the new npm package name
+	require.Contains(t, msg, "@phpcraftdream/crush")
+	// Should contain deploy.go
+	require.Contains(t, msg, "deploy.go")
+	// Should still contain "build from source"
+	require.Contains(t, msg, "build from source")
 }
 
 // TestIsInSourceTree_SelfCheck is a sanity check that the test binary itself
