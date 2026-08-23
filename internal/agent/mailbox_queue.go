@@ -30,9 +30,12 @@ func (mb *mailbox) queue(call SessionAgentCall) {
 }
 
 // popFirstSubmitted removes and returns the first entry from the submitted
-// queue, regardless of mailbox state. Used by runSummarize to extract the
-// first queued entry after abandonOwnership left work in submitted with
-// state mbIdle, so it can start a fresh Run for it.
+// queue, regardless of mailbox state. No production caller uses this
+// directly today: runSummarize's manual-compaction success path moved to
+// the atomic abandonOwnershipAndPopFirstSubmitted below (see its own doc),
+// which closes a reordering gap a separate abandonOwnership()+
+// popFirstSubmitted() pair would reopen. Exercised directly by unit tests
+// of the queue mechanics in isolation from ownership state.
 func (mb *mailbox) popFirstSubmitted() (SessionAgentCall, bool) {
 	mb.mu.Lock()
 	defer mb.mu.Unlock()
