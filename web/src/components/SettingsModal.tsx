@@ -85,15 +85,25 @@ function SkillsSection({ skillsPaths: _skillsPaths }: { skillsPaths: string[] })
   const [snapshot, setSnapshot] = useState<SkillsSnapshot | null>(null);
   const [loading, setLoading] = useState(false);
 
+  // Pending reply handler, detached on unmount so a late get_skills reply
+  // cannot setState on a dead component.
+  const unsubRef = useRef<(() => void) | null>(null);
+  useEffect(() => {
+    return () => unsubRef.current?.();
+  }, []);
+
   function refresh() {
     setLoading(true);
     const msgID = crypto.randomUUID();
+    unsubRef.current?.();
     const unsub = ws.on("*", (msg) => {
       if (msg.id !== msgID) return;
       unsub();
+      unsubRef.current = null;
       setLoading(false);
       if (!msg.error) setSnapshot(msg.payload as SkillsSnapshot);
     });
+    unsubRef.current = unsub;
     ws.send("get_skills", {}, msgID);
   }
 
@@ -139,6 +149,14 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
   const [initBusy, setInitBusy] = useState(false);
   const [initDone, setInitDone] = useState(false);
 
+  // Pending reply handler, detached on unmount so a late initialize_project
+  // reply cannot setActiveSession (a global-atom navigation write) after
+  // the operator dismissed Settings and moved on to another session.
+  const unsubRef = useRef<(() => void) | null>(null);
+  useEffect(() => {
+    return () => unsubRef.current?.();
+  }, []);
+
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (e.key === "Escape") onClose();
@@ -150,9 +168,11 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
   function handleInitialize() {
     setInitBusy(true);
     const msgID = crypto.randomUUID();
+    unsubRef.current?.();
     const unsub = ws.on("*", (msg) => {
       if (msg.id !== msgID) return;
       unsub();
+      unsubRef.current = null;
       setInitBusy(false);
       if (!msg.error) {
         setInitDone(true);
@@ -164,6 +184,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
         }
       }
     });
+    unsubRef.current = unsub;
     initializeProject(msgID);
   }
 

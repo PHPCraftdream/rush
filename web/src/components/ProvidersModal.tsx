@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useStore } from "@nanostores/react";
 import { $config, addCustomProvider, removeCustomProvider, updateCustomProvider, type ConfigScope } from "../store";
 import { X, Plus, Trash2, Pencil, AlertCircle, CheckCircle2, Loader2, ChevronDown, ChevronRight } from "lucide-react";
@@ -127,6 +127,19 @@ function ProviderForm({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  // Pending reply handler, detached on unmount so a reply landing after
+  // this form was cancelled cannot fire onCancel on a later form.
+  const unsubRef = useRef<(() => void) | null>(null);
+  // Guards the dynamic import in submit(): if the form unmounts before the
+  // import resolves, the .then must not register its handler at all.
+  const disposedRef = useRef(false);
+  useEffect(() => {
+    return () => {
+      disposedRef.current = true;
+      unsubRef.current?.();
+    };
+  }, []);
+
   function validate(): string | null {
     if (!id.trim()) return "Provider ID is required";
     if (!baseUrl.trim()) return "Base URL is required";
@@ -157,13 +170,17 @@ function ProviderForm({
     setBusy(true);
     const msgID = crypto.randomUUID();
     import("../ws").then(({ ws }) => {
+      if (disposedRef.current) return;
+      unsubRef.current?.();
       const unsub = ws.on("*", (msg) => {
         if (msg.id !== msgID) return;
         unsub();
+        unsubRef.current = null;
         setBusy(false);
         if (msg.error) setError(msg.error);
         else onCancel();
       });
+      unsubRef.current = unsub;
       onSubmit({ id: id.trim(), name: name.trim(), type, baseUrl: baseUrl.trim(), apiKey, models, peakHours, scope }, msgID);
     });
   }
@@ -385,17 +402,32 @@ function BuiltinProviderEditor({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  // Pending reply handlers (one per sendAndWait), detached on unmount so
+  // late replies cannot resolve a dead editor's submit continuation —
+  // which would fire onCancel on whatever editor is mounted next.
+  const pendingUnsubs = useRef<Set<() => void>>(new Set());
+  const disposedRef = useRef(false);
+  useEffect(() => {
+    return () => {
+      disposedRef.current = true;
+      pendingUnsubs.current.forEach((unsub) => unsub());
+    };
+  }, []);
+
   const canSubmit = !busy && (!enabled || (HH_MM_RE.test(start) && HH_MM_RE.test(end)));
 
   function sendAndWait(type: string, payload: Record<string, unknown>): Promise<string | null> {
     return new Promise((resolve) => {
       const msgID = crypto.randomUUID();
       import("../ws").then(({ ws }) => {
+        if (disposedRef.current) return;
         const unsub = ws.on("*", (msg) => {
           if (msg.id !== msgID) return;
           unsub();
+          pendingUnsubs.current.delete(unsub);
           resolve(msg.error ?? null);
         });
+        pendingUnsubs.current.add(unsub);
         ws.send(type, payload, msgID);
       });
     });

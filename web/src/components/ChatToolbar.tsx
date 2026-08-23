@@ -50,7 +50,10 @@ function SystemPromptModal({ sessionID, onClose }: { sessionID: string; onClose:
       if (e.key === "Escape") onClose();
     }
     document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
+    return () => {
+      unsub();
+      document.removeEventListener("keydown", onKey);
+    };
   }, [sessionID, onClose]);
 
   function save() {

@@ -99,6 +99,13 @@ function MCPForm({
 
   useEffect(() => { taRef.current?.focus(); }, []);
 
+  // Pending reply handler, detached on unmount so a reply landing after
+  // this form was cancelled cannot fire onCancel on a later form.
+  const unsubRef = useRef<(() => void) | null>(null);
+  useEffect(() => {
+    return () => unsubRef.current?.();
+  }, []);
+
   function submit() {
     setError(null);
     let parsed: Record<string, unknown>;
@@ -118,13 +125,16 @@ function MCPForm({
 
     setBusy(true);
     const msgID = crypto.randomUUID();
+    unsubRef.current?.();
     const unsub = ws.on("*", (msg) => {
       if (msg.id !== msgID) return;
       unsub();
+      unsubRef.current = null;
       setBusy(false);
       if (msg.error) setError(msg.error);
       else onCancel();
     });
+    unsubRef.current = unsub;
     onSubmit(parsed, msgID);
   }
 

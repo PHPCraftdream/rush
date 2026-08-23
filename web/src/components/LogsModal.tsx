@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { X, RefreshCw, Download } from "lucide-react";
 import { ws } from "../ws";
 
@@ -11,14 +11,23 @@ export function LogsModal({ onClose }: LogsModalProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Pending reply handler, detached on unmount so a late get_logs reply
+  // cannot setState on a dead component.
+  const unsubRef = useRef<(() => void) | null>(null);
+  useEffect(() => {
+    return () => unsubRef.current?.();
+  }, []);
+
   const fetchLogs = async () => {
     setLoading(true);
     setError(null);
 
     const msgId = crypto.randomUUID();
+    unsubRef.current?.();
     const unsub = ws.on("*", (msg: any) => {
       if (msg.id === msgId) {
         unsub();
+        unsubRef.current = null;
         if (msg.type === "logs") {
           setLogs(msg.payload || "");
         } else if (msg.type === "error") {
@@ -27,6 +36,7 @@ export function LogsModal({ onClose }: LogsModalProps) {
         setLoading(false);
       }
     });
+    unsubRef.current = unsub;
 
     ws.send("get_logs", { lines: 1000 }, msgId);
   };
