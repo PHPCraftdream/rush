@@ -148,10 +148,12 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 //     shutdown admission gate (tryAdmitRunWg) refuses any Run the pump
 //     might attempt, and App.Shutdown stops the pump before closing the
 //     DB. The stopped latch's real teardown protections live in the
-//     turn-loop drains (drainAfterCancel, drainOrReleaseFinal's
-//     finalize step) and in interruptAndReplace's "nobody running"
-//     refusal — the abandon-path release is deliberately NOT one of
-//     them (task #641 F-4 corrected an earlier version of this
+//     turn-loop drains (drainAfterCancel, and drainOrReleaseFinal's
+//     ENTRY check, which skips the live branches for a stopped mailbox —
+//     since #646 its finalize step is latch-blind in effect, treating
+//     stopped and non-stopped identically) and in interruptAndReplace's
+//     "nobody running" refusal — the abandon-path release is
+//     deliberately NOT one of them (task #641 F-4 corrected an earlier version of this
 //     paragraph that claimed "every drain refuses on the latch anyway",
 //     which was never true of abandonOwnershipAndPopSubmitted). Note:
 //     the caller-side release ALSO drains summarizeQueue and spawns

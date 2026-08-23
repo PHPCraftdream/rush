@@ -319,36 +319,26 @@ func (mb *mailbox) drainOrReleaseFinal(
 	mb.current.cancel = nil // preserve id (monotonic, see the field doc) — only the cancel func is spent
 	mb.dispatcherCancel = nil
 
-	// Re-checking mb.stopped here (rather than trusting the snapshot that
-	// sent us down this path) is required, not optional: CancelAll's
-	// hardStop can land WHILE release() is in flight (hardStop only takes
-	// mb.mu for the instant it sets the latch and reads the cancel funcs —
-	// see its own doc — so it is never blocked by a concurrent release()).
-	// A hardStop landing in that window still wins over handing work back
-	// to the turn loop (hasNext stays false — a shutdown must not run another
-	// turn in-process), but the raced-in work is now returned as `orphaned`
-	// so drainOrReleaseMerged durably enqueues it via restartOrphaned — a
-	// DB row, not a provider turn — exactly matching the abandon path's
-	// behavior on a latched mailbox (task #641 / twelfth review N-3).
+	// The finalize step deliberately treats a stopped and a non-stopped
+	// mailbox identically: any work that raced into the mailbox (via
+	// CancelAll's hardStop latching stopped mid-release, or via a plain
+	// submit()/interruptAndReplace during the release() window) is drained
+	// out below and handed to the caller as orphaned, NOT run as another
+	// in-process turn. The shutdown semantics — hasNext stays false so a
+	// shutdown never starts another provider turn — live entirely in the
+	// ENTRY check above, which skips the live branches for a stopped
+	// mailbox. drainOrReleaseMerged durably enqueues the orphaned work via
+	// restartOrphaned — a DB row, not a provider turn ("restart" stopped
+	// being a fresh provider turn in task #340) — exactly matching the
+	// abandon path's behavior on a latched mailbox (task #641 / twelfth
+	// review N-3). The shutdown admission gate (tryAdmitRunWg) refuses any
+	// Run during shutdown, and App.Shutdown stops the pump before closing
+	// the DB, so the durable row is safely processed later.
 	//
-	// Historical note: this branch used to discard, justified by "restart =
-	// fresh provider turn", which stopped being true when task #340 made
-	// restartOrphaned/restartOrphanedWithRetry a durable enqueue into
-	// session_run_queue rather than starting a turn. The shutdown admission
-	// gate (tryAdmitRunWg) refuses any Run during shutdown, and App.Shutdown
-	// stops the pump before closing the DB, so the durable row is safely
-	// processed later.
-	if mb.stopped {
-		if mb.replacement != nil {
-			orphaned = append(orphaned, *mb.replacement)
-			mb.replacement = nil
-		}
-		if len(mb.submitted) > 0 {
-			orphaned = append(orphaned, mb.submitted...)
-			mb.submitted = nil
-		}
-		return SessionAgentCall{}, false, orphaned, releaseErr
-	}
+	// Historical note: an explicit `if mb.stopped { ... }` branch used to
+	// live here (before #646 it discarded the raced-in work; #646 changed
+	// it to enqueue). Task #652 (thirteenth review P3-3) deleted it once
+	// it became byte-identical to this fall-through.
 
 	// Drain everything that raced into the mailbox during the release()
 	// window (a submit() or a recovered interruptAndReplace observed
