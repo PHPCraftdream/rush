@@ -942,8 +942,10 @@ type LockState struct {
 	// component, ...). It is nil both when the file exists and when it
 	// verifiably does not (os.IsNotExist) — "absent" and "could not check"
 	// are different answers. Display consumers intentionally ignore this
-	// and stay fail-open (Exists/Live both false); only diagnostics
-	// (sessions why) read it.
+	// and stay fail-open (Exists/Live both false); the startup recovery
+	// sweep (app.recoverInterruptedTurns) reads it to fail CLOSED —
+	// StatErr != nil is treated as "possibly live" so the sweep skips
+	// the session instead of clobbering it.
 	StatErr error
 }
 
@@ -985,7 +987,7 @@ func InspectSessionLock(dataDir, sessionID string, liveThreshold time.Duration) 
 		// must not be indistinguishable from "verifiably absent". Both still
 		// return the same fail-open zero state below — Exists:false, Live:false
 		// — so display consumers are unaffected; only StatErr carries the
-		// distinction for diagnostics.
+		// distinction. The startup recovery sweep reads it to fail closed.
 		if !os.IsNotExist(err) {
 			return LockState{StatErr: err}
 		}

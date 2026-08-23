@@ -199,3 +199,53 @@ func TestRecoverInterruptedTurns_LiveAndDeadSessions_OnlyDeadRecovered(t *testin
 	require.NoError(t, err)
 	assert.True(t, gotDead.IsFinished(), "the session with no live holder must still be recovered in the same pass")
 }
+
+// TestRecoverInterruptedTurns_StatError_FailsClosed is the regression test
+// for #639 review finding B-2. Before the fix, InspectSessionLock returned
+// LockState{StatErr: err} (Exists/Live both false) when the lock file's
+// existence could not be determined at all — a non-ENOENT stat failure
+// (permission denied, I/O error, network-mount hiccup, ...). The recovery
+// guard only checked st.Live, so "could not check" read as "no live owner"
+// and the sweep fell through to the 30s age filter — which does not protect
+// a turn that has been streaming for more than 30 seconds in another
+// process. Fail-open here means Update rewrites the whole Parts blob from a
+// stale snapshot, clobbering the live owner's streamed content (#287).
+//
+// The stat failure is forged with a NUL byte in the dataDir path (same
+// technique as sessions_why_test.go): Go's os package rejects NUL bytes in
+// a path before any syscall, on every platform, so the error can never be
+// misclassified as ENOENT. The orphan-age threshold is ZERO, so nothing but
+// the StatErr-aware guard can save the message.
+func TestRecoverInterruptedTurns_StatError_FailsClosed(t *testing.T) {
+	// dataDir with a NUL byte: os.Stat on any path under it fails with a
+	// non-ENOENT error.
+	dataDir := t.TempDir() + string([]byte{0}) + "bad"
+
+	// Verify the forgery through the exact production entry point.
+	st := session.InspectSessionLock(dataDir, "any-session", session.LockStaleDuration)
+	require.Error(t, st.StatErr,
+		"stat of a NUL-containing path must fail")
+	require.False(t, os.IsNotExist(st.StatErr),
+		"this failure must NOT be ENOENT — we need a different stat error class for this test")
+	require.False(t, st.Live, "precondition sanity: Live alone must not flag this")
+	t.Logf("Forged stat error: %v", st.StatErr)
+
+	app := newRecoveryTestAppWithDataDir(t, dataDir)
+	ctx := t.Context()
+
+	sess, err := app.Sessions.Create(ctx, "lock-unverifiable")
+	require.NoError(t, err)
+	orphan := newOrphanAssistant(t, app, sess.ID)
+
+	app.recoverInterruptedTurns(ctx)
+
+	got, err := app.Messages.Get(ctx, orphan.ID)
+	require.NoError(t, err)
+	assert.False(t, got.IsFinished(),
+		"recovery must fail CLOSED when lock liveness cannot be verified — "+
+			"'could not check' must not read as 'no live owner' (#639 B-2)")
+	assert.Nil(t, got.FinishPart(),
+		"no finish part may be added when the lock state is unverifiable")
+	assert.Equal(t, "working on it...", got.Content().Text,
+		"the sweep must not rewrite a possibly-live session's message content")
+}

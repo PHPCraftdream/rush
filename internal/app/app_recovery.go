@@ -104,7 +104,19 @@ func (app *App) recoverInterruptedTurns(ctx context.Context) {
 		// recorded PID (bounded by MaxPidFallbackAge), so a healthy session
 		// blocked on one long tool call is correctly protected too.
 		if dataDir != "" {
-			if st := session.InspectSessionLock(dataDir, sess.ID, session.LockStaleDuration); st.Live {
+			st := session.InspectSessionLock(dataDir, sess.ID, session.LockStaleDuration)
+			// Fail CLOSED on "could not check": if the lock file's
+			// existence could not be determined at all (permission
+			// denied, I/O error, unreachable path component, ...),
+			// StatErr is non-nil and Live is false — which without this
+			// check would read as "no live owner" and let the sweep
+			// clobber a session another process may own. "Could not
+			// look" must not read as "looked and found nothing" (same
+			// principle as #622/#631 on the rerun/delete guards).
+			// Skipping a genuinely orphaned session here only delays its
+			// recovery to a later startup; wrongly stamping a live one
+			// destroys streamed content (#287).
+			if st.Live || st.StatErr != nil {
 				skippedLive++
 				continue
 			}
