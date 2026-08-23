@@ -24,6 +24,12 @@ package server
 // the handler-level regression below pins that the helper still scans
 // (and thus recognizes the turn's own prompt row) when the baseline falls
 // back to the pre-delete listing.
+//
+// Task #659 (sixteenth review, M-2): the seed's CONTENT — not just its
+// non-nilness — is pinned at the handler level by
+// TestHandleRerunMessage_SeedContentPinsEarlierIdenticalPromptOnFailedListPath;
+// deleting the seed loop at the capture site keeps every other test green,
+// and only that test goes red.
 
 import (
 	"context"
@@ -43,6 +49,7 @@ import (
 var _ agent.Coordinator = (*compactingErrorCoordinator)(nil)
 var _ agent.Coordinator = (*postHandoffPanicCoordinator)(nil)
 var _ agent.Coordinator = (*promptThenErrorCoordinator)(nil)
+var _ agent.Coordinator = (*handoffOnlyErrorCoordinator)(nil)
 var _ message.Service = (*listCallFailingMessages)(nil)
 
 // compactingErrorCoordinator simulates a replacement turn that fires the
@@ -609,6 +616,28 @@ func (m *promptThenErrorCoordinator) RunWithReservedOwnership(ctx context.Contex
 	return nil, errors.New("second-turn provider error")
 }
 
+// handoffOnlyErrorCoordinator fires the real onHandoff and then returns an
+// error WITHOUT creating any row — the "replacement turn dies before its
+// createUserMessage" shape. Where promptThenErrorCoordinator proves the
+// turn's own prompt row suppresses the recreate, this one leaves nothing
+// new in the DB, so the only same-text row the helper's scan can find is
+// one that predates the rerun entirely.
+type handoffOnlyErrorCoordinator struct {
+	cancellableHoldCoordinator
+}
+
+func (m *handoffOnlyErrorCoordinator) RunWithReservedOwnership(ctx context.Context, sessionID, prompt string, epoch uint64, cancel context.CancelFunc, onHandoff func(), smart, fast *agent.ModelOverride, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
+	// Fire the handoff exactly as agent_run.go does, BEFORE anything else
+	// (clears the handler's releaseOnBailout gate).
+	if onHandoff != nil {
+		onHandoff()
+	}
+	// The real turn installs its ownership-release defer right at the
+	// handoff point; mirror that so the reservation is freed on error.
+	defer m.ReleaseExclusive(sessionID, epoch, cancel)
+	return nil, errors.New("provider error before any prompt row")
+}
+
 // TestHandleRerunMessage_TransientBaselineListFailureDoesNotDuplicatePrompt is
 // the fifteenth review's P3-1 reproduction: the baseline-capture List
 // (handlers_agent.go:849) fails transiently, the DB recovers, the replacement
@@ -731,4 +760,145 @@ func TestHandleRerunMessage_TransientBaselineListFailureDoesNotDuplicatePrompt(t
 		}
 	}
 	require.True(t, hasReply, "the replacement turn's assistant reply should exist")
+}
+
+// TestHandleRerunMessage_SeedContentPinsEarlierIdenticalPromptOnFailedListPath
+// is the sixteenth review's M-2: nothing else in the suite pins the CONTENT
+// of the pre-delete seed. Delete only the three-line seed loop at the
+// capture site (baselineIDs stays non-nil but empty; the post-delete union
+// loop is intact) and every other test stays green — including
+// TestHandleRerunMessage_TransientBaselineListFailureDoesNotDuplicatePrompt,
+// whose suppressing row is the replacement turn's OWN prompt, outside the
+// seed regardless of whether the seed loop ran. This test is the one that
+// goes red.
+//
+// #644's exact shape: an EARLIER identical prompt above the rerun target.
+// History setup (targetIdx=1):
+//
+//	earlier: "rerun me" (User — the earlier identical prompt; above the
+//	         target, so the tail delete spares it)
+//	userMsg: "rerun me" (User, rerun target — deleted at step 3)
+//	tailMsg: "old reply" (Assistant, finished — deleted by the tail delete)
+//
+// The decorator fails List call #2 of exactly 3 (call #1 = step 2's tail
+// list, call #2 = baseline capture, call #3 = the helper's own scan, which
+// must succeed — the "transient" premise). The fake coordinator fires
+// onHandoff and errors WITHOUT creating any row, so when the helper scans,
+// the only "rerun me" row left is the EARLIER one.
+//
+// Against the real code the seed contains earlier's ID: the scan reads it
+// as pre-existing (in the baseline, not the target) and the recreate fires
+// — count=2. With the seed loop deleted the set is empty, the earlier
+// row's ID is "not in the baseline", it is misread as the already
+// recreated prompt, and the recreate is suppressed — count=1: #644's
+// prompt loss silently reintroduced on a green suite.
+//
+// Revert-check: delete the seed loop at the capture site in
+// handleRerunMessage and this test fails with count=1.
+func TestHandleRerunMessage_SeedContentPinsEarlierIdenticalPromptOnFailedListPath(t *testing.T) {
+	// Cannot use t.Parallel() because newAttachmentsTestApp calls t.Setenv.
+	workingDir := t.TempDir()
+	dataDir := t.TempDir()
+	a := newAttachmentsTestApp(t, workingDir, dataDir)
+	sess, err := a.Sessions.Create(t.Context(), "test-655-seed-content-pins")
+	require.NoError(t, err)
+	sessionID := sess.ID
+	ctx := t.Context()
+
+	promptText := "rerun me"
+	earlier, err := a.Messages.Create(ctx, sessionID, message.CreateMessageParams{
+		Role:  message.User,
+		Parts: []message.ContentPart{message.TextContent{Text: promptText}},
+	})
+	require.NoError(t, err)
+	userMsg, err := a.Messages.Create(ctx, sessionID, message.CreateMessageParams{
+		Role:  message.User,
+		Parts: []message.ContentPart{message.TextContent{Text: promptText}},
+	})
+	require.NoError(t, err)
+	tailMsg, err := a.Messages.Create(ctx, sessionID, message.CreateMessageParams{
+		Role:  message.Assistant,
+		Parts: []message.ContentPart{message.TextContent{Text: "old reply"}},
+	})
+	require.NoError(t, err)
+	tailMsg.AddFinish(message.FinishReasonEndTurn, "", "")
+	require.NoError(t, a.Messages.Update(ctx, tailMsg))
+
+	initialMsgs, err := a.Messages.List(ctx, sessionID)
+	require.NoError(t, err)
+	require.Len(t, initialMsgs, 3, "precondition: earlier, target, tail")
+	targetIdx := -1
+	for i, m := range initialMsgs {
+		if m.ID == userMsg.ID {
+			targetIdx = i
+		}
+	}
+	require.Equal(t, 1, targetIdx, "precondition: target is at index 1, below the earlier identical prompt")
+	require.NotEqual(t, earlier.ID, userMsg.ID, "precondition: earlier and target are distinct rows")
+
+	mockCoord := &handoffOnlyErrorCoordinator{}
+	a.AgentCoordinator = mockCoord
+
+	// Install the decorator AFTER all setup rows are created and BEFORE
+	// launching the handler.
+	msgSvc := &listCallFailingMessages{Service: a.Messages, failOnNthList: 2}
+	a.Messages = msgSvc
+
+	hub := newHub()
+	client := newClient(hub, nil)
+	client.send = make(chan []byte, 10)
+	payload, err := json.Marshal(RerunMessagePayload{MessageID: userMsg.ID})
+	require.NoError(t, err)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		handleRerunMessage(ctx, a, client, WSMessage{ID: "req-1", Type: CmdRerunMessage, Payload: payload})
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("rerun handler never returned — something blocked unboundedly")
+	}
+
+	env := decodeReply(t, client)
+	require.Equal(t, EventError, env.Type,
+		"the fake returns an error, so the handler must reply with an error")
+	require.Contains(t, env.Error, "provider error before any prompt row")
+
+	// Assert the transient premise held: exactly three List calls, the
+	// failure hit the capture call (#2), and the helper's own List (#3)
+	// succeeded.
+	require.Equal(t, 3, msgSvc.listCalls,
+		"exactly three List calls must have occurred: step 2 tail list, baseline capture, helper's own scan")
+	require.Equal(t, 2, msgSvc.failedAt,
+		"the failure must have hit the baseline-capture List (call #2), not any other")
+
+	// The handler's deletes did their job: tail and target gone, the
+	// earlier identical prompt (above the target) survives.
+	_, getErr := a.Messages.Get(ctx, tailMsg.ID)
+	require.Error(t, getErr, "tail should be deleted by the handler's step 2")
+	_, getErr = a.Messages.Get(ctx, userMsg.ID)
+	require.Error(t, getErr, "target should be deleted by the handler's step 3")
+	_, getErr = a.Messages.Get(ctx, earlier.ID)
+	require.NoError(t, getErr, "the earlier identical prompt sits above the target and must survive")
+
+	// The decisive assertion: the recreate must FIRE — count=2 (the
+	// earlier row plus the recreated prompt). An empty seed (the
+	// mutation) misreads `earlier` as the already-recreated row,
+	// suppresses the recreate, and silently loses the operator's rerun
+	// prompt: count=1.
+	msgs, err := a.Messages.List(ctx, sessionID)
+	require.NoError(t, err)
+	count := 0
+	for _, m := range msgs {
+		if m.Role == message.User && m.Content().Text == promptText {
+			count++
+		}
+	}
+	require.Equal(t, 2, count,
+		"the pre-delete seed must identify the earlier identical prompt as PRE-EXISTING so the recreate fires; "+
+			"got %d matching user messages, expected 2 — with an empty seed the earlier row is misread as the "+
+			"already-recreated prompt and the operator's rerun prompt is silently lost (sixteenth-review M-2, #644's shape)", count)
 }

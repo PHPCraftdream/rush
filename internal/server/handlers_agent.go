@@ -829,8 +829,12 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 	// pre-delete listing by #658, fifteenth-review P3-1). This is not an
 	// exclusivity claim: the reservation and probe above exclude other
 	// agent RUNS, but handleDeleteMessage, handleDeleteMessages and
-	// handleUpdateMessageContent (handlers_messages.go) mutate rows with
-	// no ownership check and may interleave here. The set does not need
+	// handleUpdateMessageContent (handlers_messages.go) — all three of
+	// which can only delete or edit an existing row — and
+	// handleInjectMessage (via coordinator.InjectMessage, the only one
+	// of the four that can ADD a row: agent Run cannot land one here
+	// because it reserves the session before writing any row) mutate
+	// rows with no ownership check and may interleave here. The set does not need
 	// them excluded: a concurrent writer only adds a row whose ID was
 	// never in the set or removes one that was, and ID membership —
 	// unlike the index or count #651 used — is invariant under deletions
@@ -864,7 +868,11 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 	// writer BETWEEN the two listings: on this failed-List path it is in
 	// neither set, so a same-text foreign row could suppress the
 	// recreate — the same concurrent-writer tolerance the helper's doc
-	// documents, in a microseconds-wide window.
+	// documents. That window is not two adjacent statements: it spans
+	// the whole tail-delete loop plus step 3's target delete — one
+	// Messages.Delete (itself a get + delete-if-terminal + publish
+	// round trip) per tail row — so it is milliseconds for a short tail
+	// and hundreds of milliseconds for a long one.
 	baselineIDs := make(map[string]struct{}, len(allMsgs))
 	for _, m := range allMsgs {
 		baselineIDs[m.ID] = struct{}{}
