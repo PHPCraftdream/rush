@@ -57,7 +57,8 @@ func (mb *mailbox) popFirstSubmitted() (SessionAgentCall, bool) {
 // This method deliberately does NOT consult mb.stopped: the hard-stop
 // latch's job is to stop TURN-LOOP drains from handing a shutting-down
 // process another provider turn (drainAfterCancel, drainOrReleaseFinal's
-// finalize step, interruptAndReplace). Popping the queue here only feeds
+// ENTRY check — since #646 its finalize step is latch-blind in effect —
+// and interruptAndReplace). Popping the queue here only feeds
 // restartOrphanedWithRetry, which durably enqueues to the run queue
 // rather than starting a turn — and any later pump execution is refused
 // by the shutdown admission gate (task #641 F-4; an earlier doc claimed

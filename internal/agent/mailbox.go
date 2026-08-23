@@ -76,18 +76,21 @@ type mailboxState int
 //     it only sets the one-way `stopped` latch and returns whatever
 //     current.cancel/dispatcherCancel currently are (both nil during
 //     mbReleasing, so the caller's cancel calls are no-ops — correctly:
-//     there is nothing left running to interrupt). `stopped` is read again
-//     when drainOrReleaseFinal reacquires mb.mu to finalize: if it is now
-//     set, the finalize step ends the era at mbIdle and DISCARDS (not
-//     orphans — a detached restart would start a fresh provider turn while
-//     the process is exiting, exactly the P0-C bug this mailbox exists to
-//     prevent) anything that landed in mb.submitted/mb.replacement during
-//     the release window (mirroring the pre-existing stopped branch taken
-//     when hardStop lands BEFORE drainOrReleaseFinal is even called). This
-//     is the one behavioral interaction between mbReleasing and stopped
-//     that does not fall out
-//     of the other gates automatically, so drainOrReleaseFinal checks it
-//     explicitly — see its own doc.
+//     there is nothing left running to interrupt). `stopped` is not read
+//     again at finalize: since #652 deleted the finalize step's dead
+//     stopped branch, the finalize step is latch-blind — stopped and
+//     non-stopped mailboxes finalize identically, and anything that
+//     landed in mb.submitted/mb.replacement during the release window is
+//     drained out as `orphaned` (durably enqueued via restartOrphaned,
+//     a session_run_queue row, not a fresh provider turn — "restart"
+//     stopped being a provider turn in task #340), never discarded and
+//     never handed back to the turn loop. The latch's only read in
+//     drainOrReleaseFinal is the ENTRY check: when hardStop lands BEFORE
+//     the drain is even called, that check skips the live branches for
+//     the stopped mailbox, keeping hasNext false so a shutting-down
+//     process never starts another provider turn; when it lands DURING
+//     the release window, nothing stopped-specific is needed at all.
+//     See the finalize step's own doc in mailbox_ownership.go.
 const (
 	mbIdle      mailboxState = iota // no owner, nothing queued
 	mbOwned                         // a turn loop holds ownership

@@ -45,11 +45,16 @@ import (
 // mbReleasing — see that transition), so the caller's cancel invocations are
 // correctly no-ops: there is no live generation left to interrupt, the turn
 // loop is already past its provider work and mid lock-teardown. The latch
-// itself is still fully effective — drainOrReleaseFinal's finalize step
-// re-reads mb.stopped after reacquiring mb.mu specifically to catch a
-// hardStop that landed during the release() window (see its own doc) and
-// ends the era at mbIdle instead of handing any newly-queued work back to
-// the (now shutting-down) turn loop.
+// itself is still fully effective — but not because anything re-reads it
+// at finalize: the finalize step is latch-blind (in effect since #646;
+// #652 deleted the dead stopped branch outright) and ALWAYS drains work
+// that raced in during the release() window out as orphaned for
+// restartOrphaned's durable enqueue — not lost, and not handed back to
+// the (now shutting-down) turn loop — whether or not a hardStop landed.
+// The stopped-specific half lives in drainOrReleaseFinal's ENTRY check,
+// which skips the live branches and keeps hasNext false when hardStop
+// lands BEFORE the drain is even called (see its own doc in
+// mailbox_ownership.go).
 func (mb *mailbox) hardStop() (dispatcherCancel, genCancel context.CancelFunc) {
 	mb.mu.Lock()
 	defer mb.mu.Unlock()
