@@ -19,12 +19,22 @@ export const ThinkingPart = memo(function ThinkingPart({ thinking, messageID, pa
   // collapse strip at the bottom — long reasoning blocks are tedious to
   // close when the toggle is only at the top.
   const [open, setOpen] = useState(false);
-  useCollapseAllSignal(() => setOpen(false));
+  // Collapsing the card (toggle, sticky bottom strip, or "Collapse all")
+  // also exits edit mode — a stashed edit form that silently reappears on
+  // the next expand is the same ambush shape as the delete dialog.
+  const collapse = useCallback(() => { setOpen(false); setEditing(false); }, []);
+  useCollapseAllSignal(collapse);
 
   const closeEdit  = useCallback(() => setEditing(false), []);
   const openDel    = useCallback((e: React.MouseEvent) => { e.preventDefault(); e.stopPropagation(); setConfirmDelete(true); }, []);
-  const openEditEv = useCallback((e: React.MouseEvent) => { e.preventDefault(); e.stopPropagation(); setEditing(true); }, []);
-  const toggleOpen = useCallback(() => setOpen((v) => !v), []);
+  // Editing a collapsed card implicitly means the operator now wants to see
+  // and edit its content, so force the card open (the EditForm renders in
+  // the card body).
+  const openEditEv = useCallback((e: React.MouseEvent) => { e.preventDefault(); e.stopPropagation(); setEditing(true); setOpen(true); }, []);
+  const toggleOpen = useCallback(() => {
+    if (open) collapse();
+    else setOpen(true);
+  }, [open, collapse]);
 
   const handleSave = useCallback((text: string) => {
     if (text && text !== thinking) updateMessageThinking(messageID, text);
@@ -78,7 +88,12 @@ export const ThinkingPart = memo(function ThinkingPart({ thinking, messageID, pa
           {open ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
         </span>
       </button>
-      {open && confirmDelete && (
+      {/* The confirm dialog is a fixed overlay and must render regardless of
+          the card's open state — the Delete button lives in the collapsed
+          header, so gating on `open` swallowed the click and ambushed the
+          operator with the destructive dialog on a later, unrelated expand
+          (ActionRow.tsx renders its dialog the same unguarded way). */}
+      {confirmDelete && (
         <ConfirmDialog
           title="Delete thinking"
           message="The model's reasoning will be removed from this message. This cannot be undone."
@@ -87,7 +102,11 @@ export const ThinkingPart = memo(function ThinkingPart({ thinking, messageID, pa
           onCancel={() => setConfirmDelete(false)}
         />
       )}
-      {open && (editing ? (
+      {/* The EditForm is likewise ungated: `editing` is only ever true while
+          open (openEditEv forces open, collapse clears editing), and keeping
+          the form outside the open guard means a future regression can never
+          re-introduce the swallowed click. */}
+      {editing ? (
         <div className="p-4 bg-base-overlay border-t border-surface">
           <EditForm
             initialValue={thinking}
@@ -97,7 +116,7 @@ export const ThinkingPart = memo(function ThinkingPart({ thinking, messageID, pa
             onCancel={closeEdit}
           />
         </div>
-      ) : (
+      ) : open ? (
         <>
           <pre data-test-id="thinking-content" className="p-5 bg-base-overlay font-mono whitespace-pre-wrap overflow-x-auto text-text-muted border-t border-surface leading-relaxed" style={{ fontSize: "var(--chat-font-size)" }}>
             {thinking}
@@ -116,7 +135,7 @@ export const ThinkingPart = memo(function ThinkingPart({ thinking, messageID, pa
             <span>Collapse thinking</span>
           </button>
         </>
-      ))}
+      ) : null}
     </div>
   );
 });
