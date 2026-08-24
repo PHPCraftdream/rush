@@ -10,11 +10,11 @@ import (
 )
 
 // forkBaseVersion is the fork's current release-line version, mirrored by hand
-// from the "version" field in npm/crush/package.json. It is embedded into local
+// from the "version" field in npm/rush/package.json. It is embedded into local
 // dev-build version strings so the operator can see at a glance which release
 // line a devel binary was built from. This fork bumps versions deliberately and
 // manually (see CLAUDE.md at the repo root), so this constant must be kept in
-// lockstep with npm/crush/package.json on every bump.
+// lockstep with npm/rush/package.json on every bump.
 const forkBaseVersion = "0.2.0-alpha.0"
 
 // VersionLine is what `rush --version`/`rush version` prints: the fork's

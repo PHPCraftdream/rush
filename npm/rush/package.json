@@ -1,0 +1,40 @@
+{
+  "name": "@phpcraftdream/rush",
+  "version": "0.2.0-alpha.0",
+  "description": "Unofficial npm distribution of rush — a fork of charmbracelet/crush. Installs a prebuilt, Go-free binary via per-platform optional packages. No download step at install time.",
+  "license": "FSL-1.1-MIT",
+  "author": "Charmbracelet, Inc. (upstream) and fork maintainers",
+  "homepage": "https://github.com/PHPCraftdream/crush",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/PHPCraftdream/crush.git"
+  },
+  "bugs": {
+    "url": "https://github.com/PHPCraftdream/crush/issues"
+  },
+  "keywords": [
+    "rush",
+    "cli",
+    "ai",
+    "coding-assistant",
+    "charm",
+    "charmbracelet"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "bin": {
+    "rush": "bin/rush.js"
+  },
+  "files": [
+    "bin/rush.js",
+    "CHANGELOG.md"
+  ],
+  "optionalDependencies": {
+    "@phpcraftdream/rush-linux-x64": "0.2.0-alpha.0",
+    "@phpcraftdream/rush-linux-arm64": "0.2.0-alpha.0",
+    "@phpcraftdream/rush-darwin-x64": "0.2.0-alpha.0",
+    "@phpcraftdream/rush-darwin-arm64": "0.2.0-alpha.0",
+    "@phpcraftdream/rush-win32-x64": "0.2.0-alpha.0"
+  }
+}

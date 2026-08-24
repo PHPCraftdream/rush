@@ -1,9 +1,9 @@
 # Opt-in, Go-free npm distribution for this fork.
 #
 # This workflow is self-contained and does NOT touch the upstream goreleaser
-# config or any other workflow. It builds prebuilt crush binaries and publishes
+# config or any other workflow. It builds prebuilt rush binaries and publishes
 # them to npm using the esbuild-style optional-dependency layout in npm/, so a
-# user can `npm i -g <scope>/crush` with no Go and no pnpm.
+# user can `npm i -g <scope>/rush` with no Go and no pnpm.
 #
 # A REAL (non-dry-run) publish can ONLY happen as the direct result of an
 # `npm-v*` tag push — this is a hard invariant, not a default.
@@ -108,7 +108,7 @@ jobs:
           VERSION: ${{ steps.ver.outputs.version }}
         run: |
           set -euo pipefail
-          # Also stamp commit + build time so `crush --version` proves which
+          # Also stamp commit + build time so `rush --version` proves which
           # source tree a published binary came from (VersionLine's
           # provenance suffix, internal/version/version.go). -trimpath below
           # strips the VCS metadata the toolchain would otherwise embed, so
@@ -121,16 +121,16 @@ jobs:
           LDFLAGS="-s -w -X github.com/PHPCraftdream/rush/internal/version.Version=${GO_VERSION_STRING} -X github.com/PHPCraftdream/rush/internal/version.Commit=${BUILD_COMMIT} -X github.com/PHPCraftdream/rush/internal/version.BuildTime=${BUILD_TIME}"
           # target triples: <node_os> <node_arch> <GOOS> <GOARCH> <bin>
           TARGETS="
-          linux x64   linux   amd64 crush
-          linux arm64 linux   arm64 crush
-          darwin x64  darwin  amd64 crush
-          darwin arm64 darwin arm64 crush
-          win32 x64   windows amd64 crush.exe
+          linux x64   linux   amd64 rush
+          linux arm64 linux   arm64 rush
+          darwin x64  darwin  amd64 rush
+          darwin arm64 darwin arm64 rush
+          win32 x64   windows amd64 rush.exe
           "
           mkdir -p staging
           echo "$TARGETS" | while read -r NODE_OS NODE_ARCH GOOS GOARCH BIN; do
             [ -z "${NODE_OS:-}" ] && continue
-            PKG="staging/crush-${NODE_OS}-${NODE_ARCH}"
+            PKG="staging/rush-${NODE_OS}-${NODE_ARCH}"
             echo "→ building ${GOOS}/${GOARCH} → ${PKG}"
             mkdir -p "${PKG}/bin"
             CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" \
@@ -144,11 +144,11 @@ jobs:
             cp LICENSE.md "${PKG}/LICENSE"
           done
           # meta package
-          cp -R npm/crush staging/crush
-          cp LICENSE.md staging/crush/LICENSE
+          cp -R npm/rush staging/rush
+          cp LICENSE.md staging/rush/LICENSE
           node -e '
             const fs = require("fs");
-            const p = "staging/crush/package.json";
+            const p = "staging/rush/package.json";
             const j = JSON.parse(fs.readFileSync(p, "utf8"));
             const v = process.env.VERSION;
             j.version = v;
@@ -158,7 +158,7 @@ jobs:
             fs.writeFileSync(p, JSON.stringify(j, null, 2) + "\n");
           '
 
-          # Guard against the TARGETS list above and npm/crush/package.json's
+          # Guard against the TARGETS list above and npm/rush/package.json's
           # optionalDependencies silently drifting apart — a platform present
           # in one but not the other fails loudly here instead of surfacing
           # later as a broken `npm install` for one specific OS/arch.
@@ -166,16 +166,16 @@ jobs:
             const fs = require("fs");
             const scope = process.env.SCOPE;
             const built = fs.readdirSync("staging")
-              .filter((d) => d.startsWith("crush-"))
+              .filter((d) => d.startsWith("rush-"))
               .map((d) => scope + "/" + d)
               .sort();
             const declared = Object.keys(
-              JSON.parse(fs.readFileSync("staging/crush/package.json", "utf8")).optionalDependencies || {},
+              JSON.parse(fs.readFileSync("staging/rush/package.json", "utf8")).optionalDependencies || {},
             ).sort();
             const missing = built.filter((p) => !declared.includes(p));
             const extra = declared.filter((p) => !built.includes(p));
             if (missing.length || extra.length) {
-              console.error("Platform list drift between the workflow TARGETS table and npm/crush/package.json optionalDependencies:");
+              console.error("Platform list drift between the workflow TARGETS table and npm/rush/package.json optionalDependencies:");
               if (missing.length) console.error("  built but not declared:", missing.join(", "));
               if (extra.length) console.error("  declared but not built:", extra.join(", "));
               process.exit(1);
@@ -191,7 +191,7 @@ jobs:
         # this Actions runner; the same source and LDFLAGS are used for every
         # cross-compiled package.
         #
-        # `crush --version` prints version.VersionLine() (e.g.
+        # `rush --version` prints version.VersionLine() (e.g.
         # "0.2.0-alpha.0 (c34a7334, built ...)" — forkBaseVersion plus a
         # provenance suffix, no "v" prefix), NOT the raw ldflags-injected
         # version.Version. So EXPECTED must be the bare numeric tag
@@ -206,7 +206,7 @@ jobs:
             exit 1
           fi
           echo "Expected binary version: $EXPECTED"
-          BIN_PATH="staging/crush-linux-x64/bin/crush"
+          BIN_PATH="staging/rush-linux-x64/bin/rush"
           if [ ! -x "$BIN_PATH" ]; then
             echo "::error::${BIN_PATH} is missing or not executable"
             exit 1
@@ -258,7 +258,7 @@ jobs:
           # regardless of whether the version string carries a semver
           # prerelease identifier — publishing e.g. 0.2.0-alpha.0 without an
           # explicit --tag would make that alpha the version everyone gets
-          # from a bare `npm install @phpcraftdream/crush`. Derive the
+          # from a bare `npm install @phpcraftdream/rush`. Derive the
           # dist-tag from the version's prerelease identifier instead
           # (0.2.0-alpha.0 -> alpha, 0.2.0-rc.1 -> rc), so only a clean
           # X.Y.Z release ever lands on "latest".
@@ -281,12 +281,12 @@ jobs:
           fi
           # platform packages first, meta package last (so its optional deps exist).
           # The leading "./" is required: without it, npm treats a bare
-          # "staging/crush-..." argument as a <githubname>/<githubrepo>
+          # "staging/rush-..." argument as a <githubname>/<githubrepo>
           # install-style specifier (it tries `git ls-remote` on it) instead
           # of a local folder to publish.
-          for d in staging/crush-*; do
+          for d in staging/rush-*; do
             echo "→ npm publish $d"
             npm publish "./$d" $FLAGS
           done
-          echo "→ npm publish staging/crush (meta)"
-          npm publish "./staging/crush" $FLAGS
+          echo "→ npm publish staging/rush (meta)"
+          npm publish "./staging/rush" $FLAGS

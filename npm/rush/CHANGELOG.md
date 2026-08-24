@@ -1,0 +1,313 @@
+# Changelog
+
+All notable changes to the `@phpcraftdream/rush` npm distribution are
+documented here. Versions correspond to the `npm-vX.Y.Z` git tags that
+trigger [`publish-fork-npm.yml`](../../.github/workflows/publish-fork-npm.yml).
+
+This is the npm-package changelog, not the fork's engineering decision
+log — see [`CHANGELOG.fork.md`](../../CHANGELOG.fork.md) at the repo
+root for the full per-file merge/divergence history.
+
+## [0.2.0-alpha.0]
+
+- Renamed: the npm distribution is now published as `@phpcraftdream/rush` (binary `rush`) — same package, same version line, previously published as `@phpcraftdream/crush`.
+
+Alpha pre-release snapshot — published under the `alpha` npm dist-tag, not
+`latest`. A large amount of internal work has landed since 0.1.7 (session
+lifecycle, watchdog/heartbeat hardening, sub-agent delegation, CLI
+provider fixes, and more); this snapshot exists to let early testers try
+it ahead of a curated 0.2.0 stable release. Full user-facing release notes
+will be written for that stable cut — until then, see the root
+[`CHANGELOG.md`](../../CHANGELOG.md) for the complete list of changes in
+progress.
+
+- Changed: `rush --version` no longer appends an upstream-triage
+  watermark (previously `<version>@<upstream-tag>`, e.g. `0.1.7@0.87.0`)
+  — it now prints just the release-line version plus build provenance,
+  e.g. `0.2.0-alpha.0 (c34a7334, built 2026-08-06 13:48:47)`.
+
+## [0.1.7]
+
+- New: **four model roles instead of two.** Alongside `large`/`smart` and
+  `small`/`fast` there are now two optional slots — `worker` (a cheap slot for
+  delegated hands-on work) and `reviewer` (the strongest slot, for explicit
+  review invocations). Both are optional and neither is ever auto-selected:
+  with neither configured everything behaves exactly as before. Set them with
+  `rush models use <large> <small> --worker <m> --reviewer <m>`, inspect them
+  with `rush models state`, clear them with `rush models unset`. Short codes
+  (`fl`, `glm4_7`, …) work for the new slots too. Previously `--role worker`
+  and `--role reviewer` parsed but silently resolved to the *small* model.
+- New: **orchestrator mode.** When a worker model is configured and a run uses
+  `--role smart`, that run stops being the implementer and becomes an
+  orchestrator: sub-agents spawned by the `agent` tool run on the cheap worker
+  slot, get a work-capable toolset instead of the read-only one, and `rush
+  run`'s default sub-agent ban is lifted so delegation is possible at all. The
+  smart agent's system prompt gains a matching instruction to plan and
+  delegate in worker-context-sized chunks rather than implementing inline. An
+  explicit `--agents single` still overrides the whole thing.
+- New: a worker sub-agent can **ask its orchestrator a question and be
+  resumed**. Its question comes back as a normal tool result ("SUB-AGENT
+  QUESTION …") rather than looking like a crash, and the orchestrator answers
+  by calling the `agent` tool again with `resume_session_id`, which continues
+  the same sub-session with the worker's context intact instead of restarting
+  the task from scratch.
+- Fixed: the `ask_question` tool was **unreachable since it was introduced**.
+  It was constructed for every agent and then immediately discarded by the
+  allowed-tools filter, because its name was never registered. No model could
+  ever call it, `exit_reason: "awaiting_answer"` could not occur, and both the
+  web UI's answer chips and the documented resume flow described behaviour
+  that could not fire.
+- Fixed: a legitimate worker delegation taking longer than 15 minutes used to
+  be killed by the same watchdog meant for catching genuinely hung tools.
+  Orchestrator-mode delegations now get a 45-minute allowance; an operator's
+  own `stream_tool_timeout_seconds` always wins over either default, in
+  either direction.
+- The orchestrator's own system prompt now requires treating every worker's
+  report as an unverified claim, not a receipt — re-check the file it says it
+  changed or the test it says passed before counting the work done, the same
+  standard already applied elsewhere in the prompt.
+- New: **`rush models efforts [model]`** explains what reasoning-effort
+  levels a model actually supports and what each one does — per provider,
+  since the same word means different things depending on where the model
+  runs. New: **`rush models bump <role> up|down`** steps a role's effort one
+  level without retyping the model name, and reports plainly when there's
+  nowhere left to move instead of erroring.
+- Fixed: **GLM-5.2 was documented as accepting 8 distinct effort levels**,
+  sourced from Z.AI's own API reference. This fork's own code only ever
+  produces 3 distinct behaviours regardless of which of the 8 you picked
+  (`off`, `high`, `max`) — the other 5 silently did nothing beyond the
+  default. Only the 3 real levels are accepted now; the same audit also
+  corrected several Z.AI atoms' displayed context-window sizes (were
+  `204.8k`, are `200k`) and dropped short codes for models this fork doesn't
+  currently support well.
+- Fixed: `rush models use` used to write `large`/`small` to disk *before*
+  validating `--worker`/`--reviewer`, so a bad value in either of the latter
+  could leave the former silently changed even though the command reported
+  failure. Every slot is now validated before anything is written.
+- `rush models use`/`state`/`efforts`/`bump` now validate any
+  `<atom>-<level>` or `provider/model@level` effort suffix against that
+  model's real supported levels instead of silently accepting a typo, and
+  `rush models state` shows what an *unset* effort actually resolves to
+  (e.g. Z.AI defaults unset to `"high"`) instead of showing nothing.
+- `rush --version` now also reports how far upstream has actually been
+  triaged, so that review watermark cannot go stale unnoticed, and no longer
+  shows a second, unrelated version-shaped number next to it.
+- Fixed: a tool call with malformed JSON arguments from the model used to be
+  persisted as-is and re-read from the DB every subsequent turn, sticking the
+  session forever. Malformed input is now sanitized before storage and the
+  matching tool result is turned into an explicit "arguments were not valid
+  JSON" error the model can react to.
+- Fixed: a non-vision model receiving media (an image) back from a tool call
+  could brick the session instead of continuing. It now gets a text
+  placeholder in place of the media it can't process.
+- Fixed: switching to a different provider/model with no reasoning effort of
+  its own could silently keep the previous provider's effort level instead of
+  resetting to the new model's own default.
+- `rush`'s reasoning-capable API providers now fall back to the first
+  available reasoning level instead of silently running without reasoning
+  when neither the user nor the model config specifies an effort.
+- Z.AI/GLM: an unset reasoning effort now defaults to thinking **on** at
+  `high` instead of off (Z.AI recommends max/high for coding tasks, and
+  GLM-5.x only exposes high/max — no lower tier to "fall back" to). Opt out
+  explicitly with an effort of `off`. DeepSeek is unaffected and keeps its
+  original "unset = no reasoning" default.
+- Fixed: abbreviated directory names (e.g. in `~/.../p/file`-style paths)
+  took the first *byte* of a non-ASCII name instead of the first character,
+  mangling Cyrillic/CJK/emoji directory names.
+- New: a `llama.cpp` model enricher auto-detects context window size from
+  the server's `/v1/models` metadata, matching the existing Ollama/LM
+  Studio/LiteLLM/oMLX enrichers.
+- Every outbound request to the model provider now carries a deterministic,
+  opaque session-affinity header, and provider-reported warnings are now
+  logged instead of silently dropped.
+- Fixed (macOS): project-level skills discovery could duplicate every
+  monorepo-root skills directory when the working directory was itself the
+  git repository root, because of a symlink-unaware path comparison
+  (`/var` vs macOS's real `/private/var`).
+
+## [0.1.6]
+
+- Windows: fixed a real instant-death bug where `rush run` launched detached
+  in the background (e.g. `rush run ... > out 2> err &`) could be killed the
+  moment the wrapper shell's console closed — Windows sends `CTRL_CLOSE_EVENT`
+  to every attached process on console close, and that termination cannot be
+  prevented from inside a console-control handler. Fixed by detaching from
+  the console (`FreeConsole`) at startup whenever all three std streams are
+  redirected.
+- Windows: eliminated console-window flashing introduced by the fix above.
+  Every child process `rush` spawns (git, MCP stdio servers, ripgrep,
+  cliprovider CLI launches, docker, the `--on-finish` hook, `sessions diff`,
+  `sessions pick`, `queue`, model-effort probing, `rush run` sub-invocations
+  from `queue`, and the `taskkill` used by `sessions kill`/`reap` and stale-
+  lock reclamation) now launches with its console window hidden instead of
+  momentarily visible.
+- `rush sessions why <id>` and `sessions list` no longer misreport a session
+  as "crashed" when its lock file's PID can't be read — a normal, expected
+  side effect of Windows' mandatory file locking for a genuinely alive
+  session, not proof of death. They now fall back to heartbeat freshness in
+  that case, while still trusting a confirmed-dead PID unconditionally.
+- `rush run`: fixed a race where a peak-hours window opening mid-turn could
+  abort the run without a `RESUME AT` explanation reaching the output — the
+  guidance is now printed to stderr and the specific peak-hours error message
+  is preserved through the whole cancel/abort path instead of being
+  overwritten by a generic "cancelled" message.
+- `rush run`: peak-hours is now re-checked mid-turn on a 10s ticker in
+  addition to step boundaries, so a long stream, a retry loop, or a
+  long-running tool call can no longer run straight through a peak-hours
+  window opening without being interrupted. The check also reloads the
+  provider config from disk when it's changed since the turn started, so a
+  `peak_hours` edit made from another process (e.g. the web UI or a second
+  `rush` invocation) while a run is mid-turn takes effect immediately
+  instead of only on the next run.
+- Fixed: the built-in `local-cli` provider (the local `claude`/`gemini`/
+  `codex`/`qwen` CLI models) silently lost `peak_hours`, `disable`, and any
+  custom display name on every single config load and reload — it was being
+  rebuilt from a bare template each time instead of preserving the existing
+  entry. This meant `rush providers set local-cli --peak-hours ...` was
+  accepted and persisted to disk but never actually took effect. Found via a
+  live test of the peak-hours mid-turn refresh above; predates that feature
+  entirely.
+- Windows: an interactive `rush run` (no redirected stdio) could sometimes
+  cancel with a bare "context canceled" on ordinary console events — Windows
+  maps `CTRL_CLOSE_EVENT`/`CTRL_LOGOFF_EVENT`/`CTRL_SHUTDOWN_EVENT` to the
+  same signal Go's runtime uses for a real Ctrl+C. Only a genuine Ctrl+C now
+  cancels the run.
+- `rush run`: fixed handling of busy sessions and stale locks — a
+  session already busy in-process no longer surfaces as a bare nil result,
+  and lock reclamation on a stale-but-contended heartbeat retries instead of
+  spuriously reporting "busy".
+- Web UI: sessions started or driven from the web UI now auto-approve every
+  tool permission, matching how non-interactive `rush run` already behaves.
+  The permission-request dialog can no longer appear in the web UI; the
+  now-unreachable dialog component, its WebSocket events/handlers, and the
+  backend endpoints that served it were removed.
+
+## [0.1.5]
+
+- Web UI: the Providers settings modal is now the single place to edit every
+  provider parameter, including the API key, for both custom and built-in
+  providers (anthropic, openai, zai, ...) — previously a built-in provider's
+  key could only be set from the model-selection dropdown, and its other
+  fields weren't editable at all. The now-redundant "Edit key" / "Remove
+  key" / "+ Add API key" affordances were removed from model selection.
+- Web UI: providers without an API key configured no longer clutter the
+  model-selection dropdown (CLI-type providers, which don't need a key, are
+  unaffected).
+- Web UI: configured providers (API key set) now sort to the top of the
+  Providers settings list.
+- Web UI: peak-hours start/end are now a plain 24-hour `HH:MM` text field
+  instead of the native time picker, which showed AM/PM on some non-Chromium
+  browsers regardless of locale.
+- Web UI: a global/local scope selector on add/edit/remove for custom
+  providers, and peak-hours management for built-in providers — previously
+  only custom providers could be scoped.
+- Web UI: the background "keep Bluetooth headphones awake" noise loop now
+  stops while the backend is disconnected and resumes automatically on
+  reconnect, instead of playing pointlessly against a dead connection.
+- `rush ping` now shows a provider's peak-hours status in its output.
+- `rush run` now has a default 6-hour hard wall-clock backstop when
+  `--timeout` is unset or 0 (override via `RUSH_RUN_DEFAULT_HARD_TIMEOUT`),
+  so a run can no longer hang indefinitely with no timeout at all.
+- `rush mcp add/remove/enable/disable/set` and `rush claude-init`/
+  `claude-del` now default to the global scope with an explicit `--local`
+  flag to opt into project-local, matching every other scoped command
+  (previously inconsistent — some defaulted to local with no way to
+  target global from the flag).
+- Per-model slash-commands installed by `cah install` (e.g. `/oxx`, `/sh`,
+  `/fl`) are no longer surfaced in rush's own skill/command discovery —
+  those pin a specific model to switch to and aren't general-purpose
+  commands.
+- Fixed: loop detection could trip on a step *after* the one that actually
+  repeated, due to an ordering mismatch between the fantasy SDK's
+  `OnStepFinish` and `StopWhen` callbacks; it now stops on the exact step
+  that trips the detector and records a distinguishable "stopped by
+  loop-detection" message.
+- Fixed: a CLI provider's background process wait could block forever if a
+  grandchild process held stderr open, and its kill only terminated the
+  direct child on Windows, orphaning `node.exe`. Both are now bounded/tree-
+  killed correctly.
+- Fixed: `rush sessions why <id>`'s verdict could disagree with `sessions
+  list` for a stale-lock-but-cleanly-finished session.
+- Local/development builds now report a version like
+  `<upstream-tag>-<commit>-0.1.5` (e.g. `v0.72.1-06c8078-0.1.5`) — the
+  upstream base tag is preserved, and neither a `devel` nor a `dirty`
+  marker is ever included.
+
+## [0.1.4]
+
+- New per-provider `peak_hours` refusal window: a provider can be configured
+  with a local-time `{start, end}` window (overnight wrap supported) during
+  which `rush run` refuses to use it, with a clear text error naming the
+  provider and when it becomes available again. Manageable from `rush
+  providers set/add --peak-hours HH:MM-HH:MM`, `show`, and `list`, from the
+  web UI's provider editor, and over the WebSocket provider API.
+- New `rush run --allow-peak-hours` flag to bypass a provider's peak-hours
+  refusal for a single invocation. This is a conscious one-off override with
+  no persistent config equivalent, and its `--help` text carries an explicit
+  warning that an orchestrating agent must never add it unsolicited — only
+  on a human operator's explicit request for that specific run.
+- New `rush sessions why <id>` command: a one-shot diagnostic explaining
+  whether a session is running, crashed, done, or at rest, using only the
+  session DB and lock-file state — including reclassifying a "crashed" lock
+  as done when the last assistant message actually finished cleanly.
+- New `--color-scheme light|dark|auto` flag and `RUSH_COLOR_SCHEME` env var
+  to force the CLI help/error color palette, working around terminals where
+  automatic light/dark background detection is unreliable or unavailable
+  (e.g. redirected stdio, or a terminal that doesn't answer the background
+  color query in time).
+- Fixed: a malformed `peak_hours` time string could previously parse into a
+  plausible-but-wrong time instead of being rejected.
+- Fixed: a background job's forceful termination could hang the whole agent
+  turn well past the configured tool-execution watchdog cap when the
+  underlying process ignored cancellation.
+- Local/development builds now report a version like
+  `devel-<commit>-0.1.4[-dirty]` instead of a bare `devel-<commit>[-dirty]`,
+  and no longer show a raw, unhelpful Go pseudo-version timestamp when one
+  leaks through from a `go install`-style build.
+
+## [0.1.3]
+
+- New opt-in restricted permission model for `rush run`: `permissions.run`
+  config plus `--restrict-run` / `--allow-bash` / `--allow-tool` flags.
+  When armed, a non-interactive run switches from auto-approve-everything
+  to deny-by-default, gating each tool/bash call against an allowlist.
+- Bash allowlist patterns (`cmd args` prefix, `exact:`, `glob:`, `regex:`)
+  are compound-guarded via a real shell parse: a permissive pattern can
+  never authorise a chained/backgrounded/substituted command (e.g.
+  `git status && rm -rf /` or `git status\nrm -rf /`). Globs are matched
+  cross-platform.
+- Hardening of the interactive bash safe-read-only fast-path: the same
+  shell-parse compound check now gates it, closing a bypass where a
+  newline- or `&`-chained command behind a safe prefix ran without a
+  permission prompt.
+
+## [0.1.2]
+
+- Documented `rush sessions inject` (cross-process message injection,
+  merge and `--interrupt` modes) in the `/rush` slash-command guide —
+  the feature had shipped without the corresponding doc update.
+- 0.1.0 and 0.1.1 were unpublished from npm; 0.1.2 is the first
+  version to install cleanly going forward.
+
+## [0.1.1] (unpublished)
+
+- `rush models list` no longer hits the network or writes the provider
+  cache by default; pass `--refresh` to force a fresh fetch.
+- `rush ping --role smart|fast` — ping either model slot without
+  switching to `ping-fast`.
+- `ZHIPU_API_KEY` accepted as a fallback for the Z.AI provider when
+  `ZAI_API_KEY` is unset.
+- Startup diagnostics ("no git repository detected", "Apple Terminal
+  detected") no longer print on scripted/default runs — only under
+  `--debug` (or `"options": {"debug": true}` in config).
+- Hardened version reporting: an ldflags-injected release version can no
+  longer be silently overwritten by Go's module metadata, and the npm
+  publish workflow verifies the packaged binary reports the expected
+  version before publishing.
+
+## [0.1.0] (unpublished)
+
+- First release of the npm distribution: `npm install -g
+  @phpcraftdream/rush` installs a prebuilt, Go-free binary via
+  per-platform optional dependencies (linux/darwin × x64/arm64,
+  win32 x64).
