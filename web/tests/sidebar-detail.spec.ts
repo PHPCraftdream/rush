@@ -12,10 +12,12 @@
  *  - Rename via pencil button opens edit mode
  *  - Save button in edit mode commits rename
  *  - Cancel button in edit mode cancels rename
+ *  - Cancel click never sends rename_session (no blur-commit)
+ *  - Escape control: no rename_session; Save control: rename_session sent
  */
 
 import { test, expect } from "@playwright/test";
-import { setupMockWS, sendMockWSMessage, waitForWSSend } from "./helpers/mock-ws";
+import { setupMockWS, sendMockWSMessage, waitForWSSend, clearWSSent } from "./helpers/mock-ws";
 import { makeSession } from "./helpers/fixtures";
 
 test.beforeEach(async ({ page }) => {
@@ -189,4 +191,82 @@ test("sidebar hides token count when zero", async ({ page }) => {
 
   // Token count should not be visible when total is 0
   await expect(page.getByTestId("session-tokens-sb-notok")).not.toBeVisible({ timeout: 1000 });
+});
+
+// ── Rename commit semantics (F-3 regression) ──────────────────────────────
+// The edit input used to save on blur. Mousedown on the Cancel button blurs
+// the still-mounted input before the button's click handler runs, so the
+// blur handler committed the draft and "Cancel" renamed the session to the
+// abandoned title. onBlur-to-save was removed; commit is now explicit only
+// (Save button / Enter) and cancel is explicit only (Cancel button / Esc).
+// These tests pin the wire behavior of all three exit paths.
+
+async function renameFramesSent(page: import("@playwright/test").Page) {
+  return page.evaluate(() => {
+    const sent = ((window as unknown as Record<string, unknown>)["__wsSent"] as Array<{ type: string }> | null) ?? [];
+    return sent.filter((m) => m.type === "rename_session");
+  });
+}
+
+test("Cancel click does not send rename_session", async ({ page }) => {
+  await page.goto("/");
+  await sendMockWSMessage(page, {
+    type: "sessions_list",
+    payload: [makeSession({ ID: "sb-f3-cancel", Title: "Keep This Title" })],
+  });
+  await expect(page.getByTestId("session-title-sb-f3-cancel")).toBeVisible({ timeout: 3000 });
+  await page.getByTestId("session-sb-f3-cancel").dblclick();
+  const input = page.getByTestId("session-edit-input");
+  await expect(input).toBeVisible({ timeout: 2000 });
+  await input.fill("TYPO-I-DID-NOT-MEAN-THIS");
+  await clearWSSent(page);
+  await page.getByTestId("session-edit-cancel").click();
+  await expect(input).not.toBeVisible({ timeout: 2000 });
+  // Give any spurious blur-induced send time to land before inspecting the wire.
+  await page.waitForTimeout(400);
+  const renames = await renameFramesSent(page);
+  expect(renames, "Cancel must not commit the draft rename").toEqual([]);
+  await expect(page.getByTestId("session-title-sb-f3-cancel")).toHaveText("Keep This Title", { timeout: 2000 });
+});
+
+test("Escape does not send rename_session (control)", async ({ page }) => {
+  await page.goto("/");
+  await sendMockWSMessage(page, {
+    type: "sessions_list",
+    payload: [makeSession({ ID: "sb-f3-esc", Title: "Escape Keeps This" })],
+  });
+  await expect(page.getByTestId("session-title-sb-f3-esc")).toBeVisible({ timeout: 3000 });
+  await page.getByTestId("session-sb-f3-esc").dblclick();
+  const input = page.getByTestId("session-edit-input");
+  await expect(input).toBeVisible({ timeout: 2000 });
+  await input.fill("ESCAPED-DRAFT");
+  await clearWSSent(page);
+  await input.press("Escape");
+  await expect(input).not.toBeVisible({ timeout: 2000 });
+  await page.waitForTimeout(400);
+  const renames = await renameFramesSent(page);
+  expect(renames, "Escape must not commit the draft rename").toEqual([]);
+  await expect(page.getByTestId("session-title-sb-f3-esc")).toHaveText("Escape Keeps This", { timeout: 2000 });
+});
+
+test("Save click still sends rename_session (control)", async ({ page }) => {
+  await page.goto("/");
+  await sendMockWSMessage(page, {
+    type: "sessions_list",
+    payload: [makeSession({ ID: "sb-f3-save", Title: "Before Save" })],
+  });
+  await expect(page.getByTestId("session-title-sb-f3-save")).toBeVisible({ timeout: 3000 });
+  await page.getByTestId("session-sb-f3-save").dblclick();
+  const input = page.getByTestId("session-edit-input");
+  await expect(input).toBeVisible({ timeout: 2000 });
+  await input.fill("Deliberate New Name");
+  await clearWSSent(page);
+  await page.getByTestId("session-edit-save").click();
+  await expect(input).not.toBeVisible({ timeout: 2000 });
+  const cmd = await waitForWSSend(page, "rename_session");
+  expect((cmd.payload as { sessionID: string; title: string }).sessionID).toBe("sb-f3-save");
+  expect((cmd.payload as { sessionID: string; title: string }).title).toBe("Deliberate New Name");
+  // Exactly one rename frame, not a duplicated blur+click send.
+  const renames = await renameFramesSent(page);
+  expect(renames).toHaveLength(1);
 });

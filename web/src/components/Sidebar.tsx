@@ -165,7 +165,6 @@ export function Sidebar() {
                         ref={inputRef}
                         value={editTitle}
                         onChange={(e) => setEditTitle(e.target.value)}
-                        onBlur={saveRename}
                         onKeyDown={handleKeyDown}
                         data-test-id="session-edit-input"
                         className="font-medium w-full bg-canvas border border-accent rounded-lg px-2 py-1 outline-none shadow-sm"
