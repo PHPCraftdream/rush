@@ -102,8 +102,8 @@ func parseHHMM(s string) (int, error) {
 			return 0, fmt.Errorf("invalid time %q: expected HH:MM", s)
 		}
 	}
-	h := (int(s[0]-'0'))*10 + int(s[1]-'0')
-	mi := (int(s[3]-'0'))*10 + int(s[4]-'0')
+	h := int(s[0]-'0')*10 + int(s[1]-'0')
+	mi := int(s[3]-'0')*10 + int(s[4]-'0')
 	if h < 0 || h > 23 || mi < 0 || mi > 59 {
 		return 0, fmt.Errorf("invalid time %q: out of range", s)
 	}

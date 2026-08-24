@@ -3,7 +3,7 @@
 #
 # Runs the same checks as .github/workflows/{build,lint}.yml:
 #   1. go build ./...                 — compile + //go:embed all:dist
-#   2. golangci-lint run              — v2.10, same as lint.yml (covers gofumpt),
+#   2. golangci-lint run              — v2.13, same as lint.yml (covers gofumpt),
 #                                       once per GOOS in the CI matrix so
 #                                       build-tagged files aren't skipped
 #   3. go test -short -failfast ./... — like build.yml, minus -race (that needs
@@ -38,7 +38,7 @@
 set -uo pipefail
 
 # Keep in sync with golangci_version in .github/workflows/lint.yml.
-GOLANGCI_VERSION="v2.10"
+GOLANGCI_VERSION="v2.13"
 
 cd "$(git rev-parse --show-toplevel)" || exit 1
 

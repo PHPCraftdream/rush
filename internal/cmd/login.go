@@ -8,7 +8,6 @@ package cmd
 // section 2 ("internal/cmd/login.go") before merging.
 
 import (
-	"cmp"
 	"context"
 	"fmt"
 	"os"
@@ -142,10 +141,10 @@ func loginHyper(cfg *config.ConfigStore, force bool) error {
 		return fmt.Errorf("access token is not active")
 	}
 
-	if err := cmp.Or(
-		cfg.SetConfigField(config.ScopeGlobal, "providers.hyper.api_key", token.AccessToken),
-		cfg.SetConfigField(config.ScopeGlobal, "providers.hyper.oauth", token),
-	); err != nil {
+	if err := cfg.SetConfigField(config.ScopeGlobal, "providers.hyper.api_key", token.AccessToken); err != nil {
+		return err
+	}
+	if err := cfg.SetConfigField(config.ScopeGlobal, "providers.hyper.oauth", token); err != nil {
 		return err
 	}
 
@@ -208,10 +207,10 @@ func loginCopilot(cfg *config.ConfigStore, force bool) error {
 		token = t
 	}
 
-	if err := cmp.Or(
-		cfg.SetConfigField(config.ScopeGlobal, "providers.copilot.api_key", token.AccessToken),
-		cfg.SetConfigField(config.ScopeGlobal, "providers.copilot.oauth", token),
-	); err != nil {
+	if err := cfg.SetConfigField(config.ScopeGlobal, "providers.copilot.api_key", token.AccessToken); err != nil {
+		return err
+	}
+	if err := cfg.SetConfigField(config.ScopeGlobal, "providers.copilot.oauth", token); err != nil {
 		return err
 	}
 

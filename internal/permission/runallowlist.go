@@ -358,7 +358,7 @@ func extractBashCommand(params any) string {
 		return provider.RunAllowlistCommand()
 	}
 	v := reflect.ValueOf(params)
-	for v.Kind() == reflect.Ptr {
+	for v.Kind() == reflect.Pointer {
 		if v.IsNil() {
 			return ""
 		}

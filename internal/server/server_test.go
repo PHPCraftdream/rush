@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -11,7 +12,7 @@ import (
 // newOriginRequest builds a fake WS upgrade request carrying the given
 // Origin header (omit by passing "").
 func newOriginRequest(origin string) *http.Request {
-	r := httptest.NewRequest(http.MethodGet, "/ws", nil)
+	r := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/ws", nil)
 	if origin != "" {
 		r.Header.Set("Origin", origin)
 	}

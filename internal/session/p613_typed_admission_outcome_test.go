@@ -524,7 +524,6 @@ func TestDrainSessionNow_F4_ObservedRetryable_ThenObservedSuccess_ReportsComplet
 	require.NoError(t, err)
 	require.NoError(t, svc.EnqueueRunQueueEntry(context.Background(), "p613-f4-retry-observed-row-A", sess.ID, callData))
 
-	var refusals int
 	refusalCh := make(chan struct{}, 8)
 	pump.SetTestAfterAdmissionRefusalForTest(func(sessionID string) {
 		if sessionID == sess.ID {
@@ -560,7 +559,6 @@ func TestDrainSessionNow_F4_ObservedRetryable_ThenObservedSuccess_ReportsComplet
 	// one.
 	select {
 	case <-refusalCh:
-		refusals++
 	case <-time.After(5 * time.Second):
 		t.Fatal("DrainSessionNow was never refused admission — test setup is broken, proves nothing about the observed-admission path under test")
 	}
