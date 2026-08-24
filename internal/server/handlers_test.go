@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/db"
@@ -57,6 +58,31 @@ func isolateAllGlobalConfigPaths(t *testing.T) {
 	t.Setenv("CRUSH_SKILLS_DIR", skillsDir)
 }
 
+// forceLocalCLIProviderForTest deterministically satisfies the
+// IsConfigured() precondition appPkg.New needs to build a real
+// AgentCoordinator, by stubbing cliprovider's PATH probe to always report
+// one spec. isolateAllGlobalConfigPaths deliberately does NOT isolate PATH,
+// so whether appPkg.New constructs a coordinator at all currently depends on
+// whether the machine running the test happens to have claude/gemini/codex/
+// qwen on its ambient PATH (config.Load auto-synthesizes the local-cli
+// provider from that probe, which is the only provider that can exist under
+// full global-config isolation). That made the test's precondition vary
+// across CI runner images — observed as a macos-latest flake where appPkg.New
+// returned no error but a nil coordinator. The stub returns All[0], a real
+// spec, so the provider client built from cliprovider.All can resolve the
+// auto-selected model; the CLI binary itself is never executed by tests
+// using this helper. Must be called before config.Init runs (i.e. before
+// newAttachmentsTestApp) and only from sequential tests — which every
+// caller is, since newAttachmentsTestApp calls t.Setenv.
+func forceLocalCLIProviderForTest(t *testing.T) {
+	t.Helper()
+	origAvailable := cliprovider.AvailableFunc
+	cliprovider.AvailableFunc = func() []cliprovider.CLISpec {
+		return []cliprovider.CLISpec{cliprovider.All[0]}
+	}
+	t.Cleanup(func() { cliprovider.AvailableFunc = origAvailable })
+}
+
 // newAttachmentsTestApp builds a real *appPkg.App over a config.Init'd temp
 // workingDir/dataDir pair, isolated from the host's real global config.
 // dataDir may be "" to exercise config's own default-resolution path (see
@@ -70,7 +96,7 @@ func newAttachmentsTestApp(t *testing.T, workingDir, dataDir string) *appPkg.App
 	require.NoError(t, err)
 	resolvedDataDir := store.Config().Options.DataDirectory
 	require.NotEmpty(t, resolvedDataDir)
-	// Mirrors setupApp's createDotCrushDir (internal/cmd/root.go): db.Connect
+	// Mirrors setupApp's createDotRushDir (internal/cmd/root.go): db.Connect
 	// expects the data directory to already exist.
 	require.NoError(t, os.MkdirAll(resolvedDataDir, 0o700))
 
@@ -214,13 +240,13 @@ func TestAttachmentsDataDir_UsesConfiguredDataDirectory(t *testing.T) {
 	require.True(t, os.IsNotExist(statErr), "no attachments dir should exist under workingDir/.crush")
 }
 
-// TestAttachmentsDataDir_DefaultsToWorkingDirCrushWhenUnconfigured is the
+// TestAttachmentsDataDir_DefaultsToWorkingDirRushWhenUnconfigured is the
 // companion case: with no explicit data_directory passed to config.Init
 // (empty string), config's own setDefaults falls back to
 // "<workingDir>/.crush" — the same value attachmentsDataDir's own
 // nil-config defensive fallback would produce. This pins down that the
 // "normal" (no override) path still behaves exactly as before #248.
-func TestAttachmentsDataDir_DefaultsToWorkingDirCrushWhenUnconfigured(t *testing.T) {
+func TestAttachmentsDataDir_DefaultsToWorkingDirRushWhenUnconfigured(t *testing.T) {
 	workingDir := t.TempDir()
 
 	a := newAttachmentsTestApp(t, workingDir, "")

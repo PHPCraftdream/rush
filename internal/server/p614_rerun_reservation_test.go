@@ -424,6 +424,9 @@ func TestRunWithReservedOwnership_ModelResolutionFailureReleasesReservation(t *t
 	// Cannot use t.Parallel() because newAttachmentsTestApp calls t.Setenv.
 	workingDir := t.TempDir()
 	dataDir := t.TempDir()
+	// Make coordinator construction independent of whether the machine
+	// running this test has a local CLI on PATH — see the helper's doc.
+	forceLocalCLIProviderForTest(t)
 	a := newAttachmentsTestApp(t, workingDir, dataDir)
 	require.NotNil(t, a.AgentCoordinator, "test app must build a real coordinator")
 
