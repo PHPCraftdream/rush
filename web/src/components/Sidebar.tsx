@@ -88,7 +88,14 @@ export function Sidebar() {
         return;
       }
       removeSession(target.id);
-      if (activeID === target.id) setActiveSession(null);
+      // Decide against the store's CURRENT active session, not the one
+      // captured when the request was sent (task #694): the confirm
+      // dialog's overlay blocks row clicks, but live events still switch
+      // the active session while the reply is in flight (session_created
+      // auto-focus, hashchange, sessions_list routing). Clearing from a
+      // stale capture would wipe the now-active session's transcript and
+      // hash for a delete that no longer concerns it.
+      if ($activeSessionID.get() === target.id) setActiveSession(null);
       setPendingDelete(null);
     });
     deleteUnsubRef.current = unsub;
@@ -113,10 +120,21 @@ export function Sidebar() {
       // Only drop rows the server actually confirms deleted (task #684) —
       // a partial failure (deletedIDs missing some non-kept session) must
       // leave the survivor's row in place, not vanish on a blanket "ok".
+      // Reconcile against the store's CURRENT session list and active
+      // session, not the ones captured when the request was sent (task
+      // #694): a session created while the reply was in flight can be
+      // deleted server-side and must not survive as a ghost row, and the
+      // active session can be switched mid-flight onto an ID the server
+      // then deleted — leaving it active would dangle. The kept session
+      // never appears in deletedIDs, so membership alone filters rows;
+      // mirroring useWS's session_deleted handler, a deleted session that
+      // is still the active one clears the active session.
       const result = msg.payload as DeleteOtherSessionsResult | undefined;
       const deletedIDs = new Set(result?.deletedIDs ?? []);
-      for (const s of allSessions) {
-        if (s.ID !== activeID && deletedIDs.has(s.ID)) removeSession(s.ID);
+      for (const s of $sessions.get()) {
+        if (!deletedIDs.has(s.ID)) continue;
+        removeSession(s.ID);
+        if ($activeSessionID.get() === s.ID) setActiveSession(null);
       }
       if (result && result.failedIDs.length > 0) {
         setDeleteOthersError(
