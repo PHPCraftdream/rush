@@ -249,3 +249,75 @@ func TestRecoverInterruptedTurns_StatError_FailsClosed(t *testing.T) {
 	assert.Equal(t, "working on it...", got.Content().Text,
 		"the sweep must not rewrite a possibly-live session's message content")
 }
+
+// TestRecoverInterruptedTurns_LiveChildLockHolder_LeavesChildAlone verifies that
+// the liveness probe (session lock inspection) protects a CHILD session from
+// being recovered, even though child sessions are not currently swept at all.
+// This test guards the fix that will extend recovery to children: when that
+// lands, the live-locked child must still be skipped, while a dead child under
+// the same parent is recovered.
+//
+// Setup: a parent with two child sessions. One child holds a live lock; the
+// other has no lock at all (dead). Both children have orphan assistant messages.
+// After recovery, the live-locked child's orphan must NOT be finished, while the
+// dead child's orphan MUST be finished. The dead-child assertion FAILS against
+// current code (children are not swept); the live-child assertion passes against
+// current code but protects the upcoming fix from clobbering a live child.
+func TestRecoverInterruptedTurns_LiveChildLockHolder_LeavesChildAlone(t *testing.T) {
+	dataDir := t.TempDir()
+	app := newRecoveryTestAppWithDataDir(t, dataDir)
+	ctx := t.Context()
+
+	// Create a parent session.
+	parent, err := app.Sessions.Create(ctx, "parent-with-children")
+	require.NoError(t, err)
+
+	// Create a LIVE child session with an orphan assistant.
+	liveChild, err := app.Sessions.CreateTaskSession(ctx, "call_live_child", parent.ID, "live sub-agent")
+	require.NoError(t, err)
+	liveOrphan := newOrphanAssistant(t, app, liveChild.ID)
+
+	// Acquire the LIVE child's session lock for real.
+	liveLock, err := session.TryAcquireSessionLock(dataDir, liveChild.ID)
+	require.NoError(t, err, "precondition: the test must be able to hold the child's lock")
+	t.Cleanup(func() { _ = liveLock.Release() })
+
+	require.True(t, session.InspectSessionLock(dataDir, liveChild.ID, session.LockStaleDuration).Live,
+		"precondition: the live child's lock must read as live")
+
+	// Create a DEAD child session (no lock at all) with an orphan assistant.
+	deadChild, err := app.Sessions.CreateTaskSession(ctx, "call_dead_child", parent.ID, "dead sub-agent")
+	require.NoError(t, err)
+	deadOrphan := newOrphanAssistant(t, app, deadChild.ID)
+
+	// Verify the dead child has no lock at all.
+	deadLockState := session.InspectSessionLock(dataDir, deadChild.ID, session.LockStaleDuration)
+	require.False(t, deadLockState.Exists,
+		"precondition: the dead child must have no lock file")
+	require.False(t, deadLockState.Live,
+		"precondition: the dead child must read as not-live")
+
+	app.recoverInterruptedTurns(ctx)
+
+	// The live-locked child's orphan must NOT be finished.
+	gotLive, err := app.Messages.Get(ctx, liveOrphan.ID)
+	require.NoError(t, err)
+	assert.False(t, gotLive.IsFinished(),
+		"recovery must NOT stamp a child session whose lock is held by a live process")
+	assert.Nil(t, gotLive.FinishPart(),
+		"no finish part may be added to a live child's in-flight assistant message")
+	assert.Equal(t, "working on it...", gotLive.Content().Text,
+		"the sweep must not rewrite a live child's message content")
+
+	// The dead child's orphan MUST be finished. This assertion FAILS against the
+	// current code because child sessions are not swept at all.
+	gotDead, err := app.Messages.Get(ctx, deadOrphan.ID)
+	require.NoError(t, err)
+	assert.True(t, gotDead.IsFinished(),
+		"recovery must rescue a genuinely orphaned child session's turn")
+	assert.Equal(t, message.FinishReasonError, gotDead.FinishReason(),
+		"orphan recovery uses FinishReasonError")
+	fp := gotDead.FinishPart()
+	require.NotNil(t, fp)
+	assert.Equal(t, "Process restarted", fp.Message)
+}

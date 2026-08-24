@@ -322,3 +322,117 @@ func TestFindOrphanPartial_OnlyLatestOrphan(t *testing.T) {
 	assert.NotEqual(t, older.ID, got.MessageID,
 		"must NOT surface the older orphan")
 }
+
+// TestRecoverInterruptedTurns_ChildSessionOrphan_GetsErrorFinish reproduces
+// the known recovery gap: recoverInterruptedTurns only sweeps TOP-LEVEL sessions
+// (Sessions.List filters parent_session_id IS NULL), so a sub-agent CHILD
+// session's trailing assistant message left mid-stream by a hard kill never gets
+// a finish part.
+//
+// This test builds a parent with a finished assistant (delegating via a tool)
+// and a child session with an orphan trailing assistant. After recovery, the
+// child's orphan should be marked with FinishReasonError — but this assertion
+// FAILS against the current code because child sessions are not swept.
+func TestRecoverInterruptedTurns_ChildSessionOrphan_GetsErrorFinish(t *testing.T) {
+	app := newRecoveryTestApp(t)
+	ctx := t.Context()
+
+	// Create a top-level parent session.
+	parent, err := app.Sessions.Create(ctx, "parent-session")
+	require.NoError(t, err)
+
+	// In the parent, create an assistant message that is ALREADY finished.
+	// This simulates a delegation that completed cleanly before the hard kill.
+	parentAsst, err := app.Messages.Create(ctx, parent.ID, message.CreateMessageParams{
+		Role: message.Assistant,
+		Parts: []message.ContentPart{
+			message.TextContent{Text: "delegating..."},
+			message.Finish{Reason: message.FinishReasonToolUse},
+		},
+	})
+	require.NoError(t, err)
+	require.True(t, parentAsst.IsFinished(), "precondition: parent assistant should be finished")
+	require.Equal(t, message.FinishReasonToolUse, parentAsst.FinishReason(),
+		"precondition: parent assistant should have FinishReasonToolUse")
+
+	// Create a child session via CreateTaskSession. The toolCallID becomes the
+	// child session ID, and parent_session_id is set to the parent's ID.
+	child, err := app.Sessions.CreateTaskSession(ctx, "call_child_1", parent.ID, "sub-agent task")
+	require.NoError(t, err)
+
+	// In the child, create an orphan trailing assistant: text + a tool call
+	// but NO finish part. This is what a hard kill during a sub-agent delegation
+	// leaves behind.
+	childOrphan, err := app.Messages.Create(ctx, child.ID, message.CreateMessageParams{
+		Role: message.Assistant,
+		Parts: []message.ContentPart{
+			message.TextContent{Text: "working in child..."},
+			message.ToolCall{
+				ID:       "call_x",
+				Name:     "bash",
+				Input:    `{"command":"echo hi"}`,
+				Finished: true,
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.False(t, childOrphan.IsFinished(), "precondition: child orphan must NOT have finish part")
+
+	app.recoverInterruptedTurns(ctx)
+
+	// Re-read the child's orphan message and verify it now has a finish part.
+	gotChild, err := app.Messages.Get(ctx, childOrphan.ID)
+	require.NoError(t, err)
+	assert.True(t, gotChild.IsFinished(), "recovery must add a finish part to the child's orphan assistant")
+	assert.Equal(t, message.FinishReasonError, gotChild.FinishReason(),
+		"orphan recovery uses FinishReasonError so the UI can show it as an interrupted turn")
+	fp := gotChild.FinishPart()
+	require.NotNil(t, fp)
+	assert.Equal(t, "Process restarted", fp.Message,
+		"the brief, user-visible title")
+
+	// The parent's already-finished assistant must not be touched.
+	gotParent, err := app.Messages.Get(ctx, parentAsst.ID)
+	require.NoError(t, err)
+	assert.Equal(t, message.FinishReasonToolUse, gotParent.FinishReason(),
+		"recovery must not touch the parent's already-finished assistant message")
+}
+
+// TestRecoverInterruptedTurns_ChildSessionAlreadyFinished_LeavesItAlone is the
+// companion non-regression test: if a child session's trailing assistant already
+// has a finish part (meaning the child completed cleanly), recovery must leave it
+// alone. This proves the sweep doesn't blindly add a second finish to every
+// child assistant it sees.
+func TestRecoverInterruptedTurns_ChildSessionAlreadyFinished_LeavesItAlone(t *testing.T) {
+	app := newRecoveryTestApp(t)
+	ctx := t.Context()
+
+	// Create a parent + child pair.
+	parent, err := app.Sessions.Create(ctx, "parent-finished")
+	require.NoError(t, err)
+
+	child, err := app.Sessions.CreateTaskSession(ctx, "call_child_finished", parent.ID, "finished sub-agent")
+	require.NoError(t, err)
+
+	// In the child, create a trailing assistant that already has a finish part.
+	// This simulates a sub-agent that completed before the hard kill.
+	childAsst, err := app.Messages.Create(ctx, child.ID, message.CreateMessageParams{
+		Role: message.Assistant,
+		Parts: []message.ContentPart{
+			message.TextContent{Text: "done with child task"},
+			message.Finish{Reason: message.FinishReasonEndTurn},
+		},
+	})
+	require.NoError(t, err)
+	require.True(t, childAsst.IsFinished(), "precondition: child assistant should be finished")
+	require.Equal(t, message.FinishReasonEndTurn, childAsst.FinishReason(),
+		"precondition: child assistant should have FinishReasonEndTurn")
+
+	app.recoverInterruptedTurns(ctx)
+
+	// Re-read the child's assistant and verify its finish reason is unchanged.
+	got, err := app.Messages.Get(ctx, childAsst.ID)
+	require.NoError(t, err)
+	assert.Equal(t, message.FinishReasonEndTurn, got.FinishReason(),
+		"recovery must not modify a child session's already-finished assistant")
+}
