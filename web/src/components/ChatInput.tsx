@@ -330,11 +330,21 @@ export function ChatInput() {
 
   const send = useCallback(() => {
     const msg = text.trim();
-    if (!msg || !activeSessionID) return;
+    if (!activeSessionID) return;
+    // Attachment-only sends are legal: the backend's send_message accepts
+    // Attachments independent of Content (handlers_agent.go appends
+    // "[Attached file: <path>]" to the prompt itself), so a pending
+    // attachment with an empty draft still means "send".
+    // Slash-command decision: command interception is deliberately
+    // text-only — commands are parsed from the typed text, and an
+    // attachment-only send has no text, hence no command to interpret.
+    // It goes out as a raw frame with empty content.
+    if (!msg && attachments.length === 0) return;
     // Intercept `/sitter`-family before any server roundtrip — it's a
     // pure-client toggle (start/stop the auto-resume loop). Other slash
-    // commands flow through unchanged.
-    if (handleSitterCommand(msg)) {
+    // commands flow through unchanged. The msg guard makes the
+    // text-only-command rule above explicit.
+    if (msg && handleSitterCommand(msg)) {
       setText("");
       setHistIdx(-1);
       setStash("");
@@ -367,7 +377,9 @@ export function ChatInput() {
 
   const sendFast = useCallback(() => {
     const msg = text.trim();
-    if (!msg || !activeSessionID || agentBusy) return;
+    // Attachment-only fast-sends are legal for the same reason as send().
+    if (!activeSessionID || agentBusy) return;
+    if (!msg && attachments.length === 0) return;
     // sendWithFastModel fire-and-forgets its frame internally (store.ts), so
     // guard here: with the socket down, keep the draft rather than let it
     // vanish into a no-op send.
@@ -403,7 +415,10 @@ export function ChatInput() {
     if (msg) parts.push(msg);
     atts.push(...toWireAttachments(attachments));
     const content = parts.join("\n\n");
-    if (!content) return;
+    // Attachment-only is valid (see send()) — the backend appends the saved
+    // attachment paths to the prompt itself. Without this, relaxing canSend
+    // would leave the Interrupt button enabled but dead.
+    if (!content && atts.length === 0) return;
     const payload: Record<string, unknown> = { sessionID: activeSessionID, content };
     if (atts.length > 0) {
       payload.attachments = atts;
@@ -440,7 +455,8 @@ export function ChatInput() {
     if (msg) parts.push(msg);
     atts.push(...toWireAttachments(attachments));
     const content = parts.join("\n\n");
-    if (!content) return;
+    // Attachment-only is valid (see send()) — same reasoning as interrupt.
+    if (!content && atts.length === 0) return;
     const payload: Record<string, unknown> = { sessionID: activeSessionID, content };
     if (atts.length > 0) {
       payload.attachments = atts;
@@ -657,7 +673,9 @@ export function ChatInput() {
     setAttachments((prev) => [...prev, ...reads]);
   }
 
-  const canSend = !!text.trim() && !!activeSessionID;
+  // A send needs text OR a pending attachment — the backend accepts
+  // attachment-only frames (content goes out empty).
+  const canSend = (!!text.trim() || attachments.length > 0) && !!activeSessionID;
   const placeholder = activeSessionID
     ? agentBusy
       ? "Message… (will be queued)"
