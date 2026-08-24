@@ -5,6 +5,15 @@ import { ws } from "../ws";
 import { MessageSquare, Plus, Pencil, X, Check, Folder, Trash2 } from "lucide-react";
 import { ConfirmDialog } from "./ConfirmDialog";
 
+// Wire shape of a delete_other_sessions reply payload (task #684). Mirrors
+// internal/server/protocol.go's DeleteOtherSessionsResult: only DeletedIDs
+// were actually removed server-side; FailedIDs stayed put after a
+// per-session delete failure inside the handler's loop.
+interface DeleteOtherSessionsResult {
+  deletedIDs: string[];
+  failedIDs: string[];
+}
+
 function formatTokens(n: number): string {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
   if (n >= 1_000) return (n / 1_000).toFixed(1) + "k";
@@ -21,7 +30,11 @@ export function Sidebar() {
   const [editTitle, setEditTitle] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
   const [pendingDelete, setPendingDelete] = useState<{ id: string; title: string } | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const [confirmDeleteOthers, setConfirmDeleteOthers] = useState(false);
+  const [deleteOthersError, setDeleteOthersError] = useState<string | null>(null);
+  const [deletingOthers, setDeletingOthers] = useState(false);
 
   useEffect(() => {
     if (editingID && inputRef.current) {
@@ -29,6 +42,18 @@ export function Sidebar() {
       inputRef.current.select();
     }
   }, [editingID]);
+
+  // Pending delete reply handlers, detached on unmount so a reply landing
+  // after this component unmounted cannot resolve a dead delete (mirrors
+  // SystemPromptModal.save()'s unsubRef pattern in ChatToolbar.tsx, task #683).
+  const deleteUnsubRef = useRef<(() => void) | null>(null);
+  const deleteOthersUnsubRef = useRef<(() => void) | null>(null);
+  useEffect(() => {
+    return () => {
+      deleteUnsubRef.current?.();
+      deleteOthersUnsubRef.current?.();
+    };
+  }, []);
 
   function selectSession(id: string) {
     if (editingID === id) return;
@@ -42,24 +67,67 @@ export function Sidebar() {
 
   function deleteSession(e: React.MouseEvent, id: string, title: string) {
     e.stopPropagation();
+    setDeleteError(null);
     setPendingDelete({ id, title: title || "Untitled session" });
   }
 
   function confirmDelete() {
     if (!pendingDelete) return;
-    ws.send("delete_session", { sessionID: pendingDelete.id });
-    removeSession(pendingDelete.id);
-    if (activeID === pendingDelete.id) setActiveSession(null);
-    setPendingDelete(null);
+    const target = pendingDelete;
+    setDeleteError(null);
+    setDeleting(true);
+    const msgID = crypto.randomUUID();
+    deleteUnsubRef.current?.();
+    const unsub = ws.on("*", (msg) => {
+      if (msg.id !== msgID) return;
+      unsub();
+      deleteUnsubRef.current = null;
+      setDeleting(false);
+      if (msg.error) {
+        setDeleteError(msg.error as string);
+        return;
+      }
+      removeSession(target.id);
+      if (activeID === target.id) setActiveSession(null);
+      setPendingDelete(null);
+    });
+    deleteUnsubRef.current = unsub;
+    ws.send("delete_session", { sessionID: target.id }, msgID);
   }
 
   function confirmDeleteOtherSessions() {
     if (!activeID) return;
-    ws.send("delete_other_sessions", { keepID: activeID });
-    for (const s of allSessions) {
-      if (s.ID !== activeID) removeSession(s.ID);
-    }
-    setConfirmDeleteOthers(false);
+    setDeleteOthersError(null);
+    setDeletingOthers(true);
+    const msgID = crypto.randomUUID();
+    deleteOthersUnsubRef.current?.();
+    const unsub = ws.on("*", (msg) => {
+      if (msg.id !== msgID) return;
+      unsub();
+      deleteOthersUnsubRef.current = null;
+      setDeletingOthers(false);
+      if (msg.error) {
+        setDeleteOthersError(msg.error as string);
+        return;
+      }
+      // Only drop rows the server actually confirms deleted (task #684) —
+      // a partial failure (deletedIDs missing some non-kept session) must
+      // leave the survivor's row in place, not vanish on a blanket "ok".
+      const result = msg.payload as DeleteOtherSessionsResult | undefined;
+      const deletedIDs = new Set(result?.deletedIDs ?? []);
+      for (const s of allSessions) {
+        if (s.ID !== activeID && deletedIDs.has(s.ID)) removeSession(s.ID);
+      }
+      if (result && result.failedIDs.length > 0) {
+        setDeleteOthersError(
+          `${result.failedIDs.length} session${result.failedIDs.length === 1 ? "" : "s"} could not be deleted`
+        );
+        return;
+      }
+      setConfirmDeleteOthers(false);
+    });
+    deleteOthersUnsubRef.current = unsub;
+    ws.send("delete_other_sessions", { keepID: activeID }, msgID);
   }
 
   function startEditing(e: React.MouseEvent, id: string, title: string) {
@@ -103,7 +171,10 @@ export function Sidebar() {
             New
           </button>
           <button
-            onClick={() => setConfirmDeleteOthers(true)}
+            onClick={() => {
+              setDeleteOthersError(null);
+              setConfirmDeleteOthers(true);
+            }}
             disabled={!activeID || sessions.length <= 1}
             title="Delete all sessions except the current one"
             data-test-id="sidebar-delete-others"
@@ -241,9 +312,11 @@ export function Sidebar() {
         <ConfirmDialog
           title="Delete session"
           message={`"${pendingDelete.title}" and all its messages will be permanently deleted.`}
-          confirmLabel="Delete"
+          confirmLabel={deleting ? "Deleting…" : "Delete"}
           onConfirm={confirmDelete}
-          onCancel={() => setPendingDelete(null)}
+          onCancel={() => { setPendingDelete(null); setDeleteError(null); }}
+          error={deleteError}
+          busy={deleting}
         />
       )}
 
@@ -251,9 +324,11 @@ export function Sidebar() {
         <ConfirmDialog
           title="Delete all other sessions"
           message="Delete all sessions except the current one? This cannot be undone."
-          confirmLabel="Delete all"
+          confirmLabel={deletingOthers ? "Deleting…" : "Delete all"}
           onConfirm={confirmDeleteOtherSessions}
-          onCancel={() => setConfirmDeleteOthers(false)}
+          onCancel={() => { setConfirmDeleteOthers(false); setDeleteOthersError(null); }}
+          error={deleteOthersError}
+          busy={deletingOthers}
         />
       )}
     </aside>

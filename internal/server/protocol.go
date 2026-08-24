@@ -180,6 +180,17 @@ type DeleteOtherSessionsPayload struct {
 	KeepID string `json:"keepID"`
 }
 
+// DeleteOtherSessionsResult is the reply payload for delete_other_sessions
+// (task #684). Replaces a bare {"status":"ok"} that gave the client no way
+// to tell full success from partial failure: DeletedIDs lists the sessions
+// that were actually removed server-side; FailedIDs lists the ones a
+// per-session delete failed for (still present server-side). The client
+// must only drop rows whose ID appears in DeletedIDs.
+type DeleteOtherSessionsResult struct {
+	DeletedIDs []string `json:"deletedIDs"`
+	FailedIDs  []string `json:"failedIDs"`
+}
+
 type LoadMessagesPayload struct {
 	SessionID string `json:"sessionID"`
 }

@@ -9,6 +9,14 @@ interface Props {
   variant?: "danger" | "warning";
   onConfirm: () => void;
   onCancel: () => void;
+  /**
+   * Inline error from a rejected confirm (task #684): shown inside the
+   * still-open dialog instead of relying solely on the global transcript-pane
+   * banner, mirroring SystemPromptModal's inline error (ChatToolbar.tsx).
+   */
+  error?: string | null;
+  /** Disables both buttons and suppresses Enter/Escape while a confirm is in flight. */
+  busy?: boolean;
 }
 
 export function ConfirmDialog({
@@ -18,15 +26,18 @@ export function ConfirmDialog({
   variant = "danger",
   onConfirm,
   onCancel,
+  error,
+  busy = false,
 }: Props) {
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
+      if (busy) return;
       if (e.key === "Escape") onCancel();
       if (e.key === "Enter") { e.preventDefault(); onConfirm(); }
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [onConfirm, onCancel]);
+  }, [onConfirm, onCancel, busy]);
 
   const isDanger = variant === "danger";
 
@@ -52,23 +63,32 @@ export function ConfirmDialog({
           </div>
           <button
             onClick={onCancel}
-            className="shrink-0 p-1 rounded-lg text-text-subtle hover:text-text hover:bg-base-overlay transition-colors"
+            disabled={busy}
+            className="shrink-0 p-1 rounded-lg text-text-subtle hover:text-text hover:bg-base-overlay transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
           >
             <X size={16} />
           </button>
         </div>
 
+        {error && (
+          <p className="px-6 pb-4 text-sm text-red leading-relaxed" data-test-id="confirm-dialog-error">
+            {error}
+          </p>
+        )}
+
         {/* actions */}
         <div className="flex items-center justify-end gap-2 px-6 py-4 border-t border-surface bg-base-subtle">
           <button
             onClick={onCancel}
-            className="px-4 py-2 text-sm font-medium text-text-muted hover:text-text hover:bg-base-overlay rounded-xl transition-colors"
+            disabled={busy}
+            className="px-4 py-2 text-sm font-medium text-text-muted hover:text-text hover:bg-base-overlay rounded-xl transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
           >
             Cancel
           </button>
           <button
             onClick={onConfirm}
-            className={`px-4 py-2 text-sm font-semibold text-white/90 rounded-xl transition-all active:scale-[0.97] shadow-sm ${
+            disabled={busy}
+            className={`px-4 py-2 text-sm font-semibold text-white/90 rounded-xl transition-all active:scale-[0.97] shadow-sm disabled:opacity-40 disabled:cursor-not-allowed ${
               isDanger
                 ? "bg-red-fill hover:opacity-90 shadow-red/20"
                 : "bg-yellow-fill hover:opacity-90 shadow-yellow/20"

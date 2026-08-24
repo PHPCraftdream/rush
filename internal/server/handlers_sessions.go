@@ -108,7 +108,16 @@ func handleDeleteSession(ctx context.Context, a *appPkg.App, c *Client, msg WSMe
 // cleaned up by a.Sessions.Delete when their parent is removed, mirroring
 // handleDeleteSession. Each deletion publishes a DeletedEvent that the
 // events.go pubsub bridge broadcasts as session_deleted, so every connected
-// client updates. A no-op ack is returned when KeepID is empty or there is
+// client updates.
+//
+// The reply always carries deletedIDs/failedIDs (task #684) rather than a
+// bare "ok": a per-session failure inside the loop used to be only
+// slog.Warn'd, with the reply staying an unqualified EventResponse{"status":
+// "ok"} regardless of how many deletes actually failed — the client had no
+// way to learn which session survived and (before its own #684 fix) removed
+// every non-kept row from the sidebar unconditionally on that lossy "ok".
+// Callers should only drop rows whose ID appears in deletedIDs. A no-op ack
+// (empty deletedIDs/failedIDs) is returned when KeepID is empty or there is
 // nothing else to delete.
 func handleDeleteOtherSessions(ctx context.Context, a *appPkg.App, c *Client, msg WSMessage) {
 	var p DeleteOtherSessionsPayload
@@ -117,7 +126,7 @@ func handleDeleteOtherSessions(ctx context.Context, a *appPkg.App, c *Client, ms
 		return
 	}
 	if p.KeepID == "" {
-		c.reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
+		c.reply(msg.ID, EventResponse, DeleteOtherSessionsResult{DeletedIDs: []string{}, FailedIDs: []string{}}, "")
 		return
 	}
 	sessions, err := a.Sessions.List(ctx)
@@ -125,6 +134,8 @@ func handleDeleteOtherSessions(ctx context.Context, a *appPkg.App, c *Client, ms
 		c.reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
+	deletedIDs := []string{}
+	failedIDs := []string{}
 	for _, s := range sessions {
 		// Skip the kept session and any sub-session (those go when their
 		// parent is deleted, matching handleDeleteSession's behaviour).
@@ -133,9 +144,12 @@ func handleDeleteOtherSessions(ctx context.Context, a *appPkg.App, c *Client, ms
 		}
 		if err := a.Sessions.Delete(ctx, s.ID); err != nil {
 			slog.Warn("delete_other_sessions: failed to delete session", "id", s.ID, "err", err)
+			failedIDs = append(failedIDs, s.ID)
+			continue
 		}
+		deletedIDs = append(deletedIDs, s.ID)
 	}
-	c.reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
+	c.reply(msg.ID, EventResponse, DeleteOtherSessionsResult{DeletedIDs: deletedIDs, FailedIDs: failedIDs}, "")
 }
 
 // externalOwnerLiveThreshold mirrors the heartbeat expiry used by the lock
