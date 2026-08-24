@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestCrushIgnore(t *testing.T) {
+func TestRushIgnore(t *testing.T) {
 	tempDir := t.TempDir()
 	t.Chdir(tempDir)
 
@@ -85,8 +85,8 @@ func TestShouldExcludeFileHierarchical(t *testing.T) {
 	}
 
 	// Create .crushignore in subdir that ignores normal_nested
-	subCrushignore := "normal_nested/\n"
-	if err := os.WriteFile(filepath.Join(subDir, ".crushignore"), []byte(subCrushignore), 0o644); err != nil {
+	subRushignore := "normal_nested/\n"
+	if err := os.WriteFile(filepath.Join(subDir, ".crushignore"), []byte(subRushignore), 0o644); err != nil {
 		t.Fatalf("Failed to create subdir .crushignore: %v", err)
 	}
 

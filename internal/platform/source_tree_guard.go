@@ -90,7 +90,7 @@ func IsInSourceTree(exePath string) bool {
 				// not the crush module, continue walking up. Otherwise, stop.
 				if checkDir == ancestor {
 					if module == "github.com/PHPCraftdream/rush" {
-						return true // Crush module at marker dir itself!
+						return true // Rush module at marker dir itself!
 					}
 					// Foreign or empty go.mod at marker dir — continue up.
 					continue

@@ -176,7 +176,7 @@ var (
 
 // RefreshOAuthToken refreshes the OAuth token for the given provider.
 // Before making an external refresh request, it checks the config file on
-// disk to see if another Crush session has already refreshed the token. If
+// disk to see if another Rush session has already refreshed the token. If
 // a newer, unexpired token is found, it is used instead of refreshing. If
 // the exchange fails (e.g. because another session already rotated the
 // refresh token), the disk is re-checked to recover the other session's

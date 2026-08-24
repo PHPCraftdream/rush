@@ -323,7 +323,7 @@ func setupApp(cmd *cobra.Command) (*app.App, error) {
 	}
 
 	cfg := store.Config()
-	if err := createDotCrushDir(cfg.Options.DataDirectory); err != nil {
+	if err := createDotRushDir(cfg.Options.DataDirectory); err != nil {
 		return nil, err
 	}
 
@@ -625,7 +625,7 @@ func ResolveCwd(cmd *cobra.Command) (string, error) {
 	return cwd, nil
 }
 
-func createDotCrushDir(dir string) error {
+func createDotRushDir(dir string) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("failed to create data directory: %q %w", dir, err)
 	}

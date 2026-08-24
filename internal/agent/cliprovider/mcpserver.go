@@ -1,12 +1,12 @@
 package cliprovider
 
-// crushMCPServer starts an in-process MCP HTTP server that exposes crush's
+// rushMCPServer starts an in-process MCP HTTP server that exposes rush's
 // core tools (bash, view, write, edit, glob, grep) to an external CLI process
 // (e.g. the claude CLI). Each server instance generates a random Bearer token
-// so only the CLI process spawned by crush can connect.
+// so only the CLI process spawned by rush can connect.
 //
 // Usage:
-//  1. Create the server with newCrushMCPServer.
+//  1. Create the server with newRushMCPServer.
 //  2. Write mcpConfigFile() to a temp file and pass it to the claude CLI via
 //     the --mcp-config flag.
 //  3. Call stop() when the CLI process exits to free the port.
@@ -35,10 +35,10 @@ type mcpToolEvent struct {
 	input string // JSON-encoded input (start events only)
 }
 
-// crushMCPServer is an in-process MCP HTTP server with token auth.
+// rushMCPServer is an in-process MCP HTTP server with token auth.
 // The token is accepted via Authorization: Bearer header (Claude CLI)
 // or as a ?token= query parameter (Qwen CLI, which cannot set headers).
-type crushMCPServer struct {
+type rushMCPServer struct {
 	addr    string // "127.0.0.1:PORT"
 	token   string
 	httpSrv *http.Server
@@ -48,7 +48,7 @@ type crushMCPServer struct {
 }
 
 // stop shuts down the HTTP server.
-func (s *crushMCPServer) stop() {
+func (s *rushMCPServer) stop() {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	if err := s.httpSrv.Shutdown(ctx); err != nil {
@@ -58,7 +58,7 @@ func (s *crushMCPServer) stop() {
 
 // mcpConfigJSON returns the JSON bytes of the MCP server config suitable for
 // writing to a temp file and passing to the claude CLI via --mcp-config.
-func (s *crushMCPServer) mcpConfigJSON() ([]byte, error) {
+func (s *rushMCPServer) mcpConfigJSON() ([]byte, error) {
 	cfg := map[string]any{
 		"mcpServers": map[string]any{
 			"crush": map[string]any{
@@ -75,17 +75,17 @@ func (s *crushMCPServer) mcpConfigJSON() ([]byte, error) {
 
 // mcpURL returns the URL with the token embedded as a query parameter,
 // for clients (e.g. qwen CLI) that cannot set custom HTTP headers.
-func (s *crushMCPServer) mcpURL() string {
+func (s *rushMCPServer) mcpURL() string {
 	return "http://" + s.addr + "/mcp?token=" + s.token
 }
 
-// newCrushMCPServer starts a local MCP HTTP server and returns it.
-// The server exposes crush's core tools; each tool call goes through
-// perms.Request before execution so crush's permission dialog appears.
+// newRushMCPServer starts a local MCP HTTP server and returns it.
+// The server exposes rush's core tools; each tool call goes through
+// perms.Request before execution so rush's permission dialog appears.
 // The token is accepted via Authorization: Bearer header OR ?token= query param.
 // If token is empty a cryptographically random one is generated.
 // sessions and sessionID are used by the todos tool to persist task updates.
-func newCrushMCPServer(ctx context.Context, perms permission.Service, sessions session.Service, sessionID string, workingDir string, token string, mcpProxy ExternalMCPProxy) (*crushMCPServer, error) {
+func newRushMCPServer(ctx context.Context, perms permission.Service, sessions session.Service, sessionID string, workingDir string, token string, mcpProxy ExternalMCPProxy) (*rushMCPServer, error) {
 	if token == "" {
 		// 32-byte random token → 64-char hex string.
 		tokenBytes := make([]byte, 32)
@@ -97,7 +97,7 @@ func newCrushMCPServer(ctx context.Context, perms permission.Service, sessions s
 
 	srv := mcp.NewServer(&mcp.Implementation{
 		Name:    "crush",
-		Title:   "Crush",
+		Title:   "Rush",
 		Version: "1.0",
 	}, nil)
 
@@ -144,7 +144,7 @@ func newCrushMCPServer(ctx context.Context, perms permission.Service, sessions s
 
 	addr := ln.Addr().String()
 	slog.Info("cliprovider: MCP server started", "addr", addr)
-	return &crushMCPServer{
+	return &rushMCPServer{
 		addr:    addr,
 		token:   token,
 		httpSrv: httpSrv,

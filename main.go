@@ -1,4 +1,4 @@
-// Package main is the entry point for the Crush CLI, an AI coding assistant
+// Package main is the entry point for the Rush CLI, an AI coding assistant
 // built for delegation from orchestrators and scripts. The command tree
 // lives in internal/cmd; the default `crush` invocation starts the fork's
 // TCP-based WebSocket server (internal/server) and opens the web UI: /auth

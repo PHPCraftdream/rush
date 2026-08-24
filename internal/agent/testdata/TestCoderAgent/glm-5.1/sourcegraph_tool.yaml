@@ -15,7 +15,7 @@ interactions:
       Content-Type:
       - application/json
       User-Agent:
-      - Charm-Crush/devel (https://charm.land/crush)
+      - Rush/devel (https://github.com/PHPCraftdream/rush)
     url: https://hyper.charm.land/v1/chat/completions
     method: POST
   response:
@@ -69,7 +69,7 @@ interactions:
       Content-Type:
       - application/json
       User-Agent:
-      - Charm-Crush/devel (https://charm.land/crush)
+      - Rush/devel (https://github.com/PHPCraftdream/rush)
     url: https://hyper.charm.land/v1/chat/completions
     method: POST
   response:
@@ -555,7 +555,7 @@ interactions:
       Content-Type:
       - application/json
       User-Agent:
-      - Charm-Crush/devel (https://charm.land/crush)
+      - Rush/devel (https://github.com/PHPCraftdream/rush)
     url: https://hyper.charm.land/v1/chat/completions
     method: POST
   response:

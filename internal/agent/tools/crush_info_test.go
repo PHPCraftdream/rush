@@ -16,13 +16,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestCrushInfo_MinimalConfig(t *testing.T) {
+func TestRushInfo_MinimalConfig(t *testing.T) {
 	t.Parallel()
 
 	cfg := config.NewTestStore(&config.Config{
 		Providers: csync.NewMap[string, config.ProviderConfig](),
 	})
-	output := buildCrushInfo(cfg, nil, nil, nil)
+	output := buildRushInfo(cfg, nil, nil, nil)
 	require.NotContains(t, output, "[providers]")
 	_ = output
 	require.NotContains(t, output, "[mcp]")
@@ -30,7 +30,7 @@ func TestCrushInfo_MinimalConfig(t *testing.T) {
 	require.NotContains(t, output, "[tools]")
 }
 
-func TestCrushInfo_ConfigFiles(t *testing.T) {
+func TestRushInfo_ConfigFiles(t *testing.T) {
 	t.Parallel()
 
 	cfg := config.NewTestStore(
@@ -38,13 +38,13 @@ func TestCrushInfo_ConfigFiles(t *testing.T) {
 		"/home/user/.config/crush/crush.json",
 		"/project/.crush/crush.json",
 	)
-	output := buildCrushInfo(cfg, nil, nil, nil)
+	output := buildRushInfo(cfg, nil, nil, nil)
 	require.Contains(t, output, "[config_files]")
 	require.Contains(t, output, "/home/user/.config/crush/crush.json")
 	require.Contains(t, output, "/project/.crush/crush.json")
 }
 
-func TestCrushInfo_Models(t *testing.T) {
+func TestRushInfo_Models(t *testing.T) {
 	t.Parallel()
 
 	cfg := config.NewTestStore(&config.Config{
@@ -54,13 +54,13 @@ func TestCrushInfo_Models(t *testing.T) {
 		},
 		Providers: csync.NewMap[string, config.ProviderConfig](),
 	})
-	output := buildCrushInfo(cfg, nil, nil, nil)
+	output := buildRushInfo(cfg, nil, nil, nil)
 	require.Contains(t, output, "[model]")
 	require.Contains(t, output, "smart = claude-sonnet-4-20250514 (anthropic)")
 	require.Contains(t, output, "fast = claude-haiku-3-20250307 (anthropic)")
 }
 
-func TestCrushInfo_Models_WorkerAndReviewer(t *testing.T) {
+func TestRushInfo_Models_WorkerAndReviewer(t *testing.T) {
 	t.Parallel()
 
 	cfg := config.NewTestStore(&config.Config{
@@ -72,7 +72,7 @@ func TestCrushInfo_Models_WorkerAndReviewer(t *testing.T) {
 		},
 		Providers: csync.NewMap[string, config.ProviderConfig](),
 	})
-	output := buildCrushInfo(cfg, nil, nil, nil)
+	output := buildRushInfo(cfg, nil, nil, nil)
 	require.Contains(t, output, "[model]")
 	require.Contains(t, output, "smart = claude-sonnet-4-20250514 (anthropic)")
 	require.Contains(t, output, "fast = claude-haiku-3-20250307 (anthropic)")
@@ -80,7 +80,7 @@ func TestCrushInfo_Models_WorkerAndReviewer(t *testing.T) {
 	require.Contains(t, output, "reviewer = claude-opus-4-20250514 (anthropic)")
 }
 
-func TestCrushInfo_Providers(t *testing.T) {
+func TestRushInfo_Providers(t *testing.T) {
 	t.Parallel()
 
 	providers := csync.NewMap[string, config.ProviderConfig]()
@@ -88,7 +88,7 @@ func TestCrushInfo_Providers(t *testing.T) {
 	providers.Set("anthropic", config.ProviderConfig{Models: make([]catwalk.Model, 12)})
 
 	cfg := config.NewTestStore(&config.Config{Providers: providers})
-	output := buildCrushInfo(cfg, nil, nil, nil)
+	output := buildRushInfo(cfg, nil, nil, nil)
 	require.Contains(t, output, "[providers]")
 	anthropicIdx := strings.Index(output, "anthropic = enabled")
 	openaiIdx := strings.Index(output, "openai = enabled")
@@ -99,7 +99,7 @@ func TestCrushInfo_Providers(t *testing.T) {
 	require.Contains(t, output, "openai = enabled (8 models)")
 }
 
-func TestCrushInfo_DisabledProvidersOmitted(t *testing.T) {
+func TestRushInfo_DisabledProvidersOmitted(t *testing.T) {
 	t.Parallel()
 
 	providers := csync.NewMap[string, config.ProviderConfig]()
@@ -107,12 +107,12 @@ func TestCrushInfo_DisabledProvidersOmitted(t *testing.T) {
 	providers.Set("anthropic", config.ProviderConfig{Models: make([]catwalk.Model, 12)})
 
 	cfg := config.NewTestStore(&config.Config{Providers: providers})
-	output := buildCrushInfo(cfg, nil, nil, nil)
+	output := buildRushInfo(cfg, nil, nil, nil)
 	require.Contains(t, output, "anthropic = enabled")
 	require.NotContains(t, output, "openai")
 }
 
-func TestCrushInfo_MCPStates(t *testing.T) {
+func TestRushInfo_MCPStates(t *testing.T) {
 	t.Parallel()
 
 	connectedAt := time.Date(2025, 1, 15, 15, 4, 5, 0, time.UTC)
@@ -145,7 +145,7 @@ func TestCrushInfo_MCPStates(t *testing.T) {
 	require.Less(t, filesystemIdx, githubIdx, "filesystem should appear before github")
 }
 
-func TestCrushInfo_YoloMode(t *testing.T) {
+func TestRushInfo_YoloMode(t *testing.T) {
 	t.Parallel()
 
 	cfg := config.NewTestStore(&config.Config{
@@ -154,12 +154,12 @@ func TestCrushInfo_YoloMode(t *testing.T) {
 	})
 	cfg.SetSkipPermissionRequests(true)
 
-	output := buildCrushInfo(cfg, nil, nil, nil)
+	output := buildRushInfo(cfg, nil, nil, nil)
 	require.Contains(t, output, "[permissions]")
 	require.Contains(t, output, "mode = yolo")
 }
 
-func TestCrushInfo_AllowedTools(t *testing.T) {
+func TestRushInfo_AllowedTools(t *testing.T) {
 	t.Parallel()
 
 	cfg := config.NewTestStore(&config.Config{
@@ -167,12 +167,12 @@ func TestCrushInfo_AllowedTools(t *testing.T) {
 		Permissions: &config.Permissions{AllowedTools: []string{"edit:write", "bash"}},
 	})
 
-	output := buildCrushInfo(cfg, nil, nil, nil)
+	output := buildRushInfo(cfg, nil, nil, nil)
 	require.Contains(t, output, "[permissions]")
 	require.Contains(t, output, "allowed_tools = bash, edit:write")
 }
 
-func TestCrushInfo_DisabledTools(t *testing.T) {
+func TestRushInfo_DisabledTools(t *testing.T) {
 	t.Parallel()
 
 	cfg := config.NewTestStore(&config.Config{
@@ -180,12 +180,12 @@ func TestCrushInfo_DisabledTools(t *testing.T) {
 		Options:   &config.Options{DisabledTools: []string{"sourcegraph", "agentic_fetch"}},
 	})
 
-	output := buildCrushInfo(cfg, nil, nil, nil)
+	output := buildRushInfo(cfg, nil, nil, nil)
 	require.Contains(t, output, "[tools]")
 	require.Contains(t, output, "disabled = agentic_fetch, sourcegraph")
 }
 
-func TestCrushInfo_Options(t *testing.T) {
+func TestRushInfo_Options(t *testing.T) {
 	t.Parallel()
 
 	cfg := config.NewTestStore(&config.Config{
@@ -197,32 +197,32 @@ func TestCrushInfo_Options(t *testing.T) {
 		},
 	})
 
-	output := buildCrushInfo(cfg, nil, nil, nil)
+	output := buildRushInfo(cfg, nil, nil, nil)
 	require.Contains(t, output, "[options]")
 	require.Contains(t, output, "auto_summarize = false")
 	require.Contains(t, output, "data_directory = /Users/user/project/.crush")
 	require.Contains(t, output, "debug = true")
 }
 
-func TestCrushInfo_AutoSummarizeInversion(t *testing.T) {
+func TestRushInfo_AutoSummarizeInversion(t *testing.T) {
 	t.Parallel()
 
 	cfgFalse := config.NewTestStore(&config.Config{
 		Providers: csync.NewMap[string, config.ProviderConfig](),
 		Options:   &config.Options{DisableAutoSummarize: true},
 	})
-	outputFalse := buildCrushInfo(cfgFalse, nil, nil, nil)
+	outputFalse := buildRushInfo(cfgFalse, nil, nil, nil)
 	require.Contains(t, outputFalse, "auto_summarize = false")
 
 	cfgTrue := config.NewTestStore(&config.Config{
 		Providers: csync.NewMap[string, config.ProviderConfig](),
 		Options:   &config.Options{DisableAutoSummarize: false},
 	})
-	outputTrue := buildCrushInfo(cfgTrue, nil, nil, nil)
+	outputTrue := buildRushInfo(cfgTrue, nil, nil, nil)
 	require.Contains(t, outputTrue, "auto_summarize = true")
 }
 
-func TestCrushInfo_NoSecrets(t *testing.T) {
+func TestRushInfo_NoSecrets(t *testing.T) {
 	t.Parallel()
 
 	providers := csync.NewMap[string, config.ProviderConfig]()
@@ -232,13 +232,13 @@ func TestCrushInfo_NoSecrets(t *testing.T) {
 	})
 
 	cfg := config.NewTestStore(&config.Config{Providers: providers})
-	output := buildCrushInfo(cfg, nil, nil, nil)
+	output := buildRushInfo(cfg, nil, nil, nil)
 	require.NotContains(t, output, "sk-super-secret-key-12345")
 	require.NotContains(t, output, "secret")
 	require.Contains(t, output, "openai = enabled (8 models)")
 }
 
-func TestCrushInfo_DeterministicOrdering(t *testing.T) {
+func TestRushInfo_DeterministicOrdering(t *testing.T) {
 	t.Parallel()
 
 	providers := csync.NewMap[string, config.ProviderConfig]()
@@ -268,7 +268,7 @@ func TestCrushInfo_DeterministicOrdering(t *testing.T) {
 	zMcpIdx := strings.Index(mcpOutput, "z-mcp = connected")
 	require.Less(t, aMcpIdx, zMcpIdx)
 
-	output := buildCrushInfo(cfg, nil, nil, nil)
+	output := buildRushInfo(cfg, nil, nil, nil)
 
 	alphaIdx := strings.Index(output, "alpha = enabled")
 	middleIdx := strings.Index(output, "middle = enabled")
@@ -280,7 +280,7 @@ func TestCrushInfo_DeterministicOrdering(t *testing.T) {
 	require.Contains(t, output, "allowed_tools = a-perm, z-perm")
 }
 
-func TestCrushInfo_EmptySectionsOmitted(t *testing.T) {
+func TestRushInfo_EmptySectionsOmitted(t *testing.T) {
 	t.Parallel()
 
 	cfg := config.NewTestStore(&config.Config{
@@ -289,7 +289,7 @@ func TestCrushInfo_EmptySectionsOmitted(t *testing.T) {
 		Options:     &config.Options{},
 	})
 
-	output := buildCrushInfo(cfg, nil, nil, nil)
+	output := buildRushInfo(cfg, nil, nil, nil)
 	require.NotContains(t, output, "[tools]")
 	require.NotContains(t, output, "[permissions]")
 	_ = output
@@ -297,7 +297,7 @@ func TestCrushInfo_EmptySectionsOmitted(t *testing.T) {
 	require.NotContains(t, output, "[skills]")
 }
 
-func TestCrushInfo_ConfigStaleness_Clean(t *testing.T) {
+func TestRushInfo_ConfigStaleness_Clean(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -311,14 +311,14 @@ func TestCrushInfo_ConfigStaleness_Clean(t *testing.T) {
 	// Capture snapshot (normally done in Load)
 	store.CaptureStalenessSnapshot([]string{configPath})
 
-	output := buildCrushInfo(store, nil, nil, nil)
+	output := buildRushInfo(store, nil, nil, nil)
 	require.Contains(t, output, "[config]")
 	require.Contains(t, output, "dirty = false")
 	require.NotContains(t, output, "changed_paths")
 	require.NotContains(t, output, "missing_paths")
 }
 
-func TestCrushInfo_ConfigStaleness_Dirty(t *testing.T) {
+func TestRushInfo_ConfigStaleness_Dirty(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -336,14 +336,14 @@ func TestCrushInfo_ConfigStaleness_Dirty(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 	require.NoError(t, os.WriteFile(configPath, []byte(`{"debug": true}`), 0o600))
 
-	output := buildCrushInfo(store, nil, nil, nil)
+	output := buildRushInfo(store, nil, nil, nil)
 	require.Contains(t, output, "[config]")
 	require.Contains(t, output, "dirty = true")
 	require.Contains(t, output, "changed_paths")
 	require.Contains(t, output, configPath)
 }
 
-func TestCrushInfo_ConfigStaleness_MissingPath(t *testing.T) {
+func TestRushInfo_ConfigStaleness_MissingPath(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -360,24 +360,24 @@ func TestCrushInfo_ConfigStaleness_MissingPath(t *testing.T) {
 	// Delete file to trigger missing state
 	require.NoError(t, os.Remove(configPath))
 
-	output := buildCrushInfo(store, nil, nil, nil)
+	output := buildRushInfo(store, nil, nil, nil)
 	require.Contains(t, output, "[config]")
 	require.Contains(t, output, "dirty = true")
 	require.Contains(t, output, "missing_paths")
 	require.Contains(t, output, configPath)
 }
 
-func TestCrushInfo_Skills_NoSkills(t *testing.T) {
+func TestRushInfo_Skills_NoSkills(t *testing.T) {
 	t.Parallel()
 
 	cfg := config.NewTestStore(&config.Config{
 		Providers: csync.NewMap[string, config.ProviderConfig](),
 	})
-	output := buildCrushInfo(cfg, nil, nil, nil)
+	output := buildRushInfo(cfg, nil, nil, nil)
 	require.NotContains(t, output, "[skills]")
 }
 
-func TestCrushInfo_Skills_MixedLoadedUnloaded(t *testing.T) {
+func TestRushInfo_Skills_MixedLoadedUnloaded(t *testing.T) {
 	t.Parallel()
 
 	allSkills := []*skills.Skill{
@@ -394,14 +394,14 @@ func TestCrushInfo_Skills_MixedLoadedUnloaded(t *testing.T) {
 	cfg := config.NewTestStore(&config.Config{
 		Providers: csync.NewMap[string, config.ProviderConfig](),
 	})
-	output := buildCrushInfo(cfg, allSkills, activeSkills, tracker)
+	output := buildRushInfo(cfg, allSkills, activeSkills, tracker)
 	require.Contains(t, output, "[skills]")
 	require.Contains(t, output, "bash = user, loaded")
 	require.Contains(t, output, "crush-config = builtin, loaded")
 	require.Contains(t, output, "go-doc = user, unloaded")
 }
 
-func TestCrushInfo_Skills_DisabledSkills(t *testing.T) {
+func TestRushInfo_Skills_DisabledSkills(t *testing.T) {
 	t.Parallel()
 
 	allSkills := []*skills.Skill{
@@ -420,14 +420,14 @@ func TestCrushInfo_Skills_DisabledSkills(t *testing.T) {
 		Providers: csync.NewMap[string, config.ProviderConfig](),
 		Options:   &config.Options{DisabledSkills: []string{"image-convert"}},
 	})
-	output := buildCrushInfo(cfg, allSkills, activeSkills, tracker)
+	output := buildRushInfo(cfg, allSkills, activeSkills, tracker)
 	require.Contains(t, output, "[skills]")
 	require.Contains(t, output, "bash = user, unloaded")
 	require.Contains(t, output, "crush-config = builtin, unloaded")
 	require.Contains(t, output, "image-convert = user, disabled")
 }
 
-func TestCrushInfo_Skills_Ordering(t *testing.T) {
+func TestRushInfo_Skills_Ordering(t *testing.T) {
 	t.Parallel()
 
 	allSkills := []*skills.Skill{
@@ -441,7 +441,7 @@ func TestCrushInfo_Skills_Ordering(t *testing.T) {
 	cfg := config.NewTestStore(&config.Config{
 		Providers: csync.NewMap[string, config.ProviderConfig](),
 	})
-	output := buildCrushInfo(cfg, allSkills, activeSkills, tracker)
+	output := buildRushInfo(cfg, allSkills, activeSkills, tracker)
 
 	aIdx := strings.Index(output, "a-skill")
 	mIdx := strings.Index(output, "m-skill")
@@ -450,7 +450,7 @@ func TestCrushInfo_Skills_Ordering(t *testing.T) {
 	require.Less(t, mIdx, zIdx)
 }
 
-func TestCrushInfo_Skills_BuiltinOrigin(t *testing.T) {
+func TestRushInfo_Skills_BuiltinOrigin(t *testing.T) {
 	t.Parallel()
 
 	allSkills := []*skills.Skill{
@@ -463,12 +463,12 @@ func TestCrushInfo_Skills_BuiltinOrigin(t *testing.T) {
 	cfg := config.NewTestStore(&config.Config{
 		Providers: csync.NewMap[string, config.ProviderConfig](),
 	})
-	output := buildCrushInfo(cfg, allSkills, activeSkills, tracker)
+	output := buildRushInfo(cfg, allSkills, activeSkills, tracker)
 	require.Contains(t, output, "crush-config = builtin, unloaded")
 	require.Contains(t, output, "my-skill = user, unloaded")
 }
 
-func TestCrushInfo_Hooks(t *testing.T) {
+func TestRushInfo_Hooks(t *testing.T) {
 	t.Parallel()
 
 	cfg := config.NewTestStore(&config.Config{
@@ -481,19 +481,19 @@ func TestCrushInfo_Hooks(t *testing.T) {
 		},
 	})
 
-	output := buildCrushInfo(cfg, nil, nil, nil)
+	output := buildRushInfo(cfg, nil, nil, nil)
 	require.Contains(t, output, "[hooks]")
 	require.Contains(t, output, "PreToolUse (matcher: edit|write) = check-privates.sh")
 	require.Contains(t, output, "PreToolUse = audit.sh")
 }
 
-func TestCrushInfo_Hooks_NoHooks(t *testing.T) {
+func TestRushInfo_Hooks_NoHooks(t *testing.T) {
 	t.Parallel()
 
 	cfg := config.NewTestStore(&config.Config{
 		Providers: csync.NewMap[string, config.ProviderConfig](),
 	})
 
-	output := buildCrushInfo(cfg, nil, nil, nil)
+	output := buildRushInfo(cfg, nil, nil, nil)
 	require.NotContains(t, output, "[hooks]")
 }

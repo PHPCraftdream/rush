@@ -52,7 +52,7 @@ func BuildPayload(eventName, sessionID, cwd, toolName, toolInputJSON string) []b
 // It includes all current process env vars plus hook-specific ones.
 func BuildEnv(eventName, toolName, sessionID, cwd, projectDir, toolInputJSON string) []string {
 	env := os.Environ()
-	env = append(env, shell.CrushEnvMarkers()...)
+	env = append(env, shell.RushEnvMarkers()...)
 	env = append(
 		env,
 		fmt.Sprintf("CRUSH_EVENT=%s", eventName),
@@ -76,7 +76,7 @@ func BuildEnv(eventName, toolName, sessionID, cwd, projectDir, toolInputJSON str
 }
 
 // parseStdout parses the JSON output from a hook command's stdout.
-// Supports both Crush format and Claude Code format (hookSpecificOutput).
+// Supports both Rush format and Claude Code format (hookSpecificOutput).
 func parseStdout(stdout string) HookResult {
 	stdout = strings.TrimSpace(stdout)
 	if stdout == "" {

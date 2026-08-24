@@ -35,11 +35,11 @@ type CLISpec struct {
 	// Called on every line; returns (usage, true) when usage data is found.
 	// If nil, usage will be zero in the Finish stream part.
 	ParseUsageLine func(line []byte) (fantasy.Usage, bool)
-	// UseCrushMCP controls whether crush starts an internal MCP server and
+	// UseRushMCP controls whether crush starts an internal MCP server and
 	// passes it to the CLI process via --mcp-config.  When true and the
 	// provider is running in non-yolo mode, tool calls are routed through
 	// crush's permission system instead of the CLI's own permission handling.
-	UseCrushMCP bool
+	UseRushMCP bool
 	// AlwaysStdin forces the prompt to be delivered via stdin instead of a
 	// CLI flag, and disables PTY mode (using a regular pipe instead).
 	// Use this for CLIs that detect TTY on stdout and switch to interactive
@@ -196,7 +196,7 @@ func claudeSpec(modelID, modelName, modelArg string, ctxWindow int64) CLISpec {
 		BuildArgs:      claudeArgs(modelArg),
 		NewPartParser:  claudePartParser,
 		ParseUsageLine: claudeParseUsageLine,
-		UseCrushMCP:    true,
+		UseRushMCP:     true,
 		SupportsResume: true,
 		ApplyEffort:    applyClaudeEffort,
 		EffortLevels:   claudeEffortLevels,

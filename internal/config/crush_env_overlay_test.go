@@ -21,26 +21,26 @@ import (
 // variable that was absent before the call permanently set to "" after
 // "restoring" it.
 //
-// The replacement (crushEnvOverlay + env.NewOverlay) computes the same
+// The replacement (rushEnvOverlay + env.NewOverlay) computes the same
 // CRUSH_X -> X mapping as a pure function and threads it explicitly
 // through an env.Env value passed to the resolver and to configureProviders'
 // own env.Get calls, with no os.Setenv/os.Unsetenv anywhere in the path.
 
-// TestCrushEnvOverlay_MapsPrefixToBareName pins the core mapping: a
+// TestRushEnvOverlay_MapsPrefixToBareName pins the core mapping: a
 // CRUSH_X entry in the base Env becomes visible as X in the overlay,
 // independent of whatever X is set to in the base.
-func TestCrushEnvOverlay_MapsPrefixToBareName(t *testing.T) {
+func TestRushEnvOverlay_MapsPrefixToBareName(t *testing.T) {
 	base := env.NewFromMap(map[string]string{
 		"CRUSH_OPENAI_API_KEY": "overridden-key",
 		"OPENAI_API_KEY":       "real-key",
 		"UNRELATED":            "unrelated-value",
 	})
 
-	overlay := crushEnvOverlay(base)
+	overlay := rushEnvOverlay(base)
 	require.Equal(t, map[string]string{"OPENAI_API_KEY": "overridden-key"}, overlay)
 }
 
-// TestConfigureProviders_CrushPrefixOverridesAPIKey exercises the
+// TestConfigureProviders_RushPrefixOverridesAPIKey exercises the
 // documented escape hatch end to end: a provider header template
 // referencing $OPENAI_API_KEY resolves to the CRUSH_-prefixed override
 // when present, not the bare env var.
@@ -49,7 +49,7 @@ func TestCrushEnvOverlay_MapsPrefixToBareName(t *testing.T) {
 // unresolved template as a placeholder — see TestConfig_configureProviders)
 // store the RESOLVED value, so they're the observable signal for proving
 // the overlay actually took effect during resolution.
-func TestConfigureProviders_CrushPrefixOverridesAPIKey(t *testing.T) {
+func TestConfigureProviders_RushPrefixOverridesAPIKey(t *testing.T) {
 	knownProviders := []catwalk.Provider{
 		{
 			ID:          "openai",
@@ -78,10 +78,10 @@ func TestConfigureProviders_CrushPrefixOverridesAPIKey(t *testing.T) {
 	require.Equal(t, "crush-override-key", pc.ExtraHeaders["X-Probe"], "CRUSH_ prefix must override the bare env var")
 }
 
-// TestConfigureProviders_NoOverlayWhenNoCrushPrefix verifies the common
+// TestConfigureProviders_NoOverlayWhenNoRushPrefix verifies the common
 // case (no CRUSH_ vars set at all) behaves exactly as before: the plain
 // env var resolves normally.
-func TestConfigureProviders_NoOverlayWhenNoCrushPrefix(t *testing.T) {
+func TestConfigureProviders_NoOverlayWhenNoRushPrefix(t *testing.T) {
 	knownProviders := []catwalk.Provider{
 		{
 			ID:          "openai",

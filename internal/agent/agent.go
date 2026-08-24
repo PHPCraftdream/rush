@@ -1,4 +1,4 @@
-// Package agent is the core orchestration layer for Crush AI agents.
+// Package agent is the core orchestration layer for Rush AI agents.
 //
 // It provides session-based AI agent functionality for managing
 // conversations, tool execution, and message handling. It coordinates
@@ -188,7 +188,7 @@ const (
 // resolved at Run()-time via effectiveSessionPreambleMaxDuration below.
 const sessionPreambleMaxDurationDefault = 60 * time.Second
 
-var userAgent = fmt.Sprintf("Charm-Crush/%s (https://charm.land/crush)", version.Version)
+var userAgent = fmt.Sprintf("Rush/%s (https://github.com/PHPCraftdream/rush)", version.Version)
 
 type SessionAgentCall struct {
 	SessionID        string

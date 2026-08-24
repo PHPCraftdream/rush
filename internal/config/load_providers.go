@@ -27,10 +27,10 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, bas
 
 	// Overlay CRUSH_X -> X explicitly for both env.Get lookups below and
 	// the resolver, rather than mutating the process environment (see
-	// crushEnvOverlay's doc comment for why). The overlay is scoped to
+	// rushEnvOverlay's doc comment for why). The overlay is scoped to
 	// this call: no global state changes, so concurrent reloads/resolves
 	// never see or clobber each other's overlay.
-	overlay := crushEnvOverlay(baseEnv)
+	overlay := rushEnvOverlay(baseEnv)
 	env := env.NewOverlay(baseEnv, overlay)
 	if len(overlay) > 0 {
 		if r, ok := resolver.(*shellVariableResolver); ok {

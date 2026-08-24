@@ -18,13 +18,13 @@ import (
 const defaultKillTimeout = 2 * time.Second
 
 // isolateProcess sets SysProcAttr so the child runs in its own session,
-// fully detached from Crush's controlling terminal and process group.
+// fully detached from Rush's controlling terminal and process group.
 //
-// Fork context: Crush has no interactive TTY of its own (the upstream TUI
+// Fork context: Rush has no interactive TTY of its own (the upstream TUI
 // was replaced by the web UI), so the original "don't let zsh steal the
 // terminal" motivation is moot for us. What still matters for agent-tooling
 // is the second half: a child must not be able to deliver SIGINT/SIGTERM to
-// Crush's own process group, and — paired with the negative-PID kill in
+// Rush's own process group, and — paired with the negative-PID kill in
 // processGroupExecHandler — a cancelled `crush run` step must take its whole
 // subtree (build → compiler → spawned helpers) down with it instead of
 // leaking orphaned grandchildren.
@@ -37,7 +37,7 @@ func isolateProcess(cmd *exec.Cmd) {
 
 // processGroupExecHandler returns an ExecHandlerFunc that replaces
 // interp.DefaultExecHandler with one that fully isolates child processes
-// from Crush's session and signals the entire child process group on
+// from Rush's session and signals the entire child process group on
 // cancellation.
 //
 // The implementation mirrors interp.DefaultExecHandler with two additions:

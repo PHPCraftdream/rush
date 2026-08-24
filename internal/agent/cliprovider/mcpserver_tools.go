@@ -18,11 +18,11 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/bmatcuk/doublestar/v4"
 	"github.com/PHPCraftdream/rush/internal/agent/agentguard"
 	"github.com/PHPCraftdream/rush/internal/permission"
 	"github.com/PHPCraftdream/rush/internal/platform"
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/bmatcuk/doublestar/v4"
 	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -228,7 +228,7 @@ func registerViewTool(srv *mcp.Server, perms permission.Service, workingDir stri
 		// content. Operator reading via shell or external tools still
 		// sees the original.
 		if isClaudeMdPath(path) {
-			content = stripCrushClaudeInitBlock(content)
+			content = stripRushClaudeInitBlock(content)
 		}
 		if input.StartLine > 0 || input.EndLine > 0 {
 			content = sliceLines(content, input.StartLine, input.EndLine)
@@ -242,7 +242,7 @@ func registerViewTool(srv *mcp.Server, perms permission.Service, workingDir stri
 // uses to identify our injected block. Duplicated here to avoid a cmd→
 // cliprovider import (cmd already imports a lot from the agent layer).
 // If the marker scheme ever changes, update both sites.
-var crushClaudeInitBlockPattern = regexp.MustCompile(`(?s)<!-- crush-claude-init:v\d+ -->.*?<!-- /crush-claude-init -->\s*`)
+var rushClaudeInitBlockPattern = regexp.MustCompile(`(?s)<!-- crush-claude-init:v\d+ -->.*?<!-- /crush-claude-init -->\s*`)
 
 func isClaudeMdPath(path string) bool {
 	// Split on BOTH separators regardless of host OS: the path may be a
@@ -256,8 +256,8 @@ func isClaudeMdPath(path string) bool {
 	return strings.EqualFold(base, "CLAUDE.md")
 }
 
-func stripCrushClaudeInitBlock(content string) string {
-	return crushClaudeInitBlockPattern.ReplaceAllString(content, "")
+func stripRushClaudeInitBlock(content string) string {
+	return rushClaudeInitBlockPattern.ReplaceAllString(content, "")
 }
 
 // ── write ─────────────────────────────────────────────────────────────────────

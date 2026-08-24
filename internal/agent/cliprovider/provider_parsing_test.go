@@ -421,13 +421,13 @@ func TestCodexMCPConfigArgs_NoTokenInArgs(t *testing.T) {
 }
 
 // TestCodexMCPConfigArgs_UsesRealServerToken exercises codexMCPConfigArgs
-// against a genuinely running crushMCPServer (not a hand-written literal
+// against a genuinely running rushMCPServer (not a hand-written literal
 // like the test above), confirming the fix holds against the actual random
-// token newCrushMCPServer generates, not just a placeholder addr string.
+// token newRushMCPServer generates, not just a placeholder addr string.
 func TestCodexMCPConfigArgs_UsesRealServerToken(t *testing.T) {
-	srv, err := newCrushMCPServer(context.Background(), nil, nil, "", t.TempDir(), "", nil)
+	srv, err := newRushMCPServer(context.Background(), nil, nil, "", t.TempDir(), "", nil)
 	if err != nil {
-		t.Fatalf("newCrushMCPServer: %v", err)
+		t.Fatalf("newRushMCPServer: %v", err)
 	}
 	t.Cleanup(srv.stop)
 

@@ -182,7 +182,7 @@ type ExternalMCPProxy interface {
 // registration (e.g. from a caller, like `crush ping`, that has no
 // meaningful per-session data directory context).
 // yoloFn is called at request time to decide whether to pass the auto-accept flag.
-// perms is used to show crush's permission dialog when UseCrushMCP specs are invoked.
+// perms is used to show crush's permission dialog when UseRushMCP specs are invoked.
 // sessions is used by the todos MCP tool to persist task lists.
 // mcpProxy, if non-nil, is used for proxying external MCP tools to CLI models.
 func New(workingDir, dataDir string, yoloFn func() bool, perms permission.Service, sessions session.Service, mcpProxy ExternalMCPProxy) fantasy.Provider {

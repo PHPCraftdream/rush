@@ -13,29 +13,29 @@ import (
 	"github.com/PHPCraftdream/rush/internal/skills"
 )
 
-const CrushInfoToolName = "crush_info"
+const RushInfoToolName = "crush_info"
 
 //go:embed crush_info.md
 var crushInfoDescription string
 
-type CrushInfoParams struct{}
+type RushInfoParams struct{}
 
-func NewCrushInfoTool(
+func NewRushInfoTool(
 	cfg *config.ConfigStore,
 	allSkills []*skills.Skill,
 	activeSkills []*skills.Skill,
 	skillTracker *skills.Tracker,
 ) fantasy.AgentTool {
 	return fantasy.NewAgentTool(
-		CrushInfoToolName,
+		RushInfoToolName,
 		crushInfoDescription,
-		func(ctx context.Context, _ CrushInfoParams, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
-			return fantasy.NewTextResponse(buildCrushInfo(cfg, allSkills, activeSkills, skillTracker)), nil
+		func(ctx context.Context, _ RushInfoParams, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			return fantasy.NewTextResponse(buildRushInfo(cfg, allSkills, activeSkills, skillTracker)), nil
 		},
 	)
 }
 
-func buildCrushInfo(cfg *config.ConfigStore, allSkills []*skills.Skill, activeSkills []*skills.Skill, skillTracker *skills.Tracker) string {
+func buildRushInfo(cfg *config.ConfigStore, allSkills []*skills.Skill, activeSkills []*skills.Skill, skillTracker *skills.Tracker) string {
 	var b strings.Builder
 
 	writeConfigFiles(&b, cfg)
@@ -93,7 +93,7 @@ func writeConfigStaleness(b *strings.Builder, cfg *config.ConfigStore) {
 }
 
 // writeModels prints the [model] section, one line per configured slot.
-// Crush resolves models through four named slots: "smart" (the strong
+// Rush resolves models through four named slots: "smart" (the strong
 // top-level default) and "fast" (cheap trivial work) are always
 // meaningful; "worker" (cheap sub-task delegation target) and "reviewer"
 // (strongest slot, explicit --role reviewer only) are optional — they are

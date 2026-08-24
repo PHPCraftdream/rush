@@ -111,7 +111,7 @@ func mergeExternalMCPServers(cfg *Config, store *ConfigStore, external map[strin
 	}
 	for name, extCfg := range external {
 		if _, exists := cfg.MCP[name]; exists {
-			// Crush's own config defines this server — it takes precedence.
+			// Rush's own config defines this server — it takes precedence.
 			continue
 		}
 		// Check if the user has toggled this server off via the UI.

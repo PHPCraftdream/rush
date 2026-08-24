@@ -35,7 +35,7 @@ func TestIsClaudeMdPath(t *testing.T) {
 	}
 }
 
-func TestStripCrushClaudeInitBlock_RemovesV8Block(t *testing.T) {
+func TestStripRushClaudeInitBlock_RemovesV8Block(t *testing.T) {
 	in := `# CLAUDE.md
 
 User content before.
@@ -47,7 +47,7 @@ Lots of delegation guidance the sub-agent should not see.
 
 User content after.
 `
-	out := stripCrushClaudeInitBlock(in)
+	out := stripRushClaudeInitBlock(in)
 	assert.NotContains(t, out, "crush-claude-init")
 	assert.NotContains(t, out, "Working with crush")
 	assert.NotContains(t, out, "delegation guidance")
@@ -55,16 +55,16 @@ User content after.
 	assert.Contains(t, out, "User content after.")
 }
 
-func TestStripCrushClaudeInitBlock_RemovesV9Block(t *testing.T) {
+func TestStripRushClaudeInitBlock_RemovesV9Block(t *testing.T) {
 	in := `<!-- crush-claude-init:v9 -->
 fresh marker
 <!-- /crush-claude-init -->
 `
-	out := stripCrushClaudeInitBlock(in)
+	out := stripRushClaudeInitBlock(in)
 	assert.NotContains(t, out, "fresh marker")
 }
 
-func TestStripCrushClaudeInitBlock_RemovesMultipleBlocks(t *testing.T) {
+func TestStripRushClaudeInitBlock_RemovesMultipleBlocks(t *testing.T) {
 	// Defence against an operator who somehow ended up with two
 	// versioned blocks (e.g. mid-migration). The regex is non-greedy
 	// per block, so both should disappear independently.
@@ -78,7 +78,7 @@ new
 <!-- /crush-claude-init -->
 suffix
 `
-	out := stripCrushClaudeInitBlock(in)
+	out := stripRushClaudeInitBlock(in)
 	assert.NotContains(t, out, "old")
 	assert.NotContains(t, out, "new")
 	assert.Contains(t, out, "prefix")
@@ -86,13 +86,13 @@ suffix
 	assert.Contains(t, out, "suffix")
 }
 
-func TestStripCrushClaudeInitBlock_LeavesContentWithoutBlock(t *testing.T) {
+func TestStripRushClaudeInitBlock_LeavesContentWithoutBlock(t *testing.T) {
 	in := "just plain content\nno markers here\n"
-	out := stripCrushClaudeInitBlock(in)
+	out := stripRushClaudeInitBlock(in)
 	assert.Equal(t, in, out)
 }
 
-func TestStripCrushClaudeInitBlock_UnclosedMarkerLeftAsIs(t *testing.T) {
+func TestStripRushClaudeInitBlock_UnclosedMarkerLeftAsIs(t *testing.T) {
 	// If the closing marker is missing (corrupt file), don't munch
 	// everything after the opening marker — the regex requires both
 	// halves, so the broken half stays visible. That's the safe
@@ -103,6 +103,6 @@ func TestStripCrushClaudeInitBlock_UnclosedMarkerLeftAsIs(t *testing.T) {
 no closing marker
 keep this visible
 `
-	out := stripCrushClaudeInitBlock(in)
+	out := stripRushClaudeInitBlock(in)
 	assert.Equal(t, in, out)
 }

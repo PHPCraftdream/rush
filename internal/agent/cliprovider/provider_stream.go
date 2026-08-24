@@ -20,9 +20,9 @@ import (
 	"sync"
 
 	"charm.land/fantasy"
-	gopty "github.com/aymanbagabas/go-pty"
 	"github.com/PHPCraftdream/rush/internal/platform"
 	"github.com/PHPCraftdream/rush/internal/session"
+	gopty "github.com/aymanbagabas/go-pty"
 )
 
 func (m *cliModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.StreamResponse, error) {
@@ -100,7 +100,7 @@ func (m *cliModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.Strea
 	// via defer here — defer in Stream() would fire when Stream() returns
 	// (before the closure runs), deleting the config file before claude CLI
 	// can read it.
-	var mcpSrv *crushMCPServer
+	var mcpSrv *rushMCPServer
 	var mcpTmpCfg string     // path to temp MCP config file (claude-style); "" if not used
 	var qwenMCPName string   // registered name in ~/.qwen/settings.json; "" if not used
 	var geminiMCPName string // registered name in ~/.gemini/settings.json; "" if not used
@@ -111,9 +111,9 @@ func (m *cliModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.Strea
 	// Write / Task tools, bypassing agentguard (batch 16) and the MCP permission
 	// dialog. yolo only controls whether claude needs the bypass-permissions flag,
 	// not whether our MCP bridge sits in the loop.
-	if m.spec.UseCrushMCP && m.perms != nil {
+	if m.spec.UseRushMCP && m.perms != nil {
 		var err error
-		mcpSrv, err = newCrushMCPServer(ctx, m.perms, m.sessions, sessionID, m.workingDir, "", m.mcpProxy)
+		mcpSrv, err = newRushMCPServer(ctx, m.perms, m.sessions, sessionID, m.workingDir, "", m.mcpProxy)
 		if err != nil {
 			slog.Warn("cliprovider: failed to start MCP server, falling back to CLI permissions", "err", err)
 		} else {
@@ -150,14 +150,14 @@ func (m *cliModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.Strea
 	// When crush's own MCP server is active, tell the CLI to only allow our
 	// MCP tools. This pre-approves them inside the CLI's own permission layer
 	// (so calls reach our handlers), while the CLI's built-in tools remain
-	// blocked. Crush still shows its own permission dialog in the UI for each
+	// blocked. Rush still shows its own permission dialog in the UI for each
 	// tool call via perms.Request() inside the MCP handlers.
 	// We also explicitly disallow TodoWrite so the model uses mcp__crush__todos
 	// (which persists tasks to the crush session) instead of the CLI-native
 	// TodoWrite tool that writes to a local file unknown to the crush UI.
 	if mcpSrv != nil {
 		allowed := []string{
-			// Crush MCP bridge tools (go through crush's permission system).
+			// Rush MCP bridge tools (go through crush's permission system).
 			"mcp__crush__Bash",
 			"mcp__crush__Read",
 			"mcp__crush__Write",
@@ -199,7 +199,7 @@ func (m *cliModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.Strea
 			slog.Warn("cliprovider: failed to get qwen MCP ID", "err", idErr)
 		} else {
 			var err error
-			mcpSrv, err = newCrushMCPServer(ctx, m.perms, m.sessions, sessionID, m.workingDir, "", m.mcpProxy)
+			mcpSrv, err = newRushMCPServer(ctx, m.perms, m.sessions, sessionID, m.workingDir, "", m.mcpProxy)
 			if err != nil {
 				slog.Warn("cliprovider: failed to start qwen MCP server", "err", err)
 			} else {
@@ -248,7 +248,7 @@ func (m *cliModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.Strea
 			slog.Warn("cliprovider: failed to get gemini MCP ID", "err", idErr)
 		} else {
 			var err error
-			mcpSrv, err = newCrushMCPServer(ctx, m.perms, m.sessions, sessionID, m.workingDir, "", m.mcpProxy)
+			mcpSrv, err = newRushMCPServer(ctx, m.perms, m.sessions, sessionID, m.workingDir, "", m.mcpProxy)
 			if err != nil {
 				slog.Warn("cliprovider: failed to start gemini MCP server", "err", err)
 			} else {
@@ -277,7 +277,7 @@ func (m *cliModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.Strea
 	// to avoid leaking secrets in process lists (query params are visible in /proc/<pid>/cmdline).
 	if m.spec.CodexMCPIntegration && m.perms != nil {
 		var err error
-		mcpSrv, err = newCrushMCPServer(ctx, m.perms, m.sessions, sessionID, m.workingDir, "", m.mcpProxy)
+		mcpSrv, err = newRushMCPServer(ctx, m.perms, m.sessions, sessionID, m.workingDir, "", m.mcpProxy)
 		if err != nil {
 			slog.Warn("cliprovider: failed to start codex MCP server", "err", err)
 		} else {

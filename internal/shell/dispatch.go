@@ -562,7 +562,7 @@ func parseEnvShebang(rest string) (*shebang, error) {
 
 // runShellSource parses path's contents as POSIX shell and runs it
 // in-process via a nested interp.Runner. It reuses the parent runner's cwd,
-// env, and stdio, and rebuilds the Crush handler stack so builtins and the
+// env, and stdio, and rebuilds the Rush handler stack so builtins and the
 // dispatch handler itself remain available to anything the script invokes.
 // Positional parameters ($1, $2, …) come from args[1:].
 //

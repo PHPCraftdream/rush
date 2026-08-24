@@ -55,7 +55,7 @@ const RunQueueMaxAttempts = 10
 // 10 is a reasonable default for typical resource constraints: one turn
 // can hold ~1-2 HTTP connections (LLM request + tools) plus a few SQLite
 // writers, so 10 concurrent turns stay within practical limits for a
-// single-process Crush instance. Each session still has its own inFlight
+// single-process Rush instance. Each session still has its own inFlight
 // guard, so multiple entries for the same session never run concurrently
 // even if the pool is not full.
 const RunQueueMaxConcurrentExecutions = 10

@@ -13,7 +13,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/home"
 )
 
-// crushEnvOverlay scans e for "CRUSH_X" entries and returns a map of the
+// rushEnvOverlay scans e for "CRUSH_X" entries and returns a map of the
 // bare "X" -> value they should shadow, so a config value written as
 // "$FOO" resolves against CRUSH_FOO when the caller has set it (the
 // documented escape hatch for overriding a variable crush itself doesn't
@@ -34,7 +34,7 @@ import (
 // "restoring" it. See internal/env.NewOverlay for the replacement
 // mechanism: the overlay computed here is passed explicitly to the
 // resolver and to configureProviders' own env.Get calls instead.
-func crushEnvOverlay(e env.Env) map[string]string {
+func rushEnvOverlay(e env.Env) map[string]string {
 	const prefix = "CRUSH_"
 	overlay := make(map[string]string)
 	for _, ev := range e.Env() {
