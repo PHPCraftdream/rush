@@ -194,7 +194,9 @@ export function hasLiveEventsSinceRequest(sessionID: string | undefined): boolea
 // something is nominally "in flight". A messages_list reply is applied only
 // if its `id` matches the latest recorded request for its session (or
 // there's nothing recorded, e.g. an older cached frontend that never sent
-// an id at all) — replies to any superseded request are dropped. See
+// an id at all) — replies to any superseded request are dropped.
+// Entries live until the session is removed from the store — the one end
+// that doesn't weaken the floor — via forgetSessionRequestState below. See
 // sendLoadMessages/isStaleMessagesReply below.
 const latestLoadMessagesID = new Map<string, string>();
 
@@ -219,4 +221,17 @@ export function isStaleMessagesReply(sessionID: string | undefined, replyID: str
   const latest = latestLoadMessagesID.get(sessionID);
   if (!latest) return false;
   return latest !== replyID;
+}
+
+/** Drops every per-session request-bookkeeping entry (stale-reply floor
+ * plus live-event epochs) for a session that has been removed from
+ * $sessions. Session IDs are never reused, so nothing arriving later for
+ * this ID needs the tracking; without this, all three maps above grow one
+ * entry per session ever loaded for the page's lifetime. Called from
+ * store.ts removeSession, the single choke point every session-removal
+ * path funnels through (session_deleted, sidebar delete replies). */
+export function forgetSessionRequestState(sessionID: string) {
+  latestLoadMessagesID.delete(sessionID);
+  liveEventEpoch.delete(sessionID);
+  requestEpoch.delete(sessionID);
 }

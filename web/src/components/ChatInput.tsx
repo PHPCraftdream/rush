@@ -300,10 +300,20 @@ export function ChatInput() {
     if (sendNow) {
       if (!activeSessionID) return;
       const content = skill.instructions || `/${skill.name}`;
+      // A file picked before the skill was chosen rides on the same frame
+      // (same wire shape as send(): the backend appends "[Attached file:
+      // <path>]" to the prompt itself) — without this the badge would stay
+      // visible while the file silently never goes out.
+      const payload: Record<string, unknown> = { sessionID: activeSessionID, content };
+      const wire = toWireAttachments(attachments);
+      if (wire.length > 0) {
+        payload.attachments = wire;
+      }
       // Park in the offline outbox when the socket is down; only clear the
       // input once the frame is on the wire or queued for delivery.
-      if (!ws.sendQueued("send_message", { sessionID: activeSessionID, content })) return;
+      if (!ws.sendQueued("send_message", payload)) return;
       setText("");
+      setAttachments([]);
       if (textareaRef.current) textareaRef.current.style.height = "auto";
     } else {
       // Tab: fill in the command name + space so user can keep typing

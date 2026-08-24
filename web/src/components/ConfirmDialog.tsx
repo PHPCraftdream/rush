@@ -44,7 +44,11 @@ export function ConfirmDialog({
   return (
     <div
       className="modal-overlay p-4 z-[100]"
-      onClick={onCancel}
+      onClick={() => {
+        // Same busy guard as the buttons and the key handler: a confirm
+        // in flight must not be dismissed, only concluded or errored.
+        if (!busy) onCancel();
+      }}
     >
       <div
         className="modal-panel w-full max-w-sm overflow-hidden chat-font"

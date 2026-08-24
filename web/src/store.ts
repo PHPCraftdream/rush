@@ -114,6 +114,10 @@ export function upsertSession(s: Session) {
 
 export function removeSession(id: string) {
   $sessions.set($sessions.get().filter((s) => s.ID !== id));
+  // Drop the ws-layer request bookkeeping with the row (task #698): the
+  // stale-reply floor and live-event epochs only matter while replies for
+  // this session can still arrive and be applied.
+  forgetSessionRequestState(id);
 }
 
 export function setActiveSession(id: string | null) {
@@ -435,7 +439,7 @@ export function getDefaultModelKey(role: "smart" | "fast", config: ConfigPayload
   return "";
 }
 
-import { ws } from "./ws";
+import { ws, forgetSessionRequestState } from "./ws";
 import { logClientEvent } from "./telemetry";
 import { isTerminallyFinished } from "./components/Message/textParts";
 
@@ -774,16 +778,6 @@ export function enqueueMessage(
     { id: newQueueID(), content, attachments },
   ]);
   $messageQueue.set(q);
-}
-
-export function dequeueNextMessage(sessionID: string): string | undefined {
-  const q = new Map($messageQueue.get());
-  const msgs = q.get(sessionID) ?? [];
-  if (!msgs.length) return undefined;
-  const [first, ...rest] = msgs;
-  if (!rest.length) q.delete(sessionID); else q.set(sessionID, rest);
-  $messageQueue.set(q);
-  return first.content;
 }
 
 export interface FlushedQueue {
