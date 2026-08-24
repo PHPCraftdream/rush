@@ -11,16 +11,18 @@ package agent
 // call, ensuring the context is always cleaned up.
 
 import (
-	"charm.land/catwalk/pkg/catwalk"
-	"charm.land/fantasy"
 	"context"
 	"errors"
 	"fmt"
-	"github.com/stretchr/testify/require"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"charm.land/catwalk/pkg/catwalk"
+	"charm.land/fantasy"
+
+	"github.com/stretchr/testify/require"
 )
 
 // contextCapturingModel is a fantasy.LanguageModel that captures the context

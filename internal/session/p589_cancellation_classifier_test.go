@@ -88,7 +88,7 @@ func realSQLiteBusyErrorForCancellationTest(t *testing.T) error {
 	require.NoError(t, err)
 	db1.SetMaxOpenConns(1)
 	t.Cleanup(func() { db1.Close() })
-	_, err = db1.Exec(`CREATE TABLE t (id TEXT PRIMARY KEY)`)
+	_, err = db1.ExecContext(context.Background(), `CREATE TABLE t (id TEXT PRIMARY KEY)`)
 	require.NoError(t, err)
 
 	db2, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(0)&_pragma=journal_mode(WAL)")
@@ -99,13 +99,13 @@ func realSQLiteBusyErrorForCancellationTest(t *testing.T) error {
 	tx1, err := db1.BeginTx(context.Background(), nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { tx1.Rollback() })
-	_, err = tx1.Exec(`INSERT INTO t (id) VALUES ('a')`)
+	_, err = tx1.ExecContext(context.Background(), `INSERT INTO t (id) VALUES ('a')`)
 	require.NoError(t, err)
 
 	tx2, err := db2.BeginTx(context.Background(), nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { tx2.Rollback() })
-	_, busyErr := tx2.Exec(`INSERT INTO t (id) VALUES ('b')`)
+	_, busyErr := tx2.ExecContext(context.Background(), `INSERT INTO t (id) VALUES ('b')`)
 	require.Error(t, busyErr, "the second writer must be rejected, or this test proves nothing")
 
 	return busyErr
@@ -125,12 +125,12 @@ func realConstraintErrorForCancellationTest(t *testing.T) error {
 	rawDB, err := sql.Open("sqlite", path+"?_pragma=foreign_keys(ON)")
 	require.NoError(t, err)
 	t.Cleanup(func() { rawDB.Close() })
-	_, err = rawDB.Exec(`CREATE TABLE parent (id TEXT PRIMARY KEY)`)
+	_, err = rawDB.ExecContext(context.Background(), `CREATE TABLE parent (id TEXT PRIMARY KEY)`)
 	require.NoError(t, err)
-	_, err = rawDB.Exec(`CREATE TABLE child (id TEXT PRIMARY KEY, parent_id TEXT NOT NULL REFERENCES parent(id))`)
+	_, err = rawDB.ExecContext(context.Background(), `CREATE TABLE child (id TEXT PRIMARY KEY, parent_id TEXT NOT NULL REFERENCES parent(id))`)
 	require.NoError(t, err)
 
-	_, fkErr := rawDB.Exec(`INSERT INTO child (id, parent_id) VALUES ('c1', 'does-not-exist')`)
+	_, fkErr := rawDB.ExecContext(context.Background(), `INSERT INTO child (id, parent_id) VALUES ('c1', 'does-not-exist')`)
 	require.Error(t, fkErr, "the constraint violation must be rejected, or this test proves nothing")
 	var sqliteErr *sqlitedriver.Error
 	require.ErrorAs(t, fkErr, &sqliteErr)
@@ -152,12 +152,12 @@ func TestIsPermanentOrphanOutboxDrainError_ConstraintViolationIsPermanent(t *tes
 	rawDB, err := sql.Open("sqlite", path+"?_pragma=foreign_keys(ON)")
 	require.NoError(t, err)
 	t.Cleanup(func() { rawDB.Close() })
-	_, err = rawDB.Exec(`CREATE TABLE parent (id TEXT PRIMARY KEY)`)
+	_, err = rawDB.ExecContext(context.Background(), `CREATE TABLE parent (id TEXT PRIMARY KEY)`)
 	require.NoError(t, err)
-	_, err = rawDB.Exec(`CREATE TABLE child (id TEXT PRIMARY KEY, parent_id TEXT NOT NULL REFERENCES parent(id))`)
+	_, err = rawDB.ExecContext(context.Background(), `CREATE TABLE child (id TEXT PRIMARY KEY, parent_id TEXT NOT NULL REFERENCES parent(id))`)
 	require.NoError(t, err)
 
-	_, fkErr := rawDB.Exec(`INSERT INTO child (id, parent_id) VALUES ('c1', 'does-not-exist')`)
+	_, fkErr := rawDB.ExecContext(context.Background(), `INSERT INTO child (id, parent_id) VALUES ('c1', 'does-not-exist')`)
 	require.Error(t, fkErr)
 	var sqliteErr *sqlitedriver.Error
 	require.ErrorAs(t, fkErr, &sqliteErr)
@@ -348,11 +348,11 @@ func TestProcessOrphanOutboxEntry_NonCtxPermanentErrorStillCounts(t *testing.T) 
 	rawDB, err := sql.Open("sqlite", path+"?_pragma=foreign_keys(ON)")
 	require.NoError(t, err)
 	t.Cleanup(func() { rawDB.Close() })
-	_, err = rawDB.Exec(`CREATE TABLE parent (id TEXT PRIMARY KEY)`)
+	_, err = rawDB.ExecContext(context.Background(), `CREATE TABLE parent (id TEXT PRIMARY KEY)`)
 	require.NoError(t, err)
-	_, err = rawDB.Exec(`CREATE TABLE child (id TEXT PRIMARY KEY, parent_id TEXT NOT NULL REFERENCES parent(id))`)
+	_, err = rawDB.ExecContext(context.Background(), `CREATE TABLE child (id TEXT PRIMARY KEY, parent_id TEXT NOT NULL REFERENCES parent(id))`)
 	require.NoError(t, err)
-	_, fkErr := rawDB.Exec(`INSERT INTO child (id, parent_id) VALUES ('c1', 'does-not-exist')`)
+	_, fkErr := rawDB.ExecContext(context.Background(), `INSERT INTO child (id, parent_id) VALUES ('c1', 'does-not-exist')`)
 	require.Error(t, fkErr)
 
 	fake := &fakePumpSessionsForCancellationTest{

@@ -101,8 +101,10 @@ func (m *mockSessionAgent) SetTimeoutOptions(bool, time.Duration) {}
 func (m *mockSessionAgent) ReserveExclusive(ctx context.Context, sessionID string) (holdCtx context.Context, epoch uint64, cancel context.CancelFunc, ok bool) {
 	return ctx, 1, func() {}, true
 }
+
 func (m *mockSessionAgent) ReleaseExclusive(sessionID string, epoch uint64, cancel context.CancelFunc) {
 }
+
 func (m *mockSessionAgent) RunWithReservedOwnership(ctx context.Context, call SessionAgentCall, epoch uint64, cancel context.CancelFunc, onHandoff func()) (*fantasy.AgentResult, error) {
 	return m.runFunc(ctx, call)
 }

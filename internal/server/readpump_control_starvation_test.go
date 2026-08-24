@@ -86,9 +86,11 @@ func (f *blockingCoordinator) ClearQueue(sessionID string) {}
 func (f *blockingCoordinator) InterruptAndSend(ctx context.Context, sessionID, prompt string, smart, fast *agent.ModelOverride, attachments ...message.Attachment) error {
 	return nil
 }
+
 func (f *blockingCoordinator) InjectMessage(ctx context.Context, sessionID, prompt string, attachments ...message.Attachment) (message.Message, error) {
 	return message.Message{}, nil
 }
+
 func (f *blockingCoordinator) Summarize(context.Context, string, *agent.SummarizeSnapshot) error {
 	return nil
 }
@@ -96,9 +98,11 @@ func (f *blockingCoordinator) SummarizeQueued(sessionID string) bool { return fa
 func (f *blockingCoordinator) TakeSummarizeQueue(sessionID string) (*agent.SummarizeSnapshot, bool) {
 	return nil, false
 }
+
 func (f *blockingCoordinator) RebuildSessionAgentCall(ctx context.Context, data session.SessionAgentCallData) (agent.SessionAgentCall, error) {
 	return agent.SessionAgentCall{}, nil
 }
+
 func (f *blockingCoordinator) RunSessionAgentCall(ctx context.Context, call agent.SessionAgentCall) (*fantasy.AgentResult, error) {
 	return nil, nil
 }
@@ -107,12 +111,15 @@ func (f *blockingCoordinator) Model() agent.Model                               
 func (f *blockingCoordinator) UpdateModels(ctx context.Context) error                { return nil }
 func (f *blockingCoordinator) GetSystemPrompt() string                               { return "" }
 func (f *blockingCoordinator) BuildSystemPrompt(ctx context.Context) (string, error) { return "", nil }
+
 func (f *blockingCoordinator) BuildSystemPromptForSession(ctx context.Context, sessionID string) (string, error) {
 	return "", nil
 }
+
 func (f *blockingCoordinator) UpdateSessionSystemPrompt(ctx context.Context, sessionID, prompt string) error {
 	return nil
 }
+
 func (f *blockingCoordinator) SetAgentTimeoutOptions(extendsOnProgress bool, hardCap time.Duration) {
 }
 func (f *blockingCoordinator) SetRunLimits(maxCost float64, maxTokens int64)    {}

@@ -248,8 +248,10 @@ var errNoExecutionAttempted = errors.New("run_queue_pump: admission was held but
 // "nothing happened here" contract already covers -- that case is not new
 // and every existing caller/test already depends on it staying
 // (DrainNoWork, nil).
-var ErrDrainIncomplete = errors.New("run_queue_pump: session became busy/contended after only part of its pending run-queue work was drained")
-var ErrDrainFailureUnspecified = errors.New("drain failure recorded without an underlying error")
+var (
+	ErrDrainIncomplete         = errors.New("run_queue_pump: session became busy/contended after only part of its pending run-queue work was drained")
+	ErrDrainFailureUnspecified = errors.New("drain failure recorded without an underlying error")
+)
 
 // ErrOutstandingRunQueueEntry is returned by DrainSessionNow's terminal
 // "nothing pending" check (task #610, P0 -- the seventh form of this

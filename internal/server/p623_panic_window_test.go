@@ -103,9 +103,7 @@ func TestHandleRerunMessage_PanicBeforeHandoffReleasesReservation(t *testing.T) 
 		defer close(done)
 		// Recover from panic like runRecovered does.
 		defer func() {
-			if r := recover(); r != nil {
-				// Expected panic in test - continue normally
-			}
+			recover() // expected panic in test - continue normally
 		}()
 		handleRerunMessage(ctx, a, client, WSMessage{ID: "req-1", Type: CmdRerunMessage, Payload: payload})
 	}()
@@ -177,9 +175,7 @@ func TestHandleRerunMessage_PanicBeforeHandoffRecreatesPrompt(t *testing.T) {
 	go func() {
 		defer close(done)
 		defer func() {
-			if r := recover(); r != nil {
-				// Expected panic — mirrors hub.runRecovered.
-			}
+			recover() // expected panic — mirrors hub.runRecovered.
 		}()
 		handleRerunMessage(ctx, a, client, WSMessage{ID: "req-1", Type: CmdRerunMessage, Payload: payload})
 	}()

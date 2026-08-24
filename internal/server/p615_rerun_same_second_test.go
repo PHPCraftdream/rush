@@ -39,7 +39,7 @@ import (
 func forceSameCreatedAt(t *testing.T, db *sql.DB, ids []string, ts int64) {
 	t.Helper()
 	for _, id := range ids {
-		_, err := db.Exec(`UPDATE messages SET created_at = ? WHERE id = ?`, ts, id)
+		_, err := db.ExecContext(t.Context(), `UPDATE messages SET created_at = ? WHERE id = ?`, ts, id)
 		require.NoError(t, err, "forcing created_at for %s", id)
 	}
 }

@@ -327,7 +327,7 @@ func realSQLiteBusyErrorForTest(t *testing.T) error {
 	require.NoError(t, err)
 	db1.SetMaxOpenConns(1)
 	t.Cleanup(func() { db1.Close() })
-	_, err = db1.Exec(`CREATE TABLE t (id TEXT PRIMARY KEY)`)
+	_, err = db1.ExecContext(context.Background(), `CREATE TABLE t (id TEXT PRIMARY KEY)`)
 	require.NoError(t, err)
 
 	db2, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(0)&_pragma=journal_mode(WAL)")
@@ -338,13 +338,13 @@ func realSQLiteBusyErrorForTest(t *testing.T) error {
 	tx1, err := db1.BeginTx(context.Background(), nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { tx1.Rollback() })
-	_, err = tx1.Exec(`INSERT INTO t (id) VALUES ('a')`)
+	_, err = tx1.ExecContext(context.Background(), `INSERT INTO t (id) VALUES ('a')`)
 	require.NoError(t, err)
 
 	tx2, err := db2.BeginTx(context.Background(), nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { tx2.Rollback() })
-	_, busyErr := tx2.Exec(`INSERT INTO t (id) VALUES ('b')`)
+	_, busyErr := tx2.ExecContext(context.Background(), `INSERT INTO t (id) VALUES ('b')`)
 	require.Error(t, busyErr, "the second writer must be rejected, or this test proves nothing")
 
 	return busyErr

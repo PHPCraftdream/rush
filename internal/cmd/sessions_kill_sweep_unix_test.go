@@ -213,7 +213,7 @@ func spawnCrashTestLockHolder(t *testing.T, dataDir, sessionID string) *killTest
 	exe, err := os.Executable()
 	require.NoError(t, err)
 
-	c := exec.Command(exe, "-test.run=^TestHelperCrashTestLockHold$")
+	c := exec.CommandContext(t.Context(), exe, "-test.run=^TestHelperCrashTestLockHold$")
 	c.Env = append(os.Environ(),
 		crashTestHelperProcessEnv+"=1",
 		"CRUSH_SESSIONS_CRASH_LOCK_HELPER_DATADIR="+dataDir,

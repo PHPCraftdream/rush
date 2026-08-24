@@ -105,7 +105,7 @@ func (s *stealOnNackSessions) NackRunQueueEntry(ctx context.Context, id, leasedB
 	if err := s.Service.NackRunQueueEntry(ctx, id, leasedBy, lastError); err != nil {
 		return err
 	}
-	leased, err := s.Service.LeaseRunQueueEntry(context.Background(), s.sessionID, "external-process-pump", time.Minute)
+	leased, err := s.LeaseRunQueueEntry(context.Background(), s.sessionID, "external-process-pump", time.Minute)
 	if err == nil && leased != nil {
 		s.stolen.Store(true)
 	}
@@ -188,11 +188,11 @@ func (s *stealAndTerminalFailOnNackSessions) NackRunQueueEntry(ctx context.Conte
 	if err := s.Service.NackRunQueueEntry(ctx, id, leasedBy, lastError); err != nil {
 		return err
 	}
-	leased, err := s.Service.LeaseRunQueueEntry(context.Background(), s.sessionID, "external-process-pump", time.Minute)
+	leased, err := s.LeaseRunQueueEntry(context.Background(), s.sessionID, "external-process-pump", time.Minute)
 	if err != nil || leased == nil {
 		return nil
 	}
-	if termErr := s.Service.TerminalFailRunQueueEntry(context.Background(), leased.ID, "external-process-pump"); termErr == nil {
+	if termErr := s.TerminalFailRunQueueEntry(context.Background(), leased.ID, "external-process-pump"); termErr == nil {
 		s.terminalFailed.Store(true)
 	}
 	return nil
@@ -305,11 +305,11 @@ func (s *stealAndAckOnNackSessions) NackRunQueueEntry(ctx context.Context, id, l
 	if err := s.Service.NackRunQueueEntry(ctx, id, leasedBy, lastError); err != nil {
 		return err
 	}
-	leased, err := s.Service.LeaseRunQueueEntry(context.Background(), s.sessionID, "external-process-pump", time.Minute)
+	leased, err := s.LeaseRunQueueEntry(context.Background(), s.sessionID, "external-process-pump", time.Minute)
 	if err != nil || leased == nil {
 		return nil
 	}
-	if _, ackErr := s.Service.AckRunQueueEntry(context.Background(), leased.ID, "external-process-pump"); ackErr == nil {
+	if _, ackErr := s.AckRunQueueEntry(context.Background(), leased.ID, "external-process-pump"); ackErr == nil {
 		s.acked.Store(true)
 	}
 	return nil

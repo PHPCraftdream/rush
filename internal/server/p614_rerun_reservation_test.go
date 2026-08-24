@@ -97,12 +97,15 @@ func (m *mailboxLikeCoordinator) GetSystemPrompt() string                { retur
 func (m *mailboxLikeCoordinator) BuildSystemPrompt(ctx context.Context) (string, error) {
 	return "", nil
 }
+
 func (m *mailboxLikeCoordinator) BuildSystemPromptForSession(ctx context.Context, sessionID string) (string, error) {
 	return "", nil
 }
+
 func (m *mailboxLikeCoordinator) UpdateSessionSystemPrompt(ctx context.Context, sessionID, prompt string) error {
 	return nil
 }
+
 func (m *mailboxLikeCoordinator) SetAgentTimeoutOptions(extendsOnProgress bool, hardCap time.Duration) {
 }
 func (m *mailboxLikeCoordinator) SetRunLimits(maxCost float64, maxTokens int64)    {}
@@ -114,6 +117,7 @@ func (m *mailboxLikeCoordinator) ResetAutoResumeCounter(sessionID string)       
 func (m *mailboxLikeCoordinator) RebuildSessionAgentCall(ctx context.Context, data session.SessionAgentCallData) (agent.SessionAgentCall, error) {
 	return agent.SessionAgentCall{}, nil
 }
+
 func (m *mailboxLikeCoordinator) RunSessionAgentCall(ctx context.Context, call agent.SessionAgentCall) (*fantasy.AgentResult, error) {
 	return nil, nil
 }

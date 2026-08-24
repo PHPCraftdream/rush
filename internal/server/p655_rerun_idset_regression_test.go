@@ -53,11 +53,13 @@ import (
 )
 
 // Compile-time guarantee that the fakes satisfy agent.Coordinator.
-var _ agent.Coordinator = (*compactingErrorCoordinator)(nil)
-var _ agent.Coordinator = (*postHandoffPanicCoordinator)(nil)
-var _ agent.Coordinator = (*promptThenErrorCoordinator)(nil)
-var _ agent.Coordinator = (*handoffOnlyErrorCoordinator)(nil)
-var _ message.Service = (*listCallFailingMessages)(nil)
+var (
+	_ agent.Coordinator = (*compactingErrorCoordinator)(nil)
+	_ agent.Coordinator = (*postHandoffPanicCoordinator)(nil)
+	_ agent.Coordinator = (*promptThenErrorCoordinator)(nil)
+	_ agent.Coordinator = (*handoffOnlyErrorCoordinator)(nil)
+	_ message.Service   = (*listCallFailingMessages)(nil)
+)
 
 // compactingErrorCoordinator simulates a replacement turn that fires the
 // real onHandoff, creates the prompt + reply rows (mimicking
@@ -314,9 +316,7 @@ func TestHandleRerunMessage_PanicBetweenHandoffAndCreateUserMessagePreservesProm
 	go func() {
 		defer close(done)
 		defer func() {
-			if r := recover(); r != nil {
-				// Expected panic — mirrors hub.runRecovered.
-			}
+			recover() // expected panic — mirrors hub.runRecovered.
 		}()
 		handleRerunMessage(ctx, a, client, WSMessage{ID: "req-1", Type: CmdRerunMessage, Payload: payload})
 	}()

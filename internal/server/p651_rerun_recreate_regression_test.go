@@ -37,8 +37,10 @@ import (
 )
 
 // Compile-time guarantee that the fake satisfies agent.Coordinator.
-var _ agent.Coordinator = (*compactingSuccessCoordinator)(nil)
-var _ agent.Coordinator = (*concurrentWriterFailureCoordinator)(nil)
+var (
+	_ agent.Coordinator = (*compactingSuccessCoordinator)(nil)
+	_ agent.Coordinator = (*concurrentWriterFailureCoordinator)(nil)
+)
 
 // compactingSuccessCoordinator simulates a successful replacement turn that
 // performs in-turn silent compaction: it creates the new prompt, assistant
@@ -101,21 +103,15 @@ func (m *compactingSuccessCoordinator) RunWithReservedOwnership(ctx context.Cont
 	// Find and delete the old messages by their text content.
 	for _, msg := range allMsgs {
 		if msg.Role == message.User && msg.Content().Text == "earlier question" {
-			if err := m.a.Messages.Delete(ctx, msg.ID); err != nil {
-				// Ignore errors.
-			}
+			_ = m.a.Messages.Delete(ctx, msg.ID) // best-effort; test setup only
 		}
 		if msg.Role == message.Assistant && msg.Content().Text == "earlier answer" {
-			if err := m.a.Messages.Delete(ctx, msg.ID); err != nil {
-				// Ignore errors.
-			}
+			_ = m.a.Messages.Delete(ctx, msg.ID) // best-effort; test setup only
 		}
 	}
 
 	// Delete the summary to bring the final count to exactly 2.
-	if err := m.a.Messages.Delete(ctx, summary.ID); err != nil {
-		// Ignore errors.
-	}
+	_ = m.a.Messages.Delete(ctx, summary.ID) // best-effort; test setup only
 
 	// Release ownership and return success.
 	m.ReleaseExclusive(sessionID, epoch, cancel)
