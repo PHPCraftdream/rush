@@ -271,25 +271,11 @@ test("delete button sends delete_session command", async ({ page }) => {
   expect((cmd.payload as { sessionID: string }).sessionID).toBe("del-x");
 });
 
-test("deleted session disappears from sidebar immediately", async ({ page }) => {
-  await page.goto("/");
-  await sendMockWSMessage(page, {
-    type: "sessions_list",
-    payload: [
-      makeSession({ ID: "del-keep", Title: "Keep This" }),
-      makeSession({ ID: "del-gone", Title: "Delete This" }),
-    ],
-  });
-  await expect(page.getByTestId("session-title-del-gone")).toBeVisible({ timeout: 3000 });
-  // Hover and click delete
-  const sessionRow = page.getByTestId("session-del-gone");
-  await sessionRow.hover();
-  await page.getByTestId("session-delete-del-gone").click();
-  // Confirm the delete dialog
-  await page.getByRole("button", { name: "Delete", exact: true }).click();
-  await expect(page.getByTestId("session-del-gone")).not.toBeVisible({ timeout: 2000 });
-  await expect(page.getByTestId("session-del-keep")).toBeVisible();
-});
+// Full delete-confirmation round trip (send delete_session, wait for the
+// server's reply, only then remove the row) is covered by
+// sidebar-delete.spec.ts's "CONTROL: successful delete_session removes the
+// row and stays removed" test — task #684 changed Sidebar's delete to wait
+// for that reply instead of removing the row immediately on send.
 
 // ── Session rename ──────────────────────────────────────────────────────────
 
