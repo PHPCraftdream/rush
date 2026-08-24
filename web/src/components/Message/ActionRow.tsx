@@ -116,7 +116,17 @@ export const ActionRow = memo(function ActionRow({ item, isCurrent, suppressAuto
             <div className="flex items-center gap-0.5 hover-reveal shrink-0" onClick={(e) => e.stopPropagation()}>
               <CopyButton text={item.text} className="px-1.5 py-1 text-xs" />
               <button
-                onClick={(e) => { e.preventDefault(); e.stopPropagation(); setEditingThinking(true); }}
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  // The row body (including EditForm below) is gated on
+                  // `open`; editing a collapsed row implies wanting to see
+                  // it, so force it open (mirrors ThinkingPart.tsx's
+                  // openEditEv) — otherwise the click sets state but
+                  // renders nothing (the sibling bug #676 fixed).
+                  setEditingThinking(true);
+                  setOverride(true);
+                }}
                 title="Edit thinking"
                 className="btn-icon-sm"
               >

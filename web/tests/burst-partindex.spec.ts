@@ -191,3 +191,54 @@ test("thinking row flushed by a narrating text still addresses the real part", a
   const cmd = await waitForWSSend(page, "update_message_part");
   expect(cmd.payload).toEqual({ messageID: "c2", partIndex: 0, content: "EDITED C" });
 });
+
+// ── Test D: Edit on a collapsed burst thinking row auto-expands ────────────
+
+test("edit click on a collapsed burst thinking row auto-expands and shows the edit form", async ({ page }) => {
+  // Sibling of #676 (ThinkingPart.tsx's collapsed-card ambush bug): the row
+  // body (including EditForm) is gated on `open`, but the Edit button only
+  // set editingThinking without forcing the row open, so a click on a
+  // collapsed row rendered nothing. Reuses test B's two-message-burst shape
+  // (only the LAST action in the burst defaults open) so the first thinking
+  // row genuinely starts collapsed, not auto-open via isCurrent.
+  await setupWithMessages(page, [
+    makeMessage({ ID: "u1", Role: "user", Parts: [{ type: "text", Text: "go" }] }),
+    makeMessage({
+      ID: "d1",
+      Role: "assistant",
+      Parts: [
+        { type: "thinking", Thinking: "collapsed row reasoning" },
+        { type: "tool_call", ID: "tc-d1", Name: "bash", Input: '{"command":"pwd"}', Finished: true },
+        F,
+      ],
+    }),
+    makeMessage({
+      ID: "td1",
+      Role: "tool",
+      Parts: [{ type: "tool_result", ToolCallID: "tc-d1", Name: "bash", Content: "ok", IsError: false }],
+    }),
+    makeMessage({
+      ID: "d2",
+      Role: "assistant",
+      Parts: [
+        { type: "thinking", Thinking: "second row stays current" },
+        { type: "tool_call", ID: "tc-d2", Name: "bash", Input: '{"command":"cd"}', Finished: true },
+        F,
+      ],
+    }),
+  ]);
+
+  const row = page.locator('[data-test-id="action-row"]').filter({ hasText: "collapsed row reasoning" });
+  await expect(row).toBeVisible();
+  // The first row is not the last action in the burst, so it starts collapsed.
+  await expect(row.locator('[data-test-id="action-row-toggle"]')).toHaveAttribute("aria-expanded", "false");
+
+  await row.hover();
+  await row.getByTitle("Edit thinking").click();
+
+  // The row must auto-expand and show the edit form, not swallow the click.
+  await expect(row.locator('[data-test-id="action-row-toggle"]')).toHaveAttribute("aria-expanded", "true");
+  const textarea = row.locator("textarea");
+  await expect(textarea).toBeVisible();
+  await expect(textarea).toHaveValue("collapsed row reasoning");
+});
