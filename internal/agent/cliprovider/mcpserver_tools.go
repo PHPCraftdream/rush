@@ -119,24 +119,17 @@ func registerBashTool(srv *mcp.Server, perms permission.Service, workingDir stri
 
 		// Fork patch: batch 16 — refuse invocations of other AI agent CLIs
 		// (claude, codex, gemini, opencode, aider, crush itself, …) before
-		// they reach the shell. A sub-agent should EXECUTE work, not
-		// re-delegate it — recursive nesting was burning hours of wall time
-		// for zero useful output. See internal/agent/agentguard.
-		if guardErr := agentguard.Check(input.Command); guardErr != nil {
+		// they reach the shell, and — on Windows — commands that would pop
+		// a brand-new, visible console/GUI window via start / Start-Process
+		// / Start-Job, regardless of the outer shell's own HideWindow
+		// attribute. A model running unattended via `crush run` has no
+		// legitimate reason to open a window on the operator's desktop, and
+		// every such window steals focus and covers whatever the operator
+		// was doing. Both guards now live behind agentguard.CheckAll, the
+		// single entry point shared with the built-in Bash tool so the two
+		// surfaces cannot diverge again. See internal/agent/agentguard.
+		if guardErr := agentguard.CheckAll(input.Command); guardErr != nil {
 			return toolError(guardErr.Error()), nil, nil
-		}
-
-		// Refuse `start` / `Start-Process` / `Start-Job`: on Windows these
-		// open a brand-new, visible console/GUI window regardless of the
-		// outer cmd.exe's own HideWindow attribute (see platform.Command's
-		// doc comment and agentguard.CheckWindowSafety) — a model running
-		// unattended via `crush run` has no legitimate reason to pop a
-		// window on the operator's desktop, and every such window steals
-		// focus and covers whatever the operator was doing.
-		if runtime.GOOS == "windows" {
-			if winErr := agentguard.CheckWindowSafety(input.Command); winErr != nil {
-				return toolError(winErr.Error()), nil, nil
-			}
 		}
 
 		wd := workingDir

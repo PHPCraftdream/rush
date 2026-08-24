@@ -3,6 +3,7 @@ package agentguard
 import (
 	"encoding/base64"
 	"errors"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -519,5 +520,79 @@ func TestCheckWindowSafety_EnvNiceTimeoutAllowsHarmlessCommands(t *testing.T) {
 		t.Run(cmd, func(t *testing.T) {
 			assert.Nil(t, CheckWindowSafety(cmd))
 		})
+	}
+}
+
+// --- CheckAll ---------------------------------------------------------------
+//
+// The single entry point every Bash tool surface must call, so the two
+// guards cannot diverge again (the original bug: the MCP surface ran
+// CheckWindowSafety, the built-in surface ran only Check).
+
+func TestCheckAll_BlocksWindowOpenersOnlyOnWindows(t *testing.T) {
+	u16 := make([]byte, 0, len("Start-Process notepad")*2)
+	for _, r := range "Start-Process notepad" {
+		u16 = append(u16, byte(r), 0)
+	}
+	encoded := base64.StdEncoding.EncodeToString(u16)
+
+	cases := []string{
+		"start notepad",
+		`cmd /c start notepad`,
+		`powershell -Command "Start-Process notepad"`,
+		"powershell -EncodedCommand " + encoded,
+		"env start notepad",
+		"timeout 5 start notepad",
+	}
+	for _, cmd := range cases {
+		t.Run(cmd, func(t *testing.T) {
+			err := checkAll(cmd, true)
+			require.Error(t, err, "windows-shaped call must refuse: %s", cmd)
+			var winErr *WindowOpenerError
+			require.ErrorAs(t, err, &winErr, "expected *WindowOpenerError, got %T for: %s", err, cmd)
+			// Off Windows the window-opener guard is off by design — the
+			// verbs are cmd.exe/PowerShell constructs.
+			assert.NoError(t, checkAll(cmd, false), "non-windows call must not refuse: %s", cmd)
+		})
+	}
+}
+
+func TestCheckAll_StillBlocksDeniedAgentsEverywhere(t *testing.T) {
+	for _, isWindows := range []bool{true, false} {
+		err := checkAll("claude -p 'do something'", isWindows)
+		require.Error(t, err, "isWindows=%v", isWindows)
+		var denied *DeniedError
+		require.ErrorAs(t, err, &denied, "expected *DeniedError, got %T", err)
+	}
+}
+
+func TestCheckAll_AgentDenylistWinsOverWindowSafety(t *testing.T) {
+	// `start claude` trips both guards; Check runs first by design, so the
+	// model sees the recursion refusal, not the window refusal.
+	err := checkAll("start claude", true)
+	require.Error(t, err)
+	var denied *DeniedError
+	require.ErrorAs(t, err, &denied, "expected *DeniedError, got %T", err)
+}
+
+func TestCheckAll_AllowsHarmlessWithoutTypedNilLeak(t *testing.T) {
+	// The typed-nil trap: checkAll must return a true nil interface for
+	// harmless commands on Windows — not a non-nil error wrapping a nil
+	// *WindowOpenerError. require.NoError/assert.NoError fail on the
+	// latter, which is exactly the regression this pins.
+	for _, cmd := range []string{"echo hi", "go build ./...", "ls -la"} {
+		t.Run(cmd, func(t *testing.T) {
+			assert.NoError(t, checkAll(cmd, true))
+			assert.NoError(t, checkAll(cmd, false))
+		})
+	}
+}
+
+func TestCheckAll_MirrorsRuntimeGOOS(t *testing.T) {
+	err := CheckAll("start notepad")
+	if runtime.GOOS == "windows" {
+		require.Error(t, err, "on windows CheckAll must include the window-opener guard")
+	} else {
+		require.NoError(t, err, "off windows CheckAll must skip the window-opener guard")
 	}
 }

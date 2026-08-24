@@ -220,7 +220,15 @@ func NewBashTool(permissions permission.Service, workingDir string, attribution 
 			// not re-delegate to yet another agent. Recursive nesting was
 			// silently burning wall time and tokens for no useful output.
 			// See internal/agent/agentguard for the denylist + tokenisation.
-			if guardErr := agentguard.Check(params.Command); guardErr != nil {
+			//
+			// Window safety (start / Start-Process / Start-Job on Windows)
+			// used to be wired ONLY into the cliprovider MCP Bash tool, not
+			// here — the same model request popped a visible window or not
+			// depending on which surface routed it. CheckAll runs both
+			// guards for every surface, before the permission request and
+			// before any shell starts, so a refusal costs neither a prompt
+			// nor a process.
+			if guardErr := agentguard.CheckAll(params.Command); guardErr != nil {
 				return fantasy.NewTextErrorResponse(guardErr.Error()), nil
 			}
 

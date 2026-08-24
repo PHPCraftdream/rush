@@ -17,6 +17,7 @@ package agentguard
 import (
 	"encoding/base64"
 	"fmt"
+	"runtime"
 	"strings"
 	"unicode/utf16"
 )
@@ -147,6 +148,39 @@ func Check(command string) error {
 	for _, segment := range splitChained(command) {
 		if err := checkSegment(segment); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// CheckAll runs every pre-execution command-string guard this package
+// defines, in a fixed order, and returns the first refusal. Today that is
+// Check (AI-agent recursion denylist — all platforms) followed, on
+// Windows, by CheckWindowSafety (start / Start-Process / Start-Job
+// window-poppers — see WindowOpenerError for why the outer process's
+// HideWindow attribute cannot suppress the windows these verbs create).
+//
+// It exists so a tool surface cannot wire only a subset of the guards:
+// both Bash surfaces (internal/agent/tools/bash.go's built-in tool and
+// internal/agent/cliprovider/mcpserver_tools.go's MCP tool) call exactly
+// this one function, and any future tool surface should too — this is
+// the one place that decides the two checks always run together.
+func CheckAll(command string) error {
+	return checkAll(command, runtime.GOOS == "windows")
+}
+
+// checkAll is CheckAll's testable core: isWindows stands in for
+// runtime.GOOS so the gating itself can be exercised on any host.
+func checkAll(command string, isWindows bool) error {
+	if err := Check(command); err != nil {
+		return err
+	}
+	if isWindows {
+		// Explicit nil check, NOT `return CheckWindowSafety(command)`: that
+		// would return a typed-nil *WindowOpenerError inside a non-nil
+		// error interface, making every allowed command look refused.
+		if winErr := CheckWindowSafety(command); winErr != nil {
+			return winErr
 		}
 	}
 	return nil
