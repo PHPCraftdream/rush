@@ -32,8 +32,17 @@ function SystemPromptModal({ sessionID, onClose }: { sessionID: string; onClose:
   const [draft, setDraft] = useState<string>("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const dirty = draft !== original;
+
+  // Pending save reply handler, detached on unmount so a reply landing
+  // after this modal was closed cannot resolve a dead save (mirrors
+  // MCPForm.submit()'s unsubRef pattern in MCPSettings.tsx).
+  const unsubRef = useRef<(() => void) | null>(null);
+  useEffect(() => {
+    return () => unsubRef.current?.();
+  }, []);
 
   useEffect(() => {
     const unsub = ws.on("system_prompt", (msg) => {
@@ -57,10 +66,24 @@ function SystemPromptModal({ sessionID, onClose }: { sessionID: string; onClose:
   }, [sessionID, onClose]);
 
   function save() {
+    setError(null);
     setSaving(true);
-    ws.send("set_system_prompt", { sessionID, content: draft });
-    setOriginal(draft);
-    setSaving(false);
+    const savedDraft = draft;
+    const msgID = crypto.randomUUID();
+    unsubRef.current?.();
+    const unsub = ws.on("*", (msg) => {
+      if (msg.id !== msgID) return;
+      unsub();
+      unsubRef.current = null;
+      setSaving(false);
+      if (msg.error) {
+        setError(msg.error as string);
+      } else {
+        setOriginal(savedDraft);
+      }
+    });
+    unsubRef.current = unsub;
+    ws.send("set_system_prompt", { sessionID, content: draft }, msgID);
   }
 
   function reset() {
@@ -98,6 +121,11 @@ function SystemPromptModal({ sessionID, onClose }: { sessionID: string; onClose:
           )}
         </div>
         <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-surface shrink-0">
+          {error && (
+            <span className="flex-1 text-sm text-red truncate" title={error}>
+              {error}
+            </span>
+          )}
           {dirty && (
             <button
               onClick={reset}
