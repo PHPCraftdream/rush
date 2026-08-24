@@ -36,14 +36,15 @@ const (
 	maxConcurrentHandlersPerConn = 12
 
 	// maxConcurrentControlHandlersPerConn bounds control-plane dispatches (see
-	// dispatchControl) — currently CmdCancelAgent and CmdInterruptAndSend.
-	// These never call into AgentCoordinator.Run: they look up an in-memory
-	// map, invoke a stored context.CancelFunc, and/or do a bounded DB read +
-	// local recompute, so they return in well under a second even under load.
-	// The cap is much larger than maxConcurrentHandlersPerConn (which gates
-	// genuinely long-running, minutes-long agent turns) purely as a sanity
-	// backstop against a buggy/malicious client flooding cancel/interrupt
-	// frames — it is not expected to ever bind in practice.
+	// dispatchControl) — currently CmdCancelAgent, CmdInterruptAndSend, and
+	// CmdShutdownServer. These never call into AgentCoordinator.Run: they look
+	// up an in-memory map, invoke a stored context.CancelFunc, and/or do a
+	// bounded DB read + local recompute, so they return in well under a second
+	// even under load. The cap is much larger than
+	// maxConcurrentHandlersPerConn (which gates genuinely long-running,
+	// minutes-long agent turns) purely as a sanity backstop against a
+	// buggy/malicious client flooding cancel/interrupt/shutdown frames — it
+	// is not expected to ever bind in practice.
 	maxConcurrentControlHandlersPerConn = 256
 
 	// workQueueDepth bounds how many work-shaped dispatches (see dispatch) may
@@ -109,8 +110,8 @@ type Client struct {
 
 	// controlSem is the analogous semaphore for control-plane dispatches
 	// (see dispatchControl) — a separate, much larger pool so a control-plane
-	// frame (cancel/interrupt) is never queued behind long-running work
-	// slots. Keeping it a distinct resource (rather than sharing the work
+	// frame (cancel/interrupt/shutdown) is never queued behind long-running
+	// work slots. Keeping it a distinct resource (rather than sharing the work
 	// queue/pool) is the whole point of the fix: control-plane commands must
 	// not compete with long-running handlers for the same bounded resource.
 	// Admission is non-blocking (see dispatchControl): it never blocks
@@ -193,10 +194,10 @@ func (c *Client) dispatch(name, msgID string, fn func()) {
 }
 
 // dispatchControl is dispatch's counterpart for control-plane commands —
-// currently CmdCancelAgent and CmdInterruptAndSend. It runs fn in a new
-// goroutine gated by controlSem (a separate, generously-sized semaphore)
-// instead of the work queue, and provides the SAME panic-recovery safety
-// net as dispatch.
+// currently CmdCancelAgent, CmdInterruptAndSend, and CmdShutdownServer. It
+// runs fn in a new goroutine gated by controlSem (a separate, generously-sized
+// semaphore) instead of the work queue, and provides the SAME panic-recovery
+// safety net as dispatch.
 //
 // Why this needs to exist at all: handleIncoming (handlers.go) calls dispatch
 // synchronously from readPump's read loop (server.go). If a cancel/interrupt

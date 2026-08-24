@@ -81,6 +81,19 @@ class WSClient {
     this.socket = null;
   }
 
+  /** Stops all future reconnection attempts WITHOUT touching the current
+   * socket (task #714): used after the server confirms a shutdown_server
+   * request — the endpoint is intentionally going away, so the normal
+   * auto-reconnect loop would retry forever against a server that is
+   * deliberately gone. The live socket and its handlers are left untouched: final server frames still arrive, and when the connection eventually closes the normal _disconnected handling runs (accurate $connected state, keep-alive teardown) — the `if (!this.closed)` guard in onclose is what keeps a reconnect from being scheduled. */
+  disableReconnect() {
+    this.closed = true;
+    if (this.reconnectTimer !== null) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+  }
+
   /** Sends a frame now. Returns true iff the frame was actually written to
    * the socket — false when the socket is missing/closed, or it flipped out
    * of OPEN between the check and the write. Callers that own user-visible

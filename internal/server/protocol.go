@@ -78,6 +78,10 @@ const (
 	CmdGetScopedModels       = "get_scoped_models"
 	CmdSetScopedModel        = "set_scoped_model"
 	CmdClearScopedModel      = "clear_scoped_model"
+	// CmdShutdownServer asks the server process to gracefully shut itself down
+	// (task #714). The handler acks first, then triggers the same shutdown path
+	// a SIGINT takes.
+	CmdShutdownServer = "shutdown_server"
 )
 
 // Payload structs for inbound commands.

@@ -5,6 +5,12 @@ import type { Session, Message, ContentPart, ConfigPayload, MCPState, Todo, Skil
 export const $connected = atom(false);
 export const $authed = atom(false);
 
+// True once the server confirmed our shutdown_server request (task #714).
+// Terminal for the page: App renders a full-screen "server is shutting
+// down" state and suppresses the reconnect banner — the server is
+// intentionally gone, not transiently unreachable.
+export const $serverShuttingDown = atom(false);
+
 // ── Data ─────────────────────────────────────────────────────────────────────
 export const $skills = atom<SkillInfo[]>([]);
 export const $sessions = atom<Session[]>([]);

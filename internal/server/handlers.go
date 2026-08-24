@@ -16,15 +16,17 @@ import (
 // connection's bounded work queue non-blockingly and, when that queue is
 // also full, replies with an overload error instead of waiting.
 //
-// Control-plane commands (CmdCancelAgent, CmdInterruptAndSend) are the
-// exception: they go through c.dispatchControl instead, which uses a
-// separate, much larger semaphore. Both handlers are fast — they signal
-// cancellation via an in-memory map lookup and/or a bounded DB read, never
-// AgentCoordinator.Run — and must not be able to queue behind
-// maxConcurrentHandlersPerConn long-running turns (e.g. handleSendMessage),
-// since that's exactly when a user most needs cancel/interrupt to go
-// through promptly. See dispatchControl's doc comment for the full story.
-func handleIncoming(ctx context.Context, a *appPkg.App, c *Client, raw []byte) {
+// Control-plane commands (CmdCancelAgent, CmdInterruptAndSend,
+// CmdShutdownServer) are the exception: they go through c.dispatchControl
+// instead, which uses a separate, much larger semaphore. All three handlers
+// are fast — they signal cancellation or request shutdown via in-memory
+// channels/context, never AgentCoordinator.Run — and must not be able to
+// queue behind maxConcurrentHandlersPerConn long-running turns
+// (e.g. handleSendMessage), since that's exactly when a user most needs
+// cancel/interrupt/shutdown to go through promptly. See dispatchControl's
+// doc comment for the full story.
+func handleIncoming(ctx context.Context, s *Server, c *Client, raw []byte) {
+	a := s.app
 	var msg WSMessage
 	if err := json.Unmarshal(raw, &msg); err != nil {
 		slog.Debug("ws: malformed message", "err", err)
@@ -45,6 +47,10 @@ func handleIncoming(ctx context.Context, a *appPkg.App, c *Client, raw []byte) {
 	case CmdCancelAgent:
 		// Control-plane: same rationale as CmdInterruptAndSend above.
 		c.dispatchControl("handleCancelAgent", msg.ID, func() { handleCancelAgent(ctx, a, c, msg) })
+	case CmdShutdownServer:
+		// Control-plane: a shutdown request must not queue behind long-running
+		// turns — same rationale as CmdInterruptAndSend above.
+		c.dispatchControl("handleShutdownServer", msg.ID, func() { handleShutdownServer(s, c, msg) })
 	case CmdCreateSession:
 		c.dispatch("handleCreateSession", msg.ID, func() { handleCreateSession(ctx, a, c, msg) })
 	case CmdForkSession:

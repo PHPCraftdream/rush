@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useStore } from "@nanostores/react";
-import { Minimize2, X, CheckCheck, ScrollText, Plug, Sun, Moon, Settings, ServerCog, FileText, Headphones, Eye, ChevronsDownUp, SlidersHorizontal, ArrowUpCircle, MoreHorizontal } from "lucide-react";
+import { Minimize2, X, CheckCheck, ScrollText, Plug, Sun, Moon, Settings, ServerCog, FileText, Headphones, Eye, ChevronsDownUp, SlidersHorizontal, ArrowUpCircle, MoreHorizontal, PowerOff } from "lucide-react";
 import { $sitter, stopSitter } from "../sitter";
 import {
   $sessions,
@@ -9,6 +9,7 @@ import {
   $summarizeQueued,
   $config,
   $updateAvailable,
+  $serverShuttingDown,
   summarizeSession,
   cancelQueuedSummarize,
   setTheme,
@@ -23,6 +24,7 @@ import { MCPSettings } from "./MCPSettings";
 import { SettingsModal } from "./SettingsModal";
 import { ProvidersModal } from "./ProvidersModal";
 import { ScopedModelsModal } from "./ScopedModelsModal";
+import { ConfirmDialog } from "./ConfirmDialog";
 import { ws } from "../ws";
 
 // ── System Prompt Modal ───────────────────────────────────────────────────────
@@ -235,6 +237,17 @@ export function ChatToolbar() {
   const [showLogs, setShowLogs] = useState(false);
   const closeLogs = useCallback(() => setShowLogs(false), []);
 
+  // Server shutdown confirm (task #714): rare destructive action, wired
+  // exactly like Sidebar's session delete — msgID + one-shot reply
+  // listener, busy state, inline error.
+  const [confirmShutdown, setConfirmShutdown] = useState(false);
+  const [shutdownBusy, setShutdownBusy] = useState(false);
+  const [shutdownError, setShutdownError] = useState<string | null>(null);
+  const shutdownUnsubRef = useRef<(() => void) | null>(null);
+  useEffect(() => {
+    return () => shutdownUnsubRef.current?.();
+  }, []);
+
   // More dropdown state
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
   const moreMenuRef = useRef<HTMLDivElement>(null);
@@ -312,6 +325,38 @@ export function ChatToolbar() {
   // hidden individually (Compact below; Prompt is conditionally rendered via
   // `{activeSessionID && (` inside the "More" dropdown; the token pill and busy dots are
   // already gated on an active session existing).
+
+  function confirmShutdownServer() {
+    setShutdownError(null);
+    setShutdownBusy(true);
+    const msgID = crypto.randomUUID();
+    shutdownUnsubRef.current?.();
+    const unsub = ws.on("*", (msg) => {
+      if (msg.id !== msgID) return;
+      unsub();
+      shutdownUnsubRef.current = null;
+      setShutdownBusy(false);
+      if (msg.error) {
+        setShutdownError(msg.error as string);
+        return;
+      }
+      // Acked: the server is now shutting down for good. Enter the terminal
+      // UI state and stop the auto-reconnect loop from retrying a server
+      // that is intentionally gone.
+      $serverShuttingDown.set(true);
+      ws.disableReconnect();
+      setConfirmShutdown(false);
+    });
+    shutdownUnsubRef.current = unsub;
+    if (!ws.send("shutdown_server", undefined, msgID)) {
+      // Socket wasn't open — nothing will ever call the listener above,
+      // so surface that now instead of leaving the dialog busy forever.
+      unsub();
+      shutdownUnsubRef.current = null;
+      setShutdownBusy(false);
+      setShutdownError("Not connected to the server — cannot send the shutdown request.");
+    }
+  }
 
   if (foreignOwned) {
     return (
@@ -470,6 +515,17 @@ export function ChatToolbar() {
                 <FileText size={14} />
                 <span>Logs</span>
               </button>
+              <div className="border-t border-surface mt-1 pt-1">
+                <button
+                  data-test-id="header-shutdown-button"
+                  onClick={() => { setMoreMenuOpen(false); setShutdownError(null); setConfirmShutdown(true); }}
+                  className="w-full text-left px-3 py-2 flex items-center gap-2 text-sm text-red hover:bg-red/10 transition-colors"
+                  title="Shut down the whole server process"
+                >
+                  <PowerOff size={14} />
+                  <span>Shut down server</span>
+                </button>
+              </div>
             </div>
           )}
         </div>
@@ -565,6 +621,17 @@ export function ChatToolbar() {
       {showProviders && <ProvidersModal onClose={closeProviders} />}
       {showScopedModels && <ScopedModelsModal onClose={closeScopedModels} activeSession={activeSession} />}
       {showLogs && <LogsModal onClose={closeLogs} />}
+      {confirmShutdown && (
+        <ConfirmDialog
+          title="Shut down server"
+          message="This stops the whole server process and cancels any in-progress agent turns. The web UI will stop working until the server is started again."
+          confirmLabel={shutdownBusy ? "Shutting down…" : "Shut down"}
+          onConfirm={confirmShutdownServer}
+          onCancel={() => { setConfirmShutdown(false); setShutdownError(null); }}
+          error={shutdownError}
+          busy={shutdownBusy}
+        />
+      )}
     </>
   );
 }

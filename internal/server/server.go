@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
@@ -29,6 +30,13 @@ type Server struct {
 	// read by checkOrigin to validate the WebSocket handshake's Origin header
 	// against the port this server is actually reachable on.
 	port string
+
+	// shutdownSig is closed (once) to ask Start()'s shutdown watcher to begin
+	// graceful shutdown — the WS-triggered counterpart of ctx.Done(). Guarded
+	// lazy init so bare struct literals (tests) work too.
+	shutdownMu   sync.Mutex
+	shutdownSig  chan struct{}
+	shutdownOnce sync.Once
 }
 
 // checkOrigin validates the WebSocket handshake's Origin header. This is the
@@ -77,16 +85,40 @@ func (s *Server) checkOrigin(r *http.Request) bool {
 // Use addr "host:0" to let the OS pick a free port.
 func New(a *appPkg.App, addr string, staticFS fs.FS) *Server {
 	return &Server{
-		app:    a,
-		hub:    newHub(),
-		auth:   newAuth(),
-		addr:   addr,
-		static: staticFS,
+		app:         a,
+		hub:         newHub(),
+		auth:        newAuth(),
+		addr:        addr,
+		static:      staticFS,
+		shutdownSig: make(chan struct{}),
 	}
 }
 
 // Token returns the auth token to be printed in the terminal.
 func (s *Server) Token() string { return s.auth.Token() }
+
+// shutdownChan returns the shutdown signal channel, lazily creating it so
+// Servers built as bare struct literals (tests) behave like New-built ones.
+func (s *Server) shutdownChan() chan struct{} {
+	s.shutdownMu.Lock()
+	defer s.shutdownMu.Unlock()
+	if s.shutdownSig == nil {
+		s.shutdownSig = make(chan struct{})
+	}
+	return s.shutdownSig
+}
+
+// shutdownSignal is the read-side accessor for the shutdown watcher in
+// Start and for tests waiting on the signal.
+func (s *Server) shutdownSignal() <-chan struct{} { return s.shutdownChan() }
+
+// requestShutdown asks Start()'s watcher to run the graceful shutdown
+// sequence. Idempotent: the channel is closed exactly once; later calls
+// are no-ops. This is the ONLY thing the WS handler needs to do — the
+// watcher then runs the same srv.Shutdown path a cancelled ctx takes.
+func (s *Server) requestShutdown() {
+	s.shutdownOnce.Do(func() { close(s.shutdownChan()) })
+}
 
 // Start runs the server until ctx is cancelled. onReady is called once the
 // listener is bound (with the actual address, useful when port was 0).
@@ -142,7 +174,13 @@ func (s *Server) Start(ctx context.Context, onReady func(addr string)) error {
 	}
 
 	go func() {
-		<-ctx.Done()
+		// ctx.Done() is the SIGINT/SIGTERM path; shutdownSignal is the
+		// WS-triggered shutdown_server command (task #714). Both converge
+		// here so the teardown sequence is identical either way.
+		select {
+		case <-ctx.Done():
+		case <-s.shutdownSignal():
+		}
 		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(shutCtx)
@@ -252,10 +290,10 @@ func (s *Server) readPump(ctx context.Context, c *Client) {
 	// from handleIncoming: every message handler is handed to Client.dispatch
 	// (hub.go), which enqueues it on a per-connection bounded work queue
 	// drained by a fixed worker pool whose runRecovered recovers any panic —
-	// with the control-plane exception (CmdCancelAgent/CmdInterruptAndSend)
-	// going through Client.dispatchControl, which does spawn a goroutine per
-	// command, semaphore-bounded, under the same runRecovered net. No handler
-	// runs as a bare `go handleX(...)` off the read loop. See
+	// with the control-plane exception (CmdCancelAgent/CmdInterruptAndSend/
+	// CmdShutdownServer) going through Client.dispatchControl, which does spawn
+	// a goroutine per command, semaphore-bounded, under the same runRecovered net.
+	// No handler runs as a bare `go handleX(...)` off the read loop. See
 	// CHANGELOG.fork.md section 4.A.
 	for {
 		_, raw, err := c.conn.ReadMessage()
@@ -266,7 +304,7 @@ func (s *Server) readPump(ctx context.Context, c *Client) {
 			}
 			return
 		}
-		handleIncoming(ctx, s.app, c, raw)
+		handleIncoming(ctx, s, c, raw)
 	}
 }
 
