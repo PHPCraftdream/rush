@@ -165,7 +165,8 @@ function partsOfKind<T extends ContentPart["type"]>(
 // mergePreserveContent guards already-shown assistant content — BOTH the
 // reasoning (inside the thinking spoiler) AND the answer text (rendered
 // outside it) — against a wholesale-replace that would shrink or erase
-// either one.
+// either one. This guard applies ONLY when the incoming message is NOT
+// terminally finished; terminal updates are taken verbatim.
 //
 // The backend streams an assistant message by APPENDING reasoning/text to
 // one in-memory message and broadcasting it via `message_updated`. Most
@@ -176,7 +177,7 @@ function partsOfKind<T extends ContentPart["type"]>(
 // the operator was watching vanish mid-turn — the answer text blinks out
 // the instant the thinking spoiler updates again.
 //
-// Rule, per accumulating kind:
+// Rule, per accumulating kind (applies only to non-terminal incoming):
 //   - THINKING: if incoming total thinking is shorter than existing →
 //     keep existing thinking part(s); else use incoming's.
 //   - TEXT: if incoming total text is shorter than existing → keep
@@ -190,6 +191,22 @@ function partsOfKind<T extends ContentPart["type"]>(
 // verbatim — the cheapest path, and it preserves any incoming ordering
 // nuance.
 export function mergePreserveContent(existing: Message, incoming: Message): Message {
+  // A terminally finished row is by definition not a mid-stream snapshot:
+  // the server refuses every part-level edit/delete on a row that is not
+  // terminally finished (internal/server/handlers_messages.go
+  // updateMessageAndVerify), so a terminal broadcast that SHRINKS thinking
+  // or text can only be a deliberate operator edit/delete that already
+  // committed server-side. Take it verbatim — running the length guard
+  // here would resurrect deleted parts and revert shortened edits, and the
+  // rebuilt [thinking…, text…, advancing…] order would desynchronise the
+  // client's Parts array from the DB's, mis-addressing every later
+  // partIndex. The guard below now only ever sees genuinely mid-stream
+  // (non-terminal) snapshots, which is exactly the stale re-broadcast
+  // case it was written for.
+  if (isTerminallyFinished(incoming.Parts)) {
+    return incoming;
+  }
+
   const existingThinking = totalThinking(existing.Parts);
   const incomingThinking = totalThinking(incoming.Parts);
   const existingText = totalText(existing.Parts);
@@ -338,6 +355,7 @@ export function getDefaultModelKey(role: "smart" | "fast", config: ConfigPayload
 
 import { ws } from "./ws";
 import { logClientEvent } from "./telemetry";
+import { isTerminallyFinished } from "./components/Message/textParts";
 
 export function updateTodos(sessionID: string, todos: Todo[]) {
   // Optimistic local update
