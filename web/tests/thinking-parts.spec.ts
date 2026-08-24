@@ -109,13 +109,36 @@ test("tool call shows running indicator when not finished", async ({ page }) => 
 });
 
 test("tool call hides running indicator when finished", async ({ page }) => {
-  await setupWithMessage(page, makeMessage({
-    ID: "tp-5",
-    Role: "assistant",
-    Parts: [
-      { type: "tool_call", ID: "tc-2", Name: "bash", Input: '{"command":"ls"}', Finished: true },
+  await page.goto("/");
+  await sendMockWSMessage(page, {
+    type: "sessions_list",
+    payload: [makeSession({ ID: "tp-sess", Title: "Parts Session" })],
+  });
+  await expect(page.getByText("Parts Session").first()).toBeVisible({ timeout: 3000 });
+  await page.getByText("Parts Session").first().click();
+  // The running badge is keyed off a paired tool_result now, not
+  // ToolCall.Finished (which flips true before the tool is dispatched —
+  // see ActionRow.tsx/ToolCallBlock.tsx). "Finished" here must come with
+  // its matching tool_result to actually read as done.
+  await sendMockWSMessage(page, {
+    type: "messages_list",
+    payload: [
+      { ...makeMessage({
+          ID: "tp-5",
+          Role: "assistant",
+          Parts: [
+            { type: "tool_call", ID: "tc-2", Name: "bash", Input: '{"command":"ls"}', Finished: true },
+          ],
+        }), SessionID: "tp-sess" },
+      { ...makeMessage({
+          ID: "tp-5-result",
+          Role: "tool",
+          Parts: [
+            { type: "tool_result", ToolCallID: "tc-2", Name: "bash", Content: "", IsError: false },
+          ],
+        }), SessionID: "tp-sess" },
     ],
-  }));
+  });
 
   await expect(page.getByTestId("tool-call")).toContainText("bash", { timeout: 2000 });
   await expect(page.getByTestId("tool-call-running")).not.toBeVisible();

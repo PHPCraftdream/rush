@@ -194,7 +194,7 @@ export const ToolActivityGroup = memo(function ToolActivityGroup({ items, live, 
     if (part.type === "tool_call") {
       let prompt = "";
       try { prompt = (JSON.parse(part.Input) as { prompt?: string }).prompt ?? part.Input; } catch { prompt = part.Input; }
-      return <SubAgentBlock key={`a-${part.ID}`} messageID={messageID ?? ""} toolCallID={part.ID} prompt={prompt} finished={part.Finished} />;
+      return <SubAgentBlock key={`a-${part.ID}`} messageID={messageID ?? ""} toolCallID={part.ID} prompt={prompt} />;
     }
     return null;
   });

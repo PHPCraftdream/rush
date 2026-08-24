@@ -47,7 +47,13 @@ function safeParseWriteInput(raw: string): WriteInput {
   try { return JSON.parse(raw) as WriteInput; } catch { return {}; }
 }
 
-export const ToolCallBlock = memo(function ToolCallBlock({ name, input, finished }: { name: string; input: string; finished: boolean }) {
+// `running` is caller-supplied truth ("call exists, no matching
+// tool_result yet"). ToolCall.Finished must not be used for this badge:
+// it means the model finished typing the arguments and flips true before
+// the tool is dispatched (internal/agent/agent_turn.go), which showed
+// "running" for a blink at the wrong moment and hid it while the tool
+// actually executed.
+export const ToolCallBlock = memo(function ToolCallBlock({ name, input, running }: { name: string; input: string; running?: boolean }) {
   const isFileWrite = FileWriteTools.has(name);
   const writeInput  = isFileWrite ? safeParseWriteInput(input) : null;
   const formatted   = useMemo(() => prettyToolInput(input), [input]);
@@ -60,7 +66,7 @@ export const ToolCallBlock = memo(function ToolCallBlock({ name, input, finished
           <span className="text-xs text-text-subtle">⚡</span>
           <span className="text-mauve font-semibold text-sm">{name}</span>
           {writeInput?.file_path && <span className="text-text-muted text-xs font-mono truncate max-w-[36em]">{writeInput.file_path}</span>}
-          {!finished && <span data-test-id="tool-call-running" className="text-text-subtle text-xs animate-pulse">running…</span>}
+          {running && <span data-test-id="tool-call-running" className="text-text-subtle text-xs animate-pulse">running…</span>}
         </div>
         <CopyButton text={input} />
       </div>

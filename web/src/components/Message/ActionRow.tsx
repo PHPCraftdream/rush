@@ -165,7 +165,13 @@ export const ActionRow = memo(function ActionRow({ item, isCurrent, suppressAuto
   const result  = item.resultPart;
   const name    = call?.Name ?? result?.Name ?? "tool";
   const subject = call ? formatActionArgs(call.Name, call.Input) : "";
-  const running = !!call && !call.Finished && !result;
+  // `result` (paired by ToolCallID) is the real "tool returned" signal.
+  // call.Finished is NOT: it means the model finished typing the
+  // arguments and is set before the tool is dispatched
+  // (internal/agent/agent_turn.go OnToolInputEnd/OnToolCall), so keying
+  // on it flashed the badge for a blink while args streamed and hid it
+  // for the whole execution window.
+  const running = !!call && !result;
   const errored = !!result?.IsError;
   return (
     <div data-test-id="action-row" className="action-row">
@@ -196,7 +202,7 @@ export const ActionRow = memo(function ActionRow({ item, isCurrent, suppressAuto
       </button>
       {open && (
         <div className="action-row-body">
-          {call && <ToolCallBlock name={call.Name} input={call.Input} finished={call.Finished} />}
+          {call && <ToolCallBlock name={call.Name} input={call.Input} running={running} />}
           {result && <ToolResultBlock name={result.Name} content={result.Content} isError={result.IsError} metadata={result.Metadata} />}
         </div>
       )}

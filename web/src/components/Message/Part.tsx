@@ -23,9 +23,14 @@ export const Part = memo(function Part({ part, index, isUser, messageID, thinkin
       if (part.Name === "agent") {
         let prompt = "";
         try { prompt = JSON.parse(part.Input).prompt ?? part.Input; } catch { prompt = part.Input; }
-        return <SubAgentBlock messageID={messageID} toolCallID={part.ID} prompt={prompt} finished={part.Finished} />;
+        return <SubAgentBlock messageID={messageID} toolCallID={part.ID} prompt={prompt} />;
       }
-      return <ToolCallBlock name={part.Name} input={part.Input} finished={part.Finished} />;
+      // No `running` here: this router renders one part in isolation and
+      // the result lives on a separate role=tool message, so there is no
+      // pairing to derive "still running" from. (Tool parts of assistant
+      // messages route through ToolActivityGroup/ActionRow, which pair
+      // results; this branch is the defensive path.)
+      return <ToolCallBlock name={part.Name} input={part.Input} />;
     }
     case "tool_result": {
       if (part.Name === "agent") return null;

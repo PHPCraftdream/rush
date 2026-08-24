@@ -22,10 +22,25 @@ import (
 // forever, and `crush sessions reset` is the only escape.
 //
 // This sweep runs once at app start, before the coordinator is wired up.
-// For every session, it finds the LAST assistant message and, if it has no
-// finish part, adds a FinishReasonError marking it as a process-restart
-// interruption. Cheap (O(sessions × 1 query each)), non-fatal on error,
-// silent when there is nothing to recover.
+// For every TOP-LEVEL session (Sessions.List filters parent_session_id IS
+// NULL, internal/db/sql/sessions.sql), it finds the LAST assistant message
+// and, if it has no finish part, adds a FinishReasonError marking it as a
+// process-restart interruption. Cheap (O(top-level sessions × 1 query
+// each)), non-fatal on error, silent when there is nothing to recover.
+//
+// Deliberate gap: sub-agent (child) sessions are not swept. Including them
+// (ListAllSessions) would multiply the sweep's dominant cost — one full
+// Messages.List per session — by every delegation ever recorded, at every
+// process startup, contending with the 10s budget below; and nothing today
+// consumes a child session's finish state. The operator-visible case is
+// covered on the parent side instead: a hard-killed delegation's agent
+// tool call has no tool_result, and the web UI attributes the parent's
+// "Process restarted" finish to the sub-agent block (SubAgentBlock's
+// errorFinish). A child's own trailing unfinished message therefore stays
+// unfinished in the DB; if a consumer of that state ever appears, extend
+// this sweep with ListAllSessions (the liveness guard below already works
+// for children — agent_run.go acquires a heartbeat lock for every Run(),
+// child sessions included).
 func (app *App) recoverInterruptedTurns(ctx context.Context) {
 	// Bound the whole sweep so a slow disk (network mount, AV scan,
 	// fsync stall) cannot block app startup. 10s is generous for a

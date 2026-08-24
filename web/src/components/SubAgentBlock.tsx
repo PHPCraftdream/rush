@@ -23,10 +23,10 @@ function extractTextFromParts(parts?: ContentPart[]): string {
     .join("\n");
 }
 
-const SubAgentMessage = memo(function SubAgentMessage({ message }: { message: Message }) {
+const SubAgentMessage = memo(function SubAgentMessage({ message, completed }: { message: Message; completed: Set<string> }) {
   const text = useMemo(() => extractTextFromParts(message.Parts), [message.Parts]);
   const toolCalls = useMemo(
-    () => (message.Parts ?? []).filter((p) => p.type === "tool_call") as Array<{ type: "tool_call"; Name: string; Input: string; Finished: boolean }>,
+    () => (message.Parts ?? []).filter((p) => p.type === "tool_call") as Array<{ type: "tool_call"; Name: string; Input: string; Finished: boolean; ID: string }>,
     [message.Parts],
   );
 
@@ -37,7 +37,7 @@ const SubAgentMessage = memo(function SubAgentMessage({ message }: { message: Me
       {toolCalls.map((tc, i) => (
         <div key={i} className="flex items-center gap-1.5 text-xs text-text-subtle py-0.5">
           <span className="text-mauve font-semibold">{tc.Name}</span>
-          {!tc.Finished && <span className="animate-pulse">running...</span>}
+          {!completed.has(tc.ID) && <span className="animate-pulse">running...</span>}
         </div>
       ))}
       {text && (
@@ -53,12 +53,10 @@ export const SubAgentBlock = memo(function SubAgentBlock({
   messageID,
   toolCallID,
   prompt,
-  finished,
 }: {
   messageID: string;
   toolCallID: string;
   prompt: string;
-  finished: boolean;
 }) {
   // Backend keys the sub-agent session as `${messageID}$$${toolCallID}`
   // (see internal/session/session.go CreateAgentToolSessionID), and the WS
@@ -82,44 +80,73 @@ export const SubAgentBlock = memo(function SubAgentBlock({
   );
   const messages = allSubMessages.get(subSessionID) ?? [];
 
-  // "done" means this sub-agent's RUN is over. Both signals are facts
-  // about the PARENT message, not inferences from the sub-agent's own
-  // transcript:
+  // ToolCall.Finished on the sub-agent's own tool calls means "arguments
+  // fully typed", not "tool returned" (same backend semantics as the
+  // parent's flag above), so per-row running state must come from the
+  // sub-session's own tool_result parts — they live on role=tool messages
+  // inside this same transcript.
+  const completedCallIDs = useMemo(() => {
+    const ids = new Set<string>();
+    for (const m of messages) {
+      for (const p of m.Parts ?? []) {
+        if (p.type === "tool_result") ids.add(p.ToolCallID);
+      }
+    }
+    return ids;
+  }, [messages]);
+
+  // "done" means this sub-agent's RUN is over — the `agent` tool returned.
   //
-  // - `finished` (primary): the parent's agent tool_call part's Finished
-  //   flag — true exactly when the agent tool returned, which is the
-  //   whole sub-agent run. It arrives via the parent's own
-  //   message_updated and never flips at the sub-agent's internal step
-  //   boundaries.
-  // - parent terminally finished (fallback): a hard-killed run never
-  //   gets its tool call marked finished (FinishToolCall only runs on
-  //   the normal return path, internal/agent/agent_turn.go), but startup
-  //   recovery stamps a terminal error finish on the parent's message
-  //   (internal/app/app_recovery.go, "Process restarted"). Partial
-  //   checkpoint finishes on a live parent don't count —
-  //   isTerminallyFinished ignores them — so this stays false mid-run.
+  // The parent tool_call part's Finished flag must NOT be used here: it
+  // means "the model finished typing the arguments", not "the tool
+  // returned". It is set twice while the provider stream is still being
+  // consumed, BEFORE any tool is dispatched (internal/agent/agent_turn.go):
+  // FinishToolCall inside OnToolInputEnd (~:1227), and Finished:true inline
+  // in OnToolCall's AddToolCall (~:1261) — fantasy fires every OnToolCall
+  // for a step before executing any tool. Both writes hit the DB before
+  // dispatch, so on the wire the flag is already true before the sub-agent
+  // session even exists (harness-verified: flag true at 0ms; the agent
+  // tool's Run() spans 0-1200ms). Basing `done` on it collapsed the block
+  // ~1s into every delegation and showed a green "done" badge for the
+  // whole run.
+  //
+  // - tool_result present (primary): the agent tool demonstrably returned.
+  //   The result arrives on its own role=tool message in the PARENT
+  //   transcript (agent_turn.go's OnToolResult creates it), so scan
+  //   $messages — already subscribed to for `parent` — for a tool_result
+  //   part whose ToolCallID matches this call.
+  // - parent terminally finished (fallback): a hard-killed run never gets
+  //   its tool_result, but startup recovery stamps a terminal error finish
+  //   on the parent's message (internal/app/app_recovery.go, "Process
+  //   restarted"). Partial checkpoint finishes on a live parent don't
+  //   count — isTerminallyFinished ignores them — so this stays false
+  //   mid-run.
   //
   // isRunning is !done. A busySessions lookup cannot be used here: a
   // sub-agent session ID NEVER enters $busySessions — the only feeder
   // (the agent_busy event) names client-chosen top-level sessions or the
   // list_sessions correction loop, whose SQL (internal/db/sql/
   // sessions.sql, ListSessions) filters `parent_session_id is NULL`, so
-  // sub-sessions are invisible to it. The previous predicate
-  // (!isRunning && isTerminallyFinished(sub's last assistant message))
-  // therefore flashed done at EVERY sub-agent step boundary (each step
-  // ends with a real non-Partial finish while the run continues), which
-  // also silently reset the operator's collapse override via the
-  // prevDone effect below.
+  // sub-sessions are invisible to it.
+  const toolResultArrived = useMemo(
+    () =>
+      parentMessages.some((m) =>
+        (m.Parts ?? []).some(
+          (p) => p.type === "tool_result" && p.ToolCallID === toolCallID,
+        ),
+      ),
+    [parentMessages, toolCallID],
+  );
   const parentDone = parent ? isTerminallyFinished(parent.Parts ?? []) : false;
-  const done = finished || parentDone;
+  const done = toolResultArrived || parentDone;
   const isRunning = !done;
 
   // A run that ended badly must not wear the green "done" badge: read
   // the terminal finish of the sub-agent's last assistant message and
   // apply the same rule as the main renderer's finish router
   // (Message/Part.tsx): error or canceled renders an error block. When
-  // the tool call never returned (`finished` false — a hard kill),
-  // attribute the parent's terminal error finish instead; recovery
+  // the tool call never returned (no tool_result for this call — a hard
+  // kill), attribute the parent's terminal error finish instead; recovery
   // stamps "Process restarted" there and the sub-agent's own transcript
   // may have no finish at all.
   const errorFinish = useMemo(() => {
@@ -130,14 +157,14 @@ export const SubAgentBlock = memo(function SubAgentBlock({
       );
       if (f && (f.Reason === "error" || f.Reason === "canceled")) return f;
     }
-    if (!finished && parent) {
+    if (!toolResultArrived && parent) {
       const f = (parent.Parts ?? []).find(
         (p): p is FinishPart => p.type === "finish" && !p.Partial,
       );
       if (f && (f.Reason === "error" || f.Reason === "canceled")) return f;
     }
     return undefined;
-  }, [messages, finished, parent]);
+  }, [messages, toolResultArrived, parent]);
 
   const label = useMemo(() => {
     if (!prompt) return "";
@@ -215,7 +242,7 @@ export const SubAgentBlock = memo(function SubAgentBlock({
               m.IsSummaryMessage ? (
                 <SummaryMessage key={m.ID} message={m} />
               ) : (
-                <SubAgentMessage key={m.ID} message={m} />
+                <SubAgentMessage key={m.ID} message={m} completed={completedCallIDs} />
               ),
             )}
           {errorFinish && (
