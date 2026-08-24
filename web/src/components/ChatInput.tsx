@@ -3,6 +3,7 @@ import { useStore } from "@nanostores/react";
 import {
   $activeSessionID,
   $busySessions,
+  $connected,
   $sessions,
   $skills,
   $lastUsedSkill,
@@ -14,9 +15,9 @@ import {
   jumpToMessage,
   type WireAttachment,
 } from "../store";
-import { ws } from "../ws";
+import { ws, $wsOutboxCount } from "../ws";
 import { handleSitterCommand } from "../sitter";
-import { ListOrdered, Send, SendHorizonal, Paperclip, X, Zap, History, CornerLeftUp, PlusCircle } from "lucide-react";
+import { ListOrdered, Send, SendHorizonal, Paperclip, X, Zap, History, CornerLeftUp, PlusCircle, WifiOff } from "lucide-react";
 import type { SkillInfo } from "../types";
 import type { MyPromptItem } from "../store";
 
@@ -211,6 +212,8 @@ export function ChatInput() {
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const activeSessionID = useStore($activeSessionID);
   const busySessions = useStore($busySessions);
+  const connected = useStore($connected);
+  const outboxCount = useStore($wsOutboxCount);
   const sessions = useStore($sessions);
   const activeSession = useMemo(
     () => sessions.find((s) => s.ID === activeSessionID) ?? null,
@@ -247,6 +250,16 @@ export function ChatInput() {
   // ── Slash menu state ──────────────────────────────────────────────────────
   const [slashOpen, setSlashOpen] = useState(false);
   const [slashIdx, setSlashIdx] = useState(0);
+
+  // ── Offline awareness ──────────────────────────────────────────────────────
+  // The composer only claims "offline" once a connection has been seen —
+  // otherwise every fresh page load would flash the banner while the very
+  // first socket is still connecting.
+  const [everConnected, setEverConnected] = useState(false);
+  useEffect(() => {
+    if (connected) setEverConnected(true);
+  }, [connected]);
+  const offline = everConnected && !connected;
 
   // Text matches "/<word>" with no spaces — menu active
   const slashMatch = text.match(/^\/(\S*)$/);
@@ -287,7 +300,9 @@ export function ChatInput() {
     if (sendNow) {
       if (!activeSessionID) return;
       const content = skill.instructions || `/${skill.name}`;
-      ws.send("send_message", { sessionID: activeSessionID, content });
+      // Park in the offline outbox when the socket is down; only clear the
+      // input once the frame is on the wire or queued for delivery.
+      if (!ws.sendQueued("send_message", { sessionID: activeSessionID, content })) return;
       setText("");
       if (textareaRef.current) textareaRef.current.style.height = "auto";
     } else {
@@ -337,7 +352,10 @@ export function ChatInput() {
       if (wire.length > 0) {
         payload.attachments = wire;
       }
-      ws.send("send_message", payload);
+      // When the socket is down the frame is parked in the offline outbox
+      // and flushed on reconnect; if even that failed (outbox full) keep
+      // the draft so the composer can't silently swallow the message.
+      if (!ws.sendQueued("send_message", payload)) return;
     }
     setAttachments([]);
     setText("");
@@ -350,6 +368,10 @@ export function ChatInput() {
   const sendFast = useCallback(() => {
     const msg = text.trim();
     if (!msg || !activeSessionID || agentBusy) return;
+    // sendWithFastModel fire-and-forgets its frame internally (store.ts), so
+    // guard here: with the socket down, keep the draft rather than let it
+    // vanish into a no-op send.
+    if (!ws.isOpen()) return;
     sendWithFastModel(activeSessionID, msg, toWireAttachments(attachments));
     setText("");
     setAttachments([]);
@@ -386,7 +408,10 @@ export function ChatInput() {
     if (atts.length > 0) {
       payload.attachments = atts;
     }
-    ws.send("interrupt_and_send", payload);
+    // Held in the offline outbox when the socket is down (the local queue
+    // was already folded into this payload, so parking the whole frame is
+    // the only way to not lose it) and delivered on reconnect.
+    if (!ws.sendQueued("interrupt_and_send", payload)) return;
     setText("");
     setAttachments([]);
     setHistIdx(-1);
@@ -420,7 +445,9 @@ export function ChatInput() {
     if (atts.length > 0) {
       payload.attachments = atts;
     }
-    ws.send("inject_message", payload);
+    // Same offline-outbox treatment as interrupt: the dequeued local queue
+    // lives in this frame now, so it must be parked or sent, never dropped.
+    if (!ws.sendQueued("inject_message", payload)) return;
     setText("");
     setAttachments([]);
     setHistIdx(-1);
@@ -657,6 +684,19 @@ export function ChatInput() {
 
   return (
     <div className="px-5 pt-2 pb-4 bg-canvas shrink-0">
+      {offline && (
+        <div
+          data-test-id="chat-input-offline-indicator"
+          className="mb-2 rounded-xl border border-yellow/40 bg-yellow/10 text-yellow px-4 py-2.5 text-xs flex items-center gap-2"
+          title="The WebSocket connection to the server is down. Messages you send from here are held locally and delivered automatically when the connection returns."
+        >
+          <WifiOff size={13} className="shrink-0" />
+          <span>
+            Offline — messages you send are held locally
+            {outboxCount > 0 ? ` (${outboxCount} queued)` : ""} and go out when the connection returns.
+          </span>
+        </div>
+      )}
       {/* Attachment badges */}
       {attachments.length > 0 && (
         <div className="flex flex-wrap gap-2 mb-2">
