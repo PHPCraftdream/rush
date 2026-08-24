@@ -30,13 +30,13 @@ Use --stat to include line-change statistics per file.
 Use --json for machine-readable output.`,
 	Example: `
 # Show files touched by a session
-crush sessions diff myid-123
+rush sessions diff myid-123
 
 # Include line-change statistics
-crush sessions diff myid-123 --stat
+rush sessions diff myid-123 --stat
 
 # Machine-readable output
-crush sessions diff myid-123 --json | jq '.files[] | .path'
+rush sessions diff myid-123 --json | jq '.files[] | .path'
   `,
 	Args: cobra.ExactArgs(1),
 	RunE: sessionsDiffCmdRun,

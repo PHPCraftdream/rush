@@ -74,8 +74,8 @@ func Load(workingDir, dataDir string, debug bool) (*ConfigStore, error) {
 	}
 
 	// Load MCP servers from .mcp.json files (Claude Code format) and merge
-	// them into the config. Servers defined in crush.json take precedence;
-	// the disabled state for external servers is read from crush's own config.
+	// them into the config. Servers defined in rush.json take precedence;
+	// the disabled state for external servers is read from rush's own config.
 	if external := loadExternalMCPServers(workingDir); len(external) > 0 {
 		mergeExternalMCPServers(cfg, store, external)
 	}
@@ -181,7 +181,7 @@ func Load(workingDir, dataDir string, debug bool) (*ConfigStore, error) {
 
 // ResolveDataDirectory resolves the effective data directory (honoring
 // --data-dir / the project's configured data_directory, defaulting to
-// <workingDir>/.crush) WITHOUT the network/provider-fetch/persist side
+// <workingDir>/.rush) WITHOUT the network/provider-fetch/persist side
 // effects Load performs — safe for rescue commands (sessions kill/reset
 // --force) that must keep working even when the network or DB is
 // unreachable.
@@ -238,13 +238,13 @@ func isAppleTerminal() bool { return os.Getenv("TERM_PROGRAM") == "Apple_Termina
 // environment-derived default the user cannot act on from a scripted
 // invocation ("no git repo means limited walk depth", "Apple Terminal
 // means transparent mode"); the config adjustment itself still applies.
-// They fired unconditionally on every invocation, including `crush run
+// They fired unconditionally on every invocation, including `rush run
 // --json` and the `logs`/`sessions`/`mcp` scripting commands,
 // polluting stderr that orchestrators capture.
 //
 // Fork patch (orchestrator UX): callers pass cfg.Options.Debug (which
 // folds in both the --debug flag and options.debug from the config
-// file), so the verbose path — `crush --debug`, `crush run --debug`,
+// file), so the verbose path — `rush --debug`, `rush run --debug`,
 // OR `"options": {"debug": true}` — still surfaces them while default
 // and scripted paths stay quiet. Real provider/config/auth warnings
 // elsewhere in Load are unaffected.

@@ -18,7 +18,7 @@ import (
 // to follow only the SINGLE freshest descendant session
 // (computeCallTreeActivity's DeepestSessionID), so when two sub-agents were
 // delegated in parallel, whichever one wrote second-most-recently was
-// completely invisible to `crush sessions watch` — the operator would see
+// completely invisible to `rush sessions watch` — the operator would see
 // only one of the two working children, with no indication the other one
 // existed at all.
 //

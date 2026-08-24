@@ -205,7 +205,7 @@ func TestHyperSync_GetCacheStoreError(t *testing.T) {
 }
 
 // TestHyperSync_GetCacheOnlySkipsNetwork proves that when
-// CRUSH_PROVIDER_CACHE_ONLY=1 the syncer serves cached data without
+// RUSH_PROVIDER_CACHE_ONLY=1 the syncer serves cached data without
 // calling the network client and without rewriting the cache file.
 //
 // This is the contract `crush models list` (default, no --refresh)
@@ -213,9 +213,9 @@ func TestHyperSync_GetCacheStoreError(t *testing.T) {
 //
 // Not parallel: t.Setenv mutates process-global env.
 func TestHyperSync_GetCacheOnlySkipsNetwork(t *testing.T) {
-	t.Setenv("CRUSH_PROVIDER_CACHE_ONLY", "1")
+	t.Setenv("RUSH_PROVIDER_CACHE_ONLY", "1")
 	// Force TTL=0 alongside cache-only to prove cache-only wins.
-	t.Setenv("CRUSH_PROVIDER_CACHE_TTL", "0")
+	t.Setenv("RUSH_PROVIDER_CACHE_TTL", "0")
 
 	tmpDir := t.TempDir()
 	path := tmpDir + "/hyper.json"
@@ -254,14 +254,14 @@ func TestHyperSync_GetCacheOnlySkipsNetwork(t *testing.T) {
 }
 
 // TestHyperSync_GetCacheOnlyFallsBackToEmbedded proves that when
-// CRUSH_PROVIDER_CACHE_ONLY=1 and no cache file exists, the syncer
+// RUSH_PROVIDER_CACHE_ONLY=1 and no cache file exists, the syncer
 // falls back to the embedded provider without calling the network
 // client or creating a cache file.
 //
 // Not parallel: t.Setenv mutates process-global env.
 func TestHyperSync_GetCacheOnlyFallsBackToEmbedded(t *testing.T) {
-	t.Setenv("CRUSH_PROVIDER_CACHE_ONLY", "1")
-	t.Setenv("CRUSH_PROVIDER_CACHE_TTL", "0")
+	t.Setenv("RUSH_PROVIDER_CACHE_ONLY", "1")
+	t.Setenv("RUSH_PROVIDER_CACHE_TTL", "0")
 
 	// No cache file at this path.
 	path := t.TempDir() + "/hyper.json"

@@ -88,7 +88,7 @@ type Service interface {
 	// InheritSessionAutoApprove propagates parentID's auto-approve status
 	// (if any) to childID, atomically. Sub-agent delegations run under
 	// their OWN child session id, so without this a non-interactive
-	// `crush run` — which auto-approves only the root session it was
+	// `rush run` — which auto-approves only the root session it was
 	// given — leaves every delegated sub-agent unapproved, and the
 	// sub-agent's first non-safe tool call blocks forever on a UI prompt
 	// that does not exist in that mode. Deliberately inheritance rather
@@ -98,7 +98,7 @@ type Service interface {
 	SetSkipRequests(skip bool)
 	SkipRequests() bool
 	// SetRunAllowlist arms the restricted-run allowlist used by
-	// `crush run`. Pass the zero value (or call with IsRestricted ==
+	// `rush run`. Pass the zero value (or call with IsRestricted ==
 	// false) to restore the legacy auto-approve-everything behaviour.
 	// The allowlist only governs the non-interactive auto-approve path;
 	// it never affects interactive (TUI / web) permission flows.
@@ -116,8 +116,8 @@ type permissionService struct {
 	workingDir         string
 	// Fork patch (concurrency): the upstream in-memory grant cache was
 	// removed. Request now consults the DB on every call via
-	// MatchSessionPermission so a grant created in another crush process
-	// (parallel `crush run`) is immediately visible without restart. See
+	// MatchSessionPermission so a grant created in another rush process
+	// (parallel `rush run`) is immediately visible without restart. See
 	// CHANGELOG.fork.md and the original fork note about why this used
 	// to be a []PermissionRequest slice.
 	pendingRequests       *csync.Map[string, chan bool]
@@ -284,7 +284,7 @@ func (s *permissionService) Request(ctx context.Context, opts CreatePermissionRe
 	s.autoApproveSessionsMu.RUnlock()
 
 	if autoApprove {
-		// Restricted-run gate. In a non-interactive `crush run` the
+		// Restricted-run gate. In a non-interactive `rush run` the
 		// session is auto-approve, but if the operator armed a
 		// restricted allowlist (--restrict-run / permissions.run.restrict)
 		// we must not blanket-grant. Consult the allowlist; unmatched
@@ -332,7 +332,7 @@ func (s *permissionService) Request(ctx context.Context, opts CreatePermissionRe
 
 	// Fork patch (concurrency): query the persistent-grant table directly
 	// on every Request instead of consulting an in-memory cache that was
-	// populated only at startup. Under parallel `crush run` processes,
+	// populated only at startup. Under parallel `rush run` processes,
 	// the old cache made an "always allow" granted in process A invisible
 	// to process B until B restarted, causing B to re-prompt (or block in
 	// non-interactive mode). Query cost is one indexed SELECT; the cache

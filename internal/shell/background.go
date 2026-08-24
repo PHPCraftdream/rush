@@ -19,7 +19,7 @@ import (
 const (
 	// MaxBackgroundJobs is the DEFAULT maximum number of concurrent
 	// background jobs. Override it per process with
-	// CRUSH_MAX_BACKGROUND_JOBS.
+	// RUSH_MAX_BACKGROUND_JOBS.
 	//
 	// 50 is reachable in real use, and reaching it is expensive: an
 	// orchestrator fanning work out to sub-agents while a 17-minute gate ran
@@ -321,7 +321,7 @@ type BackgroundShellManager struct {
 	// slot, which is slower than the property being demonstrated and, on
 	// Windows, leaves survivors that block TempDir cleanup. It also keeps
 	// those tests honest when an operator has raised the cap via
-	// CRUSH_MAX_BACKGROUND_JOBS. Per-manager, so lowering it in one test
+	// RUSH_MAX_BACKGROUND_JOBS. Per-manager, so lowering it in one test
 	// cannot be observed by a parallel sibling.
 	maxJobs int
 }
@@ -621,7 +621,7 @@ func (bs *BackgroundShell) releaseBuffers() {
 // has already returned, so it needs its own panic isolation. fn is normally
 // the agent package's notifyBackgroundJobDone, which can itself start a
 // fresh top-level turn (Phase 4 auto-resume); an unrecovered panic here
-// would otherwise crash the whole crush process with no log output, exactly
+// would otherwise crash the whole rush process with no log output, exactly
 // like the goroutine in app.go's RunNonInteractive this mirrors.
 func (bs *BackgroundShell) OnDone(fn func()) {
 	if fn == nil {
@@ -739,7 +739,7 @@ func (m *BackgroundShellManager) MaxJobs() int {
 }
 
 // maxJobsFromEnv resolves the concurrency cap for a new manager:
-// CRUSH_MAX_BACKGROUND_JOBS when it parses to a positive integer, otherwise
+// RUSH_MAX_BACKGROUND_JOBS when it parses to a positive integer, otherwise
 // MaxBackgroundJobs.
 //
 // An env var rather than a bigger default because the cost of a higher cap
@@ -752,13 +752,13 @@ func (m *BackgroundShellManager) MaxJobs() int {
 // failing: this is a convenience knob, and a typo in it should not stop
 // crush from starting. It is logged so the typo is visible.
 func maxJobsFromEnv() int {
-	raw := os.Getenv("CRUSH_MAX_BACKGROUND_JOBS")
+	raw := os.Getenv("RUSH_MAX_BACKGROUND_JOBS")
 	if raw == "" {
 		return MaxBackgroundJobs
 	}
 	n, err := strconv.Atoi(raw)
 	if err != nil || n <= 0 {
-		slog.Warn("ignoring CRUSH_MAX_BACKGROUND_JOBS: not a positive integer",
+		slog.Warn("ignoring RUSH_MAX_BACKGROUND_JOBS: not a positive integer",
 			"value", raw, "using", MaxBackgroundJobs)
 		return MaxBackgroundJobs
 	}

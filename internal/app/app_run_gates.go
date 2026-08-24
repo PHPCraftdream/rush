@@ -1,4 +1,4 @@
-// `crush run` gating applied before the agent starts: the default
+// `rush run` gating applied before the agent starts: the default
 // sub-agent tool ban and its smart+worker bypass, plus the
 // restricted-run allowlist spec derived from config permissions.
 
@@ -11,7 +11,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/permission"
 )
 
-// subAgentToolNames lists every tool name that the default `crush run`
+// subAgentToolNames lists every tool name that the default `rush run`
 // sub-agent ban strips from the coder agent's AllowedTools. Split out so
 // callers that want to restore a subset (see the smart+worker bypass in
 // RunNonInteractive) can strip everything EXCEPT that subset instead of
@@ -20,11 +20,11 @@ var subAgentToolNames = []string{"agent", "agentic_fetch"}
 
 // disableSubAgentToolsInConfig drops the given tool names from the coder
 // agent's AllowedTools list in the in-memory config. Used by
-// RunNonInteractive when overrides.DisableSubAgents (`crush run --agents
+// RunNonInteractive when overrides.DisableSubAgents (`rush run --agents
 // single`, or the implicit default when --agents is unset) is set.
 // Mutation does not touch the on-disk config and only outlives this
 // process if a future caller reloads the in-memory config from disk —
-// `crush run` exits immediately after the agent turn so this is moot in
+// `rush run` exits immediately after the agent turn so this is moot in
 // practice.
 //
 // Fork patch (orchestrator UX): see CHANGELOG.fork.md (Section 4.J).
@@ -67,7 +67,7 @@ func (app *App) disableToolsInConfig(toolNames []string) {
 	app.config.UpdateAgentAllowedTools(config.AgentCoder, filtered)
 }
 
-// shouldBypassSubAgentBan decides whether the `crush run` default
+// shouldBypassSubAgentBan decides whether the `rush run` default
 // sub-agent ban (DisableSubAgents) should be bypassed for the `agent`
 // tool specifically, restoring it to the coder's AllowedTools even
 // though the ban is otherwise in effect.
@@ -75,7 +75,7 @@ func (app *App) disableToolsInConfig(toolNames []string) {
 // Fork patch (orchestrator UX, plan phase 2): the orchestrator design (a smart
 // parent delegating hands-on work to cheap worker sub-agents) depends on
 // the `agent` tool being available. The ban exists to stop an
-// unsupervised `crush run` from silently fanning out — but when a Worker
+// unsupervised `rush run` from silently fanning out — but when a Worker
 // model is configured, that fan-out IS the point, so the ban would
 // otherwise block the very feature it was configured for. This applies
 // regardless of whether `--agents single` was passed explicitly or left
@@ -107,7 +107,7 @@ func shouldBypassSubAgentBan(role config.SelectedModelType, cfg *config.Config) 
 // runAllowlistSpecFromConfig reads the config-derived restricted-run
 // allowlist spec (pre-compilation). Returns an inert spec (Restrict =
 // false) when permissions.run is absent or disabled, preserving the
-// legacy `crush run` auto-approve-everything behaviour.
+// legacy `rush run` auto-approve-everything behaviour.
 func runAllowlistSpecFromConfig(p *config.Permissions) permission.RunAllowlistSpec {
 	spec := permission.RunAllowlistSpec{}
 	if p == nil || p.Run == nil {

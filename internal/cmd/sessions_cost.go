@@ -37,25 +37,25 @@ CURRENT model, so a session that switched models attributes all of it to
 whichever model it ended on.
 
 For accurate per-message token totals, correct per-model attribution and
-prompt-cache statistics, use "crush sessions cache" instead - it reads the
+prompt-cache statistics, use "rush sessions cache" instead - it reads the
 per-message usage table rather than these session snapshots. The two are
 deliberately NOT merged into one table here: they come from different sources
 and presenting them in adjacent columns would imply they are comparable.`,
 	Example: `
 # Cost grouped by model
-crush sessions cost
+rush sessions cost
 
 # Cost grouped by day
-crush sessions cost --by day
+rush sessions cost --by day
 
 # Last 7 days, grouped by model
-crush sessions cost --since 7d
+rush sessions cost --since 7d
 
 # Top 20 most expensive sessions
-crush sessions cost --by session --top 20
+rush sessions cost --by session --top 20
 
 # Machine-readable output
-crush sessions cost --json | jq '.[] | select(.cost_usd > 1.0)'
+rush sessions cost --json | jq '.[] | select(.cost_usd > 1.0)'
   `,
 	RunE: sessionsCostCmdRun,
 }

@@ -39,12 +39,12 @@ func PeakHoursGuidance(err error) string {
 	}
 	return fmt.Sprintf(
 		"%s\n\n"+
-			"This is not a crash — crush is intentionally refusing/halting because "+
-			"of the provider's peak-hours window. crush is exiting now; it will "+
+			"This is not a crash — rush is intentionally refusing/halting because "+
+			"of the provider's peak-hours window. rush is exiting now; it will "+
 			"not retry on its own.\n\n"+
 			"If an orchestrating agent is driving this session: schedule a resume "+
 			"for RESUME AT above (e.g. CronCreate / a scheduled wakeup) and "+
-			"re-invoke `crush run --session <this session>` then — do not retry "+
+			"re-invoke `rush run --session <this session>` then — do not retry "+
 			"immediately, and do not pass --allow-peak-hours unless a human "+
 			"operator explicitly asked for that specific run.",
 		resumeLine,

@@ -21,7 +21,7 @@ import (
 // tmpDir so it can be passed to explainSessionStatus as its dataDir
 // parameter — explainSessionStatus resolves the lock at
 // <dataDir>/locks/session-<id>.lock (task #233 fix; previously this helper
-// nested an extra ".crush" level to match the pre-fix <cwd>/.crush/locks
+// nested an extra ".rush" level to match the pre-fix <cwd>/.rush/locks
 // layout).
 func writeLockFile(t *testing.T, sessionID string, pid int) string {
 	t.Helper()
@@ -318,15 +318,15 @@ func TestExplainSessionStatus_ErrorFinishSurfacesErrorText(t *testing.T) {
 
 // TestExplainSessionStatus_PidReuseBeyondMaxFallbackAgeIsNotRunning is the
 // regression test for task #250: explainSessionStatus (backing
-// `crush sessions why`) was the FOURTH independent copy of the "trust a
+// `rush sessions why`) was the FOURTH independent copy of the "trust a
 // confirmed-alive PID unconditionally, with no bound on lock age" check that
 // tasks #235/#241 had already bounded in the other three copies
-// (InspectSessionLock, sessions_watch.go, sessions.go). A `crush run` killed
+// (InspectSessionLock, sessions_watch.go, sessions.go). A `rush run` killed
 // with SIGKILL/taskkill /F leaves its PID in the lock file without
 // releasing; hours later the OS can recycle that exact PID number for a
 // completely unrelated, currently-running process. Before this fix,
 // `sessions list` (already bounded) would correctly show crashed/done, but
-// `crush sessions why` — the command whose ONLY job is to explain that very
+// `rush sessions why` — the command whose ONLY job is to explain that very
 // verdict — would say "running / lock held by live PID N", directly
 // contradicting `sessions list` for the same session.
 //

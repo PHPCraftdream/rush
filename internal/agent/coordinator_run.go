@@ -164,7 +164,7 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 		return nil, errModelProviderNotConfigured
 	}
 	// Fork patch (peak-hours bypass): consume the one-shot allow flag
-	// armed by SetAllowPeakHours (`crush run --allow-peak-hours`). Reset
+	// armed by SetAllowPeakHours (`rush run --allow-peak-hours`). Reset
 	// immediately so a subsequent Run on the same coordinator does not
 	// inherit the bypass.
 	c.runLimitsMu.Lock()
@@ -304,7 +304,7 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 	}
 
 	// Interrupt-inject ticker: watches pending_injects for interrupt=true rows
-	// written by `crush sessions inject --interrupt` in another process, and
+	// written by `rush sessions inject --interrupt` in another process, and
 	// (on the first hit) cancels the running turn and requeues the referenced
 	// message so it picks up immediately. Bound to this turn's lifetime via
 	// tickerCtx — stopped by the defer as soon as run() returns, so no

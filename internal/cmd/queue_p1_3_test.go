@@ -192,7 +192,7 @@ func TestQueueRunCmdRun_CorruptChildStdout_MarksTaskFailedNotDone(t *testing.T) 
 // concurrent-connection semantics, the queueTaskExecOverride callback (which
 // runs synchronously inside runQueueTask, strictly BEFORE the parent loop's
 // subsequent q.UpdateStatus call for the same task) opens its own short-lived
-// connection to the exact same crush.db file and drops the queue_tasks
+// connection to the exact same rush.db file and drops the queue_tasks
 // table. By the time control returns to queueRunCmd.RunE's loop and it calls
 // UpdateStatus, the table no longer exists, so the write fails every time —
 // no timing race.
@@ -227,7 +227,7 @@ func TestQueueRunCmdRun_UpdateStatusFailure_SurfacesError(t *testing.T) {
 	os.Stdin = oldStdin
 	require.NoError(t, addErr)
 
-	dbPath := filepath.Join(dataDir, "crush.db")
+	dbPath := filepath.Join(dataDir, "rush.db")
 
 	// The child "succeeds" with valid JSON, but as a side effect drops the
 	// queue_tasks table out from under the still-open app DB connection —
@@ -351,7 +351,7 @@ func TestQueueRunCmdRun_DoesNotReclaimTaskFromLiveRunner(t *testing.T) {
 	// (acquireSpawnLock, then ClaimPending) but staying "in the middle of a
 	// tool call" indefinitely instead of finishing.
 	require.NoError(t, os.MkdirAll(dataDir, 0o755))
-	dbPath := filepath.Join(dataDir, "crush.db")
+	dbPath := filepath.Join(dataDir, "rush.db")
 	liveConn, err := sql.Open("sqlite", dbPath)
 	require.NoError(t, err)
 	// Closed explicitly (not via t.Cleanup) right before
@@ -408,7 +408,7 @@ func TestQueueRunCmdRun_DoesNotReclaimTaskFromLiveRunner(t *testing.T) {
 	// The second invocation's spawned-child path must never actually run
 	// (there is nothing pending for it to claim while the live runner holds
 	// the only task), but wire the override anyway so a test bug can't
-	// accidentally shell out to a real `crush run`.
+	// accidentally shell out to a real `rush run`.
 	queueTaskExecOverride = func(args []string, cwd, prompt string) ([]byte, error) {
 		t.Errorf("unexpected: second queue run spawned a child task while the live runner's task was still 'running' — it must have wrongly reclaimed task %s", liveTaskID)
 		out, _ := json.Marshal(map[string]any{"cost_usd": 0.0, "tokens": int64(0), "exit_reason": "unexpected"})

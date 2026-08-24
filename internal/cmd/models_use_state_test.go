@@ -1,4 +1,4 @@
-// `crush models state` tests: worker/reviewer reporting in text and --json
+// `rush models state` tests: worker/reviewer reporting in text and --json
 // modes, unset-effort default notes, and unit tests of the note helpers
 // (unsetEffortNote, effortEffectiveNote, nilOrEffortDefault).
 package cmd
@@ -77,7 +77,7 @@ func TestModelsState_UnsetEffort_ShowsKnownZAIDefault(t *testing.T) {
 // on the same slot's line, or a reader can't tell "you set this" from "this
 // merely happens by default". Uses glm4_7_flash (boolean off/on Z.AI atom) rather than
 // glm5_3: the embedded catwalk provider catalog this test env falls back to
-// in CRUSH_PROVIDER_CACHE_ONLY mode doesn't list glm-5.3 at all, which makes
+// in RUSH_PROVIDER_CACHE_ONLY mode doesn't list glm-5.3 at all, which makes
 // config's smart/fast validation silently substitute a different zai model
 // on load — an unrelated, pre-existing environmental quirk of the vendored
 // catwalk embedded data, not something this task touches. glm4_7_flash IS in

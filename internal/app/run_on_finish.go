@@ -32,11 +32,11 @@ func runOnFinishHook(hook, sessionID, exitReason string, cost float64, tokens in
 
 	cmd.Env = append(
 		os.Environ(),
-		"CRUSH_SESSION_ID="+sessionID,
-		"CRUSH_EXIT_REASON="+exitReason,
-		fmt.Sprintf("CRUSH_COST_USD=%.6f", cost),
-		fmt.Sprintf("CRUSH_TOKENS=%d", tokens),
-		fmt.Sprintf("CRUSH_DURATION_SEC=%.0f", duration.Seconds()),
+		"RUSH_SESSION_ID="+sessionID,
+		"RUSH_EXIT_REASON="+exitReason,
+		fmt.Sprintf("RUSH_COST_USD=%.6f", cost),
+		fmt.Sprintf("RUSH_TOKENS=%d", tokens),
+		fmt.Sprintf("RUSH_DURATION_SEC=%.0f", duration.Seconds()),
 	)
 
 	output, err := cmd.CombinedOutput()

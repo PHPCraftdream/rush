@@ -29,10 +29,10 @@ Supported age suffixes:
   m, mo, mon   months (30d)   e.g. 1m
   y           years (365d)    e.g. 1y`,
 	Example: `
-crush sessions purge 1m --dry-run
-crush sessions purge 3d
-crush sessions purge 15min --yes
-crush sessions purge 7d --matching 'garnet-sql-*' --yes
+rush sessions purge 1m --dry-run
+rush sessions purge 3d
+rush sessions purge 15min --yes
+rush sessions purge 7d --matching 'garnet-sql-*' --yes
   `,
 	Args: cobra.ExactArgs(1),
 	RunE: sessionsPurgeCmdRun,

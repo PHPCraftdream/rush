@@ -25,7 +25,7 @@ const defaultKillTimeout = 2 * time.Second
 // terminal" motivation is moot for us. What still matters for agent-tooling
 // is the second half: a child must not be able to deliver SIGINT/SIGTERM to
 // Rush's own process group, and — paired with the negative-PID kill in
-// processGroupExecHandler — a cancelled `crush run` step must take its whole
+// processGroupExecHandler — a cancelled `rush run` step must take its whole
 // subtree (build → compiler → spawned helpers) down with it instead of
 // leaking orphaned grandchildren.
 func isolateProcess(cmd *exec.Cmd) {

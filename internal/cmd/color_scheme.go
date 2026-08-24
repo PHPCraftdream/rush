@@ -10,7 +10,7 @@ import (
 const ColorSchemeAuto = "auto"
 
 // resolveColorScheme resolves the effective color-scheme value from an
-// explicit flag value and the CRUSH_COLOR_SCHEME environment variable.
+// explicit flag value and the RUSH_COLOR_SCHEME environment variable.
 //
 // Precedence: a non-empty flagValue wins over envValue. The result is one
 // of "light", "dark", or "auto" (case-insensitive on input). Anything that

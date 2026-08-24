@@ -32,12 +32,12 @@ func isInsideWorktree() bool {
 //
 // Keyed on dir (as passed in, not canonicalized) and cached for the life of
 // the process: a directory's git-worktree membership does not change while
-// crush is running under any normal workflow (unlike cliprovider.Available's
+// rush is running under any normal workflow (unlike cliprovider.Available's
 // PATH-keyed cache, which DOES need to invalidate on a PATH change a running
 // process can legitimately observe, worktreeRoot has no equivalent
 // externally-observable "this changed" signal to key on). The one scenario
 // this trades away — running `git worktree add/remove` or `git init` on a
-// directory crush already resolved a boundary for, in the same long-lived
+// directory rush already resolved a boundary for, in the same long-lived
 // process, without restarting — is the same class of staleness
 // cliprovider.detectAvailable's cache already accepts for a newly-installed
 // CLI (see that function's doc comment). Every caller (lookupConfigs,

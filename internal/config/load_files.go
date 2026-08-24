@@ -1,5 +1,5 @@
 // Config-file discovery and merging: the bounded upward search for
-// crush.json files, duplicate-workspace-config detection, and the JSON
+// rush.json files, duplicate-workspace-config detection, and the JSON
 // merge that folds every loaded document into one Config.
 package config
 
@@ -18,7 +18,7 @@ import (
 // lookupConfigs searches config files starting at cwd and walking up
 // through the current project. The upward walk stops at the git
 // working tree root when one can be detected, otherwise at cwd itself,
-// so an unrelated crush.json placed above the project is never picked
+// so an unrelated rush.json placed above the project is never picked
 // up. Global user-level config locations are always included
 // regardless of the boundary.
 func lookupConfigs(cwd string) []string {
@@ -48,7 +48,7 @@ func lookupConfigs(cwd string) []string {
 // already merged into cfg).
 //
 // Load and buildAndPublishReload both merge the workspace config
-// (<DataDirectory>/crush.json) as a SEPARATE step after loadFromConfigPaths,
+// (<DataDirectory>/rush.json) as a SEPARATE step after loadFromConfigPaths,
 // under the assumption that it's a distinct file loadFromConfigPaths didn't
 // already see. That assumption breaks when DataDirectory is configured (or,
 // as in several tests, passed directly) such that the workspace path
@@ -119,11 +119,11 @@ func loadFromBytes(configs [][]byte) (*Config, error) {
 }
 
 // knownModelSlots is the exhaustive set of keys the "models" object in
-// crush.json is read into (see the SelectedModelType* constants). Anything
+// rush.json is read into (see the SelectedModelType* constants). Anything
 // else under "models" is not a typo Go will catch: json.Unmarshal into
 // Config.Models (map[SelectedModelType]SelectedModel) silently keeps an
 // unrecognized key as a map entry that is simply never looked up anywhere
-// -- Load never errors, "crush models state" just reports whatever the
+// -- Load never errors, "rush models state" just reports whatever the
 // defaults resolve to, and the operator has no signal that the key they
 // wrote did nothing. This bites hardest after a model-slot rename: a config
 // file still holding a pre-rename slot key under "models" loads
@@ -156,7 +156,7 @@ func warnUnknownModelSlots(data []byte) {
 	}
 	for key := range probe.Models {
 		if !knownModelSlots[key] {
-			slog.Warn("unrecognized key under \"models\" in crush.json -- it is not one of the configured model slots and has no effect", "key", key, "known_slots", "smart, fast, worker, reviewer")
+			slog.Warn("unrecognized key under \"models\" in rush.json -- it is not one of the configured model slots and has no effect", "key", key, "known_slots", "smart, fast, worker, reviewer")
 		}
 	}
 }

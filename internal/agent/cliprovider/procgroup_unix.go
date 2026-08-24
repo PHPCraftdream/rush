@@ -14,7 +14,7 @@ import (
 // registration in procgroup_windows.go. The ORDINARY teardown paths need
 // nothing from it — KillProcess detects process-group leaders itself via
 // getpgid — but registering the child lets the last-resort sweep in
-// session.KillAllTrackedTrees find it when crush is about to die without
+// session.KillAllTrackedTrees find it when rush is about to die without
 // running its own cleanup (the second Ctrl-C; see internal/cmd/run.go).
 // Windows gets that case for free from KILL_ON_JOB_CLOSE; Unix does not.
 //
@@ -23,12 +23,12 @@ import (
 // which is correct: there is no group of ours to sweep.
 //
 // It ALSO durably records the group (session.RegisterChildGroup) in a
-// cross-process, on-disk registry keyed by this crush process's own pid.
+// cross-process, on-disk registry keyed by this rush process's own pid.
 // TrackProcessTree/KillAllTrackedTrees above only help when THIS process
-// is still alive to run its own signal handler; `crush sessions kill`
+// is still alive to run its own signal handler; `rush sessions kill`
 // runs as a separate OS process and has no access to the in-memory
 // trackedGroups map, so without the disk registry it could kill the
-// crush pid it read from the lock file and still leave this exact
+// rush pid it read from the lock file and still leave this exact
 // process group (a CLI provider's claude/gemini/codex/qwen tree) running
 // — the #580 gap. See childgroup_registry_unix.go for the full design
 // rationale.

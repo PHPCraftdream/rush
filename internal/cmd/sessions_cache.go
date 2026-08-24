@@ -35,7 +35,7 @@ DISJOINT classes, so the prompt size is their sum:
 
 Grouping is by the model that ACTUALLY PRODUCED each message, so a session
 that switched models mid-conversation is split correctly across them. This is
-what "crush sessions cost" cannot do: it groups by the session's current model
+what "rush sessions cost" cannot do: it groups by the session's current model
 and its TOKENS column sums last-snapshot session counters rather than real
 totals.
 
@@ -57,16 +57,16 @@ Rows whose usage was ESTIMATED (the provider sent none, so counts were derived
 from message lengths) are flagged rather than blended in silently.`,
 	Example: `
 # Cache effectiveness for one session (short hash works)
-crush sessions cache a1b2c3d
+rush sessions cache a1b2c3d
 
 # Across every session, grouped by the model that produced each message
-crush sessions cache --by model
+rush sessions cache --by model
 
 # Last week, day by day
-crush sessions cache --since 7d --by day
+rush sessions cache --since 7d --by day
 
 # Machine-readable; cache_hit_ratio is null when it cannot be stated
-crush sessions cache --since 30d --json | jq '.by_model[]'
+rush sessions cache --since 30d --json | jq '.by_model[]'
   `,
 	Args: cobra.MaximumNArgs(1),
 	RunE: sessionsCacheCmdRun,

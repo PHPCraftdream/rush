@@ -110,9 +110,9 @@ func TestBackgroundShellManager_LimitBlocksWhenAllActive(t *testing.T) {
 	workingDir := t.TempDir()
 	manager := newBackgroundShellManager()
 	// Pin THIS manager's cap. newBackgroundShellManager honours
-	// CRUSH_MAX_BACKGROUND_JOBS, so asserting against the bare constant
+	// RUSH_MAX_BACKGROUND_JOBS, so asserting against the bare constant
 	// made the test fail on any host that had set the knob — measured:
-	// CRUSH_MAX_BACKGROUND_JOBS=200 turned the rejection assertion into
+	// RUSH_MAX_BACKGROUND_JOBS=200 turned the rejection assertion into
 	// "An error is expected but got nil". A low fixed cap also keeps the
 	// fill loop from spawning 50 real processes to prove one rejection.
 	manager.SetMaxJobs(6)
@@ -143,17 +143,17 @@ func TestBackgroundShellManager_LimitBlocksWhenAllActive(t *testing.T) {
 // the answer to "50 killed my session" is still "edit the source".
 func TestMaxJobsFromEnv(t *testing.T) {
 	t.Run("unset uses the default", func(t *testing.T) {
-		t.Setenv("CRUSH_MAX_BACKGROUND_JOBS", "")
+		t.Setenv("RUSH_MAX_BACKGROUND_JOBS", "")
 		require.Equal(t, MaxBackgroundJobs, maxJobsFromEnv())
 	})
 
 	t.Run("a positive value is honoured", func(t *testing.T) {
-		t.Setenv("CRUSH_MAX_BACKGROUND_JOBS", "500")
+		t.Setenv("RUSH_MAX_BACKGROUND_JOBS", "500")
 		require.Equal(t, 500, maxJobsFromEnv())
 	})
 
 	t.Run("a new manager picks it up", func(t *testing.T) {
-		t.Setenv("CRUSH_MAX_BACKGROUND_JOBS", "7")
+		t.Setenv("RUSH_MAX_BACKGROUND_JOBS", "7")
 		require.Equal(t, 7, newBackgroundShellManager().MaxJobs())
 	})
 
@@ -161,7 +161,7 @@ func TestMaxJobsFromEnv(t *testing.T) {
 	// knob, and a typo in it must not stop crush from starting.
 	for _, bad := range []string{"nonsense", "0", "-5", "3.5"} {
 		t.Run("rejects "+bad, func(t *testing.T) {
-			t.Setenv("CRUSH_MAX_BACKGROUND_JOBS", bad)
+			t.Setenv("RUSH_MAX_BACKGROUND_JOBS", bad)
 			require.Equal(t, MaxBackgroundJobs, maxJobsFromEnv(),
 				"a malformed value must fall back to the default, not disable the limit")
 		})

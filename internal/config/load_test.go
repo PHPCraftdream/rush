@@ -17,7 +17,7 @@ func TestMain(m *testing.M) {
 	// the network-fetch path are not short-circuited by the new
 	// time-based skip. TTL behaviour itself is covered by dedicated
 	// tests that re-enable a non-zero value via t.Setenv.
-	os.Setenv("CRUSH_PROVIDER_CACHE_TTL", "0")
+	os.Setenv("RUSH_PROVIDER_CACHE_TTL", "0")
 
 	// Stub CLI detection so the always-on local-CLI provider is not injected
 	// from whatever binaries (claude/gemini/npx) happen to be on the runner's

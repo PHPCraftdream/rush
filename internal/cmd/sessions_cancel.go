@@ -10,20 +10,20 @@ import (
 var sessionsCancelCmd = &cobra.Command{
 	Use:   "cancel <session-id>",
 	Short: "Request cancellation of a running session",
-	Long: `Signal a running crush process to cancel the given session.
+	Long: `Signal a running rush process to cancel the given session.
 
 Sets a database flag that the running agent checks after each step. Works
 across processes — use it from a second terminal or orchestrator to stop
-a ` + "`crush run`" + ` that is running in the background.
+a ` + "`rush run`" + ` that is running in the background.
 
 The running agent will stop within one step of the flag being set.`,
 	Args: cobra.MaximumNArgs(1),
 	Example: `
 # Cancel a specific session
-crush sessions cancel my-session-id
+rush sessions cancel my-session-id
 
 # Cancel all sessions
-crush sessions cancel --all
+rush sessions cancel --all
   `,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		all, _ := cmd.Flags().GetBool("all")

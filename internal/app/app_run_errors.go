@@ -31,7 +31,7 @@ const sqliteConstraintCode = 19
 
 // isSessionsIDConstraintError reports whether err is a SQLite PRIMARY
 // KEY/UNIQUE constraint violation on sessions.id specifically — the shape
-// produced when two `crush run --session <id>` processes race the very
+// produced when two `rush run --session <id>` processes race the very
 // first INSERT for an id that has never existed before (task #605).
 //
 // Two layers, in order:
@@ -136,24 +136,24 @@ func runFailed(finalReason string, runErr error, isCanceled bool) bool {
 }
 
 // sessionBusyGuidance turns a "session already in use" failure into the
-// sentence an operator can act on: who holds it, why a second `crush run`
+// sentence an operator can act on: who holds it, why a second `rush run`
 // cannot attach, and the inject command that can.
 func sessionBusyGuidance(sessionID string, err error) string {
 	var busyErr *session.SessionLockBusyError
 	holder := ""
 	switch {
 	case errors.As(err, &busyErr):
-		holder = "another live crush process"
+		holder = "another live rush process"
 		if busyErr.HolderPID > 0 {
-			holder = fmt.Sprintf("crush process PID %d", busyErr.HolderPID)
+			holder = fmt.Sprintf("rush process PID %d", busyErr.HolderPID)
 		}
 	case errors.Is(err, agent.ErrSessionBusy):
-		holder = "this crush process"
+		holder = "this rush process"
 	default:
 		return ""
 	}
 	return fmt.Sprintf(
-		"session %q is already running in %s. `crush run --session %s ...` starts a new turn and cannot attach to an active one. To push a message into the running turn, use: crush sessions inject %s -m <message>",
+		"session %q is already running in %s. `rush run --session %s ...` starts a new turn and cannot attach to an active one. To push a message into the running turn, use: rush sessions inject %s -m <message>",
 		sessionID, holder, sessionID, sessionID,
 	)
 }

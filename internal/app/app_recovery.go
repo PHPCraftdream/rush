@@ -14,12 +14,12 @@ import (
 )
 
 // recoverInterruptedTurns is the startup safety net for the "silent dying"
-// pattern: a previous crush process that died ungracefully (kill -9, power
+// pattern: a previous rush process that died ungracefully (kill -9, power
 // loss, OS reboot, panic without recovery, or even a graceful Ctrl-C during
 // the brief window where ctx.Canceled would bypass the in-flight Update)
 // can leave assistant messages in the DB with tool calls but no finish
 // part. Without recovery, the WUI renders those as "still streaming"
-// forever, and `crush sessions reset` is the only escape.
+// forever, and `rush sessions reset` is the only escape.
 //
 // This sweep runs once at app start, before the coordinator is wired up.
 // It performs a two-pass scan over ALL sessions (Sessions.ListAll):
@@ -55,7 +55,7 @@ func (app *App) recoverInterruptedTurns(ctx context.Context) {
 	// fsync stall) cannot block app startup. 10s is generous for a
 	// linear scan of sessions + targeted updates against SQLite; if it
 	// trips we'd rather skip recovery than hang the user's first
-	// `crush run`.
+	// `rush run`.
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	start := time.Now()
@@ -195,15 +195,15 @@ func (app *App) recoverSessionInterruptedTurn(ctx context.Context, sess session.
 		return recoveryOutcomeNone
 	}
 	// PRIMARY GUARD (task #287, release blocker): never touch a session
-	// that another LIVE crush process still owns. This sweep runs at the
-	// start of EVERY crush process and iterates EVERY session in the data
+	// that another LIVE rush process still owns. This sweep runs at the
+	// start of EVERY rush process and iterates EVERY session in the data
 	// directory — not just this process's own — so without a real
 	// liveness probe it happily stamps "Process restarted" onto turns
 	// that are genuinely mid-flight in a sibling process. Because
 	// message.Update rewrites the whole Parts blob from the snapshot read
 	// here, that stamp also CLOBBERS whatever the live owner streamed in
 	// between our read and our write. This fork's entire model is N
-	// concurrent `crush run` sessions sharing one data directory, so that
+	// concurrent `rush run` sessions sharing one data directory, so that
 	// was routine, not rare: an observed 38-minute sub-agent delegation
 	// was marked errored by an unrelated process merely starting up.
 	//
@@ -238,7 +238,7 @@ func (app *App) recoverSessionInterruptedTurn(ctx context.Context, sess session.
 		}
 	}
 	// Age filter: secondary belt-and-braces only. Skips messages another
-	// concurrent crush process might have just created in the window
+	// concurrent rush process might have just created in the window
 	// before it managed to write its lock file at all.
 	if lastAssistant.CreatedAt > staleBefore {
 		return recoveryOutcomeSkippedFresh
@@ -246,7 +246,7 @@ func (app *App) recoverSessionInterruptedTurn(ctx context.Context, sess session.
 	lastAssistant.AddFinish(
 		message.FinishReasonError,
 		"Process restarted",
-		"The previous crush process exited before this turn completed (silent dying — see CHANGELOG.fork.md section 4.D). The assistant message had tool calls but no finish part. Cleanly recovered on startup; you can retry from the previous user message.",
+		"The previous rush process exited before this turn completed (silent dying — see CHANGELOG.fork.md section 4.D). The assistant message had tool calls but no finish part. Cleanly recovered on startup; you can retry from the previous user message.",
 	)
 	if err := app.Messages.Update(ctx, *lastAssistant); err != nil {
 		slog.Warn(

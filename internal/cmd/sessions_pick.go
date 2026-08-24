@@ -20,18 +20,18 @@ var sessionsPickCmd = &cobra.Command{
 
 Arrow keys navigate, Enter selects, q or Ctrl+C exits without selection.
 
-By default, runs "crush sessions last <id>" on the selected session.
-Use --tail to run "crush sessions tail <id> --follow" instead.
+By default, runs "rush sessions last <id>" on the selected session.
+Use --tail to run "rush sessions tail <id> --follow" instead.
 
 Only the 15 most recently active sessions are shown in the picker —
 older ones are hidden and a "(+N not shown)" footer reports how many.
-Run "crush sessions list" to see every session.`,
+Run "rush sessions list" to see every session.`,
 	Example: `
 # Pick a session and show last 10 messages
-crush sessions pick
+rush sessions pick
 
 # Pick a session and tail it live
-crush sessions pick --tail
+rush sessions pick --tail
   `,
 	RunE: sessionsPickCmdRun,
 }
@@ -50,7 +50,7 @@ func sessionsPickCmdRun(cmd *cobra.Command, args []string) error {
 	// raw flag — same "prefer the raw flag" anti-pattern task #224 fixed in
 	// sessions_kill.go and #247 fixed in queue.go's runQueueTask. Forwarded
 	// to the spawned child below so it resolves the SAME session DB the
-	// picker just listed from, instead of re-deriving <cwd>/.crush from
+	// picker just listed from, instead of re-deriving <cwd>/.rush from
 	// scratch and reporting "session not found" for the ID just displayed.
 	dataDir := a.Config().Options.DataDirectory
 
@@ -94,7 +94,7 @@ func sessionsPickCmdRun(cmd *cobra.Command, args []string) error {
 	// doc comment for the same reasoning (#247/#263).
 	binary, err := os.Executable()
 	if err != nil {
-		return fmt.Errorf("failed to resolve crush binary path: %w", err)
+		return fmt.Errorf("failed to resolve rush binary path: %w", err)
 	}
 
 	m := pickerModel{
@@ -127,7 +127,7 @@ func sessionsPickCmdRun(cmd *cobra.Command, args []string) error {
 	return subCmd.Run()
 }
 
-// pickedSessionArgs builds the argv for the child `crush sessions
+// pickedSessionArgs builds the argv for the child `rush sessions
 // tail|last` process spawned after a session is picked. Split out from
 // sessionsPickCmdRun so it can be tested directly without driving the
 // interactive tea.Program picker — see

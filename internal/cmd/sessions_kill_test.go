@@ -24,8 +24,8 @@ import (
 // naive strconv.Atoi(TrimSpace(file)) and would return 0 for the
 // multi-line lock files that TryAcquireSessionLockWithTimeout writes
 // (PID on line 1, timeout-in-seconds on line 2). That bug made
-// `crush sessions kill` silently skip the kill step on any session
-// started with `crush run --timeout ...`. Regression coverage stays in
+// `rush sessions kill` silently skip the kill step on any session
+// started with `rush run --timeout ...`. Regression coverage stays in
 // this file even though the parser now lives in the session package.
 func TestReadLockPID_FromCLI(t *testing.T) {
 	dir := t.TempDir()
@@ -132,7 +132,7 @@ func TestForceKillHolder_AlreadyDead(t *testing.T) {
 // nobody holds it, and refuse to kill anything.
 func TestProbeThenKillHolder_StalePIDNotKilled(t *testing.T) {
 	dir := t.TempDir()
-	dataDir := filepath.Join(dir, ".crush")
+	dataDir := filepath.Join(dir, ".rush")
 
 	// Simulate a holder that finished (no live OS lock on this session id)
 	// but whose lock file still names a PID — specifically our own PID, so
@@ -171,7 +171,7 @@ func TestProbeThenKillHolder_LiveHolderStillKilled(t *testing.T) {
 		t.Skip("spawns a real child process; skipped in -short")
 	}
 	dir := t.TempDir()
-	dataDir := filepath.Join(dir, ".crush")
+	dataDir := filepath.Join(dir, ".rush")
 
 	// reapInBackground=true: this test measures whether forceKillHolder's
 	// SIGKILL-then-poll observes death within its wait budget, which needs
@@ -240,7 +240,7 @@ func TestForceKillHolder_LiveProcess(t *testing.T) {
 // re-exec idiom scoped to this test binary.
 // ---------------------------------------------------------------------
 
-const killTestHelperProcessEnv = "CRUSH_SESSIONS_KILL_LOCK_HELPER"
+const killTestHelperProcessEnv = "RUSH_SESSIONS_KILL_LOCK_HELPER"
 
 // TestHelperKillTestLockHold is the re-exec entry point for
 // spawnKillTestLockHolder. Under a normal `go test` run (sentinel env var
@@ -249,8 +249,8 @@ func TestHelperKillTestLockHold(t *testing.T) {
 	if os.Getenv(killTestHelperProcessEnv) != "1" {
 		return
 	}
-	dataDir := os.Getenv("CRUSH_SESSIONS_KILL_LOCK_HELPER_DATADIR")
-	sessionID := os.Getenv("CRUSH_SESSIONS_KILL_LOCK_HELPER_SESSIONID")
+	dataDir := os.Getenv("RUSH_SESSIONS_KILL_LOCK_HELPER_DATADIR")
+	sessionID := os.Getenv("RUSH_SESSIONS_KILL_LOCK_HELPER_SESSIONID")
 	if dataDir == "" || sessionID == "" {
 		fmt.Println("FAILED missing-env")
 		os.Exit(2)
@@ -340,8 +340,8 @@ func spawnKillTestLockHolder(t *testing.T, dataDir, sessionID string, reapInBack
 	c := exec.CommandContext(ctx, exe, "-test.run=^TestHelperKillTestLockHold$")
 	c.Env = append(os.Environ(),
 		killTestHelperProcessEnv+"=1",
-		"CRUSH_SESSIONS_KILL_LOCK_HELPER_DATADIR="+dataDir,
-		"CRUSH_SESSIONS_KILL_LOCK_HELPER_SESSIONID="+sessionID,
+		"RUSH_SESSIONS_KILL_LOCK_HELPER_DATADIR="+dataDir,
+		"RUSH_SESSIONS_KILL_LOCK_HELPER_SESSIONID="+sessionID,
 	)
 	stdoutR, err := c.StdoutPipe()
 	require.NoError(t, err)
@@ -419,13 +419,13 @@ func (h *killTestLockHolder) stop() {
 
 // TestSessionsKillCmdRun_HonorsConfiguredDataDir is the regression test for
 // task #219: sessionsKillCmdRun used to hardcode the lock/data path as
-// filepath.Join(cwd, ".crush"), completely ignoring --data-dir. This test
-// points --data-dir at a directory that is deliberately NOT <cwd>/.crush,
+// filepath.Join(cwd, ".rush"), completely ignoring --data-dir. This test
+// points --data-dir at a directory that is deliberately NOT <cwd>/.rush,
 // writes a real lock file (naming this test process's own PID, mirroring
 // the stale-PID pattern used elsewhere in this file) at the path the FIX
 // computes (<configured-data-dir>/locks/session-<id>.lock), and runs the
 // real sessionsKillCmd.RunE. Before the fix this would print "no lock file
-// at <cwd>/.crush/locks/..." (wrong path) and no-op; after the fix it must
+// at <cwd>/.rush/locks/..." (wrong path) and no-op; after the fix it must
 // find the lock at the configured location and remove it.
 func TestSessionsKillCmdRun_HonorsConfiguredDataDir(t *testing.T) {
 	// sessionsKillCmdRun now resolves the data directory via
@@ -440,7 +440,7 @@ func TestSessionsKillCmdRun_HonorsConfiguredDataDir(t *testing.T) {
 	require.NoError(t, os.Chdir(workDir))
 	t.Cleanup(func() { _ = os.Chdir(orig) })
 
-	// Deliberately outside workDir entirely, so filepath.Join(cwd, ".crush")
+	// Deliberately outside workDir entirely, so filepath.Join(cwd, ".rush")
 	// can never accidentally coincide with this path.
 	configuredDataDir := filepath.Join(tmp, "elsewhere-data")
 
@@ -462,7 +462,7 @@ func TestSessionsKillCmdRun_HonorsConfiguredDataDir(t *testing.T) {
 	// Sanity: the WRONG (pre-fix) path must not exist, so a false pass via
 	// "no lock file at <wrong path>" being silently treated as success is
 	// impossible to confuse with the real assertion below.
-	wrongPath := filepath.Join(workDir, ".crush", "locks", "session-"+sanitiseSessionIDForFilename(sessionID)+".lock")
+	wrongPath := filepath.Join(workDir, ".rush", "locks", "session-"+sanitiseSessionIDForFilename(sessionID)+".lock")
 	_, wrongStatErr := os.Stat(wrongPath)
 	require.True(t, os.IsNotExist(wrongStatErr))
 

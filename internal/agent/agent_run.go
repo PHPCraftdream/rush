@@ -309,7 +309,7 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 	}()
 
 	// Inter-process session lock. The reservation above is per-process (an
-	// in-memory map); two crush processes wouldn't see each other's busy
+	// in-memory map); two rush processes wouldn't see each other's busy
 	// state and could both start streaming into the same session id — the
 	// accidental-double-spawn race documented in the parallel-process audit
 	// (#6 CRITICAL). The OS-level lock auto-releases on process death, so a
@@ -320,8 +320,8 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 	// session.CreateAgentToolSessionID), which is a completely different
 	// id from the parent's call.SessionID. The parent's lock only covers
 	// the parent's own session id — the child id is otherwise unlocked,
-	// so a second crush process opening that exact child session (e.g.
-	// via `crush sessions pick`/`resume`) could acquire it and stream into
+	// so a second rush process opening that exact child session (e.g.
+	// via `rush sessions pick`/`resume`) could acquire it and stream into
 	// it concurrently with this in-process sub-agent run. Locking must
 	// happen per session id, regardless of isSubAgent.
 	//

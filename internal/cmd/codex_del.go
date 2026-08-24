@@ -1,21 +1,27 @@
 // Fork addition: `codex-del` undoes `codex-init` — removes the
-// crush/crush-fallback Codex CLI Skills. See codex_init.go for context.
+// rush/rush-fallback Codex CLI Skills. See codex_init.go for context.
 package cmd
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
 
 var codexDelCmd = &cobra.Command{
 	Use:   "codex-del",
-	Short: "Remove the crush/crush-fallback Skills from Codex CLI",
-	Long: `Undo ` + "`crush codex-init`" + `: remove the crush and crush-fallback Skills
+	Short: "Remove the rush/rush-fallback Skills from Codex CLI",
+	Long: `Undo ` + "`rush codex-init`" + `: remove the rush and rush-fallback Skills
 from Codex CLI's Skills directory.
 
 Only Skills that carry our sentinel are removed — foreign SKILL.md files
 with the same name are left alone with a warning.
+
+This also removes legacy crush and crush-fallback Skills from a
+pre-rename install (if they contain the legacy sentinel).
 
 Default is --global (~/.agents/skills/). Use --local (or --cwd, which
 implies it) to target the current project's .agents/skills/ instead.
@@ -24,13 +30,13 @@ implies it) to target the current project's .agents/skills/ instead.
 Idempotent: running this twice is a no-op the second time.`,
 	Example: `
 # Remove globally (from ~/.agents/skills/) — the default
-crush codex-del
+rush codex-del
 
 # Remove from the current project instead
-crush codex-del --local
+rush codex-del --local
 
 # Scope to another project (implies --local)
-crush codex-del --cwd /path/to/project
+rush codex-del --cwd /path/to/project
 `,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		global, _ := cmd.Flags().GetBool("global")
@@ -73,13 +79,58 @@ func runCodexDel(cwd string) error {
 	return removeCodexSkills(skillsDir)
 }
 
-// removeCodexSkills removes both the crush and crush-fallback Skills from
-// skillsDir.
+const (
+	legacyCodexSlashCommandSentinel = "<!-- crush-slash-command:v1 -->"
+)
+
+// containsAnyCodexSentinel returns true if the data contains either the new
+// rush-slash-command sentinel or the legacy crush-slash-command sentinel.
+func containsAnyCodexSentinel(data string) bool {
+	return strings.Contains(data, claudeSlashCommandSentinel) ||
+		strings.Contains(data, legacyCodexSlashCommandSentinel)
+}
+
+// removeCodexSkills removes both the rush/rush-fallback Skills and the legacy
+// crush/crush-fallback Skills from skillsDir.
 func removeCodexSkills(skillsDir string) error {
-	if err := removeSentinelledSkillDir(skillsDir, "crush", claudeSlashCommandSentinel); err != nil {
+	// Remove new rush-named Skills
+	if err := removeSentinelledSkillDir(skillsDir, "rush", claudeSlashCommandSentinel); err != nil {
 		return err
 	}
-	return removeSentinelledSkillDir(skillsDir, "crush-fallback", claudeSlashCommandSentinel)
+	if err := removeSentinelledSkillDir(skillsDir, "rush-fallback", claudeSlashCommandSentinel); err != nil {
+		return err
+	}
+	// Remove legacy crush-named Skills (accept either sentinel)
+	if err := removeCodexSkillDirWithEitherSentinel(skillsDir, "crush"); err != nil {
+		return err
+	}
+	return removeCodexSkillDirWithEitherSentinel(skillsDir, "crush-fallback")
+}
+
+// removeCodexSkillDirWithEitherSentinel removes <skillsDir>/<name>/SKILL.md
+// if it contains either the new rush-slash-command sentinel or the legacy
+// crush-slash-command sentinel, then attempts to remove the now-presumably-empty
+// directory.
+func removeCodexSkillDirWithEitherSentinel(skillsDir, name string) error {
+	dir := filepath.Join(skillsDir, name)
+	path := filepath.Join(dir, "SKILL.md")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read %s: %w", path, err)
+	}
+	if !containsAnyCodexSentinel(string(data)) {
+		fmt.Fprintf(os.Stderr, "refusing to delete %s — does not look like ours (missing sentinel)\n", path)
+		return nil
+	}
+	if err := os.Remove(path); err != nil {
+		return fmt.Errorf("failed to remove %s: %w", path, err)
+	}
+	fmt.Fprintf(os.Stderr, "removed %s\n", path)
+	_ = os.Remove(dir)
+	return nil
 }
 
 func init() {

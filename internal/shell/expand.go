@@ -21,7 +21,7 @@ const maxInnerStderrBytes = 512
 
 // NoUnset controls whether ExpandValue treats unset variables as an
 // error. Default false matches bash: $UNSET expands to "". Store true
-// to re-enable strict mode globally. Not exposed in crush.json; this is
+// to re-enable strict mode globally. Not exposed in rush.json; this is
 // an internal escape hatch in case the lenient default turns out to be
 // the wrong call.
 //

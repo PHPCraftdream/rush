@@ -59,19 +59,19 @@ func TestRenderEffortsForModel_ZAI(t *testing.T) {
 	assert.Contains(t, out, "xhigh, max, ultracode        -> reasoning_effort: \"max\"")
 
 	// Must show the raw @effort command form, not a letter short code (none exist).
-	assert.Contains(t, out, "crush models use zai/glm-5.3@<level> <fast>")
-	assert.Contains(t, out, "crush models use zai/glm-5.3@off <fast>")
-	assert.Contains(t, out, "crush models use zai/glm-5.3@max <fast>")
+	assert.Contains(t, out, "rush models use zai/glm-5.3@<level> <fast>")
+	assert.Contains(t, out, "rush models use zai/glm-5.3@off <fast>")
+	assert.Contains(t, out, "rush models use zai/glm-5.3@max <fast>")
 	// "high" is glm5_3's third real state — must be rendered too, and no
 	// wider vendor-only vocabulary (e.g. "xhigh") should appear as a settable row.
-	assert.Contains(t, out, "crush models use zai/glm-5.3@high <fast>")
-	assert.NotContains(t, out, "crush models use zai/glm-5.3@xhigh <fast>")
+	assert.Contains(t, out, "rush models use zai/glm-5.3@high <fast>")
+	assert.NotContains(t, out, "rush models use zai/glm-5.3@xhigh <fast>")
 
 	// New behavior for this task: the long-form atom suffix (validated,
 	// same mechanism as Claude atoms) is now also offered and the output
 	// says both forms are validated against the real levels array — not
 	// left as an unvalidated blind string split.
-	assert.Contains(t, out, "crush models use glm5_3-<level> <fast>")
+	assert.Contains(t, out, "rush models use glm5_3-<level> <fast>")
 	assert.Contains(t, out, "Validated")
 	assert.Contains(t, out, "3 real states")
 }
@@ -85,7 +85,7 @@ func TestRenderEffortsForModel_ZAI_LevelsFromRealArray(t *testing.T) {
 	a := atomRegistry["glm5_3"]
 	require.NotNil(t, a.ReasoningLevels)
 	for _, level := range a.ReasoningLevels {
-		assert.Contains(t, out, "crush models use zai/glm-5.3@"+level, "level %q from the real array must be rendered", level)
+		assert.Contains(t, out, "rush models use zai/glm-5.3@"+level, "level %q from the real array must be rendered", level)
 	}
 }
 
@@ -114,7 +114,7 @@ func TestRenderEffortsForModel_Claude(t *testing.T) {
 	assert.Contains(t, out, "fable-low")
 	assert.Contains(t, out, "fable-high")
 	assert.Contains(t, out, "fable-max")
-	assert.Contains(t, out, "crush models use fable-high <fast>")
+	assert.Contains(t, out, "rush models use fable-high <fast>")
 
 	// Must NOT suggest the @effort form for a Claude atom.
 	assert.NotContains(t, out, "fable@")
@@ -139,7 +139,7 @@ func TestRenderEffortsForModel_UnknownModel(t *testing.T) {
 	_, err := renderEffortsForModel("totally-fake-model-xyz")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not a recognized atom, short code, or provider/model")
-	assert.Contains(t, err.Error(), "crush models list")
+	assert.Contains(t, err.Error(), "rush models list")
 }
 
 // TestResolveEffortTarget_Variants exercises the three accepted input
@@ -184,7 +184,7 @@ func TestResolveEffortTarget_Variants(t *testing.T) {
 }
 
 // TestModelsEffortsCmd_RegisteredAsSubcommand sanity-checks that init()
-// registered the new command under `crush models`.
+// registered the new command under `rush models`.
 func TestModelsEffortsCmd_RegisteredAsSubcommand(t *testing.T) {
 	found := false
 	for _, sub := range modelsCmd.Commands() {
@@ -196,9 +196,9 @@ func TestModelsEffortsCmd_RegisteredAsSubcommand(t *testing.T) {
 	assert.True(t, found, "modelsEffortsCmd must be registered under modelsCmd")
 }
 
-// TestModelsHelp_CrossReferencesEfforts verifies `crush models --help`
+// TestModelsHelp_CrossReferencesEfforts verifies `rush models --help`
 // mentions the new command, per the task's requirement to extend (not
 // restyle) the existing four-slot Long description.
 func TestModelsHelp_CrossReferencesEfforts(t *testing.T) {
-	assert.Contains(t, modelsCmd.Long, "crush models efforts --help")
+	assert.Contains(t, modelsCmd.Long, "rush models efforts --help")
 }

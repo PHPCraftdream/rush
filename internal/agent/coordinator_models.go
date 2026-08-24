@@ -227,7 +227,7 @@ func (c *coordinator) resolveSessionModels(ctx context.Context, sessionID string
 // so it isn't folded into the hot resolveSessionModels call.
 //
 // reviewer has no equivalent runtime hook: unlike smart/fast/worker, it is
-// consumed only as a `crush run --role reviewer` CLI selection (an entire
+// consumed only as a `rush run --role reviewer` CLI selection (an entire
 // top-level run's model choice), never read at sub-agent dispatch time —
 // see internal/cmd/run.go's --role docs. A session-level ReviewerModelID is
 // stored (task #466's DB/API layer) for forward compatibility but currently

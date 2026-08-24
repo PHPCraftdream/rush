@@ -11,7 +11,7 @@ import (
 
 var logsPathCmd = &cobra.Command{
 	Use:   "path",
-	Short: "Print the path to the crush log file",
+	Short: "Print the path to the rush log file",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cwd, _ := cmd.Flags().GetString("cwd")
 		dataDir, _ := cmd.Flags().GetString("data-dir")
@@ -19,7 +19,7 @@ var logsPathCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		p := filepath.Join(cfg.Config().Options.DataDirectory, "logs", "crush.log")
+		p := filepath.Join(cfg.Config().Options.DataDirectory, "logs", "rush.log")
 		info, err := os.Stat(p)
 		if err != nil {
 			fmt.Println(p, "(does not exist)")

@@ -16,7 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// writeGenerationConfig writes a crush.json whose single custom provider's
+// writeGenerationConfig writes a rush.json whose single custom provider's
 // model ID embeds gen, so that after a reload picks it up,
 // Config().Models[large].Model, Config().Providers, and KnownProviders()
 // (via the custom-provider validation path, which mirrors provider IDs seen
@@ -62,7 +62,7 @@ func TestConcurrentReloadAndReads_NeverObservesTornGeneration(t *testing.T) {
 	resetProviderState()
 	t.Cleanup(resetProviderState)
 
-	configPath := filepath.Join(dir, "crush.json")
+	configPath := filepath.Join(dir, "rush.json")
 	writeGenerationConfig(t, configPath, 0)
 
 	store, err := Load(dir, dir, false)
@@ -254,7 +254,7 @@ func TestFailedReload_DoesNotChangePublishedSnapshot(t *testing.T) {
 	resetProviderState()
 	t.Cleanup(resetProviderState)
 
-	configPath := filepath.Join(dir, "crush.json")
+	configPath := filepath.Join(dir, "rush.json")
 	writeGenerationConfig(t, configPath, 1)
 
 	store, err := Load(dir, dir, false)
@@ -560,11 +560,11 @@ func TestUpdateConfigVsReload_ReloadDiskStateNotLostByStaleClone(t *testing.T) {
 	// deployment sees most of the time — and a slow-for-unrelated-reasons
 	// reload would mask this test's race window just as badly as the old
 	// sleep-based version did.
-	t.Setenv("CRUSH_DISABLE_PROVIDER_AUTO_UPDATE", "1")
+	t.Setenv("RUSH_DISABLE_PROVIDER_AUTO_UPDATE", "1")
 	resetProviderState()
 	t.Cleanup(resetProviderState)
 
-	configPath := filepath.Join(dir, "crush.json")
+	configPath := filepath.Join(dir, "rush.json")
 	writeGenerationConfig(t, configPath, 0)
 
 	store, err := Load(dir, dir, false)
@@ -656,7 +656,7 @@ func TestConcurrentSetConfigFields_DifferentKeys_BothPersistedOnDisk(t *testing.
 	const iterations = 20
 	for range iterations {
 		dir := t.TempDir()
-		configPath := filepath.Join(dir, "crush.json")
+		configPath := filepath.Join(dir, "rush.json")
 		require.NoError(t, os.WriteFile(configPath, []byte(`{}`), 0o600))
 
 		cfg := &Config{}
@@ -793,7 +793,7 @@ func TestReloadCandidateBuild_DoesNotBlockRuntimeMutator(t *testing.T) {
 	require.True(t, store.Overrides().SkipPermissionRequests, "the runtime override must have actually been applied")
 }
 
-// writeSlowProviderConfig writes a crush.json defining a single custom
+// writeSlowProviderConfig writes a rush.json defining a single custom
 // provider whose api_key is a shell command substitution that blocks for
 // sleepSeconds — the real-world shape of P1.2's failure mode (a hung
 // "$(...)" in a provider credential). base_url and models are pre-set so
@@ -836,11 +836,11 @@ func TestReloadFromDisk_HungResolve_DoesNotBlockIndependentRuntimeChange(t *test
 	t.Setenv("HOME", isolated)
 	t.Setenv("PATH", os.Getenv("PATH")) // preserve real PATH so $(sleep) resolves
 	isolateAllGlobalConfigPaths(t)
-	t.Setenv("CRUSH_DISABLE_PROVIDER_AUTO_UPDATE", "1")
+	t.Setenv("RUSH_DISABLE_PROVIDER_AUTO_UPDATE", "1")
 	resetProviderState()
 	t.Cleanup(resetProviderState)
 
-	configPath := filepath.Join(dir, "crush.json")
+	configPath := filepath.Join(dir, "rush.json")
 	writeGenerationConfig(t, configPath, 0)
 
 	store, err := Load(dir, dir, false)

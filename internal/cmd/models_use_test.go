@@ -1,6 +1,6 @@
-// Tests for the worker/reviewer CLI settability gap: `crush models use` gained
-// optional --worker/--reviewer flags, `crush models state` reports all four
-// slots, and `crush models unset` can clear worker/reviewer individually or
+// Tests for the worker/reviewer CLI settability gap: `rush models use` gained
+// optional --worker/--reviewer flags, `rush models state` reports all four
+// slots, and `rush models unset` can clear worker/reviewer individually or
 // via the new "all" positional. These tests run the real RunE functions
 // against an isolated data dir (same harness as runProvidersCmdInIsolatedApp
 // in providers_test.go) so behavior is asserted against actual code paths,
@@ -20,14 +20,14 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/db"
-	crushlog "github.com/PHPCraftdream/rush/internal/log"
+	rushlog "github.com/PHPCraftdream/rush/internal/log"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 // isolatedModelsEnv stands up a temp global data dir with a minimal
-// crush.json and chdirs into a temp workspace. Unlike
+// rush.json and chdirs into a temp workspace. Unlike
 // runProvidersCmdInIsolatedApp in providers_test.go — which invokes RunE with
 // a separate "carrier" *cobra.Command standing in for the `cmd` parameter —
 // this harness attaches the data-dir/debug flags setupApp needs DIRECTLY onto
@@ -45,7 +45,7 @@ func isolatedModelsEnv(t *testing.T) (globalPath string) {
 	// catalog resolution is memoized process-wide via sync.Once — whichever
 	// test in this binary calls it FIRST freezes the result (embedded vs.
 	// on-disk cache vs. network) for every other test, regardless of their
-	// own CRUSH_PROVIDER_CACHE_ONLY/CRUSH_GLOBAL_DATA. Safe here because
+	// own RUSH_PROVIDER_CACHE_ONLY/RUSH_GLOBAL_DATA. Safe here because
 	// these tests are serial (no t.Parallel()) — see the exported func's
 	// own doc comment for why this must never be called from a parallel
 	// test.
@@ -54,12 +54,12 @@ func isolatedModelsEnv(t *testing.T) (globalPath string) {
 	dataDir := filepath.Join(tmp, "data")
 	require.NoError(t, os.MkdirAll(dataDir, 0o755))
 	t.Setenv("XDG_DATA_HOME", dataDir)
-	t.Setenv("CRUSH_GLOBAL_DATA", dataDir)
-	// GlobalConfig() (CRUSH_GLOBAL_CONFIG/XDG_CONFIG_HOME) is a SEPARATE
-	// resolution path from GlobalConfigData() (CRUSH_GLOBAL_DATA) above —
+	t.Setenv("RUSH_GLOBAL_DATA", dataDir)
+	// GlobalConfig() (RUSH_GLOBAL_CONFIG/XDG_CONFIG_HOME) is a SEPARATE
+	// resolution path from GlobalConfigData() (RUSH_GLOBAL_DATA) above —
 	// see CLAUDE.md's "two real config paths" caveat. Without this, app.New()
 	// (invoked by e.g. TestModelsBump_AllFourRoles) reads the
-	// real host ~/.config/crush/crush.json and, if it configures MCP
+	// real host ~/.config/rush/rush.json and, if it configures MCP
 	// servers, tries to open real network connections to them from
 	// inside the test — observed hanging a stress run for 9+ minutes
 	// until the 10-minute go test panic-timeout.
@@ -68,7 +68,7 @@ func isolatedModelsEnv(t *testing.T) (globalPath string) {
 	// reused for both env vars: lookupConfigs (internal/config/load.go)
 	// loads BOTH GlobalConfig() and GlobalConfigData() and merges them via
 	// go-jsons, which merges (rather than replaces) array-valued fields on
-	// collision. Pointing both env vars at the identical "<dir>/crush.json"
+	// collision. Pointing both env vars at the identical "<dir>/rush.json"
 	// path made lookupConfigs load and merge that one file with itself —
 	// harmless while the seeded config below has no array fields, but a
 	// latent bug (doubled array entries, doubled ConfigStore.LoadedPaths()
@@ -76,15 +76,15 @@ func isolatedModelsEnv(t *testing.T) (globalPath string) {
 	// pointed at dataDir (where GlobalConfigData()/ScopeGlobal actually
 	// resolves and where modelsUseCmd/modelsBumpCmd actually write); configDir
 	// only needs to exist and be isolated from the real host file —
-	// lookupConfigs still merges dataDir's crush.json (with the seeded zai
+	// lookupConfigs still merges dataDir's rush.json (with the seeded zai
 	// key) in regardless of which of the two paths it physically lives under.
 	configDir := filepath.Join(tmp, "config")
 	require.NoError(t, os.MkdirAll(configDir, 0o755))
 	t.Setenv("XDG_CONFIG_HOME", configDir)
-	t.Setenv("CRUSH_GLOBAL_CONFIG", configDir)
-	t.Setenv("CRUSH_PROVIDER_CACHE_ONLY", "1")
+	t.Setenv("RUSH_GLOBAL_CONFIG", configDir)
+	t.Setenv("RUSH_PROVIDER_CACHE_ONLY", "1")
 
-	crushlog.Setup("", false)
+	rushlog.Setup("", false)
 	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	workDir := t.TempDir()
@@ -92,15 +92,15 @@ func isolatedModelsEnv(t *testing.T) (globalPath string) {
 	require.NoError(t, err)
 	require.NoError(t, os.Chdir(workDir))
 
-	globalPath = filepath.Join(dataDir, "crush.json")
+	globalPath = filepath.Join(dataDir, "rush.json")
 	// Seed a synthetic zai api_key from the start rather than starting
 	// from a bare "{}". Live model resolution (a.ResolveModel /
 	// configureSelectedModels, exercised by e.g. modelsUseCmd's
 	// smart/fast positionals and modelsBumpCmd/modelsStateCmd's role
 	// reads) drops any provider whose api_key doesn't resolve non-empty —
 	// see configureProviders' zai case in internal/config/load.go. Before
-	// CRUSH_GLOBAL_CONFIG was isolated above, that requirement was met by
-	// accident via a real host ~/.config/crush/crush.json's real zai key
+	// RUSH_GLOBAL_CONFIG was isolated above, that requirement was met by
+	// accident via a real host ~/.config/rush/rush.json's real zai key
 	// leaking in; now that the leak is closed, every test using this
 	// harness needs its own deterministic key so zai atoms keep resolving
 	// instead of silently falling back to a default provider (observed:
@@ -161,7 +161,7 @@ func isolatedModelsEnv(t *testing.T) (globalPath string) {
 		// above, used as this test's cwd): os.Chdir(orig) already ran
 		// at the top of this closure, so workDir is no longer the
 		// process's current directory by this point, but a command run
-		// under test (crushlog.Setup, setupApp, or the command itself)
+		// under test (rushlog.Setup, setupApp, or the command itself)
 		// can still leave a file underneath it with pending Windows
 		// handle-release lag, same class of race as the SQLite files —
 		// observed directly: a TestModelsBump_GLM52FullStepUp failure
@@ -189,7 +189,7 @@ func isolatedModelsEnv(t *testing.T) (globalPath string) {
 // t.Parallel() subtests).
 //
 // A prior version of this helper only probed specific named files
-// (crush.db/-wal/-shm/-journal) via a rename-in-place check. That missed at
+// (rush.db/-wal/-shm/-journal) via a rename-in-place check. That missed at
 // least one real failure (TestModelsBump_RoleNotSet_ReportsCleanly) where
 // something else under dataDir was still locked — the named-file allowlist
 // can't be kept exhaustive as isolatedModelsEnv/setupBumpEnv's callers grow
@@ -272,7 +272,7 @@ func runModelsCmd(t *testing.T, cmd *cobra.Command, args ...string) (stdout stri
 
 func TestModelsUse_TwoPositionalRegression(t *testing.T) {
 	// The most important test in this file: the existing, established
-	// two-positional `crush models use <smart> <fast>` form must behave
+	// two-positional `rush models use <smart> <fast>` form must behave
 	// identically to before the --worker/--reviewer flags were added.
 	globalPath := isolatedModelsEnv(t)
 

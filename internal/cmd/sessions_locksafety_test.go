@@ -242,7 +242,7 @@ func TestSessionsReset_ForceLeavesLockFileInPlace(t *testing.T) {
 
 	// Seed a bare lock file (stale PID, no live OS lock) exactly as
 	// TestSessionsReset_ForceDoesNotKillStalePID does.
-	lockDir := filepath.Join(cwd, ".crush", "locks")
+	lockDir := filepath.Join(cwd, ".rush", "locks")
 	require.NoError(t, os.MkdirAll(lockDir, 0o755))
 	lockPath := filepath.Join(lockDir, "session-"+sanitiseSessionIDForFilename(sess.ID)+".lock")
 	require.NoError(t, os.WriteFile(lockPath, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0o644))
@@ -264,7 +264,7 @@ func TestSessionsReset_ForceLeavesLockFileInPlace(t *testing.T) {
 // place 6 directly: while reset --force has acquired the session lock for its
 // critical section, a concurrent TryAcquireSessionLock on the same session
 // must report contention (the lock is actually held). This is the mutual
-// exclusion that prevents a fresh `crush run --session <id>` from racing the
+// exclusion that prevents a fresh `rush run --session <id>` from racing the
 // DB wipe. Exercises acquireSessionLockForReset (the helper reset --force now
 // uses) rather than the full RunE, since the hold window is the property under
 // test and is most cleanly observed against the returned held lock.

@@ -1,6 +1,6 @@
 // Coordinator wiring and model selection: InitCoderAgent builds the
 // agent.Coordinator, and the model-override helpers resolve per-run
-// smart/fast model choices for `crush run`.
+// smart/fast model choices for `rush run`.
 
 package app
 

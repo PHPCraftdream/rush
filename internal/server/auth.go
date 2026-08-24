@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-const cookieName = "crush_session"
+const cookieName = "rush_session"
 
 // Auth handles token-based authentication for the web UI.
 // The token is generated at startup, printed to the terminal, and must be

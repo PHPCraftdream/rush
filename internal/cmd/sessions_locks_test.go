@@ -50,7 +50,7 @@ func TestSessionsLocks_CreateLockFile(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// Create locks directory
-	locksDir := filepath.Join(tmpDir, ".crush", "locks")
+	locksDir := filepath.Join(tmpDir, ".rush", "locks")
 	require.NoError(t, os.MkdirAll(locksDir, 0o755))
 
 	// Create a lock file
@@ -69,7 +69,7 @@ func TestSessionsLocks_MultipleFiles(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()
 
-	locksDir := filepath.Join(tmpDir, ".crush", "locks")
+	locksDir := filepath.Join(tmpDir, ".rush", "locks")
 	require.NoError(t, os.MkdirAll(locksDir, 0o755))
 
 	// Create multiple lock files
@@ -88,7 +88,7 @@ func TestSessionsLocks_ParseFilename(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()
 
-	locksDir := filepath.Join(tmpDir, ".crush", "locks")
+	locksDir := filepath.Join(tmpDir, ".rush", "locks")
 	require.NoError(t, os.MkdirAll(locksDir, 0o755))
 
 	lockFile := filepath.Join(locksDir, "session-abc-123.lock")
@@ -118,7 +118,7 @@ func TestLockHolderProvablyDead_StaleMtimeButLiveHolder_NotDeleted(t *testing.T)
 		t.Skip("spawns a real child process; skipped in -short")
 	}
 	dir := t.TempDir()
-	dataDir := filepath.Join(dir, ".crush")
+	dataDir := filepath.Join(dir, ".rush")
 
 	// reapInBackground=false: this test never kills the holder (it stays
 	// alive throughout as a live-PID fixture and is only stopped in the
@@ -155,7 +155,7 @@ func TestLockHolderProvablyDead_StaleMtimeButLiveHolder_NotDeleted(t *testing.T)
 // auto-delete path can proceed.
 func TestLockHolderProvablyDead_NoRealHolder_ReportsDead(t *testing.T) {
 	dir := t.TempDir()
-	dataDir := filepath.Join(dir, ".crush")
+	dataDir := filepath.Join(dir, ".rush")
 
 	// Simulate an abandoned lock file: content written directly (no real OS
 	// lock held by anyone), naming a plausible-looking but uncontended PID.
@@ -170,7 +170,7 @@ func TestLockHolderProvablyDead_NoRealHolder_ReportsDead(t *testing.T) {
 
 // TestSessionsLocksCmdRun_HonorsConfiguredDataDir is the regression test for
 // task #231 finding 1: sessionsLocksCmdRun computed locksDir (and the
-// lockHolderProvablyDead probe's dataDir) as filepath.Join(cwd, ".crush",
+// lockHolderProvablyDead probe's dataDir) as filepath.Join(cwd, ".rush",
 // ...), completely ignoring --data-dir / a configured data_directory, even
 // though setupApp(cmd) had already resolved the correct value onto `a`.
 // This is the same bug class task #219/#224 already fixed for `sessions
@@ -198,7 +198,7 @@ func TestSessionsLocksCmdRun_HonorsConfiguredDataDir(t *testing.T) {
 	require.NoError(t, os.Chdir(workDir))
 	t.Cleanup(func() { _ = os.Chdir(orig) })
 
-	// Deliberately outside workDir entirely, so filepath.Join(cwd, ".crush")
+	// Deliberately outside workDir entirely, so filepath.Join(cwd, ".rush")
 	// can never accidentally coincide with this path.
 	configuredDataDir := filepath.Join(tmp, "elsewhere-data")
 
@@ -225,7 +225,7 @@ func TestSessionsLocksCmdRun_HonorsConfiguredDataDir(t *testing.T) {
 
 	// Sanity: the WRONG (pre-fix) path must not exist, so "(no locks)"
 	// being printed can never be confused with a real find.
-	wrongPath := filepath.Join(workDir, ".crush", "locks", "session-"+sessionID+".lock")
+	wrongPath := filepath.Join(workDir, ".rush", "locks", "session-"+sessionID+".lock")
 	_, wrongStatErr := os.Stat(wrongPath)
 	require.True(t, os.IsNotExist(wrongStatErr))
 

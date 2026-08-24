@@ -21,7 +21,7 @@ import (
 // so the new config values are used rather than stale pre-reload values.
 func TestReloadFromDisk_UsesNewConfigValues(t *testing.T) {
 	dir := t.TempDir()
-	configPath := filepath.Join(dir, "crush.json")
+	configPath := filepath.Join(dir, "rush.json")
 
 	// Isolate from the host's global config so only test-provided
 	// providers are visible.
@@ -90,7 +90,7 @@ func TestAutoReloadDisabledDuringReload(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	configPath := filepath.Join(dir, "crush.json")
+	configPath := filepath.Join(dir, "rush.json")
 
 	// Create initial config with a provider that will trigger config modification during reload
 	// (simulating the anthropic OAuth token removal case)
@@ -136,7 +136,7 @@ func TestAutoReloadDisabledDuringReload(t *testing.T) {
 // update and the reload's full snapshot rebuild.
 func TestProviderUpdates_ConcurrentReloadNoRace(t *testing.T) {
 	dir := t.TempDir()
-	configPath := filepath.Join(dir, "crush.json")
+	configPath := filepath.Join(dir, "rush.json")
 
 	initialConfig := `{
 		"providers": {

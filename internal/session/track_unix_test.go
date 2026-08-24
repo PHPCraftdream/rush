@@ -12,7 +12,7 @@ import (
 )
 
 // The Unix registry behind KillAllTrackedTrees — the last-resort sweep that
-// stands in for Windows' kill-on-close Job Object when crush is about to die
+// stands in for Windows' kill-on-close Job Object when rush is about to die
 // without running its own cleanup.
 //
 // The property that matters most here is the NEGATIVE one: a pid that is not

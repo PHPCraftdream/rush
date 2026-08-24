@@ -7,7 +7,7 @@ import (
 )
 
 // Fork-only file (concurrency / orchestrator UX): the --format and
-// --agents flags exposed on `crush run` are inert to upstream and live
+// --agents flags exposed on `rush run` are inert to upstream and live
 // here so a merge from origin/main never touches run.go's flag block.
 // See CHANGELOG.fork.md (Section 4.J).
 

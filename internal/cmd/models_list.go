@@ -1,7 +1,7 @@
-// Fork patch: batch 11 — `crush models list` prints the atom registry filtered
+// Fork patch: batch 11 — `rush models list` prints the atom registry filtered
 // by enabled providers + a section of raw provider/model IDs for everything
 // else available right now. Replaces the implicit "discoverability via
-// `crush models <fuzzy>` only" path.
+// `rush models <fuzzy>` only" path.
 //
 // Fork patch (orchestrator UX): by default this command reads cached/embedded
 // provider data and does NOT trigger a network refresh or write the provider
@@ -26,17 +26,17 @@ var modelsListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "Show the atom registry plus all models from enabled providers",
 	Long: `Print the atom registry — short, friendly names you pass to
-` + "`crush models use <smart> <fast>`" + `. Atoms whose backing provider is
+` + "`rush models use <smart> <fast>`" + `. Atoms whose backing provider is
 disabled are hidden so the list only shows what you can actually use
 right now.
 
 After the atom block, a second section lists every model id from every
 enabled provider as a raw "provider/model" string — those are also
-accepted by ` + "`crush models use`" + ` as a fallback when a model is not in
+accepted by ` + "`rush models use`" + ` as a fallback when a model is not in
 the atom registry.
 
 By default this command does not hit the network: it reads the on-disk
-provider cache (or the embedded provider list bundled with Crush when no
+provider cache (or the embedded provider list bundled with Rush when no
 cache exists yet) and does not write any cache files. Pass ` + "`--refresh`" + `
 to force a fresh fetch of the provider lists from Catwalk and Hyper
 before rendering. The JSON output shape is identical in both modes.
@@ -45,19 +45,19 @@ before rendering. The JSON output shape is identical in both modes.
 	Example: `
 # Human-readable atom table + raw provider/model listing for enabled providers.
 # Reads the on-disk provider cache (or embedded fallback); no network.
-crush models list
+rush models list
 
 # Force a network refresh of the provider cache before listing.
-crush models list --refresh
+rush models list --refresh
 
 # Just the atoms (skip the OTHER MODELS section visually via head/sed):
-crush models list | sed '/^OTHER MODELS/,$d'
+rush models list | sed '/^OTHER MODELS/,$d'
 
 # JSON for orchestrators — enumerate every atom and its valid effort levels:
-crush models list --json | jq '.atoms[] | {name, levels}'
+rush models list --json | jq '.atoms[] | {name, levels}'
 
 # Find every glm-* model the active Z.AI provider exposes:
-crush models list --json | jq '.other_models[] | select(.provider=="zai")'
+rush models list --json | jq '.other_models[] | select(.provider=="zai")'
   `,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		asJSON, _ := cmd.Flags().GetBool("json")
@@ -86,21 +86,21 @@ crush models list --json | jq '.other_models[] | select(.provider=="zai")'
 }
 
 // applyModelsListRefreshMode configures the provider syncers' env-var seam
-// for a `crush models list` invocation. When refresh is false (the default),
+// for a `rush models list` invocation. When refresh is false (the default),
 // provider data is served from the on-disk cache or the embedded fallback
 // without any network call or cache write. When refresh is true, any
-// cache-only override is cleared and CRUSH_PROVIDER_CACHE_TTL is forced to
+// cache-only override is cleared and RUSH_PROVIDER_CACHE_TTL is forced to
 // zero so the syncers always perform a network fetch and update the cache.
 //
-// The mutations are process-local: `crush models list` is a short-lived
+// The mutations are process-local: `rush models list` is a short-lived
 // process, so the env vars never leak back into the user's shell.
 func applyModelsListRefreshMode(refresh bool) {
 	if refresh {
-		_ = os.Unsetenv("CRUSH_PROVIDER_CACHE_ONLY")
-		os.Setenv("CRUSH_PROVIDER_CACHE_TTL", "0")
+		_ = os.Unsetenv("RUSH_PROVIDER_CACHE_ONLY")
+		os.Setenv("RUSH_PROVIDER_CACHE_TTL", "0")
 		return
 	}
-	os.Setenv("CRUSH_PROVIDER_CACHE_ONLY", "1")
+	os.Setenv("RUSH_PROVIDER_CACHE_ONLY", "1")
 }
 
 type atomJSON struct {
@@ -158,7 +158,7 @@ func renderOtherModelsBlock(cfg *config.Config) string {
 		return "OTHER MODELS: (no enabled providers)\n"
 	}
 	var b strings.Builder
-	b.WriteString("OTHER MODELS (use as `crush models use provider/model[@level] provider/model[@level]`):\n\n")
+	b.WriteString("OTHER MODELS (use as `rush models use provider/model[@level] provider/model[@level]`):\n\n")
 
 	byProvider := map[string][]catwalk.Model{}
 	providerIDs := make([]string, 0, len(enabled))
@@ -172,7 +172,7 @@ func renderOtherModelsBlock(cfg *config.Config) string {
 	for _, pid := range providerIDs {
 		models := byProvider[pid]
 		if len(models) == 0 {
-			fmt.Fprintf(tw, "  %s:\t(no models loaded — run `crush providers update %s`)\n", pid, pid)
+			fmt.Fprintf(tw, "  %s:\t(no models loaded — run `rush providers update %s`)\n", pid, pid)
 			continue
 		}
 		sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })

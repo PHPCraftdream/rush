@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/charmbracelet/crush/internal/config/config",
+  "$id": "https://github.com/PHPCraftdream/rush/internal/config/config",
   "$ref": "#/$defs/Config",
   "$defs": {
     "Attribution": {
@@ -22,7 +22,7 @@
         },
         "generated_with": {
           "type": "boolean",
-          "description": "Add Generated with Crush line to commit messages and issues and PRs",
+          "description": "Add Generated with Rush line to commit messages and issues and PRs",
           "default": true
         }
       },
@@ -68,7 +68,7 @@
             "$ref": "#/$defs/ModelPreset"
           },
           "type": "object",
-          "description": "Named (smart, fast) model pairs swappable with 'crush models preset use'"
+          "description": "Named (smart, fast) model pairs swappable with 'rush models preset use'"
         },
         "providers": {
           "additionalProperties": {
@@ -355,7 +355,7 @@
             "type": "string",
             "examples": [
               ".cursorrules",
-              "CRUSH.md"
+              "RUSH.md"
             ]
           },
           "type": "array",
@@ -368,7 +368,7 @@
           "type": "array",
           "description": "Paths to files containing global context information for the AI",
           "default": [
-            "~/.config/crush/CRUSH.md",
+            "~/.config/rush/RUSH.md",
             "~/.config/AGENTS.md"
           ]
         },
@@ -376,7 +376,7 @@
           "items": {
             "type": "string",
             "examples": [
-              "~/.config/crush/skills",
+              "~/.config/rush/skills",
               "./skills"
             ]
           },
@@ -400,9 +400,9 @@
         "data_directory": {
           "type": "string",
           "description": "Directory for storing application data. Relative paths are resolved against the working directory; absolute paths are used as-is.",
-          "default": ".crush",
+          "default": ".rush",
           "examples": [
-            ".crush"
+            ".rush"
           ]
         },
         "disabled_tools": {
@@ -441,7 +441,7 @@
           "default": "AGENTS.md",
           "examples": [
             "AGENTS.md",
-            "CRUSH.md",
+            "RUSH.md",
             "CLAUDE.md",
             "docs/LLMs.md"
           ]
@@ -560,7 +560,7 @@
         },
         "run": {
           "$ref": "#/$defs/RunPermissions",
-          "description": "Restricted permission model for non-interactive 'crush run'. Off by default; opt in with run.restrict=true or the --restrict-run flag."
+          "description": "Restricted permission model for non-interactive 'rush run'. Off by default; opt in with run.restrict=true or the --restrict-run flag."
         }
       },
       "additionalProperties": false,
@@ -675,7 +675,7 @@
       "properties": {
         "restrict": {
           "type": "boolean",
-          "description": "Enable restricted permission mode for 'crush run'. When true, only allow_tools (non-bash) and allow_bash entries are approved; everything else is denied cleanly. Default false (current auto-approve behaviour).",
+          "description": "Enable restricted permission mode for 'rush run'. When true, only allow_tools (non-bash) and allow_bash entries are approved; everything else is denied cleanly. Default false (current auto-approve behaviour).",
           "default": false
         },
         "allow_tools": {

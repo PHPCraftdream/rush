@@ -67,7 +67,7 @@ func broadcastUpdateNoticeWithClientVersion(ctx context.Context, h *Hub, client 
 		return
 	}
 
-	slog.Info("a newer crush is available", "current", info.Current, "latest", info.Latest)
+	slog.Info("a newer rush is available", "current", info.Current, "latest", info.Latest)
 	// Sticky, not a plain Broadcast: this is sent once at server start and
 	// the replay ring evicts it within a single streaming turn, so an
 	// operator who opens the browser after any real work would never see the

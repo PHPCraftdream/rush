@@ -74,7 +74,7 @@ var zaiReasoningLevels = []string{"off", "high", "max"}
 // coordinator.go's current code still forwards reasoning_effort=high/max to
 // these models too (see the SYNC WARNING above on zaiReasoningLevels) — that
 // runtime behavior is unchanged by this task; this array only affects what
-// `crush models efforts`/parseAtom/validateEffortForModel consider a valid,
+// `rush models efforts`/parseAtom/validateEffortForModel consider a valid,
 // documented-as-meaningful level for THESE models specifically.
 var zaiBooleanThinkingLevels = []string{"off", "on"}
 
@@ -114,7 +114,7 @@ var atomRegistry = map[string]atom{
 	// uniformly, but Z.AI documents only the 5.2-tier models as acting on
 	// it. See the SYNC WARNING on zaiReasoningLevels.
 	//
-	// PARTIALLY VERIFIED (2026-08-14): `crush ping --model zai/glm-5.3`
+	// PARTIALLY VERIFIED (2026-08-14): `rush ping --model zai/glm-5.3`
 	// confirms the model id "glm-5.3" is real and reachable — a live call
 	// succeeded (32 in / 48 out tokens, ~1.9s latency). GLM-5.3 is still
 	// not documented on docs.z.ai (only GLM-5, GLM-5.2 exist there as of
@@ -251,7 +251,7 @@ func formatAtomLine(w io.Writer, key string, a atom) {
 
 func renderAtomsBlock(cfg *config.Config) string {
 	var b strings.Builder
-	b.WriteString("ATOMS (combine as `crush models use <smart> <fast>`):\n\n")
+	b.WriteString("ATOMS (combine as `rush models use <smart> <fast>`):\n\n")
 	for _, group := range atomGroupOrder {
 		keys := enabledGroupAtomKeys(cfg, group)
 		if len(keys) == 0 {
@@ -279,17 +279,17 @@ func renderAtomsBlock(cfg *config.Config) string {
 	}
 	b.WriteString(renderShortCodesBlock())
 	b.WriteString("EXAMPLES:\n")
-	b.WriteString("  crush models use o47x h45l       # Opus 4.7 xhigh + Haiku 4.5 low\n")
-	b.WriteString("  crush models use s46h h45l       # Sonnet 4.6 high + Haiku 4.5 low\n")
-	b.WriteString("  crush models use opus-high sonnet-low\n")
-	b.WriteString("  crush models use glm5_3 glm5_turbo\n")
-	b.WriteString("  crush models use ox glm5_turbo    # mixed\n")
+	b.WriteString("  rush models use o47x h45l       # Opus 4.7 xhigh + Haiku 4.5 low\n")
+	b.WriteString("  rush models use s46h h45l       # Sonnet 4.6 high + Haiku 4.5 low\n")
+	b.WriteString("  rush models use opus-high sonnet-low\n")
+	b.WriteString("  rush models use glm5_3 glm5_turbo\n")
+	b.WriteString("  rush models use ox glm5_turbo    # mixed\n")
 	return b.String()
 }
 
 func renderAtomsBlockFallback() string {
 	var b strings.Builder
-	b.WriteString("ATOMS (combine as `crush models use <smart> <fast>`):\n\n")
+	b.WriteString("ATOMS (combine as `rush models use <smart> <fast>`):\n\n")
 	for _, group := range atomGroupOrder {
 		keys := atomsByGroup(group)
 		if len(keys) == 0 {
@@ -317,9 +317,9 @@ func renderAtomsBlockFallback() string {
 	}
 	b.WriteString(renderShortCodesBlock())
 	b.WriteString("EXAMPLES:\n")
-	b.WriteString("  crush models use o47x h45l\n")
-	b.WriteString("  crush models use s46h h45l\n")
-	b.WriteString("  crush models use glm5_3 glm5_turbo\n")
+	b.WriteString("  rush models use o47x h45l\n")
+	b.WriteString("  rush models use s46h h45l\n")
+	b.WriteString("  rush models use glm5_3 glm5_turbo\n")
 	return b.String()
 }
 
@@ -335,7 +335,7 @@ func titleCase(s string) string {
 // renderShortCodesBlock returns a formatted table of the short-code aliases.
 func renderShortCodesBlock() string {
 	var b strings.Builder
-	b.WriteString("SHORT CODES (alias for atom+effort, e.g. `crush models use o47x h45l`):\n\n")
+	b.WriteString("SHORT CODES (alias for atom+effort, e.g. `rush models use o47x h45l`):\n\n")
 	b.WriteString("  Code     Model               CTX   Effort\n")
 	b.WriteString("  -------  ------------------  ----  ------\n")
 	rows := []struct{ code, model, ctx, effort string }{
@@ -515,7 +515,7 @@ func parseAtom(name string) (config.SelectedModel, error) {
 		}
 	}
 	if matchedKey == "" {
-		return config.SelectedModel{}, fmt.Errorf("%q is not a recognized atom — see `crush models list`", name)
+		return config.SelectedModel{}, fmt.Errorf("%q is not a recognized atom — see `rush models list`", name)
 	}
 
 	a := atomRegistry[matchedKey]
@@ -527,7 +527,7 @@ func parseAtom(name string) (config.SelectedModel, error) {
 	// suffix OPTIONAL: omitting it means "let the provider default apply"
 	// (see the coordinator's unset-defaults-to-high behavior for Z.AI).
 	if a.EffortSource != nil && rem == "" {
-		return config.SelectedModel{}, fmt.Errorf("%s requires explicit level (e.g. %s-low, %s-high) — see `crush models list`", matchedKey, matchedKey, matchedKey)
+		return config.SelectedModel{}, fmt.Errorf("%s requires explicit level (e.g. %s-low, %s-high) — see `rush models list`", matchedKey, matchedKey, matchedKey)
 	}
 
 	if rem == "" {
@@ -538,7 +538,7 @@ func parseAtom(name string) (config.SelectedModel, error) {
 	}
 
 	if !strings.HasPrefix(rem, "-") {
-		return config.SelectedModel{}, fmt.Errorf("%q is not a recognized atom — see `crush models list`", name)
+		return config.SelectedModel{}, fmt.Errorf("%q is not a recognized atom — see `rush models list`", name)
 	}
 	level := rem[1:]
 
@@ -595,7 +595,7 @@ func parseAtomOrRaw(name string, resolveFunc func(string) (string, string, error
 	modelPart, effort := splitModelEffort(name)
 	provider, modelID, rerr := resolveFunc(modelPart)
 	if rerr != nil {
-		return config.SelectedModel{}, fmt.Errorf("%q is not a known atom or provider/model — see `crush models list`", name)
+		return config.SelectedModel{}, fmt.Errorf("%q is not a known atom or provider/model — see `rush models list`", name)
 	}
 	if err := validateEffortForModel(provider, modelID, effort); err != nil {
 		return config.SelectedModel{}, err
@@ -610,7 +610,7 @@ func parseAtomOrRaw(name string, resolveFunc func(string) (string, string, error
 // validateEffortForModel checks a raw "@effort" suffix (from
 // splitModelEffort) against the target (provider, model)'s real levels
 // array, when one exists in the atom registry. This closes the exact gap
-// `crush models efforts`'s help text warns about: previously, splitModelEffort
+// `rush models efforts`'s help text warns about: previously, splitModelEffort
 // was a blind string split with NO validation anywhere, so a typo like
 // "zai/glm-5.3@hihg" was silently accepted and either ignored or mismapped
 // by the wire-level provider code. If (provider, model) isn't a known atom
@@ -634,7 +634,7 @@ func validateEffortForModel(provider, model, effort string) error {
 			return nil
 		}
 	}
-	return fmt.Errorf("%q is not a valid effort level for %s/%s (valid: %s) — see `crush models efforts %s`", effort, provider, model, strings.Join(levels, "|"), key)
+	return fmt.Errorf("%q is not a valid effort level for %s/%s (valid: %s) — see `rush models efforts %s`", effort, provider, model, strings.Join(levels, "|"), key)
 }
 
 func renderAtomsBlockToStdout() {

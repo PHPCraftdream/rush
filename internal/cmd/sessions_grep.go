@@ -31,19 +31,19 @@ Use --session to search only within a specific session.
 Use --json to emit one JSON object per match suitable for piping into jq.`,
 	Example: `
 # Find all TODO mentions across sessions
-crush sessions grep "TODO"
+rush sessions grep "TODO"
 
 # Regex search
-crush sessions grep "/TODO|FIXME/"
+rush sessions grep "/TODO|FIXME/"
 
 # Search within a specific session
-crush sessions grep "error" --session myid-123
+rush sessions grep "error" --session myid-123
 
 # Filter to assistant messages only
-crush sessions grep "refactor" --role assistant
+rush sessions grep "refactor" --role assistant
 
 # Machine-readable output
-crush sessions grep "TODO" --json | jq '.excerpt'
+rush sessions grep "TODO" --json | jq '.excerpt'
   `,
 	Args: cobra.ExactArgs(1),
 	RunE: sessionsGrepCmdRun,

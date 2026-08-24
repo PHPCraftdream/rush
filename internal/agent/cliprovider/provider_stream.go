@@ -27,7 +27,7 @@ import (
 
 func (m *cliModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.StreamResponse, error) {
 	yolo := m.yoloFn != nil && m.yoloFn()
-	// Fork patch: batch 14 — `crush run` has no human at the keyboard, so any
+	// Fork patch: batch 14 — `rush run` has no human at the keyboard, so any
 	// inner CLI process MUST get bypass-permissions or it will hang on the
 	// interactive permission prompt. RunNonInteractive sets this context key.
 	if !yolo {
@@ -80,11 +80,11 @@ func (m *cliModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.Strea
 				args = append(args, "--resume", entry.CLISessionID)
 				resuming = true
 				resumePrompt = extractLatestUserMessage(call.Prompt, filePaths)
-				slog.Info("cliprovider: resuming CLI session", "crushSession", sessionID, "cliSession", entry.CLISessionID, "resumePromptLen", len(resumePrompt))
+				slog.Info("cliprovider: resuming CLI session", "rushSession", sessionID, "cliSession", entry.CLISessionID, "resumePromptLen", len(resumePrompt))
 			} else {
 				// History was edited/deleted — start fresh CLI session.
 				m.cliSessions.Del(cliSessionKey)
-				slog.Info("cliprovider: conversation prefix changed, starting fresh CLI session", "crushSession", sessionID)
+				slog.Info("cliprovider: conversation prefix changed, starting fresh CLI session", "rushSession", sessionID)
 			}
 		}
 	}
@@ -92,9 +92,9 @@ func (m *cliModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.Strea
 		prompt = resumePrompt
 	}
 
-	// When running in non-yolo mode with a spec that opts into crush's MCP
+	// When running in non-yolo mode with a spec that opts into rush's MCP
 	// server, start an in-process MCP server and pass its config to the CLI
-	// so tool calls go through crush's permission dialog instead of the CLI's
+	// so tool calls go through rush's permission dialog instead of the CLI's
 	// own (invisible) permission prompts.
 	// mcpSrv and mcpTmpCfg are cleaned up inside the returned closure, not
 	// via defer here — defer in Stream() would fire when Stream() returns
@@ -105,7 +105,7 @@ func (m *cliModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.Strea
 	var qwenMCPName string   // registered name in ~/.qwen/settings.json; "" if not used
 	var geminiMCPName string // registered name in ~/.gemini/settings.json; "" if not used
 	// Fork patch: batch 20 — keep the MCP bridge active even in yolo/bypass mode.
-	// Before this fix, `!yolo` here meant that `crush run` (which sets yolo=true via
+	// Before this fix, `!yolo` here meant that `rush run` (which sets yolo=true via
 	// NonInteractiveContextKey in batch 14) would skip MCP setup entirely. Inner
 	// claude then ran with no --allowedTools and could reach for its native Bash /
 	// Write / Task tools, bypassing agentguard (batch 16) and the MCP permission
@@ -124,7 +124,7 @@ func (m *cliModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.Strea
 				mcpSrv = nil
 			} else {
 				// Write the config to a temp file; the claude CLI reads it via --mcp-config.
-				tmpFile, tmpErr := os.CreateTemp("", "crush-mcp-*.json")
+				tmpFile, tmpErr := os.CreateTemp("", "rush-mcp-*.json")
 				if tmpErr != nil {
 					slog.Warn("cliprovider: failed to create MCP config temp file", "err", tmpErr)
 					mcpSrv.stop()
@@ -147,35 +147,35 @@ func (m *cliModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.Strea
 		}
 	}
 
-	// When crush's own MCP server is active, tell the CLI to only allow our
+	// When rush's own MCP server is active, tell the CLI to only allow our
 	// MCP tools. This pre-approves them inside the CLI's own permission layer
 	// (so calls reach our handlers), while the CLI's built-in tools remain
 	// blocked. Rush still shows its own permission dialog in the UI for each
 	// tool call via perms.Request() inside the MCP handlers.
-	// We also explicitly disallow TodoWrite so the model uses mcp__crush__todos
-	// (which persists tasks to the crush session) instead of the CLI-native
-	// TodoWrite tool that writes to a local file unknown to the crush UI.
+	// We also explicitly disallow TodoWrite so the model uses mcp__rush__todos
+	// (which persists tasks to the rush session) instead of the CLI-native
+	// TodoWrite tool that writes to a local file unknown to the rush UI.
 	if mcpSrv != nil {
 		allowed := []string{
-			// Rush MCP bridge tools (go through crush's permission system).
-			"mcp__crush__Bash",
-			"mcp__crush__Read",
-			"mcp__crush__Write",
-			"mcp__crush__Glob",
-			"mcp__crush__Grep",
-			"mcp__crush__todos",
-			// CLI built-in tools that crush doesn't replicate.
+			// Rush MCP bridge tools (go through rush's permission system).
+			"mcp__rush__Bash",
+			"mcp__rush__Read",
+			"mcp__rush__Write",
+			"mcp__rush__Glob",
+			"mcp__rush__Grep",
+			"mcp__rush__todos",
+			// CLI built-in tools that rush doesn't replicate.
 			// These are safe read-only or internal tools that don't need
-			// crush's permission system.
+			// rush's permission system.
 			"WebSearch",
 			"WebFetch",
 			"Task",
 			"Agent",
 		}
-		// Include external MCP tools registered on the crush MCP bridge.
+		// Include external MCP tools registered on the rush MCP bridge.
 		if m.mcpProxy != nil {
 			for _, ext := range m.mcpProxy.ListTools() {
-				allowed = append(allowed, "mcp__crush__"+ext.ServerName+"__"+ext.Name)
+				allowed = append(allowed, "mcp__rush__"+ext.ServerName+"__"+ext.Name)
 			}
 		}
 		args = append(
@@ -187,8 +187,8 @@ func (m *cliModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.Strea
 		)
 	}
 
-	// Qwen MCP integration: register crush's MCP server in ~/.qwen/settings.json
-	// using a stable per-project ID stored in <workingDir>/.crush/qwen-mcp-id.
+	// Qwen MCP integration: register rush's MCP server in ~/.qwen/settings.json
+	// using a stable per-project ID stored in <workingDir>/.rush/qwen-mcp-id.
 	// Qwen doesn't support --mcp-config, so we write the settings directly.
 	// The Authorization: Bearer header is stored in the settings (qwen CLI
 	// supports custom headers for httpUrl transports); the server is
@@ -216,11 +216,11 @@ func (m *cliModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.Strea
 				} else {
 					qwenMCPName = id
 					args = append(args, "--allowed-mcp-server-names", id)
-					// Restrict qwen to only crush MCP tools so its built-in
-					// tools (read_file, glob, etc.) cannot bypass crush's
+					// Restrict qwen to only rush MCP tools so its built-in
+					// tools (read_file, glob, etc.) cannot bypass rush's
 					// permission system.
 					// Also block the native todo_write so the model uses
-					// mcp__crush__todos which persists tasks to the crush session.
+					// mcp__rush__todos which persists tasks to the rush session.
 					args = append(
 						args,
 						"--allowed-tools",
@@ -238,10 +238,10 @@ func (m *cliModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.Strea
 		}
 	}
 
-	// Gemini MCP integration: register crush's MCP server in ~/.gemini/settings.json
+	// Gemini MCP integration: register rush's MCP server in ~/.gemini/settings.json
 	// using a stable per-project ID. Gemini supports Authorization: Bearer headers and
 	// a trust:true flag to bypass its own confirmation prompts, so tool calls go
-	// directly to our MCP server which shows crush's permission dialog.
+	// directly to our MCP server which shows rush's permission dialog.
 	if m.spec.GeminiMCPIntegration && m.perms != nil {
 		id, idErr := geminiMCPID(m.workingDir)
 		if idErr != nil {
@@ -271,7 +271,7 @@ func (m *cliModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.Strea
 		}
 	}
 
-	// Codex MCP integration: pass crush's MCP server URL to codex via -c flag
+	// Codex MCP integration: pass rush's MCP server URL to codex via -c flag
 	// (inline config override). No persistent changes to ~/.codex/config.toml.
 	// The token is passed via environment variable and Authorization: Bearer header
 	// to avoid leaking secrets in process lists (query params are visible in /proc/<pid>/cmdline).
@@ -353,7 +353,7 @@ func (m *cliModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.Strea
 				childPid = trackChildTree(ptycmd.Process, m.dataDir, sessionID)
 				// Log command-line diagnostics. In production mode, args are sanitized
 				// to remove sensitive values (prompts, tokens). In diagnostic mode
-				// (CRUSH_CLIPROVIDER_LOG_RAW_PROMPT=1), the full args are logged.
+				// (RUSH_CLIPROVIDER_LOG_RAW_PROMPT=1), the full args are logged.
 				// The promptHead/promptTail fields are only included in diagnostic mode.
 				argsToLog := strings.Join(sanitizeArgs(args), " ")
 				if logRawPromptEnabled() {
@@ -513,7 +513,7 @@ func (m *cliModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.Strea
 		}
 		// Log command-line diagnostics. In production mode, args are sanitized
 		// to remove sensitive values (prompts, tokens). In diagnostic mode
-		// (CRUSH_CLIPROVIDER_LOG_RAW_PROMPT=1), the full args are logged.
+		// (RUSH_CLIPROVIDER_LOG_RAW_PROMPT=1), the full args are logged.
 		// The promptHead/promptTail fields are only included in diagnostic mode.
 		argsToLog := strings.Join(sanitizeArgs(args), " ")
 		if logRawPromptEnabled() {

@@ -221,7 +221,7 @@ func TestCatwalkSync_GetCalledMultipleTimesUsesOnce(t *testing.T) {
 }
 
 // TestCatwalkSync_GetCacheOnlySkipsNetwork proves that when
-// CRUSH_PROVIDER_CACHE_ONLY=1 the syncer serves cached data without
+// RUSH_PROVIDER_CACHE_ONLY=1 the syncer serves cached data without
 // calling the network client and without rewriting the cache file.
 //
 // This is the contract `crush models list` (default, no --refresh)
@@ -232,10 +232,10 @@ func TestCatwalkSync_GetCalledMultipleTimesUsesOnce(t *testing.T) {
 func TestCatwalkSync_GetCacheOnlySkipsNetwork(t *testing.T) {
 	// t.Setenv restores the prior value on exit, so this does not leak
 	// into other tests in the package.
-	t.Setenv("CRUSH_PROVIDER_CACHE_ONLY", "1")
+	t.Setenv("RUSH_PROVIDER_CACHE_ONLY", "1")
 	// Force TTL=0 in parallel with cache-only to prove cache-only wins
 	// over the "always re-fetch" TTL setting.
-	t.Setenv("CRUSH_PROVIDER_CACHE_TTL", "0")
+	t.Setenv("RUSH_PROVIDER_CACHE_TTL", "0")
 
 	tmpDir := t.TempDir()
 	path := tmpDir + "/providers.json"
@@ -272,14 +272,14 @@ func TestCatwalkSync_GetCacheOnlySkipsNetwork(t *testing.T) {
 }
 
 // TestCatwalkSync_GetCacheOnlyFallsBackToEmbedded proves that when
-// CRUSH_PROVIDER_CACHE_ONLY=1 and no cache file exists, the syncer
+// RUSH_PROVIDER_CACHE_ONLY=1 and no cache file exists, the syncer
 // falls back to the embedded provider list without calling the network
 // client or creating a cache file.
 //
 // Not parallel: t.Setenv mutates process-global env.
 func TestCatwalkSync_GetCacheOnlyFallsBackToEmbedded(t *testing.T) {
-	t.Setenv("CRUSH_PROVIDER_CACHE_ONLY", "1")
-	t.Setenv("CRUSH_PROVIDER_CACHE_TTL", "0")
+	t.Setenv("RUSH_PROVIDER_CACHE_ONLY", "1")
+	t.Setenv("RUSH_PROVIDER_CACHE_TTL", "0")
 
 	// No cache file at this path.
 	path := t.TempDir() + "/providers.json"

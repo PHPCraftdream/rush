@@ -251,7 +251,7 @@ func getProviderOptions(model Model, providerCfg config.ProviderConfig) fantasy.
 		//
 		// SYNC WARNING: the per-provider effort/thinking mapping below (ZAI,
 		// DeepSeek, io.net, Alibaba Singapore, hyper) is restated in prose for
-		// users by `crush models efforts` (providerEffortDocs in
+		// users by `rush models efforts` (providerEffortDocs in
 		// internal/cmd/models_efforts.go). That prose is NOT derived from this
 		// switch — if you change a mapping here, update the matching entry
 		// there too, or the CLI help will describe stale behavior.
@@ -272,7 +272,7 @@ func getProviderOptions(model Model, providerCfg config.ProviderConfig) fantasy.
 			// level or off. Z.AI recommends max for hard coding/math tasks,
 			// so an unset effort defaults to thinking ON at "high" rather
 			// than silently disabling reasoning. Explicitly opt out with
-			// ReasoningEffort == "off" (e.g. `crush models use
+			// ReasoningEffort == "off" (e.g. `rush models use
 			// zai/glm-5.2@off <fast>` — the raw provider/model@effort
 			// syntax accepts any suffix, unvalidated against ReasoningLevels).
 			//
@@ -612,7 +612,7 @@ func (c *coordinator) buildProvider(providerCfg config.ProviderConfig, model con
 		switch providerCfg.ID {
 		case hyper.Name:
 			baseURL = hyper.BaseURL() + "/v1"
-			headers["x-crush-id"] = event.GetID()
+			headers["x-rush-id"] = event.GetID()
 		case string(catwalk.InferenceProviderZAI):
 			if providerCfg.ExtraBody == nil {
 				providerCfg.ExtraBody = map[string]any{}

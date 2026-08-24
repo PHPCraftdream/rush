@@ -408,7 +408,7 @@ func TestHTTPRoundTripLogger_BodyLoggedWithRedactionWhenOptedIn(t *testing.T) {
 // cache_creation_input_tokens, max_completion_tokens, total_tokens) — every
 // one of these used to be silently replaced with the string "[REDACTED]"
 // (also corrupting its JSON type from number to string) whenever
-// CRUSH_LOG_HTTP_BODIES was on, defeating the exact usage-accounting
+// RUSH_LOG_HTTP_BODIES was on, defeating the exact usage-accounting
 // inspection that flag exists for. Credential-shaped SINGULAR "*token*"
 // fields (access_token, refresh_token, auth's nested token) must still
 // redact normally — this is not a loosening of the "token" match, only a

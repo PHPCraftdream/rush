@@ -18,7 +18,7 @@ var modelsCmd = &cobra.Command{
 	Short: "List all available models from known providers",
 	Long: `List all available models from known providers. Shows provider name and model IDs. Unconfigured providers are marked with (not configured).
 
-Crush resolves models through four named slots (` + "`config.SelectedModelType`" + `):
+Rush resolves models through four named slots (` + "`config.SelectedModelType`" + `):
 
   smart     the strong default slot; the top-level agent runs on it.
   fast      the cheap slot for trivial work.
@@ -29,22 +29,22 @@ Crush resolves models through four named slots (` + "`config.SelectedModelType`"
             Never auto-selected anywhere — reachable only via --role reviewer.
 
 worker and reviewer are both optional: with neither configured, everything
-behaves exactly as if only smart/fast existed. See ` + "`crush models use --help`" + `
+behaves exactly as if only smart/fast existed. See ` + "`rush models use --help`" + `
 to set any slot — including worker/reviewer via the ` + "`--worker`" + `/` + "`--reviewer`" + `
-flags, with effort settable in that same call — and ` + "`crush models state --help`" + `
-to see what's effective. ` + "`crush models unset --help`" + ` clears slots, worker/reviewer
+flags, with effort settable in that same call — and ` + "`rush models state --help`" + `
+to see what's effective. ` + "`rush models unset --help`" + ` clears slots, worker/reviewer
 included.
 
 Any slot can pin a reasoning-effort level (low/medium/high/xhigh/max, though
 what a level actually does — and whether it does anything at all — is
-provider-specific). See ` + "`crush models efforts --help`" + ` for the two syntaxes
+provider-specific). See ` + "`rush models efforts --help`" + ` for the two syntaxes
 that set it, the per-provider semantics (e.g. Z.AI collapses low/medium/high
 into one wire value), and per-model command examples.`,
 	Example: `# List all available models
-crush models
+rush models
 
 # Search models
-crush models gpt5`,
+rush models gpt5`,
 	Args: cobra.ArbitraryArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cwd, err := ResolveCwd(cmd)

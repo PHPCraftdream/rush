@@ -1,7 +1,7 @@
 package cmd
 
 // Fork patch: the upstream `rootCmd` launches the Bubble Tea TUI. In this fork
-// it launches the embedded web server (`crush web`) by default, opens the
+// it launches the embedded web server (`rush web`) by default, opens the
 // browser, and exposes the `--host`, `--port`, `--no-open` flags. The TUI
 // import tree (bubbletea, fang/v2 client wiring, internal/ui/model, etc.) and
 // the `--host`-as-REST-client logic from upstream are intentionally removed
@@ -22,23 +22,23 @@ import (
 
 	"charm.land/fang/v2"
 	"charm.land/lipgloss/v2"
-	"github.com/atotto/clipboard"
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/db"
-	crushlog "github.com/PHPCraftdream/rush/internal/log"
+	rushlog "github.com/PHPCraftdream/rush/internal/log"
 	"github.com/PHPCraftdream/rush/internal/projects"
 	"github.com/PHPCraftdream/rush/internal/server"
 	"github.com/PHPCraftdream/rush/internal/version"
-	crushweb "github.com/PHPCraftdream/rush/web"
+	rushweb "github.com/PHPCraftdream/rush/web"
+	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/x/term"
 	"github.com/pkg/browser"
 	"github.com/spf13/cobra"
 )
 
 func init() {
-	rootCmd.PersistentFlags().StringP("cwd", "c", "", "Working directory crush operates in (absolute or relative). Applies to every subcommand; the .crush/ store and any tool-side relative paths resolve against it.")
-	rootCmd.PersistentFlags().StringP("data-dir", "D", "", "Override the .crush/ data directory (sessions DB, logs, attachments). Defaults to <cwd>/.crush.")
+	rootCmd.PersistentFlags().StringP("cwd", "c", "", "Working directory rush operates in (absolute or relative). Applies to every subcommand; the .rush/ store and any tool-side relative paths resolve against it.")
+	rootCmd.PersistentFlags().StringP("data-dir", "D", "", "Override the .rush/ data directory (sessions DB, logs, attachments). Defaults to <cwd>/.rush.")
 	rootCmd.PersistentFlags().BoolP("debug", "d", false, "Debug")
 	rootCmd.Flags().BoolP("help", "h", false, "Help")
 	rootCmd.Flags().StringP("host", "H", "localhost", "Host to bind the web UI to")
@@ -47,7 +47,7 @@ func init() {
 	// --color-scheme forces fang's help/error styling onto a light or dark
 	// palette, working around terminals (WezTerm on Windows, git-bash) where
 	// lipgloss.HasDarkBackground misdetects and renders grey-on-white. The
-	// CRUSH_COLOR_SCHEME env var does the same; the flag wins if both are set.
+	// RUSH_COLOR_SCHEME env var does the same; the flag wins if both are set.
 	// "auto" (the default) leaves fang's built-in detection untouched.
 	//
 	// This description string is the ONLY place this flag is documented —
@@ -60,7 +60,7 @@ func init() {
 		"Force CLI help/error color palette: light, dark, or auto (default auto). "+
 			"Use light on a white-background terminal where auto-detection "+
 			"misrenders (e.g. WezTerm on Windows, git-bash). "+
-			"Overrides CRUSH_COLOR_SCHEME env var when set.",
+			"Overrides RUSH_COLOR_SCHEME env var when set.",
 	)
 
 	rootCmd.AddCommand(
@@ -76,9 +76,9 @@ func init() {
 }
 
 var rootCmd = &cobra.Command{
-	Use:   "crush",
-	Short: "Run the Crush coding agent with a browser-based UI",
-	Long: `Crush is an AI coding assistant. Running ` + "`crush`" + ` (or ` + "`crush web`" + `)
+	Use:   "rush",
+	Short: "Run the Rush coding agent with a browser-based UI",
+	Long: `Rush is an AI coding assistant. Running ` + "`rush`" + ` (or ` + "`rush web`" + `)
 starts a local HTTP + WebSocket server, prints the URL and a one-time
 access token, and opens your default browser to the UI.
 
@@ -88,70 +88,70 @@ is busy, and interrupt the running turn (yellow Interrupt button) to fold
 a correction into the next step while keeping everything produced so far.
 
 Companion CLI subcommands for scripting and CI:
-  - ` + "`crush run`" + `             one-shot prompt; --session, --timeout, --max-cost,
+  - ` + "`rush run`" + `             one-shot prompt; --session, --timeout, --max-cost,
                           --max-tokens, --on-finish, --json.
-  - ` + "`crush sessions`" + `        list / show / delete / last / tail / locks / watch /
+  - ` + "`rush sessions`" + `        list / show / delete / last / tail / locks / watch /
                           pick / grep / cost / diff / tree / fork / cancel / gc.
-  - ` + "`crush queue`" + `           batch task queue — add / list / run / rm / clear / show.
-  - ` + "`crush models`" + `          use / list / set / unset — atom-based model selection
+  - ` + "`rush queue`" + `           batch task queue — add / list / run / rm / clear / show.
+  - ` + "`rush models`" + `          use / list / set / unset — atom-based model selection
                           with short codes (o47x, s46h, hl, etc.).
-  - ` + "`crush claude-init`" + `     install 31 slash-commands + 31 sub-agents into
+  - ` + "`rush claude-init`" + `     install 31 slash-commands + 31 sub-agents into
                           .claude/commands/ and .claude/agents/.
-  - ` + "`crush system-prompt`" + `   print the system prompt that would be sent.
-  - ` + "`crush ping`" + `            health-check (verify API connectivity).
+  - ` + "`rush system-prompt`" + `   print the system prompt that would be sent.
+  - ` + "`rush ping`" + `            health-check (verify API connectivity).
 
 See the FLAGS section below for every top-level flag (--color-scheme,
 --cwd, --data-dir, --debug, ...) — each is documented once, on its own
 flag registration, not duplicated here.`,
 	Example: `
 # Start the web UI on a random free port and open the browser
-crush
+rush
 
 # Pin the port and bind to all interfaces (e.g. for a remote dev box)
-crush --host 0.0.0.0 --port 9000
+rush --host 0.0.0.0 --port 9000
 
 # Start the server without opening the browser (useful for IDE integrations)
-crush --no-open --port 8080
+rush --no-open --port 8080
 
 # Run with debug logging from a specific working directory
-crush --debug --cwd /path/to/project
+rush --debug --cwd /path/to/project
 
-# Use a non-default data directory for state (.crush/)
-crush --data-dir /path/to/custom/.crush
+# Use a non-default data directory for state (.rush/)
+rush --data-dir /path/to/custom/.rush
 
-# Non-interactive one-shot prompt (see "crush run --help" for more)
-crush run "Summarise the changes on this branch"
+# Non-interactive one-shot prompt (see "rush run --help" for more)
+rush run "Summarise the changes on this branch"
 
 # Pipe stdin into a one-shot prompt
-cat README.md | crush run "Make this more glamorous" > GLAMOROUS_README.md
+cat README.md | rush run "Make this more glamorous" > GLAMOROUS_README.md
 
 # With cost cap and timeout (900 = 900 seconds)
-crush run --max-cost 0.50 --max-tokens 100k --timeout 900 "refactor storage"
+rush run --max-cost 0.50 --max-tokens 100k --timeout 900 "refactor storage"
 
 # Idempotent CI invocation with structured output
-crush run --session "pr-42" --json "Review the diff" | jq .final_text
+rush run --session "pr-42" --json "Review the diff" | jq .final_text
 
 # Session management
-crush sessions list                    # list all sessions
-crush sessions last pr-42 --n 5       # last 5 messages with timestamps
-crush sessions tree                    # parent-child hierarchy
-crush sessions cancel pr-42            # graceful cancel via DB flag
-crush sessions fork pr-42 --at 10     # branch from message 10
-crush sessions grep "import error"    # search message text
-crush sessions cost --by model        # cost breakdown by model
-crush sessions diff pr-42             # files touched (from ToolCalls)
-crush sessions pick                   # interactive TUI picker
+rush sessions list                    # list all sessions
+rush sessions last pr-42 --n 5       # last 5 messages with timestamps
+rush sessions tree                    # parent-child hierarchy
+rush sessions cancel pr-42            # graceful cancel via DB flag
+rush sessions fork pr-42 --at 10     # branch from message 10
+rush sessions grep "import error"    # search message text
+rush sessions cost --by model        # cost breakdown by model
+rush sessions diff pr-42             # files touched (from ToolCalls)
+rush sessions pick                   # interactive TUI picker
 
 # Task queue
-crush queue add --role smart --max-cost 0.20 < task.prompt
-crush queue run --concurrent 2 --stop-on-fail
+rush queue add --role smart --max-cost 0.20 < task.prompt
+rush queue run --concurrent 2 --stop-on-fail
 
 # Model selection with short codes
-crush models use o47x h45l            # Opus 4.7 xhigh + Haiku low
-crush models use oh sl                # top Opus high + top Sonnet low
+rush models use o47x h45l            # Opus 4.7 xhigh + Haiku low
+rush models use oh sl                # top Opus high + top Sonnet low
 
 # Install slash-commands & sub-agents for Claude Code
-crush claude-init --global
+rush claude-init --global
   `,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runWebMode(cmd)
@@ -171,13 +171,13 @@ func runWebMode(cmd *cobra.Command) error {
 	a.AgentCoordinator.SetPersistentMode(true)
 
 	addr := fmt.Sprintf("%s:%d", host, port)
-	srv := server.New(a, addr, crushweb.FS())
+	srv := server.New(a, addr, rushweb.FS())
 	token := srv.Token()
 
 	onReady := func(boundAddr string) {
 		url := fmt.Sprintf("http://%s", boundAddr)
 		fmt.Println()
-		fmt.Printf("  crush web UI  ΓåÆ  %s\n", url)
+		fmt.Printf("  rush web UI  ΓåÆ  %s\n", url)
 		if err := clipboard.WriteAll(token); err == nil {
 			fmt.Printf("  Access token  ΓåÆ  %s (copied to clipboard)\n", token)
 		} else {
@@ -203,7 +203,7 @@ func runWebMode(cmd *cobra.Command) error {
 // command tree. Kept as a named constant (rather than an inline string) so
 // `sessions why` (see its "status: crashed" branch) and this log site can't
 // silently drift apart if one side's wording changes.
-const crashLogMarker = "crush: fatal panic, exiting"
+const crashLogMarker = "rush: fatal panic, exiting"
 
 // recoverAndLogPanic is Execute's top-level panic handler. It logs the
 // panic value and a full stack trace via slog.Error under crashLogMarker,
@@ -215,17 +215,17 @@ const crashLogMarker = "crush: fatal panic, exiting"
 // deferred function).
 //
 // Go's default panic handler writes only to os.Stderr, never through slog
-// — for a `crush run` invocation whose stderr isn't captured by whatever
+// — for a `rush run` invocation whose stderr isn't captured by whatever
 // launched it (a backgrounded/redirected orchestrator run, the common case
 // this fork is built for), an unrecovered panic anywhere in the command
-// tree previously left crush.log with zero trace of what happened; the
+// tree previously left rush.log with zero trace of what happened; the
 // process just silently stopped updating its session lock. This does NOT
 // change what happens to the process on a genuine panic — a real
 // programmer error should still crash loudly — it only ensures the stack
 // trace lands somewhere durable first: via whatever slog.Default()
 // currently is, which for most real crashes (occurring well after
-// setupApp's crushlog.Setup call) is already pointed at
-// <dataDir>/logs/crush.log.
+// setupApp's rushlog.Setup call) is already pointed at
+// <dataDir>/logs/rush.log.
 func recoverAndLogPanic() {
 	if r := recover(); r != nil {
 		slog.Error(crashLogMarker,
@@ -245,7 +245,7 @@ func Execute() {
 		fang.WithNotifySignal(os.Interrupt),
 	}
 
-	// Resolve --color-scheme / CRUSH_COLOR_SCHEME. fang builds its help/error
+	// Resolve --color-scheme / RUSH_COLOR_SCHEME. fang builds its help/error
 	// styles from the options we pass here, before cobra has parsed args, so
 	// we read the flag straight from os.Args (and fall back to the env var).
 	// Only force a palette when the user explicitly asked for light or dark;
@@ -253,7 +253,7 @@ func Execute() {
 	// historical behaviour — we don't even pass WithColorSchemeFunc).
 	scheme := resolveColorScheme(
 		colorSchemeFlagFromArgs(os.Args[1:]),
-		os.Getenv("CRUSH_COLOR_SCHEME"),
+		os.Getenv("RUSH_COLOR_SCHEME"),
 	)
 	if scheme != ColorSchemeAuto {
 		isDark := isDarkColorScheme(scheme)
@@ -329,12 +329,12 @@ func setupApp(cmd *cobra.Command) (*app.App, error) {
 
 	// Fork merge note: when we dropped upstream's serverCmd + connectToServer
 	// during the May-16 merge we accidentally dropped the only two callers
-	// of crushlog.Setup(). The slog.Default() handler then stayed at the
-	// terminal-writing default, so .crush/logs/crush.log silently stopped
-	// receiving new entries for both `crush` (web) and `crush run`. Wiring
+	// of rushlog.Setup(). The slog.Default() handler then stayed at the
+	// terminal-writing default, so .rush/logs/rush.log silently stopped
+	// receiving new entries for both `rush` (web) and `rush run`. Wiring
 	// the call here in setupApp re-points the default logger at the same
 	// file path the WUI/Logs modal already expects to read from.
-	crushlog.Setup(filepath.Join(cfg.Options.DataDirectory, "logs", "crush.log"), debug)
+	rushlog.Setup(filepath.Join(cfg.Options.DataDirectory, "logs", "rush.log"), debug)
 
 	// Register this project in the centralized projects list.
 	if err := projects.Register(cwd, cfg.Options.DataDirectory); err != nil {
@@ -363,13 +363,13 @@ func setupApp(cmd *cobra.Command) (*app.App, error) {
 // no bound. A `|` pipe, though, can be connected to a writer that never
 // sends anything and never closes — observed in practice when a
 // background shell job's stdin fd is left open but unused (e.g. a
-// launcher that runs `crush run "$(...)"` without an explicit `< file`
+// launcher that runs `rush run "$(...)"` without an explicit `< file`
 // redirect, so the process's stdin resolves to a dangling pipe instead of
 // a closed/empty one). io.ReadAll would then block forever: this happens
 // BEFORE --timeout's context deadline is even wired up, and without an
-// explicit --timeout the hard-kill backstop defaults to 6h — so crush
+// explicit --timeout the hard-kill backstop defaults to 6h — so rush
 // would sit doing nothing, invisible to `sessions list` (no session row
-// exists yet), for hours. crush must never hang like that regardless of
+// exists yet), for hours. rush must never hang like that regardless of
 // how it was invoked.
 //
 // It is a const (not a mutable package var) so tests inject a shorter grace
@@ -445,7 +445,7 @@ func maybePrependStdin(prompt string, grace time.Duration) (string, error) {
 		// The reader goroutine is intentionally leaked if the producer truly
 		// never sends anything and never closes — Go can't cancel a blocked
 		// pipe Read — but that's a single goroutine for the life of the
-		// process, not a hang of maybePrependStdin/crush run itself.
+		// process, not a hang of maybePrependStdin/rush run itself.
 		//
 		// This replaces two earlier, each individually broken, versions of
 		// this fix:
@@ -592,7 +592,7 @@ func maybePrependStdin(prompt string, grace time.Duration) (string, error) {
 // stdinTruncationNote returns a marker appended to partial stdin content
 // returned on a non-clean-EOF path (idle timeout or a non-EOF read error
 // after some data was already read). It exists so the model that receives
-// the resulting prompt — not just a human tailing stderr, which `crush run`
+// the resulting prompt — not just a human tailing stderr, which `rush run`
 // invocations typically don't have watched — can tell the stdin section may
 // be an arbitrary mid-stream cut rather than complete input, and reason
 // accordingly instead of silently trusting truncated data as whole.

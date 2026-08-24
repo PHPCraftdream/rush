@@ -237,7 +237,7 @@ func handleTrackModelUsage(a *appPkg.App, c *Client, msg WSMessage) {
 	// Recency ONLY — never the preferred/default model.
 	//
 	// This used to call UpdatePreferredModel(ScopeGlobal, ...), which writes
-	// models.<type> into the global crush.json. That made model selection
+	// models.<type> into the global rush.json. That made model selection
 	// leak out of the session it was made in: picking a model for one session
 	// silently changed the system-wide default for every other session, every
 	// other folder, and every subsequent CLI invocation. Worse, the web client
@@ -247,7 +247,7 @@ func handleTrackModelUsage(a *appPkg.App, c *Client, msg WSMessage) {
 	//
 	// Model defaults are scoped deliberately and cascade system -> folder ->
 	// session: the system and folder levels are written only through the
-	// explicit scoped commands (and `crush models use`), and the session level
+	// explicit scoped commands (and `rush models use`), and the session level
 	// only through set_session_models. "Recently used" is a UI convenience
 	// list and is the only thing this command may touch.
 	if err := store.RecordRecentModel(config.ScopeGlobal, modelType, config.SelectedModel{Provider: p.Provider, Model: p.Model}); err != nil {
@@ -304,7 +304,7 @@ func scopedModelsScopeToWire(scope config.Scope) string {
 // of the four slots, what global and workspace explicitly set (nil = unset
 // there) plus the resolved effective value and which scope it came from.
 // Reuses store.ReadAllModelsAtScope and store.Config().Models — the exact
-// same primitives `crush models state` (internal/cmd/models_state.go) reads
+// same primitives `rush models state` (internal/cmd/models_state.go) reads
 // — so the CLI and the web UI can never disagree about what's effective.
 func buildScopedModelsWire(a *appPkg.App) (ScopedModelsWire, error) {
 	store := a.Store()
@@ -364,7 +364,7 @@ func handleGetScopedModels(a *appPkg.App, c *Client, msg WSMessage) {
 // handleSetScopedModel writes one slot at one scope (config.ScopeGlobal =
 // "system" or config.ScopeWorkspace = "folder"). Unlike set_session_models,
 // this never touches the session DB — it's the system/folder half of the
-// cascade, edited the same way `crush models use --global/--local` does.
+// cascade, edited the same way `rush models use --global/--local` does.
 func handleSetScopedModel(a *appPkg.App, c *Client, msg WSMessage) {
 	var p SetScopedModelPayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil {
@@ -408,7 +408,7 @@ func handleSetScopedModel(a *appPkg.App, c *Client, msg WSMessage) {
 }
 
 // handleClearScopedModel removes one slot's explicit value at one scope
-// (mirrors `crush models unset <slot> --global/--local`, internal/cmd/
+// (mirrors `rush models unset <slot> --global/--local`, internal/cmd/
 // models_unset.go), letting the other scope (or "no default at all") take
 // over. A missing key is treated as a no-op success, matching the CLI.
 func handleClearScopedModel(a *appPkg.App, c *Client, msg WSMessage) {
@@ -438,7 +438,7 @@ func handleClearScopedModel(a *appPkg.App, c *Client, msg WSMessage) {
 	}
 	// Best-effort cleanup: if that was the last slot in this scope's
 	// "models" object, strip the now-empty object so the file stays clean —
-	// same behavior as `crush models unset` (internal/cmd/models_unset.go).
+	// same behavior as `rush models unset` (internal/cmd/models_unset.go).
 	if remaining, rerr := store.ReadAllModelsAtScope(scope); rerr == nil && len(remaining) == 0 {
 		_ = store.RemoveConfigField(scope, "models")
 	}

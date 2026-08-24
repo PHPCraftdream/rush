@@ -370,7 +370,7 @@ func TestSourceTreeGuardMessage(t *testing.T) {
 	// Should NOT contain the old go install command
 	require.NotContains(t, msg, "go install github.com/PHPCraftdream/rush")
 	// Should contain the new npm package name
-	require.Contains(t, msg, "@phpcraftdream/crush")
+	require.Contains(t, msg, "@phpcraftdream/rush")
 	// Should contain deploy.go
 	require.Contains(t, msg, "deploy.go")
 	// Should still contain "build from source"

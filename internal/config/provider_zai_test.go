@@ -95,7 +95,7 @@ func TestConfigureProviders_ZAIAPIKeyMissing(t *testing.T) {
 }
 
 // TestConfigureProviders_ZAIConfigAPIKeyWins confirms an explicit
-// providers.zai.api_key override in crush.json takes priority over the
+// providers.zai.api_key override in rush.json takes priority over the
 // ZHIPU_API_KEY env-var fallback.
 func TestConfigureProviders_ZAIConfigAPIKeyWins(t *testing.T) {
 	t.Parallel()

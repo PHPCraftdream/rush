@@ -83,11 +83,11 @@ func IsInSourceTree(exePath string) bool {
 					break
 				}
 
-				// Found a go.mod — check if it's the crush module.
+				// Found a go.mod — check if it's the rush module.
 				module := parseModuleFromLine(moduleLine)
 
 				// P3-5(a): If this go.mod is at the marker dir itself (ancestor), and it's
-				// not the crush module, continue walking up. Otherwise, stop.
+				// not the rush module, continue walking up. Otherwise, stop.
 				if checkDir == ancestor {
 					if module == "github.com/PHPCraftdream/rush" {
 						return true // Rush module at marker dir itself!
@@ -96,7 +96,7 @@ func IsInSourceTree(exePath string) bool {
 					continue
 				}
 
-				// For any level above the marker dir, stop if module is not crush.
+				// For any level above the marker dir, stop if module is not rush.
 				if module == "github.com/PHPCraftdream/rush" {
 					return true // Detected!
 				}
@@ -141,12 +141,12 @@ func GuardSourceTreeRun() error {
 // sourceTreeGuardMessage returns the error message displayed when running
 // from inside the source tree.
 func sourceTreeGuardMessage(absPath string) string {
-	return fmt.Sprintf("crush binary is running from inside its own source tree: %s\n\n"+
-		"This looks like a scratch dev build inside the crush repo that can "+
+	return fmt.Sprintf("rush binary is running from inside its own source tree: %s\n\n"+
+		"This looks like a scratch dev build inside the rush repo that can "+
 		"silently go stale relative to the source it exercises.\n\n"+
-		"To run crush, use your installed/system crush instead, or rebuild and "+
+		"To run rush, use your installed/system rush instead, or rebuild and "+
 		"reinstall fresh via:\n"+
-		"  npm install -g @phpcraftdream/crush\n\n"+
+		"  npm install -g @phpcraftdream/rush\n\n"+
 		"Or rebuild from source with 'go run deploy.go' to build and replace "+
 		"your PATH binary, or use 'go build .' from a clone and move the binary "+
 		"OUT of the repo before use.",
@@ -155,7 +155,7 @@ func sourceTreeGuardMessage(absPath string) string {
 
 // readModuleLine reads the first line from go.mod that starts with "module " or "module\t".
 // Returns ("", nil) if the file exists but has no recognizable module line; the caller
-// (IsInSourceTree) treats that like any other non-crush module: a boundary that stops
+// (IsInSourceTree) treats that like any other non-rush module: a boundary that stops
 // the walk when the go.mod sits ABOVE the marker directory, but "foreign, keep
 // looking" when it sits AT the marker itself (same treatment as an explicitly
 // foreign module at the marker; see the P3-5(a) comment in IsInSourceTree).
@@ -176,7 +176,7 @@ func readModuleLine(goModPath string) (string, error) {
 		}
 	}
 	// P3-5(d2): No module line found — file exists but is unparseable. The
-	// caller (IsInSourceTree) treats this the same as any other non-crush
+	// caller (IsInSourceTree) treats this the same as any other non-rush
 	// module: a boundary above the marker, "foreign, keep looking" at it.
 	return "", nil
 }

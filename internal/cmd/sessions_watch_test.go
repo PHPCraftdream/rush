@@ -396,7 +396,7 @@ func TestFormatWatchSummary_NoTitle(t *testing.T) {
 // regression test for task #241: isSessionFinished used to hand-roll its
 // own "mtime stale -> fall back to a PID-liveness probe" check
 // (mtimeFresh/pidAlive/combinedLockLiveness) with no bound on the PID
-// fallback. A `crush run` killed with SIGKILL leaves its PID in the lock
+// fallback. A `rush run` killed with SIGKILL leaves its PID in the lock
 // file without releasing; hours later the OS can recycle that exact PID
 // number for a completely unrelated, currently-running process. Before this
 // fix, isSessionFinished would report lockAlive: true forever for that
@@ -479,7 +479,7 @@ func TestIsSessionFinished_PidAliveWithinMaxFallbackAgeReportsAlive(t *testing.T
 }
 
 // isolatedWatchEnvForTest stands up a real *app.App against a data
-// directory that is deliberately NOT <cwd>/.crush (same isolation pattern
+// directory that is deliberately NOT <cwd>/.rush (same isolation pattern
 // as isolatedListEnvWithConfiguredDataDir in sessions_list_test.go), so
 // isSessionFinished's dataDir parameter can be pointed at a known location
 // without touching the operator's real global config.
@@ -564,8 +564,8 @@ func TestFormatAge(t *testing.T) {
 // --- resume-race guard (decideWatchExit) -----------------------------------
 //
 // Regression cover for a false "--- session ended ---" summary printed by
-// `crush sessions watch` against a session that was in fact just being
-// resumed. `crush run --session <id>` on an existing session clears the
+// `rush sessions watch` against a session that was in fact just being
+// resumed. `rush run --session <id>` on an existing session clears the
 // previous run's ended_reason only after the app boots, so an orchestrator
 // that launches the run and immediately starts watching sees, for a few
 // seconds: no lock for the new run yet + the PREVIOUS run's terminal state

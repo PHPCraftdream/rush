@@ -21,17 +21,17 @@ var sessionsResetCmd = &cobra.Command{
 session row itself — including its id, title, persisted system prompt,
 and per-session model selection.
 
-Useful when you want to re-run "crush run --session <same-id>" from a
+Useful when you want to re-run "rush run --session <same-id>" from a
 clean slate without picking a new id and losing the side-channel state
 (system prompt, model overrides) that you previously configured.`,
 	Args: cobra.ExactArgs(1),
 	Example: `
 # Wipe history, keep system prompt, continue with same id
-crush sessions reset pr-42
-crush run --session pr-42 "try again with the fresh context"
+rush sessions reset pr-42
+rush run --session pr-42 "try again with the fresh context"
 
 # Reset even if a stale lock from a crashed process is in the way
-crush sessions reset pr-42 --force
+rush sessions reset pr-42 --force
   `,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		force, _ := cmd.Flags().GetBool("force")
@@ -50,7 +50,7 @@ crush sessions reset pr-42 --force
 		// Fork patch (orchestrator UX): --force kills any process still
 		// holding the session's lock and removes the lock file. Without
 		// this, a reset can succeed at the DB level but a subsequent
-		// `crush run --session <same>` still fails with "session is
+		// `rush run --session <same>` still fails with "session is
 		// already in use" because the previous holder crashed without
 		// releasing.
 		//
@@ -79,7 +79,7 @@ crush sessions reset pr-42 --force
 			}
 			fmt.Fprint(os.Stderr, kr.Report)
 			// HOLD the real OS lock across the DB reset below so no concurrent
-			// `crush run --session <id>` can recreate the lock at this path and
+			// `rush run --session <id>` can recreate the lock at this path and
 			// start writing into the session DB while the wipe is in flight.
 			// The lock FILE is deliberately NOT removed: an empty lock file
 			// with no held OS lock is harmless (the next acquirer reopens and

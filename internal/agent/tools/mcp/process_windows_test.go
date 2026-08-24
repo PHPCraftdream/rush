@@ -23,7 +23,7 @@ import (
 // suite. Standard Go idiom for reproducing real OS-level process/handle
 // inheritance deterministically; mirrors internal/shell/exec_windows_test.go,
 // which pins the same class of bug for background shell commands.
-const helperEnvVar = "CRUSH_MCP_TEST_HELPER"
+const helperEnvVar = "RUSH_MCP_TEST_HELPER"
 
 func TestMain(m *testing.M) {
 	switch os.Getenv(helperEnvVar) {

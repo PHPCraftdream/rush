@@ -158,10 +158,10 @@ func handleIncoming(ctx context.Context, s *Server, c *Client, raw []byte) {
 // autoApproveWebSession marks a session for blanket permission auto-approval.
 // In the web UI there is no permission dialog — the agent must never block
 // waiting for a user to grant/deny a tool call. This mirrors the
-// non-interactive `crush run` path (app.RunNonInteractive →
+// non-interactive `rush run` path (app.RunNonInteractive →
 // Permissions.AutoApproveSession). It is idempotent: re-arming an
 // already-approved session is a no-op. The restricted-run allowlist is NOT
-// armed here (unlike `crush run`), so approval is unconditional.
+// armed here (unlike `rush run`), so approval is unconditional.
 func autoApproveWebSession(a *appPkg.App, sessionID string) {
 	if a == nil || a.Permissions == nil || sessionID == "" {
 		return

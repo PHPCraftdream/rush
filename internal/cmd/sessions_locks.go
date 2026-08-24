@@ -22,7 +22,7 @@ import (
 var sessionsLocksCmd = &cobra.Command{
 	Use:   "locks",
 	Short: "List active session lock files",
-	Long: `Scan the .crush/locks directory for session lock files and report
+	Long: `Scan the .rush/locks directory for session lock files and report
 their status: session id, PID, when the lock was acquired, and whether
 it appears stale (process not running or lock older than 10 minutes).
 
@@ -42,7 +42,7 @@ but that a real OS-level lock probe proves are still held are never deleted
 — only a lock file with no live OS-level holder is removed under --prune.
 See lockHolderProvablyDead's doc comment for the full discipline and its
 two documented, narrow residual windows (a post-probe TOCTOU on removal,
-and brief probe-induced contention with a concurrent "crush run" starting
+and brief probe-induced contention with a concurrent "rush run" starting
 on the exact same session id). --prune is opt-in precisely because those
 narrow windows are accepted for an explicit operator request, not for a
 default that runs silently on every invocation.
@@ -51,13 +51,13 @@ Use --stale-only to filter to suspicious locks. Use --json for NDJSON
 output suitable for metrics collection or automation.`,
 	Example: `
 # Show all locks
-crush sessions locks
+rush sessions locks
 
 # Show only stale locks
-crush sessions locks --stale-only
+rush sessions locks --stale-only
 
 # Stream to jq for scripting
-crush sessions locks --json | jq '.session_id'
+rush sessions locks --json | jq '.session_id'
   `,
 	RunE: sessionsLocksCmdRun,
 }
@@ -117,7 +117,7 @@ func lockPulseStatus(ageSec int64) string {
 //     remove the file. Its caller (sessionsLocksCmdRun) calls os.Remove
 //     afterward, as a separate, non-atomic step. In the gap between this
 //     function's Release() and the caller's os.Remove(), a fresh
-//     `crush run --session <id>` can legitimately re-acquire the same
+//     `rush run --session <id>` can legitimately re-acquire the same
 //     session id and start writing — and the caller would then unlink
 //     that new, live holder's lock file, reproducing (in a window on the
 //     order of a syscall or two, not the original unbounded-mtime window)
@@ -142,14 +142,14 @@ func lockPulseStatus(ageSec int64) string {
 //     exclusive OS lock (open + LockFileEx/flock + truncate + PID write +
 //     Sync + sidecar write + Chtimes, then release) on every lock file
 //     `sessions locks` inspects that looks older than autoDeleteAfter. A
-//     `crush run` legitimately starting on that exact session id during
+//     `rush run` legitimately starting on that exact session id during
 //     that brief window gets a hard "already in use" abort with no retry.
 //     This is why the fix for (1) above is not simply "hold the lock
 //     longer" — extending how long the probe holds the OS lock would widen
 //     this exact contention window, trading one narrow risk for a wider
 //     one. Given how narrow the window already is (a single acquire+release
 //     cycle, not the run's full lifetime) and that it only collides with a
-//     `crush run` starting on the SAME session id in that SAME instant,
+//     `rush run` starting on the SAME session id in that SAME instant,
 //     this is accepted as-is rather than gated behind a flag — see
 //     sessionsLocksCmdRun's doc comment for the fuller default-behavior
 //     tradeoff.

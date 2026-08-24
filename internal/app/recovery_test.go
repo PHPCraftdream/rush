@@ -140,7 +140,7 @@ func TestRecoverInterruptedTurns_SessionWithUserMessageOnly_LeavesItAlone(t *tes
 // TestRecoverInterruptedTurns_RespectsAgeFilter verifies the
 // concurrent-process safety net: a freshly-created (just-now) orphan
 // assistant must NOT be marked as restarted, because it might be a
-// live in-progress message from a parallel crush process. We exercise
+// live in-progress message from a parallel rush process. We exercise
 // this by NOT zeroing the threshold (overriding the default 30s).
 func TestRecoverInterruptedTurns_RespectsAgeFilter(t *testing.T) {
 	app := newRecoveryTestApp(t)
@@ -165,11 +165,11 @@ func TestRecoverInterruptedTurns_RespectsAgeFilter(t *testing.T) {
 	got, err := app.Messages.Get(ctx, orphan.ID)
 	require.NoError(t, err)
 	assert.False(t, got.IsFinished(),
-		"recovery must skip recently-created assistants — could be a fresh message from a parallel crush process")
+		"recovery must skip recently-created assistants — could be a fresh message from a parallel rush process")
 }
 
 // TestRecoverInterruptedTurns_MultipleSessions_OnlyOrphansTouched mirrors
-// the realistic shape of D:\dev\garnet-team\.crush at startup time: many
+// the realistic shape of D:\dev\garnet-team\.rush at startup time: many
 // sessions, only a few have orphan assistants.
 func TestRecoverInterruptedTurns_MultipleSessions_OnlyOrphansTouched(t *testing.T) {
 	app := newRecoveryTestApp(t)

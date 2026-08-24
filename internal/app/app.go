@@ -103,7 +103,7 @@ type App struct {
 	// raw-SQL features that don't have their own sqlc-generated package.
 	DB func() *sql.DB
 
-	// dataDir is the path to .crush/ where the database lives. Stored here
+	// dataDir is the path to .rush/ where the database lives. Stored here
 	// so Shutdown() can call db.Release() with knowledge of whether shutdown
 	// was graceful or forced.
 	dataDir string
@@ -193,7 +193,7 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore) (*App, er
 	}
 
 	// NOTE: the restricted-run allowlist is deliberately NOT armed here.
-	// app.New builds the App shared by BOTH `crush run` and the
+	// app.New builds the App shared by BOTH `rush run` and the
 	// interactive web/TUI server, and the gate would then leak into
 	// interactive sessions — an auto-approved sub-agent (e.g.
 	// agentic_fetch) would be denied-by-default even though interactive

@@ -52,9 +52,10 @@ func TestCheck_BlocksDirectAgents(t *testing.T) {
 		"aider --no-git",
 		"cline",
 		"cursor-agent",
-		"crush",         // self
-		"crush.exe run", // self with subcommand
-		"./crush run something",
+		"crush",
+		"rush",
+		"rush.exe run",
+		"./rush run something",
 	}
 	for _, cmd := range cases {
 		t.Run(cmd, func(t *testing.T) {

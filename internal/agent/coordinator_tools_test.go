@@ -25,12 +25,12 @@ import (
 // Worker-substitution branch end to end.
 func newRoleModelTestCoordinator(t *testing.T, env fakeEnv, includeWorker bool) *coordinator {
 	t.Helper()
-	// Isolate from the host machine's real global config (e.g. ~/.local/share/crush
-	// or %LocalAppData%\crush): without this, config.Init falls back to
-	// GlobalConfigData(), which reads the real machine-wide crush.json and can
+	// Isolate from the host machine's real global config (e.g. ~/.local/share/rush
+	// or %LocalAppData%\rush): without this, config.Init falls back to
+	// GlobalConfigData(), which reads the real machine-wide rush.json and can
 	// leak a real models.worker entry into "worker NOT configured" scenarios.
 	// See isolateAllGlobalConfigPaths's doc comment for why both
-	// CRUSH_GLOBAL_CONFIG and CRUSH_GLOBAL_DATA (not just the latter) must be
+	// RUSH_GLOBAL_CONFIG and RUSH_GLOBAL_DATA (not just the latter) must be
 	// isolated, and why they must point at different directories.
 	isolateAllGlobalConfigPaths(t)
 	cfg, err := config.Init(env.workingDir, "", false)
@@ -285,7 +285,7 @@ func TestBuildTools_WorkerToolset(t *testing.T) {
 // behavior suite for the top-level coder: when a Worker model is configured
 // AND the active role is smart or unset (workerSubAgentActive), the coder
 // must LOSE edit/multiedit/write (so rule 7 is structural, not advice —
-// three real `crush run --role smart` runs produced 0 agent-tool calls out
+// three real `rush run --role smart` runs produced 0 agent-tool calls out
 // of 50/51/24 with the worker never used) while KEEPING bash, every read
 // tool, and the agent tool itself (zero-trust verification and delegation
 // both require them). In every other configuration the coder's toolset must

@@ -1,14 +1,14 @@
 ---
-description: Delegate this task to a crush sub-agent instead of doing it yourself
+description: Delegate this task to a rush sub-agent instead of doing it yourself
 ---
 
-This skill is **opt-in only** — invoked by typing `/crush <task>` (or
-"delegate this to crush"). Build a `crush run` and launch it within
+This skill is **opt-in only** — invoked by typing `/rush <task>` (or
+"delegate this to rush"). Build a `rush run` and launch it within
 this single invocation. **Do NOT auto-invoke on later turns**: if the
-user didn't type `/crush` again, they chose to handle the follow-up
+user didn't type `/rush` again, they chose to handle the follow-up
 with you directly.
 
-## When NOT to delegate (even after /crush)
+## When NOT to delegate (even after /rush)
 
 Refuse, say so in one sentence, and offer to do it directly:
 
@@ -21,9 +21,9 @@ Refuse, say so in one sentence, and offer to do it directly:
 - **One- or two-line work** — delegation overhead > the change.
 - **Mid-plan with the user** — keep the plan coherent in one head.
 
-## Fallback when `crush` hits rate limits
+## Fallback when `rush` hits rate limits
 
-If the operator has armed `/crush-fallback <agent>`, a hard window/quota
+If the operator has armed `/rush-fallback <agent>`, a hard window/quota
 limit — weekly/monthly budget gone, account suspended, or "context
 window exceeded"/"quota exceeded" with no retry-after inside this
 session — is one of its two triggers: switch to that agent immediately
@@ -36,7 +36,7 @@ never pick a sub-agent to re-route to on your own initiative.
 **Do NOT fall back** for transient/recoverable failures — re-run
 instead:
 
-- your own `--timeout` fired — re-run `crush run` against the **same
+- your own `--timeout` fired — re-run `rush run` against the **same
   `--session` id** with a larger `--timeout`.
 - situational HTTP 429 with short retry-after — wait it out, re-run.
 - 5xx / network blip — re-run; escalate to the user if it persists.
@@ -48,9 +48,9 @@ transient failures.
 
 ## Never self-add `--allow-peak-hours`
 
-A provider can refuse to run during a local-time window (`crush
+A provider can refuse to run during a local-time window (`rush
 providers set <id> --peak-hours HH:MM-HH:MM`, overnight wrap allowed,
-`--peak-hours off` clears it). `crush run --allow-peak-hours` bypasses
+`--peak-hours off` clears it). `rush run --allow-peak-hours` bypasses
 that refusal for one invocation only — no persistent config-level
 equivalent exists.
 
@@ -64,7 +64,7 @@ closes, unsolicited.
 
 ## Resuming after `exit_reason: "awaiting_answer"`
 
-A `crush run --json` session can force-finish its turn with
+A `rush run --json` session can force-finish its turn with
 `"exit_reason": "awaiting_answer"` because the sub-agent called its
 `ask_question` tool. **This is not a crash, and it is a different
 situation from the rate-limit / peak-hours refusal above** — the
@@ -77,14 +77,14 @@ The question — and the exact resume command — live in `.error`, not
 that's expected, not a bug):
 
 ```
-jq -r '.error' .crush/stdin/<task>.out
+jq -r '.error' .rush/stdin/<task>.out
 ```
 
 `.error` carries the question, any suggested options, and a
 ready-to-run resume line with the session id already filled in:
 
 ```
-crush run --session <id> "<your answer>"
+rush run --session <id> "<your answer>"
 ```
 
 Use that command as-is — don't invent your own syntax for resuming.
@@ -100,20 +100,20 @@ Decide who answers, same judgment call as `--allow-peak-hours` above:
   to the human verbatim and wait for their answer before resuming. Do
   not guess on their behalf.
 
-Resume with a **fresh `crush run --session <id> "<answer>"`, not
+Resume with a **fresh `rush run --session <id> "<answer>"`, not
 `sessions inject`** — the process that asked the question already
 exited when the turn force-finished (that's what "exiting now" in the
 guidance text means), so there is no live holder left to inject a
-message into. A fresh `crush run` against the same `--session` id
+message into. A fresh `rush run` against the same `--session` id
 picks the conversation back up exactly where `ask_question` left off.
 
 ## Orchestrator mode — and why a worker's question is NOT your problem
 
-When `--role smart` is used and a `worker` model is configured (`crush
-models use ... --worker <model>`), the launched `crush run` auto-lifts
+When `--role smart` is used and a `worker` model is configured (`rush
+models use ... --worker <model>`), the launched `rush run` auto-lifts
 its default sub-agent ban for the `agent` tool specifically —
 `agentic_fetch` stays banned either way, that's an unrelated concern.
-Crush's own coder model is then instructed (an "Orchestrator mode" rule
+Rush's own coder model is then instructed (an "Orchestrator mode" rule
 in its system prompt) to delegate hands-on work — editing, writing,
 running commands — to worker sub-agents via the `agent` tool in chunks
 sized to fit the worker's context window, rather than editing everything
@@ -133,15 +133,15 @@ that guarantee, don't configure a worker for the run.
 top-level question flow documented above, and it does **not** surface
 to you at all.
 
-- **Top-level question** (documented above): the `crush run` process
+- **Top-level question** (documented above): the `rush run` process
   you launched calls `ask_question` itself. There is nobody left inside
   the process to answer it, so the process force-finishes its turn and
   **exits** with `exit_reason: "awaiting_answer"`. You see this as your
   background command completing, and you must resume it yourself with
-  a fresh `crush run --session <id> "<answer>"`.
+  a fresh `rush run --session <id> "<answer>"`.
 - **Worker sub-agent's question**: a worker delegated to via the
   `agent` tool calls `ask_question` on its own turn. This does **not**
-  make the `crush run` process exit — it stays alive. Crush's own
+  make the `rush run` process exit — it stays alive. Rush's own
   orchestrating model receives the pause as a normal (successful) tool
   result telling it to resume the worker via `resume_session_id`, and —
   driven by its own orchestrator-mode instructions — answers it and
@@ -151,7 +151,7 @@ to you at all.
 
 Do not try to `sessions inject` into a worker's child sub-session
 directly to answer its question — it isn't meant to be addressed
-externally; crush's own orchestrating model already owns that resume.
+externally; rush's own orchestrating model already owns that resume.
 
 ## Launching
 
@@ -162,7 +162,7 @@ externally; crush's own orchestrating model already owns that resume.
   mode, see below) and `--role reviewer` (the strongest configured
   slot, for an explicit one-off strong-review invocation, e.g. `--role
   reviewer --session "pr-42-review" "review this diff"`). Configure
-  them with `crush models use <smart> <fast> --worker <model>
+  them with `rush models use <smart> <fast> --worker <model>
   --reviewer <model>` (the two positional args are still required;
   `--worker`/`--reviewer` are additive flags on the same command) —
   not the plain two-positional form, which only touches smart/fast.
@@ -174,31 +174,31 @@ externally; crush's own orchestrating model already owns that resume.
   done). Drop lower only for a genuinely tiny task where you want a
   fast failure signal.
 - Run in the background (`Bash` `run_in_background: true`), redirect
-  to `.crush/stdin/<task>.{out,err}`, react on the completion
+  to `.rush/stdin/<task>.{out,err}`, react on the completion
   notification. Don't sleep-poll for output — do run the liveness
   watchdog below.
 - **Never background the process yourself with a trailing `&`.** The
-  Bash call must be the bare `crush run ...` command, passed with
+  Bash call must be the bare `rush run ...` command, passed with
   `run_in_background: true` on the tool call — nothing else. `&` (plus
   anything after it, e.g. `echo`) makes Bash track the *wrapper shell*,
   which exits instantly on detach — so "completed" fires before
-  `crush run` finishes. That false-done signal is what causes a second
-  `crush run` into the same still-locked `--session` (`already in use`
+  `rush run` finishes. That false-done signal is what causes a second
+  `rush run` into the same still-locked `--session` (`already in use`
   / lock races / crashed sessions). One command per Bash call, no `&`:
 
   ```
   # Correct
-  Bash({ command: "crush run --role smart --session foo --timeout 60m --json < .crush/stdin/foo.prompt > .crush/stdin/foo.out 2> .crush/stdin/foo.err", run_in_background: true })
+  Bash({ command: "rush run --role smart --session foo --timeout 60m --json < .rush/stdin/foo.prompt > .rush/stdin/foo.out 2> .rush/stdin/foo.err", run_in_background: true })
 
   # Wrong — false-completes instantly, invites session-id reuse before the real process exits
-  Bash({ command: "crush run ... > out 2> err &\necho launched pid $!", run_in_background: true })
+  Bash({ command: "rush run ... > out 2> err &\necho launched pid $!", run_in_background: true })
   ```
 
-- Multi-line prompts → `Write` to `.crush/stdin/<task>.prompt`, feed
+- Multi-line prompts → `Write` to `.rush/stdin/<task>.prompt`, feed
   via `< file`. Avoid positional `"…"` past one line.
-- Permissions inside `crush run` are auto-approved — run only in
+- Permissions inside `rush run` are auto-approved — run only in
   workspaces you can afford to lose.
-- **Default to one `crush run` in flight at a time per worktree.**
+- **Default to one `rush run` in flight at a time per worktree.**
   Sequential is the safe default — launch, wait for the real
   completion notification, verify, then launch the next. Only run more
   than one concurrently when the task genuinely decomposes into
@@ -232,20 +232,20 @@ externally; crush's own orchestrating model already owns that resume.
 
 ## Monitoring
 
-`crush sessions watch` is the primary monitor — auto-detects end and
+`rush sessions watch` is the primary monitor — auto-detects end and
 prints a summary (duration, tokens, cost); unlike `sessions tail
 --follow` it never hangs on a dead lock.
 
 With orchestrator mode active (see above), `sessions watch`/`sessions
 tree` may show child sessions (worker delegations) appearing and
-disappearing over the course of a single `crush run` invocation — that
+disappearing over the course of a single `rush run` invocation — that
 is expected, not a sign of something wrong. Don't try to `sessions
 inject` into one of those child sessions directly; it isn't meant to be
 addressed externally.
 
 ```
-crush sessions watch              # interactive picker → live-tail
-crush sessions watch <id>         # live-tail directly (short hash ok)
+rush sessions watch              # interactive picker → live-tail
+rush sessions watch <id>         # live-tail directly (short hash ok)
 ```
 
 Live-tail shows tool calls with their key arguments inline:
@@ -271,32 +271,32 @@ long time to be blind, so don't just wait for the completion
 notification. Probe the session is still alive periodically:
 
 ```
-crush sessions locks <id>   # heartbeat: alive / ping / stopping / offline
+rush sessions locks <id>   # heartbeat: alive / ping / stopping / offline
 ```
 
 This is a liveness probe, not output polling — the completion
 notification still delivers the result. But if the heartbeat reads
 `offline`/`stopping` with no completion notification, the holder died
-silently: stop waiting, inspect `.crush/stdin/<task>.{out,err}` +
-`crush sessions last <id>` (or `crush sessions why <id>`), and
+silently: stop waiting, inspect `.rush/stdin/<task>.{out,err}` +
+`rush sessions last <id>` (or `rush sessions why <id>`), and
 re-launch into the same `--session` rather than burning the rest of
 the 60m on a dead process.
 
 **Tear the watchdog down when it has nothing left to watch.** The
 10-minute cycle exists only to babysit live runs. Once a session
 finishes — and you're not launching a replacement and no other
-`/crush` runs are in flight — drop the liveness loop; an idle watchdog
+`/rush` runs are in flight — drop the liveness loop; an idle watchdog
 is just noise. Re-arm it only when you launch the next run.
 
-**Never re-launch `crush run --session <id>` into a session that's already
-busy** — a fresh `crush run` against a live lock either queues confusingly
+**Never re-launch `rush run --session <id>` into a session that's already
+busy** — a fresh `rush run` against a live lock either queues confusingly
 or fails fast, and a background-tool "completed" notification then only
 reflects that rejected/duplicate launch, not the real session's progress.
-Before treating a session as idle or stuck, confirm with `crush sessions
-locks <id>` (alive/offline) or `crush sessions show <id> --with-messages`
+Before treating a session as idle or stuck, confirm with `rush sessions
+locks <id>` (alive/offline) or `rush sessions show <id> --with-messages`
 — never infer state from a completion notification alone. To nudge a live
-session, use `crush sessions inject <id> -m "<msg>"` (`--interrupt` to cut
-in), not another `crush run`. Only relaunch once the lock is confirmed
+session, use `rush sessions inject <id> -m "<msg>"` (`--interrupt` to cut
+in), not another `rush run`. Only relaunch once the lock is confirmed
 gone or genuinely stale (`sessions locks`/`reap`).
 
 ## Steering a running session — `sessions inject`
@@ -306,9 +306,9 @@ without killing and relaunching it — to correct course, add a
 forgotten constraint, or answer a question the agent surfaced mid-run.
 
 ```
-crush sessions inject <id> -m "also update the CHANGELOG"     # merge
-crush sessions inject <id> -f ./notes/next-step.md            # from a file
-crush sessions inject <id> -m "stop — wrong approach" --interrupt
+rush sessions inject <id> -m "also update the CHANGELOG"     # merge
+rush sessions inject <id> -f ./notes/next-step.md            # from a file
+rush sessions inject <id> -m "stop — wrong approach" --interrupt
 ```
 
 - `<id>` is the same `--session` id you launched with (short hash ok).
@@ -324,23 +324,23 @@ crush sessions inject <id> -m "stop — wrong approach" --interrupt
   persisted and picked up next time that session id runs — the
   command tells you so instead of failing.
 
-Works cross-process: writes to the session DB, and the running `crush
+Works cross-process: writes to the session DB, and the running `rush
 run` (or web server) owning that session picks it up. Add `--json` for
 a machine-readable `{session_id, message_id, running, status}` result.
 
 ## Repo-wide default system prompt
 
-If `./.crush/system-prompts/default.md` exists, `crush run` auto-loads
+If `./.rush/system-prompts/default.md` exists, `rush run` auto-loads
 it as the system prompt when neither `--system-prompt` nor
 `--system-prompt-file` was passed. Use it to commit one set of "always
 apply" rules per repo (stay in scope, end with a final assistant
 message, never commit/push, run the tests, surface ambiguity). Explicit
 `--system-prompt-file` always wins.
 
-`crush models efforts [model]` (list/validate reasoning-effort levels a
-model supports) and `crush models bump <smart|fast|worker|reviewer>
+`rush models efforts [model]` (list/validate reasoning-effort levels a
+model supports) and `rush models bump <smart|fast|worker|reviewer>
 <up|down>` (step a role's effort one level) also exist — see README.md's
-`crush models` section for the full picture, not repeated here.
+`rush models` section for the full picture, not repeated here.
 
 ## When the lock is stuck
 
@@ -348,14 +348,14 @@ Don't `rm` the lock manually — on Windows the OS still holds the
 handle and refuses. Use:
 
 ```
-crush sessions kill <id>            # kills holder PID + removes lock
-crush sessions kill <id> --wait 10s # extra time for a slow holder
-crush sessions reset <id> --force   # same + wipe message history
-crush sessions reap                 # sweep ALL orphan locks at once
+rush sessions kill <id>            # kills holder PID + removes lock
+rush sessions kill <id> --wait 10s # extra time for a slow holder
+rush sessions reset <id> --force   # same + wipe message history
+rush sessions reap                 # sweep ALL orphan locks at once
 ```
 
 On Windows `kill` goes through `taskkill /F /T /PID` (whole tree:
-`crush.exe` → `claude.cmd` → `node.exe`) and polls until the PID
+`rush.exe` → `claude.cmd` → `node.exe`) and polls until the PID
 exits, then retries lock removal until the OS releases the handle.
 
 ## After the run finishes — you are responsible for verifying everything
@@ -394,11 +394,11 @@ actually done, what *you* ran, and any compromises or re-delegations.
 
 ### Where to find envelope details
 
-- `.crush/stdin/<task>.out` — wire envelope (`--json`) or final text.
+- `.rush/stdin/<task>.out` — wire envelope (`--json`) or final text.
   Read first.
 - `.warnings[]` — `final_text is empty` means the model ended on a
-  `tool_call`; fall back to `git status` + `crush sessions last <id>`.
-- `crush sessions watch <id>` — confirm the process really exited.
+  `tool_call`; fall back to `git status` + `rush sessions last <id>`.
+- `rush sessions watch <id>` — confirm the process really exited.
   Lock-alive heartbeat is the truth.
 
 ## Task

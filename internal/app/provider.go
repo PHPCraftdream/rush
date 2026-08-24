@@ -45,7 +45,7 @@ func findModels(providers map[string]config.ProviderConfig, smartModel, fastMode
 	} {
 		if pf.filter != "" {
 			if _, ok := providers[pf.filter]; !ok {
-				return nil, nil, fmt.Errorf("%s model: provider %q not found in configuration. Use 'crush models' to list available models", pf.label, pf.filter)
+				return nil, nil, fmt.Errorf("%s model: provider %q not found in configuration. Use 'rush models' to list available models", pf.label, pf.filter)
 			}
 		}
 	}
@@ -74,8 +74,8 @@ func filter(modelFilter, providerFilter, model, provider string) bool {
 		(providerFilter == "" || strings.EqualFold(provider, providerFilter))
 }
 
-// ResolveModel does the same smart lookup that --model on `crush run` does,
-// but exposed as a public method so the `crush models set` CLI can share
+// ResolveModel does the same smart lookup that --model on `rush run` does,
+// but exposed as a public method so the `rush models set` CLI can share
 // the rules. modelStr is "model" or "provider/model"; the returned values
 // are the unique provider id and the canonical model id from its catalog.
 // Returns an error on no-match or ambiguity.

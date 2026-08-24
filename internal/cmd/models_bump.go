@@ -1,10 +1,10 @@
-// Fork patch: `crush models bump <role> <up|down>` — step a role's reasoning
+// Fork patch: `rush models bump <role> <up|down>` — step a role's reasoning
 // effort by exactly one level in its model's own ordered Levels() array, and
 // show the before/after effort so the effect is visible without a separate
 // `models state` call.
 //
-// NAMING: this is deliberately NOT called `crush models effort` (singular).
-// `crush models efforts` (plural, task #69/#71) already exists as a
+// NAMING: this is deliberately NOT called `rush models effort` (singular).
+// `rush models efforts` (plural, task #69/#71) already exists as a
 // documentation/discoverability command ("what levels does this model
 // support and how do I set them"). "effort" vs "efforts" differs by exactly
 // one character and is exactly the kind of thing a user or a scripted caller
@@ -27,25 +27,25 @@ var modelsBumpCmd = &cobra.Command{
 	Use:   "bump <smart|fast|worker|reviewer> <up|down>",
 	Short: "Step a role's reasoning effort up or down by one level",
 	Long: `Step a role's effort one level up or down and print the before/after
-value. Unlike ` + "`crush models efforts [model]`" + ` (which only shows what levels
+value. Unlike ` + "`rush models efforts [model]`" + ` (which only shows what levels
 are available), ` + "`bump`" + ` writes the new value.
 
 ` + "`up`" + ` from unset lands on the lowest level; ` + "`down`" + ` from unset reports
 nothing to lower. At either end of the list, the command prints a message
 and exits 0 (not an error).
 
-Scoped like ` + "`crush models use`" + ` (` + "`--global`" + `/` + "`--local`" + `).`,
+Scoped like ` + "`rush models use`" + ` (` + "`--global`" + `/` + "`--local`" + `).`,
 	Args: cobra.ExactArgs(2),
 	Example: `
 # Step by step through a GLM-5.2 role: off -> high -> max.
-crush models bump reviewer up    # off -> high
-crush models bump reviewer up    # high -> max
-crush models bump reviewer up    # already at max, prints a message, exits 0
+rush models bump reviewer up    # off -> high
+rush models bump reviewer up    # high -> max
+rush models bump reviewer up    # already at max, prints a message, exits 0
 
-crush models bump worker down    # one level down
-crush models bump --local smart down   # workspace-scoped
+rush models bump worker down    # one level down
+rush models bump --local smart down   # workspace-scoped
 
-crush models state   # see the full picture afterward
+rush models state   # see the full picture afterward
   `,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		roleArg, dirArg := args[0], args[1]
@@ -73,7 +73,7 @@ crush models state   # see the full picture afterward
 		cfg := a.Config()
 		current, has := cfg.Models[slot]
 		if !has {
-			fmt.Fprintf(os.Stderr, "%s is not set in any scope — nothing to bump. Set it first with `crush models use`.\n", roleArg)
+			fmt.Fprintf(os.Stderr, "%s is not set in any scope — nothing to bump. Set it first with `rush models use`.\n", roleArg)
 			return nil
 		}
 
@@ -81,8 +81,8 @@ crush models state   # see the full picture afterward
 		if atomKey == "" {
 			fmt.Fprintf(os.Stderr,
 				"%s (%s/%s) is not a known atom — stepping isn't supported for this model.\n"+
-					"See `crush models efforts %s/%s` or set an explicit level manually via\n"+
-					"`crush models use ... --%s %s/%s@<level>`.\n",
+					"See `rush models efforts %s/%s` or set an explicit level manually via\n"+
+					"`rush models use ... --%s %s/%s@<level>`.\n",
 				roleArg, current.Provider, current.Model, current.Provider, current.Model, roleArg, current.Provider, current.Model)
 			return nil
 		}
@@ -91,7 +91,7 @@ crush models state   # see the full picture afterward
 		if levels == nil {
 			fmt.Fprintf(os.Stderr,
 				"%s (atom: %s) declares no effort levels — stepping isn't supported for this model.\n"+
-					"See `crush models efforts %s`.\n",
+					"See `rush models efforts %s`.\n",
 				roleArg, atomKey, atomKey)
 			return nil
 		}
@@ -124,7 +124,7 @@ crush models state   # see the full picture afterward
 			// it plainly rather than silently treating it as "unset".
 			fmt.Fprintf(os.Stderr,
 				"%s is currently %q, which is not one of %s's known levels (%s) — can't determine a step direction.\n"+
-					"Set an explicit valid level first via `crush models use`.\n",
+					"Set an explicit valid level first via `rush models use`.\n",
 				roleArg, current.ReasoningEffort, atomKey, strings.Join(levels, "|"))
 			return nil
 		}
@@ -201,7 +201,7 @@ func parseBumpDirection(s string) (up bool, err error) {
 
 func init() {
 	modelsBumpCmd.Flags().Bool("global", false, "Target the global config (default when neither --global nor --local is given)")
-	modelsBumpCmd.Flags().Bool("local", false, "Target the workspace config (./.crush/crush.json)")
+	modelsBumpCmd.Flags().Bool("local", false, "Target the workspace config (./.rush/rush.json)")
 	modelsBumpCmd.MarkFlagsMutuallyExclusive("global", "local")
 	modelsCmd.AddCommand(modelsBumpCmd)
 }

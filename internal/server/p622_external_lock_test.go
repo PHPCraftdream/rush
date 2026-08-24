@@ -24,7 +24,7 @@ import (
 )
 
 // holdRealExclusiveLock acquires a REAL exclusive session lock, exactly as
-// a concurrent `crush run --session S` would, and returns a release func.
+// a concurrent `rush run --session S` would, and returns a release func.
 // This is the only faithful stand-in for an external owner under the
 // probe-based proof: the shared probe denies against the kernel lock
 // itself, regardless of what any file's bytes say.

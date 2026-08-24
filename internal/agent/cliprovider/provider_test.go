@@ -13,7 +13,7 @@ import (
 // fastExitHelperEnv turns this test binary into the fast-exiting child process
 // used by TestStreamFastExitNoLastLineLoss. See that test for why the child is
 // the test binary rather than a shell.
-const fastExitHelperEnv = "CRUSH_TEST_FAST_EXIT_FILE"
+const fastExitHelperEnv = "RUSH_TEST_FAST_EXIT_FILE"
 
 func TestMain(m *testing.M) {
 	// Child-process mode: dump the fixture and exit before the testing

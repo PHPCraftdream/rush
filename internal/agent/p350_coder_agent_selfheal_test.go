@@ -17,7 +17,7 @@ package agent
 // sixth @oh review pass — internal/config/load.go's cliprovider.Available()
 // synthesizes a local-cli provider whenever claude/gemini/codex/qwen is on
 // PATH, making IsConfigured() already true at the moment config.Init runs
-// (regardless of CRUSH_GLOBAL_CONFIG/CRUSH_GLOBAL_DATA/XDG_CONFIG_HOME/
+// (regardless of RUSH_GLOBAL_CONFIG/RUSH_GLOBAL_DATA/XDG_CONFIG_HOME/
 // XDG_DATA_HOME isolation, since PATH detection isn't file-based), so
 // SetupAgents fires during that initial call and the gap never surfaces
 // locally on a machine with any of those CLIs installed. It reproduces

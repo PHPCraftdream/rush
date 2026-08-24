@@ -13,7 +13,7 @@ func TestAwaitingAnswerGuidance(t *testing.T) {
 		if !strings.Contains(guidance, "QUESTION: Which env should I deploy to?") {
 			t.Errorf("guidance %q must echo the question verbatim under a QUESTION: label", guidance)
 		}
-		if !strings.Contains(guidance, "crush run --session sess-123") {
+		if !strings.Contains(guidance, "rush run --session sess-123") {
 			t.Errorf("guidance %q must contain a ready-to-run resume command with the session id substituted in", guidance)
 		}
 		if !strings.Contains(strings.ToLower(guidance), "not a crash") {
@@ -36,7 +36,7 @@ func TestAwaitingAnswerGuidance(t *testing.T) {
 		if !strings.Contains(guidance, "Suggested options: yes | no | dry-run only") {
 			t.Errorf("guidance %q must list the suggested options", guidance)
 		}
-		if !strings.Contains(guidance, "crush run --session sess-456") {
+		if !strings.Contains(guidance, "rush run --session sess-456") {
 			t.Errorf("guidance %q must contain a ready-to-run resume command with the session id substituted in", guidance)
 		}
 	})
@@ -78,7 +78,7 @@ func TestAwaitingAnswerStoppedFinishText(t *testing.T) {
 		if !strings.Contains(details, "Suggested options: staging | prod") {
 			t.Errorf("details %q must contain the suggested options", details)
 		}
-		if !strings.Contains(details, "crush run --session sess-abc") {
+		if !strings.Contains(details, "rush run --session sess-abc") {
 			t.Errorf("details %q must contain an explicit resume command an orchestrator can act on", details)
 		}
 	})

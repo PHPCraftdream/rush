@@ -31,13 +31,13 @@ fields.`,
 	Args: cobra.ExactArgs(1),
 	Example: `
 # Add an extra header to openai globally
-crush providers patch openai --json '{"extra_headers":{"OpenAI-Organization":"org-XXX"}}'
+rush providers patch openai --json '{"extra_headers":{"OpenAI-Organization":"org-XXX"}}'
 
 # Swap extra_body from a file (workspace scope)
-crush providers patch openai --local --json-file ./openai-extra-body.json
+rush providers patch openai --local --json-file ./openai-extra-body.json
 
 # Pipe JSON in
-echo '{"disable": true}' | crush providers patch hyper
+echo '{"disable": true}' | rush providers patch hyper
   `,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		scope, err := scopeFromFlags(cmd, config.ScopeGlobal)

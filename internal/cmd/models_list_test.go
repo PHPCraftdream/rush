@@ -9,20 +9,20 @@ import (
 )
 
 // TestApplyModelsListRefreshMode_Default verifies that the default
-// `crush models list` path (no --refresh) opts into cache-only mode so
+// `rush models list` path (no --refresh) opts into cache-only mode so
 // the provider syncers do not perform a network fetch or write the
-// cache. This is the contract that makes `crush models list` side
+// cache. This is the contract that makes `rush models list` side
 // effect-free by default.
 func TestApplyModelsListRefreshMode_Default(t *testing.T) {
-	t.Setenv("CRUSH_PROVIDER_CACHE_ONLY", "")
-	t.Setenv("CRUSH_PROVIDER_CACHE_TTL", "24h")
+	t.Setenv("RUSH_PROVIDER_CACHE_ONLY", "")
+	t.Setenv("RUSH_PROVIDER_CACHE_TTL", "24h")
 
 	applyModelsListRefreshMode(false)
 
-	assert.Equal(t, "1", os.Getenv("CRUSH_PROVIDER_CACHE_ONLY"),
-		"default mode must set CRUSH_PROVIDER_CACHE_ONLY=1")
-	assert.Equal(t, "24h", os.Getenv("CRUSH_PROVIDER_CACHE_TTL"),
-		"default mode must not perturb CRUSH_PROVIDER_CACHE_TTL (cache-only wins anyway)")
+	assert.Equal(t, "1", os.Getenv("RUSH_PROVIDER_CACHE_ONLY"),
+		"default mode must set RUSH_PROVIDER_CACHE_ONLY=1")
+	assert.Equal(t, "24h", os.Getenv("RUSH_PROVIDER_CACHE_TTL"),
+		"default mode must not perturb RUSH_PROVIDER_CACHE_TTL (cache-only wins anyway)")
 }
 
 // TestApplyModelsListRefreshMode_Refresh verifies that `--refresh`
@@ -31,15 +31,15 @@ func TestApplyModelsListRefreshMode_Default(t *testing.T) {
 // environment had previously opted into cache-only mode.
 func TestApplyModelsListRefreshMode_Refresh(t *testing.T) {
 	// Simulate a user shell that pre-set cache-only mode.
-	t.Setenv("CRUSH_PROVIDER_CACHE_ONLY", "1")
-	t.Setenv("CRUSH_PROVIDER_CACHE_TTL", "24h")
+	t.Setenv("RUSH_PROVIDER_CACHE_ONLY", "1")
+	t.Setenv("RUSH_PROVIDER_CACHE_TTL", "24h")
 
 	applyModelsListRefreshMode(true)
 
-	assert.Equal(t, "", os.Getenv("CRUSH_PROVIDER_CACHE_ONLY"),
-		"refresh mode must clear CRUSH_PROVIDER_CACHE_ONLY so the syncer hits the network")
-	assert.Equal(t, "0", os.Getenv("CRUSH_PROVIDER_CACHE_TTL"),
-		"refresh mode must force CRUSH_PROVIDER_CACHE_TTL=0 so a fresh cache is treated as stale")
+	assert.Equal(t, "", os.Getenv("RUSH_PROVIDER_CACHE_ONLY"),
+		"refresh mode must clear RUSH_PROVIDER_CACHE_ONLY so the syncer hits the network")
+	assert.Equal(t, "0", os.Getenv("RUSH_PROVIDER_CACHE_TTL"),
+		"refresh mode must force RUSH_PROVIDER_CACHE_TTL=0 so a fresh cache is treated as stale")
 }
 
 // TestModelsListCmd_RefreshFlagRegistered verifies the --refresh flag is

@@ -103,8 +103,8 @@ func loadExternalMCPServers(workingDir string) map[string]MCPConfig {
 }
 
 // mergeExternalMCPServers injects .mcp.json servers into the config's MCP map.
-// Servers already defined in crush.json take full precedence. For external
-// servers, the disabled state is read from the crush config store.
+// Servers already defined in rush.json take full precedence. For external
+// servers, the disabled state is read from the rush config store.
 func mergeExternalMCPServers(cfg *Config, store *ConfigStore, external map[string]MCPConfig) {
 	if cfg.MCP == nil {
 		cfg.MCP = make(MCPs)

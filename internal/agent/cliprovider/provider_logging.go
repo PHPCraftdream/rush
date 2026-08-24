@@ -38,13 +38,13 @@ func tailString(s string, n int) string {
 }
 
 // logRawPromptEnabled returns true when raw prompt logging is explicitly enabled
-// via the CRUSH_CLIPROVIDER_LOG_RAW_PROMPT environment variable. This is an
+// via the RUSH_CLIPROVIDER_LOG_RAW_PROMPT environment variable. This is an
 // opt-in diagnostic mode for debugging CLI invocation issues — it defaults to
 // false to avoid leaking sensitive data (system prompts, API keys, tokens) into logs.
 //
 // Exported for use by agent.go's orphan outbox logging (SEC-1 fix).
 func LogRawPromptEnabled() bool {
-	return os.Getenv("CRUSH_CLIPROVIDER_LOG_RAW_PROMPT") == "1"
+	return os.Getenv("RUSH_CLIPROVIDER_LOG_RAW_PROMPT") == "1"
 }
 
 // logRawPromptEnabled is a convenience alias for the exported function.
@@ -55,7 +55,7 @@ func logRawPromptEnabled() bool {
 // sanitizeArgs returns a safe-to-log version of args by redacting values of
 // sensitive flags (like -p/--prompt) while preserving flag names and safe values
 // (like config file paths). In normal mode, only flag names are logged for sensitive
-// args. In diagnostic mode (CRUSH_CLIPROVIDER_LOG_RAW_PROMPT=1), the original args
+// args. In diagnostic mode (RUSH_CLIPROVIDER_LOG_RAW_PROMPT=1), the original args
 // are returned as-is for debugging.
 func sanitizeArgs(args []string) []string {
 	if logRawPromptEnabled() {

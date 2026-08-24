@@ -1,4 +1,4 @@
-// Fork addition: `qwen-init` installs the `crush`/`crush-fallback` slash
+// Fork addition: `qwen-init` installs the `rush`/`rush-fallback` slash
 // commands for Qwen Code CLI (`.qwen/commands/*.md`). Part of the
 // `<tool>-init`/`<tool>-del` family alongside claude-init/claude-del and
 // codex-init/codex-del; gemini-init/gemini-del and grok-init/grok-del
@@ -43,11 +43,11 @@ func resolveQwenCommandsDir(cwd string, global bool) (string, error) {
 
 var qwenInitCmd = &cobra.Command{
 	Use:   "qwen-init",
-	Short: "Install the crush/crush-fallback slash-commands for Qwen Code CLI",
-	Long: `Set up crush's delegation commands in Qwen Code CLI.
+	Short: "Install the rush/rush-fallback slash-commands for Qwen Code CLI",
+	Long: `Set up rush's delegation commands in Qwen Code CLI.
 
-Qwen Code CLI custom commands are written to ` + "`~/.qwen/commands/crush.md`" + ` and
-` + "`~/.qwen/commands/crush-fallback.md`" + ` by default (the GLOBAL scope,
+Qwen Code CLI custom commands are written to ` + "`~/.qwen/commands/rush.md`" + ` and
+` + "`~/.qwen/commands/rush-fallback.md`" + ` by default (the GLOBAL scope,
 available in every project). Use --local (or --cwd, which implies it) to
 scope them to the current project's ` + "`.qwen/commands/`" + ` instead.
 
@@ -60,13 +60,13 @@ Skipped (with a warning) if a target file exists without our sentinel —
 we never overwrite a file we don't own.`,
 	Example: `
 # Install / refresh the Qwen commands globally — the default
-crush qwen-init
+rush qwen-init
 
 # Install into the current project instead
-crush qwen-init --local
+rush qwen-init --local
 
 # Scope to another project (implies --local)
-crush qwen-init --cwd /path/to/project
+rush qwen-init --cwd /path/to/project
 `,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		global, _ := cmd.Flags().GetBool("global")
@@ -100,25 +100,25 @@ crush qwen-init --cwd /path/to/project
 	},
 }
 
-// installQwenCommands writes both the crush and crush-fallback commands
+// installQwenCommands writes both the rush and rush-fallback commands
 // into commandsDir. Extracted so qwen_init_test.go can drive it directly.
 func installQwenCommands(commandsDir string) error {
 	desc1, body1, err := parseSlashCommandSource(claudeSlashCommandTemplate)
 	if err != nil {
-		return fmt.Errorf("crush command: %w", err)
+		return fmt.Errorf("rush command: %w", err)
 	}
 	content1 := renderFrontMatterMD(claudeSlashCommandSentinel, desc1, body1, qwenArgsPlaceholder)
-	if err := writeSentinelledFile(filepath.Join(commandsDir, "crush.md"), claudeSlashCommandSentinel, content1); err != nil {
-		return fmt.Errorf("crush command: %w", err)
+	if err := writeSentinelledFile(filepath.Join(commandsDir, "rush.md"), claudeSlashCommandSentinel, content1); err != nil {
+		return fmt.Errorf("rush command: %w", err)
 	}
 
 	desc2, body2, err := parseSlashCommandSource(claudeFallbackCommandTemplate)
 	if err != nil {
-		return fmt.Errorf("crush-fallback command: %w", err)
+		return fmt.Errorf("rush-fallback command: %w", err)
 	}
 	content2 := renderFrontMatterMD(claudeSlashCommandSentinel, desc2, body2, qwenArgsPlaceholder)
-	if err := writeSentinelledFile(filepath.Join(commandsDir, "crush-fallback.md"), claudeSlashCommandSentinel, content2); err != nil {
-		return fmt.Errorf("crush-fallback command: %w", err)
+	if err := writeSentinelledFile(filepath.Join(commandsDir, "rush-fallback.md"), claudeSlashCommandSentinel, content2); err != nil {
+		return fmt.Errorf("rush-fallback command: %w", err)
 	}
 	return nil
 }

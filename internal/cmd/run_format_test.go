@@ -167,7 +167,7 @@ func TestFormatPresetJSON_ForbidsFences(t *testing.T) {
 
 // --- resolveDefaultHardTimeout -------------------------------------------
 //
-// Covers the default hard wall-clock backstop installed for `crush run` when
+// Covers the default hard wall-clock backstop installed for `rush run` when
 // no --timeout is given (or --timeout 0). The backstop prevents a true zombie
 // (deadlock / a read that ignores ctx) from holding its session lock forever.
 // These tests exercise the pure resolver rather than waiting hours for a real

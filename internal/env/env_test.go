@@ -197,17 +197,17 @@ func TestOverlayEnv_NeverTouchesProcessEnviron(t *testing.T) {
 	// Pick a var name unlikely to collide with anything real, plus one
 	// that likely already exists in most process environments (PATH) to
 	// prove shadowing a real var doesn't leak into os.Environ() either.
-	t.Setenv("CRUSH_ENV_OVERLAY_TEST_PROBE", "process-value")
+	t.Setenv("RUSH_ENV_OVERLAY_TEST_PROBE", "process-value")
 
 	before := os.Environ()
 
 	base := New() // osEnv — reads the real process environment.
 	o := NewOverlay(base, map[string]string{
-		"CRUSH_ENV_OVERLAY_TEST_PROBE": "overlay-value",
-		"PATH":                         "/overlay/only/path",
+		"RUSH_ENV_OVERLAY_TEST_PROBE": "overlay-value",
+		"PATH":                        "/overlay/only/path",
 	})
 
-	require.Equal(t, "overlay-value", o.Get("CRUSH_ENV_OVERLAY_TEST_PROBE"))
+	require.Equal(t, "overlay-value", o.Get("RUSH_ENV_OVERLAY_TEST_PROBE"))
 	require.Equal(t, "/overlay/only/path", o.Get("PATH"))
 	_ = o.Env()
 
@@ -218,7 +218,7 @@ func TestOverlayEnv_NeverTouchesProcessEnviron(t *testing.T) {
 	// untouched (redundant with the ElementsMatch above, but pins the
 	// specific historical failure mode: os.Setenv leaking a scoped
 	// override into the process for every other goroutine/child process).
-	require.Equal(t, "process-value", os.Getenv("CRUSH_ENV_OVERLAY_TEST_PROBE"))
+	require.Equal(t, "process-value", os.Getenv("RUSH_ENV_OVERLAY_TEST_PROBE"))
 }
 
 // TestOverlayEnv_ConcurrentOverlaysDoNotInterfere fires many goroutines,

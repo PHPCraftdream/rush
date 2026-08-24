@@ -17,42 +17,42 @@ var sessionsKillCmd = &cobra.Command{
 	Use:   "kill <id>",
 	Short: "Kill the process holding a session's lock and remove the lock file",
 	Long: `Force-release a session that is stuck behind a live or orphan
-crush process. Reads the holder PID from .crush/locks/session-<id>.lock,
+rush process. Reads the holder PID from .rush/locks/session-<id>.lock,
 forcibly kills it (SIGKILL on POSIX, taskkill /F /T on Windows so the
 whole subprocess tree dies), waits for the OS to release the file
 handle, then removes the lock file.
 
 Use this when:
-- A "crush run --session <id>" reports "session is already in use", but
+- A "rush run --session <id>" reports "session is already in use", but
   you know the real holder is dead (or stuck) and won't release.
-- "crush sessions reset --force" cannot proceed because the lock survived.
+- "rush sessions reset --force" cannot proceed because the lock survived.
 - A previous run was force-killed (TaskStop / Ctrl+C on a wrapper) and
-  left the child crush process orphaned, still holding the lock.
+  left the child rush process orphaned, still holding the lock.
 
 On Windows the kill goes through ` + "`taskkill /F /T /PID`" + ` which
-also terminates every child the crush process spawned (typically the
+also terminates every child the rush process spawned (typically the
 external CLI: claude.cmd → node.exe). The plain os.Process.Kill() goes
 through OpenProcess(PROCESS_TERMINATE), which can fail with "Access is
 denied" for processes launched under Git Bash or MSYS — taskkill avoids
 that whole class of issue.
 
-On Unix (Linux/macOS) a CLI-provider child (the ` + "`claude`" + `/` + "`gemini`" + `/` + "`codex`" + `/` + "`qwen`" + ` process crush
+On Unix (Linux/macOS) a CLI-provider child (the ` + "`claude`" + `/` + "`gemini`" + `/` + "`codex`" + `/` + "`qwen`" + ` process rush
 launched) is spawned as the leader of its OWN process group, deliberately
-separate from crush's, so an ordinary signal to crush does not also kill
+separate from rush's, so an ordinary signal to rush does not also kill
 it (see internal/session/track_unix.go). Because of that, SIGKILL to the
-crush PID by itself does NOT reach that child tree on Unix.
+rush PID by itself does NOT reach that child tree on Unix.
 
 This command closes that gap, but ONLY when it can prove the process
 group it is about to signal is still the one that was actually spawned
-for the holder just confirmed dead. When crush registers a CLI-provider
+for the holder just confirmed dead. When rush registers a CLI-provider
 child group (automatic for every model run through the ` + "`cli`" + `
 provider), the registration is written next to the session's own lock
-file, under its per-user ` + "`.crush/locks`" + ` directory (see
+file, under its per-user ` + "`.rush/locks`" + ` directory (see
 internal/session/childgroup_registry_unix.go) -- NOT a shared, predictable
 path -- and it is stamped with the exact lock generation token that was
 current at registration time (the same generation mechanism
 internal/session/lock.go already uses to guard its own destructive
-cleanup). Once the crush PID itself is confirmed dead -- whether this
+cleanup). Once the rush PID itself is confirmed dead -- whether this
 command killed it, or it had already crashed/exited on its own before
 this command ever ran -- this command:
 
@@ -113,9 +113,9 @@ path out from under a live OS lock is exactly the two-owners bug this
 command must never trigger. Pass --keep-lock to skip the file removal
 entirely even on a confirmed kill.`,
 	Example: `
-crush sessions kill pr-42
-crush sessions kill pr-42 --keep-lock     # just kill, leave the lock file
-crush sessions kill pr-42 --wait 10s      # wait up to 10s for the PID to die
+rush sessions kill pr-42
+rush sessions kill pr-42 --keep-lock     # just kill, leave the lock file
+rush sessions kill pr-42 --wait 10s      # wait up to 10s for the PID to die
   `,
 	Args: cobra.ExactArgs(1),
 	RunE: sessionsKillCmdRun,
@@ -136,7 +136,7 @@ func sessionsKillCmdRun(cmd *cobra.Command, args []string) error {
 
 	// Resolve the data directory the same lightweight way `stats` does:
 	// honor --data-dir first, then the project's configured
-	// data_directory, and only fall back to <cwd>/.crush if neither is
+	// data_directory, and only fall back to <cwd>/.rush if neither is
 	// set. config.ResolveDataDirectory is pure, local, filesystem-only
 	// config resolution (no network fetch, no DB connection, no config
 	// persistence side effects), so it stays safe to use from a rescue
@@ -666,9 +666,9 @@ func sweepChildGroupsWithHeldLock(sb *strings.Builder, dataDir, sessionID, victi
 
 // acquireSessionLockForReset acquires the real OS session lock, killing the
 // current holder first if one is alive (and confirmable). It returns the HELD
-// lock (caller MUST Release) so no concurrent crush process can grab the
+// lock (caller MUST Release) so no concurrent rush process can grab the
 // session during a critical section that follows — in particular `sessions
-// reset --force`'s DB wipe, which must not race a fresh `crush run --session
+// reset --force`'s DB wipe, which must not race a fresh `rush run --session
 // <id>` that recreates the lock at the same path and starts writing.
 //
 // This is the only place in the sessions CLI that holds the OS lock across a

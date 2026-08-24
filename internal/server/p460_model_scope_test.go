@@ -12,8 +12,8 @@ import (
 // changes the model system-wide" bug.
 //
 // Model defaults cascade system -> folder -> session. The system level lives
-// in the global crush.json (config.ScopeGlobal), the folder level in the
-// workspace crush.json (config.ScopeWorkspace), and the session level in the
+// in the global rush.json (config.ScopeGlobal), the folder level in the
+// workspace rush.json (config.ScopeWorkspace), and the session level in the
 // sessions DB row. Only three writers may touch the system/folder levels:
 // `crush models use`, the explicit scoped WS commands, and config's own
 // first-run bootstrap/self-heal in load.go. Nothing driven by ordinary chat
@@ -21,7 +21,7 @@ import (
 //
 // The bug: handleTrackModelUsage called
 // store.UpdatePreferredModel(config.ScopeGlobal, ...), which writes
-// models.<type> into the global crush.json. Two paths reached it —
+// models.<type> into the global rush.json. Two paths reached it —
 // ModelSelector.onSelect (an explicit per-session pick) and, far worse,
 // web/src/useWS.ts's message_created subscriber, which fires on EVERY
 // assistant message. So the system-wide default silently drifted to whichever
@@ -33,7 +33,7 @@ import (
 
 // globalLargeState captures the system-level smart-model default from both
 // places it can live: the published in-memory snapshot every reader sees, and
-// the global crush.json on disk that survives a restart. A leak into either
+// the global rush.json on disk that survives a restart. A leak into either
 // one is a bug, so both are compared.
 type globalSmartState struct {
 	live   config.SelectedModel
@@ -70,11 +70,11 @@ func requireGlobalSmartUnchanged(t *testing.T, store *config.ConfigStore, before
 	switch before.onDisk {
 	case nil:
 		require.Nil(t, after.onDisk,
-			"models.smart was written into the global crush.json by an action that must not touch it")
+			"models.smart was written into the global rush.json by an action that must not touch it")
 	default:
-		require.NotNil(t, after.onDisk, "models.smart vanished from the global crush.json")
+		require.NotNil(t, after.onDisk, "models.smart vanished from the global rush.json")
 		require.Equal(t, *before.onDisk, *after.onDisk,
-			"the global crush.json's models.smart was rewritten")
+			"the global rush.json's models.smart was rewritten")
 	}
 }
 

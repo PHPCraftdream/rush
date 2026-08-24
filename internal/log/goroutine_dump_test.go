@@ -15,8 +15,8 @@ import (
 )
 
 // TestDumpGoroutines_WritesUsableDump is the regression guard for the reason
-// this function exists at all: when a crush process hung in production there
-// was no way to find out where. pprof is only served when CRUSH_PROFILE is
+// this function exists at all: when a rush process hung in production there
+// was no way to find out where. pprof is only served when RUSH_PROFILE is
 // set (so it cannot be enabled after the fact on a live hang) and release
 // builds strip symbols (so attaching a debugger returns nothing and kills the
 // process). A dump written by the process itself, at the moment the hang is
@@ -37,7 +37,7 @@ func TestDumpGoroutines_WritesUsableDump(t *testing.T) {
 	path, err := DumpGoroutines("unit test")
 	require.NoError(t, err)
 	require.NotEmpty(t, path)
-	assert.Equal(t, dir, filepath.Dir(path), "dump must land next to crush.log, not somewhere unrelated")
+	assert.Equal(t, dir, filepath.Dir(path), "dump must land next to rush.log, not somewhere unrelated")
 
 	bts, err := os.ReadFile(path)
 	require.NoError(t, err)
@@ -45,7 +45,7 @@ func TestDumpGoroutines_WritesUsableDump(t *testing.T) {
 
 	assert.Contains(t, content, "reason: unit test", "the dump must record WHY it was taken")
 	assert.Contains(t, content, "pid: "+strconv.Itoa(os.Getpid()),
-		"the dump must name the process it came from — several crush processes share one .crush dir")
+		"the dump must name the process it came from — several rush processes share one .rush dir")
 	assert.Contains(t, content, "goroutine ",
 		"the dump must contain actual goroutine stacks, which is the entire point")
 	assert.Contains(t, content, "DumpGoroutines",

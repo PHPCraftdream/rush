@@ -21,7 +21,7 @@ func TestLoadTokenFromDisk_ReturnsNewerToken(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	configPath := filepath.Join(dir, "crush.json")
+	configPath := filepath.Join(dir, "rush.json")
 
 	// Create config file with a newer token on disk
 	configContent := `{
@@ -56,7 +56,7 @@ func TestLoadTokenFromDisk_ReturnsNilWhenSameToken(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	configPath := filepath.Join(dir, "crush.json")
+	configPath := filepath.Join(dir, "rush.json")
 
 	// Create config file with the same token
 	configContent := `{
@@ -104,7 +104,7 @@ func TestLoadTokenFromDisk_ReturnsNilWhenProviderMissing(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	configPath := filepath.Join(dir, "crush.json")
+	configPath := filepath.Join(dir, "rush.json")
 
 	// Create config file without the hyper provider
 	configContent := `{"providers": {"openai": {"api_key": "test-key"}}}`
@@ -124,7 +124,7 @@ func TestLoadTokenFromDisk_ReturnsNilWhenOAuthMissing(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	configPath := filepath.Join(dir, "crush.json")
+	configPath := filepath.Join(dir, "rush.json")
 
 	// Create config file with provider but no OAuth token
 	configContent := `{"providers": {"hyper": {"api_key": "test-key"}}}`
@@ -144,7 +144,7 @@ func TestRefreshOAuthToken_UsesDiskTokenWhenDifferent(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	configPath := filepath.Join(dir, "crush.json")
+	configPath := filepath.Join(dir, "rush.json")
 
 	// Create config file with a newer token on disk
 	configContent := `{
@@ -205,7 +205,7 @@ func TestRefreshOAuthToken_UsesDiskTokenWhenDifferent(t *testing.T) {
 // truth, not the in-memory copy).
 func TestSetProviderRuntimeConfig_VisibleImmediatelyAndDiscardedByReload(t *testing.T) {
 	dir := t.TempDir()
-	configPath := filepath.Join(dir, "crush.json")
+	configPath := filepath.Join(dir, "rush.json")
 
 	// Config with one provider on disk.
 	initialConfig := `{
@@ -285,7 +285,7 @@ func TestSetProviderRuntimeConfig_VisibleImmediatelyAndDiscardedByReload(t *test
 // one — independent of any later disk-driven resync.
 func TestRefreshOAuthToken_SurvivesReloadDuringNetworkCall(t *testing.T) {
 	dir := t.TempDir()
-	configPath := filepath.Join(dir, "crush.json")
+	configPath := filepath.Join(dir, "rush.json")
 	require.NoError(t, os.WriteFile(configPath, []byte("{}"), 0o600))
 
 	oldToken := &oauth.Token{

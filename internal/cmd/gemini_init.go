@@ -1,4 +1,4 @@
-// Fork addition: `gemini-init` installs the `crush`/`crush-fallback` slash
+// Fork addition: `gemini-init` installs the `rush`/`rush-fallback` slash
 // commands as Gemini CLI custom commands (`.gemini/commands/*.toml`). Part
 // of the `<tool>-init`/`<tool>-del` family alongside claude-init/claude-del
 // and codex-init/codex-del; grok-init/grok-del and qwen-init/qwen-del follow
@@ -18,19 +18,19 @@ import (
 const geminiCommandsDir = ".gemini/commands" // relative to cwd (local) or $HOME (global)
 
 // geminiSlashCommandSentinel is the substring toGeminiTOML embeds as its
-// first line (`# crush-slash-command:v1`). We can't reuse the full
-// claudeSlashCommandSentinel constant here (`<!-- crush-slash-command:v1
+// first line (`# rush-slash-command:v1`). We can't reuse the full
+// claudeSlashCommandSentinel constant here (`<!-- rush-slash-command:v1
 // -->`) verbatim as the ownership-check substring — TOML uses `#` comments,
 // not HTML comments, so that exact string never appears in a generated
 // .toml file. This narrower substring is what actually shows up in both,
 // and is used consistently by both write (installGeminiCommands) and
 // remove (removeGeminiCommands).
-const geminiSlashCommandSentinel = "crush-slash-command:v1"
+const geminiSlashCommandSentinel = "rush-slash-command:v1"
 
 // resolveGeminiCommandsDir returns the directory Gemini CLI custom commands
 // should be written to. When global is true it returns ~/.gemini/commands;
 // otherwise <cwd>/.gemini/commands. Unlike Codex's Skills convention, Gemini
-// custom commands are flat files (crush.toml, crush-fallback.toml) directly
+// custom commands are flat files (rush.toml, rush-fallback.toml) directly
 // inside this directory, not nested under a per-command subdirectory.
 func resolveGeminiCommandsDir(cwd string, global bool) (string, error) {
 	if global {
@@ -45,11 +45,11 @@ func resolveGeminiCommandsDir(cwd string, global bool) (string, error) {
 
 var geminiInitCmd = &cobra.Command{
 	Use:   "gemini-init",
-	Short: "Install the crush/crush-fallback custom commands for Gemini CLI",
-	Long: `Set up crush's delegation custom commands in Gemini CLI.
+	Short: "Install the rush/rush-fallback custom commands for Gemini CLI",
+	Long: `Set up rush's delegation custom commands in Gemini CLI.
 
-Gemini CLI custom commands are written to ` + "`~/.gemini/commands/crush.toml`" + ` and
-` + "`~/.gemini/commands/crush-fallback.toml`" + ` by default (the GLOBAL scope,
+Gemini CLI custom commands are written to ` + "`~/.gemini/commands/rush.toml`" + ` and
+` + "`~/.gemini/commands/rush-fallback.toml`" + ` by default (the GLOBAL scope,
 available in every project). Use --local (or --cwd, which implies it) to
 scope them to the current project's ` + "`.gemini/commands/`" + ` instead.
 
@@ -60,13 +60,13 @@ Skipped (with a warning) if a target .toml file exists without our sentinel
 — we never overwrite a file we don't own.`,
 	Example: `
 # Install / refresh the Gemini custom commands globally — the default
-crush gemini-init
+rush gemini-init
 
 # Install into the current project instead
-crush gemini-init --local
+rush gemini-init --local
 
 # Scope to another project (implies --local)
-crush gemini-init --cwd /path/to/project
+rush gemini-init --cwd /path/to/project
 `,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		global, _ := cmd.Flags().GetBool("global")
@@ -100,32 +100,32 @@ crush gemini-init --cwd /path/to/project
 	},
 }
 
-// installGeminiCommands writes both the crush and crush-fallback custom
+// installGeminiCommands writes both the rush and rush-fallback custom
 // commands into commandsDir. Extracted so gemini_init_test.go can drive it
 // directly.
 func installGeminiCommands(commandsDir string) error {
 	desc1, body1, err := parseSlashCommandSource(claudeSlashCommandTemplate)
 	if err != nil {
-		return fmt.Errorf("crush command: %w", err)
+		return fmt.Errorf("rush command: %w", err)
 	}
 	content1, err := toGeminiTOML(desc1, body1)
 	if err != nil {
-		return fmt.Errorf("crush command: %w", err)
+		return fmt.Errorf("rush command: %w", err)
 	}
-	if err := writeSentinelledFile(filepath.Join(commandsDir, "crush.toml"), geminiSlashCommandSentinel, content1); err != nil {
-		return fmt.Errorf("crush command: %w", err)
+	if err := writeSentinelledFile(filepath.Join(commandsDir, "rush.toml"), geminiSlashCommandSentinel, content1); err != nil {
+		return fmt.Errorf("rush command: %w", err)
 	}
 
 	desc2, body2, err := parseSlashCommandSource(claudeFallbackCommandTemplate)
 	if err != nil {
-		return fmt.Errorf("crush-fallback command: %w", err)
+		return fmt.Errorf("rush-fallback command: %w", err)
 	}
 	content2, err := toGeminiTOML(desc2, body2)
 	if err != nil {
-		return fmt.Errorf("crush-fallback command: %w", err)
+		return fmt.Errorf("rush-fallback command: %w", err)
 	}
-	if err := writeSentinelledFile(filepath.Join(commandsDir, "crush-fallback.toml"), geminiSlashCommandSentinel, content2); err != nil {
-		return fmt.Errorf("crush-fallback command: %w", err)
+	if err := writeSentinelledFile(filepath.Join(commandsDir, "rush-fallback.toml"), geminiSlashCommandSentinel, content2); err != nil {
+		return fmt.Errorf("rush-fallback command: %w", err)
 	}
 	return nil
 }

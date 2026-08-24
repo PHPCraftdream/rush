@@ -1,4 +1,4 @@
-// `crush models unset` tests: clearing worker alone, the "all" positional
+// `rush models unset` tests: clearing worker alone, the "all" positional
 // clearing every slot, and clean rejection of unknown slot names.
 package cmd
 

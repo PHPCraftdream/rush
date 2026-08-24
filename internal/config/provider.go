@@ -44,7 +44,7 @@ var (
 // one package's tests in a single process, so without a reset, whichever
 // test happens to call into provider resolution first freezes the result
 // for every other test in that binary — including ones with completely
-// different CRUSH_PROVIDER_CACHE_ONLY/CRUSH_GLOBAL_DATA env vars, since
+// different RUSH_PROVIDER_CACHE_ONLY/RUSH_GLOBAL_DATA env vars, since
 // those are only consulted inside the once-guarded closure. This package's
 // own tests already avoid the problem (see resetProviderState in
 // provider_test.go); this exported twin exists so tests in OTHER packages
@@ -205,7 +205,7 @@ func Providers(cfg *Config) ([]catwalk.Provider, error) {
 			items, err := catwalkSyncer.Get(ctx)
 			if err != nil {
 				catwalkURL := fmt.Sprintf("%s/v2/providers", cmp.Or(os.Getenv("CATWALK_URL"), defaultCatwalkURL))
-				catwalkErr = fmt.Errorf("Rush was unable to fetch an updated list of providers from %s. Consider setting CRUSH_DISABLE_PROVIDER_AUTO_UPDATE=1 to use the embedded providers bundled at the time of this Rush release. You can also update providers manually. For more info see crush update-providers --help.\n\nCause: %w", catwalkURL, err) //nolint:staticcheck
+				catwalkErr = fmt.Errorf("Rush was unable to fetch an updated list of providers from %s. Consider setting RUSH_DISABLE_PROVIDER_AUTO_UPDATE=1 to use the embedded providers bundled at the time of this Rush release. You can also update providers manually. For more info see crush update-providers --help.\n\nCause: %w", catwalkURL, err) //nolint:staticcheck
 				return
 			}
 			providers.Append(items...)
@@ -253,7 +253,7 @@ func newCache[T any](path string) cache[T] {
 //
 // Fork patch (orchestrator UX): used by catwalk/hyper syncers to skip
 // the network round-trip when the cache is fresh, so a read-only
-// `crush models show` does not spend ~3s on two HTTP requests every
+// `rush models show` does not spend ~3s on two HTTP requests every
 // invocation. See CHANGELOG.fork.md (Section 4.J).
 func (c cache[T]) Age() (time.Duration, error) {
 	fi, err := os.Stat(c.path)

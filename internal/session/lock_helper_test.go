@@ -28,7 +28,7 @@ import (
 // and reports back over stdout so the parent test can synchronize
 // without sleeping blindly.
 
-const helperProcessEnv = "CRUSH_LOCK_HELPER_PROCESS"
+const helperProcessEnv = "RUSH_LOCK_HELPER_PROCESS"
 
 // TestHelperLockHold is not a real test — it's the re-exec entry point
 // invoked by spawnLockHolder via `-test.run=^TestHelperLockHold$`. Under
@@ -53,9 +53,9 @@ func TestHelperLockHold(t *testing.T) {
 	// running as a plain child process that happens to have been
 	// launched via `go test -test.run=...`. Use os.Exit, not t.Fatal,
 	// so the exit code is meaningful to the parent.
-	dataDir := os.Getenv("CRUSH_LOCK_HELPER_DATADIR")
-	sessionID := os.Getenv("CRUSH_LOCK_HELPER_SESSIONID")
-	holdSeconds := os.Getenv("CRUSH_LOCK_HELPER_HOLD_SECONDS")
+	dataDir := os.Getenv("RUSH_LOCK_HELPER_DATADIR")
+	sessionID := os.Getenv("RUSH_LOCK_HELPER_SESSIONID")
+	holdSeconds := os.Getenv("RUSH_LOCK_HELPER_HOLD_SECONDS")
 
 	if dataDir == "" || sessionID == "" {
 		fmt.Println("FAILED missing-env")
@@ -124,11 +124,11 @@ func spawnLockHolder(t *testing.T, dataDir, sessionID string, holdSeconds int) *
 	cmd := exec.CommandContext(ctx, exe, "-test.run=^TestHelperLockHold$")
 	cmd.Env = append(os.Environ(),
 		helperProcessEnv+"=1",
-		"CRUSH_LOCK_HELPER_DATADIR="+dataDir,
-		"CRUSH_LOCK_HELPER_SESSIONID="+sessionID,
+		"RUSH_LOCK_HELPER_DATADIR="+dataDir,
+		"RUSH_LOCK_HELPER_SESSIONID="+sessionID,
 	)
 	if holdSeconds > 0 {
-		cmd.Env = append(cmd.Env, fmt.Sprintf("CRUSH_LOCK_HELPER_HOLD_SECONDS=%d", holdSeconds))
+		cmd.Env = append(cmd.Env, fmt.Sprintf("RUSH_LOCK_HELPER_HOLD_SECONDS=%d", holdSeconds))
 	}
 
 	stdinW, err := cmd.StdinPipe()

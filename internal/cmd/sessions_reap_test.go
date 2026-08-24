@@ -13,7 +13,7 @@ import (
 
 // TestSessionsReapCmdRun_HonorsConfiguredDataDir is the regression test for
 // task #233 finding 2: sessionsReapCmdRun used to compute locksDir as
-// filepath.Join(ResolveCwd(cmd), ".crush", "locks"), completely ignoring
+// filepath.Join(ResolveCwd(cmd), ".rush", "locks"), completely ignoring
 // --data-dir / a configured data_directory. Unlike sessions kill/list/watch,
 // this command is purely filesystem-based (no DB), so the fix uses the
 // lightweight config.ResolveDataDirectory helper (task #224) exactly like
@@ -38,7 +38,7 @@ func TestSessionsReapCmdRun_HonorsConfiguredDataDir(t *testing.T) {
 	require.NoError(t, os.Chdir(workDir))
 	t.Cleanup(func() { _ = os.Chdir(orig) })
 
-	// Deliberately outside workDir entirely, so filepath.Join(cwd, ".crush")
+	// Deliberately outside workDir entirely, so filepath.Join(cwd, ".rush")
 	// can never accidentally coincide with this path.
 	configuredDataDir := filepath.Join(tmp, "elsewhere-data")
 
@@ -65,7 +65,7 @@ func TestSessionsReapCmdRun_HonorsConfiguredDataDir(t *testing.T) {
 	// Sanity: the WRONG (pre-fix) path must not exist, so a false pass via
 	// "(no locks directory)" being silently treated as success is impossible
 	// to confuse with the real assertion below.
-	wrongPath := filepath.Join(workDir, ".crush", "locks", "session-"+sanitiseSessionIDForFilename(sessionID)+".lock")
+	wrongPath := filepath.Join(workDir, ".rush", "locks", "session-"+sanitiseSessionIDForFilename(sessionID)+".lock")
 	_, wrongStatErr := os.Stat(wrongPath)
 	require.True(t, os.IsNotExist(wrongStatErr))
 

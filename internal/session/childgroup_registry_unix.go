@@ -2,31 +2,31 @@
 
 // Cross-process child process-group registry (#580), generation-checked.
 //
-// Why this exists: "crush sessions kill <id>" runs as a SEPARATE OS process
-// from the crush instance that holds the session lock. It reads the holder
+// Why this exists: "rush sessions kill <id>" runs as a SEPARATE OS process
+// from the rush instance that holds the session lock. It reads the holder
 // PID from the lock file/sidecar and kills that one PID via KillProcess,
 // which on Unix also killpg's the PID's OWN process group if that PID
 // happens to be a leader of ITS group. But a CLI provider child
 // (claude/gemini/codex/qwen, see internal/agent/cliprovider) is
 // deliberately spawned as the leader of its OWN, DIFFERENT process group
 // (procgroup_unix.go's configureChildProcessGroup / go-pty's Setsid),
-// precisely so a stray signal to crush's terminal/group does not also kill
+// precisely so a stray signal to rush's terminal/group does not also kill
 // it (see track_unix.go's doc comment and commit 59908cbe). That same
-// design choice means killing the crush PID alone -- all "sessions kill"
+// design choice means killing the rush PID alone -- all "sessions kill"
 // can reach through the lock file -- does NOT touch the CLI child's group.
 //
 // KillAllTrackedTrees (in track_unix.go) solves this for the IN-PROCESS
-// crash-net path because that code runs inside the same crush process that
+// crash-net path because that code runs inside the same rush process that
 // holds the in-memory trackedGroups map. "sessions kill" runs in a separate
 // process and has no access to that map, so the fix needs a durable,
 // cross-process record.
 //
 // SECURITY: an earlier version of this file keyed that record purely by
-// the crush process's numeric pid, under os.TempDir() (world-writable on
+// the rush process's numeric pid, under os.TempDir() (world-writable on
 // most POSIX systems, 0755/0644). That was rejected in review for two
 // independent reasons and replaced with the design below:
 //
-//  1. PID reuse: a crush process that crashes never runs
+//  1. PID reuse: a rush process that crashes never runs
 //     UnregisterChildGroup/RemoveChildGroupRegistry, so the file survives
 //     indefinitely. Once the OS recycles that pid for an unrelated
 //     process, a LATER "sessions kill" against a session that happens to
@@ -99,7 +99,7 @@ import (
 )
 
 // childGroupRegistryPath returns the sidecar file recording the CLI
-// provider child process groups a session's crush process registered,
+// provider child process groups a session's rush process registered,
 // alongside the lock generation token that was current when each entry was
 // written. Lives next to the session lock file itself
 // (dataDir/locks/session-<id>.lock), not in a shared world-writable
@@ -146,7 +146,7 @@ type childGroupEntry struct {
 	StartTime string
 }
 
-// RegisterChildGroup durably records that the crush process currently
+// RegisterChildGroup durably records that the rush process currently
 // holding sessionID's lock is responsible for tearing down the process
 // group led by pgid if it is killed from outside without running its own
 // cleanup. Call only for a confirmed process-group leader (pgid == its own
@@ -202,7 +202,7 @@ func RegisterChildGroup(dataDir, sessionID string, pgid int, generation string) 
 // UnregisterChildGroup removes pgid from sessionID's durable registry,
 // mirroring UntrackProcessTree's in-memory forget. Safe to call for a pgid
 // that was never registered. When the registry file becomes empty it is
-// removed entirely so a long-lived crush process that starts and stops many
+// removed entirely so a long-lived rush process that starts and stops many
 // CLI streams does not accumulate stale, empty sidecar files.
 func UnregisterChildGroup(dataDir, sessionID string, pgid int) {
 	if pgid <= 0 {
@@ -293,7 +293,7 @@ func readChildGroupFileLocked(path string) []childGroupEntry {
 //
 // DURABILITY SCOPE: the sequence above is sufficient for the failure modes
 // this registry actually exists to survive -- an external SIGKILL to the
-// crush process, or that process crashing -- because the directory entry
+// rush process, or that process crashing -- because the directory entry
 // for `path` (pointing at the OLD inode, then the NEW one after rename)
 // only needs to be correct for readers of the SAME still-mounted
 // filesystem; a rename's directory-entry update is itself atomic content
@@ -416,7 +416,7 @@ func RemoveChildGroupRegistry(dataDir, sessionID string) {
 // did, broken down by outcome, so a caller (sessions_kill.go) can tell an
 // operator the difference between outcomes that must not be collapsed into
 // a single "0 swept" report: nothing was ever registered; it was registered
-// but a newer/different owner has since taken the session (or this crush
+// but a newer/different owner has since taken the session (or this rush
 // process restarted) so nothing was touched; it was registered, still
 // looked plausible, and was killed; or it was registered, attempted, and
 // left in a genuinely unresolved state that a later retry might still
@@ -504,7 +504,7 @@ var killpgFunc = syscall.Kill
 // earlier version did ("read fresh from disk, right here"), which was the
 // root cause of a real defect (2026-08-19 static-follow-up review, task
 // #591 blocker P0-2, confirmed by running on real Linux) -- on Unix,
-// killing the holder PID releases the OS lock, so a new crush run
+// killing the holder PID releases the OS lock, so a new rush run
 // --session <id> can acquire it and register its OWN child group under a
 // NEW generation before this function ever runs. Re-reading "current"
 // generation at sweep time reads that NEW owner's token, not the dead

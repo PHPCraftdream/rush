@@ -13,7 +13,7 @@ import (
 
 // TestSessionsWatchCmdRun_HonorsConfiguredDataDir is the regression test for
 // task #233 finding 3: sessionsWatchCmdRun used to compute locksDir as
-// filepath.Join(ResolveCwd(cmd), ".crush", "locks"), ignoring --data-dir /
+// filepath.Join(ResolveCwd(cmd), ".rush", "locks"), ignoring --data-dir /
 // a configured data_directory, even though setupApp(cmd) had already
 // resolved the correct value onto `a`.
 //
@@ -39,7 +39,7 @@ func TestSessionsWatchCmdRun_HonorsConfiguredDataDir(t *testing.T) {
 	require.NoError(t, os.Chdir(workDir))
 	t.Cleanup(func() { _ = os.Chdir(orig) })
 
-	// Deliberately outside workDir entirely, so filepath.Join(cwd, ".crush")
+	// Deliberately outside workDir entirely, so filepath.Join(cwd, ".rush")
 	// (the pre-fix hardcoded guess) can never accidentally coincide with it.
 	configuredDataDir := filepath.Join(tmp, "elsewhere-data")
 
@@ -77,7 +77,7 @@ func TestSessionsWatchCmdRun_HonorsConfiguredDataDir(t *testing.T) {
 	require.NoError(t, os.Chtimes(lockPath, now, now))
 
 	// Sanity: the WRONG (pre-fix) path must not exist.
-	wrongPath := filepath.Join(workDir, ".crush", "locks", "session-"+sanitiseSessionIDForFilename(sess.ID)+".lock")
+	wrongPath := filepath.Join(workDir, ".rush", "locks", "session-"+sanitiseSessionIDForFilename(sess.ID)+".lock")
 	_, wrongStatErr := os.Stat(wrongPath)
 	require.True(t, os.IsNotExist(wrongStatErr))
 

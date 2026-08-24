@@ -124,7 +124,7 @@ func (p *RunQueuePump) run() {
 	// (P1-4 fix, docs/reviews/2026-08-13-release-readiness-static-audit.md
 	// §P1-4), mirroring p.tick()'s own initial call below — otherwise the
 	// first drain wouldn't happen until drainInterval (15s in production)
-	// has elapsed, and a short-lived process (crush run) could start and
+	// has elapsed, and a short-lived process (rush run) could start and
 	// exit without ever attempting to recover a pending outbox entry.
 	p.wg.Add(1)
 	go func() {

@@ -104,7 +104,7 @@ func (c *coordinator) notifyBackgroundJobDone(sessionID string, sh *shell.Backgr
 // as app.go's RunNonInteractive goroutine, see runAgentTurnRecovered there),
 // so any tool call made during this auto-resumed turn could panic exactly
 // like it could during a human-initiated turn. Without this recover, such a
-// panic would crash the whole crush process with no log output, at an
+// panic would crash the whole rush process with no log output, at an
 // arbitrary time long after the triggering background job completed.
 func runAutoResumeRecovered(ctx context.Context, sessionID, shellID string, runFn func(ctx context.Context) (*fantasy.AgentResult, error)) {
 	defer func() {

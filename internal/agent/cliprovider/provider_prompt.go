@@ -40,7 +40,7 @@ func saveFileParts(msgs fantasy.Prompt) (tempDir string, filePaths map[int][]str
 		return "", nil, nil
 	}
 
-	tempDir, err = os.MkdirTemp("", "crush-attachments-*")
+	tempDir, err = os.MkdirTemp("", "rush-attachments-*")
 	if err != nil {
 		return "", nil, fmt.Errorf("create attachment temp dir: %w", err)
 	}

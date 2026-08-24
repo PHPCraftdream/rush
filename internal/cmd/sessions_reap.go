@@ -16,7 +16,7 @@ import (
 var sessionsReapCmd = &cobra.Command{
 	Use:   "reap",
 	Short: "Remove lock files proven (via a real OS lock probe) to have no live holder",
-	Long: `Scan .crush/locks/ and remove any lock that a real OS-level lock
+	Long: `Scan .rush/locks/ and remove any lock that a real OS-level lock
 probe (actually attempting flock/LockFileEx) proves has no live holder.
 Unlike the old PID/mtime heuristic — which could unlink a path out from
 under a live OS lock (advisory locks are bound to the inode, not the path,
@@ -37,9 +37,9 @@ no-op: removal is decided solely by the OS-lock probe, so a lock with an
 unreadable PID is removed if (and only if) the probe proves no live holder,
 regardless of --all.`,
 	Example: `
-crush sessions reap
-crush sessions reap --dry-run
-crush sessions reap --all      # also nuke locks with unreadable PIDs
+rush sessions reap
+rush sessions reap --dry-run
+rush sessions reap --all      # also nuke locks with unreadable PIDs
   `,
 	RunE: sessionsReapCmdRun,
 }
@@ -69,7 +69,7 @@ func sessionsReapCmdRun(cmd *cobra.Command, args []string) error {
 
 	// Resolve the data directory the same lightweight way `sessions kill`
 	// does (task #219/#224): honor --data-dir first, then the project's
-	// configured data_directory, and only fall back to <cwd>/.crush if
+	// configured data_directory, and only fall back to <cwd>/.rush if
 	// neither is set. This command is purely filesystem-based (no DB,
 	// no provider config), so config.ResolveDataDirectory's pure, local
 	// resolution is used instead of pulling in the full setupApp. See

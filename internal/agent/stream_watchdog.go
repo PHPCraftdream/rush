@@ -49,7 +49,7 @@ const (
 // LLM streaming: if a provider stops sending data mid-stream (network
 // glitch, rate-limit, HTTP/2 stall, backend hiccup), we MUST detect it and
 // force-unblock the agent rather than freeze with it. The 162-promise-all
-// stuck session (D:\dev\garnet-team\.crush, see post-mortem in
+// stuck session (D:\dev\garnet-team\.rush, see post-mortem in
 // CHANGELOG.fork.md section 4.D) is the failure mode this protects
 // against — 4 streams froze for 1.5h until the user killed the process.
 type streamWatchdog struct {

@@ -11,16 +11,16 @@ import (
 
 var logsPruneCmd = &cobra.Command{
 	Use:   "prune",
-	Short: "Truncate the crush log file to zero bytes",
-	Long: `Truncate .crush/logs/crush.log to reclaim disk space.
+	Short: "Truncate the rush log file to zero bytes",
+	Long: `Truncate .rush/logs/rush.log to reclaim disk space.
 
-crush does not auto-rotate its log file — on busy workspaces it can
+rush does not auto-rotate its log file — on busy workspaces it can
 grow to hundreds of megabytes. This command blanks it atomically (the
 same way logrotate's copytruncate works) so running sessions keep
 appending without a reopen.`,
 	Example: `
-crush logs prune
-crush logs path    # check size before/after
+rush logs prune
+rush logs path    # check size before/after
   `,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cwd, _ := cmd.Flags().GetString("cwd")
@@ -29,7 +29,7 @@ crush logs path    # check size before/after
 		if err != nil {
 			return err
 		}
-		p := filepath.Join(cfg.Config().Options.DataDirectory, "logs", "crush.log")
+		p := filepath.Join(cfg.Config().Options.DataDirectory, "logs", "rush.log")
 		info, err := os.Stat(p)
 		if err != nil {
 			if os.IsNotExist(err) {

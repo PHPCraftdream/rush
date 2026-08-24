@@ -142,7 +142,7 @@ func (a *sessionAgent) handleWatchdogFire(
 	watchdogCauseVal.Store(int32(cause))
 	// The watchdog firing IS the hang, caught at the only moment the
 	// evidence still exists. Capture every goroutine's stack now,
-	// SYNCHRONOUSLY: pprof is gated behind CRUSH_PROFILE (so it can't be
+	// SYNCHRONOUSLY: pprof is gated behind RUSH_PROFILE (so it can't be
 	// turned on after the fact) and release builds strip symbols (so a
 	// debugger attach yields nothing and merely kills the process). Without
 	// this, every production hang is diagnosed by guesswork.
@@ -359,7 +359,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 
 	// Add the user message to the session. Skip creation when the call
 	// references a message that already exists in the DB (interrupt-inject
-	// path: `crush sessions inject --interrupt` created the row before
+	// path: `rush sessions inject --interrupt` created the row before
 	// signalling this process). Creating it again would duplicate it in
 	// history — the referenced message is already the newest user message.
 	//
@@ -1007,7 +1007,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 			}
 
 			// Cross-process inject drain: rows written by another process
-			// (`crush sessions inject`) into pending_injects. The message
+			// (`rush sessions inject`) into pending_injects. The message
 			// row already exists in the DB (the CLI created it at inject
 			// time for immediate web-UI visibility), so we only load it by
 			// message_id and splice it in — no second Create, no dup row.
@@ -1034,7 +1034,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 					continue
 				}
 				prepared.Messages = append(prepared.Messages, injMsg.ToAIMessage()...)
-				// The row was written by a foreign process (`crush sessions
+				// The row was written by a foreign process (`rush sessions
 				// inject`), so its Create() never published through THIS
 				// process's message broker. If a web UI happens to be
 				// attached to this process for the session, Notify pushes
@@ -1108,7 +1108,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 			// recorded Model.Model()/Provider(). While this line recorded
 			// ModelCfg instead, a provider whose canonical id differs from
 			// the configured one would split a single session into two
-			// groups in `crush sessions cost` — with neither number looking
+			// groups in `rush sessions cost` — with neither number looking
 			// wrong enough to notice.
 			assistantMsg, err = a.messages.Create(callContext, call.SessionID, message.CreateMessageParams{
 				Role:            message.Assistant,
@@ -1571,7 +1571,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 		isHyper := smartModel.ModelCfg.Provider == hyper.Name
 		isCancelErr := errors.Is(err, context.Canceled)
 		isWatchdogStall := isCancelErr && wd.stalled.Load()
-		// `crush run --timeout` bounds the whole invocation via
+		// `rush run --timeout` bounds the whole invocation via
 		// context.WithTimeout on the root ctx (run.go); when it fires
 		// mid-turn, ctx.Err() is context.DeadlineExceeded, NOT
 		// context.Canceled, so isCancelErr above never catches it. Without
@@ -1605,7 +1605,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 			return result, SessionAgentCall{}, false, err
 		}
 		// All DB writes in the error path use a detached context. The outer
-		// ctx may itself be cancelled — in `crush run` it's the
+		// ctx may itself be cancelled — in `rush run` it's the
 		// signal.NotifyContext from fang, so Ctrl-C cancels it too; in the
 		// web UI a request abort cancels it; the stream watchdog above
 		// cancels genCtx (whose parent is ctx, so it doesn't cancel ctx,
@@ -1727,7 +1727,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 				"The run's --timeout deadline expired while this turn was still in flight (e.g. a long tool call or sub-agent delegation). Re-run into the same --session id with a larger --timeout to continue from here.",
 			)
 		} else if isHyper && errors.As(err, &providerErr) && providerErr.StatusCode == http.StatusUnauthorized {
-			currentAssistant.AddFinish(message.FinishReasonError, "Unauthorized", `Please re-authenticate with Hyper. You can also run "crush auth" to re-authenticate.`)
+			currentAssistant.AddFinish(message.FinishReasonError, "Unauthorized", `Please re-authenticate with Hyper. You can also run "rush auth" to re-authenticate.`)
 		} else if isHyper && errors.As(err, &providerErr) && providerErr.StatusCode == http.StatusPaymentRequired {
 			url := hyper.BaseURL()
 			currentAssistant.AddFinish(message.FinishReasonError, "No credits", "You're out of credits. Add more at "+url)

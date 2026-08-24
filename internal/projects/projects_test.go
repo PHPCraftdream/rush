@@ -14,10 +14,10 @@ func TestRegisterAndList(t *testing.T) {
 
 	// Override the projects file path for testing
 	t.Setenv("XDG_DATA_HOME", tmpDir)
-	t.Setenv("CRUSH_GLOBAL_DATA", filepath.Join(tmpDir, "crush"))
+	t.Setenv("RUSH_GLOBAL_DATA", filepath.Join(tmpDir, "crush"))
 
 	// Test registering a project
-	err := Register("/home/user/project1", "/home/user/project1/.crush")
+	err := Register("/home/user/project1", "/home/user/project1/.rush")
 	if err != nil {
 		t.Fatalf("Register failed: %v", err)
 	}
@@ -36,12 +36,12 @@ func TestRegisterAndList(t *testing.T) {
 		t.Errorf("Expected path /home/user/project1, got %s", projects[0].Path)
 	}
 
-	if projects[0].DataDir != "/home/user/project1/.crush" {
-		t.Errorf("Expected data_dir /home/user/project1/.crush, got %s", projects[0].DataDir)
+	if projects[0].DataDir != "/home/user/project1/.rush" {
+		t.Errorf("Expected data_dir /home/user/project1/.rush, got %s", projects[0].DataDir)
 	}
 
 	// Register another project
-	err = Register("/home/user/project2", "/home/user/project2/.crush")
+	err = Register("/home/user/project2", "/home/user/project2/.rush")
 	if err != nil {
 		t.Fatalf("Register failed: %v", err)
 	}
@@ -64,10 +64,10 @@ func TestRegisterAndList(t *testing.T) {
 func TestRegisterUpdatesExisting(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", tmpDir)
-	t.Setenv("CRUSH_GLOBAL_DATA", filepath.Join(tmpDir, "crush"))
+	t.Setenv("RUSH_GLOBAL_DATA", filepath.Join(tmpDir, "crush"))
 
 	// Register a project
-	err := Register("/home/user/project1", "/home/user/project1/.crush")
+	err := Register("/home/user/project1", "/home/user/project1/.rush")
 	if err != nil {
 		t.Fatalf("Register failed: %v", err)
 	}
@@ -78,7 +78,7 @@ func TestRegisterUpdatesExisting(t *testing.T) {
 	// Wait a bit and re-register
 	time.Sleep(10 * time.Millisecond)
 
-	err = Register("/home/user/project1", "/home/user/project1/.crush-new")
+	err = Register("/home/user/project1", "/home/user/project1/.rush-new")
 	if err != nil {
 		t.Fatalf("Register failed: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestRegisterUpdatesExisting(t *testing.T) {
 		t.Fatalf("Expected 1 project after update, got %d", len(projects))
 	}
 
-	if projects[0].DataDir != "/home/user/project1/.crush-new" {
+	if projects[0].DataDir != "/home/user/project1/.rush-new" {
 		t.Errorf("Expected updated data_dir, got %s", projects[0].DataDir)
 	}
 
@@ -101,7 +101,7 @@ func TestRegisterUpdatesExisting(t *testing.T) {
 func TestLoadEmptyFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", tmpDir)
-	t.Setenv("CRUSH_GLOBAL_DATA", filepath.Join(tmpDir, "crush"))
+	t.Setenv("RUSH_GLOBAL_DATA", filepath.Join(tmpDir, "crush"))
 
 	// List before any projects exist
 	projects, err := List()
@@ -117,7 +117,7 @@ func TestLoadEmptyFile(t *testing.T) {
 func TestProjectsFilePath(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", tmpDir)
-	t.Setenv("CRUSH_GLOBAL_DATA", filepath.Join(tmpDir, "crush"))
+	t.Setenv("RUSH_GLOBAL_DATA", filepath.Join(tmpDir, "crush"))
 
 	expected := filepath.Join(tmpDir, "crush", "projects.json")
 	actual := projectsFilePath()
@@ -130,11 +130,11 @@ func TestProjectsFilePath(t *testing.T) {
 func TestRegisterWithParentDataDir(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", tmpDir)
-	t.Setenv("CRUSH_GLOBAL_DATA", filepath.Join(tmpDir, "crush"))
+	t.Setenv("RUSH_GLOBAL_DATA", filepath.Join(tmpDir, "crush"))
 
-	// Register a project where .crush is in a parent directory.
-	// e.g., working in /home/user/monorepo/packages/app but .crush is at /home/user/monorepo/.crush
-	err := Register("/home/user/monorepo/packages/app", "/home/user/monorepo/.crush")
+	// Register a project where .rush is in a parent directory.
+	// e.g., working in /home/user/monorepo/packages/app but .rush is at /home/user/monorepo/.rush
+	err := Register("/home/user/monorepo/packages/app", "/home/user/monorepo/.rush")
 	if err != nil {
 		t.Fatalf("Register failed: %v", err)
 	}
@@ -152,17 +152,17 @@ func TestRegisterWithParentDataDir(t *testing.T) {
 		t.Errorf("Expected path /home/user/monorepo/packages/app, got %s", projects[0].Path)
 	}
 
-	if projects[0].DataDir != "/home/user/monorepo/.crush" {
-		t.Errorf("Expected data_dir /home/user/monorepo/.crush, got %s", projects[0].DataDir)
+	if projects[0].DataDir != "/home/user/monorepo/.rush" {
+		t.Errorf("Expected data_dir /home/user/monorepo/.rush, got %s", projects[0].DataDir)
 	}
 }
 
 func TestRegisterWithExternalDataDir(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", tmpDir)
-	t.Setenv("CRUSH_GLOBAL_DATA", filepath.Join(tmpDir, "crush"))
+	t.Setenv("RUSH_GLOBAL_DATA", filepath.Join(tmpDir, "crush"))
 
-	// Register a project where .crush is in a completely different location.
+	// Register a project where .rush is in a completely different location.
 	// e.g., project at /home/user/project but data stored at /var/data/crush/myproject
 	err := Register("/home/user/project", "/var/data/crush/myproject")
 	if err != nil {
@@ -188,7 +188,7 @@ func TestRegisterWithExternalDataDir(t *testing.T) {
 }
 
 // TestRegisterConcurrent reproduces M-2: two concurrent Register calls
-// against the same projects.json (simulating two parallel `crush run`
+// against the same projects.json (simulating two parallel `rush run`
 // processes racing to register their own project at startup) must not lose
 // either write. Before the fix, Register's Load -> mutate -> Save cycle
 // released the package mutex between Load and Save, and had no
@@ -198,7 +198,7 @@ func TestRegisterWithExternalDataDir(t *testing.T) {
 func TestRegisterConcurrent(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", tmpDir)
-	t.Setenv("CRUSH_GLOBAL_DATA", filepath.Join(tmpDir, "crush"))
+	t.Setenv("RUSH_GLOBAL_DATA", filepath.Join(tmpDir, "crush"))
 
 	const n = 20
 	var wg sync.WaitGroup
@@ -208,7 +208,7 @@ func TestRegisterConcurrent(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			workingDir := fmt.Sprintf("/home/user/project%d", i)
-			dataDir := fmt.Sprintf("/home/user/project%d/.crush", i)
+			dataDir := fmt.Sprintf("/home/user/project%d/.rush", i)
 			errs[i] = Register(workingDir, dataDir)
 		}(i)
 	}

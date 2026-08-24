@@ -24,15 +24,15 @@ func TestDefaultInstallPath(t *testing.T) {
 	base := filepath.Base(p)
 	switch runtime.GOOS {
 	case "windows":
-		if base != "crush.exe" {
-			t.Errorf("windows install path should end in crush.exe, got %q", p)
+		if base != "rush.exe" {
+			t.Errorf("windows install path should end in rush.exe, got %q", p)
 		}
-		if filepath.Base(filepath.Dir(p)) != "crush" {
-			t.Errorf("windows install path should live under a crush/ dir, got %q", p)
+		if filepath.Base(filepath.Dir(p)) != "rush" {
+			t.Errorf("windows install path should live under a rush/ dir, got %q", p)
 		}
 	default:
-		if base != "crush" {
-			t.Errorf("unix install path should end in crush, got %q", p)
+		if base != "rush" {
+			t.Errorf("unix install path should end in rush, got %q", p)
 		}
 		if filepath.Base(filepath.Dir(p)) != "bin" {
 			t.Errorf("unix install path should live under .local/bin, got %q", p)
@@ -52,7 +52,7 @@ func TestDefaultInstallPath_WindowsUsesLocalAppData(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DefaultInstallPath: %v", err)
 	}
-	want := filepath.Join(`C:\Users\tester\AppData\Local`, "Programs", "crush", "crush.exe")
+	want := filepath.Join(`C:\Users\tester\AppData\Local`, "Programs", "rush", "rush.exe")
 	if p != want {
 		t.Errorf("got %q, want %q", p, want)
 	}
@@ -68,7 +68,7 @@ func TestDefaultInstallPath_UnixUsesHome(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DefaultInstallPath: %v", err)
 	}
-	want := filepath.Join(home, ".local", "bin", "crush")
+	want := filepath.Join(home, ".local", "bin", "rush")
 	if p != want {
 		t.Errorf("got %q, want %q", p, want)
 	}
@@ -86,26 +86,26 @@ func TestIsReplaceableExe(t *testing.T) {
 	}
 
 	if runtime.GOOS == "windows" {
-		exe := write("crush.exe", 0o644)
+		exe := write("rush.exe", 0o644)
 		if !IsReplaceableExe(exe) {
 			t.Errorf(".exe should be replaceable on windows")
 		}
-		cmd := write("crush.cmd", 0o644)
+		cmd := write("rush.cmd", 0o644)
 		if IsReplaceableExe(cmd) {
 			t.Errorf(".cmd shim should NOT be replaceable on windows")
 		}
 		return
 	}
 
-	bin := write("crush-bin", 0o755)
+	bin := write("rush-bin", 0o755)
 	if !IsReplaceableExe(bin) {
 		t.Errorf("executable-mode file with no script extension should be replaceable")
 	}
-	script := write("crush.sh", 0o755)
+	script := write("rush.sh", 0o755)
 	if IsReplaceableExe(script) {
 		t.Errorf(".sh script should NOT be replaceable even if executable")
 	}
-	nonExec := write("crush-nonexec", 0o644)
+	nonExec := write("rush-nonexec", 0o644)
 	if IsReplaceableExe(nonExec) {
 		t.Errorf("non-executable file should NOT be replaceable")
 	}
@@ -185,19 +185,19 @@ func TestLookPathExcludingCwd(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		exts = []string{".exe"}
 	}
-	binName := "crush" + exts[0]
+	binName := "rush" + exts[0]
 
 	// Only a copy in cwd: must be excluded, so lookup fails.
 	writeExe(t, filepath.Join(cwd, binName))
 	pathEnv := cwd
-	if _, err := LookPathExcludingCwd("crush", cwd, pathEnv, exts); err == nil {
+	if _, err := LookPathExcludingCwd("rush", cwd, pathEnv, exts); err == nil {
 		t.Fatalf("expected error when the only candidate is in cwd")
 	}
 
 	// A copy elsewhere on PATH: found, cwd copy ignored.
 	wantPath := writeExe(t, filepath.Join(elsewhere, binName))
 	pathEnv = cwd + string(os.PathListSeparator) + elsewhere
-	got, err := LookPathExcludingCwd("crush", cwd, pathEnv, exts)
+	got, err := LookPathExcludingCwd("rush", cwd, pathEnv, exts)
 	if err != nil {
 		t.Fatalf("LookPathExcludingCwd: %v", err)
 	}
@@ -226,8 +226,8 @@ func TestWindowsPathExts(t *testing.T) {
 }
 
 func TestRenameAsideName(t *testing.T) {
-	got := RenameAsideName(filepath.Join("C:", "bin", "crush.exe"), "12345")
-	want := filepath.Join("C:", "bin", "crush.exe") + ".old-12345"
+	got := RenameAsideName(filepath.Join("C:", "bin", "rush.exe"), "12345")
+	want := filepath.Join("C:", "bin", "rush.exe") + ".old-12345"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
@@ -235,8 +235,8 @@ func TestRenameAsideName(t *testing.T) {
 	// Distinct tokens must produce distinct names — the whole point is
 	// that concurrent/successive deploys don't collide with each other's
 	// still-live rename-aside targets.
-	a := RenameAsideName("/bin/crush", "1")
-	b := RenameAsideName("/bin/crush", "2")
+	a := RenameAsideName("/bin/rush", "1")
+	b := RenameAsideName("/bin/rush", "2")
 	if a == b {
 		t.Errorf("expected different tokens to produce different names, both got %q", a)
 	}
@@ -244,7 +244,7 @@ func TestRenameAsideName(t *testing.T) {
 
 func TestSweepRenameAsideLeftovers(t *testing.T) {
 	dir := t.TempDir()
-	dst := filepath.Join(dir, "crush.exe")
+	dst := filepath.Join(dir, "rush.exe")
 
 	// Nothing on disk at all: must not panic or error, and must report
 	// nothing removed.
@@ -290,7 +290,7 @@ func TestSweepRenameAsideLeftovers(t *testing.T) {
 // deploy must be removed.
 func TestSweepRenameAsideLeftovers_NewTempFiles(t *testing.T) {
 	dir := t.TempDir()
-	dst := filepath.Join(dir, "crush.exe")
+	dst := filepath.Join(dir, "rush.exe")
 
 	fresh := TempBuildName(dst, "111")
 	stale := TempBuildName(dst, "222")
@@ -326,7 +326,7 @@ func TestSweepRenameAsideLeftovers_NewTempFiles(t *testing.T) {
 // assertion that sweeping still doesn't error).
 func TestSweepRenameAsideLeftovers_BusyFileIsIgnored(t *testing.T) {
 	dir := t.TempDir()
-	dst := filepath.Join(dir, "crush.exe")
+	dst := filepath.Join(dir, "rush.exe")
 	busy := RenameAsideName(dst, "999")
 	if err := os.WriteFile(busy, []byte("x"), 0o644); err != nil {
 		t.Fatalf("write %s: %v", busy, err)
@@ -350,21 +350,21 @@ func TestSweepRenameAsideLeftovers_BusyFileIsIgnored(t *testing.T) {
 }
 
 func TestTempBuildName(t *testing.T) {
-	got := TempBuildName(filepath.Join("C:", "bin", "crush.exe"), "1234-567")
-	want := filepath.Join("C:", "bin", "crush.exe") + ".new-1234-567"
+	got := TempBuildName(filepath.Join("C:", "bin", "rush.exe"), "1234-567")
+	want := filepath.Join("C:", "bin", "rush.exe") + ".new-1234-567"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
 	// Distinct tokens must yield distinct temp paths so concurrent
 	// deploys never share a temp file.
-	if TempBuildName("/bin/crush", "1") == TempBuildName("/bin/crush", "2") {
+	if TempBuildName("/bin/rush", "1") == TempBuildName("/bin/rush", "2") {
 		t.Errorf("distinct tokens produced the same temp path")
 	}
 }
 
 func TestSwapRenameAside_Success(t *testing.T) {
 	dir := t.TempDir()
-	dst := filepath.Join(dir, "crush.exe")
+	dst := filepath.Join(dir, "rush.exe")
 	aside := RenameAsideName(dst, "tok")
 	tmp := TempBuildName(dst, "tok")
 	writeFileBytes(t, dst, []byte("old-binary"))
@@ -392,7 +392,7 @@ func TestSwapRenameAside_Success(t *testing.T) {
 // deterministically reproducible across CI runners.
 func TestSwapRenameAside_SecondRenameFailsRestored(t *testing.T) {
 	dir := t.TempDir()
-	dst := filepath.Join(dir, "crush.exe")
+	dst := filepath.Join(dir, "rush.exe")
 	aside := RenameAsideName(dst, "tok")
 	tmp := TempBuildName(dst, "tok")
 	writeFileBytes(t, dst, []byte("old-binary"))
@@ -433,7 +433,7 @@ func TestSwapRenameAside_SecondRenameFailsRestored(t *testing.T) {
 // move aside back to dst.
 func TestSwapRenameAside_RestoreAlsoFails(t *testing.T) {
 	dir := t.TempDir()
-	dst := filepath.Join(dir, "crush.exe")
+	dst := filepath.Join(dir, "rush.exe")
 	aside := RenameAsideName(dst, "tok")
 	tmp := TempBuildName(dst, "tok")
 	writeFileBytes(t, dst, []byte("old-binary"))
@@ -507,8 +507,8 @@ func TestNpmPlatformBinaryPath(t *testing.T) {
 	cases := []struct {
 		npmDir, goos, goarch, binaryName string
 	}{
-		{filepath.Join("/some", "npm", "dir"), "windows", "amd64", "crush.exe"},
-		{filepath.Join("/some", "npm", "dir"), "linux", "arm64", "crush"},
+		{filepath.Join("/some", "npm", "dir"), "windows", "amd64", "rush.exe"},
+		{filepath.Join("/some", "npm", "dir"), "linux", "arm64", "rush"},
 	}
 	for _, c := range cases {
 		got := NpmPlatformBinaryPath(c.npmDir, c.goos, c.goarch, c.binaryName)
@@ -522,15 +522,15 @@ func TestNpmPlatformBinaryPath(t *testing.T) {
 
 	// Concrete, spelled-out example matching the docstring, independent
 	// of NpmNodeOS/NpmNodeArch helpers, for windows/amd64.
-	got := NpmPlatformBinaryPath(filepath.Join("/some", "npm", "dir"), "windows", "amd64", "crush.exe")
-	want := filepath.Join("/some", "npm", "dir", "node_modules", "@phpcraftdream", "crush-win32-x64", "bin", "crush.exe")
+	got := NpmPlatformBinaryPath(filepath.Join("/some", "npm", "dir"), "windows", "amd64", "rush.exe")
+	want := filepath.Join("/some", "npm", "dir", "node_modules", "@phpcraftdream", "crush-win32-x64", "bin", "rush.exe")
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
 
 	// Concrete example for linux/arm64.
-	got = NpmPlatformBinaryPath(filepath.Join("/some", "npm", "dir"), "linux", "arm64", "crush")
-	want = filepath.Join("/some", "npm", "dir", "node_modules", "@phpcraftdream", "crush-linux-arm64", "bin", "crush")
+	got = NpmPlatformBinaryPath(filepath.Join("/some", "npm", "dir"), "linux", "arm64", "rush")
+	want = filepath.Join("/some", "npm", "dir", "node_modules", "@phpcraftdream", "crush-linux-arm64", "bin", "rush")
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}

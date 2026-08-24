@@ -24,7 +24,7 @@ const (
 	// an error, and the notice is simply never sent. That is the correct
 	// behaviour, and it starts working on its own the day a release is cut.
 	githubApiUrl = "https://api.github.com/repos/PHPCraftdream/crush/releases/latest"
-	userAgent    = "crush/1.0"
+	userAgent    = "rush/1.0"
 
 	// maxReleaseBodyBytes caps how much of the GitHub releases API HTTP
 	// response body we read into memory. It's a real network endpoint (not

@@ -1,4 +1,4 @@
-// Fork addition: `codex-init` installs the `crush`/`crush-fallback` slash
+// Fork addition: `codex-init` installs the `rush`/`rush-fallback` slash
 // commands as Codex CLI Skills (`.agents/skills/<name>/SKILL.md`). First of
 // the `<tool>-init`/`<tool>-del` family alongside claude-init/claude-del;
 // gemini-init/gemini-del, grok-init/grok-del and qwen-init/qwen-del follow
@@ -34,11 +34,11 @@ func resolveCodexSkillsDir(cwd string, global bool) (string, error) {
 
 var codexInitCmd = &cobra.Command{
 	Use:   "codex-init",
-	Short: "Install the crush/crush-fallback Skills for Codex CLI",
-	Long: `Set up crush's delegation Skills in Codex CLI.
+	Short: "Install the rush/rush-fallback Skills for Codex CLI",
+	Long: `Set up rush's delegation Skills in Codex CLI.
 
-Codex CLI Skills are written to ` + "`~/.agents/skills/crush/SKILL.md`" + ` and
-` + "`~/.agents/skills/crush-fallback/SKILL.md`" + ` by default (the GLOBAL scope,
+Codex CLI Skills are written to ` + "`~/.agents/skills/rush/SKILL.md`" + ` and
+` + "`~/.agents/skills/rush-fallback/SKILL.md`" + ` by default (the GLOBAL scope,
 available in every project). Use --local (or --cwd, which implies it) to
 scope them to the current project's ` + "`.agents/skills/`" + ` instead.
 
@@ -49,13 +49,13 @@ Skipped (with a warning) if a target SKILL.md exists without our sentinel
 — we never overwrite a file we don't own.`,
 	Example: `
 # Install / refresh the Codex Skills globally — the default
-crush codex-init
+rush codex-init
 
 # Install into the current project instead
-crush codex-init --local
+rush codex-init --local
 
 # Scope to another project (implies --local)
-crush codex-init --cwd /path/to/project
+rush codex-init --cwd /path/to/project
 `,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		global, _ := cmd.Flags().GetBool("global")
@@ -89,25 +89,25 @@ crush codex-init --cwd /path/to/project
 	},
 }
 
-// installCodexSkills writes both the crush and crush-fallback Skills into
+// installCodexSkills writes both the rush and rush-fallback Skills into
 // skillsDir. Extracted so codex_init_test.go can drive it directly.
 func installCodexSkills(skillsDir string) error {
 	desc1, body1, err := parseSlashCommandSource(claudeSlashCommandTemplate)
 	if err != nil {
-		return fmt.Errorf("crush skill: %w", err)
+		return fmt.Errorf("rush skill: %w", err)
 	}
-	content1 := toSkillMD("crush", desc1, body1)
-	if err := writeSentinelledSkillDir(skillsDir, "crush", claudeSlashCommandSentinel, content1); err != nil {
-		return fmt.Errorf("crush skill: %w", err)
+	content1 := toSkillMD("rush", desc1, body1)
+	if err := writeSentinelledSkillDir(skillsDir, "rush", claudeSlashCommandSentinel, content1); err != nil {
+		return fmt.Errorf("rush skill: %w", err)
 	}
 
 	desc2, body2, err := parseSlashCommandSource(claudeFallbackCommandTemplate)
 	if err != nil {
-		return fmt.Errorf("crush-fallback skill: %w", err)
+		return fmt.Errorf("rush-fallback skill: %w", err)
 	}
-	content2 := toSkillMD("crush-fallback", desc2, body2)
-	if err := writeSentinelledSkillDir(skillsDir, "crush-fallback", claudeSlashCommandSentinel, content2); err != nil {
-		return fmt.Errorf("crush-fallback skill: %w", err)
+	content2 := toSkillMD("rush-fallback", desc2, body2)
+	if err := writeSentinelledSkillDir(skillsDir, "rush-fallback", claudeSlashCommandSentinel, content2); err != nil {
+		return fmt.Errorf("rush-fallback skill: %w", err)
 	}
 	return nil
 }

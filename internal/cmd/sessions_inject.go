@@ -37,16 +37,16 @@ The <session-id> may be a full session id or a hash prefix as printed by
 	Args: cobra.ExactArgs(1),
 	Example: `
 # Inline message
-crush sessions inject pr-42 -m "also update the changelog"
+rush sessions inject pr-42 -m "also update the changelog"
 
 # From a file
-crush sessions inject pr-42 -f ./notes/next-step.md
+rush sessions inject pr-42 -f ./notes/next-step.md
 
 # Interrupt the current turn and restart with this message
-crush sessions inject pr-42 -m "stop, wrong approach" --interrupt
+rush sessions inject pr-42 -m "stop, wrong approach" --interrupt
 
 # Match by hash prefix, machine-readable result
-crush sessions inject 8a3f0c -m "continue" --json
+rush sessions inject 8a3f0c -m "continue" --json
   `,
 	RunE: sessionsInjectCmdRun,
 }
@@ -60,7 +60,7 @@ func init() {
 	sessionsCmd.AddCommand(sessionsInjectCmd)
 }
 
-// injectResult is the wire shape of `crush sessions inject --json`.
+// injectResult is the wire shape of `rush sessions inject --json`.
 type injectResult struct {
 	SessionID string `json:"session_id"`
 	Hash      string `json:"hash"`

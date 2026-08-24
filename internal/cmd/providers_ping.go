@@ -18,7 +18,7 @@ var providersTestCmd = &cobra.Command{
 	Use:   "test <id>",
 	Short: "Ping a provider's API to verify the configured credentials and base URL",
 	Long: `Make a small read-only request against the provider's API to find
-out whether crush would be able to talk to it. Reports the HTTP status,
+out whether rush would be able to talk to it. Reports the HTTP status,
 a short error message on failure, and how many models the endpoint
 returned on success.
 
@@ -32,8 +32,8 @@ The exact endpoint depends on the provider type:
 No tokens are spent — these are catalog endpoints, not completions.`,
 	Args: cobra.ExactArgs(1),
 	Example: `
-crush providers test openai
-crush providers test ollama   # works with a local openai-compat server too
+rush providers test openai
+rush providers test ollama   # works with a local openai-compat server too
   `,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		asJSON, _ := cmd.Flags().GetBool("json")

@@ -20,7 +20,7 @@ import (
 // Before this fix, that cleanup went through the public, 30s-budget
 // withConfigWriteLock; since publishMu gates every reader of the config
 // store (including app startup via Load itself), a contended or wedged
-// sibling crush process holding the on-disk crush.json.lock sidecar could
+// sibling rush process holding the on-disk rush.json.lock sidecar could
 // stall the ENTIRE config subsystem for up to 30s. The fix added
 // internalConfigWriteLockTimeout (2s) specifically for this call path.
 //
@@ -36,7 +36,7 @@ func TestRemoveConfigFieldBestEffort_BoundedByInternalTimeout(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	configPath := filepath.Join(dir, "crush.json")
+	configPath := filepath.Join(dir, "rush.json")
 	const key = "providers.anthropic.oauth"
 	require.NoError(t, os.WriteFile(configPath, []byte(`{"providers":{"anthropic":{"oauth":{"access_token":"secret"}}}}`), 0o600))
 
@@ -87,7 +87,7 @@ func TestRemoveConfigFieldBestEffort_SucceedsQuicklyWhenLockFree(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	configPath := filepath.Join(dir, "crush.json")
+	configPath := filepath.Join(dir, "rush.json")
 	const key = "providers.anthropic.oauth"
 	require.NoError(t, os.WriteFile(configPath, []byte(`{"providers":{"anthropic":{"oauth":{"access_token":"secret"}}}}`), 0o600))
 

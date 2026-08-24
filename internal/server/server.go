@@ -186,7 +186,7 @@ func (s *Server) Start(ctx context.Context, onReady func(addr string)) error {
 		_ = srv.Shutdown(shutCtx)
 	}()
 
-	slog.Info("crush web server listening", "addr", ln.Addr().String())
+	slog.Info("rush web server listening", "addr", ln.Addr().String())
 
 	// Notify caller synchronously ΓÇö address is known, server not yet serving.
 	if onReady != nil {

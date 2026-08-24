@@ -47,7 +47,7 @@ func TestBashTool_BackgroundShellStartLimitIsModelVisibleNotFatal(t *testing.T) 
 	// production value. Filling the real queue with `sleep 60` processes
 	// costs one process per slot and leaves them all live for the duration
 	// — at the shipped default of 50 that is 50 spawns to prove one
-	// rejection, and CRUSH_MAX_BACKGROUND_JOBS can raise it much further on
+	// rejection, and RUSH_MAX_BACKGROUND_JOBS can raise it much further on
 	// an operator's host.
 	originalMax := bgManager.MaxJobs()
 	bgManager.SetMaxJobs(5)

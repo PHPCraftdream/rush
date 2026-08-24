@@ -69,7 +69,7 @@ const (
 
 // LockStaleDuration is the exported view of lockStaleDuration, for callers
 // outside this package that need the same "how old is too old" threshold
-// this package's own heartbeat logic uses. In particular: `crush sessions
+// this package's own heartbeat logic uses. In particular: `rush sessions
 // why`/`sessions list` must fall back to heartbeat freshness when the PID
 // can't be read — see the Windows note on readLockFile below. A holder PID
 // of 0 does NOT mean "unreadable/dead"; on Windows it very often means
@@ -198,9 +198,9 @@ type SessionLockBusyError struct {
 
 func (e *SessionLockBusyError) Error() string {
 	if e.HolderPID > 0 {
-		return fmt.Sprintf("session is already locked by crush process PID %d (lock file: %s)", e.HolderPID, e.Path)
+		return fmt.Sprintf("session is already locked by rush process PID %d (lock file: %s)", e.HolderPID, e.Path)
 	}
-	return fmt.Sprintf("session is already locked by another crush process (lock file: %s)", e.Path)
+	return fmt.Sprintf("session is already locked by another rush process (lock file: %s)", e.Path)
 }
 
 // TryAcquireSessionLock attempts to acquire an exclusive lock for the
@@ -506,7 +506,7 @@ func acquireSessionLockFileWithOptions(path string, opts []LockOption) (*Session
 //
 // Before actually unlocking, it wipes the PID it stamped into both the
 // primary lock file and the sidecar (see clearHolderMetadata). This
-// matters for `crush sessions kill`: without it, a process that exits
+// matters for `rush sessions kill`: without it, a process that exits
 // cleanly (Release() runs, e.g. via a normal `defer`) leaves its old PID
 // sitting in the lock file/sidecar on disk. If the OS later reuses that
 // PID number for a completely unrelated process — routine on a busy
@@ -870,7 +870,7 @@ func SessionLockPath(dataDir, sessionID string) string {
 }
 
 // ReadLockPID is the exported variant of readLockHolderPID, used by
-// `crush sessions kill` / `reset --force` to read the PID off a lock
+// `rush sessions kill` / `reset --force` to read the PID off a lock
 // file without having to re-implement the multi-line parse (the file
 // stores PID on line 1, optional timeout in seconds on line 2).
 func ReadLockPID(path string) int {
@@ -895,10 +895,10 @@ func ReadLockTimeoutSec(path string) int64 {
 //
 // Used by internal/agent/cliprovider's child-process-group registry
 // (see internal/session/childgroup_registry_unix.go): the registry records
-// this token alongside the pgids it tracks, and `crush sessions kill`
+// this token alongside the pgids it tracks, and `rush sessions kill`
 // refuses to signal any of them unless this function, read again at kill
 // time, still returns the SAME token — proving the lock has not been
-// released and re-acquired (by this crush process restarting, or by an
+// released and re-acquired (by this rush process restarting, or by an
 // entirely different one after a PID/session reuse) since the registration
 // was written.
 func ReadLockGeneration(path string) string {

@@ -19,7 +19,7 @@ import (
 // isolatedListEnvWithConfiguredDataDir mirrors
 // isolatedResetEnvWithConfiguredDataDir (sessions_reset_test.go) but wires up
 // sessionsListCmd instead: stands up a real app via setupApp against a data
-// directory that is deliberately NOT <cwd>/.crush, so a fix that reads
+// directory that is deliberately NOT <cwd>/.rush, so a fix that reads
 // a.Config().Options.DataDirectory can be told apart from a pre-fix
 // cwd-based guess.
 func isolatedListEnvWithConfiguredDataDir(t *testing.T) (a *app.App, workDir, dataDir string) {
@@ -31,7 +31,7 @@ func isolatedListEnvWithConfiguredDataDir(t *testing.T) (a *app.App, workDir, da
 	require.NoError(t, err)
 	require.NoError(t, os.Chdir(workDir))
 
-	// Deliberately outside workDir entirely, so filepath.Join(cwd, ".crush")
+	// Deliberately outside workDir entirely, so filepath.Join(cwd, ".rush")
 	// (the pre-fix hardcoded guess) can never accidentally coincide with it.
 	dataDir = filepath.Join(tmp, "configured-elsewhere-data")
 
@@ -65,7 +65,7 @@ func isolatedListEnvWithConfiguredDataDir(t *testing.T) (a *app.App, workDir, da
 // TestSessionsListCmdRun_StatusHonorsConfiguredDataDir is the regression test
 // for task #233 finding 1: computeSessionStatuses (backing `sessions list`'s
 // STATUS column) used to compute locksDir as
-// filepath.Join(ResolveCwd(cmd), ".crush", "locks"), completely ignoring
+// filepath.Join(ResolveCwd(cmd), ".rush", "locks"), completely ignoring
 // --data-dir / a configured data_directory, even though sessionsListCmd's
 // RunE had already resolved the correct value onto `a` via setupApp. This is
 // the same bug class already fixed for `sessions kill` / `sessions reset
@@ -91,7 +91,7 @@ func TestSessionsListCmdRun_StatusHonorsConfiguredDataDir(t *testing.T) {
 
 	// Sanity: the WRONG (pre-fix) path must not exist, so a blank STATUS
 	// column can never be confused with a real find.
-	wrongPath := filepath.Join(workDir, ".crush", "locks", "session-"+sanitiseSessionIDForFilename(sess.ID)+".lock")
+	wrongPath := filepath.Join(workDir, ".rush", "locks", "session-"+sanitiseSessionIDForFilename(sess.ID)+".lock")
 	_, wrongStatErr := os.Stat(wrongPath)
 	require.True(t, os.IsNotExist(wrongStatErr))
 
@@ -123,7 +123,7 @@ func TestSessionsListCmdRun_StatusHonorsConfiguredDataDir(t *testing.T) {
 // TestComputeSessionStatuses_PidReuseBeyondMaxFallbackAgeIsNotRunning is the
 // regression test for task #241: computeSessionStatuses trusted a
 // CONFIRMED-alive recorded PID unconditionally, with no bound on how old the
-// lock file itself could be. A `crush run` killed with SIGKILL leaves its
+// lock file itself could be. A `rush run` killed with SIGKILL leaves its
 // PID in the lock file without releasing; hours later the OS can recycle
 // that exact PID number for a completely unrelated, currently-running
 // process. Before this fix, `sessions list` would report that session's

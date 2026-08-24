@@ -1,4 +1,4 @@
-// Fork addition: `grok-init` installs the `crush`/`crush-fallback` slash
+// Fork addition: `grok-init` installs the `rush`/`rush-fallback` slash
 // commands as xAI Grok Build CLI Skills (`.grok/skills/<name>/SKILL.md`).
 // Part of the `<tool>-init`/`<tool>-del` family alongside claude-init/
 // claude-del, codex-init/codex-del and gemini-init/gemini-del/
@@ -34,11 +34,11 @@ func resolveGrokSkillsDir(cwd string, global bool) (string, error) {
 
 var grokInitCmd = &cobra.Command{
 	Use:   "grok-init",
-	Short: "Install the crush/crush-fallback Skills for Grok Build CLI",
-	Long: `Set up crush's delegation Skills in xAI Grok Build CLI.
+	Short: "Install the rush/rush-fallback Skills for Grok Build CLI",
+	Long: `Set up rush's delegation Skills in xAI Grok Build CLI.
 
-Grok Build CLI Skills are written to ` + "`~/.grok/skills/crush/SKILL.md`" + ` and
-` + "`~/.grok/skills/crush-fallback/SKILL.md`" + ` by default (the GLOBAL scope,
+Grok Build CLI Skills are written to ` + "`~/.grok/skills/rush/SKILL.md`" + ` and
+` + "`~/.grok/skills/rush-fallback/SKILL.md`" + ` by default (the GLOBAL scope,
 available in every project). Use --local (or --cwd, which implies it) to
 scope them to the current project's ` + "`.grok/skills/`" + ` instead.
 
@@ -49,13 +49,13 @@ Skipped (with a warning) if a target SKILL.md exists without our sentinel
 — we never overwrite a file we don't own.`,
 	Example: `
 # Install / refresh the Grok Skills globally — the default
-crush grok-init
+rush grok-init
 
 # Install into the current project instead
-crush grok-init --local
+rush grok-init --local
 
 # Scope to another project (implies --local)
-crush grok-init --cwd /path/to/project
+rush grok-init --cwd /path/to/project
 `,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		global, _ := cmd.Flags().GetBool("global")
@@ -89,25 +89,25 @@ crush grok-init --cwd /path/to/project
 	},
 }
 
-// installGrokSkills writes both the crush and crush-fallback Skills into
+// installGrokSkills writes both the rush and rush-fallback Skills into
 // skillsDir. Extracted so grok_init_test.go can drive it directly.
 func installGrokSkills(skillsDir string) error {
 	desc1, body1, err := parseSlashCommandSource(claudeSlashCommandTemplate)
 	if err != nil {
-		return fmt.Errorf("crush skill: %w", err)
+		return fmt.Errorf("rush skill: %w", err)
 	}
-	content1 := toSkillMD("crush", desc1, body1)
-	if err := writeSentinelledSkillDir(skillsDir, "crush", claudeSlashCommandSentinel, content1); err != nil {
-		return fmt.Errorf("crush skill: %w", err)
+	content1 := toSkillMD("rush", desc1, body1)
+	if err := writeSentinelledSkillDir(skillsDir, "rush", claudeSlashCommandSentinel, content1); err != nil {
+		return fmt.Errorf("rush skill: %w", err)
 	}
 
 	desc2, body2, err := parseSlashCommandSource(claudeFallbackCommandTemplate)
 	if err != nil {
-		return fmt.Errorf("crush-fallback skill: %w", err)
+		return fmt.Errorf("rush-fallback skill: %w", err)
 	}
-	content2 := toSkillMD("crush-fallback", desc2, body2)
-	if err := writeSentinelledSkillDir(skillsDir, "crush-fallback", claudeSlashCommandSentinel, content2); err != nil {
-		return fmt.Errorf("crush-fallback skill: %w", err)
+	content2 := toSkillMD("rush-fallback", desc2, body2)
+	if err := writeSentinelledSkillDir(skillsDir, "rush-fallback", claudeSlashCommandSentinel, content2); err != nil {
+		return fmt.Errorf("rush-fallback skill: %w", err)
 	}
 	return nil
 }

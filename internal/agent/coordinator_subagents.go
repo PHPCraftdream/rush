@@ -85,7 +85,7 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 	//
 	// A sub-agent runs under its own child session id
 	// (parentMessageID$$toolCallID), which is a completely different key
-	// from the parent's. A non-interactive `crush run` auto-approves ONLY
+	// from the parent's. A non-interactive `rush run` auto-approves ONLY
 	// the root session id it was handed (app.go's
 	// Permissions.AutoApproveSession(sess.ID)), so before this call every
 	// delegated sub-agent was unapproved: its first non-safe tool call

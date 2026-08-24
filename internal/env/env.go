@@ -31,7 +31,7 @@ func New() Env {
 // priority over the base for both Get and Env(); every other key passes
 // through to base unchanged.
 //
-// This exists so a caller-scoped override (e.g. "CRUSH_"-prefixed config
+// This exists so a caller-scoped override (e.g. "RUSH_"-prefixed config
 // values that should be visible under their bare name to shell expansion)
 // can be threaded explicitly through a single Env value — and from there
 // into anything that reads it (config.Resolve, os/exec child processes via

@@ -8,7 +8,7 @@ import (
 
 // AwaitingAnswerGuidance returns the orchestrator-facing instruction
 // paragraph for a question-tool stop — the turn is force-finished because
-// the agent asked a question and this fork's `crush run` has no synchronous
+// the agent asked a question and this fork's `rush run` has no synchronous
 // way to block mid-turn for an answer (both headless and web sessions
 // auto-approve permissions unconditionally; there is no blocking
 // permission-style channel to wait on). The turn must end cleanly instead,
@@ -26,13 +26,13 @@ func AwaitingAnswerGuidance(question string, options []string, sessionID string)
 	}
 	return fmt.Sprintf(
 		"QUESTION: %s%s\n\n"+
-			"This is not a crash — crush is intentionally stopping this turn because "+
+			"This is not a crash — rush is intentionally stopping this turn because "+
 			"the agent asked a question and needs an answer before it can continue. "+
-			"crush is exiting now; it will not retry or re-ask on its own.\n\n"+
+			"rush is exiting now; it will not retry or re-ask on its own.\n\n"+
 			"If an orchestrating agent is driving this session: decide the answer "+
 			"yourself (or ask the human operator if it's genuinely their call), then "+
 			"resume with:\n\n"+
-			"  crush run --session %s \"<your answer>\"\n\n"+
+			"  rush run --session %s \"<your answer>\"\n\n"+
 			"This is a normal continuation, not a retry — do not treat exit_reason "+
 			"\"awaiting_answer\" as a failure.",
 		question, optsLine, sessionID,
@@ -42,7 +42,7 @@ func AwaitingAnswerGuidance(question string, options []string, sessionID string)
 // subAgentQuestionText builds the tool-result text runSubAgent returns when
 // a sub-agent (the `agent` tool) stops on AwaitingAnswerError instead of
 // finishing normally. Sibling to AwaitingAnswerGuidance above: that function
-// is for the top-level session stopping crush run itself (nobody left to
+// is for the top-level session stopping rush run itself (nobody left to
 // answer, process must exit); this one is for a sub-agent stopping while its
 // orchestrator is still alive and mid-turn — the orchestrator can decide the
 // answer itself and keep going without its own turn ending. Wording matters

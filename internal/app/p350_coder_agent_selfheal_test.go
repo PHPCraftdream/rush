@@ -43,12 +43,12 @@ func TestReleaseGate_P350_InitCoderAgentSelfHealsMissingAgentsMap(t *testing.T) 
 	// — see that file's comment for the full explanation.
 	isolationTmp := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", isolationTmp)
-	t.Setenv("CRUSH_GLOBAL_DATA", isolationTmp)
+	t.Setenv("RUSH_GLOBAL_DATA", isolationTmp)
 	isolationConfigDir := filepath.Join(isolationTmp, "config")
 	require.NoError(t, os.MkdirAll(isolationConfigDir, 0o755))
 	t.Setenv("XDG_CONFIG_HOME", isolationConfigDir)
-	t.Setenv("CRUSH_GLOBAL_CONFIG", isolationConfigDir)
-	t.Setenv("CRUSH_PROVIDER_CACHE_ONLY", "1")
+	t.Setenv("RUSH_GLOBAL_CONFIG", isolationConfigDir)
+	t.Setenv("RUSH_PROVIDER_CACHE_ONLY", "1")
 
 	dataDir := t.TempDir()
 

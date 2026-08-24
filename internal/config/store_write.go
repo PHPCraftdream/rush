@@ -34,7 +34,7 @@ func (s *ConfigStore) configPath(scope Scope) (string, error) {
 // HasWorkspaceConfig reports whether a workspace config path is resolvable
 // at all — distinct from whether the workspace file has any explicit
 // content. Read/write calls at config.ScopeWorkspace fail with
-// ErrNoWorkspaceConfig when this is false (e.g. no .crush directory could be
+// ErrNoWorkspaceConfig when this is false (e.g. no .rush directory could be
 // resolved for the current working directory). Used by API consumers, such
 // as the web server's scoped-models UI, that need to grey out folder-scope
 // controls rather than surface a write error after the fact.
@@ -60,9 +60,9 @@ func (s *ConfigStore) HasConfigField(scope Scope, key string) bool {
 // configWriteLockTimeout caps how long a config write waits for the
 // inter-process sidecar lock before failing. Mirrors the 30s budget used by
 // cliprovider's acquireMCPConfigLock for the same class of cross-process
-// config read-modify-write, so a wedged sibling crush process (debugger
+// config read-modify-write, so a wedged sibling rush process (debugger
 // attached, suspended shell, frozen network mount) cannot indefinitely freeze
-// parallel runs that share the same crush.json.
+// parallel runs that share the same rush.json.
 //
 // This is the budget for explicit, user-triggered writes (SetConfigFields,
 // RemoveConfigField/RemoveProviderAPIKey called outside of Load/reload).
@@ -77,7 +77,7 @@ const configWriteLockTimeout = 30 * time.Second
 // by b53cbf3d: before that commit this was a same-process disk write with no
 // cross-process lock and completed in milliseconds; after it, the same call
 // can block for up to configWriteLockTimeout (30s) on the inter-process
-// sidecar lock if a sibling crush process holds it (or is wedged holding
+// sidecar lock if a sibling rush process holds it (or is wedged holding
 // it) — and because publishMu is held for the duration, EVERY reader of the
 // config store (including app startup via Load, and ReloadFromDisk,
 // SetSkipPermissionRequests, CaptureStalenessSnapshot, etc.) stalls too.
@@ -95,7 +95,7 @@ const internalConfigWriteLockTimeout = 2 * time.Second
 // for the inter-process sidecar lock before logging a warning that the wait
 // is unusually long. This makes cross-process contention (or a wedged
 // sibling process holding the lock) diagnosable — without it, a stalled
-// config write just looks like "crush doesn't start" or "crush hangs" with
+// config write just looks like "rush doesn't start" or "rush hangs" with
 // no signal pointing at the lock file. Logged regardless of which timeout
 // (configWriteLockTimeout or internalConfigWriteLockTimeout) is in effect,
 // and regardless of whether the wait eventually succeeds or times out.
@@ -123,8 +123,8 @@ func (s *ConfigStore) withConfigWriteLock(path string, fn func() error) error {
 //
 // diskWriteMu serialises concurrent goroutines inside THIS process; the OS
 // lock (flock on POSIX, LockFileEx on Windows, via session.FileLock)
-// serialises SEPARATE crush processes that share the same config file — two
-// parallel `crush run` sessions on one machine each own a private
+// serialises SEPARATE rush processes that share the same config file — two
+// parallel `rush run` sessions on one machine each own a private
 // diskWriteMu, so without the OS lock each could read the same pre-write
 // file, apply only its own key, and the second atomicWriteFile would
 // silently erase the first writer's key (a classic lost-update across
@@ -146,7 +146,7 @@ func (s *ConfigStore) withConfigWriteLockCtx(ctx context.Context, path string, f
 	lock, err := session.AcquireFileLockContext(ctx, path+".lock")
 	if wait := time.Since(waitStart); wait >= configWriteLockStallLogThreshold {
 		// Diagnosability (see configWriteLockStallLogThreshold): without
-		// this, a contended or wedged sidecar lock just looks like "crush
+		// this, a contended or wedged sidecar lock just looks like "rush
 		// hangs on startup" with nothing pointing at the lock file.
 		slog.Warn("Config write waited unusually long for inter-process lock",
 			"path", path+".lock", "wait", wait, "succeeded", err == nil)
@@ -168,7 +168,7 @@ func (s *ConfigStore) withConfigWriteLockCtx(ctx context.Context, path string, f
 	// creating a distinct, unrelated file object at the same path while the
 	// old one is still locked — reintroducing exactly the split-brain this
 	// lock exists to prevent. Leaving a handful of empty *.lock sidecars
-	// next to crush.json is a one-time, bounded cost; deleting them is not.
+	// next to rush.json is a one-time, bounded cost; deleting them is not.
 	defer lock.Release()
 	return fn()
 }
@@ -185,14 +185,14 @@ func (s *ConfigStore) SetConfigField(scope Scope, key string, value any) error {
 // several keys at once (e.g. UpdatePreferredModels) get one atomic on-disk
 // write instead of one per key. Keys are applied in sorted order so the
 // resulting JSON is deterministic regardless of map iteration order, keeping
-// crush.json diffs stable across runs.
+// rush.json diffs stable across runs.
 //
 // The read-modify-write cycle is protected at two levels: an in-process
 // diskWriteMu (serialises concurrent goroutines within this ConfigStore) and
 // an inter-process OS-level file lock on a path+".lock" sidecar, acquired via
 // withConfigWriteLock (backed by session.FileLock — flock on POSIX,
 // LockFileEx on Windows). The in-process mutex alone cannot prevent two
-// separate `crush` processes sharing the same crush.json from each reading
+// separate `rush` processes sharing the same rush.json from each reading
 // the pre-write file, applying only their own keys, and the second
 // atomicWriteFile silently clobbering the first — the file lock closes that
 // cross-process gap. After a successful write, it automatically reloads
@@ -204,7 +204,7 @@ func (s *ConfigStore) SetConfigFields(scope Scope, kv map[string]any) error {
 	}
 
 	// Apply keys in sorted order so the on-disk output is deterministic
-	// regardless of map iteration order (keeps crush.json diffs stable).
+	// regardless of map iteration order (keeps rush.json diffs stable).
 	keys := make([]string, 0, len(kv))
 	for key := range kv {
 		keys = append(keys, key)
@@ -265,8 +265,8 @@ func (s *ConfigStore) SetConfigFields(scope Scope, kv map[string]any) error {
 // on-disk read-modify-write is protected at two levels: the in-process
 // diskWriteMu and an inter-process OS-level file lock on a path+".lock"
 // sidecar acquired via withConfigWriteLock (backed by session.FileLock —
-// flock on POSIX, LockFileEx on Windows), so two separate `crush` processes
-// racing to edit the same crush.json cannot silently clobber each other's
+// flock on POSIX, LockFileEx on Windows), so two separate `rush` processes
+// racing to edit the same rush.json cannot silently clobber each other's
 // change. After a successful write, it automatically reloads config to keep
 // in-memory state fresh.
 //
@@ -353,7 +353,7 @@ func (s *ConfigStore) removeConfigFieldAt(ctx context.Context, path, key string)
 // publishMu gates every reader of the config store (ReloadFromDisk,
 // SetSkipPermissionRequests, CaptureStalenessSnapshot, and app startup via
 // Load itself), a stall here — waiting on a sidecar lock held by a
-// contended or wedged sibling crush process — would freeze the whole config
+// contended or wedged sibling rush process — would freeze the whole config
 // subsystem for as long as the wait budget allows. Regressed by b53cbf3d,
 // which replaced a same-process, lock-free disk write with the
 // cross-process-locked withConfigWriteLock path without adjusting the

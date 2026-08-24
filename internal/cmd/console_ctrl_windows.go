@@ -15,7 +15,7 @@ var (
 
 // installConsoleCtrlFilter installs a Windows console-control handler that
 // swallows CTRL_CLOSE_EVENT / CTRL_LOGOFF_EVENT / CTRL_SHUTDOWN_EVENT so
-// `crush run` invoked directly in a foreground terminal is not cancelled by
+// `rush run` invoked directly in a foreground terminal is not cancelled by
 // a window-close/logoff/shutdown console event — only a genuine
 // CTRL_C_EVENT or CTRL_BREAK_EVENT (real Ctrl+C / Ctrl+Break) still reaches
 // Go's os/signal machinery and cancels the run's context.
@@ -26,7 +26,7 @@ var (
 // to tell "user pressed Ctrl+C" apart from "the console window got a
 // close/logoff/shutdown event" (a routine thing: alt-tabbing away in some
 // terminal hosts, a Windows Terminal tab close, etc.). Without this, a
-// plain `crush run --session X "message"` typed directly in a terminal —
+// plain `rush run --session X "message"` typed directly in a terminal —
 // exactly the everyday interactive use case, no stdin redirection or
 // backgrounding involved — can abort mid-turn with "Context canceled" for
 // no operator-visible reason.
@@ -40,7 +40,7 @@ var (
 // before.
 //
 // Returns an uninstall func; safe to call even if the underlying
-// SetConsoleCtrlHandler call failed (e.g. crush isn't actually attached to
+// SetConsoleCtrlHandler call failed (e.g. rush isn't actually attached to
 // a console — the common case for a headless orchestrator launch) — the
 // handler simply never fires in that case.
 func installConsoleCtrlFilter() (uninstall func()) {

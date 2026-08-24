@@ -11,12 +11,15 @@ import (
 
 var claudeDelCmd = &cobra.Command{
 	Use:   "claude-del",
-	Short: "Remove the /crush slash-command and strip legacy CLAUDE.md block",
-	Long: `Undo ` + "`crush claude-init`" + `: remove the /crush slash-command and strip
+	Short: "Remove the /rush slash-command and strip legacy CLAUDE.md block",
+	Long: `Undo ` + "`rush claude-init`" + `: remove the /rush slash-command and strip
 any crush-claude-init block from CLAUDE.md.
 
 Only files that carry our sentinel are removed — foreign files with the
 same name are left alone with a warning.
+
+This also removes legacy crush.md and crush-fallback.md files from a
+pre-rename install (if they contain the legacy sentinel).
 
 Default is --global (~/.claude/commands/). Use --local (or --cwd, which
 implies it) to target the current project's .claude/commands/ instead.
@@ -28,13 +31,13 @@ For per-model commands, agents and skills, use ` + "`cah uninstall`" + ` from th
 cc-arch-hands repo.`,
 	Example: `
 # Remove globally (from ~/.claude/commands/) — the default
-crush claude-del
+rush claude-del
 
 # Remove from the current project instead
-crush claude-del --local
+rush claude-del --local
 
 # Scope to another project (implies --local)
-crush claude-del --cwd /path/to/project
+rush claude-del --cwd /path/to/project
 `,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		global, _ := cmd.Flags().GetBool("global")
@@ -87,32 +90,49 @@ func runClaudeDel(cwd string) error {
 	return removeFallbackCommandFromDir(cmdDir)
 }
 
+const (
+	legacyClaudeSlashCommandSentinel = "<!-- crush-slash-command:v1 -->"
+)
+
+// containsAnySentinel returns true if the data contains either the new
+// rush-slash-command sentinel or the legacy crush-slash-command sentinel.
+func containsAnySentinel(data string) bool {
+	return strings.Contains(data, claudeSlashCommandSentinel) ||
+		strings.Contains(data, legacyClaudeSlashCommandSentinel)
+}
+
 func removeSlashCommand(cwd string) error {
 	return removeSlashCommandFromDir(filepath.Join(cwd, claudeCommandsDir))
 }
 
+// removeSlashCommandFromDir removes both rush.md and legacy crush.md files
+// from the directory if they contain our sentinel.
 func removeSlashCommandFromDir(dir string) error {
-	path := filepath.Join(dir, "crush.md")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
+	for _, name := range []string{"rush.md", "crush.md"} {
+		if err := removeFileIfOurs(dir, name); err != nil {
+			return err
 		}
-		return fmt.Errorf("read %s: %w", path, err)
 	}
-	if !strings.Contains(string(data), claudeSlashCommandSentinel) {
-		fmt.Fprintf(os.Stderr, "refusing to delete %s — does not look like ours (missing sentinel)\n", path)
-		return nil
-	}
-	if err := os.Remove(path); err != nil {
-		return fmt.Errorf("failed to remove %s: %w", path, err)
-	}
-	fmt.Fprintf(os.Stderr, "removed %s\n", path)
 	return nil
 }
 
+// removeFallbackCommandFromDir removes both rush-fallback.md and legacy
+// crush-fallback.md files from the directory if they contain our sentinel.
 func removeFallbackCommandFromDir(dir string) error {
-	path := filepath.Join(dir, "crush-fallback.md")
+	for _, name := range []string{"rush-fallback.md", "crush-fallback.md"} {
+		if err := removeFileIfOurs(dir, name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// removeFileIfOurs deletes the file at dir/name if it contains either the
+// new rush-slash-command sentinel or the legacy crush-slash-command sentinel.
+// If the file exists but doesn't contain either sentinel, it's left alone
+// with a warning. Missing file is a no-op.
+func removeFileIfOurs(dir, name string) error {
+	path := filepath.Join(dir, name)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -120,7 +140,7 @@ func removeFallbackCommandFromDir(dir string) error {
 		}
 		return fmt.Errorf("read %s: %w", path, err)
 	}
-	if !strings.Contains(string(data), claudeSlashCommandSentinel) {
+	if !containsAnySentinel(string(data)) {
 		fmt.Fprintf(os.Stderr, "refusing to delete %s — does not look like ours (missing sentinel)\n", path)
 		return nil
 	}

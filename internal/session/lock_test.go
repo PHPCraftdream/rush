@@ -136,7 +136,7 @@ func TestSessionLockBusyError_Format(t *testing.T) {
 	assert.Contains(t, e.Error(), "/tmp/x.lock")
 
 	e2 := &SessionLockBusyError{Path: "/tmp/x.lock"}
-	assert.Contains(t, e2.Error(), "another crush process")
+	assert.Contains(t, e2.Error(), "another rush process")
 
 	// Must be detectable via errors.As — caller-visible contract.
 	var target *SessionLockBusyError

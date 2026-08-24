@@ -25,17 +25,17 @@ var runCmd = &cobra.Command{
 	Long: `Run a single prompt in non-interactive mode and exit.
 
   WARNING — auto-bypass of inner CLI permissions:
-  ` + "`crush run`" + ` is non-interactive by design (no human at the keyboard),
+  ` + "`rush run`" + ` is non-interactive by design (no human at the keyboard),
   so any inner CLI sub-process it spawns (claude / codex / gemini) is
   launched with its own bypass-permissions flag (claude
   --dangerously-skip-permissions, codex --approval-mode yolo, gemini
   --yolo). The sub-process can read, write, and execute anywhere the
   invoking user has permission. There is no per-tool confirmation. Use
-  ` + "`crush run`" + ` only in workspaces you can afford to lose; if you need
+  ` + "`rush run`" + ` only in workspaces you can afford to lose; if you need
   real isolation, wrap the invocation in an OS-level sandbox (Sandboxie
   Plus, Windows Sandbox, WSL2 + landlock, Docker, etc.). Interactive
   sessions (TUI / web) keep the normal permission flow — this WARNING
-  applies only to ` + "`crush run`" + `.
+  applies only to ` + "`rush run`" + `.
 
 --role is REQUIRED: every invocation must declare which model slot it
 wants. This avoids silently burning premium tokens on a one-liner.
@@ -61,15 +61,15 @@ Four roles exist:
   reviewer           optional, no alias; the strongest slot, for explicit
                       review invocations. Never auto-selected anywhere —
                       reachable only via --role reviewer.
-worker/reviewer are configured with "crush models use <smart> <fast>
---worker <model> --reviewer <model>" (or the web UI / crush.json's
+worker/reviewer are configured with "rush models use <smart> <fast>
+--worker <model> --reviewer <model>" (or the web UI / rush.json's
 models.worker / models.reviewer directly). The actual model id behind
-each role comes from "crush models show"; --model overrides it for one
+each role comes from "rush models show"; --model overrides it for one
 invocation.
 
 Prompt sources (combined as "<stdin>\n\n<args>"):
-  - positional args:   crush run "your prompt"
-  - stdin pipe/redir:  echo "hello" | crush run     |     crush run < prompt.md
+  - positional args:   rush run "your prompt"
+  - stdin pipe/redir:  echo "hello" | rush run     |     rush run < prompt.md
   - both (stdin = context, args = question)
 
 Sessions: --session takes either an existing session id (or hash prefix)
@@ -78,8 +78,8 @@ exact id — handy for CI where the build matrix maps to a stable key.
 
 System prompt: --system-prompt / --system-prompt-file persists the prompt
 on the session so subsequent runs with the same --session pick it up.
-If neither is passed and .crush/system-prompts/default.md exists, it is
-loaded automatically (see "crush claude-init" for a starter template).
+If neither is passed and .rush/system-prompts/default.md exists, it is
+loaded automatically (see "rush claude-init" for a starter template).
 
 Session title: if the session title is empty or "Untitled Session", the
 first 60 characters of the user prompt are used as the title. This makes
@@ -181,7 +181,7 @@ Runaway protection:
   partial work so you can inspect or fork from it.
   Even with --timeout 0 (no graceful deadline), a 6h default hard wall-clock
   backstop force-kills a true zombie (deadlock / a read that ignores ctx).
-  Override via CRUSH_RUN_DEFAULT_HARD_TIMEOUT (plain number = seconds, or a
+  Override via RUSH_RUN_DEFAULT_HARD_TIMEOUT (plain number = seconds, or a
   Go duration like 30m/2h; invalid/non-positive falls back to the 6h default).
 
 Peak-hours override:
@@ -198,24 +198,24 @@ Peak-hours override:
 
 Lifecycle hooks:
   --on-finish "cmd"   run a shell command after the agent finishes.
-                      Env vars set: CRUSH_SESSION_ID, CRUSH_EXIT_REASON,
-                      CRUSH_COST_USD, CRUSH_TOKENS, CRUSH_DURATION_SEC.
+                      Env vars set: RUSH_SESSION_ID, RUSH_EXIT_REASON,
+                      RUSH_COST_USD, RUSH_TOKENS, RUSH_DURATION_SEC.
 
-External cancellation: use "crush sessions cancel <id>" from another
+External cancellation: use "rush sessions cancel <id>" from another
 terminal to set a DB flag; the running agent checks it after each step
 and stops gracefully.
 
 Permissions: non-interactive runs auto-approve every permission request
 (no one is on the keyboard to confirm). The agent gets the full tool
 set with no prompting. This is fast but irreversible — only run
-"crush run" in a workspace whose contents you can afford to lose, and
+"rush run"" in a workspace whose contents you can afford to lose, and
 prefer --cwd /some/sandbox-or-temp-dir for one-shot scripts.
 
 Restricted-run allowlist (scoped permissions):
   --restrict-run           flip from auto-approve-everything to
                            deny-by-default; only allowlist matches are
                            approved. Also armed by setting
-                           permissions.run.restrict=true in crush.json.
+                           permissions.run.restrict=true in rush.json.
   --allow-bash '<pattern>' permit a bash command in restricted mode
                            (repeatable). Forms:
                              cmd args    word-boundary prefix
@@ -231,7 +231,7 @@ Restricted-run allowlist (scoped permissions):
                            are ignored here — use --allow-bash for
                            command-level control of the bash tool.
 
-  Config equivalent (crush.json):
+  Config equivalent (rush.json):
     "permissions": {
       "run": {
         "restrict": true,
@@ -246,18 +246,18 @@ Restricted-run allowlist (scoped permissions):
   allowed_tools empty for bash and use --allow-bash / run.allow_bash.
   Restricted mode never affects interactive TUI / web sessions.
 
-Protecting harness-owned files: when the orchestrator pipes "crush run"
+Protecting harness-owned files: when the orchestrator pipes "rush run""
 output through a shell redirect, the model can pick the same path for
 its write/edit tool (e.g. it sees ".tmp-audit-D.json" in the prompt
 and decides "I'll just write findings there directly"). Result: a
 mixed file where envelope and tool output overwrite each other in
-non-deterministic order. To block this set the CRUSH_FORBID_WRITES
+non-deterministic order. To block this set the RUSH_FORBID_WRITES
 env-var to a comma-separated list of paths the write/edit/multiedit
 tools must NOT touch. Example:
 
   out=/tmp/audit.json
-  CRUSH_FORBID_WRITES="$out" \
-    crush run --json --format json ... > "$out" 2>"$out.err"
+  RUSH_FORBID_WRITES="$out" \
+    rush run --json --format json ... > "$out" 2>"$out.err"
 
 The tools fail with a visible error to the model when a forbidden path
 is targeted; the model then either retries with a different path or
@@ -265,119 +265,119 @@ falls back to returning the content via final_text — both of which
 keep the redirect target intact.`,
 	Example: `
 # Run a simple prompt
-crush run "Guess my 5 favorite Pokémon"
+rush run "Guess my 5 favorite Pokémon"
 
 # Pipe input from stdin (stdin is prepended to the args prompt)
-curl https://charm.land | crush run "Summarize this website"
+curl https://charm.land | rush run "Summarize this website"
 
 # Read the prompt from a file
-crush run < prompt.md
+rush run < prompt.md
 
 # Redirect output to a file
-crush run "Generate a hot README for this project" > MY_HOT_README.md
+rush run "Generate a hot README for this project" > MY_HOT_README.md
 
 # Quiet mode (hide the spinner) / verbose mode (show logs)
-crush run --quiet  "Generate a README for this project"
-crush run --verbose "Generate a README for this project"
+rush run --quiet  "Generate a README for this project"
+rush run --verbose "Generate a README for this project"
 
 # Continue a previous session by id (or hash prefix)
-crush run --session {session-id} "Follow up on your last response"
+rush run --session {session-id} "Follow up on your last response"
 
 # Continue the most recent session
-crush run --continue "Follow up on your last response"
+rush run --continue "Follow up on your last response"
 
 # Idempotent CI: same id across runs continues the same conversation;
 # the first run creates it. Use a stable key like a PR number.
-crush run --session "pr-42" "Review the latest changes"
+rush run --session "pr-42" "Review the latest changes"
 
 # Override the session's system prompt from a flag
-crush run --system-prompt "You are a terse senior reviewer." \
+rush run --system-prompt "You are a terse senior reviewer." \
           --session "pr-42" "Review the latest changes"
 
 # Or from a file (mutually exclusive with --system-prompt)
-crush run --system-prompt-file ./reviewer-prompt.md \
+rush run --system-prompt-file ./reviewer-prompt.md \
           --session "pr-42" "Review the latest changes"
 
 # Stdin user-prompt + file system-prompt + stable session id — the three
 # inputs are independent, so this works as one pipeline:
-git diff HEAD~1 | crush run --system-prompt-file ./reviewer-prompt.md \
+git diff HEAD~1 | rush run --system-prompt-file ./reviewer-prompt.md \
                             --session "pr-42" \
                             "Review this diff"
 
 # Required role flag — pick the strong model
-crush run --role smart "design a migration for X"
+rush run --role smart "design a migration for X"
 
 # …or the cheap one for a quick one-liner
-crush run --role fast "tldr this readme" < README.md
+rush run --role fast "tldr this readme" < README.md
 
 # Watch the agent think token-by-token (legacy output mode)
-crush run --role smart --stream "explain this codebase"
+rush run --role smart --stream "explain this codebase"
 
 # Runaway protection: cap cost and tokens (persisted to session budget)
-crush run --role smart --max-cost 0.50 --max-tokens 100k "refactor storage"
-# After run: crush sessions show <id> → "Cost: $0.32 / $0.50 budget (64%)"
+rush run --role smart --max-cost 0.50 --max-tokens 100k "refactor storage"
+# After run: rush sessions show <id> → "Cost: $0.32 / $0.50 budget (64%)"
 
 # Flexible timeout: plain number = seconds (saved to session budget)
-crush run --role smart --timeout 900 --session "long-task" "refactor the storage layer"
-# During run: crush sessions locks → "ELAPSED 3m0s  BUDGET 15m0s"
+rush run --role smart --timeout 900 --session "long-task" "refactor the storage layer"
+# During run: rush sessions locks → "ELAPSED 3m0s  BUDGET 15m0s"
 
-# On-finish hook (env: CRUSH_SESSION_ID, CRUSH_EXIT_REASON, CRUSH_COST_USD, ...)
-crush run --role smart --on-finish "echo done >> /tmp/log" "analyze codebase"
+# On-finish hook (env: RUSH_SESSION_ID, RUSH_EXIT_REASON, RUSH_COST_USD, ...)
+rush run --role smart --on-finish "echo done >> /tmp/log" "analyze codebase"
 
-# Auto-loaded repo-default system prompt (from .crush/system-prompts/default.md)
-crush run --role smart --session "pr-42" "review this PR"
+# Auto-loaded repo-default system prompt (from .rush/system-prompts/default.md)
+rush run --role smart --session "pr-42" "review this PR"
 # → auto-loads scope-control / summary-required rules without --system-prompt-file
 
 # Machine-readable summary for wrapper scripts
-crush run --json --session "pr-42" "review the diff" | jq .final_text
+rush run --json --session "pr-42" "review the diff" | jq .final_text
 
 # Force raw JSON in final_text (model is instructed AND envelope is
 # post-stripped; markdown fences and prose preamble go to
 # assistant_notes).
-crush run --role smart --json --format json \
+rush run --role smart --json --format json \
           --session "audit-A" "..." < /tmp/audit-prompt.md
 
 # JSON conforming to a schema
-crush run --role smart --json \
+rush run --role smart --json \
           --format json-schema:./schemas/audit.json \
           --session "audit-A" "..." < /tmp/audit-prompt.md
 
 # Disable sub-agent fan-out (the "agent" tool is removed from the
 # toolset entirely so the model cannot dispatch even if it wants to).
-crush run --role smart --agents single --session "linear-task" "..."
+rush run --role smart --agents single --session "linear-task" "..."
 
 # Tell the model to fan out (system-prompt nudge — still up to the
 # model whether it actually decomposes the work).
-crush run --role smart --agents with-agents --session "parallel-audit" "..."
+rush run --role smart --agents with-agents --session "parallel-audit" "..."
 
 # Fan-out and recover every sub-agent's full text via the envelope.
 # Parent's final_text becomes a brief wrap-up; sub_agent_outputs
 # array carries the verbatim sub-agent replies.
-crush run --role smart --json --agents with-agents --aggregation attach \
+rush run --role smart --json --agents with-agents --aggregation attach \
           --session "structured-audit" < /tmp/p.txt > /tmp/audit.json
 
 # Orchestrator mode: with a worker model configured (models.worker in
-# crush.json / web UI), --role smart on its own is enough — the default
+# rush.json / web UI), --role smart on its own is enough — the default
 # sub-agent ban is lifted, sub-agents get a work-capable toolset and run
 # on the cheap worker slot, and the smart agent's edit/multiedit/write
 # tools are removed so hands-on work has to be delegated.
-crush run --role smart --session "orchestrated-refactor" "..."
+rush run --role smart --session "orchestrated-refactor" "..."
 
 # Bypass the strongest slot for an explicit one-off review (never picked
 # automatically — must be requested by role name).
-crush run --role reviewer --session "pr-42-review" "review this diff"
+rush run --role reviewer --session "pr-42-review" "review this diff"
 
 # Fan-out but keep everything in final_text verbatim (one big string).
-crush run --role smart --json --agents with-agents --aggregation concat \
+rush run --role smart --json --agents with-agents --aggregation concat \
           --session "flat-audit" < /tmp/p.txt > /tmp/audit.json
 
 # Hard time limit — partial answer is still preserved in the session
 # (and surfaced in --json's exit_reason / final_text)
-crush run --timeout 5m --session "long-task" "refactor the storage layer"
+rush run --timeout 5m --session "long-task" "refactor the storage layer"
 
 # Scope an unattended CI run: only view + the listed bash commands are
 # approved; everything else is denied cleanly (no UI to hang on).
-crush run --restrict-run --role fast \
+rush run --restrict-run --role fast \
           --allow-tool view \
           --allow-bash 'git diff' --allow-bash 'glob:go *' \
           --session "ci-123" "summarize the diff"
@@ -445,11 +445,11 @@ crush run --restrict-run --role fast \
 			}
 		}
 
-		// --role is required so a `crush run` invocation always declares
+		// --role is required so a `rush run` invocation always declares
 		// its intent (cheap-and-fast vs strong-and-slow), instead of
 		// silently defaulting to smart and burning tokens unintentionally.
 		// The role vocabulary (smart/fast/worker/reviewer) and the
-		// invalid-value wording are shared with `crush ping` via
+		// invalid-value wording are shared with `rush ping` via
 		// resolveModelRole; only the empty-is-required rule is
 		// command-specific.
 		if role == "" {
@@ -472,7 +472,7 @@ crush run --restrict-run --role fast \
 			systemPrompt = string(bts)
 		}
 		// Fork patch (orchestrator UX, round 2 #13): auto-load a repo-local
-		// default system prompt from .crush/system-prompts/default.md if it
+		// default system prompt from .rush/system-prompts/default.md if it
 		// exists AND neither --system-prompt nor --system-prompt-file was
 		// supplied. Lets a team commit one set of "always apply these
 		// rules" instructions (scope-control, summary-required, no-commits)
@@ -481,7 +481,7 @@ crush run --restrict-run --role fast \
 		// auto-load only fills the gap when nothing was passed.
 		if systemPrompt == "" {
 			if cwd, cwdErr := ResolveCwd(cmd); cwdErr == nil {
-				autoPath := filepath.Join(cwd, ".crush", "system-prompts", "default.md")
+				autoPath := filepath.Join(cwd, ".rush", "system-prompts", "default.md")
 				if bts, err := os.ReadFile(autoPath); err == nil && len(bts) > 0 {
 					systemPrompt = string(bts)
 					fmt.Fprintf(os.Stderr, "auto-loaded system prompt from %s (%d bytes)\n", autoPath, len(bts))
@@ -498,7 +498,7 @@ crush run --restrict-run --role fast \
 		)
 		switch agentsMode {
 		case "", "single":
-			// New non-interactive default: NO sub-agent fan-out. `crush run`
+			// New non-interactive default: NO sub-agent fan-out. `rush run`
 			// has no UI to surface sub-agent work, and a nested run silently
 			// burns time/tokens out of view (and risks recursion). The model
 			// should EXECUTE rather than re-delegate. The `agent` and
@@ -572,7 +572,7 @@ crush run --restrict-run --role fast \
 
 		// On Windows, filter out console-close/logoff/shutdown events so
 		// only a genuine Ctrl+C cancels the run — otherwise a plain
-		// `crush run --session X "message"` typed directly in a terminal
+		// `rush run --session X "message"` typed directly in a terminal
 		// can abort with "Context canceled" from an ordinary console event
 		// that has nothing to do with the user asking to stop. No-op on
 		// other platforms. See console_ctrl_windows.go for the full
@@ -588,7 +588,7 @@ crush run --restrict-run --role fast \
 		//
 		// NotifyContext restores the default disposition after the signal it
 		// acts on, so a user who presses Ctrl-C again — the normal reaction
-		// when the first one appears to do nothing — kills crush outright,
+		// when the first one appears to do nothing — kills rush outright,
 		// with none of its cleanup running. That used to be survivable: the
 		// terminal delivers the signal to its whole foreground process group,
 		// which the CLI child was part of, so the child died with us. It is
@@ -604,7 +604,7 @@ crush run --restrict-run --role fast \
 		// registered, then exit. Registering a handler means the second
 		// Ctrl-C no longer kills us instantly, so the sweep must be
 		// unconditionally followed by os.Exit — a hang here would take away
-		// the user's ability to stop crush at all, which is worse than the
+		// the user's ability to stop rush at all, which is worse than the
 		// leak it prevents. 130 is the conventional status for
 		// SIGINT-terminated.
 		hardStop := make(chan os.Signal, 2)
@@ -614,7 +614,7 @@ crush run --restrict-run --role fast \
 			<-hardStop // first: NotifyContext is cancelling the run
 			<-hardStop // second: the user means it
 			if n := session.KillAllTrackedTrees(); n > 0 {
-				fmt.Fprintf(os.Stderr, "\ncrush: interrupted — killed %d CLI process tree(s)\n", n)
+				fmt.Fprintf(os.Stderr, "\nrush: interrupted — killed %d CLI process tree(s)\n", n)
 			}
 			os.Exit(130)
 		}()
@@ -640,13 +640,13 @@ crush run --restrict-run --role fast \
 			// grace window for clean shutdown, it force-exits. The defer stops
 			// it on any normal return, so it only ever fires on a true hang.
 			// os.Exit skips defers, leaving the lock file with a now-dead PID —
-			// `crush sessions reap`/`kill` reclaims it, far better than a live
+			// `rush sessions reap`/`kill` reclaims it, far better than a live
 			// zombie holding the handle. (Fork patch.)
 			const hardKillGrace = 60 * time.Second
 			hardDeadline := timeoutDur + hardKillGrace
 			installedHardKill = time.AfterFunc(hardDeadline, func() {
 				fmt.Fprintf(os.Stderr,
-					"crush: run exceeded %s (timeout %s + %s grace) without exiting — force-killing\n",
+					"rush: run exceeded %s (timeout %s + %s grace) without exiting — force-killing\n",
 					hardDeadline, timeoutDur, hardKillGrace)
 				os.Exit(124)
 			})
@@ -658,7 +658,7 @@ crush run --restrict-run --role fast \
 			// provider/LSP read that ignores ctx — the same class of bug already
 			// fixed in internal/agent/cliprovider/provider.go) would zombie
 			// indefinitely holding its session lock, recoverable only via
-			// manual `crush sessions kill`. Install a generous DEFAULT hard cap.
+			// manual `rush sessions kill`. Install a generous DEFAULT hard cap.
 			//
 			// Unlike the --timeout path, NO separate grace window is added
 			// here: there's no graceful deadline to give time to wrap up
@@ -667,17 +667,17 @@ crush run --restrict-run --role fast \
 			//
 			// Default: 6h. Rationale: this is a backstop-of-last-resort, NOT a
 			// task-completion expectation. 6h is long enough that no legitimate
-			// `crush run` (which is a single agentic turn bounded by the model's
+			// `rush run` (which is a single agentic turn bounded by the model's
 			// context window and tool latency) should ever approach it, yet
 			// short enough that a true zombie is reaped within a workday instead
 			// of holding its session lock across days. The observed real freeze
 			// was ~2h; 6h gives 3x headroom over that while still bounding the
-			// worst case. Override via CRUSH_RUN_DEFAULT_HARD_TIMEOUT (parsed by
+			// worst case. Override via RUSH_RUN_DEFAULT_HARD_TIMEOUT (parsed by
 			// resolveDefaultHardTimeout).
-			hardDeadline := resolveDefaultHardTimeout(os.Getenv("CRUSH_RUN_DEFAULT_HARD_TIMEOUT"))
+			hardDeadline := resolveDefaultHardTimeout(os.Getenv("RUSH_RUN_DEFAULT_HARD_TIMEOUT"))
 			installedHardKill = time.AfterFunc(hardDeadline, func() {
 				fmt.Fprintf(os.Stderr,
-					"crush: run exceeded its default hard backstop of %s (no --timeout set; override via CRUSH_RUN_DEFAULT_HARD_TIMEOUT) without exiting — force-killing\n",
+					"rush: run exceeded its default hard backstop of %s (no --timeout set; override via RUSH_RUN_DEFAULT_HARD_TIMEOUT) without exiting — force-killing\n",
 					hardDeadline)
 				os.Exit(124)
 			})
@@ -701,7 +701,7 @@ crush run --restrict-run --role fast \
 		}
 
 		if !a.Config().IsConfigured() {
-			return fmt.Errorf("no providers configured - please run 'crush' to set up a provider interactively")
+			return fmt.Errorf("no providers configured - please run 'rush' to set up a provider interactively")
 		}
 
 		// Fold --role into smartModel. When the user picked a role other than
@@ -713,7 +713,7 @@ crush run --restrict-run --role fast \
 		if modelType != config.SelectedModelTypeSmart && smartModel == "" {
 			roleModel, ok := a.Config().Models[modelType]
 			if !ok || roleModel.Model == "" {
-				return fmt.Errorf("--role %s: no %s model configured (run \"crush models use --%s <model>\" first)", role, modelType, modelType)
+				return fmt.Errorf("--role %s: no %s model configured (run \"rush models use --%s <model>\" first)", role, modelType, modelType)
 			}
 			smartModel = roleModel.Provider + "/" + roleModel.Model
 		}
@@ -786,11 +786,11 @@ func init() {
 	runCmd.SilenceUsage = true
 	runCmd.Flags().BoolP("quiet", "q", false, "Hide spinner")
 	runCmd.Flags().BoolP("verbose", "v", false, "Show logs")
-	runCmd.Flags().String("role", "", "REQUIRED. Which preselected model slot to use: smart (the strong default; --role smart + a configured worker also enables orchestrator-mode sub-agent delegation) | fast (the cheap slot) | worker (cheap slot for delegated sub-task work, never auto-selected) | reviewer (the strongest slot, for explicit review invocations, never auto-selected). The actual model id comes from `crush models show`; override with --model.")
+	runCmd.Flags().String("role", "", "REQUIRED. Which preselected model slot to use: smart (the strong default; --role smart + a configured worker also enables orchestrator-mode sub-agent delegation) | fast (the cheap slot) | worker (cheap slot for delegated sub-task work, never auto-selected) | reviewer (the strongest slot, for explicit review invocations, never auto-selected). The actual model id comes from `rush models show`; override with --model.")
 	runCmd.Flags().String("effort", "", "Reasoning effort for this turn: low|medium|high. Applies to whichever slot --role picked. Persisted on the session so subsequent runs inherit it.")
 	runCmd.Flags().Bool("stream", false, "Stream every assistant token to stdout. Default is terse: tool-call names on stderr + final answer on stdout.")
 	runCmd.Flags().Bool("json", false, "Emit one JSON object on stdout summarising the run (session_id, final_text, tool_calls, usage, duration, exit_reason). Mutually exclusive with --stream.")
-	runCmd.Flags().String("timeout", "60m", "Abort the run after this duration (e.g. 30s, 5m, 900 — plain number = seconds). A hard wall-clock kill force-exits the process 60s past this even on a freeze. Default 60m; pass 0 to disable the graceful deadline (a 6h default hard backstop still applies — override via CRUSH_RUN_DEFAULT_HARD_TIMEOUT).")
+	runCmd.Flags().String("timeout", "60m", "Abort the run after this duration (e.g. 30s, 5m, 900 — plain number = seconds). A hard wall-clock kill force-exits the process 60s past this even on a freeze. Default 60m; pass 0 to disable the graceful deadline (a 6h default hard backstop still applies — override via RUSH_RUN_DEFAULT_HARD_TIMEOUT).")
 	runCmd.Flags().StringP("model", "m", "", "Model to use. Accepts 'model' or 'provider/model' to disambiguate models with the same name across providers")
 	runCmd.Flags().String("fast-model", "", "Fast model to use. If not provided, uses the default fast model for the provider")
 	runCmd.Flags().StringP("session", "s", "", "Session ID to continue OR create. If a session with this id exists it is continued; otherwise a new one is created with this id. Accepts a hash prefix for existing sessions only.")
@@ -806,7 +806,7 @@ func init() {
 	runCmd.Flags().Bool("timeout-extends-on-progress", false, "Reset the stream watchdog deadline every time streaming progress occurs. Prevents killing healthy long compositions. Default: false (static deadline).")
 	runCmd.Flags().String("timeout-hard-cap", "0", "Maximum wall-clock time the watchdog allows even with --timeout-extends-on-progress (e.g. 30s, 5m, 900 — plain number = seconds). Default: 0 (no cap).")
 	// Fork patch: batch 24 — on-finish hook.
-	runCmd.Flags().String("on-finish", "", "Shell command to execute after the run completes. Environment variables: CRUSH_SESSION_ID, CRUSH_EXIT_REASON, CRUSH_COST_USD, CRUSH_TOKENS, CRUSH_DURATION_SEC. Hook errors are printed to stderr but don't affect exit code.")
+	runCmd.Flags().String("on-finish", "", "Shell command to execute after the run completes. Environment variables: RUSH_SESSION_ID, RUSH_EXIT_REASON, RUSH_COST_USD, RUSH_TOKENS, RUSH_DURATION_SEC. Hook errors are printed to stderr but don't affect exit code.")
 	// Fork patch: batch 30 — runaway protection.
 	runCmd.Flags().String("max-cost", "", "Abort the run if total cost (USD) exceeds this value. e.g. 0.50, 2.00")
 	runCmd.Flags().String("max-tokens", "", "Abort the run if total prompt+completion tokens exceed this value. e.g. 100k, 1M, 500000")
@@ -877,14 +877,14 @@ func parseDurationFlexible(s string) (time.Duration, error) {
 }
 
 // defaultHardKillTimeout is the default wall-clock backstop installed for
-// `crush run` when the operator does NOT pass --timeout (or passes --timeout 0).
+// `rush run` when the operator does NOT pass --timeout (or passes --timeout 0).
 // It is a backstop-of-last-resort against a true zombie (deadlock / a read that
 // ignores ctx), NOT a task-completion expectation — see the comment at the
 // call site for the full rationale.
 const defaultHardKillTimeout = 6 * time.Hour
 
 // resolveDefaultHardTimeout resolves the default hard-kill backstop duration
-// from the CRUSH_RUN_DEFAULT_HARD_TIMEOUT env var, falling back to
+// from the RUSH_RUN_DEFAULT_HARD_TIMEOUT env var, falling back to
 // defaultHardKillTimeout when the env var is unset, empty, or holds an
 // unparseable / non-positive value. It NEVER returns an error: a malformed env
 // var must not error out a run, it just silently falls back to the hardcoded

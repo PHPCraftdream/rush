@@ -347,7 +347,7 @@ func TestResolveSession_ContinueByID_NotFound_CreateError(t *testing.T) {
 }
 
 // TestResolveSession_CreationRace_AttachesToWinner is task #605: when two
-// `crush run --session <id>` processes both miss the initial Get() for an
+// `rush run --session <id>` processes both miss the initial Get() for an
 // id that has never existed, and then both race CreateWithID's INSERT,
 // SQLite's UNIQUE/PRIMARY KEY constraint on sessions.id lets exactly one
 // of them win. Before the fix, the loser's raw driver error ("constraint

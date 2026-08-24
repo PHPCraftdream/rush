@@ -21,13 +21,13 @@ The new session is a top-level session (no parent) unless --child is set.`,
 	Args: cobra.ExactArgs(1),
 	Example: `
 # Fork all messages into a new session
-crush sessions fork my-session-id
+rush sessions fork my-session-id
 
 # Fork only the first 5 messages
-crush sessions fork my-session-id --at 5
+rush sessions fork my-session-id --at 5
 
 # Fork with a custom session id and title
-crush sessions fork my-session-id --session new-id --title "My Fork"
+rush sessions fork my-session-id --session new-id --title "My Fork"
   `,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		atN, _ := cmd.Flags().GetInt("at")
@@ -103,7 +103,7 @@ type forkOptions struct {
 // session.Service.ForkSessionTx deliberately does not publish a
 // pubsub.CreatedEvent — this CLI invocation runs in its own process, so a
 // pubsub.Broker subscriber here would never be observed by whichever process
-// is actually serving the web UI or another `crush run`.
+// is actually serving the web UI or another `rush run`.
 func forkSessionCLI(ctx context.Context, svc session.Service, srcID string, opts forkOptions) (fork session.Session, copiedCount int, err error) {
 	fork, copiedCount, err = svc.ForkSessionTx(ctx, srcID, session.ForkOptions{
 		NewID:     opts.newID,

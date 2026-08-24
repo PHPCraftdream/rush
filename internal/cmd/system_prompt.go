@@ -10,27 +10,27 @@ import (
 var systemPromptCmd = &cobra.Command{
 	Use:   "system-prompt",
 	Short: "Print the system prompt that would be sent to the model",
-	Long: `Print the system prompt that crush is currently configured to send.
+	Long: `Print the system prompt that rush is currently configured to send.
 
-Without --session, prints the default prompt that crush would build for a
+Without --session, prints the default prompt that rush would build for a
 fresh session — i.e. the prompt baked from the active model, the registered
-tools, the environment description, and the project's CRUSH.md if any.
+tools, the environment description, and the project's RUSH.md if any.
 
 With --session, prints the prompt persisted on that session (set previously
-via "crush run --system-prompt[-file]" or the web UI). If the session has
+via "rush run --system-prompt[-file]" or the web UI). If the session has
 no override yet, the default is printed instead so the output is always
 the prompt that would actually be sent on the next turn.`,
 	Example: `
 # Print the default
-crush system-prompt
+rush system-prompt
 
 # Print a specific session's prompt
-crush system-prompt --session "pr-42"
+rush system-prompt --session "pr-42"
 
-# Round-trip: dump, edit, write back via "crush run --system-prompt-file"
-crush system-prompt --session "pr-42" > prompt.md
+# Round-trip: dump, edit, write back via "rush run --system-prompt-file"
+rush system-prompt --session "pr-42" > prompt.md
 $EDITOR prompt.md
-crush run --system-prompt-file prompt.md --session "pr-42" "..."
+rush run --system-prompt-file prompt.md --session "pr-42" "..."
   `,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
@@ -43,7 +43,7 @@ crush run --system-prompt-file prompt.md --session "pr-42" "..."
 		defer app.Shutdown()
 
 		if sessionID != "" {
-			// Accept either an exact id or a hash prefix, same as `crush run`.
+			// Accept either an exact id or a hash prefix, same as `rush run`.
 			if sess, lookupErr := resolveSessionID(ctx, app.Sessions, sessionID); lookupErr == nil {
 				sessionID = sess.ID
 			}
@@ -56,7 +56,7 @@ crush run --system-prompt-file prompt.md --session "pr-42" "..."
 				return nil
 			}
 			// Empty override → fall through and print the default. That way
-			// `crush system-prompt --session new-id` shows what the next run
+			// `rush system-prompt --session new-id` shows what the next run
 			// will actually use, not an empty string.
 		}
 

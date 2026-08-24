@@ -12,12 +12,12 @@ import (
 
 // CLISpec describes how to invoke a single CLI-based language model.
 type CLISpec struct {
-	// ModelID is the model identifier used in the crush UI (e.g. "cli-claude").
+	// ModelID is the model identifier used in the rush UI (e.g. "cli-claude").
 	ModelID string
 	// ModelName is the human-readable display name.
 	ModelName string
 	// ContextWindow is the total context window size in tokens.
-	// Used by crush to decide when to trigger auto-summarization.
+	// Used by rush to decide when to trigger auto-summarization.
 	ContextWindow int64
 	// Binary is the executable name resolved via PATH (e.g. "claude", "gemini").
 	Binary string
@@ -35,10 +35,10 @@ type CLISpec struct {
 	// Called on every line; returns (usage, true) when usage data is found.
 	// If nil, usage will be zero in the Finish stream part.
 	ParseUsageLine func(line []byte) (fantasy.Usage, bool)
-	// UseRushMCP controls whether crush starts an internal MCP server and
+	// UseRushMCP controls whether rush starts an internal MCP server and
 	// passes it to the CLI process via --mcp-config.  When true and the
 	// provider is running in non-yolo mode, tool calls are routed through
-	// crush's permission system instead of the CLI's own permission handling.
+	// rush's permission system instead of the CLI's own permission handling.
 	UseRushMCP bool
 	// AlwaysStdin forces the prompt to be delivered via stdin instead of a
 	// CLI flag, and disables PTY mode (using a regular pipe instead).
@@ -51,27 +51,27 @@ type CLISpec struct {
 	// forces stdin delivery). Use this for wrapper binaries like npx.cmd
 	// that don't relay child-process output through ConPTY on Windows.
 	NoPTY bool
-	// QwenMCPIntegration starts crush's MCP server and registers it in
+	// QwenMCPIntegration starts rush's MCP server and registers it in
 	// ~/.qwen/settings.json under a stable per-project ID stored in
-	// <workingDir>/.crush/qwen-mcp-id. The entry is removed when the CLI
+	// <workingDir>/.rush/qwen-mcp-id. The entry is removed when the CLI
 	// process exits. Uses Authorization: Bearer header for auth.
 	QwenMCPIntegration bool
-	// GeminiMCPIntegration starts crush's MCP server and registers it in
+	// GeminiMCPIntegration starts rush's MCP server and registers it in
 	// ~/.gemini/settings.json under a stable per-project ID stored in
-	// <workingDir>/.crush/gemini-mcp-id. The entry is removed when the CLI
+	// <workingDir>/.rush/gemini-mcp-id. The entry is removed when the CLI
 	// process exits. Uses Authorization: Bearer header and trust:true to
 	// bypass Gemini's own confirmation prompts.
 	GeminiMCPIntegration bool
-	// CodexMCPIntegration starts crush's MCP server and passes its URL to
+	// CodexMCPIntegration starts rush's MCP server and passes its URL to
 	// codex via -c flags (inline config override), so no persistent changes
 	// are made to ~/.codex/config.toml. The token is passed via the
-	// CRUSH_CODEX_MCP_TOKEN environment variable, which codex reads via
+	// RUSH_CODEX_MCP_TOKEN environment variable, which codex reads via
 	// bearer_token_env_var and sends as Authorization: Bearer header.
 	CodexMCPIntegration bool
 	// SupportsResume enables --resume <session_id> for CLI models that
 	// support it (Claude CLI). This lets the CLI reload its own conversation
 	// history from its local DB, enabling API-level prompt caching across
-	// multiple messages in the same crush session.
+	// multiple messages in the same rush session.
 	SupportsResume bool
 	// ApplyEffort adds a reasoning-effort setting to the CLI arguments.
 	//
@@ -112,7 +112,7 @@ func claudeArgs(model string, extra ...string) func(bool) []string {
 // benefit (anyone with `claude` on PATH gets identical behaviour faster,
 // and Windows ConPTY relay through npx.cmd was unreliable anyway).
 
-// codexMCPTokenEnvVar is the name of the environment variable crush sets on
+// codexMCPTokenEnvVar is the name of the environment variable rush sets on
 // the codex child process to carry the MCP auth token (P2-3). Passing the
 // token via an env var + Authorization: Bearer header, instead of embedding
 // it in the -c inline config override's URL as a query parameter, avoids
@@ -124,10 +124,10 @@ func claudeArgs(model string, extra ...string) func(bool) []string {
 // `codex mcp add --bearer-token-env-var` form (`codex mcp list` reports
 // "Bearer token" auth for an entry configured this way, entirely in-memory
 // — never written to ~/.codex/config.toml).
-const codexMCPTokenEnvVar = "CRUSH_CODEX_MCP_TOKEN"
+const codexMCPTokenEnvVar = "RUSH_CODEX_MCP_TOKEN"
 
 // codexMCPConfigArgs returns the -c inline config override args that
-// register crush's MCP server (listening on addr) with codex, with the auth
+// register rush's MCP server (listening on addr) with codex, with the auth
 // token referenced by environment variable name rather than embedded in the
 // URL — see codexMCPTokenEnvVar's doc. Extracted as a pure function so the
 // no-token-in-argv property can be tested directly, without spawning the
@@ -135,8 +135,8 @@ const codexMCPTokenEnvVar = "CRUSH_CODEX_MCP_TOKEN"
 func codexMCPConfigArgs(addr string) []string {
 	urlNoToken := "http://" + addr + "/mcp"
 	return []string{
-		"-c", fmt.Sprintf("mcp_servers.crush.url=%q", urlNoToken),
-		"-c", "mcp_servers.crush.bearer_token_env_var=" + codexMCPTokenEnvVar,
+		"-c", fmt.Sprintf("mcp_servers.rush.url=%q", urlNoToken),
+		"-c", "mcp_servers.rush.bearer_token_env_var=" + codexMCPTokenEnvVar,
 	}
 }
 
@@ -331,17 +331,17 @@ var All = []CLISpec{
 	codexSpec("cli-codex-sol", "GPT-5.6-Sol (CLI)", "gpt-5.6-sol", codexEffortLevelsUltra),
 	codexSpec("cli-codex-terra", "GPT-5.6-Terra (CLI)", "gpt-5.6-terra", codexEffortLevelsUltra),
 	codexSpec("cli-codex-luna", "GPT-5.6-Luna (CLI)", "gpt-5.6-luna", codexEffortLevelsMax),
-	// gpt-5.5 stops at xhigh. Note the ceiling below only clamps efforts CRUSH
+	// gpt-5.5 stops at xhigh. Note the ceiling below only clamps efforts RUSH
 	// sends; it says nothing about codex's own default. If the operator's
 	// ~/.codex/config.toml sets a higher model_reasoning_effort (e.g. "max",
-	// which is valid for sol/terra), the CLI applies it whenever crush passes
+	// which is valid for sol/terra), the CLI applies it whenever rush passes
 	// none and the API rejects the turn:
 	//
 	//	Unsupported value: 'max' is not supported with the gpt-5.5 model.
 	//	Supported values are: 'none', 'low', 'medium', 'high', 'xhigh'.
 	//
 	// Reproduced on this machine; passing any supported level explicitly
-	// (`crush ping --model local-cli/cli-codex-gpt-5-5@xhigh`) succeeds. crush
+	// (`rush ping --model local-cli/cli-codex-gpt-5-5@xhigh`) succeeds. rush
 	// deliberately does not overwrite a codex config it did not write.
 	codexSpec("cli-codex-gpt-5-5", "GPT-5.5 (CLI)", "gpt-5.5", codexEffortLevelsStandard),
 	codexSpec("cli-codex-gpt-5-4", "GPT-5.4 (CLI)", "gpt-5.4", codexEffortLevelsStandard),

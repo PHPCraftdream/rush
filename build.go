@@ -35,12 +35,12 @@ func main() {
 	fmt.Println("→ Building web UI...")
 	run(root+"/web", "pnpm", "run", "build")
 
-	out := "crush"
+	out := "rush"
 	if runtime.GOOS == "windows" {
-		out = "crush.exe"
+		out = "rush.exe"
 	}
 
-	fmt.Println("→ Building crush binary (production flags)...")
+	fmt.Println("→ Building rush binary (production flags)...")
 	// Fork merge note (origin/main 2026-05-16): upstream renamed BuildTime to
 	// BuildID (commit 9e126c27). We keep the timestamp value — it satisfies
 	// BuildID's "unique per build" contract — but write it into the new field.
@@ -55,7 +55,7 @@ func main() {
 	// numbered release.
 	//
 	// Also stamp the commit hash and a readable build time so
-	// `crush --version` can prove which source tree a binary came from.
+	// `rush --version` can prove which source tree a binary came from.
 	// Without them the version line is byte-identical for every build of a
 	// release line, so "is the deployed binary actually current?" cannot be
 	// answered from the binary itself — a question that got answered wrong

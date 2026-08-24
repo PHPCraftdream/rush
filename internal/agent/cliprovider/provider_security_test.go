@@ -14,7 +14,7 @@ import (
 // full system prompt (~12KB) was being logged to INFO via the "args" field.
 func TestPromptNotLoggedInProduction(t *testing.T) {
 	// Ensure diagnostic mode is OFF
-	t.Setenv("CRUSH_CLIPROVIDER_LOG_RAW_PROMPT", "")
+	t.Setenv("RUSH_CLIPROVIDER_LOG_RAW_PROMPT", "")
 
 	// Create a test handler that captures all log output
 	var logBuf bytes.Buffer
@@ -53,11 +53,11 @@ func TestPromptNotLoggedInProduction(t *testing.T) {
 }
 
 // TestPromptLoggedInDebugMode verifies that prompts CAN be logged when
-// explicitly enabled via CRUSH_CLIPROVIDER_LOG_RAW_PROMPT=1. This is the
+// explicitly enabled via RUSH_CLIPROVIDER_LOG_RAW_PROMPT=1. This is the
 // opt-in diagnostic mode for troubleshooting CLI invocation issues.
 func TestPromptLoggedInDebugMode(t *testing.T) {
 	// Enable diagnostic mode
-	t.Setenv("CRUSH_CLIPROVIDER_LOG_RAW_PROMPT", "1")
+	t.Setenv("RUSH_CLIPROVIDER_LOG_RAW_PROMPT", "1")
 
 	const secretMarker = "SECRET_MARKER_12345"
 	args := []string{"--model", "sonnet", "-p", secretMarker, "--verbose"}
@@ -80,25 +80,25 @@ func TestPromptLoggedInDebugMode(t *testing.T) {
 // TestLogRawPromptEnabled verifies the diagnostic mode flag is respected.
 func TestLogRawPromptEnabled(t *testing.T) {
 	// Default: should be off
-	os.Unsetenv("CRUSH_CLIPROVIDER_LOG_RAW_PROMPT")
+	os.Unsetenv("RUSH_CLIPROVIDER_LOG_RAW_PROMPT")
 	if logRawPromptEnabled() {
 		t.Error("Expected logRawPromptEnabled to be false by default")
 	}
 
 	// Set to "1": should be on
-	t.Setenv("CRUSH_CLIPROVIDER_LOG_RAW_PROMPT", "1")
+	t.Setenv("RUSH_CLIPROVIDER_LOG_RAW_PROMPT", "1")
 	if !logRawPromptEnabled() {
 		t.Error("Expected logRawPromptEnabled to be true when set to '1'")
 	}
 
 	// Set to anything else: should be off
-	t.Setenv("CRUSH_CLIPROVIDER_LOG_RAW_PROMPT", "0")
+	t.Setenv("RUSH_CLIPROVIDER_LOG_RAW_PROMPT", "0")
 	if logRawPromptEnabled() {
 		t.Error("Expected logRawPromptEnabled to be false when set to '0'")
 	}
 
 	// Set to random string: should be off
-	t.Setenv("CRUSH_CLIPROVIDER_LOG_RAW_PROMPT", "random")
+	t.Setenv("RUSH_CLIPROVIDER_LOG_RAW_PROMPT", "random")
 	if logRawPromptEnabled() {
 		t.Error("Expected logRawPromptEnabled to be false when set to 'random'")
 	}

@@ -19,13 +19,13 @@ count and cost. Use --depth to limit recursion and --json for structured output.
 	Args: cobra.MaximumNArgs(1),
 	Example: `
 # Show all sessions as a tree
-crush sessions tree
+rush sessions tree
 
 # Show tree for a specific root session
-crush sessions tree my-session-id
+rush sessions tree my-session-id
 
 # JSON output for scripting
-crush sessions tree --json
+rush sessions tree --json
   `,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		depth, _ := cmd.Flags().GetInt("depth")

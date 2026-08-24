@@ -1,5 +1,5 @@
-// Fork patch: batch 11 — `crush models use <smart> <fast>` replaces the older
-// `crush models set --smart X --fast Y` with positional args + atom registry.
+// Fork patch: batch 11 — `rush models use <smart> <fast>` replaces the older
+// `rush models set --smart X --fast Y` with positional args + atom registry.
 package cmd
 
 import (
@@ -17,9 +17,9 @@ var modelsUseCmd = &cobra.Command{
 name (e.g. "opus-high", "glm5_turbo") OR a raw "provider/model[@level]"
 string for models not in the atom registry.
 
-The chosen scope is written to crush.json:
-  --global (default)  ~/.local/share/crush/crush.json
-  --local             ./.crush/crush.json
+The chosen scope is written to rush.json:
+  --global (default)  ~/.local/share/rush/rush.json
+  --local             ./.rush/rush.json
 
 The current value in the OTHER scope is preserved; effective resolution
 remains "local if set, else global".
@@ -27,73 +27,73 @@ remains "local if set, else global".
 Two forms are supported — never mix them in the same call:
 
   1. Positional (sets smart + fast together):
-       crush models use <smart> <fast>
+       rush models use <smart> <fast>
 
   2. Flags (set any subset of the four slots independently — e.g. only the
      fast model, leaving smart/worker/reviewer untouched):
-       crush models use --fast <atom>
-       crush models use --smart <atom> --reviewer <atom>
+       rush models use --fast <atom>
+       rush models use --smart <atom> --reviewer <atom>
 
---worker and --reviewer (see ` + "`crush models --help`" + ` for what each is for)
+--worker and --reviewer (see ` + "`rush models --help`" + ` for what each is for)
 are ALWAYS flag-only, in both forms, and are resolved/written independently
 of smart/fast. Omit a flag to leave that slot untouched.
 
 Every one of the four slots accepts an effort suffix right here — either
 "<atom>-<level>" (e.g. "glm5_3-max") or "provider/model@level" — no separate
-step needed. See ` + "`crush models efforts [model]`" + ` to list the levels a model
-supports, and ` + "`crush models bump <role> up|down`" + ` to nudge an already-set
+step needed. See ` + "`rush models efforts [model]`" + ` to list the levels a model
+supports, and ` + "`rush models bump <role> up|down`" + ` to nudge an already-set
 effort later.
 
-See ` + "`crush models list`" + ` for the full atom table.`,
+See ` + "`rush models list`" + ` for the full atom table.`,
 	Args: cobra.MaximumNArgs(2),
 	Example: `
 # Short codes: Opus 4.7 xhigh (1M ctx) + Haiku 4.5 low (200k ctx)
-crush models use o47x h45l
+rush models use o47x h45l
 
 # Sonnet 4.6 high (200k ctx) + Haiku 4.5 low — cheaper than Opus, still smart
-crush models use s46h h45l
+rush models use s46h h45l
 
 # Max thinking on smart (1M ctx), fast on fast
-crush models use o47xx h45l
+rush models use o47xx h45l
 
 # Z.AI stack
-crush models use glm5_3 glm5_turbo
+rush models use glm5_3 glm5_turbo
 
 # Mixed: Opus xhigh (1M ctx) + Z.AI turbo
-crush models use o47x glm5_turbo
+rush models use o47x glm5_turbo
 
 # Long-form atom syntax still works
-crush models use opus-high sonnet-low
+rush models use opus-high sonnet-low
 
 # Also set the worker slot (cheap sub-agent model) in the same call
-crush models use o47x h45l --worker glm5_turbo
+rush models use o47x h45l --worker glm5_turbo
 
 # Also set the reviewer slot (strongest model, --role reviewer only)
-crush models use o47x h45l --reviewer oxx
+rush models use o47x h45l --reviewer oxx
 
 # Set effort on a role slot in the same call: "<atom>-<level>" or "provider/model@level"
-crush models use o47x h45l --reviewer glm5_3-max
+rush models use o47x h45l --reviewer glm5_3-max
 
 # Set worker and reviewer together with smart/fast
-crush models use o47x h45l --worker fl --reviewer oxx
+rush models use o47x h45l --worker fl --reviewer oxx
 
-# Workspace-only override (writes ./.crush/crush.json, leaves global untouched).
-crush models use --local o47x h45l
+# Workspace-only override (writes ./.rush/rush.json, leaves global untouched).
+rush models use --local o47x h45l
 
 # Raw "provider/model[@level]" syntax for models not in the registry.
-crush models use openai/gpt-5@high zai/glm-5-turbo
+rush models use openai/gpt-5@high zai/glm-5-turbo
 
 # Change ONLY the fast slot, leaving smart/worker/reviewer untouched
-crush models use --fast glm4_7_flash
+rush models use --fast glm4_7_flash
 
 # Change ONLY the smart slot
-crush models use --smart o47x
+rush models use --smart o47x
 
 # --smart and --fast together, still without touching worker/reviewer
-crush models use --smart o47x --fast h45l
+rush models use --smart o47x --fast h45l
 
 # After running, verify with:
-crush models state
+rush models state
   `,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		scope, err := scopeFromFlags(cmd, config.ScopeGlobal)
@@ -114,7 +114,7 @@ crush models state
 		switch len(args) {
 		case 2:
 			if smartFlag != "" || fastFlag != "" {
-				return fmt.Errorf("cannot combine positional <smart> <fast> args with --smart/--fast flags — use one form or the other (see `crush models use --help`)")
+				return fmt.Errorf("cannot combine positional <smart> <fast> args with --smart/--fast flags — use one form or the other (see `rush models use --help`)")
 			}
 			smartArg, fastArg = args[0], args[1]
 		case 0:
@@ -189,7 +189,7 @@ crush models state
 		// write (one atomicWriteFile) instead of one write per slot — so
 		// there's no window, even for an I/O-level failure, where only some
 		// of the provided slots landed on disk. This reuses the same
-		// batch-write primitive `crush providers patch` already relies on
+		// batch-write primitive `rush providers patch` already relies on
 		// (config.ConfigStore.SetConfigFields), rather than inventing a new
 		// mechanism.
 		toWrite := map[config.SelectedModelType]config.SelectedModel{}
@@ -240,7 +240,7 @@ func effortSuffix(effort string) string {
 
 func init() {
 	modelsUseCmd.Flags().Bool("global", false, "Target the global config (default when neither --global nor --local is given)")
-	modelsUseCmd.Flags().Bool("local", false, "Target the workspace config (./.crush/crush.json)")
+	modelsUseCmd.Flags().Bool("local", false, "Target the workspace config (./.rush/rush.json)")
 	modelsUseCmd.MarkFlagsMutuallyExclusive("global", "local")
 	modelsUseCmd.Flags().String("smart", "", "Set only the smart slot (atom or provider/model[@level]) — cannot combine with positional args")
 	modelsUseCmd.Flags().String("fast", "", "Set only the fast slot (atom or provider/model[@level]) — cannot combine with positional args")

@@ -1,6 +1,6 @@
 // Package main is the entry point for the Rush CLI, an AI coding assistant
 // built for delegation from orchestrators and scripts. The command tree
-// lives in internal/cmd; the default `crush` invocation starts the fork's
+// lives in internal/cmd; the default `rush` invocation starts the fork's
 // TCP-based WebSocket server (internal/server) and opens the web UI: /auth
 // and /auth/check issue and verify the session cookie, /ws carries the
 // session/agent protocol, and / serves the embedded React build.
@@ -35,7 +35,7 @@ func main() {
 		slog.Debug("Job object assignment skipped", "error", err)
 	}
 
-	if os.Getenv("CRUSH_PROFILE") != "" {
+	if os.Getenv("RUSH_PROFILE") != "" {
 		go func() {
 			slog.Info("Serving pprof at localhost:6060")
 			if httpErr := http.ListenAndServe("localhost:6060", nil); httpErr != nil {

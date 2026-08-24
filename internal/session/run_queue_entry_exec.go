@@ -111,7 +111,7 @@ func (p *RunQueuePump) executeEntrySync(ctx context.Context, leased *RunQueueEnt
 	// function compiled with ctx entirely unused, so a caller's timeout or
 	// cancellation could not stop a continuation that had already begun.
 	// The consequences were not theoretical (P0-2, 2026-08-18
-	// release-readiness review): `crush run --timeout` did not bound a
+	// release-readiness review): `rush run --timeout` did not bound a
 	// durable continuation, App.Shutdown could see an idle pump and close
 	// the DB underneath a live execution, and the goroutine could keep
 	// writing messages after the CLI had already returned an error to the

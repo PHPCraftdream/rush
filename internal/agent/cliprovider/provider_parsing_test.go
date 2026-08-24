@@ -385,7 +385,7 @@ func contains(ss []string, s string) bool {
 // SCOPE NOTE (added on independent review): the delegated /crush fix's own
 // version of this test never called codexMCPConfigArgs (or any other
 // production function) at all — every assertion compared hand-written
-// string literals to themselves (e.g. `expectedEnvVar != "CRUSH_CODEX_MCP_TOKEN"`,
+// string literals to themselves (e.g. `expectedEnvVar != "RUSH_CODEX_MCP_TOKEN"`,
 // comparing the constant to its own value) or checked CLISpec.BuildArgs,
 // which builds the codex CLI's BASE args ("exec --json -m ...") and never
 // includes the MCP-related -c flags at all — those are appended separately,
@@ -412,10 +412,10 @@ func TestCodexMCPConfigArgs_NoTokenInArgs(t *testing.T) {
 	}
 
 	joined := strings.Join(args, " ")
-	if !strings.Contains(joined, "mcp_servers.crush.url=\"http://127.0.0.1:54321/mcp\"") {
+	if !strings.Contains(joined, "mcp_servers.rush.url=\"http://127.0.0.1:54321/mcp\"") {
 		t.Errorf("codexMCPConfigArgs must set a plain MCP URL with no query string, got: %v", args)
 	}
-	if !strings.Contains(joined, "mcp_servers.crush.bearer_token_env_var="+codexMCPTokenEnvVar) {
+	if !strings.Contains(joined, "mcp_servers.rush.bearer_token_env_var="+codexMCPTokenEnvVar) {
 		t.Errorf("codexMCPConfigArgs must reference %s as the bearer_token_env_var, got: %v", codexMCPTokenEnvVar, args)
 	}
 }
@@ -440,7 +440,7 @@ func TestCodexMCPConfigArgs_UsesRealServerToken(t *testing.T) {
 	if strings.Contains(joined, "?token=") {
 		t.Errorf("codexMCPConfigArgs must not produce a query-param token, got: %v", args)
 	}
-	if !strings.Contains(joined, "mcp_servers.crush.bearer_token_env_var="+codexMCPTokenEnvVar) {
+	if !strings.Contains(joined, "mcp_servers.rush.bearer_token_env_var="+codexMCPTokenEnvVar) {
 		t.Errorf("codexMCPConfigArgs must reference %s as the bearer_token_env_var, got: %v", codexMCPTokenEnvVar, args)
 	}
 }

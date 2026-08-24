@@ -194,7 +194,7 @@ func (a *sessionAgent) CancelAll() (stillBusy bool) {
 // activeRequests permanently holds a non-nil (already-fired, inert)
 // cancelFunc for it. The old activeRequests-based IsBusy therefore returned
 // true forever after any session's first turn completed, which meant
-// CancelAll's 5-second drain loop (App.Shutdown, reached by every `crush
+// CancelAll's 5-second drain loop (App.Shutdown, reached by every `rush
 // run` via `defer a.Shutdown()`) always ran to its full timeout instead of
 // returning immediately once genuinely idle. mailboxes.state is the
 // post-migration source of truth for "does this session have a live

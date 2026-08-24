@@ -1,8 +1,8 @@
 // Package agentguard refuses bash invocations that would launch another AI
-// coding agent from inside a crush sub-agent's tool surface. This closes
+// coding agent from inside a rush sub-agent's tool surface. This closes
 // the silent-recursion path where:
 //
-//	parent agent → crush run → sub-agent → bash → claude/codex/gemini → …
+//	parent agent → rush run → sub-agent → bash → claude/codex/gemini → …
 //
 // — every link adds latency, multiplies token spend, and routinely
 // times out before the deepest agent ever returns a useful answer.
@@ -11,7 +11,7 @@
 // in their own shell, where there is a human to confirm and watch costs.
 //
 // Fork patch: batch 16 — added after we burned an evening watching three
-// nested crush invocations bake each other while doing zero real work.
+// nested rush invocations bake each other while doing zero real work.
 package agentguard
 
 import (
@@ -67,8 +67,9 @@ var deniedAgents = map[string]string{
 	"forge":        "Forge agent",
 	"tabby":        "Tabby agent",
 
-	// Tier 3 — us. Blocks any recursive crush invocation regardless of flags.
-	"crush": "this very binary — recursive invocation is never the right answer",
+	// Tier 3 — us. Blocks any recursive rush/crush invocation regardless of flags.
+	"rush": "this very binary — recursive invocation is never the right answer",
+	"crush": "legacy pre-rename binary name for this very binary",
 }
 
 // deniedNpmPackages lists packages a sub-agent might launch through npx /
@@ -292,7 +293,7 @@ func checkSegment(segment string) error {
 	if reason, ok := deniedAgents[headCanon]; ok {
 		return &DeniedError{
 			Tool:    headCanon,
-			Reason:  "AI agent CLI invocation is blocked by crush's architecture (would recurse / multiply cost). Tool: " + reason,
+			Reason:  "AI agent CLI invocation is blocked by rush's architecture (would recurse / multiply cost). Tool: " + reason,
 			Snippet: segment,
 		}
 	}
@@ -378,7 +379,7 @@ func (e *WindowOpenerError) Error() string {
 // Start-Process / Start-Job — the one class of invocation that pops a
 // real, visible window on Windows no matter how the process that RUNS
 // this command string was itself launched. platform.Command hides the
-// window of the process crush directly spawns (e.g. the outer cmd.exe
+// window of the process rush directly spawns (e.g. the outer cmd.exe
 // running this command), but `start` inside that command asks Windows to
 // create a SEPARATE process with its own, independently-chosen creation
 // flags — a request the outer process's hidden-window attribute cannot
@@ -440,7 +441,7 @@ func checkSegmentWindowSafety(segment string) *WindowOpenerError {
 func canonicalName(name string) string {
 	// Strip the directory using BOTH path separators regardless of host OS.
 	// The command string we inspect can carry a Windows path
-	// (D:\bin\claude.exe) even when crush runs on Linux/macOS, where
+	// (D:\bin\claude.exe) even when rush runs on Linux/macOS, where
 	// filepath.Base only understands "/". Without this, agentguard could be
 	// bypassed on non-Windows hosts by spelling the binary with backslashes.
 	base := name

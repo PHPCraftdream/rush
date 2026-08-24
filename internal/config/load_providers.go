@@ -25,7 +25,7 @@ import (
 func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, baseEnv env.Env, resolver VariableResolver, knownProviders []catwalk.Provider) error {
 	knownProviderNames := make(map[string]bool)
 
-	// Overlay CRUSH_X -> X explicitly for both env.Get lookups below and
+	// Overlay RUSH_X -> X explicitly for both env.Get lookups below and
 	// the resolver, rather than mutating the process environment (see
 	// rushEnvOverlay's doc comment for why). The overlay is scoped to
 	// this call: no global state changes, so concurrent reloads/resolves
@@ -210,7 +210,7 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, bas
 			// documents that variable name, don't need to set a second
 			// variable. It's only consulted when the primary resolves
 			// CLEANLY to empty, so ZAI_API_KEY always wins. Both names
-			// honour the CRUSH_ prefix via the overlay built above.
+			// honour the RUSH_ prefix via the overlay built above.
 			v, err := resolver.ResolveValue(p.APIKey)
 			switch {
 			case err != nil:
@@ -314,7 +314,7 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, bas
 			})
 		}
 		// Start from whatever is already in c.Providers for this ID (loaded
-		// from crush.json on this same pass) rather than a bare literal, so
+		// from rush.json on this same pass) rather than a bare literal, so
 		// user-set fields — peak_hours, disable, a custom display name,
 		// system_prompt_prefix, etc. — survive being re-synthesized here on
 		// every config load/reload. Only ID/Type/Models are ever

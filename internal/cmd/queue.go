@@ -20,15 +20,15 @@ import (
 
 var queueCmd = &cobra.Command{
 	Use:   "queue",
-	Short: "Manage a persistent task queue for batched crush run invocations",
-	Long: `The queue system allows batching multiple crush run prompts and
+	Short: "Manage a persistent task queue for batched rush run invocations",
+	Long: `The queue system allows batching multiple rush run prompts and
 executing them sequentially or concurrently.
 
 Workflow:
-  1. crush queue add < prompt     — enqueue a task
-  2. crush queue list              — inspect the queue
-  3. crush queue run               — process pending tasks
-  4. crush queue list              — see results`,
+  1. rush queue add < prompt     — enqueue a task
+  2. rush queue list              — inspect the queue
+  3. rush queue run               — process pending tasks
+  4. rush queue list              — see results`,
 }
 
 var queueAddCmd = &cobra.Command{
@@ -166,10 +166,10 @@ var queueShowCmd = &cobra.Command{
 
 var queueRunCmd = &cobra.Command{
 	Use:   "run",
-	Short: "Process pending queue tasks by spawning crush run subprocesses",
+	Short: "Process pending queue tasks by spawning rush run subprocesses",
 	Long: `Acquire an exclusive lock and process pending tasks from the queue.
 
-Each task is executed by spawning a ` + "`crush run`" + ` subprocess with the
+Each task is executed by spawning a ` + "`rush run`" + ` subprocess with the
 task's prompt, role, cost limit, and timeout. Results (cost, tokens, exit
 reason) are written back to the queue.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -376,11 +376,11 @@ var queueClearCmd = &cobra.Command{
 // queueTaskExecOverride is a test-only seam for runQueueTask. When non-nil,
 // it replaces the real platform.Command + execCmd.Output() call, letting a
 // test intercept the spawned child's argv (e.g. to assert --data-dir
-// forwarding) without spawning a real crush run subprocess. Always nil in
+// forwarding) without spawning a real rush run subprocess. Always nil in
 // production.
 var queueTaskExecOverride func(args []string, cwd, prompt string) ([]byte, error)
 
-// runQueueTask executes a single queue task by spawning crush run.
+// runQueueTask executes a single queue task by spawning rush run.
 // Returns cost, tokens, exit reason, and any error.
 func runQueueTask(ctx context.Context, cwd, dataDir string, task queue.Task) (float64, int64, string, error) {
 	sessionID := task.SessionID
@@ -391,7 +391,7 @@ func runQueueTask(ctx context.Context, cwd, dataDir string, task queue.Task) (fl
 	// os.Executable() resolves to whatever binary the OS currently has
 	// mapped under the canonical install path. Since deploy.go hot-swaps
 	// that binary via rename-aside instead of killing live sessions (see
-	// docs/plans/2026-07-29-relaunch-from-cache.md §7), a queued `crush
+	// docs/plans/2026-07-29-relaunch-from-cache.md §7), a queued `rush
 	// run` spawned from a long-lived parent always gets the CURRENT
 	// canonical binary — the just-updated version, in the unlucky case —
 	// never the version the parent itself was loaded from. This is
@@ -400,7 +400,7 @@ func runQueueTask(ctx context.Context, cwd, dataDir string, task queue.Task) (fl
 	// at startup would not "freeze" a version either (the same path just
 	// points at different bytes after a hot swap), so pinning the child
 	// to the parent's version was considered and rejected as incoherent.
-	crushBin, err := os.Executable()
+	rushBin, err := os.Executable()
 	if err != nil {
 		return 0, 0, "", err
 	}
@@ -434,7 +434,7 @@ func runQueueTask(ctx context.Context, cwd, dataDir string, task queue.Task) (fl
 			return 0, 0, "", overrideErr
 		}
 	} else {
-		execCmd := platform.Command(ctx, crushBin, cmdArgs...)
+		execCmd := platform.Command(ctx, rushBin, cmdArgs...)
 		execCmd.Dir = cwd
 		execCmd.Stdin = strings.NewReader(task.Prompt)
 
@@ -470,14 +470,14 @@ func runQueueTask(ctx context.Context, cwd, dataDir string, task queue.Task) (fl
 	}
 	if jsonErr := json.Unmarshal(output, &result); jsonErr != nil {
 		excerpt := truncate(string(output), 512)
-		return 0, 0, "", fmt.Errorf("parse crush run JSON output: %w (stdout excerpt: %q)", jsonErr, excerpt)
+		return 0, 0, "", fmt.Errorf("parse rush run JSON output: %w (stdout excerpt: %q)", jsonErr, excerpt)
 	}
 	return result.CostUSD, result.Tokens, result.ExitReason, nil
 }
 
 func init() {
 	queueAddCmd.Flags().String("session", "", "Session ID for the run (default: auto-generated from task ID)")
-	queueAddCmd.Flags().String("role", "", "Model role forwarded verbatim to the spawned `crush run --role <role>` (queue run): smart | fast | worker | reviewer (default: smart)")
+	queueAddCmd.Flags().String("role", "", "Model role forwarded verbatim to the spawned `rush run --role <role>` (queue run): smart | fast | worker | reviewer (default: smart)")
 	queueAddCmd.Flags().Float64("max-cost", 0, "Abort if cost exceeds this value (USD)")
 	queueAddCmd.Flags().Int64("max-tokens", 0, "Abort if tokens exceed this value")
 	queueAddCmd.Flags().Duration("timeout", 0, "Timeout for the run (e.g. 10m)")

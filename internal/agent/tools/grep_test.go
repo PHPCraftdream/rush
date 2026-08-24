@@ -35,9 +35,9 @@ func TestGrepWithIgnoreFiles(t *testing.T) {
 	gitignoreContent := "ignored/\n*.key\n"
 	require.NoError(t, os.WriteFile(filepath.Join(tempDir, ".gitignore"), []byte(gitignoreContent), 0o644))
 
-	// Create .crushignore file
+	// Create .rushignore file
 	crushignoreContent := "node_modules/\n"
-	require.NoError(t, os.WriteFile(filepath.Join(tempDir, ".crushignore"), []byte(crushignoreContent), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(tempDir, ".rushignore"), []byte(crushignoreContent), 0o644))
 
 	// Test both implementations
 	for name, fn := range map[string]func(pattern, path, include string) ([]grepMatch, error){
@@ -71,7 +71,7 @@ func TestGrepWithIgnoreFiles(t *testing.T) {
 
 			// Should NOT find ignored files
 			require.False(t, foundFiles["file3.txt"], "Should not find file3.txt (ignored by .gitignore)")
-			require.False(t, foundFiles["lib.js"], "Should not find lib.js (ignored by .crushignore)")
+			require.False(t, foundFiles["lib.js"], "Should not find lib.js (ignored by .rushignore)")
 			require.False(t, foundFiles["secret.key"], "Should not find secret.key (ignored by .gitignore)")
 
 			// Should find exactly 2 matches
@@ -101,7 +101,7 @@ func TestSearchImplementations(t *testing.T) {
 	}
 
 	require.NoError(t, os.WriteFile(filepath.Join(tempDir, ".gitignore"), []byte("file4.txt\n"), 0o644))
-	require.NoError(t, os.WriteFile(filepath.Join(tempDir, ".crushignore"), []byte("file5.txt\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(tempDir, ".rushignore"), []byte("file5.txt\n"), 0o644))
 
 	for name, fn := range map[string]func(pattern, path, include string) ([]grepMatch, error){
 		"regex": func(pattern, path, include string) ([]grepMatch, error) {

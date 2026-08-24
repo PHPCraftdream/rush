@@ -19,13 +19,13 @@ var sessionsWhyCmd = &cobra.Command{
 	Short: "Explain why a session has the status it has",
 	Long: `Print a one-shot diagnostic explaining a session's current status
 (running / crashed / done / at rest) and the evidence behind it, using
-only data crush itself owns: the session/message DB and the lock file.
+only data rush itself owns: the session/message DB and the lock file.
 
 This is the command to reach for when "sessions list" shows a session as
 "crashed" and you want to know whether it genuinely died mid-turn or
 actually finished cleanly and left a stale lock behind. It does NOT read
 external log files or orchestrator redirect output — only the DB and the
-.crush/locks directory.
+.rush/locks directory.
 
 The four possible verdicts:
 
@@ -45,10 +45,10 @@ applies via reclassifyCrashedAsDone, surfaced here in plain language.`,
 	Args: cobra.ExactArgs(1),
 	Example: `
 # Why does sessions list show this one as crashed?
-crush sessions why pr-42
+rush sessions why pr-42
 
 # Same, by hash prefix
-crush sessions why 8a3f0c
+rush sessions why 8a3f0c
   `,
 	RunE: sessionsWhyCmdRun,
 }
@@ -66,7 +66,7 @@ func sessionsWhyCmdRun(cmd *cobra.Command, args []string) error {
 	}
 
 	// explainSessionStatus's second-to-last string parameter is the root
-	// whose "<root>/.crush/locks" subtree holds the session's lock file —
+	// whose "<root>/.rush/locks" subtree holds the session's lock file —
 	// historically named cwd because setupApp's --data-dir-aware
 	// resolution wasn't wired through here. Pass the already-resolved data
 	// directory instead of the raw --cwd value so `sessions why` honors
@@ -78,16 +78,16 @@ func sessionsWhyCmdRun(cmd *cobra.Command, args []string) error {
 
 // explainSessionStatus writes a terse, plain-text explanation of why the
 // session has the status it has. It is the testable core of
-// `crush sessions why`: it takes the app services, the resolved data
+// `rush sessions why`: it takes the app services, the resolved data
 // directory (for the locks dir), the session id, and an output writer, so
 // tests can drive it with a hand-built *app.App and a t.TempDir() without
 // spinning up cobra.
 //
-// dataDir is the crush data directory itself (e.g. what
+// dataDir is the rush data directory itself (e.g. what
 // a.Config().Options.DataDirectory resolves to — honoring --data-dir / a
 // configured data_directory), NOT the project cwd: the lock file lives at
 // <dataDir>/locks/session-<id>.lock, one level shallower than the old
-// <cwd>/.crush/locks layout this parameter used to assume. See task #233
+// <cwd>/.rush/locks layout this parameter used to assume. See task #233
 // (same cwd-hardcoding bug class as #219/#224/#231): the caller used to
 // pass the raw --cwd value here, ignoring --data-dir entirely.
 //
@@ -278,7 +278,7 @@ func explainSessionStatus(ctx context.Context, a *app.App, dataDir, sessionID st
 			} else {
 				fmt.Fprintf(out, "no clean finish found (last finish: %s) — likely died mid-turn.\n", finishReasonOrUnknown(finish))
 			}
-			fmt.Fprintf(out, "If this was an unrecovered panic, grep crush.log for %q around the\n", crashLogMarker)
+			fmt.Fprintf(out, "If this was an unrecovered panic, grep rush.log for %q around the\n", crashLogMarker)
 			fmt.Fprintf(out, "time this session's lock went stale — Execute's top-level recover logs\n")
 			fmt.Fprintf(out, "the panic and stack trace there before the process exits.\n")
 		}

@@ -23,13 +23,13 @@ var (
 func Setup(logFile string, debug bool, ws ...io.Writer) {
 	initOnce.Do(func() {
 		// Remember where logs live so DumpGoroutines can drop hang dumps
-		// next to crush.log without threading config through every caller.
+		// next to rush.log without threading config through every caller.
 		if logFile != "" {
 			logDir.Store(filepath.Dir(logFile))
 		}
 		// Fork patch (concurrency): MaxBackups was 0 upstream, which
 		// effectively disabled rotation — once a process reached MaxSize
-		// the file grew indefinitely. Under parallel `crush run` the
+		// the file grew indefinitely. Under parallel `rush run` the
 		// shared log file balloons quickly. Keep 3 compressed backups so
 		// rotation actually runs but disk usage stays bounded. See
 		// CHANGELOG.fork.md.
@@ -51,8 +51,8 @@ func Setup(logFile string, debug bool, ws ...io.Writer) {
 			AddSource: true,
 		}
 
-		// Tag every entry with this process's PID. When two crush
-		// processes share a .crush dir (common with parallel `crush run
+		// Tag every entry with this process's PID. When two rush
+		// processes share a .rush dir (common with parallel `rush run
 		// --session X` orchestration), the lumberjack file gets
 		// interleaved writes from both. The pid attribute lets
 		// post-hoc filtering split them cleanly: `jq 'select(.pid==N)'`.
@@ -86,7 +86,7 @@ func RecoverPanic(name string, cleanup func()) {
 	if r := recover(); r != nil {
 		// Create a timestamped panic log file
 		timestamp := time.Now().Format("20060102-150405")
-		filename := fmt.Sprintf("crush-panic-%s-%s.log", name, timestamp)
+		filename := fmt.Sprintf("rush-panic-%s-%s.log", name, timestamp)
 
 		file, err := os.Create(filename)
 		if err == nil {

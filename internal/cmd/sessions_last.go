@@ -21,13 +21,13 @@ Use --n to control how many messages to show (default 10).
 Use --format ndjson for machine-readable output.`,
 	Example: `
 # Show last 10 messages
-crush sessions last myid-123
+rush sessions last myid-123
 
 # Show last 3 messages
-crush sessions last myid-123 --n 3
+rush sessions last myid-123 --n 3
 
 # Machine-readable
-crush sessions last myid-123 --format ndjson | jq '.role'
+rush sessions last myid-123 --format ndjson | jq '.role'
 `,
 	Args: cobra.ExactArgs(1),
 	RunE: sessionsLastCmdRun,

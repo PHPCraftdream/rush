@@ -126,7 +126,7 @@ func handleLoadMessages(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 // closed: "no coordinator to prove idle" must not weaken the streaming guard.
 //
 // Task #622 (F-1) parity, redesigned in #631: in-process idle alone does
-// not prove orphanhood — a `crush run --session S` in a DIFFERENT process
+// not prove orphanhood — a `rush run --session S` in a DIFFERENT process
 // writing to the same row is invisible to IsSessionBusy. The rescue
 // therefore also holds the kernel-attested SHARED lock probe on the
 // session's OS lock file (holdExternalSilenceProof — including its

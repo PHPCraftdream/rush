@@ -42,7 +42,7 @@ func TestRemoveProviderAPIKey_OldSnapshotUnaffected(t *testing.T) {
 	}
 	store := newTestConfigStore(testStoreOpts{
 		config:         cfg,
-		globalDataPath: filepath.Join(t.TempDir(), "crush.json"),
+		globalDataPath: filepath.Join(t.TempDir(), "rush.json"),
 	})
 
 	// Capture a snapshot BEFORE the removal.
@@ -84,7 +84,7 @@ func TestRemoveProviderAPIKey_IncrementsGeneration(t *testing.T) {
 	}
 	store := newTestConfigStore(testStoreOpts{
 		config:         cfg,
-		globalDataPath: filepath.Join(t.TempDir(), "crush.json"),
+		globalDataPath: filepath.Join(t.TempDir(), "rush.json"),
 	})
 
 	initialGen := store.Generation()

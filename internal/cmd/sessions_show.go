@@ -28,16 +28,16 @@ message content (default truncates to 200 chars per message).`,
 	Args: cobra.ExactArgs(1),
 	Example: `
 # Human-readable inspection
-crush sessions show myid-123
+rush sessions show myid-123
 
 # Full session data with all messages
-crush sessions show myid-123 --with-messages
+rush sessions show myid-123 --with-messages
 
 # Machine-readable format for scripts
-crush sessions show myid-123 --json
+rush sessions show myid-123 --json
 
 # See everything including full message content
-crush sessions show myid-123 --with-messages --full --json
+rush sessions show myid-123 --with-messages --full --json
   `,
 	RunE: sessionsShowCmdRun,
 }

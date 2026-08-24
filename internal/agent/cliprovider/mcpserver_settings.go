@@ -1,9 +1,9 @@
 package cliprovider
 
-// Registration of the crush MCP server in external CLI settings files
+// Registration of the rush MCP server in external CLI settings files
 // (~/.qwen/settings.json and ~/.gemini/settings.json): stable per-project
 // server IDs, register/deregister pairs, and the flock helpers that
-// serialise settings read-modify-write cycles across parallel crush runs.
+// serialise settings read-modify-write cycles across parallel rush runs.
 
 import (
 	"context"
@@ -22,7 +22,7 @@ import (
 
 // mcpConfigLockTimeout caps how long an MCP id/settings flock will
 // wait before failing. Fork patch (concurrency): chosen so a wedged
-// sibling crush process (debugger, suspended shell, frozen NFS mount)
+// sibling rush process (debugger, suspended shell, frozen NFS mount)
 // cannot freeze the entire parallel-run fleet on a shared id/settings
 // file — see CHANGELOG.fork.md (Section 4.I).
 const mcpConfigLockTimeout = 30 * time.Second
@@ -39,28 +39,28 @@ func acquireMCPConfigLock(lockPath string) (*session.FileLock, error) {
 // ── qwen MCP registration ─────────────────────────────────────────────────────
 
 // qwenMCPID returns a stable MCP server name for the given workingDir.
-// If <workingDir>/.crush/ already exists, the ID is stored there in qwen-mcp-id.
-// Otherwise a temp file keyed by workingDir is used so we never create .crush/
-// in directories that don't already have a crush project.
+// If <workingDir>/.rush/ already exists, the ID is stored there in qwen-mcp-id.
+// Otherwise a temp file keyed by workingDir is used so we never create .rush/
+// in directories that don't already have a rush project.
 //
 // Fork patch (concurrency): wrap the read-then-write of the id file with
-// a flock (session.AcquireFileLock) so two parallel `crush run` processes
+// a flock (session.AcquireFileLock) so two parallel `rush run` processes
 // in the same workingDir cannot both miss the file, both generate a UUID,
 // and end up with a split-brain MCP server name. See CHANGELOG.fork.md.
 func qwenMCPID(workingDir string) (string, error) {
 	var idFile string
-	crushDir := filepath.Join(workingDir, ".crush")
+	crushDir := filepath.Join(workingDir, ".rush")
 	if info, err := os.Stat(crushDir); err == nil && info.IsDir() {
-		// .crush/ exists — this is a crush project directory, store ID there.
+		// .rush/ exists — this is a rush project directory, store ID there.
 		idFile = filepath.Join(crushDir, "qwen-mcp-id")
 	} else {
-		// No .crush/ here — use a temp file keyed by a hash of the path so
-		// the ID remains stable across crush restarts without polluting the dir.
+		// No .rush/ here — use a temp file keyed by a hash of the path so
+		// the ID remains stable across rush restarts without polluting the dir.
 		h := fmt.Sprintf("%x", []byte(workingDir))
 		if len(h) > 16 {
 			h = h[:16]
 		}
-		idFile = filepath.Join(os.TempDir(), "crush-qwen-mcp-"+h)
+		idFile = filepath.Join(os.TempDir(), "rush-qwen-mcp-"+h)
 	}
 	// Fork patch: serialise the read-modify-write below across processes.
 	lock, err := acquireMCPConfigLock(idFile + ".lock")
@@ -74,7 +74,7 @@ func qwenMCPID(workingDir string) (string, error) {
 		}
 	}
 	// Generate a short stable ID for this project.
-	id := "crush-" + uuid.New().String()[:8]
+	id := "rush-" + uuid.New().String()[:8]
 	if err := fsext.AtomicWriteFile(idFile, []byte(id), 0o644); err != nil {
 		return "", fmt.Errorf("cliprovider: write qwen-mcp-id: %w", err)
 	}
@@ -91,14 +91,14 @@ func qwenSettingsPath() (string, error) {
 	return filepath.Join(home, ".qwen", "settings.json"), nil
 }
 
-// registerQwenMCP adds the crush MCP server to ~/.qwen/settings.json.
+// registerQwenMCP adds the rush MCP server to ~/.qwen/settings.json.
 // It removes any stale entry with the same name first, then writes the new URL.
 // The Authorization: Bearer header is stored in the settings so Qwen sends it
 // with each MCP request.
 //
 // Fork patch (concurrency): the read-modify-write of settings.json is
-// guarded by a sibling .lock file so parallel `crush run` processes (or
-// concurrent crush + qwen invocations) cannot stomp each other's
+// guarded by a sibling .lock file so parallel `rush run` processes (or
+// concurrent rush + qwen invocations) cannot stomp each other's
 // entries, and the write itself is atomic so a kill mid-write cannot
 // leave a half-truncated settings.json. See CHANGELOG.fork.md.
 func registerQwenMCP(serverName, addr, token string) error {
@@ -140,12 +140,12 @@ func registerQwenMCP(serverName, addr, token string) error {
 	return fsext.AtomicWriteFile(path, data, 0o644)
 }
 
-// deregisterQwenMCP removes the crush MCP entry from ~/.qwen/settings.json,
+// deregisterQwenMCP removes the rush MCP entry from ~/.qwen/settings.json,
 // but ONLY if it still points at expectedAddr — the exact addr this specific
 // call's own registerQwenMCP wrote.
 //
 // serverName is a STABLE per-workingDir ID (see qwenMCPID), so two
-// concurrent crush sessions in the same project both integrating with Qwen
+// concurrent rush sessions in the same project both integrating with Qwen
 // share one mcpServers[serverName] entry: registerQwenMCP unconditionally
 // overwrites it with whichever session called last, and an unconditional
 // delete here used to remove the entry regardless of which session
@@ -210,7 +210,7 @@ func deregisterQwenMCP(serverName, expectedAddr string) {
 // qwenMCPID — see that function's note.
 func geminiMCPID(workingDir string) (string, error) {
 	var idFile string
-	crushDir := filepath.Join(workingDir, ".crush")
+	crushDir := filepath.Join(workingDir, ".rush")
 	if info, err := os.Stat(crushDir); err == nil && info.IsDir() {
 		idFile = filepath.Join(crushDir, "gemini-mcp-id")
 	} else {
@@ -218,7 +218,7 @@ func geminiMCPID(workingDir string) (string, error) {
 		if len(h) > 16 {
 			h = h[:16]
 		}
-		idFile = filepath.Join(os.TempDir(), "crush-gemini-mcp-"+h)
+		idFile = filepath.Join(os.TempDir(), "rush-gemini-mcp-"+h)
 	}
 	lock, err := acquireMCPConfigLock(idFile + ".lock")
 	if err != nil {
@@ -230,7 +230,7 @@ func geminiMCPID(workingDir string) (string, error) {
 			return id, nil
 		}
 	}
-	id := "crush-" + uuid.New().String()[:8]
+	id := "rush-" + uuid.New().String()[:8]
 	if err := fsext.AtomicWriteFile(idFile, []byte(id), 0o644); err != nil {
 		return "", fmt.Errorf("cliprovider: write gemini-mcp-id: %w", err)
 	}
@@ -247,10 +247,10 @@ func geminiSettingsPath() (string, error) {
 	return filepath.Join(home, ".gemini", "settings.json"), nil
 }
 
-// registerGeminiMCP adds the crush MCP server to ~/.gemini/settings.json.
+// registerGeminiMCP adds the rush MCP server to ~/.gemini/settings.json.
 // The Authorization: Bearer header is stored in the settings so Gemini sends
 // it with each MCP request. trust:true bypasses Gemini's own confirmation
-// prompts so tool calls flow directly to crush's permission dialog.
+// prompts so tool calls flow directly to rush's permission dialog.
 // Fork patch (concurrency): flock + atomic-write — see registerQwenMCP.
 func registerGeminiMCP(serverName, addr, token string) error {
 	path, err := geminiSettingsPath()
@@ -293,7 +293,7 @@ func registerGeminiMCP(serverName, addr, token string) error {
 	return fsext.AtomicWriteFile(path, data, 0o644)
 }
 
-// deregisterGeminiMCP removes the crush MCP entry from
+// deregisterGeminiMCP removes the rush MCP entry from
 // ~/.gemini/settings.json, but ONLY if it still points at expectedAddr —
 // the exact addr this specific call's own registerGeminiMCP wrote. See
 // deregisterQwenMCP's doc for why an unconditional delete is unsafe when

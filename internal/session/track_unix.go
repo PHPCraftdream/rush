@@ -72,7 +72,7 @@ func UntrackProcessTree(pid int) {
 
 // KillAllTrackedTrees SIGKILLs every tracked process group and forgets them.
 // It is the Unix stand-in for the kill-on-close Job Object: a last-resort
-// sweep for paths where crush is about to die without running its normal
+// sweep for paths where rush is about to die without running its normal
 // per-stream cleanup.
 //
 // Returns how many groups it signalled, which is the only thing a caller can

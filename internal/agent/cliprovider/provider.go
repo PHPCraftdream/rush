@@ -37,13 +37,13 @@ var ReasoningEffortContextKey = reasoningEffortContextKey{}
 
 // Fork patch: batch 14 — non-interactive context propagation.
 //
-// nonInteractiveContextKey marks the request as coming from `crush run` (a
+// nonInteractiveContextKey marks the request as coming from `rush run` (a
 // non-interactive entry point with no human at the keyboard). When set, the
 // CLI sub-process is launched with its own bypass-permissions flag
 // (claude --dangerously-skip-permissions, codex --approval-mode yolo,
 // gemini --yolo) regardless of the runtime yoloFn. Otherwise the inner
 // CLI would block waiting for an interactive permission prompt that
-// nobody is there to answer, and `crush run` would hang silently.
+// nobody is there to answer, and `rush run` would hang silently.
 type nonInteractiveContextKey struct{}
 
 // NonInteractiveContextKey is set by app.RunNonInteractive on the agent
@@ -83,7 +83,7 @@ const maxPromptArgLen = 30 * 1024
 // these tools installed via npm. A real system prompt is routinely ~10-15KB
 // once skills, MCP tool descriptions, and env/git context are folded in —
 // comfortably under maxPromptArgLen's 30KB, but well past cmd.exe's ~8191
-// character ceiling. Found via a smoke test of a real `crush run`
+// character ceiling. Found via a smoke test of a real `rush run`
 // invocation on Windows: the underlying claude.cmd process exited with
 // status 1 and its only PTY output was cmd.exe's own
 // "The command line is too long." — before this fix, maxPromptArgLen's 30KB
@@ -153,10 +153,10 @@ type cliProvider struct {
 	sessions    session.Service
 	mcpProxy    ExternalMCPProxy
 	specs       map[string]CLISpec
-	cliSessions *csync.Map[string, cliSessionEntry] // crush session key → CLI session entry
+	cliSessions *csync.Map[string, cliSessionEntry] // rush session key → CLI session entry
 }
 
-// ExternalMCPTool describes an external MCP tool to expose through the crush MCP bridge.
+// ExternalMCPTool describes an external MCP tool to expose through the rush MCP bridge.
 type ExternalMCPTool struct {
 	ServerName  string
 	Name        string
@@ -175,14 +175,14 @@ type ExternalMCPProxy interface {
 
 // New creates a CLI provider that runs all specs from [All].
 // workingDir is set as the working directory for every CLI invocation.
-// dataDir is the session data directory (holds .crush/locks/*) -- used
+// dataDir is the session data directory (holds .rush/locks/*) -- used
 // only to durably register CLI-provider child process groups so
-// `crush sessions kill` can reach them cross-process (see
+// `rush sessions kill` can reach them cross-process (see
 // internal/session/childgroup_registry_unix.go); pass "" to disable that
-// registration (e.g. from a caller, like `crush ping`, that has no
+// registration (e.g. from a caller, like `rush ping`, that has no
 // meaningful per-session data directory context).
 // yoloFn is called at request time to decide whether to pass the auto-accept flag.
-// perms is used to show crush's permission dialog when UseRushMCP specs are invoked.
+// perms is used to show rush's permission dialog when UseRushMCP specs are invoked.
 // sessions is used by the todos MCP tool to persist task lists.
 // mcpProxy, if non-nil, is used for proxying external MCP tools to CLI models.
 func New(workingDir, dataDir string, yoloFn func() bool, perms permission.Service, sessions session.Service, mcpProxy ExternalMCPProxy) fantasy.Provider {

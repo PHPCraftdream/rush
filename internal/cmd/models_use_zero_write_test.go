@@ -1,4 +1,4 @@
-// Zero-write and atomicity tests for `crush models use`: any validation
+// Zero-write and atomicity tests for `rush models use`: any validation
 // failure (invalid effort suffix, unresolvable atom) must leave the config
 // file byte-identical, and the fully-valid case must still write all slots.
 package cmd
@@ -21,7 +21,7 @@ import (
 // --reviewer, so a typo'd effort like "glm5_3-hihg" left smart/fast durably
 // changed even though the overall command reported failure. This asserts the
 // raw on-disk bytes are byte-identical to the pre-command state (the seed
-// `{}` isolatedModelsEnv wrote), not just crush state's "effective" view,
+// `{}` isolatedModelsEnv wrote), not just rush state's "effective" view,
 // which could misleadingly inherit a prior write.
 //
 // Uses the atom form "glm5_3-hihg" rather than the raw "zai/glm-5.3@hihg"

@@ -16,8 +16,8 @@ import (
 
 // providerCacheTTL is how long a previously-fetched providers.json on
 // disk is considered fresh enough to short-circuit the network call.
-// Override with CRUSH_PROVIDER_CACHE_TTL (e.g. "1h", "0s" to always
-// re-fetch). Default chosen so a workstation that runs `crush models
+// Override with RUSH_PROVIDER_CACHE_TTL (e.g. "1h", "0s" to always
+// re-fetch). Default chosen so a workstation that runs `rush models
 // show` 50 times a day doesn't pay 50× 3s = ~2.5 minutes of latency
 // over the day — refreshes happen at most once per 24h.
 //
@@ -26,7 +26,7 @@ import (
 const defaultProviderCacheTTL = 24 * time.Hour
 
 func providerCacheTTL() time.Duration {
-	if v := os.Getenv("CRUSH_PROVIDER_CACHE_TTL"); v != "" {
+	if v := os.Getenv("RUSH_PROVIDER_CACHE_TTL"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			return d
 		}
@@ -37,16 +37,16 @@ func providerCacheTTL() time.Duration {
 // providerCacheOnly reports whether provider syncers should operate in
 // cache-only mode: read the on-disk cache (or fall back to embedded
 // providers when no cache exists) and NEVER hit the network or write
-// the cache. Opt-in via CRUSH_PROVIDER_CACHE_ONLY=1.
+// the cache. Opt-in via RUSH_PROVIDER_CACHE_ONLY=1.
 //
-// Fork patch (orchestrator UX): `crush models list` sets this so a
+// Fork patch (orchestrator UX): `rush models list` sets this so a
 // read-only listing does not produce "Fetching Hyper provider" /
 // "Fetching providers from Catwalk" log lines or provider cache writes
-// as a side effect. Use `crush models list --refresh` (which clears
-// this and forces CRUSH_PROVIDER_CACHE_TTL=0) to force a network
+// as a side effect. Use `rush models list --refresh` (which clears
+// this and forces RUSH_PROVIDER_CACHE_TTL=0) to force a network
 // refresh.
 func providerCacheOnly() bool {
-	v := os.Getenv("CRUSH_PROVIDER_CACHE_ONLY")
+	v := os.Getenv("RUSH_PROVIDER_CACHE_ONLY")
 	if v == "" {
 		return false
 	}
@@ -98,8 +98,8 @@ func (s *catwalkSync) Get(ctx context.Context) ([]catwalk.Provider, error) {
 		// Fork patch (orchestrator UX): cache-only mode short-circuits
 		// here: serve whatever the on-disk cache had (or embedded
 		// fallback populated above) without ever calling the network
-		// client or rewriting the cache. Driven by CRUSH_PROVIDER_CACHE_ONLY,
-		// set by `crush models list` so a read-only listing has no
+		// client or rewriting the cache. Driven by RUSH_PROVIDER_CACHE_ONLY,
+		// set by `rush models list` so a read-only listing has no
 		// network/disk side effects.
 		if providerCacheOnly() {
 			slog.Debug("Catwalk providers cache-only mode, skipping fetch", "cached", len(cached))
@@ -109,7 +109,7 @@ func (s *catwalkSync) Get(ctx context.Context) ([]catwalk.Provider, error) {
 
 		// Fork patch (orchestrator UX): skip the HTTP call when the
 		// on-disk cache is younger than providerCacheTTL. Saves ~1.5s
-		// per `crush models show` after the first call of the day.
+		// per `rush models show` after the first call of the day.
 		if age, ageErr := s.cache.Age(); ageErr == nil && age < providerCacheTTL() && len(cached) > 0 && cachedErr == nil {
 			slog.Debug("Catwalk providers cache fresh, skipping fetch", "age", age, "ttl", providerCacheTTL())
 			s.result = cached

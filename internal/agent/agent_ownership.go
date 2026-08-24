@@ -552,7 +552,7 @@ func (a *sessionAgent) restartOrphanedWithRetry(calls []SessionAgentCall) error 
 
 // promptHash returns a safe hash of the prompt for logging (never the raw prompt).
 // This prevents leaking user data (system prompts, history, secrets) into logs.
-// Only used when CRUSH_CLIPROVIDER_LOG_RAW_PROMPT is NOT enabled.
+// Only used when RUSH_CLIPROVIDER_LOG_RAW_PROMPT is NOT enabled.
 func promptHash(prompt string) string {
 	if prompt == "" {
 		return ""

@@ -63,7 +63,7 @@ func TestModelsUnset_AcceptedPositionals(t *testing.T) {
 }
 
 // TestModelsUnset_RegisteredAsSubcommand sanity-checks that init() registered
-// the new command under `crush models`.
+// the new command under `rush models`.
 func TestModelsUnset_RegisteredAsSubcommand(t *testing.T) {
 	found := false
 	for _, sub := range modelsCmd.Commands() {

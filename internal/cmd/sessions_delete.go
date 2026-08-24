@@ -21,12 +21,12 @@ var sessionsDeleteCmd = &cobra.Command{
 
 The <id> can be a full session id or a hash prefix (as printed by
 "sessions list"). Use this to clean up scratch sessions created during
-experiments — for example, the per-PR ids that "crush run --session pr-NN"
+experiments — for example, the per-PR ids that "rush run --session pr-NN"
 leaves behind after the work is merged.`,
 	Args: cobra.ExactArgs(1),
 	Example: `
-crush sessions delete pr-42
-crush sessions delete 8a3f0c  # match by hash prefix
+rush sessions delete pr-42
+rush sessions delete 8a3f0c  # match by hash prefix
   `,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		a, err := setupApp(cmd)

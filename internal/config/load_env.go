@@ -1,5 +1,5 @@
 // Environment overlay and credential probes for provider setup: the
-// CRUSH_-prefixed shadow map fed to variable resolution, and the AWS
+// RUSH_-prefixed shadow map fed to variable resolution, and the AWS
 // credential detection behind the Bedrock provider check.
 package config
 
@@ -13,9 +13,9 @@ import (
 	"github.com/PHPCraftdream/rush/internal/home"
 )
 
-// rushEnvOverlay scans e for "CRUSH_X" entries and returns a map of the
+// rushEnvOverlay scans e for "RUSH_X" entries and returns a map of the
 // bare "X" -> value they should shadow, so a config value written as
-// "$FOO" resolves against CRUSH_FOO when the caller has set it (the
+// "$FOO" resolves against RUSH_FOO when the caller has set it (the
 // documented escape hatch for overriding a variable crush itself doesn't
 // own, e.g. in CI or a sandboxed agent run without touching the real
 // FOO for every other process on the machine).
@@ -35,7 +35,7 @@ import (
 // mechanism: the overlay computed here is passed explicitly to the
 // resolver and to configureProviders' own env.Get calls instead.
 func rushEnvOverlay(e env.Env) map[string]string {
-	const prefix = "CRUSH_"
+	const prefix = "RUSH_"
 	overlay := make(map[string]string)
 	for _, ev := range e.Env() {
 		key, _, ok := strings.Cut(ev, "=")

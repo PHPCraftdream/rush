@@ -1,4 +1,4 @@
-// Effort-suffix validation for `crush models use`: the raw
+// Effort-suffix validation for `rush models use`: the raw
 // "provider/model@effort" syntax through the real CLI path (seedZAIProvider
 // keeps zai resolvable) plus direct unit tests of validateEffortForModel.
 package cmd
@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// seedZAIProvider overwrites the isolated crush.json at globalPath with an
+// seedZAIProvider overwrites the isolated rush.json at globalPath with an
 // explicit zai provider that carries a literal (self-resolving, non-empty)
 // api_key.
 //
@@ -24,9 +24,9 @@ import (
 // dropped and "zai/glm-4.7-flash" resolves to nothing.
 //
 // These tests historically passed ONLY by accident: isolatedModelsEnv
-// redirects CRUSH_GLOBAL_DATA/XDG_DATA_HOME but NOT GlobalConfig()
-// (CRUSH_GLOBAL_CONFIG/XDG_CONFIG_HOME), so on a dev machine with a real
-// ~/.config/crush/crush.json configuring zai with an api_key, that host
+// redirects RUSH_GLOBAL_DATA/XDG_DATA_HOME but NOT GlobalConfig()
+// (RUSH_GLOBAL_CONFIG/XDG_CONFIG_HOME), so on a dev machine with a real
+// ~/.config/rush/rush.json configuring zai with an api_key, that host
 // config leaked in and kept the provider alive. On a from-scratch CI runner
 // (no such file, no env keys) the provider was absent and these tests failed
 // with `model "zai/glm-4.7-flash" not found`. Seeding the provider explicitly

@@ -1,6 +1,6 @@
-// Fork patch: batch 13 — `crush models unset [smart|fast|both] [--global|--local]`
+// Fork patch: batch 13 — `rush models unset [smart|fast|both] [--global|--local]`
 // removes a model override from the chosen scope so the other scope takes
-// effect, without having to hand-edit crush.json or `rm` the whole file.
+// effect, without having to hand-edit rush.json or `rm` the whole file.
 package cmd
 
 import (
@@ -15,19 +15,19 @@ var modelsUnsetCmd = &cobra.Command{
 	Use:   "unset [smart|fast|worker|reviewer|both|all]",
 	Short: "Remove a model override from the chosen scope (defaults to smart+fast, global scope)",
 	Long: `Delete the models.<slot> entry (or entries) from the chosen scope's
-crush.json so the OTHER scope's value becomes effective again.
+rush.json so the OTHER scope's value becomes effective again.
 
 Positional arg (optional):
   smart     — only the smart slot
   fast      — only the fast slot
   worker    — only the optional worker slot
   reviewer  — only the optional reviewer slot
-  both      — smart + fast (default if omitted; matches ` + "`crush models use`" + `'s scope)
+  both      — smart + fast (default if omitted; matches ` + "`rush models use`" + `'s scope)
   all       — all four slots, including worker/reviewer
 
 Scope flags (mutually exclusive):
-  --global  (default) ~/.local/share/crush/crush.json
-  --local             ./.crush/crush.json
+  --global  (default) ~/.local/share/rush/rush.json
+  --local             ./.rush/rush.json
 
 Missing keys are a no-op (exit 0). After the deletion, an empty
 "models" object is also stripped so the file stays clean.`,
@@ -35,28 +35,28 @@ Missing keys are a no-op (exit 0). After the deletion, an empty
 	ValidArgs: []string{"smart", "fast", "worker", "reviewer", "both", "all"},
 	Example: `
 # Clear the smart+fast workspace override so the global config takes effect again.
-crush models unset --local
+rush models unset --local
 
-# Same but globally — wipes smart+fast from ~/.local/share/crush/crush.json.
-crush models unset --global
+# Same but globally — wipes smart+fast from ~/.local/share/rush/rush.json.
+rush models unset --global
 
 # Drop just the smart slot in the workspace; keep the fast one.
-crush models unset smart --local
+rush models unset smart --local
 
 # Drop just the fast slot globally.
-crush models unset fast --global
+rush models unset fast --global
 
 # Clear the worker slot globally (falls back to no worker — sub-agents use smart).
-crush models unset worker --global
+rush models unset worker --global
 
 # Clear the reviewer slot in the workspace.
-crush models unset reviewer --local
+rush models unset reviewer --local
 
 # Clear all four slots (smart, fast, worker, reviewer) globally.
-crush models unset all --global
+rush models unset all --global
 
 # Confirm what survived:
-crush models state
+rush models state
   `,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		which := "both"
@@ -143,7 +143,7 @@ crush models state
 
 func init() {
 	modelsUnsetCmd.Flags().Bool("global", false, "Target the global config (default when neither --global nor --local is given)")
-	modelsUnsetCmd.Flags().Bool("local", false, "Target the workspace config (./.crush/crush.json)")
+	modelsUnsetCmd.Flags().Bool("local", false, "Target the workspace config (./.rush/rush.json)")
 	modelsUnsetCmd.MarkFlagsMutuallyExclusive("global", "local")
 	modelsCmd.AddCommand(modelsUnsetCmd)
 }

@@ -55,9 +55,9 @@ type Skill struct {
 	Path                   string            `yaml:"-" json:"path"`
 	SkillFilePath          string            `yaml:"-" json:"skill_file_path"`
 	// Source identifies which AI tool this skill/command comes from (e.g.
-	// "claude", "gemini", "crush"). Fork-only field — drives our
+	// "claude", "gemini", "rush"). Fork-only field — drives our
 	// DiscoverCommands scrape of ~/.claude/commands/, ~/.gemini/commands/,
-	// ~/.crush/commands/ etc that the WebUI surfaces as slash-commands.
+	// ~/.rush/commands/ etc that the WebUI surfaces as slash-commands.
 	Source  string `yaml:"-" json:"source,omitempty"`
 	Builtin bool   `yaml:"-" json:"-"`
 }
@@ -85,7 +85,7 @@ func DefaultCommandDirs() []CommandDir {
 			CommandDir{Path: filepath.Join(cwd, ".claude", "commands"), Source: "claude"},
 			CommandDir{Path: filepath.Join(cwd, ".gemini", "commands"), Source: "gemini"},
 			CommandDir{Path: filepath.Join(cwd, ".qwen", "commands"), Source: "qwen"},
-			CommandDir{Path: filepath.Join(cwd, ".crush", "commands"), Source: "crush"},
+			CommandDir{Path: filepath.Join(cwd, ".rush", "commands"), Source: "rush"},
 		)
 	}
 	return dirs
@@ -106,8 +106,8 @@ func SourceFromPath(path string) string {
 		return "zed"
 	case strings.Contains(norm, "/.windsurf/") || strings.Contains(norm, "/.windsurf\\"):
 		return "windsurf"
-	case strings.Contains(norm, "crush"):
-		return "crush"
+	case strings.Contains(norm, "rush"):
+		return "rush"
 	default:
 		return "local"
 	}
@@ -117,8 +117,8 @@ func SourceFromPath(path string) string {
 // a specific model to run under (a `model:` frontmatter field — the pattern
 // `cah install` uses for its per-model shortcuts like /oxx, /sh, /fl, ...).
 // Those are meant to be typed directly by the operator to switch the
-// current turn's model, not surfaced in crush's own command/skill list —
-// crush has its own model-selection UI and doesn't route slash-commands to
+// current turn's model, not surfaced in rush's own command/skill list —
+// rush has its own model-selection UI and doesn't route slash-commands to
 // specific models.
 var ErrPerModelCommand = errors.New("per-model command, not a general-purpose command")
 

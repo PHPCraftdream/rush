@@ -2,18 +2,18 @@
 
 # Build everything: React app + Go binary with embedded assets.
 build: web
-	go build -o crush .
+	go build -o rush .
 
 # Build only the React app into web/dist/.
 web:
 	cd web && npm install && npm run build
 
-# Start React dev server (pair with: crush web --port 3030 --no-open).
+# Start React dev server (pair with: rush web --port 3030 --no-open).
 web-dev:
 	cd web && npm install && npm run dev
 
 clean:
-	rm -rf web/dist web/node_modules crush
+	rm -rf web/dist web/node_modules rush
 
 # Point git at the versioned hooks in .githooks/ (run once per clone).
 install-hooks:

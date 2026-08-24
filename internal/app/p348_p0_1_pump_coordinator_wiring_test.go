@@ -98,26 +98,26 @@ import (
 func TestAppNew_RunQueuePump_ExecutesRealEnqueuedCall(t *testing.T) {
 	// CRITICAL: isolate global config/data resolution before calling
 	// app.New() below. Without this, App.New's app.checkForUpdates and
-	// mcp.Initialize read the REAL host ~/.config/crush/crush.json and, if
+	// mcp.Initialize read the REAL host ~/.config/rush/rush.json and, if
 	// it configures MCP servers, try to open real network connections from
 	// inside this test — this exact path previously hung a stress run for
 	// 9+ minutes elsewhere in this repo (see
 	// internal/cmd/providers_test.go's runProvidersCmdInIsolatedApp, whose
-	// pattern this mirrors). GlobalConfig() (CRUSH_GLOBAL_CONFIG/
-	// XDG_CONFIG_HOME) and GlobalConfigData() (CRUSH_GLOBAL_DATA/
+	// pattern this mirrors). GlobalConfig() (RUSH_GLOBAL_CONFIG/
+	// XDG_CONFIG_HOME) and GlobalConfigData() (RUSH_GLOBAL_DATA/
 	// XDG_DATA_HOME) are two SEPARATE resolution paths — both must be
 	// isolated, in two DIFFERENT subdirectories (not the same tmp dir),
 	// per CLAUDE.md's "two real config paths" caveat, or lookupConfigs
 	// would load the same file twice under two different env vars.
 	isolationTmp := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", isolationTmp)
-	t.Setenv("CRUSH_GLOBAL_DATA", isolationTmp)
+	t.Setenv("RUSH_GLOBAL_DATA", isolationTmp)
 	isolationConfigDir := filepath.Join(isolationTmp, "config")
 	require.NoError(t, os.MkdirAll(isolationConfigDir, 0o755))
 	t.Setenv("XDG_CONFIG_HOME", isolationConfigDir)
-	t.Setenv("CRUSH_GLOBAL_CONFIG", isolationConfigDir)
+	t.Setenv("RUSH_GLOBAL_CONFIG", isolationConfigDir)
 	// Cache-only so provider discovery makes no network calls.
-	t.Setenv("CRUSH_PROVIDER_CACHE_ONLY", "1")
+	t.Setenv("RUSH_PROVIDER_CACHE_ONLY", "1")
 	// KNOWN LIMITATION (found in the third @oh review pass over #337-349):
 	// this isolation does NOT cover skill discovery under App.New's prompt
 	// construction, which reads the real ~/.claude/skills directory via

@@ -23,7 +23,7 @@ var sessionsWatchCmd = &cobra.Command{
 Without arguments: shows an interactive picker (arrow keys, Enter to
 select) and then drops into live-tail of the chosen session. The picker
 shows the 15 most recently active sessions and a "(+N not shown)"
-footer when there are older ones — use "crush sessions list" to see
+footer when there are older ones — use "rush sessions list" to see
 every session.
 
 With a <session-id> argument: skips the picker and live-tails that
@@ -46,13 +46,13 @@ without a summary so you don't mistake "I stopped watching" for
 "the session ended".`,
 	Example: `
 # Pick a session interactively and live-tail it
-crush sessions watch
+rush sessions watch
 
 # Live-tail a specific session (full id or short hash)
-crush sessions watch abc123
+rush sessions watch abc123
 
 # Faster polling for snappier output
-crush sessions watch --interval 500ms
+rush sessions watch --interval 500ms
   `,
 	Args: cobra.MaximumNArgs(1),
 	RunE: sessionsWatchCmdRun,
@@ -437,7 +437,7 @@ func combinedLockLiveness(mtimeFresh, pidAlive bool) bool {
 // bounded PID-liveness probe" check locally. This file used to hand-roll
 // that exact check (mtimeFresh/pidAlive/combinedLockLiveness below) without
 // ever bounding the PID fallback, so a lock abandoned by a killed/crashed
-// `crush run` whose recorded PID the OS later recycled for an unrelated
+// `rush run` whose recorded PID the OS later recycled for an unrelated
 // process would report lockAlive: true forever — isSessionFinishedFromState
 // would then never see a false lockAlive, and `sessions watch` would hang
 // on a session that in fact ended hours earlier. InspectSessionLock already
@@ -485,7 +485,7 @@ type watchState struct {
 // the session ALREADY looked finished before the watch ever observed a
 // live lock.
 //
-// Why this exists: `crush run --session <id>` on an existing session
+// Why this exists: `rush run --session <id>` on an existing session
 // RESUMES it, and clears the previous run's ended_reason only once the app
 // has booted (app.go's SetEndedReason(ctx, id, "")). Booting takes seconds
 // — config load, DB open, provider init. An orchestrator that launches the

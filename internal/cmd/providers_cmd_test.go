@@ -15,7 +15,7 @@ import (
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/db"
-	crushlog "github.com/PHPCraftdream/rush/internal/log"
+	rushlog "github.com/PHPCraftdream/rush/internal/log"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -28,24 +28,24 @@ import (
 // rendering code in providers.go — not a reimplementation.
 //
 // cmd is the real providersShowCmd/providersListCmd. providerJSON is the raw
-// JSON for the "providers" object written into the isolated global crush.json
+// JSON for the "providers" object written into the isolated global rush.json
 // before the command runs. args is the positional/flag payload parsed onto cmd
 // (e.g. "with-peak" for show, "--json" for list).
 func runProvidersCmdInIsolatedApp(t *testing.T, cmd *cobra.Command, providerJSON, args string) string {
 	t.Helper()
 	tmp := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", tmp)
-	t.Setenv("CRUSH_GLOBAL_DATA", tmp)
-	// GlobalConfig() (CRUSH_GLOBAL_CONFIG/XDG_CONFIG_HOME) is a SEPARATE
-	// resolution path from GlobalConfigData() (CRUSH_GLOBAL_DATA) above — see
+	t.Setenv("RUSH_GLOBAL_DATA", tmp)
+	// GlobalConfig() (RUSH_GLOBAL_CONFIG/XDG_CONFIG_HOME) is a SEPARATE
+	// resolution path from GlobalConfigData() (RUSH_GLOBAL_DATA) above — see
 	// CLAUDE.md's "two real config paths" caveat and the longer explanation
 	// in isolatedModelsEnv (models_use_test.go). Without this, setupApp's
 	// app.New() -> mcp.Initialize reads the real host
-	// ~/.config/crush/crush.json and, if it configures MCP servers, tries to
+	// ~/.config/rush/rush.json and, if it configures MCP servers, tries to
 	// open real network connections to them from inside the test — this is
 	// the exact path that previously hung a stress run for 9+ minutes.
 	//
-	// Use a SEPARATE subdirectory from CRUSH_GLOBAL_DATA (not the same tmp)
+	// Use a SEPARATE subdirectory from RUSH_GLOBAL_DATA (not the same tmp)
 	// so lookupConfigs (internal/config/load.go), which loads and merges
 	// both GlobalConfig() and GlobalConfigData(), doesn't load the same file
 	// path twice under two different env vars — see the "Low, latent"
@@ -53,14 +53,14 @@ func runProvidersCmdInIsolatedApp(t *testing.T, cmd *cobra.Command, providerJSON
 	configDir := filepath.Join(tmp, "config")
 	require.NoError(t, os.MkdirAll(configDir, 0o755))
 	t.Setenv("XDG_CONFIG_HOME", configDir)
-	t.Setenv("CRUSH_GLOBAL_CONFIG", configDir)
+	t.Setenv("RUSH_GLOBAL_CONFIG", configDir)
 	// Cache-only so provider discovery makes no network calls.
-	t.Setenv("CRUSH_PROVIDER_CACHE_ONLY", "1")
+	t.Setenv("RUSH_PROVIDER_CACHE_ONLY", "1")
 
 	// Pre-initialise the once-only global logger so setupApp's log.Setup
 	// call is a no-op and does not open a lumberjack handle inside the
 	// temp dir (which would lock the file and break t.TempDir cleanup).
-	crushlog.Setup("", false)
+	rushlog.Setup("", false)
 	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	workDir := t.TempDir()
@@ -68,7 +68,7 @@ func runProvidersCmdInIsolatedApp(t *testing.T, cmd *cobra.Command, providerJSON
 	require.NoError(t, err)
 	require.NoError(t, os.Chdir(workDir))
 
-	globalDataPath := filepath.Join(tmp, "crush.json")
+	globalDataPath := filepath.Join(tmp, "rush.json")
 	require.NoError(t, os.WriteFile(globalDataPath, []byte(providerJSON), 0o644))
 
 	// setupApp reads debug/data-dir/cwd off the command it receives. Those
@@ -79,7 +79,7 @@ func runProvidersCmdInIsolatedApp(t *testing.T, cmd *cobra.Command, providerJSON
 		_ = os.Chdir(orig)
 		// setupApp opens a pooled SQLite connection under tmp; cancel ctx
 		// and release THIS test's own connection so t.TempDir cleanup
-		// doesn't hit a locked crush.db / crush.log on Windows.
+		// doesn't hit a locked rush.db / rush.log on Windows.
 		//
 		// db.Release(tmp), not db.ResetPool(): this file alone has ~19
 		// t.Parallel() tests sharing this helper. ResetPool() used to nuke
@@ -91,7 +91,7 @@ func runProvidersCmdInIsolatedApp(t *testing.T, cmd *cobra.Command, providerJSON
 		cancel()
 		_ = db.Release(tmp)
 	})
-	carrier := &cobra.Command{Use: "crush"}
+	carrier := &cobra.Command{Use: "rush"}
 	carrier.Flags().Bool("debug", false, "")
 	carrier.Flags().String("data-dir", tmp, "")
 	carrier.Flags().String("cwd", workDir, "")

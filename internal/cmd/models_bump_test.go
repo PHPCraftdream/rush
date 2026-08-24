@@ -1,4 +1,4 @@
-// Tests for `crush models bump <role> <up|down>` — stepping a role's
+// Tests for `rush models bump <role> <up|down>` — stepping a role's
 // reasoning effort by one level in its model's own ordered Levels() array.
 // Uses the same isolated-config harness as models_use_test.go
 // (isolatedModelsEnv/runModelsCmd) so behavior is asserted against the real
@@ -37,7 +37,7 @@ func resetModelsBumpFlags(t *testing.T) {
 func setupBumpEnv(t *testing.T) (globalPath string) {
 	t.Helper()
 	globalPath = isolatedModelsEnv(t)
-	ensureRootFlagStandIns(modelsBumpCmd, os.Getenv("CRUSH_GLOBAL_DATA"))
+	ensureRootFlagStandIns(modelsBumpCmd, os.Getenv("RUSH_GLOBAL_DATA"))
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	modelsBumpCmd.SetContext(ctx)
@@ -52,7 +52,7 @@ func setupBumpEnv(t *testing.T) (globalPath string) {
 // 2026-08-18: `models use`'s smart/fast positionals additionally require
 // the resolved model to be found in the provider catalog (a.ResolveModel /
 // c.GetModel — see configureSelectedModels in internal/config/load.go), the
-// isolated harness runs with CRUSH_PROVIDER_CACHE_ONLY=1, and glm-5.2 is not
+// isolated harness runs with RUSH_PROVIDER_CACHE_ONLY=1, and glm-5.2 is not
 // in that catalog. The lookup failed, configureSelectedModels silently
 // substituted a default AND persisted it — corrupting the very file these
 // tests read back. worker/reviewer are read straight from cfg.Models by
@@ -97,7 +97,7 @@ func TestModelsBump_GLM53FullStepUp(t *testing.T) {
 		_ = db.Release(filepath.Dir(globalPath))
 
 		// Assert against the raw config file directly — cheaper than
-		// another `crush models state` call and avoids yet another setupApp
+		// another `rush models state` call and avoids yet another setupApp
 		// cycle.
 		data, err := os.ReadFile(globalPath)
 		require.NoError(t, err)

@@ -99,9 +99,9 @@ const maxGoroutineDumpBytes = 32 << 20
 // synchronously from a context where an unbounded block is unacceptable
 // (see the stream watchdog's onFire, in internal/agent/agent.go).
 //
-// This exists because a hung crush process was, in practice, undiagnosable.
+// This exists because a hung rush process was, in practice, undiagnosable.
 // pprof is compiled in (main.go imports net/http/pprof) but only served when
-// CRUSH_PROFILE is set, so an operator who hits a hang cannot retroactively
+// RUSH_PROFILE is set, so an operator who hits a hang cannot retroactively
 // enable it on the already-running process. Release binaries are built with
 // stripped symbols, so attaching a debugger yields "could not find goroutine
 // array" — and the attach attempt itself killed the only live instance of the
@@ -128,7 +128,7 @@ func CaptureGoroutineStack(reason string) []byte {
 	}
 
 	header := fmt.Sprintf(
-		"crush goroutine dump\nreason: %s\npid: %d\ntime: %s\ngoroutines: %d\n\n",
+		"rush goroutine dump\nreason: %s\npid: %d\ntime: %s\ngoroutines: %d\n\n",
 		reason, os.Getpid(), time.Now().Format(time.RFC3339), runtime.NumGoroutine(),
 	)
 	return append([]byte(header), buf[:n]...)
@@ -156,8 +156,8 @@ func WriteGoroutineDump(buf []byte) (string, error) {
 		return "", fmt.Errorf("goroutine dump: create dir %s: %w", dir, err)
 	}
 
-	// PID + timestamp so concurrent crush processes sharing one .crush dir
-	// (the normal case for parallel `crush run`) never overwrite each
+	// PID + timestamp so concurrent rush processes sharing one .rush dir
+	// (the normal case for parallel `rush run`) never overwrite each
 	// other, plus a monotonic sequence number so multiple dumps from THIS
 	// process within the same wall-clock second don't collide either
 	// (task #275).

@@ -10,9 +10,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// isolateGlobalConfigDir points GlobalConfig() (CRUSH_GLOBAL_CONFIG/
+// isolateGlobalConfigDir points GlobalConfig() (RUSH_GLOBAL_CONFIG/
 // XDG_CONFIG_HOME) at a throwaway directory distinct from whatever
-// XDG_DATA_HOME/CRUSH_GLOBAL_DATA the caller already isolated.
+// XDG_DATA_HOME/RUSH_GLOBAL_DATA the caller already isolated.
 // projects.List/Register here only ever touch config.GlobalConfigData() (to
 // find the sibling projects.json), never config.Load/GlobalConfig(), so
 // there's no actual host-config leak risk on this path today — this is
@@ -24,7 +24,7 @@ func isolateGlobalConfigDir(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(dir, 0o755))
 	t.Setenv("XDG_CONFIG_HOME", dir)
-	t.Setenv("CRUSH_GLOBAL_CONFIG", dir)
+	t.Setenv("RUSH_GLOBAL_CONFIG", dir)
 }
 
 func TestProjectsEmpty(t *testing.T) {
@@ -48,7 +48,7 @@ func TestProjectsJSON(t *testing.T) {
 	isolateGlobalConfigDir(t)
 
 	// Register a project
-	err := projects.Register("/test/project", "/test/project/.crush")
+	err := projects.Register("/test/project", "/test/project/.rush")
 	require.NoError(t, err)
 
 	var b bytes.Buffer
@@ -72,5 +72,5 @@ func TestProjectsJSON(t *testing.T) {
 
 	require.Len(t, result.Projects, 1)
 	require.Equal(t, "/test/project", result.Projects[0].Path)
-	require.Equal(t, "/test/project/.crush", result.Projects[0].DataDir)
+	require.Equal(t, "/test/project/.rush", result.Projects[0].DataDir)
 }

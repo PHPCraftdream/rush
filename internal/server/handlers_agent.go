@@ -145,8 +145,8 @@ func holdExternalSilenceProofFromConfig(cfg *config.Config, sessionID string) (*
 // saveAttachmentToDisk saves an attachment to <dataDir>/attachments/ with a
 // timestamped filename and returns the absolute path. dataDir must already be
 // the fully resolved data directory (e.g. cfg.Options.DataDirectory, which
-// defaults to "<workingDir>/.crush" but honors an explicit --data-dir or
-// configured data_directory) — callers must not append ".crush" themselves.
+// defaults to "<workingDir>/.rush" but honors an explicit --data-dir or
+// configured data_directory) — callers must not append ".rush" themselves.
 func saveAttachmentToDisk(dataDir, fileName string, data []byte) (string, error) {
 	if dataDir == "" {
 		return "", errors.New("data directory not configured")
@@ -162,7 +162,7 @@ func saveAttachmentToDisk(dataDir, fileName string, data []byte) (string, error)
 	// per upload) rather than a near-certainty (task #274) -- os.WriteFile
 	// below would otherwise silently let the second upload overwrite the
 	// first's content. A uuid, not #275's atomic counter, on purpose: an
-	// atomic counter is only unique WITHIN one process, but multiple crush
+	// atomic counter is only unique WITHIN one process, but multiple rush
 	// processes can share this same dataDir/attachments directory.
 	name := ts + "_" + uuid.NewString()[:8] + "_" + filepath.Base(fileName)
 	path := filepath.Join(dir, name)
@@ -420,12 +420,12 @@ func handleCancelAgent(_ context.Context, a *appPkg.App, c *Client, msg WSMessag
 }
 
 // attachmentsDataDir resolves the configured data directory for saved
-// attachments. It defensively falls back to "<workingDir>/.crush" (the
+// attachments. It defensively falls back to "<workingDir>/.rush" (the
 // pre-fix, cwd-derived default) on the rare nil-config edge case, so a
 // missing config doesn't turn a best-effort attachment save into a hard
 // failure.
 func attachmentsDataDir(a *appPkg.App) string {
-	return cmp.Or(externalOwnershipDataDir(a), filepath.Join(a.Store().WorkingDir(), ".crush"))
+	return cmp.Or(externalOwnershipDataDir(a), filepath.Join(a.Store().WorkingDir(), ".rush"))
 }
 
 func handleSummarizeSession(ctx context.Context, a *appPkg.App, c *Client, msg WSMessage) {
@@ -655,14 +655,14 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 
 	// 1b. Task #622 (F-1), redesigned in #631: the reservation above proves
 	// no OTHER caller in THIS process can be writing to the session, but
-	// says nothing about a `crush run --session S` executing in a DIFFERENT
+	// says nothing about a `rush run --session S` executing in a DIFFERENT
 	// process. The old byte-heuristic inspection is replaced by a
 	// kernel-attested SHARED lock probe on the session's lock file,
 	// HELD from here through the tail delete and the target delete below:
 	// while the shared lock is held, no process — including this one — can
 	// acquire the exclusive lock, so no external agent RUN (a lock-taking
-	// writer, e.g. another `crush run --session S`) can start mid-delete.
-	// Lock-free writers are NOT excluded by it: `crush sessions inject`
+	// writer, e.g. another `rush run --session S`) can start mid-delete.
+	// Lock-free writers are NOT excluded by it: `rush sessions inject`
 	// (cmd/sessions_inject.go) writes a user row from a separate process
 	// without ever touching the lock — see the writer enumeration in the
 	// baseline-capture comment below. It is released just before the
@@ -841,7 +841,7 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 	// goroutine that outlives its turn) — the only writers in THIS
 	// process that can ADD a row, since agent Run reserves the session
 	// before writing any row — mutate rows with no ownership check and
-	// may interleave here. One adder is cross-process: `crush sessions
+	// may interleave here. One adder is cross-process: `rush sessions
 	// inject` (cmd/sessions_inject.go, doInject) writes a User row in a
 	// separate process taking no lock at all, so the step-1b probe does
 	// not exclude it either. The set does not need any of them excluded:

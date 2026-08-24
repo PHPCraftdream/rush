@@ -21,9 +21,9 @@ const projectsFileName = "projects.json"
 // sidecar lock on projects.json before failing. Mirrors configWriteLockTimeout
 // in internal/config/store.go (30s), which uses the same
 // session.AcquireFileLockContext primitive for the same class of
-// cross-process read-modify-write: a wedged sibling `crush run` process
+// cross-process read-modify-write: a wedged sibling `rush run` process
 // (debugger attached, suspended shell, frozen network mount) must not
-// indefinitely freeze every other parallel `crush` invocation's startup.
+// indefinitely freeze every other parallel `rush` invocation's startup.
 const registerLockTimeout = 30 * time.Second
 
 // Project represents a tracked project directory.
@@ -40,7 +40,7 @@ type ProjectList struct {
 
 // mu serialises concurrent goroutines within THIS process (mirrors
 // ConfigStore.diskWriteMu). It does NOT by itself protect against two
-// separate `crush` processes racing to read-modify-write projects.json —
+// separate `rush` processes racing to read-modify-write projects.json —
 // that cross-process gap is closed by the OS-level file lock acquired in
 // Register (see session.AcquireFileLockContext and
 // ConfigStore.withConfigWriteLockCtx's doc comment for the same pattern).
@@ -83,7 +83,7 @@ func loadLocked() (*ProjectList, error) {
 // the same directory, then rename over the destination) so a crash mid-write
 // cannot leave a truncated/corrupt projects.json behind — a truncated file
 // would fail json.Unmarshal on every subsequent Load/List/Register call in
-// every future crush process, not just the one that crashed.
+// every future rush process, not just the one that crashed.
 func Save(list *ProjectList) error {
 	mu.Lock()
 	defer mu.Unlock()
@@ -113,9 +113,9 @@ func saveLocked(list *ProjectList) error {
 // The whole load -> mutate -> save cycle runs under both the in-process mu
 // (serialising goroutines within this process) and an inter-process OS-level
 // file lock on a ".lock" sidecar next to projects.json (serialising separate
-// `crush` processes, acquired via session.AcquireFileLockContext — the same
-// primitive ConfigStore.withConfigWriteLockCtx uses for crush.json). Register
-// runs on the startup path of every `crush` process, so N parallel `crush
+// `rush` processes, acquired via session.AcquireFileLockContext — the same
+// primitive ConfigStore.withConfigWriteLockCtx uses for rush.json). Register
+// runs on the startup path of every `rush` process, so N parallel `rush
 // run` invocations racing to register their own project is the normal case,
 // not a hypothetical: without the file lock, two concurrent Register calls
 // (in one process or across processes) could each Load the same pre-write

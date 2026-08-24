@@ -460,7 +460,7 @@ func (l *rowLedger) verdictOnCtxDone(ctx context.Context) (DrainResult, error) {
 // queue is empty and no execution of it is in flight in this pump instance
 // -- or until ctx is done.
 //
-// It exists so a short-lived process (crush run) can finish a durable
+// It exists so a short-lived process (rush run) can finish a durable
 // continuation in the SAME process instead of leaving it for some future
 // invocation's background tick to eventually pick up (task #421/P0-1): a
 // cross-process interrupt landing on a busy session cancels the in-flight
@@ -555,7 +555,7 @@ func (l *rowLedger) verdictOnCtxDone(ctx context.Context) (DrainResult, error) {
 // Deliberately does NOT replicate processEntry's RunQueueMaxAttempts
 // pre-check, busyBackoffUntil dedup, or admitMu/stopping shutdown gate --
 // those exist for the long-running, many-tick background scenario. A
-// synchronous drain bounded by the caller's own ctx (crush run's --timeout)
+// synchronous drain bounded by the caller's own ctx (rush run's --timeout)
 // does not need them: a genuinely stuck or poison entry hits ctx's
 // deadline (or, for attempts, the loop below still honors
 // RunQueueMaxAttempts directly so a truly poison entry terminal-fails
@@ -1201,7 +1201,7 @@ func (p *RunQueuePump) DrainSessionNow(ctx context.Context, sessionID string) (D
 		// session was leased by a different owner and never resolved, and
 		// DrainSessionNow returned (DrainComplete, nil) while B still sat in
 		// the DB with status=leased, attempts=0, and an expired lease --
-		// `crush run` had already exited 0 over durable, unconfirmed work.
+		// `rush run` had already exited 0 over durable, unconfirmed work.
 		//
 		// The fix is a dedicated, explicit service call --
 		// HasOutstandingRunQueueEntriesForSession -- rather than inferring

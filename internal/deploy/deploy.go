@@ -34,8 +34,8 @@ const DeployLockTimeout = 2 * time.Minute
 // A single, stable, well-known path is used — not a per-destination
 // sidecar (e.g. dst+".deploy.lock") — because resolveDests's discovered
 // destinations can legitimately differ between two invocations of
-// deploy.go: the npm-shim directory depends on wherever `crush` resolves
-// on THIS invocation's PATH, CRUSH_DEPLOY_PATH can be set for one run and
+// deploy.go: the npm-shim directory depends on wherever `rush` resolves
+// on THIS invocation's PATH, RUSH_DEPLOY_PATH can be set for one run and
 // not another, and a first-install run has no pre-existing dst at all
 // (DefaultInstallPath is used instead). A per-dst lock would only
 // serialize two deploys that happen to resolve to the exact same dst set
@@ -51,7 +51,7 @@ const DeployLockTimeout = 2 * time.Minute
 // may be zero destinations that exist yet (first install) and because
 // the lock must be discoverable before resolveDests has even run.
 func DeployLockPath() string {
-	return filepath.Join(os.TempDir(), "crush-deploy.lock")
+	return filepath.Join(os.TempDir(), "rush-deploy.lock")
 }
 
 // AcquireDeployLock takes an exclusive, cross-process lock guarding
@@ -164,7 +164,7 @@ func SwapRenameAside(rename func(old, new string) error, tmp, dst, aside string)
 	}
 	if err := rename(tmp, dst); err != nil {
 		// dst is now EMPTY — the old binary is stranded at aside. Try to
-		// put it back so the operator is not left without a working crush.
+		// put it back so the operator is not left without a working rush.
 		if rerr := rename(aside, dst); rerr != nil {
 			return fmt.Errorf("rename %s → %s after rename-aside failed: %v; restore %s → %s ALSO failed — dst %s is now MISSING, recover manually by moving %s back to %s: %w", tmp, dst, err, aside, dst, dst, aside, dst, rerr)
 		}
@@ -194,7 +194,7 @@ const staleTempFileAge = time.Hour
 // files (via TempBuildName) old enough to be certain they were abandoned
 // by a crashed deploy rather than belonging to one still in progress. It
 // returns the paths it successfully removed; failures (most commonly a
-// busy file still held open by a live crush process) are swallowed on
+// busy file still held open by a live rush process) are swallowed on
 // purpose — a file that refuses to delete just means a live session is
 // still serving it, and it will be swept on a later deploy once that
 // session exits. This function never returns an error and never panics:
@@ -250,10 +250,10 @@ func SweepRenameAsideLeftovers(dst string) []string {
 // DefaultInstallPath returns the standard per-user install location for
 // the running OS — reachable without admin/root rights:
 //
-//	Windows:      %LOCALAPPDATA%\Programs\crush\crush.exe
+//	Windows:      %LOCALAPPDATA%\Programs\rush\rush.exe
 //	              (the canonical per-user programs dir, same convention
 //	              as VS Code's user setup and winget user installs)
-//	Linux/macOS:  ~/.local/bin/crush
+//	Linux/macOS:  ~/.local/bin/rush
 //	              (XDG-recommended user binaries dir; on PATH by
 //	              default in most modern distros and shells)
 func DefaultInstallPath() (string, error) {
@@ -262,13 +262,13 @@ func DefaultInstallPath() (string, error) {
 		if base == "" {
 			base = filepath.Join(os.Getenv("USERPROFILE"), "AppData", "Local")
 		}
-		return filepath.Join(base, "Programs", "crush", "crush.exe"), nil
+		return filepath.Join(base, "Programs", "rush", "rush.exe"), nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("cannot determine home directory for install location: %w", err)
 	}
-	return filepath.Join(home, ".local", "bin", "crush"), nil
+	return filepath.Join(home, ".local", "bin", "rush"), nil
 }
 
 // IsReplaceableExe reports whether p is a native executable that should
@@ -388,7 +388,7 @@ func LookPathExcludingCwd(name, cwd, pathEnv string, extList []string) (string, 
 		}
 	}
 	if skippedCwdHit != "" {
-		return "", fmt.Errorf("only candidate found was %s (in current directory — refusing to treat the just-built artifact as an existing install). Install crush via npm/winget first, or set CRUSH_DEPLOY_PATH=/full/path/to/crush.exe", skippedCwdHit)
+		return "", fmt.Errorf("only candidate found was %s (in current directory — refusing to treat the just-built artifact as an existing install). Install rush via npm/winget first, or set RUSH_DEPLOY_PATH=/full/path/to/rush.exe", skippedCwdHit)
 	}
 	return "", fmt.Errorf("%s not found on PATH (excluding current directory)", name)
 }
@@ -439,9 +439,9 @@ func NpmNodeArch(goarch string) string {
 // NpmPlatformBinaryPath returns the path to the real binary inside the
 // fork's per-platform npm package — the one the JS wrapper execs via
 // `node` — given the npm package directory (the dir containing
-// node_modules, i.e. the directory holding the `crush` entry found on
+// node_modules, i.e. the directory holding the `rush` entry found on
 // PATH), the target OS/arch (as Go GOOS/GOARCH values), and the local
-// binary name (crush or crush.exe). The fork ships the binary in the
+// binary name (rush or rush.exe). The fork ships the binary in the
 // PLATFORM package, not the meta package (unlike upstream's
 // @charmland/crush, which bundled bin/ directly in the package the JS
 // wrapper lives in) — see docs/plans/2026-07-29-relaunch-from-cache.md

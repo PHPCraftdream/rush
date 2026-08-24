@@ -21,7 +21,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// claudeSlashCommandTemplate is the canonical /crush slash-command body
+// claudeSlashCommandTemplate is the canonical /rush slash-command body
 // minus the sentinel marker (which is prepended at write time so
 // `claude-del` can recognise files we own without depending on file
 // content semantics). Kept in a sibling .md file rather than a Go raw
@@ -30,7 +30,7 @@ import (
 //go:embed claude_slash_command.md
 var claudeSlashCommandTemplate string
 
-// claudeFallbackCommandTemplate is the canonical /crush-fallback slash-command
+// claudeFallbackCommandTemplate is the canonical /rush-fallback slash-command
 // body minus the sentinel marker. Same rationale as claudeSlashCommandTemplate
 // above: kept in a sibling .md file so edits don't need Go string escaping,
 // and reuses the shared claudeSlashCommandSentinel since ownership checks are
@@ -47,8 +47,8 @@ var claudeInitBlockPattern = regexp.MustCompile(`(?s)<!-- crush-claude-init:v\d+
 
 const (
 	claudeMdFile               = "CLAUDE.md"
-	claudeSlashCommandPath     = ".claude/commands/crush.md"
-	claudeSlashCommandSentinel = "<!-- crush-slash-command:v1 -->"
+	claudeSlashCommandPath     = ".claude/commands/rush.md"
+	claudeSlashCommandSentinel = "<!-- rush-slash-command:v1 -->"
 	claudeCommandsDir          = ".claude/commands"
 	claudeGlobalCommandsDir    = ".claude/commands" // relative to $HOME
 )
@@ -69,17 +69,17 @@ func resolveCommandsDir(cwd string, global bool) (string, error) {
 
 var claudeInitCmd = &cobra.Command{
 	Use:   "claude-init",
-	Short: "Install the /crush slash-command and strip legacy CLAUDE.md block",
-	Long: `Set up crush's ` + "`/crush`" + ` slash-command in Claude Code.
+	Short: "Install the /rush slash-command and strip legacy CLAUDE.md block",
+	Long: `Set up rush's ` + "`/rush`" + ` slash-command in Claude Code.
 
-The slash-command file is written to ` + "`~/.claude/commands/crush.md`" + ` by
+The slash-command file is written to ` + "`~/.claude/commands/rush.md`" + ` by
 default (the GLOBAL scope, available in every project). Use --local (or
 --cwd, which implies it) to scope it to the current project's
-` + "`.claude/commands/crush.md`" + ` instead.
+` + "`.claude/commands/rush.md`" + ` instead.
 
 Concretely:
 
-  1. Write ` + "`.claude/commands/crush.md`" + ` — the ` + "`/crush`" + ` delegation command.
+  1. Write ` + "`.claude/commands/rush.md`" + ` — the ` + "`/rush`" + ` delegation command.
      Skipped (with a warning) if the file exists without our sentinel.
 
   2. In local mode only: strip any pre-existing crush-claude-init block
@@ -87,19 +87,19 @@ Concretely:
      it is removed.
 
 ` + "`claude-init`" + ` no longer writes anything into ` + "`CLAUDE.md`" + `. Delegation is
-explicit-only — invoke ` + "`/crush <task>`" + ` when you want it.
+explicit-only — invoke ` + "`/rush <task>`" + ` when you want it.
 
 For per-model commands, agents and skills, use ` + "`cah install`" + ` from the
 cc-arch-hands repo.`,
 	Example: `
-# Install / refresh the /crush slash-command globally — the default
-crush claude-init
+# Install / refresh the /rush slash-command globally — the default
+rush claude-init
 
 # Install into the current project instead
-crush claude-init --local
+rush claude-init --local
 
 # Scope to another project (implies --local)
-crush claude-init --cwd /path/to/project
+rush claude-init --cwd /path/to/project
 `,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		global, _ := cmd.Flags().GetBool("global")
@@ -131,11 +131,11 @@ crush claude-init --cwd /path/to/project
 			}
 		}
 
-		// Install / refresh the /crush slash-command.
+		// Install / refresh the /rush slash-command.
 		if err := writeSlashCommandToDir(cmdDir); err != nil {
 			return fmt.Errorf("slash command: %w", err)
 		}
-		// Install / refresh the /crush-fallback slash-command.
+		// Install / refresh the /rush-fallback slash-command.
 		if err := writeFallbackCommandToDir(cmdDir); err != nil {
 			return fmt.Errorf("fallback slash command: %w", err)
 		}
@@ -180,7 +180,7 @@ func writeSlashCommand(cwd string) error {
 }
 
 func writeSlashCommandToDir(dir string) error {
-	path := filepath.Join(dir, "crush.md")
+	path := filepath.Join(dir, "rush.md")
 	if data, err := os.ReadFile(path); err == nil {
 		if !strings.Contains(string(data), claudeSlashCommandSentinel) {
 			fmt.Fprintf(os.Stderr, "warning: %s exists but does not contain our sentinel — skipping (someone else owns that file)\n", path)
@@ -199,18 +199,18 @@ func writeSlashCommandToDir(dir string) error {
 	return nil
 }
 
-// claudeSlashCommandContent returns the body of `.claude/commands/crush.md`.
+// claudeSlashCommandContent returns the body of `.claude/commands/rush.md`.
 // Sentinel marker is prepended so claude-del can recognise files we own
 // without parsing content. Self-contained: holds the full delegation
 // guidance inline, because there is no longer a long block in CLAUDE.md
-// to refer the operator to. Triggered ONLY by an explicit `/crush <task>`
+// to refer the operator to. Triggered ONLY by an explicit `/rush <task>`
 // from the operator.
 func claudeSlashCommandContent() string {
 	return claudeSlashCommandSentinel + "\n" + claudeSlashCommandTemplate
 }
 
 func writeFallbackCommandToDir(dir string) error {
-	path := filepath.Join(dir, "crush-fallback.md")
+	path := filepath.Join(dir, "rush-fallback.md")
 	if data, err := os.ReadFile(path); err == nil {
 		if !strings.Contains(string(data), claudeSlashCommandSentinel) {
 			fmt.Fprintf(os.Stderr, "warning: %s exists but does not contain our sentinel — skipping (someone else owns that file)\n", path)
@@ -230,9 +230,9 @@ func writeFallbackCommandToDir(dir string) error {
 }
 
 // claudeFallbackCommandContent returns the body of
-// `.claude/commands/crush-fallback.md`. Sentinel marker is prepended so
+// `.claude/commands/rush-fallback.md`. Sentinel marker is prepended so
 // claude-del can recognise files we own without parsing content. Triggered
-// ONLY by an explicit `/crush-fallback <agent>` from the operator, right
+// ONLY by an explicit `/rush-fallback <agent>` from the operator, right
 // after a peak-hours refusal.
 func claudeFallbackCommandContent() string {
 	return claudeSlashCommandSentinel + "\n" + claudeFallbackCommandTemplate

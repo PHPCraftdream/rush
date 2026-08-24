@@ -61,7 +61,7 @@ func (s *rushMCPServer) stop() {
 func (s *rushMCPServer) mcpConfigJSON() ([]byte, error) {
 	cfg := map[string]any{
 		"mcpServers": map[string]any{
-			"crush": map[string]any{
+			"rush": map[string]any{
 				"type": "http",
 				"url":  "http://" + s.addr + "/mcp",
 				"headers": map[string]string{
@@ -96,7 +96,7 @@ func newRushMCPServer(ctx context.Context, perms permission.Service, sessions se
 	}
 
 	srv := mcp.NewServer(&mcp.Implementation{
-		Name:    "crush",
+		Name:    "rush",
 		Title:   "Rush",
 		Version: "1.0",
 	}, nil)
@@ -152,7 +152,7 @@ func newRushMCPServer(ctx context.Context, perms permission.Service, sessions se
 	}, nil
 }
 
-// registerMCPTools adds crush tool implementations to the MCP server.
+// registerMCPTools adds rush tool implementations to the MCP server.
 // Each tool requests permission via perms.Request before executing.
 // toolCh, if non-nil, receives start/end notifications for each tool call.
 func registerMCPTools(srv *mcp.Server, perms permission.Service, sessions session.Service, sessionID string, workingDir string, toolCh chan mcpToolEvent) {

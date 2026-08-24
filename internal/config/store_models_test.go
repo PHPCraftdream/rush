@@ -84,7 +84,7 @@ func TestConfigStore_UpdateAgentAllowedTools_PublishesNewGenerationWithoutMutati
 // new lock.
 func TestLoad_PersistingCorrectedModelDoesNotDeadlock(t *testing.T) {
 	dir := t.TempDir()
-	configPath := filepath.Join(dir, "crush.json")
+	configPath := filepath.Join(dir, "rush.json")
 
 	isolateAllGlobalConfigPaths(t)
 	resetProviderState()

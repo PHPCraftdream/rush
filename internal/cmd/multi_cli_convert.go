@@ -21,7 +21,7 @@ import (
 // parseSlashCommandSource splits a canonical slash-command .md source
 // (YAML front-matter with a single `description:` field, then a Markdown
 // body) into its description and body parts. The format is trivial and
-// fixed by convention (see claude_slash_command.md / claude_crush_fallback_command.md),
+// fixed by convention (see claude_slash_command.md / claude_rush_fallback_command.md),
 // so this is deliberately plain string parsing rather than a YAML library.
 //
 // Expected shape:
@@ -72,7 +72,7 @@ func toGeminiTOML(description, body string) (string, error) {
 	}
 	escapedDesc := strings.ReplaceAll(description, `"`, `\"`)
 	prompt := strings.ReplaceAll(body, "$ARGUMENTS", "{{args}}")
-	return "# crush-slash-command:v1\n" +
+	return "# rush-slash-command:v1\n" +
 		"description = \"" + escapedDesc + "\"\n" +
 		"prompt = \"\"\"\n" +
 		prompt +

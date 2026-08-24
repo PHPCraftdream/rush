@@ -12,7 +12,7 @@ import (
 )
 
 // TestSetConfigFields_TwoStoresSameFile_BothUpdatesSurvive simulates two
-// parallel crush processes writing DIFFERENT keys to the SAME config file at
+// parallel rush processes writing DIFFERENT keys to the SAME config file at
 // the same time. Each ConfigStore owns a private diskWriteMu (just as two
 // separate OS processes would), so in-process serialisation cannot help —
 // only the inter-process sidecar lock (path+".lock", via session.FileLock)
@@ -27,7 +27,7 @@ import (
 func TestSetConfigFields_TwoStoresSameFile_BothUpdatesSurvive(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	configPath := filepath.Join(dir, "crush.json")
+	configPath := filepath.Join(dir, "rush.json")
 
 	// Many iterations widen the window: under the pre-fix code this lost an
 	// update on a large fraction of iterations; under the fix it never does.
@@ -36,7 +36,7 @@ func TestSetConfigFields_TwoStoresSameFile_BothUpdatesSurvive(t *testing.T) {
 		require.NoError(t, os.WriteFile(configPath, []byte(`{}`), 0o600))
 
 		// Two independent stores sharing the SAME globalDataPath — two
-		// separate in-process mutexes, like two crush processes sharing one
+		// separate in-process mutexes, like two rush processes sharing one
 		// config file. workingDir is "" so autoReload is a no-op (keeps the
 		// test free of provider/network work).
 		store1 := newTestConfigStore(testStoreOpts{globalDataPath: configPath})
@@ -86,7 +86,7 @@ func TestSetConfigFields_TwoStoresSameFile_BothUpdatesSurvive(t *testing.T) {
 func TestUnprotectedRMW_DeterministicallyLosesUpdate(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	configPath := filepath.Join(dir, "crush.json")
+	configPath := filepath.Join(dir, "rush.json")
 	require.NoError(t, os.WriteFile(configPath, []byte(`{}`), 0o600))
 
 	// Phase 1: both read the file BEFORE any write (barrier). Both see "{}".

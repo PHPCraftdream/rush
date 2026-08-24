@@ -1,4 +1,4 @@
-Get Crush's current runtime state: active models, provider, MCP status, skills, hooks, permissions, and disabled tools. No parameters needed.
+Get Rush's current runtime state: active models, provider, MCP status, skills, hooks, permissions, and disabled tools. No parameters needed.
 
 <usage>
 - Shows active models and provider, MCP server status, skills,

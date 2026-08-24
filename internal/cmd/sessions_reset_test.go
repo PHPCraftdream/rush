@@ -1,8 +1,8 @@
-// Regression coverage for task #204: `crush sessions reset --force` used to
+// Regression coverage for task #204: `rush sessions reset --force` used to
 // call forceKillHolder directly on whatever PID a lock file named, without
 // first proving (via a real OS-level lock attempt) that the PID was still a
 // genuine live holder. That is the exact stale/reused-PID bug already fixed
-// for `crush sessions kill` in sessions_kill.go (see
+// for `rush sessions kill` in sessions_kill.go (see
 // TestProbeThenKillHolder_StalePIDNotKilled) via the probeThenKillHolder
 // helper — sessions.go's reset --force block was never updated to use it.
 //
@@ -28,15 +28,15 @@ import (
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/db"
-	crushlog "github.com/PHPCraftdream/rush/internal/log"
+	rushlog "github.com/PHPCraftdream/rush/internal/log"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
 )
 
-// isolateConfigEnvForTests sets XDG_DATA_HOME/CRUSH_GLOBAL_DATA,
-// XDG_CONFIG_HOME/CRUSH_GLOBAL_CONFIG, and CRUSH_PROVIDER_CACHE_ONLY to
+// isolateConfigEnvForTests sets XDG_DATA_HOME/RUSH_GLOBAL_DATA,
+// XDG_CONFIG_HOME/RUSH_GLOBAL_CONFIG, and RUSH_PROVIDER_CACHE_ONLY to
 // throwaway directories under a fresh t.TempDir(), and points the default
 // slog logger at io.Discard — the isolation this repo's CLAUDE.md documents
 // as mandatory (not optional) for any test that reaches config.Load /
@@ -59,21 +59,21 @@ func isolateConfigEnvForTests(t *testing.T) (tmp string) {
 	dataDir := filepath.Join(tmp, "global-data")
 	require.NoError(t, os.MkdirAll(dataDir, 0o755))
 	t.Setenv("XDG_DATA_HOME", dataDir)
-	t.Setenv("CRUSH_GLOBAL_DATA", dataDir)
+	t.Setenv("RUSH_GLOBAL_DATA", dataDir)
 
 	configDir := filepath.Join(tmp, "config")
 	require.NoError(t, os.MkdirAll(configDir, 0o755))
 	t.Setenv("XDG_CONFIG_HOME", configDir)
-	t.Setenv("CRUSH_GLOBAL_CONFIG", configDir)
-	t.Setenv("CRUSH_PROVIDER_CACHE_ONLY", "1")
+	t.Setenv("RUSH_GLOBAL_CONFIG", configDir)
+	t.Setenv("RUSH_PROVIDER_CACHE_ONLY", "1")
 
-	crushlog.Setup("", false)
+	rushlog.Setup("", false)
 	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	return tmp
 }
 
-// isolatedResetEnv stands up a full app (same setupApp path `crush sessions
+// isolatedResetEnv stands up a full app (same setupApp path `rush sessions
 // reset` uses) in an isolated data dir/cwd, mirroring isolatedModelsEnv /
 // runProvidersCmdInIsolatedApp's harness. Unlike those two, sessionsResetCmd's
 // own RunE calls setupApp(cmd) a SECOND time (once here to seed the session,
@@ -119,7 +119,7 @@ func isolatedResetEnv(t *testing.T) (a *app.App, cwd string) {
 // TestSessionsReset_ForceDoesNotKillStalePID is the load-bearing regression
 // test for task #204: it creates a real session, writes a lock file at the
 // exact path sessions.go's --force block computes
-// (.crush/locks/session-<id>.lock) naming THIS TEST PROCESS's own PID, then
+// (.rush/locks/session-<id>.lock) naming THIS TEST PROCESS's own PID, then
 // runs the real sessionsResetCmd.RunE with --force. Before the fix, RunE
 // called forceKillHolder(pid, ...) unconditionally on the recorded PID; since
 // the OS lock for this session was never actually held (Release() ran
@@ -140,7 +140,7 @@ func TestSessionsReset_ForceDoesNotKillStalePID(t *testing.T) {
 	// session.TryAcquireSessionLock here: sessions.go's block only checks
 	// os.Stat(lockPath) before proceeding, so a bare file with a stale PID
 	// is exactly the shape it must handle safely.
-	lockDir := filepath.Join(cwd, ".crush", "locks")
+	lockDir := filepath.Join(cwd, ".rush", "locks")
 	require.NoError(t, os.MkdirAll(lockDir, 0o755))
 	lockPath := filepath.Join(lockDir, "session-"+sanitiseSessionIDForFilename(sess.ID)+".lock")
 	require.NoError(t, os.WriteFile(lockPath, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0o644))
@@ -181,11 +181,11 @@ func resetSessionCmdFlags() *cobra.Command {
 // ...), mirroring sessions_kill.go's own reporting.
 
 // isolatedResetEnvWithConfiguredDataDir mirrors isolatedResetEnv but points
-// --data-dir at a directory that is deliberately NOT <workDir>/.crush — the
+// --data-dir at a directory that is deliberately NOT <workDir>/.rush — the
 // exact gap task #219 exists to close. isolatedResetEnv always leaves
-// --data-dir empty, so config.Load's default-to-<cwd>/.crush path silently
-// makes "configured data dir" and "cwd/.crush" coincide, and the existing
-// reset --force tests could never have caught a hardcoded cwd/.crush
+// --data-dir empty, so config.Load's default-to-<cwd>/.rush path silently
+// makes "configured data dir" and "cwd/.rush" coincide, and the existing
+// reset --force tests could never have caught a hardcoded cwd/.rush
 // computation. This helper proves --data-dir is genuinely honored by
 // sessions.go's --force block, not just present on the flag set.
 func isolatedResetEnvWithConfiguredDataDir(t *testing.T) (a *app.App, workDir, dataDir string) {
@@ -198,7 +198,7 @@ func isolatedResetEnvWithConfiguredDataDir(t *testing.T) (a *app.App, workDir, d
 	require.NoError(t, os.Chdir(workDir))
 
 	// The configured data dir lives entirely outside workDir, so
-	// filepath.Join(workDir, ".crush") (the pre-fix hardcoded guess) can
+	// filepath.Join(workDir, ".rush") (the pre-fix hardcoded guess) can
 	// never accidentally coincide with it.
 	dataDir = filepath.Join(tmp, "configured-elsewhere-data")
 
@@ -226,14 +226,14 @@ func isolatedResetEnvWithConfiguredDataDir(t *testing.T) (a *app.App, workDir, d
 
 // TestSessionsReset_ForceHonorsConfiguredDataDir is the regression test for
 // task #219: sessions.go's --force block used to compute
-// filepath.Join(cwd, ".crush") for both the lock path and the dataDir passed
+// filepath.Join(cwd, ".rush") for both the lock path and the dataDir passed
 // to probeThenKillHolder, ignoring --data-dir entirely. This test creates a
-// session against a data dir that is NOT <cwd>/.crush, writes the lock file
+// session against a data dir that is NOT <cwd>/.rush, writes the lock file
 // at the CONFIGURED location (mirroring the stale-PID pattern used by
 // TestSessionsReset_ForceDoesNotKillStalePID), runs the real
 // sessionsResetCmd.RunE with --force, and asserts the lock at the configured
 // path was found and removed — proving the fix reads
-// a.Config().Options.DataDirectory instead of recomputing cwd/.crush.
+// a.Config().Options.DataDirectory instead of recomputing cwd/.rush.
 func TestSessionsReset_ForceHonorsConfiguredDataDir(t *testing.T) {
 	a, _, dataDir := isolatedResetEnvWithConfiguredDataDir(t)
 
@@ -285,7 +285,7 @@ func TestSessionsReset_ForceStillKillsLiveHolder(t *testing.T) {
 	sess, err := a.Sessions.CreateWithID(ctx, "reset-force-live-holder", "regression title")
 	require.NoError(t, err)
 
-	dataDir := filepath.Join(cwd, ".crush")
+	dataDir := filepath.Join(cwd, ".rush")
 	// reapInBackground=true: same rationale as
 	// TestProbeThenKillHolder_LiveHolderStillKilled — reset --force also
 	// drives forceKillHolder's SIGKILL-then-poll and needs the victim
@@ -311,7 +311,7 @@ func TestSessionsReset_ForceStillKillsLiveHolder(t *testing.T) {
 }
 
 // TestSessionsReset_ForceClearsUnfinishedAssistantMessages is the regression
-// test for task #595: `crush sessions reset --force` SIGKILLs the lock holder
+// test for task #595: `rush sessions reset --force` SIGKILLs the lock holder
 // and then calls DeleteSessionMessages to wipe the session. The killed turn's
 // assistant row is forever `finished_at IS NULL` (never gets a terminal Finish),
 // so the per-row DeleteMessageIfTerminal predicate would refuse deletion and

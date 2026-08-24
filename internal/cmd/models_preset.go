@@ -10,12 +10,12 @@ import (
 var modelsPresetCmd = &cobra.Command{
 	Use:                "preset",
 	Hidden:             true,
-	Short:              "(removed — use `crush models use` / `crush models list`)",
+	Short:              "(removed — use `rush models use` / `rush models list`)",
 	DisableFlagParsing: true, // print the redirect even when caller passes legacy preset args.
 	Run: func(cmd *cobra.Command, args []string) {
 		fmt.Fprintln(os.Stderr,
-			"`crush models preset` was removed in batch 11.\n"+
-				"Use `crush models list` to see atoms, then `crush models use <smart> <fast>`.")
+			"`rush models preset` was removed in batch 11.\n"+
+				"Use `rush models list` to see atoms, then `rush models use <smart> <fast>`.")
 		os.Exit(2)
 	},
 }

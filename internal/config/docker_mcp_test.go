@@ -61,7 +61,7 @@ func TestEnableDockerMCP(t *testing.T) {
 
 		// Create a temporary directory for config.
 		tmpDir := t.TempDir()
-		configPath := filepath.Join(tmpDir, "crush.json")
+		configPath := filepath.Join(tmpDir, "rush.json")
 
 		cfg := &Config{
 			MCP: make(map[string]MCPConfig),
@@ -99,7 +99,7 @@ func TestEnableDockerMCP(t *testing.T) {
 
 		// Create a temporary directory for config.
 		tmpDir := t.TempDir()
-		configPath := filepath.Join(tmpDir, "crush.json")
+		configPath := filepath.Join(tmpDir, "rush.json")
 
 		cfg := &Config{
 			MCP: make(map[string]MCPConfig),
@@ -124,7 +124,7 @@ func TestDisableDockerMCP(t *testing.T) {
 
 		// Create a temporary directory for config.
 		tmpDir := t.TempDir()
-		configPath := filepath.Join(tmpDir, "crush.json")
+		configPath := filepath.Join(tmpDir, "rush.json")
 
 		cfg := &Config{
 			MCP: map[string]MCPConfig{
@@ -164,7 +164,7 @@ func TestDisableDockerMCP(t *testing.T) {
 		}
 		store := newTestConfigStore(testStoreOpts{
 			config:         cfg,
-			globalDataPath: filepath.Join(t.TempDir(), "crush.json"),
+			globalDataPath: filepath.Join(t.TempDir(), "rush.json"),
 			resolver:       NewShellVariableResolver(env.New()),
 		})
 
@@ -181,7 +181,7 @@ func TestEnableDockerMCPWithRealDockerWhenAvailable(t *testing.T) {
 	}
 
 	tmpDir := t.TempDir()
-	configPath := filepath.Join(tmpDir, "crush.json")
+	configPath := filepath.Join(tmpDir, "rush.json")
 
 	cfg := &Config{
 		MCP: make(map[string]MCPConfig),

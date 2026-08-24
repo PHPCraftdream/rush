@@ -13,7 +13,7 @@ var sessionsCmd = &cobra.Command{
 	Use:   "sessions",
 	Short: "List, observe, and manage sessions — the full orchestration toolkit",
 	Long: `Sessions are the unit of conversation context. The web UI and
-"crush run" both create / continue them. This subcommand gives full
+"rush run" both create / continue them. This subcommand gives full
 CLI access to the session store for scripting, orchestration, and debugging.
 
 Core:        list (with STATUS column), show (with purpose + budget), delete, reset (--force)

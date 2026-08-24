@@ -41,20 +41,20 @@ func parsePeakHoursWindow(raw string) (*config.PeakHoursWindow, error) {
 var providersCmd = &cobra.Command{
 	Use:   "providers",
 	Short: "Inspect and edit LLM-provider configuration",
-	Long: `Manage the provider entries crush will use for chat completions.
+	Long: `Manage the provider entries rush will use for chat completions.
 
-Provider config lives under "providers.<id>" in crush.json. Two scopes
-exist and crush merges them at load time, workspace overriding global:
+Provider config lives under "providers.<id>" in rush.json. Two scopes
+exist and rush merges them at load time, workspace overriding global:
 
-  --global   ~/.local/share/crush/crush.json   (or %LocalAppData%\crush on Windows)
-  --local    ./.crush/crush.json               (next to the project)
+  --global   ~/.local/share/rush/rush.json   (or %LocalAppData%\rush on Windows)
+  --local    ./.rush/rush.json               (next to the project)
 
 If --global / --local is omitted the default is --global for write
 operations and "both" for read operations.
 
 Each provider entry holds: api_key, base_url, type, name, disable, and
 an optional peak_hours refusal window (local-clock HH:MM-HH:MM; see
-'crush providers set --help').`,
+'rush providers set --help').`,
 }
 
 var providersListCmd = &cobra.Command{
@@ -64,8 +64,8 @@ var providersListCmd = &cobra.Command{
 global). Use --json for one NDJSON object per provider. API keys are
 always masked — only the last 4 chars are shown.`,
 	Example: `
-crush providers list
-crush providers list --json | jq 'select(.api_key_present)'
+rush providers list
+rush providers list --json | jq 'select(.api_key_present)'
   `,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		asJSON, _ := cmd.Flags().GetBool("json")
@@ -197,16 +197,16 @@ credentials; --disabled=false to re-enable.`,
 	Args: cobra.ExactArgs(1),
 	Example: `
 # Set api key in global config (default scope)
-crush providers set openai --api-key=$OPENAI_API_KEY
+rush providers set openai --api-key=$OPENAI_API_KEY
 
 # Pin a custom base URL just for this workspace
-crush providers set openai --local --base-url=http://localhost:11434/v1
+rush providers set openai --local --base-url=http://localhost:11434/v1
 
 # Disable a provider without removing it
-crush providers set hyper --disabled=true
+rush providers set hyper --disabled=true
 
 # Refuse to run during business hours (local time); clear with "off"
-crush providers set openai --peak-hours 09:00-18:00
+rush providers set openai --peak-hours 09:00-18:00
   `,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		scope, err := scopeFromFlags(cmd, config.ScopeGlobal)
@@ -283,10 +283,10 @@ provider type, name, and optionally a base URL and API key.`,
 	Args: cobra.ExactArgs(1),
 	Example: `
 # Add a catwalk-known provider (Z.AI)
-crush providers add zai --name "Z.AI" --type openai-compat --base-url https://api.z.ai --api-key $ZAI_API_KEY
+rush providers add zai --name "Z.AI" --type openai-compat --base-url https://api.z.ai --api-key $ZAI_API_KEY
 
 # Add a custom OpenAI-compatible provider
-crush providers add local-llm --name "Local LLM" --type openai-compat --base-url http://localhost:8000/v1 --api-key none`,
+rush providers add local-llm --name "Local LLM" --type openai-compat --base-url http://localhost:8000/v1 --api-key none`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		scope, err := scopeFromFlags(cmd, config.ScopeGlobal)
 		if err != nil {
@@ -497,7 +497,7 @@ func updateSingleProvider(a *app.App, id string) error {
 				if modelType == config.SelectedModelTypeFast {
 					slotName = "fast"
 				}
-				fmt.Fprintf(os.Stderr, "WARN: preferred %s = %s/%s no longer exists after update — your '%s' slot is broken. Run `crush models use <smart> <fast>` to fix.\n", slotName, id, model.Model, slotName)
+				fmt.Fprintf(os.Stderr, "WARN: preferred %s = %s/%s no longer exists after update — your '%s' slot is broken. Run `rush models use <smart> <fast>` to fix.\n", slotName, id, model.Model, slotName)
 			}
 		}
 	}
@@ -551,7 +551,7 @@ var providersEnableCmd = &cobra.Command{
 		id := args[0]
 		p, ok := a.Config().Providers.Get(id)
 		if !ok {
-			return fmt.Errorf("provider %q not found, see `crush providers list`", id)
+			return fmt.Errorf("provider %q not found, see `rush providers list`", id)
 		}
 
 		if !p.Disable {
@@ -586,7 +586,7 @@ var providersDisableCmd = &cobra.Command{
 		id := args[0]
 		p, ok := a.Config().Providers.Get(id)
 		if !ok {
-			return fmt.Errorf("provider %q not found, see `crush providers list`", id)
+			return fmt.Errorf("provider %q not found, see `rush providers list`", id)
 		}
 
 		if p.Disable {
@@ -606,7 +606,7 @@ var providersDisableCmd = &cobra.Command{
 				if modelType == config.SelectedModelTypeFast {
 					slotName = "fast"
 				}
-				fmt.Fprintf(os.Stderr, "warning: %s slot was using %s/%s; that slot is now broken. Run `crush models use <smart> <fast>` to fix.\n", slotName, id, model.Model)
+				fmt.Fprintf(os.Stderr, "warning: %s slot was using %s/%s; that slot is now broken. Run `rush models use <smart> <fast>` to fix.\n", slotName, id, model.Model)
 			}
 		}
 
@@ -625,7 +625,7 @@ the other scope (workspace fallback to global, or vice versa) — run
 unset with the matching --global / --local to fully clear it. For a
 default/catwalk-known provider (e.g. "anthropic", "openai") unset only
 clears any override; the provider reappears from the built-in catalog on
-the next config load — use "crush providers disable <id>" to
+the next config load — use "rush providers disable <id>" to
 persistently suppress it.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -649,7 +649,7 @@ persistently suppress it.`,
 				if modelType == config.SelectedModelTypeFast {
 					slotName = "fast"
 				}
-				fmt.Fprintf(os.Stderr, "warning: %s slot was using %s/%s; that slot is now broken. Run `crush models use <smart> <fast>` to fix.\n", slotName, id, model.Model)
+				fmt.Fprintf(os.Stderr, "warning: %s slot was using %s/%s; that slot is now broken. Run `rush models use <smart> <fast>` to fix.\n", slotName, id, model.Model)
 			}
 		}
 
@@ -667,18 +667,18 @@ var providersFetchModelsCmd = &cobra.Command{
 	Long: `Hit the provider's models endpoint (GET <base_url>/models for
 openai-compat, GET /v1/models for anthropic) using the resolved API
 key and print whatever the server actually returns. Unlike
-'crush providers update', this does NOT write anything to crush.json —
+'rush providers update', this does NOT write anything to rush.json —
 use it to discover newly-released models before deciding whether to
 update the local cache.`,
 	Example: `
 # Inspect z.ai's live model list (looks for newly-released GLM versions)
-crush providers fetch-models zai
+rush providers fetch-models zai
 
 # JSON for scripts
-crush providers fetch-models openai --json
+rush providers fetch-models openai --json
 
 # Diff against locally-cached models
-crush providers fetch-models zai --diff
+rush providers fetch-models zai --diff
   `,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -803,8 +803,8 @@ func init() {
 	providersShowCmd.Flags().Bool("json", false, "Emit a JSON object instead of human-readable lines")
 
 	for _, c := range []*cobra.Command{providersSetCmd, providersUnsetCmd} {
-		c.Flags().Bool("global", false, "Target the global config (~/.local/share/crush/crush.json). Default when neither --global nor --local is given.")
-		c.Flags().Bool("local", false, "Target the workspace config (./.crush/crush.json).")
+		c.Flags().Bool("global", false, "Target the global config (~/.local/share/rush/rush.json). Default when neither --global nor --local is given.")
+		c.Flags().Bool("local", false, "Target the workspace config (./.rush/rush.json).")
 		c.MarkFlagsMutuallyExclusive("global", "local")
 	}
 	providersSetCmd.Flags().String("api-key", "", "API key for the provider (literal or $VAR — the latter expands at config-load time)")
@@ -815,8 +815,8 @@ func init() {
 	providersSetCmd.Flags().String("peak-hours", "", "Peak-hours window as HH:MM-HH:MM (local time). Pass 'off' or empty to clear.")
 
 	for _, c := range []*cobra.Command{providersEnableCmd, providersDisableCmd, providersAddCmd} {
-		c.Flags().Bool("global", false, "Target the global config (~/.local/share/crush/crush.json). Default when neither --global nor --local is given.")
-		c.Flags().Bool("local", false, "Target the workspace config (./.crush/crush.json).")
+		c.Flags().Bool("global", false, "Target the global config (~/.local/share/rush/rush.json). Default when neither --global nor --local is given.")
+		c.Flags().Bool("local", false, "Target the workspace config (./.rush/rush.json).")
 		c.MarkFlagsMutuallyExclusive("global", "local")
 	}
 

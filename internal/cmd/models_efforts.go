@@ -1,4 +1,4 @@
-// Fork patch: `crush models efforts [model]` — discoverability for reasoning
+// Fork patch: `rush models efforts [model]` — discoverability for reasoning
 // effort.
 //
 //   - Two syntaxes set effort: short codes / long-form atom suffix
@@ -23,7 +23,7 @@ import (
 )
 
 // providerEffortDoc describes one provider (or provider-family)'s effort
-// semantics in prose, for `crush models efforts` output.
+// semantics in prose, for `rush models efforts` output.
 //
 // SYNC WARNING: this is a human-readable restatement of the effort-mapping
 // logic in internal/agent/coordinator.go's getProviderOptions (the
@@ -51,7 +51,7 @@ var providerEffortDocs = []providerEffortDoc{
 			"Effort levels are whatever the local `claude` CLI advertises via",
 			"`claude --help` (cached per process; falls back to low/medium/high/xhigh/max",
 			"if detection fails). ReasoningEffort is forwarded as-is as the CLI's own",
-			"`--effort <level>` flag — the CLI binary validates it, not Crush.",
+			"`--effort <level>` flag — the CLI binary validates it, not Rush.",
 			"These are the ONLY atoms with effort-bearing short codes (o47x, h45l, sl, ...).",
 		},
 	},
@@ -96,7 +96,7 @@ var providerEffortDocs = []providerEffortDoc{
 			"  Think=false -> reasoning.effort = \"none\"",
 			"The ReasoningEffort string (low/high/xhigh/...) is not read at all.",
 			"No CLI flag sets Think today; edit the model's \"think\" field directly",
-			"in crush.json.",
+			"in rush.json.",
 		},
 	},
 	{
@@ -138,7 +138,7 @@ var modelsEffortsCmd = &cobra.Command{
 	Use:   "efforts [model]",
 	Short: "Explain reasoning-effort levels and how to set them, per provider or per model",
 	Long: `What a reasoning-effort level actually does is provider-specific and
-not visible from ` + "`crush models list`" + `.
+not visible from ` + "`rush models list`" + `.
 
 Two syntaxes set effort:
   1. Short codes, e.g. ` + "`o47x`" + `, ` + "`h45l`" + `, ` + "`sh`" + ` (local-cli/Claude atoms only) or
@@ -152,17 +152,17 @@ the command to set each one.`,
 	Args: cobra.MaximumNArgs(1),
 	Example: `
 # Per-provider semantics, syntaxes, and the Claude-only short-code asymmetry.
-crush models efforts
+rush models efforts
 
 # What does glm5_3 (Z.AI) support, and how do I set it?
-crush models efforts glm5_3
+rush models efforts glm5_3
 
 # Same, addressed as raw provider/model.
-crush models efforts zai/glm-5.3
+rush models efforts zai/glm-5.3
 
 # A Claude atom via its short-code base.
-crush models efforts fl
-crush models efforts fable
+rush models efforts fl
+rush models efforts fable
   `,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if len(args) == 0 {
@@ -202,10 +202,10 @@ func renderEffortsOverview() string {
 	b.WriteString("REASONING EFFORT — how it's set and what it does\n\n")
 
 	b.WriteString("SYNTAX:\n")
-	b.WriteString("  1. Short codes    e.g. `crush models use o47x h45l` — local-cli/Claude only.\n")
+	b.WriteString("  1. Short codes    e.g. `rush models use o47x h45l` — local-cli/Claude only.\n")
 	b.WriteString("                    Long-form atom suffix works for any atom with a known\n")
-	b.WriteString("                    levels array, e.g. `crush models use glm5_3-max`.\n")
-	b.WriteString("  2. Raw @effort    e.g. `crush models use zai/glm-5.3@max glm4_7`\n")
+	b.WriteString("                    levels array, e.g. `rush models use glm5_3-max`.\n")
+	b.WriteString("  2. Raw @effort    e.g. `rush models use zai/glm-5.3@max glm4_7`\n")
 	b.WriteString("     Validated against the atom's real levels when the target is a\n")
 	b.WriteString("     known atom (rejects a typo like `@hihg`); UNVALIDATED (blind string\n")
 	b.WriteString("     split) for any model outside the atom registry.\n\n")
@@ -223,7 +223,7 @@ func renderEffortsOverview() string {
 		renderProviderDoc(&b, d)
 	}
 
-	b.WriteString("Run `crush models efforts <model>` (atom, short code, or provider/model)\n")
+	b.WriteString("Run `rush models efforts <model>` (atom, short code, or provider/model)\n")
 	b.WriteString("for that model's exact supported levels and command syntax.\n")
 	return b.String()
 }
@@ -313,7 +313,7 @@ var unsetEffortDefaults = map[string]string{
 // unsetEffortNote returns a short parenthetical-ready fact describing what an
 // UNSET ReasoningEffort resolves to for (provider, model), reusing
 // providerDocKeyFor so this can never describe a provider differently than
-// `crush models efforts` does. Returns "" when the provider's unset-default
+// `rush models efforts` does. Returns "" when the provider's unset-default
 // behavior isn't one of the documented, unambiguous cases (see
 // unsetEffortDefaults) — callers must treat "" as "say nothing", not fall
 // back to a guess.
@@ -324,7 +324,7 @@ func unsetEffortNote(provider string) string {
 func renderEffortsForModel(arg string) (string, error) {
 	target, ok := resolveEffortTarget(arg)
 	if !ok {
-		return "", fmt.Errorf("%q is not a recognized atom, short code, or provider/model — see `crush models list`", arg)
+		return "", fmt.Errorf("%q is not a recognized atom, short code, or provider/model — see `rush models list`", arg)
 	}
 
 	var b strings.Builder
@@ -348,14 +348,14 @@ func renderEffortsForModel(arg string) (string, error) {
 			levels := a.EffortSource.Levels()
 			tw := tabwriter.NewWriter(&b, 0, 0, 2, ' ', 0)
 			for _, l := range levels {
-				fmt.Fprintf(tw, "  %s-%s\t or  crush models use %s-%s <fast>\n", target.AtomKey, l, target.AtomKey, l)
+				fmt.Fprintf(tw, "  %s-%s\t or  rush models use %s-%s <fast>\n", target.AtomKey, l, target.AtomKey, l)
 			}
 			tw.Flush()
 			b.WriteString("\n  (Levels detected from `claude --help`; falls back to a fixed\n")
 			b.WriteString("  low/medium/high/xhigh/max list if the CLI can't be reached.)\n")
 		} else {
 			b.WriteString("  This local-cli model was not found in the atom registry with an\n")
-			b.WriteString("  effort source; use `crush models use local-cli/" + target.Model + "@<level> <fast>`.\n")
+			b.WriteString("  effort source; use `rush models use local-cli/" + target.Model + "@<level> <fast>`.\n")
 		}
 		return b.String(), nil
 	}
@@ -363,13 +363,13 @@ func renderEffortsForModel(arg string) (string, error) {
 	// Non-Claude: raw @effort syntax is the only option. List candidate
 	// levels from provider docs where we know them; otherwise show the
 	// generic form only.
-	fmt.Fprintf(&b, "  crush models use %s/%s@<level> <fast>\n\n", target.Provider, target.Model)
+	fmt.Fprintf(&b, "  rush models use %s/%s@<level> <fast>\n\n", target.Provider, target.Model)
 
 	// Z.AI atoms additionally now support the long-form "<atom>-<level>"
 	// suffix (validated against ReasoningLevels), same mechanism Claude
 	// atoms already use for their EffortSource-detected levels.
 	if a, ok := atomRegistry[target.AtomKey]; ok && a.ReasoningLevels != nil && providerDocKeyFor(target.Provider) == string(catwalk.InferenceProviderZAI) {
-		fmt.Fprintf(&b, "  Or the validated long-form atom suffix: crush models use %s-<level> <fast>\n\n", target.AtomKey)
+		fmt.Fprintf(&b, "  Or the validated long-form atom suffix: rush models use %s-<level> <fast>\n\n", target.AtomKey)
 	}
 
 	switch providerDocKeyFor(target.Provider) {
@@ -400,19 +400,19 @@ func renderEffortsForModel(arg string) (string, error) {
 		}
 		tw := tabwriter.NewWriter(&b, 0, 0, 2, ' ', 0)
 		for _, l := range levels {
-			fmt.Fprintf(tw, "  %s\t crush models use %s/%s@%s <fast>\n", l, target.Provider, target.Model, l)
+			fmt.Fprintf(tw, "  %s\t rush models use %s/%s@%s <fast>\n", l, target.Provider, target.Model, l)
 		}
 		tw.Flush()
 		if target.AtomKey != "" {
-			fmt.Fprintf(&b, "  (Validated — see `crush models use %s-<level>` above, or the raw\n", target.AtomKey)
+			fmt.Fprintf(&b, "  (Validated — see `rush models use %s-<level>` above, or the raw\n", target.AtomKey)
 			b.WriteString("  @effort form, validated against this same list.)\n")
 		}
 	case string(catwalk.InferenceProviderDeepSeek):
 		b.WriteString("  Meaningful levels for this provider (others collapse into these):\n")
 		tw := tabwriter.NewWriter(&b, 0, 0, 2, ' ', 0)
-		fmt.Fprintf(tw, "  (unset)\t crush models use %s/%s <fast>\t(thinking OFF — different from Z.AI)\n", target.Provider, target.Model)
-		fmt.Fprintf(tw, "  high\t crush models use %s/%s@high <fast>\t(also: low, medium)\n", target.Provider, target.Model)
-		fmt.Fprintf(tw, "  max\t crush models use %s/%s@max <fast>\t(also: xhigh, ultracode)\n", target.Provider, target.Model)
+		fmt.Fprintf(tw, "  (unset)\t rush models use %s/%s <fast>\t(thinking OFF — different from Z.AI)\n", target.Provider, target.Model)
+		fmt.Fprintf(tw, "  high\t rush models use %s/%s@high <fast>\t(also: low, medium)\n", target.Provider, target.Model)
+		fmt.Fprintf(tw, "  max\t rush models use %s/%s@max <fast>\t(also: xhigh, ultracode)\n", target.Provider, target.Model)
 		tw.Flush()
 	case string(catwalk.InferenceProviderIoNet):
 		b.WriteString("  This provider ignores @effort entirely — it only reads the Think\n")
@@ -425,7 +425,7 @@ func renderEffortsForModel(arg string) (string, error) {
 		b.WriteString("  forwarded. No @level syntax applies.\n")
 	default:
 		b.WriteString("  Valid levels are whatever this model's ReasoningLevels advertises;\n")
-		b.WriteString("  see `crush models list` (\"reason:\" column) for this specific model.\n")
+		b.WriteString("  see `rush models list` (\"reason:\" column) for this specific model.\n")
 	}
 	if a, ok := atomRegistry[target.AtomKey]; ok && a.Levels() != nil {
 		b.WriteString("\n  This model is a known atom, so @effort (and the atom-suffix form\n")

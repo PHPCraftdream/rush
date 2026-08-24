@@ -19,7 +19,7 @@ const slowOpenBudget = 30 * time.Second
 
 func absDBPath(t *testing.T, dataDir string) string {
 	t.Helper()
-	abs, err := filepath.Abs(filepath.Join(dataDir, "crush.db"))
+	abs, err := filepath.Abs(filepath.Join(dataDir, "rush.db"))
 	require.NoError(t, err)
 	return abs
 }

@@ -53,7 +53,7 @@ func newOrphanAssistant(t *testing.T, app *App, sessionID string) message.Messag
 // TestRecoverInterruptedTurns_LiveLockHolder_LeavesSessionAlone is the
 // regression test for release-blocker #287.
 //
-// recoverInterruptedTurns runs at the start of EVERY crush process and
+// recoverInterruptedTurns runs at the start of EVERY rush process and
 // iterates EVERY session in the data directory — not just the ones this
 // process owns. Before the fix its only guard was a 30-second age threshold,
 // so any turn running longer than that in process A was stamped

@@ -17,12 +17,12 @@ import (
 // TestRecoverAndLogPanic_LogsBeforeRePanicking is the regression test for
 // task #178: Go's default panic handler writes only to os.Stderr, never
 // through slog, so an unrecovered panic anywhere in the command tree
-// previously left crush.log with zero trace of what happened. This proves
+// previously left rush.log with zero trace of what happened. This proves
 // recoverAndLogPanic (deferred at the top of Execute) logs the panic value
 // and a stack trace via slog.Error under crashLogMarker BEFORE re-panicking
 // with the exact same value — so the process's normal crash behavior (exit
 // code, stderr trace, for anyone watching the terminal directly) is
-// unchanged, while crush.log now durably records what happened.
+// unchanged, while rush.log now durably records what happened.
 func TestRecoverAndLogPanic_LogsBeforeRePanicking(t *testing.T) {
 	prevLogger := slog.Default()
 	t.Cleanup(func() { slog.SetDefault(prevLogger) })
@@ -116,7 +116,7 @@ func TestMaybePrependStdin_NamedPipeWithDataReadsIt(t *testing.T) {
 
 // TestMaybePrependStdin_NamedPipeNeverClosesDoesNotHang is the regression
 // test for the incident that motivated this change: an operator (or a
-// launcher script) invoked `crush run` with a positional prompt and no
+// launcher script) invoked `rush run` with a positional prompt and no
 // explicit `< file` redirect. stdin resolved to a dangling pipe — nothing
 // written, never closed — and io.ReadAll blocked forever, well before
 // --timeout's context deadline is even wired up, leaving the process
@@ -325,7 +325,7 @@ func TestMaybePrependStdin_NamedPipeIdleTimerResetsPerChunk(t *testing.T) {
 // TestMaybePrependStdin_IdleTimeoutTruncationCarriesNote is the regression
 // test for task #220 follow-up 1: when the idle-timeout path returns partial
 // stdin data (the producer went idle before EOF), the caller — usually a
-// model, reading a `crush run` prompt fed non-interactively with stderr
+// model, reading a `rush run` prompt fed non-interactively with stderr
 // unwatched — has no way to know the "stdin" section might be an arbitrary
 // mid-stream cut unless the returned text says so explicitly. This proves
 // the idle-timeout path appends a clearly-worded, model-readable truncation

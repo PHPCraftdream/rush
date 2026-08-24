@@ -98,7 +98,7 @@ var errAwaitingAnswer = errors.New("agent asked a question and is awaiting an op
 
 // AwaitingAnswerError is the sentinel error the (forthcoming) question tool
 // returns to force-stop the current turn instead of blocking on a synchronous
-// answer — this fork's `crush run` has no code path that can wait mid-turn
+// answer — this fork's `rush run` has no code path that can wait mid-turn
 // for operator input (both headless and web sessions auto-approve
 // permissions unconditionally, see internal/server/handlers.go:163-171), so
 // "ask a question" has to mean "stop the turn cleanly and hand the operator
@@ -212,13 +212,13 @@ type Coordinator interface {
 	// "Smart" = the default slot. Fork patch (reviewer/worker roles).
 	SetActiveModelRole(role config.SelectedModelType)
 	// SetAllowPeakHours arms a one-shot bypass of the peak-hours refusal
-	// for the next Run call. It exists so `crush run --allow-peak-hours`
+	// for the next Run call. It exists so `rush run --allow-peak-hours`
 	// can override an operator-configured peak_hours window for a single
 	// conscious invocation without introducing a persistent "always
 	// allow" config setting. Fork patch (peak-hours bypass).
 	SetAllowPeakHours(allow bool)
 	// SetPersistentMode marks this coordinator as the long-lived web/interactive
-	// server (enables Phase 4 autonomous idle-resume eligibility). crush run
+	// server (enables Phase 4 autonomous idle-resume eligibility). rush run
 	// leaves it false.
 	SetPersistentMode(persistent bool)
 	// ResetAutoResumeCounter clears the Phase 4 consecutive-auto-resume bound
@@ -262,13 +262,13 @@ type coordinator struct {
 	maxTokens   int64
 
 	// allowPeakHours is a one-shot bypass for the peak-hours refusal,
-	// armed by SetAllowPeakHours from `crush run --allow-peak-hours`.
+	// armed by SetAllowPeakHours from `rush run --allow-peak-hours`.
 	// Reset to false after the next Run. Fork patch (peak-hours bypass).
 	allowPeakHours bool
 
 	// activeModelRole records which named model slot is driving the current
 	// top-level run, set via SetActiveModelRole. Static per-process (unlike
-	// maxCost/maxTokens above, there is no reset-after-use — `crush run` is
+	// maxCost/maxTokens above, there is no reset-after-use — `rush run` is
 	// single-shot). Mutex guards the same race shape as runLimitsMu:
 	// SetActiveModelRole is called from RunNonInteractive before the agent
 	// goroutine starts, and buildAgentModels reads it from the agent
@@ -278,7 +278,7 @@ type coordinator struct {
 
 	// Phase 4 autonomous idle-resume guardrails.
 	// persistentMode: true only for the long-lived web server; false for
-	// crush run. Currently written exactly once at process start (no real
+	// rush run. Currently written exactly once at process start (no real
 	// race today), but every sibling field here (allowPeakHours,
 	// activeModelRole, maxCost) is already lock/atomic-guarded, so a plain
 	// bool would be a silent trap for the next caller who adds a second
@@ -352,7 +352,7 @@ func NewCoordinator(
 		// machine because cliprovider.Available() synthesizes a local-cli
 		// provider whenever claude/gemini/codex/qwen is on PATH, making
 		// IsConfigured() true at initial Init regardless of any
-		// CRUSH_GLOBAL_*/XDG_* isolation — confirmed by the sixth @oh
+		// RUSH_GLOBAL_*/XDG_* isolation — confirmed by the sixth @oh
 		// review pass) never triggers that population. Also guards against
 		// Agents[AgentCoder] being present but zero-value (ok==true,
 		// ID=="") — the bare `!ok` check alone would skip self-heal for
@@ -421,7 +421,7 @@ func (c *coordinator) SetAllowPeakHours(allow bool) {
 }
 
 // SetPersistentMode marks this coordinator as the long-lived web/interactive
-// server (Phase 4 autonomous idle-resume eligibility). crush run leaves it
+// server (Phase 4 autonomous idle-resume eligibility). rush run leaves it
 // false.
 func (c *coordinator) SetPersistentMode(persistent bool) {
 	c.persistentMode.Store(persistent)
@@ -467,7 +467,7 @@ func (c *coordinator) ResetAutoResumeCounter(sessionID string) {
 // Pure autonomy policy: opt-in config, persistent (web) coordinator only, and
 // under the consecutive-resume runaway bound. Per-turn cost/token caps are
 // still enforced by the normal Run path; a Cancel aborts the auto-turn like any
-// other. NEVER eligible for crush run (persistentMode stays false there).
+// other. NEVER eligible for rush run (persistentMode stays false there).
 func (c *coordinator) autoResumeEligible(sessionID string) bool {
 	return c.autonomyEnabled() &&
 		c.persistentMode.Load() &&

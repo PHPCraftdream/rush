@@ -1,4 +1,4 @@
-// The wire-stable JSON envelope for `crush run --json`: runResult
+// The wire-stable JSON envelope for `rush run --json`: runResult
 // and its usage/sub-agent/partial types, the builders that assemble
 // it (buildRunResult, buildSessionUsageInfo), and their small text
 // helpers (tailN, synthesiseEmptyFinalSummary).
@@ -16,7 +16,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/message"
 )
 
-// runResult is the JSON shape emitted by `crush run --json`. Wire-stable:
+// runResult is the JSON shape emitted by `rush run --json`. Wire-stable:
 // fields here are part of the public contract for wrapper scripts.
 type runResult struct {
 	SessionID string `json:"session_id"`
@@ -87,7 +87,7 @@ type toolCallStat struct {
 
 // subAgentOutput is one row of runResult.SubAgentOutputs. Populated by
 // the --aggregation=attach path. Title and ID are kept so the
-// orchestrator can correlate with `crush sessions list`.
+// orchestrator can correlate with `rush sessions list`.
 type subAgentOutput struct {
 	SessionID string `json:"session_id"`
 	Title     string `json:"title,omitempty"`
@@ -235,7 +235,7 @@ func buildRunResult(sessionID, finalText, assistantNotes, finalReason string, er
 	// (`agent`/`agentic_fetch`) but the turn ended with no final text. The
 	// orchestrator asked for a structured answer and got an empty string,
 	// which usually means the model expected the sub-agents to "be the
-	// answer" — but `crush run` returns ONLY the top-level final_text, so
+	// answer" — but `rush run` returns ONLY the top-level final_text, so
 	// the actual content sits in the sub-session DB rows the orchestrator
 	// can't easily see. Telling them to either prompt for a wrap-up
 	// summary or fetch the sub-session data explicitly.
@@ -254,7 +254,7 @@ func buildRunResult(sessionID, finalText, assistantNotes, finalReason string, er
 			// whether to look at `git status --short` or re-prompt for a
 			// proper summary.
 			if synth := synthesiseEmptyFinalSummary(toolCounts); synth != "" {
-				warnings = append(warnings, "final_text is empty (model ended on a tool_call without composing a reply). "+synth+" Inspect `git status --short` or `crush sessions last <id>` for context, or re-prompt asking for a summary.")
+				warnings = append(warnings, "final_text is empty (model ended on a tool_call without composing a reply). "+synth+" Inspect `git status --short` or `rush sessions last <id>` for context, or re-prompt asking for a summary.")
 			} else {
 				warnings = append(warnings, "final_text is empty and no tools were called this turn. The model produced nothing actionable.")
 			}
@@ -267,7 +267,7 @@ func buildRunResult(sessionID, finalText, assistantNotes, finalReason string, er
 		// awaitingErr branch already wrote onto the Finish part via
 		// awaitingAnswerStoppedFinishText — title is the short headline,
 		// details is err.Error() plus the full AwaitingAnswerGuidance
-		// (question, options, and the ready-to-run `crush run --session
+		// (question, options, and the ready-to-run `rush run --session
 		// <id> "<answer>"` resume command). Reuse it verbatim instead of
 		// falling through to the bare err.Error() the next case would use,
 		// so the orchestrator sees the resume command without having to

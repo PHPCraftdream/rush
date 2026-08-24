@@ -57,19 +57,19 @@ import (
 // Cross-process helpers.
 // ---------------------------------------------------------------------
 
-const sweepTestNewOwnerHelperEnv = "CRUSH_SESSIONS_SWEEP_NEWOWNER_HELPER"
+const sweepTestNewOwnerHelperEnv = "RUSH_SESSIONS_SWEEP_NEWOWNER_HELPER"
 
 // TestHelperSweepTestNewOwner is the re-exec entry point for
 // spawnSweepTestNewOwner: it spins trying to acquire the session lock
-// (modeling a brand-new `crush run --session <id>` racing in the instant
+// (modeling a brand-new `rush run --session <id>` racing in the instant
 // the old holder dies), prints LOCKED once it holds it, then blocks
 // until its stdin pipe closes.
 func TestHelperSweepTestNewOwner(t *testing.T) {
 	if os.Getenv(sweepTestNewOwnerHelperEnv) != "1" {
 		return
 	}
-	dataDir := os.Getenv("CRUSH_SESSIONS_SWEEP_NEWOWNER_DATADIR")
-	sessionID := os.Getenv("CRUSH_SESSIONS_SWEEP_NEWOWNER_SESSIONID")
+	dataDir := os.Getenv("RUSH_SESSIONS_SWEEP_NEWOWNER_DATADIR")
+	sessionID := os.Getenv("RUSH_SESSIONS_SWEEP_NEWOWNER_SESSIONID")
 	if dataDir == "" || sessionID == "" {
 		fmt.Println("FAILED missing-env")
 		os.Exit(2)
@@ -114,8 +114,8 @@ func spawnSweepTestNewOwner(t *testing.T, dataDir, sessionID string) *killTestLo
 	c := exec.CommandContext(ctx, exe, "-test.run=^TestHelperSweepTestNewOwner$")
 	c.Env = append(os.Environ(),
 		sweepTestNewOwnerHelperEnv+"=1",
-		"CRUSH_SESSIONS_SWEEP_NEWOWNER_DATADIR="+dataDir,
-		"CRUSH_SESSIONS_SWEEP_NEWOWNER_SESSIONID="+sessionID,
+		"RUSH_SESSIONS_SWEEP_NEWOWNER_DATADIR="+dataDir,
+		"RUSH_SESSIONS_SWEEP_NEWOWNER_SESSIONID="+sessionID,
 	)
 	stdinR, stdinW, err := os.Pipe()
 	require.NoError(t, err)
@@ -168,7 +168,7 @@ func sweepTestRegistryPath(dataDir, sessionID string) string {
 // generation sidecar this test needs to survive the holder's death.
 // ---------------------------------------------------------------------
 
-const crashTestHelperProcessEnv = "CRUSH_SESSIONS_CRASH_LOCK_HELPER"
+const crashTestHelperProcessEnv = "RUSH_SESSIONS_CRASH_LOCK_HELPER"
 
 // TestHelperCrashTestLockHold is the re-exec entry point for
 // spawnCrashTestLockHolder: acquires the lock, prints LOCKED, then blocks
@@ -180,8 +180,8 @@ func TestHelperCrashTestLockHold(t *testing.T) {
 	if os.Getenv(crashTestHelperProcessEnv) != "1" {
 		return
 	}
-	dataDir := os.Getenv("CRUSH_SESSIONS_CRASH_LOCK_HELPER_DATADIR")
-	sessionID := os.Getenv("CRUSH_SESSIONS_CRASH_LOCK_HELPER_SESSIONID")
+	dataDir := os.Getenv("RUSH_SESSIONS_CRASH_LOCK_HELPER_DATADIR")
+	sessionID := os.Getenv("RUSH_SESSIONS_CRASH_LOCK_HELPER_SESSIONID")
 	if dataDir == "" || sessionID == "" {
 		fmt.Println("FAILED missing-env")
 		os.Exit(2)
@@ -216,8 +216,8 @@ func spawnCrashTestLockHolder(t *testing.T, dataDir, sessionID string) *killTest
 	c := exec.CommandContext(t.Context(), exe, "-test.run=^TestHelperCrashTestLockHold$")
 	c.Env = append(os.Environ(),
 		crashTestHelperProcessEnv+"=1",
-		"CRUSH_SESSIONS_CRASH_LOCK_HELPER_DATADIR="+dataDir,
-		"CRUSH_SESSIONS_CRASH_LOCK_HELPER_SESSIONID="+sessionID,
+		"RUSH_SESSIONS_CRASH_LOCK_HELPER_DATADIR="+dataDir,
+		"RUSH_SESSIONS_CRASH_LOCK_HELPER_SESSIONID="+sessionID,
 	)
 	stdoutR, err := c.StdoutPipe()
 	require.NoError(t, err)
@@ -265,7 +265,7 @@ func spawnCrashTestLockHolder(t *testing.T, dataDir, sessionID string) *killTest
 // crashKill SIGKILLs the holder started by spawnCrashTestLockHolder and
 // reaps it, WITHOUT ever closing a stdin pipe or otherwise giving it a
 // chance to run Release() -- modeling a genuine crash (or `kill -9` from
-// outside crush entirely), as opposed to killTestLockHolder.stop()'s
+// outside rush entirely), as opposed to killTestLockHolder.stop()'s
 // close-stdin-then-kill sequence, which races a real clean release.
 func crashKill(t *testing.T, h *killTestLockHolder) {
 	t.Helper()
@@ -290,7 +290,7 @@ func TestProbeThenKillHolder_CapturesVictimGenerationWhileHolderAlive(t *testing
 		t.Skip("spawns real child processes; skipped in -short")
 	}
 	dir := t.TempDir()
-	dataDir := filepath.Join(dir, ".crush")
+	dataDir := filepath.Join(dir, ".rush")
 	const sessionID = "victim-gen-capture-id"
 
 	// The OLD holder: a real second process holding the real OS lock. It
@@ -376,7 +376,7 @@ func TestAcquireSessionLockForReset_SweepsOnlyAfterReacquire(t *testing.T) {
 		t.Skip("spawns real child processes; skipped in -short")
 	}
 	dir := t.TempDir()
-	dataDir := filepath.Join(dir, ".crush")
+	dataDir := filepath.Join(dir, ".rush")
 	const sessionID = "reset-sweep-order-id"
 
 	// reapInBackground=false is load-bearing here too, for the same reason
@@ -462,7 +462,7 @@ func TestSweepChildGroupsUnderOwnLock_BusyLockRefusesAndRetains(t *testing.T) {
 		t.Skip("spawns real child processes; skipped in -short")
 	}
 	dir := t.TempDir()
-	dataDir := filepath.Join(dir, ".crush")
+	dataDir := filepath.Join(dir, ".rush")
 	const sessionID = "sweep-busy-refuse-id"
 
 	// reapInBackground=false here too, but for a different reason than the
@@ -561,7 +561,7 @@ func TestProbeThenKillHolder_OrphanedGenerationCapturedBeforeProbeAcquire(t *tes
 		t.Skip("spawns real child processes; skipped in -short")
 	}
 	dir := t.TempDir()
-	dataDir := filepath.Join(dir, ".crush")
+	dataDir := filepath.Join(dir, ".rush")
 	const sessionID = "orphan-gen-capture-id"
 
 	holder := spawnCrashTestLockHolder(t, dataDir, sessionID)
@@ -634,7 +634,7 @@ func TestSessionsKillCmdRun_SweepsOrphanedGroupAfterCrash(t *testing.T) {
 	require.NoError(t, os.Chdir(workDir))
 	t.Cleanup(func() { _ = os.Chdir(orig) })
 
-	dataDir := filepath.Join(workDir, ".crush")
+	dataDir := filepath.Join(workDir, ".rush")
 	const sessionID = "orphan-sweep-e2e-id"
 
 	holder := spawnCrashTestLockHolder(t, dataDir, sessionID)
@@ -704,7 +704,7 @@ func TestAcquireSessionLockForReset_SweepsOrphanedGroupAfterCrash(t *testing.T) 
 		t.Skip("spawns real child processes; skipped in -short")
 	}
 	dir := t.TempDir()
-	dataDir := filepath.Join(dir, ".crush")
+	dataDir := filepath.Join(dir, ".rush")
 	const sessionID = "reset-orphan-sweep-id"
 
 	holder := spawnCrashTestLockHolder(t, dataDir, sessionID)

@@ -111,7 +111,7 @@ type Service interface {
 	pubsub.Subscriber[Session]
 	Create(ctx context.Context, title string) (Session, error)
 	// CreateWithID creates a top-level session with a caller-chosen ID. Used
-	// by `crush run --session <id>` to make CLI/CI invocations idempotent:
+	// by `rush run --session <id>` to make CLI/CI invocations idempotent:
 	// the same ID across runs continues the same conversation. Returns an
 	// error if a row with that ID already exists (UNIQUE constraint).
 	CreateWithID(ctx context.Context, id, title string) (Session, error)
@@ -193,11 +193,11 @@ type Service interface {
 	// ForkSession is a thin wrapper around ForkSessionTx with the web fork
 	// button's defaults (server-generated UUID, top-level session, every
 	// message copied). Callers that need --at truncation, a caller-chosen
-	// ID, or parent linkage (e.g. `crush sessions fork`) should call
+	// ID, or parent linkage (e.g. `rush sessions fork`) should call
 	// ForkSessionTx directly instead of duplicating the transaction.
 	ForkSession(ctx context.Context, srcID, title string) (Session, error)
 	// ForkSessionTx is the single transactional fork implementation shared
-	// by every fork entry point (web fork button, `crush sessions fork`).
+	// by every fork entry point (web fork button, `rush sessions fork`).
 	// It clones srcID into a brand-new session in one DB transaction: a
 	// fresh session row copying the source's models, system prompt,
 	// reasoning effort, and todos/deleted_todos, plus the first o.LimitMsgs
@@ -231,7 +231,7 @@ type Service interface {
 	SetEndedReason(ctx context.Context, sessionID, reason string) error
 	SetBudget(ctx context.Context, sessionID string, maxCost float64, maxTokens, timeoutSec int64) error
 
-	// Cross-process message inject (foundation for `crush sessions inject`).
+	// Cross-process message inject (foundation for `rush sessions inject`).
 	// CreatePendingInject enqueues a signal row asking whichever process is
 	// currently running the session to splice messageID into its live prompt.
 	// DrainPendingInjects is called from PrepareStep to consume those rows.

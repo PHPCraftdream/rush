@@ -28,13 +28,13 @@ func isolateProcess(cmd *exec.Cmd) { platform.HideConsoleWindow(cmd) }
 // interp.DefaultExecHandler but additionally sets SysProcAttr.HideWindow —
 // upstream's DefaultExecHandler builds a bare exec.Cmd with no
 // SysProcAttr, so every single bash-tool command spawns a NEW, briefly
-// visible console window when the crush process itself has no console to
+// visible console window when the rush process itself has no console to
 // share (see cmd.maybeDetachConsole's doc comment for why crush ends up
 // console-less on a detached/orchestrator launch). HideWindow: true sets
 // the Windows CREATE_NO_WINDOW creation flag, which suppresses that window
-// unconditionally — independent of whatever console state crush itself is
+// unconditionally — independent of whatever console state rush itself is
 // in, so this is the correct fix at the source rather than trying to give
-// crush a console for children to inherit.
+// rush a console for children to inherit.
 func processGroupExecHandler(killTimeout time.Duration) interp.ExecHandlerFunc {
 	return func(ctx context.Context, args []string) error {
 		hc := interp.HandlerCtx(ctx)
@@ -70,7 +70,7 @@ func processGroupExecHandler(killTimeout time.Duration) interp.ExecHandlerFunc {
 				// cmd.Wait() then hangs indefinitely instead of returning
 				// once the direct child is gone. Tree-kill via taskkill /T
 				// instead, matching session.KillProcess's approach to the
-				// exact same class of problem in `crush sessions kill` —
+				// exact same class of problem in `rush sessions kill` —
 				// it kills the direct process AND everything Windows
 				// recorded as its descendant.
 				if cmd.Process != nil {

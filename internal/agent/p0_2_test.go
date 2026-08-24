@@ -41,7 +41,7 @@ import (
 // reasoning (every access to checkpointGeneration is now under
 // checkpointMu, full stop), not on this test catching a live race.
 //
-// Run with: CRUSH_GLOBAL_DATA=$(mktemp -d) CRUSH_GLOBAL_CONFIG=$(mktemp -d) go test ./internal/agent -race -run TestCheckpointGenerationOverlap -count=5
+// Run with: RUSH_GLOBAL_DATA=$(mktemp -d) RUSH_GLOBAL_CONFIG=$(mktemp -d) go test ./internal/agent -race -run TestCheckpointGenerationOverlap -count=5
 func TestCheckpointGenerationOverlap(t *testing.T) {
 	t.Parallel()
 

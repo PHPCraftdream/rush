@@ -75,13 +75,13 @@ func TestClaudeInit_NoCLAUDEMd_StillInstallsSlashCommand(t *testing.T) {
 	assert.True(t, os.IsNotExist(err), "claude-init must not create CLAUDE.md when it didn't exist")
 
 	// Slash command IS installed.
-	slashPath := filepath.Join(dir, ".claude", "commands", "crush.md")
+	slashPath := filepath.Join(dir, ".claude", "commands", "rush.md")
 	bts, err := os.ReadFile(slashPath)
 	require.NoError(t, err)
 	got := string(bts)
 	assert.Contains(t, got, claudeSlashCommandSentinel)
 	assert.Contains(t, got, "$ARGUMENTS")
-	assert.Contains(t, got, "crush run")
+	assert.Contains(t, got, "rush run")
 	assert.Contains(t, got, "--role smart")
 }
 
@@ -171,13 +171,13 @@ func TestClaudeInit_CreatesSlashCommand(t *testing.T) {
 	dir := t.TempDir()
 	runClaudeInitInDir(t, dir)
 
-	slashPath := filepath.Join(dir, ".claude", "commands", "crush.md")
+	slashPath := filepath.Join(dir, ".claude", "commands", "rush.md")
 	bts, err := os.ReadFile(slashPath)
 	require.NoError(t, err)
 	got := string(bts)
 	assert.Contains(t, got, claudeSlashCommandSentinel)
 	assert.Contains(t, got, "$ARGUMENTS")
-	assert.Contains(t, got, "crush run")
+	assert.Contains(t, got, "rush run")
 	assert.Contains(t, got, "--role smart")
 }
 
@@ -201,7 +201,7 @@ func TestClaudeInit_CreatesSlashCommand(t *testing.T) {
 func TestClaudeInit_SlashCommandOverwritesWithSentinel(t *testing.T) {
 	dir := t.TempDir()
 	runClaudeInitInDir(t, dir)
-	slashPath := filepath.Join(dir, ".claude", "commands", "crush.md")
+	slashPath := filepath.Join(dir, ".claude", "commands", "rush.md")
 	first, err := os.ReadFile(slashPath)
 	require.NoError(t, err)
 
@@ -213,7 +213,7 @@ func TestClaudeInit_SlashCommandOverwritesWithSentinel(t *testing.T) {
 
 func TestClaudeInit_SlashCommandSkipsWithoutSentinel(t *testing.T) {
 	dir := t.TempDir()
-	slashPath := filepath.Join(dir, ".claude", "commands", "crush.md")
+	slashPath := filepath.Join(dir, ".claude", "commands", "rush.md")
 	require.NoError(t, os.MkdirAll(filepath.Dir(slashPath), 0o755))
 	require.NoError(t, os.WriteFile(slashPath, []byte("someone else's file"), 0o644))
 
@@ -272,7 +272,7 @@ func TestClaudeInit_CreatesFallbackCommand(t *testing.T) {
 	dir := t.TempDir()
 	runClaudeInitInDir(t, dir)
 
-	fallbackPath := filepath.Join(dir, ".claude", "commands", "crush-fallback.md")
+	fallbackPath := filepath.Join(dir, ".claude", "commands", "rush-fallback.md")
 	bts, err := os.ReadFile(fallbackPath)
 	require.NoError(t, err)
 	got := string(bts)
@@ -285,7 +285,7 @@ func TestClaudeInit_CreatesFallbackCommand(t *testing.T) {
 func TestClaudeInit_FallbackCommandOverwritesWithSentinel(t *testing.T) {
 	dir := t.TempDir()
 	runClaudeInitInDir(t, dir)
-	fallbackPath := filepath.Join(dir, ".claude", "commands", "crush-fallback.md")
+	fallbackPath := filepath.Join(dir, ".claude", "commands", "rush-fallback.md")
 	first, err := os.ReadFile(fallbackPath)
 	require.NoError(t, err)
 
@@ -297,7 +297,7 @@ func TestClaudeInit_FallbackCommandOverwritesWithSentinel(t *testing.T) {
 
 func TestClaudeInit_FallbackCommandSkipsWithoutSentinel(t *testing.T) {
 	dir := t.TempDir()
-	fallbackPath := filepath.Join(dir, ".claude", "commands", "crush-fallback.md")
+	fallbackPath := filepath.Join(dir, ".claude", "commands", "rush-fallback.md")
 	require.NoError(t, os.MkdirAll(filepath.Dir(fallbackPath), 0o755))
 	require.NoError(t, os.WriteFile(fallbackPath, []byte("someone else's file"), 0o644))
 
@@ -313,9 +313,9 @@ func TestClaudeInit_FallbackCommandSkipsWithoutSentinel(t *testing.T) {
 
 func TestClaudeDel_RemovesSlashCommandWithSentinel(t *testing.T) {
 	dir := t.TempDir()
-	slashPath := filepath.Join(dir, ".claude", "commands", "crush.md")
+	slashPath := filepath.Join(dir, ".claude", "commands", "rush.md")
 	require.NoError(t, os.MkdirAll(filepath.Dir(slashPath), 0o755))
-	require.NoError(t, os.WriteFile(slashPath, []byte("<!-- crush-slash-command:v1 -->\nsome content\n"), 0o644))
+	require.NoError(t, os.WriteFile(slashPath, []byte("<!-- rush-slash-command:v1 -->\nsome content\n"), 0o644))
 
 	claudeMdPath := filepath.Join(dir, claudeMdFile)
 	require.NoError(t, os.WriteFile(claudeMdPath, []byte("# Notes\n"), 0o644))
@@ -328,7 +328,7 @@ func TestClaudeDel_RemovesSlashCommandWithSentinel(t *testing.T) {
 
 func TestClaudeDel_RefusesSlashCommandWithoutSentinel(t *testing.T) {
 	dir := t.TempDir()
-	slashPath := filepath.Join(dir, ".claude", "commands", "crush.md")
+	slashPath := filepath.Join(dir, ".claude", "commands", "rush.md")
 	require.NoError(t, os.MkdirAll(filepath.Dir(slashPath), 0o755))
 	require.NoError(t, os.WriteFile(slashPath, []byte("not ours"), 0o644))
 
@@ -349,9 +349,9 @@ func TestClaudeDel_RefusesSlashCommandWithoutSentinel(t *testing.T) {
 
 func TestClaudeDel_RemovesFallbackCommandWithSentinel(t *testing.T) {
 	dir := t.TempDir()
-	fallbackPath := filepath.Join(dir, ".claude", "commands", "crush-fallback.md")
+	fallbackPath := filepath.Join(dir, ".claude", "commands", "rush-fallback.md")
 	require.NoError(t, os.MkdirAll(filepath.Dir(fallbackPath), 0o755))
-	require.NoError(t, os.WriteFile(fallbackPath, []byte("<!-- crush-slash-command:v1 -->\nsome content\n"), 0o644))
+	require.NoError(t, os.WriteFile(fallbackPath, []byte("<!-- rush-slash-command:v1 -->\nsome content\n"), 0o644))
 
 	claudeMdPath := filepath.Join(dir, claudeMdFile)
 	require.NoError(t, os.WriteFile(claudeMdPath, []byte("# Notes\n"), 0o644))
@@ -364,7 +364,7 @@ func TestClaudeDel_RemovesFallbackCommandWithSentinel(t *testing.T) {
 
 func TestClaudeDel_RefusesFallbackCommandWithoutSentinel(t *testing.T) {
 	dir := t.TempDir()
-	fallbackPath := filepath.Join(dir, ".claude", "commands", "crush-fallback.md")
+	fallbackPath := filepath.Join(dir, ".claude", "commands", "rush-fallback.md")
 	require.NoError(t, os.MkdirAll(filepath.Dir(fallbackPath), 0o755))
 	require.NoError(t, os.WriteFile(fallbackPath, []byte("not ours"), 0o644))
 
@@ -417,5 +417,5 @@ func TestClaudeDel_IdempotentOnSecondRun(t *testing.T) {
 
 // Per-model command and agent tests removed: that functionality has been
 // extracted to the cc-arch-hands repo (`cah install` / `cah uninstall`).
-// crush's claude-init/claude-del now manage only the /crush slash-command
+// rush's claude-init/claude-del now manage only the /rush slash-command
 // and the legacy CLAUDE.md block strip.

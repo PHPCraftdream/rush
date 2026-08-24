@@ -32,7 +32,7 @@ func peakWindowAroundNow() *config.PeakHoursWindow {
 // TestCheckPeakHours_RefusesInWindow pins the refusal behaviour: when the
 // provider's peak_hours window covers now, checkPeakHours returns an error
 // that wraps errProviderPeakHours and carries the descriptive text the
-// orchestrator must see in `crush run` output.
+// orchestrator must see in `rush run` output.
 func TestCheckPeakHours_RefusesInWindow(t *testing.T) {
 	w := peakWindowAroundNow()
 	cfg := config.ProviderConfig{ID: "test-peak", PeakHours: w}
@@ -40,7 +40,7 @@ func TestCheckPeakHours_RefusesInWindow(t *testing.T) {
 	err := checkPeakHours(cfg)
 	require.Error(t, err, "in-window peak_hours must refuse")
 	assert.ErrorIs(t, err, errProviderPeakHours, "refusal must wrap errProviderPeakHours for classifyProviderError")
-	// The descriptive text is what reaches `crush run`'s output (plain stderr
+	// The descriptive text is what reaches `rush run`'s output (plain stderr
 	// and the --json envelope's error field). Assert the operator-actionable
 	// fragments are present.
 	msg := err.Error()
@@ -67,7 +67,7 @@ func TestCheckPeakHours_AllowsOutsideWindow(t *testing.T) {
 }
 
 // TestSetAllowPeakHours_BypassesRunInternal verifies the bypass path that
-// `crush run --allow-peak-hours` arms. It builds a coordinator whose provider
+// `rush run --allow-peak-hours` arms. It builds a coordinator whose provider
 // is inside its peak_hours window (so a normal Run would refuse with
 // errProviderPeakHours), arms SetAllowPeakHours(true), and asserts the mock
 // agent's Run is reached instead of the refusal firing.
@@ -184,7 +184,7 @@ func TestCheckLivePeakHours_ReloadsDirtyConfig(t *testing.T) {
 	t.Parallel()
 
 	workDir := t.TempDir()
-	configPath := filepath.Join(workDir, "crush.json")
+	configPath := filepath.Join(workDir, "rush.json")
 	initial := `{
 		"options": {"disable_default_providers": true},
 		"providers": {

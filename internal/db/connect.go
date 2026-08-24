@@ -124,7 +124,7 @@ func connect(ctx context.Context, dataDir string) (*connEntry, error) {
 		return nil, fmt.Errorf("data.dir is not set")
 	}
 
-	dbPath := filepath.Join(dataDir, "crush.db")
+	dbPath := filepath.Join(dataDir, "rush.db")
 
 	// Resolve to an absolute path so that different relative paths to
 	// the same file share a single connection.
@@ -224,7 +224,7 @@ func connect(ctx context.Context, dataDir string) (*connEntry, error) {
 // either function — the shared refCount is decremented once per Release,
 // symmetric with connect()'s "increment once per call" contract.
 func Release(dataDir string) error {
-	dbPath := filepath.Join(dataDir, "crush.db")
+	dbPath := filepath.Join(dataDir, "rush.db")
 	absPath, err := filepath.Abs(dbPath)
 	if err != nil {
 		absPath = dbPath
@@ -280,7 +280,7 @@ func Release(dataDir string) error {
 // t.Parallel()) for DIFFERENT dataDirs, unlike ResetPool which tears down
 // every pooled entry process-wide.
 func ReleaseAll(dataDir string) error {
-	dbPath := filepath.Join(dataDir, "crush.db")
+	dbPath := filepath.Join(dataDir, "rush.db")
 	absPath, err := filepath.Abs(dbPath)
 	if err != nil {
 		absPath = dbPath

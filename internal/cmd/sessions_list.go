@@ -30,10 +30,10 @@ Without --json the output is a fixed-width table; with --json each line is
 one JSON object suitable for jq / streaming consumers.`,
 	Example: `
 # Human-readable table
-crush sessions list
+rush sessions list
 
 # Machine-readable (one object per line)
-crush sessions list --json | jq 'select(.message_count > 0)'
+rush sessions list --json | jq 'select(.message_count > 0)'
   `,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		asJSON, _ := cmd.Flags().GetBool("json")
@@ -68,7 +68,7 @@ crush sessions list --json | jq 'select(.message_count > 0)'
 		statusByID := computeSessionStatuses(a)
 
 		// A dead-PID lock can mean two things: a genuine mid-turn crash,
-		// or a `crush run` that finished cleanly (last assistant turn
+		// or a `rush run` that finished cleanly (last assistant turn
 		// ended with end_turn) and exited within the ~60s heartbeat
 		// sweep window — its lock file is still on disk but the PID is
 		// gone. Reclassify those to "done" so a clean exit isn't shown
@@ -144,7 +144,7 @@ crush sessions list --json | jq 'select(.message_count > 0)'
 // changing behavior here. The pid > 0 branch below is bounded by
 // session.MaxPidFallbackAge for the same reason InspectSessionLock is
 // (task #235/#241): without a bound, a lock abandoned by a killed/crashed
-// `crush run` whose recorded PID the OS later recycles for an unrelated,
+// `rush run` whose recorded PID the OS later recycles for an unrelated,
 // currently-running process would report "running" forever, with
 // `sessions list`'s STATUS column never self-healing to "crashed"/"done".
 func computeSessionStatuses(a *app.App) map[string]string {
@@ -293,7 +293,7 @@ func statusOrDash(s string) string {
 	return s
 }
 
-// sessionListItem is the JSON shape of `crush sessions list --json`. Held
+// sessionListItem is the JSON shape of `rush sessions list --json`. Held
 // as a separate struct (rather than just marshalling session.Session
 // directly) so the wire-stable field names don't drift if session.Session
 // gains internal fields we don't want to publish.
@@ -316,7 +316,7 @@ type sessionListItem struct {
 }
 
 // makeSessionListItem projects a session.Session into the wire-stable
-// sessionListItem shape used by `crush sessions list --json`.
+// sessionListItem shape used by `rush sessions list --json`.
 func makeSessionListItem(s session.Session) sessionListItem {
 	return sessionListItem{
 		ID:           s.ID,

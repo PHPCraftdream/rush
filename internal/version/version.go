@@ -17,7 +17,7 @@ import (
 // lockstep with npm/crush/package.json on every bump.
 const forkBaseVersion = "0.2.0-alpha.0"
 
-// VersionLine is what `crush --version`/`crush version` prints: the fork's
+// VersionLine is what `rush --version`/`rush version` prints: the fork's
 // release-line version, with no "v" prefix, followed by this specific
 // build's provenance — short commit hash and build time — e.g.
 //
@@ -103,7 +103,7 @@ var (
 	// BuildTime is the human-readable moment this binary was linked, injected
 	// via ldflags by build.go (and left empty for plain `go build`/`go run`).
 	//
-	// It exists because `crush --version` used to print only the release-line
+	// It exists because `rush --version` used to print only the release-line
 	// summary ("0.2.0-alpha.0"), which is IDENTICAL for every build of that
 	// line — so a deployed binary carried no evidence of which source tree it
 	// came from. Answering "is the binary I'm running actually the one I just
@@ -142,7 +142,7 @@ func formatFullVersion(v, buildID string) string {
 // win — see the "Verify" step in .github/workflows/publish-fork-npm.yml) and
 // only derives a value from build metadata for un-injected local builds.
 //
-// A user may install crush using `go install github.com/PHPCraftdream/rush@latest`
+// A user may install rush using `go install github.com/PHPCraftdream/rush@latest`
 // without -ldflags, in which case the version above is unset. As a workaround
 // we use the embedded build version that *is* set when using `go install` (and
 // is only set for `go install` and not for `go build`). For plain `go build`
@@ -297,7 +297,7 @@ func readVCS(info *debug.BuildInfo) vcsInfo {
 // build .` can embed a real pseudo-version with a recoverable base tag,
 // which produced a confusing "v0.72.1-<hash>-0.2.0-alpha.0" that looked like it
 // carried a deliberate upstream-tracking signal but didn't. The fork no
-// longer surfaces any upstream-version signal in `crush --version` output at
+// longer surfaces any upstream-version signal in `rush --version` output at
 // all (see VersionLine's doc comment) — this function still avoids the
 // incidental pseudo-version tag on its own merits: it is noise, not signal.
 func deriveDevVersion(revision string) string {

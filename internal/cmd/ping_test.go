@@ -426,7 +426,7 @@ func TestResolvePingModel(t *testing.T) {
 		cfg := newTestConfigWithProvider(t, "zai")
 		// "glm-5.3" is deliberately not in any catwalk catalog or atom
 		// fixture here -- this is exactly the case app.ResolveModel (used
-		// by `crush models use`) would reject, and resolvePingModel must
+		// by `rush models use`) would reject, and resolvePingModel must
 		// not.
 		sel, err := resolvePingModel(cfg, "zai/glm-5.3")
 		require.NoError(t, err)

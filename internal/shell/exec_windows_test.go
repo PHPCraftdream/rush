@@ -23,7 +23,7 @@ import (
 // cmd.exe's `start` or PowerShell's `Start-Process`, whose handle
 // inheritance semantics are not guaranteed to be stable across Windows
 // versions or CI images.
-const helperEnvVar = "CRUSH_SHELL_TEST_HELPER"
+const helperEnvVar = "RUSH_SHELL_TEST_HELPER"
 
 func TestMain(m *testing.M) {
 	switch os.Getenv(helperEnvVar) {

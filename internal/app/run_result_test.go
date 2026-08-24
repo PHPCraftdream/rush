@@ -107,7 +107,7 @@ func TestBuildRunResult_AwaitingAnswer(t *testing.T) {
 		SessionID: "sess-1",
 	}
 	title := "Stopped: agent asked a question and is awaiting an answer"
-	details := awaitingErr.Error() + "\n\nQUESTION: Which environment should I deploy to?\n\ncrush run --session sess-1 \"<your answer>\""
+	details := awaitingErr.Error() + "\n\nQUESTION: Which environment should I deploy to?\n\nrush run --session sess-1 \"<your answer>\""
 
 	// finalReason mirrors what agent.go's AddFinish actually records for
 	// this path: message.FinishReasonError, because there is no dedicated
@@ -123,7 +123,7 @@ func TestBuildRunResult_AwaitingAnswer(t *testing.T) {
 	assert.Equal(t, "awaiting_answer", r.ExitReason, "must not fall through to the generic error reason")
 	assert.Contains(t, r.Error, title)
 	assert.Contains(t, r.Error, "Which environment should I deploy to?")
-	assert.Contains(t, r.Error, "crush run --session sess-1")
+	assert.Contains(t, r.Error, "rush run --session sess-1")
 }
 
 // TestBuildRunResult_AwaitingAnswer_NoFanoutOrEmptyWarning verifies the
@@ -342,12 +342,12 @@ func TestRunIncompleteError_Message(t *testing.T) {
 
 func TestSessionBusyGuidance(t *testing.T) {
 	queued := sessionBusyGuidance("s1", fmt.Errorf("outer: %w", agent.ErrSessionBusy))
-	assert.Contains(t, queued, "this crush process")
-	assert.Contains(t, queued, "crush sessions inject s1 -m <message>")
+	assert.Contains(t, queued, "this rush process")
+	assert.Contains(t, queued, "rush sessions inject s1 -m <message>")
 
 	locked := sessionBusyGuidance("s2", fmt.Errorf("outer: %w", &session.SessionLockBusyError{HolderPID: 1234, Path: "lock"}))
-	assert.Contains(t, locked, "crush process PID 1234")
-	assert.Contains(t, locked, "crush run --session s2")
+	assert.Contains(t, locked, "rush process PID 1234")
+	assert.Contains(t, locked, "rush run --session s2")
 
 	assert.Empty(t, sessionBusyGuidance("s3", errors.New("other")))
 }

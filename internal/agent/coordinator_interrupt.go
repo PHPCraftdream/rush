@@ -21,7 +21,7 @@ import (
 
 // interruptInjectTick is how often the interrupt-inject ticker polls
 // pending_injects for interrupt=true rows during an active turn. 3s is a
-// deliberate middle ground: fast enough that `crush sessions inject
+// deliberate middle ground: fast enough that `rush sessions inject
 // --interrupt` feels near-immediate to an operator (worst case one tick of
 // latency), slow enough that the extra SELECT is negligible even across a
 // long multi-step turn. The ticker only lives for the duration of a turn (see
@@ -514,7 +514,7 @@ func (c *coordinator) RunSessionAgentCall(ctx context.Context, call SessionAgent
 	sessionID := call.SessionID
 
 	// Interrupt-inject ticker: watches pending_injects for interrupt=true rows
-	// written by `crush sessions inject --interrupt` in another process, and
+	// written by `rush sessions inject --interrupt` in another process, and
 	// (on the first hit) cancels the running turn and requeues the referenced
 	// message so it picks up immediately. Bound to this turn's lifetime via
 	// tickerCtx — stopped by the defer as soon as run() returns, so no

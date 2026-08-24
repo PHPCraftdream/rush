@@ -1,6 +1,6 @@
 package cliprovider
 
-// Tool implementations registered on the in-process crush MCP server:
+// Tool implementations registered on the in-process rush MCP server:
 // the external MCP proxy bridge, bash, read, write, glob, grep and todos,
 // plus the shared helpers (result builders, path resolution, shell
 // execution, line slicing) those tools use.
@@ -28,10 +28,10 @@ import (
 )
 
 // registerExternalMCPTools exposes all enabled external MCP tools (from the
-// internal mcp package) on the crush MCP HTTP server, so CLI models can call
+// internal mcp package) on the rush MCP HTTP server, so CLI models can call
 // them. Tool names are prefixed with the server name to avoid collisions.
 // Each tool call goes through perms.Request so the user can approve/deny it
-// in the crush UI (or auto-approve in yolo mode).
+// in the rush UI (or auto-approve in yolo mode).
 func registerExternalMCPTools(ctx context.Context, srv *mcp.Server, perms permission.Service, workingDir string, proxy ExternalMCPProxy, toolCh chan mcpToolEvent) {
 	for _, ext := range proxy.ListTools() {
 		ext := ext // capture
@@ -59,7 +59,7 @@ func registerExternalMCPTools(ctx context.Context, srv *mcp.Server, perms permis
 			emitToolStart(toolCh, id, toolName, inputJSON)
 			defer emitToolEnd(toolCh, id)
 
-			// Request permission via crush UI (respects yolo mode).
+			// Request permission via rush UI (respects yolo mode).
 			if perms != nil {
 				var params any
 				_ = json.Unmarshal(req.Params.Arguments, &params)
@@ -118,11 +118,11 @@ func registerBashTool(srv *mcp.Server, perms permission.Service, workingDir stri
 		slog.Debug("cliprovider: MCP Bash called", "command", input.Command, "description", input.Description)
 
 		// Fork patch: batch 16 — refuse invocations of other AI agent CLIs
-		// (claude, codex, gemini, opencode, aider, crush itself, …) before
+		// (claude, codex, gemini, opencode, aider, rush itself, …) before
 		// they reach the shell, and — on Windows — commands that would pop
 		// a brand-new, visible console/GUI window via start / Start-Process
 		// / Start-Job, regardless of the outer shell's own HideWindow
-		// attribute. A model running unattended via `crush run` has no
+		// attribute. A model running unattended via `rush run` has no
 		// legitimate reason to open a window on the operator's desktop, and
 		// every such window steals focus and covers whatever the operator
 		// was doing. Both guards now live behind agentguard.CheckAll, the
@@ -212,9 +212,9 @@ func registerViewTool(srv *mcp.Server, perms permission.Service, workingDir stri
 		content := string(data)
 		// Fork patch: batch 15 — when a sub-agent (called via this MCP)
 		// reads CLAUDE.md it gets the OPERATOR-facing delegation guidance
-		// inserted by `crush claude-init`. That guidance tells the reader
-		// to "delegate work to crush sub-agents" — which causes a
-		// sub-agent that just read this to spawn a NEW crush sub-agent,
+		// inserted by `rush claude-init`. That guidance tells the reader
+		// to "delegate work to rush sub-agents" — which causes a
+		// sub-agent that just read this to spawn a NEW rush sub-agent,
 		// recursing until timeout. Strip the block before returning so
 		// the sub-agent never sees the instruction it would loop on.
 		// Filesystem file is untouched; only THIS read sees the filtered
@@ -239,7 +239,7 @@ var rushClaudeInitBlockPattern = regexp.MustCompile(`(?s)<!-- crush-claude-init:
 
 func isClaudeMdPath(path string) bool {
 	// Split on BOTH separators regardless of host OS: the path may be a
-	// Windows path (…\CLAUDE.md) even when crush runs on Linux/macOS, where
+	// Windows path (…\CLAUDE.md) even when rush runs on Linux/macOS, where
 	// filepath.Base only understands "/".
 	base := path
 	if i := strings.LastIndexAny(base, `/\`); i >= 0 {
@@ -517,7 +517,7 @@ func registerTodosTool(srv *mcp.Server, sessions session.Service, sessionID stri
 
 // mcpSessionID is used as the session ID for permission requests made by the
 // MCP server. It is a fixed string because the MCP server is not tied to a
-// specific crush session.
+// specific rush session.
 const mcpSessionID = "cli-mcp"
 
 func toolText(text string) *mcp.CallToolResult {

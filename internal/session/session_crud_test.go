@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// CreateWithID is the primitive behind `crush run --session <id>` idempotent
+// CreateWithID is the primitive behind `rush run --session <id>` idempotent
 // CI invocations and behind `app.resolveSession`'s get-or-create branch.
 // It must (a) honour the caller-chosen id verbatim, (b) round-trip the title,
 // and (c) refuse a second insert with the same id (so the get-or-create flow

@@ -24,7 +24,7 @@ func TestCheckForbiddenWrite_MatchingPath_Errors(t *testing.T) {
 
 	err := CheckForbiddenWrite(forbidden)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "CRUSH_FORBID_WRITES",
+	assert.Contains(t, err.Error(), "RUSH_FORBID_WRITES",
 		"error must name the env var so the model can self-correct")
 	assert.Contains(t, err.Error(), "stdout-target.json")
 }
@@ -92,7 +92,7 @@ func TestCheckForbiddenWrite_CaseInsensitiveOnWindows(t *testing.T) {
 func TestCheckForbiddenWrite_EnvVarConst(t *testing.T) {
 	// Document the exact env var name as a stable contract for
 	// orchestrators that set it before exec'ing crush.
-	assert.Equal(t, "CRUSH_FORBID_WRITES", ForbiddenWritesEnv,
+	assert.Equal(t, "RUSH_FORBID_WRITES", ForbiddenWritesEnv,
 		"orchestrators rely on this exact env var name — do not rename without coordinating")
 }
 

@@ -11,15 +11,15 @@ import (
 // ForbiddenWritesEnv is the env var orchestrators set to blacklist
 // specific paths from the write / edit / multiedit tools. Comma-separated
 // list of absolute or working-dir-relative paths. Designed to be set by
-// a parent process before exec'ing `crush run`, so a wrapper like
-// `crush run --json > /tmp/out.json` can guarantee the model can't
+// a parent process before exec'ing `rush run`, so a wrapper like
+// `rush run --json > /tmp/out.json` can guarantee the model can't
 // collide with its own stdout-redirect target — the failure mode where
 // the JSON envelope ended up on line 1 and write-tool content on lines
 // 2+ in the same file, observed in the shamir-db .tmp-audit-D.json case.
-const ForbiddenWritesEnv = "CRUSH_FORBID_WRITES"
+const ForbiddenWritesEnv = "RUSH_FORBID_WRITES"
 
 // CheckForbiddenWrite returns an error if path is on the comma-separated
-// CRUSH_FORBID_WRITES env-var blacklist. Comparison uses absolute, cleaned
+// RUSH_FORBID_WRITES env-var blacklist. Comparison uses absolute, cleaned
 // paths; case-insensitive on Windows. Empty env var means no
 // restrictions.
 func CheckForbiddenWrite(path string) error {

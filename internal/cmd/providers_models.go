@@ -1,4 +1,4 @@
-// Fork patch: batch 12 — model-fetch helpers for `crush providers update`.
+// Fork patch: batch 12 — model-fetch helpers for `rush providers update`.
 // Lives next to providers.go (its single caller is updateSingleProvider in
 // providers.go). Restored after a stray manual delete — see commit log.
 package cmd
@@ -126,7 +126,7 @@ func fetchModelsOpenAICompat(baseURL, apiKey string) ([]catwalk.Model, []string,
 
 	if len(models) > 0 {
 		warnings = append(warnings, "Note: context window information is not available for openai-compat providers. "+
-			"Set it manually with: crush providers set "+
+			"Set it manually with: rush providers set "+
 			"<id> --json '{\"models\": [{\"id\": \"<model>\", \"context_window\": <tokens>}]}'")
 	}
 

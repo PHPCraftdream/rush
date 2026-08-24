@@ -1,4 +1,4 @@
-// Fork patch: batch 11 — `crush models state` shows the effective smart/fast
+// Fork patch: batch 11 — `rush models state` shows the effective smart/fast
 // pair, the scope each came from, and a per-scope breakdown of what is written
 // to disk. Replaces the implicit story (`models show` alone doesn't say WHERE
 // each slot came from).
@@ -16,11 +16,11 @@ import (
 
 var modelsStateCmd = &cobra.Command{
 	Use:     "state",
-	Aliases: []string{"show"}, // backwards-compat: `crush models show` used to exist.
+	Aliases: []string{"show"}, // backwards-compat: `rush models show` used to exist.
 	Short:   "Show what's currently effective and from which scope",
 	Long: `Print three things:
   1. EFFECTIVE — the (smart, fast, worker, reviewer) values that
-     ` + "`crush run --role smart/fast/worker/reviewer`" + ` will actually use, and
+     ` + "`rush run --role smart/fast/worker/reviewer`" + ` will actually use, and
      which scope each came from. worker and reviewer are optional; when unset
      in both scopes they print "(not set in any scope)".
   2. SCOPES — what each scope (global, local) says about each slot, with
@@ -29,22 +29,22 @@ var modelsStateCmd = &cobra.Command{
   4. For a slot with no explicit effort, the known unset-default (e.g.
      "unset -> thinking on, high" for Z.AI) — silent when undocumented.
 
-Set worker/reviewer with ` + "`crush models use <smart> <fast> --worker <m> --reviewer <m>`" + `
-and clear them with ` + "`crush models unset worker`" + ` / ` + "`crush models unset reviewer`" + `.
+Set worker/reviewer with ` + "`rush models use <smart> <fast> --worker <m> --reviewer <m>`" + `
+and clear them with ` + "`rush models unset worker`" + ` / ` + "`rush models unset reviewer`" + `.
 
 ` + "`--json`" + ` emits a structured object for orchestrators.`,
 	Example: `
 # Plain text: effective pair + scope breakdown.
-crush models state
+rush models state
 
 # Machine-readable for orchestrators (jq-friendly):
-crush models state --json | jq '.effective'
+rush models state --json | jq '.effective'
 
 # After changing the workspace override, see what's now effective:
-crush models use --local opus-high glm5_turbo && crush models state
+rush models use --local opus-high glm5_turbo && rush models state
 
 # Backwards-compat alias of the same command:
-crush models show
+rush models show
   `,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		asJSON, _ := cmd.Flags().GetBool("json")
@@ -197,7 +197,7 @@ func printEffectiveLine(label string, has bool, m config.SelectedModel, scope st
 // or "" when there's nothing to add) for a slot's effort state: nothing
 // when an effort is explicitly set (effortSuffix above already shows that),
 // and the documented unset-default fact — reusing unsetEffortNote from
-// models_efforts.go so this can never drift from `crush models efforts`'s
+// models_efforts.go so this can never drift from `rush models efforts`'s
 // prose or coordinator.go's actual switch — when the effort is unset and
 // that provider's default is known. Silent ("") for unset effort on a
 // provider whose default isn't documented; never guesses.

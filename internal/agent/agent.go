@@ -212,7 +212,7 @@ type SessionAgentCall struct {
 	MaxTokens int64
 	// ExistingMessageID, when non-empty, marks this call as referencing a
 	// user message that already exists in the DB (created by another process,
-	// e.g. `crush sessions inject --interrupt`). The queue-drain path in
+	// e.g. `rush sessions inject --interrupt`). The queue-drain path in
 	// Run's PrepareStep must then load that message by ID and splice it into
 	// the prompt WITHOUT calling createUserMessage — otherwise the operator
 	// would see the same message twice in history. Set by
@@ -511,7 +511,7 @@ type sessionAgent struct {
 	// default (5s). Test-only seam (task #454), same rationale as
 	// titleJoinGrace.
 	cancelAllGrace time.Duration
-	// dataDir is the absolute path to .crush/, used for the per-session
+	// dataDir is the absolute path to .rush/, used for the per-session
 	// inter-process file lock. Empty means locking is disabled (legacy
 	// callers / tests). Plumbed from SessionAgentOptions.DataDirectory.
 	dataDir string
@@ -630,9 +630,9 @@ type SessionAgentOptions struct {
 	// when > 0. Test-only seam (task #454) — production callers leave this
 	// unset.
 	CancelAllGrace time.Duration
-	// DataDirectory is the absolute path to .crush/. Used by Run() to
+	// DataDirectory is the absolute path to .rush/. Used by Run() to
 	// acquire an inter-process file lock per session (prevents two
-	// crush processes from accidentally working on the same session
+	// rush processes from accidentally working on the same session
 	// id — see internal/session/lock.go).
 	DataDirectory string
 	// CheckpointInterval controls how often in-progress streaming

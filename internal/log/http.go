@@ -36,18 +36,18 @@ const (
 // itself repeated inside a JSON field, not just the Authorization header.
 // formatHeaders (below) redacts known sensitive HEADERS, but historically
 // nothing redacted the BODY, so simply turning on --debug was enough to
-// spray all of that into crush.log at slog.Debug level.
+// spray all of that into rush.log at slog.Debug level.
 //
 // This is intentionally a SEPARATE opt-in from --debug/slog.LevelDebug:
 // --debug is routinely turned on to diagnose transport/timing issues and
 // must not, by itself, imply "log secrets". Body logging additionally
-// requires CRUSH_LOG_HTTP_BODIES=1 (following the existing CRUSH_* opt-in
-// env var convention used elsewhere, e.g. CRUSH_DISABLE_ANTHROPIC_CACHE,
-// CRUSH_CORE_UTILS — no new configuration mechanism introduced here).
+// requires RUSH_LOG_HTTP_BODIES=1 (following the existing RUSH_* opt-in
+// env var convention used elsewhere, e.g. RUSH_DISABLE_ANTHROPIC_CACHE,
+// RUSH_CORE_UTILS — no new configuration mechanism introduced here).
 // Even then, known secret-shaped JSON fields are redacted before logging
 // (see redactBodySecrets).
 var LogHTTPBodies = func() bool {
-	v, _ := strconv.ParseBool(os.Getenv("CRUSH_LOG_HTTP_BODIES"))
+	v, _ := strconv.ParseBool(os.Getenv("RUSH_LOG_HTTP_BODIES"))
 	return v
 }()
 
@@ -360,7 +360,7 @@ var sensitiveBodyKeySubstrings = []string{
 // "tokens" key to hold an actual secret value. This lets the bare "token"
 // substring below stay broad enough to catch any "*_token"/"token_*"
 // credential shape without an exact enumeration, while not redacting the
-// exact usage-accounting fields CRUSH_LOG_HTTP_BODIES is most often turned
+// exact usage-accounting fields RUSH_LOG_HTTP_BODIES is most often turned
 // on to inspect (previously every one of the examples above was silently
 // replaced with the string "[REDACTED]", corrupting both the value and its
 // JSON type).

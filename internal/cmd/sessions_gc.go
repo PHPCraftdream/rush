@@ -27,16 +27,16 @@ Use --max-sessions to cap the number of deletions per run.
 Use --json to emit one JSON object per deleted (or would-be-deleted) session.`,
 	Example: `
 # Dry run: show what would be collected
-crush sessions gc --dry-run
+rush sessions gc --dry-run
 
 # Collect with defaults (7 days, no limit)
-crush sessions gc
+rush sessions gc
 
 # Collect sessions older than 3 days, max 50 deletions
-crush sessions gc --older-than 3d --max-sessions 50
+rush sessions gc --older-than 3d --max-sessions 50
 
 # Machine-readable output
-crush sessions gc --dry-run --json
+rush sessions gc --dry-run --json
   `,
 	RunE: sessionsGcCmdRun,
 }

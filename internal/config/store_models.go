@@ -15,10 +15,10 @@ import (
 // ReadModelsAtScope reads the per-scope `models.smart` / `models.fast` entries
 // directly from the on-disk file for the given scope, ignoring any merge with
 // the other scope. Returns (nil, nil) for a slot that the scope's file does not
-// define; returns an error only on read/parse failure. Used by `crush models
+// define; returns an error only on read/parse failure. Used by `rush models
 // state` to show "what each scope says" alongside the effective merged view.
 //
-// Fork patch: batch 11 — `crush models state` needs per-scope visibility.
+// Fork patch: batch 11 — `rush models state` needs per-scope visibility.
 func (s *ConfigStore) ReadModelsAtScope(scope Scope) (smart, fast *SelectedModel, err error) {
 	all, err := s.ReadAllModelsAtScope(scope)
 	if err != nil {
@@ -72,7 +72,7 @@ func (s *ConfigStore) UpdatePreferredModel(scope Scope, modelType SelectedModelT
 
 // UpdatePreferredModels updates and persists multiple model slots (e.g.
 // smart/fast/worker/reviewer) in a single write via SetConfigFields, so
-// callers that need to set several slots at once (like `crush models use`)
+// callers that need to set several slots at once (like `rush models use`)
 // get one atomic on-disk write instead of one write per slot. Callers are
 // responsible for validating every entry in models BEFORE calling this —
 // this function assumes all inputs are already valid and only performs
@@ -148,9 +148,9 @@ func (s *ConfigStore) updatePreferredModelsLocked(scope Scope, models map[Select
 // worker/reviewer) in memory ONLY — no disk write, no autoReload, no
 // recent-models bookkeeping. It exists for callers that need a
 // process-lifetime override rather than a persisted preference, e.g.
-// `crush run --model=...`/--fast-model=...`, which temporarily swaps the
+// `rush run --model=...`/--fast-model=...`, which temporarily swaps the
 // active model for one non-interactive invocation and must NOT leave that
-// override sitting in crush.json for the next run to inherit.
+// override sitting in rush.json for the next run to inherit.
 //
 // Before this method existed, that one-shot CLI override went through
 // app.config.Config().Models[...] = ... — mutating the map returned by
@@ -175,7 +175,7 @@ func (s *ConfigStore) SetSelectedModelRuntime(modelType SelectedModelType, model
 // instead of mutating whatever *Config a concurrent reader currently holds
 // via Config() in place.
 //
-// It exists for callers like app.disableToolsInConfig (`crush run`'s
+// It exists for callers like app.disableToolsInConfig (`rush run`'s
 // sub-agent ban / smart+worker bypass), which used to do
 // cfg := app.config.Config(); cfg.Agents[id] = agent — writing straight into
 // the map backing the currently-published snapshot. Config() is documented

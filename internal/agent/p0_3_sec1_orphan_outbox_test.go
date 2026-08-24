@@ -48,7 +48,7 @@ func (e *enqueueFailingSessions) EnqueueRunQueueEntry(ctx context.Context, idemp
 // the call is written to the orphan outbox (durable record exists).
 func TestP0_3_OrphanOutboxDurability(t *testing.T) {
 	// Disable raw prompt logging for security test
-	t.Setenv("CRUSH_CLIPROVIDER_LOG_RAW_PROMPT", "")
+	t.Setenv("RUSH_CLIPROVIDER_LOG_RAW_PROMPT", "")
 
 	env := testEnv(t)
 	model := newFastSSEModel(t, "orphan outbox test")
@@ -100,10 +100,10 @@ func TestP0_3_OrphanOutboxDurability(t *testing.T) {
 }
 
 // TestSEC1_PromptRedaction verifies that raw prompt is NOT logged in ERROR logs
-// when CRUSH_CLIPROVIDER_LOG_RAW_PROMPT is not set.
+// when RUSH_CLIPROVIDER_LOG_RAW_PROMPT is not set.
 func TestSEC1_PromptRedaction(t *testing.T) {
 	// Ensure raw prompt logging is DISABLED
-	t.Setenv("CRUSH_CLIPROVIDER_LOG_RAW_PROMPT", "")
+	t.Setenv("RUSH_CLIPROVIDER_LOG_RAW_PROMPT", "")
 	require.False(t, cliprovider.LogRawPromptEnabled(), "raw prompt logging must be disabled for this test")
 
 	// Capture slog output to verify prompt redaction
@@ -155,12 +155,12 @@ func TestSEC1_PromptRedaction(t *testing.T) {
 }
 
 // TestSEC1_PromptRedaction_WithDiagnosticFlag verifies that raw prompt IS logged
-// when CRUSH_CLIPROVIDER_LOG_RAW_PROMPT=1 is set.
+// when RUSH_CLIPROVIDER_LOG_RAW_PROMPT=1 is set.
 func TestSEC1_PromptRedaction_WithDiagnosticFlag(t *testing.T) {
 	// Enable raw prompt logging
-	t.Setenv("CRUSH_CLIPROVIDER_LOG_RAW_PROMPT", "1")
+	t.Setenv("RUSH_CLIPROVIDER_LOG_RAW_PROMPT", "1")
 	require.True(t, cliprovider.LogRawPromptEnabled(), "raw prompt logging must be enabled for this test")
-	defer t.Setenv("CRUSH_CLIPROVIDER_LOG_RAW_PROMPT", "")
+	defer t.Setenv("RUSH_CLIPROVIDER_LOG_RAW_PROMPT", "")
 
 	// Capture slog output to verify prompt IS logged in diagnostic mode
 	var logBuf bytes.Buffer
@@ -212,7 +212,7 @@ func TestSEC1_PromptRedaction_WithDiagnosticFlag(t *testing.T) {
 // TestP0_3_OutboxWriteFailure verifies that when BOTH enqueue and outbox write
 // fail, we return a clear error (not silently lose the call).
 func TestP0_3_OutboxWriteFailure(t *testing.T) {
-	t.Setenv("CRUSH_CLIPROVIDER_LOG_RAW_PROMPT", "")
+	t.Setenv("RUSH_CLIPROVIDER_LOG_RAW_PROMPT", "")
 
 	env := testEnv(t)
 	model := newFastSSEModel(t, "outbox write failure test")

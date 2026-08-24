@@ -61,7 +61,7 @@ func (s *hyperSync) Get(ctx context.Context) (catwalk.Provider, error) {
 		// here: serve whatever the on-disk cache had (or embedded
 		// fallback populated above) without ever calling the network
 		// client or rewriting the cache. Driven by
-		// CRUSH_PROVIDER_CACHE_ONLY, set by `crush models list` so a
+		// RUSH_PROVIDER_CACHE_ONLY, set by `rush models list` so a
 		// read-only listing has no network/disk side effects.
 		if providerCacheOnly() {
 			slog.Debug("Hyper provider cache-only mode, skipping fetch", "cached_id", cached.ID)

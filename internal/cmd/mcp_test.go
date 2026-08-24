@@ -14,18 +14,18 @@ import (
 
 // newTestStoreWithDir creates a ConfigStore that can perform
 // SetConfigField/RemoveConfigField operations against a temp directory.
-// Uses config.Load with CRUSH_GLOBAL_DATA pointing to a temp dir.
+// Uses config.Load with RUSH_GLOBAL_DATA pointing to a temp dir.
 func newTestStoreWithDir(t *testing.T) (*config.ConfigStore, string) {
 	t.Helper()
 	dir := t.TempDir()
 	globalDir := filepath.Join(dir, "global")
 	require.NoError(t, os.MkdirAll(globalDir, 0o755))
-	t.Setenv("CRUSH_GLOBAL_DATA", globalDir)
+	t.Setenv("RUSH_GLOBAL_DATA", globalDir)
 
-	// GlobalConfig() (CRUSH_GLOBAL_CONFIG/XDG_CONFIG_HOME) is a SEPARATE
-	// resolution path from GlobalConfigData() (CRUSH_GLOBAL_DATA) above —
+	// GlobalConfig() (RUSH_GLOBAL_CONFIG/XDG_CONFIG_HOME) is a SEPARATE
+	// resolution path from GlobalConfigData() (RUSH_GLOBAL_DATA) above —
 	// see CLAUDE.md's "two real config paths" caveat. Without this,
-	// config.Load below merges in the real host ~/.config/crush/crush.json,
+	// config.Load below merges in the real host ~/.config/rush/rush.json,
 	// leaking real mcp/providers config into these in-memory-store tests.
 	// There's no app.New()/mcp.Initialize in this path so there's no network
 	// risk here (unlike runProvidersCmdInIsolatedApp), but the leak still
@@ -35,17 +35,17 @@ func newTestStoreWithDir(t *testing.T) (*config.ConfigStore, string) {
 	globalConfigDir := filepath.Join(dir, "globalconfig")
 	require.NoError(t, os.MkdirAll(globalConfigDir, 0o755))
 	t.Setenv("XDG_CONFIG_HOME", globalConfigDir)
-	t.Setenv("CRUSH_GLOBAL_CONFIG", globalConfigDir)
+	t.Setenv("RUSH_GLOBAL_CONFIG", globalConfigDir)
 
 	// Write an empty config so Load finds it.
-	configPath := filepath.Join(globalDir, "crush.json")
+	configPath := filepath.Join(globalDir, "rush.json")
 	require.NoError(t, os.WriteFile(configPath, []byte("{}"), 0o600))
 
-	// Load with a workspace dir that has a .crush subdir.
+	// Load with a workspace dir that has a .rush subdir.
 	workspaceDir := filepath.Join(dir, "workspace")
-	require.NoError(t, os.MkdirAll(filepath.Join(workspaceDir, ".crush"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(workspaceDir, ".rush"), 0o755))
 
-	store, err := config.Load(workspaceDir, filepath.Join(workspaceDir, ".crush"), false)
+	store, err := config.Load(workspaceDir, filepath.Join(workspaceDir, ".rush"), false)
 	require.NoError(t, err)
 	return store, configPath
 }

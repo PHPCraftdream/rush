@@ -148,7 +148,7 @@ type SetSessionModelsResult struct {
 
 // ScopedModelSlotWire describes one model slot (smart/fast/worker/reviewer)
 // across both scopes plus the resolved effective value, mirroring the
-// vocabulary `crush models state` already established
+// vocabulary `rush models state` already established
 // (internal/cmd/models_state.go) so the CLI and the web UI never drift.
 type ScopedModelSlotWire struct {
 	Global         *ModelOverrideWire `json:"global"`         // explicit value at ScopeGlobal, nil if unset
@@ -163,7 +163,7 @@ type ScopedModelsWire struct {
 	Fast         ScopedModelSlotWire `json:"fast"`
 	Worker       ScopedModelSlotWire `json:"worker"`
 	Reviewer     ScopedModelSlotWire `json:"reviewer"`
-	HasWorkspace bool                `json:"hasWorkspace"` // false when no .crush workspace config path resolves
+	HasWorkspace bool                `json:"hasWorkspace"` // false when no .rush workspace config path resolves
 }
 
 // SetScopedModelPayload writes one slot at one scope.
@@ -334,8 +334,8 @@ type PeakHoursWirePayload struct {
 // AddCustomProviderPayload adds a fully custom provider.
 //
 // Scope is "global" or "local" (workspace); empty defaults to "global",
-// matching every scope-aware CLI command's default (crush providers,
-// crush mcp, crush claude-init, ...).
+// matching every scope-aware CLI command's default (rush providers,
+// rush mcp, rush claude-init, ...).
 type AddCustomProviderPayload struct {
 	ID        string                `json:"id"`
 	Name      string                `json:"name,omitempty"`
@@ -379,7 +379,7 @@ type UpdateCustomProviderPayload struct {
 // ANY provider (built-in/catwalk-known or custom) — a targeted single-field
 // write, unlike Add/UpdateCustomProviderPayload which replace every field
 // and are therefore only safe to use on custom providers the client fully
-// owns. This mirrors what `crush providers set <id> --peak-hours` does on
+// owns. This mirrors what `rush providers set <id> --peak-hours` does on
 // the CLI side.
 //
 // PeakHours nil/absent clears the window. Scope is "global" or "local"

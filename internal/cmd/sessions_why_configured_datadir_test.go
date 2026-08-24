@@ -14,7 +14,7 @@ import (
 // TestSessionsWhyCmdRun_HonorsConfiguredDataDir is the regression test for
 // task #233 finding 4: sessionsWhyCmdRun passed the raw --cwd value into
 // explainSessionStatus, which then computed the lock path as
-// filepath.Join(cwd, ".crush", "locks", ...), ignoring --data-dir / a
+// filepath.Join(cwd, ".rush", "locks", ...), ignoring --data-dir / a
 // configured data_directory even though setupApp(cmd) had already resolved
 // the correct value onto `a`. The fix passes a.Config().Options.DataDirectory
 // instead (explainSessionStatus's dataDir parameter now expects the data
@@ -36,7 +36,7 @@ func TestSessionsWhyCmdRun_HonorsConfiguredDataDir(t *testing.T) {
 	require.NoError(t, os.Chdir(workDir))
 	t.Cleanup(func() { _ = os.Chdir(orig) })
 
-	// Deliberately outside workDir entirely, so filepath.Join(cwd, ".crush")
+	// Deliberately outside workDir entirely, so filepath.Join(cwd, ".rush")
 	// (the pre-fix hardcoded guess) can never accidentally coincide with it.
 	configuredDataDir := filepath.Join(tmp, "elsewhere-data")
 
@@ -71,7 +71,7 @@ func TestSessionsWhyCmdRun_HonorsConfiguredDataDir(t *testing.T) {
 	require.NoError(t, os.Chtimes(lockPath, now, now))
 
 	// Sanity: the WRONG (pre-fix) path must not exist.
-	wrongPath := filepath.Join(workDir, ".crush", "locks", "session-"+sanitiseSessionIDForFilename(sess.ID)+".lock")
+	wrongPath := filepath.Join(workDir, ".rush", "locks", "session-"+sanitiseSessionIDForFilename(sess.ID)+".lock")
 	_, wrongStatErr := os.Stat(wrongPath)
 	require.True(t, os.IsNotExist(wrongStatErr))
 

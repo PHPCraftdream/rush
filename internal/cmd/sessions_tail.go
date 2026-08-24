@@ -32,16 +32,16 @@ Exit codes:
 	Args: cobra.ExactArgs(1),
 	Example: `
 # Print all messages and exit
-crush sessions tail myid-123
+rush sessions tail myid-123
 
 # Live-tail a running session (Ctrl+C to stop)
-crush sessions tail myid-123 --follow
+rush sessions tail myid-123 --follow
 
 # Resume from message abc123 in NDJSON format
-crush sessions tail myid-123 --from-message abc123 --format ndjson
+rush sessions tail myid-123 --from-message abc123 --format ndjson
 
 # Pipe to jq for filtering
-crush sessions tail myid-123 --format ndjson | jq '.role == "assistant"'
+rush sessions tail myid-123 --format ndjson | jq '.role == "assistant"'
   `,
 	RunE: sessionsTailCmdRun,
 }

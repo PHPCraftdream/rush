@@ -27,7 +27,7 @@ func countMsgsForSessionCLI(t *testing.T, ctx context.Context, sqlDB *sql.DB, se
 }
 
 // TestForkSessionCLI_HappyPath verifies the CLI fork path (forkSessionCLI,
-// invoked by `crush sessions fork`) clones the source session's models,
+// invoked by `rush sessions fork`) clones the source session's models,
 // system prompt, reasoning effort, and todos, and every message into a new
 // session, and honors the CLI-specific --session / --title / --child knobs
 // on top of the shared session.Service.ForkSessionTx.

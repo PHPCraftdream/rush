@@ -16,8 +16,8 @@ import (
 // isolateAllGlobalConfigPaths redirects every environment variable that
 // config.GlobalConfig()/config.GlobalConfigData() (and the XDG fallbacks
 // they defer to) can resolve through, so config.Init below can never read
-// or merge the operator's real ~/.config/crush/crush.json (live API keys,
-// MCP server definitions) nor the real global data-dir crush.json into the
+// or merge the operator's real ~/.config/rush/rush.json (live API keys,
+// MCP server definitions) nor the real global data-dir rush.json into the
 // App under test — see internal/cmd/providers_test.go's
 // runProvidersCmdInIsolatedApp for the concrete failure mode this guards
 // against (a leaked real MCP config made app.New's mcp.Initialize hang on a
@@ -36,16 +36,16 @@ func isolateAllGlobalConfigPaths(t *testing.T) {
 	dataDir := filepath.Join(tmp, "global-data")
 	skillsDir := filepath.Join(tmp, "global-skills")
 
-	t.Setenv("CRUSH_GLOBAL_CONFIG", configDir)
+	t.Setenv("RUSH_GLOBAL_CONFIG", configDir)
 	t.Setenv("XDG_CONFIG_HOME", configDir)
-	t.Setenv("CRUSH_GLOBAL_DATA", dataDir)
+	t.Setenv("RUSH_GLOBAL_DATA", dataDir)
 	t.Setenv("XDG_DATA_HOME", dataDir)
 
 	// Without this, provider discovery makes a real network call to Catwalk
 	// (and Hyper) the first time it runs against a fresh, cache-empty
 	// isolated data dir — see internal/cmd/providers_test.go's identical
 	// use of this env var for the same reason.
-	t.Setenv("CRUSH_PROVIDER_CACHE_ONLY", "1")
+	t.Setenv("RUSH_PROVIDER_CACHE_ONLY", "1")
 
 	// If a local CLI (claude/gemini/...) happens to be on this machine's
 	// PATH, config.Load auto-synthesizes a "local-cli" provider, which
@@ -55,7 +55,7 @@ func isolateAllGlobalConfigPaths(t *testing.T) {
 	// ~/.config/crush/skills / ~/.claude/skills, making the test
 	// non-deterministic across machines and leaking real filesystem state
 	// into a test that has nothing to do with skills.
-	t.Setenv("CRUSH_SKILLS_DIR", skillsDir)
+	t.Setenv("RUSH_SKILLS_DIR", skillsDir)
 }
 
 // forceLocalCLIProviderForTest deterministically satisfies the
@@ -125,11 +125,11 @@ func newAttachmentsTestApp(t *testing.T, workingDir, dataDir string) *appPkg.App
 
 // TestSaveAttachmentToDisk_UsesDataDirNotWorkingDir verifies that
 // saveAttachmentToDisk writes under <dataDir>/attachments/ using the
-// dataDir argument as-is (no extra ".crush" segment appended), and does NOT
+// dataDir argument as-is (no extra ".rush" segment appended), and does NOT
 // fall back to any working-directory-derived path. This guards against
 // regressing to the old cwd-hardcoded behavior (task #248 / attachments dir
 // bug), where attachments always landed under
-// "<workingDir>/.crush/attachments" even when a different data_directory
+// "<workingDir>/.rush/attachments" even when a different data_directory
 // (or --data-dir) was configured.
 func TestSaveAttachmentToDisk_UsesDataDirNotWorkingDir(t *testing.T) {
 	dataDir := t.TempDir()
@@ -212,20 +212,20 @@ func TestSaveAttachmentToDisk_SameNameSameSecondDoesNotCollide(t *testing.T) {
 // every existing test green.
 //
 // This test builds a real *appPkg.App over a config-initialized dataDir
-// that is deliberately DIFFERENT from <workingDir>/.crush, then asserts
+// that is deliberately DIFFERENT from <workingDir>/.rush, then asserts
 // attachmentsDataDir(a) resolves to the configured dataDir — not a
 // workingDir-derived path — and that saveAttachmentToDisk driven with that
 // result actually lands the file under the configured dir.
 func TestAttachmentsDataDir_UsesConfiguredDataDirectory(t *testing.T) {
 	workingDir := t.TempDir()
 	dataDir := t.TempDir()
-	require.NotEqual(t, filepath.Join(workingDir, ".crush"), dataDir)
+	require.NotEqual(t, filepath.Join(workingDir, ".rush"), dataDir)
 
 	a := newAttachmentsTestApp(t, workingDir, dataDir)
 
 	got := attachmentsDataDir(a)
 	require.Equal(t, dataDir, got,
-		"attachmentsDataDir must resolve to the configured data_directory, not <workingDir>/.crush")
+		"attachmentsDataDir must resolve to the configured data_directory, not <workingDir>/.rush")
 
 	path, err := saveAttachmentToDisk(got, "notes.txt", []byte("hello"))
 	require.NoError(t, err)
@@ -235,15 +235,15 @@ func TestAttachmentsDataDir_UsesConfiguredDataDirectory(t *testing.T) {
 	require.NotContains(t, rel, "..")
 
 	// The historical bug's location: nothing must land under
-	// <workingDir>/.crush/attachments.
-	_, statErr := os.Stat(filepath.Join(workingDir, ".crush", "attachments"))
-	require.True(t, os.IsNotExist(statErr), "no attachments dir should exist under workingDir/.crush")
+	// <workingDir>/.rush/attachments.
+	_, statErr := os.Stat(filepath.Join(workingDir, ".rush", "attachments"))
+	require.True(t, os.IsNotExist(statErr), "no attachments dir should exist under workingDir/.rush")
 }
 
 // TestAttachmentsDataDir_DefaultsToWorkingDirRushWhenUnconfigured is the
 // companion case: with no explicit data_directory passed to config.Init
 // (empty string), config's own setDefaults falls back to
-// "<workingDir>/.crush" — the same value attachmentsDataDir's own
+// "<workingDir>/.rush" — the same value attachmentsDataDir's own
 // nil-config defensive fallback would produce. This pins down that the
 // "normal" (no override) path still behaves exactly as before #248.
 func TestAttachmentsDataDir_DefaultsToWorkingDirRushWhenUnconfigured(t *testing.T) {
@@ -251,6 +251,6 @@ func TestAttachmentsDataDir_DefaultsToWorkingDirRushWhenUnconfigured(t *testing.
 
 	a := newAttachmentsTestApp(t, workingDir, "")
 
-	want := filepath.Join(workingDir, ".crush")
+	want := filepath.Join(workingDir, ".rush")
 	require.Equal(t, want, attachmentsDataDir(a))
 }

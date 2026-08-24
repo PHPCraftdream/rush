@@ -102,7 +102,7 @@ func TestRenderFrontMatterMD(t *testing.T) {
 func TestToGeminiTOML_Basic(t *testing.T) {
 	got, err := toGeminiTOML(`Say "hi"`, "Hello $ARGUMENTS world")
 	require.NoError(t, err)
-	assert.Contains(t, got, "# crush-slash-command:v1")
+	assert.Contains(t, got, "# rush-slash-command:v1")
 	assert.Contains(t, got, `description = "Say \"hi\""`)
 	assert.Contains(t, got, `prompt = """`)
 	assert.Contains(t, got, "Hello {{args}} world")
@@ -119,9 +119,9 @@ func TestToGeminiTOML_ErrorsOnTripleQuoteInBody(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestToSkillMD(t *testing.T) {
-	got := toSkillMD("crush", "My description", "Body text with $ARGUMENTS placeholder")
+	got := toSkillMD("rush", "My description", "Body text with $ARGUMENTS placeholder")
 	assert.True(t, strings.HasPrefix(got, claudeSlashCommandSentinel+"\n"))
-	assert.Contains(t, got, "name: crush\n")
+	assert.Contains(t, got, "name: rush\n")
 	assert.Contains(t, got, "description: My description\n")
 	assert.Contains(t, got, "$ARGUMENTS")
 	assert.Contains(t, got, "Body text with $ARGUMENTS placeholder")

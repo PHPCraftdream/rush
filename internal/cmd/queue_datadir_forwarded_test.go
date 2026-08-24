@@ -16,7 +16,7 @@ import (
 // a.Config().Options.DataDirectory (honoring an explicit --data-dir on the
 // PARENT `queue run` invocation, or a configured data_directory — see
 // queue_configured_datadir_test.go for that half), but runQueueTask — which
-// spawns each task as its own `crush run --session ...` subprocess — never
+// spawns each task as its own `rush run --session ...` subprocess — never
 // forwarded that resolved value on to the child. Each spawned child then
 // re-resolved its OWN data dir from scratch starting at --cwd, which for an
 // explicit parent --data-dir diverges from what the parent queue actually
@@ -24,10 +24,10 @@ import (
 // one the queue claimed the task from.
 //
 // This seeds a parent `queue run` with an explicit --data-dir that differs
-// from the cwd-based default (<cwd>/.crush), queues one task, runs the real
+// from the cwd-based default (<cwd>/.rush), queues one task, runs the real
 // queueRunCmd.RunE, and uses the queueTaskExecOverride test seam (queue.go)
 // to intercept the argv that would have been passed to the spawned child
-// crush run process — without actually spawning one — asserting
+// rush run process — without actually spawning one — asserting
 // "--data-dir <resolved-parent-dir>" is present verbatim.
 func TestQueueRunCmdRun_ForwardsDataDirToSpawnedChild(t *testing.T) {
 	tmp := isolateConfigEnvForTests(t)
@@ -39,7 +39,7 @@ func TestQueueRunCmdRun_ForwardsDataDirToSpawnedChild(t *testing.T) {
 	projectDir := filepath.Join(tmp, "project")
 	require.NoError(t, os.MkdirAll(projectDir, 0o755))
 
-	// Explicit --data-dir on the PARENT, deliberately NOT <cwd>/.crush (the
+	// Explicit --data-dir on the PARENT, deliberately NOT <cwd>/.rush (the
 	// default a child would independently re-derive if it ignored the
 	// parent's resolved value entirely), so the two are trivially
 	// distinguishable.
@@ -83,7 +83,7 @@ func TestQueueRunCmdRun_ForwardsDataDirToSpawnedChild(t *testing.T) {
 
 	// Install the test-only exec seam (queue.go) to intercept the argv that
 	// runQueueTask would otherwise hand to platform.Command/execCmd.Output,
-	// capturing it instead of spawning a real `crush run` child process.
+	// capturing it instead of spawning a real `rush run` child process.
 	var mu sync.Mutex
 	var capturedArgs []string
 	queueTaskExecOverride = func(args []string, cwd, prompt string) ([]byte, error) {

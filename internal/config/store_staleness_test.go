@@ -16,7 +16,7 @@ func TestConfigStaleness_CleanImmediatelyAfterSnapshot(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	configPath := filepath.Join(dir, "crush.json")
+	configPath := filepath.Join(dir, "rush.json")
 
 	// Create a config file
 	content := []byte(`{"options": {"debug": true}}`)
@@ -38,7 +38,7 @@ func TestConfigStaleness_DetectsFileContentChange(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	configPath := filepath.Join(dir, "crush.json")
+	configPath := filepath.Join(dir, "rush.json")
 
 	// Create initial config file
 	require.NoError(t, os.WriteFile(configPath, []byte(`{"debug": false}`), 0o600))
@@ -63,7 +63,7 @@ func TestConfigStaleness_DetectsFileDeletion(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	configPath := filepath.Join(dir, "crush.json")
+	configPath := filepath.Join(dir, "rush.json")
 
 	// Create initial config file
 	require.NoError(t, os.WriteFile(configPath, []byte(`{"debug": true}`), 0o600))
@@ -87,7 +87,7 @@ func TestConfigStaleness_DetectsNewFile(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	configPath := filepath.Join(dir, "crush.json")
+	configPath := filepath.Join(dir, "rush.json")
 
 	// Don't create file initially
 	store := newTestConfigStore(testStoreOpts{
@@ -142,7 +142,7 @@ func TestConfigStaleness_RefreshClearsDirtyState(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	configPath := filepath.Join(dir, "crush.json")
+	configPath := filepath.Join(dir, "rush.json")
 
 	// Create initial config file
 	require.NoError(t, os.WriteFile(configPath, []byte(`{"debug": false}`), 0o600))

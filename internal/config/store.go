@@ -34,7 +34,7 @@ type storeSnapshot struct {
 	loadedPaths        []string // config files that were successfully loaded
 	trackedConfigPaths []string // unique, normalized config file paths
 	snapshots          map[string]fileSnapshot
-	workspacePath      string // .crush/crush.json (recomputed on every reload)
+	workspacePath      string // .rush/rush.json (recomputed on every reload)
 	overrides          RuntimeOverrides
 
 	// generation is a monotonically increasing counter assigned at publish
@@ -82,7 +82,7 @@ type ConfigStore struct {
 	// (Load / NewTestStore) and never mutated afterwards, so they are
 	// safe to read without synchronization.
 	workingDir     string
-	globalDataPath string // ~/.local/share/crush/crush.json
+	globalDataPath string // ~/.local/share/rush/rush.json
 
 	// publishMu is the single mutex that serialises ALL snapshot
 	// publications — both ReloadFromDisk (which rebuilds the entire
@@ -111,7 +111,7 @@ type ConfigStore struct {
 	// diskWriteMu serialises the on-disk read-modify-write cycle
 	// (os.ReadFile → sjson.Set/Delete → atomicWriteFile) in
 	// SetConfigFields and RemoveConfigField. Without it, two concurrent
-	// callers writing to the same crush.json path could each read the
+	// callers writing to the same rush.json path could each read the
 	// pre-write file, apply only their own key, and have the second
 	// atomicWriteFile clobber the first — a classic lost-update on the
 	// file itself, independent of the in-memory snapshot race that
@@ -383,5 +383,5 @@ func (s *ConfigStore) LogPath() string {
 	if opts == nil || opts.DataDirectory == "" {
 		return ""
 	}
-	return filepath.Join(opts.DataDirectory, "logs", "crush.log")
+	return filepath.Join(opts.DataDirectory, "logs", "rush.log")
 }

@@ -94,11 +94,11 @@ func TestPickerModel_ViewSurfacesHashAndTitle(t *testing.T) {
 }
 
 // TestPickedSessionArgs_ForwardsDataDir is the regression test for task
-// #263: sessionsPickCmdRun spawns "crush sessions tail|last <id>" on the
+// #263: sessionsPickCmdRun spawns "rush sessions tail|last <id>" on the
 // picked session using argv built entirely from literals -- no --data-dir
-// forwarded at all. `crush sessions pick --data-dir /custom` would list
+// forwarded at all. `rush sessions pick --data-dir /custom` would list
 // sessions from /custom, then spawn a child that re-resolves to
-// <cwd>/.crush and reports "session not found" for the ID the picker just
+// <cwd>/.rush and reports "session not found" for the ID the picker just
 // displayed. This mirrors #247's identical fix in queue.go's runQueueTask.
 func TestPickedSessionArgs_ForwardsDataDir(t *testing.T) {
 	const explicitDataDir = "/custom/data-dir"

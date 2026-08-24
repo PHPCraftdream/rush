@@ -51,7 +51,7 @@ const (
 // RunNonInteractive so the signature doesn't keep growing.
 //
 // Persistence: every non-empty field is written to the session BEFORE
-// the agent runs, so a subsequent `crush run --session <same>` without
+// the agent runs, so a subsequent `rush run --session <same>` without
 // those flags continues with the same overrides. Empty fields are
 // left alone (they don't reset what's already on the session).
 type RunOverrides struct {
@@ -64,7 +64,7 @@ type RunOverrides struct {
 	ReasoningEffort string
 	RoleSmart       bool
 	// ModelRole is the resolved --role slot for this invocation (smart,
-	// fast, worker, reviewer). "" (e.g. non-`crush run` paths) is treated
+	// fast, worker, reviewer). "" (e.g. non-`rush run` paths) is treated
 	// as smart by the coordinator. Threaded through to
 	// AgentCoordinator.SetActiveModelRole so sub-agent spawns can decide
 	// whether to prefer the cheaper Worker slot instead of blindly
@@ -73,8 +73,8 @@ type RunOverrides struct {
 	ModelRole config.SelectedModelType
 	// Fork patch (orchestrator UX): DisableSubAgents drops the `agent`
 	// and `agentic_fetch` tools from the coder agent for this run so a
-	// `crush run --agents single` invocation cannot fan out. Mutation
-	// is per-process — `crush run` is single-shot, so the change does
+	// `rush run --agents single` invocation cannot fan out. Mutation
+	// is per-process — `rush run` is single-shot, so the change does
 	// not leak across invocations. StripJSONFences asks
 	// RunNonInteractive to post-process the envelope's final_text
 	// (markdown fence + prose preamble removal); the unstripped
@@ -116,7 +116,7 @@ type RunOverrides struct {
 	// value. 0 = no cap. Fork patch: batch 30.
 	MaxTokens int64
 	// AllowPeakHours, when true, bypasses the per-provider peak_hours refusal
-	// for this single invocation. `crush run --allow-peak-hours` sets it.
+	// for this single invocation. `rush run --allow-peak-hours` sets it.
 	// There is intentionally NO config-level "always allow" equivalent: the
 	// whole point is a conscious one-off override. Fork patch (peak-hours
 	// bypass).
@@ -166,7 +166,7 @@ func (app *App) resolveSession(ctx context.Context, continueSessionID string, us
 			slog.Info("Created session on demand from --session id", "session_id", created.ID)
 			return created, nil
 		}
-		// Session-creation race (task #605): several `crush run --session
+		// Session-creation race (task #605): several `rush run --session
 		// <id>` processes can all miss the Get above for an id that has
 		// NEVER existed before (first use of that id) and then all race
 		// CreateWithID's INSERT. SQLite's own single-writer serialization
@@ -245,9 +245,9 @@ type agentTurnResponse struct {
 // includes every tool call it executes synchronously, e.g. bash, edit,
 // grep, or a sub-agent delegation via the `agent` tool (runSubAgent calls
 // params.Agent.Run synchronously on this same call stack, see
-// coordinator.go's runSubAgent) — would crash the entire crush.exe process
+// coordinator.go's runSubAgent) — would crash the entire rush.exe process
 // via Go's default panic handler, which writes only to os.Stderr and never
-// through slog. For `crush run` invocations whose stderr isn't captured by
+// through slog. For `rush run` invocations whose stderr isn't captured by
 // whatever launched them, that's a silent death with zero log output. It
 // also left RunNonInteractive's `case result := <-done` select blocked
 // forever, since nothing would ever send on the channel.
@@ -269,7 +269,7 @@ func runAgentTurnRecovered(
 				"panic", r,
 				"stack", string(debug.Stack()))
 			done <- agentTurnResponse{
-				err: fmt.Errorf("agent turn panicked (recovered, see crush.log for stack trace): %v", r),
+				err: fmt.Errorf("agent turn panicked (recovered, see rush.log for stack trace): %v", r),
 			}
 		}
 	}()
@@ -441,7 +441,7 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt 
 	// Fork patch (orchestrator UX): --agents single. Drop the agent /
 	// agentic_fetch tools from the coder agent's AllowedTools BEFORE
 	// UpdateModels rebuilds the toolset so the model literally cannot
-	// fan out. Mutation is in-process only (crush run is a single-shot
+	// fan out. Mutation is in-process only (rush run is a single-shot
 	// process — exit drops the change), so this is safe even though
 	// it touches the global config. See run.go and run_format.go.
 	//
@@ -856,7 +856,7 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt 
 			isCanceled := runErr != nil && (errors.Is(runErr, context.Canceled) || errors.Is(runErr, agent.ErrRequestCancelled))
 
 			// P0-1 fix (task #421): a cross-process interrupt landing on a
-			// busy session (crush sessions inject --interrupt) cancels the
+			// busy session (rush sessions inject --interrupt) cancels the
 			// in-flight generation and durably enqueues its replacement
 			// (handleInterruptTick), deliberately WITHOUT a live mailbox
 			// handoff — the durable run_queue row is the only remaining

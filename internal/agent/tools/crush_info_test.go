@@ -35,13 +35,13 @@ func TestRushInfo_ConfigFiles(t *testing.T) {
 
 	cfg := config.NewTestStore(
 		&config.Config{Providers: csync.NewMap[string, config.ProviderConfig]()},
-		"/home/user/.config/crush/crush.json",
-		"/project/.crush/crush.json",
+		"/home/user/.config/rush/rush.json",
+		"/project/.rush/rush.json",
 	)
 	output := buildRushInfo(cfg, nil, nil, nil)
 	require.Contains(t, output, "[config_files]")
-	require.Contains(t, output, "/home/user/.config/crush/crush.json")
-	require.Contains(t, output, "/project/.crush/crush.json")
+	require.Contains(t, output, "/home/user/.config/rush/rush.json")
+	require.Contains(t, output, "/project/.rush/rush.json")
 }
 
 func TestRushInfo_Models(t *testing.T) {
@@ -191,7 +191,7 @@ func TestRushInfo_Options(t *testing.T) {
 	cfg := config.NewTestStore(&config.Config{
 		Providers: csync.NewMap[string, config.ProviderConfig](),
 		Options: &config.Options{
-			DataDirectory:        "/Users/user/project/.crush",
+			DataDirectory:        "/Users/user/project/.rush",
 			Debug:                true,
 			DisableAutoSummarize: true,
 		},
@@ -200,7 +200,7 @@ func TestRushInfo_Options(t *testing.T) {
 	output := buildRushInfo(cfg, nil, nil, nil)
 	require.Contains(t, output, "[options]")
 	require.Contains(t, output, "auto_summarize = false")
-	require.Contains(t, output, "data_directory = /Users/user/project/.crush")
+	require.Contains(t, output, "data_directory = /Users/user/project/.rush")
 	require.Contains(t, output, "debug = true")
 }
 
@@ -301,7 +301,7 @@ func TestRushInfo_ConfigStaleness_Clean(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	configPath := filepath.Join(dir, "crush.json")
+	configPath := filepath.Join(dir, "rush.json")
 	require.NoError(t, os.WriteFile(configPath, []byte(`{}`), 0o600))
 
 	store := config.NewTestStore(&config.Config{
@@ -322,7 +322,7 @@ func TestRushInfo_ConfigStaleness_Dirty(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	configPath := filepath.Join(dir, "crush.json")
+	configPath := filepath.Join(dir, "rush.json")
 	require.NoError(t, os.WriteFile(configPath, []byte(`{"debug": false}`), 0o600))
 
 	store := config.NewTestStore(&config.Config{
@@ -347,7 +347,7 @@ func TestRushInfo_ConfigStaleness_MissingPath(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	configPath := filepath.Join(dir, "crush.json")
+	configPath := filepath.Join(dir, "rush.json")
 	require.NoError(t, os.WriteFile(configPath, []byte(`{}`), 0o600))
 
 	store := config.NewTestStore(&config.Config{
