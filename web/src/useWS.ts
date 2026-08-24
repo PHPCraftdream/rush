@@ -281,11 +281,21 @@ export function useWS() {
       ws.on("agent_busy", (msg: WSMessage) => {
         const p = msg.payload as AgentBusyPayload;
         setSessionBusy(p.SessionID, p.Busy);
-        // When the agent finishes, send all queued messages as one combined message.
+        // When the agent finishes, send all queued messages as one combined
+        // message. Every attachment from every queued message rides on that
+        // single flushed send, in queue order — mirroring how the texts are
+        // joined with blank lines.
         if (!p.Busy) {
-          const combined = dequeueAllMessages(p.SessionID);
-          if (combined) {
-            ws.send("send_message", { sessionID: p.SessionID, content: combined });
+          const flushed = dequeueAllMessages(p.SessionID);
+          if (flushed) {
+            const payload: Record<string, unknown> = {
+              sessionID: p.SessionID,
+              content: flushed.content,
+            };
+            if (flushed.attachments.length > 0) {
+              payload.attachments = flushed.attachments;
+            }
+            ws.send("send_message", payload);
           }
         }
       }),

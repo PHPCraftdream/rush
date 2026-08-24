@@ -12,6 +12,7 @@ import {
   sendWithFastModel,
   setLastUsedSkill,
   jumpToMessage,
+  type WireAttachment,
 } from "../store";
 import { ws } from "../ws";
 import { handleSitterCommand } from "../sitter";
@@ -50,6 +51,15 @@ function formatBytes(n: number): string {
   if (n >= 1024 * 1024) return (n / (1024 * 1024)).toFixed(1) + " MB";
   if (n >= 1024) return (n / 1024).toFixed(1) + " KB";
   return n + " B";
+}
+
+// Strip the local-only `size` field — the wire shape is fileName/mimeType/data.
+function toWireAttachments(atts: PendingAttachment[]): WireAttachment[] {
+  return atts.map((a) => ({
+    fileName: a.fileName,
+    mimeType: a.mimeType,
+    data: a.data,
+  }));
 }
 
 // Source badge colors
@@ -318,19 +328,18 @@ export function ChatInput() {
       return;
     }
     if (agentBusy) {
-      enqueueMessage(activeSessionID, msg);
+      // The attachment is captured by the queued message — it will go out
+      // with the flushed send, so clearing the badge here is honest.
+      enqueueMessage(activeSessionID, msg, toWireAttachments(attachments));
     } else {
       const payload: Record<string, unknown> = { sessionID: activeSessionID, content: msg };
-      if (attachments.length > 0) {
-        payload.attachments = attachments.map((a) => ({
-          fileName: a.fileName,
-          mimeType: a.mimeType,
-          data: a.data,
-        }));
+      const wire = toWireAttachments(attachments);
+      if (wire.length > 0) {
+        payload.attachments = wire;
       }
       ws.send("send_message", payload);
-      setAttachments([]);
     }
+    setAttachments([]);
     setText("");
     setHistIdx(-1);
     setStash("");
@@ -341,14 +350,14 @@ export function ChatInput() {
   const sendFast = useCallback(() => {
     const msg = text.trim();
     if (!msg || !activeSessionID || agentBusy) return;
-    sendWithFastModel(activeSessionID, msg);
+    sendWithFastModel(activeSessionID, msg, toWireAttachments(attachments));
     setText("");
     setAttachments([]);
     setHistIdx(-1);
     setStash("");
     setHistoryOpen(false);
     if (textareaRef.current) textareaRef.current.style.height = "auto";
-  }, [text, activeSessionID, agentBusy]);
+  }, [text, activeSessionID, agentBusy, attachments]);
 
   // Interrupt the in-flight turn AND submit immediately. The server's
   // interrupt_and_send handler queues the new message and cancels the
@@ -356,24 +365,26 @@ export function ChatInput() {
   // and re-enters Run() with this message — so the partial assistant
   // output stays in history and the new instruction picks up right away.
   // We also fold anything sitting in the local front-end queue into the
-  // submitted text, otherwise those would race the cancel and arrive in
-  // a separate send_message after the interrupt-turn finishes.
+  // submitted text (both text AND attachments), otherwise those would race
+  // the cancel and arrive in a separate send_message after the interrupt-turn
+  // finishes.
   const interrupt = useCallback(() => {
     if (!activeSessionID) return;
     const queued = dequeueAllMessages(activeSessionID);
     const parts: string[] = [];
-    if (queued) parts.push(queued);
+    const atts: WireAttachment[] = [];
+    if (queued) {
+      parts.push(queued.content);
+      atts.push(...queued.attachments);
+    }
     const msg = text.trim();
     if (msg) parts.push(msg);
+    atts.push(...toWireAttachments(attachments));
     const content = parts.join("\n\n");
     if (!content) return;
     const payload: Record<string, unknown> = { sessionID: activeSessionID, content };
-    if (attachments.length > 0) {
-      payload.attachments = attachments.map((a) => ({
-        fileName: a.fileName,
-        mimeType: a.mimeType,
-        data: a.data,
-      }));
+    if (atts.length > 0) {
+      payload.attachments = atts;
     }
     ws.send("interrupt_and_send", payload);
     setText("");
@@ -389,23 +400,25 @@ export function ChatInput() {
   // the same pubsub path as a regular send_message) and schedules it to be
   // appended to prepared.Messages at the next PrepareStep — so the model
   // sees it on its next provider request inside the SAME Run(). Anything in
-  // the front-end local queue is folded in so we don't race.
+  // the front-end local queue (both text AND attachments) is folded in so
+  // we don't race.
   const inject = useCallback(() => {
     if (!activeSessionID) return;
     const queued = dequeueAllMessages(activeSessionID);
     const parts: string[] = [];
-    if (queued) parts.push(queued);
+    const atts: WireAttachment[] = [];
+    if (queued) {
+      parts.push(queued.content);
+      atts.push(...queued.attachments);
+    }
     const msg = text.trim();
     if (msg) parts.push(msg);
+    atts.push(...toWireAttachments(attachments));
     const content = parts.join("\n\n");
     if (!content) return;
     const payload: Record<string, unknown> = { sessionID: activeSessionID, content };
-    if (attachments.length > 0) {
-      payload.attachments = attachments.map((a) => ({
-        fileName: a.fileName,
-        mimeType: a.mimeType,
-        data: a.data,
-      }));
+    if (atts.length > 0) {
+      payload.attachments = atts;
     }
     ws.send("inject_message", payload);
     setText("");

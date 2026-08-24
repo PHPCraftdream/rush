@@ -613,7 +613,19 @@ export function collectTurnContent(anyMessageID: string): string {
   return chunks.join("\n\n");
 }
 
-export function sendWithFastModel(sessionID: string, content: string) {
+// Wire shape of one file attachment in a send_message / inject_message
+// frame. Mirrors the backend's SendMessagePayload.Attachments entry.
+export interface WireAttachment {
+  fileName: string;
+  mimeType: string;
+  data: string; // base64
+}
+
+export function sendWithFastModel(
+  sessionID: string,
+  content: string,
+  attachments?: WireAttachment[]
+) {
   const config = $config.get();
   const sess = $sessions.get().find((s) => s.ID === sessionID);
   let fastModel: { provider: string; model: string } | undefined;
@@ -625,6 +637,9 @@ export function sendWithFastModel(sessionID: string, content: string) {
   const payload: Record<string, unknown> = { sessionID, content };
   if (fastModel) {
     payload.smartModel = fastModel;
+  }
+  if (attachments && attachments.length > 0) {
+    payload.attachments = attachments;
   }
   ws.send("send_message", payload);
 }
@@ -656,6 +671,9 @@ export const $agentError = atom<string | null>(null);
 export interface QueuedMessage {
   id: string;
   content: string;
+  // Attachments captured from the composer when this message was queued;
+  // they ride on the single flushed send when the turn ends.
+  attachments?: WireAttachment[];
 }
 
 export const $messageQueue = atom<Map<string, QueuedMessage[]>>(new Map());
@@ -663,9 +681,16 @@ export const $messageQueue = atom<Map<string, QueuedMessage[]>>(new Map());
 let _queueIDCounter = 0;
 function newQueueID() { return `q-${++_queueIDCounter}`; }
 
-export function enqueueMessage(sessionID: string, content: string) {
+export function enqueueMessage(
+  sessionID: string,
+  content: string,
+  attachments?: WireAttachment[]
+) {
   const q = new Map($messageQueue.get());
-  q.set(sessionID, [...(q.get(sessionID) ?? []), { id: newQueueID(), content }]);
+  q.set(sessionID, [
+    ...(q.get(sessionID) ?? []),
+    { id: newQueueID(), content, attachments },
+  ]);
   $messageQueue.set(q);
 }
 
@@ -679,13 +704,24 @@ export function dequeueNextMessage(sessionID: string): string | undefined {
   return first.content;
 }
 
-export function dequeueAllMessages(sessionID: string): string | undefined {
+export interface FlushedQueue {
+  content: string;
+  attachments: WireAttachment[];
+}
+
+// Drains the session's queue. Texts join with blank lines; every attachment
+// from every queued message is concatenated in queue order, so a multi-
+// message flush carries all of them on the single send.
+export function dequeueAllMessages(sessionID: string): FlushedQueue | undefined {
   const q = new Map($messageQueue.get());
   const msgs = q.get(sessionID) ?? [];
   if (!msgs.length) return undefined;
   q.delete(sessionID);
   $messageQueue.set(q);
-  return msgs.map((m) => m.content).join("\n\n");
+  return {
+    content: msgs.map((m) => m.content).join("\n\n"),
+    attachments: msgs.flatMap((m) => m.attachments ?? []),
+  };
 }
 
 export function removeQueuedMessage(sessionID: string, id: string) {
