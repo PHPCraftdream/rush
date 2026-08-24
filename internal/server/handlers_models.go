@@ -122,7 +122,14 @@ func handleSetSessionModels(ctx context.Context, a *appPkg.App, c *Client, msg W
 	}
 
 	// Broadcast updated session so clients can refresh their model selectors.
+	// Unlike handleCreateSession/handleForkSession (harmless per round-23
+	// review F-3: a session born in this process cannot be foreign-locked at
+	// creation), set_session_models targets an EXISTING session by ID that
+	// another live process may legitimately hold, so the broadcast must
+	// carry the ownership annotation like every other Session that reaches
+	// a client — see AnnotateSessionExternalOwnership.
 	if sess, err := a.Sessions.Get(ctx, p.SessionID); err == nil {
+		AnnotateSessionExternalOwnership(a, &sess)
 		c.hub.Broadcast(EventSessionUpdated, sess)
 	}
 	// Broadcast updated config so all clients see the new recent-models list immediately.
