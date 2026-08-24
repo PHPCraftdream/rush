@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"charm.land/log/v2"
-	"github.com/charmbracelet/colorprofile"
 	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/charmbracelet/colorprofile"
 	"github.com/charmbracelet/x/term"
 	"github.com/nxadm/tail"
 	"github.com/spf13/cobra"

@@ -14,9 +14,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/charlievieth/fastwalk"
 	"github.com/PHPCraftdream/rush/internal/home"
 	"github.com/PHPCraftdream/rush/internal/pubsub"
+	"github.com/charlievieth/fastwalk"
 	"gopkg.in/yaml.v3"
 )
 

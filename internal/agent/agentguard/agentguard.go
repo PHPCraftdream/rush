@@ -68,7 +68,7 @@ var deniedAgents = map[string]string{
 	"tabby":        "Tabby agent",
 
 	// Tier 3 — us. Blocks any recursive rush/crush invocation regardless of flags.
-	"rush": "this very binary — recursive invocation is never the right answer",
+	"rush":  "this very binary — recursive invocation is never the right answer",
 	"crush": "legacy pre-rename binary name for this very binary",
 }
 

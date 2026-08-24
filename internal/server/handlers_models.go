@@ -36,14 +36,16 @@ const (
 // raw value, before backfill, so only a payload that actually asked to
 // clear can produce a clear.
 func resolveEffortPair(raw1, raw2, stored1, stored2 string) (string, string) {
-	if raw1 == "" {
+	switch raw1 {
+	case "":
 		raw1 = stored1
-	} else if raw1 == ReasoningEffortClear {
+	case ReasoningEffortClear:
 		raw1 = ""
 	}
-	if raw2 == "" {
+	switch raw2 {
+	case "":
 		raw2 = stored2
-	} else if raw2 == ReasoningEffortClear {
+	case ReasoningEffortClear:
 		raw2 = ""
 	}
 	return raw1, raw2

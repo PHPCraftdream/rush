@@ -9,10 +9,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bmatcuk/doublestar/v4"
-	"github.com/charlievieth/fastwalk"
 	"github.com/PHPCraftdream/rush/internal/csync"
 	"github.com/PHPCraftdream/rush/internal/home"
+	"github.com/bmatcuk/doublestar/v4"
+	"github.com/charlievieth/fastwalk"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -29,7 +29,7 @@ func SkipHidden(path string) bool {
 	}
 
 	commonIgnoredDirs := map[string]bool{
-		".rush":           true,
+		".rush":            true,
 		"node_modules":     true,
 		"vendor":           true,
 		"dist":             true,
