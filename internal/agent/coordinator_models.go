@@ -554,17 +554,19 @@ func (c *coordinator) buildModelsFromCfg(ctx context.Context, cfg *config.Config
 		return Model{}, Model{}, err
 	}
 
-	return Model{
-			Model:      smartModel,
-			CatwalkCfg: *smartCatwalkModel,
-			ModelCfg:   smartModelCfg,
-			FlatRate:   smartProviderCfg.FlatRate,
-		}, Model{
-			Model:      fastModel,
-			CatwalkCfg: *fastCatwalkModel,
-			ModelCfg:   fastModelCfg,
-			FlatRate:   fastProviderCfg.FlatRate,
-		}, nil
+	smart := Model{
+		Model:      smartModel,
+		CatwalkCfg: *smartCatwalkModel,
+		ModelCfg:   smartModelCfg,
+		FlatRate:   smartProviderCfg.FlatRate,
+	}
+	fast := Model{
+		Model:      fastModel,
+		CatwalkCfg: *fastCatwalkModel,
+		ModelCfg:   fastModelCfg,
+		FlatRate:   fastProviderCfg.FlatRate,
+	}
+	return smart, fast, nil
 }
 
 // Model returns the globally configured smart model from config.
