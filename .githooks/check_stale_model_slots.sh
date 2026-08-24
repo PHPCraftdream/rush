@@ -49,7 +49,7 @@
 #      or immediately after the word "use" or "unset" -- to one of
 #      smart/fast/worker/reviewer. This catches role-table and enum-style
 #      prose ("smart | large", "[large|small|both]", "large + small",
-#      "sub-agents use large", "large/worker/reviewer untouched", "crush
+#      "sub-agents use large", "large/worker/reviewer untouched", "rush
 #      models unset small --global") WITHOUT matching ordinary sentences
 #      that merely mention both concepts with other words between them --
 #      adjacency is the signal, not co-occurrence anywhere on the line.
@@ -122,11 +122,11 @@
 #     snapshots and planning docs describing past states of the repo, not
 #     current behavior.
 #   - internal/cmd/models_set.go                           -- the hidden
-#     `crush models set` redirect stub; its one "large"/"small" mention is
+#     `rush models set` redirect stub; its one "large"/"small" mention is
 #     a Go comment explaining why DisableFlagParsing exists (a legacy
 #     caller may still pass --large/--small), not a live claim that those
 #     flags work today. The command's actual output tells the user to use
-#     `crush models use` instead.
+#     `rush models use` instead.
 #   - README.md's one documented "Removed in batch 11" note -- explicitly
 #     labeled historical, describing the exact old command spelling that
 #     was removed. (Not excluded by path -- excluded by requiring an
