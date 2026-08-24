@@ -58,6 +58,34 @@ export function setSessions(sessions: Session[]) {
   $sessions.set(sessions);
 }
 
+export interface SessionsLiveDelta {
+  upserts: Session[];
+  deletedIDs: string[];
+}
+
+/** Applies a sessions_list snapshot, replaying any live session pushes that
+ * raced the request (task #690). With an empty delta this is a plain
+ * wholesale replace — the convergent behavior the 5s poll depends on. Returns
+ * the reconciled list so routing decisions downstream use it, not the raw
+ * snapshot. */
+export function applySessionsSnapshot(sessions: Session[], live: SessionsLiveDelta): Session[] {
+  let next = [...sessions];
+  for (const id of live.deletedIDs) {
+    next = next.filter((s) => s.ID !== id);
+  }
+  for (const s of live.upserts) {
+    const idx = next.findIndex((x) => x.ID === s.ID);
+    if (idx === -1) {
+      next = [s, ...next];
+    } else {
+      next = [...next];
+      next[idx] = s;
+    }
+  }
+  $sessions.set(next);
+  return next;
+}
+
 // ── Model History ────────────────────────────────────────────────────────────
 // Recent models are stored on the backend and synced via WebSocket config.
 // Local state is initialized empty and populated when config arrives.

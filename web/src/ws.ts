@@ -1,5 +1,5 @@
 import { atom } from "nanostores";
-import type { WSMessage } from "./types";
+import type { WSMessage, Session } from "./types";
 
 type Handler = (msg: WSMessage) => void;
 
@@ -234,4 +234,71 @@ export function forgetSessionRequestState(sessionID: string) {
   latestLoadMessagesID.delete(sessionID);
   liveEventEpoch.delete(sessionID);
   requestEpoch.delete(sessionID);
+}
+
+// ── sessions_list live-race guard (task #690) ───────────────────────────────
+//
+// list_sessions is polled every 5s plus on reconnect/tab-focus, and the server
+// dispatches it through the same non-FIFO worker pool that bit messages_list
+// (#685): a reply to an older request can land after a newer one's. Worse,
+// even the latest request's reply can carry a DB snapshot read BEFORE live
+// session_created/updated/deleted pushes were applied client-side — a wholesale
+// setSessions then resurrects a deleted session, drops a created one, or reverts
+// a title. Mirrors #685 (correlation ID drop) + #689 (live-event reconciliation),
+// simplified: sessions are a flat ID-keyed list with no streaming/partial content,
+// so a straight replay of live deltas recorded since the request was sent is sufficient.
+interface sessionsLiveRecord {
+  seq: number;
+  session?: Session;
+  deleted?: boolean;
+}
+const sessionsLiveRecords = new Map<string, sessionsLiveRecord>();
+let sessionsLiveSeq = 0;
+let sessionsRequestSeq = 0;
+let latestListSessionsID: string | undefined;
+
+/** Records a live session_created/session_updated payload (task #690). */
+export function recordSessionLiveUpdate(s: Session) {
+  sessionsLiveRecords.set(s.ID, { seq: ++sessionsLiveSeq, session: s });
+}
+
+/** Records a live session_deleted push (task #690). */
+export function recordSessionLiveDelete(id: string) {
+  sessionsLiveRecords.set(id, { seq: ++sessionsLiveSeq, deleted: true });
+}
+
+/** Sends list_sessions tagged with a fresh correlation ID that becomes the
+ * only one whose reply will be accepted (mirrors sendLoadMessages). Also
+ * records the live-event watermark at send time. */
+export function sendListSessions() {
+  const id = crypto.randomUUID();
+  latestListSessionsID = id;
+  sessionsRequestSeq = sessionsLiveSeq;
+  ws.send("list_sessions", undefined, id);
+}
+
+/** True if a sessions_list reply is not the answer to the most recently sent
+ * list_sessions (mirrors isStaleMessagesReply; untagged/unknown → false). */
+export function isStaleSessionsListReply(replyID: string | undefined): boolean {
+  if (!replyID || !latestListSessionsID) return false;
+  return latestListSessionsID !== replyID;
+}
+
+/** Collects the live deltas recorded since the latest request was sent and
+ * clears the log. Called only when a fresh tagged reply is applied: by then
+ * every retained record (seq <= request watermark) is already reflected in
+ * the snapshot read, and the seq > watermark ones are being replayed now, so
+ * the whole log is safe to drop. Untagged back-compat replies must NOT call
+ * this — clearing on them would strip protection from a tagged request that
+ * is still in flight. */
+export function takeSessionsLiveDelta(): { upserts: Session[]; deletedIDs: string[] } {
+  const upserts: Session[] = [];
+  const deletedIDs: string[] = [];
+  for (const [id, rec] of sessionsLiveRecords) {
+    if (rec.seq <= sessionsRequestSeq) continue;
+    if (rec.deleted) deletedIDs.push(id);
+    else if (rec.session) upserts.push(rec.session);
+  }
+  sessionsLiveRecords.clear();
+  return { upserts, deletedIDs };
 }

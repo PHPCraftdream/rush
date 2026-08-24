@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { ws, sendLoadMessages, isStaleMessagesReply, hasLiveEventsSinceRequest, bumpLiveEventEpoch } from "./ws";
+import { ws, sendLoadMessages, isStaleMessagesReply, hasLiveEventsSinceRequest, bumpLiveEventEpoch, sendListSessions, isStaleSessionsListReply, takeSessionsLiveDelta, recordSessionLiveUpdate, recordSessionLiveDelete } from "./ws";
 import {
   $connected,
   $config,
@@ -11,6 +11,7 @@ import {
   $busySessions,
   applyMessagesSnapshot,
   applySubAgentMessagesSnapshot,
+  applySessionsSnapshot,
   setSessions,
   upsertSession,
   removeSession,
@@ -78,7 +79,7 @@ export function useWS() {
         // sessions that are truly still running. Without this, a server restart
         // leaves sessions stuck in "busy" forever.
         $busySessions.set(new Set());
-        ws.send("list_sessions");
+        sendListSessions();
         ws.send("get_config");
         ws.send("get_skills");
         // Sync theme from localStorage to server on every (re)connect
@@ -103,6 +104,7 @@ export function useWS() {
         const s = msg.payload as Session;
         console.log("[useWS] session_created:", s.ID, "ParentSessionID:", s.ParentSessionID);
         upsertSession(s);
+        recordSessionLiveUpdate(s);
         if (s.ParentSessionID) {
           registerSubAgentSession(s.ID, s.ParentSessionID);
           sendLoadMessages(s.ID);
@@ -114,17 +116,32 @@ export function useWS() {
       ws.on("session_updated", (msg: WSMessage) => {
         const session = msg.payload as Session;
         upsertSession(session);
+        recordSessionLiveUpdate(session);
       }),
       ws.on("session_deleted", (msg: WSMessage) => {
         const id = (msg.payload as { ID: string }).ID;
         removeSession(id);
+        recordSessionLiveDelete(id);
         if ($activeSessionID.get() === id) {
           setActiveSession(null);
         }
       }),
       ws.on("sessions_list", (msg: WSMessage) => {
-        const sessions = (msg.payload as Session[]) ?? [];
-        setSessions(sessions);
+        // Stale-reply guard (task #690): drop replies superseded by a newer
+        // list_sessions — the newer reply reflects a more current DB read.
+        if (isStaleSessionsListReply(msg.id)) return;
+        const raw = (msg.payload as Session[]) ?? [];
+        // Live-race reconcile (task #690): a still-latest reply can carry a
+        // snapshot read BEFORE live pushes applied while the request was in
+        // flight; replay those deltas on top instead of wholesale-replacing.
+        // Untagged (back-compat) replies keep the plain replace and leave the
+        // delta log intact so an in-flight tagged request stays protected.
+        let sessions = raw;
+        if (msg.id) {
+          sessions = applySessionsSnapshot(raw, takeSessionsLiveDelta());
+        } else {
+          setSessions(raw);
+        }
 
         // Foreign-owned active session: kick a load_messages refresh on
         // every sessions_list poll too. This guarantees we never sit
@@ -372,9 +389,9 @@ export function useWS() {
       stopPolling();
       // Immediate refresh on tab focus so the user doesn't sit through
       // a full interval before the first update lands.
-      ws.send("list_sessions");
+      sendListSessions();
       pollMessagesIfFollowed();
-      listInterval = window.setInterval(() => ws.send("list_sessions"), SESSIONS_POLL_MS);
+      listInterval = window.setInterval(() => sendListSessions(), SESSIONS_POLL_MS);
       messagesInterval = window.setInterval(pollMessagesIfFollowed, FOLLOW_MESSAGES_POLL_MS);
     };
 
