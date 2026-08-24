@@ -248,6 +248,10 @@ func handleRenameSession(ctx context.Context, a *appPkg.App, c *Client, msg WSMe
 		c.reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
+	// The rename broadcast is the only notification a rename produces (Rename
+	// publishes no pubsub event), so it must carry the ownership annotation
+	// like every other Session broadcast — see AnnotateSessionExternalOwnership.
+	AnnotateSessionExternalOwnership(a, &sess)
 	c.hub.Broadcast(EventSessionUpdated, sess)
 }
 
