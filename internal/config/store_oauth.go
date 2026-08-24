@@ -12,11 +12,11 @@ import (
 	"time"
 
 	"charm.land/catwalk/pkg/catwalk"
-	hyperp "github.com/charmbracelet/crush/internal/agent/hyper"
-	"github.com/charmbracelet/crush/internal/csync"
-	"github.com/charmbracelet/crush/internal/oauth"
-	"github.com/charmbracelet/crush/internal/oauth/copilot"
-	"github.com/charmbracelet/crush/internal/oauth/hyper"
+	hyperp "github.com/PHPCraftdream/rush/internal/agent/hyper"
+	"github.com/PHPCraftdream/rush/internal/csync"
+	"github.com/PHPCraftdream/rush/internal/oauth"
+	"github.com/PHPCraftdream/rush/internal/oauth/copilot"
+	"github.com/PHPCraftdream/rush/internal/oauth/hyper"
 	"github.com/tidwall/gjson"
 )
 

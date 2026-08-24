@@ -16,13 +16,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/charmbracelet/crush/internal/config"
-	"github.com/charmbracelet/crush/internal/csync"
-	"github.com/charmbracelet/crush/internal/home"
-	"github.com/charmbracelet/crush/internal/permission"
-	"github.com/charmbracelet/crush/internal/platform"
-	"github.com/charmbracelet/crush/internal/pubsub"
-	"github.com/charmbracelet/crush/internal/version"
+	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/csync"
+	"github.com/PHPCraftdream/rush/internal/home"
+	"github.com/PHPCraftdream/rush/internal/permission"
+	"github.com/PHPCraftdream/rush/internal/platform"
+	"github.com/PHPCraftdream/rush/internal/pubsub"
+	"github.com/PHPCraftdream/rush/internal/version"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 

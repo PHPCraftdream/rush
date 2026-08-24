@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	appPkg "github.com/charmbracelet/crush/internal/app"
-	"github.com/charmbracelet/crush/internal/config"
+	appPkg "github.com/PHPCraftdream/rush/internal/app"
+	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/stretchr/testify/require"
 )
 

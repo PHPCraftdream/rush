@@ -13,8 +13,8 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/charmbracelet/crush/internal/platform"
-	"github.com/charmbracelet/crush/internal/queue"
+	"github.com/PHPCraftdream/rush/internal/platform"
+	"github.com/PHPCraftdream/rush/internal/queue"
 	"github.com/spf13/cobra"
 )
 

@@ -9,7 +9,7 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/charmbracelet/crush/internal/platform"
+	"github.com/PHPCraftdream/rush/internal/platform"
 )
 
 // Fork patch: batch 24 (run --on-finish hook), review-fix (30s timeout to prevent hangs).

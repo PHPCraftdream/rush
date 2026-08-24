@@ -8,9 +8,9 @@ package app
 import (
 	"context"
 
-	"github.com/charmbracelet/crush/internal/agent/notify"
-	"github.com/charmbracelet/crush/internal/config"
-	"github.com/charmbracelet/crush/internal/pubsub"
+	"github.com/PHPCraftdream/rush/internal/agent/notify"
+	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/pubsub"
 )
 
 // Config returns the pure-data configuration.

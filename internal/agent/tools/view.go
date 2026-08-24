@@ -16,11 +16,11 @@ import (
 	"unicode/utf8"
 
 	"charm.land/fantasy"
-	"github.com/charmbracelet/crush/internal/filepathext"
-	"github.com/charmbracelet/crush/internal/filetracker"
-	"github.com/charmbracelet/crush/internal/permission"
-	"github.com/charmbracelet/crush/internal/skills"
-	"github.com/charmbracelet/crush/internal/stringext"
+	"github.com/PHPCraftdream/rush/internal/filepathext"
+	"github.com/PHPCraftdream/rush/internal/filetracker"
+	"github.com/PHPCraftdream/rush/internal/permission"
+	"github.com/PHPCraftdream/rush/internal/skills"
+	"github.com/PHPCraftdream/rush/internal/stringext"
 )
 
 //go:embed view.md.tpl

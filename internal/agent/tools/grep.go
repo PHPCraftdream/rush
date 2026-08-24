@@ -22,10 +22,10 @@ import (
 	"time"
 
 	"charm.land/fantasy"
-	"github.com/charmbracelet/crush/internal/config"
-	"github.com/charmbracelet/crush/internal/csync"
-	"github.com/charmbracelet/crush/internal/fsext"
-	"github.com/charmbracelet/crush/internal/stringext"
+	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/csync"
+	"github.com/PHPCraftdream/rush/internal/fsext"
+	"github.com/PHPCraftdream/rush/internal/stringext"
 )
 
 // regexCache provides thread-safe caching of compiled regex patterns

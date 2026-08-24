@@ -9,7 +9,7 @@ import (
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/openaicompat"
-	"github.com/charmbracelet/crush/internal/csync"
+	"github.com/PHPCraftdream/rush/internal/csync"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

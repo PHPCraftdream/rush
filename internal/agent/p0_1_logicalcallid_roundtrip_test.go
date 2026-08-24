@@ -26,7 +26,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/charmbracelet/crush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 )

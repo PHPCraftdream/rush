@@ -10,8 +10,8 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/charmbracelet/crush/internal/update"
-	"github.com/charmbracelet/crush/internal/version"
+	"github.com/PHPCraftdream/rush/internal/update"
+	"github.com/PHPCraftdream/rush/internal/version"
 )
 
 // updateCheckTimeout bounds the startup check. It is best-effort

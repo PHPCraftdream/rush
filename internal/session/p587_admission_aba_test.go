@@ -43,7 +43,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/charmbracelet/crush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
 
@@ -178,7 +178,7 @@ func TestDrainSessionNow_AdmissionRefusal_NeverObservesReplacementEntry(t *testi
 //	    run_queue_round2_test.go:329: pump.Stop() graceful shutdown after 733.9us
 //	--- FAIL: TestDrainSessionNow_AdmissionRefusal_NeverObservesReplacementEntry (4.35s)
 //	FAIL
-//	FAIL	github.com/charmbracelet/crush/internal/session	4.512s
+//	FAIL	github.com/PHPCraftdream/rush/internal/session	4.512s
 //	FAIL
 //
 // (DrainSessionNow's own ctx timed out at ~4.35s waiting on B's

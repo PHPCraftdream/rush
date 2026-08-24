@@ -8,7 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
-	"github.com/charmbracelet/crush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/session"
 )
 
 func countAllSessionsCLI(t *testing.T, ctx context.Context, sqlDB *sql.DB) int64 {

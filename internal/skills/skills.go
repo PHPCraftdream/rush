@@ -15,8 +15,8 @@ import (
 	"sync"
 
 	"github.com/charlievieth/fastwalk"
-	"github.com/charmbracelet/crush/internal/home"
-	"github.com/charmbracelet/crush/internal/pubsub"
+	"github.com/PHPCraftdream/rush/internal/home"
+	"github.com/PHPCraftdream/rush/internal/pubsub"
 	"gopkg.in/yaml.v3"
 )
 

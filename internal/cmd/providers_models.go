@@ -12,9 +12,9 @@ import (
 	"strings"
 
 	"charm.land/catwalk/pkg/catwalk"
-	"github.com/charmbracelet/crush/internal/agent/cliprovider"
-	"github.com/charmbracelet/crush/internal/app"
-	"github.com/charmbracelet/crush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
+	"github.com/PHPCraftdream/rush/internal/app"
+	"github.com/PHPCraftdream/rush/internal/config"
 )
 
 // fetchModels fetches the model list for a provider based on its type.

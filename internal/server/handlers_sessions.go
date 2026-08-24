@@ -11,8 +11,8 @@ import (
 	"os"
 	"time"
 
-	appPkg "github.com/charmbracelet/crush/internal/app"
-	"github.com/charmbracelet/crush/internal/session"
+	appPkg "github.com/PHPCraftdream/rush/internal/app"
+	"github.com/PHPCraftdream/rush/internal/session"
 )
 
 func handleCreateSession(ctx context.Context, a *appPkg.App, c *Client, msg WSMessage) {

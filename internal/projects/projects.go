@@ -10,9 +10,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/charmbracelet/crush/internal/config"
-	"github.com/charmbracelet/crush/internal/fsext"
-	"github.com/charmbracelet/crush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/fsext"
+	"github.com/PHPCraftdream/rush/internal/session"
 )
 
 const projectsFileName = "projects.json"

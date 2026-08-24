@@ -12,7 +12,7 @@ import (
 
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy/providers/openrouter"
-	"github.com/charmbracelet/crush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/config"
 )
 
 // resolvedOverrides is what applyModelOverrides computed, captured so the

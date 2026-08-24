@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	hyperp "github.com/charmbracelet/crush/internal/agent/hyper"
-	"github.com/charmbracelet/crush/internal/csync"
-	"github.com/charmbracelet/crush/internal/oauth"
+	hyperp "github.com/PHPCraftdream/rush/internal/agent/hyper"
+	"github.com/PHPCraftdream/rush/internal/csync"
+	"github.com/PHPCraftdream/rush/internal/oauth"
 	"github.com/stretchr/testify/require"
 )
 

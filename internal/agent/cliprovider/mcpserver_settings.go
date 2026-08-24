@@ -15,8 +15,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/crush/internal/fsext"
-	"github.com/charmbracelet/crush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/fsext"
+	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/google/uuid"
 )
 

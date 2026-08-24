@@ -9,8 +9,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/charmbracelet/crush/internal/platform"
-	"github.com/charmbracelet/crush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/platform"
+	"github.com/PHPCraftdream/rush/internal/session"
 	"mvdan.cc/sh/v3/interp"
 )
 

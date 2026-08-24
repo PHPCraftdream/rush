@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/crush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/session"
 )
 
 // DeployLockTimeout caps how long AcquireDeployLock waits for a

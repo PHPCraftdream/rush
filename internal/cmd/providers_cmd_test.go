@@ -14,8 +14,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/charmbracelet/crush/internal/db"
-	crushlog "github.com/charmbracelet/crush/internal/log"
+	"github.com/PHPCraftdream/rush/internal/db"
+	crushlog "github.com/PHPCraftdream/rush/internal/log"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

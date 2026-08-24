@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 
-	"github.com/charmbracelet/crush/internal/home"
+	"github.com/PHPCraftdream/rush/internal/home"
 )
 
 // GlobalConfig returns the global configuration file path for the application.

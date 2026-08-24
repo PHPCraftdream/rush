@@ -6,7 +6,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/charmbracelet/crush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/spf13/cobra"
 )
 

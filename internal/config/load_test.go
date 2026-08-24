@@ -6,7 +6,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/charmbracelet/crush/internal/agent/cliprovider"
+	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
 )
 
 func TestMain(m *testing.M) {

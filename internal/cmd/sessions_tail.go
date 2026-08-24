@@ -8,7 +8,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/charmbracelet/crush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/spf13/cobra"
 )
 

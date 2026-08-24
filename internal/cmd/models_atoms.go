@@ -8,7 +8,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/charmbracelet/crush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/config"
 )
 
 type atom struct {

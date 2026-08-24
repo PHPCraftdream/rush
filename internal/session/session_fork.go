@@ -9,8 +9,8 @@ import (
 	"database/sql"
 	"fmt"
 
-	"github.com/charmbracelet/crush/internal/db"
-	"github.com/charmbracelet/crush/internal/pubsub"
+	"github.com/PHPCraftdream/rush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/pubsub"
 	"github.com/google/uuid"
 )
 

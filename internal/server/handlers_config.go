@@ -12,11 +12,11 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/charmbracelet/crush/internal/agent/cliprovider"
-	appPkg "github.com/charmbracelet/crush/internal/app"
-	"github.com/charmbracelet/crush/internal/config"
-	"github.com/charmbracelet/crush/internal/skills"
-	"github.com/charmbracelet/crush/internal/version"
+	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
+	appPkg "github.com/PHPCraftdream/rush/internal/app"
+	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/skills"
+	"github.com/PHPCraftdream/rush/internal/version"
 )
 
 func buildConfigWire(a *appPkg.App) (ConfigWire, bool) {

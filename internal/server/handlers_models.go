@@ -11,9 +11,9 @@ import (
 	"log/slog"
 	"slices"
 
-	appPkg "github.com/charmbracelet/crush/internal/app"
-	"github.com/charmbracelet/crush/internal/config"
-	"github.com/charmbracelet/crush/internal/session"
+	appPkg "github.com/PHPCraftdream/rush/internal/app"
+	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/session"
 )
 
 func handleSetSessionModels(ctx context.Context, a *appPkg.App, c *Client, msg WSMessage) {

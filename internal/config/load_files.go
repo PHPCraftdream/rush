@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 
-	"github.com/charmbracelet/crush/internal/fsext"
+	"github.com/PHPCraftdream/rush/internal/fsext"
 	"github.com/qjebbs/go-jsons"
 )
 

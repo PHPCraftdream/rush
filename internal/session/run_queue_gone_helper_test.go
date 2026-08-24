@@ -26,7 +26,7 @@ import (
 	"context"
 	"math"
 
-	"github.com/charmbracelet/crush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/session"
 )
 
 // runQueueGoneEverywhere reports whether the run queue holds no rows at all

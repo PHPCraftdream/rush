@@ -7,7 +7,7 @@ import (
 	"os"
 	"os/exec"
 
-	"github.com/charmbracelet/crush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/session"
 )
 
 // trackChildTree registers the freshly started CLI child's whole tree

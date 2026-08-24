@@ -21,8 +21,8 @@ import (
 
 	"charm.land/fantasy"
 	gopty "github.com/aymanbagabas/go-pty"
-	"github.com/charmbracelet/crush/internal/platform"
-	"github.com/charmbracelet/crush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/platform"
+	"github.com/PHPCraftdream/rush/internal/session"
 )
 
 func (m *cliModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.StreamResponse, error) {

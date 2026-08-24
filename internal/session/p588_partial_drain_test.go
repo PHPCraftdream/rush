@@ -34,8 +34,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/charmbracelet/crush/internal/agent"
-	"github.com/charmbracelet/crush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/agent"
+	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
 
@@ -292,7 +292,7 @@ func TestDrainSessionNow_PartialDrain_AckErrorThenBusy_PreservesError(t *testing
 //	        	Messages:   	row B was left undrained (busy) after row A succeeded -- this must NOT be reported as a clean success
 //	--- FAIL: TestDrainSessionNow_PartialDrain_SuccessThenBusy_NeverReportsCleanSuccess (0.56s)
 //	FAIL
-//	FAIL	github.com/charmbracelet/crush/internal/session	0.717s
+//	FAIL	github.com/PHPCraftdream/rush/internal/session	0.717s
 //	FAIL
 //
 // (All four reverted-scenario failures are on the exact assertion this

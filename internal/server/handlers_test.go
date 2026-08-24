@@ -6,9 +6,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	appPkg "github.com/charmbracelet/crush/internal/app"
-	"github.com/charmbracelet/crush/internal/config"
-	"github.com/charmbracelet/crush/internal/db"
+	appPkg "github.com/PHPCraftdream/rush/internal/app"
+	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/stretchr/testify/require"
 )
 

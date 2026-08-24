@@ -9,7 +9,7 @@ import (
 	"slices"
 	"sync"
 
-	"github.com/charmbracelet/crush/internal/shell"
+	"github.com/PHPCraftdream/rush/internal/shell"
 )
 
 // Available returns the subset of All whose Binary is found in PATH.

@@ -7,7 +7,7 @@ import (
 	"unicode/utf8"
 
 	"charm.land/fantasy"
-	"github.com/charmbracelet/crush/internal/agent/tools"
+	"github.com/PHPCraftdream/rush/internal/agent/tools"
 )
 
 // Every tool failure reaches the log, whichever way it fails.

@@ -1,6 +1,6 @@
 package server
 
-import "github.com/charmbracelet/crush/internal/message"
+import "github.com/PHPCraftdream/rush/internal/message"
 
 // PartWire is the JSON wire format for a ContentPart sent to the browser.
 // All fields use PascalCase to match the TypeScript interface names.

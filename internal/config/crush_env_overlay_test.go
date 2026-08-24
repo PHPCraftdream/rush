@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"charm.land/catwalk/pkg/catwalk"
-	"github.com/charmbracelet/crush/internal/env"
+	"github.com/PHPCraftdream/rush/internal/env"
 	"github.com/stretchr/testify/require"
 )
 

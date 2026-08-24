@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/charmbracelet/crush/internal/update"
+	"github.com/PHPCraftdream/rush/internal/update"
 	"github.com/stretchr/testify/require"
 )
 

@@ -63,7 +63,7 @@ func main() {
 	// would otherwise embed, so the hash is injected explicitly instead of
 	// relying on debug.ReadBuildInfo. Best-effort: a build outside a git
 	// checkout still succeeds, just without the commit component.
-	const versionPkg = "github.com/charmbracelet/crush/internal/version"
+	const versionPkg = "github.com/PHPCraftdream/rush/internal/version"
 	ldflags := fmt.Sprintf(
 		"-s -w -X=%s.BuildID=%s -X=%s.BuildTime=%s",
 		versionPkg, buildTime,

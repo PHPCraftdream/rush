@@ -12,7 +12,7 @@ import (
 // IsInSourceTree reports whether exePath (already an absolute, symlink-resolved
 // executable path) sits inside this repository's own source tree, i.e. under a
 // `dev/` or `.claude/worktrees/` path component within a directory tree whose
-// go.mod declares module github.com/charmbracelet/crush. Repo-root build outputs
+// go.mod declares module github.com/PHPCraftdream/rush. Repo-root build outputs
 // (`go build .` writing to the clone root) are intentionally NOT covered: deploy
 // tooling builds there and copies the binary out, so guarding the root would break it.
 func IsInSourceTree(exePath string) bool {
@@ -89,7 +89,7 @@ func IsInSourceTree(exePath string) bool {
 				// P3-5(a): If this go.mod is at the marker dir itself (ancestor), and it's
 				// not the crush module, continue walking up. Otherwise, stop.
 				if checkDir == ancestor {
-					if module == "github.com/charmbracelet/crush" {
+					if module == "github.com/PHPCraftdream/rush" {
 						return true // Crush module at marker dir itself!
 					}
 					// Foreign or empty go.mod at marker dir — continue up.
@@ -97,7 +97,7 @@ func IsInSourceTree(exePath string) bool {
 				}
 
 				// For any level above the marker dir, stop if module is not crush.
-				if module == "github.com/charmbracelet/crush" {
+				if module == "github.com/PHPCraftdream/rush" {
 					return true // Detected!
 				}
 				// Different module (above marker dir) — stop, don't walk past it.

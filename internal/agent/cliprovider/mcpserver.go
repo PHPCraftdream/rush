@@ -22,8 +22,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/charmbracelet/crush/internal/permission"
-	"github.com/charmbracelet/crush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/permission"
+	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 

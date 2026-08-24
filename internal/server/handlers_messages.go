@@ -10,8 +10,8 @@ import (
 	"fmt"
 	"log/slog"
 
-	appPkg "github.com/charmbracelet/crush/internal/app"
-	"github.com/charmbracelet/crush/internal/message"
+	appPkg "github.com/PHPCraftdream/rush/internal/app"
+	"github.com/PHPCraftdream/rush/internal/message"
 )
 
 // updateMessageAndVerify wraps a.Messages.Update for the four message-part

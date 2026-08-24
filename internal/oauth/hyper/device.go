@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/crush/internal/agent/hyper"
-	"github.com/charmbracelet/crush/internal/oauth"
+	"github.com/PHPCraftdream/rush/internal/agent/hyper"
+	"github.com/PHPCraftdream/rush/internal/oauth"
 )
 
 // DeviceAuthResponse contains the response from the device authorization endpoint.

@@ -40,7 +40,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/charmbracelet/crush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/db"
 	sqlitedriver "modernc.org/sqlite"
 
 	"github.com/stretchr/testify/require"

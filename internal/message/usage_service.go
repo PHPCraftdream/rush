@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 
-	"github.com/charmbracelet/crush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/db"
 )
 
 // UsageReport is the analytics view over a session's recorded token usage.

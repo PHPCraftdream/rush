@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"os/exec"
 
-	"github.com/charmbracelet/crush/internal/platform"
+	"github.com/PHPCraftdream/rush/internal/platform"
 	"golang.org/x/sys/windows"
 )
 

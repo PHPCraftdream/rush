@@ -6,8 +6,8 @@ import (
 	"io"
 	"time"
 
-	"github.com/charmbracelet/crush/internal/app"
-	"github.com/charmbracelet/crush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/app"
+	"github.com/PHPCraftdream/rush/internal/session"
 )
 
 // printSubAgentTranscripts renders the messages of every direct sub-agent

@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/crush/internal/oauth"
+	"github.com/PHPCraftdream/rush/internal/oauth"
 )
 
 const (

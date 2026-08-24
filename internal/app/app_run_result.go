@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/crush/internal/agent"
-	"github.com/charmbracelet/crush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/agent"
+	"github.com/PHPCraftdream/rush/internal/message"
 )
 
 // runResult is the JSON shape emitted by `crush run --json`. Wire-stable:

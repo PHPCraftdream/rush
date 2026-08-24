@@ -10,7 +10,7 @@ import (
 	"log/slog"
 
 	"charm.land/fantasy"
-	"github.com/charmbracelet/crush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/config"
 )
 
 // SummarizeSnapshot holds an immutable snapshot of all configuration needed

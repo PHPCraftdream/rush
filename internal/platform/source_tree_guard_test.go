@@ -18,7 +18,7 @@ func TestIsInSourceTree(t *testing.T) {
 
 		// Create go.mod at root.
 		goModPath := filepath.Join(tmpDir, "go.mod")
-		require.NoError(t, os.WriteFile(goModPath, []byte("module github.com/charmbracelet/crush\n"), 0o644))
+		require.NoError(t, os.WriteFile(goModPath, []byte("module github.com/PHPCraftdream/rush\n"), 0o644))
 
 		// Create dev directory and a fake exe.
 		devDir := filepath.Join(tmpDir, "dev")
@@ -34,7 +34,7 @@ func TestIsInSourceTree(t *testing.T) {
 
 		// Create go.mod at root.
 		goModPath := filepath.Join(tmpDir, "go.mod")
-		require.NoError(t, os.WriteFile(goModPath, []byte("module github.com/charmbracelet/crush\n"), 0o644))
+		require.NoError(t, os.WriteFile(goModPath, []byte("module github.com/PHPCraftdream/rush\n"), 0o644))
 
 		// Create .claude/worktrees directory and a fake exe.
 		worktreesDir := filepath.Join(tmpDir, ".claude", "worktrees", "agent-x")
@@ -78,7 +78,7 @@ func TestIsInSourceTree(t *testing.T) {
 
 		// Create go.mod at root.
 		goModPath := filepath.Join(tmpDir, "go.mod")
-		require.NoError(t, os.WriteFile(goModPath, []byte("module github.com/charmbracelet/crush\n"), 0o644))
+		require.NoError(t, os.WriteFile(goModPath, []byte("module github.com/PHPCraftdream/rush\n"), 0o644))
 
 		// Create bin directory and a fake exe.
 		binDir := filepath.Join(tmpDir, "bin")
@@ -103,7 +103,7 @@ func TestIsInSourceTree(t *testing.T) {
 		devDir := filepath.Join(parentDir, "dev")
 		require.NoError(t, os.Mkdir(devDir, 0o755))
 		devGoMod := filepath.Join(devDir, "go.mod")
-		require.NoError(t, os.WriteFile(devGoMod, []byte("module github.com/charmbracelet/crush\n"), 0o644))
+		require.NoError(t, os.WriteFile(devGoMod, []byte("module github.com/PHPCraftdream/rush\n"), 0o644))
 
 		// Create exe in dev/.
 		exePath := filepath.Join(devDir, "crush.exe")
@@ -118,7 +118,7 @@ func TestIsInSourceTree(t *testing.T) {
 
 		// Create go.mod at root with quoted module name.
 		goModPath := filepath.Join(tmpDir, "go.mod")
-		require.NoError(t, os.WriteFile(goModPath, []byte(`module "github.com/charmbracelet/crush"`+"\n"), 0o644))
+		require.NoError(t, os.WriteFile(goModPath, []byte(`module "github.com/PHPCraftdream/rush"`+"\n"), 0o644))
 
 		// Create dev directory and a fake exe.
 		devDir := filepath.Join(tmpDir, "dev")
@@ -134,7 +134,7 @@ func TestIsInSourceTree(t *testing.T) {
 
 		// Create go.mod at root.
 		goModPath := filepath.Join(tmpDir, "go.mod")
-		require.NoError(t, os.WriteFile(goModPath, []byte("module github.com/charmbracelet/crush\n"), 0o644))
+		require.NoError(t, os.WriteFile(goModPath, []byte("module github.com/PHPCraftdream/rush\n"), 0o644))
 
 		// Create worktrees directory WITHOUT .claude parent.
 		worktreesDir := filepath.Join(tmpDir, "worktrees", "agent-x")
@@ -152,7 +152,7 @@ func TestIsInSourceTree(t *testing.T) {
 
 		// Create go.mod at root (crush module).
 		rootGoMod := filepath.Join(tmpDir, "go.mod")
-		require.NoError(t, os.WriteFile(rootGoMod, []byte("module github.com/charmbracelet/crush\n"), 0o644))
+		require.NoError(t, os.WriteFile(rootGoMod, []byte("module github.com/PHPCraftdream/rush\n"), 0o644))
 
 		// Create dev/ with a foreign go.mod.
 		devDir := filepath.Join(tmpDir, "dev")
@@ -181,7 +181,7 @@ func TestIsInSourceTree(t *testing.T) {
 		worktreesDir := filepath.Join(homeDir, ".claude", "worktrees", "wt")
 		require.NoError(t, os.MkdirAll(worktreesDir, 0o755))
 		wtGoMod := filepath.Join(worktreesDir, "go.mod")
-		require.NoError(t, os.WriteFile(wtGoMod, []byte("module github.com/charmbracelet/crush\n"), 0o644))
+		require.NoError(t, os.WriteFile(wtGoMod, []byte("module github.com/PHPCraftdream/rush\n"), 0o644))
 
 		// Create exe in worktrees/.
 		exePath := filepath.Join(worktreesDir, "crush.exe")
@@ -197,7 +197,7 @@ func TestIsInSourceTree(t *testing.T) {
 
 		// Create go.mod at root (crush module).
 		rootGoMod := filepath.Join(tmpDir, "go.mod")
-		require.NoError(t, os.WriteFile(rootGoMod, []byte("module github.com/charmbracelet/crush\n"), 0o644))
+		require.NoError(t, os.WriteFile(rootGoMod, []byte("module github.com/PHPCraftdream/rush\n"), 0o644))
 
 		// Create directory literally named "Dev" (with capital D).
 		devDir := filepath.Join(tmpDir, "Dev")
@@ -215,7 +215,7 @@ func TestIsInSourceTree(t *testing.T) {
 
 		// Create go.mod at root with tab after "module".
 		rootGoMod := filepath.Join(tmpDir, "go.mod")
-		require.NoError(t, os.WriteFile(rootGoMod, []byte("module\tgithub.com/charmbracelet/crush\n"), 0o644))
+		require.NoError(t, os.WriteFile(rootGoMod, []byte("module\tgithub.com/PHPCraftdream/rush\n"), 0o644))
 
 		// Create dev directory and a fake exe.
 		devDir := filepath.Join(tmpDir, "dev")
@@ -233,7 +233,7 @@ func TestIsInSourceTree(t *testing.T) {
 
 		// Create go.mod at root (crush module).
 		rootGoMod := filepath.Join(tmpDir, "go.mod")
-		require.NoError(t, os.WriteFile(rootGoMod, []byte("module github.com/charmbracelet/crush\n"), 0o644))
+		require.NoError(t, os.WriteFile(rootGoMod, []byte("module github.com/PHPCraftdream/rush\n"), 0o644))
 
 		// Create dev/ with a go.mod that has no module line.
 		devDir := filepath.Join(tmpDir, "dev")
@@ -255,7 +255,7 @@ func TestIsInSourceTree(t *testing.T) {
 
 		// Create go.mod at root (crush module).
 		rootGoMod := filepath.Join(tmpDir, "go.mod")
-		require.NoError(t, os.WriteFile(rootGoMod, []byte("module github.com/charmbracelet/crush\n"), 0o644))
+		require.NoError(t, os.WriteFile(rootGoMod, []byte("module github.com/PHPCraftdream/rush\n"), 0o644))
 
 		// Create interposed/ with different module.
 		interposedDir := filepath.Join(tmpDir, "interposed")
@@ -294,28 +294,28 @@ func TestParseModuleFromLine(t *testing.T) {
 	}{
 		{
 			name: "unquoted module",
-			line: "module github.com/charmbracelet/crush",
-			want: "github.com/charmbracelet/crush",
+			line: "module github.com/PHPCraftdream/rush",
+			want: "github.com/PHPCraftdream/rush",
 		},
 		{
 			name: "quoted module",
-			line: `module "github.com/charmbracelet/crush"`,
-			want: "github.com/charmbracelet/crush",
+			line: `module "github.com/PHPCraftdream/rush"`,
+			want: "github.com/PHPCraftdream/rush",
 		},
 		{
 			name: "unquoted module with trailing space",
-			line: "module github.com/charmbracelet/crush   ",
-			want: "github.com/charmbracelet/crush",
+			line: "module github.com/PHPCraftdream/rush   ",
+			want: "github.com/PHPCraftdream/rush",
 		},
 		{
 			name: "quoted module with trailing space",
-			line: `module "github.com/charmbracelet/crush"   `,
-			want: "github.com/charmbracelet/crush",
+			line: `module "github.com/PHPCraftdream/rush"   `,
+			want: "github.com/PHPCraftdream/rush",
 		},
 		{
 			name: "unquoted module with leading space",
-			line: "  module github.com/charmbracelet/crush",
-			want: "github.com/charmbracelet/crush",
+			line: "  module github.com/PHPCraftdream/rush",
+			want: "github.com/PHPCraftdream/rush",
 		},
 		{
 			name: "different module",
@@ -342,11 +342,11 @@ func TestReadModuleLine(t *testing.T) {
 		t.Parallel()
 		tmpDir := t.TempDir()
 		goModPath := filepath.Join(tmpDir, "go.mod")
-		require.NoError(t, os.WriteFile(goModPath, []byte("module\tgithub.com/charmbracelet/crush\n"), 0o644))
+		require.NoError(t, os.WriteFile(goModPath, []byte("module\tgithub.com/PHPCraftdream/rush\n"), 0o644))
 
 		line, err := readModuleLine(goModPath)
 		require.NoError(t, err)
-		require.Equal(t, "module\tgithub.com/charmbracelet/crush", line)
+		require.Equal(t, "module\tgithub.com/PHPCraftdream/rush", line)
 	})
 
 	t.Run("no module line returns empty string", func(t *testing.T) {
@@ -368,7 +368,7 @@ func TestSourceTreeGuardMessage(t *testing.T) {
 	msg := sourceTreeGuardMessage("/path/to/crush.exe")
 
 	// Should NOT contain the old go install command
-	require.NotContains(t, msg, "go install github.com/charmbracelet/crush")
+	require.NotContains(t, msg, "go install github.com/PHPCraftdream/rush")
 	// Should contain the new npm package name
 	require.Contains(t, msg, "@phpcraftdream/crush")
 	// Should contain deploy.go
@@ -412,7 +412,7 @@ func TestIsInSourceTree_WindowsPaths(t *testing.T) {
 
 		// Create go.mod at root.
 		goModPath := filepath.Join(tmpDir, "go.mod")
-		require.NoError(t, os.WriteFile(goModPath, []byte("module github.com/charmbracelet/crush\n"), 0o644))
+		require.NoError(t, os.WriteFile(goModPath, []byte("module github.com/PHPCraftdream/rush\n"), 0o644))
 
 		// Create dev directory and a fake exe using backslashes.
 		devDir := filepath.Join(tmpDir, "dev")
@@ -428,7 +428,7 @@ func TestIsInSourceTree_WindowsPaths(t *testing.T) {
 
 		// Create go.mod at root.
 		goModPath := filepath.Join(tmpDir, "go.mod")
-		require.NoError(t, os.WriteFile(goModPath, []byte("module github.com/charmbracelet/crush\n"), 0o644))
+		require.NoError(t, os.WriteFile(goModPath, []byte("module github.com/PHPCraftdream/rush\n"), 0o644))
 
 		// Create .claude\\worktrees\\ directory and a fake exe.
 		worktreesDir := filepath.Join(tmpDir, ".claude", "worktrees", "agent-x")

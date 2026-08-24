@@ -17,9 +17,9 @@ import (
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/anthropic"
 
-	crushlog "github.com/charmbracelet/crush/internal/log"
-	"github.com/charmbracelet/crush/internal/message"
-	"github.com/charmbracelet/crush/internal/session"
+	crushlog "github.com/PHPCraftdream/rush/internal/log"
+	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/session"
 )
 
 // summaryCommitMaxDuration bounds the silent compaction's COMMIT phase — the

@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/charmbracelet/crush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/session"
 )
 
 func makeTestTodos(n int) []session.Todo {

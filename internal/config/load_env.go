@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/charmbracelet/crush/internal/env"
-	"github.com/charmbracelet/crush/internal/home"
+	"github.com/PHPCraftdream/rush/internal/env"
+	"github.com/PHPCraftdream/rush/internal/home"
 )
 
 // crushEnvOverlay scans e for "CRUSH_X" entries and returns a map of the

@@ -142,7 +142,7 @@ func formatFullVersion(v, buildID string) string {
 // win — see the "Verify" step in .github/workflows/publish-fork-npm.yml) and
 // only derives a value from build metadata for un-injected local builds.
 //
-// A user may install crush using `go install github.com/charmbracelet/crush@latest`
+// A user may install crush using `go install github.com/PHPCraftdream/rush@latest`
 // without -ldflags, in which case the version above is unset. As a workaround
 // we use the embedded build version that *is* set when using `go install` (and
 // is only set for `go install` and not for `go build`). For plain `go build`

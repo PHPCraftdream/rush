@@ -2,7 +2,7 @@ package proto
 
 import (
 	"charm.land/catwalk/pkg/catwalk"
-	"github.com/charmbracelet/crush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/config"
 )
 
 // Workspace represents a running app.App workspace with its associated

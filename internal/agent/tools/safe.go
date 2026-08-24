@@ -4,7 +4,7 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/charmbracelet/crush/internal/shell"
+	"github.com/PHPCraftdream/rush/internal/shell"
 )
 
 var safeCommands = []string{

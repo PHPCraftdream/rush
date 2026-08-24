@@ -6,7 +6,7 @@ import (
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/openrouter"
 
-	"github.com/charmbracelet/crush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/session"
 )
 
 func (a *sessionAgent) openrouterCost(metadata fantasy.ProviderMetadata) *float64 {

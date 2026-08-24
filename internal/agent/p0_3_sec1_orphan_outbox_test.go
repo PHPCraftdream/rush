@@ -26,8 +26,8 @@ import (
 	"log/slog"
 	"testing"
 
-	"github.com/charmbracelet/crush/internal/agent/cliprovider"
-	"github.com/charmbracelet/crush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
+	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
 

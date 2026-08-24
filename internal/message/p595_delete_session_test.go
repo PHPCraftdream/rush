@@ -19,7 +19,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/charmbracelet/crush/internal/pubsub"
+	"github.com/PHPCraftdream/rush/internal/pubsub"
 	"github.com/stretchr/testify/require"
 )
 

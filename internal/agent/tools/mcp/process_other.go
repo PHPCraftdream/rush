@@ -6,7 +6,7 @@ import (
 	"os/exec"
 	"time"
 
-	"github.com/charmbracelet/crush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/session"
 )
 
 // configureStdioProcess makes context cancellation tree-kill a stdio MCP

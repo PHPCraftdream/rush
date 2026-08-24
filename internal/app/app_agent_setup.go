@@ -10,8 +10,8 @@ import (
 	"log/slog"
 
 	"charm.land/catwalk/pkg/catwalk"
-	"github.com/charmbracelet/crush/internal/agent"
-	"github.com/charmbracelet/crush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/agent"
+	"github.com/PHPCraftdream/rush/internal/config"
 )
 
 func (app *App) UpdateAgentModel(ctx context.Context) error {

@@ -14,8 +14,8 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/charmbracelet/crush/internal/filepathext"
-	"github.com/charmbracelet/crush/internal/platform"
+	"github.com/PHPCraftdream/rush/internal/filepathext"
+	"github.com/PHPCraftdream/rush/internal/platform"
 	"mvdan.cc/sh/v3/expand"
 	"mvdan.cc/sh/v3/interp"
 	"mvdan.cc/sh/v3/syntax"

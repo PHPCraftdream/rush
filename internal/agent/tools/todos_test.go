@@ -3,7 +3,7 @@ package tools
 import (
 	"testing"
 
-	"github.com/charmbracelet/crush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/session"
 )
 
 // helpers

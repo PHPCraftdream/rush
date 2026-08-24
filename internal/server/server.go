@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	appPkg "github.com/charmbracelet/crush/internal/app"
+	appPkg "github.com/PHPCraftdream/rush/internal/app"
 	"github.com/gorilla/websocket"
 )
 

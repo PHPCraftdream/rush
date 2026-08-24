@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 
-	appPkg "github.com/charmbracelet/crush/internal/app"
+	appPkg "github.com/PHPCraftdream/rush/internal/app"
 )
 
 // handleIncoming dispatches an incoming WS message from a client.

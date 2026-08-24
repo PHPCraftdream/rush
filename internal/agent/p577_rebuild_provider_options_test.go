@@ -23,8 +23,8 @@ import (
 	"charm.land/fantasy/providers/openai"
 	"github.com/stretchr/testify/require"
 
-	"github.com/charmbracelet/crush/internal/config"
-	"github.com/charmbracelet/crush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/session"
 )
 
 // providerOptionsUser extracts the "user" probe field RebuildSessionAgentCall

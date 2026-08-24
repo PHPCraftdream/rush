@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/charmbracelet/crush/internal/home"
+	"github.com/PHPCraftdream/rush/internal/home"
 )
 
 // mcpJSONFile represents the .mcp.json file format (Claude Code compatible).

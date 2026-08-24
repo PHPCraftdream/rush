@@ -9,7 +9,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/charmbracelet/crush/internal/platform"
+	"github.com/PHPCraftdream/rush/internal/platform"
 )
 
 func isInsideWorktree() bool {

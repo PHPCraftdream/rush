@@ -7,8 +7,8 @@ package app
 import (
 	"slices"
 
-	"github.com/charmbracelet/crush/internal/config"
-	"github.com/charmbracelet/crush/internal/permission"
+	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/permission"
 )
 
 // subAgentToolNames lists every tool name that the default `crush run`

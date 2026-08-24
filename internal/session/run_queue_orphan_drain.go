@@ -10,7 +10,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/charmbracelet/crush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/db"
 	sqlitedriver "modernc.org/sqlite"
 )
 

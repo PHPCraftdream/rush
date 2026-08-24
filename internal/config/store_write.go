@@ -12,7 +12,7 @@ import (
 	"slices"
 	"time"
 
-	"github.com/charmbracelet/crush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )

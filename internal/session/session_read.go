@@ -10,7 +10,7 @@ import (
 	"database/sql"
 	"errors"
 
-	"github.com/charmbracelet/crush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/db"
 )
 
 func (s *service) Get(ctx context.Context, id string) (Session, error) {

@@ -13,7 +13,7 @@ import (
 	"charm.land/fantasy/providers/openai"
 	"github.com/stretchr/testify/require"
 
-	"github.com/charmbracelet/crush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/config"
 )
 
 // TestResolveSessionModels_InvalidatesCacheOnConfigChange is a regression test

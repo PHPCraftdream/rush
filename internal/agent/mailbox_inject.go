@@ -5,7 +5,7 @@
 package agent
 
 import (
-	"github.com/charmbracelet/crush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/message"
 )
 
 // inject implements design §5: appends msg to the pending-inject list,

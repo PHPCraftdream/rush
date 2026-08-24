@@ -1,8 +1,8 @@
 package agent
 
 import (
-	"github.com/charmbracelet/crush/internal/config"
-	"github.com/charmbracelet/crush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/session"
 )
 
 // toSessionModelCfg converts config.SelectedModel to session.ModelCfg.

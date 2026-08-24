@@ -8,7 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/charmbracelet/crush/internal/env"
+	"github.com/PHPCraftdream/rush/internal/env"
 )
 
 const defaultCatwalkURL = "https://catwalk.charm.land"

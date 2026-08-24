@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 	_ "modernc.org/sqlite"
 
-	"github.com/charmbracelet/crush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/db"
 )
 
 func newTestDB(t *testing.T) (*sql.DB, *db.Queries) {

@@ -25,7 +25,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/charmbracelet/crush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/stretchr/testify/require"
 )
 

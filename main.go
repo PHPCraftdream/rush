@@ -13,9 +13,9 @@ import (
 	_ "net/http/pprof"
 	"os"
 
-	"github.com/charmbracelet/crush/internal/cmd"
-	_ "github.com/charmbracelet/crush/internal/dns"
-	"github.com/charmbracelet/crush/internal/platform"
+	"github.com/PHPCraftdream/rush/internal/cmd"
+	_ "github.com/PHPCraftdream/rush/internal/dns"
+	"github.com/PHPCraftdream/rush/internal/platform"
 	_ "github.com/joho/godotenv/autoload"
 )
 

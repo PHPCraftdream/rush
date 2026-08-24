@@ -9,8 +9,8 @@ import (
 	"text/tabwriter"
 	"time"
 
-	mcpmanager "github.com/charmbracelet/crush/internal/agent/tools/mcp"
-	"github.com/charmbracelet/crush/internal/config"
+	mcpmanager "github.com/PHPCraftdream/rush/internal/agent/tools/mcp"
+	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/spf13/cobra"
 )
 

@@ -9,8 +9,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/charmbracelet/crush/internal/log"
-	"github.com/charmbracelet/crush/internal/platform"
+	"github.com/PHPCraftdream/rush/internal/log"
+	"github.com/PHPCraftdream/rush/internal/platform"
 )
 
 var getRg = sync.OnceValue(func() string {

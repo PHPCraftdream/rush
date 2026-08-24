@@ -16,10 +16,10 @@ import (
 	"time"
 
 	"charm.land/catwalk/pkg/catwalk"
-	"github.com/charmbracelet/crush/internal/agent/cliprovider"
-	"github.com/charmbracelet/crush/internal/agent/hyper"
-	"github.com/charmbracelet/crush/internal/discover"
-	"github.com/charmbracelet/crush/internal/env"
+	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
+	"github.com/PHPCraftdream/rush/internal/agent/hyper"
+	"github.com/PHPCraftdream/rush/internal/discover"
+	"github.com/PHPCraftdream/rush/internal/env"
 )
 
 func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, baseEnv env.Env, resolver VariableResolver, knownProviders []catwalk.Provider) error {
