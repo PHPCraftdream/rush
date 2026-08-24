@@ -1,15 +1,15 @@
 //go:build ignore
 
 // deploy.go — one-shot: prod-build the binary, then replace whatever
-// `crush` resolves to on PATH with the freshly built artifact, WITHOUT
-// killing any running crush process. Verifies by running the new
+// `rush` resolves to on PATH with the freshly built artifact, WITHOUT
+// killing any running rush process. Verifies by running the new
 // binary's --version.
 //
 // Live sessions are safe by construction, not by avoidance:
 //   Unix:    replaceFile does a temp-write + rename over dst. A running
 //            process keeps its open file descriptor pointing at the old
 //            inode's data even after the directory entry is replaced, so
-//            in-flight `crush` processes are completely unaffected.
+//            in-flight `rush` processes are completely unaffected.
 //   Windows: renaming a file out from under a running .exe is allowed
 //            (the OS only cares about the open data, not the name), but
 //            DELETING that renamed-aside file while the process still
@@ -25,19 +25,19 @@
 //            (Confirmed by hand on 2026-07-29, see
 //            docs/plans/2026-07-29-relaunch-from-cache.md §2.)
 //
-// If NO crush exists on PATH yet, this is a first install: the binary
+// If NO rush exists on PATH yet, this is a first install: the binary
 // goes to the standard per-user location for the OS and the directory
 // is made reachable from the command line —
-//   Windows:      %LOCALAPPDATA%\Programs\crush\crush.exe
+//   Windows:      %LOCALAPPDATA%\Programs\rush\rush.exe
 //                 (dir appended to the user PATH via the registry;
 //                 new terminals pick it up, current ones need restart)
-//   Linux/macOS:  ~/.local/bin/crush
+//   Linux/macOS:  ~/.local/bin/rush
 //                 (already on PATH in most distros; if not, a ready
 //                 export line is printed — shell rc files are never
 //                 edited automatically)
 //
 // Usage:   go run deploy.go
-// Override the destination path with CRUSH_DEPLOY_PATH=...
+// Override the destination path with RUSH_DEPLOY_PATH=...
 //
 // The decision logic behind path/PATH handling (install location,
 // PATH-membership checks, executable-vs-shim detection, cwd-excluding
@@ -110,13 +110,13 @@ func main() {
 		fatal("expected build artifact at %s: %v", src, err)
 	}
 
-	// 2. Find destinations. CRUSH_DEPLOY_PATH wins (single target);
-	//    otherwise we collect every crush binary on PATH that should be
+	// 2. Find destinations. RUSH_DEPLOY_PATH wins (single target);
+	//    otherwise we collect every rush binary on PATH that should be
 	//    kept in sync — typically the npm-shim sibling AND the
 	//    node_modules real binary, because Windows cmd's PATH resolution
 	//    can pick either depending on the order of npm-dir vs other
-	//    entries. Deploying to both stops "crush --version is fresh but
-	//    crush claude-init says Unknown flag --replace" puzzles.
+	//    entries. Deploying to both stops "rush --version is fresh but
+	//    rush claude-init says Unknown flag --replace" puzzles.
 	//
 	//    If nothing is found, this is a FIRST INSTALL: fall back to the
 	//    standard per-user location for the OS and make sure it is
@@ -128,7 +128,7 @@ func main() {
 		if derr != nil {
 			fatal("could not determine an install location: %v", derr)
 		}
-		warn("no existing crush found to replace: %v", err)
+		warn("no existing rush found to replace: %v", err)
 		step("First install → standard per-user location: %s", dst)
 		dsts = []string{dst}
 		freshInstall = true
@@ -268,26 +268,26 @@ func ensureOnPath(dir string) {
 
 func binaryName() string {
 	if runtime.GOOS == "windows" {
-		return "crush.exe"
+		return "rush.exe"
 	}
-	return "crush"
+	return "rush"
 }
 
 // resolveDests decides what files to overwrite. Priority:
-//  1. $CRUSH_DEPLOY_PATH set → single forced target, used as-is.
-//  2. Otherwise we discover the npm-installed crush via exec.LookPath
+//  1. $RUSH_DEPLOY_PATH set → single forced target, used as-is.
+//  2. Otherwise we discover the npm-installed rush via exec.LookPath
 //     and return EVERY binary we can find around it:
-//     a. <npm-dir>/node_modules/@phpcraftdream/crush-<node_os>-<node_arch>/bin/crush(.exe)
+//     a. <npm-dir>/node_modules/@phpcraftdream/crush-<node_os>-<node_arch>/bin/rush(.exe)
 //     — the real binary the JS wrapper execs via `node`. The fork ships
 //     the binary in the PLATFORM package, not the meta package (unlike
 //     upstream's @charmland/crush, which bundled bin/ directly in the
 //     package the JS wrapper lives in) — see
 //     docs/plans/2026-07-29-relaunch-from-cache.md §5.3.
-//     b. <npm-dir>/crush.exe (Windows only) — a sibling native
+//     b. <npm-dir>/rush.exe (Windows only) — a sibling native
 //     binary that `cmd` may pick BEFORE the JS wrapper depending
 //     on PATHEXT and PATH ordering. Historically this slot
 //     received an out-of-band copy from a previous install and
-//     then drifted, producing "crush --version is fresh but
+//     then drifted, producing "rush --version is fresh but
 //     claude-init --replace is unknown" symptoms.
 //     c. The LookPath result itself, only if it is an executable
 //     (.exe on Windows, no extension on Unix) — covers raw
@@ -297,15 +297,15 @@ func binaryName() string {
 // We deduplicate by absolute path so the same file isn't replaced
 // twice on a same-file collision.
 func resolveDests() ([]string, error) {
-	if env := os.Getenv("CRUSH_DEPLOY_PATH"); env != "" {
+	if env := os.Getenv("RUSH_DEPLOY_PATH"); env != "" {
 		return []string{env}, nil
 	}
 	// We can't use exec.LookPath here: deploy.go is run from the repo
-	// root which itself contains a freshly built crush.exe (the build
+	// root which itself contains a freshly built rush.exe (the build
 	// artifact). Go 1.19+ exec.LookPath refuses to return executables
 	// found via the cwd entry of PATH (returns exec.ErrDot) to defend
 	// against directory-planting attacks. That defence is exactly
-	// wrong for us — we WANT the OTHER crush on PATH (the npm-installed
+	// wrong for us — we WANT the OTHER rush on PATH (the npm-installed
 	// or system one), not the local build artifact. Walk PATH ourselves,
 	// skipping anything that resolves to cwd.
 	cwd, err := os.Getwd()
@@ -318,7 +318,7 @@ func resolveDests() ([]string, error) {
 	} else {
 		exts = []string{""}
 	}
-	p, err := deploy.LookPathExcludingCwd("crush", cwd, os.Getenv("PATH"), exts)
+	p, err := deploy.LookPathExcludingCwd("rush", cwd, os.Getenv("PATH"), exts)
 	if err != nil {
 		return nil, err
 	}
@@ -332,11 +332,11 @@ func resolveDests() ([]string, error) {
 	if _, err := os.Stat(npmBin); err == nil {
 		cands = append(cands, npmBin)
 	}
-	// (b) sibling crush.exe in npm bin dir (Windows only). This is the
-	// one that Windows `cmd` may pick when PATHEXT resolves `crush` to
-	// `crush.exe` before considering `crush.cmd`/`crush.ps1`.
+	// (b) sibling rush.exe in npm bin dir (Windows only). This is the
+	// one that Windows `cmd` may pick when PATHEXT resolves `rush` to
+	// `rush.exe` before considering `rush.cmd`/`rush.ps1`.
 	if runtime.GOOS == "windows" {
-		sibling := filepath.Join(dir, "crush.exe")
+		sibling := filepath.Join(dir, "rush.exe")
 		if _, err := os.Stat(sibling); err == nil {
 			cands = append(cands, sibling)
 		}
@@ -375,7 +375,7 @@ func resolveDests() ([]string, error) {
 // dst's directory, then rename over dst). Falls back to a direct copy on
 // filesystems that don't allow cross-device renames.
 //
-// On Windows, a running process holding dst open (e.g. a live `crush
+// On Windows, a running process holding dst open (e.g. a live `rush
 // run` session) makes a straight rename-over-dst fail: Windows refuses
 // to replace a file that's in use. Deleting dst first doesn't help
 // either — deleting a busy file is *also* refused there (confirmed by
