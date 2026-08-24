@@ -138,11 +138,13 @@ function QueuedMessageItem({
 interface PartLike { type: string; Reason?: string }
 
 // BurstPart carries each tool/thinking part alongside its source message's
-// CreatedAt and its real partIndex (index into the source message's Parts array).
-// Needed so each row in ToolActivityGroup can render its own HH:MM:SS timestamp
-// — the part itself has no time field, the message does — and so that WS commands
-// use the REAL partIndex for server addressing (burst position is a render concern only).
-type BurstPart = { part: ContentPart; createdAt: number; messageID: string; partIndex: number };
+// CreatedAt, Model, and ReasoningEffort, and its real partIndex (index into
+// the source message's Parts array). Needed so each row in ToolActivityGroup
+// can render its own HH:MM:SS timestamp and model/effort badge — the part
+// itself has no time/model/effort field, the message does — and so that WS
+// commands use the REAL partIndex for server addressing (burst position is
+// a render concern only).
+type BurstPart = { part: ContentPart; createdAt: number; messageID: string; partIndex: number; model?: string; effort?: string };
 
 type RenderItem =
   | { kind: "message"; message: Msg; index: number }
@@ -198,7 +200,7 @@ function buildRenderItems(messages: Msg[]): RenderItem[] {
       if (burstFirstID === "") burstFirstID = m.ID;
       for (let pi = 0; pi < m.Parts.length; pi++) {
         const p = m.Parts[pi];
-        if (p.type === "tool_result") burstParts.push({ part: p, createdAt: m.CreatedAt, messageID: m.ID, partIndex: pi });
+        if (p.type === "tool_result") burstParts.push({ part: p, createdAt: m.CreatedAt, messageID: m.ID, partIndex: pi, model: m.Model, effort: m.ReasoningEffort });
       }
       return;
     }
@@ -229,7 +231,7 @@ function buildRenderItems(messages: Msg[]): RenderItem[] {
       for (let pi = 0; pi < m.Parts.length; pi++) {
         const p = m.Parts[pi];
         if (p.type === "tool_call" || p.type === "tool_result" || p.type === "thinking") {
-          burstParts.push({ part: p as ContentPart, createdAt: m.CreatedAt, messageID: m.ID, partIndex: pi });
+          burstParts.push({ part: p as ContentPart, createdAt: m.CreatedAt, messageID: m.ID, partIndex: pi, model: m.Model, effort: m.ReasoningEffort });
         } else if (p.type === "text") {
           const t = (p as { type: "text"; Text: string }).Text ?? "";
           if (t.trim().length === 0) continue;
@@ -260,7 +262,7 @@ function ToolRun({ parts, firstMsgID, isLive, isCurrent }: { parts: BurstPart[];
   // real index into the source message's Parts array (the ONLY field valid for
   // server addressing via WS commands like update_message_part/delete_message_part).
   const items = useMemo(
-    () => parts.map((bp, idx) => ({ part: bp.part, idx, createdAt: bp.createdAt, messageID: bp.messageID, partIndex: bp.partIndex })),
+    () => parts.map((bp, idx) => ({ part: bp.part, idx, createdAt: bp.createdAt, messageID: bp.messageID, partIndex: bp.partIndex, model: bp.model, effort: bp.effort })),
     [parts]
   );
   const startedAt = useMemo(() => {

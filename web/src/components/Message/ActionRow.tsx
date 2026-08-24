@@ -50,6 +50,8 @@ export type ActionItem =
       key: string;
       createdAt?: number;
       repeatCount?: number;
+      model?: string;
+      effort?: string;
     }
   | {
       kind: "thinking";
@@ -59,6 +61,8 @@ export type ActionItem =
       createdAt?: number;
       messageID?: string;
       partIndex: number;
+      model?: string;
+      effort?: string;
     };
 
 interface ActionRowProps {

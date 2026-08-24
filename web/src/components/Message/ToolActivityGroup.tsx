@@ -31,7 +31,7 @@ import { useCollapseAllSignal } from "./useCollapseAllSignal";
 //     Manual collapse via the chevron in the header — never auto-collapsed.
 
 interface ToolActivityGroupProps {
-  items: { part: ContentPart; idx: number; createdAt?: number; messageID?: string; partIndex: number }[];
+  items: { part: ContentPart; idx: number; createdAt?: number; messageID?: string; partIndex: number; model?: string; effort?: string }[];
   live: boolean;
   // True when this group is the most recent activity in the transcript
   // (i.e. nothing rendered after it). When false, the auto-rule collapses
@@ -126,10 +126,12 @@ export const ToolActivityGroup = memo(function ToolActivityGroup({ items, live, 
     const actions: ActionItem[] = [];
     const rawAgentParts: { part: ContentPart; idx: number; messageID?: string }[] = [];
     const indexByCallID = new Map<string, number>();
-    for (const { part, idx, createdAt, messageID, partIndex } of items) {
+    for (const { part, idx, createdAt, messageID, partIndex, model, effort } of items) {
       if (part.type === "thinking") {
         const text = (part as { type: "thinking"; Thinking: string }).Thinking ?? "";
-        actions.push({ kind: "thinking", text, idx, key: `think-${idx}`, createdAt, messageID, partIndex });
+        // Per-row model/effort from the part's own source message (burst path);
+        // falls back to group-level props (single-message path via AssistantContent).
+        actions.push({ kind: "thinking", text, idx, key: `think-${idx}`, createdAt, messageID, partIndex, model, effort });
       } else if (part.type === "tool_call") {
         if (part.Name === "agent") { rawAgentParts.push({ part, idx, messageID }); continue; }
         const a: ActionItem = { kind: "tool", callPart: part, idx, key: `call-${part.ID}`, createdAt };
@@ -222,8 +224,10 @@ export const ToolActivityGroup = memo(function ToolActivityGroup({ items, live, 
         item={actions[0]}
         isCurrent={effectiveCurrent}
         suppressAutoCurrent={false}
-        model={model}
-        effort={effort}
+        // Per-row model/effort from the part's own source message (burst path);
+        // falls back to group-level props (single-message path via AssistantContent).
+        model={actions[0].model || model}
+        effort={actions[0].effort || effort}
       />
     );
   }
@@ -257,8 +261,10 @@ export const ToolActivityGroup = memo(function ToolActivityGroup({ items, live, 
               item={a}
               isCurrent={i === actions.length - 1}
               suppressAutoCurrent={suppressAuto}
-              model={model}
-              effort={effort}
+              // Per-row model/effort from the part's own source message (burst path);
+              // falls back to group-level props (single-message path via AssistantContent).
+              model={a.model || model}
+              effort={a.effort || effort}
             />
           ))}
           {renderAgents()}
