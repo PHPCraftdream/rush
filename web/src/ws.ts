@@ -143,6 +143,35 @@ class WSClient {
 
 export const ws = new WSClient();
 
+// ── live-event epoch (task #689) ────────────────────────────────────────────
+//
+// The request-ordering guard above cannot see live push events
+// (message_created/message_updated/message_deleted) that the client
+// applies BETWEEN a load_messages request being sent and its reply
+// arriving. A reply that is still the latest REQUEST can carry a DB
+// snapshot read BEFORE those events were written — applying it wholesale
+// would erase the fresher live state (a just-created message vanishing,
+// streamed content reverting, a deleted message resurrecting). Each
+// applied live push bumps a per-session epoch; sendLoadMessages records
+// the epoch at send time; the messages_list handler compares the two and
+// merges instead of replacing when they differ.
+const liveEventEpoch = new Map<string, number>();
+const requestEpoch = new Map<string, number>();
+
+/** Records that a live push event was applied for sessionID. Called by
+ * useWS.ts only at sites where the event actually mutated store state. */
+export function bumpLiveEventEpoch(sessionID: string) {
+  liveEventEpoch.set(sessionID, (liveEventEpoch.get(sessionID) ?? 0) + 1);
+}
+
+/** True if any live push was applied for sessionID since its latest
+ * load_messages request was sent. Sessions with no tracked request (and
+ * the untagged back-compat reply path) report false. */
+export function hasLiveEventsSinceRequest(sessionID: string | undefined): boolean {
+  if (!sessionID) return false;
+  return (liveEventEpoch.get(sessionID) ?? 0) > (requestEpoch.get(sessionID) ?? 0);
+}
+
 // ── load_messages stale-reply guard (task #685) ────────────────────────────
 //
 // Several independent call sites (the two OwnedExternal pollers in
@@ -175,6 +204,7 @@ const latestLoadMessagesID = new Map<string, string>();
 export function sendLoadMessages(sessionID: string) {
   const id = crypto.randomUUID();
   latestLoadMessagesID.set(sessionID, id);
+  requestEpoch.set(sessionID, liveEventEpoch.get(sessionID) ?? 0);
   ws.send("load_messages", { sessionID }, id);
 }
 

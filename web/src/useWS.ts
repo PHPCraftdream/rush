@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { ws, sendLoadMessages, isStaleMessagesReply } from "./ws";
+import { ws, sendLoadMessages, isStaleMessagesReply, hasLiveEventsSinceRequest, bumpLiveEventEpoch } from "./ws";
 import {
   $connected,
   $config,
@@ -9,10 +9,11 @@ import {
   $sessions,
   $activeSessionID,
   $busySessions,
+  applyMessagesSnapshot,
+  applySubAgentMessagesSnapshot,
   setSessions,
   upsertSession,
   removeSession,
-  setMessages,
   upsertMessage,
   removeMessage,
   setSessionBusy,
@@ -27,7 +28,7 @@ import {
   registerSubAgentSession,
   isSubAgentSession,
   upsertSubAgentMessage,
-  setSubAgentMessages,
+  tombstoneMessage,
   removeSubAgentMessage,
   trackMessageParts,
 } from "./store";
@@ -170,11 +171,13 @@ export function useWS() {
         const m = msg.payload as Message;
         if (isSubAgentSession(m.SessionID)) {
           upsertSubAgentMessage(m.SessionID, m);
+          bumpLiveEventEpoch(m.SessionID);
           return;
         }
         const activeID = $activeSessionID.get();
         if (!activeID || m.SessionID !== activeID) return;
         upsertMessage(m);
+        bumpLiveEventEpoch(m.SessionID);
         if (m.Role === "assistant" && m.Provider && m.Model) {
           trackModelUsage("smart", `${m.Provider}:::${m.Model}`);
         }
@@ -183,6 +186,7 @@ export function useWS() {
         const m = msg.payload as Message;
         if (isSubAgentSession(m.SessionID)) {
           upsertSubAgentMessage(m.SessionID, m);
+          bumpLiveEventEpoch(m.SessionID);
           return;
         }
         const activeID = $activeSessionID.get();
@@ -191,6 +195,7 @@ export function useWS() {
           trackMessageParts(m.ID, m.Parts);
         }
         upsertMessage(m);
+        bumpLiveEventEpoch(m.SessionID);
       }),
       ws.on("message_deleted", (msg: WSMessage) => {
         const m = msg.payload as Message;
@@ -198,13 +203,17 @@ export function useWS() {
         // deletes sub-agent messages too, and the sub-agent block never
         // re-fetches once populated, so deletes must be applied in place.
         if (isSubAgentSession(m.SessionID)) {
+          tombstoneMessage(m.SessionID, m.ID);
           removeSubAgentMessage(m.SessionID, m.ID);
+          bumpLiveEventEpoch(m.SessionID);
           return;
         }
         // Only process messages for the active session
         const activeID = $activeSessionID.get();
         if (!activeID || m.SessionID !== activeID) return;
+        tombstoneMessage(m.SessionID, m.ID);
         removeMessage(m.ID);
+        bumpLiveEventEpoch(m.SessionID);
       }),
       ws.on("messages_list", (msg: WSMessage) => {
         // New envelope: { SessionID, Messages }. Old shape (raw array) is
@@ -233,15 +242,20 @@ export function useWS() {
         // the newer reply already reflects a more current DB read, and
         // applying the older one would regress the visible transcript.
         if (isStaleMessagesReply(sid, msg.id)) return;
+        // Live-race guard (task #689): a still-latest reply can carry a
+        // snapshot read BEFORE live pushes that were applied while the
+        // request was in flight. When that happened, merge (ID-union +
+        // delete tombstones) instead of wholesale-replacing; otherwise
+        // keep the replace — it is what makes deletes/compaction converge.
         if (sid && isSubAgentSession(sid)) {
-          setSubAgentMessages(sid, msgs);
+          applySubAgentMessagesSnapshot(sid, msgs, hasLiveEventsSinceRequest(sid));
           return;
         }
         // For the main chat: only apply if it's for the currently active
         // session (we might have polled in flight and the user switched).
         const activeID = $activeSessionID.get();
         if (sid && activeID && sid !== activeID) return;
-        setMessages(msgs);
+        applyMessagesSnapshot(sid ?? "", msgs, hasLiveEventsSinceRequest(sid));
       }),
 
       ws.on("update_available", (msg: WSMessage) => {

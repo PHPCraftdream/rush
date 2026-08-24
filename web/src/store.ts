@@ -316,6 +316,88 @@ export function removeSubAgentMessage(sessionID: string, messageID: string) {
   $subAgentMessages.set(map);
 }
 
+// ── messages_list snapshot application (task #689) ──────────────────────────
+//
+// A load_messages reply is a DB snapshot read at some instant between the
+// request's send and its reply. Live pushes (message_created/_updated/
+// _deleted) may have been applied locally inside that window. When they
+// were (detected via ws.ts's per-session live-event epoch), replacing the
+// list wholesale would erase them, so the snapshot is MERGED instead:
+//
+//   - messages deleted by a live push are tombstoned and filtered out of
+//     every merge until an epoch-clean snapshot clears the tombstones;
+//   - an ID present in both lists keeps the fresher row: assistant pairs
+//     go through mergePreserveContent (streaming growth can only win),
+//     other roles compare UpdatedAt;
+//   - IDs only in the live list (created after the snapshot's read) are
+//     appended after the snapshot rows — they are by definition newer.
+//
+// An epoch-clean reply (nothing raced it) still replaces wholesale: that
+// path is what makes server-side deletes/compaction converge on the
+// client.
+
+// Per-session IDs deleted by a live message_deleted push. Keyed by
+// session so the main chat and each sub-agent transcript tombstone
+// independently. Same lifetime class as ws.ts's latestLoadMessagesID:
+// never eagerly cleared per event; bounded by sessions seen this tab.
+const deletedMessageIDs = new Map<string, Set<string>>();
+
+/** Records that messageID was deleted from sessionID by a live push, so
+ * later merged snapshots that still contain the row (their DB read
+ * predated the delete) keep it filtered out. */
+export function tombstoneMessage(sessionID: string, messageID: string) {
+  const set = deletedMessageIDs.get(sessionID);
+  if (set) set.add(messageID);
+  else deletedMessageIDs.set(sessionID, new Set([messageID]));
+}
+
+// mergeMessageLists combines a still-latest-but-stale snapshot with the
+// live state that raced it. Pure: reads the tombstone set, writes
+// nothing.
+function mergeMessageLists(sessionID: string, existing: Message[], snapshot: Message[]): Message[] {
+  const tomb = deletedMessageIDs.get(sessionID);
+  const snap = tomb ? snapshot.filter((m) => !tomb.has(m.ID)) : snapshot;
+  const existingByID = new Map(existing.map((m) => [m.ID, m]));
+  const merged = snap.map((sm) => {
+    const live = existingByID.get(sm.ID);
+    if (!live) return sm;
+    if (live.Role === "assistant" && sm.Role === "assistant") {
+      return mergePreserveContent(live, sm);
+    }
+    // Non-assistant overlap: take the row with the newer UpdatedAt; a
+    // tie keeps the live row (what the operator is looking at).
+    return sm.UpdatedAt > live.UpdatedAt ? sm : live;
+  });
+  const snapIDs = new Set(snap.map((m) => m.ID));
+  const liveTail = existing.filter((m) => !snapIDs.has(m.ID));
+  return [...merged, ...liveTail];
+}
+
+/** Applies a messages_list snapshot to the main chat. `liveRaced` says a
+ * live push was applied since the request was sent (ws.ts epoch check). */
+export function applyMessagesSnapshot(sessionID: string, msgs: Message[], liveRaced: boolean) {
+  if (!liveRaced) {
+    setMessages(msgs);
+    // A clean read postdates any recorded delete, so it cannot contain
+    // tombstoned rows — dropping the set bounds memory.
+    deletedMessageIDs.delete(sessionID);
+    return;
+  }
+  $messages.set(mergeMessageLists(sessionID, $messages.get(), msgs));
+}
+
+/** Sub-agent transcript counterpart of applyMessagesSnapshot. */
+export function applySubAgentMessagesSnapshot(sessionID: string, msgs: Message[], liveRaced: boolean) {
+  if (!liveRaced) {
+    setSubAgentMessages(sessionID, msgs);
+    deletedMessageIDs.delete(sessionID);
+    return;
+  }
+  const map = new Map($subAgentMessages.get());
+  map.set(sessionID, mergeMessageLists(sessionID, map.get(sessionID) ?? [], msgs));
+  $subAgentMessages.set(map);
+}
+
 const _msgPartTracker = new Map<string, { time: number; count: number }>();
 
 export function trackMessageParts(msgID: string, parts: { type: string }[]) {
