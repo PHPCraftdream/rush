@@ -45,22 +45,75 @@ function SystemPromptModal({ sessionID, onClose }: { sessionID: string; onClose:
   }, []);
 
   useEffect(() => {
-    const unsub = ws.on("system_prompt", (msg) => {
-      const p = msg.payload as { content?: string } | undefined;
-      const c = p?.content ?? "";
-      setOriginal(c);
-      setDraft(c);
+    // Fresh fetch for this session. The modal stays mounted while the
+    // active session can flip underneath it (a broadcast session_created
+    // from another client re-renders us with a new sessionID prop), so
+    // reset any state carried over from the previous session — otherwise
+    // content fetched for session A could be saved into session B
+    // (review F5, task #693).
+    setLoading(true);
+    setError(null);
+    setOriginal("");
+    setDraft("");
+
+    // Correlate the fetch like the save path below (task #683): only the
+    // reply carrying THIS id may populate the editor, and it must echo the
+    // session we asked about.
+    const msgID = crypto.randomUUID();
+    let settled = false;
+
+    function finish(): boolean {
+      if (settled) return false;
+      settled = true;
+      clearTimeout(timer);
+      unsubReply();
+      unsubDisc();
+      return true;
+    }
+
+    const timer = setTimeout(() => {
+      if (!finish()) return;
       setLoading(false);
-      unsub();
+      setError("Timed out waiting for the system prompt");
+    }, 10_000);
+
+    const unsubReply = ws.on("*", (msg) => {
+      if (msg.id !== msgID) return;
+      const p = msg.payload as { sessionID?: string; content?: string } | undefined;
+      // Defense in depth: the server echoes the requested sessionID in
+      // the payload; a success reply naming a different session is not
+      // ours to apply (error replies carry no payload, so they pass).
+      if (!msg.error && p?.sessionID !== sessionID) return;
+      if (!finish()) return;
+      setLoading(false);
+      if (msg.error) {
+        setError(msg.error as string);
+      } else {
+        const c = p?.content ?? "";
+        setOriginal(c);
+        setDraft(c);
+      }
     });
-    ws.send("get_system_prompt", { sessionID });
+
+    // A dropped connection dooms the in-flight fetch — fail it explicitly
+    // instead of leaving the modal hanging on "Loading…" until the timer.
+    const unsubDisc = ws.on("_disconnected", () => {
+      if (!finish()) return;
+      setLoading(false);
+      setError("Connection lost while loading the system prompt");
+    });
+
+    ws.send("get_system_prompt", { sessionID }, msgID);
 
     function onKey(e: KeyboardEvent) {
       if (e.key === "Escape") onClose();
     }
     document.addEventListener("keydown", onKey);
     return () => {
-      unsub();
+      settled = true;
+      clearTimeout(timer);
+      unsubReply();
+      unsubDisc();
       document.removeEventListener("keydown", onKey);
     };
   }, [sessionID, onClose]);

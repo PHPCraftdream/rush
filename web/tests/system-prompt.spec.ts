@@ -91,9 +91,11 @@ test("System prompt modal shows loading then textarea after response", async ({ 
   await expect(page.getByText("Loading")).toBeVisible({ timeout: 2000 });
 
   // Server responds with prompt content
+  const getCmd = await waitForWSSend(page, "get_system_prompt");
   await sendMockWSMessage(page, {
     type: "system_prompt",
-    payload: { content: "You are a helpful assistant." },
+    id: getCmd.id,
+    payload: { sessionID: "sp-sess", content: "You are a helpful assistant." },
   });
 
   // Loading gone; textarea visible with content
@@ -107,9 +109,11 @@ test("System prompt modal shows loaded content", async ({ page }) => {
   await setupWithSession(page);
   await openMoreMenu(page);
   await page.getByTestId("header-prompt-button").click();
+  const getCmd = await waitForWSSend(page, "get_system_prompt");
   await sendMockWSMessage(page, {
     type: "system_prompt",
-    payload: { content: "You are helpful" },
+    id: getCmd.id,
+    payload: { sessionID: "sp-sess", content: "You are helpful" },
   });
   const textarea = page.locator(".fixed textarea");
   await expect(textarea).toBeVisible({ timeout: 3000 });
@@ -122,9 +126,11 @@ test("Save button disabled when content unchanged", async ({ page }) => {
   await setupWithSession(page);
   await openMoreMenu(page);
   await page.getByTestId("header-prompt-button").click();
+  const getCmd = await waitForWSSend(page, "get_system_prompt");
   await sendMockWSMessage(page, {
     type: "system_prompt",
-    payload: { content: "Original" },
+    id: getCmd.id,
+    payload: { sessionID: "sp-sess", content: "Original" },
   });
   const saveBtn = page.locator(".fixed button", { hasText: "Save" });
   await expect(saveBtn).toBeDisabled({ timeout: 3000 });
@@ -134,9 +140,11 @@ test("Save button enabled after editing", async ({ page }) => {
   await setupWithSession(page);
   await openMoreMenu(page);
   await page.getByTestId("header-prompt-button").click();
+  const getCmd = await waitForWSSend(page, "get_system_prompt");
   await sendMockWSMessage(page, {
     type: "system_prompt",
-    payload: { content: "Original" },
+    id: getCmd.id,
+    payload: { sessionID: "sp-sess", content: "Original" },
   });
   const textarea = page.locator(".fixed textarea");
   await textarea.fill("Modified prompt");
@@ -148,9 +156,11 @@ test("Save button sends set_system_prompt", async ({ page }) => {
   await setupWithSession(page);
   await openMoreMenu(page);
   await page.getByTestId("header-prompt-button").click();
+  const getCmd = await waitForWSSend(page, "get_system_prompt");
   await sendMockWSMessage(page, {
     type: "system_prompt",
-    payload: { content: "Old prompt" },
+    id: getCmd.id,
+    payload: { sessionID: "sp-sess", content: "Old prompt" },
   });
   const textarea = page.locator(".fixed textarea");
   await textarea.fill("New prompt content");
@@ -167,9 +177,11 @@ test("Reset button reverts draft to original content", async ({ page }) => {
   await setupWithSession(page);
   await openMoreMenu(page);
   await page.getByTestId("header-prompt-button").click();
+  const getCmd = await waitForWSSend(page, "get_system_prompt");
   await sendMockWSMessage(page, {
     type: "system_prompt",
-    payload: { content: "Original text" },
+    id: getCmd.id,
+    payload: { sessionID: "sp-sess", content: "Original text" },
   });
   const textarea = page.locator(".fixed textarea");
   await textarea.fill("Changed text");
@@ -211,7 +223,8 @@ test("CONTROL: Save disabled only after a genuine EventResponse", async ({ page 
   await setupWithSession(page);
   await openMoreMenu(page);
   await page.getByTestId("header-prompt-button").click();
-  await sendMockWSMessage(page, { type: "system_prompt", payload: { content: "Original" } });
+  const getCmd = await waitForWSSend(page, "get_system_prompt");
+  await sendMockWSMessage(page, { type: "system_prompt", id: getCmd.id, payload: { sessionID: "sp-sess", content: "Original" } });
   const textarea = page.locator(".fixed textarea");
   await textarea.fill("Edited content");
 
@@ -237,7 +250,8 @@ test("BUG regression: a rejected save (EventError) leaves the edit dirty and sho
   await setupWithSession(page);
   await openMoreMenu(page);
   await page.getByTestId("header-prompt-button").click();
-  await sendMockWSMessage(page, { type: "system_prompt", payload: { content: "Original" } });
+  const getCmd = await waitForWSSend(page, "get_system_prompt");
+  await sendMockWSMessage(page, { type: "system_prompt", id: getCmd.id, payload: { sessionID: "sp-sess", content: "Original" } });
   const textarea = page.locator(".fixed textarea");
   await textarea.fill("Edited content that will be rejected");
 
@@ -268,7 +282,8 @@ test("BUG regression: reopening the modal after a rejected save does not silentl
   await setupWithSession(page);
   await openMoreMenu(page);
   await page.getByTestId("header-prompt-button").click();
-  await sendMockWSMessage(page, { type: "system_prompt", payload: { content: "Original" } });
+  const getCmd = await waitForWSSend(page, "get_system_prompt");
+  await sendMockWSMessage(page, { type: "system_prompt", id: getCmd.id, payload: { sessionID: "sp-sess", content: "Original" } });
   const textarea = page.locator(".fixed textarea");
   await textarea.fill("Edited content that will be rejected");
   await page.locator(".fixed button", { hasText: "Save" }).click();
@@ -290,7 +305,8 @@ test("BUG regression: reopening the modal after a rejected save does not silentl
   await page.locator(".fixed button", { hasText: "×" }).click();
   await page.getByTestId("header-more-button").click();
   await page.getByTestId("header-prompt-button").click();
-  await sendMockWSMessage(page, { type: "system_prompt", payload: { content: "Original" } });
+  const getCmd2 = await waitForWSSend(page, "get_system_prompt");
+  await sendMockWSMessage(page, { type: "system_prompt", id: getCmd2.id, payload: { sessionID: "sp-sess", content: "Original" } });
   const textarea2 = page.locator(".fixed textarea");
   await expect(textarea2).toHaveValue("Original");
 });
