@@ -68,7 +68,7 @@ export const ThinkingPart = memo(function ThinkingPart({ thinking, messageID, pa
         <span className="text-accent/70"><BrainCircuit size={18} /></span>
         <span data-test-id="thinking-label">Thoughts</span>
         {model && <span className="text-xs text-text-subtle font-mono">{model}</span>}
-        {effort && <span className="px-1 py-0.5 rounded bg-base-subtle text-text-muted font-mono text-[10px]">{effort === "low" ? "L" : effort === "medium" ? "M" : effort === "high" ? "H" : "X"}</span>}
+        <EffortBadge effort={effort} />
         <div className="ml-auto flex items-center gap-0.5 hover-reveal" onClick={(e) => e.stopPropagation()}>
           <CopyButton text={thinking} className="px-1.5 py-1 text-xs" />
           <button onClick={openEditEv} title="Edit thinking"   className="btn-icon-sm"><Pencil size={13} /></button>

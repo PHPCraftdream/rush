@@ -92,6 +92,7 @@ type MessageWire struct {
 	Parts               []PartWire `json:"Parts"`
 	Model               string     `json:"Model"`
 	Provider            string     `json:"Provider"`
+	ReasoningEffort     string     `json:"ReasoningEffort,omitempty"`
 	CreatedAt           int64      `json:"CreatedAt"`
 	UpdatedAt           int64      `json:"UpdatedAt"`
 	IsSummaryMessage    bool       `json:"IsSummaryMessage"`
@@ -131,6 +132,7 @@ func toMessageWire(m message.Message) MessageWire {
 		Parts:               parts,
 		Model:               m.Model,
 		Provider:            m.Provider,
+		ReasoningEffort:     m.ReasoningEffort,
 		CreatedAt:           m.CreatedAt,
 		UpdatedAt:           m.UpdatedAt,
 		IsSummaryMessage:    m.IsSummaryMessage,
