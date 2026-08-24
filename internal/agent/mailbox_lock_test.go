@@ -246,7 +246,7 @@ func TestMailbox_DrainOrReleaseFinal_MuNotHeldDuringRelease_ButNoPrematureIdle(t
 // cross-process invariant, not just the in-memory mailbox postcondition.
 // While a separate goroutine holds a call that drainOrReleaseFinal reported
 // as orphaned, a DIRECT session.TryAcquireSessionLock (standing in for a
-// second `crush` process) must succeed immediately — proving no code path
+// second `rush` process) must succeed immediately — proving no code path
 // is still running "as if" it held that lock. Reverting the finalize step to
 // the rejected hand-back-to-mbOwned shape must make this test fail: the
 // prior draft returned hasNext=true/mbOwned for this exact scenario, and a

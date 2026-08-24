@@ -77,7 +77,7 @@ const (
 //     row is still leased and will be recovered and re-run after its lease
 //     expires. Callers must not re-run the provider on their own, and must
 //     not report a terminal success. This used to return nil (P0-3 of the
-//     2026-08-18 release-readiness review), which made `crush run` tell the
+//     2026-08-18 release-readiness review), which made `rush run` tell the
 //     operator a durable continuation had completed when nothing had been
 //     committed at all.
 func (p *RunQueuePump) executeEntrySync(ctx context.Context, leased *RunQueueEntry) error {

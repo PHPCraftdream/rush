@@ -8,7 +8,7 @@ import (
 )
 
 // Fork-only file (orchestrator UX): the JSON-envelope stripper used by
-// `crush run --json` / `--format json` to defang a persistent model
+// `rush run --json` / `--format json` to defang a persistent model
 // failure mode where the assistant wraps its supposed-to-be-raw-JSON
 // final_text in a markdown ```json fence and/or a prose preamble.
 // Inert to upstream — see CHANGELOG.fork.md (Section 4.J).

@@ -22,7 +22,7 @@ import (
 // activeRequests permanently held a non-nil (already-fired, inert)
 // cancelFunc for it. IsBusy() read activeRequests directly and therefore
 // returned true FOREVER after any session's first turn completed.
-// CancelAll (called by App.Shutdown, reached by every `crush run` via
+// CancelAll (called by App.Shutdown, reached by every `rush run` via
 // `defer a.Shutdown()`) short-circuits on !IsBusy() to return immediately
 // when genuinely idle; with the bug, it never could, so shutdown always
 // burned the full 5-second drain timeout instead of returning at once.
@@ -87,7 +87,7 @@ func TestSessionAgent_IsBusy_FalseAfterTurnCompletes(t *testing.T) {
 
 	// CancelAll must therefore return immediately, not burn the 5-second
 	// drain timeout — this is what App.Shutdown relies on for every
-	// `crush run` invocation.
+	// `rush run` invocation.
 	start := time.Now()
 	stillBusy := sa.CancelAll()
 	elapsed := time.Since(start)

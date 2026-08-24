@@ -7,14 +7,14 @@ import (
 
 // Command builds an *exec.Cmd that is ALREADY hardened for the current
 // platform, and is the single sanctioned way to spawn a child process
-// anywhere inside crush. Callers configure the returned command as usual
+// anywhere inside rush. Callers configure the returned command as usual
 // (Dir, Env, Stdin/Stdout/Stderr, …) — only the platform-specific process
 // creation attributes are pre-set.
 //
 // On Windows the hardening is [HideConsoleWindow]: without it a
 // console-subsystem child (rg, git, npm.cmd, node, taskkill, …) pops a
-// real console window whenever crush itself has no console to share —
-// which is the normal state for an orchestrator/detached `crush run`,
+// real console window whenever rush itself has no console to share —
+// which is the normal state for an orchestrator/detached `rush run`,
 // see cmd.maybeDetachConsole. Those windows flash on screen, cover the
 // operator's work and steal keyboard focus. On every other platform the
 // hardening is a no-op and this is a thin wrapper over

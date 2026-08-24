@@ -1,7 +1,7 @@
-# Crush — Fork-Specific Merge & Development Guide
+# Rush — Fork-Specific Merge & Development Guide
 
 This file is **fork-local guidance** (not committed upstream). The fork
-(`PHPCraftdream/crush`) has diverged substantially from
+(`PHPCraftdream/rush`) has diverged substantially from
 `charmbracelet/crush` and is **NOT a passive mirror**. Treat upstream as
 an external project whose changes are imported selectively, never as a
 source of truth.
@@ -24,7 +24,7 @@ The fork is positioned as **agent-tooling**: a CLI optimised for
 delegation from Claude Code / orchestrators / scripts. The crown jewels
 are:
 
-- `crush run` non-interactive entry point + agent harness
+- `rush run` non-interactive entry point + agent harness
 - `sessions` subcommand family (pick / watch / tree / kill / locks /
   purge / reap / gc / grep / diff / cost / fork)
 - `cliprovider` — invoke local `claude` / `gemini` / `codex` / `qwen`
@@ -46,7 +46,7 @@ Upstream commits touching any of these MUST be skipped:
 | Removed subsystem | Upstream-coded as | Skip rule |
 |---|---|---|
 | **Bubble Tea TUI** | `internal/tui/` | Any commit under `internal/tui/**` → SKIP |
-| Upstream YOLO + permissions test files | `b46dae6c` removed them | SKIP fixes there — fork has no YOLO/auto-approve UI at all (removed `5c323b55`); only non-interactive `crush run` auto-approve remains |
+| Upstream YOLO + permissions test files | `b46dae6c` removed them | SKIP fixes there — fork has no YOLO/auto-approve UI at all (removed `5c323b55`); only non-interactive `rush run` auto-approve remains |
 | Taskfile.yaml, swagger stub, nix, playwright temp | `52bb90f8` | SKIP CI/build replays |
 | CLA bot infra | `chore(legal): @… signed CLA` commits | SKIP — fork doesn't use CLA bot |
 | Auto-update / scheduled chores | `chore: auto-update files`, cron `nightly.yml` | SKIP |
@@ -72,7 +72,7 @@ are almost always wrong for us:
 - **Fork's multi-session engine predates upstream's and is the more
   mature design for our use case** — it shipped before upstream even
   had a multi-client concept, was built for N truly concurrent
-  `crush run` sessions from the start (see `coordinator.go`'s own
+  `rush run` sessions from the start (see `coordinator.go`'s own
   "drives N concurrent web sessions" note), and doesn't share
   upstream's "one shared workspace across simultaneous UI clients"
   problem space at all. Do not treat upstream's session/concurrency
@@ -118,7 +118,7 @@ are almost always wrong for us:
   only, leave atom registry to the fork.
 
 ### Slash-commands / agents installer
-- **Fork**: `cmd/claude_init.go` + `claude_del.go` install `/crush`
+- **Fork**: `cmd/claude_init.go` + `claude_del.go` install `/rush`
   and per-model commands (`fl`, `ox`, etc.) plus sub-agents into
   `.claude/{commands,agents}/`.
 - Upstream has nothing equivalent. Any "skills discovery" upstream
@@ -172,32 +172,32 @@ the shared-workspace git-safety clause already in your prompt:
   `//go:embed all:dist` for CI builds. (It is currently deleted in
   the working tree; user knows; do not commit the deletion either
   way without explicit instruction.)
-- **Never exercise `crush models`/`crush providers`/anything that
+- **Never exercise `rush models`/`rush providers`/anything that
   writes config against the machine's real global config**, even
   when told to "isolate" via `--cwd`. `--cwd` only affects
   *workspace*-scope config; it does nothing for *global*-scope writes
-  (`crush models use` defaults to global scope). The only thing that
-  isolates global scope is setting the `CRUSH_GLOBAL_DATA` env var to
+  (`rush models use` defaults to global scope). The only thing that
+  isolates global scope is setting the `RUSH_GLOBAL_DATA` env var to
   a throwaway directory for that invocation — confirmed necessary the
   hard way multiple times in one session, when "isolated" manual
   verification in an agent's own report turned out to have silently
   overwritten the operator's real, in-use model configuration anyway.
   If your task instructions say "isolate manual CLI exercising" and
-  don't spell out `CRUSH_GLOBAL_DATA` explicitly, set it yourself
+  don't spell out `RUSH_GLOBAL_DATA` explicitly, set it yourself
   before running anything that writes — don't assume `--cwd` alone is
   enough, and don't trust your own past invocation was isolated
   without re-checking the real global config file afterward.
-- **`CRUSH_GLOBAL_DATA` isolates only ONE of two real config paths.**
-  This machine (and likely any dev machine that's run `crush` outside
+- **`RUSH_GLOBAL_DATA` isolates only ONE of two real config paths.**
+  This machine (and likely any dev machine that's run `rush` outside
   a container) also has a SEPARATE real config file reached via
-  `GlobalConfig()` (gated by `CRUSH_GLOBAL_CONFIG`/`XDG_CONFIG_HOME`,
-  not `CRUSH_GLOBAL_DATA`) — found to hold the live provider API key
+  `GlobalConfig()` (gated by `RUSH_GLOBAL_CONFIG`/`XDG_CONFIG_HOME`,
+  not `RUSH_GLOBAL_DATA`) — found to hold the live provider API key
   and MCP server definitions, distinct from the `GlobalConfigData()`
-  path the bullet above covers. Setting `CRUSH_GLOBAL_DATA` alone
+  path the bullet above covers. Setting `RUSH_GLOBAL_DATA` alone
   still leaks real credentials/MCP config into a "manually isolated"
-  run. For genuine isolation, set BOTH `CRUSH_GLOBAL_DATA` and
-  `CRUSH_GLOBAL_CONFIG` to throwaway directories, or better, put test
-  config in a project-local `crush.json` instead of relying on either
+  run. For genuine isolation, set BOTH `RUSH_GLOBAL_DATA` and
+  `RUSH_GLOBAL_CONFIG` to throwaway directories, or better, put test
+  config in a project-local `rush.json` instead of relying on either
   global path — `GlobalConfigData()`'s target behaves as an
   app-managed scratch file the app itself can rewrite/clear between
   runs, not a stable place to seed test state.

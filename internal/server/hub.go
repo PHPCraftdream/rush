@@ -178,7 +178,7 @@ func (c *Client) startWorkers() {
 //   - Panic isolation: recovers any panic inside fn, logs it (with a stack
 //     trace) instead of propagating it. Without this, a nil-deref or
 //     out-of-range index triggered by an unexpected payload in ANY handler
-//     would crash the entire crush web process, taking down every other
+//     would crash the entire rush web process, taking down every other
 //     connection and in-flight agent session with it.
 //
 // name is a short identifier (typically the WS command type or handler

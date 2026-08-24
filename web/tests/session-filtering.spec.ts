@@ -252,7 +252,7 @@ test("message_deleted for different session is ignored", async ({ page }) => {
 // the entire message-type dispatch table there), and no "permission" string
 // anywhere else in src/ either. The permission-approval dialog this section
 // tested does not exist in this fork — matches CLAUDE.md's note that the
-// YOLO/auto-approve UI was removed (5c323b55): non-interactive `crush run`
+// YOLO/auto-approve UI was removed (5c323b55): non-interactive `rush run`
 // auto-approves everything, so there is nothing to render a dialog for.
 // The "different session is ignored" test was passing, but only vacuously —
 // nothing ever renders for ANY permission_request, active session or not.

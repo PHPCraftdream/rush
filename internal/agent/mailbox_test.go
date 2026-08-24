@@ -57,7 +57,7 @@ func TestMailbox_Submit_QueuesWhenAlreadyOwned(t *testing.T) {
 // mb.submitted) and the pump (re-leasing the durable row) execute the same
 // logical request independently.
 //
-// The crush-delegated fix's own test (p0_1_durable_double_execution_test.go
+// The rush-delegated fix's own test (p0_1_durable_double_execution_test.go
 // in internal/session) exercises this indirectly through a mocked
 // Coordinator that never touches the real mailbox — verified by hand that
 // it still passes with the `if !call.FromDurableQueue` guard removed, i.e.

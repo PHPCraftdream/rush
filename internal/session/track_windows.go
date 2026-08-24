@@ -47,7 +47,7 @@ var (
 //
 // The KILL_ON_JOB_CLOSE limit doubles as a crash net: the handle is
 // held open until the tree is terminated or UntrackProcessTree runs,
-// so if crush itself dies without cleanup, the OS closes the handle
+// so if rush itself dies without cleanup, the OS closes the handle
 // and kills the tree anyway.
 //
 // Assigning a process that already belongs to another job fails on

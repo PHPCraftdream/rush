@@ -4,7 +4,7 @@ package message
 // predicate. The per-row Delete refuses to delete an unfinished assistant
 // message (role == 'assistant' AND finished_at IS NULL AND is_summary_message = 0)
 // because such a row is still owned by an in-flight agent turn. However,
-// DeleteSessionMessages is called by `crush sessions reset --force` AFTER
+// DeleteSessionMessages is called by `rush sessions reset --force` AFTER
 // the lock holder has been killed — that orphaned streaming row will never
 // receive a terminal Finish, so the predicate would strand it forever.
 //
@@ -25,7 +25,7 @@ import (
 
 // TestDeleteSessionMessages_WithUnfinishedAssistantMessage proves that
 // DeleteSessionMessages can wipe a session containing a user message and an
-// unfinished assistant message (the exact shape that `crush sessions reset
+// unfinished assistant message (the exact shape that `rush sessions reset
 // --force` encounters after SIGKILL'ing a live turn). It must:
 //  1. Return nil (no error).
 //  2. Leave zero messages in the session (verified via List/Count).

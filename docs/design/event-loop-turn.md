@@ -25,11 +25,11 @@ loop itself** so the model doesn't spend turns asking "is it done yet?".
 There are two execution models, and the push/event-loop work applies to only
 one of them:
 
-- **`crush run` (non-interactive)** — `app.RunNonInteractive` runs ONE turn and
+- **`rush run` (non-interactive)** — `app.RunNonInteractive` runs ONE turn and
   the process exits. A background job that finishes *after* the turn ends has
   nowhere to be delivered — the process is gone. Here the only correct model is
   the Phase 1–2 bounded poll: the model must finish its work within the run,
-  polling as needed. **Phases 3–4 do NOT apply to `crush run`.**
+  polling as needed. **Phases 3–4 do NOT apply to `rush run`.**
 - **Interactive / web (persistent coordinator)** — the coordinator stays alive
   driving N long-lived sessions over WebSocket. A session can receive new input
   (`InjectMessage`) at any time. THIS is where pushing a completion and an
@@ -163,7 +163,7 @@ else:
 
 ```
 return c.autonomyEnabled()            // Options.AutoResumeOnJobDone == true
-   && c.persistentMode                // NOT crush run (single-turn, process exits)
+   && c.persistentMode                // NOT rush run (single-turn, process exits)
    && consecutiveResume(sessionID) < maxConsecutiveAutoResumes
    && withinRunLimits()               // MaxCost / MaxTokens not exhausted
 ```
@@ -188,10 +188,10 @@ thing for busy/idle. Eligibility is purely the autonomy policy.
    - "Human message" reset point: the operator send path — the web
      `handleSendMessage` → `coordinator.Run`/`InterruptAndSend`. Reset the
      counter there, NOT in `InjectMessage` (which auto-resume itself uses).
-3. **Never for `crush run`.** `RunNonInteractive` is single-turn and the process
+3. **Never for `rush run`.** `RunNonInteractive` is single-turn and the process
    exits at end of turn; an OnDone firing after that has nowhere to go. Gate on a
    coordinator `persistentMode bool` (true only for the long-lived web/interactive
-   coordinator; false for `crush run`). Belt-and-suspenders: even if it fired, the
+   coordinator; false for `rush run`). Belt-and-suspenders: even if it fired, the
    process is gone.
 4. **Respect cost/token caps + cancel.** Reuse the existing `maxCost`/`maxTokens`
    (coordinator.go:279 `SetRunLimits`) — if the session has hit its budget, do
@@ -246,7 +246,7 @@ tell "the agent continued on its own". Mechanism:
   - `internal/agent/coordinator.go`: add the consecutive-resume counter
     (a `map[string]int` guarded by a mutex, or reuse an existing csync map type
     used elsewhere in the file), `persistentMode bool` field + constructor wiring
-    (true for the web coordinator, false for the `crush run` path), and a
+    (true for the web coordinator, false for the `rush run` path), and a
     `maxConsecutiveAutoResumes` const (5). Helpers: `autonomyEnabled()`,
     `consecutiveResume(id)`, `bumpConsecutiveResume(id)`,
     `resetConsecutiveResume(id)`. Pure-unit-testable; no behavior wired yet.

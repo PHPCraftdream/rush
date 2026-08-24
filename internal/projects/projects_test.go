@@ -14,7 +14,7 @@ func TestRegisterAndList(t *testing.T) {
 
 	// Override the projects file path for testing
 	t.Setenv("XDG_DATA_HOME", tmpDir)
-	t.Setenv("RUSH_GLOBAL_DATA", filepath.Join(tmpDir, "crush"))
+	t.Setenv("RUSH_GLOBAL_DATA", filepath.Join(tmpDir, "rush"))
 
 	// Test registering a project
 	err := Register("/home/user/project1", "/home/user/project1/.rush")
@@ -64,7 +64,7 @@ func TestRegisterAndList(t *testing.T) {
 func TestRegisterUpdatesExisting(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", tmpDir)
-	t.Setenv("RUSH_GLOBAL_DATA", filepath.Join(tmpDir, "crush"))
+	t.Setenv("RUSH_GLOBAL_DATA", filepath.Join(tmpDir, "rush"))
 
 	// Register a project
 	err := Register("/home/user/project1", "/home/user/project1/.rush")
@@ -101,7 +101,7 @@ func TestRegisterUpdatesExisting(t *testing.T) {
 func TestLoadEmptyFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", tmpDir)
-	t.Setenv("RUSH_GLOBAL_DATA", filepath.Join(tmpDir, "crush"))
+	t.Setenv("RUSH_GLOBAL_DATA", filepath.Join(tmpDir, "rush"))
 
 	// List before any projects exist
 	projects, err := List()
@@ -117,9 +117,9 @@ func TestLoadEmptyFile(t *testing.T) {
 func TestProjectsFilePath(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", tmpDir)
-	t.Setenv("RUSH_GLOBAL_DATA", filepath.Join(tmpDir, "crush"))
+	t.Setenv("RUSH_GLOBAL_DATA", filepath.Join(tmpDir, "rush"))
 
-	expected := filepath.Join(tmpDir, "crush", "projects.json")
+	expected := filepath.Join(tmpDir, "rush", "projects.json")
 	actual := projectsFilePath()
 
 	if actual != expected {
@@ -130,7 +130,7 @@ func TestProjectsFilePath(t *testing.T) {
 func TestRegisterWithParentDataDir(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", tmpDir)
-	t.Setenv("RUSH_GLOBAL_DATA", filepath.Join(tmpDir, "crush"))
+	t.Setenv("RUSH_GLOBAL_DATA", filepath.Join(tmpDir, "rush"))
 
 	// Register a project where .rush is in a parent directory.
 	// e.g., working in /home/user/monorepo/packages/app but .rush is at /home/user/monorepo/.rush
@@ -160,11 +160,11 @@ func TestRegisterWithParentDataDir(t *testing.T) {
 func TestRegisterWithExternalDataDir(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", tmpDir)
-	t.Setenv("RUSH_GLOBAL_DATA", filepath.Join(tmpDir, "crush"))
+	t.Setenv("RUSH_GLOBAL_DATA", filepath.Join(tmpDir, "rush"))
 
 	// Register a project where .rush is in a completely different location.
-	// e.g., project at /home/user/project but data stored at /var/data/crush/myproject
-	err := Register("/home/user/project", "/var/data/crush/myproject")
+	// e.g., project at /home/user/project but data stored at /var/data/rush/myproject
+	err := Register("/home/user/project", "/var/data/rush/myproject")
 	if err != nil {
 		t.Fatalf("Register failed: %v", err)
 	}
@@ -182,8 +182,8 @@ func TestRegisterWithExternalDataDir(t *testing.T) {
 		t.Errorf("Expected path /home/user/project, got %s", projects[0].Path)
 	}
 
-	if projects[0].DataDir != "/var/data/crush/myproject" {
-		t.Errorf("Expected data_dir /var/data/crush/myproject, got %s", projects[0].DataDir)
+	if projects[0].DataDir != "/var/data/rush/myproject" {
+		t.Errorf("Expected data_dir /var/data/rush/myproject, got %s", projects[0].DataDir)
 	}
 }
 
@@ -198,7 +198,7 @@ func TestRegisterWithExternalDataDir(t *testing.T) {
 func TestRegisterConcurrent(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", tmpDir)
-	t.Setenv("RUSH_GLOBAL_DATA", filepath.Join(tmpDir, "crush"))
+	t.Setenv("RUSH_GLOBAL_DATA", filepath.Join(tmpDir, "rush"))
 
 	const n = 20
 	var wg sync.WaitGroup

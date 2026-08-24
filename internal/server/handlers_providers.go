@@ -91,7 +91,7 @@ func peakHoursToWire(w *config.PeakHoursWindow) *PeakHoursWirePayload {
 // scopeFromWire resolves a provider-config wire scope string ("global" /
 // "local", case-insensitive) into a config.Scope. Empty or unrecognised
 // values default to config.ScopeGlobal, matching every scope-aware CLI
-// command's default (crush providers, crush mcp, crush claude-init, ...).
+// command's default (rush providers, rush mcp, rush claude-init, ...).
 func scopeFromWire(s string) config.Scope {
 	if strings.EqualFold(s, "local") {
 		return config.ScopeWorkspace
@@ -250,7 +250,7 @@ func handleUpdateCustomProvider(a *appPkg.App, c *Client, msg WSMessage) {
 // provider — built-in/catwalk-known (e.g. "anthropic", "zai") or custom.
 // Unlike handleUpdateCustomProvider (which replaces every field and is only
 // safe on a custom provider the client fully owns), this is a targeted
-// single-field write, mirroring `crush providers set <id> --peak-hours` on
+// single-field write, mirroring `rush providers set <id> --peak-hours` on
 // the CLI side. This is what lets the web UI manage peak hours for a
 // built-in provider without needing to know/round-trip its type, base URL,
 // API key, or model list.

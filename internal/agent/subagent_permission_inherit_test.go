@@ -16,7 +16,7 @@ import (
 // the end-to-end regression test for release-blocker P0-D (task #298, fixed
 // by commit bd90f915).
 //
-// The bug: a non-interactive `crush run` auto-approves ONLY the root session
+// The bug: a non-interactive `rush run` auto-approves ONLY the root session
 // id it was handed (app.go's Permissions.AutoApproveSession(sess.ID)). A
 // sub-agent spawned via the "agent" tool runs under its OWN child session id
 // (session.CreateAgentToolSessionID: "parentMessageID$$toolCallID") — a
@@ -74,7 +74,7 @@ func TestRunSubAgent_ChildSession_InheritsAutoApprove_DoesNotHangOnPermission(t 
 	parentSessionID := parentSess.ID
 
 	// Mirrors app.go's `app.Permissions.AutoApproveSession(sess.ID)` for the
-	// PARENT/root session — exactly what `crush run` does on startup for the
+	// PARENT/root session — exactly what `rush run` does on startup for the
 	// one session id it was handed.
 	permissions.AutoApproveSession(parentSessionID)
 

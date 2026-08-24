@@ -1,15 +1,15 @@
 ---
 name: crush-config
-description: Use when the user needs help configuring Crush — working with crush.json, setting up providers, configuring LSPs, adding MCP servers, managing skills or permissions, or changing Crush behavior.
+description: Use when the user needs help configuring Rush — working with rush.json, setting up providers, configuring LSPs, adding MCP servers, managing skills or permissions, or changing Rush behavior.
 ---
 
-# Crush Configuration
+# Rush Configuration
 
-Crush uses JSON configuration files with the following priority (highest to lowest):
+Rush uses JSON configuration files with the following priority (highest to lowest):
 
-1. `.crush.json` (project-local, hidden)
-2. `crush.json` (project-local)
-3. `$XDG_CONFIG_HOME/crush/crush.json` or `$HOME/.config/crush/crush.json` (global)
+1. `.rush.json` (project-local, hidden)
+2. `rush.json` (project-local)
+3. `$XDG_CONFIG_HOME/rush/rush.json` or `$HOME/.config/rush/rush.json` (global)
 
 ## Basic Structure
 
@@ -31,7 +31,7 @@ The `$schema` property enables IDE autocomplete but is optional.
 
 ## Shell Expansion
 
-Crush runs selected string fields through an embedded bash-compatible
+Rush runs selected string fields through an embedded bash-compatible
 shell at load time, so values can pull from env vars, files, or helper
 commands.
 
@@ -76,9 +76,9 @@ var isn't set. Applies to MCP `headers` and provider `extra_headers`.
 
 ### Security note
 
-`crush.json` is trusted code. Any `$(...)` in it runs at load time
+`rush.json` is trusted code. Any `$(...)` in it runs at load time
 with the invoking user's shell privileges, before the UI appears.
-Don't launch Crush in a directory whose `crush.json` you haven't
+Don't launch Rush in a directory whose `rush.json` you haven't
 reviewed.
 
 ## Common Tasks
@@ -105,7 +105,7 @@ reviewed.
 }
 ```
 
-- `smart` is the primary coding model; `fast` is for summarization. (Two more optional slots exist: `worker` for cheap delegated sub-task work, `reviewer` for the strongest slot on explicit review — see `crush models --help`.)
+- `smart` is the primary coding model; `fast` is for summarization. (Two more optional slots exist: `worker` for cheap delegated sub-task work, `reviewer` for the strongest slot on explicit review — see `rush models --help`.)
 - Only `model` and `provider` are required.
 - Optional tuning: `reasoning_effort`, `think`, `max_tokens`, `temperature`, `top_p`, `top_k`, `frequency_penalty`, `presence_penalty`, `provider_options`.
 
@@ -207,7 +207,7 @@ reviewed.
 
 > [!IMPORTANT]
 > The following skill paths are loaded by default and DO NOT NEED to be added to `skills_paths`:
-> `.agents/skills`, `.crush/skills`, `.claude/skills`, `.cursor/skills`
+> `.agents/skills`, `.rush/skills`, `.claude/skills`, `.cursor/skills`
 
 Other options: `context_paths`, `progress`, `disable_notifications`, `disable_auto_summarize`, `disable_metrics`, `disable_provider_auto_update`, `disable_default_providers`, `data_directory`, `initialize_as`.
 
@@ -252,11 +252,11 @@ Hooks are user-defined shell commands that fire on agent events. Currently only 
     "PreToolUse": [
       {
         "matcher": "^(edit|write|multiedit)$",
-        "command": ".crush/hooks/protect-files.sh"
+        "command": ".rush/hooks/protect-files.sh"
       },
       {
         "matcher": "^bash$",
-        "command": ".crush/hooks/no-haskell.sh"
+        "command": ".rush/hooks/no-haskell.sh"
       }
     ]
   }
@@ -297,13 +297,13 @@ A JSON payload is piped to the hook command:
 
 | Variable | Description |
 |---|---|
-| `CRUSH_EVENT` | Event name (e.g. `PreToolUse`) |
-| `CRUSH_TOOL_NAME` | Name of the tool being called |
-| `CRUSH_SESSION_ID` | Current session ID |
-| `CRUSH_CWD` | Current working directory |
-| `CRUSH_PROJECT_DIR` | Project root directory |
-| `CRUSH_TOOL_INPUT_COMMAND` | Value of `command` from tool input (if present) |
-| `CRUSH_TOOL_INPUT_FILE_PATH` | Value of `file_path` from tool input (if present) |
+| `RUSH_EVENT` | Event name (e.g. `PreToolUse`) |
+| `RUSH_TOOL_NAME` | Name of the tool being called |
+| `RUSH_SESSION_ID` | Current session ID |
+| `RUSH_CWD` | Current working directory |
+| `RUSH_PROJECT_DIR` | Project root directory |
+| `RUSH_TOOL_INPUT_COMMAND` | Value of `command` from tool input (if present) |
+| `RUSH_TOOL_INPUT_FILE_PATH` | Value of `file_path` from tool input (if present) |
 
 ### Hook Output
 
@@ -329,7 +329,7 @@ exit 2
 
 ### Claude Code Compatibility
 
-Crush also supports the Claude Code hook output format:
+Rush also supports the Claude Code hook output format:
 
 ```json
 {
@@ -363,12 +363,12 @@ When multiple hooks match, their decisions are aggregated:
 }
 ```
 
-### Restricted `crush run` allowlist
+### Restricted `rush run` allowlist
 
-By default `crush run` is non-interactive and auto-approves every
+By default `rush run` is non-interactive and auto-approves every
 permission request (no one is at the keyboard). For unattended / CI use
 you can flip to a deny-by-default model and carve out exactly what the
-run may do. This only affects `crush run`; interactive TUI / web
+run may do. This only affects `rush run`; interactive TUI / web
 sessions keep the normal permission flow.
 
 ```json
@@ -388,7 +388,7 @@ sessions keep the normal permission flow.
 }
 ```
 
-- `run.restrict` arms the gate. Without it (the default), `crush run`
+- `run.restrict` arms the gate. Without it (the default), `rush run`
   keeps auto-approving everything.
 - `run.allow_tools` uses the same `tool` / `tool:action` syntax as
   `allowed_tools` and bypasses the run gate for matching **non-bash**
@@ -420,7 +420,7 @@ CLI equivalents (merged with config; flags union with the lists and
 `--restrict-run` forces restrict on):
 
 ```
-crush run --restrict-run \
+rush run --restrict-run \
           --allow-bash 'git diff' --allow-bash 'glob:ls *' \
           --allow-tool view \
           --role fast "..."
@@ -428,6 +428,6 @@ crush run --restrict-run \
 
 ## Environment Variables
 
-- `CRUSH_GLOBAL_CONFIG` - Override global config location
-- `CRUSH_GLOBAL_DATA` - Override data directory location
-- `CRUSH_SKILLS_DIR` - Override default skills directory
+- `RUSH_GLOBAL_CONFIG` - Override global config location
+- `RUSH_GLOBAL_DATA` - Override data directory location
+- `RUSH_SKILLS_DIR` - Override default skills directory

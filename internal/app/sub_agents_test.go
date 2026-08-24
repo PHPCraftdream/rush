@@ -13,7 +13,7 @@ import (
 // the sub-agent aggregation logic (lastAssistantText). The
 // App-level helpers (collectSubAgentOutputs / subAgentSummaryStats)
 // thin-wrap DB queries via the Sessions and Messages services; their
-// integration is exercised end-to-end by `crush run` smoke runs and
+// integration is exercised end-to-end by `rush run` smoke runs and
 // the buildRunResult tests in run_result_test.go, so we keep this
 // file focused on the algorithmic core that doesn't need a temp DB.
 

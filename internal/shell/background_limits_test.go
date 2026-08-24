@@ -158,7 +158,7 @@ func TestMaxJobsFromEnv(t *testing.T) {
 	})
 
 	// Falling back rather than failing is deliberate: this is a convenience
-	// knob, and a typo in it must not stop crush from starting.
+	// knob, and a typo in it must not stop rush from starting.
 	for _, bad := range []string{"nonsense", "0", "-5", "3.5"} {
 		t.Run("rejects "+bad, func(t *testing.T) {
 			t.Setenv("RUSH_MAX_BACKGROUND_JOBS", bad)

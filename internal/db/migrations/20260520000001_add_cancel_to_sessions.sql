@@ -1,6 +1,6 @@
 -- Fork patch: batch 30 — runaway protection.
 -- Add cancel_requested flag so a foreign process (orchestrator) can signal
--- a running `crush run` to stop gracefully within one step.
+-- a running `rush run` to stop gracefully within one step.
 --
 -- +goose Up
 -- +goose StatementBegin

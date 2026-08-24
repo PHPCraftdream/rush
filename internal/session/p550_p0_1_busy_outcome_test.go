@@ -85,7 +85,7 @@ func TestDrainSessionNow_QueuedNotExecutedIsNotDrained(t *testing.T) {
 }
 
 // TestDrainSessionNow_SessionLockBusyIsNotDrained is the cross-process half:
-// another live crush process holds the OS session lock.
+// another live rush process holds the OS session lock.
 func TestDrainSessionNow_SessionLockBusyIsNotDrained(t *testing.T) {
 	t.Parallel()
 	limitParallel(t)

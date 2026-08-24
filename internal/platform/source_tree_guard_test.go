@@ -23,7 +23,7 @@ func TestIsInSourceTree(t *testing.T) {
 		// Create dev directory and a fake exe.
 		devDir := filepath.Join(tmpDir, "dev")
 		require.NoError(t, os.Mkdir(devDir, 0o755))
-		exePath := filepath.Join(devDir, "crush.exe")
+		exePath := filepath.Join(devDir, "rush.exe")
 
 		require.True(t, IsInSourceTree(exePath))
 	})
@@ -39,7 +39,7 @@ func TestIsInSourceTree(t *testing.T) {
 		// Create .claude/worktrees directory and a fake exe.
 		worktreesDir := filepath.Join(tmpDir, ".claude", "worktrees", "agent-x")
 		require.NoError(t, os.MkdirAll(worktreesDir, 0o755))
-		exePath := filepath.Join(worktreesDir, "crush.exe")
+		exePath := filepath.Join(worktreesDir, "rush.exe")
 
 		require.True(t, IsInSourceTree(exePath))
 	})
@@ -51,7 +51,7 @@ func TestIsInSourceTree(t *testing.T) {
 		// Create dev directory and a fake exe, but no go.mod.
 		devDir := filepath.Join(tmpDir, "dev")
 		require.NoError(t, os.Mkdir(devDir, 0o755))
-		exePath := filepath.Join(devDir, "crush.exe")
+		exePath := filepath.Join(devDir, "rush.exe")
 
 		require.False(t, IsInSourceTree(exePath))
 	})
@@ -67,7 +67,7 @@ func TestIsInSourceTree(t *testing.T) {
 		// Create dev directory and a fake exe.
 		devDir := filepath.Join(tmpDir, "dev")
 		require.NoError(t, os.Mkdir(devDir, 0o755))
-		exePath := filepath.Join(devDir, "crush.exe")
+		exePath := filepath.Join(devDir, "rush.exe")
 
 		require.False(t, IsInSourceTree(exePath))
 	})
@@ -83,7 +83,7 @@ func TestIsInSourceTree(t *testing.T) {
 		// Create bin directory and a fake exe.
 		binDir := filepath.Join(tmpDir, "bin")
 		require.NoError(t, os.Mkdir(binDir, 0o755))
-		exePath := filepath.Join(binDir, "crush.exe")
+		exePath := filepath.Join(binDir, "rush.exe")
 
 		// bin/ is not a marker directory, so this should NOT be detected.
 		require.False(t, IsInSourceTree(exePath))
@@ -99,14 +99,14 @@ func TestIsInSourceTree(t *testing.T) {
 		parentGoMod := filepath.Join(parentDir, "go.mod")
 		require.NoError(t, os.WriteFile(parentGoMod, []byte("module example.com/parent\n"), 0o644))
 
-		// Create dev directory under parent with crush go.mod.
+		// Create dev directory under parent with rush go.mod.
 		devDir := filepath.Join(parentDir, "dev")
 		require.NoError(t, os.Mkdir(devDir, 0o755))
 		devGoMod := filepath.Join(devDir, "go.mod")
 		require.NoError(t, os.WriteFile(devGoMod, []byte("module github.com/PHPCraftdream/rush\n"), 0o644))
 
 		// Create exe in dev/.
-		exePath := filepath.Join(devDir, "crush.exe")
+		exePath := filepath.Join(devDir, "rush.exe")
 
 		// Should detect because the ancestor candidate (dev/) itself has the go.mod.
 		require.True(t, IsInSourceTree(exePath))
@@ -123,7 +123,7 @@ func TestIsInSourceTree(t *testing.T) {
 		// Create dev directory and a fake exe.
 		devDir := filepath.Join(tmpDir, "dev")
 		require.NoError(t, os.Mkdir(devDir, 0o755))
-		exePath := filepath.Join(devDir, "crush.exe")
+		exePath := filepath.Join(devDir, "rush.exe")
 
 		require.True(t, IsInSourceTree(exePath))
 	})
@@ -139,7 +139,7 @@ func TestIsInSourceTree(t *testing.T) {
 		// Create worktrees directory WITHOUT .claude parent.
 		worktreesDir := filepath.Join(tmpDir, "worktrees", "agent-x")
 		require.NoError(t, os.MkdirAll(worktreesDir, 0o755))
-		exePath := filepath.Join(worktreesDir, "crush.exe")
+		exePath := filepath.Join(worktreesDir, "rush.exe")
 
 		// Should NOT detect because worktrees must have .claude parent.
 		require.False(t, IsInSourceTree(exePath))
@@ -150,7 +150,7 @@ func TestIsInSourceTree(t *testing.T) {
 		t.Parallel()
 		tmpDir := t.TempDir()
 
-		// Create go.mod at root (crush module).
+		// Create go.mod at root (rush module).
 		rootGoMod := filepath.Join(tmpDir, "go.mod")
 		require.NoError(t, os.WriteFile(rootGoMod, []byte("module github.com/PHPCraftdream/rush\n"), 0o644))
 
@@ -161,30 +161,30 @@ func TestIsInSourceTree(t *testing.T) {
 		require.NoError(t, os.WriteFile(devGoMod, []byte("module example.com/stray\n"), 0o644))
 
 		// Create exe in dev/.
-		exePath := filepath.Join(devDir, "crush.exe")
+		exePath := filepath.Join(devDir, "rush.exe")
 
 		// Should detect because the marker dir's own go.mod is foreign, so walk continues up.
 		require.True(t, IsInSourceTree(exePath))
 	})
 
-	// P3-5(b): Worktrees marker without .claude parent but with crush go.mod at root
-	t.Run("worktrees without .claude parent but with crush go.mod", func(t *testing.T) {
+	// P3-5(b): Worktrees marker without .claude parent but with rush go.mod at root
+	t.Run("worktrees without .claude parent but with rush go.mod", func(t *testing.T) {
 		t.Parallel()
 		tmpDir := t.TempDir()
 
-		// NO go.mod at tmpDir (no crush repo at parent level).
+		// NO go.mod at tmpDir (no rush repo at parent level).
 		// Create home directory (no go.mod).
 		homeDir := filepath.Join(tmpDir, "home")
 		require.NoError(t, os.Mkdir(homeDir, 0o755))
 
-		// Create .claude/worktrees/wt/ with crush go.mod.
+		// Create .claude/worktrees/wt/ with rush go.mod.
 		worktreesDir := filepath.Join(homeDir, ".claude", "worktrees", "wt")
 		require.NoError(t, os.MkdirAll(worktreesDir, 0o755))
 		wtGoMod := filepath.Join(worktreesDir, "go.mod")
 		require.NoError(t, os.WriteFile(wtGoMod, []byte("module github.com/PHPCraftdream/rush\n"), 0o644))
 
 		// Create exe in worktrees/.
-		exePath := filepath.Join(worktreesDir, "crush.exe")
+		exePath := filepath.Join(worktreesDir, "rush.exe")
 
 		// Should detect because walk starts at worktrees marker dir itself.
 		require.True(t, IsInSourceTree(exePath))
@@ -195,14 +195,14 @@ func TestIsInSourceTree(t *testing.T) {
 		t.Parallel()
 		tmpDir := t.TempDir()
 
-		// Create go.mod at root (crush module).
+		// Create go.mod at root (rush module).
 		rootGoMod := filepath.Join(tmpDir, "go.mod")
 		require.NoError(t, os.WriteFile(rootGoMod, []byte("module github.com/PHPCraftdream/rush\n"), 0o644))
 
 		// Create directory literally named "Dev" (with capital D).
 		devDir := filepath.Join(tmpDir, "Dev")
 		require.NoError(t, os.Mkdir(devDir, 0o755))
-		exePath := filepath.Join(devDir, "crush.exe")
+		exePath := filepath.Join(devDir, "rush.exe")
 
 		// Should detect because marker comparison is case-insensitive.
 		require.True(t, IsInSourceTree(exePath))
@@ -220,7 +220,7 @@ func TestIsInSourceTree(t *testing.T) {
 		// Create dev directory and a fake exe.
 		devDir := filepath.Join(tmpDir, "dev")
 		require.NoError(t, os.Mkdir(devDir, 0o755))
-		exePath := filepath.Join(devDir, "crush.exe")
+		exePath := filepath.Join(devDir, "rush.exe")
 
 		// Should detect because readModuleLine now accepts tab separator.
 		require.True(t, IsInSourceTree(exePath))
@@ -231,7 +231,7 @@ func TestIsInSourceTree(t *testing.T) {
 		t.Parallel()
 		tmpDir := t.TempDir()
 
-		// Create go.mod at root (crush module).
+		// Create go.mod at root (rush module).
 		rootGoMod := filepath.Join(tmpDir, "go.mod")
 		require.NoError(t, os.WriteFile(rootGoMod, []byte("module github.com/PHPCraftdream/rush\n"), 0o644))
 
@@ -242,7 +242,7 @@ func TestIsInSourceTree(t *testing.T) {
 		require.NoError(t, os.WriteFile(devGoMod, []byte("// nothing\n"), 0o644))
 
 		// Create exe in dev/.
-		exePath := filepath.Join(devDir, "crush.exe")
+		exePath := filepath.Join(devDir, "rush.exe")
 
 		// Should detect because marker dir's go.mod has no module line (returns ""), walk continues up.
 		require.True(t, IsInSourceTree(exePath))
@@ -253,7 +253,7 @@ func TestIsInSourceTree(t *testing.T) {
 		t.Parallel()
 		tmpDir := t.TempDir()
 
-		// Create go.mod at root (crush module).
+		// Create go.mod at root (rush module).
 		rootGoMod := filepath.Join(tmpDir, "go.mod")
 		require.NoError(t, os.WriteFile(rootGoMod, []byte("module github.com/PHPCraftdream/rush\n"), 0o644))
 
@@ -266,7 +266,7 @@ func TestIsInSourceTree(t *testing.T) {
 		// Create dev/ under interposed/.
 		devDir := filepath.Join(interposedDir, "dev")
 		require.NoError(t, os.Mkdir(devDir, 0o755))
-		exePath := filepath.Join(devDir, "crush.exe")
+		exePath := filepath.Join(devDir, "rush.exe")
 
 		// Should NOT detect because foreign go.mod at interposed/ (above dev/) stops the walk.
 		require.False(t, IsInSourceTree(exePath))
@@ -365,7 +365,7 @@ func TestReadModuleLine(t *testing.T) {
 func TestSourceTreeGuardMessage(t *testing.T) {
 	t.Parallel()
 
-	msg := sourceTreeGuardMessage("/path/to/crush.exe")
+	msg := sourceTreeGuardMessage("/path/to/rush.exe")
 
 	// Should NOT contain the old go install command
 	require.NotContains(t, msg, "go install github.com/PHPCraftdream/rush")
@@ -417,7 +417,7 @@ func TestIsInSourceTree_WindowsPaths(t *testing.T) {
 		// Create dev directory and a fake exe using backslashes.
 		devDir := filepath.Join(tmpDir, "dev")
 		require.NoError(t, os.Mkdir(devDir, 0o755))
-		exePath := filepath.Join(devDir, "crush.exe")
+		exePath := filepath.Join(devDir, "rush.exe")
 
 		require.True(t, IsInSourceTree(exePath))
 	})
@@ -433,7 +433,7 @@ func TestIsInSourceTree_WindowsPaths(t *testing.T) {
 		// Create .claude\\worktrees\\ directory and a fake exe.
 		worktreesDir := filepath.Join(tmpDir, ".claude", "worktrees", "agent-x")
 		require.NoError(t, os.MkdirAll(worktreesDir, 0o755))
-		exePath := filepath.Join(worktreesDir, "crush.exe")
+		exePath := filepath.Join(worktreesDir, "rush.exe")
 
 		require.True(t, IsInSourceTree(exePath))
 	})

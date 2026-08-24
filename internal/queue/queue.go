@@ -1,4 +1,4 @@
-// Package queue provides persistent task queue CRUD for batched crush run
+// Package queue provides persistent task queue CRUD for batched rush run
 // invocations. The backing store is a SQLite table (queue_tasks) created by
 // migration 20260520000002.
 package queue

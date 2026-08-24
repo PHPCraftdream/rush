@@ -1,6 +1,6 @@
 package tools
 
-// BUG-1 regression test (found by a full-project @crush --role reviewer
+// BUG-1 regression test (found by a full-project @rush --role reviewer
 // audit, 2026-08-11): download.go used os.Create + io.Copy directly on the
 // final destination path. A network failure or ctx-cancel partway through
 // the copy left a truncated file at that path — a later view/edit tool call

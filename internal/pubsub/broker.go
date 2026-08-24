@@ -215,7 +215,7 @@ func (b *Broker[T]) Publish(t EventType, payload T) {
 // slow subscribers. This is deliberate. The message broker has exactly
 // one subscriber in practice — the web server's single fan-out
 // goroutine (internal/server/events.go), which itself broadcasts to all
-// WebSocket clients — or, in the non-interactive crush run path, one
+// WebSocket clients — or, in the non-interactive rush run path, one
 // CLI output subscriber (internal/app/app.go). The broker never sees
 // per-client subscriptions; client fan-out happens downstream of a
 // single broker subscriber. With N effectively 1 (at most 2 if both

@@ -1,9 +1,9 @@
-# crush — Maintainer Bug Report: `--restrict-run` permission enforcement (0.1.3)
+# rush — Maintainer Bug Report: `--restrict-run` permission enforcement (0.1.3)
 
 Follow-up to `docs/crush-issues.md`. That report's issue #4
-(`crush run` had no allowlist) was resolved in 0.1.3 by adding
+(`rush run` had no allowlist) was resolved in 0.1.3 by adding
 `--restrict-run` + `--allow-bash` / `--allow-tool` and a `permissions.run`
-config key. While wiring `triss` to seed that policy into `crush.json`, we
+config key. While wiring `triss` to seed that policy into `rush.json`, we
 found the **config-based** side of the feature does not actually enforce,
 and that denied commands hang until the timeout. Both were verified live.
 
@@ -11,24 +11,24 @@ Findings ordered High → Medium.
 
 ## Environment
 
-- **Package:** `@phpcraftdream/crush@0.1.3` (npm), binary self-reports
-  `crush version v0.1.3`.
+- **Package:** `@phpcraftdream/rush@0.1.3` (npm), binary self-reports
+  `rush version v0.1.3`.
 - **Platform:** macOS (darwin arm64), Apple Terminal.
 - **Provider:** built-in Catwalk `zai` provider (coding-plan endpoint
   `https://api.z.ai/api/coding/paas/v4`), key via `ZHIPU_API_KEY` (read
   natively in 0.1.1+). Models: large `glm5_2`, small `glm5_turbo`,
-  configured with `crush models use glm5_2 glm5_turbo --local`.
+  configured with `rush models use glm5_2 glm5_turbo --local`.
 - **Context:** `triss` seeds a deny-first `permissions.run` policy into
-  `crush.json` at setup and expects `crush run --restrict-run` to honor it,
+  `rush.json` at setup and expects `rush run --restrict-run` to honor it,
   mirroring opencode's persistent `opencode.json` bash allowlist.
 
 ---
 
-## [High] `permissions.run` in `crush.json` is not honored by `crush run --restrict-run`
+## [High] `permissions.run` in `rush.json` is not honored by `rush run --restrict-run`
 
 **Severity:** High — the documented config-based allowlist does not enforce.
 
-**What the docs promise.** `crush run --help` states, for `--restrict-run`:
+**What the docs promise.** `rush run --help` states, for `--restrict-run`:
 
 > Opt into restricted permission mode for this run. When set (or when
 > `permissions.run.restrict` is true in config), permission requests are
@@ -39,7 +39,7 @@ and for `--allow-bash`:
 
 > Merged with `permissions.run.allow_bash` from config.
 
-So a `permissions.run` block in `crush.json` should (a) be able to turn
+So a `permissions.run` block in `rush.json` should (a) be able to turn
 restriction on via `restrict: true`, and (b) supply the `allow_bash`
 allowlist. Neither holds in practice.
 
@@ -47,19 +47,19 @@ allowlist. Neither holds in practice.
 
 ```bash
 mkdir /tmp/t && cd /tmp/t
-crush models use glm5_2 glm5_turbo --local          # writes ./.crush/crush.json
+rush models use glm5_2 glm5_turbo --local          # writes ./.rush/rush.json
 
 # Seed a deny-first permissions.run policy into BOTH candidate config files:
 node -e 'const fs=require("fs");
   const pol={restrict:true,allow_bash:["git status"],allow_tools:["view"]};
-  for (const p of ["./crush.json","./.crush/crush.json"]) {
+  for (const p of ["./rush.json","./.rush/rush.json"]) {
     const c = fs.existsSync(p) ? JSON.parse(fs.readFileSync(p)) : {};
     c.permissions = {run: pol};
     fs.writeFileSync(p, JSON.stringify(c,null,2));
   }'
 
 # restrict-run ON, NO CLI --allow-bash. `echo` is NOT in the allowlist.
-crush run --role fast --restrict-run --json --timeout 45 \
+rush run --role fast --restrict-run --json --timeout 45 \
   "Use the bash tool to run exactly: echo HELLO_FROM_BASH"
 ```
 
@@ -71,7 +71,7 @@ crush run --role fast --restrict-run --json --timeout 45 \
 ```
 
 The non-allowlisted `echo` **ran to completion**. Same result whether the
-`permissions.run` block is in `./crush.json`, `./.crush/crush.json`, or both.
+`permissions.run` block is in `./rush.json`, `./.rush/rush.json`, or both.
 By contrast, passing the identical allowlist on the **CLI**
 (`--allow-bash 'git status'`) *does* take effect (see the next issue), so the
 enforcement path works — only the config path is ignored.
@@ -82,9 +82,9 @@ not match the allowlist — exactly as if `--allow-bash 'git status'` had been
 passed on the CLI.
 
 **Impact:** A wrapper cannot express a **persistent** deny-first policy in
-`crush.json` (the opencode-parity use case). It must instead pass every
+`rush.json` (the opencode-parity use case). It must instead pass every
 `--allow-bash` / `--allow-tool` pattern on the command line for *every*
-`crush run` invocation. Worse, a wrapper that trusts the documented config
+`rush run` invocation. Worse, a wrapper that trusts the documented config
 behavior (seeds `permissions.run` and calls `--restrict-run`) ships a policy
 that silently does nothing — the agent runs effectively unrestricted while
 appearing sandboxed.
@@ -106,7 +106,7 @@ allow.
 ```bash
 cd /tmp/t
 # CLI allowlist this time (this path DOES enforce). `echo` is not allowed.
-crush run --role fast --restrict-run --allow-bash 'git status' \
+rush run --role fast --restrict-run --allow-bash 'git status' \
   --json --timeout 60 \
   "Use the bash tool to run exactly: echo HELLO_FROM_BASH"
 ```
@@ -145,18 +145,18 @@ dead-end, which is the opposite of the intended safety/UX trade-off.
   is blocked (it just blocks the run — see the Medium issue).
 - The resolved issues from `docs/crush-issues.md` all still hold: clean
   `v0.1.3` version string, native `ZHIPU_API_KEY`, working `--role fast`,
-  side-effect-free `crush models list`, `crush ping --role`, single JSON
+  side-effect-free `rush models list`, `rush ping --role`, single JSON
   envelope, real per-call cost.
 
 ---
 
 ## Suggested fixes
 
-1. **Honor `permissions.run` from `crush.json`** for both `restrict` and
+1. **Honor `permissions.run` from `rush.json`** for both `restrict` and
    `allow_bash` / `allow_tools`, per the `--help` text — or, if the config
    key is intentionally unsupported, remove those promises from `--help` and
    document that the allowlist is CLI-only.
-2. **Make denial clean and fast** in non-interactive `crush run`: return a
+2. **Make denial clean and fast** in non-interactive `rush run`: return a
    denial result to the model (or end the run with a `permission_denied`
    reason) instead of blocking on an un-answerable permission prompt until
    the timeout.
@@ -165,6 +165,6 @@ dead-end, which is the opposite of the intended safety/UX trade-off.
 
 ---
 
-*Compiled during triss's crush-engine 0.1.3 integration on 2026-07-06.
-All repros run against `@phpcraftdream/crush@0.1.3` with a live Z.AI
+*Compiled during triss's rush-engine 0.1.3 integration on 2026-07-06.
+All repros run against `@phpcraftdream/rush@0.1.3` with a live Z.AI
 coding-plan key.*

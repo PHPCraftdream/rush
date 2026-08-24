@@ -62,7 +62,7 @@ func TestTracker_BuiltinSkillTracking(t *testing.T) {
 
 	// Simulate active skills including a builtin skill (crush-config).
 	activeSkills := []*Skill{
-		{Name: "crush-config", Description: "Crush config", Builtin: true},
+		{Name: "crush-config", Description: "Rush config", Builtin: true},
 		{Name: "go-doc", Description: "Go docs", Builtin: false},
 	}
 	tracker := NewTracker(activeSkills)

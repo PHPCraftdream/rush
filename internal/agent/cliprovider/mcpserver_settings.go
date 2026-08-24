@@ -49,10 +49,10 @@ func acquireMCPConfigLock(lockPath string) (*session.FileLock, error) {
 // and end up with a split-brain MCP server name. See CHANGELOG.fork.md.
 func qwenMCPID(workingDir string) (string, error) {
 	var idFile string
-	crushDir := filepath.Join(workingDir, ".rush")
-	if info, err := os.Stat(crushDir); err == nil && info.IsDir() {
+	rushDir := filepath.Join(workingDir, ".rush")
+	if info, err := os.Stat(rushDir); err == nil && info.IsDir() {
 		// .rush/ exists — this is a rush project directory, store ID there.
-		idFile = filepath.Join(crushDir, "qwen-mcp-id")
+		idFile = filepath.Join(rushDir, "qwen-mcp-id")
 	} else {
 		// No .rush/ here — use a temp file keyed by a hash of the path so
 		// the ID remains stable across rush restarts without polluting the dir.
@@ -149,7 +149,7 @@ func registerQwenMCP(serverName, addr, token string) error {
 // share one mcpServers[serverName] entry: registerQwenMCP unconditionally
 // overwrites it with whichever session called last, and an unconditional
 // delete here used to remove the entry regardless of which session
-// currently owned it — found by a full-project @crush --role reviewer
+// currently owned it — found by a full-project @rush --role reviewer
 // audit. Session A finishing first would delete session B's still-active
 // registration (B's own overwrite already replaced A's url with B's own),
 // breaking qwen's ability to reconnect to B's MCP server for the rest of
@@ -210,9 +210,9 @@ func deregisterQwenMCP(serverName, expectedAddr string) {
 // qwenMCPID — see that function's note.
 func geminiMCPID(workingDir string) (string, error) {
 	var idFile string
-	crushDir := filepath.Join(workingDir, ".rush")
-	if info, err := os.Stat(crushDir); err == nil && info.IsDir() {
-		idFile = filepath.Join(crushDir, "gemini-mcp-id")
+	rushDir := filepath.Join(workingDir, ".rush")
+	if info, err := os.Stat(rushDir); err == nil && info.IsDir() {
+		idFile = filepath.Join(rushDir, "gemini-mcp-id")
 	} else {
 		h := fmt.Sprintf("%x", []byte(workingDir))
 		if len(h) > 16 {

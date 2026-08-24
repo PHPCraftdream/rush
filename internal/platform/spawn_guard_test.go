@@ -31,8 +31,8 @@ var spawnGuardExemptions = map[string]string{
 // [Command].
 //
 // Why this test exists: on Windows a console-subsystem child spawned by a
-// console-less crush (the normal state of a detached/orchestrator
-// `crush run` — see cmd.maybeDetachConsole) pops a real console window
+// console-less rush (the normal state of a detached/orchestrator
+// `rush run` — see cmd.maybeDetachConsole) pops a real console window
 // that flashes on screen, covers the operator's work and steals keyboard
 // focus. The fix is one process-creation flag, and it was originally
 // applied by convention: "remember to call platform.HideConsoleWindow at

@@ -1,11 +1,11 @@
-// Fork patch: `claude-init` installs ONLY the `/crush` slash-command and
+// Fork patch: `claude-init` installs ONLY the `/rush` slash-command and
 // strips any legacy crush-claude-init block from CLAUDE.md. The per-model
 // slash-commands, per-model sub-agents and model-registry / agent-clause /
 // sentinel code have been extracted to a separate repo (`cc-arch-hands`);
 // use `cah install` from there for the rest.
 //
 // On invocation we still STRIP any pre-existing crush-claude-init block
-// from CLAUDE.md (any version) so users upgrading from an older crush
+// from CLAUDE.md (any version) so users upgrading from an older rush
 // get a clean workspace. If the strip leaves CLAUDE.md empty, the file
 // is removed (mirrors `claude-del`'s behaviour).
 package cmd

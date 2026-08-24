@@ -70,7 +70,7 @@ func ExpandValue(ctx context.Context, value string, env []string) (string, error
 	// Build a minimal Shell value purely to reuse its handler chain
 	// (builtins, block funcs, optional Go coreutils) inside $(...).
 	// We deliberately skip NewShell so the passed-in env is used
-	// verbatim, with no CRUSH/AGENT/AI_AGENT injection: callers of
+	// verbatim, with no RUSH/AGENT/AI_AGENT injection: callers of
 	// ExpandValue control the env, and nounset must treat any name
 	// not in env as unset.
 	cwd, _ := os.Getwd()

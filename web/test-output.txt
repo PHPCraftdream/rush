@@ -1,5 +1,5 @@
 
-> crush-web@0.1.0 test
+> rush-web@0.1.0 test
 > playwright test tests/session-filtering.spec.ts --reporter=line
 
 

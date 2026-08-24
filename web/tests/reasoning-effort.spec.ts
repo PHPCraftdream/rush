@@ -73,7 +73,7 @@ func TestZZEffortWireProbe(t *testing.T) {
 `;
 
 function realWireEffortMaxMessage(): Record<string, any> {
-  const tmp = mkdtempSync(join(tmpdir(), "crush-effort-wire-"));
+  const tmp = mkdtempSync(join(tmpdir(), "rush-effort-wire-"));
   const probePath = join(tmp, "zz_effort_wire_probe_test.go").replace(/\\/g, "/");
   writeFileSync(probePath, PROBE_SRC);
   const overlayPath = join(tmp, "overlay.json");

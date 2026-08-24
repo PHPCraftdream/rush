@@ -1,7 +1,7 @@
 # Bug — background-job-completion notices render as user messages
 
 **Status:** open (task #86). Found 2026-06-26.
-**Observed in:** `D:\dev\rust\fs-sandbox\.crush`, session `73219465-e1f2-40f7-8ade-11f58b7737c7`.
+**Observed in:** `D:\dev\rust\fs-sandbox\.rush`, session `73219465-e1f2-40f7-8ade-11f58b7737c7`.
 
 ## Symptom
 

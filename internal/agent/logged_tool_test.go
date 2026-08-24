@@ -17,7 +17,7 @@ import (
 
 // A tool failure that reaches nobody is the failure mode this wrapper
 // exists for: a run once died 42 seconds into a 75k-character prompt and
-// the whole window in crush.log held no ERROR record at all, so the cause
+// the whole window in rush.log held no ERROR record at all, so the cause
 // had to be recovered by reading source. These tests pin that both kinds of
 // failure are written, and at levels that keep the log usable.
 
@@ -122,7 +122,7 @@ func TestLoggedTool_SuccessLogsNothing(t *testing.T) {
 
 // An unbounded error body must not reach the log. The model can retry a
 // malformed call in a loop, and these bodies carry whatever the far side
-// sent back, so whole ones would grow crush.log without limit.
+// sent back, so whole ones would grow rush.log without limit.
 func TestLoggedTool_LongErrorContentIsTruncated(t *testing.T) {
 	long := strings.Repeat("x", maxLoggedContentRunes*3)
 	recs := runWrapped(t, stubTool{name: "fetch", resp: fantasy.NewTextErrorResponse(long)})

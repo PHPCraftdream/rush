@@ -63,7 +63,7 @@ func Available() []CLISpec { return AvailableFunc() }
 // That would be a once-per-process cost if Available() were called once, but
 // it is called from config.configureProviders, which runs on the initial
 // config Load AND on every buildAndPublishReload — i.e. once per config
-// field write. A single `crush models use ...` invocation triggers ~5 of
+// field write. A single `rush models use ...` invocation triggers ~5 of
 // them, so ~1.8s of the command's runtime was spent re-answering "is
 // claude on PATH?" with an answer that had not changed. In the test suite
 // the same multiplier applied per test: internal/cmd's models_* tests each
@@ -75,7 +75,7 @@ func Available() []CLISpec { return AvailableFunc() }
 // dispatch tests) working unchanged: changing PATH invalidates the entry.
 // The remaining behavioral difference from an uncached scan is that
 // installing a CLI into an already-on-PATH directory while a long-lived
-// crush process is running is no longer picked up by a config reload; it
+// rush process is running is no longer picked up by a config reload; it
 // needs a restart. That is the same trade the fork already makes for the
 // Catwalk/Hyper provider catalogs (see internal/config/catwalk.go's
 // providerCacheTTL) and is why detection is only ever consulted to

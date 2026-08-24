@@ -924,7 +924,7 @@ func TestHandleRerunMessage_SeedContentPinsEarlierIdenticalPromptOnFailedListPat
 // SAME text as the rerun prompt lands INSIDE the tail-delete window
 // (created at rerunTailDeleteSeam(0), i.e. after the pre-delete listing and
 // before the post-delete List) — exactly a concurrent handleInjectMessage
-// or `crush sessions inject` landing mid-delete. The post-delete List
+// or `rush sessions inject` landing mid-delete. The post-delete List
 // SUCCEEDS (no decorator). The fake coordinator is handoffOnlyErrorCoordinator:
 // it fires onHandoff and errors without writing any row.
 //
@@ -990,7 +990,7 @@ func TestHandleRerunMessage_UnionLoopPinsForeignRowInsideWindowOnSuccessPath(t *
 	// before the tail's Delete runs. The row is therefore NOT in the tail
 	// slice the loop deletes (sliced from allMsgs) and not the target: it
 	// survives both deletes, exactly like a real handleInjectMessage /
-	// `crush sessions inject` row.
+	// `rush sessions inject` row.
 	foreignCreated := make(chan message.Message, 1)
 	rerunTailDeleteSeam = func(i int) {
 		if i != 0 {

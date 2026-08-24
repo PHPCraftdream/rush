@@ -6,7 +6,7 @@ package agent
 // enqueue attempt — otherwise a caller-level retry creates a second durable
 // row for what should be one logical request.
 //
-// SCOPE NOTE (added on independent review): the delegated /crush fix's own
+// SCOPE NOTE (added on independent review): the delegated /rush fix's own
 // test file (this file, before this rewrite) asserted against a LOCAL
 // closure that duplicated startDetachedRun/restartOrphanedWithRetry's key-
 // generation logic rather than calling the real functions — passing

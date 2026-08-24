@@ -159,7 +159,7 @@ func TestConfigureProviders_ZAIResolveErrorSkipsNoFallback(t *testing.T) {
 // docs.z.ai/guides/llm/glm-5.3's 404), configureProviders appends a
 // provisional entry so the web UI's model picker (which reads
 // KnownProviders()/ProviderConfig.Models, not the CLI-only atom registry)
-// can show it — confirmed live via `crush ping --model zai/glm-5.3`.
+// can show it — confirmed live via `rush ping --model zai/glm-5.3`.
 func TestConfigureProviders_ZAISynthesizesGLM53WhenCatwalkLacksIt(t *testing.T) {
 	t.Parallel()
 

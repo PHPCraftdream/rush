@@ -238,7 +238,7 @@ func (s *transientBusySessions) DrainOrphanOutboxEntry(ctx context.Context, id s
 // this round adds (task #571 part c): max_attempts=5
 // (20260812000001_add_orphan_call_outbox.sql) with no backoff between
 // ticks means five ordinary SQLITE_BUSY hits -- exactly what several
-// concurrent `crush run` processes each running an immediate
+// concurrent `rush run` processes each running an immediate
 // Start()-time drain would produce -- used to permanently quarantine a
 // perfectly healthy, still-queued user call. This drives MORE than
 // max_attempts consecutive transient failures through the real pump and

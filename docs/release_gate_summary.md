@@ -18,7 +18,7 @@
 
 ## What changed after the delegated round (orchestrator-verified fixes)
 
-The delegated `/crush` round that produced this suite reported tests 7 and 9 as passing, but the
+The delegated `/rush` round that produced this suite reported tests 7 and 9 as passing, but the
 orchestrator's independent verification (rebuild, revert-check every criterion) found both were
 either broken or not actually testing what they claimed:
 

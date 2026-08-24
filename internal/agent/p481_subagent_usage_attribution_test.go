@@ -19,7 +19,7 @@ import (
 //     session owns the message, so a child's tokens stay on the child's rows.
 //
 // Conflating them would double-count. The cross-session aggregate
-// (message.UsageByModelInRange, backing `crush sessions cache`) deliberately
+// (message.UsageByModelInRange, backing `rush sessions cache`) deliberately
 // INCLUDES child sessions precisely because cost transfer never rewrites
 // message rows — each message's cost_usd is counted exactly once there. If a
 // future change started copying child usage rows onto the parent, that

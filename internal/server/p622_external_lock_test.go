@@ -38,7 +38,7 @@ func holdRealExclusiveLock(t *testing.T, dataDir, sessionID string) func() {
 // TestHandleRerunMessage_ExternalLockHolderFailsClosed is the core F-1
 // regression under the #631 probe design: with the session idle in THIS
 // process (mailbox free, reservation succeeds) but a REAL exclusive OS
-// lock held (as a concurrent external `crush run` holds it), the rerun
+// lock held (as a concurrent external `rush run` holds it), the rerun
 // must be refused with an actionable error and must not delete ANY
 // history — not the tail, not the target.
 //

@@ -226,7 +226,7 @@ func resolveCommandHead(tokens []string) splitStringResult {
 	// Strip leading command-wrapper utilities (best effort — enough to
 	// reach the wrapped command in ordinary invocations, not a full
 	// argument parser for each utility). "env", "nice", and "timeout" were
-	// found missing here by a full-project @crush --role reviewer audit:
+	// found missing here by a full-project @rush --role reviewer audit:
 	// "env claude ...", "nice claude ...", "timeout 30 claude ..." all
 	// bypassed this guard entirely (head stayed "env"/"nice"/"timeout",
 	// never matching deniedAgents below) — the exact recursion class this

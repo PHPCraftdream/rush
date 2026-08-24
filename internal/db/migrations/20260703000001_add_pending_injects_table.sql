@@ -1,8 +1,8 @@
 -- +goose Up
 -- +goose StatementBegin
 -- pending_injects is a cross-process signal/queue table for
--- `crush sessions inject`: one process (the CLI) writes a row here to ask
--- another already-running `crush run` process to splice a message into the
+-- `rush sessions inject`: one process (the CLI) writes a row here to ask
+-- another already-running `rush run` process to splice a message into the
 -- session it is actively executing. The message row itself is created in
 -- `messages` at inject time (for immediate web-UI visibility, mirroring
 -- handleInjectMessage); this table only references it by message_id so the

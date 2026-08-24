@@ -101,7 +101,7 @@ lock release, provider cancellation, cross-process contention, and shutdown.
    already hardened individually — a freeze period would validate they hold up under sustained,
    combined load rather than the current one-scenario-at-a-time test style).
 6. **This is a multi-session effort.** Given the size of `agent.go`/`coordinator.go`, do not
-   attempt this as a single delegated `/crush` round — decompose into a proper task list (per this
+   attempt this as a single delegated `/rush` round — decompose into a proper task list (per this
    repo's `/babygoal`/`/task` conventions) with its own investigation phase, before delegating.
 
 ## Explicit non-goals for this plan document

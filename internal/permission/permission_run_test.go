@@ -28,7 +28,7 @@ func newRunTestService(t *testing.T) Service {
 }
 
 // TestRunGate_DefaultStillAutoApproves is the backwards-compatibility
-// guarantee: with no restricted allowlist armed, `crush run` keeps its
+// guarantee: with no restricted allowlist armed, `rush run` keeps its
 // current behaviour of approving every permission request.
 func TestRunGate_DefaultStillAutoApproves(t *testing.T) {
 	svc := newRunTestService(t)
@@ -42,7 +42,7 @@ func TestRunGate_DefaultStillAutoApproves(t *testing.T) {
 		Params:    fakeBashParams{Command: "rm -rf /"},
 	})
 	require.NoError(t, err)
-	assert.True(t, result, "default crush run must still auto-approve even rm -rf /")
+	assert.True(t, result, "default rush run must still auto-approve even rm -rf /")
 }
 
 // TestRunGate_RestrictedDeniesWithoutWaiting is the core safety

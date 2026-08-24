@@ -10,7 +10,7 @@ import (
 )
 
 // logDir records the directory Setup was pointed at, so DumpGoroutines can
-// drop its dumps next to crush.log without every caller having to thread the
+// drop its dumps next to rush.log without every caller having to thread the
 // config through. Empty until Setup runs (or when Setup got an empty path),
 // in which case DumpGoroutines falls back to the OS temp dir.
 var logDir atomic.Value // string
@@ -135,7 +135,7 @@ func CaptureGoroutineStack(reason string) []byte {
 }
 
 // WriteGoroutineDump writes a buffer captured by CaptureGoroutineStack to a
-// file next to crush.log and returns its path. This is the (potentially
+// file next to rush.log and returns its path. This is the (potentially
 // slow) I/O half of what DumpGoroutines used to do in one synchronous call;
 // splitting it out lets a caller capture the stack synchronously (bounded,
 // no I/O) and dispatch only the write asynchronously, so a stuck disk or
@@ -172,7 +172,7 @@ func WriteGoroutineDump(buf []byte) (string, error) {
 }
 
 // DumpGoroutines writes the stack traces of ALL current goroutines to a file
-// next to crush.log and returns its path. It is CaptureGoroutineStack
+// next to rush.log and returns its path. It is CaptureGoroutineStack
 // immediately followed by WriteGoroutineDump — a synchronous convenience
 // wrapper for callers that are fine blocking on the write (e.g. tests, or
 // call sites not on a cancellation-critical path). Callers for whom the

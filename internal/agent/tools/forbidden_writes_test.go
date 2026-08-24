@@ -91,20 +91,20 @@ func TestCheckForbiddenWrite_CaseInsensitiveOnWindows(t *testing.T) {
 
 func TestCheckForbiddenWrite_EnvVarConst(t *testing.T) {
 	// Document the exact env var name as a stable contract for
-	// orchestrators that set it before exec'ing crush.
+	// orchestrators that set it before exec'ing rush.
 	assert.Equal(t, "RUSH_FORBID_WRITES", ForbiddenWritesEnv,
 		"orchestrators rely on this exact env var name — do not rename without coordinating")
 }
 
 // TestCheckForbiddenWrite_RealOrchestratorScenario reproduces the
 // shamir-db .tmp-audit-D.json failure mode: the orchestrator shell-
-// redirects crush's stdout into a file, and the model then writes to
+// redirects rush's stdout into a file, and the model then writes to
 // the SAME file via the write tool, corrupting the JSON envelope.
 func TestCheckForbiddenWrite_RealOrchestratorScenario(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, ".tmp-audit-D.json")
 
-	// Orchestrator sets the env var before exec'ing crush.
+	// Orchestrator sets the env var before exec'ing rush.
 	t.Setenv(ForbiddenWritesEnv, target)
 
 	// Touch the file as if the orchestrator started writing to it.

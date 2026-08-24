@@ -134,7 +134,7 @@ func WithHeartbeatInterval(d time.Duration) LockOption {
 }
 
 // SessionLock is an inter-process exclusive lock for a single session ID.
-// Acquired around the entire `sessionAgent.Run()` call so two crush
+// Acquired around the entire `sessionAgent.Run()` call so two rush
 // processes can never write into the same session simultaneously.
 //
 // Backed exclusively by OS-level advisory file locks (flock on POSIX,

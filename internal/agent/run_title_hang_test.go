@@ -46,7 +46,7 @@ func hangingSSEServer(release <-chan struct{}) *httptest.Server {
 // goroutine launched from runTurn (needsTitle's wg.Go call) ran
 // a.generateTitle on titleCtx := ctx — the raw, potentially unbounded ctx
 // passed into runTurn from its caller (e.g. context.Background() from
-// `crush run`) — NOT genCtx, the per-turn context the stream watchdog
+// `rush run`) — NOT genCtx, the per-turn context the stream watchdog
 // cancels. generateTitle's two model attempts (small then large) are each a
 // blocking agent.Stream call with no timeout of their own. If the title
 // provider hangs (dead TCP connection, provider never closes the stream),

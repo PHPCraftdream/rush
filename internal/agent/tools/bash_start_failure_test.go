@@ -138,7 +138,7 @@ func TestBashTool_CommandFailuresAreModelVisible(t *testing.T) {
 		{"syntax error", `echo "unclosed`, "could not parse command"},
 		{"blocked command", "sudo echo hi", "command is not allowed"},
 		{"non-zero exit", "exit 7", "Exit code 7"},
-		{"command not found", "crush-not-a-real-command-xyz", "Exit code 127"},
+		{"command not found", "rush-not-a-real-command-xyz", "Exit code 127"},
 	}
 
 	for _, tc := range cases {

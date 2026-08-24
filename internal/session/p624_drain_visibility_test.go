@@ -105,7 +105,7 @@ func TestDrainSessionNow_ColdCall_OrphanedLeasedRow_IsVisible(t *testing.T) {
 // this one pins that a row owned by a LIVE foreign process -- the case the
 // app_run.go DrainNoWork comment used to claim keeps the original
 // cancellation standing -- is equally visible. Consumer-side, the
-// observable difference is only WHICH non-nil error `crush run` reports;
+// observable difference is only WHICH non-nil error `rush run` reports;
 // see drainOutcomeError's own comment in internal/app/app_run.go.
 //
 // Revert-check (per-test, not per-edit-site): removing the `||

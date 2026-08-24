@@ -750,7 +750,7 @@ func (m *BackgroundShellManager) MaxJobs() int {
 //
 // A malformed or non-positive value falls back to the default rather than
 // failing: this is a convenience knob, and a typo in it should not stop
-// crush from starting. It is logged so the typo is visible.
+// rush from starting. It is logged so the typo is visible.
 func maxJobsFromEnv() int {
 	raw := os.Getenv("RUSH_MAX_BACKGROUND_JOBS")
 	if raw == "" {

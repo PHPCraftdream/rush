@@ -36,8 +36,8 @@ func TestGrepWithIgnoreFiles(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(tempDir, ".gitignore"), []byte(gitignoreContent), 0o644))
 
 	// Create .rushignore file
-	crushignoreContent := "node_modules/\n"
-	require.NoError(t, os.WriteFile(filepath.Join(tempDir, ".rushignore"), []byte(crushignoreContent), 0o644))
+	rushignoreContent := "node_modules/\n"
+	require.NoError(t, os.WriteFile(filepath.Join(tempDir, ".rushignore"), []byte(rushignoreContent), 0o644))
 
 	// Test both implementations
 	for name, fn := range map[string]func(pattern, path, include string) ([]grepMatch, error){

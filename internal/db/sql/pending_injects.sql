@@ -1,4 +1,4 @@
--- pending_injects is the cross-process inject queue for `crush sessions
+-- pending_injects is the cross-process inject queue for `rush sessions
 -- inject`. See migration 20260703000001 for the full semantics.
 --
 -- NOTE: as of this fork the session-layer wrapper (session.go

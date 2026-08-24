@@ -1,4 +1,4 @@
-# План: горячая замена бинарника `crush` без убийства сессий
+# План: горячая замена бинарника `rush` без убийства сессий
 
 Дата: 2026-07-29. Редакция 3 (после ревью и охоты на грабли).
 Цель: `deploy.go` и обновление npm работают при живых сессиях;
@@ -19,7 +19,7 @@
 
 ## 1. Требования
 
-1. `go run deploy.go` не убивает живые сессии (сейчас — `killAllCrush`,
+1. `go run deploy.go` не убивает живые сессии (сейчас — `killAllRush`,
    `deploy.go:317`).
 2. Обновление через npm не падает при живых сессиях.
 3. Параллельный запуск в другой папке поднимает более новую версию, если
@@ -35,7 +35,7 @@
 
 | Операция над **работающим** exe | Результат |
 |---|---|
-| `rename` в сторону (`crush.exe` → `crush.exe.old-<ts>`) | ✅ **OK** |
+| `rename` в сторону (`rush.exe` → `rush.exe.old-<ts>`) | ✅ **OK** |
 | запись **нового** файла под освободившимся именем | ✅ **OK** |
 | `delete` переименованного файла, пока процесс жив | ❌ **Permission denied** |
 | `delete` того же файла после выхода процесса | ✅ **OK** |
@@ -55,7 +55,7 @@
 
 На Unix всё это не нужно: `replaceFile` (`deploy.go:339`) уже делает
 temp+rename, безопасный для работающих процессов (живут на старом inode).
-`pkill -x crush` (`deploy.go:330-333`) стоит там за компанию с
+`pkill -x rush` (`deploy.go:330-333`) стоит там за компанию с
 Windows-веткой.
 
 ---
@@ -65,9 +65,9 @@ Windows-веткой.
 Канонический путь установки один, и он всегда содержит свежую версию:
 
 ```
-t0  сессия A в папке1 → читает crush.exe (v1), держит хендл
-t1  deploy: crush.exe → crush.exe.old-t1 ; новый файл → crush.exe (v2)
-t2  сессия B в папке2 → читает crush.exe → получает v2        ✔ (треб. 3)
+t0  сессия A в папке1 → читает rush.exe (v1), держит хендл
+t1  deploy: rush.exe → rush.exe.old-t1 ; новый файл → rush.exe (v2)
+t2  сессия B в папке2 → читает rush.exe → получает v2        ✔ (треб. 3)
 t3  сессия A работает на v1 через свой хендл                   ✔
 t4  A завершилась → следующий deploy подметает .old-t1
 ```
@@ -83,7 +83,7 @@ Per-folder копии не только дороже (62 МиБ × папки ×
 
 ## 4. Правки `deploy.go`
 
-1. Удалить `killAllCrush()` (строки 317-334) и вызов (строка 140).
+1. Удалить `killAllRush()` (строки 317-334) и вызов (строка 140).
 2. `replaceFile` (строка 339), ветка Windows: вместо `os.Remove(dst)` +
    rename — **rename-aside**: `dst` → `dst.old-<unixnano>`, затем
    `tmp` → `dst`. Комментарий на строках 349-351 описывает именно тот
@@ -94,7 +94,7 @@ Per-folder копии не только дороже (62 МиБ × папки ×
    доносит живая сессия». Бесплатный детектор занятости.
 4. Unix-ветку не трогать.
 5. Обновить doc-комментарий (строки 3-28) — он обещает «kill every
-   running crush process».
+   running rush process».
 6. `queue.go:332` — см. §7.
 
 ---
@@ -104,20 +104,20 @@ Per-folder копии не только дороже (62 МиБ × папки ×
 Реальное состояние машины (проверено):
 
 ```
-node_modules/@charmland/crush        ← UPSTREAM 0.62.0
-  run-crush.js + lib.js              ← исполняется ЭТА обёртка (GoReleaser)
-  bin/crush.exe                      ← 62 383 104 Б = форковая сборка от deploy.go
-  bin/crush.exe.bak-b53789cc         ← 62 МБ мусора от 14 июля
-npm/crush, crush.cmd, crush.ps1      ← шимы
-npm/crush.exe                        ← 62 МБ, sibling-копия
-npm/crush.exeн                       ← 76 МБ мусора (опечатка в редиректе, 10 марта)
+node_modules/@charmland/rush        ← UPSTREAM 0.62.0
+  run-rush.js + lib.js              ← исполняется ЭТА обёртка (GoReleaser)
+  bin/rush.exe                      ← 62 383 104 Б = форковая сборка от deploy.go
+  bin/rush.exe.bak-b53789cc         ← 62 МБ мусора от 14 июля
+npm/rush, rush.cmd, rush.ps1      ← шимы
+npm/rush.exe                        ← 62 МБ, sibling-копия
+npm/rush.exeн                       ← 76 МБ мусора (опечатка в редиректе, 10 марта)
 ```
 
 Установлен **upstream-пакет с подменённым форковым бинарником**. Правка
-форковой `npm/crush/bin/crush.js` на эту установку **не влияет вообще**.
+форковой `npm/rush/bin/rush.js` на эту установку **не влияет вообще**.
 
 **Решение оператора:** удалить upstream полностью, перейти на
-`@phpcraftdream/crush`.
+`@phpcraftdream/rush`.
 
 **Осложнение:** в реестре опубликована только **0.1.6**, репозиторий на
 **0.1.7** → нужна локальная установка до публикации.
@@ -128,10 +128,10 @@ npm/crush.exeн                       ← 76 МБ мусора (опечатка
 
 ```
 staging/
-  crush/                 ← копия npm/crush; version и optionalDependencies → 0.1.7
-    bin/crush.js
-  crush-win32-x64/       ← package.json из npm/platform/package.json.tmpl
-    bin/crush.exe
+  rush/                 ← копия npm/rush; version и optionalDependencies → 0.1.7
+    bin/rush.js
+  rush-win32-x64/       ← package.json из npm/platform/package.json.tmpl
+    bin/rush.exe
 ```
 
 **Web-UI собрать обязательно** до `go build` — бинарник встраивает
@@ -142,17 +142,17 @@ staging/
 
 ### 5.2 Установка без реестра
 
-Обычный `npm i -g ./crush-0.1.7.tgz` **не годится**: optional-зависимость
-`crush-win32-x64@0.1.7` в реестре отсутствует, npm её **молча пропустит**
+Обычный `npm i -g ./rush-0.1.7.tgz` **не годится**: optional-зависимость
+`rush-win32-x64@0.1.7` в реестре отсутствует, npm её **молча пропустит**
 (на то она и optional), и обёртка упадёт с кодом 127 «platform package is
 not installed».
 
 1. `npm pack` обоих пакетов;
-2. `npm i -g ./phpcraftdream-crush-win32-x64-0.1.7.tgz` — платформенный
+2. `npm i -g ./phpcraftdream-rush-win32-x64-0.1.7.tgz` — платформенный
    первым (у него нет `bin`, просто ложится в глобальный `node_modules`);
-3. `npm i -g ./phpcraftdream-crush-0.1.7.tgz --omit=optional`.
+3. `npm i -g ./phpcraftdream-rush-0.1.7.tgz --omit=optional`.
 
-Резолвинг сработает: Node ищет `@phpcraftdream/crush-win32-x64` вверх по
+Резолвинг сработает: Node ищет `@phpcraftdream/rush-win32-x64` вверх по
 родительским каталогам, и глобальный `node_modules` в этот список входит.
 
 ### 5.3 Правка `deploy.go` под новый scope
@@ -160,21 +160,21 @@ not installed».
 `deploy.go:274` жёстко зашивает upstream-scope **и upstream-раскладку**:
 
 ```go
-npmBin := filepath.Join(dir, "node_modules", "@charmland", "crush", "bin", binaryName())
+npmBin := filepath.Join(dir, "node_modules", "@charmland", "rush", "bin", binaryName())
 ```
 
 В форке бинарник лежит в **платформенном** пакете:
-`node_modules/@phpcraftdream/crush-<node_os>-<node_arch>/bin/crush.exe`.
+`node_modules/@phpcraftdream/rush-<node_os>-<node_arch>/bin/rush.exe`.
 Без правки `resolveDests` не найдёт npm-цель и деплой станет **молча
 неполным**.
 
 ---
 
-## 6. Правка `npm/crush/bin/crush.js`
+## 6. Правка `npm/rush/bin/rush.js`
 
 Единственное место, где копия нужна — и **одна на сборку**, не на папку.
 
-Причина: `crush.js:43` делает `spawnSync` прямо по бинарнику из
+Причина: `rush.js:43` делает `spawnSync` прямо по бинарнику из
 `node_modules` и ждёт его → файл залочен всю сессию. Rename-aside здесь
 **неприменим**: заменой управляет npm, момент обновления нам неизвестен.
 
@@ -197,14 +197,14 @@ npmBin := filepath.Join(dir, "node_modules", "@charmland", "crush", "bin", binar
 ### 6.2 Ключ — в имени КАТАЛОГА, не файла
 
 ```
-<cache>/crush/bin/<key>/crush.exe      ← ПРАВИЛЬНО
-<cache>/crush/bin/crush-<key>.exe      ← неправильно
+<cache>/rush/bin/<key>/rush.exe      ← ПРАВИЛЬНО
+<cache>/rush/bin/rush-<key>.exe      ← неправильно
 ```
 
-Имя процесса должно остаться `crush.exe`: от него зависят
-`taskkill /IM crush.exe`, читаемость в диспетчере задач, сопоставление по
+Имя процесса должно остаться `rush.exe`: от него зависят
+`taskkill /IM rush.exe`, читаемость в диспетчере задач, сопоставление по
 имени в `agentguard` (`internal/agent/agentguard/agentguard.go:70` — Tier
-3 блокирует рекурсивный вызов `crush`), и привычки операторских скриптов.
+3 блокирует рекурсивный вызов `rush`), и привычки операторских скриптов.
 Ключ в имени файла всё это ломает; ключ в имени каталога — нет, а
 семантика удаления та же (сносим каталог целиком; занятый файл просто не
 удалится).
@@ -215,14 +215,14 @@ npmBin := filepath.Join(dir, "node_modules", "@charmland", "crush", "bin", binar
 - Кэш-каталог: `%LOCALAPPDATA%` / `~/Library/Caches` /
   `$XDG_CACHE_HOME || ~/.cache`. В Node **нет** аналога
   `os.UserCacheDir()` — вычислять руками. Переопределение через
-  `CRUSH_BIN_CACHE` (у оператора система разгружена на `D:\`, держать
+  `RUSH_BIN_CACHE` (у оператора система разгружена на `D:\`, держать
   растущий кэш на `C:` нежелательно).
 - Подметание: при старте удалять каталоги с ключом, отличным от текущего;
   занятые не удалятся — уберутся позже.
 - Fallback: любая ошибка → `spawnSync` исходного бинарника, как сегодня.
 - **Доставка правки в установленный пакет.** Правка живёт в
-  `npm/crush/bin/crush.js` в репозитории; установленная копия в
-  глобальном `node_modules/@phpcraftdream/crush/bin/crush.js` сама не
+  `npm/rush/bin/rush.js` в репозитории; установленная копия в
+  глобальном `node_modules/@phpcraftdream/rush/bin/rush.js` сама не
   обновится. Финальный шаг задачи — перепаковать мета-пакет и
   переустановить его (`npm pack` + `npm i -g ... --omit=optional`, как в
   §5.2; платформенный пакет с бинарником пересобирать не нужно). Без
@@ -233,7 +233,7 @@ npmBin := filepath.Join(dir, "node_modules", "@charmland", "crush", "bin", binar
 
 ## 7. `queue.go` порождает детей через `os.Executable()`
 
-`internal/cmd/queue.go:332` (`runQueueTask`) спавнит дочерние `crush run`
+`internal/cmd/queue.go:332` (`runQueueTask`) спавнит дочерние `rush run`
 по пути `os.Executable()`. При горячей замене смысл пути расходится:
 
 - **Windows**: `GetModuleFileName` отдаёт путь, зафиксированный при
@@ -257,7 +257,7 @@ npmBin := filepath.Join(dir, "node_modules", "@charmland", "crush", "bin", binar
 
 Принятая семантика: **дети всегда получают текущий канонический бинарник
 (новую версию)** — единообразно на всех ОС, без дополнительного кода.
-Очередь и так спавнит независимые `crush run`-процессы. Зафиксировать
+Очередь и так спавнит независимые `rush run`-процессы. Зафиксировать
 комментарием у `queue.go:332`; тест не нужен (тестировать нечего — это
 поведение ОС по умолчанию), достаточно комментария.
 
@@ -267,7 +267,7 @@ npmBin := filepath.Join(dir, "node_modules", "@charmland", "crush", "bin", binar
 
 `internal/relaunch` (self-relaunch внутри Go-бинарника), execve/spawn+wait
 обёртки, врезка в `main.go` до `AssignToNewJobObject`, guard от
-форк-бомбы `deriveBuildID`, per-folder кэш и его GC, `crush cache
+форк-бомбы `deriveBuildID`, per-folder кэш и его GC, `rush cache
 ls|prune`, allow-list перезапускаемых команд — **не нужно**. Вместе с ними
 исчезают и связанные ловушки: job-объекты, Ctrl+C на группу процессов,
 проброс кода выхода, рекурсия перезапуска.
@@ -283,35 +283,35 @@ ls|prune`, allow-list перезапускаемых команд — **не н�
    rename-aside → запись новой версии → старый процесс дорабатывает →
    новый запуск получает новую версию → после выхода `.old` подметается.
 3. **Дев-цикл через обёртку** (ловит регрессию §6.1): собрать →
-   `deploy.go` → сразу `crush --version` через обёртку → должна отдать
+   `deploy.go` → сразу `rush --version` через обёртку → должна отдать
    **новую** сборку. Без size+mtime в ключе тест падает — в этом смысл.
 4. **Разрешение имени в обоих шеллах** (см. §10, грабля 1): после
-   миграции `crush` в cmd.exe и в git-bash должны вести к одному и тому же
+   миграции `rush` в cmd.exe и в git-bash должны вести к одному и тому же
    бинарнику.
-5. Сквозной smoke на Windows: живая `crush run` + параллельный
+5. Сквозной smoke на Windows: живая `rush run` + параллельный
    `go run deploy.go` → сессия не убита, обновление применилось, запуск в
    другой папке поднимает новую версию.
-6. Linux: удаление `killAllCrush` ничего не сломало.
+6. Linux: удаление `killAllRush` ничего не сломало.
 
 ---
 
 ## 10. Реестр граблей
 
-### Г1. `npm/crush.exe` перехватывает разрешение имени в cmd.exe — **критично**
+### Г1. `npm/rush.exe` перехватывает разрешение имени в cmd.exe — **критично**
 
 Проверено:
 
 ```
-cmd.exe:   where crush → D:\dev\go\crush\crush.exe        (cwd!)
-                       → npm\crush, npm\crush.cmd, npm\crush.exe
-git-bash:  which crush → /c/.../npm/crush                 (sh-шим)
+cmd.exe:   where rush → D:\dev\go\rush\rush.exe        (cwd!)
+                       → npm\rush, npm\rush.cmd, npm\rush.exe
+git-bash:  which rush → /c/.../npm/rush                 (sh-шим)
 ```
 
 PATHEXT ставит `.EXE` **раньше** `.CMD`, поэтому в cmd.exe вне репозитория
-`crush` = `npm\crush.exe` (нативный sibling), а в git-bash — sh-шим →
+`rush` = `npm\rush.exe` (нативный sibling), а в git-bash — sh-шим →
 node → обёртка. **Это два разных пути исполнения в зависимости от шелла.**
 
-Последствие: если при миграции не удалить `npm\crush.exe`, для cmd.exe
+Последствие: если при миграции не удалить `npm\rush.exe`, для cmd.exe
 миграция **не произойдёт вообще** — он продолжит запускать старый
 sibling-бинарник, а все правки обёртки будут невидимы. Удаление sibling'а
 — обязательный шаг, не уборка «для красоты».
@@ -319,33 +319,33 @@ sibling-бинарник, а все правки обёртки будут не�
 `deploy.go` sibling заново не создаст: кандидат (b) добавляется только
 `if os.Stat(sibling) == nil`, то есть если файл уже есть.
 
-Отдельно: `crush` в cmd.exe из корня репозитория разрешается в **артефакт
-сборки** `D:\dev\go\crush\crush.exe` (cwd идёт первым). Это ожидаемо, но
+Отдельно: `rush` в cmd.exe из корня репозитория разрешается в **артефакт
+сборки** `D:\dev\go\rush\rush.exe` (cwd идёт первым). Это ожидаемо, но
 при ручной проверке версий легко принять за установленный бинарник.
 
 ### Г2. Миграция требует тишины
 
-`npm rm -g` удаляет файлы. Занятый `crush.exe` **не удалится** — а
+`npm rm -g` удаляет файлы. Занятый `rush.exe` **не удалится** — а
 rename-aside живёт в нашем `deploy.go`, не в npm. Перед миграцией
-убедиться, что живых сессий нет (`crush sessions locks`), иначе
+убедиться, что живых сессий нет (`rush sessions locks`), иначе
 uninstall оставит частично снесённый пакет.
 
 ### Г3. Нужен путь отката
 
 Мигрируем **ежедневный рабочий инструмент**. До начала — сохранить копию
-текущего рабочего `bin/crush.exe` вне npm-дерева, чтобы при неудаче
+текущего рабочего `bin/rush.exe` вне npm-дерева, чтобы при неудаче
 вернуться одной командой. Без этого шага неудачная миграция оставляет
-оператора без `crush`.
+оператора без `rush`.
 
 ### Г4. `deploy.go` может создать ТРЕТЬЮ установку
 
 Если запустить `deploy.go` в момент, когда npm-цели нет (между
 uninstall и install), `resolveDests` вернёт ошибку → сработает ветка
-первой установки → бинарник ляжет в `%LOCALAPPDATA%\Programs\crush\` и
+первой установки → бинарник ляжет в `%LOCALAPPDATA%\Programs\rush\` и
 этот каталог будет **дописан в user PATH через реестр**. Появится третья
 точка установки, конкурирующая с npm за разрешение имени. Не запускать
 `deploy.go` в окне миграции; при необходимости — только с явным
-`CRUSH_DEPLOY_PATH`.
+`RUSH_DEPLOY_PATH`.
 
 ### Г5. Гонка первого запуска в обёртке
 
@@ -388,14 +388,14 @@ expected version» на такой сборке не воспроизводит�
 
 ### Г10. Теоретический обход agentguard
 
-Если бы кэш-копия называлась `crush-<key>.exe`, вызов такого имени не
-совпал бы с записью `"crush"` в денилисте `agentguard`. Закрыто решением
-§6.2 (ключ в каталоге, имя файла остаётся `crush.exe`).
+Если бы кэш-копия называлась `rush-<key>.exe`, вызов такого имени не
+совпал бы с записью `"rush"` в денилисте `agentguard`. Закрыто решением
+§6.2 (ключ в каталоге, имя файла остаётся `rush.exe`).
 
 ### Г11. Мусор, который надо снести
 
-`bin/crush.exe.bak-b53789cc` (62 МБ, 14 июля) — доказательство, что
-бэкап-механизм уже работал, а подметать было некому. `npm/crush.exeн`
+`bin/rush.exe.bak-b53789cc` (62 МБ, 14 июля) — доказательство, что
+бэкап-механизм уже работал, а подметать было некому. `npm/rush.exeн`
 (76 МБ, 10 марта) — файл с прилипшей кириллической «н» от опечатки в
 редиректе. Суммарно 138 МБ мёртвого груза.
 

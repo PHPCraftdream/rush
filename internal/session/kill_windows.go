@@ -20,7 +20,7 @@ import (
 // the MSYS2/Git-Bash transient intermediary parent (job membership
 // reaches those), while the job cannot see a process that escaped in the
 // Start→AssignProcessToJobObject micro-gap and IS PPID-reachable when
-// crush itself does not run under MSYS (taskkill reaches those).
+// rush itself does not run under MSYS (taskkill reaches those).
 // Returning early on a successful TerminateJobObject — the shape this
 // function had after 68f9c65f — silently dropped that second case: the
 // job terminated "successfully", KillProcess reported nil, and the
@@ -36,8 +36,8 @@ import (
 // prefer two more reliable paths:
 //
 //  1. taskkill /F /T /PID <pid> — kills the process plus every child it
-//     spawned. This is what crush sessions kill actually wants because
-//     a stuck crush.exe usually has a claude.cmd / node.exe descendant
+//     spawned. This is what rush sessions kill actually wants because
+//     a stuck rush.exe usually has a claude.cmd / node.exe descendant
 //     still holding its stdin pipe.
 //  2. As a fallback (taskkill not on PATH) OpenProcess + TerminateProcess
 //     via golang.org/x/sys/windows.

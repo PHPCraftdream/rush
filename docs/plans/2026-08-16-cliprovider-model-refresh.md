@@ -251,12 +251,12 @@ labels *secondary* to `gemini-3.5-flash`.
 
 ---
 
-## 4. `crush ping` and effort
+## 4. `rush ping` and effort
 
 `--model` **already** accepts an `@effort` suffix — `parseAtomOrRaw`
 (`models_atoms.go:562-601`) splits it and `validateEffortForModel`
 (`:613-631`) checks it against the atom's `Levels()`. So
-`crush ping --model local-cli/cli-codex-sol@xhigh` is already the intended
+`rush ping --model local-cli/cli-codex-sol@xhigh` is already the intended
 syntax; what is missing is:
 
 1. **It does nothing useful for codex today** — see §0; the effort would be
@@ -294,7 +294,7 @@ the blast radius of the effort bug before it is fixed.
 
 Verification bar: each behavioural fix gets a revert-check (reintroduce the
 bug, confirm the new test fails, restore, confirm the diff is unchanged), and
-every new model is pinged before being added - `crush ping --model
+every new model is pinged before being added - `rush ping --model
 local-cli/<id>[@effort]`, or the CLI directly.
 
 ## 6. Open questions

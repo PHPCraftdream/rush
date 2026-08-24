@@ -11,7 +11,7 @@ import (
 // a new invocation" case (checkPeakHours' pre-flight call sites) and the
 // "force-stopped an already-in-flight turn" case (the OnStepFinish
 // mid-turn re-check). Both must carry the same guidance: this is not a
-// crash, crush will not retry on its own, and an orchestrating agent
+// crash, rush will not retry on its own, and an orchestrating agent
 // should schedule a resume for the exact reopen time rather than retry
 // immediately.
 //

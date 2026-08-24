@@ -332,7 +332,7 @@ func (s *service) Create(ctx context.Context, sessionID string, params CreateMes
 // operation, bypassing the per-message DeleteMessageIfTerminal predicate.
 //
 // This is the only code path that intentionally bypasses the streaming guard:
-// total session teardown (called by `crush sessions reset --force`) has no notion
+// total session teardown (called by `rush sessions reset --force`) has no notion
 // of a "live turn that will still write" — the caller holds the session lock and
 // has already killed the previous holder (via SIGKILL on Windows or Unix), so
 // any orphaned streaming row will never receive a terminal Finish. Using the

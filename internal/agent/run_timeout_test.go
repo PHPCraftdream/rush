@@ -11,7 +11,7 @@ import (
 )
 
 // deadlineExceededModel is a fantasy.LanguageModel whose Stream call fails
-// with a bare context.DeadlineExceeded, simulating what `crush run
+// with a bare context.DeadlineExceeded, simulating what `rush run
 // --timeout` produces when its root context deadline fires mid-turn (see
 // run.go's timeoutDur handling). Only Stream is exercised by Run().
 type deadlineExceededModel struct{}

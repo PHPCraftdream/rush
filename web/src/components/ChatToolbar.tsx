@@ -538,7 +538,7 @@ export function ChatToolbar() {
           // running agent session.
           <a
             data-test-id="header-update-available"
-            href="https://github.com/PHPCraftdream/crush/releases"
+            href="https://github.com/PHPCraftdream/rush/releases"
             target="_blank"
             rel="noreferrer"
             title={`rush ${updateInfo.latest} is available (you have ${updateInfo.current})`}

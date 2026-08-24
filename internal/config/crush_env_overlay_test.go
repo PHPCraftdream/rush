@@ -66,7 +66,7 @@ func TestConfigureProviders_RushPrefixOverridesAPIKey(t *testing.T) {
 	cfg.setDefaults(t.TempDir(), "")
 	baseEnv := env.NewFromMap(map[string]string{
 		"OPENAI_API_KEY":      "real-key",
-		"RUSH_OPENAI_API_KEY": "crush-override-key",
+		"RUSH_OPENAI_API_KEY": "rush-override-key",
 	})
 	resolver := NewShellVariableResolver(baseEnv)
 
@@ -75,7 +75,7 @@ func TestConfigureProviders_RushPrefixOverridesAPIKey(t *testing.T) {
 
 	pc, ok := cfg.Providers.Get("openai")
 	require.True(t, ok)
-	require.Equal(t, "crush-override-key", pc.ExtraHeaders["X-Probe"], "RUSH_ prefix must override the bare env var")
+	require.Equal(t, "rush-override-key", pc.ExtraHeaders["X-Probe"], "RUSH_ prefix must override the bare env var")
 }
 
 // TestConfigureProviders_NoOverlayWhenNoRushPrefix verifies the common

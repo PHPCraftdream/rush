@@ -24,7 +24,7 @@ type ForkOptions struct {
 	// Title is the forked session's title. Empty means "<src title> fork".
 	Title string
 	// ParentID sets the fork's parent_session_id, making it a child session
-	// (as `crush sessions fork --child` does). Empty means top-level (no
+	// (as `rush sessions fork --child` does). Empty means top-level (no
 	// parent) — the web fork button's behavior.
 	ParentID string
 	// LimitMsgs truncates the copy to the first LimitMsgs messages

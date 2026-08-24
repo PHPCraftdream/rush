@@ -50,7 +50,7 @@ func TestCheckOriginLocalhostAccepted(t *testing.T) {
 
 // TestCheckOriginWrongPortRejected verifies that even a same-host origin is
 // rejected if the port doesn't match the one this server actually bound to —
-// otherwise a malicious page on the same machine but a different crush
+// otherwise a malicious page on the same machine but a different rush
 // instance's port (or a stale cached value) could sneak through.
 func TestCheckOriginWrongPortRejected(t *testing.T) {
 	t.Parallel()

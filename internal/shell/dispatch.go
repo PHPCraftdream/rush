@@ -176,14 +176,14 @@ func dispatchShebang(ctx context.Context, scriptPath string, probe []byte, args 
 	sb, err := parseShebang(probe)
 	if err != nil {
 		hc := interp.HandlerCtx(ctx)
-		fmt.Fprintf(hc.Stderr, "crush: %s: %s\n", scriptPath, err)
+		fmt.Fprintf(hc.Stderr, "rush: %s: %s\n", scriptPath, err)
 		return interp.ExitStatus(126)
 	}
 
 	interpreter, err := resolveInterpreter(sb.interpreter)
 	if err != nil {
 		hc := interp.HandlerCtx(ctx)
-		fmt.Fprintf(hc.Stderr, "crush: %s: %s\n", scriptPath, err)
+		fmt.Fprintf(hc.Stderr, "rush: %s: %s\n", scriptPath, err)
 		return interp.ExitStatus(127)
 	}
 
@@ -402,7 +402,7 @@ const defaultSystemRoot = `C:\Windows`
 // Includes Sysnative alongside System32/SysWOW64: Sysnative is the path a
 // 32-bit process sees to reach the "real" (64-bit) System32 on 64-bit
 // Windows, via WOW64 file-system redirection. This fork is only ever built
-// 64-bit, so a 64-bit crush process never actually resolves through
+// 64-bit, so a 64-bit rush process never actually resolves through
 // Sysnative in practice — but listing it is cheap and future-proofs this
 // list against a 32-bit build ever existing, without relying on us to
 // remember to add it later.

@@ -106,7 +106,7 @@ ORDER BY created_at ASC;
 -- name: IncrementSessionCost :one
 -- Atomic additive update for session cost. Safe under fan-out (multiple
 -- sub-agent goroutines finishing concurrently and each charging the
--- parent) and across processes (orchestrator with parallel crush runs).
+-- parent) and across processes (orchestrator with parallel rush runs).
 -- Returns the updated row so the caller can refresh its snapshot.
 UPDATE sessions
 SET

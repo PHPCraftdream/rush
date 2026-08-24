@@ -199,7 +199,7 @@ func TestCodexSpecs_CurrentSlugsArePresent(t *testing.T) {
 // ── Gemini specs (task #478) ─────────────────────────────────────────────────
 
 // TestGeminiSpecs_PassExactModelArgument pins the ids against the CLI's own
-// VALID_GEMINI_MODELS set. Both additions were pinged OK through crush.
+// VALID_GEMINI_MODELS set. Both additions were pinged OK through rush.
 func TestGeminiSpecs_PassExactModelArgument(t *testing.T) {
 	for _, tc := range []struct{ id, arg string }{
 		{"cli-gemini-flash", "gemini-3-flash"},

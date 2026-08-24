@@ -4,7 +4,7 @@
  *
  * useWS.ts's `messages_list` handler used to apply ANY incoming reply
  * unconditionally by session-ID match, with no msgID/sequence check. For an
- * externally-owned session (OwnedExternal === true, i.e. another `crush run`
+ * externally-owned session (OwnedExternal === true, i.e. another `rush run`
  * process holds the session), TWO independent timers each fire their own
  * un-coordinated `load_messages` request for the SAME session ID:
  *

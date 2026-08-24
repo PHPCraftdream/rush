@@ -32,7 +32,7 @@ func (s *ConfigStore) ReadModelsAtScope(scope Scope) (smart, fast *SelectedModel
 // the given scope, ignoring any merge with the other scope. Missing slots are
 // absent from the returned map; returns an error only on read/parse failure.
 //
-// Fork patch: worker/reviewer CLI settability — `crush models state` needs
+// Fork patch: worker/reviewer CLI settability — `rush models state` needs
 // per-scope visibility into all four slots, not just smart/fast.
 func (s *ConfigStore) ReadAllModelsAtScope(scope Scope) (map[SelectedModelType]*SelectedModel, error) {
 	path, perr := s.configPath(scope)

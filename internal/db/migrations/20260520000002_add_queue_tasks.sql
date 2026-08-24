@@ -1,5 +1,5 @@
 -- Fork patch: batch 30 — queue system.
--- Persistent task queue for batched `crush run` invocations.
+-- Persistent task queue for batched `rush run` invocations.
 --
 -- +goose Up
 -- +goose StatementBegin

@@ -108,14 +108,14 @@ var gitGlobalIgnorePatterns = sync.OnceValue(func() []gitignore.Pattern {
 	return parsePatterns(strings.Split(string(bts), "\n"), nil)
 })
 
-// crushGlobalIgnorePatterns returns patterns from the user's
-// ~/.config/crush/ignore file.
-var crushGlobalIgnorePatterns = sync.OnceValue(func() []gitignore.Pattern {
-	name := filepath.Join(home.Config(), "crush", "ignore")
+// rushGlobalIgnorePatterns returns patterns from the user's
+// ~/.config/rush/ignore file.
+var rushGlobalIgnorePatterns = sync.OnceValue(func() []gitignore.Pattern {
+	name := filepath.Join(home.Config(), "rush", "ignore")
 	bts, err := os.ReadFile(name)
 	if err != nil {
 		if !os.IsNotExist(err) {
-			slog.Debug("Failed to read crush global ignore file", "path", name, "error", err)
+			slog.Debug("Failed to read rush global ignore file", "path", name, "error", err)
 		}
 		return nil
 	}
@@ -197,9 +197,9 @@ func (dl *directoryLister) getCombinedMatcher(dir string) gitignore.Matcher {
 		// Add common patterns first (lowest priority).
 		allPatterns = append(allPatterns, commonIgnorePatterns()...)
 
-		// Add global ignore patterns (git core.excludesFile + crush global ignore).
+		// Add global ignore patterns (git core.excludesFile + rush global ignore).
 		allPatterns = append(allPatterns, gitGlobalIgnorePatterns()...)
-		allPatterns = append(allPatterns, crushGlobalIgnorePatterns()...)
+		allPatterns = append(allPatterns, rushGlobalIgnorePatterns()...)
 
 		// Collect patterns from root to this directory.
 		relDir, _ := filepath.Rel(dl.rootPath, dir)

@@ -29,7 +29,7 @@ func TestRunAllowlist_BashToolNameLiteralMatchesConstant(t *testing.T) {
 
 // TestRunAllowlistSpecFromConfig_NilPreservesLegacy is the backwards-
 // compatibility guarantee: with no permissions.run block at all, the
-// derived spec is inert (Restrict = false) so `crush run` keeps
+// derived spec is inert (Restrict = false) so `rush run` keeps
 // auto-approving everything.
 func TestRunAllowlistSpecFromConfig_NilPreservesLegacy(t *testing.T) {
 	t.Parallel()
@@ -185,7 +185,7 @@ func TestRunOverridesMerge_ConfigPlusCLI(t *testing.T) {
 
 // TestRunOverridesMerge_CLIRestrictOffKeepsConfigBehaviour verifies
 // that when neither CLI nor config arms restrict, the merged gate stays
-// inert — i.e. legacy `crush run` auto-approve is preserved.
+// inert — i.e. legacy `rush run` auto-approve is preserved.
 func TestRunOverridesMerge_CLIRestrictOffKeepsConfigBehaviour(t *testing.T) {
 	t.Parallel()
 	configPerms := &config.Permissions{

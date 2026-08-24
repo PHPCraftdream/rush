@@ -66,7 +66,7 @@ func TestHandleInterruptTick(t *testing.T) {
 	sess, err := env.sessions.Create(ctx, "interrupt-tick")
 	require.NoError(t, err)
 
-	// The CLI (`crush sessions inject --interrupt`) creates the user message
+	// The CLI (`rush sessions inject --interrupt`) creates the user message
 	// AND the interrupt row; simulate both here.
 	msg, err := env.messages.Create(ctx, sess.ID, message.CreateMessageParams{
 		Role:  message.User,

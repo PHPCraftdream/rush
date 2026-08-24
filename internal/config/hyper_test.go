@@ -208,7 +208,7 @@ func TestHyperSync_GetCacheStoreError(t *testing.T) {
 // RUSH_PROVIDER_CACHE_ONLY=1 the syncer serves cached data without
 // calling the network client and without rewriting the cache file.
 //
-// This is the contract `crush models list` (default, no --refresh)
+// This is the contract `rush models list` (default, no --refresh)
 // relies on so a read-only listing has no network/disk side effects.
 //
 // Not parallel: t.Setenv mutates process-global env.

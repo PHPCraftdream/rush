@@ -33,7 +33,7 @@ type AskQuestionParams struct {
 // normalizes an AskQuestionError it sees coming back from fantasy's Stream()
 // into the pre-existing agent.AwaitingAnswerError (see the errors.As check
 // next to the peak-hours abort-err normalization in agent.go), so every
-// downstream consumer (Finish-part text, `crush run --json`'s exit_reason,
+// downstream consumer (Finish-part text, `rush run --json`'s exit_reason,
 // sessions why/diff, …) only ever has to know about the one agent-level
 // type. This struct is the narrow carrier that crosses the package
 // boundary.

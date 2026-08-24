@@ -32,7 +32,7 @@ import (
 // any Run during shutdown, and App.Shutdown stops the pump before
 // closing the DB, so the durable rows are safely processed later — after
 // restart, in a fresh process. This includes interrupt tick's calls (an
-// ExistingMessageID for a row `crush sessions inject` already wrote):
+// ExistingMessageID for a row `rush sessions inject` already wrote):
 // they ride the same durable-enqueue path as everything else, they just
 // additionally already had a DB row.
 //
@@ -130,7 +130,7 @@ func (mb *mailbox) interruptAndReplace(call SessionAgentCall) (context.CancelFun
 	//
 	// "the pump will execute it" originally meant only the background
 	// RunQueuePump's own periodic tick (3s in production) — leaving a real
-	// liveness gap for short-lived processes (crush run), since the process
+	// liveness gap for short-lived processes (rush run), since the process
 	// routinely exits before that tick ever fires. Task #421/P0-1 closed
 	// that gap WITHOUT touching this guard: RunNonInteractive
 	// (internal/app/app.go) now calls RunQueuePump.DrainSessionNow
@@ -218,7 +218,7 @@ func (mb *mailbox) interruptAndReplace(call SessionAgentCall) (context.CancelFun
 // first, it is a SessionAgentCall a PRIOR drain (drainOrRelease/
 // drainOrReleaseFinal) already popped out of mb.submitted (or the legacy
 // queue) specifically because "next" meant "run this next" — it has not run
-// yet, and for the ExistingMessageID path (e.g. `crush sessions inject
+// yet, and for the ExistingMessageID path (e.g. `rush sessions inject
 // --interrupt`) its DB row already exists with nothing that will ever
 // answer it if silently dropped here. On the LOOP'S VERY FIRST iteration,
 // `call` is instead the original argument to Run() itself — verified, not

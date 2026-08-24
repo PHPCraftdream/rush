@@ -143,7 +143,7 @@ var workerToolNames = []string{"edit", "multiedit", "write", "bash", "todos", "d
 // AllowedTools when workerSubAgentActive(cfg) is true (worker configured AND
 // active role empty-or-smart). The orchestrator must delegate all file
 // mutation to the worker: as long as edit/multiedit/write are present, rule
-// 7 in the prompt is only advice, and three real `crush run --role smart`
+// 7 in the prompt is only advice, and three real `rush run --role smart`
 // runs showed the smart model doing all the hands-on work itself (0 agent
 // calls out of 50/51/24 tool calls) with a configured worker never used.
 //
@@ -272,7 +272,7 @@ func (c *coordinator) buildTools(ctx context.Context, cfg *config.Config, agent 
 		}
 	}
 
-	logFile := filepath.Join(cfg.Options.DataDirectory, "logs", "crush.log")
+	logFile := filepath.Join(cfg.Options.DataDirectory, "logs", "rush.log")
 
 	// Build hook runner if PreToolUse hooks are configured.
 	var hookRunner *hooks.Runner
@@ -285,7 +285,7 @@ func (c *coordinator) buildTools(ctx context.Context, cfg *config.Config, agent 
 	// one-message completion notice into the owning session via the
 	// existing InjectMessage path. Kill-switch defaults to ON; a session
 	// that is BUSY merges it into the running turn, IDLE sessions get a
-	// persisted message (no auto-resume). crush run is single-turn and
+	// persisted message (no auto-resume). rush run is single-turn and
 	// never receives it.
 	opts := cfg.Options
 	notifyDone := opts.NotifyOnBackgroundJobDone == nil || *opts.NotifyOnBackgroundJobDone

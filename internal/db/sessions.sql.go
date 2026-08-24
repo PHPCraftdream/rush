@@ -253,7 +253,7 @@ type IncrementSessionCostParams struct {
 
 // Atomic additive update for session cost. Safe under fan-out (multiple
 // sub-agent goroutines finishing concurrently and each charging the
-// parent) and across processes (orchestrator with parallel crush runs).
+// parent) and across processes (orchestrator with parallel rush runs).
 // Returns the updated row so the caller can refresh its snapshot.
 func (q *Queries) IncrementSessionCost(ctx context.Context, arg IncrementSessionCostParams) (Session, error) {
 	row := q.queryRow(ctx, q.incrementSessionCostStmt, incrementSessionCost, arg.Cost, arg.ID)

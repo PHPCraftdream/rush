@@ -147,7 +147,7 @@ func TestP1_5_GenerationCheckPreventsMetadataClobber(t *testing.T) {
 // generation mechanism, or this holder's own writeGenerationSidecar call
 // having failed at acquire time — best-effort, never fatal).
 //
-// SCOPE NOTE (added on independent review): the delegated /crush fix's own
+// SCOPE NOTE (added on independent review): the delegated /rush fix's own
 // version of this test asserted the OPPOSITE — that cleanup is SKIPPED
 // when the generation sidecar is missing — treating "file absent" as
 // positive evidence of a new owner. That is wrong: a missing sidecar is

@@ -42,7 +42,7 @@ package tools
 //     string, not JSON params — separate work); askquestion (its one
 //     Go error is the deliberate control-flow AskQuestionError that
 //     surfaces the question to the operator); webfetch, websearch,
-//     crushinfo, crushlogs, jobkill, joboutput (no returned-error
+//     rushinfo, rushlogs, jobkill, joboutput (no returned-error
 //     sites, grep-verified — nothing for this guard to catch);
 //     mcp-tools.go, list_mcp_resources.go and read_mcp_resource.go
 //     (their level-3 sites are missing session IDs and MCP client

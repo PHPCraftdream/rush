@@ -19,7 +19,7 @@ import (
 // the test process and instead surfaces as a single, clear agentTurnResponse
 // on done, exactly once. Without runAgentTurnRecovered's recover(), this
 // panic would propagate out of the goroutine and terminate the whole
-// process via Go's default handler — this is precisely the "crush run died
+// process via Go's default handler — this is precisely the "rush run died
 // with zero log lines" failure mode being closed here.
 func TestRunAgentTurnRecovered_Panic(t *testing.T) {
 	done := make(chan agentTurnResponse, 1)

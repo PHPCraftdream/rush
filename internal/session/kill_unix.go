@@ -24,7 +24,7 @@ import (
 // without that confirmation we fall back to the single-process SIGKILL
 // below and leave every group untouched. Callers that want tree-kill
 // semantics must spawn the child with SysProcAttr.Setpgid = true;
-// foreign pids (the lock holder `crush sessions kill` targets, for
+// foreign pids (the lock holder `rush sessions kill` targets, for
 // example) keep the old single-process behavior unless they already
 // happen to be leaders.
 //

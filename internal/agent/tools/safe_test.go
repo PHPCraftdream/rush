@@ -1,6 +1,6 @@
 package tools
 
-// B-1 regression test (found by a full-project @crush --role reviewer
+// B-1 regression test (found by a full-project @rush --role reviewer
 // audit, 2026-08-11): safeCommands used to include command-wrapper
 // utilities (env, nice, nohup, time, timeout) that execute an arbitrary
 // subcommand. isSafeReadOnlyCommand matches on prefix alone, so

@@ -162,7 +162,7 @@ func TestSaveFileParts(t *testing.T) {
 }
 
 // TestSaveFilePartsDisambiguatesCollidingFilenames is a BUG-3 regression
-// test (found by a full-project @crush --role reviewer audit, 2026-08-11):
+// test (found by a full-project @rush --role reviewer audit, 2026-08-11):
 // two FileParts sharing the same base filename (e.g. two "image.png"
 // attachments from different messages) used to silently write to the same
 // path — the second os.WriteFile overwrote the first, but both entries'

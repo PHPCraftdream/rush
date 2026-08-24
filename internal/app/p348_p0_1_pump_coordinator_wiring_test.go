@@ -4,7 +4,7 @@ package app
 // 2026-08-10): App.New started the RunQueuePump BEFORE InitCoderAgent
 // assigned app.AgentCoordinator, and the pump's coordinatorAdapterImpl
 // captured app.AgentCoordinator BY VALUE at construction time — so every
-// production `crush run`/web-server pump was permanently wired to a nil
+// production `rush run`/web-server pump was permanently wired to a nil
 // coordinator. The pump silently ran in scan-only mode forever
 // (run_queue_pump.go's `if p.cfg.Coordinator == nil { ...; return }`
 // branch), meaning ANY call that ever reached the durable run queue
@@ -153,7 +153,7 @@ func TestAppNew_RunQueuePump_ExecutesRealEnqueuedCall(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	// Real config store, the same construction path `crush run`/the web
+	// Real config store, the same construction path `rush run`/the web
 	// server use — NOT a bare &config.ConfigStore{} literal.
 	store, err := config.Init(dataDir, dataDir, false)
 	require.NoError(t, err)

@@ -13,16 +13,16 @@ back here.
 
 ## 1. Why this fork exists
 
-Upstream Crush is a **terminal UI** (TUI) coding agent — built around
+Upstream Rush is a **terminal UI** (TUI) coding agent — built around
 a human typing into a terminal session. The optional `client/server`
 mode in upstream still drives the TUI; its REST API under `/v1/...` is
 just a transport between the TUI front-end (running in a separate
 terminal) and the agent back-end (Unix socket / Windows named pipe).
 
-This fork has a fundamentally different goal: **make `crush` a tool
+This fork has a fundamentally different goal: **make `rush` a tool
 that other AI agents can drive.** The primary user is not a human at
 a keyboard — it is an orchestrator (Claude Code, a custom LLM wrapper,
-a CI job, a multi-agent fleet) that spawns `crush run` and parses the
+a CI job, a multi-agent fleet) that spawns `rush run` and parses the
 JSON envelope on stdout. A React/Tailwind web UI stays for the cases
 where a human DOES want to peek in, but the design centre is the CLI
 and the orchestrator-facing contract.
@@ -30,11 +30,11 @@ and the orchestrator-facing contract.
 Concretely, this single repositioning forces everything that follows:
 
 - The TUI is removed because the primary user no longer types.
-- `crush run` grows a wrapper-stable JSON envelope, a frozen set of
+- `rush run` grows a wrapper-stable JSON envelope, a frozen set of
   flags (`--role`, `--session`, `--format`, `--agents`, `--timeout`,
   `--json`, `--stream`), and post-validation guarantees so a script
   on top can branch deterministically on the result.
-- Multiple concurrent `crush run` against one repo become a supported
+- Multiple concurrent `rush run` against one repo become a supported
   scenario (multi-section audits, fan-out refactors) — so the storage
   layer, lock files, log writes and MCP-id files all get hardened
   against process races.
@@ -42,7 +42,7 @@ Concretely, this single repositioning forces everything that follows:
   context overflow, mid-stream stall, sub-agent fan-out without a
   final composition) the envelope says so. The agent on top cannot
   read minds; silent success is the worst class of failure.
-- Bootstrap helpers (`crush claude-init`) drop a delegation guide into
+- Bootstrap helpers (`rush claude-init`) drop a delegation guide into
   the workspace so an upper LLM learns the rules of engagement
   without trial-and-error.
 
@@ -58,7 +58,7 @@ top".
 | Front-end | Bubble Tea TUI (`internal/ui/`, ~495 files) | React SPA (`web/`, embedded via `go:embed`) |
 | Transport | REST `/v1/...` over Unix socket / Windows named pipe (`internal/server/proto.go`, 30KB) | WebSocket `/ws` over TCP loopback (`internal/server/handlers.go`, ~58 handlers) |
 | Auth | None (local-socket trust) | Token-based, see `internal/server/auth.go` |
-| Workspace model | `internal/workspace/` abstraction (single local vs. remote-HTTP impl behind `CRUSH_CLIENT_SERVER` env) | Single embedded `appPkg.App`; no abstraction (workspace package removed) |
+| Workspace model | `internal/workspace/` abstraction (single local vs. remote-HTTP impl behind `RUSH_CLIENT_SERVER` env) | Single embedded `appPkg.App`; no abstraction (workspace package removed) |
 | Sessions | One model per agent role, set globally | Per-session model overrides stored in DB (migration `20260308000001`) |
 | Permissions | In-memory rules during a TUI run | Persistent per-session rules in DB (migration `20260308000002`) |
 | Skills | TUI list dialog | `web/` slash-command autocomplete + browser dialog |
@@ -133,11 +133,11 @@ tells you which side is authoritative for each common conflict class.
 | `internal/ui/notification/` | **Keep** | OS-native notifications are reused by the web server. |
 | `internal/backend/` (DU) | **Delete** | Upstream's split between agent core (`backend`) and TUI was meant for the client/server mode. We have a single embedded `appPkg.App` in `internal/app/` so there is no need for the split. |
 | `internal/client/` (DU) | **Delete** | HTTP REST client for upstream's client/server mode. Our front-end is the browser, not Go. |
-| `internal/cmd/server.go`, `internal/cmd/server_*.go`, `internal/cmd/session.go`, `internal/cmd/logout.go`, `internal/cmd/clientserverrace/` (DU) | **Delete** | Upstream client/server CLI subcommands. Our subcommand is `crush web` (see `internal/cmd/web.go`). |
+| `internal/cmd/server.go`, `internal/cmd/server_*.go`, `internal/cmd/session.go`, `internal/cmd/logout.go`, `internal/cmd/clientserverrace/` (DU) | **Delete** | Upstream client/server CLI subcommands. Our subcommand is `rush web` (see `internal/cmd/web.go`). |
 | `internal/server/proto.go`, `internal/server/config.go`, `internal/server/logging.go`, `internal/server/net_*.go` (DU) | **Delete** | Upstream's REST `/v1/...` server. Our server is `internal/server/{server,handlers,protocol,events,hub,auth,wire}.go` and lives next to them. |
 | `internal/workspace/` (DU) | **Decide each merge.** Last time (commit `8b30fad1`'s merge resolution) we silently dropped it. Currently we don't import the package anywhere, so the build passes either way. If upstream starts hardening the abstraction in a way we want to inherit, restore it — otherwise leave deleted. Document the decision in the commit message. |
 | `go.mod` / `go.sum` (UU) | **Merge both sides.** Take upstream's version bumps but keep our additions: `@rsbuild/plugin-babel`-related Go deps are none (frontend-only), but anything we added for the web server (websocket/cors/etc) must stay. Run `go mod tidy` after resolving. |
-| `internal/cmd/root.go` (UU) | **Keep ours but pull in their new flags.** We register `crush web` as the default subcommand; upstream registers `tui`. Diff carefully and copy over only flag additions. |
+| `internal/cmd/root.go` (UU) | **Keep ours but pull in their new flags.** We register `rush web` as the default subcommand; upstream registers `tui`. Diff carefully and copy over only flag additions. |
 | `internal/cmd/login.go` (UU) | **Keep ours.** Our flow stores tokens for the web server; upstream's writes to the TUI auth context. |
 | `internal/agent/agent.go` (UU) | **Merge by hand.** This is our main extension point: sliding context window, queued compact, silent background compaction, empty-response detection (see Section 4.A). Upstream evolves this file too. Take each new upstream change as a separate patch and verify our `// Fork patch:` blocks still apply. |
 | `internal/agent/coordinator.go` (UU) | **Merge by hand.** We added `TakeSummarizeQueue`, `RunWithOverrides`, and per-session yolo/permission tracking. Upstream's coordinator drives one TUI session at a time, ours drives N concurrent web sessions. |
@@ -221,7 +221,7 @@ Files added (all new — none from upstream):
 | `events.go` | WS event type names + payload structs (server-push side). |
 | `wire.go` | Envelope `{type, id, payload}` + JSON framing. |
 | `hub.go` | Hub of connected clients, broadcast routing, per-session filtering. |
-| `auth.go` | Token mint/verify (HMAC of timestamp+secret), stored in `~/.config/crush/token`. |
+| `auth.go` | Token mint/verify (HMAC of timestamp+secret), stored in `~/.config/rush/token`. |
 
 ### 4.B — React web UI (`web/`)
 
@@ -294,14 +294,14 @@ Patches and additions in `agent.go`, `coordinator.go`:
   every fantasy stream callback bumps an atomic activity timestamp;
   a watchdog goroutine cancels the generation context if no callback
   fires for `streamIdleTimeoutDefault` (3 min default), overridable
-  per app via `Options.StreamIdleTimeoutSeconds` in `crush.json`.
+  per app via `Options.StreamIdleTimeoutSeconds` in `rush.json`.
   Adds the "Codec must surface control" invariant: a provider that
   holds the HTTP body open but stops sending bytes (rate-limit,
   HTTP/2 stall, backend hiccup) can no longer freeze the agent
   indefinitely. On fire, the assistant message gets a
   `FinishReasonError("Stream stalled")` with the duration so the user
   knows why their turn ended. Backed by the 162-promise-all
-  post-mortem (D:\dev\garnet-team\.crush): four streams (parent + 3
+  post-mortem (D:\dev\garnet-team\.rush): four streams (parent + 3
   sub-agents) all froze in a 9-second window when a provider stopped
   responding mid-stream, and the agent waited 1.5h before the user
   killed the process. **Tune up to 10–15 minutes** (e.g.
@@ -311,7 +311,7 @@ Patches and additions in `agent.go`, `coordinator.go`:
 - **Detached-context flush at the error path** — the final
   `messages.Update` that records the assistant's finish part now uses
   `context.WithoutCancel(ctx)` + a short timeout, instead of the
-  outer ctx. Without this, Ctrl-C in `crush run` (which cancels the
+  outer ctx. Without this, Ctrl-C in `rush run` (which cancels the
   signal.NotifyContext that fang gives every subcommand) would
   propagate `ctx.Canceled` into `Update` and leave the assistant
   message half-saved: tool calls present, no finish part — the
@@ -347,7 +347,7 @@ The fork ships substantially more CLI integration than upstream:
 ### 4.F — Hooks in config
 
 `internal/hooks/` was added upstream but we extended the `Hooks` block
-in `crush.json` schema and surfaced it in `schema.json` so the user can
+in `rush.json` schema and surfaced it in `schema.json` so the user can
 configure PreToolUse/PostToolUse hooks via the standard config file
 (see `docs/hooks/README.md`).
 
@@ -371,7 +371,7 @@ configure PreToolUse/PostToolUse hooks via the standard config file
 
 - `Makefile`, `build.go` — convenience entry points.
 - `.claude/skills/deploy.md` — skill autocomplete entry.
-- `internal/cmd/web.go` — the `crush web` subcommand (the default in
+- `internal/cmd/web.go` — the `rush web` subcommand (the default in
   this fork).
 - `internal/swagger/` — annotations-only stub kept so a future
   REST-side rebirth could autogenerate docs; the WS server is the real
@@ -379,10 +379,10 @@ configure PreToolUse/PostToolUse hooks via the standard config file
 
 ### 4.I — Parallel-process / multi-agent concurrency
 
-Crush in this fork is increasingly used as a **sub-agent** spawned by an
-orchestrator: typically 5+ `crush run --session X --json` processes
+Rush in this fork is increasingly used as a **sub-agent** spawned by an
+orchestrator: typically 5+ `rush run --session X --json` processes
 running concurrently in the same working directory and sharing one
-`.crush/` folder (the shamir-db audit workflow is the canonical case).
+`.rush/` folder (the shamir-db audit workflow is the canonical case).
 On top of that, each process fan-outs internally to sub-agents in
 separate goroutines. The defence layers live in two clusters.
 
@@ -390,9 +390,9 @@ separate goroutines. The defence layers live in two clusters.
 
 - `internal/session/lock.go` + `lock_unix.go` + `lock_windows.go` —
   cross-platform per-session exclusive file lock under
-  `.crush/locks/session-<id>.lock` (flock on POSIX, LockFileEx on
+  `.rush/locks/session-<id>.lock` (flock on POSIX, LockFileEx on
   Windows). `agent.Run` acquires it after the in-process
-  `IsSessionBusy` check so two crush processes cannot share a session
+  `IsSessionBusy` check so two rush processes cannot share a session
   id. OS auto-releases on death — no stale-lock cleanup. PID stamped
   for diagnostics.
 - `recoverInterruptedTurns` age-filtered (>30s) so a starting process
@@ -403,7 +403,7 @@ separate goroutines. The defence layers live in two clusters.
 - SQLite `busy_timeout=30000` + `synchronous=NORMAL` (already present
   via `db/connect.go`).
 - `envelope.Error` / `envelope.Warnings` for orchestrator feedback.
-- `CRUSH_FORBID_WRITES` env to block the model from writing through
+- `RUSH_FORBID_WRITES` env to block the model from writing through
   the write/edit tool into paths the orchestrator owns.
 - coordinator auto-retry on `FinishReasonError("Stream stalled")`.
 
@@ -433,8 +433,8 @@ history) flagged remaining HIGH-severity gaps:
 - **MCP id and settings.json flock.** `cliprovider/mcpserver.go`'s
   `qwenMCPID`, `geminiMCPID`, `registerQwen/GeminiMCP`,
   `deregisterQwen/GeminiMCP` previously did read-then-write of
-  `.crush/{qwen,gemini}-mcp-id` and `~/.{qwen,gemini}/settings.json`
-  without locking — two parallel `crush run` startups on a fresh
+  `.rush/{qwen,gemini}-mcp-id` and `~/.{qwen,gemini}/settings.json`
+  without locking — two parallel `rush run` startups on a fresh
   project could both miss the id file, both generate distinct UUIDs,
   and end up with a split-brain MCP server name; settings.json edits
   could clobber each other. All six now wrap the critical section in
@@ -451,7 +451,7 @@ history) flagged remaining HIGH-severity gaps:
   previously held an in-memory cache of persistent grants loaded
   exactly once at startup, with `Request` scanning it under a RWMutex.
   An "always allow" granted in process A was therefore invisible to
-  process B until B restarted (and in non-interactive `crush run` B
+  process B until B restarted (and in non-interactive `rush run` B
   would block on the prompt). The cache was removed; `Request` now
   hits the DB via a new indexed `MatchSessionPermission` SQL on every
   call. `GrantPersistent` stores `session_id=""` so the row matches
@@ -470,7 +470,7 @@ history) flagged remaining HIGH-severity gaps:
   cancelled ctx does not leak an orphan goroutine holding the lock.
   `cliprovider/mcpserver.go` introduces `acquireMCPConfigLock` that
   wraps it with a hard 30s timeout — all six MCP id/settings flocks
-  now use it, so a wedged sibling crush process cannot freeze the
+  now use it, so a wedged sibling rush process cannot freeze the
   whole parallel-run fleet.
 - New migration `20260517000001_permissions_dedup_and_indexes.sql`
   adds two things: a UNIQUE index on
@@ -558,7 +558,7 @@ they don't pollute `go doc` output):
   `geminiMCPID`, `registerQwenMCP`, `deregisterQwenMCP`,
   `registerGeminiMCP`, `deregisterGeminiMCP` are wrapped in a
   `session.AcquireFileLock` on a sibling `.lock` file and switched to
-  `fsext.AtomicWriteFile` so two parallel `crush run` processes
+  `fsext.AtomicWriteFile` so two parallel `rush run` processes
   cannot split-brain MCP IDs or clobber `~/.{qwen,gemini}/settings.json`.
   See Section 4.I.
 - `internal/log/log.go` — lumberjack `MaxBackups` raised from 0 to 3
@@ -603,7 +603,7 @@ c3ad81aa 2026-03-09 feat(web): add LSP server management UI identical to MCP set
 f60d19c7 2026-03-09 ✨ feat: add todos UI and expose todos tool to CLI providers
 8ff59020 2026-03-09 ✅ test(web): add Playwright tests for LSP, providers, theme, system prompt
 16187cde 2026-03-09 🐛 fix(web): remove duplicate message on rerun
-00983411 2026-03-09 🐛 fix(cliprovider): block TodoWrite so model uses mcp__crush__todos
+00983411 2026-03-09 🐛 fix(cliprovider): block TodoWrite so model uses mcp__rush__todos
 44ca7f4f 2026-03-09 feat(cliprovider): add MCP integration for Gemini and Codex CLIs
 23bb5069 2026-03-09 fix(agent): inject actual todos state into system_reminder
 4b634f9e 2026-03-09 feat(ui): add task creation button and move row controls to left
@@ -679,7 +679,7 @@ cd868df2 2026-03-30 Merge stdout+stderr for NoPTY models to handle long prompts
 2d35883d 2026-03-30 Force stdin for NoPTY models to avoid Windows cmd line length limit
 a9897fca 2026-03-30 Fix NoPTY pipe: use StdoutPipe+StderrPipe with concurrent copy
 0948af4c 2026-03-30 Load MCP servers from .mcp.json files (Claude Code format)
-5b68c5e8 2026-03-30 Proxy external MCP tools to CLI models via crush MCP bridge
+5b68c5e8 2026-03-30 Proxy external MCP tools to CLI models via rush MCP bridge
 606dcfec 2026-03-30 Increase default timeout for .mcp.json servers to 60s
 a028f1cb 2026-03-30 Add permission requests for external MCP tools in CLI bridge
 1b9bd849 2026-03-30 Resume CLI sessions across messages for API prompt caching
@@ -768,9 +768,9 @@ Tightened `formatPresetJSON` (imperative voice, 8 explicit rules,
 last-line repeat). Added `StrippedBytes` field to the envelope so
 operators can graph compliance over time.
 
-**BUG 3 (LOW) — `crush models` dials home on every call.**
+**BUG 3 (LOW) — `rush models` dials home on every call.**
 Added `cache.Age()` + `providerCacheTTL` (24h default, override via
-`CRUSH_PROVIDER_CACHE_TTL` env). `catwalkSync` and `hyperSync` now
+`RUSH_PROVIDER_CACHE_TTL` env). `catwalkSync` and `hyperSync` now
 skip the HTTP roundtrip when the on-disk cache is fresher than the
 TTL. Test pkg `TestMain` sets TTL=0 so existing network-path tests
 keep exercising it.
@@ -783,13 +783,13 @@ a `truncation_hint` warning when `final_text` ends with `: , -` —
 hints that the model was mid-composition when the error fired.
 
 **BUG 5 (MEDIUM) — write-tool overwrites the stdout-redirect target.**
-Already mitigated in `cfad5391` (CRUSH_FORBID_WRITES env). This batch
-documents it: `crush run --help` gained a "Protecting harness-owned
+Already mitigated in `cfad5391` (RUSH_FORBID_WRITES env). This batch
+documents it: `rush run --help` gained a "Protecting harness-owned
 files" section and the claude-init guide gained a matching section
-with the canonical `CRUSH_FORBID_WRITES="$out" crush run > "$out"`
+with the canonical `RUSH_FORBID_WRITES="$out" rush run > "$out"`
 pattern. Marker bumped v5 → v6.
 
-**Observation 6 — show pricing in `crush models show`.**
+**Observation 6 — show pricing in `rush models show`.**
 `modelsShowCmd` now prints `ctx=204.8k` + `$1.40 / 1M in, $4.40 / 1M
 out (cached-in $0.26)` on a second indented line per slot, sourced
 from the catwalk catalog. Same fields appear under `cost_per_1m_*`
@@ -803,9 +803,9 @@ internal/app/app.go                  fallback error msg, truncation warning, val
 internal/app/strip_json.go           stripAndValidateJSON, ErrInvalidStripJSON
 internal/app/strip_json_test.go      6 new validation tests
 internal/app/run_result_test.go      updated for new buildRunResult signature
-internal/cmd/run.go                  CRUSH_FORBID_WRITES help section
+internal/cmd/run.go                  RUSH_FORBID_WRITES help section
 internal/cmd/run_format.go           tightened formatPresetJSON
-internal/cmd/claude_init.go          v5 → v6 marker, CRUSH_FORBID_WRITES section
+internal/cmd/claude_init.go          v5 → v6 marker, RUSH_FORBID_WRITES section
 internal/cmd/models_set.go           pricing + ctx in `models show`, JSON keys
 internal/config/provider.go          cache.Age()
 internal/config/catwalk.go           providerCacheTTL + TTL skip
@@ -975,11 +975,11 @@ Three coordinated changes:
 **1. `claude-init` always replaces.** Removed `--force` and `--replace`
 flags. Every invocation now strips ALL existing crush-claude-init blocks
 (any version) and writes a single fresh one. The slash command file
-`.claude/commands/crush.md` is overwritten if it carries our sentinel; a
+`.claude/commands/rush.md` is overwritten if it carries our sentinel; a
 warning is printed if the file exists without the sentinel (someone else
 owns it).
 
-**2. `crush claude-del` (inverse).** New subcommand that undoes
+**2. `rush claude-del` (inverse).** New subcommand that undoes
 `claude-init`: strips all crush-claude-init blocks from CLAUDE.md
 (deletes the file if only our block was present), removes the slash
 command if it has our sentinel. Idempotent and safe.
@@ -1020,22 +1020,22 @@ CHANGELOG.fork.md                             this entry
 README.md                                     mention Haiku in CLI provider table
 ```
 
-### Batch 11 — `crush models use/list/state`; `preset` and `set` removed (2026-05-17)
+### Batch 11 — `rush models use/list/state`; `preset` and `set` removed (2026-05-17)
 
 Reworked the model-selection UX around a small **atom registry** plus three
-sharp commands. The previous two-pronged surface (`crush models set
---large X --small Y` plus the `crush models preset save/use/list/delete`
+sharp commands. The previous two-pronged surface (`rush models set
+--large X --small Y` plus the `rush models preset save/use/list/delete`
 machinery) is gone — both are replaced by a single positional command and
 a discoverability pair.
 
-**1. `crush models use <large> <small>` [--global | --local].**
+**1. `rush models use <large> <small>` [--global | --local].**
 Two positional atoms, no flags for the model names themselves. Each
 argument is either an atom from the registry (e.g. `opus-high`,
 `glm5_turbo`) or a raw `provider/model[@level]` string as fallback for
 anything not in the registry. `--global` (default) writes to the global
-crush.json; `--local` to `./.crush/crush.json`.
+rush.json; `--local` to `./.rush/rush.json`.
 
-**2. `crush models list`** prints the atom registry (filtered by
+**2. `rush models list`** prints the atom registry (filtered by
 `EnabledProviders()` — disabled providers' atoms are hidden) followed by
 an "OTHER MODELS" block listing every model id from every enabled
 provider as raw `provider/model`. `--json` emits a structured object
@@ -1044,12 +1044,12 @@ variant comma-separated on one line per model — opus-low through
 opus-max all on the same row — so the operator can copy the exact string
 they want.
 
-**3. `crush models state` [--json]** shows the EFFECTIVE large/small
+**3. `rush models state` [--json]** shows the EFFECTIVE large/small
 pair plus a per-scope breakdown (global / local) annotated with
 `(effective)` / `(overridden by local)` / `(not set)`. When the
 effective model matches an atom, the atom name is shown in parens:
 `local-cli/cli-claude-opus effort=high (atom: opus-high)`. Aliased as
-`crush models show` for backwards compat.
+`rush models show` for backwards compat.
 
 **Atom registry** (internal/cmd/models_atoms.go): 3 Anthropic atoms
 (`opus`, `sonnet`, `haiku`) × 5 effort levels read from `claude --help`
@@ -1058,10 +1058,10 @@ max]`) plus 10 Z.AI atoms with no effort. Mixed pairs supported
 (`opus-high glm5_turbo`).
 
 **Removals:**
-- `crush models set` → hidden cobra with `DisableFlagParsing` that prints
+- `rush models set` → hidden cobra with `DisableFlagParsing` that prints
   a redirect notice to stderr and exits 2.
-- `crush models preset` (entire `save`/`use`/`list`/`delete` ветвь) → same
-  hidden-redirect treatment. The `ModelPresets` field in crush.json is
+- `rush models preset` (entire `save`/`use`/`list`/`delete` ветвь) → same
+  hidden-redirect treatment. The `ModelPresets` field in rush.json is
   silently ignored from now on.
 
 Files touched:
@@ -1069,9 +1069,9 @@ Files touched:
 ```
 internal/cmd/models_atoms.go        new — registry, parseAtom, parseAtomOrRaw, renderAtomsBlock
 internal/cmd/models_effort.go       new — claude --help parser, per-binary cache, test seam
-internal/cmd/models_use.go          new — `crush models use <large> <small>`
-internal/cmd/models_list.go         new — `crush models list` + --json
-internal/cmd/models_state.go        new — `crush models state` + --json (aliased as `show`)
+internal/cmd/models_use.go          new — `rush models use <large> <small>`
+internal/cmd/models_list.go         new — `rush models list` + --json
+internal/cmd/models_state.go        new — `rush models state` + --json (aliased as `show`)
 internal/cmd/models_set.go          rewrite — splitModelEffort helper + hidden redirect
 internal/cmd/models_preset.go       rewrite — hidden redirect only
 internal/cmd/models_atoms_test.go   new — 10 tests covering parser + lookup
@@ -1079,14 +1079,14 @@ internal/config/store.go            new ReadModelsAtScope helper for per-scope v
 CHANGELOG.fork.md                   this entry
 ```
 
-### Batch 13 — `crush models unset` (2026-05-17)
+### Batch 13 — `rush models unset` (2026-05-17)
 
 Adds a one-liner way to remove a model override from the chosen scope
-so the other scope takes effect, replacing the `rm .crush/crush.json`
+so the other scope takes effect, replacing the `rm .rush/rush.json`
 workaround (which would destroy any unrelated settings in that file).
 
 ```
-crush models unset [large|small|both] [--global | --local]
+rush models unset [large|small|both] [--global | --local]
 ```
 
 - Defaults to `both` slots and global scope.
@@ -1103,9 +1103,9 @@ README.md                            mention unset in the models section
 CHANGELOG.fork.md                    this entry
 ```
 
-### Batch 14 — `crush run` auto-bypasses inner CLI permissions (2026-05-18)
+### Batch 14 — `rush run` auto-bypasses inner CLI permissions (2026-05-18)
 
-Fixes the silent-hang bug where `crush run` spawns an inner CLI sub-process
+Fixes the silent-hang bug where `rush run` spawns an inner CLI sub-process
 (`claude`, `codex`, or `gemini`) and the inner process blocks waiting for an
 interactive permission prompt that nobody is there to answer.
 
@@ -1116,8 +1116,8 @@ the root `--yolo` flag. Consequence: `claudeArgs(yolo=true)` adds
 `--dangerously-skip-permissions`, `codexArgs(yolo=true)` adds
 `--approval-mode yolo`, etc. — all transparently.
 
-Rationale: `crush run` IS the non-interactive entry point by design. Asking
-operators to remember `crush --yolo run` is fragile (CLAUDE.md actively
+Rationale: `rush run` IS the non-interactive entry point by design. Asking
+operators to remember `rush --yolo run` is fragile (CLAUDE.md actively
 discouraged it). The fix makes the right thing happen automatically while
 preserving the explicit `--yolo` semantics for interactive TUI/web sessions
 which still go through the original `yoloFn` path.
@@ -1132,18 +1132,18 @@ CHANGELOG.fork.md                         this entry
 
 ### Batch 12 — provider management commands (2026-05-18)
 
-Extends the `crush providers` command family with full CRUD + model lifecycle
+Extends the `rush providers` command family with full CRUD + model lifecycle
 management, enabling operators to add custom providers, refresh model lists,
 and track provider state transitions.
 
 New commands:
-- `crush providers list` — extended with `STATUS` column, `--grep` filtering
-- `crush providers enable <id>` — re-enable a disabled provider
-- `crush providers disable <id>` — disable with orphaned-slot warnings
-- `crush providers add <id>` — new provider with model auto-fetch
-- `crush providers remove <id>` — delete provider with `--yes` confirmation
-- `crush providers update [<id> | --all]` — refresh model lists, show diffs
-- `crush providers grep <pattern>` — sugar for `list --grep`
+- `rush providers list` — extended with `STATUS` column, `--grep` filtering
+- `rush providers enable <id>` — re-enable a disabled provider
+- `rush providers disable <id>` — disable with orphaned-slot warnings
+- `rush providers add <id>` — new provider with model auto-fetch
+- `rush providers remove <id>` — delete provider with `--yes` confirmation
+- `rush providers update [<id> | --all]` — refresh model lists, show diffs
+- `rush providers grep <pattern>` — sugar for `list --grep`
 
 Model-source strategies:
 - **Catwalk-known providers** (openai, anthropic, gemini, etc.) — pull cached
@@ -1172,9 +1172,9 @@ CHANGELOG.fork.md                      this entry
 ### Batch 15 — strip our delegation block from CLAUDE.md in sub-agent Read (2026-05-18)
 
 Closes the silent infinite-recursion bug where a sub-agent invoked via
-`crush run` would read the workspace `CLAUDE.md`, see the "delegate work
-to `crush run`" guidance that `crush claude-init` injected, and faithfully
-spawn ANOTHER `crush run` — recursing until the timeout fired with no
+`rush run` would read the workspace `CLAUDE.md`, see the "delegate work
+to `rush run`" guidance that `rush claude-init` injected, and faithfully
+spawn ANOTHER `rush run` — recursing until the timeout fired with no
 real output.
 
 Mechanism: the MCP `Read` tool exposed by `cliprovider` (which is the
@@ -1211,18 +1211,18 @@ New package `internal/agent/agentguard` exports `Check(command string) error`
 that returns a `*DeniedError` when the command would launch any known AI
 coding agent CLI. The check is wired into BOTH bash interfaces:
 
-  - `internal/agent/tools/bash.go` (native bash tool — used by crush
+  - `internal/agent/tools/bash.go` (native bash tool — used by rush
     when it runs an agent without going through a CLI provider)
   - `internal/agent/cliprovider/mcpserver.go` registerBashTool
     (the MCP Bash tool used by claude / codex / gemini when they run
-    under `crush run` with --bare-style invocation)
+    under `rush run` with --bare-style invocation)
 
 Denylist covers the 2026 agent landscape:
 
   - Proprietary: claude, codex, gemini, qwen, cody, windsurf
   - Open-source: opencode, aider, cline, cursor-agent, continue, amp,
     goose, mentat, forge, tabby
-  - Self: crush (recursive crush invocations are never the right answer)
+  - Self: rush (recursive rush invocations are never the right answer)
 
 Plus launch-form coverage:
 
@@ -1254,41 +1254,41 @@ internal/agent/cliprovider/mcpserver.go         early Check in registerBashTool;
 CHANGELOG.fork.md                                this entry
 ```
 
-### Batch 17 — standardize stdin prompt file location to `.crush/stdin/` (2026-05-18)
+### Batch 17 — standardize stdin prompt file location to `.rush/stdin/` (2026-05-18)
 
 Documentation-only change. Formalizes a convention: when an orchestrator
-(Claude Code, crush wrapper harness, CI job) needs to pass a multi-line prompt
-to `crush run` via stdin (e.g. `< ./.crush/stdin/task.prompt`), it should write
-to a file under `./.crush/stdin/` (co-located with workspace data) rather than
+(Claude Code, rush wrapper harness, CI job) needs to pass a multi-line prompt
+to `rush run` via stdin (e.g. `< ./.rush/stdin/task.prompt`), it should write
+to a file under `./.rush/stdin/` (co-located with workspace data) rather than
 scattering files into `/tmp`. No new directories are created at runtime — the
 operator's harness creates them on first write. The directory is covered by the
-existing `.crush/` gitignore rule, so cleanup is automatic.
+existing `.rush/` gitignore rule, so cleanup is automatic.
 
 Files touched:
 
 ```
-internal/cmd/claude_init.go               v9 → v10 marker; new paragraph on `.crush/stdin/` location + reuse pattern
-CLAUDE.md                                 one-liner in "Long prompts" section mentioning `.crush/stdin/`
+internal/cmd/claude_init.go               v9 → v10 marker; new paragraph on `.rush/stdin/` location + reuse pattern
+CLAUDE.md                                 one-liner in "Long prompts" section mentioning `.rush/stdin/`
 CHANGELOG.fork.md                         this entry
 ```
 
-### Batch 18 — `crush sessions` subcommands for orchestrator observability (2026-05-18)
+### Batch 18 — `rush sessions` subcommands for orchestrator observability (2026-05-18)
 
-Three new `crush sessions` subcommands for monitoring and debugging session state
+Three new `rush sessions` subcommands for monitoring and debugging session state
 at the CLI. Designed for orchestrator visibility into running or completed
 sessions — allowing scripts and CI jobs to inspect session metadata, monitor
 lock files, and stream messages as they complete.
 
 Subcommands:
 
-- `crush sessions show <id> [--json] [--with-messages] [--full]` — inspect single
+- `rush sessions show <id> [--json] [--with-messages] [--full]` — inspect single
   session with optional message thread; default: text output with truncated
   system prompt and message previews; --json for structured format
-- `crush sessions locks [--json] [--stale-only]` — scan `.crush/locks/` for
+- `rush sessions locks [--json] [--stale-only]` — scan `.rush/locks/` for
   active lock files (one per running session); report session id, PID, acquisition
   time, duration, stale status (process dead OR lock older than 10 minutes);
   default: tabwriter table; --json for NDJSON
-- `crush sessions tail <id> [--follow] [--from-message <id>] [--format text|ndjson]`
+- `rush sessions tail <id> [--follow] [--from-message <id>] [--format text|ndjson]`
   — stream messages from a session; default: print all existing messages and exit;
   --follow: poll and print new messages until session finishes or Ctrl+C;
   --from-message: resume after a specific message ID (skip earlier); default:
@@ -1308,28 +1308,28 @@ internal/cmd/sessions_tail_test.go        new — 3 tests (StreamsMessages, Mult
 CHANGELOG.fork.md                         this entry
 ```
 
-### Batch 19 — `crush mcp` command family for MCP server management (2026-05-18)
+### Batch 19 — `rush mcp` command family for MCP server management (2026-05-18)
 
-Add new CLI command family `crush mcp <subcommand>` to manage Model Context
-Protocol servers configured in crush.json. Follows the `crush providers`
+Add new CLI command family `rush mcp <subcommand>` to manage Model Context
+Protocol servers configured in rush.json. Follows the `rush providers`
 pattern with list, show, enable, disable, restart, test, add, remove, and
 set subcommands. Default write scope is --local (project config); --global
 targets the user-level config.
 
 Subcommands:
 
-- `crush mcp list [--json] [--grep <pattern>]` — table with ID, NAME, TYPE,
+- `rush mcp list [--json] [--grep <pattern>]` — table with ID, NAME, TYPE,
   STATUS, TOOLS, COMMAND/URL columns. TOOLS shows count from live session
   or "-" if not reachable. --grep filters by id/type/command/url.
-- `crush mcp show <id> [--json]` — full config for one server
-- `crush mcp enable <id> [--global|--local]` — set disabled=false (default: --local)
-- `crush mcp disable <id> [--global|--local]` — set disabled=true (default: --local)
-- `crush mcp restart <id>` — placeholder (hot-reload planned for future)
-- `crush mcp test <id> [--timeout 10s]` — connectivity test (placeholder)
-- `crush mcp add <id> --type <stdio|sse|http> [--command ...] [--url ...]
+- `rush mcp show <id> [--json]` — full config for one server
+- `rush mcp enable <id> [--global|--local]` — set disabled=false (default: --local)
+- `rush mcp disable <id> [--global|--local]` — set disabled=true (default: --local)
+- `rush mcp restart <id>` — placeholder (hot-reload planned for future)
+- `rush mcp test <id> [--timeout 10s]` — connectivity test (placeholder)
+- `rush mcp add <id> --type <stdio|sse|http> [--command ...] [--url ...]
   [--arg ...] [--env ...] [--header ...]` — create new server (default: --local)
-- `crush mcp remove <id> [--global|--local]` (alias: `rm`) — delete from config
-- `crush mcp set <id> [--command ...] [--type ...] [--arg ...] [--env ...]
+- `rush mcp remove <id> [--global|--local]` (alias: `rm`) — delete from config
+- `rush mcp set <id> [--command ...] [--type ...] [--arg ...] [--env ...]
   [--header ...] [--url ...] [--disabled ...]` — update fields in-place
 
 Files touched:
@@ -1343,26 +1343,26 @@ CHANGELOG.fork.md                this entry
 ### Batch 20 — keep MCP bridge active in yolo mode (security fix) (2026-05-18)
 
 Closes a regression introduced by batch 14. The condition that decided
-whether to spawn crush's MCP bridge inside the inner `claude` CLI was
-`UseCrushMCP && !yolo && perms != nil` — the `!yolo` half meant that any
-non-interactive `crush run` (which batch 14 marks as yolo-equivalent so
+whether to spawn rush's MCP bridge inside the inner `claude` CLI was
+`UseRushMCP && !yolo && perms != nil` — the `!yolo` half meant that any
+non-interactive `rush run` (which batch 14 marks as yolo-equivalent so
 inner claude gets `--dangerously-skip-permissions`) silently skipped the
 MCP setup. Without MCP setup we never passed `--allowedTools`, so claude
 ran with its native Bash/Write/Edit/Task toolset — completely bypassing
 the agentguard denylist (batch 16, which only inspects calls coming
-through `mcp__crush__Bash`).
+through `mcp__rush__Bash`).
 
 Fix: drop `!yolo` from the condition. yolo only ever needed to flip the
 bypass-permissions flag for claude itself; it has nothing to say about
 whether our MCP bridge sits in the loop. With the bridge on, claude's
-toolset is restricted to `mcp__crush__*` plus the safe built-ins
+toolset is restricted to `mcp__rush__*` plus the safe built-ins
 (WebSearch, WebFetch, Task, Agent), agentguard is back in force, and
 the audit/permission machinery applies to every shell call.
 
-Verified empirically: before the patch, `crush run` invocations showed
+Verified empirically: before the patch, `rush run` invocations showed
 `args: --model haiku ... --effort medium --dangerously-skip-permissions`
 in cliprovider logs (no `--allowedTools`, no MCP). After: full
-`--allowedTools mcp__crush__Bash,…` + `--mcp-config` lines, matching the
+`--allowedTools mcp__rush__Bash,…` + `--mcp-config` lines, matching the
 shape we already saw on the shamir-db workspace.
 
 Files touched:
@@ -1372,11 +1372,11 @@ internal/agent/cliprovider/provider.go   one-line condition change at the MCP-br
 CHANGELOG.fork.md                         this entry
 ```
 
-### Batch 21 — `crush ping` and `crush ping-fast` (model connectivity check) (2026-05-18)
+### Batch 21 — `rush ping` and `rush ping-fast` (model connectivity check) (2026-05-18)
 
 Add two new top-level commands to verify the configured large/small models
 are reachable, responsive, and have valid credentials. Complements
-`crush providers test <id>` (which probes the provider's API catalog endpoint);
+`rush providers test <id>` (which probes the provider's API catalog endpoint);
 ping is slot-based, not provider-based, and actually exercises the model
 with a real completion request.
 
@@ -1395,7 +1395,7 @@ a flag that changes which model is tested.
 - `--json` outputs structured result with provider/model/status/latency_ms/response/tokens.
 - `--timeout` defaults to 15s, `--prompt` allows custom user message.
 - Cost calculation skipped (requires model pricing config, not exposed to commands).
-- No session DB pollution: throwaway requests don't persist to crush sessions list.
+- No session DB pollution: throwaway requests don't persist to rush sessions list.
 
 **Tested coverage:**
 
@@ -1413,21 +1413,21 @@ internal/cmd/ping_test.go        new — 12 tests covering command structure + J
 CHANGELOG.fork.md                this entry
 ```
 
-### Batch 21 — `crush ping` / `crush ping-fast` liveness probes (2026-05-18)
+### Batch 21 — `rush ping` / `rush ping-fast` liveness probes (2026-05-18)
 
 Cheap one-shot probes for verifying the configured large/small model is
 reachable, the API key still works, and the round-trip latency. Today
-operators had to run a real `crush run` with a stub prompt to test this,
+operators had to run a real `rush run` with a stub prompt to test this,
 which creates a session, persists messages, drags MCP setup with it,
 and accumulates cost.
 
 New commands:
-- `crush ping [--json] [--timeout 15s] [--prompt "<custom>"]` — pings
+- `rush ping [--json] [--timeout 15s] [--prompt "<custom>"]` — pings
   the **large** slot. Sends a one-line system prompt ("reply with OK")
   and a one-token user prompt, captures provider + model + latency_ms +
   cost_usd + tokens, returns exit 0 (ok), 1 (error), 2 (timeout), or
   3 (degraded — alive but didn't return "OK").
-- `crush ping-fast` — same shape for the **small** slot.
+- `rush ping-fast` — same shape for the **small** slot.
 
 Default text output prints provider, status, latency, response, tokens,
 cost — the operator's triage info in five lines. `--json` mirrors the
@@ -1487,21 +1487,21 @@ polishing after the initial batch-19 commit landed):
 ### Batch 22 — remove CLAUDE.md delegation block (recursion-prone footgun) (2026-05-18)
 
 **Postmortem.** Over the course of one day this fork accumulated 470+
-orphan processes (95 claude.exe, 290 bash.exe, 80 go.exe, 3 crush.exe)
+orphan processes (95 claude.exe, 290 bash.exe, 80 go.exe, 3 rush.exe)
 on the operator's Windows machine. Root cause: the always-on
 delegation block that `claude-init` installed into the workspace's
-CLAUDE.md ("you are the strategist, crush is the worker — delegate
+CLAUDE.md ("you are the strategist, rush is the worker — delegate
 everything"). Every Claude Code session opening the workspace read it
-on startup and tried to delegate ANY task back into `crush run`, which
+on startup and tried to delegate ANY task back into `rush run`, which
 spawned another Claude Code via cliprovider, which read the same block,
 and so on. Watchdogs killed outer parents but on Windows the child
 processes became OS-level orphans (no Job Object kill-on-close).
 
 The cycle was already partially closed at the tool-call layer:
-- batch 16 (agentguard) denies `crush`/`claude`/`codex`/etc in our MCP
+- batch 16 (agentguard) denies `rush`/`claude`/`codex`/etc in our MCP
   Bash tool.
 - batch 20 force-keeps the MCP bridge active in yolo mode so inner
-  claude is locked to mcp__crush__* and agentguard actually fires.
+  claude is locked to mcp__rush__* and agentguard actually fires.
 
 But the cleanest fix is to remove the trigger entirely: stop telling
 sub-agents to delegate.
@@ -1509,17 +1509,17 @@ sub-agents to delegate.
 **Change.** `claude-init` now:
 - Writes NOTHING into CLAUDE.md.
 - STRIPS any pre-existing crush-claude-init block (any version, v1..v10)
-  from CLAUDE.md when invoked, so users upgrading from an older crush
+  from CLAUDE.md when invoked, so users upgrading from an older rush
   get a clean workspace.
 - Removes CLAUDE.md entirely if stripping leaves it empty (mirrors
   `claude-del`'s behaviour).
-- Continues to install / refresh the `.claude/commands/crush.md`
+- Continues to install / refresh the `.claude/commands/rush.md`
   slash-command — that file is now self-contained (full delegation
-  guidance inline) and triggered ONLY by an explicit `/crush <task>`
+  guidance inline) and triggered ONLY by an explicit `/rush <task>`
   from the operator. Never auto-discovered.
 
 Also removed:
-- `crush claude-print` — there's no longer a block to print to stdout.
+- `rush claude-print` — there's no longer a block to print to stdout.
 - The whole `claudeInitBlock()` template function in claude_init.go
   (lines 165..532, ~370 LoC of long-form prose), the
   `claudeInitMarkerStart`/`End` constants, and the related "v8"/"v9"/
@@ -1548,7 +1548,7 @@ CHANGELOG.fork.md                  this entry
 ### Batch 23 — upstream merge v0.72.0 + system-prompt compression (2026-05-26)
 
 This batch covers two unrelated chunks landed back-to-back: a compression
-of the system prompt that ships with every `crush run`, and the
+of the system prompt that ships with every `rush run`, and the
 upstream-merge of 42 commits (v0.71.0 + v0.72.0).
 
 **System-prompt compression (commit `882ffccd`)**
@@ -1563,7 +1563,7 @@ the will-to-finish (autonomous + finish-every-part + only-stop-for-real-
 blocks + try-different-approach), the code-caution (read-before-edit +
 exact-whitespace + 3–5-lines-context + strict-scope + never-commit/push/
 amend/--no-verify), and the output contract (under 4 lines, no emojis,
-user's language, `crush run --json` needs `final_text`). ~44 % size
+user's language, `rush run --json` needs `final_text`). ~44 % size
 reduction per invocation; saves ~600 input tokens on every native API
 call and every cliprovider subprocess invocation (both render this
 template).
@@ -1584,9 +1584,9 @@ Per-file decisions (anything not listed below was a clean auto-merge):
 | `internal/agent/tools/bash.go` + `safe.go` + `safe_test.go` + new `recordingPermissionService` tests (`96728b15`) | upstream verbatim | clean security fix: `containsCommandChaining()` blocks the allowlist bypass `ls && rm -rf /`. Stubbed three extra DB-backed methods on the test mock to satisfy our extended `permission.Service` interface |
 | `internal/permission/permission.go` (UU + `6b312bee`) | combine | kept our DB-persistence (`ListSessionPermissions` / `UpdatePermissionEnabled` / `DeletePermission` + per-session yolo + cross-process direct-DB lookup) + adopted upstream's `skip atomic.Bool` race fix (`SetSkipRequests`/`SkipRequests` Load/Store, init via `svc.skip.Store(skip)` after struct ctor) |
 | `internal/permission/permission_test.go` `TestSkipRace` | adapted | rewrote the `NewPermissionService(...)` call to our extended signature (ctx, workingDir, skip, allowedTools, q) using the existing `newTestService` helper |
-| `internal/agent/agent.go` (5 UU clusters) | combine | kept our `updateSessionUsage(...) float64` signature — critical for our `sessions.IncrementCost(delta)` race-safe additive UPDATE under parallel `crush run` processes. Inside, replaced our direct token-counter assignment with upstream's `updateSessionTokenCounters` helper (doesn't overwrite accumulated counters with zero — `74e6e378`). In the streaming loop, prepended `usage, _ := fallbackStepUsage(stepMessages, stepResult)` so the new estimator (`6ed8852b`) corrects providers that omit final usage chunks. In `Summarize`, kept our `re-fetch session before save` (preserves user todo edits during summary stream) + `IncrementCost` pattern + adopted upstream's `summaryCompletionTokens(usage, summaryMessage)` helper. Took the two new helper functions verbatim. **Rejected**: their `estimated bool` parameter on `updateSessionUsage` (drives the TUI `EstimatedUsage` marker — Section 2 default rule); their `a.eventTokensUsed(...)` publish (no consumer in our WebSocket fan-out) |
+| `internal/agent/agent.go` (5 UU clusters) | combine | kept our `updateSessionUsage(...) float64` signature — critical for our `sessions.IncrementCost(delta)` race-safe additive UPDATE under parallel `rush run` processes. Inside, replaced our direct token-counter assignment with upstream's `updateSessionTokenCounters` helper (doesn't overwrite accumulated counters with zero — `74e6e378`). In the streaming loop, prepended `usage, _ := fallbackStepUsage(stepMessages, stepResult)` so the new estimator (`6ed8852b`) corrects providers that omit final usage chunks. In `Summarize`, kept our `re-fetch session before save` (preserves user todo edits during summary stream) + `IncrementCost` pattern + adopted upstream's `summaryCompletionTokens(usage, summaryMessage)` helper. Took the two new helper functions verbatim. **Rejected**: their `estimated bool` parameter on `updateSessionUsage` (drives the TUI `EstimatedUsage` marker — Section 2 default rule); their `a.eventTokensUsed(...)` publish (no consumer in our WebSocket fan-out) |
 | `internal/agent/coordinator.go` (UU + `2faa467a`) | restored ours | upstream `6716ef09` threaded a `skillsMgr *skills.Manager` parameter through `NewCoordinator`; auto-merge left both that param and `skills.DiscoverFromConfig` call in. Stripped the parameter and restored our pre-merge `discoverSkills` body (uses `skills.DiscoverBuiltinWithStates` + `skills.DiscoverWithStates` directly) and its 7-arg `logDiscoveryStats` helper. `2faa467a`'s reasoning-effort guard (`if !model.SupportsReasoningEffort { …only thinking }`) auto-merged cleanly |
-| `internal/skills/skills.go` (UU) | combine struct only | kept our `Source` field (drives `DiscoverCommands` scrape of `~/.{claude,gemini,qwen,cursor,zed,windsurf,crush}/commands/` that the WebUI surfaces as slash-commands — fork-only feature), added their two new boolean flags (`UserInvocable`, `DisableModelInvocation`) so SKILL.md files using them parse without error. **Rejected** the rest of their skills-architecture rewrite |
+| `internal/skills/skills.go` (UU) | combine struct only | kept our `Source` field (drives `DiscoverCommands` scrape of `~/.{claude,gemini,qwen,cursor,zed,windsurf,rush}/commands/` that the WebUI surfaces as slash-commands — fork-only feature), added their two new boolean flags (`UserInvocable`, `DisableModelInvocation`) so SKILL.md files using them parse without error. **Rejected** the rest of their skills-architecture rewrite |
 | `internal/skills/{catalog,manager,manager_test}.go` (upstream-added, ~600 LoC) | `git rm` | Manager/Catalog wraps per-workspace state for their multi-client backend (one Manager per workspace + `WithGlobalMirror` fallback for local TUI). We have a single embedded `App` per process and a WebSocket hub for fan-out — there is nothing to manage |
 | `internal/proto/skills.go` (upstream-added) | `git rm` | wire types for their REST client-server skills events — no consumer |
 | `internal/proto/proto.go` `Workspace.Skills []SkillState` field | dropped | dangling reference to removed `SkillState` |
@@ -1616,7 +1616,7 @@ Verification:
   `TestGlobWithDoubleStar/*`, `TestListDirectory/*`, `TestStreamExitError`)
   were already failing pre-merge on Windows (Windows path-slash + cred
   resolution flakes). New failures: 0.
-- Smoke: built `crush.exe`, ran `crush sessions list` / `sessions locks`
+- Smoke: built `rush.exe`, ran `rush sessions list` / `sessions locks`
   / `--help` — all clean
 - All 42 upstream commits absorbed or explicitly rejected (every
   rejection logged in this batch entry or via `// Fork merge note`
@@ -1659,9 +1659,9 @@ internal/cmd/server*.go — already deleted, just kept it that way
 ### Batch 24 — sessions monitoring UX: tool-call previews + watch live-tail (2026-05-26)
 
 Two changes that make watching agent runs actually pleasant. Until now,
-following a `crush run` session looked like a wall of `[tool: bash]` /
+following a `rush run` session looked like a wall of `[tool: bash]` /
 `[tool-result: bash]` lines — you knew the agent was *doing things*
-but not *which things*. And `crush sessions watch` printed a dashboard
+but not *which things*. And `rush sessions watch` printed a dashboard
 of active sessions, which duplicates `sessions list` + `sessions locks`
 and is not what an operator usually wants.
 
@@ -1702,11 +1702,11 @@ The old dashboard mode (auto-refreshed table of active sessions with
 PULSE / AGE / LAST_TOOL / TOKENS / COST columns) was removed — it
 duplicated `sessions list` + `sessions locks` and crowded the command
 with three modes (no-args / `--pick` / `<id>`) that obscured the actual
-job. `watch -n 3 'crush sessions list'` in the shell trivially
+job. `watch -n 3 'rush sessions list'` in the shell trivially
 reproduces what the dashboard did. Final shape:
 
-    crush sessions watch          → interactive picker, then live-tail
-    crush sessions watch <id>     → live-tail directly (short hash OK)
+    rush sessions watch          → interactive picker, then live-tail
+    rush sessions watch <id>     → live-tail directly (short hash OK)
 
 Live-tail prints existing messages, polls every `--interval` (default
 1s) for new ones, and exits cleanly when the session ends. End
@@ -1782,7 +1782,7 @@ CHANGELOG.fork.md                       this entry
 
 Opus 4.8 shipped. Two related changes across the two model-alias
 subsystems: the `claude-init` slash-commands / sub-agents and the
-`crush models use` short-code table.
+`rush models use` short-code table.
 
 **Top opus shortcuts now resolve to `claude-opus-4-8`.** In
 `allModelCommands` (`internal/cmd/claude_init.go`) the top-of-family
@@ -1796,16 +1796,16 @@ newest version. The display labels in `renderShortCodesBlock`
 (`internal/cmd/models_atoms.go`) were updated to match.
 
 **Ownership sentinels moved out of the visible `description`.** The
-`<!-- crush-model-command:v1 -->` / `<!-- crush-model-agent:v1 -->`
+`<!-- rush-model-command:v1 -->` / `<!-- rush-model-agent:v1 -->`
 markers used to sit inside the YAML `description:` field, so they leaked
 into the Claude Code command list and the agent picker / tool listing
-(e.g. `aoh: <!-- crush-model-agent:v1 --> claude-opus-…`). They are
+(e.g. `aoh: <!-- rush-model-agent:v1 --> claude-opus-…`). They are
 load-bearing — `claude-init` and `claude-del` both use a whole-file
 `strings.Contains(data, sentinel)` to tell our files from foreign ones
 before overwriting / deleting — so they can't simply be removed. The
 frontmatter must stay on line 1 (a leading comment makes Claude Code fail
 to parse the YAML and render that first line as the description — which is
-also why `crush.md`'s own leading sentinel shows up as its listed
+also why `rush.md`'s own leading sentinel shows up as its listed
 description), so the marker is now an HTML comment in the body:
 
 - commands have a tiny body (`$ARGUMENTS`), so the marker is buried ~50
@@ -1822,7 +1822,7 @@ Drive-by: fixed a pre-existing gofmt misalignment in the `atom` struct in
 
 Build / vet / gofmt clean; `./internal/cmd/...` and `./internal/agent/`
 test suites green. The generated `.claude/**` files are gitignored — the
-source of truth is the Go generator; run `crush claude-init` (`--global`
+source of truth is the Go generator; run `rush claude-init` (`--global`
 for `~/.claude/`) to refresh a workspace.
 
 Files:
@@ -1875,7 +1875,7 @@ diverged too far for a literal patch to apply):**
   exposes high/max, no lower tier to "fall back" to). Explicit opt-out via
   `ReasoningEffort == "off"`, reachable today through the existing
   unvalidated `provider/model@effort` CLI syntax
-  (`crush models use zai/glm-5.2@off <small>`).
+  (`rush models use zai/glm-5.2@off <small>`).
 - `188dea64` → `754f2075` — `fsext.DirTrim` took the first *byte* of a
   directory name when abbreviating a path, mangling Cyrillic/CJK/emoji
   names. Now takes the first grapheme cluster via
@@ -2122,7 +2122,7 @@ here, and closing them changed the conclusions.
 - `05a1708f`, `6fe0108b` — **the child-group sweep is fenced on the
   victim's generation, captured before ownership is released.** The fence
   existed but was read at sweep time, after the victim was dead and the
-  lock free: on Unix that is precisely the window a new `crush run` uses to
+  lock free: on Unix that is precisely the window a new `rush run` uses to
   acquire the lock and register its own children, so the sweep signalled
   the *new* owner's process group and discarded the real victim's entries.
   The follow-up found the crash case reachable by nothing at all, and why a
@@ -2160,7 +2160,7 @@ here, and closing them changed the conclusions.
 
 **The gate ran.** `docs/reviews/2026-08-20-dynamic-release-gate.md`, with
 its driver scripts committed alongside. 3622 sub-tests without `-short` on
-Linux; 15 rounds of six concurrent real `crush run` processes against one
+Linux; 15 rounds of six concurrent real `rush run` processes against one
 session id, exactly one winner every round and every loser rejected busy
 with a nonzero exit; 45 SIGKILLs aimed at outbox writes with no split write
 seen — reported as 3 of 25 landing near the write boundary rather than
@@ -2281,7 +2281,7 @@ There is a seventh form, and it needs no dead context at all.
 row left `leased` by an owner that died — its lease already expired, nobody
 executing it — is invisible to the drain loop. The loop concludes nothing is
 pending and, if an earlier row committed, returns `(DrainComplete, nil)`.
-`crush run` then exits 0 claiming a continuation it did not finish. Less
+`rush run` then exits 0 claiming a continuation it did not finish. Less
 severe than the previous six because `CleanupExpiredLeases` recovers the row
 on a later tick — the work is deferred, not lost — but the exit code still
 lies to whatever is branching on it. Filed as its own task.

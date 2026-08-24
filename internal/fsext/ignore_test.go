@@ -51,8 +51,8 @@ func TestShouldExcludeFile(t *testing.T) {
 	}
 
 	// Create .rushignore file
-	crushignoreContent := "custom_ignored/\n"
-	if err := os.WriteFile(filepath.Join(tempDir, ".rushignore"), []byte(crushignoreContent), 0o644); err != nil {
+	rushignoreContent := "custom_ignored/\n"
+	if err := os.WriteFile(filepath.Join(tempDir, ".rushignore"), []byte(rushignoreContent), 0o644); err != nil {
 		t.Fatalf("Failed to create .rushignore: %v", err)
 	}
 

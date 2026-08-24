@@ -16,7 +16,7 @@ import (
 // rushEnvOverlay scans e for "RUSH_X" entries and returns a map of the
 // bare "X" -> value they should shadow, so a config value written as
 // "$FOO" resolves against RUSH_FOO when the caller has set it (the
-// documented escape hatch for overriding a variable crush itself doesn't
+// documented escape hatch for overriding a variable rush itself doesn't
 // own, e.g. in CI or a sandboxed agent run without touching the real
 // FOO for every other process on the machine).
 //

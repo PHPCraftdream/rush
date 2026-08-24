@@ -8,8 +8,8 @@ import (
 
 // Fork-only tests (batch 15) for the CLAUDE.md filter applied at MCP
 // Read tool level. The filter prevents a sub-agent from seeing the
-// delegation guidance injected by `crush claude-init` — without it, the
-// sub-agent reads "delegate to crush" and spawns another sub-agent,
+// delegation guidance injected by `rush claude-init` — without it, the
+// sub-agent reads "delegate to rush" and spawns another sub-agent,
 // recursing.
 
 func TestIsClaudeMdPath(t *testing.T) {
@@ -19,7 +19,7 @@ func TestIsClaudeMdPath(t *testing.T) {
 	}{
 		{"CLAUDE.md", true},
 		{"/home/x/repo/CLAUDE.md", true},
-		{"D:\\dev\\go\\crush\\c\\CLAUDE.md", true},
+		{"D:\\dev\\go\\rush\\c\\CLAUDE.md", true},
 		{"claude.md", true}, // case-insensitive
 		{"Claude.md", true},
 		{"CLAUDE.MD", true},
@@ -41,7 +41,7 @@ func TestStripRushClaudeInitBlock_RemovesV8Block(t *testing.T) {
 User content before.
 
 <!-- crush-claude-init:v8 -->
-## Working with crush
+## Working with rush
 Lots of delegation guidance the sub-agent should not see.
 <!-- /crush-claude-init -->
 
@@ -49,7 +49,7 @@ User content after.
 `
 	out := stripRushClaudeInitBlock(in)
 	assert.NotContains(t, out, "crush-claude-init")
-	assert.NotContains(t, out, "Working with crush")
+	assert.NotContains(t, out, "Working with rush")
 	assert.NotContains(t, out, "delegation guidance")
 	assert.Contains(t, out, "User content before.")
 	assert.Contains(t, out, "User content after.")

@@ -1,19 +1,19 @@
-# Crush
+# Rush
 
-**Crush is a coding agent you run from the command line — but built
+**Rush is a coding agent you run from the command line — but built
 to be driven by *other* AI agents, not by a human typing into a
 terminal.** Point an orchestrator (Claude Code, your own LLM wrapper,
-a CI pipeline, a multi-agent fleet) at `crush run`, and it gets a
+a CI pipeline, a multi-agent fleet) at `rush run`, and it gets a
 model-agnostic, wrapper-stable JSON envelope back: one process it can
 spawn any number of times in parallel against the same repository
 without the instances corrupting each other's state.
 
-- **npm package:** [`@phpcraftdream/crush`](https://www.npmjs.com/package/@phpcraftdream/crush)
-- **Source:** [github.com/PHPCraftdream/crush](https://github.com/PHPCraftdream/crush)
+- **npm package:** [`@phpcraftdream/rush`](https://www.npmjs.com/package/@phpcraftdream/rush)
+- **Source:** [github.com/PHPCraftdream/rush](https://github.com/PHPCraftdream/rush)
 
 ```bash
-npm install -g @phpcraftdream/crush
-crush run --role smart "summarize what this repo does"
+npm install -g @phpcraftdream/rush
+rush run --role smart "summarize what this repo does"
 ```
 
 ## What is this, and why
@@ -29,10 +29,10 @@ Typical ways people actually use it:
 - **Claude Code (or any other agent) delegating sub-tasks.** The
   top-level agent hits a chunk of work that's cheap, mechanical, or
   just doesn't need its own context window — it shells out to
-  `crush run`, gets a JSON envelope back, and keeps going. See the
-  `/crush` skill shipped with this fork for the exact pattern.
-- **Fan-out over a codebase.** Five, ten, fifty `crush run` invocations
-  against the same `.crush/` directory at once — each one a separate
+  `rush run`, gets a JSON envelope back, and keeps going. See the
+  `/rush` skill shipped with this fork for the exact pattern.
+- **Fan-out over a codebase.** Five, ten, fifty `rush run` invocations
+  against the same `.rush/` directory at once — each one a separate
   session, each one safe from the others' writes (SQLite, file locks,
   cost accounting are all defended for exactly this).
 - **CI pipelines that need an LLM step.** A build step that asks a
@@ -57,28 +57,28 @@ full list of what changed and why.
 
 ## What this fork actually is
 
-The product is **`crush` as an agent's hands**, not as a human's coding
+The product is **`rush` as an agent's hands**, not as a human's coding
 companion. Every divergence below follows from that single repositioning:
 
 - The TUI is gone — a human is no longer the primary user of the
   process. A React/Tailwind **web UI** stays for the cases where a
   human DOES want to look in, but the design centre is the CLI.
-- The CLI is the contract. `crush run` exposes a **wrapper-stable JSON
+- The CLI is the contract. `rush run` exposes a **wrapper-stable JSON
   envelope** with a small, frozen set of fields an orchestrator parses
   without surprises. New flags (`--role`, `--session`, `--format`,
   `--agents`, `--timeout`, …) all exist to give the upper LLM precise
   control over a delegated turn.
-- Multiple instances are a first-class concern. Five `crush run` against
-  one `.crush/` directory cannot corrupt each other's state — sessions,
+- Multiple instances are a first-class concern. Five `rush run` against
+  one `.rush/` directory cannot corrupt each other's state — sessions,
   cost accounting, log writes, MCP-id files and SQLite are all
   defended explicitly.
 - Honest error reporting. When the model fails its contract (returns
   invalid JSON, runs out of context, stalls the stream) the envelope
   says so — there is no silent success because the agent on top
   cannot read the operator's mind.
-- Bootstrap helper (`crush claude-init`) installs a `/crush` slash command into
+- Bootstrap helper (`rush claude-init`) installs a `/rush` slash command into
   the workspace so the upper LLM knows when and how to delegate to
-  `crush run` instead of grepping the codebase itself.
+  `rush run` instead of grepping the codebase itself.
 
 The browser UI is the second-class entry point for humans peeking in,
 the orchestrator-facing CLI is first-class.
@@ -101,54 +101,54 @@ That document is also the survival guide for merging upstream `main`
 into the fork — every divergence is annotated with a `// Fork patch:`
 comment in the code so conflicts surface at the right line.
 
-## Security — `crush run` has no permission gating at all
+## Security — `rush run` has no permission gating at all
 
-**`crush run` (the non-interactive CLI mode this fork is built around)
+**`rush run` (the non-interactive CLI mode this fork is built around)
 auto-approves every tool call — bash, write, edit, fetch, everything.**
 There is no dialog, no allow/deny prompt, no toggle to turn this off:
 it is how non-interactive mode works by design, because there is no
 human on the keyboard to click Allow. The model has the same file and
-process access as the OS user running `crush`.
+process access as the OS user running `rush`.
 
 This is **not** the old per-session "YOLO" toggle (that UI feature has
 been removed entirely — see `CHANGELOG.fork.md`). It is unconditional
-for every `crush run` invocation, with no flag to restore per-request
-prompting. The interactive web UI (`crush web`) is different: it still
+for every `rush run` invocation, with no flag to restore per-request
+prompting. The interactive web UI (`rush web`) is different: it still
 shows a permission dialog (Allow / Deny / Allow-always) for each tool
 call unless the operator clicks through it manually.
 
-**Run `crush run` inside an isolated environment — Docker, Podman, a
+**Run `rush run` inside an isolated environment — Docker, Podman, a
 VM, or at minimum an OS-level sandbox/dedicated worktree** — whenever
 the prompt or the repository content is not fully trusted, or when
 model-written code will execute. Do not point it at a host you can't
-afford to have fully modified. See `--cwd` and `CRUSH_FORBID_WRITES`
+afford to have fully modified. See `--cwd` and `RUSH_FORBID_WRITES`
 below for lighter-weight mitigations when a full container isn't
 practical, but they are not a substitute for real isolation — they
 only block specific tool-call targets, not arbitrary shell execution.
 
-## Running Crush in this fork
+## Running Rush in this fork
 
 Two complementary entry points; pick whichever fits the job.
 
-### 1. `crush web` — the browser UI
+### 1. `rush web` — the browser UI
 
 ```bash
-crush web                            # default port + open browser
-crush web --port 8080 --no-open      # for a remote workstation
+rush web                            # default port + open browser
+rush web --port 8080 --no-open      # for a remote workstation
 ```
 
-A long-lived process. Sessions live in `.crush/crush.db`, the UI loads
+A long-lived process. Sessions live in `.rush/rush.db`, the UI loads
 the React bundle from inside the binary, the WebSocket is local-only +
 token-authed. This replaces upstream's TUI.
 
-### 2. `crush run` — the orchestration CLI (the main thing)
+### 2. `rush run` — the orchestration CLI (the main thing)
 
 The canonical pattern an orchestrator should be writing:
 
 ```bash
 out=/tmp/audit-A.json
-CRUSH_FORBID_WRITES="$out" \
-  crush run --role smart --session "audit-A" \
+RUSH_FORBID_WRITES="$out" \
+  rush run --role smart --session "audit-A" \
             --json --format json --timeout 10m \
             < /tmp/audit-A.prompt > "$out" 2>"$out.err"
 jq -r '.exit_reason' "$out"   # "end_turn" on success, "invalid_json" if model broke contract, "error" otherwise
@@ -168,8 +168,8 @@ jq -r '.error' "$out"         # error.message if non-success
   dispatches a sub-agent via the `agent` tool), and `reviewer`
   (optional, no alias, the strongest slot, for explicit review
   invocations — never auto-selected). `worker`/`reviewer` are
-  configured via the web UI or `crush.json`'s `models.worker` /
-  `models.reviewer` (`crush models use` manages smart/fast; see
+  configured via the web UI or `rush.json`'s `models.worker` /
+  `models.reviewer` (`rush models use` manages smart/fast; see
   `--worker`/`--reviewer` flags below for the other two). No silent
   default to the expensive model either way.
 - **`--session <id>`** — get-or-create. Pass the same id again to
@@ -269,12 +269,12 @@ jq -r '.error' "$out"         # error.message if non-success
 
 The model has an `ask_question` tool it can call when it genuinely
 needs input to proceed (ambiguous scope, a destructive choice, missing
-info) instead of guessing. Because `crush run` has no synchronous way
+info) instead of guessing. Because `rush run` has no synchronous way
 to block mid-turn for an answer, calling it **force-finishes the turn
 cleanly**:
 
 ```bash
-crush run --role smart --session "deploy-1" "deploy the release" > out.json
+rush run --role smart --session "deploy-1" "deploy the release" > out.json
 jq -r '.exit_reason' out.json   # "awaiting_answer"
 jq -r '.error'       out.json   # question + suggested options + resume command
 ```
@@ -283,8 +283,8 @@ jq -r '.error'       out.json   # question + suggested options + resume command
   a normal continuation point, not something to retry.
 - The question, suggested options, and the exact resume command live in
   `.error` (not `.final_text`).
-- Resume with `crush run --session <id> "<your answer>"` — **not**
-  `crush sessions inject`, since the process already exited.
+- Resume with `rush run --session <id> "<your answer>"` — **not**
+  `rush sessions inject`, since the process already exited.
 
 **Orchestrator mode:** when `--role smart` is used and a `worker` model
 is configured, the smart agent's system prompt gains an "Orchestrator
@@ -304,46 +304,46 @@ the same sub-session instead of starting a fresh one.
 
 #### Env-vars to know
 
-- **`CRUSH_FORBID_WRITES`** — comma-separated paths the `write`/`edit`/
+- **`RUSH_FORBID_WRITES`** — comma-separated paths the `write`/`edit`/
   `multiedit` tools must NOT touch. **Set this to the stdout-redirect
-  target before every `crush run`** — otherwise the model can pick the
+  target before every `rush run`** — otherwise the model can pick the
   same filename it sees in the prompt and overwrite your envelope
   output. Tool calls to forbidden paths fail visibly to the model;
   it then falls back to returning content via `final_text`.
-- **`CRUSH_PROVIDER_CACHE_TTL`** — duration (`24h` default, `0s` to
+- **`RUSH_PROVIDER_CACHE_TTL`** — duration (`24h` default, `0s` to
   always refresh). Caches the Catwalk/Hyper provider catalog locally
-  so `crush models show` and similar read-only commands skip the
+  so `rush models show` and similar read-only commands skip the
   ~3-second HTTP round-trip when the on-disk cache is fresher than
   the TTL.
-- **`CRUSH_COLOR_SCHEME`** — `light` \| `dark` \| `auto` (default
+- **`RUSH_COLOR_SCHEME`** — `light` \| `dark` \| `auto` (default
   `auto`). Forces the CLI help/error color palette onto a light or
   dark background, working around unreliable terminal light/dark
   auto-detection. The auto path queries the terminal's background
   color with an OSC 11 escape sequence and a hard 2-second timeout;
   if the terminal doesn't reply in time (or stdin/stdout aren't both
-  real TTYs, e.g. when an orchestrator spawns `crush` with redirected
+  real TTYs, e.g. when an orchestrator spawns `rush` with redirected
   stdin), lipgloss's `HasDarkBackground` **falls back to assuming a
   dark background** — so on a light-themed terminal the help renders
   grey-on-white with low contrast. This has been reported on WezTerm
-  on Windows. Set `CRUSH_COLOR_SCHEME=light` (or pass
+  on Windows. Set `RUSH_COLOR_SCHEME=light` (or pass
   `--color-scheme light`, which is global and wins over the env var)
   to force the light palette.
-  > **Windows gotcha:** `setx CRUSH_COLOR_SCHEME light` only writes the
+  > **Windows gotcha:** `setx RUSH_COLOR_SCHEME light` only writes the
   > variable to the registry for *future* processes — it does **not**
   > update any terminal window that's already open. Open a new
   > terminal tab/window (or restart the shell) before checking whether
   > it took effect, or you'll see the old behavior and wrongly
   > conclude the flag doesn't work.
 
-Permissions are unconditionally auto-approved in `crush run` — see
+Permissions are unconditionally auto-approved in `rush run` — see
 "Security" above. `--cwd /tmp/sandbox` or a worktree narrows the blast
 radius somewhat, but a container (Docker/Podman) or VM is the only
 real isolation boundary; use it whenever the prompt or repo content
 isn't fully trusted.
 
-### 3. Parallel processes against one `.crush/`
+### 3. Parallel processes against one `.rush/`
 
-The fork explicitly supports running 5+ `crush run --session X` against
+The fork explicitly supports running 5+ `rush run --session X` against
 the same working directory concurrently (the canonical use case is
 multi-section code audits). The defence layers:
 
@@ -374,14 +374,14 @@ processes still spawn N stdio children of every configured MCP server
 #### Injecting a message into a running session from another process
 
 ```bash
-crush sessions inject <session-id> -m "also update the changelog"
-crush sessions inject <session-id> -f ./notes/next-step.md
-crush sessions inject <session-id> -m "stop, wrong approach" --interrupt
-crush sessions inject 8a3f0c -m "continue" --json
+rush sessions inject <session-id> -m "also update the changelog"
+rush sessions inject <session-id> -f ./notes/next-step.md
+rush sessions inject <session-id> -m "stop, wrong approach" --interrupt
+rush sessions inject 8a3f0c -m "continue" --json
 ```
 
-Use this when a `crush run --session X` you already launched (from an
-orchestrator, another terminal, or a `/crush` sub-agent) is mid-turn
+Use this when a `rush run --session X` you already launched (from an
+orchestrator, another terminal, or a `/rush` sub-agent) is mid-turn
 and you want to hand it new information without killing it. `<id>`
 accepts a full session id or the short hash printed by `sessions
 list`.
@@ -399,7 +399,7 @@ list`.
   still persisted and picked up the next time the session runs; the
   command tells you so instead of failing.
 
-Delivery costs nothing at rest: `crush sessions inject` writes a
+Delivery costs nothing at rest: `rush sessions inject` writes a
 signal row to a `pending_injects` table, and the running process only
 checks it at points it already visits on every turn (next provider
 step for the merge case, a lightweight 3s ticker bound to the active
@@ -411,10 +411,10 @@ Every assistant message records its own token accounting, so you can ask
 how much a model actually cost and how well the prompt cache is working:
 
 ```bash
-crush sessions cache <session-id>          # one session, per model
-crush sessions cache --by model            # every session, per model
-crush sessions cache --since 7d --by day   # last week, day by day
-crush sessions cache --since 30d --json    # machine-readable
+rush sessions cache <session-id>          # one session, per model
+rush sessions cache --by model            # every session, per model
+rush sessions cache --since 7d --by day   # last week, day by day
+rush sessions cache --since 30d --json    # machine-readable
 ```
 
 Tokens are split into three **disjoint** classes, so the prompt size is
@@ -424,7 +424,7 @@ cache). `HIT` is `read / (input + read + write)`.
 
 Grouping is by the model that **actually produced** each message, so a
 session that switched models mid-conversation is split correctly. That
-is the difference from `crush sessions cost`, which groups by the
+is the difference from `rush sessions cost`, which groups by the
 session's *current* model and whose `TOKENS` column sums last-snapshot
 session counters rather than real totals — the two read different
 sources and are deliberately not merged into one table.
@@ -438,50 +438,50 @@ cache visibility differs.
 
 ### 5. Bootstrap helpers for an orchestrator
 
-If you drive Crush from another LLM (e.g. Claude Code), run once:
+If you drive Rush from another LLM (e.g. Claude Code), run once:
 
 ```bash
-crush claude-init                 # install the /crush slash-command
+rush claude-init                 # install the /rush slash-command
 ```
 
-This installs **only** the `.claude/commands/crush.md` slash-command — an
-operator-triggered `/crush <task>` that builds a `crush run` invocation
+This installs **only** the `.claude/commands/rush.md` slash-command — an
+operator-triggered `/rush <task>` that builds a `rush run` invocation
 with sensible defaults and launches it. Triggered explicitly by the
 operator; never auto-discovered.
 
 Earlier versions of this fork also wrote a long "delegate everything to
-crush" block into `CLAUDE.md`. That block turned out to be a recursive-
+rush" block into `CLAUDE.md`. That block turned out to be a recursive-
 delegation footgun: a sub-agent reading it on startup would try to
-delegate every task back into `crush run`, spawning another sub-agent
+delegate every task back into `rush run`, spawning another sub-agent
 which read the same block, and so on (see CHANGELOG.fork.md batch 22 for
 the postmortem). `claude-init` now strips that legacy block on every
 invocation (matching any version, v1..vN) and removes `CLAUDE.md`
 entirely if stripping leaves it empty. Re-run `claude-init` at any time
 — it's idempotent.
 
-To uninstall completely: `crush claude-del` removes the slash-command
+To uninstall completely: `rush claude-del` removes the slash-command
 file and strips any remaining legacy `CLAUDE.md` block.
 
-### 6. `crush models` — picking and inspecting models
+### 6. `rush models` — picking and inspecting models
 
 Four model slots exist: `smart`/`fast` (the pair every
-`crush run` uses by default) plus two optional ones, `worker` (cheap
+`rush run` uses by default) plus two optional ones, `worker` (cheap
 slot for delegated sub-task work — see orchestrator mode above) and
 `reviewer` (strongest slot, explicit-only). Commands covering the surface:
 
 ```bash
-crush models list             # show available atoms + raw provider/model ids (reads cache; no network)
-crush models list --refresh   # force a network refresh of provider data before listing
-crush models use <smart> <fast> [--worker <atom>] [--reviewer <atom>] [--global | --local]
-crush models use --fast <atom>   # set just one slot — --smart/--fast/--worker/--reviewer are all independent
-crush models state             # what's effective + per-scope breakdown (alias: `show`)
-crush models efforts [model]   # explain reasoning-effort levels and how to set them
-crush models bump <role> up|down  # step a role's effort by one level
-crush models unset [smart|fast|worker|reviewer|both|all] [--global|--local]
+rush models list             # show available atoms + raw provider/model ids (reads cache; no network)
+rush models list --refresh   # force a network refresh of provider data before listing
+rush models use <smart> <fast> [--worker <atom>] [--reviewer <atom>] [--global | --local]
+rush models use --fast <atom>   # set just one slot — --smart/--fast/--worker/--reviewer are all independent
+rush models state             # what's effective + per-scope breakdown (alias: `show`)
+rush models efforts [model]   # explain reasoning-effort levels and how to set them
+rush models bump <role> up|down  # step a role's effort by one level
+rush models unset [smart|fast|worker|reviewer|both|all] [--global|--local]
 ```
 
-> **No side effects by default:** `crush models list` reads the on-disk
-> provider cache (or the embedded provider list bundled with Crush when
+> **No side effects by default:** `rush models list` reads the on-disk
+> provider cache (or the embedded provider list bundled with Rush when
 > no cache exists yet) and does NOT trigger a network fetch or write any
 > cache files. Pass `--refresh` to force a fresh fetch from Catwalk and
 > Hyper before rendering. The output shape (text and `--json`) is
@@ -492,7 +492,7 @@ currently-enabled providers — disabled providers' atoms are hidden so the
 list only shows what actually works right now:
 
 ```
-ATOMS (combine as `crush models use <smart> <fast>`):
+ATOMS (combine as `rush models use <smart> <fast>`):
 
   Anthropic:
     via local `claude` CLI
@@ -515,7 +515,7 @@ wire states (`off`/`high`/`max`) settable via the long-form suffix
 (`glm5_3-max`) or raw `zai/glm-5.3@max` — one more
 than every *other* Z.AI/GLM atom (5-turbo, 4.7, 4.6, ...), which
 exposes only a boolean thinking toggle (`off`/`on`). Both forms are
-validated against the atom's real levels; `crush models efforts <model>`
+validated against the atom's real levels; `rush models efforts <model>`
 prints the exact list and commands for any specific model. (GLM-5.3's
 context window/levels are provisional — see the comment above its entry
 in `internal/cmd/models_atoms.go`.) The web UI's model picker also shows
@@ -526,26 +526,26 @@ once catwalk or your own `providers.zai.models` config actually provides
 one), so both the CLI atom and the web picker agree.
 
 ```bash
-crush models use opus-high glm5_turbo                # mixed Anthropic smart + Z.AI fast
-crush models use --local glm5_3 glm5_turbo           # workspace-only override
-crush models use openai/gpt-5@high zai/glm-5-turbo   # raw provider/model fallback for anything not in the atom list
+rush models use opus-high glm5_turbo                # mixed Anthropic smart + Z.AI fast
+rush models use --local glm5_3 glm5_turbo           # workspace-only override
+rush models use openai/gpt-5@high zai/glm-5-turbo   # raw provider/model fallback for anything not in the atom list
 
 # Also set worker/reviewer in the same call (independent of smart/fast)
-crush models use opus-high haiku-low --worker glm5_turbo --reviewer opus-max
+rush models use opus-high haiku-low --worker glm5_turbo --reviewer opus-max
 
 # Change ONE slot only, leaving the other three exactly as they are —
 # --smart/--fast work just like --worker/--reviewer always have. The two
 # positional args and --smart/--fast are mutually exclusive per call.
-crush models use --fast glm4_7_flash
-crush models use --smart opus-high
+rush models use --fast glm4_7_flash
+rush models use --smart opus-high
 
 # Discover effort levels for a specific model (or run with no arg for the
 # full per-provider overview, including the Z.AI graduated-vs-boolean split)
-crush models efforts glm5_3
+rush models efforts glm5_3
 
 # Step a role's effort by one level instead of retyping the full atom name
-crush models bump reviewer up
-crush models bump worker down --local
+rush models bump reviewer up
+rush models bump worker down --local
 ```
 
 `models state` shows the currently-effective values for all four slots and
@@ -553,10 +553,10 @@ the per-scope breakdown so you always know whether your `--local` workspace
 overrides your global default or vice versa.
 
 **The cascade has a third level: session.** `--global`/`--local` (system/
-workspace) both live in a `crush.json` file and are what `models state`
+workspace) both live in a `rush.json` file and are what `models state`
 reports. On top of that, the **web UI** lets each open session pin its own
 smart/fast/worker/reviewer, stored in that session's DB row, not in any
-`crush.json` — so it's invisible to `models state` and to other sessions.
+`rush.json` — so it's invisible to `models state` and to other sessions.
 Resolution order is always **system → folder → session**: a session with no
 override inherits whatever `models state` would show; setting one there
 wins for that session only, and clearing it (the model picker's "Inherit"
@@ -568,11 +568,11 @@ unset, the inherited value and which level it's coming from.
 
 <!-- stale-slot-ok: historical record of the removed command's exact spelling -->
 
-> **Removed in batch 11:** `crush models set --large X --small Y` and the
-> entire `crush models preset` subtree (save/use/list/delete). Both
-> commands now print a redirect notice pointing at `crush models use`.
+> **Removed in batch 11:** `rush models set --large X --small Y` and the
+> entire `rush models preset` subtree (save/use/list/delete). Both
+> commands now print a redirect notice pointing at `rush models use`.
 
-To clear an override and fall back to the other scope: `crush models unset
+To clear an override and fall back to the other scope: `rush models unset
 [smart|fast|worker|reviewer|both|all] [--local|--global]`. `both` (the
 default when the arg is omitted) clears smart+fast only; `all` clears all
 four slots. Missing keys are a no-op.
@@ -592,10 +592,10 @@ four slots. Missing keys are a no-op.
 ## When this fork is exactly the right tool
 
 - You're building a multi-agent system where one LLM delegates code
-  work to another. `crush run` is that worker; the envelope is the
+  work to another. `rush run` is that worker; the envelope is the
   protocol between them.
 - You run a multi-section audit / refactor / migration as 5+ parallel
-  `crush run` invocations against one repo and need the cost
+  `rush run` invocations against one repo and need the cost
   accounting + lock-file + atomic-write guarantees that follow.
 - You wrap LLMs in CI: stable `--session` key per build matrix,
   `--timeout` for budget control, `--json` for jq-parseable output,
@@ -612,7 +612,7 @@ either the text above or `CHANGELOG.fork.md` overrides.
 
 ---
 
-# Crush (upstream)
+# Rush (upstream)
 
 > Logo, release badge, build-status badge and demo GIF removed — they
 > point at upstream `charmbracelet/crush` artifacts (Charm's logo,
@@ -627,7 +627,7 @@ either the text above or `CHANGELOG.fork.md` overrides.
 - **Multi-Model:** choose from a wide range of LLMs or add your own via OpenAI- or Anthropic-compatible APIs
 - **Flexible:** switch LLMs mid-session while preserving context
 - **Session-Based:** maintain multiple work sessions and contexts per project
-- **LSP-Enhanced:** Crush uses LSPs for additional context, just like you do
+- **LSP-Enhanced:** Rush uses LSPs for additional context, just like you do
 - **Extensible:** add capabilities via MCPs (`http`, `stdio`, and `sse`)
 - **Works Everywhere:** first-class support in every terminal on macOS, Linux, Windows (PowerShell and WSL), Android, FreeBSD, OpenBSD, and NetBSD
 - **Industrial Grade:** built on the Charm ecosystem, powering 25k+ applications, from leading open source projects to business-critical infrastructure
@@ -637,37 +637,36 @@ either the text above or `CHANGELOG.fork.md` overrides.
 This fork ships as an npm package:
 
 ```bash
-npm install -g @phpcraftdream/crush
-crush run --role smart "your prompt here"
+npm install -g @phpcraftdream/rush
+rush run --role smart "your prompt here"
 ```
 
 Or build from source (requires Go 1.26+):
 
 ```bash
-git clone https://github.com/PHPCraftdream/crush.git
-cd crush
-go build -o crush .
+git clone https://github.com/PHPCraftdream/rush.git
+cd rush
+go build -o rush .
 ```
 
 > [!NOTE]
 > The package managers upstream `charmbracelet/crush` publishes through
 > (Homebrew, Winget, Scoop, apt/yum via `repo.charm.sh`, the Nix NUR
 > module, `go install github.com/charmbracelet/crush@latest`) install
-> **the upstream project, not this fork** — this fork's Go module path
-> is unchanged from upstream's on purpose (to keep merges tractable),
-> so `go install`-ing that path will not get you this fork's code. The
-> npm package above and building from [this repository](https://github.com/PHPCraftdream/crush)
+> **the upstream project, not this fork** — this fork's Go module path is
+> `github.com/PHPCraftdream/rush`, distinct from upstream. The npm package above
+> and building from [this repository](https://github.com/PHPCraftdream/rush)
 > directly are the two ways to get this fork specifically.
 
 > [!WARNING]
-> Productivity may increase when using Crush and you may find yourself nerd
+> Productivity may increase when using Rush and you may find yourself nerd
 > sniped when first using the application.
 
 ## Getting Started
 
 The quickest way to get started is to grab an API key for your preferred
 provider such as Anthropic, OpenAI, Groq, OpenRouter, or Vercel AI Gateway and just start
-Crush. You'll be prompted to enter your API key.
+Rush. You'll be prompted to enter your API key.
 
 That said, you can also set environment variables for preferred providers.
 
@@ -704,7 +703,7 @@ That said, you can also set environment variables for preferred providers.
 ### Subscriptions
 
 If you prefer subscription-based usage, here are some plans that work well in
-Crush:
+Rush:
 
 - [Synthetic](https://synthetic.new/pricing)
 - [GLM Coding Plan](https://z.ai/subscribe)
@@ -713,30 +712,47 @@ Crush:
 
 ### By the Way
 
-Is there a provider you’d like to see in Crush? Is there an existing model that needs an update?
+Is there a provider you’d like to see in Rush? Is there an existing model that needs an update?
 
-Crush’s default model listing is managed in [Catwalk](https://github.com/charmbracelet/catwalk), a community-supported, open source repository of Crush-compatible models, and you’re welcome to contribute.
+Rush’s default model listing is managed in [Catwalk](https://github.com/charmbracelet/catwalk), a community-supported, open source repository of Rush-compatible models, and you’re welcome to contribute.
 
 (Upstream's Catwalk badge image removed — see the project at
 [charmbracelet/catwalk](https://github.com/charmbracelet/catwalk).)
 
+## Upgrading from the pre-rename builds
+
+This project was renamed from "Crush" to "Rush". If you have existing Crush
+installations, you'll need to migrate your data:
+
+- Run `rush migrate` to rename `.crush/` directories to `.rush/` and
+  `crush.json` files to `rush.json` (both workspace configs and global
+  config/data locations)
+- Update environment variables: `CRUSH_*` → `RUSH_*` (e.g. `CRUSH_FORBID_WRITES`
+  → `RUSH_FORBID_WRITES`)
+- Update scripts that reference the old names: commands like `crush run` →
+  `rush run`, paths like `.crush/` → `.rush/`, `crush.json` → `rush.json`,
+  and `crush.db` → `rush.db`
+
+The migration command works on the current working directory (or `--cwd` if set)
+and always attempts global migrations. Use `--dry-run` to preview changes.
+
 ## Configuration
 
 > [!TIP]
-> Crush ships with a builtin `crush-config` skill for configuring itself. In
-> many cases you can simply ask Crush to configure itself.
+> Rush ships with a builtin `crush-config` skill for configuring itself. In
+> many cases you can simply ask Rush to configure itself.
 
-Crush runs great with no configuration. That said, if you do need or want to
-customize Crush, configuration can be added either local to the project itself,
+Rush runs great with no configuration. That said, if you do need or want to
+customize Rush, configuration can be added either local to the project itself,
 or globally, with the following priority:
 
-1. `.crush.json`
-2. `crush.json`
-3. `$HOME/.config/crush/crush.json`
+1. `.rush.json`
+2. `rush.json`
+3. `$HOME/.config/rush/rush.json`
 
 Items 1 and 2 are searched by name in the project root, walking up the
-directory tree from `cwd` — a file at `./.crush/crush.json` (inside the
-`.crush/` subdirectory) is not discovered; that directory holds ephemeral
+directory tree from `cwd` — a file at `./.rush/rush.json` (inside the
+`.rush/` subdirectory) is not discovered; that directory holds ephemeral
 data, not config.
 
 Configuration itself is stored as a JSON object:
@@ -748,26 +764,26 @@ Configuration itself is stored as a JSON object:
 }
 ```
 
-As an additional note, Crush also stores ephemeral data, such as application
+As an additional note, Rush also stores ephemeral data, such as application
 state, in one additional location:
 
 ```bash
 # Unix
-$HOME/.local/share/crush/crush.json
+$HOME/.local/share/rush/rush.json
 
 # Windows
-%LOCALAPPDATA%\crush\crush.json
+%LOCALAPPDATA%\rush\rush.json
 ```
 
 > [!TIP]
 > You can override the user and data config locations by setting:
 >
-> - `CRUSH_GLOBAL_CONFIG`
-> - `CRUSH_GLOBAL_DATA`
+> - `RUSH_GLOBAL_CONFIG`
+> - `RUSH_GLOBAL_DATA`
 
 ### LSPs
 
-Crush can use LSPs for additional context to help inform its decisions, just
+Rush can use LSPs for additional context to help inform its decisions, just
 like you would. LSPs can be added manually like so:
 
 ```json
@@ -793,14 +809,14 @@ like you would. LSPs can be added manually like so:
 
 ### MCPs
 
-Crush also supports Model Context Protocol (MCP) servers through three transport
+Rush also supports Model Context Protocol (MCP) servers through three transport
 types: `stdio` for command-line servers, `http` for HTTP endpoints, and `sse`
 for Server-Sent Events.
 
 Shell-style value expansion (`$VAR`, `${VAR:-default}`, `$(command)`, quoting,
 nesting) works in `command`, `args`, `env`, `headers`, and `url`, so
 file-based secrets work out of the box. You can use values like `"$TOKEN"`
-or `"$(cat /path/to/secret/token)"`. Expansion runs through Crush's embedded
+or `"$(cat /path/to/secret/token)"`. Expansion runs through Rush's embedded
 shell, so the same syntax works on every supported system, Windows included.
 
 Unset variables expand to the empty string by default, matching bash. For
@@ -820,9 +836,9 @@ Provider `extra_body` is a non-expanding JSON passthrough; put env-driven
 values in `extra_headers` or the provider's `api_key` / `base_url`, all of
 which do expand.
 
-> **Security note:** `crush.json` is trusted code. Any `$(...)` in it runs at
+> **Security note:** `rush.json` is trusted code. Any `$(...)` in it runs at
 > load time with your shell's privileges, before the UI appears. Don't launch
-> Crush in a directory whose `crush.json` you haven't reviewed.
+> Rush in a directory whose `rush.json` you haven't reviewed.
 
 ```json
 {
@@ -864,18 +880,18 @@ which do expand.
 
 ### Hooks
 
-Crush has preliminary support for hooks. For details, see
+Rush has preliminary support for hooks. For details, see
 [the hook guide](./docs/hooks/).
 
 ### Global context files
 
-Crush automatically includes two files for cross-project instructions.
+Rush automatically includes two files for cross-project instructions.
 
-- `~/.config/crush/CRUSH.md`: Crush-specific rules that would confuse other
-  agentic coding tools. If you only use Crush, this is the only one you need to
+- `~/.config/rush/RUSH.md`: Rush-specific rules that would confuse other
+  agentic coding tools. If you only use Rush, this is the only one you need to
   edit.
 - `~/.config/AGENTS.md`: generic instructions that other coding tools might
-  read. Avoid referring to Crush-specific features or workflows here. You
+  read. Avoid referring to Rush-specific features or workflows here. You
   probably only care about this if you use multiple agentic coding tools and
   want to share instructions between them.
 
@@ -896,17 +912,17 @@ configuration:
 
 ### Ignoring Files
 
-Crush respects `.gitignore` files by default, but you can also create a
-`.crushignore` file to specify additional files and directories that Crush
+Rush respects `.gitignore` files by default, but you can also create a
+`.rushignore` file to specify additional files and directories that Rush
 should ignore. This is useful for excluding files that you want in version
-control but don't want Crush to consider when providing context.
+control but don't want Rush to consider when providing context.
 
-The `.crushignore` file uses the same syntax as `.gitignore` and can be placed
+The `.rushignore` file uses the same syntax as `.gitignore` and can be placed
 in the root of your project or in subdirectories.
 
 ### Allowing Tools
 
-By default, Crush will ask you for permission before running tool calls. If
+By default, Rush will ask you for permission before running tool calls. If
 you'd like, you can allow tools to be executed without prompting you for
 permissions. Use this with care.
 
@@ -925,9 +941,9 @@ permissions. Use this with care.
 }
 ```
 
-### Restricting `crush run`
+### Restricting `rush run`
 
-Non-interactive `crush run` invocations auto-approve every permission request
+Non-interactive `rush run` invocations auto-approve every permission request
 by default (no human is on the keyboard). The `permissions.run` block flips
 that to deny-by-default so an unattended run can be scoped to a known-safe
 allowlist. Interactive sessions (TUI / web) are never affected.
@@ -974,12 +990,12 @@ the tool name. To bypass the gate for bash wholesale, use the global
 `permissions.allowed_tools` (which is checked before the gate); otherwise
 leave `bash` out of `allowed_tools` and use `run.allow_bash`.
 
-The same options are available as CLI flags on `crush run`, which merge
+The same options are available as CLI flags on `rush run`, which merge
 (union) with the config block. `--restrict-run` forces restrict on even
 when the config has it off:
 
 ```sh
-crush run --restrict-run \
+rush run --restrict-run \
   --allow-bash 'git diff' \
   --allow-bash 'glob:ls *' \
   --allow-tool view \
@@ -989,7 +1005,7 @@ crush run --restrict-run \
 
 ### Disabling Built-In Tools
 
-If you'd like to prevent Crush from using certain built-in tools entirely, you
+If you'd like to prevent Rush from using certain built-in tools entirely, you
 can disable them via the `options.disabled_tools` list. Disabled tools are
 completely hidden from the agent.
 
@@ -1006,7 +1022,7 @@ To disable tools from MCP servers, see the [MCP config section](#mcps).
 
 ### Disabling Skills
 
-If you'd like to prevent Crush from using certain skills entirely, you can
+If you'd like to prevent Rush from using certain skills entirely, you can
 disable them via the `options.disabled_skills` list. Disabled skills are hidden
 from the agent, including builtin skills and skills discovered from disk.
 
@@ -1021,28 +1037,28 @@ from the agent, including builtin skills and skills discovered from disk.
 
 ### Agent Skills
 
-Crush supports the [Agent Skills](https://agentskills.io) open standard for
+Rush supports the [Agent Skills](https://agentskills.io) open standard for
 extending agent capabilities with reusable skill packages. Skills are folders
-containing a `SKILL.md` file with instructions that Crush can discover and
+containing a `SKILL.md` file with instructions that Rush can discover and
 activate on demand.
 
 The global paths we looks for skills are:
 
-* `$CRUSH_SKILLS_DIR`
+* `$RUSH_SKILLS_DIR`
 * `$XDG_CONFIG_HOME/agents/skills` or `~/.config/agents/skills/`
-* `$XDG_CONFIG_HOME/crush/skills` or `~/.config/crush/skills/`
+* `$XDG_CONFIG_HOME/rush/skills` or `~/.config/rush/skills/`
 * `~/.agents/skills/`
 * `~/.claude/skills/`
 * On Windows, we _also_ look at
   * `%LOCALAPPDATA%\agents\skills\` or `%USERPROFILE%\AppData\Local\agents\skills\`
-  * `%LOCALAPPDATA%\crush\skills\` or `%USERPROFILE%\AppData\Local\crush\skills\`
+  * `%LOCALAPPDATA%\rush\skills\` or `%USERPROFILE%\AppData\Local\rush\skills\`
 * Additional paths configured via `options.skills_paths`
 
 On top of that, we _also_ load skills in your project from the following
 relative paths:
 
 * `.agents/skills`
-* `.crush/skills`
+* `.rush/skills`
 * `.claude/skills`
 * `.cursor/skills`
 
@@ -1051,7 +1067,7 @@ relative paths:
   "$schema": "https://charm.land/crush.json",
   "options": {
     "skills_paths": [
-      "~/.config/crush/skills", // Windows: "%LOCALAPPDATA%\\crush\\skills",
+      "~/.config/rush/skills", // Windows: "%LOCALAPPDATA%\\rush\\skills",
       "./project-skills",
     ],
   },
@@ -1062,16 +1078,16 @@ You can get started with example skills from [anthropics/skills](https://github.
 
 ```bash
 # Unix
-mkdir -p ~/.config/crush/skills
-cd ~/.config/crush/skills
+mkdir -p ~/.config/rush/skills
+cd ~/.config/rush/skills
 git clone https://github.com/anthropics/skills.git _temp
 mv _temp/skills/* . && rm -rf _temp
 ```
 
 ```powershell
 # Windows (PowerShell)
-mkdir -Force "$env:LOCALAPPDATA\crush\skills"
-cd "$env:LOCALAPPDATA\crush\skills"
+mkdir -Force "$env:LOCALAPPDATA\rush\skills"
+cd "$env:LOCALAPPDATA\rush\skills"
 git clone https://github.com/anthropics/skills.git _temp
 mv _temp/skills/* . ; rm -r -force _temp
 ```
@@ -1109,7 +1125,7 @@ Skills with `disable-model-invocation` won't appear in the model's available ski
 
 ### Desktop notifications
 
-Crush sends desktop notifications when a tool call requires permission and when
+Rush sends desktop notifications when a tool call requires permission and when
 the agent finishes its turn. They're only sent when the terminal window isn't
 focused _and_ your terminal supports reporting the focus state.
 
@@ -1128,7 +1144,7 @@ limitations.
 
 ### Initialization
 
-When you initialize a project, Crush analyzes your codebase and creates
+When you initialize a project, Rush analyzes your codebase and creates
 a context file that helps it work more effectively in future sessions.
 By default, this file is named `AGENTS.md`, but you can customize the
 name and location with the `initialize_as` option:
@@ -1143,14 +1159,14 @@ name and location with the `initialize_as` option:
 ```
 
 This is useful if you prefer a different naming convention or want to
-place the file in a specific directory (e.g., `CRUSH.md` or
-`docs/LLMs.md`). Crush will fill the file with project-specific context
+place the file in a specific directory (e.g., `RUSH.md` or
+`docs/LLMs.md`). Rush will fill the file with project-specific context
 like build commands, code patterns, and conventions it discovered during
 initialization.
 
 ### Attribution Settings
 
-By default, Crush adds attribution information to Git commits and pull requests
+By default, Rush adds attribution information to Git commits and pull requests
 it creates. You can customize this behavior with the `attribution` option:
 
 ```json
@@ -1167,15 +1183,15 @@ it creates. You can customize this behavior with the `attribution` option:
 
 - `trailer_style`: Controls the attribution trailer added to commit messages
   (default: `assisted-by`)
-  - `assisted-by`: Adds `Assisted-by: Crush:[ModelID]` as specified in [the convention](https://docs.kernel.org/process/coding-assistants.html#attribution)
-  - `co-authored-by`: Adds `Co-Authored-By: Crush <crush@charm.land>`
+  - `assisted-by`: Adds `Assisted-by: Rush:[ModelID]` as specified in [the convention](https://docs.kernel.org/process/coding-assistants.html#attribution)
+  - `co-authored-by`: Adds `Co-Authored-By: Rush <rush@charm.land>`
   - `none`: No attribution trailer
-- `generated_with`: When true (default), adds `💘 Generated with Crush` line to
+- `generated_with`: When true (default), adds `💘 Generated with Rush` line to
   commit messages and PR descriptions
 
 ### Custom Providers
 
-Crush supports custom provider configurations for both OpenAI-compatible and
+Rush supports custom provider configurations for both OpenAI-compatible and
 Anthropic-compatible APIs.
 
 > [!NOTE]
@@ -1251,11 +1267,11 @@ Custom Anthropic-compatible providers follow this format:
 
 ### Amazon Bedrock
 
-Crush currently supports running Anthropic models through Bedrock, with caching disabled.
+Rush currently supports running Anthropic models through Bedrock, with caching disabled.
 
 - A Bedrock provider will appear once you have AWS configured, i.e. `aws configure`
-- Crush also expects the `AWS_REGION` or `AWS_DEFAULT_REGION` to be set
-- To use a specific AWS profile set `AWS_PROFILE` in your environment, i.e. `AWS_PROFILE=myprofile crush`
+- Rush also expects the `AWS_REGION` or `AWS_DEFAULT_REGION` to be set
+- To use a specific AWS profile set `AWS_PROFILE` in your environment, i.e. `AWS_PROFILE=myprofile rush`
 - Alternatively to `aws configure`, you can also just set `AWS_BEARER_TOKEN_BEDROCK`
 
 ### Vertex AI Platform
@@ -1342,23 +1358,23 @@ Local models can also be configured via OpenAI-compatible API. Here are two comm
 
 ## Logging
 
-Sometimes you need to look at logs. Luckily, Crush logs all sorts of
-stuff. Logs are stored in `./.crush/logs/crush.log` relative to the project.
+Sometimes you need to look at logs. Luckily, Rush logs all sorts of
+stuff. Logs are stored in `./.rush/logs/rush.log` relative to the project.
 
 The CLI also contains some helper commands to make perusing recent logs easier:
 
 ```bash
 # Print the last 1000 lines
-crush logs
+rush logs
 
 # Print the last 500 lines
-crush logs --tail 500
+rush logs --tail 500
 
 # Follow logs in real time
-crush logs --follow
+rush logs --follow
 ```
 
-Want more logging? Run `crush` with the `--debug` flag, or enable it in the
+Want more logging? Run `rush` with the `--debug` flag, or enable it in the
 config:
 
 ```json
@@ -1373,10 +1389,10 @@ config:
 
 ## Provider Auto-Updates
 
-By default, Crush automatically checks for the latest and greatest list of
+By default, Rush automatically checks for the latest and greatest list of
 providers and models from [Catwalk](https://github.com/charmbracelet/catwalk),
-the open source Crush provider database. This means that when new providers and
-models are available, or when model metadata changes, Crush automatically
+the open source Rush provider database. This means that when new providers and
+models are available, or when model metadata changes, Rush automatically
 updates your local configuration.
 
 ### Disabling automatic provider updates
@@ -1386,7 +1402,7 @@ air-gapped environments, this might not be want you want, and this feature can
 be disabled.
 
 To disable automatic provider updates, set `disable_provider_auto_update` into
-your `crush.json` config:
+your `rush.json` config:
 
 ```json
 {
@@ -1397,27 +1413,27 @@ your `crush.json` config:
 }
 ```
 
-Or set the `CRUSH_DISABLE_PROVIDER_AUTO_UPDATE` environment variable:
+Or set the `RUSH_DISABLE_PROVIDER_AUTO_UPDATE` environment variable:
 
 ```bash
-export CRUSH_DISABLE_PROVIDER_AUTO_UPDATE=1
+export RUSH_DISABLE_PROVIDER_AUTO_UPDATE=1
 ```
 
 ## Provider management
 
-Crush provides a suite of commands to inspect and manage LLM providers:
+Rush provides a suite of commands to inspect and manage LLM providers:
 
 ### List providers
 
 ```bash
 # List all configured providers across global and workspace scopes
-crush providers list
+rush providers list
 
 # Filter by id, name, or type (case-insensitive substring match)
-crush providers list --grep zai
+rush providers list --grep zai
 
 # Emit JSON for further processing
-crush providers list --json | jq '.[] | select(.type=="openai")'
+rush providers list --json | jq '.[] | select(.type=="openai")'
 ```
 
 Output shows ID, name, type, status (enabled/disabled), model count, and (masked) API key.
@@ -1426,34 +1442,34 @@ Output shows ID, name, type, status (enabled/disabled), model count, and (masked
 
 ```bash
 # Show full details for a provider
-crush providers show openai
+rush providers show openai
 
 # Emit JSON
-crush providers show openai --json
+rush providers show openai --json
 ```
 
 ### Enable/disable a provider
 
 ```bash
 # Enable a disabled provider (re-enables it and refreshes models)
-crush providers enable zai
+rush providers enable zai
 
 # Disable a provider (keeps credentials, sets disabled flag)
-crush providers disable openai
+rush providers disable openai
 ```
 
 ### Add a new provider
 
 ```bash
 # Add a catwalk-known provider (uses default base URL from catwalk)
-crush providers add zai --name "Z.AI" --type openai-compat --api-key $ZAI_API_KEY
+rush providers add zai --name "Z.AI" --type openai-compat --api-key $ZAI_API_KEY
 
 # Add with a custom base URL
-crush providers add local-llm --name "Local LLM" --type openai-compat \
+rush providers add local-llm --name "Local LLM" --type openai-compat \
   --base-url http://localhost:8000/v1 --api-key none
 
 # Add but don't enable
-crush providers add myProvider --name "My Provider" --type openai \
+rush providers add myProvider --name "My Provider" --type openai \
   --api-key $KEY --no-enable
 ```
 
@@ -1461,20 +1477,20 @@ crush providers add myProvider --name "My Provider" --type openai \
 
 ```bash
 # Remove a provider with confirmation
-crush providers remove openai
+rush providers remove openai
 
 # Remove without prompting (required in non-interactive mode)
-crush providers remove openai --yes
+rush providers remove openai --yes
 ```
 
 ### Update provider models
 
 ```bash
 # Refresh models for a single provider
-crush providers update zai
+rush providers update zai
 
 # Refresh models for all enabled providers
-crush providers update --all
+rush providers update --all
 ```
 
 Shows a diff of added/removed models. Warns if any currently-preferred model is orphaned.
@@ -1483,47 +1499,47 @@ Shows a diff of added/removed models. Warns if any currently-preferred model is 
 
 ```bash
 # Equivalent to `providers list --grep pattern`
-crush providers grep openai-compat
+rush providers grep openai-compat
 ```
 
 ### Manually updating providers
 
-Manually updating providers is possible with the `crush update-providers`
+Manually updating providers is possible with the `rush update-providers`
 command:
 
 ```bash
 # Update providers remotely from Catwalk.
-crush update-providers
+rush update-providers
 
 # Update providers from a custom Catwalk base URL.
-crush update-providers https://example.com/
+rush update-providers https://example.com/
 
 # Update providers from a local file.
-crush update-providers /path/to/local-providers.json
+rush update-providers /path/to/local-providers.json
 
-# Reset providers to the embedded version, embedded at crush at build time.
-crush update-providers embedded
+# Reset providers to the embedded version, embedded at rush at build time.
+rush update-providers embedded
 
 # For more info:
-crush update-providers --help
+rush update-providers --help
 ```
 
 ## Metrics
 
-Crush records pseudonymous usage metrics (tied to a device-specific hash),
+Rush records pseudonymous usage metrics (tied to a device-specific hash),
 which maintainers rely on to inform development and support priorities. The
 metrics include solely usage metadata; prompts and responses are NEVER
 collected.
 
 Details on exactly what’s collected are in the source code
-([here](https://github.com/PHPCraftdream/crush/tree/main/internal/event)
-and [here](https://github.com/PHPCraftdream/crush/blob/main/internal/config/config.go)).
+([here](https://github.com/PHPCraftdream/rush/tree/main/internal/event)
+and [here](https://github.com/PHPCraftdream/rush/blob/main/internal/config/config.go)).
 
 You can opt out of metrics collection at any time by setting the environment
 variable by setting the following in your environment:
 
 ```bash
-export CRUSH_DISABLE_METRICS=1
+export RUSH_DISABLE_METRICS=1
 ```
 
 Or by setting the following in your config:
@@ -1536,7 +1552,7 @@ Or by setting the following in your config:
 }
 ```
 
-Crush also respects the [`DO_NOT_TRACK`](https://donottrack.sh/) convention
+Rush also respects the [`DO_NOT_TRACK`](https://donottrack.sh/) convention
 which can be enabled via `export DO_NOT_TRACK=1`.
 
 ## Q&A
@@ -1554,16 +1570,16 @@ Installing an extra tool might be needed on Unix-like environments.
 
 ## Contributing
 
-Open an issue or pull request on [this fork's repository](https://github.com/PHPCraftdream/crush).
+Open an issue or pull request on [this fork's repository](https://github.com/PHPCraftdream/rush).
 
 ## Whatcha think?
 
 Questions or issues specific to this fork: use [GitHub Issues on
-this repository](https://github.com/PHPCraftdream/crush/issues).
+this repository](https://github.com/PHPCraftdream/rush/issues).
 
 ## License
 
-[FSL-1.1-MIT](https://github.com/PHPCraftdream/crush/raw/main/LICENSE.md)
+[FSL-1.1-MIT](https://github.com/PHPCraftdream/rush/raw/main/LICENSE.md)
 
 ---
 

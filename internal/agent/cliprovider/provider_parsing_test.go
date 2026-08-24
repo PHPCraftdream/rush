@@ -382,7 +382,7 @@ func contains(ss []string, s string) bool {
 // visible to any local user via `ps` / a process viewer / /proc/<pid>/cmdline,
 // unlike an environment variable set only on the child process.
 //
-// SCOPE NOTE (added on independent review): the delegated /crush fix's own
+// SCOPE NOTE (added on independent review): the delegated /rush fix's own
 // version of this test never called codexMCPConfigArgs (or any other
 // production function) at all — every assertion compared hand-written
 // string literals to themselves (e.g. `expectedEnvVar != "RUSH_CODEX_MCP_TOKEN"`,

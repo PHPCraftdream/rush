@@ -13,7 +13,7 @@ import (
 // sets (SysProcAttr.Setpgid), not something retrofittable onto a running pid.
 //
 // The registry below exists for the one case those paths cannot cover: a
-// crush that dies without running its own cleanup. Windows gets that for
+// rush that dies without running its own cleanup. Windows gets that for
 // free — its Job Object is kill-on-close, so the OS tears the tree down when
 // the process takes the last handle with it. Unix has no equivalent, and
 // since CLI children were moved into their own process groups they are no

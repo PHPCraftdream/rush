@@ -25,7 +25,7 @@ const updateCheckTimeout = 30 * time.Second
 // client and the binary's own version.Version.
 //
 // Deliberately fire-and-forget with no retry and no schedule: the operator
-// restarts crush often enough, and a background poller would be a network
+// restarts rush often enough, and a background poller would be a network
 // call nobody asked for on a machine that may be offline on purpose. A
 // failed check is logged at debug — it is not a problem the user can act
 // on, and at warn it would cry wolf on every offline start.

@@ -155,7 +155,7 @@ func TestCheck_BlocksExecAndNohupWrappers(t *testing.T) {
 	}
 }
 
-// B-2 regression test (found by a full-project @crush --role reviewer
+// B-2 regression test (found by a full-project @rush --role reviewer
 // audit, 2026-08-11): env/nice/timeout were missing from the wrapper
 // strip-list, so "env claude ...", "nice claude ...", "timeout 30 claude
 // ..." all bypassed this guard entirely — head stayed "env"/"nice"/

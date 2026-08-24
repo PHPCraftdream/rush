@@ -83,7 +83,7 @@ func TestMaxPromptArgLen(t *testing.T) {
 	}
 }
 
-// TestIsWindowsCmdShim covers the fix for a real `crush run` failure found
+// TestIsWindowsCmdShim covers the fix for a real `rush run` failure found
 // via a Windows smoke test: claude.cmd (npm's shim) invoked with a routine
 // ~12KB system prompt as a CLI argument hit cmd.exe's own ~8191-character
 // command-line ceiling ("The command line is too long.") well before

@@ -1,7 +1,7 @@
 package permission
 
 // This file implements the restricted-run allowlist: the matcher that
-// decides whether a `crush run` permission request is auto-approved
+// decides whether a `rush run` permission request is auto-approved
 // when restricted mode is on. See config.RunPermissions for the
 // user-facing config and cmd/run.go for the --restrict-run / --allow-bash
 // CLI surface.
@@ -35,11 +35,11 @@ import (
 
 // RunAllowlistSpec is the user-facing, pre-compilation form of a
 // restricted-run allowlist. It mirrors config.RunPermissions and the
-// `crush run` CLI flags; BuildRunAllowlist compiles it into a queryable
+// `rush run` CLI flags; BuildRunAllowlist compiles it into a queryable
 // RunAllowlist.
 type RunAllowlistSpec struct {
 	// Restrict enables the restricted permission model. When false the
-	// allowlist is inert and `crush run` keeps auto-approving everything.
+	// allowlist is inert and `rush run` keeps auto-approving everything.
 	Restrict bool
 	// AllowTools lists "tool" and "tool:action" keys that bypass the
 	// run gate for non-bash tools. Same syntax as permissions.allowed_tools.

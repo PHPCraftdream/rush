@@ -10,7 +10,7 @@ import (
 
 // TestShouldBypassSubAgentBan is the table-level test for the Фаза 2
 // decision logic (docs/plans/2026-07-26-orchestrator-worker-e2e.md): the
-// default `crush run` sub-agent ban is bypassed for the `agent` tool
+// default `rush run` sub-agent ban is bypassed for the `agent` tool
 // whenever --role resolved to smart AND a Worker model slot is
 // configured with a non-empty Model — regardless of whether --agents
 // single was passed explicitly or left unset, since a configured worker
@@ -90,7 +90,7 @@ func TestShouldBypassSubAgentBan(t *testing.T) {
 // TestShouldBypassSubAgentBan_BackwardCompatRequiresWorkerCondition proves
 // that dropping the "worker configured" condition from the predicate
 // would break the backward-compatibility guarantee: without it, a bare
-// `crush run --role smart` (no worker configured at all — today's most
+// `rush run --role smart` (no worker configured at all — today's most
 // common invocation) would incorrectly bypass the sub-agent ban. This
 // test documents/pins that condition by re-deriving the role-only
 // predicate inline and showing it disagrees with shouldBypassSubAgentBan

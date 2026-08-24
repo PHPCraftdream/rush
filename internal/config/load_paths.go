@@ -14,8 +14,8 @@ import (
 
 // GlobalConfig returns the global configuration file path for the application.
 func GlobalConfig() string {
-	if crushGlobal := os.Getenv("RUSH_GLOBAL_CONFIG"); crushGlobal != "" {
-		return filepath.Join(crushGlobal, fmt.Sprintf("%s.json", appName))
+	if rushGlobal := os.Getenv("RUSH_GLOBAL_CONFIG"); rushGlobal != "" {
+		return filepath.Join(rushGlobal, fmt.Sprintf("%s.json", appName))
 	}
 	return filepath.Join(home.Config(), appName, fmt.Sprintf("%s.json", appName))
 }
@@ -23,8 +23,8 @@ func GlobalConfig() string {
 // GlobalCacheDir returns the path to the global cache directory for the
 // application.
 func GlobalCacheDir() string {
-	if crushCache := os.Getenv("RUSH_CACHE_DIR"); crushCache != "" {
-		return crushCache
+	if rushCache := os.Getenv("RUSH_CACHE_DIR"); rushCache != "" {
+		return rushCache
 	}
 	if xdgCacheHome := os.Getenv("XDG_CACHE_HOME"); xdgCacheHome != "" {
 		return filepath.Join(xdgCacheHome, appName)
@@ -47,16 +47,16 @@ func ProjectConfigs(cwd string) []string {
 // GlobalConfigData returns the path to the main data directory for the application.
 // this config is used when the app overrides configurations instead of updating the global config.
 func GlobalConfigData() string {
-	if crushData := os.Getenv("RUSH_GLOBAL_DATA"); crushData != "" {
-		return filepath.Join(crushData, fmt.Sprintf("%s.json", appName))
+	if rushData := os.Getenv("RUSH_GLOBAL_DATA"); rushData != "" {
+		return filepath.Join(rushData, fmt.Sprintf("%s.json", appName))
 	}
 	if xdgDataHome := os.Getenv("XDG_DATA_HOME"); xdgDataHome != "" {
 		return filepath.Join(xdgDataHome, appName, fmt.Sprintf("%s.json", appName))
 	}
 
 	// return the path to the main data directory
-	// for windows, it should be in `%LOCALAPPDATA%/crush/`
-	// for linux and macOS, it should be in `$HOME/.local/share/crush/`
+	// for windows, it should be in `%LOCALAPPDATA%/rush/`
+	// for linux and macOS, it should be in `$HOME/.local/share/rush/`
 	if runtime.GOOS == "windows" {
 		localAppData := cmp.Or(
 			os.Getenv("LOCALAPPDATA"),

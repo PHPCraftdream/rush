@@ -40,7 +40,7 @@ type Querier interface {
 	CountMessagesMissingUsageInRange(ctx context.Context, arg CountMessagesMissingUsageInRangeParams) (int64, error)
 	CreateFile(ctx context.Context, arg CreateFileParams) (File, error)
 	CreateMessage(ctx context.Context, arg CreateMessageParams) (Message, error)
-	// pending_injects is the cross-process inject queue for `crush sessions
+	// pending_injects is the cross-process inject queue for `rush sessions
 	// inject`. See migration 20260703000001 for the full semantics.
 	//
 	// NOTE: as of this fork the session-layer wrapper (session.go
@@ -218,7 +218,7 @@ type Querier interface {
 	HasOutstandingRunQueueEntryForSession(ctx context.Context, sessionID string) (int64, error)
 	// Atomic additive update for session cost. Safe under fan-out (multiple
 	// sub-agent goroutines finishing concurrently and each charging the
-	// parent) and across processes (orchestrator with parallel crush runs).
+	// parent) and across processes (orchestrator with parallel rush runs).
 	// Returns the updated row so the caller can refresh its snapshot.
 	IncrementSessionCost(ctx context.Context, arg IncrementSessionCostParams) (Session, error)
 	// Claim a specific entry by ID (call after GetOldestPendingRunQueueEntryForSession in a transaction).

@@ -97,7 +97,7 @@ func TestAutonomyEnabled(t *testing.T) {
 
 func TestSetPersistentMode(t *testing.T) {
 	coord := &coordinator{}
-	assert.False(t, coord.persistentMode.Load(), "default must be false (crush run is non-persistent)")
+	assert.False(t, coord.persistentMode.Load(), "default must be false (rush run is non-persistent)")
 	coord.SetPersistentMode(true)
 	assert.True(t, coord.persistentMode.Load())
 	coord.SetPersistentMode(false)
@@ -190,7 +190,7 @@ func TestAutoResumeEligible(t *testing.T) {
 		assert.False(t, coord.autoResumeEligible(sid))
 	})
 
-	t.Run("autonomy ON + persistentMode false (crush run) is not eligible", func(t *testing.T) {
+	t.Run("autonomy ON + persistentMode false (rush run) is not eligible", func(t *testing.T) {
 		cfg.Config().Options = &config.Options{AutoResumeOnJobDone: boolPtr(true)}
 		coord.persistentMode.Store(false)
 		assert.False(t, coord.autoResumeEligible(sid))
@@ -239,7 +239,7 @@ func TestResetAutoResumeCounter(t *testing.T) {
 // tool-dispatch chain) is recovered rather than crashing the process. This
 // goroutine is spawned independently of BackgroundShell.OnDone's own
 // recover(), so it needs its own — without it, a panic here (e.g. from a
-// tool call made during the auto-resumed turn) would kill the whole crush
+// tool call made during the auto-resumed turn) would kill the whole rush
 // process with no log output, at an arbitrary time after the triggering
 // background job finished.
 func TestRunAutoResumeRecovered_Panic(t *testing.T) {

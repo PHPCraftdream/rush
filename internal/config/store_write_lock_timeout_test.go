@@ -27,7 +27,7 @@ import (
 // This test contends the exact lock file removeConfigFieldAt/
 // withConfigWriteLockCtx acquires (path+".lock", via
 // session.AcquireFileLockContext/session.TryAcquireFileLock — the same
-// sidecar a second real crush process would take) for well longer than
+// sidecar a second real rush process would take) for well longer than
 // internalConfigWriteLockTimeout, then calls removeConfigFieldBestEffort
 // and asserts it returns within a bound that proves the SHORT (2s) timeout
 // was used, not the full 30s configWriteLockTimeout and not an unbounded
@@ -41,7 +41,7 @@ func TestRemoveConfigFieldBestEffort_BoundedByInternalTimeout(t *testing.T) {
 	require.NoError(t, os.WriteFile(configPath, []byte(`{"providers":{"anthropic":{"oauth":{"access_token":"secret"}}}}`), 0o600))
 
 	// Hold the exact sidecar lock file removeConfigFieldAt contends on,
-	// standing in for a sibling crush process that has it wedged/busy.
+	// standing in for a sibling rush process that has it wedged/busy.
 	// Held for well longer than internalConfigWriteLockTimeout (2s) and
 	// released only after the assertions below run, via t.Cleanup.
 	externalLock, err := session.TryAcquireFileLock(configPath + ".lock")

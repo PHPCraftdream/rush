@@ -11,7 +11,7 @@ import (
 // helper used by --aggregation=attach and by the reduction-loss
 // warning. Inert to upstream — see CHANGELOG.fork.md (Section 4.K).
 //
-// Background: when a `crush run` model uses the `agent` tool to fan
+// Background: when a `rush run` model uses the `agent` tool to fan
 // out, each dispatch lands a sub-session whose parent_session_id
 // points at the calling session. After Run() returns, the parent
 // composes a final assistant message that often *summarises* the

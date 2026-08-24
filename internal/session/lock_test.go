@@ -657,8 +657,8 @@ func TestCrossProcess_StaleMtimeButAliveHolderStaysBusy(t *testing.T) {
 // completely different id from its parent's session id. Before the fix,
 // agent.Run's inter-process lock was skipped entirely for sub-agents
 // (`if !a.isSubAgent && a.dataDir != ""`), so nothing ever locked the child
-// session id at the OS level — a second crush process opening that exact
-// child session id (e.g. via `crush sessions pick`/`resume`) could acquire
+// session id at the OS level — a second rush process opening that exact
+// child session id (e.g. via `rush sessions pick`/`resume`) could acquire
 // it and stream into it concurrently with the in-process sub-agent run.
 //
 // This test doesn't invoke the agent package (that would require a full
@@ -734,8 +734,8 @@ func TestCrossProcess_DeadHolderIsReclaimedPromptly(t *testing.T) {
 }
 
 // TestCrossProcess_ReadLockPIDWorksWhileHolderIsAlive is the direct
-// regression test for the `crush sessions kill` failure this was written
-// to fix: an operator ran `crush sessions kill <id>` against a genuinely
+// regression test for the `rush sessions kill` failure this was written
+// to fix: an operator ran `rush sessions kill <id>` against a genuinely
 // live, still-running session on Windows and got "lock has no readable
 // PID; removing file only" followed by a sharing-violation error trying
 // to delete the still-open lock file — sessions kill could never identify
@@ -748,7 +748,7 @@ func TestCrossProcess_DeadHolderIsReclaimedPromptly(t *testing.T) {
 // stamps the same PID into a companion, never-locked sidecar file that a
 // contending process CAN always read. This test spawns a real second
 // process holding the lock and asserts ReadLockPID — the exact function
-// `crush sessions kill` uses — returns its real PID while it is still
+// `rush sessions kill` uses — returns its real PID while it is still
 // alive and still holding the lock, on every OS.
 func TestCrossProcess_ReadLockPIDWorksWhileHolderIsAlive(t *testing.T) {
 	if testing.Short() {
@@ -764,7 +764,7 @@ func TestCrossProcess_ReadLockPIDWorksWhileHolderIsAlive(t *testing.T) {
 	path := lockPathFor(dir, "kill-target")
 	got := ReadLockPID(path)
 	assert.Equal(t, holder.pid, got,
-		"ReadLockPID (what `crush sessions kill` calls) must be able to name a genuinely live holder's PID, not just a dead one")
+		"ReadLockPID (what `rush sessions kill` calls) must be able to name a genuinely live holder's PID, not just a dead one")
 }
 
 // TestInspectSessionLock_StatErrorDistinctFromAbsent proves that InspectSessionLock

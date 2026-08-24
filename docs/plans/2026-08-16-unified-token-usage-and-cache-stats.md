@@ -101,7 +101,7 @@ accidentally correct. Two consequences:
 list with **only** `ID / Name / ContextWindow / DefaultMaxTokens`; every
 `CostPer1M*` field defaults to `0`. Line 589 (`provider.Models = models`)
 unconditionally overwrites the list on every load, so a user cannot supply
-costs via `crush.json` either. Net effect: CLI-provider cost is always `0`,
+costs via `rush.json` either. Net effect: CLI-provider cost is always `0`,
 so the dropped cache breakdown is **not** currently a billing bug. It is a
 *statistics* bug — and a latent billing bug the moment anyone adds prices.
 
@@ -356,10 +356,10 @@ parent's message row.
    `Usage *UsageWire`; `web/src/types.ts` mirrors it; the message component
    renders `↓ 12.3k · ↑ 840 · cache 87%` (and `cache n/a` when
    `CacheSupport != "native"`), matching however cost is displayed today.
-2. **CLI** — extend `crush sessions cost` with cache columns, and add
-   `crush sessions cache [<id>]` for a per-session / per-model cache-hit
+2. **CLI** — extend `rush sessions cost` with cache columns, and add
+   `rush sessions cache [<id>]` for a per-session / per-model cache-hit
    breakdown. Both become real `SUM()` queries thanks to §2.3.
-3. **`crush run --json`** — add a `usage` object to the envelope so an
+3. **`rush run --json`** — add a `usage` object to the envelope so an
    orchestrator can read cache efficiency without opening the DB.
 
 ---
@@ -377,7 +377,7 @@ parent's message row.
 | 7 | `MessageWire.Usage` + `web/src/types.ts` + per-message display | **OPEN** |
 | 8 | `sessions cache` command, incl. `--since` / `--by model|day` across sessions | **DONE** |
 | 8b | `sessions cost` cache columns | **DONE (as a documented pointer, not merged columns)** - `sessions cost` reads session-level last-snapshot counters while the cache view reads per-message rows. Putting both in one table would imply they are comparable, so its help now states the caveat and directs to `sessions cache` instead. |
-| 9 | `usage` object in the `crush run --json` envelope | **OPEN** |
+| 9 | `usage` object in the `rush run --json` envelope | **OPEN** |
 | 10 | CHANGELOG + README + command help | **DONE** |
 
 ### Bugs found and fixed while implementing

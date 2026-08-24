@@ -4,8 +4,8 @@ package app
 // reviews (docs/reviews/2026-08-13-release-gate.md's AMENDMENT/F1 and
 // docs/reviews/2026-08-13-release-readiness-static-audit.md's §P0-1):
 //
-// A cross-process interrupt (`crush sessions inject --interrupt`) landing on
-// a session a `crush run` process is actively generating for cancels the
+// A cross-process interrupt (`rush sessions inject --interrupt`) landing on
+// a session a `rush run` process is actively generating for cancels the
 // in-flight generation and durably enqueues its replacement
 // (handleInterruptTick, internal/agent/coordinator.go), but deliberately
 // does NOT hand the running sessionAgent.Run a live mb.replacement — see
@@ -20,7 +20,7 @@ package app
 // proceeds straight to Shutdown(), whose RunQueuePump.Stop() only waits for
 // ALREADY-IN-FLIGHT workers, never drains new pending rows. The user's
 // accepted interrupt silently does not run until some unrelated future
-// `crush` invocation happens to tick the same session's row.
+// `rush` invocation happens to tick the same session's row.
 //
 // FIX: RunNonInteractive's `case result := <-done` branch (internal/app/
 // app.go), on detecting a cancellation, calls the new
@@ -241,7 +241,7 @@ func TestRunNonInteractive_P0_1_LiveContinuation(t *testing.T) {
 		t.Fatal("first generation never reached the mock provider — test setup is broken, proves nothing")
 	}
 
-	// Inject a cross-process interrupt exactly the way `crush sessions
+	// Inject a cross-process interrupt exactly the way `rush sessions
 	// inject --interrupt` does: create the referenced message row first
 	// (so it's immediately visible in the web UI / message history), then
 	// the pending_injects signal row the interrupt ticker polls for.

@@ -197,7 +197,7 @@ func TestBackgroundShell_OnDone_FiresOnKill(t *testing.T) {
 // background job (see the doc comment on OnDone) — production code passes
 // the agent package's notifyBackgroundJobDone here, which can itself start
 // a fresh top-level turn, so an unrecovered panic here would previously
-// have taken down the whole crush process with no log output.
+// have taken down the whole rush process with no log output.
 func TestBackgroundShell_OnDone_PanicRecovered(t *testing.T) {
 	t.Parallel()
 

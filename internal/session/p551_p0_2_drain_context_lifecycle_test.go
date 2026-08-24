@@ -28,7 +28,7 @@ import (
 // Before the fix, executeEntrySync built its execution context with
 // context.WithCancel(context.Background()) and never read its ctx parameter
 // at all — the function compiled with the parameter entirely unused. A
-// `crush run --timeout` that expired mid-continuation therefore returned an
+// `rush run --timeout` that expired mid-continuation therefore returned an
 // error to the operator while the turn kept running and kept writing
 // messages behind it.
 //

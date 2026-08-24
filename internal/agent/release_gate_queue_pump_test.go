@@ -180,7 +180,7 @@ func TestReleaseGate_2_OSLockHeldPastRetryWindow(t *testing.T) {
 
 // TestReleaseGate_3_CrossProcessInterruptAutoResumed proves that a call
 // enqueued via startDetachedRun (the real production entry point for
-// `crush sessions inject --interrupt` recovering from cross-process OS-lock
+// `rush sessions inject --interrupt` recovering from cross-process OS-lock
 // contention) is automatically picked up and executed by the autonomous
 // pump, without the test manually driving execution.
 //
@@ -284,7 +284,7 @@ func TestReleaseGate_3_CrossProcessInterruptAutoResumed(t *testing.T) {
 	sess, err := env.sessions.Create(ctx, "release-gate-3")
 	require.NoError(t, err)
 
-	// Create a user message (simulating `crush sessions inject`).
+	// Create a user message (simulating `rush sessions inject`).
 	msg, err := env.messages.Create(ctx, sess.ID, message.CreateMessageParams{
 		Role:  message.User,
 		Parts: []message.ContentPart{message.TextContent{Text: "interrupted message"}},

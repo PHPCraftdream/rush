@@ -29,7 +29,7 @@ type PendingInject struct {
 }
 
 // CreatePendingInject enqueues a cross-process inject signal for sessionID.
-// The caller (e.g. `crush sessions inject`) is responsible for having
+// The caller (e.g. `rush sessions inject`) is responsible for having
 // already created the referenced messages row so it is immediately visible
 // in the web UI; this only records the request to splice it into the live
 // prompt of whatever process is running the session.

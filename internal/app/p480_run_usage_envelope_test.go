@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Task #480 — the `usage.session` object in the `crush run --json` envelope.
+// Task #480 — the `usage.session` object in the `rush run --json` envelope.
 //
 // The envelope is a public contract for wrapper scripts, so two things matter
 // beyond the arithmetic:

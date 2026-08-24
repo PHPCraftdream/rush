@@ -121,7 +121,7 @@ func TestArgsSanitization(t *testing.T) {
 		},
 		{
 			name:     "mcp-config path preserved (safe)",
-			args:     []string{"--mcp-config", "/tmp/crush-mcp-123.json"},
+			args:     []string{"--mcp-config", "/tmp/rush-mcp-123.json"},
 			wantFlag: "--mcp-config",
 			dontWant: "", // Path is safe, nothing to exclude
 		},

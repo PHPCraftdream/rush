@@ -215,8 +215,8 @@ func NewBashTool(permissions permission.Service, workingDir string, attribution 
 			}
 
 			// Fork patch: batch 16 — refuse invocations of other AI agent
-			// CLIs (claude, codex, gemini, opencode, aider, crush itself, …).
-			// Architectural rule: an agent inside crush should EXECUTE work,
+			// CLIs (claude, codex, gemini, opencode, aider, rush itself, …).
+			// Architectural rule: an agent inside rush should EXECUTE work,
 			// not re-delegate to yet another agent. Recursive nesting was
 			// silently burning wall time and tokens for no useful output.
 			// See internal/agent/agentguard for the denylist + tokenisation.

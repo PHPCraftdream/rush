@@ -23,7 +23,7 @@ const (
 	// While this fork publishes no releases the endpoint 404s, Check returns
 	// an error, and the notice is simply never sent. That is the correct
 	// behaviour, and it starts working on its own the day a release is cut.
-	githubApiUrl = "https://api.github.com/repos/PHPCraftdream/crush/releases/latest"
+	githubApiUrl = "https://api.github.com/repos/PHPCraftdream/rush/releases/latest"
 	userAgent    = "rush/1.0"
 
 	// maxReleaseBodyBytes caps how much of the GitHub releases API HTTP

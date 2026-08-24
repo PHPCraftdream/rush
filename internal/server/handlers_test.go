@@ -52,7 +52,7 @@ func isolateAllGlobalConfigPaths(t *testing.T) {
 	// makes cfg.IsConfigured() true and drives app.New into
 	// InitCoderAgent -> NewCoordinator -> discoverSkills. Without this
 	// override that reads the OPERATOR's real
-	// ~/.config/crush/skills / ~/.claude/skills, making the test
+	// ~/.config/rush/skills / ~/.claude/skills, making the test
 	// non-deterministic across machines and leaking real filesystem state
 	// into a test that has nothing to do with skills.
 	t.Setenv("RUSH_SKILLS_DIR", skillsDir)

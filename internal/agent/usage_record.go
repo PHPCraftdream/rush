@@ -71,7 +71,7 @@ func (a *sessionAgent) recordMessageUsage(
 		CostUSD:             costDelta,
 		// The EXECUTING model, matching the assistant message row itself
 		// (agent_turn.go) and the two summarize paths, which have always
-		// recorded it. These are the columns `crush sessions cache` and
+		// recorded it. These are the columns `rush sessions cache` and
 		// UsageByModelInRange actually group by; leaving them on the
 		// configured pair while the message row carried the executing one
 		// split a single message's identity across two columns, which is

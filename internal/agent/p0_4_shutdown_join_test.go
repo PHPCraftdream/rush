@@ -8,7 +8,7 @@ package agent
 // runWg.Wait() could report stillBusy=false (and let App.Shutdown close the
 // DB) while either was still genuinely in flight and could still write.
 //
-// SCOPE NOTE (added on independent review): the delegated /crush fix's own
+// SCOPE NOTE (added on independent review): the delegated /rush fix's own
 // version of these two tests (TestP0_4_SummarizeTracksRunWg,
 // TestP0_4_TitleTracksRunWg) waited for Summarize()/Run() to fully
 // complete BEFORE ever calling CancelAll() — at that point runWg is

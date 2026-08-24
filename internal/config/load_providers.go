@@ -247,12 +247,12 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, bas
 			// docs.z.ai/guides/llm/glm-5.3 404s), so prepared.Models
 			// built from catwalk above never contains it — even though
 			// the model itself is real and reachable, confirmed live via
-			// `crush ping --model zai/glm-5.3` (see models_atoms.go's
+			// `rush ping --model zai/glm-5.3` (see models_atoms.go's
 			// glm5_3 atom entry for the full verification note and its
 			// own "provisional numbers" caveat, which this entry mirrors
 			// exactly for consistency between the two surfaces).
 			//
-			// Without this, `crush models use zai/glm-5.3` and `crush
+			// Without this, `rush models use zai/glm-5.3` and `rush
 			// ping --model zai/glm-5.3` already work (they resolve
 			// provider/model directly, not through the catwalk catalog —
 			// see ping.go's resolvePingModel), but the WEB UI's model

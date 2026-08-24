@@ -9,7 +9,7 @@ package tools
 // malicious model could otherwise exfiltrate through final_text.
 //
 // The single permission layer is the only other gate, and in non-
-// interactive `crush run` / web contexts it auto-approves, so this guard
+// interactive `rush run` / web contexts it auto-approves, so this guard
 // is the thing that actually stops a `http://169.254.169.254/latest/
 // meta-data/` request from ever leaving the process.
 //

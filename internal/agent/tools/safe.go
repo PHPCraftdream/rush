@@ -17,7 +17,7 @@ var safeCommands = []string{
 	// ./exfil.sh", "nice npm install" etc. would ALL match the "env"/
 	// "timeout"/"nice" prefix and skip permissions.Request entirely,
 	// letting the wrapped, genuinely arbitrary subcommand run unchecked —
-	// found by a full-project @crush --role reviewer audit. None of these
+	// found by a full-project @rush --role reviewer audit. None of these
 	// wrappers have a legitimate read-only use case worth this risk; an
 	// agent that needs the environment can use `printenv` (already safe,
 	// takes no subcommand) instead of bare `env`.

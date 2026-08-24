@@ -16,7 +16,7 @@ import (
 // TestReplaceFile_LiveWindowsProcess is the integration test called for in
 // docs/plans/2026-07-29-relaunch-from-cache.md §9.2: it reproduces, against
 // a genuinely running process, the exact rename-aside sequence deploy.go's
-// replaceFile now uses on Windows instead of killing live crush sessions.
+// replaceFile now uses on Windows instead of killing live rush sessions.
 //
 // It builds a tiny helper binary (testdata/sleeper), launches it so its
 // exe file is loaded and executing, then applies deploy.go's rename-aside

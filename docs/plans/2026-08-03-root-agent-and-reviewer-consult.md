@@ -2,7 +2,7 @@
 
 ## Origin
 
-Raised by the user mid-session (2026-08-03): should `crush run` gain a
+Raised by the user mid-session (2026-08-03): should `rush run` gain a
 `--root` flag telling the top-level agent it is the most senior agent in
 the chain — nobody to ask — so it must resolve every decision itself, or
 by consulting the `reviewer` model slot if one is configured?
@@ -23,10 +23,10 @@ explicit:
   2) already pushes hard on autonomy: *"Be autonomous — search, read,
   decide, act, don't ask what you can find out... Stop only for real
   external blocks... or a genuinely ambiguous high-stakes decision."*
-- `crush run --help` already states "non-interactive by design (no human
+- `rush run --help` already states "non-interactive by design (no human
   at the keyboard)".
 - BUT: `ask_question` is unconditionally added to the toolset
-  (`coordinator.go:1435`), including for the root `crush run` invocation.
+  (`coordinator.go:1435`), including for the root `rush run` invocation.
   If the model calls it, the run ends cleanly with
   `exit_reason: "awaiting_answer"` (`app.go:482`) and a resume command —
   not a crash, but a burned run for a genuinely unattended invocation
@@ -36,8 +36,8 @@ explicit:
   permission system at all.
 
 The "consult the reviewer" half **does not exist at all**. `reviewer` is
-today only a model *slot* (`crush models use --reviewer`), reachable only
-by an operator explicitly running `crush run --role reviewer`. There is no
+today only a model *slot* (`rush models use --reviewer`), reachable only
+by an operator explicitly running `rush run --role reviewer`. There is no
 in-run path for the root agent to consult it mid-turn.
 
 ## Why deferred
@@ -60,8 +60,8 @@ in-run path for the root agent to consult it mid-turn.
 Split into two independent, separately-reviewable pieces:
 
 ### (a) `--root` flag — cheap, mostly plumbing
-- New `crush run --root` bool flag (default false, or maybe should
-  default true for `crush run` specifically since it's *already*
+- New `rush run --root` bool flag (default false, or maybe should
+  default true for `rush run` specifically since it's *already*
   non-interactive by definition — worth deciding explicitly, not
   assuming).
 - When set: either strip `ask_question` from the toolset entirely, or

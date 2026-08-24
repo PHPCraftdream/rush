@@ -15,7 +15,7 @@ import (
 // in the global rush.json (config.ScopeGlobal), the folder level in the
 // workspace rush.json (config.ScopeWorkspace), and the session level in the
 // sessions DB row. Only three writers may touch the system/folder levels:
-// `crush models use`, the explicit scoped WS commands, and config's own
+// `rush models use`, the explicit scoped WS commands, and config's own
 // first-run bootstrap/self-heal in load.go. Nothing driven by ordinary chat
 // activity may.
 //

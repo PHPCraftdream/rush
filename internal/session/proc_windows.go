@@ -5,7 +5,7 @@ package session
 import "golang.org/x/sys/windows"
 
 // IsProcessAlive is the exported variant of isProcessAlive, used by
-// `crush sessions reap` to probe lock holders from the CLI layer.
+// `rush sessions reap` to probe lock holders from the CLI layer.
 func IsProcessAlive(pid int) bool { return isProcessAlive(pid) }
 
 // isProcessAlive reports whether a process with the given PID is currently

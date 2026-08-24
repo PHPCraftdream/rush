@@ -10,7 +10,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
-- **A badge when a newer crush exists.** Since the TUI was removed
+- **A badge when a newer rush exists.** Since the TUI was removed
   nothing told anyone about a new release: upstream published a message
   the Bubble Tea UI rendered, this fork deleted that UI, and the startup
   check was left computing an answer nobody read. The server now checks
@@ -21,7 +21,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   session. A failed check is logged at debug, because an offline machine
   is a legitimate state and warning on every offline start would cry
   wolf about something nobody can act on.
-- **`CRUSH_MAX_BACKGROUND_JOBS`** raises the concurrent background-job
+- **`RUSH_MAX_BACKGROUND_JOBS`** raises the concurrent background-job
   cap for one process. The default stays at 50, and that is a measured
   decision rather than a cautious one: raising it to 500 made this
   repository's own test suite unstable (one package went from 5s to
@@ -44,7 +44,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   message now records its own token accounting, split into three
   disjoint classes (fresh input / served from cache / written to cache)
   plus reasoning tokens, cost, and the model that actually produced it.
-  New `crush sessions cache` reports it per session, per model or per
+  New `rush sessions cache` reports it per session, per model or per
   day, with `--since` to bound the period and `--json` for machines.
   Grouping is by the *producing* model, so a session that switched
   models mid-conversation is attributed correctly — something `sessions
@@ -88,17 +88,17 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   for.
 
   **Existing configurations stop applying and must be edited.** A
-  `crush.json` (global or workspace) with `"models": {"large": …,
+  `rush.json` (global or workspace) with `"models": {"large": …,
   "small": …}` no longer matches either slot, so both fall back to
   their defaults. Rename the two keys to `"smart"` and `"fast"`. There
   is deliberately no alias-reading fallback: keeping one would have
   preserved exactly the two-names-for-one-thing problem this change
   exists to remove.
 
-  Also renamed, in the same sweep: `crush models use --large/--small`
-  → `--smart/--fast`; `crush models unset large|small` →
-  `smart|fast`; `crush models bump large|small` → `smart|fast`;
-  `crush run --small-model` → `--fast-model`; the `largeModel` /
+  Also renamed, in the same sweep: `rush models use --large/--small`
+  → `--smart/--fast`; `rush models unset large|small` →
+  `smart|fast`; `rush models bump large|small` → `smart|fast`;
+  `rush run --small-model` → `--fast-model`; the `largeModel` /
   `smallModel` WebSocket fields → `smartModel` / `fastModel`; and the
   `sessions` table's six `large_model_*` / `small_model_*` columns →
   `smart_model_*` / `fast_model_*` (a `RENAME COLUMN` migration —
@@ -112,13 +112,13 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   all three, and carrying four near-identical GLM-5 atoms made the list
   harder to read than it made anything easier to reach. `glm5_3` and
   `glm5_turbo` remain, as does the whole 4.x family. Nothing became
-  unreachable: the raw form (`crush models use zai/glm-5.2@max`) still
+  unreachable: the raw form (`rush models use zai/glm-5.2@max`) still
   works for any Z.AI model id, whether or not it has a short code —
   only the abbreviation is gone.
 
 ### Fixed
 
-- **`crush run` no longer reports success for work it did not do.** Three
+- **`rush run` no longer reports success for work it did not do.** Three
   separate ways it could, all on the path that finishes a durable
   continuation before the process exits. A session held by another live
   owner counted as "completed here" the moment its row was leased, so a
@@ -198,18 +198,18 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   the turn ends the transcript settles into collapsed history.
 - **A message is now attributed to the model that produced it,
   consistently.** An assistant message carries the model twice: once on
-  the row itself (which `crush stats` counts by) and once on its usage
-  record (which `crush sessions cache` reports tokens and cost by). The
+  the row itself (which `rush stats` counts by) and once on its usage
+  record (which `rush sessions cache` reports tokens and cost by). The
   per-turn write recorded the configured selection in both, while the
   summarisation paths recorded the executing model — so for a provider
   whose canonical id differs from the configured one, the same messages
   appeared under two names depending on which command you asked.
   Both now record the executing model, which is the one that can be
-  checked against what the provider actually billed. Note `crush
+  checked against what the provider actually billed. Note `rush
   sessions cost` is unaffected either way: it groups by the session's
   model, not the message's. Rows written before this change keep their
   old attribution — there is no migration.
-- **`crush sessions reap` removes a lock's `.pid` and `.gen`
+- **`rush sessions reap` removes a lock's `.pid` and `.gen`
   companions.** They were previously cleared only as a side effect of
   the probe's own background cleanup, which the process does not wait
   for — so a fast sweep could report `reclaimed 1 lock(s)` and leave two
@@ -217,7 +217,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 - **Two type errors in the web UI** that had been invisible for want of
   a typecheck, plus three dead declarations. One of them is the
   collapsed-tool-group bug above.
-- **`crush sessions reap` no longer abandons a lock because something
+- **`rush sessions reap` no longer abandons a lock because something
   held the file open for a moment.** On Windows a file cannot be
   unlinked while any handle to it is open, and reap tried exactly once:
   if the handle let go a millisecond later, the operator was still told
@@ -226,7 +226,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   probe, since releasing a lock clears the holder's metadata in the
   background and reopens the file to do it, so the command could lose
   the race to itself. It now retries the unlink, using the same helper
-  `crush sessions kill` has always removed locks with.
+  `rush sessions kill` has always removed locks with.
 
   The retry is bounded by a single three-second budget for the whole
   sweep, not per lock: a lock nobody can delete — a read-only volume, a
@@ -258,7 +258,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
     still ends the run — on Windows always, since `os.Stat` reports
     that case as plain "not found" and the check above never sees it;
 
-  - a full background-job table. This one hurt most: because crush
+  - a full background-job table. This one hurt most: because rush
     auto-backgrounds long commands, an ordinary `ls` ended the session
     whenever 50 jobs happened to be alive — a normal state for a
     session running dev servers or watchers. The refusal even carries
@@ -273,7 +273,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   actually sends.
 
 - **Killing a CLI provider no longer leaves its grandchildren
-  running.** `crush sessions kill`, a cancelled turn and a watchdog
+  running.** `rush sessions kill`, a cancelled turn and a watchdog
   timeout all terminated only the direct child, so the processes it had
   spawned — `claude.cmd` → `cmd.exe` → `node.exe`, plus any MCP servers
   the CLI started itself — survived and kept running. On Unix there was
@@ -287,12 +287,12 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   processes over two days.
 
   Two limits worth knowing, both Unix-only. The Windows Job Object
-  doubles as a safety net — if crush itself is killed, the OS closes
+  doubles as a safety net — if rush itself is killed, the OS closes
   the handle and the tree goes with it — and Unix has no equivalent, so
-  `crush sessions kill`, which targets crush's own pid, does not reach
+  `rush sessions kill`, which targets rush's own pid, does not reach
   a CLI child that now sits in its own process group. For the same
   reason a second Ctrl-C (the first is handled; the second gets Go's
-  default handler and kills crush outright) no longer reaches the CLI
+  default handler and kills rush outright) no longer reaches the CLI
   through the terminal's foreground group. Both are being tracked; the
   ordinary cancel, watchdog and timeout paths are unaffected.
 
@@ -326,13 +326,13 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   understating it delays compaction until the context window overruns.
 - **Switching a session's model no longer changes the system-wide
   default.** Picking a model in the chat toolbar (or, more subtly, just
-  sending a message) used to call the same code path as `crush models
-  use`, silently rewriting the global `crush.json`'s default model to
+  sending a message) used to call the same code path as `rush models
+  use`, silently rewriting the global `rush.json`'s default model to
   whatever the most recently active session happened to be running —
   so every OTHER session, every other folder, and the next CLI
   invocation would drift to a model nobody explicitly chose there. The
   chat toolbar's model pickers are now session-scoped only; the global
-  default changes only through `crush models use` or the new
+  default changes only through `rush models use` or the new
   System/Folder blocks in the "Default models" modal above.
 - **Switching only the large (or only the small) model no longer
   freezes the other slot.** The picker used to always send both
@@ -346,26 +346,26 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   written into their own row immediately, which — same root cause as
   above — silently opted every untouched session out of ever following
   a later folder/system default change. New sessions now start with no
-  override and genuinely inherit, the same way `crush run` sessions
+  override and genuinely inherit, the same way `rush run` sessions
   always have.
 
-- **`crush models use --large`/`--small`** — the two positional args
-  (`crush models use <large> <small>`) always set large and small
+- **`rush models use --large`/`--small`** — the two positional args
+  (`rush models use <large> <small>`) always set large and small
   together, so there was no way to change just the fast/small model (or
   just the smart/large one) without retyping the other. `--large` and
   `--small` now exist alongside the already-independent `--worker`/
   `--reviewer` flags, so any of the four slots can be set on its own —
-  e.g. `crush models use --small glm4_7_flash`. The positional form and
+  e.g. `rush models use --small glm4_7_flash`. The positional form and
   the `--large`/`--small` flags are mutually exclusive per call (mixing
   them is rejected with a clear error, rather than silently preferring
   one).
 
-- **GLM-5.3 support** — added as a new `glm5_3` atom (`crush models use
-  glm5_3`, `crush ping --model zai/glm-5.3`) and, since neither docs.z.ai
+- **GLM-5.3 support** — added as a new `glm5_3` atom (`rush models use
+  glm5_3`, `rush ping --model zai/glm-5.3`) and, since neither docs.z.ai
   nor the upstream catwalk provider registry list the model yet, the
   Z.AI provider's model list is now supplemented with a provisional
   GLM-5.3 entry so it also shows up in the web UI's model picker.
-  Verified live via `crush ping --model zai/glm-5.3`; context
+  Verified live via `rush ping --model zai/glm-5.3`; context
   window/reasoning-level numbers are copied from GLM-5.2 pending
   official documentation.
 
@@ -589,7 +589,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   making the parent look busy while nothing happened at all** — the most
   visible bug of this round, reproduced live: a session sat in
   `delegating` with a healthy heartbeat for 41 minutes while its
-  sub-agent was stuck on a bare `wc -l`. A non-interactive `crush run`
+  sub-agent was stuck on a bare `wc -l`. A non-interactive `rush run`
   auto-approves only the session id it was given, but a sub-agent runs
   under its own child session id, so its first command outside the
   read-only safe list waited on a permission prompt that does not exist
@@ -696,7 +696,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   the next run picks it up, matching how a stale reservation used to
   recover before the migration.
 
-- **`crush run` hung for a full 5 seconds on exit after any turn ran, and a
+- **`rush run` hung for a full 5 seconds on exit after any turn ran, and a
   turn that errored out with a message still queued could wedge that
   session permanently busy** — introduced by the per-session owner/mailbox
   migration's first two stages (P0-3, P0-2) and found the same day by an
@@ -705,7 +705,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
     but the migration stopped clearing its plain-session-id entry on
     release (only the mailbox's own state is cleared now) — so
     `IsBusy()` returned `true` forever after a session's first turn, and
-    `App.Shutdown()` (reached by every `crush run` via
+    `App.Shutdown()` (reached by every `rush run` via
     `defer a.Shutdown()`) always burned its full 5-second busy-drain
     timeout instead of returning immediately once idle. Both now read the
     mailbox's state directly.
@@ -722,7 +722,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
     later owner, and it always fully releases the session (logging what
     was dropped) instead of leaving it stuck.
 
-- **Starting any `crush` process could kill a long-running session in a
+- **Starting any `rush` process could kill a long-running session in a
   DIFFERENT process (release blocker)** — the startup recovery sweep
   (`recoverInterruptedTurns`, which runs on every process start) walked
   **every** session in the data directory, not just this process's own,
@@ -731,11 +731,11 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   performed no cross-process liveness check of any kind. Since a turn is
   legitimately unfinished for as long as it runs — a sub-agent
   delegation is bounded at 45 minutes — essentially every non-trivial
-  turn was exposed: a sibling `crush` merely starting up marked it as
+  turn was exposed: a sibling `rush` merely starting up marked it as
   crashed. Worse, `message.Update` rewrites the whole `Parts` blob from
   the snapshot the sweep read, so the stamp also **clobbered** whatever
   the live owner had streamed in between. This hit the fork's core use
-  case (N concurrent `crush run` sessions sharing one data directory)
+  case (N concurrent `rush run` sessions sharing one data directory)
   routinely rather than rarely; an observed 38-minute delegation was
   killed this way and produced zero file edits. The sweep now proves no
   other live process owns a session — via `session.InspectSessionLock`,
@@ -768,7 +768,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   `Cancel`, and `Cancel` unconditionally cleared the message queue — so
   the replacement was deleted by the line immediately after the one that
   queued it, on every call, deterministically. The web UI's interrupt
-  button and `crush sessions inject --interrupt` therefore silently
+  button and `rush sessions inject --interrupt` therefore silently
   dropped the user's new request. Both now route through one atomic
   `InterruptAndReplace` operation that records the replacement and
   cancels only the in-flight generation under the same lock, so the
@@ -783,7 +783,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   (honoring an explicit `--data-dir` on the parent invocation, or a
   configured `data_directory`) to open the queue DB and acquire
   `queue.lock`, but `runQueueTask` never forwarded that resolved path
-  to the `crush run --session ...` subprocess it spawns per task. Each
+  to the `rush run --session ...` subprocess it spawns per task. Each
   spawned child independently re-resolved its own data directory
   starting from `--cwd`, which diverges from the parent's when
   `--data-dir` was passed explicitly — a queued task's child process
@@ -794,15 +794,15 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 - **Web UI attachments now honor the configured data directory** —
   `saveAttachmentToDisk` (in `internal/server/handlers.go`) always wrote
-  uploaded attachments to `<cwd>/.crush/attachments/`, hardcoding both the
-  working directory and the `.crush` segment instead of using the
+  uploaded attachments to `<cwd>/.rush/attachments/`, hardcoding both the
+  working directory and the `.rush` segment instead of using the
   resolved `data_directory`/`--data-dir`. With a non-default data
   directory configured, attachments landed in a location the rest of the
   app doesn't read from. It now takes the already-resolved data
   directory (the same `externalOwnershipDataDir` helper that
   `annotateExternalOwnership` uses) and writes
   to `<dataDir>/attachments/`; a nil-config edge case defensively falls
-  back to the old `<cwd>/.crush` default rather than hard-failing an
+  back to the old `<cwd>/.rush` default rather than hard-failing an
   otherwise best-effort save.
 
 A separate review flagged the session heartbeat as reporting "alive"
@@ -873,7 +873,7 @@ review below. Closed together, one task/commit at a time:
   the actual configured `--timeout-hard-cap` duration and blames
   neither the provider nor a tool.
 - **`sessions kill` and `sessions reset --force` ignored a configured
-  data directory** — both hardcoded the lock/data path to `<cwd>/.crush`,
+  data directory** — both hardcoded the lock/data path to `<cwd>/.rush`,
   so an operator using `--data-dir` or a project's `data_directory`
   config silently got "no lock file found" instead of the rescue these
   commands exist to perform. Both now resolve the actual configured
@@ -912,7 +912,7 @@ themselves, closed in the same way:
   top-level (delegating) session; a sub-agent, which can never itself
   be waiting on a further nested delegation, gets none — so its own
   stuck-tool detection fires strictly before the parent's.
-- **`crush sessions reset --force` had the same stale-PID kill bug
+- **`rush sessions reset --force` had the same stale-PID kill bug
   just fixed for `sessions kill`** — a sibling code path that read a
   lock file's recorded PID and killed it unconditionally, missed by
   the original fix because it lives in a different file. Now routes
@@ -933,18 +933,18 @@ Two more, explicit product decisions/fixes:
   intentional: a configured Worker model always wins over an explicit
   `--agents single` (unchanged runtime behavior). What WAS wrong was
   the documentation: the `--agents` flag's `--help` text, an inline
-  code comment, and the installed `/crush` slash-command guide all
+  code comment, and the installed `/rush` slash-command guide all
   flatly claimed `--agents single` was an absolute guarantee against
   delegation — the literal opposite of the real behavior, and
   actively misleading for an orchestrating agent deciding how to
-  invoke `crush run`. All three corrected, no behavior changed.
+  invoke `rush run`. All three corrected, no behavior changed.
 - **stdin named-pipe read could hang indefinitely again** — the
   previous fix (above) bounded only the wait for the *first* byte,
   then read to EOF with no further timeout at all; a producer that
   wrote one chunk and then went silent forever (no close, no more
-  data) hung `crush run` indefinitely. Replaced with a real idle
+  data) hung `rush run` indefinitely. Replaced with a real idle
   timeout applied to the whole read, chunk by chunk, that resets on
-  every chunk received — `crush run` can now only ever block for
+  every chunk received — `rush run` can now only ever block for
   "the grace window since the last byte was seen," never longer,
   regardless of how the pipe behaves afterward.
 
@@ -1028,7 +1028,7 @@ one at a time:
   failure partway through could leave (and report success for) a
   partially copied fork. Forking is now one transaction that rolls
   back entirely on any failure.
-- **Config file races across processes** — two `crush run` processes
+- **Config file races across processes** — two `rush run` processes
   writing the config file at the same time could silently lose one
   process's change (in-memory locking only protected against races
   within a single process). Config writes now also take a
@@ -1052,7 +1052,7 @@ verified one at a time in the same way as the batch above:
   lock at all. The same fix replaced environment-mutating shell-var
   push/pop with a non-destructive overlay that never touches the
   process's real environment.
-- **WebSocket handler panics could crash the whole `crush web`
+- **WebSocket handler panics could crash the whole `rush web`
   process** (#154) — a panic in any per-connection message handler
   is now recovered and logged with a stack trace instead of taking
   down the server; concurrent handlers per connection are also capped.
@@ -1066,7 +1066,7 @@ verified one at a time in the same way as the batch above:
   with a stall warning instead of silently blocking full-length.
 - **`projects.Register` wasn't atomic across processes** (#157) — a
   read-modify-write with no cross-process lock and a non-atomic file
-  write could corrupt the projects file under concurrent `crush run`
+  write could corrupt the projects file under concurrent `rush run`
   invocations. It now takes the same file lock as config writes and
   writes atomically.
 - **WebSocket `CheckOrigin` always returned true** (#159) — a
@@ -1106,7 +1106,7 @@ verified one at a time in the same way as the batch above:
   — enabling `--debug` alone used to be enough to log full LLM
   request/response bodies (system prompts, message history, tool
   output, sometimes API keys echoed in JSON fields). Body logging now
-  requires a separate `CRUSH_LOG_HTTP_BODIES=1` opt-in on top of
+  requires a separate `RUSH_LOG_HTTP_BODIES=1` opt-in on top of
   `--debug`, and known secret-shaped JSON fields are redacted even
   when it's on.
 - **npm cache key was spoofable via size+mtime** (#170) — the
@@ -1138,7 +1138,7 @@ range `66c4d062..e9544a8f`) turned up a chain of related lifecycle,
 watchdog, and process-safety issues, all fixed and verified one at a
 time in the same way as the batches above:
 
-- **`crush run` could hang forever on a named pipe with no data
+- **`rush run` could hang forever on a named pipe with no data
   buffered yet** — `MaybePrependStdin` used to block indefinitely on
   `io.ReadAll(os.Stdin)` for an inherited/piped stdin fd that never
   closes. It's now bounded by a grace window for the first byte, with
@@ -1164,13 +1164,13 @@ time in the same way as the batches above:
   occurrence is diagnosable without a live debugger attach (which, on
   a stripped release binary, can only kill the process, not inspect
   it).
-- **`crush sessions kill`/`ReadLockPID` couldn't identify a live
+- **`rush sessions kill`/`ReadLockPID` couldn't identify a live
   Windows holder** — `LockFileEx`'s mandatory whole-file lock made a
   plain file read of the lock file fail for any genuinely live
   holder, so `sessions kill` on a live session used to see PID 0. A
   never-locked `.pid` sidecar file, written alongside the lock, is now
   the primary read path.
-- **`crush -v` printed the same version string for every build** —
+- **`rush -v` printed the same version string for every build** —
   `Commit`/`BuildTime` are now stamped into every build path
   (local dev build, goreleaser, the npm publish workflow) via
   `-ldflags`, so a deployed binary's provenance is identifiable.
@@ -1346,11 +1346,11 @@ finished the mailbox migration:
   construction, not by convention.
 - **Cross-process compaction was not serialized — only in-process (P0-4
   residual)** — `beginCompact` closed the gap above only within one
-  process; a *second* `crush` process holding the OS session lock could
+  process; a *second* `rush` process holding the OS session lock could
   still start an ordinary turn while this process's compaction was mid
   commit, the same "one process deletes history the other believes is
   live" shape P0-4 itself was about. In a fork whose whole point is N
-  concurrent `crush run` processes over one tree, that's a routine
+  concurrent `rush run` processes over one tree, that's a routine
   configuration, not a theoretical one. Manual `/compact` now takes the
   same OS session lock a turn takes, held across the compaction's commit
   phase, and releases it explicitly (not via `defer`) before handing off
@@ -1550,7 +1550,7 @@ finished the mailbox migration:
     by giving each affected test its own explicit model selection
     instead.
 
-- **Eleven findings from a full-project `crush run --role reviewer`
+- **Eleven findings from a full-project `rush run --role reviewer`
   audit, closed and independently verified** (2 security blockers, 4
   bugs, 5 code-smell items with a code change — see the full report
   referenced from `docs/checkpoints/2026-08-11-0805.md`). Unlike prior
@@ -1626,7 +1626,7 @@ finished the mailbox migration:
     cloud-metadata URL** (e.g. `http://169.254.169.254/latest/
     meta-data/`) and leaking the response into `final_text` — the only
     prior gate was the permission system, which auto-approves in
-    non-interactive `crush run`/web contexts. Added a shared SSRF guard
+    non-interactive `rush run`/web contexts. Added a shared SSRF guard
     that blocks loopback/private/link-local/metadata destinations at
     dial time (`net.Dialer.Control`, which sees the actually-resolved
     IP after DNS lookup but before connect — closes both the trivial
@@ -1683,7 +1683,7 @@ finished the mailbox migration:
   `docs/reviews/2026-08-11-release-readiness-concurrency-and-code-review.md`).
   This round covers the core session/mailbox/durable-queue lifecycle,
   the same subsystem seven prior review passes already hardened; every
-  fix was implemented via a delegated `/crush` session and then
+  fix was implemented via a delegated `/rush` session and then
   independently re-verified: the diff read line by line, every new test
   checked for whether it would actually fail without the fix, and every
   safety/concurrency-critical fix personally revert-checked (temporarily
@@ -1943,7 +1943,7 @@ finished the mailbox migration:
   - **The CLI provider logged the full prompt text and raw argv at INFO
     level** by default, including any secrets embedded in a prompt.
     Both are now redacted unless
-    `CRUSH_CLIPROVIDER_LOG_RAW_PROMPT=1` is explicitly set for
+    `RUSH_CLIPROVIDER_LOG_RAW_PROMPT=1` is explicitly set for
     diagnostics.
   - **The lock-metadata generation guard's residual gap** (a narrow
     window where async cleanup can still race a brand-new owner despite
@@ -1991,7 +1991,7 @@ finished the mailbox migration:
     ERROR level** by default — the same class of leak the CLI provider
     fix above had already closed, reopened in a different function.
     Only length and a hash are logged by default now; raw prompt needs
-    the same explicit `CRUSH_CLIPROVIDER_LOG_RAW_PROMPT=1` opt-in.
+    the same explicit `RUSH_CLIPROVIDER_LOG_RAW_PROMPT=1` opt-in.
   - **A lease-renewal stall could let an executor keep running for up to
     a full TTL past the point another pump instance could legitimately
     take over the same row** — the existing fail-closed check ran in
@@ -2079,7 +2079,7 @@ finished the mailbox migration:
     in anymore.
 
   - **Orphan-request recovery only ran on a slow timer**, so a
-    short-lived `crush run` invocation could start and finish without
+    short-lived `rush run` invocation could start and finish without
     ever attempting to recover a pending request that was waiting on
     it. Recovery now also runs once immediately on startup, the same
     way normal request dispatch already did.

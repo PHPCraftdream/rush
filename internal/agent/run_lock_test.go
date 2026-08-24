@@ -61,7 +61,7 @@ func newLockTestSessionAgent(dataDir string, isSubAgent bool) *sessionAgent {
 // gated by `if !a.isSubAgent && a.dataDir != ""`, so a sub-agent's Run call
 // never took the lock for its own CHILD session id (format
 // "parentMessageID$$toolCallID", see session.CreateAgentToolSessionID) at
-// all. This test simulates "another crush process already holds the lock
+// all. This test simulates "another rush process already holds the lock
 // for this exact child session id" by acquiring the lock directly from the
 // test (standing in for the other process) before calling Run, and asserts
 // Run refuses to proceed — returning the same "already in use" error a

@@ -115,7 +115,7 @@ func TestP0_2_CrossProcessInterrupt_RowRecreatedOnFailure(t *testing.T) {
 	sess, err := env.sessions.Create(ctx, "p0-2-cross-process-interrupt-test")
 	require.NoError(t, err)
 
-	// Create a user message (simulating `crush sessions inject`).
+	// Create a user message (simulating `rush sessions inject`).
 	msg, err := env.messages.Create(ctx, sess.ID, message.CreateMessageParams{
 		Role:  message.User,
 		Parts: []message.ContentPart{message.TextContent{Text: "interrupted message"}},

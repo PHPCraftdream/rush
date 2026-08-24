@@ -14,7 +14,7 @@ import (
 //
 // Before this wrapper existed, none of them did. A run died 42 seconds into
 // a 75k-character prompt because a todos item carried an unusable status,
-// and the whole failure window in crush.log contained no ERROR record at
+// and the whole failure window in rush.log contained no ERROR record at
 // all — the only carriers were the process's stderr and the JSON envelope,
 // and both are overwritten when the same session id is run again. Diagnosing
 // it meant reading the source.
@@ -73,7 +73,7 @@ func wrapToolsWithErrorLogging(list []fantasy.AgentTool) []fantasy.AgentTool {
 // not bounded anywhere: sourcegraph's JSON error quotes the offending byte
 // range of the remote reply, fetch and download embed server responses,
 // bash embeds the command line. Left whole, a retry loop appends multi-KB
-// records carrying remote payload fragments to crush.log. A returned ERROR
+// records carrying remote payload fragments to rush.log. A returned ERROR
 // ends the run, so it is written at most once per run and stays whole:
 // that one record is the only account of why the run stopped.
 //

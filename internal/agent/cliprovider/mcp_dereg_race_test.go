@@ -1,9 +1,9 @@
 package cliprovider
 
-// BUG-2 regression test (found by a full-project @crush --role reviewer
+// BUG-2 regression test (found by a full-project @rush --role reviewer
 // audit, 2026-08-11): registerQwenMCP/registerGeminiMCP write under a
 // STABLE per-workingDir server name (see qwenMCPID/geminiMCPID), so two
-// concurrent crush sessions in the same project integrating with the same
+// concurrent rush sessions in the same project integrating with the same
 // CLI provider share one mcpServers[serverName] entry — register
 // unconditionally overwrites it with whichever session called last.
 // deregisterQwenMCP/deregisterGeminiMCP used to delete that entry
@@ -69,7 +69,7 @@ func readQwenMCPServerURL(t *testing.T, home, serverName string) (string, bool) 
 
 func TestDeregisterQwenMCP_DoesNotClobberNewerSession(t *testing.T) {
 	home := isolateHomeDir(t)
-	const serverName = "crush-test-shared"
+	const serverName = "rush-test-shared"
 
 	// Session A registers first.
 	require.NoError(t, registerQwenMCP(serverName, "127.0.0.1:5001", "token-a"))
@@ -123,7 +123,7 @@ func readGeminiMCPServerURL(t *testing.T, home, serverName string) (string, bool
 
 func TestDeregisterGeminiMCP_DoesNotClobberNewerSession(t *testing.T) {
 	home := isolateHomeDir(t)
-	const serverName = "crush-test-shared"
+	const serverName = "rush-test-shared"
 
 	require.NoError(t, registerGeminiMCP(serverName, "127.0.0.1:5001", "token-a"))
 	require.NoError(t, registerGeminiMCP(serverName, "127.0.0.1:5002", "token-b"))

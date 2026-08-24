@@ -26,13 +26,13 @@ func captureDefaultSlog(t *testing.T, fn func()) string {
 }
 
 // TestLogStartupNotice_SuppressedUnlessDebug is the regression guard for
-// startup stderr noise: every invocation, including `crush run --json`
+// startup stderr noise: every invocation, including `rush run --json`
 // and the logs/sessions/mcp scripting commands, used to emit WARN lines
 // like "No git repository detected..." and "Detected Apple Terminal...".
 // These notices describe non-actionable environment defaults; the config
 // adjustment (limited walk depth, transparent TUI) still applies. They
 // must stay silent on the default/scripted path (debug=false) and only
-// surface under the verbose path (`crush --debug` / `crush run --debug`).
+// surface under the verbose path (`rush --debug` / `rush run --debug`).
 func TestLogStartupNotice_SuppressedUnlessDebug(t *testing.T) {
 	const gitMsg = "No git repository detected in working directory, will limit file walk operations"
 	const termMsg = "Detected Apple Terminal, enabling transparent mode"

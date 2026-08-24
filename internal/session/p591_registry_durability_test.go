@@ -92,7 +92,7 @@ func TestWriteChildGroupFileLocked_NoStrayTempFileAfterSuccess(t *testing.T) {
 
 // TestWriteChildGroupFileLocked_NeverObservedTruncated writes the registry
 // repeatedly (simulating RegisterChildGroup/UnregisterChildGroup churn from
-// a long-lived crush process starting and stopping many CLI streams) while
+// a long-lived rush process starting and stopping many CLI streams) while
 // a second goroutine continuously reads the SAME file directly with
 // os.ReadFile, outside childGroupFileMu -- exactly how an external
 // "sessions kill" process would read it, with no coordination available

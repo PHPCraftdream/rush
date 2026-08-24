@@ -59,7 +59,7 @@ func saveFileParts(msgs fantasy.Prompt) (tempDir string, filePaths map[int][]str
 		// Sanitize: keep only the base name.
 		name = filepath.Base(name)
 
-		// Disambiguate on collision (found by a full-project @crush
+		// Disambiguate on collision (found by a full-project @rush
 		// --role reviewer audit): two FileParts sharing the same base
 		// filename (e.g. two "image.png" attachments from different
 		// messages) used to silently write to the same path — the

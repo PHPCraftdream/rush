@@ -13,7 +13,7 @@ import (
 )
 
 // TestResolveSessionModels_SmallModelNotSwappedWithLarge is the regression
-// test for a bug found reviewing the /crush-delegated per-session model
+// test for a bug found reviewing the /rush-delegated per-session model
 // isolation fix: resolveSessionModels's original model cache called
 // buildModelsFromCfg once per slot, swapping (largeCfg, smallCfg) argument
 // order to "select" which half of the pair to keep for the fast slot.
@@ -26,7 +26,7 @@ import (
 // — pinned onto every turn's SmallModel (title generation and any other
 // fast-model-driven path) via resolvedOverrides.pin.
 //
-// This bug was invisible to the /crush sub-agent's own testing because its
+// This bug was invisible to the /rush sub-agent's own testing because its
 // test fixtures likely configure identical smart/fast models (a common CI
 // shortcut) — the swap's condition (cfg == largeCfg) is then trivially
 // true either way, masking the mismatch. This test deliberately uses
@@ -89,7 +89,7 @@ func TestResolveSessionModels_CachesPairAcrossCalls(t *testing.T) {
 // used to call the un-scoped BuildSystemPrompt(ctx), which builds from the
 // global config default regardless of which session asked. This test calls
 // BuildSystemPromptForSession directly — an earlier version of this test's
-// body (both the /crush-delegated one and this reviewer's first replacement
+// body (both the /rush-delegated one and this reviewer's first replacement
 // attempt) never actually exercised it, despite the name/docstring claiming
 // otherwise; caught during independent review both times.
 //

@@ -29,7 +29,7 @@ func isolateProcess(cmd *exec.Cmd) { platform.HideConsoleWindow(cmd) }
 // upstream's DefaultExecHandler builds a bare exec.Cmd with no
 // SysProcAttr, so every single bash-tool command spawns a NEW, briefly
 // visible console window when the rush process itself has no console to
-// share (see cmd.maybeDetachConsole's doc comment for why crush ends up
+// share (see cmd.maybeDetachConsole's doc comment for why rush ends up
 // console-less on a detached/orchestrator launch). HideWindow: true sets
 // the Windows CREATE_NO_WINDOW creation flag, which suppresses that window
 // unconditionally — independent of whatever console state rush itself is

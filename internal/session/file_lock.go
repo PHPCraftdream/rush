@@ -20,7 +20,7 @@ import (
 //
 // Use case (callers added 2026-05): the cliprovider qwen/gemini MCP-id
 // files and their respective ~/.{qwen,gemini}/settings.json edits are
-// read-modify-write across multiple crush processes that share a working
+// read-modify-write across multiple rush processes that share a working
 // directory or a home directory. Without a lock, two processes racing to
 // generate the same MCP ID end up with split-brain (loser's in-memory
 // ID points to no server) and concurrent settings.json edits clobber

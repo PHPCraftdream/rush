@@ -231,7 +231,7 @@ func registerViewTool(srv *mcp.Server, perms permission.Service, workingDir stri
 	})
 }
 
-// crushClaudeInitBlockPattern is the same regex `internal/cmd/claude_init.go`
+// rushClaudeInitBlockPattern is the same regex `internal/cmd/claude_init.go`
 // uses to identify our injected block. Duplicated here to avoid a cmd→
 // cliprovider import (cmd already imports a lot from the agent layer).
 // If the marker scheme ever changes, update both sites.

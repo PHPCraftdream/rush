@@ -616,7 +616,7 @@ stage — do not batch verification until the end.
   Go-side `session.Service`/`message.Service` methods
   (`DrainPendingInjects`, `ConsumeInterruptInject`, `CreateAgentToolSessionID`,
   etc.) are unchanged. The cross-process inject/interrupt path
-  (`crush sessions inject [--interrupt]`) continues to write through the DB
+  (`rush sessions inject [--interrupt]`) continues to write through the DB
   exactly as today; the mailbox only affects the SAME-PROCESS in-memory
   hand-off, which is what P0-2/P0-3/P1-1/P1-2 are actually about. Cross-
   process pending-inject rows are drained into `prepared.Messages` by

@@ -26,7 +26,7 @@ import (
 // and sessionAgent.Cancel unconditionally ran messageQueue.Clear(sessionID)
 // — so the replacement was queued and then deleted by the very next line, on
 // EVERY call, deterministically. Not a race: ordinary production flow. The
-// web UI's "interrupt and send" button and `crush sessions inject
+// web UI's "interrupt and send" button and `rush sessions inject
 // --interrupt` silently discarded the user's new request.
 //
 // The pre-existing coordinator-level test only asserted call ORDER against a

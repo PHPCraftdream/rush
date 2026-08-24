@@ -18,7 +18,7 @@ import (
 // The property that matters most here is the NEGATIVE one: a pid that is not
 // its own group leader must never be recorded. Sweeping it would mean
 // kill(-pid) against whatever unrelated process group happens to carry that
-// numeric id — including, on an unlucky day, crush's own.
+// numeric id — including, on an unlucky day, rush's own.
 
 // spawnGroupChild starts a long-lived child, optionally as its own process
 // group leader, and returns it with a reaper already waiting.

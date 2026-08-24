@@ -33,7 +33,7 @@ type DownloadPermissionsParams struct {
 const DownloadToolName = "download"
 
 // MaxDownloadBytes bounds how much of the response body download will
-// write to disk. Found missing by a full-project @crush --role reviewer
+// write to disk. Found missing by a full-project @rush --role reviewer
 // audit: without a limit, a URL serving an unbounded stream (or a slow-drip
 // server exploiting Timeout=0, which only bounds the HTTP client's overall
 // deadline, not response size) could fill the disk. 500 MiB is generous for

@@ -114,7 +114,7 @@ func TestDrainSessionNow_ForeignLeasedRow_NeverReportsComplete(t *testing.T) {
 // correctness cannot depend on timing a maintenance sweep this call does
 // not control and is not obligated to wait for -- an eighth review found a
 // version of this fix that treated expiry as equivalent to "gone" still
-// let `crush run` exit 0 over a row whose fate remained genuinely unknown
+// let `rush run` exit 0 over a row whose fate remained genuinely unknown
 // at the moment this call returned.
 func TestDrainSessionNow_ForeignLeasedRow_ExpiredButNotYetCleaned(t *testing.T) {
 	t.Parallel()

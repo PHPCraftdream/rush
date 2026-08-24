@@ -755,7 +755,7 @@ func TestParseStdoutClaudeCodeFormat(t *testing.T) {
 		require.Equal(t, "extra info for the model", r.Context)
 	})
 
-	t.Run("crush format still works", func(t *testing.T) {
+	t.Run("rush format still works", func(t *testing.T) {
 		t.Parallel()
 		r := parseStdout(`{"decision":"allow","context":"hello"}`)
 		require.Equal(t, DecisionAllow, r.Decision)
