@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { ws } from "./ws";
+import { ws, sendLoadMessages, isStaleMessagesReply } from "./ws";
 import {
   $connected,
   $config,
@@ -62,7 +62,7 @@ export function useWS() {
         const sessionExists = $sessions.get().some((s) => s.ID === id);
         if (sessionExists) {
           setActiveSession(id);
-          ws.send("load_messages", { sessionID: id });
+          sendLoadMessages(id);
         }
       } else if (!id && currentActive) {
         setActiveSession(null);
@@ -104,11 +104,11 @@ export function useWS() {
         upsertSession(s);
         if (s.ParentSessionID) {
           registerSubAgentSession(s.ID, s.ParentSessionID);
-          ws.send("load_messages", { sessionID: s.ID });
+          sendLoadMessages(s.ID);
           return;
         }
         setActiveSession(s.ID);
-        ws.send("load_messages", { sessionID: s.ID });
+        sendLoadMessages(s.ID);
       }),
       ws.on("session_updated", (msg: WSMessage) => {
         const session = msg.payload as Session;
@@ -134,7 +134,7 @@ export function useWS() {
         if (activeID0) {
           const a = sessions.find((s) => s.ID === activeID0);
           if (a && a.OwnedExternal) {
-            ws.send("load_messages", { sessionID: activeID0 });
+            sendLoadMessages(activeID0);
           }
         }
 
@@ -152,7 +152,7 @@ export function useWS() {
           if (session) {
             if (activeID !== hashID) {
               setActiveSession(hashID);
-              ws.send("load_messages", { sessionID: hashID });
+              sendLoadMessages(hashID);
             }
             return;
           }
@@ -162,7 +162,7 @@ export function useWS() {
         const latest = sessions.find((s) => !s.ParentSessionID);
         if (latest && activeID !== latest.ID) {
           setActiveSession(latest.ID);
-          ws.send("load_messages", { sessionID: latest.ID });
+          sendLoadMessages(latest.ID);
         }
       }),
 
@@ -225,6 +225,14 @@ export function useWS() {
           msgs = payload.Messages ?? [];
           sid = payload.SessionID ?? msgs[0]?.SessionID;
         }
+        // Stale-reply guard (task #685): load_messages is fired from
+        // several uncoordinated call sites (two independent OwnedExternal
+        // pollers among them) and the server dispatches it through a
+        // worker pool with no FIFO guarantee, so an older request's reply
+        // can arrive after a newer one for the same session. Drop it —
+        // the newer reply already reflects a more current DB read, and
+        // applying the older one would regress the visible transcript.
+        if (isStaleMessagesReply(sid, msg.id)) return;
         if (sid && isSubAgentSession(sid)) {
           setSubAgentMessages(sid, msgs);
           return;
@@ -343,7 +351,7 @@ export function useWS() {
       if (!id) return;
       const sess = $sessions.get().find((s) => s.ID === id);
       if (!sess || !sess.OwnedExternal) return;
-      ws.send("load_messages", { sessionID: id });
+      sendLoadMessages(id);
     };
 
     const startPolling = () => {

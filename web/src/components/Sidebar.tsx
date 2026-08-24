@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { useStore } from "@nanostores/react";
 import { $sessions, $activeSessionID, $busySessions, $config, setActiveSession, removeSession } from "../store";
-import { ws } from "../ws";
+import { ws, sendLoadMessages } from "../ws";
 import { MessageSquare, Plus, Pencil, X, Check, Folder, Trash2 } from "lucide-react";
 import { ConfirmDialog } from "./ConfirmDialog";
 
@@ -58,7 +58,7 @@ export function Sidebar() {
   function selectSession(id: string) {
     if (editingID === id) return;
     setActiveSession(id);
-    ws.send("load_messages", { sessionID: id });
+    sendLoadMessages(id);
   }
 
   function newSession() {

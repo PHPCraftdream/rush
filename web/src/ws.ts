@@ -83,3 +83,51 @@ class WSClient {
 }
 
 export const ws = new WSClient();
+
+// ── load_messages stale-reply guard (task #685) ────────────────────────────
+//
+// Several independent call sites (the two OwnedExternal pollers in
+// useWS.ts, hashchange/session_created/sessions_list routing, Sidebar's
+// session switch, SubAgentBlock's lazy load) each fire their own
+// `load_messages` for a session with no coordination between them. The
+// server dispatches load_messages through a per-connection worker pool
+// with no FIFO guarantee (hub.go's workerPoolSize goroutines draining one
+// shared queue), so two in-flight requests for the same session can have
+// their `messages_list` replies arrive in EITHER order — a reply to a
+// request sent earlier can land after the reply to one sent later,
+// carrying a stale (pre-update) snapshot that would silently regress the
+// rendered transcript if applied unconditionally.
+//
+// Fix: every load_messages send is tagged with a msgID and recorded here
+// as the latest SENT request for that session — this entry is intentionally
+// never cleared (not even once its reply is accepted): it must keep acting
+// as a floor so that a slower, older reply arriving even after the newer
+// one was already applied is still recognized and dropped, not just while
+// something is nominally "in flight". A messages_list reply is applied only
+// if its `id` matches the latest recorded request for its session (or
+// there's nothing recorded, e.g. an older cached frontend that never sent
+// an id at all) — replies to any superseded request are dropped. See
+// sendLoadMessages/isStaleMessagesReply below.
+const latestLoadMessagesID = new Map<string, string>();
+
+/** Sends load_messages for sessionID, tagged with a fresh msgID that
+ * becomes the only one whose reply will be accepted for this session
+ * until a newer load_messages supersedes it. */
+export function sendLoadMessages(sessionID: string) {
+  const id = crypto.randomUUID();
+  latestLoadMessagesID.set(sessionID, id);
+  ws.send("load_messages", { sessionID }, id);
+}
+
+/** True if a messages_list reply for sessionID/replyID is stale — i.e. it
+ * is not the answer to the most recently sent load_messages for this
+ * session (a newer request has since superseded it, whether or not that
+ * newer request's reply has arrived yet). Replies with no id (or for a
+ * session with no tracked request at all) are never considered stale, so
+ * back-compat/untagged paths keep working. */
+export function isStaleMessagesReply(sessionID: string | undefined, replyID: string | undefined): boolean {
+  if (!sessionID || !replyID) return false;
+  const latest = latestLoadMessagesID.get(sessionID);
+  if (!latest) return false;
+  return latest !== replyID;
+}

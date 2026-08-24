@@ -6,7 +6,7 @@ import remarkBreaks from "remark-breaks";
 import rehypeHighlight from "rehype-highlight";
 import { Bot } from "lucide-react";
 import { $subAgentMessages, $messages, $activeSessionID, registerSubAgentSession } from "../store";
-import { ws } from "../ws";
+import { sendLoadMessages } from "../ws";
 import type { Message, ContentPart, FinishPart } from "../types";
 import { SummaryMessage } from "./Message/SummaryMessage";
 import { FinishErrorBlock } from "./Message/FinishErrorBlock";
@@ -195,7 +195,7 @@ export const SubAgentBlock = memo(function SubAgentBlock({
     // the parent message's own SessionID.
     const owner = parent?.SessionID ?? $activeSessionID.get();
     if (owner) registerSubAgentSession(subSessionID, owner);
-    ws.send("load_messages", { sessionID: subSessionID });
+    sendLoadMessages(subSessionID);
   }, [subSessionID, messages.length, parent]);
 
   // Open while the sub-agent is still working (mirrors prior `open={!done}`
