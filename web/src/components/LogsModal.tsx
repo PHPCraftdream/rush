@@ -46,7 +46,7 @@ export function LogsModal({ onClose }: LogsModalProps) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `crush-logs-${Date.now()}.txt`;
+    a.download = `rush-logs-${Date.now()}.txt`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);

@@ -308,7 +308,7 @@ export function ChatToolbar() {
   }, [effectiveSmartKey, allModels]);
 
   const contextPct = contextWindow > 0 ? Math.min(100, Math.round((totalTokens / contextWindow) * 100)) : null;
-  // Read-only follow mode: another live crush process holds this session's
+  // Read-only follow mode: another live rush process holds this session's
   // lock. The toolbar still renders so the operator can see the token
   // counter, status, etc., but every mutation control collapses to a
   // single inline notice so we don't fight the foreign agent.
@@ -541,7 +541,7 @@ export function ChatToolbar() {
             href="https://github.com/PHPCraftdream/crush/releases"
             target="_blank"
             rel="noreferrer"
-            title={`crush ${updateInfo.latest} is available (you have ${updateInfo.current})`}
+            title={`rush ${updateInfo.latest} is available (you have ${updateInfo.current})`}
             className="flex items-center gap-1.5 text-xs font-medium rounded-lg px-2.5 py-1.5 border transition-colors bg-base-overlay border-accent/50 text-accent hover:border-accent"
           >
             <ArrowUpCircle size={13} />
@@ -562,7 +562,7 @@ export function ChatToolbar() {
             Bluetooth headphones from suspending the audio device during
             long agent runs (otherwise they eat the first second of any
             real notification). Backed by Options.KeepAliveEnabled in the
-            global crush.json; default ON. */}
+            global rush.json; default ON. */}
         <button
           data-test-id="header-keepalive-toggle"
           onClick={() => setKeepAliveEnabled(!keepAliveOn)}

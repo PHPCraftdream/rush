@@ -26,7 +26,7 @@ export const BackgroundJobNotice = memo(function BackgroundJobNotice({ message }
         <div className="summary-header">
           <span
             className="px-1 py-0.5 rounded bg-base-subtle text-text-muted font-mono text-[10px]"
-            title="background job finished — injected by crush, not typed by you"
+            title="background job finished — injected by rush, not typed by you"
           >
             ⚙ background job
           </span>

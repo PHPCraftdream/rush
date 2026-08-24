@@ -6,7 +6,7 @@
 //
 // Persistence note: this module owns ONLY the runtime state (is the
 // AudioContext currently producing noise?). The user's preference lives
-// in the global crush.json on the backend (Options.KeepAliveEnabled) and
+// in the global rush.json on the backend (Options.KeepAliveEnabled) and
 // reaches the web UI via the `config` WebSocket event. Sync between
 // preference and runtime happens in useWS.ts.
 //

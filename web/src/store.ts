@@ -53,7 +53,7 @@ export function setSkills(skills: SkillInfo[]) {
   $skills.set(skills);
 }
 
-const LAST_SKILL_KEY = "crush_last_skill";
+const LAST_SKILL_KEY = "rush_last_skill";
 export const $lastUsedSkill = atom<string>(localStorage.getItem(LAST_SKILL_KEY) ?? "");
 export function setLastUsedSkill(name: string) {
   $lastUsedSkill.set(name);
@@ -597,7 +597,7 @@ export function setSessionReasoningEffort(
 // Theme is stored on the backend. localStorage is only used as a cache for
 // instant page load (before WS connects) to avoid white flash.
 
-const STORAGE_KEY_THEME = "crush_theme";
+const STORAGE_KEY_THEME = "rush_theme";
 
 export function applyTheme(theme: string) {
   if (theme === "dark") {
@@ -625,7 +625,7 @@ export function setTheme(theme: "light" | "dark") {
 }
 
 // setKeepAliveEnabled toggles the WebAudio keep-alive preference. The
-// backend persists it to the global crush.json under
+// backend persists it to the global rush.json under
 // options.keep_alive_enabled and broadcasts a fresh `config` event;
 // useWS.ts reacts to that broadcast and starts/stops the local audio.
 export function setKeepAliveEnabled(enabled: boolean) {

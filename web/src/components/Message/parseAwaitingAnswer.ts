@@ -15,7 +15,7 @@
 // WS call ChatInput's `send()` uses.
 //
 // Detection caveat: there is currently NO structural signal for "this
-// finish is a question, not a real error" on the wire — `crush run --json`
+// finish is a question, not a real error" on the wire — `rush run --json`
 // computes exit_reason: "awaiting_answer" (internal/app/app.go
 // buildRunResult), but that's CLI-only and never reaches the web socket.
 // FinishPart only carries {Reason, Message, Details} and Reason is the

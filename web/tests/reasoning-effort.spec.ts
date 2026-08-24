@@ -39,7 +39,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/charmbracelet/crush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/message"
 )
 
 // TestZZEffortWireProbe marshals a real toMessageWire conversion and prints

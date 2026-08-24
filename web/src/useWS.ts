@@ -84,7 +84,7 @@ export function useWS() {
         ws.send("get_skills");
         // Sync theme from localStorage to server on every (re)connect
         // so the server's state always matches what the client has saved locally.
-        const localTheme = localStorage.getItem("crush_theme");
+        const localTheme = localStorage.getItem("rush_theme");
         if (localTheme) {
           ws.send("set_theme", { theme: localTheme });
         }
@@ -358,8 +358,8 @@ export function useWS() {
     // pubsub do its thing without any extra requests. When the tab is
     // visible:
     //   - poll sessions_list every 5s — keeps the sidebar fresh (titles,
-    //     ownership, message counts) even when another crush process
-    //     drives a session on the same .crush/.
+    //     ownership, message counts) even when another rush process
+    //     drives a session on the same .rush/.
     //   - if the active session is externally owned (another process
     //     holds the lock — OwnedExternal: true), poll its messages_list
     //     every 1.5s so the conversation streams visibly without going

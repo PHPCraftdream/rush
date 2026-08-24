@@ -236,7 +236,7 @@ function ProviderForm({
           ))}
         </div>
         <p className="text-[10px] text-text-muted mt-1">
-          {scope === "global" ? "Available in every project (~/.local/share/crush)." : "This project only (./.crush)."}
+          {scope === "global" ? "Available in every project (~/.local/share/rush)." : "This project only (./.rush)."}
         </p>
       </div>
 
@@ -709,13 +709,13 @@ function ProviderRow({
               <span className="text-xs text-text-subtle">Remove from:</span>
               <button
                 onClick={() => { onRemove("global"); setConfirmRemove(false); }}
-                title="Remove the global (~/.local/share/crush) override"
+                title="Remove the global (~/.local/share/rush) override"
                 className="px-2 py-0.5 text-xs font-medium bg-red-fill text-white/90 rounded hover:opacity-90"
                 data-test-id="provider-remove-global"
               >Global</button>
               <button
                 onClick={() => { onRemove("local"); setConfirmRemove(false); }}
-                title="Remove the local (./.crush) override"
+                title="Remove the local (./.rush) override"
                 className="px-2 py-0.5 text-xs font-medium bg-red-fill/70 text-white/90 rounded hover:opacity-90"
                 data-test-id="provider-remove-local"
               >Local</button>

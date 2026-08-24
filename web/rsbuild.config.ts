@@ -54,6 +54,6 @@ export default defineConfig({
     sourceMap: { js: "source-map", css: false },
   },
   html: {
-    title: "Crush",
+    title: "Rush",
   },
 });

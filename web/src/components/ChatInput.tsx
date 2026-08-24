@@ -71,7 +71,7 @@ const SOURCE_COLORS: Record<string, string> = {
   cursor: "bg-[#0ea5e9]/15 text-[#0ea5e9]",
   zed: "bg-[#059669]/15 text-[#059669]",
   windsurf: "bg-[#0891b2]/15 text-[#0891b2]",
-  crush: "bg-accent/15 text-accent",
+  rush: "bg-accent/15 text-accent",
   local: "bg-surface text-text-muted",
 };
 
@@ -219,7 +219,7 @@ export function ChatInput() {
     () => sessions.find((s) => s.ID === activeSessionID) ?? null,
     [sessions, activeSessionID],
   );
-  // Foreign-owned: another live crush process holds the session lock.
+  // Foreign-owned: another live rush process holds the session lock.
   // We can read the conversation but can't drive it — the input row and
   // all action buttons are replaced by a read-only banner.
   const foreignOwned = !!activeSession?.OwnedExternal;
@@ -698,11 +698,11 @@ export function ChatInput() {
         <div
           data-test-id="chat-input-foreign-owned-banner"
           className="rounded-xl border border-yellow/40 bg-yellow/10 text-yellow px-4 py-3 text-sm flex items-center gap-2"
-          title="Read-only follow mode. Another live crush process holds the session lock — this tab polls the database for updates instead of driving the agent."
+          title="Read-only follow mode. Another live rush process holds the session lock — this tab polls the database for updates instead of driving the agent."
         >
           <Zap size={14} className="shrink-0" />
           <span>
-            Read-only follow mode — session is driven by another crush process
+            Read-only follow mode — session is driven by another rush process
             {ownerPID > 0 ? ` (PID ${ownerPID})` : ""}.
           </span>
         </div>

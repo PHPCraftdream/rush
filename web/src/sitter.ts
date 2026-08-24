@@ -20,7 +20,7 @@ import { atom } from "nanostores";
 import { $sessions, $busySessions, $activeSessionID } from "./store";
 import { ws } from "./ws";
 
-const LS_KEY = "crushSitter";
+const LS_KEY = "rushSitter";
 const DEFAULT_MINUTES = 10;
 
 // Short resume prompt sent on each "stalled + has work" tick. Kept in
@@ -66,7 +66,7 @@ function tick() {
     stopSitter();
     return;
   }
-  // Read-only follow mode: another live crush process drives this session;
+  // Read-only follow mode: another live rush process drives this session;
   // any send_message we fire would be ignored at best and confuse history
   // at worst. Skip — sitter stays armed for if/when ownership reverts.
   if (sess.OwnedExternal) {

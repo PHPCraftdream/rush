@@ -358,7 +358,7 @@ export function ScopedModelsModal({ onClose, activeSession }: { onClose: () => v
           {/* System block */}
           <section data-test-id="scoped-models-system">
             <h3 className="text-sm font-semibold text-text mb-1">System</h3>
-            <p className="text-[11px] text-text-subtle mb-2">Global default — ~/.local/share/crush/crush.json</p>
+            <p className="text-[11px] text-text-subtle mb-2">Global default — ~/.local/share/rush/rush.json</p>
             <div className="divide-y divide-surface/30">
               {SLOTS.map(({ key, label }) => (
                 <ScopedSlotRow
@@ -378,7 +378,7 @@ export function ScopedModelsModal({ onClose, activeSession }: { onClose: () => v
           <section data-test-id="scoped-models-folder">
             <h3 className="text-sm font-semibold text-text mb-1">Folder</h3>
             <p className="text-[11px] text-text-subtle mb-2">
-              Workspace override — ./.crush/crush.json
+              Workspace override — ./.rush/rush.json
               {scopedModels && !scopedModels.hasWorkspace && " (no workspace config resolved for this directory)"}
             </p>
             <div className="divide-y divide-surface/30">

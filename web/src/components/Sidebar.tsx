@@ -174,7 +174,7 @@ export function Sidebar() {
       {/* Header */}
       <div className="flex items-center justify-between px-6 py-5 border-b border-surface" data-test-id="sidebar-header">
         <div className="flex flex-col gap-0.5">
-          <span className="text-xl font-black text-accent tracking-tighter">Crush~</span>
+          <span className="text-xl font-black text-accent tracking-tighter">Rush~</span>
           <span className="text-[10px] text-text-subtle font-mono opacity-60">#{__GIT_COUNT__} · {__GIT_COMMIT__}</span>
           <span className="text-[10px] text-text-subtle font-mono opacity-50">{__GIT_BRANCH__}</span>
         </div>
