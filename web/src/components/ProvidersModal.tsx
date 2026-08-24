@@ -134,6 +134,7 @@ function ProviderForm({
   // import resolves, the .then must not register its handler at all.
   const disposedRef = useRef(false);
   useEffect(() => {
+    disposedRef.current = false;
     return () => {
       disposedRef.current = true;
       unsubRef.current?.();
@@ -408,6 +409,7 @@ function BuiltinProviderEditor({
   const pendingUnsubs = useRef<Set<() => void>>(new Set());
   const disposedRef = useRef(false);
   useEffect(() => {
+    disposedRef.current = false;
     return () => {
       disposedRef.current = true;
       pendingUnsubs.current.forEach((unsub) => unsub());
