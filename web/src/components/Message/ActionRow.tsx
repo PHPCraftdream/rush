@@ -58,7 +58,7 @@ export type ActionItem =
       key: string;
       createdAt?: number;
       messageID?: string;
-      partIndex?: number;
+      partIndex: number;
     };
 
 interface ActionRowProps {

@@ -31,7 +31,7 @@ import { useCollapseAllSignal } from "./useCollapseAllSignal";
 //     Manual collapse via the chevron in the header — never auto-collapsed.
 
 interface ToolActivityGroupProps {
-  items: { part: ContentPart; idx: number; createdAt?: number; messageID?: string }[];
+  items: { part: ContentPart; idx: number; createdAt?: number; messageID?: string; partIndex: number }[];
   live: boolean;
   // True when this group is the most recent activity in the transcript
   // (i.e. nothing rendered after it). When false, the auto-rule collapses
@@ -126,10 +126,10 @@ export const ToolActivityGroup = memo(function ToolActivityGroup({ items, live, 
     const actions: ActionItem[] = [];
     const rawAgentParts: { part: ContentPart; idx: number; messageID?: string }[] = [];
     const indexByCallID = new Map<string, number>();
-    for (const { part, idx, createdAt, messageID } of items) {
+    for (const { part, idx, createdAt, messageID, partIndex } of items) {
       if (part.type === "thinking") {
         const text = (part as { type: "thinking"; Thinking: string }).Thinking ?? "";
-        actions.push({ kind: "thinking", text, idx, key: `think-${idx}`, createdAt, messageID, partIndex: idx });
+        actions.push({ kind: "thinking", text, idx, key: `think-${idx}`, createdAt, messageID, partIndex });
       } else if (part.type === "tool_call") {
         if (part.Name === "agent") { rawAgentParts.push({ part, idx, messageID }); continue; }
         const a: ActionItem = { kind: "tool", callPart: part, idx, key: `call-${part.ID}`, createdAt };

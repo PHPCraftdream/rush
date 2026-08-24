@@ -333,6 +333,16 @@ func handleDeleteMessagePart(ctx context.Context, a *appPkg.App, c *Client, msg 
 		c.reply(msg.ID, EventError, nil, "part index out of range")
 		return
 	}
+	// Part-level delete is a user-facing affordance for text/thinking rows only.
+	// Finish/tool_call/tool_result are structural (provider-history/turn-termination),
+	// and a wrong index must not be able to remove them.
+	switch m.Parts[p.PartIndex].(type) {
+	case message.TextContent, message.ReasoningContent:
+		// Allowed deletions.
+	default:
+		c.reply(msg.ID, EventError, nil, "part type not deletable")
+		return
+	}
 	m.Parts = append(m.Parts[:p.PartIndex], m.Parts[p.PartIndex+1:]...)
 	if !updateMessageAndVerify(ctx, a, c, msg.ID, m) {
 		return
@@ -369,19 +379,15 @@ func handleUpdateMessagePart(ctx context.Context, a *appPkg.App, c *Client, msg 
 			FinishedAt:       part.FinishedAt,
 		}
 	case message.ToolCall:
-		m.Parts[p.PartIndex] = message.ToolCall{
-			ID:       part.ID,
-			Name:     part.Name,
-			Input:    p.Content,
-			Finished: part.Finished,
-		}
+		// Copy-and-override to preserve ProviderExecuted and other fields the web UI renders (Metadata → inline diff).
+		updated := part
+		updated.Input = p.Content
+		m.Parts[p.PartIndex] = updated
 	case message.ToolResult:
-		m.Parts[p.PartIndex] = message.ToolResult{
-			ToolCallID: part.ToolCallID,
-			Name:       part.Name,
-			Content:    p.Content,
-			IsError:    part.IsError,
-		}
+		// Copy-and-override to preserve Data/MIMEType/Metadata.
+		updated := part
+		updated.Content = p.Content
+		m.Parts[p.PartIndex] = updated
 	default:
 		c.reply(msg.ID, EventError, nil, "part type not editable")
 		return

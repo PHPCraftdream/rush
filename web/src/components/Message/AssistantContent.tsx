@@ -101,7 +101,7 @@ export const AssistantContent = memo(function AssistantContent({
             // as falsy and collapsed unconditionally, contradicting the
             // paragraph above and diverging from Chat.tsx, which has always
             // passed it.
-            <ToolActivityGroup items={block.items.map((it) => ({ ...it, messageID: message.ID }))} live={isLive} isCurrent={isLive && bi === blocks.length - 1} model={message.Model} effort={message.ReasoningEffort} />
+            <ToolActivityGroup items={block.items.map((it) => ({ ...it, messageID: message.ID, partIndex: it.idx }))} live={isLive} isCurrent={isLive && bi === blocks.length - 1} model={message.Model} effort={message.ReasoningEffort} />
           ) : (
             block.items.map(({ part, idx }) => (
               <Part key={idx} part={part} index={idx} isUser={false} messageID={message.ID} thinkingDone={block.thinkingDone} partialWorkDone={partialWorkDone} model={message.Model} effort={message.ReasoningEffort} sessionID={message.SessionID} />
