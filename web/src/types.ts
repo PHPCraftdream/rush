@@ -158,6 +158,10 @@ export interface ProviderInfo {
   baseUrl?: string;
   isCustom?: boolean;
   apiKeySet?: boolean;
+  // Effective config scope: "local" when a workspace override shadows the
+  // global entry, "global" otherwise. Mirrors server ProviderWire.Scope;
+  // absent (older server) means global.
+  scope?: "global" | "local";
   // Peak-hours window in local browser time ("HH:MM"). null/absent means no
   // restriction. Mirrors server PeakHoursWirePayload (lowerCamelCase keys).
   peakHours?: { start: string; end: string } | null;

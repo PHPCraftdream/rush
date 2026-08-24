@@ -16,6 +16,39 @@ import (
 	"github.com/PHPCraftdream/rush/internal/session"
 )
 
+// Field-group names reported in SetSessionModelsResult (task #696): one
+// entry per independent DB update handleSetSessionModels performs, named
+// after the session.Service method behind it. A group the payload did not
+// ask to change appears in neither Applied nor Failed.
+const (
+	setModelsFieldSmartFast            = "smartFastModels"
+	setModelsFieldWorkerReviewer       = "workerReviewerModels"
+	setModelsFieldSmartFastEffort      = "smartFastReasoningEffort"
+	setModelsFieldWorkerReviewerEffort = "workerReviewerReasoningEffort"
+)
+
+// resolveEffortPair turns one effort pair's raw wire values into the values
+// to write. An empty raw value means "not sent": the stored column value is
+// substituted so writing the OTHER slot cannot clobber this one. The
+// ReasoningEffortClear sentinel means the slot WAS sent, explicitly asking
+// to reset to unset: it becomes the empty string, which the effort updates
+// write as the column's no-override state. The sentinel is checked on the
+// raw value, before backfill, so only a payload that actually asked to
+// clear can produce a clear.
+func resolveEffortPair(raw1, raw2, stored1, stored2 string) (string, string) {
+	if raw1 == "" {
+		raw1 = stored1
+	} else if raw1 == ReasoningEffortClear {
+		raw1 = ""
+	}
+	if raw2 == "" {
+		raw2 = stored2
+	} else if raw2 == ReasoningEffortClear {
+		raw2 = ""
+	}
+	return raw1, raw2
+}
+
 func handleSetSessionModels(ctx context.Context, a *appPkg.App, c *Client, msg WSMessage) {
 	var p SetSessionModelsPayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil {
@@ -42,11 +75,6 @@ func handleSetSessionModels(ctx context.Context, a *appPkg.App, c *Client, msg W
 		fastUpdate = &session.ModelSlotUpdate{Provider: sp, Model: sm}
 	}
 
-	if err := a.Sessions.UpdateModels(ctx, p.SessionID, smartUpdate, fastUpdate); err != nil {
-		c.reply(msg.ID, EventError, nil, err.Error())
-		return
-	}
-
 	// Worker/reviewer (task #466) — same nil-means-untouched partial update,
 	// via UpdateWorkerReviewerModels/UpdateWorkerReviewerReasoningEffort
 	// (UpdateModels/UpdateReasoningEffort's siblings for these optional slots).
@@ -62,26 +90,60 @@ func handleSetSessionModels(ctx context.Context, a *appPkg.App, c *Client, msg W
 		rre = p.ReviewerModel.ReasoningEffort
 		reviewerUpdate = &session.ModelSlotUpdate{Provider: rp, Model: rm}
 	}
-	if workerUpdate != nil || reviewerUpdate != nil {
-		if err := a.Sessions.UpdateWorkerReviewerModels(ctx, p.SessionID, workerUpdate, reviewerUpdate); err != nil {
-			c.reply(msg.ID, EventError, nil, err.Error())
+
+	// The four updates below are independent column-scoped writes to the
+	// same row, so each is attempted and reported per field (task #696,
+	// review F8): a failure used to be either an early EventError that hid
+	// which earlier fields HAD already landed, or — for the two effort
+	// updates — only a slog.Warn folded into an unqualified "ok" reply. The
+	// reply now carries the true per-field outcome, following
+	// DeleteOtherSessionsResult's deleted/failed shape (task #684). A
+	// single transaction was ruled out: it would need a new session.Service
+	// method (the server package has no DB handle), and partial application
+	// is operationally meaningful here — every group is independently
+	// retryable and the session_updated broadcast below already reflects
+	// whatever subset landed.
+	result := SetSessionModelsResult{
+		Applied: []string{},
+		Failed:  []string{},
+		Errors:  map[string]string{},
+	}
+	run := func(field string, update func() error) {
+		if err := update(); err != nil {
+			result.Failed = append(result.Failed, field)
+			result.Errors[field] = err.Error()
+			slog.Warn("ws: failed to update session models field", "field", field, "err", err)
 			return
 		}
+		result.Applied = append(result.Applied, field)
 	}
+
+	if smartUpdate != nil || fastUpdate != nil {
+		run(setModelsFieldSmartFast, func() error {
+			return a.Sessions.UpdateModels(ctx, p.SessionID, smartUpdate, fastUpdate)
+		})
+	}
+	if workerUpdate != nil || reviewerUpdate != nil {
+		run(setModelsFieldWorkerReviewer, func() error {
+			return a.Sessions.UpdateWorkerReviewerModels(ctx, p.SessionID, workerUpdate, reviewerUpdate)
+		})
+	}
+
+	// Worker/reviewer reasoning effort. An empty raw value means "not sent"
+	// — resolveEffortPair backfills the stored value so the paired slot's
+	// write cannot clobber it; ReasoningEffortClear means "explicitly reset"
+	// and becomes the column's unset state.
 	if wre != "" || rre != "" {
+		var storedWorker, storedReviewer string
 		if wre == "" || rre == "" {
 			if sess, sessErr := a.Sessions.Get(ctx, p.SessionID); sessErr == nil {
-				if wre == "" {
-					wre = sess.WorkerModelReasoningEffort
-				}
-				if rre == "" {
-					rre = sess.ReviewerModelReasoningEffort
-				}
+				storedWorker, storedReviewer = sess.WorkerModelReasoningEffort, sess.ReviewerModelReasoningEffort
 			}
 		}
-		if err := a.Sessions.UpdateWorkerReviewerReasoningEffort(ctx, p.SessionID, wre, rre); err != nil {
-			slog.Warn("ws: failed to update worker/reviewer reasoning effort", "err", err)
-		}
+		wre, rre = resolveEffortPair(wre, rre, storedWorker, storedReviewer)
+		run(setModelsFieldWorkerReviewerEffort, func() error {
+			return a.Sessions.UpdateWorkerReviewerReasoningEffort(ctx, p.SessionID, wre, rre)
+		})
 	}
 
 	// Update reasoning effort for models that support it. CRITICAL: a single
@@ -91,24 +153,26 @@ func handleSetSessionModels(ctx context.Context, a *appPkg.App, c *Client, msg W
 	// would clobber the OTHER model's effort on every click — and on GLM (where
 	// medium is not a supported level) the clamp useEffect would immediately
 	// fire back, locking the UI into a flash-loop that never let the
-	// operator's chosen effort stick.
+	// operator's chosen effort stick. An explicit clear deliberately does
+	// NOT round-trip through this preservation: see resolveEffortPair.
 	if lre != "" || sre != "" {
+		var storedSmart, storedFast string
 		if lre == "" || sre == "" {
 			if sess, sessErr := a.Sessions.Get(ctx, p.SessionID); sessErr == nil {
-				if lre == "" {
-					lre = sess.SmartModelReasoningEffort
-				}
-				if sre == "" {
-					sre = sess.FastModelReasoningEffort
-				}
+				storedSmart, storedFast = sess.SmartModelReasoningEffort, sess.FastModelReasoningEffort
 			}
 		}
-		if err := a.Sessions.UpdateReasoningEffort(ctx, p.SessionID, lre, sre); err != nil {
-			slog.Warn("ws: failed to update reasoning effort", "err", err)
-		}
+		lre, sre = resolveEffortPair(lre, sre, storedSmart, storedFast)
+		run(setModelsFieldSmartFastEffort, func() error {
+			return a.Sessions.UpdateReasoningEffort(ctx, p.SessionID, lre, sre)
+		})
 	}
 
-	// Record recently used models in the config (persists across restarts)
+	// Record recently used models in the config (persists across restarts).
+	// Deliberately still best-effort/warn-only rather than part of the
+	// per-field result: this is a UI-convenience list in a config file, not
+	// session DB state, and the EventConfig broadcast below re-syncs every
+	// client to whatever the list actually contains.
 	store := a.Store()
 	if store != nil && lp != "" && lm != "" {
 		if err := store.RecordRecentModel(config.ScopeGlobal, config.SelectedModelTypeSmart, config.SelectedModel{Provider: lp, Model: lm}); err != nil {
@@ -136,7 +200,7 @@ func handleSetSessionModels(ctx context.Context, a *appPkg.App, c *Client, msg W
 	if wire, ok := buildConfigWire(a); ok {
 		c.hub.Broadcast(EventConfig, wire)
 	}
-	c.reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
+	c.reply(msg.ID, EventResponse, result, "")
 }
 
 func handleRemoveRecentModel(a *appPkg.App, c *Client, msg WSMessage) {

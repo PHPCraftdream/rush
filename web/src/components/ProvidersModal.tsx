@@ -100,7 +100,7 @@ function ProviderForm({
   onSubmit,
   onCancel,
 }: {
-  initial?: { id: string; name: string; type: string; baseUrl: string; models: ModelDraft[]; peakHours?: { start: string; end: string } | null };
+  initial?: { id: string; name: string; type: string; baseUrl: string; models: ModelDraft[]; peakHours?: { start: string; end: string } | null; scope?: ConfigScope };
   submitLabel: string;
   onSubmit: (data: {
     id: string; name: string; type: string; baseUrl: string; apiKey: string; models: ModelDraft[];
@@ -117,13 +117,12 @@ function ProviderForm({
   const [peakEnabled, setPeakEnabled] = useState(!!initial?.peakHours?.start && !!initial?.peakHours?.end);
   const [peakStart, setPeakStart] = useState(initial?.peakHours?.start ?? "09:00");
   const [peakEnd, setPeakEnd] = useState(initial?.peakHours?.end ?? "18:00");
-  // Default global — matches every scope-aware CLI command's default
-  // (crush providers, crush mcp, crush claude-init, ...). There is no
-  // read-back of an existing provider's current scope (would require a
-  // separate per-scope config read the server doesn't expose yet), so
-  // editing always starts from "global"; pick "local" explicitly if the
-  // provider actually lives in the workspace config.
-  const [scope, setScope] = useState<ConfigScope>("global");
+  // Prefill from the provider's effective scope as reported by the server
+  // wire — editing must write back to the scope the effective config
+  // actually lives in, not silently create a global entry under a
+  // still-active local override. A fresh add (no initial) defaults to
+  // global, matching every scope-aware CLI command's default.
+  const [scope, setScope] = useState<ConfigScope>(initial?.scope ?? "global");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -387,18 +386,20 @@ function ProviderForm({
 function BuiltinProviderEditor({
   id,
   initial,
+  initialScope,
   apiKeySet,
   onCancel,
 }: {
   id: string;
   initial: { start: string; end: string } | null | undefined;
+  initialScope?: ConfigScope;
   apiKeySet?: boolean;
   onCancel: () => void;
 }) {
   const [enabled, setEnabled] = useState(!!initial?.start && !!initial?.end);
   const [start, setStart] = useState(initial?.start ?? "09:00");
   const [end, setEnd] = useState(initial?.end ?? "18:00");
-  const [scope, setScope] = useState<ConfigScope>("global");
+  const [scope, setScope] = useState<ConfigScope>(initialScope ?? "global");
   const [apiKey, setApiKey] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -603,7 +604,7 @@ function ProviderRow({
   if (editing && !isCustom) {
     return (
       <div className="border-b border-surface last:border-0">
-        <BuiltinProviderEditor id={id} initial={info.peakHours} apiKeySet={info.apiKeySet} onCancel={() => setEditing(false)} />
+        <BuiltinProviderEditor id={id} initial={info.peakHours} initialScope={info.scope} apiKeySet={info.apiKeySet} onCancel={() => setEditing(false)} />
       </div>
     );
   }
@@ -625,6 +626,7 @@ function ProviderRow({
               costPer1mOut: "",
             })),
             peakHours: info.peakHours ?? null,
+            scope: info.scope,
           }}
           submitLabel="Update Provider"
           onSubmit={(data, msgID) => {

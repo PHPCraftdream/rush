@@ -19,6 +19,17 @@ import (
 	"github.com/PHPCraftdream/rush/internal/version"
 )
 
+// providerScopeWire reports the scope the provider's effective (merged)
+// entry is governed by: the workspace config merges after the global one,
+// so a workspace providers.<id> override shadows any global entry and the
+// effective scope is "local"; otherwise "global".
+func providerScopeWire(store *config.ConfigStore, id string) string {
+	if store.HasConfigField(config.ScopeWorkspace, fmt.Sprintf("providers.%s", id)) {
+		return "local"
+	}
+	return "global"
+}
+
 func buildConfigWire(a *appPkg.App) (ConfigWire, bool) {
 	store := a.Store()
 	cfg := store.Config()
@@ -44,13 +55,13 @@ func buildConfigWire(a *appPkg.App) (ConfigWire, bool) {
 	for _, p := range store.KnownProviders() {
 		id := string(p.ID)
 		if ep, ok := enabledIDs[id]; ok {
-			pw := ProviderWire{Name: p.Name, Enabled: true, Type: string(p.Type), APIKeySet: ep.APIKey != "", PeakHours: peakHoursToWire(ep.PeakHours), Models: make([]ModelInfoWire, len(ep.Models))}
+			pw := ProviderWire{Name: p.Name, Enabled: true, Type: string(p.Type), APIKeySet: ep.APIKey != "", Scope: providerScopeWire(store, id), PeakHours: peakHoursToWire(ep.PeakHours), Models: make([]ModelInfoWire, len(ep.Models))}
 			for i, m := range ep.Models {
 				pw.Models[i] = ModelInfoWire{ID: m.ID, Name: m.Name, ContextWindow: m.ContextWindow}
 			}
 			wire.Providers[id] = pw
 		} else {
-			pw := ProviderWire{Name: p.Name, Enabled: false, Type: string(p.Type), Models: make([]ModelInfoWire, len(p.Models))}
+			pw := ProviderWire{Name: p.Name, Enabled: false, Type: string(p.Type), Scope: providerScopeWire(store, id), Models: make([]ModelInfoWire, len(p.Models))}
 			for i, m := range p.Models {
 				pw.Models[i] = ModelInfoWire{ID: m.ID, Name: m.Name, ContextWindow: m.ContextWindow}
 			}
@@ -71,6 +82,7 @@ func buildConfigWire(a *appPkg.App) (ConfigWire, bool) {
 				BaseURL:   ep.BaseURL,
 				IsCustom:  isCustom,
 				APIKeySet: ep.APIKey != "",
+				Scope:     providerScopeWire(store, ep.ID),
 				PeakHours: peakHoursToWire(ep.PeakHours),
 				Models:    make([]ModelInfoWire, len(ep.Models)),
 			}

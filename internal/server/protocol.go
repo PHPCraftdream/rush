@@ -86,9 +86,15 @@ const (
 
 // ModelOverrideWire carries per-call model overrides from the client.
 type ModelOverrideWire struct {
-	Provider        string `json:"provider"`
-	Model           string `json:"model"`
-	ReasoningEffort string `json:"reasoning_effort,omitempty"` // "low", "medium", "high", or "max"
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+	// ReasoningEffort is "low", "medium", "high", or "max". An empty value
+	// means "leave this slot's effort untouched" — set_session_models
+	// backfills the stored value so a paired-slot write cannot clobber it —
+	// while the ReasoningEffortClear sentinel explicitly resets the slot's
+	// effort back to unset (task #696), the distinction an empty string
+	// could not otherwise express.
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 }
 
 type SetSessionModelsPayload struct {
@@ -99,6 +105,34 @@ type SetSessionModelsPayload struct {
 	// "don't touch", same convention as SmartModel/FastModel above.
 	WorkerModel   *ModelOverrideWire `json:"workerModel,omitempty"`
 	ReviewerModel *ModelOverrideWire `json:"reviewerModel,omitempty"`
+}
+
+// ReasoningEffortClear is the wire sentinel a client sends in
+// ModelOverrideWire.ReasoningEffort (set_session_models) to explicitly
+// reset that slot's per-session reasoning effort back to unset. It exists
+// because the field is a plain string and an empty value already means
+// "don't touch this slot" (the server preserves the stored value), so
+// without a distinct sentinel there is no way to express "clear it"
+// (task #696). It cannot collide with a real effort level: valid efforts
+// are low/medium/high/max.
+const ReasoningEffortClear = "clear"
+
+// SetSessionModelsResult is the reply payload for set_session_models (task
+// #696, review F8). It replaces the bare {"status":"ok"} that was replied
+// even when one of the handler's independent DB updates had failed with
+// only a slog.Warn, and the bare EventError that an early update failure
+// used to produce while hiding which earlier groups had already landed.
+// The handler performs four column-scoped updates (smart/fast models,
+// worker/reviewer models, and each pair's reasoning efforts) as separate
+// operations; Applied lists the groups whose update ran and succeeded,
+// Failed the groups whose update errored, with Errors carrying the
+// per-group error text. Groups the payload did not ask to change appear
+// in neither list. A client must treat every group in Failed as NOT
+// applied and re-read the session before retrying.
+type SetSessionModelsResult struct {
+	Applied []string          `json:"applied"`
+	Failed  []string          `json:"failed"`
+	Errors  map[string]string `json:"errors,omitempty"`
 }
 
 // ── Scoped (system/folder) default models ──────────────────────────────────
@@ -508,6 +542,7 @@ type ProviderWire struct {
 	BaseURL   string                `json:"baseUrl,omitempty"`
 	IsCustom  bool                  `json:"isCustom,omitempty"`
 	APIKeySet bool                  `json:"apiKeySet,omitempty"`
+	Scope     string                `json:"scope,omitempty"`
 	PeakHours *PeakHoursWirePayload `json:"peakHours,omitempty"`
 }
 

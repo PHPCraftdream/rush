@@ -541,3 +541,79 @@ test("Built-in provider editor Remove button sends remove_provider_key", async (
   const payload = msg.payload as Record<string, unknown>;
   expect(payload.providerID).toBe("anthropic");
 });
+
+// ── Edit form reads the provider's effective scope from the wire ─────────────
+// Regression for the providerscope review finding: the edit form used to
+// hardcode scope "global", so editing a provider whose effective config
+// lives in the workspace (local) scope silently wrote a NEW global-scope
+// entry while the local override kept shadowing it. The server now sends
+// each provider's effective scope in the wire; the edit form must prefill
+// from it and send it back unchanged on save.
+
+test("Edit provider with local scope from wire sends update with local scope", async ({ page }) => {
+  await primeSession(page, makeConfigWithProvider({ scope: "local" }));
+  await openMoreMenu(page);
+  await page.getByTestId("header-providers-button").click();
+  await expect(page.getByTestId("providers-modal")).toContainText("Ollama", { timeout: 3000 });
+  await page.getByTestId("provider-edit-ollama").click();
+  await expect(page.getByText("Edit: ollama", { exact: false })).toBeVisible({ timeout: 3000 });
+  await page.getByRole("button", { name: "Update Provider" }).click();
+  const msg = await waitForWSSend(page, "update_custom_provider");
+  const payload = msg.payload as Record<string, unknown>;
+  expect(payload.scope).toBe("local");
+});
+
+test("Edit provider defaults to global scope when wire omits scope", async ({ page }) => {
+  await primeSession(page, makeConfigWithProvider());
+  await openMoreMenu(page);
+  await page.getByTestId("header-providers-button").click();
+  await expect(page.getByTestId("providers-modal")).toContainText("Ollama", { timeout: 3000 });
+  await page.getByTestId("provider-edit-ollama").click();
+  await expect(page.getByText("Edit: ollama", { exact: false })).toBeVisible({ timeout: 3000 });
+  await page.getByRole("button", { name: "Update Provider" }).click();
+  const msg = await waitForWSSend(page, "update_custom_provider");
+  const payload = msg.payload as Record<string, unknown>;
+  expect(payload.scope).toBe("global");
+});
+
+test("Edit provider scope can still be switched explicitly", async ({ page }) => {
+  await primeSession(page, makeConfigWithProvider({ scope: "local" }));
+  await openMoreMenu(page);
+  await page.getByTestId("header-providers-button").click();
+  await expect(page.getByTestId("providers-modal")).toContainText("Ollama", { timeout: 3000 });
+  await page.getByTestId("provider-edit-ollama").click();
+  await expect(page.getByText("Edit: ollama", { exact: false })).toBeVisible({ timeout: 3000 });
+  // Explicit operator choice overrides the prefilled effective scope.
+  await page.getByTestId("provider-form-scope-global").click();
+  await page.getByRole("button", { name: "Update Provider" }).click();
+  const msg = await waitForWSSend(page, "update_custom_provider");
+  const payload = msg.payload as Record<string, unknown>;
+  expect(payload.scope).toBe("global");
+});
+
+test("Built-in provider editor prefills local scope from wire", async ({ page }) => {
+  await primeSession(page, makeConfig({
+      providers: {
+        anthropic: {
+          name: "Anthropic",
+          enabled: true,
+          scope: "local",
+          models: [
+            { id: "claude-opus-4", name: "claude-opus-4", contextWindow: 200000 },
+          ],
+        },
+      },
+    }));
+  await openMoreMenu(page);
+  await page.getByTestId("header-providers-button").click();
+  await expect(page.getByTestId("providers-modal")).toContainText("Anthropic", { timeout: 3000 });
+  await page.getByTestId("provider-edit-anthropic").click();
+  await expect(page.getByTestId("builtin-provider-editor")).toBeVisible({ timeout: 3000 });
+  await page.getByTestId("peak-hours-only-toggle").check();
+  await page.getByTestId("peak-hours-only-start").fill("09:00");
+  await page.getByTestId("peak-hours-only-end").fill("18:00");
+  await page.getByTestId("peak-hours-only-save").click();
+  const msg = await waitForWSSend(page, "set_provider_peak_hours");
+  const payload = msg.payload as Record<string, unknown>;
+  expect(payload.scope).toBe("local");
+});
