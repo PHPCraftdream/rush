@@ -80,11 +80,18 @@ export const ActionRow = memo(function ActionRow({ item, isCurrent, suppressAuto
   const [override, setOverride] = useState<boolean | undefined>(undefined);
   const effectiveCurrent = suppressAutoCurrent ? false : isCurrent;
   const open = override ?? effectiveCurrent;
-  const toggle = useCallback(() => setOverride(!open), [open]);
-
   // Used only by the thinking branch; useState must be called unconditionally.
   const [editingThinking, setEditingThinking] = useState(false);
   const [confirmDeleteThinking, setConfirmDeleteThinking] = useState(false);
+
+  // Collapsing the row via its own toggle also exits edit mode — a stashed
+  // edit form that silently reappears on the next expand is the same ambush
+  // shape ThinkingPart guards against (55d32c4d). Tool rows are unaffected.
+  const collapse = useCallback(() => { setOverride(false); setEditingThinking(false); }, []);
+  const toggle = useCallback(() => {
+    if (open) collapse();
+    else setOverride(true);
+  }, [open, collapse]);
 
   if (item.kind === "thinking") {
     // Thinking rows live alongside tool rows in the accordion. Same
