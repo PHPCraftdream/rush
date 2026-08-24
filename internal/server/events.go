@@ -8,7 +8,6 @@ import (
 	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
 	appPkg "github.com/charmbracelet/crush/internal/app"
 	"github.com/charmbracelet/crush/internal/config"
-	"github.com/charmbracelet/crush/internal/history"
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/pubsub"
 	"github.com/charmbracelet/crush/internal/session"
@@ -93,23 +92,6 @@ func subscribeAndBroadcast(ctx context.Context, a *appPkg.App, h *Hub) {
 		}
 	}()
 
-	// File history
-	go func() {
-		ch := a.History.Subscribe(ctx)
-		for {
-			select {
-			case ev, ok := <-ch:
-				if !ok {
-					return
-				}
-				_ = ev // cast to concrete type if needed
-				h.Broadcast(EventFileUpdated, ev.Payload)
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
-
 	// MCP state changes ΓÇö broadcast a full snapshot of all servers on each event.
 	go func() {
 		ch := mcp.SubscribeEvents(ctx)
@@ -128,10 +110,9 @@ func subscribeAndBroadcast(ctx context.Context, a *appPkg.App, h *Hub) {
 
 	slog.Debug("ws: event subscriptions started")
 
-	// Unused imports guard ΓÇö referenced through the generic channels above.
+	// Unused imports guard — referenced through the generic channels above.
 	_ = session.Session{}
 	_ = message.Message{}
-	_ = history.File{}
 }
 
 // buildMCPSnapshot returns the current state of all MCP servers in wire format.

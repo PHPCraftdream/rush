@@ -20,7 +20,6 @@ const (
 	EventSessionCreated = "session_created"
 	EventSessionUpdated = "session_updated"
 	EventSessionDeleted = "session_deleted"
-	EventFileUpdated    = "file_updated"
 	EventMCPState       = "mcp_state"
 	EventLSPState       = "lsp_state"
 	EventAgentBusy      = "agent_busy"

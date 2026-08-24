@@ -138,12 +138,6 @@ export function useWS() {
           }
         }
 
-        for (const s of sessions) {
-          if (s.ParentSessionID) {
-            registerSubAgentSession(s.ID, s.ParentSessionID);
-          }
-        }
-
         const topLevelSessions = sessions.filter((s) => !s.ParentSessionID);
         if (topLevelSessions.length === 0) {
           ws.send("create_session");
