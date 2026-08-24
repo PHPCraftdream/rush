@@ -117,7 +117,12 @@ func (s *Server) Start(ctx context.Context, onReady func(addr string)) error {
 	mux.HandleFunc("/auth/check", s.auth.HandleAuthCheck)
 
 	// WebSocket ΓÇö requires valid session cookie.
-	mux.Handle("/ws", s.auth.Middleware(http.HandlerFunc(s.handleWS)))
+	mux.Handle("/ws", s.auth.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The server-lifetime ctx (same one Hub.Run drains) is what the
+		// guarded register send inside handleWS needs; r.Context() alone
+		// cannot unblock it (it ends only when the handler returns).
+		s.handleWS(ctx, w, r)
+	})))
 
 	if s.static != nil {
 		// Serve the embedded React build; fall back to index.html for SPA routing.
@@ -156,7 +161,9 @@ func (s *Server) Start(ctx context.Context, onReady func(addr string)) error {
 }
 
 // handleWS upgrades the connection and runs the client read/write pumps.
-func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
+// ctx is the server's lifetime context (Start's), so the register send
+// below can be abandoned when the hub has already stopped.
+func (s *Server) handleWS(ctx context.Context, w http.ResponseWriter, r *http.Request) {
 	upgrader := websocket.Upgrader{
 		ReadBufferSize:  64 * 1024,
 		WriteBufferSize: 64 * 1024,
@@ -169,7 +176,22 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	c := newClient(s.hub, conn)
-	s.hub.register <- c
+	// register is buffered (64) but nothing drains it once Hub.Run has
+	// returned, so a handshake racing server shutdown past that buffer
+	// would park this goroutine — and the teardown only this function
+	// performs — until process exit. Mirror readPump's guarded unregister
+	// send below: abandon the client instead of blocking.
+	select {
+	case s.hub.register <- c:
+	case <-ctx.Done():
+		// Handshake lost the shutdown race. Tear the just-constructed
+		// client down the way readPump's defers would have: close the
+		// socket and stop newClient's worker pool. No unregister send —
+		// the hub is gone, nothing would read it.
+		_ = conn.Close()
+		close(c.workQueue)
+		return
+	}
 
 	// Start write pump in background; read pump blocks this goroutine.
 	go c.writePump()
@@ -200,6 +222,21 @@ func (s *Server) readPump(ctx context.Context, c *Client) {
 	// synchronously from within this function's read loop below — by the
 	// time this defer runs, the loop has already exited, so nothing can
 	// still be sending on workQueue concurrently with this close.
+	//
+	// DECISION (task #698 review): items already queued — including
+	// still-buffered ones, since `for range` drains a closed channel's
+	// buffer before exiting — are deliberately allowed to run to
+	// completion after the connection is gone. This is intended
+	// decoupling, not a leak: agent turns are session-scoped, not
+	// connection-scoped (the agent-driving handlers run the coordinator
+	// under context.WithoutCancel precisely so a browser refresh
+	// mid-turn does not cancel the run — see handlers_agent.go), and a
+	// reconnecting client re-attaches via the sessions_list poll plus
+	// the hub's event replay. The blast radius is bounded
+	// (workQueueDepth items, panic-isolated by runRecovered) and
+	// post-teardown replies are harmless (Client.reply recovers the
+	// closed-send-channel case). Do not "fix" this by draining-and-
+	// dropping the queue on disconnect.
 	defer close(c.workQueue)
 
 	c.conn.SetReadLimit(maxMessageSize)
