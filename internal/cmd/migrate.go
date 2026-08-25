@@ -1,10 +1,12 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/fsext"
@@ -46,6 +48,15 @@ happens before the ignore check).
 Known artifact files inside a migrated .crush/ are also renamed to their Rush
 equivalents: crush.db → rush.db and logs/crush.log → logs/rush.log. Any other
 files inside are left as-is and not touched.
+
+After a crush.json is renamed to rush.json, its content is also checked for
+legacy-named values in four fields and rewritten in place: disabled_skills
+entries matching a renamed builtin skill ID (e.g. crush-config → rush-config),
+and .crush-referencing path segments (including the ~/.config/crush convention)
+or the old CRUSH.md context-file name in skills_paths, global_context_paths,
+and data_directory. No other fields or values are touched - this is not a
+blind find-and-replace, so unrelated content (e.g. a hook command string that
+happens to mention "crush") is left as-is.
 
 Global locations (always processed, regardless of --recursive):
   - Config: ~XDG_CONFIG_HOME-or-~/.config/crush/crush.json → rush/rush.json
@@ -495,6 +506,7 @@ func migrateFile(cmd *cobra.Command, oldFile string, dryRun bool, prefix string)
 	// Perform or report the file rename.
 	if dryRun {
 		cmd.Printf("would rename %s%s  ->  %s\n", formatPrefix(prefix), oldFile, newFile)
+		rewriteLegacyConfigContent(cmd, oldFile, newFile, dryRun, prefix)
 		return statusRenamed, newFile
 	}
 
@@ -504,7 +516,291 @@ func migrateFile(cmd *cobra.Command, oldFile string, dryRun bool, prefix string)
 	}
 
 	cmd.Printf("renamed %s%s  ->  %s\n", formatPrefix(prefix), oldFile, newFile)
+	rewriteLegacyConfigContent(cmd, newFile, newFile, dryRun, prefix)
 	return statusRenamed, newFile
+}
+
+// legacySkillRenames maps builtin skill IDs that were renamed as part of the
+// crush->rush project to their current names. Used to fix up disabled_skills
+// entries that still reference the old ID after a crush.json -> rush.json
+// migration (see internal/skills/builtin for the authoritative current list
+// of builtin skill directory names, and internal/skills/skills.go's Filter,
+// which does a literal string comparison against skill names - a stale
+// legacy ID silently stops matching anything, silently re-enabling a skill
+// the user meant to keep disabled).
+var legacySkillRenames = map[string]string{
+	"crush-config": "rush-config",
+	"crush-hooks":  "rush-hooks",
+}
+
+// legacyContextFileName is the pre-rename context-file basename that
+// global_context_paths entries may still reference.
+const legacyContextFileName = "CRUSH.md"
+
+// currentContextFileName is legacyContextFileName's Rush equivalent.
+const currentContextFileName = "RUSH.md"
+
+// rewriteLegacyConfigContent reads a just-migrated rush.json (project or
+// global), rewrites known legacy-named values in a small set of fields
+// (disabled_skills, skills_paths, global_context_paths, data_directory),
+// and writes the result back if anything changed. It is intentionally NOT a
+// blind find-and-replace across the file: only these specific fields are
+// touched, so a user's own data that happens to contain the substring
+// "crush" for unrelated reasons (e.g. a hook command string, or a project
+// description) is left alone.
+//
+// readFrom is the path to read current content from: in a real run this is
+// the already-renamed newFile; in dry-run, nothing has moved yet, so the
+// caller passes the still-in-place oldFile instead (same convention
+// migrateDir/migrateKnownArtifacts use elsewhere in this file). reportAs is
+// always the newFile path, used only for log messages.
+//
+// Errors reading or parsing the file are reported but non-fatal to the
+// overall migration - the file has already been renamed (the primary goal),
+// content rewriting is a best-effort follow-up.
+func rewriteLegacyConfigContent(cmd *cobra.Command, readFrom, reportAs string, dryRun bool, prefix string) {
+	raw, err := os.ReadFile(readFrom)
+	if err != nil {
+		// Nothing to rewrite if we can't read it; migrateFile already
+		// reported the rename itself.
+		return
+	}
+
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &top); err != nil {
+		// Not a JSON object we understand - leave content untouched.
+		return
+	}
+
+	optionsRaw, ok := top["options"]
+	if !ok {
+		return
+	}
+
+	var options map[string]json.RawMessage
+	if err := json.Unmarshal(optionsRaw, &options); err != nil {
+		return
+	}
+
+	contentPrefix := formatPrefix(prefix, "(content inside migrated config)")
+	changed := false
+	var notes []string
+
+	// disabled_skills: exact-match rewrite of known legacy skill IDs.
+	if rawSkills, ok := options["disabled_skills"]; ok {
+		var skills []string
+		if err := json.Unmarshal(rawSkills, &skills); err == nil {
+			rewritten := false
+			for i, name := range skills {
+				if newName, isLegacy := legacySkillRenames[name]; isLegacy {
+					skills[i] = newName
+					rewritten = true
+					notes = append(notes, fmt.Sprintf("disabled_skills: %q -> %q", name, newName))
+				}
+			}
+			if rewritten {
+				if newRaw, err := json.Marshal(skills); err == nil {
+					options["disabled_skills"] = newRaw
+					changed = true
+				}
+			}
+		}
+	}
+
+	// skills_paths, global_context_paths: path-segment-aware .crush ->
+	// .rush rewrite, plus CRUSH.md -> RUSH.md for the context-file case.
+	for _, field := range []string{"skills_paths", "global_context_paths"} {
+		rawPaths, ok := options[field]
+		if !ok {
+			continue
+		}
+		var paths []string
+		if err := json.Unmarshal(rawPaths, &paths); err != nil {
+			continue
+		}
+		rewritten := false
+		for i, p := range paths {
+			newPath := rewriteLegacyConfigPath(p)
+			if newPath != p {
+				paths[i] = newPath
+				rewritten = true
+				notes = append(notes, fmt.Sprintf("%s: %q -> %q", field, p, newPath))
+			}
+		}
+		if rewritten {
+			if newRaw, err := json.Marshal(paths); err == nil {
+				options[field] = newRaw
+				changed = true
+			}
+		}
+	}
+
+	// data_directory: same .crush-path-segment rewrite, only if set.
+	if rawDataDir, ok := options["data_directory"]; ok {
+		var dataDir string
+		if err := json.Unmarshal(rawDataDir, &dataDir); err == nil && dataDir != "" {
+			newDataDir := rewriteLegacyConfigPath(dataDir)
+			if newDataDir != dataDir {
+				if newRaw, err := json.Marshal(newDataDir); err == nil {
+					options["data_directory"] = newRaw
+					changed = true
+					notes = append(notes, fmt.Sprintf("data_directory: %q -> %q", dataDir, newDataDir))
+				}
+			}
+		}
+	}
+
+	if !changed {
+		return
+	}
+
+	if dryRun {
+		for _, note := range notes {
+			cmd.Printf("would rewrite %s%s: %s\n", contentPrefix, reportAs, note)
+		}
+		return
+	}
+
+	newOptionsRaw, err := json.Marshal(options)
+	if err != nil {
+		cmd.Printf("failed to rewrite content %s%s: %v\n", contentPrefix, reportAs, err)
+		return
+	}
+	top["options"] = newOptionsRaw
+
+	newRaw, err := json.MarshalIndent(top, "", "  ")
+	if err != nil {
+		cmd.Printf("failed to rewrite content %s%s: %v\n", contentPrefix, reportAs, err)
+		return
+	}
+	newRaw = append(newRaw, '\n')
+
+	if err := os.WriteFile(reportAs, newRaw, 0o644); err != nil {
+		cmd.Printf("failed to rewrite content %s%s: %v\n", contentPrefix, reportAs, err)
+		return
+	}
+
+	for _, note := range notes {
+		cmd.Printf("rewrote %s%s: %s\n", contentPrefix, reportAs, note)
+	}
+}
+
+// rewriteLegacyConfigPath rewrites a single path-like config value:
+//   - a ".crush" path segment becomes ".rush" (segment-boundary aware, using
+//     filepath.SplitList/separators rather than a naive string replace, so
+//     "/foo/notcrushbar/skills" is left untouched while "/foo/.crush/skills"
+//     becomes "/foo/.rush/skills")
+//   - a bare "crush" segment immediately following a ".config" segment
+//     becomes "rush" - the XDG-style config-home convention
+//     ("~/.config/crush/..." -> "~/.config/rush/..."), matched narrowly on
+//     that specific ".config/crush" adjacency so an unrelated path like
+//     "/data/crush/skills" (a "crush" directory with no ".config" parent)
+//     is left untouched
+//   - a "CRUSH.md" basename becomes "RUSH.md"
+//
+// Returns the input unchanged if none of the above apply.
+func rewriteLegacyConfigPath(p string) string {
+	if p == "" {
+		return p
+	}
+
+	result := p
+
+	// Rewrite CRUSH.md as a path segment (basename or any component),
+	// matched on segment boundaries the same way as .crush below.
+	result = rewritePathSegments(result, legacyContextFileName, currentContextFileName)
+
+	// Rewrite a bare ".crush" path segment to ".rush".
+	result = rewritePathSegments(result, ".crush", ".rush")
+
+	// Rewrite the XDG-style "<...>/.config/crush/..." convention, where
+	// "crush" (no leading dot) is its own segment right after ".config".
+	result = rewriteSegmentAfter(result, ".config", "crush", "rush")
+
+	return result
+}
+
+// splitPathSegments splits p into path segments on both / and \ (so it
+// behaves correctly for paths written with either separator convention -
+// config files are portable text, and a path saved on one OS may be
+// read/migrated on another), returning the segments and the separator byte
+// that followed each one (len(seps) == len(segments)-1).
+func splitPathSegments(p string) (segments []string, seps []byte) {
+	start := 0
+	for i := 0; i < len(p); i++ {
+		if p[i] == '/' || p[i] == '\\' {
+			segments = append(segments, p[start:i])
+			seps = append(seps, p[i])
+			start = i + 1
+		}
+	}
+	segments = append(segments, p[start:])
+	return segments, seps
+}
+
+// joinPathSegments rejoins segments using the separators splitPathSegments
+// returned, reconstructing the original path exactly aside from whatever
+// segment values the caller mutated in place.
+func joinPathSegments(segments []string, seps []byte) string {
+	var b strings.Builder
+	for i, seg := range segments {
+		b.WriteString(seg)
+		if i < len(seps) {
+			b.WriteByte(seps[i])
+		}
+	}
+	return b.String()
+}
+
+// rewritePathSegments replaces path segments that are exactly oldSeg with
+// newSeg. Segments are compared verbatim (case-sensitive), matching the
+// exact legacy names this migration targets (".crush", "CRUSH.md").
+func rewritePathSegments(p, oldSeg, newSeg string) string {
+	if !strings.Contains(p, oldSeg) {
+		return p
+	}
+
+	segments, seps := splitPathSegments(p)
+
+	changed := false
+	for i, seg := range segments {
+		if seg == oldSeg {
+			segments[i] = newSeg
+			changed = true
+		}
+	}
+	if !changed {
+		return p
+	}
+
+	return joinPathSegments(segments, seps)
+}
+
+// rewriteSegmentAfter replaces a segment exactly equal to oldSeg with
+// newSeg, but only when the immediately preceding segment is exactly
+// afterSeg. Used for the narrow "<...>/.config/crush/..." XDG convention:
+// a bare "crush" segment is only rewritten when it directly follows a
+// ".config" segment, so an unrelated "crush" directory elsewhere in a path
+// (no ".config" parent) is left untouched.
+func rewriteSegmentAfter(p, afterSeg, oldSeg, newSeg string) string {
+	if !strings.Contains(p, oldSeg) {
+		return p
+	}
+
+	segments, seps := splitPathSegments(p)
+
+	changed := false
+	for i := 1; i < len(segments); i++ {
+		if segments[i] == oldSeg && segments[i-1] == afterSeg {
+			segments[i] = newSeg
+			changed = true
+		}
+	}
+	if !changed {
+		return p
+	}
+
+	return joinPathSegments(segments, seps)
 }
 
 // migrateKnownArtifacts renames known non-config artifact files inside a
