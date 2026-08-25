@@ -215,17 +215,16 @@ func (s *Server) handleWS(ctx context.Context, w http.ResponseWriter, r *http.Re
 
 	c := newClient(s.hub, conn)
 	// register is buffered (64) but nothing drains it once Hub.Run has
-	// returned, so a handshake racing server shutdown past that buffer
-	// would park this goroutine — and the teardown only this function
-	// performs — until process exit. Mirror readPump's guarded unregister
-	// send below: abandon the client instead of blocking.
-	select {
-	case s.hub.register <- c:
-	case <-ctx.Done():
-		// Handshake lost the shutdown race. Tear the just-constructed
-		// client down the way readPump's defers would have: close the
-		// socket and stop newClient's worker pool. No unregister send —
-		// the hub is gone, nothing would read it.
+	// returned, and a bare select between the send and ctx.Done() cannot
+	// close the shutdown race: with buffer space left and ctx cancelled,
+	// Go picks a branch at random, so the send can strand the client in a
+	// channel nobody reads (task #723). tryRegister checks the hub's
+	// explicit stopped signal — closed before Run's final register drain —
+	// both before and after the send, which makes the check airtight. On
+	// false, tear the just-constructed client down the way readPump's
+	// defers would have: close the socket and stop newClient's worker
+	// pool. No unregister send — the hub is gone, nothing would read it.
+	if !s.hub.tryRegister(ctx, c) {
 		_ = conn.Close()
 		close(c.workQueue)
 		return

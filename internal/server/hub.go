@@ -368,6 +368,18 @@ type Hub struct {
 	// Run's stickyBroadcast case swaps this map with a fresh empty one and
 	// fans out the current envelope for each type in the swapped set.
 	stickyPending map[string]struct{}
+
+	// stopped is closed exactly once, at the top of Run's ctx.Done() exit
+	// branch — the hub's commit point. Once closed, the loop will never
+	// activate another client: registrations still racing into the register
+	// buffer are torn down by the drain that immediately follows the close,
+	// and any send that lands after that drain is caught by the sender's own
+	// post-send check in tryRegister (the close happens-before the drain, so
+	// a send the drain misses necessarily completed after the close and is
+	// therefore observable by the re-check). This mirrors the Server-level
+	// shutdownSignal style from task #714, but tracks the hub's ACTUAL stop,
+	// not a shutdown request.
+	stopped chan struct{}
 }
 
 func newHub() *Hub {
@@ -380,6 +392,7 @@ func newHub() *Hub {
 		sticky:          make(map[string][]byte),
 		stickyPending:   make(map[string]struct{}),
 		stickyBroadcast: make(chan struct{}, 64),
+		stopped:         make(chan struct{}),
 	}
 }
 
@@ -388,10 +401,28 @@ func (h *Hub) Run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			for c := range h.clients {
-				close(c.send)
+			// Commit to exit before anything else: closing stopped tells
+			// tryRegister this hub will never activate another client. It MUST
+			// precede the register drain below — a registration landing in the
+			// buffer after the drain can then only be one whose send completed
+			// after this close, which the sender's post-send check is guaranteed
+			// to observe (see tryRegister).
+			close(h.stopped)
+			// Registrations that won the shutdown race into the buffer still
+			// get the same teardown as active clients: close(c.send) so their
+			// writePump — possibly not even started yet — shuts the connection
+			// down cleanly instead of parking on a channel nobody drains.
+			for {
+				select {
+				case c := <-h.register:
+					close(c.send)
+				default:
+					for c := range h.clients {
+						close(c.send)
+					}
+					return
+				}
 			}
-			return
 
 		case c := <-h.register:
 			// Add to active set first so no broadcasts are lost after this point.
@@ -517,6 +548,37 @@ func (h *Hub) Run(ctx context.Context) {
 				}
 			}
 		}
+	}
+}
+
+// tryRegister hands c to the hub's event loop, returning false when the
+// caller must tear the client down itself (close the socket, stop the
+// worker pool) because the hub has stopped — either before the attempt,
+// or concurrently while the send was in flight. A bare racy select
+// between the register send and ctx.Done() cannot close that window:
+// when the buffer has space and ctx is cancelled both cases are ready
+// and Go picks randomly, so the send can succeed into a channel Run has
+// already stopped draining. The stopped channel closes before Run's
+// final register drain, which makes checking it on BOTH sides of the
+// send airtight: a send the drain never saw necessarily completed after
+// the close, so the post-send check observes it. The ctx fallback only
+// remains to unblock a send parked on a full buffer during shutdown.
+func (h *Hub) tryRegister(ctx context.Context, c *Client) bool {
+	select {
+	case <-h.stopped:
+		return false
+	default:
+	}
+	select {
+	case h.register <- c:
+		select {
+		case <-h.stopped:
+			return false
+		default:
+		}
+		return true
+	case <-ctx.Done():
+		return false
 	}
 }
 
