@@ -1,7 +1,7 @@
 # CHANGELOG.fork.md
 
-This document tracks every divergence between this fork and upstream
-`charmbracelet/crush`. Its purpose is **not** to be a release changelog
+This document tracks every divergence between this fork and upstream.
+Its purpose is **not** to be a release changelog
 for end users — it is a survival guide for the next person (likely
 ourselves) who has to merge upstream `main` into the fork and decide,
 file by file, which side to keep.

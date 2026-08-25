@@ -2,8 +2,8 @@
 
 ## Project Overview
 
-Rush is a terminal-based AI coding agent built in Go — a fork of
-charmbracelet/crush repositioned for delegation from orchestrators.
+Rush is a terminal-based AI coding agent built in Go, repositioned for
+delegation from orchestrators.
 
 The module path is `github.com/PHPCraftdream/rush`.
 
