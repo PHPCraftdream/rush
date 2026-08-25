@@ -9,12 +9,14 @@ import {
   $sessions,
   $activeSessionID,
   $busySessions,
+  $messageQueue,
   applyMessagesSnapshot,
   applySubAgentMessagesSnapshot,
   applySessionsSnapshot,
   setSessions,
   upsertSession,
   removeSession,
+  removeSessionQueueAndBusy,
   upsertMessage,
   removeMessage,
   setSessionBusy,
@@ -23,6 +25,7 @@ import {
   $recentFastModels,
   trackModelUsage,
   dequeueAllMessages,
+  enqueueMessage,
   applyTheme,
   setSkills,
   setSummarizeQueued,
@@ -75,10 +78,24 @@ export function useWS() {
     const offs = [
       ws.on("_connected", () => {
         $connected.set(true);
-        // Reset busy state on reconnect — the replay buffer will re-set any
-        // sessions that are truly still running. Without this, a server restart
-        // leaves sessions stuck in "busy" forever.
-        $busySessions.set(new Set());
+        // Reconcile busy state against queued work instead of blindly
+        // clearing it (task #726). The server appends an authoritative
+        // agent_busy frame for every session to each sessions_list reply
+        // (handleListSessions in internal/server/handlers_sessions.go), so
+        // the sendListSessions() below re-marks sessions that are truly
+        // still running. But a disconnect can swallow the final
+        // agent_busy=false of a turn that ended while we were offline —
+        // blindly clearing left such a session's queued messages with no
+        // trigger that would ever flush them. Keep the busy flag only for
+        // sessions that still have queued work awaiting that replay; when
+        // the replay reports busy=false, the agent_busy handler below
+        // flushes the queue as a fresh send_message.
+        const queuedIDs = $messageQueue.get();
+        const nextBusy = new Set<string>();
+        for (const id of $busySessions.get()) {
+          if (queuedIDs.has(id)) nextBusy.add(id);
+        }
+        $busySessions.set(nextBusy);
         sendListSessions();
         ws.send("get_config");
         ws.send("get_skills");
@@ -141,6 +158,18 @@ export function useWS() {
           sessions = applySessionsSnapshot(raw, takeSessionsLiveDelta());
         } else {
           setSessions(raw);
+        }
+
+        // Offline-deletion reconcile (task #726): a session deleted while
+        // this tab was disconnected never gets its authoritative
+        // agent_busy replay (handleListSessions only replays sessions
+        // that still exist), so both its queued messages and its busy
+        // flag would be stranded forever — nothing would ever flush
+        // them. Drop both for any id the fresh list no longer knows.
+        // No-op on ordinary polls, where every queued/busy id is present.
+        const liveIDs = new Set(sessions.map((s) => s.ID));
+        for (const id of [...$messageQueue.get().keys(), ...$busySessions.get()]) {
+          if (!liveIDs.has(id)) removeSessionQueueAndBusy(id);
         }
 
         // Foreign-owned active session: kick a load_messages refresh on
@@ -334,7 +363,19 @@ export function useWS() {
             if (flushed.attachments.length > 0) {
               payload.attachments = flushed.attachments;
             }
-            ws.send("send_message", payload);
+            // sendQueued, never a bare send (task #726): the browser can
+            // dispatch this final agent_busy=false frame while the socket
+            // has already left OPEN (readyState flips before the close
+            // event fires), so send() can return false here even though
+            // the event arrived. A bare send would drop the just-drained
+            // queue with no recovery path; parking the frame in the
+            // offline outbox delivers it on the next reconnect instead.
+            // The outbox-full fallback (100 parked frames) puts the
+            // drained content back into the local queue so the reconnect
+            // reconcile in the _connected handler can retry it later.
+            if (!ws.sendQueued("send_message", payload)) {
+              enqueueMessage(p.SessionID, flushed.content, flushed.attachments);
+            }
           }
         }
       }),

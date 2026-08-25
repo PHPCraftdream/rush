@@ -436,6 +436,14 @@ export function ChatInput() {
     // Held in the offline outbox when the socket is down (the local queue
     // was already folded into this payload, so parking the whole frame is
     // the only way to not lose it) and delivered on reconnect.
+    // Stale-action policy (task #726): parked as interrupt_and_send, NOT
+    // rewritten to send_message. If the target turn already finished
+    // server-side by delivery time, the server's idle path degrades the
+    // interrupt into exactly the desired default — a fresh run of the
+    // content (coordinator.InterruptAndSend → startDetachedRun durable
+    // enqueue); if the turn is still running, cancel-and-replace happens
+    // as the user asked. Both delivery worlds are safe, so the frame
+    // keeps its original type.
     if (!ws.sendQueued("interrupt_and_send", payload)) return;
     setText("");
     setAttachments([]);
@@ -473,7 +481,18 @@ export function ChatInput() {
     }
     // Same offline-outbox treatment as interrupt: the dequeued local queue
     // lives in this frame now, so it must be parked or sent, never dropped.
-    if (!ws.sendQueued("inject_message", payload)) return;
+    // Stale-action policy (task #726): "inject" means "merge into the
+    // RUNNING turn", but while the socket is down we cannot know whether
+    // that turn still exists when the frame is finally delivered. The
+    // server's idle-inject semantics would only persist the message and
+    // leave it unanswered until some later turn happens to run (see
+    // sessionAgent.InjectMessage's injectIfBusy no-op path). So an inject
+    // parked offline is re-shaped into a plain send_message, which is
+    // correct in both worlds: if the turn ended, it starts a fresh turn
+    // (immediate answer); if the turn is still running, the server queues
+    // the call as the next turn's content (handleSendMessage on an owned
+    // session). Nothing stays dormant.
+    if (!ws.sendQueued("send_message", payload)) return;
     setText("");
     setAttachments([]);
     setHistIdx(-1);

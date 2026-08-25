@@ -152,6 +152,9 @@ export function removeSession(id: string) {
   // stale-reply floor and live-event epochs only matter while replies for
   // this session can still arrive and be applied.
   forgetSessionRequestState(id);
+  // A session that no longer exists can never receive the
+  // agent_busy=false that flushes its queue (task #726).
+  removeSessionQueueAndBusy(id);
 }
 
 export function setActiveSession(id: string | null) {
@@ -832,6 +835,17 @@ export function dequeueAllMessages(sessionID: string): FlushedQueue | undefined 
     content: msgs.map((m) => m.content).join("\n\n"),
     attachments: msgs.flatMap((m) => m.attachments ?? []),
   };
+}
+
+/** Drops the queued messages and busy flag for a session that no longer
+ * exists. A removed session can never receive the agent_busy=false that
+ * flushes its queue, so keeping either would strand the other (task #726).
+ * Called from removeSession (live deletion) and the sessions_list handler
+ * in useWS.ts (deletion that happened while this tab was offline). */
+export function removeSessionQueueAndBusy(id: string) {
+  const q = new Map($messageQueue.get());
+  if (q.delete(id)) $messageQueue.set(q);
+  if ($busySessions.get().has(id)) setSessionBusy(id, false);
 }
 
 export function removeQueuedMessage(sessionID: string, id: string) {
