@@ -334,6 +334,12 @@ export function Chat() {
   }, []);
 
   const handleWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
+    // Scroll-up must disengage the auto-scroll magnet synchronously, right
+    // here -- waiting on handleScroll's position check races against the
+    // content effect below, which re-fires on every streamed token and can
+    // snap back to bottom before the position check catches up. Re-engages
+    // normally once handleScroll sees the user back within 80px of bottom.
+    if (e.deltaY < 0) isAtBottomRef.current = false;
     if (e.shiftKey) {
       const el = scrollRef.current;
       if (!el) return;
@@ -427,7 +433,7 @@ export function Chat() {
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden relative bg-canvas">
-      <div ref={scrollRef} onScroll={handleScroll} onWheel={handleWheel} className="flex-1 overflow-y-auto overflow-x-hidden py-8 flex flex-col">
+      <div ref={scrollRef} onScroll={handleScroll} onWheel={handleWheel} data-test-id="chat-scroll-container" className="flex-1 overflow-y-auto overflow-x-hidden py-8 flex flex-col">
         {!activeSessionID ? (
           <div className="empty-state">
             <div className="empty-state-icon">
