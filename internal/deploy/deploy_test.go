@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -513,7 +514,7 @@ func TestNpmPlatformBinaryPath(t *testing.T) {
 	for _, c := range cases {
 		got := NpmPlatformBinaryPath(c.npmDir, c.goos, c.goarch, c.binaryName)
 		want := filepath.Join(c.npmDir, "node_modules", "@phpcraftdream",
-			"crush-"+NpmNodeOS(c.goos)+"-"+NpmNodeArch(c.goarch), "bin", c.binaryName)
+			"rush-"+NpmNodeOS(c.goos)+"-"+NpmNodeArch(c.goarch), "bin", c.binaryName)
 		if got != want {
 			t.Errorf("NpmPlatformBinaryPath(%q, %q, %q, %q) = %q, want %q",
 				c.npmDir, c.goos, c.goarch, c.binaryName, got, want)
@@ -523,16 +524,104 @@ func TestNpmPlatformBinaryPath(t *testing.T) {
 	// Concrete, spelled-out example matching the docstring, independent
 	// of NpmNodeOS/NpmNodeArch helpers, for windows/amd64.
 	got := NpmPlatformBinaryPath(filepath.Join("/some", "npm", "dir"), "windows", "amd64", "rush.exe")
-	want := filepath.Join("/some", "npm", "dir", "node_modules", "@phpcraftdream", "crush-win32-x64", "bin", "rush.exe")
+	want := filepath.Join("/some", "npm", "dir", "node_modules", "@phpcraftdream", "rush-win32-x64", "bin", "rush.exe")
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
 
 	// Concrete example for linux/arm64.
 	got = NpmPlatformBinaryPath(filepath.Join("/some", "npm", "dir"), "linux", "arm64", "rush")
-	want = filepath.Join("/some", "npm", "dir", "node_modules", "@phpcraftdream", "crush-linux-arm64", "bin", "rush")
+	want = filepath.Join("/some", "npm", "dir", "node_modules", "@phpcraftdream", "rush-linux-arm64", "bin", "rush")
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// TestNpmPlatformBinaryPathMatchesNpmManifest guards against the crush→rush
+// rename drift class (deploy helper prefix vs actual npm manifest). It reads
+// the npm/rush/package.json manifest and verifies that NpmPlatformBinaryPath
+// returns paths matching the platform packages declared in optionalDependencies.
+// This was filed as a P1 in the 2026-08-25 release review.
+func TestNpmPlatformBinaryPathMatchesNpmManifest(t *testing.T) {
+	// Read the npm package manifest
+	manifestPath := filepath.Join("..", "..", "npm", "rush", "package.json")
+	raw, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatalf("failed to read %s: %v", manifestPath, err)
+	}
+
+	var pkg struct {
+		OptionalDependencies map[string]string `json:"optionalDependencies"`
+	}
+	if err := json.Unmarshal(raw, &pkg); err != nil {
+		t.Fatalf("failed to parse %s: %v", manifestPath, err)
+	}
+	if len(pkg.OptionalDependencies) == 0 {
+		t.Fatalf("no optionalDependencies found in %s", manifestPath)
+	}
+
+	// Use a single temp dir for all checks so both sides use the same base
+	npmDir := t.TempDir()
+
+	// Maps from Node platform names to Go platform names
+	nodeOSToGOOS := map[string]string{
+		"win32":  "windows",
+		"linux":  "linux",
+		"darwin": "darwin",
+	}
+	nodeArchToGOARCH := map[string]string{
+		"x64":   "amd64",
+		"arm64": "arm64",
+	}
+
+	for depKey := range pkg.OptionalDependencies {
+		// Parse the scoped package name: "@phpcraftdream/rush-win32-x64"
+		parts := strings.Split(depKey, "/")
+		if len(parts) != 2 {
+			t.Errorf("invalid optionalDependency key %q: expected scoped package (scope/name)", depKey)
+			continue
+		}
+		scope, name := parts[0], parts[1]
+		if !strings.HasPrefix(scope, "@") {
+			t.Errorf("invalid scope %q in %q: must start with '@'", scope, depKey)
+			continue
+		}
+
+		// Split name as <prefix>-<node_os>-<node_arch> using the LAST two "-" separators
+		// This handles cases where the prefix itself might contain "-"
+		lastDash := strings.LastIndex(name, "-")
+		if lastDash == -1 {
+			t.Errorf("invalid package name %q: cannot find '-' separator for arch", depKey)
+			continue
+		}
+		nodeArch := name[lastDash+1:]
+
+		secondLastDash := strings.LastIndex(name[:lastDash], "-")
+		if secondLastDash == -1 {
+			t.Errorf("invalid package name %q: cannot find second '-' separator for os", depKey)
+			continue
+		}
+		nodeOS := name[secondLastDash+1 : lastDash]
+
+		// Map Node platform names to Go platform names
+		goos, ok := nodeOSToGOOS[nodeOS]
+		if !ok {
+			t.Errorf("unknown Node OS %q in %q", nodeOS, depKey)
+			continue
+		}
+		goarch, ok := nodeArchToGOARCH[nodeArch]
+		if !ok {
+			t.Errorf("unknown Node arch %q in %q", nodeArch, depKey)
+			continue
+		}
+
+		// Verify NpmPlatformBinaryPath returns the expected path
+		got := NpmPlatformBinaryPath(npmDir, goos, goarch, "rush")
+		want := filepath.Join(npmDir, "node_modules", scope, name, "bin", "rush")
+		if got != want {
+			t.Errorf("NpmPlatformBinaryPath(%q, %q, %q, %q) = %q, want %q",
+				npmDir, goos, goarch, "rush", got, want)
+		}
 	}
 }
 

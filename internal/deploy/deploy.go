@@ -409,7 +409,7 @@ func WindowsPathExts(pathext string) []string {
 
 // NpmNodeOS maps a Go GOOS value to the Node "os" package name used for
 // the fork's per-platform npm packages
-// (node_modules/@phpcraftdream/crush-<node_os>-<node_arch>/bin/<binaryName>),
+// (node_modules/@phpcraftdream/rush-<node_os>-<node_arch>/bin/<binaryName>),
 // mirroring the TARGETS table in .github/workflows/publish-fork-npm.yml.
 // goos is passed in explicitly (rather than read from runtime.GOOS)
 // so this stays a pure function over its input and every branch can be
@@ -446,8 +446,10 @@ func NpmNodeArch(goarch string) string {
 // @charmland/crush, which bundled bin/ directly in the package the JS
 // wrapper lives in) — see docs/plans/2026-07-29-relaunch-from-cache.md
 // §5.3. Pure function over its inputs — no filesystem access — so it's
-// unit-testable for any OS/arch combination on any runner.
+// unit-testable for any OS/arch combination on any runner. The platform
+// package names must stay in sync with the optionalDependencies in
+// npm/rush/package.json, enforced by TestNpmPlatformBinaryPathMatchesNpmManifest.
 func NpmPlatformBinaryPath(npmDir, goos, goarch, binaryName string) string {
 	return filepath.Join(npmDir, "node_modules", "@phpcraftdream",
-		fmt.Sprintf("crush-%s-%s", NpmNodeOS(goos), NpmNodeArch(goarch)), "bin", binaryName)
+		fmt.Sprintf("rush-%s-%s", NpmNodeOS(goos), NpmNodeArch(goarch)), "bin", binaryName)
 }

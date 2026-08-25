@@ -277,7 +277,7 @@ func binaryName() string {
 //  1. $RUSH_DEPLOY_PATH set → single forced target, used as-is.
 //  2. Otherwise we discover the npm-installed rush via exec.LookPath
 //     and return EVERY binary we can find around it:
-//     a. <npm-dir>/node_modules/@phpcraftdream/crush-<node_os>-<node_arch>/bin/rush(.exe)
+//     a. <npm-dir>/node_modules/@phpcraftdream/rush-<node_os>-<node_arch>/bin/rush(.exe)
 //     — the real binary the JS wrapper execs via `node`. The fork ships
 //     the binary in the PLATFORM package, not the meta package (unlike
 //     upstream's @charmland/crush, which bundled bin/ directly in the
@@ -326,8 +326,8 @@ func resolveDests() ([]string, error) {
 
 	var cands []string
 	// (a) node_modules real binary — lives in the fork's per-platform
-	// package (@phpcraftdream/crush-<node_os>-<node_arch>), not the meta
-	// package (@phpcraftdream/crush) that owns bin/crush.js.
+	// package (@phpcraftdream/rush-<node_os>-<node_arch>), not the meta
+	// package (@phpcraftdream/rush) that owns bin/rush.js.
 	npmBin := deploy.NpmPlatformBinaryPath(dir, runtime.GOOS, runtime.GOARCH, binaryName())
 	if _, err := os.Stat(npmBin); err == nil {
 		cands = append(cands, npmBin)
