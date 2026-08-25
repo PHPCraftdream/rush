@@ -435,6 +435,19 @@ func checkSegmentWindowSafety(segment string) *WindowOpenerError {
 		if inner := extractShellInner(headCanon, rest); inner != "" {
 			return CheckWindowSafety(inner)
 		}
+		return nil
+	}
+
+	// Command wrapper (iex / Invoke-Expression / Invoke-Command / icm …):
+	// first non-flag arg is the actual command that would run. Without this,
+	// `iex 'saps notepad'` bypassed the window-safety guard entirely — the
+	// window-opener verb is real, it's just one wrapper layer deeper than
+	// this function used to look. Mirrors the commandWrappers recursion
+	// checkSegment already does for the agent-denylist path.
+	if commandWrappers[headCanon] {
+		if inner := extractWrapperInner(rest); inner != "" {
+			return CheckWindowSafety(inner)
+		}
 	}
 
 	return nil

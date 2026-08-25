@@ -398,6 +398,31 @@ func TestCheckWindowSafety_DoesNotBlockInvokeExpression(t *testing.T) {
 	assert.Nil(t, CheckWindowSafety(`Invoke-Expression "go build ./..."`))
 }
 
+func TestCheckWindowSafety_BlocksWindowOpenerInsideCommandWrapper(t *testing.T) {
+	// iex/Invoke-Expression/Invoke-Command/icm DO recurse into whatever
+	// string they evaluate — same as Check()'s agent-denylist path already
+	// does via commandWrappers. A window-opener verb hiding behind one of
+	// these wrappers must still be caught, bare or nested inside a shell
+	// wrapper such as `powershell -c "..."`.
+	cases := []string{
+		`iex 'saps notepad'`,
+		`iex "saps notepad.exe"`,
+		`Invoke-Expression 'saps notepad'`,
+		`invoke-command 'saps notepad'`,
+		`icm 'saps notepad'`,
+		`icm 'sajb notepad'`,
+		`powershell -c "iex 'saps notepad'"`,
+		`powershell -Command "iex 'start notepad.exe'"`,
+	}
+	for _, cmd := range cases {
+		t.Run(cmd, func(t *testing.T) {
+			err := CheckWindowSafety(cmd)
+			require.Error(t, err, "should block: %s", cmd)
+			assert.Contains(t, err.Error(), "new, visible window")
+		})
+	}
+}
+
 func TestCheckWindowSafety_ErrorReportsVerbAndSnippet(t *testing.T) {
 	err := CheckWindowSafety("start notepad.exe")
 	require.Error(t, err)
