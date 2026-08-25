@@ -772,6 +772,11 @@ section for the two things a rename tool cannot fix by itself:
   `*-init` commands install new rush-named files alongside them but never
   touch the old ones, so cleanup is a separate, explicit step.
 
+Instead of running all 10 `*-init`/`*-del` commands by hand, `rush
+cli-refresh` runs each tool's del-then-init pair back to back for all 5
+integrations at once (local dir by default, `--recursive [root]` for a
+directory tree, or `--global`; supports `--dry-run` too).
+
 Also update scripts that reference the old names directly: commands like
 `crush run` → `rush run`, paths like `.crush/` → `.rush/`, `crush.json` →
 `rush.json`, and `crush.db` → `rush.db`.
