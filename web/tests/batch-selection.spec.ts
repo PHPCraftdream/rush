@@ -87,6 +87,31 @@ test("checkbox appears on message hover", async ({ page }) => {
   await expect(checkboxWrap).toHaveClass(/opacity-100/);
 });
 
+test("checkbox is always positioned left of the message content, for both user and assistant messages", async ({ page }) => {
+  // Message.tsx used to flip the checkbox's flex `order` based on author
+  // (order: 1 for user, -1 for assistant), which put it on the RIGHT of a
+  // user message (since user rows are right-justified) and on the LEFT of
+  // an assistant message. The checkbox now always uses order: -1, so it
+  // renders immediately left of the message content regardless of author.
+  await setupWithMessages(page, "batch-3", twoMessages);
+
+  const userRow = page.getByText("First batch msg").locator("xpath=ancestor::div[contains(@class,'msg-row')]");
+  await userRow.hover();
+  const userCheckboxBox = await userRow.locator(".msg-checkbox-wrap").boundingBox();
+  const userContentBox = await userRow.getByText("First batch msg").boundingBox();
+  expect(userCheckboxBox).not.toBeNull();
+  expect(userContentBox).not.toBeNull();
+  expect(userCheckboxBox!.x).toBeLessThan(userContentBox!.x);
+
+  const assistantRow = page.getByText("Second batch msg").locator("xpath=ancestor::div[contains(@class,'msg-row')]");
+  await assistantRow.hover();
+  const assistantCheckboxBox = await assistantRow.locator(".msg-checkbox-wrap").boundingBox();
+  const assistantContentBox = await assistantRow.getByText("Second batch msg").boundingBox();
+  expect(assistantCheckboxBox).not.toBeNull();
+  expect(assistantContentBox).not.toBeNull();
+  expect(assistantCheckboxBox!.x).toBeLessThan(assistantContentBox!.x);
+});
+
 // ── Selection toolbar ───────────────────────────────────────────────────
 
 test("selecting a message shows batch toolbar with count", async ({ page }) => {

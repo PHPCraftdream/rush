@@ -15,6 +15,7 @@ import {
   selectMessageIDs,
   removeQueuedMessage,
   updateQueuedMessage,
+  rerunFromMessage,
   type QueuedMessage,
 } from "../store";
 import { ws } from "../ws";
@@ -308,11 +309,6 @@ export function Chat() {
   const selectionActive = selectedIDs.size > 0;
   const queuedItems  = useMemo(() => activeSessionID ? (messageQueue.get(activeSessionID) ?? []) : [], [activeSessionID, messageQueue]);
 
-  const lastUserMsgID = useMemo(
-    () => (isBusy ? null : [...messages].reverse().find((m) => m.Role === "user")?.ID ?? null),
-    [messages, isBusy]
-  );
-
   // Group consecutive tool-only assistant messages into a single ToolRun so
   // a long burst of N steps renders as one container with N actions instead
   // of N near-empty per-message containers.
@@ -323,7 +319,13 @@ export function Chat() {
     [activeSession]
   );
 
-  const [confirm, setConfirm] = useState<{ text: string; action: () => void } | null>(null);
+  const [confirm, setConfirm] = useState<{
+    title: string;
+    text: string;
+    confirmLabel: string;
+    variant: "danger" | "warning";
+    action: () => void;
+  } | null>(null);
 
   const handleScroll = useCallback(() => {
     const el = scrollRef.current;
@@ -375,7 +377,10 @@ export function Chat() {
 
   const requestDeleteOne = useCallback((id: string) => {
     setConfirm({
+      title: "Delete message",
       text: "Delete this message?",
+      confirmLabel: "Delete",
+      variant: "danger",
       action: () => { deleteMessage(id); clearSelection(); },
     });
   }, []);
@@ -383,10 +388,34 @@ export function Chat() {
   const requestDeleteSelected = useCallback(() => {
     const ids = Array.from(selectedIDs);
     setConfirm({
+      title: "Delete message",
       text: `Delete ${ids.length} selected message${ids.length === 1 ? "" : "s"}?`,
+      confirmLabel: "Delete",
+      variant: "danger",
       action: () => { deleteMessages(ids); clearSelection(); },
     });
   }, [selectedIDs]);
+
+  // Retry re-sends a user message: the server cancels any in-flight turn,
+  // deletes the target message and everything after it, then re-runs the
+  // agent with the same prompt (handleRerunMessage). Only ask for
+  // confirmation when there is actually something below to lose — retrying
+  // the last user message has nothing after it to delete.
+  const requestRerun = useCallback((id: string) => {
+    const idx = messages.findIndex((m) => m.ID === id);
+    const hasMessagesBelow = idx !== -1 && idx < messages.length - 1;
+    if (!hasMessagesBelow) {
+      rerunFromMessage(id);
+      return;
+    }
+    setConfirm({
+      title: "Retry message",
+      text: "This message and everything after it will be deleted, then resent. This cannot be undone.",
+      confirmLabel: "Retry",
+      variant: "warning",
+      action: () => rerunFromMessage(id),
+    });
+  }, [messages]);
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden relative bg-canvas">
@@ -445,9 +474,9 @@ export function Chat() {
                 index={item.index}
                 message={m}
                 onDeleteRequest={requestDeleteOne}
+                onRerunRequest={requestRerun}
                 onRangeSelect={handleRangeSelect}
                 selectionActive={selectionActive}
-                isLastUserMsg={m.ID === lastUserMsgID}
                 isSelected={selectedIDs.has(m.ID)}
                 forkDefaultTitle={forkDefaultTitle}
                 sessionID={activeSessionID ?? ""}
@@ -522,9 +551,10 @@ export function Chat() {
 
       {confirm && (
         <ConfirmDialog
-          title="Delete message"
+          title={confirm.title}
           message={confirm.text}
-          confirmLabel="Delete"
+          confirmLabel={confirm.confirmLabel}
+          variant={confirm.variant}
           onConfirm={() => { confirm.action(); setConfirm(null); }}
           onCancel={() => setConfirm(null)}
         />

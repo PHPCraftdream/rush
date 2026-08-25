@@ -20,9 +20,9 @@ import { extractText, isTerminallyFinished } from "./textParts";
 export interface MessageProps {
   message: Msg;
   onDeleteRequest: (id: string) => void;
+  onRerunRequest: (id: string) => void;
   onRangeSelect: (index: number) => void;
   selectionActive: boolean;
-  isLastUserMsg: boolean;
   isSelected: boolean;
   forkDefaultTitle: string;
   sessionID: string;
@@ -30,7 +30,7 @@ export interface MessageProps {
 }
 
 export const Message = memo(function Message({
-  message, onDeleteRequest, onRangeSelect, selectionActive, isLastUserMsg, isSelected, forkDefaultTitle, sessionID, index,
+  message, onDeleteRequest, onRerunRequest, onRangeSelect, selectionActive, isSelected, forkDefaultTitle, sessionID, index,
 }: MessageProps) {
   if (message.Hidden) return null;
   if (message.IsSummaryMessage) return <SummaryMessage message={message} />;
@@ -90,6 +90,7 @@ export const Message = memo(function Message({
   const handleEditOpen   = useCallback(() => setEditing(true),  []);
   const handleEditClose  = useCallback(() => setEditing(false), []);
   const handleDelete     = useCallback(() => onDeleteRequest(message.ID), [onDeleteRequest, message.ID]);
+  const handleRerun      = useCallback(() => onRerunRequest(message.ID), [onRerunRequest, message.ID]);
 
   const handleSaveEdit = useCallback((text: string) => {
     if (text && text !== extractText(message.Parts)) updateMessageContent(message.ID, text);
@@ -134,7 +135,7 @@ export const Message = memo(function Message({
       <div className={`flex gap-3 ${isUser ? "justify-end" : "justify-start"}`}>
         <div
           className={`msg-checkbox-wrap ${checkboxVisible ? "opacity-100" : "opacity-0 pointer-events-none"}`}
-          style={{ order: isUser ? 1 : -1 }}
+          style={{ order: -1 }}
           onClick={handleCheckboxClick}
         >
           <div className={`msg-checkbox ${isSelected ? "bg-accent border-accent" : "border-text-subtle/50 hover:border-accent"}`}>
@@ -168,11 +169,11 @@ export const Message = memo(function Message({
               <UserHoverActions
                 messageID={message.ID}
                 copyText={copyText}
-                isLastUserMsg={isLastUserMsg}
                 isPinned={message.Pinned}
                 onEdit={handleEditOpen}
                 onDelete={handleDelete}
                 onFork={handleForkOpen}
+                onRerun={handleRerun}
               />
             ) : hasContent ? (
               <AssistantHoverActions
