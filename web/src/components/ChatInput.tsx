@@ -491,8 +491,12 @@ export function ChatInput() {
     // correct in both worlds: if the turn ended, it starts a fresh turn
     // (immediate answer); if the turn is still running, the server queues
     // the call as the next turn's content (handleSendMessage on an owned
-    // session). Nothing stays dormant.
-    if (!ws.sendQueued("send_message", payload)) return;
+    // session). Nothing stays dormant. sendQueued keeps whatever type it's
+    // given whether it sends immediately or parks (see ws.ts), so the type
+    // must be chosen HERE based on the socket's current state — the normal
+    // online case still needs the real inject_message type.
+    const type = ws.isOpen() ? "inject_message" : "send_message";
+    if (!ws.sendQueued(type, payload)) return;
     setText("");
     setAttachments([]);
     setHistIdx(-1);
