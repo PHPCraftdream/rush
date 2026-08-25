@@ -25,7 +25,7 @@ import { SettingsModal } from "./SettingsModal";
 import { ProvidersModal } from "./ProvidersModal";
 import { ScopedModelsModal } from "./ScopedModelsModal";
 import { ConfirmDialog } from "./ConfirmDialog";
-import { ws } from "../ws";
+import { ws, wsRequest } from "../ws";
 
 // ── System Prompt Modal ───────────────────────────────────────────────────────
 
@@ -38,12 +38,15 @@ function SystemPromptModal({ sessionID, onClose }: { sessionID: string; onClose:
 
   const dirty = draft !== original;
 
-  // Pending save reply handler, detached on unmount so a reply landing
-  // after this modal was closed cannot resolve a dead save (mirrors
-  // MCPForm.submit()'s unsubRef pattern in MCPSettings.tsx).
-  const unsubRef = useRef<(() => void) | null>(null);
+  // Set when the modal unmounts: save()'s continuation checks it after
+  // its await so a reply landing after close cannot setState on a dead
+  // modal (the wsRequest listeners detach themselves on settle).
+  const disposedRef = useRef(false);
   useEffect(() => {
-    return () => unsubRef.current?.();
+    disposedRef.current = false;
+    return () => {
+      disposedRef.current = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -120,25 +123,20 @@ function SystemPromptModal({ sessionID, onClose }: { sessionID: string; onClose:
     };
   }, [sessionID, onClose]);
 
-  function save() {
+  async function save() {
     setError(null);
     setSaving(true);
     const savedDraft = draft;
-    const msgID = crypto.randomUUID();
-    unsubRef.current?.();
-    const unsub = ws.on("*", (msg) => {
-      if (msg.id !== msgID) return;
-      unsub();
-      unsubRef.current = null;
+    try {
+      await wsRequest("set_system_prompt", { sessionID, content: savedDraft });
+      if (disposedRef.current) return;
       setSaving(false);
-      if (msg.error) {
-        setError(msg.error as string);
-      } else {
-        setOriginal(savedDraft);
-      }
-    });
-    unsubRef.current = unsub;
-    ws.send("set_system_prompt", { sessionID, content: draft }, msgID);
+      setOriginal(savedDraft);
+    } catch (e) {
+      if (disposedRef.current) return;
+      setSaving(false);
+      setError(e instanceof Error ? e.message : String(e));
+    }
   }
 
   function reset() {

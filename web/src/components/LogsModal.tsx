@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { X, RefreshCw, Download } from "lucide-react";
-import { ws } from "../ws";
+import { wsRequest } from "../ws";
 
 interface LogsModalProps {
   onClose: () => void;
@@ -11,34 +11,30 @@ export function LogsModal({ onClose }: LogsModalProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Pending reply handler, detached on unmount so a late get_logs reply
-  // cannot setState on a dead component.
-  const unsubRef = useRef<(() => void) | null>(null);
+  // Set when the modal unmounts: fetchLogs' continuation checks it after
+  // its await so a late get_logs reply cannot setState on a dead modal
+  // (the wsRequest listeners detach themselves on settle).
+  const disposedRef = useRef(false);
   useEffect(() => {
-    return () => unsubRef.current?.();
+    disposedRef.current = false;
+    return () => {
+      disposedRef.current = true;
+    };
   }, []);
 
   const fetchLogs = async () => {
     setLoading(true);
     setError(null);
-
-    const msgId = crypto.randomUUID();
-    unsubRef.current?.();
-    const unsub = ws.on("*", (msg: any) => {
-      if (msg.id === msgId) {
-        unsub();
-        unsubRef.current = null;
-        if (msg.type === "logs") {
-          setLogs(msg.payload || "");
-        } else if (msg.type === "error") {
-          setError(msg.error || "Failed to fetch logs");
-        }
-        setLoading(false);
-      }
-    });
-    unsubRef.current = unsub;
-
-    ws.send("get_logs", { lines: 1000 }, msgId);
+    try {
+      const reply = await wsRequest<string>("get_logs", { lines: 1000 });
+      if (disposedRef.current) return;
+      setLoading(false);
+      setLogs(reply.payload ?? "");
+    } catch (e) {
+      if (disposedRef.current) return;
+      setLoading(false);
+      setError(e instanceof Error ? e.message : String(e));
+    }
   };
 
   const handleDownload = () => {

@@ -156,6 +156,77 @@ class WSClient {
 
 export const ws = new WSClient();
 
+// ── correlated request/reply (task #725) ────────────────────────────────────
+//
+// send() returning false means the frame never left the browser, yet
+// several UI owners of busy/loading state used to register a reply
+// listener and wait forever for a reply that could never arrive — a
+// disconnect mid-request left the modal stuck busy permanently (review
+// 2026-08-25, P1/P2). This helper bundles the shape the system-prompt
+// fetch path already uses — correlation id, bounded timeout, disconnect
+// fail-fast — into one reusable primitive: it sends the frame, resolves
+// with the first reply carrying the same id, and rejects (detaching
+// every listener it registered) on an error reply, a dropped
+// connection, a send that could not happen, or the timeout.
+
+export interface WSRequestOptions {
+  /** Bounded wait for the correlated reply. */
+  timeoutMs?: number;
+}
+
+// 10s, matching the system-prompt fetch path's timeout in
+// ChatToolbar.tsx — every migrated request is a fast config/DB/filesystem
+// round-trip; anything slower than this is treated as lost.
+const WS_REQUEST_TIMEOUT_MS = 10_000;
+
+export function wsRequest<T = unknown>(
+  type: string,
+  payload?: unknown,
+  opts: WSRequestOptions = {},
+): Promise<WSMessage<T>> {
+  return new Promise<WSMessage<T>>((resolve, reject) => {
+    const msgID = crypto.randomUUID();
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let unsubReply: () => void = () => {};
+    let unsubDisc: () => void = () => {};
+
+    function cleanup() {
+      if (timer !== null) clearTimeout(timer);
+      unsubReply();
+      unsubDisc();
+    }
+
+    timer = setTimeout(() => {
+      cleanup();
+      reject(new Error(`Timed out waiting for the ${type} reply`));
+    }, opts.timeoutMs ?? WS_REQUEST_TIMEOUT_MS);
+
+    unsubReply = ws.on("*", (msg) => {
+      if (msg.id !== msgID) return;
+      cleanup();
+      if (msg.error) reject(new Error(msg.error));
+      else resolve(msg as WSMessage<T>);
+    });
+
+    // A dropped connection dooms the in-flight request — its reply can
+    // never arrive on this socket. Fail fast instead of burning the
+    // timeout (mirrors the _disconnected handling of the system-prompt
+    // fetch path).
+    unsubDisc = ws.on("_disconnected", () => {
+      cleanup();
+      reject(new Error(`Connection lost while waiting for the ${type} reply`));
+    });
+
+    // send() reports false when the socket is already down/closed — the
+    // same doom as a drop, known before the frame even left. Nothing
+    // will ever call the listeners above, so reject now and detach them.
+    if (!ws.send(type, payload, msgID)) {
+      cleanup();
+      reject(new Error(`Not connected to the server — ${type} request was not sent`));
+    }
+  });
+}
+
 // ── live-event epoch (task #689) ────────────────────────────────────────────
 //
 // The request-ordering guard above cannot see live push events

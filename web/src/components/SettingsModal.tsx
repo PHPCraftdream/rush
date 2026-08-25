@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useStore } from "@nanostores/react";
-import { $config, addContextPath, removeContextPath, addSkillsPath, removeSkillsPath, initializeProject, setActiveSession } from "../store";
-import { ws } from "../ws";
+import { $config, addContextPath, removeContextPath, addSkillsPath, removeSkillsPath, setActiveSession } from "../store";
+import { wsRequest } from "../ws";
 import { X, Plus, Trash2, RefreshCw, FolderOpen, Loader2 } from "lucide-react";
 import type { SkillsSnapshot } from "../types";
 
@@ -84,27 +84,32 @@ function PathList({
 function SkillsSection({ skillsPaths: _skillsPaths }: { skillsPaths: string[] }) {
   const [snapshot, setSnapshot] = useState<SkillsSnapshot | null>(null);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  // Pending reply handler, detached on unmount so a late get_skills reply
-  // cannot setState on a dead component.
-  const unsubRef = useRef<(() => void) | null>(null);
+  // refresh()'s continuation checks this after its await so a late reply
+  // cannot setState on an unmounted section (wsRequest's listeners detach
+  // themselves on settle).
+  const disposedRef = useRef(false);
   useEffect(() => {
-    return () => unsubRef.current?.();
+    disposedRef.current = false;
+    return () => {
+      disposedRef.current = true;
+    };
   }, []);
 
-  function refresh() {
+  async function refresh() {
     setLoading(true);
-    const msgID = crypto.randomUUID();
-    unsubRef.current?.();
-    const unsub = ws.on("*", (msg) => {
-      if (msg.id !== msgID) return;
-      unsub();
-      unsubRef.current = null;
+    setError(null);
+    try {
+      const reply = await wsRequest<SkillsSnapshot>("get_skills", {});
+      if (disposedRef.current) return;
       setLoading(false);
-      if (!msg.error) setSnapshot(msg.payload as SkillsSnapshot);
-    });
-    unsubRef.current = unsub;
-    ws.send("get_skills", {}, msgID);
+      setSnapshot(reply.payload as SkillsSnapshot);
+    } catch (e) {
+      if (disposedRef.current) return;
+      setLoading(false);
+      setError(e instanceof Error ? e.message : String(e));
+    }
   }
 
   useEffect(() => { refresh(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -123,6 +128,9 @@ function SkillsSection({ skillsPaths: _skillsPaths }: { skillsPaths: string[] })
           <RefreshCw size={13} className={loading ? "animate-spin" : ""} />
         </button>
       </div>
+      {error && (
+        <p className="text-xs text-red" data-test-id="settings-skills-error">{error}</p>
+      )}
       {loading ? (
         <p className="text-xs text-text-subtle">Scanning…</p>
       ) : snapshot && snapshot.skills.length > 0 ? (
@@ -148,13 +156,18 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
   const config = useStore($config);
   const [initBusy, setInitBusy] = useState(false);
   const [initDone, setInitDone] = useState(false);
+  const [initError, setInitError] = useState<string | null>(null);
 
-  // Pending reply handler, detached on unmount so a late initialize_project
-  // reply cannot setActiveSession (a global-atom navigation write) after
-  // the operator dismissed Settings and moved on to another session.
-  const unsubRef = useRef<(() => void) | null>(null);
+  // handleInitialize's continuation checks this after its await so a late
+  // initialize_project reply cannot setActiveSession (a global-atom
+  // navigation write) or onClose() after the operator dismissed Settings
+  // and moved on to another session.
+  const disposedRef = useRef(false);
   useEffect(() => {
-    return () => unsubRef.current?.();
+    disposedRef.current = false;
+    return () => {
+      disposedRef.current = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -165,27 +178,24 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
     return () => document.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  function handleInitialize() {
+  async function handleInitialize() {
+    setInitError(null);
     setInitBusy(true);
-    const msgID = crypto.randomUUID();
-    unsubRef.current?.();
-    const unsub = ws.on("*", (msg) => {
-      if (msg.id !== msgID) return;
-      unsub();
-      unsubRef.current = null;
+    try {
+      const reply = await wsRequest<{ sessionID?: string }>("initialize_project", {});
+      if (disposedRef.current) return;
       setInitBusy(false);
-      if (!msg.error) {
-        setInitDone(true);
-        // Navigate to the new session
-        const payload = msg.payload as { sessionID?: string } | undefined;
-        if (payload?.sessionID) {
-          setActiveSession(payload.sessionID);
-          onClose();
-        }
+      setInitDone(true);
+      // Navigate to the new session
+      if (reply.payload?.sessionID) {
+        setActiveSession(reply.payload.sessionID);
+        onClose();
       }
-    });
-    unsubRef.current = unsub;
-    initializeProject(msgID);
+    } catch (e) {
+      if (disposedRef.current) return;
+      setInitBusy(false);
+      setInitError(e instanceof Error ? e.message : String(e));
+    }
   }
 
   const contextPaths = config?.contextPaths ?? [];
@@ -238,6 +248,9 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
                 <><FolderOpen size={14} /> Initialize Project</>
               )}
             </button>
+            {initError && (
+              <p className="text-xs text-red" data-test-id="settings-init-error">{initError}</p>
+            )}
           </section>
 
           {/* Context paths */}

@@ -3,6 +3,7 @@ import { useStore } from "@nanostores/react";
 import { $config, addCustomProvider, removeCustomProvider, updateCustomProvider, type ConfigScope } from "../store";
 import { X, Plus, Trash2, Pencil, AlertCircle, CheckCircle2, Loader2, ChevronDown, ChevronRight } from "lucide-react";
 import type { ProviderInfo } from "../types";
+import { wsRequest } from "../ws";
 
 // ── Custom model editor ───────────────────────────────────────────────────────
 
@@ -404,58 +405,52 @@ function BuiltinProviderEditor({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  // Pending reply handlers (one per sendAndWait), detached on unmount so
-  // late replies cannot resolve a dead editor's submit continuation —
-  // which would fire onCancel on whatever editor is mounted next.
-  const pendingUnsubs = useRef<Set<() => void>>(new Set());
+  // Continuations of submit()/removeKey() check this flag after their
+  // await so a reply landing after this editor was cancelled cannot fire
+  // onCancel on whatever editor is mounted next (the wsRequest listeners
+  // themselves are always detached on settle: reply, disconnect,
+  // timeout or a failed send).
   const disposedRef = useRef(false);
   useEffect(() => {
     disposedRef.current = false;
     return () => {
       disposedRef.current = true;
-      pendingUnsubs.current.forEach((unsub) => unsub());
     };
   }, []);
 
   const canSubmit = !busy && (!enabled || (HH_MM_RE.test(start) && HH_MM_RE.test(end)));
-
-  function sendAndWait(type: string, payload: Record<string, unknown>): Promise<string | null> {
-    return new Promise((resolve) => {
-      const msgID = crypto.randomUUID();
-      import("../ws").then(({ ws }) => {
-        if (disposedRef.current) return;
-        const unsub = ws.on("*", (msg) => {
-          if (msg.id !== msgID) return;
-          unsub();
-          pendingUnsubs.current.delete(unsub);
-          resolve(msg.error ?? null);
-        });
-        pendingUnsubs.current.add(unsub);
-        ws.send(type, payload, msgID);
-      });
-    });
-  }
 
   async function submit() {
     if (enabled && (!start || !end)) { setError("Start and end are required"); return; }
     if (enabled && (!HH_MM_RE.test(start) || !HH_MM_RE.test(end))) { setError("Must be in 24-hour HH:MM format"); return; }
     setError(null);
     setBusy(true);
-    const errs = await Promise.all([
-      sendAndWait("set_provider_peak_hours", { id, peakHours: enabled ? { start, end } : null, scope }),
-      ...(apiKey.trim() ? [sendAndWait("set_provider_key", { providerID: id, apiKey: apiKey.trim() })] : []),
-    ]);
-    setBusy(false);
-    const err = errs.find((e) => e);
-    if (err) setError(err);
-    else onCancel();
+    try {
+      await Promise.all([
+        wsRequest("set_provider_peak_hours", { id, peakHours: enabled ? { start, end } : null, scope }),
+        ...(apiKey.trim() ? [wsRequest("set_provider_key", { providerID: id, apiKey: apiKey.trim() })] : []),
+      ]);
+      if (disposedRef.current) return;
+      setBusy(false);
+      onCancel();
+    } catch (e) {
+      if (disposedRef.current) return;
+      setBusy(false);
+      setError(e instanceof Error ? e.message : String(e));
+    }
   }
 
   async function removeKey() {
     setBusy(true);
-    const err = await sendAndWait("remove_provider_key", { providerID: id });
-    setBusy(false);
-    if (err) setError(err);
+    try {
+      await wsRequest("remove_provider_key", { providerID: id });
+      if (disposedRef.current) return;
+      setBusy(false);
+    } catch (e) {
+      if (disposedRef.current) return;
+      setBusy(false);
+      setError(e instanceof Error ? e.message : String(e));
+    }
   }
 
   return (

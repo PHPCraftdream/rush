@@ -866,10 +866,6 @@ export function removeSkillsPath(path: string) {
   ws.send("remove_skills_path", { path });
 }
 
-export function initializeProject(msgID?: string) {
-  ws.send("initialize_project", {}, msgID);
-}
-
 // Scope is "global" or "local" (workspace); omitted/undefined defaults to
 // "global" server-side, matching every scope-aware CLI command.
 export type ConfigScope = "global" | "local";

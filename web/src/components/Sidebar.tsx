@@ -44,8 +44,9 @@ export function Sidebar() {
   }, [editingID]);
 
   // Pending delete reply handlers, detached on unmount so a reply landing
-  // after this component unmounted cannot resolve a dead delete (mirrors
-  // SystemPromptModal.save()'s unsubRef pattern in ChatToolbar.tsx, task #683).
+  // after this component unmounted cannot resolve a dead delete (same
+  // intent as the disposedRef continuation guard in ChatToolbar.tsx's
+  // SystemPromptModal.save(), task #683).
   const deleteUnsubRef = useRef<(() => void) | null>(null);
   const deleteOthersUnsubRef = useRef<(() => void) | null>(null);
   useEffect(() => {
