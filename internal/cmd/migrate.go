@@ -50,6 +50,13 @@ Known artifact files inside a migrated .crush/ are also renamed to their Rush
 equivalents: crush.db → rush.db and logs/crush.log → logs/rush.log. Any other
 files inside are left as-is and not touched.
 
+Loose legacy context and ignore files are also renamed to their Rush
+equivalents wherever encountered (project root always; every directory visited
+during a --recursive walk for .crushignore, since it is read per-directory):
+CRUSH.md/CRUSH.local.md (and the Crush.md/Rush.md case variants the app's
+context-file loader recognizes) → RUSH.md/RUSH.local.md, and
+.crushignore → .rushignore.
+
 After a crush.json is renamed to rush.json, its content is also checked for
 legacy-named values in four fields and rewritten in place: disabled_skills
 entries matching a renamed builtin skill ID (e.g. crush-config → rush-config),
@@ -198,6 +205,26 @@ func runMigrate(cmd *cobra.Command, args []string) error {
 			// Skip ignored directories (but NOT .crush, handled above).
 			if d.IsDir() && fsext.ShouldExcludeFile(root, path) {
 				return filepath.SkipDir
+			}
+
+			// Check for loose context/ignore files (CRUSH.md family,
+			// .crushignore) directly inside this directory. Unlike
+			// crush.json/.crush, these are visited at every directory in the
+			// walk (not just the root) because .crushignore is read
+			// per-directory by fsext's directory lister during recursive
+			// file listing (see internal/fsext/ls.go) - a stray .crushignore
+			// several levels deep would otherwise keep silently excluding
+			// files after the rename. Context files (CRUSH.md family) are
+			// only ever loaded from the project root in practice, but
+			// renaming a stray copy elsewhere is harmless, so both are
+			// handled by the same directory-scoped call rather than
+			// maintaining two separate walks.
+			if d.IsDir() {
+				ctxRenamed, ctxRefused, ctxFailed := migrateContextAndIgnoreFiles(cmd, path, dryRun, "project:")
+				renamedCount += ctxRenamed
+				refusedCount += ctxRefused
+				failedCount += ctxFailed
+				foundAny = foundAny || ctxRenamed > 0 || ctxRefused > 0 || ctxFailed > 0
 			}
 
 			// Check for crush.json file.
@@ -396,6 +423,12 @@ func migrateRootLocation(cmd *cobra.Command, root string, dryRun bool) (renamed,
 
 	fileStatus, _ := migrateFile(cmd, crushFile, dryRun, "project:")
 	tally(fileStatus)
+
+	ctxRenamed, ctxRefused, ctxFailed := migrateContextAndIgnoreFiles(cmd, root, dryRun, "project:")
+	renamed += ctxRenamed
+	refused += ctxRefused
+	failed += ctxFailed
+	foundAny = foundAny || ctxRenamed > 0 || ctxRefused > 0 || ctxFailed > 0
 
 	return renamed, refused, failed, foundAny
 }
@@ -974,6 +1007,141 @@ func migrateNamedFile(cmd *cobra.Command, oldFile, newFile string, dryRun bool, 
 	}
 
 	// Perform or report the file rename.
+	if dryRun {
+		cmd.Printf("would rename %s%s  ->  %s\n", formatPrefix(prefix), oldFile, newFile)
+		return statusRenamed, newFile
+	}
+
+	if err := os.Rename(oldFile, newFile); err != nil {
+		cmd.Printf("failed to rename %s%s  ->  %s: %v\n", formatPrefix(prefix), oldFile, newFile, err)
+		return statusFailed, ""
+	}
+
+	cmd.Printf("renamed %s%s  ->  %s\n", formatPrefix(prefix), oldFile, newFile)
+	return statusRenamed, newFile
+}
+
+// legacyContextAndIgnoreFileRenames is the single source of truth for the
+// loose (not inside .crush/) project-root files whose legacy crush-branded
+// basename must be renamed to its rush-branded equivalent so the app keeps
+// finding them after a rename:
+//
+//   - Context files: every crush-equivalent of a case variant that
+//     internal/config/config.go's defaultContextPaths actually looks for
+//     (rush.md, rush.local.md, Rush.md, Rush.local.md, RUSH.md,
+//     RUSH.local.md) - NOT every case spelling anyone could imagine, only
+//     the ones the config loader reads. A pre-existing CRUSH.md-family file
+//     otherwise silently stops being loaded as agent context after
+//     upgrading, with no warning (defaultContextPaths has no crush.md
+//     entries at all).
+//   - Ignore file: .crushignore -> .rushignore. internal/fsext/ls.go's
+//     per-directory ignore-file reader only looks for .gitignore and
+//     .rushignore; a pre-existing .crushignore silently stops excluding
+//     files, so previously-excluded files quietly re-enter agent context.
+//
+// Both are project-scoped, not global: defaultContextPaths is resolved via
+// processContextPath joined against the workspace's WorkingDir (see
+// internal/agent/prompt/prompt.go), and .rushignore is read per-directory by
+// fsext's directory lister during recursive file listing - neither concept
+// has a global/user-home equivalent the way crush.json's global config/data
+// locations do, so these renames are only wired into the project-directory
+// call sites (migrateRootLocation and the --recursive WalkDir callback in
+// runMigrate), not migrateGlobalLocation.
+//
+// This is intentionally a separate table from knownArtifactFileRenames
+// rather than folded into it: artifacts live INSIDE a migrated .crush/.rush
+// directory and are only processed when that directory itself is renamed,
+// while these files live loose in whatever directory is being visited
+// (project root, or - for ignore files - any directory during a recursive
+// walk) regardless of whether a .crush directory is even present there.
+func legacyContextAndIgnoreFileRenames() []knownArtifactFileRename {
+	return []knownArtifactFileRename{
+		{oldName: "crush.md", newName: "rush.md"},
+		{oldName: "crush.local.md", newName: "rush.local.md"},
+		{oldName: "Crush.md", newName: "Rush.md"},
+		{oldName: "Crush.local.md", newName: "Rush.local.md"},
+		{oldName: "CRUSH.md", newName: "RUSH.md"},
+		{oldName: "CRUSH.local.md", newName: "RUSH.local.md"},
+		{oldName: ".crushignore", newName: ".rushignore"},
+	}
+}
+
+// migrateContextAndIgnoreFiles renames any legacy context/ignore files
+// present directly inside dir (see legacyContextAndIgnoreFileRenames for the
+// full list and rationale) to their rush-branded equivalents. Same
+// conflict-refusal discipline as every other rename in this file: a target
+// that already exists refuses just that one item and is reported, everything
+// else still proceeds.
+//
+// Case-insensitive-filesystem hazard: on Windows/default-macOS, os.Stat
+// matches names case-insensitively, so a naive "does the target exist"
+// check using os.Stat(newPath) would false-positive whenever the legacy and
+// target names differ only by case in a way the filesystem folds together
+// (verified concretely on this machine: after creating "rush.md",
+// os.Stat("RUSH.md") also succeeds and os.SameFile confirms it is the same
+// file). None of the mappings above are pure case-only renames (each drops
+// the leading "C"/"c"), so a source can never collide with its own target
+// this way, but a DIFFERENT already-existing file could still collide
+// case-insensitively with a target name (e.g. an existing "Rush.md" blocks
+// renaming "Crush.md" -> "Rush.md" even though the exact-case spellings
+// differ). To classify a Stat hit as a genuine conflict rather than a
+// same-file false positive, os.SameFile is used to compare the (about to be
+// vacated) source path against the Stat-matched target path: same file ->
+// not a conflict, just proceed with the rename (os.Rename handles pure
+// case-only renames correctly on Windows, confirmed by direct testing);
+// different file -> genuine conflict, refuse and report.
+func migrateContextAndIgnoreFiles(cmd *cobra.Command, dir string, dryRun bool, prefix string) (renamed, refused, failed int) {
+	tally := func(status migrateStatus) {
+		switch status {
+		case statusRenamed:
+			renamed++
+		case statusRefused:
+			refused++
+		case statusFailed:
+			failed++
+		}
+	}
+
+	itemPrefix := formatPrefix(prefix, "(context/ignore file)")
+
+	for _, rn := range legacyContextAndIgnoreFileRenames() {
+		oldPath := filepath.Join(dir, rn.oldName)
+		newPath := filepath.Join(dir, rn.newName)
+		status, _ := migrateNamedFileCaseAware(cmd, oldPath, newPath, dryRun, itemPrefix)
+		tally(status)
+	}
+
+	return renamed, refused, failed
+}
+
+// migrateNamedFileCaseAware behaves like migrateNamedFile (rename oldFile to
+// newFile, same not-exists/conflict/dry-run semantics) but adds an
+// os.SameFile check before reporting a conflict, so a case-insensitive
+// filesystem's case-folded Stat match against a DIFFERENT legacy name that
+// happens to resolve to the same underlying file as oldFile is not
+// misreported as a conflict against oldFile itself. See
+// migrateContextAndIgnoreFiles for the concrete scenario this guards
+// against.
+func migrateNamedFileCaseAware(cmd *cobra.Command, oldFile, newFile string, dryRun bool, prefix string) (migrateStatus, string) {
+	oldInfo, err := os.Stat(oldFile)
+	if os.IsNotExist(err) {
+		return statusNone, ""
+	}
+	if err != nil {
+		return statusNone, ""
+	}
+
+	if newInfo, err := os.Stat(newFile); err == nil {
+		if !os.SameFile(oldInfo, newInfo) {
+			cmd.Printf("CONFLICT %s%s  ->  %s: target already exists — resolve manually (merge by hand, then delete the old path); refusing to touch either\n", formatPrefix(prefix), oldFile, newFile)
+			return statusRefused, ""
+		}
+		// Same underlying file (case-insensitive filesystem folded oldFile
+		// and newFile to the same inode) - fall through to the rename below,
+		// which os.Rename handles correctly even for a pure case-only
+		// change.
+	}
+
 	if dryRun {
 		cmd.Printf("would rename %s%s  ->  %s\n", formatPrefix(prefix), oldFile, newFile)
 		return statusRenamed, newFile

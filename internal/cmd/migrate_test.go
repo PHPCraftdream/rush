@@ -1388,3 +1388,262 @@ func TestMigrateUnrelatedCrushSubstringNotTouched(t *testing.T) {
 	assert.NotContains(t, output, "rewrote")
 	assert.NotContains(t, output, "would rewrite")
 }
+
+// TestMigrateContextFileRenamed tests that a plain CRUSH.md at the project
+// root is renamed to RUSH.md (task #738: context files were previously only
+// rewritten as a path SEGMENT inside config values, never renamed on disk).
+func TestMigrateContextFileRenamed(t *testing.T) {
+	_, _ = isolateGlobalPaths(t)
+	tmpDir := t.TempDir()
+
+	crushMD := filepath.Join(tmpDir, "CRUSH.md")
+	content := "# Project notes\nSome agent context.\n"
+	require.NoError(t, os.WriteFile(crushMD, []byte(content), 0o644))
+
+	var b bytes.Buffer
+	migrateCmd.SetOut(&b)
+	migrateCmd.SetErr(&b)
+	migrateCmd.SetIn(bytes.NewReader(nil))
+	err := migrateCmd.RunE(migrateCmd, []string{tmpDir})
+	require.NoError(t, err)
+
+	output := b.String()
+	t.Logf("Output:\n%s", output)
+
+	_, err = os.Stat(crushMD)
+	assert.True(t, os.IsNotExist(err), "CRUSH.md should not exist")
+
+	rushMD := filepath.Join(tmpDir, "RUSH.md")
+	got, err := os.ReadFile(rushMD)
+	require.NoError(t, err, "RUSH.md should exist")
+	assert.Equal(t, content, string(got))
+	assert.Contains(t, output, "renamed project:")
+	assert.Contains(t, output, "(context/ignore file)")
+}
+
+// TestMigrateIgnoreFileRenamed tests that a plain .crushignore at the
+// project root is renamed to .rushignore (task #738: previously not handled
+// anywhere at all, so a pre-existing .crushignore silently stopped excluding
+// files after upgrading).
+func TestMigrateIgnoreFileRenamed(t *testing.T) {
+	_, _ = isolateGlobalPaths(t)
+	tmpDir := t.TempDir()
+
+	crushIgnore := filepath.Join(tmpDir, ".crushignore")
+	content := "*.secret\nbuild/\n"
+	require.NoError(t, os.WriteFile(crushIgnore, []byte(content), 0o644))
+
+	var b bytes.Buffer
+	migrateCmd.SetOut(&b)
+	migrateCmd.SetErr(&b)
+	migrateCmd.SetIn(bytes.NewReader(nil))
+	err := migrateCmd.RunE(migrateCmd, []string{tmpDir})
+	require.NoError(t, err)
+
+	output := b.String()
+	t.Logf("Output:\n%s", output)
+
+	_, err = os.Stat(crushIgnore)
+	assert.True(t, os.IsNotExist(err), ".crushignore should not exist")
+
+	rushIgnore := filepath.Join(tmpDir, ".rushignore")
+	got, err := os.ReadFile(rushIgnore)
+	require.NoError(t, err, ".rushignore should exist")
+	assert.Equal(t, content, string(got))
+}
+
+// TestMigrateContextFileCaseVariant tests one of the case variants
+// internal/config/config.go's defaultContextPaths actually looks for
+// (Crush.md -> Crush.md's rush equivalent is "Rush.md", which IS in
+// defaultContextPaths) rather than an invented spelling nobody reads.
+func TestMigrateContextFileCaseVariant(t *testing.T) {
+	_, _ = isolateGlobalPaths(t)
+	tmpDir := t.TempDir()
+
+	legacy := filepath.Join(tmpDir, "Crush.local.md")
+	content := "local overrides\n"
+	require.NoError(t, os.WriteFile(legacy, []byte(content), 0o644))
+
+	var b bytes.Buffer
+	migrateCmd.SetOut(&b)
+	migrateCmd.SetErr(&b)
+	migrateCmd.SetIn(bytes.NewReader(nil))
+	err := migrateCmd.RunE(migrateCmd, []string{tmpDir})
+	require.NoError(t, err)
+
+	t.Logf("Output:\n%s", b.String())
+
+	_, err = os.Stat(legacy)
+	assert.True(t, os.IsNotExist(err), "Crush.local.md should not exist")
+
+	target := filepath.Join(tmpDir, "Rush.local.md")
+	got, err := os.ReadFile(target)
+	require.NoError(t, err, "Rush.local.md should exist")
+	assert.Equal(t, content, string(got))
+}
+
+// TestMigrateContextIgnoreFileConflictRefused tests that a genuine
+// name conflict (target already exists with different content) refuses only
+// that one item and reports CONFLICT, while a sibling rename in the same run
+// that has no conflict still proceeds - same never-clobber discipline as
+// every other rename in this file.
+func TestMigrateContextIgnoreFileConflictRefused(t *testing.T) {
+	_, _ = isolateGlobalPaths(t)
+	tmpDir := t.TempDir()
+
+	// CRUSH.md -> RUSH.md will conflict (RUSH.md already exists).
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "CRUSH.md"), []byte("legacy"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "RUSH.md"), []byte("existing"), 0o644))
+
+	// .crushignore -> .rushignore has no conflict and should still proceed.
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, ".crushignore"), []byte("*.log\n"), 0o644))
+
+	var b bytes.Buffer
+	migrateCmd.SetOut(&b)
+	migrateCmd.SetErr(&b)
+	migrateCmd.SetIn(bytes.NewReader(nil))
+	err := migrateCmd.RunE(migrateCmd, []string{tmpDir})
+	require.Error(t, err, "a conflict should produce a non-zero exit")
+
+	output := b.String()
+	t.Logf("Output:\n%s", output)
+	assert.Contains(t, output, "CONFLICT")
+
+	// Both CRUSH.md and RUSH.md remain untouched.
+	legacyContent, err := os.ReadFile(filepath.Join(tmpDir, "CRUSH.md"))
+	require.NoError(t, err, "CRUSH.md should still exist")
+	assert.Equal(t, "legacy", string(legacyContent))
+	existingContent, err := os.ReadFile(filepath.Join(tmpDir, "RUSH.md"))
+	require.NoError(t, err)
+	assert.Equal(t, "existing", string(existingContent))
+
+	// The non-conflicting .crushignore rename still happened.
+	_, err = os.Stat(filepath.Join(tmpDir, ".crushignore"))
+	assert.True(t, os.IsNotExist(err), ".crushignore should have been renamed away")
+	ignoreContent, err := os.ReadFile(filepath.Join(tmpDir, ".rushignore"))
+	require.NoError(t, err, ".rushignore should exist")
+	assert.Equal(t, "*.log\n", string(ignoreContent))
+}
+
+// TestMigrateContextIgnoreFileDryRunReportsWithoutTouching tests that
+// --dry-run reports the CRUSH.md/.crushignore renames without writing
+// anything to disk.
+func TestMigrateContextIgnoreFileDryRunReportsWithoutTouching(t *testing.T) {
+	_, _ = isolateGlobalPaths(t)
+	tmpDir := t.TempDir()
+
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "CRUSH.md"), []byte("hello"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, ".crushignore"), []byte("*.log\n"), 0o644))
+
+	var b bytes.Buffer
+	migrateCmd.SetOut(&b)
+	migrateCmd.SetErr(&b)
+	migrateCmd.SetIn(bytes.NewReader(nil))
+	migrateCmd.Flags().Set("dry-run", "true")
+	err := migrateCmd.RunE(migrateCmd, []string{tmpDir})
+	require.NoError(t, err)
+	migrateCmd.Flags().Set("dry-run", "false")
+
+	output := b.String()
+	t.Logf("Output:\n%s", output)
+	assert.Contains(t, output, "would rename")
+	assert.Contains(t, output, "CRUSH.md")
+	assert.Contains(t, output, "RUSH.md")
+	assert.Contains(t, output, ".crushignore")
+	assert.Contains(t, output, ".rushignore")
+
+	// Nothing on disk actually changed.
+	_, err = os.Stat(filepath.Join(tmpDir, "CRUSH.md"))
+	require.NoError(t, err, "CRUSH.md should still exist (dry-run)")
+	_, err = os.Stat(filepath.Join(tmpDir, "RUSH.md"))
+	assert.True(t, os.IsNotExist(err), "RUSH.md should not have been created (dry-run)")
+	_, err = os.Stat(filepath.Join(tmpDir, ".crushignore"))
+	require.NoError(t, err, ".crushignore should still exist (dry-run)")
+	_, err = os.Stat(filepath.Join(tmpDir, ".rushignore"))
+	assert.True(t, os.IsNotExist(err), ".rushignore should not have been created (dry-run)")
+}
+
+// TestMigrateContextFileCaseInsensitiveFilesystemHazard is the regression
+// test for the case-sensitivity hazard investigated for task #738: on a
+// case-insensitive filesystem (confirmed concretely on this machine via
+// os.SameFile), a naive os.Stat-based conflict check against the target name
+// would false-positive whenever a DIFFERENT already-existing file happens to
+// case-fold to the same target name migrateContextAndIgnoreFiles is about to
+// rename into.
+//
+// Concretely: Crush.md -> Rush.md and CRUSH.md -> RUSH.md are two different
+// table entries, but "Rush.md" and "RUSH.md" case-fold to the SAME physical
+// file on Windows/default-macOS. If both Crush.md and CRUSH.md existed
+// simultaneously that would itself be impossible on such a filesystem
+// (creating the second would either fail or silently collide with the
+// first), so this test instead exercises the realistic version of the
+// hazard: a legacy file is renamed to a target name, and the target name's
+// OTHER case spelling is then independently probed to confirm it reports as
+// the same file (not a phantom conflict) and that the rename did not corrupt
+// or lose content.
+func TestMigrateContextFileCaseInsensitiveFilesystemHazard(t *testing.T) {
+	_, _ = isolateGlobalPaths(t)
+	tmpDir := t.TempDir()
+
+	legacy := filepath.Join(tmpDir, "CRUSH.md")
+	content := "case hazard regression content\n"
+	require.NoError(t, os.WriteFile(legacy, []byte(content), 0o644))
+
+	var b bytes.Buffer
+	migrateCmd.SetOut(&b)
+	migrateCmd.SetErr(&b)
+	migrateCmd.SetIn(bytes.NewReader(nil))
+	err := migrateCmd.RunE(migrateCmd, []string{tmpDir})
+	require.NoError(t, err)
+
+	output := b.String()
+	t.Logf("Output:\n%s", output)
+
+	// No false CONFLICT should have been reported for this rename.
+	assert.NotContains(t, output, "CONFLICT")
+
+	// Content preserved exactly, nothing corrupted or lost.
+	target := filepath.Join(tmpDir, "RUSH.md")
+	got, err := os.ReadFile(target)
+	require.NoError(t, err, "RUSH.md should exist with original content")
+	assert.Equal(t, content, string(got))
+
+	// The exact-case target reports as present via Stat (sanity check the
+	// rename actually landed).
+	targetInfo, err := os.Stat(target)
+	require.NoError(t, err)
+
+	// Probing the OTHER case spelling of the same target name resolves to
+	// the identical underlying file on this (case-insensitive) filesystem -
+	// confirms the hazard is real and that migrate's os.SameFile guard is
+	// checking the right thing, rather than this test silently passing for
+	// an unrelated reason.
+	altCaseInfo, err := os.Stat(filepath.Join(tmpDir, "rush.md"))
+	if err == nil {
+		assert.True(t, os.SameFile(targetInfo, altCaseInfo),
+			"on a case-insensitive filesystem, RUSH.md and rush.md must resolve to the same file")
+	}
+
+	// Directly exercise migrateNamedFileCaseAware's conflict guard: renaming
+	// a second legacy source whose target case-folds to the SAME already-
+	// migrated file must not be misreported as a conflict against itself.
+	// (Re-create a fresh legacy file and rename it onto the already-existing
+	// target's case-insensitive twin to prove no phantom CONFLICT fires when
+	// the Stat-matched file is genuinely the same file.)
+	testCmd := &cobra.Command{}
+	var b2 bytes.Buffer
+	testCmd.SetOut(&b2)
+	testCmd.SetErr(&b2)
+	status, _ := migrateNamedFileCaseAware(testCmd, target, filepath.Join(tmpDir, "rUsH.md"), false, "test:")
+	// target (RUSH.md) and "rUsH.md" case-fold to the same file, so this is
+	// a same-file no-conflict situation: os.Rename is invoked and succeeds
+	// (or is a case-only no-op), not refused as a conflict.
+	assert.NotEqual(t, statusRefused, status, "same-file case-only variant must not be reported as a conflict")
+	assert.NotContains(t, b2.String(), "CONFLICT")
+
+	// Content still intact and reachable under some valid casing after the
+	// case-only operation above.
+	finalContent, err := os.ReadFile(filepath.Join(tmpDir, "RUSH.md"))
+	require.NoError(t, err, "content should remain reachable, not lost, after case-only rename")
+	assert.Equal(t, content, string(finalContent))
+}
