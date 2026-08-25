@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 
 	"github.com/PHPCraftdream/rush/internal/config"
@@ -62,7 +63,20 @@ Global locations (always processed, regardless of --recursive):
   - Config: ~XDG_CONFIG_HOME-or-~/.config/crush/crush.json → rush/rush.json
   - Data: XDG_DATA_HOME/crush/crush.json → rush/rush.json (or %LOCALAPPDATA%/crush/ on Windows)
   - System config (Unix only): /etc/crush/crush.json → /etc/rush/rush.json. This
-    location is often root-owned; migrating it may require elevated privileges.`,
+    location is often root-owned; migrating it may require elevated privileges.
+
+If a global location's target directory already exists (e.g. because the app itself
+already created ~/.config/rush on a prior run), only crush.json is renamed by default;
+any other legacy files left behind (skills/, auth.json, etc.) are then also moved into
+the target directory individually, refusing only the specific items whose names already
+exist there (everything else still moves) - never a blanket "leave it all behind".
+
+At the end of the run, a "Manual follow-up needed" section reports what this command
+structurally cannot fix on its own: any CRUSH_*-prefixed environment variable still set
+in your shell that has no automatic Rush equivalent (the app itself only reads RUSH_*
+names now), and a reminder to run the matching *-del command (claude-del, codex-del,
+gemini-del, grok-del, qwen-del) if you still have old crush-named slash-commands/agents
+installed by a pre-rename *-init run.`,
 	Example: `
 # Migrate current directory and global locations
 rush migrate
@@ -271,6 +285,8 @@ func runMigrate(cmd *cobra.Command, args []string) error {
 		cmd.Printf("summary: %d renamed, %d conflict, %d failed\n", renamedCount, refusedCount, failedCount)
 	}
 
+	printManualFollowUp(cmd)
+
 	// Exit non-zero on any conflict or failure in a real run.
 	if !dryRun {
 		if refusedCount > 0 && failedCount > 0 {
@@ -282,6 +298,62 @@ func runMigrate(cmd *cobra.Command, args []string) error {
 		}
 	}
 	return nil
+}
+
+// handledLegacyEnvVars are the CRUSH_*-prefixed environment variables that
+// migrate itself already looks at (as a legacy-lookup fallback, to locate
+// pre-rename global/data paths — see legacyGlobalConfigPath and
+// legacyGlobalDataPath). They must NOT be re-listed in the "manual
+// follow-up needed" report below, since migrate already accounts for them.
+var handledLegacyEnvVars = map[string]bool{
+	"CRUSH_GLOBAL_CONFIG": true,
+	"CRUSH_GLOBAL_DATA":   true,
+}
+
+// printManualFollowUp prints a distinct, clearly-labeled report of cleanup
+// steps that a filesystem-renaming tool like migrate structurally cannot
+// perform on its own:
+//
+//  1. Any CRUSH_*-prefixed environment variable currently set in this
+//     process's environment that migrate does NOT already look at as a
+//     legacy fallback (see handledLegacyEnvVars). The running app itself
+//     now only checks RUSH_*-named variables (e.g. RUSH_CACHE_DIR,
+//     RUSH_SKILLS_DIR, RUSH_FORBID_WRITES) with no CRUSH_* fallback, so an
+//     old CRUSH_* variable still set in the user's shell profile is
+//     silently ignored rather than erroring - easy to miss. This scans the
+//     actual process environment (os.Environ()) rather than a static list,
+//     so it is accurate to what THIS user's shell actually has set.
+//  2. A fixed reminder about the matching *-del command(s), for cleaning up
+//     old crush-named slash-commands/agents left behind by a pre-rename
+//     crush-init run. This part is deliberately static: migrate does not
+//     scan disk for leftover crush-named installed files (out of scope),
+//     it just reminds the user that *-del exists and does that job.
+func printManualFollowUp(cmd *cobra.Command) {
+	var staleEnvVars []string
+	for _, kv := range os.Environ() {
+		name, value, ok := strings.Cut(kv, "=")
+		if !ok || value == "" || !strings.HasPrefix(name, "CRUSH_") {
+			// An empty value is treated as unset, same convention this file
+			// already uses for legacy env var lookups elsewhere (see
+			// legacyGlobalConfigPath/legacyGlobalDataPath's `!= ""` checks).
+			continue
+		}
+		if handledLegacyEnvVars[name] {
+			continue
+		}
+		staleEnvVars = append(staleEnvVars, name)
+	}
+	sort.Strings(staleEnvVars)
+
+	cmd.Printf("\nManual follow-up needed:\n")
+
+	if len(staleEnvVars) > 0 {
+		cmd.Printf("  - Legacy environment variable(s) still set in this process's environment with no automatic Rush equivalent: %s. The app no longer reads these (only the matching RUSH_* names are checked) - update your shell profile (.bashrc/.zshrc/PowerShell profile/etc.) to rename them.\n", strings.Join(staleEnvVars, ", "))
+	} else {
+		cmd.Printf("  - No stray CRUSH_* environment variables detected in this process's environment.\n")
+	}
+
+	cmd.Printf("  - If you previously ran a pre-rename crush-init/codex-init/gemini-init/grok-init/qwen-init, old crush-named slash-commands/agents are left behind - this migrate command does not touch them. Run the matching *-del command (e.g. claude-del, codex-del, gemini-del, grok-del, qwen-del) to remove them, then re-run the corresponding *-init to reinstall the current rush-named versions.\n")
 }
 
 // migrateRootLocation migrates a single directory's root-level .crush/ and
@@ -893,10 +965,12 @@ func migrateNamedFile(cmd *cobra.Command, oldFile, newFile string, dryRun bool, 
 // 2. File-level rename (when both directories exist or are the same).
 //
 // Returns the status of the directory/file migration, the status of the
-// inner config migration, and the renamed/refused/failed counts of known
-// artifact files (crush.db, logs/crush.log) migrated alongside a whole
-// directory rename (case 1 only — case 2's file-level migration has no
-// directory to move artifacts within, so it always returns zero counts).
+// inner config migration, and the renamed/refused/failed counts of extra
+// items migrated alongside the primary rename: known artifact files
+// (crush.db, logs/crush.log) for a whole directory rename (case 1), or
+// every remaining legacy-directory entry moved into the target directory
+// for a file-level rename that leaves the legacy directory non-empty
+// (case 2 — see the "merge remaining entries" step below).
 //
 // When renaming just the file and the legacy directory becomes empty, it is
 // removed. If the directory still has other contents (e.g., auth.json, skills),
@@ -991,10 +1065,89 @@ func migrateGlobalLocation(cmd *cobra.Command, legacyPath, currentPath string, d
 			cmd.Printf("notice: failed to remove now-empty legacy directory %s: %v\n", legacyDir, err)
 		}
 		return statusRenamed, statusNone, 0, 0, 0
-	} else {
-		// Directory has other contents - user must handle manually.
-		cmd.Printf("notice: legacy directory %s still contains other files (e.g., auth.json, skills) that were NOT merged. Copy or move them manually, then delete the old directory.\n", legacyDir)
-		// Count as refused so exit code reflects unfinished work.
-		return statusRefused, statusNone, 0, 0, 0
 	}
+
+	// Directory has other contents (e.g., auth.json, skills/) - the target
+	// directory already existed (that's why we're in case 2 at all), so
+	// these were stranded rather than moved by a whole-directory rename.
+	// Attempt to move every remaining entry into the target directory,
+	// same never-clobber discipline as everything else: a per-item name
+	// conflict refuses just that item and reports it, everything else that
+	// doesn't conflict still gets moved.
+	mergeRenamed, mergeRefused, mergeFailed, refusedNames := mergeRemainingDirEntries(cmd, legacyDir, rushDir, dryRun, prefix)
+
+	// Re-check emptiness after the merge attempt - if everything moved (or
+	// there was nothing left to conflict on), remove the now-empty legacy
+	// directory, same as the fast path above.
+	remaining, err := os.ReadDir(legacyDir)
+	if err == nil && len(remaining) == 0 {
+		if !dryRun {
+			if err := os.Remove(legacyDir); err != nil {
+				cmd.Printf("notice: failed to remove now-empty legacy directory %s: %v\n", legacyDir, err)
+			}
+		}
+	} else if len(refusedNames) > 0 {
+		cmd.Printf("notice: legacy directory %s still contains %d item(s) that were NOT merged due to name conflicts with the target directory: %s. Resolve manually (merge by hand, then delete the old path).\n", legacyDir, len(refusedNames), strings.Join(refusedNames, ", "))
+	}
+
+	// Count as refused overall so the exit code reflects unfinished work
+	// whenever at least one item could not be merged.
+	if mergeRefused > 0 || mergeFailed > 0 {
+		return statusRenamed, statusNone, mergeRenamed, mergeRefused, mergeFailed
+	}
+	return statusRenamed, statusNone, mergeRenamed, 0, mergeFailed
+}
+
+// mergeRemainingDirEntries moves every entry still present in legacyDir into
+// targetDir, used when a legacy global directory (e.g. ~/.config/crush) has
+// leftover files/subdirectories (skills/, auth.json, etc.) after its
+// crush.json was already migrated via a file-level rename in
+// migrateGlobalLocation's case 2 (the target directory already existed, so
+// there was no single whole-directory rename to carry these along).
+//
+// Same conflict-refusal discipline as every rename in this file: an entry
+// is moved with os.Rename unless the target directory already has an entry
+// with that exact name, in which case that one entry is refused and
+// reported, while every other, non-conflicting entry still proceeds.
+//
+// Returns renamed/refused/failed counts plus the base names of any refused
+// entries, so the caller can name them explicitly in its own notice rather
+// than falling back to a generic "other files" message.
+func mergeRemainingDirEntries(cmd *cobra.Command, legacyDir, targetDir string, dryRun bool, prefix string) (renamed, refused, failed int, refusedNames []string) {
+	entries, err := os.ReadDir(legacyDir)
+	if err != nil {
+		return 0, 0, 0, nil
+	}
+
+	mergePrefix := formatPrefix(prefix, "(remaining item in migrated directory)")
+
+	for _, entry := range entries {
+		name := entry.Name()
+		oldPath := filepath.Join(legacyDir, name)
+		newPath := filepath.Join(targetDir, name)
+
+		if _, err := os.Stat(newPath); err == nil {
+			cmd.Printf("CONFLICT %s%s  ->  %s: target already exists — resolve manually (merge by hand, then delete the old path); refusing to touch either\n", mergePrefix, oldPath, newPath)
+			refused++
+			refusedNames = append(refusedNames, name)
+			continue
+		}
+
+		if dryRun {
+			cmd.Printf("would rename %s%s  ->  %s\n", mergePrefix, oldPath, newPath)
+			renamed++
+			continue
+		}
+
+		if err := os.Rename(oldPath, newPath); err != nil {
+			cmd.Printf("failed to rename %s%s  ->  %s: %v\n", mergePrefix, oldPath, newPath, err)
+			failed++
+			continue
+		}
+
+		cmd.Printf("renamed %s%s  ->  %s\n", mergePrefix, oldPath, newPath)
+		renamed++
+	}
+
+	return renamed, refused, failed, refusedNames
 }

@@ -722,19 +722,59 @@ Rush’s default model listing is managed in [Catwalk](https://github.com/charmb
 ## Upgrading from the pre-rename builds
 
 This project was renamed from "Crush" to "Rush". If you have existing Crush
-installations, you'll need to migrate your data:
+installations, run `rush migrate` to handle everything a filesystem tool can
+handle automatically, then follow its final report for anything it can't.
 
-- Run `rush migrate` to rename `.crush/` directories to `.rush/` and
-  `crush.json` files to `rush.json` (both workspace configs and global
-  config/data locations)
-- Update environment variables: `CRUSH_*` → `RUSH_*` (e.g. `CRUSH_FORBID_WRITES`
-  → `RUSH_FORBID_WRITES`)
-- Update scripts that reference the old names: commands like `crush run` →
-  `rush run`, paths like `.crush/` → `.rush/`, `crush.json` → `rush.json`,
-  and `crush.db` → `rush.db`
+`rush migrate` renames, in one pass:
 
-The migration command works on the current working directory (or `--cwd` if set)
-and always attempts global migrations. Use `--dry-run` to preview changes.
+- `.crush/` directories to `.rush/` and `crush.json` files to `rush.json` —
+  both workspace configs and the global config/data locations (and, on Unix,
+  the root-owned `/etc/crush/crush.json` system config — this one may need
+  elevated privileges)
+- Known artifact files inside a migrated directory: `crush.db` → `rush.db`
+  and `logs/crush.log` → `logs/rush.log`, so existing session history and
+  logs stay reachable under the names the app now looks for
+- Legacy-named *values inside* a migrated `rush.json`: `disabled_skills`
+  entries referencing a renamed builtin skill ID (`crush-config` →
+  `rush-config`, `crush-hooks` → `rush-hooks`), and `.crush`-referencing path
+  segments (including the `~/.config/crush` convention) or the old
+  `CRUSH.md` context-file name in `skills_paths`, `global_context_paths`,
+  and `data_directory` — this is a narrow, field-scoped rewrite, not a blind
+  find-and-replace, so unrelated content (e.g. a hook command string that
+  happens to mention "crush") is left untouched
+- Leftover files in an already-existing global target directory: if
+  `~/.config/rush` (or the data-dir equivalent) already existed before
+  migrating — common, since the app itself may have created it on a prior
+  run — any other legacy files still sitting in the old directory (`skills/`,
+  `auth.json`, etc.) are also moved into the target directory, one item at a
+  time, refusing only the specific items whose names already conflict there
+
+By default it operates on the current working directory (or `--cwd` if set)
+and always attempts the global/system locations above; `--recursive` walks
+the entire directory tree from the given root, including the root itself.
+Use `--dry-run` to preview changes without touching anything. Conflicting
+targets are never clobbered — a conflicting item is refused and reported,
+and everything else still proceeds.
+
+At the end of every run, `rush migrate` prints a "Manual follow-up needed"
+section for the two things a rename tool cannot fix by itself:
+
+- Any `CRUSH_*`-prefixed environment variable still set in your shell with
+  no automatic Rush equivalent — the running app only reads `RUSH_*` names
+  now (e.g. `RUSH_FORBID_WRITES`, `RUSH_CACHE_DIR`, `RUSH_SKILLS_DIR`), so an
+  old `CRUSH_*` variable left in `.bashrc`/`.zshrc`/your PowerShell profile
+  is silently ignored rather than erroring. This is computed from your
+  actual shell environment at the time you run the command, not a fixed
+  list, so it only flags what you personally still have set.
+- A reminder to run the matching `*-del` command (`claude-del`, `codex-del`,
+  `gemini-del`, `grok-del`, `qwen-del`) if you still have old crush-named
+  slash-commands/agents installed by a pre-rename `*-init` run — the current
+  `*-init` commands install new rush-named files alongside them but never
+  touch the old ones, so cleanup is a separate, explicit step.
+
+Also update scripts that reference the old names directly: commands like
+`crush run` → `rush run`, paths like `.crush/` → `.rush/`, `crush.json` →
+`rush.json`, and `crush.db` → `rush.db`.
 
 ## Configuration
 

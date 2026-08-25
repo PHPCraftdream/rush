@@ -953,6 +953,217 @@ func TestMigrateCleanConfigContentUnchanged(t *testing.T) {
 	assert.NotContains(t, output, "would rewrite")
 }
 
+// TestMigrateGlobalMergesRemainingDirContents tests the P2 fix: when a
+// global legacy directory (e.g. ~/.config/crush) still has other files
+// (skills/, auth.json) after its crush.json was migrated via the
+// file-level path (case 2 - target directory already exists), those
+// remaining entries are now moved into the target directory too, instead
+// of being left behind with just a generic "other files" notice.
+func TestMigrateGlobalMergesRemainingDirContents(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Legacy dir: crush.json + a skills/ subdir (with a file inside) + auth.json.
+	legacyDir := filepath.Join(tmpDir, "crush")
+	legacyConfig := filepath.Join(legacyDir, "crush.json")
+	legacySkillsDir := filepath.Join(legacyDir, "skills")
+	legacySkillFile := filepath.Join(legacySkillsDir, "my-skill.md")
+	legacyAuth := filepath.Join(legacyDir, "auth.json")
+	require.NoError(t, os.MkdirAll(legacySkillsDir, 0o755))
+	require.NoError(t, os.WriteFile(legacyConfig, []byte(`{"legacy": true}`), 0o644))
+	require.NoError(t, os.WriteFile(legacySkillFile, []byte("# my skill"), 0o644))
+	require.NoError(t, os.WriteFile(legacyAuth, []byte(`{"token": "secret"}`), 0o644))
+
+	// Target dir already exists (the app itself created it on a prior run),
+	// forcing migrateGlobalLocation into case 2 (file-level migration).
+	rushDir := filepath.Join(tmpDir, "rush")
+	currentPath := filepath.Join(rushDir, "rush.json")
+	require.NoError(t, os.MkdirAll(rushDir, 0o755))
+
+	var b bytes.Buffer
+	testCmd := &cobra.Command{}
+	testCmd.SetOut(&b)
+	testCmd.SetErr(&b)
+
+	dirStatus, innerStatus, mergeRenamed, mergeRefused, mergeFailed := migrateGlobalLocation(testCmd, legacyConfig, currentPath, false, "test global:")
+
+	output := b.String()
+	t.Logf("Output:\n%s", output)
+
+	assert.Equal(t, statusRenamed, dirStatus)
+	assert.Equal(t, statusNone, innerStatus)
+	assert.Equal(t, 2, mergeRenamed, "skills/ dir and auth.json should both be merged")
+	assert.Equal(t, 0, mergeRefused)
+	assert.Equal(t, 0, mergeFailed)
+
+	// crush.json -> rush.json in the target dir.
+	newConfigContent, err := os.ReadFile(filepath.Join(rushDir, "rush.json"))
+	require.NoError(t, err)
+	assert.Equal(t, `{"legacy": true}`, string(newConfigContent))
+
+	// skills/my-skill.md moved into the target dir intact.
+	movedSkillFile := filepath.Join(rushDir, "skills", "my-skill.md")
+	skillContent, err := os.ReadFile(movedSkillFile)
+	require.NoError(t, err)
+	assert.Equal(t, "# my skill", string(skillContent))
+
+	// auth.json moved into the target dir intact.
+	movedAuth := filepath.Join(rushDir, "auth.json")
+	authContent, err := os.ReadFile(movedAuth)
+	require.NoError(t, err)
+	assert.Equal(t, `{"token": "secret"}`, string(authContent))
+
+	// Legacy directory is now fully empty and was removed.
+	_, err = os.Stat(legacyDir)
+	assert.True(t, os.IsNotExist(err), "legacy dir should be removed once fully merged")
+
+	assert.Contains(t, output, "(remaining item in migrated directory)")
+}
+
+// TestMigrateGlobalMergeRemainingPerItemConflict tests that a genuine
+// per-item name conflict during the remaining-contents merge refuses only
+// that one item (leaving both copies untouched) while every other,
+// non-conflicting item still merges - and that the final notice names the
+// refused item explicitly rather than a generic "other files" message.
+func TestMigrateGlobalMergeRemainingPerItemConflict(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	legacyDir := filepath.Join(tmpDir, "crush")
+	legacyConfig := filepath.Join(legacyDir, "crush.json")
+	legacyAuth := filepath.Join(legacyDir, "auth.json")
+	legacySkillsDir := filepath.Join(legacyDir, "skills")
+	require.NoError(t, os.MkdirAll(legacySkillsDir, 0o755))
+	require.NoError(t, os.WriteFile(legacyConfig, []byte(`{"legacy": true}`), 0o644))
+	require.NoError(t, os.WriteFile(legacyAuth, []byte("legacy-auth-bytes"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(legacySkillsDir, "s.md"), []byte("skill"), 0o644))
+
+	// Target dir already exists AND already has its own auth.json - this
+	// one item must be refused, while skills/ (no name conflict) still merges.
+	rushDir := filepath.Join(tmpDir, "rush")
+	currentPath := filepath.Join(rushDir, "rush.json")
+	require.NoError(t, os.MkdirAll(rushDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(rushDir, "auth.json"), []byte("existing-rush-auth"), 0o644))
+
+	var b bytes.Buffer
+	testCmd := &cobra.Command{}
+	testCmd.SetOut(&b)
+	testCmd.SetErr(&b)
+
+	dirStatus, innerStatus, mergeRenamed, mergeRefused, mergeFailed := migrateGlobalLocation(testCmd, legacyConfig, currentPath, false, "test global:")
+
+	output := b.String()
+	t.Logf("Output:\n%s", output)
+
+	assert.Equal(t, statusRenamed, dirStatus)
+	assert.Equal(t, statusNone, innerStatus)
+	assert.Equal(t, 1, mergeRenamed, "skills/ should merge")
+	assert.Equal(t, 1, mergeRefused, "auth.json should be refused due to conflict")
+	assert.Equal(t, 0, mergeFailed)
+
+	// skills/ merged.
+	_, err := os.Stat(filepath.Join(rushDir, "skills", "s.md"))
+	require.NoError(t, err, "skills/s.md should have merged")
+
+	// Both auth.json copies remain untouched (neither clobbered).
+	legacyAuthContent, err := os.ReadFile(legacyAuth)
+	require.NoError(t, err, "legacy auth.json should still exist, untouched")
+	assert.Equal(t, "legacy-auth-bytes", string(legacyAuthContent))
+
+	targetAuthContent, err := os.ReadFile(filepath.Join(rushDir, "auth.json"))
+	require.NoError(t, err)
+	assert.Equal(t, "existing-rush-auth", string(targetAuthContent))
+
+	// Legacy directory still exists (auth.json left behind) - not removed.
+	_, err = os.Stat(legacyDir)
+	require.NoError(t, err, "legacy dir should still exist since auth.json was refused")
+
+	// The final notice names the specific refused item, not a generic message.
+	assert.Contains(t, output, "CONFLICT")
+	assert.Contains(t, output, "auth.json")
+	assert.Contains(t, output, "still contains 1 item(s) that were NOT merged due to name conflicts")
+}
+
+// TestMigrateManualFollowUpReportsStaleCrushEnvVars tests the P2/P3 fix:
+// runMigrate's final "Manual follow-up needed" section scans the actual
+// process environment for CRUSH_*-prefixed variables that migrate does NOT
+// already handle itself, and lists them so the user knows to update their
+// shell profile - while variables migrate DOES already account for
+// (CRUSH_GLOBAL_CONFIG, CRUSH_GLOBAL_DATA, used internally as legacy
+// fallbacks) are not re-listed as if they were a gap.
+func TestMigrateManualFollowUpReportsStaleCrushEnvVars(t *testing.T) {
+	_, _ = isolateGlobalPaths(t)
+	root := t.TempDir()
+
+	t.Setenv("CRUSH_SOMETHING_MADE_UP", "some-value")
+
+	var b bytes.Buffer
+	migrateCmd.SetOut(&b)
+	migrateCmd.SetErr(&b)
+	migrateCmd.SetIn(bytes.NewReader(nil))
+	err := migrateCmd.RunE(migrateCmd, []string{root})
+	require.NoError(t, err)
+
+	output := b.String()
+	t.Logf("Output:\n%s", output)
+
+	assert.Contains(t, output, "Manual follow-up needed:")
+	assert.Contains(t, output, "CRUSH_SOMETHING_MADE_UP")
+	assert.Contains(t, output, "*-del")
+
+	// CRUSH_GLOBAL_CONFIG/CRUSH_GLOBAL_DATA are handled by migrate itself
+	// (as legacy-lookup fallbacks) and must NOT be reported as a gap, even
+	// though isolateGlobalPaths sets RUSH_* (not CRUSH_*) equivalents here -
+	// this assertion documents that if a real user DID have the CRUSH_*
+	// forms set, they still wouldn't be listed.
+	t.Setenv("CRUSH_GLOBAL_CONFIG", t.TempDir())
+	t.Setenv("CRUSH_GLOBAL_DATA", t.TempDir())
+
+	var b2 bytes.Buffer
+	migrateCmd.SetOut(&b2)
+	migrateCmd.SetErr(&b2)
+	migrateCmd.SetIn(bytes.NewReader(nil))
+	err = migrateCmd.RunE(migrateCmd, []string{root})
+	require.NoError(t, err)
+
+	output2 := b2.String()
+	t.Logf("Output2:\n%s", output2)
+
+	assert.Contains(t, output2, "Manual follow-up needed:")
+	assert.NotContains(t, output2, "CRUSH_GLOBAL_CONFIG")
+	assert.NotContains(t, output2, "CRUSH_GLOBAL_DATA")
+	// The unrelated stale var set earlier in this test is still reported.
+	assert.Contains(t, output2, "CRUSH_SOMETHING_MADE_UP")
+}
+
+// TestMigrateManualFollowUpNoStaleVars tests that when no stray CRUSH_*
+// variables are set, the report says so explicitly rather than silently
+// omitting the section.
+func TestMigrateManualFollowUpNoStaleVars(t *testing.T) {
+	_, _ = isolateGlobalPaths(t)
+	root := t.TempDir()
+
+	// Best-effort: ensure no CRUSH_* leaks in from the outer test environment.
+	for _, kv := range os.Environ() {
+		name, _, ok := strings.Cut(kv, "=")
+		if ok && strings.HasPrefix(name, "CRUSH_") {
+			t.Setenv(name, "")
+		}
+	}
+
+	var b bytes.Buffer
+	migrateCmd.SetOut(&b)
+	migrateCmd.SetErr(&b)
+	migrateCmd.SetIn(bytes.NewReader(nil))
+	err := migrateCmd.RunE(migrateCmd, []string{root})
+	require.NoError(t, err)
+
+	output := b.String()
+	t.Logf("Output:\n%s", output)
+
+	assert.Contains(t, output, "Manual follow-up needed:")
+	assert.Contains(t, output, "No stray CRUSH_* environment variables detected")
+	assert.Contains(t, output, "*-del")
+}
+
 // TestMigrateUnrelatedCrushSubstringNotTouched is a true-negative test
 // proving the rewrite step is NOT a blind find-and-replace: a field that
 // isn't one of the four targeted fields, but happens to contain the
