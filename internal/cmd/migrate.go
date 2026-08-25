@@ -875,6 +875,30 @@ func rewriteSegmentAfter(p, afterSeg, oldSeg, newSeg string) string {
 	return joinPathSegments(segments, seps)
 }
 
+// knownArtifactFileRename describes a single known non-config artifact
+// whose basename changes from the legacy crush-style name to the rush-style
+// name. dir is the relative subdirectory the file lives in ("" for the top
+// level of the migrated directory, "logs" for files nested one level down).
+type knownArtifactFileRename struct {
+	dir     string // relative subdirectory, "" for top-level
+	oldName string
+	newName string
+}
+
+// knownArtifactFileRenames is the single source of truth for known
+// non-config artifact basename renames applied inside a migrated global or
+// project directory: crush.db -> rush.db and logs/crush.log ->
+// logs/rush.log. Both migrateKnownArtifacts (whole-directory-rename path)
+// and mergeRemainingDirEntries (per-item merge path, when the target
+// directory already existed) share this table so there is exactly one
+// place that knows the crush->rush artifact name mapping.
+func knownArtifactFileRenames() []knownArtifactFileRename {
+	return []knownArtifactFileRename{
+		{dir: "", oldName: "crush.db", newName: "rush.db"},
+		{dir: "logs", oldName: "crush.log", newName: "rush.log"},
+	}
+}
+
 // migrateKnownArtifacts renames known non-config artifact files inside a
 // directory that has just been (or, in dry-run, would be) renamed from
 // .crush-style to .rush-style: crush.db -> rush.db and logs/crush.log ->
@@ -913,14 +937,19 @@ func migrateKnownArtifacts(cmd *cobra.Command, oldDir, newDir string, dryRun boo
 
 	artifactPrefix := formatPrefix(prefix, "(artifact inside migrated directory)")
 
-	dbStatus, _ := migrateNamedFile(cmd, filepath.Join(sourceDir, "crush.db"), filepath.Join(newDir, "rush.db"), dryRun, artifactPrefix)
-	tally(dbStatus)
+	for _, art := range knownArtifactFileRenames() {
+		sourceSubDir := sourceDir
+		newSubDir := newDir
+		if art.dir != "" {
+			sourceSubDir = filepath.Join(sourceDir, art.dir)
+			newSubDir = filepath.Join(newDir, art.dir)
+			if _, err := os.Stat(sourceSubDir); err != nil {
+				continue
+			}
+		}
 
-	sourceLogsDir := filepath.Join(sourceDir, "logs")
-	if _, err := os.Stat(sourceLogsDir); err == nil {
-		newLogsDir := filepath.Join(newDir, "logs")
-		logStatus, _ := migrateNamedFile(cmd, filepath.Join(sourceLogsDir, "crush.log"), filepath.Join(newLogsDir, "rush.log"), dryRun, artifactPrefix)
-		tally(logStatus)
+		status, _ := migrateNamedFile(cmd, filepath.Join(sourceSubDir, art.oldName), filepath.Join(newSubDir, art.newName), dryRun, artifactPrefix)
+		tally(status)
 	}
 
 	return renamed, refused, failed
@@ -1100,15 +1129,31 @@ func migrateGlobalLocation(cmd *cobra.Command, legacyPath, currentPath string, d
 
 // mergeRemainingDirEntries moves every entry still present in legacyDir into
 // targetDir, used when a legacy global directory (e.g. ~/.config/crush) has
-// leftover files/subdirectories (skills/, auth.json, etc.) after its
-// crush.json was already migrated via a file-level rename in
-// migrateGlobalLocation's case 2 (the target directory already existed, so
-// there was no single whole-directory rename to carry these along).
+// leftover files/subdirectories (skills/, auth.json, crush.db,
+// logs/crush.log, etc.) after its crush.json was already migrated via a
+// file-level rename in migrateGlobalLocation's case 2 (the target directory
+// already existed, so there was no single whole-directory rename to carry
+// these along).
+//
+// Known artifacts (crush.db, logs/crush.log) are moved under their mapped
+// rush-style name via knownArtifactFileRenames, the same table
+// migrateKnownArtifacts uses for the whole-directory-rename path — the app
+// looks for rush.db and logs/rush.log, so landing them under their old
+// crush-style names here would make them invisible to the app even though
+// the migration reported success. Everything else is moved unchanged.
+//
+// logs/ is handled as a per-file merge into (possibly newly created)
+// targetDir/logs rather than a whole-directory os.Rename: the target
+// directory may already have its own logs/ with unrelated content (or none
+// yet), so only the specific crush.log -> rush.log entry inside it is
+// renamed/merged, and any other files already in a stranded logs/ are
+// merged in under their own names via the same conflict-refusing loop.
 //
 // Same conflict-refusal discipline as every rename in this file: an entry
 // is moved with os.Rename unless the target directory already has an entry
-// with that exact name, in which case that one entry is refused and
-// reported, while every other, non-conflicting entry still proceeds.
+// with that (possibly mapped) name, in which case that one entry is refused
+// and reported — by its ORIGINAL name, so the user can find the file being
+// discussed — while every other, non-conflicting entry still proceeds.
 //
 // Returns renamed/refused/failed counts plus the base names of any refused
 // entries, so the caller can name them explicitly in its own notice rather
@@ -1121,10 +1166,40 @@ func mergeRemainingDirEntries(cmd *cobra.Command, legacyDir, targetDir string, d
 
 	mergePrefix := formatPrefix(prefix, "(remaining item in migrated directory)")
 
+	// Map of top-level entry name -> mapped target name for known artifacts
+	// that live directly inside legacyDir (currently just crush.db).
+	topLevelRenames := map[string]string{}
+	// Whether "logs" needs special per-file merge treatment instead of a
+	// plain whole-entry rename.
+	logsNeedsMerge := false
+	for _, art := range knownArtifactFileRenames() {
+		if art.dir == "" {
+			topLevelRenames[art.oldName] = art.newName
+		} else if art.dir == "logs" {
+			logsNeedsMerge = true
+		}
+	}
+
 	for _, entry := range entries {
 		name := entry.Name()
 		oldPath := filepath.Join(legacyDir, name)
-		newPath := filepath.Join(targetDir, name)
+
+		if name == "logs" && logsNeedsMerge && entry.IsDir() {
+			logsRenamed, logsRefused, logsFailed, logsRefusedNames := mergeLogsDirEntries(cmd, oldPath, filepath.Join(targetDir, "logs"), dryRun, mergePrefix)
+			renamed += logsRenamed
+			refused += logsRefused
+			failed += logsFailed
+			for _, n := range logsRefusedNames {
+				refusedNames = append(refusedNames, filepath.Join(name, n))
+			}
+			continue
+		}
+
+		mappedName := name
+		if mapped, ok := topLevelRenames[name]; ok {
+			mappedName = mapped
+		}
+		newPath := filepath.Join(targetDir, mappedName)
 
 		if _, err := os.Stat(newPath); err == nil {
 			cmd.Printf("CONFLICT %s%s  ->  %s: target already exists — resolve manually (merge by hand, then delete the old path); refusing to touch either\n", mergePrefix, oldPath, newPath)
@@ -1147,6 +1222,75 @@ func mergeRemainingDirEntries(cmd *cobra.Command, legacyDir, targetDir string, d
 
 		cmd.Printf("renamed %s%s  ->  %s\n", mergePrefix, oldPath, newPath)
 		renamed++
+	}
+
+	return renamed, refused, failed, refusedNames
+}
+
+// mergeLogsDirEntries merges every entry of a stranded legacy logs/
+// directory into targetLogsDir, mapping known log artifact names (currently
+// crush.log -> rush.log) the same way mergeRemainingDirEntries maps
+// top-level artifacts. targetLogsDir is created if it does not exist yet
+// (in a real run); in dry-run nothing is created, matching the rest of this
+// file's dry-run convention.
+//
+// Same conflict-refusal discipline as mergeRemainingDirEntries: a name
+// collision on the (possibly mapped) target refuses just that one entry,
+// reported by its original name, while everything else still merges.
+func mergeLogsDirEntries(cmd *cobra.Command, legacyLogsDir, targetLogsDir string, dryRun bool, prefix string) (renamed, refused, failed int, refusedNames []string) {
+	entries, err := os.ReadDir(legacyLogsDir)
+	if err != nil {
+		return 0, 0, 0, nil
+	}
+
+	if !dryRun {
+		if err := os.MkdirAll(targetLogsDir, 0o755); err != nil {
+			cmd.Printf("failed to create %s%s: %v\n", prefix, targetLogsDir, err)
+			return 0, 0, len(entries), nil
+		}
+	}
+
+	for _, entry := range entries {
+		name := entry.Name()
+		oldPath := filepath.Join(legacyLogsDir, name)
+
+		mappedName := name
+		if name == "crush.log" {
+			mappedName = "rush.log"
+		}
+		newPath := filepath.Join(targetLogsDir, mappedName)
+
+		if _, err := os.Stat(newPath); err == nil {
+			cmd.Printf("CONFLICT %s%s  ->  %s: target already exists — resolve manually (merge by hand, then delete the old path); refusing to touch either\n", prefix, oldPath, newPath)
+			refused++
+			refusedNames = append(refusedNames, name)
+			continue
+		}
+
+		if dryRun {
+			cmd.Printf("would rename %s%s  ->  %s\n", prefix, oldPath, newPath)
+			renamed++
+			continue
+		}
+
+		if err := os.Rename(oldPath, newPath); err != nil {
+			cmd.Printf("failed to rename %s%s  ->  %s: %v\n", prefix, oldPath, newPath, err)
+			failed++
+			continue
+		}
+
+		cmd.Printf("renamed %s%s  ->  %s\n", prefix, oldPath, newPath)
+		renamed++
+	}
+
+	// If the legacy logs dir is now empty (and not dry-run), remove it so
+	// the outer caller's emptiness check on legacyDir can also succeed.
+	if !dryRun {
+		if remaining, err := os.ReadDir(legacyLogsDir); err == nil && len(remaining) == 0 {
+			if err := os.Remove(legacyLogsDir); err != nil {
+				cmd.Printf("notice: failed to remove now-empty legacy directory %s: %v\n", legacyLogsDir, err)
+			}
+		}
 	}
 
 	return renamed, refused, failed, refusedNames

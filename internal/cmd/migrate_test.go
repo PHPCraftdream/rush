@@ -1082,6 +1082,195 @@ func TestMigrateGlobalMergeRemainingPerItemConflict(t *testing.T) {
 	assert.Contains(t, output, "still contains 1 item(s) that were NOT merged due to name conflicts")
 }
 
+// TestMigrateGlobalMergeMapsKnownArtifactNames tests that mergeRemainingDirEntries
+// (the per-item merge path used when the target directory already exists)
+// applies the same known-artifact name mapping migrateKnownArtifacts uses
+// for the whole-directory-rename path: a stranded crush.db lands as rush.db,
+// and logs/crush.log lands as logs/rush.log, both in the target directory -
+// not under their original crush-style names, which would make them
+// invisible to the app even though migration reported success.
+func TestMigrateGlobalMergeMapsKnownArtifactNames(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	legacyDir := filepath.Join(tmpDir, "crush")
+	legacyConfig := filepath.Join(legacyDir, "crush.json")
+	legacyDB := filepath.Join(legacyDir, "crush.db")
+	legacyLogsDir := filepath.Join(legacyDir, "logs")
+	legacyLog := filepath.Join(legacyLogsDir, "crush.log")
+	require.NoError(t, os.MkdirAll(legacyLogsDir, 0o755))
+	require.NoError(t, os.WriteFile(legacyConfig, []byte(`{"legacy": true}`), 0o644))
+	require.NoError(t, os.WriteFile(legacyDB, []byte("db-bytes"), 0o644))
+	require.NoError(t, os.WriteFile(legacyLog, []byte("log-bytes"), 0o644))
+
+	// Target dir already exists, forcing case 2 (file-level migration).
+	rushDir := filepath.Join(tmpDir, "rush")
+	currentPath := filepath.Join(rushDir, "rush.json")
+	require.NoError(t, os.MkdirAll(rushDir, 0o755))
+
+	var b bytes.Buffer
+	testCmd := &cobra.Command{}
+	testCmd.SetOut(&b)
+	testCmd.SetErr(&b)
+
+	dirStatus, innerStatus, mergeRenamed, mergeRefused, mergeFailed := migrateGlobalLocation(testCmd, legacyConfig, currentPath, false, "test global:")
+
+	output := b.String()
+	t.Logf("Output:\n%s", output)
+
+	assert.Equal(t, statusRenamed, dirStatus)
+	assert.Equal(t, statusNone, innerStatus)
+	assert.Equal(t, 2, mergeRenamed, "crush.db and logs/crush.log should both be merged")
+	assert.Equal(t, 0, mergeRefused)
+	assert.Equal(t, 0, mergeFailed)
+
+	// crush.db landed as rush.db in the target dir (not crush.db).
+	dbContent, err := os.ReadFile(filepath.Join(rushDir, "rush.db"))
+	require.NoError(t, err, "rush.db should exist in target dir")
+	assert.Equal(t, "db-bytes", string(dbContent))
+	_, err = os.Stat(filepath.Join(rushDir, "crush.db"))
+	assert.True(t, os.IsNotExist(err), "crush.db should NOT exist in target dir under its old name")
+
+	// logs/crush.log landed as logs/rush.log in the target dir.
+	logContent, err := os.ReadFile(filepath.Join(rushDir, "logs", "rush.log"))
+	require.NoError(t, err, "logs/rush.log should exist in target dir")
+	assert.Equal(t, "log-bytes", string(logContent))
+	_, err = os.Stat(filepath.Join(rushDir, "logs", "crush.log"))
+	assert.True(t, os.IsNotExist(err), "logs/crush.log should NOT exist in target dir under its old name")
+
+	// Legacy directory fully merged and removed.
+	_, err = os.Stat(legacyDir)
+	assert.True(t, os.IsNotExist(err), "legacy dir should be removed once fully merged")
+}
+
+// TestMigrateGlobalMergeArtifactConflictRefusesByOriginalName tests that when
+// the MAPPED target name for a known artifact already exists in the target
+// directory (e.g. target already has rush.db), mergeRemainingDirEntries
+// refuses only that one item - reporting the conflict using the item's
+// ORIGINAL (crush-style) name, since that's the name the user will find on
+// disk in the legacy directory - while other, unrelated stranded items
+// still merge normally.
+func TestMigrateGlobalMergeArtifactConflictRefusesByOriginalName(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	legacyDir := filepath.Join(tmpDir, "crush")
+	legacyConfig := filepath.Join(legacyDir, "crush.json")
+	legacyDB := filepath.Join(legacyDir, "crush.db")
+	legacyAuth := filepath.Join(legacyDir, "auth.json")
+	require.NoError(t, os.MkdirAll(legacyDir, 0o755))
+	require.NoError(t, os.WriteFile(legacyConfig, []byte(`{"legacy": true}`), 0o644))
+	require.NoError(t, os.WriteFile(legacyDB, []byte("legacy-db-bytes"), 0o644))
+	require.NoError(t, os.WriteFile(legacyAuth, []byte("legacy-auth-bytes"), 0o644))
+
+	// Target dir already has its own rush.db - the mapped target name for
+	// crush.db - so that specific item must be refused, while auth.json
+	// (no conflict) still merges.
+	rushDir := filepath.Join(tmpDir, "rush")
+	currentPath := filepath.Join(rushDir, "rush.json")
+	require.NoError(t, os.MkdirAll(rushDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(rushDir, "rush.db"), []byte("existing-rush-db"), 0o644))
+
+	var b bytes.Buffer
+	testCmd := &cobra.Command{}
+	testCmd.SetOut(&b)
+	testCmd.SetErr(&b)
+
+	dirStatus, innerStatus, mergeRenamed, mergeRefused, mergeFailed := migrateGlobalLocation(testCmd, legacyConfig, currentPath, false, "test global:")
+
+	output := b.String()
+	t.Logf("Output:\n%s", output)
+
+	assert.Equal(t, statusRenamed, dirStatus)
+	assert.Equal(t, statusNone, innerStatus)
+	assert.Equal(t, 1, mergeRenamed, "auth.json should merge")
+	assert.Equal(t, 1, mergeRefused, "crush.db should be refused due to mapped-name conflict")
+	assert.Equal(t, 0, mergeFailed)
+
+	// auth.json merged normally.
+	_, err := os.Stat(filepath.Join(rushDir, "auth.json"))
+	require.NoError(t, err, "auth.json should have merged")
+
+	// Both crush.db/rush.db copies remain untouched (neither clobbered).
+	legacyDBContent, err := os.ReadFile(legacyDB)
+	require.NoError(t, err, "legacy crush.db should still exist, untouched")
+	assert.Equal(t, "legacy-db-bytes", string(legacyDBContent))
+
+	targetDBContent, err := os.ReadFile(filepath.Join(rushDir, "rush.db"))
+	require.NoError(t, err)
+	assert.Equal(t, "existing-rush-db", string(targetDBContent))
+
+	// The conflict is reported using the ORIGINAL name (crush.db), not the
+	// mapped target name, so the user can find the file being discussed.
+	assert.Contains(t, output, "CONFLICT")
+	assert.Contains(t, output, legacyDB)
+	assert.Contains(t, output, filepath.Join(rushDir, "rush.db"))
+
+	// The final notice also names the refused item by its original name.
+	assert.Contains(t, output, "still contains 1 item(s) that were NOT merged due to name conflicts")
+	assert.Contains(t, output, "crush.db")
+
+	// Legacy directory still exists (crush.db left behind) - not removed.
+	_, err = os.Stat(legacyDir)
+	require.NoError(t, err, "legacy dir should still exist since crush.db was refused")
+}
+
+// TestMigrateGlobalMergeArtifactDryRunReportsMappedName tests that a dry-run
+// merge of a stranded known artifact reports the MAPPED target name (e.g.
+// rush.db), not the original crush-style name, so --dry-run output
+// accurately previews what a real run would produce.
+//
+// This calls mergeRemainingDirEntries directly rather than going through
+// migrateGlobalLocation's case 2: that outer wrapper's dry-run path returns
+// immediately after reporting the primary crush.json -> rush.json rename
+// (see the `if dryRun { ... return ... }` right after the case-2 conflict
+// check) and never actually calls into the merge step at all - a
+// pre-existing limitation predating this fix, out of scope here. The merge
+// step's own dry-run behavior (which this fix touches) is still fully
+// exercised by calling it directly.
+func TestMigrateGlobalMergeArtifactDryRunReportsMappedName(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	legacyDir := filepath.Join(tmpDir, "crush")
+	legacyDB := filepath.Join(legacyDir, "crush.db")
+	legacyLogsDir := filepath.Join(legacyDir, "logs")
+	legacyLog := filepath.Join(legacyLogsDir, "crush.log")
+	require.NoError(t, os.MkdirAll(legacyLogsDir, 0o755))
+	require.NoError(t, os.WriteFile(legacyDB, []byte("db-bytes"), 0o644))
+	require.NoError(t, os.WriteFile(legacyLog, []byte("log-bytes"), 0o644))
+
+	rushDir := filepath.Join(tmpDir, "rush")
+	require.NoError(t, os.MkdirAll(rushDir, 0o755))
+
+	var b bytes.Buffer
+	testCmd := &cobra.Command{}
+	testCmd.SetOut(&b)
+	testCmd.SetErr(&b)
+
+	renamed, refused, failed, refusedNames := mergeRemainingDirEntries(testCmd, legacyDir, rushDir, true, "test global:")
+
+	output := b.String()
+	t.Logf("Output:\n%s", output)
+
+	assert.Equal(t, 2, renamed)
+	assert.Equal(t, 0, refused)
+	assert.Equal(t, 0, failed)
+	assert.Empty(t, refusedNames)
+
+	// Nothing actually moved.
+	_, err := os.Stat(legacyDB)
+	require.NoError(t, err, "crush.db should still exist in legacy dir")
+	_, err = os.Stat(legacyLog)
+	require.NoError(t, err, "logs/crush.log should still exist in legacy dir")
+	_, err = os.Stat(filepath.Join(rushDir, "rush.db"))
+	assert.True(t, os.IsNotExist(err), "rush.db should not have been created in dry-run")
+
+	// Output reports the mapped target names, not the original names.
+	assert.Contains(t, output, "would rename")
+	assert.Contains(t, output, legacyDB)
+	assert.Contains(t, output, filepath.Join(rushDir, "rush.db"))
+	assert.Contains(t, output, legacyLog)
+	assert.Contains(t, output, filepath.Join(rushDir, "logs", "rush.log"))
+}
+
 // TestMigrateManualFollowUpReportsStaleCrushEnvVars tests the P2/P3 fix:
 // runMigrate's final "Manual follow-up needed" section scans the actual
 // process environment for CRUSH_*-prefixed variables that migrate does NOT
