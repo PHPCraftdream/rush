@@ -251,6 +251,10 @@ func TestCheck_BlocksCommandWrappers(t *testing.T) {
 		`powershell -c "iex 'claude'"`,
 		// PowerShell & invocation operator
 		`powershell -c "& 'C:\Tools\claude.exe' -p hi"`,
+		// PowerShell short aliases (task #722)
+		"saps claude",
+		"sajb claude",
+		`powershell -c "saps claude"`,
 	}
 	for _, cmd := range cases {
 		t.Run(cmd, func(t *testing.T) {
@@ -322,6 +326,28 @@ func TestCheckWindowSafety_BlocksDirectStartFamily(t *testing.T) {
 		"Start-Process notepad.exe",
 		"Start-Process -FilePath notepad.exe",
 		"Start-Job notepad.exe",
+	}
+	for _, cmd := range cases {
+		t.Run(cmd, func(t *testing.T) {
+			err := CheckWindowSafety(cmd)
+			require.Error(t, err, "should block: %s", cmd)
+			assert.Contains(t, err.Error(), "new, visible window")
+		})
+	}
+}
+
+// Task #722 regression (2026-08-25 release readiness review, P2):
+// PowerShell's built-in short aliases — saps (Start-Process) and sajb
+// (Start-Job) — are aliases, not similarly-named commands, and bypassed
+// the window-safety verb table, so `powershell -Command "saps notepad"`
+// popped a visible window. Mirrors the full-name cases above.
+func TestCheckWindowSafety_BlocksStartCmdletShortAliases(t *testing.T) {
+	cases := []string{
+		"saps notepad.exe",
+		"saps -FilePath notepad.exe",
+		"sajb notepad.exe",
+		`powershell -c "saps notepad.exe"`,
+		`powershell -Command "sajb notepad.exe"`,
 	}
 	for _, cmd := range cases {
 		t.Run(cmd, func(t *testing.T) {

@@ -130,6 +130,8 @@ var commandWrappers = map[string]bool{
 	"start":             true, // cmd: start <cmd> [args]
 	"start-process":     true, // PowerShell cmdlet
 	"start-job":         true, // PowerShell — runs in background but still launches the agent
+	"saps":              true, // PowerShell built-in alias for Start-Process
+	"sajb":              true, // PowerShell built-in alias for Start-Job
 	"invoke-expression": true, // PowerShell: invoke-expression "<string>"
 	"iex":               true, // PowerShell alias for invoke-expression
 	"invoke-command":    true, // PowerShell remote/local exec
@@ -356,6 +358,8 @@ var windowOpenerVerbs = map[string]bool{
 	"start":         true, // cmd: start <cmd> [args] — always opens a new window
 	"start-process": true, // PowerShell cmdlet — same effect, -WindowStyle Hidden not assumed
 	"start-job":     true, // PowerShell — background job, but the job's own window still opens
+	"saps":          true, // PowerShell built-in alias for Start-Process
+	"sajb":          true, // PowerShell built-in alias for Start-Job
 }
 
 // WindowOpenerError is returned by CheckWindowSafety when a command would
@@ -363,7 +367,7 @@ var windowOpenerVerbs = map[string]bool{
 // Start-Job, even nested inside a recognised shell wrapper (cmd /c,
 // powershell -Command, an -EncodedCommand payload, …).
 type WindowOpenerError struct {
-	Verb    string // the matched verb, as canonicalized ("start", "start-process", "start-job")
+	Verb    string // the matched verb, as canonicalized ("start", "start-process", "start-job", "saps", "sajb")
 	Snippet string // the offending segment, for forensic context
 }
 
