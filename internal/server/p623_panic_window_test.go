@@ -58,7 +58,16 @@ func TestHandleRerunMessage_PanicBeforeHandoffReleasesReservation(t *testing.T) 
 	// Cannot use t.Parallel() because newAttachmentsTestApp calls t.Setenv.
 	workingDir := t.TempDir()
 	dataDir := t.TempDir()
+	// Make coordinator construction independent of whether the machine
+	// running this test has a local CLI on PATH — see the helper's doc.
+	// Without this, a CI runner with no claude/gemini/codex/qwen on PATH
+	// leaves a.AgentCoordinator nil, mockCoord below wraps that nil, and
+	// every delegated call nil-panics — including inside App.Shutdown's
+	// cleanup, which crashes the whole test binary instead of failing
+	// just this test.
+	forceLocalCLIProviderForTest(t)
 	a := newAttachmentsTestApp(t, workingDir, dataDir)
+	require.NotNil(t, a.AgentCoordinator, "test app must build a real coordinator")
 	sess, err := a.Sessions.Create(t.Context(), "test-panic-window")
 	require.NoError(t, err)
 	sessionID := sess.ID
@@ -149,7 +158,10 @@ func TestHandleRerunMessage_PanicBeforeHandoffRecreatesPrompt(t *testing.T) {
 	// Cannot use t.Parallel() because newAttachmentsTestApp calls t.Setenv.
 	workingDir := t.TempDir()
 	dataDir := t.TempDir()
+	// See the sibling test above for why this call is required.
+	forceLocalCLIProviderForTest(t)
 	a := newAttachmentsTestApp(t, workingDir, dataDir)
+	require.NotNil(t, a.AgentCoordinator, "test app must build a real coordinator")
 	sess, err := a.Sessions.Create(t.Context(), "test-panic-recreate")
 	require.NoError(t, err)
 	sessionID := sess.ID

@@ -41,10 +41,19 @@ func (mb *mailbox) inject(msg message.Message) {
 // are untouched) and therefore does NOT appear in mailbox_invariant_test.go's
 // postcondition table — that table covers operations that hand work to a turn
 // loop or end an era, which injectIfBusy deliberately does neither.
+//
+// mbReleasing is treated the same as mbIdle here — unlike IsSessionBusy/
+// submit (gated on OS-lock availability, see the mbReleasing const's doc),
+// injectIfBusy only cares whether a live generation loop will ever call
+// drainInjects again. The CRITICAL INVARIANT in drainOrReleaseFinal's doc
+// guarantees it never will once mbReleasing is entered, so queuing here
+// would strand the message in mb.injects — nobody drains it until some
+// unrelated future generation does, risking a duplicate splice on top of
+// the natural DB read that already covers the mbIdle case.
 func (mb *mailbox) injectIfBusy(msg message.Message) bool {
 	mb.mu.Lock()
 	defer mb.mu.Unlock()
-	if mb.state == mbIdle {
+	if mb.state != mbOwned {
 		return false
 	}
 	mb.injects = append(mb.injects, pendingInject{

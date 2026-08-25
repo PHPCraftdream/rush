@@ -93,6 +93,13 @@ type mailboxState int
 //     process never starts another provider turn; when it lands DURING
 //     the release window, nothing stopped-specific is needed at all.
 //     See the finalize step's own doc in mailbox_ownership.go.
+//   - injectIfBusy() (mailbox_inject.go) is the one exception to "no new
+//     per-method check needed": it is gated on `state == mbOwned`
+//     specifically, NOT the mbIdle-fails/else-busy shape every other
+//     mutator above uses, because unlike them it isn't about OS-lock
+//     availability — it's about whether a live generation loop will ever
+//     call drainInjects again, which mbReleasing already answers no to
+//     just as definitively as mbIdle does.
 const (
 	mbIdle      mailboxState = iota // no owner, nothing queued
 	mbOwned                         // a turn loop holds ownership

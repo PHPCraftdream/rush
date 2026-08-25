@@ -352,8 +352,16 @@ func TestStreamKillUsesTreeKillStillTerminatesChild(t *testing.T) {
 		t.Fatalf("could not parse child pid from %q", pidData)
 	}
 
-	// Poll briefly: process death isn't instant after SIGKILL/taskkill.
-	deadline := time.Now().Add(3 * time.Second)
+	// Poll: process death isn't instant after SIGKILL/taskkill, and under a
+	// loaded CI Windows runner (AV scanning, concurrent -race binaries) the
+	// gap between taskkill returning and the OS actually dropping the pid
+	// from the process table can exceed a couple seconds even though
+	// session.KillProcess itself (called synchronously before the stream
+	// closes, see provider_stream.go) has already returned by the time this
+	// loop starts. Observed once in CI (run 32864883788, windows-latest)
+	// with the old 3s budget; never reproduced locally (15/15) where there
+	// is no such contention.
+	deadline := time.Now().Add(8 * time.Second)
 	var alive atomic.Bool
 	alive.Store(true)
 	for time.Now().Before(deadline) {

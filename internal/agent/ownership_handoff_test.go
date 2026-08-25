@@ -260,54 +260,68 @@ func TestAbandonOwnershipWithHandoff_ManualCompactionSuccess_UsesPlainAbandon(t 
 		Prompt:    "establish ownership",
 	}
 
-	// Start a Run in the background that we'll interrupt.
+	// Start a Run in the background. No model is configured
+	// (SessionAgentOptions above has none), so firstCall's single turn
+	// errors out and self-releases almost immediately — this setup only
+	// needs a REAL epoch to hand to abandonOwnership below, not a genuinely
+	// in-flight generation to interrupt.
 	runDone := make(chan struct{})
 	go func() {
 		defer close(runDone)
 		_, _ = sessionAgent.Run(ctx, firstCall)
 	}()
 
-	// Wait for ownership to be established.
+	// Wait for the first Run to release ownership ON ITS OWN before queueing
+	// anything.
 	//
-	// NOTE (investigated for CI failure on macos-latest run 31714546616,
-	// "must have 3 calls in submitted: expected 3, actual 0"): tried
-	// replacing this fixed sleep with a deterministic wait for the turn
-	// loop to begin a generation (require.Eventually on
-	// mb.current.cancel != nil before issuing Cancel below). That change
-	// made the failure reproduce on EVERY run locally (30/30), not just
-	// occasionally on CI -- the opposite of the intended fix. So whatever
-	// actually distinguishes the "queue preserved" case (this test's whole
-	// premise) from the "queue cleared" case (agent.go's Run defer calling
-	// abandonOwnershipWithHandoff, which pops+clears mb.submitted when the
-	// epoch still matches) is NOT simply "did Cancel land before or after
-	// beginGeneration" -- the real mechanism is not yet understood, and
-	// guessing further risks trading a rare CI flake for a deterministic
-	// break. Reverted to the original sleep pending a real investigation;
-	// left as a known, documented CI flake (same disposition as this
-	// session's other confirmed-but-unfixed timing flakes) rather than
-	// risk shipping a worse, confidently-wrong "fix".
-	time.Sleep(10 * time.Millisecond)
+	// Root-caused (investigated for CI failures on macos-latest run
+	// 31714546616 and this session's own run, both "must have 3 calls in
+	// submitted: expected 3, actual 0"): an earlier version of this test
+	// queued call1..call3 after a FIXED 10ms sleep, assuming the first Run
+	// was still genuinely owning the session at that point, then called
+	// Cancel() to interrupt it. Direct instrumentation (t.Logf of
+	// mb.state/current.cancel right before that Cancel call) showed the
+	// opposite is true in the overwhelming common case: the mailbox was
+	// ALREADY mbIdle (state=0, both cancels nil) every single time locally —
+	// the no-model turn had already self-released well under 10ms, making
+	// Cancel() a no-op and the 3 queued calls land harmlessly on an already-
+	// idle mailbox. That accidental "queue while idle" sequencing is what
+	// actually made the test pass, not the "queue while owned, then cancel"
+	// story its comments told.
+	//
+	// The rare CI failure is the inverse ordering: under heavy scheduling
+	// contention the first Run can still be genuinely mbOwned when the old
+	// code queued+cancelled. Cancel() then interrupts a truly live
+	// generation with 3 calls already in mb.submitted, and
+	// drainAfterCancel (mailbox_interrupt.go) hands the first queued call
+	// back to runOwned's turn loop as the NEXT turn instead of releasing
+	// ownership — deliberate, documented mailbox behavior (see
+	// drainAfterCancel's own doc), not a bug. Since each of those queued
+	// calls is itself a no-model turn that also fails instantly, the loop
+	// keeps consuming mb.submitted turn by turn until empty, only THEN
+	// reaching mbIdle — exactly the observed "actual 0".
+	//
+	// This test's actual subject is plain abandonOwnership's queue-
+	// preserving behavior, which has nothing to do with racing Cancel()
+	// against a live generation — so the fix removes that race entirely:
+	// wait for the first Run to finish releasing ownership on its own, THEN
+	// queue. Cancel() is no longer needed.
+	select {
+	case <-runDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first Run did not release ownership within 2s")
+	}
 
-	// Queue three calls while the first Run owns the session.
+	// Queue three calls onto the now-idle mailbox.
 	sessionAgent.QueueMessage(call1)
 	sessionAgent.QueueMessage(call2)
 	sessionAgent.QueueMessage(call3)
 	require.Equal(t, 3, sessionAgent.QueuedPrompts(sessionID), "three calls must be queued")
 
-	// Cancel the session to release the first Run's ownership.
-	sessionAgent.Cancel(sessionID)
-
-	// Wait for the first Run to exit.
-	select {
-	case <-runDone:
-	case <-time.After(2 * time.Second):
-		t.Fatal("first Run did not exit after cancel")
-	}
-
 	// Now the session should be idle. Get the mailbox and simulate the
 	// SUCCESS path of runSummarize: plain abandonOwnership (not handoff).
 	mb := sessionAgent.getMailbox(sessionID)
-	epoch := mb.epoch // Current epoch after the canceled run
+	epoch := mb.epoch // Current epoch after the first Run released
 
 	// Verify we have 3 calls in submitted.
 	require.Equal(t, 3, len(mb.submitted), "must have 3 calls in submitted")
