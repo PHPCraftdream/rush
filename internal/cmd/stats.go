@@ -29,15 +29,6 @@ var statsCSS string
 //go:embed stats/index.js
 var statsJS string
 
-//go:embed stats/header.svg
-var headerSVG string
-
-//go:embed stats/heartbit.svg
-var heartbitSVG string
-
-//go:embed stats/footer.svg
-var footerSVG string
-
 var statsCmd = &cobra.Command{
 	Use:   "stats",
 	Short: "Show usage statistics",
@@ -351,9 +342,6 @@ func generateHTML(stats *Stats, projName, username, path string) error {
 		StatsJSON   template.JS
 		CSS         template.CSS
 		JS          template.JS
-		Header      template.HTML
-		Heartbit    template.HTML
-		Footer      template.HTML
 		GeneratedAt string
 		ProjectName string
 		Username    string
@@ -361,9 +349,6 @@ func generateHTML(stats *Stats, projName, username, path string) error {
 		StatsJSON:   template.JS(statsJSON),
 		CSS:         template.CSS(statsCSS),
 		JS:          template.JS(statsJS),
-		Header:      template.HTML(headerSVG),
-		Heartbit:    template.HTML(heartbitSVG),
-		Footer:      template.HTML(footerSVG),
 		GeneratedAt: stats.GeneratedAt.Format("2006-01-02"),
 		ProjectName: projName,
 		Username:    username,
