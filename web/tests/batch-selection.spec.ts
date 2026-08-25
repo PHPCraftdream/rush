@@ -87,12 +87,13 @@ test("checkbox appears on message hover", async ({ page }) => {
   await expect(checkboxWrap).toHaveClass(/opacity-100/);
 });
 
-test("checkbox is always positioned left of the message content, for both user and assistant messages", async ({ page }) => {
-  // Message.tsx used to flip the checkbox's flex `order` based on author
-  // (order: 1 for user, -1 for assistant), which put it on the RIGHT of a
-  // user message (since user rows are right-justified) and on the LEFT of
-  // an assistant message. The checkbox now always uses order: -1, so it
-  // renders immediately left of the message content regardless of author.
+test("checkbox sits at a fixed left edge, same x for user and assistant rows", async ({ page }) => {
+  // The checkbox used to live inside the same flex row as the content
+  // bubble, so a user row's justify-end packed [checkbox][bubble] together
+  // and pushed them right as a unit -- the checkbox's x depended on the
+  // bubble's width, drifting per message instead of lining up with the
+  // assistant row's checkbox. The checkbox is now a fixed first column;
+  // only the content wrapper inside the remaining space is justified.
   await setupWithMessages(page, "batch-3", twoMessages);
 
   const userRow = page.getByText("First batch msg").locator("xpath=ancestor::div[contains(@class,'msg-row')]");
@@ -110,6 +111,8 @@ test("checkbox is always positioned left of the message content, for both user a
   expect(assistantCheckboxBox).not.toBeNull();
   expect(assistantContentBox).not.toBeNull();
   expect(assistantCheckboxBox!.x).toBeLessThan(assistantContentBox!.x);
+
+  expect(userCheckboxBox!.x).toBeCloseTo(assistantCheckboxBox!.x, 0);
 });
 
 // ── Selection toolbar ───────────────────────────────────────────────────

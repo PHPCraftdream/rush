@@ -132,25 +132,26 @@ export const Message = memo(function Message({
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
     >
-      <div className={`flex gap-3 ${isUser ? "justify-end" : "justify-start"}`}>
+      <div className="flex gap-3">
         <div
           className={`msg-checkbox-wrap ${checkboxVisible ? "opacity-100" : "opacity-0 pointer-events-none"}`}
-          style={{ order: -1 }}
           onClick={handleCheckboxClick}
         >
           <div className={`msg-checkbox ${isSelected ? "bg-accent border-accent" : "border-text-subtle/50 hover:border-accent"}`}>
             {isSelected && <Check size={10} className="text-white shrink-0" />}
           </div>
         </div>
-        {isUser ? (
-          <div className="max-w-[80%]">
-            <UserContent message={message} editing={editing} onSaveEdit={handleSaveEdit} onCancelEdit={handleEditClose} />
-          </div>
-        ) : (
-          <div className="w-full min-w-0">
-            <AssistantContent message={message} editing={editing} onSaveEdit={handleSaveEdit} onCancelEdit={handleEditClose} />
-          </div>
-        )}
+        <div className={`flex flex-1 min-w-0 ${isUser ? "justify-end" : "justify-start"}`}>
+          {isUser ? (
+            <div className="max-w-[80%]">
+              <UserContent message={message} editing={editing} onSaveEdit={handleSaveEdit} onCancelEdit={handleEditClose} />
+            </div>
+          ) : (
+            <div className="w-full min-w-0">
+              <AssistantContent message={message} editing={editing} onSaveEdit={handleSaveEdit} onCancelEdit={handleEditClose} />
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Action strip — fixed-height row; interactive controls only mounted on hover */}
