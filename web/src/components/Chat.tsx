@@ -375,6 +375,14 @@ export function Chat() {
     selectMessageIDs(ids);
   }, [messages, selectedIDs]);
 
+  const handleSelectAbove = useCallback((index: number) => {
+    selectMessageIDs(messages.slice(0, index + 1).map(m => m.ID));
+  }, [messages]);
+
+  const handleSelectBelow = useCallback((index: number) => {
+    selectMessageIDs(messages.slice(index).map(m => m.ID));
+  }, [messages]);
+
   const requestDeleteOne = useCallback((id: string) => {
     setConfirm({
       title: "Delete message",
@@ -476,6 +484,8 @@ export function Chat() {
                 onDeleteRequest={requestDeleteOne}
                 onRerunRequest={requestRerun}
                 onRangeSelect={handleRangeSelect}
+                onSelectAbove={handleSelectAbove}
+                onSelectBelow={handleSelectBelow}
                 selectionActive={selectionActive}
                 isSelected={selectedIDs.has(m.ID)}
                 forkDefaultTitle={forkDefaultTitle}

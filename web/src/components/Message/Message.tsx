@@ -10,6 +10,7 @@ import { ForkSessionModal } from "../ForkSessionModal";
 import { AssistantContent } from "./AssistantContent";
 import { AssistantHoverActions } from "./AssistantHoverActions";
 import { BackgroundJobNotice } from "./BackgroundJobNotice";
+import { CheckboxContextMenu } from "./CheckboxContextMenu";
 import { SummaryMessage } from "./SummaryMessage";
 import { UserContent } from "./UserContent";
 import { UserHoverActions } from "./UserHoverActions";
@@ -22,6 +23,8 @@ export interface MessageProps {
   onDeleteRequest: (id: string) => void;
   onRerunRequest: (id: string) => void;
   onRangeSelect: (index: number) => void;
+  onSelectAbove: (index: number) => void;
+  onSelectBelow: (index: number) => void;
   selectionActive: boolean;
   isSelected: boolean;
   forkDefaultTitle: string;
@@ -30,7 +33,7 @@ export interface MessageProps {
 }
 
 export const Message = memo(function Message({
-  message, onDeleteRequest, onRerunRequest, onRangeSelect, selectionActive, isSelected, forkDefaultTitle, sessionID, index,
+  message, onDeleteRequest, onRerunRequest, onRangeSelect, onSelectAbove, onSelectBelow, selectionActive, isSelected, forkDefaultTitle, sessionID, index,
 }: MessageProps) {
   if (message.Hidden) return null;
   if (message.IsSummaryMessage) return <SummaryMessage message={message} />;
@@ -82,6 +85,7 @@ export const Message = memo(function Message({
   const [editing, setEditing] = useState(false);
   const [forking, setForking] = useState(false);
   const [hovered, setHovered] = useState(false);
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
 
   const handleMouseEnter = useCallback(() => setHovered(true),  []);
   const handleMouseLeave = useCallback(() => setHovered(false), []);
@@ -116,6 +120,15 @@ export const Message = memo(function Message({
     else { toggleMessageSelection(message.ID); }
   }, [message.ID, index, onRangeSelect, selectable]);
 
+  const handleCheckboxContextMenu = useCallback((e: React.MouseEvent) => {
+    if (!selectable) return;
+    e.preventDefault();
+    setContextMenu({ x: e.clientX, y: e.clientY });
+  }, [selectable]);
+  const closeContextMenu = useCallback(() => setContextMenu(null), []);
+  const handleSelectAbove = useCallback(() => { onSelectAbove(index); setContextMenu(null); }, [onSelectAbove, index]);
+  const handleSelectBelow = useCallback(() => { onSelectBelow(index); setContextMenu(null); }, [onSelectBelow, index]);
+
   // Checkbox is always in DOM (reserves layout space), opacity-0 when not
   // relevant. A non-selectable (still-streaming) message never shows it,
   // regardless of hover/selection-mode state — there is nothing useful the
@@ -136,6 +149,7 @@ export const Message = memo(function Message({
         <div
           className={`msg-checkbox-wrap ${checkboxVisible ? "opacity-100" : "opacity-0 pointer-events-none"}`}
           onClick={handleCheckboxClick}
+          onContextMenu={handleCheckboxContextMenu}
         >
           <div className={`msg-checkbox ${isSelected ? "bg-accent border-accent" : "border-text-subtle/50 hover:border-accent"}`}>
             {isSelected && <Check size={10} className="text-white shrink-0" />}
@@ -193,6 +207,16 @@ export const Message = memo(function Message({
 
       {forking && (
         <ForkSessionModal sessionID={sessionID} defaultTitle={forkDefaultTitle} onClose={handleForkClose} />
+      )}
+
+      {contextMenu && (
+        <CheckboxContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          onSelectAbove={handleSelectAbove}
+          onSelectBelow={handleSelectBelow}
+          onClose={closeContextMenu}
+        />
       )}
     </div>
   );
