@@ -182,23 +182,34 @@ type Message struct {
 	// from a turn measured at zero, and the UI must be able to say "not
 	// measured" instead of rendering a confident 0% cache hit.
 	Usage *TokenUsage
-	// RowID is the message's SQLite rowid -- the same monotonic insertion
-	// counter already used as a tiebreaker throughout
-	// internal/db/sql/messages.sql (message.id is a non-monotonic UUID,
-	// unsuitable for ordering). Populated only where a caller specifically
-	// asked for it (message.Service's Delete/ForceDelete/ListWithWatermark);
+	// DeleteGeneration is the session's delete-generation counter value as
+	// of this message's Delete/ForceDelete call (task #737, replacing the
+	// task #731 rowid-based watermark below). Populated only where a caller
+	// specifically asked for it (message.Service's Delete/ForceDelete);
 	// zero everywhere else, including every row returned by the plain
-	// Get/List/ListPaginated/etc. methods that existed before this field.
+	// Get/List/ListPaginated/etc. methods.
 	//
 	// This is the wire-level "delete watermark": DeletedEvent carries the
-	// deleted row's RowID (fetched just before the DELETE, since rowid does
-	// not survive it), and a messages_list snapshot reply carries the
-	// session's current max RowID as of that read. The web client compares
-	// the two to tell a snapshot that is PROVABLY older than a delete it has
-	// already applied from one that merely looks that way because of a
-	// reordered push -- see web/src/ws.ts's per-session delete high-water
-	// mark and CLAUDE.md/docs for the resurrection risk this closes.
-	RowID int64
+	// POST-INCREMENT generation value (message.service's deleteGen map,
+	// bumped before the row is removed), and a messages_list snapshot reply
+	// carries the session's CURRENT generation as of that read (see
+	// message.Service.ListWithWatermark's doc comment for why that read
+	// must happen before the List query, not after). The web client
+	// compares the two to tell a snapshot that is PROVABLY older than a
+	// delete it has already applied from one that merely looks that way
+	// because of a reordered push -- see web/src/ws.ts's per-session delete
+	// high-water mark and CLAUDE.md/docs for the resurrection risk this
+	// closes.
+	//
+	// Task #731's original design used MAX(rowid) over a session's
+	// surviving messages as the watermark. That is NOT a monotonic "highest
+	// ever assigned" value: deleting a non-tail message (an older message
+	// while a newer one survives) does not lower MAX(rowid), so the
+	// watermark never moved for that class of delete and a stale
+	// pre-delete snapshot could still compare as "fresh". The generation
+	// counter increments on every delete regardless of which message was
+	// removed, so it has no such blind spot.
+	DeleteGeneration int64
 }
 
 func (m *Message) Content() TextContent {

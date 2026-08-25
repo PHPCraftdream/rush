@@ -117,11 +117,12 @@ export interface Message {
   // Per-message token accounting. Absent on messages written before
   // per-message tracking existed, and on non-assistant messages.
   Usage?: MessageUsage;
-  // RowID is the delete watermark (internal/server/wire.go's MessageWire.RowID
+  // DeleteGeneration is the delete watermark (task #737; replaces the old
+  // RowID field — internal/server/wire.go's MessageWire.DeleteGeneration
   // doc comment has the full mechanism). Only ever populated on a
   // message_deleted push's payload; absent/0 everywhere else (created/
   // updated pushes and messages_list snapshot rows never carry it).
-  RowID?: number;
+  DeleteGeneration?: number;
 }
 
 // MessageUsage mirrors internal/server/wire.go's UsageWire.

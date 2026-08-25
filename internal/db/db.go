@@ -108,14 +108,8 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.getLastSessionStmt, err = db.PrepareContext(ctx, getLastSession); err != nil {
 		return nil, fmt.Errorf("error preparing query GetLastSession: %w", err)
 	}
-	if q.getMaxMessageRowIDBySessionStmt, err = db.PrepareContext(ctx, getMaxMessageRowIDBySession); err != nil {
-		return nil, fmt.Errorf("error preparing query GetMaxMessageRowIDBySession: %w", err)
-	}
 	if q.getMessageStmt, err = db.PrepareContext(ctx, getMessage); err != nil {
 		return nil, fmt.Errorf("error preparing query GetMessage: %w", err)
-	}
-	if q.getMessageRowIDStmt, err = db.PrepareContext(ctx, getMessageRowID); err != nil {
-		return nil, fmt.Errorf("error preparing query GetMessageRowID: %w", err)
 	}
 	if q.getOldestPendingRunQueueEntryForSessionStmt, err = db.PrepareContext(ctx, getOldestPendingRunQueueEntryForSession); err != nil {
 		return nil, fmt.Errorf("error preparing query GetOldestPendingRunQueueEntryForSession: %w", err)
@@ -439,19 +433,9 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing getLastSessionStmt: %w", cerr)
 		}
 	}
-	if q.getMaxMessageRowIDBySessionStmt != nil {
-		if cerr := q.getMaxMessageRowIDBySessionStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing getMaxMessageRowIDBySessionStmt: %w", cerr)
-		}
-	}
 	if q.getMessageStmt != nil {
 		if cerr := q.getMessageStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing getMessageStmt: %w", cerr)
-		}
-	}
-	if q.getMessageRowIDStmt != nil {
-		if cerr := q.getMessageRowIDStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing getMessageRowIDStmt: %w", cerr)
 		}
 	}
 	if q.getOldestPendingRunQueueEntryForSessionStmt != nil {
@@ -816,9 +800,7 @@ type Queries struct {
 	getFileReadStmt                                *sql.Stmt
 	getHourDayHeatmapStmt                          *sql.Stmt
 	getLastSessionStmt                             *sql.Stmt
-	getMaxMessageRowIDBySessionStmt                *sql.Stmt
 	getMessageStmt                                 *sql.Stmt
-	getMessageRowIDStmt                            *sql.Stmt
 	getOldestPendingRunQueueEntryForSessionStmt    *sql.Stmt
 	getOrphanOutboxEntryStmt                       *sql.Stmt
 	getRecentActivityStmt                          *sql.Stmt
@@ -912,9 +894,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		getFileReadStmt:                                q.getFileReadStmt,
 		getHourDayHeatmapStmt:                          q.getHourDayHeatmapStmt,
 		getLastSessionStmt:                             q.getLastSessionStmt,
-		getMaxMessageRowIDBySessionStmt:                q.getMaxMessageRowIDBySessionStmt,
 		getMessageStmt:                                 q.getMessageStmt,
-		getMessageRowIDStmt:                            q.getMessageRowIDStmt,
 		getOldestPendingRunQueueEntryForSessionStmt:    q.getOldestPendingRunQueueEntryForSessionStmt,
 		getOrphanOutboxEntryStmt:                       q.getOrphanOutboxEntryStmt,
 		getRecentActivityStmt:                          q.getRecentActivityStmt,

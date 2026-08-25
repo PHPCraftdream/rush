@@ -93,11 +93,15 @@ func handleLoadMessages(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 		return
 	}
 	// ListWithWatermark over List: the reply must carry the session's
-	// delete watermark (highest message rowid as of this read) so the
-	// client can tell a snapshot whose read is PROVABLY older than a
-	// delete it already applied from one that merely looks that way
-	// because of a reordered push (see message.Message.RowID's doc
-	// comment for the full mechanism this closes).
+	// delete-generation watermark (task #737: an in-memory counter bumped
+	// once on every delete for the session, read BEFORE the List query --
+	// see that method's doc comment) so the client can tell a snapshot
+	// whose read is PROVABLY older than a delete it already applied from
+	// one that merely looks that way because of a reordered push (see
+	// message.Message.DeleteGeneration's doc comment for the full
+	// mechanism this closes). The wire field is still named "Watermark"
+	// for back-compat with cached frontends that only understand the
+	// numeric-comparison contract, not the old rowid semantics.
 	msgs, watermark, err := a.Messages.ListWithWatermark(ctx, p.SessionID)
 	if err != nil {
 		c.reply(msg.ID, EventError, nil, err.Error())

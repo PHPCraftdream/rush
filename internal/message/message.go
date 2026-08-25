@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/db"
@@ -58,15 +59,16 @@ type Service interface {
 	Notify(message Message)
 	Get(ctx context.Context, id string) (Message, error)
 	List(ctx context.Context, sessionID string) ([]Message, error)
-	// ListWithWatermark is List plus the session's delete watermark as of
-	// the same read: the highest message rowid in the session at read time
-	// (0 for an empty/all-deleted session). Callers that forward this
-	// watermark to a client (the messages_list WS reply) let that client
-	// detect a snapshot whose read is PROVABLY older than a delete it has
-	// already applied -- see Message.RowID's doc comment for the full
-	// mechanism. Returned messages do NOT carry their own RowID (this is
-	// the session-level watermark, not a per-message one); only Delete/
-	// ForceDelete populate that.
+	// ListWithWatermark is List plus the session's delete-generation
+	// watermark as of the same read (task #737): a per-session counter
+	// bumped once on every Delete/ForceDelete call, read here BEFORE the
+	// List query runs (0 for a session with no deletes yet). Callers that
+	// forward this watermark to a client (the messages_list WS reply) let
+	// that client detect a snapshot whose read is PROVABLY older than a
+	// delete it has already applied -- see Message.DeleteGeneration's doc
+	// comment for the full mechanism. Returned messages do NOT carry their
+	// own DeleteGeneration (this is the session-level watermark, not a
+	// per-message one); only Delete/ForceDelete populate that.
 	ListWithWatermark(ctx context.Context, sessionID string) ([]Message, int64, error)
 	// ListPaginated returns at most limit messages for a session, newest first
 	// (DESC by created_at), skipping the first offset rows. It is the paginated
@@ -151,13 +153,36 @@ type service struct {
 	// NewService), so callers that don't opt into a separate reader get
 	// today's serialized behavior unchanged.
 	qRead db.Querier
+
+	// deleteGenMu guards deleteGen.
+	deleteGenMu sync.Mutex
+	// deleteGen is the task #737 per-session delete-generation counter:
+	// keyed by sessionID, incremented once on every Delete/ForceDelete
+	// call for that session. Replaces task #731's MAX(rowid)-based
+	// watermark, which did not move for a delete of a non-tail message
+	// (see Message.DeleteGeneration's doc comment).
+	//
+	// An in-memory map is correct here specifically because the SAME
+	// server process that publishes the DeletedEvent also serves
+	// ListWithWatermark reads — there is no cross-process or persisted-
+	// state requirement. A server restart resets every session's counter
+	// to 0; that is intentional and safe, not a bug: a long-lived browser
+	// client may still hold a higher remembered high-water mark from
+	// before the restart, which just makes every snapshot compare as
+	// stale until that client's own state catches up, forcing the
+	// (already-correct) epoch/tombstone fallback more often than strictly
+	// needed. That is the conservative direction — it can never cause a
+	// resurrection, only an occasional unnecessary merge. Do NOT persist
+	// this counter to the DB to "fix" that; it is not broken.
+	deleteGen map[string]int64
 }
 
 func NewService(q db.Querier) Service {
 	return &service{
-		Broker: pubsub.NewBroker[Message](),
-		q:      q,
-		qRead:  q,
+		Broker:    pubsub.NewBroker[Message](),
+		q:         q,
+		qRead:     q,
+		deleteGen: make(map[string]int64),
 	}
 }
 
@@ -193,6 +218,29 @@ func NewServiceWithReader(q db.Querier, qRead *db.Queries) Service {
 // comment for why this must be refused rather than raced, and for why
 // summary messages (IsSummaryMessage) are exempt.
 var ErrMessageStillStreaming = errors.New("message is still streaming and cannot be deleted yet; please wait for it to finish")
+
+// bumpDeleteGeneration increments sessionID's delete-generation counter and
+// returns the POST-increment value -- this is the value Delete/ForceDelete
+// attach to the DeletedEvent payload. See the deleteGen field's doc comment
+// on the service struct for why an in-memory map is correct here, and
+// ListWithWatermark's doc comment for the read-ordering requirement this
+// pairs with.
+func (s *service) bumpDeleteGeneration(sessionID string) int64 {
+	s.deleteGenMu.Lock()
+	defer s.deleteGenMu.Unlock()
+	s.deleteGen[sessionID]++
+	return s.deleteGen[sessionID]
+}
+
+// currentDeleteGeneration returns sessionID's delete-generation counter as
+// of this call, without mutating it (0 for a session with no deletes yet
+// this process). Used by ListWithWatermark, which MUST call this BEFORE
+// running the List query -- see that method's doc comment.
+func (s *service) currentDeleteGeneration(sessionID string) int64 {
+	s.deleteGenMu.Lock()
+	defer s.deleteGenMu.Unlock()
+	return s.deleteGen[sessionID]
+}
 
 func (s *service) Delete(ctx context.Context, id string) error {
 	message, err := s.Get(ctx, id)
@@ -230,17 +278,6 @@ func (s *service) Delete(ctx context.Context, id string) error {
 	// abandoned draft. Gating that case too caused a real regression
 	// (internal/agent's TestP1_4_CleanupUsesCancelImmuneContext) that this
 	// exemption fixes.
-	// Fetch the row's watermark BEFORE deleting it -- rowid does not survive
-	// the DELETE below, and this is the value the DeletedEvent payload must
-	// carry so a client can later prove a snapshot's read predates this
-	// delete (see Message.RowID's doc comment). Best-effort: a lookup error
-	// here (row disappeared between Get and now, or a transient DB error)
-	// must not block the delete itself -- RowID simply stays 0, which only
-	// weakens this one delete's resurrection protection to the pre-watermark
-	// heuristic, not correctness of the delete.
-	if rowID, rowErr := s.q.GetMessageRowID(ctx, message.ID); rowErr == nil {
-		message.RowID = rowID
-	}
 	rowsAffected, err := s.q.DeleteMessageIfTerminal(ctx, message.ID)
 	if err != nil {
 		return err
@@ -254,6 +291,11 @@ func (s *service) Delete(ctx context.Context, id string) error {
 		// replying "ok" over a delete that did not happen.
 		return ErrMessageStillStreaming
 	}
+	// Bump the session's delete-generation counter (task #737) now that the
+	// row is confirmed gone, and attach the POST-increment value to the
+	// DeletedEvent payload -- see Message.DeleteGeneration's doc comment for
+	// why this replaced the old per-row RowID watermark.
+	message.DeleteGeneration = s.bumpDeleteGeneration(message.SessionID)
 	// Clone the message before publishing to avoid race conditions with
 	// concurrent modifications to the Parts slice.
 	//
@@ -282,14 +324,12 @@ func (s *service) ForceDelete(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	// See the identical lookup in Delete above for why this is best-effort
-	// and fetched before the row is gone.
-	if rowID, rowErr := s.q.GetMessageRowID(ctx, message.ID); rowErr == nil {
-		message.RowID = rowID
-	}
 	if err := s.q.DeleteMessage(ctx, message.ID); err != nil {
 		return err
 	}
+	// See the identical bump in Delete above -- same mechanism, same
+	// "increment only once the delete is confirmed" ordering.
+	message.DeleteGeneration = s.bumpDeleteGeneration(message.SessionID)
 	s.PublishMustDeliver(ctx, pubsub.DeletedEvent, message.Clone())
 	return nil
 }
@@ -535,38 +575,49 @@ func (s *service) List(ctx context.Context, sessionID string) ([]Message, error)
 	return messages, nil
 }
 
-// ListWithWatermark is List plus the session's delete watermark -- see the
-// Service interface doc comment for the full contract.
+// ListWithWatermark is List plus the session's delete-generation watermark
+// -- see the Service interface doc comment for the full contract.
 //
-// The watermark is read as a SEPARATE query, not derived from the returned
-// messages' own rowids (List/fromDBItem never populate Message.RowID; only
-// Delete/ForceDelete do, for the DeletedEvent payload). This is deliberate:
-// deriving "session max rowid" from MAX(returned rows' rowid) would silently
-// UNDER-report the watermark for a session with an empty tail -- e.g. every
-// message after some point was deleted -- because the max would come from
-// whatever's left, not from what actually happened. GetMaxMessageRowIDBySession
-// answers "as of this read, what's the highest rowid this session's messages
-// table has ever assigned" directly, correctly landing at 0 for a fully
-// emptied session (see that query's own COALESCE comment) rather than
-// silently reusing a stale lower watermark from before the emptying delete.
+// task #737 replaced the original (task #731) watermark, which was
+// GetMaxMessageRowIDBySession -- MAX(rowid) over a session's SURVIVING
+// messages. That query's own doc comment used to claim it answered "the
+// highest rowid this session's messages table has ever assigned", which is
+// WRONG: deleting a non-tail message (an older message while a newer one
+// survives) does not lower MAX(rowid) at all, so that watermark never moved
+// for that class of delete. Concretely: rowid 10 and rowid 20 both exist;
+// rowid 10 is deleted; MAX(rowid) is still 20, unchanged. A client that
+// recorded delete-watermark 10 from that delete's push, comparing against a
+// stale pre-delete snapshot reporting watermark 20, computes "10 > 20" ==
+// false and wrongly treats the stale snapshot as fresh -- exactly the
+// resurrection this mechanism exists to prevent. The watermark scheme as
+// originally implemented only actually caught deletion of the CURRENT
+// highest-rowid message in a session, not deletion in general.
 //
-// The two queries are not transactionally atomic with each other (two
-// separate round trips against qRead), which matters only in the direction
-// that is always safe here: if a message is inserted between them, the
-// watermark can very slightly UNDER-represent what List actually returned
-// (the new message might be in the List result but not yet reflected in the
-// watermark's MAX), which only makes the watermark a more conservative
-// (lower, "more stale-looking") value than reality -- never a falsely fresh
-// one. A client comparing its delete high-water mark against an
-// under-reported watermark only ever falls back to the pre-existing
-// epoch/tombstone heuristic more often than strictly necessary; it can never
-// cause a resurrection the watermark check was supposed to catch.
+// The fix: the watermark is now an in-memory per-session counter
+// (s.deleteGen, guarded by s.deleteGenMu) that increments once on EVERY
+// Delete/ForceDelete call for that session, regardless of which message was
+// removed -- see bumpDeleteGeneration/currentDeleteGeneration and
+// Message.DeleteGeneration's doc comment. An in-memory map is sufficient
+// (no DB persistence needed) because the same server process that
+// publishes each DeletedEvent also serves every ListWithWatermark read.
+//
+// ORDERING IS CRITICAL FOR CORRECTNESS: the generation counter is read
+// BEFORE the List query runs, not after. Reading first guarantees the
+// returned generation can only UNDER-represent deletes that raced this read
+// -- if a delete lands in the gap between the generation read and the List
+// query, the returned generation is stale-low relative to what List
+// actually reflects, which is the SAFE direction: it just makes this
+// snapshot look slightly more stale than it is, falling back to the
+// pre-existing epoch/tombstone heuristic more often than strictly
+// necessary, but never claiming freshness it hasn't earned. Reading the
+// generation AFTER the List query would let a delete that lands in THAT
+// gap advance the counter past what the returned message list actually
+// reflects, making a genuinely-stale snapshot compare as falsely fresh --
+// exactly the class of bug this mechanism exists to close. Do not reorder
+// these two calls.
 func (s *service) ListWithWatermark(ctx context.Context, sessionID string) ([]Message, int64, error) {
+	watermark := s.currentDeleteGeneration(sessionID)
 	messages, err := s.List(ctx, sessionID)
-	if err != nil {
-		return nil, 0, err
-	}
-	watermark, err := s.qRead.GetMaxMessageRowIDBySession(ctx, sessionID)
 	if err != nil {
 		return nil, 0, err
 	}

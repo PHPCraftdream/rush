@@ -283,7 +283,7 @@ export function useWS() {
         // deletes sub-agent messages too, and the sub-agent block never
         // re-fetches once populated, so deletes must be applied in place.
         if (isSubAgentSession(m.SessionID)) {
-          tombstoneMessage(m.SessionID, m.ID, m.RowID);
+          tombstoneMessage(m.SessionID, m.ID, m.DeleteGeneration);
           removeSubAgentMessage(m.SessionID, m.ID);
           bumpLiveEventEpoch(m.SessionID);
           return;
@@ -291,7 +291,7 @@ export function useWS() {
         // Only process messages for the active session
         const activeID = $activeSessionID.get();
         if (!activeID || m.SessionID !== activeID) return;
-        tombstoneMessage(m.SessionID, m.ID, m.RowID);
+        tombstoneMessage(m.SessionID, m.ID, m.DeleteGeneration);
         removeMessage(m.ID);
         bumpLiveEventEpoch(m.SessionID);
       }),

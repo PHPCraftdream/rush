@@ -256,7 +256,7 @@ export function hasLiveEventsSinceRequest(sessionID: string | undefined): boolea
   return (liveEventEpoch.get(sessionID) ?? 0) > (requestEpoch.get(sessionID) ?? 0);
 }
 
-// ── delete high-water mark (task #731) ──────────────────────────────────────
+// ── delete high-water mark (task #731, fixed in task #737) ─────────────────
 //
 // The epoch counter above proves "did any live push land since I sent this
 // request" — a statement about EVENT COUNT, tied to wall-clock send/apply
@@ -276,20 +276,29 @@ export function hasLiveEventsSinceRequest(sessionID: string | undefined): boolea
 //     leaves no local signal that anything happened at all.
 //
 // Fix: every message_deleted push and every messages_list reply now carries
-// a monotonic watermark — the deleted row's SQLite rowid, and the session's
-// max rowid as of the snapshot read, respectively (see
-// internal/message/content.go's Message.RowID doc comment for the full
-// server-side mechanism). A snapshot reply whose watermark is LOWER than the
-// high-water mark recorded from a delete this client already applied is
-// PROVABLY older than that delete, regardless of what the epoch counter
-// says — mergeMessageLists must keep filtering that message's tombstone
-// even on an otherwise "epoch-clean" reply, and applyMessagesSnapshot must
-// not clear the tombstone set for it.
+// a monotonic watermark — the session's delete-GENERATION counter (task
+// #737), post-increment on the delete push and as-of-read on the snapshot
+// reply, respectively (see internal/message/content.go's
+// Message.DeleteGeneration doc comment for the full server-side mechanism).
+// A snapshot reply whose watermark is LOWER than the high-water mark
+// recorded from a delete this client already applied is PROVABLY older than
+// that delete, regardless of what the epoch counter says — mergeMessageLists
+// must keep filtering that message's tombstone even on an otherwise
+// "epoch-clean" reply, and applyMessagesSnapshot must not clear the
+// tombstone set for it.
+//
+// task #731's original wire field carried the deleted row's raw SQLite
+// rowid instead of a generation counter. That was buggy: MAX(rowid) over a
+// session's surviving messages does not move when a NON-TAIL message is
+// deleted (deleting an older row while a newer one survives leaves the max
+// unchanged), so a stale pre-delete snapshot could still compare as "fresh"
+// after that class of delete. The generation counter has no such blind
+// spot — every delete bumps it, regardless of which message was removed.
 //
 // This is strictly additive to the epoch/tombstone mechanism, not a
-// replacement: sessions whose deletes carry no watermark (RowID missing —
-// e.g. a lookup failure on the fork's best-effort GetMessageRowID call, or a
-// stale cached frontend talking to a pre-watermark server) fall back to the
+// replacement: sessions whose deletes carry no watermark (field missing —
+// a stale cached frontend talking to a pre-watermark server, or a
+// pre-#737 server still emitting the old field name) fall back to the
 // existing epoch heuristic exactly as before, since deleteHighWaterMark
 // simply never advances past 0 for them and every real snapshot watermark
 // is >= 0.
@@ -299,14 +308,15 @@ const deleteHighWaterMark = new Map<string, number>();
  * actually applied. Never lowers the mark — deletes can be recorded out of
  * order relative to each other (independent messages, no ordering
  * guarantee between distinct deletes), and only the highest one seen so far
- * is a valid floor for judging a snapshot's freshness. rowID <= 0 (missing/
- * unavailable) is a no-op: it must not regress the mark to something that
- * would compare as "older" than the true high-water mark and weaken
+ * is a valid floor for judging a snapshot's freshness. generation <= 0
+ * (missing/unavailable — e.g. a pre-#737 server, or back-compat with an old
+ * cached frontend) is a no-op: it must not regress the mark to something
+ * that would compare as "older" than the true high-water mark and weaken
  * protection for an already-recorded delete. */
-export function bumpDeleteHighWaterMark(sessionID: string, rowID: number | undefined) {
-  if (!rowID || rowID <= 0) return;
+export function bumpDeleteHighWaterMark(sessionID: string, generation: number | undefined) {
+  if (!generation || generation <= 0) return;
   const prev = deleteHighWaterMark.get(sessionID) ?? 0;
-  if (rowID > prev) deleteHighWaterMark.set(sessionID, rowID);
+  if (generation > prev) deleteHighWaterMark.set(sessionID, generation);
 }
 
 /** True if sessionID's recorded delete high-water mark is STRICTLY newer
