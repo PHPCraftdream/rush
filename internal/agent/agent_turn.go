@@ -266,6 +266,11 @@ func normalizeTurnError(err error, getPeakHoursAbortErr func() error) error {
 // the caller's loop is expected to invoke runTurn(ctx, next) again in that
 // case. When hasNext is false, result/err are Run's final return values.
 func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *session.SessionLock, epoch uint64, runCancel context.CancelFunc) (res *fantasy.AgentResult, next SessionAgentCall, hasNext bool, resErr error) {
+	// A real turn is starting: any stale keep-alive scheduled for this
+	// session's prior idle state is moot and must not race this turn's own
+	// request.
+	a.cancelCacheKeepAlive(call.SessionID)
+
 	// Copy mutable fields under lock to avoid races with SetTools/SetModels.
 	agentTools := a.tools.Copy()
 	// One immutable snapshot for the whole turn (task #265). Resolving these
@@ -1419,6 +1424,9 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 			assistantID := currentAssistant.ID
 			sessionLock.Unlock()
 			a.recordMessageUsage(ctx, assistantID, smartModel, usage, costDelta, estimated)
+			if usage.CacheCreationTokens > 0 {
+				a.scheduleCacheKeepAlive(call.SessionID, smartModel, stepMessages)
+			}
 			currentSession = updatedSession
 
 			// Fork patch: batch 30 — cancel + runaway protection.

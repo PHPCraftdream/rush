@@ -9,10 +9,12 @@ import (
 
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy/providers/anthropic"
+	"charm.land/fantasy/providers/azure"
 	"charm.land/fantasy/providers/bedrock"
 	"charm.land/fantasy/providers/openai"
 	"charm.land/fantasy/providers/openaicompat"
 	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -42,7 +44,7 @@ func TestGetProviderOptionsReasoningEffort(t *testing.T) {
 			}
 			providerCfg := config.ProviderConfig{ID: "test", Type: tc.providerType}
 
-			opts := getProviderOptions(model, providerCfg)
+			opts := getProviderOptions("test-session", model, providerCfg)
 
 			raw, ok := opts[anthropic.Name]
 			require.True(t, ok, "options should be keyed under anthropic.Name for type %q", tc.providerType)
@@ -75,7 +77,7 @@ func TestGetProviderOptionsReasoningEffortFallback(t *testing.T) {
 	}
 	providerCfg := config.ProviderConfig{ID: "openai", Type: openai.Name}
 
-	opts := getProviderOptions(model, providerCfg)
+	opts := getProviderOptions("test-session", model, providerCfg)
 
 	raw, ok := opts[openai.Name]
 	require.True(t, ok)
@@ -108,7 +110,7 @@ func TestGetProviderOptionsZAIReasoningDefault(t *testing.T) {
 
 	extraBody := func(t *testing.T, effort string) map[string]any {
 		t.Helper()
-		opts := getProviderOptions(newModel(effort), providerCfg)
+		opts := getProviderOptions("test-session", newModel(effort), providerCfg)
 		raw, ok := opts[openaicompat.Name]
 		require.True(t, ok)
 		parsed, ok := raw.(*openaicompat.ProviderOptions)
@@ -164,7 +166,7 @@ func TestGetProviderOptionsDeepSeekReasoningDefault(t *testing.T) {
 
 	extraBody := func(t *testing.T, effort string, think bool) map[string]any {
 		t.Helper()
-		opts := getProviderOptions(newModel(effort, think), providerCfg)
+		opts := getProviderOptions("test-session", newModel(effort, think), providerCfg)
 		raw, ok := opts[openaicompat.Name]
 		require.True(t, ok)
 		parsed, ok := raw.(*openaicompat.ProviderOptions)
@@ -204,5 +206,94 @@ func TestGetProviderOptionsDeepSeekReasoningDefault(t *testing.T) {
 		require.True(t, ok)
 		assert.Equal(t, "enabled", thinking["type"])
 		assert.Equal(t, "max", eb["reasoning_effort"])
+	})
+}
+
+// getProviderOptions must set PromptCacheKey to the same stable, opaque hash
+// sessionHeaders uses, so OpenAI-direct sessions get session-stable cache
+// routing via the prompt_cache_key request parameter (not just headers).
+// Covers both the Chat Completions parse path (ParseOptions) and the
+// Responses API parse path (ParseResponsesOptions), and azure.Name, which
+// shares the openai.Name options key/struct since azure.go wraps openai.New.
+func TestGetProviderOptionsPromptCacheKey(t *testing.T) {
+	const sessionID = "session-abc-123"
+	wantHash := session.HashID(sessionID)
+
+	t.Run("chat completions path sets stable prompt_cache_key", func(t *testing.T) {
+		model := Model{
+			// Fictional ID (not in fantasy's Responses-API model list) to
+			// force the Chat Completions parse path, same as
+			// TestGetProviderOptionsReasoningEffortFallback above.
+			CatwalkCfg: catwalk.Model{ID: "gpt-5-test"},
+			ModelCfg:   config.SelectedModel{Provider: "openai"},
+		}
+		providerCfg := config.ProviderConfig{ID: "openai", Type: openai.Name}
+		require.False(t, openai.IsResponsesModel(model.CatwalkCfg.ID))
+
+		opts := getProviderOptions(sessionID, model, providerCfg)
+
+		raw, ok := opts[openai.Name]
+		require.True(t, ok)
+		parsed, ok := raw.(*openai.ProviderOptions)
+		require.True(t, ok)
+		require.NotNil(t, parsed.PromptCacheKey)
+		assert.Equal(t, wantHash, *parsed.PromptCacheKey)
+	})
+
+	t.Run("responses API path sets stable prompt_cache_key", func(t *testing.T) {
+		model := Model{
+			CatwalkCfg: catwalk.Model{ID: "gpt-4.1"}, // Responses API model.
+			ModelCfg:   config.SelectedModel{Provider: "openai"},
+		}
+		providerCfg := config.ProviderConfig{ID: "openai", Type: openai.Name}
+		require.True(t, openai.IsResponsesModel(model.CatwalkCfg.ID))
+
+		opts := getProviderOptions(sessionID, model, providerCfg)
+
+		raw, ok := opts[openai.Name]
+		require.True(t, ok)
+		parsed, ok := raw.(*openai.ResponsesProviderOptions)
+		require.True(t, ok)
+		require.NotNil(t, parsed.PromptCacheKey)
+		assert.Equal(t, wantHash, *parsed.PromptCacheKey)
+	})
+
+	t.Run("azure shares the openai prompt_cache_key behavior", func(t *testing.T) {
+		model := Model{
+			CatwalkCfg: catwalk.Model{ID: "gpt-5-test"},
+			ModelCfg:   config.SelectedModel{Provider: "azure"},
+		}
+		providerCfg := config.ProviderConfig{ID: "azure", Type: azure.Name}
+
+		opts := getProviderOptions(sessionID, model, providerCfg)
+
+		raw, ok := opts[openai.Name]
+		require.True(t, ok)
+		parsed, ok := raw.(*openai.ProviderOptions)
+		require.True(t, ok)
+		require.NotNil(t, parsed.PromptCacheKey)
+		assert.Equal(t, wantHash, *parsed.PromptCacheKey)
+	})
+
+	t.Run("user-supplied prompt_cache_key is not overwritten", func(t *testing.T) {
+		model := Model{
+			CatwalkCfg: catwalk.Model{ID: "gpt-5-test"},
+			ModelCfg: config.SelectedModel{
+				Provider: "openai",
+				ProviderOptions: map[string]any{
+					"prompt_cache_key": "user-chosen-key",
+				},
+			},
+		}
+		providerCfg := config.ProviderConfig{ID: "openai", Type: openai.Name}
+
+		opts := getProviderOptions(sessionID, model, providerCfg)
+
+		raw, ok := opts[openai.Name]
+		require.True(t, ok)
+		parsed, ok := raw.(*openai.ProviderOptions)
+		require.True(t, ok)
+		require.NotNil(t, parsed.PromptCacheKey)
+		assert.Equal(t, "user-chosen-key", *parsed.PromptCacheKey)
 	})
 }

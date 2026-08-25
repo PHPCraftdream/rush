@@ -100,7 +100,7 @@ func (c *coordinator) buildCall(ctx context.Context, sessionID, prompt string, p
 		return SessionAgentCall{}, err
 	}
 
-	mergedOptions, temp, topP, topK, freqPenalty, presPenalty := mergeCallOptions(model, providerCfg)
+	mergedOptions, temp, topP, topK, freqPenalty, presPenalty := mergeCallOptions(sessionID, model, providerCfg)
 	sessionSystemPrompt := c.resolveSessionSystemPrompt(ctx, sessionID)
 
 	pinnedSmart := model
@@ -181,7 +181,7 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 		}
 	}
 
-	mergedOptions, temp, topP, topK, freqPenalty, presPenalty := mergeCallOptions(model, providerCfg)
+	mergedOptions, temp, topP, topK, freqPenalty, presPenalty := mergeCallOptions(sessionID, model, providerCfg)
 
 	if err := c.refreshTokenIfExpired(ctx, providerCfg); err != nil {
 		// NOTE(@andreynering): We don't return here because the event handling to ask the user to reauthenticate
@@ -288,7 +288,7 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 			return errModelProviderNotConfigured
 		}
 
-		mergedOptions, temp, topP, topK, freqPenalty, presPenalty := mergeCallOptions(model, providerCfg)
+		mergedOptions, temp, topP, topK, freqPenalty, presPenalty := mergeCallOptions(sessionID, model, providerCfg)
 
 		pinnedSmart := model
 		newCall := SessionAgentCall{

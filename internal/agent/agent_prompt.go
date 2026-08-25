@@ -92,6 +92,8 @@ func (a *sessionAgent) createUserMessage(ctx context.Context, call SessionAgentC
 
 func (a *sessionAgent) preparePrompt(msgs []message.Message, todos []session.Todo, attachments ...message.Attachment) ([]fantasy.Message, []fantasy.FilePart) {
 	var history []fantasy.Message
+	var reminderMsg fantasy.Message
+	hasReminder := false
 	if !a.isSubAgent {
 		// Fork merge note: we already extended this block to also surface the
 		// CURRENT todo list when non-empty (originally only handled empty).
@@ -110,9 +112,10 @@ If not, please feel free to ignore. Again do not mention this message to the use
 			sb.WriteString("\nIMPORTANT: Tasks NOT in this list have been DELETED (by the user or by you). Do NOT add them back. Only manage the tasks listed above, plus any new ones the user explicitly requests. DO NOT mention this reminder to the user.")
 			reminderText = sb.String()
 		}
-		history = append(history, fantasy.NewUserMessage(
+		reminderMsg = fantasy.NewUserMessage(
 			fmt.Sprintf("<system_reminder>%s</system_reminder>", reminderText),
-		))
+		)
+		hasReminder = true
 	}
 	// Collect all tool call IDs present in assistant messages and all tool
 	// result IDs present in tool messages. This lets us detect both orphaned
@@ -161,6 +164,14 @@ If not, please feel free to ignore. Again do not mention this message to the use
 				history = append(history, msg)
 			}
 		}
+	}
+
+	// Reminder goes last, not first: keeping it at the tail preserves the
+	// longest-common-prefix cache match across turns (PrepareStep caches the
+	// last 2 messages; a volatile message near the front busts the whole
+	// history's cache on every todo mutation).
+	if hasReminder {
+		history = append(history, reminderMsg)
 	}
 
 	var files []fantasy.FilePart

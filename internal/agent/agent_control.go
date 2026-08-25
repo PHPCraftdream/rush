@@ -157,6 +157,14 @@ func (a *sessionAgent) CancelAll() (stillBusy bool) {
 		}
 	}
 
+	// Stop every pending cache keep-alive timer too — defense in depth on
+	// top of tryAdmitRunWg's gate inside fireCacheKeepAlive itself, so no
+	// new replay call is even attempted once shutdown begins.
+	for sessionID, entry := range a.cacheKeepAlive.Seq2() {
+		entry.timer.Stop()
+		a.cacheKeepAlive.Del(sessionID)
+	}
+
 	// Wait for all active Run() goroutines to finish. This provides a true
 	// join primitive instead of the old IsBusy() polling, which could report
 	// "not busy" before the actual Run() goroutines had unwound (defer

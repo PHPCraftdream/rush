@@ -6,6 +6,7 @@ package agent
 
 import (
 	"encoding/base64"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
 
@@ -159,6 +161,107 @@ func TestPreparePrompt_OrphanedToolUseMixed(t *testing.T) {
 		}
 	}
 	require.Equal(t, 1, syntheticCount, "expected exactly one synthetic result for the orphaned call")
+}
+
+// TestPreparePrompt_ReminderPosition guards against the todo reminder sitting
+// near the front of history: PrepareStep cache-marks the system message plus
+// the last 2 messages, so a volatile reminder near the front busts the whole
+// conversation's cache prefix on every todo mutation.
+func TestPreparePrompt_ReminderPosition(t *testing.T) {
+	newMsgs := func(t *testing.T, env fakeEnv, sessID string) []message.Message {
+		t.Helper()
+		ctx := t.Context()
+		_, err := env.messages.Create(ctx, sessID, message.CreateMessageParams{
+			Role:  message.User,
+			Parts: []message.ContentPart{message.TextContent{Text: "hello"}},
+		})
+		require.NoError(t, err)
+		_, err = env.messages.Create(ctx, sessID, message.CreateMessageParams{
+			Role:  message.Assistant,
+			Parts: []message.ContentPart{message.TextContent{Text: "hi there"}},
+		})
+		require.NoError(t, err)
+		msgs, err := env.messages.List(ctx, sessID)
+		require.NoError(t, err)
+		return msgs
+	}
+
+	hasReminder := func(msg fantasy.Message) bool {
+		for _, part := range msg.Content {
+			if tp, ok := fantasy.AsMessagePart[fantasy.TextPart](part); ok {
+				if strings.Contains(tp.Text, "<system_reminder>") {
+					return true
+				}
+			}
+		}
+		return false
+	}
+
+	t.Run("empty todos - reminder is last, not first", func(t *testing.T) {
+		env := testEnv(t)
+		sa := testSessionAgent(env, nil, nil, "test prompt")
+		agent := sa.(*sessionAgent)
+		ctx := t.Context()
+		sess, err := env.sessions.Create(ctx, "test")
+		require.NoError(t, err)
+		msgs := newMsgs(t, env, sess.ID)
+
+		history, _ := agent.preparePrompt(msgs, nil)
+
+		require.NotEmpty(t, history)
+		require.False(t, hasReminder(history[0]), "reminder must not be the first message in history")
+		last := history[len(history)-1]
+		require.True(t, hasReminder(last), "reminder must be the last message in history")
+		require.Contains(t, last.Content[0].(fantasy.TextPart).Text, "todo list is currently empty")
+
+		// Every message derived from msgs must come strictly before the reminder.
+		for _, m := range history[:len(history)-1] {
+			require.False(t, hasReminder(m), "only the last message should carry the reminder")
+		}
+	})
+
+	t.Run("non-empty todos - reminder is last, not first", func(t *testing.T) {
+		env := testEnv(t)
+		sa := testSessionAgent(env, nil, nil, "test prompt")
+		agent := sa.(*sessionAgent)
+		ctx := t.Context()
+		sess, err := env.sessions.Create(ctx, "test")
+		require.NoError(t, err)
+		msgs := newMsgs(t, env, sess.ID)
+
+		todos := []session.Todo{
+			{Content: "write tests", Status: session.TodoStatusInProgress},
+		}
+		history, _ := agent.preparePrompt(msgs, todos)
+
+		require.NotEmpty(t, history)
+		require.False(t, hasReminder(history[0]), "reminder must not be the first message in history")
+		last := history[len(history)-1]
+		require.True(t, hasReminder(last), "reminder must be the last message in history")
+		require.Contains(t, last.Content[0].(fantasy.TextPart).Text, "CURRENT todo list")
+		require.Contains(t, last.Content[0].(fantasy.TextPart).Text, "write tests")
+	})
+
+	t.Run("sub-agent - no reminder appended at all", func(t *testing.T) {
+		env := testEnv(t)
+		sa := testSessionAgent(env, nil, nil, "test prompt")
+		agent := sa.(*sessionAgent)
+		agent.isSubAgent = true
+		ctx := t.Context()
+		sess, err := env.sessions.Create(ctx, "test")
+		require.NoError(t, err)
+		msgs := newMsgs(t, env, sess.ID)
+
+		todos := []session.Todo{
+			{Content: "write tests", Status: session.TodoStatusInProgress},
+		}
+		history, _ := agent.preparePrompt(msgs, todos)
+
+		require.NotEmpty(t, history)
+		for _, m := range history {
+			require.False(t, hasReminder(m), "sub-agent history must never contain a todo reminder")
+		}
+	})
 }
 
 func TestWorkaroundProviderMediaLimitations_TextOnlyModel(t *testing.T) {

@@ -38,6 +38,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/event"
 	"github.com/PHPCraftdream/rush/internal/log"
 	"github.com/PHPCraftdream/rush/internal/oauth/copilot"
+	"github.com/PHPCraftdream/rush/internal/session"
 	openaisdk "github.com/charmbracelet/openai-go/option"
 	"github.com/qjebbs/go-jsons"
 )
@@ -79,7 +80,7 @@ func effectiveReasoningEffort(model Model) string {
 	return ""
 }
 
-func getProviderOptions(model Model, providerCfg config.ProviderConfig) fantasy.ProviderOptions {
+func getProviderOptions(sessionID string, model Model, providerCfg config.ProviderConfig) fantasy.ProviderOptions {
 	options := fantasy.ProviderOptions{}
 
 	cfgOpts := []byte("{}")
@@ -145,11 +146,21 @@ func getProviderOptions(model Model, providerCfg config.ProviderConfig) fantasy.
 			}
 			parsed, err := openai.ParseResponsesOptions(mergedOptions)
 			if err == nil {
+				// Route cache-affine requests to the same backend host (session-stable, opaque).
+				if parsed.PromptCacheKey == nil && sessionID != "" {
+					hash := session.HashID(sessionID)
+					parsed.PromptCacheKey = &hash
+				}
 				options[openai.Name] = parsed
 			}
 		} else {
 			parsed, err := openai.ParseOptions(mergedOptions)
 			if err == nil {
+				// Route cache-affine requests to the same backend host (session-stable, opaque).
+				if parsed.PromptCacheKey == nil && sessionID != "" {
+					hash := session.HashID(sessionID)
+					parsed.PromptCacheKey = &hash
+				}
 				options[openai.Name] = parsed
 			}
 		}
@@ -356,8 +367,8 @@ func getProviderOptions(model Model, providerCfg config.ProviderConfig) fantasy.
 	return options
 }
 
-func mergeCallOptions(model Model, cfg config.ProviderConfig) (fantasy.ProviderOptions, *float64, *float64, *int64, *float64, *float64) {
-	modelOptions := getProviderOptions(model, cfg)
+func mergeCallOptions(sessionID string, model Model, cfg config.ProviderConfig) (fantasy.ProviderOptions, *float64, *float64, *int64, *float64, *float64) {
+	modelOptions := getProviderOptions(sessionID, model, cfg)
 	temp := cmp.Or(model.ModelCfg.Temperature, model.CatwalkCfg.Options.Temperature)
 	topP := cmp.Or(model.ModelCfg.TopP, model.CatwalkCfg.Options.TopP)
 	topK := cmp.Or(model.ModelCfg.TopK, model.CatwalkCfg.Options.TopK)

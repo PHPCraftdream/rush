@@ -37,12 +37,16 @@ import (
 // was survivable. The snapshot now reads every field ONCE at turn start —
 // that is the whole point, since a concurrent session can rewrite the shared
 // fields mid-turn — so a nil here panics instead of silently not mattering.
+//
+// cacheKeepAlive joined the list once runTurn started calling
+// cancelCacheKeepAlive unconditionally at turn start (agent_cache_keepalive.go).
 func newLockTestSessionAgent(dataDir string, isSubAgent bool) *sessionAgent {
 	return &sessionAgent{
 		dataDir:            dataDir,
 		isSubAgent:         isSubAgent,
 		activeRequests:     csync.NewMap[string, context.CancelFunc](),
 		mailboxes:          csync.NewMap[string, *mailbox](),
+		cacheKeepAlive:     csync.NewMap[string, *cacheKeepAliveEntry](),
 		tools:              csync.NewSliceFrom[fantasy.AgentTool](nil),
 		smartModel:         csync.NewValue(Model{}),
 		fastModel:          csync.NewValue(Model{}),

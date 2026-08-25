@@ -472,7 +472,7 @@ func (c *coordinator) RebuildSessionAgentCall(ctx context.Context, data session.
 	// reaches Run, so we must do the same here or every durably-recovered call
 	// silently loses its provider options and sampling knobs.
 	smartProviderCfg, _ := cfg.Providers.Get(smartModel.ModelCfg.Provider)
-	providerOptions, temp, topP, topK, freqPenalty, presPenalty := mergeCallOptions(smartModel, smartProviderCfg)
+	providerOptions, temp, topP, topK, freqPenalty, presPenalty := mergeCallOptions(data.SessionID, smartModel, smartProviderCfg)
 
 	return SessionAgentCall{
 		SessionID:            data.SessionID,

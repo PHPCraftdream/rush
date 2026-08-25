@@ -612,6 +612,10 @@ type sessionAgent struct {
 	// explicitly deleted — same "one map, lazily populated, entries live
 	// forever" lifetime as activeRequests today.
 	mailboxes *csync.Map[string, *mailbox]
+	// cacheKeepAlive holds one pending keep-alive timer per session, armed
+	// after a turn writes to the provider's ephemeral prompt cache. See
+	// agent_cache_keepalive.go.
+	cacheKeepAlive *csync.Map[string, *cacheKeepAliveEntry]
 	// peakHoursCheck, when non-nil, is called once per step from
 	// OnStepFinish to re-check whether the smart model's provider has
 	// entered its peak_hours refusal window mid-turn. Returns nil while
@@ -737,6 +741,7 @@ func NewSessionAgent(
 		activeRequests:             csync.NewMap[string, context.CancelFunc](),
 		summarizeQueue:             csync.NewMap[string, *SummarizeSnapshot](),
 		mailboxes:                  csync.NewMap[string, *mailbox](),
+		cacheKeepAlive:             csync.NewMap[string, *cacheKeepAliveEntry](),
 		streamIdleTimeout:          opts.StreamIdleTimeout,
 		streamWatchdogTick:         opts.StreamWatchdogTick,
 		titleJoinGrace:             opts.TitleJoinGrace,

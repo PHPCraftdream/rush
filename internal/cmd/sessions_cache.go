@@ -112,11 +112,19 @@ type cacheRowJSON struct {
 }
 
 type cacheReportJSON struct {
-	SessionID    string         `json:"session_id"`
-	ByModel      []cacheRowJSON `json:"by_model"`
-	Total        cacheRowJSON   `json:"total"`
-	MissingUsage int64          `json:"messages_missing_usage"`
-	Coverage     *float64       `json:"coverage"`
+	SessionID     string                 `json:"session_id"`
+	ByModel       []cacheRowJSON         `json:"by_model"`
+	Total         cacheRowJSON           `json:"total"`
+	MissingUsage  int64                  `json:"messages_missing_usage"`
+	Coverage      *float64               `json:"coverage"`
+	Invalidations []cacheInvalidationRow `json:"cache_invalidations,omitempty"`
+}
+
+// cacheInvalidationRow is the --json shape for a detected warm->cold
+// transition.
+type cacheInvalidationRow struct {
+	MessageID           string `json:"message_id"`
+	CacheCreationTokens int64  `json:"cache_creation_tokens"`
 }
 
 func toCacheRow(u message.TokenUsage, messages, estimated int64) cacheRowJSON {
@@ -195,13 +203,58 @@ func sessionsCacheCmdRun(cmd *cobra.Command, args []string) error {
 		return report.ByModel[i].Usage.PromptTokens() > report.ByModel[j].Usage.PromptTokens()
 	})
 
-	if asJSON {
-		return renderCacheJSON(sessionID, report)
+	msgs, err := a.Messages.List(ctx, sessionID)
+	if err != nil {
+		return err
 	}
-	return renderCacheText(sessionID, report)
+	invalidations := detectCacheInvalidations(msgs)
+
+	if asJSON {
+		return renderCacheJSON(sessionID, report, invalidations)
+	}
+	return renderCacheText(sessionID, report, invalidations)
 }
 
-func renderCacheJSON(sessionID string, report message.UsageReport) error {
+// cacheInvalidation is a warm->cold transition: the previous turn read a
+// well-warmed cache and this one suddenly wrote from scratch, which is the
+// signature of something upstream of it changing the prompt prefix.
+type cacheInvalidation struct {
+	MessageID           string
+	CacheCreationTokens int64
+}
+
+// warmCacheFloor is the minimum prior CacheReadTokens before a drop to zero
+// counts as a genuine invalidation rather than a session that was never
+// meaningfully warm.
+const warmCacheFloor = 2048
+
+// detectCacheInvalidations walks a session's messages in order and flags
+// turns where a warm cache (prev read >= warmCacheFloor) went cold (this
+// turn read 0 but wrote something) on a native-cache provider. Gated on
+// CacheSupportNative because implicit-cache providers report noisy
+// CacheReadTokens that would false-positive on every turn.
+func detectCacheInvalidations(msgs []message.Message) []cacheInvalidation {
+	var out []cacheInvalidation
+	var prev *message.TokenUsage
+	for _, m := range msgs {
+		u := m.Usage
+		if u == nil || u.CacheSupport != message.CacheSupportNative {
+			prev = u
+			continue
+		}
+		if prev != nil && prev.CacheReadTokens >= warmCacheFloor &&
+			u.CacheReadTokens == 0 && u.CacheCreationTokens > 0 {
+			out = append(out, cacheInvalidation{
+				MessageID:           m.ID,
+				CacheCreationTokens: u.CacheCreationTokens,
+			})
+		}
+		prev = u
+	}
+	return out
+}
+
+func renderCacheJSON(sessionID string, report message.UsageReport, invalidations []cacheInvalidation) error {
 	out := cacheReportJSON{
 		SessionID:    sessionID,
 		ByModel:      make([]cacheRowJSON, 0, len(report.ByModel)),
@@ -214,12 +267,15 @@ func renderCacheJSON(sessionID string, report message.UsageReport) error {
 	if cov, ok := report.Coverage(); ok {
 		out.Coverage = &cov
 	}
+	for _, inv := range invalidations {
+		out.Invalidations = append(out.Invalidations, cacheInvalidationRow(inv))
+	}
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	return enc.Encode(out)
 }
 
-func renderCacheText(sessionID string, report message.UsageReport) error {
+func renderCacheText(sessionID string, report message.UsageReport, invalidations []cacheInvalidation) error {
 	if len(report.ByModel) == 0 {
 		// sessionID is empty for the cross-session period views.
 		if sessionID == "" {
@@ -280,6 +336,13 @@ func renderCacheText(sessionID string, report message.UsageReport) error {
 		fmt.Printf("counts were derived from message lengths and are approximate).\n")
 	}
 
+	// A warm cache going cold mid-session usually means something upstream of
+	// that turn changed the prompt prefix (e.g. a volatile message inserted).
+	for _, inv := range invalidations {
+		fmt.Printf("\nCACHE INVALIDATION: message %s lost the cache and re-wrote %s tokens.\n",
+			short(inv.MessageID), formatInt64(inv.CacheCreationTokens))
+	}
+
 	return nil
 }
 
@@ -332,9 +395,9 @@ func cacheByModel(ctx context.Context, a *app.App, rng timeRange, asJSON bool) e
 		return report.ByModel[i].Usage.PromptTokens() > report.ByModel[j].Usage.PromptTokens()
 	})
 	if asJSON {
-		return renderCacheJSON("", report)
+		return renderCacheJSON("", report, nil)
 	}
-	return renderCacheText("", report)
+	return renderCacheText("", report, nil)
 }
 
 // dayRowJSON is the --by day --json shape. CacheHitRatio is intentionally

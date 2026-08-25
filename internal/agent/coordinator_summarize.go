@@ -144,7 +144,7 @@ func (c *coordinator) buildSummarizeSnapshot(ctx context.Context, sessionID stri
 	}
 
 	// Build provider options from the resolved model.
-	opts := getProviderOptions(resolved.smart, providerCfg)
+	opts := getProviderOptions(sessionID, resolved.smart, providerCfg)
 
 	// Use the prompt prefix from the resolved snapshot (provider config's
 	// prefix, already set by resolveSessionModels).
