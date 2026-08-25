@@ -866,6 +866,12 @@ export function removeSessionQueueAndBusy(id: string) {
  * removeSession (live deletion) and the sessions_list handler in
  * useWS.ts (deletion that happened while this tab was offline). */
 export function removeSubAgentState(id: string) {
+  // Reaps one level of nesting: direct children of `id` only, not
+  // grandchildren. Safe today because sub-agents cannot spawn sub-agents —
+  // AgentTask's allowed toolset (resolveReadOnlyTools plus
+  // workerToolNames, see internal/config/config.go and
+  // internal/agent/coordinator_tools.go) never includes the `agent` tool.
+  // If that ever changes, this needs to walk the whole subtree instead.
   const doomed = [id];
   for (const [sub, parent] of $subAgentSessions.get()) {
     if (parent === id) doomed.push(sub);
