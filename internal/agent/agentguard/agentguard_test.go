@@ -264,6 +264,64 @@ func TestCheck_BlocksCommandWrappers(t *testing.T) {
 	}
 }
 
+// Task #741 regression: -ScriptBlock { ... } (Invoke-Command/icm/Start-Job)
+// and a bare positional { ... } (iex/icm) previously bypassed the agent
+// denylist entirely. `-ScriptBlock` fell into the generic flag-skip branch
+// of extractWrapperInner, so the function returned the NEXT token — the
+// bare `{` (or `{Start-Process` glued by the tokenizer) — instead of the
+// actual payload inside the braces, and nothing inside was ever checked.
+//
+// REVERT CHECK PROCEDURE:
+//  1. In agentguard.go, remove the "-scriptblock" branch and the
+//     `strings.HasPrefix(t, "{")` branch from extractWrapperInner (restore
+//     the version before task #741).
+//  2. Run: go test ./internal/agent/agentguard -run TestCheck_BlocksScriptBlockBypass -v
+//  3. FAIL: these commands return nil instead of *DeniedError.
+//  4. Restore the branches and PASS.
+func TestCheck_BlocksScriptBlockBypass(t *testing.T) {
+	cases := []string{
+		"Invoke-Command -ScriptBlock { Start-Process claude }",
+		"icm -ScriptBlock {claude}",
+		"icm -ScriptBlock { claude --print hi }",
+		"Start-Job -ScriptBlock { claude }",
+		"Start-Job -ScriptBlock { saps claude }",
+		`iex "{ claude }"`,
+		"icm { claude }",
+		// Multi-statement block: the blockable statement isn't first.
+		`Invoke-Command -ScriptBlock { Write-Host "hi"; Start-Process claude }`,
+		// Nested inside a shell wrapper too.
+		`powershell -c "Invoke-Command -ScriptBlock { claude }"`,
+	}
+	for _, cmd := range cases {
+		t.Run(cmd, func(t *testing.T) {
+			err := Check(cmd)
+			require.Error(t, err, "should block: %s", cmd)
+			var de *DeniedError
+			require.True(t, errors.As(err, &de), "expected DeniedError, got %T for: %s", err, cmd)
+		})
+	}
+}
+
+// TestCheck_ScriptBlockAllowsHarmless proves the fix didn't overcorrect:
+// a harmless script block with nothing blockable inside must still be
+// allowed. Turning this into "any brace block is blocked" would break
+// legitimate PowerShell usage (Invoke-Command is a normal remoting/local
+// exec cmdlet, not inherently dangerous).
+func TestCheck_ScriptBlockAllowsHarmless(t *testing.T) {
+	cases := []string{
+		"Invoke-Command -ScriptBlock { Write-Host hello }",
+		`Invoke-Command -ScriptBlock { Write-Host "hello" }`,
+		"icm -ScriptBlock {Get-Process}",
+		"Start-Job -ScriptBlock { Get-Date }",
+		`iex "{ Write-Host hi }"`,
+	}
+	for _, cmd := range cases {
+		t.Run(cmd, func(t *testing.T) {
+			assert.NoError(t, Check(cmd))
+		})
+	}
+}
+
 func TestCheck_BlocksEncodedCommand(t *testing.T) {
 	// Encode "claude -p test" as UTF-16LE → base64 (PowerShell convention).
 	// Verified output: c2EgIIA= is wrong — let's compute properly.
@@ -419,6 +477,58 @@ func TestCheckWindowSafety_BlocksWindowOpenerInsideCommandWrapper(t *testing.T) 
 			err := CheckWindowSafety(cmd)
 			require.Error(t, err, "should block: %s", cmd)
 			assert.Contains(t, err.Error(), "new, visible window")
+		})
+	}
+}
+
+// Task #741 regression, window-safety path: `-ScriptBlock { Start-Process
+// notepad }` previously bypassed CheckWindowSafety the same way it bypassed
+// Check — `-ScriptBlock` fell into the generic flag-skip branch of
+// extractWrapperInner and the function returned the bare `{` token instead
+// of the payload inside the braces, so the window-opener verb buried inside
+// was never inspected.
+//
+// REVERT CHECK PROCEDURE:
+//  1. In agentguard.go, remove the "-scriptblock" branch and the
+//     `strings.HasPrefix(t, "{")` branch from extractWrapperInner.
+//  2. Run: go test ./internal/agent/agentguard -run TestCheckWindowSafety_BlocksScriptBlockBypass -v
+//  3. FAIL: these commands return nil instead of *WindowOpenerError.
+//  4. Restore the branches and PASS.
+func TestCheckWindowSafety_BlocksScriptBlockBypass(t *testing.T) {
+	cases := []string{
+		"Invoke-Command -ScriptBlock { Start-Process notepad }",
+		"icm -ScriptBlock {saps notepad}",
+		"icm -ScriptBlock { saps notepad }",
+		"Start-Job -ScriptBlock { Start-Process notepad }",
+		`iex "{ saps notepad }"`,
+		"icm { saps notepad }",
+		// Multi-statement block: the window-opener isn't the first statement.
+		`Invoke-Command -ScriptBlock { Write-Host "hi"; Start-Process notepad }`,
+		// Nested inside a shell wrapper too.
+		`powershell -c "Invoke-Command -ScriptBlock { saps notepad }"`,
+	}
+	for _, cmd := range cases {
+		t.Run(cmd, func(t *testing.T) {
+			err := CheckWindowSafety(cmd)
+			require.Error(t, err, "should block: %s", cmd)
+			assert.Contains(t, err.Error(), "new, visible window")
+		})
+	}
+}
+
+// TestCheckWindowSafety_ScriptBlockAllowsHarmless proves the fix didn't
+// overcorrect: a harmless script block with nothing window-opening inside
+// must still be allowed.
+func TestCheckWindowSafety_ScriptBlockAllowsHarmless(t *testing.T) {
+	cases := []string{
+		"Invoke-Command -ScriptBlock { Write-Host hello }",
+		`Invoke-Command -ScriptBlock { Write-Host "hello" }`,
+		"icm -ScriptBlock {Get-Process}",
+		`iex "{ Write-Host hi }"`,
+	}
+	for _, cmd := range cases {
+		t.Run(cmd, func(t *testing.T) {
+			assert.Nil(t, CheckWindowSafety(cmd))
 		})
 	}
 }

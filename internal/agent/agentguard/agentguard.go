@@ -721,6 +721,15 @@ func decodePowerShellEncoded(b64 string) string {
 // invocation (`start <cmd>`, `Start-Process <cmd>`, `iex "<cmd>"` …).
 // Skips leading PowerShell-isms — quoted strings, the `&` invocation
 // operator, and -Verb/-WindowStyle/-FilePath flag spellings.
+//
+// Also handles PowerShell script blocks: `-ScriptBlock { ... }` (paired with
+// Invoke-Command/icm/Start-Job) and a bare `{ ... }` passed positionally
+// (`iex { ... }`). Without this, `-ScriptBlock` fell into the generic
+// flag-skip branch below and the function returned the NEXT token — the
+// bare `{` (or `{Start-Process` glued by the tokenizer) — inspecting
+// literal brace punctuation instead of the payload inside it, so the real
+// command slipped through unchecked. See extractScriptBlockInner for how
+// the (possibly multi-token, possibly glued) `{ ... }` span is reassembled.
 func extractWrapperInner(rest []string) string {
 	for i, t := range rest {
 		if t == "" {
@@ -729,6 +738,14 @@ func extractWrapperInner(rest []string) string {
 		// PowerShell flags often paired with Start-Process: -FilePath <cmd>,
 		// -ArgumentList "..."; the actual exe sits behind -FilePath.
 		if strings.EqualFold(t, "-filepath") && i+1 < len(rest) {
+			return rest[i+1]
+		}
+		// -ScriptBlock { ... } (Invoke-Command/icm/Start-Job): the actual
+		// payload is the braced block that follows.
+		if strings.EqualFold(t, "-scriptblock") && i+1 < len(rest) {
+			if inner, ok := extractScriptBlockInner(rest[i+1:]); ok {
+				return inner
+			}
 			return rest[i+1]
 		}
 		// Skip POSIX-style (-x) AND cmd-style (/x) flags. `start /b claude`,
@@ -740,9 +757,42 @@ func extractWrapperInner(rest []string) string {
 		if t == "&" {
 			continue
 		}
+		// Bare script block passed positionally: `iex { ... }`, `icm { ... }`.
+		if strings.HasPrefix(t, "{") {
+			if inner, ok := extractScriptBlockInner(rest[i:]); ok {
+				return inner
+			}
+		}
 		return strings.Trim(t, `"'`)
 	}
 	return ""
+}
+
+// extractScriptBlockInner reassembles the contents of a `{ ... }`
+// PowerShell script block out of the tokens that follow its opening brace
+// (tokens[0] is expected to start with "{", e.g. "{" itself or "{saps"
+// glued by tokenize's whitespace-only splitting). It joins tokens with a
+// space until it finds the token that closes the block (exactly "}" or one
+// ending in "}", e.g. "notepad}"), strips the outer braces, and returns the
+// raw content for the caller to Check/CheckWindowSafety recursively — which
+// already splits on ';' (splitChained), so a multi-statement block like
+// `{ Write-Host "hi"; Start-Process notepad }` gets every statement
+// inspected, not just the first. ok is false if no closing '}' is found
+// (malformed/truncated input) — callers fall back to their existing
+// single-token behavior in that case.
+func extractScriptBlockInner(tokens []string) (string, bool) {
+	if len(tokens) == 0 || !strings.HasPrefix(tokens[0], "{") {
+		return "", false
+	}
+	for end := 0; end < len(tokens); end++ {
+		if strings.HasSuffix(tokens[end], "}") {
+			joined := strings.Join(tokens[:end+1], " ")
+			joined = strings.TrimPrefix(joined, "{")
+			joined = strings.TrimSuffix(joined, "}")
+			return strings.TrimSpace(joined), true
+		}
+	}
+	return "", false
 }
 
 // extractPackageRunnerTarget returns the FIRST positional arg that is the
