@@ -9,6 +9,7 @@ import {
   $sessions,
   $activeSessionID,
   $busySessions,
+  $subAgentSessions,
   $messageQueue,
   applyMessagesSnapshot,
   applySubAgentMessagesSnapshot,
@@ -17,6 +18,7 @@ import {
   upsertSession,
   removeSession,
   removeSessionQueueAndBusy,
+  removeSubAgentState,
   upsertMessage,
   removeMessage,
   setSessionBusy,
@@ -46,6 +48,19 @@ function getIDFromHash(): string | null {
     return hash.slice(2);
   }
   return null;
+}
+
+// Reconnect housekeeping frames must not vanish silently (task #727):
+// _connected can run while the socket has already flipped out of OPEN —
+// the same race class task #726 documented for the agent_busy flush —
+// and a bare send() would drop the frame. These refreshes are
+// idempotent, so sendQueued (#692) is safe: a failed send parks the
+// frame in the offline outbox for the next reconnect's flush. Only the
+// outbox-full refusal (100 frames) truly loses it, and that gets logged.
+function sendReconnectHousekeeping(type: string, payload?: unknown) {
+  if (!ws.sendQueued(type, payload)) {
+    console.warn(`[useWS] reconnect ${type} frame dropped (offline outbox full)`);
+  }
 }
 
 export function useWS() {
@@ -96,14 +111,21 @@ export function useWS() {
           if (queuedIDs.has(id)) nextBusy.add(id);
         }
         $busySessions.set(nextBusy);
-        sendListSessions();
-        ws.send("get_config");
-        ws.send("get_skills");
+        // list_sessions deliberately stays a plain send — parking a
+        // poll frame in the outbox would only deliver a stale-watermark
+        // request — but its result is checked now (task #727): a silent
+        // drop here would leave the sidebar stale until the next 5s
+        // poll or reconnect.
+        if (!sendListSessions()) {
+          console.warn("[useWS] reconnect list_sessions refresh was not sent");
+        }
+        sendReconnectHousekeeping("get_config");
+        sendReconnectHousekeeping("get_skills");
         // Sync theme from localStorage to server on every (re)connect
         // so the server's state always matches what the client has saved locally.
         const localTheme = localStorage.getItem("rush_theme");
         if (localTheme) {
-          ws.send("set_theme", { theme: localTheme });
+          sendReconnectHousekeeping("set_theme", { theme: localTheme });
         }
       }),
 
@@ -170,6 +192,18 @@ export function useWS() {
         const liveIDs = new Set(sessions.map((s) => s.ID));
         for (const id of [...$messageQueue.get().keys(), ...$busySessions.get()]) {
           if (!liveIDs.has(id)) removeSessionQueueAndBusy(id);
+        }
+
+        // Offline-deletion companion for sub-agent state (task #727):
+        // the cascade session_deleted pushes that would have cleared it
+        // via removeSession never arrive for deletions that happened
+        // while this tab was disconnected. Sessions.Delete removes
+        // sub-sessions with their parent and ListSessions only returns
+        // top-level rows, so a parent absent from the fresh list means
+        // its whole sub-agent branch is gone — reap it. No-op on
+        // ordinary polls, where every parent is present.
+        for (const parent of new Set($subAgentSessions.get().values())) {
+          if (!liveIDs.has(parent)) removeSubAgentState(parent);
         }
 
         // Foreign-owned active session: kick a load_messages refresh on

@@ -155,6 +155,10 @@ export function removeSession(id: string) {
   // A session that no longer exists can never receive the
   // agent_busy=false that flushes its queue (task #726).
   removeSessionQueueAndBusy(id);
+  // Sub-agent state, delete tombstones and block breaks are keyed
+  // independently of $sessions — clear them with the row too, or they
+  // grow once per session ever seen for the tab's lifetime (task #727).
+  removeSubAgentState(id);
 }
 
 export function setActiveSession(id: string | null) {
@@ -846,6 +850,47 @@ export function removeSessionQueueAndBusy(id: string) {
   const q = new Map($messageQueue.get());
   if (q.delete(id)) $messageQueue.set(q);
   if ($busySessions.get().has(id)) setSessionBusy(id, false);
+}
+
+/** Clears every piece of state that outlives a removed session's row
+ * (task #727): the sub-agent registration and transcript keyed by the id
+ * itself when it is a sub-agent session, plus the same for every
+ * sub-agent session parented by it — the server cascades sub-session
+ * deletion with the parent (internal/server/handlers_sessions.go
+ * handleDeleteSession → Sessions.Delete), so a removed parent strands
+ * its whole branch. Also drops the per-session delete tombstones and
+ * whichever message-block breaks can still be attributed:
+ * $messageBlockBreaks is keyed by MESSAGE id, so the only attribution
+ * available is the message lists themselves — the active session's
+ * $messages and each doomed sub-agent transcript. Called from
+ * removeSession (live deletion) and the sessions_list handler in
+ * useWS.ts (deletion that happened while this tab was offline). */
+export function removeSubAgentState(id: string) {
+  const doomed = [id];
+  for (const [sub, parent] of $subAgentSessions.get()) {
+    if (parent === id) doomed.push(sub);
+  }
+
+  const msgIDs = new Set<string>();
+  if ($activeSessionID.get() === id) {
+    for (const m of $messages.get()) msgIDs.add(m.ID);
+  }
+  const subs = new Map($subAgentSessions.get());
+  const subMsgs = new Map($subAgentMessages.get());
+  for (const d of doomed) {
+    subs.delete(d);
+    for (const m of subMsgs.get(d) ?? []) msgIDs.add(m.ID);
+    subMsgs.delete(d);
+    deletedMessageIDs.delete(d);
+  }
+  if (subs.size !== $subAgentSessions.get().size) $subAgentSessions.set(subs);
+  if (subMsgs.size !== $subAgentMessages.get().size) $subAgentMessages.set(subMsgs);
+  if (msgIDs.size > 0) {
+    const breaks = new Map($messageBlockBreaks.get());
+    let dropped = false;
+    for (const mid of msgIDs) dropped = breaks.delete(mid) || dropped;
+    if (dropped) $messageBlockBreaks.set(breaks);
+  }
 }
 
 export function removeQueuedMessage(sessionID: string, id: string) {

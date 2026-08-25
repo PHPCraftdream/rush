@@ -353,12 +353,15 @@ export function recordSessionLiveDelete(id: string) {
 
 /** Sends list_sessions tagged with a fresh correlation ID that becomes the
  * only one whose reply will be accepted (mirrors sendLoadMessages). Also
- * records the live-event watermark at send time. */
-export function sendListSessions() {
+ * records the live-event watermark at send time. Returns whether the
+ * frame actually left the socket (see WSClient.send) so reconnect
+ * callers can report a drop instead of silently ignoring it (task #727);
+ * the pollers re-issue it every 5s regardless. */
+export function sendListSessions(): boolean {
   const id = crypto.randomUUID();
   latestListSessionsID = id;
   sessionsRequestSeq = sessionsLiveSeq;
-  ws.send("list_sessions", undefined, id);
+  return ws.send("list_sessions", undefined, id);
 }
 
 /** True if a sessions_list reply is not the answer to the most recently sent
