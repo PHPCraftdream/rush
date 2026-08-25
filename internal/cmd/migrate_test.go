@@ -1644,8 +1644,14 @@ func TestMigrateContextFileCaseInsensitiveFilesystemHazard(t *testing.T) {
 	assert.NotContains(t, b2.String(), "CONFLICT")
 
 	// Content still intact and reachable under some valid casing after the
-	// case-only operation above.
-	finalContent, err := os.ReadFile(filepath.Join(tmpDir, "RUSH.md"))
+	// case-only operation above. On a case-insensitive filesystem "RUSH.md"
+	// still resolves (same file as "rUsH.md"); on a case-sensitive one
+	// (Linux) the rename actually moved it, so check under its real name.
+	finalPath := filepath.Join(tmpDir, "RUSH.md")
+	if _, statErr := os.Stat(finalPath); os.IsNotExist(statErr) {
+		finalPath = filepath.Join(tmpDir, "rUsH.md")
+	}
+	finalContent, err := os.ReadFile(finalPath)
 	require.NoError(t, err, "content should remain reachable, not lost, after case-only rename")
 	assert.Equal(t, content, string(finalContent))
 }
