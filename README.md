@@ -739,7 +739,7 @@ and always attempts global migrations. Use `--dry-run` to preview changes.
 ## Configuration
 
 > [!TIP]
-> Rush ships with a builtin `crush-config` skill for configuring itself. In
+> Rush ships with a builtin `rush-config` skill for configuring itself. In
 > many cases you can simply ask Rush to configure itself.
 
 Rush runs great with no configuration. That said, if you do need or want to
@@ -1030,7 +1030,7 @@ from the agent, including builtin skills and skills discovered from disk.
 {
   "$schema": "https://charm.land/crush.json",
   "options": {
-    "disabled_skills": ["crush-config"]
+    "disabled_skills": ["rush-config"]
   }
 }
 ```

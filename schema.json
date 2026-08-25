@@ -460,7 +460,7 @@
           "items": {
             "type": "string",
             "examples": [
-              "crush-config"
+              "rush-config"
             ]
           },
           "type": "array",

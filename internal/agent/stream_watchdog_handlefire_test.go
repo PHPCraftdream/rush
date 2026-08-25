@@ -1,6 +1,6 @@
 // Tests for sessionAgent.handleWatchdogFire, the production fire handler
 // the watchdog onFire closure dispatches to: cause storage and the async
-// goroutine-dump write (against the real crushlog write path), plus use of
+// goroutine-dump write (against the real rushlog write path), plus use of
 // the largeModel snapshot in the diagnostic log. Hosts lockedBuffer.
 
 package agent
@@ -18,7 +18,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/csync"
-	crushlog "github.com/PHPCraftdream/rush/internal/log"
+	rushlog "github.com/PHPCraftdream/rush/internal/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -34,16 +34,16 @@ import (
 // method runTurn's onFire closure dispatches to (see agent.go) — with no
 // watchdog, no turn, no VCR involved.
 //
-// The write is the REAL crushlog.WriteGoroutineDump (not a fake). To make
+// The write is the REAL rushlog.WriteGoroutineDump (not a fake). To make
 // "the write is dispatched async and does not delay the return" a
 // deterministic, non-flaky assertion rather than a timing guess against an
 // ordinarily near-instant local disk write, this test installs a
-// crushlog.SetWriteDelayHookForTest hook that blocks the real write at a
+// rushlog.SetWriteDelayHookForTest hook that blocks the real write at a
 // known point until the test explicitly releases it — a genuine
 // synchronization barrier, not a race against wall-clock I/O speed.
 //
 // An earlier version of this test tried to manufacture "slow" instead of
-// "blocked": it pointed crushlog.SetLogDirForTest at a deliberately deep,
+// "blocked": it pointed rushlog.SetLogDirForTest at a deliberately deep,
 // not-yet-created 300-level directory so os.MkdirAll would take measurably
 // long. That failed outright on macOS CI (build(macos-latest), 3 consecutive
 // fork/main pushes) because the kernel enforces PATH_MAX=1024 there; the
@@ -67,11 +67,11 @@ import (
 //     lands real, readable goroutine-stack content on disk.
 func TestSessionAgent_HandleWatchdogFire_StoresCauseAndDispatchesDumpAsync(t *testing.T) {
 	dumpDir := t.TempDir()
-	crushlog.SetLogDirForTest(t, dumpDir)
+	rushlog.SetLogDirForTest(t, dumpDir)
 
 	hookEntered := make(chan struct{})
 	release := make(chan struct{})
-	crushlog.SetWriteDelayHookForTest(t, func() {
+	rushlog.SetWriteDelayHookForTest(t, func() {
 		close(hookEntered)
 		<-release
 	})
@@ -160,7 +160,7 @@ func TestSessionAgent_HandleWatchdogFire_StoresCauseAndDispatchesDumpAsync(t *te
 	}, 5*time.Second, 20*time.Millisecond, "expected a goroutine dump with real content to appear matching %s", pattern)
 	require.Len(t, matches, 1, "expected exactly one dump file from this call")
 	assert.Contains(t, string(dumpContent), "stream watchdog fired",
-		"the dump must carry the reason handleWatchdogFire passes to crushlog.CaptureGoroutineStack")
+		"the dump must carry the reason handleWatchdogFire passes to rushlog.CaptureGoroutineStack")
 	assert.Contains(t, string(dumpContent), "goroutine ", "the dump must contain real goroutine stacks")
 }
 
@@ -209,7 +209,7 @@ func TestSessionAgent_HandleWatchdogFire_UsesPassedSmartModelSnapshot(t *testing
 	// Redirect the goroutine-dump dir so the async WriteGoroutineDump inside
 	// handleWatchdogFire does not pollute the real log dir; a shallow tempdir
 	// also keeps that write near-instant.
-	crushlog.SetLogDirForTest(t, t.TempDir())
+	rushlog.SetLogDirForTest(t, t.TempDir())
 
 	// a.largeModel's CURRENT value — what the BUGGY code would read at fire
 	// time via a.largeModel.Get().

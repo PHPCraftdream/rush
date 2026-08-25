@@ -17,23 +17,23 @@ import (
 	"charm.land/fantasy"
 )
 
-const RushLogsToolName = "crush_logs"
+const RushLogsToolName = "rush_logs"
 
-//go:embed crush_logs.md.tpl
-var crushLogsDescriptionTmpl []byte
+//go:embed rush_logs.md.tpl
+var rushLogsDescriptionTmpl []byte
 
-var crushLogsDescriptionTpl = template.Must(
-	template.New("crushLogsDescription").
-		Parse(string(crushLogsDescriptionTmpl)),
+var rushLogsDescriptionTpl = template.Must(
+	template.New("rushLogsDescription").
+		Parse(string(rushLogsDescriptionTmpl)),
 )
 
-type crushLogsDescriptionData struct {
+type rushLogsDescriptionData struct {
 	DefaultLines int
 	MaxLines     int
 }
 
-func crushLogsDescription() string {
-	return renderTemplate(crushLogsDescriptionTpl, crushLogsDescriptionData{
+func rushLogsDescription() string {
+	return renderTemplate(rushLogsDescriptionTpl, rushLogsDescriptionData{
 		DefaultLines: defaultLogLines,
 		MaxLines:     maxLogLines,
 	})
@@ -76,7 +76,7 @@ type RushLogsParams struct {
 func NewRushLogsTool(logFile string) fantasy.AgentTool {
 	return fantasy.NewAgentTool(
 		RushLogsToolName,
-		crushLogsDescription(),
+		rushLogsDescription(),
 		func(ctx context.Context, params RushLogsParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
 			result := runRushLogs(logFile, params)
 			return fantasy.NewTextResponse(result), nil

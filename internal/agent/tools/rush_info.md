@@ -20,5 +20,5 @@ Get Rush's current runtime state: active models, provider, MCP status, skills, h
   loaded this session
 - Check [hooks] to see which hook events are configured and whether the
   hook runner is active
-- Pair with the crush-config skill to fix configuration issues
+- Pair with the rush-config skill to fix configuration issues
 </tips>

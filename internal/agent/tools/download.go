@@ -137,7 +137,7 @@ func NewDownloadTool(permissions permission.Service, workingDir string, client *
 				)), nil
 			}
 
-			req.Header.Set("User-Agent", "crush/1.0")
+			req.Header.Set("User-Agent", "rush/1.0")
 
 			resp, err := client.Do(req)
 			if err != nil {

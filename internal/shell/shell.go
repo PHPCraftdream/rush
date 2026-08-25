@@ -42,9 +42,9 @@ const (
 // A fresh slice is returned on every call so callers may append freely.
 func RushEnvMarkers() []string {
 	return []string{
-		"CRUSH=1",
-		"AGENT=crush",
-		"AI_AGENT=crush",
+		"RUSH=1",
+		"AGENT=rush",
+		"AI_AGENT=rush",
 	}
 }
 

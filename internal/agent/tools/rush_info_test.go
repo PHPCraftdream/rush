@@ -383,13 +383,13 @@ func TestRushInfo_Skills_MixedLoadedUnloaded(t *testing.T) {
 	allSkills := []*skills.Skill{
 		{Name: "go-doc", Builtin: false},
 		{Name: "bash", Builtin: false},
-		{Name: "crush-config", Builtin: true},
+		{Name: "rush-config", Builtin: true},
 	}
 	activeSkills := allSkills
 
 	tracker := skills.NewTracker(activeSkills)
 	tracker.MarkLoaded("bash")
-	tracker.MarkLoaded("crush-config")
+	tracker.MarkLoaded("rush-config")
 
 	cfg := config.NewTestStore(&config.Config{
 		Providers: csync.NewMap[string, config.ProviderConfig](),
@@ -397,7 +397,7 @@ func TestRushInfo_Skills_MixedLoadedUnloaded(t *testing.T) {
 	output := buildRushInfo(cfg, allSkills, activeSkills, tracker)
 	require.Contains(t, output, "[skills]")
 	require.Contains(t, output, "bash = user, loaded")
-	require.Contains(t, output, "crush-config = builtin, loaded")
+	require.Contains(t, output, "rush-config = builtin, loaded")
 	require.Contains(t, output, "go-doc = user, unloaded")
 }
 
@@ -406,12 +406,12 @@ func TestRushInfo_Skills_DisabledSkills(t *testing.T) {
 
 	allSkills := []*skills.Skill{
 		{Name: "bash", Builtin: false},
-		{Name: "crush-config", Builtin: true},
+		{Name: "rush-config", Builtin: true},
 		{Name: "image-convert", Builtin: false},
 	}
 	activeSkills := []*skills.Skill{
 		{Name: "bash", Builtin: false},
-		{Name: "crush-config", Builtin: true},
+		{Name: "rush-config", Builtin: true},
 	}
 
 	tracker := skills.NewTracker(activeSkills)
@@ -423,7 +423,7 @@ func TestRushInfo_Skills_DisabledSkills(t *testing.T) {
 	output := buildRushInfo(cfg, allSkills, activeSkills, tracker)
 	require.Contains(t, output, "[skills]")
 	require.Contains(t, output, "bash = user, unloaded")
-	require.Contains(t, output, "crush-config = builtin, unloaded")
+	require.Contains(t, output, "rush-config = builtin, unloaded")
 	require.Contains(t, output, "image-convert = user, disabled")
 }
 
@@ -454,7 +454,7 @@ func TestRushInfo_Skills_BuiltinOrigin(t *testing.T) {
 	t.Parallel()
 
 	allSkills := []*skills.Skill{
-		{Name: "crush-config", Builtin: true},
+		{Name: "rush-config", Builtin: true},
 		{Name: "my-skill", Builtin: false},
 	}
 	activeSkills := allSkills
@@ -464,7 +464,7 @@ func TestRushInfo_Skills_BuiltinOrigin(t *testing.T) {
 		Providers: csync.NewMap[string, config.ProviderConfig](),
 	})
 	output := buildRushInfo(cfg, allSkills, activeSkills, tracker)
-	require.Contains(t, output, "crush-config = builtin, unloaded")
+	require.Contains(t, output, "rush-config = builtin, unloaded")
 	require.Contains(t, output, "my-skill = user, unloaded")
 }
 

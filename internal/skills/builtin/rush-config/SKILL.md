@@ -1,5 +1,5 @@
 ---
-name: crush-config
+name: rush-config
 description: Use when the user needs help configuring Rush — working with rush.json, setting up providers, configuring LSPs, adding MCP servers, managing skills or permissions, or changing Rush behavior.
 ---
 
@@ -188,7 +188,7 @@ reviewed.
   "options": {
     "skills_paths": ["./skills"],
     "disabled_tools": ["bash", "sourcegraph"],
-    "disabled_skills": ["crush-config"],
+    "disabled_skills": ["rush-config"],
     "tui": {
       "compact_mode": false,
       "diff_mode": "unified",

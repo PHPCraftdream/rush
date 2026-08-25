@@ -394,7 +394,7 @@ type Options struct {
 	InitializeAs              string       `json:"initialize_as,omitempty" jsonschema:"description=Name of the context file to create/update during project initialization,default=AGENTS.md,example=AGENTS.md,example=RUSH.md,example=CLAUDE.md,example=docs/LLMs.md"`
 	Progress                  *bool        `json:"progress,omitempty" jsonschema:"description=Show indeterminate progress updates during long operations,default=true"`
 	DisableNotifications      bool         `json:"disable_notifications,omitempty" jsonschema:"description=Disable desktop notifications,default=false"`
-	DisabledSkills            []string     `json:"disabled_skills,omitempty" jsonschema:"description=List of skill names to disable and hide from the agent,example=crush-config"`
+	DisabledSkills            []string     `json:"disabled_skills,omitempty" jsonschema:"description=List of skill names to disable and hide from the agent,example=rush-config"`
 	// AllowPrivateNetworkFetch disables the SSRF guard (see
 	// internal/agent/tools/ssrf_guard.go) on download/fetch/agentic_fetch/
 	// web_fetch/web_search/sourcegraph, letting the model reach
@@ -776,8 +776,8 @@ func allToolNames() []string {
 		"read_delegation_transcript",
 		"ask_question",
 		"bash",
-		"crush_info",
-		"crush_logs",
+		"rush_info",
+		"rush_logs",
 		"job_output",
 		"job_kill",
 		"download",

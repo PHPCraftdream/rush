@@ -26,7 +26,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/notify"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/agent/tools/mcp"
-	crushlog "github.com/PHPCraftdream/rush/internal/log"
+	rushlog "github.com/PHPCraftdream/rush/internal/log"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/pubsub"
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -156,7 +156,7 @@ func (a *sessionAgent) handleWatchdogFire(
 	// or was force-killed first, never run at all — defeating the entire
 	// point of a diagnostic taken "at the only moment it is still
 	// available" (see the doc comment on CaptureGoroutineStack).
-	stackDump := crushlog.CaptureGoroutineStack("stream watchdog fired")
+	stackDump := rushlog.CaptureGoroutineStack("stream watchdog fired")
 	// Only the WRITE is dispatched async and NOT awaited: WriteGoroutineDump
 	// does a synchronous os.WriteFile with no timeout of its own (see its
 	// doc in internal/log/goroutine_dump.go). Since onFire now runs
@@ -170,7 +170,7 @@ func (a *sessionAgent) handleWatchdogFire(
 	// immediately preserves the already-captured evidence without putting
 	// an unbounded disk write on cancellation's critical path.
 	go func() {
-		if dumpPath, dumpErr := crushlog.WriteGoroutineDump(stackDump); dumpErr != nil {
+		if dumpPath, dumpErr := rushlog.WriteGoroutineDump(stackDump); dumpErr != nil {
 			slog.Warn("agent: failed to write goroutine dump for watchdog fire", "err", dumpErr)
 		} else {
 			slog.Warn("agent: wrote goroutine dump for watchdog fire", "path", dumpPath)

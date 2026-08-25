@@ -17,7 +17,7 @@ import (
 func createTestLogFile(t *testing.T, entries []map[string]any) string {
 	t.Helper()
 	tempDir := t.TempDir()
-	logFile := filepath.Join(tempDir, "crush.log")
+	logFile := filepath.Join(tempDir, "rush.log")
 
 	file, err := os.Create(logFile)
 	require.NoError(t, err)
@@ -123,14 +123,14 @@ func TestRushLogs_MaxCap(t *testing.T) {
 
 func TestRushLogs_MissingFile(t *testing.T) {
 	t.Parallel()
-	result := runRushLogs("/nonexistent/path/crush.log", RushLogsParams{Lines: 50})
+	result := runRushLogs("/nonexistent/path/rush.log", RushLogsParams{Lines: 50})
 	require.Contains(t, result, "No log file found")
 }
 
 func TestRushLogs_EmptyFile(t *testing.T) {
 	t.Parallel()
 	tempDir := t.TempDir()
-	logFile := filepath.Join(tempDir, "crush.log")
+	logFile := filepath.Join(tempDir, "rush.log")
 	file, err := os.Create(logFile)
 	require.NoError(t, err)
 	require.NoError(t, file.Close())
@@ -142,7 +142,7 @@ func TestRushLogs_EmptyFile(t *testing.T) {
 func TestRushLogs_MalformedLines(t *testing.T) {
 	t.Parallel()
 	tempDir := t.TempDir()
-	logFile := filepath.Join(tempDir, "crush.log")
+	logFile := filepath.Join(tempDir, "rush.log")
 
 	file, err := os.Create(logFile)
 	require.NoError(t, err)
@@ -302,7 +302,7 @@ func TestRushLogs_ReservedFields(t *testing.T) {
 func TestRushLogs_OversizedLines(t *testing.T) {
 	t.Parallel()
 	tempDir := t.TempDir()
-	logFile := filepath.Join(tempDir, "crush.log")
+	logFile := filepath.Join(tempDir, "rush.log")
 
 	file, err := os.Create(logFile)
 	require.NoError(t, err)
@@ -344,7 +344,7 @@ func TestRushLogs_OversizedLines(t *testing.T) {
 func TestRushLogs_PartialTrailingLine(t *testing.T) {
 	t.Parallel()
 	tempDir := t.TempDir()
-	logFile := filepath.Join(tempDir, "crush.log")
+	logFile := filepath.Join(tempDir, "rush.log")
 
 	file, err := os.Create(logFile)
 	require.NoError(t, err)

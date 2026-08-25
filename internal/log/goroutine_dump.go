@@ -27,7 +27,7 @@ var dumpSeq atomic.Uint64
 // the duration of the calling test, restoring the previous value via
 // t.Cleanup. Exists so tests OUTSIDE this package (e.g.
 // internal/agent's stream-watchdog-fire tests) can redirect where a REAL
-// crushlog.WriteGoroutineDump call lands without needing Setup's
+// rushlog.WriteGoroutineDump call lands without needing Setup's
 // process-wide sync.Once or reaching into this package's unexported logDir
 // directly. Safe to call from any test package; not for production use.
 func SetLogDirForTest(t testingTB, dir string) {

@@ -13,10 +13,10 @@ import (
 	"github.com/PHPCraftdream/rush/internal/skills"
 )
 
-const RushInfoToolName = "crush_info"
+const RushInfoToolName = "rush_info"
 
-//go:embed crush_info.md
-var crushInfoDescription string
+//go:embed rush_info.md
+var rushInfoDescription string
 
 type RushInfoParams struct{}
 
@@ -28,7 +28,7 @@ func NewRushInfoTool(
 ) fantasy.AgentTool {
 	return fantasy.NewAgentTool(
 		RushInfoToolName,
-		crushInfoDescription,
+		rushInfoDescription,
 		func(ctx context.Context, _ RushInfoParams, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
 			return fantasy.NewTextResponse(buildRushInfo(cfg, allSkills, activeSkills, skillTracker)), nil
 		},

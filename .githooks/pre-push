@@ -156,7 +156,7 @@ fi
 # mangling legitimate prose like "a large thinking budget") had missed
 # live --large/--small flag mentions, models.large/models.small config-key
 # docs, and quoted "large"/"small" slot names in --help text, error
-# strings, and the bundled crush-config skill. Nothing else in the
+# strings, and the bundled rush-config skill. Nothing else in the
 # toolchain would catch this -- it is not a compile error and go vet does
 # not know these strings are supposed to be in sync with the Go identifiers.
 step "no stale large/small model-slot spelling (renamed to smart/fast)"

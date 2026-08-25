@@ -575,8 +575,8 @@ func TestAllToolNames_CoversUnconditionallyBuiltTools(t *testing.T) {
 	unconditionallyBuilt := []string{
 		tools.AskQuestionToolName,
 		"bash",
-		"crush_info",
-		"crush_logs",
+		"rush_info",
+		"rush_logs",
 		"job_output",
 		"job_kill",
 		"download",

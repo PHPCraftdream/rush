@@ -294,11 +294,11 @@ var _ filetracker.Service = mockFileTracker{}
 func TestReadBuiltinFile(t *testing.T) {
 	t.Parallel()
 
-	t.Run("reads crush-config skill", func(t *testing.T) {
+	t.Run("reads rush-config skill", func(t *testing.T) {
 		t.Parallel()
 
 		resp, err := readBuiltinFile(ViewParams{
-			FilePath: "crush://skills/crush-config/SKILL.md",
+			FilePath: "rush://skills/rush-config/SKILL.md",
 		}, nil)
 		require.NoError(t, err)
 		require.NotEmpty(t, resp.Content)
@@ -309,7 +309,7 @@ func TestReadBuiltinFile(t *testing.T) {
 		t.Parallel()
 
 		resp, err := readBuiltinFile(ViewParams{
-			FilePath: "crush://skills/nonexistent/SKILL.md",
+			FilePath: "rush://skills/nonexistent/SKILL.md",
 		}, nil)
 		require.NoError(t, err)
 		require.True(t, resp.IsError)
@@ -319,14 +319,14 @@ func TestReadBuiltinFile(t *testing.T) {
 		t.Parallel()
 
 		resp, err := readBuiltinFile(ViewParams{
-			FilePath: "crush://skills/crush-config/SKILL.md",
+			FilePath: "rush://skills/rush-config/SKILL.md",
 		}, nil)
 		require.NoError(t, err)
 
 		var meta ViewResponseMetadata
 		require.NoError(t, json.Unmarshal([]byte(resp.Metadata), &meta))
 		require.Equal(t, ViewResourceSkill, meta.ResourceType)
-		require.Equal(t, "crush-config", meta.ResourceName)
+		require.Equal(t, "rush-config", meta.ResourceName)
 		require.NotEmpty(t, meta.ResourceDescription)
 	})
 
@@ -334,7 +334,7 @@ func TestReadBuiltinFile(t *testing.T) {
 		t.Parallel()
 
 		resp, err := readBuiltinFile(ViewParams{
-			FilePath: "crush://skills/crush-config/SKILL.md",
+			FilePath: "rush://skills/rush-config/SKILL.md",
 			Offset:   5,
 		}, nil)
 		require.NoError(t, err)

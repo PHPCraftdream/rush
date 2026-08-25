@@ -199,9 +199,9 @@ func TestBuildEnv(t *testing.T) {
 	// Shared Rush markers must be present so hook-authored scripts can
 	// detect they're running under Rush the same way bash-tool-invoked
 	// scripts can.
-	require.Equal(t, "1", envMap["CRUSH"])
-	require.Equal(t, "crush", envMap["AGENT"])
-	require.Equal(t, "crush", envMap["AI_AGENT"])
+	require.Equal(t, "1", envMap["RUSH"])
+	require.Equal(t, "rush", envMap["AGENT"])
+	require.Equal(t, "rush", envMap["AI_AGENT"])
 }
 
 func splitFirst(s, sep string) []string {

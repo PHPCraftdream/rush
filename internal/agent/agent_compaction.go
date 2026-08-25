@@ -17,7 +17,7 @@ import (
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/anthropic"
 
-	crushlog "github.com/PHPCraftdream/rush/internal/log"
+	rushlog "github.com/PHPCraftdream/rush/internal/log"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
 )
@@ -120,9 +120,9 @@ func (a *sessionAgent) runSummarize(ctx context.Context, genCtx context.Context,
 		// Use a simple callback - just log and cancel (no tools to report)
 		func(elapsed time.Duration, cause watchdogCause) {
 			watchdogCauseVal.Store(int32(cause))
-			stackDump := crushlog.CaptureGoroutineStack("summarize watchdog fired")
+			stackDump := rushlog.CaptureGoroutineStack("summarize watchdog fired")
 			go func() {
-				if dumpPath, dumpErr := crushlog.WriteGoroutineDump(stackDump); dumpErr != nil {
+				if dumpPath, dumpErr := rushlog.WriteGoroutineDump(stackDump); dumpErr != nil {
 					slog.Warn("agent.runSummarize: failed to write goroutine dump", "err", dumpErr)
 				} else {
 					slog.Warn("agent.runSummarize: wrote goroutine dump", "path", dumpPath)

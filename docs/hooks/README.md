@@ -15,7 +15,7 @@ forward.
 - Hooks are just shell commands
 - Hooks can be written in any language because they’re just executables: Bash, Python, Node, Rust, Haskell, whatever
 - Hooks are Claude Code-compatible
-- Rush ships with a builtin `crush-hooks` skill write, edit, and configure
+- Rush ships with a builtin `rush-hooks` skill write, edit, and configure
   hooks; just tell Rush how to configure Rush
 - Rush currently supports just one hook, `PreToolUse`, with plans to support
   the full gamut; please let us know which hooks you'd like to see next
@@ -117,8 +117,8 @@ What this means in practice:
   log records the fallback. If the interpreter isn't on `PATH` either, the
   hook fails cleanly as a non-blocking warning and the agent proceeds as
   "no opinion".
-- **Environment**: every hook sees `CRUSH=1`, `AGENT=crush`, and
-  `AI_AGENT=crush` on top of the `RUSH_*` hook-specific variables. These
+- **Environment**: every hook sees `RUSH=1`, `AGENT=rush`, and
+  `AI_AGENT=rush` on top of the `RUSH_*` hook-specific variables. These
   three markers are guaranteed and match what the `bash` tool sets, so
   scripts that detect "am I being run by an AI agent?" behave the same in
   both contexts.
@@ -233,9 +233,9 @@ The available environment variables are:
 
 | Variable                     | Description                                    |
 | ---------------------------- | ---------------------------------------------- |
-| `CRUSH`                     | Always `1` when running under Rush.           |
-| `AGENT`                     | Always `crush` (legacy marker name).          |
-| `AI_AGENT`                  | Always `crush` (legacy marker name).          |
+| `RUSH`                     | Always `1` when running under Rush.           |
+| `AGENT`                    | Always `rush`.                                  |
+| `AI_AGENT`                 | Always `rush`.                                  |
 | `RUSH_EVENT`                | The hook event name (e.g. `PreToolUse`).       |
 | `RUSH_TOOL_NAME`            | The tool being called (e.g. `bash`).           |
 | `RUSH_SESSION_ID`           | Current session ID.                            |
@@ -244,7 +244,7 @@ The available environment variables are:
 | `RUSH_TOOL_INPUT_COMMAND`   | For `bash` calls: the shell command being run. |
 | `RUSH_TOOL_INPUT_FILE_PATH` | For file tools: the target file path.          |
 
-The `CRUSH`, `AGENT`, and `AI_AGENT` markers are also set by the `bash`
+The `RUSH`, `AGENT`, and `AI_AGENT` markers are also set by the `bash`
 tool, so a script can detect "am I running under Rush?" the same way in
 either context.
 

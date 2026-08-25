@@ -72,7 +72,7 @@ func TestLogStartupNotice_SuppressedUnlessDebug(t *testing.T) {
 
 // TestLogStartupNotice_EmitsAtDefaultInfoLevel documents why the gate is
 // the `debug` flag rather than slog level: the notices fire inside Load,
-// before crushlog.Setup installs the file logger, so they hit Go's
+// before rushlog.Setup installs the file logger, so they hit Go's
 // default handler (level=Info). Emitting at Warn means `--debug` users
 // still see them on stderr; a slog.Debug call here would be filtered by
 // the Info handler and the diagnostic would be lost even under --debug.
