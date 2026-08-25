@@ -1849,3 +1849,107 @@ func TestMigrateCLITallyReflectsRewriteFailure(t *testing.T) {
 	}
 	assert.ElementsMatch(t, []string{"rush.json"}, names, "no leftover temp file after a failed write, got: %v", names)
 }
+
+// ── .gitignore update (task #749) ──────────────────────────────────────────
+
+func TestMigrateGitignoreAddsRushDirEntry(t *testing.T) {
+	_, _ = isolateGlobalPaths(t)
+	tmpDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, ".gitignore"), []byte("node_modules/\n.crush/\n*.log\n"), 0o644))
+
+	var b bytes.Buffer
+	migrateCmd.SetOut(&b)
+	migrateCmd.SetErr(&b)
+	migrateCmd.SetIn(bytes.NewReader(nil))
+	require.NoError(t, migrateCmd.RunE(migrateCmd, []string{tmpDir}))
+
+	got, err := os.ReadFile(filepath.Join(tmpDir, ".gitignore"))
+	require.NoError(t, err)
+	assert.Equal(t, "node_modules/\n.crush/\n.rush/\n*.log\n", string(got))
+	assert.Contains(t, b.String(), "added to")
+}
+
+func TestMigrateGitignoreAddsRushJsonEntry(t *testing.T) {
+	_, _ = isolateGlobalPaths(t)
+	tmpDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, ".gitignore"), []byte("crush.json\n"), 0o644))
+
+	var b bytes.Buffer
+	migrateCmd.SetOut(&b)
+	migrateCmd.SetErr(&b)
+	migrateCmd.SetIn(bytes.NewReader(nil))
+	require.NoError(t, migrateCmd.RunE(migrateCmd, []string{tmpDir}))
+
+	got, err := os.ReadFile(filepath.Join(tmpDir, ".gitignore"))
+	require.NoError(t, err)
+	assert.Equal(t, "crush.json\nrush.json\n", string(got))
+}
+
+func TestMigrateGitignoreNoDuplicateWhenRushEntryAlreadyPresent(t *testing.T) {
+	_, _ = isolateGlobalPaths(t)
+	tmpDir := t.TempDir()
+	original := ".crush/\n.rush/\n"
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, ".gitignore"), []byte(original), 0o644))
+
+	var b bytes.Buffer
+	migrateCmd.SetOut(&b)
+	migrateCmd.SetErr(&b)
+	migrateCmd.SetIn(bytes.NewReader(nil))
+	require.NoError(t, migrateCmd.RunE(migrateCmd, []string{tmpDir}))
+
+	got, err := os.ReadFile(filepath.Join(tmpDir, ".gitignore"))
+	require.NoError(t, err)
+	assert.Equal(t, original, string(got), "must not duplicate an already-present .rush/ line")
+}
+
+func TestMigrateNoGitignoreCreatesNothing(t *testing.T) {
+	_, _ = isolateGlobalPaths(t)
+	tmpDir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, ".crush"), 0o755))
+
+	var b bytes.Buffer
+	migrateCmd.SetOut(&b)
+	migrateCmd.SetErr(&b)
+	migrateCmd.SetIn(bytes.NewReader(nil))
+	require.NoError(t, migrateCmd.RunE(migrateCmd, []string{tmpDir}))
+
+	_, err := os.Stat(filepath.Join(tmpDir, ".gitignore"))
+	assert.True(t, os.IsNotExist(err), "must never create a .gitignore that didn't exist")
+}
+
+func TestMigrateGitignoreDryRunDoesNotWrite(t *testing.T) {
+	_, _ = isolateGlobalPaths(t)
+	tmpDir := t.TempDir()
+	original := ".crush/\n"
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, ".gitignore"), []byte(original), 0o644))
+
+	var b bytes.Buffer
+	migrateCmd.SetOut(&b)
+	migrateCmd.SetErr(&b)
+	migrateCmd.SetIn(bytes.NewReader(nil))
+	require.NoError(t, migrateCmd.Flags().Set("dry-run", "true"))
+	defer migrateCmd.Flags().Set("dry-run", "false")
+	require.NoError(t, migrateCmd.RunE(migrateCmd, []string{tmpDir}))
+
+	got, err := os.ReadFile(filepath.Join(tmpDir, ".gitignore"))
+	require.NoError(t, err)
+	assert.Equal(t, original, string(got), "dry-run must not write")
+	assert.Contains(t, b.String(), "would add")
+}
+
+func TestMigrateGitignoreUnrelatedLineUntouched(t *testing.T) {
+	_, _ = isolateGlobalPaths(t)
+	tmpDir := t.TempDir()
+	original := "dist/\ncrushonabike.txt\n"
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, ".gitignore"), []byte(original), 0o644))
+
+	var b bytes.Buffer
+	migrateCmd.SetOut(&b)
+	migrateCmd.SetErr(&b)
+	migrateCmd.SetIn(bytes.NewReader(nil))
+	require.NoError(t, migrateCmd.RunE(migrateCmd, []string{tmpDir}))
+
+	got, err := os.ReadFile(filepath.Join(tmpDir, ".gitignore"))
+	require.NoError(t, err)
+	assert.Equal(t, original, string(got), "a line not exactly matching a known legacy pattern must be left alone")
+}

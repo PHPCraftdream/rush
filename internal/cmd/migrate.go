@@ -225,6 +225,9 @@ func runMigrate(cmd *cobra.Command, args []string) error {
 				refusedCount += ctxRefused
 				failedCount += ctxFailed
 				foundAny = foundAny || ctxRenamed > 0 || ctxRefused > 0 || ctxFailed > 0
+
+				gitignoreAdded := updateGitignoreForMigratedProject(cmd, path, dryRun, "project:")
+				foundAny = foundAny || gitignoreAdded > 0
 			}
 
 			// Check for crush.json file.
@@ -429,6 +432,9 @@ func migrateRootLocation(cmd *cobra.Command, root string, dryRun bool) (renamed,
 	refused += ctxRefused
 	failed += ctxFailed
 	foundAny = foundAny || ctxRenamed > 0 || ctxRefused > 0 || ctxFailed > 0
+
+	gitignoreAdded := updateGitignoreForMigratedProject(cmd, root, dryRun, "project:")
+	foundAny = foundAny || gitignoreAdded > 0
 
 	return renamed, refused, failed, foundAny
 }
@@ -1214,6 +1220,120 @@ func migrateNamedFileCaseAware(cmd *cobra.Command, oldFile, newFile string, dryR
 
 	cmd.Printf("renamed %s%s  ->  %s\n", formatPrefix(prefix), oldFile, newFile)
 	return statusRenamed, newFile
+}
+
+// gitignoreLegacyPatternRenames: exact .gitignore lines this migrator can
+// add a rush-named counterpart for. Excludes logs/crush.log — gitignore
+// entries for nested log files vary too much to guess safely.
+func gitignoreLegacyPatternRenames() []knownArtifactFileRename {
+	renames := []knownArtifactFileRename{
+		{oldName: ".crush", newName: ".rush"},
+		{oldName: ".crush/", newName: ".rush/"},
+		{oldName: "crush.json", newName: "rush.json"},
+	}
+	for _, art := range knownArtifactFileRenames() {
+		if art.dir == "" {
+			renames = append(renames, knownArtifactFileRename{oldName: art.oldName, newName: art.newName})
+		}
+	}
+	return append(renames, legacyContextAndIgnoreFileRenames()...)
+}
+
+// updateGitignoreForMigratedProject adds a rush-named line after any
+// matching legacy line in dir/.gitignore. Additive only — never rewrites,
+// removes, or creates a .gitignore, never duplicates, never commits.
+// Exact-line matching only, no glob parsing. Returns lines added.
+func updateGitignoreForMigratedProject(cmd *cobra.Command, dir string, dryRun bool, prefix string) int {
+	path := filepath.Join(dir, ".gitignore")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return 0 // no .gitignore present — never create one
+	}
+
+	usesCRLF := strings.Contains(string(raw), "\r\n")
+	lines := strings.Split(string(raw), "\n")
+
+	present := make(map[string]bool, len(lines))
+	for _, l := range lines {
+		present[strings.TrimRight(l, "\r")] = true
+	}
+
+	renames := gitignoreLegacyPatternRenames()
+	itemPrefix := formatPrefix(prefix, "(.gitignore)")
+
+	var out []string
+	var added []string
+	for _, l := range lines {
+		trimmed := strings.TrimRight(l, "\r")
+		out = append(out, l)
+		for _, rn := range renames {
+			if trimmed != rn.oldName || present[rn.newName] {
+				continue
+			}
+			newLine := rn.newName
+			if usesCRLF {
+				newLine += "\r"
+			}
+			out = append(out, newLine)
+			present[rn.newName] = true
+			added = append(added, rn.newName)
+			break
+		}
+	}
+
+	if len(added) == 0 {
+		return 0
+	}
+
+	if dryRun {
+		for _, a := range added {
+			cmd.Printf("would add %s%s: %s\n", itemPrefix, path, a)
+		}
+		return len(added)
+	}
+
+	// strings.Split preserved a trailing "" element if raw ended in \n, so
+	// Join reproduces the original trailing-newline state without extra logic.
+	newContent := strings.Join(out, "\n")
+
+	// Atomic write, same pattern as rewriteLegacyConfigContent.
+	info, statErr := os.Stat(path)
+	perm := os.FileMode(0o644)
+	if statErr == nil {
+		perm = info.Mode().Perm()
+	}
+	tmpFile, err := os.CreateTemp(dir, ".gitignore.tmp-*")
+	if err != nil {
+		cmd.Printf("failed to update %s%s: %v\n", itemPrefix, path, err)
+		return 0
+	}
+	tmpPath := tmpFile.Name()
+	if _, err := tmpFile.WriteString(newContent); err != nil {
+		tmpFile.Close()
+		os.Remove(tmpPath)
+		cmd.Printf("failed to update %s%s: %v\n", itemPrefix, path, err)
+		return 0
+	}
+	if err := tmpFile.Close(); err != nil {
+		os.Remove(tmpPath)
+		cmd.Printf("failed to update %s%s: %v\n", itemPrefix, path, err)
+		return 0
+	}
+	if err := os.Chmod(tmpPath, perm); err != nil {
+		os.Remove(tmpPath)
+		cmd.Printf("failed to update %s%s: %v\n", itemPrefix, path, err)
+		return 0
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		os.Remove(tmpPath)
+		cmd.Printf("failed to update %s%s: %v\n", itemPrefix, path, err)
+		return 0
+	}
+
+	for _, a := range added {
+		cmd.Printf("added to %s%s: %s\n", itemPrefix, path, a)
+	}
+	return len(added)
 }
 
 // migrateGlobalLocation migrates a global config or data location.
