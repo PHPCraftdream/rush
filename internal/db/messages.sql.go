@@ -219,6 +219,26 @@ func (q *Queries) DeleteSessionMessages(ctx context.Context, sessionID string) e
 	return err
 }
 
+const getMaxMessageRowIDBySession = `-- name: GetMaxMessageRowIDBySession :one
+SELECT CAST(COALESCE(MAX(rowid), 0) AS INTEGER) AS row_id
+FROM messages
+WHERE session_id = ?
+`
+
+// Returns the highest rowid among a session's messages as of this read --
+// i.e. this read's own watermark, comparable against the per-message
+// watermark GetMessageRowID attaches to a message_deleted push. COALESCE
+// to 0 for an empty/all-deleted session so callers always get a usable
+// integer instead of having to special-case NULL: 0 is guaranteed lower
+// than any real rowid (SQLite rowids start at 1), so a watermark of 0
+// correctly compares as "older than every possible delete".
+func (q *Queries) GetMaxMessageRowIDBySession(ctx context.Context, sessionID string) (int64, error) {
+	row := q.queryRow(ctx, q.getMaxMessageRowIDBySessionStmt, getMaxMessageRowIDBySession, sessionID)
+	var row_id int64
+	err := row.Scan(&row_id)
+	return row_id, err
+}
+
 const getMessage = `-- name: GetMessage :one
 SELECT id, session_id, role, parts, model, created_at, updated_at, finished_at, provider, is_summary_message, pinned, hidden, reasoning_effort, auto_resumed, background_job_notice, input_tokens, output_tokens, reasoning_tokens, cache_creation_tokens, cache_read_tokens, total_tokens, cost_usd, usage_provider, usage_model, cache_support, usage_estimated, checkpoint_generation
 FROM messages
@@ -258,6 +278,35 @@ func (q *Queries) GetMessage(ctx context.Context, id string) (Message, error) {
 		&i.CheckpointGeneration,
 	)
 	return i, err
+}
+
+const getMessageRowID = `-- name: GetMessageRowID :one
+SELECT CAST(rowid AS INTEGER) AS row_id
+FROM messages
+WHERE id = ?
+`
+
+// Returns a single message's rowid -- SQLite's implicit monotonic insertion
+// counter, already established elsewhere in this file (see
+// ListMessagesBySessionAtCreatedAt/GetTranscriptWindowCursor) as the
+// fork's chosen tiebreaker/ordering primitive, exposed via
+// CAST(rowid AS INTEGER) because sqlc's SQLite catalog rejects a bare
+// rowid reference outside ORDER BY.
+//
+// Used by message.Service.Delete/ForceDelete to attach a monotonic
+// "delete watermark" to the DeletedEvent payload BEFORE the row is
+// removed (rowid does not survive the DELETE) -- see
+// internal/server/handlers_messages.go and web/src/ws.ts's delete
+// high-water-mark tracking for why: a client that has recorded this
+// watermark can then recognize any messages_list snapshot whose own
+// watermark (GetMaxMessageRowIDBySession below) is lower as one whose DB
+// read is PROVABLY older than this delete, regardless of arrival order
+// or which connection served the read.
+func (q *Queries) GetMessageRowID(ctx context.Context, id string) (int64, error) {
+	row := q.queryRow(ctx, q.getMessageRowIDStmt, getMessageRowID, id)
+	var row_id int64
+	err := row.Scan(&row_id)
+	return row_id, err
 }
 
 const getTranscriptWindowCursor = `-- name: GetTranscriptWindowCursor :one

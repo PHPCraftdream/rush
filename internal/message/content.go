@@ -182,6 +182,23 @@ type Message struct {
 	// from a turn measured at zero, and the UI must be able to say "not
 	// measured" instead of rendering a confident 0% cache hit.
 	Usage *TokenUsage
+	// RowID is the message's SQLite rowid -- the same monotonic insertion
+	// counter already used as a tiebreaker throughout
+	// internal/db/sql/messages.sql (message.id is a non-monotonic UUID,
+	// unsuitable for ordering). Populated only where a caller specifically
+	// asked for it (message.Service's Delete/ForceDelete/ListWithWatermark);
+	// zero everywhere else, including every row returned by the plain
+	// Get/List/ListPaginated/etc. methods that existed before this field.
+	//
+	// This is the wire-level "delete watermark": DeletedEvent carries the
+	// deleted row's RowID (fetched just before the DELETE, since rowid does
+	// not survive it), and a messages_list snapshot reply carries the
+	// session's current max RowID as of that read. The web client compares
+	// the two to tell a snapshot that is PROVABLY older than a delete it has
+	// already applied from one that merely looks that way because of a
+	// reordered push -- see web/src/ws.ts's per-session delete high-water
+	// mark and CLAUDE.md/docs for the resurrection risk this closes.
+	RowID int64
 }
 
 func (m *Message) Content() TextContent {

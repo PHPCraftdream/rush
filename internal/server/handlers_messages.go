@@ -92,7 +92,13 @@ func handleLoadMessages(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 		c.reply(msg.ID, EventError, nil, "invalid payload")
 		return
 	}
-	msgs, err := a.Messages.List(ctx, p.SessionID)
+	// ListWithWatermark over List: the reply must carry the session's
+	// delete watermark (highest message rowid as of this read) so the
+	// client can tell a snapshot whose read is PROVABLY older than a
+	// delete it already applied from one that merely looks that way
+	// because of a reordered push (see message.Message.RowID's doc
+	// comment for the full mechanism this closes).
+	msgs, watermark, err := a.Messages.ListWithWatermark(ctx, p.SessionID)
 	if err != nil {
 		c.reply(msg.ID, EventError, nil, err.Error())
 		return
@@ -108,6 +114,7 @@ func handleLoadMessages(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 	c.reply(msg.ID, EventMessagesList, map[string]any{
 		"SessionID": p.SessionID,
 		"Messages":  toMessagesWire(msgs),
+		"Watermark": watermark,
 	}, "")
 }
 

@@ -406,3 +406,36 @@ WHERE role = 'assistant'
   AND total_tokens IS NULL
   AND created_at >= ?
   AND created_at <= ?;
+
+-- name: GetMessageRowID :one
+-- Returns a single message's rowid -- SQLite's implicit monotonic insertion
+-- counter, already established elsewhere in this file (see
+-- ListMessagesBySessionAtCreatedAt/GetTranscriptWindowCursor) as the
+-- fork's chosen tiebreaker/ordering primitive, exposed via
+-- CAST(rowid AS INTEGER) because sqlc's SQLite catalog rejects a bare
+-- rowid reference outside ORDER BY.
+--
+-- Used by message.Service.Delete/ForceDelete to attach a monotonic
+-- "delete watermark" to the DeletedEvent payload BEFORE the row is
+-- removed (rowid does not survive the DELETE) -- see
+-- internal/server/handlers_messages.go and web/src/ws.ts's delete
+-- high-water-mark tracking for why: a client that has recorded this
+-- watermark can then recognize any messages_list snapshot whose own
+-- watermark (GetMaxMessageRowIDBySession below) is lower as one whose DB
+-- read is PROVABLY older than this delete, regardless of arrival order
+-- or which connection served the read.
+SELECT CAST(rowid AS INTEGER) AS row_id
+FROM messages
+WHERE id = ?;
+
+-- name: GetMaxMessageRowIDBySession :one
+-- Returns the highest rowid among a session's messages as of this read --
+-- i.e. this read's own watermark, comparable against the per-message
+-- watermark GetMessageRowID attaches to a message_deleted push. COALESCE
+-- to 0 for an empty/all-deleted session so callers always get a usable
+-- integer instead of having to special-case NULL: 0 is guaranteed lower
+-- than any real rowid (SQLite rowids start at 1), so a watermark of 0
+-- correctly compares as "older than every possible delete".
+SELECT CAST(COALESCE(MAX(rowid), 0) AS INTEGER) AS row_id
+FROM messages
+WHERE session_id = ?;

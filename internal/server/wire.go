@@ -101,6 +101,14 @@ type MessageWire struct {
 	AutoResumed         bool       `json:"AutoResumed"`
 	BackgroundJobNotice bool       `json:"BackgroundJobNotice"`
 	Usage               *UsageWire `json:"Usage,omitempty"`
+	// RowID is the delete watermark (message.Message.RowID's doc comment
+	// has the full mechanism). Only ever non-zero on the payload of an
+	// EventMessageDeleted push -- toMessageWire is also used for
+	// message_created/message_updated broadcasts and the messages_list
+	// snapshot's per-message rows, none of which populate Message.RowID
+	// server-side, so this field is 0/omitted there. The web client reads
+	// it ONLY off message_deleted.
+	RowID int64 `json:"RowID,omitempty"`
 }
 
 func toPartWire(part message.ContentPart) PartWire {
@@ -141,6 +149,7 @@ func toMessageWire(m message.Message) MessageWire {
 		AutoResumed:         m.AutoResumed,
 		BackgroundJobNotice: m.BackgroundJobNotice,
 		Usage:               toUsageWire(m.Usage),
+		RowID:               m.RowID,
 	}
 }
 

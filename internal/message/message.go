@@ -58,6 +58,16 @@ type Service interface {
 	Notify(message Message)
 	Get(ctx context.Context, id string) (Message, error)
 	List(ctx context.Context, sessionID string) ([]Message, error)
+	// ListWithWatermark is List plus the session's delete watermark as of
+	// the same read: the highest message rowid in the session at read time
+	// (0 for an empty/all-deleted session). Callers that forward this
+	// watermark to a client (the messages_list WS reply) let that client
+	// detect a snapshot whose read is PROVABLY older than a delete it has
+	// already applied -- see Message.RowID's doc comment for the full
+	// mechanism. Returned messages do NOT carry their own RowID (this is
+	// the session-level watermark, not a per-message one); only Delete/
+	// ForceDelete populate that.
+	ListWithWatermark(ctx context.Context, sessionID string) ([]Message, int64, error)
 	// ListPaginated returns at most limit messages for a session, newest first
 	// (DESC by created_at), skipping the first offset rows. It is the paginated
 	// counterpart to List so callers can read just the window they need instead
@@ -220,6 +230,17 @@ func (s *service) Delete(ctx context.Context, id string) error {
 	// abandoned draft. Gating that case too caused a real regression
 	// (internal/agent's TestP1_4_CleanupUsesCancelImmuneContext) that this
 	// exemption fixes.
+	// Fetch the row's watermark BEFORE deleting it -- rowid does not survive
+	// the DELETE below, and this is the value the DeletedEvent payload must
+	// carry so a client can later prove a snapshot's read predates this
+	// delete (see Message.RowID's doc comment). Best-effort: a lookup error
+	// here (row disappeared between Get and now, or a transient DB error)
+	// must not block the delete itself -- RowID simply stays 0, which only
+	// weakens this one delete's resurrection protection to the pre-watermark
+	// heuristic, not correctness of the delete.
+	if rowID, rowErr := s.q.GetMessageRowID(ctx, message.ID); rowErr == nil {
+		message.RowID = rowID
+	}
 	rowsAffected, err := s.q.DeleteMessageIfTerminal(ctx, message.ID)
 	if err != nil {
 		return err
@@ -260,6 +281,11 @@ func (s *service) ForceDelete(ctx context.Context, id string) error {
 	message, err := s.Get(ctx, id)
 	if err != nil {
 		return err
+	}
+	// See the identical lookup in Delete above for why this is best-effort
+	// and fetched before the row is gone.
+	if rowID, rowErr := s.q.GetMessageRowID(ctx, message.ID); rowErr == nil {
+		message.RowID = rowID
 	}
 	if err := s.q.DeleteMessage(ctx, message.ID); err != nil {
 		return err
@@ -507,6 +533,44 @@ func (s *service) List(ctx context.Context, sessionID string) ([]Message, error)
 		}
 	}
 	return messages, nil
+}
+
+// ListWithWatermark is List plus the session's delete watermark -- see the
+// Service interface doc comment for the full contract.
+//
+// The watermark is read as a SEPARATE query, not derived from the returned
+// messages' own rowids (List/fromDBItem never populate Message.RowID; only
+// Delete/ForceDelete do, for the DeletedEvent payload). This is deliberate:
+// deriving "session max rowid" from MAX(returned rows' rowid) would silently
+// UNDER-report the watermark for a session with an empty tail -- e.g. every
+// message after some point was deleted -- because the max would come from
+// whatever's left, not from what actually happened. GetMaxMessageRowIDBySession
+// answers "as of this read, what's the highest rowid this session's messages
+// table has ever assigned" directly, correctly landing at 0 for a fully
+// emptied session (see that query's own COALESCE comment) rather than
+// silently reusing a stale lower watermark from before the emptying delete.
+//
+// The two queries are not transactionally atomic with each other (two
+// separate round trips against qRead), which matters only in the direction
+// that is always safe here: if a message is inserted between them, the
+// watermark can very slightly UNDER-represent what List actually returned
+// (the new message might be in the List result but not yet reflected in the
+// watermark's MAX), which only makes the watermark a more conservative
+// (lower, "more stale-looking") value than reality -- never a falsely fresh
+// one. A client comparing its delete high-water mark against an
+// under-reported watermark only ever falls back to the pre-existing
+// epoch/tombstone heuristic more often than strictly necessary; it can never
+// cause a resurrection the watermark check was supposed to catch.
+func (s *service) ListWithWatermark(ctx context.Context, sessionID string) ([]Message, int64, error) {
+	messages, err := s.List(ctx, sessionID)
+	if err != nil {
+		return nil, 0, err
+	}
+	watermark, err := s.qRead.GetMaxMessageRowIDBySession(ctx, sessionID)
+	if err != nil {
+		return nil, 0, err
+	}
+	return messages, watermark, nil
 }
 
 func (s *service) ListPaginated(ctx context.Context, sessionID string, limit, offset int) ([]Message, error) {

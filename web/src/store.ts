@@ -380,6 +380,20 @@ export function removeSubAgentMessage(sessionID: string, messageID: string) {
 // An epoch-clean reply (nothing raced it) still replaces wholesale: that
 // path is what makes server-side deletes/compaction converge on the
 // client.
+//
+// Task #731 augments the "epoch-clean" verdict itself with a per-session
+// delete watermark (ws.ts's isSnapshotStaleForDeletes/bumpDeleteHighWaterMark):
+// the epoch counter only proves "no live push landed since I sent this
+// request", which is a statement about wall-clock event count, not about
+// whether THIS reply's underlying DB read actually postdates a delete
+// already applied. A worker-pool dispatch with no FIFO guarantee, reading
+// off a separate read-only connection pool, can serve a reply whose read
+// legitimately predates a delete even when the epoch counter says clean.
+// applyMessagesSnapshot/applySubAgentMessagesSnapshot now take
+// `liveRaced` as an OR of the epoch check and the watermark check — either
+// one alone is enough to force the merge path instead of a wholesale
+// replace that would silently clear tombstones and risk resurrecting the
+// deleted row.
 
 // Per-session IDs deleted by a live message_deleted push. Keyed by
 // session so the main chat and each sub-agent transcript tombstone
@@ -389,11 +403,21 @@ const deletedMessageIDs = new Map<string, Set<string>>();
 
 /** Records that messageID was deleted from sessionID by a live push, so
  * later merged snapshots that still contain the row (their DB read
- * predated the delete) keep it filtered out. */
-export function tombstoneMessage(sessionID: string, messageID: string) {
+ * predated the delete) keep it filtered out.
+ *
+ * rowID is the delete watermark carried on the push's payload (message_
+ * deleted's RowID field — see internal/message/content.go's Message.RowID
+ * doc comment). Forwarded to ws.ts's bumpDeleteHighWaterMark so a LATER
+ * snapshot reply whose own watermark is provably older than this delete is
+ * recognized as stale even when the epoch heuristic alone would call it
+ * clean (task #731). Undefined/0 (missing/pre-watermark server) is a
+ * harmless no-op there — the tombstone itself still protects this
+ * messageID via the existing epoch mechanism, unchanged. */
+export function tombstoneMessage(sessionID: string, messageID: string, rowID?: number) {
   const set = deletedMessageIDs.get(sessionID);
   if (set) set.add(messageID);
   else deletedMessageIDs.set(sessionID, new Set([messageID]));
+  bumpDeleteHighWaterMark(sessionID, rowID);
 }
 
 // mergeMessageLists combines a still-latest-but-stale snapshot with the
@@ -480,7 +504,7 @@ export function getDefaultModelKey(role: "smart" | "fast", config: ConfigPayload
   return "";
 }
 
-import { ws, forgetSessionRequestState } from "./ws";
+import { ws, forgetSessionRequestState, bumpDeleteHighWaterMark } from "./ws";
 import { logClientEvent } from "./telemetry";
 import { isTerminallyFinished } from "./components/Message/textParts";
 

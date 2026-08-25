@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { ws, sendLoadMessages, isStaleMessagesReply, hasLiveEventsSinceRequest, bumpLiveEventEpoch, sendListSessions, isStaleSessionsListReply, takeSessionsLiveDelta, recordSessionLiveUpdate, recordSessionLiveDelete } from "./ws";
+import { ws, sendLoadMessages, isStaleMessagesReply, hasLiveEventsSinceRequest, bumpLiveEventEpoch, sendListSessions, isStaleSessionsListReply, takeSessionsLiveDelta, recordSessionLiveUpdate, recordSessionLiveDelete, isSnapshotStaleForDeletes } from "./ws";
 import {
   $connected,
   $config,
@@ -283,7 +283,7 @@ export function useWS() {
         // deletes sub-agent messages too, and the sub-agent block never
         // re-fetches once populated, so deletes must be applied in place.
         if (isSubAgentSession(m.SessionID)) {
-          tombstoneMessage(m.SessionID, m.ID);
+          tombstoneMessage(m.SessionID, m.ID, m.RowID);
           removeSubAgentMessage(m.SessionID, m.ID);
           bumpLiveEventEpoch(m.SessionID);
           return;
@@ -291,28 +291,30 @@ export function useWS() {
         // Only process messages for the active session
         const activeID = $activeSessionID.get();
         if (!activeID || m.SessionID !== activeID) return;
-        tombstoneMessage(m.SessionID, m.ID);
+        tombstoneMessage(m.SessionID, m.ID, m.RowID);
         removeMessage(m.ID);
         bumpLiveEventEpoch(m.SessionID);
       }),
       ws.on("messages_list", (msg: WSMessage) => {
-        // New envelope: { SessionID, Messages }. Old shape (raw array) is
-        // kept as a fallback for back-compat with cached frontends, but the
-        // backend now always wraps so we can route empty replies safely —
-        // a lazy load_messages for an empty sub-agent session must NOT
-        // overwrite the active main session's messages.
+        // New envelope: { SessionID, Messages, Watermark }. Old shape (raw
+        // array) is kept as a fallback for back-compat with cached
+        // frontends, but the backend now always wraps so we can route empty
+        // replies safely — a lazy load_messages for an empty sub-agent
+        // session must NOT overwrite the active main session's messages.
         const payload = msg.payload as
-          | { SessionID?: string; Messages?: Message[] }
+          | { SessionID?: string; Messages?: Message[]; Watermark?: number }
           | Message[]
           | undefined;
         let sid: string | undefined;
         let msgs: Message[] = [];
+        let watermark: number | undefined;
         if (Array.isArray(payload)) {
           msgs = payload;
           sid = msgs[0]?.SessionID;
         } else if (payload) {
           msgs = payload.Messages ?? [];
           sid = payload.SessionID ?? msgs[0]?.SessionID;
+          watermark = payload.Watermark;
         }
         // Stale-reply guard (task #685): load_messages is fired from
         // several uncoordinated call sites (two independent OwnedExternal
@@ -327,15 +329,20 @@ export function useWS() {
         // request was in flight. When that happened, merge (ID-union +
         // delete tombstones) instead of wholesale-replacing; otherwise
         // keep the replace — it is what makes deletes/compaction converge.
+        // The watermark check (task #731) augments this: even an
+        // epoch-"clean" reply must not be trusted to clear tombstones (or
+        // wholesale-replace) if its own watermark is provably older than a
+        // delete already applied for this session — see
+        // isSnapshotStaleForDeletes's doc comment.
         if (sid && isSubAgentSession(sid)) {
-          applySubAgentMessagesSnapshot(sid, msgs, hasLiveEventsSinceRequest(sid));
+          applySubAgentMessagesSnapshot(sid, msgs, hasLiveEventsSinceRequest(sid) || isSnapshotStaleForDeletes(sid, watermark));
           return;
         }
         // For the main chat: only apply if it's for the currently active
         // session (we might have polled in flight and the user switched).
         const activeID = $activeSessionID.get();
         if (sid && activeID && sid !== activeID) return;
-        applyMessagesSnapshot(sid ?? "", msgs, hasLiveEventsSinceRequest(sid));
+        applyMessagesSnapshot(sid ?? "", msgs, hasLiveEventsSinceRequest(sid) || isSnapshotStaleForDeletes(sid, watermark));
       }),
 
       ws.on("update_available", (msg: WSMessage) => {

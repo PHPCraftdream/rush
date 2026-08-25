@@ -256,6 +256,72 @@ export function hasLiveEventsSinceRequest(sessionID: string | undefined): boolea
   return (liveEventEpoch.get(sessionID) ?? 0) > (requestEpoch.get(sessionID) ?? 0);
 }
 
+// ── delete high-water mark (task #731) ──────────────────────────────────────
+//
+// The epoch counter above proves "did any live push land since I sent this
+// request" — a statement about EVENT COUNT, tied to wall-clock send/apply
+// timing. It says nothing about whether THIS SPECIFIC reply's underlying DB
+// read actually postdates a delete the client already knows about. Two real
+// (not just theoretical-reordering) mechanisms can desync those:
+//
+//   - the server dispatches load_messages across a worker pool with no FIFO
+//     guarantee AND serves reads off a SEPARATE read-only connection pool
+//     (internal/db.ConnectRead) for concurrency with the writer — a read
+//     transaction's SQLite MVCC snapshot can be pinned before a delete's
+//     write commits even when the REQUEST was sent after the delete's push
+//     already arrived, with no ordering violation visible at the
+//     message/counter level;
+//   - message_deleted is exactly one WS frame; a socket hiccup that reorders
+//     or (per the epoch mechanism's own known limit) drops it entirely
+//     leaves no local signal that anything happened at all.
+//
+// Fix: every message_deleted push and every messages_list reply now carries
+// a monotonic watermark — the deleted row's SQLite rowid, and the session's
+// max rowid as of the snapshot read, respectively (see
+// internal/message/content.go's Message.RowID doc comment for the full
+// server-side mechanism). A snapshot reply whose watermark is LOWER than the
+// high-water mark recorded from a delete this client already applied is
+// PROVABLY older than that delete, regardless of what the epoch counter
+// says — mergeMessageLists must keep filtering that message's tombstone
+// even on an otherwise "epoch-clean" reply, and applyMessagesSnapshot must
+// not clear the tombstone set for it.
+//
+// This is strictly additive to the epoch/tombstone mechanism, not a
+// replacement: sessions whose deletes carry no watermark (RowID missing —
+// e.g. a lookup failure on the fork's best-effort GetMessageRowID call, or a
+// stale cached frontend talking to a pre-watermark server) fall back to the
+// existing epoch heuristic exactly as before, since deleteHighWaterMark
+// simply never advances past 0 for them and every real snapshot watermark
+// is >= 0.
+const deleteHighWaterMark = new Map<string, number>();
+
+/** Records a delete watermark for sessionID from a message_deleted push
+ * actually applied. Never lowers the mark — deletes can be recorded out of
+ * order relative to each other (independent messages, no ordering
+ * guarantee between distinct deletes), and only the highest one seen so far
+ * is a valid floor for judging a snapshot's freshness. rowID <= 0 (missing/
+ * unavailable) is a no-op: it must not regress the mark to something that
+ * would compare as "older" than the true high-water mark and weaken
+ * protection for an already-recorded delete. */
+export function bumpDeleteHighWaterMark(sessionID: string, rowID: number | undefined) {
+  if (!rowID || rowID <= 0) return;
+  const prev = deleteHighWaterMark.get(sessionID) ?? 0;
+  if (rowID > prev) deleteHighWaterMark.set(sessionID, rowID);
+}
+
+/** True if sessionID's recorded delete high-water mark is STRICTLY newer
+ * than the given snapshot watermark — i.e. this snapshot's DB read is
+ * provably older than a delete already applied for this session, so the
+ * caller must not trust it to clear tombstones (and must keep merging
+ * rather than wholesale-replacing) even if the epoch heuristic alone would
+ * call the reply clean. snapshotWatermark undefined (untagged/back-compat
+ * reply, or a server that predates this fix) always reports false — the
+ * existing epoch heuristic is the only signal available for it, unchanged. */
+export function isSnapshotStaleForDeletes(sessionID: string | undefined, snapshotWatermark: number | undefined): boolean {
+  if (!sessionID || snapshotWatermark === undefined) return false;
+  return (deleteHighWaterMark.get(sessionID) ?? 0) > snapshotWatermark;
+}
+
 // ── load_messages stale-reply guard (task #685) ────────────────────────────
 //
 // Several independent call sites (the two OwnedExternal pollers in
@@ -307,17 +373,18 @@ export function isStaleMessagesReply(sessionID: string | undefined, replyID: str
   return latest !== replyID;
 }
 
-/** Drops every per-session request-bookkeeping entry (stale-reply floor
- * plus live-event epochs) for a session that has been removed from
- * $sessions. Session IDs are never reused, so nothing arriving later for
- * this ID needs the tracking; without this, all three maps above grow one
- * entry per session ever loaded for the page's lifetime. Called from
- * store.ts removeSession, the single choke point every session-removal
+/** Drops every per-session request-bookkeeping entry (stale-reply floor,
+ * live-event epochs, delete high-water mark) for a session that has been
+ * removed from $sessions. Session IDs are never reused, so nothing arriving
+ * later for this ID needs the tracking; without this, all four maps above
+ * grow one entry per session ever loaded for the page's lifetime. Called
+ * from store.ts removeSession, the single choke point every session-removal
  * path funnels through (session_deleted, sidebar delete replies). */
 export function forgetSessionRequestState(sessionID: string) {
   latestLoadMessagesID.delete(sessionID);
   liveEventEpoch.delete(sessionID);
   requestEpoch.delete(sessionID);
+  deleteHighWaterMark.delete(sessionID);
 }
 
 // ── sessions_list live-race guard (task #690) ───────────────────────────────

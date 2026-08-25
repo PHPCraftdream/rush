@@ -90,6 +90,10 @@ func (m *mockMessageService) Get(ctx context.Context, id string) (message.Messag
 	return m.inner.Get(ctx, id)
 }
 
+func (m *mockMessageService) ListWithWatermark(ctx context.Context, sessionID string) ([]message.Message, int64, error) {
+	return m.inner.ListWithWatermark(ctx, sessionID)
+}
+
 func (m *mockMessageService) Delete(ctx context.Context, messageID string) error {
 	return m.inner.Delete(ctx, messageID)
 }
