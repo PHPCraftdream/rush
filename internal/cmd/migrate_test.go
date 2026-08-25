@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -465,7 +466,7 @@ func TestMigrateGlobalDirLevelRename(t *testing.T) {
 	testCmd.SetOut(&b)
 	testCmd.SetErr(&b)
 
-	dirStatus, innerStatus := migrateGlobalLocation(testCmd, legacyConfig, currentPath, false, "test global:")
+	dirStatus, innerStatus, _, _, _ := migrateGlobalLocation(testCmd, legacyConfig, currentPath, false, "test global:")
 
 	output := b.String()
 	t.Logf("Output:\n%s", output)
@@ -501,6 +502,242 @@ func TestMigrateGlobalDirLevelRename(t *testing.T) {
 
 	// Verify output
 	assert.Contains(t, output, "renamed test global:")
+}
+
+// TestMigrateKnownArtifactsProjectDir tests that a pre-existing crush.db and
+// logs/crush.log inside a project-level .crush/ are renamed to rush.db and
+// logs/rush.log alongside the directory migration, so session history and
+// logs remain reachable at the paths the app now looks for them under.
+func TestMigrateKnownArtifactsProjectDir(t *testing.T) {
+	_, _ = isolateGlobalPaths(t)
+	tmpDir := t.TempDir()
+
+	crushDir := filepath.Join(tmpDir, ".crush")
+	require.NoError(t, os.MkdirAll(crushDir, 0o755))
+
+	dbContent := []byte("sqlite-session-history-bytes")
+	require.NoError(t, os.WriteFile(filepath.Join(crushDir, "crush.db"), dbContent, 0o644))
+
+	logsDir := filepath.Join(crushDir, "logs")
+	require.NoError(t, os.MkdirAll(logsDir, 0o755))
+	logContent := []byte("log line 1\nlog line 2\n")
+	require.NoError(t, os.WriteFile(filepath.Join(logsDir, "crush.log"), logContent, 0o644))
+
+	var b bytes.Buffer
+	migrateCmd.SetOut(&b)
+	migrateCmd.SetErr(&b)
+	migrateCmd.SetIn(bytes.NewReader(nil))
+	err := migrateCmd.RunE(migrateCmd, []string{tmpDir})
+	require.NoError(t, err)
+
+	output := b.String()
+	t.Logf("Output:\n%s", output)
+
+	rushDir := filepath.Join(tmpDir, ".rush")
+
+	// crush.db -> rush.db, content preserved, old name gone.
+	dbGot, err := os.ReadFile(filepath.Join(rushDir, "rush.db"))
+	require.NoError(t, err, "rush.db should exist")
+	assert.Equal(t, dbContent, dbGot)
+	_, err = os.Stat(filepath.Join(rushDir, "crush.db"))
+	assert.True(t, os.IsNotExist(err), "crush.db should be gone")
+
+	// logs/crush.log -> logs/rush.log, content preserved, old name gone,
+	// "logs" subdirectory itself is NOT renamed.
+	logGot, err := os.ReadFile(filepath.Join(rushDir, "logs", "rush.log"))
+	require.NoError(t, err, "logs/rush.log should exist")
+	assert.Equal(t, logContent, logGot)
+	_, err = os.Stat(filepath.Join(rushDir, "logs", "crush.log"))
+	assert.True(t, os.IsNotExist(err), "logs/crush.log should be gone")
+
+	assert.Contains(t, output, "renamed project:")
+}
+
+// TestMigrateKnownArtifactsConflictRefused tests that a pre-existing rush.db
+// at the target blocks the crush.db artifact rename (same conflict-refusal
+// discipline as every other rename in this file): refuse and leave both
+// files untouched, rather than clobbering the existing rush.db.
+func TestMigrateKnownArtifactsConflictRefused(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	crushDir := filepath.Join(tmpDir, ".crush")
+	rushDir := filepath.Join(tmpDir, ".rush")
+	require.NoError(t, os.MkdirAll(crushDir, 0o755))
+	require.NoError(t, os.MkdirAll(rushDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(crushDir, "crush.db"), []byte("new-crush-db"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(rushDir, "rush.db"), []byte("existing-rush-db"), 0o644))
+
+	// Simulate the post-rename state migrateKnownArtifacts expects for a
+	// non-dry-run call: the directory itself has already been renamed
+	// (crushDir here just stands in as the old-path argument, unused when
+	// dryRun is false), so pass rushDir as both the artifact source and
+	// target parent.
+	var b bytes.Buffer
+	testCmd := &cobra.Command{}
+	testCmd.SetOut(&b)
+	testCmd.SetErr(&b)
+	require.NoError(t, os.WriteFile(filepath.Join(rushDir, "crush.db"), []byte("new-crush-db"), 0o644))
+	renamed, refused, failed := migrateKnownArtifacts(testCmd, crushDir, rushDir, false, "project:")
+
+	output := b.String()
+	t.Logf("Output:\n%s", output)
+
+	assert.Equal(t, 0, renamed)
+	assert.Equal(t, 1, refused)
+	assert.Equal(t, 0, failed)
+	assert.Contains(t, output, "CONFLICT")
+
+	// Both crush.db (source) and rush.db (target) remain untouched.
+	crushContent, err := os.ReadFile(filepath.Join(rushDir, "crush.db"))
+	require.NoError(t, err)
+	assert.Equal(t, "new-crush-db", string(crushContent))
+
+	rushContent, err := os.ReadFile(filepath.Join(rushDir, "rush.db"))
+	require.NoError(t, err)
+	assert.Equal(t, "existing-rush-db", string(rushContent))
+}
+
+// TestMigrateKnownArtifactsDryRun tests that a dry-run reports the artifact
+// renames without touching anything, using the pre-rename (.crush) source
+// paths since the directory rename itself hasn't happened yet.
+func TestMigrateKnownArtifactsDryRun(t *testing.T) {
+	_, _ = isolateGlobalPaths(t)
+	tmpDir := t.TempDir()
+
+	crushDir := filepath.Join(tmpDir, ".crush")
+	require.NoError(t, os.MkdirAll(crushDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(crushDir, "crush.db"), []byte("db"), 0o644))
+	logsDir := filepath.Join(crushDir, "logs")
+	require.NoError(t, os.MkdirAll(logsDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(logsDir, "crush.log"), []byte("log"), 0o644))
+
+	var b bytes.Buffer
+	migrateCmd.SetOut(&b)
+	migrateCmd.SetErr(&b)
+	migrateCmd.SetIn(bytes.NewReader(nil))
+	require.NoError(t, migrateCmd.Flags().Set("dry-run", "true"))
+	defer migrateCmd.Flags().Set("dry-run", "false")
+	err := migrateCmd.RunE(migrateCmd, []string{tmpDir})
+	require.NoError(t, err)
+
+	output := b.String()
+	t.Logf("Output:\n%s", output)
+
+	// Nothing was actually renamed.
+	_, err = os.Stat(filepath.Join(crushDir, "crush.db"))
+	require.NoError(t, err, "crush.db should still exist")
+	_, err = os.Stat(filepath.Join(logsDir, "crush.log"))
+	require.NoError(t, err, "logs/crush.log should still exist")
+	_, err = os.Stat(filepath.Join(tmpDir, ".rush"))
+	assert.True(t, os.IsNotExist(err), ".rush should not exist in dry-run")
+
+	assert.Contains(t, output, "would rename")
+	assert.Contains(t, output, filepath.Join(crushDir, "crush.db"))
+	assert.Contains(t, output, filepath.Join(tmpDir, ".rush", "rush.db"))
+	assert.Contains(t, output, filepath.Join(logsDir, "crush.log"))
+	assert.Contains(t, output, filepath.Join(tmpDir, ".rush", "logs", "rush.log"))
+}
+
+// TestMigrateRecursiveMigratesRoot tests that --recursive migrates the root
+// directory's own .crush/crush.json (not just nested ones), regressing the
+// bug where WalkDir's callback skipped path == root with a comment claiming
+// it was "handled separately below" when nothing there actually did.
+func TestMigrateRecursiveMigratesRoot(t *testing.T) {
+	_, _ = isolateGlobalPaths(t)
+	root := t.TempDir()
+
+	// Seed .crush/crush.json at the root itself.
+	rootCrushDir := filepath.Join(root, ".crush")
+	rootCrushInner := filepath.Join(rootCrushDir, "crush.json")
+	require.NoError(t, os.MkdirAll(rootCrushDir, 0o755))
+	require.NoError(t, os.WriteFile(rootCrushInner, []byte(`{"root": true}`), 0o644))
+
+	// Seed root-level crush.json too.
+	rootCrushFile := filepath.Join(root, "crush.json")
+	require.NoError(t, os.WriteFile(rootCrushFile, []byte(`{"root_file": true}`), 0o644))
+
+	// Seed a nested .crush/crush.json in a subdirectory.
+	nestedCrushDir := filepath.Join(root, "nested", ".crush")
+	nestedCrushInner := filepath.Join(nestedCrushDir, "crush.json")
+	require.NoError(t, os.MkdirAll(nestedCrushDir, 0o755))
+	require.NoError(t, os.WriteFile(nestedCrushInner, []byte(`{"nested": true}`), 0o644))
+
+	var b bytes.Buffer
+	migrateCmd.SetOut(&b)
+	migrateCmd.SetErr(&b)
+	migrateCmd.SetIn(bytes.NewReader(nil))
+	require.NoError(t, migrateCmd.Flags().Set("recursive", "true"))
+	defer migrateCmd.Flags().Set("recursive", "false")
+	err := migrateCmd.RunE(migrateCmd, []string{root})
+	require.NoError(t, err)
+
+	output := b.String()
+	t.Logf("Output:\n%s", output)
+
+	// Root .crush -> .rush, inner config migrated.
+	rootRushInner := filepath.Join(root, ".rush", "rush.json")
+	rootContent, err := os.ReadFile(rootRushInner)
+	require.NoError(t, err, "root .rush/rush.json should exist")
+	assert.Equal(t, `{"root": true}`, string(rootContent))
+	_, err = os.Stat(rootCrushDir)
+	assert.True(t, os.IsNotExist(err), "root .crush should be gone")
+
+	// Root crush.json -> rush.json.
+	rootFileContent, err := os.ReadFile(filepath.Join(root, "rush.json"))
+	require.NoError(t, err, "root rush.json should exist")
+	assert.Equal(t, `{"root_file": true}`, string(rootFileContent))
+
+	// Nested .crush -> .rush still works too.
+	nestedRushInner := filepath.Join(root, "nested", ".rush", "rush.json")
+	nestedContent, err := os.ReadFile(nestedRushInner)
+	require.NoError(t, err, "nested .rush/rush.json should exist")
+	assert.Equal(t, `{"nested": true}`, string(nestedContent))
+	_, err = os.Stat(nestedCrushDir)
+	assert.True(t, os.IsNotExist(err), "nested .crush should be gone")
+}
+
+// TestLegacySystemConfigPath tests legacySystemConfigPath's Unix/Windows
+// gating without touching the real filesystem: on Windows it must return
+// empty (mirroring config.SystemConfig()'s empty return there, since no
+// system-wide config location exists), and on Unix it must return the
+// well-known legacy path.
+func TestLegacySystemConfigPath(t *testing.T) {
+	got := legacySystemConfigPath()
+	if runtime.GOOS == "windows" {
+		assert.Equal(t, "", got, "should be empty on Windows: no system-wide config location exists")
+	} else {
+		assert.Equal(t, "/etc/crush/crush.json", got)
+	}
+}
+
+// TestMigrateSystemConfigSkippedWhenPathsEmpty tests that runMigrate's
+// system-config migration step is skipped cleanly (no panic, no crash on
+// filepath.Dir("")) when the legacy/current system paths are unavailable,
+// which is the real, permanent state on Windows (config.SystemConfig()
+// returns "" there — see internal/config/config_windows.go) and is
+// reproduced directly here rather than by mocking package-level path
+// resolution, since runMigrate's system-config block already treats an
+// empty legacy or current path as "skip" by construction.
+func TestMigrateSystemConfigSkippedWhenPathsEmpty(t *testing.T) {
+	_, _ = isolateGlobalPaths(t)
+	root := t.TempDir()
+
+	if runtime.GOOS != "windows" {
+		t.Skip("this test exercises the empty-path skip branch, which is only naturally reachable on Windows; on Unix legacySystemConfigPath()/config.SystemConfig() are non-empty and the branch runs (covered by other tests' passing runs against isolated temp dirs, not the real /etc/ path)")
+	}
+
+	var b bytes.Buffer
+	migrateCmd.SetOut(&b)
+	migrateCmd.SetErr(&b)
+	migrateCmd.SetIn(bytes.NewReader(nil))
+	err := migrateCmd.RunE(migrateCmd, []string{root})
+	require.NoError(t, err)
+
+	output := b.String()
+	t.Logf("Output:\n%s", output)
+
+	// No system config section should appear in the output at all.
+	assert.NotContains(t, output, "system config:")
 }
 
 // TestLegacyGlobalPathEnvPrecedence tests env var precedence for legacy global paths.

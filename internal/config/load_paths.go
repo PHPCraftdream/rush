@@ -20,6 +20,13 @@ func GlobalConfig() string {
 	return filepath.Join(home.Config(), appName, fmt.Sprintf("%s.json", appName))
 }
 
+// SystemConfig returns the system-wide configuration file path (e.g.
+// /etc/rush/rush.json on Unix). It is empty on Windows, where there is no
+// system-wide config location — see config_unix.go / config_windows.go.
+func SystemConfig() string {
+	return systemConfigPath
+}
+
 // GlobalCacheDir returns the path to the global cache directory for the
 // application.
 func GlobalCacheDir() string {
