@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -1646,4 +1647,205 @@ func TestMigrateContextFileCaseInsensitiveFilesystemHazard(t *testing.T) {
 	finalContent, err := os.ReadFile(filepath.Join(tmpDir, "RUSH.md"))
 	require.NoError(t, err, "content should remain reachable, not lost, after case-only rename")
 	assert.Equal(t, content, string(finalContent))
+}
+
+// TestMigrateRewriteContentAtomicHappyPath is a regression check that the
+// atomic-write path (temp file in the same directory, then os.Rename over
+// the target) still lands the rewritten content correctly - same outcome as
+// before the write was made atomic, just via a different mechanism. Runs
+// rewriteLegacyConfigContent directly (rather than the full migrate
+// pipeline) so the temp-file/rename mechanics are exercised in isolation.
+func TestMigrateRewriteContentAtomicHappyPath(t *testing.T) {
+	isolateGlobalPaths(t)
+	tmpDir := t.TempDir()
+
+	rushFile := filepath.Join(tmpDir, "rush.json")
+	content := `{"options":{"disabled_skills":["crush-config"],"skills_paths":[".crush/skills"]}}`
+	require.NoError(t, os.WriteFile(rushFile, []byte(content), 0o644))
+
+	testCmd := &cobra.Command{}
+	var b bytes.Buffer
+	testCmd.SetOut(&b)
+	testCmd.SetErr(&b)
+
+	status := rewriteLegacyConfigContent(testCmd, rushFile, rushFile, false, "test:")
+	assert.Equal(t, statusRenamed, status, "successful rewrite should report statusRenamed")
+
+	output := b.String()
+	t.Logf("Output:\n%s", output)
+	assert.Contains(t, output, "rewrote")
+	assert.NotContains(t, output, "failed to rewrite")
+
+	raw, err := os.ReadFile(rushFile)
+	require.NoError(t, err)
+
+	var parsed struct {
+		Options struct {
+			DisabledSkills []string `json:"disabled_skills"`
+			SkillsPaths    []string `json:"skills_paths"`
+		} `json:"options"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &parsed))
+	assert.Equal(t, []string{"rush-config"}, parsed.Options.DisabledSkills)
+	assert.Equal(t, []string{".rush/skills"}, parsed.Options.SkillsPaths)
+
+	// No stray temp file left behind in the target directory.
+	entries, err := os.ReadDir(tmpDir)
+	require.NoError(t, err)
+	assert.Len(t, entries, 1, "only rush.json should remain, no leftover temp file")
+	assert.Equal(t, "rush.json", entries[0].Name())
+}
+
+// denyCurrentUserWrite uses icacls (Windows-only) to deny the current user
+// write/add-file access to dir, returning a cleanup func that removes the
+// deny ACE again. This is the Windows-reliable equivalent of "chmod 000 a
+// directory" for blocking file creation inside it: verified directly that
+// os.CreateTemp inside a dir with this ACE applied fails with "Access is
+// denied", and that removing the ACE afterward restores normal access so
+// t.TempDir's own cleanup can still remove the directory.
+func denyCurrentUserWrite(t *testing.T, dir string) {
+	t.Helper()
+	if runtime.GOOS != "windows" {
+		t.Skip("icacls-based write-denial is Windows-specific")
+	}
+	user := os.Getenv("USERNAME")
+	require.NotEmpty(t, user, "USERNAME must be set to build the icacls deny rule")
+
+	out, err := exec.Command("icacls", dir, "/deny", user+":(WD,AD)").CombinedOutput()
+	require.NoErrorf(t, err, "icacls deny failed: %s", out)
+
+	t.Cleanup(func() {
+		out, err := exec.Command("icacls", dir, "/remove:d", user).CombinedOutput()
+		if err != nil {
+			t.Logf("icacls restore failed (dir may already be gone): %s: %v", out, err)
+		}
+	})
+}
+
+// TestMigrateRewriteContentCreateTempFailurePropagates forces the very first
+// step of the atomic write - os.CreateTemp in the target's directory - to
+// fail, and verifies rewriteLegacyConfigContent reports statusFailed rather
+// than silently swallowing the error. This pins down the "can't even create
+// the temp file" branch (as opposed to a later write/rename failure).
+//
+// Failure injection: denyCurrentUserWrite applies a Windows ACL deny rule
+// (icacls .../deny <user>:(WD,AD)) to the target directory, which blocks
+// file creation without relying on any Unix-only mechanism like chmod 000
+// (which Windows does not enforce for file creation the same way).
+func TestMigrateRewriteContentCreateTempFailurePropagates(t *testing.T) {
+	isolateGlobalPaths(t)
+	tmpDir := t.TempDir()
+
+	rushFile := filepath.Join(tmpDir, "rush.json")
+	content := `{"options":{"disabled_skills":["crush-config"]}}`
+	require.NoError(t, os.WriteFile(rushFile, []byte(content), 0o644))
+
+	denyCurrentUserWrite(t, tmpDir)
+
+	testCmd := &cobra.Command{}
+	var b bytes.Buffer
+	testCmd.SetOut(&b)
+	testCmd.SetErr(&b)
+
+	status := rewriteLegacyConfigContent(testCmd, rushFile, rushFile, false, "test:")
+	assert.Equal(t, statusFailed, status, "a directory that refuses file creation must report statusFailed")
+
+	output := b.String()
+	t.Logf("Output:\n%s", output)
+	assert.Contains(t, output, "failed to rewrite content")
+}
+
+// TestMigrateCLITallyReflectsRewriteFailure runs the actual rush migrate
+// command end-to-end (through runMigrate/migrateFile, not by calling
+// rewriteLegacyConfigContent directly) against a project directory whose
+// crush.json triggers a content rewrite, and forces ONLY the FINAL step of
+// the atomic write - os.Rename(tmpPath, reportAs) - to fail, so the failure
+// exercised here is specifically the new atomic-write path, not the
+// pre-existing crush.json->rush.json rename-failure path.
+//
+// Failure injection: a background goroutine opens rush.json exclusively
+// (os.O_RDWR, no share-delete) the instant it first appears on disk - i.e.
+// right after migrateFile's own os.Rename(crush.json, rush.json) succeeds.
+// Windows refuses to rename any file over the top of another file that is
+// currently open for read/write (verified directly: os.Rename onto an
+// open-for-ReadWrite file returns "Access is denied"), so
+// rewriteLegacyConfigContent's os.CreateTemp and its write both still
+// succeed (they don't touch the already-existing rush.json), and only its
+// closing os.Rename(tmpPath, reportAs) fails.
+//
+// This in-process open-file lock (as opposed to shelling out to icacls, as
+// an earlier version of this test did) lands in ~1-3ms - fast enough to
+// reliably win the race against the rest of migrateFile's synchronous,
+// sub-5ms execution. A prior version of this test used an external icacls
+// process to deny write access instead; that consistently LOST the race
+// (icacls.exe takes ~50ms to spawn and apply the ACE, by which time the
+// entire migrate run had already completed successfully) - confirmed by
+// direct timing instrumentation before switching to this approach.
+//
+// Asserts the failure surfaces in BOTH the printed top-level tally line
+// ("N renamed, N conflict, N failed") and the command's returned error
+// (non-zero exit status) - not silently swallowed the way the old
+// cmd.Printf-and-return implementation left it - and specifically that it is
+// NOT double-counted as a successful "renamed" item.
+func TestMigrateCLITallyReflectsRewriteFailure(t *testing.T) {
+	isolateGlobalPaths(t)
+	tmpDir := t.TempDir()
+
+	crushFile := filepath.Join(tmpDir, "crush.json")
+	// A field that will trigger a rewrite (disabled_skills legacy ID), so
+	// the run actually reaches the content-rewrite step rather than
+	// short-circuiting on "nothing to rewrite".
+	content := `{"options":{"disabled_skills":["crush-config"]}}`
+	require.NoError(t, os.WriteFile(crushFile, []byte(content), 0o644))
+
+	rushFile := filepath.Join(tmpDir, "rush.json")
+
+	lockedCh := make(chan *os.File, 1)
+	go func() {
+		for {
+			f, err := os.OpenFile(rushFile, os.O_RDWR, 0o644)
+			if err == nil {
+				lockedCh <- f
+				return
+			}
+		}
+	}()
+
+	var b bytes.Buffer
+	migrateCmd.SetOut(&b)
+	migrateCmd.SetErr(&b)
+	migrateCmd.SetIn(bytes.NewReader(nil))
+	err := migrateCmd.RunE(migrateCmd, []string{tmpDir})
+
+	lockedFile := <-lockedCh
+	t.Cleanup(func() { lockedFile.Close() })
+
+	output := b.String()
+	t.Logf("Output:\n%s", output)
+
+	// The rename itself succeeded (rush.json exists - that's what let the
+	// watcher goroutine open it); only the subsequent content-rewrite step
+	// failed. The overall migrateFile status must therefore come back as
+	// failed, not renamed - proving the rename's own success message plus a
+	// rewrite failure fold into ONE failed count, not a separate renamed
+	// count.
+	assert.NotContains(t, output, "failed to rename", "this test must exercise the rewrite failure, not the rename failure")
+	assert.Contains(t, output, "renamed project:", "the rename step itself must have succeeded")
+	assert.Contains(t, output, "failed to rewrite content", "the rewrite failure must be printed")
+	assert.Contains(t, output, "summary: 0 renamed, 0 conflict, 1 failed",
+		"a rewrite failure must be tallied as failed, not silently dropped or double counted as renamed")
+
+	require.Error(t, err, "a rewrite failure must produce a non-zero exit status, not silent success")
+	assert.Contains(t, err.Error(), "failed")
+
+	// No stray temp file left behind, and original (pre-rewrite) content is
+	// intact - the failed atomic write must not have corrupted rush.json.
+	lockedFile.Close()
+	entries, err2 := os.ReadDir(tmpDir)
+	require.NoError(t, err2)
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	assert.ElementsMatch(t, []string{"rush.json"}, names, "no leftover temp file after a failed write, got: %v", names)
 }

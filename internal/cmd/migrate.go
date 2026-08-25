@@ -621,7 +621,18 @@ func migrateFile(cmd *cobra.Command, oldFile string, dryRun bool, prefix string)
 	}
 
 	cmd.Printf("renamed %s%s  ->  %s\n", formatPrefix(prefix), oldFile, newFile)
-	rewriteLegacyConfigContent(cmd, newFile, newFile, dryRun, prefix)
+
+	// The rename itself succeeded (the primary goal), but a failure while
+	// rewriting legacy-named values inside the just-renamed content must
+	// still surface as an overall failure - by this point the original
+	// crush.json is already gone (renamed away above), so a rewrite failure
+	// leaves rush.json as the only copy in an unknown state and the run
+	// must not silently report success. See rewriteLegacyConfigContent's
+	// own doc comment for what "failure" means here (I/O error on the
+	// atomic write, not "nothing to rewrite").
+	if rewriteStatus := rewriteLegacyConfigContent(cmd, newFile, newFile, dryRun, prefix); rewriteStatus == statusFailed {
+		return statusFailed, newFile
+	}
 	return statusRenamed, newFile
 }
 
@@ -658,33 +669,39 @@ const currentContextFileName = "RUSH.md"
 // the already-renamed newFile; in dry-run, nothing has moved yet, so the
 // caller passes the still-in-place oldFile instead (same convention
 // migrateDir/migrateKnownArtifacts use elsewhere in this file). reportAs is
-// always the newFile path, used only for log messages.
+// always the newFile path, used both for log messages and as the write
+// target.
 //
-// Errors reading or parsing the file are reported but non-fatal to the
-// overall migration - the file has already been renamed (the primary goal),
-// content rewriting is a best-effort follow-up.
-func rewriteLegacyConfigContent(cmd *cobra.Command, readFrom, reportAs string, dryRun bool, prefix string) {
+// Returns statusFailed only for an actual I/O error while writing the
+// rewritten content back (see the atomic-write step at the end of this
+// function) - by that point the caller's rename has already happened and
+// there is no fallback copy left, so the caller folds this into its own
+// overall status rather than reporting success. Errors reading or parsing
+// readFrom, or there being nothing to rewrite, are reported as statusNone:
+// non-fatal, since the file has already been renamed (the primary goal) and
+// there is nothing this function could have written anyway.
+func rewriteLegacyConfigContent(cmd *cobra.Command, readFrom, reportAs string, dryRun bool, prefix string) migrateStatus {
 	raw, err := os.ReadFile(readFrom)
 	if err != nil {
 		// Nothing to rewrite if we can't read it; migrateFile already
 		// reported the rename itself.
-		return
+		return statusNone
 	}
 
 	var top map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &top); err != nil {
 		// Not a JSON object we understand - leave content untouched.
-		return
+		return statusNone
 	}
 
 	optionsRaw, ok := top["options"]
 	if !ok {
-		return
+		return statusNone
 	}
 
 	var options map[string]json.RawMessage
 	if err := json.Unmarshal(optionsRaw, &options); err != nil {
-		return
+		return statusNone
 	}
 
 	contentPrefix := formatPrefix(prefix, "(content inside migrated config)")
@@ -756,38 +773,81 @@ func rewriteLegacyConfigContent(cmd *cobra.Command, readFrom, reportAs string, d
 	}
 
 	if !changed {
-		return
+		return statusNone
 	}
 
 	if dryRun {
 		for _, note := range notes {
 			cmd.Printf("would rewrite %s%s: %s\n", contentPrefix, reportAs, note)
 		}
-		return
+		return statusNone
 	}
 
 	newOptionsRaw, err := json.Marshal(options)
 	if err != nil {
 		cmd.Printf("failed to rewrite content %s%s: %v\n", contentPrefix, reportAs, err)
-		return
+		return statusFailed
 	}
 	top["options"] = newOptionsRaw
 
 	newRaw, err := json.MarshalIndent(top, "", "  ")
 	if err != nil {
 		cmd.Printf("failed to rewrite content %s%s: %v\n", contentPrefix, reportAs, err)
-		return
+		return statusFailed
 	}
 	newRaw = append(newRaw, '\n')
 
-	if err := os.WriteFile(reportAs, newRaw, 0o644); err != nil {
+	// Preserve the target's existing permission bits where practical (this
+	// file's own writes elsewhere - e.g. in tests seeding fixtures - use
+	// 0o644, so that is the fallback when the target can't be stat'd for
+	// some reason).
+	perm := os.FileMode(0o644)
+	if info, statErr := os.Stat(reportAs); statErr == nil {
+		perm = info.Mode().Perm()
+	}
+
+	// Write atomically: a plain os.WriteFile over reportAs would leave a
+	// truncated/corrupt rush.json if the process dies mid-write, and by this
+	// point the original crush.json has already been renamed away (no
+	// fallback copy to recover from). Write to a temp file in the SAME
+	// DIRECTORY as the target first (so the final os.Rename stays on one
+	// filesystem - cross-filesystem renames aren't atomic), then rename it
+	// over the target.
+	dir := filepath.Dir(reportAs)
+	tmpFile, err := os.CreateTemp(dir, filepath.Base(reportAs)+".tmp-*")
+	if err != nil {
 		cmd.Printf("failed to rewrite content %s%s: %v\n", contentPrefix, reportAs, err)
-		return
+		return statusFailed
+	}
+	tmpPath := tmpFile.Name()
+
+	if _, err := tmpFile.Write(newRaw); err != nil {
+		tmpFile.Close()
+		os.Remove(tmpPath)
+		cmd.Printf("failed to rewrite content %s%s: %v\n", contentPrefix, reportAs, err)
+		return statusFailed
+	}
+	if err := tmpFile.Close(); err != nil {
+		os.Remove(tmpPath)
+		cmd.Printf("failed to rewrite content %s%s: %v\n", contentPrefix, reportAs, err)
+		return statusFailed
+	}
+	if err := os.Chmod(tmpPath, perm); err != nil {
+		os.Remove(tmpPath)
+		cmd.Printf("failed to rewrite content %s%s: %v\n", contentPrefix, reportAs, err)
+		return statusFailed
+	}
+
+	if err := os.Rename(tmpPath, reportAs); err != nil {
+		os.Remove(tmpPath)
+		cmd.Printf("failed to rewrite content %s%s: %v\n", contentPrefix, reportAs, err)
+		return statusFailed
 	}
 
 	for _, note := range notes {
 		cmd.Printf("rewrote %s%s: %s\n", contentPrefix, reportAs, note)
 	}
+	return statusRenamed
 }
 
 // rewriteLegacyConfigPath rewrites a single path-like config value:
