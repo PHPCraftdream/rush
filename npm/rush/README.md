@@ -1,6 +1,6 @@
 # `@phpcraftdream/rush`
 
-**Unofficial npm distribution of [rush](https://github.com/PHPCraftdream/crush), maintained as a fork of [charmbracelet/crush](https://github.com/charmbracelet/crush). Not published by Charmbracelet.**
+**Unofficial npm distribution of [rush](https://github.com/PHPCraftdream/rush), maintained as a fork of [charmbracelet/crush](https://github.com/charmbracelet/crush). Not published by Charmbracelet.**
 
 This package installs the `rush` CLI as a single prebuilt binary — **no Go
 toolchain, no pnpm, no build step** on the user's machine. The correct binary
@@ -50,4 +50,4 @@ software.
 
 ## Reporting issues
 
-For bugs in this fork's code or this npm packaging (missing binaries, wrong platform selection, launcher errors), file an issue against this fork at <https://github.com/PHPCraftdream/crush/issues>. For bugs in the code inherited from upstream that also reproduce in [charmbracelet/crush](https://github.com/charmbracelet/crush), report them upstream at <https://github.com/charmbracelet/crush/issues>.
+For bugs in this fork's code or this npm packaging (missing binaries, wrong platform selection, launcher errors), file an issue against this fork at <https://github.com/PHPCraftdream/rush/issues>. For bugs in the code inherited from upstream that also reproduce in [charmbracelet/crush](https://github.com/charmbracelet/crush), report them upstream at <https://github.com/charmbracelet/crush/issues>.

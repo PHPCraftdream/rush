@@ -4,13 +4,13 @@
   "description": "Unofficial npm distribution of rush — a fork of charmbracelet/crush. Installs a prebuilt, Go-free binary via per-platform optional packages. No download step at install time.",
   "license": "FSL-1.1-MIT",
   "author": "Charmbracelet, Inc. (upstream) and fork maintainers",
-  "homepage": "https://github.com/PHPCraftdream/crush",
+  "homepage": "https://github.com/PHPCraftdream/rush",
   "repository": {
     "type": "git",
-    "url": "https://github.com/PHPCraftdream/crush.git"
+    "url": "https://github.com/PHPCraftdream/rush.git"
   },
   "bugs": {
-    "url": "https://github.com/PHPCraftdream/crush/issues"
+    "url": "https://github.com/PHPCraftdream/rush/issues"
   },
   "keywords": [
     "rush",
