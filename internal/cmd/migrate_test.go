@@ -1789,6 +1789,13 @@ func TestMigrateRewriteContentCreateTempFailurePropagates(t *testing.T) {
 // cmd.Printf-and-return implementation left it - and specifically that it is
 // NOT double-counted as a successful "renamed" item.
 func TestMigrateCLITallyReflectsRewriteFailure(t *testing.T) {
+	// Opening rushFile for read/write only blocks a subsequent os.Rename
+	// onto it on Windows -- POSIX rename(2) freely replaces an open file,
+	// so this forced-failure technique is a no-op on macOS/Linux and the
+	// migrate call just succeeds normally there.
+	if runtime.GOOS != "windows" {
+		t.Skip("open-file-blocks-rename forced failure is Windows-specific")
+	}
 	isolateGlobalPaths(t)
 	tmpDir := t.TempDir()
 
