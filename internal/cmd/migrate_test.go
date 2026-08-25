@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -1711,11 +1712,11 @@ func denyCurrentUserWrite(t *testing.T, dir string) {
 	user := os.Getenv("USERNAME")
 	require.NotEmpty(t, user, "USERNAME must be set to build the icacls deny rule")
 
-	out, err := exec.Command("icacls", dir, "/deny", user+":(WD,AD)").CombinedOutput()
+	out, err := exec.CommandContext(t.Context(), "icacls", dir, "/deny", user+":(WD,AD)").CombinedOutput()
 	require.NoErrorf(t, err, "icacls deny failed: %s", out)
 
 	t.Cleanup(func() {
-		out, err := exec.Command("icacls", dir, "/remove:d", user).CombinedOutput()
+		out, err := exec.CommandContext(context.Background(), "icacls", dir, "/remove:d", user).CombinedOutput()
 		if err != nil {
 			t.Logf("icacls restore failed (dir may already be gone): %s: %v", out, err)
 		}

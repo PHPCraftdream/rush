@@ -1521,9 +1521,10 @@ func mergeRemainingDirEntries(cmd *cobra.Command, legacyDir, targetDir string, d
 	// plain whole-entry rename.
 	logsNeedsMerge := false
 	for _, art := range knownArtifactFileRenames() {
-		if art.dir == "" {
+		switch art.dir {
+		case "":
 			topLevelRenames[art.oldName] = art.newName
-		} else if art.dir == "logs" {
+		case "logs":
 			logsNeedsMerge = true
 		}
 	}
