@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useStore } from "@nanostores/react";
 import { $mcpState } from "../store";
-import { ws } from "../ws";
+import { ws, wsRequest } from "../ws";
 import {
   X,
   Plus,
@@ -87,7 +87,7 @@ function MCPForm({
 }: {
   initial?: MCPServerInfo;
   submitLabel: string;
-  onSubmit: (parsed: Record<string, unknown>, msgID: string) => void;
+  onSubmit: (parsed: Record<string, unknown>) => Promise<unknown>;
   onCancel: () => void;
 }) {
   const [json, setJson] = useState(() =>
@@ -99,14 +99,19 @@ function MCPForm({
 
   useEffect(() => { taRef.current?.focus(); }, []);
 
-  // Pending reply handler, detached on unmount so a reply landing after
-  // this form was cancelled cannot fire onCancel on a later form.
-  const unsubRef = useRef<(() => void) | null>(null);
+  // Continuation of submit() checks this flag after its await so a reply
+  // landing after this form was cancelled cannot fire onCancel on a later
+  // form (the wsRequest listeners themselves are always detached on
+  // settle: reply, disconnect, timeout or a failed send).
+  const disposedRef = useRef(false);
   useEffect(() => {
-    return () => unsubRef.current?.();
+    disposedRef.current = false;
+    return () => {
+      disposedRef.current = true;
+    };
   }, []);
 
-  function submit() {
+  async function submit() {
     setError(null);
     let parsed: Record<string, unknown>;
     try {
@@ -124,18 +129,16 @@ function MCPForm({
     }
 
     setBusy(true);
-    const msgID = crypto.randomUUID();
-    unsubRef.current?.();
-    const unsub = ws.on("*", (msg) => {
-      if (msg.id !== msgID) return;
-      unsub();
-      unsubRef.current = null;
+    try {
+      await onSubmit(parsed);
+      if (disposedRef.current) return;
       setBusy(false);
-      if (msg.error) setError(msg.error);
-      else onCancel();
-    });
-    unsubRef.current = unsub;
-    onSubmit(parsed, msgID);
+      onCancel();
+    } catch (e) {
+      if (disposedRef.current) return;
+      setBusy(false);
+      setError(e instanceof Error ? e.message : String(e));
+    }
   }
 
   function onKey(e: React.KeyboardEvent) {
@@ -210,8 +213,8 @@ function ServerRow({ info, onRemove }: { info: MCPServerInfo; onRemove: () => vo
         <MCPForm
           initial={info}
           submitLabel="Update Server"
-          onSubmit={(parsed, msgID) => {
-            ws.send("update_mcp_server", {
+          onSubmit={(parsed) =>
+            wsRequest("update_mcp_server", {
               oldName: info.name,
               name: (parsed.name as string).trim(),
               type: (parsed.type as string) || "stdio",
@@ -221,8 +224,8 @@ function ServerRow({ info, onRemove }: { info: MCPServerInfo; onRemove: () => vo
               env: parsed.env as Record<string, string> | undefined,
               headers: parsed.headers as Record<string, string> | undefined,
               timeout: parsed.timeout as number | undefined,
-            }, msgID);
-          }}
+            })
+          }
           onCancel={() => setEditing(false)}
         />
       </div>
@@ -400,8 +403,8 @@ export function MCPSettings({ onClose }: { onClose: () => void }) {
         {showAdd ? (
           <MCPForm
             submitLabel="Add Server"
-            onSubmit={(parsed, msgID) => {
-              ws.send("add_mcp_server", {
+            onSubmit={(parsed) =>
+              wsRequest("add_mcp_server", {
                 name: (parsed.name as string).trim(),
                 type: (parsed.type as string) || "stdio",
                 command: parsed.command as string | undefined,
@@ -410,8 +413,8 @@ export function MCPSettings({ onClose }: { onClose: () => void }) {
                 env: parsed.env as Record<string, string> | undefined,
                 headers: parsed.headers as Record<string, string> | undefined,
                 timeout: parsed.timeout as number | undefined,
-              }, msgID);
-            }}
+              })
+            }
             onCancel={() => setShowAdd(false)}
           />
         ) : (

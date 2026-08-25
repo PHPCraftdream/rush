@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { useStore } from "@nanostores/react";
 import { $sessions, $activeSessionID, $busySessions, $config, setActiveSession, removeSession } from "../store";
-import { ws, sendLoadMessages } from "../ws";
+import { ws, wsRequest, sendLoadMessages } from "../ws";
 import { MessageSquare, Plus, Pencil, X, Check, Folder, Trash2 } from "lucide-react";
 import { ConfirmDialog } from "./ConfirmDialog";
 
@@ -43,16 +43,17 @@ export function Sidebar() {
     }
   }, [editingID]);
 
-  // Pending delete reply handlers, detached on unmount so a reply landing
-  // after this component unmounted cannot resolve a dead delete (same
-  // intent as the disposedRef continuation guard in ChatToolbar.tsx's
-  // SystemPromptModal.save(), task #683).
-  const deleteUnsubRef = useRef<(() => void) | null>(null);
-  const deleteOthersUnsubRef = useRef<(() => void) | null>(null);
+  // Continuations of confirmDelete()/confirmDeleteOtherSessions() check this
+  // flag after their await so a reply landing after this component
+  // unmounted cannot resolve a dead delete (same intent as the disposedRef
+  // continuation guard in ChatToolbar.tsx's SystemPromptModal.save(), task
+  // #683; the wsRequest listeners themselves are always detached on settle:
+  // reply, disconnect, timeout or a failed send).
+  const disposedRef = useRef(false);
   useEffect(() => {
+    disposedRef.current = false;
     return () => {
-      deleteUnsubRef.current?.();
-      deleteOthersUnsubRef.current?.();
+      disposedRef.current = true;
     };
   }, []);
 
@@ -72,22 +73,15 @@ export function Sidebar() {
     setPendingDelete({ id, title: title || "Untitled session" });
   }
 
-  function confirmDelete() {
+  async function confirmDelete() {
     if (!pendingDelete) return;
     const target = pendingDelete;
     setDeleteError(null);
     setDeleting(true);
-    const msgID = crypto.randomUUID();
-    deleteUnsubRef.current?.();
-    const unsub = ws.on("*", (msg) => {
-      if (msg.id !== msgID) return;
-      unsub();
-      deleteUnsubRef.current = null;
+    try {
+      await wsRequest("delete_session", { sessionID: target.id });
+      if (disposedRef.current) return;
       setDeleting(false);
-      if (msg.error) {
-        setDeleteError(msg.error as string);
-        return;
-      }
       removeSession(target.id);
       // Decide against the store's CURRENT active session, not the one
       // captured when the request was sent (task #694): the confirm
@@ -98,26 +92,21 @@ export function Sidebar() {
       // hash for a delete that no longer concerns it.
       if ($activeSessionID.get() === target.id) setActiveSession(null);
       setPendingDelete(null);
-    });
-    deleteUnsubRef.current = unsub;
-    ws.send("delete_session", { sessionID: target.id }, msgID);
+    } catch (e) {
+      if (disposedRef.current) return;
+      setDeleting(false);
+      setDeleteError(e instanceof Error ? e.message : String(e));
+    }
   }
 
-  function confirmDeleteOtherSessions() {
+  async function confirmDeleteOtherSessions() {
     if (!activeID) return;
     setDeleteOthersError(null);
     setDeletingOthers(true);
-    const msgID = crypto.randomUUID();
-    deleteOthersUnsubRef.current?.();
-    const unsub = ws.on("*", (msg) => {
-      if (msg.id !== msgID) return;
-      unsub();
-      deleteOthersUnsubRef.current = null;
+    try {
+      const msg = await wsRequest<DeleteOtherSessionsResult>("delete_other_sessions", { keepID: activeID });
+      if (disposedRef.current) return;
       setDeletingOthers(false);
-      if (msg.error) {
-        setDeleteOthersError(msg.error as string);
-        return;
-      }
       // Only drop rows the server actually confirms deleted (task #684) —
       // a partial failure (deletedIDs missing some non-kept session) must
       // leave the survivor's row in place, not vanish on a blanket "ok".
@@ -130,7 +119,7 @@ export function Sidebar() {
       // never appears in deletedIDs, so membership alone filters rows;
       // mirroring useWS's session_deleted handler, a deleted session that
       // is still the active one clears the active session.
-      const result = msg.payload as DeleteOtherSessionsResult | undefined;
+      const result = msg.payload;
       const deletedIDs = new Set(result?.deletedIDs ?? []);
       for (const s of $sessions.get()) {
         if (!deletedIDs.has(s.ID)) continue;
@@ -144,9 +133,11 @@ export function Sidebar() {
         return;
       }
       setConfirmDeleteOthers(false);
-    });
-    deleteOthersUnsubRef.current = unsub;
-    ws.send("delete_other_sessions", { keepID: activeID }, msgID);
+    } catch (e) {
+      if (disposedRef.current) return;
+      setDeletingOthers(false);
+      setDeleteOthersError(e instanceof Error ? e.message : String(e));
+    }
   }
 
   function startEditing(e: React.MouseEvent, id: string, title: string) {

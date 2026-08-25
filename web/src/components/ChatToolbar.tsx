@@ -236,14 +236,22 @@ export function ChatToolbar() {
   const closeLogs = useCallback(() => setShowLogs(false), []);
 
   // Server shutdown confirm (task #714): rare destructive action, wired
-  // exactly like Sidebar's session delete — msgID + one-shot reply
-  // listener, busy state, inline error.
+  // via wsRequest (task #732) — busy state, inline error, and a bounded
+  // timeout/disconnect handler so a drop AFTER the frame was written can no
+  // longer leave the dialog busy forever.
   const [confirmShutdown, setConfirmShutdown] = useState(false);
   const [shutdownBusy, setShutdownBusy] = useState(false);
   const [shutdownError, setShutdownError] = useState<string | null>(null);
-  const shutdownUnsubRef = useRef<(() => void) | null>(null);
+  // Continuation of confirmShutdownServer() checks this flag after its
+  // await so a reply landing after this component unmounted cannot setState
+  // on it (the wsRequest listeners themselves are always detached on
+  // settle: reply, disconnect, timeout or a failed send).
+  const shutdownDisposedRef = useRef(false);
   useEffect(() => {
-    return () => shutdownUnsubRef.current?.();
+    shutdownDisposedRef.current = false;
+    return () => {
+      shutdownDisposedRef.current = true;
+    };
   }, []);
 
   // More dropdown state
@@ -324,35 +332,23 @@ export function ChatToolbar() {
   // `{activeSessionID && (` inside the "More" dropdown; the token pill and busy dots are
   // already gated on an active session existing).
 
-  function confirmShutdownServer() {
+  async function confirmShutdownServer() {
     setShutdownError(null);
     setShutdownBusy(true);
-    const msgID = crypto.randomUUID();
-    shutdownUnsubRef.current?.();
-    const unsub = ws.on("*", (msg) => {
-      if (msg.id !== msgID) return;
-      unsub();
-      shutdownUnsubRef.current = null;
+    try {
+      await wsRequest("shutdown_server");
+      if (shutdownDisposedRef.current) return;
       setShutdownBusy(false);
-      if (msg.error) {
-        setShutdownError(msg.error as string);
-        return;
-      }
       // Acked: the server is now shutting down for good. Enter the terminal
       // UI state and stop the auto-reconnect loop from retrying a server
       // that is intentionally gone.
       $serverShuttingDown.set(true);
       ws.disableReconnect();
       setConfirmShutdown(false);
-    });
-    shutdownUnsubRef.current = unsub;
-    if (!ws.send("shutdown_server", undefined, msgID)) {
-      // Socket wasn't open — nothing will ever call the listener above,
-      // so surface that now instead of leaving the dialog busy forever.
-      unsub();
-      shutdownUnsubRef.current = null;
+    } catch (e) {
+      if (shutdownDisposedRef.current) return;
       setShutdownBusy(false);
-      setShutdownError("Not connected to the server — cannot send the shutdown request.");
+      setShutdownError(e instanceof Error ? e.message : String(e));
     }
   }
 

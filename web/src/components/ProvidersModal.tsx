@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { useStore } from "@nanostores/react";
-import { $config, addCustomProvider, removeCustomProvider, updateCustomProvider, type ConfigScope } from "../store";
+import { $config, removeCustomProvider, type ConfigScope } from "../store";
 import { X, Plus, Trash2, Pencil, AlertCircle, CheckCircle2, Loader2, ChevronDown, ChevronRight } from "lucide-react";
 import type { ProviderInfo } from "../types";
 import { wsRequest } from "../ws";
@@ -106,7 +106,7 @@ function ProviderForm({
   onSubmit: (data: {
     id: string; name: string; type: string; baseUrl: string; apiKey: string; models: ModelDraft[];
     peakHours: { start: string; end: string } | null; scope: ConfigScope;
-  }, msgID: string) => void;
+  }) => Promise<unknown>;
   onCancel: () => void;
 }) {
   const [id, setId] = useState(initial?.id ?? "");
@@ -127,17 +127,15 @@ function ProviderForm({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  // Pending reply handler, detached on unmount so a reply landing after
-  // this form was cancelled cannot fire onCancel on a later form.
-  const unsubRef = useRef<(() => void) | null>(null);
-  // Guards the dynamic import in submit(): if the form unmounts before the
-  // import resolves, the .then must not register its handler at all.
+  // Continuation of submit() checks this flag after its await so a reply
+  // landing after this form was cancelled cannot fire onCancel on a later
+  // form (the wsRequest listeners themselves are always detached on
+  // settle: reply, disconnect, timeout or a failed send).
   const disposedRef = useRef(false);
   useEffect(() => {
     disposedRef.current = false;
     return () => {
       disposedRef.current = true;
-      unsubRef.current?.();
     };
   }, []);
 
@@ -164,26 +162,21 @@ function ProviderForm({
 
   const peakHours = peakEnabled && peakStart && peakEnd ? { start: peakStart, end: peakEnd } : null;
 
-  function submit() {
+  async function submit() {
     const err = validate();
     if (err) { setError(err); return; }
     setError(null);
     setBusy(true);
-    const msgID = crypto.randomUUID();
-    import("../ws").then(({ ws }) => {
+    try {
+      await onSubmit({ id: id.trim(), name: name.trim(), type, baseUrl: baseUrl.trim(), apiKey, models, peakHours, scope });
       if (disposedRef.current) return;
-      unsubRef.current?.();
-      const unsub = ws.on("*", (msg) => {
-        if (msg.id !== msgID) return;
-        unsub();
-        unsubRef.current = null;
-        setBusy(false);
-        if (msg.error) setError(msg.error);
-        else onCancel();
-      });
-      unsubRef.current = unsub;
-      onSubmit({ id: id.trim(), name: name.trim(), type, baseUrl: baseUrl.trim(), apiKey, models, peakHours, scope }, msgID);
-    });
+      setBusy(false);
+      onCancel();
+    } catch (e) {
+      if (disposedRef.current) return;
+      setBusy(false);
+      setError(e instanceof Error ? e.message : String(e));
+    }
   }
 
   return (
@@ -624,8 +617,8 @@ function ProviderRow({
             scope: info.scope,
           }}
           submitLabel="Update Provider"
-          onSubmit={(data, msgID) => {
-            updateCustomProvider({
+          onSubmit={(data) =>
+            wsRequest("update_custom_provider", {
               oldId: id,
               id: data.id,
               name: data.name,
@@ -642,8 +635,8 @@ function ProviderRow({
               // Send null explicitly when cleared so the server clears it.
               peakHours: data.peakHours,
               scope: data.scope,
-            }, msgID);
-          }}
+            })
+          }
           onCancel={() => setEditing(false)}
         />
       </div>
@@ -827,8 +820,8 @@ export function ProvidersModal({ onClose }: { onClose: () => void }) {
         {showAdd ? (
           <ProviderForm
             submitLabel="Add Provider"
-            onSubmit={(data, msgID) => {
-              addCustomProvider({
+            onSubmit={(data) =>
+              wsRequest("add_custom_provider", {
                 id: data.id,
                 name: data.name || undefined,
                 type: data.type,
@@ -843,8 +836,8 @@ export function ProvidersModal({ onClose }: { onClose: () => void }) {
                 })),
                 peakHours: data.peakHours,
                 scope: data.scope,
-              }, msgID);
-            }}
+              })
+            }
             onCancel={() => setShowAdd(false)}
           />
         ) : (
