@@ -11,9 +11,12 @@ import (
 	"net"
 	"net/http"
 	"testing"
+	"time"
 
+	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/csync"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -317,4 +320,103 @@ func TestShouldRetryTurn(t *testing.T) {
 		require.NoError(t, err)
 		assert.False(t, coord.shouldRetryTurn(t.Context(), sess.ID, overloadErr))
 	})
+}
+
+// TestRunInternal_RetryReusesUserMessage_NoDuplicate reproduces a real
+// incident: a session where the same prompt appeared multiple times in
+// history after transient provider failures. Each retry created a fresh
+// user message instead of reusing the one the first attempt already
+// created. Fix: capture the first attempt's created message ID via
+// OnUserMessageCreated and feed it back as ExistingMessageID on retries.
+func TestRunInternal_RetryReusesUserMessage_NoDuplicate(t *testing.T) {
+	const providerID = "test-retry-dup"
+	const prompt = "investigate the flaky provider"
+
+	orig := streamStallRetryBaseBackoff
+	streamStallRetryBaseBackoff = time.Millisecond
+	t.Cleanup(func() { streamStallRetryBaseBackoff = orig })
+
+	env := testEnv(t)
+	cfg, err := config.Init(env.workingDir, "", false)
+	require.NoError(t, err)
+	providerCfg := config.ProviderConfig{
+		ID:   providerID,
+		Type: "openai",
+		Models: []catwalk.Model{
+			{ID: "test-model", Name: "Test Model", DefaultMaxTokens: 4096},
+		},
+	}
+	cfg.Config().Providers.Set(providerID, providerCfg)
+	sel := config.SelectedModel{Provider: providerID, Model: "test-model"}
+	cfg.Config().Models[config.SelectedModelTypeSmart] = sel
+	cfg.Config().Models[config.SelectedModelTypeFast] = sel
+
+	coord := &coordinator{
+		cfg:        cfg,
+		sessions:   env.sessions,
+		messages:   env.messages,
+		modelCache: csync.NewMap[string, cachedModelPair](),
+	}
+
+	sess, err := env.sessions.Create(t.Context(), "retry-dup-test")
+	require.NoError(t, err)
+
+	var createdUserMsgID string
+	callCount := 0
+	agent := newMockAgent(providerID, 4096, func(_ context.Context, call SessionAgentCall) (*fantasy.AgentResult, error) {
+		callCount++
+		if callCount == 1 {
+			require.Empty(t, call.ExistingMessageID, "first attempt must create its own user message")
+			userMsg, err := env.messages.Create(t.Context(), sess.ID, message.CreateMessageParams{
+				Role:  message.User,
+				Parts: []message.ContentPart{message.TextContent{Text: prompt}},
+			})
+			require.NoError(t, err)
+			createdUserMsgID = userMsg.ID
+			require.NotNil(t, call.OnUserMessageCreated)
+			call.OnUserMessageCreated(userMsg.ID)
+
+			_, err = env.messages.Create(t.Context(), sess.ID, message.CreateMessageParams{
+				Role: message.Assistant,
+				Parts: []message.ContentPart{
+					message.Finish{Reason: message.FinishReasonError, Message: "Empty response"},
+				},
+			})
+			require.NoError(t, err)
+			return nil, nil // "turn returned no error" -- shouldRetryTurn's empty-stream retry path
+		}
+		// Retry: must reuse the message the first attempt created, not a new one.
+		assert.Equal(t, createdUserMsgID, call.ExistingMessageID, "retry must reuse the first attempt's user message")
+		// A real runTurn would persist a clean assistant finish here; without
+		// it, shouldRetryTurn keeps seeing call 1's FinishReasonError message
+		// and retries again.
+		_, err := env.messages.Create(t.Context(), sess.ID, message.CreateMessageParams{
+			Role: message.Assistant,
+			Parts: []message.ContentPart{
+				message.TextContent{Text: "recovered"},
+				message.Finish{Reason: message.FinishReasonEndTurn},
+			},
+		})
+		require.NoError(t, err)
+		return agentResultWithText("recovered"), nil
+	})
+	coord.currentAgent = agent
+
+	pinned, err := coord.resolveSessionModels(t.Context(), sess.ID)
+	require.NoError(t, err)
+
+	res, err := coord.runInternal(t.Context(), sess.ID, prompt, pinned)
+	require.NoError(t, err)
+	require.NotNil(t, res)
+	assert.Equal(t, 2, callCount, "exactly one retry expected")
+
+	msgs, err := env.messages.List(t.Context(), sess.ID)
+	require.NoError(t, err)
+	var userCount int
+	for _, m := range msgs {
+		if m.Role == message.User && m.Content().Text == prompt {
+			userCount++
+		}
+	}
+	assert.Equal(t, 1, userCount, "the prompt must appear exactly once in history, not once per retry attempt")
 }

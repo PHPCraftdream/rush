@@ -370,7 +370,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	// so we're already in the "attempted" state.
 	userMessageCreated := call.ExistingMessageID != ""
 	if call.ExistingMessageID == "" {
-		_, err = a.createUserMessage(preambleCtx, call)
+		createdMsg, err := a.createUserMessage(preambleCtx, call)
 		if err != nil {
 			preambleCancel()
 			if errors.Is(err, context.Canceled) {
@@ -381,6 +381,9 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 			return nil, SessionAgentCall{}, false, err
 		}
 		userMessageCreated = true
+		if call.OnUserMessageCreated != nil {
+			call.OnUserMessageCreated(createdMsg.ID)
+		}
 	}
 	preambleCancel()
 

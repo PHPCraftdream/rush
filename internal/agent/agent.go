@@ -219,6 +219,21 @@ type SessionAgentCall struct {
 	// QueueExistingMessage on the interrupt path.
 	ExistingMessageID string
 
+	// OnUserMessageCreated, if non-nil, is invoked once with the ID of the
+	// user message createUserMessage creates for this call. Not invoked
+	// when ExistingMessageID is already set (no new message was created).
+	// Lets a caller capture the ID without a second DB round trip -- e.g.
+	// coordinator_run.go's transient-retry loop sets this on the initial
+	// attempt, then feeds the captured ID back in as ExistingMessageID on
+	// each retry so a provider hiccup doesn't re-persist the same prompt
+	// as a fresh row every attempt.
+	// json:"-": in-process callback, never durable-queue-persisted (unlike
+	// ExistingMessageID above, session.SessionAgentCallData has no mirror
+	// for this field -- a retry always runs in the same process that set
+	// it). Also lets code that shortcuts through json.Marshal(SessionAgentCall{...})
+	// keep working now that not every field is a plain value type.
+	OnUserMessageCreated func(messageID string) `json:"-"`
+
 	// InjectID, when non-empty, is the ID of a pending_injects row that
 	// must be deleted AFTER successful OS lock acquisition. Set by the
 	// cross-process interrupt inject path (startDetachedRun) to

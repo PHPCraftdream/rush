@@ -32,11 +32,10 @@ const (
 	// retries for ALL transient turn failures (stream stall, empty stream,
 	// overload, 5xx, network), not just stalls.
 	streamStallRetriesDefault = 2
-	// streamStallRetryBaseBackoff and streamStallRetryBackoffMultiplier
-	// shape exponential backoff: 10s → 30s → 90s. Long enough to let a
-	// rate-limit window roll over, short enough to keep one turn under
-	// ~5 min including the prior watchdog timeout.
-	streamStallRetryBaseBackoff       = 10 * time.Second
+	// streamStallRetryBackoffMultiplier shapes exponential backoff: 10s →
+	// 30s → 90s. Long enough to let a rate-limit window roll over, short
+	// enough to keep one turn under ~5 min including the prior watchdog
+	// timeout.
 	streamStallRetryBackoffMultiplier = 3.0
 	// streamStalledFinishTitle is the canonical Message field that
 	// agent.Run writes on a watchdog stall. Match against this exact
@@ -53,6 +52,11 @@ const (
 	// cross-reference is the agreed sync mechanism).
 	streamStalledFinishTitle = "Stream stalled"
 )
+
+// streamStallRetryBaseBackoff is the first retry's backoff (10s in
+// production). A var, not a const, so tests can shrink it instead of
+// sleeping through the real delay.
+var streamStallRetryBaseBackoff = 10 * time.Second
 
 // buildCall assembles the SessionAgentCall for the current agent + model
 // state. Extracted so InterruptAndSend can queue a call shaped exactly like
@@ -203,6 +207,14 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 	// turn run one model with another model's options. Passing it down keeps
 	// the call internally consistent.
 	pinnedSmart := model
+	// createdUserMessageID captures the ID createUserMessage assigns the
+	// first time this call actually creates a user message (nil
+	// ExistingMessageID). The transient-retry loop below feeds it back in
+	// as ExistingMessageID on each retry so a provider hiccup re-runs the
+	// SAME turn instead of persisting the prompt as a fresh message every
+	// attempt (previously: operator sees their own message duplicated once
+	// per retry).
+	var createdUserMessageID string
 	agentCall := SessionAgentCall{
 		SessionID:            sessionID,
 		Prompt:               prompt,
@@ -219,6 +231,7 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 		MaxTokens:            maxTokensRunLimit,
 		SmartModel:           &pinnedSmart,
 		LogicalCallID:        uuid.New().String(), // P2-1: generate stable ID once
+		OnUserMessageCreated: func(id string) { createdUserMessageID = id },
 	}
 	// Overrides pin fast model / prefix / base prompt too; pin() leaves
 	// SmartModel as set above when pinned is nil, and rewrites it to the same
@@ -295,6 +308,7 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 			SmartModel:           &pinnedSmart,
 			LogicalCallID:        trackCall.LogicalCallID, // Preserve logical ID
 			ExistingMessageID:    trackCall.ExistingMessageID,
+			OnUserMessageCreated: trackCall.OnUserMessageCreated,
 			InjectID:             trackCall.InjectID,
 			FromDurableQueue:     trackCall.FromDurableQueue,
 		}
@@ -366,6 +380,15 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		if !c.shouldRetryTurn(ctx, sessionID, originalErr) {
 			break
+		}
+		// Reuse the user message the first attempt already created instead
+		// of letting the retry's runTurn create a fresh one -- otherwise
+		// the operator sees their own prompt duplicated once per retry.
+		// createdUserMessageID is empty only if OnUserMessageCreated never
+		// fired (e.g. the call already carried an ExistingMessageID of its
+		// own), in which case there's nothing to overwrite.
+		if createdUserMessageID != "" {
+			trackCall.ExistingMessageID = createdUserMessageID
 		}
 		backoff := streamStallRetryBaseBackoff
 		for i := 1; i < attempt; i++ {
