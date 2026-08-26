@@ -473,6 +473,55 @@ WHERE ranked.rn = 1
   AND ranked.role = 'assistant'
   AND ranked.finished_at IS NULL;
 
+-- name: StampInterruptedAssistantIfStillLast :execrows
+-- task #777 (P1 release blocker): recoverSessionInterruptedTurn used to
+-- read the candidate message (Get), re-check IsFinished() in Go, check the
+-- liveness lock, then call the plain message.Update, which rewrites the
+-- WHOLE parts blob from that Get-time snapshot. Both the read-then-write gap
+-- AND the whole-blob overwrite were unguarded TOCTOU windows:
+--
+--   1. ListCandidateInterruptedAssistantSessions proved this message was the
+--      session's LAST message only at the instant the discovery query ran.
+--      If a newer user/assistant message lands before this write, the
+--      candidate is stale and must not be stamped -- the session has moved
+--      on, and stamping the older message would show a spurious "Process
+--      restarted" on a turn that already has a live successor.
+--   2. A plain UPDATE ... WHERE id = ? has no way to notice #1, and also
+--      clobbers any Parts content the live owner wrote in the same window
+--      (e.g. a checkpoint tick) since the write is not conditioned on the
+--      row being unchanged since the Get.
+--
+-- This mirrors DeleteMessageIfTerminal / UpdateMessageIfNotTerminal: the
+-- read-then-act race is closed by moving the predicate into the WHERE clause
+-- of a single statement instead of trusting a prior read. The WHERE
+-- requires, atomically:
+--   - finished_at IS NULL (still unfinished -- same re-check the Go code
+--     used to do after the initial Get, now enforced in the same statement
+--     as the write instead of a separate round trip before it)
+--   - rowid = the MAX(rowid) among this session's messages (still the
+--     session's chronologically last message, using rowid rather than
+--     created_at for the same reason as ListCandidateInterruptedAssistantSessions
+--     and ListMessagesBySession: created_at is second-granularity, so a
+--     single turn's rows can tie, and rowid is SQLite's monotonic insertion
+--     counter -- see ListAllUserMessages's comment for the canonical
+--     explanation of why rowid is the established tiebreaker throughout this
+--     file)
+--
+-- Returns rows affected: 0 means the candidate went stale between discovery
+-- and this write (superseded by a newer message, or finished concurrently by
+-- its live owner) -- the caller must treat that as "skip, do not retry",
+-- exactly like DeleteMessageIfTerminal's 0-rows-affected contract.
+UPDATE messages
+SET
+    parts = ?,
+    finished_at = ?,
+    updated_at = strftime('%s', 'now')
+WHERE messages.id = ?
+  AND messages.finished_at IS NULL
+  AND messages.rowid = (
+      SELECT MAX(other.rowid) FROM messages AS other WHERE other.session_id = ?
+  );
+
 -- task #737: GetMessageRowID / GetMaxMessageRowIDBySession (the task #731
 -- delete-watermark queries) were removed here. MAX(rowid) over a session's
 -- REMAINING messages is not a monotonic "highest rowid ever assigned"

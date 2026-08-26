@@ -10,6 +10,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/spf13/cobra"
@@ -225,11 +226,12 @@ type cacheInvalidation struct {
 	MessageID           string
 	CacheCreationTokens int64
 	// LikelyTTLExpiry is true when the elapsed wall-clock time between the
-	// warm and cold turns is at or above likelyTTLExpiryThreshold — the
-	// EXACT same warm->cold signature a normal idle period produces once the
-	// cache's TTL lapses, with nothing wrong at all. false means the gap was
-	// short enough that TTL expiry is an unlikely explanation, making this a
-	// genuine invalidation candidate worth investigating.
+	// warm and cold turns is at or above the provider's own cache TTL (see
+	// likelyTTLExpiryThresholdFor) — the EXACT same warm->cold signature a
+	// normal idle period produces once the cache's TTL lapses, with nothing
+	// wrong at all. false means the gap was short enough that TTL expiry is
+	// an unlikely explanation, making this a genuine invalidation candidate
+	// worth investigating.
 	LikelyTTLExpiry bool
 }
 
@@ -238,11 +240,27 @@ type cacheInvalidation struct {
 // meaningfully warm.
 const warmCacheFloor = 2048
 
-// likelyTTLExpiryThreshold mirrors the explicit-cache providers' real TTL
-// (Anthropic-style ephemeral caches: 5 minutes). A local constant rather than
-// a cross-package reference to internal/agent's unexported cache profile
-// table — this package is a diagnostic reader, not a policy owner.
-const likelyTTLExpiryThreshold = 5 * time.Minute
+// likelyTTLExpiryFallback bounds the "cache idle-expired" classification
+// for providers whose TTL internal/agent's cache profiles do not carry
+// (implicit caches and unknown providers report no explicit TTL): the
+// explicit-cache default those profiles are anchored on — Anthropic-style
+// ephemeral caches, 5 minutes.
+const likelyTTLExpiryFallback = 5 * time.Minute
+
+// likelyTTLExpiryThresholdFor returns the idle gap at or above which a
+// warm->cold transition on provider is classified as likely TTL expiry
+// rather than a genuine invalidation. The TTL comes from the injected
+// lookup — agent.PromptCacheTTL in production, the same per-provider figure
+// the agent's keep-alive scheduler derives its replay interval from — so
+// this diagnostic can never silently drift from the policy it reports on.
+// A provider with no profile TTL (zero) falls back to the explicit-cache
+// default above.
+func likelyTTLExpiryThresholdFor(ttlFor func(string) time.Duration, provider string) time.Duration {
+	if ttl := ttlFor(provider); ttl > 0 {
+		return ttl
+	}
+	return likelyTTLExpiryFallback
+}
 
 // detectCacheInvalidations walks a session's messages in order and flags
 // turns where a warm cache (prev read >= warmCacheFloor) went cold (this
@@ -250,17 +268,44 @@ const likelyTTLExpiryThreshold = 5 * time.Minute
 // CacheSupportNative because implicit-cache providers report noisy
 // CacheReadTokens that would false-positive on every turn.
 //
-// prev only ever advances to a message with measured native-cache usage;
-// user/tool messages (nil usage) sit between real turns in every session and
-// must be skipped, not treated as a reset. A provider/model switch is also
-// excluded: that legitimately cold-starts a different cache.
+// Two kinds of in-between message are handled differently, and confusing
+// them is exactly how phantom invalidations happen:
+//
+//   - user/tool messages (nil usage) sit between real turns in every
+//     session; they are skipped and the baseline is KEPT.
+//   - an assistant turn with usage whose CacheSupport is not Native
+//     (unknown or estimated — the provider was silent about caching, or
+//     the numbers were synthesized from message lengths) RESETS the
+//     baseline: whatever the cache did across that turn is invisible, so
+//     comparing a later native turn against the pre-gap warm baseline
+//     would fabricate an invalidation out of a gap the detector cannot
+//     actually see across. It re-warms from the next measured native turn.
+//
+// A provider/model switch is also excluded: that legitimately cold-starts
+// a different cache.
 func detectCacheInvalidations(msgs []message.Message) []cacheInvalidation {
+	return detectCacheInvalidationsWithLookup(msgs, agent.PromptCacheTTL)
+}
+
+// detectCacheInvalidationsWithLookup is detectCacheInvalidations with the
+// per-provider TTL lookup injected, so tests can prove the classification
+// consults the provider's real profile TTL instead of a hardcoded constant.
+func detectCacheInvalidationsWithLookup(msgs []message.Message, ttlFor func(string) time.Duration) []cacheInvalidation {
 	var out []cacheInvalidation
 	var prev *message.TokenUsage
 	var prevCreatedAt int64
 	for _, m := range msgs {
 		u := m.Usage
-		if u == nil || u.CacheSupport != message.CacheSupportNative {
+		if u == nil {
+			// Not an assistant turn (user/tool/system): skip, keep the
+			// baseline.
+			continue
+		}
+		if u.CacheSupport != message.CacheSupportNative {
+			// An assistant turn whose cache numbers are unknown or
+			// estimated: reset the baseline — see the function comment.
+			prev = nil
+			prevCreatedAt = 0
 			continue
 		}
 		if prev != nil && prev.CacheReadTokens >= warmCacheFloor &&
@@ -270,7 +315,7 @@ func detectCacheInvalidations(msgs []message.Message) []cacheInvalidation {
 			out = append(out, cacheInvalidation{
 				MessageID:           m.ID,
 				CacheCreationTokens: u.CacheCreationTokens,
-				LikelyTTLExpiry:     gap >= likelyTTLExpiryThreshold,
+				LikelyTTLExpiry:     gap >= likelyTTLExpiryThresholdFor(ttlFor, u.Provider),
 			})
 		}
 		prev = u

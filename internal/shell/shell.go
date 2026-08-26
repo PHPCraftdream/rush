@@ -236,7 +236,9 @@ func splitArgsFlags(parts []string) (args []string, flags []string) {
 // newInterp creates a new interpreter with the current shell state. A nil
 // stdin is equivalent to an empty input stream.
 func (s *Shell) newInterp(stdin io.Reader, stdout, stderr io.Writer) (*interp.Runner, error) {
-	return newRunner(s.cwd, s.env, stdin, stdout, stderr, s.blockFuncs)
+	// Stateful Shell sessions have no abandon-time hard-kill consumer,
+	// so there is no pid registration here.
+	return newRunner(s.cwd, s.env, stdin, stdout, stderr, s.blockFuncs, nil)
 }
 
 // updateShellFromRunner updates the shell from the interpreter after execution.

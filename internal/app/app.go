@@ -279,6 +279,28 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, opts ...O
 		return app, nil
 	}
 	if err := app.InitCoderAgent(ctx); err != nil {
+		// Ownership split (task #778): New only ever took ONE reference
+		// itself — the ConnectRead above (when it succeeded; readConn is
+		// nil otherwise, and releasing a dataDir with no matching Connect/
+		// ConnectRead call is a documented no-op anyway). The writer
+		// reference (conn) was acquired by the CALLER via db.Connect
+		// BEFORE calling New, so New never owned it and must not release
+		// it here — that's the caller's job on this same error path (see
+		// setupApp/setupAppLite in internal/cmd/root.go). Releasing it
+		// from both places would double-release and could drop refCount
+		// to zero while another live caller in this process still holds
+		// a legitimate reference to the same pooled entry.
+		//
+		// On success, this same reference is instead released exactly
+		// once via app.dbReleasesNeeded in Shutdown() — this error path
+		// returns no *App, so nothing else will ever release it, and
+		// skipping this call would leak the pool entry (and its OS file
+		// handle) forever (task #778).
+		if readConn != nil {
+			if relErr := db.Release(dataDir); relErr != nil {
+				slog.Error("app: failed to release read-only DB reference after init failure", "error", relErr)
+			}
+		}
 		return nil, fmt.Errorf("failed to initialize coder agent: %w", err)
 	}
 

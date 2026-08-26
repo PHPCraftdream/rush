@@ -587,7 +587,10 @@ func runShellSource(ctx context.Context, path string, args []string, blockFuncs 
 		interp.Interactive(false),
 		interp.Env(hc.Env),
 		interp.Dir(hc.Dir),
-		execHandlerOption(blockFuncs),
+		// Nested in-process runner: its children share the parent's
+		// ctx-driven kill, and the parent Run's pid registration
+		// already covers what the hooks abandon path needs.
+		execHandlerOption(blockFuncs, nil),
 	}
 	if len(args) > 1 {
 		// Params with a leading "--" avoids any of args[1:] being

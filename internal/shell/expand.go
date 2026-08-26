@@ -93,7 +93,11 @@ func ExpandValue(ctx context.Context, value string, env []string) (string, error
 				interp.Interactive(false),
 				interp.Env(expand.ListEnviron(env...)),
 				interp.Dir(s.cwd),
-				execHandlerOption(s.blockFuncs),
+				// Nested in-process runner: its children share the
+				// parent's ctx-driven kill, and the parent Run's pid
+				// registration already covers what the hooks abandon
+				// path needs.
+				execHandlerOption(s.blockFuncs, nil),
 			}
 			if strict {
 				// Match the outer NoUnset: an unset $VAR inside

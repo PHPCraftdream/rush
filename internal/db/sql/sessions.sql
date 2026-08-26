@@ -115,6 +115,33 @@ SET
 WHERE id = ?
 RETURNING *;
 
+-- name: IncrementSessionCostIfUnderMax :execrows
+-- task #782 (K-2, P1 release blocker): plain IncrementSessionCost has no
+-- budget predicate, so two concurrent callers (a real turn and a cache
+-- keep-alive replay, or two replays) can both read cost < maxCost, then
+-- both call IncrementSessionCost, and jointly overshoot maxCost (e.g.
+-- 0.09 -> 0.14 against a 0.10 cap). Moving the budget check into the WHERE
+-- clause of the additive UPDATE itself closes that TOCTOU window: only ONE
+-- of two racing callers can win when their combined delta would cross max,
+-- because SQLite serializes writers and the second writer's WHERE
+-- re-evaluates cost as already updated by the first.
+--
+-- This is a NEW query, not a modified IncrementSessionCost: that query has
+-- other callers (agent_title.go, agent_turn.go, agent_compaction.go,
+-- coordinator cost transfer, sessions_reset) which do not carry a maxCost
+-- budget in the same shape and must keep their existing unconditional
+-- semantics.
+--
+-- Returns rows affected: 0 means the charge was refused because
+-- cost + delta would meet or exceed max_cost -- the caller must treat that
+-- the same as an up-front max-cost skip (no charge landed).
+UPDATE sessions
+SET
+    cost = cost + sqlc.arg('delta'),
+    updated_at = strftime('%s', 'now')
+WHERE id = sqlc.arg('id')
+  AND cost + sqlc.arg('delta') < sqlc.arg('max_cost');
+
 -- name: RenameSession :exec
 UPDATE sessions
 SET

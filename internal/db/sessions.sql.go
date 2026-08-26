@@ -295,6 +295,48 @@ func (q *Queries) IncrementSessionCost(ctx context.Context, arg IncrementSession
 	return i, err
 }
 
+const incrementSessionCostIfUnderMax = `-- name: IncrementSessionCostIfUnderMax :execrows
+UPDATE sessions
+SET
+    cost = cost + ?1,
+    updated_at = strftime('%s', 'now')
+WHERE id = ?2
+  AND cost + ?1 < ?3
+`
+
+type IncrementSessionCostIfUnderMaxParams struct {
+	Delta   float64 `json:"delta"`
+	ID      string  `json:"id"`
+	MaxCost float64 `json:"max_cost"`
+}
+
+// task #782 (K-2, P1 release blocker): plain IncrementSessionCost has no
+// budget predicate, so two concurrent callers (a real turn and a cache
+// keep-alive replay, or two replays) can both read cost < maxCost, then
+// both call IncrementSessionCost, and jointly overshoot maxCost (e.g.
+// 0.09 -> 0.14 against a 0.10 cap). Moving the budget check into the WHERE
+// clause of the additive UPDATE itself closes that TOCTOU window: only ONE
+// of two racing callers can win when their combined delta would cross max,
+// because SQLite serializes writers and the second writer's WHERE
+// re-evaluates cost as already updated by the first.
+//
+// This is a NEW query, not a modified IncrementSessionCost: that query has
+// other callers (agent_title.go, agent_turn.go, agent_compaction.go,
+// coordinator cost transfer, sessions_reset) which do not carry a maxCost
+// budget in the same shape and must keep their existing unconditional
+// semantics.
+//
+// Returns rows affected: 0 means the charge was refused because
+// cost + delta would meet or exceed max_cost -- the caller must treat that
+// the same as an up-front max-cost skip (no charge landed).
+func (q *Queries) IncrementSessionCostIfUnderMax(ctx context.Context, arg IncrementSessionCostIfUnderMaxParams) (int64, error) {
+	result, err := q.exec(ctx, q.incrementSessionCostIfUnderMaxStmt, incrementSessionCostIfUnderMax, arg.Delta, arg.ID, arg.MaxCost)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const listAllSessions = `-- name: ListAllSessions :many
 SELECT id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, smart_model_provider, smart_model_id, fast_model_provider, fast_model_id, system_prompt, yolo_enabled, smart_model_reasoning_effort, fast_model_reasoning_effort, cancel_requested, ended_reason, budget_max_cost, budget_max_tokens, budget_timeout_sec, deleted_todos, parent_cost_accounted, worker_model_provider, worker_model_id, worker_model_reasoning_effort, reviewer_model_provider, reviewer_model_id, reviewer_model_reasoning_effort
 FROM sessions

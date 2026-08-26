@@ -30,6 +30,23 @@ import (
 	"github.com/charmbracelet/x/term"
 )
 
+// cleanupTimeout bounds the best-effort DB writes in RunNonInteractive's
+// post-run defers (A-2, task #779). Chosen as a small multiple of ordinary
+// SQLite lock contention (a single writer holding the DB for a query or two,
+// typically single-digit milliseconds) while staying far short of the 30s
+// busy_timeout configured in internal/db/connect.go -- long enough that a
+// momentarily busy DB still gets the write, short enough that a genuinely
+// stuck writer can't reproduce the "looks like a hang after output already
+// printed" symptom this fixes.
+const cleanupTimeout = 2 * time.Second
+
+// messageEventsClosedSeam is a test-only hook fired once, the first time
+// RunNonInteractive's event loop observes messageEvents closed (H-2, task
+// #779). nil in production. Lets tests assert the closed-channel branch was
+// actually taken exactly once (not spun on) rather than only inferring it
+// from wall-clock loop termination.
+var messageEventsClosedSeam func()
+
 // RunMode picks the output format for RunNonInteractive.
 type RunMode int
 
@@ -602,20 +619,39 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt 
 
 	// Fork patch (operator UX): persist ended_reason when the run finishes.
 	// hookExitReason is always set before return, so this defer fires after it.
+	//
+	// A-2 (task #779): these defers deliberately use context.Background()
+	// rather than the run's own ctx -- by the time they fire, ctx is
+	// already cancelled (cancel() above, or a --timeout/interrupt), so
+	// reusing it would make the write fail instantly every time, silently
+	// dropping ended_reason/usage bookkeeping on every cancelled run. But
+	// an unbounded Background() context can block for the full SQLite
+	// busy_timeout (30s, see internal/db/connect.go's pragma map) waiting
+	// on a lock -- to the user, who already has their result printed, that
+	// looks like a hang. cleanupTimeout gives these best-effort writes a
+	// short budget of their own: long enough to clear an ordinary,
+	// momentary busy_timeout contention window, short enough that a
+	// genuinely stuck writer can't reproduce the 30s freeze this fixes.
 	defer func() {
 		reason := hookExitReason
 		if reason == "" {
 			reason = "done"
 		}
-		if setErr := app.Sessions.SetEndedReason(context.Background(), sess.ID, reason); setErr != nil {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), cleanupTimeout)
+		defer cleanupCancel()
+		if setErr := app.Sessions.SetEndedReason(cleanupCtx, sess.ID, reason); setErr != nil {
 			slog.Warn("Failed to persist ended_reason", "session_id", sess.ID, "reason", reason, "err", setErr)
 		}
 	}()
 	if overrides.OnFinishHook != "" {
 		defer func() {
-			if freshSess, err := app.Sessions.Get(context.Background(), sess.ID); err == nil {
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), cleanupTimeout)
+			defer cleanupCancel()
+			if freshSess, err := app.Sessions.Get(cleanupCtx, sess.ID); err == nil {
 				hookTokens = freshSess.PromptTokens + freshSess.CompletionTokens - tokensBefore
 				hookCost = freshSess.Cost - costBefore
+			} else {
+				slog.Warn("Failed to refresh session for on-finish hook usage", "session_id", sess.ID, "err", err)
 			}
 			duration := time.Since(runStart)
 			runOnFinishHook(overrides.OnFinishHook, sess.ID, hookExitReason, hookCost, hookTokens, duration)
@@ -892,7 +928,29 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt 
 		case drainErr := <-drainDone:
 			return finish(drainErr)
 
-		case event := <-messageEvents:
+		case event, ok := <-messageEvents:
+			if !ok {
+				// H-2 (task #779): app.Messages.Subscribe's channel closes
+				// either when ctx is cancelled OR when the broker itself is
+				// closed independently of ctx (see pubsub.Broker.Close /
+				// Broker.Subscribe). A receive on a closed channel succeeds
+				// immediately and forever with a zero-value event, so
+				// without this guard this branch would spin hot on
+				// zero-value events until (or unless) ctx.Done() happened
+				// to be the one picked by `select` — and if the broker
+				// closed independently of ctx, ctx.Done() might never fire
+				// at all, so the loop would never terminate. Nil-ing the
+				// local channel variable makes this case block forever
+				// from here on, so `select` falls through cleanly to the
+				// `done`/`drainDone`/`ctx.Done()` cases instead of spinning
+				// — the other cases still decide when the loop actually
+				// exits.
+				messageEvents = nil
+				if messageEventsClosedSeam != nil {
+					messageEventsClosedSeam()
+				}
+				continue
+			}
 			msg := event.Payload
 			if msg.SessionID == sess.ID && msg.Role == message.Assistant && len(msg.Parts) > 0 {
 				stopSpinner()

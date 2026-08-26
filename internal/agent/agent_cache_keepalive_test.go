@@ -870,3 +870,295 @@ func TestCancelAll_CancelsInFlightReplay(t *testing.T) {
 	require.Less(t, elapsed, 5*time.Second,
 		"CancelAll must cancel the in-flight replay promptly rather than waiting out its own grace period")
 }
+
+// toolCallingKeepAliveModel is a mockModel whose Stream always returns a
+// single StreamPartTypeToolCall (for the tool named by toolName, with a
+// trivial "{}" input) followed by a finish part with FinishReasonToolCalls —
+// simulating a provider that ignores ToolChoiceNone and selects a tool
+// anyway. Used to prove the replay cannot get that tool call to actually
+// execute (task #776).
+type toolCallingKeepAliveModel struct {
+	mockModel
+	provider string
+	toolName string
+	calls    atomic.Int64
+
+	mu        sync.Mutex
+	callsSeen []fantasy.Call
+}
+
+func (m *toolCallingKeepAliveModel) Stream(_ context.Context, call fantasy.Call) (fantasy.StreamResponse, error) {
+	m.calls.Add(1)
+	m.mu.Lock()
+	m.callsSeen = append(m.callsSeen, call)
+	m.mu.Unlock()
+	toolName := m.toolName
+	return func(yield func(fantasy.StreamPart) bool) {
+		if !yield(fantasy.StreamPart{
+			Type:          fantasy.StreamPartTypeToolCall,
+			ID:            "call-1",
+			ToolCallName:  toolName,
+			ToolCallInput: "{}",
+		}) {
+			return
+		}
+		yield(fantasy.StreamPart{
+			Type:         fantasy.StreamPartTypeFinish,
+			FinishReason: fantasy.FinishReasonToolCalls,
+			Usage:        fantasy.Usage{InputTokens: 1, OutputTokens: 1},
+		})
+	}, nil
+}
+
+func (m *toolCallingKeepAliveModel) Provider() string { return m.provider }
+
+func (m *toolCallingKeepAliveModel) lastCall() fantasy.Call {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.callsSeen) == 0 {
+		return fantasy.Call{}
+	}
+	return m.callsSeen[len(m.callsSeen)-1]
+}
+
+// TestFireCacheKeepAlive_SetsToolChoiceNone proves the replay's outgoing
+// fantasy.Call carries ToolChoice == ToolChoiceNone — the request-level
+// guard task #776 requires. Pins the parameter directly, independent of
+// whether the model actually honors it.
+func TestFireCacheKeepAlive_SetsToolChoiceNone(t *testing.T) {
+	restoreKeepAliveVars(t, 20*time.Millisecond, 1)
+	a, _ := newKeepAliveAgent(t)
+	t.Cleanup(func() { a.CancelAll() })
+
+	echoTool := fantasy.NewAgentTool("echo", "echoes input",
+		func(context.Context, struct{}, fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			return fantasy.ToolResponse{}, nil
+		})
+
+	lm := &keepAliveCountingModel{provider: anthropic.Name}
+	model := testKeepAliveModel(Model{Model: lm})
+
+	a.scheduleCacheKeepAlive("sess-toolchoice", model,
+		[]fantasy.Message{fantasy.NewUserMessage("hi")},
+		[]fantasy.AgentTool{echoTool}, nil, 0)
+
+	require.Eventually(t, func() bool {
+		return lm.calls.Load() >= 1
+	}, 2*time.Second, 5*time.Millisecond, "expected the replay to fire")
+
+	replayCall := lm.lastCall()
+	require.NotNil(t, replayCall.ToolChoice, "replay call must set an explicit ToolChoice")
+	require.Equal(t, fantasy.ToolChoiceNone, *replayCall.ToolChoice,
+		"replay call must set ToolChoice=none so the provider is told not to select a tool")
+
+	// The tool DEFINITION must still be present — dropping it would itself
+	// invalidate the prompt-cache prefix the keep-alive exists to preserve.
+	require.Equal(t, []string{"echo"}, keepAliveToolNames(replayCall),
+		"ToolChoiceNone must not come at the cost of dropping the tool definitions")
+}
+
+// TestFireCacheKeepAlive_ToolCallNeverExecutes is the defect-pinning test:
+// even when the mock model RETURNS a tool call (simulating a provider that
+// ignores ToolChoiceNone), the replay's belt-and-braces noExecuteTools
+// wrapper must stop it from actually running. Before the fix, this tool's
+// real Run function executed for real inside a detached background replay —
+// a P1 (Bash/edit/write/MCP could all fire unattended).
+func TestFireCacheKeepAlive_ToolCallNeverExecutes(t *testing.T) {
+	restoreKeepAliveVars(t, 20*time.Millisecond, 1)
+	a, _ := newKeepAliveAgent(t)
+	t.Cleanup(func() { a.CancelAll() })
+
+	var executed atomic.Bool
+	spyTool := fantasy.NewAgentTool("dangerous", "flips a flag if it actually runs",
+		func(context.Context, struct{}, fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			executed.Store(true)
+			return fantasy.NewTextResponse("ran"), nil
+		})
+
+	lm := &toolCallingKeepAliveModel{provider: anthropic.Name, toolName: "dangerous"}
+	model := testKeepAliveModel(Model{Model: lm})
+
+	a.scheduleCacheKeepAlive("sess-toolexec", model,
+		[]fantasy.Message{fantasy.NewUserMessage("hi")},
+		[]fantasy.AgentTool{spyTool}, nil, 0)
+
+	require.Eventually(t, func() bool {
+		return lm.calls.Load() >= 1
+	}, 2*time.Second, 5*time.Millisecond, "expected the replay to fire")
+
+	// Give the agent's internal step/tool-execution loop time to run if it
+	// were going to — Stream having been called is not enough; the step loop
+	// processes the yielded tool_call part asynchronously to this goroutine.
+	time.Sleep(150 * time.Millisecond)
+
+	require.False(t, executed.Load(),
+		"the spy tool must NEVER execute from a cache keep-alive replay, even when the model returns a tool call")
+}
+
+// TestFireCacheKeepAlive_CancelBetweenErrCheckAndRearmDoesNotRearm pins the K-1
+// re-arm race (2026-08-26 review): between fireCacheKeepAlive's `if ctx.Err() != nil`
+// early-out and its rearm critical section, a cancelCacheKeepAlive landing in that
+// window must still stop the rearm. The production fix added a BLOCKING test seam
+// `cacheKeepAliveRearmSeam func()` called exactly in that window (after the
+// ctx.Err() check, before the lock). This test uses the documented `close(signal);
+// <-proceed` blocking pattern — a fire-and-forget seam produces a vacuous test here.
+//
+// The ctx.Err() check runs before the lock, so a cancelCacheKeepAlive landing
+// between that check and the rearm critical section used to be invisible — the
+// pending map was empty at that point (the fire Del'd its entry at start), the
+// generation guard only rejects when an entry EXISTS with a different generation,
+// and the stale fire re-armed a timer for a just-cancelled session, letting a stale
+// replay later run on top of a NEW turn. The fix makes the in-flight registration
+// the tombstone: cancelCacheKeepAlive consumes it under cacheKeepAliveMu, and the
+// rearm critical section requires the registration to still be present AND still
+// owned by this fire's generation.
+func TestFireCacheKeepAlive_CancelBetweenErrCheckAndRearmDoesNotRearm(t *testing.T) {
+	restoreKeepAliveVars(t, 20*time.Millisecond, 3)
+	a, _ := newKeepAliveAgent(t)
+	t.Cleanup(func() { a.CancelAll() })
+
+	lm := &usageKeepAliveModel{
+		provider: anthropic.Name,
+		usage:    fantasy.Usage{InputTokens: 1, OutputTokens: 1},
+	}
+	model := testKeepAliveModel(Model{Model: lm})
+
+	rearmHit := make(chan struct{})
+	rearmProceed := make(chan struct{})
+	var closeOnce sync.Once
+	cacheKeepAliveRearmSeam = func() { closeOnce.Do(func() { close(rearmHit) }); <-rearmProceed }
+	t.Cleanup(func() { cacheKeepAliveRearmSeam = nil })
+
+	sessionID := "sess-k1-rearm-race"
+	a.scheduleCacheKeepAlive(sessionID, model, []fantasy.Message{fantasy.NewUserMessage("hi")}, nil, nil, 0)
+
+	select {
+	case <-rearmHit:
+	case <-time.After(2 * time.Second):
+		t.Fatal("fire never reached the rearm seam")
+	}
+
+	// While the fire is BLOCKED at the seam (i.e. after the ctx.Err() check
+	// already passed with ctx not yet cancelled), land the cancel — this takes
+	// the in-flight registration (the K-1 tombstone) and cancels the ctx,
+	// exactly the interleaving the old code could not see.
+	a.cancelCacheKeepAlive(sessionID)
+	close(rearmProceed)
+
+	// Assert the fire finished: the deferred release must have cleared the
+	// in-flight entry.
+	require.Eventually(t, func() bool {
+		_, stillInFlight := a.cacheKeepAliveInFlight.Get(sessionID)
+		return !stillInFlight
+	}, 2*time.Second, 5*time.Millisecond,
+		"fire's deferred release must have cleared the in-flight entry")
+
+	// Sleep well past the 20ms rearm interval, giving an incorrect rearm every
+	// chance to fire a second replay.
+	time.Sleep(150 * time.Millisecond)
+	require.EqualValues(t, 1, lm.calls.Load(),
+		"a cancel landing between the ctx.Err() check and the rearm critical section must stop the rearm")
+
+	_, scheduled := a.cacheKeepAlive.Get(sessionID)
+	require.False(t, scheduled,
+		"the stale fire must not leave a re-armed pending entry behind")
+}
+
+// TestFireCacheKeepAlive_ChargeRefusedWhenDeltaWouldCrossMaxCost pins the K-2
+// defect at the wiring level: recordCacheKeepAliveCost used to do Get →
+// `sess.Cost >= maxCost` → IncrementCost, a read-then-write pair whose check
+// only compared the EXISTING cost against the cap and never accounted for the
+// delta about to be charged — so a charge that would itself cross the remaining
+// headroom landed anyway and overshot maxCost (the same missing delta-aware
+// predicate that let two racing chargers jointly overshoot). The fix is the
+// single atomic a.sessions.IncrementCostIfUnderMax(ctx, id, cost, maxCost) call.
+//
+// The RED behaviour (old code) was final cost 0.14 > maxCost 0.10 (overshoot).
+// The fixed code's delta-aware predicate also closes the concurrent two-charger
+// overshoot scenario — SQLite serializes writers, so only one racing charge can
+// land when their combined delta would cross max.
+func TestFireCacheKeepAlive_ChargeRefusedWhenDeltaWouldCrossMaxCost(t *testing.T) {
+	restoreKeepAliveVars(t, 20*time.Millisecond, 1)
+	a, env := newKeepAliveAgent(t)
+	t.Cleanup(func() { a.CancelAll() })
+
+	sess, err := env.sessions.Create(t.Context(), "keepalive k2 overshoot test")
+	require.NoError(t, err)
+
+	// Pre-charge to leave headroom smaller than the replay's own cost.
+	_, err = env.sessions.IncrementCost(t.Context(), sess.ID, 0.09)
+	require.NoError(t, err)
+
+	lm := &usageKeepAliveModel{
+		provider: anthropic.Name,
+		usage:    fantasy.Usage{InputTokens: 500, OutputTokens: 0},
+	}
+	model := testKeepAliveModel(Model{Model: lm})
+	model.CatwalkCfg.CostPer1MIn = 100.0 // replay cost = 100/1e6*500 = 0.05
+
+	const maxCost = 0.10 // up-front check passes (0.09 < 0.10), charge must be refused (0.09 + 0.05 >= 0.10)
+
+	a.scheduleCacheKeepAlive(sess.ID, model, []fantasy.Message{fantasy.NewUserMessage("hi")}, nil, nil, maxCost)
+
+	require.Eventually(t, func() bool {
+		return lm.calls.Load() >= 1
+	}, 2*time.Second, 5*time.Millisecond, "expected the replay to fire")
+
+	time.Sleep(200 * time.Millisecond) // let any incorrect charge/rearm settle
+
+	updated, err := env.sessions.Get(t.Context(), sess.ID)
+	require.NoError(t, err)
+	require.InDelta(t, 0.09, updated.Cost, 1e-9,
+		"a charge whose delta would cross the remaining maxCost headroom must be refused atomically, not layered on top (K-2: 0.09 + 0.05 >= 0.10)")
+
+	require.EqualValues(t, 1, lm.calls.Load(),
+		"refused charge returns false, so no rearm may follow")
+
+	_, scheduled := a.cacheKeepAlive.Get(sess.ID)
+	require.False(t, scheduled)
+}
+
+// TestFireCacheKeepAlive_ChargeFailureStopsRearm pins K-3 (2026-08-26 review):
+// when the cost charge errors (DB outage), recordCacheKeepAliveCost must return
+// false so the caller stops re-arming; the old code logged the error and returned
+// true, yielding repeated unbilled replays under DB trouble.
+//
+// This test simulates a DB outage by closing env.conn (fakeEnv exposes the raw
+// *sql.DB precisely so tests can do this — see common_test.go's comment). The
+// close happens BEFORE scheduling. Note testEnv's own cleanup double-closes conn,
+// which is safe (sql.DB.Close is idempotent).
+func TestFireCacheKeepAlive_ChargeFailureStopsRearm(t *testing.T) {
+	restoreKeepAliveVars(t, 20*time.Millisecond, 3)
+	a, env := newKeepAliveAgent(t)
+	t.Cleanup(func() { a.CancelAll() })
+
+	sess, err := env.sessions.Create(t.Context(), "keepalive k3 charge-failure test")
+	require.NoError(t, err)
+
+	lm := &usageKeepAliveModel{
+		provider: anthropic.Name,
+		usage:    fantasy.Usage{InputTokens: 500},
+	}
+	model := testKeepAliveModel(Model{Model: lm})
+	model.CatwalkCfg.CostPer1MIn = 100.0 // cost 0.05 (nonzero, so charge path runs)
+
+	// Simulate DB outage by closing the connection BEFORE scheduling.
+	env.conn.Close()
+
+	// maxCost=0 (unlimited) so the charge goes down IncrementCostIfUnderMax's
+	// plain IncrementCost path, which will error on the closed DB.
+	a.scheduleCacheKeepAlive(sess.ID, model, []fantasy.Message{fantasy.NewUserMessage("hi")}, nil, nil, 0)
+
+	require.Eventually(t, func() bool {
+		return lm.calls.Load() >= 1
+	}, 2*time.Second, 5*time.Millisecond, "expected the replay to fire")
+
+	time.Sleep(200 * time.Millisecond) // with maxExtensions=3, incorrect rearm would fire up to 2 more replays
+
+	require.EqualValues(t, 1, lm.calls.Load(),
+		"a failed charge must stop rearming — no repeated unbilled replays under DB trouble (K-3)")
+
+	_, scheduled := a.cacheKeepAlive.Get(sess.ID)
+	require.False(t, scheduled,
+		"a failed charge must not leave a re-armed entry behind")
+}

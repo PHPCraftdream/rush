@@ -162,6 +162,17 @@ type Service interface {
 	// with zero accrued cost still wants to fail if the parent went
 	// away. Pass a non-zero delta only when you actually want to charge.
 	IncrementCost(ctx context.Context, sessionID string, delta float64) (Session, error)
+	// IncrementCostIfUnderMax is IncrementCost's budget-guarded sibling
+	// (task #782, K-2): the charge and the maxCost check happen in ONE
+	// atomic SQL statement (cost = cost + delta WHERE cost + delta <
+	// max_cost), so two concurrent callers racing to charge the same
+	// session cannot both pass a separate read-then-check and jointly
+	// overshoot max_cost. Returns ok=false (no charge applied) when the
+	// combined cost would meet or exceed maxCost; the caller must treat
+	// that exactly like a pre-charge budget-cap skip. maxCost <= 0 is
+	// treated as "unlimited" and always charges (delta == 0 still
+	// short-circuits to a plain Get, same as IncrementCost).
+	IncrementCostIfUnderMax(ctx context.Context, sessionID string, delta, maxCost float64) (sess Session, ok bool, err error)
 	// TransferChildCostToParent moves the child session's cost accrued since
 	// the last transfer into the parent session, atomically in one DB
 	// transaction. It reads the child's persisted parent_cost_accounted

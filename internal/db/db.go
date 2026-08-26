@@ -156,6 +156,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.incrementSessionCostStmt, err = db.PrepareContext(ctx, incrementSessionCost); err != nil {
 		return nil, fmt.Errorf("error preparing query IncrementSessionCost: %w", err)
 	}
+	if q.incrementSessionCostIfUnderMaxStmt, err = db.PrepareContext(ctx, incrementSessionCostIfUnderMax); err != nil {
+		return nil, fmt.Errorf("error preparing query IncrementSessionCostIfUnderMax: %w", err)
+	}
 	if q.leaseRunQueueEntryByIDStmt, err = db.PrepareContext(ctx, leaseRunQueueEntryByID); err != nil {
 		return nil, fmt.Errorf("error preparing query LeaseRunQueueEntryByID: %w", err)
 	}
@@ -245,6 +248,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	}
 	if q.setParentCostAccountedStmt, err = db.PrepareContext(ctx, setParentCostAccounted); err != nil {
 		return nil, fmt.Errorf("error preparing query SetParentCostAccounted: %w", err)
+	}
+	if q.stampInterruptedAssistantIfStillLastStmt, err = db.PrepareContext(ctx, stampInterruptedAssistantIfStillLast); err != nil {
+		return nil, fmt.Errorf("error preparing query StampInterruptedAssistantIfStillLast: %w", err)
 	}
 	if q.sumMessageUsageByDayInRangeStmt, err = db.PrepareContext(ctx, sumMessageUsageByDayInRange); err != nil {
 		return nil, fmt.Errorf("error preparing query SumMessageUsageByDayInRange: %w", err)
@@ -516,6 +522,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing incrementSessionCostStmt: %w", cerr)
 		}
 	}
+	if q.incrementSessionCostIfUnderMaxStmt != nil {
+		if cerr := q.incrementSessionCostIfUnderMaxStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing incrementSessionCostIfUnderMaxStmt: %w", cerr)
+		}
+	}
 	if q.leaseRunQueueEntryByIDStmt != nil {
 		if cerr := q.leaseRunQueueEntryByIDStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing leaseRunQueueEntryByIDStmt: %w", cerr)
@@ -664,6 +675,11 @@ func (q *Queries) Close() error {
 	if q.setParentCostAccountedStmt != nil {
 		if cerr := q.setParentCostAccountedStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing setParentCostAccountedStmt: %w", cerr)
+		}
+	}
+	if q.stampInterruptedAssistantIfStillLastStmt != nil {
+		if cerr := q.stampInterruptedAssistantIfStillLastStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing stampInterruptedAssistantIfStillLastStmt: %w", cerr)
 		}
 	}
 	if q.sumMessageUsageByDayInRangeStmt != nil {
@@ -824,6 +840,7 @@ type Queries struct {
 	getUsageByModelStmt                            *sql.Stmt
 	hasOutstandingRunQueueEntryForSessionStmt      *sql.Stmt
 	incrementSessionCostStmt                       *sql.Stmt
+	incrementSessionCostIfUnderMaxStmt             *sql.Stmt
 	leaseRunQueueEntryByIDStmt                     *sql.Stmt
 	listAllSessionPermissionsStmt                  *sql.Stmt
 	listAllSessionsStmt                            *sql.Stmt
@@ -854,6 +871,7 @@ type Queries struct {
 	renameSessionStmt                              *sql.Stmt
 	renewRunQueueLeaseStmt                         *sql.Stmt
 	setParentCostAccountedStmt                     *sql.Stmt
+	stampInterruptedAssistantIfStillLastStmt       *sql.Stmt
 	sumMessageUsageByDayInRangeStmt                *sql.Stmt
 	sumMessageUsageByModelInRangeStmt              *sql.Stmt
 	sumMessageUsageBySessionStmt                   *sql.Stmt
@@ -919,6 +937,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		getUsageByModelStmt:                            q.getUsageByModelStmt,
 		hasOutstandingRunQueueEntryForSessionStmt:      q.hasOutstandingRunQueueEntryForSessionStmt,
 		incrementSessionCostStmt:                       q.incrementSessionCostStmt,
+		incrementSessionCostIfUnderMaxStmt:             q.incrementSessionCostIfUnderMaxStmt,
 		leaseRunQueueEntryByIDStmt:                     q.leaseRunQueueEntryByIDStmt,
 		listAllSessionPermissionsStmt:                  q.listAllSessionPermissionsStmt,
 		listAllSessionsStmt:                            q.listAllSessionsStmt,
@@ -949,6 +968,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		renameSessionStmt:                              q.renameSessionStmt,
 		renewRunQueueLeaseStmt:                         q.renewRunQueueLeaseStmt,
 		setParentCostAccountedStmt:                     q.setParentCostAccountedStmt,
+		stampInterruptedAssistantIfStillLastStmt:       q.stampInterruptedAssistantIfStillLastStmt,
 		sumMessageUsageByDayInRangeStmt:                q.sumMessageUsageByDayInRangeStmt,
 		sumMessageUsageByModelInRangeStmt:              q.sumMessageUsageByModelInRangeStmt,
 		sumMessageUsageBySessionStmt:                   q.sumMessageUsageBySessionStmt,

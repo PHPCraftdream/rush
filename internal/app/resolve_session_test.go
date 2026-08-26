@@ -111,6 +111,18 @@ func (m *mockSessionService) IncrementCost(_ context.Context, id string, delta f
 	return session.Session{}, nil
 }
 
+func (m *mockSessionService) IncrementCostIfUnderMax(ctx context.Context, id string, delta, maxCost float64) (session.Session, bool, error) {
+	if maxCost > 0 {
+		for _, s := range m.sessions {
+			if s.ID == id && s.Cost+delta >= maxCost {
+				return s, false, nil
+			}
+		}
+	}
+	sess, err := m.IncrementCost(ctx, id, delta)
+	return sess, err == nil, err
+}
+
 func (m *mockSessionService) TransferChildCostToParent(context.Context, string, string) error {
 	return nil
 }

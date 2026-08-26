@@ -118,6 +118,17 @@ type Service interface {
 	// ListCandidateInterruptedAssistantSessions (messages.sql) for the exact
 	// query and its tie-break/correctness notes.
 	ListCandidateInterruptedAssistantSessions(ctx context.Context) ([]InterruptedAssistantCandidate, error)
+	// StampInterruptedAssistantIfStillLast conditionally applies a
+	// process-restart error finish to msg (task #777, P1 release blocker).
+	// The write lands only if, atomically in the same statement, msg.ID is
+	// still unfinished AND still the chronologically last message in
+	// sessionID. Returns (applied=false, nil) if the candidate went stale
+	// between discovery and this call (superseded by a newer message, or
+	// finished concurrently by its live owner) -- callers must treat that as
+	// "skip, do not retry", exactly like DeleteMessageIfTerminal's
+	// 0-rows-affected contract. See StampInterruptedAssistantIfStillLast
+	// (messages.sql) for the full rationale.
+	StampInterruptedAssistantIfStillLast(ctx context.Context, sessionID string, msg Message) (applied bool, err error)
 	Delete(ctx context.Context, id string) error
 	// ForceDelete unconditionally deletes a message, bypassing the
 	// DeleteMessageIfTerminal streaming guard. This is ONLY for callers that

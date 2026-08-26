@@ -171,8 +171,8 @@ func (a *sessionAgent) CancelAll() (stillBusy bool) {
 		entry.timer.Stop()
 		a.cacheKeepAlive.Del(sessionID)
 	}
-	for sessionID, cancel := range a.cacheKeepAliveInFlight.Seq2() {
-		cancel()
+	for sessionID, inFlight := range a.cacheKeepAliveInFlight.Seq2() {
+		inFlight.cancel()
 		a.cacheKeepAliveInFlight.Del(sessionID)
 	}
 	a.cacheKeepAliveMu.Unlock()

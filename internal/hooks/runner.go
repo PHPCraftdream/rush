@@ -5,11 +5,14 @@ import (
 	"context"
 	"log/slog"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/shell"
 )
 
@@ -18,6 +21,42 @@ import (
 // letting the goroutine finish on its own. Mirrors the historical
 // cmd.WaitDelay = time.Second behavior of the previous os/exec path.
 const abandonGrace = time.Second
+
+// maxAbandonedWorkers caps how many hook goroutines may be simultaneously
+// abandoned (still running past timeout+abandonGrace, e.g. a failed kill,
+// a nested interpreter, or a process holding a pipe open). The normal
+// Windows/Unix exec path already tree-kills the underlying process on ctx
+// cancellation (see shell.processGroupExecHandler), so this cap guards the
+// rarer case where that kill doesn't land and the worker goroutine keeps
+// running indefinitely. 32 is generous for any realistic hook fan-out
+// (Run() dedupes by command and a single event rarely matches more than a
+// handful of hooks) while still being small enough that hitting it is a
+// clear signal something is systemically wedged rather than normal load.
+// Enforcement: Run checks the gauge before spawning workers and rejects
+// (non-blocking, loud error log) once it is at/above the cap; the check is
+// advisory under concurrency (a burst that passes the check before the
+// first abandonment lands can still overshoot by its in-flight size).
+const maxAbandonedWorkers = 32
+
+// abandonedWorkers tracks hook goroutines currently abandoned past
+// timeout+abandonGrace (increment on abandon, decrement when the worker
+// eventually finishes), so their number is observable (AbandonedWorkers)
+// instead of silently growing without bound.
+var abandonedWorkers atomic.Int64
+
+// AbandonedWorkers returns the number of hook worker goroutines currently
+// abandoned past their timeout+abandonGrace deadline. Intended for
+// diagnostics/metrics.
+func AbandonedWorkers() int64 {
+	return abandonedWorkers.Load()
+}
+
+// abandonSeam, when non-nil, is called in place of the real hard-kill
+// attempt on the abandon path, receiving the pids registered by the
+// wedged worker via shell.RunOptions.RegisterProcess. Test-only hook so
+// tests can observe/force that path deterministically without depending
+// on OS process timing or killing real pids.
+var abandonSeam func(pids []int)
 
 // runShell is the shell executor used by runOne. It is a package-level
 // variable so tests can substitute a blocking or non-yielding
@@ -104,6 +143,29 @@ func (r *Runner) Run(ctx context.Context, eventName, sessionID, toolName, toolIn
 		deduped = append(deduped, h)
 	}
 
+	// Saturation guard: once maxAbandonedWorkers hook goroutines are
+	// stuck past their timeout+grace, spawning more only grows the
+	// pile of leaked goroutines and processes, so reject the run
+	// before any worker is spawned. The check is advisory, not a hard
+	// invariant — workers turn abandoned only at timeout+grace, so a
+	// burst that passes the check before the first abandonment lands
+	// can still overshoot by its in-flight size; what this guarantees
+	// is that growth stops once saturation is observed. A rejected run
+	// is non-blocking (DecisionNone), deliberately matching how a
+	// single wedged hook is treated: turning a hooks-subsystem failure
+	// into blocked tool calls would trade a bounded leak for an agent
+	// outage.
+	if abandoned := abandonedWorkers.Load(); abandoned >= int64(maxAbandonedWorkers) {
+		slog.Error(
+			"Hook run rejected: too many abandoned hook workers",
+			"event", eventName,
+			"tool", toolName,
+			"abandoned_workers", abandoned,
+			"cap", maxAbandonedWorkers,
+		)
+		return AggregateResult{Decision: DecisionNone}, nil
+	}
+
 	envVars := BuildEnv(eventName, toolName, sessionID, r.cwd, r.projectDir, toolInputJSON)
 	payload := BuildPayload(eventName, sessionID, r.cwd, toolName, toolInputJSON)
 
@@ -153,6 +215,87 @@ func (r *Runner) matchingHooks(toolName string) []config.HookConfig {
 	return matched
 }
 
+// workerTracker coordinates the abandon handshake between runOne's
+// outer frame and its worker goroutine, and collects the pids of
+// processes the worker spawns so the abandon path can hard-kill
+// them. All methods are safe for concurrent use: RegisterProcess
+// fires from inside the interpreter, potentially on several
+// goroutines at once for backgrounded commands.
+type workerTracker struct {
+	mu        sync.Mutex
+	pids      []int
+	finished  bool
+	abandoned bool
+}
+
+// register is passed as shell.RunOptions.RegisterProcess.
+func (wt *workerTracker) register(pid int) {
+	wt.mu.Lock()
+	wt.pids = append(wt.pids, pid)
+	wt.mu.Unlock()
+}
+
+// workerFinished runs on the worker goroutine after runShell
+// returns. If the outer frame already abandoned this worker, it
+// performs the matching decrement — the count must come back down
+// even though nobody was waiting on the worker anymore.
+func (wt *workerTracker) workerFinished() {
+	wt.mu.Lock()
+	wt.finished = true
+	if wt.abandoned {
+		abandonedWorkers.Add(-1)
+	}
+	wt.mu.Unlock()
+}
+
+// abandon runs on the outer frame once it gives up waiting. It marks
+// the worker abandoned and increments the global count — unless the
+// worker snuck in a finish between the grace deadline and now, in
+// which case there is nothing left to track. The mutex pairs with
+// workerFinished so exactly one side of the increment/decrement
+// pairing happens under either interleaving. Returns a snapshot of
+// the registered pids for the hard-kill attempt.
+func (wt *workerTracker) abandon() []int {
+	wt.mu.Lock()
+	defer wt.mu.Unlock()
+	wt.abandoned = true
+	if !wt.finished {
+		abandonedWorkers.Add(1)
+	}
+	return slices.Clone(wt.pids)
+}
+
+// hardKillAbandoned is the abandon path's escalation: mark the worker
+// abandoned (incrementing the global count) and, off the caller's
+// goroutine, re-attempt a hard kill of the processes the worker
+// registered. The ctx-driven kill inside the shell exec layer has
+// already fired by now (SIGINT then SIGKILL on Unix, taskkill /T on
+// Windows); this is defense in depth for the cases where that kill
+// did not land — a failed kill, a nested interpreter, or a process
+// still holding a pipe. It must never block the caller, so the kill
+// runs in its own goroutine; that goroutine is bounded by the same
+// cap because abandonments themselves are capped via the Run-level
+// saturation check.
+func hardKillAbandoned(wt *workerTracker, hook config.HookConfig) {
+	pids := wt.abandon()
+	go func() {
+		if abandonSeam != nil {
+			abandonSeam(pids)
+			return
+		}
+		for _, pid := range pids {
+			if err := session.KillProcess(pid); err != nil {
+				slog.Warn(
+					"Hard kill of abandoned hook process failed",
+					"pid", pid,
+					"command", hook.Command,
+					"error", err,
+				)
+			}
+		}
+	}()
+}
+
 // runOne executes a single hook command and returns its result.
 //
 // Execution goes through Rush's embedded POSIX shell (shell.Run) so the
@@ -169,22 +312,30 @@ func (r *Runner) matchingHooks(toolName string) []config.HookConfig {
 //     outer frame reads them;
 //   - on the abandon path, the goroutine may still be writing and the
 //     outer frame must not touch them again.
+//   - the abandonment is counted in the global abandonedWorkers gauge and
+//     undone when the goroutine eventually finishes;
+//   - a best-effort hard kill of the worker's registered pids is attempted
+//     asynchronously and must never touch the buffers or block the caller.
 func (r *Runner) runOne(parentCtx context.Context, hook config.HookConfig, envVars []string, payload []byte) HookResult {
 	timeout := hook.TimeoutDuration()
 	ctx, cancel := context.WithTimeout(parentCtx, timeout)
 	defer cancel()
 
 	var stdout, stderr bytes.Buffer
+	tracker := &workerTracker{}
 	done := make(chan error, 1)
 	go func() {
-		done <- runShell(ctx, shell.RunOptions{
-			Command: hook.Command,
-			Cwd:     r.cwd,
-			Env:     envVars,
-			Stdin:   bytes.NewReader(payload),
-			Stdout:  &stdout,
-			Stderr:  &stderr,
+		err := runShell(ctx, shell.RunOptions{
+			Command:         hook.Command,
+			Cwd:             r.cwd,
+			Env:             envVars,
+			Stdin:           bytes.NewReader(payload),
+			Stdout:          &stdout,
+			Stderr:          &stderr,
+			RegisterProcess: tracker.register,
 		})
+		tracker.workerFinished()
+		done <- err
 	}()
 
 	var err error
@@ -201,6 +352,7 @@ func (r *Runner) runOne(parentCtx context.Context, hook config.HookConfig, envVa
 				"command", hook.Command,
 				"timeout", timeout,
 			)
+			hardKillAbandoned(tracker, hook)
 			// The goroutine may still be writing to stdout/stderr; do
 			// not read either buffer below this point.
 			return HookResult{Decision: DecisionNone}

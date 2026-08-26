@@ -4,6 +4,9 @@ import (
 	"fmt"
 
 	"charm.land/fantasy"
+	"charm.land/fantasy/providers/anthropic"
+	"charm.land/fantasy/providers/google"
+	"charm.land/fantasy/providers/openai"
 )
 
 func usageIsZero(usage fantasy.Usage) bool {
@@ -33,13 +36,141 @@ func fallbackStepUsage(messages []fantasy.Message, step fantasy.StepResult) (fan
 	}, true
 }
 
+// cloneFantasyMessages returns a snapshot of messages that subsequent
+// mutation of the live conversation cannot reach: the slice itself, each
+// message's Content slice, every part (value and pointer form), FilePart
+// byte payloads, and every ProviderOptions map together with the option
+// values inside them are copied. This is what the cache keep-alive replay
+// (scheduleCacheKeepAlive) replays: its whole value is byte-matching the
+// prompt prefix the triggering turn cached, so a later turn mutating shared
+// internals retroactively changing the snapshot would silently invalidate
+// the cache the replay exists to keep warm.
+//
+// Deliberately left SHARED, and why that is safe:
+//   - string fields everywhere (part text, tool-call IDs and inputs, media
+//     base64): Go strings are immutable; "changing" one in the original can
+//     only replace the field on the original's own copy, which the snapshot
+//     does not alias.
+//   - ToolResultOutputContentError.Error (an error interface value): errors
+//     are created, formatted and read, never mutated in place by this repo
+//     or fantasy; copying an arbitrary error value is not possible
+//     generically.
+//   - MessagePart and ProviderOptionsData implementations unknown to the
+//     switches below: passed through untouched (never dropped) — fantasy's
+//     closed part set and every option type this repo attaches are covered,
+//     and an unknown implementation could not be copied without reflection.
 func cloneFantasyMessages(messages []fantasy.Message) []fantasy.Message {
 	cloned := make([]fantasy.Message, len(messages))
 	for i, msg := range messages {
 		cloned[i] = msg
-		cloned[i].Content = append([]fantasy.MessagePart(nil), msg.Content...)
+		cloned[i].ProviderOptions = cloneProviderOptions(msg.ProviderOptions)
+		cloned[i].Content = cloneMessageParts(msg.Content)
 	}
 	return cloned
+}
+
+// cloneMessageParts deep-copies a Content slice; nil and empty stay nil,
+// matching the append-based clone this replaces.
+func cloneMessageParts(parts []fantasy.MessagePart) []fantasy.MessagePart {
+	if len(parts) == 0 {
+		return nil
+	}
+	cloned := make([]fantasy.MessagePart, len(parts))
+	for i, part := range parts {
+		cloned[i] = cloneMessagePart(part)
+	}
+	return cloned
+}
+
+// cloneMessagePart deep-copies one of fantasy's five MessagePart types,
+// preserving the value-vs-pointer dynamic type of the original. Pointer
+// parts must get a fresh pointee: sharing one would alias every field, not
+// just the mutable ones.
+func cloneMessagePart(part fantasy.MessagePart) fantasy.MessagePart {
+	switch p := part.(type) {
+	case fantasy.TextPart:
+		p.ProviderOptions = cloneProviderOptions(p.ProviderOptions)
+		return p
+	case *fantasy.TextPart:
+		c := *p
+		c.ProviderOptions = cloneProviderOptions(c.ProviderOptions)
+		return &c
+	case fantasy.ReasoningPart:
+		p.ProviderOptions = cloneProviderOptions(p.ProviderOptions)
+		return p
+	case *fantasy.ReasoningPart:
+		c := *p
+		c.ProviderOptions = cloneProviderOptions(c.ProviderOptions)
+		return &c
+	case fantasy.FilePart:
+		p.ProviderOptions = cloneProviderOptions(p.ProviderOptions)
+		p.Data = append([]byte(nil), p.Data...)
+		return p
+	case *fantasy.FilePart:
+		c := *p
+		c.ProviderOptions = cloneProviderOptions(c.ProviderOptions)
+		c.Data = append([]byte(nil), p.Data...)
+		return &c
+	case fantasy.ToolCallPart:
+		p.ProviderOptions = cloneProviderOptions(p.ProviderOptions)
+		return p
+	case *fantasy.ToolCallPart:
+		c := *p
+		c.ProviderOptions = cloneProviderOptions(c.ProviderOptions)
+		return &c
+	case fantasy.ToolResultPart:
+		p.ProviderOptions = cloneProviderOptions(p.ProviderOptions)
+		return p
+	case *fantasy.ToolResultPart:
+		c := *p
+		c.ProviderOptions = cloneProviderOptions(c.ProviderOptions)
+		return &c
+	default:
+		return part
+	}
+}
+
+// cloneProviderOptions deep-copies a ProviderOptions map: the map itself
+// (so key inserts/deletes on the original cannot reach the snapshot) and
+// every value inside it (the implementations this repo attaches are
+// pointers, so sharing a value would share mutable state). nil stays nil.
+func cloneProviderOptions(opts fantasy.ProviderOptions) fantasy.ProviderOptions {
+	if opts == nil {
+		return nil
+	}
+	cloned := make(fantasy.ProviderOptions, len(opts))
+	for k, v := range opts {
+		cloned[k] = cloneProviderOptionsData(v)
+	}
+	return cloned
+}
+
+// cloneProviderOptionsData copies the ProviderOptionsData implementations
+// this repo can attach to a message (see getCacheControlOptions and
+// message.ToAIMessage); each is a pointer, so a shallow map copy would
+// still alias its fields.
+func cloneProviderOptionsData(v fantasy.ProviderOptionsData) fantasy.ProviderOptionsData {
+	switch o := v.(type) {
+	case *anthropic.ProviderCacheControlOptions:
+		c := *o
+		return &c
+	case *anthropic.ReasoningOptionMetadata:
+		c := *o
+		return &c
+	case *google.ReasoningMetadata:
+		c := *o
+		return &c
+	case *openai.ResponsesReasoningMetadata:
+		c := *o
+		if o.EncryptedContent != nil {
+			s := *o.EncryptedContent
+			c.EncryptedContent = &s
+		}
+		c.Summary = append([]string(nil), o.Summary...)
+		return &c
+	default:
+		return v
+	}
 }
 
 func estimateMessageTokens(messages []fantasy.Message) int64 {

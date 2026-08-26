@@ -6,6 +6,8 @@ import (
 
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
+	"charm.land/fantasy/providers/anthropic"
+	"charm.land/fantasy/providers/openai"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
@@ -326,4 +328,70 @@ func TestUpdateSessionUsageAddsProviderCost(t *testing.T) {
 	require.Equal(t, 1.3, currentSession.Cost)
 	require.Equal(t, int64(1000), currentSession.PromptTokens)
 	require.Equal(t, int64(2000), currentSession.CompletionTokens)
+}
+
+// TestCloneFantasyMessagesDeepSnapshot pins the snapshot guarantee the cache
+// keep-alive replay depends on: cloneFantasyMessages must copy deeply enough
+// that later mutation of the LIVE conversation (map writes into provider
+// options, in-place edits through pointer parts, file-data byte writes)
+// cannot retroactively change the replayed prompt prefix.
+func TestCloneFantasyMessagesDeepSnapshot(t *testing.T) {
+	t.Parallel()
+
+	msgOptions := fantasy.ProviderOptions{
+		anthropic.Name: &anthropic.ProviderCacheControlOptions{
+			CacheControl: anthropic.CacheControl{Type: "ephemeral"},
+		},
+	}
+	partOptions := fantasy.ProviderOptions{
+		openai.Name: &openai.ResponsesReasoningMetadata{ItemID: "item_1"},
+	}
+	orig := []fantasy.Message{
+		{
+			Role:            fantasy.MessageRoleSystem,
+			ProviderOptions: msgOptions,
+			Content: []fantasy.MessagePart{
+				fantasy.TextPart{Text: "value part", ProviderOptions: partOptions},
+				&fantasy.TextPart{Text: "pointer part"},
+				fantasy.FilePart{Filename: "img.png", Data: []byte{1, 2, 3}},
+				fantasy.ToolCallPart{ToolCallID: "call_1", ToolName: "bash", Input: `{"cmd":"ls"}`},
+				fantasy.ToolResultPart{
+					ToolCallID: "call_1",
+					Output:     fantasy.ToolResultOutputContentText{Text: "ok"},
+				},
+			},
+		},
+	}
+
+	cloned := cloneFantasyMessages(orig)
+
+	// Mutate every nested level of the ORIGINAL after the snapshot was
+	// taken. The value-part mutations below deliberately go through
+	// type-asserted struct copies: a struct copy still shares the map and
+	// byte-slice internals, which is exactly the aliasing the clone must
+	// break.
+	orig[0].ProviderOptions["injected"] = &anthropic.ProviderCacheControlOptions{}
+	msgOptions[anthropic.Name].(*anthropic.ProviderCacheControlOptions).CacheControl.Type = "mutated"
+	orig[0].Content[0].(fantasy.TextPart).ProviderOptions["injected"] = &openai.ResponsesReasoningMetadata{}
+	partOptions[openai.Name].(*openai.ResponsesReasoningMetadata).ItemID = "mutated"
+	orig[0].Content[1].(*fantasy.TextPart).Text = "mutated"
+	orig[0].Content[2].(fantasy.FilePart).Data[0] = 99
+	orig[0].Content = append(orig[0].Content, fantasy.TextPart{Text: "extra"})
+	orig = append(orig, fantasy.NewUserMessage("extra turn"))
+	require.Len(t, orig, 2, "the original slice mutation must land on the original")
+
+	// The snapshot must be untouched by every one of those mutations.
+	require.NotContains(t, cloned[0].ProviderOptions, "injected")
+	require.Equal(t, "ephemeral",
+		cloned[0].ProviderOptions[anthropic.Name].(*anthropic.ProviderCacheControlOptions).CacheControl.Type)
+
+	clonedText := cloned[0].Content[0].(fantasy.TextPart)
+	require.NotContains(t, clonedText.ProviderOptions, "injected")
+	require.Equal(t, "item_1",
+		clonedText.ProviderOptions[openai.Name].(*openai.ResponsesReasoningMetadata).ItemID)
+
+	require.Equal(t, "pointer part", cloned[0].Content[1].(*fantasy.TextPart).Text)
+	require.Equal(t, []byte{1, 2, 3}, cloned[0].Content[2].(fantasy.FilePart).Data)
+	require.Len(t, cloned[0].Content, 5)
+	require.Len(t, cloned, 1)
 }

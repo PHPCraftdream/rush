@@ -114,7 +114,7 @@ func isolateProcess(cmd *exec.Cmd) {
 // bounded by whatever OUTER mechanism eventually cancels that context
 // (turn cancellation, the stream watchdog, `job_kill` for a backgrounded
 // tool run), not by anything in this file.
-func processGroupExecHandler(killTimeout time.Duration) interp.ExecHandlerFunc {
+func processGroupExecHandler(killTimeout time.Duration, registerProcess func(int)) interp.ExecHandlerFunc {
 	return func(ctx context.Context, args []string) error {
 		hc := interp.HandlerCtx(ctx)
 		path, err := interp.LookPathDir(hc.Dir, hc.Env, args[0])
@@ -136,6 +136,9 @@ func processGroupExecHandler(killTimeout time.Duration) interp.ExecHandlerFunc {
 
 		err = cmd.Start()
 		if err == nil {
+			if registerProcess != nil && cmd.Process != nil {
+				registerProcess(cmd.Process.Pid)
+			}
 			stopf := context.AfterFunc(ctx, func() {
 				if killTimeout <= 0 {
 					_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)

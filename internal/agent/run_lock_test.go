@@ -47,7 +47,7 @@ func newLockTestSessionAgent(dataDir string, isSubAgent bool) *sessionAgent {
 		activeRequests:         csync.NewMap[string, context.CancelFunc](),
 		mailboxes:              csync.NewMap[string, *mailbox](),
 		cacheKeepAlive:         csync.NewMap[string, *cacheKeepAliveEntry](),
-		cacheKeepAliveInFlight: csync.NewMap[string, context.CancelFunc](),
+		cacheKeepAliveInFlight: csync.NewMap[string, cacheKeepAliveInFlightEntry](),
 		tools:                  csync.NewSliceFrom[fantasy.AgentTool](nil),
 		smartModel:             csync.NewValue(Model{}),
 		fastModel:              csync.NewValue(Model{}),

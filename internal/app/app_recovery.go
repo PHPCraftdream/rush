@@ -23,6 +23,26 @@ import (
 // per-session Messages.List.
 var recoverSessionListSeam func()
 
+// recoverSessionPreWriteSeam is a test-only hook fired once per candidate,
+// immediately after all guards (finished re-check, liveness lock, age
+// filter) have passed but BEFORE the conditional stamp write
+// (StampInterruptedAssistantIfStillLast) is issued (task #777). nil in
+// production.
+//
+// Unlike recoverSessionListSeam, this is deliberately a BLOCKING seam
+// (invoked in-line, expected to itself block via a channel handshake) rather
+// than fire-and-forget: a fire-and-forget hook cannot force a specific
+// interleaving, so a test built on one can only ever observe "the write
+// happened after some unspecified point," which is vacuous against exactly
+// the TOCTOU bug this task fixes -- the whole defect is that a message can
+// land in the narrow gap between the last guard check and the write. This
+// codebase has a documented history of vacuous seam tests passing against
+// deliberately-broken code, so this seam's contract requires deterministic
+// interleaving: a test sets this to a function that signals "the guards have
+// passed, safe to inject the race now" and then blocks until told to
+// proceed.
+var recoverSessionPreWriteSeam func()
+
 // recoverInterruptedTurns is the startup safety net for the "silent dying"
 // pattern: a previous rush process that died ungracefully (kill -9, power
 // loss, OS reboot, panic without recovery, or even a graceful Ctrl-C during
@@ -264,12 +284,37 @@ func (app *App) recoverSessionInterruptedTurn(ctx context.Context, cand message.
 		"Process restarted",
 		"The previous rush process exited before this turn completed (silent dying — see CHANGELOG.fork.md section 4.D). The assistant message had tool calls but no finish part. Cleanly recovered on startup; you can retry from the previous user message.",
 	)
-	if err := app.Messages.Update(ctx, lastAssistant); err != nil {
+	if recoverSessionPreWriteSeam != nil {
+		recoverSessionPreWriteSeam()
+	}
+	// task #777 (P1 release blocker): a plain Update here rewrites the whole
+	// Parts blob unconditionally, which is unsafe against two remaining
+	// TOCTOU windows even after the IsFinished/lock/age checks above: (1)
+	// cand.MessageID was proven to be the session's LAST message only at the
+	// instant the discovery query ran -- a new message landing between then
+	// and this write makes the candidate stale, and (2) a plain UPDATE has no
+	// way to notice a live owner's write landing in the gap between the Get
+	// above and this write, so it would clobber it. StampInterruptedAssistant-
+	// IfStillLast folds "still unfinished AND still the session's last
+	// message" into the WHERE clause of the write itself, closing both gaps
+	// atomically. applied=false means the candidate went stale in that
+	// window: skip, do not retry-stamp (see the query's own comment in
+	// internal/db/sql/messages.sql for the full rationale).
+	applied, err := app.Messages.StampInterruptedAssistantIfStillLast(ctx, cand.SessionID, lastAssistant)
+	if err != nil {
 		slog.Warn(
 			"startup recovery: failed to mark orphan assistant",
 			"session_id", cand.SessionID,
 			"message_id", lastAssistant.ID,
 			"err", err,
+		)
+		return recoveryOutcomeNone
+	}
+	if !applied {
+		slog.Debug(
+			"startup recovery: skipping candidate, went stale between discovery and write",
+			"session_id", cand.SessionID,
+			"message_id", lastAssistant.ID,
 		)
 		return recoveryOutcomeNone
 	}

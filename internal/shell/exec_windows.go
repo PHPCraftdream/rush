@@ -35,7 +35,7 @@ func isolateProcess(cmd *exec.Cmd) { platform.HideConsoleWindow(cmd) }
 // unconditionally — independent of whatever console state rush itself is
 // in, so this is the correct fix at the source rather than trying to give
 // rush a console for children to inherit.
-func processGroupExecHandler(killTimeout time.Duration) interp.ExecHandlerFunc {
+func processGroupExecHandler(killTimeout time.Duration, registerProcess func(int)) interp.ExecHandlerFunc {
 	return func(ctx context.Context, args []string) error {
 		hc := interp.HandlerCtx(ctx)
 		path, err := interp.LookPathDir(hc.Dir, hc.Env, args[0])
@@ -56,6 +56,9 @@ func processGroupExecHandler(killTimeout time.Duration) interp.ExecHandlerFunc {
 
 		err = cmd.Start()
 		if err == nil {
+			if registerProcess != nil && cmd.Process != nil {
+				registerProcess(cmd.Process.Pid)
+			}
 			stopf := context.AfterFunc(ctx, func() {
 				// cmd.Stdout/Stderr here are plain io.Writers (our
 				// boundedBuffer, not *os.File), so os/exec backs them with an

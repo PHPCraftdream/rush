@@ -221,6 +221,26 @@ type Querier interface {
 	// parent) and across processes (orchestrator with parallel rush runs).
 	// Returns the updated row so the caller can refresh its snapshot.
 	IncrementSessionCost(ctx context.Context, arg IncrementSessionCostParams) (Session, error)
+	// task #782 (K-2, P1 release blocker): plain IncrementSessionCost has no
+	// budget predicate, so two concurrent callers (a real turn and a cache
+	// keep-alive replay, or two replays) can both read cost < maxCost, then
+	// both call IncrementSessionCost, and jointly overshoot maxCost (e.g.
+	// 0.09 -> 0.14 against a 0.10 cap). Moving the budget check into the WHERE
+	// clause of the additive UPDATE itself closes that TOCTOU window: only ONE
+	// of two racing callers can win when their combined delta would cross max,
+	// because SQLite serializes writers and the second writer's WHERE
+	// re-evaluates cost as already updated by the first.
+	//
+	// This is a NEW query, not a modified IncrementSessionCost: that query has
+	// other callers (agent_title.go, agent_turn.go, agent_compaction.go,
+	// coordinator cost transfer, sessions_reset) which do not carry a maxCost
+	// budget in the same shape and must keep their existing unconditional
+	// semantics.
+	//
+	// Returns rows affected: 0 means the charge was refused because
+	// cost + delta would meet or exceed max_cost -- the caller must treat that
+	// the same as an up-front max-cost skip (no charge landed).
+	IncrementSessionCostIfUnderMax(ctx context.Context, arg IncrementSessionCostIfUnderMaxParams) (int64, error)
 	// Claim a specific entry by ID (call after GetOldestPendingRunQueueEntryForSession in a transaction).
 	// Does not increment attempts: leasing only claims the row for execution.
 	// NackRunQueueEntry and CleanupExpiredLeases are the only sites that count
@@ -386,6 +406,44 @@ type Querier interface {
 	// IncrementSessionCost so a crash between the two cannot leave the parent
 	// charged but the child's accounting lagging (or vice versa).
 	SetParentCostAccounted(ctx context.Context, arg SetParentCostAccountedParams) error
+	// task #777 (P1 release blocker): recoverSessionInterruptedTurn used to
+	// read the candidate message (Get), re-check IsFinished() in Go, check the
+	// liveness lock, then call the plain message.Update, which rewrites the
+	// WHOLE parts blob from that Get-time snapshot. Both the read-then-write gap
+	// AND the whole-blob overwrite were unguarded TOCTOU windows:
+	//
+	//   1. ListCandidateInterruptedAssistantSessions proved this message was the
+	//      session's LAST message only at the instant the discovery query ran.
+	//      If a newer user/assistant message lands before this write, the
+	//      candidate is stale and must not be stamped -- the session has moved
+	//      on, and stamping the older message would show a spurious "Process
+	//      restarted" on a turn that already has a live successor.
+	//   2. A plain UPDATE ... WHERE id = ? has no way to notice #1, and also
+	//      clobbers any Parts content the live owner wrote in the same window
+	//      (e.g. a checkpoint tick) since the write is not conditioned on the
+	//      row being unchanged since the Get.
+	//
+	// This mirrors DeleteMessageIfTerminal / UpdateMessageIfNotTerminal: the
+	// read-then-act race is closed by moving the predicate into the WHERE clause
+	// of a single statement instead of trusting a prior read. The WHERE
+	// requires, atomically:
+	//   - finished_at IS NULL (still unfinished -- same re-check the Go code
+	//     used to do after the initial Get, now enforced in the same statement
+	//     as the write instead of a separate round trip before it)
+	//   - rowid = the MAX(rowid) among this session's messages (still the
+	//     session's chronologically last message, using rowid rather than
+	//     created_at for the same reason as ListCandidateInterruptedAssistantSessions
+	//     and ListMessagesBySession: created_at is second-granularity, so a
+	//     single turn's rows can tie, and rowid is SQLite's monotonic insertion
+	//     counter -- see ListAllUserMessages's comment for the canonical
+	//     explanation of why rowid is the established tiebreaker throughout this
+	//     file)
+	//
+	// Returns rows affected: 0 means the candidate went stale between discovery
+	// and this write (superseded by a newer message, or finished concurrently by
+	// its live owner) -- the caller must treat that as "skip, do not retry",
+	// exactly like DeleteMessageIfTerminal's 0-rows-affected contract.
+	StampInterruptedAssistantIfStillLast(ctx context.Context, arg StampInterruptedAssistantIfStillLastParams) (int64, error)
 	// Same window and semantics as SumMessageUsageByModelInRange, bucketed by
 	// local calendar day so it lines up with `sessions cost --by day`, which
 	// formats with time.Unix(...).Format("2006-01-02") in local time.

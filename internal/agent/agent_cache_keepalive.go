@@ -60,6 +60,11 @@ var cacheKeepAliveCallTimeout = 30 * time.Second
 // fireCacheKeepAlive. nil (a no-op) in every production path.
 var cacheKeepAliveFireSeam func()
 
+// cacheKeepAliveRearmSeam is a test-only hook — see its call site in
+// fireCacheKeepAlive's rearm decision, between the ctx.Err() check and the
+// rearm critical section. nil (a no-op) in every production path.
+var cacheKeepAliveRearmSeam func()
+
 // cacheKeepAliveEntry is the pending-timer state for one session. It holds
 // only what the generation-guard compare-and-act sequences actually read
 // back (timer, generation) plus the extension counter — messages, tools,
@@ -72,6 +77,19 @@ type cacheKeepAliveEntry struct {
 	timer      *time.Timer
 	extension  int
 	generation int64
+}
+
+// cacheKeepAliveInFlightEntry is the in-flight registration for one replay
+// call currently executing inside fireCacheKeepAlive: its cancel func plus
+// the generation of the fire that owns it. The generation makes ownership
+// testable under cacheKeepAliveMu — "the entry is still mine" is what the
+// rearm decision (K-1) and the deferred release both check, so a consumed
+// (cancelled) or replaced (superseded by a newer fire) registration is
+// distinguishable from "still mine", and a finishing fire can never drop a
+// NEWER fire's registration with a blind Del.
+type cacheKeepAliveInFlightEntry struct {
+	generation int64
+	cancel     context.CancelFunc
 }
 
 // cacheKeepAliveExplicitCacheProvider reports whether provider is one of the
@@ -123,6 +141,36 @@ func (a *sessionAgent) scheduleCacheKeepAlive(sessionID string, model Model, mes
 	a.cacheKeepAlive.Set(sessionID, entry)
 }
 
+// noExecuteToolCallRefused is returned by every noExecuteTool in place of
+// actually running — a provider that ignores ToolChoiceNone (or a step that
+// otherwise slips a tool_call through) still gets a normal tool-result turn,
+// not a panic or a hang, so the replay just finishes as a no-op instead of
+// executing anything.
+const noExecuteToolCallRefused = "cache keep-alive replay: tool execution is disabled for this request"
+
+// noExecuteTool wraps an AgentTool so Info()/ProviderOptions() (the parts
+// that must byte-match the triggering turn's tools for the provider cache to
+// recognize the same prefix) pass through unchanged, but Run() refuses
+// unconditionally. See its call site in fireCacheKeepAlive for why this
+// exists alongside ToolChoiceNone rather than instead of it.
+type noExecuteTool struct {
+	fantasy.AgentTool
+}
+
+func (noExecuteTool) Run(context.Context, fantasy.ToolCall) (fantasy.ToolResponse, error) {
+	return fantasy.NewTextErrorResponse(noExecuteToolCallRefused), nil
+}
+
+// noExecuteTools wraps every tool in tools with noExecuteTool. See
+// noExecuteTool's doc.
+func noExecuteTools(tools []fantasy.AgentTool) []fantasy.AgentTool {
+	wrapped := make([]fantasy.AgentTool, len(tools))
+	for i, t := range tools {
+		wrapped[i] = noExecuteTool{AgentTool: t}
+	}
+	return wrapped
+}
+
 // fireCacheKeepAlive runs one detached replay call and, on success, reschedules
 // itself until cacheKeepAliveMaxExtensions is reached. gen is the generation
 // captured when this fire's timer was armed: if a newer schedule has since
@@ -159,8 +207,12 @@ func (a *sessionAgent) fireCacheKeepAlive(sessionID string, model Model, message
 	// re-arm on top of) the new turn it should have yielded to. Atomic
 	// registration closes that gap — any observer taking cacheKeepAliveMu
 	// after this point sees either the pending entry (not yet fired) or the
-	// in-flight cancel (already committed), never neither.
-	a.cacheKeepAliveInFlight.Set(sessionID, cancel)
+	// in-flight cancel (already committed), never neither. The registration
+	// is ALSO the cancellation tombstone for the rearm decision (K-1):
+	// cancelCacheKeepAlive/CancelAll consume it under this same mutex, so
+	// a cancel landing anywhere before the rearm critical section is
+	// observable there as "my registration is gone".
+	a.cacheKeepAliveInFlight.Set(sessionID, cacheKeepAliveInFlightEntry{generation: gen, cancel: cancel})
 	a.cacheKeepAliveMu.Unlock()
 
 	// Test-only seam: fires right after the atomic registration above, before
@@ -173,9 +225,7 @@ func (a *sessionAgent) fireCacheKeepAlive(sessionID string, model Model, message
 	}
 
 	defer func() {
-		a.cacheKeepAliveMu.Lock()
-		a.cacheKeepAliveInFlight.Del(sessionID)
-		a.cacheKeepAliveMu.Unlock()
+		a.releaseCacheKeepAliveInFlight(sessionID, gen)
 		cancel()
 	}()
 
@@ -198,9 +248,22 @@ func (a *sessionAgent) fireCacheKeepAlive(sessionID string, model Model, message
 	}
 	defer a.runWg.Done()
 
+	// Tool DEFINITIONS must stay (WithTools(tools...)) — they are part of the
+	// cached prompt prefix, and dropping them would itself invalidate the
+	// cache this call exists to keep warm. But this is a background replay
+	// with no operator watching: nothing must actually EXECUTE. ToolChoiceNone
+	// tells the provider not to select a tool — belt only, not braces, since
+	// it is a request hint the SDK does not itself enforce (fantasy's step
+	// loop still calls executeSingleTool for any tool_call a provider returns
+	// regardless of ToolChoice). noExecuteTools below is the braces: same
+	// Info()/schema (so the cached prefix is byte-identical), Run() replaced
+	// with a hard refusal, so even a provider that ignores ToolChoiceNone
+	// cannot get Bash/edit/write/MCP/etc. to actually run. Do not drop either
+	// half, and do not let a future refactor "simplify" this back to raw tools.
+	toolChoiceNone := fantasy.ToolChoiceNone
 	replayAgent := fantasy.NewAgent(
 		model.Model,
-		fantasy.WithTools(tools...),
+		fantasy.WithTools(noExecuteTools(tools)...),
 		fantasy.WithMaxOutputTokens(1),
 		fantasy.WithUserAgent(userAgent),
 	)
@@ -208,6 +271,7 @@ func (a *sessionAgent) fireCacheKeepAlive(sessionID string, model Model, message
 		Messages:        messages,
 		Headers:         sessionHeaders(sessionID),
 		ProviderOptions: providerOptions,
+		ToolChoice:      &toolChoiceNone,
 	})
 	if err != nil {
 		slog.Debug("cache keep-alive replay failed", "session_id", sessionID, "err", err)
@@ -224,26 +288,55 @@ func (a *sessionAgent) fireCacheKeepAlive(sessionID string, model Model, message
 	if extension+1 >= cacheKeepAliveMaxExtensions {
 		return
 	}
-	// A cancelCacheKeepAlive call landing AFTER Stream already returned
-	// successfully but BEFORE this rearm decision would find the in-flight
-	// entry still registered (its own defer hasn't run yet) and cancel this
-	// fire's ctx — a no-op on the already-finished call, but ctx.Err() still
-	// reports it, which the generation check below cannot: a new turn hasn't
-	// necessarily scheduled its own keep-alive yet, so "no entry present" is
-	// indistinguishable from "genuinely idle" without this explicit signal.
+	// Cheap early-out for a cancel that already landed: ctx.Err() is set the
+	// moment cancelCacheKeepAlive invokes our cancel func, so this skips the
+	// lock round trip in the common case. It is only a SUBSET of the
+	// lock-held in-flight ownership check below — a cancel can still land
+	// between this check and the lock (K-1), which is exactly the window the
+	// ownership check exists to close; do not treat this check as sufficient
+	// on its own.
 	if ctx.Err() != nil {
 		slog.Debug("cache keep-alive: cancelled after replay completed, not rearming", "session_id", sessionID)
 		return
 	}
 
+	// Test-only seam: fires AFTER the ctx.Err() check but BEFORE the rearm
+	// critical section below — the exact K-1 window where a
+	// cancelCacheKeepAlive landing between the check and the lock used to be
+	// invisible to the rearm decision (the pending map is empty at this
+	// point, so the generation guard alone cannot see it). nil (a no-op) in
+	// every production path.
+	if cacheKeepAliveRearmSeam != nil {
+		cacheKeepAliveRearmSeam()
+	}
+
 	a.cacheKeepAliveMu.Lock()
 	defer a.cacheKeepAliveMu.Unlock()
-	// A concurrent schedule/cancel may have landed while the replay call was
-	// in flight — only re-arm if this fire's generation is still the map's
-	// current occupant (i.e. nothing newer has since claimed the session).
+	// K-1: cancellation must be visible to the rearm decision atomically,
+	// under the same mutex the cancel path takes. This fire's in-flight
+	// registration (set when the replay started, still held now) is that
+	// signal: cancelCacheKeepAlive/CancelAll consume it with a Take under
+	// this same mutex, and a newer fire that superseded us would have
+	// replaced it with its own generation. If the entry is gone or no longer
+	// ours, this fire was cancelled or superseded after the ctx.Err() check
+	// above passed — rearming now would arm a stale timer on top of whatever
+	// cancelled us (e.g. a brand-new turn), so stop here.
+	if infl, ok := a.cacheKeepAliveInFlight.Get(sessionID); !ok || infl.generation != gen {
+		return
+	}
+	// A concurrent schedule may have landed while the replay call was in
+	// flight — only re-arm if this fire's generation is still the pending
+	// map's current occupant (i.e. nothing newer has since claimed the
+	// session).
 	if current, ok := a.cacheKeepAlive.Get(sessionID); ok && current.generation != gen {
 		return
 	}
+	// In-flight -> pending transition, atomically with the checks above: the
+	// registration outlived the replay call precisely so the rearm decision
+	// could see cancels; once the decision is made, hand the session back to
+	// the pending map (the deferred releaseCacheKeepAliveInFlight becomes a
+	// no-op since the entry is already gone).
+	a.cacheKeepAliveInFlight.Del(sessionID)
 	newGen := a.cacheKeepAliveGen.Add(1)
 	entry := &cacheKeepAliveEntry{extension: extension + 1, generation: newGen}
 	entry.timer = time.AfterFunc(cacheKeepAliveIntervalFor(model.Model.Provider()), func() {
@@ -261,13 +354,20 @@ func (a *sessionAgent) fireCacheKeepAlive(sessionID string, model Model, message
 // to them here would corrupt that snapshot: whichever of the replay and the
 // next real turn's own usage update lands last would silently win.
 //
-// Returns false when maxCost blocked the charge — the session crossed its
-// cap sometime between fireCacheKeepAlive's up-front check and the replay
-// actually completing (a real, if narrow, TOCTOU window: the up-front check
-// only bounds the wait BEFORE the up-to-30s replay call, not the charge
-// after it). The caller must treat false the same as the up-front skip: no
-// charge, and no rearm — a session already over its cap must not keep
-// spending on future keep-alive extensions either.
+// Returns false when either:
+//   - maxCost blocked the charge — the session crossed its cap sometime
+//     between fireCacheKeepAlive's up-front check and the replay actually
+//     completing. The charge is now refused atomically when cost + delta
+//     would meet or exceed maxCost (the check lives inside the UPDATE itself,
+//     so concurrent chargers cannot jointly overshoot); or
+//   - the charge itself failed (IncrementCostIfUnderMax returned an error, e.g.
+//     a DB outage) — the accounting is now unreliable for this session, so the
+//     caller must not keep firing unbilled replays against it.
+//
+// The caller must treat false the same as the up-front skip in both cases:
+// no charge, and no rearm — a session already over its cap, or one whose
+// cost we just failed to persist, must not keep spending on future
+// keep-alive extensions either.
 func (a *sessionAgent) recordCacheKeepAliveCost(sessionID string, model Model, result *fantasy.AgentResult, maxCost float64) bool {
 	if result == nil {
 		return true
@@ -305,24 +405,40 @@ func (a *sessionAgent) recordCacheKeepAliveCost(sessionID string, model Model, r
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if maxCost > 0 {
-		sess, err := a.sessions.Get(ctx, sessionID)
-		if err != nil {
-			slog.Debug("cache keep-alive: failed to re-verify max cost before charging; skipping charge", "session_id", sessionID, "err", err)
-			return false
-		}
-		if sess.Cost >= maxCost {
-			slog.Debug("cache keep-alive: session crossed max cost while the replay was in flight; skipping charge", "session_id", sessionID, "cost", sess.Cost, "max_cost", maxCost)
-			return false
-		}
-	}
-
-	if _, err := a.sessions.IncrementCost(ctx, sessionID, cost); err != nil {
+	// K-2 (task #782): the budget check and the charge are ONE atomic SQL
+	// statement (UPDATE ... WHERE cost + delta < max_cost), not the
+	// read-then-write pair this used to be. The old shape let two
+	// concurrent chargers — a real turn and a replay, or two replays — both
+	// observe cost < maxCost and then both land their delta, jointly
+	// overshooting the cap (e.g. 0.09 -> 0.14 against a 0.10 max). With the
+	// predicate inside the UPDATE, SQLite serializes the writers and only
+	// one racing charge can land when their combined delta would cross max.
+	sess, charged, err := a.sessions.IncrementCostIfUnderMax(ctx, sessionID, cost, maxCost)
+	if err != nil {
 		slog.Error("cache keep-alive: failed to accrue replay cost", "session_id", sessionID, "err", err)
-		return true
+		return false
+	}
+	if !charged {
+		slog.Debug("cache keep-alive: session crossed max cost while the replay was in flight; skipping charge", "session_id", sessionID, "cost", sess.Cost, "max_cost", maxCost)
+		return false
 	}
 	slog.Debug("cache keep-alive: replay cost recorded", "session_id", sessionID, "cost", cost)
 	return true
+}
+
+// releaseCacheKeepAliveInFlight removes the session's in-flight registration
+// only when it still belongs to generation gen. Three things may already
+// have consumed it by the time a finishing fire unwinds: cancelCacheKeepAlive/
+// CancelAll's Take (the fire was cancelled), a newer fire's replacement Set
+// (this fire was superseded), or this fire's own rearm transition inside
+// fireCacheKeepAlive. A blind Del here could otherwise drop a NEWER fire's
+// registration and make that replay uncancellable.
+func (a *sessionAgent) releaseCacheKeepAliveInFlight(sessionID string, gen int64) {
+	a.cacheKeepAliveMu.Lock()
+	defer a.cacheKeepAliveMu.Unlock()
+	if infl, ok := a.cacheKeepAliveInFlight.Get(sessionID); ok && infl.generation == gen {
+		a.cacheKeepAliveInFlight.Del(sessionID)
+	}
 }
 
 // cancelCacheKeepAlive stops and removes any pending keep-alive timer for
@@ -331,7 +447,10 @@ func (a *sessionAgent) recordCacheKeepAliveCost(sessionID string, model Model, r
 // about to be refreshed naturally, so any stale scheduled or in-flight
 // keep-alive is moot and must not race the real turn's own request — without
 // this, an in-flight replay (bounded only by cacheKeepAliveCallTimeout, 30s)
-// would otherwise keep running underneath the new turn.
+// would otherwise keep running underneath the new turn. The Take is also the
+// K-1 tombstone — consuming the in-flight registration under cacheKeepAliveMu
+// is what makes the cancel visible to a fire that is between its ctx.Err()
+// check and its rearm critical section.
 func (a *sessionAgent) cancelCacheKeepAlive(sessionID string) {
 	// Both maps checked under ONE lock hold, not two separate cycles: since
 	// fireCacheKeepAlive now moves an entry from "pending" to "in-flight"
@@ -341,13 +460,13 @@ func (a *sessionAgent) cancelCacheKeepAlive(sessionID string) {
 	// in between.
 	a.cacheKeepAliveMu.Lock()
 	entry, hasPending := a.cacheKeepAlive.Take(sessionID)
-	cancel, hasInFlight := a.cacheKeepAliveInFlight.Take(sessionID)
+	inFlight, hasInFlight := a.cacheKeepAliveInFlight.Take(sessionID)
 	a.cacheKeepAliveMu.Unlock()
 
 	if hasPending {
 		entry.timer.Stop()
 	}
 	if hasInFlight {
-		cancel()
+		inFlight.cancel()
 	}
 }

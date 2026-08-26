@@ -126,6 +126,10 @@ func (m *mockMessageService) ListCandidateInterruptedAssistantSessions(ctx conte
 	return m.inner.ListCandidateInterruptedAssistantSessions(ctx)
 }
 
+func (m *mockMessageService) StampInterruptedAssistantIfStillLast(ctx context.Context, sessionID string, msg message.Message) (bool, error) {
+	return m.inner.StampInterruptedAssistantIfStillLast(ctx, sessionID, msg)
+}
+
 func (m *mockMessageService) DeleteSessionMessages(ctx context.Context, sessionID string) error {
 	return m.inner.DeleteSessionMessages(ctx, sessionID)
 }

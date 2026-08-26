@@ -855,6 +855,76 @@ func (q *Queries) ListUserMessagesBySession(ctx context.Context, sessionID strin
 	return items, nil
 }
 
+const stampInterruptedAssistantIfStillLast = `-- name: StampInterruptedAssistantIfStillLast :execrows
+UPDATE messages
+SET
+    parts = ?,
+    finished_at = ?,
+    updated_at = strftime('%s', 'now')
+WHERE messages.id = ?
+  AND messages.finished_at IS NULL
+  AND messages.rowid = (
+      SELECT MAX(other.rowid) FROM messages AS other WHERE other.session_id = ?
+  )
+`
+
+type StampInterruptedAssistantIfStillLastParams struct {
+	Parts      string        `json:"parts"`
+	FinishedAt sql.NullInt64 `json:"finished_at"`
+	ID         string        `json:"id"`
+	SessionID  string        `json:"session_id"`
+}
+
+// task #777 (P1 release blocker): recoverSessionInterruptedTurn used to
+// read the candidate message (Get), re-check IsFinished() in Go, check the
+// liveness lock, then call the plain message.Update, which rewrites the
+// WHOLE parts blob from that Get-time snapshot. Both the read-then-write gap
+// AND the whole-blob overwrite were unguarded TOCTOU windows:
+//
+//  1. ListCandidateInterruptedAssistantSessions proved this message was the
+//     session's LAST message only at the instant the discovery query ran.
+//     If a newer user/assistant message lands before this write, the
+//     candidate is stale and must not be stamped -- the session has moved
+//     on, and stamping the older message would show a spurious "Process
+//     restarted" on a turn that already has a live successor.
+//  2. A plain UPDATE ... WHERE id = ? has no way to notice #1, and also
+//     clobbers any Parts content the live owner wrote in the same window
+//     (e.g. a checkpoint tick) since the write is not conditioned on the
+//     row being unchanged since the Get.
+//
+// This mirrors DeleteMessageIfTerminal / UpdateMessageIfNotTerminal: the
+// read-then-act race is closed by moving the predicate into the WHERE clause
+// of a single statement instead of trusting a prior read. The WHERE
+// requires, atomically:
+//   - finished_at IS NULL (still unfinished -- same re-check the Go code
+//     used to do after the initial Get, now enforced in the same statement
+//     as the write instead of a separate round trip before it)
+//   - rowid = the MAX(rowid) among this session's messages (still the
+//     session's chronologically last message, using rowid rather than
+//     created_at for the same reason as ListCandidateInterruptedAssistantSessions
+//     and ListMessagesBySession: created_at is second-granularity, so a
+//     single turn's rows can tie, and rowid is SQLite's monotonic insertion
+//     counter -- see ListAllUserMessages's comment for the canonical
+//     explanation of why rowid is the established tiebreaker throughout this
+//     file)
+//
+// Returns rows affected: 0 means the candidate went stale between discovery
+// and this write (superseded by a newer message, or finished concurrently by
+// its live owner) -- the caller must treat that as "skip, do not retry",
+// exactly like DeleteMessageIfTerminal's 0-rows-affected contract.
+func (q *Queries) StampInterruptedAssistantIfStillLast(ctx context.Context, arg StampInterruptedAssistantIfStillLastParams) (int64, error) {
+	result, err := q.exec(ctx, q.stampInterruptedAssistantIfStillLastStmt, stampInterruptedAssistantIfStillLast,
+		arg.Parts,
+		arg.FinishedAt,
+		arg.ID,
+		arg.SessionID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const sumMessageUsageByDayInRange = `-- name: SumMessageUsageByDayInRange :many
 SELECT
     CAST(strftime('%Y-%m-%d', created_at, 'unixepoch', 'localtime') AS TEXT) AS day,

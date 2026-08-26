@@ -40,6 +40,17 @@ type RunOptions struct {
 	// BlockFuncs is an optional list of deny-list matchers applied before
 	// each command reaches the exec layer. nil disables blocking entirely.
 	BlockFuncs []BlockFunc
+	// RegisterProcess, when non-nil, is called with the pid of every
+	// child process the interpreter's exec layer starts, immediately
+	// after a successful Start and before Wait. It lets a caller that
+	// has given up waiting on a wedged execution (see internal/hooks'
+	// abandon path) hard-kill exactly the processes involved.
+	// Implementations must be safe for concurrent use: a script may
+	// background several commands at once. Processes started via the
+	// shebang-dispatch path (./script.sh with a #! line) are NOT
+	// registered; their teardown relies on the ctx-driven kill of
+	// platform.Command.
+	RegisterProcess func(pid int)
 }
 
 // Run parses and executes a shell command using the same mvdan.cc/sh
@@ -77,7 +88,7 @@ func Run(ctx context.Context, opts RunOptions) (err error) {
 		return fmt.Errorf("could not parse command: %w", err)
 	}
 
-	runner, err := newRunner(opts.Cwd, opts.Env, opts.Stdin, stdout, stderr, opts.BlockFuncs)
+	runner, err := newRunner(opts.Cwd, opts.Env, opts.Stdin, stdout, stderr, opts.BlockFuncs, opts.RegisterProcess)
 	if err != nil {
 		return fmt.Errorf("could not run command: %w", err)
 	}
@@ -88,14 +99,14 @@ func Run(ctx context.Context, opts RunOptions) (err error) {
 // newRunner constructs an [interp.Runner] configured with the standard
 // Rush handler stack. Shared by the stateless [Run] entrypoint and the
 // stateful [Shell] so the two surfaces cannot drift.
-func newRunner(cwd string, env []string, stdin io.Reader, stdout, stderr io.Writer, blockFuncs []BlockFunc) (*interp.Runner, error) {
+func newRunner(cwd string, env []string, stdin io.Reader, stdout, stderr io.Writer, blockFuncs []BlockFunc, registerProcess func(int)) (*interp.Runner, error) {
 	env = withNonInteractiveEnv(env)
 	return interp.New(
 		interp.StdIO(stdin, stdout, stderr),
 		interp.Interactive(false),
 		interp.Env(expand.ListEnviron(env...)),
 		interp.Dir(cwd),
-		execHandlerOption(blockFuncs),
+		execHandlerOption(blockFuncs, registerProcess),
 	)
 }
 
@@ -109,8 +120,8 @@ func newRunner(cwd string, env []string, stdin io.Reader, stdout, stderr io.Writ
 // isolation. On Unix that base handler is processGroupExecHandler, which
 // detaches each child into its own session and kills the whole child
 // process group on cancellation; on Windows it is the unmodified default.
-func execHandlerOption(blockFuncs []BlockFunc) interp.RunnerOption {
-	base := processGroupExecHandler(defaultKillTimeout)
+func execHandlerOption(blockFuncs []BlockFunc, registerProcess func(int)) interp.RunnerOption {
+	base := processGroupExecHandler(defaultKillTimeout, registerProcess)
 	handler := base
 	for _, mw := range slices.Backward(standardHandlers(blockFuncs)) {
 		handler = mw(handler)

@@ -32,6 +32,43 @@ func (s *service) IncrementCost(ctx context.Context, sessionID string, delta flo
 	return session, nil
 }
 
+// IncrementCostIfUnderMax — see interface doc on
+// Service.IncrementCostIfUnderMax for rationale. maxCost <= 0 means
+// "unlimited": the predicate would otherwise reject every charge (cost +
+// delta < 0 is never true for non-negative cost/delta), so that case falls
+// through to the same unconditional path as IncrementCost.
+func (s *service) IncrementCostIfUnderMax(ctx context.Context, sessionID string, delta, maxCost float64) (Session, bool, error) {
+	if maxCost <= 0 {
+		sess, err := s.IncrementCost(ctx, sessionID, delta)
+		return sess, err == nil, err
+	}
+	if delta == 0 {
+		sess, err := s.Get(ctx, sessionID)
+		return sess, err == nil, err
+	}
+	rows, err := s.q.IncrementSessionCostIfUnderMax(ctx, db.IncrementSessionCostIfUnderMaxParams{
+		ID:      sessionID,
+		Delta:   delta,
+		MaxCost: maxCost,
+	})
+	if err != nil {
+		return Session{}, false, err
+	}
+	if rows == 0 {
+		sess, getErr := s.Get(ctx, sessionID)
+		if getErr != nil {
+			return Session{}, false, getErr
+		}
+		return sess, false, nil
+	}
+	sess, err := s.Get(ctx, sessionID)
+	if err != nil {
+		return Session{}, false, err
+	}
+	s.Publish(pubsub.UpdatedEvent, sess)
+	return sess, true, nil
+}
+
 // TransferChildCostToParent — see Service.TransferChildCostToParent doc.
 //
 // The whole operation runs in one transaction so the parent charge and the

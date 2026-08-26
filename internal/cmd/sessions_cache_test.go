@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
@@ -248,4 +249,119 @@ func TestDetectCacheInvalidations_BelowFloorIsNotFlagged(t *testing.T) {
 
 	got := detectCacheInvalidations(msgs)
 	require.Empty(t, got, "a prior read below the warm floor must not count as an invalidation")
+}
+
+// TestDetectCacheInvalidations_UnknownUsageTurnResetsBaseline proves the
+// phantom-invalidations defect: a warm-native -> unknown-usage ->
+// cold-native sequence must NOT be reported as an invalidation. Comparing
+// the cold turn against the pre-gap warm baseline, as though the
+// unknown-usage assistant turn in between were not there, manufactures an
+// invalidation out of a gap the detector cannot actually see across. The
+// baseline must reset on the unknown turn, so nothing is reported until the
+// detector re-warms from a later measured native turn.
+func TestDetectCacheInvalidations_UnknownUsageTurnResetsBaseline(t *testing.T) {
+	t.Parallel()
+
+	conn, q := newTestDB(t)
+	s := session.NewService(q, conn)
+	m := message.NewService(q)
+	ctx := context.Background()
+
+	sess, err := s.Create(ctx, "unknown usage between")
+	require.NoError(t, err)
+
+	mkAssistant(t, ctx, m, sess.ID, "warm", message.TokenUsage{
+		InputTokens: 10, CacheReadTokens: 5000, TotalTokens: 5010,
+		Provider: "anthropic", Model: "claude", CacheSupport: message.CacheSupportNative,
+	})
+	// An assistant turn whose usage was ESTIMATED (provider sent none), the
+	// exact shape internal/agent persists with CacheSupportNone — see
+	// usage_record.go's estimated override.
+	mkAssistant(t, ctx, m, sess.ID, "estimated", message.TokenUsage{
+		InputTokens: 500, TotalTokens: 600,
+		Provider: "anthropic", Model: "claude",
+		CacheSupport: message.CacheSupportNone, Estimated: true,
+	})
+	mkAssistant(t, ctx, m, sess.ID, "cold", message.TokenUsage{
+		InputTokens: 10, CacheCreationTokens: 4000, TotalTokens: 4010,
+		Provider: "anthropic", Model: "claude", CacheSupport: message.CacheSupportNative,
+	})
+
+	msgs, err := m.List(ctx, sess.ID)
+	require.NoError(t, err)
+
+	got := detectCacheInvalidations(msgs)
+	require.Empty(t, got,
+		"an unknown-usage turn between two native turns must not manufacture a phantom invalidation")
+}
+
+// TestDetectCacheInvalidations_TTLThresholdComesFromProviderProfile proves
+// the idle-expiry classification consults the provider's real cache-profile
+// TTL (via the injected lookup) instead of a hardcoded 5 minutes: with a
+// 6-minute gap, a provider whose TTL is 1 minute is classified as likely
+// TTL expiry while one whose TTL is 10 minutes is not — a hardcoded
+// 5-minute threshold answers both the opposite way.
+func TestDetectCacheInvalidations_TTLThresholdComesFromProviderProfile(t *testing.T) {
+	t.Parallel()
+
+	// The production lookup is agent.PromptCacheTTL; anthropic's profile
+	// TTL is 5 minutes today. Pinning it here keeps this test honest about
+	// the fake lookups below, and makes any future profile change update
+	// this diagnostic's expectations loudly instead of silently.
+	require.Equal(t, 5*time.Minute, agent.PromptCacheTTL("anthropic"))
+
+	setup := func(t *testing.T) []message.Message {
+		conn, q := newTestDB(t)
+		s := session.NewService(q, conn)
+		m := message.NewService(q)
+		ctx := context.Background()
+
+		sess, err := s.Create(ctx, "ttl threshold")
+		require.NoError(t, err)
+
+		warm := mkAssistant(t, ctx, m, sess.ID, "warm", message.TokenUsage{
+			InputTokens: 10, CacheReadTokens: 5000, TotalTokens: 5010,
+			Provider: "anthropic", Model: "claude", CacheSupport: message.CacheSupportNative,
+		})
+		backdateMessage(t, conn, warm.ID, 6*time.Minute)
+		mkNoUsage(t, ctx, m, sess.ID, message.Tool, "tool_result")
+		mkAssistant(t, ctx, m, sess.ID, "cold", message.TokenUsage{
+			InputTokens: 10, CacheCreationTokens: 4000, TotalTokens: 4010,
+			Provider: "anthropic", Model: "claude", CacheSupport: message.CacheSupportNative,
+		})
+
+		msgs, err := m.List(ctx, sess.ID)
+		require.NoError(t, err)
+		return msgs
+	}
+
+	t.Run("gap past provider TTL is likely expiry", func(t *testing.T) {
+		t.Parallel()
+		got := detectCacheInvalidationsWithLookup(setup(t), func(string) time.Duration {
+			return time.Minute
+		})
+		require.Len(t, got, 1)
+		require.True(t, got[0].LikelyTTLExpiry,
+			"a 6-minute gap past a 1-minute provider TTL is likely expiry; a hardcoded 5-minute threshold would say otherwise")
+	})
+
+	t.Run("gap below provider TTL stays genuine", func(t *testing.T) {
+		t.Parallel()
+		got := detectCacheInvalidationsWithLookup(setup(t), func(string) time.Duration {
+			return 10 * time.Minute
+		})
+		require.Len(t, got, 1)
+		require.False(t, got[0].LikelyTTLExpiry,
+			"a 6-minute gap under a 10-minute provider TTL stays a genuine invalidation; a hardcoded 5-minute threshold would say otherwise")
+	})
+
+	t.Run("unknown TTL falls back to the documented default", func(t *testing.T) {
+		t.Parallel()
+		got := detectCacheInvalidationsWithLookup(setup(t), func(string) time.Duration {
+			return 0
+		})
+		require.Len(t, got, 1)
+		require.True(t, got[0].LikelyTTLExpiry,
+			"a 6-minute gap with an unknown provider TTL falls back to the 5-minute default")
+	})
 }
