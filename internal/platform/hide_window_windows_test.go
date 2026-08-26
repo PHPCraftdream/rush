@@ -31,7 +31,7 @@ import (
 func TestHideConsoleWindow_SetsCreateNoWindow(t *testing.T) {
 	t.Parallel()
 
-	cmd := exec.Command("cmd.exe", "/c", "exit")
+	cmd := exec.CommandContext(context.Background(), "cmd.exe", "/c", "exit")
 	HideConsoleWindow(cmd)
 
 	require.NotNil(t, cmd.SysProcAttr, "SysProcAttr must be allocated")
@@ -47,7 +47,7 @@ func TestHideConsoleWindow_SetsCreateNoWindow(t *testing.T) {
 func TestHideConsoleWindow_PreservesExistingCreationFlags(t *testing.T) {
 	t.Parallel()
 
-	cmd := exec.Command("cmd.exe", "/c", "exit")
+	cmd := exec.CommandContext(context.Background(), "cmd.exe", "/c", "exit")
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP}
 	HideConsoleWindow(cmd)
 
