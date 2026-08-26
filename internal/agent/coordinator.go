@@ -57,8 +57,6 @@ var (
 	errFastModelNotSelected            = errors.New("fast model not selected")
 	errSmartModelProviderNotConfigured = errors.New("smart model provider not configured")
 	errFastModelProviderNotConfigured  = errors.New("fast model provider not configured")
-	errSmartModelNotFound              = errors.New("smart model not found in provider config")
-	errFastModelNotFound               = errors.New("fast model not found in provider config")
 	// errProviderPeakHours is returned when a provider's peak_hours
 	// window refuses the request. It is operator-actionable (the user
 	// configured the window on purpose) and MUST NOT be retried: the

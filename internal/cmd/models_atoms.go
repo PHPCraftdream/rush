@@ -128,6 +128,23 @@ var atomRegistry = map[string]atom{
 	// the same way the 204.8k/131.1k guesses above this were corrected.
 	"glm5_3":     {Provider: "zai", Model: "glm-5.3", DisplayName: "GLM 5.3", CtxLabel: "1M", Group: "zai", ReasoningLevels: zaiReasoningLevels},
 	"glm5_turbo": {Provider: "zai", Model: "glm-5-turbo", DisplayName: "GLM 5 turbo", CtxLabel: "200k", Group: "zai", ReasoningLevels: zaiBooleanThinkingLevels},
+	// VERIFIED (2026-08-26): `rush ping --model zai/glm-5.3-flash` succeeded
+	// (32 in / 97 out tokens, ~5.3s latency) — the model id is real and
+	// reachable. CtxLabel confirmed via docs.z.ai/guides/vlm/glm-5.3-flash
+	// ("text parameters consistent with GLM-5.3, 1M-token context window")
+	// and cross-checked against Z.ai's own launch announcement, OpenRouter,
+	// and vLLM's model recipe — all agree on 1,048,576 tokens (1M); the one
+	// outlier (Artificial Analysis, 400k) is inconsistent with every
+	// first-party and inference-provider source and is treated as their
+	// error, not ours. Z.ai's announcement also describes it as "natively
+	// multimodal" (320B-A18B MoE, MIT license) — hence Vision: true.
+	// ReasoningLevels remains an UNVERIFIED guess: follows the "flash"
+	// convention used elsewhere in this table (glm4_7_flash:
+	// zaiBooleanThinkingLevels, not the fuller zaiReasoningLevels glm5_3
+	// itself gets) rather than assuming it inherits glm5_3's tier — update
+	// once z.ai's text-generation guide (as opposed to the vlm/ page found
+	// so far) documents reasoning_effort behavior for this model.
+	"glm5_3_flash": {Provider: "zai", Model: "glm-5.3-flash", DisplayName: "GLM 5.3 flash", CtxLabel: "1M", Group: "zai", Vision: true, ReasoningLevels: zaiBooleanThinkingLevels},
 	// GLM-4.7-FlashX is deliberately NOT an atom. Its model id
 	// ("glm-4.7-flashx") is real — verified by pinging it directly: it
 	// returned "Insufficient balance or no resource package" (an
@@ -154,7 +171,7 @@ var atomGroupOrder = []string{"anthropic", "zai"}
 var atomDisplayOrder = map[string][]string{
 	"anthropic": {"opus", "opus48", "opus47", "opus46", "fable", "sonnet", "haiku"},
 	"zai": {
-		"glm5_3", "glm5_turbo",
+		"glm5_3", "glm5_3_flash", "glm5_turbo",
 		"glm4_7", "glm4_7_flash",
 		"glm4_6", "glm4_6v",
 	},
@@ -565,46 +582,49 @@ func parseAtom(name string) (config.SelectedModel, error) {
 }
 
 // parseAtomOrRaw tries the atom registry first, then falls back to raw
-// provider/model resolution via the app's ResolveModel.
-func parseAtomOrRaw(name string, resolveFunc func(string) (string, string, error)) (config.SelectedModel, error) {
+// provider/model resolution via the app's ResolveModel. known is false only
+// for the raw-form, unverified-passthrough case (see findModels' doc
+// comment in internal/app/provider.go) — atoms are always known (curated,
+// hand-verified), so every other path returns true.
+func parseAtomOrRaw(name string, resolveFunc func(string) (string, string, bool, error)) (config.SelectedModel, bool, error) {
 	if strings.Contains(name, "/") {
 		modelPart, effort := splitModelEffort(name)
-		provider, modelID, err := resolveFunc(modelPart)
+		provider, modelID, known, err := resolveFunc(modelPart)
 		if err != nil {
-			return config.SelectedModel{}, err
+			return config.SelectedModel{}, false, err
 		}
 		if err := validateEffortForModel(provider, modelID, effort); err != nil {
-			return config.SelectedModel{}, err
+			return config.SelectedModel{}, false, err
 		}
 		return config.SelectedModel{
 			Provider:        provider,
 			Model:           modelID,
 			ReasoningEffort: effort,
-		}, nil
+		}, known, nil
 	}
 
 	sm, err := parseAtom(name)
 	if err == nil {
-		return sm, nil
+		return sm, true, nil
 	}
 
 	if !strings.Contains(err.Error(), "not a recognized atom") {
-		return config.SelectedModel{}, err
+		return config.SelectedModel{}, false, err
 	}
 
 	modelPart, effort := splitModelEffort(name)
-	provider, modelID, rerr := resolveFunc(modelPart)
+	provider, modelID, known, rerr := resolveFunc(modelPart)
 	if rerr != nil {
-		return config.SelectedModel{}, fmt.Errorf("%q is not a known atom or provider/model — see `rush models list`", name)
+		return config.SelectedModel{}, false, fmt.Errorf("%q is not a known atom or provider/model — see `rush models list`", name)
 	}
 	if err := validateEffortForModel(provider, modelID, effort); err != nil {
-		return config.SelectedModel{}, err
+		return config.SelectedModel{}, false, err
 	}
 	return config.SelectedModel{
 		Provider:        provider,
 		Model:           modelID,
 		ReasoningEffort: effort,
-	}, nil
+	}, known, nil
 }
 
 // validateEffortForModel checks a raw "@effort" suffix (from

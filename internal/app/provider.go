@@ -26,10 +26,14 @@ func parseModelStr(providers map[string]config.ProviderConfig, modelStr string) 
 	return "", modelStr
 }
 
-// modelMatch represents a found model.
+// modelMatch represents a found model. known is false for the unverified
+// passthrough case below (an explicit provider/model that matched nothing in
+// that provider's catalog) — callers use it to warn the operator without
+// blocking the selection.
 type modelMatch struct {
 	provider string
 	modelID  string
+	known    bool
 }
 
 func findModels(providers map[string]config.ProviderConfig, smartModel, fastModel string) ([]modelMatch, []modelMatch, error) {
@@ -58,12 +62,28 @@ func findModels(providers map[string]config.ProviderConfig, smartModel, fastMode
 		}
 		for _, m := range provider.Models {
 			if filter(smartModelID, smartProviderFilter, m.ID, name) {
-				smartMatches = append(smartMatches, modelMatch{provider: name, modelID: m.ID})
+				smartMatches = append(smartMatches, modelMatch{provider: name, modelID: m.ID, known: true})
 			}
 			if filter(fastModelID, fastProviderFilter, m.ID, name) {
-				fastMatches = append(fastMatches, modelMatch{provider: name, modelID: m.ID})
+				fastMatches = append(fastMatches, modelMatch{provider: name, modelID: m.ID, known: true})
 			}
 		}
+	}
+
+	// Unverified passthrough: an explicit "provider/model" that matched
+	// nothing in that provider's cached catalog is still accepted, since the
+	// catalog can be stale (the provider added a model after our last sync —
+	// e.g. zai/glm-5.3-flash existing live before `rush providers update`
+	// pulled it in) or entirely absent (openai-compat providers with no
+	// declared models). Only eligible when a provider WAS named explicitly:
+	// a bare "model" search across every provider's catalog has no anchor to
+	// fall back to, so a typo there still fails loudly instead of guessing
+	// which provider was meant.
+	if smartModelID != "" && smartProviderFilter != "" && len(smartMatches) == 0 {
+		smartMatches = append(smartMatches, modelMatch{provider: smartProviderFilter, modelID: smartModelID, known: false})
+	}
+	if fastModelID != "" && fastProviderFilter != "" && len(fastMatches) == 0 {
+		fastMatches = append(fastMatches, modelMatch{provider: fastProviderFilter, modelID: fastModelID, known: false})
 	}
 
 	return smartMatches, fastMatches, nil
@@ -78,18 +98,21 @@ func filter(modelFilter, providerFilter, model, provider string) bool {
 // but exposed as a public method so the `rush models set` CLI can share
 // the rules. modelStr is "model" or "provider/model"; the returned values
 // are the unique provider id and the canonical model id from its catalog.
-// Returns an error on no-match or ambiguity.
-func (app *App) ResolveModel(modelStr string) (provider, modelID string, err error) {
+// known is false when modelID was accepted as an unverified "provider/model"
+// passthrough rather than a real catalog hit — callers should surface that
+// to the operator (see findModels' doc comment for why this is allowed at
+// all). Returns an error on no-match or ambiguity.
+func (app *App) ResolveModel(modelStr string) (provider, modelID string, known bool, err error) {
 	providers := app.config.Config().Providers.Copy()
 	matches, _, fErr := findModels(providers, modelStr, "")
 	if fErr != nil {
-		return "", "", fErr
+		return "", "", false, fErr
 	}
 	m, vErr := validateMatches(matches, modelStr, "model")
 	if vErr != nil {
-		return "", "", vErr
+		return "", "", false, vErr
 	}
-	return m.provider, m.modelID, nil
+	return m.provider, m.modelID, m.known, nil
 }
 
 // Validate and return a single match.

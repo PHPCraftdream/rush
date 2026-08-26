@@ -30,10 +30,11 @@ func TestResolveModel_ExactProviderSlashModel(t *testing.T) {
 		"openai": {ID: "openai", Models: []catwalk.Model{{ID: "gpt-5"}}},
 		"alt":    {ID: "alt", Models: []catwalk.Model{{ID: "gpt-5"}}}, // dup name
 	})
-	p, m, err := a.ResolveModel("openai/gpt-5")
+	p, m, known, err := a.ResolveModel("openai/gpt-5")
 	require.NoError(t, err)
 	assert.Equal(t, "openai", p)
 	assert.Equal(t, "gpt-5", m)
+	assert.True(t, known)
 }
 
 func TestResolveModel_BareName_Unique(t *testing.T) {
@@ -41,10 +42,11 @@ func TestResolveModel_BareName_Unique(t *testing.T) {
 		"openai": {ID: "openai", Models: []catwalk.Model{{ID: "gpt-5"}, {ID: "gpt-4o-mini"}}},
 		"anth":   {ID: "anth", Models: []catwalk.Model{{ID: "claude"}}},
 	})
-	p, m, err := a.ResolveModel("claude")
+	p, m, known, err := a.ResolveModel("claude")
 	require.NoError(t, err)
 	assert.Equal(t, "anth", p)
 	assert.Equal(t, "claude", m)
+	assert.True(t, known)
 }
 
 func TestResolveModel_BareName_AmbiguityIsError(t *testing.T) {
@@ -52,7 +54,7 @@ func TestResolveModel_BareName_AmbiguityIsError(t *testing.T) {
 		"openai": {ID: "openai", Models: []catwalk.Model{{ID: "gpt-5"}}},
 		"alt":    {ID: "alt", Models: []catwalk.Model{{ID: "gpt-5"}}},
 	})
-	_, _, err := a.ResolveModel("gpt-5")
+	_, _, _, err := a.ResolveModel("gpt-5")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "found in multiple providers")
 }
@@ -61,7 +63,7 @@ func TestResolveModel_NotFound(t *testing.T) {
 	a := makeAppForResolve(t, map[string]config.ProviderConfig{
 		"openai": {ID: "openai", Models: []catwalk.Model{{ID: "gpt-5"}}},
 	})
-	_, _, err := a.ResolveModel("nonexistent-model")
+	_, _, _, err := a.ResolveModel("nonexistent-model")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not found")
 }
@@ -70,7 +72,7 @@ func TestResolveModel_UnknownProviderPrefix(t *testing.T) {
 	a := makeAppForResolve(t, map[string]config.ProviderConfig{
 		"openai": {ID: "openai", Models: []catwalk.Model{{ID: "gpt-5"}}},
 	})
-	_, _, err := a.ResolveModel("ghost/whatever")
+	_, _, _, err := a.ResolveModel("ghost/whatever")
 	require.Error(t, err)
 	// parseModelStr falls through to treating the whole string as a model
 	// id when the prefix isn't a known provider, so the message says
@@ -84,8 +86,27 @@ func TestResolveModel_SkipsDisabledProviders(t *testing.T) {
 		"on":  {ID: "on", Models: []catwalk.Model{{ID: "shared"}}},
 		"off": {ID: "off", Disable: true, Models: []catwalk.Model{{ID: "shared"}}},
 	})
-	p, m, err := a.ResolveModel("shared")
+	p, m, known, err := a.ResolveModel("shared")
 	require.NoError(t, err)
 	assert.Equal(t, "on", p, "disabled providers must not contribute to matches")
 	assert.Equal(t, "shared", m)
+	assert.True(t, known)
+}
+
+// TestResolveModel_UnverifiedPassthroughForKnownProvider pins the new
+// unverified-passthrough fallback (2026-08-26 feature request): a
+// configured provider with an explicit "provider/model" whose model id
+// isn't in the cached catalog still resolves — just with known=false so
+// callers can warn instead of silently accepting a possible typo. A bare
+// model search (no provider prefix) does NOT get this fallback — see
+// TestResolveModel_NotFound and TestResolveModel_UnknownProviderPrefix.
+func TestResolveModel_UnverifiedPassthroughForKnownProvider(t *testing.T) {
+	a := makeAppForResolve(t, map[string]config.ProviderConfig{
+		"zai": {ID: "zai", Models: []catwalk.Model{{ID: "glm-5.3"}}},
+	})
+	p, m, known, err := a.ResolveModel("zai/glm-5.3-flash")
+	require.NoError(t, err)
+	assert.Equal(t, "zai", p)
+	assert.Equal(t, "glm-5.3-flash", m)
+	assert.False(t, known, "a model missing from the cached catalog must report known=false")
 }

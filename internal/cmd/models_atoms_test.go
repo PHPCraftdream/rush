@@ -12,8 +12,8 @@ import (
 
 var errStubResolve = errors.New("stub resolve")
 
-func noopResolve(s string) (string, string, error) {
-	return "", "", errStubResolve
+func noopResolve(s string) (string, string, bool, error) {
+	return "", "", false, errStubResolve
 }
 
 // TestAtom_ZAIHasReasoningLevels verifies every Z.AI atom carries a real,
@@ -200,35 +200,55 @@ func TestParseAtom_UnknownAtom(t *testing.T) {
 }
 
 func TestParseAtomOrRaw_FallsBackToProviderSlashModel(t *testing.T) {
-	resolve := func(s string) (string, string, error) {
+	resolve := func(s string) (string, string, bool, error) {
 		assert.Equal(t, "openai/gpt-5", s)
-		return "openai", "gpt-5", nil
+		return "openai", "gpt-5", true, nil
 	}
-	sm, err := parseAtomOrRaw("openai/gpt-5@high", resolve)
+	sm, known, err := parseAtomOrRaw("openai/gpt-5@high", resolve)
 	require.NoError(t, err)
 	assert.Equal(t, "openai", sm.Provider)
 	assert.Equal(t, "gpt-5", sm.Model)
 	assert.Equal(t, "high", sm.ReasoningEffort)
+	assert.True(t, known)
 }
 
 func TestParseAtomOrRaw_AtomWinsOverFallback(t *testing.T) {
 	defer setMockEffortLevels([]string{"low", "high"})()
 	called := false
-	resolve := func(s string) (string, string, error) {
+	resolve := func(s string) (string, string, bool, error) {
 		called = true
-		return "", "", nil
+		return "", "", false, nil
 	}
-	sm, err := parseAtomOrRaw("opus-high", resolve)
+	sm, known, err := parseAtomOrRaw("opus-high", resolve)
 	require.NoError(t, err)
 	assert.False(t, called, "resolver must NOT be called when atom matches")
 	assert.Equal(t, "local-cli", sm.Provider)
 	assert.Equal(t, "cli-claude-opus-4-8", sm.Model)
+	assert.True(t, known, "atoms are always known")
 }
 
 func TestParseAtomOrRaw_UnknownAtomAndNoSlash(t *testing.T) {
-	_, err := parseAtomOrRaw("nonsense", noopResolve)
+	_, _, err := parseAtomOrRaw("nonsense", noopResolve)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not a known atom or provider/model")
+}
+
+// TestParseAtomOrRaw_UnverifiedPassthroughReportsUnknown pins the new
+// findModels/ResolveModel fallback contract (2026-08-26 feature request):
+// an explicit provider/model that the resolver couldn't verify against a
+// catalog still succeeds, but must report known=false so callers (e.g.
+// `rush models use`) can warn the operator instead of silently accepting a
+// possible typo.
+func TestParseAtomOrRaw_UnverifiedPassthroughReportsUnknown(t *testing.T) {
+	resolve := func(s string) (string, string, bool, error) {
+		assert.Equal(t, "zai/glm-5.3-flash", s)
+		return "zai", "glm-5.3-flash", false, nil
+	}
+	sm, known, err := parseAtomOrRaw("zai/glm-5.3-flash", resolve)
+	require.NoError(t, err)
+	assert.Equal(t, "zai", sm.Provider)
+	assert.Equal(t, "glm-5.3-flash", sm.Model)
+	assert.False(t, known, "an unverified provider/model passthrough must report known=false")
 }
 
 func TestLookupAtomForModel(t *testing.T) {

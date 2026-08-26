@@ -133,9 +133,24 @@ rush models state
 		}
 		defer a.Shutdown()
 
-		resolve := func(modelPart string) (string, string, error) {
-			provider, modelID, rerr := a.ResolveModel(modelPart)
-			return provider, modelID, rerr
+		resolve := func(modelPart string) (string, string, bool, error) {
+			provider, modelID, known, rerr := a.ResolveModel(modelPart)
+			return provider, modelID, known, rerr
+		}
+
+		// warnUnknownModel surfaces the findModels unverified-passthrough
+		// case (see its doc comment in internal/app/provider.go): the
+		// provider is real and configured, but the model id didn't match
+		// anything in its cached catalog. The set still goes through —
+		// cost/context-window just render as unknown until the catalog is
+		// refreshed or the provider's own API accepts/rejects the id at
+		// call time — but the operator needs to see this wasn't a verified
+		// hit, in case it's actually a typo.
+		warnUnknownModel := func(label string, sel config.SelectedModel) {
+			cmd.PrintErrf(
+				"warning: %s model %s/%s is not in %s's known model catalog (cost/context-window unknown) -- set anyway. If this is a typo, fix it; otherwise run `rush providers update %s` to refresh the catalog.\n",
+				label, sel.Provider, sel.Model, sel.Provider, sel.Provider,
+			)
 		}
 
 		// Pass 1: parse + validate EVERY provided argument before writing
@@ -150,36 +165,52 @@ rush models state
 		var smartSel config.SelectedModel
 		if smartArg != "" {
 			var lerr error
-			smartSel, lerr = parseAtomOrRaw(smartArg, resolve)
+			var known bool
+			smartSel, known, lerr = parseAtomOrRaw(smartArg, resolve)
 			if lerr != nil {
 				return fmt.Errorf("smart: %w", lerr)
+			}
+			if !known {
+				warnUnknownModel("smart", smartSel)
 			}
 		}
 
 		var fastSel config.SelectedModel
 		if fastArg != "" {
 			var serr error
-			fastSel, serr = parseAtomOrRaw(fastArg, resolve)
+			var known bool
+			fastSel, known, serr = parseAtomOrRaw(fastArg, resolve)
 			if serr != nil {
 				return fmt.Errorf("fast: %w", serr)
+			}
+			if !known {
+				warnUnknownModel("fast", fastSel)
 			}
 		}
 
 		var workerSel config.SelectedModel
 		if workerArg != "" {
 			var werr error
-			workerSel, werr = parseAtomOrRaw(workerArg, resolve)
+			var known bool
+			workerSel, known, werr = parseAtomOrRaw(workerArg, resolve)
 			if werr != nil {
 				return fmt.Errorf("worker: %w", werr)
+			}
+			if !known {
+				warnUnknownModel("worker", workerSel)
 			}
 		}
 
 		var reviewerSel config.SelectedModel
 		if reviewerArg != "" {
 			var rerr error
-			reviewerSel, rerr = parseAtomOrRaw(reviewerArg, resolve)
+			var known bool
+			reviewerSel, known, rerr = parseAtomOrRaw(reviewerArg, resolve)
 			if rerr != nil {
 				return fmt.Errorf("reviewer: %w", rerr)
+			}
+			if !known {
+				warnUnknownModel("reviewer", reviewerSel)
 			}
 		}
 

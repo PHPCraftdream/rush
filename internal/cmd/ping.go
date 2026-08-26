@@ -783,25 +783,28 @@ func stringPtr(s string) *string {
 // (zai/glm-5.3, zai/glm-5.3@max), both via the shared parseAtomOrRaw.
 //
 // Unlike `rush models use`'s raw-form resolution (app.ResolveModel, which
-// searches the provider's known catwalk catalog and rejects an unlisted
-// model id), the raw-form resolveFunc here only checks that the PROVIDER
-// prefix is configured — never the model id. That's the entire point:
-// letting an operator test-probe a model id the catalog doesn't know about
-// yet (e.g. a just-announced model, not yet added as an atom) via a real
-// API call, instead of failing before ever reaching the network the way
-// `rush models use zai/<brand-new-model>` would today.
+// searches the provider's known catwalk catalog first and only falls back to
+// an unverified passthrough — see findModels' doc comment in
+// internal/app/provider.go), the raw-form resolveFunc here only checks that
+// the PROVIDER prefix is configured — never the model id, and never warns.
+// That's the entire point: letting an operator test-probe a model id the
+// catalog doesn't know about yet (e.g. a just-announced model, not yet added
+// as an atom) via a real API call. ping is inherently a one-shot,
+// non-persisted probe, so there's no config drift to warn about the way
+// there is for `rush models use`.
 func resolvePingModel(cfg *config.Config, modelStr string) (config.SelectedModel, error) {
-	resolve := func(modelPart string) (string, string, error) {
+	resolve := func(modelPart string) (string, string, bool, error) {
 		provider, modelID, ok := strings.Cut(modelPart, "/")
 		if !ok || provider == "" || modelID == "" {
-			return "", "", fmt.Errorf("%q is not a recognized atom and not \"provider/model\" — see `rush models list`", modelPart)
+			return "", "", false, fmt.Errorf("%q is not a recognized atom and not \"provider/model\" — see `rush models list`", modelPart)
 		}
 		if _, ok := cfg.Providers.Get(provider); !ok {
-			return "", "", fmt.Errorf("provider %q is not configured — see `rush providers list`", provider)
+			return "", "", false, fmt.Errorf("provider %q is not configured — see `rush providers list`", provider)
 		}
-		return provider, modelID, nil
+		return provider, modelID, true, nil
 	}
-	return parseAtomOrRaw(modelStr, resolve)
+	sel, _, err := parseAtomOrRaw(modelStr, resolve)
+	return sel, err
 }
 
 // resolvePingRole maps a --role value to the model slot to ping. An empty

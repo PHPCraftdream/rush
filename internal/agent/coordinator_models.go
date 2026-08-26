@@ -526,12 +526,28 @@ func (c *coordinator) buildModelsFromCfg(ctx context.Context, cfg *config.Config
 		}
 	}
 
+	// Unverified model: the operator's config names a model id this
+	// provider's cached catalog doesn't know about (see findModels' doc
+	// comment in internal/app/provider.go — `rush models use`/`rush run
+	// --model` accept this explicitly, with a warning, for a just-announced
+	// model the catalog hasn't synced yet). Synthesize a minimal catwalk.Model
+	// (zero-value cost/context-window/reasoning fields) rather than refusing
+	// to build the agent at all — every CatwalkCfg reader downstream already
+	// treats a zero ContextWindow/CostPer1M*/CanReason as "unknown, don't
+	// assume" (see agent_turn.go's `if cw > 0` gate before any context-window
+	// budget logic runs), so this degrades to "no proactive trimming, cost
+	// shows as free/unknown, no reasoning params sent" instead of crashing or
+	// refusing to start.
 	if smartCatwalkModel == nil {
-		return Model{}, Model{}, errSmartModelNotFound
+		slog.Warn("smart model not found in provider's known catalog; using unverified minimal metadata (cost/context-window unknown)",
+			"provider", smartModelCfg.Provider, "model", smartModelCfg.Model)
+		smartCatwalkModel = &catwalk.Model{ID: smartModelCfg.Model, Name: smartModelCfg.Model}
 	}
 
 	if fastCatwalkModel == nil {
-		return Model{}, Model{}, errFastModelNotFound
+		slog.Warn("fast model not found in provider's known catalog; using unverified minimal metadata (cost/context-window unknown)",
+			"provider", fastModelCfg.Provider, "model", fastModelCfg.Model)
+		fastCatwalkModel = &catwalk.Model{ID: fastModelCfg.Model, Name: fastModelCfg.Model}
 	}
 
 	smartModelID := smartModelCfg.Model
