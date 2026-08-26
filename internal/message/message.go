@@ -109,6 +109,15 @@ type Service interface {
 	ListPaginatedSnapshot(ctx context.Context, sessionID string, limit, offset int) (window []Message, total int64, err error)
 	ListUserMessages(ctx context.Context, sessionID string) ([]Message, error)
 	ListAllUserMessages(ctx context.Context) ([]Message, error)
+	// ListCandidateInterruptedAssistantSessions returns, for every session
+	// whose CHRONOLOGICALLY LAST message is an unfinished assistant message,
+	// that session's id, the candidate message's id, and the session's
+	// parent session id. Used by app.recoverInterruptedTurns (task #774) to
+	// find the small set of sessions that actually need recovery instead of
+	// scanning every session's full message history. See
+	// ListCandidateInterruptedAssistantSessions (messages.sql) for the exact
+	// query and its tie-break/correctness notes.
+	ListCandidateInterruptedAssistantSessions(ctx context.Context) ([]InterruptedAssistantCandidate, error)
 	Delete(ctx context.Context, id string) error
 	// ForceDelete unconditionally deletes a message, bypassing the
 	// DeleteMessageIfTerminal streaming guard. This is ONLY for callers that

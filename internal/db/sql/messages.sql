@@ -407,6 +407,72 @@ WHERE role = 'assistant'
   AND created_at >= ?
   AND created_at <= ?;
 
+-- name: ListCandidateInterruptedAssistantSessions :many
+-- task #774: startup recovery (app.recoverInterruptedTurns) used to call
+-- Sessions.ListAll then, for EVERY session, Messages.List (the full message
+-- history) just to find the last assistant message. Measured on a real dev
+-- DB: 137 sessions, 10s+, tripping the sweep's own 10s deadline -- an
+-- O(sessions) linear scan that only gets worse as session count grows.
+--
+-- This query returns only the small set of sessions whose CHRONOLOGICALLY
+-- LAST message is an unfinished assistant message -- the exact candidate set
+-- recovery needs -- so the caller can skip straight to those sessions
+-- instead of touching every one.
+--
+-- Correctness nuance: a session can have an OLD unfinished assistant message
+-- later superseded by a newer, finished one (e.g. a retried turn). A flat
+-- `WHERE role = 'assistant' AND finished_at IS NULL` over the whole table
+-- would wrongly flag that session even though its latest message is fine.
+-- The window function ranks every message within its session by recency
+-- first, and only rank-1 (the latest) rows are checked against the
+-- unfinished-assistant predicate.
+--
+-- rowid is the tie-breaker for the same reason as ListMessagesBySession /
+-- ListUserMessagesBySession above: created_at is stored in SECONDS, so a
+-- single agent turn can produce multiple rows sharing one created_at value.
+-- (created_at DESC, rowid DESC) is a deterministic newest-first total order.
+--
+-- idx_messages_unfinished_assistant (session_id, created_at) WHERE
+-- role = 'assistant' AND finished_at IS NULL accelerates the base filter
+-- pass (SQLite can seek directly to the small set of unfinished-assistant
+-- rows via the index rather than a full table scan); the ranking itself
+-- still needs each candidate session's full ORDER BY to determine "is this
+-- really the last message", which the CTE below narrows to just the
+-- sessions the index already flagged, not every session in the table.
+--
+-- parent_session_id is returned alongside so the caller can partition
+-- top-level vs child sessions without a second per-candidate session
+-- lookup.
+WITH unfinished_candidates AS (
+    SELECT DISTINCT session_id
+    FROM messages
+    WHERE role = 'assistant' AND finished_at IS NULL
+),
+ranked AS (
+    SELECT
+        m.id AS message_id,
+        m.session_id AS session_id,
+        m.role AS role,
+        m.finished_at AS finished_at,
+        m.created_at AS created_at,
+        ROW_NUMBER() OVER (
+            PARTITION BY m.session_id
+            ORDER BY m.created_at DESC, m.rowid DESC
+        ) AS rn
+    FROM messages m
+    WHERE m.session_id IN (SELECT session_id FROM unfinished_candidates)
+)
+SELECT
+    ranked.session_id AS session_id,
+    ranked.message_id AS message_id,
+    ranked.created_at AS created_at,
+    s.parent_session_id AS parent_session_id
+FROM ranked
+JOIN sessions s ON s.id = ranked.session_id
+WHERE ranked.rn = 1
+  AND ranked.role = 'assistant'
+  AND ranked.finished_at IS NULL;
+
 -- task #737: GetMessageRowID / GetMaxMessageRowIDBySession (the task #731
 -- delete-watermark queries) were removed here. MAX(rowid) over a session's
 -- REMAINING messages is not a monotonic "highest rowid ever assigned"

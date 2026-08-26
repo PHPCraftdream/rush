@@ -13,6 +13,16 @@ import (
 	"github.com/PHPCraftdream/rush/internal/session"
 )
 
+// recoverSessionListSeam is a test-only hook fired once per candidate
+// session actually processed by recoverInterruptedTurns (task #774). nil in
+// production. Tests use it to assert the recovery path's cost is
+// proportional to the number of CANDIDATES (sessions whose last message is
+// an unfinished assistant message) rather than the total number of sessions
+// in the data directory -- the whole point of routing discovery through
+// ListCandidateInterruptedAssistantSessions instead of Sessions.ListAll +
+// per-session Messages.List.
+var recoverSessionListSeam func()
+
 // recoverInterruptedTurns is the startup safety net for the "silent dying"
 // pattern: a previous rush process that died ungracefully (kill -9, power
 // loss, OS reboot, panic without recovery, or even a graceful Ctrl-C during
@@ -22,40 +32,45 @@ import (
 // forever, and `rush sessions reset` is the only escape.
 //
 // This sweep runs once at app start, before the coordinator is wired up.
-// It performs a two-pass scan over ALL sessions (Sessions.ListAll):
 //
-//   - PASS 1: top-level sessions (parent_session_id IS NULL), iterated
+// Discovery (task #774): rather than listing EVERY session
+// (Sessions.ListAll) and running a full Messages.List against each one just
+// to find its last assistant message, the sweep asks SQL directly, via
+// message.Service.ListCandidateInterruptedAssistantSessions, for the small
+// set of sessions whose chronologically last message is an unfinished
+// assistant message. That query is backed by a partial index
+// (idx_messages_unfinished_assistant) that SQLite auto-maintains on every
+// insert/update/delete, so the sweep's cost is now proportional to the
+// number of CANDIDATES, not the total number of sessions ever created.
+// Measured on a real dev DB this eliminated a 10s+ scan (137 sessions) that
+// was tripping the sweep's own deadline below.
+//
+// The candidate set is then partitioned exactly as before:
+//
+//   - PASS 1: top-level candidates (ParentSessionID == ""), iterated
 //     first. This preserves the original behavior and guarantees top-level
 //     sessions are always recovered before children.
 //
-//   - PASS 2: child sessions (parent_session_id IS NOT NULL), iterated
-//     after all top-level sessions have been processed. Children include
-//     sub-agent task sessions (created via CreateTaskSession), title children
+//   - PASS 2: child candidates (ParentSessionID != ""), iterated after all
+//     top-level candidates have been processed. Children include sub-agent
+//     task sessions (created via CreateTaskSession), title children
 //     (CreateTitleSession), and forks (ForkSessionTx with ParentID set).
 //
-// For each session, the sweep finds the LAST assistant message and, if it
-// has no finish part, adds a FinishReasonError marking it as a process-restart
-// interruption. The same liveness guard (InspectSessionLock) protects both
-// passes: every Run() — child sessions included — acquires its own
-// per-session-ID lock (see agent_run.go:~320-360), so the lock check
-// correctly identifies live children and leaves them alone.
-//
-// Cost: one full Messages.List per session. For top-level sessions this is
-// cheap (bounded by the number of top-level conversations). For child
-// sessions it's unbounded (every delegation ever recorded), which is why
-// children are processed in pass 2 after all top-level sessions and are
-// bounded by the shared 10s deadline — they can never crowd out top-level
-// recovery. The deadline is enforced by early-out checks at the top of
-// each pass loop (a tripped deadline would fail every Messages.List
-// anyway, so we skip wasted iterations).
+// For each candidate, the sweep loads just that one message (Messages.Get,
+// by the id the query already identified as the last assistant message) and,
+// since discovery already proved it has no finish part, adds a
+// FinishReasonError marking it as a process-restart interruption. The same
+// liveness guard (InspectSessionLock) protects both passes: every Run() —
+// child sessions included — acquires its own per-session-ID lock (see
+// agent_run.go:~320-360), so the lock check correctly identifies live
+// children and leaves them alone.
 //
 // The sweep is non-fatal on error and silent when there is nothing to recover.
 func (app *App) recoverInterruptedTurns(ctx context.Context) {
 	// Bound the whole sweep so a slow disk (network mount, AV scan,
 	// fsync stall) cannot block app startup. 10s is generous for a
-	// linear scan of sessions + targeted updates against SQLite; if it
-	// trips we'd rather skip recovery than hang the user's first
-	// `rush run`.
+	// candidate-proportional scan against SQLite; if it trips we'd rather
+	// skip recovery than hang the user's first `rush run`.
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	start := time.Now()
@@ -82,31 +97,31 @@ func (app *App) recoverInterruptedTurns(ctx context.Context) {
 			dataDir = cfg.Options.DataDirectory
 		}
 	}
-	allSessions, err := app.Sessions.ListAll(ctx)
+	candidates, err := app.Messages.ListCandidateInterruptedAssistantSessions(ctx)
 	if err != nil {
-		slog.Warn("startup recovery: failed to list sessions", "err", err)
+		slog.Warn("startup recovery: failed to list recovery candidates", "err", err)
 		return
 	}
-	// Partition sessions into top-level (ParentSessionID == "") and children.
-	var topLevel, children []session.Session
-	for _, sess := range allSessions {
-		if sess.ParentSessionID == "" {
-			topLevel = append(topLevel, sess)
+	// Partition candidates into top-level (ParentSessionID == "") and children.
+	var topLevel, children []message.InterruptedAssistantCandidate
+	for _, cand := range candidates {
+		if cand.ParentSessionID == "" {
+			topLevel = append(topLevel, cand)
 		} else {
-			children = append(children, sess)
+			children = append(children, cand)
 		}
 	}
 	var recovered, skippedFresh, skippedLive, recoveredChildren, childrenScanned int
-	// PASS 1: top-level sessions, iterated first. Existing behavior is
+	// PASS 1: top-level candidates, iterated first. Existing behavior is
 	// bit-for-bit preserved.
-	for _, sess := range topLevel {
+	for _, cand := range topLevel {
 		// Early-out if the deadline has already tripped. This is
-		// especially important for the unbounded child pass below, but we
-		// check it here too to keep the pattern consistent.
+		// especially important for the child pass below, but we check it
+		// here too to keep the pattern consistent.
 		if ctx.Err() != nil {
 			break
 		}
-		outcome := app.recoverSessionInterruptedTurn(ctx, sess, staleBefore, dataDir)
+		outcome := app.recoverSessionInterruptedTurn(ctx, cand, staleBefore, dataDir)
 		switch outcome {
 		case recoveryOutcomeRecovered:
 			recovered++
@@ -116,18 +131,16 @@ func (app *App) recoverInterruptedTurns(ctx context.Context) {
 			skippedLive++
 		}
 	}
-	// PASS 2: child sessions, only after pass 1 completes. Same per-session
-	// logic verbatim — the only difference is which sessions we visit.
+	// PASS 2: child candidates, only after pass 1 completes. Same per-session
+	// logic verbatim — the only difference is which candidates we visit.
 	//
-	// The early-out at the top prevents wasted iterations after the deadline:
-	// a tripped deadline means every Messages.List would fail, so we stop
-	// immediately rather than spinning through thousands of children.
-	for _, sess := range children {
+	// The early-out at the top prevents wasted iterations after the deadline.
+	for _, cand := range children {
 		if ctx.Err() != nil {
 			break
 		}
 		childrenScanned++
-		outcome := app.recoverSessionInterruptedTurn(ctx, sess, staleBefore, dataDir)
+		outcome := app.recoverSessionInterruptedTurn(ctx, cand, staleBefore, dataDir)
 		switch outcome {
 		case recoveryOutcomeRecovered:
 			recoveredChildren++
@@ -152,7 +165,7 @@ func (app *App) recoverInterruptedTurns(ctx context.Context) {
 		)
 	} else if elapsed > time.Second {
 		// Silent normally, but if the sweep took noticeable time
-		// (10k+ sessions on slow disk), surface it so the user can
+		// (10k+ candidates on slow disk), surface it so the user can
 		// diagnose a slow startup without enabling debug logs.
 		slog.Info(
 			"startup recovery: nothing to recover",
@@ -170,33 +183,36 @@ const (
 	recoveryOutcomeRecovered    recoveryOutcome = iota // Orphan was marked as errored.
 	recoveryOutcomeSkippedFresh                        // Too recent to touch.
 	recoveryOutcomeSkippedLive                         // Live lock holder protects it.
-	recoveryOutcomeNone                                // List failed or no assistant message.
+	recoveryOutcomeNone                                // Get failed or message no longer unfinished.
 )
 
-// recoverSessionInterruptedTurn attempts to recover a single session's
+// recoverSessionInterruptedTurn attempts to recover a single candidate's
 // orphaned assistant message. It returns the outcome so the caller can
 // maintain counters.
-func (app *App) recoverSessionInterruptedTurn(ctx context.Context, sess session.Session, staleBefore int64, dataDir string) recoveryOutcome {
-	msgs, err := app.Messages.List(ctx, sess.ID)
+//
+// cand.MessageID is already known to be the session's chronologically last
+// message and, as of the discovery query's read, an unfinished assistant
+// message — so this only needs to fetch that ONE message (not the session's
+// full history) to re-check and act on it.
+func (app *App) recoverSessionInterruptedTurn(ctx context.Context, cand message.InterruptedAssistantCandidate, staleBefore int64, dataDir string) recoveryOutcome {
+	if recoverSessionListSeam != nil {
+		recoverSessionListSeam()
+	}
+	lastAssistant, err := app.Messages.Get(ctx, cand.MessageID)
 	if err != nil {
-		slog.Debug("startup recovery: skipping session, list failed",
-			"session_id", sess.ID, "err", err)
+		slog.Debug("startup recovery: skipping candidate, get failed",
+			"session_id", cand.SessionID, "message_id", cand.MessageID, "err", err)
 		return recoveryOutcomeNone
 	}
-	var lastAssistant *message.Message
-	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role == message.Assistant {
-			m := msgs[i]
-			lastAssistant = &m
-			break
-		}
-	}
-	if lastAssistant == nil || lastAssistant.IsFinished() {
+	// Re-check finished state: the discovery query's read and this Get are
+	// two round trips, so a concurrent write landing in between (the live
+	// owner finishing its own turn) could have finished the message since.
+	if lastAssistant.IsFinished() {
 		return recoveryOutcomeNone
 	}
 	// PRIMARY GUARD (task #287, release blocker): never touch a session
 	// that another LIVE rush process still owns. This sweep runs at the
-	// start of EVERY rush process and iterates EVERY session in the data
+	// start of EVERY rush process and iterates EVERY candidate in the data
 	// directory — not just this process's own — so without a real
 	// liveness probe it happily stamps "Process restarted" onto turns
 	// that are genuinely mid-flight in a sibling process. Because
@@ -221,7 +237,7 @@ func (app *App) recoverSessionInterruptedTurn(ctx context.Context, sess session.
 	// regardless of whether it's a sub-agent. A live child's lock protects
 	// it exactly like a live top-level session.
 	if dataDir != "" {
-		st := session.InspectSessionLock(dataDir, sess.ID, session.LockStaleDuration)
+		st := session.InspectSessionLock(dataDir, cand.SessionID, session.LockStaleDuration)
 		// Fail CLOSED on "could not check": if the lock file's
 		// existence could not be determined at all (permission
 		// denied, I/O error, unreachable path component, ...),
@@ -248,10 +264,10 @@ func (app *App) recoverSessionInterruptedTurn(ctx context.Context, sess session.
 		"Process restarted",
 		"The previous rush process exited before this turn completed (silent dying — see CHANGELOG.fork.md section 4.D). The assistant message had tool calls but no finish part. Cleanly recovered on startup; you can retry from the previous user message.",
 	)
-	if err := app.Messages.Update(ctx, *lastAssistant); err != nil {
+	if err := app.Messages.Update(ctx, lastAssistant); err != nil {
 		slog.Warn(
 			"startup recovery: failed to mark orphan assistant",
-			"session_id", sess.ID,
+			"session_id", cand.SessionID,
 			"message_id", lastAssistant.ID,
 			"err", err,
 		)

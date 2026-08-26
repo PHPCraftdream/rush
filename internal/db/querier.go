@@ -236,6 +236,42 @@ type Querier interface {
 	// rowid is the tie-breaker: see ListUserMessagesBySession above - identical
 	// reasoning applies across all sessions, not just one.
 	ListAllUserMessages(ctx context.Context) ([]Message, error)
+	// task #774: startup recovery (app.recoverInterruptedTurns) used to call
+	// Sessions.ListAll then, for EVERY session, Messages.List (the full message
+	// history) just to find the last assistant message. Measured on a real dev
+	// DB: 137 sessions, 10s+, tripping the sweep's own 10s deadline -- an
+	// O(sessions) linear scan that only gets worse as session count grows.
+	//
+	// This query returns only the small set of sessions whose CHRONOLOGICALLY
+	// LAST message is an unfinished assistant message -- the exact candidate set
+	// recovery needs -- so the caller can skip straight to those sessions
+	// instead of touching every one.
+	//
+	// Correctness nuance: a session can have an OLD unfinished assistant message
+	// later superseded by a newer, finished one (e.g. a retried turn). A flat
+	// `WHERE role = 'assistant' AND finished_at IS NULL` over the whole table
+	// would wrongly flag that session even though its latest message is fine.
+	// The window function ranks every message within its session by recency
+	// first, and only rank-1 (the latest) rows are checked against the
+	// unfinished-assistant predicate.
+	//
+	// rowid is the tie-breaker for the same reason as ListMessagesBySession /
+	// ListUserMessagesBySession above: created_at is stored in SECONDS, so a
+	// single agent turn can produce multiple rows sharing one created_at value.
+	// (created_at DESC, rowid DESC) is a deterministic newest-first total order.
+	//
+	// idx_messages_unfinished_assistant (session_id, created_at) WHERE
+	// role = 'assistant' AND finished_at IS NULL accelerates the base filter
+	// pass (SQLite can seek directly to the small set of unfinished-assistant
+	// rows via the index rather than a full table scan); the ranking itself
+	// still needs each candidate session's full ORDER BY to determine "is this
+	// really the last message", which the CTE below narrows to just the
+	// sessions the index already flagged, not every session in the table.
+	//
+	// parent_session_id is returned alongside so the caller can partition
+	// top-level vs child sessions without a second per-candidate session
+	// lookup.
+	ListCandidateInterruptedAssistantSessions(ctx context.Context) ([]ListCandidateInterruptedAssistantSessionsRow, error)
 	ListFilesByPath(ctx context.Context, path string) ([]File, error)
 	ListFilesBySession(ctx context.Context, sessionID string) ([]File, error)
 	ListLatestSessionFiles(ctx context.Context, sessionID string) ([]File, error)

@@ -168,6 +168,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.listAllUserMessagesStmt, err = db.PrepareContext(ctx, listAllUserMessages); err != nil {
 		return nil, fmt.Errorf("error preparing query ListAllUserMessages: %w", err)
 	}
+	if q.listCandidateInterruptedAssistantSessionsStmt, err = db.PrepareContext(ctx, listCandidateInterruptedAssistantSessions); err != nil {
+		return nil, fmt.Errorf("error preparing query ListCandidateInterruptedAssistantSessions: %w", err)
+	}
 	if q.listFilesByPathStmt, err = db.PrepareContext(ctx, listFilesByPath); err != nil {
 		return nil, fmt.Errorf("error preparing query ListFilesByPath: %w", err)
 	}
@@ -533,6 +536,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing listAllUserMessagesStmt: %w", cerr)
 		}
 	}
+	if q.listCandidateInterruptedAssistantSessionsStmt != nil {
+		if cerr := q.listCandidateInterruptedAssistantSessionsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing listCandidateInterruptedAssistantSessionsStmt: %w", cerr)
+		}
+	}
 	if q.listFilesByPathStmt != nil {
 		if cerr := q.listFilesByPathStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing listFilesByPathStmt: %w", cerr)
@@ -820,6 +828,7 @@ type Queries struct {
 	listAllSessionPermissionsStmt                  *sql.Stmt
 	listAllSessionsStmt                            *sql.Stmt
 	listAllUserMessagesStmt                        *sql.Stmt
+	listCandidateInterruptedAssistantSessionsStmt  *sql.Stmt
 	listFilesByPathStmt                            *sql.Stmt
 	listFilesBySessionStmt                         *sql.Stmt
 	listLatestSessionFilesStmt                     *sql.Stmt
@@ -914,6 +923,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		listAllSessionPermissionsStmt:                  q.listAllSessionPermissionsStmt,
 		listAllSessionsStmt:                            q.listAllSessionsStmt,
 		listAllUserMessagesStmt:                        q.listAllUserMessagesStmt,
+		listCandidateInterruptedAssistantSessionsStmt:  q.listCandidateInterruptedAssistantSessionsStmt,
 		listFilesByPathStmt:                            q.listFilesByPathStmt,
 		listFilesBySessionStmt:                         q.listFilesBySessionStmt,
 		listLatestSessionFilesStmt:                     q.listLatestSessionFilesStmt,

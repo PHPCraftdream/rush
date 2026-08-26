@@ -122,6 +122,10 @@ func (m *mockMessageService) ListAllUserMessages(ctx context.Context) ([]message
 	return m.inner.ListAllUserMessages(ctx)
 }
 
+func (m *mockMessageService) ListCandidateInterruptedAssistantSessions(ctx context.Context) ([]message.InterruptedAssistantCandidate, error) {
+	return m.inner.ListCandidateInterruptedAssistantSessions(ctx)
+}
+
 func (m *mockMessageService) DeleteSessionMessages(ctx context.Context, sessionID string) error {
 	return m.inner.DeleteSessionMessages(ctx, sessionID)
 }
