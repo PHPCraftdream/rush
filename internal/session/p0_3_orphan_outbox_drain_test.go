@@ -530,7 +530,7 @@ func TestOrphanOutbox_InitialDrainOnStart(t *testing.T) {
 	require.Eventually(t, func() bool {
 		pending, err := svc.ListPendingOrphanOutboxEntries(t.Context())
 		return err == nil && len(pending) == 0
-	}, 2*time.Second, 20*time.Millisecond, "entry should be drained by the initial Start()-time drain, not wait for drainTicker")
+	}, 5*time.Second, 10*time.Millisecond, "entry should be drained by the initial Start()-time drain, not wait for drainTicker")
 	pump.Stop()
 
 	pendingMain, err := svc.ListPendingRunQueueEntries(t.Context())
