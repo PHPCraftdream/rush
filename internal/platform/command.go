@@ -11,14 +11,14 @@ import (
 // (Dir, Env, Stdin/Stdout/Stderr, …) — only the platform-specific process
 // creation attributes are pre-set.
 //
-// On Windows the hardening is [HideConsoleWindow]: without it a
-// console-subsystem child (rg, git, npm.cmd, node, taskkill, …) pops a
-// real console window whenever rush itself has no console to share —
-// which is the normal state for an orchestrator/detached `rush run`,
-// see cmd.maybeDetachConsole. Those windows flash on screen, cover the
-// operator's work and steal keyboard focus. On every other platform the
-// hardening is a no-op and this is a thin wrapper over
-// [exec.CommandContext].
+// On Windows the hardening is [HideConsoleWindow] — CREATE_NO_WINDOW plus
+// SysProcAttr.HideWindow: without it a console-subsystem child (rg, git,
+// npm.cmd, node, taskkill, …) pops a real console window whenever rush
+// itself has no console to share — which is the normal state for an
+// orchestrator/detached `rush run`, see cmd.maybeDetachConsole. Those
+// windows flash on screen, cover the operator's work and steal keyboard
+// focus. On every other platform the hardening is a no-op and this is a
+// thin wrapper over [exec.CommandContext].
 //
 // Why a constructor rather than a "remember to call HideConsoleWindow"
 // convention: the convention was in force since d630d3a3 and depended on

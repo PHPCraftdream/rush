@@ -23,7 +23,7 @@ import (
 var spawnGuardExemptions = map[string]string{
 	"internal/platform/command.go":   "the sanctioned constructor itself — it IS the wrapper every other call site must use",
 	"internal/shell/exec_unix.go":    "mirrors interp.DefaultExecHandler with an exec.Cmd literal (needs Path, not LookPath semantics); sets SysProcAttr explicitly via isolateProcess",
-	"internal/shell/exec_windows.go": "mirrors interp.DefaultExecHandler with an exec.Cmd literal; sets SysProcAttr{HideWindow: true} inline on the literal",
+	"internal/shell/exec_windows.go": "mirrors interp.DefaultExecHandler with an exec.Cmd literal (needs Path, not LookPath semantics); hardens it by calling HideConsoleWindow on the literal",
 }
 
 // TestNoUnhardenedProcessSpawns fails when any non-test file under

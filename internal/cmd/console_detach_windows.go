@@ -27,13 +27,20 @@ var procFreeConsole = kernel32DLL.NewProc("FreeConsole")
 // A bare FreeConsole (no console at all) is enough here: the earlier
 // concern — mvdan.cc/sh's DefaultExecHandler spawning a new visible
 // console per bash-tool command when rush itself has none to share — is
-// now fixed at its own source (internal/shell/exec_windows.go sets
-// SysProcAttr.HideWindow on every child it spawns), so rush doesn't need
-// a console of its own for children to inherit. Giving rush its own
+// now fixed at its own source (internal/shell/exec_windows.go hardens
+// every child it spawns via platform.HideConsoleWindow), so rush doesn't
+// need a console of its own for children to inherit. Giving rush its own
 // console anyway (AllocConsole) was tried first and technically worked,
 // but risks a brief visible flash before the immediate ShowWindow(SW_HIDE)
 // takes effect — window creation and hiding aren't atomic. Not having a
 // console at all has no such race.
+//
+// That same non-atomicity is why the child-side fix cannot rely on
+// SysProcAttr.HideWindow alone: HideWindow is only SW_HIDE via
+// STARTUPINFO, so a child's console window is likewise created and THEN
+// hidden. platform.HideConsoleWindow therefore also passes
+// CREATE_NO_WINDOW, under which no window is created to begin with — see
+// its doc comment for the full story.
 //
 // The redirect-target file handles are not console handles, so they
 // survive FreeConsole untouched and output keeps flowing into the

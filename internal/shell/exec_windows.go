@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
-	"syscall"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/platform"
@@ -25,16 +24,22 @@ const defaultKillTimeout = 2 * time.Second
 func isolateProcess(cmd *exec.Cmd) { platform.HideConsoleWindow(cmd) }
 
 // processGroupExecHandler returns a Windows exec handler that behaves like
-// interp.DefaultExecHandler but additionally sets SysProcAttr.HideWindow —
+// interp.DefaultExecHandler but additionally hardens process creation —
 // upstream's DefaultExecHandler builds a bare exec.Cmd with no
 // SysProcAttr, so every single bash-tool command spawns a NEW, briefly
 // visible console window when the rush process itself has no console to
 // share (see cmd.maybeDetachConsole's doc comment for why rush ends up
-// console-less on a detached/orchestrator launch). HideWindow: true sets
-// the Windows CREATE_NO_WINDOW creation flag, which suppresses that window
-// unconditionally — independent of whatever console state rush itself is
-// in, so this is the correct fix at the source rather than trying to give
-// rush a console for children to inherit.
+// console-less on a detached/orchestrator launch).
+//
+// The hardening goes through platform.HideConsoleWindow rather than an
+// inline SysProcAttr literal so this path can never drift from the
+// sanctioned one: it sets CREATE_NO_WINDOW (the load-bearing half — the
+// console is then created without a window at all) in addition to
+// HideWindow (which only asks for an already-created window to be
+// hidden, and so races with that window painting). See that function's
+// doc comment for why HideWindow alone was never sufficient, despite
+// this comment previously claiming it "sets the Windows CREATE_NO_WINDOW
+// creation flag" — it does not.
 func processGroupExecHandler(killTimeout time.Duration, registerProcess func(int)) interp.ExecHandlerFunc {
 	return func(ctx context.Context, args []string) error {
 		hc := interp.HandlerCtx(ctx)
@@ -44,15 +49,15 @@ func processGroupExecHandler(killTimeout time.Duration, registerProcess func(int
 			return interp.ExitStatus(127)
 		}
 		cmd := exec.Cmd{
-			Path:        path,
-			Args:        args,
-			Env:         execEnvList(hc.Env),
-			Dir:         hc.Dir,
-			Stdin:       hc.Stdin,
-			Stdout:      hc.Stdout,
-			Stderr:      hc.Stderr,
-			SysProcAttr: &syscall.SysProcAttr{HideWindow: true},
+			Path:   path,
+			Args:   args,
+			Env:    execEnvList(hc.Env),
+			Dir:    hc.Dir,
+			Stdin:  hc.Stdin,
+			Stdout: hc.Stdout,
+			Stderr: hc.Stderr,
 		}
+		platform.HideConsoleWindow(&cmd)
 
 		err = cmd.Start()
 		if err == nil {
