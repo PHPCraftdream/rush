@@ -68,7 +68,7 @@ rush models list --json | jq '.other_models[] | select(.provider=="zai")'
 		// no network, no cache write. With --refresh: clear cache-only
 		// and force TTL=0 so the syncers always re-fetch.
 		applyModelsListRefreshMode(refresh)
-		a, err := setupApp(cmd)
+		a, err := setupAppLite(cmd)
 		if err != nil {
 			return err
 		}

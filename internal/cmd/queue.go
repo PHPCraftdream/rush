@@ -62,7 +62,7 @@ var queueAddCmd = &cobra.Command{
 			return fmt.Errorf("no prompt provided (pipe to stdin or use --prompt-file)")
 		}
 
-		a, err := setupApp(cmd)
+		a, err := setupAppLite(cmd)
 		if err != nil {
 			return err
 		}
@@ -89,7 +89,7 @@ var queueListCmd = &cobra.Command{
 		status, _ := cmd.Flags().GetString("status")
 		asJSON, _ := cmd.Flags().GetBool("json")
 
-		a, err := setupApp(cmd)
+		a, err := setupAppLite(cmd)
 		if err != nil {
 			return err
 		}
@@ -130,7 +130,7 @@ var queueShowCmd = &cobra.Command{
 	Short: "Show details of a single queue task",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		a, err := setupApp(cmd)
+		a, err := setupAppLite(cmd)
 		if err != nil {
 			return err
 		}
@@ -333,7 +333,7 @@ var queueRmCmd = &cobra.Command{
 	Short: "Remove a task from the queue",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		a, err := setupApp(cmd)
+		a, err := setupAppLite(cmd)
 		if err != nil {
 			return err
 		}
@@ -354,7 +354,7 @@ var queueClearCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		status, _ := cmd.Flags().GetString("status")
 
-		a, err := setupApp(cmd)
+		a, err := setupAppLite(cmd)
 		if err != nil {
 			return err
 		}

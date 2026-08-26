@@ -132,8 +132,34 @@ type App struct {
 	recoveryDataDir *string
 }
 
+// Option configures New's behavior. See SkipAgentSetup.
+type Option func(*newOptions)
+
+type newOptions struct {
+	skipAgentSetup bool
+}
+
+// SkipAgentSetup builds the App without recoverInterruptedTurns,
+// mcp.Initialize, or InitCoderAgent (task #773). For commands that only
+// read/write config (`models`, `providers`, `mcp`, `login`, `queue add/
+// list/show/rm/clear`) none of the three ever get used: recovery sweeps
+// session/message state, mcp.Initialize starts MCP servers, and
+// InitCoderAgent builds the full AgentCoordinator (incl. skill
+// discovery) — all pure overhead for a config-only invocation. Callers
+// that pass this option get an App with AgentCoordinator == nil and
+// RunQueuePump == nil; any code path that dereferences those must not be
+// reached from a command using this option (setupAppLite in
+// internal/cmd/root.go documents which commands qualify).
+func SkipAgentSetup() Option {
+	return func(o *newOptions) { o.skipAgentSetup = true }
+}
+
 // New initializes a new application instance.
-func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore) (*App, error) {
+func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, opts ...Option) (*App, error) {
+	var o newOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
 	q := db.New(conn)
 	cfg := store.Config()
 
@@ -208,9 +234,14 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore) (*App, er
 	// invariant: even when the previous process died ungracefully (kill,
 	// power loss, panic) we release the session on next startup. See
 	// the 162-promise-all post-mortem in CHANGELOG.fork.md section 4.D.
-	app.recoverInterruptedTurns(ctx)
-
-	go mcp.Initialize(ctx, app.Permissions, store)
+	//
+	// Skipped entirely under SkipAgentSetup (task #773): config-only
+	// commands never read session/message state, so this sweep — even at
+	// its post-#774 candidate-proportional cost — is pure waste for them.
+	if !o.skipAgentSetup {
+		app.recoverInterruptedTurns(ctx)
+		go mcp.Initialize(ctx, app.Permissions, store)
+	}
 
 	// Release the shared database connection(s) on shutdown. The pool
 	// closes the underlying *sql.DB when the last reference is released.
@@ -235,6 +266,12 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore) (*App, er
 		app.cleanupFuncs,
 		func(ctx context.Context) error { return mcp.Close(ctx) },
 	)
+
+	// Config-only commands (SkipAgentSetup) never touch AgentCoordinator or
+	// RunQueuePump, so both are left nil/zero and construction stops here.
+	if o.skipAgentSetup {
+		return app, nil
+	}
 
 	// TODO: remove the concept of agent config, most likely.
 	if !cfg.IsConfigured() {

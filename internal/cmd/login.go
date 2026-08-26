@@ -57,7 +57,7 @@ rush login -f copilot
 	},
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		app, err := setupApp(cmd)
+		app, err := setupAppLite(cmd)
 		if err != nil {
 			return err
 		}

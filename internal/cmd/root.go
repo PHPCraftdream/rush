@@ -357,6 +357,62 @@ func setupApp(cmd *cobra.Command) (*app.App, error) {
 	return appInstance, nil
 }
 
+// setupAppLite is identical to setupApp except the returned App skips
+// recoverInterruptedTurns, mcp.Initialize, and InitCoderAgent (task #773,
+// via app.SkipAgentSetup) — AgentCoordinator and RunQueuePump are left nil.
+//
+// Use this ONLY for commands that never read `a.AgentCoordinator` and never
+// depend on the startup recovery sweep having already run: the entire
+// `rush models *` family (state/list/use/bump/unset), `rush providers *`,
+// `rush mcp *`, `rush login`, and `rush queue add/list/show/rm/clear`
+// (task #772's classification (b), config-only / DB-only, zero App-service
+// dependency beyond a.Config()/a.Store()/a.DB()).
+//
+// Do NOT use this for: `rush` (web), `rush run`, `rush system-prompt`
+// (needs AgentCoordinator.BuildSystemPrompt), or the `rush sessions *`
+// family / `rush queue run` (task #772's classification (c) — these read
+// live session/message state that recoverInterruptedTurns keeps sane, even
+// though they too skip InitCoderAgent). Those must keep calling setupApp.
+func setupAppLite(cmd *cobra.Command) (*app.App, error) {
+	debug, _ := cmd.Flags().GetBool("debug")
+	dataDir, _ := cmd.Flags().GetString("data-dir")
+	ctx := cmd.Context()
+
+	cwd, err := ResolveCwd(cmd)
+	if err != nil {
+		return nil, err
+	}
+
+	store, err := config.Init(cwd, dataDir, debug)
+	if err != nil {
+		return nil, err
+	}
+
+	cfg := store.Config()
+	if err := createDotRushDir(cfg.Options.DataDirectory); err != nil {
+		return nil, err
+	}
+
+	rushlog.Setup(filepath.Join(cfg.Options.DataDirectory, "logs", "rush.log"), debug)
+
+	if err := projects.Register(cwd, cfg.Options.DataDirectory); err != nil {
+		slog.Warn("Failed to register project", "error", err)
+	}
+
+	conn, err := db.Connect(ctx, cfg.Options.DataDirectory)
+	if err != nil {
+		return nil, err
+	}
+
+	appInstance, err := app.New(ctx, conn, store, app.SkipAgentSetup())
+	if err != nil {
+		slog.Error("Failed to create app instance", "error", err)
+		return nil, err
+	}
+
+	return appInstance, nil
+}
+
 // stdinReadGraceDefault bounds how long MaybePrependStdin waits for a named
 // pipe to produce data before giving up on it. A `< file` redirect (regular
 // file) is always fully available immediately and is read directly with

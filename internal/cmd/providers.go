@@ -69,7 +69,7 @@ rush providers list --json | jq 'select(.api_key_present)'
   `,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		asJSON, _ := cmd.Flags().GetBool("json")
-		a, err := setupApp(cmd)
+		a, err := setupAppLite(cmd)
 		if err != nil {
 			return err
 		}
@@ -147,7 +147,7 @@ var providersShowCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		asJSON, _ := cmd.Flags().GetBool("json")
-		a, err := setupApp(cmd)
+		a, err := setupAppLite(cmd)
 		if err != nil {
 			return err
 		}
@@ -252,7 +252,7 @@ rush providers set openai --peak-hours 09:00-18:00
 			return fmt.Errorf("no fields to set — pass at least one of --api-key/--base-url/--type/--name/--disabled/--peak-hours")
 		}
 
-		a, err := setupApp(cmd)
+		a, err := setupAppLite(cmd)
 		if err != nil {
 			return err
 		}
@@ -292,7 +292,7 @@ rush providers add local-llm --name "Local LLM" --type openai-compat --base-url 
 		if err != nil {
 			return err
 		}
-		a, err := setupApp(cmd)
+		a, err := setupAppLite(cmd)
 		if err != nil {
 			return err
 		}
@@ -415,7 +415,7 @@ var providersUpdateCmd = &cobra.Command{
 configuration. Shows a summary of added/removed models.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		a, err := setupApp(cmd)
+		a, err := setupAppLite(cmd)
 		if err != nil {
 			return err
 		}
@@ -542,7 +542,7 @@ var providersEnableCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		a, err := setupApp(cmd)
+		a, err := setupAppLite(cmd)
 		if err != nil {
 			return err
 		}
@@ -577,7 +577,7 @@ var providersDisableCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		a, err := setupApp(cmd)
+		a, err := setupAppLite(cmd)
 		if err != nil {
 			return err
 		}
@@ -633,7 +633,7 @@ persistently suppress it.`,
 		if err != nil {
 			return err
 		}
-		a, err := setupApp(cmd)
+		a, err := setupAppLite(cmd)
 		if err != nil {
 			return err
 		}
@@ -685,7 +685,7 @@ rush providers fetch-models zai --diff
 		asJSON, _ := cmd.Flags().GetBool("json")
 		showDiff, _ := cmd.Flags().GetBool("diff")
 
-		a, err := setupApp(cmd)
+		a, err := setupAppLite(cmd)
 		if err != nil {
 			return err
 		}
@@ -756,7 +756,7 @@ var providersGrepCmd = &cobra.Command{
 	Short: "Filter providers by id, name, or type (sugar for `list --grep <pattern>`)",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		a, err := setupApp(cmd)
+		a, err := setupAppLite(cmd)
 		if err != nil {
 			return err
 		}

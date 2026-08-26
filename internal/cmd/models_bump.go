@@ -64,7 +64,7 @@ rush models state   # see the full picture afterward
 			return err
 		}
 
-		a, err := setupApp(cmd)
+		a, err := setupAppLite(cmd)
 		if err != nil {
 			return err
 		}

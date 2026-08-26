@@ -42,7 +42,7 @@ rush providers test ollama   # works with a local openai-compat server too
 			timeout = time.Minute
 		}
 
-		a, err := setupApp(cmd)
+		a, err := setupAppLite(cmd)
 		if err != nil {
 			return err
 		}

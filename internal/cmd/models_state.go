@@ -48,7 +48,7 @@ rush models show
   `,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		asJSON, _ := cmd.Flags().GetBool("json")
-		a, err := setupApp(cmd)
+		a, err := setupAppLite(cmd)
 		if err != nil {
 			return err
 		}

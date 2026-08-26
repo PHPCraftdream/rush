@@ -127,7 +127,7 @@ rush models state
 			return fmt.Errorf("nothing to set — provide <smart> <fast> positionally, or at least one of --smart/--fast/--worker/--reviewer")
 		}
 
-		a, err := setupApp(cmd)
+		a, err := setupAppLite(cmd)
 		if err != nil {
 			return err
 		}

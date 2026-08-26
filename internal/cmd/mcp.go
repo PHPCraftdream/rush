@@ -47,7 +47,7 @@ rush mcp list --grep stdio
   `,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		asJSON, _ := cmd.Flags().GetBool("json")
-		a, err := setupApp(cmd)
+		a, err := setupAppLite(cmd)
 		if err != nil {
 			return err
 		}
@@ -125,7 +125,7 @@ rush mcp show my-server --json
   `,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		asJSON, _ := cmd.Flags().GetBool("json")
-		a, err := setupApp(cmd)
+		a, err := setupAppLite(cmd)
 		if err != nil {
 			return err
 		}
@@ -188,7 +188,7 @@ rush mcp enable my-server --global
 		if err != nil {
 			return err
 		}
-		a, err := setupApp(cmd)
+		a, err := setupAppLite(cmd)
 		if err != nil {
 			return err
 		}
@@ -229,7 +229,7 @@ rush mcp disable my-server --local
 		if err != nil {
 			return err
 		}
-		a, err := setupApp(cmd)
+		a, err := setupAppLite(cmd)
 		if err != nil {
 			return err
 		}
@@ -268,7 +268,7 @@ effect.`,
 rush mcp restart my-server
   `,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		a, err := setupApp(cmd)
+		a, err := setupAppLite(cmd)
 		if err != nil {
 			return err
 		}
@@ -298,7 +298,7 @@ rush mcp test my-server
 rush mcp test my-server --timeout 30s
   `,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		a, err := setupApp(cmd)
+		a, err := setupAppLite(cmd)
 		if err != nil {
 			return err
 		}
@@ -352,7 +352,7 @@ rush mcp add auth-server --type http --url http://api.example.com/mcp --header "
 		if err != nil {
 			return err
 		}
-		a, err := setupApp(cmd)
+		a, err := setupAppLite(cmd)
 		if err != nil {
 			return err
 		}
@@ -448,7 +448,7 @@ rush mcp rm old-server --local
 		if err != nil {
 			return err
 		}
-		a, err := setupApp(cmd)
+		a, err := setupAppLite(cmd)
 		if err != nil {
 			return err
 		}
@@ -492,7 +492,7 @@ rush mcp set events --url http://new-host:4000/sse
 		if err != nil {
 			return err
 		}
-		a, err := setupApp(cmd)
+		a, err := setupAppLite(cmd)
 		if err != nil {
 			return err
 		}

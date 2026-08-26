@@ -69,7 +69,7 @@ echo '{"disable": true}' | rush providers patch hyper
 			return fmt.Errorf("--json: empty object — nothing to patch")
 		}
 
-		a, err := setupApp(cmd)
+		a, err := setupAppLite(cmd)
 		if err != nil {
 			return err
 		}
