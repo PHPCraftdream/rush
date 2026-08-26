@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/PHPCraftdream/rush/internal/config"
@@ -96,6 +97,10 @@ rush models show
 					"fast_effort_default":     nilOrEffortDefault(hasFast, effFast),
 					"worker_effort_default":   nilOrEffortDefault(hasWorker, effWorker),
 					"reviewer_effort_default": nilOrEffortDefault(hasReviewer, effReviewer),
+					"smart_effort_stale":      nilOrStaleEffort(hasSmart, effSmart),
+					"fast_effort_stale":       nilOrStaleEffort(hasFast, effFast),
+					"worker_effort_stale":     nilOrStaleEffort(hasWorker, effWorker),
+					"reviewer_effort_stale":   nilOrStaleEffort(hasReviewer, effReviewer),
 				},
 				"global": map[string]any{
 					"smart":    globalSmart,
@@ -167,6 +172,17 @@ func nilOrEffortDefault(has bool, m config.SelectedModel) any {
 	return nil
 }
 
+// nilOrStaleEffort is the JSON counterpart of staleEffortNote: null when the
+// slot is unset or its effort is still valid, otherwise the levels that ARE
+// valid, so an orchestrator can detect and repair a stale config without
+// re-deriving the atom's vocabulary itself.
+func nilOrStaleEffort(has bool, m config.SelectedModel) any {
+	if !has || staleEffortNote(m) == "" {
+		return nil
+	}
+	return atomRegistry[lookupAtomForModel(m)].Levels()
+}
+
 func printEffectiveLine(label string, has bool, m config.SelectedModel, scope string) {
 	if !has {
 		fmt.Printf("  %s:  (not set in any scope)\n", label)
@@ -174,7 +190,11 @@ func printEffectiveLine(label string, has bool, m config.SelectedModel, scope st
 	}
 	atomLabel := ""
 	if k := lookupAtomForModel(m); k != "" {
-		if m.ReasoningEffort != "" {
+		// The "<atom>-<effort>" form is only printed when that exact string
+		// would still be accepted by `rush models use`. A stale effort (see
+		// staleEffortNote) falls back to the bare atom key so the output
+		// never suggests a command the CLI now rejects.
+		if m.ReasoningEffort != "" && staleEffortNote(m) == "" {
 			atomLabel = fmt.Sprintf(" (atom: %s-%s)", k, m.ReasoningEffort)
 		} else {
 			atomLabel = fmt.Sprintf(" (atom: %s)", k)
@@ -203,12 +223,56 @@ func printEffectiveLine(label string, has bool, m config.SelectedModel, scope st
 // provider whose default isn't documented; never guesses.
 func effortEffectiveNote(m config.SelectedModel) string {
 	if m.ReasoningEffort != "" {
-		return ""
+		return staleEffortNote(m)
 	}
 	if note := unsetEffortNote(m.Provider); note != "" {
 		return "  (" + note + ")"
 	}
 	return ""
+}
+
+// staleEffortNote flags a stored effort that is no longer one of its atom's
+// declared levels — a config written before that atom's level vocabulary
+// changed (e.g. GLM-5.3/5.3-Flash dropped off/on for low/high/max once Z.AI
+// stopped allowing reasoning to be disabled; see zai53ReasoningLevels in
+// models_atoms.go). Such a value still reaches the provider — the wire
+// mapping in coordinator_providers.go folds an unrecognized effort onto a
+// sane default rather than failing — but `rush models use <atom>-<effort>`
+// would now reject it, so printing it as a live atom suffix would be a lie.
+// Returns "" when the effort is valid, unset, or the model isn't a known
+// atom (efforts on non-atom models stay deliberately unvalidated).
+//
+// Deliberately checks the atom's static ReasoningLevels directly rather than
+// calling validateEffortForModel: that helper also serves Claude/local-cli
+// atoms, whose Levels() shells out to `claude --help` (internal/cmd/
+// models_effort.go). `rush models state` is a read-only status command that
+// must stay fast and work with no `claude` binary installed — it must never
+// spawn a subprocess as a side effect of rendering a line, and a CLI-detected
+// vocabulary is machine-state-dependent anyway (not the kind of durable
+// "declaration changed" fact this note exists to report).
+func staleEffortNote(m config.SelectedModel) string {
+	if m.ReasoningEffort == "" {
+		return ""
+	}
+	key := lookupAtomForModel(m)
+	if key == "" {
+		return ""
+	}
+	a := atomRegistry[key]
+	if a.EffortSource != nil {
+		return ""
+	}
+	levels := a.ReasoningLevels
+	if levels == nil {
+		return ""
+	}
+	for _, l := range levels {
+		if l == m.ReasoningEffort {
+			return ""
+		}
+	}
+	return fmt.Sprintf("  (STALE: %q is no longer valid here — valid: %s; re-set with `rush models use`)",
+		m.ReasoningEffort, strings.Join(levels, "|"))
 }
 
 func printScopeLine(tw *tabwriter.Writer, scopeName, slot string, value, other *config.SelectedModel, ownScope string) {

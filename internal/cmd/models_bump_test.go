@@ -71,10 +71,10 @@ func TestModelsBump_GLM53FullStepUp(t *testing.T) {
 	globalPath := setupBumpEnv(t)
 
 	resetModelsUseFlags(t)
-	_, runErr := runModelsCmd(t, modelsUseCmd, "glm4_7_flash-off", "glm5_turbo", "--reviewer", "glm5_3-off")
+	_, runErr := runModelsCmd(t, modelsUseCmd, "glm4_7_flash-off", "glm5_turbo", "--reviewer", "glm5_3-low")
 	require.NoError(t, runErr)
 
-	levels := []string{"off", "high", "max"}
+	levels := []string{"low", "high", "max"}
 	for i := 1; i < len(levels); i++ {
 		resetModelsBumpFlags(t)
 		_, runErr := runModelsCmd(t, modelsBumpCmd, "reviewer", "up")
@@ -114,7 +114,7 @@ func TestModelsBump_GLM53FullStepUp(t *testing.T) {
 }
 
 // TestModelsBump_GLM53FullStepDown is the symmetric downward walk, starting
-// from the top (max) and stepping down to off.
+// from the top (max) and stepping down to low.
 func TestModelsBump_GLM53FullStepDown(t *testing.T) {
 	globalPath := setupBumpEnv(t)
 
@@ -122,7 +122,7 @@ func TestModelsBump_GLM53FullStepDown(t *testing.T) {
 	_, runErr := runModelsCmd(t, modelsUseCmd, "glm4_7_flash-on", "glm5_turbo", "--reviewer", "glm5_3-max")
 	require.NoError(t, runErr)
 
-	levels := []string{"off", "high", "max"}
+	levels := []string{"low", "high", "max"}
 	for i := len(levels) - 2; i >= 0; i-- {
 		resetModelsBumpFlags(t)
 		_, runErr := runModelsCmd(t, modelsBumpCmd, "reviewer", "down")
@@ -143,7 +143,7 @@ func TestModelsBump_GLM53FullStepDown(t *testing.T) {
 	resetModelsStateFlags(t)
 	state, runErr := runModelsCmd(t, modelsStateCmd)
 	require.NoError(t, runErr)
-	assert.Contains(t, state, "atom: glm5_3-off")
+	assert.Contains(t, state, "atom: glm5_3-low")
 }
 
 // TestModelsBump_TopBoundary_UpIsInformationalNotError confirms that
@@ -170,12 +170,12 @@ func TestModelsBump_TopBoundary_UpIsInformationalNotError(t *testing.T) {
 
 // TestModelsBump_BottomBoundary_DownIsInformationalNotError is the symmetric
 // bottom-boundary case: stepping "down" while already at the lowest defined
-// level ("off").
+// level ("low").
 func TestModelsBump_BottomBoundary_DownIsInformationalNotError(t *testing.T) {
 	setupBumpEnv(t)
 
 	resetModelsUseFlags(t)
-	_, runErr := runModelsCmd(t, modelsUseCmd, "glm4_7_flash-off", "glm5_turbo", "--reviewer", "glm5_3-off")
+	_, runErr := runModelsCmd(t, modelsUseCmd, "glm4_7_flash-off", "glm5_turbo", "--reviewer", "glm5_3-low")
 	require.NoError(t, runErr)
 
 	resetModelsBumpFlags(t)
@@ -185,7 +185,7 @@ func TestModelsBump_BottomBoundary_DownIsInformationalNotError(t *testing.T) {
 	resetModelsStateFlags(t)
 	state, runErr := runModelsCmd(t, modelsStateCmd)
 	require.NoError(t, runErr)
-	assert.Contains(t, state, "atom: glm5_3-off")
+	assert.Contains(t, state, "atom: glm5_3-low")
 }
 
 // TestModelsBump_UnsetEffort_UpLandsOnLowestLevel confirms the chosen
@@ -208,12 +208,12 @@ func TestModelsBump_UnsetEffort_UpLandsOnLowestLevel(t *testing.T) {
 
 	data, err := os.ReadFile(globalPath)
 	require.NoError(t, err)
-	assert.Contains(t, string(data), `"off"`, "up from unset must land on the lowest level (off), got: %s", data)
+	assert.Contains(t, string(data), `"low"`, "up from unset must land on the lowest level (low), got: %s", data)
 
 	resetModelsStateFlags(t)
 	state, runErr := runModelsCmd(t, modelsStateCmd)
 	require.NoError(t, runErr)
-	assert.Contains(t, state, "atom: glm5_3-off")
+	assert.Contains(t, state, "atom: glm5_3-low")
 }
 
 // TestModelsBump_UnsetEffort_DownReportsAlreadyLowest confirms the symmetric

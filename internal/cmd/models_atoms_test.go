@@ -17,24 +17,26 @@ func noopResolve(s string) (string, string, bool, error) {
 }
 
 // TestAtom_ZAIHasReasoningLevels verifies every Z.AI atom carries a real,
-// declared levels array (not just prose describing them) — the core of this
-// task. coordinator.go only ever sends one of THREE wire values for any
-// Z.AI model (thinking disabled, reasoning_effort="high", or "max"), so
-// glm5_3 gets exactly those three real states ("off","high","max") rather
-// than Z.AI's wider documented-but-unproduced 7-value reasoning_effort
-// enum, and every other Z.AI atom gets the boolean thinking-toggle-only
-// array. Also checks atom.Levels() surfaces each.
+// declared levels array (not just prose describing them). glm5_3 and
+// glm5_3_flash get exactly the three real states Z.AI's API actually
+// accepts for these two models — "low","high","max" (verified 2026-08-26;
+// disabling reasoning is rejected by the API for these two specifically,
+// unlike every older Z.AI model), and every other Z.AI atom gets the
+// boolean thinking-toggle-only array. Also checks atom.Levels() surfaces
+// each.
 func TestAtom_ZAIHasReasoningLevels(t *testing.T) {
-	a, ok := atomRegistry["glm5_3"]
-	require.True(t, ok)
-	assert.Equal(t, []string{"off", "high", "max"}, a.ReasoningLevels)
-	assert.Nil(t, a.EffortSource, "Z.AI atom glm5_3 must not use the CLI-shelling EffortSource")
-	assert.Equal(t, a.ReasoningLevels, a.Levels())
+	for _, key := range []string{"glm5_3", "glm5_3_flash"} {
+		a, ok := atomRegistry[key]
+		require.True(t, ok, "expected atom %q in registry", key)
+		assert.Equal(t, []string{"low", "high", "max"}, a.ReasoningLevels, "atom %q", key)
+		assert.Nil(t, a.EffortSource, "Z.AI atom %q must not use the CLI-shelling EffortSource", key)
+		assert.Equal(t, a.ReasoningLevels, a.Levels(), "atom %q .Levels()", key)
+	}
 
 	for _, key := range []string{"glm5_turbo", "glm4_7", "glm4_7_flash", "glm4_6", "glm4_6v"} {
 		a, ok := atomRegistry[key]
 		require.True(t, ok, "expected atom %q in registry", key)
-		assert.Equal(t, []string{"off", "on"}, a.ReasoningLevels, "atom %q — only GLM-5.3 has graduated effort per Z.AI docs", key)
+		assert.Equal(t, []string{"off", "on"}, a.ReasoningLevels, "atom %q — only GLM-5.3/5.3-Flash have graduated effort per Z.AI docs", key)
 		assert.Nil(t, a.EffortSource, "Z.AI atom %q must not use the CLI-shelling EffortSource", key)
 		assert.Equal(t, []string{"off", "on"}, a.Levels(), "atom %q .Levels()", key)
 	}
@@ -97,8 +99,9 @@ func TestParseAtom_ZAINoLevel(t *testing.T) {
 // model's effort.
 //
 // That contract has deliberately changed (task: give every atom a real
-// ReasoningLevels array). glm5_turbo (like every non-glm5_3 Z.AI atom) declares
-// {"off", "on"} — Z.AI's own docs only document a boolean thinking toggle
+// ReasoningLevels array). glm5_turbo (like every non-graduated Z.AI atom —
+// everything except glm5_3 and glm5_3_flash) declares {"off", "on"} — Z.AI's
+// own docs only document a boolean thinking toggle
 // for this model, not graduated reasoning_effort — and the long-form
 // "<atom>-<level>" suffix is validated against that array exactly like
 // Claude atoms are validated against EffortSource.Levels(). "low" is not one
@@ -140,20 +143,19 @@ func TestParseAtom_ZAI53AcceptsGraduatedLevel(t *testing.T) {
 	assert.Equal(t, "max", sm.ReasoningEffort)
 }
 
-// TestParseAtom_ZAI53RejectsWiderVendorVocabulary proves the deliberate,
-// stricter-than-before behavior this task introduces: "xhigh" (and
-// similarly none/minimal/low/medium) is part of Z.AI's own documented
-// reasoning_effort enum, but this fork's coordinator.go collapses all of
-// those to the same "high" wire value as an unset effort — so they are no
-// longer accepted as distinct glm5_3 levels. Only the three levels that
-// produce genuinely different wire behavior (off/high/max) are valid now.
+// TestParseAtom_ZAI53RejectsWiderVendorVocabulary proves glm5_3 only accepts
+// its own real, documented reasoning_effort enum (low/high/max) and rejects
+// both the wider Z.AI-documented vocabulary that this fork's coordinator
+// doesn't produce ("xhigh", "none", "minimal", "medium") AND the old
+// off/high/max shape from before the 2026-08-26 correction ("off" is no
+// longer valid for glm5_3 — the API rejects disabling reasoning for it).
 func TestParseAtom_ZAI53RejectsWiderVendorVocabulary(t *testing.T) {
-	for _, level := range []string{"xhigh", "none", "minimal", "low", "medium"} {
+	for _, level := range []string{"off", "xhigh", "none", "minimal", "medium"} {
 		t.Run(level, func(t *testing.T) {
 			_, err := parseAtom("glm5_3-" + level)
 			require.Error(t, err)
 			assert.Contains(t, strings.ToLower(err.Error()), "not a valid level")
-			assert.Contains(t, err.Error(), "off|high|max")
+			assert.Contains(t, err.Error(), "low|high|max")
 		})
 	}
 }

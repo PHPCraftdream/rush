@@ -21,20 +21,34 @@
 // Claude CLI: `claude --help` documents low|medium|high|xhigh|max.
 export const EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
 
-// z.ai GLM-5.x only exposes High / Max natively (see docs.z.ai/devpack/
-// latest-model and the MarkTechPost launch coverage). The chevron selector
-// cycles through just these two; the backend mirrors them onto the provider's
-// reasoning_effort field.
+// z.ai GLM-5.x (pre-5.3) only exposes High / Max natively (see docs.z.ai/
+// devpack/latest-model and the MarkTechPost launch coverage). The chevron
+// selector cycles through just these two; the backend mirrors them onto the
+// provider's reasoning_effort field.
 export const EFFORT_LEVELS_ZAI = ["high", "max"] as const;
 
-// Returns true for any GLM-5.x model regardless of which provider key it lives
-// under — users sometimes wire z.ai via a custom OpenAI-compat provider (id
-// "z-ai" / "zhipu" / etc.), so matching the model id is the robust signal. The
-// "[1m]" suffix variant (glm-5.2[1m]) is also covered. Older GLM-4.x families
-// fall through to the binary thinking on/off in the coordinator and don't get
-// the selector.
+// GLM-5.3 and GLM-5.3-Flash broke that pattern — reasoning can't be disabled
+// at all and the model instead exposes low/high/max. See the verification
+// and doc quotes on zai53ReasoningLevels in internal/cmd/models_atoms.go
+// (the backend counterpart this must stay in sync with).
+export const EFFORT_LEVELS_ZAI53 = ["low", "high", "max"] as const;
+
+// Returns true for GLM-5.3 / GLM-5.3-Flash specifically (not other GLM-5.x),
+// regardless of which provider key the model lives under. Matches the exact
+// id and the "[1m]"-suffixed context-window variant.
+export function isZAI53Model(_provider: string, model: string): boolean {
+  return /^glm-5\.3(-flash)?(\[|$)/i.test(model);
+}
+
+// Returns true for any OTHER GLM-5.x model regardless of which provider key
+// it lives under — users sometimes wire z.ai via a custom OpenAI-compat
+// provider (id "z-ai" / "zhipu" / etc.), so matching the model id is the
+// robust signal. The "[1m]" suffix variant (glm-5.2[1m]) is also covered.
+// Older GLM-4.x families fall through to the binary thinking on/off in the
+// coordinator and don't get the selector. Excludes GLM-5.3/5.3-Flash, which
+// have their own, larger vocabulary — see isZAI53Model above.
 export function isZAIReasoningModel(_provider: string, model: string): boolean {
-  return /^glm-5(\.|-|\[|$)/i.test(model);
+  return !isZAI53Model(_provider, model) && /^glm-5(\.|-|\[|$)/i.test(model);
 }
 
 // Returns true if the model is a CLI Claude model (supports reasoning_effort).
@@ -56,6 +70,7 @@ export function isCLIClaudeModel(provider: string, model: string): boolean {
 // per-model levels here is what this module exists to prevent; wire it through
 // from the backend spec when codex effort is exposed.
 export function effortLevelsFor(provider: string, model: string): readonly string[] | null {
+  if (isZAI53Model(provider, model)) return EFFORT_LEVELS_ZAI53;
   if (isZAIReasoningModel(provider, model)) return EFFORT_LEVELS_ZAI;
   if (isCLIClaudeModel(provider, model)) return EFFORT_LEVELS;
   return null;
@@ -68,10 +83,12 @@ export function supportsEffort(provider: string, model: string): boolean {
 }
 
 // defaultEffortFor is the level to show when the session has none stored.
-// Claude CLI keeps the legacy "medium"; z.ai GLM-5.x defaults to "high"
-// (Max is opt-in for heavy work — the same wording z.ai uses).
+// Claude CLI keeps the legacy "medium"; every z.ai GLM-5.x model (including
+// the 5.3-tier's low/high/max vocabulary) defaults to "high" — the fork's
+// existing convention, not z.ai's own doc default of "max" for the 5.3 tier
+// (Max stays opt-in for heavy work).
 export function defaultEffortFor(provider: string, model: string): string {
-  return isZAIReasoningModel(provider, model) ? "high" : "medium";
+  return isZAI53Model(provider, model) || isZAIReasoningModel(provider, model) ? "high" : "medium";
 }
 
 // clampEffort maps a stored effort onto something this model accepts.

@@ -121,7 +121,7 @@ func TestValidateEffortForModel_NonAtomStillUnvalidated(t *testing.T) {
 // counterpart to TestModelsUse_RawZAIEffort_TypoNowFailsCleanly above: same
 // fact, asserted without going through the full CLI/config-write path.
 // Uses glm-4.7-flash (boolean off/on levels — see zaiBooleanThinkingLevels)
-// rather than glm-5.3, whose graduated 8-value set is covered separately by
+// rather than glm-5.3, whose graduated 3-value set is covered separately by
 // TestValidateEffortForModel_GLM53AcceptsGraduatedLevel below.
 func TestValidateEffortForModel_KnownAtomRejectsTypo(t *testing.T) {
 	err := validateEffortForModel("zai", "glm-4.7-flash", "hgih")
@@ -143,25 +143,31 @@ func TestValidateEffortForModel_KnownAtomAcceptsRealLevel(t *testing.T) {
 
 // TestValidateEffortForModel_GLM53AcceptsGraduatedLevel confirms GLM-5.3
 // specifically validates against its OWN, larger vocabulary (3 real wire
-// states: off/high/max — one more than every other Z.AI atom's off/on).
-// A wider Z.AI-documented value like "xhigh" is deliberately NOT accepted:
-// this fork's coordinator.go collapses it to the same "max" wire value as
-// an explicit "max", so it isn't a meaningful, distinct level to expose.
-// See the comment on zaiReasoningLevels in models_atoms.go.
+// states: low/high/max — one more than every other Z.AI atom's off/on).
+// VERIFIED 2026-08-26: GLM-5.3 (and GLM-5.3-Flash) reject disabling
+// reasoning entirely, so "off" is deliberately NOT in this vocabulary
+// anymore (it used to be, before that correction). A wider Z.AI-documented
+// value like "xhigh" is also deliberately NOT accepted: this fork's
+// coordinator.go collapses it to the same "max" wire value as an explicit
+// "max", so it isn't a meaningful, distinct level to expose. See the
+// comment on zai53ReasoningLevels in models_atoms.go.
 func TestValidateEffortForModel_GLM53AcceptsGraduatedLevel(t *testing.T) {
-	for _, level := range []string{"off", "high", "max"} {
+	for _, level := range []string{"low", "high", "max"} {
 		assert.NoError(t, validateEffortForModel("zai", "glm-5.3", level), "level %q", level)
 	}
-	// "on" is a glm4_7_flash-style boolean value, not part of glm-5.3's
-	// vocabulary — must still be rejected for glm-5.3.
-	err := validateEffortForModel("zai", "glm-5.3", "on")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "not a valid effort level")
+	// "off" is no longer part of glm-5.3's vocabulary — the API rejects
+	// disabling reasoning for this model. "on" is a glm4_7_flash-style
+	// boolean value, never part of glm-5.3's vocabulary at all.
+	for _, level := range []string{"off", "on"} {
+		err := validateEffortForModel("zai", "glm-5.3", level)
+		require.Error(t, err, "level %q", level)
+		assert.Contains(t, err.Error(), "not a valid effort level")
+	}
 
 	// "xhigh" is part of Z.AI's own documented reasoning_effort enum but
 	// collapses to "max" on the wire — no longer accepted as a distinct
 	// glm5_3 level (deliberately stricter than before this task).
-	err = validateEffortForModel("zai", "glm-5.3", "xhigh")
+	err := validateEffortForModel("zai", "glm-5.3", "xhigh")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not a valid effort level")
 }

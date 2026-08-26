@@ -144,6 +144,74 @@ func TestGetProviderOptionsZAIReasoningDefault(t *testing.T) {
 	})
 }
 
+// TestGetProviderOptionsZAI53ReasoningLevels pins the GLM-5.3/5.3-Flash
+// branch of the ZAI mapping — see zai53ReasoningLevels' comment in
+// internal/cmd/models_atoms.go for the verification this must stay in sync
+// with. Full input-mapping matrix runs against glm-5.3; glm-5.3-flash gets
+// two spot checks (below) confirming it shares the same branch, not a
+// duplicate full matrix.
+func TestGetProviderOptionsZAI53ReasoningLevels(t *testing.T) {
+	newModel := func(modelID, effort string) Model {
+		return Model{
+			CatwalkCfg: catwalk.Model{
+				ID:              modelID,
+				CanReason:       true,
+				ReasoningLevels: []string{"low", "high", "max"},
+			},
+			ModelCfg: config.SelectedModel{
+				Provider:        "zai",
+				Model:           modelID,
+				ReasoningEffort: effort,
+			},
+		}
+	}
+	providerCfg := config.ProviderConfig{ID: string(catwalk.InferenceProviderZAI), Type: openaicompat.Name}
+
+	extraBodyFor := func(t *testing.T, modelID, effort string) map[string]any {
+		t.Helper()
+		opts := getProviderOptions("test-session", newModel(modelID, effort), providerCfg)
+		raw, ok := opts[openaicompat.Name]
+		require.True(t, ok)
+		parsed, ok := raw.(*openaicompat.ProviderOptions)
+		require.True(t, ok)
+		return parsed.ExtraBody
+	}
+	assertMapping := func(t *testing.T, modelID, effort, wantEffort string) {
+		t.Helper()
+		eb := extraBodyFor(t, modelID, effort)
+		thinking, ok := eb["thinking"].(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, "enabled", thinking["type"], "thinking must always be enabled for %s — disabling is rejected by the API", modelID)
+		assert.Equal(t, wantEffort, eb["reasoning_effort"])
+	}
+
+	t.Run("glm-5.3", func(t *testing.T) {
+		cases := []struct {
+			effort     string
+			wantEffort string
+			desc       string
+		}{
+			{"", "high", "unset defaults to high (fork convention, not z.ai's own max default)"},
+			{"low", "low", "low maps to low"},
+			{"high", "high", "high maps to high"},
+			{"xhigh", "max", "xhigh maps to max"},
+			{"max", "max", "max maps to max"},
+			{"ultracode", "max", "ultracode maps to max"},
+			{"off", "low", "off degrades to low — can't truly disable, closest available"},
+		}
+		for _, tc := range cases {
+			t.Run(tc.desc, func(t *testing.T) {
+				assertMapping(t, "glm-5.3", tc.effort, tc.wantEffort)
+			})
+		}
+	})
+
+	t.Run("glm-5.3-flash shares the same branch", func(t *testing.T) {
+		assertMapping(t, "glm-5.3-flash", "low", "low")
+		assertMapping(t, "glm-5.3-flash", "off", "low")
+	})
+}
+
 // DeepSeek must keep the fork's ORIGINAL default: an unset ReasoningEffort
 // leaves thinking OFF. The ZAI-only "unset → thinking on at high" default
 // (added in 28ec4145) deliberately does not apply to DeepSeek — this test

@@ -26,14 +26,14 @@ import (
 // semantics in prose, for `rush models efforts` output.
 //
 // SYNC WARNING: this is a human-readable restatement of the effort-mapping
-// logic in internal/agent/coordinator.go's getProviderOptions (the
+// logic in internal/agent/coordinator_providers.go's getProviderOptions (the
 // `case openaicompat.Name, hyper.Name:` switch on providerCfg.ID, plus the
 // anthropic/bedrock and openai/azure branches). It is NOT derived from that
 // switch — Go has no reflection-friendly way to turn "which case of a
 // string switch fired" into documentation text. If you change the mapping
-// in coordinator.go, you MUST update the matching entry here, or this
-// command will lie to users. coordinator.go has a matching "SYNC WARNING"
-// comment pointing back at this file.
+// in coordinator_providers.go, you MUST update the matching entry here, or
+// this command will lie to users. coordinator_providers.go has a matching
+// "SYNC WARNING" comment pointing back at this file.
 type providerEffortDoc struct {
 	// Key matches catwalk.InferenceProvider values (zai, deepseek, ionet,
 	// alibaba-singapore, hyper) or "anthropic-cli" for the local-cli/Claude
@@ -57,22 +57,33 @@ var providerEffortDocs = []providerEffortDoc{
 	},
 	{
 		Key:   string(catwalk.InferenceProviderZAI),
-		Title: "Z.AI (all GLM models, e.g. glm5_3, glm5_turbo, glm4_7)",
+		Title: "Z.AI (GLM models, e.g. glm5_3, glm5_turbo, glm4_7 — not all identical, see below)",
 		Body: []string{
-			"Every Z.AI model sends the same wire values, collapsed to three",
-			"real states:",
+			"Most Z.AI models (glm5_turbo, glm4_7, glm4_7_flash, glm4_6,",
+			"glm4_6v, and any older/raw zai/<model> not listed below) send the",
+			"same wire values, collapsed to three real states:",
 			"  off                          -> thinking disabled",
 			"  unset, low, medium, high     -> reasoning_effort: \"high\"",
 			"  xhigh, max, ultracode        -> reasoning_effort: \"max\"",
 			"Older GLM-4.x models ignore reasoning_effort harmlessly.",
 			"",
-			"GLM-5.3 (glm5_3) is the only Z.AI atom with 3 real states",
-			"(off/high/max — one more than the rest). Every other Z.AI atom",
-			"(glm5_turbo, glm4_7, glm4_7_flash, glm4_6, glm4_6v) has 2 (off/on,",
-			"a boolean thinking toggle). No letter short codes exist for Z.AI",
-			"(no `glm5_3xx`) — set with the long-form atom suffix",
-			"(`glm5_3-max`) or raw `zai/<model>@<level>` (`zai/glm-5.3@max`);",
-			"both are validated against the atom's list.",
+			"GLM-5.3 and GLM-5.3-Flash (glm5_3, glm5_3_flash) are the",
+			"exception: as of these models, Z.AI removed the ability to",
+			"disable reasoning at all — thinking is always enabled.",
+			"reasoning_effort instead takes exactly three real values:",
+			"  off                          -> reasoning_effort: \"low\" (closest available; can't truly disable)",
+			"  low                          -> reasoning_effort: \"low\"",
+			"  unset, high                  -> reasoning_effort: \"high\"",
+			"  xhigh, max, ultracode        -> reasoning_effort: \"max\"",
+			"",
+			"glm5_3/glm5_3_flash are the only Z.AI atoms with 3 real states",
+			"(a DIFFERENT 3 than GLM-5.2 used to have — low/high/max, not",
+			"off/high/max). Every other Z.AI atom (glm5_turbo, glm4_7,",
+			"glm4_7_flash, glm4_6, glm4_6v) has 2 (off/on, a boolean thinking",
+			"toggle). No letter short codes exist for Z.AI (no `glm5_3xx`) —",
+			"set with the long-form atom suffix (`glm5_3-max`) or raw",
+			"`zai/<model>@<level>` (`zai/glm-5.3@max`); both are validated",
+			"against the atom's list.",
 		},
 	},
 	{
@@ -375,25 +386,23 @@ func renderEffortsForModel(arg string) (string, error) {
 	switch providerDocKeyFor(target.Provider) {
 	case string(catwalk.InferenceProviderZAI):
 		// SYNC WARNING: which levels apply to which Z.AI model restates
-		// zaiReasoningLevels / zaiBooleanThinkingLevels in models_atoms.go
-		// (themselves paired, via their own SYNC WARNING, with the
-		// coordinator.go switch this whole doc restates). Render straight
-		// from the resolved atom's real array instead of a hardcoded copy.
-		// For a raw, non-atom zai/<model> the registry doesn't know, fall
-		// back to zaiReasoningLevels (glm5_3's 3-state array) as the most
-		// generically useful default — a documentation aid, not a
-		// validation source (validateEffortForModel only validates known
-		// atoms).
+		// zaiReasoningLevels / zai53ReasoningLevels / zaiBooleanThinkingLevels
+		// in models_atoms.go (themselves paired, via their own SYNC WARNING,
+		// with the coordinator_providers.go switch this whole doc restates).
+		// Render straight from the resolved atom's real array instead of a
+		// hardcoded copy. For a raw, non-atom zai/<model> the registry
+		// doesn't know, fall back to zaiReasoningLevels (off/high/max — the
+		// shape most non-5.3-tier Z.AI models share) as the most generically
+		// useful default — a documentation aid, not a validation source
+		// (validateEffortForModel only validates known atoms).
 		levels := zaiReasoningLevels
 		if a, ok := atomRegistry[target.AtomKey]; ok && a.ReasoningLevels != nil {
 			levels = a.ReasoningLevels
 		}
-		// 3-state (off/high/max) vs boolean (off/on) is determined by which
-		// levels array the atom actually resolved to above, not a hardcoded
-		// atom-key check — GLM-5.3 was added on the same zaiReasoningLevels
-		// array as GLM-5.2 (task #448), so a name-based check here would
-		// have silently shown the wrong (boolean-only) message for it.
-		if len(levels) == len(zaiReasoningLevels) {
+		// 3-state vs boolean (off/on) by array length, not a hardcoded
+		// atom-key check — works for any Z.AI atom with a real 3-state
+		// array (zaiReasoningLevels or zai53ReasoningLevels alike).
+		if len(levels) > 2 {
 			b.WriteString("  This Z.AI atom has 3 real states (most Z.AI models only have 2):\n")
 		} else {
 			b.WriteString("  This Z.AI model only exposes the boolean thinking toggle:\n")

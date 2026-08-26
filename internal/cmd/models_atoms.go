@@ -45,16 +45,22 @@ func (a atom) Levels() []string {
 
 // zaiReasoningLevels is GLM-5.2's effort-levels array. Z.AI's API docs
 // (docs.z.ai/api-reference/llm/chat-completion) document a 7-value
-// reasoning_effort enum for GLM-5.2, but this fork's coordinator.go (the
-// `case string(catwalk.InferenceProviderZAI):` branch of getProviderOptions,
-// ~line 1140) only ever sends one of THREE wire values for any Z.AI model:
-// thinking disabled, reasoning_effort="high", or reasoning_effort="max".
+// reasoning_effort enum for GLM-5.2, but this fork's coordinator_providers.go
+// (the `case string(catwalk.InferenceProviderZAI):` branch of
+// getProviderOptions) only ever sends one of THREE wire values for any
+// pre-5.3 Z.AI model: thinking disabled, reasoning_effort="high", or
+// reasoning_effort="max".
 // This array is deliberately restricted to those three real, distinct
 // outcomes ("off", "high", "max") rather than the wider vendor-documented
 // vocabulary — a level this fork can't actually produce on the wire isn't a
-// meaningful thing to let a user select. GLM-5.2 still has one more real
-// state than the other Z.AI atoms (zaiBooleanThinkingLevels' off/on): "max"
-// as a distinct target from "high".
+// meaningful thing to let a user select.
+//
+// No atom currently uses this array (GLM-5.2 was dropped as an atom on
+// 2026-08-18 — raw `zai/glm-5.2` still works). It remains as the doc/fallback
+// shape for that and any other older, not-yet-promoted raw Z.AI model.
+// GLM-5.3 and GLM-5.3-Flash moved to zai53ReasoningLevels below, which has a
+// different, incompatible third state ("low" instead of "off" — see that
+// var's comment for why).
 //
 // SYNC WARNING: kept in sync with coordinator.go's switch and with
 // providerEffortDocs in models_efforts.go — all three must describe the
@@ -62,8 +68,38 @@ func (a atom) Levels() []string {
 // both of the other two.
 var zaiReasoningLevels = []string{"off", "high", "max"}
 
+// zai53ReasoningLevels is GLM-5.3 and GLM-5.3-Flash's real effort-levels
+// array. VERIFIED 2026-08-26 against docs.z.ai/guides/llm/glm-5.3 and
+// docs.z.ai/api-reference/llm/chat-completion: starting with GLM-5.3, Z.AI
+// removed the ability to disable reasoning at all —
+//
+//	"GLM-5.3 always operates with reasoning enabled... Disabling reasoning
+//	is no longer supported. If your application currently uses
+//	thinking.type: 'disabled', please change it to 'enabled'."
+//
+// — and the restriction is identical for GLM-5.3-Flash per the same
+// api-reference page ("GLM-5.3 GLM-5.3-FLASH can only be enabled"). Both
+// models instead expose exactly three reasoning_effort values: "low"
+// (Lightweight Reasoning), "high" (Enhanced Reasoning), "max" (Deep
+// Reasoning, the documented default). This is a real UI-visible fact, not
+// just a docs footnote — Z.AI's own coding-tool model selector for
+// GLM-5.3-Flash literally offers Low/High/Max as the reasoning-effort
+// choices, no off/on toggle at all.
+//
+// This replaces an earlier incorrect guess: GLM-5.3-Flash used to carry
+// zaiBooleanThinkingLevels (off/on) on the unverified assumption it followed
+// the "flash" convention of other GLM atoms; that guess was wrong for this
+// specific model family.
+//
+// SYNC WARNING: kept in sync with coordinator_providers.go's Z.AI switch
+// (the GLM-5.3-tier branch) and providerEffortDocs in models_efforts.go —
+// all three must describe the same three wire states for these two models.
+var zai53ReasoningLevels = []string{"low", "high", "max"}
+
 // zaiBooleanThinkingLevels is the levels array for every Z.AI (GLM) atom
-// OTHER than the 5.2-tier ones. Per Z.AI's docs, these models only expose the boolean
+// OTHER than the 5.3-tier ones (GLM-5.3, GLM-5.3-Flash — see
+// zai53ReasoningLevels) and the older, no-longer-an-atom GLM-5.2 (see
+// zaiReasoningLevels). Per Z.AI's docs, these models only expose the boolean
 // `thinking: {"type": "enabled"|"disabled"}` toggle — there is no graduated
 // `reasoning_effort` support documented for them at all. "off"/"on" here
 // stand in for that boolean, not for genuine effort gradations; validating
@@ -108,25 +144,19 @@ var atomRegistry = map[string]atom{
 	// glm5_turbo. The raw `zai/glm-5.2` syntax still works for anyone who
 	// needs a removed one; only the short code is gone.
 	//
-	// glm5_3 gets zaiReasoningLevels (off/high/max); glm5_turbo below gets
-	// zaiBooleanThinkingLevels (off/on toggle) instead — coordinator.go
-	// sends the same reasoning_effort wire value to every Z.AI model
-	// uniformly, but Z.AI documents only the 5.2-tier models as acting on
-	// it. See the SYNC WARNING on zaiReasoningLevels.
+	// glm5_3 gets zai53ReasoningLevels (low/high/max, no off — see that var's
+	// comment); glm5_turbo below gets zaiBooleanThinkingLevels (off/on
+	// toggle) instead. glm5_3/glm5_3_flash are the only current Z.AI atoms
+	// where the API itself rejects disabling reasoning.
 	//
 	// PARTIALLY VERIFIED (2026-08-14): `rush ping --model zai/glm-5.3`
 	// confirms the model id "glm-5.3" is real and reachable — a live call
-	// succeeded (32 in / 48 out tokens, ~1.9s latency). GLM-5.3 is still
-	// not documented on docs.z.ai (only GLM-5, GLM-5.2 exist there as of
-	// this date; docs.z.ai/guides/llm/glm-5.3 404s), so CtxLabel "1M" and
-	// ReasoningLevels remain COPIED FROM GLM-5.2 on the assumption a .3
-	// point release keeps the same capability tier as .2 rather than
-	// reverting to the 200k/boolean-only tier of 5/5.1/5-turbo — the
-	// ping proves connectivity/basic function, not context window size or
-	// which reasoning_effort values it actually honors. Update this
-	// entry/comment with the real numbers once docs.z.ai publishes them,
-	// the same way the 204.8k/131.1k guesses above this were corrected.
-	"glm5_3":     {Provider: "zai", Model: "glm-5.3", DisplayName: "GLM 5.3", CtxLabel: "1M", Group: "zai", ReasoningLevels: zaiReasoningLevels},
+	// succeeded (32 in / 48 out tokens, ~1.9s latency). CtxLabel "1M" is
+	// COPIED FROM GLM-5.2 on the assumption a .3 point release keeps the
+	// same context-window tier; not independently re-verified for 5.3 the
+	// way it later was for 5.3-flash below. ReasoningLevels (low/high/max,
+	// no off) IS independently verified — see zai53ReasoningLevels' comment.
+	"glm5_3":     {Provider: "zai", Model: "glm-5.3", DisplayName: "GLM 5.3", CtxLabel: "1M", Group: "zai", ReasoningLevels: zai53ReasoningLevels},
 	"glm5_turbo": {Provider: "zai", Model: "glm-5-turbo", DisplayName: "GLM 5 turbo", CtxLabel: "200k", Group: "zai", ReasoningLevels: zaiBooleanThinkingLevels},
 	// VERIFIED (2026-08-26): `rush ping --model zai/glm-5.3-flash` succeeded
 	// (32 in / 97 out tokens, ~5.3s latency) — the model id is real and
@@ -138,13 +168,12 @@ var atomRegistry = map[string]atom{
 	// first-party and inference-provider source and is treated as their
 	// error, not ours. Z.ai's announcement also describes it as "natively
 	// multimodal" (320B-A18B MoE, MIT license) — hence Vision: true.
-	// ReasoningLevels remains an UNVERIFIED guess: follows the "flash"
-	// convention used elsewhere in this table (glm4_7_flash:
-	// zaiBooleanThinkingLevels, not the fuller zaiReasoningLevels glm5_3
-	// itself gets) rather than assuming it inherits glm5_3's tier — update
-	// once z.ai's text-generation guide (as opposed to the vlm/ page found
-	// so far) documents reasoning_effort behavior for this model.
-	"glm5_3_flash": {Provider: "zai", Model: "glm-5.3-flash", DisplayName: "GLM 5.3 flash", CtxLabel: "1M", Group: "zai", Vision: true, ReasoningLevels: zaiBooleanThinkingLevels},
+	// ReasoningLevels: VERIFIED 2026-08-26 (corrected from an earlier
+	// unverified "flash follows the boolean-toggle convention" guess) — per
+	// docs.z.ai/guides/llm/glm-5.3-flash and the api-reference page, GLM-5.3
+	// and GLM-5.3-Flash share the identical low/high/max restriction, no
+	// off. See zai53ReasoningLevels' comment for the exact quotes.
+	"glm5_3_flash": {Provider: "zai", Model: "glm-5.3-flash", DisplayName: "GLM 5.3 flash", CtxLabel: "1M", Group: "zai", Vision: true, ReasoningLevels: zai53ReasoningLevels},
 	// GLM-4.7-FlashX is deliberately NOT an atom. Its model id
 	// ("glm-4.7-flashx") is real — verified by pinging it directly: it
 	// returned "Insufficient balance or no resource package" (an

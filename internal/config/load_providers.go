@@ -559,6 +559,49 @@ func (c *Config) defaultModelSelection(knownProviders []catwalk.Provider) (smart
 	return smartModel, fastModel, err
 }
 
+// unverifiedPassthroughModel returns minimal stand-in metadata for a model
+// that isn't in its provider's cached catalog but whose provider IS a real,
+// enabled entry in this config — or nil when even the provider is unknown,
+// which is the only case that still warrants falling back to a default.
+//
+// This closes the load-side half of the "accept an unverified provider/model"
+// behavior added on 2026-08-26. `rush models use zai/<brand-new-model>`
+// (internal/app/provider.go's findModels/ResolveModel) deliberately accepts
+// and persists such a selection with a warning, but configureSelectedModels
+// used to overwrite it on the very next config load: any command that loads
+// config — including read-only ones like `rush models state` — replaced the
+// user's choice with the provider's DefaultLargeModelID AND persisted that
+// replacement to the GLOBAL scope. A model can be live at the provider well
+// before it appears in catwalk or a locally cached catalog, so "not in the
+// catalog" is not evidence the selection is wrong.
+//
+// Every zero-value field here means "unknown, don't assume" and is already
+// treated that way downstream (e.g. agent_turn.go gates context-window
+// budgeting behind `if cw > 0`), matching the same synthesized-model approach
+// coordinator_models.go's buildModelsFromCfg uses for this exact case.
+//
+// Callers must only invoke this when the CALLER'S OWN configured selection
+// (not a value inherited from defaultModelSelection's merge) explicitly
+// named both provider and model — configureSelectedModels' two call sites
+// gate on smartModelSelected/fastModelSelected's raw fields for exactly this
+// reason. Without that gate, a partial hand-edited selection (e.g. only
+// `{"provider": "zai"}`, model left empty) would pair the chosen provider
+// with whatever model defaultModelSelection happened to pick for a
+// DIFFERENT provider, silently keeping a nonsensical combination alive
+// instead of self-healing to a working default the way it used to.
+func unverifiedPassthroughModel(c *Config, sel SelectedModel) *catwalk.Model {
+	if sel.Provider == "" || sel.Model == "" {
+		return nil
+	}
+	p, ok := c.Providers.Get(sel.Provider)
+	if !ok || p.Disable {
+		return nil
+	}
+	slog.Debug("Using unverified model selection not found in provider's cached catalog",
+		"provider", sel.Provider, "model", sel.Model)
+	return &catwalk.Model{ID: sel.Model, Name: sel.Model}
+}
+
 // configureSelectedModels computes the effective smart/fast model
 // selection for cfg and writes the result back into cfg.Models. store is
 // only consulted when persist is true (the initial Load path), to persist
@@ -584,6 +627,9 @@ func configureSelectedModels(store *ConfigStore, cfg *Config, knownProviders []c
 			smart.Provider = smartModelSelected.Provider
 		}
 		model := c.GetModel(smart.Provider, smart.Model)
+		if model == nil && smartModelSelected.Provider != "" && smartModelSelected.Model != "" {
+			model = unverifiedPassthroughModel(c, smart)
+		}
 		if model == nil {
 			smart = defaultSmart
 			if persist {
@@ -633,6 +679,9 @@ func configureSelectedModels(store *ConfigStore, cfg *Config, knownProviders []c
 		}
 
 		model := c.GetModel(fast.Provider, fast.Model)
+		if model == nil && fastModelSelected.Provider != "" && fastModelSelected.Model != "" {
+			model = unverifiedPassthroughModel(c, fast)
+		}
 		if model == nil {
 			fast = defaultFast
 			if persist {

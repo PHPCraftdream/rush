@@ -55,16 +55,20 @@ func TestRenderEffortsForModel_ZAI(t *testing.T) {
 
 	assert.Contains(t, out, "GLM 5.3")
 	assert.Contains(t, out, "zai/glm-5.3")
+	// The generic Z.AI provider doc (shown for every Z.AI model, including
+	// glm5_3) still describes the shape most OTHER Z.AI models share.
 	assert.Contains(t, out, `unset, low, medium, high     -> reasoning_effort: "high"`)
 	assert.Contains(t, out, "xhigh, max, ultracode        -> reasoning_effort: \"max\"")
 
 	// Must show the raw @effort command form, not a letter short code (none exist).
 	assert.Contains(t, out, "rush models use zai/glm-5.3@<level> <fast>")
-	assert.Contains(t, out, "rush models use zai/glm-5.3@off <fast>")
+	// glm5_3's own resolved levels are low/high/max (verified 2026-08-26 —
+	// the API rejects disabling reasoning for this model) — "off" is no
+	// longer one of its settable rows.
+	assert.Contains(t, out, "rush models use zai/glm-5.3@low <fast>")
 	assert.Contains(t, out, "rush models use zai/glm-5.3@max <fast>")
-	// "high" is glm5_3's third real state — must be rendered too, and no
-	// wider vendor-only vocabulary (e.g. "xhigh") should appear as a settable row.
 	assert.Contains(t, out, "rush models use zai/glm-5.3@high <fast>")
+	assert.NotContains(t, out, "rush models use zai/glm-5.3@off <fast>")
 	assert.NotContains(t, out, "rush models use zai/glm-5.3@xhigh <fast>")
 
 	// New behavior for this task: the long-form atom suffix (validated,
@@ -77,7 +81,7 @@ func TestRenderEffortsForModel_ZAI(t *testing.T) {
 }
 
 // TestRenderEffortsForModel_ZAI_LevelsFromRealArray proves the rendered
-// levels for a Z.AI atom come from the real zaiReasoningLevels array (used
+// levels for a Z.AI atom come from the real ReasoningLevels array (used
 // for validation), not merely restated as prose that could drift from it.
 func TestRenderEffortsForModel_ZAI_LevelsFromRealArray(t *testing.T) {
 	out, err := renderEffortsForModel("glm5_3")

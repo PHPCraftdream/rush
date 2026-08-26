@@ -13,12 +13,7 @@ import {
   clearSessionModelSlot,
 } from "../store";
 import type { ConfigPayload, Session } from "../types";
-import {
-  EFFORT_LEVELS,
-  EFFORT_LEVELS_ZAI,
-  isZAIReasoningModel,
-  isCLIClaudeModel,
-} from "../effort";
+import { effortLevelsFor, defaultEffortFor, supportsEffort, clampEffort } from "../effort";
 
 // Effort levels in cycle order: left arrow decrements, right arrow increments
 // Effort tiers and the model-capability rules now live in ../effort so the
@@ -150,24 +145,31 @@ export function ModelSelector({ session, modelType }: { session: Session | null;
   // Get current reasoning effort (default to "medium" if not set)
   const currentProvider = currentEntry?.providerID ?? "";
   const currentModelID = currentEntry?.modelID ?? "";
-  const isCLIClaudeModelFlag = isCLIClaudeModel(currentProvider, currentModelID);
-  const isZAIReasoningFlag = isZAIReasoningModel(currentProvider, currentModelID);
-  const effortLevels: readonly string[] = isZAIReasoningFlag ? EFFORT_LEVELS_ZAI : EFFORT_LEVELS;
-  // Default: Claude CLI keeps the legacy "medium"; z.ai GLM-5.x defaults
-  // to "high" (Max is opt-in for heavy work — same wording z.ai uses).
-  let storedEffort = isZAIReasoningFlag ? "high" : "medium";
+  // Delegates to ../effort so this selector can't drift from the
+  // Default-models modal's model-capability rules (see that module's header
+  // comment on why a second hand-written copy of these rules is a bug
+  // magnet — GLM-5.3/5.3-Flash's low/high/max vocabulary vs. other GLM-5.x's
+  // high/max-only would otherwise need to be kept in sync by hand here too).
+  const effortLevels: readonly string[] = effortLevelsFor(currentProvider, currentModelID) ?? [];
+  let storedEffort = defaultEffortFor(currentProvider, currentModelID);
   if (session) {
     const effort = modelType === "smart" ? session.SmartModelReasoningEffort : session.FastModelReasoningEffort;
     if (effort) storedEffort = effort;
   }
-  const showEffortPicker = isCLIClaudeModelFlag || isZAIReasoningFlag;
-  // Clamp the displayed effort to what THIS model actually supports. Without
-  // this, switching Claude→GLM on a session that stored "medium" leaves the
-  // badge showing M (which GLM does not understand) until the user clicks an
-  // arrow. The useEffect below persists the clamp back to the session so the
-  // backend never sees an unsupported value either.
-  const effortValid = effortLevels.includes(storedEffort);
-  const currentEffort = effortValid ? storedEffort : effortLevels[0];
+  const showEffortPicker = supportsEffort(currentProvider, currentModelID);
+  // Clamp the displayed effort to what THIS model actually supports, via the
+  // same clampEffort ScopedModelsModal.tsx uses — NOT effortLevels[0], which
+  // used to disagree with clampEffort's "fall back to defaultEffortFor"
+  // semantics whenever a level array's first entry differs from the model's
+  // default (exposed by GLM-5.3/5.3-Flash: levels[0] is "low", but the
+  // default is "high"). Without this, switching Claude→GLM on a session that
+  // stored "medium" leaves the badge showing M (which GLM does not
+  // understand) until the user clicks an arrow. The useEffect below persists
+  // the clamp back to the session so the backend never sees an unsupported
+  // value either.
+  const clampedEffort = clampEffort(currentProvider, currentModelID, storedEffort);
+  const effortValid = clampedEffort === storedEffort;
+  const currentEffort = clampedEffort ?? storedEffort;
 
   useEffect(() => {
     if (!session || !showEffortPicker) return;

@@ -116,8 +116,9 @@ function EffortPicker({
   if (levels === null) return null;
 
   // Show the level that would actually be used, not a stale one this model
-  // cannot accept (e.g. "medium" carried over from Claude onto a GLM-5 slot,
-  // which only exposes high/max).
+  // cannot accept (e.g. "medium" carried over from Claude onto a GLM-5 slot
+  // — most GLM-5.x expose only high/max, but GLM-5.3/5.3-Flash expose
+  // low/high/max; see effort.ts's EFFORT_LEVELS_ZAI vs EFFORT_LEVELS_ZAI53).
   const current = clampEffort(provider, model, value) ?? levels[0];
 
   return (

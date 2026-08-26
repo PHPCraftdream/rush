@@ -60,6 +60,18 @@ var opencodeMessagesModels = map[string]bool{
 	"qwen3.7-max": true,
 }
 
+// zai53ModelIDs are the Z.AI model ids whose reasoning-effort contract
+// matches zai53ReasoningLevels in internal/cmd/models_atoms.go (low/high/max,
+// no off — see that var's comment for the verification). Registered here as
+// a map rather than inline `||` comparisons so a future sibling id is a
+// one-line addition; the `internal/cmd` atom registry can't be imported
+// directly (it doesn't export atomRegistry), so this list is the other half
+// of the three-way SYNC WARNING pairing this file already documents.
+var zai53ModelIDs = map[string]bool{
+	"glm-5.3":       true,
+	"glm-5.3-flash": true,
+}
+
 // effectiveReasoningEffort returns the reasoning effort to apply for provider calls.
 // It prefers the user-selected effort when valid, otherwise the model default when
 // valid, and finally falls back to the first configured reasoning level.
@@ -278,14 +290,40 @@ func getProviderOptions(sessionID string, model Model, providerCfg config.Provid
 				}
 			}
 		case string(catwalk.InferenceProviderZAI):
-			// GLM-5.x exposes two thinking-effort levels (high / max) and no
-			// "unset" state on z.ai's side — reasoning is either on at some
-			// level or off. Z.AI recommends max for hard coding/math tasks,
-			// so an unset effort defaults to thinking ON at "high" rather
-			// than silently disabling reasoning. Explicitly opt out with
-			// ReasoningEffort == "off" (e.g. `rush models use
-			// zai/glm-5.2@off <fast>` — the raw provider/model@effort
-			// syntax accepts any suffix, unvalidated against ReasoningLevels).
+			effort := strings.ToLower(model.ModelCfg.ReasoningEffort)
+			modelID := strings.ToLower(model.ModelCfg.Model)
+			if zai53ModelIDs[modelID] {
+				// GLM-5.3/5.3-Flash can't disable reasoning at all (unlike
+				// every model in the branch below) and take low/high/max
+				// instead of off/high/max — see zai53ReasoningLevels' comment
+				// in models_atoms.go for the verification and SYNC WARNING.
+				// "off" (raw-syntax only, rejected by `rush models use` for
+				// these two atoms) degrades to "low"; unset stays "high" per
+				// this fork's existing convention, not the doc's own "max".
+				extraBody["thinking"] = map[string]any{
+					"type": "enabled",
+				}
+				switch effort {
+				case "off", "low":
+					extraBody["reasoning_effort"] = "low"
+				case "high":
+					extraBody["reasoning_effort"] = "high"
+				case "xhigh", "max", "ultracode":
+					extraBody["reasoning_effort"] = "max"
+				default:
+					extraBody["reasoning_effort"] = "high"
+				}
+				break
+			}
+			// GLM-5.x (pre-5.3) exposes two thinking-effort levels
+			// (high / max) and no "unset" state on z.ai's side — reasoning
+			// is either on at some level or off. Z.AI recommends max for
+			// hard coding/math tasks, so an unset effort defaults to
+			// thinking ON at "high" rather than silently disabling
+			// reasoning. Explicitly opt out with ReasoningEffort == "off"
+			// (e.g. `rush models use zai/glm-5.2@off <fast>` — the raw
+			// provider/model@effort syntax accepts any suffix, unvalidated
+			// against ReasoningLevels).
 			//
 			// We forward via `extra_body.reasoning_effort` — the
 			// OpenAI-compat field z.ai already accepts on its Anthropic-
@@ -296,7 +334,6 @@ func getProviderOptions(sessionID string, model Model, providerCfg config.Provid
 			//   xhigh, max, ultracode                → max
 			//   off                                  → thinking disabled
 			// Older GLM-4.x ignore the field harmlessly.
-			effort := strings.ToLower(model.ModelCfg.ReasoningEffort)
 			if effort == "off" {
 				extraBody["thinking"] = map[string]any{
 					"type": "disabled",
