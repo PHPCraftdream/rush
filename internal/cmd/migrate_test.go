@@ -1814,25 +1814,38 @@ func TestMigrateCLITallyReflectsRewriteFailure(t *testing.T) {
 
 	rushFile := filepath.Join(tmpDir, "rush.json")
 
+	// Deterministic synchronization via migrateFileRenamePauseSeam instead
+	// of a busy-poll goroutine racing migrateFile's own execution speed: a
+	// prior version of this test raced an external icacls process (always
+	// lost), then a tight os.OpenFile retry loop (usually won, but flaked
+	// on Windows CI under -race — see this test's doc comment above). The
+	// seam blocks migrateFile immediately after rush.json first exists on
+	// disk and before the content-rewrite starts, so opening it here can
+	// never race against production code.
 	lockedCh := make(chan *os.File, 1)
-	go func() {
-		for {
-			f, err := os.OpenFile(rushFile, os.O_RDWR, 0o644)
-			if err == nil {
-				lockedCh <- f
-				return
-			}
-		}
-	}()
+	proceed := make(chan struct{})
+	migrateFileRenamePauseSeam = func() {
+		f, err := os.OpenFile(rushFile, os.O_RDWR, 0o644)
+		require.NoError(t, err, "rush.json must already exist by the time the pause seam fires")
+		lockedCh <- f
+		<-proceed
+	}
+	t.Cleanup(func() { migrateFileRenamePauseSeam = nil })
 
 	var b bytes.Buffer
 	migrateCmd.SetOut(&b)
 	migrateCmd.SetErr(&b)
 	migrateCmd.SetIn(bytes.NewReader(nil))
-	err := migrateCmd.RunE(migrateCmd, []string{tmpDir})
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- migrateCmd.RunE(migrateCmd, []string{tmpDir})
+	}()
 
 	lockedFile := <-lockedCh
 	t.Cleanup(func() { lockedFile.Close() })
+	close(proceed)
+	err := <-errCh
 
 	output := b.String()
 	t.Logf("Output:\n%s", output)

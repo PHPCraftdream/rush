@@ -15,6 +15,15 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// migrateFileRenamePauseSeam is a test-only hook that fires right after
+// migrateFile's create-rename (oldFile -> newFile) has succeeded, before
+// rewriteLegacyConfigContent runs. nil (a no-op) in every production path.
+// Lets a test deterministically synchronize a concurrent process against
+// the exact moment newFile first exists on disk, instead of racing a
+// busy-poll loop against migrateFile's own execution speed (see
+// TestMigrateCLITallyReflectsRewriteFailure).
+var migrateFileRenamePauseSeam func()
+
 // migrateStatus represents the outcome of a migration attempt for a single item.
 type migrateStatus int
 
@@ -627,6 +636,10 @@ func migrateFile(cmd *cobra.Command, oldFile string, dryRun bool, prefix string)
 	}
 
 	cmd.Printf("renamed %s%s  ->  %s\n", formatPrefix(prefix), oldFile, newFile)
+
+	if migrateFileRenamePauseSeam != nil {
+		migrateFileRenamePauseSeam()
+	}
 
 	// The rename itself succeeded (the primary goal), but a failure while
 	// rewriting legacy-named values inside the just-renamed content must
