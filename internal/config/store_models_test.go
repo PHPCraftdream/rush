@@ -88,7 +88,7 @@ func TestLoad_PersistingCorrectedModelDoesNotDeadlock(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "rush.json")
 
-	isolateAllGlobalConfigPaths(t)
+	_, globalDataDir := isolateAllGlobalConfigPaths(t)
 	resetProviderState()
 	t.Cleanup(resetProviderState)
 
@@ -148,9 +148,16 @@ func TestLoad_PersistingCorrectedModelDoesNotDeadlock(t *testing.T) {
 
 	// The corrected selection must actually have reached disk (proving the
 	// persist path really ran, not just the in-memory copy-on-write step).
-	data, err := os.ReadFile(configPath)
-	require.NoError(t, err)
-	require.Contains(t, string(data), "gpt-4")
+	// updatePreferredModelLocked always writes ScopeGlobal, which resolves to
+	// GlobalConfigData() (RUSH_GLOBAL_DATA) — NOT configPath, the workspace
+	// file Load was seeded from. Checking configPath here would be vacuous:
+	// "gpt-4" already appears verbatim in providers.openai.models in the
+	// seed above regardless of whether any persist happened at all.
+	globalPath := filepath.Join(globalDataDir, "rush.json")
+	data, err := os.ReadFile(globalPath)
+	require.NoError(t, err, "the healed selection must have been persisted to the global config file")
+	require.Contains(t, string(data), `"gpt-4"`)
+	require.Contains(t, string(data), `"openai"`)
 }
 
 // TestLoad_UnverifiedModelOnKnownProviderSurvives pins the load-side half of
@@ -169,7 +176,7 @@ func TestLoad_UnverifiedModelOnKnownProviderSurvives(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "rush.json")
 
-	isolateAllGlobalConfigPaths(t)
+	_, globalDataDir := isolateAllGlobalConfigPaths(t)
 	resetProviderState()
 	t.Cleanup(resetProviderState)
 
@@ -205,12 +212,24 @@ func TestLoad_UnverifiedModelOnKnownProviderSurvives(t *testing.T) {
 	// downstream readers already gate on (e.g. `if contextWindow > 0`).
 	require.Zero(t, smart.MaxTokens)
 
-	// Nothing may have been rewritten on disk.
+	// Nothing may have been rewritten in the seed file...
 	data, err := os.ReadFile(configPath)
 	require.NoError(t, err)
 	require.Contains(t, string(data), "brand-new-model")
-	require.NotContains(t, string(data), `"model": "gpt-4"`,
-		"the load path must not persist a substituted model over the user's choice")
+
+	// ...and the surviving selection must specifically NOT have been
+	// persisted to global scope as a substitution. updatePreferredModelLocked
+	// always writes ScopeGlobal (GlobalConfigData(), RUSH_GLOBAL_DATA here) —
+	// a check against configPath alone would be vacuous, since the OLD buggy
+	// substitution never touched the workspace file either, only global. A
+	// missing global file is the expected, correct outcome (no persist ever
+	// ran); if one exists for some other reason, it must not carry the
+	// substituted default.
+	globalPath := filepath.Join(globalDataDir, "rush.json")
+	if globalData, gerr := os.ReadFile(globalPath); gerr == nil {
+		require.NotContains(t, string(globalData), `"gpt-4"`,
+			"the load path must not persist a substituted model over the user's choice")
+	}
 }
 
 // TestLoad_PartialSelectionSelfHealsInsteadOfMismatchedPassthrough is the
@@ -226,7 +245,7 @@ func TestLoad_PartialSelectionSelfHealsInsteadOfMismatchedPassthrough(t *testing
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "rush.json")
 
-	isolateAllGlobalConfigPaths(t)
+	_, globalDataDir := isolateAllGlobalConfigPaths(t)
 	resetProviderState()
 	t.Cleanup(resetProviderState)
 
@@ -268,6 +287,81 @@ func TestLoad_PartialSelectionSelfHealsInsteadOfMismatchedPassthrough(t *testing
 	require.Equal(t, "gpt-4", smart.Model)
 	require.NotNil(t, store.Config().GetModel(smart.Provider, smart.Model),
 		"the resulting selection must be a real, catalog-resolvable (provider, model) pair")
+
+	// The heal must actually reach disk (persist=true on the Load path), not
+	// just the in-memory copy-on-write step — mirroring the disk assertion
+	// TestLoad_PersistingCorrectedModelDoesNotDeadlock already makes for the
+	// unknown-provider case. Must check the GLOBAL file (GlobalConfigData(),
+	// RUSH_GLOBAL_DATA here) — updatePreferredModelLocked always writes
+	// ScopeGlobal regardless of which file the original partial selection
+	// came from; configPath (the workspace seed file) is never touched by
+	// this persist path.
+	globalPath := filepath.Join(globalDataDir, "rush.json")
+	data, err := os.ReadFile(globalPath)
+	require.NoError(t, err, "the healed selection must have been persisted to the global config file")
+	require.Contains(t, string(data), `"gpt-4"`)
+	require.NotContains(t, string(data), `"zai"`,
+		"the healed selection must not keep the mismatched provider on disk")
+}
+
+// TestLoad_PartialSelectionSelfHealsInsteadOfMismatchedPassthrough_ModelOnly
+// is the symmetric case to the provider-only test above: only the MODEL is
+// explicitly set, no provider. The gate in configureSelectedModels requires
+// BOTH raw fields non-empty before attempting a passthrough, so this must
+// self-heal exactly like the provider-only case — pinned separately because
+// the gate is a `&&` of two independent conditions and a review flagged that
+// only one side had test coverage (e.g. an accidental `||` would pass the
+// provider-only test's assertions here would not).
+func TestLoad_PartialSelectionSelfHealsInsteadOfMismatchedPassthrough_ModelOnly(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "rush.json")
+
+	_, globalDataDir := isolateAllGlobalConfigPaths(t)
+	resetProviderState()
+	t.Cleanup(resetProviderState)
+
+	// "smart" names a model but no provider at all. The inherited default
+	// provider (openai, alphabetically first) doesn't have this model, so if
+	// the gate were wrongly `||` instead of `&&`, this would synthesize an
+	// openai/brand-new-model passthrough instead of healing.
+	initialConfig := `{
+		"options": {"disable_default_providers": true},
+		"models": {
+			"smart": {"model": "brand-new-model"}
+		},
+		"providers": {
+			"openai": {
+				"api_key": "test-key",
+				"base_url": "https://example.invalid/v1",
+				"models": [{"id": "gpt-4", "name": "GPT-4"}]
+			},
+			"zai": {
+				"api_key": "test-key",
+				"base_url": "https://api.z.ai/v1",
+				"models": [{"id": "glm-5.3", "name": "GLM 5.3"}]
+			}
+		}
+	}`
+	require.NoError(t, os.WriteFile(configPath, []byte(initialConfig), 0o600))
+
+	store, err := Load(dir, dir, false)
+	require.NoError(t, err)
+
+	smart := store.Config().Models[SelectedModelTypeSmart]
+	require.Equal(t, "openai", smart.Provider,
+		"a partial selection (model set, provider empty) must self-heal to a fully consistent default pair")
+	require.Equal(t, "gpt-4", smart.Model,
+		"must not keep the explicitly-set model paired with the inherited default provider")
+	require.NotNil(t, store.Config().GetModel(smart.Provider, smart.Model))
+
+	// See the provider-only test's comment above: the heal persists to the
+	// GLOBAL file (RUSH_GLOBAL_DATA), never to configPath.
+	globalPath := filepath.Join(globalDataDir, "rush.json")
+	data, err := os.ReadFile(globalPath)
+	require.NoError(t, err, "the healed selection must have been persisted to the global config file")
+	require.Contains(t, string(data), `"gpt-4"`)
+	require.NotContains(t, string(data), `"brand-new-model"`,
+		"the healed selection must not keep the mismatched model on disk")
 }
 
 // TestLoad_UnverifiedModelOnKnownProviderSurvives_FastSlot mirrors
@@ -281,7 +375,7 @@ func TestLoad_UnverifiedModelOnKnownProviderSurvives_FastSlot(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "rush.json")
 
-	isolateAllGlobalConfigPaths(t)
+	_, globalDataDir := isolateAllGlobalConfigPaths(t)
 	resetProviderState()
 	t.Cleanup(resetProviderState)
 
@@ -311,6 +405,15 @@ func TestLoad_UnverifiedModelOnKnownProviderSurvives_FastSlot(t *testing.T) {
 	data, err := os.ReadFile(configPath)
 	require.NoError(t, err)
 	require.Contains(t, string(data), "brand-new-fast-model")
+
+	// See TestLoad_UnverifiedModelOnKnownProviderSurvives's comment: a
+	// substitution, if it happened, would land in the GLOBAL file
+	// (RUSH_GLOBAL_DATA), never in configPath — check there too.
+	globalPath := filepath.Join(globalDataDir, "rush.json")
+	if globalData, gerr := os.ReadFile(globalPath); gerr == nil {
+		require.NotContains(t, string(globalData), `"gpt-4"`,
+			"the load path must not persist a substituted model over the user's choice")
+	}
 }
 
 // TestUnverifiedPassthroughModel_DirectUnitTests exercises

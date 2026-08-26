@@ -53,7 +53,7 @@ func TestModelsState_JSONReportsWorkerAndReviewer(t *testing.T) {
 // TestModelsState_UnsetEffort_ShowsKnownZAIDefault covers the core case for
 // this task: a slot with no explicit effort on a provider with a KNOWN
 // documented unset-default (Z.AI, "unset -> thinking on, high" per
-// coordinator.go's getProviderOptions and providerEffortDocs in
+// coordinator_providers.go's getProviderOptions and providerEffortDocs in
 // models_efforts.go) must show that default as a terse parenthetical.
 // "glm5_turbo" (large, in this test) is set with no @effort suffix, so
 // m.ReasoningEffort == "" and effortEffectiveNote must fire.
@@ -277,21 +277,21 @@ func TestNilOrStaleEffort_JSONCounterpart(t *testing.T) {
 // cliEffortSource.Levels()) to discover its levels. That made `rush models
 // state` — a read-only status command — spawn a subprocess (with no timeout,
 // under a package-level mutex) as a side effect of rendering a line, on
-// EVERY invocation where a Claude slot has an explicit effort set. This test
-// pins that Claude/local-cli atoms are excluded from staleEffortNote's check
-// entirely: setFallbackEffortSource makes the "claude" binary
-// unreachable — if staleEffortNote ever calls into EffortSource.Levels()
-// again, the level would come back as the hardcoded fallback list
-// (low/medium/high/xhigh/max), "max" would still validate as non-stale, so
-// this alone wouldn't fail loudly. What actually matters and IS asserted:
-// the function returns "" immediately without going through
-// validateEffortForModel's atom-levels branch at all — proven by using an
-// effort value ("legacy-cli-level") that isn't in ANY vocabulary the CLI
-// could plausibly report, static or fallback. If staleEffortNote ever
-// validated Claude atoms, this would be flagged STALE; it must not be.
+// EVERY invocation where a Claude slot has an explicit effort set.
+//
+// This does NOT use setFallbackEffortSource/setMockEffortLevels: a code
+// review caught that those helpers only reassign the package-level
+// `claudeEffortSource` variable, while every atomRegistry entry's
+// `EffortSource` field already captured the ORIGINAL pointer value at
+// package-init time — a mock swap in a test never reaches an atom looked up
+// via atomRegistry, so it would give false confidence here without actually
+// making the test hermetic (a regression on a machine with `claude`
+// installed would still shell out to the real binary). Using
+// "legacy-cli-level" — a string outside BOTH the real CLI's plausible output
+// and the hardcoded fallback list — makes the assertion fail on a regression
+// regardless of which one actually gets consulted, without pretending a
+// mock prevents that consultation from happening at all.
 func TestStaleEffortNote_ClaudeAtomNeverShellsOut(t *testing.T) {
-	defer setFallbackEffortSource()()
-
 	claudeAtom := config.SelectedModel{Provider: "local-cli", Model: "cli-claude-opus-4-8", ReasoningEffort: "legacy-cli-level"}
 	assert.Empty(t, staleEffortNote(claudeAtom), "Claude/local-cli atoms must never be flagged stale — their vocabulary is CLI-detected, not a static declaration")
 	assert.Empty(t, effortEffectiveNote(claudeAtom))

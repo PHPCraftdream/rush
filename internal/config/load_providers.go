@@ -257,11 +257,22 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, bas
 			// provider/model directly, not through the catwalk catalog —
 			// see ping.go's resolvePingModel), but the WEB UI's model
 			// picker reads KnownProviders()/prepared.Models and would
-			// never show glm-5.3 as a choice. Values (context window,
-			// reasoning levels, default effort) are copied from zai's own
-			// real glm-5.2 catwalk entry, not guessed — the two models
-			// share the same 1M-context, high/xhigh-reasoning tier per
-			// models_atoms.go's zaiReasoningLevels comment.
+			// never show glm-5.3 as a choice, and worker/reviewer slots
+			// (which build their runtime Model via this catalog, not via
+			// the CLI atom registry — see coordinator_models.go's
+			// buildModelsFromCfg) would get an all-zero-metadata stand-in
+			// instead of real context-window/effort data.
+			//
+			// ReasoningLevels/DefaultReasoningEffort: VERIFIED 2026-08-26
+			// against docs.z.ai/guides/llm/glm-5.3 — corrected from an
+			// earlier guess that copied GLM-5.2's high/xhigh tier before
+			// GLM-5.3's real, independently-documented low/high/max
+			// vocabulary (no off) was confirmed; see zai53ReasoningLevels'
+			// comment in internal/cmd/models_atoms.go for the full
+			// verification and SYNC WARNING this entry is now a party to.
+			// DefaultReasoningEffort is "high" (this fork's convention for
+			// an unset effort, matching coordinator_providers.go's wire
+			// mapping default), not z.ai's own doc default of "max".
 			//
 			// Never overwrites a real catwalk-sourced or user-configured
 			// entry: skipped entirely once catwalk (or the user's own
@@ -283,8 +294,8 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, bas
 					ContextWindow:          1_000_000,
 					DefaultMaxTokens:       131072,
 					CanReason:              true,
-					ReasoningLevels:        []string{"high", "xhigh"},
-					DefaultReasoningEffort: "xhigh",
+					ReasoningLevels:        []string{"low", "high", "max"},
+					DefaultReasoningEffort: "high",
 				})
 			}
 		default:
@@ -561,8 +572,11 @@ func (c *Config) defaultModelSelection(knownProviders []catwalk.Provider) (smart
 
 // unverifiedPassthroughModel returns minimal stand-in metadata for a model
 // that isn't in its provider's cached catalog but whose provider IS a real,
-// enabled entry in this config — or nil when even the provider is unknown,
-// which is the only case that still warrants falling back to a default.
+// enabled entry in this config — or nil when the provider is unknown,
+// disabled, or the selection is missing a field, any of which still
+// warrants falling back to a default (see the empty-field/Disable guards
+// below; callers additionally only invoke this when both fields were
+// explicitly set in the raw selection — see configureSelectedModels).
 //
 // This closes the load-side half of the "accept an unverified provider/model"
 // behavior added on 2026-08-26. `rush models use zai/<brand-new-model>`

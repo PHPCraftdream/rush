@@ -187,6 +187,20 @@ func TestConfigureProviders_ZAISynthesizesGLM53WhenCatwalkLacksIt(t *testing.T) 
 	require.Equal(t, "GLM-5.3", glm53.Name)
 	require.True(t, glm53.CanReason)
 	require.Equal(t, int64(1_000_000), glm53.ContextWindow)
+	// VERIFIED 2026-08-26: GLM-5.3 (and GLM-5.3-Flash) reject disabling
+	// reasoning and expose exactly low/high/max — regression test for a code
+	// review finding that this synthesized entry was a 4th, missed sync point
+	// still carrying the earlier off/high/xhigh-era guess after
+	// internal/cmd/models_atoms.go's zai53ReasoningLevels and
+	// coordinator_providers.go's wire mapping were both corrected. A stale
+	// entry here matters for real: worker/reviewer slots build their runtime
+	// Model from this catalog (coordinator_models.go's buildModelsFromCfg),
+	// not from the CLI atom registry, so an explicit "low" selection here
+	// would silently fail effectiveReasoningEffort's Contains check and fall
+	// back to DefaultReasoningEffort — deep reasoning instead of the
+	// requested light one — if this entry still said high/xhigh.
+	require.Equal(t, []string{"low", "high", "max"}, glm53.ReasoningLevels)
+	require.Equal(t, "high", glm53.DefaultReasoningEffort)
 	// The original catwalk-provided model must still be present — synthesis
 	// must be additive, never a wholesale replacement.
 	var foundOriginal bool

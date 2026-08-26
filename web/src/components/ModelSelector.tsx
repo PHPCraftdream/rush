@@ -142,7 +142,9 @@ export function ModelSelector({ session, modelType }: { session: Session | null;
   const currentEntry = allModels.find(m => m.key === currentKey);
   const displayName = currentEntry?.name ?? currentKey.split(":::")[1] ?? "No model";
 
-  // Get current reasoning effort (default to "medium" if not set)
+  // Get current reasoning effort — model-dependent default (see
+  // defaultEffortFor below): "medium" for Claude CLI, "high" for every
+  // Z.AI GLM-5.x including the 5.3 tier.
   const currentProvider = currentEntry?.providerID ?? "";
   const currentModelID = currentEntry?.modelID ?? "";
   // Delegates to ../effort so this selector can't drift from the
@@ -167,6 +169,13 @@ export function ModelSelector({ session, modelType }: { session: Session | null;
   // understand) until the user clicks an arrow. The useEffect below persists
   // the clamp back to the session so the backend never sees an unsupported
   // value either.
+  //
+  // Side effect of this unification, intentional: an invalid stored effort
+  // on a Claude CLI slot (e.g. a legacy value) now also clamps to
+  // defaultEffortFor's "medium" instead of the old effortLevels[0] ("low") —
+  // Claude's levels[0] happened to differ from its own default too, just
+  // less visibly than GLM-5.3's. Both model classes now behave identically
+  // to ScopedModelsModal.tsx, which is the point.
   const clampedEffort = clampEffort(currentProvider, currentModelID, storedEffort);
   const effortValid = clampedEffort === storedEffort;
   const currentEffort = clampedEffort ?? storedEffort;

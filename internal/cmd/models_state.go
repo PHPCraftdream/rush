@@ -214,11 +214,13 @@ func printEffectiveLine(label string, has bool, m config.SelectedModel, scope st
 }
 
 // effortEffectiveNote returns a terse parenthetical (with a leading space,
-// or "" when there's nothing to add) for a slot's effort state: nothing
-// when an effort is explicitly set (effortSuffix above already shows that),
-// and the documented unset-default fact — reusing unsetEffortNote from
-// models_efforts.go so this can never drift from `rush models efforts`'s
-// prose or coordinator.go's actual switch — when the effort is unset and
+// or "" when there's nothing to add) for a slot's effort state: the STALE
+// note (see staleEffortNote) when an explicit effort no longer matches its
+// atom's declared levels, nothing when an explicit effort is still valid
+// (effortSuffix above already shows that value), and the documented
+// unset-default fact — reusing unsetEffortNote from models_efforts.go so
+// this can never drift from `rush models efforts`'s prose or
+// coordinator_providers.go's actual switch — when the effort is unset and
 // that provider's default is known. Silent ("") for unset effort on a
 // provider whose default isn't documented; never guesses.
 func effortEffectiveNote(m config.SelectedModel) string {

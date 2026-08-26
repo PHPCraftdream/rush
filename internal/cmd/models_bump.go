@@ -107,7 +107,7 @@ rush models state   # see the full picture afterward
 		// e.g. defaulting it to the middle of the array) would require
 		// guessing which level unset behaves like on the wire, which is
 		// itself a provider-specific fact (see zaiReasoningLevels' doc comment:
-		// Z.AI's own default differs from the fork's coordinator.go default).
+		// Z.AI's own default differs from the fork's coordinator_providers.go default).
 		// Modeling unset as "below the bottom" sidesteps that guess entirely
 		// and gives a single, predictable rule for every provider.
 		idx := -1
