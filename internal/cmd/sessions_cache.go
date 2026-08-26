@@ -125,6 +125,7 @@ type cacheReportJSON struct {
 type cacheInvalidationRow struct {
 	MessageID           string `json:"message_id"`
 	CacheCreationTokens int64  `json:"cache_creation_tokens"`
+	LikelyTTLExpiry     bool   `json:"likely_ttl_expiry"`
 }
 
 func toCacheRow(u message.TokenUsage, messages, estimated int64) cacheRowJSON {
@@ -216,11 +217,20 @@ func sessionsCacheCmdRun(cmd *cobra.Command, args []string) error {
 }
 
 // cacheInvalidation is a warm->cold transition: the previous turn read a
-// well-warmed cache and this one suddenly wrote from scratch, which is the
-// signature of something upstream of it changing the prompt prefix.
+// well-warmed cache and this one suddenly wrote from scratch. That is either
+// the signature of something upstream changing the prompt prefix, or simply
+// the provider's cache TTL expiring after a normal idle gap — see
+// LikelyTTLExpiry.
 type cacheInvalidation struct {
 	MessageID           string
 	CacheCreationTokens int64
+	// LikelyTTLExpiry is true when the elapsed wall-clock time between the
+	// warm and cold turns is at or above likelyTTLExpiryThreshold — the
+	// EXACT same warm->cold signature a normal idle period produces once the
+	// cache's TTL lapses, with nothing wrong at all. false means the gap was
+	// short enough that TTL expiry is an unlikely explanation, making this a
+	// genuine invalidation candidate worth investigating.
+	LikelyTTLExpiry bool
 }
 
 // warmCacheFloor is the minimum prior CacheReadTokens before a drop to zero
@@ -228,28 +238,43 @@ type cacheInvalidation struct {
 // meaningfully warm.
 const warmCacheFloor = 2048
 
+// likelyTTLExpiryThreshold mirrors the explicit-cache providers' real TTL
+// (Anthropic-style ephemeral caches: 5 minutes). A local constant rather than
+// a cross-package reference to internal/agent's unexported cache profile
+// table — this package is a diagnostic reader, not a policy owner.
+const likelyTTLExpiryThreshold = 5 * time.Minute
+
 // detectCacheInvalidations walks a session's messages in order and flags
 // turns where a warm cache (prev read >= warmCacheFloor) went cold (this
 // turn read 0 but wrote something) on a native-cache provider. Gated on
 // CacheSupportNative because implicit-cache providers report noisy
 // CacheReadTokens that would false-positive on every turn.
+//
+// prev only ever advances to a message with measured native-cache usage;
+// user/tool messages (nil usage) sit between real turns in every session and
+// must be skipped, not treated as a reset. A provider/model switch is also
+// excluded: that legitimately cold-starts a different cache.
 func detectCacheInvalidations(msgs []message.Message) []cacheInvalidation {
 	var out []cacheInvalidation
 	var prev *message.TokenUsage
+	var prevCreatedAt int64
 	for _, m := range msgs {
 		u := m.Usage
 		if u == nil || u.CacheSupport != message.CacheSupportNative {
-			prev = u
 			continue
 		}
 		if prev != nil && prev.CacheReadTokens >= warmCacheFloor &&
-			u.CacheReadTokens == 0 && u.CacheCreationTokens > 0 {
+			u.CacheReadTokens == 0 && u.CacheCreationTokens > 0 &&
+			prev.Provider == u.Provider && prev.Model == u.Model {
+			gap := time.Duration(m.CreatedAt-prevCreatedAt) * time.Second
 			out = append(out, cacheInvalidation{
 				MessageID:           m.ID,
 				CacheCreationTokens: u.CacheCreationTokens,
+				LikelyTTLExpiry:     gap >= likelyTTLExpiryThreshold,
 			})
 		}
 		prev = u
+		prevCreatedAt = m.CreatedAt
 	}
 	return out
 }
@@ -337,8 +362,16 @@ func renderCacheText(sessionID string, report message.UsageReport, invalidations
 	}
 
 	// A warm cache going cold mid-session usually means something upstream of
-	// that turn changed the prompt prefix (e.g. a volatile message inserted).
+	// that turn changed the prompt prefix (e.g. a volatile message inserted)
+	// — unless the gap is long enough that the provider's own TTL simply
+	// expired on schedule, which is not a bug. Both are surfaced, labeled
+	// differently, since silently dropping either would hide real signal.
 	for _, inv := range invalidations {
+		if inv.LikelyTTLExpiry {
+			fmt.Printf("\ncache idle-expired: message %s re-wrote %s tokens after a long gap (likely just TTL expiry, not a prefix change).\n",
+				short(inv.MessageID), formatInt64(inv.CacheCreationTokens))
+			continue
+		}
 		fmt.Printf("\nCACHE INVALIDATION: message %s lost the cache and re-wrote %s tokens.\n",
 			short(inv.MessageID), formatInt64(inv.CacheCreationTokens))
 	}

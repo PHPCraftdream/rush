@@ -481,7 +481,9 @@ func (a *sessionAgent) runSummarizeBody(ctx context.Context, sessionID string, o
 	if err != nil {
 		return fmt.Errorf("failed to re-fetch session before save: %w", err)
 	}
-	costDelta := a.updateSessionUsage(smartModel, &freshSession, resp.TotalUsage, openrouterCost)
+	// Normalize once, upstream of both sinks (see agent_turn.go's OnStepFinish).
+	totalUsage := normalizeProviderUsage(smartModel.Model.Provider(), resp.TotalUsage)
+	costDelta := a.updateSessionUsage(smartModel, &freshSession, totalUsage, openrouterCost)
 	if costDelta != 0 {
 		if _, costErr := a.sessions.IncrementCost(commitCtx, freshSession.ID, costDelta); costErr != nil {
 			return costErr
@@ -489,10 +491,10 @@ func (a *sessionAgent) runSummarizeBody(ctx context.Context, sessionID string, o
 	}
 
 	// Per-message usage for the summary turn itself (task #469). Recorded
-	// against resp.TotalUsage — the same figure updateSessionUsage just billed
-	// — so the summarization's own token cost is visible in analytics instead
+	// against totalUsage — the same figure updateSessionUsage just billed —
+	// so the summarization's own token cost is visible in analytics instead
 	// of appearing as an unattributed jump in the session total.
-	a.recordMessageUsage(commitCtx, summaryMessage.ID, smartModel, resp.TotalUsage, costDelta, false)
+	a.recordMessageUsage(commitCtx, summaryMessage.ID, smartModel, totalUsage, costDelta, false)
 
 	usage := resp.Response.Usage
 	if err := a.sessions.SetSummaryAndUsage(commitCtx, freshSession.ID, summaryMessage.ID, 0, summaryCompletionTokens(usage, summaryMessage)); err != nil {
@@ -668,7 +670,9 @@ func (a *sessionAgent) runSummarizeSilent(ctx context.Context, sessionID string,
 			*openrouterCost += *stepCost
 		}
 	}
-	costDelta := a.updateSessionUsage(smartModel, &freshSession, resp.TotalUsage, openrouterCost)
+	// Normalize once, upstream of both sinks (see agent_turn.go's OnStepFinish).
+	totalUsage := normalizeProviderUsage(smartModel.Model.Provider(), resp.TotalUsage)
+	costDelta := a.updateSessionUsage(smartModel, &freshSession, totalUsage, openrouterCost)
 	if costDelta != 0 {
 		if _, costErr := a.sessions.IncrementCost(commitCtx, freshSession.ID, costDelta); costErr != nil {
 			return costErr
@@ -676,7 +680,7 @@ func (a *sessionAgent) runSummarizeSilent(ctx context.Context, sessionID string,
 	}
 	// Per-message usage for the silent-summarise turn (task #469), same
 	// rationale as the manual /compact path above.
-	a.recordMessageUsage(commitCtx, summaryMessage.ID, smartModel, resp.TotalUsage, costDelta, false)
+	a.recordMessageUsage(commitCtx, summaryMessage.ID, smartModel, totalUsage, costDelta, false)
 
 	if err := a.sessions.SetSummaryAndUsage(commitCtx, freshSession.ID, summaryMessage.ID, 0, resp.Response.Usage.OutputTokens); err != nil {
 		// Nothing has been deleted yet, so the session is still whole: the

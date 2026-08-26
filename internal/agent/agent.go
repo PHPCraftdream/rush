@@ -616,6 +616,21 @@ type sessionAgent struct {
 	// after a turn writes to the provider's ephemeral prompt cache. See
 	// agent_cache_keepalive.go.
 	cacheKeepAlive *csync.Map[string, *cacheKeepAliveEntry]
+	// cacheKeepAliveMu serializes schedule/fire generation check-and-act
+	// sequences on cacheKeepAlive, since csync.Map has no atomic CAS.
+	cacheKeepAliveMu sync.Mutex
+	// cacheKeepAliveGen is a monotonic counter; each scheduled entry captures
+	// the generation current at schedule time so a racing stale fire can
+	// detect it has been superseded. See agent_cache_keepalive.go.
+	cacheKeepAliveGen atomic.Int64
+	// cacheKeepAliveInFlight holds the cancel func for a replay call
+	// currently executing inside fireCacheKeepAlive, keyed by session id.
+	// Deliberately separate from cacheKeepAlive/cacheKeepAliveEntry: that map
+	// entry is removed BEFORE the replay call starts (so a new schedule is
+	// never blocked by an old in-flight call), so overloading it here would
+	// conflict with that "removed = free to reschedule" invariant. See
+	// fireCacheKeepAlive and cancelCacheKeepAlive.
+	cacheKeepAliveInFlight *csync.Map[string, context.CancelFunc]
 	// peakHoursCheck, when non-nil, is called once per step from
 	// OnStepFinish to re-check whether the smart model's provider has
 	// entered its peak_hours refusal window mid-turn. Returns nil while
@@ -742,6 +757,7 @@ func NewSessionAgent(
 		summarizeQueue:             csync.NewMap[string, *SummarizeSnapshot](),
 		mailboxes:                  csync.NewMap[string, *mailbox](),
 		cacheKeepAlive:             csync.NewMap[string, *cacheKeepAliveEntry](),
+		cacheKeepAliveInFlight:     csync.NewMap[string, context.CancelFunc](),
 		streamIdleTimeout:          opts.StreamIdleTimeout,
 		streamWatchdogTick:         opts.StreamWatchdogTick,
 		titleJoinGrace:             opts.TitleJoinGrace,

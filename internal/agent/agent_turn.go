@@ -253,6 +253,10 @@ func normalizeTurnError(err error, getPeakHoursAbortErr func() error) error {
 	return err
 }
 
+// runTurnToolsSnapshotSeam is a test-only hook — see its call site in
+// runTurn. nil (a no-op) in every production path.
+var runTurnToolsSnapshotSeam func()
+
 // runTurn executes exactly one agent turn (one call into fantasy's
 // agent.Stream, plus all of Run's surrounding bookkeeping: DB preamble,
 // stream watchdog, checkpointing, error/cancel handling, and auto-summarize
@@ -273,6 +277,14 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 
 	// Copy mutable fields under lock to avoid races with SetTools/SetModels.
 	agentTools := a.tools.Copy()
+	// Test-only seam: fires right after the snapshot above, before PrepareStep
+	// re-reads a.tools for the actual request (see stepTools' doc). Lets a
+	// test deterministically simulate a SetTools/MCP update landing in that
+	// exact window, on the same goroutine, without needing real concurrency.
+	// nil (a no-op) in every production path.
+	if runTurnToolsSnapshotSeam != nil {
+		runTurnToolsSnapshotSeam()
+	}
 	// One immutable snapshot for the whole turn (task #265). Resolving these
 	// individually here used to mean a concurrent session's
 	// applyModelOverrides could land BETWEEN the reads, so a single turn ran
@@ -619,6 +631,14 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 
 	var currentAssistant *message.Message
 	var stepMessages []fantasy.Message
+	// stepTools is the tools list PrepareStep actually decided on for the
+	// most recent step (prepared.Tools, re-read from a.tools.Copy() there —
+	// see that assignment's own "use latest tools" comment) — NOT the outer
+	// agentTools snapshot above, which can go stale if SetTools/an MCP update
+	// lands between turn start and a step's PrepareStep. Cache-related code
+	// that needs "what was actually sent" (the keep-alive replay) must use
+	// this, not agentTools.
+	var stepTools []fantasy.AgentTool
 	var shouldSummarize bool
 	// sanitizedToolCalls tracks tool call IDs whose input JSON was malformed
 	// and got replaced with "{}" by sanitizeToolInput, so OnToolResult can
@@ -1104,6 +1124,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 
 			sessionLock.Lock()
 			stepMessages = cloneFantasyMessages(prepared.Messages)
+			stepTools = append([]fantasy.AgentTool(nil), prepared.Tools...)
 			sessionLock.Unlock()
 
 			var assistantMsg message.Message
@@ -1405,6 +1426,10 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 			// context window stays accurate. We drop the "estimated" flag
 			// (TUI marker — see CHANGELOG.fork.md Section 2).
 			usage, estimated := fallbackStepUsage(stepMessages, stepResult)
+			// Normalize once, upstream of both updateSessionUsage and
+			// recordMessageUsage, so InputTokens is exclusive-of-cache for
+			// every provider before either consumer sees it.
+			usage = normalizeProviderUsage(smartModel.Model.Provider(), usage)
 			costDelta := a.updateSessionUsage(smartModel, &updatedSession, usage, a.openrouterCost(stepResult.ProviderMetadata))
 			if costDelta != 0 {
 				if _, costErr := a.sessions.IncrementCost(ctx, updatedSession.ID, costDelta); costErr != nil {
@@ -1425,7 +1450,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 			sessionLock.Unlock()
 			a.recordMessageUsage(ctx, assistantID, smartModel, usage, costDelta, estimated)
 			if usage.CacheCreationTokens > 0 {
-				a.scheduleCacheKeepAlive(call.SessionID, smartModel, stepMessages)
+				a.scheduleCacheKeepAlive(call.SessionID, smartModel, stepMessages, stepTools, call.ProviderOptions, call.MaxCost)
 			}
 			currentSession = updatedSession
 

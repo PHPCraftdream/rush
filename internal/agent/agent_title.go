@@ -256,11 +256,15 @@ func (a *sessionAgent) generateTitle(ctx context.Context, sessionID string, user
 		}
 	}
 
+	// Google/OpenRouter/Vercel report InputTokens inclusive of cached tokens;
+	// normalize before costing, same as the main turn (agent_turn.go) and the
+	// keep-alive replay (recordCacheKeepAliveCost) already do.
+	usage := normalizeProviderUsage(model.Model.Provider(), resp.TotalUsage)
 	modelConfig := model.CatwalkCfg
-	cost := modelConfig.CostPer1MInCached/1e6*float64(resp.TotalUsage.CacheCreationTokens) +
-		modelConfig.CostPer1MOutCached/1e6*float64(resp.TotalUsage.CacheReadTokens) +
-		modelConfig.CostPer1MIn/1e6*float64(resp.TotalUsage.InputTokens) +
-		modelConfig.CostPer1MOut/1e6*float64(resp.TotalUsage.OutputTokens)
+	cost := modelConfig.CostPer1MInCached/1e6*float64(usage.CacheCreationTokens) +
+		modelConfig.CostPer1MOutCached/1e6*float64(usage.CacheReadTokens) +
+		modelConfig.CostPer1MIn/1e6*float64(usage.InputTokens) +
+		modelConfig.CostPer1MOut/1e6*float64(usage.OutputTokens)
 
 	// Use override cost if available (e.g., from OpenRouter).
 	if openrouterCost != nil {
