@@ -11,21 +11,21 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestRunAllowlist_BashToolNameLiteralMatchesConstant pins the string
-// literal that internal/permission/runallowlist.go hardcodes ("bash", in
-// allowsRequest) to the canonical tools.BashToolName. The permission
-// package can't import internal/agent/tools (import cycle), so it matches
-// the literal directly; this cross-package assertion — in a package that
-// CAN see both — turns a future rename of the bash tool into a failing
-// test instead of a silent bypass, where the renamed tool would fall
-// through to toolAllowed and a "bash" entry in run.allow_tools could
-// start authorising arbitrary shell commands.
-func TestRunAllowlist_BashToolNameLiteralMatchesConstant(t *testing.T) {
-	t.Parallel()
-	require.Equal(t, "bash", tools.BashToolName,
-		`internal/permission/runallowlist.go hardcodes "bash" in allowsRequest; `+
-			`if the bash tool is renamed, update that literal (and this guard) too`)
-}
+// The restricted-run gate routes any tool whose permission params
+// implement RunAllowlistCommand through allow_bash-pattern scrutiny
+// (see internal/permission/runallowlist.go). These assertions pin that
+// both command-executing tools' params keep satisfying that contract —
+// the cross-package spot that can see both the tools and the contract.
+var (
+	_ interface{ RunAllowlistCommand() string } = tools.BashPermissionsParams{}
+	_ interface{ RunAllowlistCommand() string } = tools.RunCommandPermissionsParams{}
+)
+
+// p mirrors a bash-params shape (Command field + RunAllowlistCommand
+// contract) for use in requestAllowed stand-in requests.
+type p struct{ Command string }
+
+func (p p) RunAllowlistCommand() string { return p.Command }
 
 // TestRunAllowlistSpecFromConfig_NilPreservesLegacy is the backwards-
 // compatibility guarantee: with no permissions.run block at all, the
@@ -162,7 +162,6 @@ func TestRunOverridesMerge_ConfigPlusCLI(t *testing.T) {
 	require.True(t, compiled.IsRestricted())
 
 	// Config bash pattern survives.
-	type p struct{ Command string }
 	assert.True(t, requestAllowed(t, compiled, permission.CreatePermissionRequest{
 		ToolName: "bash", Action: "execute", Params: p{Command: "git diff HEAD~1"},
 	}), "config allow_bash pattern honoured after merge")
@@ -220,11 +219,43 @@ func TestRunOverridesMerge_ConfigBashEntryInAllowToolsIsIgnored(t *testing.T) {
 	compiled, err := permission.BuildRunAllowlist(spec)
 	require.NoError(t, err)
 
-	type p struct{ Command string }
 	denied := requestAllowed(t, compiled, permission.CreatePermissionRequest{
 		ToolName: "bash", Action: "execute", Params: p{Command: "ls"},
 	})
 	assert.False(t, denied, "allow_tools with bash/bash:execute must not bypass the gate")
+}
+
+// TestRunAllowlist_RunCommandGovernedByAllowBash pins the app-level
+// generalisation: run_command requests are governed by allow_bash command
+// patterns via RunCommandPermissionsParams.RunAllowlistCommand, not by
+// run.allow_tools entries.
+func TestRunAllowlist_RunCommandGovernedByAllowBash(t *testing.T) {
+	t.Parallel()
+
+	allowlist, err := permission.BuildRunAllowlist(permission.RunAllowlistSpec{
+		Restrict:  true,
+		AllowBash: []string{"go test"},
+	})
+	require.NoError(t, err)
+
+	assert.True(t, requestAllowed(t, allowlist, permission.CreatePermissionRequest{
+		ToolName: "run_command", Action: "execute",
+		Params: tools.RunCommandPermissionsParams{Program: "go", Args: []string{"test", "./..."}},
+	}), "matching allow_bash pattern approves run_command")
+	assert.False(t, requestAllowed(t, allowlist, permission.CreatePermissionRequest{
+		ToolName: "run_command", Action: "execute",
+		Params: tools.RunCommandPermissionsParams{Program: "rm", Args: []string{"-rf", "x"}},
+	}), "non-matching command denied")
+
+	allowlistToolsOnly, err := permission.BuildRunAllowlist(permission.RunAllowlistSpec{
+		Restrict:   true,
+		AllowTools: []string{"run_command"},
+	})
+	require.NoError(t, err)
+	assert.False(t, requestAllowed(t, allowlistToolsOnly, permission.CreatePermissionRequest{
+		ToolName: "run_command", Action: "execute",
+		Params: tools.RunCommandPermissionsParams{Program: "go", Args: []string{"test", "./..."}},
+	}), "allow_tools entry for run_command must not approve commands without allow_bash")
 }
 
 func requestAllowed(t *testing.T, allowlist permission.RunAllowlist, req permission.CreatePermissionRequest) bool {

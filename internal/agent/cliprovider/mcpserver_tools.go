@@ -110,6 +110,11 @@ type mcpBashInput struct {
 	WorkingDir  string `json:"working_dir,omitempty" description:"Working directory (defaults to project root)"`
 }
 
+// RunAllowlistCommand lets the restricted-run gate apply allow_bash
+// pattern scrutiny to this tool's command string exactly as it does for
+// the built-in bash tool (see internal/permission/runallowlist.go).
+func (p mcpBashInput) RunAllowlistCommand() string { return p.Command }
+
 func registerBashTool(srv *mcp.Server, perms permission.Service, workingDir string, toolCh chan mcpToolEvent) {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "Bash",

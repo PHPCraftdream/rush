@@ -776,6 +776,8 @@ func allToolNames() []string {
 		"read_delegation_transcript",
 		"ask_question",
 		"bash",
+		"git_read",
+		"run_command",
 		"rush_info",
 		"rush_logs",
 		"job_output",
@@ -813,7 +815,7 @@ func resolveReadOnlyTools(tools []string) []string {
 	// this list by buildToolsAgentConfig in internal/agent/coordinator.go,
 	// together with the question round-trip that makes it useful. See
 	// docs/plans/2026-07-26-orchestrator-worker-e2e.md (BUG-2, phase 3).
-	readOnlyTools := []string{"glob", "grep", "ls", "sourcegraph", "view"}
+	readOnlyTools := []string{"git_read", "glob", "grep", "ls", "sourcegraph", "view"}
 	// filter to only include tools that are in allowedtools (include mode)
 	return filterSlice(tools, readOnlyTools, true)
 }

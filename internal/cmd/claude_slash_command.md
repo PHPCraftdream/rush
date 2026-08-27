@@ -197,7 +197,9 @@ externally; rush's own orchestrating model already owns that resume.
 - Multi-line prompts → `Write` to `.rush/stdin/<task>.prompt`, feed
   via `< file`. Avoid positional `"…"` past one line.
 - Permissions inside `rush run` are auto-approved — run only in
-  workspaces you can afford to lose.
+  workspaces you can afford to lose. See `--restrict-run` below to
+  scope a specific delegation instead of relying on workspace choice
+  alone.
 - **Default to one `rush run` in flight at a time per worktree.**
   Sequential is the safe default — launch, wait for the real
   completion notification, verify, then launch the next. Only run more
@@ -229,6 +231,71 @@ externally; rush's own orchestrating model already owns that resume.
   run can't scope its tests narrowly, it skips them and says so in its
   summary — the orchestrator runs the shared suite once, after all
   runs land and are merged.
+
+## Scoping permissions for a delegation — `--restrict-run`
+
+Auto-approve-everything is the default (see the bullet above) because
+nobody is at the keyboard to confirm. For a delegation you don't want
+to hand full rein — an experimental/exploratory prompt, a run whose
+prompt came from outside this conversation (e.g. relayed from an
+issue or another tool), or anything touching a workspace wider than
+the task needs — flip to deny-by-default and carve out exactly what's
+allowed:
+
+```
+rush run --restrict-run --role fast \
+          --allow-tool view \
+          --allow-bash 'git diff' --allow-bash 'glob:go *' \
+          --session "ci-123" "summarize the diff"
+```
+
+- `--restrict-run` arms deny-by-default. Anything not matched below is
+  denied **cleanly and immediately** — the model sees a fast "no" and
+  adapts, the run does not block until `--timeout` waiting on a
+  permission prompt nobody can answer.
+- `--allow-tool <name>` (repeatable) permits a non-bash tool or a
+  `tool:action` pair, e.g. `view`, `edit:write`. `bash` /
+  `bash:execute` listed here are silent no-ops by design — bash is
+  scoped by `--allow-bash` only, so a tool-name entry can't
+  accidentally whitelist arbitrary shell.
+- `--allow-bash '<pattern>'` (repeatable) permits a bash command.
+  Forms: `'cmd args'` (word-boundary prefix — `'git diff'` matches
+  `'git diff HEAD~1'` but not `'git difftool'`), `'exact:cmd'`,
+  `'glob:pat'`, `'regex:pat'`. The first three refuse to match a
+  command containing shell-chaining metacharacters (`;`, `|`, `&&`,
+  `` $( ``, `` ` ``), so `--allow-bash 'ls'` cannot authorise
+  `'ls && rm -rf /'`. Only `regex:` is exempt from that guard — reach
+  for it deliberately, not as the default choice.
+- `run_command` (single program + argv, no shell) is scoped by
+  `--allow-bash` patterns exactly like `bash` — its program and
+  arguments are synthesized into one command string for matching.
+  `git_read` can't run arbitrary commands (fixed read-only git
+  subcommands only), so it needs no command-pattern scrutiny and is
+  gated at the coarse `--allow-tool git_read` level like other
+  read-only tools.
+- The same policy can be seeded persistently in `rush.json` instead of
+  repeated on every invocation:
+  ```json
+  { "permissions": { "run": {
+      "restrict": true,
+      "allow_tools": ["view"],
+      "allow_bash": ["git diff", "glob:ls *"]
+  }}}
+  ```
+  CLI flags union with config — `--restrict-run` forces restrict on
+  even if config's `restrict` is false, and the allow-lists merge.
+- `permissions.allowed_tools` (the plain, non-`run`-scoped setting) is
+  a separate, earlier-checked global bypass that still wins over this
+  gate — listing `bash` there approves every bash command regardless
+  of `--restrict-run`. Leave it clear of `bash` when `--allow-bash`
+  should be the one actually governing.
+- Only affects non-interactive `rush run` — interactive TUI/web
+  sessions are never restricted this way.
+
+Unlike `--allow-peak-hours`, this is not gated behind an explicit
+human ask — it narrows the blast radius rather than bypassing a
+safety refusal, so add it on your own judgment whenever a delegation's
+prompt or target workspace warrants less than full auto-approve.
 
 ## Monitoring
 

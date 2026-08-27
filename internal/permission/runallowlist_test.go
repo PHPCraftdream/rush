@@ -156,40 +156,6 @@ func TestPrefixWordBoundary(t *testing.T) {
 // TestBashCommandAllowed_PrefixRefusesCompoundCommands and the glob/exact
 // tests below.
 
-func TestExtractBashCommand(t *testing.T) {
-	// The concrete bash params type lives in internal/agent/tools; the
-	// permission package reads it via reflection to avoid a cycle. Use a
-	// local struct with the same shape to prove the field lookup.
-	type fakeBashParams struct {
-		Description string `json:"description"`
-		Command     string `json:"command"`
-		WorkingDir  string `json:"working_dir"`
-	}
-	t.Run("struct value", func(t *testing.T) {
-		assert.Equal(t, "git diff", extractBashCommand(fakeBashParams{Command: "git diff"}))
-	})
-	t.Run("struct pointer", func(t *testing.T) {
-		assert.Equal(t, "ls", extractBashCommand(&fakeBashParams{Command: "ls"}))
-	})
-	t.Run("nil", func(t *testing.T) {
-		assert.Equal(t, "", extractBashCommand(nil))
-	})
-	t.Run("non-struct", func(t *testing.T) {
-		assert.Equal(t, "", extractBashCommand("git diff"))
-		assert.Equal(t, "", extractBashCommand(42))
-	})
-	t.Run("no command field", func(t *testing.T) {
-		type other struct {
-			Cmd string
-		}
-		assert.Equal(t, "", extractBashCommand(other{Cmd: "x"}))
-	})
-	t.Run("nil pointer", func(t *testing.T) {
-		var p *fakeBashParams
-		assert.Equal(t, "", extractBashCommand(p))
-	})
-}
-
 func TestToolAllowed(t *testing.T) {
 	a, err := BuildRunAllowlist(RunAllowlistSpec{
 		Restrict:   true,
@@ -223,6 +189,12 @@ func TestMergeRunAllowlistSpecs(t *testing.T) {
 	assert.Equal(t, []string{"edit"}, b.AllowTools)
 }
 
+// fakeBashParams mirrors tools.BashPermissionsParams' interface contract
+// (RunAllowlistCommand) without importing internal/agent/tools.
+type fakeBashCommandParams struct{ Command string }
+
+func (p fakeBashCommandParams) RunAllowlistCommand() string { return p.Command }
+
 // TestAllowsRequest_AllowToolsDoesNotBypassBash is the conservative-
 // semantics guarantee: listing "bash" or "bash:execute" in AllowTools
 // must NOT authorise an arbitrary bash command. Only a matching
@@ -230,8 +202,6 @@ func TestMergeRunAllowlistSpecs(t *testing.T) {
 // footgun where a tool-name allowlist entry silently turns into a full
 // shell bypass.
 func TestAllowsRequest_AllowToolsDoesNotBypassBash(t *testing.T) {
-	type fakeParams struct{ Command string }
-
 	for _, tools := range [][]string{
 		{"bash"},
 		{"bash:execute"},
@@ -247,7 +217,7 @@ func TestAllowsRequest_AllowToolsDoesNotBypassBash(t *testing.T) {
 			})
 			require.NoError(t, err)
 			denied := a.allowsRequest(CreatePermissionRequest{
-				ToolName: "bash", Action: "execute", Params: fakeParams{Command: "ls -la"},
+				ToolName: "bash", Action: "execute", Params: fakeBashCommandParams{Command: "ls -la"},
 			})
 			assert.False(t, denied, "allow_tools=%v must not approve bash without an allow_bash match", tools)
 
@@ -260,7 +230,7 @@ func TestAllowsRequest_AllowToolsDoesNotBypassBash(t *testing.T) {
 			})
 			require.NoError(t, err)
 			allowed := a2.allowsRequest(CreatePermissionRequest{
-				ToolName: "bash", Action: "execute", Params: fakeParams{Command: "ls -la"},
+				ToolName: "bash", Action: "execute", Params: fakeBashCommandParams{Command: "ls -la"},
 			})
 			assert.True(t, allowed, "allow_bash match approves bash regardless of allow_tools")
 
@@ -285,16 +255,14 @@ func TestAllowsRequest_BashWithoutToolGrantUsesCommandMatch(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	type fakeParams struct{ Command string }
-
 	assert.True(t, a.allowsRequest(CreatePermissionRequest{
-		ToolName: "bash", Action: "execute", Params: fakeParams{Command: "git diff HEAD"},
+		ToolName: "bash", Action: "execute", Params: fakeBashCommandParams{Command: "git diff HEAD"},
 	}))
 	assert.False(t, a.allowsRequest(CreatePermissionRequest{
-		ToolName: "bash", Action: "execute", Params: fakeParams{Command: "rm -rf /"},
+		ToolName: "bash", Action: "execute", Params: fakeBashCommandParams{Command: "rm -rf /"},
 	}))
 	assert.False(t, a.allowsRequest(CreatePermissionRequest{
-		ToolName: "bash", Action: "execute", Params: fakeParams{Command: ""},
+		ToolName: "bash", Action: "execute", Params: fakeBashCommandParams{Command: ""},
 	}), "empty command is denied")
 }
 
@@ -312,9 +280,8 @@ func TestAllowsRequest_EmptyAllowlistDeniesBash(t *testing.T) {
 	// Restricted mode with no allowlist entries at all => deny everything.
 	a, err := BuildRunAllowlist(RunAllowlistSpec{Restrict: true})
 	require.NoError(t, err)
-	type fakeParams struct{ Command string }
 	assert.False(t, a.allowsRequest(CreatePermissionRequest{
-		ToolName: "bash", Action: "execute", Params: fakeParams{Command: "ls"},
+		ToolName: "bash", Action: "execute", Params: fakeBashCommandParams{Command: "ls"},
 	}))
 	assert.False(t, a.allowsRequest(CreatePermissionRequest{ToolName: "view"}))
 }
@@ -364,3 +331,69 @@ func TestPatternError_IncludesRawPattern(t *testing.T) {
 type assertAnError struct{}
 
 func (assertAnError) Error() string { return "cause" }
+
+// fakeRunCommandParams mirrors tools.RunCommandPermissionsParams' interface
+// contract without importing internal/agent/tools (import cycle). The real
+// quoting lives in the tools package; a simple join suffices here.
+type fakeRunCommandParams struct {
+	Program string
+	Args    []string
+}
+
+func (p fakeRunCommandParams) RunAllowlistCommand() string {
+	return strings.Join(append([]string{p.Program}, p.Args...), " ")
+}
+
+// TestAllowsRequest_RunCommandParamsUseCommandPatterns pins the generalised
+// gate: any tool whose params implement RunAllowlistCommand gets
+// allow_bash-pattern scrutiny, regardless of tool name — and an AllowTools
+// entry for such a tool can NOT authorise commands on its own.
+func TestAllowsRequest_RunCommandParamsUseCommandPatterns(t *testing.T) {
+	a, err := BuildRunAllowlist(RunAllowlistSpec{
+		Restrict:  true,
+		AllowBash: []string{"go test"},
+	})
+	require.NoError(t, err)
+
+	assert.True(t, a.allowsRequest(CreatePermissionRequest{
+		ToolName: "run_command", Action: "execute",
+		Params: fakeRunCommandParams{Program: "go", Args: []string{"test", "./..."}},
+	}))
+	assert.False(t, a.allowsRequest(CreatePermissionRequest{
+		ToolName: "run_command", Action: "execute",
+		Params: fakeRunCommandParams{Program: "rm", Args: []string{"-rf", "x"}},
+	}))
+
+	// A tool-name entry must NOT authorize commands.
+	aToolsOnly, err := BuildRunAllowlist(RunAllowlistSpec{
+		Restrict:   true,
+		AllowTools: []string{"run_command"},
+	})
+	require.NoError(t, err)
+	assert.False(t, aToolsOnly.allowsRequest(CreatePermissionRequest{
+		ToolName: "run_command", Action: "execute",
+		Params: fakeRunCommandParams{Program: "go", Args: []string{"test", "./..."}},
+	}), "allow_tools entry for run_command must not approve commands without allow_bash")
+}
+
+// plainParams has NO RunAllowlistCommand method — it exercises the
+// fall-through to the tool table.
+type plainParams struct{ Path string }
+
+// TestAllowsRequest_ParamsWithoutCommandProviderUseToolTable guards the
+// generalisation: tools whose params don't carry a command keep using the
+// AllowTools table and are never affected by allow_bash patterns.
+func TestAllowsRequest_ParamsWithoutCommandProviderUseToolTable(t *testing.T) {
+	a, err := BuildRunAllowlist(RunAllowlistSpec{
+		Restrict:   true,
+		AllowTools: []string{"customtool"},
+		AllowBash:  []string{"rm -rf"}, // would prefix-match something, but is irrelevant here
+	})
+	require.NoError(t, err)
+	assert.True(t, a.allowsRequest(CreatePermissionRequest{
+		ToolName: "customtool", Action: "run", Params: plainParams{Path: "/tmp"},
+	}))
+	assert.False(t, a.allowsRequest(CreatePermissionRequest{
+		ToolName: "othertool", Action: "run", Params: plainParams{Path: "/tmp"},
+	}))
+}

@@ -24,7 +24,6 @@ package permission
 //     command, or an unmatched request all fall through to "not allowed".
 
 import (
-	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -91,35 +90,34 @@ func (a RunAllowlist) IsRestricted() bool { return a.restrict }
 //
 // Semantics (conservative by design):
 //
-//   - Bash is governed ONLY by AllowBash command patterns. AllowTools
-//     entries for "bash" or "bash:execute" do NOT bypass command
-//     scrutiny — listing bash there is a silent no-op for the run gate.
-//     This keeps the two surfaces non-overlapping: AllowTools scopes
-//     which non-bash tools may run; AllowBash scopes which commands
-//     bash may run. (The global permissions.allowed_tools fast-path
-//     still wins over both because it is checked earlier in Request —
-//     that is the documented operator escape hatch for a full bash
-//     bypass, not this gate's concern.)
-//   - Every other tool is approved iff it (or its tool:action) is in
-//     the AllowTools table.
-//   - Empty/unreadable bash commands are denied.
+//   - Any tool whose params implement runAllowlistCommandProvider
+//     (bash, run_command) is governed ONLY by AllowBash command
+//     patterns, applied to the command string the params provide.
+//     AllowTools entries for such tools do NOT bypass command
+//     scrutiny — listing them there is a silent no-op for the run
+//     gate. This keeps the two surfaces non-overlapping: AllowTools
+//     scopes which plain tools may run; AllowBash scopes which
+//     commands the command-executing tools may run. (The global
+//     permissions.allowed_tools fast-path still wins over both because
+//     it is checked earlier in Request — that is the documented
+//     operator escape hatch for a full bypass, not this gate's
+//     concern.)
+//   - Every other tool (params without a command string) is approved
+//     iff it (or its tool:action) is in the AllowTools table.
+//   - Empty/unreadable commands are denied.
 func (a RunAllowlist) allowsRequest(opts CreatePermissionRequest) bool {
-	// Bash gets command-level scrutiny ONLY. We deliberately do not
-	// consult the AllowTools table here, even if "bash" or
-	// "bash:execute" is listed: a tool-name match must not authorise an
-	// arbitrary shell command. Operators who want to approve bash
-	// wholesale must use permissions.allowed_tools (the pre-gate
-	// fast-path), not run.allow_tools.
-	//
-	// The literal "bash" must stay equal to internal/agent/tools.BashToolName
-	// (we can't import it here without an import cycle). A cross-package
-	// guard in internal/app (TestRunAllowlist_BashToolNameLiteralMatchesConstant)
-	// fails the build if the tool is ever renamed and this literal is not.
-	if opts.ToolName == "bash" {
-		cmd := extractBashCommand(opts.Params)
+	// Command-carrying tools get command-level scrutiny ONLY, routed via
+	// the RunAllowlistCommand interface rather than by tool name: a
+	// tool-name match must never authorise an arbitrary command. We
+	// deliberately do not consult the AllowTools table here, even if the
+	// tool (or tool:action) is listed. Operators who want to approve a
+	// command-executing tool wholesale must use permissions.allowed_tools
+	// (the pre-gate fast-path), not run.allow_tools.
+	if provider, ok := opts.Params.(runAllowlistCommandProvider); ok {
+		cmd := provider.RunAllowlistCommand()
 		if cmd == "" {
-			// Bash call with no inspectable command — deny. We refuse
-			// to auto-approve an unknown shell command in restricted mode.
+			// Request with no inspectable command — deny. We refuse
+			// to auto-approve an unknown command in restricted mode.
 			return false
 		}
 		return bashCommandAllowed(a.bashPatterns, cmd)
@@ -128,9 +126,10 @@ func (a RunAllowlist) allowsRequest(opts CreatePermissionRequest) bool {
 }
 
 // toolAllowed reports whether the tool (or tool:action) is in the
-// AllowTools table. It is consulted ONLY for non-bash tools; the bash
-// branch of allowsRequest ignores it entirely (see the doc comment
-// there). An empty table denies every non-bash tool.
+// AllowTools table. It is consulted ONLY for tools whose params don't
+// carry a command string; the command-provider branch of allowsRequest
+// ignores it entirely (see the doc comment there). An empty table denies
+// every plain tool.
 func (a RunAllowlist) toolAllowed(toolName, action string) bool {
 	if len(a.allowTools) == 0 {
 		return false
@@ -343,35 +342,6 @@ func prefixWordBoundary(pattern, command string) bool {
 
 type runAllowlistCommandProvider interface {
 	RunAllowlistCommand() string
-}
-
-// extractBashCommand reads the bash command from permission params. The
-// real bash params type implements runAllowlistCommandProvider; the
-// reflection fallback keeps tests and older mirror structs working
-// without importing internal/agent/tools and creating a package cycle.
-// Returns "" when params is nil, non-struct, or has no command.
-func extractBashCommand(params any) string {
-	if params == nil {
-		return ""
-	}
-	if provider, ok := params.(runAllowlistCommandProvider); ok {
-		return provider.RunAllowlistCommand()
-	}
-	v := reflect.ValueOf(params)
-	for v.Kind() == reflect.Pointer {
-		if v.IsNil() {
-			return ""
-		}
-		v = v.Elem()
-	}
-	if v.Kind() != reflect.Struct {
-		return ""
-	}
-	f := v.FieldByName("Command")
-	if !f.IsValid() || f.Kind() != reflect.String {
-		return ""
-	}
-	return f.String()
 }
 
 // runAllowlistGate wraps a RunAllowlist with the mutex it shares with

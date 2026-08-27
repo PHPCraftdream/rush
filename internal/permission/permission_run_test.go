@@ -8,15 +8,17 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// fakeBashParams mirrors the shape of tools.BashPermissionsParams so the
-// reflection-based extractor in the permission package can read the
-// Command field without importing internal/agent/tools (which would be
-// a cycle). Keep the field name in sync with BashPermissionsParams.
+// fakeBashParams mirrors tools.BashPermissionsParams' interface contract
+// (RunAllowlistCommand) without importing internal/agent/tools (which
+// would be a cycle). Keep the method's output in sync with the real
+// BashPermissionsParams.
 type fakeBashParams struct {
 	Description string `json:"description"`
 	Command     string `json:"command"`
 	WorkingDir  string `json:"working_dir"`
 }
+
+func (p fakeBashParams) RunAllowlistCommand() string { return p.Command }
 
 // newRunTestService is newTestService + an auto-approved session, so the
 // restricted-run gate is the only thing left to exercise.
