@@ -192,7 +192,7 @@ jobs:
         # cross-compiled package.
         #
         # `rush --version` prints version.VersionLine() (e.g.
-        # "0.2.0-alpha.0 (c34a7334, built ...)" — forkBaseVersion plus a
+        # "0.2.0-alpha.1 (c34a7334, built ...)" — forkBaseVersion plus a
         # provenance suffix, no "v" prefix), NOT the raw ldflags-injected
         # version.Version. So EXPECTED must be the bare numeric tag
         # (steps.ver.outputs.version), not go_version.
@@ -200,7 +200,7 @@ jobs:
           VERSION: ${{ steps.ver.outputs.version }}
         run: |
           set -euo pipefail
-          EXPECTED="${VERSION}"   # e.g. 0.2.0-alpha.0 (resolved from the npm-v tag, no "v" prefix)
+          EXPECTED="${VERSION}"   # e.g. 0.2.0-alpha.1 (resolved from the npm-v tag, no "v" prefix)
           if [ -z "$EXPECTED" ]; then
             echo "::error::expected version is empty — the version-resolution step failed"
             exit 1
@@ -256,11 +256,11 @@ jobs:
           set -euo pipefail
           # npm defaults every `npm publish` to the "latest" dist-tag
           # regardless of whether the version string carries a semver
-          # prerelease identifier — publishing e.g. 0.2.0-alpha.0 without an
+          # prerelease identifier — publishing e.g. 0.2.0-alpha.1 without an
           # explicit --tag would make that alpha the version everyone gets
           # from a bare `npm install @phpcraftdream/rush`. Derive the
           # dist-tag from the version's prerelease identifier instead
-          # (0.2.0-alpha.0 -> alpha, 0.2.0-rc.1 -> rc), so only a clean
+          # (0.2.0-alpha.1 -> alpha, 0.2.0-rc.1 -> rc), so only a clean
           # X.Y.Z release ever lands on "latest".
           if printf '%s' "$VERSION" | grep -Eq -- '-[A-Za-z]'; then
             PUBLISH_TAG="$(printf '%s' "$VERSION" | sed -E 's/^[0-9]+\.[0-9]+\.[0-9]+-([A-Za-z]+).*/\1/')"

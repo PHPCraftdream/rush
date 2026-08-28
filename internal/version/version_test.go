@@ -16,7 +16,7 @@ func TestVersionLine(t *testing.T) {
 }
 
 // TestBuildProvenanceSuffix pins the provenance tail appended to VersionLine.
-// It exists because the release-line part alone ("0.2.0-alpha.0") is identical
+// It exists because the release-line part alone ("0.2.0-alpha.1") is identical
 // for every build of that line, so a deployed binary carried no evidence of
 // which source tree produced it — making "is the running binary actually built
 // from current source?" unanswerable from the binary itself, a question that

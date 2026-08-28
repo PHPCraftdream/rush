@@ -15,7 +15,7 @@ import (
 // line a devel binary was built from. This fork bumps versions deliberately and
 // manually (see CLAUDE.md at the repo root), so this constant must be kept in
 // lockstep with npm/rush/package.json on every bump.
-const forkBaseVersion = "0.2.0-alpha.0"
+const forkBaseVersion = "0.2.0-alpha.1"
 
 // VersionLine is what `rush --version`/`rush version` prints: the fork's
 // release-line version, with no "v" prefix, followed by this specific

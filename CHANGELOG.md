@@ -8,7 +8,82 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.2.0-alpha.1] - 2026-08-28
+
 ### Added
+
+- **`git_read` and `run_command` agent tools.** Two narrower alternatives
+  to `bash` for the two things it was used for most: inspecting a repo
+  and running a program. `git_read` exposes a fixed, closed set of
+  non-mutating git operations (`status`/`diff`/`log`/`show`/`blame`/
+  `branch_list`) — there is no way to reach `checkout`/`reset`/`commit`/
+  `push` through it, because the tool never accepts a raw command or raw
+  flags, only typed parameters assembled into one of those six fixed
+  shapes. It is safe to run concurrently from different subdirectories
+  of the same repo. `run_command` runs one program with an argument
+  list and no shell at all — no `;`/`&&`/`|`/`$()`/backticks, because
+  nothing parses the arguments as shell syntax — which is both faster
+  (bypasses the Windows shell-emulation layer `bash` goes through) and
+  closes a class of shell-injection that a restricted `bash` allowlist
+  cannot. Both are covered by the same `--restrict-run`/`--allow-bash`
+  surface as `bash`: `run_command`'s program and arguments are
+  synthesized into one command string for pattern matching, so an
+  existing `--allow-bash 'go test'` rule now also permits `run_command`
+  running `go test`.
+- **`rush mcp add`/`rush mcp set --enabled-in-cli`** and a `CLI` column
+  in `rush mcp list` to manage the new `enabled_in_cli` field (see
+  Changed below) without hand-editing `rush.json`.
+
+- **`rush migrate`** renames existing on-disk state from the old
+  crush-era names to the new ones (see the rename entry under Changed):
+  `.crush/` → `.rush/`, `crush.json` → `rush.json`, `CRUSH.md` →
+  `RUSH.md`, `.crushignore` → `.rushignore`, plus both global
+  locations (config and data are genuinely separate paths gated by
+  different env vars, so both are always attempted). `--recursive`
+  walks a tree and migrates every project it finds; `--dry-run` prints
+  what would happen and touches nothing. It never merges or clobbers:
+  if the rush-named target already exists, that one item is refused
+  with an explicit message while everything else in the same run still
+  proceeds, and the command exits non-zero if anything needs manual
+  attention. A gitignored `.crush/` still migrates; a `crush.json`
+  genuinely nested inside `node_modules` does not.
+- **`rush cli-refresh`** re-installs the slash-commands and sub-agents
+  for all five tool integrations (claude, codex, gemini, grok, qwen) in
+  one go, replacing crush-branded ones with their rush-branded
+  equivalents. Local by default, or `--recursive` (only directories
+  that already have an integration) / `--global`, with `--dry-run`. It
+  is deliberately a separate command from `rush migrate` and is never
+  invoked by it — config state and installed tooling are two different
+  things to update, on two different schedules.
+
+- **A Retry button on every user message** in the web UI, not just the
+  last one. The server already implemented the atomic
+  cancel-tail-delete-and-resend; only the last message ever exposed it.
+  Retrying an earlier message now warns, in a confirm dialog, that it
+  and everything after it will be deleted. The selection checkbox also
+  stopped moving: it used to flip sides based on who wrote the message,
+  and now sits at a fixed left edge.
+- **Right-click a message's checkbox to select everything above or
+  below it.** Both add to the current selection rather than replacing
+  it, matching shift-click's existing behaviour.
+- **A "More" dropdown in the chat toolbar.** The button cluster had
+  grown crowded, so the occasional-configuration buttons (Prompt, MCP,
+  Providers, Default models, Settings, Logs) moved into one menu.
+  Moment-to-moment session controls — Compact, Collapse all, the
+  update badge, the theme/keep-alive toggles, the sitter pill — stay
+  where they were.
+- **A button to shut the server down from the web UI.** It travels on
+  the same non-starvable control-plane path as cancel/interrupt, so a
+  shutdown request never queues behind a long-running turn.
+
+- **rush refuses to run from inside its own source tree.** A scratch
+  dev binary built into the repo goes stale silently: one was found
+  mid-session shipping a *new* system prompt that told delegated agents
+  their edit tools were "absent by design" alongside *old* code that
+  had not actually removed them, so those agents cheerfully called the
+  tools they had just been told they did not have. The binary now
+  refuses to start from that location and says how to build or install
+  a real one.
 
 - **A badge when a newer rush exists.** Since the TUI was removed
   nothing told anyone about a new release: upstream published a message
@@ -40,12 +115,30 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   which does not, and no script or workflow ran `tsc`. Five errors had
   accumulated unnoticed, one of which changed what users saw.
 
+- **Higher prompt-cache hit rates**, ported from investigating why
+  oh-my-pi gets much better ones than rush did. Three changes: the
+  todo-list reminder injected into every turn moves from the *front*
+  of the conversation history to the tail — it's regenerated from the
+  session's current todos every turn, so prepending it busted the
+  longest-common-prefix cache match on every single todo mutation,
+  the single largest source of cache invalidation rush had. An idle
+  keep-alive now extends Anthropic/Bedrock/Vercel's ~5-minute cache
+  TTL for a paused conversation: after a turn writes to the cache, a
+  timer fires a detached, silent replay of the same cache-marked
+  messages just under the TTL, up to 3 times (~15 minutes), cancelled
+  the moment a real turn resumes. And OpenAI-compatible providers
+  (Chat Completions and Responses API) now get a stable
+  `prompt_cache_key` per session, matching the affinity hint the
+  request headers already used, so repeated calls have a better
+  chance of landing on the same upstream cache shard.
 - **Per-message token & prompt-cache statistics** — every assistant
   message now records its own token accounting, split into three
   disjoint classes (fresh input / served from cache / written to cache)
   plus reasoning tokens, cost, and the model that actually produced it.
-  New `rush sessions cache` reports it per session, per model or per
-  day, with `--since` to bound the period and `--json` for machines.
+  This is also the tool that proves the cache-hit-rate work above
+  actually helps: `rush sessions cache` reports it per session, per
+  model or per day, with `--since` to bound the period and `--json`
+  for machines.
   Grouping is by the *producing* model, so a session that switched
   models mid-conversation is attributed correctly — something `sessions
   cost` cannot do, as it groups by the session's current model.
@@ -54,7 +147,10 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   (a fabricated zero is indistinguishable from a real miss), every
   table states its coverage when some messages have no usage recorded,
   and the per-day view omits the hit rate entirely because a day can
-  span providers whose cache visibility differs.
+  span providers whose cache visibility differs. It also flags
+  warm-to-cold cache transitions per session, distinguishing a genuine
+  prompt-prefix change from the cache simply expiring after a normal
+  idle gap.
 - **Reasoning effort is now dispatched per CLI**, and validated against
   what each model actually accepts — codex's own registry stops
   `gpt-5.5` at `xhigh` while `gpt-5.6-sol` accepts `ultra`.
@@ -77,6 +173,80 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   following the folder/system default instead of staying pinned forever.
 
 ### Changed
+
+- **BREAKING — the tool is now called `rush`, not `crush`.** This fork
+  had diverged far enough from upstream that sharing a name with it
+  caused real confusion: which binary is on `$PATH`, which project an
+  issue belongs to, which config a directory holds. The rename is a
+  clean break with no compatibility shims, and it touches everything
+  a user can see:
+
+  - the binary is `rush` (`rush run`, `rush sessions`, …);
+  - **all ~52 `CRUSH_*` environment variables are now `RUSH_*`**;
+  - config and state move: `.crush/` → `.rush/`, `crush.json` →
+    `rush.json`, `CRUSH.md` → `RUSH.md`, `.crushignore` →
+    `.rushignore`, `~/.config/crush` → `~/.config/rush`,
+    `~/.local/share/crush` → `~/.local/share/rush`,
+    `%LocalAppData%\crush` → `…\rush`, `/etc/crush/crush.json` →
+    `/etc/rush/rush.json`, and inside the data dir `crush.db` →
+    `rush.db` and `crush.log` → `rush.log`;
+  - the Go module path is `github.com/PHPCraftdream/rush`;
+  - the npm package is `@phpcraftdream/rush`;
+  - the installed slash-commands become `/rush` (`rush claude-init`
+    and friends now write rush-named files under a new sentinel).
+
+  **Existing installations do not migrate themselves** — run `rush
+  migrate` (see Added) to rename on-disk state, and `rush cli-refresh`
+  to update installed slash-commands. The one deliberate
+  backward-compatibility carve-out: every `*-del` command still removes
+  legacy crush-named files as well as rush-named ones, so uninstalling
+  an old integration still works; a file at a legacy path that carries
+  no recognized sentinel is refused with a warning rather than deleted.
+
+- **The orchestrator can no longer edit files itself — it has to
+  delegate.** With a worker model configured, three real `rush run
+  --role smart` runs made *zero* calls to the `agent` tool out of 50,
+  51 and 24 tool calls: the smart model did every edit itself while the
+  worker sat unused. Everything about that was working as designed
+  except the part that matters — the prompt asked it to delegate, and
+  asking was not enough. `edit`/`multiedit`/`write` are now removed
+  from the orchestrator's toolset outright when a worker is active, so
+  hands-on work has to go through the worker. `bash` and every read
+  tool stay, deliberately: the orchestrator's own zero-trust
+  verification pass has to be able to re-read files and re-run tests
+  itself, and delegating verification would mean trusting a worker's
+  report about checking a worker's report.
+
+- **Config-only commands start ~14× faster.** `rush models state`
+  took ~10.85s: `setupApp` unconditionally ran startup recovery,
+  started every MCP server, and built the whole agent coordinator
+  (including skill discovery) even for commands that never touch a
+  session or the coordinator. The `models`, `providers`, `mcp`,
+  `login` and `queue add/list/show/rm/clear` families now skip all
+  three — audited command by command, not guessed.
+
+- **Startup recovery no longer scales with session count.** It used to
+  list every session and pull each one's *entire* message history just
+  to ask "was this session's last message an interrupted turn?" —
+  measured at 137 sessions: 10.03s, which hit the sweep's own 10s
+  deadline before it finished. A partial index plus a query that
+  returns only the sessions whose chronologically last message is an
+  unfinished assistant turn replaces the linear scan. This fork's
+  design intent is N concurrent sessions, so a high session count is
+  the normal case, not an edge case.
+
+- **BREAKING — MCP servers no longer start automatically during `rush
+  run` (and every other non-interactive CLI command) unless explicitly
+  opted in.** New per-server config field `enabled_in_cli` (default
+  `false`) gates it; the interactive web UI is unaffected and always
+  starts every non-disabled server exactly as before. Profiling `rush
+  run`'s memory found a globally-configured `stdio` MCP server
+  (an `npx`-launched Node process) committing ~90-100MB on every single
+  invocation — more than rush's own process — regardless of whether the
+  task ever called it. **Existing MCP servers you actually want
+  available to `rush run` need `"enabled_in_cli": true` added**
+  (`rush mcp set <id> --enabled-in-cli=true`), or pass `--all-mcp` on a
+  one-off invocation that needs everything.
 
 - **BREAKING — the model slots are now called `smart` and `fast`**, not
   `large` and `small`. There were already two names for each of these
@@ -117,6 +287,80 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   only the abbreviation is gone.
 
 ### Fixed
+
+- **The Inject button was silently doing something else.** It sends a
+  message into the *currently running* turn — that is its entire
+  reason to exist, and it is only visible while a turn is busy — but a
+  refactor had every send path reshaped into `send_message`, so every
+  online use of Inject quietly degraded into "queue this as the next
+  turn" instead. No error, no visible difference until the turn
+  finished and the message arrived late.
+- **Queued messages could vanish on a reconnect race.** The queue was
+  drained and *then* sent; if the socket closed between those two
+  steps the messages were already gone from the queue and the send
+  returned false. Sends now route through the offline outbox, and
+  content that the outbox refuses (it is bounded at 100 frames) goes
+  back into the per-session queue rather than disappearing.
+- **The UI could get stuck "busy" forever after a disconnect.**
+  Several places started a request, ignored that the send had failed,
+  and then waited for a reply that could never arrive — worst case the
+  Providers modal, which had no failure handling at all. All of them
+  (provider edits, system-prompt save, project initialize, log
+  loading, skills update) now go through one bounded request helper.
+- **Three ways to open a window past the PowerShell guard**, each
+  found by review rather than by incident: the `saps`/`sajb` aliases
+  for `Start-Process`/`Start-Job` were not recognized at all; the
+  window check did not look inside `iex`/`Invoke-Command` wrappers, so
+  `powershell -c "iex 'saps notepad'"` passed; and `-ScriptBlock { … }`
+  had its braced body treated as an opaque flag argument, so
+  `Invoke-Command -ScriptBlock { Start-Process notepad }` was never
+  inspected. All three now recurse into the wrapped content through
+  the same checks as any other command.
+- **A retried turn no longer duplicates your message.** When a turn
+  ended in an error with no content, the retry re-sent the same prompt
+  but did not tell the agent it was reusing the existing message row —
+  so each attempt persisted the prompt again. Found investigating a
+  real session where one user message appeared three or four times in
+  its own history.
+- **Scrolling up during streaming works.** Every streamed update
+  re-triggered "scroll to bottom" if the view had last been at the
+  bottom, and only a real scroll *event* could clear that flag — which
+  the browser dispatches on a later task, not synchronously with the
+  wheel. During fast streaming the snap-back kept winning the race,
+  making it feel nearly impossible to scroll away. The wheel now
+  disengages the magnet immediately.
+- **GLM-5.3 and GLM-5.3-Flash reasoning effort.** Both models actually
+  expose `low`/`high`/`max` — not the `off`/`on` toggle other GLM-5
+  models use — so `rush models use --smart zai/glm-5.3-flash@high`
+  failed, and `rush models state` showed a stale `on` value neither
+  model accepts. Fixed everywhere the vocabulary is declared (CLI
+  atoms, the wire-format switch, `rush models efforts`, and the web
+  UI). Also fixed
+  a more serious bug found while chasing this down: loading config could
+  silently discard and overwrite a smart/fast model selection that
+  wasn't yet in the cached provider catalog — on every single config
+  load, including read-only commands like `rush models state` — making
+  "select a model rush doesn't have cached yet" effectively impossible
+  to keep.
+- **Windows console windows no longer flash during `rush run`.**
+  `SysProcAttr.HideWindow` alone does not set `CREATE_NO_WINDOW`; it
+  only hides an already-created window after the fact, a race that lost
+  under load. Both flags are now set together on every spawned child.
+- **CI `lint` was failing on every push** (a reusable workflow owned by
+  a different GitHub organization silently refuses external forks). The
+  job is now self-contained.
+- **A rare "close of closed channel" panic under heavy load**, traced to
+  the checkpoint-write ticker attempting one more write with an
+  already-cancelled context after being told to stop — internal-only,
+  never reached a real user-visible failure, since the redundant write
+  simply failed the same way any other cancellation would have.
+- **Two missing database indexes** found by profiling: `rush run
+  --continue` did a full table scan of every session to find the most
+  recent one, and loading a session's message history paid an
+  in-memory sort despite an existing index, because no index covered
+  both the filter and the sort order together. Both closed with
+  covering composite indexes, verified with `EXPLAIN QUERY PLAN`
+  against a real database before and after.
 
 - **`rush run` no longer reports success for work it did not do.** Three
   separate ways it could, all on the path that finishes a durable
