@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -324,13 +325,27 @@ func TestGetCallTreeActivity_WideTree(t *testing.T) {
 	require.EqualValues(t, 200+childCount-1, row.LatestUnix, "freshest activity is on the last child")
 }
 
-// TestMigration_ParentSessionIdIndex asserts migration 20260728000002 created
-// idx_sessions_parent_session_id on sessions(parent_session_id). That index
-// backs the recursive descent in GetCallTreeActivity
-// (WHERE s.parent_session_id = tree.session_id) and ListSubSessions; without
-// it every recursion step is a full sessions scan. newCallTreeTestDB runs the
-// REAL migrations via db.Connect, so this verifies the migration applies
-// cleanly and produces the index.
+// TestMigration_ParentSessionIdIndex asserts some index leads with
+// sessions(parent_session_id). That leading column backs the recursive
+// descent in GetCallTreeActivity (WHERE s.parent_session_id =
+// tree.session_id) and ListSubSessions/ListSessions; without it every
+// recursion step is a full sessions scan. newCallTreeTestDB runs the REAL
+// migrations via db.Connect, so this verifies the migrations apply cleanly
+// and produce a usable index.
+//
+// Migration 20260728000002 originally created a bare
+// idx_sessions_parent_session_id(parent_session_id) index. Migration
+// 20260828000001 replaced it with two composite indexes,
+// idx_sessions_parent_session_id_updated_at and
+// idx_sessions_parent_session_id_created_at (parent_session_id leading both,
+// EXPLAIN QUERY PLAN-verified against a real dev DB to eliminate a
+// USE TEMP B-TREE FOR ORDER BY step ListSessions/ListSubSessions previously
+// paid on every call) — a strict superset of the bare index's coverage for
+// every query that only filtered on parent_session_id, so the bare index
+// was dropped rather than kept alongside the composites. The prefix match
+// below intentionally does not pin an exact index name: what matters is
+// that parent_session_id lookups stay accelerated, not the specific
+// column combination a future migration chooses.
 func TestMigration_ParentSessionIdIndex(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -348,6 +363,13 @@ func TestMigration_ParentSessionIdIndex(t *testing.T) {
 		names = append(names, n)
 	}
 	require.NoError(t, rows.Err())
-	require.Contains(t, names, "idx_sessions_parent_session_id",
-		"migration must create idx_sessions_parent_session_id on sessions(parent_session_id)")
+
+	var found []string
+	for _, n := range names {
+		if strings.HasPrefix(n, "idx_sessions_parent_session_id") {
+			found = append(found, n)
+		}
+	}
+	require.NotEmpty(t, found,
+		"migration must create at least one index leading with sessions(parent_session_id); found indexes: %v", names)
 }

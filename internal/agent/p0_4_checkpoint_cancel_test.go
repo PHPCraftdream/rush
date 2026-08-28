@@ -46,6 +46,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -63,12 +64,21 @@ import (
 // the rest of a real turn can proceed normally.
 type checkpointBlockingMessages struct {
 	message.Service
-	mu            sync.Mutex
-	armed         bool
-	updateStarted chan struct{} // closed once a checkpoint Update call is blocked
-	releaseCh     chan struct{} // test closes this to unblock manually, as a cleanup fallback
-	ctxCanceledCh chan struct{} // closed if the blocked call observed ctx.Done() first
-	startOnce     sync.Once
+	mu              sync.Mutex
+	armed           bool
+	updateStarted   chan struct{} // closed once a checkpoint Update call is blocked
+	releaseCh       chan struct{} // test closes this to unblock manually, as a cleanup fallback
+	ctxCanceledCh   chan struct{} // closed if the blocked call observed ctx.Done() first
+	startOnce       sync.Once
+	ctxCanceledOnce sync.Once
+	// checkpointAttempts counts every Update call classified as a
+	// checkpoint write, including ones seen after stopCheckpoint has
+	// already cancelled writeCtx. It must never exceed 1 for a single
+	// generation — see the select-priority fix in agent_turn.go's
+	// checkpoint ticker loop (stopCheckpoint closes `stop` before
+	// cancelling writeCtx, so without that fix a queued tick could win
+	// the race against `stop` and attempt a second, already-doomed write).
+	checkpointAttempts atomic.Int32
 }
 
 func newCheckpointBlockingMessages(inner message.Service) *checkpointBlockingMessages {
@@ -95,10 +105,11 @@ func (m *checkpointBlockingMessages) Update(ctx context.Context, msg message.Mes
 	isCheckpointWrite := armed && fp != nil && fp.Partial
 
 	if isCheckpointWrite {
+		m.checkpointAttempts.Add(1)
 		m.startOnce.Do(func() { close(m.updateStarted) })
 		select {
 		case <-ctx.Done():
-			close(m.ctxCanceledCh)
+			m.ctxCanceledOnce.Do(func() { close(m.ctxCanceledCh) })
 			return ctx.Err()
 		case <-m.releaseCh:
 			// Fell through to the real write below.
@@ -221,4 +232,16 @@ func TestP0_4_StopCheckpointCancelsBlockedWrite(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("Run() did not exit after cleanup unblock")
 	}
+
+	// Regression guard for the race this test originally uncovered: the
+	// checkpoint ticker's select gave no priority to the stop signal over
+	// an already-queued tick, so a second write could be attempted with
+	// the writeCtx stopCheckpoint had just cancelled — observed as an
+	// intermittent "close of closed channel" panic on ctxCanceledCh under
+	// load. By the time runDone has fired, stopCheckpoint has already
+	// waited for the checkpoint goroutine to fully exit, so this read is
+	// race-free: exactly one checkpoint write must ever have been
+	// attempted for this generation.
+	require.EqualValues(t, 1, blockingMsgs.checkpointAttempts.Load(),
+		"exactly one checkpoint write must be attempted before stop takes effect — a second attempt means the ticker raced past the stop signal")
 }

@@ -801,6 +801,25 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 				case <-genCtx.Done():
 					return
 				case <-ticker.C:
+					// stopCheckpoint closes `stop` BEFORE cancelling writeCtx
+					// (see its comment), so a tick that was already queued
+					// while the previous write was blocked can become ready
+					// in the SAME instant `stop` does — select's case order
+					// above gives no priority, so it can pick ticker.C over
+					// stop by chance. Re-checking non-blockingly here closes
+					// that window: a write must never be attempted with a
+					// writeCtx that stopCheckpoint may have already
+					// cancelled, since that write's failure would be
+					// indistinguishable from any other cancellation to the
+					// caller but still represents wasted, racy work the
+					// goroutine was explicitly told to stop before reaching.
+					select {
+					case <-stop:
+						return
+					case <-genCtx.Done():
+						return
+					default:
+					}
 					sessionLock.Lock()
 					var snap message.Message
 					haveSnap := false
