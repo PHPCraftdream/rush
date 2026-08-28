@@ -164,7 +164,15 @@ func Close(ctx context.Context) error {
 }
 
 // Initialize initializes MCP clients based on the provided configuration.
-func Initialize(ctx context.Context, permissions permission.Service, cfg *config.ConfigStore) {
+//
+// restrictToCLIEnabled, when true, additionally skips every server whose
+// config does not set EnabledInCLI — set by internal/app.New's
+// RestrictMCPToCLI option for non-interactive invocations (rush run and
+// every other CLI subcommand except the bare `rush` that starts the web
+// UI). The interactive web/TUI path always passes false here, so it
+// keeps starting every non-disabled server exactly as before this field
+// existed.
+func Initialize(ctx context.Context, permissions permission.Service, cfg *config.ConfigStore, restrictToCLIEnabled bool) {
 	slog.Info("Initializing MCP clients")
 	var wg sync.WaitGroup
 	// Initialize states for all configured MCPs
@@ -172,6 +180,11 @@ func Initialize(ctx context.Context, permissions permission.Service, cfg *config
 		if m.Disabled {
 			updateState(name, StateDisabled, nil, nil, Counts{})
 			slog.Debug("Skipping disabled MCP", "name", name)
+			continue
+		}
+		if restrictToCLIEnabled && !m.EnabledInCLI {
+			updateState(name, StateDisabled, nil, nil, Counts{})
+			slog.Debug("Skipping MCP not enabled for CLI mode (set enabled_in_cli or pass --all-mcp)", "name", name)
 			continue
 		}
 

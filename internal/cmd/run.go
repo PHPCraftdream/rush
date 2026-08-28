@@ -211,6 +211,16 @@ set with no prompting. This is fast but irreversible — only run
 "rush run"" in a workspace whose contents you can afford to lose, and
 prefer --cwd /some/sandbox-or-temp-dir for one-shot scripts.
 
+MCP servers: by default only servers with mcp.<id>.enabled_in_cli=true
+in rush.json are started for "rush run"" (and every other non-web CLI
+subcommand) — most MCP servers add nothing to an unattended agent while
+still paying real startup cost (a stdio server spawns its own child
+process every invocation). Interactive "rush"" (the web UI) is
+unaffected and always starts every non-disabled server.
+  --all-mcp   start every configured, non-disabled MCP server for this
+              run, ignoring enabled_in_cli. Use when this specific run
+              genuinely needs an MCP server rush would otherwise skip.
+
 Restricted-run allowlist (scoped permissions):
   --restrict-run           flip from auto-approve-everything to
                            deny-by-default; only allowlist matches are
@@ -810,6 +820,10 @@ func init() {
 	// Fork patch: batch 30 — runaway protection.
 	runCmd.Flags().String("max-cost", "", "Abort the run if total cost (USD) exceeds this value. e.g. 0.50, 2.00")
 	runCmd.Flags().String("max-tokens", "", "Abort the run if total prompt+completion tokens exceed this value. e.g. 100k, 1M, 500000")
+	// Fork patch: MCP servers default to OFF in CLI mode (see mcpAppOptions
+	// in root.go) unless mcp.<id>.enabled_in_cli=true; this is the one-off
+	// escape hatch for a run that needs a server rush would otherwise skip.
+	runCmd.Flags().Bool("all-mcp", false, `Force-start every configured, non-disabled MCP server for this run, ignoring each server's enabled_in_cli setting. Does not affect interactive TUI/web sessions, which always start every non-disabled server regardless of this flag.`)
 	// Fork patch (run allowlist): scope what an unattended run may do.
 	runCmd.Flags().Bool("restrict-run", false, `Opt into restricted permission mode for this run. When set (or when permissions.run.restrict is true in config), permission requests are auto-approved ONLY if they match the allowlist; everything else is denied cleanly. Default remains auto-approve-everything. Does not affect interactive TUI/web sessions.`)
 	runCmd.Flags().StringSlice("allow-bash", nil, `Bash command patterns to permit in restricted-run mode (repeatable, also comma-separated). Merged with permissions.run.allow_bash from config. Forms: 'cmd args' (word-boundary prefix, chaining-guarded) | 'exact:cmd' | 'glob:pat' | 'regex:pat'. Examples: --allow-bash 'git diff' --allow-bash 'glob:ls *' --allow-bash 'regex:^go (test|build)'`)

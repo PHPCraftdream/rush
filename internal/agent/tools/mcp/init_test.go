@@ -524,3 +524,61 @@ func TestCreateSession_ResolutionFailureUpdatesState(t *testing.T) {
 		})
 	}
 }
+
+// TestInitialize_RestrictToCLIEnabled pins the enabled_in_cli gate used by
+// non-interactive invocations (see internal/app.RestrictMCPToCLI and
+// internal/cmd/root.go's mcpAppOptions): with restrictToCLIEnabled=true, a
+// server without EnabledInCLI must be skipped exactly like Disabled — no
+// connection attempt at all, StateDisabled — while a server with
+// EnabledInCLI is still attempted. With restrictToCLIEnabled=false
+// (interactive web/TUI), both must be attempted regardless of the field.
+//
+// Both servers point `command` at a real "echo" binary that is not
+// actually an MCP server, so any ATTEMPTED connection fails fast with a
+// protocol error (StateError) — that failure is expected and irrelevant
+// to this test; what matters is whether a connection was attempted at
+// all (anything other than StateDisabled) versus skipped outright
+// (StateDisabled, set synchronously before initClient ever runs).
+func TestInitialize_RestrictToCLIEnabled(t *testing.T) {
+	const (
+		offName         = "test-restrict-cli-off"
+		onName          = "test-restrict-cli-on"
+		interactiveName = "test-restrict-interactive"
+	)
+	for _, name := range []string{offName, onName, interactiveName} {
+		states.Del(name)
+		t.Cleanup(func() { states.Del(name) })
+	}
+
+	dataDir := t.TempDir()
+	store, err := config.Init(dataDir, dataDir, false)
+	require.NoError(t, err)
+
+	store.Config().MCP = config.MCPs{
+		offName: {Type: config.MCPStdio, Command: "echo"},
+		onName:  {Type: config.MCPStdio, Command: "echo", EnabledInCLI: true},
+	}
+	Initialize(t.Context(), nil, store, true)
+
+	offState, ok := GetState(offName)
+	require.True(t, ok)
+	require.Equal(t, StateDisabled, offState.State,
+		"a server without enabled_in_cli must be skipped, not attempted, when restricted to CLI-enabled servers")
+
+	onState, ok := GetState(onName)
+	require.True(t, ok)
+	require.NotEqual(t, StateDisabled, onState.State,
+		"a server with enabled_in_cli must still be attempted when restricted to CLI-enabled servers")
+
+	// Interactive mode (restrictToCLIEnabled=false): the SAME server that
+	// was skipped above must be attempted when the gate is off.
+	store.Config().MCP = config.MCPs{
+		interactiveName: {Type: config.MCPStdio, Command: "echo"},
+	}
+	Initialize(t.Context(), nil, store, false)
+
+	interactiveState, ok := GetState(interactiveName)
+	require.True(t, ok)
+	require.NotEqual(t, StateDisabled, interactiveState.State,
+		"interactive mode must attempt every non-disabled server regardless of enabled_in_cli")
+}

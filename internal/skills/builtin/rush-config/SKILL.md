@@ -179,7 +179,37 @@ reviewed.
 
 - `type` (required): `stdio`, `sse`, or `http`
 - `command`, `args`, `env`, `headers`, and `url` are shell-expanded (see [Shell Expansion](#shell-expansion)).
-- Additional fields: `env`, `disabled`, `disabled_tools`, `timeout`.
+- Additional fields: `env`, `disabled`, `disabled_tools`, `enabled_tools`, `timeout`.
+
+### CLI mode (`rush run` and other non-interactive commands)
+
+A server only starts during `rush run` (and every other CLI subcommand
+except the bare `rush` that starts the web UI) if its config sets
+`enabled_in_cli: true`. It is off by default, because most MCP servers
+help a human chatting in the web UI but add nothing to an unattended
+coding agent, while still paying real startup cost — a `stdio` server
+spawns its own child process on every single invocation whether or not
+the task ever calls it.
+
+```json
+{
+  "mcp": {
+    "github": {
+      "type": "http",
+      "url": "https://api.githubcopilot.com/mcp/",
+      "headers": { "Authorization": "Bearer $GH_PAT" },
+      "enabled_in_cli": true
+    }
+  }
+}
+```
+
+The interactive web UI is never affected by this field — it always
+starts every non-disabled server. `rush run --all-mcp` overrides the
+gate for a single invocation that genuinely needs a server rush would
+otherwise skip. `rush mcp add`/`rush mcp set` accept `--enabled-in-cli`
+to set this without hand-editing the config file; `rush mcp list` shows
+a `CLI` column for the effective value.
 
 ## Options
 

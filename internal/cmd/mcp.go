@@ -37,6 +37,11 @@ var mcpListCmd = &cobra.Command{
 global). Use --json for one JSON object per server. Use --grep to filter
 by server ID, name, type, command, or URL (case-insensitive substring).
 
+The CLI column shows whether the server starts during non-interactive
+invocations (rush run and other CLI subcommands) — see enabled_in_cli.
+It is always "yes" for the interactive web UI regardless of this
+column, which only affects CLI mode.
+
 The TOOLS column shows the number of tools discovered for servers that
 have been started in the current session, or "-" if the server has not
 been reached.`,
@@ -80,7 +85,7 @@ rush mcp list --grep stdio
 		}
 
 		tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(tw, "ID\tNAME\tTYPE\tSTATUS\tTOOLS\tCOMMAND/URL")
+		fmt.Fprintln(tw, "ID\tNAME\tTYPE\tSTATUS\tCLI\tTOOLS\tCOMMAND/URL")
 		for _, id := range ids {
 			m := mcps[id]
 			if grepPattern != "" {
@@ -92,6 +97,10 @@ rush mcp list --grep stdio
 			if m.Disabled {
 				status = "disabled"
 			}
+			cli := "no"
+			if m.EnabledInCLI {
+				cli = "yes"
+			}
 			cmdOrURL := dash(m.Command)
 			if m.URL != "" {
 				cmdOrURL = dash(m.URL)
@@ -100,11 +109,12 @@ rush mcp list --grep stdio
 			if info, ok := mcpmanager.GetState(id); ok {
 				tools = fmt.Sprintf("%d", info.Counts.Tools)
 			}
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 				id,
 				"-",
 				dash(string(m.Type)),
 				status,
+				cli,
 				tools,
 				cmdOrURL,
 			)
@@ -146,9 +156,14 @@ rush mcp show my-server --json
 		if item.Disabled {
 			status = "disabled"
 		}
+		cli := "no"
+		if item.EnabledInCLI {
+			cli = "yes"
+		}
 		fmt.Fprintf(os.Stdout, "id:       %s\n", item.ID)
 		fmt.Fprintf(os.Stdout, "type:     %s\n", dash(item.Type))
 		fmt.Fprintf(os.Stdout, "status:   %s\n", status)
+		fmt.Fprintf(os.Stdout, "enabled_in_cli: %s\n", cli)
 		fmt.Fprintf(os.Stdout, "command:  %s\n", dash(item.Command))
 		fmt.Fprintf(os.Stdout, "url:      %s\n", dash(item.URL))
 		if len(item.Args) > 0 {
@@ -331,6 +346,10 @@ For stdio servers, provide --command (and optionally --arg).
 For sse/http servers, provide --url.
 Set environment variables with --env and HTTP headers with --header.
 
+New servers default to CLI-off: they never start during "rush run" or
+other non-interactive invocations unless --enabled-in-cli is passed
+(the web UI always starts non-disabled servers regardless).
+
 Errors with "use rush mcp set to modify" if the ID already exists in
 the chosen scope.`,
 	Args: cobra.ExactArgs(1),
@@ -413,6 +432,10 @@ rush mcp add auth-server --type http --url http://api.example.com/mcp --header "
 			fields["mcp."+id+".env"] = json.RawMessage(envJSON)
 		}
 
+		if enabledInCLI, _ := cmd.Flags().GetBool("enabled-in-cli"); enabledInCLI {
+			fields["mcp."+id+".enabled_in_cli"] = true
+		}
+
 		headers, _ := cmd.Flags().GetStringSlice("header")
 		if len(headers) > 0 {
 			headersMap := parseKVPairs(headers)
@@ -472,7 +495,9 @@ var mcpSetCmd = &cobra.Command{
 untouched.
 
 Use --disabled=true to disable without removing; --disabled=false to
-re-enable.`,
+re-enable. Use --enabled-in-cli=true to let this server start during
+"rush run" and other non-interactive invocations (off by default);
+--enabled-in-cli=false to go back to CLI-off.`,
 	Args: cobra.ExactArgs(1),
 	Example: `
 # Change the command for a stdio server
@@ -486,6 +511,9 @@ rush mcp set my-server --disabled=true
 
 # Update the URL for an SSE server
 rush mcp set events --url http://new-host:4000/sse
+
+# Let this server start during "rush run" too, not just the web UI
+rush mcp set my-server --enabled-in-cli=true
   `,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		scope, err := scopeFromFlags(cmd, config.ScopeGlobal)
@@ -516,6 +544,10 @@ rush mcp set events --url http://new-host:4000/sse
 		if cmd.Flags().Changed("disabled") {
 			v, _ := cmd.Flags().GetBool("disabled")
 			updates["mcp."+id+".disabled"] = v
+		}
+		if cmd.Flags().Changed("enabled-in-cli") {
+			v, _ := cmd.Flags().GetBool("enabled-in-cli")
+			updates["mcp."+id+".enabled_in_cli"] = v
 		}
 
 		argSlice, _ := cmd.Flags().GetStringSlice("arg")
@@ -567,6 +599,7 @@ func init() {
 	mcpAddCmd.Flags().StringSlice("env", nil, "Environment variables as KEY=VALUE (repeatable)")
 	mcpAddCmd.Flags().StringSlice("header", nil, "HTTP headers as KEY=VALUE (repeatable)")
 	mcpAddCmd.Flags().String("url", "", "URL for HTTP or SSE servers")
+	mcpAddCmd.Flags().Bool("enabled-in-cli", false, "Start this server during non-interactive CLI invocations (rush run, etc). Off by default — the web UI always starts it regardless.")
 
 	mcpSetCmd.Flags().String("type", "", "Server type: stdio, sse, or http")
 	mcpSetCmd.Flags().String("command", "", "Command to execute for stdio servers")
@@ -575,6 +608,7 @@ func init() {
 	mcpSetCmd.Flags().StringSlice("header", nil, "HTTP headers as KEY=VALUE (repeatable)")
 	mcpSetCmd.Flags().String("url", "", "URL for HTTP or SSE servers")
 	mcpSetCmd.Flags().Bool("disabled", false, "Disable or enable the server")
+	mcpSetCmd.Flags().Bool("enabled-in-cli", false, "Start this server during non-interactive CLI invocations (rush run, etc). Off by default — the web UI always starts it regardless.")
 
 	mcpCmd.AddCommand(mcpListCmd, mcpShowCmd, mcpEnableCmd, mcpDisableCmd, mcpRestartCmd, mcpTestCmd, mcpAddCmd, mcpRemoveCmd, mcpSetCmd)
 	rootCmd.AddCommand(mcpCmd)
@@ -587,6 +621,7 @@ type mcpListItem struct {
 	Args          []string          `json:"args,omitempty"`
 	URL           string            `json:"url,omitempty"`
 	Disabled      bool              `json:"disabled"`
+	EnabledInCLI  bool              `json:"enabled_in_cli"`
 	Env           map[string]string `json:"env,omitempty"`
 	Headers       map[string]string `json:"headers,omitempty"`
 	DisabledTools []string          `json:"disabled_tools,omitempty"`
@@ -603,6 +638,7 @@ func makeMCPListItem(id string, m config.MCPConfig) mcpListItem {
 		Args:          m.Args,
 		URL:           m.URL,
 		Disabled:      m.Disabled,
+		EnabledInCLI:  m.EnabledInCLI,
 		Env:           m.Env,
 		Headers:       m.Headers,
 		DisabledTools: m.DisabledTools,

@@ -136,7 +136,8 @@ type App struct {
 type Option func(*newOptions)
 
 type newOptions struct {
-	skipAgentSetup bool
+	skipAgentSetup   bool
+	restrictMCPToCLI bool
 }
 
 // SkipAgentSetup builds the App without recoverInterruptedTurns,
@@ -152,6 +153,20 @@ type newOptions struct {
 // internal/cmd/root.go documents which commands qualify).
 func SkipAgentSetup() Option {
 	return func(o *newOptions) { o.skipAgentSetup = true }
+}
+
+// RestrictMCPToCLI makes mcp.Initialize start only MCP servers whose
+// config has EnabledInCLI set — every other non-disabled server is
+// skipped instead of started. internal/cmd/root.go's setupApp passes
+// this for every non-interactive invocation (rush run and every other
+// CLI subcommand except the bare `rush` that starts the web UI), unless
+// the run itself asked for the old behavior (rush run --all-mcp). The
+// interactive web/TUI path never passes this option, so it keeps
+// starting every non-disabled server exactly as before — this option
+// exists to opt CLI invocations OUT of automatic MCP startup, not to
+// change what the web UI does.
+func RestrictMCPToCLI() Option {
+	return func(o *newOptions) { o.restrictMCPToCLI = true }
 }
 
 // New initializes a new application instance.
@@ -240,7 +255,7 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, opts ...O
 	// its post-#774 candidate-proportional cost — is pure waste for them.
 	if !o.skipAgentSetup {
 		app.recoverInterruptedTurns(ctx)
-		go mcp.Initialize(ctx, app.Permissions, store)
+		go mcp.Initialize(ctx, app.Permissions, store, o.restrictMCPToCLI)
 	}
 
 	// Release the shared database connection(s) on shutdown. The pool

@@ -246,6 +246,20 @@ type MCPConfig struct {
 	EnabledTools  []string          `json:"enabled_tools,omitempty" jsonschema:"description=Allow list of tools from this MCP server,example=get-library-doc"`
 	Timeout       int               `json:"timeout,omitempty" jsonschema:"description=Timeout in seconds for MCP server connections,default=15,example=30,example=60,example=120"`
 
+	// EnabledInCLI opts this server into non-interactive invocations
+	// (`rush run` and every other CLI subcommand except the bare `rush`
+	// that starts the web UI). Off by default: most MCP servers are
+	// useful to a human chatting in the web UI but add nothing to an
+	// unattended coding agent, while still paying real startup cost — a
+	// stdio server spawns its own child process on every single
+	// invocation regardless of whether the task ever calls it (measured:
+	// an npx-launched Node MCP server commits ~90-100MB, more than
+	// rush's own process). Interactive web/TUI sessions are NEVER
+	// affected by this field — they always start every non-disabled
+	// server, exactly as before. `rush run --all-mcp` overrides this
+	// gate for a single invocation when that run genuinely needs it.
+	EnabledInCLI bool `json:"enabled_in_cli,omitempty" jsonschema:"description=Whether this server starts during non-interactive CLI invocations (rush run and other CLI subcommands). Off by default -- interactive web/TUI sessions always start non-disabled servers regardless. Override for one run with --all-mcp.,default=false"`
+
 	// Headers are HTTP headers for HTTP/SSE MCP servers. Values run
 	// through shell expansion at MCP startup, so $VAR and $(cmd)
 	// work. A header whose value resolves to the empty string (unset

@@ -305,6 +305,29 @@ func colorSchemeFlagFromArgs(args []string) string {
 	return ""
 }
 
+// mcpAppOptions decides whether app.New should restrict MCP startup to
+// servers with enabled_in_cli set. cmd.Parent() is nil ONLY for the bare
+// `rush` invocation (the interactive web UI) — every other command in the
+// tree, from `rush run` to `rush sessions list`, has rootCmd or an
+// intermediate group command as its parent. That single distinction is
+// what "CLI mode" means here: no code path other than runWebMode's own
+// setupApp call reaches this function with a nil parent.
+//
+// The "all-mcp" flag only exists on `rush run` (see run.go); every other
+// command's GetBool call below returns false (with an ignored error) as
+// if the flag were never set, which is exactly the right default — those
+// commands have no equivalent override and should stay gated.
+func mcpAppOptions(cmd *cobra.Command) []app.Option {
+	if cmd.Parent() == nil {
+		return nil
+	}
+	allMCP, _ := cmd.Flags().GetBool("all-mcp")
+	if allMCP {
+		return nil
+	}
+	return []app.Option{app.RestrictMCPToCLI()}
+}
+
 // setupApp handles the common setup logic for both interactive and non-interactive modes.
 // It returns the app instance, config, cleanup function, and any error.
 func setupApp(cmd *cobra.Command) (*app.App, error) {
@@ -348,7 +371,7 @@ func setupApp(cmd *cobra.Command) (*app.App, error) {
 		return nil, err
 	}
 
-	appInstance, err := app.New(ctx, conn, store)
+	appInstance, err := app.New(ctx, conn, store, mcpAppOptions(cmd)...)
 	if err != nil {
 		slog.Error("Failed to create app instance", "error", err)
 		// Ownership split (task #778): app.New only ever releases the
