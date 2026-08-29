@@ -1,7 +1,7 @@
 // The non-interactive run path: run modes and per-invocation overrides,
 // session resolution, the panic-isolated agent-turn wrapper, and the
-// RunNonInteractive event loop that streams output and emits the final
-// envelope.
+// ExecuteRun event loop that computes a run and streams output; the thin
+// RunNonInteractive wrapper renders the final envelope.
 
 package app
 
@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"os"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"time"
 
@@ -95,7 +96,7 @@ type RunOverrides struct {
 	// not leak across invocations. StripJSONFences asks
 	// RunNonInteractive to post-process the envelope's final_text
 	// (markdown fence + prose preamble removal); the unstripped
-	// original is preserved in runResult.AssistantNotes.
+	// original is preserved in RunResult.AssistantNotes.
 	DisableSubAgents bool
 	StripJSONFences  bool
 	// AggregationMode controls how sub-agent fan-out output reaches
@@ -104,7 +105,7 @@ type RunOverrides struct {
 	// "concat" = the user prompt carries a nudge asking the parent to
 	// include each sub-agent's reply verbatim in final_text. "attach"
 	// = after Run the app collects each sub-session's last assistant
-	// text into runResult.SubAgentOutputs so the orchestrator gets
+	// text into RunResult.SubAgentOutputs so the orchestrator gets
 	// the structured set even if parent over-summarised.
 	// See run_format.go and the 2026-05-17 session-#3 audit feedback.
 	AggregationMode string
@@ -156,6 +157,20 @@ type RunOverrides struct {
 	// merged with permissions.run.allow_tools from config.
 	// Fork patch (run allowlist).
 	AllowTools []string
+}
+
+// RunRequest bundles everything one ExecuteRun invocation needs,
+// including the streams it may write to. Nil Stdout/Stderr fall back
+// to io.Discard so a library caller can opt out of streaming output.
+type RunRequest struct {
+	Prompt            string
+	Overrides         RunOverrides
+	Mode              RunMode
+	ContinueSessionID string
+	UseLast           bool
+	Stdout            io.Writer // nil → io.Discard
+	Stderr            io.Writer // nil → io.Discard
+	HideSpinner       bool
 }
 
 // resolveSession resolves which session to use for a non-interactive run
@@ -404,9 +419,26 @@ func drainOutcomeError(sessID string, result session.DrainResult, drainErr, orig
 	}
 }
 
-// RunNonInteractive runs a single agent turn and writes its result to
-// `output`. See RunMode for the available output shapes.
-func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt string, overrides RunOverrides, hideSpinner bool, mode RunMode, continueSessionID string, useLast bool) error {
+// ExecuteRun computes a single agent turn and returns the result envelope
+// without rendering it (see RunMode for the output shapes that shape the
+// streaming behaviour). Streaming output goes to req.Stdout, diagnostics to
+// req.Stderr; nil falls back to io.Discard. For RunModeJSON the caller is
+// responsible for encoding the returned *RunResult.
+func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, error) {
+	prompt := req.Prompt
+	overrides := req.Overrides
+	mode := req.Mode
+	continueSessionID := req.ContinueSessionID
+	useLast := req.UseLast
+	hideSpinner := req.HideSpinner
+	stdout := io.Writer(io.Discard)
+	if req.Stdout != nil {
+		stdout = req.Stdout
+	}
+	stderr := io.Writer(io.Discard)
+	if req.Stderr != nil {
+		stderr = req.Stderr
+	}
 	smartModel := overrides.SmartModel
 	fastModel := overrides.FastModel
 	systemPrompt := overrides.SystemPrompt
@@ -424,7 +456,7 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt 
 
 	if smartModel != "" || fastModel != "" {
 		if err := app.overrideModelsForNonInteractive(ctx, smartModel, fastModel); err != nil {
-			return fmt.Errorf("failed to override models: %w", err)
+			return nil, fmt.Errorf("failed to override models: %w", err)
 		}
 	}
 
@@ -452,15 +484,15 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt 
 
 	// Wait for MCP initialization to complete before reading MCP tools.
 	if err := mcp.WaitForInit(ctx); err != nil {
-		return fmt.Errorf("failed to wait for MCP initialization: %w", err)
+		return nil, fmt.Errorf("failed to wait for MCP initialization: %w", err)
 	}
 
 	// Fork patch (orchestrator UX): --agents single. Drop the agent /
 	// agentic_fetch tools from the coder agent's AllowedTools BEFORE
 	// UpdateModels rebuilds the toolset so the model literally cannot
-	// fan out. Mutation is in-process only (rush run is a single-shot
-	// process — exit drops the change), so this is safe even though
-	// it touches the global config. See run.go and run_format.go.
+	// fan out. The mutation is restored when the run ends (see the R3
+	// note on the gate below), so it cannot leak into a subsequent run
+	// on the same *App. See run.go and run_format.go.
 	//
 	// Plan phase 2 exception: when this run is --role smart with a Worker
 	// model configured, restore ONLY the `agent` tool — see
@@ -473,6 +505,27 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt 
 	// comment) and has nothing to do with delegating hands-on work to a
 	// worker.
 	if overrides.DisableSubAgents {
+		// R3 fix (docs/plans/2026-08-29-embeddable-library-refactoring.md,
+		// risk R3): the gate below rewrites the PUBLISHED coder
+		// AllowedTools and used to leave it stripped forever. For the
+		// one-shot `rush run` process that was moot (see the old comment
+		// in app_run_gates.go), but a library caller (sdk.Client) runs
+		// several turns on one *App, and a later run with
+		// DisableSubAgents:false would inherit the stripped toolset.
+		// Snapshot the original list before mutating and restore it
+		// unconditionally when this run ends — the defer covers error
+		// returns too. The guard mirrors disableToolsInConfig's own (cfg
+		// non-nil, coder present) so a restore is registered only when a
+		// mutation was actually possible, and only when this run asked
+		// for the ban (no mutation → nothing to restore).
+		// UpdateAgentAllowedTools is copy-on-write, so republishing the
+		// saved list cleanly cancels the strip for the next run.
+		if cfgSnap := app.config.Config(); cfgSnap != nil {
+			if coder, ok := cfgSnap.Agents[config.AgentCoder]; ok {
+				savedTools := slices.Clone(coder.AllowedTools)
+				defer app.config.UpdateAgentAllowedTools(config.AgentCoder, savedTools)
+			}
+		}
 		if shouldBypassSubAgentBan(overrides.ModelRole, app.config.Config()) {
 			app.disableToolsInConfig([]string{"agentic_fetch"})
 		} else {
@@ -495,7 +548,7 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt 
 
 	sess, err := app.resolveSession(ctx, continueSessionID, useLast)
 	if err != nil {
-		return fmt.Errorf("failed to create session for non-interactive mode: %w", err)
+		return nil, fmt.Errorf("failed to create session for non-interactive mode: %w", err)
 	}
 
 	if continueSessionID != "" || useLast {
@@ -510,7 +563,7 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt 
 	// the default prompt to be built and stored on first run).
 	if systemPrompt != "" {
 		if err := app.Sessions.UpdateSystemPrompt(ctx, sess.ID, systemPrompt); err != nil {
-			return fmt.Errorf("failed to set system prompt for session: %w", err)
+			return nil, fmt.Errorf("failed to set system prompt for session: %w", err)
 		}
 	}
 
@@ -526,7 +579,7 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt 
 			fast = overrides.ReasoningEffort
 		}
 		if err := app.Sessions.UpdateReasoningEffort(ctx, sess.ID, smart, fast); err != nil {
-			return fmt.Errorf("failed to set reasoning effort: %w", err)
+			return nil, fmt.Errorf("failed to set reasoning effort: %w", err)
 		}
 	}
 
@@ -676,14 +729,14 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt 
 
 	defer func() {
 		if progress && stderrTTY {
-			_, _ = fmt.Fprintf(os.Stderr, ansi.ResetProgressBar)
+			_, _ = fmt.Fprintf(stderr, ansi.ResetProgressBar)
 		}
 
 		// JSON mode emits its own trailing newline via json.Encoder; the
 		// terse/stream modes need a bare \n so a follow-up shell prompt
 		// doesn't overwrite the last token.
 		if mode != RunModeJSON {
-			_, _ = fmt.Fprintln(output)
+			_, _ = fmt.Fprintln(stdout)
 		}
 	}()
 
@@ -694,7 +747,7 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt 
 	// BOTH that case AND drainDone's case (a durable continuation's outcome,
 	// possibly arriving well after the original done fired) can reach it —
 	// see the select loop's own doc for why this split exists.
-	finish := func(runErr error) error {
+	finish := func(runErr error) (*RunResult, error) {
 		stopSpinner()
 		isCanceled := runErr != nil && (errors.Is(runErr, context.Canceled) || errors.Is(runErr, agent.ErrRequestCancelled))
 
@@ -747,7 +800,7 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt 
 			//    sub-agent's last assistant text into
 			//    envelope.SubAgentOutputs so the orchestrator
 			//    recovers the lost detail.
-			var subOutputs []subAgentOutput
+			var subOutputs []SubAgentOutput
 			var reductionWarning string
 			subAgentCalls := toolCallCounts["agent"] + toolCallCounts["agentic_fetch"]
 			if subAgentCalls > 0 {
@@ -793,20 +846,10 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt 
 				))
 			}
 			hookExitReason = summary.ExitReason
-			enc := json.NewEncoder(output)
-			if encErr := enc.Encode(summary); encErr != nil {
-				return fmt.Errorf("failed to encode JSON result: %w", encErr)
-			}
-			// The envelope (incl. exit_reason + error) is already on
-			// stdout. Drive the PROCESS exit code off the outcome so
-			// orchestrators / CI branch on success without parsing stdout:
-			// a clean end_turn exits 0; an in-band error finish (stall,
-			// provider error, empty stream), a cancellation/timeout, or a
-			// max_tokens truncation exit non-zero.
 			if runFailed(finalReason, runErr, isCanceled) {
-				return &runIncompleteError{reason: summary.ExitReason, detail: summary.Error}
+				return &summary, &runIncompleteError{reason: summary.ExitReason, detail: summary.Error}
 			}
-			return nil
+			return &summary, nil
 		}
 
 		if runErr != nil {
@@ -815,7 +858,7 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt 
 					"session_id", sess.ID,
 					"guidance", guidance,
 					"err", runErr)
-				fmt.Fprintf(os.Stderr, "\n%s\n\n", guidance)
+				fmt.Fprintf(stderr, "\n%s\n\n", guidance)
 			}
 			// Peak-hours refusal carries multiline orchestrator
 			// guidance (RESUME AT + don't-retry instructions) that
@@ -827,15 +870,15 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt 
 			// peakHoursStoppedFinishText (sessions why / diff, etc.).
 			var peakErr *agent.PeakHoursError
 			if errors.As(runErr, &peakErr) {
-				fmt.Fprintf(os.Stderr, "\n%s\n\n", agent.PeakHoursGuidance(peakErr))
+				fmt.Fprintf(stderr, "\n%s\n\n", agent.PeakHoursGuidance(peakErr))
 			}
 			if isCanceled {
 				slog.Debug("Non-interactive: agent processing cancelled", "session_id", sess.ID)
 				hookExitReason = "cancelled"
-				return cancelledRunError(runErr, finalReason, finalErrTitle, finalErrDetails)
+				return nil, cancelledRunError(runErr, finalReason, finalErrTitle, finalErrDetails)
 			}
 			hookExitReason = "error"
-			return fmt.Errorf("agent processing failed: %w", runErr)
+			return nil, fmt.Errorf("agent processing failed: %w", runErr)
 		}
 		// runErr == nil, but the turn may still have ended in-band on an
 		// error / canceled / max_tokens finish — not a clean completion,
@@ -853,10 +896,10 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt 
 				}
 				detail += finalErrDetails
 			}
-			return &runIncompleteError{reason: reason, detail: detail}
+			return nil, &runIncompleteError{reason: reason, detail: detail}
 		}
 		hookExitReason = "stop"
-		return nil
+		return nil, nil
 	}
 
 	// drainDone carries the outcome of a P0-1 durable-continuation drain
@@ -883,7 +926,7 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt 
 		if progress && stderrTTY {
 			// HACK: Reinitialize the terminal progress bar on every iteration
 			// so it doesn't get hidden by the terminal due to inactivity.
-			_, _ = fmt.Fprintf(os.Stderr, ansi.SetIndeterminateProgressBar)
+			_, _ = fmt.Fprintf(stderr, ansi.SetIndeterminateProgressBar)
 		}
 
 		select {
@@ -966,7 +1009,7 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt 
 						if stderrTTY {
 							prefix = "\r" + ansi.EraseEntireLine
 						}
-						fmt.Fprintf(os.Stderr, prefix+"▶ %s\n", tc.Name)
+						fmt.Fprintf(stderr, prefix+"▶ %s\n", tc.Name)
 					}
 				}
 
@@ -997,14 +1040,14 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt 
 					if text != "" {
 						printedFinal[msg.ID] = true
 						printed = true
-						fmt.Fprint(output, text)
+						fmt.Fprint(stdout, text)
 					}
 				case RunModeStream:
 					content := msg.FullText()
 					readBytes := messageReadBytes[msg.ID]
 					if len(content) < readBytes {
 						slog.Error("Non-interactive: message content is shorter than read bytes", "message_length", len(content), "read_bytes", readBytes)
-						return fmt.Errorf("message content is shorter than read bytes: %d < %d", len(content), readBytes)
+						return nil, fmt.Errorf("message content is shorter than read bytes: %d < %d", len(content), readBytes)
 					}
 					part := content[readBytes:]
 					if readBytes == 0 {
@@ -1012,7 +1055,7 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt 
 					}
 					if printed || strings.TrimSpace(part) != "" {
 						printed = true
-						fmt.Fprint(output, part)
+						fmt.Fprint(stdout, part)
 					}
 					messageReadBytes[msg.ID] = len(content)
 				}
@@ -1021,7 +1064,31 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt 
 		case <-ctx.Done():
 			stopSpinner()
 			hookExitReason = "cancelled"
-			return ctx.Err()
+			return nil, ctx.Err()
 		}
 	}
+}
+
+// RunNonInteractive runs a single agent turn and writes its result to
+// `output`. See RunMode for the available output shapes. It is a thin
+// wrapper over ExecuteRun: it supplies the process streams as defaults
+// and renders the JSON envelope for RunModeJSON.
+func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt string, overrides RunOverrides, hideSpinner bool, mode RunMode, continueSessionID string, useLast bool) error {
+	summary, err := app.ExecuteRun(ctx, RunRequest{
+		Prompt:            prompt,
+		Overrides:         overrides,
+		Mode:              mode,
+		ContinueSessionID: continueSessionID,
+		UseLast:           useLast,
+		Stdout:            output,
+		Stderr:            os.Stderr,
+		HideSpinner:       hideSpinner,
+	})
+	if mode == RunModeJSON && summary != nil {
+		enc := json.NewEncoder(output)
+		if encErr := enc.Encode(summary); encErr != nil {
+			return fmt.Errorf("failed to encode JSON result: %w", encErr)
+		}
+	}
+	return err
 }

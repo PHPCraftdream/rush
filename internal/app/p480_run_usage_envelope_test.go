@@ -25,7 +25,7 @@ func TestRunEnvelope_SessionUsageAbsentWhenNothingRecorded(t *testing.T) {
 		"a report with no recorded messages must produce no usage.session object")
 
 	// And the envelope must omit the key entirely.
-	raw, err := json.Marshal(usageInfo{DeltaTokens: 10, DeltaCostUSD: 0.5})
+	raw, err := json.Marshal(UsageInfo{DeltaTokens: 10, DeltaCostUSD: 0.5})
 	require.NoError(t, err)
 	var decoded map[string]any
 	require.NoError(t, json.Unmarshal(raw, &decoded))
@@ -77,7 +77,7 @@ func TestRunEnvelope_NullRatioSerializesAsNull(t *testing.T) {
 		},
 	}
 
-	raw, err := json.Marshal(usageInfo{Session: buildSessionUsageInfo(report)})
+	raw, err := json.Marshal(UsageInfo{Session: buildSessionUsageInfo(report)})
 	require.NoError(t, err)
 
 	var decoded struct {

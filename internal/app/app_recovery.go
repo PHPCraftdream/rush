@@ -325,7 +325,7 @@ func (app *App) recoverSessionInterruptedTurn(ctx context.Context, cand message.
 // has a Partial finish (mid-stream checkpoint) and is unfinished. Used by
 // RunNonInteractive to surface recovered text in the envelope.
 // Returns nil if no orphan found. Fork patch: batch 8.
-func (app *App) findOrphanPartial(ctx context.Context, sessionID string) *recoveredPartial {
+func (app *App) findOrphanPartial(ctx context.Context, sessionID string) *RecoveredPartial {
 	msgs, err := app.Messages.List(ctx, sessionID)
 	if err != nil {
 		return nil
@@ -342,7 +342,7 @@ func (app *App) findOrphanPartial(ctx context.Context, sessionID string) *recove
 			if f := m.FinishPart(); f != nil {
 				lastFlushAt = f.Time
 			}
-			return &recoveredPartial{
+			return &RecoveredPartial{
 				MessageID:   m.ID,
 				Chars:       len(text),
 				LastFlushAt: lastFlushAt,

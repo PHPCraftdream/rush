@@ -47,14 +47,14 @@ const maxSubAgentTextChars = 64 * 1024
 // Failures to list messages for a single sub-session are logged at
 // WARN and the entry is skipped — partial output is better than
 // dropping the whole field on one bad row.
-func (app *App) collectSubAgentOutputs(ctx context.Context, parentSessionID string) []subAgentOutput {
+func (app *App) collectSubAgentOutputs(ctx context.Context, parentSessionID string) []SubAgentOutput {
 	subs, err := app.Sessions.ListSubSessions(ctx, parentSessionID)
 	if err != nil {
 		slog.Warn("collectSubAgentOutputs: list sub-sessions failed",
 			"parent", parentSessionID, "err", err)
-		return []subAgentOutput{}
+		return []SubAgentOutput{}
 	}
-	out := make([]subAgentOutput, 0, len(subs))
+	out := make([]SubAgentOutput, 0, len(subs))
 	for _, sub := range subs {
 		msgs, mErr := app.Messages.List(ctx, sub.ID)
 		if mErr != nil {
@@ -68,7 +68,7 @@ func (app *App) collectSubAgentOutputs(ctx context.Context, parentSessionID stri
 			truncated = truncated[:maxSubAgentTextChars] +
 				"\n\n[…truncated, see session " + sub.ID + " for full text]"
 		}
-		out = append(out, subAgentOutput{
+		out = append(out, SubAgentOutput{
 			SessionID: sub.ID,
 			Title:     sub.Title,
 			FinalText: truncated,

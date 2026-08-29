@@ -1,4 +1,4 @@
-// The wire-stable JSON envelope for `rush run --json`: runResult
+// The wire-stable JSON envelope for `rush run --json`: RunResult
 // and its usage/sub-agent/partial types, the builders that assemble
 // it (buildRunResult, buildSessionUsageInfo), and their small text
 // helpers (tailN, synthesiseEmptyFinalSummary).
@@ -16,9 +16,9 @@ import (
 	"github.com/PHPCraftdream/rush/internal/message"
 )
 
-// runResult is the JSON shape emitted by `rush run --json`. Wire-stable:
+// RunResult is the JSON shape emitted by `rush run --json`. Wire-stable:
 // fields here are part of the public contract for wrapper scripts.
-type runResult struct {
+type RunResult struct {
 	SessionID string `json:"session_id"`
 	// ExitReason vocabulary:
 	//   "stop","end_turn","tool_use","max_tokens","unknown"  — model-level
@@ -51,7 +51,7 @@ type runResult struct {
 	// tool dispatched during this run; FinalText is the sub-agent's
 	// last assistant message. Lets the orchestrator recover detail
 	// the parent over-summarised away.
-	SubAgentOutputs []subAgentOutput `json:"sub_agent_outputs,omitempty"`
+	SubAgentOutputs []SubAgentOutput `json:"sub_agent_outputs,omitempty"`
 	Error           string           `json:"error,omitempty"`
 	// Warnings are non-fatal observations about the run that an
 	// orchestrator should know about even when exit_reason looks happy.
@@ -61,34 +61,34 @@ type runResult struct {
 	// hit a stdout-redirect target. Wrappers can ignore the field if
 	// they don't care.
 	Warnings   []string       `json:"warnings,omitempty"`
-	ToolCalls  []toolCallStat `json:"tool_calls"`
-	Usage      usageInfo      `json:"usage"`
+	ToolCalls  []ToolCallStat `json:"tool_calls"`
+	Usage      UsageInfo      `json:"usage"`
 	DurationMs int64          `json:"duration_ms"`
 	// RecoveredPartial is set when the session had an orphan assistant
 	// message from a previous interrupted run (detected by IsPartial()
 	// on the latest unfinished assistant row). Contains the partial text
 	// so the orchestrator can salvage it. Fork patch: batch 8.
-	RecoveredPartial *recoveredPartial `json:"recovered_partial,omitempty"`
+	RecoveredPartial *RecoveredPartial `json:"recovered_partial,omitempty"`
 }
 
-// recoveredPartial describes an orphaned partial assistant message found
+// RecoveredPartial describes an orphaned partial assistant message found
 // during session recovery. Fork patch: batch 8.
-type recoveredPartial struct {
+type RecoveredPartial struct {
 	MessageID   string `json:"message_id"`
 	Chars       int    `json:"chars"`
 	LastFlushAt int64  `json:"last_flush_at"`
 	Text        string `json:"text,omitempty"`
 }
 
-type toolCallStat struct {
+type ToolCallStat struct {
 	Name  string `json:"name"`
 	Count int    `json:"count"`
 }
 
-// subAgentOutput is one row of runResult.SubAgentOutputs. Populated by
+// SubAgentOutput is one row of RunResult.SubAgentOutputs. Populated by
 // the --aggregation=attach path. Title and ID are kept so the
 // orchestrator can correlate with `rush sessions list`.
-type subAgentOutput struct {
+type SubAgentOutput struct {
 	SessionID string `json:"session_id"`
 	Title     string `json:"title,omitempty"`
 	FinalText string `json:"final_text"`
@@ -97,7 +97,7 @@ type subAgentOutput struct {
 	CharCount int `json:"char_count"`
 }
 
-type usageInfo struct {
+type UsageInfo struct {
 	DeltaTokens  int64   `json:"delta_tokens"`
 	DeltaCostUSD float64 `json:"delta_cost_usd"`
 	// Session is the per-message token accounting for the WHOLE session,
@@ -110,16 +110,16 @@ type usageInfo struct {
 	// run consumed), while these figures are real sums over the message rows.
 	// Presenting them as adjacent fields of one flat object would invite
 	// exactly the arithmetic that mixes them.
-	Session *sessionUsageInfo `json:"session,omitempty"`
+	Session *SessionUsageInfo `json:"session,omitempty"`
 }
 
-// sessionUsageInfo is the cache/token breakdown an orchestrator needs to judge
+// SessionUsageInfo is the cache/token breakdown an orchestrator needs to judge
 // prompt-cache efficiency without opening the session database.
 //
 // Token classes are DISJOINT, so PromptTokens is their sum: InputTokens
 // (fresh, full price), CacheReadTokens (served from cache) and
 // CacheCreationTokens (written into it).
-type sessionUsageInfo struct {
+type SessionUsageInfo struct {
 	InputTokens         int64   `json:"input_tokens"`
 	OutputTokens        int64   `json:"output_tokens"`
 	ReasoningTokens     int64   `json:"reasoning_tokens,omitempty"`
@@ -148,12 +148,12 @@ type sessionUsageInfo struct {
 // buildSessionUsageInfo converts a message-layer usage report into the
 // envelope shape. Returns nil when the session has no recorded usage at all,
 // so `usage.session` is absent rather than a misleading all-zero object.
-func buildSessionUsageInfo(report message.UsageReport) *sessionUsageInfo {
+func buildSessionUsageInfo(report message.UsageReport) *SessionUsageInfo {
 	if len(report.ByModel) == 0 {
 		return nil
 	}
 	total := report.Total()
-	out := &sessionUsageInfo{
+	out := &SessionUsageInfo{
 		InputTokens:          total.InputTokens,
 		OutputTokens:         total.OutputTokens,
 		ReasoningTokens:      total.ReasoningTokens,
@@ -173,7 +173,7 @@ func buildSessionUsageInfo(report message.UsageReport) *sessionUsageInfo {
 	return out
 }
 
-// buildRunResult assembles runResult from the bits collected during the
+// buildRunResult assembles RunResult from the bits collected during the
 // run. exit_reason follows the same vocabulary the WUI uses (see
 // message.FinishReason*) plus a synthetic "canceled" / "error" when the
 // agent never finalised a message.
@@ -181,7 +181,7 @@ func buildSessionUsageInfo(report message.UsageReport) *sessionUsageInfo {
 // finalErrTitle and finalErrDetails come from the assistant message's
 // Finish part when Reason=error (e.g. "Stream stalled" /
 // "Provider X stopped sending streaming data for over 3m0s..."). They
-// surface into runResult.Error so orchestrators see WHY a turn errored,
+// surface into RunResult.Error so orchestrators see WHY a turn errored,
 // not just THAT it did.
 // Fork patch (orchestrator UX): assistantNotes added. Carries the
 // stripped prose/fence content when --json or --format json triggered
@@ -192,7 +192,7 @@ func buildSessionUsageInfo(report message.UsageReport) *sessionUsageInfo {
 // non-empty, OVERRIDES the model's finalReason so the envelope tells
 // the orchestrator "you asked for JSON, it didn't validate" instead of
 // the model's optimistic "stop"/"end_turn".
-func buildRunResult(sessionID, finalText, assistantNotes, finalReason string, err error, canceled bool, toolCounts map[string]int, deltaTokens int64, deltaCost float64, duration time.Duration, finalErrTitle, finalErrDetails string, strippedBytes int, stripErrMsg, stripErrReason string, subAgentOutputs []subAgentOutput, reductionWarning string) runResult {
+func buildRunResult(sessionID, finalText, assistantNotes, finalReason string, err error, canceled bool, toolCounts map[string]int, deltaTokens int64, deltaCost float64, duration time.Duration, finalErrTitle, finalErrDetails string, strippedBytes int, stripErrMsg, stripErrReason string, subAgentOutputs []SubAgentOutput, reductionWarning string) RunResult {
 	reason := finalReason
 	if reason == "" {
 		switch {
@@ -222,9 +222,9 @@ func buildRunResult(sessionID, finalText, assistantNotes, finalReason string, er
 		reason = "awaiting_answer"
 		isAwaitingAnswer = true
 	}
-	calls := make([]toolCallStat, 0, len(toolCounts))
+	calls := make([]ToolCallStat, 0, len(toolCounts))
 	for name, count := range toolCounts {
-		calls = append(calls, toolCallStat{Name: name, Count: count})
+		calls = append(calls, ToolCallStat{Name: name, Count: count})
 	}
 	// Stable ordering so the JSON diffs cleanly across runs.
 	sort.Slice(calls, func(i, j int) bool { return calls[i].Name < calls[j].Name })
@@ -343,7 +343,7 @@ func buildRunResult(sessionID, finalText, assistantNotes, finalReason string, er
 	if reductionWarning != "" {
 		warnings = append(warnings, reductionWarning)
 	}
-	return runResult{
+	return RunResult{
 		SessionID:       sessionID,
 		ExitReason:      reason,
 		FinalText:       finalText,
@@ -353,7 +353,7 @@ func buildRunResult(sessionID, finalText, assistantNotes, finalReason string, er
 		Error:           errMsg,
 		Warnings:        warnings,
 		ToolCalls:       calls,
-		Usage: usageInfo{
+		Usage: UsageInfo{
 			DeltaTokens:  deltaTokens,
 			DeltaCostUSD: deltaCost,
 		},

@@ -201,7 +201,7 @@ func TestBuildRunResult_NoReductionWarning(t *testing.T) {
 // TestBuildRunResult_SubAgentOutputsAttached verifies the envelope
 // field that --aggregation=attach populates.
 func TestBuildRunResult_SubAgentOutputsAttached(t *testing.T) {
-	subs := []subAgentOutput{
+	subs := []SubAgentOutput{
 		{SessionID: "sub-1", Title: "Topic A", FinalText: "verbatim A", CharCount: 10},
 		{SessionID: "sub-2", Title: "Topic B", FinalText: "verbatim B much longer text", CharCount: 27},
 	}

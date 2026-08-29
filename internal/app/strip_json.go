@@ -16,7 +16,7 @@ import (
 // ErrInvalidStripJSON is returned by stripAndValidateJSON when the
 // extracted candidate (or the original text, if nothing could be
 // stripped) is not parseable JSON. Callers should surface it via the
-// runResult.Error/ExitReason so the orchestrator stops trusting the
+// RunResult.Error/ExitReason so the orchestrator stops trusting the
 // envelope's final_text. Wrapped with the underlying json error.
 var ErrInvalidStripJSON = errors.New("model output is not valid JSON")
 

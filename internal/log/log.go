@@ -20,6 +20,67 @@ var (
 	initialized atomic.Bool
 )
 
+// NewLogger builds an independent *slog.Logger wired to the rotating log
+// file plus any extra writers (e.g. an IPC pipe), tagging every entry with
+// the process PID. It deliberately does NOT call slog.SetDefault: library
+// consumers can use it without hijacking the host program's slog.Default().
+//
+// The v1 boundary: this gives the caller a logger for its own needs, but it
+// does not isolate rush's internal logs. The rush core (internal/agent,
+// internal/session, and so on) still calls the package-level slog.Info,
+// slog.Warn and slog.Error in many places, and those go to whatever the
+// CURRENT slog.Default() is — independent of what NewLogger returned. Full
+// isolation of core logs is out of scope for v1; use Setup for that.
+func NewLogger(logFile string, debug bool, ws ...io.Writer) *slog.Logger {
+	// Fork patch (concurrency): MaxBackups was 0 upstream, which
+	// effectively disabled rotation — once a process reached MaxSize
+	// the file grew indefinitely. Under parallel `rush run` the
+	// shared log file balloons quickly. Keep 3 compressed backups so
+	// rotation actually runs but disk usage stays bounded. See
+	// CHANGELOG.fork.md.
+	logRotator := &lumberjack.Logger{
+		Filename:   logFile,
+		MaxSize:    10, // Max size in MB
+		MaxBackups: 3,  // keep last 3 rotated files
+		MaxAge:     30, // Days
+		Compress:   true,
+	}
+
+	level := slog.LevelInfo
+	if debug {
+		level = slog.LevelDebug
+	}
+
+	opts := &slog.HandlerOptions{
+		Level:     level,
+		AddSource: true,
+	}
+
+	// Tag every entry with this process's PID. When two rush
+	// processes share a .rush dir (common with parallel `rush run
+	// --session X` orchestration), the lumberjack file gets
+	// interleaved writes from both. The pid attribute lets
+	// post-hoc filtering split them cleanly: `jq 'select(.pid==N)'`.
+	// Cheap (one int per log line) and harmless when there's only
+	// one process.
+	pid := os.Getpid()
+	var handlers []slog.Handler
+	handlers = append(handlers, slog.NewJSONHandler(logRotator, opts).WithAttrs([]slog.Attr{slog.Int("pid", pid)}))
+
+	for _, w := range ws {
+		if w == nil {
+			continue
+		}
+		if f, ok := w.(term.File); ok && term.IsTerminal(f.Fd()) {
+			handlers = append(handlers, slog.NewTextHandler(w, opts).WithAttrs([]slog.Attr{slog.Int("pid", pid)}))
+		} else {
+			handlers = append(handlers, slog.NewJSONHandler(w, opts).WithAttrs([]slog.Attr{slog.Int("pid", pid)}))
+		}
+	}
+
+	return slog.New(slog.NewMultiHandler(handlers...))
+}
+
 func Setup(logFile string, debug bool, ws ...io.Writer) {
 	initOnce.Do(func() {
 		// Remember where logs live so DumpGoroutines can drop hang dumps
@@ -27,53 +88,7 @@ func Setup(logFile string, debug bool, ws ...io.Writer) {
 		if logFile != "" {
 			logDir.Store(filepath.Dir(logFile))
 		}
-		// Fork patch (concurrency): MaxBackups was 0 upstream, which
-		// effectively disabled rotation — once a process reached MaxSize
-		// the file grew indefinitely. Under parallel `rush run` the
-		// shared log file balloons quickly. Keep 3 compressed backups so
-		// rotation actually runs but disk usage stays bounded. See
-		// CHANGELOG.fork.md.
-		logRotator := &lumberjack.Logger{
-			Filename:   logFile,
-			MaxSize:    10, // Max size in MB
-			MaxBackups: 3,  // keep last 3 rotated files
-			MaxAge:     30, // Days
-			Compress:   true,
-		}
-
-		level := slog.LevelInfo
-		if debug {
-			level = slog.LevelDebug
-		}
-
-		opts := &slog.HandlerOptions{
-			Level:     level,
-			AddSource: true,
-		}
-
-		// Tag every entry with this process's PID. When two rush
-		// processes share a .rush dir (common with parallel `rush run
-		// --session X` orchestration), the lumberjack file gets
-		// interleaved writes from both. The pid attribute lets
-		// post-hoc filtering split them cleanly: `jq 'select(.pid==N)'`.
-		// Cheap (one int per log line) and harmless when there's only
-		// one process.
-		pid := os.Getpid()
-		var handlers []slog.Handler
-		handlers = append(handlers, slog.NewJSONHandler(logRotator, opts).WithAttrs([]slog.Attr{slog.Int("pid", pid)}))
-
-		for _, w := range ws {
-			if w == nil {
-				continue
-			}
-			if f, ok := w.(term.File); ok && term.IsTerminal(f.Fd()) {
-				handlers = append(handlers, slog.NewTextHandler(w, opts).WithAttrs([]slog.Attr{slog.Int("pid", pid)}))
-			} else {
-				handlers = append(handlers, slog.NewJSONHandler(w, opts).WithAttrs([]slog.Attr{slog.Int("pid", pid)}))
-			}
-		}
-
-		slog.SetDefault(slog.New(slog.NewMultiHandler(handlers...)))
+		slog.SetDefault(NewLogger(logFile, debug, ws...))
 		initialized.Store(true)
 	})
 }
