@@ -218,6 +218,6 @@ func TestOpenRunsWithWorkingDirDifferentFromProcessCwd(t *testing.T) {
 	require.Equal(t, cwdAuditFinalText, res2.FinalText)
 
 	// Typed result is usable through the sdk aliases.
-	var envelope sdk.RunResult = *res2
+	envelope := *res2
 	require.Equal(t, res2.SessionID, envelope.SessionID)
 }
