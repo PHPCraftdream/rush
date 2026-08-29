@@ -76,7 +76,16 @@ jobs:
       - run: go build -race ./...
       # -short skips VCR/network integration tests (TestCoderAgent) whose
       # cassettes need a Charm hyper key to re-record — unavailable on the fork.
-      - run: go test -short -race -failfast ./...
+      # -p 2 caps how many race-instrumented test binaries compile+run at
+      # once: under a full-module -race sweep the shared ubuntu runner runs
+      # out of memory and the job dies with SIGTERM (exit 143) ~2-3 min in,
+      # reproduced 3x in a row -- far short of go test's own 10-min timeout.
+      # This is CI-runner memory throttling, NOT a repeat of the cancelled
+      # global -p/-parallel cap once tried in .githooks/pre-push: that one
+      # slowed every local push to paper over per-test races (since fixed
+      # in the tests themselves), while this targets a memory-limited CI
+      # runner only.
+      - run: go test -short -race -failfast -p 2 ./...
       # The generation-fence and process-tree-kill suites are the ones the
       # session/agent concurrency work exists to protect, and -short skips
       # every one of them (they spawn real child processes, so the guard is
