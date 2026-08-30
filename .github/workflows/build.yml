@@ -76,17 +76,85 @@ jobs:
       # -short skips VCR/network integration tests (TestCoderAgent) whose
       # cassettes need a Charm hyper key to re-record — unavailable on the fork.
       #
-      # No -race here (and go build -race is gone too, for the same reason):
-      # a full-module `go test -race ./...` never got even one package to
-      # finish compiling+starting on this shared ubuntu-latest runner --
-      # confirmed with -v (zero "=== RUN" lines ever printed) and with -p 2
-      # (identical ~2-3 min SIGTERM kill regardless of concurrency), across
-      # 4 reproductions. Whatever the runner-level cause, race mode on the
-      # full suite is not viable in this CI environment; run it locally
-      # (go test -race ./...) when you want race coverage. The process-group
-      # and lock-fence suite below already made the same call for its own
-      # slice of tests (see its comment) before this ever came up.
-      - run: go test -short -failfast ./...
+      # No -race here (go build -race is gone too, for the same reason): a
+      # full-module `go test -race ./...` never got even one package to finish
+      # compiling+starting on this shared ubuntu-latest runner -- confirmed
+      # with -v (zero "=== RUN" lines ever printed) across 4 reproductions
+      # with different -p/-v combinations, all landing in the same ~2-3 min
+      # SIGTERM window. Removing -race alone did NOT fix it either (same
+      # exit 143 on the same plain `go test -short -failfast ./...`), and the
+      # go.sum-keyed setup-go cache was confirmed warm (cache hit, ~1.1GB
+      # restored) going in, ruling out a cold-cache compile as the cause.
+      #
+      # The one thing every reproduction had in common: total silence before
+      # the kill, meaning no single one of the ~50 packages' test binaries
+      # had even started RUNNING yet. `go test ./...` must not just compile
+      # but LINK a separate binary per package with tests -- unlike
+      # `go build ./...`, which never links library packages at all and
+      # reliably finished in ~14s. Whatever the runner-level ceiling actually
+      # is (never fully identified), splitting the one all-at-once link
+      # workload into several smaller, sequential batches means each batch
+      # finishes -- and prints -- well before any single batch could
+      # approach it.
+      #
+      # internal/agent, internal/app, internal/server and internal/session
+      # are pulled out into their own solo batches first: measured locally
+      # (this same session, no -race) at ~193s/~?/~117s/~92s respectively --
+      # each one alone is already a meaningful fraction of the observed
+      # ~73s-3min kill window, so bundling any of them together, or with
+      # enough smaller packages, would just recreate one oversized batch.
+      # Everything else is small in comparison and safe to auto-split by
+      # `go list ./...` at run time (not a hand-maintained list), so a
+      # newly added package is automatically covered and never silently
+      # drops out of CI -- only add to `solo` above if a future package
+      # turns out to be similarly heavy.
+      - name: go test -short -failfast (split into batches; see comment above)
+        run: |
+          set -uo pipefail
+          solo=(
+            "github.com/PHPCraftdream/rush/internal/agent"
+            "github.com/PHPCraftdream/rush/internal/app"
+            "github.com/PHPCraftdream/rush/internal/server"
+            "github.com/PHPCraftdream/rush/internal/session"
+          )
+          mapfile -t all_pkgs < <(go list ./...)
+          rest=()
+          for p in "${all_pkgs[@]}"; do
+            is_solo=0
+            for s in "${solo[@]}"; do
+              [ "$p" = "$s" ] && is_solo=1 && break
+            done
+            [ "$is_solo" -eq 0 ] && rest+=("$p")
+          done
+
+          status=0
+          run_batch() {
+            local label=$1
+            shift
+            [ "$#" -eq 0 ] && return 0
+            echo "::group::go test batch: ${label} ($# packages)"
+            go test -short -failfast "$@"
+            local rc=$?
+            echo "::endgroup::"
+            return $rc
+          }
+
+          for pkg in "${solo[@]}"; do
+            run_batch "$pkg" "$pkg" || { status=$?; break; }
+          done
+
+          if [ "$status" -eq 0 ]; then
+            batches=4
+            total=${#rest[@]}
+            size=$(( (total + batches - 1) / batches ))
+            for ((i = 0; i < batches; i++)); do
+              start=$((i * size))
+              chunk=("${rest[@]:start:size}")
+              [ ${#chunk[@]} -eq 0 ] && continue
+              run_batch "rest $((i + 1))/${batches}" "${chunk[@]}" || { status=$?; break; }
+            done
+          fi
+          exit $status
       # The generation-fence and process-tree-kill suites are the ones the
       # session/agent concurrency work exists to protect, and -short skips
       # every one of them (they spawn real child processes, so the guard is
