@@ -133,11 +133,26 @@ jobs:
       # consumed by checkout/setup-go/sqlc/every-other-package's test run
       # first. macos-latest/windows-latest keep testing it as part of
       # ./... below (both are stable there).
+      #
+      # -parallel 2 (not just -p 2, which only bounds package-level
+      # concurrency): TestProbe_CheckpointStopDoesNotStallStep flaked here
+      # at 10-17s elapsed against a ~450ms expected stream. Traced through
+      # agent_turn.go's stopCheckpoint(): it has its own 5s backstop
+      # waiting for the checkpoint goroutine's DB write to actually
+      # observe writeCtx's cancellation (comment there: "the ~10s/turn
+      # stall this code replaces"). A pure-Go sqlite write mid-flight
+      # isn't necessarily preemptible by context cancellation, so under
+      # enough concurrent disk I/O from many t.Parallel() tests each
+      # doing their own sqlite writes at once (default -parallel is
+      # GOMAXPROCS, unaffected by -p), a write can genuinely queue behind
+      # real disk contention long enough to hit that backstop. -parallel
+      # 2 bounds how many tests' goroutines (and their I/O) run at once,
+      # same fix already confirmed to work for test-agent-ubuntu below.
       - run: |
           if [ "${{ matrix.os }}" = "ubuntu-latest" ]; then
-            go test -short -failfast -p 2 $(go list ./... | grep -v '/internal/agent$')
+            go test -short -failfast -p 2 -parallel 2 $(go list ./... | grep -v '/internal/agent$')
           else
-            go test -short -failfast -p 2 ./...
+            go test -short -failfast -p 2 -parallel 2 ./...
           fi
         shell: bash
       # The generation-fence and process-tree-kill suites are the ones the
