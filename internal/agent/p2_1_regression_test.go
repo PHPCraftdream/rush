@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -35,10 +36,23 @@ func TestP2_1_SummarizeQueueDrainedFromNonWebPath(t *testing.T) {
 
 	// Create a fake SSE provider for both Run and summarize.
 	var totalCalls atomic.Int64
+	var firstRequest atomic.Bool
+	chunksReleased := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseChunks := func() {
+		releaseOnce.Do(func() { close(chunksReleased) })
+	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		totalCalls.Add(1)
 		w.Header().Set("Content-Type", "text/event-stream")
 		fl, _ := w.(http.Flusher)
+
+		// Only the FIRST request this server ever receives (the Run
+		// call) is gated; the later summarize request streams
+		// straight through. CompareAndSwap makes the "am I first?"
+		// decision exactly once and is race-free under concurrent
+		// handlers.
+		gated := firstRequest.CompareAndSwap(false, true)
 
 		// Stream a simple response.
 		chunks := []string{
@@ -46,24 +60,27 @@ func TestP2_1_SummarizeQueueDrainedFromNonWebPath(t *testing.T) {
 			`{"id":"c1","object":"chat.completion.chunk","created":1,"model":"test-model","choices":[{"index":0,"delta":{"content":"response"}}]}`,
 			`{"id":"c1","object":"chat.completion.chunk","created":1,"model":"test-model","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":10,"total_tokens":20}}`,
 		}
-		for _, c := range chunks {
+		for i, c := range chunks {
 			fmt.Fprintf(w, "data: %s\n\n", c)
 			if fl != nil {
 				fl.Flush()
 			}
-			// Root cause of a flake this session, not just a timing
-			// margin: with no delay here, the mock response streams
-			// instantly, so the session's busy window can be shorter
-			// than the 10ms poll interval below -- require.Eventually
-			// never observes IsSessionBusy() true even once, regardless
-			// of how long its own outer timeout is (confirmed: failed at
-			// exactly the timeout boundary, both at 1s and again at a
-			// widened 5s -- the condition was never satisfied, not just
-			// slow to arrive). Sleeping between chunks (mirroring
-			// checkpoint_stall_probe_test.go's identical pattern) keeps
-			// the run's own busy window observably wide regardless of
-			// scheduling variance.
-			time.Sleep(50 * time.Millisecond)
+			// Deterministic handshake replacing the old fixed 50ms
+			// sleep between chunks: after the first chunk, hold the
+			// Run request open until the test has actually observed
+			// IsSessionBusy() == true below. Without this, the mock
+			// streams instantly and the session's busy window can be
+			// narrower than the 10ms poll interval of the
+			// require.Eventually below, so that assertion could fail
+			// regardless of how long its own outer timeout is. The
+			// test closes the channel the moment the busy state is
+			// confirmed; the cleanup below also releases it in case
+			// the test bails out early (registered after
+			// t.Cleanup(srv.Close) so it runs first and the blocked
+			// handler cannot deadlock srv.Close).
+			if gated && i == 0 {
+				<-chunksReleased
+			}
 		}
 		fmt.Fprint(w, "data: [DONE]\n\n")
 		if fl != nil {
@@ -71,6 +88,7 @@ func TestP2_1_SummarizeQueueDrainedFromNonWebPath(t *testing.T) {
 		}
 	}))
 	t.Cleanup(srv.Close)
+	t.Cleanup(releaseChunks)
 
 	provider, err := openaicompat.New(
 		openaicompat.WithBaseURL(srv.URL),
@@ -141,17 +159,21 @@ func TestP2_1_SummarizeQueueDrainedFromNonWebPath(t *testing.T) {
 		_, _ = sessionAgent.Run(ctx, runCall)
 	}()
 
-	// Wait for Run to actually start and acquire ownership. The real fix
-	// for this session's flake is the per-chunk sleep added to the mock
-	// server above (the busy window was previously too narrow to
-	// reliably observe at all); 2s here is just a comfortable margin,
-	// not a load-driven timeout.
+	// Wait for Run to actually start and acquire ownership. The
+	// handshake in the mock server above (gate after the first chunk)
+	// guarantees the busy window stays open until this poll observes
+	// it; 2s here is just a comfortable margin, not a load-driven
+	// timeout.
 	require.Eventually(t, func() bool {
 		return sessionAgent.IsSessionBusy(sess.ID)
 	}, 2*time.Second, 10*time.Millisecond, "session should become busy after Run starts")
 
 	// Verify the session is busy (owned by the Run).
 	require.True(t, sessionAgent.IsSessionBusy(sess.ID), "session should be busy after Run starts")
+
+	// Busy state confirmed: release the gate so the Run request can
+	// stream its remaining chunks and complete.
+	releaseChunks()
 
 	// Call Summarize directly (NON-WEB PATH) while the session is busy.
 	// This should queue the request and return ErrSummarizeQueued.
