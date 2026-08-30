@@ -28,7 +28,11 @@ func wedgeRunShell(t *testing.T) func() {
 	t.Helper()
 
 	origRunShell := runShell
-	t.Cleanup(func() { runShell = origRunShell })
+	origAbandonSeam := abandonSeam
+	t.Cleanup(func() {
+		runShell = origRunShell
+		abandonSeam = origAbandonSeam
+	})
 
 	release := make(chan struct{})
 	// invoked counts how many times the fake executor was entered;
@@ -37,6 +41,21 @@ func wedgeRunShell(t *testing.T) func() {
 	// the Add-after-Wait race of a plain WaitGroup.
 	var invoked atomic.Int64
 	returned := make(chan struct{}, 128)
+
+	// hardKillAbandoned (runner.go) spawns its own goroutine to call
+	// abandonSeam, independent of when the wedged worker itself returns --
+	// it never waits on `release`. Left unclaimed, that goroutine can
+	// survive past this test's own cleanup and later fire against whatever
+	// abandonSeam the NEXT test in this file has since installed,
+	// delivering a phantom call there. Confirmed as the cause of a real
+	// flake: TestRunnerAbandonHardKillSeam's own seamPids channel received
+	// a stray nil-pids value that raced its real invocation. None of the
+	// tests using this helper register a process pid, so the real
+	// session.KillProcess loop abandonSeam's default branch would run is
+	// always a no-op for them; tracking completion here changes nothing
+	// observable, it only makes it awaitable.
+	hardKillDone := make(chan struct{}, 128)
+	abandonSeam = func([]int) { hardKillDone <- struct{}{} }
 
 	runShell = func(_ context.Context, _ shell.RunOptions) error {
 		invoked.Add(1)
@@ -51,7 +70,8 @@ func wedgeRunShell(t *testing.T) func() {
 	}
 	t.Cleanup(func() {
 		releaseFunc()
-		for n := invoked.Load(); n > 0; n-- {
+		n := invoked.Load()
+		for i := int64(0); i < n; i++ {
 			<-returned
 		}
 		// <-returned only confirms the fake runShell call returned, not
@@ -68,6 +88,17 @@ func wedgeRunShell(t *testing.T) func() {
 		require.Eventually(t, func() bool { return AbandonedWorkers() == 0 },
 			5*time.Second, 10*time.Millisecond,
 			"abandoned-worker count must drain to zero before the next test runs")
+		// Every wedged invocation here times out and gets abandoned
+		// exactly once, so exactly n hard-kill attempts are in flight;
+		// drain them all before returning so none can survive into the
+		// next test's abandonSeam.
+		for i := int64(0); i < n; i++ {
+			select {
+			case <-hardKillDone:
+			case <-time.After(5 * time.Second):
+				t.Fatal("hard-kill goroutine never signalled completion")
+			}
+		}
 	})
 	return releaseFunc
 }
