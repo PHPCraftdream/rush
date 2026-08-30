@@ -102,7 +102,7 @@ jobs:
       # many packages run at once; tried once already earlier this session
       # (before the leak fix) with "no effect", but per-package runtime is
       # now ~3x lower, so the same cap now bounds a much smaller peak.
-      - run: go test -short -failfast -p 2 ./...
+      - run: go test -short -failfast -p 2 -v ./...
       # The generation-fence and process-tree-kill suites are the ones the
       # session/agent concurrency work exists to protect, and -short skips
       # every one of them (they spawn real child processes, so the guard is
