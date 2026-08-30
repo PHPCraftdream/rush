@@ -12,6 +12,42 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// setRunShellForTest swaps runShell under seamMu for the duration of the
+// calling test, restoring the previous value (also under seamMu) via
+// t.Cleanup. Use this instead of assigning the bare `runShell` variable
+// directly -- production code reads it through getRunShell() under the
+// same mutex, so going through this setter is what actually makes the
+// swap race-free against a runOne goroutine that hasn't been scheduled
+// yet when a test's cleanup runs.
+func setRunShellForTest(t *testing.T, f func(context.Context, shell.RunOptions) error) {
+	t.Helper()
+	seamMu.Lock()
+	prev := runShell
+	runShell = f
+	seamMu.Unlock()
+	t.Cleanup(func() {
+		seamMu.Lock()
+		runShell = prev
+		seamMu.Unlock()
+	})
+}
+
+// setAbandonSeamForTest swaps abandonSeam under seamMu for the duration
+// of the calling test, restoring the previous value (also under seamMu)
+// via t.Cleanup. See setRunShellForTest's doc for why this matters.
+func setAbandonSeamForTest(t *testing.T, f func(pids []int)) {
+	t.Helper()
+	seamMu.Lock()
+	prev := abandonSeam
+	abandonSeam = f
+	seamMu.Unlock()
+	t.Cleanup(func() {
+		seamMu.Lock()
+		abandonSeam = prev
+		seamMu.Unlock()
+	})
+}
+
 // wedgeRunShell replaces the shell executor with one that never yields to
 // ctx cancellation, forcing every runOne onto the abandon path. Workers
 // block until the returned release func is called; t.Cleanup closes the
@@ -26,13 +62,6 @@ import (
 // tests in the package.
 func wedgeRunShell(t *testing.T) func() {
 	t.Helper()
-
-	origRunShell := runShell
-	origAbandonSeam := abandonSeam
-	t.Cleanup(func() {
-		runShell = origRunShell
-		abandonSeam = origAbandonSeam
-	})
 
 	release := make(chan struct{})
 	// invoked counts how many times the fake executor was entered;
@@ -55,14 +84,14 @@ func wedgeRunShell(t *testing.T) func() {
 	// always a no-op for them; tracking completion here changes nothing
 	// observable, it only makes it awaitable.
 	hardKillDone := make(chan struct{}, 128)
-	abandonSeam = func([]int) { hardKillDone <- struct{}{} }
+	setAbandonSeamForTest(t, func([]int) { hardKillDone <- struct{}{} })
 
-	runShell = func(_ context.Context, _ shell.RunOptions) error {
+	setRunShellForTest(t, func(_ context.Context, _ shell.RunOptions) error {
 		invoked.Add(1)
 		defer func() { returned <- struct{}{} }()
 		<-release
 		return nil
-	}
+	})
 
 	var closeOnce sync.Once
 	releaseFunc := func() {
@@ -214,13 +243,6 @@ func TestRunnerAbandonedDoesNotBlockCaller(t *testing.T) {
 // blocking the caller: the seam replaces session.KillProcess, so no real
 // pid is ever signalled.
 func TestRunnerAbandonHardKillSeam(t *testing.T) {
-	origRunShell := runShell
-	origSeam := abandonSeam
-	t.Cleanup(func() {
-		runShell = origRunShell
-		abandonSeam = origSeam
-	})
-
 	release := make(chan struct{})
 	var closeOnce sync.Once
 	releaseFunc := func() {
@@ -231,15 +253,15 @@ func TestRunnerAbandonHardKillSeam(t *testing.T) {
 	seamPids := make(chan []int, 1)
 	const fakePID = 424242
 
-	abandonSeam = func(pids []int) { seamPids <- pids }
-	runShell = func(_ context.Context, opts shell.RunOptions) error {
+	setAbandonSeamForTest(t, func(pids []int) { seamPids <- pids })
+	setRunShellForTest(t, func(_ context.Context, opts shell.RunOptions) error {
 		// Simulate the interpreter having started one child process.
 		if opts.RegisterProcess != nil {
 			opts.RegisterProcess(fakePID)
 		}
 		<-release
 		return nil
-	}
+	})
 
 	hookCfg := config.HookConfig{
 		Command: "wedged-with-child",

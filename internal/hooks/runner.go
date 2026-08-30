@@ -64,6 +64,41 @@ var abandonSeam func(pids []int)
 // depending on the scheduling behavior of the real interpreter.
 var runShell = shell.Run
 
+// seamMu guards runShell and abandonSeam. Both are read exactly once per
+// hook invocation, from a goroutine whose scheduling is decoupled from
+// the wall-clock timeout logic that governs when a test's own r.Run()
+// call returns and its cleanup runs -- a bare package-var swap races the
+// read with a later test's restore/reassignment under the Go memory
+// model even when, in practice, whole seconds of real time separate
+// them (confirmed by `go test -race`, which caught exactly this: a read
+// at runOne's `runShell(ctx, ...)` call site racing a subsequent test's
+// cleanup, despite the reading goroutine's owning r.Run() call having
+// already returned by the time that cleanup ran). The mutex does not
+// change *which* function value a maximally-delayed reader ends up
+// observing -- that stays a harmless, pre-existing timing
+// nondeterminism inherent to swapping a test seam -- it only makes the
+// access itself properly synchronized, which is what both the race
+// detector and the memory model require.
+var seamMu sync.RWMutex
+
+// getRunShell returns the current runShell value under seamMu's read
+// lock. Use this at every production call site instead of reading the
+// bare variable.
+func getRunShell() func(context.Context, shell.RunOptions) error {
+	seamMu.RLock()
+	defer seamMu.RUnlock()
+	return runShell
+}
+
+// getAbandonSeam returns the current abandonSeam value under seamMu's
+// read lock. Use this at every production call site instead of reading
+// the bare variable.
+func getAbandonSeam() func(pids []int) {
+	seamMu.RLock()
+	defer seamMu.RUnlock()
+	return abandonSeam
+}
+
 // compiledHook pairs a HookConfig with its compiled matcher regex. A nil
 // matcher means "match every tool".
 type compiledHook struct {
@@ -278,9 +313,22 @@ func (wt *workerTracker) abandon() []int {
 // saturation check.
 func hardKillAbandoned(wt *workerTracker, hook config.HookConfig) {
 	pids := wt.abandon()
+	// Read the seam here, synchronously on hardKillAbandoned's own
+	// caller goroutine (runOne's abandon-path select, itself on the
+	// goroutine Run() spawns per hook and properly joins before
+	// returning) -- NOT inside the goroutine below. A test that installs
+	// a seam always does so before calling r.Run() and restores it only
+	// after r.Run() returns, so a read that happens synchronously within
+	// that window is provably ordered by Run()'s own join, with no
+	// dependency on when the spawned goroutine below happens to be
+	// scheduled. Reading it lazily inside the goroutine put the read on
+	// an uncoupled timeline and raced a later test's restore under the
+	// Go memory model, confirmed by `go test -race`, even with whole
+	// seconds of real time separating them in every practical run.
+	seam := getAbandonSeam()
 	go func() {
-		if abandonSeam != nil {
-			abandonSeam(pids)
+		if seam != nil {
+			seam(pids)
 			return
 		}
 		for _, pid := range pids {
@@ -324,8 +372,18 @@ func (r *Runner) runOne(parentCtx context.Context, hook config.HookConfig, envVa
 	var stdout, stderr bytes.Buffer
 	tracker := &workerTracker{}
 	done := make(chan error, 1)
+	// Read runShell here, synchronously on runOne's own caller goroutine
+	// (the one Run() spawns per hook and properly joins before
+	// returning) -- NOT inside the goroutine below. See
+	// hardKillAbandoned's identical comment on getAbandonSeam() for the
+	// full reasoning: a read on an uncoupled timeline (inside the spawned
+	// goroutine, whose scheduling has no relation to when a test's
+	// cleanup runs) is a genuine data race under the Go memory model,
+	// confirmed by `go test -race`, regardless of how much real
+	// wall-clock time separates the two accesses in practice.
+	shellFn := getRunShell()
 	go func() {
-		err := runShell(ctx, shell.RunOptions{
+		err := shellFn(ctx, shell.RunOptions{
 			Command:         hook.Command,
 			Cwd:             r.cwd,
 			Env:             envVars,

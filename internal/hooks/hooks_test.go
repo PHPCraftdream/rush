@@ -655,21 +655,72 @@ func TestAggregationUpdatedInput(t *testing.T) {
 // Under -race this catches any code path in runOne that reads those
 // buffers after returning the DecisionNone abandon result.
 func TestRunnerAbandonRaceSafety(t *testing.T) {
-	origRunShell := runShell
-	t.Cleanup(func() { runShell = origRunShell })
-
 	// Synchronize shutdown with the abandoned goroutine so the test
 	// exits cleanly even under -race.
 	var wg sync.WaitGroup
 	release := make(chan struct{})
+
+	// started fires as the very first thing inside the stub, before
+	// wg.Add(1). This is a SEPARATE concern from seamMu (which only
+	// makes reading/writing the runShell/abandonSeam package variables
+	// themselves race-free): runOne spawns a goroutine that calls the
+	// stub asynchronously, with no guarantee it has been scheduled by
+	// the time this test reaches wg.Wait() below. wg.Add/Done/Wait is
+	// not a substitute for that guarantee -- sync.WaitGroup's own
+	// implementation race-instruments specifically to catch "Add with a
+	// positive delta racing a Wait that already observed zero" (its
+	// docs call this pattern unsound), and that is exactly what
+	// happened here: confirmed by -race flagging a conflict rooted in
+	// this stub even after seamMu made the runShell/abandonSeam
+	// variable accesses themselves properly synchronized. Waiting for
+	// started first proves the stub (and therefore its wg.Add(1)) has
+	// already run before this test goes anywhered near wg.Wait().
+	started := make(chan struct{}, 1)
+
+	// hardKillAbandoned (runner.go) spawns its own goroutine that reads
+	// the package-level abandonSeam independently of when the abandoned
+	// runShell stub itself returns -- wg.Wait() below only confirms the
+	// stub returned, not that this separate goroutine's read of
+	// abandonSeam has happened yet. This test never registers a process
+	// pid, so installing a completion-signalling abandonSeam here is a
+	// functional no-op versus the real (also pid-less) hard-kill path;
+	// it only makes completion awaitable.
+	hardKillDone := make(chan struct{}, 1)
+	setAbandonSeamForTest(t, func([]int) { hardKillDone <- struct{}{} })
+
 	t.Cleanup(func() {
 		close(release)
 		wg.Wait()
+		select {
+		case <-hardKillDone:
+		case <-time.After(5 * time.Second):
+			t.Fatal("hard-kill goroutine never signalled completion")
+		}
 	})
 
-	runShell = func(_ context.Context, opts shell.RunOptions) error {
+	// setRunShellForTest (not a bare `runShell = ...` assignment) is
+	// what actually makes this swap safe: runOne's spawned goroutine
+	// reads runShell (runner.go's getRunShell()) on a timeline governed
+	// by real wall-clock timeouts, decoupled from whether that goroutine
+	// has been scheduled yet. A bare package-var swap raced that read
+	// against a later test's restore under the Go memory model even
+	// with whole seconds of real time between them -- confirmed by
+	// `go test -race`. See runner.go's seamMu doc for the full
+	// explanation.
+	setRunShellForTest(t, func(_ context.Context, opts shell.RunOptions) error {
+		// wg.Add(1) must run BEFORE the started signal, not after: this
+		// test waits for `started` and then proceeds toward wg.Wait()
+		// in cleanup, so `started` firing is what the test treats as
+		// proof wg.Add(1) already ran. If Add came second, there is a
+		// window -- between the send completing and Add executing --
+		// where a preempted goroutine could let wg.Wait() observe a
+		// zero counter and return without ever synchronizing with this
+		// stub at all. Confirmed by -race: this exact reordering bug
+		// reproduced the identical failure even after started was
+		// already in place, once (wrongly) sent before Add.
 		wg.Add(1)
 		defer wg.Done()
+		started <- struct{}{}
 		// Write before the caller observes ctx.Done(); the caller will
 		// not read the buffer while we still own it.
 		_, _ = io.WriteString(opts.Stdout, "before\n")
@@ -682,7 +733,7 @@ func TestRunnerAbandonRaceSafety(t *testing.T) {
 		}
 		_, _ = io.WriteString(opts.Stdout, "after\n")
 		return nil
-	}
+	})
 
 	hookCfg := config.HookConfig{
 		Command: "# irrelevant; runShell is stubbed",
@@ -693,6 +744,15 @@ func TestRunnerAbandonRaceSafety(t *testing.T) {
 	start := time.Now()
 	result, err := r.Run(context.Background(), EventPreToolUse, "sess", "bash", `{}`)
 	elapsed := time.Since(start)
+
+	// Prove the stub has actually been entered (and therefore its own
+	// wg.Add(1) has already run) before this test goes anywhere near
+	// wg.Wait() in cleanup -- see the started channel's doc above.
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("runShell stub was never entered")
+	}
 
 	require.NoError(t, err)
 	require.Equal(t, DecisionNone, result.Decision)
