@@ -191,6 +191,26 @@ jobs:
   # trigger it. Test names are extracted from source at run time (not a
   # hand-maintained list), so a newly added test is automatically
   # covered.
+  #
+  # -parallel 2: traced a SEPARATE flake pattern (not the SIGTERM above)
+  # to its actual mechanism instead of guessing -- widening individual
+  # tests' timeouts (tried first) didn't hold, because the delay wasn't
+  # in test logic. TestP2_1_SummarizeQueueDrainedFromNonWebPath's
+  # "session should become busy after Run starts" failure traces through
+  # IsSessionBusy -> mailbox.mu.Lock() -> mb.state and Run ->
+  # tryReserveSession -> mailbox.submit() -> mailbox.mu.Lock(): every
+  # hop is a plain in-memory mutex on a per-sessionAgent-instance map
+  # (agent_control.go, agent_ownership.go, mailbox_ownership.go) --
+  # nothing in that path does I/O or can legitimately block for seconds.
+  # The only remaining explanation is the spawned goroutine itself not
+  # getting scheduled: with default `-parallel` (GOMAXPROCS, 4 on a
+  # standard ubuntu-latest runner) and dozens of this batch's 99 tests
+  # using t.Parallel() plus REAL (non-fake-clock) 5-30ms tickers
+  # (TestStreamWatchdog_*, TestProbe_Checkpoint*), enough of them
+  # competing for 4 OS threads at once can genuinely starve a
+  # newly-spawned goroutine for multiple seconds. Capping concurrency
+  # directly addresses that instead of padding every affected test's
+  # own timeout indefinitely.
   test-agent-ubuntu:
     runs-on: ubuntu-latest
     steps:
@@ -219,7 +239,7 @@ jobs:
             [ ${#chunk[@]} -eq 0 ] && continue
             pattern="^($(IFS='|'; echo "${chunk[*]}"))$"
             echo "::group::batch $((i + 1))/${batches} (${#chunk[@]} tests)"
-            go test -short -failfast -run "$pattern" ./internal/agent/
+            go test -short -failfast -parallel 2 -run "$pattern" ./internal/agent/
             rc=$?
             echo "::endgroup::"
             if [ "$rc" -ne 0 ]; then
