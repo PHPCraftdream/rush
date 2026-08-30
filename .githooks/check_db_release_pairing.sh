@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+# check_db_release_pairing.sh: guard against *_test.go files calling
+# db.Connect()/db.ConnectRead() without pairing them with db.Release()
+# in the same file -- the bug class behind the chronic ubuntu-latest
+# CI kill documented in docs/lessons/2026-08-30-ci-goroutine-leak.md.
+#
+# Background: internal/db/connect.go's Connect/ConnectRead return
+# handles from a process-wide REF-COUNTED pool (pool
+# map[string]*connEntry, keyed by absolute database path). Every call
+# increments the entry's refCount; only db.Release(dataDir) decrements
+# it and (at zero) closes the underlying *sql.DB handles. A test that
+# cleans up with conn.Close() on the raw *sql.DB compiles fine, looks
+# correct, and is silently wrong: it bypasses the bookkeeping entirely,
+# so the pool entry -- and, worse, its stdlib
+# database/sql.(*DB).connectionOpener background goroutine, which only
+# exits when the *sql.DB is closed via the correct API -- stays alive
+# for the remaining life of the test binary. That leak was real and
+# expensive: dozens of leaked connectionOpener goroutines across
+# internal/agent's ~396 tests eventually starved GitHub hosted runners
+# into killing the job (exit 143), a symptom that looked like pure
+# runner flakiness for days. The compiler, go vet, and staticcheck all
+# have no way to see the invariant -- it lives only in connect.go's doc
+# comment -- so, exactly like the ASCII-SQL and stale-model-slot
+# guards, a byte-level repo check is the only automated defense.
+#
+# Heuristic (same philosophy as this repo's other guards -- same-file
+# occurrence counting, not static analysis): for every tracked
+# *_test.go file that mentions db.Connect( or db.ConnectRead( at least
+# once, count mentions of db.Release( and db.ReleaseAll( in the same
+# file, with full-line // comments stripped first. If the release count
+# is lower than the connect count, the file is a violation. Disclosed
+# imprecision, accepted deliberately:
+#   - It counts text, not dataflow. The refCount contract is per CALL
+#     (connect.go: "one Connect, one Release", twice for a
+#     Connect+ConnectRead pair), so counting calls is the right
+#     granularity; but a mention inside a string literal, a /* */
+#     block, or a trailing comment after code on the same line counts
+#     too (only full-line // comments are stripped). If that ever
+#     flags a correct file, fix the wording or extend the per-file
+#     allow-list below -- do not delete the guard.
+#   - db.ReleaseAll( counts as a release. It forcibly closes the entry
+#     regardless of refCount, which is leak-safe even though it is not
+#     the contractually preferred pairing; it exists precisely for
+#     tests whose cleanup cannot know the live refCount (App.Shutdown's
+#     forced-shutdown path deliberately skips Release -- see its doc
+#     comment). internal/server/handlers_test.go is a legitimate user.
+#   - db.ResetPool() deliberately does NOT count: it tears down every
+#     pooled entry process-wide, which this repo's own comments
+#     (internal/cmd/providers_cmd_test.go and friends) treat as the
+#     wrong cleanup under t.Parallel(). A file pairing Connect with
+#     ResetPool-only cleanup will be flagged on purpose; switch it to
+#     db.Release/db.ReleaseAll.
+#   - Only *_test.go files are scanned, and only the literal `db.`
+#     qualifier. Package-internal callers in internal/db itself use
+#     bare Connect(...) and are invisible here; production files are
+#     skipped because App.Shutdown intentionally never calls Release in
+#     its normal path, so a production scan would flag by design, not
+#     by defect.
+#   - A leak created via an indirect helper (test file A calls a
+#     helper in file B that Connects and Releases) is invisible to a
+#     same-file count by construction: the helper file carries both
+#     sides, so it pairs.
+#
+# Implementation note: the per-file loop runs only over files that
+# mention db.Connect/db.ConnectRead (~40 today), never over every
+# tracked file -- see check_stale_model_slots.sh for why a whole-repo
+# per-file loop is untenable (2500+ files, over a minute). Listing
+# candidates with one `git grep -l` keeps this well under a second.
+set -uo pipefail
+
+# Deliberately NOT `set -e`: this script is invoked two ways --
+# directly by .githooks/pre-push (plain `bash
+# .githooks/check_db_release_pairing.sh`, no -e) and by
+# .github/workflows/build.yml's pairing-guard step, whose `run:` block
+# runs under GitHub Actions' default `bash --noprofile --norc -eo
+# pipefail {0}` -- but that parent -e does not propagate into a fresh
+# `bash <file>` subprocess. This file's own `set` line is the only
+# thing that governs it. With -e, the grep pipelines below (grep exits
+# 1 whenever it finds zero matches -- the PASS case for most files)
+# would abort the script mid-loop; see check_stale_model_slots.sh for
+# the longer version of this exact warning.
+
+cd "$(git rev-parse --show-toplevel)" || exit 1
+
+conn_files="$(git grep -l -E 'db\.(Connect|ConnectRead)\(' -- '*_test.go' 2>/dev/null || true)"
+
+violations=""
+while IFS= read -r file; do
+	[ -z "$file" ] && continue
+
+	# Per-file allow-list, same spirit as check_stale_model_slots.sh's
+	# stale-slot-ok marker: a file with a documented reason to be
+	# exempt. Keep each entry annotated with that reason; a blanket
+	# *.go exemption would also hide a genuine reintroduction in a
+	# different file.
+	case "$file" in
+	# (none today -- add one line per file, with the reason, if a
+	# legitimate exception ever appears)
+	esac
+
+	# Strip full-line // comments before counting, so prose like
+	# common_test.go's "(db.Connect(ctx, dbDir))" explainer does not
+	# inflate the connect count. Trailing same-line comments and
+	# /* */ blocks are accepted gaps (see above).
+	code="$(grep -v '^[[:space:]]*//' "$file" 2>/dev/null || true)"
+
+	connects="$(printf '%s\n' "$code" | grep -o -E 'db\.(Connect|ConnectRead)\(' | wc -l)"
+	releases="$(printf '%s\n' "$code" | grep -o -E 'db\.(Release|ReleaseAll)\(' | wc -l)"
+
+	if [ "$((releases))" -lt "$((connects))" ]; then
+		violations="${violations}  ${file}: ${connects} db.Connect/ConnectRead call(s), ${releases} db.Release/ReleaseAll call(s)"$'\n'
+	fi
+done <<<"$conn_files"
+
+if [ -n "$violations" ]; then
+	printf '\033[31munpaired db.Connect/db.ConnectRead found (ref-counted pool contract, see internal/db/connect.go):\033[0m\n'
+	printf '%s' "$violations"
+	printf '\033[33mdb.Connect/db.ConnectRead increment a process-wide refCount that only db.Release(dataDir) decrements. Cleaning up with conn.Close() on the returned *sql.DB bypasses that bookkeeping and leaks the pool entry AND its database/sql connectionOpener goroutine for the life of the test binary -- this is the leak that killed ubuntu CI runners (docs/lessons/2026-08-30-ci-goroutine-leak.md). Pair every call with db.Release(dataDir) in the same file; db.ReleaseAll(dataDir) also counts, for forced-teardown cases. If a file is a genuine, documented exception, extend the allow-list in .githooks/check_db_release_pairing.sh -- do not just delete the call.\033[0m\n'
+	exit 1
+fi
+
+exit 0

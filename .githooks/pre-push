@@ -162,6 +162,20 @@ fi
 step "no stale large/small model-slot spelling (renamed to smart/fast)"
 bash .githooks/check_stale_model_slots.sh || fail "stale large/small model-slot text found -- see output above"
 
+# db.Connect/db.ConnectRead pairing guard for test files.
+# internal/db/connect.go's Connect/ConnectRead hand out handles from a
+# ref-counted pool whose entries are only torn down by db.Release; a
+# test that "cleans up" with conn.Close() on the raw *sql.DB bypasses
+# the refCount and leaks the pool entry plus its database/sql
+# connectionOpener goroutine per call -- the mechanism that chronically
+# killed ubuntu CI runners before the fix
+# (docs/lessons/2026-08-30-ci-goroutine-leak.md). Nothing in the
+# compiler/vet/staticcheck toolchain can see the invariant, so a
+# same-file occurrence count is the guard, same philosophy as the
+# ASCII-SQL and stale-slot guards above.
+step "test files pair db.Connect/db.ConnectRead with db.Release (ref-counted pool contract)"
+bash .githooks/check_db_release_pairing.sh || fail "unpaired db.Connect/db.ConnectRead in a test file -- see output above"
+
 # The web UI's typecheck. rsbuild (pnpm build) does NOT check types, so
 # without this nothing in the project does — which is how five errors,
 # including a required prop that silently changed how tool groups render,

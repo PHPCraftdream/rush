@@ -60,6 +60,9 @@ jobs:
       - name: no stale large/small model-slot spelling (renamed to smart/fast)
         if: matrix.os == 'ubuntu-latest'
         run: bash .githooks/check_stale_model_slots.sh
+      - name: test files pair db.Connect/db.ConnectRead with db.Release (ref-counted pool contract)
+        if: matrix.os == 'ubuntu-latest'
+        run: bash .githooks/check_db_release_pairing.sh
       # Regenerate the sqlc output and fail if it drifts from what's
       # committed. Pinned to v1.30.0 — the exact version this repo's own
       # sqlc.yaml targets and whose byte/rune span-counting bug the ASCII
@@ -244,3 +247,63 @@ jobs:
             fi
           done
           exit $status
+
+  # Targeted -race job. -race was removed entirely earlier this session
+  # for CI resource reasons (see the "No -race" note in the build job
+  # above), and this session still found and fixed several real
+  # goroutine/race bugs purely by manual log analysis -- goroutine-count
+  # instrumentation and full stack dumps, see
+  # docs/lessons/2026-08-30-ci-goroutine-leak.md -- without the race
+  # detector's help, because there was no -race run anywhere left to
+  # help. It earned its keep on its first local run: the detector
+  # caught a real write/read race between internal/hooks'
+  # hardKillAbandoned goroutine (runner.go) and that package's own test
+  # stub on the first execution of this exact command.
+  #
+  # Scope: internal/hooks + internal/session ONLY, on ubuntu-latest
+  # ONLY. internal/agent -- the biggest, most concurrency-heavy package
+  # -- is deliberately NOT here, and excluding it from the one job
+  # whose purpose is catching concurrency bugs needs explaining, so:
+  #   1. windows-latest is out of the question for anything -race: this
+  #      session established that internal/agent needs GOMEMLIMIT=1500MiB
+  #      AND an 8-way batch split on windows-latest to survive WITHOUT
+  #      -race (genuine VirtualAlloc errno=1455 ERROR_COMMITMENT_LIMIT
+  #      OOM kills -- see the test-agent job's Windows comments), and
+  #      -race roughly triples memory use, so it would reintroduce
+  #      exactly the OOM eliminated this session. The same history is
+  #      the reason not to assume ubuntu's larger headroom transfers
+  #      blindly either.
+  #   2. Time, not memory, is the measured binding constraint for
+  #      internal/agent under -race: a local `go test -race -short
+  #      -failfast ./internal/agent/` run this session was killed by
+  #      go test's DEFAULT 10-minute per-package timeout ("*** Test
+  #      killed: ran too long (11m0s)", package FAIL 668s) on a dev
+  #      box -- no OOM, purely runtime. A 4-core shared runner would be
+  #      slower still, and one continuous 15-20m invocation is exactly
+  #      the per-invocation runtime shape the test-agent job's 8-way
+  #      split exists to avoid (the chronic "runner has received a
+  #      shutdown signal" kills scale with how long one invocation
+  #      runs). The documented fallback -- scope this job down to
+  #      internal/hooks and internal/session rather than ship a
+  #      permanently red or flaky job -- is therefore taken, and
+  #      internal/agent has NO -race coverage in CI. That is a real,
+  #      acknowledged gap: if it is ever to close, the shape to try is
+  #      a batched -run-filtered split (as test-agent does) in its own
+  #      dedicated job, not one monolithic command.
+  #
+  # -timeout 15m overrides go test's implicit 10m per-package default:
+  # under -race even these two packages run ~2-3x slower (local run:
+  # session 76s, hooks 6s), and a run should fail on a real assertion,
+  # not on a wall-clock guess against a slower shared runner.
+  test-race:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+      - name: go test -race -short -failfast (internal/hooks, internal/session)
+        run: go test -race -short -failfast -timeout 15m ./internal/hooks/ ./internal/session/

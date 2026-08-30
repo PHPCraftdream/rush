@@ -201,3 +201,20 @@ of this session's CI investigation began.
    `internal/session`, which is likely exactly why this went unnoticed
    for so long: most usages were fine, so nothing about the codebase's
    overall shape looked suspicious.
+
+## Addendum (added later the same day, 2026-08-30): this document is a historical snapshot, not the current CI architecture
+
+The "Fix" section above states that `build.yml`'s test step "is back to
+a single plain `go test -short -failfast ./...`, exactly as it was
+before" — and the "What did NOT work" list names `-race` removal as a
+released workaround. Both claims were true at the moment this document
+was written (immediately after the original three goroutine-leak
+fixes) and both are stale now. Subsequent commits the same session
+(0eb7b082, 409f0d61, ff0b2d33, and others) re-added a dedicated
+`test-agent` job for `internal/agent`, split that package's ~396 tests
+into 8 sequential batches, added `-parallel` limits, and set
+`GOMEMLIMIT=1500MiB` on Windows — because even with the leaks fixed,
+the package still could not survive shared runners as one unsplit
+invocation. Do not read this document as a description of today's CI:
+`.github/workflows/build.yml` is the source of truth for the current
+architecture, including a later ubuntu-only targeted `-race` job.
