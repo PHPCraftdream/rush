@@ -155,6 +155,15 @@ jobs:
           diag() {
             df -h . 2>/dev/null || true
             command -v free >/dev/null 2>&1 && free -h || true
+            ulimit -a 2>/dev/null || true
+            # /proc is Linux-only; scopes the thread-count check to ubuntu-latest,
+            # where the kill actually happens -- ample df/free headroom already
+            # ruled out disk/memory, this checks the next candidate: thread/fd
+            # exhaustion hitting ulimit -u before memory pressure would show.
+            if [ -r /proc/sys/kernel/threads-max ]; then
+              echo "threads-max: $(cat /proc/sys/kernel/threads-max)"
+              echo "live threads (ps -eLf | wc -l): $(ps -eLf 2>/dev/null | wc -l)"
+            fi
           }
           run_batch() {
             local label=$1
