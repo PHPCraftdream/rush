@@ -141,7 +141,18 @@ func TestRunTurn_DisarmsWatchdogOnErrorReturn_NotJustSuccessPath(t *testing.T) {
 	const titleGrace = 400 * time.Millisecond
 	sa.SetTimeoutOptions(false, hardCap)
 	sa.titleJoinGrace = titleGrace
-	sa.titleGenerationMaxDuration = 10 * time.Second // must not cut in before the hard cap could refire
+	// Must outlast hardCap (80ms) so it can't cut in before the hard cap
+	// could refire, but otherwise as short as possible: hangingTitleModel
+	// blocks the background title-generation goroutine (detached from
+	// Run's own return via titleJoinGrace) for up to this whole duration,
+	// orphaned and still running well after this test itself reports its
+	// own PASS/FAIL -- confirmed via CI diagnostics this session (visible
+	// as "sql: database is closed" errors from this exact kind of
+	// leftover goroutine racing a later test's own db.Release teardown,
+	// and as measurable scheduler/CPU pressure while it overlaps dozens of
+	// subsequent tests). 1s is orders of magnitude longer than hardCap and
+	// two orders shorter than the old 10s.
+	sa.titleGenerationMaxDuration = 1 * time.Second
 	sa.streamWatchdogTick = 5 * time.Millisecond     // default tick is 30s -- far too coarse to observe an 80ms hard cap within this test's window
 
 	sess, err := env.sessions.Create(t.Context(), "New Session")
