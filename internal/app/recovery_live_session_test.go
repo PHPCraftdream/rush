@@ -20,9 +20,12 @@ import (
 // session — not the age filter accidentally covering for it.
 func newRecoveryTestAppWithDataDir(t *testing.T, dataDir string) *App {
 	t.Helper()
-	conn, err := db.Connect(t.Context(), t.TempDir())
+	connDBDir := t.TempDir()
+	conn, err := db.Connect(t.Context(), connDBDir)
 	require.NoError(t, err)
-	t.Cleanup(func() { conn.Close() })
+	// db.Release, not conn.Close() -- see newRecoveryTestApp in
+	// recovery_test.go for why.
+	t.Cleanup(func() { _ = db.Release(connDBDir) })
 
 	q := db.New(conn)
 	zero := time.Duration(0)

@@ -89,7 +89,13 @@ func testEnv(t *testing.T) fakeEnv {
 	filetrackerService := filetracker.NewService(q)
 
 	t.Cleanup(func() {
-		conn.Close()
+		// Connect pools connections by absolute path with a refCount (see
+		// internal/db/connect.go) — conn.Close() bypasses that bookkeeping
+		// entirely, leaking the pool's map entry (and, worse, leaving its
+		// connectionOpener goroutine reachable from a stale, never-emptied
+		// entry) for the life of the test binary. db.Release is the
+		// contractually correct counterpart to db.Connect.
+		_ = db.Release(dbDir)
 		os.RemoveAll(workingDir)
 	})
 

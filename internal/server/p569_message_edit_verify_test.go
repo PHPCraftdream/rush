@@ -24,7 +24,11 @@ func newMessageEditTestApp(t *testing.T) (*appPkg.App, string) {
 	dataDir := t.TempDir()
 	conn, err := db.Connect(t.Context(), dataDir)
 	require.NoError(t, err)
-	t.Cleanup(func() { conn.Close() })
+	// db.Release, not conn.Close() -- Connect pools by path with a
+	// refCount (internal/db/connect.go); Close() bypasses it, leaking the
+	// pool's map entry and its connectionOpener goroutine for the rest of
+	// the test binary.
+	t.Cleanup(func() { _ = db.Release(dataDir) })
 	q := db.New(conn)
 	sessions := session.NewService(q, conn)
 	sess, err := sessions.Create(t.Context(), "Test Session")

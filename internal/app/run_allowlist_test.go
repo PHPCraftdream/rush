@@ -261,9 +261,12 @@ func TestRunAllowlist_RunCommandGovernedByAllowBash(t *testing.T) {
 func requestAllowed(t *testing.T, allowlist permission.RunAllowlist, req permission.CreatePermissionRequest) bool {
 	t.Helper()
 
-	conn, err := db.Connect(t.Context(), t.TempDir())
+	dbDir := t.TempDir()
+	conn, err := db.Connect(t.Context(), dbDir)
 	require.NoError(t, err)
-	t.Cleanup(func() { conn.Close() })
+	// db.Release, not conn.Close() -- see newRecoveryTestApp in
+	// recovery_test.go for why.
+	t.Cleanup(func() { _ = db.Release(dbDir) })
 
 	const sessionID = "run-session"
 	if req.SessionID == "" {

@@ -19,9 +19,14 @@ type testEnv struct {
 func setupTest(t *testing.T) *testEnv {
 	t.Helper()
 
-	conn, err := db.Connect(t.Context(), t.TempDir())
+	dbDir := t.TempDir()
+	conn, err := db.Connect(t.Context(), dbDir)
 	require.NoError(t, err)
-	t.Cleanup(func() { conn.Close() })
+	// db.Release, not conn.Close() -- Connect pools by path with a
+	// refCount (internal/db/connect.go); Close() bypasses it, leaking the
+	// pool's map entry and its connectionOpener goroutine for the rest of
+	// the test binary.
+	t.Cleanup(func() { _ = db.Release(dbDir) })
 
 	q := db.New(conn)
 	return &testEnv{

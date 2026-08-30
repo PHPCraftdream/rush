@@ -5,9 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
-	"time"
 
 	_ "github.com/joho/godotenv/autoload"
 )
@@ -58,36 +56,6 @@ func TestMain(m *testing.M) {
 	os.Setenv("RUSH_GLOBAL_CONFIG", configDir)
 	os.Setenv("XDG_CONFIG_HOME", configDir)
 
-	// TEMPORARY diagnostic for the chronic ubuntu-latest CI kill under
-	// investigation -- remove once the root cause is found and fixed.
-	// Logs live goroutine count every 2s to see whether it grows
-	// unbounded across the run (a leak accumulating toward some runner
-	// ceiling) rather than staying flat.
-	stopDiag := make(chan struct{})
-	go func() {
-		t := time.NewTicker(2 * time.Second)
-		defer t.Stop()
-		start := time.Now()
-		buf := make([]byte, 1<<20)
-		for {
-			select {
-			case <-stopDiag:
-				return
-			case <-t.C:
-				n := runtime.NumGoroutine()
-				fmt.Fprintf(os.Stderr, "DIAG t=%s goroutines=%d\n", time.Since(start).Round(time.Second), n)
-				// Dump full stacks once goroutines climb past a floor, so we
-				// can see exactly where the extra ones are blocked instead
-				// of guessing from code review.
-				if n > 60 {
-					sz := runtime.Stack(buf, true)
-					fmt.Fprintf(os.Stderr, "DIAG STACKS at t=%s (goroutines=%d):\n%s\n", time.Since(start).Round(time.Second), n, buf[:sz])
-				}
-			}
-		}
-	}()
-
 	m.Run()
-	close(stopDiag)
 	os.RemoveAll(globalTmp)
 }

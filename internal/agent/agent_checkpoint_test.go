@@ -25,7 +25,11 @@ func TestCheckpointFencing_P0_4Regression(t *testing.T) {
 	sessions := session.NewService(q, conn)
 	messages := message.NewService(q)
 	t.Cleanup(func() {
-		conn.Close()
+		// See common_test.go's testEnv for why this must be db.Release,
+		// not conn.Close() -- Connect pools by path with a refCount, and
+		// Close() bypasses it, leaking the pool entry (and its
+		// connectionOpener goroutine) for the rest of the test binary.
+		_ = db.Release(dbDir)
 	})
 
 	testSession, err := sessions.Create(ctx, "Test Session")

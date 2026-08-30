@@ -21,9 +21,14 @@ import (
 // permission event that the test then has to drain manually.
 func newTestService(t *testing.T, skip bool, allowedTools []string) Service {
 	t.Helper()
-	conn, err := db.Connect(t.Context(), t.TempDir())
+	dbDir := t.TempDir()
+	conn, err := db.Connect(t.Context(), dbDir)
 	require.NoError(t, err)
-	t.Cleanup(func() { conn.Close() })
+	// db.Release, not conn.Close() -- Connect pools by path with a
+	// refCount (internal/db/connect.go); Close() bypasses it, leaking the
+	// pool's map entry and its connectionOpener goroutine for the rest of
+	// the test binary.
+	t.Cleanup(func() { _ = db.Release(dbDir) })
 	return NewPermissionService(t.Context(), "/tmp", skip, allowedTools, db.New(conn))
 }
 
@@ -245,9 +250,10 @@ func TestAlwaysAllow_DifferentPath(t *testing.T) {
 // check moved to the SQL WHERE clause (MatchSessionPermission.enabled=1),
 // so the test now exercises Request directly rather than the loader.
 func TestDisabledPermissions_NotMatched(t *testing.T) {
-	conn, err := db.Connect(t.Context(), t.TempDir())
+	dbDir := t.TempDir()
+	conn, err := db.Connect(t.Context(), dbDir)
 	require.NoError(t, err)
-	t.Cleanup(func() { conn.Close() })
+	t.Cleanup(func() { _ = db.Release(dbDir) })
 
 	q := db.New(conn)
 
