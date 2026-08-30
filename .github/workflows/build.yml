@@ -102,23 +102,20 @@ jobs:
       # many packages run at once; tried once already earlier this session
       # (before the leak fix) with "no effect", but per-package runtime is
       # now ~3x lower, so the same cap now bounds a much smaller peak.
-      # TEMPORARY diagnostic: -run '^$' compiles+links every test binary
-      # but runs zero actual tests, isolating the compile/link phase from
-      # test execution. -v showed zero "=== RUN" lines before the last
-      # several kills -- if this step alone reproduces the kill, the
-      # cause is confirmed to be in compiling/linking, not in anything
-      # any test does at runtime (ruling the goroutine leak fix out as
-      # relevant to this specific symptom).
-      - name: DIAGNOSTIC -- compile+link every test binary, run nothing
-        shell: bash
-        run: |
-          df -h . 2>/dev/null || true
-          free -h 2>/dev/null || true
-          go test -short -failfast -run '^$' -v ./...
-          echo "compile+link-only phase completed without a kill"
-          df -h . 2>/dev/null || true
-          free -h 2>/dev/null || true
-      - run: go test -short -failfast -p 2 -v ./...
+      # Compile+link-only ('go test -run "^$" -v ./...') was tried as a
+      # separate step and PASSED cleanly, ruling out compilation/linking
+      # entirely. The very next step (real test execution) still died
+      # with zero "=== RUN" lines -- but that observation was a red
+      # herring: go test BUFFERS each package's -v output until that
+      # whole package finishes when testing multiple packages at once
+      # (regardless of -p), specifically to avoid interleaving concurrent
+      # packages' verbose logs. "Zero === RUN lines" only ever meant "zero
+      # packages finished" -- tests could have been running the whole
+      # time. -p 1 forces one package at a time, which makes go test
+      # stream that single package's -v output live instead of buffering
+      # it, so if this kill recurs we can finally see which package/test
+      # was actually in flight.
+      - run: go test -short -failfast -p 1 -v ./...
       # The generation-fence and process-tree-kill suites are the ones the
       # session/agent concurrency work exists to protect, and -short skips
       # every one of them (they spawn real child processes, so the guard is
