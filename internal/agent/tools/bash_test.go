@@ -266,9 +266,10 @@ func newBashToolWithRecordingPerms(workingDir string, allow bool) (fantasy.Agent
 }
 
 func TestBashPermissionsParams_RunAllowlistCommandContract(t *testing.T) {
-	conn, err := db.Connect(t.Context(), t.TempDir())
+	dbDir := t.TempDir()
+	conn, err := db.Connect(t.Context(), dbDir)
 	require.NoError(t, err)
-	t.Cleanup(func() { conn.Close() })
+	t.Cleanup(func() { _ = db.Release(dbDir) })
 
 	svc := permission.NewPermissionService(t.Context(), "/tmp", false, nil, db.New(conn))
 	svc.AutoApproveSession("run-session")

@@ -317,9 +317,10 @@ func TestRunCommand_PermissionRequested(t *testing.T) {
 // RunCommandToolName get command-level scrutiny — an AllowTools entry for
 // "run_command" cannot authorize commands on its own.
 func TestRunCommandPermissionsParams_RunAllowlistCommandContract(t *testing.T) {
-	conn, err := db.Connect(t.Context(), t.TempDir())
+	dbDir := t.TempDir()
+	conn, err := db.Connect(t.Context(), dbDir)
 	require.NoError(t, err)
-	t.Cleanup(func() { conn.Close() })
+	t.Cleanup(func() { _ = db.Release(dbDir) })
 
 	svc := permission.NewPermissionService(t.Context(), "/tmp", false, nil, db.New(conn))
 	svc.AutoApproveSession("run-session")
