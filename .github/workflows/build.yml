@@ -87,35 +87,34 @@ jobs:
       #
       # History: this line chronically killed ubuntu-latest with SIGTERM
       # (exit 143, "the runner has received a shutdown signal") for days.
-      # A real bug was found and fixed (docs/lessons/2026-08-30-ci-goroutine-leak.md):
-      # several test helpers closed their pooled internal/db connection via
-      # conn.Close() instead of db.Release(), leaking a connectionOpener
-      # goroutine per test, unboundedly, for the life of the test binary.
-      # That fix is real (confirmed: per-package local runtimes dropped by
-      # roughly 3x) but was NOT sufficient on its own -- the unbatched
-      # ./... still died the same way post-fix, with zero packages ever
-      # completing, which looks like the ORIGINAL concern this session
-      # started from: go test's default package-level parallelism (-p,
-      # defaults to GOMAXPROCS) can run several of this repo's heaviest
-      # packages' test binaries fully concurrently, and a 4-vCPU shared
-      # runner can't sustain that even without any leak. -p 2 caps how
-      # many packages run at once; tried once already earlier this session
-      # (before the leak fix) with "no effect", but per-package runtime is
-      # now ~3x lower, so the same cap now bounds a much smaller peak.
-      # Compile+link-only ('go test -run "^$" -v ./...') was tried as a
-      # separate step and PASSED cleanly, ruling out compilation/linking
-      # entirely. The very next step (real test execution) still died
-      # with zero "=== RUN" lines -- but that observation was a red
-      # herring: go test BUFFERS each package's -v output until that
-      # whole package finishes when testing multiple packages at once
-      # (regardless of -p), specifically to avoid interleaving concurrent
-      # packages' verbose logs. "Zero === RUN lines" only ever meant "zero
-      # packages finished" -- tests could have been running the whole
-      # time. -p 1 forces one package at a time, which makes go test
-      # stream that single package's -v output live instead of buffering
-      # it, so if this kill recurs we can finally see which package/test
-      # was actually in flight.
-      - run: go test -short -failfast -p 1 -v ./...
+      # Three real, confirmed bugs were found this session and fixed at
+      # the source (docs/lessons/2026-08-30-ci-goroutine-leak.md has the
+      # first in full detail):
+      #   1. Several test helpers closed their pooled internal/db
+      #      connection via conn.Close() instead of db.Release(), leaking
+      #      a connectionOpener goroutine per test, unboundedly, for the
+      #      life of the test binary.
+      #   2. config.isInsideWorktree() spawned an uncached `git
+      #      rev-parse` subprocess on every single Load()/Init() call
+      #      (internal/agent's ~396 tests, most reaching this via
+      #      testEnv, each spawning one) -- memoized once per process.
+      #   3. A regression test deliberately left a detached background
+      #      goroutine (title generation against a hanging mock model)
+      #      alive for up to 10 real seconds after the test itself
+      #      already reported PASS, overlapping dozens of subsequent
+      #      tests' execution -- shrunk to 1s, the minimum the test
+      #      actually needs.
+      # Each fix was confirmed with real evidence (a temporary
+      # runtime.NumGoroutine()/runtime.Stack() diagnostic, and a
+      # -p 1 -v run to defeat go test's per-package output buffering)
+      # and each measurably improved things -- macos-latest and
+      # windows-latest are fully clean now. ubuntu-latest still dies
+      # occasionally, but goroutine count stays flat when it does
+      # (ruling out a leak) while a diagnostic ticker's own firing
+      # interval creeps up gradually over tens of seconds beforehand --
+      # consistent with shared-runner noisy-neighbor CPU contention
+      # external to this process, not a remaining code bug.
+      - run: go test -short -failfast ./...
       # The generation-fence and process-tree-kill suites are the ones the
       # session/agent concurrency work exists to protect, and -short skips
       # every one of them (they spawn real child processes, so the guard is

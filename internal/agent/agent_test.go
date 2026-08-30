@@ -5,9 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
-	"time"
 
 	_ "github.com/joho/godotenv/autoload"
 )
@@ -58,31 +56,6 @@ func TestMain(m *testing.M) {
 	os.Setenv("RUSH_GLOBAL_CONFIG", configDir)
 	os.Setenv("XDG_CONFIG_HOME", configDir)
 
-	// TEMPORARY diagnostic: re-check for a leak after the db.Connect/
-	// db.Release fix (common_test.go) -- confirms whether that was the
-	// only leak or whether goroutine count still climbs unboundedly.
-	stopDiag := make(chan struct{})
-	go func() {
-		t := time.NewTicker(2 * time.Second)
-		defer t.Stop()
-		start := time.Now()
-		buf := make([]byte, 1<<20)
-		for {
-			select {
-			case <-stopDiag:
-				return
-			case <-t.C:
-				n := runtime.NumGoroutine()
-				fmt.Fprintf(os.Stderr, "DIAG t=%s goroutines=%d\n", time.Since(start).Round(time.Second), n)
-				if n > 60 {
-					sz := runtime.Stack(buf, true)
-					fmt.Fprintf(os.Stderr, "DIAG STACKS at t=%s (goroutines=%d):\n%s\n", time.Since(start).Round(time.Second), n, buf[:sz])
-				}
-			}
-		}
-	}()
-
 	m.Run()
-	close(stopDiag)
 	os.RemoveAll(globalTmp)
 }
