@@ -62,15 +62,35 @@ func (erroringModel) Model() string    { return "erroring" }
 // titleJoinGrace/joinTitle exists to bound. Returning ctx.Err() on unblock
 // (rather than hanging the test) keeps the goroutine from leaking once the
 // test's own deadline machinery (genCtx's eventual cancel) kicks in.
-type hangingTitleModel struct{}
+//
+// done is closed by Stream right before it returns its ctx.Err(), so the
+// test can PROVE the blocked call has actually unblocked before the test
+// function itself returns — instead of assuming titleGenerationMaxDuration
+// (1s here) is short enough that the orphaned goroutine can't outlive the
+// test and race a later test's teardown. Construct via
+// newHangingTitleModel; a zero-value model would close a nil channel and
+// panic, so always use the constructor.
+type hangingTitleModel struct {
+	done chan struct{}
+}
+
+func newHangingTitleModel() hangingTitleModel {
+	return hangingTitleModel{done: make(chan struct{})}
+}
 
 func (hangingTitleModel) Generate(ctx context.Context, _ fantasy.Call) (*fantasy.Response, error) {
 	<-ctx.Done()
 	return nil, ctx.Err()
 }
 
-func (hangingTitleModel) Stream(ctx context.Context, _ fantasy.Call) (fantasy.StreamResponse, error) {
+func (m hangingTitleModel) Stream(ctx context.Context, _ fantasy.Call) (fantasy.StreamResponse, error) {
 	<-ctx.Done()
+	// Signal the test that this call has genuinely unblocked and is
+	// returning. generateTitle calls Stream on this model at most once per
+	// Run (on error it falls through to the smart model, never back here),
+	// and the test runs Run exactly once, so a plain close cannot
+	// double-fire.
+	close(m.done)
 	return nil, ctx.Err()
 }
 
@@ -134,7 +154,8 @@ func (b *syncBuffer) String() string {
 func TestRunTurn_DisarmsWatchdogOnErrorReturn_NotJustSuccessPath(t *testing.T) {
 	env := testEnv(t)
 
-	agentIface := testSessionAgent(env, erroringModel{}, hangingTitleModel{}, "test system prompt")
+	hangingModel := newHangingTitleModel()
+	agentIface := testSessionAgent(env, erroringModel{}, hangingModel, "test system prompt")
 	sa := agentIface.(*sessionAgent)
 
 	const hardCap = 80 * time.Millisecond
@@ -145,8 +166,9 @@ func TestRunTurn_DisarmsWatchdogOnErrorReturn_NotJustSuccessPath(t *testing.T) {
 	// could refire, but otherwise as short as possible: hangingTitleModel
 	// blocks the background title-generation goroutine (detached from
 	// Run's own return via titleJoinGrace) for up to this whole duration,
-	// orphaned and still running well after this test itself reports its
-	// own PASS/FAIL -- confirmed via CI diagnostics this session (visible
+	// orphaned and (before the explicit wait below was added) still
+	// running well after this test itself reports its own PASS/FAIL --
+	// confirmed via CI diagnostics this session (visible
 	// as "sql: database is closed" errors from this exact kind of
 	// leftover goroutine racing a later test's own db.Release teardown,
 	// and as measurable scheduler/CPU pressure while it overlaps dozens of
@@ -177,6 +199,20 @@ func TestRunTurn_DisarmsWatchdogOnErrorReturn_NotJustSuccessPath(t *testing.T) {
 	case <-runDone:
 	case <-time.After(5 * time.Second):
 		t.Fatal("Run did not return — runTurn's deferred joinTitle()/<-wd.done must still bound the wait even with a hanging title provider")
+	}
+
+	// The title-generation goroutine is detached from Run's return by
+	// titleJoinGrace and only unblocks when titleCtx's own
+	// titleGenerationMaxDuration deadline (1s above) fires — potentially
+	// AFTER this test has already reported a result, at which point its
+	// wakeup can race a later test's db.Release teardown ("sql: database
+	// is closed"). Wait for hangingTitleModel.Stream to actually return so
+	// the goroutine is provably gone before this test function returns,
+	// instead of assuming 1s is short enough.
+	select {
+	case <-hangingModel.done:
+	case <-time.After(sa.titleGenerationMaxDuration + 2*time.Second):
+		t.Fatal("title-generation goroutine never exited after its own internal timeout")
 	}
 
 	logged := logBuf.String()
