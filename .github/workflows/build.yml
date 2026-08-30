@@ -124,7 +124,7 @@ jobs:
       # happens, ruling out a leak; the compile+link phase passes cleanly
       # in isolation) than the Windows OOM, so -p 1 specifically for that
       # OS instead of chasing its concurrency limit further.
-      - run: go test -short -failfast -p ${{ matrix.os == 'ubuntu-latest' && '1' || '2' }} ./...
+      - run: go test -short -failfast -p ${{ matrix.os == 'ubuntu-latest' && '1' || '2' }} ${{ matrix.os == 'ubuntu-latest' && '-v' || '' }} ./...
       # The generation-fence and process-tree-kill suites are the ones the
       # session/agent concurrency work exists to protect, and -short skips
       # every one of them (they spawn real child processes, so the guard is
