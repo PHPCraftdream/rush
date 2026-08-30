@@ -165,15 +165,33 @@ jobs:
               echo "live threads (ps -eLf | wc -l): $(ps -eLf 2>/dev/null | wc -l)"
             fi
           }
+          # Root-caused (see commit message, and this session's two /oxx
+          # contemplation rounds) as ubuntu-latest-specific shared-runner
+          # contention, not our code: disk/memory/thread-limit diagnostics
+          # above all showed ample headroom right before a kill, the
+          # package that dies first has zero exec.Command/syscall.Kill of
+          # its own, and identical commits killed at wildly different
+          # times (55s, 2m22s, 46min) across back-to-back CI runs -- a
+          # deterministic in-repo bug would behave consistently on
+          # unchanged code, contention with noisy neighbors wouldn't.
+          # Retrying absorbs it without masking real bugs: only exit codes
+          # >128 (killed by signal, e.g. 143 = SIGTERM) retry; a genuine
+          # test failure (exit 1) still fails immediately, same as
+          # -failfast intends.
           run_batch() {
             local label=$1
             shift
             [ "$#" -eq 0 ] && return 0
             echo "::group::go test batch: ${label} ($# packages)"
-            diag
-            go test -short -failfast "$@"
-            local rc=$?
-            diag
+            local rc attempt
+            for attempt in 1 2 3; do
+              diag
+              go test -short -failfast "$@"
+              rc=$?
+              diag
+              [ "$rc" -le 128 ] && break
+              echo "::warning::go test batch ${label} was killed (exit $rc, likely shared-runner contention, not a test failure) -- retry ${attempt}/3"
+            done
             echo "::endgroup::"
             return $rc
           }
