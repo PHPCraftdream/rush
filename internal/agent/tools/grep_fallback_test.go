@@ -320,7 +320,14 @@ func TestSearchFilesWithRegexRespectsMidWalkCancellation(t *testing.T) {
 // inside readBoundedLine. Timing is measured relative to a full-read baseline
 // on this machine, so the assertion is machine-independent.
 func TestFileMatchesHonoursDeadlineMidHugeLine(t *testing.T) {
-	t.Parallel()
+	// Deliberately NOT t.Parallel(): this test takes two sequential live
+	// wall-clock measurements and compares them to each other (not against
+	// a fixed constant). Under load from sibling t.Parallel() tests, the
+	// two measurements can land in different-contention moments and
+	// disagree even though the deadline mechanism itself works correctly
+	// -- observed flaking with the SECOND (deadline-bounded) measurement
+	// coming out slower than the FIRST (full-read baseline), which should
+	// be structurally impossible if both ran under comparable load.
 	tempDir := t.TempDir()
 
 	// A single line, no newline, several MiB. The pattern never matches, so

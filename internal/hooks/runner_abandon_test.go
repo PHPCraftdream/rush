@@ -54,6 +54,20 @@ func wedgeRunShell(t *testing.T) func() {
 		for n := invoked.Load(); n > 0; n-- {
 			<-returned
 		}
+		// <-returned only confirms the fake runShell call returned, not
+		// that runner.go's abandoned-worker bookkeeping has decremented
+		// AbandonedWorkers() yet -- that happens in the abandoning
+		// goroutine, a step after runShell returns. Under CI scheduling
+		// pressure that gap can outlast this cleanup, leaking a nonzero
+		// count into the NEXT test in this file (they deliberately run
+		// sequentially and share the package-level counter, see this
+		// function's own doc above) -- confirmed as the cause of a real
+		// flake: TestRunnerAbandonHardKillSeam's hook run got rejected
+		// outright ("too many abandoned hook workers") because an
+		// earlier test's workers hadn't finished decrementing yet.
+		require.Eventually(t, func() bool { return AbandonedWorkers() == 0 },
+			5*time.Second, 10*time.Millisecond,
+			"abandoned-worker count must drain to zero before the next test runs")
 	})
 	return releaseFunc
 }
