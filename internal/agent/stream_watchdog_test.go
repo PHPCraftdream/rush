@@ -19,22 +19,26 @@ func TestStreamWatchdog_BumpKeepsItAlive(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
-	const idle = 80 * time.Millisecond
-	const tick = 10 * time.Millisecond
+	// 3x the original 80/10ms/20ms-bump timings (same ratios): observed
+	// flaking under CI load, a real wall-clock race against actual
+	// scheduling jitter rather than a logic bug -- more absolute headroom,
+	// same relative behavior under test.
+	const idle = 240 * time.Millisecond
+	const tick = 30 * time.Millisecond
 
 	var fired atomic.Int32
 	wd := startStreamWatchdog(ctx, cancel, idle, tick, func(time.Duration, watchdogCause) {
 		fired.Add(1)
 	}, false, 0, 0, 0, nil)
-	// Bump every 20ms for ~300ms — well past idle*3 worth of ticks.
+	// Bump every 60ms for ~900ms — well past idle*3 worth of ticks.
 	// Watchdog must NOT fire.
-	stop := time.After(300 * time.Millisecond)
+	stop := time.After(900 * time.Millisecond)
 loop:
 	for {
 		select {
 		case <-stop:
 			break loop
-		case <-time.After(20 * time.Millisecond):
+		case <-time.After(60 * time.Millisecond):
 			wd.bump()
 		}
 	}

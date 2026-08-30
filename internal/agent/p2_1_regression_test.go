@@ -128,10 +128,16 @@ func TestP2_1_SummarizeQueueDrainedFromNonWebPath(t *testing.T) {
 		_, _ = sessionAgent.Run(ctx, runCall)
 	}()
 
-	// Wait for Run to actually start and acquire ownership.
+	// Wait for Run to actually start and acquire ownership. 1s was too
+	// tight under CI load (observed flaking on both macOS and ubuntu
+	// runners this session, "Condition never satisfied") -- the
+	// background goroutine only needs to get scheduled and reach the
+	// point where Run marks the session busy, which doesn't get slower
+	// under load in a way that needs a longer poll interval, just a
+	// longer overall budget.
 	require.Eventually(t, func() bool {
 		return sessionAgent.IsSessionBusy(sess.ID)
-	}, 1*time.Second, 10*time.Millisecond, "session should become busy after Run starts")
+	}, 5*time.Second, 10*time.Millisecond, "session should become busy after Run starts")
 
 	// Verify the session is busy (owned by the Run).
 	require.True(t, sessionAgent.IsSessionBusy(sess.ID), "session should be busy after Run starts")

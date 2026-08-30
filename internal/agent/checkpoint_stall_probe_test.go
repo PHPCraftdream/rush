@@ -84,7 +84,12 @@ func TestProbe_CheckpointStopDoesNotStallStep(t *testing.T) {
 	require.NoError(t, err)
 
 	t.Logf("PROBE: single-step run took %s (server-side stream is ~450ms)", elapsed)
-	require.Less(t, elapsed, 2*time.Second,
+	// 4s (was 2s): still comfortably below the 5s stall this probes for --
+	// a real regression would still fail clearly -- but with enough
+	// headroom over the ~450ms expected time to absorb CI scheduling
+	// jitter that was observed flaking this on both macOS and Windows
+	// runners this session.
+	require.Less(t, elapsed, 4*time.Second,
 		"Run stalled far beyond the ~450ms stream: checkpoint lifecycle is blocking on its 5s timeout")
 }
 
@@ -171,5 +176,6 @@ func TestProbe_CheckpointStallIsPerStep(t *testing.T) {
 	require.NoError(t, err)
 
 	t.Logf("PROBE: two-step run took %s across %d provider calls (server-side stream is ~750ms)", elapsed, calls.Load())
-	require.Less(t, elapsed, 2*time.Second, "two-step run stalled")
+	// 4s (was 2s) -- see the single-step probe above for why.
+	require.Less(t, elapsed, 4*time.Second, "two-step run stalled")
 }

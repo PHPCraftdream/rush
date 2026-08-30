@@ -24,9 +24,14 @@ func TestStreamWatchdog_ExtendsOnProgress(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
-	const idle = 80 * time.Millisecond
-	const tick = 10 * time.Millisecond
-	const hardCap = 500 * time.Millisecond
+	// 3x the original 80/10/500ms/30ms-bump timings (same ratios): observed
+	// flaking under CI load ("watchdog must not fire while progress keeps
+	// arriving") when a bump got scheduled more than idle late -- a real
+	// wall-clock race against actual scheduling jitter, not a logic bug.
+	// More absolute headroom, same relative behavior being tested.
+	const idle = 240 * time.Millisecond
+	const tick = 30 * time.Millisecond
+	const hardCap = 1500 * time.Millisecond
 
 	var fired atomic.Int32
 	wd := startStreamWatchdog(ctx, cancel, idle, tick, func(time.Duration, watchdogCause) {
@@ -37,14 +42,14 @@ func TestStreamWatchdog_ExtendsOnProgress(t *testing.T) {
 		<-wd.done
 	}()
 
-	// Bump every 30ms for 300ms — extends the deadline each time.
-	stop := time.After(300 * time.Millisecond)
+	// Bump every 90ms for 900ms — extends the deadline each time.
+	stop := time.After(900 * time.Millisecond)
 loop:
 	for {
 		select {
 		case <-stop:
 			break loop
-		case <-time.After(30 * time.Millisecond):
+		case <-time.After(90 * time.Millisecond):
 			wd.bump()
 		}
 	}
