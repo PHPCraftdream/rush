@@ -86,19 +86,23 @@ jobs:
       # No -race here (go build -race is gone too, for the same reason).
       #
       # History: this line chronically killed ubuntu-latest with SIGTERM
-      # (exit 143, "the runner has received a shutdown signal") for days
-      # before the actual cause was found: internal/agent's shared test
-      # helper (and a handful of others across internal/app, internal/server,
-      # internal/filetracker, internal/permission) closed their pooled
-      # internal/db connection via conn.Close() instead of db.Release() —
-      # db.Connect pools by path with a refCount, so Close() bypassed it and
-      # leaked a connectionOpener goroutine per test, unboundedly, for the
-      # life of the test binary. Confirmed via bisection + a goroutine-count/
-      # stack-dump diagnostic in a throwaway workflow (deleted once the cause
-      # was found) — see docs/lessons/2026-08-30-ci-goroutine-leak.md for the
-      # full investigation. Fixed at the source; no CI-side workaround
-      # (batching, retries, resource throttling) was needed or kept.
-      - run: go test -short -failfast ./...
+      # (exit 143, "the runner has received a shutdown signal") for days.
+      # A real bug was found and fixed (docs/lessons/2026-08-30-ci-goroutine-leak.md):
+      # several test helpers closed their pooled internal/db connection via
+      # conn.Close() instead of db.Release(), leaking a connectionOpener
+      # goroutine per test, unboundedly, for the life of the test binary.
+      # That fix is real (confirmed: per-package local runtimes dropped by
+      # roughly 3x) but was NOT sufficient on its own -- the unbatched
+      # ./... still died the same way post-fix, with zero packages ever
+      # completing, which looks like the ORIGINAL concern this session
+      # started from: go test's default package-level parallelism (-p,
+      # defaults to GOMAXPROCS) can run several of this repo's heaviest
+      # packages' test binaries fully concurrently, and a 4-vCPU shared
+      # runner can't sustain that even without any leak. -p 2 caps how
+      # many packages run at once; tried once already earlier this session
+      # (before the leak fix) with "no effect", but per-package runtime is
+      # now ~3x lower, so the same cap now bounds a much smaller peak.
+      - run: go test -short -failfast -p 2 ./...
       # The generation-fence and process-tree-kill suites are the ones the
       # session/agent concurrency work exists to protect, and -short skips
       # every one of them (they spawn real child processes, so the guard is
