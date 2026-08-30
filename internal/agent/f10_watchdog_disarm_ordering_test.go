@@ -153,7 +153,7 @@ func TestRunTurn_DisarmsWatchdogOnErrorReturn_NotJustSuccessPath(t *testing.T) {
 	// subsequent tests). 1s is orders of magnitude longer than hardCap and
 	// two orders shorter than the old 10s.
 	sa.titleGenerationMaxDuration = 1 * time.Second
-	sa.streamWatchdogTick = 5 * time.Millisecond     // default tick is 30s -- far too coarse to observe an 80ms hard cap within this test's window
+	sa.streamWatchdogTick = 5 * time.Millisecond // default tick is 30s -- far too coarse to observe an 80ms hard cap within this test's window
 
 	sess, err := env.sessions.Create(t.Context(), "New Session")
 	require.NoError(t, err)
