@@ -167,6 +167,7 @@ func TestCaptureGoroutineStack_ReturnsBeforeSlowWrite(t *testing.T) {
 	captureDone := make(chan struct{})
 	writeEntered := make(chan struct{})
 	releaseWrite := make(chan struct{})
+	writeDone := make(chan struct{})
 	var writeFinished atomic.Bool
 
 	buf := CaptureGoroutineStack("async write test")
@@ -175,8 +176,12 @@ func TestCaptureGoroutineStack_ReturnsBeforeSlowWrite(t *testing.T) {
 	go func() {
 		close(writeEntered)
 		<-releaseWrite // simulate a slow/hung disk write
-		_, _ = WriteGoroutineDump(buf)
+		path, _ := WriteGoroutineDump(buf)
+		if path != "" {
+			_ = os.Remove(path)
+		}
 		writeFinished.Store(true)
+		close(writeDone)
 	}()
 
 	select {
@@ -196,6 +201,19 @@ func TestCaptureGoroutineStack_ReturnsBeforeSlowWrite(t *testing.T) {
 	assert.False(t, writeFinished.Load(), "write must still be pending — this proves capture did not wait for it")
 
 	close(releaseWrite)
+
+	// Must wait for the write to actually land before returning: it reads
+	// the package-level logDir global, which the next test in this file
+	// repoints at its own t.TempDir() as soon as it starts. An unawaited
+	// write here can fire after that point and land inside the next test's
+	// directory, producing a phantom extra file there (regression:
+	// TestWriteGoroutineDump_ConcurrentDumpsDoNotCollide saw 21 files
+	// instead of 20 for exactly this reason).
+	select {
+	case <-writeDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the async write goroutine never finished")
+	}
 }
 
 // TestWriteGoroutineDump_ConcurrentDumpsDoNotCollide is the regression test
