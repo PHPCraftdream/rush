@@ -51,6 +51,19 @@ func TestP2_1_SummarizeQueueDrainedFromNonWebPath(t *testing.T) {
 			if fl != nil {
 				fl.Flush()
 			}
+			// Root cause of a flake this session, not just a timing
+			// margin: with no delay here, the mock response streams
+			// instantly, so the session's busy window can be shorter
+			// than the 10ms poll interval below -- require.Eventually
+			// never observes IsSessionBusy() true even once, regardless
+			// of how long its own outer timeout is (confirmed: failed at
+			// exactly the timeout boundary, both at 1s and again at a
+			// widened 5s -- the condition was never satisfied, not just
+			// slow to arrive). Sleeping between chunks (mirroring
+			// checkpoint_stall_probe_test.go's identical pattern) keeps
+			// the run's own busy window observably wide regardless of
+			// scheduling variance.
+			time.Sleep(50 * time.Millisecond)
 		}
 		fmt.Fprint(w, "data: [DONE]\n\n")
 		if fl != nil {
@@ -128,16 +141,14 @@ func TestP2_1_SummarizeQueueDrainedFromNonWebPath(t *testing.T) {
 		_, _ = sessionAgent.Run(ctx, runCall)
 	}()
 
-	// Wait for Run to actually start and acquire ownership. 1s was too
-	// tight under CI load (observed flaking on both macOS and ubuntu
-	// runners this session, "Condition never satisfied") -- the
-	// background goroutine only needs to get scheduled and reach the
-	// point where Run marks the session busy, which doesn't get slower
-	// under load in a way that needs a longer poll interval, just a
-	// longer overall budget.
+	// Wait for Run to actually start and acquire ownership. The real fix
+	// for this session's flake is the per-chunk sleep added to the mock
+	// server above (the busy window was previously too narrow to
+	// reliably observe at all); 2s here is just a comfortable margin,
+	// not a load-driven timeout.
 	require.Eventually(t, func() bool {
 		return sessionAgent.IsSessionBusy(sess.ID)
-	}, 5*time.Second, 10*time.Millisecond, "session should become busy after Run starts")
+	}, 2*time.Second, 10*time.Millisecond, "session should become busy after Run starts")
 
 	// Verify the session is busy (owned by the Run).
 	require.True(t, sessionAgent.IsSessionBusy(sess.ID), "session should be busy after Run starts")
