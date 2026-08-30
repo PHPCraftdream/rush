@@ -107,14 +107,17 @@ jobs:
       # Each fix was confirmed with real evidence (a temporary
       # runtime.NumGoroutine()/runtime.Stack() diagnostic, and a
       # -p 1 -v run to defeat go test's per-package output buffering)
-      # and each measurably improved things -- macos-latest and
-      # windows-latest are fully clean now. ubuntu-latest still dies
-      # occasionally, but goroutine count stays flat when it does
-      # (ruling out a leak) while a diagnostic ticker's own firing
-      # interval creeps up gradually over tens of seconds beforehand --
-      # consistent with shared-runner noisy-neighbor CPU contention
-      # external to this process, not a remaining code bug.
-      - run: go test -short -failfast ./...
+      # and each measurably improved things. But dropping back to
+      # default (unbounded) package parallelism to retest surfaced a
+      # 4th, more fundamental confirmation: windows-latest crashed with
+      # a genuine "fatal error: out of memory" (VirtualAlloc failed,
+      # errno=1455) while compiling/running internal/commands
+      # concurrently alongside this repo's heavier packages -- a small
+      # (278-line) package with nothing memory-hungry of its own, so
+      # the exhaustion is from the CONCURRENT total, not any one
+      # package. -p 2 caps how many packages build/run at once,
+      # directly bounding that concurrent peak.
+      - run: go test -short -failfast -p 2 ./...
       # The generation-fence and process-tree-kill suites are the ones the
       # session/agent concurrency work exists to protect, and -short skips
       # every one of them (they spawn real child processes, so the guard is
