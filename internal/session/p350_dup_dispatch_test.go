@@ -389,7 +389,15 @@ func TestReleaseGate_P350_LeaseRenewedDuringLongExecution(t *testing.T) {
 	// weaken what the test verifies (exactly-once dispatch across multiple
 	// TTL windows) — it only gives the renewal mechanism realistic room to
 	// actually succeed before judging whether it did.
-	const testLeaseTTL = 3 * time.Second
+	//
+	// Widened again 3s -> 5s (task #805): reproduced failing on
+	// windows-latest CI again, same shape (lease watchdog fired before
+	// renewal landed, "lease renewal failed ... context deadline exceeded"
+	// then "entry should be acked" never satisfied) -- 1s of renewal
+	// budget per attempt was still not always enough under a contended
+	// runner. 5s gives ~1.67s per attempt, same TTL/3 relationship, no
+	// change to what is verified.
+	const testLeaseTTL = 5 * time.Second
 	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
 		Sessions:       svc,
 		Coordinator:    coord,
