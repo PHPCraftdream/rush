@@ -14,12 +14,9 @@ concurrency:
 jobs:
   build:
     strategy:
-      # Without this, a fast failure on one OS (e.g. the macOS bash-3.2
-      # incompatibility below) cancels the other legs mid-run via the
-      # default fail-fast, hiding whatever they were actually doing --
-      # which is exactly what happened investigating the ubuntu-only
-      # go-test batching below: ubuntu got canceled mid-batch, never
-      # reaching its own pass/fail verdict.
+      # Without this, a fast failure on one OS cancels the other legs
+      # mid-run via the default fail-fast, hiding whatever they were
+      # actually doing.
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
@@ -81,79 +78,16 @@ jobs:
             exit 1
           }
       # -short skips VCR/network integration tests (TestCoderAgent) whose
-      # cassettes need a Charm hyper key to re-record — unavailable on the fork.
+      # cassettes need a Charm hyper key to re-record — unavailable on the
+      # fork. No -race (go build -race is gone too, for the same reason).
       #
-      # No -race here (go build -race is gone too, for the same reason).
-      #
-      # History: this line chronically killed ubuntu-latest with SIGTERM
-      # (exit 143, "the runner has received a shutdown signal") for days.
-      # Three real, confirmed bugs were found this session and fixed at
-      # the source (docs/lessons/2026-08-30-ci-goroutine-leak.md has the
-      # first in full detail):
-      #   1. Several test helpers closed their pooled internal/db
-      #      connection via conn.Close() instead of db.Release(), leaking
-      #      a connectionOpener goroutine per test, unboundedly, for the
-      #      life of the test binary.
-      #   2. config.isInsideWorktree() spawned an uncached `git
-      #      rev-parse` subprocess on every single Load()/Init() call
-      #      (internal/agent's ~396 tests, most reaching this via
-      #      testEnv, each spawning one) -- memoized once per process.
-      #   3. A regression test deliberately left a detached background
-      #      goroutine (title generation against a hanging mock model)
-      #      alive for up to 10 real seconds after the test itself
-      #      already reported PASS, overlapping dozens of subsequent
-      #      tests' execution -- shrunk to 1s, the minimum the test
-      #      actually needs.
-      # Each fix was confirmed with real evidence (a temporary
-      # runtime.NumGoroutine()/runtime.Stack() diagnostic, and a
-      # -p 1 -v run to defeat go test's per-package output buffering)
-      # and each measurably improved things. Dropping back to default
-      # (unbounded) package parallelism to retest surfaced a 4th,
-      # independent confirmation on windows-latest: a genuine "fatal
-      # error: out of memory" (VirtualAlloc failed, errno=1455) while
-      # compiling/running internal/commands (a tiny, 278-line package
-      # with nothing memory-hungry of its own) concurrently alongside
-      # this repo's heavier packages -- the exhaustion is from the
-      # concurrent total, not any one package. -p 2 fixed that: retried
-      # with it, windows-latest and macos-latest both got all the way to
-      # their own (already-tracked, known-flaky) test assertions instead
-      # of crashing/hanging.
-      #
-      # ubuntu-latest alone still dies with the same SIGTERM regardless of
-      # -p (tried 1 and 2) -- a different failure shape (goroutine count
-      # stays flat when it happens, ruling out a leak; the compile+link
-      # phase passes cleanly in isolation; the exact test/point it dies at
-      # moves every run, further each time a real bug got fixed but never
-      # to zero) than the Windows OOM. That "moves further with every
-      # unrelated fix, never converges on one culprit" shape is what a
-      # cumulative per-JOB resource ceiling on a shared runner looks like,
-      # not a specific bug -- internal/agent (~396 tests, by far this
-      # repo's largest suite) is carved out into its own job below on
-      # ubuntu-latest only, so it gets a fresh VM with nothing already
-      # consumed by checkout/setup-go/sqlc/every-other-package's test run
-      # first. macos-latest/windows-latest keep testing it as part of
-      # ./... below (both are stable there).
-      #
-      # -parallel 2 (not just -p 2, which only bounds package-level
-      # concurrency): TestProbe_CheckpointStopDoesNotStallStep flaked here
-      # at 10-17s elapsed against a ~450ms expected stream. Traced through
-      # agent_turn.go's stopCheckpoint(): it has its own 5s backstop
-      # waiting for the checkpoint goroutine's DB write to actually
-      # observe writeCtx's cancellation (comment there: "the ~10s/turn
-      # stall this code replaces"). A pure-Go sqlite write mid-flight
-      # isn't necessarily preemptible by context cancellation, so under
-      # enough concurrent disk I/O from many t.Parallel() tests each
-      # doing their own sqlite writes at once (default -parallel is
-      # GOMAXPROCS, unaffected by -p), a write can genuinely queue behind
-      # real disk contention long enough to hit that backstop. -parallel
-      # 2 bounds how many tests' goroutines (and their I/O) run at once,
-      # same fix already confirmed to work for test-agent-ubuntu below.
-      - run: |
-          if [ "${{ matrix.os }}" = "ubuntu-latest" ]; then
-            go test -short -failfast -p 2 -parallel 2 $(go list ./... | grep -v '/internal/agent$')
-          else
-            go test -short -failfast -p 2 -parallel 2 ./...
-          fi
+      # internal/agent (this repo's largest suite, ~396 tests) is excluded
+      # here and tested in its own dedicated job below instead -- see that
+      # job's comment, and docs/lessons/2026-08-30-ci-goroutine-leak.md,
+      # for the full history of why (a chronic SIGTERM kill on
+      # ubuntu-latest, plus a genuine Windows OOM from running it
+      # concurrently with another package under -p >1).
+      - run: go test -short -failfast -p 2 $(go list ./... | grep -v '/internal/agent$')
         shell: bash
       # The generation-fence and process-tree-kill suites are the ones the
       # session/agent concurrency work exists to protect, and -short skips
@@ -185,49 +119,44 @@ jobs:
       - name: Test npm wrapper cache logic (rush)
         run: node npm/rush/bin/rush.cache.test.js
 
-  # internal/agent carved out of the main ubuntu-latest leg above -- see
-  # the comment on that job's go-test step for the full rationale. This
-  # job exists ONLY because ubuntu-latest's shared runner couldn't
-  # reliably get through this repo's largest test suite (~396 tests)
-  # alongside checkout/setup-go/sqlc/every other package in one job; a
-  # fresh, otherwise-empty VM gives it the best remaining chance. Not
-  # needed on macos-latest/windows-latest (both stable testing this
-  # package as part of the main job's ./...), so this job doesn't run a
-  # matrix at all.
+  # internal/agent gets its own dedicated job, on all three OSes, instead of
+  # running as part of the main job's ./... above. Full investigation in
+  # docs/lessons/2026-08-30-ci-goroutine-leak.md; summary of why this shape:
   #
-  # Even alone, in its own job, the single `go test ./internal/agent/`
-  # invocation still died with the same SIGTERM -- so the test suite
-  # itself (~396 tests, this repo's largest, several minutes of
-  # continuous CPU) is further split into 4 sequential sub-batches by
-  # test name here. Each batch needs less continuous runtime to finish,
-  # shrinking the window during which a burst of shared-runner
-  # contention (see the main job's comment -- goroutine count stays flat
-  # when this fires, ruling out a leak) could land badly enough to
-  # trigger it. Test names are extracted from source at run time (not a
-  # hand-maintained list), so a newly added test is automatically
+  # 1. On ubuntu-latest, `go test ./...` (and later, `go test
+  #    ./internal/agent/` even fully isolated in its own job) chronically
+  #    died with SIGTERM ("the runner has received a shutdown signal") --
+  #    three real bugs were found and fixed at the source (a goroutine leak
+  #    from conn.Close() vs db.Release(), an uncached git subprocess spawn
+  #    in config.isInsideWorktree(), and a test that left a background
+  #    goroutine alive 10s past its own PASS), each confirmed to help, but
+  #    the kill itself only fully stopped once this package's own ~396
+  #    tests were ALSO split into 4 sequential -run-filtered batches here
+  #    (shrinking how much continuous runtime any single invocation needs)
+  #    with -parallel 2 (below).
+  # 2. On windows-latest, running internal/agent concurrently with another
+  #    package (default -p, or even -p 2) produced a genuine "fatal error:
+  #    out of memory" (VirtualAlloc failed) -- this package alone is heavy
+  #    enough that it needs to not compete with anything else building/
+  #    testing at the same time, which a dedicated job guarantees.
+  # 3. -parallel 2 (in-package t.Parallel() concurrency, NOT bounded by -p)
+  #    fixed a separate flake class: TestProbe_CheckpointStopDoesNotStallStep
+  #    and friends have their own multi-second backstops for a checkpoint
+  #    goroutine's sqlite write to observe context cancellation (see
+  #    agent_turn.go's stopCheckpoint) -- under enough concurrent disk I/O
+  #    from many t.Parallel() tests writing their own sqlite files at once,
+  #    a write can genuinely queue behind real contention long enough to
+  #    hit that backstop.
+  #
+  # Test names for the 4 sub-batches are extracted from source at run time
+  # (not a hand-maintained list), so a newly added test is automatically
   # covered.
-  #
-  # -parallel 2: traced a SEPARATE flake pattern (not the SIGTERM above)
-  # to its actual mechanism instead of guessing -- widening individual
-  # tests' timeouts (tried first) didn't hold, because the delay wasn't
-  # in test logic. TestP2_1_SummarizeQueueDrainedFromNonWebPath's
-  # "session should become busy after Run starts" failure traces through
-  # IsSessionBusy -> mailbox.mu.Lock() -> mb.state and Run ->
-  # tryReserveSession -> mailbox.submit() -> mailbox.mu.Lock(): every
-  # hop is a plain in-memory mutex on a per-sessionAgent-instance map
-  # (agent_control.go, agent_ownership.go, mailbox_ownership.go) --
-  # nothing in that path does I/O or can legitimately block for seconds.
-  # The only remaining explanation is the spawned goroutine itself not
-  # getting scheduled: with default `-parallel` (GOMAXPROCS, 4 on a
-  # standard ubuntu-latest runner) and dozens of this batch's 99 tests
-  # using t.Parallel() plus REAL (non-fake-clock) 5-30ms tickers
-  # (TestStreamWatchdog_*, TestProbe_Checkpoint*), enough of them
-  # competing for 4 OS threads at once can genuinely starve a
-  # newly-spawned goroutine for multiple seconds. Capping concurrency
-  # directly addresses that instead of padding every affected test's
-  # own timeout indefinitely.
-  test-agent-ubuntu:
-    runs-on: ubuntu-latest
+  test-agent:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -239,7 +168,14 @@ jobs:
         shell: bash
         run: |
           set -uo pipefail
-          mapfile -t names < <(
+          # No mapfile/readarray: this job now runs on macos-latest too,
+          # whose system /bin/bash is 3.2 (Apple ships no newer one) --
+          # both builtins require bash 4+. Portable while-read loop works
+          # on bash 3.2, bash 4/5, and Windows' Git Bash alike.
+          names=()
+          while IFS= read -r name; do
+            names+=("$name")
+          done < <(
             grep -h "^func Test" internal/agent/*_test.go \
               | sed 's/func \(Test[A-Za-z0-9_]*\).*/\1/' \
               | LC_ALL=C sort -u
