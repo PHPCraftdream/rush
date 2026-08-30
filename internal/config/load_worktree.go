@@ -12,14 +12,32 @@ import (
 	"github.com/PHPCraftdream/rush/internal/platform"
 )
 
+var (
+	insideWorktreeOnce   sync.Once
+	insideWorktreeResult bool
+)
+
+// isInsideWorktree spawns `git rev-parse --is-inside-work-tree` against the
+// process's own CWD (never a caller-supplied directory, unlike worktreeRoot
+// below), which cannot change mid-process under any normal call path here --
+// so the result is memoized once per process instead of once per call. Before
+// this, every Load/Init call spawned a fresh git subprocess with no caching
+// at all (unlike worktreeRoot, which already cached per-directory): profiled
+// as a real contributor to a chronic CI kill this session -- internal/agent's
+// ~396 tests each use a unique t.TempDir(), so worktreeRoot's cache never hit
+// across tests either, meaning hundreds of uncached git spawns in a row could
+// burn through a CPU-throttled runner's cgroup quota.
 func isInsideWorktree() bool {
-	cmd := platform.Command(
-		context.Background(),
-		"git", "rev-parse",
-		"--is-inside-work-tree",
-	)
-	bts, err := cmd.CombinedOutput()
-	return err == nil && strings.TrimSpace(string(bts)) == "true"
+	insideWorktreeOnce.Do(func() {
+		cmd := platform.Command(
+			context.Background(),
+			"git", "rev-parse",
+			"--is-inside-work-tree",
+		)
+		bts, err := cmd.CombinedOutput()
+		insideWorktreeResult = err == nil && strings.TrimSpace(string(bts)) == "true"
+	})
+	return insideWorktreeResult
 }
 
 // worktreeRootCache memoizes worktreeRoot's per-directory result. Every
