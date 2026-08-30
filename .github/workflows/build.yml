@@ -14,6 +14,13 @@ concurrency:
 jobs:
   build:
     strategy:
+      # Without this, a fast failure on one OS (e.g. the macOS bash-3.2
+      # incompatibility below) cancels the other legs mid-run via the
+      # default fail-fast, hiding whatever they were actually doing --
+      # which is exactly what happened investigating the ubuntu-only
+      # go-test batching below: ubuntu got canceled mid-batch, never
+      # reaching its own pass/fail verdict.
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
@@ -108,7 +115,11 @@ jobs:
       # newly added package is automatically covered and never silently
       # drops out of CI -- only add to `solo` above if a future package
       # turns out to be similarly heavy.
+      # shell: bash pins this to Git Bash on windows-latest (default run:
+      # shell there is pwsh, which can't parse this script at all) and to
+      # whatever bash ubuntu-latest/macos-latest already default to.
       - name: go test -short -failfast (split into batches; see comment above)
+        shell: bash
         run: |
           set -uo pipefail
           solo=(
@@ -117,7 +128,15 @@ jobs:
             "github.com/PHPCraftdream/rush/internal/server"
             "github.com/PHPCraftdream/rush/internal/session"
           )
-          mapfile -t all_pkgs < <(go list ./...)
+          # No mapfile/readarray: macos-latest's system /bin/bash is 3.2
+          # (Apple ships no newer bash for licensing reasons), and both
+          # builtins require bash 4+ -- confirmed the hard way when this
+          # exact line killed the macOS leg with "mapfile: command not
+          # found" (exit 127) before it ever reached a single go test.
+          all_pkgs=()
+          while IFS= read -r pkg; do
+            all_pkgs+=("$pkg")
+          done < <(go list ./...)
           rest=()
           for p in "${all_pkgs[@]}"; do
             is_solo=0
