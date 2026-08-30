@@ -147,13 +147,24 @@ jobs:
           done
 
           status=0
+          # Diagnostic only (no behavior change): ubuntu-latest kills the
+          # SIGTERM/exit-143 pattern even on a single solo package now, which
+          # rules out the "one big ./... link workload" theory -- so this
+          # prints resource levels around each batch to test the next
+          # candidate, an ubuntu-runner-specific disk/memory ceiling.
+          diag() {
+            df -h . 2>/dev/null || true
+            command -v free >/dev/null 2>&1 && free -h || true
+          }
           run_batch() {
             local label=$1
             shift
             [ "$#" -eq 0 ] && return 0
             echo "::group::go test batch: ${label} ($# packages)"
+            diag
             go test -short -failfast "$@"
             local rc=$?
+            diag
             echo "::endgroup::"
             return $rc
           }
