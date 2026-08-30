@@ -68,12 +68,21 @@ func TestMain(m *testing.M) {
 		t := time.NewTicker(2 * time.Second)
 		defer t.Stop()
 		start := time.Now()
+		buf := make([]byte, 1<<20)
 		for {
 			select {
 			case <-stopDiag:
 				return
 			case <-t.C:
-				fmt.Fprintf(os.Stderr, "DIAG t=%s goroutines=%d\n", time.Since(start).Round(time.Second), runtime.NumGoroutine())
+				n := runtime.NumGoroutine()
+				fmt.Fprintf(os.Stderr, "DIAG t=%s goroutines=%d\n", time.Since(start).Round(time.Second), n)
+				// Dump full stacks once goroutines climb past a floor, so we
+				// can see exactly where the extra ones are blocked instead
+				// of guessing from code review.
+				if n > 60 {
+					sz := runtime.Stack(buf, true)
+					fmt.Fprintf(os.Stderr, "DIAG STACKS at t=%s (goroutines=%d):\n%s\n", time.Since(start).Round(time.Second), n, buf[:sz])
+				}
 			}
 		}
 	}()
