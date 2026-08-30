@@ -141,9 +141,11 @@ jobs:
   #    testing at the same time, which a dedicated job guarantees. Even
   #    fully isolated, batch 1/4 alone (99 tests, -parallel 2) still hit
   #    the same failure (errno=1455, ERROR_COMMITMENT_LIMIT -- the paging
-  #    file too small, not physical RAM), so windows-latest specifically
-  #    runs 8 smaller batches at -parallel 1 instead of 4 at -parallel 2
-  #    (see the step below); ubuntu/macOS keep the proven 4/-2 split.
+  #    file too small, not physical RAM); splitting further to 8/-1
+  #    pushed the failure from batch 1 to batch 2, still not clean, so
+  #    windows-latest also sets GOMEMLIMIT to make the GC shed heap
+  #    proactively instead of asking the OS to commit more (see the step
+  #    below for both).
   # 3. -parallel 2 (in-package t.Parallel() concurrency, NOT bounded by -p)
   #    fixed a separate flake class: TestProbe_CheckpointStopDoesNotStallStep
   #    and friends have their own multi-second backstops for a checkpoint
@@ -193,13 +195,36 @@ jobs:
           # roughly halves how much state (sqlite DBs, httptest servers, SSE
           # mock buffers) is ever resident in one process at once, and
           # -parallel 1 removes concurrent-test memory overlap on top of
-          # that. ubuntu/macOS never hit this and stay at the proven 4/-2
-          # split.
+          # that.
+          #
+          # ubuntu-latest separately still shows a low residual rate of the
+          # external "runner has received a shutdown signal" kill this job
+          # exists to avoid (confirmed via ACTIONS_STEP_DEBUG earlier this
+          # investigation to be GitHub's own "lost communication with the
+          # server ... starves it for CPU/Memory" annotation, i.e. shared-
+          # runner noisy-neighbor contention external to this repo's code --
+          # all 3 code-level contributors found in this investigation
+          # -- see docs/lessons/2026-08-30-ci-goroutine-leak.md -- are
+          # already fixed). A probabilistic external kill can't be fixed by
+          # any code change, but shortening each batch's continuous runtime
+          # shrinks the exposure window per invocation, same reasoning that
+          # got ubuntu from chronic to rare in the first place, so ubuntu/
+          # macOS move to the same 8-way split too (parallelism unaffected,
+          # they never had the Windows-specific memory problem).
           if [ "$RUNNER_OS" = "Windows" ]; then
             batches=8
             parallel=1
+            # errno=1455 is ERROR_COMMITMENT_LIMIT -- the OS refused to
+            # commit a new heap span because the paging file (not physical
+            # RAM) is too small, and it recurred even after the 8/-1 split
+            # above (batch 1/8 clean, batch 2/8 still hit it ~86s in).
+            # GOMEMLIMIT gives the GC a soft ceiling to actively shed heap
+            # against before the runtime ever asks the OS to commit more,
+            # attacking the actual mechanism instead of shrinking batches
+            # further with diminishing returns.
+            export GOMEMLIMIT=1500MiB
           else
-            batches=4
+            batches=8
             parallel=2
           fi
           size=$(( (total + batches - 1) / batches ))
