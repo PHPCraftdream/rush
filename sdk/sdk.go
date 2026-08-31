@@ -331,6 +331,12 @@ func Wrap(a *app.App, stdout, stderr io.Writer) *Client {
 // substituted; when that is nil too, output is discarded. For RunModeJSON
 // the caller encodes the returned *RunResult itself (the envelope's JSON
 // shape is stable).
+//
+// Unlike `rush run` and the web server (which queue a second message
+// behind a running turn), Run sets req.FailIfSessionBusy: a concurrent
+// Run/RunWithCredentials on the SAME ContinueSessionID fails immediately
+// with an error wrapping agent.ErrSessionBusy. Concurrent runs on
+// DIFFERENT sessions are unaffected.
 func (c *Client) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 	if req.Stdout == nil && c.stdout != nil {
 		req.Stdout = c.stdout
@@ -338,6 +344,9 @@ func (c *Client) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 	if req.Stderr == nil && c.stderr != nil {
 		req.Stderr = c.stderr
 	}
+	// SDK semantics differ from `rush run`/web: fail fast on an
+	// in-process busy session instead of queueing behind it.
+	req.FailIfSessionBusy = true
 	return c.app.ExecuteRun(ctx, req)
 }
 
@@ -362,7 +371,10 @@ func (c *Client) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 // Sessions and credentials are independent axes: req.ContinueSessionID
 // keeps its normal get-or-create semantics (the session lives in the
 // Client's shared data directory), while creds only decides WHICH
-// provider serves this call.
+// provider serves this call. Like Run, it sets req.FailIfSessionBusy: a
+// second concurrent call on the SAME ContinueSessionID fails fast with
+// an error wrapping agent.ErrSessionBusy instead of queueing; different
+// sessions run concurrently.
 func (c *Client) RunWithCredentials(ctx context.Context, req RunRequest, creds CredentialSet) (*RunResult, error) {
 	if req.Stdout == nil && c.stdout != nil {
 		req.Stdout = c.stdout
@@ -371,6 +383,8 @@ func (c *Client) RunWithCredentials(ctx context.Context, req RunRequest, creds C
 		req.Stderr = c.stderr
 	}
 	req.Credentials = &creds
+	// Same fail-fast busy semantics as Run (see its doc).
+	req.FailIfSessionBusy = true
 	return c.app.ExecuteRun(ctx, req)
 }
 

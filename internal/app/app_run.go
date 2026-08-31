@@ -181,6 +181,15 @@ type RunRequest struct {
 	// to the ordinary resolution path. Ordinary Run leaves it nil and
 	// behaves exactly as before.
 	Credentials *agent.CredentialSet
+	// FailIfSessionBusy changes what happens when the resolved session
+	// already has an in-process owner (AgentCoordinator.IsSessionBusy).
+	// The zero value (false) keeps the historical behaviour: the prompt
+	// is silently queued behind the running turn — the mailbox queue the
+	// CLI and the web server rely on. true rejects the request
+	// immediately, before any turn goroutine is started, with an error
+	// wrapping agent.ErrSessionBusy. The SDK's Run/RunWithCredentials set
+	// it so embedders get a fail-fast answer instead of a hidden queue.
+	FailIfSessionBusy bool
 }
 
 // resolveSession resolves which session to use for a non-interactive run
@@ -583,6 +592,19 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 	sess, err := app.resolveSession(ctx, continueSessionID, useLast)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create session for non-interactive mode: %w", err)
+	}
+
+	// FailIfSessionBusy (sdk.Client.Run/RunWithCredentials): reject the
+	// request BEFORE the turn goroutine exists when the session already
+	// has an in-process owner, instead of silently queueing behind it.
+	// Opt-in on purpose: `rush run` and the web server keep their
+	// intentional queueing behaviour. The check-then-act window against
+	// the owner's mailbox reservation remains by design — a caller racing
+	// the owner's start falls through into the queue (the pre-existing
+	// behaviour) rather than erroring.
+	if req.FailIfSessionBusy && app.AgentCoordinator.IsSessionBusy(sess.ID) {
+		slog.Warn("Run rejected: session already has an in-process owner", "session_id", sess.ID)
+		return nil, fmt.Errorf("session %q is already processing another request: %w", sess.ID, agent.ErrSessionBusy)
 	}
 
 	if continueSessionID != "" || useLast {
