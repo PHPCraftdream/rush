@@ -662,6 +662,14 @@ go build -o rush .
 > Productivity may increase when using Rush and you may find yourself nerd
 > sniped when first using the application.
 
+## Embedding Rush as a Go library
+
+Prefer to call Rush from your own Go process instead of shelling out to
+the CLI? See [`sdk/README.md`](sdk/README.md) for the embeddable SDK —
+`sdk.Open` + `Client.Run` gets you a typed result envelope back, with
+support for explicit per-call provider credentials, ephemeral in-memory
+sessions, and concurrent multi-tenant use on one `Client`.
+
 ## Getting Started
 
 The quickest way to get started is to grab an API key for your preferred
