@@ -14,7 +14,6 @@ import (
 	"log/slog"
 	"os"
 	"runtime/debug"
-	"slices"
 	"strings"
 	"time"
 
@@ -560,59 +559,55 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 		return nil, fmt.Errorf("failed to wait for MCP initialization: %w", err)
 	}
 
-	// Fork patch (orchestrator UX): --agents single. Drop the agent /
-	// agentic_fetch tools from the coder agent's AllowedTools BEFORE
-	// UpdateModels rebuilds the toolset so the model literally cannot
-	// fan out. The mutation is restored when the run ends (see the R3
-	// note on the gate below), so it cannot leak into a subsequent run
-	// on the same *App. See run.go and run_format.go.
+	// R1-1 (P0): build this run's IMMUTABLE per-call execution context
+	// and attach it to the run's context. Everything below that used to
+	// pin per-invocation settings onto SHARED coordinator/permission
+	// state — SetActiveModelRole, SetAgentTimeoutOptions, SetRunLimits,
+	// SetAllowPeakHours, the published-config DisableSubAgents
+	// mutation, and the process-wide SetRunAllowlist — now travels in
+	// this one value instead. On one *App (web server, sdk.Client) two
+	// overlapping runs each carry their own policy: previously they
+	// raced for every one of those shared fields, and a run could
+	// execute under another run's role, caps, bypass, allowlist or
+	// stripped toolset. The coordinator's Set* methods remain the
+	// fallback path for legacy (non-ExecuteRun) callers and are
+	// deliberately untouched.
 	//
-	// Plan phase 2 exception: when this run is --role smart with a Worker
-	// model configured, restore ONLY the `agent` tool — see
-	// shouldBypassSubAgentBan. This applies even if the operator passed
-	// `--agents single` explicitly: a configured worker means delegation
-	// is the intended workflow. `agentic_fetch` stays stripped either
-	// way: it's a separate concern (web-fetch delegation that always
-	// runs on the fast model, see
-	// internal/agent/agentic_fetch_tool.go's "Use fast model for both"
-	// comment) and has nothing to do with delegating hands-on work to a
-	// worker.
-	if overrides.DisableSubAgents {
-		// R3 fix (docs/plans/2026-08-29-embeddable-library-refactoring.md,
-		// risk R3): the gate below rewrites the PUBLISHED coder
-		// AllowedTools and used to leave it stripped forever. For the
-		// one-shot `rush run` process that was moot (see the old comment
-		// in app_run_gates.go), but a library caller (sdk.Client) runs
-		// several turns on one *App, and a later run with
-		// DisableSubAgents:false would inherit the stripped toolset.
-		// Snapshot the original list before mutating and restore it
-		// unconditionally when this run ends — the defer covers error
-		// returns too. The guard mirrors disableToolsInConfig's own (cfg
-		// non-nil, coder present) so a restore is registered only when a
-		// mutation was actually possible, and only when this run asked
-		// for the ban (no mutation → nothing to restore).
-		// UpdateAgentAllowedTools is copy-on-write, so republishing the
-		// saved list cleanly cancels the strip for the next run.
-		if cfgSnap := app.config.Config(); cfgSnap != nil {
-			if coder, ok := cfgSnap.Agents[config.AgentCoder]; ok {
-				savedTools := slices.Clone(coder.AllowedTools)
-				defer app.config.UpdateAgentAllowedTools(config.AgentCoder, savedTools)
-			}
-		}
-		if shouldBypassSubAgentBan(overrides.ModelRole, app.config.Config()) {
-			app.disableToolsInConfig([]string{"agentic_fetch"})
-		} else {
-			app.disableSubAgentToolsInConfig()
-		}
+	// Attached BEFORE UpdateModels on purpose: UpdateModels' toolset
+	// rebuild reads the per-call DisableSubAgents filter and ModelRole
+	// from this context (see coordinator_tools.go), and buildAgent
+	// captures the role synchronously at registration time.
+	callOpts := &agent.CallOptions{
+		ModelRole:                overrides.ModelRole,
+		TimeoutExtendsOnProgress: overrides.TimeoutExtendsOnProgress,
+		TimeoutHardCap:           overrides.TimeoutHardCap,
+		MaxCost:                  overrides.MaxCost,
+		MaxTokens:                overrides.MaxTokens,
+		AllowPeakHours:           overrides.AllowPeakHours,
+		DisableSubAgents:         overrides.DisableSubAgents,
+		FailIfSessionBusy:        req.FailIfSessionBusy,
 	}
+	ctx = agent.WithCallOptions(ctx, callOpts)
 
-	// Fork patch (reviewer/worker roles): record which named model slot is
-	// driving this top-level run so sub-agent spawns (coordinator's
-	// buildAgentModels) can decide whether to prefer the cheaper Worker
-	// slot. Called unconditionally (even for ModelRole == "") so a resumed
-	// session without going through this code path again still gets a
-	// defined value.
-	app.AgentCoordinator.SetActiveModelRole(overrides.ModelRole)
+	// Fork patch (orchestrator UX): --agents single. The agent /
+	// agentic_fetch tools are stripped from the coder's toolset for THIS
+	// run only, via CallOptions.DisableSubAgents consumed inside the
+	// coordinator's per-build toolset filter (applyCallDisableSubAgents).
+	// The former implementation mutated the PUBLISHED coder AllowedTools
+	// and restored it via defer (the R3 fix): on one *App that write raced
+	// every concurrent run's buildTools for the whole duration of the
+	// mutating run, so a DisableSubAgents:false call could observe the
+	// delegating call's stripped toolset until the restore fired. Nothing
+	// shared is touched anymore — there is nothing to snapshot or restore
+	// (shouldBypassSubAgentBan/disableToolsInConfig stay in
+	// app_run_gates.go for their direct tests and as the config-level
+	// gate utility).
+	//
+	// Plan phase 2 exception is preserved with identical semantics: when
+	// this run is --role smart with a Worker model configured, the
+	// filter restores ONLY the `agent` tool — a configured worker means
+	// delegation is the intended workflow, even when --agents single was
+	// passed explicitly. `agentic_fetch` stays stripped either way.
 
 	// force update of agent models before running so mcp tools are loaded
 	app.AgentCoordinator.UpdateModels(ctx)
@@ -625,13 +620,21 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 	}
 
 	// FailIfSessionBusy (sdk.Client.Run/RunWithCredentials): reject the
-	// request BEFORE the turn goroutine exists when the session already
-	// has an in-process owner, instead of silently queueing behind it.
-	// Opt-in on purpose: `rush run` and the web server keep their
-	// intentional queueing behaviour. The check-then-act window against
-	// the owner's mailbox reservation remains by design — a caller racing
-	// the owner's start falls through into the queue (the pre-existing
-	// behaviour) rather than erroring.
+	// request when the session already has an in-process owner, instead
+	// of silently queueing behind it. Opt-in on purpose: `rush run` and
+	// the web server keep their intentional queueing behaviour.
+	//
+	// This pre-check is only the FAST path — it avoids spawning a turn
+	// goroutine in the common already-busy case. It cannot close the
+	// check-then-act window by itself (two simultaneous starters both see
+	// IsSessionBusy == false). The contract is enforced atomically at the
+	// session's mailbox reservation instead: the run's CallOptions carry
+	// FailIfSessionBusy onto the SessionAgentCall, and mailbox.submit —
+	// the single existing check-and-set that grants ownership — returns
+	// without queueing for such a call, so sessionAgent.Run reports
+	// ErrSessionBusy. A caller racing the owner's start therefore errors
+	// exactly like this pre-check, never slips into the old silent queue
+	// (R1-4).
 	if req.FailIfSessionBusy && app.AgentCoordinator.IsSessionBusy(sess.ID) {
 		slog.Warn("Run rejected: session already has an in-process owner", "session_id", sess.ID)
 		return nil, fmt.Errorf("session %q is already processing another request: %w", sess.ID, agent.ErrSessionBusy)
@@ -677,8 +680,20 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 	// by merging the config-derived spec with this invocation's CLI
 	// overrides. Even when no override is passed we rebuild from config
 	// so the gate stays consistent with whatever permissions.run was on
-	// disk at run time. SetRunAllowlist only affects the auto-approve
-	// path exercised above; interactive sessions never run this code.
+	// disk at run time. Only affects the auto-approve path exercised
+	// above; interactive sessions never run this code.
+	//
+	// R1-1: the compiled gate is armed per SESSION (SetSessionRunAllowlist)
+	// in addition to the legacy process-wide slot. The process-wide value
+	// is ONE field on the permission service, so two concurrent runs with
+	// different policies raced for it — the restricted tenant's tool call
+	// could clear the unrestricted tenant's gate and vice versa, depending
+	// on which SetRunAllowlist landed last. Request consults the
+	// session-keyed entry FIRST and falls back to the process-wide gate,
+	// so legacy SetRunAllowlist callers behave exactly as before. The
+	// per-session entry is dropped when this run ends (see the defer) so a
+	// long-lived host does not accumulate one entry per run; every run
+	// re-arms its own before the turn starts.
 	runSpec := runAllowlistSpecFromConfig(app.config.Config().Permissions)
 	if overrides.RestrictedRun {
 		runSpec.Restrict = true
@@ -690,28 +705,22 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 		slog.Warn("Restricted-run allowlist has invalid patterns (skipping them)", "err", allowErr)
 	}
 	app.Permissions.SetRunAllowlist(compiled)
-
-	// Fork patch: batch 8 — wire per-invocation timeout extension flags to
-	// the coordinator's agent before the run starts.
-	if overrides.TimeoutExtendsOnProgress || overrides.TimeoutHardCap > 0 {
-		app.AgentCoordinator.SetAgentTimeoutOptions(
-			overrides.TimeoutExtendsOnProgress,
-			overrides.TimeoutHardCap,
-		)
+	if allowMgr, ok := app.Permissions.(permission.SessionRunAllowlistManager); ok {
+		allowMgr.SetSessionRunAllowlist(sess.ID, compiled)
+		defer allowMgr.ClearSessionRunAllowlist(sess.ID)
 	}
 
-	// Fork patch: batch 30 — clear stale cancel flag and set run limits.
+	// Fork patch: batch 8/30 + peak-hours bypass (R1-1). This run's
+	// timeout-extension policy, cost/token caps and peak-hours bypass now
+	// travel in callOpts (WithCallOptions above) and are consumed per call
+	// by runInternal/agent_turn — the former SetAgentTimeoutOptions /
+	// SetRunLimits / SetAllowPeakHours calls wrote coordinator-wide state
+	// that a concurrent run could overwrite before this run's turn read
+	// it.
+
+	// Fork patch: batch 30 — clear stale cancel flag.
 	if err := app.Sessions.ClearCancelRequest(ctx, sess.ID); err != nil {
 		slog.Warn("Failed to clear cancel request flag", "session_id", sess.ID, "err", err)
-	}
-	if overrides.MaxCost > 0 || overrides.MaxTokens > 0 {
-		app.AgentCoordinator.SetRunLimits(overrides.MaxCost, overrides.MaxTokens)
-	}
-
-	// Fork patch (peak-hours bypass): arm the one-shot flag before Run so
-	// runInternal's checkPeakHours gate is skipped for this invocation.
-	if overrides.AllowPeakHours {
-		app.AgentCoordinator.SetAllowPeakHours(true)
 	}
 
 	// Fork patch (operator UX): persist budget at run start so
@@ -940,7 +949,7 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 			}
 			hookExitReason = summary.ExitReason
 			if runFailed(finalReason, runErr, isCanceled) {
-				return &summary, &runIncompleteError{reason: summary.ExitReason, detail: summary.Error}
+				return &summary, &runIncompleteError{reason: summary.ExitReason, detail: summary.Error, cause: runErr}
 			}
 			return &summary, nil
 		}

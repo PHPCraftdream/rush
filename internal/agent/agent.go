@@ -305,6 +305,27 @@ type SessionAgentCall struct {
 	// idempotency contract and potentially creating multiple durable rows for the
 	// same logical request.
 	LogicalCallID string
+
+	// CallOptions pins THIS call's execution policy (R1-1) - model role,
+	// cost/token caps, peak-hours bypass, timeout watchdog policy, the
+	// sub-agent ban and the fail-fast busy contract. Stamped by
+	// runInternal/buildCall from the call's context (WithCallOptions); nil
+	// for legacy callers, whose runs keep reading the coordinator's shared
+	// Set*-state. Never durable-queue-persisted: ToSessionAgentCallData
+	// does not copy it, so pump-driven rebuilds fall back to the shared
+	// path exactly like any other legacy caller.
+	CallOptions *CallOptions `json:"-"`
+
+	// FailIfSessionBusy rejects this call instead of queueing it when the
+	// session's mailbox is already owned (submit returns false): Run fails
+	// with an error wrapping ErrSessionBusy instead of the historical
+	// silent nil. Sourced from CallOptions.FailIfSessionBusy. The guard is
+	// enforced AT the atomic mailbox reservation, so two simultaneous
+	// starters can never both observe "idle" and slip into the queue -
+	// exactly one wins, the loser fails fast (#818/R1-4). Not durable: a
+	// pump-driven retry is by definition not racing a live in-process
+	// starter for ownership.
+	FailIfSessionBusy bool
 }
 
 // turnConfig is the immutable per-call snapshot of everything model- and

@@ -485,6 +485,17 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	}
 	toolMaxDuration := a.effectiveToolMaxDuration()
 	toolCleanupGrace := a.effectiveToolCleanupGrace()
+	// R1-1: resolve the watchdog's deadline-extension policy per call.
+	// The sessionAgent's shared timeoutExtendsOnProgress/timeoutHardCap
+	// fields are written by SetTimeoutOptions — previously per-run from
+	// ExecuteRun, so two overlapping runs raced: one run's
+	// --timeout-extends-on-progress/--timeout-hard-cap could land in the
+	// other's watchdog. A call carrying CallOptions uses its own values;
+	// everyone else keeps the shared fields exactly as before.
+	timeoutExtends, timeoutHardCap := a.timeoutExtendsOnProgress, a.timeoutHardCap
+	if o := call.CallOptions; o != nil && (o.TimeoutExtendsOnProgress || o.TimeoutHardCap > 0) {
+		timeoutExtends, timeoutHardCap = o.TimeoutExtendsOnProgress, o.TimeoutHardCap
+	}
 	var watchdogCauseVal atomic.Int32 // stores watchdogCause
 	wd := startStreamWatchdog(
 		genCtx, cancel, idleTimeout, a.effectiveStreamWatchdogTick(),
@@ -497,8 +508,8 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 		func(elapsed time.Duration, cause watchdogCause) {
 			a.handleWatchdogFire(cause, elapsed, call.SessionID, &watchdogCauseVal, toolMaxDuration, idleTimeout, smartModel)
 		},
-		a.timeoutExtendsOnProgress,        // Fork patch: batch 8
-		a.timeoutHardCap,                  // Fork patch: batch 8
+		timeoutExtends,                    // Fork patch: batch 8 (per-call via CallOptions, R1-1)
+		timeoutHardCap,                    // Fork patch: batch 8 (per-call via CallOptions, R1-1)
 		toolMaxDuration,                   // never-freeze backstop, applies to every tool
 		toolCleanupGrace,                  // buffer for a nested watchdog to unwind first
 		func() { notifyActivity(genCtx) }, // task #222/#300: recordActivity is
@@ -1728,7 +1739,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 				content = watchdogToolResultMessage(
 					watchdogCause(watchdogCauseVal.Load()),
 					toolMaxDuration,
-					a.timeoutHardCap,
+					timeoutHardCap,
 					idleTimeout,
 					smartModel.ModelCfg.Provider,
 				)
@@ -1776,7 +1787,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 			title, body := watchdogFinishMessage(
 				cause,
 				toolMaxDuration,
-				a.timeoutHardCap,
+				timeoutHardCap,
 				idleTimeout,
 				smartModel.ModelCfg.Provider,
 			)

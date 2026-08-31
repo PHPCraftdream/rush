@@ -202,7 +202,7 @@ func (c *coordinator) resolveSessionModels(ctx context.Context, sessionID string
 	// WorkerAvailable flag disagree with the model/prefix this call already
 	// resolved from an earlier generation.
 	if c.prompt != nil {
-		newSystemPrompt, err := c.prompt.Build(ctx, smartModel.ModelCfg.Provider, smartModel.ModelCfg.Model, c.cfg, cfg, c.workerSubAgentActive(cfg))
+		newSystemPrompt, err := c.prompt.Build(ctx, smartModel.ModelCfg.Provider, smartModel.ModelCfg.Model, c.cfg, cfg, c.workerSubAgentActiveForCall(ctx, cfg))
 		if err != nil {
 			// Leave resolved.systemPrompt empty rather than guessing: the
 			// caller treats "" as "nothing to pin", so the turn falls back to
@@ -339,7 +339,7 @@ func (c *coordinator) applyModelOverrides(ctx context.Context, smart, fast *Mode
 	// workerSubAgentActive takes the SAME pinned cfg used for smartModel
 	// above (task #341, P1-1) rather than re-reading c.cfg.Config() live.
 	if c.prompt != nil {
-		newSystemPrompt, err := c.prompt.Build(ctx, smartModel.ModelCfg.Provider, smartModel.ModelCfg.Model, c.cfg, cfg, c.workerSubAgentActive(cfg))
+		newSystemPrompt, err := c.prompt.Build(ctx, smartModel.ModelCfg.Provider, smartModel.ModelCfg.Model, c.cfg, cfg, c.workerSubAgentActiveForCall(ctx, cfg))
 		if err != nil {
 			slog.Error("applyModelOverrides: failed to rebuild system prompt", "err", err)
 		} else {
@@ -409,6 +409,23 @@ func (c *coordinator) resolveSessionSystemPrompt(ctx context.Context, sessionID 
 		slog.Warn("coordinator: failed to save system prompt to session", "sessionID", sessionID, "err", saveErr)
 	}
 	return built
+}
+
+// workerSubAgentActiveForCall is the per-call form of workerSubAgentActive
+// (R1-1): the active role comes from the context's CallOptions when present,
+// and only falls back to the coordinator-wide activeModelRole field for
+// legacy callers whose context carries none. The fallback read keeps the
+// existing mutex discipline; the per-call read is race-free by construction
+// (an immutable value bound to the context before the build started).
+func (c *coordinator) workerSubAgentActiveForCall(ctx context.Context, cfg *config.Config) bool {
+	if opts := callOptionsFrom(ctx); opts != nil && opts.ModelRole != "" {
+		if opts.ModelRole != config.SelectedModelTypeSmart {
+			return false
+		}
+		workerModelCfg, ok := cfg.Models[config.SelectedModelTypeWorker]
+		return ok && workerModelCfg.Model != ""
+	}
+	return c.workerSubAgentActive(cfg)
 }
 
 // workerSubAgentActive reports whether a sub-agent being built right now is
@@ -487,7 +504,7 @@ func (c *coordinator) buildAgentModelsFromCfg(ctx context.Context, cfg *config.C
 	// the sub-agent's smart-model slot. This never touches the fast-model
 	// slot, and falls through to today's behavior (Smart for everything)
 	// otherwise.
-	if isSubAgent && c.workerSubAgentActive(cfg) {
+	if isSubAgent && c.workerSubAgentActiveForCall(ctx, cfg) {
 		smartModelCfg = cfg.Models[config.SelectedModelTypeWorker]
 	}
 

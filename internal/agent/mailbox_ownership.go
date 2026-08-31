@@ -57,6 +57,16 @@ func (mb *mailbox) submit(call SessionAgentCall, dispatcherCancel context.Cancel
 	// would execute the mb.submitted copy, then after backoff the pump would
 	// execute the same durable row again independently. For non-durable calls,
 	// the mailbox queue IS the only retry path, so they are enqueued normally.
+	// R1-4: a fail-fast call must NEVER queue — the whole point of the
+	// contract is that the caller learns "someone else owns this session"
+	// instead of silently waiting behind it. The decision happens inside
+	// THIS critical section (the same mb.mu hold as the mbIdle check
+	// above), so two calls starting simultaneously on an idle mailbox
+	// cannot both observe idle: exactly one becomes owner, the loser sees
+	// state != mbIdle here and returns without queueing.
+	if call.FailIfSessionBusy {
+		return false, 0 // caller reports ErrSessionBusy instead of queueing
+	}
 	if !call.FromDurableQueue {
 		mb.submitted = append(mb.submitted, call)
 	}

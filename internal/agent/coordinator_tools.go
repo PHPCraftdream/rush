@@ -93,6 +93,16 @@ func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, age
 		},
 	})
 
+	// R1-1: resolve the per-call worker-active predicate SYNCHRONOUSLY,
+	// before the async build goroutines below are registered — the value
+	// they see is fixed at UpdateModels/buildAgent call time, never a lazy
+	// read of shared state from inside an already-running goroutine (the
+	// hooks/runner.go sync-capture pattern). With a CallOptions-carrying
+	// context the value is this call's own ModelRole; without one it is
+	// the legacy shared field, read here under its mutex rather than
+	// later on a goroutine.
+	workerActive := c.workerSubAgentActiveForCall(ctx, cfg)
+
 	c.readyWg.Go(func() error {
 		// Orchestrator block only ever applies to the top-level coder prompt
 		// (isSubAgent false) — a sub-agent renders task.md.tpl via
@@ -101,7 +111,7 @@ func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, age
 		// relying on the template to ignore the field.
 		// Same pinned cfg as the models above and buildTools below — see
 		// this function's opening comment.
-		systemPrompt, err := prompt.Build(ctx, smart.Model.Provider(), smart.Model.Model(), c.cfg, cfg, !isSubAgent && c.workerSubAgentActive(cfg))
+		systemPrompt, err := prompt.Build(ctx, smart.Model.Provider(), smart.Model.Model(), c.cfg, cfg, !isSubAgent && workerActive)
 		if err != nil {
 			return err
 		}
@@ -203,6 +213,48 @@ func (c *coordinator) buildToolsAgentConfig(cfg *config.Config, agent config.Age
 	return agent
 }
 
+// applyCallDisableSubAgents implements the per-call `--agents single`
+// sub-agent ban (R1-1). It replaces ExecuteRun's former mutation of the
+// PUBLISHED coder AllowedTools (disableSubAgentToolsInConfig +
+// UpdateAgentAllowedTools): that write raced every concurrent run's
+// toolset build for the whole duration of the mutating run, so a
+// DisableSubAgents:false call could observe the delegating call's
+// stripped toolset until its defer restored the list. The per-call
+// filter touches nothing shared: it applies to THIS build only, and only
+// to the top-level coder (isSubAgent false) — exactly the agent config
+// the old mutation targeted (cfg.Agents[AgentCoder]).
+//
+// Semantics mirror the app-side shouldBypassSubAgentBan: strip both
+// delegation tools, except when the run explicitly runs the smart role
+// AND a Worker model is configured — delegation IS the intended workflow
+// there, so only agentic_fetch stays stripped. A context without
+// CallOptions (legacy callers) changes nothing.
+func (c *coordinator) applyCallDisableSubAgents(ctx context.Context, cfg *config.Config, agent config.Agent, isSubAgent bool) config.Agent {
+	opts := callOptionsFrom(ctx)
+	if opts == nil || !opts.DisableSubAgents || isSubAgent {
+		return agent
+	}
+
+	bypass := opts.ModelRole == config.SelectedModelTypeSmart
+	if bypass {
+		workerModelCfg, ok := cfg.Models[config.SelectedModelTypeWorker]
+		bypass = ok && workerModelCfg.Model != ""
+	}
+
+	stripped := make([]string, 0, len(agent.AllowedTools))
+	for _, name := range agent.AllowedTools {
+		if name == tools.AgenticFetchToolName {
+			continue
+		}
+		if name == AgentToolName && !bypass {
+			continue
+		}
+		stripped = append(stripped, name)
+	}
+	agent.AllowedTools = stripped
+	return agent
+}
+
 // buildTools builds the tool slice for agent. cfg is the pinned
 // *config.Config the caller captured for this whole buildAgent call (task
 // #576/P1-3) -- every config-derived choice below (worker tool layering,
@@ -233,6 +285,7 @@ func (c *coordinator) buildToolsAgentConfig(cfg *config.Config, agent config.Age
 // torn read (every other tool and the prompt agree with each other and with
 // cfg), but real. See tools.GetMCPTools's doc for the registry side of this.
 func (c *coordinator) buildTools(ctx context.Context, cfg *config.Config, agent config.Agent, isSubAgent bool) ([]fantasy.AgentTool, error) {
+	agent = c.applyCallDisableSubAgents(ctx, cfg, agent, isSubAgent)
 	agent = c.buildToolsAgentConfig(cfg, agent, isSubAgent)
 
 	// SSRF guard escape hatch (Options.AllowPrivateNetworkFetch, off by

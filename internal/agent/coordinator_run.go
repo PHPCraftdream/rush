@@ -104,6 +104,10 @@ func (c *coordinator) buildCall(ctx context.Context, sessionID, prompt string, p
 	sessionSystemPrompt := c.resolveSessionSystemPrompt(ctx, sessionID)
 
 	pinnedSmart := model
+	// R1-1: carry whatever per-call options the arming context holds so a
+	// queued replacement (InterruptAndSend) keeps its own policy when it
+	// eventually starts, however long the queue delay is.
+	callOpts := callOptionsFrom(ctx)
 	call := SessionAgentCall{
 		SessionID:            sessionID,
 		Prompt:               prompt,
@@ -116,6 +120,7 @@ func (c *coordinator) buildCall(ctx context.Context, sessionID, prompt string, p
 		FrequencyPenalty:     freqPenalty,
 		PresencePenalty:      presPenalty,
 		SystemPromptOverride: sessionSystemPrompt,
+		CallOptions:          callOpts,
 		SmartModel:           &pinnedSmart,
 		LogicalCallID:        uuid.New().String(), // P2-1: generate stable ID once
 	}
@@ -151,6 +156,13 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 	// resolvedOverrides.credentials): the 401 rebuild below must
 	// re-resolve through the SAME per-call credentials, not the config.
 	creds := pinned.credentials
+	// callOpts is non-nil when the caller armed this run via
+	// WithCallOptions (ExecuteRun, R1-1): every policy read below then
+	// comes from THIS call's immutable options instead of the coordinator's
+	// shared Set*-state, which a concurrent Run call can rewrite between
+	// the Set and this read. nil = legacy caller — the fallback paths keep
+	// the historical read-and-reset behavior byte-for-byte.
+	callOpts := callOptionsFrom(ctx)
 	slog.Debug("Coordinator: running with model", "sessionID", sessionID, "model", model.ModelCfg.Model)
 
 	maxOutputTokens := model.CatwalkCfg.DefaultMaxTokens
@@ -180,11 +192,18 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 	// Fork patch (peak-hours bypass): consume the one-shot allow flag
 	// armed by SetAllowPeakHours (`rush run --allow-peak-hours`). Reset
 	// immediately so a subsequent Run on the same coordinator does not
-	// inherit the bypass.
-	c.runLimitsMu.Lock()
-	allowPeak := c.allowPeakHours
-	c.allowPeakHours = false
-	c.runLimitsMu.Unlock()
+	// inherit the bypass. R1-1: a per-call CallOptions value wins — the
+	// shared flag is neither read nor consumed, so a concurrent run
+	// arming/clearing it can no longer flip THIS run's bypass decision.
+	var allowPeak bool
+	if callOpts != nil {
+		allowPeak = callOpts.AllowPeakHours
+	} else {
+		c.runLimitsMu.Lock()
+		allowPeak = c.allowPeakHours
+		c.allowPeakHours = false
+		c.runLimitsMu.Unlock()
+	}
 	if !allowPeak {
 		if err := checkPeakHours(providerCfg); err != nil {
 			return nil, err
@@ -202,12 +221,22 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 	sessionSystemPrompt := c.resolveSessionSystemPrompt(ctx, sessionID)
 
 	// Fork patch: batch 30 — per-run limits, pass through to the agent.
-	c.runLimitsMu.Lock()
-	maxCost := c.maxCost
-	c.maxCost = 0
-	maxTokensRunLimit := c.maxTokens
-	c.maxTokens = 0
-	c.runLimitsMu.Unlock()
+	// R1-1: with a per-call CallOptions the caps are this call's own and
+	// the shared SetRunLimits state is left untouched (no read, no reset);
+	// otherwise the legacy atomic read-and-reset applies unchanged.
+	var maxCost float64
+	var maxTokensRunLimit int64
+	if callOpts != nil {
+		maxCost = callOpts.MaxCost
+		maxTokensRunLimit = callOpts.MaxTokens
+	} else {
+		c.runLimitsMu.Lock()
+		maxCost = c.maxCost
+		c.maxCost = 0
+		maxTokensRunLimit = c.maxTokens
+		c.maxTokens = 0
+		c.runLimitsMu.Unlock()
+	}
 
 	// Pin the model this call already resolved (task #265). Everything above
 	// — maxOutputTokens, mergedOptions, temp/topP/topK/penalties — was
@@ -239,6 +268,11 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 		SystemPromptOverride: sessionSystemPrompt,
 		MaxCost:              maxCost,
 		MaxTokens:            maxTokensRunLimit,
+		// R1-1/R1-4: per-call policy travels with the call — the caps the
+		// turn enforces, this run's full options snapshot, and the
+		// fail-fast busy contract enforced at the mailbox reservation.
+		CallOptions:          callOpts,
+		FailIfSessionBusy:    callOpts != nil && callOpts.FailIfSessionBusy,
 		SmartModel:           &pinnedSmart,
 		LogicalCallID:        uuid.New().String(), // P2-1: generate stable ID once
 		OnUserMessageCreated: func(id string) { createdUserMessageID = id },
@@ -322,6 +356,8 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 			SystemPromptOverride: trackCall.SystemPromptOverride,
 			MaxCost:              trackCall.MaxCost,
 			MaxTokens:            trackCall.MaxTokens,
+			CallOptions:          trackCall.CallOptions,
+			FailIfSessionBusy:    trackCall.FailIfSessionBusy,
 			SmartModel:           &pinnedSmart,
 			LogicalCallID:        trackCall.LogicalCallID, // Preserve logical ID
 			ExistingMessageID:    trackCall.ExistingMessageID,

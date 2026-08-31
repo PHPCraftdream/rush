@@ -49,7 +49,7 @@ func (c *coordinator) BuildSystemPrompt(ctx context.Context) (string, error) {
 
 	// Use the same pinned cfg captured above (task #341, P1-1) instead of
 	// re-reading c.cfg.Config() live inside workerSubAgentActive.
-	return c.prompt.Build(ctx, smartModel.ModelCfg.Provider, smartModel.ModelCfg.Model, c.cfg, cfg, c.workerSubAgentActive(cfg))
+	return c.prompt.Build(ctx, smartModel.ModelCfg.Provider, smartModel.ModelCfg.Model, c.cfg, cfg, c.workerSubAgentActiveForCall(ctx, cfg))
 }
 
 // BuildSystemPromptForSession builds a system prompt for a specific session,

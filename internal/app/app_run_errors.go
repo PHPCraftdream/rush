@@ -109,6 +109,15 @@ func isSessionsIDConstraintError(err error) bool {
 type runIncompleteError struct {
 	reason string
 	detail string
+	// cause, when non-nil, is the underlying run error this envelope
+	// failure was built from (R1-4). Unwrapping it keeps errors.Is-based
+	// classification working on the ENVELOPE path, not just the
+	// early-return path: a fail-fast busy rejection that surfaces through
+	// the finished turn (ExecuteRun's race loser) must still satisfy
+	// errors.Is(err, agent.ErrSessionBusy) for SDK consumers and
+	// orchestrators, the same way sessionBusyGuidance classifies it.
+	// Error()'s text is unchanged.
+	cause error
 }
 
 func (e *runIncompleteError) Error() string {
@@ -117,6 +126,8 @@ func (e *runIncompleteError) Error() string {
 	}
 	return fmt.Sprintf("run did not complete cleanly (%s)", e.reason)
 }
+
+func (e *runIncompleteError) Unwrap() error { return e.cause }
 
 // runFailed reports whether a finished non-interactive turn should map to a
 // non-zero exit code. A clean end_turn (or a bare finish with no captured

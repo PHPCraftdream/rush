@@ -65,6 +65,14 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 	// pending queue under the same lock — nothing left to do here.
 	became, epoch := a.tryReserveSession(call, runCancel)
 	if !became {
+		// R1-4: fail-fast callers (sdk.Client.Run/RunWithCredentials) must
+		// get a hard error, not the historical silent queue. The decision
+		// is atomic with the ownership check inside mailbox.submit, so a
+		// call that loses the race for an idle session errors immediately
+		// instead of falling into the queue.
+		if call.FailIfSessionBusy {
+			return nil, fmt.Errorf("session %q is already processing another request: %w", call.SessionID, ErrSessionBusy)
+		}
 		return nil, nil
 	}
 	return a.runOwned(ctx, runCtx, call, epoch, runCancel)

@@ -18,6 +18,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/notify"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/home"
+	"github.com/PHPCraftdream/rush/internal/permission"
 	"github.com/PHPCraftdream/rush/internal/pubsub"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/skills"
@@ -105,6 +106,23 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 	// override (agentic_fetch_tool.go auto-approves unconditionally).
 	if c.permissions != nil {
 		c.permissions.InheritSessionAutoApprove(params.SessionID, session.ID)
+		// R1-1: inherit the parent run's per-session restricted-run gate
+		// too, so a delegated sub-agent's tool calls are judged by its
+		// own run's policy rather than by whatever a concurrent run last
+		// armed on the process-wide gate. Optional-interface assertion on
+		// purpose (mirrors credentialRunner): test fakes of
+		// permission.Service must keep compiling unchanged; the real
+		// service always implements it.
+		if mgr, ok := c.permissions.(permission.SessionRunAllowlistManager); ok {
+			mgr.InheritSessionRunAllowlist(params.SessionID, session.ID)
+			// Drop the child's gate entry when this delegation ends:
+			// runSubAgent owns the child's whole work synchronously, so no
+			// permission request for this child id can arrive after the
+			// defer fires. Without this, every sub-agent delegation of a
+			// per-session-gated run would leave one inherited entry in the
+			// permission service forever (a long-lived host leak).
+			defer mgr.ClearSessionRunAllowlist(session.ID)
+		}
 	}
 
 	// Call session setup function if provided

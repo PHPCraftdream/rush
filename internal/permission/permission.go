@@ -109,6 +109,31 @@ type Service interface {
 	DeletePermission(ctx context.Context, ruleID string) error
 }
 
+// SessionRunAllowlistManager is the OPTIONAL per-session extension of the
+// restricted-run gate (R1-1). Consumers type-assert on it instead of it
+// living on Service so every existing Service test fake keeps compiling
+// (same consuming-interface pattern as the agent package's
+// credentialRunner).
+//
+//   - SetSessionRunAllowlist arms allowlist for sessionID ONLY: Request
+//     consults it before the process-wide gate armed by SetRunAllowlist.
+//     This is what lets two concurrent non-interactive runs on one host
+//     carry different restricted-run policies without racing for a single
+//     shared value.
+//   - ClearSessionRunAllowlist drops sessionID's entry (run-end cleanup);
+//     the session then falls back to the process-wide gate.
+//   - InheritSessionRunAllowlist propagates parentID's entry to childID
+//     (sub-agent sessions), mirroring InheritSessionAutoApprove: a
+//     restricted run's delegated sub-agent must not silently escape the
+//     restriction by carrying a child session id the gate has no entry
+//     for. No parent entry => child gets none (interactive children keep
+//     the normal prompt path).
+type SessionRunAllowlistManager interface {
+	SetSessionRunAllowlist(sessionID string, allowlist RunAllowlist)
+	ClearSessionRunAllowlist(sessionID string)
+	InheritSessionRunAllowlist(parentID, childID string)
+}
+
 type permissionService struct {
 	*pubsub.Broker[PermissionRequest]
 
@@ -160,6 +185,20 @@ type permissionService struct {
 	// allowlist instead, or it is denied cleanly without waiting for a
 	// UI that isn't there. See runallowlist.go.
 	runAllowlistGate runAllowlistGate
+
+	// runAllowlistBySession is the per-session restricted-run gate
+	// (R1-1): the process-wide runAllowlistGate above is ONE value for
+	// the whole service, so two concurrent non-interactive runs with
+	// different policies raced for it — a restricted tenant's tool call
+	// could be approved under another tenant's unrestricted gate (or
+	// vice versa) whenever the second run's SetRunAllowlist landed
+	// between the first run's arm and its first permission check.
+	// Entries are keyed by the requesting session id (already carried by
+	// CreatePermissionRequest, just previously unused by the gate) and
+	// take precedence over the shared gate; absent entries fall back to
+	// it, so legacy SetRunAllowlist callers behave exactly as before.
+	runAllowlistBySession   map[string]RunAllowlist
+	runAllowlistBySessionMu sync.RWMutex
 }
 
 func (s *permissionService) GrantPersistent(permission PermissionRequest) {
@@ -290,7 +329,17 @@ func (s *permissionService) Request(ctx context.Context, opts CreatePermissionRe
 		// we must not blanket-grant. Consult the allowlist; unmatched
 		// requests are denied cleanly here so the agent sees a fast
 		// "no" instead of hanging on a UI that doesn't exist.
+		// R1-1: the session-keyed entry, when present, wins — it is THIS
+		// run's own policy, immune to a concurrent run re-arming the
+		// process-wide gate. opts.SessionID was always available here;
+		// the gate just never consulted it before.
+		s.runAllowlistBySessionMu.RLock()
+		sessionGate, hasSessionGate := s.runAllowlistBySession[opts.SessionID]
+		s.runAllowlistBySessionMu.RUnlock()
 		gate := s.runAllowlistGate.load()
+		if hasSessionGate {
+			gate = sessionGate
+		}
 		if gate.IsRestricted() && !gate.allowsRequest(opts) {
 			s.notificationBroker.Publish(pubsub.CreatedEvent, PermissionNotification{
 				ToolCallID: opts.ToolCallID,
@@ -426,16 +475,63 @@ func (s *permissionService) SetRunAllowlist(allowlist RunAllowlist) {
 	s.runAllowlistGate.store(allowlist)
 }
 
+// SetSessionRunAllowlist arms allowlist for sessionID only (R1-1). See
+// SessionRunAllowlistManager for the contract.
+func (s *permissionService) SetSessionRunAllowlist(sessionID string, allowlist RunAllowlist) {
+	if sessionID == "" {
+		return
+	}
+	s.runAllowlistBySessionMu.Lock()
+	s.runAllowlistBySession[sessionID] = allowlist
+	s.runAllowlistBySessionMu.Unlock()
+}
+
+// ClearSessionRunAllowlist drops sessionID's entry so the session falls
+// back to the process-wide gate (R1-1 run-end cleanup; ExecuteRun calls
+// it when the run finishes so a long-lived host does not accumulate one
+// entry per run). Deleting rather than storing an inert value keeps the
+// map from growing per session and keeps the fallback semantics
+// explicit. Session auto-approve state is NOT touched — it has no
+// cleanup by design (a web session's approval must survive across
+// turns), unlike a run-scoped allowlist which is re-armed by every run.
+func (s *permissionService) ClearSessionRunAllowlist(sessionID string) {
+	if sessionID == "" {
+		return
+	}
+	s.runAllowlistBySessionMu.Lock()
+	delete(s.runAllowlistBySession, sessionID)
+	s.runAllowlistBySessionMu.Unlock()
+}
+
+// InheritSessionRunAllowlist propagates parentID's per-session gate to
+// childID under one lock hold (R1-1): a restricted run's sub-agent works
+// under its OWN child session id, and without inheritance its first
+// non-allowlisted tool call would consult the process-wide gate — whatever
+// a concurrent run last armed there — instead of its parent's policy.
+// Mirrors InheritSessionAutoApprove's atomicity and its "inherit nothing
+// when the parent has nothing" rule.
+func (s *permissionService) InheritSessionRunAllowlist(parentID, childID string) {
+	if parentID == "" || childID == "" || parentID == childID {
+		return
+	}
+	s.runAllowlistBySessionMu.Lock()
+	if gate, ok := s.runAllowlistBySession[parentID]; ok {
+		s.runAllowlistBySession[childID] = gate
+	}
+	s.runAllowlistBySessionMu.Unlock()
+}
+
 func NewPermissionService(ctx context.Context, workingDir string, skip bool, allowedTools []string, q *db.Queries) Service {
 	svc := &permissionService{
-		Broker:              pubsub.NewBroker[PermissionRequest](),
-		notificationBroker:  pubsub.NewBroker[PermissionNotification](),
-		workingDir:          workingDir,
-		autoApproveSessions: make(map[string]bool),
-		allowedTools:        allowedTools,
-		pendingRequests:     csync.NewMap[string, chan bool](),
-		activeRequests:      csync.NewMap[string, *PermissionRequest](),
-		q:                   q,
+		Broker:                pubsub.NewBroker[PermissionRequest](),
+		notificationBroker:    pubsub.NewBroker[PermissionNotification](),
+		workingDir:            workingDir,
+		autoApproveSessions:   make(map[string]bool),
+		runAllowlistBySession: make(map[string]RunAllowlist),
+		allowedTools:          allowedTools,
+		pendingRequests:       csync.NewMap[string, chan bool](),
+		activeRequests:        csync.NewMap[string, *PermissionRequest](),
+		q:                     q,
 	}
 	// Fork merge note (origin/main 6b312bee "fix: potential data race on
 	// permissionService"): upstream made skip atomic.Bool and initialises it
