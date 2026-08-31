@@ -36,6 +36,7 @@ package sdk
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"io"
 	"log/slog"
@@ -176,6 +177,17 @@ type Options struct {
 	// does not touch slog.Default() at all — that is the core v1
 	// guarantee: embedding Rush never silently steals the host's logger.
 	SetupLogging bool
+	// Mode selects how Open resolves configuration and persistence. The
+	// zero value (ModeApplication) is today's exact behavior: WorkingDir
+	// is required and rush.json/.mcp.json/global config are
+	// auto-discovered from disk. Existing callers who never set Mode are
+	// completely unaffected.
+	Mode OpenMode
+	// LibraryConfig is the fully-explicit, zero-disk-configuration used
+	// when Mode == ModeLibrary: every provider and every model role comes
+	// from here instead of any config file. Ignored (may be nil) in
+	// application mode. See OpenMode and LibraryConfig.
+	LibraryConfig *LibraryConfig
 }
 
 // Client is a handle to one embedded Rush instance rooted at
@@ -190,6 +202,11 @@ type Client struct {
 	// caches that single run's outcome for repeat callers.
 	closeOnce   sync.Once
 	closeResult CloseResult
+
+	// Conns to close after the App shutdown on Close; only set for
+	// library-mode ephemeral in-memory clients, whose *sql.DB is not
+	// owned by the db pool.
+	closeConns []*sql.DB
 }
 
 // Open wires up a full Rush instance for the given working directory:
@@ -199,25 +216,45 @@ type Client struct {
 // library equivalent of internal/cmd's setupApp, minus os.Chdir,
 // unconditional logging setup, and cobra.
 func Open(ctx context.Context, o Options) (*Client, error) {
-	if o.WorkingDir == "" {
-		return nil, fmt.Errorf("sdk: Options.WorkingDir is required")
+	if o.Mode == ModeLibrary {
+		return openLibrary(ctx, o)
 	}
-	workDir, err := filepath.Abs(o.WorkingDir)
+	return openApplication(ctx, o)
+}
+
+// resolveWorkingDir validates and absolutizes the raw working directory
+// path the caller handed to Options.WorkingDir.
+func resolveWorkingDir(raw string) (string, error) {
+	workDir, err := filepath.Abs(raw)
 	if err != nil {
-		return nil, fmt.Errorf("sdk: failed to resolve working directory %q: %w", o.WorkingDir, err)
+		return "", fmt.Errorf("sdk: failed to resolve working directory %q: %w", raw, err)
 	}
 	if info, statErr := os.Stat(workDir); statErr != nil {
 		if !os.IsNotExist(statErr) {
-			return nil, fmt.Errorf("sdk: working directory %q is not accessible: %w", workDir, statErr)
+			return "", fmt.Errorf("sdk: working directory %q is not accessible: %w", workDir, statErr)
 		}
 		// WorkingDir stays a required parameter -- this is not a default
 		// path, just tolerance for a fresh workspace the host hasn't
 		// created yet (e.g. a freshly-provisioned per-tenant directory).
 		if err := os.MkdirAll(workDir, 0o755); err != nil {
-			return nil, fmt.Errorf("sdk: failed to create working directory %q: %w", workDir, err)
+			return "", fmt.Errorf("sdk: failed to create working directory %q: %w", workDir, err)
 		}
 	} else if !info.IsDir() {
-		return nil, fmt.Errorf("sdk: working directory %q is not a directory", workDir)
+		return "", fmt.Errorf("sdk: working directory %q is not a directory", workDir)
+	}
+	return workDir, nil
+}
+
+// openApplication is Open's application-mode path: the exact setup
+// sequence the CLI performs, from config discovery down to app
+// construction.
+func openApplication(ctx context.Context, o Options) (*Client, error) {
+	if o.WorkingDir == "" {
+		return nil, fmt.Errorf("sdk: Options.WorkingDir is required")
+	}
+	workDir, err := resolveWorkingDir(o.WorkingDir)
+	if err != nil {
+		return nil, err
 	}
 
 	store, err := config.Init(workDir, o.DataDir, o.Debug)
@@ -385,6 +422,11 @@ func (c *Client) Close() CloseResult {
 	}
 	c.closeOnce.Do(func() {
 		c.closeResult = c.app.ShutdownWithResult()
+		for _, conn := range c.closeConns {
+			if err := conn.Close(); err != nil {
+				slog.Error("sdk: failed to close in-memory database connection", "error", err)
+			}
+		}
 	})
 	return c.closeResult
 }

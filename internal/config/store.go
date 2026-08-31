@@ -347,6 +347,26 @@ func NewTestStore(cfg *Config, loadedPaths ...string) *ConfigStore {
 	return s
 }
 
+// NewLibraryStore builds a ConfigStore for the embeddable SDK's library
+// mode: the given fully-explicit Config is published as the store's sole
+// snapshot generation with no disk I/O of any kind. workingDir (possibly
+// empty for an ephemeral session) is recorded as the store's working
+// directory, and an identity resolver is installed so literal API keys
+// and base URLs pass through unchanged (buildProvider resolves provider
+// settings through the store; a nil resolver would silently blank them).
+// This deliberately is not NewTestStore: that constructor is test-scoped
+// by name and leaves workingDir and the resolver unset, both of which
+// library mode needs (tools and prompt building root every path at
+// store.WorkingDir()).
+func NewLibraryStore(cfg *Config, workingDir string) *ConfigStore {
+	s := &ConfigStore{workingDir: workingDir}
+	s.snap.Store(&storeSnapshot{
+		config:   cfg,
+		resolver: IdentityResolver(),
+	})
+	return s
+}
+
 // testStoreOpts configures the fields newTestConfigStore should set on the
 // snapshot/store it builds. Only used by this package's own white-box
 // tests, which used to build ConfigStore{config: ..., globalDataPath: ...}
