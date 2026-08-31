@@ -80,9 +80,24 @@ set -uo pipefail
 # would abort the script mid-loop; see check_stale_model_slots.sh for
 # the longer version of this exact warning.
 
+if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+	printf '\033[31mcheck_db_release_pairing.sh: not inside a git work tree; refusing to guess (run from a repository checkout)\033[0m\n' >&2
+	exit 1
+fi
 cd "$(git rev-parse --show-toplevel)" || exit 1
 
-conn_files="$(git grep -l -E 'db\.(Connect|ConnectRead)\(' -- '*_test.go' 2>/dev/null || true)"
+# The candidate listing must distinguish "zero matches" (git grep exit
+# 1 -- legitimate empty result, empty $conn_files, loop is a no-op)
+# from "git grep itself failed" (exit > 1 -- e.g. broken repository or
+# mangled paths in mixed Windows/WSL setups). The latter must fail
+# closed instead of silently reporting a pass. The `||` form keeps
+# status capture correct even if the script ever runs with -e set.
+grep_status=0
+conn_files="$(git grep -l -E 'db\.(Connect|ConnectRead)\(' -- '*_test.go')" || grep_status=$?
+if [ "$grep_status" -gt 1 ]; then
+	printf '\033[31mcheck_db_release_pairing.sh: git grep failed (exit %s) -- refusing to report a false pass\033[0m\n' "$grep_status" >&2
+	exit 1
+fi
 
 violations=""
 while IFS= read -r file; do
