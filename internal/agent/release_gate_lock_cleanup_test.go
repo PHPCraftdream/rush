@@ -143,13 +143,17 @@ func TestReleaseGate_1_MetadataCleanupBlockedForever(t *testing.T) {
 	select {
 	case runErr := <-runErrCh:
 		runDuration := time.Since(runStart)
-		// Bound is releaseMetadataCleanupBound (50ms, see internal/session/
-		// lock.go) plus generous headroom for scheduling jitter on loaded
-		// CI runners (flagged as a latent Windows flake risk in the final
-		// @oh review of tasks #337-349, P3) — this test's cleanup fn is
-		// permanently blocked for the whole test, so Run() always pays the
-		// full bound, not just occasionally.
-		require.Less(t, runDuration, 500*time.Millisecond,
+		// runDuration covers the WHOLE Run() turn (provider HTTP round-trip
+		// + agent processing + the releaseMetadataCleanupBound release
+		// itself, see internal/session/lock.go), not just the isolated
+		// 50ms release bound, so it needs more headroom than a pure
+		// lock-release timing test. 500ms was observed to fail under heavy
+		// full-package parallel load even on an unmodified tree (510ms,
+		// 988ms), since every step of the turn is scheduler-jitter
+		// sensitive, not only the release. 3s stays far below the 10s
+		// permanent cleanup block and the 5s outer timeout below, so it
+		// still proves Run() does not wait for the blocked cleanup.
+		require.Less(t, runDuration, 3*time.Second,
 			"Run() should return quickly despite hung cleanup, got %v", runDuration)
 		// Run() should SUCCEED (not fail) because it completes before cleanup finishes
 		require.NoError(t, runErr, "Run should succeed")
