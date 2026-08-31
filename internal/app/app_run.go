@@ -171,6 +171,16 @@ type RunRequest struct {
 	Stdout            io.Writer // nil → io.Discard
 	Stderr            io.Writer // nil → io.Discard
 	HideSpinner       bool
+
+	// Credentials, when non-nil, runs THIS invocation on the given
+	// provider credentials instead of whatever rush.json/env would
+	// resolve — the per-tenant entry point of the embeddable SDK
+	// (sdk.Client.RunWithCredentials). The set replaces model/provider
+	// resolution for every role it covers; nothing is merged with config
+	// or environment credentials, and roles it does not cover fall back
+	// to the ordinary resolution path. Ordinary Run leaves it nil and
+	// behaves exactly as before.
+	Credentials *agent.CredentialSet
 }
 
 // resolveSession resolves which session to use for a non-interactive run
@@ -419,6 +429,15 @@ func drainOutcomeError(sessID string, result session.DrainResult, drainErr, orig
 	}
 }
 
+// credentialsRunner is the slice of the coordinator that supports
+// per-call credential isolation (agent's RunWithCredentials). A
+// consuming-package interface on purpose, and type-asserted rather than
+// added to agent.Coordinator, so that interface's many existing test
+// fakes stay untouched.
+type credentialsRunner interface {
+	RunWithCredentials(ctx context.Context, sessionID, prompt string, creds *agent.CredentialSet, attachments ...message.Attachment) (*fantasy.AgentResult, error)
+}
+
 // ExecuteRun computes a single agent turn and returns the result envelope
 // without rendering it (see RunMode for the output shapes that shape the
 // streaming behaviour). Streaming output goes to req.Stdout, diagnostics to
@@ -453,6 +472,21 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 	// waiting for a permission prompt that no human is there to answer.
 	// See cliprovider.NonInteractiveContextKey.
 	ctx = context.WithValue(ctx, cliprovider.NonInteractiveContextKey, true)
+
+	// Per-call credentials (sdk.Client.RunWithCredentials): validate the
+	// bundle before any session work so a malformed set fails fast, and
+	// keep the credentials-capable coordinator for the run handoff below.
+	var credsRunner credentialsRunner
+	if req.Credentials != nil {
+		if err := req.Credentials.Validate(); err != nil {
+			return nil, fmt.Errorf("invalid per-call credentials: %w", err)
+		}
+		cr, ok := app.AgentCoordinator.(credentialsRunner)
+		if !ok {
+			return nil, fmt.Errorf("per-call credentials are not supported by this coordinator")
+		}
+		credsRunner = cr
+	}
 
 	if smartModel != "" || fastModel != "" {
 		if err := app.overrideModelsForNonInteractive(ctx, smartModel, fastModel); err != nil {
@@ -713,9 +747,16 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 
 	done := make(chan agentTurnResponse, 1)
 
-	go runAgentTurnRecovered(ctx, sess.ID, prompt, func(ctx context.Context, sessionID, prompt string) (*fantasy.AgentResult, error) {
+	runFn := func(ctx context.Context, sessionID, prompt string) (*fantasy.AgentResult, error) {
 		return app.AgentCoordinator.Run(ctx, sessionID, prompt)
-	}, done)
+	}
+	if credsRunner != nil {
+		creds := req.Credentials
+		runFn = func(ctx context.Context, sessionID, prompt string) (*fantasy.AgentResult, error) {
+			return credsRunner.RunWithCredentials(ctx, sessionID, prompt, creds)
+		}
+	}
+	go runAgentTurnRecovered(ctx, sess.ID, prompt, runFn, done)
 
 	messageEvents := app.Messages.Subscribe(ctx)
 	messageReadBytes := make(map[string]int)

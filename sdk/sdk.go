@@ -43,6 +43,7 @@ import (
 	"path/filepath"
 	"sync"
 
+	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/db"
@@ -67,6 +68,15 @@ type (
 	ToolCallStat     = app.ToolCallStat
 	SubAgentOutput   = app.SubAgentOutput
 	RecoveredPartial = app.RecoveredPartial
+	// Per-call credentials (RunWithCredentials): aliases onto the
+	// canonical types in internal/agent — the coordinator consumes them
+	// directly, so no conversion layer exists anywhere.
+	CredentialSet   = agent.CredentialSet
+	Credential      = agent.Credential
+	CredentialModel = agent.CredentialModel
+	ModelChoice     = agent.ModelChoice
+	ProviderType    = agent.ProviderType
+	Role            = agent.Role
 )
 
 // Structured-event aliases onto the same raw types the web UI's WS layer
@@ -89,6 +99,31 @@ const (
 	RunModeTerse  = app.RunModeTerse
 	RunModeStream = app.RunModeStream
 	RunModeJSON   = app.RunModeJSON
+)
+
+// Role names the model slot a ModelChoice fills in a CredentialSet.
+// Values mirror config.SelectedModelType* literally, so casting between
+// sdk.Role and config.SelectedModelType needs no conversion.
+const (
+	RoleSmart    = agent.RoleSmart
+	RoleFast     = agent.RoleFast
+	RoleWorker   = agent.RoleWorker
+	RoleReviewer = agent.RoleReviewer
+)
+
+// ProviderType values for Credential.Type, mirroring catwalk.Type
+// (charm.land/catwalk) one-to-one: a fixed closed enum, not a free-form
+// string.
+const (
+	ProviderTypeOpenAI       = agent.ProviderTypeOpenAI
+	ProviderTypeOpenAICompat = agent.ProviderTypeOpenAICompat
+	ProviderTypeOpenRouter   = agent.ProviderTypeOpenRouter
+	ProviderTypeAnthropic    = agent.ProviderTypeAnthropic
+	ProviderTypeGoogle       = agent.ProviderTypeGoogle
+	ProviderTypeGoogleVertex = agent.ProviderTypeGoogleVertex
+	ProviderTypeAzure        = agent.ProviderTypeAzure
+	ProviderTypeBedrock      = agent.ProviderTypeBedrock
+	ProviderTypeVercel       = agent.ProviderTypeVercel
 )
 
 // MCPMode selects which MCP servers Open starts.
@@ -258,6 +293,39 @@ func (c *Client) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 	if req.Stderr == nil && c.stderr != nil {
 		req.Stderr = c.stderr
 	}
+	return c.app.ExecuteRun(ctx, req)
+}
+
+// RunWithCredentials is Run's per-tenant counterpart for concurrent
+// multi-tenant use: ONE Client may have several RunWithCredentials
+// calls in flight at once, each with its own creds and its own
+// req.ContinueSessionID, and each turn is built and served entirely
+// from that call's CredentialSet — fresh provider clients per call,
+// never cached, and nothing is read from (or merged with) rush.json
+// providers, environment credentials, or any other call's state.
+//
+// creds replaces model+provider resolution for every role it covers:
+// smart drives the turn, fast drives title generation, worker drives
+// sub-agent spawns made BY THIS CALL; reviewer is accepted but, like
+// the config slot of the same name, has no live runtime consumer yet.
+// Roles absent from creds.Models fall back to the ordinary resolution
+// path. The API key is used literally — OAuth/token-refresh providers
+// are out of scope. ModelChoice.Model is deliberately NOT validated
+// against Credential.Models: an unknown id fails on the first real
+// provider call, exactly like `--model` today.
+//
+// Sessions and credentials are independent axes: req.ContinueSessionID
+// keeps its normal get-or-create semantics (the session lives in the
+// Client's shared data directory), while creds only decides WHICH
+// provider serves this call.
+func (c *Client) RunWithCredentials(ctx context.Context, req RunRequest, creds CredentialSet) (*RunResult, error) {
+	if req.Stdout == nil && c.stdout != nil {
+		req.Stdout = c.stdout
+	}
+	if req.Stderr == nil && c.stderr != nil {
+		req.Stderr = c.stderr
+	}
+	req.Credentials = &creds
 	return c.app.ExecuteRun(ctx, req)
 }
 

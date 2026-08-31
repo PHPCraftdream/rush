@@ -42,6 +42,12 @@ type resolvedOverrides struct {
 	// populated it (e.g. applyModelOverrides callers that don't need it);
 	// always populated by resolveSessionModels.
 	providerCfg config.ProviderConfig
+	// credentials is non-nil when this snapshot was resolved from a
+	// per-call CredentialSet (RunWithCredentials) instead of session
+	// DB/config state. runInternal's 401 rebuild re-resolves through the
+	// SAME credentials so a rejected tenant key can never retry the turn
+	// on the operator's configured provider.
+	credentials *CredentialSet
 }
 
 // resolveSessionModels builds an immutable snapshot of model configuration for a session.

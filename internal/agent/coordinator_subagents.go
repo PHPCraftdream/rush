@@ -122,19 +122,54 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 	// cannot leak into a concurrent sub-agent dispatch from a different
 	// session sharing the same underlying agent object (task #466).
 	model := params.Agent.Model()
-	if override, err := c.resolveSubAgentModelOverride(ctx, params.SessionID); err != nil {
-		slog.Error("runSubAgent: failed to resolve session worker override, falling back to default", "sessionID", params.SessionID, "err", err)
-	} else if override != nil {
-		model = *override
+
+	// Per-call CredentialSet (RunWithCredentials): the parent call's
+	// tenant credentials win for the slots they cover — worker first (the
+	// slot sub-agent spawns exist for), then smart — and the session-DB
+	// worker override below is skipped entirely for a covered call.
+	// Building the child's model from the SAME CredentialSet keeps a
+	// tenant's fan-out on the tenant's provider; the shared config would
+	// silently route the child to the operator's provider, the exact leak
+	// per-call credentials exist to prevent. A build failure is a hard
+	// error for the same reason: falling through to `model` would run
+	// tenant work on the shared config.
+	var credProviderCfg *config.ProviderConfig
+	if creds := callCredentialsFrom(ctx); creds != nil {
+		choice, covered := creds.Models[RoleWorker]
+		if !covered {
+			choice, covered = creds.Models[RoleSmart]
+		}
+		if covered {
+			credModel, provCfg, err := c.buildCredentialModel(ctx, creds, choice)
+			if err != nil {
+				return fantasy.ToolResponse{}, fmt.Errorf("failed to build sub-agent model from per-call credentials: %w", err)
+			}
+			model = credModel
+			credProviderCfg = &provCfg
+		}
+	}
+
+	if credProviderCfg == nil {
+		if override, err := c.resolveSubAgentModelOverride(ctx, params.SessionID); err != nil {
+			slog.Error("runSubAgent: failed to resolve session worker override, falling back to default", "sessionID", params.SessionID, "err", err)
+		} else if override != nil {
+			model = *override
+		}
 	}
 	maxTokens := model.CatwalkCfg.DefaultMaxTokens
 	if model.ModelCfg.MaxTokens != 0 {
 		maxTokens = model.ModelCfg.MaxTokens
 	}
 
-	providerCfg, ok := c.cfg.Config().Providers.Get(model.ModelCfg.Provider)
-	if !ok {
-		return fantasy.ToolResponse{}, errModelProviderNotConfigured
+	var providerCfg config.ProviderConfig
+	if credProviderCfg != nil {
+		providerCfg = *credProviderCfg
+	} else {
+		var ok bool
+		providerCfg, ok = c.cfg.Config().Providers.Get(model.ModelCfg.Provider)
+		if !ok {
+			return fantasy.ToolResponse{}, errModelProviderNotConfigured
+		}
 	}
 	if err := checkPeakHours(providerCfg); err != nil {
 		return fantasy.ToolResponse{}, err

@@ -312,10 +312,12 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 		systemPrompt += "\n\n<mcp-instructions>\n" + s + "\n</mcp-instructions>"
 	}
 
-	if len(agentTools) > 0 {
-		// Add Anthropic caching to the last tool.
-		agentTools[len(agentTools)-1].SetProviderOptions(a.getCacheControlOptions())
-	}
+	// Add Anthropic caching to the last tool. Via a per-turn wrapper, NOT
+	// SetProviderOptions on the shared tool object: a.tools' ELEMENTS are one
+	// set of pointers shared by every concurrent turn on this agent, and two
+	// turns marking "their" last tool wrote the same field (a real -race
+	// finding). See withProviderOptionsOnLast.
+	agentTools = withProviderOptionsOnLast(agentTools, a.getCacheControlOptions())
 
 	agent := fantasy.NewAgent(
 		smartModel.Model,
@@ -1047,7 +1049,12 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 			}
 
 			// Use latest tools (updated by SetTools when MCP tools change).
-			prepared.Tools = a.tools.Copy()
+			// The cache-control marker is re-applied per step through the
+			// same per-step wrapper the turn's initial tool list uses: this
+			// re-read used to inherit the marker only because runTurn had
+			// MUTATED the shared tool object above, which is exactly the
+			// cross-turn write this fix removes.
+			prepared.Tools = withProviderOptionsOnLast(a.tools.Copy(), a.getCacheControlOptions())
 
 			for _, inj := range a.drainDueInjects(call.SessionID, genID, historyIDs) {
 				prepared.Messages = append(prepared.Messages, inj.ToAIMessage()...)

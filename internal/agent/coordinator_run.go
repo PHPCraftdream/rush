@@ -141,6 +141,11 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 	}
 
 	model := pinned.smart
+
+	// creds is non-nil for RunWithCredentials calls (see
+	// resolvedOverrides.credentials): the 401 rebuild below must
+	// re-resolve through the SAME per-call credentials, not the config.
+	creds := pinned.credentials
 	slog.Debug("Coordinator: running with model", "sessionID", sessionID, "model", model.ModelCfg.Model)
 
 	maxOutputTokens := model.CatwalkCfg.DefaultMaxTokens
@@ -249,8 +254,12 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 	// the logical request ID and other fields but using fresh models with new
 	// credentials (task #341, P1-2).
 	rebuildCall := func() error {
-		// Resolve fresh models with updated credentials.
-		pinned, err := c.resolveSessionModels(ctx, sessionID)
+		// Resolve fresh models with updated credentials. A per-call
+		// CredentialSet (RunWithCredentials) re-resolves through the SAME
+		// credentials — resolveSessionModels here would rebuild the retry
+		// on the config provider, sending a rejected tenant key's retry
+		// to the operator's own provider.
+		pinned, err := c.resolveCallModels(ctx, sessionID, creds)
 		if err != nil {
 			return fmt.Errorf("failed to resolve models after credential refresh: %w", err)
 		}

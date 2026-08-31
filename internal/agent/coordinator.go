@@ -39,7 +39,6 @@ import (
 	"github.com/PHPCraftdream/rush/internal/pubsub"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/skills"
-	"golang.org/x/sync/errgroup"
 )
 
 // ModelOverride allows callers to specify per-run model overrides (provider + model ID).
@@ -250,7 +249,14 @@ type coordinator struct {
 	activeSkills []*skills.Skill // Post-filter: active skills only.
 	skillTracker *skills.Tracker
 
-	readyWg errgroup.Group
+	// readyWg gates every run entry point on the asynchronous half of agent
+	// construction (buildAgent's prompt/tool builds). Deliberately NOT an
+	// errgroup.Group: buildAgent re-registers on this same gate from every
+	// UpdateModels, while other concurrent runs are already parked in Wait —
+	// which errgroup and the sync.WaitGroup under it explicitly forbid ("The
+	// first call to Go must happen before a Wait") and which -race reports as
+	// a real data race. See readyGate's doc comment in ready_gate.go.
+	readyWg readyGate
 
 	// Per-run limits. Set via SetRunLimits before Run(). Reset after use.
 	// Fork patch: batch 30. Mutex added in review-fix (data race: SetRunLimits
