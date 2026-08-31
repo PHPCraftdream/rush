@@ -207,7 +207,15 @@ func Open(ctx context.Context, o Options) (*Client, error) {
 		return nil, fmt.Errorf("sdk: failed to resolve working directory %q: %w", o.WorkingDir, err)
 	}
 	if info, statErr := os.Stat(workDir); statErr != nil {
-		return nil, fmt.Errorf("sdk: working directory %q is not accessible: %w", workDir, statErr)
+		if !os.IsNotExist(statErr) {
+			return nil, fmt.Errorf("sdk: working directory %q is not accessible: %w", workDir, statErr)
+		}
+		// WorkingDir stays a required parameter -- this is not a default
+		// path, just tolerance for a fresh workspace the host hasn't
+		// created yet (e.g. a freshly-provisioned per-tenant directory).
+		if err := os.MkdirAll(workDir, 0o755); err != nil {
+			return nil, fmt.Errorf("sdk: failed to create working directory %q: %w", workDir, err)
+		}
 	} else if !info.IsDir() {
 		return nil, fmt.Errorf("sdk: working directory %q is not a directory", workDir)
 	}
