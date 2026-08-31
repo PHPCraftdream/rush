@@ -1,7 +1,7 @@
 // Round-trip tests for the sessions.origin column: the explicit-origin
 // creators (CreateWithOrigin / CreateWithIDAndOrigin) persist the entry
 // channel, while the legacy creators (Create / CreateWithID) leave it as
-// OriginUnspecified via the column's DEFAULT ''.
+// OriginUnspecified via the column's empty-string default.
 package session
 
 import (

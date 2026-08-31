@@ -1,7 +1,7 @@
 // Round-trip tests for the messages.origin column: CreateMessageParams
 // carries the entry-channel origin and it must persist, while params
 // without an Origin read back as OriginUnspecified via the column's
-// DEFAULT ''.
+// empty-string default.
 package message
 
 import (
