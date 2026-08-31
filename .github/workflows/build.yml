@@ -285,11 +285,11 @@ jobs:
   #      shutdown signal" kills scale with how long one invocation
   #      runs). The documented fallback -- scope this job down to
   #      internal/hooks and internal/session rather than ship a
-  #      permanently red or flaky job -- is therefore taken, and
-  #      internal/agent has NO -race coverage in CI. That is a real,
-  #      acknowledged gap: if it is ever to close, the shape to try is
-  #      a batched -run-filtered split (as test-agent does) in its own
-  #      dedicated job, not one monolithic command.
+  #      permanently red or flaky job -- was taken at first, and the
+  #      gap it left is now closed by the batched -run-filtered split
+  #      for internal/agent added as this job's second step below:
+  #      same technique as the test-agent job, so no single -race
+  #      invocation ever spans the whole package.
   #
   # -timeout 15m overrides go test's implicit 10m per-package default:
   # under -race even these two packages run ~2-3x slower (local run:
@@ -297,7 +297,12 @@ jobs:
   # not on a wall-clock guess against a slower shared runner.
   test-race:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Raised from 30m when the internal/agent batched -race split
+    # landed below: five batches, each individually -timeout 15m
+    # (measured ~2.7m per ~80-test batch locally), plus the
+    # hooks/session step and toolchain overhead, expected well under
+    # 45m -- 60m is only a runaway backstop, not a target.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -307,3 +312,52 @@ jobs:
           go-version-file: go.mod
       - name: go test -race -short -failfast (internal/hooks, internal/session)
         run: go test -race -short -failfast -timeout 15m ./internal/hooks/ ./internal/session/
+      # internal/agent -- the most concurrency-heavy package in the repo
+      # (generation fences, stream watchdog, mailboxes, coordinator
+      # background work) -- gets -race coverage via the batched split
+      # whose need the comment above documents: one monolithic
+      # `go test -race` over the whole package is killed by go test's
+      # default 10m per-package timeout on time alone (668s measured
+      # locally, no OOM), so the package is split into 5 sequential
+      # -run-filtered batches of ~80 tests using the same
+      # source-extraction technique as the test-agent job above (test
+      # names are read from *_test.go at run time, so newly added tests
+      # are covered automatically; keep the two extractions in sync --
+      # the while-read form is deliberate, see that job's bash 3.2
+      # comment). Each batch gets -timeout 15m so a real hang fails the
+      # batch instead of racing an implicit guess; the measured local
+      # cost of one batch under -race (~2.7m for 80 tests) leaves an
+      # order of magnitude of headroom on a slower shared runner. Still
+      # ubuntu-only: the windows -race OOM history in point 1 above
+      # applies unchanged, and macos has never had -race here.
+      - name: go test -race -short -failfast (internal/agent, 5 run-filtered batches)
+        shell: bash
+        run: |
+          set -uo pipefail
+          names=()
+          while IFS= read -r name; do
+            names+=("$name")
+          done < <(
+            grep -h "^func Test" internal/agent/*_test.go \
+              | sed 's/func \(Test[A-Za-z0-9_]*\).*/\1/' \
+              | LC_ALL=C sort -u
+          )
+          total=${#names[@]}
+          batches=5
+          size=$(( (total + batches - 1) / batches ))
+          status=0
+          for ((i = 0; i < batches; i++)); do
+            start=$((i * size))
+            chunk=("${names[@]:start:size}")
+            [ ${#chunk[@]} -eq 0 ] && continue
+            pattern="^($(IFS='|'; echo "${chunk[*]}"))$"
+            echo "::group::race batch $((i + 1))/${batches} (${#chunk[@]} tests)"
+            go test -race -short -failfast -parallel 2 -timeout 15m -run "$pattern" ./internal/agent/
+            rc=$?
+            echo "::endgroup::"
+            if [ "$rc" -ne 0 ]; then
+              status=$rc
+              break
+            fi
+          done
+          exit $status
