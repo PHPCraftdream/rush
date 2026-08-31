@@ -1765,13 +1765,21 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 				"session_id", call.SessionID,
 				"provider", smartModel.ModelCfg.Provider,
 			)
+			cause := watchdogCause(watchdogCauseVal.Load())
 			title, body := watchdogFinishMessage(
-				watchdogCause(watchdogCauseVal.Load()),
+				cause,
 				toolMaxDuration,
 				a.timeoutHardCap,
 				idleTimeout,
 				smartModel.ModelCfg.Provider,
 			)
+			if cause == causeToolTimeout || cause == causeHardCap {
+				flag := "--timeout"
+				if cause == causeHardCap {
+					flag = "--timeout-hard-cap"
+				}
+				body = fmt.Sprintf("%s\n\n%s", body, WatchdogResumeGuidance(call.SessionID, flag))
+			}
 			currentAssistant.AddFinish(message.FinishReasonError, title, body)
 		} else if isCancelErr {
 			currentAssistant.AddFinish(message.FinishReasonCanceled, "User canceled request", "")
@@ -1779,7 +1787,10 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 			currentAssistant.AddFinish(
 				message.FinishReasonError,
 				"Run timeout exceeded",
-				"The run's --timeout deadline expired while this turn was still in flight (e.g. a long tool call or sub-agent delegation). Re-run into the same --session id with a larger --timeout to continue from here.",
+				fmt.Sprintf(
+					"The run's --timeout deadline expired while this turn was still in flight (e.g. a long tool call or sub-agent delegation).\n\n%s",
+					WatchdogResumeGuidance(call.SessionID, "--timeout"),
+				),
 			)
 		} else if isHyper && errors.As(err, &providerErr) && providerErr.StatusCode == http.StatusUnauthorized {
 			currentAssistant.AddFinish(message.FinishReasonError, "Unauthorized", `Please re-authenticate with Hyper. You can also run "rush auth" to re-authenticate.`)
