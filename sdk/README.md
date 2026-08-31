@@ -85,13 +85,21 @@ use: **one Client, many concurrent calls, each with its own provider
 credentials.** Every field `creds.Models` covers gets resolved fresh for
 that one call — a new provider client is built per call, never cached,
 and nothing is read from or merged with the Client's own configured
-providers. A role `creds.Models` doesn't cover falls back to the
-ordinary resolution path.
+providers. Strict isolation is the default: the `smart` role is **required** in
+`creds.Models`, and a `smart`/`fast` role the set doesn't cover is a
+hard **error** before any provider traffic — Rush will not quietly
+serve a missing role from the Client's configured providers. If you
+genuinely want an uncovered role to fall back to the Client's own
+configured model (e.g. `fast` for background title generation), set
+`AllowConfiguredRoleFallback: true` on the `CredentialSet`. That is a
+deliberate crossing of the tenant-credential boundary: the fallback
+role runs on **your** (the operator's) provider, with whatever tenant
+data that role carries.
 
 ```go
 result, err := client.RunWithCredentials(ctx, sdk.RunRequest{
     Prompt:            "summarise the attached diff",
-    ContinueSessionID: "tenant-42-session-7",
+    ContinueSessionID: sessionIDForTenant(tenantID), // opaque, unguessable -- see the trust-model section below
 }, sdk.CredentialSet{
     Credentials: []sdk.Credential{{
         Provider: "tenant-provider",
@@ -100,6 +108,7 @@ result, err := client.RunWithCredentials(ctx, sdk.RunRequest{
     }},
     Models: map[sdk.Role]sdk.ModelChoice{
         sdk.RoleSmart: {Provider: "tenant-provider", Model: "claude-opus-4-8"},
+        sdk.RoleFast:  {Provider: "tenant-provider", Model: "claude-haiku-4-5"},
     },
 })
 ```
@@ -122,9 +131,47 @@ Copilot) are out of scope for `CredentialSet` — only a literal API key.
 get-or-create semantics — an unknown id creates a new session with that
 exact id, an existing one continues it. This is completely orthogonal to
 credentials: a session doesn't "belong" to a `CredentialSet`. A tenant
-just picks its own `ContinueSessionID` (e.g. `"tenant-42"`) and passes
-its own `CredentialSet` on each call — no separate directory or
-sub-Client per tenant is needed.
+just picks its own `ContinueSessionID` and passes its own
+`CredentialSet` on each call — no separate directory or sub-Client per
+tenant is needed.
+
+Pick the id as an unguessable value whose mapping to your callers *you*
+own — the next section explains why.
+
+## Trust model: there is no tenant authorization
+
+Stated as plainly as possible because it matters: **Rush performs no
+authorization and no ownership checks whatsoever.** Not on
+`ContinueSessionID`, not on `Messages`, not on `Session`, not on the
+subscribe streams.
+
+- `RunRequest.ContinueSessionID` has get-or-create semantics keyed on
+  the literal id. Any caller who knows — or guesses — an existing
+  session id can continue that session, reading and writing its full
+  history, with **any** credentials they pass. A per-call
+  `CredentialSet` isolates *which provider serves the turn*; it is not
+  an authentication mechanism and grants no exclusivity over the
+  session.
+- `Client.Messages(ctx, id)` and `Client.Session(ctx, id)` return any
+  session's full history / metadata to whoever asks, no questions
+  asked.
+- `SubscribeMessages` / `SubscribeSessions` stream
+  create/update/delete events for **every** session the Client knows
+  about, with no tenant filtering. If you forward events to
+  per-tenant consumers, filter the stream yourself on
+  `ev.Payload.SessionID` before it leaves your process.
+
+The host owns this boundary. A multi-tenant host should:
+
+1. Generate session ids that are opaque and unguessable (a UUID or
+   equivalent) — never predictable ids like `"tenant-42"`.
+2. Keep its own ownership map (session id → caller) and consult it
+   *before* handing a `ContinueSessionID` to Rush.
+3. Filter subscribe streams per tenant before forwarding anything.
+
+If you need enforced in-process tenant isolation today, put it in your
+own authorization layer and only hand Rush ids that the caller is allowed
+to touch.
 
 ## Session-busy behaviour is different from `rush run`
 
@@ -179,6 +226,12 @@ writer risks corruption), so a long-lived host process should treat a
 forced close as "some in-flight work may not have been persisted,"
 not as an ordinary clean shutdown. `CloseResult.CleanupErrors` collects
 any non-fatal errors from cleanup (also logged internally).
+
+After `Close()` returns, the Client is permanently closed: `Run`,
+`RunWithCredentials`, `Messages`, and `Session` return
+`sdk.ErrClientClosed` (check with `errors.Is`), and `SubscribeMessages` /
+`SubscribeSessions` return an already-closed channel. `Close()` itself
+stays idempotent — the second call just returns the first call's result.
 
 ## Minimal example
 

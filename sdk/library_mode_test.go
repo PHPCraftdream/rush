@@ -19,6 +19,7 @@ package sdk_test
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -246,4 +247,81 @@ func TestOpenLibraryMode_ValidationErrors(t *testing.T) {
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "must define the smart role")
 	})
+}
+
+// TestOpenLibraryMode_TwoEphemeralClientsAreIsolated pins the per-client
+// isolation of ephemeral in-memory sessions (review round-1 finding
+// R1-2): SQLite keys shared-cache named memory databases by name
+// process-wide, so a fixed DSN name made every ephemeral client in the
+// process open -- and re-run migrations on -- ONE shared database. With
+// the per-client unique DSN, two clients alive at the same time must not
+// see each other's sessions at all, and closing one must leave the
+// other fully working.
+func TestOpenLibraryMode_TwoEphemeralClientsAreIsolated(t *testing.T) {
+	isolateGlobalConfigForWorkdirTest(t)
+
+	ctx := context.Background()
+	serverA := newCredentialServer(t, "CLIENT_A_OK")
+	serverB := newCredentialServer(t, "CLIENT_B_OK")
+
+	open := func(srv *credentialServer) *sdk.Client {
+		client, err := sdk.Open(ctx, sdk.Options{
+			Mode:          sdk.ModeLibrary,
+			LibraryConfig: libraryConfigFor(srv.srv.URL, "sk-library-secret"),
+		})
+		require.NoError(t, err)
+		require.NotNil(t, client)
+		return client
+	}
+
+	// Two ephemeral clients alive at the SAME time in one process.
+	clientA := open(serverA)
+	t.Cleanup(func() { _ = clientA.Close() })
+	clientB := open(serverB)
+	t.Cleanup(func() { _ = clientB.Close() })
+
+	// Each client materializes its own fixed-ID session (get-or-create
+	// via ContinueSessionID) into its own private database.
+	const (
+		sessionA = "sdk-ephemeral-a"
+		sessionB = "sdk-ephemeral-b"
+	)
+	resA := runLibraryPrompt(t, clientA, sessionA)
+	require.Equal(t, "CLIENT_A_OK", resA.FinalText)
+	require.Equal(t, sessionA, resA.SessionID)
+	resB := runLibraryPrompt(t, clientB, sessionB)
+	require.Equal(t, "CLIENT_B_OK", resB.FinalText)
+	require.Equal(t, sessionB, resB.SessionID)
+
+	// Each client sees its own session.
+	_, err := clientA.Session(ctx, sessionA)
+	require.NoError(t, err)
+	msgsA, err := clientA.Messages(ctx, sessionA)
+	require.NoError(t, err)
+	require.NotEmpty(t, msgsA)
+
+	// Cross-client lookups must not see the other client's session:
+	// Messages of a foreign session come back empty, Session comes back
+	// sql.ErrNoRows.
+	_, err = clientA.Session(ctx, sessionB)
+	require.ErrorIs(t, err, sql.ErrNoRows, "client A must not see client B's session")
+	msgsFromA, err := clientA.Messages(ctx, sessionB)
+	require.NoError(t, err)
+	require.Empty(t, msgsFromA, "client A must not see client B's history")
+	_, err = clientB.Session(ctx, sessionA)
+	require.ErrorIs(t, err, sql.ErrNoRows, "client B must not see client A's session")
+	msgsFromB, err := clientB.Messages(ctx, sessionA)
+	require.NoError(t, err)
+	require.Empty(t, msgsFromB, "client B must not see client A's history")
+
+	// Closing one client leaves the other fully working: continue B's
+	// session and read it back; A's data stays invisible to B.
+	require.Empty(t, clientA.Close().CleanupErrors)
+	resB2 := runLibraryPrompt(t, clientB, sessionB)
+	require.Equal(t, "CLIENT_B_OK", resB2.FinalText)
+	msgsB2, err := clientB.Messages(ctx, sessionB)
+	require.NoError(t, err)
+	require.NotEmpty(t, msgsB2)
+	_, err = clientB.Session(ctx, sessionA)
+	require.ErrorIs(t, err, sql.ErrNoRows)
 }

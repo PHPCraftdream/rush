@@ -19,6 +19,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
@@ -55,6 +56,66 @@ const (
 	RoleWorker   Role = "worker"
 	RoleReviewer Role = "reviewer"
 )
+
+// validRoles and validProviderTypes list the enum values in display
+// order for validation errors; the known* helpers are Validate's
+// membership checks. Keep both slices in sync with the const blocks
+// above.
+var (
+	validRoles         = []Role{RoleSmart, RoleFast, RoleWorker, RoleReviewer}
+	validProviderTypes = []ProviderType{
+		ProviderTypeOpenAI,
+		ProviderTypeOpenAICompat,
+		ProviderTypeOpenRouter,
+		ProviderTypeAnthropic,
+		ProviderTypeGoogle,
+		ProviderTypeGoogleVertex,
+		ProviderTypeAzure,
+		ProviderTypeBedrock,
+		ProviderTypeVercel,
+	}
+)
+
+// knownRole reports whether role is one of the four Role constants.
+func knownRole(role Role) bool {
+	for _, known := range validRoles {
+		if role == known {
+			return true
+		}
+	}
+	return false
+}
+
+// knownProviderType reports whether t is one of the nine ProviderType
+// constants.
+func knownProviderType(t ProviderType) bool {
+	for _, known := range validProviderTypes {
+		if t == known {
+			return true
+		}
+	}
+	return false
+}
+
+// roleNames renders validRoles as a comma-separated list for error
+// messages.
+func roleNames() string {
+	names := make([]string, 0, len(validRoles))
+	for _, role := range validRoles {
+		names = append(names, string(role))
+	}
+	return strings.Join(names, ", ")
+}
+
+// providerTypeNames renders validProviderTypes as a comma-separated
+// list for error messages.
+func providerTypeNames() string {
+	names := make([]string, 0, len(validProviderTypes))
+	for _, t := range validProviderTypes {
+		names = append(names, string(t))
+	}
+	return strings.Join(names, ", ")
+}
 
 // CredentialModel describes one model a tenant's provider serves. Pure
 // metadata: Rush never validates a ModelChoice.Model against the owning
@@ -96,20 +157,35 @@ type ModelChoice struct {
 }
 
 // CredentialSet is the per-call credential bundle for
-// RunWithCredentials. Coverage of the four roles is optional per role:
-// roles absent from Models fall back to the ordinary resolution path
-// (session DB overrides, then config). Treat the value as immutable
-// after construction; a RunWithCredentials call never mutates it.
+// RunWithCredentials. The smart role is required in Models; fast,
+// worker, and reviewer are optional. Strict isolation is the default:
+// a smart/fast role the set does not cover is a hard error before any
+// provider traffic — Rush will NOT silently serve it from the Client's
+// configured providers. Set AllowConfiguredRoleFallback to explicitly
+// re-enable configured-model fallback for uncovered roles (see that
+// field's doc for the trust boundary it crosses). Treat the value as
+// immutable after construction; a RunWithCredentials call never
+// mutates it.
 type CredentialSet struct {
 	Credentials []Credential         `json:"credentials"`
 	Models      map[Role]ModelChoice `json:"models"`
+	// AllowConfiguredRoleFallback re-enables the ordinary session/config
+	// model resolution for roles this set does not cover. The default
+	// (false) is fail-closed: an uncovered smart/fast role is an error
+	// before any provider traffic. True deliberately crosses the
+	// tenant-credential boundary: the uncovered role — with whatever
+	// tenant data it carries (fast drives title generation) — is served
+	// by the Client's configured (operator) provider, not the tenant's.
+	AllowConfiguredRoleFallback bool `json:"allow_configured_role_fallback,omitempty"`
 }
 
 // Validate checks the bundle's internal consistency: at least one
 // credential, at least one role choice, every choice naming a known
-// credential, non-empty provider types, and a base URL wherever the
-// provider type has no built-in default endpoint. Model IDs are
-// deliberately NOT checked against the Credentials' Models lists.
+// credential, non-empty provider types drawn from the nine ProviderType
+// constants, a base URL wherever the provider type has no built-in
+// default endpoint, Models keys restricted to the four Role constants,
+// and the required smart role present. Model IDs are deliberately NOT
+// checked against the Credentials' Models lists.
 func (cs *CredentialSet) Validate() error {
 	if cs == nil {
 		return fmt.Errorf("credential set is nil")
@@ -132,17 +208,26 @@ func (cs *CredentialSet) Validate() error {
 		if cred.Type == "" {
 			return fmt.Errorf("credential for provider %q is missing its type", cred.Provider)
 		}
+		if !knownProviderType(cred.Type) {
+			return fmt.Errorf("credential for provider %q has unknown type %q; valid types: %s", cred.Provider, cred.Type, providerTypeNames())
+		}
 		if cred.Type == ProviderTypeOpenAICompat && cred.BaseURL == "" {
 			return fmt.Errorf("provider %q: base_url is required for the %q provider type", cred.Provider, cred.Type)
 		}
 	}
 	for role, choice := range cs.Models {
+		if !knownRole(role) {
+			return fmt.Errorf("model choice uses unknown role %q; valid roles: %s", role, roleNames())
+		}
 		if _, ok := known[choice.Provider]; !ok {
 			return fmt.Errorf("model choice for role %q references provider %q which is not in the credential set", role, choice.Provider)
 		}
 		if choice.Model == "" {
 			return fmt.Errorf("model choice for role %q has an empty model id", role)
 		}
+	}
+	if _, ok := cs.Models[RoleSmart]; !ok {
+		return fmt.Errorf("credential set must define the smart role (Models[RoleSmart]); smart drives every turn")
 	}
 	return nil
 }
@@ -190,8 +275,10 @@ var _ credentialRunner = (*coordinator)(nil)
 
 // RunWithCredentials is like Run but resolves this call's smart/fast
 // models — and any sub-agent spawn's worker model inside the turn —
-// from the given CredentialSet instead of config/session state. Roles
-// the set does not cover fall back to the ordinary resolution path.
+// from the given CredentialSet instead of config/session state.
+// Uncovered smart/fast roles are a hard error before any provider
+// traffic unless creds.AllowConfiguredRoleFallback is set (see
+// CredentialSet).
 // Built for the embeddable SDK's concurrent multi-tenant story:
 // several RunWithCredentials calls may be in flight on ONE coordinator,
 // each fully isolated by its own credentials. Nothing here touches the
@@ -241,15 +328,26 @@ var credentialReasoningLevels = []string{"low", "medium", "high"}
 
 // resolveCredentialsModels builds the per-call model snapshot from
 // creds. Roles covered by creds.Models are built ad-hoc (fresh provider
-// client, never cached — see buildCredentialModel); every other role —
-// and the prompt prefix/system prompt with it — falls through to the
-// ordinary resolveSessionModels path.
+// client, never cached — see buildCredentialModel). Strict isolation is
+// the default: with AllowConfiguredRoleFallback false, an uncovered
+// smart/fast role errors out HERE — before any session/config resolve
+// and before any provider client is built — so tenant data can never
+// reach the operator's provider through a missing role. With the flag
+// set, uncovered roles fall through to the ordinary resolveSessionModels
+// path (a documented boundary crossing).
 func (c *coordinator) resolveCredentialsModels(ctx context.Context, sessionID string, creds *CredentialSet) (*resolvedOverrides, error) {
 	smartChoice, smartCovered := creds.Models[RoleSmart]
 	fastChoice, fastCovered := creds.Models[RoleFast]
 
+	if !smartCovered {
+		return nil, fmt.Errorf("credential set does not cover the smart role (Models[RoleSmart]) and AllowConfiguredRoleFallback is false; smart drives every turn, so there is no safe fallback")
+	}
+	if !fastCovered && !creds.AllowConfiguredRoleFallback {
+		return nil, fmt.Errorf("credential set does not cover the fast role (Models[RoleFast], drives title generation) and AllowConfiguredRoleFallback is false; add the role or set the flag to serve it from the Client's configured models")
+	}
+
 	var base *resolvedOverrides
-	if !smartCovered || !fastCovered {
+	if creds.AllowConfiguredRoleFallback && (!smartCovered || !fastCovered) {
 		var err error
 		base, err = c.resolveSessionModels(ctx, sessionID)
 		if err != nil {

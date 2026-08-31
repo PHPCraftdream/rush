@@ -16,6 +16,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/db"
 	rushlog "github.com/PHPCraftdream/rush/internal/log"
 	"github.com/PHPCraftdream/rush/internal/projects"
+	"github.com/google/uuid"
 	"github.com/pressly/goose/v3"
 )
 
@@ -51,6 +52,12 @@ const (
 type LibraryConfig struct {
 	Credentials []Credential
 	Models      map[Role]ModelChoice
+
+	// AllowConfiguredRoleFallback mirrors
+	// CredentialSet.AllowConfiguredRoleFallback -- see that field's
+	// doc comment. Inert in library mode: openLibrary only calls
+	// Validate(), which does not read this field.
+	AllowConfiguredRoleFallback bool
 }
 
 // openLibrary is Open's library-mode path: no config-file discovery at
@@ -264,9 +271,23 @@ var memPragmas = map[string]string{
 	"busy_timeout":  "30000",
 }
 
-// memDSN names the shared-cache memory database. The name is fixed: two
-// handles on the same named memory DB share one underlying database.
-const memDSN = "file:rush_sdk_memory?mode=memory&cache=shared"
+// newMemDSN builds the DSN for one ephemeral client's shared-cache memory
+// database, with a unique name per call. Two handles opened on the SAME
+// named memory DB share one underlying database -- which the keeper and
+// main handle of a single client must do, but two different clients must
+// never: SQLite keys shared-cache memory databases by name process-wide,
+// so a fixed name would make every ephemeral client in the process open
+// (and re-run migrations on) one and the same database, breaking the
+// per-client isolation an in-memory session promises. The uuid portion
+// keeps each client's database private (google/uuid is already a direct
+// dependency).
+func newMemDSN() string {
+	dsn := fmt.Sprintf("file:rush_sdk_memory_%s?mode=memory&cache=shared", uuid.NewString())
+	for _, name := range sortedPragmaNames(memPragmas) {
+		dsn += fmt.Sprintf("&_pragma=%s(%s)", name, memPragmas[name])
+	}
+	return dsn
+}
 
 // memoryDriverName picks the registered SQLite driver: modernc registers
 // as "sqlite", ncruces as "sqlite3".
@@ -306,11 +327,9 @@ func openMemoryDB(ctx context.Context) (closeConns []*sql.DB, conn *sql.DB, err 
 	}
 
 	// The DSN _pragma params apply at every pooled connection; the
-	// modernc spelling is _pragma=name(value).
-	dsn := memDSN
-	for _, name := range sortedPragmaNames(memPragmas) {
-		dsn += fmt.Sprintf("&_pragma=%s(%s)", name, memPragmas[name])
-	}
+	// modernc spelling is _pragma=name(value). One unique DSN serves
+	// both handles below, so the pair shares exactly one database.
+	dsn := newMemDSN()
 
 	open := func() (*sql.DB, error) {
 		h, err := sql.Open(driver, dsn)

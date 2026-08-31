@@ -16,7 +16,6 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
-	"github.com/PHPCraftdream/rush/sdk"
 	"github.com/spf13/cobra"
 )
 
@@ -787,11 +786,11 @@ rush run --restrict-run --role fast \
 			AllowPeakHours:           allowPeakHours,           // Fork patch: peak-hours bypass
 			Origin:                   message.OriginCLI,        // Fork patch: entry-channel origin
 		}
-		// Phase 5: route through the sdk facade (Wrap adapts the App
-		// built by setupApp above) so the CLI and library share one run
-		// path by construction. Behaviour is identical to calling
-		// a.RunNonInteractive directly.
-		return sdk.Wrap(a, os.Stdout, os.Stderr).RunNonInteractive(ctx, os.Stdout, prompt, overrides, hideSpinner, mode, sessionID, useLast)
+		// The CLI calls the App's RunNonInteractive directly: the sdk
+		// facade no longer re-exports an internal *app.App wrapper in
+		// its public API (sdk.Wrap and sdk.Client.RunNonInteractive
+		// were removed as internal-only seams).
+		return a.RunNonInteractive(ctx, os.Stdout, prompt, overrides, hideSpinner, mode, sessionID, useLast)
 	},
 }
 

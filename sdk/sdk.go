@@ -37,12 +37,14 @@ package sdk
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/app"
@@ -80,6 +82,12 @@ type (
 	Role            = agent.Role
 )
 
+// ErrClientClosed is returned by Client.Run, Client.RunWithCredentials,
+// Client.Messages, and Client.Session when the Client has already been
+// closed via Close. The Subscribe methods return no error; on a closed
+// Client they return an already-closed channel instead (see their docs).
+var ErrClientClosed = errors.New("sdk: client is closed")
+
 // Structured-event aliases onto the same raw types the web UI's WS layer
 // consumes through app.App's Sessions/Messages brokers (see
 // internal/server/events.go). These are pass-through aliases, deliberately
@@ -87,6 +95,11 @@ type (
 // JSON tags on purpose — internal/server re-shapes them into its own
 // browser-specific wire structs, while sdk hands consumers the raw Go
 // values so each consumer serialises them for its own API as it sees fit.
+//
+// Message and Session are NOT a stable wire contract across Rush
+// versions — unlike RunRequest/RunResult, their field set may change
+// without a semver-major bump; do not persist their JSON encoding as a
+// durable format.
 type (
 	Message = message.Message
 	Session = session.Session
@@ -194,7 +207,8 @@ type Options struct {
 	// zero value (ModeApplication) is today's exact behavior: WorkingDir
 	// is required and rush.json/.mcp.json/global config are
 	// auto-discovered from disk. Existing callers who never set Mode are
-	// completely unaffected.
+	// completely unaffected. Any value other than ModeApplication or
+	// ModeLibrary makes Open return an error.
 	Mode OpenMode
 	// LibraryConfig is the fully-explicit, zero-disk-configuration used
 	// when Mode == ModeLibrary: every provider and every model role comes
@@ -216,9 +230,23 @@ type Client struct {
 	closeOnce   sync.Once
 	closeResult CloseResult
 
-	// Conns to close after the App shutdown on Close; only set for
-	// library-mode ephemeral in-memory clients, whose *sql.DB is not
-	// owned by the db pool.
+	// closed is set once by Close and never unset. Every Run, read, and
+	// Subscribe method checks it on entry and refuses a closed Client
+	// (ErrClientClosed, or an already-closed channel for the Subscribe
+	// methods) instead of racing the shutdown sequence on c.app.
+	closed atomic.Bool
+
+	// connsMu guards connsClosed, the once-only bookkeeping for
+	// closeConns: Close's graceful path and CloseEphemeralConnsForced
+	// can reach the close from different goroutines.
+	connsMu sync.Mutex
+	// connsClosed records whether closeConns has already been closed.
+	connsClosed bool
+
+	// Conns to close after a GRACEFUL App shutdown on Close; only set
+	// for library-mode ephemeral in-memory clients, whose *sql.DB is
+	// not owned by the db pool. On a FORCED shutdown they are left
+	// open (live writers) until CloseEphemeralConnsForced.
 	closeConns []*sql.DB
 }
 
@@ -229,10 +257,14 @@ type Client struct {
 // library equivalent of internal/cmd's setupApp, minus os.Chdir,
 // unconditional logging setup, and cobra.
 func Open(ctx context.Context, o Options) (*Client, error) {
-	if o.Mode == ModeLibrary {
+	switch o.Mode {
+	case ModeApplication:
+		return openApplication(ctx, o)
+	case ModeLibrary:
 		return openLibrary(ctx, o)
+	default:
+		return nil, fmt.Errorf("sdk: unknown Options.Mode %d (want ModeApplication or ModeLibrary)", int(o.Mode))
 	}
-	return openApplication(ctx, o)
 }
 
 // resolveWorkingDir validates and absolutizes the raw working directory
@@ -324,20 +356,6 @@ func openApplication(ctx context.Context, o Options) (*Client, error) {
 	return &Client{app: application, stdout: o.Stdout, stderr: o.Stderr}, nil
 }
 
-// Wrap adapts an already-constructed *app.App (e.g. one built by a
-// host's own setup sequence, or by the CLI's setupApp) into a Client.
-// Use this when the caller needs full control over app construction
-// (custom cobra flags, a bespoke MCP-selection policy, etc.) and only
-// wants sdk's typed Run/Close surface on top — as opposed to Open,
-// which builds the App itself for the common embedding case.
-//
-// Wrap performs no setup of its own — no config load, no DB connect,
-// no MCP startup: the App is taken over exactly as handed over, and
-// Close on the returned Client calls the App's Shutdown.
-func Wrap(a *app.App, stdout, stderr io.Writer) *Client {
-	return &Client{app: a, stdout: stdout, stderr: stderr}
-}
-
 // Run executes one non-interactive agent turn and returns the typed
 // result envelope. It is a thin pass-through to app.App.ExecuteRun: when
 // req.Stdout or req.Stderr is nil, the Options-level default from Open is
@@ -350,7 +368,18 @@ func Wrap(a *app.App, stdout, stderr io.Writer) *Client {
 // Run/RunWithCredentials on the SAME ContinueSessionID fails immediately
 // with an error wrapping agent.ErrSessionBusy. Concurrent runs on
 // DIFFERENT sessions are unaffected.
+//
+// Trust model: Run performs no ownership or authorization check on
+// req.ContinueSessionID — any caller who knows the id continues that
+// session with whatever credentials the process is configured with.
+// Generating opaque session ids and mapping them to your own callers
+// is the host's job. See the README's trust-model section.
+//
+// Returns ErrClientClosed if the Client has already been closed.
 func (c *Client) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
+	if c.closed.Load() {
+		return nil, ErrClientClosed
+	}
 	if req.Stdout == nil && c.stdout != nil {
 		req.Stdout = c.stdout
 	}
@@ -380,8 +409,13 @@ func (c *Client) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 // smart drives the turn, fast drives title generation, worker drives
 // sub-agent spawns made BY THIS CALL; reviewer is accepted but, like
 // the config slot of the same name, has no live runtime consumer yet.
-// Roles absent from creds.Models fall back to the ordinary resolution
-// path. The API key is used literally — OAuth/token-refresh providers
+// Strict isolation is the default: the smart role is required in
+// creds.Models, and a smart/fast role the set does not cover is a
+// hard error before any provider traffic. Set
+// creds.AllowConfiguredRoleFallback to serve uncovered roles from the
+// Client's configured providers instead — a deliberate crossing of
+// the tenant-credential boundary (see agent.CredentialSet). The API
+// key is used literally — OAuth/token-refresh providers
 // are out of scope. ModelChoice.Model is deliberately NOT validated
 // against Credential.Models: an unknown id fails on the first real
 // provider call, exactly like `--model` today.
@@ -393,7 +427,15 @@ func (c *Client) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 // second concurrent call on the SAME ContinueSessionID fails fast with
 // an error wrapping agent.ErrSessionBusy instead of queueing; different
 // sessions run concurrently.
+//
+// Like Run, no ownership or authorization check is performed on
+// req.ContinueSessionID — see the README's trust-model section.
+//
+// Returns ErrClientClosed if the Client has already been closed.
 func (c *Client) RunWithCredentials(ctx context.Context, req RunRequest, creds CredentialSet) (*RunResult, error) {
+	if c.closed.Load() {
+		return nil, ErrClientClosed
+	}
 	if req.Stdout == nil && c.stdout != nil {
 		req.Stdout = c.stdout
 	}
@@ -409,16 +451,6 @@ func (c *Client) RunWithCredentials(ctx context.Context, req RunRequest, creds C
 	return c.app.ExecuteRun(ctx, req)
 }
 
-// RunNonInteractive is the render-inclusive counterpart to Run: it has
-// the same signature and behaviour as app.App.RunNonInteractive (JSON
-// envelope encoded into output for RunModeJSON, run-incomplete error
-// mapping for the process exit code) and is a thin pass-through to it.
-// The CLI's `rush run` goes through this method via Wrap, so the binary
-// and the library share one code path by construction.
-func (c *Client) RunNonInteractive(ctx context.Context, output io.Writer, prompt string, overrides RunOverrides, hideSpinner bool, mode RunMode, continueSessionID string, useLast bool) error {
-	return c.app.RunNonInteractive(ctx, output, prompt, overrides, hideSpinner, mode, continueSessionID, useLast)
-}
-
 // SubscribeMessages streams every message create/update/delete across ALL
 // sessions this Client's App knows about — the same raw event stream
 // internal/server's WS layer consumes before its own reshaping for the
@@ -428,14 +460,35 @@ func (c *Client) RunNonInteractive(ctx context.Context, output io.Writer, prompt
 // them. Filter by ev.Payload.SessionID if you only care about one
 // session's output. The returned channel is closed when ctx is done (see
 // pubsub.Broker.Subscribe).
+//
+// No tenant filtering: events for every session reach every
+// subscriber; filter by ev.Payload.SessionID in the host (see the
+// README's trust-model section).
+//
+// On a closed Client the returned channel is already closed.
 func (c *Client) SubscribeMessages(ctx context.Context) <-chan MessageEvent {
+	if c.closed.Load() {
+		closedCh := make(chan MessageEvent)
+		close(closedCh)
+		return closedCh
+	}
 	return c.app.Messages.Subscribe(ctx)
 }
 
 // SubscribeSessions is SubscribeMessages' session-lifecycle counterpart
 // (created/updated/deleted); same pass-through semantics and the same raw
 // session.Session payload, with no wire reshaping.
+//
+// No tenant filtering either: filter by ev.Payload.SessionID in the
+// host (see the README's trust-model section).
+//
+// On a closed Client the returned channel is already closed.
 func (c *Client) SubscribeSessions(ctx context.Context) <-chan SessionEvent {
+	if c.closed.Load() {
+		closedCh := make(chan SessionEvent)
+		close(closedCh)
+		return closedCh
+	}
 	return c.app.Sessions.Subscribe(ctx)
 }
 
@@ -449,13 +502,30 @@ func (c *Client) SubscribeSessions(ctx context.Context) <-chan SessionEvent {
 // no WorkingDir, see LibraryConfig), this is ALSO the only way to see
 // history at all once Run returns -- and it becomes permanently
 // unavailable the moment Close is called: nothing survives on disk.
+//
+// No ownership check is performed on sessionID: any caller who knows
+// the id gets the full history (see the README's trust-model
+// section).
+//
+// Returns ErrClientClosed if the Client has already been closed.
 func (c *Client) Messages(ctx context.Context, sessionID string) ([]Message, error) {
+	if c.closed.Load() {
+		return nil, ErrClientClosed
+	}
 	return c.app.Messages.List(ctx, sessionID)
 }
 
 // Session returns sessionID's current metadata (title, token/cost
 // counters, etc.) -- not its message history, see Messages for that.
+//
+// No ownership check is performed on sessionID either (see the
+// README's trust-model section).
+//
+// Returns ErrClientClosed if the Client has already been closed.
 func (c *Client) Session(ctx context.Context, sessionID string) (Session, error) {
+	if c.closed.Load() {
+		return Session{}, ErrClientClosed
+	}
 	return c.app.Sessions.Get(ctx, sessionID)
 }
 
@@ -471,17 +541,81 @@ func (c *Client) Session(ctx context.Context, sessionID string) (Session, error)
 // every later call, so a double defer or a defensive second Close never
 // re-runs cleanup or re-releases database references. A nil receiver or
 // a Client without an App returns the zero CloseResult and does nothing.
+//
+// Ephemeral in-memory clients (Options.Mode == ModeLibrary with no
+// WorkingDir) follow the same policy as app.ShutdownWithResult: on a
+// graceful Close the in-memory handles are closed here; on a forced
+// Close they are deliberately LEFT OPEN, because closing them would pull
+// the database out from under still-live writers — the exact hazard the
+// forced-shutdown policy exists to avoid. The trade-off: an in-memory
+// database whose handles stay open stays pinned (memory held, session
+// data intact) — there is no OS to reclaim the handles at process exit
+// inside a long-lived host process. Release them deliberately with
+// CloseEphemeralConnsForced once every writer has finished.
+//
+// Once Close has run, Run, RunWithCredentials, Messages, and Session return
+// ErrClientClosed and the Subscribe methods return an already-closed
+// channel; Close itself remains idempotent.
 func (c *Client) Close() CloseResult {
 	if c == nil || c.app == nil {
 		return CloseResult{}
 	}
+	c.closed.Store(true)
 	c.closeOnce.Do(func() {
 		c.closeResult = c.app.ShutdownWithResult()
-		for _, conn := range c.closeConns {
-			if err := conn.Close(); err != nil {
-				slog.Error("sdk: failed to close in-memory database connection", "error", err)
-			}
+		if !c.closeResult.Forced {
+			// Graceful shutdown: no live writers remain, the
+			// in-memory handles can be released immediately.
+			_ = c.closeEphemeralConns()
 		}
+		// Forced shutdown: leave the in-memory handles open (live
+		// writers may still be active); CloseEphemeralConnsForced
+		// releases them once the host knows the writers are done.
 	})
 	return c.closeResult
+}
+
+// CloseEphemeralConnsForced force-closes the in-memory database handles
+// of a library-mode ephemeral client (Options.Mode == ModeLibrary with
+// no WorkingDir). It exists for the case where Close returned a
+// CloseResult with Forced=true: Close leaves the handles open so the
+// database survives under still-live writers, and the host calls this
+// once it KNOWS every writer has finished (e.g. all in-flight
+// Run/RunWithCredentials goroutines have returned). Calling it while a
+// writer is still active closes the database under that writer — the
+// caller owns that judgement; database/sql's Close additionally blocks
+// until queries already in flight on the pool complete.
+//
+// The method is safe in every order and is idempotent: before Close it
+// closes the handles early (the host asserts no writers); after a
+// graceful Close it is a no-op (Close already closed them); repeated
+// calls are no-ops. It returns the first handle-close error, if any
+// (every error is also logged). Clients without in-memory handles
+// (application mode) always get a no-op and a nil error.
+func (c *Client) CloseEphemeralConnsForced() error {
+	if c == nil {
+		return nil
+	}
+	return c.closeEphemeralConns()
+}
+
+// closeEphemeralConns closes the in-memory handles exactly once, however
+// many callers race it.
+func (c *Client) closeEphemeralConns() error {
+	c.connsMu.Lock()
+	defer c.connsMu.Unlock()
+	if c.connsClosed {
+		return nil
+	}
+	c.connsClosed = true
+	var firstErr error
+	for _, conn := range c.closeConns {
+		if err := conn.Close(); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			slog.Error("sdk: failed to close in-memory database connection", "error", err)
+		}
+	}
+	return firstErr
 }
