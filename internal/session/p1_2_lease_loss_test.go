@@ -93,6 +93,7 @@ func setupTestSessionWithDB(t *testing.T, title string) (*session.Session, sessi
 			usage_updated_at INTEGER NOT NULL DEFAULT 0,
 			parent_cost_accounted REAL NOT NULL DEFAULT 0,
 			cost_checksum INTEGER NOT NULL DEFAULT 0,
+			origin TEXT DEFAULT '' NOT NULL,
 			FOREIGN KEY (parent_session_id) REFERENCES sessions(id) ON DELETE CASCADE
 		);
 
@@ -133,6 +134,7 @@ func setupTestSessionWithDB(t *testing.T, title string) (*session.Session, sessi
 			usage_model TEXT,
 			cache_support TEXT,
 			usage_estimated INTEGER,
+			origin TEXT DEFAULT '' NOT NULL,
 			checkpoint_generation INTEGER NOT NULL DEFAULT 0,
 
 			FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE

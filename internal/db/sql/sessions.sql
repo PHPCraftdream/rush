@@ -14,7 +14,8 @@ INSERT INTO sessions (
     smart_model_id,
     fast_model_provider,
     fast_model_id,
-    yolo_enabled
+    yolo_enabled,
+    origin
 ) VALUES (
     ?,
     ?,
@@ -30,7 +31,8 @@ INSERT INTO sessions (
     ?,
     ?,
     ?,
-    0
+    0,
+    ?
 ) RETURNING *;
 
 -- name: UpdateSessionModels :exec

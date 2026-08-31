@@ -33,6 +33,7 @@ func TestSessionsInject_Success(t *testing.T) {
 	require.Equal(t, message.User, msgs[0].Role)
 	require.Equal(t, msg.ID, msgs[0].ID)
 	require.Equal(t, "hello from CLI", msgs[0].Content().Text)
+	require.Equal(t, message.OriginCLI, msgs[0].Origin)
 
 	// pending_injects row created with the right message_id, not interrupt.
 	injects, hasInterrupt, err := s.DrainPendingInjects(context.Background(), sess.ID)

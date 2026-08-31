@@ -57,7 +57,8 @@ func newTranscriptTestDB(t *testing.T) (session.Service, message.Service) {
 			budget_max_cost REAL NOT NULL DEFAULT 0,
 			budget_max_tokens INTEGER NOT NULL DEFAULT 0,
 			budget_timeout_sec INTEGER NOT NULL DEFAULT 0,
-			parent_cost_accounted REAL NOT NULL DEFAULT 0
+			parent_cost_accounted REAL NOT NULL DEFAULT 0,
+			origin TEXT DEFAULT '' NOT NULL
 		);
 		CREATE TABLE messages (
 			id TEXT PRIMARY KEY,
@@ -86,6 +87,7 @@ func newTranscriptTestDB(t *testing.T) (session.Service, message.Service) {
 			usage_model TEXT,
 			cache_support TEXT,
 			usage_estimated INTEGER,
+			origin TEXT DEFAULT '' NOT NULL,
 			checkpoint_generation INTEGER NOT NULL DEFAULT 0
 		);
 		CREATE INDEX idx_messages_session_id ON messages(session_id);

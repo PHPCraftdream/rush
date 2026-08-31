@@ -191,10 +191,17 @@ const sessionPreambleMaxDurationDefault = 60 * time.Second
 var userAgent = fmt.Sprintf("Rush/%s (https://github.com/PHPCraftdream/rush)", version.Version)
 
 type SessionAgentCall struct {
-	SessionID        string
-	Prompt           string
-	ProviderOptions  fantasy.ProviderOptions
-	Attachments      []message.Attachment
+	SessionID       string
+	Prompt          string
+	ProviderOptions fantasy.ProviderOptions
+	Attachments     []message.Attachment
+	// Origin marks the entry channel this call's user message arrived
+	// through (message.OriginCLI/Web/SDK). Stamped by buildCall from the
+	// call's context so it survives the InterruptAndSend queued-replacement
+	// handoff; SessionAgentCall literals built outside buildCall (sub-agent
+	// dispatch) leave it unspecified. Persisted on the created user
+	// message by createUserMessage.
+	Origin           message.Origin
 	MaxOutputTokens  int64
 	Temperature      *float64
 	TopP             *float64

@@ -119,6 +119,11 @@ func (c *coordinator) buildCall(ctx context.Context, sessionID, prompt string, p
 		SmartModel:           &pinnedSmart,
 		LogicalCallID:        uuid.New().String(), // P2-1: generate stable ID once
 	}
+	// Stamp the entry-channel origin at BUILD time, not message-creation
+	// time: the call may be queued as an InterruptAndSend replacement and
+	// drained much later under a DIFFERENT turn's context, so the sender's
+	// origin must travel on the call struct itself.
+	call.Origin = CallOriginFrom(ctx)
 	// Pinning matters more here than in runInternal: this call is QUEUED as a
 	// replacement and may not start for a while, so the gap between "options
 	// computed" and "turn starts" is unbounded rather than a few lines.
@@ -237,6 +242,9 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 		SmartModel:           &pinnedSmart,
 		LogicalCallID:        uuid.New().String(), // P2-1: generate stable ID once
 		OnUserMessageCreated: func(id string) { createdUserMessageID = id },
+		// Stamp the entry-channel origin (see buildCall): createUserMessage
+		// persists it on the user message this turn creates.
+		Origin: CallOriginFrom(ctx),
 	}
 	// Overrides pin fast model / prefix / base prompt too; pin() leaves
 	// SmartModel as set above when pinned is nil, and rewrites it to the same
@@ -320,6 +328,7 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 			OnUserMessageCreated: trackCall.OnUserMessageCreated,
 			InjectID:             trackCall.InjectID,
 			FromDurableQueue:     trackCall.FromDurableQueue,
+			Origin:               trackCall.Origin,
 		}
 		pinned.pin(&newCall)
 		*trackCall = newCall

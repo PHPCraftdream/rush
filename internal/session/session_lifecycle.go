@@ -11,14 +11,16 @@ import (
 	"strings"
 
 	"github.com/PHPCraftdream/rush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/pubsub"
 	"github.com/google/uuid"
 )
 
-func (s *service) Create(ctx context.Context, title string) (Session, error) {
+func (s *service) createWithOrigin(ctx context.Context, id string, title string, origin message.Origin) (Session, error) {
 	dbSession, err := s.q.CreateSession(ctx, db.CreateSessionParams{
-		ID:    uuid.New().String(),
-		Title: title,
+		ID:     id,
+		Title:  title,
+		Origin: string(origin),
 	})
 	if err != nil {
 		return Session{}, err
@@ -28,17 +30,12 @@ func (s *service) Create(ctx context.Context, title string) (Session, error) {
 	return session, nil
 }
 
+func (s *service) Create(ctx context.Context, title string) (Session, error) {
+	return s.createWithOrigin(ctx, uuid.New().String(), title, message.OriginUnspecified)
+}
+
 func (s *service) CreateWithID(ctx context.Context, id, title string) (Session, error) {
-	dbSession, err := s.q.CreateSession(ctx, db.CreateSessionParams{
-		ID:    id,
-		Title: title,
-	})
-	if err != nil {
-		return Session{}, err
-	}
-	session := s.fromDBItem(dbSession)
-	s.Publish(pubsub.CreatedEvent, session)
-	return session, nil
+	return s.createWithOrigin(ctx, id, title, message.OriginUnspecified)
 }
 
 func (s *service) CreateTaskSession(ctx context.Context, toolCallID, parentSessionID, title string) (Session, error) {
@@ -119,3 +116,30 @@ func (s *service) IsAgentToolSession(sessionID string) bool {
 	_, _, ok := s.ParseAgentToolSessionID(sessionID)
 	return ok
 }
+
+// CreateWithOrigin is Create plus an explicit entry-channel origin
+// (message.OriginCLI/Web/SDK) persisted on the session row.
+func (s *service) CreateWithOrigin(ctx context.Context, title string, origin message.Origin) (Session, error) {
+	return s.createWithOrigin(ctx, uuid.New().String(), title, origin)
+}
+
+// CreateWithIDAndOrigin is CreateWithID plus an explicit entry-channel
+// origin persisted on the session row.
+func (s *service) CreateWithIDAndOrigin(ctx context.Context, id, title string, origin message.Origin) (Session, error) {
+	return s.createWithOrigin(ctx, id, title, origin)
+}
+
+// OriginCreator is the consuming-package seam for the origin-aware
+// Create siblings above. It is deliberately NOT part of Service: adding
+// methods to Service would force every test fake implementing it across
+// the repo to grow stubs. Callers (internal/app, internal/server)
+// type-assert their session.Service value to OriginCreator and fall back
+// to the plain Create/CreateWithID when the assertion fails — the same
+// pattern internal/agent's credentialRunner uses for
+// Coordinator.RunWithCredentials.
+type OriginCreator interface {
+	CreateWithOrigin(ctx context.Context, title string, origin message.Origin) (Session, error)
+	CreateWithIDAndOrigin(ctx context.Context, id, title string, origin message.Origin) (Session, error)
+}
+
+var _ OriginCreator = (*service)(nil)

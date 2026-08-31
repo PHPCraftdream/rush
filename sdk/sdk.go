@@ -88,8 +88,12 @@ type (
 // browser-specific wire structs, while sdk hands consumers the raw Go
 // values so each consumer serialises them for its own API as it sees fit.
 type (
-	Message      = message.Message
-	Session      = session.Session
+	Message = message.Message
+	Session = session.Session
+	// Origin is the entry-channel marker (message.Origin) attached to
+	// sessions and individual user messages; see the Origin* constants
+	// below.
+	Origin       = message.Origin
 	MessageEvent = pubsub.Event[Message]
 	SessionEvent = pubsub.Event[Session]
 )
@@ -110,6 +114,15 @@ const (
 	RoleFast     = agent.RoleFast
 	RoleWorker   = agent.RoleWorker
 	RoleReviewer = agent.RoleReviewer
+)
+
+// Origin values mark where a session or an individual user message
+// entered the system (session origin + per-message origin). Mirrors
+// message.Origin* one-to-one.
+const (
+	OriginCLI = message.OriginCLI
+	OriginWeb = message.OriginWeb
+	OriginSDK = message.OriginSDK
 )
 
 // ProviderType values for Credential.Type, mirroring catwalk.Type
@@ -347,6 +360,11 @@ func (c *Client) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 	// SDK semantics differ from `rush run`/web: fail fast on an
 	// in-process busy session instead of queueing behind it.
 	req.FailIfSessionBusy = true
+	// SDK turns are SDK-origin by default; an explicit origin set by the
+	// caller on the request is respected.
+	if req.Origin == message.OriginUnspecified {
+		req.Origin = OriginSDK
+	}
 	return c.app.ExecuteRun(ctx, req)
 }
 
@@ -385,6 +403,9 @@ func (c *Client) RunWithCredentials(ctx context.Context, req RunRequest, creds C
 	req.Credentials = &creds
 	// Same fail-fast busy semantics as Run (see its doc).
 	req.FailIfSessionBusy = true
+	if req.Origin == message.OriginUnspecified {
+		req.Origin = OriginSDK
+	}
 	return c.app.ExecuteRun(ctx, req)
 }
 

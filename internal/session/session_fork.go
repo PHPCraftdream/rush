@@ -100,8 +100,9 @@ func (s *service) ForkSessionTx(ctx context.Context, srcID string, o ForkOptions
 	}
 
 	createParams := db.CreateSessionParams{
-		ID:    forkID,
-		Title: resolvedTitle,
+		ID:     forkID,
+		Title:  resolvedTitle,
+		Origin: src.Origin,
 	}
 	if o.ParentID != "" {
 		createParams.ParentSessionID = sql.NullString{String: o.ParentID, Valid: true}
@@ -199,6 +200,7 @@ func (s *service) ForkSessionTx(ctx context.Context, srcID string, o ForkOptions
 			Hidden:              m.Hidden,
 			AutoResumed:         m.AutoResumed,
 			BackgroundJobNotice: m.BackgroundJobNotice,
+			Origin:              m.Origin,
 		}); err != nil {
 			return Session{}, 0, fmt.Errorf("copy message into fork: %w", err)
 		}

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
+	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
 )
 
@@ -27,7 +28,14 @@ func handleCreateSession(ctx context.Context, a *appPkg.App, c *Client, msg WSMe
 	if title == "" {
 		title = "New Session"
 	}
-	sess, err := a.Sessions.Create(ctx, title)
+	var sess session.Session
+	var err error
+	if oc, ok := a.Sessions.(session.OriginCreator); ok {
+		sess, err = oc.CreateWithOrigin(ctx, title, message.OriginWeb)
+	} else {
+		// Test fakes without the OriginCreator seam keep the legacy path.
+		sess, err = a.Sessions.Create(ctx, title)
+	}
 	if err != nil {
 		c.reply(msg.ID, EventError, nil, err.Error())
 		return

@@ -125,7 +125,8 @@ func newTestDB(t *testing.T) (*sql.DB, *db.Queries) {
 			budget_max_cost REAL NOT NULL DEFAULT 0,
 			budget_max_tokens INTEGER NOT NULL DEFAULT 0,
 			budget_timeout_sec INTEGER NOT NULL DEFAULT 0,
-			parent_cost_accounted REAL NOT NULL DEFAULT 0
+			parent_cost_accounted REAL NOT NULL DEFAULT 0,
+			origin TEXT DEFAULT '' NOT NULL
 		);
 
 		CREATE TABLE messages (
@@ -155,6 +156,7 @@ func newTestDB(t *testing.T) (*sql.DB, *db.Queries) {
 			usage_model TEXT,
 			cache_support TEXT,
 			usage_estimated INTEGER,
+			origin TEXT DEFAULT '' NOT NULL,
 			checkpoint_generation INTEGER NOT NULL DEFAULT 0
 		);
 

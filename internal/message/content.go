@@ -25,6 +25,19 @@ const (
 	Tool      MessageRole = "tool"
 )
 
+// Origin marks the entry channel a session or an individual user message
+// arrived through. Zero value (empty string) means unspecified: legacy
+// rows, tests, and internally-generated sessions/messages (title
+// generation, agent-tool sub-sessions) carry no origin.
+type Origin string
+
+const (
+	OriginUnspecified Origin = ""
+	OriginCLI         Origin = "cli"
+	OriginWeb         Origin = "web"
+	OriginSDK         Origin = "sdk"
+)
+
 // mediaLoadFailedPlaceholder is the text substituted for image data that
 // cannot be decoded during session replay.
 const mediaLoadFailedPlaceholder = "[Image data could not be loaded]"
@@ -159,6 +172,9 @@ type Message struct {
 	// BackgroundJobNotice marks a system-injected background-job-completion
 	// notice so the web renders it as a notice, not a human message.
 	BackgroundJobNotice bool
+	// Origin marks the entry channel this message arrived through (see
+	// the Origin type's doc). Zero value = unspecified.
+	Origin Origin
 	// CheckpointGeneration fences mid-stream checkpoint writes (P1-3 of the
 	// 2026-08-18 release-readiness review). runTurn replaces its checkpoint
 	// writer per step and stopCheckpoint waits only a bounded grace for the

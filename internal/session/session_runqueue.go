@@ -82,6 +82,11 @@ type SessionAgentCallData struct {
 	// ExistingMessageID, when non-empty, marks this call as referencing a
 	// user message that already exists in the DB (created by another process)
 	ExistingMessageID string
+	// Origin marks the entry channel the original request arrived
+	// through; preserved across the durable run queue so a call queued
+	// by one process (e.g. the CLI) still stamps its origin when
+	// drained by another.
+	Origin message.Origin
 	// InjectID, when non-empty, is the ID of a pending_injects row that
 	// must be deleted AFTER successful OS lock acquisition (P0-2 fix)
 	InjectID string

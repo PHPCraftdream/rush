@@ -248,7 +248,10 @@ func handleSendMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMess
 	// Decouple the agent run from the WebSocket connection lifetime.
 	// Without this, closing/refreshing the browser tab would cancel the agent.
 	// Explicit cancellation is still available via Cancel(sessionID).
-	agentCtx := context.WithoutCancel(ctx)
+	// Web-originated turn: tag the entry channel so the user message the
+	// agent creates carries OriginWeb (decoupled from the WS lifetime —
+	// WithoutCancel still applies).
+	agentCtx := agent.WithCallOrigin(context.WithoutCancel(ctx), message.OriginWeb)
 
 	c.hub.Broadcast(EventAgentBusy, AgentBusyPayload{SessionID: p.SessionID, Busy: true})
 	var err error
@@ -343,7 +346,7 @@ func handleInterruptAndSend(ctx context.Context, a *appPkg.App, c *Client, msg W
 	// Use bounded context for idle-interrupt: WithoutCancel + timeout to ensure
 	// the operation can complete even if the WebSocket connection closes, but with
 	// a reasonable upper bound to prevent indefinite hangs (e.g., blocked SQLite write).
-	agentCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	agentCtx, cancel := context.WithTimeout(agent.WithCallOrigin(context.WithoutCancel(ctx), message.OriginWeb), 30*time.Second)
 	defer cancel()
 
 	if err := a.AgentCoordinator.InterruptAndSend(agentCtx, p.SessionID, p.Content, smartOverride, fastOverride, attachments...); err != nil {
@@ -397,7 +400,7 @@ func handleInjectMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMe
 		})
 	}
 
-	agentCtx := context.WithoutCancel(ctx)
+	agentCtx := agent.WithCallOrigin(context.WithoutCancel(ctx), message.OriginWeb)
 	if _, err := a.AgentCoordinator.InjectMessage(agentCtx, p.SessionID, p.Content, attachments...); err != nil {
 		slog.Error("ws: inject-message failed", "err", err)
 		c.reply(msg.ID, EventError, nil, err.Error())
@@ -498,7 +501,15 @@ func handleInitializeProject(ctx context.Context, a *appPkg.App, c *Client, msg 
 	}
 
 	// Create a dedicated initialization session.
-	sess, err := a.Sessions.Create(ctx, "Project Initialization")
+	var sess session.Session
+	var createErr error
+	if oc, ok := a.Sessions.(session.OriginCreator); ok {
+		sess, createErr = oc.CreateWithOrigin(ctx, "Project Initialization", message.OriginWeb)
+	} else {
+		// Test fakes without the OriginCreator seam keep the legacy path.
+		sess, createErr = a.Sessions.Create(ctx, "Project Initialization")
+	}
+	err = createErr
 	if err != nil {
 		c.reply(msg.ID, EventError, nil, "failed to create session: "+err.Error())
 		return
@@ -520,7 +531,7 @@ func handleInitializeProject(ctx context.Context, a *appPkg.App, c *Client, msg 
 	c.reply(msg.ID, EventResponse, map[string]string{"status": "ok", "sessionID": sess.ID}, "")
 
 	// Run the agent in a background context so closing the tab won't cancel it.
-	agentCtx := context.WithoutCancel(ctx)
+	agentCtx := agent.WithCallOrigin(context.WithoutCancel(ctx), message.OriginWeb)
 	c.hub.Broadcast(EventAgentBusy, AgentBusyPayload{SessionID: sess.ID, Busy: true})
 	_, runErr := a.AgentCoordinator.Run(agentCtx, sess.ID, initPrompt)
 	// P2-2 fix: broadcast the actual busy state derived from mailbox ownership.
@@ -978,7 +989,7 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 		rerunPreHandoffSeam()
 	}
 
-	agentCtx := context.WithoutCancel(ctx)
+	agentCtx := agent.WithCallOrigin(context.WithoutCancel(ctx), message.OriginWeb)
 	c.hub.Broadcast(EventAgentBusy, AgentBusyPayload{SessionID: sessionID, Busy: true})
 	if smartOverride != nil || fastOverride != nil {
 		_, err = a.AgentCoordinator.RunWithReservedOwnership(agentCtx, sessionID, text, epoch, reserveCancel, func() { releaseOnBailout = false }, smartOverride, fastOverride)
@@ -1080,8 +1091,9 @@ func recreateRerunPromptIfLost(ctx context.Context, a *appPkg.App, sessionID str
 	}
 
 	_, createErr := a.Messages.Create(ctx, sessionID, message.CreateMessageParams{
-		Role:  message.User,
-		Parts: []message.ContentPart{message.TextContent{Text: text}},
+		Role:   message.User,
+		Origin: message.OriginWeb, // a re-run is web-initiated; the recreated prompt keeps the web origin
+		Parts:  []message.ContentPart{message.TextContent{Text: text}},
 	})
 	if createErr != nil {
 		slog.Error("Failed to recreate lost user prompt",

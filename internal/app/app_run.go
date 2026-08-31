@@ -157,6 +157,12 @@ type RunOverrides struct {
 	// merged with permissions.run.allow_tools from config.
 	// Fork patch (run allowlist).
 	AllowTools []string
+	// Origin marks the entry channel of this invocation. This is the
+	// CLI's transport for the origin: `rush run` sets OriginCLI here and
+	// RunNonInteractive forwards it into the RunRequest it builds
+	// (RunNonInteractive takes parameters directly, not a RunRequest).
+	// Empty = unspecified.
+	Origin message.Origin
 }
 
 // RunRequest bundles everything one ExecuteRun invocation needs,
@@ -190,6 +196,13 @@ type RunRequest struct {
 	// wrapping agent.ErrSessionBusy. The SDK's Run/RunWithCredentials set
 	// it so embedders get a fail-fast answer instead of a hidden queue.
 	FailIfSessionBusy bool
+	// Origin marks the entry channel of this request
+	// (message.OriginCLI/Web/SDK). Persisted on the session this run
+	// creates or attaches to, and stamped on the user message the turn
+	// creates. The zero value (unspecified) preserves the historical
+	// behaviour. The SDK's Run/RunWithCredentials default it to
+	// message.OriginSDK when the caller left it unspecified.
+	Origin message.Origin
 }
 
 // resolveSession resolves which session to use for a non-interactive run
@@ -197,6 +210,7 @@ type RunRequest struct {
 // If useLast is set, it returns the most recently updated top-level session
 // Otherwise, it creates a new session
 func (app *App) resolveSession(ctx context.Context, continueSessionID string, useLast bool) (session.Session, error) {
+	origin := agent.CallOriginFrom(ctx)
 	switch {
 	case continueSessionID != "":
 		if app.Sessions.IsAgentToolSession(continueSessionID) {
@@ -212,7 +226,15 @@ func (app *App) resolveSession(ctx context.Context, continueSessionID string, us
 		// Get-or-create semantics: --session <id> with an unknown id creates
 		// a brand-new top-level session with that exact id. Lets CI / scripts
 		// pick a deterministic key (e.g. an issue number) and re-run idempotently.
-		created, createErr := app.Sessions.CreateWithID(ctx, continueSessionID, continueSessionID)
+		var created session.Session
+		var createErr error
+		if oc, ok := app.Sessions.(session.OriginCreator); ok {
+			created, createErr = oc.CreateWithIDAndOrigin(ctx, continueSessionID, continueSessionID, origin)
+		} else {
+			// Test fakes implementing session.Service without the
+			// OriginCreator seam keep the legacy behaviour.
+			created, createErr = app.Sessions.CreateWithID(ctx, continueSessionID, continueSessionID)
+		}
 		if createErr == nil {
 			slog.Info("Created session on demand from --session id", "session_id", created.ID)
 			return created, nil
@@ -276,6 +298,9 @@ func (app *App) resolveSession(ctx context.Context, continueSessionID string, us
 		return sess, nil
 
 	default:
+		if oc, ok := app.Sessions.(session.OriginCreator); ok {
+			return oc.CreateWithOrigin(ctx, agent.DefaultSessionName, origin)
+		}
 		return app.Sessions.Create(ctx, agent.DefaultSessionName)
 	}
 }
@@ -481,6 +506,11 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 	// waiting for a permission prompt that no human is there to answer.
 	// See cliprovider.NonInteractiveContextKey.
 	ctx = context.WithValue(ctx, cliprovider.NonInteractiveContextKey, true)
+	// Tag the entry-channel origin on the turn context: resolveSession
+	// reads it to persist the origin on a freshly created session, and
+	// buildCall stamps it onto the call so createUserMessage persists it
+	// on the user message. Empty/unspecified leaves both untouched.
+	ctx = agent.WithCallOrigin(ctx, req.Origin)
 
 	// Per-call credentials (sdk.Client.RunWithCredentials): validate the
 	// bundle before any session work so a malformed set fails fast, and
@@ -1143,6 +1173,7 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt 
 		Mode:              mode,
 		ContinueSessionID: continueSessionID,
 		UseLast:           useLast,
+		Origin:            overrides.Origin,
 		Stdout:            output,
 		Stderr:            os.Stderr,
 		HideSpinner:       hideSpinner,

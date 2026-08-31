@@ -82,6 +82,7 @@ func ToSessionAgentCallData(call SessionAgentCall) session.SessionAgentCallData 
 		FastModel:            fastModel,
 		SystemPromptPrefix:   call.SystemPromptPrefix,
 		SystemPrompt:         call.SystemPrompt,
+		Origin:               call.Origin,
 	}
 }
 
@@ -109,6 +110,7 @@ func FromSessionAgentCallData(callData session.SessionAgentCallData) SessionAgen
 		InjectID:             callData.InjectID,
 		SystemPromptPrefix:   callData.SystemPromptPrefix,
 		SystemPrompt:         callData.SystemPrompt,
+		Origin:               callData.Origin,
 		// SmartModel and FastModel are NOT set here — they will be reconstructed
 		// by coordinator.RebuildSessionAgentCall.
 	}

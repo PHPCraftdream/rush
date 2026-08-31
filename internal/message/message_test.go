@@ -57,7 +57,8 @@ func newTestMessageDB(t *testing.T) (*sql.DB, *db.Queries) {
 			reviewer_model_id TEXT,
 			reviewer_model_reasoning_effort TEXT,
 			system_prompt TEXT DEFAULT '',
-			yolo_enabled INTEGER NOT NULL DEFAULT 0
+			yolo_enabled INTEGER NOT NULL DEFAULT 0,
+			origin TEXT DEFAULT '' NOT NULL
 		);
 
 		CREATE TABLE messages (
@@ -87,6 +88,7 @@ func newTestMessageDB(t *testing.T) (*sql.DB, *db.Queries) {
 			usage_model TEXT,
 			cache_support TEXT,
 			usage_estimated INTEGER,
+			origin TEXT DEFAULT '' NOT NULL,
 			checkpoint_generation INTEGER NOT NULL DEFAULT 0
 		);
 	`)

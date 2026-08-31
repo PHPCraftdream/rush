@@ -46,6 +46,7 @@ type Message struct {
 	CacheSupport         sql.NullString  `json:"cache_support"`
 	UsageEstimated       sql.NullInt64   `json:"usage_estimated"`
 	CheckpointGeneration int64           `json:"checkpoint_generation"`
+	Origin               string          `json:"origin"`
 }
 
 type OrphanCallOutbox struct {
@@ -125,6 +126,7 @@ type Session struct {
 	ReviewerModelProvider        sql.NullString `json:"reviewer_model_provider"`
 	ReviewerModelID              sql.NullString `json:"reviewer_model_id"`
 	ReviewerModelReasoningEffort sql.NullString `json:"reviewer_model_reasoning_effort"`
+	Origin                       string         `json:"origin"`
 }
 
 type SessionPermission struct {

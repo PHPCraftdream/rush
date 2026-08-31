@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/pubsub"
 	"github.com/zeebo/xxh3"
 )
@@ -45,9 +46,13 @@ func HasIncompleteTodos(todos []Todo) bool {
 }
 
 type Session struct {
-	ID               string
-	ParentSessionID  string
-	Title            string
+	ID              string
+	ParentSessionID string
+	Title           string
+	// Origin marks the entry channel the session was created through
+	// (cli / web / sdk). Empty = unspecified: legacy rows, tests, and
+	// internal sessions (title generation, agent-tool sub-sessions).
+	Origin           message.Origin
 	MessageCount     int64
 	PromptTokens     int64
 	CompletionTokens int64
@@ -393,6 +398,7 @@ func (s service) fromDBItem(item db.Session) Session {
 		ID:               item.ID,
 		ParentSessionID:  item.ParentSessionID.String,
 		Title:            item.Title,
+		Origin:           message.Origin(item.Origin),
 		MessageCount:     item.MessageCount,
 		PromptTokens:     item.PromptTokens,
 		CompletionTokens: item.CompletionTokens,

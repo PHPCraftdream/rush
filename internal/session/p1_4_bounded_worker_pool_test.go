@@ -148,6 +148,7 @@ func TestP1_4_BoundedWorkerPoolRespectsLimit(t *testing.T) {
 			usage_updated_at INTEGER NOT NULL DEFAULT 0,
 			parent_cost_accounted REAL NOT NULL DEFAULT 0,
 			cost_checksum INTEGER NOT NULL DEFAULT 0,
+			origin TEXT DEFAULT '' NOT NULL,
 			FOREIGN KEY (parent_session_id) REFERENCES sessions(id) ON DELETE CASCADE
 		);
 

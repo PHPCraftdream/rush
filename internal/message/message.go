@@ -47,6 +47,9 @@ type CreateMessageParams struct {
 	// BackgroundJobNotice marks a system-injected background-job-completion
 	// notice so the web renders it as a notice, not a human message.
 	BackgroundJobNotice bool
+	// Origin marks the entry channel this message arrived through
+	// (message.OriginCLI/Web/SDK); empty = unspecified.
+	Origin Origin
 }
 
 type Service interface {
@@ -392,6 +395,7 @@ func (s *service) Create(ctx context.Context, sessionID string, params CreateMes
 		Hidden:              hidden,
 		AutoResumed:         autoResumed,
 		BackgroundJobNotice: backgroundJobNotice,
+		Origin:              string(params.Origin),
 	})
 	if err != nil {
 		return Message{}, err
@@ -822,6 +826,7 @@ func (s *service) fromDBItem(item db.Message) (Message, error) {
 		Hidden:               item.Hidden != 0,
 		AutoResumed:          item.AutoResumed != 0,
 		BackgroundJobNotice:  item.BackgroundJobNotice != 0,
+		Origin:               Origin(item.Origin),
 		CheckpointGeneration: item.CheckpointGeneration,
 		Usage:                usageFromDBItem(item),
 	}, nil

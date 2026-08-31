@@ -167,8 +167,10 @@ func doInject(
 	// Mirrors sessionAgent.createUserMessage's CreateMessageParams shape so
 	// the message renders identically to anything the user sends.
 	msg, err := messages.Create(ctx, sess.ID, message.CreateMessageParams{
-		Role:  message.User,
-		Parts: []message.ContentPart{message.TextContent{Text: text}},
+		// CLI inject is its own entry channel, even into an SDK/web-created session.
+		Origin: message.OriginCLI,
+		Role:   message.User,
+		Parts:  []message.ContentPart{message.TextContent{Text: text}},
 	})
 	if err != nil {
 		return session.Session{}, message.Message{}, fmt.Errorf("failed to create user message: %w", err)

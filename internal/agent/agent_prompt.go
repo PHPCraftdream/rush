@@ -66,6 +66,30 @@ type autoResumedCtxKey struct{}
 // injected completion summary as a notice rather than a human message.
 type backgroundJobNoticeCtxKey struct{}
 
+// callOriginCtxKey tags a context with the entry-channel origin
+// (message.OriginCLI/Web/SDK) of the request that started the turn.
+// Set by ExecuteRun (internal/app) and the web server's turn handlers;
+// buildCall stamps it onto the SessionAgentCall so the origin is
+// persisted on the user message createUserMessage creates.
+type callOriginCtxKey struct{}
+
+// WithCallOrigin returns ctx tagged with the entry-channel origin of
+// the request. Zero/unspecified origin preserves the historical
+// behaviour (no origin recorded).
+func WithCallOrigin(ctx context.Context, origin message.Origin) context.Context {
+	return context.WithValue(ctx, callOriginCtxKey{}, origin)
+}
+
+// CallOriginFrom reads the entry-channel origin tagged by WithCallOrigin
+// (message.OriginUnspecified when absent).
+func CallOriginFrom(ctx context.Context) message.Origin {
+	if ctx == nil {
+		return message.OriginUnspecified
+	}
+	origin, _ := ctx.Value(callOriginCtxKey{}).(message.Origin)
+	return origin
+}
+
 func (a *sessionAgent) createUserMessage(ctx context.Context, call SessionAgentCall) (message.Message, error) {
 	parts := []message.ContentPart{message.TextContent{Text: call.Prompt}}
 	var attachmentParts []message.ContentPart
@@ -80,6 +104,7 @@ func (a *sessionAgent) createUserMessage(ctx context.Context, call SessionAgentC
 		Parts:               parts,
 		AutoResumed:         autoResumed,
 		BackgroundJobNotice: backgroundJobNotice,
+		Origin:              call.Origin,
 	})
 	if err != nil {
 		return message.Message{}, fmt.Errorf("failed to create user message: %w", err)
