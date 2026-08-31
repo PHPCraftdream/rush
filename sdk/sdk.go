@@ -439,6 +439,26 @@ func (c *Client) SubscribeSessions(ctx context.Context) <-chan SessionEvent {
 	return c.app.Sessions.Subscribe(ctx)
 }
 
+// Messages returns the full message history of sessionID, in
+// chronological order -- every role (user/assistant/tool/system).
+// This is the only way to retrieve history after a Run/RunWithCredentials
+// call has already returned if SubscribeMessages was not used before
+// that call started (the subscription channel carries no backlog).
+//
+// For an ephemeral in-memory session (Options.Mode == ModeLibrary with
+// no WorkingDir, see LibraryConfig), this is ALSO the only way to see
+// history at all once Run returns -- and it becomes permanently
+// unavailable the moment Close is called: nothing survives on disk.
+func (c *Client) Messages(ctx context.Context, sessionID string) ([]Message, error) {
+	return c.app.Messages.List(ctx, sessionID)
+}
+
+// Session returns sessionID's current metadata (title, token/cost
+// counters, etc.) -- not its message history, see Messages for that.
+func (c *Client) Session(ctx context.Context, sessionID string) (Session, error) {
+	return c.app.Sessions.Get(ctx, sessionID)
+}
+
 // Close shuts the client down (agent cancellation, run-queue pump stop,
 // bounded cleanup, DB release) and returns a CloseResult describing how
 // it went: CloseResult.Forced is true when agents were still busy after
