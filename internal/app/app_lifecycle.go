@@ -13,10 +13,35 @@ import (
 	"github.com/PHPCraftdream/rush/internal/shell"
 )
 
-// Shutdown performs a graceful shutdown of the application.
-func (app *App) Shutdown() {
+// ShutdownResult reports how an App shutdown completed.
+type ShutdownResult struct {
+	// Forced is true when at least one agent Run goroutine or the
+	// run-queue pump was still busy after the grace period. On a forced
+	// shutdown the database is deliberately NOT released, to avoid
+	// closing it under live writers; the CLI reclaims the handle by
+	// exiting, but a long-lived host process must decide its own
+	// follow-up (e.g. db.ReleaseAll once it knows no writers remain).
+	Forced bool
+	// CleanupErrors carries the errors returned by the parallel cleanup
+	// goroutines (registered cleanup funcs) and by the per-reference
+	// db.Release calls on the graceful path. Each error is also logged
+	// by Shutdown; they are surfaced here so library callers can react.
+	// When the outer cleanup timeout fires, goroutines abandoned past
+	// it may still log later — the returned slice is a snapshot taken
+	// before returning and never aliases live state.
+	CleanupErrors []error
+}
+
+// ShutdownWithResult performs the full shutdown — agent cancellation,
+// run-queue pump stop, bounded parallel cleanup, DB release — and returns
+// a ShutdownResult describing how it went: whether the shutdown was
+// forced (agents still busy, DB release skipped) and which cleanup
+// errors occurred. See the policy comment in the body.
+func (app *App) ShutdownWithResult() ShutdownResult {
 	start := time.Now()
 	defer func() { slog.Debug("Shutdown took " + time.Since(start).String()) }()
+
+	var result ShutdownResult
 
 	// First, cancel all agents and wait for them to finish. This must complete
 	// before closing the DB so agents can finish writing their state.
@@ -34,6 +59,7 @@ func (app *App) Shutdown() {
 		stillBusy = stillBusy || pumpStillBusy
 		slog.Info("app: stopped run queue pump")
 	}
+	result.Forced = stillBusy
 
 	// Shutdown policy: distinguish between graceful and forced shutdown.
 	//
@@ -65,6 +91,21 @@ func (app *App) Shutdown() {
 	// message-update layer. We removed that layer (see message/message.go);
 	// Update() writes synchronously, so there is nothing to drain here.
 
+	// Collect cleanup errors from the parallel goroutines into the
+	// result. A mutex-guarded slice is enough: the goroutines run
+	// concurrently under wg, and Shutdown snapshots the slice under the
+	// same mutex before returning.
+	var errMu sync.Mutex
+	var collected []error
+	recordCleanupError := func(err error) {
+		if err == nil {
+			return
+		}
+		errMu.Lock()
+		collected = append(collected, err)
+		errMu.Unlock()
+	}
+
 	// Now run remaining cleanup tasks in parallel with an overall bounded timeout.
 	var wg sync.WaitGroup
 
@@ -79,6 +120,7 @@ func (app *App) Shutdown() {
 			wg.Go(func() {
 				if err := cleanup(shutdownCtx); err != nil {
 					slog.Error("Failed to cleanup app properly on shutdown", "error", err)
+					recordCleanupError(err)
 				}
 			})
 		}
@@ -114,6 +156,7 @@ func (app *App) Shutdown() {
 			for i := 0; i < app.dbReleasesNeeded; i++ {
 				if err := db.Release(app.dataDir); err != nil {
 					slog.Error("Shutdown: failed to release database connection", "error", err)
+					recordCleanupError(err)
 				}
 			}
 		} else {
@@ -121,6 +164,21 @@ func (app *App) Shutdown() {
 			slog.Warn("Shutdown: skipping database close due to forced shutdown (live writers may still be active; OS will reclaim resources on process exit)")
 		}
 	}
+
+	// Snapshot under the mutex: if the outer timeout fired, abandoned
+	// cleanup goroutines may still append after this returns, and the
+	// caller must never observe that live slice.
+	errMu.Lock()
+	result.CleanupErrors = append([]error(nil), collected...)
+	errMu.Unlock()
+	return result
+}
+
+// Shutdown performs the same shutdown as ShutdownWithResult and discards
+// the result. Kept as the call-site-compatible entry point for the CLI's
+// many `defer a.Shutdown()` sites.
+func (app *App) Shutdown() {
+	app.ShutdownWithResult()
 }
 
 // The update check used to live here. It is gone rather than fixed,

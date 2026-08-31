@@ -41,6 +41,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
@@ -57,6 +58,7 @@ import (
 // with zero conversion code; the JSON shapes are unchanged.
 type (
 	RunRequest       = app.RunRequest
+	CloseResult      = app.ShutdownResult
 	RunResult        = app.RunResult
 	RunOverrides     = app.RunOverrides
 	RunMode          = app.RunMode
@@ -147,6 +149,12 @@ type Client struct {
 	app    *app.App
 	stdout io.Writer
 	stderr io.Writer
+
+	// closeOnce guarantees the wrapped App's shutdown runs at most once
+	// per Client, no matter how many times Close is called. closeResult
+	// caches that single run's outcome for repeat callers.
+	closeOnce   sync.Once
+	closeResult CloseResult
 }
 
 // Open wires up a full Rush instance for the given working directory:
@@ -283,13 +291,24 @@ func (c *Client) SubscribeSessions(ctx context.Context) <-chan SessionEvent {
 	return c.app.Sessions.Subscribe(ctx)
 }
 
-// Close shuts the client down gracefully (agent cancellation, run-queue
-// pump stop, bounded cleanup, DB release). It always returns nil;
-// Shutdown reports problems through logs, not errors.
-func (c *Client) Close() error {
+// Close shuts the client down (agent cancellation, run-queue pump stop,
+// bounded cleanup, DB release) and returns a CloseResult describing how
+// it went: CloseResult.Forced is true when agents were still busy after
+// the grace period, in which case the database was deliberately NOT
+// released (see app.ShutdownResult), and CloseResult.CleanupErrors
+// carries cleanup failures (also logged).
+//
+// Close is idempotent: the underlying App shutdown runs at most once per
+// Client — the first call's result is cached and returned unchanged by
+// every later call, so a double defer or a defensive second Close never
+// re-runs cleanup or re-releases database references. A nil receiver or
+// a Client without an App returns the zero CloseResult and does nothing.
+func (c *Client) Close() CloseResult {
 	if c == nil || c.app == nil {
-		return nil
+		return CloseResult{}
 	}
-	c.app.Shutdown()
-	return nil
+	c.closeOnce.Do(func() {
+		c.closeResult = c.app.ShutdownWithResult()
+	})
+	return c.closeResult
 }
