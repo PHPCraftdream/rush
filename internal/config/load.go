@@ -86,7 +86,17 @@ func Load(workingDir, dataDir string, debug bool) (*ConfigStore, error) {
 		return nil, fmt.Errorf("invalid hook configuration: %w", err)
 	}
 
-	if !isInsideWorktree() {
+	// The no-repo walk limits must key on the working directory Load was
+	// given, not the process CWD: an SDK host (sdk.Open +
+	// Options.WorkingDir) runs with its process CWD somewhere else
+	// entirely, and the historical process-wide
+	// `git rev-parse --is-inside-work-tree` probe answered that wrong
+	// question once and froze the answer for the whole process lifetime.
+	// worktreeRoot targets workingDir via cmd.Dir and memoizes per
+	// directory (worktreeRootCache), so this keeps the per-directory
+	// caching that motivated the old probe and adds no uncached git
+	// spawn per call.
+	if worktreeRoot(workingDir) == "" {
 		const depth = 2
 		const items = 100
 		// Fork patch (orchestrator UX): gate on cfg.Options.Debug (which
