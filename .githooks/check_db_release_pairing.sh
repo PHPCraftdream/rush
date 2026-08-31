@@ -109,8 +109,22 @@ while IFS= read -r file; do
 	# *.go exemption would also hide a genuine reintroduction in a
 	# different file.
 	case "$file" in
-	# (none today -- add one line per file, with the reason, if a
-	# legitimate exception ever appears)
+	internal/app/shutdown_result_test.go)
+		# ShutdownWithResult (internal/app/app_lifecycle.go, a production
+		# file this guard never scans) calls db.Release(app.dataDir)
+		# internally, app.dbReleasesNeeded times, on the graceful path.
+		# Two of this file's four db.Connect calls are paired by that
+		# invisible internal call, not by a literal db.Release( in this
+		# file -- same root cause as the helper-file gap this guard's own
+		# doc comment documents, just with the "helper" being the method
+		# under test. Verified balanced by hand: TestShutdownWithResult_
+		# ForcedSkipsDBReleaseAndReportsForced's 2 Connects are cleared by
+		# its own db.ReleaseAll; TestShutdownWithResult_
+		# GracefulReleasesDBAndReportsNotForced's first Connect is
+		# released internally by ShutdownWithResult, its second Connect
+		# by the file's own db.Release.
+		continue
+		;;
 	esac
 
 	# Strip full-line // comments before counting, so prose like
