@@ -18,13 +18,18 @@
 //
 // v1 boundaries, stated honestly:
 //
-//   - One Client per process. MCP server startup
-//     (internal/agent/tools/mcp) is guarded by a process-wide sync.Once,
-//     so a second Open in the same process would not start its own MCP
-//     servers. The primary embedding scenario — one working directory per
-//     process — is unaffected; run one process per workspace (the same
-//     model `rush run` already uses, with lock-file + heartbeat, the
-//     battle-tested path in the sessions_* CLI family).
+//   - One application-mode Client per process. MCP client state
+//     (internal/agent/tools/mcp) is process-wide package state — one
+//     registry keyed by server name, plus process-wide
+//     initialization-complete signaling — so two simultaneous
+//     application-mode Clients would share one MCP layer instead of each
+//     owning one. Library mode (Options.Mode == ModeLibrary) starts no
+//     MCP servers at all, and multiple simultaneous library-mode Clients
+//     are supported and tested (each ephemeral client gets its own
+//     isolated in-memory database). Run one process per workspace for
+//     application mode — the same model `rush run` already uses, with
+//     lock-file + heartbeat, the battle-tested path in the sessions_*
+//     CLI family.
 //
 //   - Core logging is redirected only if you ask for it. With
 //     SetupLogging false (the default) Open does not hijack the host's
@@ -706,7 +711,7 @@ func (c *Client) beginShutdown() <-chan struct{} {
 
 // CloseEphemeralConnsForced force-closes the in-memory database handles
 // of a library-mode ephemeral client (Options.Mode == ModeLibrary with
-// no WorkingDir). It exists for the case where Close returned a
+// no WorkingDir). It is the recovery step for a Close that returned a
 // CloseResult with Forced=true: Close leaves the handles open so the
 // database survives under still-live writers, and the host calls this
 // once it KNOWS every writer has finished (e.g. all in-flight
@@ -715,15 +720,26 @@ func (c *Client) beginShutdown() <-chan struct{} {
 // caller owns that judgement; database/sql's Close additionally blocks
 // until queries already in flight on the pool complete.
 //
-// The method is safe in every order and is idempotent: before Close it
-// closes the handles early (the host asserts no writers); after a
-// graceful Close it is a no-op (Close already closed them); repeated
-// calls are no-ops. It returns the first handle-close error, if any
-// (every error is also logged). Clients without in-memory handles
-// (application mode) always get a no-op and a nil error.
+// Order matters: before Close has started, the method refuses to run
+// and returns an error instead. Closing the handles early would leave a
+// still-open Client whose Run/Messages/Session calls are admitted and
+// then fail with database/sql's "sql: database is closed" instead of
+// ErrClientClosed — and a host finished with an idle client should call
+// Close, which releases the handles itself on the graceful path. After
+// a graceful Close it is a no-op (Close already closed the handles);
+// repeated calls are no-ops. It returns the first handle-close error,
+// if any (every error is also logged). Clients without in-memory
+// handles (application mode) get a no-op and a nil error once Close has
+// started.
 func (c *Client) CloseEphemeralConnsForced() error {
 	if c == nil {
 		return nil
+	}
+	c.admissionMu.Lock()
+	closing := c.closing
+	c.admissionMu.Unlock()
+	if !closing {
+		return fmt.Errorf("sdk: CloseEphemeralConnsForced before Close: call Close first — reclaiming the in-memory handles while the Client is still open would leave it admitting calls against closed database handles")
 	}
 	return c.closeEphemeralConns()
 }

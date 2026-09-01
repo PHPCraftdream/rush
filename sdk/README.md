@@ -61,9 +61,14 @@ existing caller that never sets `Mode` is completely unaffected.
 **`WorkingDir` is optional in this mode, and that choice matters:**
 
 - **Omitted** → an ephemeral session backed by an in-memory SQLite
-  connection. Nothing ever touches disk. The session is gone the moment
-  `Close()` returns — there is no way to recover it afterward. Use this
-  for stateless, one-shot embedding (a request handler that spins up a
+  connection. Nothing ever touches disk. A graceful `Close()` releases
+  the in-memory handles, and the session data is gone with them. On a
+  forced `Close()` — in-flight work that ignored cancellation — the
+  handles are deliberately left open and the data survives under them
+  until you reclaim it with `CloseEphemeralConnsForced()` (see
+  "Shutting down" below). Either way, once the handles are closed there
+  is no way to recover the session. Use this for stateless, one-shot
+  embedding (a request handler that spins up a
   Client, runs one turn, and throws it away).
 - **Given** → the directory is created if missing (same as application
   mode), and session data persists under `<WorkingDir>/.rush` — but
@@ -196,8 +201,10 @@ calls on *different* session ids remain fully concurrent and unaffected.
   returned. This is the only way to retrieve history if you didn't
   subscribe in advance — and for an ephemeral in-memory session (see
   above), it is the *only* way to see history at all, since nothing
-  persists to query later. Call it before `Close()`: once closed, an
-  ephemeral session's data is gone for good.
+  persists to query later. Call it before `Close()`: once a graceful
+  `Close()` has released the in-memory handles, an ephemeral session's
+  data is gone for good (a forced close keeps the data alive until you
+  reclaim the handles — see "Shutting down").
 - **`Client.Session(ctx, sessionID)`** — a session's metadata (title,
   token/cost counters), not its messages.
 
@@ -219,13 +226,48 @@ defer client.Close()
 ```
 
 `Close()` is idempotent — calling it more than once is safe and always
-returns the first call's result. `CloseResult.Forced` is `true` when
-some agent turn didn't finish within its grace period; in that case the
-database is deliberately **not** released (closing it under a live
-writer risks corruption), so a long-lived host process should treat a
-forced close as "some in-flight work may not have been persisted,"
-not as an ordinary clean shutdown. `CloseResult.CleanupErrors` collects
-any non-fatal errors from cleanup (also logged internally).
+returns the first call's result. It runs in three ordered phases:
+
+1. **Admission closes.** From the instant `Close()` is called, new
+   `Run`, `RunWithCredentials`, `Messages`, and `Session` calls return
+   `sdk.ErrClientClosed`, and the Subscribe methods return an
+   already-closed channel.
+2. **Drain, cancelling on stall.** The calls admitted before that
+   instant get one grace period (`agent.DefaultCancelAllGrace`, five
+   seconds) to finish against the fully live App — a call that finishes
+   inside the window is never cancelled. Work still running when the
+   window expires is cancelled immediately, while every resource is
+   still open: a run stuck on a non-cancellable provider or tool call
+   unwinds here instead of blocking `Close()` forever. A run that
+   unwinds once cancelled keeps the shutdown graceful; work that
+   ignores cancellation entirely makes the shutdown forced, and
+   `Close()` stops waiting — it returns within a bounded time (at most
+   a couple of grace windows) instead of hanging. After agent work has
+   fully unwound, the residual wait for any remaining non-agent calls
+   (a `Messages` read, which cancellation cannot reach) is unbounded: a
+   host that needs a total bound should cancel the contexts it handed
+   to its own in-flight calls.
+3. **Release.** Bounded parallel cleanup always; the database — and, on
+   an ephemeral client, the in-memory handles — only if the shutdown
+   was graceful.
+
+`CloseResult.Forced` is therefore `true` only when agent work was
+*still busy after cancellation* — in-flight work that ignored the
+cancellation phase 2 fired. A stuck-but-cooperative run produces a
+graceful result: it is cancelled, it unwinds, and its state is flushed
+before anything is released. A forced result means the database was
+deliberately **not** released (closing it under a live writer risks
+corruption), and on an ephemeral client the in-memory handles were
+deliberately left open too: the session data is still alive under
+those handles, held by the writer that refused to die. Once the host
+knows every writer has finished, it reclaims the handles — and with
+them the held memory — with `CloseEphemeralConnsForced()`; from that
+call on, the ephemeral data is gone for good.
+`CloseEphemeralConnsForced()` refuses to run before `Close()` has
+started (reclaiming early would leave the still-open Client admitting
+calls against closed database handles) and is a no-op after a graceful
+close. `CloseResult.CleanupErrors` collects any non-fatal errors from
+cleanup (also logged internally).
 
 After `Close()` returns, the Client is permanently closed: `Run`,
 `RunWithCredentials`, `Messages`, and `Session` return
@@ -270,10 +312,15 @@ func main() {
 A few embedding limitations are stated honestly in `sdk.go`'s package
 doc comment and worth repeating here:
 
-- **One `Client` per process** for application/library MCP startup — MCP
-  server initialization is guarded by a process-wide `sync.Once`, so a
-  second `Open` in the same process won't start its own MCP servers.
-  Run one process per workspace, the same model `rush run` itself uses.
+- **One application-mode `Client` per process.** MCP client state is
+  process-wide (one registry keyed by server name, plus shared
+  initialization-complete signaling), so two simultaneous
+  application-mode Clients would share a single MCP layer rather than
+  each owning one. Library mode never starts MCP servers, and multiple
+  simultaneous library-mode Clients are supported and tested — each
+  ephemeral client gets its own isolated in-memory database. Run one
+  process per workspace for application mode, the same model `rush run`
+  itself uses.
 - **The host's logger is untouched unless you opt in** via
   `Options.SetupLogging` — and that call is itself a process-wide
   singleton, so only the first `Open` with `SetupLogging: true` in a

@@ -114,8 +114,36 @@ func TestClientCloseGracefulClosesEphemeralConnsAndReclaimIsNoop(t *testing.T) {
 
 // TestCloseEphemeralConnsForcedWithoutInMemoryHandles pins that the
 // forced reclaim is a no-op for clients without in-memory handles
-// (application mode, Wrap).
+// (application mode) once Close has started.
 func TestCloseEphemeralConnsForcedWithoutInMemoryHandles(t *testing.T) {
 	client := &Client{app: &app.App{AgentCoordinator: &idleSpyCoordinator{}}}
+	client.Close()
+	require.NoError(t, client.CloseEphemeralConnsForced())
+}
+
+// TestCloseEphemeralConnsForcedBeforeCloseIsRejected pins the ordering
+// guard (review round-3, R3-5): the forced reclaim exists to recover a
+// FORCED Close's deliberately-left-open handles. Before Close has
+// started it must refuse — closing the handles early would leave a
+// still-open Client admitting Run/Messages/Session calls against closed
+// database handles — and it must leave the handles untouched for the
+// later Close to release them on the graceful path.
+func TestCloseEphemeralConnsForcedBeforeCloseIsRejected(t *testing.T) {
+	ctx := context.Background()
+	client, conn := newEphemeralTestClient(t, &idleSpyCoordinator{})
+
+	err := client.CloseEphemeralConnsForced()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "before Close")
+
+	// The refused reclaim must not have touched the handles.
+	require.NoError(t, conn.PingContext(ctx), "a refused reclaim must leave the in-memory handles open")
+
+	// The normal lifecycle still works afterwards: graceful Close
+	// releases the handles itself, and the reclaim afterwards is a no-op.
+	res := client.Close()
+	require.False(t, res.Forced)
+	require.Empty(t, res.CleanupErrors)
+	require.Error(t, conn.PingContext(ctx), "graceful Close must close the in-memory handles itself")
 	require.NoError(t, client.CloseEphemeralConnsForced())
 }
