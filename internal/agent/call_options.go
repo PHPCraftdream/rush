@@ -47,6 +47,22 @@ type CallOptions struct {
 	TimeoutExtendsOnProgress bool
 	TimeoutHardCap           time.Duration
 
+	// TimeoutOptionsSet marks the two timeout fields above as THIS
+	// call's deliberate policy (R3-6). Without it they are
+	// indistinguishable from "unset": a non-nil CallOptions with both
+	// fields zero could mean "no extension, no cap, on purpose" or
+	// "caller never configured timeouts", and the turn loop could not
+	// tell them apart — it fell back to the SHARED SetTimeoutOptions
+	// fields, so a call asking for no watchdog policy could execute
+	// under another run's. When the bit is set, the two fields are
+	// authoritative even when both are zero; when it is clear (and for
+	// a nil CallOptions) the legacy shared fields apply, exactly as
+	// before. ExecuteRun derives the bit from its overrides because
+	// RunOverrides' zero values mean "no override" and cannot express a
+	// deliberate zero; constructors that need that (in-process callers,
+	// tests) set it explicitly.
+	TimeoutOptionsSet bool
+
 	// MaxCost/MaxTokens abort this run when the session exceeds them
 	// (batch 30). Threaded onto SessionAgentCall exactly like the legacy
 	// SetRunLimits path does, but sourced per call.
@@ -87,4 +103,16 @@ func WithCallOptions(ctx context.Context, o *CallOptions) context.Context {
 func callOptionsFrom(ctx context.Context) *CallOptions {
 	o, _ := ctx.Value(callOptionsContextKey{}).(*CallOptions)
 	return o
+}
+
+// watchdogTimeoutPolicyForCall resolves the stream watchdog's
+// (extendsOnProgress, hardCap) policy for one call: the call's own values
+// when it carries a TimeoutOptionsSet CallOptions (even all-zero — a
+// deliberate policy, R3-6), otherwise the sessionAgent's shared
+// SetTimeoutOptions fields for legacy callers.
+func (a *sessionAgent) watchdogTimeoutPolicyForCall(call *CallOptions) (extendsOnProgress bool, hardCap time.Duration) {
+	if call != nil && call.TimeoutOptionsSet {
+		return call.TimeoutExtendsOnProgress, call.TimeoutHardCap
+	}
+	return a.timeoutExtendsOnProgress, a.timeoutHardCap
 }

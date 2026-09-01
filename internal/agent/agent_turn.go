@@ -500,10 +500,11 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	// --timeout-extends-on-progress/--timeout-hard-cap could land in the
 	// other's watchdog. A call carrying CallOptions uses its own values;
 	// everyone else keeps the shared fields exactly as before.
-	timeoutExtends, timeoutHardCap := a.timeoutExtendsOnProgress, a.timeoutHardCap
-	if o := call.CallOptions; o != nil && (o.TimeoutExtendsOnProgress || o.TimeoutHardCap > 0) {
-		timeoutExtends, timeoutHardCap = o.TimeoutExtendsOnProgress, o.TimeoutHardCap
-	}
+	// R3-6: presence (TimeoutOptionsSet), not zero-ness, decides — the
+	// old (extends || hardCap > 0) heuristic made a deliberate "no
+	// extension, no cap" CallOptions fall through to the shared fields,
+	// possibly another run's.
+	timeoutExtends, timeoutHardCap := a.watchdogTimeoutPolicyForCall(call.CallOptions)
 	var watchdogCauseVal atomic.Int32 // stores watchdogCause
 	wd := startStreamWatchdog(
 		genCtx, cancel, idleTimeout, a.effectiveStreamWatchdogTick(),

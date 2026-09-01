@@ -603,11 +603,19 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 		ModelRole:                overrides.ModelRole,
 		TimeoutExtendsOnProgress: overrides.TimeoutExtendsOnProgress,
 		TimeoutHardCap:           overrides.TimeoutHardCap,
-		MaxCost:                  overrides.MaxCost,
-		MaxTokens:                overrides.MaxTokens,
-		AllowPeakHours:           overrides.AllowPeakHours,
-		DisableSubAgents:         overrides.DisableSubAgents,
-		FailIfSessionBusy:        req.FailIfSessionBusy,
+		// R3-6: RunOverrides cannot distinguish "flag not passed" from
+		// "flag passed as false/0" (plain bool/duration fields; the CLI
+		// reads them with GetBool/GetString defaults), so presence is
+		// derived from the same predicate the turn-time check used —
+		// ExecuteRun's semantics are unchanged, while in-process
+		// constructors wanting a deliberate all-zero policy set the bit
+		// themselves. See CallOptions.TimeoutOptionsSet.
+		TimeoutOptionsSet: overrides.TimeoutExtendsOnProgress || overrides.TimeoutHardCap > 0,
+		MaxCost:           overrides.MaxCost,
+		MaxTokens:         overrides.MaxTokens,
+		AllowPeakHours:    overrides.AllowPeakHours,
+		DisableSubAgents:  overrides.DisableSubAgents,
+		FailIfSessionBusy: req.FailIfSessionBusy,
 	}
 	ctx = agent.WithCallOptions(ctx, callOpts)
 

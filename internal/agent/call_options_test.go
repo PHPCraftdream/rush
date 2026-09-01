@@ -332,3 +332,85 @@ func TestRunWithCallOptions_ContextRoundTrip(t *testing.T) {
 	require.Same(t, opts, got, "the exact CallOptions pointer must round-trip")
 	assert.Equal(t, 3.25, got.MaxCost)
 }
+
+// TestWatchdogTimeoutPolicyForCall_DeliberateZeroIsNotInheritance is the
+// R3-6 regression test: the turn loop used to decide via an
+// (o.TimeoutExtendsOnProgress || o.TimeoutHardCap > 0) heuristic, so a
+// non-nil CallOptions with BOTH timeout fields zero — a deliberate "no
+// extension, no cap" policy — was indistinguishable from "unset" and fell
+// back to the sessionAgent's shared SetTimeoutOptions fields, potentially
+// another run's. Presence (TimeoutOptionsSet), not zero-ness, must decide.
+func TestWatchdogTimeoutPolicyForCall_DeliberateZeroIsNotInheritance(t *testing.T) {
+	env := testEnv(t)
+	sa := testSessionAgent(env, nil, nil, "test prompt").(*sessionAgent)
+	// A DIFFERENT run's policy on the shared fields, deliberately
+	// non-zero so any fallback onto it is visible in the resolved values.
+	sa.SetTimeoutOptions(true, 30*time.Minute)
+
+	t.Run("deliberate zero does not inherit the shared policy", func(t *testing.T) {
+		extends, hardCap := sa.watchdogTimeoutPolicyForCall(&CallOptions{TimeoutOptionsSet: true})
+		assert.False(t, extends, "deliberate all-zero CallOptions must NOT inherit the shared extends flag")
+		assert.Zero(t, hardCap, "deliberate all-zero CallOptions must NOT inherit the shared hard cap")
+	})
+
+	t.Run("explicit per-call values win", func(t *testing.T) {
+		extends, hardCap := sa.watchdogTimeoutPolicyForCall(&CallOptions{
+			TimeoutOptionsSet:        true,
+			TimeoutExtendsOnProgress: true,
+			TimeoutHardCap:           5 * time.Minute,
+		})
+		assert.True(t, extends)
+		assert.Equal(t, 5*time.Minute, hardCap)
+	})
+
+	t.Run("CallOptions without the bit inherits the shared policy", func(t *testing.T) {
+		extends, hardCap := sa.watchdogTimeoutPolicyForCall(&CallOptions{})
+		assert.True(t, extends, "timeout fields present but not marked set keep the legacy shared fallback")
+		assert.Equal(t, 30*time.Minute, hardCap)
+	})
+
+	t.Run("nil CallOptions inherits the shared policy", func(t *testing.T) {
+		extends, hardCap := sa.watchdogTimeoutPolicyForCall(nil)
+		assert.True(t, extends, "legacy callers keep the shared SetTimeoutOptions fallback")
+		assert.Equal(t, 30*time.Minute, hardCap)
+	})
+}
+
+// TestWatchdogTimeoutPolicyForCall_ConcurrentCallsAreIsolated hammers the
+// race shape R3-6 closed: simultaneous calls with opposite timeout
+// policies resolve each from its OWN CallOptions while the shared fields
+// hold a third, non-zero policy — the deliberate-zero call must never
+// observe it. The shared fields are armed once up front and never
+// rewritten during the test (SetTimeoutOptions is unsynchronized legacy
+// state; the per-call READ path is what is under test here).
+func TestWatchdogTimeoutPolicyForCall_ConcurrentCallsAreIsolated(t *testing.T) {
+	env := testEnv(t)
+	sa := testSessionAgent(env, nil, nil, "test prompt").(*sessionAgent)
+	sa.SetTimeoutOptions(true, 30*time.Minute)
+
+	deliberateZero := &CallOptions{TimeoutOptionsSet: true}
+	explicit := &CallOptions{
+		TimeoutOptionsSet:        true,
+		TimeoutExtendsOnProgress: true,
+		TimeoutHardCap:           5 * time.Minute,
+	}
+
+	const iterations = 50
+	var wg sync.WaitGroup
+	for range iterations {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			extends, hardCap := sa.watchdogTimeoutPolicyForCall(deliberateZero)
+			assert.False(t, extends, "deliberate-zero call must not inherit the shared extends flag")
+			assert.Zero(t, hardCap, "deliberate-zero call must not inherit the shared hard cap")
+		}()
+		go func() {
+			defer wg.Done()
+			extends, hardCap := sa.watchdogTimeoutPolicyForCall(explicit)
+			assert.True(t, extends, "explicit call must keep its own extends flag")
+			assert.Equal(t, 5*time.Minute, hardCap, "explicit call must keep its own hard cap")
+		}()
+	}
+	wg.Wait()
+}
