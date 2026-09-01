@@ -64,8 +64,18 @@ func TestRunAgentTurnRecovered_NormalError(t *testing.T) {
 		"a normal error must not be mislabeled as a panic")
 }
 
-// TestRunAgentTurnRecovered_NilResultNoError pins the existing
-// ErrSessionBusy-mapping behaviour for a nil result with a nil error.
+// TestRunAgentTurnRecovered_NilResultNoError pins the corrected behaviour
+// for a nil result with a nil error: sessionAgent.Run's ONLY (nil, nil)
+// return is the R1-4 legacy queueing path (mailbox.submit's "caller queues
+// and returns nil" branch) — every fail-fast busy rejection already wraps
+// agent.ErrSessionBusy in a non-nil err, caught by the branch above this
+// one. The previous version of this test pinned the OLD, buggy mapping to
+// agent.ErrSessionBusy, which made a legacy (FailIfSessionBusy=false)
+// caller that genuinely landed in the mid-turn queueing window fail hard
+// instead of queueing — round-3 review finding, reproduced by
+// TestExecuteRunSameSessionLegacyQueueingStillQueuesBehindOwner failing
+// under CI load (a fast idle machine almost always races the second call
+// in AFTER the owner releases, masking the bug).
 func TestRunAgentTurnRecovered_NilResultNoError(t *testing.T) {
 	done := make(chan agentTurnResponse, 1)
 
@@ -76,8 +86,8 @@ func TestRunAgentTurnRecovered_NilResultNoError(t *testing.T) {
 	runAgentTurnRecovered(t.Context(), "sess-3", "prompt", nilResult, done)
 
 	resp := <-done
-	require.Error(t, resp.err)
-	assert.Contains(t, resp.err.Error(), "failed to start agent processing stream")
+	require.NoError(t, resp.err, "a legacy-queued call must not be reported as a failure")
+	assert.Nil(t, resp.result)
 }
 
 // TestRunAgentTurnRecovered_Success verifies the plain happy path still

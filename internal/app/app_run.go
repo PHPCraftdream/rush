@@ -358,9 +358,30 @@ func runAgentTurnRecovered(
 		return
 	}
 	if result == nil {
-		done <- agentTurnResponse{
-			err: fmt.Errorf("failed to start agent processing stream: %w", agent.ErrSessionBusy),
-		}
+		// sessionAgent.Run's ONLY (nil, nil) return is the legacy
+		// queueing path (mailbox.submit's "caller queues and returns
+		// nil" branch, agent_run.go): every fail-fast busy rejection
+		// — the FailIfSessionBusy branch right next to it, and every
+		// earlier fast-path check in ExecuteRun (IsSessionBusy,
+		// ReserveExclusive) — already wraps agent.ErrSessionBusy in a
+		// non-nil err, caught by the branch above. So reaching here
+		// with a nil err means this call queued behind the current
+		// owner and returned immediately, exactly as the R1-4 legacy
+		// queueing contract intends: nothing to report YET (the
+		// eventual queued turn runs under the owner's own dispatcher
+		// loop and its messages/results land in the SAME session,
+		// picked up by messageEvents below) — not a failure. Treating
+		// it as agent.ErrSessionBusy here (as this used to) broke
+		// exactly the callers this contract exists for: two
+		// legacy (non-fail-fast) ExecuteRun calls on one busy session
+		// would have the loser's call fail hard instead of queueing,
+		// silently regressing R1-4 the instant a caller's timing
+		// landed it in the genuine mid-turn queueing window rather
+		// than racing in fresh after the owner released (round-3
+		// review, R3 follow-up: CI's macOS runner hit the queueing
+		// window; a fast idle dev machine almost never does, which is
+		// why this went unnoticed until load-sensitive CI exposed it).
+		done <- agentTurnResponse{}
 		return
 	}
 	done <- agentTurnResponse{
