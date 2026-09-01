@@ -280,7 +280,21 @@ func TestSearchFilesWithRegexRespectsMidWalkCancellation(t *testing.T) {
 	}
 	const missingPattern = "ZZQ_NO_SUCH_NEEDLE_ZZQ"
 
-	// Baseline: a full, uninterrupted walk over the whole tree.
+	// Warm-up: an untimed, discarded walk so the OS file cache (and any
+	// on-access antivirus scan) has already touched every file once. The
+	// first walk over 4000 freshly-written files can be measurably slower
+	// than every subsequent one -- observed on a Windows CI runner, where
+	// a cold walk took 2.1s but the very next (still-cold-baseline'd, but
+	// now-warm) walk finished well under fullElapsed/4 before the
+	// cancellation below ever fired, so the test raced itself into "no
+	// error" instead of exercising cancellation at all. Warming the cache
+	// before measuring the baseline keeps the baseline and the cancelled
+	// walk under comparable conditions.
+	_, warmErr := searchFilesWithRegex(context.Background(), missingPattern, tempDir, "")
+	require.NoError(t, warmErr)
+
+	// Baseline: a full, uninterrupted (now warm-cache) walk over the whole
+	// tree.
 	fullStart := time.Now()
 	_, fullErr := searchFilesWithRegex(context.Background(), missingPattern, tempDir, "")
 	fullElapsed := time.Since(fullStart)
