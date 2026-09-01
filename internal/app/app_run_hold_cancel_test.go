@@ -10,8 +10,12 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,6 +23,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
+	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
 
@@ -172,6 +177,146 @@ func TestExecuteRunMailboxCancelDuringAdmissionHoldAborts(t *testing.T) {
 	require.NotNil(t, res)
 	require.Equal(t, "end_turn", res.ExitReason)
 	require.Equal(t, "R33_FOLLOWUP_DONE", res.FinalText)
+	seenMu.Lock()
+	require.Equal(t, []string{"followup"}, seen,
+		"the only provider request must be the follow-up's")
+	seenMu.Unlock()
+}
+
+// clearCancelGateSessions parks ExecuteRun inside ClearCancelRequest —
+// the first Sessions write AFTER the gate that guards it (the stale
+// cancel-flag clear) and BEFORE the budget/ended_reason/title block and
+// the final pre-handoff gate — giving the test a deterministic window in
+// which a mailbox cancel lands after every explicit gate but before the
+// turn handoff.
+type clearCancelGateSessions struct {
+	session.Service
+	entered chan struct{} // closed when ClearCancelRequest is entered
+	proceed chan struct{} // closed by the test to release the parked write
+	once    sync.Once
+}
+
+func (s *clearCancelGateSessions) ClearCancelRequest(ctx context.Context, sessionID string) error {
+	s.once.Do(func() { close(s.entered); <-s.proceed })
+	return s.Service.ClearCancelRequest(ctx, sessionID)
+}
+
+// TestExecuteRunMailboxCancelAfterLastMutationGateSkipsCleanupWrites
+// covers the F6 window the first-gate test cannot reach: the cancel
+// lands AFTER the ClearCancelRequest gate, inside the first post-gate
+// Sessions write, so every remaining pre-handoff mutation fails on the
+// canceled mutCtx — and the ended_reason/on-finish-hook defers, which
+// deliberately use Background-derived contexts, must skip instead of
+// overwriting the previous run's ended_reason or firing the hook for a
+// run that never started.
+func TestExecuteRunMailboxCancelAfterLastMutationGateSkipsCleanupWrites(t *testing.T) {
+	var seenMu sync.Mutex
+	var seen []string
+	record := func(label string) {
+		seenMu.Lock()
+		seen = append(seen, label)
+		seenMu.Unlock()
+	}
+	application, sessionID := newAdmissionRaceApp(t, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if strings.Contains(string(body), "F6_FOLLOWUP") {
+			record("followup")
+			admissionWriteSSE(w, []string{
+				admissionSSEText("c1", "F6_FOLLOWUP_DONE"),
+				admissionSSEStop("c1", "stop"),
+			})
+			return
+		}
+		record("unexpected")
+		admissionWriteSSE(w, []string{
+			admissionSSEText("c1", "F6_UNEXPECTED"),
+			admissionSSEStop("c1", "stop"),
+		})
+	})
+
+	// Stage the ended_reason a PREVIOUS, unrelated run would have left.
+	require.NoError(t, application.Sessions.SetEndedReason(context.Background(), sessionID, "previous-run"))
+
+	spy := &clearCancelGateSessions{
+		Service: application.Sessions,
+		entered: make(chan struct{}),
+		proceed: make(chan struct{}),
+	}
+	application.Sessions = spy
+
+	// On-finish hook sentinel: if the hook fires for the aborted
+	// attempt, this file appears.
+	hookFile := filepath.Join(t.TempDir(), "f6_hook_fired.txt")
+	hook := fmt.Sprintf(`touch %q`, hookFile)
+	if runtime.GOOS == "windows" {
+		hook = fmt.Sprintf(`type nul > %q`, hookFile)
+	}
+
+	outcomes := make(chan admissionOutcome, 1)
+	start := make(chan struct{})
+	admissionLaunch(t, application, sessionID, outcomes, start, 1,
+		"F6_CANCELLED this must never run", RunOverrides{
+			OnFinishHook: hook,
+		}, true)
+	close(start)
+
+	select {
+	case <-spy.entered:
+	case <-time.After(60 * time.Second):
+		t.Fatal("the victim never reached ClearCancelRequest; cannot stage the post-gate window")
+	}
+
+	// Cancel while the victim is parked between the ClearCancelRequest
+	// gate and the final pre-handoff gate, then release the write. The
+	// remaining mutCtx writes fail on the canceled hold context.
+	application.AgentCoordinator.Cancel(sessionID)
+	close(spy.proceed)
+
+	select {
+	case o := <-outcomes:
+		require.Error(t, o.err, "the victim must fail once the hold is canceled")
+		require.ErrorIs(t, o.err, context.Canceled, "the bail-out must wrap context.Canceled")
+		require.ErrorContains(t, o.err, "canceled during run admission")
+		require.Nil(t, o.res, "a canceled admission hold must produce no run result")
+	case <-time.After(60 * time.Second):
+		t.Fatal("the victim neither failed nor returned after the hold was canceled")
+	}
+
+	// session.Service.Get does not surface EndedReason (fromDBItem drops
+	// it), so read the column directly.
+	readEndedReason := func() string {
+		t.Helper()
+		var reason string
+		require.NoError(t, application.DB().QueryRowContext(context.Background(),
+			`SELECT ended_reason FROM sessions WHERE id = ?`, sessionID).Scan(&reason))
+		return reason
+	}
+	require.Equal(t, "previous-run", readEndedReason(),
+		"staged ended_reason must be visible before the run")
+
+	after := readEndedReason()
+	require.Equal(t, "previous-run", after,
+		"a run that never started must not overwrite the previous run's ended_reason")
+
+	_, statErr := os.Stat(hookFile)
+	require.True(t, os.IsNotExist(statErr),
+		"the on-finish hook must not fire for a run that never started")
+
+	// The session must not be stuck: a follow-up run on the same session
+	// (FailIfSessionBusy) succeeds and genuinely reaches the provider.
+	res, err := application.ExecuteRun(context.Background(), RunRequest{
+		Prompt:            "F6_FOLLOWUP answer me",
+		Mode:              RunModeJSON,
+		ContinueSessionID: sessionID,
+		Stdout:            io.Discard,
+		Stderr:            io.Discard,
+		HideSpinner:       true,
+		FailIfSessionBusy: true,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, res)
+	require.Equal(t, "end_turn", res.ExitReason)
+	require.Equal(t, "F6_FOLLOWUP_DONE", res.FinalText)
 	seenMu.Lock()
 	require.Equal(t, []string{"followup"}, seen,
 		"the only provider request must be the follow-up's")

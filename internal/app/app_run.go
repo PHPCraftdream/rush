@@ -122,6 +122,16 @@ type RunOverrides struct {
 	// allow even with continuous progress. 0 = no cap.
 	// Fork patch: batch 8.
 	TimeoutHardCap time.Duration
+	// TimeoutOptionsSet marks the two timeout fields above as THIS
+	// invocation's deliberate policy, even when both are zero ("no
+	// watchdog extension, no hard cap, on purpose"). It exists for
+	// in-process (SDK) callers, which construct RunOverrides as a Go
+	// struct and can set it explicitly; the CLI never sets it, because
+	// cobra flags cannot distinguish "not passed" from "passed as
+	// false/0" — ExecuteRun keeps deriving presence from the two fields
+	// when this bit is clear. Not persisted on the session. Fork patch
+	// (F3, 2026-09-01 SDK review).
+	TimeoutOptionsSet bool
 	// OnFinishHook is an optional shell command to execute after the run
 	// completes. Environment variables are set with run metadata.
 	// Errors from the hook are printed to stderr but don't affect exit code.
@@ -606,11 +616,17 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 		// R3-6: RunOverrides cannot distinguish "flag not passed" from
 		// "flag passed as false/0" (plain bool/duration fields; the CLI
 		// reads them with GetBool/GetString defaults), so presence is
-		// derived from the same predicate the turn-time check used —
-		// ExecuteRun's semantics are unchanged, while in-process
-		// constructors wanting a deliberate all-zero policy set the bit
-		// themselves. See CallOptions.TimeoutOptionsSet.
-		TimeoutOptionsSet: overrides.TimeoutExtendsOnProgress || overrides.TimeoutHardCap > 0,
+		// still derived from the same predicate the turn-time check
+		// used, and CLI behaviour is unchanged. F3 (2026-09-01 SDK
+		// review): an in-process caller can additionally set
+		// Overrides.TimeoutOptionsSet to make even an all-zero policy
+		// deliberate instead of an inheritance of the sessionAgent's
+		// shared fields. The derived predicate stays in the OR because
+		// removing it would silently break the CLI's
+		// --timeout-extends-on-progress / --timeout-hard-cap flags,
+		// whose only presence signal is this predicate. See
+		// CallOptions.TimeoutOptionsSet.
+		TimeoutOptionsSet: overrides.TimeoutOptionsSet || overrides.TimeoutExtendsOnProgress || overrides.TimeoutHardCap > 0,
 		MaxCost:           overrides.MaxCost,
 		MaxTokens:         overrides.MaxTokens,
 		AllowPeakHours:    overrides.AllowPeakHours,
@@ -758,6 +774,17 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 	// and immediately before the handoff, so a canceled hold bails out
 	// through the armed ReleaseExclusive defer without mutating session
 	// state or starting a turn.
+	//
+	// F6 (2026-09-01 SDK review): admissionAborted records that a
+	// bail-out actually fired. The ended_reason and on-finish-hook
+	// defers below are registered before the LAST gate and write
+	// through Background-derived contexts on purpose (a started run's
+	// cleanup must complete even when its own ctx is already gone), so
+	// ctx cancellation cannot stop them in the window where the whole
+	// run never started; they check this flag instead. A plain bool is
+	// enough: every checkHoldCanceled call site and both defers run on
+	// ExecuteRun's goroutine.
+	admissionAborted := false
 	checkHoldCanceled := func() error {
 		if reservedHold == nil {
 			return nil
@@ -766,6 +793,7 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 		if err == nil {
 			return nil
 		}
+		admissionAborted = true
 		slog.Warn("Run abandoned: cancellation landed during admission hold", "session_id", sess.ID, "err", err)
 		return fmt.Errorf("session %q canceled during run admission: %w", sess.ID, err)
 	}
@@ -929,6 +957,10 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 	// momentary busy_timeout contention window, short enough that a
 	// genuinely stuck writer can't reproduce the 30s freeze this fixes.
 	defer func() {
+		if admissionAborted {
+			slog.Info("Skipping ended_reason write: the run never started (canceled during admission)", "session_id", sess.ID)
+			return
+		}
 		reason := hookExitReason
 		if reason == "" {
 			reason = "done"
@@ -941,6 +973,10 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 	}()
 	if overrides.OnFinishHook != "" {
 		defer func() {
+			if admissionAborted {
+				slog.Info("Skipping on-finish hook: the run never started (canceled during admission)", "session_id", sess.ID)
+				return
+			}
 			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), cleanupTimeout)
 			defer cleanupCancel()
 			if freshSess, err := app.Sessions.Get(cleanupCtx, sess.ID); err == nil {
