@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/shell"
 )
@@ -21,6 +22,12 @@ type ShutdownResult struct {
 	// closing it under live writers; the CLI reclaims the handle by
 	// exiting, but a long-lived host process must decide its own
 	// follow-up (e.g. db.ReleaseAll once it knows no writers remain).
+	//
+	// On the ShutdownAfterDrain path (the SDK's Close) the same holds,
+	// with one refinement: a caller-side drain that stalls past its
+	// grace period is cancelled first, and Forced reflects whether work
+	// was STILL busy after that cancellation — a run that unwinds once
+	// cancelled keeps the shutdown graceful.
 	Forced bool
 	// CleanupErrors carries the errors returned by the parallel cleanup
 	// goroutines (registered cleanup funcs) and by the per-reference
@@ -32,24 +39,116 @@ type ShutdownResult struct {
 	CleanupErrors []error
 }
 
-// ShutdownWithResult performs the full shutdown — agent cancellation,
-// run-queue pump stop, bounded parallel cleanup, DB release — and returns
-// a ShutdownResult describing how it went: whether the shutdown was
-// forced (agents still busy, DB release skipped) and which cleanup
-// errors occurred. See the policy comment in the body.
-func (app *App) ShutdownWithResult() ShutdownResult {
+// CancelAgents signals cancellation to every agent Run/Summarize
+// goroutine the coordinator is tracking and joins them, bounded by the
+// coordinator's grace period (agent.DefaultCancelAllGrace, unless the
+// agent was built with an explicit CancelAllGrace). It returns whether
+// agent work was still busy once that grace period expired — the verdict
+// that decides a forced shutdown. On an idle App it returns immediately:
+// CancelAll does not burn its grace period when there is nothing to join.
+//
+// This is the ONLY code path that cancels in-flight agent work (R3-2): a
+// shutdown that merely waits for its callers' work to finish can block
+// forever on a run stuck in a non-cancellable provider or tool call, so
+// any shutdown that bounds its own duration must call this — before it
+// starts releasing resources.
+func (app *App) CancelAgents() bool {
+	if app.AgentCoordinator != nil {
+		return app.AgentCoordinator.CancelAll()
+	}
+	return false
+}
+
+// ShutdownAfterDrain performs the full shutdown — agent cancellation,
+// run-queue pump stop, bounded parallel cleanup, DB release — and, when
+// drained is non-nil, first gives the CALLER's already-admitted work a
+// chance to finish, cancelling it only once it stalls:
+//
+//   - drained == nil (the CLI shape, what ShutdownWithResult does):
+//     cancel first, then release — unchanged behavior.
+//
+//   - drained != nil (library hosts, the SDK's Close): admitted work
+//     gets one agent.DefaultCancelAllGrace window to finish against the
+//     fully live App — a call that finishes inside that window is never
+//     cancelled and never touches a released resource. Work still
+//     running when the window expires is cancelled immediately, while
+//     every resource is still open, so a run stuck on a non-cancellable
+//     provider or tool call unwinds instead of blocking the shutdown
+//     forever. Cancellation's own join is bounded by the same grace
+//     policy; work that ignores cancellation makes the shutdown forced
+//     and the drain is abandoned rather than waited on. After agent work
+//     has fully unwound, the residual wait for the caller's remaining
+//     admitted calls is unbounded — cancellation cannot reach non-agent
+//     calls (a store read), so a host needing a total bound must cancel
+//     the contexts it handed to its own calls.
+//
+// Resources are released only once the drain completed or was
+// force-abandoned, under the graceful/forced policy documented in the
+// release phase's body. Returns a ShutdownResult describing how it went.
+func (app *App) ShutdownAfterDrain(drained <-chan struct{}) ShutdownResult {
 	start := time.Now()
 	defer func() { slog.Debug("Shutdown took " + time.Since(start).String()) }()
 
-	var result ShutdownResult
+	return app.releaseResources(app.cancelAgentsBeforeRelease(drained))
+}
 
-	// First, cancel all agents and wait for them to finish. This must complete
-	// before closing the DB so agents can finish writing their state.
-	// CancelAll now returns whether agents are still busy after the grace period.
-	var stillBusy bool
-	if app.AgentCoordinator != nil {
-		stillBusy = app.AgentCoordinator.CancelAll()
+// cancelAgentsBeforeRelease is ShutdownAfterDrain's first phase: cancel
+// agent work, respecting the caller's drain up to the shared grace
+// policy, and return the still-busy verdict the release phase needs. The
+// ordering is the whole point (R3-2): cancellation — the only thing that
+// can unblock a stuck run — must fire while the App and its resources
+// are still fully live, never after the drain has been waited on to
+// completion.
+func (app *App) cancelAgentsBeforeRelease(drained <-chan struct{}) bool {
+	if drained == nil {
+		// No caller-side drain to respect: cancel immediately, the CLI
+		// shape ShutdownWithResult has always had.
+		return app.CancelAgents()
 	}
+
+	// First window: give admitted work one grace period to finish
+	// against the fully live App.
+	timer := time.NewTimer(agent.DefaultCancelAllGrace)
+	defer timer.Stop()
+	select {
+	case <-drained:
+		// Everything drained cooperatively. Cancellation still runs:
+		// for the drained calls it is a formality, but it joins any
+		// background agent work (title generation, cache keep-alive
+		// replays) that no admitted call was blocked on — the same
+		// single CancelAll the drain-less path performs.
+		return app.CancelAgents()
+	case <-timer.C:
+		slog.Warn("Shutdown: drain did not finish within grace period - cancelling agent work while the app is still live")
+	}
+
+	// Second window: cancellation is now signalled — a stuck run can
+	// unwind and even flush its state, because nothing has been released
+	// yet — and CancelAgents' grace-bounded join decides whether
+	// uncooperative work makes the shutdown forced.
+	if app.CancelAgents() {
+		// Work ignored cancellation and is still running after the
+		// join's grace period: proceed WITHOUT waiting for the drain;
+		// the forced release below leaves live writers' resources open.
+		return true
+	}
+
+	// Agent work fully unwound. Whatever still holds the drain open is
+	// either unwinding imminently or a non-agent call cancellation
+	// cannot reach; wait for it without a second bound (see
+	// ShutdownAfterDrain).
+	<-drained
+	return false
+}
+
+// releaseResources is ShutdownAfterDrain's second phase: run-queue pump
+// stop, bounded parallel cleanup, and the conditional DB release. It
+// runs only once cancelAgentsBeforeRelease has returned — no resource is
+// touched while agent work may still be using it, except on the forced
+// path, where live writers' DB and in-memory handles are deliberately
+// LEFT OPEN (see the policy comment below).
+func (app *App) releaseResources(stillBusy bool) ShutdownResult {
+	var result ShutdownResult
 
 	// Stop the run queue pump (task #340 P0-3). This must complete before DB
 	// close to ensure no pump goroutines are writing when we close the connection.
@@ -72,9 +171,10 @@ func (app *App) ShutdownWithResult() ShutdownResult {
 	// when the process exits (which CLI callers do immediately after Shutdown()).
 	// This is the policy choice: bounded shutdown time over perfect cleanup.
 	//
-	// For library/server callers who want graceful shutdown, they should call
-	// CancelAll separately and check the return value before invoking Shutdown()
-	// with a custom policy.
+	// For library/server callers who want to combine cancellation with a
+	// custom release policy, CancelAgents returns the same still-busy
+	// verdict Shutdown uses; ShutdownAfterDrain is the ready-made
+	// drain-aware variant.
 	if stillBusy {
 		slog.Warn("Shutdown: some agents did not finish within grace period - proceeding with forced shutdown (DB will NOT be closed, in-progress work may be incomplete)")
 	} else {
@@ -172,6 +272,18 @@ func (app *App) ShutdownWithResult() ShutdownResult {
 	result.CleanupErrors = append([]error(nil), collected...)
 	errMu.Unlock()
 	return result
+}
+
+// ShutdownWithResult performs the full shutdown — agent cancellation,
+// run-queue pump stop, bounded parallel cleanup, DB release — and returns
+// a ShutdownResult describing how it went: whether the shutdown was
+// forced (agents still busy, DB release skipped) and which cleanup
+// errors occurred. See the policy comment in releaseResources' body.
+//
+// Cancellation comes first, with no caller-side drain to respect — see
+// ShutdownAfterDrain for the drain-aware variant library hosts use.
+func (app *App) ShutdownWithResult() ShutdownResult {
+	return app.ShutdownAfterDrain(nil)
 }
 
 // Shutdown performs the same shutdown as ShutdownWithResult and discards

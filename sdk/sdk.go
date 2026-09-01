@@ -574,8 +574,9 @@ func (c *Client) Session(ctx context.Context, sessionID string) (Session, error)
 
 // Close shuts the client down (agent cancellation, run-queue pump stop,
 // bounded cleanup, DB release) and returns a CloseResult describing how
-// it went: CloseResult.Forced is true when agents were still busy after
-// the grace period, in which case the database was deliberately NOT
+// it went: CloseResult.Forced is true when agent work was still busy
+// after the grace period, in which case the database — and, on an
+// ephemeral client, the in-memory handles — were deliberately NOT
 // released (see app.ShutdownResult), and CloseResult.CleanupErrors
 // carries cleanup failures (also logged).
 //
@@ -596,20 +597,36 @@ func (c *Client) Session(ctx context.Context, sessionID string) (Session, error)
 // inside a long-lived host process. Release them deliberately with
 // CloseEphemeralConnsForced once every writer has finished.
 //
-// Close runs in three ordered phases. First it closes admission: from
-// the instant Close is called, new Run/RunWithCredentials/Messages/
-// Session calls fail with ErrClientClosed and the Subscribe methods
-// return an already-closed channel. Second it waits for the calls that
-// were admitted before that instant to return, so an in-flight call
-// always finishes against a fully live App and can never touch an App or
-// an in-memory handle that teardown has already released — the
-// check-then-act race a bare closed flag leaves open. Third it performs
-// exactly the shutdown described above.
+// Close runs in three ordered phases:
 //
-// The drain wait is deliberately unbounded: a call that never returns
-// delays Close, so a host that needs a bound should cancel the contexts
-// it handed to its own in-flight calls. Do not call Close from within an
-// in-flight call on the same Client — the drain would wait for the very
+// Phase 1 — admission closes: from the instant Close is called, new
+// Run/RunWithCredentials/Messages/Session calls fail with ErrClientClosed
+// and the Subscribe methods return an already-closed channel.
+//
+// Phase 2 — drain, cancelling on stall: the calls admitted before that
+// instant get one grace period (agent.DefaultCancelAllGrace, the same
+// value the coordinator's cancellation enforces) to finish against the
+// fully live App — a call that finishes inside it is neither cancelled
+// nor exposed to any released resource. Work still running when the
+// grace period expires is cancelled immediately, while every resource is
+// still open: a run stuck on a non-cancellable provider or tool call
+// unwinds here instead of blocking Close forever (review round-3, R3-2).
+// After cancellation, Close waits for agent work to unwind — bounded by
+// the coordinator's own grace-bounded join — and then for the remaining
+// admitted calls; work that ignores cancellation makes the shutdown
+// forced and the drain is abandoned rather than waited on. The residual
+// wait after agent work has fully unwound is unbounded, because
+// cancellation cannot reach non-agent calls (a Messages read against the
+// store): a host that needs a total bound should cancel the contexts it
+// handed to its own in-flight calls.
+//
+// Phase 3 — release: only once the drain completed or was force-abandoned
+// are resources released, under the same graceful-vs-forced policy as
+// app.ShutdownWithResult: bounded parallel cleanup always; the database
+// and the in-memory handles only on the graceful path.
+//
+// Do not call Close from within an in-flight call on the same Client —
+// the drain, and the residual wait after a stall, waits for the very
 // call Close is blocking.
 //
 // Once Close has started, Run, RunWithCredentials, Messages, and Session
@@ -621,13 +638,15 @@ func (c *Client) Close() CloseResult {
 	}
 	// Phase 1: reject every new admission from this instant on.
 	drained := c.beginShutdown()
-	// Phase 2: let the already-admitted calls finish before anything
-	// is torn down.
-	<-drained
-	// Phase 3: the shutdown itself — still at most once per Client
-	// (closeOnce), with the first result cached for repeat callers.
+	// Phases 2 and 3: drain with cancellation on stall, then release —
+	// still at most once per Client (closeOnce), with the first result
+	// cached for repeat callers. ShutdownAfterDrain keeps the App fully
+	// live until the drain has had its grace period: cancellation fires
+	// BEFORE any resource is released (R3-2), and release still happens
+	// only after the drain, so an admitted call never touches a torn-down
+	// App (the round-2 check-then-act guarantee).
 	c.closeOnce.Do(func() {
-		c.closeResult = c.app.ShutdownWithResult()
+		c.closeResult = c.app.ShutdownAfterDrain(drained)
 		if !c.closeResult.Forced {
 			// Graceful shutdown: no live writers remain, the
 			// in-memory handles can be released immediately.
