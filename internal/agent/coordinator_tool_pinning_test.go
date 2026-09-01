@@ -504,3 +504,93 @@ func TestRunTurn_PinnedToolsAreStableAcrossStepsAndSharedSetTools(t *testing.T) 
 	assert.Len(t, pinnedA, 2)
 	assert.Len(t, pinnedB, 2)
 }
+
+// TestRunWithCredentials_PinsPerCallTools proves F1: the credentials entry
+// point must pin the same per-call toolset Run pins — built from THIS
+// call's context (CallOptions.DisableSubAgents / CallOptions.ModelRole) —
+// onto the SessionAgentCall the turn actually executes. Pre-fix,
+// resolveCredentialsModels never assigned resolved.tools, so pin() skipped
+// Tools and runTurn fell back to the shared a.tools.Copy(): the model kept
+// the delegation tools despite DisableSubAgents, and kept edit/write tools
+// despite an orchestrator-mode role.
+func TestRunWithCredentials_PinsPerCallTools(t *testing.T) {
+	env := testEnv(t)
+	coord := newToolPinningCoordinator(t, env, true /* worker configured: the role case needs the orchestrator strip */)
+
+	var mu sync.Mutex
+	var calls []SessionAgentCall
+	mock := newMockAgent("cred-provider", 4096,
+		func(_ context.Context, call SessionAgentCall) (*fantasy.AgentResult, error) {
+			mu.Lock()
+			calls = append(calls, call)
+			mu.Unlock()
+			return agentResultWithText("ok"), nil
+		})
+	coord.currentAgent = mock
+
+	sess, err := coord.sessions.Create(t.Context(), "cred-pin")
+	require.NoError(t, err)
+
+	creds := &CredentialSet{
+		Credentials: []Credential{{
+			Provider: "cred-provider",
+			Type:     ProviderTypeOpenAI,
+			APIKey:   "sk-cred-test",
+			Models:   []CredentialModel{{ID: "cred-model", ContextWindow: 200000, DefaultMaxTokens: 4096}},
+		}},
+		Models: map[Role]ModelChoice{
+			RoleSmart: {Provider: "cred-provider", Model: "cred-model"},
+			RoleFast:  {Provider: "cred-provider", Model: "cred-model"},
+		},
+	}
+
+	// pinnedToolsOf runs one full RunWithCredentials turn and returns the
+	// Tools slice the turn's SessionAgentCall actually carried.
+	pinnedToolsOf := func(run func() error) []fantasy.AgentTool {
+		mu.Lock()
+		before := len(calls)
+		mu.Unlock()
+		require.NoError(t, run())
+		mu.Lock()
+		defer mu.Unlock()
+		require.Len(t, calls, before+1, "the mock agent must have received exactly one new call")
+		return calls[before].Tools
+	}
+
+	banned := pinnedToolsOf(func() error {
+		_, err := coord.RunWithCredentials(
+			WithCallOptions(t.Context(), &CallOptions{DisableSubAgents: true}),
+			sess.ID, "cred run with sub-agents disabled", creds)
+		return err
+	})
+	require.NotNil(t, banned, "RunWithCredentials must pin a per-call toolset; nil makes runTurn fall back to the shared slice")
+	namesBanned := pinnedToolNames(banned)
+	assert.NotContains(t, namesBanned, AgentToolName, "DisableSubAgents must strip the agent tool from the pinned set")
+	assert.NotContains(t, namesBanned, "agentic_fetch", "DisableSubAgents must strip agentic_fetch from the pinned set")
+	assert.Contains(t, namesBanned, "bash", "unrelated tools must survive the per-call filter")
+
+	allowed := pinnedToolsOf(func() error {
+		_, err := coord.RunWithCredentials(
+			WithCallOptions(t.Context(), &CallOptions{DisableSubAgents: false}),
+			sess.ID, "cred run with sub-agents allowed", creds)
+		return err
+	})
+	namesAllowed := pinnedToolNames(allowed)
+	assert.Contains(t, namesAllowed, AgentToolName, "the allowed call keeps the agent tool")
+	assert.Contains(t, namesAllowed, "agentic_fetch", "the allowed call keeps agentic_fetch")
+
+	// Role policy: an explicit smart role with a worker configured is an
+	// orchestrator run — the pinned set must be stripped of the edit tools,
+	// agreeing with the per-call orchestrator prompt.
+	orchestrator := pinnedToolsOf(func() error {
+		_, err := coord.RunWithCredentials(
+			WithCallOptions(t.Context(), &CallOptions{ModelRole: config.SelectedModelTypeSmart}),
+			sess.ID, "cred run as orchestrator", creds)
+		return err
+	})
+	namesOrchestrator := pinnedToolNames(orchestrator)
+	assert.NotContains(t, namesOrchestrator, "edit", "per-call smart + worker configured => orchestrator strip")
+	assert.NotContains(t, namesOrchestrator, "multiedit")
+	assert.NotContains(t, namesOrchestrator, "write")
+	assert.Contains(t, namesOrchestrator, AgentToolName, "the orchestrator keeps the agent tool")
+}

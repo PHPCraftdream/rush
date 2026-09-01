@@ -386,6 +386,16 @@ func (c *coordinator) resolveCredentialsModels(ctx context.Context, sessionID st
 		}
 		resolved.fast = fast
 	}
+
+	cfg, _ := c.cfg.Snapshot()
+	// F1: pin THIS call's coder toolset exactly like
+	// resolveSessionModels/applyModelOverrides do, built from THIS call's
+	// ctx so buildTools' per-call filters (CallOptions.DisableSubAgents,
+	// ModelRole) decide the slice. Deliberately unconditional — also when
+	// base != nil: base may have been resolved before this call's
+	// CallOptions were attached to ctx, so its tools slice proves nothing
+	// about this call's policy; always rebuild from ctx directly.
+	resolved.tools = c.pinCallTools(ctx, cfg)
 	return resolved, nil
 }
 
