@@ -21,6 +21,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/csync"
 	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/permission"
 	"github.com/PHPCraftdream/rush/internal/pubsub"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/version"
@@ -293,6 +294,18 @@ type SessionAgentCall struct {
 	// live in-process values, so pump-driven rebuilds fall back to the
 	// shared path exactly like any other legacy caller.
 	Tools []fantasy.AgentTool `json:"-"`
+
+	// RunAllowlist pins THIS call's restricted-run permission policy
+	// (R3-4). ExecuteRun compiles it from config + overrides and attaches
+	// it to the call's context; buildCall/runInternal stamp it here so the
+	// policy survives the mailbox-queue handoff and is armed by the turn
+	// loop (runOwned) ONLY when this call becomes the active turn — never
+	// at queue time. nil (legacy callers, durable-queue rebuilds) arms
+	// nothing and keeps the fallback path. json:"-": never
+	// durable-queue-persisted — the compiled matcher is an in-process
+	// value, so pump-driven restarts fall back to the shared path exactly
+	// like CallOptions/Tools above.
+	RunAllowlist *permission.RunAllowlist `json:"-"`
 
 	// FromDurableQueue is true when this call originates from the durable
 	// run queue (task #340). When true and the session's mailbox is already
@@ -683,6 +696,13 @@ type sessionAgent struct {
 	// itself only knows about Model (SelectedModel + catwalk metadata),
 	// not the provider's peak_hours setting.
 	peakHoursCheck func() error
+
+	// runAllowlists, when non-nil, lets the turn loop activate each call's
+	// carried restricted-run policy (SessionAgentCall.RunAllowlist) at
+	// turn start and clear it at loop end (R3-4). Nil (tests, bare
+	// fixtures) disables the mechanism entirely — no session entry is
+	// ever armed.
+	runAllowlists permission.SessionRunAllowlistManager
 }
 
 type SessionAgentOptions struct {
@@ -780,6 +800,12 @@ type SessionAgentOptions struct {
 	// inter-process locks. Primarily exposed for regression tests like
 	// TestP0_338_FinalizerReachableDespiteHungCleanup.
 	LockOptions []session.LockOption
+	// RunAllowlists, when non-nil, lets the turn loop activate each call's
+	// carried restricted-run policy (SessionAgentCall.RunAllowlist) at
+	// turn start and clear it at loop end (R3-4). Nil (tests, bare
+	// fixtures) disables the mechanism entirely — no session entry is
+	// ever armed.
+	RunAllowlists permission.SessionRunAllowlistManager
 }
 
 func NewSessionAgent(
@@ -814,6 +840,7 @@ func NewSessionAgent(
 		toolMaxDuration:            opts.ToolMaxDuration,
 		toolCleanupGrace:           opts.ToolCleanupGrace,
 		peakHoursCheck:             opts.PeakHoursCheck,
+		runAllowlists:              opts.RunAllowlists,
 		sessionPreambleMaxDuration: opts.SessionPreambleMaxDuration,
 		titleGenerationMaxDuration: opts.TitleGenerationMaxDuration,
 	}

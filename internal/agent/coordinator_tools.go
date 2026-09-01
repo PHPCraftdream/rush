@@ -18,6 +18,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/hooks"
+	"github.com/PHPCraftdream/rush/internal/permission"
 	"github.com/PHPCraftdream/rush/internal/shell"
 )
 
@@ -73,6 +74,15 @@ func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, age
 		disableAutoSummarize = opts.DisableAutoSummarize
 		dataDirectory = opts.DataDirectory
 	}
+	// R3-4: the turn-level activation of per-call restricted-run policies
+	// needs the optional permission extension. Nil-safe like c.permissions
+	// everywhere else in this function (bare test-fixture coordinators).
+	var runAllowlists permission.SessionRunAllowlistManager
+	if c.permissions != nil {
+		if mgr, ok := c.permissions.(permission.SessionRunAllowlistManager); ok {
+			runAllowlists = mgr
+		}
+	}
 	result := NewSessionAgent(SessionAgentOptions{
 		SmartModel:           smart,
 		FastModel:            fast,
@@ -90,6 +100,7 @@ func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, age
 		StreamIdleTimeout:  streamIdleTimeout,
 		ToolMaxDuration:    toolMaxDuration,
 		DataDirectory:      dataDirectory,
+		RunAllowlists:      runAllowlists,
 		CheckpointInterval: checkpointInterval, // Fork patch: batch 8
 		// Fork patch: peak-hours mid-turn re-check. Deliberately LIVE, not
 		// pinned to cfg above: this is a runtime *policy* check re-evaluated

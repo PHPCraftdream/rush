@@ -693,7 +693,6 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 	// and mailbox.submit decides ownership/queueing when the turn
 	// goroutine reaches it.
 	var (
-		reserved        bool
 		reservedEpoch   uint64
 		reservedCancel  context.CancelFunc
 		reservedHandoff atomic.Bool
@@ -708,7 +707,6 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 			slog.Warn("Run rejected: session already has an in-process owner (atomic reservation)", "session_id", sess.ID)
 			return nil, fmt.Errorf("session %q is already processing another request: %w", sess.ID, agent.ErrSessionBusy)
 		}
-		reserved = true
 		reservedEpoch = epoch
 		reservedCancel = cancel
 		reservedHold = holdCtx
@@ -811,18 +809,15 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 	}
 	app.Permissions.AutoApproveSession(sess.ID)
 
-	// Fork patch (run allowlist): (re)arm the restricted-run allowlist
-	// by merging the config-derived spec with this invocation's CLI
+	// Fork patch (run allowlist): build the restricted-run allowlist by
+	// merging the config-derived spec with this invocation's CLI
 	// overrides. Even when no override is passed we rebuild from config
 	// so the gate stays consistent with whatever permissions.run was on
 	// disk at run time. Only affects the auto-approve path exercised
-	// above; interactive sessions never run this code.
-	//
-	// R2-1 closes the residual same-session race: admission is decided
-	// before the policy is armed (reserved path), the entry is bound to the
-	// winner's ownership epoch, and the process-wide gate is no longer
-	// written by this path at all, so a missing/stale session entry cannot
-	// inherit an unrelated concurrent run's policy.
+	// above; interactive sessions never run this code. R2-1's epoch
+	// binding has been superseded by the per-call binding (R3-4), which
+	// covers the reserved path too: the reserved call also carries its
+	// policy and arms it at turn start.
 	runSpec := runAllowlistSpecFromConfig(app.config.Config().Permissions)
 	if overrides.RestrictedRun {
 		runSpec.Restrict = true
@@ -834,24 +829,23 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 		slog.Warn("Restricted-run allowlist has invalid patterns (skipping them)", "err", allowErr)
 	}
 	// R2-1: the unconditional process-wide SetRunAllowlist write is GONE
-	// from this path. The per-session entry below is the ONLY policy this
-	// run installs, so a session whose entry is missing or stale can never
-	// inherit another concurrent run's active policy — it consults whatever
-	// the process-wide gate holds (armed only by legacy callers, never by
-	// this path), which is the fail-closed direction for a multi-tenant
-	// host. On the reserved path the entry is epoch-bound: set only after
-	// admission won, cleared on exit only if THIS run's epoch still owns
-	// it, so a stale cleanup can never delete a newer owner's policy (the
-	// same epoch-comparison idiom mailbox.abandonOwnership uses).
-	if allowMgr, ok := app.Permissions.(permission.SessionRunAllowlistManager); ok {
-		if reserved {
-			allowMgr.SetSessionRunAllowlistForEpoch(sess.ID, compiled, reservedEpoch)
-			defer allowMgr.ClearSessionRunAllowlistForEpoch(sess.ID, reservedEpoch)
-		} else {
-			allowMgr.SetSessionRunAllowlist(sess.ID, compiled)
-			defer allowMgr.ClearSessionRunAllowlist(sess.ID)
-		}
-	}
+	// from this path.
+	//
+	// R3-4: the compiled policy is no longer armed here at call time —
+	// that write raced the mailbox: a queued (FailIfSessionBusy=false)
+	// call overwrote the ACTIVE owner's entry at queue time and its
+	// front-end defer cleared the only entry before the queued turn ever
+	// ran, and even the reserved path's entry armed before the turn
+	// goroutine had been admitted by the mailbox. The policy now travels
+	// with the call (agent.WithRunAllowlist below, stamped onto
+	// SessionAgentCall by buildCall/runInternal) and the turn loop arms it
+	// — bound to the call's LogicalCallID — only when the call actually
+	// becomes the active turn, for BOTH the reserved and the legacy
+	// queueing path, and clears it with that same call id at loop end.
+	// FailIfSessionBusy==false keeps the queueing contract (R1-4)
+	// untouched: queueing no longer has ANY global side effect at call
+	// time.
+	ctx = agent.WithRunAllowlist(ctx, &compiled)
 
 	// Fork patch: batch 8/30 + peak-hours bypass (R1-1). This run's
 	// timeout-extension policy, cost/token caps and peak-hours bypass now

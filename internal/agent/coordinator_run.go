@@ -121,8 +121,10 @@ func (c *coordinator) buildCall(ctx context.Context, sessionID, prompt string, p
 		PresencePenalty:      presPenalty,
 		SystemPromptOverride: sessionSystemPrompt,
 		CallOptions:          callOpts,
-		SmartModel:           &pinnedSmart,
-		LogicalCallID:        uuid.New().String(), // P2-1: generate stable ID once
+		// R3-4: this call's restricted-run policy, armed at turn start.
+		RunAllowlist:  runAllowlistFrom(ctx),
+		SmartModel:    &pinnedSmart,
+		LogicalCallID: uuid.New().String(), // P2-1: generate stable ID once
 	}
 	// Stamp the entry-channel origin at BUILD time, not message-creation
 	// time: the call may be queued as an InterruptAndSend replacement and
@@ -271,7 +273,9 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 		// R1-1/R1-4: per-call policy travels with the call — the caps the
 		// turn enforces, this run's full options snapshot, and the
 		// fail-fast busy contract enforced at the mailbox reservation.
-		CallOptions:          callOpts,
+		CallOptions: callOpts,
+		// R3-4: this call's restricted-run policy, armed at turn start.
+		RunAllowlist:         runAllowlistFrom(ctx),
 		FailIfSessionBusy:    callOpts != nil && callOpts.FailIfSessionBusy,
 		SmartModel:           &pinnedSmart,
 		LogicalCallID:        uuid.New().String(), // P2-1: generate stable ID once

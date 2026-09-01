@@ -413,6 +413,21 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 		}()
 	}
 
+	// R3-4: drop THIS dispatch loop's policy entry when the loop ends —
+	// identified by the LAST call whose policy was armed below, so a
+	// later owner's (or later turn's) freshly armed entry is never
+	// deleted: ClearSessionRunAllowlistForCall is compare-and-delete.
+	// Registered after the defers above so it runs before them: the
+	// session's gate falls back to the process-wide policy only after no
+	// turn of this loop can still consult it. Empty when no turn of this
+	// loop armed anything — the clear is then a no-op.
+	var armedCallID string
+	defer func() {
+		if armedCallID != "" {
+			a.runAllowlists.ClearSessionRunAllowlistForCall(call.SessionID, armedCallID)
+		}
+	}()
+
 	// Turn loop: replaces the three recursive a.Run(ctx, ...) call sites
 	// that used to live inside runTurn's body (cancel-drain, end-of-turn
 	// drain, and the /compact drain in runSummarizeBody). Each iteration
@@ -453,6 +468,24 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 		// interrupt landed in this exact window, which is the overwhelming
 		// majority of iterations.
 		call = mb.reclaimReplacementOrKeep(call)
+		// R3-4: activate THIS call's carried restricted-run policy exactly
+		// when the call becomes the active turn — whether it won ownership
+		// immediately (tryReserveSession), was queued and is now drained as
+		// the next turn (call = next below), or is an interrupt replacement.
+		// Arming here (instead of at ExecuteRun call time) is the fix: a
+		// queued call's policy can never overwrite the currently running
+		// owner's entry, and a queued turn runs under ITS OWN policy once
+		// promoted instead of the stale/fallback one. A replacement call
+		// that carries no policy leaves the previous entry armed, so the
+		// replacement keeps being judged by the policy of the run it
+		// interrupted (the pre-R3-4 behavior for that path). Consecutive
+		// turns share ONE mailbox epoch (the owner's whole dispatch loop),
+		// so the entry is bound to the call's LogicalCallID — the only
+		// per-turn identifier that survives the queue handoff.
+		if a.runAllowlists != nil && call.RunAllowlist != nil && call.LogicalCallID != "" {
+			a.runAllowlists.SetSessionRunAllowlistForCall(call.SessionID, *call.RunAllowlist, call.LogicalCallID)
+			armedCallID = call.LogicalCallID
+		}
 		// Per-turn context, derived from runCtx but independently
 		// cancelable. An interrupt during this turn's DB preamble (before
 		// runTurn creates genCtx) targets THIS cancel — not runCancel — so

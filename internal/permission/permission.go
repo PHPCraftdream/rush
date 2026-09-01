@@ -146,17 +146,43 @@ type SessionRunAllowlistManager interface {
 	// armed policy, and an entry armed by a run that lost admission is
 	// never created in the first place.
 	ClearSessionRunAllowlistForEpoch(sessionID string, ownerEpoch uint64)
+
+	// SetSessionRunAllowlistForCall arms allowlist for sessionID bound to
+	// the owning turn's LogicalCallID (round-3 review R3-4). This is the
+	// per-turn activation mechanism: the CALLER arms the policy only when
+	// its call actually becomes the session's active turn — never at
+	// queue time — so a queued call's policy can neither leak into the
+	// currently running turn nor be armed for a turn that has not
+	// started.
+	SetSessionRunAllowlistForCall(sessionID string, allowlist RunAllowlist, ownerCallID string)
+	// ClearSessionRunAllowlistForCall drops sessionID's entry ONLY if the
+	// stored entry still carries ownerCallID — the same
+	// compare-and-delete idiom as ClearSessionRunAllowlistForEpoch, keyed
+	// by the logical call id instead of the mailbox epoch. The mailbox
+	// epoch cannot serve this role on the queueing path: one owner's
+	// dispatch loop runs EVERY queued turn under the SAME epoch
+	// (runOwned's epoch parameter does not change across its
+	// call=next iterations), so consecutive turns are distinguishable
+	// only by their own LogicalCallID. A stale clear (a later owner, a
+	// newer turn's policy) therefore never deletes another turn's entry.
+	ClearSessionRunAllowlistForCall(sessionID string, ownerCallID string)
 }
 
 // sessionRunAllowlistEntry is one per-session restricted-run gate entry:
-// the compiled allowlist plus the mailbox ownership epoch it was armed
-// under. ownerEpoch 0 marks a legacy entry armed without an ownership
-// epoch (the mailbox never grants epoch 0 — beginCompact bumps an idle
-// mailbox to 1 — so a reserved run's epoch-aware clear can never match a
-// legacy entry by accident).
+// the compiled allowlist plus its binding. ownerEpoch 0 marks a
+// legacy/epoch-less entry armed without an ownership epoch (the mailbox
+// never grants epoch 0 — beginCompact bumps an idle mailbox to 1 — so a
+// reserved run's epoch-aware clear can never match a legacy entry by
+// accident). ownerCallID "" marks an entry not bound to a logical call.
+// The two bindings are independent: the epoch-scoped pair
+// (Set/ClearSessionRunAllowlistForEpoch) matches only ownerEpoch, the
+// call-scoped pair (Set/ClearSessionRunAllowlistForCall) matches only
+// ownerCallID, so a stale clear from one mechanism can never delete the
+// other mechanism's entry.
 type sessionRunAllowlistEntry struct {
-	allowlist  RunAllowlist
-	ownerEpoch uint64
+	allowlist   RunAllowlist
+	ownerEpoch  uint64
+	ownerCallID string
 }
 
 type permissionService struct {
@@ -553,6 +579,25 @@ func (s *permissionService) ClearSessionRunAllowlistForEpoch(sessionID string, o
 	}
 	s.runAllowlistBySessionMu.Lock()
 	if entry, ok := s.runAllowlistBySession[sessionID]; ok && entry.ownerEpoch == ownerEpoch {
+		delete(s.runAllowlistBySession, sessionID)
+	}
+	s.runAllowlistBySessionMu.Unlock()
+}
+
+// SetSessionRunAllowlistForCall arms allowlist for sessionID under the
+// logical call id of the turn that owns it (R3-4).
+func (s *permissionService) SetSessionRunAllowlistForCall(sessionID string, allowlist RunAllowlist, ownerCallID string) {
+	s.runAllowlistBySessionMu.Lock()
+	s.runAllowlistBySession[sessionID] = sessionRunAllowlistEntry{allowlist: allowlist, ownerCallID: ownerCallID}
+	s.runAllowlistBySessionMu.Unlock()
+}
+
+// ClearSessionRunAllowlistForCall drops sessionID's entry only when it
+// still carries ownerCallID (R3-4): a stale clear can never delete a
+// newer turn's freshly armed policy.
+func (s *permissionService) ClearSessionRunAllowlistForCall(sessionID string, ownerCallID string) {
+	s.runAllowlistBySessionMu.Lock()
+	if entry, ok := s.runAllowlistBySession[sessionID]; ok && entry.ownerCallID == ownerCallID {
 		delete(s.runAllowlistBySession, sessionID)
 	}
 	s.runAllowlistBySessionMu.Unlock()
