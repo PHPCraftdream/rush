@@ -280,6 +280,20 @@ type SessionAgentCall struct {
 	// exactly the field another session's override rewrites.
 	SystemPrompt *string
 
+	// Tools pins THIS call's complete tool slice (R3-1). It is built per
+	// call by resolveSessionModels/applyModelOverrides from the same
+	// pinned config snapshot and context as SmartModel/SystemPrompt above,
+	// so the per-call policy (CallOptions.DisableSubAgents, ModelRole)
+	// decides it, and the turn consumes its own slice at start and at
+	// every PrepareStep instead of re-reading the shared a.tools — which
+	// any concurrent call's UpdateModels/buildTools rewrites in place.
+	// nil (legacy callers; direct sessionAgent.Run tests) keeps the
+	// historical shared-slice behavior, including PrepareStep's live
+	// re-read. json:"-": never durable-queue-persisted — tool objects are
+	// live in-process values, so pump-driven rebuilds fall back to the
+	// shared path exactly like any other legacy caller.
+	Tools []fantasy.AgentTool `json:"-"`
+
 	// FromDurableQueue is true when this call originates from the durable
 	// run queue (task #340). When true and the session's mailbox is already
 	// owned by another in-process turn, mailbox.submit does NOT append this

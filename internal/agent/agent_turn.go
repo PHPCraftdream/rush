@@ -275,8 +275,16 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	// request.
 	a.cancelCacheKeepAlive(call.SessionID)
 
-	// Copy mutable fields under lock to avoid races with SetTools/SetModels.
-	agentTools := a.tools.Copy()
+	// R3-1: consume THIS call's pinned tool slice when it carries one, so
+	// no concurrent call's SetTools (UpdateModels' global rebuild) can
+	// change this turn's tools — not at start, and not between steps
+	// (PrepareStep below resolves from the same slice). nil keeps the
+	// legacy shared behavior: copy the live slice under its lock to avoid
+	// races with SetTools/SetModels.
+	agentTools := call.Tools
+	if agentTools == nil {
+		agentTools = a.tools.Copy()
+	}
 	// Test-only seam: fires right after the snapshot above, before PrepareStep
 	// re-reads a.tools for the actual request (see stepTools' doc). Lets a
 	// test deterministically simulate a SetTools/MCP update landing in that
@@ -645,12 +653,13 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	var currentAssistant *message.Message
 	var stepMessages []fantasy.Message
 	// stepTools is the tools list PrepareStep actually decided on for the
-	// most recent step (prepared.Tools, re-read from a.tools.Copy() there —
-	// see that assignment's own "use latest tools" comment) — NOT the outer
-	// agentTools snapshot above, which can go stale if SetTools/an MCP update
-	// lands between turn start and a step's PrepareStep. Cache-related code
-	// that needs "what was actually sent" (the keep-alive replay) must use
-	// this, not agentTools.
+	// most recent step (prepared.Tools, resolved in PrepareStep from the
+	// call's pinned slice, or from a.tools.Copy() for legacy calls that pin
+	// nothing — see that assignment's comment) — NOT the outer agentTools
+	// snapshot above, which can go stale if SetTools/an MCP update lands
+	// between turn start and a step's PrepareStep. Cache-related code that
+	// needs "what was actually sent" (the keep-alive replay) must use this,
+	// not agentTools.
 	var stepTools []fantasy.AgentTool
 	var shouldSummarize bool
 	// sanitizedToolCalls tracks tool call IDs whose input JSON was malformed
@@ -1059,13 +1068,19 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 				prepared.Messages[i].ProviderOptions = nil
 			}
 
-			// Use latest tools (updated by SetTools when MCP tools change).
-			// The cache-control marker is re-applied per step through the
-			// same per-step wrapper the turn's initial tool list uses: this
-			// re-read used to inherit the marker only because runTurn had
-			// MUTATED the shared tool object above, which is exactly the
-			// cross-turn write this fix removes.
-			prepared.Tools = withProviderOptionsOnLast(a.tools.Copy(), a.getCacheControlOptions())
+			// R3-1: the call's PINNED tool slice when it carries one —
+			// identical at every step, immune to a concurrent call's
+			// SetTools landing between steps. Only legacy calls (nothing
+			// pinned) re-read the shared slice (updated by SetTools when
+			// MCP tools change). The cache-control marker is re-applied per
+			// step through the same per-step wrapper the turn's initial
+			// tool list uses; withProviderOptionsOnLast clones before
+			// writing, so the pinned slice itself is never mutated.
+			pinnedStepTools := call.Tools
+			if pinnedStepTools == nil {
+				pinnedStepTools = a.tools.Copy()
+			}
+			prepared.Tools = withProviderOptionsOnLast(pinnedStepTools, a.getCacheControlOptions())
 
 			for _, inj := range a.drainDueInjects(call.SessionID, genID, historyIDs) {
 				prepared.Messages = append(prepared.Messages, inj.ToAIMessage()...)

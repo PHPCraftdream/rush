@@ -65,22 +65,32 @@ func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, age
 			checkpointInterval = defaultCheckpointInterval
 		}
 	}
+	// DisableAutoSummarize/DataDirectory must also tolerate a nil Options —
+	// the streamIdle/toolMax/checkpointInterval reads above already do.
+	var disableAutoSummarize bool
+	var dataDirectory string
+	if opts != nil {
+		disableAutoSummarize = opts.DisableAutoSummarize
+		dataDirectory = opts.DataDirectory
+	}
 	result := NewSessionAgent(SessionAgentOptions{
 		SmartModel:           smart,
 		FastModel:            fast,
 		SystemPromptPrefix:   smartProviderCfg.SystemPromptPrefix,
 		SystemPrompt:         "",
 		IsSubAgent:           isSubAgent,
-		DisableAutoSummarize: opts.DisableAutoSummarize,
-		IsYolo:               c.permissions.SkipRequests(),
-		Sessions:             c.sessions,
-		Messages:             c.messages,
-		Tools:                nil,
-		Notify:               c.notify,
-		StreamIdleTimeout:    streamIdleTimeout,
-		ToolMaxDuration:      toolMaxDuration,
-		DataDirectory:        opts.DataDirectory,
-		CheckpointInterval:   checkpointInterval, // Fork patch: batch 8
+		DisableAutoSummarize: disableAutoSummarize,
+		// permissions can be nil on bare test-fixture coordinators; treat
+		// that as fail-closed (not YOLO) rather than panicking.
+		IsYolo:             c.permissions != nil && c.permissions.SkipRequests(),
+		Sessions:           c.sessions,
+		Messages:           c.messages,
+		Tools:              nil,
+		Notify:             c.notify,
+		StreamIdleTimeout:  streamIdleTimeout,
+		ToolMaxDuration:    toolMaxDuration,
+		DataDirectory:      dataDirectory,
+		CheckpointInterval: checkpointInterval, // Fork patch: batch 8
 		// Fork patch: peak-hours mid-turn re-check. Deliberately LIVE, not
 		// pinned to cfg above: this is a runtime *policy* check re-evaluated
 		// on every mid-turn tick for the lifetime of the turn (see
@@ -184,8 +194,13 @@ var orchestratorStrippedToolNames = []string{"edit", "multiedit", "write"}
 // longer takes its own live c.cfg.Config() reads, so this decision now
 // agrees with every other config-derived choice buildAgent makes for the
 // same build (models, prompt's WorkerAvailable, hooks, MCP, etc.).
-func (c *coordinator) buildToolsAgentConfig(cfg *config.Config, agent config.Agent, isSubAgent bool) config.Agent {
-	if !c.workerSubAgentActive(cfg) {
+//
+// R3-1: the gate is now the PER-CALL predicate workerSubAgentActiveForCall,
+// so an explicit --role fast/worker/reviewer call's tool set agrees with
+// the prompt/model chosen for the SAME call instead of with the shared
+// activeModelRole field.
+func (c *coordinator) buildToolsAgentConfigForCall(ctx context.Context, cfg *config.Config, agent config.Agent, isSubAgent bool) config.Agent {
+	if !c.workerSubAgentActiveForCall(ctx, cfg) {
 		return agent
 	}
 
@@ -211,6 +226,13 @@ func (c *coordinator) buildToolsAgentConfig(cfg *config.Config, agent config.Age
 	}
 	agent.AllowedTools = allowed
 	return agent
+}
+
+// buildToolsAgentConfig is the legacy, context-less form of
+// buildToolsAgentConfigForCall, kept for direct tests: it behaves exactly
+// like a caller whose context carries no CallOptions.
+func (c *coordinator) buildToolsAgentConfig(cfg *config.Config, agent config.Agent, isSubAgent bool) config.Agent {
+	return c.buildToolsAgentConfigForCall(context.Background(), cfg, agent, isSubAgent)
 }
 
 // applyCallDisableSubAgents implements the per-call `--agents single`
@@ -284,15 +306,34 @@ func (c *coordinator) applyCallDisableSubAgents(ctx context.Context, cfg *config
 // generation than the rest of the agent -- narrower than the pre-#576
 // torn read (every other tool and the prompt agree with each other and with
 // cfg), but real. See tools.GetMCPTools's doc for the registry side of this.
+//
+// R3-1: when ctx carries CallOptions, the returned slice is scoped to that
+// ONE call (the DisableSubAgents filter and the per-call role gate above
+// read the context). Callers must pin it to the call — resolvedOverrides.tools
+// / SessionAgentCall.Tools — and must NOT publish it onto the shared agent
+// with SetTools; only UpdateModels (which strips CallOptions from its ctx
+// first) may publish a global toolset.
 func (c *coordinator) buildTools(ctx context.Context, cfg *config.Config, agent config.Agent, isSubAgent bool) ([]fantasy.AgentTool, error) {
 	agent = c.applyCallDisableSubAgents(ctx, cfg, agent, isSubAgent)
-	agent = c.buildToolsAgentConfig(cfg, agent, isSubAgent)
+	agent = c.buildToolsAgentConfigForCall(ctx, cfg, agent, isSubAgent)
 
 	// SSRF guard escape hatch (Options.AllowPrivateNetworkFetch, off by
 	// default): when enabled, every model-facing HTTP tool below gets an
 	// explicit allowPrivate=true client instead of letting its own nil
 	// fallback build the guarded default. See ssrf_guard.go.
-	allowPrivateNetworkFetch := cfg.Options.AllowPrivateNetworkFetch
+	//
+	// Options can be nil on bare test fixtures; every Options read below
+	// tolerates that.
+	var allowPrivateNetworkFetch bool
+	var attribution *config.Attribution
+	var skillsPaths []string
+	var logFile string
+	if cfg.Options != nil {
+		allowPrivateNetworkFetch = cfg.Options.AllowPrivateNetworkFetch
+		attribution = cfg.Options.Attribution
+		skillsPaths = cfg.Options.SkillsPaths
+		logFile = filepath.Join(cfg.Options.DataDirectory, "logs", "rush.log")
+	}
 	fetchClient := func(timeout time.Duration) *http.Client {
 		if !allowPrivateNetworkFetch {
 			return nil
@@ -325,8 +366,6 @@ func (c *coordinator) buildTools(ctx context.Context, cfg *config.Config, agent 
 		}
 	}
 
-	logFile := filepath.Join(cfg.Options.DataDirectory, "logs", "rush.log")
-
 	// Build hook runner if PreToolUse hooks are configured.
 	var hookRunner *hooks.Runner
 	if preToolHooks := cfg.Hooks[hooks.EventPreToolUse]; len(preToolHooks) > 0 {
@@ -341,7 +380,7 @@ func (c *coordinator) buildTools(ctx context.Context, cfg *config.Config, agent 
 	// persisted message (no auto-resume). rush run is single-turn and
 	// never receives it.
 	opts := cfg.Options
-	notifyDone := opts.NotifyOnBackgroundJobDone == nil || *opts.NotifyOnBackgroundJobDone
+	notifyDone := opts == nil || opts.NotifyOnBackgroundJobDone == nil || *opts.NotifyOnBackgroundJobDone
 	var onBgDone func(string, *shell.BackgroundShell)
 	if notifyDone {
 		onBgDone = func(sessionID string, sh *shell.BackgroundShell) {
@@ -352,7 +391,7 @@ func (c *coordinator) buildTools(ctx context.Context, cfg *config.Config, agent 
 	allTools = append(
 		allTools,
 		tools.NewAskQuestionTool(),
-		tools.NewBashTool(c.permissions, c.cfg.WorkingDir(), cfg.Options.Attribution, modelID, onBgDone),
+		tools.NewBashTool(c.permissions, c.cfg.WorkingDir(), attribution, modelID, onBgDone),
 		tools.NewRushInfoTool(c.cfg, c.allSkills, c.activeSkills, c.skillTracker),
 		tools.NewRushLogsTool(logFile),
 		tools.NewJobOutputTool(),
@@ -369,7 +408,7 @@ func (c *coordinator) buildTools(ctx context.Context, cfg *config.Config, agent 
 		tools.NewRunCommandTool(c.permissions, c.cfg.WorkingDir()),
 		tools.NewSourcegraphTool(fetchClient(30*time.Second)),
 		tools.NewTodosTool(c.sessions),
-		tools.NewViewTool(c.permissions, c.filetracker, c.skillTracker, c.cfg.WorkingDir(), cfg.Options.SkillsPaths...),
+		tools.NewViewTool(c.permissions, c.filetracker, c.skillTracker, c.cfg.WorkingDir(), skillsPaths...),
 		tools.NewWriteTool(c.permissions, c.history, c.filetracker, c.cfg.WorkingDir()),
 	)
 

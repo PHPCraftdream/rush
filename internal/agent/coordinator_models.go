@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"charm.land/catwalk/pkg/catwalk"
+	"charm.land/fantasy"
 	"charm.land/fantasy/providers/openrouter"
 	"github.com/PHPCraftdream/rush/internal/config"
 )
@@ -48,6 +49,23 @@ type resolvedOverrides struct {
 	// SAME credentials so a rejected tenant key can never retry the turn
 	// on the operator's configured provider.
 	credentials *CredentialSet
+	// tools is the coder toolset built from the SAME pinned config snapshot
+	// and THIS call's context (R3-1): buildTools reads the per-call
+	// CallOptions (DisableSubAgents, ModelRole) from the context, so the
+	// slice is scoped to exactly one call. pin copies it onto the
+	// SessionAgentCall so the turn consumes its own toolset at start and at
+	// every PrepareStep instead of re-reading the shared currentAgent
+	// tools, which a concurrent call's UpdateModels/buildTools used to
+	// overwrite mid-turn. nil (coder agent unconfigured, build failed) =
+	// pin nothing; the call falls back to the shared toolset exactly like a
+	// legacy caller.
+	tools []fantasy.AgentTool
+}
+
+// resolveSessionModels builds the full per-call snapshot for a turn —
+// models, prompt, AND the per-call coder toolset (R3-1).
+func (c *coordinator) resolveSessionModels(ctx context.Context, sessionID string) (*resolvedOverrides, error) {
+	return c.resolveSessionModelsInternal(ctx, sessionID, true)
 }
 
 // resolveSessionModels builds an immutable snapshot of model configuration for a session.
@@ -64,7 +82,7 @@ type resolvedOverrides struct {
 //
 // All config reads use a single atomic Snapshot() call to prevent reading config fields
 // from different generations (task #341, P1-3).
-func (c *coordinator) resolveSessionModels(ctx context.Context, sessionID string) (*resolvedOverrides, error) {
+func (c *coordinator) resolveSessionModelsInternal(ctx context.Context, sessionID string, wantTools bool) (*resolvedOverrides, error) {
 	// Load the session to check for model overrides.
 	sess, err := c.sessions.Get(ctx, sessionID)
 	if err != nil {
@@ -214,6 +232,17 @@ func (c *coordinator) resolveSessionModels(ctx context.Context, sessionID string
 		}
 	}
 
+	// R3-1: when the caller runs a turn (not a prompt-only resolve), build
+	// THIS call's coder toolset from the SAME pinned cfg and with THIS
+	// call's context, so the per-call filters (CallOptions.DisableSubAgents,
+	// ModelRole) decide the slice and the result is pinned to the call
+	// instead of published onto the shared currentAgent. The old publisher
+	// was ExecuteRun's per-run UpdateModels, whose SetTools overwrote the
+	// ONE shared toolset every in-flight turn re-read at every step.
+	if wantTools {
+		resolved.tools = c.pinCallTools(ctx, cfg)
+	}
+
 	return resolved, nil
 }
 
@@ -346,6 +375,11 @@ func (c *coordinator) applyModelOverrides(ctx context.Context, smart, fast *Mode
 			resolved.systemPrompt = newSystemPrompt
 		}
 	}
+	// R3-1: pin the per-call coder toolset exactly like
+	// resolveSessionModels does — built from the same pinned cfg and this
+	// call's context, so RunWithOverrides' per-call policy decides the
+	// slice instead of the shared agent state.
+	resolved.tools = c.pinCallTools(ctx, cfg)
 	return resolved, nil
 }
 
@@ -368,6 +402,9 @@ func (r *resolvedOverrides) pin(call *SessionAgentCall) {
 		prompt := r.systemPrompt
 		call.SystemPrompt = &prompt
 	}
+	if r.tools != nil {
+		call.Tools = r.tools
+	}
 }
 
 // resolveSessionSystemPrompt loads the per-session system prompt from the DB,
@@ -387,7 +424,10 @@ func (c *coordinator) resolveSessionSystemPrompt(ctx context.Context, sessionID 
 
 	// Resolve the session's model to use for prompt building.
 	// Use the smart model since that's what the turn runs on.
-	resolved, resolveErr := c.resolveSessionModels(ctx, sessionID)
+	// wantTools=false: this path only needs the prompt, and the turn that
+	// consumes it builds (and pins) its own toolset — building one here
+	// would double the per-turn tool build for no effect.
+	resolved, resolveErr := c.resolveSessionModelsInternal(ctx, sessionID, false)
 	if resolveErr != nil {
 		slog.Warn("coordinator: failed to resolve models for system prompt", "sessionID", sessionID, "err", resolveErr)
 		return ""
@@ -409,6 +449,49 @@ func (c *coordinator) resolveSessionSystemPrompt(ctx context.Context, sessionID 
 		slog.Warn("coordinator: failed to save system prompt to session", "sessionID", sessionID, "err", saveErr)
 	}
 	return built
+}
+
+// pinCallTools builds the per-call coder toolset (R3-1) from the caller's
+// already-pinned cfg snapshot and THIS call's context, then drains any
+// agent-build tasks registered on the ready gate. buildTools reads the
+// per-call CallOptions (DisableSubAgents, ModelRole) from ctx, so the
+// returned slice is scoped to exactly one call; the caller pins it onto the
+// SessionAgentCall via resolvedOverrides.pin instead of publishing it to the
+// shared agent. nil is returned (log-only, never fatal) whenever the coder
+// agent is unconfigured, buildTools fails, or a registered agent build
+// fails — the call then falls back to the shared toolset exactly like a
+// legacy caller.
+func (c *coordinator) pinCallTools(ctx context.Context, cfg *config.Config) []fantasy.AgentTool {
+	agentCfg, ok := cfg.Agents[config.AgentCoder]
+	if !ok {
+		return nil
+	}
+	tools, err := c.buildTools(ctx, cfg, agentCfg, false)
+	if err != nil {
+		slog.Warn("Coordinator: failed to build per-call tools; falling back to shared toolset", "err", err)
+		tools = nil
+	}
+	// The toolset embeds a freshly built sub-agent (buildTools -> agentTool
+	// -> buildAgent), whose prompt/tool builds run asynchronously on the
+	// ready gate. Drain the gate before returning so the turn cannot
+	// dispatch a still-under-construction sub-agent — the same ordering the
+	// removed per-run UpdateModels publisher used to get from the run entry
+	// points' readyWg.Wait. A gate error is not fatal here: drop the pinned
+	// slice and let the call fall back to the shared toolset.
+	if waitErr := c.readyWg.Wait(); waitErr != nil {
+		slog.Warn("Coordinator: agent build failed; falling back to shared toolset", "err", waitErr)
+		return nil
+	}
+	return tools
+}
+
+// withoutCallOptions returns ctx with any per-call CallOptions removed, so
+// downstream builds cannot consume a caller's per-call policy (R3-1).
+// UpdateModels is a GLOBAL refresh (config reloads, credential refreshes)
+// and must publish only global state even when the caller's context — e.g.
+// runWithUnauthorizedRetry's 401-rebuild ctx — carries CallOptions.
+func withoutCallOptions(ctx context.Context) context.Context {
+	return context.WithValue(ctx, callOptionsContextKey{}, (*CallOptions)(nil))
 }
 
 // workerSubAgentActiveForCall is the per-call form of workerSubAgentActive
@@ -632,7 +715,16 @@ func (c *coordinator) Model() Model {
 	return smartModel
 }
 
+// UpdateModels refreshes the coordinator-wide default agent (models, prompt
+// prefix, toolset) from the LATEST config: config reloads (SetupAgents) and
+// credential refreshes use it to republish clients and tools — including
+// live MCP tool-list changes — for LEGACY callers whose turns still read the
+// shared state. It is NOT a per-run hook (R3-1): any CallOptions carried by
+// ctx are stripped first, so a single run's DisableSubAgents/ModelRole can
+// never decide what every other in-flight turn sees. Per-call toolsets are
+// built and pinned by resolveSessionModels/applyModelOverrides instead.
 func (c *coordinator) UpdateModels(ctx context.Context) error {
+	ctx = withoutCallOptions(ctx)
 	c.clearModelCache()
 
 	// build the models again so we make sure we get the latest config

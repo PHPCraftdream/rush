@@ -595,10 +595,10 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 	// fallback path for legacy (non-ExecuteRun) callers and are
 	// deliberately untouched.
 	//
-	// Attached BEFORE UpdateModels on purpose: UpdateModels' toolset
-	// rebuild reads the per-call DisableSubAgents filter and ModelRole
-	// from this context (see coordinator_tools.go), and buildAgent
-	// captures the role synchronously at registration time.
+	// Attached before session resolution on purpose: the coordinator's
+	// per-call toolset build (resolveSessionModels -> buildTools) reads
+	// the DisableSubAgents filter and ModelRole from this context, and
+	// buildAgent captures the role synchronously at registration time.
 	callOpts := &agent.CallOptions{
 		ModelRole:                overrides.ModelRole,
 		TimeoutExtendsOnProgress: overrides.TimeoutExtendsOnProgress,
@@ -631,8 +631,17 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 	// delegation is the intended workflow, even when --agents single was
 	// passed explicitly. `agentic_fetch` stays stripped either way.
 
-	// force update of agent models before running so mcp tools are loaded
-	app.AgentCoordinator.UpdateModels(ctx)
+	// R3-1: the former per-run UpdateModels(ctx) call is GONE. It was the
+	// publisher that leaked THIS run's per-call tool filter onto shared
+	// state: it rebuilt the coder toolset with this ctx's CallOptions and
+	// SetTools'd the result onto the ONE shared currentAgent — before
+	// session resolution and before ReserveExclusive — so a same-session
+	// fail-fast loser clobbered the winner's live toolset, and calls with
+	// opposite DisableSubAgents raced each other's in-flight turns (which
+	// re-read the shared slice at every PrepareStep). Per-call toolsets are
+	// now built and pinned inside the coordinator's resolveSessionModels;
+	// UpdateModels remains only as a global config/MCP refresh and no
+	// longer consumes per-call state at all.
 
 	defer stopSpinner()
 
