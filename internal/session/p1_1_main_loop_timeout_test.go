@@ -25,6 +25,7 @@ import (
 	"context"
 	"encoding/json"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -39,6 +40,14 @@ type blockingReadsService struct {
 	mu       sync.Mutex
 	blockCh  chan struct{} // when non-nil, ListPendingRunQueueEntries blocks until closed
 	blockNow bool          // whether the next ListPendingRunQueueEntries call should block
+
+	// blockedCount is incremented the moment a call actually observes
+	// blockNow and starts blocking. Tests poll this (require.Eventually)
+	// instead of guessing readiness via time.Sleep — under CI load the pump
+	// goroutine can be scheduled far later than a fixed sleep assumes, so a
+	// sleep-based wait can start the Stop()/timeout measurement before the
+	// main loop ever reaches the blocked call at all.
+	blockedCount atomic.Int32
 }
 
 // ListPendingRunQueueEntries blocks if blockNow is true, otherwise delegates.
@@ -49,6 +58,7 @@ func (s *blockingReadsService) ListPendingRunQueueEntries(ctx context.Context) (
 	s.mu.Unlock()
 
 	if shouldBlock && ch != nil {
+		s.blockedCount.Add(1)
 		<-ch // Block until the test closes the channel
 	}
 
@@ -91,8 +101,11 @@ func TestP1_1_StopWaitsForMainLoopWithTimeout(t *testing.T) {
 	})
 	pump.Start()
 
-	// Wait for at least one tick to complete (pump is running)
-	time.Sleep(200 * time.Millisecond)
+	// Wait for at least one tick to complete (pump is running and has
+	// dispatched the enqueued entry) before arming the block.
+	require.Eventually(t, func() bool {
+		return coord.entryCount.Load() > 0
+	}, 5*time.Second, 10*time.Millisecond, "pump must process the initial pending entry before we arm the block")
 
 	// Now block on the next DB read (tick() will hang inside ListPendingRunQueueEntries)
 	blockingSvc.mu.Lock()
@@ -100,8 +113,11 @@ func TestP1_1_StopWaitsForMainLoopWithTimeout(t *testing.T) {
 	blockingSvc.blockCh = blockCh
 	blockingSvc.mu.Unlock()
 
-	// Wait a bit for tick() to call ListPendingRunQueueEntries and block
-	time.Sleep(200 * time.Millisecond)
+	// Wait for tick() to actually enter the blocked read before measuring
+	// Stop()'s behavior — a fixed sleep can't guarantee this under CI load.
+	require.Eventually(t, func() bool {
+		return blockingSvc.blockedCount.Load() > 0
+	}, 5*time.Second, 10*time.Millisecond, "tick() must have entered the blocked read before Stop() is called")
 
 	// Call Stop() and verify it returns within 5 seconds despite the hung tick
 	start := time.Now()
@@ -163,7 +179,9 @@ func TestP1_1_TickUsesDeadlineBoundContext(t *testing.T) {
 	pump.Start()
 
 	// Wait for at least one tick to complete
-	time.Sleep(200 * time.Millisecond)
+	require.Eventually(t, func() bool {
+		return coord.entryCount.Load() > 0
+	}, 5*time.Second, 10*time.Millisecond, "pump must process the initial pending entry before we arm the block")
 
 	// Now block on the next DB read
 	blockingSvc.mu.Lock()
@@ -171,8 +189,11 @@ func TestP1_1_TickUsesDeadlineBoundContext(t *testing.T) {
 	blockingSvc.blockCh = blockCh
 	blockingSvc.mu.Unlock()
 
-	// Wait for tick() to be blocked
-	time.Sleep(200 * time.Millisecond)
+	// Wait for tick() to actually be blocked before relying on the timing
+	// assertions below.
+	require.Eventually(t, func() bool {
+		return blockingSvc.blockedCount.Load() > 0
+	}, 5*time.Second, 10*time.Millisecond, "tick() must have entered the blocked read")
 
 	// The tick() call should eventually fail with context deadline exceeded
 	// (after the 5-second timeout in tick), not hang forever. We verify this
