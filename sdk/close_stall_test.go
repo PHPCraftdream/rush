@@ -270,7 +270,7 @@ func TestCloseForcedWhenRunIgnoresCancellation(t *testing.T) {
 	// Forced shutdown leaves the in-memory handles open (live writers),
 	// and the bookkeeping agrees.
 	for _, conn := range client.closeConns {
-		require.NoError(t, conn.Ping(), "forced Close must leave the in-memory handles open")
+		require.NoError(t, conn.PingContext(t.Context()), "forced Close must leave the in-memory handles open")
 	}
 	require.False(t, client.connsClosed)
 
@@ -284,7 +284,7 @@ func TestCloseForcedWhenRunIgnoresCancellation(t *testing.T) {
 	require.NoError(t, client.CloseEphemeralConnsForced())
 	require.True(t, client.connsClosed)
 	for _, conn := range client.closeConns {
-		require.Error(t, conn.Ping(), "the explicit reclaim must actually close the handles")
+		require.Error(t, conn.PingContext(t.Context()), "the explicit reclaim must actually close the handles")
 	}
 	// The reclaim is idempotent.
 	require.NoError(t, client.CloseEphemeralConnsForced())
