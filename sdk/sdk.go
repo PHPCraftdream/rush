@@ -44,7 +44,6 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"sync/atomic"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/app"
@@ -83,9 +82,11 @@ type (
 )
 
 // ErrClientClosed is returned by Client.Run, Client.RunWithCredentials,
-// Client.Messages, and Client.Session when the Client has already been
-// closed via Close. The Subscribe methods return no error; on a closed
-// Client they return an already-closed channel instead (see their docs).
+// Client.Messages, and Client.Session once Close has started on the
+// Client — either already finished, or still draining the calls it
+// admitted before closing began (see Close for the exact ordering). The
+// Subscribe methods return no error; on a closed Client they return an
+// already-closed channel instead (see their docs).
 var ErrClientClosed = errors.New("sdk: client is closed")
 
 // Structured-event aliases onto the same raw types the web UI's WS layer
@@ -230,11 +231,30 @@ type Client struct {
 	closeOnce   sync.Once
 	closeResult CloseResult
 
-	// closed is set once by Close and never unset. Every Run, read, and
-	// Subscribe method checks it on entry and refuses a closed Client
-	// (ErrClientClosed, or an already-closed channel for the Subscribe
-	// methods) instead of racing the shutdown sequence on c.app.
-	closed atomic.Bool
+	// Admission state, shared by every public method and Close (review
+	// round-2 finding R2-2): a bare closed flag checked on entry only
+	// guarded calls that STARTED after Close returned, leaving the
+	// check-then-act race open where a call reads closed==false, is
+	// descheduled, and then enters c.app against an App that Close has
+	// already torn down. admissionMu guards the three fields below as
+	// one state machine: admit either registers a call as in-flight
+	// before closing starts or rejects it; Close flips closing, waits
+	// for inflight to drain, and only then tears the App down. See
+	// admit, release, and beginShutdown.
+	admissionMu sync.Mutex
+	// closing is set once by Close and never unset; from that instant
+	// every new admission is refused (ErrClientClosed, or an
+	// already-closed channel for the Subscribe methods).
+	closing bool
+	// inflight counts admitted calls that have not returned yet. The
+	// Subscribe methods hold a count only for the duration of the call
+	// itself, never for the subscription's lifetime (a subscription is
+	// bound to the caller's ctx, which outlives the call by design).
+	inflight int
+	// drained is created when closing flips to true and is closed once
+	// inflight reaches zero — Close's signal that the last admitted
+	// call has returned and teardown may begin.
+	drained chan struct{}
 
 	// connsMu guards connsClosed, the once-only bookkeeping for
 	// closeConns: Close's graceful path and CloseEphemeralConnsForced
@@ -375,11 +395,14 @@ func openApplication(ctx context.Context, o Options) (*Client, error) {
 // Generating opaque session ids and mapping them to your own callers
 // is the host's job. See the README's trust-model section.
 //
-// Returns ErrClientClosed if the Client has already been closed.
+// Returns ErrClientClosed once Close has started. An admitted Run always
+// finishes against a fully live App: Close waits for it before releasing
+// any resource (see Close).
 func (c *Client) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
-	if c.closed.Load() {
+	if !c.admit() {
 		return nil, ErrClientClosed
 	}
+	defer c.release()
 	if req.Stdout == nil && c.stdout != nil {
 		req.Stdout = c.stdout
 	}
@@ -431,11 +454,14 @@ func (c *Client) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 // Like Run, no ownership or authorization check is performed on
 // req.ContinueSessionID — see the README's trust-model section.
 //
-// Returns ErrClientClosed if the Client has already been closed.
+// Returns ErrClientClosed once Close has started. An admitted call always
+// finishes against a fully live App: Close waits for it before releasing
+// any resource (see Close).
 func (c *Client) RunWithCredentials(ctx context.Context, req RunRequest, creds CredentialSet) (*RunResult, error) {
-	if c.closed.Load() {
+	if !c.admit() {
 		return nil, ErrClientClosed
 	}
+	defer c.release()
 	if req.Stdout == nil && c.stdout != nil {
 		req.Stdout = c.stdout
 	}
@@ -465,13 +491,20 @@ func (c *Client) RunWithCredentials(ctx context.Context, req RunRequest, creds C
 // subscriber; filter by ev.Payload.SessionID in the host (see the
 // README's trust-model section).
 //
+// Admission counts only the Subscribe call itself, never the
+// subscription's lifetime: a subscription admitted before Close started
+// stays bound to the caller's ctx (it simply stops receiving events once
+// the App has shut down), while a call that races Close either completes
+// against the live broker or returns an already-closed channel.
+//
 // On a closed Client the returned channel is already closed.
 func (c *Client) SubscribeMessages(ctx context.Context) <-chan MessageEvent {
-	if c.closed.Load() {
+	if !c.admit() {
 		closedCh := make(chan MessageEvent)
 		close(closedCh)
 		return closedCh
 	}
+	defer c.release()
 	return c.app.Messages.Subscribe(ctx)
 }
 
@@ -482,13 +515,17 @@ func (c *Client) SubscribeMessages(ctx context.Context) <-chan MessageEvent {
 // No tenant filtering either: filter by ev.Payload.SessionID in the
 // host (see the README's trust-model section).
 //
+// Admission counts only the Subscribe call itself, never the
+// subscription's lifetime — see SubscribeMessages.
+//
 // On a closed Client the returned channel is already closed.
 func (c *Client) SubscribeSessions(ctx context.Context) <-chan SessionEvent {
-	if c.closed.Load() {
+	if !c.admit() {
 		closedCh := make(chan SessionEvent)
 		close(closedCh)
 		return closedCh
 	}
+	defer c.release()
 	return c.app.Sessions.Subscribe(ctx)
 }
 
@@ -507,11 +544,14 @@ func (c *Client) SubscribeSessions(ctx context.Context) <-chan SessionEvent {
 // the id gets the full history (see the README's trust-model
 // section).
 //
-// Returns ErrClientClosed if the Client has already been closed.
+// Returns ErrClientClosed once Close has started; an admitted call is
+// always served from the live store, because Close waits for it before
+// releasing any resource (see Close).
 func (c *Client) Messages(ctx context.Context, sessionID string) ([]Message, error) {
-	if c.closed.Load() {
+	if !c.admit() {
 		return nil, ErrClientClosed
 	}
+	defer c.release()
 	return c.app.Messages.List(ctx, sessionID)
 }
 
@@ -521,11 +561,14 @@ func (c *Client) Messages(ctx context.Context, sessionID string) ([]Message, err
 // No ownership check is performed on sessionID either (see the
 // README's trust-model section).
 //
-// Returns ErrClientClosed if the Client has already been closed.
+// Returns ErrClientClosed once Close has started; an admitted call is
+// always served from the live store, because Close waits for it before
+// releasing any resource (see Close).
 func (c *Client) Session(ctx context.Context, sessionID string) (Session, error) {
-	if c.closed.Load() {
+	if !c.admit() {
 		return Session{}, ErrClientClosed
 	}
+	defer c.release()
 	return c.app.Sessions.Get(ctx, sessionID)
 }
 
@@ -553,14 +596,36 @@ func (c *Client) Session(ctx context.Context, sessionID string) (Session, error)
 // inside a long-lived host process. Release them deliberately with
 // CloseEphemeralConnsForced once every writer has finished.
 //
-// Once Close has run, Run, RunWithCredentials, Messages, and Session return
-// ErrClientClosed and the Subscribe methods return an already-closed
-// channel; Close itself remains idempotent.
+// Close runs in three ordered phases. First it closes admission: from
+// the instant Close is called, new Run/RunWithCredentials/Messages/
+// Session calls fail with ErrClientClosed and the Subscribe methods
+// return an already-closed channel. Second it waits for the calls that
+// were admitted before that instant to return, so an in-flight call
+// always finishes against a fully live App and can never touch an App or
+// an in-memory handle that teardown has already released — the
+// check-then-act race a bare closed flag leaves open. Third it performs
+// exactly the shutdown described above.
+//
+// The drain wait is deliberately unbounded: a call that never returns
+// delays Close, so a host that needs a bound should cancel the contexts
+// it handed to its own in-flight calls. Do not call Close from within an
+// in-flight call on the same Client — the drain would wait for the very
+// call Close is blocking.
+//
+// Once Close has started, Run, RunWithCredentials, Messages, and Session
+// return ErrClientClosed and the Subscribe methods return an
+// already-closed channel; Close itself remains idempotent.
 func (c *Client) Close() CloseResult {
 	if c == nil || c.app == nil {
 		return CloseResult{}
 	}
-	c.closed.Store(true)
+	// Phase 1: reject every new admission from this instant on.
+	drained := c.beginShutdown()
+	// Phase 2: let the already-admitted calls finish before anything
+	// is torn down.
+	<-drained
+	// Phase 3: the shutdown itself — still at most once per Client
+	// (closeOnce), with the first result cached for repeat callers.
 	c.closeOnce.Do(func() {
 		c.closeResult = c.app.ShutdownWithResult()
 		if !c.closeResult.Forced {
@@ -573,6 +638,51 @@ func (c *Client) Close() CloseResult {
 		// releases them once the host knows the writers are done.
 	})
 	return c.closeResult
+}
+
+// admit atomically admits one method call: it either registers the call
+// as in-flight before closing has started (true) or rejects it because
+// Close has begun (false). The check and the registration share one
+// critical section, so a call can never be counted as admitted and then
+// enter c.app against an App that Close is tearing down.
+func (c *Client) admit() bool {
+	c.admissionMu.Lock()
+	defer c.admissionMu.Unlock()
+	if c.closing {
+		return false
+	}
+	c.inflight++
+	return true
+}
+
+// release drops one admission made by admit. It runs at most once per
+// successful admit, so inflight never goes negative; when it drops
+// inflight to zero after Close has started closing, it signals Close
+// that the last admitted call has returned.
+func (c *Client) release() {
+	c.admissionMu.Lock()
+	defer c.admissionMu.Unlock()
+	c.inflight--
+	if c.closing && c.inflight == 0 {
+		close(c.drained)
+	}
+}
+
+// beginShutdown flips the Client into the closing state — rejecting
+// every new admission from this instant — and returns the channel that
+// is closed once no admitted call remains in flight. Idempotent: repeat
+// and concurrent calls observe the state the first call created.
+func (c *Client) beginShutdown() <-chan struct{} {
+	c.admissionMu.Lock()
+	defer c.admissionMu.Unlock()
+	if !c.closing {
+		c.closing = true
+		c.drained = make(chan struct{})
+		if c.inflight == 0 {
+			close(c.drained)
+		}
+	}
+	return c.drained
 }
 
 // CloseEphemeralConnsForced force-closes the in-memory database handles
