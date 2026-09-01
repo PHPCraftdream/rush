@@ -90,8 +90,99 @@ jobs:
       # for the full history of why (a chronic SIGTERM kill on
       # ubuntu-latest, plus a genuine Windows OOM from running it
       # concurrently with another package under -p >1).
-      - run: go test -short -failfast -p 2 $(go list ./... | grep -v '/internal/agent$')
+      #
+      # Everything else used to run as ONE `go test $(go list ./...)`
+      # step. That hid which package actually failed behind a single
+      # combined log a human had to grep through (task: round-3 SDK
+      # review follow-up, found the hard way debugging a real
+      # macos-latest failure in internal/app buried under dozens of
+      # unrelated "ok" lines from packages that finished afterward).
+      # Splitting into one named step per logical package group makes
+      # the failing step's NAME the diagnosis -- no log-reading needed
+      # to find which area broke. Flags (-short -failfast -p 2) are
+      # unchanged from the old single step; this is a pure regrouping,
+      # not a coverage or flag change.
+      #
+      # The LAST step is a computed catch-all, not a hand-maintained
+      # list: it runs every package not explicitly claimed by an
+      # earlier step, so a newly added top-level package is always
+      # covered by SOMETHING even if nobody remembers to give it its
+      # own group (same philosophy as the test-agent job's dynamic
+      # test-name extraction below).
+      - name: "test: internal/app"
+        run: go test -short -failfast -p 2 ./internal/app/...
         shell: bash
+      - name: "test: internal/server, internal/session"
+        run: go test -short -failfast -p 2 ./internal/server/... ./internal/session/...
+        shell: bash
+      - name: "test: internal/permission, internal/config, internal/csync"
+        run: go test -short -failfast -p 2 ./internal/permission/... ./internal/config/... ./internal/csync/...
+        shell: bash
+      - name: "test: internal/cmd, internal/commands"
+        run: go test -short -failfast -p 2 ./internal/cmd/... ./internal/commands/...
+        shell: bash
+      - name: "test: sdk"
+        run: go test -short -failfast -p 2 ./sdk/...
+        shell: bash
+      - name: "test: internal/agent subpackages (agentguard, cliprovider, hyper, notify, prompt, tools)"
+        run: go test -short -failfast -p 2 ./internal/agent/agentguard/... ./internal/agent/cliprovider/... ./internal/agent/hyper/... ./internal/agent/notify/... ./internal/agent/prompt/... ./internal/agent/tools/...
+        shell: bash
+      - name: "test: internal/db, internal/message, internal/queue, internal/pubsub, internal/history"
+        run: go test -short -failfast -p 2 ./internal/db/... ./internal/message/... ./internal/queue/... ./internal/pubsub/... ./internal/history/...
+        shell: bash
+      - name: "test: internal/oauth, internal/deploy, internal/update, internal/version"
+        run: go test -short -failfast -p 2 ./internal/oauth/... ./internal/deploy/... ./internal/update/... ./internal/version/...
+        shell: bash
+      - name: "test: everything else (computed catch-all)"
+        shell: bash
+        run: |
+          set -uo pipefail
+          # Bash 3.2 compatible (macos-latest's system bash) -- no
+          # mapfile/readarray, same constraint as the test-agent job below.
+          covered=(
+            github.com/PHPCraftdream/rush/internal/app
+            github.com/PHPCraftdream/rush/internal/server
+            github.com/PHPCraftdream/rush/internal/session
+            github.com/PHPCraftdream/rush/internal/permission
+            github.com/PHPCraftdream/rush/internal/config
+            github.com/PHPCraftdream/rush/internal/csync
+            github.com/PHPCraftdream/rush/internal/cmd
+            github.com/PHPCraftdream/rush/internal/commands
+            github.com/PHPCraftdream/rush/sdk
+            github.com/PHPCraftdream/rush/internal/agent/agentguard
+            github.com/PHPCraftdream/rush/internal/agent/cliprovider
+            github.com/PHPCraftdream/rush/internal/agent/hyper
+            github.com/PHPCraftdream/rush/internal/agent/notify
+            github.com/PHPCraftdream/rush/internal/agent/prompt
+            github.com/PHPCraftdream/rush/internal/agent/tools
+            github.com/PHPCraftdream/rush/internal/agent/tools/mcp
+            github.com/PHPCraftdream/rush/internal/db
+            github.com/PHPCraftdream/rush/internal/message
+            github.com/PHPCraftdream/rush/internal/queue
+            github.com/PHPCraftdream/rush/internal/pubsub
+            github.com/PHPCraftdream/rush/internal/history
+            github.com/PHPCraftdream/rush/internal/oauth
+            github.com/PHPCraftdream/rush/internal/oauth/copilot
+            github.com/PHPCraftdream/rush/internal/oauth/hyper
+            github.com/PHPCraftdream/rush/internal/deploy
+            github.com/PHPCraftdream/rush/internal/update
+            github.com/PHPCraftdream/rush/internal/version
+            github.com/PHPCraftdream/rush/internal/agent
+          )
+          # internal/agent is in `covered` too (it has its own dedicated
+          # test-agent job below) so exclusion is exact-string, same
+          # mechanism as every other group -- no grep/regex dependency
+          # for correctness here.
+          leftover=()
+          while IFS= read -r pkg; do
+            found=0
+            for c in "${covered[@]}"; do
+              [ "$pkg" = "$c" ] && { found=1; break; }
+            done
+            [ "$found" -eq 0 ] && leftover+=("$pkg")
+          done < <(go list ./...)
+          echo "leftover packages: ${leftover[*]}"
+          go test -short -failfast -p 2 "${leftover[@]}"
       # The generation-fence and process-tree-kill suites are the ones the
       # session/agent concurrency work exists to protect, and -short skips
       # every one of them (they spawn real child processes, so the guard is
