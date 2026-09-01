@@ -697,9 +697,13 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 		reservedEpoch   uint64
 		reservedCancel  context.CancelFunc
 		reservedHandoff atomic.Bool
+		// reservedHold is the holdCtx returned by ReserveExclusive
+		// (context.WithCancel-derived); Cancel(sessionID)/CancelAll landing
+		// during the hold cancels it via the session mailbox.
+		reservedHold context.Context
 	)
 	if req.FailIfSessionBusy {
-		_, epoch, cancel, ok := app.AgentCoordinator.ReserveExclusive(ctx, sess.ID)
+		holdCtx, epoch, cancel, ok := app.AgentCoordinator.ReserveExclusive(ctx, sess.ID)
 		if !ok {
 			slog.Warn("Run rejected: session already has an in-process owner (atomic reservation)", "session_id", sess.ID)
 			return nil, fmt.Errorf("session %q is already processing another request: %w", sess.ID, agent.ErrSessionBusy)
@@ -707,6 +711,7 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 		reserved = true
 		reservedEpoch = epoch
 		reservedCancel = cancel
+		reservedHold = holdCtx
 		// Ownership continues into the turn: the token makes sessionAgent.Run
 		// CONTINUE this era (the same rebindDispatcher mechanism /compact and
 		// rerun already use) instead of racing a fresh submit() that would
@@ -726,6 +731,39 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 		}()
 	}
 
+	// R3-3: mutCtx governs every pre-handoff session mutation below. On
+	// the reserved path it is reservedHold, the context ReserveExclusive
+	// derives via context.WithCancel and wires into the mailbox as the
+	// era's cancel target, so a Cancel(sessionID)/CancelAll landing during
+	// the hold window cancels it while caller-ctx cancellation still
+	// propagates (it derives from ctx). Previously ExecuteRun discarded
+	// holdCtx, so mailbox-directed cancellation in this window fired a
+	// placeholder nobody observed and the mutations and turn proceeded
+	// anyway. After the handoff holdCtx is intentionally dead
+	// (RunWithReservedOwnership / the pre-reserved-ownership path fires it
+	// once the turn's own cancel is live), so the turn goroutine and
+	// everything downstream keeps the original ctx.
+	mutCtx := ctx
+	if reservedHold != nil {
+		mutCtx = reservedHold
+	}
+
+	// checkHoldCanceled is checked before every pre-handoff mutation block
+	// and immediately before the handoff, so a canceled hold bails out
+	// through the armed ReleaseExclusive defer without mutating session
+	// state or starting a turn.
+	checkHoldCanceled := func() error {
+		if reservedHold == nil {
+			return nil
+		}
+		err := reservedHold.Err()
+		if err == nil {
+			return nil
+		}
+		slog.Warn("Run abandoned: cancellation landed during admission hold", "session_id", sess.ID, "err", err)
+		return fmt.Errorf("session %q canceled during run admission: %w", sess.ID, err)
+	}
+
 	if continueSessionID != "" || useLast {
 		slog.Info("Continuing session for non-interactive run", "session_id", sess.ID)
 	} else {
@@ -736,8 +774,11 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 	// resolveSessionSystemPrompt will pick it up on the next Run(); leaving
 	// systemPrompt empty preserves whatever was previously stored (or causes
 	// the default prompt to be built and stored on first run).
+	if err := checkHoldCanceled(); err != nil {
+		return nil, err
+	}
 	if systemPrompt != "" {
-		if err := app.Sessions.UpdateSystemPrompt(ctx, sess.ID, systemPrompt); err != nil {
+		if err := app.Sessions.UpdateSystemPrompt(mutCtx, sess.ID, systemPrompt); err != nil {
 			return nil, fmt.Errorf("failed to set system prompt for session: %w", err)
 		}
 	}
@@ -745,6 +786,9 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 	// Persist reasoning effort onto the active slot. We pass the current
 	// stored value for the *other* slot through so we don't clobber it —
 	// UpdateReasoningEffort takes both fields as a single transaction.
+	if err := checkHoldCanceled(); err != nil {
+		return nil, err
+	}
 	if overrides.ReasoningEffort != "" {
 		smart := sess.SmartModelReasoningEffort
 		fast := sess.FastModelReasoningEffort
@@ -753,13 +797,18 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 		} else {
 			fast = overrides.ReasoningEffort
 		}
-		if err := app.Sessions.UpdateReasoningEffort(ctx, sess.ID, smart, fast); err != nil {
+		if err := app.Sessions.UpdateReasoningEffort(mutCtx, sess.ID, smart, fast); err != nil {
 			return nil, fmt.Errorf("failed to set reasoning effort: %w", err)
 		}
 	}
 
 	// Automatically approve all permission requests for this non-interactive
 	// session.
+	// checkHoldCanceled guards both calls below: they have no ctx parameter
+	// to carry cancellation, so the hold check is the only gate.
+	if err := checkHoldCanceled(); err != nil {
+		return nil, err
+	}
 	app.Permissions.AutoApproveSession(sess.ID)
 
 	// Fork patch (run allowlist): (re)arm the restricted-run allowlist
@@ -813,17 +862,20 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 	// it.
 
 	// Fork patch: batch 30 — clear stale cancel flag.
-	if err := app.Sessions.ClearCancelRequest(ctx, sess.ID); err != nil {
+	if err := checkHoldCanceled(); err != nil {
+		return nil, err
+	}
+	if err := app.Sessions.ClearCancelRequest(mutCtx, sess.ID); err != nil {
 		slog.Warn("Failed to clear cancel request flag", "session_id", sess.ID, "err", err)
 	}
 
 	// Fork patch (operator UX): persist budget at run start so
 	// `sessions show` / `sessions locks` can display "cost vs limit".
 	// Also clear ended_reason since the session is being (re)started.
-	if err := app.Sessions.SetBudget(ctx, sess.ID, overrides.MaxCost, overrides.MaxTokens, int64(overrides.Timeout.Seconds())); err != nil {
+	if err := app.Sessions.SetBudget(mutCtx, sess.ID, overrides.MaxCost, overrides.MaxTokens, int64(overrides.Timeout.Seconds())); err != nil {
 		slog.Warn("Failed to persist budget", "session_id", sess.ID, "err", err)
 	}
-	if err := app.Sessions.SetEndedReason(ctx, sess.ID, ""); err != nil {
+	if err := app.Sessions.SetEndedReason(mutCtx, sess.ID, ""); err != nil {
 		slog.Warn("Failed to clear ended_reason", "session_id", sess.ID, "err", err)
 	}
 
@@ -843,7 +895,7 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 			}
 			return r
 		}, autoTitle)
-		if err := app.Sessions.Rename(ctx, sess.ID, autoTitle); err != nil {
+		if err := app.Sessions.Rename(mutCtx, sess.ID, autoTitle); err != nil {
 			slog.Warn("Failed to auto-title session", "session_id", sess.ID, "err", err)
 		}
 	}
@@ -910,6 +962,15 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 		runFn = func(ctx context.Context, sessionID, prompt string) (*fantasy.AgentResult, error) {
 			return credsRunner.RunWithCredentials(ctx, sessionID, prompt, creds)
 		}
+	}
+	// Last gate before the turn goroutine launches. A cancel landing in
+	// the irreducible window between this check and the turn's mailbox
+	// rebind is the accepted design race (identical to the rerun
+	// handler's): the turn must not run under holdCtx, since the handoff
+	// deliberately retires it.
+	if err := checkHoldCanceled(); err != nil {
+		hookExitReason = "cancelled"
+		return nil, err
 	}
 	go runAgentTurnRecovered(ctx, sess.ID, prompt, runFn, done)
 

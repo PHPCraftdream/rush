@@ -414,6 +414,27 @@ func TestExecuteRunSameSessionLegacyQueueingStillQueuesBehindOwner(t *testing.T)
 	admissionLaunch(t, application, sessionID, outcomes, start2, 2, "second turn LOSER_QUEUE_MARKER queued", RunOverrides{}, false)
 	close(start2)
 
+	// Wait for the loser to actually land in the mailbox's submitted queue
+	// before releasing the winner. Without this, closing gate races the
+	// loser's own goroutine to mailbox.submit(): the winner (still blocked
+	// on <-gate at this point, so it cannot have reached its own end-of-turn
+	// drain yet) is guaranteed to still be mbOwned here, so once
+	// QueuedPrompts reports the loser, the winner's upcoming drain is
+	// guaranteed to observe it and hand it the next turn directly. Without
+	// this wait, a slow scheduler (constrained CI runners, GOMAXPROCS=1)
+	// can let the winner's drain complete and enter mbReleasing BEFORE the
+	// loser calls submit() — the loser then lands in the mbReleasing
+	// window and is handed off as "orphaned" for a detached durable-queue
+	// restart (mailbox_ownership.go's drainOrReleaseFinal, Case 4) instead
+	// of being run directly by the winner's still-live turn loop, and
+	// nothing in this test drives that queue, so the loser's turn never
+	// executes at all — reproduced locally under GOMAXPROCS=1 (~5% of
+	// runs) and observed once in CI (windows-latest, "provider saw too few
+	// requests: [winner]").
+	require.Eventually(t, func() bool {
+		return application.AgentCoordinator.QueuedPrompts(sessionID) >= 1
+	}, 10*time.Second, time.Millisecond, "the loser never reached the mailbox's submitted queue")
+
 	// Release the winner; its end-of-turn drain must pick the queued call
 	// up and run it as the next turn in the same Run loop.
 	close(gate)
