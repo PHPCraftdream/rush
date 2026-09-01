@@ -52,6 +52,23 @@ type ModelCfg struct {
 	ProviderOptions  map[string]any `json:"provider_options,omitempty"`
 }
 
+// RunAllowlistSpec is a JSON-serializable mirror of
+// permission.RunAllowlistSpec (the uncompiled restricted-run policy). It
+// exists for the same reason ModelCfg mirrors config.SelectedModel: the
+// session package cannot import internal/permission (session → permission
+// → shell → session would be an import cycle). The agent package converts
+// between the two at the durable-serialization boundary
+// (call_data_conversion.go); keep the fields in sync with
+// permission.RunAllowlistSpec.
+type RunAllowlistSpec struct {
+	// Restrict enables the restricted permission model. When false the
+	// spec is inert (the run auto-approves everything). Kept explicit so
+	// "policy present but inert" is distinguishable in the durable row.
+	Restrict   bool     `json:"restrict,omitempty"`
+	AllowTools []string `json:"allow_tools,omitempty"`
+	AllowBash  []string `json:"allow_bash,omitempty"`
+}
+
 // SessionAgentCallData is a durable, serializable subset of agent.SessionAgentCall
 // that can be stored in the run queue and reconstructed after process restart.
 // It contains only the fields needed to execute a call, excluding process-local
@@ -73,6 +90,18 @@ type SessionAgentCallData struct {
 	LogicalCallID   string
 	MaxOutputTokens int64
 	NonInteractive  bool
+	// RunAllowlistSpec carries the caller's declared restricted-run policy
+	// SPEC (the uncompiled mirror of permission.RunAllowlistSpec), so a
+	// call rebuilt from this row by the run-queue pump can recompile and
+	// re-arm its own policy instead of falling back to a session-wide or
+	// process-wide gate. The compiled matcher itself is NOT serialized —
+	// it holds compiled regexps and is process-local. Pointer, so "no
+	// policy declared" (rows persisted before this field existed, and
+	// calls queued by non-ExecuteRun callers) stays distinguishable from
+	// "policy present but inert" (Restrict: false). nil spec must never be
+	// read as "unrestricted on purpose"; see RebuildSessionAgentCall for
+	// how a nil spec is judged.
+	RunAllowlistSpec *RunAllowlistSpec
 	// SystemPromptOverride, if non-empty, replaces the agent's global system prompt
 	SystemPromptOverride string
 	// MaxCost aborts the run if total session cost exceeds this value (0 = no cap)

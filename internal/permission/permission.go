@@ -168,26 +168,33 @@ type SessionRunAllowlistManager interface {
 	ClearSessionRunAllowlistForCall(sessionID string, ownerCallID string)
 }
 
-// SessionRunAllowlistBaselineManager is the OPTIONAL per-session
-// durable-restart fallback gate (F2 in
-// docs/reviews/2026-09-01-sdk-review-fh.md). Consumers type-assert on it
-// instead of it living on Service, exactly like
+// SessionRunAllowlistBaselineManager is the per-session DEMOTED
+// legacy-row fallback gate. Durable run-queue rows now persist each
+// call's own policy spec (session.SessionAgentCallData.RunAllowlistSpec)
+// and the run-queue pump's RebuildSessionAgentCall recompiles it (R4-1),
+// so every NEW row's restarted turn arms its own per-call entry (R3-4
+// SetSessionRunAllowlistForCall) that Request consults BEFORE this
+// baseline. The baseline can therefore no longer decide any new row's
+// policy and cannot exhibit the cross-call policy mix-up — or the
+// unrestricted-sub-agent leak (R4-2 closes the residual window in
+// InheritSessionRunAllowlist) — that a per-SESSION last-writer-wins map
+// once could. Its only remaining role: turns rebuilt from rows persisted
+// BEFORE the spec field existed (their JSON carries no spec), for which
+// nothing better can be reconstructed in this process. Consumers
+// type-assert on it instead of it living on Service, exactly like
 // SessionRunAllowlistManager, so every existing Service test fake keeps
 // compiling.
 //
 // SetSessionRunAllowlistBaseline pins allowlist as sessionID's FALLBACK
 // restricted-run policy: it is consulted only for auto-approved requests
 // that arrive when the session has NO per-call entry in the R3-4
-// SetSessionRunAllowlistForCall map. Why it exists: a queued call that
-// leaves the in-process mailbox and comes back through the durable run
-// queue (abandonOwnershipWithHandoff, or drainOrReleaseFinal's Case 4)
-// is rebuilt by the run-queue pump with RunAllowlist == nil (the
-// compiled matcher is an in-process value and
-// SessionAgentCall.RunAllowlist is json:"-"), so nothing arms a per-call
-// entry for the restarted turn. Without a baseline the restarted turn
-// falls through to the process-wide gate, which has had no production
-// writer since R2-1 and is therefore unrestricted — the restart would be
-// blanket-approved regardless of the restriction its caller declared.
+// SetSessionRunAllowlistForCall map — i.e. legacy rows only. Two honest
+// residuals remain for those rows: (1) a legacy row judged only by the
+// baseline inherits whichever run armed the baseline LAST for that
+// session, not necessarily its own caller's policy; (2) after a real
+// process restart the in-memory baseline is gone too, and such a row
+// falls to the unrestricted process-wide gate — the pre-baseline status
+// quo, healed by any re-run of the turn through ExecuteRun.
 //
 // Deliberately NOT cleared at run end: the durable restart can happen
 // long after the arming run returned, so the baseline's lifetime matches
@@ -282,10 +289,14 @@ type permissionService struct {
 	// round-2 review R2-1 each entry also carries the mailbox ownership epoch
 	// it was armed under, so a stale run's epoch-aware clear can never delete
 	// a newer owner's policy.
-	// F2: absent entries no longer mean "unrestricted" for a session an
-	// ExecuteRun has armed: Request then consults
+	// F2: absent entries now mean "unrestricted" only for LEGACY rows
+	// (durable rows persisted before the policy spec field existed) with
+	// no baseline: Request then consults
 	// runAllowlistBaselineBySession (below) before the process-wide
-	// gate. The process-wide gate itself remains the LAST fallback and
+	// gate. Every ExecuteRun-lineage turn — including durable restarts —
+	// carries its own per-call entry (RebuildSessionAgentCall recompiles
+	// the row's spec, R4-1), so the entry is never absent for them. The
+	// process-wide gate itself remains the LAST fallback and
 	// is unrestricted in production (no writer since R2-1), so an
 	// auto-approved session with neither a per-call entry nor a
 	// baseline is blanket-approved — the fail-open direction, retained
@@ -293,8 +304,9 @@ type permissionService struct {
 	runAllowlistBySession   map[string]sessionRunAllowlistEntry
 	runAllowlistBySessionMu sync.RWMutex
 	// runAllowlistBaselineBySession is the per-session FALLBACK policy
-	// armed by ExecuteRun (F2): see
-	// SessionRunAllowlistBaselineManager. Guarded by
+	// armed by ExecuteRun: legacy-row fallback only, since durable rows
+	// now persist per-call policy specs (see
+	// SessionRunAllowlistBaselineManager). Guarded by
 	// runAllowlistBySessionMu — the same lock as the per-call map
 	// above — so Request reads both maps in one lock hold.
 	runAllowlistBaselineBySession map[string]RunAllowlist
@@ -427,11 +439,15 @@ func (s *permissionService) Request(ctx context.Context, opts CreatePermissionRe
 		// blanket-grant. Consult a restricted allowlist when one is
 		// armed; unmatched requests are denied cleanly here so the
 		// agent sees a fast "no" instead of hanging on a UI that
-		// doesn't exist. Precedence: the per-call entry armed by the
-		// active turn (R3-4) wins; else the session baseline armed by
-		// ExecuteRun (F2), the fallback for durable-queue restarts
-		// whose rebuilt calls carry no policy of their own; else the
-		// process-wide gate. That last fallback is UNRESTRICTED in
+		// doesn't exist. Precedence: (1) the per-call entry armed by
+		// the active turn (R3-4) — which now covers durable-queue
+		// restarts too, since RebuildSessionAgentCall recompiles the
+		// row's persisted policy spec and the restarted turn arms its
+		// own entry keyed by its LogicalCallID (R4-1), and sub-agents
+		// inherit that entry (R4-2); (2) else the session baseline
+		// armed by ExecuteRun — a legacy-row fallback only, for turns
+		// rebuilt from rows whose JSON predates the spec field; (3)
+		// else the process-wide gate. That last fallback is UNRESTRICTED in
 		// production — it has had no writer since R2-1 removed the
 		// ExecuteRun write — so an auto-approved session with neither a
 		// per-call entry nor a baseline is blanket-approved: fail-open,
@@ -680,7 +696,10 @@ func (s *permissionService) SetSessionRunAllowlistBaseline(sessionID string, all
 // non-allowlisted tool call would consult the process-wide gate — whatever
 // a concurrent run last armed there — instead of its parent's policy.
 // Mirrors InheritSessionAutoApprove's atomicity and its "inherit nothing
-// when the parent has nothing" rule.
+// when the parent has nothing" rule. When the parent has no per-call
+// entry but a session baseline, the baseline is propagated instead, so a
+// legacy-row restart's sub-agent cannot escape the restriction its
+// session was being judged by.
 func (s *permissionService) InheritSessionRunAllowlist(parentID, childID string) {
 	if parentID == "" || childID == "" || parentID == childID {
 		return
@@ -688,6 +707,16 @@ func (s *permissionService) InheritSessionRunAllowlist(parentID, childID string)
 	s.runAllowlistBySessionMu.Lock()
 	if entry, ok := s.runAllowlistBySession[parentID]; ok {
 		s.runAllowlistBySession[childID] = entry
+	} else if baseline, ok := s.runAllowlistBaselineBySession[parentID]; ok {
+		// R4-2 (legacy-window half): a parent governed only by its
+		// session baseline — a turn rebuilt from a pre-spec durable row —
+		// must not delegate into an auto-approved child with NO
+		// restriction at all (the child would fall through to the
+		// unrestricted process-wide gate). Propagate the baseline the
+		// parent is actually judged by. New rows never take this branch:
+		// their parents carry per-call entries, and the entry copy above
+		// already keeps the child under the parent's own declared policy.
+		s.runAllowlistBySession[childID] = sessionRunAllowlistEntry{allowlist: baseline}
 	}
 	s.runAllowlistBySessionMu.Unlock()
 }

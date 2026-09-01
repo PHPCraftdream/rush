@@ -421,7 +421,10 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 	// after no turn of this loop can still consult the entry does the
 	// session's gate fall back — to the session baseline ExecuteRun
 	// armed for this session (F2), and only then to the process-wide
-	// policy. Empty when no turn of this
+	// policy. A rebuilt durable call that carries a recompiled policy
+	// spec (R4-1) arms its own entry like any in-process call, so the
+	// fallback chain only applies to turns with no policy of their own
+	// (legacy callers, pre-spec rows). Empty when no turn of this
 	// loop armed anything — the clear is then a no-op.
 	var armedCallID string
 	defer func() {
@@ -485,10 +488,12 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 		// so the entry is bound to the call's LogicalCallID — the only
 		// per-turn identifier that survives the queue handoff.
 		// A call that carries NO policy — legacy in-process callers, and
-		// durable-queue restarts whose rebuilt calls never carry one —
-		// leaves whatever is armed alone, so such a restart is judged by
-		// the session baseline ExecuteRun armed for this session (F2)
-		// rather than blanket-approved.
+		// durable rows persisted before the policy spec field existed —
+		// leaves whatever is armed alone, and is judged by the session
+		// baseline if one is armed (F2 legacy-row fallback), else the
+		// process-wide gate; every durable restart whose row carries a
+		// spec recompiles it in RebuildSessionAgentCall and arms its own
+		// per-call entry here, keyed by its LogicalCallID (R4-1).
 		if a.runAllowlists != nil && call.RunAllowlist != nil && call.LogicalCallID != "" {
 			a.runAllowlists.SetSessionRunAllowlistForCall(call.SessionID, *call.RunAllowlist, call.LogicalCallID)
 			armedCallID = call.LogicalCallID

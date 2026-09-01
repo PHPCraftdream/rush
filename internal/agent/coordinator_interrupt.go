@@ -15,6 +15,7 @@ import (
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/permission"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/google/uuid"
 )
@@ -474,19 +475,54 @@ func (c *coordinator) RebuildSessionAgentCall(ctx context.Context, data session.
 	smartProviderCfg, _ := cfg.Providers.Get(smartModel.ModelCfg.Provider)
 	providerOptions, temp, topP, topK, freqPenalty, presPenalty := mergeCallOptions(data.SessionID, smartModel, smartProviderCfg)
 
+	// R4-1/R4-2/R4-3: recompile and rebind the call's OWN restricted-run
+	// policy from the spec serialized on the durable row. This is what
+	// makes the R3-4 per-call arming in runOwned (SetSessionRunAllowlistForCall,
+	// keyed by this call's LogicalCallID) apply to durable restarts: each
+	// rebuilt call is judged by the policy ITS caller declared, never by a
+	// session-wide last-writer-wins baseline, and its sub-agents inherit
+	// both auto-approval and the restriction (runSubAgent →
+	// InheritSessionRunAllowlist). A nil spec — rows persisted before the
+	// spec field existed, or rows queued by non-ExecuteRun callers — arms
+	// nothing: such a turn keeps the historical fallback chain (session
+	// baseline if one is armed in this process, else the process-wide
+	// gate). That is deliberately NOT a synthetic deny-all: web-origin
+	// durable calls belong to interactive sessions whose permission
+	// requests must still reach the UI, and the gate is only consulted on
+	// the auto-approve path anyway. BuildRunAllowlist drops unparseable
+	// patterns and reports them; the compiled allowlist stays restricted
+	// even then, so a corrupted spec fails closed per pattern.
+	var rebuiltRunAllowlist *permission.RunAllowlist
+	if data.RunAllowlistSpec != nil {
+		compiledRebuilt, compileErr := permission.BuildRunAllowlist(permission.RunAllowlistSpec{
+			Restrict:   data.RunAllowlistSpec.Restrict,
+			AllowTools: data.RunAllowlistSpec.AllowTools,
+			AllowBash:  data.RunAllowlistSpec.AllowBash,
+		})
+		if compileErr != nil {
+			slog.Warn("RebuildSessionAgentCall: dropped invalid restricted-run patterns from the durable row's policy spec",
+				"session_id", data.SessionID, "err", compileErr)
+		}
+		rebuiltRunAllowlist = &compiledRebuilt
+	}
+
 	return SessionAgentCall{
-		SessionID:            data.SessionID,
-		LogicalCallID:        data.LogicalCallID, // P2-1 fix: restore stable ID
-		Prompt:               data.Prompt,
-		Attachments:          data.Attachments,
-		ProviderOptions:      providerOptions,
-		MaxOutputTokens:      data.MaxOutputTokens,
-		Temperature:          temp,
-		TopP:                 topP,
-		TopK:                 topK,
-		FrequencyPenalty:     freqPenalty,
-		PresencePenalty:      presPenalty,
-		NonInteractive:       data.NonInteractive,
+		SessionID:        data.SessionID,
+		LogicalCallID:    data.LogicalCallID, // P2-1 fix: restore stable ID
+		Prompt:           data.Prompt,
+		Attachments:      data.Attachments,
+		ProviderOptions:  providerOptions,
+		MaxOutputTokens:  data.MaxOutputTokens,
+		Temperature:      temp,
+		TopP:             topP,
+		TopK:             topK,
+		FrequencyPenalty: freqPenalty,
+		PresencePenalty:  presPenalty,
+		NonInteractive:   data.NonInteractive,
+		// recompiled from the durable row's spec (R4-1).
+		RunAllowlist: rebuiltRunAllowlist,
+		// Keep the spec on the rebuilt call so a re-queued copy re-serializes it.
+		RunAllowlistSpec:     fromSessionRunAllowlistSpec(data.RunAllowlistSpec),
 		SystemPromptOverride: data.SystemPromptOverride,
 		MaxCost:              data.MaxCost,
 		MaxTokens:            data.MaxTokens,
@@ -512,6 +548,29 @@ func (c *coordinator) RunSessionAgentCall(ctx context.Context, call SessionAgent
 	}
 
 	sessionID := call.SessionID
+
+	// R4-3: after a REAL process restart the permission service's
+	// autoApproveSessions map is empty (it is in-memory only, like
+	// everything else the pump used to lose), so the first
+	// permission-requiring tool call of a rebuilt non-interactive turn
+	// would enter the interactive path and hang on a UI responder a
+	// detached pump run does not have. A rebuilt call that carries a
+	// policy spec is by construction an ExecuteRun-lineage call — only
+	// ExecuteRun attaches WithRunAllowlistSpec, and it always
+	// auto-approves its session — so its presence is the durable marker
+	// that THIS session was being driven non-interactively. Re-arm it.
+	// Idempotent for the in-process pump case (ExecuteRun already armed
+	// it). Calls with no spec (web-origin durable calls, pre-migration
+	// rows) are left exactly as before: interactive sessions must keep
+	// reaching the UI, and a legacy row restarts with the pre-R4-3 status
+	// quo. SessionAgentCall.NonInteractive would be the more direct
+	// signal, but it is only set for sub-agent calls today and stamping it
+	// on top-level runs would also change desktop-notify behavior
+	// (agent_turn's `!call.NonInteractive` notification gate), which this
+	// fix deliberately does not touch.
+	if call.RunAllowlistSpec != nil && c.permissions != nil {
+		c.permissions.AutoApproveSession(sessionID)
+	}
 
 	// Interrupt-inject ticker: watches pending_injects for interrupt=true rows
 	// written by `rush sessions inject --interrupt` in another process, and

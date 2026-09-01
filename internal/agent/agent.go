@@ -296,19 +296,35 @@ type SessionAgentCall struct {
 	Tools []fantasy.AgentTool `json:"-"`
 
 	// RunAllowlist pins THIS call's restricted-run permission policy
-	// (R3-4). ExecuteRun compiles it from config + overrides and attaches
-	// it to the call's context; buildCall/runInternal stamp it here so the
-	// policy survives the mailbox-queue handoff and is armed by the turn
-	// loop (runOwned) ONLY when this call becomes the active turn — never
-	// at queue time. nil (legacy callers, durable-queue rebuilds) arms
-	// nothing: in-loop legacy turns keep the historical fallback path,
-	// while pump-driven restarts — whose rebuilt calls never carry this
-	// field — are judged by the session baseline ExecuteRun armed for
-	// their session (F2, permission.SessionRunAllowlistBaselineManager)
-	// instead of the unrestricted process-wide gate. json:"-": never
-	// durable-queue-persisted — the compiled matcher is an in-process
-	// value, exactly like CallOptions/Tools above.
+	// (R3-4): the compiled matcher, armed by the turn loop (runOwned) ONLY
+	// when this call becomes the active turn — never at queue time. It is
+	// stamped by buildCall/runInternal from the call's context, and
+	// recompiled from the serialized spec by RebuildSessionAgentCall for
+	// durable-queue restarts (see RunAllowlistSpec below). nil (legacy
+	// in-process callers, and durable rows persisted before the spec field
+	// existed) arms nothing: such turns fall back to the session baseline
+	// ExecuteRun armed for their session (F2,
+	// permission.SessionRunAllowlistBaselineManager — now a legacy-row
+	// fallback only), and only then to the process-wide gate.
+	// json:"-": the compiled matcher is an in-process value; the
+	// serializable spec travels in RunAllowlistSpec below.
 	RunAllowlist *permission.RunAllowlist `json:"-"`
+
+	// RunAllowlistSpec pins THIS call's restricted-run policy in its
+	// serializable, pre-compilation form (the spec RunAllowlist was compiled
+	// from). Unlike RunAllowlist above, it is NOT json:"-": it is the field
+	// ToSessionAgentCallData persists on the durable run queue, and
+	// RebuildSessionAgentCall recompiles it into RunAllowlist so a
+	// durably-restarted call runs under ITS OWN caller's declared policy —
+	// keyed by LogicalCallID — instead of a session-wide last-writer-wins
+	// fallback (review R4-1) and instead of leaving its sub-agents to
+	// inherit auto-approval with no restriction (review R4-2). Its presence
+	// on a pump-rebuilt call is also the durable marker that the call's
+	// caller ran the session non-interactive with auto-approve
+	// (RunSessionAgentCall uses it to re-arm AutoApproveSession after a
+	// real process restart, review R4-3). nil for legacy in-process
+	// callers, pre-migration durable rows, and non-ExecuteRun callers.
+	RunAllowlistSpec *permission.RunAllowlistSpec
 
 	// FromDurableQueue is true when this call originates from the durable
 	// run queue (task #340). When true and the session's mailbox is already

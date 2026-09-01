@@ -2,6 +2,7 @@ package agent
 
 import (
 	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/permission"
 	"github.com/PHPCraftdream/rush/internal/session"
 )
 
@@ -42,6 +43,32 @@ func fromSessionModelCfg(cfg session.ModelCfg) config.SelectedModel {
 	}
 }
 
+// toSessionRunAllowlistSpec converts permission.RunAllowlistSpec to its
+// session.SessionAgentCallData mirror type (session.RunAllowlistSpec). See
+// that type's doc for why the mirror exists.
+func toSessionRunAllowlistSpec(spec *permission.RunAllowlistSpec) *session.RunAllowlistSpec {
+	if spec == nil {
+		return nil
+	}
+	return &session.RunAllowlistSpec{
+		Restrict:   spec.Restrict,
+		AllowTools: spec.AllowTools,
+		AllowBash:  spec.AllowBash,
+	}
+}
+
+// fromSessionRunAllowlistSpec is the inverse of toSessionRunAllowlistSpec.
+func fromSessionRunAllowlistSpec(spec *session.RunAllowlistSpec) *permission.RunAllowlistSpec {
+	if spec == nil {
+		return nil
+	}
+	return &permission.RunAllowlistSpec{
+		Restrict:   spec.Restrict,
+		AllowTools: spec.AllowTools,
+		AllowBash:  spec.AllowBash,
+	}
+}
+
 // ToSessionAgentCallData converts agent.SessionAgentCall to session.SessionAgentCallData
 // for durable queue serialization (task #340, ROUND 3 migration).
 //
@@ -52,6 +79,8 @@ func fromSessionModelCfg(cfg session.ModelCfg) config.SelectedModel {
 //     during pump execution ( ROUND 3 design decision).
 //   - The live fantasy.LanguageModel and CatwalkCfg in Model are NOT serializable
 //     and will be reconstructed by coordinator.RebuildSessionAgentCall.
+//
+// RunAllowlistSpec round-trips so a pump-driven restart can recompile and re-arm the caller's declared policy (R4-1/R4-2/R4-3).
 //
 // LogicalCallID is serialized to ensure the stable idempotency key survives
 // the durable serialization boundary (P2-1 fix, P0-1 release blocker).
@@ -83,6 +112,7 @@ func ToSessionAgentCallData(call SessionAgentCall) session.SessionAgentCallData 
 		SystemPromptPrefix:   call.SystemPromptPrefix,
 		SystemPrompt:         call.SystemPrompt,
 		Origin:               call.Origin,
+		RunAllowlistSpec:     toSessionRunAllowlistSpec(call.RunAllowlistSpec),
 	}
 }
 
@@ -92,6 +122,8 @@ func ToSessionAgentCallData(call SessionAgentCall) session.SessionAgentCallData 
 // This function only converts the data that was serialized. The full Model
 // (with live fantasy.LanguageModel and CatwalkCfg) will be reconstructed by
 // coordinator.RebuildSessionAgentCall.
+//
+// RunAllowlistSpec round-trips so a pump-driven restart can recompile and re-arm the caller's declared policy (R4-1/R4-2/R4-3).
 //
 // LogicalCallID is restored to ensure the stable idempotency key survives
 // the durable serialization boundary (P2-1 fix, P0-1 release blocker).
@@ -111,6 +143,7 @@ func FromSessionAgentCallData(callData session.SessionAgentCallData) SessionAgen
 		SystemPromptPrefix:   callData.SystemPromptPrefix,
 		SystemPrompt:         callData.SystemPrompt,
 		Origin:               callData.Origin,
+		RunAllowlistSpec:     fromSessionRunAllowlistSpec(callData.RunAllowlistSpec),
 		// SmartModel and FastModel are NOT set here — they will be reconstructed
 		// by coordinator.RebuildSessionAgentCall.
 	}

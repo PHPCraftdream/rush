@@ -121,10 +121,12 @@ func (c *coordinator) buildCall(ctx context.Context, sessionID, prompt string, p
 		PresencePenalty:      presPenalty,
 		SystemPromptOverride: sessionSystemPrompt,
 		CallOptions:          callOpts,
-		// R3-4: this call's restricted-run policy, armed at turn start.
-		RunAllowlist:  runAllowlistFrom(ctx),
-		SmartModel:    &pinnedSmart,
-		LogicalCallID: uuid.New().String(), // P2-1: generate stable ID once
+		// R3-4: this call's restricted-run policy, armed at turn start; the
+		// uncompiled spec travels too so the durable queue can persist it.
+		RunAllowlist:     runAllowlistFrom(ctx),
+		RunAllowlistSpec: runAllowlistSpecFrom(ctx),
+		SmartModel:       &pinnedSmart,
+		LogicalCallID:    uuid.New().String(), // P2-1: generate stable ID once
 	}
 	// Stamp the entry-channel origin at BUILD time, not message-creation
 	// time: the call may be queued as an InterruptAndSend replacement and
@@ -274,8 +276,10 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 		// turn enforces, this run's full options snapshot, and the
 		// fail-fast busy contract enforced at the mailbox reservation.
 		CallOptions: callOpts,
-		// R3-4: this call's restricted-run policy, armed at turn start.
+		// R3-4: this call's restricted-run policy, armed at turn start; the
+		// uncompiled spec travels too so the durable queue can persist it.
 		RunAllowlist:         runAllowlistFrom(ctx),
+		RunAllowlistSpec:     runAllowlistSpecFrom(ctx),
 		FailIfSessionBusy:    callOpts != nil && callOpts.FailIfSessionBusy,
 		SmartModel:           &pinnedSmart,
 		LogicalCallID:        uuid.New().String(), // P2-1: generate stable ID once
@@ -361,6 +365,12 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 			MaxCost:              trackCall.MaxCost,
 			MaxTokens:            trackCall.MaxTokens,
 			CallOptions:          trackCall.CallOptions,
+			// Preserve the per-call restricted-run policy across the
+			// credential-refresh rebuild: a retried call must stay judged
+			// by its own declared policy, not fall back to the session or
+			// process-wide gate.
+			RunAllowlist:         trackCall.RunAllowlist,
+			RunAllowlistSpec:     trackCall.RunAllowlistSpec,
 			FailIfSessionBusy:    trackCall.FailIfSessionBusy,
 			SmartModel:           &pinnedSmart,
 			LogicalCallID:        trackCall.LogicalCallID, // Preserve logical ID

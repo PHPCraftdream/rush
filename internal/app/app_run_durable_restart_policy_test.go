@@ -1,36 +1,34 @@
 package app
 
-// F2 regression pin (docs/reviews/2026-09-01-sdk-review-fh.md): a queued
-// call that gets durably orphaned — the owner's turn loop exits on a
-// terminal provider error and runOwned's abandonOwnershipWithHandoff
-// finalizer pops the mailbox queue into the session_run_queue table — is
-// rebuilt by the pump WITHOUT its in-process restricted-run policy
-// (SessionAgentCall.RunAllowlist is json:"-"). Under the pre-fix code the
-// restarted turn fell through to the process-wide runAllowlistGate,
-// which has no production writer since R2-1, so its zero value applied:
-// the still-auto-approved session blanket-approved EVERYTHING, whatever
-// restriction the queued caller had declared. The fix arms a session
-// BASELINE (permission.SessionRunAllowlistBaselineManager) from each
-// ExecuteRun's own compiled policy; the restart must then be judged by
-// that baseline, never by an unrestricted fallback.
+// R4-1 regression pin: a queued call that gets durably orphaned — the
+// owner's turn loop exits on a terminal provider error and runOwned's
+// abandonOwnershipWithHandoff finalizer pops the mailbox queue into the
+// session_run_queue table — must run under ITS OWN declared policy after
+// the pump rebuilds it, never under a sibling run's policy and never
+// under an unrestricted fallback.
 //
-// Scenario (mirrors the review's concrete scenario, tightened): run 1
-// (owner, P1 = --allow-bash probe_cmd_one) is parked mid-turn; run 2
-// (P2 = --allow-bash probe_cmd_two) legacy-queues behind it. The owner's
-// turn then dies on a terminal provider error (HTTP 400 →
-// classifyProviderError classTerminal, no retry), the loop exits, and
-// the finalizer durably enqueues the queued call. The pump rebuilds it
-// policy-less and runs it. Two gated bash probes discriminate:
-//   - probe_cmd_two r1 (call_q1): allowed by P2 — the queued caller's
-//     OWN policy, which is what its ExecuteRun armed as the baseline.
-//     Must be GRANTED: the restart still functions under its caller's
-//     declared restriction (pre-fix it was also granted, but for the
-//     wrong reason — blanket approval).
+// Scenario: run 1 (owner, P1 = --allow-bash probe_cmd_one) is parked
+// mid-turn; run 2 (P2 = --allow-bash probe_cmd_two) legacy-queues behind
+// it. The owner's turn then dies on a terminal provider error (HTTP 400
+// → classifyProviderError classTerminal, no retry), the loop exits, and
+// the finalizer durably enqueues the queued call — persisting P2's
+// UNCOMPILED policy spec on the row. The pump rebuilds the call,
+// RebuildSessionAgentCall recompiles the spec, and runOwned arms the
+// restarted turn's own per-call entry keyed by its LogicalCallID. Two
+// gated bash probes discriminate:
+//   - probe_cmd_two r1 (call_q1): allowed by P2. Must be GRANTED under
+//     P2 — the restart runs restricted, functioning.
 //   - probe_cmd_neither r2 (call_q2): allowed by NEITHER policy. Must
-//     be DENIED. Pre-fix this exact request was blanket-GRANTED — that
-//     grant is the bug.
+//     be DENIED — the restart is genuinely restricted, not blanket
+//     approved.
 //
 // A third provider round would mean the denial did not stop the turn.
+//
+// Historical note: before the durable spec persisted on the row (R4-1),
+// this guarantee relied on a per-session baseline each ExecuteRun armed
+// (F2) — a last-writer-wins stopgap that broke with two queued calls on
+// one session. The baseline survives only as a legacy-row fallback for
+// rows whose JSON predates the spec field.
 
 import (
 	"context"

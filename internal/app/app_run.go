@@ -864,20 +864,19 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 	if allowErr != nil {
 		slog.Warn("Restricted-run allowlist has invalid patterns (skipping them)", "err", allowErr)
 	}
-	// F2 (docs/reviews/2026-09-01-sdk-review-fh.md): pin THIS run's
-	// compiled policy as the session's durable-restart baseline. The
-	// per-call policy (WithRunAllowlist below) dies with the in-process
-	// call: a queued call that gets durably orphaned (the
-	// abandonOwnershipWithHandoff finalizer, or mailbox
-	// drainOrReleaseFinal's Case 4) is rebuilt by the run-queue pump
-	// with RunAllowlist == nil, and without a baseline the restarted
-	// turn would be blanket-approved — auto-approve is never revoked and
-	// the process-wide gate has no production writer. The per-call entry
-	// still wins while a turn is active; the baseline governs only
-	// turns that carry no policy of their own, and can only narrow what
-	// the historical unrestricted fallback allowed. Never cleared on run
-	// end — a pump restart can land long after ExecuteRun returned
-	// (same lifetime as the auto-approve flag itself); a later run on
+	// F2: pin THIS run's compiled policy as the session baseline. It was
+	// once the mechanism that kept a durably restarted turn restricted, but
+	// it is now a DEMOTED legacy-row fallback: the durable run queue
+	// persists each call's own policy spec (WithRunAllowlistSpec below) and
+	// the pump recompiles and re-arms it per call, keyed by LogicalCallID —
+	// Request consults the per-call entry first — so the baseline no longer
+	// governs any NEW row. It now only judges turns rebuilt from rows
+	// persisted before the spec field existed (no spec in their JSON), for
+	// which nothing better can be reconstructed in-process. Residual: after
+	// a real process restart even the in-memory baseline is gone, and a
+	// legacy row then falls to the unrestricted process-wide gate — an
+	// accepted, documented migration-window behavior that any re-run
+	// through ExecuteRun heals. Never cleared on run end — a later run on
 	// the same session re-arms it.
 	if mgr, ok := app.Permissions.(permission.SessionRunAllowlistBaselineManager); ok {
 		mgr.SetSessionRunAllowlistBaseline(sess.ID, compiled)
@@ -900,6 +899,13 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 	// untouched: queueing no longer has ANY global side effect at call
 	// time.
 	ctx = agent.WithRunAllowlist(ctx, &compiled)
+	// R4-1/R4-2/R4-3: the UNCOMPILED spec travels with the call too, so it
+	// is serialized onto any durable run-queue row this call produces
+	// (ToSessionAgentCallData). The pump rebuilds the call, recompiles the
+	// spec, and arms the restarted turn's OWN policy keyed by its
+	// LogicalCallID — replacing the per-session baseline below as the
+	// mechanism that keeps a durable restart restricted.
+	ctx = agent.WithRunAllowlistSpec(ctx, &runSpec)
 
 	// Fork patch: batch 8/30 + peak-hours bypass (R1-1). This run's
 	// timeout-extension policy, cost/token caps and peak-hours bypass now
