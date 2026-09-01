@@ -132,6 +132,31 @@ type SessionRunAllowlistManager interface {
 	SetSessionRunAllowlist(sessionID string, allowlist RunAllowlist)
 	ClearSessionRunAllowlist(sessionID string)
 	InheritSessionRunAllowlist(parentID, childID string)
+
+	// SetSessionRunAllowlistForEpoch arms allowlist for sessionID, bound to
+	// the mailbox ownership epoch the caller holds for that session
+	// (round-2 review R2-1). Call it only AFTER winning the reservation
+	// (ReserveExclusive) so a policy is never installed for a run that has
+	// not been admitted yet.
+	SetSessionRunAllowlistForEpoch(sessionID string, allowlist RunAllowlist, ownerEpoch uint64)
+	// ClearSessionRunAllowlistForEpoch drops sessionID's entry ONLY if the
+	// stored entry still carries ownerEpoch — the permission-layer
+	// analogue of mailbox.abandonOwnership's epoch check. A stale run's
+	// deferred cleanup therefore can never delete a NEWER owner's freshly
+	// armed policy, and an entry armed by a run that lost admission is
+	// never created in the first place.
+	ClearSessionRunAllowlistForEpoch(sessionID string, ownerEpoch uint64)
+}
+
+// sessionRunAllowlistEntry is one per-session restricted-run gate entry:
+// the compiled allowlist plus the mailbox ownership epoch it was armed
+// under. ownerEpoch 0 marks a legacy entry armed without an ownership
+// epoch (the mailbox never grants epoch 0 — beginCompact bumps an idle
+// mailbox to 1 — so a reserved run's epoch-aware clear can never match a
+// legacy entry by accident).
+type sessionRunAllowlistEntry struct {
+	allowlist  RunAllowlist
+	ownerEpoch uint64
 }
 
 type permissionService struct {
@@ -196,8 +221,11 @@ type permissionService struct {
 	// Entries are keyed by the requesting session id (already carried by
 	// CreatePermissionRequest, just previously unused by the gate) and
 	// take precedence over the shared gate; absent entries fall back to
-	// it, so legacy SetRunAllowlist callers behave exactly as before.
-	runAllowlistBySession   map[string]RunAllowlist
+	// it, so legacy SetRunAllowlist callers behave exactly as before. Since
+	// round-2 review R2-1 each entry also carries the mailbox ownership epoch
+	// it was armed under, so a stale run's epoch-aware clear can never delete
+	// a newer owner's policy.
+	runAllowlistBySession   map[string]sessionRunAllowlistEntry
 	runAllowlistBySessionMu sync.RWMutex
 }
 
@@ -334,11 +362,11 @@ func (s *permissionService) Request(ctx context.Context, opts CreatePermissionRe
 		// process-wide gate. opts.SessionID was always available here;
 		// the gate just never consulted it before.
 		s.runAllowlistBySessionMu.RLock()
-		sessionGate, hasSessionGate := s.runAllowlistBySession[opts.SessionID]
+		sessionEntry, hasSessionGate := s.runAllowlistBySession[opts.SessionID]
 		s.runAllowlistBySessionMu.RUnlock()
 		gate := s.runAllowlistGate.load()
 		if hasSessionGate {
-			gate = sessionGate
+			gate = sessionEntry.allowlist
 		}
 		if gate.IsRestricted() && !gate.allowsRequest(opts) {
 			s.notificationBroker.Publish(pubsub.CreatedEvent, PermissionNotification{
@@ -482,7 +510,7 @@ func (s *permissionService) SetSessionRunAllowlist(sessionID string, allowlist R
 		return
 	}
 	s.runAllowlistBySessionMu.Lock()
-	s.runAllowlistBySession[sessionID] = allowlist
+	s.runAllowlistBySession[sessionID] = sessionRunAllowlistEntry{allowlist: allowlist}
 	s.runAllowlistBySessionMu.Unlock()
 }
 
@@ -503,6 +531,33 @@ func (s *permissionService) ClearSessionRunAllowlist(sessionID string) {
 	s.runAllowlistBySessionMu.Unlock()
 }
 
+// SetSessionRunAllowlistForEpoch arms allowlist for sessionID under the
+// given ownership epoch (R2-1). See SessionRunAllowlistManager.
+func (s *permissionService) SetSessionRunAllowlistForEpoch(sessionID string, allowlist RunAllowlist, ownerEpoch uint64) {
+	if sessionID == "" {
+		return
+	}
+	s.runAllowlistBySessionMu.Lock()
+	s.runAllowlistBySession[sessionID] = sessionRunAllowlistEntry{allowlist: allowlist, ownerEpoch: ownerEpoch}
+	s.runAllowlistBySessionMu.Unlock()
+}
+
+// ClearSessionRunAllowlistForEpoch drops sessionID's entry only when it
+// still carries ownerEpoch (R2-1): the same epoch-comparison idiom
+// mailbox.abandonOwnership uses before mutating shared state. A mismatch
+// means a later owner re-armed the entry after this run's era ended, and
+// this stale cleanup must not touch it.
+func (s *permissionService) ClearSessionRunAllowlistForEpoch(sessionID string, ownerEpoch uint64) {
+	if sessionID == "" {
+		return
+	}
+	s.runAllowlistBySessionMu.Lock()
+	if entry, ok := s.runAllowlistBySession[sessionID]; ok && entry.ownerEpoch == ownerEpoch {
+		delete(s.runAllowlistBySession, sessionID)
+	}
+	s.runAllowlistBySessionMu.Unlock()
+}
+
 // InheritSessionRunAllowlist propagates parentID's per-session gate to
 // childID under one lock hold (R1-1): a restricted run's sub-agent works
 // under its OWN child session id, and without inheritance its first
@@ -515,8 +570,8 @@ func (s *permissionService) InheritSessionRunAllowlist(parentID, childID string)
 		return
 	}
 	s.runAllowlistBySessionMu.Lock()
-	if gate, ok := s.runAllowlistBySession[parentID]; ok {
-		s.runAllowlistBySession[childID] = gate
+	if entry, ok := s.runAllowlistBySession[parentID]; ok {
+		s.runAllowlistBySession[childID] = entry
 	}
 	s.runAllowlistBySessionMu.Unlock()
 }
@@ -527,7 +582,7 @@ func NewPermissionService(ctx context.Context, workingDir string, skip bool, all
 		notificationBroker:    pubsub.NewBroker[PermissionNotification](),
 		workingDir:            workingDir,
 		autoApproveSessions:   make(map[string]bool),
-		runAllowlistBySession: make(map[string]RunAllowlist),
+		runAllowlistBySession: make(map[string]sessionRunAllowlistEntry),
 		allowedTools:          allowedTools,
 		pendingRequests:       csync.NewMap[string, chan bool](),
 		activeRequests:        csync.NewMap[string, *PermissionRequest](),

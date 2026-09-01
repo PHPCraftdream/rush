@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
@@ -624,4 +625,64 @@ func notifyWatchdog(ctx context.Context) {
 	if bump, ok := ctx.Value(watchdogBumpContextKey{}).(func()); ok && bump != nil {
 		bump()
 	}
+}
+
+// reservedOwnershipContextKey is the context key under which ExecuteRun
+// (internal/app) publishes an already-held mailbox ownership era for
+// sessionAgent.Run to CONTINUE instead of re-claiming.
+type reservedOwnershipContextKey struct{}
+
+// reservedOwnership is the owner token ExecuteRun obtains by winning the
+// atomic mailbox reservation (ReserveExclusive -> mailbox.beginCompact)
+// BEFORE any per-run side effects (round-2 SDK review R2-1/R2-3), then
+// publishes on the run's context. sessionAgent.Run consumes it to continue
+// that era — the same RunWithReservedOwnership-shaped handoff — instead of
+// racing a fresh mailbox.submit() that would either double-reserve or lose
+// to the era this very caller already holds.
+//
+// The token is deliberately ONE-SHOT (claimed): the coordinator's
+// 401/transient retry loop calls currentAgent.Run once per attempt, and
+// every attempt after the first must do a normal fresh reservation,
+// because the previous attempt's runOwned defer has already released the
+// era. A stale claim attempt would otherwise present a dead epoch to
+// rebindDispatcher.
+type reservedOwnership struct {
+	sessionID string
+	epoch     uint64
+	// cancel releases the placeholder context ReserveExclusive created.
+	// Run invokes it only AFTER rebindDispatcher has repointed the
+	// mailbox's dispatcherCancel at the turn loop's own runCancel, exactly
+	// like RunWithReservedOwnership does.
+	cancel context.CancelFunc
+	// onHandoff, when non-nil, is invoked immediately before ownership's
+	// release responsibility transfers into runOwned's defer. ExecuteRun
+	// uses it to disarm its own bail-out ReleaseExclusive defer (ExecuteRun
+	// can return on cancellation while the turn goroutine is still running,
+	// so a blind release defer would end a live era under a running turn).
+	onHandoff func()
+
+	claimed atomic.Bool
+}
+
+// claim consumes the token exactly once. Returns false for every caller
+// after the first.
+func (r *reservedOwnership) claim() bool {
+	return r.claimed.CompareAndSwap(false, true)
+}
+
+// WithReservedOwnership returns a child of ctx carrying the ownership era
+// (epoch) the caller already holds for sessionID. See reservedOwnership.
+func WithReservedOwnership(ctx context.Context, sessionID string, epoch uint64, cancel context.CancelFunc, onHandoff func()) context.Context {
+	return context.WithValue(ctx, reservedOwnershipContextKey{}, &reservedOwnership{
+		sessionID: sessionID,
+		epoch:     epoch,
+		cancel:    cancel,
+		onHandoff: onHandoff,
+	})
+}
+
+// reservedOwnershipFrom returns the token published on ctx, or nil.
+func reservedOwnershipFrom(ctx context.Context) *reservedOwnership {
+	token, _ := ctx.Value(reservedOwnershipContextKey{}).(*reservedOwnership)
+	return token
 }

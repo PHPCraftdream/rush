@@ -59,6 +59,21 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 	runCtx, runCancel := context.WithCancel(ctx)
 	defer runCancel()
 
+	// R2-1/R2-3: when the caller (ExecuteRun) already holds this session's
+	// ownership era — claimed atomically BEFORE its per-run mutations —
+	// continue THAT era instead of claiming a fresh one. Reaching
+	// tryReserveSession here would find the mailbox owned BY THIS CALLER
+	// and, for a FailIfSessionBusy call, fail with ErrSessionBusy (or, for
+	// a queueing call, silently queue the call behind itself). The token is
+	// one-shot (see reservedOwnership): only the first Run attempt of a
+	// logical request continues the era; later retry attempts — whose era
+	// was already released by runOwned's own defer — reserve freshly. A
+	// token published for a DIFFERENT session id (e.g. a sub-agent child
+	// session running under the parent's context) is ignored.
+	if token := reservedOwnershipFrom(ctx); token != nil && token.sessionID == call.SessionID && token.claim() {
+		return a.runPreReservedOwnership(ctx, runCtx, runCancel, call, token)
+	}
+
 	// Atomically check-and-claim the busy slot via the session's mailbox
 	// (mailbox.submit, design §3). If someone else already owns the
 	// session, submit has already appended call to the mailbox's own
@@ -464,4 +479,38 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 		}
 		call = next
 	}
+}
+
+// runPreReservedOwnership is Run's body for a call whose ownership era was
+// already claimed by the caller and published on ctx via
+// WithReservedOwnership. It mirrors the rebind/handoff tail of
+// RunWithReservedOwnership exactly (that function could not be reused
+// directly because it re-runs admission and takes the reservation's cancel
+// as a parameter): rebind the mailbox's dispatcherCancel onto THIS turn
+// loop's runCancel, release the placeholder context, transfer release
+// responsibility, and enter runOwned.
+//
+// THE SINGLE HANDOFF POINT: token.onHandoff + `return a.runOwned(...)`.
+// If rebindDispatcher fails, the era is NOT ours to release and
+// onHandoff does NOT fire — the caller's own bail-out release (an
+// epoch-matched ReleaseExclusive/abandonOwnership, or a no-op when the era
+// already ended) stays armed, exactly like RunWithReservedOwnership's
+// rebind-failure branch leaves the release to its caller's defer. The
+// reservation cancel IS invoked, mirroring that branch: the placeholder
+// context is unconditionally ours to clean up regardless of mailbox state.
+func (a *sessionAgent) runPreReservedOwnership(ctx context.Context, runCtx context.Context, runCancel context.CancelFunc, call SessionAgentCall, token *reservedOwnership) (*fantasy.AgentResult, error) {
+	mb := a.getMailbox(call.SessionID)
+	if !mb.rebindDispatcher(token.epoch, runCancel) {
+		token.cancel()
+		return nil, fmt.Errorf("agent.Run: pre-reserved ownership for session %q is no longer valid (epoch mismatch or stopped mailbox); the reservation's owner still holds and will release it", call.SessionID)
+	}
+	// The placeholder context the reservation was created with is
+	// superseded by runCtx (rebindDispatcher already repointed the mailbox
+	// at runCancel) — release it so it does not leak, then transfer release
+	// responsibility for the era itself to runOwned's defer.
+	token.cancel()
+	if token.onHandoff != nil {
+		token.onHandoff()
+	}
+	return a.runOwned(ctx, runCtx, call, token.epoch, runCancel)
 }

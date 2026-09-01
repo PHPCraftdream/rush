@@ -15,6 +15,7 @@ import (
 	"os"
 	"runtime/debug"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"charm.land/fantasy"
@@ -626,18 +627,73 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 	//
 	// This pre-check is only the FAST path — it avoids spawning a turn
 	// goroutine in the common already-busy case. It cannot close the
-	// check-then-act window by itself (two simultaneous starters both see
-	// IsSessionBusy == false). The contract is enforced atomically at the
-	// session's mailbox reservation instead: the run's CallOptions carry
-	// FailIfSessionBusy onto the SessionAgentCall, and mailbox.submit —
-	// the single existing check-and-set that grants ownership — returns
+	// check-then-act window by itself: for FailIfSessionBusy callers the
+	// atomic mailbox reservation immediately below both decides admission
+	// and carries the ownership era into the turn; for queueing callers the
+	// contract is still enforced at the session's mailbox reservation inside
+	// sessionAgent.Run (mailbox.submit), whose single check-and-set returns
 	// without queueing for such a call, so sessionAgent.Run reports
-	// ErrSessionBusy. A caller racing the owner's start therefore errors
-	// exactly like this pre-check, never slips into the old silent queue
-	// (R1-4).
+	// ErrSessionBusy (R1-4).
 	if req.FailIfSessionBusy && app.AgentCoordinator.IsSessionBusy(sess.ID) {
 		slog.Warn("Run rejected: session already has an in-process owner", "session_id", sess.ID)
 		return nil, fmt.Errorf("session %q is already processing another request: %w", sess.ID, agent.ErrSessionBusy)
+	}
+
+	// R2-1/R2-3 (round-2 SDK review): for fail-fast callers claim the
+	// session's mailbox ownership ATOMICALLY right here — before ANY
+	// per-run mutation below (system prompt, reasoning effort, auto-approve,
+	// the per-session permission policy, cancel flag, budget, ended_reason,
+	// title). The old shape mutated shared session state first and let the
+	// real admission decision happen much later, deep inside mailbox.submit
+	// (sessionAgent.Run): two simultaneous FailIfSessionBusy callers on one
+	// idle session both passed the fast-path check above, both mutated
+	// shared state, and the eventual loser's deferred
+	// ClearSessionRunAllowlist then deleted the WINNER's armed policy
+	// (R2-1), while a caller that was about to be rejected could rewrite
+	// the running session's prompt, budget or title before learning it had
+	// lost (R2-3). ReserveExclusive is the same atomic mbIdle->mbOwned
+	// check-and-set mailbox.submit performs, reused per the review's
+	// recommendation ("Move atomic run admission ahead of side effects.
+	// This can also provide the owner token needed to solve R2-1
+	// cleanly").
+	//
+	// FailIfSessionBusy == false (`rush run`, the web server) keeps the
+	// intentional queueing contract untouched (R1-4): no reservation is
+	// attempted, the mutations below run at queue time exactly as before,
+	// and mailbox.submit decides ownership/queueing when the turn
+	// goroutine reaches it.
+	var (
+		reserved        bool
+		reservedEpoch   uint64
+		reservedCancel  context.CancelFunc
+		reservedHandoff atomic.Bool
+	)
+	if req.FailIfSessionBusy {
+		_, epoch, cancel, ok := app.AgentCoordinator.ReserveExclusive(ctx, sess.ID)
+		if !ok {
+			slog.Warn("Run rejected: session already has an in-process owner (atomic reservation)", "session_id", sess.ID)
+			return nil, fmt.Errorf("session %q is already processing another request: %w", sess.ID, agent.ErrSessionBusy)
+		}
+		reserved = true
+		reservedEpoch = epoch
+		reservedCancel = cancel
+		// Ownership continues into the turn: the token makes sessionAgent.Run
+		// CONTINUE this era (the same rebindDispatcher mechanism /compact and
+		// rerun already use) instead of racing a fresh submit() that would
+		// find the mailbox owned by this very caller. onHandoff disarms the
+		// bail-out release below exactly when the turn takes over:
+		// ExecuteRun can return on cancellation while the turn goroutine is
+		// still running, so a blind release defer would end a live era under
+		// a running turn. Every error return BETWEEN here and the handoff
+		// (UpdateSystemPrompt and friends) releases via this defer instead.
+		ctx = agent.WithReservedOwnership(ctx, sess.ID, reservedEpoch, reservedCancel, func() {
+			reservedHandoff.Store(true)
+		})
+		defer func() {
+			if !reservedHandoff.Load() {
+				app.AgentCoordinator.ReleaseExclusive(sess.ID, reservedEpoch, reservedCancel)
+			}
+		}()
 	}
 
 	if continueSessionID != "" || useLast {
@@ -683,17 +739,11 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 	// disk at run time. Only affects the auto-approve path exercised
 	// above; interactive sessions never run this code.
 	//
-	// R1-1: the compiled gate is armed per SESSION (SetSessionRunAllowlist)
-	// in addition to the legacy process-wide slot. The process-wide value
-	// is ONE field on the permission service, so two concurrent runs with
-	// different policies raced for it — the restricted tenant's tool call
-	// could clear the unrestricted tenant's gate and vice versa, depending
-	// on which SetRunAllowlist landed last. Request consults the
-	// session-keyed entry FIRST and falls back to the process-wide gate,
-	// so legacy SetRunAllowlist callers behave exactly as before. The
-	// per-session entry is dropped when this run ends (see the defer) so a
-	// long-lived host does not accumulate one entry per run; every run
-	// re-arms its own before the turn starts.
+	// R2-1 closes the residual same-session race: admission is decided
+	// before the policy is armed (reserved path), the entry is bound to the
+	// winner's ownership epoch, and the process-wide gate is no longer
+	// written by this path at all, so a missing/stale session entry cannot
+	// inherit an unrelated concurrent run's policy.
 	runSpec := runAllowlistSpecFromConfig(app.config.Config().Permissions)
 	if overrides.RestrictedRun {
 		runSpec.Restrict = true
@@ -704,10 +754,24 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 	if allowErr != nil {
 		slog.Warn("Restricted-run allowlist has invalid patterns (skipping them)", "err", allowErr)
 	}
-	app.Permissions.SetRunAllowlist(compiled)
+	// R2-1: the unconditional process-wide SetRunAllowlist write is GONE
+	// from this path. The per-session entry below is the ONLY policy this
+	// run installs, so a session whose entry is missing or stale can never
+	// inherit another concurrent run's active policy — it consults whatever
+	// the process-wide gate holds (armed only by legacy callers, never by
+	// this path), which is the fail-closed direction for a multi-tenant
+	// host. On the reserved path the entry is epoch-bound: set only after
+	// admission won, cleared on exit only if THIS run's epoch still owns
+	// it, so a stale cleanup can never delete a newer owner's policy (the
+	// same epoch-comparison idiom mailbox.abandonOwnership uses).
 	if allowMgr, ok := app.Permissions.(permission.SessionRunAllowlistManager); ok {
-		allowMgr.SetSessionRunAllowlist(sess.ID, compiled)
-		defer allowMgr.ClearSessionRunAllowlist(sess.ID)
+		if reserved {
+			allowMgr.SetSessionRunAllowlistForEpoch(sess.ID, compiled, reservedEpoch)
+			defer allowMgr.ClearSessionRunAllowlistForEpoch(sess.ID, reservedEpoch)
+		} else {
+			allowMgr.SetSessionRunAllowlist(sess.ID, compiled)
+			defer allowMgr.ClearSessionRunAllowlist(sess.ID)
+		}
 	}
 
 	// Fork patch: batch 8/30 + peak-hours bypass (R1-1). This run's
