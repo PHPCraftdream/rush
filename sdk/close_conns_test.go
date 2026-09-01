@@ -23,6 +23,7 @@ import (
 	"database/sql"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/app"
@@ -146,4 +147,92 @@ func TestCloseEphemeralConnsForcedBeforeCloseIsRejected(t *testing.T) {
 	require.Empty(t, res.CleanupErrors)
 	require.Error(t, conn.PingContext(ctx), "graceful Close must close the in-memory handles itself")
 	require.NoError(t, client.CloseEphemeralConnsForced())
+}
+
+// gatedCancelCoordinator lets the test park Close inside its
+// cancellation join: CancelAll blocks until the test releases it. Its
+// verdict matches idleSpyCoordinator (graceful).
+type gatedCancelCoordinator struct {
+	agent.Coordinator
+	entered chan struct{} // Closed once CancelAll has been entered.
+	release chan struct{} // Closed by the test to let CancelAll return.
+}
+
+func (c *gatedCancelCoordinator) CancelAll() bool {
+	close(c.entered)
+	<-c.release
+	return false
+}
+
+// TestCloseEphemeralConnsForcedDuringCloseIsRejected extends the
+// ordering guard's coverage past
+// TestCloseEphemeralConnsForcedBeforeCloseIsRejected (review round-4,
+// F5): the old guard keyed on `closing`, which beginShutdown sets at
+// the very START of Close — so a reclaim fired from another goroutine
+// DURING Close's grace-drain window (admitted calls still executing
+// against the in-memory handles) passed the guard and closed the
+// handles under them. The guard now keys on `closed`, set only once
+// Close's shutdown has fully returned, so the reclaim is rejected at
+// every point before that — including this window, where closing is
+// already true.
+func TestCloseEphemeralConnsForcedDuringCloseIsRejected(t *testing.T) {
+	ctx := context.Background()
+	coord := &gatedCancelCoordinator{
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	client, conn := newEphemeralTestClient(t, coord)
+
+	// Simulate an admitted call still in flight when Close starts:
+	// with inflight held above zero, drained cannot close, so once
+	// closing flips, Close is deterministically inside its grace-drain
+	// window.
+	require.True(t, client.admit())
+
+	closeDone := make(chan CloseResult, 1)
+	go func() { closeDone <- client.Close() }()
+
+	require.Eventually(t, func() bool {
+		client.admissionMu.Lock()
+		defer client.admissionMu.Unlock()
+		return client.closing
+	}, 5*time.Second, time.Millisecond,
+		"Close never reached its admission-closing phase")
+
+	// The discriminator: Close has STARTED (closing true — the old
+	// guard passed exactly here) but has not finished (closed false).
+	// The reclaim must be refused and must leave the handles open; on
+	// the pre-F5 guard this call returned nil and closed them.
+	err := client.CloseEphemeralConnsForced()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "before Close has finished")
+	require.NoError(t, conn.PingContext(ctx),
+		"a refused reclaim must leave the in-memory handles open")
+
+	// Let the admitted call return: the drain completes and Close
+	// enters its (gated) cancellation join — still before Close
+	// returns, so the guard must still refuse.
+	client.release()
+	select {
+	case <-coord.entered:
+	case <-time.After(stallGraceSlack):
+		t.Fatal("Close never reached its cancellation join after the drain completed")
+	}
+	require.Error(t, client.CloseEphemeralConnsForced(),
+		"the reclaim must stay refused while Close is still running")
+
+	// Release the join: Close finishes gracefully, closing the handles
+	// itself, and only now does the guard admit the (no-op) reclaim.
+	close(coord.release)
+	var res CloseResult
+	select {
+	case res = <-closeDone:
+	case <-time.After(2*agent.DefaultCancelAllGrace + stallGraceSlack):
+		t.Fatal("Close never returned after the cancellation join was released")
+	}
+	require.False(t, res.Forced)
+	require.Empty(t, res.CleanupErrors)
+	require.NoError(t, client.CloseEphemeralConnsForced())
+	require.Error(t, conn.PingContext(ctx),
+		"graceful Close must have closed the in-memory handles itself")
 }

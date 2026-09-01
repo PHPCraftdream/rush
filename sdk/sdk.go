@@ -241,11 +241,12 @@ type Client struct {
 	// guarded calls that STARTED after Close returned, leaving the
 	// check-then-act race open where a call reads closed==false, is
 	// descheduled, and then enters c.app against an App that Close has
-	// already torn down. admissionMu guards the three fields below as
-	// one state machine: admit either registers a call as in-flight
-	// before closing starts or rejects it; Close flips closing, waits
-	// for inflight to drain, and only then tears the App down. See
-	// admit, release, and beginShutdown.
+	// already torn down. admissionMu guards the fields below as one
+	// state machine: admit either registers a call as in-flight before
+	// closing starts or rejects it; Close flips closing, waits for
+	// inflight to drain (abandoning that wait when the shutdown goes
+	// forced — see Close), and flips closed only once the App shutdown
+	// has fully returned. See admit, release, and beginShutdown.
 	admissionMu sync.Mutex
 	// closing is set once by Close and never unset; from that instant
 	// every new admission is refused (ErrClientClosed, or an
@@ -260,6 +261,15 @@ type Client struct {
 	// inflight reaches zero — Close's signal that the last admitted
 	// call has returned and teardown may begin.
 	drained chan struct{}
+
+	// closed is set once by Close after the wrapped App's shutdown has
+	// fully returned — not when Close starts. CloseEphemeralConnsForced
+	// keys its ordering guard on this rather than on closing: between
+	// the two moments Close may still be draining admitted calls that
+	// are executing against the in-memory handles, and a reclaim inside
+	// that window would close the database under them (review round-4
+	// finding F5).
+	closed bool
 
 	// connsMu guards connsClosed, the once-only bookkeeping for
 	// closeConns: Close's graceful path and CloseEphemeralConnsForced
@@ -400,9 +410,13 @@ func openApplication(ctx context.Context, o Options) (*Client, error) {
 // Generating opaque session ids and mapping them to your own callers
 // is the host's job. See the README's trust-model section.
 //
-// Returns ErrClientClosed once Close has started. An admitted Run always
-// finishes against a fully live App: Close waits for it before releasing
-// any resource (see Close).
+// Returns ErrClientClosed once Close has started. An admitted Run gets
+// one grace period against a fully live App, but Close no longer
+// guarantees to wait for it before anything is released: on a forced
+// shutdown (work still busy after the grace period — an admitted run
+// included) cleanup proceeds around calls still in flight, and only the
+// database and the in-memory handles are held back. Close's doc is the
+// authoritative description of this graceful-vs-forced split.
 func (c *Client) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 	if !c.admit() {
 		return nil, ErrClientClosed
@@ -459,9 +473,13 @@ func (c *Client) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 // Like Run, no ownership or authorization check is performed on
 // req.ContinueSessionID — see the README's trust-model section.
 //
-// Returns ErrClientClosed once Close has started. An admitted call always
-// finishes against a fully live App: Close waits for it before releasing
-// any resource (see Close).
+// Returns ErrClientClosed once Close has started. An admitted call gets
+// one grace period against a fully live App, but Close no longer
+// guarantees to wait for it before anything is released: on a forced
+// shutdown (work still busy after the grace period — an admitted call
+// included) cleanup proceeds around calls still in flight, and only the
+// database and the in-memory handles are held back. Close's doc is the
+// authoritative description of this graceful-vs-forced split.
 func (c *Client) RunWithCredentials(ctx context.Context, req RunRequest, creds CredentialSet) (*RunResult, error) {
 	if !c.admit() {
 		return nil, ErrClientClosed
@@ -550,8 +568,13 @@ func (c *Client) SubscribeSessions(ctx context.Context) <-chan SessionEvent {
 // section).
 //
 // Returns ErrClientClosed once Close has started; an admitted call is
-// always served from the live store, because Close waits for it before
-// releasing any resource (see Close).
+// served from the live store while Close is still draining it. But
+// Close no longer guarantees to wait for every admitted call before
+// anything is released: on a forced shutdown (work still busy after
+// the grace period) cleanup proceeds around calls still in flight, and
+// only the database and the in-memory handles are held back. Close's
+// doc is the authoritative description of this graceful-vs-forced
+// split.
 func (c *Client) Messages(ctx context.Context, sessionID string) ([]Message, error) {
 	if !c.admit() {
 		return nil, ErrClientClosed
@@ -567,8 +590,13 @@ func (c *Client) Messages(ctx context.Context, sessionID string) ([]Message, err
 // README's trust-model section).
 //
 // Returns ErrClientClosed once Close has started; an admitted call is
-// always served from the live store, because Close waits for it before
-// releasing any resource (see Close).
+// served from the live store while Close is still draining it. But
+// Close no longer guarantees to wait for every admitted call before
+// anything is released: on a forced shutdown (work still busy after
+// the grace period) cleanup proceeds around calls still in flight, and
+// only the database and the in-memory handles are held back. Close's
+// doc is the authoritative description of this graceful-vs-forced
+// split.
 func (c *Client) Session(ctx context.Context, sessionID string) (Session, error) {
 	if !c.admit() {
 		return Session{}, ErrClientClosed
@@ -579,8 +607,9 @@ func (c *Client) Session(ctx context.Context, sessionID string) (Session, error)
 
 // Close shuts the client down (agent cancellation, run-queue pump stop,
 // bounded cleanup, DB release) and returns a CloseResult describing how
-// it went: CloseResult.Forced is true when agent work was still busy
-// after the grace period, in which case the database — and, on an
+// it went: CloseResult.Forced is true when agent work or the run-queue
+// pump was still busy after the grace period, in which case the
+// database — and, on an
 // ephemeral client, the in-memory handles — were deliberately NOT
 // released (see app.ShutdownResult), and CloseResult.CleanupErrors
 // carries cleanup failures (also logged).
@@ -619,8 +648,15 @@ func (c *Client) Session(ctx context.Context, sessionID string) (Session, error)
 // After cancellation, Close waits for agent work to unwind — bounded by
 // the coordinator's own grace-bounded join — and then for the remaining
 // admitted calls; work that ignores cancellation makes the shutdown
-// forced and the drain is abandoned rather than waited on. The residual
-// wait after agent work has fully unwound is unbounded, because
+// forced and the drain is abandoned rather than waited on. "Work" here
+// is broader than the admitted calls: even a drain that finishes
+// cooperatively still runs one round of cancellation to join background
+// agent work (session title generation, cache keep-alive replays) that
+// no admitted call was blocked on — such work ignoring cancellation
+// makes an otherwise fully drained Close forced — and a run-queue pump
+// worker still busy after its own grace forces it with no agent work
+// involved at all. The residual wait after agent work has fully
+// unwound is unbounded, because
 // cancellation cannot reach non-agent calls (a Messages read against the
 // store): a host that needs a total bound should cancel the contexts it
 // handed to its own in-flight calls.
@@ -638,7 +674,18 @@ func (c *Client) Session(ctx context.Context, sessionID string) (Session, error)
 // return ErrClientClosed and the Subscribe methods return an
 // already-closed channel; Close itself remains idempotent.
 func (c *Client) Close() CloseResult {
-	if c == nil || c.app == nil {
+	if c == nil {
+		return CloseResult{}
+	}
+	if c.app == nil {
+		// Nothing to shut down, but record completion anyway so
+		// CloseEphemeralConnsForced's ordering guard does not
+		// report "before Close has finished" after Close was
+		// called — such a client has no in-memory handles to
+		// protect either way.
+		c.admissionMu.Lock()
+		c.closed = true
+		c.admissionMu.Unlock()
 		return CloseResult{}
 	}
 	// Phase 1: reject every new admission from this instant on.
@@ -647,11 +694,21 @@ func (c *Client) Close() CloseResult {
 	// still at most once per Client (closeOnce), with the first result
 	// cached for repeat callers. ShutdownAfterDrain keeps the App fully
 	// live until the drain has had its grace period: cancellation fires
-	// BEFORE any resource is released (R3-2), and release still happens
-	// only after the drain, so an admitted call never touches a torn-down
-	// App (the round-2 check-then-act guarantee).
+	// BEFORE any resource is released (R3-2). Release then happens once
+	// the drain completed or was force-abandoned: a call that finishes
+	// inside its grace never touches a torn-down App (the round-2
+	// check-then-act guarantee), while on the forced path cleanup runs
+	// around calls still unwinding, with only the database and
+	// in-memory handles held back.
 	c.closeOnce.Do(func() {
 		c.closeResult = c.app.ShutdownAfterDrain(drained)
+		// The App shutdown has returned: only now can no admitted
+		// call still be executing against the in-memory handles,
+		// so this — not the start of Close — is the moment
+		// CloseEphemeralConnsForced's ordering guard may pass (F5).
+		c.admissionMu.Lock()
+		c.closed = true
+		c.admissionMu.Unlock()
 		if !c.closeResult.Forced {
 			// Graceful shutdown: no live writers remain, the
 			// in-memory handles can be released immediately.
@@ -720,8 +777,16 @@ func (c *Client) beginShutdown() <-chan struct{} {
 // caller owns that judgement; database/sql's Close additionally blocks
 // until queries already in flight on the pool complete.
 //
-// Order matters: before Close has started, the method refuses to run
-// and returns an error instead. Closing the handles early would leave a
+// Order matters: until Close has FINISHED, the method refuses to run
+// and returns an error instead. The guard keys on Close's completion,
+// not on its start: between the two, Close may still be draining calls
+// it admitted, and those calls are executing against the in-memory
+// handles — reclaiming inside that window would pull the database out
+// from under exactly them, the hazard this guard exists to prevent
+// (F5). No legitimate caller is blocked by this: a host cannot know
+// Close's Forced verdict before Close returns, which is the only state
+// this method is documented to recover from. Before Close is called at
+// all the refusal has its own reason: closing the handles would leave a
 // still-open Client whose Run/Messages/Session calls are admitted and
 // then fail with database/sql's "sql: database is closed" instead of
 // ErrClientClosed — and a host finished with an idle client should call
@@ -730,16 +795,16 @@ func (c *Client) beginShutdown() <-chan struct{} {
 // repeated calls are no-ops. It returns the first handle-close error,
 // if any (every error is also logged). Clients without in-memory
 // handles (application mode) get a no-op and a nil error once Close has
-// started.
+// finished.
 func (c *Client) CloseEphemeralConnsForced() error {
 	if c == nil {
 		return nil
 	}
 	c.admissionMu.Lock()
-	closing := c.closing
+	closed := c.closed
 	c.admissionMu.Unlock()
-	if !closing {
-		return fmt.Errorf("sdk: CloseEphemeralConnsForced before Close: call Close first — reclaiming the in-memory handles while the Client is still open would leave it admitting calls against closed database handles")
+	if !closed {
+		return fmt.Errorf("sdk: CloseEphemeralConnsForced before Close has finished: call Close and let it return first — until then the Client is either still open and admitting calls, or Close is still draining calls it already admitted, and reclaiming now would close the in-memory database handles out from under calls executing against them")
 	}
 	return c.closeEphemeralConns()
 }

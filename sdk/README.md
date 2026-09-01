@@ -63,10 +63,13 @@ existing caller that never sets `Mode` is completely unaffected.
 - **Omitted** → an ephemeral session backed by an in-memory SQLite
   connection. Nothing ever touches disk. A graceful `Close()` releases
   the in-memory handles, and the session data is gone with them. On a
-  forced `Close()` — in-flight work that ignored cancellation — the
-  handles are deliberately left open and the data survives under them
-  until you reclaim it with `CloseEphemeralConnsForced()` (see
-  "Shutting down" below). Either way, once the handles are closed there
+  forced `Close()` — work that was still busy after cancellation, which
+  includes background agent work (session title generation, cache
+  keep-alive replays) and a busy run-queue pump worker, not just the
+  calls you had in flight — the handles are deliberately left open and
+  the data survives under them until you reclaim it with
+  `CloseEphemeralConnsForced()` (see "Shutting down" below). Either
+  way, once the handles are closed there
   is no way to recover the session. Use this for stateless, one-shot
   embedding (a request handler that spins up a
   Client, runs one turn, and throws it away).
@@ -242,7 +245,13 @@ returns the first call's result. It runs in three ordered phases:
    unwinds once cancelled keeps the shutdown graceful; work that
    ignores cancellation entirely makes the shutdown forced, and
    `Close()` stops waiting — it returns within a bounded time (at most
-   a couple of grace windows) instead of hanging. After agent work has
+   a couple of grace windows) instead of hanging. "Work" here is
+   broader than the calls you admitted: even a drain that finishes
+   cooperatively still runs one round of cancellation to join
+   background agent work (session title generation, cache keep-alive
+   replays) that no call was blocked on, and the run-queue pump is
+   stopped with its own grace — either of those still busy after its
+   grace period forces the shutdown too. After agent work has
    fully unwound, the residual wait for any remaining non-agent calls
    (a `Messages` read, which cancellation cannot reach) is unbounded: a
    host that needs a total bound should cancel the contexts it handed
@@ -251,9 +260,12 @@ returns the first call's result. It runs in three ordered phases:
    an ephemeral client, the in-memory handles — only if the shutdown
    was graceful.
 
-`CloseResult.Forced` is therefore `true` only when agent work was
-*still busy after cancellation* — in-flight work that ignored the
-cancellation phase 2 fired. A stuck-but-cooperative run produces a
+`CloseResult.Forced` is therefore `true` only when something was
+*still busy after cancellation* — and that something is not limited to
+the calls you had in flight: background agent work (session title
+generation, cache keep-alive replays) that joined too late, or a
+run-queue pump worker that ignored its own grace, forces the shutdown
+with every admitted call long gone. A stuck-but-cooperative run produces a
 graceful result: it is cancelled, it unwinds, and its state is flushed
 before anything is released. A forced result means the database was
 deliberately **not** released (closing it under a live writer risks
@@ -263,10 +275,13 @@ those handles, held by the writer that refused to die. Once the host
 knows every writer has finished, it reclaims the handles — and with
 them the held memory — with `CloseEphemeralConnsForced()`; from that
 call on, the ephemeral data is gone for good.
-`CloseEphemeralConnsForced()` refuses to run before `Close()` has
-started (reclaiming early would leave the still-open Client admitting
-calls against closed database handles) and is a no-op after a graceful
-close. `CloseResult.CleanupErrors` collects any non-fatal errors from
+`CloseEphemeralConnsForced()` refuses to run until `Close()` has
+*finished* — not merely started: while `Close()` is still draining,
+calls it admitted earlier are still executing against the in-memory
+handles, and a reclaim inside that window would close the database
+under them. Before `Close()` is called at all the same refusal
+applies, because the still-open Client would admit new calls against
+closed handles. It is a no-op after a graceful close. `CloseResult.CleanupErrors` collects any non-fatal errors from
 cleanup (also logged internally).
 
 After `Close()` returns, the Client is permanently closed: `Run`,
