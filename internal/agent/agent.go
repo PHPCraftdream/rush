@@ -301,10 +301,13 @@ type SessionAgentCall struct {
 	// policy survives the mailbox-queue handoff and is armed by the turn
 	// loop (runOwned) ONLY when this call becomes the active turn — never
 	// at queue time. nil (legacy callers, durable-queue rebuilds) arms
-	// nothing and keeps the fallback path. json:"-": never
+	// nothing: in-loop legacy turns keep the historical fallback path,
+	// while pump-driven restarts — whose rebuilt calls never carry this
+	// field — are judged by the session baseline ExecuteRun armed for
+	// their session (F2, permission.SessionRunAllowlistBaselineManager)
+	// instead of the unrestricted process-wide gate. json:"-": never
 	// durable-queue-persisted — the compiled matcher is an in-process
-	// value, so pump-driven restarts fall back to the shared path exactly
-	// like CallOptions/Tools above.
+	// value, exactly like CallOptions/Tools above.
 	RunAllowlist *permission.RunAllowlist `json:"-"`
 
 	// FromDurableQueue is true when this call originates from the durable

@@ -417,9 +417,11 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 	// identified by the LAST call whose policy was armed below, so a
 	// later owner's (or later turn's) freshly armed entry is never
 	// deleted: ClearSessionRunAllowlistForCall is compare-and-delete.
-	// Registered after the defers above so it runs before them: the
-	// session's gate falls back to the process-wide policy only after no
-	// turn of this loop can still consult it. Empty when no turn of this
+	// Registered after the defers above so it runs before them: only
+	// after no turn of this loop can still consult the entry does the
+	// session's gate fall back — to the session baseline ExecuteRun
+	// armed for this session (F2), and only then to the process-wide
+	// policy. Empty when no turn of this
 	// loop armed anything — the clear is then a no-op.
 	var armedCallID string
 	defer func() {
@@ -482,6 +484,11 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 		// turns share ONE mailbox epoch (the owner's whole dispatch loop),
 		// so the entry is bound to the call's LogicalCallID — the only
 		// per-turn identifier that survives the queue handoff.
+		// A call that carries NO policy — legacy in-process callers, and
+		// durable-queue restarts whose rebuilt calls never carry one —
+		// leaves whatever is armed alone, so such a restart is judged by
+		// the session baseline ExecuteRun armed for this session (F2)
+		// rather than blanket-approved.
 		if a.runAllowlists != nil && call.RunAllowlist != nil && call.LogicalCallID != "" {
 			a.runAllowlists.SetSessionRunAllowlistForCall(call.SessionID, *call.RunAllowlist, call.LogicalCallID)
 			armedCallID = call.LogicalCallID

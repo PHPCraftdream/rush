@@ -864,6 +864,24 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 	if allowErr != nil {
 		slog.Warn("Restricted-run allowlist has invalid patterns (skipping them)", "err", allowErr)
 	}
+	// F2 (docs/reviews/2026-09-01-sdk-review-fh.md): pin THIS run's
+	// compiled policy as the session's durable-restart baseline. The
+	// per-call policy (WithRunAllowlist below) dies with the in-process
+	// call: a queued call that gets durably orphaned (the
+	// abandonOwnershipWithHandoff finalizer, or mailbox
+	// drainOrReleaseFinal's Case 4) is rebuilt by the run-queue pump
+	// with RunAllowlist == nil, and without a baseline the restarted
+	// turn would be blanket-approved — auto-approve is never revoked and
+	// the process-wide gate has no production writer. The per-call entry
+	// still wins while a turn is active; the baseline governs only
+	// turns that carry no policy of their own, and can only narrow what
+	// the historical unrestricted fallback allowed. Never cleared on run
+	// end — a pump restart can land long after ExecuteRun returned
+	// (same lifetime as the auto-approve flag itself); a later run on
+	// the same session re-arms it.
+	if mgr, ok := app.Permissions.(permission.SessionRunAllowlistBaselineManager); ok {
+		mgr.SetSessionRunAllowlistBaseline(sess.ID, compiled)
+	}
 	// R2-1: the unconditional process-wide SetRunAllowlist write is GONE
 	// from this path.
 	//

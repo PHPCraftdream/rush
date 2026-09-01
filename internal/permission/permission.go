@@ -168,6 +168,37 @@ type SessionRunAllowlistManager interface {
 	ClearSessionRunAllowlistForCall(sessionID string, ownerCallID string)
 }
 
+// SessionRunAllowlistBaselineManager is the OPTIONAL per-session
+// durable-restart fallback gate (F2 in
+// docs/reviews/2026-09-01-sdk-review-fh.md). Consumers type-assert on it
+// instead of it living on Service, exactly like
+// SessionRunAllowlistManager, so every existing Service test fake keeps
+// compiling.
+//
+// SetSessionRunAllowlistBaseline pins allowlist as sessionID's FALLBACK
+// restricted-run policy: it is consulted only for auto-approved requests
+// that arrive when the session has NO per-call entry in the R3-4
+// SetSessionRunAllowlistForCall map. Why it exists: a queued call that
+// leaves the in-process mailbox and comes back through the durable run
+// queue (abandonOwnershipWithHandoff, or drainOrReleaseFinal's Case 4)
+// is rebuilt by the run-queue pump with RunAllowlist == nil (the
+// compiled matcher is an in-process value and
+// SessionAgentCall.RunAllowlist is json:"-"), so nothing arms a per-call
+// entry for the restarted turn. Without a baseline the restarted turn
+// falls through to the process-wide gate, which has had no production
+// writer since R2-1 and is therefore unrestricted — the restart would be
+// blanket-approved regardless of the restriction its caller declared.
+//
+// Deliberately NOT cleared at run end: the durable restart can happen
+// long after the arming run returned, so the baseline's lifetime matches
+// the session's auto-approve flag, which is also never revoked. A later
+// ExecuteRun on the same session overwrites it. The COMPILED allowlist is
+// stored (not the spec) because the baseline, like the per-call entries,
+// is consumed only inside this process.
+type SessionRunAllowlistBaselineManager interface {
+	SetSessionRunAllowlistBaseline(sessionID string, allowlist RunAllowlist)
+}
+
 // sessionRunAllowlistEntry is one per-session restricted-run gate entry:
 // the compiled allowlist plus its binding. ownerEpoch 0 marks a
 // legacy/epoch-less entry armed without an ownership epoch (the mailbox
@@ -251,8 +282,22 @@ type permissionService struct {
 	// round-2 review R2-1 each entry also carries the mailbox ownership epoch
 	// it was armed under, so a stale run's epoch-aware clear can never delete
 	// a newer owner's policy.
+	// F2: absent entries no longer mean "unrestricted" for a session an
+	// ExecuteRun has armed: Request then consults
+	// runAllowlistBaselineBySession (below) before the process-wide
+	// gate. The process-wide gate itself remains the LAST fallback and
+	// is unrestricted in production (no writer since R2-1), so an
+	// auto-approved session with neither a per-call entry nor a
+	// baseline is blanket-approved — the fail-open direction, retained
+	// for callers that never arm anything.
 	runAllowlistBySession   map[string]sessionRunAllowlistEntry
 	runAllowlistBySessionMu sync.RWMutex
+	// runAllowlistBaselineBySession is the per-session FALLBACK policy
+	// armed by ExecuteRun (F2): see
+	// SessionRunAllowlistBaselineManager. Guarded by
+	// runAllowlistBySessionMu — the same lock as the per-call map
+	// above — so Request reads both maps in one lock hold.
+	runAllowlistBaselineBySession map[string]RunAllowlist
 }
 
 func (s *permissionService) GrantPersistent(permission PermissionRequest) {
@@ -378,21 +423,33 @@ func (s *permissionService) Request(ctx context.Context, opts CreatePermissionRe
 
 	if autoApprove {
 		// Restricted-run gate. In a non-interactive `rush run` the
-		// session is auto-approve, but if the operator armed a
-		// restricted allowlist (--restrict-run / permissions.run.restrict)
-		// we must not blanket-grant. Consult the allowlist; unmatched
-		// requests are denied cleanly here so the agent sees a fast
-		// "no" instead of hanging on a UI that doesn't exist.
+		// session is auto-approve, so absent further arming it would
+		// blanket-grant. Consult a restricted allowlist when one is
+		// armed; unmatched requests are denied cleanly here so the
+		// agent sees a fast "no" instead of hanging on a UI that
+		// doesn't exist. Precedence: the per-call entry armed by the
+		// active turn (R3-4) wins; else the session baseline armed by
+		// ExecuteRun (F2), the fallback for durable-queue restarts
+		// whose rebuilt calls carry no policy of their own; else the
+		// process-wide gate. That last fallback is UNRESTRICTED in
+		// production — it has had no writer since R2-1 removed the
+		// ExecuteRun write — so an auto-approved session with neither a
+		// per-call entry nor a baseline is blanket-approved: fail-open,
+		// the historical behaviour for callers that never arm anything.
 		// R1-1: the session-keyed entry, when present, wins — it is THIS
 		// run's own policy, immune to a concurrent run re-arming the
 		// process-wide gate. opts.SessionID was always available here;
 		// the gate just never consulted it before.
 		s.runAllowlistBySessionMu.RLock()
 		sessionEntry, hasSessionGate := s.runAllowlistBySession[opts.SessionID]
+		baseline, hasBaseline := s.runAllowlistBaselineBySession[opts.SessionID]
 		s.runAllowlistBySessionMu.RUnlock()
 		gate := s.runAllowlistGate.load()
-		if hasSessionGate {
+		switch {
+		case hasSessionGate:
 			gate = sessionEntry.allowlist
+		case hasBaseline:
+			gate = baseline
 		}
 		if gate.IsRestricted() && !gate.allowsRequest(opts) {
 			s.notificationBroker.Publish(pubsub.CreatedEvent, PermissionNotification{
@@ -603,6 +660,20 @@ func (s *permissionService) ClearSessionRunAllowlistForCall(sessionID string, ow
 	s.runAllowlistBySessionMu.Unlock()
 }
 
+// SetSessionRunAllowlistBaseline arms sessionID's durable-restart
+// fallback policy (F2). See SessionRunAllowlistBaselineManager for the
+// full contract. Upsert semantics: a later arming overwrites the
+// previous baseline, mirroring how each new run on a session supersedes
+// the previous run's policy.
+func (s *permissionService) SetSessionRunAllowlistBaseline(sessionID string, allowlist RunAllowlist) {
+	if sessionID == "" {
+		return
+	}
+	s.runAllowlistBySessionMu.Lock()
+	s.runAllowlistBaselineBySession[sessionID] = allowlist
+	s.runAllowlistBySessionMu.Unlock()
+}
+
 // InheritSessionRunAllowlist propagates parentID's per-session gate to
 // childID under one lock hold (R1-1): a restricted run's sub-agent works
 // under its OWN child session id, and without inheritance its first
@@ -623,15 +694,16 @@ func (s *permissionService) InheritSessionRunAllowlist(parentID, childID string)
 
 func NewPermissionService(ctx context.Context, workingDir string, skip bool, allowedTools []string, q *db.Queries) Service {
 	svc := &permissionService{
-		Broker:                pubsub.NewBroker[PermissionRequest](),
-		notificationBroker:    pubsub.NewBroker[PermissionNotification](),
-		workingDir:            workingDir,
-		autoApproveSessions:   make(map[string]bool),
-		runAllowlistBySession: make(map[string]sessionRunAllowlistEntry),
-		allowedTools:          allowedTools,
-		pendingRequests:       csync.NewMap[string, chan bool](),
-		activeRequests:        csync.NewMap[string, *PermissionRequest](),
-		q:                     q,
+		Broker:                        pubsub.NewBroker[PermissionRequest](),
+		notificationBroker:            pubsub.NewBroker[PermissionNotification](),
+		workingDir:                    workingDir,
+		autoApproveSessions:           make(map[string]bool),
+		runAllowlistBySession:         make(map[string]sessionRunAllowlistEntry),
+		runAllowlistBaselineBySession: make(map[string]RunAllowlist),
+		allowedTools:                  allowedTools,
+		pendingRequests:               csync.NewMap[string, chan bool](),
+		activeRequests:                csync.NewMap[string, *PermissionRequest](),
+		q:                             q,
 	}
 	// Fork merge note (origin/main 6b312bee "fix: potential data race on
 	// permissionService"): upstream made skip atomic.Bool and initialises it
