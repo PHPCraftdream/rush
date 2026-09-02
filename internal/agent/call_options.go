@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent/prompt"
+	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/permission"
 )
@@ -100,6 +101,27 @@ type CallOptions struct {
 	// default) is an unscoped call: existing callers keep today's
 	// toolset.
 	FolderScope *permission.FolderScope
+
+	// DiskProvider redirects THIS call's fs_* filesystem I/O to a
+	// caller-supplied implementation instead of the real disk: every
+	// stat, symlink resolution, read, write, delete, directory listing,
+	// name search and content search the eight fs_* tools perform goes
+	// through it, including the path resolution the folder-scope check
+	// runs on. nil (the default) is the real filesystem, so every
+	// existing caller is unchanged.
+	//
+	// Deliberately NOT symmetrical with FolderScope above: FolderScope is
+	// data that permission.BuildFolderScope compiles and a later task
+	// persists across a durable-queue restart; a DiskProvider is
+	// arbitrary in-process Go code with no serializable form. A call
+	// carrying one must therefore never reach the durable queue — that
+	// refusal is a LATER task, not implemented here.
+	//
+	// It does NOT affect the legacy single-target file tools
+	// (view/glob/grep/ls/write/edit/multiedit), bash, download, git_read,
+	// agentic_fetch or MCP tools, all of which keep hitting the real disk
+	// regardless of this field.
+	DiskProvider tools.DiskProvider
 }
 
 // callOptionsContextKey is the unexported context key carrying *CallOptions.

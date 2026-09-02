@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -30,7 +31,7 @@ func TestResolveScopedPath_SymlinkEscapeResolvesOutside(t *testing.T) {
 		t.Skipf("skipping: symlink creation requires elevated privileges on this platform: %v", err)
 	}
 
-	resolved, err := resolveScopedPath(filepath.Join(tmp, "root"), filepath.Join("inside", "link.txt"))
+	resolved, err := resolveScopedPath(context.Background(), OSDisk(), filepath.Join(tmp, "root"), filepath.Join("inside", "link.txt"))
 	require.NoError(t, err)
 	wantOutside, err := filepath.EvalSymlinks(target)
 	require.NoError(t, err)
@@ -67,7 +68,7 @@ func TestResolveScopedPath_CreateJudgedByResolvedParent(t *testing.T) {
 		t.Skipf("skipping: symlink creation requires elevated privileges on this platform: %v", err)
 	}
 
-	resolved, err := resolveScopedPath(base, filepath.Join("link", "newfile.txt"))
+	resolved, err := resolveScopedPath(context.Background(), OSDisk(), base, filepath.Join("link", "newfile.txt"))
 	require.NoError(t, err)
 	evalElsewhere, err := filepath.EvalSymlinks(elsewhere)
 	require.NoError(t, err)
@@ -80,13 +81,13 @@ func TestResolveScopedPath_FileComponentDenies(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(base, "afile.txt"), []byte("x"), 0o644))
 	require.NoError(t, os.MkdirAll(filepath.Join(base, "sub"), 0o755))
 
-	_, err := resolveScopedPath(base, filepath.Join("afile.txt", "sub", "deeper.txt"))
+	_, err := resolveScopedPath(context.Background(), OSDisk(), base, filepath.Join("afile.txt", "sub", "deeper.txt"))
 	require.Error(t, err)
 
-	_, err = resolveScopedPath(base, filepath.Join("afile.txt"))
+	_, err = resolveScopedPath(context.Background(), OSDisk(), base, filepath.Join("afile.txt"))
 	require.NoError(t, err)
 
-	_, err = resolveScopedPath(base, filepath.Join("sub", "newfile.txt"))
+	_, err = resolveScopedPath(context.Background(), OSDisk(), base, filepath.Join("sub", "newfile.txt"))
 	require.NoError(t, err)
 }
 
@@ -103,22 +104,22 @@ func TestResolveScopedPath_AbsoluteAndRelativeInputs(t *testing.T) {
 	require.NoError(t, err)
 
 	// Relative input.
-	resolved, err := resolveScopedPath(root, filepath.Join("existing", "file.txt"))
+	resolved, err := resolveScopedPath(context.Background(), OSDisk(), root, filepath.Join("existing", "file.txt"))
 	require.NoError(t, err)
 	require.Equal(t, wantFile, resolved)
 
 	// Absolute input passes through SmartJoin unchanged.
-	resolved, err = resolveScopedPath(root, file)
+	resolved, err = resolveScopedPath(context.Background(), OSDisk(), root, file)
 	require.NoError(t, err)
 	require.Equal(t, wantFile, resolved)
 
 	// Relative input with traversal cleans to the same path.
-	resolved, err = resolveScopedPath(root, filepath.Join("existing", "..", "existing", "file.txt"))
+	resolved, err = resolveScopedPath(context.Background(), OSDisk(), root, filepath.Join("existing", "..", "existing", "file.txt"))
 	require.NoError(t, err)
 	require.Equal(t, wantFile, resolved)
 
 	// Non-existent create path is appended to the resolved parent.
-	resolved, err = resolveScopedPath(root, filepath.Join("existing", "newfile.txt"))
+	resolved, err = resolveScopedPath(context.Background(), OSDisk(), root, filepath.Join("existing", "newfile.txt"))
 	require.NoError(t, err)
 	require.Equal(t, filepath.Join(wantExisting, "newfile.txt"), resolved)
 }

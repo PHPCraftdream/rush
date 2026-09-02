@@ -151,6 +151,20 @@ type SessionAgentCallData struct {
 	// fail-closed direction). nil means unscoped or legacy row; see
 	// RebuildSessionAgentCall for how a nil spec is judged.
 	FolderScopeSpec *FolderScopeSpec
+	// HostDiskProvider records that the call this row was built from
+	// carried a caller-supplied filesystem (agent.CallOptions.DiskProvider).
+	// The provider itself is arbitrary in-process Go code (typically a
+	// closure over host state: an open DB handle, an HTTP client, an
+	// in-memory map) and cannot be serialized in any form, so a row with
+	// this flag set must NEVER be executed: rebuilding it would silently
+	// restart the turn on the REAL disk instead of the host's, replaying
+	// the model's writes onto the operator's filesystem. Producers
+	// (agent.restartOrphanedWithRetry, coordinator.startDetachedRun,
+	// coordinator.handleInterruptTick) refuse to enqueue such a call at
+	// all; this flag exists so that a producer added later, or a row
+	// written by an older/newer binary, still fails CLOSED at the
+	// consumer (agent.RebuildSessionAgentCall) instead of failing open.
+	HostDiskProvider bool
 	// SystemPromptOverride, if non-empty, replaces the agent's global system prompt
 	SystemPromptOverride string
 	// MaxCost aborts the run if total session cost exceeds this value (0 = no cap)

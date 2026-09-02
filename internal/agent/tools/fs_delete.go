@@ -9,8 +9,9 @@ package tools
 import (
 	"context"
 	_ "embed"
+	"errors"
 	"fmt"
-	"os"
+	"io/fs"
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/filepathext"
@@ -35,7 +36,8 @@ type FSDeletePermissionsParams struct {
 
 const FSDeleteToolName = "fs_delete"
 
-func NewFSDeleteTool(scope permission.FolderScope, permissions permission.Service, workingDir string) fantasy.AgentTool {
+func NewFSDeleteTool(scope permission.FolderScope, permissions permission.Service, workingDir string, disk DiskProvider) fantasy.AgentTool {
+	disk = diskOrOS(disk)
 	return fantasy.NewAgentTool(
 		FSDeleteToolName,
 		fsDeleteDescription,
@@ -86,12 +88,13 @@ func NewFSDeleteTool(scope permission.FolderScope, permissions permission.Servic
 				WorkingDir: workingDir,
 				Scope:      scope,
 				Items:      params.Items,
+				Disk:       disk,
 				PathOf: func(i FSDeleteItem) string {
 					return i.Path
 				},
 				Preflight: fsDeletePreflight,
 				Execute: func(ctx context.Context, group FSBatchGroup[FSDeleteItem]) ([]FSItemOutcome, error) {
-					return fsDeleteExecuteGroup(ctx, group)
+					return fsDeleteExecuteGroup(ctx, disk, group)
 				},
 			})
 			return resp, err
@@ -101,7 +104,7 @@ func NewFSDeleteTool(scope permission.FolderScope, permissions permission.Servic
 
 // fsDeletePreflight grants delete unconditionally: existence is verified
 // during execution, where the regular-file check happens anyway.
-func fsDeletePreflight(item FSDeleteItem, _ int, _ string) (permission.FileOp, error) {
+func fsDeletePreflight(_ context.Context, item FSDeleteItem, _ int, _ string) (permission.FileOp, error) {
 	return permission.FileOpDelete, nil
 }
 
@@ -109,13 +112,14 @@ func fsDeletePreflight(item FSDeleteItem, _ int, _ string) (permission.FileOp, e
 // order, independently: the first removes the file, later duplicates
 // honestly report "file not found". There is no history write, no
 // filetracker read and no diff — deletion is not a content write.
-func fsDeleteExecuteGroup(ctx context.Context, group FSBatchGroup[FSDeleteItem]) ([]FSItemOutcome, error) {
+func fsDeleteExecuteGroup(ctx context.Context, disk DiskProvider, group FSBatchGroup[FSDeleteItem]) ([]FSItemOutcome, error) {
+	disk = diskOrOS(disk)
 	outcomes := make([]FSItemOutcome, len(group.Items))
 
 	for i := range group.Items {
-		info, err := os.Stat(group.Path)
+		info, err := disk.Stat(ctx, group.Path)
 		if err != nil {
-			if os.IsNotExist(err) {
+			if errors.Is(err, fs.ErrNotExist) {
 				outcomes[i] = FSItemOutcome{
 					Status: FSStatusFailed,
 					Error:  "file not found: " + group.Path,
@@ -142,7 +146,7 @@ func fsDeleteExecuteGroup(ctx context.Context, group FSBatchGroup[FSDeleteItem])
 			}
 			continue
 		}
-		if err := os.Remove(group.Path); err != nil {
+		if err := disk.Remove(ctx, group.Path); err != nil {
 			outcomes[i] = FSItemOutcome{
 				Status: FSStatusFailed,
 				Error:  fmt.Sprintf("cannot delete %s: %v", group.Path, err),

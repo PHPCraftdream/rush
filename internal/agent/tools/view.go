@@ -340,8 +340,19 @@ func addLineNumbers(content string, startLine int) string {
 	return strings.Join(result, "\n")
 }
 
+// readTextFile keeps its exact signature for the legacy view tool: it
+// always reads through the real disk. fs_read routes through
+// readTextFileFrom instead, so it can honour an injected DiskProvider.
 func readTextFile(filePath string, offset, limit, maxContentSize int) (string, bool, error) {
-	file, err := os.Open(filePath)
+	return readTextFileFrom(context.Background(), OSDisk(), filePath, offset, limit, maxContentSize)
+}
+
+// readTextFileFrom is readTextFile's provider-aware core: identical
+// bounded line-window logic, its one real disk call (Open) routed
+// through disk instead of os.Open directly.
+func readTextFileFrom(ctx context.Context, disk DiskProvider, filePath string, offset, limit, maxContentSize int) (string, bool, error) {
+	disk = diskOrOS(disk)
+	file, err := disk.Open(ctx, filePath)
 	if err != nil {
 		return "", false, err
 	}

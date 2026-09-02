@@ -21,7 +21,7 @@ func fsGrepTestRun(t *testing.T, ctx context.Context, workingDir string, scope p
 	t.Helper()
 	input, err := json.Marshal(FSGrepParams{Items: items})
 	require.NoError(t, err)
-	tool := NewFSGrepTool(workingDir, scope)
+	tool := NewFSGrepTool(workingDir, scope, nil)
 	resp, err := tool.Run(ctx, fantasy.ToolCall{ID: "c1", Name: FSGrepToolName, Input: string(input)})
 	require.NoError(t, err)
 	return resp
@@ -31,9 +31,9 @@ func fsGrepTestRun(t *testing.T, ctx context.Context, workingDir string, scope p
 // grep-allowed but a subdirectory is carved out as a bare deny entry.
 func fsGrepCarvedScope(t *testing.T, workingDir, carvedRel string) permission.FolderScope {
 	t.Helper()
-	root, err := resolveScopedPath(workingDir, ".")
+	root, err := resolveScopedPath(context.Background(), OSDisk(), workingDir, ".")
 	require.NoError(t, err)
-	carved, err := resolveScopedPath(workingDir, carvedRel)
+	carved, err := resolveScopedPath(context.Background(), OSDisk(), workingDir, carvedRel)
 	require.NoError(t, err)
 	scope, err := permission.BuildFolderScope(permission.FolderScopeSpec{
 		WorkingDir: workingDir,

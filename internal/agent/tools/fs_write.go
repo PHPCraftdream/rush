@@ -11,7 +11,7 @@ import (
 	_ "embed"
 	"errors"
 	"fmt"
-	"os"
+	"io/fs"
 	"path/filepath"
 	"strings"
 
@@ -43,7 +43,8 @@ type FSWritePermissionsParams struct {
 
 const FSWriteToolName = "fs_write"
 
-func NewFSWriteTool(scope permission.FolderScope, permissions permission.Service, files history.Service, filetracker filetracker.Service, workingDir string) fantasy.AgentTool {
+func NewFSWriteTool(scope permission.FolderScope, permissions permission.Service, files history.Service, filetracker filetracker.Service, workingDir string, disk DiskProvider) fantasy.AgentTool {
+	disk = diskOrOS(disk)
 	return fantasy.NewAgentTool(
 		FSWriteToolName,
 		fsWriteDescription,
@@ -98,12 +99,13 @@ func NewFSWriteTool(scope permission.FolderScope, permissions permission.Service
 				WorkingDir: workingDir,
 				Scope:      scope,
 				Items:      params.Items,
+				Disk:       disk,
 				PathOf: func(i FSWriteItem) string {
 					return i.Path
 				},
-				Preflight: fsWritePreflight,
+				Preflight: fsWritePreflight(disk),
 				Execute: func(ctx context.Context, group FSBatchGroup[FSWriteItem]) ([]FSItemOutcome, error) {
-					return fsWriteExecuteGroup(ctx, scope, files, filetracker, workingDir, group)
+					return fsWriteExecuteGroup(ctx, scope, files, filetracker, workingDir, disk, group)
 				},
 			})
 			return resp, err
@@ -114,28 +116,31 @@ func NewFSWriteTool(scope permission.FolderScope, permissions permission.Service
 // fsWritePreflight resolves each item's operation without touching the
 // filesystem beyond read-only stats, so the runner's scope check sees
 // create-vs-overwrite exactly as execution will.
-func fsWritePreflight(item FSWriteItem, _ int, absPath string) (permission.FileOp, error) {
-	info, err := os.Stat(absPath)
-	switch {
-	case err == nil:
-		if info.IsDir() {
-			return "", fmt.Errorf("path is a directory, not a file: %s", absPath)
+func fsWritePreflight(disk DiskProvider) FSPreflightFunc[FSWriteItem] {
+	return func(ctx context.Context, item FSWriteItem, _ int, absPath string) (permission.FileOp, error) {
+		info, err := disk.Stat(ctx, absPath)
+		switch {
+		case err == nil:
+			if info.IsDir() {
+				return "", fmt.Errorf("path is a directory, not a file: %s", absPath)
+			}
+			if item.CreateOnly {
+				return "", fmt.Errorf("file already exists: %s", absPath)
+			}
+			return permission.FileOpOverwrite, nil
+		case errors.Is(err, fs.ErrNotExist):
+			return permission.FileOpCreate, nil
+		default:
+			return "", fmt.Errorf("cannot access %s: %w", absPath, err)
 		}
-		if item.CreateOnly {
-			return "", fmt.Errorf("file already exists: %s", absPath)
-		}
-		return permission.FileOpOverwrite, nil
-	case os.IsNotExist(err):
-		return permission.FileOpCreate, nil
-	default:
-		return "", fmt.Errorf("cannot access %s: %w", absPath, err)
 	}
 }
 
 // fsWriteExecuteGroup applies every item of one same-path group in
 // memory (last write wins) and writes the file once, so a group is one
 // atomic write and one history version regardless of item count.
-func fsWriteExecuteGroup(ctx context.Context, scope permission.FolderScope, files history.Service, filetracker filetracker.Service, workingDir string, group FSBatchGroup[FSWriteItem]) ([]FSItemOutcome, error) {
+func fsWriteExecuteGroup(ctx context.Context, scope permission.FolderScope, files history.Service, filetracker filetracker.Service, workingDir string, disk DiskProvider, group FSBatchGroup[FSWriteItem]) ([]FSItemOutcome, error) {
+	disk = diskOrOS(disk)
 	sessionID := GetSessionFromContext(ctx)
 	if sessionID == "" {
 		return nil, &FSBatchAbortError{Err: errors.New("session_id is required")}
@@ -143,9 +148,9 @@ func fsWriteExecuteGroup(ctx context.Context, scope permission.FolderScope, file
 
 	outcomes := make([]FSItemOutcome, len(group.Items))
 
-	_, statErr := os.Stat(group.Path)
+	_, statErr := disk.Stat(ctx, group.Path)
 	exists := statErr == nil
-	if statErr != nil && !os.IsNotExist(statErr) {
+	if statErr != nil && !errors.Is(statErr, fs.ErrNotExist) {
 		for i := range outcomes {
 			outcomes[i] = FSItemOutcome{
 				Status: FSStatusFailed,
@@ -191,7 +196,7 @@ func fsWriteExecuteGroup(ctx context.Context, scope permission.FolderScope, file
 			if parent == dir {
 				break
 			}
-			if _, err := os.Stat(parent); err == nil {
+			if _, err := disk.Stat(ctx, parent); err == nil {
 				break
 			}
 			if err := scope.Check(parent, op); err != nil {
@@ -202,7 +207,7 @@ func fsWriteExecuteGroup(ctx context.Context, scope permission.FolderScope, file
 	}
 
 	if !exists {
-		if err := os.MkdirAll(filepath.Dir(group.Path), 0o755); err != nil {
+		if err := disk.MkdirAll(ctx, filepath.Dir(group.Path), 0o755); err != nil {
 			if osFailureIsFatal(err) {
 				return nil, &FSBatchAbortError{Err: fmt.Errorf("error creating directory: %w", err)}
 			}
@@ -212,7 +217,7 @@ func fsWriteExecuteGroup(ctx context.Context, scope permission.FolderScope, file
 
 	oldContent := ""
 	if exists {
-		if oldBytes, err := os.ReadFile(group.Path); err == nil {
+		if oldBytes, err := disk.ReadFile(ctx, group.Path); err == nil {
 			oldContent = string(oldBytes)
 		}
 	}
@@ -264,6 +269,7 @@ func fsWriteExecuteGroup(ctx context.Context, scope permission.FolderScope, file
 		files:       files,
 		filetracker: filetracker,
 		workingDir:  workingDir,
+		disk:        disk,
 	}
 	resp, err := commitFileChange(editCtx, sessionID, group.Path, oldContent, current)
 	if err != nil {

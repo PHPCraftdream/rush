@@ -40,7 +40,7 @@ func TestFSReplaceReadBeforeWriteEnforced(t *testing.T) {
 	)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "doc.txt"), []byte("alpha\nbeta\n"), 0o644))
 
-	tool := NewFSReplaceTool(scope, &mockPermissionService{}, &mockHistoryService{}, &mockEditFileTracker{}, dir)
+	tool := NewFSReplaceTool(scope, &mockPermissionService{}, &mockHistoryService{}, &mockEditFileTracker{}, dir, nil)
 	resp, err := fsReplaceRun(t, ctx, tool, FSReplaceParams{Items: []FSReplaceItem{
 		{Path: "doc.txt", OldString: "beta", NewString: "BETA"},
 	}})
@@ -55,7 +55,7 @@ func TestFSReplaceReadBeforeWriteEnforced(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "alpha\nbeta\n", string(content))
 
-	tool = NewFSReplaceTool(scope, &mockPermissionService{}, &mockHistoryService{}, &mockEditFileTracker{lastRead: time.Now().Add(time.Second)}, dir)
+	tool = NewFSReplaceTool(scope, &mockPermissionService{}, &mockHistoryService{}, &mockEditFileTracker{lastRead: time.Now().Add(time.Second)}, dir, nil)
 	resp, err = fsReplaceRun(t, ctx, tool, FSReplaceParams{Items: []FSReplaceItem{
 		{Path: "doc.txt", OldString: "beta", NewString: "BETA"},
 	}})
@@ -76,7 +76,7 @@ func TestFSReplaceNoReadGrantGetsExplicitMessage(t *testing.T) {
 	)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "doc.txt"), []byte("alpha\nbeta\n"), 0o644))
 
-	tool := NewFSReplaceTool(scope, &mockPermissionService{}, &mockHistoryService{}, &mockEditFileTracker{}, dir)
+	tool := NewFSReplaceTool(scope, &mockPermissionService{}, &mockHistoryService{}, &mockEditFileTracker{}, dir, nil)
 	resp, err := fsReplaceRun(t, ctx, tool, FSReplaceParams{Items: []FSReplaceItem{
 		{Path: "doc.txt", OldString: "beta", NewString: "BETA"},
 	}})
@@ -113,7 +113,7 @@ func TestFSReplaceSequentialItemsOneWrite(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "num.txt"), []byte("one\ntwo\nthree\n"), 0o644))
 
 	files := &fsReplaceCountingHistory{mockHistoryService: &mockHistoryService{}}
-	tool := NewFSReplaceTool(scope, &mockPermissionService{}, files, &mockEditFileTracker{lastRead: time.Now().Add(time.Second)}, dir)
+	tool := NewFSReplaceTool(scope, &mockPermissionService{}, files, &mockEditFileTracker{lastRead: time.Now().Add(time.Second)}, dir, nil)
 	resp, err := fsReplaceRun(t, ctx, tool, FSReplaceParams{Items: []FSReplaceItem{
 		{Path: "num.txt", OldString: "one", NewString: "ONE"},
 		{Path: "num.txt", OldString: "three", NewString: "THREE"},
@@ -137,7 +137,7 @@ func TestFSReplaceReplaceAllAndFailuresBestEffort(t *testing.T) {
 	)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "x.txt"), []byte("x\nx\n"), 0o644))
 
-	tool := NewFSReplaceTool(scope, &mockPermissionService{}, &mockHistoryService{}, &mockEditFileTracker{lastRead: time.Now().Add(time.Second)}, dir)
+	tool := NewFSReplaceTool(scope, &mockPermissionService{}, &mockHistoryService{}, &mockEditFileTracker{lastRead: time.Now().Add(time.Second)}, dir, nil)
 	resp, err := fsReplaceRun(t, ctx, tool, FSReplaceParams{Items: []FSReplaceItem{
 		{Path: "x.txt", OldString: "x", NewString: "y", ReplaceAll: true},
 		{Path: "x.txt", OldString: "zzz", NewString: "q"},
@@ -164,7 +164,7 @@ func TestFSReplacePermissionDeniedStopsTurn(t *testing.T) {
 	ctx := context.WithValue(context.Background(), SessionIDContextKey, "sess-replace")
 	scope := fsWriteTestScope(t, dir)
 
-	tool := NewFSReplaceTool(scope, &fsReplaceDenyService{}, &mockHistoryService{}, &mockEditFileTracker{}, dir)
+	tool := NewFSReplaceTool(scope, &fsReplaceDenyService{}, &mockHistoryService{}, &mockEditFileTracker{}, dir, nil)
 	resp, err := fsReplaceRun(t, ctx, tool, FSReplaceParams{Items: []FSReplaceItem{
 		{Path: "denied.txt", OldString: "a", NewString: "b"},
 	}})
@@ -187,7 +187,7 @@ func TestFSReplaceCRLFPreserved(t *testing.T) {
 	)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "crlf.txt"), []byte("alpha\r\nbeta\r\n"), 0o644))
 
-	tool := NewFSReplaceTool(scope, &mockPermissionService{}, &mockHistoryService{}, &mockEditFileTracker{lastRead: time.Now().Add(time.Second)}, dir)
+	tool := NewFSReplaceTool(scope, &mockPermissionService{}, &mockHistoryService{}, &mockEditFileTracker{lastRead: time.Now().Add(time.Second)}, dir, nil)
 	resp, err := fsReplaceRun(t, ctx, tool, FSReplaceParams{Items: []FSReplaceItem{
 		{Path: "crlf.txt", OldString: "beta", NewString: "BETA"},
 	}})

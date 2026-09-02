@@ -29,7 +29,7 @@ func TestFSDeleteRemovesFile(t *testing.T) {
 	})
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "gone.txt"), []byte("gone"), 0o644))
 
-	tool := NewFSDeleteTool(scope, &mockPermissionService{}, dir)
+	tool := NewFSDeleteTool(scope, &mockPermissionService{}, dir, nil)
 	resp, err := fsDeleteRun(t, ctx, tool, FSDeleteParams{Items: []FSDeleteItem{
 		{Path: "gone.txt"},
 	}})
@@ -57,7 +57,7 @@ func TestFSDeleteRefusesDirectory(t *testing.T) {
 	})
 	require.NoError(t, os.Mkdir(filepath.Join(dir, "subdir"), 0o755))
 
-	tool := NewFSDeleteTool(scope, &mockPermissionService{}, dir)
+	tool := NewFSDeleteTool(scope, &mockPermissionService{}, dir, nil)
 	resp, err := fsDeleteRun(t, ctx, tool, FSDeleteParams{Items: []FSDeleteItem{
 		{Path: "subdir"},
 	}})
@@ -93,7 +93,7 @@ func TestFSDeleteRefusesSymlinkEscape(t *testing.T) {
 		Ops: []permission.FileOp{permission.FileOpDelete},
 	})
 
-	tool := NewFSDeleteTool(scope, &mockPermissionService{}, tmp)
+	tool := NewFSDeleteTool(scope, &mockPermissionService{}, tmp, nil)
 	resp, err := fsDeleteRun(t, ctx, tool, FSDeleteParams{Items: []FSDeleteItem{
 		{Path: filepath.Join("root", "link.txt")},
 	}})
@@ -116,7 +116,7 @@ func TestFSDeleteMissingFileFailsPerItem(t *testing.T) {
 		Ops: []permission.FileOp{permission.FileOpDelete},
 	})
 
-	tool := NewFSDeleteTool(scope, &mockPermissionService{}, dir)
+	tool := NewFSDeleteTool(scope, &mockPermissionService{}, dir, nil)
 	resp, err := fsDeleteRun(t, ctx, tool, FSDeleteParams{Items: []FSDeleteItem{
 		{Path: "nope.txt"},
 		{Path: "nope.txt"},
@@ -155,7 +155,7 @@ func TestFSDeletePermissionDeniedStopsTurn(t *testing.T) {
 	})
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "keep.txt"), []byte("keep"), 0o644))
 
-	tool := NewFSDeleteTool(scope, &fsDeleteDenyService{}, dir)
+	tool := NewFSDeleteTool(scope, &fsDeleteDenyService{}, dir, nil)
 	resp, err := fsDeleteRun(t, ctx, tool, FSDeleteParams{Items: []FSDeleteItem{
 		{Path: "keep.txt"},
 	}})

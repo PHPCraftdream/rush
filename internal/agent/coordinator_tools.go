@@ -454,15 +454,24 @@ func (c *coordinator) buildTools(ctx context.Context, cfg *config.Config, agent 
 	agent = c.buildToolsAgentConfigForCall(ctx, cfg, agent, isSubAgent)
 	agent = c.applyCallFolderScope(ctx, agent)
 
-	// The scope value the fs_* tools constructed below are built with:
-	// THIS call's FolderScope, or the zero value for an unscoped call.
-	// The zero value grants nothing, so the constructions themselves are
-	// inert; which fs_* tools reach the returned slice is decided by
-	// agent.AllowedTools membership -- applyCallFolderScope for a scoped
-	// call, the config defaults for an unscoped one.
+	// The scope and disk provider the fs_* tools constructed below are
+	// built with: THIS call's FolderScope/DiskProvider, or their zero
+	// values for a call with no CallOptions (or a CallOptions that sets
+	// neither). The zero scope grants nothing, so the constructions
+	// themselves are inert; which fs_* tools reach the returned slice is
+	// decided by agent.AllowedTools membership -- applyCallFolderScope
+	// for a scoped call, the config defaults for an unscoped one. The
+	// zero (nil) disk provider means each constructor normalises to the
+	// real filesystem (diskOrOS) -- see CallOptions.DiskProvider's doc
+	// comment for why it is deliberately not part of that same
+	// zero-scope-denies-everything story.
 	var scope permission.FolderScope
-	if callOpts := callOptionsFrom(ctx); callOpts != nil && callOpts.FolderScope != nil {
-		scope = *callOpts.FolderScope
+	var disk tools.DiskProvider
+	if callOpts := callOptionsFrom(ctx); callOpts != nil {
+		if callOpts.FolderScope != nil {
+			scope = *callOpts.FolderScope
+		}
+		disk = callOpts.DiskProvider
 	}
 
 	// SSRF guard escape hatch (Options.AllowPrivateNetworkFetch, off by
@@ -561,16 +570,20 @@ func (c *coordinator) buildTools(ctx context.Context, cfg *config.Config, agent 
 
 		// Scoped, batch-capable fs_* family, constructed with THIS
 		// call's scope (see the extraction above; the zero value denies
-		// everything). NewFSGrepTool takes workingDir first and scope
-		// second; the other seven take scope first.
-		tools.NewFSListTool(scope, c.cfg.WorkingDir(), cfg.Tools.Ls),
-		tools.NewFSFindTool(scope, c.cfg.WorkingDir()),
-		tools.NewFSReadTool(scope, c.cfg.WorkingDir()),
-		tools.NewFSGrepTool(c.cfg.WorkingDir(), scope),
-		tools.NewFSWriteTool(scope, c.permissions, c.history, c.filetracker, c.cfg.WorkingDir()),
-		tools.NewFSReplaceTool(scope, c.permissions, c.history, c.filetracker, c.cfg.WorkingDir()),
-		tools.NewFSWriteLinesTool(scope, c.permissions, c.history, c.filetracker, c.cfg.WorkingDir()),
-		tools.NewFSDeleteTool(scope, c.permissions, c.cfg.WorkingDir()),
+		// everything) and THIS call's disk provider (nil normalises to
+		// the real disk inside each constructor). NewFSGrepTool takes
+		// workingDir first and scope second; the other seven take scope
+		// first. Every constructor's LAST parameter is the DiskProvider
+		// precisely because of that reversed-order outlier: a trailing
+		// parameter needs no per-constructor special case.
+		tools.NewFSListTool(scope, c.cfg.WorkingDir(), cfg.Tools.Ls, disk),
+		tools.NewFSFindTool(scope, c.cfg.WorkingDir(), disk),
+		tools.NewFSReadTool(scope, c.filetracker, c.cfg.WorkingDir(), disk),
+		tools.NewFSGrepTool(c.cfg.WorkingDir(), scope, disk),
+		tools.NewFSWriteTool(scope, c.permissions, c.history, c.filetracker, c.cfg.WorkingDir(), disk),
+		tools.NewFSReplaceTool(scope, c.permissions, c.history, c.filetracker, c.cfg.WorkingDir(), disk),
+		tools.NewFSWriteLinesTool(scope, c.permissions, c.history, c.filetracker, c.cfg.WorkingDir(), disk),
+		tools.NewFSDeleteTool(scope, c.permissions, c.cfg.WorkingDir(), disk),
 	)
 
 	// cfg.MCP presence is pinned config data (any MCP server configured at

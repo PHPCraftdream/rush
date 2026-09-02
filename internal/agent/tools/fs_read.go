@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/filetracker"
 	"github.com/PHPCraftdream/rush/internal/permission"
 )
 
@@ -54,16 +55,24 @@ type FSReadParams struct {
 // zero FolderScope denies everything, which is the safe default. Unlike
 // fs_list, a read always requires an explicit path: there is no
 // default-scope-root fallback.
-func NewFSReadTool(scope permission.FolderScope, workingDir string) fantasy.AgentTool {
+//
+// A successful read records itself via filetracker.RecordRead, the same
+// as the legacy view tool: fs_replace/fs_write_lines both require a
+// non-zero LastReadTime before they will act, and fs_read is the only
+// read tool that survives into a folder-scoped toolset (the legacy view
+// tool is stripped), so without this a scoped run could never satisfy
+// the read-before-write gate on a file it only ever read.
+func NewFSReadTool(scope permission.FolderScope, filetracker filetracker.Service, workingDir string, disk DiskProvider) fantasy.AgentTool {
+	disk = diskOrOS(disk)
 	return fantasy.NewAgentTool(
 		FSReadToolName,
 		fsReadDescription(),
 		func(ctx context.Context, params FSReadParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
 			return RunFSBatch(ctx, FSBatch[FSReadItem]{
-				Tool: FSReadToolName, WorkingDir: workingDir, Scope: scope, Items: params.Items,
+				Tool: FSReadToolName, WorkingDir: workingDir, Scope: scope, Items: params.Items, Disk: disk,
 				PathOf:    func(item FSReadItem) string { return item.Path },
 				Preflight: fsReadPreflight,
-				Execute:   fsReadExecute,
+				Execute:   fsReadExecute(disk, filetracker),
 			})
 		},
 	)
@@ -120,7 +129,7 @@ func fsReadWindowOf(item FSReadItem) (fsReadWindow, error) {
 
 // fsReadPreflight rejects structurally invalid addressing before any
 // execution; the runner applies the scope check itself.
-func fsReadPreflight(item FSReadItem, _ int, _ string) (permission.FileOp, error) {
+func fsReadPreflight(_ context.Context, item FSReadItem, _ int, _ string) (permission.FileOp, error) {
 	_, err := fsReadWindowOf(item)
 	if err != nil {
 		return "", err
@@ -130,30 +139,42 @@ func fsReadPreflight(item FSReadItem, _ int, _ string) (permission.FileOp, error
 
 // fsReadExecute reads one group of items sharing a resolved file,
 // reporting one outcome per item in order. Scope checks already happened
-// in the preflight, so no permission work happens here.
-func fsReadExecute(_ context.Context, group FSBatchGroup[FSReadItem]) ([]FSItemOutcome, error) {
-	outcomes := make([]FSItemOutcome, len(group.Items))
-	for i, member := range group.Items {
-		block, err := fsReadOne(group.Path, member.RawPath, member.Item)
-		if err != nil {
-			outcomes[i] = FSItemOutcome{Status: FSStatusFailed, Error: err.Error()}
-			continue
+// in the preflight, so no permission work happens here. Any successful
+// read records the group's file once in filetracker, when a session ID
+// is available, so a later fs_replace/fs_write_lines on the same file
+// can pass its read-before-write check.
+func fsReadExecute(disk DiskProvider, tracker filetracker.Service) FSExecuteFunc[FSReadItem] {
+	return func(ctx context.Context, group FSBatchGroup[FSReadItem]) ([]FSItemOutcome, error) {
+		outcomes := make([]FSItemOutcome, len(group.Items))
+		anyOK := false
+		for i, member := range group.Items {
+			block, err := fsReadOne(ctx, disk, group.Path, member.RawPath, member.Item)
+			if err != nil {
+				outcomes[i] = FSItemOutcome{Status: FSStatusFailed, Error: err.Error()}
+				continue
+			}
+			outcomes[i] = FSItemOutcome{Status: FSStatusOK, Block: block}
+			anyOK = true
 		}
-		outcomes[i] = FSItemOutcome{Status: FSStatusOK, Block: block}
+		if anyOK {
+			if sessionID := GetSessionFromContext(ctx); sessionID != "" {
+				tracker.RecordRead(ctx, sessionID, group.Path)
+			}
+		}
+		return outcomes, nil
 	}
-	return outcomes, nil
 }
 
 // fsReadOne reads one window of one file and renders it as a <file>
 // block in view.go's shape, extended with path, lines and status
 // attributes. absPath is the resolved path from the execution group;
 // rawPath is echoed exactly as the model sent it.
-func fsReadOne(absPath string, rawPath string, item FSReadItem) (string, error) {
+func fsReadOne(ctx context.Context, disk DiskProvider, absPath string, rawPath string, item FSReadItem) (string, error) {
 	win, err := fsReadWindowOf(item) // validated by preflight; recompute defensively
 	if err != nil {
 		return "", err
 	}
-	content, hasMore, err := readTextFile(absPath, win.offset, win.limit, MaxViewSize)
+	content, hasMore, err := readTextFileFrom(ctx, disk, absPath, win.offset, win.limit, MaxViewSize)
 	if err != nil {
 		var tooLarge contentTooLargeError
 		if errors.As(err, &tooLarge) {

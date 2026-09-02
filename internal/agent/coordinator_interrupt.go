@@ -183,6 +183,19 @@ func (c *coordinator) handleInterruptTick(ctx context.Context, sessionID string)
 		return false, buildErr
 	}
 
+	// Layer 1 (T9 shape, design doc §7.3): refuse outright, BEFORE the
+	// atomic consume below, a call carrying a caller-supplied
+	// DiskProvider. The row PeekInterruptInject found above is left
+	// untouched (peek never deletes), so the operator has a record
+	// instead of losing the message with no trace — consuming it here
+	// would durably enqueue a row that a restart could only replay onto
+	// the REAL disk.
+	if callCarriesDiskProvider(call) {
+		slog.Error("coordinator: refusing to durably enqueue an interrupt-inject call carrying a caller-supplied disk provider",
+			"session_id", sessionID, "logical_call_id", call.LogicalCallID)
+		return false, fmt.Errorf("%w (session=%s)", ErrDiskProviderNotDurable, sessionID)
+	}
+
 	// Reference the existing row; the agent must not re-create it.
 	call.ExistingMessageID = pi.MessageID
 	call.InjectID = pi.ID
@@ -314,6 +327,20 @@ func (c *coordinator) InterruptAndSend(ctx context.Context, sessionID, prompt st
 // pump picks up the same call before we return. If durable enqueue fails, we
 // recreate the row so a future tick can retry (P0-2).
 func (c *coordinator) startDetachedRun(ctx context.Context, call SessionAgentCall) error {
+	// Layer 1 (T9 shape, design doc §7.3): refuse outright, before
+	// touching anything (including the pending_injects row below), a
+	// call carrying a caller-supplied DiskProvider. It has no
+	// serializable form, so a durable row rebuilt from it would silently
+	// restart on the REAL disk instead of the host's. Unlike
+	// restartOrphanedWithRetry's finalizer, this error DOES reach the
+	// original caller (InterruptAndSend wraps and returns it), so "Run
+	// reports the refusal" holds for this producer.
+	if callCarriesDiskProvider(call) {
+		slog.Error("coordinator: refusing to durably enqueue a call carrying a caller-supplied disk provider",
+			"session_id", call.SessionID, "logical_call_id", call.LogicalCallID)
+		return fmt.Errorf("%w (session=%s)", ErrDiskProviderNotDurable, call.SessionID)
+	}
+
 	// P0-2 fix: delete the pending_injects row at the START to prevent
 	// duplicate detached runs. If durable enqueue fails, we'll recreate it.
 	if call.InjectID != "" {
@@ -431,6 +458,23 @@ func (c *coordinator) recreatePendingInjectRow(originalCtx context.Context, call
 // reconstructed here — they are pure functions of (Model, ProviderConfig) computed
 // via mergeCallOptions during normal execution path.
 func (c *coordinator) RebuildSessionAgentCall(ctx context.Context, data session.SessionAgentCallData) (SessionAgentCall, error) {
+	// Layer 2 (belt and braces, design doc §7.3): every current producer
+	// already refuses to enqueue a disk-provider-carrying call (Layer 1),
+	// so this should be unreachable in practice — but a row marked
+	// HostDiskProvider must NEVER be rebuilt: the provider itself has no
+	// serializable form, so "rebuilding" it can only mean silently
+	// falling back to the real disk, exactly the silent restart
+	// promotion this whole feature exists to prevent. Wrapped in
+	// ErrCallAlreadyAttempted so the pump treats it as TERMINAL — no
+	// retry loop on a row that can never succeed differently.
+	if data.HostDiskProvider {
+		slog.Error("agent: refusing to rebuild a durable row marked host-disk-provider; its DiskProvider had no serializable form and rebuilding it would silently restart the turn on the real disk",
+			"session_id", data.SessionID, "logical_call_id", data.LogicalCallID)
+		return SessionAgentCall{}, &ErrCallAlreadyAttempted{
+			Err: fmt.Errorf("%w (session=%s)", ErrDiskProviderNotDurable, data.SessionID),
+		}
+	}
+
 	var smartModel, fastModel Model
 	var err error
 

@@ -256,7 +256,7 @@ func TestErrorContract_BadModelInputIsAResponseNotAnError(t *testing.T) {
 					Dir: ".",
 					Ops: []permission.FileOp{permission.FileOpCreate, permission.FileOpOverwrite},
 				})
-				return run(NewFSWriteTool(scope, &mockPermissionService{}, &mockHistoryService{}, mockFileTrackerService{}, dir),
+				return run(NewFSWriteTool(scope, &mockPermissionService{}, &mockHistoryService{}, mockFileTrackerService{}, dir, nil),
 					FSWriteToolName,
 					FSWriteParams{Items: []FSWriteItem{{Path: nulPath, Content: "x"}}})
 			},
@@ -271,7 +271,7 @@ func TestErrorContract_BadModelInputIsAResponseNotAnError(t *testing.T) {
 					Dir: ".",
 					Ops: []permission.FileOp{permission.FileOpReplace},
 				})
-				return run(NewFSReplaceTool(scope, &mockPermissionService{}, &mockHistoryService{}, mockFileTrackerService{}, dir),
+				return run(NewFSReplaceTool(scope, &mockPermissionService{}, &mockHistoryService{}, mockFileTrackerService{}, dir, nil),
 					FSReplaceToolName,
 					FSReplaceParams{Items: []FSReplaceItem{{Path: nulPath, OldString: "a", NewString: "b"}}})
 			},
@@ -286,7 +286,7 @@ func TestErrorContract_BadModelInputIsAResponseNotAnError(t *testing.T) {
 					Dir: ".",
 					Ops: []permission.FileOp{permission.FileOpWriteLines},
 				})
-				return run(NewFSWriteLinesTool(scope, &mockPermissionService{}, &mockHistoryService{}, mockFileTrackerService{}, dir),
+				return run(NewFSWriteLinesTool(scope, &mockPermissionService{}, &mockHistoryService{}, mockFileTrackerService{}, dir, nil),
 					FSWriteLinesToolName,
 					FSWriteLinesParams{Items: []FSWriteLinesItem{{Path: nulPath, StartLine: 1, EndLine: 1, Content: "x"}}})
 			},
@@ -301,7 +301,7 @@ func TestErrorContract_BadModelInputIsAResponseNotAnError(t *testing.T) {
 					Dir: ".",
 					Ops: []permission.FileOp{permission.FileOpDelete},
 				})
-				return run(NewFSDeleteTool(scope, &mockPermissionService{}, dir),
+				return run(NewFSDeleteTool(scope, &mockPermissionService{}, dir, nil),
 					FSDeleteToolName,
 					FSDeleteParams{Items: []FSDeleteItem{{Path: nulPath}}})
 			},
@@ -470,7 +470,7 @@ func TestErrorContract_BadModelInputIsAResponseNotAnError(t *testing.T) {
 			tool: "fs_grep",
 			desc: `malformed regex "("`,
 			run: func() (fantasy.ToolResponse, error) {
-				return run(NewFSGrepTool(workingDir, fsBatchTestScope(t, workingDir, permission.FileOpGrep)),
+				return run(NewFSGrepTool(workingDir, fsBatchTestScope(t, workingDir, permission.FileOpGrep), nil),
 					FSGrepToolName,
 					FSGrepParams{Items: []FSGrepItem{{Pattern: "(", Path: workingDir}}})
 			},
@@ -488,7 +488,7 @@ func TestErrorContract_BadModelInputIsAResponseNotAnError(t *testing.T) {
 			tool: "fs_list",
 			desc: `OS-rejected item path "bad\x00path.txt"`,
 			run: func() (fantasy.ToolResponse, error) {
-				return run(NewFSListTool(fsBatchTestScope(t, workingDir, permission.FileOpList, permission.FileOpFind, permission.FileOpRead), workingDir, config.ToolLs{}),
+				return run(NewFSListTool(fsBatchTestScope(t, workingDir, permission.FileOpList, permission.FileOpFind, permission.FileOpRead), workingDir, config.ToolLs{}, nil),
 					FSListToolName,
 					FSListParams{Items: []FSListItem{{Path: nulPath}}})
 			},
@@ -497,7 +497,7 @@ func TestErrorContract_BadModelInputIsAResponseNotAnError(t *testing.T) {
 			tool: "fs_find",
 			desc: `OS-rejected item path "bad\x00path.txt"`,
 			run: func() (fantasy.ToolResponse, error) {
-				return run(NewFSFindTool(fsBatchTestScope(t, workingDir, permission.FileOpList, permission.FileOpFind, permission.FileOpRead), workingDir),
+				return run(NewFSFindTool(fsBatchTestScope(t, workingDir, permission.FileOpList, permission.FileOpFind, permission.FileOpRead), workingDir, nil),
 					FSFindToolName,
 					FSFindParams{Items: []FSFindItem{{Pattern: "**/*", Path: nulPath}}})
 			},
@@ -506,7 +506,7 @@ func TestErrorContract_BadModelInputIsAResponseNotAnError(t *testing.T) {
 			tool: "fs_read",
 			desc: `item specifying both addressing modes (start_line/end_line AND line/radius)`,
 			run: func() (fantasy.ToolResponse, error) {
-				return run(NewFSReadTool(fsBatchTestScope(t, workingDir, permission.FileOpRead), workingDir),
+				return run(NewFSReadTool(fsBatchTestScope(t, workingDir, permission.FileOpRead), mockFileTrackerService{}, workingDir, nil),
 					FSReadToolName,
 					FSReadParams{Items: []FSReadItem{{Path: "some.txt", StartLine: 1, EndLine: 2, Line: 3, Radius: 1}}})
 			},
@@ -710,7 +710,7 @@ func TestErrorContract_Control_ValidInputSucceeds(t *testing.T) {
 				dir := t.TempDir()
 				require.NoError(t, os.WriteFile(filepath.Join(dir, "file.txt"), []byte("x"), 0o644))
 				resp, err := runContractTool(t, ctx,
-					NewFSListTool(fsBatchTestScope(t, dir, permission.FileOpList), dir, config.ToolLs{}),
+					NewFSListTool(fsBatchTestScope(t, dir, permission.FileOpList), dir, config.ToolLs{}, nil),
 					FSListToolName, FSListParams{Items: []FSListItem{{Path: "."}}})
 				require.NoError(t, err)
 				return resp
@@ -722,7 +722,7 @@ func TestErrorContract_Control_ValidInputSucceeds(t *testing.T) {
 				dir := t.TempDir()
 				require.NoError(t, os.WriteFile(filepath.Join(dir, "file.txt"), []byte("x"), 0o644))
 				resp, err := runContractTool(t, ctx,
-					NewFSFindTool(fsBatchTestScope(t, dir, permission.FileOpFind), dir),
+					NewFSFindTool(fsBatchTestScope(t, dir, permission.FileOpFind), dir, nil),
 					FSFindToolName, FSFindParams{Items: []FSFindItem{{Pattern: "**/*.txt"}}})
 				require.NoError(t, err)
 				return resp
@@ -734,7 +734,7 @@ func TestErrorContract_Control_ValidInputSucceeds(t *testing.T) {
 				dir := t.TempDir()
 				require.NoError(t, os.WriteFile(filepath.Join(dir, "file.txt"), []byte("content"), 0o644))
 				resp, err := runContractTool(t, ctx,
-					NewFSReadTool(fsBatchTestScope(t, dir, permission.FileOpRead), dir),
+					NewFSReadTool(fsBatchTestScope(t, dir, permission.FileOpRead), mockFileTrackerService{}, dir, nil),
 					FSReadToolName, FSReadParams{Items: []FSReadItem{{Path: "file.txt"}}})
 				require.NoError(t, err)
 				return resp

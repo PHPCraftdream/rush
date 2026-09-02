@@ -17,7 +17,7 @@ import (
 // temp dir, with a deny carve-out over the secret subdirectory.
 func fsListTestCarveScope(t *testing.T, dir string) permission.FolderScope {
 	t.Helper()
-	resolved, err := resolveScopedPath(dir, ".")
+	resolved, err := resolveScopedPath(context.Background(), OSDisk(), dir, ".")
 	require.NoError(t, err)
 	scope, err := permission.BuildFolderScope(permission.FolderScopeSpec{
 		WorkingDir: dir,
@@ -40,7 +40,7 @@ func TestFSListDropsDenyCarvedEntries(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "kept", "sub", "b.txt"), []byte("x"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "secret", "hidden.txt"), []byte("x"), 0o644))
 
-	tool := NewFSListTool(fsListTestCarveScope(t, dir), dir, config.ToolLs{})
+	tool := NewFSListTool(fsListTestCarveScope(t, dir), dir, config.ToolLs{}, nil)
 	raw, err := json.Marshal(FSListParams{Items: []FSListItem{{Path: "."}}})
 	require.NoError(t, err)
 	resp, err := tool.Run(context.Background(), fantasy.ToolCall{ID: "call-1", Input: string(raw)})
@@ -72,7 +72,7 @@ func TestFSListDeniesRootOutsideScopePerItem(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dirA, "a.txt"), []byte("x"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dirB, "b.txt"), []byte("x"), 0o644))
 
-	tool := NewFSListTool(fsBatchTestScope(t, dirA, permission.FileOpList), dirA, config.ToolLs{})
+	tool := NewFSListTool(fsBatchTestScope(t, dirA, permission.FileOpList), dirA, config.ToolLs{}, nil)
 	raw, err := json.Marshal(FSListParams{Items: []FSListItem{
 		{Path: "."},
 		{Path: dirB},
@@ -97,7 +97,7 @@ func TestFSListDefaultsToScopeRoot(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.txt"), []byte("x"), 0o644))
 
-	tool := NewFSListTool(fsBatchTestScope(t, dir, permission.FileOpList), dir, config.ToolLs{})
+	tool := NewFSListTool(fsBatchTestScope(t, dir, permission.FileOpList), dir, config.ToolLs{}, nil)
 	raw, err := json.Marshal(FSListParams{Items: []FSListItem{{}}})
 	require.NoError(t, err)
 	resp, err := tool.Run(context.Background(), fantasy.ToolCall{ID: "call-3", Input: string(raw)})
@@ -113,7 +113,7 @@ func TestFSListItemPathRequiredWhenNoRoot(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	tool := NewFSListTool(permission.FolderScope{}, dir, config.ToolLs{})
+	tool := NewFSListTool(permission.FolderScope{}, dir, config.ToolLs{}, nil)
 	raw, err := json.Marshal(FSListParams{Items: []FSListItem{{}}})
 	require.NoError(t, err)
 	resp, err := tool.Run(context.Background(), fantasy.ToolCall{ID: "call-4", Input: string(raw)})
@@ -132,7 +132,7 @@ func TestFSListNotADirectoryFailsPerItem(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.txt"), []byte("x"), 0o644))
 
-	tool := NewFSListTool(fsBatchTestScope(t, dir, permission.FileOpList), dir, config.ToolLs{})
+	tool := NewFSListTool(fsBatchTestScope(t, dir, permission.FileOpList), dir, config.ToolLs{}, nil)
 	raw, err := json.Marshal(FSListParams{Items: []FSListItem{{Path: "a.txt"}}})
 	require.NoError(t, err)
 	resp, err := tool.Run(context.Background(), fantasy.ToolCall{ID: "call-5", Input: string(raw)})

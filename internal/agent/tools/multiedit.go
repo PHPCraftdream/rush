@@ -93,7 +93,7 @@ func NewMultiEditTool(
 			var response fantasy.ToolResponse
 			var err error
 
-			editCtx := editContext{ctx, permissions, files, filetracker, workingDir}
+			editCtx := editContext{ctx, permissions, files, filetracker, workingDir, nil}
 			// Handle file creation case (first edit has empty old_string)
 			if len(params.Edits) > 0 && params.Edits[0].OldString == "" {
 				response, err = processMultiEditWithCreation(editCtx, params, call)

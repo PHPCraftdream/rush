@@ -13,8 +13,8 @@ import (
 	_ "embed"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
-	"os"
 	"sort"
 	"strings"
 	"time"
@@ -48,7 +48,8 @@ type FSWriteLinesPermissionsParams struct {
 
 const FSWriteLinesToolName = "fs_write_lines"
 
-func NewFSWriteLinesTool(scope permission.FolderScope, permissions permission.Service, files history.Service, filetracker filetracker.Service, workingDir string) fantasy.AgentTool {
+func NewFSWriteLinesTool(scope permission.FolderScope, permissions permission.Service, files history.Service, filetracker filetracker.Service, workingDir string, disk DiskProvider) fantasy.AgentTool {
+	disk = diskOrOS(disk)
 	return fantasy.NewAgentTool(
 		FSWriteLinesToolName,
 		fsWriteLinesDescription,
@@ -103,12 +104,13 @@ func NewFSWriteLinesTool(scope permission.FolderScope, permissions permission.Se
 				WorkingDir: workingDir,
 				Scope:      scope,
 				Items:      params.Items,
+				Disk:       disk,
 				PathOf: func(i FSWriteLinesItem) string {
 					return i.Path
 				},
 				Preflight: fsWriteLinesPreflight,
 				Execute: func(ctx context.Context, group FSBatchGroup[FSWriteLinesItem]) ([]FSItemOutcome, error) {
-					return fsWriteLinesExecuteGroup(ctx, scope, files, filetracker, workingDir, group)
+					return fsWriteLinesExecuteGroup(ctx, scope, files, filetracker, workingDir, disk, group)
 				},
 			})
 			return resp, err
@@ -119,7 +121,7 @@ func NewFSWriteLinesTool(scope permission.FolderScope, permissions permission.Se
 // fsWriteLinesPreflight validates each item's line numbers structurally:
 // bounds that need the file length are checked during execution, which
 // reads the file anyway, so preflight never touches the filesystem.
-func fsWriteLinesPreflight(item FSWriteLinesItem, _ int, _ string) (permission.FileOp, error) {
+func fsWriteLinesPreflight(_ context.Context, item FSWriteLinesItem, _ int, _ string) (permission.FileOp, error) {
 	if item.StartLine < 1 {
 		return "", fmt.Errorf("start_line must be at least 1")
 	}
@@ -133,7 +135,8 @@ func fsWriteLinesPreflight(item FSWriteLinesItem, _ int, _ string) (permission.F
 // memory (bottom-up, so each item's 1-based coordinates refer to the
 // original numbering) and writes the file once, so a group is one
 // atomic write and one history version regardless of item count.
-func fsWriteLinesExecuteGroup(ctx context.Context, scope permission.FolderScope, files history.Service, filetracker filetracker.Service, workingDir string, group FSBatchGroup[FSWriteLinesItem]) ([]FSItemOutcome, error) {
+func fsWriteLinesExecuteGroup(ctx context.Context, scope permission.FolderScope, files history.Service, filetracker filetracker.Service, workingDir string, disk DiskProvider, group FSBatchGroup[FSWriteLinesItem]) ([]FSItemOutcome, error) {
+	disk = diskOrOS(disk)
 	sessionID := GetSessionFromContext(ctx)
 	if sessionID == "" {
 		return nil, &FSBatchAbortError{Err: errors.New("session_id is required")}
@@ -141,10 +144,10 @@ func fsWriteLinesExecuteGroup(ctx context.Context, scope permission.FolderScope,
 
 	outcomes := make([]FSItemOutcome, len(group.Items))
 
-	info, statErr := os.Stat(group.Path)
+	info, statErr := disk.Stat(ctx, group.Path)
 	isDir := statErr == nil && info.IsDir()
 	switch {
-	case os.IsNotExist(statErr):
+	case errors.Is(statErr, fs.ErrNotExist):
 		for i := range outcomes {
 			outcomes[i] = FSItemOutcome{
 				Status: FSStatusFailed,
@@ -195,7 +198,7 @@ func fsWriteLinesExecuteGroup(ctx context.Context, scope permission.FolderScope,
 		filetracker.RecordRead(ctx, sessionID, group.Path)
 	}
 
-	content, readErr := os.ReadFile(group.Path)
+	content, readErr := disk.ReadFile(ctx, group.Path)
 	if readErr != nil {
 		if osFailureIsFatal(readErr) {
 			return nil, &FSBatchAbortError{Err: fmt.Errorf("failed to read file: %w", readErr)}
@@ -344,6 +347,7 @@ func fsWriteLinesExecuteGroup(ctx context.Context, scope permission.FolderScope,
 		files:       files,
 		filetracker: filetracker,
 		workingDir:  workingDir,
+		disk:        disk,
 	}
 	resp, err := commitFileChange(editCtx, sessionID, group.Path, oldContent, writeContent)
 	if err != nil {

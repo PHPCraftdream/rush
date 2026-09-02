@@ -51,6 +51,7 @@ import (
 	"sync"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
+	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/db"
@@ -115,6 +116,39 @@ const (
 	FileOpReplace    = permission.FileOpReplace
 	FileOpDelete     = permission.FileOpDelete
 )
+
+// Disk-provider aliases (RunOverrides.DiskProvider): aliases onto the
+// canonical types in internal/agent/tools that the fs_* tools consume, so
+// a host's implementation is directly assignable with zero conversion
+// code — the same aliasing pattern as FolderScope above.
+type (
+	// DiskProvider is the filesystem one run's fs_* tools operate on. See
+	// tools.DiskProvider for the full method contract (Stat, EvalSymlinks,
+	// Open, ReadFile, MkdirAll, WriteFile, Remove, List, Find, Search).
+	DiskProvider = tools.DiskProvider
+
+	// DiskListRequest/DiskListResult are List's request/response shapes.
+	DiskListRequest = tools.ListRequest
+	DiskListResult  = tools.ListResult
+	// DiskFindRequest/DiskFindResult are Find's request/response shapes.
+	DiskFindRequest = tools.FindRequest
+	DiskFindResult  = tools.FindResult
+	// DiskSearchRequest/DiskSearchResult/DiskSearchLine are Search's
+	// request/response shapes. Named DiskSearchResult (not the bare
+	// SearchResult FolderScope-style naming might suggest) because
+	// internal/agent/tools already declares an unrelated SearchResult
+	// type for the legacy web-search tool.
+	DiskSearchRequest = tools.SearchRequest
+	DiskSearchResult  = tools.DiskSearchResult
+	DiskSearchLine    = tools.SearchLine
+)
+
+// OSDiskProvider returns the real-filesystem DiskProvider — the default a
+// run gets when RunOverrides.DiskProvider is nil. Exposed so a host that
+// wants "real disk, but log every write" (or similar decoration) can wrap
+// it instead of reimplementing ripgrep dispatch and gitignore-aware
+// directory walking from scratch.
+func OSDiskProvider() DiskProvider { return tools.OSDisk() }
 
 // ErrClientClosed is returned by Client.Run, Client.RunWithCredentials,
 // Client.Messages, and Client.Session once Close has started on the

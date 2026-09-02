@@ -47,7 +47,8 @@ type FSFindParams struct {
 
 // NewFSFindTool builds the scoped, batch-capable file-name search tool.
 // The zero FolderScope denies everything, which is the safe default.
-func NewFSFindTool(scope permission.FolderScope, workingDir string) fantasy.AgentTool {
+func NewFSFindTool(scope permission.FolderScope, workingDir string, disk DiskProvider) fantasy.AgentTool {
+	disk = diskOrOS(disk)
 	return fantasy.NewAgentTool(
 		FSFindToolName,
 		fsFindDescription(),
@@ -63,10 +64,10 @@ func NewFSFindTool(scope permission.FolderScope, workingDir string) fantasy.Agen
 			}
 
 			return RunFSBatch(ctx, FSBatch[FSFindItem]{
-				Tool: FSFindToolName, WorkingDir: workingDir, Scope: scope, Items: items,
+				Tool: FSFindToolName, WorkingDir: workingDir, Scope: scope, Items: items, Disk: disk,
 				PathOf:    func(item FSFindItem) string { return item.Path },
 				Preflight: fsFindPreflight,
-				Execute:   fsFindExecute(scope),
+				Execute:   fsFindExecute(scope, disk),
 			})
 		},
 	)
@@ -75,7 +76,7 @@ func NewFSFindTool(scope permission.FolderScope, workingDir string) fantasy.Agen
 // fsFindPreflight validates each item structurally; the pattern is the
 // only required field, the path is resolved and scope-checked by the
 // runner itself.
-func fsFindPreflight(item FSFindItem, _ int, _ string) (permission.FileOp, error) {
+func fsFindPreflight(_ context.Context, item FSFindItem, _ int, _ string) (permission.FileOp, error) {
 	if strings.TrimSpace(item.Pattern) == "" {
 		return "", fmt.Errorf("pattern is required")
 	}
@@ -84,11 +85,11 @@ func fsFindPreflight(item FSFindItem, _ int, _ string) (permission.FileOp, error
 
 // fsFindExecute searches one group of items sharing a resolved
 // directory, reporting one outcome per item in order.
-func fsFindExecute(scope permission.FolderScope) FSExecuteFunc[FSFindItem] {
+func fsFindExecute(scope permission.FolderScope, disk DiskProvider) FSExecuteFunc[FSFindItem] {
 	return func(ctx context.Context, group FSBatchGroup[FSFindItem]) ([]FSItemOutcome, error) {
 		outcomes := make([]FSItemOutcome, len(group.Items))
 		for i, member := range group.Items {
-			block, err := fsFindOne(ctx, scope, group.Path, member.Item)
+			block, err := fsFindOne(ctx, disk, scope, group.Path, member.Item)
 			if err != nil {
 				outcomes[i] = FSItemOutcome{Status: FSStatusFailed, Error: err.Error()}
 				continue
@@ -100,13 +101,14 @@ func fsFindExecute(scope permission.FolderScope) FSExecuteFunc[FSFindItem] {
 }
 
 // fsFindOne searches one directory by pattern with policy filtering:
-// globFiles applies no scope policy, so every result path is
-// re-checked and denied results are dropped before rendering.
-func fsFindOne(ctx context.Context, scope permission.FolderScope, searchPath string, item FSFindItem) (string, error) {
-	files, truncated, err := globFiles(ctx, item.Pattern, searchPath, FSFindMaxResults)
+// disk.Find applies no scope policy, so every result path is re-checked
+// and denied results are dropped before rendering.
+func fsFindOne(ctx context.Context, disk DiskProvider, scope permission.FolderScope, searchPath string, item FSFindItem) (string, error) {
+	findResult, err := disk.Find(ctx, FindRequest{Pattern: item.Pattern, Dir: searchPath, Limit: FSFindMaxResults})
 	if err != nil {
 		return "", fmt.Errorf("error finding files: %w", err)
 	}
+	files, truncated := findResult.Paths, findResult.Truncated
 
 	// Policy filter: globFiles applies no scope policy, so every result
 	// path must pass Check with FileOpFind; denied results are dropped.

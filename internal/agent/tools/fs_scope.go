@@ -1,10 +1,10 @@
 package tools
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
-	"os"
 	"path/filepath"
 
 	"github.com/PHPCraftdream/rush/internal/filepathext"
@@ -24,7 +24,8 @@ import (
 // outside the scope directly). Any ambiguity — an unreadable component,
 // a file used as a directory, or a failed symlink evaluation — is an
 // error, never a silently-produced path, so consumers fail closed.
-func resolveScopedPath(workingDir, raw string) (abs string, err error) {
+func resolveScopedPath(ctx context.Context, disk DiskProvider, workingDir, raw string) (abs string, err error) {
+	disk = diskOrOS(disk)
 	cleaned, err := filepath.Abs(filepathext.SmartJoin(workingDir, raw))
 	if err != nil {
 		return "", fmt.Errorf("fs: resolve %q: %w", raw, err)
@@ -35,7 +36,7 @@ func resolveScopedPath(workingDir, raw string) (abs string, err error) {
 	// clean miss (EACCES, ELOOP, ...) is unresolvable: fail closed.
 	prefix := cleaned
 	for {
-		info, statErr := os.Stat(prefix)
+		info, statErr := disk.Stat(ctx, prefix)
 		if statErr == nil {
 			if !info.IsDir() && prefix != cleaned {
 				return "", fmt.Errorf(
@@ -54,7 +55,7 @@ func resolveScopedPath(workingDir, raw string) (abs string, err error) {
 		prefix = parent
 	}
 
-	resolvedPrefix, err := filepath.EvalSymlinks(prefix)
+	resolvedPrefix, err := disk.EvalSymlinks(ctx, prefix)
 	if err != nil {
 		// A prefix we cannot evaluate cannot be judged safely.
 		return "", fmt.Errorf("fs: resolve %q: evaluate symlinks in %s: %w",

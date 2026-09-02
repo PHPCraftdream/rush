@@ -56,7 +56,7 @@ func TestFSWriteLinesInsertDeleteReplace(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "rep.txt"), []byte("a\nb\nc\n"), 0o644))
 
 	tracker := &mockEditFileTracker{lastRead: time.Now().Add(time.Second)}
-	tool := NewFSWriteLinesTool(scope, &mockPermissionService{}, &mockHistoryService{}, tracker, dir)
+	tool := NewFSWriteLinesTool(scope, &mockPermissionService{}, &mockHistoryService{}, tracker, dir, nil)
 	resp, err := fsWriteLinesRun(t, ctx, tool, FSWriteLinesParams{Items: []FSWriteLinesItem{
 		{Path: "ins.txt", StartLine: 2, EndLine: 1, Content: "X"},
 		{Path: "del.txt", StartLine: 2, EndLine: 2, Content: ""},
@@ -94,7 +94,7 @@ func TestFSWriteLinesOverlapFailsBoth(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "f.txt"), []byte("1\n2\n3\n4\n5\n"), 0o644))
 
 	tracker := &mockEditFileTracker{lastRead: time.Now().Add(time.Second)}
-	tool := NewFSWriteLinesTool(scope, &mockPermissionService{}, &mockHistoryService{}, tracker, dir)
+	tool := NewFSWriteLinesTool(scope, &mockPermissionService{}, &mockHistoryService{}, tracker, dir, nil)
 	resp, err := fsWriteLinesRun(t, ctx, tool, FSWriteLinesParams{Items: []FSWriteLinesItem{
 		{Path: "f.txt", StartLine: 2, EndLine: 4, Content: "A"},
 		{Path: "f.txt", StartLine: 3, EndLine: 5, Content: "B"},
@@ -125,7 +125,7 @@ func TestFSWriteLinesInsertionVsRangeOverlapRule(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "h.txt"), []byte("1\n2\n3\n4\n"), 0o644))
 
 	tracker := &mockEditFileTracker{lastRead: time.Now().Add(time.Second)}
-	tool := NewFSWriteLinesTool(scope, &mockPermissionService{}, &mockHistoryService{}, tracker, dir)
+	tool := NewFSWriteLinesTool(scope, &mockPermissionService{}, &mockHistoryService{}, tracker, dir, nil)
 	resp, err := fsWriteLinesRun(t, ctx, tool, FSWriteLinesParams{Items: []FSWriteLinesItem{
 		// Insert before 3, anchored strictly inside 2..4: collides.
 		{Path: "g.txt", StartLine: 3, EndLine: 2, Content: "X"},
@@ -166,7 +166,7 @@ func TestFSWriteLinesNonOverlappingApplyBottomUp(t *testing.T) {
 	// plus the new version — two would mean two writes.
 	files := &fsWriteLinesCountingHistory{mockHistoryService: &mockHistoryService{}}
 	tracker := &mockEditFileTracker{lastRead: time.Now().Add(time.Second)}
-	tool := NewFSWriteLinesTool(scope, &mockPermissionService{}, files, tracker, dir)
+	tool := NewFSWriteLinesTool(scope, &mockPermissionService{}, files, tracker, dir, nil)
 	resp, err := fsWriteLinesRun(t, ctx, tool, FSWriteLinesParams{Items: []FSWriteLinesItem{
 		{Path: "n.txt", StartLine: 4, EndLine: 4, Content: "FOUR"},
 		{Path: "n.txt", StartLine: 2, EndLine: 2, Content: "TWO"},
@@ -195,7 +195,7 @@ func TestFSWriteLinesBoundsFailures(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "b.txt"), []byte("1\n2\n3\n"), 0o644))
 
 	tracker := &mockEditFileTracker{lastRead: time.Now().Add(time.Second)}
-	tool := NewFSWriteLinesTool(scope, &mockPermissionService{}, &mockHistoryService{}, tracker, dir)
+	tool := NewFSWriteLinesTool(scope, &mockPermissionService{}, &mockHistoryService{}, tracker, dir, nil)
 	resp, err := fsWriteLinesRun(t, ctx, tool, FSWriteLinesParams{Items: []FSWriteLinesItem{
 		{Path: "b.txt", StartLine: 5, EndLine: 5, Content: "X"},
 		{Path: "b.txt", StartLine: 2, EndLine: 9, Content: "X"},
@@ -230,7 +230,7 @@ func TestFSWriteLinesPermissionDeniedStopsTurn(t *testing.T) {
 		permission.FolderScopeEntry{Dir: ".", Ops: []permission.FileOp{permission.FileOpWriteLines, permission.FileOpRead}},
 	)
 
-	tool := NewFSWriteLinesTool(scope, &fsWriteLinesDenyService{}, &mockHistoryService{}, &mockEditFileTracker{}, dir)
+	tool := NewFSWriteLinesTool(scope, &fsWriteLinesDenyService{}, &mockHistoryService{}, &mockEditFileTracker{}, dir, nil)
 	resp, err := fsWriteLinesRun(t, ctx, tool, FSWriteLinesParams{Items: []FSWriteLinesItem{
 		{Path: "denied.txt", StartLine: 1, EndLine: 1, Content: "never"},
 	}})

@@ -6,13 +6,11 @@ import (
 	_ "embed"
 	"fmt"
 	"html/template"
-	"os"
 	"path/filepath"
 	"strings"
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/fsext"
 	"github.com/PHPCraftdream/rush/internal/permission"
 )
 
@@ -48,7 +46,8 @@ type FSListParams struct {
 
 // NewFSListTool builds the scoped, batch-capable directory-listing tool.
 // The zero FolderScope denies everything, which is the safe default.
-func NewFSListTool(scope permission.FolderScope, workingDir string, lsConfig config.ToolLs) fantasy.AgentTool {
+func NewFSListTool(scope permission.FolderScope, workingDir string, lsConfig config.ToolLs, disk DiskProvider) fantasy.AgentTool {
+	disk = diskOrOS(disk)
 	return fantasy.NewAgentTool(
 		FSListToolName,
 		fsListDescription(),
@@ -64,10 +63,10 @@ func NewFSListTool(scope permission.FolderScope, workingDir string, lsConfig con
 			}
 
 			return RunFSBatch(ctx, FSBatch[FSListItem]{
-				Tool: FSListToolName, WorkingDir: workingDir, Scope: scope, Items: items,
+				Tool: FSListToolName, WorkingDir: workingDir, Scope: scope, Items: items, Disk: disk,
 				PathOf:    func(item FSListItem) string { return item.Path },
 				Preflight: fsListPreflight,
-				Execute:   fsListExecute(scope, lsConfig),
+				Execute:   fsListExecute(scope, lsConfig, disk),
 			})
 		},
 	)
@@ -85,7 +84,7 @@ func fsDefaultScopeRoot(scope permission.FolderScope, op permission.FileOp) (str
 
 // fsListPreflight resolves each item's operation and rejects an empty
 // path before the runner's scope check can misjudge it.
-func fsListPreflight(item FSListItem, _ int, _ string) (permission.FileOp, error) {
+func fsListPreflight(_ context.Context, item FSListItem, _ int, _ string) (permission.FileOp, error) {
 	if strings.TrimSpace(item.Path) == "" {
 		return "", fmt.Errorf("path is required (no folder-scope root grants list to default to)")
 	}
@@ -94,11 +93,11 @@ func fsListPreflight(item FSListItem, _ int, _ string) (permission.FileOp, error
 
 // fsListExecute lists one group of items sharing a resolved directory,
 // reporting one outcome per item in order.
-func fsListExecute(scope permission.FolderScope, lsConfig config.ToolLs) FSExecuteFunc[FSListItem] {
-	return func(_ context.Context, group FSBatchGroup[FSListItem]) ([]FSItemOutcome, error) {
+func fsListExecute(scope permission.FolderScope, lsConfig config.ToolLs, disk DiskProvider) FSExecuteFunc[FSListItem] {
+	return func(ctx context.Context, group FSBatchGroup[FSListItem]) ([]FSItemOutcome, error) {
 		outcomes := make([]FSItemOutcome, len(group.Items))
 		for i, member := range group.Items {
-			block, err := fsListOne(scope, group.Path, member.Item, lsConfig)
+			block, err := fsListOne(ctx, disk, scope, group.Path, member.Item, lsConfig)
 			if err != nil {
 				outcomes[i] = FSItemOutcome{Status: FSStatusFailed, Error: err.Error()}
 				continue
@@ -109,11 +108,11 @@ func fsListExecute(scope permission.FolderScope, lsConfig config.ToolLs) FSExecu
 	}
 }
 
-// fsListOne lists one directory with policy filtering: fsext.ListDirectory
-// does no scope checking, so every entry is re-checked and denied
-// entries are dropped before the tree is rendered.
-func fsListOne(scope permission.FolderScope, absPath string, item FSListItem, lsConfig config.ToolLs) (string, error) {
-	info, err := os.Stat(absPath)
+// fsListOne lists one directory with policy filtering: disk.List does no
+// scope checking, so every entry is re-checked and denied entries are
+// dropped before the tree is rendered.
+func fsListOne(ctx context.Context, disk DiskProvider, scope permission.FolderScope, absPath string, item FSListItem, lsConfig config.ToolLs) (string, error) {
+	info, err := disk.Stat(ctx, absPath)
 	if err != nil {
 		return "", fmt.Errorf("path does not exist: %s", absPath)
 	}
@@ -122,10 +121,16 @@ func fsListOne(scope permission.FolderScope, absPath string, item FSListItem, ls
 	}
 	cfgDepth, cfgLimit := lsConfig.Limits()
 	maxFiles := cmp.Or(cfgLimit, maxLSFiles)
-	files, truncated, err := fsext.ListDirectory(absPath, item.Ignore, cmp.Or(item.Depth, cfgDepth), maxFiles)
+	listResult, err := disk.List(ctx, ListRequest{
+		Dir:            absPath,
+		IgnorePatterns: item.Ignore,
+		Depth:          cmp.Or(item.Depth, cfgDepth),
+		Limit:          maxFiles,
+	})
 	if err != nil {
 		return "", fmt.Errorf("error listing directory: %w", err)
 	}
+	files, truncated := listResult.Entries, listResult.Truncated
 
 	// Policy filter: ListDirectory applies no scope policy, so every
 	// entry must pass Check with FileOpList; denied entries are
