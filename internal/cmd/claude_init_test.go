@@ -311,6 +311,50 @@ func TestClaudeInit_FallbackCommandSkipsWithoutSentinel(t *testing.T) {
 	assert.Equal(t, "someone else's file", string(bts))
 }
 
+func TestClaudeInit_CreatesWrushCommand(t *testing.T) {
+	dir := t.TempDir()
+	runClaudeInitInDir(t, dir)
+
+	wrushPath := filepath.Join(dir, ".claude", "commands", "wrush.md")
+	bts, err := os.ReadFile(wrushPath)
+	require.NoError(t, err)
+	got := string(bts)
+	assert.Contains(t, got, claudeSlashCommandSentinel)
+	assert.Contains(t, got, "$ARGUMENTS")
+	assert.Contains(t, got, "/wrush")
+	assert.Contains(t, got, "git worktree add")
+	assert.Contains(t, got, "Mandatory: an isolated worktree, every time")
+}
+
+func TestClaudeInit_WrushCommandOverwritesWithSentinel(t *testing.T) {
+	dir := t.TempDir()
+	runClaudeInitInDir(t, dir)
+	wrushPath := filepath.Join(dir, ".claude", "commands", "wrush.md")
+	first, err := os.ReadFile(wrushPath)
+	require.NoError(t, err)
+
+	runClaudeInitInDir(t, dir)
+	second, err := os.ReadFile(wrushPath)
+	require.NoError(t, err)
+	assert.Equal(t, string(first), string(second))
+}
+
+func TestClaudeInit_WrushCommandSkipsWithoutSentinel(t *testing.T) {
+	dir := t.TempDir()
+	wrushPath := filepath.Join(dir, ".claude", "commands", "wrush.md")
+	require.NoError(t, os.MkdirAll(filepath.Dir(wrushPath), 0o755))
+	require.NoError(t, os.WriteFile(wrushPath, []byte("someone else's file"), 0o644))
+
+	stderr := captureStderr(t, func() {
+		runClaudeInitInDir(t, dir)
+	})
+
+	assert.Contains(t, stderr, "does not contain our sentinel")
+	bts, err := os.ReadFile(wrushPath)
+	require.NoError(t, err)
+	assert.Equal(t, "someone else's file", string(bts))
+}
+
 func TestClaudeDel_RemovesSlashCommandWithSentinel(t *testing.T) {
 	dir := t.TempDir()
 	slashPath := filepath.Join(dir, ".claude", "commands", "rush.md")
@@ -379,6 +423,42 @@ func TestClaudeDel_RefusesFallbackCommandWithoutSentinel(t *testing.T) {
 	assert.Contains(t, stderr, "missing sentinel")
 
 	bts, err := os.ReadFile(fallbackPath)
+	require.NoError(t, err)
+	assert.Equal(t, "not ours", string(bts))
+}
+
+func TestClaudeDel_RemovesWrushCommandWithSentinel(t *testing.T) {
+	dir := t.TempDir()
+	wrushPath := filepath.Join(dir, ".claude", "commands", "wrush.md")
+	require.NoError(t, os.MkdirAll(filepath.Dir(wrushPath), 0o755))
+	require.NoError(t, os.WriteFile(wrushPath, []byte("<!-- rush-slash-command:v1 -->\nsome content\n"), 0o644))
+
+	claudeMdPath := filepath.Join(dir, claudeMdFile)
+	require.NoError(t, os.WriteFile(claudeMdPath, []byte("# Notes\n"), 0o644))
+
+	runClaudeDelInDir(t, dir)
+
+	_, err := os.Stat(wrushPath)
+	assert.True(t, os.IsNotExist(err), "wrush command file should be removed when it has our sentinel")
+}
+
+func TestClaudeDel_RefusesWrushCommandWithoutSentinel(t *testing.T) {
+	dir := t.TempDir()
+	wrushPath := filepath.Join(dir, ".claude", "commands", "wrush.md")
+	require.NoError(t, os.MkdirAll(filepath.Dir(wrushPath), 0o755))
+	require.NoError(t, os.WriteFile(wrushPath, []byte("not ours"), 0o644))
+
+	claudeMdPath := filepath.Join(dir, claudeMdFile)
+	require.NoError(t, os.WriteFile(claudeMdPath, []byte("# Notes\n"), 0o644))
+
+	stderr := captureStderr(t, func() {
+		runClaudeDelInDir(t, dir)
+	})
+
+	assert.Contains(t, stderr, "refusing to delete")
+	assert.Contains(t, stderr, "missing sentinel")
+
+	bts, err := os.ReadFile(wrushPath)
 	require.NoError(t, err)
 	assert.Equal(t, "not ours", string(bts))
 }

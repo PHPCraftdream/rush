@@ -8,6 +8,19 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- **`/wrush` slash-command**, installed by `rush claude-init` alongside
+  `/rush` and `/rush-fallback`. Behaviorally identical to `/rush` with
+  one added hard rule: every delegated task runs inside a dedicated
+  git worktree instead of the primary checkout, even for a solo,
+  non-parallel task — the orchestrator creates the worktree, launches
+  `rush run` there, verifies the diff, merges the reviewed result back
+  into the primary checkout, then removes the worktree. Use it when a
+  delegation must not be able to touch the primary checkout's working
+  tree or index under any circumstance. `rush claude-del` removes it
+  along with the other two commands.
+
 ## [0.2.0-alpha.1] - 2026-08-28
 
 ### Added

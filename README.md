@@ -76,9 +76,12 @@ companion. Every divergence below follows from that single repositioning:
   invalid JSON, runs out of context, stalls the stream) the envelope
   says so — there is no silent success because the agent on top
   cannot read the operator's mind.
-- Bootstrap helper (`rush claude-init`) installs a `/rush` slash command into
-  the workspace so the upper LLM knows when and how to delegate to
-  `rush run` instead of grepping the codebase itself.
+- Bootstrap helper (`rush claude-init`) installs `/rush`, `/rush-fallback`
+  and `/wrush` slash commands into the workspace so the upper LLM knows
+  when and how to delegate to `rush run` instead of grepping the
+  codebase itself. `/wrush` is `/rush` with mandatory git-worktree
+  isolation — every delegation runs in a dedicated worktree instead of
+  the primary checkout.
 
 The browser UI is the second-class entry point for humans peeking in,
 the orchestrator-facing CLI is first-class.
@@ -441,13 +444,27 @@ cache visibility differs.
 If you drive Rush from another LLM (e.g. Claude Code), run once:
 
 ```bash
-rush claude-init                 # install the /rush slash-command
+rush claude-init                 # install /rush, /rush-fallback and /wrush
 ```
 
-This installs **only** the `.claude/commands/rush.md` slash-command — an
-operator-triggered `/rush <task>` that builds a `rush run` invocation
-with sensible defaults and launches it. Triggered explicitly by the
-operator; never auto-discovered.
+This installs three slash-commands into `.claude/commands/`, each
+triggered explicitly by the operator — never auto-discovered:
+
+- **`rush.md`** — `/rush <task>`, an operator-triggered command that
+  builds a `rush run` invocation with sensible defaults and launches
+  it in the primary checkout (or, for genuinely parallel/overlapping
+  delegations, in a git worktree the orchestrator sets up itself).
+- **`rush-fallback.md`** — `/rush-fallback <agent>`, arms a reroute to
+  a named local agent for the rest of the session when `rush run` hits
+  a hard rate/quota limit.
+- **`wrush.md`** — `/wrush <task>`, identical to `/rush` except
+  isolation is mandatory rather than situational: every delegation —
+  solo or parallel, trivial or not — runs inside a freshly created git
+  worktree, never the primary checkout, and the orchestrator merges the
+  verified diff back and cleans up the worktree afterward. Reach for
+  `/wrush` when you want a hard guarantee that a delegated task cannot
+  disturb the primary checkout's working tree or index, even if the
+  sub-agent misbehaves.
 
 Earlier versions of this fork also wrote a long "delegate everything to
 rush" block into `CLAUDE.md`. That block turned out to be a recursive-
@@ -459,8 +476,8 @@ invocation (matching any version, v1..vN) and removes `CLAUDE.md`
 entirely if stripping leaves it empty. Re-run `claude-init` at any time
 — it's idempotent.
 
-To uninstall completely: `rush claude-del` removes the slash-command
-file and strips any remaining legacy `CLAUDE.md` block.
+To uninstall completely: `rush claude-del` removes all three
+slash-command files and strips any remaining legacy `CLAUDE.md` block.
 
 ### 6. `rush models` — picking and inspecting models
 
