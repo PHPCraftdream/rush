@@ -18,7 +18,9 @@ func TestFinalCompositionLog_FirstTextDeltaAfterToolBoundary(t *testing.T) {
 	// in parallel races with slog writes from other tests in this package.
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	prev := slog.Default()
 	slog.SetDefault(logger)
+	t.Cleanup(func() { slog.SetDefault(prev) })
 
 	// Simulate the tracking variable logic.
 	sawToolBoundary := true
@@ -48,7 +50,9 @@ func TestFinalCompositionLog_ManyTextDeltasStillOnce(t *testing.T) {
 	// Not parallel — see TestFinalCompositionLog_FirstTextDeltaAfterToolBoundary.
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	prev := slog.Default()
 	slog.SetDefault(logger)
+	t.Cleanup(func() { slog.SetDefault(prev) })
 
 	sawToolBoundary := true
 
@@ -74,7 +78,9 @@ func TestFinalCompositionLog_ManyTextDeltasStillOnce(t *testing.T) {
 func TestFinalCompositionLog_NewStepLogsAgain(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	prev := slog.Default()
 	slog.SetDefault(logger)
+	t.Cleanup(func() { slog.SetDefault(prev) })
 
 	sawToolBoundary := true
 
