@@ -125,6 +125,7 @@ func (c *coordinator) buildCall(ctx context.Context, sessionID, prompt string, p
 		// uncompiled spec travels too so the durable queue can persist it.
 		RunAllowlist:     runAllowlistFrom(ctx),
 		RunAllowlistSpec: runAllowlistSpecFrom(ctx),
+		FolderScopeSpec:  folderScopeSpecFrom(ctx),
 		SmartModel:       &pinnedSmart,
 		LogicalCallID:    uuid.New().String(), // P2-1: generate stable ID once
 	}
@@ -280,6 +281,7 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 		// uncompiled spec travels too so the durable queue can persist it.
 		RunAllowlist:         runAllowlistFrom(ctx),
 		RunAllowlistSpec:     runAllowlistSpecFrom(ctx),
+		FolderScopeSpec:      folderScopeSpecFrom(ctx),
 		FailIfSessionBusy:    callOpts != nil && callOpts.FailIfSessionBusy,
 		SmartModel:           &pinnedSmart,
 		LogicalCallID:        uuid.New().String(), // P2-1: generate stable ID once
@@ -371,6 +373,7 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 			// process-wide gate.
 			RunAllowlist:         trackCall.RunAllowlist,
 			RunAllowlistSpec:     trackCall.RunAllowlistSpec,
+			FolderScopeSpec:      trackCall.FolderScopeSpec,
 			FailIfSessionBusy:    trackCall.FailIfSessionBusy,
 			SmartModel:           &pinnedSmart,
 			LogicalCallID:        trackCall.LogicalCallID, // Preserve logical ID

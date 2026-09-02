@@ -326,6 +326,17 @@ type SessionAgentCall struct {
 	// callers, pre-migration durable rows, and non-ExecuteRun callers.
 	RunAllowlistSpec *permission.RunAllowlistSpec
 
+	// FolderScopeSpec pins THIS call's folder scope in its serializable,
+	// pre-compilation form (the spec CallOptions.FolderScope was compiled
+	// from). Unlike CallOptions above, it is NOT json:"-": it is the
+	// field ToSessionAgentCallData persists on the durable run queue,
+	// and RebuildSessionAgentCall recompiles it into a rebuilt call's
+	// CallOptions.FolderScope so a durably-restarted call gets its
+	// scoped filesystem toolset back instead of silently restarting
+	// with the shared unscoped toolset (T12). nil for unscoped calls,
+	// legacy in-process callers, and pre-migration durable rows.
+	FolderScopeSpec *permission.FolderScopeSpec
+
 	// FromDurableQueue is true when this call originates from the durable
 	// run queue (task #340). When true and the session's mailbox is already
 	// owned by another in-process turn, mailbox.submit does NOT append this

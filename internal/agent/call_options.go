@@ -142,3 +142,25 @@ func (a *sessionAgent) watchdogTimeoutPolicyForCall(call *CallOptions) (extendsO
 	}
 	return a.timeoutExtendsOnProgress, a.timeoutHardCap
 }
+
+// folderScopeSpecContextKey is the unexported context key carrying
+// *permission.FolderScopeSpec.
+type folderScopeSpecContextKey struct{}
+
+// WithFolderScopeSpec returns a context carrying the UNCOMPILED
+// folder-scope spec for this one call, alongside the compiled matcher
+// inside the CallOptions carried by WithCallOptions. Only ExecuteRun
+// attaches it: its presence on a serialized call is what lets
+// RebuildSessionAgentCall recompile the scope for a durable restart
+// (T12), since CallOptions itself is json:"-" and never persists. nil
+// arms nothing.
+func WithFolderScopeSpec(ctx context.Context, spec *permission.FolderScopeSpec) context.Context {
+	return context.WithValue(ctx, folderScopeSpecContextKey{}, spec)
+}
+
+// folderScopeSpecFrom returns the per-call folder-scope spec carried by
+// ctx, or nil when the context has none (legacy caller, unscoped call).
+func folderScopeSpecFrom(ctx context.Context) *permission.FolderScopeSpec {
+	spec, _ := ctx.Value(folderScopeSpecContextKey{}).(*permission.FolderScopeSpec)
+	return spec
+}

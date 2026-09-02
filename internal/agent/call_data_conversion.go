@@ -69,6 +69,50 @@ func fromSessionRunAllowlistSpec(spec *session.RunAllowlistSpec) *permission.Run
 	}
 }
 
+// toSessionFolderScopeSpec converts permission.FolderScopeSpec to its
+// session.SessionAgentCallData mirror type (session.FolderScopeSpec).
+// Entries and Ops are copied element-wise because Go cannot convert
+// between slices of different named string types in one cast. See the
+// mirror type's doc for why it exists.
+func toSessionFolderScopeSpec(spec *permission.FolderScopeSpec) *session.FolderScopeSpec {
+	if spec == nil {
+		return nil
+	}
+	out := &session.FolderScopeSpec{
+		WorkingDir:       spec.WorkingDir,
+		KeepCommandTools: spec.KeepCommandTools,
+	}
+	out.Entries = make([]session.FolderScopeEntry, len(spec.Entries))
+	for i, entry := range spec.Entries {
+		ops := make([]session.FileOp, len(entry.Ops))
+		for j, op := range entry.Ops {
+			ops[j] = session.FileOp(op)
+		}
+		out.Entries[i] = session.FolderScopeEntry{Dir: entry.Dir, Ops: ops}
+	}
+	return out
+}
+
+// fromSessionFolderScopeSpec is the inverse of toSessionFolderScopeSpec.
+func fromSessionFolderScopeSpec(spec *session.FolderScopeSpec) *permission.FolderScopeSpec {
+	if spec == nil {
+		return nil
+	}
+	out := &permission.FolderScopeSpec{
+		WorkingDir:       spec.WorkingDir,
+		KeepCommandTools: spec.KeepCommandTools,
+	}
+	out.Entries = make([]permission.FolderScopeEntry, len(spec.Entries))
+	for i, entry := range spec.Entries {
+		ops := make([]permission.FileOp, len(entry.Ops))
+		for j, op := range entry.Ops {
+			ops[j] = permission.FileOp(op)
+		}
+		out.Entries[i] = permission.FolderScopeEntry{Dir: entry.Dir, Ops: ops}
+	}
+	return out
+}
+
 // ToSessionAgentCallData converts agent.SessionAgentCall to session.SessionAgentCallData
 // for durable queue serialization (task #340, ROUND 3 migration).
 //
@@ -81,6 +125,7 @@ func fromSessionRunAllowlistSpec(spec *session.RunAllowlistSpec) *permission.Run
 //     and will be reconstructed by coordinator.RebuildSessionAgentCall.
 //
 // RunAllowlistSpec round-trips so a pump-driven restart can recompile and re-arm the caller's declared policy (R4-1/R4-2/R4-3).
+// FolderScopeSpec round-trips so a pump-driven restart can recompile the call's folder scope (T12).
 //
 // LogicalCallID is serialized to ensure the stable idempotency key survives
 // the durable serialization boundary (P2-1 fix, P0-1 release blocker).
@@ -113,6 +158,7 @@ func ToSessionAgentCallData(call SessionAgentCall) session.SessionAgentCallData 
 		SystemPrompt:         call.SystemPrompt,
 		Origin:               call.Origin,
 		RunAllowlistSpec:     toSessionRunAllowlistSpec(call.RunAllowlistSpec),
+		FolderScopeSpec:      toSessionFolderScopeSpec(call.FolderScopeSpec),
 	}
 }
 
@@ -124,6 +170,7 @@ func ToSessionAgentCallData(call SessionAgentCall) session.SessionAgentCallData 
 // coordinator.RebuildSessionAgentCall.
 //
 // RunAllowlistSpec round-trips so a pump-driven restart can recompile and re-arm the caller's declared policy (R4-1/R4-2/R4-3).
+// FolderScopeSpec round-trips so a pump-driven restart can recompile the call's folder scope (T12).
 //
 // LogicalCallID is restored to ensure the stable idempotency key survives
 // the durable serialization boundary (P2-1 fix, P0-1 release blocker).
@@ -144,6 +191,7 @@ func FromSessionAgentCallData(callData session.SessionAgentCallData) SessionAgen
 		SystemPrompt:         callData.SystemPrompt,
 		Origin:               callData.Origin,
 		RunAllowlistSpec:     fromSessionRunAllowlistSpec(callData.RunAllowlistSpec),
+		FolderScopeSpec:      fromSessionFolderScopeSpec(callData.FolderScopeSpec),
 		// SmartModel and FastModel are NOT set here — they will be reconstructed
 		// by coordinator.RebuildSessionAgentCall.
 	}

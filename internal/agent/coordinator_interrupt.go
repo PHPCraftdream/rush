@@ -506,6 +506,31 @@ func (c *coordinator) RebuildSessionAgentCall(ctx context.Context, data session.
 		rebuiltRunAllowlist = &compiledRebuilt
 	}
 
+	// T12: recompile and rebind the call's OWN folder scope from the spec
+	// serialized on the durable row. CallOptions is json:"-" and never
+	// survives the queue handoff, so without this a rebuilt scoped call
+	// would carry no FolderScope at all and fall back to the shared
+	// unscoped toolset — the silent restart promotion T12 exists to
+	// prevent. A nil spec arms nothing: unscoped calls, web-origin rows
+	// (never folder-scoped today), and pre-migration rows keep the
+	// historical fallback unchanged. A spec that FAILS to recompile keeps
+	// the value BuildFolderScope returns on error — the zero FolderScope,
+	// which denies every operation on every path — so a corrupted row
+	// fails CLOSED (a file-blind turn that can still talk) rather than
+	// open (an unscoped one with the full legacy file surface). That is
+	// the same direction as the run-allowlist handling above, where
+	// dropped patterns leave the compiled matcher restricted.
+	var rebuiltCallOptions *CallOptions
+	if data.FolderScopeSpec != nil {
+		compiledScope, scopeErr := permission.BuildFolderScope(
+			*fromSessionFolderScopeSpec(data.FolderScopeSpec))
+		if scopeErr != nil {
+			slog.Error("RebuildSessionAgentCall: the durable row's folder-scope spec failed to recompile; scoping the rebuilt turn to deny-everything",
+				"session_id", data.SessionID, "err", scopeErr)
+		}
+		rebuiltCallOptions = &CallOptions{FolderScope: &compiledScope}
+	}
+
 	return SessionAgentCall{
 		SessionID:        data.SessionID,
 		LogicalCallID:    data.LogicalCallID, // P2-1 fix: restore stable ID
@@ -522,7 +547,11 @@ func (c *coordinator) RebuildSessionAgentCall(ctx context.Context, data session.
 		// recompiled from the durable row's spec (R4-1).
 		RunAllowlist: rebuiltRunAllowlist,
 		// Keep the spec on the rebuilt call so a re-queued copy re-serializes it.
-		RunAllowlistSpec:     fromSessionRunAllowlistSpec(data.RunAllowlistSpec),
+		RunAllowlistSpec: fromSessionRunAllowlistSpec(data.RunAllowlistSpec),
+		FolderScopeSpec:  fromSessionFolderScopeSpec(data.FolderScopeSpec),
+		// The recompiled scope rides in CallOptions (json:"-",
+		// process-local); RunSessionAgentCall rebinds the toolset from it.
+		CallOptions:          rebuiltCallOptions,
 		SystemPromptOverride: data.SystemPromptOverride,
 		MaxCost:              data.MaxCost,
 		MaxTokens:            data.MaxTokens,
@@ -570,6 +599,30 @@ func (c *coordinator) RunSessionAgentCall(ctx context.Context, call SessionAgent
 	// fix deliberately does not touch.
 	if call.RunAllowlistSpec != nil && c.permissions != nil {
 		c.permissions.AutoApproveSession(sessionID)
+	}
+
+	// T12: rebind the rebuilt call's scoped filesystem toolset. The turn
+	// consumes call.Tools (runTurn), which is json:"-" and nil for every
+	// pump-rebuilt call — and that nil falls back to the SHARED agent
+	// toolset, which is unscoped. With the recompiled CallOptions from
+	// RebuildSessionAgentCall, rebuild the per-call toolset exactly like
+	// resolveSessionModels does for an in-process scoped call: attach the
+	// options to THIS turn's context (buildTools and every sub-agent
+	// build it spawns read CallOptions from ctx) and pin the freshly
+	// built slice onto the call. A nil slice from pinCallTools must fail
+	// the turn, NOT fall back to the shared toolset: for a call we KNOW
+	// was scoped, the shared toolset IS the unrestricted restart T12
+	// exists to prevent, so a build failure refuses the row (the pump
+	// retries it) — the fail-closed direction.
+	if call.CallOptions != nil && call.CallOptions.FolderScope != nil {
+		ctx = WithCallOptions(ctx, call.CallOptions)
+		cfg, _ := c.cfg.Snapshot()
+		scopedTools := c.pinCallTools(ctx, cfg)
+		if scopedTools == nil {
+			return nil, fmt.Errorf(
+				"failed to build the rebuilt call's folder-scoped toolset; refusing to restart the scoped turn on the shared unscoped toolset")
+		}
+		call.Tools = scopedTools
 	}
 
 	// Interrupt-inject ticker: watches pending_injects for interrupt=true rows

@@ -69,6 +69,42 @@ type RunAllowlistSpec struct {
 	AllowBash  []string `json:"allow_bash,omitempty"`
 }
 
+// FileOp is the session-mirror of permission.FileOp: one filesystem
+// operation a folder scope can grant. The string values are identical to
+// the permission package's constants; the type is duplicated for the
+// same reason the rest of this mirror exists (session cannot import
+// permission).
+type FileOp string
+
+// FolderScopeEntry is the session-mirror of permission.FolderScopeEntry:
+// one directory subtree plus the operations granted inside it. Dir is
+// absolute or relative to the spec's WorkingDir. Ops empty means a deny
+// carve-out, exactly as in the permission package.
+type FolderScopeEntry struct {
+	Dir string   `json:"dir"`
+	Ops []FileOp `json:"ops,omitempty"`
+}
+
+// FolderScopeSpec is a JSON-serializable mirror of
+// permission.FolderScopeSpec (the uncompiled folder-scope set). It
+// exists for the same reason RunAllowlistSpec above mirrors
+// permission.RunAllowlistSpec: the session package cannot import
+// internal/permission (session → permission → shell → session would be
+// an import cycle). The agent package converts between the two at the
+// durable-serialization boundary (call_data_conversion.go); keep the
+// fields in sync with permission.FolderScopeSpec.
+type FolderScopeSpec struct {
+	// WorkingDir resolves relative Dir entries. It is persisted from the
+	// compiling run's working directory so a restart recompiles the
+	// scope EXACTLY as it was first compiled, independent of where the
+	// rebuilding process runs.
+	WorkingDir string `json:"working_dir,omitempty"`
+	// Entries are the scopes. KeepCommandTools records that
+	// command-executing tools stay in the scoped toolset.
+	Entries          []FolderScopeEntry `json:"entries,omitempty"`
+	KeepCommandTools bool               `json:"keep_command_tools,omitempty"`
+}
+
 // SessionAgentCallData is a durable, serializable subset of agent.SessionAgentCall
 // that can be stored in the run queue and reconstructed after process restart.
 // It contains only the fields needed to execute a call, excluding process-local
@@ -102,6 +138,19 @@ type SessionAgentCallData struct {
 	// read as "unrestricted on purpose"; see RebuildSessionAgentCall for
 	// how a nil spec is judged.
 	RunAllowlistSpec *RunAllowlistSpec
+	// FolderScopeSpec carries the caller's declared folder-scope SPEC
+	// (the uncompiled mirror of permission.FolderScopeSpec), so a call
+	// rebuilt from this row by the run-queue pump can recompile the
+	// scope and rebind its scoped filesystem toolset instead of
+	// silently restarting with the shared unscoped toolset. The
+	// compiled matcher itself is NOT serialized — it is process-local.
+	// Pointer, so "no scope declared" (rows persisted before this
+	// field existed, and unscoped calls — which are the overwhelming
+	// majority) stays distinguishable from "scope present but empty"
+	// (an empty Entries list compiles to a deny-everything scope, the
+	// fail-closed direction). nil means unscoped or legacy row; see
+	// RebuildSessionAgentCall for how a nil spec is judged.
+	FolderScopeSpec *FolderScopeSpec
 	// SystemPromptOverride, if non-empty, replaces the agent's global system prompt
 	SystemPromptOverride string
 	// MaxCost aborts the run if total session cost exceeds this value (0 = no cap)

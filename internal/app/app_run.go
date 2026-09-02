@@ -632,8 +632,9 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 	// rather than guess, and this run fails before any session work or
 	// provider traffic.
 	var folderScope *permission.FolderScope
+	var folderScopeSpec *permission.FolderScopeSpec
 	if len(overrides.FolderScopes) > 0 {
-		compiledScope, err := permission.BuildFolderScope(permission.FolderScopeSpec{
+		spec := permission.FolderScopeSpec{
 			WorkingDir: app.config.WorkingDir(),
 			Entries:    overrides.FolderScopes,
 			// Command-executing tools stay in a scoped toolset only when
@@ -641,11 +642,16 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 			// command patterns: keeping them is a deliberate grant (their
 			// commands stay subject to those patterns), not a default.
 			KeepCommandTools: runSpec.Restrict && len(runSpec.AllowBash) > 0,
-		})
+		}
+		compiledScope, err := permission.BuildFolderScope(spec)
 		if err != nil {
 			return nil, fmt.Errorf("invalid folder scopes: %w", err)
 		}
 		folderScope = &compiledScope
+		// T12: keep the exact spec the compiled scope came from so it can
+		// travel on the context below and be persisted on any durable
+		// run-queue row this call produces.
+		folderScopeSpec = &spec
 		// Mandatory restricted-run companion: under RestrictedRun an
 		// EMPTY AllowTools table denies every plain (non-command) tool
 		// (RunAllowlist.toolAllowed), so "scoped + restricted" would deny
@@ -972,6 +978,16 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 	// LogicalCallID — replacing the per-session baseline below as the
 	// mechanism that keeps a durable restart restricted.
 	ctx = agent.WithRunAllowlistSpec(ctx, &runSpec)
+
+	// T12: the folder-scope spec travels with the call too, so it is
+	// serialized onto any durable run-queue row this call produces
+	// (ToSessionAgentCallData). The pump rebuilds the call, recompiles
+	// the spec, and rebinds the restarted turn's scoped filesystem
+	// toolset — without this, a durably-restarted scoped call would
+	// silently come back with the shared unscoped toolset.
+	if folderScopeSpec != nil {
+		ctx = agent.WithFolderScopeSpec(ctx, folderScopeSpec)
+	}
 
 	// Fork patch: batch 8/30 + peak-hours bypass (R1-1). This run's
 	// timeout-extension policy, cost/token caps and peak-hours bypass now
