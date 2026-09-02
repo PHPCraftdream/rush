@@ -215,11 +215,23 @@ func fsWriteExecuteGroup(ctx context.Context, scope permission.FolderScope, file
 		}
 	}
 
+	// The old content is the undo/diff baseline commitFileChange relies
+	// on. A failed read after Stat already reported the file exists
+	// (transient provider error, permission race, ...) must never be
+	// silently treated as "empty": that would make the write look like
+	// a from-scratch create and record a false history baseline. Fail
+	// the group the same way a fatal/non-fatal MkdirAll error above
+	// does, and return before WriteFile or commitFileChange run.
 	oldContent := ""
 	if exists {
-		if oldBytes, err := disk.ReadFile(ctx, group.Path); err == nil {
-			oldContent = string(oldBytes)
+		oldBytes, err := disk.ReadFile(ctx, group.Path)
+		if err != nil {
+			if osFailureIsFatal(err) {
+				return nil, &FSBatchAbortError{Err: fmt.Errorf("error reading existing content of %s: %w", group.Path, err)}
+			}
+			return nil, fmt.Errorf("cannot read existing content of %s: %v", group.Path, err)
 		}
+		oldContent = string(oldBytes)
 	}
 	current := oldContent
 
