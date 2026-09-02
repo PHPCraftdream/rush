@@ -56,6 +56,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/db"
 	rushlog "github.com/PHPCraftdream/rush/internal/log"
 	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/permission"
 	"github.com/PHPCraftdream/rush/internal/projects"
 	"github.com/PHPCraftdream/rush/internal/pubsub"
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -84,6 +85,35 @@ type (
 	ModelChoice     = agent.ModelChoice
 	ProviderType    = agent.ProviderType
 	Role            = agent.Role
+)
+
+// Folder-scope aliases (RunOverrides.FolderScopes): aliases onto the
+// canonical types in internal/permission that permission.BuildFolderScope
+// compiles and the fs_* tools consume, so a host's scope spec is directly
+// assignable with zero conversion code — the same aliasing pattern as
+// CredentialSet above.
+type (
+	// FolderScope is one scope entry: a directory subtree plus the
+	// operations granted inside it. An entry with no Ops is a deny
+	// carve-out that excludes that subtree from every enclosing grant.
+	// See permission.FolderScopeEntry.
+	FolderScope = permission.FolderScopeEntry
+	// FileOp is one filesystem operation a folder scope can grant.
+	FileOp = permission.FileOp
+)
+
+// FileOp values for FolderScope.Ops, mirroring permission.FileOp*
+// one-to-one.
+const (
+	FileOpList       = permission.FileOpList
+	FileOpFind       = permission.FileOpFind
+	FileOpGrep       = permission.FileOpGrep
+	FileOpRead       = permission.FileOpRead
+	FileOpCreate     = permission.FileOpCreate
+	FileOpOverwrite  = permission.FileOpOverwrite
+	FileOpWriteLines = permission.FileOpWriteLines
+	FileOpReplace    = permission.FileOpReplace
+	FileOpDelete     = permission.FileOpDelete
 )
 
 // ErrClientClosed is returned by Client.Run, Client.RunWithCredentials,

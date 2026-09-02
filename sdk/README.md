@@ -181,6 +181,56 @@ If you need enforced in-process tenant isolation today, put it in your
 own authorization layer and only hand Rush ids that the caller is allowed
 to touch.
 
+## Scoped filesystem access: `RunOverrides.FolderScopes`
+
+By default a run gets the standard coder toolset. Set `FolderScopes` on
+`RunOverrides` to hand one turn a per-folder file-operation ACL instead.
+`Dir` is absolute or relative to the client's working directory; `Ops`
+lists the granted `sdk.FileOp` values, and an entry with no ops is a
+**deny carve-out** that excludes that subtree from every enclosing grant
+(the deepest matching entry wins):
+
+```go
+res, err := client.Run(ctx, sdk.RunRequest{
+    Overrides: sdk.RunOverrides{
+        FolderScopes: []sdk.FolderScope{
+            {Dir: "src", Ops: []sdk.FileOp{sdk.FileOpRead, sdk.FileOpGrep, sdk.FileOpReplace}},
+            {Dir: "src/vendor", Ops: nil}, // deny carve-out
+        },
+    },
+})
+```
+
+A scoped run replaces the single-target file tools (`view`, `glob`,
+`grep`, `ls`, `write`, `edit`, `multiedit`) with the batch-capable
+`fs_*` family (`fs_read`, `fs_list`, `fs_find`, `fs_grep`, `fs_write`,
+`fs_replace`, `fs_write_lines`, `fs_delete`): every item carries its own
+path, an out-of-scope item is denied **per item** inside the batch
+response (the turn continues; only a batch where zero items succeed is a
+tool error), and escape hatches (`download`, `git_read`, MCP resources)
+and MCP tools are removed for that call. Conversation tools (todos,
+ask_question, sub-agents) are untouched. Command-executing tools stay in
+a scoped toolset only when the restricted-run gate is armed AND the run
+grants actual bash patterns — keeping them is a deliberate grant, and
+their commands remain subject to those patterns.
+
+Three boundaries to know:
+
+- **Per-call only, never persisted.** Unlike `SmartModel` /
+  `SystemPrompt`, scoping is not written to the session: a later run on
+  the same `ContinueSessionID` without `FolderScopes` is an ordinary
+  unscoped run with the default toolset.
+- **CLI providers are refused.** A folder-scoped call whose resolved
+  provider is a CLI provider (`claude` / `codex` / `gemini` / `qwen` —
+  they run file tools inside a subprocess that cannot see the scope)
+  fails with a hard error before any provider traffic.
+- **Durable-restart gap (temporary).** Until durable persistence for
+  folder scopes lands, a scoped SDK turn orphaned into the durable run
+  queue currently restarts **unscoped** after a restart — the same class
+  of gap the run allowlist had (finding F2/R4-1, since fixed for that
+  axis, but not yet for folder scopes). Do not rely on the scope
+  surviving a process restart.
+
 ## Session-busy behaviour is different from `rush run`
 
 `rush run` and the web server intentionally **queue** a second message

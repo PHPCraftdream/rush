@@ -167,6 +167,22 @@ type RunOverrides struct {
 	// merged with permissions.run.allow_tools from config.
 	// Fork patch (run allowlist).
 	AllowTools []string
+	// FolderScopes, when non-empty, replaces this run's default coder
+	// toolset with the scoped, batch-capable fs_* family for THIS call:
+	// the legacy single-target file tools and the escape-hatch tools are
+	// stripped, only the fs_* tools whose operation the scope grants
+	// survive, and every fs_* item is checked against the scope per item
+	// (an out-of-scope item is a per-item denial inside the batch, not a
+	// whole-call error). Unlike SmartModel/SystemPrompt this is per-call
+	// only and NEVER persisted on the session — a later run on the same
+	// session without it is unscoped again. Refused outright (hard error,
+	// before any provider traffic) when the resolved provider is a CLI
+	// provider, because those run file tools inside a subprocess that
+	// cannot see the scope (T9, coordinator's
+	// rejectScopedCallOnCLIProvider). Entries are compiled with
+	// permission.BuildFolderScope; any malformed entry fails the whole
+	// run. Fork patch (SDK folder scopes, T10).
+	FolderScopes []permission.FolderScopeEntry
 	// Origin marks the entry channel of this invocation. This is the
 	// CLI's transport for the origin: `rush run` sets OriginCLI here and
 	// RunNonInteractive forwards it into the RunRequest it builds
@@ -591,6 +607,57 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 		return nil, fmt.Errorf("failed to wait for MCP initialization: %w", err)
 	}
 
+	// T10 (SDK folder scopes): the restricted-run spec merge is assembled
+	// HERE, before the per-call CallOptions below is frozen, because the
+	// folder scope's KeepCommandTools decision and the fs_* AllowTools
+	// append both derive from it. This is the same pure config+overrides
+	// merge that used to sit just above BuildRunAllowlist further down;
+	// everything with side effects (BuildRunAllowlist, the session
+	// baseline pin, the WithRunAllowlist ctx attachments) stays at its
+	// original spot because it needs the resolved session and the final
+	// ctx.
+	runSpec := runAllowlistSpecFromConfig(app.config.Config().Permissions)
+	if overrides.RestrictedRun {
+		runSpec.Restrict = true
+	}
+	runSpec.AllowBash = append(runSpec.AllowBash, overrides.AllowBash...)
+	runSpec.AllowTools = append(runSpec.AllowTools, overrides.AllowTools...)
+
+	// T10: a non-empty FolderScopes scopes this call's filesystem
+	// toolset. A malformed entry is a HARD error, deliberately unlike the
+	// allowErr handling further down: dropping a bad run-allowlist
+	// pattern only narrows access (safe to log and skip), but a
+	// folder-scope entry can be a deny carve-out, and silently dropping
+	// one would WIDEN access — BuildFolderScope refuses the whole spec
+	// rather than guess, and this run fails before any session work or
+	// provider traffic.
+	var folderScope *permission.FolderScope
+	if len(overrides.FolderScopes) > 0 {
+		compiledScope, err := permission.BuildFolderScope(permission.FolderScopeSpec{
+			WorkingDir: app.config.WorkingDir(),
+			Entries:    overrides.FolderScopes,
+			// Command-executing tools stay in a scoped toolset only when
+			// the restricted-run gate is armed AND this run grants actual
+			// command patterns: keeping them is a deliberate grant (their
+			// commands stay subject to those patterns), not a default.
+			KeepCommandTools: runSpec.Restrict && len(runSpec.AllowBash) > 0,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("invalid folder scopes: %w", err)
+		}
+		folderScope = &compiledScope
+		// Mandatory restricted-run companion: under RestrictedRun an
+		// EMPTY AllowTools table denies every plain (non-command) tool
+		// (RunAllowlist.toolAllowed), so "scoped + restricted" would deny
+		// the very first fs_* write at the permission gate and silently
+		// make the two features incompatible. Append exactly the fs_*
+		// names this scope grants so the run gate and the scoped toolset
+		// agree; the fs_* tools still judge every item against the scope
+		// themselves. The command tools need no entry: their requests are
+		// command-shaped and governed by AllowBash alone.
+		runSpec.AllowTools = append(runSpec.AllowTools, fsToolsForScope(folderScope)...)
+	}
+
 	// R1-1 (P0): build this run's IMMUTABLE per-call execution context
 	// and attach it to the run's context. Everything below that used to
 	// pin per-invocation settings onto SHARED coordinator/permission
@@ -631,6 +698,11 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 		MaxTokens:         overrides.MaxTokens,
 		AllowPeakHours:    overrides.AllowPeakHours,
 		DisableSubAgents:  overrides.DisableSubAgents,
+		// T10: the compiled folder scope for THIS call (nil = unscoped).
+		// The coordinator's applyCallFolderScope rebuilds the toolset
+		// from it per call; rejectScopedCallOnCLIProvider (T9) refuses
+		// the call outright when the resolved provider is a CLI provider.
+		FolderScope:       folderScope,
 		FailIfSessionBusy: req.FailIfSessionBusy,
 	}
 	ctx = agent.WithCallOptions(ctx, callOpts)
@@ -845,21 +917,15 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 	}
 	app.Permissions.AutoApproveSession(sess.ID)
 
-	// Fork patch (run allowlist): build the restricted-run allowlist by
-	// merging the config-derived spec with this invocation's CLI
-	// overrides. Even when no override is passed we rebuild from config
-	// so the gate stays consistent with whatever permissions.run was on
-	// disk at run time. Only affects the auto-approve path exercised
-	// above; interactive sessions never run this code. R2-1's epoch
-	// binding has been superseded by the per-call binding (R3-4), which
-	// covers the reserved path too: the reserved call also carries its
-	// policy and arms it at turn start.
-	runSpec := runAllowlistSpecFromConfig(app.config.Config().Permissions)
-	if overrides.RestrictedRun {
-		runSpec.Restrict = true
-	}
-	runSpec.AllowBash = append(runSpec.AllowBash, overrides.AllowBash...)
-	runSpec.AllowTools = append(runSpec.AllowTools, overrides.AllowTools...)
+	// Fork patch (run allowlist): the spec merge moved above the
+	// per-call CallOptions (T10 — the folder scope's KeepCommandTools
+	// decision and the fs_* AllowTools append derive from it). What
+	// remains here is the compile and the session/ctx wiring below.
+	// Only affects the auto-approve path exercised above; interactive
+	// sessions never run this code. R2-1's epoch binding has been
+	// superseded by the per-call binding (R3-4), which covers the
+	// reserved path too: the reserved call also carries its policy and
+	// arms it at turn start.
 	compiled, allowErr := permission.BuildRunAllowlist(runSpec)
 	if allowErr != nil {
 		slog.Warn("Restricted-run allowlist has invalid patterns (skipping them)", "err", allowErr)

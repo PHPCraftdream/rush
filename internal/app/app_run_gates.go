@@ -7,6 +7,7 @@ package app
 import (
 	"slices"
 
+	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/permission"
 )
@@ -119,4 +120,35 @@ func runAllowlistSpecFromConfig(p *config.Permissions) permission.RunAllowlistSp
 	spec.AllowTools = append(spec.AllowTools, p.Run.AllowTools...)
 	spec.AllowBash = append(spec.AllowBash, p.Run.AllowBash...)
 	return spec
+}
+
+// fsToolsForScope returns the fs_* tool names the compiled scope grants,
+// for appending to the restricted-run AllowTools table so a
+// "scoped + restricted" run's fs_* calls clear the run gate. The
+// presence rules mirror the coordinator's applyCallFolderScope exactly
+// (one operation per tool; fs_write appears when create OR overwrite is
+// granted, because its per-item check picks the operation by path
+// existence), so the permission gate and the actual scoped toolset can
+// never disagree. A nil scope grants nothing.
+func fsToolsForScope(scope *permission.FolderScope) []string {
+	if scope == nil {
+		return nil
+	}
+	names := make([]string, 0, 8)
+	one := func(op permission.FileOp, name string) {
+		if scope.Grants(op) {
+			names = append(names, name)
+		}
+	}
+	one(permission.FileOpList, tools.FSListToolName)
+	one(permission.FileOpFind, tools.FSFindToolName)
+	one(permission.FileOpGrep, tools.FSGrepToolName)
+	one(permission.FileOpRead, tools.FSReadToolName)
+	one(permission.FileOpReplace, tools.FSReplaceToolName)
+	one(permission.FileOpWriteLines, tools.FSWriteLinesToolName)
+	one(permission.FileOpDelete, tools.FSDeleteToolName)
+	if scope.Grants(permission.FileOpCreate) || scope.Grants(permission.FileOpOverwrite) {
+		names = append(names, tools.FSWriteToolName)
+	}
+	return names
 }
