@@ -3,11 +3,14 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/history"
 	"github.com/PHPCraftdream/rush/internal/permission"
 	"github.com/stretchr/testify/require"
 )
@@ -178,6 +181,88 @@ func TestFSWriteLastWriteWinsWithinGroup(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "second", string(content))
 	require.GreaterOrEqual(t, meta.Items[1].Additions, 1)
+}
+
+// fsWriteFailingReadDisk wraps the real disk but fails ReadFile for one
+// chosen path and counts WriteFile calls, so the R5-5 regression can prove
+// fs_write treats a failed pre-write snapshot read (on a path Stat says
+// exists) as a pre-write error instead of silently overwriting from a
+// false empty baseline.
+type fsWriteFailingReadDisk struct {
+	DiskProvider
+	failReadPath string
+	writeCalls   int
+}
+
+func (f *fsWriteFailingReadDisk) ReadFile(ctx context.Context, name string) ([]byte, error) {
+	if name == f.failReadPath {
+		return nil, errors.New("simulated transient read failure")
+	}
+	return f.DiskProvider.ReadFile(ctx, name)
+}
+
+func (f *fsWriteFailingReadDisk) WriteFile(ctx context.Context, name string, data []byte, perm fs.FileMode) error {
+	f.writeCalls++
+	return f.DiskProvider.WriteFile(ctx, name, data, perm)
+}
+
+// countingHistoryService wraps mockHistoryService and counts every
+// Create/CreateVersion call, so the regression can assert zero history
+// entries were recorded.
+type countingHistoryService struct {
+	*mockHistoryService
+	createCalls        int
+	createVersionCalls int
+}
+
+func (h *countingHistoryService) Create(ctx context.Context, sessionID, path, content string) (history.File, error) {
+	h.createCalls++
+	return h.mockHistoryService.Create(ctx, sessionID, path, content)
+}
+
+func (h *countingHistoryService) CreateVersion(ctx context.Context, sessionID, path, content string) (history.File, error) {
+	h.createVersionCalls++
+	return h.mockHistoryService.CreateVersion(ctx, sessionID, path, content)
+}
+
+// TestFSWriteFailedSnapshotReadBlocksWrite is the R5-5 regression: Stat
+// reports the file exists, ReadFile fails, and WriteFile would otherwise
+// succeed. fs_write must perform ZERO writes and record ZERO history
+// entries instead of silently treating the unreadable old content as
+// empty and overwriting anyway.
+func TestFSWriteFailedSnapshotReadBlocksWrite(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ctx := context.WithValue(context.Background(), SessionIDContextKey, "sess-write")
+	scope := fsWriteTestScope(t, dir)
+	existing := filepath.Join(dir, "exist.txt")
+	require.NoError(t, os.WriteFile(existing, []byte("old"), 0o644))
+
+	resolvedExisting, err := resolveScopedPath(context.Background(), OSDisk(), dir, "exist.txt")
+	require.NoError(t, err)
+
+	disk := &fsWriteFailingReadDisk{DiskProvider: OSDisk(), failReadPath: resolvedExisting}
+	hist := &countingHistoryService{mockHistoryService: &mockHistoryService{}}
+
+	tool := NewFSWriteTool(scope, &mockPermissionService{}, hist, mockFileTrackerService{}, dir, disk)
+	resp, err := fsWriteRun(t, ctx, tool, FSWriteParams{Items: []FSWriteItem{
+		{Path: "exist.txt", Content: "new"},
+	}})
+	require.NoError(t, err)
+	require.True(t, resp.IsError)
+
+	var meta FSBatchResponseMetadata
+	require.NoError(t, json.Unmarshal([]byte(resp.Metadata), &meta))
+	require.Equal(t, FSStatusFailed, meta.Items[0].Status)
+	require.Contains(t, meta.Items[0].Error, "cannot read existing content")
+
+	require.Equal(t, 0, disk.writeCalls, "fs_write must never call WriteFile when the pre-write snapshot read fails")
+	require.Equal(t, 0, hist.createCalls, "fs_write must never record a history Create when the pre-write snapshot read fails")
+	require.Equal(t, 0, hist.createVersionCalls, "fs_write must never record a history CreateVersion when the pre-write snapshot read fails")
+
+	content, err := os.ReadFile(existing)
+	require.NoError(t, err)
+	require.Equal(t, "old", string(content), "the file on disk must remain unchanged")
 }
 
 // fsWriteDenyService refuses every permission request so the whole-call

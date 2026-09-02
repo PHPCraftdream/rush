@@ -60,6 +60,58 @@ type LibraryConfig struct {
 	AllowConfiguredRoleFallback bool
 }
 
+// LibraryVirtualRoot is the synthesized logical filesystem root used as
+// ConfigStore.WorkingDir() for an ephemeral ModeLibrary session (empty
+// Options.WorkingDir, in-memory database, nothing ever on disk).
+// ConfigStore.WorkingDir() is the single point of truth every
+// folder-scope compilation (permission.FolderScopeSpec.WorkingDir, set
+// from the app config's WorkingDir() in app_run.go's ExecuteRun) and
+// every scoped fs_* tool's item-path resolution
+// (tools.resolveScopedPath's workingDir parameter, itself sourced from
+// the SAME WorkingDir() getter in coordinator_tools.go) reads from.
+//
+// Before this fix an ephemeral session left ConfigStore.WorkingDir() as
+// "". permission.BuildFolderScope hard-rejects a relative Dir entry
+// when WorkingDir is empty, so the README's own natural example
+// ({Dir: "src", ...}) could not be used unchanged in library mode. A
+// caller who worked around that by supplying an absolute virtual scope
+// still hit a second, silent failure: a RELATIVE item path (what a
+// model actually emits in an fs_* tool call) was joined onto the empty
+// WorkingDir and passed through filepath.Abs, which resolves a
+// relative (or Windows driveless-but-rooted) path against the RUSH
+// HOST PROCESS's own current working directory/drive -- a value the
+// caller never chose and that can change between calls (R5-6, P1 SDK
+// review finding). See tools.resolveScopedPath's doc comment for the
+// mechanism of that second bug and its fix.
+//
+// LibraryVirtualRoot is deliberately not a real path on any OS:
+//   - It is exported so a host can build absolute-style FolderScopes
+//     entries directly against it, or recognize it in returned/audited
+//     paths, without guessing the sentinel value.
+//   - A leading "/" makes internal/filepathext.SmartIsAbs treat it as
+//     absolute on BOTH Windows and Unix. On Unix this coincides with
+//     the real filepath.IsAbs (a leading "/" IS Unix-absolute). On
+//     Windows it deliberately does NOT satisfy the real filepath.IsAbs
+//     (no drive letter, no "\\" UNC prefix) -- permission.BuildFolderScope
+//     and tools.resolveScopedPath were both updated (R5-6) to treat
+//     "already SmartIsAbs" the same as "already resolved," which lets
+//     this single cross-platform literal work everywhere without ever
+//     needing filepath.Abs/filepath.IsAbs to recognize it natively.
+//   - It is NOT a "\\host\share" UNC path on purpose: stat-ing a
+//     non-existent UNC host from a caller who forgets to supply a
+//     DiskProvider can hang on a real Windows network name-resolution
+//     timeout. A driveless, non-UNC "/..." path instead fails
+//     immediately (not-exist) if it were ever handed to a real disk
+//     provider by mistake.
+//   - The literal segment is specific enough that no real project is
+//     plausibly rooted at this exact absolute path; even if it were,
+//     an ephemeral ModeLibrary session only ever reaches a real
+//     filesystem call through the caller's own DiskProvider, or, on
+//     caller misuse (no DiskProvider), the real OS provider -- in
+//     which case this value denies/fails closed rather than granting
+//     anything.
+const LibraryVirtualRoot = "/rush-library-mode-root"
+
 // openLibrary is Open's library-mode path: no config-file discovery at
 // all. Everything comes from o.LibraryConfig; persistence is either an
 // ephemeral in-memory SQLite session (empty WorkingDir) or a real DB
@@ -101,8 +153,19 @@ func openLibrary(ctx context.Context, o Options) (*Client, error) {
 		dataDir = filepath.Join(workDir, ".rush")
 	}
 
+	// configWorkingDir feeds config.NewLibraryStore, becoming
+	// ConfigStore.WorkingDir() -- see LibraryVirtualRoot's doc comment
+	// for why an ephemeral session (workDir == "") needs a non-empty
+	// synthesized value here even though workDir itself -- the real,
+	// on-disk root used for dataDir/database/project-registration below
+	// -- correctly stays "".
+	configWorkingDir := workDir
+	if configWorkingDir == "" {
+		configWorkingDir = LibraryVirtualRoot
+	}
+
 	cfg := buildLibraryConfig(&lc, dataDir)
-	store := config.NewLibraryStore(cfg, workDir)
+	store := config.NewLibraryStore(cfg, configWorkingDir)
 
 	var (
 		closeConns []*sql.DB

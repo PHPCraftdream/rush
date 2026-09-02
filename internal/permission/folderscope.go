@@ -43,6 +43,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+
+	"github.com/PHPCraftdream/rush/internal/filepathext"
 )
 
 // FileOp is one filesystem operation a folder scope can grant.
@@ -156,7 +158,37 @@ func BuildFolderScope(spec FolderScopeSpec) (FolderScope, error) {
 		if dir == "" {
 			return FolderScope{}, fmt.Errorf("folder scope entry %d: Dir is empty", i)
 		}
-		if !filepath.IsAbs(dir) {
+		// alreadyAbsInThisNamespace treats dir as needing no join onto
+		// WorkingDir in exactly two cases: (1) dir is genuinely
+		// filepath.IsAbs (a real drive-letter/UNC/Unix-rooted path), or
+		// (2) dir is only filepathext.SmartIsAbs (a driveless leading
+		// "/" — real-absolute on Unix, Windows-ambiguous) AND
+		// spec.WorkingDir is ITSELF in that same driveless-virtual
+		// namespace (R5-6: tools.CanonicalizeFolderScopeSpec resolves
+		// entries against a synthesized virtual root like
+		// sdk.LibraryVirtualRoot, which is deliberately
+		// SmartIsAbs-but-not-IsAbs on Windows, producing entries in that
+		// same namespace).
+		//
+		// Using plain filepathext.SmartIsAbs(dir) alone here — without
+		// also checking spec.WorkingDir's own namespace — was tried and
+		// reverted: on Windows, filepathext.SmartIsAbs("/foo") is true
+		// even under a REAL drive-rooted WorkingDir like `D:\project`,
+		// so a leading-slash-style entry (`{Dir: "/foo"}`, a plausible
+		// operator spelling meaning "the foo subdirectory") would stop
+		// being joined onto WorkingDir and become a driveless, permanently
+		// unreachable root — silently turning a deny carve-out inert
+		// (the item path resolveScopedPath produces for any real request
+		// is always drive-rooted, so it can never match a driveless
+		// entry). That is the exact fail-open regression class R5-2
+		// exists to prevent, reintroduced through a different mechanism;
+		// confirmed via a scratch reproduction before this guard was
+		// added. Gating on spec.WorkingDir's own namespace keeps every
+		// REAL WorkingDir's leading-slash entries joining exactly as
+		// before, while still accepting the R5-6 virtual-root case.
+		alreadyAbsInThisNamespace := filepath.IsAbs(dir) ||
+			(filepathext.SmartIsAbs(dir) && filepathext.SmartIsAbs(spec.WorkingDir) && !filepath.IsAbs(spec.WorkingDir))
+		if !alreadyAbsInThisNamespace {
 			if strings.TrimSpace(spec.WorkingDir) == "" {
 				return FolderScope{}, fmt.Errorf(
 					"folder scope entry %d: Dir %q is relative but WorkingDir is empty",

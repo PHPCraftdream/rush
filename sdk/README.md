@@ -296,7 +296,7 @@ Boundaries to know:
   to persist and recompile the way a folder scope's spec is. A call
   carrying one is refused outright rather than durably queued: if it
   cannot execute immediately (in-process) it is dropped with an error
-  wrapping `agent.ErrDiskProviderNotDurable`, never silently replayed
+  wrapping `sdk.ErrDiskProviderNotDurable`, never silently replayed
   onto the real disk after a restart. Combine with
   `FailIfSessionBusy` semantics (`Client.Run`/`RunWithCredentials` set
   it already) so you get a fast, synchronous refusal instead of a
@@ -309,7 +309,7 @@ sent to a session that already has a turn in flight (this is what makes
 "type a follow-up while the agent is still answering" work in the web
 UI). `Client.Run` and `RunWithCredentials` do **not** queue: a second
 concurrent call on the *same* `ContinueSessionID` fails immediately with
-an error wrapping `agent.ErrSessionBusy` (check with `errors.Is`). Two
+an error wrapping `sdk.ErrSessionBusy` (check with `errors.Is`). Two
 calls on *different* session ids remain fully concurrent and unaffected.
 
 ## Reading what the agent wrote

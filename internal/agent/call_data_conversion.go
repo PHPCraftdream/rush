@@ -69,6 +69,41 @@ func fromSessionRunAllowlistSpec(spec *session.RunAllowlistSpec) *permission.Run
 	}
 }
 
+// toSessionCallOptionsSpec converts the replay-relevant subset of
+// agent.CallOptions to its session.SessionAgentCallData mirror type
+// (session.CallOptionsSpec), reading directly off the live CallOptions —
+// unlike FolderScopeSpec below, none of these fields need a separate
+// pre-compilation form carried through the call's context: they are
+// already plain primitives in CallOptions itself. See that type's doc
+// for the fields deliberately excluded and why (R5-3).
+func toSessionCallOptionsSpec(o *CallOptions) *session.CallOptionsSpec {
+	if o == nil {
+		return nil
+	}
+	return &session.CallOptionsSpec{
+		Version:                  session.CallOptionsSpecVersion,
+		DisableSubAgents:         o.DisableSubAgents,
+		ModelRole:                string(o.ModelRole),
+		TimeoutOptionsSet:        o.TimeoutOptionsSet,
+		TimeoutExtendsOnProgress: o.TimeoutExtendsOnProgress,
+		TimeoutHardCap:           o.TimeoutHardCap,
+	}
+}
+
+// fromSessionCallOptionsSpec is the inverse of toSessionCallOptionsSpec.
+func fromSessionCallOptionsSpec(spec *session.CallOptionsSpec) *CallOptions {
+	if spec == nil {
+		return nil
+	}
+	return &CallOptions{
+		DisableSubAgents:         spec.DisableSubAgents,
+		ModelRole:                config.SelectedModelType(spec.ModelRole),
+		TimeoutOptionsSet:        spec.TimeoutOptionsSet,
+		TimeoutExtendsOnProgress: spec.TimeoutExtendsOnProgress,
+		TimeoutHardCap:           spec.TimeoutHardCap,
+	}
+}
+
 // toSessionFolderScopeSpec converts permission.FolderScopeSpec to its
 // session.SessionAgentCallData mirror type (session.FolderScopeSpec).
 // Entries and Ops are copied element-wise because Go cannot convert
@@ -126,6 +161,7 @@ func fromSessionFolderScopeSpec(spec *session.FolderScopeSpec) *permission.Folde
 //
 // RunAllowlistSpec round-trips so a pump-driven restart can recompile and re-arm the caller's declared policy (R4-1/R4-2/R4-3).
 // FolderScopeSpec round-trips so a pump-driven restart can recompile the call's folder scope (T12).
+// CallOptionsSpec round-trips the rest of the call's replay-relevant CallOptions execution policy (DisableSubAgents, ModelRole, timeout-watchdog policy) so a pump-driven restart reconstructs all of it together instead of just the folder scope (R5-3).
 //
 // LogicalCallID is serialized to ensure the stable idempotency key survives
 // the durable serialization boundary (P2-1 fix, P0-1 release blocker).
@@ -159,6 +195,7 @@ func ToSessionAgentCallData(call SessionAgentCall) session.SessionAgentCallData 
 		Origin:               call.Origin,
 		RunAllowlistSpec:     toSessionRunAllowlistSpec(call.RunAllowlistSpec),
 		FolderScopeSpec:      toSessionFolderScopeSpec(call.FolderScopeSpec),
+		CallOptionsSpec:      toSessionCallOptionsSpec(call.CallOptions),
 		// Layer 2 (belt and braces, design doc §7.3): mark the row so a
 		// consumer that somehow receives it (a producer added later, or a
 		// row written by a different binary version) still fails closed
@@ -178,6 +215,12 @@ func ToSessionAgentCallData(call SessionAgentCall) session.SessionAgentCallData 
 //
 // RunAllowlistSpec round-trips so a pump-driven restart can recompile and re-arm the caller's declared policy (R4-1/R4-2/R4-3).
 // FolderScopeSpec round-trips so a pump-driven restart can recompile the call's folder scope (T12).
+// CallOptionsSpec round-trips into a ready-to-use CallOptions here directly
+// (unlike FolderScope, none of its fields need compilation against the
+// coordinator's config/disk, so — unlike FolderScopeSpec above, which only
+// restores the pre-compilation spec and leaves compiling it to
+// coordinator.RebuildSessionAgentCall — this function can fully restore
+// CallOptions on its own) (R5-3).
 //
 // LogicalCallID is restored to ensure the stable idempotency key survives
 // the durable serialization boundary (P2-1 fix, P0-1 release blocker).
@@ -199,6 +242,7 @@ func FromSessionAgentCallData(callData session.SessionAgentCallData) SessionAgen
 		Origin:               callData.Origin,
 		RunAllowlistSpec:     fromSessionRunAllowlistSpec(callData.RunAllowlistSpec),
 		FolderScopeSpec:      fromSessionFolderScopeSpec(callData.FolderScopeSpec),
+		CallOptions:          fromSessionCallOptionsSpec(callData.CallOptionsSpec),
 		// SmartModel and FastModel are NOT set here — they will be reconstructed
 		// by coordinator.RebuildSessionAgentCall.
 	}

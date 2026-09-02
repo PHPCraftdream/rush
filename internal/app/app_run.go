@@ -665,14 +665,35 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 			// commands stay subject to those patterns), not a default.
 			KeepCommandTools: runSpec.Restrict && len(runSpec.AllowBash) > 0,
 		}
-		compiledScope, err := permission.BuildFolderScope(spec)
+		// R5-2 (P0 security review): canonicalize every entry (and
+		// WorkingDir itself) through the SAME longest-existing-prefix +
+		// EvalSymlinks algorithm and the SAME DiskProvider used to resolve
+		// every REQUESTED item path, before compiling the matcher. Without
+		// this a scope's roots were matched in lexical form while
+		// requested paths were matched after symlink resolution, so a
+		// nested deny carve-out could stop matching while its broader
+		// parent grant kept matching — see
+		// tools.CanonicalizeFolderScopeSpec's doc comment. A
+		// canonicalization failure is a hard error here, exactly like the
+		// BuildFolderScope compile failure below: the run never starts, so
+		// there is nothing to fail open into.
+		canonSpec, err := tools.CanonicalizeFolderScopeSpec(ctx, overrides.DiskProvider, spec)
+		if err != nil {
+			return nil, fmt.Errorf("invalid folder scopes: %w", err)
+		}
+		compiledScope, err := permission.BuildFolderScope(canonSpec)
 		if err != nil {
 			return nil, fmt.Errorf("invalid folder scopes: %w", err)
 		}
 		folderScope = &compiledScope
-		// T12: keep the exact spec the compiled scope came from so it can
-		// travel on the context below and be persisted on any durable
-		// run-queue row this call produces.
+		// T12: keep the exact RAW (pre-canonicalization) spec the compiled
+		// scope came from so it can travel on the context below and be
+		// persisted on any durable run-queue row this call produces. A
+		// durable restart re-canonicalizes it against the real disk (see
+		// RebuildSessionAgentCall) — a DiskProvider is never persisted, so
+		// persisting the already-canonicalized form here would buy
+		// nothing and would go stale if the on-disk symlink structure
+		// changes before a restart.
 		folderScopeSpec = &spec
 		// Mandatory restricted-run companion: under RestrictedRun an
 		// EMPTY AllowTools table denies every plain (non-command) tool
