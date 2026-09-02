@@ -264,18 +264,11 @@ func searchFiles(ctx context.Context, pattern, rootPath, include string, limit i
 }
 
 func searchWithRipgrep(ctx context.Context, pattern, path, include string, limit int) ([]grepMatch, bool, error) {
-	cmd := getRgSearchCmd(ctx, pattern, path, include)
+	cmd := getRgSearchCmd(ctx, pattern, path, include, 0)
 	if cmd == nil {
 		return nil, false, fmt.Errorf("ripgrep not found in $PATH")
 	}
-
-	// Only add ignore files if they exist.
-	for _, ignoreFile := range []string{".gitignore", ".rushignore"} {
-		ignorePath := filepath.Join(path, ignoreFile)
-		if _, err := os.Stat(ignorePath); err == nil {
-			cmd.Args = append(cmd.Args, "--ignore-file", ignorePath)
-		}
-	}
+	appendRgIgnoreFiles(cmd, path)
 
 	// Stream rg's stdout line-by-line instead of buffering the entire output.
 	stdout, err := cmd.StdoutPipe()
