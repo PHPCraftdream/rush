@@ -1,0 +1,1 @@
+List one or more directories as trees inside the call's folder scope (batch); entries outside the scope or under a deny carve-out are dropped; max {{ .MaxFiles }} entries per item. Use fs_find to find files by pattern and fs_read to read files.

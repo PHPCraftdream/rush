@@ -31,7 +31,9 @@ package tools
 //   - Covered: download, fetch, sourcegraph (malformed URL / dead
 //     network), view, edit, write, multiedit (OS-rejected path), todos
 //     (invalid enum, fixed by f51baaca), glob, grep, ls (bad pattern /
-//     missing path) as compliant controls; the MkdirAll / final-write
+//     missing path), and the scoped fs_list/fs_find/fs_read batch tools
+//     (OS-rejected item path, ambiguous addressing) as compliant
+//     controls; the MkdirAll / final-write
 //     class — parent-path-component-is-a-file for write, edit,
 //     multiedit and download, download file_path naming an existing
 //     directory, and write/edit onto a read-only file (the final
@@ -84,6 +86,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/permission"
 	"github.com/stretchr/testify/require"
 )
 
@@ -410,6 +413,33 @@ func TestErrorContract_BadModelInputIsAResponseNotAnError(t *testing.T) {
 					LSParams{Path: "no-such-dir"})
 			},
 		},
+		{
+			tool: "fs_list",
+			desc: `OS-rejected item path "bad\x00path.txt"`,
+			run: func() (fantasy.ToolResponse, error) {
+				return run(NewFSListTool(fsBatchTestScope(t, workingDir, permission.FileOpList, permission.FileOpFind, permission.FileOpRead), workingDir, config.ToolLs{}),
+					FSListToolName,
+					FSListParams{Items: []FSListItem{{Path: nulPath}}})
+			},
+		},
+		{
+			tool: "fs_find",
+			desc: `OS-rejected item path "bad\x00path.txt"`,
+			run: func() (fantasy.ToolResponse, error) {
+				return run(NewFSFindTool(fsBatchTestScope(t, workingDir, permission.FileOpList, permission.FileOpFind, permission.FileOpRead), workingDir),
+					FSFindToolName,
+					FSFindParams{Items: []FSFindItem{{Pattern: "**/*", Path: nulPath}}})
+			},
+		},
+		{
+			tool: "fs_read",
+			desc: `item specifying both addressing modes (start_line/end_line AND line/radius)`,
+			run: func() (fantasy.ToolResponse, error) {
+				return run(NewFSReadTool(fsBatchTestScope(t, workingDir, permission.FileOpRead), workingDir),
+					FSReadToolName,
+					FSReadParams{Items: []FSReadItem{{Path: "some.txt", StartLine: 1, EndLine: 2, Line: 3, Radius: 1}}})
+			},
+		},
 	}
 
 	// A file that exists but cannot be opened: on Windows a shareMode-0
@@ -599,6 +629,42 @@ func TestErrorContract_Control_ValidInputSucceeds(t *testing.T) {
 						Status:     "pending",
 						ActiveForm: "Doing the thing",
 					}}})
+				require.NoError(t, err)
+				return resp
+			},
+		},
+		{
+			name: "fs_list lists a scoped directory",
+			run: func(t *testing.T) fantasy.ToolResponse {
+				dir := t.TempDir()
+				require.NoError(t, os.WriteFile(filepath.Join(dir, "file.txt"), []byte("x"), 0o644))
+				resp, err := runContractTool(t, ctx,
+					NewFSListTool(fsBatchTestScope(t, dir, permission.FileOpList), dir, config.ToolLs{}),
+					FSListToolName, FSListParams{Items: []FSListItem{{Path: "."}}})
+				require.NoError(t, err)
+				return resp
+			},
+		},
+		{
+			name: "fs_find finds a scoped file",
+			run: func(t *testing.T) fantasy.ToolResponse {
+				dir := t.TempDir()
+				require.NoError(t, os.WriteFile(filepath.Join(dir, "file.txt"), []byte("x"), 0o644))
+				resp, err := runContractTool(t, ctx,
+					NewFSFindTool(fsBatchTestScope(t, dir, permission.FileOpFind), dir),
+					FSFindToolName, FSFindParams{Items: []FSFindItem{{Pattern: "**/*.txt"}}})
+				require.NoError(t, err)
+				return resp
+			},
+		},
+		{
+			name: "fs_read reads a scoped file",
+			run: func(t *testing.T) fantasy.ToolResponse {
+				dir := t.TempDir()
+				require.NoError(t, os.WriteFile(filepath.Join(dir, "file.txt"), []byte("content"), 0o644))
+				resp, err := runContractTool(t, ctx,
+					NewFSReadTool(fsBatchTestScope(t, dir, permission.FileOpRead), dir),
+					FSReadToolName, FSReadParams{Items: []FSReadItem{{Path: "file.txt"}}})
 				require.NoError(t, err)
 				return resp
 			},

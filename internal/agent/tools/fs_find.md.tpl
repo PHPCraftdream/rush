@@ -1,0 +1,1 @@
+Find files by name/pattern (glob syntax) in one or more directories inside the call's folder scope (batch); results outside the scope or under a deny carve-out are dropped; max {{ .MaxResults }} results per item.

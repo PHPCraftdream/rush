@@ -1,0 +1,1 @@
+Read one or more files with line numbers inside the call's folder scope (batch); each item reads the whole file, a 1-based inclusive line range (start_line/end_line), or a center line with radius context (line/radius); max {{ .MaxViewSizeKB }}KB of content per call.
