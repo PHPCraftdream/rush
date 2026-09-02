@@ -7,6 +7,7 @@ package agent
 
 import (
 	"bytes"
+	"log"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -237,8 +238,19 @@ func TestSessionAgent_HandleWatchdogFire_UsesPassedSmartModelSnapshot(t *testing
 	// goroutine calls slog.Warn too, so the sink must be concurrency-safe.
 	var logBuf lockedBuffer
 	prevDefault := slog.Default()
+	prevLogOut, prevLogFlags := log.Writer(), log.Flags()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn})))
-	defer slog.SetDefault(prevDefault)
+	defer func() {
+		// slog.SetDefault(prevDefault) alone does NOT undo log's own
+		// output: SetDefault only calls log.SetOutput when the NEW
+		// handler isn't a *defaultHandler, so restoring to a
+		// defaultHandler-backed logger skips it (log/slog/logger.go) --
+		// log's writer would otherwise stay pointed at logBuf, a dead
+		// local variable, for the rest of the process.
+		slog.SetDefault(prevDefault)
+		log.SetOutput(prevLogOut)
+		log.SetFlags(prevLogFlags)
+	}()
 
 	var watchdogCauseVal atomic.Int32
 	a.handleWatchdogFire(

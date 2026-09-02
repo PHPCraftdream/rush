@@ -141,6 +141,25 @@ func TestP0_338_FinalizerReachableDespiteHungCleanup(t *testing.T) {
 	// We use SessionAgentOptions.LockOptions to inject the hung cleanup function.
 	cleanupStarted := atomic.Bool{}
 	cleanupUnblock := make(chan struct{})
+	// Release() is called at least twice over this test's life (once for
+	// firstCall's failing turn, once for the orphaned call's turn), so
+	// this callback fires more than once. testDone guards every t.Logf
+	// call inside it: closing cleanupUnblock only wakes a blocked
+	// invocation, it doesn't wait for its remaining log calls to run, and
+	// a goroutine calling t.Logf after the test has been marked done
+	// panics the whole binary ("Log in goroutine after Test has
+	// completed"). Checking testDone right before each call is safe under
+	// ANY number of invocations and ANY interleaving -- unlike waiting on
+	// a WaitGroup Added-to from inside the goroutine itself, which would
+	// need "Add happens before Wait" to hold for every invocation to
+	// avoid missing one; the worst case here is silently dropping a log
+	// line already racing test completion, never a panic.
+	var testDone atomic.Bool
+	safeLogf := func(format string, args ...any) {
+		if !testDone.Load() {
+			t.Logf(format, args...)
+		}
+	}
 
 	// Create a sessionAgent with dataDir so it acquires the OS lock, and inject
 	// the hung cleanup via LockOptions.
@@ -154,24 +173,31 @@ func TestP0_338_FinalizerReachableDespiteHungCleanup(t *testing.T) {
 		SystemPrompt:  "You are a test assistant.",
 		LockOptions: []session.LockOption{
 			session.WithClearHolderMetadataFn(func(path string, expectedGeneration string) {
-				t.Logf("cleanup goroutine started for path: %s", path)
+				safeLogf("cleanup goroutine started for path: %s", path)
 				cleanupStarted.Store(true)
 				// Block for 2 seconds to prove the point, then unblock to avoid process cleanup issues.
 				select {
 				case <-time.After(2 * time.Second):
-					t.Logf("cleanup goroutine unblocking after timeout")
+					safeLogf("cleanup goroutine unblocking after timeout")
 					// Timeout - unblock and proceed with cleanup
 				case <-cleanupUnblock:
-					t.Logf("cleanup goroutine unblocking via explicit unblock")
+					safeLogf("cleanup goroutine unblocking via explicit unblock")
 					// Explicit unblock (used in cleanup phase)
 				}
-				t.Logf("cleanup goroutine completed")
+				safeLogf("cleanup goroutine completed")
 			}),
 		},
 	})
 	defer func() {
-		// Unblock cleanup before test completes to avoid leaving stuck goroutines
+		// Unblock cleanup before test completes. The brief sleep is a
+		// best-effort courtesy so normal runs still see the goroutine's
+		// final log lines (it wakes and finishes in microseconds); the
+		// actual safety net is testDone, set right after -- so a slow or
+		// unexpectedly-late invocation degrades to a dropped log line,
+		// never a post-completion t.Logf panic.
 		close(cleanupUnblock)
+		time.Sleep(50 * time.Millisecond)
+		testDone.Store(true)
 	}()
 
 	// Queue an orphaned call BEFORE starting Run — it will become orphaned when Run fails.
@@ -318,6 +344,21 @@ func TestP0_338_FinalizerReachableDespiteHungCleanup(t *testing.T) {
 	}, 10*time.Second, 100*time.Millisecond,
 		"Orphaned call prompt should appear in message history "+
 			"(proving the call was actually executed, not just queued)")
+
+	// Stop the pump BEFORE releasing the DB: the two require.Eventually
+	// calls above only prove the orphaned call's turn STARTED writing
+	// (provider called, prompt visible in history) — the pump worker's
+	// turn (title generation, lock release, final bookkeeping) can still
+	// be mid-flight on the single writer connection when they return.
+	// Stop() waits up to 5s for in-flight workers to finish, so by the
+	// time it returns the pump is done touching the DB. Calling it here
+	// (Stop() is idempotent, guarded by p.started) makes the deferred
+	// Stop() above a no-op; without this explicit call in the right
+	// order, db.Release below could close the connection out from under
+	// a still-running worker, which on Windows surfaces as t.TempDir()'s
+	// RemoveAll failing with "the process cannot access the file"
+	// (rush.db still open) rather than as a DB error.
+	pump.Stop()
 
 	// Clean up the DB connection so tmpDir can be removed. db.Connect pools
 	// connections by absolute dataDir path and additionally opens a

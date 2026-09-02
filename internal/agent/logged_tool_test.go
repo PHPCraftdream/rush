@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"log/slog"
 	"strings"
 	"testing"
@@ -45,8 +46,19 @@ func captureLogs(t *testing.T) func() []map[string]any {
 	t.Helper()
 	var buf bytes.Buffer
 	prev := slog.Default()
+	prevLogOut, prevLogFlags := log.Writer(), log.Flags()
 	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
-	t.Cleanup(func() { slog.SetDefault(prev) })
+	t.Cleanup(func() {
+		// slog.SetDefault(prev) alone does NOT undo log's own output:
+		// SetDefault only calls log.SetOutput when the NEW handler isn't
+		// a *defaultHandler, so restoring to a defaultHandler-backed
+		// logger skips it (log/slog/logger.go) -- log's writer would
+		// otherwise stay pointed at buf, a dead local variable, for the
+		// rest of the process.
+		slog.SetDefault(prev)
+		log.SetOutput(prevLogOut)
+		log.SetFlags(prevLogFlags)
+	})
 
 	return func() []map[string]any {
 		var out []map[string]any

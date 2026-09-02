@@ -266,6 +266,21 @@ func (a *sessionAgent) fireCacheKeepAlive(sessionID string, model Model, message
 		fantasy.WithTools(noExecuteTools(tools)...),
 		fantasy.WithMaxOutputTokens(1),
 		fantasy.WithUserAgent(userAgent),
+		// fantasy's step loop has no built-in step cap: it keeps calling
+		// the model again as long as the model keeps returning tool
+		// calls (isStopConditionMet with an empty StopWhen never fires).
+		// noExecuteTool's refusal is a NORMAL tool response (not a Go
+		// error), so a provider that keeps selecting the same tool after
+		// seeing the refusal drives an unbounded model<->tool ping-pong
+		// this replay's own ctx timeout does not reliably interrupt
+		// (confirmed empirically: a test double that always returns a
+		// tool call hung fireCacheKeepAlive and its caller's runWg.Wait()
+		// past ExecuteRun's watch limits, consuming multi-GB before being
+		// killed). This is a single background ping with no operator
+		// watching -- it never legitimately needs more than one
+		// tool-calling round, so cap it firmly rather than trust the
+		// model to stop on its own.
+		fantasy.WithStopConditions(fantasy.StepCountIs(2)),
 	)
 	result, err := replayAgent.Stream(ctx, fantasy.AgentStreamCall{
 		Messages:        messages,

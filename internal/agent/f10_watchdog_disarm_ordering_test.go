@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"log"
 	"log/slog"
 	"sync"
 	"testing"
@@ -182,8 +183,20 @@ func TestRunTurn_DisarmsWatchdogOnErrorReturn_NotJustSuccessPath(t *testing.T) {
 
 	var logBuf syncBuffer
 	prevDefault := slog.Default()
+	prevLogOut, prevLogFlags := log.Writer(), log.Flags()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn})))
-	defer slog.SetDefault(prevDefault)
+	defer func() {
+		// slog.SetDefault(prevDefault) alone does NOT undo this: SetDefault
+		// only calls log.SetOutput when the NEW handler isn't a
+		// *defaultHandler, so restoring to a defaultHandler-backed logger
+		// intentionally skips it (log/slog/logger.go's SetDefault comment) —
+		// log's writer would otherwise stay pointed at logBuf, a dead local
+		// variable, for the rest of the process, silently swallowing every
+		// later slog.Error/Warn call made through the restored default.
+		slog.SetDefault(prevDefault)
+		log.SetOutput(prevLogOut)
+		log.SetFlags(prevLogFlags)
+	}()
 
 	runDone := make(chan struct{})
 	go func() {

@@ -23,6 +23,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"log"
 	"log/slog"
 	"testing"
 
@@ -110,8 +111,19 @@ func TestSEC1_PromptRedaction(t *testing.T) {
 	var logBuf bytes.Buffer
 	handler := slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelInfo})
 	prev := slog.Default()
+	prevLogOut, prevLogFlags := log.Writer(), log.Flags()
 	slog.SetDefault(slog.New(handler))
-	t.Cleanup(func() { slog.SetDefault(prev) })
+	t.Cleanup(func() {
+		// slog.SetDefault(prev) alone does NOT undo log's own output:
+		// SetDefault only calls log.SetOutput when the NEW handler isn't
+		// a *defaultHandler, so restoring to a defaultHandler-backed
+		// logger skips it (log/slog/logger.go) -- log's writer would
+		// otherwise stay pointed at logBuf, a dead local variable, for
+		// the rest of the process.
+		slog.SetDefault(prev)
+		log.SetOutput(prevLogOut)
+		log.SetFlags(prevLogFlags)
+	})
 
 	env := testEnv(t)
 	model := newFastSSEModel(t, "prompt redaction test")
@@ -166,8 +178,19 @@ func TestSEC1_PromptRedaction_WithDiagnosticFlag(t *testing.T) {
 	var logBuf bytes.Buffer
 	handler := slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelInfo})
 	prev := slog.Default()
+	prevLogOut, prevLogFlags := log.Writer(), log.Flags()
 	slog.SetDefault(slog.New(handler))
-	t.Cleanup(func() { slog.SetDefault(prev) })
+	t.Cleanup(func() {
+		// slog.SetDefault(prev) alone does NOT undo log's own output:
+		// SetDefault only calls log.SetOutput when the NEW handler isn't
+		// a *defaultHandler, so restoring to a defaultHandler-backed
+		// logger skips it (log/slog/logger.go) -- log's writer would
+		// otherwise stay pointed at logBuf, a dead local variable, for
+		// the rest of the process.
+		slog.SetDefault(prev)
+		log.SetOutput(prevLogOut)
+		log.SetFlags(prevLogFlags)
+	})
 
 	env := testEnv(t)
 	model := newFastSSEModel(t, "prompt redaction with flag test")

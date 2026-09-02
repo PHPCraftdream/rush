@@ -20,6 +20,7 @@ package agent
 
 import (
 	"testing"
+	"time"
 
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy/providers/openai"
@@ -153,6 +154,15 @@ func TestBuildAgentModels_ConcurrentReloadNeverTearsWorkerDecision(t *testing.T)
 				coord.cfg.SetSelectedModelRuntime(config.SelectedModelTypeWorker, config.SelectedModel{})
 			}
 			i++
+			// A tiny pace between publishes still gives the race far more
+			// toggles than the main loop's 500 iterations need to observe
+			// it (a structural guarantee, not a probabilistic catch — see
+			// the doc above), while actually yielding the OS thread: an
+			// unpaced tight loop here starves other processes on the
+			// machine under any external memory/CPU pressure, which is
+			// what turned this contributor into an outright test hang
+			// during the T12 verification incident.
+			time.Sleep(10 * time.Microsecond)
 		}
 	}()
 	t.Cleanup(func() {

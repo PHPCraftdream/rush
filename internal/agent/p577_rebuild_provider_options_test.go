@@ -18,6 +18,7 @@ package agent
 
 import (
 	"testing"
+	"time"
 
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy/providers/openai"
@@ -150,6 +151,17 @@ func TestRebuildSessionAgentCall_ProviderOptionsNeverTearFromModelGeneration(t *
 			}
 			registerSmartProviderGen(coord.cfg, i%2)
 			i++
+			// A tiny pace between publishes still gives the race far more
+			// toggles than the main loop's 2000 iterations need to observe
+			// it (a structural guarantee, not a probabilistic catch — see
+			// the doc above), while actually yielding the OS thread: an
+			// unpaced tight loop here starves other processes on the
+			// machine under any external memory/CPU pressure — confirmed
+			// as the exact test a `go test ./internal/agent/...` run hung
+			// on during a live machine-wide incident (verbose log ended
+			// mid-RUN on this test, no PASS/FAIL, right after this file's
+			// sibling in p436_config_snapshot_threading_test.go passed).
+			time.Sleep(10 * time.Microsecond)
 		}
 	}()
 	t.Cleanup(func() {
