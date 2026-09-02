@@ -111,11 +111,26 @@ type CallOptions struct {
 	// existing caller is unchanged.
 	//
 	// Deliberately NOT symmetrical with FolderScope above: FolderScope is
-	// data that permission.BuildFolderScope compiles and a later task
-	// persists across a durable-queue restart; a DiskProvider is
-	// arbitrary in-process Go code with no serializable form. A call
-	// carrying one must therefore never reach the durable queue — that
-	// refusal is a LATER task, not implemented here.
+	// data that permission.BuildFolderScope compiles and T12 persists
+	// across a durable-queue restart; a DiskProvider is arbitrary
+	// in-process Go code with no serializable form. A call carrying one
+	// must therefore never reach the durable queue, and never be rebuilt
+	// from a row that somehow did. This is enforced by a three-layer
+	// refusal (see disk_provider_durable.go):
+	//   1. producer refusal at every durable-enqueue site — startDetachedRun,
+	//      handleInterruptTick (coordinator_interrupt.go), and the
+	//      finalizer in agent_ownership.go's restartOrphanedWithRetry —
+	//      each check callCarriesDiskProvider and return
+	//      ErrDiskProviderNotDurable instead of enqueueing;
+	//   2. a durable HostDiskProvider marker stamped onto the row by
+	//      ToSessionAgentCallData (call_data_conversion.go) as belt and
+	//      braces, in case a future producer forgets layer 1;
+	//   3. consumer refusal on rebuild — RebuildSessionAgentCall
+	//      (coordinator_interrupt.go) refuses outright, as terminal
+	//      (ErrCallAlreadyAttempted), any row marked HostDiskProvider,
+	//      rather than silently rebuilding it with DiskProvider == nil
+	//      (which buildTools' diskOrOS would resolve to the real OS
+	//      filesystem).
 	//
 	// It does NOT affect the legacy single-target file tools
 	// (view/glob/grep/ls/write/edit/multiedit), bash, download, git_read,

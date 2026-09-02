@@ -639,6 +639,16 @@ func (c *coordinator) RebuildSessionAgentCall(ctx context.Context, data session.
 		FastModel:            &fastModel,
 		SystemPromptPrefix:   data.SystemPromptPrefix,
 		SystemPrompt:         data.SystemPrompt,
+		// R5-7 (P2 security review): restore the persisted entry-channel
+		// origin. Both ToSessionAgentCallData/FromSessionAgentCallData
+		// already round-trip Origin, but this rebuild path constructs its
+		// own SessionAgentCall literal from `data` directly rather than
+		// calling FromSessionAgentCallData, so it must copy the field
+		// itself or a replayed call silently reverts to
+		// message.OriginUnspecified despite the durable row carrying the
+		// real value — disagreeing with the audit/transport metadata of
+		// the request that actually entered the queue.
+		Origin: data.Origin,
 		// Mark as originating from the durable queue so mailbox.submit can
 		// skip mb.submitted for this call (P0-1: avoid double-execution).
 		// See agent.SessionAgentCall.FromDurableQueue documentation.
