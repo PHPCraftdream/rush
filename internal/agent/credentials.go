@@ -371,6 +371,9 @@ func (c *coordinator) resolveCredentialsModels(ctx context.Context, sessionID st
 		}
 		resolved.smart = smart
 		resolved.providerCfg = providerCfg
+		if err := c.rejectScopedCallOnCLIProvider(ctx, "smart", providerCfg); err != nil {
+			return nil, err
+		}
 		// The credential carries no system-prompt prefix, and the
 		// fallback prompt above was built from the CONFIG smart provider:
 		// drop both so the turn doesn't style itself for a provider it is

@@ -211,6 +211,19 @@ func (c *coordinator) resolveSessionModelsInternal(ctx context.Context, sessionI
 	// could observe a different generation than the model was built from
 	// (task #341, P1-1).
 	resolved.providerCfg = smartProviderCfg
+	if err := c.rejectScopedCallOnCLIProvider(ctx, "smart", smartProviderCfg); err != nil {
+		return nil, err
+	}
+	// The worker role runs on the same rule: a scoped call's sub-agent
+	// spawns resolve through the Worker slot, so a CLI-typed worker
+	// provider is equally unusable there.
+	if workerModelCfg, ok := cfg.Models[config.SelectedModelTypeWorker]; ok && workerModelCfg.Model != "" {
+		if workerProviderCfg, ok := cfg.Providers.Get(workerModelCfg.Provider); ok {
+			if err := c.rejectScopedCallOnCLIProvider(ctx, "worker", workerProviderCfg); err != nil {
+				return nil, err
+			}
+		}
+	}
 
 	// Build system prompt if a template is available. workerSubAgentActive
 	// takes the SAME pinned cfg used for smartModel/smartProviderCfg above
@@ -364,6 +377,18 @@ func (c *coordinator) applyModelOverrides(ctx context.Context, smart, fast *Mode
 	if smartProviderCfg, ok := cfg.Providers.Get(smartModel.ModelCfg.Provider); ok {
 		resolved.promptPrefix = smartProviderCfg.SystemPromptPrefix
 		resolved.providerCfg = smartProviderCfg
+		if err := c.rejectScopedCallOnCLIProvider(ctx, "smart", smartProviderCfg); err != nil {
+			return nil, err
+		}
+	}
+	// Same worker-role rule as resolveSessionModelsInternal: a scoped
+	// call's sub-agent spawns resolve through the Worker slot.
+	if workerModelCfg, ok := cfg.Models[config.SelectedModelTypeWorker]; ok && workerModelCfg.Model != "" {
+		if workerProviderCfg, ok := cfg.Providers.Get(workerModelCfg.Provider); ok {
+			if err := c.rejectScopedCallOnCLIProvider(ctx, "worker", workerProviderCfg); err != nil {
+				return nil, err
+			}
+		}
 	}
 	// workerSubAgentActive takes the SAME pinned cfg used for smartModel
 	// above (task #341, P1-1) rather than re-reading c.cfg.Config() live.

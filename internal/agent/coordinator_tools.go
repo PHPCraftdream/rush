@@ -6,6 +6,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
 	"github.com/PHPCraftdream/rush/internal/agent/prompt"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/config"
@@ -389,6 +391,26 @@ func (c *coordinator) applyCallFolderScope(ctx context.Context, agent config.Age
 	agent.AllowedTools = stripped
 	agent.AllowedMCP = map[string][]string{}
 	return agent
+}
+
+// rejectScopedCallOnCLIProvider refuses a folder-scoped call whose
+// RESOLVED provider for the given role is a CLI provider (Type "cli"):
+// that provider executes the file tools inside a CLI subprocess (claude,
+// codex, gemini, qwen) whose MCP tool implementations cannot see the
+// FolderScope, so the scope would silently mean nothing. The refusal is a
+// hard error so it fires BEFORE any provider traffic or subprocess spawn.
+// Unscoped calls and non-CLI providers pass untouched.
+func (c *coordinator) rejectScopedCallOnCLIProvider(ctx context.Context, role string, providerCfg config.ProviderConfig) error {
+	opts := callOptionsFrom(ctx)
+	if opts == nil || opts.FolderScope == nil {
+		return nil
+	}
+	if providerCfg.Type != cliprovider.ProviderType {
+		return nil
+	}
+	return fmt.Errorf(
+		"folder-scoped call cannot run on the %s role's CLI provider %q (type %q): the subprocess's file tools cannot see the folder scope",
+		role, providerCfg.ID, cliprovider.ProviderType)
 }
 
 // buildTools builds the tool slice for agent. cfg is the pinned
