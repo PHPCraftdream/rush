@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/permission"
 )
 
 // CallOptions carries one run's per-call execution policy. The zero value
@@ -86,6 +87,18 @@ type CallOptions struct {
 	// reservation (submit) so two simultaneous starters cannot both slip
 	// into the queue — see mailbox_ownership.go and sessionAgent.Run.
 	FailIfSessionBusy bool
+
+	// FolderScope scopes this call's filesystem toolset. When non-nil,
+	// applyCallFolderScope rebuilds AllowedTools from the scope: the
+	// legacy single-target file tools and the escape-hatch tools are
+	// stripped, only the fs_* tools whose operation the scope grants
+	// survive, the command tools follow FolderScope.KeepsCommandTools,
+	// and MCP tools are excluded. The pointed-to value is compiled by
+	// permission.BuildFolderScope and immutable; like the rest of this
+	// struct it must not be mutated after WithCallOptions. nil (the
+	// default) is an unscoped call: existing callers keep today's
+	// toolset.
+	FolderScope *permission.FolderScope
 }
 
 // callOptionsContextKey is the unexported context key carrying *CallOptions.

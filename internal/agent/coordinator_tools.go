@@ -288,6 +288,109 @@ func (c *coordinator) applyCallDisableSubAgents(ctx context.Context, cfg *config
 	return agent
 }
 
+// folderScopeLegacyFileTools are the single-target file tools a scoped
+// call never sees: the fs_* family replaces all of them, with batch
+// items in place of the single path parameter.
+var folderScopeLegacyFileTools = map[string]struct{}{
+	tools.ViewToolName: {}, tools.GlobToolName: {}, tools.GrepToolName: {},
+	tools.LSToolName: {}, tools.WriteToolName: {}, tools.EditToolName: {},
+	tools.MultiEditToolName: {},
+}
+
+// folderScopeEscapeHatchTools read or write outside any path policy a
+// folder scope can express, so a scoped call never sees them: download
+// writes arbitrary paths, git_read reads the whole repository, the MCP
+// resource tools would expose whatever the configured servers serve
+// (AllowedMCP is cleared below for the same reason), and agentic_fetch
+// builds its own unscooped view/glob/grep in a temp dir.
+var folderScopeEscapeHatchTools = map[string]struct{}{
+	tools.DownloadToolName: {}, tools.GitReadToolName: {},
+	tools.AgenticFetchToolName: {}, tools.ListMCPResourcesToolName: {},
+	tools.ReadMCPResourceToolName: {},
+}
+
+// folderScopeCommandTools execute shell commands, which trivially
+// bypass any filesystem scope. They stay only when the scope says so
+// (FolderScope.KeepsCommandTools, set by the run plumbing from the
+// restricted-run bash allowlist): keeping them is a deliberate grant,
+// not a default.
+var folderScopeCommandTools = map[string]struct{}{
+	tools.BashToolName: {}, tools.RunCommandToolName: {},
+	tools.JobOutputToolName: {}, tools.JobKillToolName: {},
+}
+
+// folderScopeOpForTool maps each fs_* tool to the single operation that
+// gates its presence in a scoped toolset. fs_write is the one
+// exception: it appears when EITHER create or overwrite is granted,
+// because its per-item check picks the operation by path existence.
+var folderScopeOpForTool = map[string]permission.FileOp{
+	tools.FSListToolName:       permission.FileOpList,
+	tools.FSFindToolName:       permission.FileOpFind,
+	tools.FSGrepToolName:       permission.FileOpGrep,
+	tools.FSReadToolName:       permission.FileOpRead,
+	tools.FSReplaceToolName:    permission.FileOpReplace,
+	tools.FSWriteLinesToolName: permission.FileOpWriteLines,
+	tools.FSDeleteToolName:     permission.FileOpDelete,
+}
+
+// applyCallFolderScope implements the per-call scoped filesystem
+// toolset: when ctx carries CallOptions.FolderScope, the agent's
+// AllowedTools is replaced with the tools that scope allows and
+// AllowedMCP becomes the "no MCPs" spelling, because an external
+// filesystem MCP server would bypass the scope wholesale. It MUST run
+// after buildToolsAgentConfigForCall: worker layering ADDS
+// bash/edit/write to a worker sub-agent's list, and this filter has to
+// see that final list to strip them again. A context without
+// CallOptions changes nothing, exactly like applyCallDisableSubAgents.
+//
+// Every fs_* name is decided by the scope's Grants here and never left
+// to fall through from the incoming list (which the post-T7 defaults DO
+// contain): ungranted fs_* tools are removed, granted ones are
+// re-added exactly once, and fs_write additionally requires create OR
+// overwrite. Tools outside all four sets -- todos, ask_question, the
+// agent delegation tool and so on -- are untouched: the scope narrows
+// the filesystem surface, not the conversation.
+func (c *coordinator) applyCallFolderScope(ctx context.Context, agent config.Agent) config.Agent {
+	opts := callOptionsFrom(ctx)
+	if opts == nil || opts.FolderScope == nil {
+		return agent
+	}
+	scope := *opts.FolderScope
+
+	stripped := make([]string, 0, len(agent.AllowedTools))
+	for _, name := range agent.AllowedTools {
+		if _, ok := folderScopeLegacyFileTools[name]; ok {
+			continue
+		}
+		if _, ok := folderScopeEscapeHatchTools[name]; ok {
+			continue
+		}
+		if _, ok := folderScopeCommandTools[name]; ok && !scope.KeepsCommandTools() {
+			continue
+		}
+		if _, ok := folderScopeOpForTool[name]; ok {
+			// Re-decided by the Grants pass below; never fall through.
+			continue
+		}
+		if name == tools.FSWriteToolName {
+			// create OR overwrite, decided below.
+			continue
+		}
+		stripped = append(stripped, name)
+	}
+	for toolName, op := range folderScopeOpForTool {
+		if scope.Grants(op) {
+			stripped = append(stripped, toolName)
+		}
+	}
+	if scope.Grants(permission.FileOpCreate) || scope.Grants(permission.FileOpOverwrite) {
+		stripped = append(stripped, tools.FSWriteToolName)
+	}
+	agent.AllowedTools = stripped
+	agent.AllowedMCP = map[string][]string{}
+	return agent
+}
+
 // buildTools builds the tool slice for agent. cfg is the pinned
 // *config.Config the caller captured for this whole buildAgent call (task
 // #576/P1-3) -- every config-derived choice below (worker tool layering,
@@ -319,7 +422,7 @@ func (c *coordinator) applyCallDisableSubAgents(ctx context.Context, cfg *config
 // cfg), but real. See tools.GetMCPTools's doc for the registry side of this.
 //
 // R3-1: when ctx carries CallOptions, the returned slice is scoped to that
-// ONE call (the DisableSubAgents filter and the per-call role gate above
+// ONE call (the DisableSubAgents filter, the per-call role gate and the folder-scope filter above
 // read the context). Callers must pin it to the call — resolvedOverrides.tools
 // / SessionAgentCall.Tools — and must NOT publish it onto the shared agent
 // with SetTools; only UpdateModels (which strips CallOptions from its ctx
@@ -327,6 +430,18 @@ func (c *coordinator) applyCallDisableSubAgents(ctx context.Context, cfg *config
 func (c *coordinator) buildTools(ctx context.Context, cfg *config.Config, agent config.Agent, isSubAgent bool) ([]fantasy.AgentTool, error) {
 	agent = c.applyCallDisableSubAgents(ctx, cfg, agent, isSubAgent)
 	agent = c.buildToolsAgentConfigForCall(ctx, cfg, agent, isSubAgent)
+	agent = c.applyCallFolderScope(ctx, agent)
+
+	// The scope value the fs_* tools constructed below are built with:
+	// THIS call's FolderScope, or the zero value for an unscoped call.
+	// The zero value grants nothing, so the constructions themselves are
+	// inert; which fs_* tools reach the returned slice is decided by
+	// agent.AllowedTools membership -- applyCallFolderScope for a scoped
+	// call, the config defaults for an unscoped one.
+	var scope permission.FolderScope
+	if callOpts := callOptionsFrom(ctx); callOpts != nil && callOpts.FolderScope != nil {
+		scope = *callOpts.FolderScope
+	}
 
 	// SSRF guard escape hatch (Options.AllowPrivateNetworkFetch, off by
 	// default): when enabled, every model-facing HTTP tool below gets an
@@ -421,6 +536,19 @@ func (c *coordinator) buildTools(ctx context.Context, cfg *config.Config, agent 
 		tools.NewTodosTool(c.sessions),
 		tools.NewViewTool(c.permissions, c.filetracker, c.skillTracker, c.cfg.WorkingDir(), skillsPaths...),
 		tools.NewWriteTool(c.permissions, c.history, c.filetracker, c.cfg.WorkingDir()),
+
+		// Scoped, batch-capable fs_* family, constructed with THIS
+		// call's scope (see the extraction above; the zero value denies
+		// everything). NewFSGrepTool takes workingDir first and scope
+		// second; the other seven take scope first.
+		tools.NewFSListTool(scope, c.cfg.WorkingDir(), cfg.Tools.Ls),
+		tools.NewFSFindTool(scope, c.cfg.WorkingDir()),
+		tools.NewFSReadTool(scope, c.cfg.WorkingDir()),
+		tools.NewFSGrepTool(c.cfg.WorkingDir(), scope),
+		tools.NewFSWriteTool(scope, c.permissions, c.history, c.filetracker, c.cfg.WorkingDir()),
+		tools.NewFSReplaceTool(scope, c.permissions, c.history, c.filetracker, c.cfg.WorkingDir()),
+		tools.NewFSWriteLinesTool(scope, c.permissions, c.history, c.filetracker, c.cfg.WorkingDir()),
+		tools.NewFSDeleteTool(scope, c.permissions, c.cfg.WorkingDir()),
 	)
 
 	// cfg.MCP presence is pinned config data (any MCP server configured at

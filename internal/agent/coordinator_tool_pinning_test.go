@@ -23,6 +23,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/csync"
 	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/permission"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -593,4 +594,283 @@ func TestRunWithCredentials_PinsPerCallTools(t *testing.T) {
 	assert.NotContains(t, namesOrchestrator, "multiedit")
 	assert.NotContains(t, namesOrchestrator, "write")
 	assert.Contains(t, namesOrchestrator, AgentToolName, "the orchestrator keeps the agent tool")
+}
+
+// ---- per-call folder-scope toolset (T8) ----
+
+// newFolderScope compiles a single-entry scope rooted at workingDir
+// granting the given ops.
+func newFolderScope(t *testing.T, workingDir string, ops ...permission.FileOp) permission.FolderScope {
+	t.Helper()
+	scope, err := permission.BuildFolderScope(permission.FolderScopeSpec{
+		WorkingDir: workingDir,
+		Entries: []permission.FolderScopeEntry{
+			{Dir: ".", Ops: ops},
+		},
+	})
+	require.NoError(t, err)
+	return scope
+}
+
+// mustBuildTools is buildTools with the error pre-asserted: the scoped
+// toolset tests only care about the resulting tool names.
+func mustBuildTools(t *testing.T, coord *coordinator, ctx context.Context, cfg *config.Config, agentCfg config.Agent, isSubAgent bool) []fantasy.AgentTool {
+	t.Helper()
+	got, err := coord.buildTools(ctx, cfg, agentCfg, isSubAgent)
+	require.NoError(t, err)
+	return got
+}
+
+func assertToolsContain(t *testing.T, names []string, want ...string) {
+	t.Helper()
+	for _, w := range want {
+		assert.Contains(t, names, w)
+	}
+}
+
+func assertToolsOmit(t *testing.T, names []string, banned ...string) {
+	t.Helper()
+	for _, b := range banned {
+		assert.NotContains(t, names, b)
+	}
+}
+
+// TestFolderScope_PinsPerCallScopedToolsetWithoutCrossContamination proves
+// the scoped toolset is decided per call: a scoped call pins only the
+// fs_* tools its scope grants plus the non-filesystem tools the scope
+// does not touch, a second unscoped call on a DIFFERENT session in the
+// same coordinator keeps the full legacy toolset, and re-resolving in the
+// opposite order does not bleed either way.
+func TestFolderScope_PinsPerCallScopedToolsetWithoutCrossContamination(t *testing.T) {
+	env := testEnv(t)
+	coord := newToolPinningCoordinator(t, env, false /* no worker configured */)
+	rec := &toolPublishRecorder{mockSessionAgent: newMockAgent("smart-provider", 4096,
+		func(context.Context, SessionAgentCall) (*fantasy.AgentResult, error) {
+			return agentResultWithText("ok"), nil
+		})}
+	coord.currentAgent = rec
+
+	scope := newFolderScope(t, env.workingDir,
+		permission.FileOpList, permission.FileOpFind, permission.FileOpGrep, permission.FileOpRead)
+
+	sessScoped, err := coord.sessions.Create(t.Context(), "scoped-session")
+	require.NoError(t, err)
+	sessUnscoped, err := coord.sessions.Create(t.Context(), "unscoped-session")
+	require.NoError(t, err)
+
+	ctxScoped := WithCallOptions(t.Context(), &CallOptions{FolderScope: &scope})
+	ctxUnscoped := WithCallOptions(t.Context(), &CallOptions{})
+
+	pinnedScoped, err := coord.resolveSessionModels(ctxScoped, sessScoped.ID)
+	require.NoError(t, err)
+	require.NotNil(t, pinnedScoped.tools, "the scoped call must get a pinned toolset")
+	namesScoped := pinnedToolNames(pinnedScoped.tools)
+
+	assertToolsContain(t, namesScoped,
+		"fs_list", "fs_find", "fs_grep", "fs_read",
+		AgentToolName, "todos", "ask_question")
+	assertToolsOmit(t, namesScoped,
+		// legacy file tools
+		"view", "glob", "grep", "ls", "write", "edit", "multiedit",
+		// escape hatches
+		"download", "git_read", "agentic_fetch", "list_mcp_resources", "read_mcp_resource",
+		// command tools without KeepsCommandTools
+		"bash", "run_command", "job_output", "job_kill",
+		// fs_* tools whose op the scope does not grant
+		"fs_write", "fs_replace", "fs_write_lines", "fs_delete")
+
+	// The concurrent unscoped call on the other session keeps the full
+	// legacy toolset.
+	pinnedUnscoped, err := coord.resolveSessionModels(ctxUnscoped, sessUnscoped.ID)
+	require.NoError(t, err)
+	require.NotNil(t, pinnedUnscoped.tools)
+	namesUnscoped := pinnedToolNames(pinnedUnscoped.tools)
+	assertToolsContain(t, namesUnscoped,
+		"view", "glob", "grep", "ls", "write", "edit", "multiedit", "bash",
+		"download", "git_read", "agentic_fetch", "run_command")
+
+	// Isolation, both directions: re-resolving the scoped policy AFTER the
+	// unscoped one must still see the scoped slice, and vice versa.
+	pinnedScoped2, err := coord.resolveSessionModels(ctxScoped, sessScoped.ID)
+	require.NoError(t, err)
+	namesScoped2 := pinnedToolNames(pinnedScoped2.tools)
+	assertToolsOmit(t, namesScoped2, "bash", "view", "fs_delete")
+	assertToolsContain(t, namesScoped2, "fs_read")
+
+	pinnedUnscoped2, err := coord.resolveSessionModels(ctxUnscoped, sessUnscoped.ID)
+	require.NoError(t, err)
+	namesUnscoped2 := pinnedToolNames(pinnedUnscoped2.tools)
+	assertToolsContain(t, namesUnscoped2, "bash", "view", "edit")
+
+	// THE KEY ASSERTION: neither resolution may publish to the shared
+	// agent (R3-1).
+	names, modelCalls := rec.snapshot()
+	assert.Empty(t, names, "resolveSessionModels must never SetTools the shared currentAgent")
+	assert.Zero(t, modelCalls)
+}
+
+// TestUpdateModels_NeverPublishesFolderScopeFilter extends the
+// global-publish contract to the folder-scope filter: UpdateModels strips
+// CallOptions from its context, so one scoped call's fs_* toolset must
+// NOT decide what every other in-flight turn sees on the shared agent.
+func TestUpdateModels_NeverPublishesFolderScopeFilter(t *testing.T) {
+	env := testEnv(t)
+	coord := newToolPinningCoordinator(t, env, false)
+	rec := &toolPublishRecorder{mockSessionAgent: newMockAgent("smart-provider", 4096,
+		func(context.Context, SessionAgentCall) (*fantasy.AgentResult, error) {
+			return agentResultWithText("ok"), nil
+		})}
+	coord.currentAgent = rec
+
+	sess, err := coord.sessions.Create(t.Context(), "update-models-scoped")
+	require.NoError(t, err)
+	_ = sess
+
+	scope := newFolderScope(t, env.workingDir, permission.FileOpRead)
+	ctx := WithCallOptions(t.Context(), &CallOptions{
+		FolderScope:      &scope,
+		DisableSubAgents: true,
+	})
+	require.NoError(t, coord.UpdateModels(ctx))
+
+	names, _ := rec.snapshot()
+	require.Len(t, names, 1, "UpdateModels must publish exactly one global toolset")
+	assert.Contains(t, names[0], AgentToolName, "the per-call folder-scope filter must NOT be applied to the global publish")
+	assert.Contains(t, names[0], "agentic_fetch")
+	assert.Contains(t, names[0], "view", "legacy file tools must survive the global publish")
+	assert.Contains(t, names[0], "bash")
+}
+
+// TestFolderScope_RunsAfterWorkerToolLayering proves the scope filter
+// sees the FINAL AllowedTools: for a sub-agent acting as a worker (worker
+// configured, per-call smart role) buildToolsAgentConfigForCall ADDS
+// bash/edit/write via workerToolNames, and the scoped filter strips them
+// anyway -- it genuinely runs AFTER the layering, not before.
+func TestFolderScope_RunsAfterWorkerToolLayering(t *testing.T) {
+	env := testEnv(t)
+	coord := newToolPinningCoordinator(t, env, true /* worker configured */)
+	taskCfg, ok := coord.cfg.Config().Agents[config.AgentTask]
+	require.True(t, ok, "task agent must be configured")
+	cfgSnap, _ := coord.cfg.Snapshot()
+
+	scope := newFolderScope(t, env.workingDir, permission.FileOpRead, permission.FileOpWriteLines)
+	ctxScopedWorker := WithCallOptions(t.Context(), &CallOptions{
+		ModelRole:   config.SelectedModelTypeSmart,
+		FolderScope: &scope,
+	})
+
+	names := pinnedToolNames(mustBuildTools(t, coord, ctxScopedWorker, cfgSnap, taskCfg, true))
+	assertToolsOmit(t, names,
+		"bash", "edit", "multiedit", "write",
+		"download", "git_read", "agentic_fetch")
+	assertToolsContain(t, names, "fs_read", "fs_write_lines")
+	assertToolsOmit(t, names, "fs_delete", "fs_write", "fs_replace")
+
+	// Control: the same worker layering WITHOUT a scope keeps bash --
+	// the strip above is the scope filter's doing, not the layering's
+	// absence.
+	ctxUnscopedWorker := WithCallOptions(t.Context(), &CallOptions{ModelRole: config.SelectedModelTypeSmart})
+	namesUnscoped := pinnedToolNames(mustBuildTools(t, coord, ctxUnscopedWorker, cfgSnap, taskCfg, true))
+	assert.Contains(t, namesUnscoped, "bash",
+		"worker layering must add bash when no scope is set, so the strip above is attributable to the scope filter")
+}
+
+// TestFolderScope_PlainSubAgentGetsGrantedReadSideFsTools confirms the
+// context propagation empirically: buildAgent registers its tool build on
+// readyWg with the CALL's context, so the sub-agent behind the agent tool
+// inside a scoped call is built through buildTools with that same scoped
+// context -- its toolset is the scoped one, not the legacy read-only
+// default.
+func TestFolderScope_PlainSubAgentGetsGrantedReadSideFsTools(t *testing.T) {
+	env := testEnv(t)
+	coord := newToolPinningCoordinator(t, env, false)
+	taskCfg, ok := coord.cfg.Config().Agents[config.AgentTask]
+	require.True(t, ok, "task agent must be configured")
+
+	scope := newFolderScope(t, env.workingDir,
+		permission.FileOpList, permission.FileOpFind, permission.FileOpGrep, permission.FileOpRead)
+	ctxScoped := WithCallOptions(t.Context(), &CallOptions{FolderScope: &scope})
+
+	tp, err := taskPrompt(prompt.WithWorkingDir(env.workingDir))
+	require.NoError(t, err)
+
+	subAgent, err := coord.buildAgent(ctxScoped, tp, taskCfg, true)
+	require.NoError(t, err)
+	require.NoError(t, coord.readyWg.Wait(), "the sub-agent's async build must succeed")
+
+	sa, ok := subAgent.(*sessionAgent)
+	require.True(t, ok, "buildAgent must return a *sessionAgent")
+	names := pinnedToolNames(sa.tools.Copy())
+
+	assertToolsContain(t, names, "fs_list", "fs_find", "fs_grep", "fs_read")
+	assertToolsOmit(t, names,
+		"view", "glob", "grep", "ls", "git_read", "bash",
+		"fs_write", "fs_replace", "fs_write_lines", "fs_delete")
+
+	// Control: the SAME sub-agent build on an unscoped context keeps the
+	// legacy read-only toolset, so the difference above is attributable
+	// to the scoped context, not the task agent's defaults.
+	subAgentUnscoped, err := coord.buildAgent(WithCallOptions(t.Context(), &CallOptions{}), tp, taskCfg, true)
+	require.NoError(t, err)
+	require.NoError(t, coord.readyWg.Wait())
+	namesUnscoped := pinnedToolNames(subAgentUnscoped.(*sessionAgent).tools.Copy())
+	assertToolsContain(t, namesUnscoped, "view", "grep", "ls", "git_read")
+}
+
+// TestFolderScope_CommandToolsFollowKeepsCommandTools proves the command
+// tools stay only by an explicit KeepsCommandTools grant (what the run
+// plumbing will set from the restricted-run bash allowlist; the raw
+// CallOptions here stubs that decision).
+func TestFolderScope_CommandToolsFollowKeepsCommandTools(t *testing.T) {
+	env := testEnv(t)
+	coord := newToolPinningCoordinator(t, env, false)
+	coderCfg, ok := coord.cfg.Config().Agents[config.AgentCoder]
+	require.True(t, ok, "coder agent must be configured")
+	cfgSnap, _ := coord.cfg.Snapshot()
+
+	commandTools := []string{"bash", "run_command", "job_output", "job_kill"}
+
+	keptScope, err := permission.BuildFolderScope(permission.FolderScopeSpec{
+		WorkingDir:       env.workingDir,
+		Entries:          []permission.FolderScopeEntry{{Dir: ".", Ops: []permission.FileOp{permission.FileOpRead}}},
+		KeepCommandTools: true,
+	})
+	require.NoError(t, err)
+
+	ctxKept := WithCallOptions(t.Context(), &CallOptions{FolderScope: &keptScope})
+	namesKept := pinnedToolNames(mustBuildTools(t, coord, ctxKept, cfgSnap, coderCfg, false))
+	assertToolsContain(t, namesKept, commandTools...)
+	assertToolsOmit(t, namesKept, "view", "write")
+
+	strippedScope := newFolderScope(t, env.workingDir, permission.FileOpRead)
+	ctxStripped := WithCallOptions(t.Context(), &CallOptions{FolderScope: &strippedScope})
+	namesStripped := pinnedToolNames(mustBuildTools(t, coord, ctxStripped, cfgSnap, coderCfg, false))
+	assertToolsOmit(t, namesStripped, commandTools...)
+	assert.Contains(t, namesStripped, "fs_read")
+}
+
+// TestFolderScope_StripsAgenticFetchEvenWhenSubAgentsAllowed proves the
+// escape-hatch strip is the scope filter's own decision: with
+// DisableSubAgents explicitly false, applyCallDisableSubAgents keeps
+// agentic_fetch, and applyCallFolderScope still removes it (and download)
+// from the scoped toolset.
+func TestFolderScope_StripsAgenticFetchEvenWhenSubAgentsAllowed(t *testing.T) {
+	env := testEnv(t)
+	coord := newToolPinningCoordinator(t, env, false)
+	coderCfg, ok := coord.cfg.Config().Agents[config.AgentCoder]
+	require.True(t, ok, "coder agent must be configured")
+	cfgSnap, _ := coord.cfg.Snapshot()
+
+	scope := newFolderScope(t, env.workingDir, permission.FileOpRead)
+	ctx := WithCallOptions(t.Context(), &CallOptions{
+		DisableSubAgents: false,
+		FolderScope:      &scope,
+	})
+	names := pinnedToolNames(mustBuildTools(t, coord, ctx, cfgSnap, coderCfg, false))
+	assert.NotContains(t, names, "agentic_fetch",
+		"the scope filter must strip agentic_fetch even when the sub-agent ban does not")
+	assert.NotContains(t, names, "download")
+	assert.Contains(t, names, AgentToolName,
+		"the agent delegation tool stays: the sub-agent inherits the same scoped context")
+	assert.Contains(t, names, "fs_read")
 }
