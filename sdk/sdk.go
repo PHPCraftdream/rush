@@ -158,6 +158,20 @@ func OSDiskProvider() DiskProvider { return tools.OSDisk() }
 // already-closed channel instead (see their docs).
 var ErrClientClosed = errors.New("sdk: client is closed")
 
+// ErrSessionBusy and ErrDiskProviderNotDurable are stable re-exports of
+// the sentinel errors Run/RunWithCredentials wrap (see their docs and
+// the README's "Session-busy behaviour" and "DiskProvider" sections).
+// Aliased here (not merely documented as agent.* / internal/agent.*)
+// because internal/agent is unimportable from outside this module —
+// Go's internal/ visibility rule confines it to this repo's own module
+// tree — so an external consumer's errors.Is(err, ...) classification
+// can only ever compile against sdk.ErrSessionBusy /
+// sdk.ErrDiskProviderNotDurable, never the internal/agent originals.
+var (
+	ErrSessionBusy            = agent.ErrSessionBusy
+	ErrDiskProviderNotDurable = agent.ErrDiskProviderNotDurable
+)
+
 // Structured-event aliases onto the same raw types the web UI's WS layer
 // consumes through app.App's Sessions/Messages brokers (see
 // internal/server/events.go). These are pass-through aliases, deliberately
@@ -465,7 +479,7 @@ func openApplication(ctx context.Context, o Options) (*Client, error) {
 // Unlike `rush run` and the web server (which queue a second message
 // behind a running turn), Run sets req.FailIfSessionBusy: a concurrent
 // Run/RunWithCredentials on the SAME ContinueSessionID fails immediately
-// with an error wrapping agent.ErrSessionBusy. Concurrent runs on
+// with an error wrapping ErrSessionBusy. Concurrent runs on
 // DIFFERENT sessions are unaffected.
 //
 // Trust model: Run performs no ownership or authorization check on
@@ -531,7 +545,7 @@ func (c *Client) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 // Client's shared data directory), while creds only decides WHICH
 // provider serves this call. Like Run, it sets req.FailIfSessionBusy: a
 // second concurrent call on the SAME ContinueSessionID fails fast with
-// an error wrapping agent.ErrSessionBusy instead of queueing; different
+// an error wrapping ErrSessionBusy instead of queueing; different
 // sessions run concurrently.
 //
 // Like Run, no ownership or authorization check is performed on

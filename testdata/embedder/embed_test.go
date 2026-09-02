@@ -11,6 +11,7 @@ package embedder
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -149,6 +150,30 @@ func TestExternalEmbedderOpenAndRun(t *testing.T) {
 	}
 	if res.FinalText != embedderFinalText {
 		t.Fatalf("FinalText = %q, want %q", res.FinalText, embedderFinalText)
+	}
+}
+
+// TestExternalErrorSentinelsAreClassifiable is the R5-4 proof: the
+// sentinel errors the README/sdk.go docs tell consumers to classify via
+// errors.Is (sdk.ErrSessionBusy, sdk.ErrDiskProviderNotDurable) must be
+// referenceable AND usable from a module that only imports
+// github.com/PHPCraftdream/rush/sdk — never internal/agent, which Go's
+// internal/ rule makes unimportable from here (see
+// TestExternalModuleCannotImportInternal above). An in-tree test proves
+// nothing about this: internal/agent's own tests live under the same
+// module and could reference agent.ErrSessionBusy directly forever
+// without ever exercising the consumer-facing contract. If either
+// sdk.ErrSessionBusy or sdk.ErrDiskProviderNotDurable were ever removed
+// from sdk/sdk.go, this whole file fails to COMPILE, not just fails an
+// assertion.
+func TestExternalErrorSentinelsAreClassifiable(t *testing.T) {
+	wrappedBusy := fmt.Errorf("outer: %w", sdk.ErrSessionBusy)
+	if !errors.Is(wrappedBusy, sdk.ErrSessionBusy) {
+		t.Fatal("errors.Is(wrappedBusy, sdk.ErrSessionBusy) = false, want true")
+	}
+	wrappedNotDurable := fmt.Errorf("outer: %w", sdk.ErrDiskProviderNotDurable)
+	if !errors.Is(wrappedNotDurable, sdk.ErrDiskProviderNotDurable) {
+		t.Fatal("errors.Is(wrappedNotDurable, sdk.ErrDiskProviderNotDurable) = false, want true")
 	}
 }
 
