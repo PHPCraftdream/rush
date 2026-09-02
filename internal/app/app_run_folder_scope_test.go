@@ -45,16 +45,22 @@ func TestFSToolsForScopeGrantsMirrorOps(t *testing.T) {
 
 func TestFSToolsForScopeWriteNeedsCreateOrOverwrite(t *testing.T) {
 	t.Parallel()
-	createScope := compileScopeForTest(t, permission.FolderScopeEntry{Dir: ".",
-		Ops: []permission.FileOp{permission.FileOpCreate}})
+	createScope := compileScopeForTest(t, permission.FolderScopeEntry{
+		Dir: ".",
+		Ops: []permission.FileOp{permission.FileOpCreate},
+	})
 	assert.ElementsMatch(t, []string{tools.FSWriteToolName}, fsToolsForScope(createScope))
 
-	overwriteScope := compileScopeForTest(t, permission.FolderScopeEntry{Dir: ".",
-		Ops: []permission.FileOp{permission.FileOpOverwrite}})
+	overwriteScope := compileScopeForTest(t, permission.FolderScopeEntry{
+		Dir: ".",
+		Ops: []permission.FileOp{permission.FileOpOverwrite},
+	})
 	assert.ElementsMatch(t, []string{tools.FSWriteToolName}, fsToolsForScope(overwriteScope))
 
-	listScope := compileScopeForTest(t, permission.FolderScopeEntry{Dir: ".",
-		Ops: []permission.FileOp{permission.FileOpList}})
+	listScope := compileScopeForTest(t, permission.FolderScopeEntry{
+		Dir: ".",
+		Ops: []permission.FileOp{permission.FileOpList},
+	})
 	assert.NotContains(t, fsToolsForScope(listScope), tools.FSWriteToolName)
 }
 

@@ -44,13 +44,10 @@ func newFolderScopeCLICoordinator(t *testing.T, env fakeEnv, smartType, workerTy
 	}
 	// "cli-claude-sonnet" is the model id stubCLIAvailability reports, so
 	// the smart slot resolves on the CLI provider without a real binary.
-	cfg.Config().Models[config.SelectedModelTypeSmart] =
-		registerProvider("smart-provider", "cli-claude-sonnet", smartType)
-	cfg.Config().Models[config.SelectedModelTypeFast] =
-		registerProvider("fast-provider", "fast-model", openai.Name)
+	cfg.Config().Models[config.SelectedModelTypeSmart] = registerProvider("smart-provider", "cli-claude-sonnet", smartType)
+	cfg.Config().Models[config.SelectedModelTypeFast] = registerProvider("fast-provider", "fast-model", openai.Name)
 	if includeWorker {
-		cfg.Config().Models[config.SelectedModelTypeWorker] =
-			registerProvider("worker-provider", "worker-model", workerType)
+		cfg.Config().Models[config.SelectedModelTypeWorker] = registerProvider("worker-provider", "worker-model", workerType)
 	}
 	cfg.SetupAgents()
 
