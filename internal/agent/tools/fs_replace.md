@@ -1,0 +1,1 @@
+Find and replace exact text in one or more files in a single call; items sharing a file apply in order and the file is written once. Requires reading the file first (fs_read). Unique match required unless replace_all.

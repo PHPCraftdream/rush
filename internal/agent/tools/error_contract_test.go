@@ -245,6 +245,68 @@ func TestErrorContract_BadModelInputIsAResponseNotAnError(t *testing.T) {
 			},
 		},
 		{
+			// The fs_* family resolves paths through resolveScopedPath
+			// inside RunFSBatch, so the NUL path fails the resolver stat
+			// and comes back as a per-item denial, not a Go error.
+			tool: "fs_write",
+			desc: `OS-rejected path "bad\x00path.txt"`,
+			run: func() (fantasy.ToolResponse, error) {
+				dir := t.TempDir()
+				scope := fsWriteTestScope(t, dir, permission.FolderScopeEntry{
+					Dir: ".",
+					Ops: []permission.FileOp{permission.FileOpCreate, permission.FileOpOverwrite},
+				})
+				return run(NewFSWriteTool(scope, &mockPermissionService{}, &mockHistoryService{}, mockFileTrackerService{}, dir),
+					FSWriteToolName,
+					FSWriteParams{Items: []FSWriteItem{{Path: nulPath, Content: "x"}}})
+			},
+		},
+		{
+			// fs_replace: same resolver denial as fs_write.
+			tool: "fs_replace",
+			desc: `OS-rejected path "bad\x00path.txt"`,
+			run: func() (fantasy.ToolResponse, error) {
+				dir := t.TempDir()
+				scope := fsWriteTestScope(t, dir, permission.FolderScopeEntry{
+					Dir: ".",
+					Ops: []permission.FileOp{permission.FileOpReplace},
+				})
+				return run(NewFSReplaceTool(scope, &mockPermissionService{}, &mockHistoryService{}, mockFileTrackerService{}, dir),
+					FSReplaceToolName,
+					FSReplaceParams{Items: []FSReplaceItem{{Path: nulPath, OldString: "a", NewString: "b"}}})
+			},
+		},
+		{
+			// fs_write_lines: same resolver denial as fs_write.
+			tool: "fs_write_lines",
+			desc: `OS-rejected path "bad\x00path.txt"`,
+			run: func() (fantasy.ToolResponse, error) {
+				dir := t.TempDir()
+				scope := fsWriteTestScope(t, dir, permission.FolderScopeEntry{
+					Dir: ".",
+					Ops: []permission.FileOp{permission.FileOpWriteLines},
+				})
+				return run(NewFSWriteLinesTool(scope, &mockPermissionService{}, &mockHistoryService{}, mockFileTrackerService{}, dir),
+					FSWriteLinesToolName,
+					FSWriteLinesParams{Items: []FSWriteLinesItem{{Path: nulPath, StartLine: 1, EndLine: 1, Content: "x"}}})
+			},
+		},
+		{
+			// fs_delete: same resolver denial, with no Request subtleties.
+			tool: "fs_delete",
+			desc: `OS-rejected path "bad\x00path.txt"`,
+			run: func() (fantasy.ToolResponse, error) {
+				dir := t.TempDir()
+				scope := fsWriteTestScope(t, dir, permission.FolderScopeEntry{
+					Dir: ".",
+					Ops: []permission.FileOp{permission.FileOpDelete},
+				})
+				return run(NewFSDeleteTool(scope, &mockPermissionService{}, dir),
+					FSDeleteToolName,
+					FSDeleteParams{Items: []FSDeleteItem{{Path: nulPath}}})
+			},
+		},
+		{
 			// write.go MkdirAll: os.Stat of notes.txt/child.md fails
 			// with ENOTDIR but os.IsNotExist is TRUE (measured), so the
 			// demoted `!os.IsNotExist` branch is skipped and control

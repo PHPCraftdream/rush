@@ -1,0 +1,1 @@
+Write one or more files in a single call. Each item is validated and reported independently; existing files are overwritten unless create_only is set. Auto-creates parent directories. Read the file first to avoid clobbering unseen content.

@@ -1,0 +1,1 @@
+Write, insert, or delete line ranges in one or more files in a single call; ranges are 1-based inclusive, end_line = start_line - 1 inserts, empty content deletes, overlapping items in one file all fail, and the file is written once. Requires reading the file first (fs_read).
