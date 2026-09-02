@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/permission"
@@ -557,20 +558,36 @@ func (c *coordinator) RebuildSessionAgentCall(ctx context.Context, data session.
 	// unscoped toolset — the silent restart promotion T12 exists to
 	// prevent. A nil spec arms nothing: unscoped calls, web-origin rows
 	// (never folder-scoped today), and pre-migration rows keep the
-	// historical fallback unchanged. A spec that FAILS to recompile keeps
-	// the value BuildFolderScope returns on error — the zero FolderScope,
-	// which denies every operation on every path — so a corrupted row
-	// fails CLOSED (a file-blind turn that can still talk) rather than
-	// open (an unscoped one with the full legacy file surface). That is
-	// the same direction as the run-allowlist handling above, where
-	// dropped patterns leave the compiled matcher restricted.
+	// historical fallback unchanged. A spec that FAILS to canonicalize or
+	// recompile keeps the zero FolderScope — which denies every operation
+	// on every path — so a corrupted or unresolvable row fails CLOSED (a
+	// file-blind turn that can still talk) rather than open (an unscoped
+	// one with the full legacy file surface). That is the same direction
+	// as the run-allowlist handling above, where dropped patterns leave
+	// the compiled matcher restricted.
+	//
+	// R5-2 (P0 security review): the persisted spec is raw (never
+	// canonicalized before persisting, see ExecuteRun), so it is
+	// canonicalized here with the SAME resolveScopedPath algorithm every
+	// REQUESTED item path goes through, exactly like the initial in-process
+	// compile does. A DiskProvider never survives the durable queue (see
+	// CallOptions.DiskProvider's doc comment), so every rebuilt scope is
+	// canonicalized against the real disk (nil disk argument).
 	var rebuiltCallOptions *CallOptions
 	if data.FolderScopeSpec != nil {
-		compiledScope, scopeErr := permission.BuildFolderScope(
-			*fromSessionFolderScopeSpec(data.FolderScopeSpec))
-		if scopeErr != nil {
-			slog.Error("RebuildSessionAgentCall: the durable row's folder-scope spec failed to recompile; scoping the rebuilt turn to deny-everything",
-				"session_id", data.SessionID, "err", scopeErr)
+		var compiledScope permission.FolderScope
+		canonSpec, canonErr := tools.CanonicalizeFolderScopeSpec(
+			ctx, nil, *fromSessionFolderScopeSpec(data.FolderScopeSpec))
+		if canonErr != nil {
+			slog.Error("RebuildSessionAgentCall: the durable row's folder-scope spec failed to canonicalize; scoping the rebuilt turn to deny-everything",
+				"session_id", data.SessionID, "err", canonErr)
+		} else {
+			var scopeErr error
+			compiledScope, scopeErr = permission.BuildFolderScope(canonSpec)
+			if scopeErr != nil {
+				slog.Error("RebuildSessionAgentCall: the durable row's folder-scope spec failed to recompile; scoping the rebuilt turn to deny-everything",
+					"session_id", data.SessionID, "err", scopeErr)
+			}
 		}
 		rebuiltCallOptions = &CallOptions{FolderScope: &compiledScope}
 	}
