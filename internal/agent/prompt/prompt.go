@@ -65,11 +65,44 @@ type PromptDat struct {
 	// render a fabricated number — an empty string here means "omit the
 	// number, keep the chunking guidance."
 	WorkerContextWindowText string
+	// FolderScoped is true when THIS call runs with a folder scope
+	// (CallOptions.FolderScope != nil): coder.md.tpl uses it to replace
+	// the legacy single-target file-tool guidance with the scoped fs_*
+	// batch-tool block. It reaches Build through the context (attached by
+	// agent.WithCallOptions at the one place a CallOptions is ever
+	// attached, cleared by agent's withoutCallOptions) rather than a
+	// Build parameter because the scoped call sites already thread this
+	// same ctx and a new positional parameter would have to be touched
+	// into every Build caller for a flag only the coder template reads.
+	// When false — every legacy caller — the rendered prompt is
+	// byte-identical to before this field existed.
+	FolderScoped bool
 }
 
 type ContextFile struct {
 	Path    string
 	Content string
+}
+
+// folderScopeContextKey carries the per-call folder-scope flag from
+// agent.WithCallOptions into Build. The key lives here, not in agent,
+// because prompt cannot import agent (agent imports prompt), and Build
+// must learn the flag without a new positional parameter.
+type folderScopeContextKey struct{}
+
+// WithFolderScoped returns a context carrying the "this call is
+// folder-scoped" flag Build renders the coder prompt from. Call it before
+// handing the context to Build; absent context or false both render the
+// legacy unscoped prompt.
+func WithFolderScoped(ctx context.Context, scoped bool) context.Context {
+	return context.WithValue(ctx, folderScopeContextKey{}, scoped)
+}
+
+// folderScopedFrom reports the flag carried by WithFolderScoped; a context
+// without the value reads as false (unscoped).
+func folderScopedFrom(ctx context.Context) bool {
+	scoped, _ := ctx.Value(folderScopeContextKey{}).(bool)
+	return scoped
 }
 
 type Option func(*Prompt)
@@ -306,6 +339,7 @@ func (p *Prompt) promptData(ctx context.Context, provider, model string, store *
 		Date:            p.now().Format("1/2/2006"),
 		AvailSkillXML:   availSkillXML,
 		WorkerAvailable: workerActive,
+		FolderScoped:    folderScopedFrom(ctx),
 	}
 	if workerActive {
 		if workerModelCfg, ok := cfg.Models[config.SelectedModelTypeWorker]; ok {

@@ -25,6 +25,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/prompt"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/permission"
 )
@@ -106,8 +107,20 @@ type callOptionsContextKey struct{}
 
 // WithCallOptions returns a context carrying o. o must not be mutated
 // afterwards: it is read concurrently by the run's goroutines.
+//
+// It also mirrors the one prompt-relevant fact of o — whether the call is
+// folder-scoped — under the prompt package's own context key: prompt
+// cannot read callOptionsContextKey (unexported here; it would import
+// agent, which imports prompt), and deriving the flag at the prompt side
+// is impossible. Doing it HERE means every present and future attach
+// point gets the same answer, and a scoped call's coder prompt always
+// matches the scoped toolset built from the same CallOptions.
 func WithCallOptions(ctx context.Context, o *CallOptions) context.Context {
-	return context.WithValue(ctx, callOptionsContextKey{}, o)
+	scoped := o != nil && o.FolderScope != nil
+	return context.WithValue(
+		prompt.WithFolderScoped(ctx, scoped),
+		callOptionsContextKey{}, o,
+	)
 }
 
 // callOptionsFrom returns the per-call options carried by ctx, or nil when

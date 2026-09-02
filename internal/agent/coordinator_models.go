@@ -13,6 +13,7 @@ import (
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/openrouter"
+	"github.com/PHPCraftdream/rush/internal/agent/prompt"
 	"github.com/PHPCraftdream/rush/internal/config"
 )
 
@@ -516,7 +517,13 @@ func (c *coordinator) pinCallTools(ctx context.Context, cfg *config.Config) []fa
 // and must publish only global state even when the caller's context — e.g.
 // runWithUnauthorizedRetry's 401-rebuild ctx — carries CallOptions.
 func withoutCallOptions(ctx context.Context) context.Context {
-	return context.WithValue(ctx, callOptionsContextKey{}, (*CallOptions)(nil))
+	// The mirrored prompt-side scope flag must go with the CallOptions:
+	// a stale true here would render the global refresh's sub-builds
+	// (an embedded agent tool's prompt, for instance) from a caller's
+	// per-call scope, exactly what this function exists to prevent.
+	return prompt.WithFolderScoped(
+		context.WithValue(ctx, callOptionsContextKey{}, (*CallOptions)(nil)),
+		false)
 }
 
 // workerSubAgentActiveForCall is the per-call form of workerSubAgentActive
