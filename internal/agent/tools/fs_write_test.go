@@ -25,7 +25,7 @@ func fsWriteTestScope(t *testing.T, workingDir string, entries ...permission.Fol
 	}
 	resolved := make([]permission.FolderScopeEntry, len(entries))
 	for i, e := range entries {
-		dir, err := resolveScopedPath(workingDir, e.Dir)
+		dir, err := resolveScopedPath(context.Background(), OSDisk(), workingDir, e.Dir)
 		require.NoError(t, err)
 		resolved[i] = permission.FolderScopeEntry{Dir: dir, Ops: e.Ops}
 	}
@@ -48,7 +48,7 @@ func TestFSWriteCreateVsOverwrite(t *testing.T) {
 	scope := fsWriteTestScope(t, dir)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "exist.txt"), []byte("old"), 0o644))
 
-	tool := NewFSWriteTool(scope, &mockPermissionService{}, &mockHistoryService{}, mockFileTrackerService{}, dir)
+	tool := NewFSWriteTool(scope, &mockPermissionService{}, &mockHistoryService{}, mockFileTrackerService{}, dir, nil)
 	resp, err := fsWriteRun(t, ctx, tool, FSWriteParams{Items: []FSWriteItem{
 		{Path: "new.txt", Content: "hello"},
 		{Path: "exist.txt", Content: "new"},
@@ -83,7 +83,7 @@ func TestFSWriteCreateOnlyRefusesExisting(t *testing.T) {
 	scope := fsWriteTestScope(t, dir)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "keep.txt"), []byte("keep"), 0o644))
 
-	tool := NewFSWriteTool(scope, &mockPermissionService{}, &mockHistoryService{}, mockFileTrackerService{}, dir)
+	tool := NewFSWriteTool(scope, &mockPermissionService{}, &mockHistoryService{}, mockFileTrackerService{}, dir, nil)
 	resp, err := fsWriteRun(t, ctx, tool, FSWriteParams{Items: []FSWriteItem{
 		{Path: "keep.txt", Content: "clobber", CreateOnly: true},
 		{Path: "fresh.txt", Content: "brand", CreateOnly: true},
@@ -113,7 +113,7 @@ func TestFSWriteParentCarveOutBlocksDirCreation(t *testing.T) {
 		permission.FolderScopeEntry{Dir: "locked"},
 	)
 
-	tool := NewFSWriteTool(scope, &mockPermissionService{}, &mockHistoryService{}, mockFileTrackerService{}, dir)
+	tool := NewFSWriteTool(scope, &mockPermissionService{}, &mockHistoryService{}, mockFileTrackerService{}, dir, nil)
 	resp, err := fsWriteRun(t, ctx, tool, FSWriteParams{Items: []FSWriteItem{
 		{Path: filepath.Join("locked", "new.txt"), Content: "inside"},
 	}})
@@ -139,14 +139,14 @@ func TestFSWriteExecuteRechecksParentBeforeMkdir(t *testing.T) {
 		},
 	)
 
-	groupPath, err := resolveScopedPath(dir, filepath.Join("locked", "deep", "f.txt"))
+	groupPath, err := resolveScopedPath(context.Background(), OSDisk(), dir, filepath.Join("locked", "deep", "f.txt"))
 	require.NoError(t, err)
 	group := FSBatchGroup[FSWriteItem]{
 		Path:  groupPath,
 		Items: []FSGroupItem[FSWriteItem]{{Index: 0, RawPath: "locked/deep/f.txt", Item: FSWriteItem{Path: "locked/deep/f.txt", Content: "x"}}},
 	}
 
-	outcomes, err := fsWriteExecuteGroup(ctx, scope, &mockHistoryService{}, mockFileTrackerService{}, dir, group)
+	outcomes, err := fsWriteExecuteGroup(ctx, scope, &mockHistoryService{}, mockFileTrackerService{}, dir, nil, group)
 	require.NoError(t, err)
 	require.Len(t, outcomes, 1)
 	require.Equal(t, FSStatusFailed, outcomes[0].Status)
@@ -162,7 +162,7 @@ func TestFSWriteLastWriteWinsWithinGroup(t *testing.T) {
 	ctx := context.WithValue(context.Background(), SessionIDContextKey, "sess-write")
 	scope := fsWriteTestScope(t, dir)
 
-	tool := NewFSWriteTool(scope, &mockPermissionService{}, &mockHistoryService{}, mockFileTrackerService{}, dir)
+	tool := NewFSWriteTool(scope, &mockPermissionService{}, &mockHistoryService{}, mockFileTrackerService{}, dir, nil)
 	resp, err := fsWriteRun(t, ctx, tool, FSWriteParams{Items: []FSWriteItem{
 		{Path: "multi.txt", Content: "first"},
 		{Path: "multi.txt", Content: "second"},
@@ -196,7 +196,7 @@ func TestFSWritePermissionDeniedStopsTurn(t *testing.T) {
 	ctx := context.WithValue(context.Background(), SessionIDContextKey, "sess-write")
 	scope := fsWriteTestScope(t, dir)
 
-	tool := NewFSWriteTool(scope, &fsWriteDenyService{}, &mockHistoryService{}, mockFileTrackerService{}, dir)
+	tool := NewFSWriteTool(scope, &fsWriteDenyService{}, &mockHistoryService{}, mockFileTrackerService{}, dir, nil)
 	resp, err := fsWriteRun(t, ctx, tool, FSWriteParams{Items: []FSWriteItem{
 		{Path: "denied.txt", Content: "never"},
 	}})

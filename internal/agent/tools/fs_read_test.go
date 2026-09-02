@@ -30,7 +30,7 @@ func fsReadTestFixture(t *testing.T, dir string) string {
 
 func fsReadRun(t *testing.T, scope permission.FolderScope, workingDir string, items []FSReadItem) fantasy.ToolResponse {
 	t.Helper()
-	tool := NewFSReadTool(scope, workingDir)
+	tool := NewFSReadTool(scope, mockFileTrackerService{}, workingDir, nil)
 	raw, err := json.Marshal(FSReadParams{Items: items})
 	require.NoError(t, err)
 	resp, err := tool.Run(context.Background(), fantasy.ToolCall{ID: "call-fs-read", Input: string(raw)})

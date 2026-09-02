@@ -173,8 +173,10 @@ type FSBatchGroup[I any] struct {
 // resolves create-vs-overwrite by statting the resolved path). Any
 // error it returns fails that item alone as FSStatusFailed. absPath is
 // the item's resolved absolute path, already symlink-resolved, so
-// existence checks see what the OS would actually touch.
-type FSPreflightFunc[I any] func(item I, index int, absPath string) (op permission.FileOp, err error)
+// existence checks see what the OS would actually touch. ctx is the
+// call's context, so a preflight that stats through a DiskProvider can
+// honour cancellation.
+type FSPreflightFunc[I any] func(ctx context.Context, item I, index int, absPath string) (op permission.FileOp, err error)
 
 // FSExecuteFunc performs the real I/O for one file group. It must
 // report exactly one outcome per group item, in order. Returning an
@@ -223,6 +225,12 @@ type FSBatch[I any] struct {
 	Preflight FSPreflightFunc[I]
 	// Execute performs the I/O for one file group.
 	Execute FSExecuteFunc[I]
+	// Disk is the filesystem this call's path resolution runs against.
+	// nil is the real disk (see diskOrOS): every fs_* constructor
+	// normalises its own disk once and passes the same non-nil value
+	// here, so path resolution and execution always agree on which
+	// filesystem is in play.
+	Disk DiskProvider
 }
 
 // fsBatchGroupEntry pairs one scheduled item with its slot in the
@@ -256,6 +264,7 @@ func RunFSBatch[I any](ctx context.Context, batch FSBatch[I]) (fantasy.ToolRespo
 			"too many items: %d (maximum %d per call)", len(batch.Items), FSBatchMaxItems)), nil
 	}
 
+	disk := diskOrOS(batch.Disk)
 	results := make([]FSItemResult, len(batch.Items))
 	groups := make([]fsBatchGroup[I], 0, len(batch.Items))
 	byPath := make(map[string]int, len(batch.Items))
@@ -267,7 +276,7 @@ func RunFSBatch[I any](ctx context.Context, batch FSBatch[I]) (fantasy.ToolRespo
 		result := FSItemResult{Index: i, Path: batch.PathOf(item)}
 		results[i] = result
 
-		abs, err := resolveScopedPath(batch.WorkingDir, result.Path)
+		abs, err := resolveScopedPath(ctx, disk, batch.WorkingDir, result.Path)
 		if err != nil {
 			// Fail closed: a path that cannot be resolved cannot be
 			// judged safe.
@@ -278,7 +287,7 @@ func RunFSBatch[I any](ctx context.Context, batch FSBatch[I]) (fantasy.ToolRespo
 			continue
 		}
 
-		op, err := batch.Preflight(item, i, abs)
+		op, err := batch.Preflight(ctx, item, i, abs)
 		if err != nil {
 			result.Status = FSStatusFailed
 			result.Error = err.Error()

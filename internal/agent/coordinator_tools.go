@@ -562,15 +562,22 @@ func (c *coordinator) buildTools(ctx context.Context, cfg *config.Config, agent 
 		// Scoped, batch-capable fs_* family, constructed with THIS
 		// call's scope (see the extraction above; the zero value denies
 		// everything). NewFSGrepTool takes workingDir first and scope
-		// second; the other seven take scope first.
-		tools.NewFSListTool(scope, c.cfg.WorkingDir(), cfg.Tools.Ls),
-		tools.NewFSFindTool(scope, c.cfg.WorkingDir()),
-		tools.NewFSReadTool(scope, c.cfg.WorkingDir()),
-		tools.NewFSGrepTool(c.cfg.WorkingDir(), scope),
-		tools.NewFSWriteTool(scope, c.permissions, c.history, c.filetracker, c.cfg.WorkingDir()),
-		tools.NewFSReplaceTool(scope, c.permissions, c.history, c.filetracker, c.cfg.WorkingDir()),
-		tools.NewFSWriteLinesTool(scope, c.permissions, c.history, c.filetracker, c.cfg.WorkingDir()),
-		tools.NewFSDeleteTool(scope, c.permissions, c.cfg.WorkingDir()),
+		// second; the other seven take scope first. Every constructor's
+		// LAST parameter is a DiskProvider (nil here means the real
+		// disk) precisely because of that reversed-order outlier: a
+		// trailing parameter needs no per-constructor special case.
+		// Wiring a caller-supplied provider through CallOptions is a
+		// separate, later task; this nil is the forced, zero-behaviour-
+		// change consequence of these constructors gaining the
+		// parameter at all.
+		tools.NewFSListTool(scope, c.cfg.WorkingDir(), cfg.Tools.Ls, nil),
+		tools.NewFSFindTool(scope, c.cfg.WorkingDir(), nil),
+		tools.NewFSReadTool(scope, c.filetracker, c.cfg.WorkingDir(), nil),
+		tools.NewFSGrepTool(c.cfg.WorkingDir(), scope, nil),
+		tools.NewFSWriteTool(scope, c.permissions, c.history, c.filetracker, c.cfg.WorkingDir(), nil),
+		tools.NewFSReplaceTool(scope, c.permissions, c.history, c.filetracker, c.cfg.WorkingDir(), nil),
+		tools.NewFSWriteLinesTool(scope, c.permissions, c.history, c.filetracker, c.cfg.WorkingDir(), nil),
+		tools.NewFSDeleteTool(scope, c.permissions, c.cfg.WorkingDir(), nil),
 	)
 
 	// cfg.MCP presence is pinned config data (any MCP server configured at

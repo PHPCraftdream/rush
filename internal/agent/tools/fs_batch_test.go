@@ -32,7 +32,7 @@ type fsBatchTestItem struct {
 
 // fsBatchTestPreflight is the fake preflight: echo the item's op, fail
 // the item when PreflightErr is set.
-func fsBatchTestPreflight(item fsBatchTestItem, _ int, _ string) (permission.FileOp, error) {
+func fsBatchTestPreflight(_ context.Context, item fsBatchTestItem, _ int, _ string) (permission.FileOp, error) {
 	if item.PreflightErr != nil {
 		return "", item.PreflightErr
 	}
@@ -71,7 +71,7 @@ func fsBatchTestExecute(recorded *[]FSBatchGroup[fsBatchTestItem]) FSExecuteFunc
 // resolved-to-resolved on every platform.
 func fsBatchTestScope(t *testing.T, workingDir string, ops ...permission.FileOp) permission.FolderScope {
 	t.Helper()
-	resolved, err := resolveScopedPath(workingDir, ".")
+	resolved, err := resolveScopedPath(context.Background(), OSDisk(), workingDir, ".")
 	require.NoError(t, err)
 	scope, err := permission.BuildFolderScope(permission.FolderScopeSpec{
 		WorkingDir: workingDir,
@@ -207,9 +207,9 @@ func TestFSBatchGroupsSamePath(t *testing.T) {
 	// Two items on one file formed ONE execution unit, in batch order;
 	// the third item went to its own group.
 	require.Len(t, recorded, 2)
-	wantA, err := resolveScopedPath(dir, "a.go")
+	wantA, err := resolveScopedPath(context.Background(), OSDisk(), dir, "a.go")
 	require.NoError(t, err)
-	wantB, err := resolveScopedPath(dir, "b.go")
+	wantB, err := resolveScopedPath(context.Background(), OSDisk(), dir, "b.go")
 	require.NoError(t, err)
 	require.Equal(t, wantA, recorded[0].Path)
 	require.Len(t, recorded[0].Items, 2)
@@ -239,9 +239,9 @@ func TestFSBatchRejectsBadShape(t *testing.T) {
 	scope := fsBatchTestScope(t, dir, permission.FileOpRead)
 
 	preflightCalls := 0
-	countingPreflight := func(item fsBatchTestItem, index int, absPath string) (permission.FileOp, error) {
+	countingPreflight := func(ctx context.Context, item fsBatchTestItem, index int, absPath string) (permission.FileOp, error) {
 		preflightCalls++
-		return fsBatchTestPreflight(item, index, absPath)
+		return fsBatchTestPreflight(ctx, item, index, absPath)
 	}
 	var recorded []FSBatchGroup[fsBatchTestItem]
 

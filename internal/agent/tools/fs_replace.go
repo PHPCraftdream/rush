@@ -13,8 +13,8 @@ import (
 	_ "embed"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
-	"os"
 	"strings"
 	"time"
 
@@ -47,7 +47,8 @@ type FSReplacePermissionsParams struct {
 
 const FSReplaceToolName = "fs_replace"
 
-func NewFSReplaceTool(scope permission.FolderScope, permissions permission.Service, files history.Service, filetracker filetracker.Service, workingDir string) fantasy.AgentTool {
+func NewFSReplaceTool(scope permission.FolderScope, permissions permission.Service, files history.Service, filetracker filetracker.Service, workingDir string, disk DiskProvider) fantasy.AgentTool {
+	disk = diskOrOS(disk)
 	return fantasy.NewAgentTool(
 		FSReplaceToolName,
 		fsReplaceDescription,
@@ -102,12 +103,13 @@ func NewFSReplaceTool(scope permission.FolderScope, permissions permission.Servi
 				WorkingDir: workingDir,
 				Scope:      scope,
 				Items:      params.Items,
+				Disk:       disk,
 				PathOf: func(i FSReplaceItem) string {
 					return i.Path
 				},
 				Preflight: fsReplacePreflight,
 				Execute: func(ctx context.Context, group FSBatchGroup[FSReplaceItem]) ([]FSItemOutcome, error) {
-					return fsReplaceExecuteGroup(ctx, scope, files, filetracker, workingDir, group)
+					return fsReplaceExecuteGroup(ctx, scope, files, filetracker, workingDir, disk, group)
 				},
 			})
 			return resp, err
@@ -119,14 +121,15 @@ func NewFSReplaceTool(scope permission.FolderScope, permissions permission.Servi
 // filesystem: replacing requires an existing file, so the op is always
 // replace and existence is checked (as "file not found") during
 // execution, which reads the file anyway.
-func fsReplacePreflight(item FSReplaceItem, _ int, _ string) (permission.FileOp, error) {
+func fsReplacePreflight(_ context.Context, item FSReplaceItem, _ int, _ string) (permission.FileOp, error) {
 	return permission.FileOpReplace, nil
 }
 
 // fsReplaceExecuteGroup applies every item of one same-path group in
 // memory, in order, and writes the file once, so a group is one atomic
 // write and one history version regardless of item count.
-func fsReplaceExecuteGroup(ctx context.Context, scope permission.FolderScope, files history.Service, filetracker filetracker.Service, workingDir string, group FSBatchGroup[FSReplaceItem]) ([]FSItemOutcome, error) {
+func fsReplaceExecuteGroup(ctx context.Context, scope permission.FolderScope, files history.Service, filetracker filetracker.Service, workingDir string, disk DiskProvider, group FSBatchGroup[FSReplaceItem]) ([]FSItemOutcome, error) {
+	disk = diskOrOS(disk)
 	sessionID := GetSessionFromContext(ctx)
 	if sessionID == "" {
 		return nil, &FSBatchAbortError{Err: errors.New("session_id is required")}
@@ -134,10 +137,10 @@ func fsReplaceExecuteGroup(ctx context.Context, scope permission.FolderScope, fi
 
 	outcomes := make([]FSItemOutcome, len(group.Items))
 
-	info, statErr := os.Stat(group.Path)
+	info, statErr := disk.Stat(ctx, group.Path)
 	isDir := statErr == nil && info.IsDir()
 	switch {
-	case os.IsNotExist(statErr):
+	case errors.Is(statErr, fs.ErrNotExist):
 		for i := range outcomes {
 			outcomes[i] = FSItemOutcome{
 				Status: FSStatusFailed,
@@ -188,7 +191,7 @@ func fsReplaceExecuteGroup(ctx context.Context, scope permission.FolderScope, fi
 		filetracker.RecordRead(ctx, sessionID, group.Path)
 	}
 
-	content, readErr := os.ReadFile(group.Path)
+	content, readErr := disk.ReadFile(ctx, group.Path)
 	if readErr != nil {
 		if osFailureIsFatal(readErr) {
 			return nil, &FSBatchAbortError{Err: fmt.Errorf("failed to read file: %w", readErr)}
@@ -253,6 +256,7 @@ func fsReplaceExecuteGroup(ctx context.Context, scope permission.FolderScope, fi
 		files:       files,
 		filetracker: filetracker,
 		workingDir:  workingDir,
+		disk:        disk,
 	}
 	resp, err := commitFileChange(editCtx, sessionID, group.Path, oldContent, writeContent)
 	if err != nil {

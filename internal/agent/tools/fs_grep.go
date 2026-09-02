@@ -73,7 +73,8 @@ type FSGrepParams struct {
 // twice: once per item root by the batch runner's preflight, and once
 // per match path here — a root check cannot vouch for paths found
 // underneath it.
-func NewFSGrepTool(workingDir string, scope permission.FolderScope) fantasy.AgentTool {
+func NewFSGrepTool(workingDir string, scope permission.FolderScope, disk DiskProvider) fantasy.AgentTool {
+	disk = diskOrOS(disk)
 	return fantasy.NewAgentTool(
 		FSGrepToolName,
 		fsGrepDescription,
@@ -83,12 +84,13 @@ func NewFSGrepTool(workingDir string, scope permission.FolderScope) fantasy.Agen
 				WorkingDir: workingDir,
 				Scope:      scope,
 				Items:      params.Items,
+				Disk:       disk,
 				PathOf:     func(item FSGrepItem) string { return cmp.Or(item.Path, ".") },
 				Preflight:  fsGrepPreflight,
 				Execute: func(ctx context.Context, group FSBatchGroup[FSGrepItem]) ([]FSItemOutcome, error) {
 					outcomes := make([]FSItemOutcome, len(group.Items))
 					for i, member := range group.Items {
-						outcomes[i] = fsGrepRunItem(ctx, workingDir, scope, group.Path, member.Item)
+						outcomes[i] = fsGrepRunItem(ctx, disk, workingDir, scope, group.Path, member.Item)
 					}
 					return outcomes, nil
 				},
@@ -101,7 +103,7 @@ func NewFSGrepTool(workingDir string, scope permission.FolderScope) fantasy.Agen
 // the scope check to the item's root afterwards. An out-of-range
 // radius is a structural failure, not a silent clamp: the model chose
 // the number and must see it rejected.
-func fsGrepPreflight(item FSGrepItem, _ int, _ string) (permission.FileOp, error) {
+func fsGrepPreflight(_ context.Context, item FSGrepItem, _ int, _ string) (permission.FileOp, error) {
 	if strings.TrimSpace(item.Pattern) == "" {
 		return "", errors.New("pattern is required")
 	}
@@ -114,8 +116,11 @@ func fsGrepPreflight(item FSGrepItem, _ int, _ string) (permission.FileOp, error
 
 // fsGrepRunItem searches one root and renders the item's block. Search
 // errors fail the item (level 1: the model can correct the pattern or
-// path); they never become Go errors.
-func fsGrepRunItem(ctx context.Context, workingDir string, scope permission.FolderScope, rootPath string, item FSGrepItem) FSItemOutcome {
+// path); they never become Go errors. The search itself runs entirely
+// through disk.Search — for the real disk that is ripgrep-then-fallback
+// (fsGrepSearchContext, unchanged), for an injected provider it is
+// whatever that provider implements, with no rg subprocess ever spawned.
+func fsGrepRunItem(ctx context.Context, disk DiskProvider, workingDir string, scope permission.FolderScope, rootPath string, item FSGrepItem) FSItemOutcome {
 	pattern := item.Pattern
 	if item.LiteralText {
 		pattern = escapeRegexPattern(pattern)
@@ -126,11 +131,27 @@ func fsGrepRunItem(ctx context.Context, workingDir string, scope permission.Fold
 
 	budget := newFSGrepBudget()
 	files := make(map[string]*fsGrepFileHits)
-	if err := fsGrepSearchContext(searchCtx, pattern, rootPath, item.Include,
-		item.ContextLines, files, &budget); err != nil {
+	searchResult, err := disk.Search(searchCtx, SearchRequest{
+		Pattern:      pattern,
+		Dir:          rootPath,
+		Include:      item.Include,
+		ContextLines: item.ContextLines,
+		MaxLines:     FSBatchMaxGrepMatchesPerItem,
+	})
+	if err != nil {
 		return FSItemOutcome{Status: FSStatusFailed, Error: fmt.Sprintf("error searching files: %v", err)}
 	}
-	block, spent := fsGrepRender(files, &budget, scope, workingDir, item.ContextLines)
+	for _, line := range searchResult.Lines {
+		file := files[line.Path]
+		if file == nil {
+			file = newFSGrepFileHits()
+			files[line.Path] = file
+		}
+		if !file.add(line.Line, line.Text, line.Hit, &budget) {
+			break // Budget spent; the provider may have returned more than needed.
+		}
+	}
+	block, spent := fsGrepRender(ctx, disk, files, &budget, scope, workingDir, item.ContextLines)
 	if block == "" {
 		block = fmt.Sprintf("No matches found for pattern %q under %s.",
 			item.Pattern, filepath.ToSlash(rootPath))
@@ -500,7 +521,7 @@ func mergeFSGrepWindows(hits []int, contextLines int) []fsGrepWindow {
 // deny-carved subtrees). Unresolvable match paths are dropped too:
 // a path that cannot be resolved cannot be judged safe. It returns the
 // blocks and whether the budget was spent (output truncated).
-func fsGrepRender(files map[string]*fsGrepFileHits, budget *fsGrepBudget, scope permission.FolderScope, workingDir string, contextLines int) (string, bool) {
+func fsGrepRender(ctx context.Context, disk DiskProvider, files map[string]*fsGrepFileHits, budget *fsGrepBudget, scope permission.FolderScope, workingDir string, contextLines int) (string, bool) {
 	paths := make([]string, 0, len(files))
 	for path := range files {
 		paths = append(paths, path)
@@ -516,7 +537,7 @@ func fsGrepRender(files map[string]*fsGrepFileHits, budget *fsGrepBudget, scope 
 		}
 		abs, ok := resolvedCache[path]
 		if !ok {
-			resolved, err := resolveScopedPath(workingDir, path)
+			resolved, err := resolveScopedPath(ctx, disk, workingDir, path)
 			if err != nil {
 				continue
 			}

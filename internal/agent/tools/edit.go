@@ -56,6 +56,13 @@ type editContext struct {
 	files       history.Service
 	filetracker filetracker.Service
 	workingDir  string
+	// disk is the filesystem commitFileChange's final write lands on.
+	// The zero value (nil) means the real disk (see diskOrOS): every
+	// legacy caller (edit, write, multiedit) constructs editContext
+	// without ever setting this field, so they are unaffected. Only
+	// fs_write/fs_replace/fs_write_lines set it, to an already-
+	// normalised non-nil DiskProvider.
+	disk DiskProvider
 }
 
 func NewEditTool(
@@ -81,7 +88,7 @@ func NewEditTool(
 			var response fantasy.ToolResponse
 			var err error
 
-			editCtx := editContext{ctx, permissions, files, filetracker, workingDir}
+			editCtx := editContext{ctx, permissions, files, filetracker, workingDir, nil}
 
 			if params.OldString == "" {
 				response, err = createNewFile(editCtx, params.FilePath, params.NewString, call)
@@ -244,7 +251,7 @@ func findAndReplace(content, old, new string, replaceAll bool) (string, error) {
 // rename) instead of os.WriteFile so a kill -9 / OOM mid-write cannot leave
 // the user's file half-truncated. See CHANGELOG.fork.md (Section 4.I).
 func commitFileChange(edit editContext, sessionID, filePath, oldContent, newContent string) (fantasy.ToolResponse, error) {
-	if err := fsext.AtomicWriteFile(filePath, []byte(newContent), 0o644); err != nil {
+	if err := diskOrOS(edit.disk).WriteFile(edit.ctx, filePath, []byte(newContent), 0o644); err != nil {
 		if osFailureIsFatal(err) {
 			return fantasy.ToolResponse{}, fmt.Errorf("failed to write file: %w", err)
 		}

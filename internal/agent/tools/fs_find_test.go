@@ -16,7 +16,7 @@ import (
 // temp dir, with a deny carve-out over the secret subdirectory.
 func fsFindTestCarveScope(t *testing.T, dir string) permission.FolderScope {
 	t.Helper()
-	resolved, err := resolveScopedPath(dir, ".")
+	resolved, err := resolveScopedPath(context.Background(), OSDisk(), dir, ".")
 	require.NoError(t, err)
 	scope, err := permission.BuildFolderScope(permission.FolderScopeSpec{
 		WorkingDir: dir,
@@ -39,7 +39,7 @@ func TestFSFindDropsDenyCarvedResults(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "secret", "hidden.txt"), []byte("x"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "nested", "deep.txt"), []byte("x"), 0o644))
 
-	tool := NewFSFindTool(fsFindTestCarveScope(t, dir), dir)
+	tool := NewFSFindTool(fsFindTestCarveScope(t, dir), dir, nil)
 	raw, err := json.Marshal(FSFindParams{Items: []FSFindItem{{Pattern: "**/*.txt"}}})
 	require.NoError(t, err)
 	resp, err := tool.Run(context.Background(), fantasy.ToolCall{ID: "call-1", Input: string(raw)})
@@ -69,7 +69,7 @@ func TestFSFindDeniesRootOutsideScopePerItem(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dirA, "a.txt"), []byte("x"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dirB, "b.txt"), []byte("x"), 0o644))
 
-	tool := NewFSFindTool(fsBatchTestScope(t, dirA, permission.FileOpFind), dirA)
+	tool := NewFSFindTool(fsBatchTestScope(t, dirA, permission.FileOpFind), dirA, nil)
 	raw, err := json.Marshal(FSFindParams{Items: []FSFindItem{
 		{Pattern: "**/*.txt", Path: "."},
 		{Pattern: "**/*.txt", Path: dirB},
@@ -94,7 +94,7 @@ func TestFSFindDefaultsToScopeRoot(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "root.txt"), []byte("x"), 0o644))
 
-	tool := NewFSFindTool(fsBatchTestScope(t, dir, permission.FileOpFind), dir)
+	tool := NewFSFindTool(fsBatchTestScope(t, dir, permission.FileOpFind), dir, nil)
 	raw, err := json.Marshal(FSFindParams{Items: []FSFindItem{{Pattern: "**/*.txt"}}})
 	require.NoError(t, err)
 	resp, err := tool.Run(context.Background(), fantasy.ToolCall{ID: "call-3", Input: string(raw)})
@@ -111,7 +111,7 @@ func TestFSFindRequiresPattern(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	tool := NewFSFindTool(fsBatchTestScope(t, dir, permission.FileOpFind), dir)
+	tool := NewFSFindTool(fsBatchTestScope(t, dir, permission.FileOpFind), dir, nil)
 	raw, err := json.Marshal(FSFindParams{Items: []FSFindItem{{Path: "."}}})
 	require.NoError(t, err)
 	resp, err := tool.Run(context.Background(), fantasy.ToolCall{ID: "call-4", Input: string(raw)})
