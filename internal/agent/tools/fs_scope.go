@@ -26,13 +26,41 @@ import (
 // outside the scope directly). Any ambiguity — an unreadable component,
 // a file used as a directory, or a failed symlink evaluation — is an
 // error, never a silently-produced path, so consumers fail closed.
+//
+// workingDir/raw are joined via filepathext.SmartJoin, then made
+// absolute WITHOUT calling filepath.Abs whenever the joined result is
+// already filepathext.SmartIsAbs (R5-6, P1 review finding). This
+// matters because filepath.Abs is not a safe no-op on an
+// already-absolute path on every OS: on Windows it unconditionally
+// normalizes through syscall.FullPath, which silently re-roots a
+// SmartIsAbs-but-driveless path (a leading "/" with no drive letter --
+// e.g. sdk.LibraryVirtualRoot, the synthesized logical root an
+// ephemeral library-mode session uses in place of a real WorkingDir)
+// against the RUSH HOST PROCESS's own current drive/working directory.
+// The same request could then resolve to a different real path if the
+// host process's CWD changes between calls -- exactly the leak this
+// guards against. A genuinely relative joined result with no
+// workingDir at all has no safe root to resolve against, so it is
+// rejected with an explicit error instead of silently falling back to
+// the host process's CWD.
 func resolveScopedPath(ctx context.Context, disk DiskProvider, workingDir, raw string) (abs string, err error) {
 	disk = diskOrOS(disk)
-	cleaned, err := filepath.Abs(filepathext.SmartJoin(workingDir, raw))
-	if err != nil {
-		return "", fmt.Errorf("fs: resolve %q: %w", raw, err)
+	joined := filepathext.SmartJoin(workingDir, raw)
+
+	var cleaned string
+	switch {
+	case filepathext.SmartIsAbs(joined):
+		cleaned = filepath.Clean(joined)
+	case workingDir == "":
+		return "", fmt.Errorf(
+			"fs: resolve %q: relative path with no working directory to resolve it against", raw)
+	default:
+		cleaned, err = filepath.Abs(joined)
+		if err != nil {
+			return "", fmt.Errorf("fs: resolve %q: %w", raw, err)
+		}
+		cleaned = filepath.Clean(cleaned)
 	}
-	cleaned = filepath.Clean(cleaned)
 
 	// Walk up to the longest existing prefix. Anything other than a
 	// clean miss (EACCES, ELOOP, ...) is unresolvable: fail closed.
