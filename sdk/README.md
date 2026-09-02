@@ -224,12 +224,83 @@ Three boundaries to know:
   provider is a CLI provider (`claude` / `codex` / `gemini` / `qwen` —
   they run file tools inside a subprocess that cannot see the scope)
   fails with a hard error before any provider traffic.
-- **Durable-restart gap (temporary).** Until durable persistence for
-  folder scopes lands, a scoped SDK turn orphaned into the durable run
-  queue currently restarts **unscoped** after a restart — the same class
-  of gap the run allowlist had (finding F2/R4-1, since fixed for that
-  axis, but not yet for folder scopes). Do not rely on the scope
-  surviving a process restart.
+- **Durable restart preserves the scope.** A scoped SDK turn orphaned
+  into the durable run queue restarts with the SAME scope: the
+  uncompiled spec travels on the durable row and is recompiled and
+  rebound before the restarted turn runs (the same fix already shipped
+  for the run allowlist, finding F2/R4-1). You do not need to re-supply
+  `FolderScopes` for a restart to stay scoped.
+
+## Substituting the filesystem: `RunOverrides.DiskProvider`
+
+Set `DiskProvider` on `RunOverrides` to redirect one run's `fs_*` tools
+(`fs_read`, `fs_list`, `fs_find`, `fs_grep`, `fs_write`, `fs_replace`,
+`fs_write_lines`, `fs_delete`) — including the path resolution their
+folder-scope checks run on — away from the real filesystem and onto your
+own implementation of the `sdk.DiskProvider` interface: stat, symlink
+resolution, streaming read, whole-file read, `MkdirAll`, atomic write,
+remove, directory listing, name glob (`Find`) and content search
+(`Search`). A virtual path is scope-checked exactly like a real one.
+
+```go
+res, err := client.Run(ctx, sdk.RunRequest{
+    Overrides: sdk.RunOverrides{
+        FolderScopes: []sdk.FolderScope{
+            {Dir: "src", Ops: []sdk.FileOp{sdk.FileOpRead, sdk.FileOpCreate}},
+        },
+        DiskProvider: myVirtualFS,
+    },
+})
+```
+
+`sdk.OSDiskProvider()` returns the real-filesystem implementation `nil`
+falls back to — wrap it (e.g. to log every write) instead of
+reimplementing ripgrep dispatch and gitignore-aware directory walking
+from scratch.
+
+**What it does NOT affect** (the deliberate non-retrofit): `view`,
+`write`, `edit`, `multiedit`, `glob`, `grep`, `ls`, `download`,
+`git_read`, `agentic_fetch`, MCP tools, and `bash`/`run_command` all keep
+hitting the real filesystem regardless of this field. This is why a
+`DiskProvider` requires a `FolderScope` (see below) — a scoped run is
+what actually removes the legacy tools that would otherwise still touch
+the real disk.
+
+Boundaries to know:
+
+- **Requires a `FolderScope`, hard error otherwise.** Without a scope,
+  the legacy single-target file tools stay in the toolset (only a scope
+  strips them), so the model could read the virtual file with `fs_read`
+  and overwrite the REAL one with `write` in the same turn. `Run` fails
+  before any provider traffic when `DiskProvider` is set with an empty
+  `FolderScopes`.
+- **Cannot combine with a scope that keeps command tools, hard error
+  otherwise.** A scope that keeps `bash` (`RestrictedRun` with bash
+  patterns granted) would let `bash` see the real disk while `fs_*` sees
+  the virtual one in the same turn — a split the model has no way to
+  know about, since the prompt does not change for a disk-provider call.
+- **The trust boundary.** The provider is YOUR own in-process Go code,
+  running in the same address space with the same OS privileges as
+  Rush. It is a *redirection* mechanism, not a sandbox: it does not
+  confine `bash`, does not confine anything the provider itself chooses
+  to do, and is not a defence against a hostile model that has other
+  tools. The `FolderScope` ACL is still what limits which paths the
+  model may name.
+- **Per-call only, never persisted** — same as `FolderScopes` above: a
+  later run on the same `ContinueSessionID` without `DiskProvider` is an
+  ordinary run against the real disk.
+- **Never survives a durable restart, by design — unlike `FolderScopes`
+  above.** A `DiskProvider` is arbitrary in-process Go code (often a
+  closure over host state — an open DB handle, an HTTP client, an
+  in-memory map) with no serializable form at all, so there is nothing
+  to persist and recompile the way a folder scope's spec is. A call
+  carrying one is refused outright rather than durably queued: if it
+  cannot execute immediately (in-process) it is dropped with an error
+  wrapping `agent.ErrDiskProviderNotDurable`, never silently replayed
+  onto the real disk after a restart. Combine with
+  `FailIfSessionBusy` semantics (`Client.Run`/`RunWithCredentials` set
+  it already) so you get a fast, synchronous refusal instead of a
+  swallowed one.
 
 ## Session-busy behaviour is different from `rush run`
 

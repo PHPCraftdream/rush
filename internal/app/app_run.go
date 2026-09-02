@@ -21,6 +21,7 @@ import (
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
+	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/agent/tools/mcp"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/format"
@@ -183,6 +184,27 @@ type RunOverrides struct {
 	// permission.BuildFolderScope; any malformed entry fails the whole
 	// run. Fork patch (SDK folder scopes, T10).
 	FolderScopes []permission.FolderScopeEntry
+	// DiskProvider, when non-nil, replaces the real filesystem for THIS
+	// run's fs_* tools (fs_read, fs_list, fs_find, fs_grep, fs_write,
+	// fs_replace, fs_write_lines, fs_delete) and for the path resolution
+	// their folder-scope checks run on. Per-call only and NEVER
+	// persisted on the session, exactly like FolderScopes above.
+	//
+	// Two hard errors, both before any provider traffic: (1) a non-nil
+	// DiskProvider with an empty FolderScopes — without a scope the
+	// legacy single-target file tools (view/write/edit/multiedit/glob/
+	// grep/ls) stay in the toolset and can silently touch the REAL disk
+	// in the same turn a virtual one is being used; (2) a non-nil
+	// DiskProvider combined with a scope that keeps command-executing
+	// tools (RestrictedRun with bash patterns granted) — bash would see
+	// the real disk while fs_* sees the virtual one, an invisible split
+	// the model has no way to know about.
+	//
+	// A run carrying one is refused outright if it would be durably
+	// queued (a caller-supplied Go value cannot be serialized onto a
+	// run-queue row) — see agent.ErrDiskProviderNotDurable. Fork patch
+	// (SDK disk provider, T13/#859).
+	DiskProvider tools.DiskProvider
 	// Origin marks the entry channel of this invocation. This is the
 	// CLI's transport for the origin: `rush run` sets OriginCLI here and
 	// RunNonInteractive forwards it into the RunRequest it builds
@@ -664,6 +686,39 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 		runSpec.AllowTools = append(runSpec.AllowTools, fsToolsForScope(folderScope)...)
 	}
 
+	// #859: two hard errors for RunOverrides.DiskProvider, both before
+	// any session work or provider traffic, mirroring "invalid folder
+	// scopes" above.
+	if overrides.DiskProvider != nil {
+		// (1) A DiskProvider without a FolderScope is a footgun: the
+		// legacy single-target file tools (view/write/edit/multiedit/
+		// glob/grep/ls) stay in the toolset when there is no scope to
+		// strip them (applyCallFolderScope only runs when
+		// CallOptions.FolderScope != nil), so the model could read the
+		// virtual file with fs_read and overwrite the REAL one with
+		// write in the same turn.
+		if folderScope == nil {
+			return nil, errors.New("disk provider requires at least one folder scope: " +
+				"RunOverrides.DiskProvider is set but RunOverrides.FolderScopes is empty")
+		}
+		// (2) A DiskProvider combined with a scope that keeps
+		// command-executing tools means bash sees the REAL disk while
+		// fs_* sees the virtual one in the same turn — an invisible
+		// split the model has no way to know about (the prompt does not
+		// change for a disk-provider call, see sdk/README.md).
+		if folderScope.KeepsCommandTools() {
+			return nil, errors.New("disk provider cannot be combined with a folder scope that keeps command tools: " +
+				"bash would see the real disk while the fs_* tools see the virtual one")
+		}
+	}
+
+	// #859 (Layer 3, §7): a DiskProvider-carrying run never queues behind
+	// another turn, even if the caller didn't ask for FailIfSessionBusy.
+	// Queueing is what creates the orphan-restart risk Layers 1/2 refuse
+	// outright — forcing fail-fast here means a provider-carrying call
+	// never reaches that path in the first place.
+	failIfSessionBusy := req.FailIfSessionBusy || overrides.DiskProvider != nil
+
 	// R1-1 (P0): build this run's IMMUTABLE per-call execution context
 	// and attach it to the run's context. Everything below that used to
 	// pin per-invocation settings onto SHARED coordinator/permission
@@ -708,8 +763,13 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 		// The coordinator's applyCallFolderScope rebuilds the toolset
 		// from it per call; rejectScopedCallOnCLIProvider (T9) refuses
 		// the call outright when the resolved provider is a CLI provider.
-		FolderScope:       folderScope,
-		FailIfSessionBusy: req.FailIfSessionBusy,
+		FolderScope: folderScope,
+		// #859: the caller-supplied filesystem for THIS call's fs_* tools
+		// (nil = real disk). Never persisted: a durably-queued call
+		// carrying one is refused outright (agent.ErrDiskProviderNotDurable),
+		// never rebuilt with a nil fallback onto the real disk.
+		DiskProvider:      overrides.DiskProvider,
+		FailIfSessionBusy: failIfSessionBusy,
 	}
 	ctx = agent.WithCallOptions(ctx, callOpts)
 
@@ -766,7 +826,7 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 	// sessionAgent.Run (mailbox.submit), whose single check-and-set returns
 	// without queueing for such a call, so sessionAgent.Run reports
 	// ErrSessionBusy (R1-4).
-	if req.FailIfSessionBusy && app.AgentCoordinator.IsSessionBusy(sess.ID) {
+	if failIfSessionBusy && app.AgentCoordinator.IsSessionBusy(sess.ID) {
 		slog.Warn("Run rejected: session already has an in-process owner", "session_id", sess.ID)
 		return nil, fmt.Errorf("session %q is already processing another request: %w", sess.ID, agent.ErrSessionBusy)
 	}
@@ -803,7 +863,7 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 		// during the hold cancels it via the session mailbox.
 		reservedHold context.Context
 	)
-	if req.FailIfSessionBusy {
+	if failIfSessionBusy {
 		holdCtx, epoch, cancel, ok := app.AgentCoordinator.ReserveExclusive(ctx, sess.ID)
 		if !ok {
 			slog.Warn("Run rejected: session already has an in-process owner (atomic reservation)", "session_id", sess.ID)

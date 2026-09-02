@@ -424,6 +424,23 @@ func (a *sessionAgent) restartOrphanedWithRetry(calls []SessionAgentCall) error 
 				return
 			}
 
+			// Layer 1 (T9 shape, design doc §7.3): refuse outright, BEFORE
+			// ToSessionAgentCallData, a call carrying a caller-supplied
+			// DiskProvider. It has no serializable form at all, so a
+			// durable row rebuilt from it would silently restart on the
+			// REAL disk instead of the host's. The finalizer that calls us
+			// (abandonOwnershipWithHandoff) cannot return this error to the
+			// original caller either — it only logs — so the call is
+			// dropped rather than replayed onto the wrong filesystem: the
+			// fail-closed direction, since the host is still in-process
+			// and can retry.
+			if callCarriesDiskProvider(call) {
+				slog.Error("agent: refusing to durably enqueue a call carrying a caller-supplied disk provider",
+					"session_id", call.SessionID, "logical_call_id", call.LogicalCallID)
+				callErrs[i] = fmt.Errorf("%w (session=%s)", ErrDiskProviderNotDurable, call.SessionID)
+				return
+			}
+
 			// P2-1: Generate idempotency key from LogicalCallID (stable per logical request)
 			// instead of timestamp (which changes on every retry). Fallback to timestamp
 			// with warning if LogicalCallID is empty (should not happen in normal flow).

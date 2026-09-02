@@ -159,6 +159,13 @@ func ToSessionAgentCallData(call SessionAgentCall) session.SessionAgentCallData 
 		Origin:               call.Origin,
 		RunAllowlistSpec:     toSessionRunAllowlistSpec(call.RunAllowlistSpec),
 		FolderScopeSpec:      toSessionFolderScopeSpec(call.FolderScopeSpec),
+		// Layer 2 (belt and braces, design doc §7.3): mark the row so a
+		// consumer that somehow receives it (a producer added later, or a
+		// row written by a different binary version) still fails closed
+		// at RebuildSessionAgentCall instead of failing open. Every
+		// current producer already refuses to reach this point at all
+		// (Layer 1) when this is true.
+		HostDiskProvider: callCarriesDiskProvider(call),
 	}
 }
 
