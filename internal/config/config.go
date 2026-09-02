@@ -810,6 +810,14 @@ func allToolNames() []string {
 		"write",
 		"list_mcp_resources",
 		"read_mcp_resource",
+		"fs_list",
+		"fs_find",
+		"fs_grep",
+		"fs_read",
+		"fs_write",
+		"fs_replace",
+		"fs_write_lines",
+		"fs_delete",
 	}
 }
 
@@ -829,7 +837,7 @@ func resolveReadOnlyTools(tools []string) []string {
 	// this list by buildToolsAgentConfig in internal/agent/coordinator.go,
 	// together with the question round-trip that makes it useful. See
 	// docs/plans/2026-07-26-orchestrator-worker-e2e.md (BUG-2, phase 3).
-	readOnlyTools := []string{"git_read", "glob", "grep", "ls", "sourcegraph", "view"}
+	readOnlyTools := []string{"git_read", "glob", "grep", "ls", "sourcegraph", "view", "fs_list", "fs_find", "fs_grep", "fs_read"}
 	// filter to only include tools that are in allowedtools (include mode)
 	return filterSlice(tools, readOnlyTools, true)
 }

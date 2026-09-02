@@ -457,7 +457,7 @@ func TestConfig_setupAgentsWithNoDisabledTools(t *testing.T) {
 
 	taskAgent, ok := cfg.Agents[AgentTask]
 	require.True(t, ok)
-	assert.Equal(t, []string{"git_read", "glob", "grep", "ls", "sourcegraph", "view"}, taskAgent.AllowedTools)
+	assert.Equal(t, []string{"git_read", "glob", "grep", "ls", "sourcegraph", "view", "fs_list", "fs_find", "fs_grep", "fs_read"}, taskAgent.AllowedTools)
 }
 
 func TestConfig_setupAgentsWithDisabledTools(t *testing.T) {
@@ -480,7 +480,7 @@ func TestConfig_setupAgentsWithDisabledTools(t *testing.T) {
 
 	taskAgent, ok := cfg.Agents[AgentTask]
 	require.True(t, ok)
-	assert.Equal(t, []string{"git_read", "glob", "ls", "sourcegraph", "view"}, taskAgent.AllowedTools)
+	assert.Equal(t, []string{"git_read", "glob", "ls", "sourcegraph", "view", "fs_list", "fs_find", "fs_grep", "fs_read"}, taskAgent.AllowedTools)
 }
 
 func TestConfig_setupAgentsWithEveryReadOnlyToolDisabled(t *testing.T) {
@@ -493,6 +493,10 @@ func TestConfig_setupAgentsWithEveryReadOnlyToolDisabled(t *testing.T) {
 				"ls",
 				"sourcegraph",
 				"view",
+				"fs_list",
+				"fs_find",
+				"fs_grep",
+				"fs_read",
 			},
 		},
 	}
