@@ -399,6 +399,12 @@ func (c *coordinator) resolveCredentialsModels(ctx context.Context, sessionID st
 	// CallOptions were attached to ctx, so its tools slice proves nothing
 	// about this call's policy; always rebuild from ctx directly.
 	resolved.tools = c.pinCallTools(ctx, cfg)
+	// R5-1 (P0): a nil result for a scoped/provider-backed call must fail
+	// the call, not silently fall back to the shared unscoped toolset — see
+	// ErrScopedCallToolsUnavailable's doc comment (coordinator_models.go).
+	if resolved.tools == nil && scopedCallToolsRequired(ctx) {
+		return nil, ErrScopedCallToolsUnavailable
+	}
 	return resolved, nil
 }
 
