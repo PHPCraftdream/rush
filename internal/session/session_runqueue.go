@@ -105,6 +105,62 @@ type FolderScopeSpec struct {
 	KeepCommandTools bool               `json:"keep_command_tools,omitempty"`
 }
 
+// CallOptionsSpecVersion is the current schema version stamped by
+// toSessionCallOptionsSpec (internal/agent/call_data_conversion.go) onto
+// every newly persisted CallOptionsSpec. Bump it whenever the mirrored
+// field set changes incompatibly.
+const CallOptionsSpecVersion = 1
+
+// CallOptionsSpec is a JSON-serializable mirror of the replay-relevant
+// subset of agent.CallOptions (R5-3, P0 security review). It exists for
+// the same reason RunAllowlistSpec/FolderScopeSpec above mirror their
+// agent/permission-side originals: the session package cannot import
+// internal/agent (agent already imports session in
+// call_data_conversion.go, so the reverse import would cycle). The agent
+// package converts between the two at the durable-serialization boundary
+// (call_data_conversion.go); keep the fields in sync with
+// agent.CallOptions.
+//
+// Deliberately NOT a full mirror of agent.CallOptions:
+//   - MaxCost/MaxTokens are already persisted directly on
+//     SessionAgentCallData below (not routed through CallOptions) and
+//     round-trip correctly today.
+//   - FolderScope has its own dedicated spec (FolderScopeSpec above),
+//     compiled through a different path (tools.CanonicalizeFolderScopeSpec
+//     + permission.BuildFolderScope) and kept separate rather than folded
+//     in here.
+//   - AllowPeakHours and FailIfSessionBusy are one-shot admission-time
+//     decisions consumed before/at the original mailbox submission; they
+//     have no meaning for a call being replayed after the fact.
+//   - DiskProvider has no serializable form at all, and a call carrying
+//     one is refused before it ever reaches the durable queue (see
+//     HostDiskProvider below).
+type CallOptionsSpec struct {
+	Version int `json:"version"`
+	// DisableSubAgents mirrors agent.CallOptions.DisableSubAgents: strips
+	// the delegation tools (agent, agentic_fetch) from the top-level coder
+	// toolset for this call. Losing this on a durable restart was the
+	// R5-3 finding's headline risk: a call originally declared
+	// single-agent (--agents single) could silently regain delegation
+	// after a restart.
+	DisableSubAgents bool `json:"disable_sub_agents,omitempty"`
+	// ModelRole mirrors agent.CallOptions.ModelRole (config.SelectedModelType,
+	// stored here as a plain string since session cannot import config
+	// either — see ModelCfg above for the same constraint). Empty means
+	// unset, exactly like the zero value of config.SelectedModelType.
+	ModelRole string `json:"model_role,omitempty"`
+	// TimeoutOptionsSet/TimeoutExtendsOnProgress/TimeoutHardCap mirror the
+	// three agent.CallOptions timeout-watchdog fields together, including
+	// the R3-6 distinction between "unset" and "deliberately zero":
+	// TimeoutOptionsSet must round-trip on its own even when the two
+	// fields it guards are both zero, or a call that asked for "no
+	// extension, no cap, on purpose" would be indistinguishable from a
+	// legacy row that never set timeouts at all.
+	TimeoutOptionsSet        bool          `json:"timeout_options_set,omitempty"`
+	TimeoutExtendsOnProgress bool          `json:"timeout_extends_on_progress,omitempty"`
+	TimeoutHardCap           time.Duration `json:"timeout_hard_cap,omitempty"`
+}
+
 // SessionAgentCallData is a durable, serializable subset of agent.SessionAgentCall
 // that can be stored in the run queue and reconstructed after process restart.
 // It contains only the fields needed to execute a call, excluding process-local
@@ -151,6 +207,20 @@ type SessionAgentCallData struct {
 	// fail-closed direction). nil means unscoped or legacy row; see
 	// RebuildSessionAgentCall for how a nil spec is judged.
 	FolderScopeSpec *FolderScopeSpec
+	// CallOptionsSpec carries the caller's declared replay-relevant
+	// agent.CallOptions execution policy — DisableSubAgents, ModelRole,
+	// and the timeout-watchdog policy — so a call rebuilt from this row
+	// by the run-queue pump reconstructs ALL of them together, not just
+	// the folder scope (R5-3, P0 security review: RebuildSessionAgentCall
+	// used to construct the rebuilt CallOptions with ONLY FolderScope
+	// set, silently dropping DisableSubAgents/ModelRole/timeout policy on
+	// every durable restart — most seriously, a call originally declared
+	// single-agent could silently regain its delegation tools after a
+	// restart). nil means "the originating call carried no CallOptions"
+	// (legacy in-process callers, and durable rows persisted before this
+	// field existed) — such rows keep the historical fallback to the
+	// shared toolset/watchdog policy, exactly as before this fix.
+	CallOptionsSpec *CallOptionsSpec
 	// HostDiskProvider records that the call this row was built from
 	// carried a caller-supplied filesystem (agent.CallOptions.DiskProvider).
 	// The provider itself is arbitrary in-process Go code (typically a

@@ -573,7 +573,24 @@ func (c *coordinator) RebuildSessionAgentCall(ctx context.Context, data session.
 	// compile does. A DiskProvider never survives the durable queue (see
 	// CallOptions.DiskProvider's doc comment), so every rebuilt scope is
 	// canonicalized against the real disk (nil disk argument).
+	//
+	// R5-3 (P0 security review): this used to be the ONLY thing
+	// rebuiltCallOptions ever carried — a rebuilt call's DisableSubAgents,
+	// ModelRole and timeout-watchdog policy were silently dropped even
+	// though CallOptionsSpec now persists them, because this block never
+	// looked at that field at all. Reconstruct the primitive fields FIRST
+	// (fromSessionCallOptionsSpec needs no compilation, unlike FolderScope
+	// below) and layer the compiled scope on top when the row also
+	// declares one, so every replay-relevant field lands on the SAME
+	// CallOptions value together. A row carrying neither spec still
+	// leaves rebuiltCallOptions nil, exactly as before this fix.
 	var rebuiltCallOptions *CallOptions
+	if data.CallOptionsSpec != nil || data.FolderScopeSpec != nil {
+		rebuiltCallOptions = fromSessionCallOptionsSpec(data.CallOptionsSpec)
+		if rebuiltCallOptions == nil {
+			rebuiltCallOptions = &CallOptions{}
+		}
+	}
 	if data.FolderScopeSpec != nil {
 		var compiledScope permission.FolderScope
 		canonSpec, canonErr := tools.CanonicalizeFolderScopeSpec(
@@ -589,7 +606,7 @@ func (c *coordinator) RebuildSessionAgentCall(ctx context.Context, data session.
 					"session_id", data.SessionID, "err", scopeErr)
 			}
 		}
-		rebuiltCallOptions = &CallOptions{FolderScope: &compiledScope}
+		rebuiltCallOptions.FolderScope = &compiledScope
 	}
 
 	return SessionAgentCall{
@@ -675,15 +692,33 @@ func (c *coordinator) RunSessionAgentCall(ctx context.Context, call SessionAgent
 	// was scoped, the shared toolset IS the unrestricted restart T12
 	// exists to prevent, so a build failure refuses the row (the pump
 	// retries it) — the fail-closed direction.
-	if call.CallOptions != nil && call.CallOptions.FolderScope != nil {
+	//
+	// R5-3 (P0 security review): the trigger used to be FolderScope alone.
+	// DisableSubAgents and ModelRole ALSO decide the pinned toolset
+	// (applyCallDisableSubAgents, coordinator_tools.go reads both off the
+	// ctx-carried CallOptions), so a rebuilt --agents single call with no
+	// folder scope used to skip this block entirely, leave call.Tools nil,
+	// and silently fall back to the shared toolset — regaining the
+	// delegation tools (agent/agentic_fetch) it was declared not to have.
+	// Widen the trigger to any of the three; keep the fail-closed refusal
+	// scoped to exactly the same cases scopedCallToolsRequired already
+	// treats as required elsewhere (FolderScope/DiskProvider) so a
+	// DisableSubAgents/ModelRole-only build failure keeps the existing
+	// "fall back to shared toolset" behavior those live (non-durable)
+	// call sites already grant it — this fix does not change that
+	// separate, wider design judgment.
+	if call.CallOptions != nil && (call.CallOptions.FolderScope != nil || call.CallOptions.DisableSubAgents || call.CallOptions.ModelRole != "") {
 		ctx = WithCallOptions(ctx, call.CallOptions)
 		cfg, _ := c.cfg.Snapshot()
 		scopedTools := c.pinCallTools(ctx, cfg)
 		if scopedTools == nil {
-			return nil, fmt.Errorf(
-				"failed to build the rebuilt call's folder-scoped toolset; refusing to restart the scoped turn on the shared unscoped toolset")
+			if scopedCallToolsRequired(ctx) {
+				return nil, fmt.Errorf(
+					"failed to build the rebuilt call's folder-scoped toolset; refusing to restart the scoped turn on the shared unscoped toolset")
+			}
+		} else {
+			call.Tools = scopedTools
 		}
-		call.Tools = scopedTools
 	}
 
 	// Interrupt-inject ticker: watches pending_injects for interrupt=true rows
