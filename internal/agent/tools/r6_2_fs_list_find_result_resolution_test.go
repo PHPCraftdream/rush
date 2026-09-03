@@ -69,7 +69,15 @@ import (
 // so never appears as a rendered leaf at all.
 func TestFSListOSDiskSymlinkNeverLeaksDenyCarvedSubtreeThroughListing(t *testing.T) {
 	t.Parallel()
-	work := t.TempDir()
+	// t.TempDir() is not guaranteed to already be canonical on every CI
+	// runner image (macOS's /var -> /private/var; a redirected Windows
+	// temp drive) -- the fs_list tool resolves "work" against the REAL
+	// disk internally, so an unresolved "work" here would make every
+	// listed entry's canonical path lexically disagree with this test's
+	// own (unresolved) scope roots, denying everything. Same
+	// host-topology class already fixed in 73878311.
+	work, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
 	private := filepath.Join(work, "private")
 	require.NoError(t, os.MkdirAll(private, 0o755))
 	secretFile := filepath.Join(private, "secret.txt")

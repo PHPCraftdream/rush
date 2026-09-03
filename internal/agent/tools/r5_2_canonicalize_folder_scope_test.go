@@ -42,7 +42,20 @@ import (
 // correctly.
 func TestCanonicalizeFolderScopeSpec_RealSymlinkedDenyCarveOutUnderBroaderGrant(t *testing.T) {
 	t.Parallel()
-	work := t.TempDir()
+	// t.TempDir() itself is not guaranteed to already be in canonical
+	// form -- some CI runner images mount/junction the OS temp root
+	// (macOS's /var -> /private/var; Windows runners with a redirected
+	// temp drive), the same host-topology class of issue already fixed
+	// in 73878311 and mirrored by this file's own
+	// TestCanonicalizeFolderScopeSpec_RealSymlinkedWorkingDir (which
+	// resolves its own "real" dir before comparing). Without this, the
+	// premise assertion below compares a fully symlink-resolved
+	// resolvedItem against an unresolved "work" grant root and can
+	// spuriously deny on such a runner even though the entry-level bug
+	// this test targets (the unresolved "alias" carve-out) is unrelated
+	// to WorkingDir's own canonical form.
+	work, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
 	private := filepath.Join(work, "private")
 	require.NoError(t, os.MkdirAll(private, 0o755))
 	keyFile := filepath.Join(private, "key.txt")

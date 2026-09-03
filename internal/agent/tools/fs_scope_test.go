@@ -18,7 +18,14 @@ import (
 
 func TestResolveScopedPath_SymlinkEscapeResolvesOutside(t *testing.T) {
 	t.Parallel()
-	tmp := t.TempDir()
+	// t.TempDir() is not guaranteed to already be canonical on every CI
+	// runner image (macOS's /var -> /private/var; a redirected Windows
+	// temp drive) -- resolve it up front so the later scope.Check(wantInside, ...)
+	// compares against the SAME namespace the scope's own (unresolved)
+	// entry root and resolveScopedPath's fully-resolved output agree on.
+	// Same host-topology class already fixed in 73878311.
+	tmp, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
 	inside := filepath.Join(tmp, "root", "inside")
 	secret := filepath.Join(tmp, "secret")
 	require.NoError(t, os.MkdirAll(inside, 0o755))
