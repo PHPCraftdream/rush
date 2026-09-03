@@ -48,6 +48,22 @@ primary checkout.
    Bash call) — every edit, git op, and test the sub-agent runs stays
    inside that tree. Redirect `.rush/stdin/<task>.{out,err}` to the
    PRIMARY checkout so results survive the eventual worktree removal.
+
+   **Two delegation layers, not one — and `--agents single` only
+   speaks to the second:** launching a worktree-scoped `rush run` at
+   all is delegation layer one (you, the orchestrating LLM, handing
+   the task to a Rush sub-agent process). `rush.md`'s `--agents
+   single`/orchestrator-mode guidance governs delegation layer two
+   (whether THAT sub-agent process may further delegate to its own
+   worker sub-agents via the `agent` tool). Passing `--agents single`
+   still does exactly what `rush.md` says — it does not grant or
+   revoke worktree isolation, and worktree isolation does not grant or
+   revoke `--agents single`'s effect. cwd isolation is inherited
+   transparently: the sub-agent process (and any worker it delegates
+   to, if `--agents single` wasn't forced) all see the worktree as
+   their working directory, because that is simply where `rush run`
+   was launched from — there is no separate step to "turn on"
+   isolation for delegated work.
 4. **Doing it yourself instead of delegating** (rush.md's refusal
    list) still means: worktree first, edits there, verify and merge
    like a sub-agent's diff. Never edit the primary checkout directly.

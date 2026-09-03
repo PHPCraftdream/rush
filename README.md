@@ -466,6 +466,16 @@ triggered explicitly by the operator — never auto-discovered:
   disturb the primary checkout's working tree or index, even if the
   sub-agent misbehaves.
 
+  **Trust boundary, stated explicitly:** `/wrush` is a slash-command
+  convention — plain text the orchestrating LLM reads and follows.
+  There is no code-level guard in the `rush` binary itself that
+  verifies a `rush run` invocation's `cwd` is actually under
+  `<repo-root>/worktrees/`; the isolation guarantee holds only as long
+  as the orchestrator (and any sub-agent it delegates to) actually
+  follows the template. An operator who manually launches `/wrush`
+  from the primary checkout, or an orchestrator that ignores the
+  instruction, gets no runtime enforcement catching the mistake.
+
 Earlier versions of this fork also wrote a long "delegate everything to
 rush" block into `CLAUDE.md`. That block turned out to be a recursive-
 delegation footgun: a sub-agent reading it on startup would try to
