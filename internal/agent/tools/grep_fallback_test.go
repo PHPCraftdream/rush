@@ -336,12 +336,38 @@ func TestSearchFilesWithRegexRespectsMidWalkCancellation(t *testing.T) {
 func TestFileMatchesHonoursDeadlineMidHugeLine(t *testing.T) {
 	// Deliberately NOT t.Parallel(): this test takes two sequential live
 	// wall-clock measurements and compares them to each other (not against
-	// a fixed constant). Under load from sibling t.Parallel() tests, the
-	// two measurements can land in different-contention moments and
-	// disagree even though the deadline mechanism itself works correctly
-	// -- observed flaking with the SECOND (deadline-bounded) measurement
-	// coming out slower than the FIRST (full-read baseline), which should
-	// be structurally impossible if both ran under comparable load.
+	// a fixed constant). Under load -- from sibling t.Parallel() tests, or
+	// from unrelated system contention (another heavy build/test running
+	// concurrently on this machine) -- the two measurements can land in
+	// different-contention moments and disagree even though the deadline
+	// mechanism itself works correctly. Observed flaking two ways: the
+	// SECOND (deadline-bounded) measurement coming out slower than the
+	// FIRST (full-read baseline); or the reverse, a contended/abnormally
+	// slow baseline inflating the computed deadline generously enough that
+	// a since-warmed file cache lets the second read finish comfortably
+	// inside it, returning nil instead of context.DeadlineExceeded. Both
+	// are measurement noise, not a production regression -- a REAL
+	// regression (fileMatches never honouring the deadline) fails
+	// identically on every attempt, so a bounded retry cannot mask it,
+	// same philosophy as the "known rare Windows flakiness" retry already
+	// accepted in .githooks/pre-push.
+	const attempts = 3
+	for attempt := 1; attempt <= attempts; attempt++ {
+		if fileMatchesHonoursDeadlineMidHugeLineAttempt(t, attempt, attempts) {
+			return
+		}
+	}
+}
+
+// fileMatchesHonoursDeadlineMidHugeLineAttempt runs one baseline +
+// deadline-bounded measurement pair. Returns true when the invariant held
+// (the test is done, pass). Returns false only for the specific timing-noise
+// shapes described above, and only when attempts remain -- on the last
+// attempt, or for any non-timing failure (I/O error, no return within 10s),
+// it fails the test immediately via require/t.Fatal instead of returning
+// false, exactly as the original single-shot version did.
+func fileMatchesHonoursDeadlineMidHugeLineAttempt(t *testing.T, attempt, attempts int) bool {
+	t.Helper()
 	tempDir := t.TempDir()
 
 	// A single line, no newline, several MiB. The pattern never matches, so
@@ -357,7 +383,7 @@ func TestFileMatchesHonoursDeadlineMidHugeLine(t *testing.T) {
 	fullStart := time.Now()
 	require.NoError(t, fileMatches(context.Background(), path, re, func(lineMatch) bool { return true }))
 	fullElapsed := time.Since(fullStart)
-	t.Logf("full read of 16 MiB single-line file took %s", fullElapsed)
+	t.Logf("attempt %d/%d: full read of 16 MiB single-line file took %s", attempt, attempts, fullElapsed)
 
 	// Deadline short enough that the read must still be in progress.
 	deadline := fullElapsed / 4
@@ -376,14 +402,22 @@ func TestFileMatchesHonoursDeadlineMidHugeLine(t *testing.T) {
 	select {
 	case err := <-done:
 		elapsed := time.Since(start)
+		invariantHeld := err != nil && errors.Is(err, context.DeadlineExceeded) && elapsed < fullElapsed
+		if !invariantHeld && attempt < attempts {
+			t.Logf("attempt %d/%d: timing-noise shape (err=%v elapsed=%s fullElapsed=%s deadline=%s), retrying",
+				attempt, attempts, err, elapsed, fullElapsed, deadline)
+			return false
+		}
 		require.Error(t, err)
 		require.ErrorIs(t, err, context.DeadlineExceeded,
 			"fileMatches must honour the deadline mid-line, got %v", err)
 		require.Less(t, elapsed, fullElapsed,
 			"fileMatches should abort near the deadline (%s), not after a full read (%s)", deadline, fullElapsed)
-		t.Logf("aborted %s after start (deadline %s, full read %s)", elapsed, deadline, fullElapsed)
+		t.Logf("attempt %d/%d: aborted %s after start (deadline %s, full read %s)", attempt, attempts, elapsed, deadline, fullElapsed)
+		return true
 	case <-time.After(10 * time.Second):
 		t.Fatal("fileMatches did not return within 10s")
+		return true // unreachable, t.Fatal stops the goroutine
 	}
 }
 
