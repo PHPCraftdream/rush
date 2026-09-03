@@ -66,7 +66,7 @@ func NewFSListTool(scope permission.FolderScope, workingDir string, lsConfig con
 				Tool: FSListToolName, WorkingDir: workingDir, Scope: scope, Items: items, Disk: disk,
 				PathOf:    func(item FSListItem) string { return item.Path },
 				Preflight: fsListPreflight,
-				Execute:   fsListExecute(scope, lsConfig, disk),
+				Execute:   fsListExecute(scope, workingDir, lsConfig, disk),
 			})
 		},
 	)
@@ -93,11 +93,11 @@ func fsListPreflight(_ context.Context, item FSListItem, _ int, _ string) (permi
 
 // fsListExecute lists one group of items sharing a resolved directory,
 // reporting one outcome per item in order.
-func fsListExecute(scope permission.FolderScope, lsConfig config.ToolLs, disk DiskProvider) FSExecuteFunc[FSListItem] {
+func fsListExecute(scope permission.FolderScope, workingDir string, lsConfig config.ToolLs, disk DiskProvider) FSExecuteFunc[FSListItem] {
 	return func(ctx context.Context, group FSBatchGroup[FSListItem]) ([]FSItemOutcome, error) {
 		outcomes := make([]FSItemOutcome, len(group.Items))
 		for i, member := range group.Items {
-			block, err := fsListOne(ctx, disk, scope, group.Path, member.Item, lsConfig)
+			block, err := fsListOne(ctx, disk, scope, workingDir, group.Path, member.Item, lsConfig)
 			if err != nil {
 				outcomes[i] = FSItemOutcome{Status: FSStatusFailed, Error: err.Error()}
 				continue
@@ -111,7 +111,26 @@ func fsListExecute(scope permission.FolderScope, lsConfig config.ToolLs, disk Di
 // fsListOne lists one directory with policy filtering: disk.List does no
 // scope checking, so every entry is re-checked and denied entries are
 // dropped before the tree is rendered.
-func fsListOne(ctx context.Context, disk DiskProvider, scope permission.FolderScope, absPath string, item FSListItem, lsConfig config.ToolLs) (string, error) {
+//
+// disk.List returns entries at whatever spelling the provider's traversal
+// used, not necessarily canonical: OSDisk's fastwalk follows directory
+// symlinks (Follow: true, internal/fsext/ls.go) while keeping the
+// alias-spelled path for the tree. Checking that lexical spelling against
+// a symlink-canonicalized scope (fs_scope.go's CanonicalizeFolderScopeSpec)
+// would let a denied subtree reachable only through an aliased directory
+// dodge a deny carve-out compiled against its real target (R6-2, P1
+// security review finding) — the same class of namespace mismatch R5-2
+// closed for directly REQUESTED paths, reopened here for RESULT paths.
+// Each entry is therefore re-resolved through resolveScopedPath (the same
+// algorithm and the same disk provider used everywhere else) before
+// Check ever sees it; an entry that cannot be resolved is dropped, never
+// rendered, exactly like a denied one — a path that cannot be judged safe
+// is not safe. The TREE ITSELF still renders the entry's original,
+// provider-returned spelling (native, alias included): createFileTree
+// requires every entry to share the literal Dir prefix it was listed
+// under, and the model is best served seeing the name it would actually
+// use to reach the file again through this same tool.
+func fsListOne(ctx context.Context, disk DiskProvider, scope permission.FolderScope, workingDir, absPath string, item FSListItem, lsConfig config.ToolLs) (string, error) {
 	info, err := disk.Stat(ctx, absPath)
 	if err != nil {
 		return "", fmt.Errorf("path does not exist: %s", absPath)
@@ -133,15 +152,22 @@ func fsListOne(ctx context.Context, disk DiskProvider, scope permission.FolderSc
 	files, truncated := listResult.Entries, listResult.Truncated
 
 	// Policy filter: ListDirectory applies no scope policy, so every
-	// entry must pass Check with FileOpList; denied entries are
-	// dropped. Entries arrive forward-slashed (fastwalk's ToSlash) with
-	// a trailing native separator on directories; FromSlash restores
-	// native separators for both the scope match and the tree builder.
+	// entry must be resolved and re-checked, and denied or unresolvable
+	// entries are dropped. Entries arrive forward-slashed (fastwalk's
+	// ToSlash) with a trailing native separator on directories; FromSlash
+	// restores native separators for the tree builder. The RESOLVED path
+	// (not the possibly alias-spelled native one) is what Check sees —
+	// see fsListOne's doc comment for why.
 	dropped := 0
 	allowed := make([]string, 0, len(files))
 	for _, f := range files {
 		native := filepath.FromSlash(f)
-		if scope.Check(filepath.Clean(native), permission.FileOpList) != nil {
+		resolved, err := resolveScopedPath(ctx, disk, workingDir, native)
+		if err != nil {
+			dropped++
+			continue
+		}
+		if scope.Check(resolved, permission.FileOpList) != nil {
 			dropped++
 			continue
 		}
