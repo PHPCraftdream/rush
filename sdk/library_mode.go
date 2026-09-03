@@ -10,6 +10,7 @@ import (
 	"sort"
 
 	"charm.land/catwalk/pkg/catwalk"
+	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/csync"
@@ -70,9 +71,9 @@ type LibraryConfig struct {
 // (tools.resolveScopedPath's workingDir parameter, itself sourced from
 // the SAME WorkingDir() getter in coordinator_tools.go) reads from.
 //
-// Before this fix an ephemeral session left ConfigStore.WorkingDir() as
-// "". permission.BuildFolderScope hard-rejects a relative Dir entry
-// when WorkingDir is empty, so the README's own natural example
+// Before R5-6 an ephemeral session left ConfigStore.WorkingDir() as "".
+// permission.BuildFolderScope hard-rejects a relative Dir entry when
+// WorkingDir is empty, so the README's own natural example
 // ({Dir: "src", ...}) could not be used unchanged in library mode. A
 // caller who worked around that by supplying an absolute virtual scope
 // still hit a second, silent failure: a RELATIVE item path (what a
@@ -84,33 +85,90 @@ type LibraryConfig struct {
 // review finding). See tools.resolveScopedPath's doc comment for the
 // mechanism of that second bug and its fix.
 //
-// LibraryVirtualRoot is deliberately not a real path on any OS:
+// A synthesized path string alone does not make a real disk-backed tool
+// virtual (R6-1, P0 SDK review round 6): before that fix, an ephemeral
+// session with no caller-supplied DiskProvider still handed the model
+// every legacy host-disk tool (bash, write, edit, ...) and the fs_*
+// family backed by the REAL OS filesystem, rooted at this sentinel --
+// which on Windows is a real, OS-interpreted drive-relative path, and on
+// Unix an ordinary absolute host path. Two changes close that hole:
+//
+//  1. buildLibraryConfig disables every host-disk and command-execution
+//     tool by default for an ephemeral session (libraryEphemeralDisabledTools
+//     below) -- an ephemeral coder gets NONE of bash/run_command/edit/
+//     multiedit/glob/grep/ls/view/write/fs_* unless a call explicitly opts
+//     in via RunOverrides.FolderScopes (which internal/agent's
+//     applyCallFolderScope re-adds regardless of this default-disabled
+//     list -- see that function's doc). bash/run_command have no such
+//     opt-in: shell execution cannot be virtualized by a DiskProvider, so
+//     they stay hard-denied for every ephemeral call, scoped or not.
+//  2. tools.resolveScopedPath now refuses (fails closed, before the
+//     first real disk.Stat call) any resolution that would touch the
+//     REAL disk under this sentinel -- the backstop for a call that
+//     opts into FolderScopes without also supplying a DiskProvider (see
+//     tools.rejectRealDiskUnderLibraryVirtualRoot).
+//
+// LibraryVirtualRoot's value:
 //   - It is exported so a host can build absolute-style FolderScopes
 //     entries directly against it, or recognize it in returned/audited
 //     paths, without guessing the sentinel value.
-//   - A leading "/" makes internal/filepathext.SmartIsAbs treat it as
-//     absolute on BOTH Windows and Unix. On Unix this coincides with
-//     the real filepath.IsAbs (a leading "/" IS Unix-absolute). On
-//     Windows it deliberately does NOT satisfy the real filepath.IsAbs
-//     (no drive letter, no "\\" UNC prefix) -- permission.BuildFolderScope
-//     and tools.resolveScopedPath were both updated (R5-6) to treat
-//     "already SmartIsAbs" the same as "already resolved," which lets
-//     this single cross-platform literal work everywhere without ever
-//     needing filepath.Abs/filepath.IsAbs to recognize it natively.
-//   - It is NOT a "\\host\share" UNC path on purpose: stat-ing a
-//     non-existent UNC host from a caller who forgets to supply a
-//     DiskProvider can hang on a real Windows network name-resolution
-//     timeout. A driveless, non-UNC "/..." path instead fails
-//     immediately (not-exist) if it were ever handed to a real disk
-//     provider by mistake.
-//   - The literal segment is specific enough that no real project is
-//     plausibly rooted at this exact absolute path; even if it were,
-//     an ephemeral ModeLibrary session only ever reaches a real
-//     filesystem call through the caller's own DiskProvider, or, on
-//     caller misuse (no DiskProvider), the real OS provider -- in
-//     which case this value denies/fails closed rather than granting
-//     anything.
-const LibraryVirtualRoot = "/rush-library-mode-root"
+//   - Computed per-OS (R6-1) to satisfy the REAL, platform-native
+//     filepath.IsAbs on every OS, not just internal/filepathext.SmartIsAbs's
+//     cross-platform notion of "absolute enough". DiskProvider's own
+//     documented contract (internal/agent/tools/fs_provider.go) is that
+//     every method receives an absolute path; before this fix the one
+//     literal used on Unix ("/rush-library-mode-root") satisfied that on
+//     Unix but not on Windows (no drive letter), so a strict custom
+//     DiskProvider could correctly reject a path the SDK itself produced.
+//     See tools.LibraryVirtualRoot (the canonical definition this
+//     re-exports) for the exact per-OS value and the reasoning behind it,
+//     including why a real collision with an actual project at this path
+//     is a non-issue: it is unconditionally denied on the real disk
+//     either way (point 2 above).
+//   - It is NOT a "\\host\share" UNC path: stat-ing a non-existent UNC
+//     host can hang on a real Windows network name-resolution timeout --
+//     moot in practice now that point 2 above refuses the real disk
+//     before any Stat is ever issued, but avoided anyway for defense in
+//     depth.
+var LibraryVirtualRoot = tools.LibraryVirtualRoot
+
+// libraryEphemeralDisabledTools are the built-in tool names removed by
+// default from an ephemeral ModeLibrary session (Options.WorkingDir
+// empty): every legacy tool that operates directly against a real OS
+// path built from c.cfg.WorkingDir() -- for an ephemeral session, the
+// synthetic LibraryVirtualRoot, an OS-interpreted real path, not a
+// sandbox -- plus the scoped fs_* family, which normalizes to the real
+// OS disk whenever a call does not supply RunOverrides.DiskProvider.
+// Closes SDK review round 6, finding R6-1 (P0): the README's minimal
+// ephemeral example must never hand the model host-disk or
+// shell-execution tools by default.
+//
+// This is not a permanent ban on the fs_* half: internal/agent's
+// applyCallFolderScope (internal/agent/coordinator_tools.go) re-adds each
+// fs_* tool named in folderScopeOpForTool UNCONDITIONALLY whenever a
+// per-call RunOverrides.FolderScopes grants the corresponding operation --
+// regardless of this default-disabled list -- so a caller who explicitly
+// opts in with FolderScopes (typically together with a DiskProvider) still
+// gets a scoped fs_* toolset for that one call. When no DiskProvider is
+// supplied for that opt-in call, tools.rejectRealDiskUnderLibraryVirtualRoot
+// (internal/agent/tools/fs_library_virtual_root.go) fails the call closed
+// rather than falling back to the real disk under the sentinel.
+//
+// bash/run_command/download have no such opt-in and are never re-added:
+// shell execution cannot be virtualized by a DiskProvider (there is no
+// seam a FolderScope or DiskProvider could plug into a spawned
+// subprocess), and download (internal/agent/tools/download.go) writes
+// straight to the real OS filesystem via c.cfg.WorkingDir() with no
+// DiskProvider parameter at all -- it is not in folderScopeOpForTool
+// (internal/agent/coordinator_tools.go), so applyCallFolderScope can
+// never re-add it regardless of a call's FolderScope grants. All three
+// stay hard-denied for every ephemeral call, scope or no scope.
+var libraryEphemeralDisabledTools = []string{
+	"bash", "run_command", "download",
+	"edit", "multiedit", "glob", "grep", "ls", "view", "write",
+	"fs_list", "fs_find", "fs_grep", "fs_read",
+	"fs_write", "fs_replace", "fs_write_lines", "fs_delete",
+}
 
 // openLibrary is Open's library-mode path: no config-file discovery at
 // all. Everything comes from o.LibraryConfig; persistence is either an
@@ -164,7 +222,10 @@ func openLibrary(ctx context.Context, o Options) (*Client, error) {
 		configWorkingDir = LibraryVirtualRoot
 	}
 
-	cfg := buildLibraryConfig(&lc, dataDir)
+	// workDir == "" is exactly the ephemeral case (see the dataDir block
+	// above) -- buildLibraryConfig uses it to decide whether this
+	// session gets the default host-disk/command tool set at all (R6-1).
+	cfg := buildLibraryConfig(&lc, dataDir, workDir == "")
 	store := config.NewLibraryStore(cfg, configWorkingDir)
 
 	var (
@@ -240,7 +301,16 @@ func openLibrary(ctx context.Context, o Options) (*Client, error) {
 // minimum guarantees (an Options record with TUI defaults and the
 // Assisted-By attribution trailer); MCP is left empty by design and
 // agent context paths stay unset (see LibraryConfig's limitations).
-func buildLibraryConfig(lc *LibraryConfig, dataDir string) *config.Config {
+//
+// ephemeral is true exactly when the caller's Options.WorkingDir was
+// empty (openLibrary's workDir == ""): a session with no real working
+// directory. In that case Options.DisabledTools is set to
+// libraryEphemeralDisabledTools (R6-1, P0 SDK review round 6) so
+// SetupAgents' resolveAllowedTools excludes every host-disk and
+// command-execution tool from the coder's default toolset -- see that
+// var's doc for exactly which tools and why, and for the per-call
+// FolderScopes opt-in that still works despite this default.
+func buildLibraryConfig(lc *LibraryConfig, dataDir string, ephemeral bool) *config.Config {
 	cfg := &config.Config{
 		Options: &config.Options{
 			DataDirectory: dataDir,
@@ -254,6 +324,9 @@ func buildLibraryConfig(lc *LibraryConfig, dataDir string) *config.Config {
 		Models:       make(map[config.SelectedModelType]config.SelectedModel, len(lc.Models)),
 		MCP:          config.MCPs{},
 		RecentModels: make(map[config.SelectedModelType][]config.SelectedModel),
+	}
+	if ephemeral {
+		cfg.Options.DisabledTools = libraryEphemeralDisabledTools
 	}
 	for _, cred := range lc.Credentials {
 		cfg.Providers.Set(cred.Provider, libraryProviderConfig(cred))

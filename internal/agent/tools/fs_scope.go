@@ -34,15 +34,23 @@ import (
 // already-absolute path on every OS: on Windows it unconditionally
 // normalizes through syscall.FullPath, which silently re-roots a
 // SmartIsAbs-but-driveless path (a leading "/" with no drive letter --
-// e.g. sdk.LibraryVirtualRoot, the synthesized logical root an
-// ephemeral library-mode session uses in place of a real WorkingDir)
-// against the RUSH HOST PROCESS's own current drive/working directory.
-// The same request could then resolve to a different real path if the
-// host process's CWD changes between calls -- exactly the leak this
-// guards against. A genuinely relative joined result with no
-// workingDir at all has no safe root to resolve against, so it is
-// rejected with an explicit error instead of silently falling back to
-// the host process's CWD.
+// e.g. a caller-supplied FolderScope entry spelled Unix-style against
+// their own virtual DiskProvider) against the RUSH HOST PROCESS's own
+// current drive/working directory. The same request could then resolve
+// to a different real path if the host process's CWD changes between
+// calls -- exactly the leak this guards against. A genuinely relative
+// joined result with no workingDir at all has no safe root to resolve
+// against, so it is rejected with an explicit error instead of silently
+// falling back to the host process's CWD.
+//
+// LibraryVirtualRoot (this file) is no longer an example of the
+// SmartIsAbs-but-driveless case above (R6-1 fix): it is now computed
+// per-OS to satisfy the REAL filepath.IsAbs on every platform, so it
+// takes the plain filepathext.SmartIsAbs(joined) branch just like any
+// other genuinely absolute path. The guard immediately below is what
+// actually keeps it inert: it fails closed before the first real
+// disk.Stat whenever the resolved path would land under that sentinel
+// AND disk is the real OSDisk.
 func resolveScopedPath(ctx context.Context, disk DiskProvider, workingDir, raw string) (abs string, err error) {
 	disk = diskOrOS(disk)
 	joined := filepathext.SmartJoin(workingDir, raw)
@@ -60,6 +68,15 @@ func resolveScopedPath(ctx context.Context, disk DiskProvider, workingDir, raw s
 			return "", fmt.Errorf("fs: resolve %q: %w", raw, err)
 		}
 		cleaned = filepath.Clean(cleaned)
+	}
+
+	// R6-1 (P0 review finding): fail closed BEFORE the first real disk.Stat
+	// call below when this resolution would touch the real filesystem
+	// under the ephemeral library-mode sentinel. LibraryVirtualRoot is a
+	// synthesized WorkingDir placeholder, never a real sandbox; a caller's
+	// own DiskProvider is unaffected (see the helper's doc).
+	if err := rejectRealDiskUnderLibraryVirtualRoot(disk, cleaned); err != nil {
+		return "", err
 	}
 
 	// Walk up to the longest existing prefix. Anything other than a

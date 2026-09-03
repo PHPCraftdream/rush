@@ -164,11 +164,16 @@ func BuildFolderScope(spec FolderScopeSpec) (FolderScope, error) {
 		// (2) dir is only filepathext.SmartIsAbs (a driveless leading
 		// "/" — real-absolute on Unix, Windows-ambiguous) AND
 		// spec.WorkingDir is ITSELF in that same driveless-virtual
-		// namespace (R5-6: tools.CanonicalizeFolderScopeSpec resolves
-		// entries against a synthesized virtual root like
-		// sdk.LibraryVirtualRoot, which is deliberately
-		// SmartIsAbs-but-not-IsAbs on Windows, producing entries in that
-		// same namespace).
+		// namespace. Case (2) was added for R5-6's synthesized virtual
+		// root (sdk.LibraryVirtualRoot), which at the time was deliberately
+		// SmartIsAbs-but-not-IsAbs on Windows. R6-1 changed
+		// LibraryVirtualRoot to a value that satisfies the real,
+		// platform-native filepath.IsAbs on every OS (a DiskProvider must
+		// only ever receive genuinely absolute paths — fs_provider.go), so
+		// spec.WorkingDir can no longer land in this driveless-virtual
+		// namespace in practice; case (2) is kept as a harmless, no-op-today
+		// defense in depth rather than removed, in case a future caller-shaped
+		// WorkingDir ever reintroduces one.
 		//
 		// Using plain filepathext.SmartIsAbs(dir) alone here — without
 		// also checking spec.WorkingDir's own namespace — was tried and
