@@ -76,6 +76,18 @@ func testEnv(t *testing.T) fakeEnv {
 	err := os.MkdirAll(workingDir, 0o755)
 	require.NoError(t, err)
 
+	// Canonicalize once, now that the directory genuinely exists: /tmp
+	// is a symlink to /private/tmp on macOS (some Windows runners
+	// junction the temp drive too), so the raw spelling and the
+	// resolved spelling are two different namespaces. Real fs_* reads
+	// resolve paths through EvalSymlinks (resolveScopedPath), so a
+	// FolderScope built from the raw form denies them on affected
+	// runners (CI run 33801298148). Hand every caller an
+	// already-canonical workingDir so no per-caller fixup is needed.
+	canonical, err := filepath.EvalSymlinks(workingDir)
+	require.NoError(t, err)
+	workingDir = canonical
+
 	dbDir := t.TempDir()
 	conn, err := db.Connect(t.Context(), dbDir)
 	require.NoError(t, err)

@@ -173,11 +173,25 @@ func (f *fakeDiskProvider) Search(_ context.Context, _ tools.SearchRequest) (too
 // Dir and the checked path disagree on volume — exactly what happens if
 // the scope is built from the raw, driveless workingDir while the
 // checked path was resolved with a drive letter attached.
+//
+// The absolute result is then ALSO symlink-canonicalized via
+// filepath.EvalSymlinks, the same namespace hygiene one level up: /tmp
+// is a symlink to /private/tmp on macOS (some Windows runners junction
+// the temp drive too), so a raw /tmp/... spelling and any path the real
+// disk resolved (resolveScopedPath canonicalizes through EvalSymlinks)
+// land in two different namespaces, and a scope built from the raw form
+// denies the resolved path. EvalSymlinks on an already-canonical path is
+// a no-op, so this is safe and idempotent for callers whose dir is
+// already resolved (e.g. testEnv's canonical workingDir). dir must exist
+// on disk for the EvalSymlinks step; every caller passes testEnv output,
+// which testEnv has just created.
 func absWorkingDir(t *testing.T, dir string) string {
 	t.Helper()
 	abs, err := filepath.Abs(dir)
 	require.NoError(t, err)
-	return abs
+	resolved, err := filepath.EvalSymlinks(abs)
+	require.NoError(t, err)
+	return resolved
 }
 
 // fsReadToolFrom extracts the fs_read tool from a pinned/published tool
