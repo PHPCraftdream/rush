@@ -108,7 +108,11 @@ if [ -n "$gcl" ]; then
 	"$gcl" run || fail "lint failed"
 else
 	step "golangci-lint run ($GOLANGCI_VERSION, via go run)"
-	go run "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${GOLANGCI_VERSION}" run \
+	# -p 2 (build flag, must precede the package path): this compiles the
+	# whole golangci-lint module tree at full default parallelism
+	# otherwise -- the heaviest single unthrottled Go compile this hook
+	# can trigger when no golangci-lint binary is on PATH.
+	run_capped 3g 300 go run -p 2 "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${GOLANGCI_VERSION}" run \
 		|| fail "lint failed (ran via 'go run'; install golangci-lint for speed)"
 fi
 
@@ -281,7 +285,7 @@ windows)
 	;;
 *)
 	step "process-group and lock-fence suites (no -short)"
-	go test -failfast -run 'ChildGroup|Registry|WriteChildGroupFile|VerifyGroupStillPlausible|Sweep|ProbeThenKillHolder|AcquireSessionLockForReset|ForceKillHolder|ForceStillKillsLiveHolder' \
+	run_capped 2g 180 go test -p 2 -failfast -run 'ChildGroup|Registry|WriteChildGroupFile|VerifyGroupStillPlausible|Sweep|ProbeThenKillHolder|AcquireSessionLockForReset|ForceKillHolder|ForceStillKillsLiveHolder' \
 		./internal/session/ ./internal/cmd/ || fail "process-group/lock-fence suites failed"
 	;;
 esac

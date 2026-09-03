@@ -1,8 +1,11 @@
 .PHONY: build web web-dev clean install-hooks
 
 # Build everything: React app + Go binary with embedded assets.
+# -p 2: same Windows commit-limit OOM mitigation as .githooks/pre-push
+# (627219bf) and every CI test step in build.yml — full default package
+# build parallelism has been a proven trigger on this machine.
 build: web
-	go build -o rush .
+	go build -p 2 -o rush .
 
 # Build only the React app into web/dist/.
 web:
