@@ -252,23 +252,17 @@ func ToSessionAgentCallData(call SessionAgentCall) session.SessionAgentCallData 
 //
 // LogicalCallID is restored to ensure the stable idempotency key survives
 // the durable serialization boundary (P2-1 fix, P0-1 release blocker).
-// callOptionsFromCallData reconstructs CallOptions for FromSessionAgentCallData
-// below, which has no error return of its own. This function is a plain
-// data-shape converter used only by round-trip tests exercising the OTHER
-// fields on SessionAgentCallData (RunAllowlistSpec, FolderScopeSpec,
-// LogicalCallID, ...) — it is never called from the production
-// durable-restart path, which goes through coordinator.RebuildSessionAgentCall
-// instead (that path DOES propagate fromSessionCallOptionsSpec's version
-// error and fails the row closed; see its doc comment). An unsupported
-// version here simply degrades to nil CallOptions, matching this
-// function's existing "best-effort reconstruction, no error channel"
-// contract for its test-only callers.
-func callOptionsFromCallData(spec *session.CallOptionsSpec) *CallOptions {
-	opts, _ := fromSessionCallOptionsSpec(spec)
-	return opts
-}
-
-func FromSessionAgentCallData(callData session.SessionAgentCallData) SessionAgentCall {
+// An unsupported CallOptionsSpec version is propagated as an error
+// wrapping ErrCallOptionsSpecVersionUnsupported rather than silently
+// degrading to a nil CallOptions (R13-1, P2 security review round 13):
+// nil is reserved for "no CallOptions was ever set" (a legacy row), and
+// a version-mismatched row must not masquerade as that legacy case. A
+// nil CallOptionsSpec keeps decoding to a nil CallOptions with no error.
+func FromSessionAgentCallData(callData session.SessionAgentCallData) (SessionAgentCall, error) {
+	opts, err := fromSessionCallOptionsSpec(callData.CallOptionsSpec)
+	if err != nil {
+		return SessionAgentCall{}, err
+	}
 	return SessionAgentCall{
 		SessionID:            callData.SessionID,
 		LogicalCallID:        callData.LogicalCallID,
@@ -286,8 +280,8 @@ func FromSessionAgentCallData(callData session.SessionAgentCallData) SessionAgen
 		Origin:               callData.Origin,
 		RunAllowlistSpec:     fromSessionRunAllowlistSpec(callData.RunAllowlistSpec),
 		FolderScopeSpec:      fromSessionFolderScopeSpec(callData.FolderScopeSpec),
-		CallOptions:          callOptionsFromCallData(callData.CallOptionsSpec),
+		CallOptions:          opts,
 		// SmartModel and FastModel are NOT set here — they will be reconstructed
 		// by coordinator.RebuildSessionAgentCall.
-	}
+	}, nil
 }

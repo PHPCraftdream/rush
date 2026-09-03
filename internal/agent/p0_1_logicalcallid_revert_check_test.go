@@ -46,7 +46,8 @@ func TestLogicalCallID_RevertCheck(t *testing.T) {
 	}
 
 	// Verify the full round-trip preserves the ID
-	rebuiltCall := FromSessionAgentCallData(callData)
+	rebuiltCall, err := FromSessionAgentCallData(callData)
+	require.NoError(t, err)
 	require.Equal(t, originalLogicalID, rebuiltCall.LogicalCallID,
 		"LogicalCallID must be preserved through round-trip")
 

@@ -77,7 +77,8 @@ func TestLogicalCallID_DurableRoundTripPreservesIdempotency(t *testing.T) {
 
 	// Step 3: Rebuild from data (simulating pump's RebuildSessionAgentCall)
 	// Note: we use FromSessionAgentCallData which is what RebuildSessionAgentCall uses internally
-	rebuiltCall := FromSessionAgentCallData(roundTripData)
+	rebuiltCall, err := FromSessionAgentCallData(roundTripData)
+	require.NoError(t, err)
 	require.Equal(t, originalLogicalID, rebuiltCall.LogicalCallID,
 		"LogicalCallID must be restored in rebuilt call")
 
@@ -131,7 +132,8 @@ func TestLogicalCallID_RoundTripWithoutFromDurableQueueCreatesOneRow(t *testing.
 
 	// Simulate JSON round-trip (serialization -> DB -> deserialization)
 	callData := ToSessionAgentCallData(originalCall)
-	roundTripCall := FromSessionAgentCallData(callData)
+	roundTripCall, err := FromSessionAgentCallData(callData)
+	require.NoError(t, err)
 	roundTripCall.LogicalCallID = originalLogicalID // Ensure it's preserved
 
 	// First restartOrphanedWithRetry (simulating first handoff)

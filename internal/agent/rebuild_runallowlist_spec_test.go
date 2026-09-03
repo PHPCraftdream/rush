@@ -131,7 +131,8 @@ func TestSessionAgentCallDataSpecJSONRoundTrip(t *testing.T) {
 	require.Equal(t, []string{"view", "edit:write"}, decoded.RunAllowlistSpec.AllowTools)
 	require.Equal(t, []string{"exact:git status", "glob:ls *", "regex:^probe_.*"}, decoded.RunAllowlistSpec.AllowBash)
 
-	roundTripped := FromSessionAgentCallData(decoded)
+	roundTripped, err := FromSessionAgentCallData(decoded)
+	require.NoError(t, err)
 	require.NotNil(t, roundTripped.RunAllowlistSpec)
 	require.True(t, roundTripped.RunAllowlistSpec.Restrict)
 	require.Equal(t, call.RunAllowlistSpec.AllowTools, roundTripped.RunAllowlistSpec.AllowTools)
@@ -158,5 +159,7 @@ func TestSessionAgentCallDataSpecJSONRoundTrip(t *testing.T) {
 	require.NoError(t, json.Unmarshal(nilRaw, &nilDecoded))
 	require.Nil(t, nilDecoded.RunAllowlistSpec,
 		"a legacy row without a spec must decode to a nil spec (never to an inert zero-value spec)")
-	require.Nil(t, FromSessionAgentCallData(nilDecoded).RunAllowlistSpec)
+	nilRoundTripped, err := FromSessionAgentCallData(nilDecoded)
+	require.NoError(t, err)
+	require.Nil(t, nilRoundTripped.RunAllowlistSpec)
 }

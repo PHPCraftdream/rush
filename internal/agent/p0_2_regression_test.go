@@ -218,7 +218,10 @@ type pumpTestCoordinator struct {
 
 func (p *pumpTestCoordinator) Run(ctx context.Context, callData session.SessionAgentCallData) (*any, error) {
 	// Convert SessionAgentCallData back to SessionAgentCall using the existing conversion function
-	call := FromSessionAgentCallData(callData)
+	call, err := FromSessionAgentCallData(callData)
+	if err != nil {
+		return nil, err
+	}
 	// Mirror production's coordinator.RebuildSessionAgentCall (coordinator.go):
 	// mark this call as originating from the durable queue so mailbox.submit
 	// skips mb.submitted for it (P0-1, closing-review round).

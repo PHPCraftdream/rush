@@ -139,7 +139,8 @@ func TestSessionAgentCallDataFolderScopeSpecJSONRoundTrip(t *testing.T) {
 	}, decoded.FolderScopeSpec.Entries)
 	require.True(t, decoded.FolderScopeSpec.KeepCommandTools)
 
-	roundTripped := FromSessionAgentCallData(decoded)
+	roundTripped, err := FromSessionAgentCallData(decoded)
+	require.NoError(t, err)
 	require.NotNil(t, roundTripped.FolderScopeSpec)
 	require.Equal(t, workDir, roundTripped.FolderScopeSpec.WorkingDir)
 	require.Equal(t, []permission.FolderScopeEntry{
@@ -164,5 +165,7 @@ func TestSessionAgentCallDataFolderScopeSpecJSONRoundTrip(t *testing.T) {
 	require.NoError(t, json.Unmarshal(nilRaw, &nilDecoded))
 	require.Nil(t, nilDecoded.FolderScopeSpec,
 		"a row without a folder-scope spec must decode to a nil spec, never an inert zero-value spec")
-	require.Nil(t, FromSessionAgentCallData(nilDecoded).FolderScopeSpec)
+	nilRoundTripped, err := FromSessionAgentCallData(nilDecoded)
+	require.NoError(t, err)
+	require.Nil(t, nilRoundTripped.FolderScopeSpec)
 }
