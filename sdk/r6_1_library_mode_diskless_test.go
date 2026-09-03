@@ -243,7 +243,7 @@ func TestSDKLibraryModeEphemeralWriteAndBashAttemptsNeverTouchRealDisk(t *testin
 
 	// Nothing was ever created under the OS interpretation of the
 	// sentinel root either.
-	_, sentinelStatErr := os.Stat(sdk.LibraryVirtualRoot)
+	_, sentinelStatErr := os.Stat(sdk.LibraryVirtualRoot())
 	require.Error(t, sentinelStatErr,
 		"the sentinel root must never resolve to a real, existing path on this host")
 }
@@ -320,6 +320,12 @@ func TestSDKLibraryModeEphemeralDownloadAttemptNeverTouchesRealDisk(t *testing.T
 // rooted at the sentinel. Run must now refuse the whole call before any
 // provider traffic, exactly like the sibling "invalid folder scopes" /
 // "disk provider requires a folder scope" hard errors.
+//
+// R14-2 (SDK review round 14) moved this refusal even earlier: the
+// no-real-workspace precondition now fails the whole call before any
+// canonicalization at all, for RELATIVE and ABSOLUTE scope entries
+// alike; the R6-1 sentinel guard remains as defense-in-depth for
+// direct internal callers.
 func TestSDKLibraryModeEphemeralFolderScopeWithoutDiskProviderFailsClosed(t *testing.T) {
 	isolateGlobalConfigForWorkdirTest(t)
 
@@ -353,8 +359,8 @@ func TestSDKLibraryModeEphemeralFolderScopeWithoutDiskProviderFailsClosed(t *tes
 	})
 	require.Error(t, err)
 	require.Nil(t, res)
-	require.Contains(t, err.Error(), "refusing real-disk access",
-		"the failure must come from the R6-1 sentinel guard, not some unrelated error")
+	require.Contains(t, err.Error(), "require a custom DiskProvider",
+		"the failure must come from the R14-2 no-real-workspace precondition, not some unrelated error")
 	require.EqualValues(t, 0, hits.Load(), "the provider must not be contacted when this precondition fails")
 }
 
@@ -456,7 +462,7 @@ func TestSDKLibraryModeEphemeralCustomDiskProviderPathsAreAlwaysAbsolute(t *test
 	)
 
 	fake := newFakeSDKDisk()
-	scopedDir := filepath.Clean(filepath.Join(sdk.LibraryVirtualRoot, "scoped"))
+	scopedDir := filepath.Clean(filepath.Join(sdk.LibraryVirtualRoot(), "scoped"))
 	fake.mkdir(scopedDir)
 	rec := newRecordingDisk(fake)
 

@@ -339,13 +339,22 @@ Boundaries to know:
   "real disk" to fall back to at all.** With no `WorkingDir`, every
   legacy file/command tool listed above as "NOT affected" is simply
   absent from the toolset by default — there is nothing for them to
-  touch. A `FolderScopes` override with no `DiskProvider` does not fall
-  back to a real filesystem there either: it fails the call before any
-  provider traffic, because the only "real" root available would be the
-  internal `sdk.LibraryVirtualRoot` sentinel, which every `fs_*` tool
-  refuses to operate against for real. Supplying your own `DiskProvider`
-  alongside `FolderScopes` is the only way an ephemeral session's model
-  gets file access at all.
+  touch — and no later layering (a worker sub-agent's toolset, a folder
+  scope's re-adds) can bring them back: the session's config carries an
+  immutable no-real-workspace capability that `internal/app` and
+  `internal/agent` both enforce as a floor (SDK review round 14). A
+  `FolderScopes` override with no `DiskProvider` (or with the real
+  `OSDiskProvider()`) is a hard error before any provider traffic —
+  relative and absolute scope entries alike: an ephemeral session has
+  no real filesystem to resolve a scope against. The internal
+  `sdk.LibraryVirtualRoot` sentinel guard remains as defense-in-depth
+  for direct internal callers only. Note `sdk.LibraryVirtualRoot` is a
+  FUNCTION since round 14 (R14-3) — it was previously an exported
+  `var`, a plain copy of the internal value an embedder could reassign,
+  diverging it from the guard's copy; assigning to it is now a compile
+  error. Supplying your own `DiskProvider` alongside `FolderScopes` is
+  still the only way an ephemeral session's model gets file access at
+  all.
 
 ## Session-busy behaviour is different from `rush run`
 
