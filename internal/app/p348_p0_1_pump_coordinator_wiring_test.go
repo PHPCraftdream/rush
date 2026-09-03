@@ -231,9 +231,26 @@ func TestAppNew_RunQueuePump_ExecutesRealEnqueuedCall(t *testing.T) {
 	err = application.Sessions.EnqueueRunQueueEntry(context.Background(), idempotencyKey, sess.ID, callDataJSON)
 	require.NoError(t, err)
 
-	pending, err := application.Sessions.ListPendingRunQueueEntries(context.Background())
+	// Status-agnostic existence check, not ListPendingRunQueueEntries
+	// (pending-only): application.RunQueuePump is the REAL, already-
+	// started production pump (see the require.NotNil above), and its
+	// run() fires an initial tick immediately on Start() -- before
+	// entering its 3s ticker loop (run_queue_lifecycle.go's "Initial tick
+	// on startup") -- on its own goroutine, at an unbounded delay after
+	// App.New returns. That tick can legitimately win the race and lease
+	// (or, much less likely in this 0.1s window, even fully execute and
+	// delete) this row before this line ever runs; a pending-only read
+	// would then see 0 rows despite the enqueue having genuinely
+	// succeeded, exactly as observed on a macos-latest CI run. Pending,
+	// leased, and already-executed-by-the-live-pump are all legitimate
+	// states at this instant -- HasOutstandingRunQueueEntriesForSession
+	// checks pending OR leased; a full disappearance is covered by the
+	// providerCalls fallback below, exactly as the later Eventually
+	// predicate in this same test already does for the same reason.
+	outstanding, err := application.Sessions.HasOutstandingRunQueueEntriesForSession(context.Background(), sess.ID)
 	require.NoError(t, err)
-	require.Len(t, pending, 1, "call should be enqueued in the durable run queue")
+	require.True(t, outstanding || providerCalls.Load() >= 1,
+		"call should be enqueued in the durable run queue (or, if the live pump's immediate initial tick already won the race, already dispatched to the coordinator)")
 
 	// Production tick is 3s (session.RunQueuePumpInterval) — this is
 	// intentionally NOT sped up (see doc comment above), so give it
