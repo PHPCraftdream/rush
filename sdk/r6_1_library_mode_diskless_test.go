@@ -36,9 +36,11 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/PHPCraftdream/rush/sdk"
 	"github.com/stretchr/testify/require"
@@ -118,6 +120,53 @@ func (cs *r6_1CapturingServer) mainTurnBody(t *testing.T) []byte {
 	return nil
 }
 
+// r6_1PathSnapshot records the observable state of one host path so a
+// later comparison can prove the path was not created, deleted, or
+// modified in between -- whether or not it already existed beforehand.
+type r6_1PathSnapshot struct {
+	path    string
+	statErr string // "" when os.Stat succeeded
+	mode    fs.FileMode
+	size    int64
+	modTime time.Time
+	entries []string // sorted immediate child names, when a directory
+}
+
+// r6_1SnapshotPath captures the current state of root. A stat error --
+// including ones Go does not classify as NotExist, e.g. Windows
+// ERROR_NOT_READY for a media-less removable drive -- is recorded as
+// part of the state instead of failing the snapshot: the sentinel root
+// may sit on any kind of host path, and the only property the snapshot
+// needs is that an unchanged path compares equal to itself.
+func r6_1SnapshotPath(t *testing.T, root string) r6_1PathSnapshot {
+	t.Helper()
+	snap := r6_1PathSnapshot{path: root}
+	info, err := os.Stat(root)
+	if err != nil {
+		snap.statErr = err.Error()
+		return snap
+	}
+	snap.mode, snap.size, snap.modTime = info.Mode(), info.Size(), info.ModTime()
+	if info.IsDir() {
+		entries, err := os.ReadDir(root)
+		require.NoError(t, err, "snapshot of %q: ReadDir failed", root)
+		for _, e := range entries {
+			snap.entries = append(snap.entries, e.Name())
+		}
+		sort.Strings(snap.entries)
+	}
+	return snap
+}
+
+// r6_1RequirePathUnchanged fails the test when the path's state differs
+// in any way from the earlier snapshot: existence, mode, size, mtime,
+// or immediate directory entries.
+func r6_1RequirePathUnchanged(t *testing.T, before r6_1PathSnapshot) {
+	t.Helper()
+	require.Equal(t, before, r6_1SnapshotPath(t, before.path),
+		"the sentinel root %q must not be created, deleted, or modified by this test", before.path)
+}
+
 // TestSDKLibraryModeEphemeralDefaultToolsetExcludesRealDiskAndCommandTools
 // is R6-1's headline regression: the README's minimal ephemeral example
 // (ModeLibrary, no WorkingDir, no DiskProvider) must never offer the
@@ -181,6 +230,12 @@ func TestSDKLibraryModeEphemeralWriteAndBashAttemptsNeverTouchRealDisk(t *testin
 	const marker = "R6_1_WRITE_BASH_DENIED_OK"
 	hostTarget := filepath.Join(t.TempDir(), "should-never-be-created.txt")
 
+	// Capture the sentinel root's state BEFORE any client/provider
+	// activity, so the end-of-test comparison can prove this run
+	// touched nothing under it whether or not the path already
+	// exists on this host (see the tail assertion below).
+	sentinelBefore := r6_1SnapshotPath(t, sdk.LibraryVirtualRoot())
+
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		switch {
@@ -241,11 +296,22 @@ func TestSDKLibraryModeEphemeralWriteAndBashAttemptsNeverTouchRealDisk(t *testin
 	_, statErr := os.Stat(hostTarget)
 	require.True(t, os.IsNotExist(statErr), "the write attempt must never reach the real disk (%s)", hostTarget)
 
-	// Nothing was ever created under the OS interpretation of the
-	// sentinel root either.
-	_, sentinelStatErr := os.Stat(sdk.LibraryVirtualRoot())
-	require.Error(t, sentinelStatErr,
-		"the sentinel root must never resolve to a real, existing path on this host")
+	// Nothing under the OS interpretation of the sentinel root was
+	// created, deleted, or modified either. This is deliberately a
+	// before/after STATE comparison, not an existence assertion: a
+	// real host collision with this exact path (a mapped K: drive on
+	// Windows, a pre-existing /rush-library-mode-root on Unix) is
+	// explicitly tolerated by the production guard --
+	// internal/agent/tools/fs_library_virtual_root.go refuses every
+	// real-disk operation resolving under the sentinel BEFORE the
+	// first disk.Stat, whether or not something real is already
+	// there -- so asserting the path's absence would encode a
+	// host-topology assumption that fails on collision machines even
+	// though production is correct (R14-5, same class as the two CI
+	// failures fixed in 73878311). What proves the security property
+	// is "this test's run changed nothing under the sentinel",
+	// whichever state the host started in.
+	r6_1RequirePathUnchanged(t, sentinelBefore)
 }
 
 // TestSDKLibraryModeEphemeralDownloadAttemptNeverTouchesRealDisk closes a
