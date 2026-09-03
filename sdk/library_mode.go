@@ -166,17 +166,26 @@ func LibraryVirtualRoot() string { return tools.LibraryVirtualRoot }
 // (internal/agent/tools/fs_library_virtual_root.go) fails the call closed
 // rather than falling back to the real disk under the sentinel.
 //
-// bash/run_command/download have no such opt-in and are never re-added:
-// shell execution cannot be virtualized by a DiskProvider (there is no
-// seam a FolderScope or DiskProvider could plug into a spawned
-// subprocess), and download (internal/agent/tools/download.go) writes
-// straight to the real OS filesystem via c.cfg.WorkingDir() with no
-// DiskProvider parameter at all -- it is not in folderScopeOpForTool
+// bash/run_command/download/agentic_fetch have no such opt-in and are
+// never re-added: shell execution cannot be virtualized by a DiskProvider
+// (there is no seam a FolderScope or DiskProvider could plug into a
+// spawned subprocess), download (internal/agent/tools/download.go)
+// writes straight to the real OS filesystem via c.cfg.WorkingDir() with
+// no DiskProvider parameter at all, and agentic_fetch
+// (internal/agent/agentic_fetch_tool.go) builds its sub-agent's
+// view/glob/grep workspace by calling os.MkdirTemp against
+// Options.DataDirectory -- which is "" for an ephemeral session, so
+// os.MkdirTemp falls back to the REAL OS temp directory (R14-4, SDK
+// review round 14). None of the four is in folderScopeOpForTool
 // (internal/agent/coordinator_tools.go), so applyCallFolderScope can
-// never re-add it regardless of a call's FolderScope grants. All three
-// stay hard-denied for every ephemeral call, scope or no scope.
+// never re-add any of them regardless of a call's FolderScope grants --
+// agentic_fetch is in that file's folderScopeEscapeHatchTools for
+// exactly this reason -- and agentic_fetch is absent from
+// workerToolNames, so the R14-1 worker toolset layering cannot re-add
+// it either. All four stay hard-denied for every ephemeral call, scope
+// or no scope.
 var libraryEphemeralDisabledTools = []string{
-	"bash", "run_command", "download",
+	"bash", "run_command", "download", tools.AgenticFetchToolName,
 	"edit", "multiedit", "glob", "grep", "ls", "view", "write",
 	"fs_list", "fs_find", "fs_grep", "fs_read",
 	"fs_write", "fs_replace", "fs_write_lines", "fs_delete",
