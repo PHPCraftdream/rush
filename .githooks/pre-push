@@ -17,9 +17,13 @@
 # internal/agent/tools/mcp/process_windows_test.go, and
 # internal/cmd/models_use_test.go) — each fixed AT THE SPECIFIC TEST, not by
 # slowing the whole suite down. (An earlier version of this hook also capped
-# -p/-parallel globally as extra defense-in-depth; that made every push take
-# 3-5x longer for no longer-necessary benefit once the actual tests were
-# fixed, so it was removed — full default Go parallelism is used here again.)
+# -p/-parallel globally as extra defense-in-depth against those races; once
+# the races themselves were fixed, that cap was removed as unnecessary
+# overhead. A DIFFERENT, later problem brought throttling back in a
+# narrower form: a genuine Windows commit-limit OOM (ERROR_COMMITMENT_LIMIT,
+# not a race) from running `go test ./...` with full default -p/-parallel —
+# see run_capped's comment below for the concrete fix, which mirrors what
+# build.yml/test-agent already do in CI for the exact same reason.)
 # A transparent retry-once remains below as a cheap backstop for whatever
 # rare environment-driven flakiness still slips through (AV scanning,
 # genuine OS scheduling lag): a real regression fails identically on both
@@ -45,8 +49,39 @@ cd "$(git rev-parse --show-toplevel)" || exit 1
 fail() { printf '\n\033[31m✗ pre-push: %s\033[0m\n' "$1" >&2; exit 1; }
 step() { printf '\033[36m▸ %s\033[0m\n' "$1"; }
 
+# Windows commit-limit OOM backstop (ERROR_COMMITMENT_LIMIT / errno=1455):
+# this hook used to run go build/test bare, with full default -p/-parallel.
+# CI already learned the hard way that internal/agent combined with ANY
+# other package under -p >1 can blow the commit limit on windows-latest
+# (see build.yml's own comment on the dedicated test-agent job) -- this
+# hook had never applied the same lesson to itself, and a live pre-push run
+# on this machine hit exactly that crash (multiple ".test" binaries dying
+# mid-compile with "runtime: VirtualAlloc ... errno=1455") while running
+# the unthrottled `go test ./...` below. Two independent layers, same
+# philosophy as CI's GOMEMLIMIT + batching:
+#   1. -p 2 everywhere (portable, no extra tooling, matches every CI step)
+#     and internal/agent tested ALONE with -parallel 2 on top of that,
+#     exactly like build.yml/test-agent split it out.
+#   2. run_capped: a HARD ceiling via safego.ps1 (this machine's Job-Object
+#     memory-cap + wall-clock-timeout wrapper, see CLAUDE.md) when present.
+#     It is a personal, machine-local tool, never committed to the repo --
+#     absent on any other contributor's machine or CI -- so this degrades
+#     to running the command bare there. -p 2 alone is CI's own proven
+#     mitigation and works with no dependency at all; safego.ps1 is
+#     defense-in-depth on top of it, not a requirement.
+SAFEGO="C:\\Users\\Computer\\AppData\\Local\\safego\\safego.ps1"
+run_capped() {
+	local size="$1" timeout="$2"
+	shift 2
+	if [ "$(go env GOHOSTOS)" = "windows" ] && [ -f "$SAFEGO" ]; then
+		powershell -NoProfile -ExecutionPolicy Bypass -File "$SAFEGO" "$size" "$timeout" "$@"
+	else
+		"$@"
+	fi
+}
+
 step "go build ./..."
-go build ./... || fail "build failed"
+run_capped 3g 240 go build -p 2 ./... || fail "build failed"
 
 gcl=""
 if command -v golangci-lint >/dev/null 2>&1; then
@@ -188,25 +223,50 @@ else
 	printf '\033[33m⚠ skipping the web typecheck — web/node_modules is absent (run: cd web && pnpm install)\033[0m\n'
 fi
 
-step "go test -short -failfast ./..."
-test_log="$(mktemp)"
-trap 'rm -f "$test_log"' EXIT
-if go test -short -failfast ./... 2>&1 | tee "$test_log"; then
-	printf '\033[32m(tests passed on the first attempt)\033[0m\n'
-else
-	# Package(s) that actually reported FAIL, e.g.
-	# "FAIL	github.com/.../internal/session	3.45s" -> the package path.
-	failed_pkgs="$(grep -E '^FAIL[[:space:]]' "$test_log" | awk '{print $2}' | sort -u | tr '\n' ' ')"
-	if [ -z "${failed_pkgs// /}" ]; then
-		printf '\033[33m⚠ tests failed once — could not identify which package from the output, retrying the whole suite (known rare Windows flakiness, see comment above)\033[0m\n'
-		go test -short -failfast ./... || fail "tests failed twice in a row — not the known flake, treat as real"
+# run_test_segment: same first-attempt/parse-failed-packages/retry-once
+# logic as the old single `go test ./...` block below, just parameterized
+# so it can run over a SUBSET of packages with its own -p/-parallel/size
+# budget instead of one unthrottled `./...` call. See run_capped's comment
+# above for why this split exists at all (internal/agent + -p >1 is a
+# proven Windows OOM trigger CI already isolates; this hook now does too).
+run_test_segment() {
+	local label="$1" size="$2" timeout="$3"
+	shift 3
+	local test_log
+	test_log="$(mktemp)"
+	step "go test -short -failfast $label"
+	if run_capped "$size" "$timeout" go test -short -failfast "$@" 2>&1 | tee "$test_log"; then
+		printf '\033[32m(tests passed on the first attempt: %s)\033[0m\n' "$label"
 	else
-		printf '\033[33m⚠ tests failed once in: %s — retrying just that/those package(s) (known rare Windows flakiness, see comment above)\033[0m\n' "$failed_pkgs"
-		# shellcheck disable=SC2086
-		go test -short -failfast $failed_pkgs || fail "tests failed twice in a row in $failed_pkgs — not the known flake, treat as real"
+		# Package(s) that actually reported FAIL, e.g.
+		# "FAIL	github.com/.../internal/session	3.45s" -> the package path.
+		failed_pkgs="$(grep -E '^FAIL[[:space:]]' "$test_log" | awk '{print $2}' | sort -u | tr '\n' ' ')"
+		if [ -z "${failed_pkgs// /}" ]; then
+			printf '\033[33m⚠ %s failed once — could not identify which package from the output, retrying the whole segment (known rare Windows flakiness, see comment above)\033[0m\n' "$label"
+			run_capped "$size" "$timeout" go test -short -failfast "$@" || fail "$label failed twice in a row — not the known flake, treat as real"
+		else
+			printf '\033[33m⚠ %s failed once in: %s — retrying just that/those package(s) (known rare Windows flakiness, see comment above)\033[0m\n' "$label" "$failed_pkgs"
+			# shellcheck disable=SC2086
+			run_capped "$size" "$timeout" go test -short -failfast $failed_pkgs || fail "$label failed twice in a row in $failed_pkgs — not the known flake, treat as real"
+		fi
+		printf '\033[33m(tests passed on retry: %s)\033[0m\n' "$label"
 	fi
-	printf '\033[33m(tests passed on retry)\033[0m\n'
-fi
+	rm -f "$test_log"
+}
+
+# internal/agent alone, throttled: 172+ t.Parallel() sites in one package
+# at default parallelism (GOMAXPROCS) is the single biggest commit-limit
+# contributor found this session -- -parallel 2 keeps peak concurrent test
+# state (sqlite DBs, httptest servers, SSE buffers) bounded regardless of
+# how many logical CPUs this machine has.
+run_test_segment "internal/agent (isolated, throttled)" 2g 300 -parallel 2 ./internal/agent/
+
+# Everything else, -p 2 like every CI test step in build.yml -- internal/agent
+# is excluded here (already covered above) so this list is never combined
+# with it under shared package-build parallelism, the other half of the
+# same proven Windows OOM trigger.
+# shellcheck disable=SC2046
+run_test_segment "./... (minus internal/agent)" 3g 480 -p 2 $(go list ./... | grep -v '^github.com/PHPCraftdream/rush/internal/agent$')
 
 # The process-group and lock-fence suites, which -short deliberately skips
 # (they spawn real child processes). build.yml runs these on ubuntu; mirror
