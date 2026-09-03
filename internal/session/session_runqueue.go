@@ -127,7 +127,7 @@ const CallOptionsSpecVersion = 1
 //     round-trip correctly today.
 //   - FolderScope has its own dedicated spec (FolderScopeSpec above),
 //     compiled through a different path (tools.CanonicalizeFolderScopeSpec
-//     + permission.BuildFolderScope) and kept separate rather than folded
+//   - permission.BuildFolderScope) and kept separate rather than folded
 //     in here.
 //   - AllowPeakHours and FailIfSessionBusy are one-shot admission-time
 //     decisions consumed before/at the original mailbox submission; they
