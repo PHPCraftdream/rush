@@ -393,6 +393,71 @@ func (c *coordinator) applyCallFolderScope(ctx context.Context, agent config.Age
 	return agent
 }
 
+// noRealWorkspaceForbiddenTools are the tools that can never be offered
+// on a config whose Options.NoRealWorkspace is set (sdk.ModeLibrary with
+// no WorkingDir): every legacy tool that reads or writes the real host
+// filesystem via c.cfg.WorkingDir() -- for such a session, the synthetic
+// library sentinel, not a sandbox -- plus every command-executing and
+// arbitrary-write tool. This is the floor behind Options.DisabledTools
+// (sdk.libraryEphemeralDisabledTools): the disabled list only filters
+// the INITIAL AllowedTools, but per-call layering appends afterwards --
+// R14-1 (P0, SDK review round 14) found buildToolsAgentConfigForCall
+// re-adding write/bash/download (workerToolNames) on an ephemeral
+// worker sub-agent with no check against the disabled list at all.
+var noRealWorkspaceForbiddenTools = map[string]struct{}{
+	tools.BashToolName: {}, tools.RunCommandToolName: {}, tools.DownloadToolName: {},
+	tools.EditToolName: {}, tools.MultiEditToolName: {}, tools.WriteToolName: {},
+	tools.ViewToolName: {}, tools.GlobToolName: {}, tools.GrepToolName: {},
+	tools.LSToolName: {},
+}
+
+// noRealWorkspaceScopedFSTools is the fs_* family's contribution to the
+// same floor. Unlike the legacy tools above, the fs_* family has a
+// legitimate opt-in on a no-real-workspace session: a call supplying a
+// CUSTOM DiskProvider (not nil and not tools.OSDisk()) backs every fs_*
+// operation with caller-supplied storage, and applyCallFolderScope has
+// already scoped it. When the call carries no custom provider, fs_*
+// normalizes to the real OS disk, so the floor strips the whole family
+// too (internal/app's ExecuteRun already refuses such calls outright
+// for sdk callers -- R14-2; this is the coordinator-side backstop for
+// direct internal callers).
+var noRealWorkspaceScopedFSTools = map[string]struct{}{
+	tools.FSListToolName: {}, tools.FSFindToolName: {}, tools.FSGrepToolName: {},
+	tools.FSReadToolName: {}, tools.FSWriteToolName: {}, tools.FSReplaceToolName: {},
+	tools.FSWriteLinesToolName: {}, tools.FSDeleteToolName: {},
+}
+
+// applyNoRealWorkspaceToolFloor is buildTools' FINAL AllowedTools
+// filter (R14-1, P0, SDK review round 14): it runs after
+// buildToolsAgentConfigForCall (worker toolset layering) and after
+// applyCallFolderScope (folder-scope re-adds), stripping every tool a
+// no-real-workspace config must never offer regardless of who added
+// it. This makes the ephemeral disabled-tools list a floor later
+// layering cannot punch through, rather than a one-time initial
+// filter. The call's resolved DiskProvider decides the fs_* half: a
+// custom provider keeps the scoped family usable (the README's
+// opt-in), nil or the real OSDisk strips it alongside the rest.
+func (c *coordinator) applyNoRealWorkspaceToolFloor(cfg *config.Config, agent config.Agent, disk tools.DiskProvider) config.Agent {
+	if cfg == nil || cfg.Options == nil || !cfg.Options.NoRealWorkspace {
+		return agent
+	}
+	customDisk := disk != nil && disk != tools.OSDisk()
+	stripped := make([]string, 0, len(agent.AllowedTools))
+	for _, name := range agent.AllowedTools {
+		if _, ok := noRealWorkspaceForbiddenTools[name]; ok {
+			continue
+		}
+		if !customDisk {
+			if _, ok := noRealWorkspaceScopedFSTools[name]; ok {
+				continue
+			}
+		}
+		stripped = append(stripped, name)
+	}
+	agent.AllowedTools = stripped
+	return agent
+}
+
 // rejectScopedCallOnCLIProvider refuses a folder-scoped call whose
 // RESOLVED provider for the given role is a CLI provider (Type "cli"):
 // that provider executes the file tools inside a CLI subprocess (claude,
@@ -473,6 +538,12 @@ func (c *coordinator) buildTools(ctx context.Context, cfg *config.Config, agent 
 		}
 		disk = callOpts.DiskProvider
 	}
+
+	// R14-1 (P0, SDK review round 14): final capability floor. Must run
+	// LAST -- after worker layering and the folder-scope re-adds above
+	// -- so the disabled-tools list is a floor no layering can punch
+	// through (see applyNoRealWorkspaceToolFloor's doc).
+	agent = c.applyNoRealWorkspaceToolFloor(cfg, agent, disk)
 
 	// SSRF guard escape hatch (Options.AllowPrivateNetworkFetch, off by
 	// default): when enabled, every model-facing HTTP tool below gets an

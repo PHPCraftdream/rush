@@ -484,6 +484,20 @@ type Options struct {
 	// because autonomy must be deliberately enabled. Web/interactive only —
 	// never fires for rush run.
 	AutoResumeOnJobDone *bool `json:"auto_resume_on_job_done,omitempty" jsonschema:"description=Autonomously resume an idle session when a background job finishes (web/interactive). Default false (opt-in). Bounded by an internal consecutive-resume cap, reset by any human message.,default=false"`
+	// NoRealWorkspace marks a config whose session has no real host
+	// working directory (sdk.ModeLibrary with an empty Options.WorkingDir:
+	// an ephemeral, in-memory session). It is the single authoritative
+	// signal every no-real-disk enforcement point reads (SDK review
+	// round 14): internal/app's ExecuteRun refuses per-call FolderScopes
+	// that would resolve against the real OS disk before any provider
+	// traffic (R14-2), and internal/agent's buildTools applies a final
+	// tool floor no later layering (worker sub-agent toolset,
+	// folder-scope re-adds) can punch through (R14-1). Deliberately
+	// json:"-": it is derived once per client at Open time
+	// (sdk.buildLibraryConfig) and must never be settable from
+	// rush.json. Per-config state, so two concurrently-open clients
+	// (one ephemeral, one not) never share it.
+	NoRealWorkspace bool `json:"-"`
 }
 
 type MCPs map[string]MCPConfig

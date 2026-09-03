@@ -645,6 +645,27 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 	runSpec.AllowBash = append(runSpec.AllowBash, overrides.AllowBash...)
 	runSpec.AllowTools = append(runSpec.AllowTools, overrides.AllowTools...)
 
+	// R14-2 (P0, SDK review round 14): a config with no real workspace
+	// (sdk.ModeLibrary with no WorkingDir) must never resolve per-call
+	// FolderScopes against the real OS disk. The R6-1 sentinel guard
+	// (tools.rejectRealDiskUnderLibraryVirtualRoot) is lexical and only
+	// catches paths under the sentinel root: an ABSOLUTE scope Dir
+	// pointing at any real host directory is joined through SmartJoin
+	// unchanged and canonicalizes straight through OSDisk. Enforce the
+	// README's precondition HERE, before any canonicalization or
+	// provider traffic: on such a config, FolderScopes require a custom
+	// (non-OSDisk) DiskProvider, full stop. The opposite-direction
+	// checks (DiskProvider without FolderScopes, and DiskProvider with
+	// a command-keeping scope) are kept unchanged below.
+	if cfgOpts := app.config.Config().Options; cfgOpts != nil && cfgOpts.NoRealWorkspace &&
+		len(overrides.FolderScopes) > 0 &&
+		(overrides.DiskProvider == nil || overrides.DiskProvider == tools.OSDisk()) {
+		return nil, errors.New(
+			"folder scopes on a session with no real working directory require a custom DiskProvider: " +
+				"RunOverrides.FolderScopes is set but DiskProvider is nil or the real OS disk, and an " +
+				"ephemeral session has no real filesystem to resolve the scope against")
+	}
+
 	// T10: a non-empty FolderScopes scopes this call's filesystem
 	// toolset. A malformed entry is a HARD error, deliberately unlike the
 	// allowErr handling further down: dropping a bad run-allowlist
