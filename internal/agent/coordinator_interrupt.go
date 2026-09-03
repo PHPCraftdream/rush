@@ -584,9 +584,22 @@ func (c *coordinator) RebuildSessionAgentCall(ctx context.Context, data session.
 	// declares one, so every replay-relevant field lands on the SAME
 	// CallOptions value together. A row carrying neither spec still
 	// leaves rebuiltCallOptions nil, exactly as before this fix.
+	//
+	// R6-4 (P2 security review round 6): fromSessionCallOptionsSpec now
+	// refuses a non-nil spec whose Version does not match the current
+	// session.CallOptionsSpecVersion instead of partially decoding it —
+	// propagate that refusal here rather than swallowing it, so a row
+	// written by a newer/older binary's incompatible schema fails the
+	// whole restart closed instead of silently running with whatever
+	// subset of fields happened to decode.
 	var rebuiltCallOptions *CallOptions
 	if data.CallOptionsSpec != nil || data.FolderScopeSpec != nil {
-		rebuiltCallOptions = fromSessionCallOptionsSpec(data.CallOptionsSpec)
+		var err error
+		rebuiltCallOptions, err = fromSessionCallOptionsSpec(data.CallOptionsSpec)
+		if err != nil {
+			return SessionAgentCall{}, fmt.Errorf(
+				"RebuildSessionAgentCall: refusing durable row with an incompatible CallOptionsSpec: %w", err)
+		}
 		if rebuiltCallOptions == nil {
 			rebuiltCallOptions = &CallOptions{}
 		}
