@@ -192,9 +192,22 @@ func TestReleaseGate_P0_2_GenuineFailureStillExhaustsAfterMaxAttempts(t *testing
 	// with a later call-count assertion then seeing only 1 call because
 	// the entry hadn't actually been dead-lettered yet — it was just
 	// caught between two retry cycles.
+	//
+	// This waits on an async count (RunQueueMaxAttempts=10 real lease+nack
+	// DB round trips at a nominal 20ms TestTick), not a precise timing
+	// relationship: widening this bound cannot mask the regression it
+	// exists to catch (the pre-fix double-increment bug plateaus calls at
+	// half RunQueueMaxAttempts and would never reach it regardless of how
+	// long we wait). Widened from 5s to 20s (2s/cycle, ~10x the >200ms/cycle
+	// pace observed on windows-latest for this exact DB shape) to match
+	// this file's own convention for multi-cycle waits after windows-latest
+	// CI flakes on the two other 25-cycle waits here and in
+	// p350_dup_dispatch_test.go (see those tests' own comments) — this
+	// 10-cycle wait was left at the original 5s and hit the same class of
+	// failure (run 33808420128, "Condition never satisfied").
 	require.Eventually(t, func() bool {
 		return coord.calls.Load() >= int64(session.RunQueueMaxAttempts)
-	}, 5*time.Second, 20*time.Millisecond,
+	}, 20*time.Second, 20*time.Millisecond,
 		"coordinator should be called RunQueueMaxAttempts times before the entry is dead-lettered")
 
 	// Now confirm the entry is actually gone (dead-lettered), sustained
@@ -216,7 +229,7 @@ func TestReleaseGate_P0_2_GenuineFailureStillExhaustsAfterMaxAttempts(t *testing
 	require.Eventually(t, func() bool {
 		gone, checkErr := runQueueGoneEverywhere(ctx, svc)
 		return checkErr == nil && gone
-	}, 5*time.Second, 20*time.Millisecond, "entry should eventually be dead-lettered (deleted) after exhausting real attempts")
+	}, 20*time.Second, 20*time.Millisecond, "entry should eventually be dead-lettered (deleted) after exhausting real attempts")
 	for range 5 {
 		time.Sleep(20 * time.Millisecond)
 		pending, checkErr := svc.ListPendingRunQueueEntries(ctx)
