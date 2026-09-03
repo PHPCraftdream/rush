@@ -3,7 +3,7 @@ package sdk_test
 // Regression test for R5-6 (P1 SDK review finding): an ephemeral
 // sdk.ModeLibrary session (no Options.WorkingDir, in-memory database,
 // nothing ever on disk) synthesizes a logical filesystem root
-// (sdk.LibraryVirtualRoot) so that BOTH a RELATIVE RunOverrides.FolderScopes
+// (sdk.LibraryVirtualRoot()) so that BOTH a RELATIVE RunOverrides.FolderScopes
 // entry (the README's own natural example, {Dir: "src", ...}) and a
 // RELATIVE model-emitted fs_* item path resolve against that synthesized
 // root -- never against the Rush host process's own real CWD/drive, and
@@ -88,7 +88,7 @@ func TestSDKLibraryModeEphemeralRelativeFolderScopeResolvesAgainstVirtualRootNot
 	// os.MkdirAll (sdk_disk_provider_test.go), mirrored here against the
 	// SYNTHESIZED root instead of a real temp dir.
 	fake := newFakeSDKDisk()
-	scopedDir := filepath.Clean(filepath.Join(sdk.LibraryVirtualRoot, "scoped"))
+	scopedDir := filepath.Clean(filepath.Join(sdk.LibraryVirtualRoot(), "scoped"))
 	fake.mkdir(scopedDir)
 
 	srv := libraryVirtualRootRoundTripServer(t, relPath, content, marker)
@@ -142,7 +142,7 @@ func TestSDKLibraryModeEphemeralRelativeFolderScopeResolvesAgainstVirtualRootNot
 	// errors), and a filepath.Abs-against-real-CWD resolution
 	// (resolveScopedPath unfixed in internal/agent/tools/fs_scope.go)
 	// would store the write under a DIFFERENT key than this one.
-	expected := filepath.Clean(filepath.Join(sdk.LibraryVirtualRoot, filepath.FromSlash(relPath)))
+	expected := filepath.Clean(filepath.Join(sdk.LibraryVirtualRoot(), filepath.FromSlash(relPath)))
 	fakeContent, ok := fake.has(expected)
 	require.True(t, ok, "the fake disk must hold the written file at the virtual-root path %s", expected)
 	require.Equal(t, content, fakeContent)

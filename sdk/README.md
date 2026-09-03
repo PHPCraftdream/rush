@@ -75,12 +75,17 @@ existing caller that never sets `Mode` is completely unaffected.
   and throws it away).
 
   **An ephemeral session also gets NO real-disk or command-execution
-  tools by default**: `bash`, `run_command`, `download`, `edit`,
-  `multiedit`, `glob`, `grep`, `ls`, `view`, `write`, and the whole
-  `fs_*` family are all absent from the model's toolset unless a call
-  opts in (below). `bash`/`run_command`/`download` have no opt-in at
-  all — none of them can be virtualized by a `DiskProvider`, so they
-  stay hard-denied even for a call that opts into `FolderScopes`.
+  tools by default**: `bash`, `run_command`, `download`,
+  `agentic_fetch`, `edit`, `multiedit`, `glob`, `grep`, `ls`, `view`,
+  `write`, and the whole `fs_*` family are all absent from the model's
+  toolset unless a call opts in (below). Four of them — `bash`,
+  `run_command`, `download`, and `agentic_fetch` — have no opt-in at
+  all: none can be virtualized by a `DiskProvider`, so they stay
+  hard-denied even for a call that opts into `FolderScopes`.
+  (`agentic_fetch` is stripped for the same reason: it builds its
+  sub-agent's file-tool workspace in a temp directory created under the
+  real OS temp path, exactly what an ephemeral session promises not to
+  touch.)
   There is no real working directory to point them at, so — unlike a
   missing `rush.json` field silently falling back to a default — Rush
   refuses to hand out tools whose only fallback would be the real host
@@ -339,13 +344,22 @@ Boundaries to know:
   "real disk" to fall back to at all.** With no `WorkingDir`, every
   legacy file/command tool listed above as "NOT affected" is simply
   absent from the toolset by default — there is nothing for them to
-  touch. A `FolderScopes` override with no `DiskProvider` does not fall
-  back to a real filesystem there either: it fails the call before any
-  provider traffic, because the only "real" root available would be the
-  internal `sdk.LibraryVirtualRoot` sentinel, which every `fs_*` tool
-  refuses to operate against for real. Supplying your own `DiskProvider`
-  alongside `FolderScopes` is the only way an ephemeral session's model
-  gets file access at all.
+  touch — and no later layering (a worker sub-agent's toolset, a folder
+  scope's re-adds) can bring them back: the session's config carries an
+  immutable no-real-workspace capability that `internal/app` and
+  `internal/agent` both enforce as a floor (SDK review round 14). A
+  `FolderScopes` override with no `DiskProvider` (or with the real
+  `OSDiskProvider()`) is a hard error before any provider traffic —
+  relative and absolute scope entries alike: an ephemeral session has
+  no real filesystem to resolve a scope against. The internal
+  `sdk.LibraryVirtualRoot` sentinel guard remains as defense-in-depth
+  for direct internal callers only. Note `sdk.LibraryVirtualRoot` is a
+  FUNCTION since round 14 (R14-3) — it was previously an exported
+  `var`, a plain copy of the internal value an embedder could reassign,
+  diverging it from the guard's copy; assigning to it is now a compile
+  error. Supplying your own `DiskProvider` alongside `FolderScopes` is
+  still the only way an ephemeral session's model gets file access at
+  all.
 
 ## Session-busy behaviour is different from `rush run`
 

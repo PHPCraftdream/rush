@@ -109,9 +109,21 @@ type LibraryConfig struct {
 //     tools.rejectRealDiskUnderLibraryVirtualRoot).
 //
 // LibraryVirtualRoot's value:
-//   - It is exported so a host can build absolute-style FolderScopes
-//     entries directly against it, or recognize it in returned/audited
-//     paths, without guessing the sentinel value.
+//   - It is exposed as a FUNCTION (R14-3, SDK review round 14), not an
+//     assignable var: the pre-R14-3 form, `var LibraryVirtualRoot =
+//     tools.LibraryVirtualRoot`, was a plain Go value COPY captured at
+//     package init -- not an alias -- so embedder code could legally
+//     reassign it and silently diverge the SDK-side root (used as
+//     configWorkingDir below) from the internal guard's root
+//     (tools.LibraryVirtualRoot, what
+//     tools.rejectRealDiskUnderLibraryVirtualRoot compares against),
+//     letting new relative scope paths through the guard onto the real
+//     OSDisk. It was also shared global mutable state across every
+//     concurrently-open Client. A host can still call it to build
+//     absolute-style FolderScopes entries or recognize the sentinel in
+//     returned/audited paths, and assigning to it is now a compile
+//     error (the correctness proof). This is a breaking API change for
+//     any embedder that read or wrote the old var.
 //   - Computed per-OS (R6-1) to satisfy the REAL, platform-native
 //     filepath.IsAbs on every OS, not just internal/filepathext.SmartIsAbs's
 //     cross-platform notion of "absolute enough". DiskProvider's own
@@ -130,7 +142,7 @@ type LibraryConfig struct {
 //     moot in practice now that point 2 above refuses the real disk
 //     before any Stat is ever issued, but avoided anyway for defense in
 //     depth.
-var LibraryVirtualRoot = tools.LibraryVirtualRoot
+func LibraryVirtualRoot() string { return tools.LibraryVirtualRoot }
 
 // libraryEphemeralDisabledTools are the built-in tool names removed by
 // default from an ephemeral ModeLibrary session (Options.WorkingDir
@@ -154,17 +166,26 @@ var LibraryVirtualRoot = tools.LibraryVirtualRoot
 // (internal/agent/tools/fs_library_virtual_root.go) fails the call closed
 // rather than falling back to the real disk under the sentinel.
 //
-// bash/run_command/download have no such opt-in and are never re-added:
-// shell execution cannot be virtualized by a DiskProvider (there is no
-// seam a FolderScope or DiskProvider could plug into a spawned
-// subprocess), and download (internal/agent/tools/download.go) writes
-// straight to the real OS filesystem via c.cfg.WorkingDir() with no
-// DiskProvider parameter at all -- it is not in folderScopeOpForTool
+// bash/run_command/download/agentic_fetch have no such opt-in and are
+// never re-added: shell execution cannot be virtualized by a DiskProvider
+// (there is no seam a FolderScope or DiskProvider could plug into a
+// spawned subprocess), download (internal/agent/tools/download.go)
+// writes straight to the real OS filesystem via c.cfg.WorkingDir() with
+// no DiskProvider parameter at all, and agentic_fetch
+// (internal/agent/agentic_fetch_tool.go) builds its sub-agent's
+// view/glob/grep workspace by calling os.MkdirTemp against
+// Options.DataDirectory -- which is "" for an ephemeral session, so
+// os.MkdirTemp falls back to the REAL OS temp directory (R14-4, SDK
+// review round 14). None of the four is in folderScopeOpForTool
 // (internal/agent/coordinator_tools.go), so applyCallFolderScope can
-// never re-add it regardless of a call's FolderScope grants. All three
-// stay hard-denied for every ephemeral call, scope or no scope.
+// never re-add any of them regardless of a call's FolderScope grants --
+// agentic_fetch is in that file's folderScopeEscapeHatchTools for
+// exactly this reason -- and agentic_fetch is absent from
+// workerToolNames, so the R14-1 worker toolset layering cannot re-add
+// it either. All four stay hard-denied for every ephemeral call, scope
+// or no scope.
 var libraryEphemeralDisabledTools = []string{
-	"bash", "run_command", "download",
+	"bash", "run_command", "download", tools.AgenticFetchToolName,
 	"edit", "multiedit", "glob", "grep", "ls", "view", "write",
 	"fs_list", "fs_find", "fs_grep", "fs_read",
 	"fs_write", "fs_replace", "fs_write_lines", "fs_delete",
@@ -219,7 +240,7 @@ func openLibrary(ctx context.Context, o Options) (*Client, error) {
 	// -- correctly stays "".
 	configWorkingDir := workDir
 	if configWorkingDir == "" {
-		configWorkingDir = LibraryVirtualRoot
+		configWorkingDir = LibraryVirtualRoot()
 	}
 
 	// workDir == "" is exactly the ephemeral case (see the dataDir block
@@ -327,6 +348,16 @@ func buildLibraryConfig(lc *LibraryConfig, dataDir string, ephemeral bool) *conf
 	}
 	if ephemeral {
 		cfg.Options.DisabledTools = libraryEphemeralDisabledTools
+		// R14-1/R14-2 (SDK review round 14): DisabledTools alone is not
+		// load-bearing -- later per-call layering (worker sub-agent
+		// toolsets, folder-scope re-adds) appends onto the already
+		// filtered list without consulting it. This immutable capability
+		// is the single signal every enforcement point consults:
+		// internal/app's ExecuteRun refuses FolderScopes that would
+		// resolve against the real disk before any provider traffic
+		// (R14-2), and internal/agent's buildTools applies a final tool
+		// floor no layering can punch through (R14-1).
+		cfg.Options.NoRealWorkspace = true
 	}
 	for _, cred := range lc.Credentials {
 		cfg.Providers.Set(cred.Provider, libraryProviderConfig(cred))

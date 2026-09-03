@@ -2,6 +2,7 @@ package cliprovider
 
 import (
 	"bytes"
+	"log"
 	"log/slog"
 	"os"
 	"strings"
@@ -20,8 +21,13 @@ func TestPromptNotLoggedInProduction(t *testing.T) {
 	var logBuf bytes.Buffer
 	handler := slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelInfo})
 	prev := slog.Default()
+	prevLogOut, prevLogFlags := log.Writer(), log.Flags()
 	slog.SetDefault(slog.New(handler))
-	t.Cleanup(func() { slog.SetDefault(prev) })
+	t.Cleanup(func() {
+		slog.SetDefault(prev)
+		log.SetOutput(prevLogOut)
+		log.SetFlags(prevLogFlags)
+	})
 
 	// Create args with a secret marker
 	const secretMarker = "SECRET_MARKER_12345_ABCDEF_GHIJK_LMNOP_QRSTUV"
