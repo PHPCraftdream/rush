@@ -129,6 +129,28 @@ func TestRecoverInterruptedTurns_NoLiveHolder_StillRecovers(t *testing.T) {
 	require.NoError(t, lk.Release())
 
 	lockPath := filepath.Join(dataDir, "locks", "session-"+sess.ID+".lock")
+
+	// Release() clears the holder PID (primary file truncated + .pid
+	// sidecar removed) in a BACKGROUND goroutine, waiting only up to
+	// releaseMetadataCleanupBound (50ms, see lock.go's Release doc) before
+	// returning -- a deliberate P1-1 trade-off so a hung filesystem/AV/SMB
+	// during cleanup can never wedge the caller. On a loaded CI runner
+	// (concurrent SQLite WAL fsyncs from sibling tests under -p 2) that
+	// 50ms bound can be exceeded, so back-dating immediately after Release
+	// races the still-in-flight cleanup: either its Truncate lands AFTER
+	// this test's own os.Chtimes (bumping mtime back to "now"), or the
+	// .pid sidecar hasn't been removed yet, so InspectSessionLock's PID
+	// fallback finds this test process's own live PID. Both read as Live.
+	// Wait for cleanup to actually finish (PID reads as 0, meaning both
+	// the truncate and the sidecar removal already happened -- they are
+	// program-ordered before that on the same goroutine) before
+	// back-dating, same idiom already used elsewhere in this codebase
+	// (internal/session/lock_test.go, internal/cmd/sessions_locks_test.go).
+	require.Eventually(t, func() bool {
+		return session.ReadLockPID(lockPath) == 0
+	}, 2*time.Second, 10*time.Millisecond,
+		"Release clears holder metadata in a bounded background goroutine; it must finish before back-dating")
+
 	stale := time.Now().Add(-(session.LockStaleDuration + time.Minute))
 	require.NoError(t, os.Chtimes(lockPath, stale, stale))
 	require.False(t, session.InspectSessionLock(dataDir, sess.ID, session.LockStaleDuration).Live,
