@@ -584,9 +584,22 @@ func (c *coordinator) RebuildSessionAgentCall(ctx context.Context, data session.
 	// declares one, so every replay-relevant field lands on the SAME
 	// CallOptions value together. A row carrying neither spec still
 	// leaves rebuiltCallOptions nil, exactly as before this fix.
+	//
+	// R6-4 (P2 security review round 6): fromSessionCallOptionsSpec now
+	// refuses a non-nil spec whose Version does not match the current
+	// session.CallOptionsSpecVersion instead of partially decoding it —
+	// propagate that refusal here rather than swallowing it, so a row
+	// written by a newer/older binary's incompatible schema fails the
+	// whole restart closed instead of silently running with whatever
+	// subset of fields happened to decode.
 	var rebuiltCallOptions *CallOptions
 	if data.CallOptionsSpec != nil || data.FolderScopeSpec != nil {
-		rebuiltCallOptions = fromSessionCallOptionsSpec(data.CallOptionsSpec)
+		var err error
+		rebuiltCallOptions, err = fromSessionCallOptionsSpec(data.CallOptionsSpec)
+		if err != nil {
+			return SessionAgentCall{}, fmt.Errorf(
+				"RebuildSessionAgentCall: refusing durable row with an incompatible CallOptionsSpec: %w", err)
+		}
 		if rebuiltCallOptions == nil {
 			rebuiltCallOptions = &CallOptions{}
 		}
@@ -710,25 +723,32 @@ func (c *coordinator) RunSessionAgentCall(ctx context.Context, call SessionAgent
 	// folder scope used to skip this block entirely, leave call.Tools nil,
 	// and silently fall back to the shared toolset — regaining the
 	// delegation tools (agent/agentic_fetch) it was declared not to have.
-	// Widen the trigger to any of the three; keep the fail-closed refusal
-	// scoped to exactly the same cases scopedCallToolsRequired already
-	// treats as required elsewhere (FolderScope/DiskProvider) so a
-	// DisableSubAgents/ModelRole-only build failure keeps the existing
-	// "fall back to shared toolset" behavior those live (non-durable)
-	// call sites already grant it — this fix does not change that
-	// separate, wider design judgment.
-	if call.CallOptions != nil && (call.CallOptions.FolderScope != nil || call.CallOptions.DisableSubAgents || call.CallOptions.ModelRole != "") {
+	// Widen the trigger to any of the three.
+	//
+	// R6-3 (P1 security review, round 6): the fail-closed refusal below
+	// USED to be scoped to only scopedCallToolsRequired(ctx) — which, at
+	// the time, only covered FolderScope/DiskProvider — so a
+	// DisableSubAgents/ModelRole-only build failure fell all the way
+	// through this if/else to the untouched, still-nil call.Tools, which
+	// resolves to the shared unscoped toolset at turn start
+	// (agent_turn.go). That is precisely the fail-open widening this
+	// block exists to prevent, just for a different pair of fields than
+	// the ones it originally guarded. scopedCallOptionsRequireDistinctTools
+	// (coordinator_models.go) now agrees with this block's own trigger
+	// condition — FolderScope, DiskProvider, DisableSubAgents, or a
+	// non-empty ModelRole — so pinCallTools itself returns a non-nil error
+	// in every case this outer `if` is entered and the build fails; there
+	// is no longer a live "fall back to shared toolset" branch inside this
+	// block at all.
+	if scopedCallOptionsRequireDistinctTools(call.CallOptions) {
 		ctx = WithCallOptions(ctx, call.CallOptions)
 		cfg, _ := c.cfg.Snapshot()
-		scopedTools := c.pinCallTools(ctx, cfg)
-		if scopedTools == nil {
-			if scopedCallToolsRequired(ctx) {
-				return nil, fmt.Errorf(
-					"failed to build the rebuilt call's folder-scoped toolset; refusing to restart the scoped turn on the shared unscoped toolset")
-			}
-		} else {
-			call.Tools = scopedTools
+		scopedTools, err := c.pinCallTools(ctx, cfg)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"failed to build the rebuilt call's tool-shaping toolset; refusing to restart the turn on the shared unscoped toolset: %w", err)
 		}
+		call.Tools = scopedTools
 	}
 
 	// Interrupt-inject ticker: watches pending_injects for interrupt=true rows

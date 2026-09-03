@@ -29,7 +29,7 @@ Use this mode when your host process manages one or more real,
 persistent project directories — the credentials, models, and tool
 settings all come from `rush.json` as usual.
 
-### Library mode — explicit config, no files touched
+### Library mode — explicit config, no persistence on disk
 
 ```go
 client, err := sdk.Open(ctx, sdk.Options{
@@ -60,23 +60,47 @@ existing caller that never sets `Mode` is completely unaffected.
 
 **`WorkingDir` is optional in this mode, and that choice matters:**
 
-- **Omitted** → an ephemeral session backed by an in-memory SQLite
-  connection. Nothing ever touches disk. A graceful `Close()` releases
-  the in-memory handles, and the session data is gone with them. On a
-  forced `Close()` — work that was still busy after cancellation, which
-  includes background agent work (session title generation, cache
-  keep-alive replays) and a busy run-queue pump worker, not just the
-  calls you had in flight — the handles are deliberately left open and
-  the data survives under them until you reclaim it with
-  `CloseEphemeralConnsForced()` (see "Shutting down" below). Either
-  way, once the handles are closed there
+- **Omitted** → an *ephemeral* session backed by an in-memory SQLite
+  connection: session/message persistence never touches disk. A
+  graceful `Close()` releases the in-memory handles, and the session
+  data is gone with them. On a forced `Close()` — work that was still
+  busy after cancellation, which includes background agent work
+  (session title generation, cache keep-alive replays) and a busy
+  run-queue pump worker, not just the calls you had in flight — the
+  handles are deliberately left open and the data survives under them
+  until you reclaim it with `CloseEphemeralConnsForced()` (see
+  "Shutting down" below). Either way, once the handles are closed there
   is no way to recover the session. Use this for stateless, one-shot
-  embedding (a request handler that spins up a
-  Client, runs one turn, and throws it away).
+  embedding (a request handler that spins up a Client, runs one turn,
+  and throws it away).
+
+  **An ephemeral session also gets NO real-disk or command-execution
+  tools by default**: `bash`, `run_command`, `download`, `edit`,
+  `multiedit`, `glob`, `grep`, `ls`, `view`, `write`, and the whole
+  `fs_*` family are all absent from the model's toolset unless a call
+  opts in (below). `bash`/`run_command`/`download` have no opt-in at
+  all — none of them can be virtualized by a `DiskProvider`, so they
+  stay hard-denied even for a call that opts into `FolderScopes`.
+  There is no real working directory to point them at, so — unlike a
+  missing `rush.json` field silently falling back to a default — Rush
+  refuses to hand out tools whose only fallback would be the real host
+  filesystem. If you need file access from an ephemeral session, opt in
+  **per call** with `RunOverrides.FolderScopes` **and**
+  `RunOverrides.DiskProvider` set to your own virtual filesystem
+  implementation — that combination is the only way an ephemeral
+  session's model gets any file tool (`fs_*`) at all, and every path
+  handed to your `DiskProvider` is guaranteed absolute on every OS. A
+  `FolderScopes` override with no `DiskProvider` fails the call before
+  any provider traffic, rather than silently falling back to the real
+  disk.
 - **Given** → the directory is created if missing (same as application
   mode), and session data persists under `<WorkingDir>/.rush` — but
   `rush.json` is still never read. `LibraryConfig` remains the only
   config source; only the *persistence* differs from the ephemeral case.
+  Because there **is** a real working directory here, the default
+  toolset behaves exactly like application mode: file and command tools
+  are enabled and operate on the real filesystem rooted at
+  `WorkingDir`, same as `rush run`.
 
 Known v1 limitation of library mode: MCP servers are not started (no
 `.mcp.json` to read from), and agent context files (`AGENTS.md`/`RUSH.md`)
@@ -230,6 +254,16 @@ Three boundaries to know:
   rebound before the restarted turn runs (the same fix already shipped
   for the run allowlist, finding F2/R4-1). You do not need to re-supply
   `FolderScopes` for a restart to stay scoped.
+- **Ephemeral library-mode sessions never get command tools back,
+  scope or no scope.** The "command tools stay when the restricted-run
+  gate grants bash patterns" behaviour above assumes a real
+  filesystem/subprocess for `bash` to run against. An ephemeral
+  `ModeLibrary` session (no `WorkingDir`) has none, and shell execution
+  cannot be virtualized by a `DiskProvider` the way `fs_*` can, so
+  `bash`/`run_command` stay hard-denied there regardless of
+  `RestrictedRun`/`AllowBash`. Only the `fs_*` family is reachable in
+  that mode, and only when you also supply a `DiskProvider` (see
+  "Substituting the filesystem" below).
 
 ## Substituting the filesystem: `RunOverrides.DiskProvider`
 
@@ -301,6 +335,17 @@ Boundaries to know:
   `FailIfSessionBusy` semantics (`Client.Run`/`RunWithCredentials` set
   it already) so you get a fast, synchronous refusal instead of a
   swallowed one.
+- **An ephemeral library-mode session (see "Library mode" above) has no
+  "real disk" to fall back to at all.** With no `WorkingDir`, every
+  legacy file/command tool listed above as "NOT affected" is simply
+  absent from the toolset by default — there is nothing for them to
+  touch. A `FolderScopes` override with no `DiskProvider` does not fall
+  back to a real filesystem there either: it fails the call before any
+  provider traffic, because the only "real" root available would be the
+  internal `sdk.LibraryVirtualRoot` sentinel, which every `fs_*` tool
+  refuses to operate against for real. Supplying your own `DiskProvider`
+  alongside `FolderScopes` is the only way an ephemeral session's model
+  gets file access at all.
 
 ## Session-busy behaviour is different from `rush run`
 

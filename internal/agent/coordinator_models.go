@@ -255,10 +255,11 @@ func (c *coordinator) resolveSessionModelsInternal(ctx context.Context, sessionI
 	// was ExecuteRun's per-run UpdateModels, whose SetTools overwrote the
 	// ONE shared toolset every in-flight turn re-read at every step.
 	if wantTools {
-		resolved.tools = c.pinCallTools(ctx, cfg)
-		if resolved.tools == nil && scopedCallToolsRequired(ctx) {
-			return nil, ErrScopedCallToolsUnavailable
+		tools, err := c.pinCallTools(ctx, cfg)
+		if err != nil {
+			return nil, err
 		}
+		resolved.tools = tools
 	}
 
 	return resolved, nil
@@ -409,10 +410,11 @@ func (c *coordinator) applyModelOverrides(ctx context.Context, smart, fast *Mode
 	// resolveSessionModels does — built from the same pinned cfg and this
 	// call's context, so RunWithOverrides' per-call policy decides the
 	// slice instead of the shared agent state.
-	resolved.tools = c.pinCallTools(ctx, cfg)
-	if resolved.tools == nil && scopedCallToolsRequired(ctx) {
-		return nil, ErrScopedCallToolsUnavailable
+	tools, err := c.pinCallTools(ctx, cfg)
+	if err != nil {
+		return nil, err
 	}
+	resolved.tools = tools
 	return resolved, nil
 }
 
@@ -485,31 +487,52 @@ func (c *coordinator) resolveSessionSystemPrompt(ctx context.Context, sessionID 
 }
 
 // ErrScopedCallToolsUnavailable is returned by resolveSessionModelsInternal/
-// applyModelOverrides/resolveCredentialsModels when pinCallTools returns nil
-// for a call whose CallOptions carries a FolderScope or a DiskProvider
-// (R5-1, P0). Those two options exist specifically to STRIP the shared
-// toolset's legacy view/write/edit/glob/grep/ls tools, MCP tools, and
-// (usually) sub-agent tools down to a restricted/redirected set; nil from
-// pinCallTools means that restricted set could not be built, and for such a
-// call the shared toolset is exactly the widened access the caller asked to
-// avoid. Since an SDK run auto-approves every tool call, nothing downstream
-// would catch the widened toolset before the model could use it — so the
-// call must fail here instead of silently falling back, mirroring
-// RunSessionAgentCall's existing "refuse the row" pattern (coordinator_interrupt.go,
-// T12) for the durable-restart path.
+// applyModelOverrides/resolveCredentialsModels/RunSessionAgentCall when
+// pinCallTools fails to build a distinct toolset for a call whose
+// CallOptions carries FolderScope, DiskProvider, DisableSubAgents, or a
+// tool-shaping ModelRole (R5-1, P0; widened R6-3, P1). Every one of those
+// options exists specifically to change the shared toolset's composition —
+// FolderScope/DiskProvider strip the legacy view/write/edit/glob/grep/ls
+// tools, MCP tools, and (usually) sub-agent tools down to a
+// restricted/redirected set; DisableSubAgents strips the delegation tools
+// (agent, agentic_fetch); a non-empty ModelRole decides worker-tool
+// layering/orchestrator-tool stripping via workerSubAgentActiveForCall. A
+// build failure for any of them means the CALLER-REQUESTED composition
+// could not be built, and the shared toolset is never guaranteed to match
+// it (it is built from the coordinator-wide activeModelRole/UpdateModels
+// state, not this call's policy). Since an SDK run auto-approves every tool
+// call, nothing downstream would catch the mismatched toolset before the
+// model could use it — so the call must fail here instead of silently
+// falling back, mirroring RunSessionAgentCall's existing "refuse the row"
+// pattern (coordinator_interrupt.go, T12) for the durable-restart path.
 var ErrScopedCallToolsUnavailable = errors.New(
-	"agent: failed to build this call's folder-scoped/disk-provider toolset; refusing to fall back to the shared unscoped toolset")
+	"agent: failed to build this call's tool-shaping toolset (folder-scope/disk-provider/disable-sub-agents/model-role); refusing to fall back to the shared toolset")
 
 // scopedCallToolsRequired reports whether ctx carries per-call options that
-// make a nil pinCallTools result unsafe to silently fall back from (R5-1):
-// FolderScope and DiskProvider both mean the caller specifically asked for a
-// restricted/redirected toolset, so a build failure must fail the call
-// closed instead of widening it to the shared toolset. A legacy call (no
-// CallOptions, or one with neither field set) keeps today's fallback
-// behavior.
+// make a failed pinCallTools build unsafe to silently fall back from (R5-1;
+// widened R6-3): FolderScope and DiskProvider mean the caller specifically
+// asked for a restricted/redirected toolset; DisableSubAgents and a
+// non-empty ModelRole ALSO decide this call's tool composition (see
+// applyCallDisableSubAgents and workerSubAgentActiveForCall/
+// buildToolsAgentConfigForCall) — a build failure for either must fail the
+// call closed instead of widening/narrowing it to whatever the shared
+// toolset happens to be. A legacy call (no CallOptions, or one with none of
+// these fields set) keeps today's fallback behavior. Mirrors the trigger
+// predicate RunSessionAgentCall uses for the durable-replay rebind
+// (coordinator_interrupt.go) — kept as a single shared definition via
+// scopedCallOptionsRequireDistinctTools so the two can never drift apart
+// again.
 func scopedCallToolsRequired(ctx context.Context) bool {
-	opts := callOptionsFrom(ctx)
-	return opts != nil && (opts.FolderScope != nil || opts.DiskProvider != nil)
+	return scopedCallOptionsRequireDistinctTools(callOptionsFrom(ctx))
+}
+
+// scopedCallOptionsRequireDistinctTools is scopedCallToolsRequired's
+// struct-based form, usable before a CallOptions has been attached to a
+// context (RunSessionAgentCall inspects the durable call's CallOptions
+// directly, ahead of calling WithCallOptions).
+func scopedCallOptionsRequireDistinctTools(opts *CallOptions) bool {
+	return opts != nil && (opts.FolderScope != nil || opts.DiskProvider != nil ||
+		opts.DisableSubAgents || opts.ModelRole != "")
 }
 
 // pinCallToolsReadyGateSeam is a test-only hook: fires immediately after the
@@ -527,23 +550,47 @@ var pinCallToolsReadyGateSeam func()
 // per-call CallOptions (DisableSubAgents, ModelRole) from ctx, so the
 // returned slice is scoped to exactly one call; the caller pins it onto the
 // SessionAgentCall via resolvedOverrides.pin instead of publishing it to the
-// shared agent. nil is returned (log-only here — never fatal INSIDE this
-// function) whenever the coder agent is unconfigured, buildTools fails, or a
-// registered agent build fails. Every caller of this function MUST check
-// scopedCallToolsRequired(ctx) itself when the result is nil (R5-1, P0):
-// for an unscoped legacy call, nil correctly means "fall back to the shared
-// toolset"; for a call carrying a FolderScope or DiskProvider, nil must
-// instead fail the call — this function does not know which behavior the
-// caller wants, so it never decides that here.
-func (c *coordinator) pinCallTools(ctx context.Context, cfg *config.Config) []fantasy.AgentTool {
+// shared agent.
+//
+// Return contract (R6-3, P1): a (nil, nil) result means "no per-call
+// toolset was required — fall back to the shared toolset", the ONLY
+// legitimate reason being ctx carries no CallOptions that
+// scopedCallOptionsRequireDistinctTools would flag. Every other failure —
+// the coder agent unconfigured, buildTools itself erroring, or a
+// registered agent build failing on the ready gate — returns a non-nil
+// error INSTEAD of a bare nil slice whenever ctx's CallOptions requires a
+// distinct toolset (FolderScope, DiskProvider, DisableSubAgents, or a
+// tool-shaping ModelRole): a nil slice was ambiguous between "no override
+// requested" and "override failed", and R5-1's original version of this
+// function pushed that disambiguation onto every caller individually
+// (three call sites had to remember to call scopedCallToolsRequired(ctx)
+// themselves) — R6-3 found that RunSessionAgentCall's durable-replay call
+// site had NOT been widened to do so for DisableSubAgents/ModelRole. Moving
+// the check in here means every caller gets the same answer from one place:
+// err != nil always means "refuse the call", nil error always means "safe
+// to use whatever slice (possibly nil) came back".
+//
+// For a genuinely legacy call (ctx carries no CallOptions, or one with none
+// of those fields set), the same build/ready-gate failures still return
+// (nil, nil) — log-only — preserving the pre-R6-3 "fall back to the shared
+// toolset" behavior for callers that never asked for a distinct one.
+func (c *coordinator) pinCallTools(ctx context.Context, cfg *config.Config) ([]fantasy.AgentTool, error) {
+	required := scopedCallToolsRequired(ctx)
+	fail := func(err error) ([]fantasy.AgentTool, error) {
+		slog.Warn("Coordinator: failed to build per-call tools", "err", err, "distinct_toolset_required", required)
+		if required {
+			return nil, fmt.Errorf("%w: %v", ErrScopedCallToolsUnavailable, err)
+		}
+		return nil, nil
+	}
+
 	agentCfg, ok := cfg.Agents[config.AgentCoder]
 	if !ok {
-		return nil
+		return fail(errCoderAgentNotConfigured)
 	}
 	tools, err := c.buildTools(ctx, cfg, agentCfg, false)
 	if err != nil {
-		slog.Warn("Coordinator: failed to build per-call tools; falling back to shared toolset", "err", err)
-		tools = nil
+		return fail(err)
 	}
 	if pinCallToolsReadyGateSeam != nil {
 		pinCallToolsReadyGateSeam()
@@ -553,13 +600,11 @@ func (c *coordinator) pinCallTools(ctx context.Context, cfg *config.Config) []fa
 	// ready gate. Drain the gate before returning so the turn cannot
 	// dispatch a still-under-construction sub-agent — the same ordering the
 	// removed per-run UpdateModels publisher used to get from the run entry
-	// points' readyWg.Wait. A gate error is not fatal here: drop the pinned
-	// slice and let the call fall back to the shared toolset.
+	// points' readyWg.Wait.
 	if waitErr := c.readyWg.Wait(); waitErr != nil {
-		slog.Warn("Coordinator: agent build failed; falling back to shared toolset", "err", waitErr)
-		return nil
+		return fail(waitErr)
 	}
-	return tools
+	return tools, nil
 }
 
 // withoutCallOptions returns ctx with any per-call CallOptions removed, so

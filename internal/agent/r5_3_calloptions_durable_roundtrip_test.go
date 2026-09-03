@@ -99,7 +99,8 @@ func TestRebuildSessionAgentCall_RestoresFullCallOptions(t *testing.T) {
 	// block does for a rebuilt call.
 	ctx := WithCallOptions(t.Context(), rebuilt.CallOptions)
 	cfg := coord.cfg.Config()
-	pinnedTools := coord.pinCallTools(ctx, cfg)
+	pinnedTools, pinErr := coord.pinCallTools(ctx, cfg)
+	require.NoError(t, pinErr, "pinCallTools must succeed for this rebuilt call")
 	require.NotNil(t, pinnedTools, "pinCallTools must succeed for this rebuilt call")
 	var names []string
 	for _, tl := range pinnedTools {
@@ -177,7 +178,8 @@ func TestRebuildSessionAgentCall_CallOptionsSpecAloneWithoutFolderScope(t *testi
 
 	ctx := WithCallOptions(t.Context(), rebuilt.CallOptions)
 	cfg := coord.cfg.Config()
-	pinnedTools := coord.pinCallTools(ctx, cfg)
+	pinnedTools, pinErr := coord.pinCallTools(ctx, cfg)
+	require.NoError(t, pinErr)
 	require.NotNil(t, pinnedTools)
 	var names []string
 	for _, tl := range pinnedTools {

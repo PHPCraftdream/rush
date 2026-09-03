@@ -5,7 +5,6 @@ import (
 	_ "embed"
 	"fmt"
 	"html/template"
-	"path/filepath"
 	"strings"
 
 	"charm.land/fantasy"
@@ -67,7 +66,7 @@ func NewFSFindTool(scope permission.FolderScope, workingDir string, disk DiskPro
 				Tool: FSFindToolName, WorkingDir: workingDir, Scope: scope, Items: items, Disk: disk,
 				PathOf:    func(item FSFindItem) string { return item.Path },
 				Preflight: fsFindPreflight,
-				Execute:   fsFindExecute(scope, disk),
+				Execute:   fsFindExecute(scope, workingDir, disk),
 			})
 		},
 	)
@@ -85,11 +84,11 @@ func fsFindPreflight(_ context.Context, item FSFindItem, _ int, _ string) (permi
 
 // fsFindExecute searches one group of items sharing a resolved
 // directory, reporting one outcome per item in order.
-func fsFindExecute(scope permission.FolderScope, disk DiskProvider) FSExecuteFunc[FSFindItem] {
+func fsFindExecute(scope permission.FolderScope, workingDir string, disk DiskProvider) FSExecuteFunc[FSFindItem] {
 	return func(ctx context.Context, group FSBatchGroup[FSFindItem]) ([]FSItemOutcome, error) {
 		outcomes := make([]FSItemOutcome, len(group.Items))
 		for i, member := range group.Items {
-			block, err := fsFindOne(ctx, disk, scope, group.Path, member.Item)
+			block, err := fsFindOne(ctx, disk, scope, workingDir, group.Path, member.Item)
 			if err != nil {
 				outcomes[i] = FSItemOutcome{Status: FSStatusFailed, Error: err.Error()}
 				continue
@@ -103,7 +102,22 @@ func fsFindExecute(scope permission.FolderScope, disk DiskProvider) FSExecuteFun
 // fsFindOne searches one directory by pattern with policy filtering:
 // disk.Find applies no scope policy, so every result path is re-checked
 // and denied results are dropped before rendering.
-func fsFindOne(ctx context.Context, disk DiskProvider, scope permission.FolderScope, searchPath string, item FSFindItem) (string, error) {
+//
+// FindResult.Paths are documented as absolute matches, not canonical ones
+// (fs_provider.go): a custom provider, or a future OSDisk change, may
+// return an alias-spelled path (e.g. a followed directory symlink) whose
+// canonical target sits under a symlink-canonicalized deny carve-out
+// (fs_scope.go's CanonicalizeFolderScopeSpec). Checking the lexical
+// spelling directly would let such a result dodge the carve-out — the
+// same namespace-mismatch class R5-2 closed for directly REQUESTED paths,
+// and R6-2 (P1 security review finding) found reopened here for RESULT
+// paths, mirroring fs_list's fsListOne. Each result is therefore
+// re-resolved through resolveScopedPath before Check ever sees it; an
+// unresolvable result is dropped, never rendered, exactly like a denied
+// one. The rendered output still shows the result's original,
+// provider-returned spelling — the model needs the name it would
+// actually use to reach the file again.
+func fsFindOne(ctx context.Context, disk DiskProvider, scope permission.FolderScope, workingDir, searchPath string, item FSFindItem) (string, error) {
 	findResult, err := disk.Find(ctx, FindRequest{Pattern: item.Pattern, Dir: searchPath, Limit: FSFindMaxResults})
 	if err != nil {
 		return "", fmt.Errorf("error finding files: %w", err)
@@ -111,11 +125,19 @@ func fsFindOne(ctx context.Context, disk DiskProvider, scope permission.FolderSc
 	files, truncated := findResult.Paths, findResult.Truncated
 
 	// Policy filter: globFiles applies no scope policy, so every result
-	// path must pass Check with FileOpFind; denied results are dropped.
+	// path must be resolved and re-checked, and denied or unresolvable
+	// results are dropped. The RESOLVED path (not the possibly
+	// alias-spelled result path) is what Check sees — see fsFindOne's
+	// doc comment for why. The rendered path stays the original spelling.
 	dropped := 0
 	kept := make([]string, 0, len(files))
 	for _, f := range files {
-		if scope.Check(filepath.Clean(f), permission.FileOpFind) != nil {
+		resolved, err := resolveScopedPath(ctx, disk, workingDir, f)
+		if err != nil {
+			dropped++
+			continue
+		}
+		if scope.Check(resolved, permission.FileOpFind) != nil {
 			dropped++
 			continue
 		}

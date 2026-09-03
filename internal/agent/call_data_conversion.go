@@ -1,6 +1,9 @@
 package agent
 
 import (
+	"errors"
+	"fmt"
+
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/permission"
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -90,10 +93,35 @@ func toSessionCallOptionsSpec(o *CallOptions) *session.CallOptionsSpec {
 	}
 }
 
-// fromSessionCallOptionsSpec is the inverse of toSessionCallOptionsSpec.
-func fromSessionCallOptionsSpec(spec *session.CallOptionsSpec) *CallOptions {
+// ErrCallOptionsSpecVersionUnsupported is returned by
+// fromSessionCallOptionsSpec when a persisted CallOptionsSpec's Version
+// does not match the current session.CallOptionsSpecVersion (R6-4, P2
+// security review round 6). CallOptionsSpecVersion existed as write-only
+// metadata before this fix: toSessionCallOptionsSpec always stamped it,
+// but nothing on the read side ever looked at it — fromSessionCallOptionsSpec
+// reconstructed CallOptions from whatever fields happened to decode
+// regardless of version. During a rollback or a mixed-version deployment,
+// an older binary could accept a newer durable row, silently drop an
+// unknown execution-policy field, and run the replayed turn with weaker
+// semantics than the row actually declared. There is exactly one accepted
+// version today (session.CallOptionsSpecVersion); anything else — zero,
+// malformed, or a future schema this binary predates — is refused rather
+// than partially decoded.
+var ErrCallOptionsSpecVersionUnsupported = errors.New("agent: durable CallOptionsSpec has an unsupported schema version")
+
+// fromSessionCallOptionsSpec is the inverse of toSessionCallOptionsSpec. A
+// nil spec (no CallOptionsSpec persisted at all — a legacy pre-R5-3 row,
+// or a call that carried no CallOptions) returns (nil, nil), preserving
+// the historical "fall back to defaults" behavior for that case; it is
+// distinct from a non-nil spec with an unrecognized Version, which fails
+// closed instead (see ErrCallOptionsSpecVersionUnsupported).
+func fromSessionCallOptionsSpec(spec *session.CallOptionsSpec) (*CallOptions, error) {
 	if spec == nil {
-		return nil
+		return nil, nil
+	}
+	if spec.Version != session.CallOptionsSpecVersion {
+		return nil, fmt.Errorf("%w: got %d, want %d",
+			ErrCallOptionsSpecVersionUnsupported, spec.Version, session.CallOptionsSpecVersion)
 	}
 	return &CallOptions{
 		DisableSubAgents:         spec.DisableSubAgents,
@@ -101,7 +129,7 @@ func fromSessionCallOptionsSpec(spec *session.CallOptionsSpec) *CallOptions {
 		TimeoutOptionsSet:        spec.TimeoutOptionsSet,
 		TimeoutExtendsOnProgress: spec.TimeoutExtendsOnProgress,
 		TimeoutHardCap:           spec.TimeoutHardCap,
-	}
+	}, nil
 }
 
 // toSessionFolderScopeSpec converts permission.FolderScopeSpec to its
@@ -224,6 +252,22 @@ func ToSessionAgentCallData(call SessionAgentCall) session.SessionAgentCallData 
 //
 // LogicalCallID is restored to ensure the stable idempotency key survives
 // the durable serialization boundary (P2-1 fix, P0-1 release blocker).
+// callOptionsFromCallData reconstructs CallOptions for FromSessionAgentCallData
+// below, which has no error return of its own. This function is a plain
+// data-shape converter used only by round-trip tests exercising the OTHER
+// fields on SessionAgentCallData (RunAllowlistSpec, FolderScopeSpec,
+// LogicalCallID, ...) — it is never called from the production
+// durable-restart path, which goes through coordinator.RebuildSessionAgentCall
+// instead (that path DOES propagate fromSessionCallOptionsSpec's version
+// error and fails the row closed; see its doc comment). An unsupported
+// version here simply degrades to nil CallOptions, matching this
+// function's existing "best-effort reconstruction, no error channel"
+// contract for its test-only callers.
+func callOptionsFromCallData(spec *session.CallOptionsSpec) *CallOptions {
+	opts, _ := fromSessionCallOptionsSpec(spec)
+	return opts
+}
+
 func FromSessionAgentCallData(callData session.SessionAgentCallData) SessionAgentCall {
 	return SessionAgentCall{
 		SessionID:            callData.SessionID,
@@ -242,7 +286,7 @@ func FromSessionAgentCallData(callData session.SessionAgentCallData) SessionAgen
 		Origin:               callData.Origin,
 		RunAllowlistSpec:     fromSessionRunAllowlistSpec(callData.RunAllowlistSpec),
 		FolderScopeSpec:      fromSessionFolderScopeSpec(callData.FolderScopeSpec),
-		CallOptions:          fromSessionCallOptionsSpec(callData.CallOptionsSpec),
+		CallOptions:          callOptionsFromCallData(callData.CallOptionsSpec),
 		// SmartModel and FastModel are NOT set here — they will be reconstructed
 		// by coordinator.RebuildSessionAgentCall.
 	}

@@ -398,13 +398,16 @@ func (c *coordinator) resolveCredentialsModels(ctx context.Context, sessionID st
 	// base != nil: base may have been resolved before this call's
 	// CallOptions were attached to ctx, so its tools slice proves nothing
 	// about this call's policy; always rebuild from ctx directly.
-	resolved.tools = c.pinCallTools(ctx, cfg)
-	// R5-1 (P0): a nil result for a scoped/provider-backed call must fail
-	// the call, not silently fall back to the shared unscoped toolset — see
+	// R5-1 (P0)/R6-3 (P1): pinCallTools itself now fails closed (returns a
+	// non-nil error) whenever ctx's CallOptions requires a distinct toolset
+	// (FolderScope, DiskProvider, DisableSubAgents, or a tool-shaping
+	// ModelRole) and the build could not produce one — see
 	// ErrScopedCallToolsUnavailable's doc comment (coordinator_models.go).
-	if resolved.tools == nil && scopedCallToolsRequired(ctx) {
-		return nil, ErrScopedCallToolsUnavailable
+	tools, err := c.pinCallTools(ctx, cfg)
+	if err != nil {
+		return nil, err
 	}
+	resolved.tools = tools
 	return resolved, nil
 }
 
