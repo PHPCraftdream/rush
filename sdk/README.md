@@ -75,12 +75,17 @@ existing caller that never sets `Mode` is completely unaffected.
   and throws it away).
 
   **An ephemeral session also gets NO real-disk or command-execution
-  tools by default**: `bash`, `run_command`, `download`, `edit`,
-  `multiedit`, `glob`, `grep`, `ls`, `view`, `write`, and the whole
-  `fs_*` family are all absent from the model's toolset unless a call
-  opts in (below). `bash`/`run_command`/`download` have no opt-in at
-  all — none of them can be virtualized by a `DiskProvider`, so they
-  stay hard-denied even for a call that opts into `FolderScopes`.
+  tools by default**: `bash`, `run_command`, `download`,
+  `agentic_fetch`, `edit`, `multiedit`, `glob`, `grep`, `ls`, `view`,
+  `write`, and the whole `fs_*` family are all absent from the model's
+  toolset unless a call opts in (below). Four of them — `bash`,
+  `run_command`, `download`, and `agentic_fetch` — have no opt-in at
+  all: none can be virtualized by a `DiskProvider`, so they stay
+  hard-denied even for a call that opts into `FolderScopes`.
+  (`agentic_fetch` is stripped for the same reason: it builds its
+  sub-agent's file-tool workspace in a temp directory created under the
+  real OS temp path, exactly what an ephemeral session promises not to
+  touch.)
   There is no real working directory to point them at, so — unlike a
   missing `rush.json` field silently falling back to a default — Rush
   refuses to hand out tools whose only fallback would be the real host
