@@ -314,7 +314,16 @@ func TestResolveScopedPath_UsesInjectedDiskProvider(t *testing.T) {
 
 func TestFSReadUsesInjectedDiskProvider(t *testing.T) {
 	t.Parallel()
-	tmp := t.TempDir()
+	// t.TempDir() is not guaranteed to already be canonical on every CI
+	// runner image (macOS's /var -> /private/var; a redirected Windows
+	// temp drive). fsBatchTestScope/fsWriteTestScope resolve workingDir's
+	// longest real-disk-existing prefix through the REAL disk, while the
+	// tool resolves item paths through the FAKE disk, which knows nothing
+	// about a real symlink/junction on tmp -- a raw t.TempDir() would put
+	// the scope root and every item path in different namespaces. Same
+	// host-topology class already fixed in 73878311 / b253bb70.
+	tmp, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
 	workingDir := filepath.Join(tmp, "virtual")
 	disk := newFakeDisk()
 	disk.putDir(workingDir)
@@ -339,7 +348,16 @@ func TestFSReadUsesInjectedDiskProvider(t *testing.T) {
 
 func TestFSListUsesInjectedDiskProvider(t *testing.T) {
 	t.Parallel()
-	tmp := t.TempDir()
+	// t.TempDir() is not guaranteed to already be canonical on every CI
+	// runner image (macOS's /var -> /private/var; a redirected Windows
+	// temp drive). fsBatchTestScope/fsWriteTestScope resolve workingDir's
+	// longest real-disk-existing prefix through the REAL disk, while the
+	// tool resolves item paths through the FAKE disk, which knows nothing
+	// about a real symlink/junction on tmp -- a raw t.TempDir() would put
+	// the scope root and every item path in different namespaces. Same
+	// host-topology class already fixed in 73878311 / b253bb70.
+	tmp, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
 	workingDir := filepath.Join(tmp, "virtual")
 	disk := newFakeDisk()
 	disk.putDir(workingDir)
@@ -369,7 +387,16 @@ func TestFSListUsesInjectedDiskProvider(t *testing.T) {
 
 func TestFSFindUsesInjectedDiskProvider(t *testing.T) {
 	t.Parallel()
-	tmp := t.TempDir()
+	// t.TempDir() is not guaranteed to already be canonical on every CI
+	// runner image (macOS's /var -> /private/var; a redirected Windows
+	// temp drive). fsBatchTestScope/fsWriteTestScope resolve workingDir's
+	// longest real-disk-existing prefix through the REAL disk, while the
+	// tool resolves item paths through the FAKE disk, which knows nothing
+	// about a real symlink/junction on tmp -- a raw t.TempDir() would put
+	// the scope root and every item path in different namespaces. Same
+	// host-topology class already fixed in 73878311 / b253bb70.
+	tmp, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
 	workingDir := filepath.Join(tmp, "virtual")
 	disk := newFakeDisk()
 	disk.putDir(workingDir)
@@ -399,7 +426,16 @@ func TestFSFindUsesInjectedDiskProvider(t *testing.T) {
 // from re-reading file content through any code path.
 func TestFSGrepUsesInjectedDiskProviderAndNeverSpawnsRipgrep(t *testing.T) {
 	t.Parallel()
-	tmp := t.TempDir()
+	// t.TempDir() is not guaranteed to already be canonical on every CI
+	// runner image (macOS's /var -> /private/var; a redirected Windows
+	// temp drive). fsBatchTestScope/fsWriteTestScope resolve workingDir's
+	// longest real-disk-existing prefix through the REAL disk, while the
+	// tool resolves item paths through the FAKE disk, which knows nothing
+	// about a real symlink/junction on tmp -- a raw t.TempDir() would put
+	// the scope root and every item path in different namespaces. Same
+	// host-topology class already fixed in 73878311 / b253bb70.
+	tmp, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
 	workingDir := filepath.Join(tmp, "virtual")
 	disk := newFakeDisk()
 	disk.putDir(workingDir)
@@ -423,7 +459,16 @@ func TestFSGrepUsesInjectedDiskProviderAndNeverSpawnsRipgrep(t *testing.T) {
 
 func TestFSWriteUsesInjectedDiskProvider(t *testing.T) {
 	t.Parallel()
-	tmp := t.TempDir()
+	// t.TempDir() is not guaranteed to already be canonical on every CI
+	// runner image (macOS's /var -> /private/var; a redirected Windows
+	// temp drive). fsBatchTestScope/fsWriteTestScope resolve workingDir's
+	// longest real-disk-existing prefix through the REAL disk, while the
+	// tool resolves item paths through the FAKE disk, which knows nothing
+	// about a real symlink/junction on tmp -- a raw t.TempDir() would put
+	// the scope root and every item path in different namespaces. Same
+	// host-topology class already fixed in 73878311 / b253bb70.
+	tmp, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
 	workingDir := filepath.Join(tmp, "virtual")
 	disk := newFakeDisk()
 	// fs_write's execute path also scope-checks and stats missing
@@ -448,7 +493,16 @@ func TestFSWriteUsesInjectedDiskProvider(t *testing.T) {
 
 func TestFSReplaceUsesInjectedDiskProvider(t *testing.T) {
 	t.Parallel()
-	tmp := t.TempDir()
+	// t.TempDir() is not guaranteed to already be canonical on every CI
+	// runner image (macOS's /var -> /private/var; a redirected Windows
+	// temp drive). fsBatchTestScope/fsWriteTestScope resolve workingDir's
+	// longest real-disk-existing prefix through the REAL disk, while the
+	// tool resolves item paths through the FAKE disk, which knows nothing
+	// about a real symlink/junction on tmp -- a raw t.TempDir() would put
+	// the scope root and every item path in different namespaces. Same
+	// host-topology class already fixed in 73878311 / b253bb70.
+	tmp, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
 	workingDir := filepath.Join(tmp, "virtual")
 	disk := newFakeDisk()
 	disk.putDir(workingDir)
@@ -477,7 +531,16 @@ func TestFSReplaceUsesInjectedDiskProvider(t *testing.T) {
 
 func TestFSWriteLinesUsesInjectedDiskProvider(t *testing.T) {
 	t.Parallel()
-	tmp := t.TempDir()
+	// t.TempDir() is not guaranteed to already be canonical on every CI
+	// runner image (macOS's /var -> /private/var; a redirected Windows
+	// temp drive). fsBatchTestScope/fsWriteTestScope resolve workingDir's
+	// longest real-disk-existing prefix through the REAL disk, while the
+	// tool resolves item paths through the FAKE disk, which knows nothing
+	// about a real symlink/junction on tmp -- a raw t.TempDir() would put
+	// the scope root and every item path in different namespaces. Same
+	// host-topology class already fixed in 73878311 / b253bb70.
+	tmp, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
 	workingDir := filepath.Join(tmp, "virtual")
 	disk := newFakeDisk()
 	disk.putDir(workingDir)
@@ -506,7 +569,16 @@ func TestFSWriteLinesUsesInjectedDiskProvider(t *testing.T) {
 
 func TestFSDeleteUsesInjectedDiskProvider(t *testing.T) {
 	t.Parallel()
-	tmp := t.TempDir()
+	// t.TempDir() is not guaranteed to already be canonical on every CI
+	// runner image (macOS's /var -> /private/var; a redirected Windows
+	// temp drive). fsBatchTestScope/fsWriteTestScope resolve workingDir's
+	// longest real-disk-existing prefix through the REAL disk, while the
+	// tool resolves item paths through the FAKE disk, which knows nothing
+	// about a real symlink/junction on tmp -- a raw t.TempDir() would put
+	// the scope root and every item path in different namespaces. Same
+	// host-topology class already fixed in 73878311 / b253bb70.
+	tmp, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
 	workingDir := filepath.Join(tmp, "virtual")
 	disk := newFakeDisk()
 	disk.putDir(workingDir)
@@ -684,7 +756,16 @@ func TestFSWriteHistoryAndFileTrackerRecordAgainstRealServices(t *testing.T) {
 	realFiletracker := filetracker.NewService(q)
 	realHistory := history.NewService(q, conn)
 
-	tmp := t.TempDir()
+	// t.TempDir() is not guaranteed to already be canonical on every CI
+	// runner image (macOS's /var -> /private/var; a redirected Windows
+	// temp drive). fsBatchTestScope/fsWriteTestScope resolve workingDir's
+	// longest real-disk-existing prefix through the REAL disk, while the
+	// tool resolves item paths through the FAKE disk, which knows nothing
+	// about a real symlink/junction on tmp -- a raw t.TempDir() would put
+	// the scope root and every item path in different namespaces. Same
+	// host-topology class already fixed in 73878311 / b253bb70.
+	tmp, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
 	workingDir := filepath.Join(tmp, "virtual")
 	disk := newFakeDisk()
 	disk.putDir(tmp)
@@ -723,7 +804,16 @@ func TestFSWriteHistoryAndFileTrackerRecordAgainstRealServices(t *testing.T) {
 // RecordRead) so the causal link is actually exercised.
 func TestFSReadRecordsReadSoFSReplaceCanSucceedWithoutAPriorWrite(t *testing.T) {
 	t.Parallel()
-	tmp := t.TempDir()
+	// t.TempDir() is not guaranteed to already be canonical on every CI
+	// runner image (macOS's /var -> /private/var; a redirected Windows
+	// temp drive). fsBatchTestScope/fsWriteTestScope resolve workingDir's
+	// longest real-disk-existing prefix through the REAL disk, while the
+	// tool resolves item paths through the FAKE disk, which knows nothing
+	// about a real symlink/junction on tmp -- a raw t.TempDir() would put
+	// the scope root and every item path in different namespaces. Same
+	// host-topology class already fixed in 73878311 / b253bb70.
+	tmp, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
 	workingDir := filepath.Join(tmp, "virtual")
 	disk := newFakeDisk()
 	disk.putDir(workingDir)

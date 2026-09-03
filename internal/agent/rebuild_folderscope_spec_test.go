@@ -25,7 +25,16 @@ func TestRebuildSessionAgentCall_RestoresFolderScopeFromSpec(t *testing.T) {
 	env := testEnv(t)
 	coord := newRoleModelTestCoordinator(t, env, false)
 
-	workDir := t.TempDir()
+	// t.TempDir() is not guaranteed to already be canonical on every CI
+	// runner image (macOS's /var -> /private/var; a redirected Windows
+	// temp drive). RebuildSessionAgentCall canonicalizes the durable spec
+	// through the REAL disk (tools.CanonicalizeFolderScopeSpec) while the
+	// assertions below check paths built from workDir itself -- a raw
+	// t.TempDir() would put the compiled scope root and the checked paths
+	// in different namespaces. Same class already fixed in 73878311 /
+	// b253bb70.
+	workDir, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
 	data := session.SessionAgentCallData{
 		SessionID: "scope-rebuild-probe",
 		Prompt:    "hello",

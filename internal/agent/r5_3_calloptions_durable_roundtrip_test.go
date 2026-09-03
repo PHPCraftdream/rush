@@ -37,7 +37,16 @@ func TestRebuildSessionAgentCall_RestoresFullCallOptions(t *testing.T) {
 	env := testEnv(t)
 	coord := newToolPinningCoordinator(t, env, true) // worker configured
 
-	workDir := t.TempDir()
+	// t.TempDir() is not guaranteed to already be canonical on every CI
+	// runner image (macOS's /var -> /private/var; a redirected Windows
+	// temp drive). RebuildSessionAgentCall canonicalizes the durable spec
+	// through the REAL disk (tools.CanonicalizeFolderScopeSpec) while the
+	// assertion below checks a path built from workDir itself -- a raw
+	// t.TempDir() would put the compiled scope root and the checked path
+	// in different namespaces. Same class already fixed in 73878311 /
+	// b253bb70.
+	workDir, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
 	scopeSpec := &permission.FolderScopeSpec{
 		WorkingDir: workDir,
 		Entries: []permission.FolderScopeEntry{
