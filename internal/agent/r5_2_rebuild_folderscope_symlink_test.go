@@ -65,7 +65,20 @@ func TestRebuildSessionAgentCall_RealSymlinkedDenyCarveOutUnderBroaderGrantStill
 	require.Contains(t, denied.Reason, "deny-carved scope")
 
 	// The parent grant still works for a sibling outside the carve-out.
+	// Resolved through EvalSymlinks for the same reason resolvedItem is
+	// above: Check's contract requires an already-resolved path (see its
+	// doc comment), and a real request always arrives pre-resolved via
+	// resolveScopedPath. workDir itself can sit under a symlinked path
+	// component on some platforms/CI runners (e.g. macOS's /var ->
+	// /private/var, or a directory-junctioned CI workspace root), which
+	// a raw filepath.Join(workDir, ...) does not account for -- found by
+	// this exact assertion failing on GitHub Actions windows-latest and
+	// macos-latest runners the first time this test ever ran on real CI
+	// (this dev machine's own temp directory happens not to traverse a
+	// symlink, which is why it was never caught locally).
 	sibling := filepath.Join(workDir, "open.txt")
 	require.NoError(t, os.WriteFile(sibling, []byte("x"), 0o644))
-	require.NoError(t, call.CallOptions.FolderScope.Check(sibling, permission.FileOpRead))
+	resolvedSibling, err := filepath.EvalSymlinks(sibling)
+	require.NoError(t, err)
+	require.NoError(t, call.CallOptions.FolderScope.Check(resolvedSibling, permission.FileOpRead))
 }

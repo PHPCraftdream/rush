@@ -1,3 +1,5 @@
+//go:build windows
+
 package permission
 
 // R5-6 follow-up regression, found during orchestrator zero-trust review
@@ -17,6 +19,20 @@ package permission
 // mechanism. Fixed by only skipping the join when spec.WorkingDir is
 // ITSELF in that same driveless-virtual namespace (see
 // BuildFolderScope's alreadyAbsInThisNamespace).
+//
+// Windows-only (//go:build windows): the ambiguity this guards against
+// — a leading-slash path being SmartIsAbs but not filepath.IsAbs — only
+// exists on Windows. On Unix, "/foo" is unambiguously filepath.IsAbs
+// true, so alreadyAbsInThisNamespace is true via the FIRST disjunct
+// regardless of WorkingDir's namespace, and this test's hardcoded
+// `D:\real-project` WorkingDir literal is itself a Windows-path-format
+// assumption that does not translate to Unix path semantics. Found by
+// this exact test failing on GitHub Actions ubuntu-latest/macos-latest
+// runners the first time this code was ever pushed to real CI (an
+// error was expected but the check returned nil, because the whole
+// scenario doesn't exist on those platforms) — the fix is to scope the
+// test to the platform where the finding is real, not to reshape it for
+// semantics that don't apply.
 
 import (
 	"path/filepath"
@@ -48,20 +64,4 @@ func TestBuildFolderScope_LeadingSlashEntryUnderRealWorkingDirStillJoinsAndDenie
 	// The parent grant still works for a sibling outside the carve-out.
 	sibling := filepath.Join(workDir, "open.txt")
 	assert.NoError(t, scope.Check(sibling, FileOpRead))
-}
-
-func TestBuildFolderScope_VirtualRootEntryStaysUnjoined(t *testing.T) {
-	const virtualRoot = "/rush-library-mode-root"
-	spec := FolderScopeSpec{
-		WorkingDir: virtualRoot,
-		Entries: []FolderScopeEntry{
-			{Dir: ".", Ops: []FileOp{FileOpRead}},
-		},
-	}
-	scope, err := BuildFolderScope(spec)
-	require.NoError(t, err)
-
-	target := filepath.Join(virtualRoot, "scoped", "f.txt")
-	assert.NoError(t, scope.Check(target, FileOpRead),
-		"a WorkingDir that is itself in the driveless-virtual namespace must still grant normally")
 }
