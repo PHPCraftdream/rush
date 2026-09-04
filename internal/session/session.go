@@ -114,6 +114,7 @@ type ModelSlotUpdate struct {
 
 type Service interface {
 	pubsub.Subscriber[Session]
+	pubsub.Shutdowner
 	Create(ctx context.Context, title string) (Session, error)
 	// CreateWithID creates a top-level session with a caller-chosen ID. Used
 	// by `rush run --session <id>` to make CLI/CI invocations idempotent:

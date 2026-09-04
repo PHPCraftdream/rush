@@ -262,3 +262,31 @@ func TestSubscribeSessionsReceivesLiveEvents(t *testing.T) {
 	require.True(t, sawCreated,
 		"expected a session CreatedEvent for %q; got %v", res.SessionID, describeSessionEvents(events))
 }
+
+// TestSubscriptionsCloseWhenClientCloses verifies that subscriptions admitted
+// with context.Background still receive EOF when the owning Client shuts down.
+// This also exercises App's message/session broker cleanup rather than only
+// the caller-context cancellation path.
+func TestSubscriptionsCloseWhenClientCloses(t *testing.T) {
+	cl, _, _ := newEventsTestEnv(t)
+
+	msgCh := cl.SubscribeMessages(context.Background())
+	sessCh := cl.SubscribeSessions(context.Background())
+
+	res := cl.Close()
+	require.False(t, res.Forced)
+	require.Empty(t, res.CleanupErrors)
+
+	select {
+	case _, ok := <-msgCh:
+		require.False(t, ok, "message subscription must close with its Client")
+	case <-time.After(eventsDrainTimeout):
+		t.Fatal("message subscription remained open after Client.Close")
+	}
+	select {
+	case _, ok := <-sessCh:
+		require.False(t, ok, "session subscription must close with its Client")
+	case <-time.After(eventsDrainTimeout):
+		t.Fatal("session subscription remained open after Client.Close")
+	}
+}

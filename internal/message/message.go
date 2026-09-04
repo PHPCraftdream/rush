@@ -54,6 +54,7 @@ type CreateMessageParams struct {
 
 type Service interface {
 	pubsub.Subscriber[Message]
+	pubsub.Shutdowner
 	Create(ctx context.Context, sessionID string, params CreateMessageParams) (Message, error)
 	Update(ctx context.Context, message Message) error
 	// Notify publishes a message update to the UI without writing to the database.

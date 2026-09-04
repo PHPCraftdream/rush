@@ -50,6 +50,7 @@ type Broker[T any] struct {
 	mu                   sync.RWMutex
 	done                 chan struct{}
 	shutdownOnce         sync.Once
+	subscriptionWG       sync.WaitGroup
 	subCount             int
 	channelBufferSize    int
 	mustDeliverTimeout   time.Duration
@@ -88,27 +89,26 @@ func (b *Broker[T]) SetMustDeliverTimeout(d time.Duration) {
 // subscriber channel. It is safe to call concurrently and more than
 // once — only the first call does any work.
 //
-// The close(b.done) step is guarded by a sync.Once because closing an
-// already-closed channel panics; a naive check-then-close (via select
-// on b.done) has a race window between the check and the close that
-// two concurrent Shutdown callers can both pass through. The
-// subscriber-draining loop below does not need the same protection: it
-// is already serialized by b.mu, and re-running it against an
-// already-emptied b.subs map is a harmless no-op.
+// The entire shutdown operation is guarded by sync.Once. This prevents
+// concurrent callers from redundantly taking b.mu while the first caller is
+// closing subscriber channels, and makes the close of b.done and every
+// subscriber channel one atomic lifecycle transition from the broker's point
+// of view. Shutdown also waits for every subscription cleanup worker, so no
+// goroutine or subscription payload remains retained after it returns.
 func (b *Broker[T]) Shutdown() {
 	b.shutdownOnce.Do(func() {
 		close(b.done)
+
+		b.mu.Lock()
+		for ch := range b.subs {
+			delete(b.subs, ch)
+			close(ch)
+		}
+
+		b.subCount = 0
+		b.mu.Unlock()
+		b.subscriptionWG.Wait()
 	})
-
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	for ch := range b.subs {
-		delete(b.subs, ch)
-		close(ch)
-	}
-
-	b.subCount = 0
 }
 
 func (b *Broker[T]) Subscribe(ctx context.Context) <-chan Event[T] {
@@ -126,19 +126,29 @@ func (b *Broker[T]) Subscribe(ctx context.Context) <-chan Event[T] {
 	sub := make(chan Event[T], b.channelBufferSize)
 	b.subs[sub] = struct{}{}
 	b.subCount++
+	b.subscriptionWG.Add(1)
 
 	go func() {
-		<-ctx.Done()
+		defer b.subscriptionWG.Done()
+		// The broker lifecycle is an independent cancellation source. In
+		// particular, SDK callers commonly use context.Background for a
+		// subscription and rely on Client.Close to release it. Waiting only
+		// on ctx.Done would retain this goroutine, the channel, and its
+		// buffered event payloads until the host eventually cancelled ctx.
+		select {
+		case <-ctx.Done():
+		case <-b.done:
+		}
 
 		b.mu.Lock()
 		defer b.mu.Unlock()
 
-		select {
-		case <-b.done:
+		// Shutdown may have removed and closed the channel already. The
+		// membership check is what keeps this cancellation path from
+		// closing it a second time.
+		if _, ok := b.subs[sub]; !ok {
 			return
-		default:
 		}
-
 		delete(b.subs, sub)
 		close(sub)
 		b.subCount--

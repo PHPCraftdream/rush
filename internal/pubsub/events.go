@@ -38,6 +38,12 @@ type Subscriber[T any] interface {
 	Subscribe(context.Context) <-chan Event[T]
 }
 
+// Shutdowner releases all subscriptions owned by a broker or service.
+// Shutdown is safe to call concurrently and more than once.
+type Shutdowner interface {
+	Shutdown()
+}
+
 type (
 	// EventType identifies the type of event.
 	EventType string

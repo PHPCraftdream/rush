@@ -24,6 +24,8 @@ func (m *mockSessionService) Subscribe(context.Context) <-chan pubsub.Event[sess
 	return make(chan pubsub.Event[session.Session])
 }
 
+func (m *mockSessionService) Shutdown() {}
+
 func (m *mockSessionService) Create(_ context.Context, title string) (session.Session, error) {
 	s := session.Session{ID: "new-session-id", Title: title}
 	m.created = append(m.created, s)

@@ -69,6 +69,64 @@ func TestShutdown_Idempotent(t *testing.T) {
 	assert.Equal(t, 0, b.GetSubscriberCount())
 }
 
+// TestShutdown_ClosesBackgroundContextSubscription verifies that broker
+// shutdown owns the lifetime of a subscription even when its caller uses a
+// context that will never be cancelled. This is the lifecycle used by SDK
+// subscriptions and prevents the subscription goroutine and buffered channel
+// from being retained after shutdown.
+func TestShutdown_ClosesBackgroundContextSubscription(t *testing.T) {
+	b := NewBrokerWithOptions[int](1)
+	ch := b.Subscribe(context.Background())
+
+	b.Shutdown()
+
+	select {
+	case _, ok := <-ch:
+		assert.False(t, ok, "shutdown must close a background-context subscription")
+	case <-time.After(time.Second):
+		t.Fatal("subscription channel remained open after broker shutdown")
+	}
+	assert.Equal(t, 0, b.GetSubscriberCount())
+
+	// The caller context remains usable and cancellation after shutdown must
+	// not attempt to close the subscription a second time.
+	b.Shutdown()
+}
+
+// TestShutdown_ConcurrentPublishDoesNotSendOnClosedChannel verifies that
+// shutdown and publishers use the broker lock consistently. A publisher may
+// overlap shutdown, but it must never send after the subscriber channel is
+// closed.
+func TestShutdown_ConcurrentPublishDoesNotSendOnClosedChannel(t *testing.T) {
+	b := NewBroker[int]()
+	ch := b.Subscribe(context.Background())
+
+	const publishers = 16
+	var ready sync.WaitGroup
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	ready.Add(publishers)
+	for range publishers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ready.Done()
+			<-start
+			for i := range 100 {
+				b.Publish(UpdatedEvent, i)
+			}
+		}()
+	}
+	ready.Wait()
+	close(start)
+	b.Shutdown()
+	wg.Wait()
+
+	for range ch {
+	}
+	assert.Equal(t, 0, b.GetSubscriberCount())
+}
+
 // TestPublish_DropsWhenSubscriberBufferFull verifies the documented
 // best-effort, lossy behavior of Publish: a full subscriber channel
 // causes the event to be dropped (not block the publisher), and

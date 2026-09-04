@@ -162,6 +162,10 @@ func (m *mockMessageService) Subscribe(ctx context.Context) <-chan pubsub.Event[
 	return m.inner.Subscribe(ctx)
 }
 
+func (m *mockMessageService) Shutdown() {
+	m.inner.Shutdown()
+}
+
 // TestP339_NoDuplicateExecutionAfterHandoff proves the fix for task #339:
 // when a detached run (started by abandonOwnershipWithHandoff) successfully
 // creates the user message and then fails with a non-retryable error, the

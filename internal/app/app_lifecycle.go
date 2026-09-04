@@ -150,6 +150,17 @@ func (app *App) cancelAgentsBeforeRelease(drained <-chan struct{}) bool {
 func (app *App) releaseResources(stillBusy bool) ShutdownResult {
 	var result ShutdownResult
 
+	// Message and session subscriptions are owned by this App, not by the
+	// caller's context. Close both brokers before any database release so an
+	// SDK subscriber using context.Background receives EOF during Client.Close,
+	// including on the forced path while live publishers are unwinding.
+	if app.Messages != nil {
+		app.Messages.Shutdown()
+	}
+	if app.Sessions != nil {
+		app.Sessions.Shutdown()
+	}
+
 	// Stop the run queue pump (task #340 P0-3). This must complete before DB
 	// close to ensure no pump goroutines are writing when we close the connection.
 	// Pump.Stop() returns true if shutdown was forced (workers still running after grace).

@@ -28,6 +28,10 @@ func newMockCheckpointMsgSvc() *mockCheckpointMsgSvc {
 	}
 }
 
+func (m *mockCheckpointMsgSvc) Shutdown() {
+	m.Broker.Shutdown()
+}
+
 func (m *mockCheckpointMsgSvc) Create(_ context.Context, _ string, _ message.CreateMessageParams) (message.Message, error) {
 	return message.Message{}, nil
 }
