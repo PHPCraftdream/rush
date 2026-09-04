@@ -18,7 +18,6 @@ import (
 	rushlog "github.com/PHPCraftdream/rush/internal/log"
 	"github.com/PHPCraftdream/rush/internal/projects"
 	"github.com/google/uuid"
-	"github.com/pressly/goose/v3"
 )
 
 // OpenMode selects how Open resolves configuration and persistence.
@@ -559,16 +558,7 @@ func openMemoryDB(ctx context.Context) (closeConns []*sql.DB, conn *sql.DB, err 
 		}
 	}
 
-	// internal/db's package init already pointed goose at db.FS
-	// (goose.SetBaseFS), and internal/db only sets the dialect lazily on
-	// its first file Connect, so library mode must set it itself
-	// (SetDialect is idempotent).
-	if err := goose.SetDialect("sqlite3"); err != nil {
-		main.Close()
-		keeper.Close()
-		return nil, nil, fmt.Errorf("sdk: failed to set goose dialect for in-memory database: %w", err)
-	}
-	if err := goose.UpContext(ctx, main, "migrations"); err != nil {
+	if err := db.Migrate(ctx, main); err != nil {
 		main.Close()
 		keeper.Close()
 		return nil, nil, fmt.Errorf("sdk: failed to run migrations on in-memory database: %w", err)

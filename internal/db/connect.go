@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"embed"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"path/filepath"
 	"sync"
@@ -24,8 +25,6 @@ var (
 		"secure_delete": "ON",
 		"busy_timeout":  "30000",
 	}
-	gooseInitOnce sync.Once
-	gooseInitErr  error
 )
 
 //go:embed migrations/*.sql
@@ -176,13 +175,7 @@ func connect(ctx context.Context, dataDir string) (*connEntry, error) {
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
 
-	if err := initGoose(); err != nil {
-		conn.Close()
-		slog.Error("Failed to initialize goose", "error", err)
-		return nil, fmt.Errorf("failed to initialize goose: %w", err)
-	}
-
-	if err := goose.Up(conn, "migrations"); err != nil {
+	if err := Migrate(ctx, conn); err != nil {
 		conn.Close()
 		slog.Error("Failed to apply migrations", "error", err)
 		return nil, fmt.Errorf("failed to apply migrations: %w", err)
@@ -333,11 +326,28 @@ func ResetPool() {
 	}
 }
 
-func initGoose() error {
-	gooseInitOnce.Do(func() {
-		goose.SetBaseFS(FS)
-		gooseInitErr = goose.SetDialect("sqlite3")
-	})
+// Migrate applies the embedded schema migrations to conn.
+//
+// Goose's legacy package-level API stores the selected dialect in a mutable
+// global. That API is not safe when independent clients initialize databases
+// concurrently. A Provider owns its dialect, filesystem, and migration
+// operations, so each database gets an isolated migration boundary.
+func Migrate(ctx context.Context, conn *sql.DB) error {
+	options := make([]goose.ProviderOption, 0, 1)
+	if testing.Testing() {
+		options = append(options, goose.WithLogger(goose.NopLogger()))
+	}
+	migrationFS, err := fs.Sub(FS, "migrations")
+	if err != nil {
+		return fmt.Errorf("failed to locate embedded migrations: %w", err)
+	}
 
-	return gooseInitErr
+	provider, err := goose.NewProvider(goose.DialectSQLite3, conn, migrationFS, options...)
+	if err != nil {
+		return fmt.Errorf("failed to initialize goose provider: %w", err)
+	}
+	if _, err := provider.Up(ctx); err != nil {
+		return fmt.Errorf("failed to apply migrations: %w", err)
+	}
+	return nil
 }

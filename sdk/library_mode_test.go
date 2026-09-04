@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/db"
@@ -324,4 +325,70 @@ func TestOpenLibraryMode_TwoEphemeralClientsAreIsolated(t *testing.T) {
 	require.NotEmpty(t, msgsB2)
 	_, err = clientB.Session(ctx, sessionA)
 	require.ErrorIs(t, err, sql.ErrNoRows)
+}
+
+// TestOpenLibraryMode_ConcurrentEphemeralAndFileBackedOpen exercises the
+// actual Open paths behind one barrier. The file-backed Connect deliberately
+// runs alongside the ephemeral Opens because both used to mutate goose's
+// package-global dialect while migrations were reading it.
+func TestOpenLibraryMode_ConcurrentEphemeralAndFileBackedOpen(t *testing.T) {
+	isolateGlobalConfigForWorkdirTest(t)
+
+	const ephemeralCallers = 2
+	const callers = ephemeralCallers + 1
+	ctx := context.Background()
+	fileDir := t.TempDir()
+	start := make(chan struct{})
+	var ready sync.WaitGroup
+	ready.Add(callers)
+	clients := make([]*sdk.Client, 0, ephemeralCallers)
+	t.Cleanup(func() {
+		for _, client := range clients {
+			_ = client.Close()
+		}
+		_ = db.ReleaseAll(fileDir)
+	})
+
+	type result struct {
+		client *sdk.Client
+		conn   *sql.DB
+		err    error
+	}
+	results := make(chan result, callers)
+	for range ephemeralCallers {
+		go func() {
+			ready.Done()
+			<-start
+			client, err := sdk.Open(ctx, sdk.Options{
+				Mode:          sdk.ModeLibrary,
+				LibraryConfig: libraryConfigFor("http://127.0.0.1:1", "sk-library-secret"),
+			})
+			results <- result{client: client, err: err}
+		}()
+	}
+	go func() {
+		ready.Done()
+		<-start
+		conn, err := db.Connect(ctx, fileDir)
+		results <- result{conn: conn, err: err}
+	}()
+
+	ready.Wait()
+	close(start)
+
+	var fileConn *sql.DB
+	for range callers {
+		got := <-results
+		require.NoError(t, got.err)
+		if got.client != nil {
+			clients = append(clients, got.client)
+		}
+		if got.conn != nil {
+			fileConn = got.conn
+		}
+	}
+
+	require.Len(t, clients, ephemeralCallers)
+	require.NotNil(t, fileConn)
+	require.NoError(t, fileConn.PingContext(ctx))
 }
