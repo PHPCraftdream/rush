@@ -4,6 +4,7 @@ package cliprovider
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +15,8 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/shell"
 )
+
+const wslOnlyLaunchMarker = "wsl-only-fixture-ran"
 
 // This file exercises the P1.7 fix: cliprovider must not hand a bare "bash"
 // off to a resolver that can silently pick the WSL launcher
@@ -53,6 +56,32 @@ func fakeWSLRoot(t *testing.T) string {
 	}
 	t.Setenv("SystemRoot", root)
 	return wslBash
+}
+
+// makeExecutableWSLFixture replaces the inert WSL stand-in with this test
+// binary. TestMain already supports re-executing the test binary in a
+// fast-exit helper mode, so a launch emits the marker file's contents. This
+// makes an accidental fallback to the WSL path observable without requiring a
+// compiler or an external executable in the test environment.
+func makeExecutableWSLFixture(t *testing.T, wslBash string) {
+	t.Helper()
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatalf("locate test binary: %v", err)
+	}
+	data, err := os.ReadFile(self)
+	if err != nil {
+		t.Fatalf("read test binary: %v", err)
+	}
+	if err := os.WriteFile(wslBash, data, 0o755); err != nil {
+		t.Fatalf("write executable WSL fixture: %v", err)
+	}
+
+	marker := filepath.Join(filepath.Dir(wslBash), "wsl-only-launch-marker.txt")
+	if err := os.WriteFile(marker, []byte(wslOnlyLaunchMarker+"\n"), 0o644); err != nil {
+		t.Fatalf("write WSL launch marker: %v", err)
+	}
+	t.Setenv(fastExitHelperEnv, marker)
 }
 
 // requireRealBash locates the actual usable bash on this machine (Git
@@ -207,8 +236,20 @@ func TestStream_WSLLauncherFirstOnPath_StillRunsRealBash(t *testing.T) {
 // (no t.Skip), unlike the tests above.
 func TestStream_OnlyWSLLauncherOnPath(t *testing.T) {
 	wslBash := fakeWSLRoot(t)
+	makeExecutableWSLFixture(t, wslBash)
 	t.Setenv("PATH", filepath.Dir(wslBash))
 	t.Setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+
+	_, err := resolveBinary("bash")
+	if err == nil {
+		t.Fatal("resolveBinary(\"bash\") unexpectedly succeeded with only a WSL launcher on PATH")
+	}
+	if !errors.Is(err, shell.ErrWSLLauncherOnly) {
+		t.Fatalf("resolveBinary(\"bash\") error = %v, want shell.ErrWSLLauncherOnly", err)
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "wsl") {
+		t.Fatalf("resolveBinary(\"bash\") error = %v, want a concrete WSL-only error", err)
+	}
 
 	spec := CLISpec{
 		ModelID:    "test-wsl-only",
@@ -224,30 +265,32 @@ func TestStream_OnlyWSLLauncherOnPath(t *testing.T) {
 		Prompt: fantasy.Prompt{fantasy.NewUserMessage("x")},
 	})
 	if err != nil {
-		// Erroring out of Stream() itself is an acceptable way to reject
-		// this case (resolveBinary failing before a process is even
-		// started).
 		return
 	}
+	if stream == nil {
+		t.Fatal("Stream() returned a nil stream without an error")
+	}
 
-	// If Stream() didn't error immediately, resolveBinary fell through to
-	// the bare "bash" name (its documented failure-open behavior — see
-	// resolveBinary's doc comment) and os/exec's own lookup either failed
-	// too (fine — surfaces as a stream error below) or, in the worst case,
-	// actually started the fake stand-in. The fake stand-in is not a valid
-	// PE binary, so attempting to start/run it must fail rather than
-	// report success with fabricated output.
 	var gotError error
 	var text strings.Builder
+	var finished bool
 	for part := range stream {
 		switch part.Type {
 		case fantasy.StreamPartTypeError:
 			gotError = part.Error
 		case fantasy.StreamPartTypeTextDelta:
 			text.WriteString(part.Delta)
+		case fantasy.StreamPartTypeFinish:
+			finished = true
 		}
 	}
-	if gotError == nil && strings.Contains(text.String(), "should-not-run") {
-		t.Fatal("the fake WSL stand-in must never actually execute successfully")
+	if gotError == nil {
+		t.Error("Stream() emitted no direct or stream-part error for a WSL-only PATH")
+	}
+	if finished {
+		t.Error("Stream() emitted a finish part after rejecting a WSL-only PATH")
+	}
+	if strings.Contains(text.String(), wslOnlyLaunchMarker) {
+		t.Errorf("the executable WSL fixture ran; Stream() must reject it before launch: output %q", text.String())
 	}
 }
