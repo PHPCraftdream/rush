@@ -157,6 +157,13 @@ under `-race` specifically because the underlying `sessionAgent`/tool
 machinery is shared coordinator-wide by default; per-call credentials
 route around that sharing rather than depending on it.
 
+If `Options.Stdout` or `Options.Stderr` is used as the default by concurrent
+runs, the SDK serializes each write for that Client, making ordinary writers
+such as `*bytes.Buffer` safe to share. Output from separate runs is still
+allowed to interleave. A non-nil `RunRequest.Stdout` or `RunRequest.Stderr`
+is passed through unchanged; a request-level writer shared across calls is
+the caller's responsibility to synchronize.
+
 `ModelChoice.Model` is **not** validated against `Credential.Models` —
 an unrecognised model id fails on the first real provider call, exactly
 like `rush run --model` does today. OAuth-based providers (e.g. GitHub

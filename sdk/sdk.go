@@ -268,13 +268,20 @@ type Options struct {
 	// refactor.
 	MCP MCPMode
 	// Stdout is the default destination for run output when a RunRequest
-	// does not carry its own Stdout. When neither is set, ExecuteRun
+	// does not carry its own Stdout. The SDK serializes writes through all
+	// Options-level default writers belonging to one Client, so a writer
+	// such as bytes.Buffer is safe when concurrent Run and
+	// RunWithCredentials calls use these defaults. Writes from different
+	// runs may still be interleaved. When neither is set, ExecuteRun
 	// discards output. Set it once here to cover every subsequent
 	// Client.Run.
 	Stdout io.Writer
 	// Stderr is the default destination for run diagnostics (tool-call
 	// heartbeat, progress, guidance) when a RunRequest does not carry its
-	// own Stderr.
+	// own Stderr. It shares the Client's serialization with the Options-
+	// level Stdout default, so concurrent calls cannot write to either
+	// default concurrently. Writes from different runs may still be
+	// interleaved.
 	Stderr io.Writer
 	// SetupLogging, when true, makes Open call internal/log.Setup — the
 	// same call the CLI makes — pointing slog.Default() at
@@ -307,6 +314,10 @@ type Client struct {
 	app    *app.App
 	stdout io.Writer
 	stderr io.Writer
+	// outputMu serializes writes made through the Options-level stdout and
+	// stderr defaults. Request-level writers are deliberately not routed
+	// through this mutex because they remain caller-owned.
+	outputMu sync.Mutex
 
 	// closeOnce guarantees the wrapped App's shutdown runs at most once
 	// per Client, no matter how many times Close is called. closeResult
@@ -488,6 +499,11 @@ func openApplication(ctx context.Context, o Options) (*Client, error) {
 // Generating opaque session ids and mapping them to your own callers
 // is the host's job. See the README's trust-model section.
 //
+// A non-nil req.Stdout or req.Stderr is passed through unchanged. If the
+// caller shares such a request-level writer across concurrent calls, the
+// caller is responsible for making it concurrency-safe. Options-level
+// defaults have SDK-provided per-Write synchronization.
+//
 // Returns ErrClientClosed once Close has started. An admitted Run gets
 // one grace period against a fully live App, but Close no longer
 // guarantees to wait for it before anything is released: on a forced
@@ -501,10 +517,10 @@ func (c *Client) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 	}
 	defer c.release()
 	if req.Stdout == nil && c.stdout != nil {
-		req.Stdout = c.stdout
+		req.Stdout = c.defaultWriter(c.stdout)
 	}
 	if req.Stderr == nil && c.stderr != nil {
-		req.Stderr = c.stderr
+		req.Stderr = c.defaultWriter(c.stderr)
 	}
 	// SDK semantics differ from `rush run`/web: fail fast on an
 	// in-process busy session instead of queueing behind it.
@@ -524,6 +540,9 @@ func (c *Client) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 // from that call's CredentialSet — fresh provider clients per call,
 // never cached, and nothing is read from (or merged with) rush.json
 // providers, environment credentials, or any other call's state.
+// A non-nil request-level Stdout or Stderr is passed through unchanged and
+// remains caller-owned when shared across calls; Options-level defaults are
+// synchronized by the Client.
 //
 // creds replaces model+provider resolution for every role it covers:
 // smart drives the turn, fast drives title generation, worker drives
@@ -564,10 +583,10 @@ func (c *Client) RunWithCredentials(ctx context.Context, req RunRequest, creds C
 	}
 	defer c.release()
 	if req.Stdout == nil && c.stdout != nil {
-		req.Stdout = c.stdout
+		req.Stdout = c.defaultWriter(c.stdout)
 	}
 	if req.Stderr == nil && c.stderr != nil {
-		req.Stderr = c.stderr
+		req.Stderr = c.defaultWriter(c.stderr)
 	}
 	req.Credentials = &creds
 	// Same fail-fast busy semantics as Run (see its doc).
@@ -814,6 +833,26 @@ func (c *Client) admit() bool {
 	}
 	c.inflight++
 	return true
+}
+
+// defaultWriter protects one Options-level writer for the duration of each
+// Write call. The same Client mutex is shared by stdout and stderr defaults,
+// including when both fields refer to the same underlying writer. This
+// guarantees writer safety without promising run-level output grouping or
+// ordering.
+func (c *Client) defaultWriter(writer io.Writer) io.Writer {
+	return &synchronizedWriter{mu: &c.outputMu, writer: writer}
+}
+
+type synchronizedWriter struct {
+	mu     *sync.Mutex
+	writer io.Writer
+}
+
+func (w *synchronizedWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.writer.Write(p)
 }
 
 // release drops one admission made by admit. It runs at most once per
