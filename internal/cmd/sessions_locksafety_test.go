@@ -248,6 +248,10 @@ func TestSessionsReset_ForceLeavesLockFileInPlace(t *testing.T) {
 	require.NoError(t, os.WriteFile(lockPath, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0o644))
 
 	require.True(t, session.IsProcessAlive(os.Getpid()))
+	// SessionsResetCmd.RunE creates its own full App. Release the seed App's
+	// process-wide MCP owner before invoking the command.
+	a.Shutdown()
+
 	require.NoError(t, resetSessionCmdFlags().Flags().Set("force", "true"))
 	stderr := captureStderr(t, func() {
 		require.NoError(t, sessionsResetCmd.RunE(sessionsResetCmd, []string{sess.ID}))

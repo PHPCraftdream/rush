@@ -75,6 +75,10 @@ func TestSessionsWhyCmdRun_HonorsConfiguredDataDir(t *testing.T) {
 	_, wrongStatErr := os.Stat(wrongPath)
 	require.True(t, os.IsNotExist(wrongStatErr))
 
+	// SessionsWhyCmd.RunE creates its own full App. Release the seed App's
+	// process-wide MCP owner before invoking the command.
+	built.Shutdown()
+
 	out := captureStdout(t, func() {
 		runErr := sessionsWhyCmd.RunE(sessionsWhyCmd, []string{sess.ID})
 		require.NoError(t, runErr)

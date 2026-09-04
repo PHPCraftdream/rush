@@ -147,6 +147,10 @@ func TestSessionsReset_ForceDoesNotKillStalePID(t *testing.T) {
 
 	require.True(t, session.IsProcessAlive(os.Getpid()))
 
+	// SessionsResetCmd.RunE creates its own full App. Release the seed App's
+	// process-wide MCP owner before invoking the command.
+	a.Shutdown()
+
 	require.NoError(t, resetSessionCmdFlags().Flags().Set("force", "true"))
 	stderr := captureStderr(t, func() {
 		err := sessionsResetCmd.RunE(sessionsResetCmd, []string{sess.ID})
@@ -248,6 +252,10 @@ func TestSessionsReset_ForceHonorsConfiguredDataDir(t *testing.T) {
 
 	require.True(t, session.IsProcessAlive(os.Getpid()))
 
+	// SessionsResetCmd.RunE creates its own full App. Release the seed App's
+	// process-wide MCP owner before invoking the command.
+	a.Shutdown()
+
 	require.NoError(t, resetSessionCmdFlags().Flags().Set("force", "true"))
 	stderr := captureStderr(t, func() {
 		err := sessionsResetCmd.RunE(sessionsResetCmd, []string{sess.ID})
@@ -295,6 +303,10 @@ func TestSessionsReset_ForceStillKillsLiveHolder(t *testing.T) {
 	defer holder.stop()
 
 	require.True(t, session.IsProcessAlive(holder.pid))
+
+	// SessionsResetCmd.RunE creates its own full App. Keep the real child lock
+	// holder alive, but release the seed App's MCP owner before invoking it.
+	a.Shutdown()
 
 	require.NoError(t, resetSessionCmdFlags().Flags().Set("force", "true"))
 	stderr := captureStderr(t, func() {
@@ -351,6 +363,10 @@ func TestSessionsReset_ForceClearsUnfinishedAssistantMessages(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, messagesBefore, 2, "session must have 2 messages before reset")
 
+	// SessionsResetCmd.RunE creates its own full App. Release the seed App's
+	// process-wide MCP owner after all seed data has been written.
+	a.Shutdown()
+
 	// Run reset --force with the real command.
 	require.NoError(t, resetSessionCmdFlags().Flags().Set("force", "true"))
 	stderr := captureStderr(t, func() {
@@ -359,16 +375,23 @@ func TestSessionsReset_ForceClearsUnfinishedAssistantMessages(t *testing.T) {
 	})
 	t.Logf("reset --force stderr:\n%s", stderr)
 
+	// The seed App was deliberately shut down before the command, so verify
+	// the persisted result through a fresh DB-only App after RunE has released
+	// its own full App and MCP owner.
+	verificationApp, err := setupAppLite(sessionsResetCmd)
+	require.NoError(t, err)
+	t.Cleanup(verificationApp.Shutdown)
+
 	// Verify all messages are gone.
-	messagesAfter, err := a.Messages.List(ctx, sess.ID)
+	messagesAfter, err := verificationApp.Messages.List(ctx, sess.ID)
 	require.NoError(t, err)
 	require.Empty(t, messagesAfter, "all messages must be deleted, including the unfinished assistant")
 
-	count, err := a.Messages.Count(ctx, sess.ID)
+	count, err := verificationApp.Messages.Count(ctx, sess.ID)
 	require.NoError(t, err)
 	require.Equal(t, int64(0), count, "message count must be 0 after reset --force")
 
 	// Verify the session row still exists (only its messages were wiped).
-	_, err = a.Sessions.Get(ctx, sess.ID)
+	_, err = verificationApp.Sessions.Get(ctx, sess.ID)
 	require.NoError(t, err, "session row must still exist after reset")
 }

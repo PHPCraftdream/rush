@@ -95,6 +95,11 @@ func TestSessionsListCmdRun_StatusHonorsConfiguredDataDir(t *testing.T) {
 	_, wrongStatErr := os.Stat(wrongPath)
 	require.True(t, os.IsNotExist(wrongStatErr))
 
+	// SessionsListCmd.RunE creates its own full App. Release the seed App's
+	// process-wide MCP owner before invoking the command so the lifetimes do
+	// not overlap.
+	a.Shutdown()
+
 	stdout := captureStdout(t, func() {
 		runErr := sessionsListCmd.RunE(sessionsListCmd, nil)
 		require.NoError(t, runErr)
