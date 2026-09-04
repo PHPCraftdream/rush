@@ -398,7 +398,13 @@ func (c *coordinator) applyCallFolderScope(ctx context.Context, agent config.Age
 // no WorkingDir): every legacy tool that reads or writes the real host
 // filesystem via c.cfg.WorkingDir() -- for such a session, the synthetic
 // library sentinel, not a sandbox -- plus every command-executing and
-// arbitrary-write tool. This is the floor behind Options.DisabledTools
+// arbitrary-write tool. rush_logs belongs here too (R15-1, P0, SDK
+// review round 15): its log path is filepath.Join(Options.DataDirectory,
+// "logs", "rush.log"), which collapses to the RELATIVE "logs/rush.log"
+// when DataDirectory is empty and is then resolved against the HOST
+// process's own working directory by a plain os.Stat/os.Open -- no
+// WorkingDir, DiskProvider, or FolderScope seam involved. This is the
+// floor behind Options.DisabledTools
 // (sdk.libraryEphemeralDisabledTools): the disabled list only filters
 // the INITIAL AllowedTools, but per-call layering appends afterwards --
 // R14-1 (P0, SDK review round 14) found buildToolsAgentConfigForCall
@@ -408,7 +414,8 @@ var noRealWorkspaceForbiddenTools = map[string]struct{}{
 	tools.BashToolName: {}, tools.RunCommandToolName: {}, tools.DownloadToolName: {},
 	tools.EditToolName: {}, tools.MultiEditToolName: {}, tools.WriteToolName: {},
 	tools.ViewToolName: {}, tools.GlobToolName: {}, tools.GrepToolName: {},
-	tools.LSToolName: {},
+	tools.LSToolName:       {},
+	tools.RushLogsToolName: {},
 }
 
 // noRealWorkspaceScopedFSTools is the fs_* family's contribution to the
@@ -560,7 +567,9 @@ func (c *coordinator) buildTools(ctx context.Context, cfg *config.Config, agent 
 		allowPrivateNetworkFetch = cfg.Options.AllowPrivateNetworkFetch
 		attribution = cfg.Options.Attribution
 		skillsPaths = cfg.Options.SkillsPaths
-		logFile = filepath.Join(cfg.Options.DataDirectory, "logs", "rush.log")
+		if cfg.Options.DataDirectory != "" {
+			logFile = filepath.Join(cfg.Options.DataDirectory, "logs", "rush.log")
+		}
 	}
 	fetchClient := func(timeout time.Duration) *http.Client {
 		if !allowPrivateNetworkFetch {
@@ -621,7 +630,6 @@ func (c *coordinator) buildTools(ctx context.Context, cfg *config.Config, agent 
 		tools.NewAskQuestionTool(),
 		tools.NewBashTool(c.permissions, c.cfg.WorkingDir(), attribution, modelID, onBgDone),
 		tools.NewRushInfoTool(c.cfg, c.allSkills, c.activeSkills, c.skillTracker),
-		tools.NewRushLogsTool(logFile),
 		tools.NewJobOutputTool(),
 		tools.NewJobKillTool(),
 		tools.NewDownloadTool(c.permissions, c.cfg.WorkingDir(), fetchClient(5*time.Minute)),
@@ -656,6 +664,16 @@ func (c *coordinator) buildTools(ctx context.Context, cfg *config.Config, agent 
 		tools.NewFSWriteLinesTool(scope, c.permissions, c.history, c.filetracker, c.cfg.WorkingDir(), disk),
 		tools.NewFSDeleteTool(scope, c.permissions, c.cfg.WorkingDir(), disk),
 	)
+
+	// R15-1 (P0, SDK review round 15): rush_logs reads a real host
+	// file -- Options.DataDirectory's logs/rush.log. With no data
+	// directory (an ephemeral SDK session) there is no log file to
+	// read, and falling back to the RELATIVE logs/rush.log would
+	// resolve against the host process's own working directory, so
+	// the tool is simply not constructed or offered at all.
+	if logFile != "" {
+		allTools = append(allTools, tools.NewRushLogsTool(logFile))
+	}
 
 	// cfg.MCP presence is pinned config data (any MCP server configured at
 	// all, enabled or not), unlike the tool set itself below -- see this
