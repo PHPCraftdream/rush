@@ -11,6 +11,8 @@ import (
 	"testing"
 
 	"charm.land/fantasy"
+
+	"github.com/PHPCraftdream/rush/internal/shell"
 )
 
 // This file exercises the P1.7 fix: cliprovider must not hand a bare "bash"
@@ -54,8 +56,9 @@ func fakeWSLRoot(t *testing.T) string {
 }
 
 // requireRealBash locates the actual usable bash on this machine (Git
-// Bash/MSYS) via exec.LookPath, skipping the test if none is installed. We
-// need a REAL, runnable bash for the end-to-end Stream() test below —
+// Bash/MSYS) via the same WSL-aware lookup as production, skipping the test
+// if none is installed. We need a REAL, runnable bash for the end-to-end
+// Stream() test below —
 // otherwise there is nothing to prove the fixed code path actually ran
 // (the fake WSL stand-in must never be invoked at all, let alone
 // successfully). resolveInterpreter/isWSLLauncher in internal/shell are
@@ -64,9 +67,12 @@ func fakeWSLRoot(t *testing.T) string {
 // skip, end to end, with a real interpreter on the other end.
 func requireRealBash(t *testing.T) string {
 	t.Helper()
-	path, err := exec.LookPath("bash")
+	path, err := shell.LookPathSkippingWSL("bash")
 	if err != nil {
-		t.Skip("no bash on PATH; skipping WSL-first regression test")
+		t.Skipf("no non-WSL bash on PATH; skipping WSL-first regression test: %v", err)
+	}
+	if err := exec.Command(path, "-c", "exit 0").Run(); err != nil {
+		t.Skipf("bash %q is not runnable; skipping WSL-first regression test: %v", path, err)
 	}
 	return path
 }
