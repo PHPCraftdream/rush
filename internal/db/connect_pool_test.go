@@ -3,6 +3,8 @@ package db
 import (
 	"context"
 	"database/sql"
+	"fmt"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -203,4 +205,173 @@ func TestConnect_ConcurrentSamePathSharesOneEntry(t *testing.T) {
 		"pool entry refCount must equal the number of concurrent Connect calls")
 
 	require.NoError(t, ReleaseAll(dataDir))
+}
+
+func TestPathLocks_ReclaimedAfterManyUniquePaths(t *testing.T) {
+	t.Cleanup(ResetPool)
+
+	root := t.TempDir()
+	const paths = 48
+	ctx := context.Background()
+	for i := range paths {
+		dataDir := filepath.Join(root, fmt.Sprintf("db-%03d", i))
+		require.NoError(t, os.Mkdir(dataDir, 0o755))
+
+		_, err := Connect(ctx, dataDir)
+		require.NoError(t, err)
+		require.NoError(t, Release(dataDir))
+
+		abs := absDBPath(t, dataDir)
+		pathLocksMu.Lock()
+		_, stillRegistered := pathLocks[abs]
+		pathLocksMu.Unlock()
+		require.False(t, stillRegistered, "released path %q remains in the path-lock registry", abs)
+	}
+}
+
+func TestConnectRelease_ConcurrentGenerationsReclaimPathLock(t *testing.T) {
+	t.Cleanup(ResetPool)
+
+	dataDir := t.TempDir()
+	ctx := context.Background()
+	const (
+		callers = 8
+		rounds  = 4
+	)
+
+	for round := range rounds {
+		start := make(chan struct{})
+		conns := make([]*sql.DB, callers)
+		errs := make([]error, callers)
+		var connectWG sync.WaitGroup
+		for i := range callers {
+			connectWG.Add(1)
+			go func(i int) {
+				defer connectWG.Done()
+				<-start
+				conns[i], errs[i] = Connect(ctx, dataDir)
+			}(i)
+		}
+		close(start)
+		connectWG.Wait()
+
+		for i := range callers {
+			require.NoError(t, errs[i], "round %d Connect caller %d failed", round, i)
+			require.NotNil(t, conns[i], "round %d Connect caller %d returned nil", round, i)
+			require.Same(t, conns[0], conns[i], "round %d opened more than one connection", round)
+		}
+
+		releaseStart := make(chan struct{})
+		releaseErrs := make([]error, callers)
+		var releaseWG sync.WaitGroup
+		for i := range callers {
+			releaseWG.Add(1)
+			go func(i int) {
+				defer releaseWG.Done()
+				<-releaseStart
+				releaseErrs[i] = Release(dataDir)
+			}(i)
+		}
+		close(releaseStart)
+		releaseWG.Wait()
+
+		for i := range callers {
+			require.NoError(t, releaseErrs[i], "round %d Release caller %d failed", round, i)
+		}
+
+		abs := absDBPath(t, dataDir)
+		poolMu.Lock()
+		_, inPool := pool[abs]
+		poolMu.Unlock()
+		pathLocksMu.Lock()
+		_, inPathLocks := pathLocks[abs]
+		pathLocksMu.Unlock()
+		require.False(t, inPool, "round %d left a pooled entry", round)
+		require.False(t, inPathLocks, "round %d left a path-lock entry", round)
+	}
+}
+
+func TestPathLocks_RetainedForWaiterDuringFinalRelease(t *testing.T) {
+	dataDir := t.TempDir()
+	abs := absDBPath(t, dataDir)
+	ctx := context.Background()
+	first, err := Connect(ctx, dataDir)
+	require.NoError(t, err)
+
+	acquired := make(chan struct{}, 2)
+	closeStarted := make(chan struct{})
+	allowClose := make(chan struct{})
+	var closeStartedOnce sync.Once
+	var allowCloseOnce sync.Once
+	onPathLockAcquired = func(path string) {
+		if path == abs {
+			acquired <- struct{}{}
+		}
+	}
+	onCloseEntry = func(path string) {
+		if path != abs {
+			return
+		}
+		closeStartedOnce.Do(func() { close(closeStarted) })
+		<-allowClose
+	}
+	t.Cleanup(func() {
+		onPathLockAcquired = nil
+		onCloseEntry = nil
+		allowCloseOnce.Do(func() { close(allowClose) })
+		ResetPool()
+	})
+
+	releaseDone := make(chan error, 1)
+	go func() { releaseDone <- Release(dataDir) }()
+	select {
+	case <-closeStarted:
+	case <-time.After(slowOpenBudget):
+		t.Fatal("final Release did not reach the close seam")
+	}
+
+	secondDone := make(chan struct {
+		conn *sql.DB
+		err  error
+	}, 1)
+	go func() {
+		conn, connectErr := Connect(ctx, dataDir)
+		secondDone <- struct {
+			conn *sql.DB
+			err  error
+		}{conn: conn, err: connectErr}
+	}()
+
+	for range 2 {
+		select {
+		case <-acquired:
+		case <-time.After(slowOpenBudget):
+			t.Fatal("Connect/Release did not acquire path-lock references")
+		}
+	}
+
+	pathLocksMu.Lock()
+	lock, registered := pathLocks[abs]
+	refs := 0
+	if registered {
+		refs = lock.refs
+	}
+	pathLocksMu.Unlock()
+	require.True(t, registered, "path lock was removed while a waiter was active")
+	require.Equal(t, 3, refs, "path lock should hold pool, final Release, and waiter references")
+
+	allowCloseOnce.Do(func() { close(allowClose) })
+	require.NoError(t, <-releaseDone)
+	result := <-secondDone
+	require.NoError(t, result.err)
+	require.NotNil(t, result.conn)
+	require.NotSame(t, first, result.conn, "a waiter must open a new generation after final Release")
+
+	onPathLockAcquired = nil
+	require.NoError(t, Release(dataDir))
+
+	pathLocksMu.Lock()
+	_, registered = pathLocks[abs]
+	pathLocksMu.Unlock()
+	require.False(t, registered, "path lock was not reclaimed after the waiter released")
 }

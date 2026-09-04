@@ -51,26 +51,74 @@ type connEntry struct {
 	db       *sql.DB
 	readDB   *sql.DB
 	refCount int
+	pathLock *pathLock
+}
+
+// pathLock serializes database lifecycle operations for one path. refs holds
+// one reference for every Connect/Release operation that has acquired the
+// path lock, plus one while the path has a pooled connection. Keeping the
+// pooled reference prevents a new operation from observing an old pathLock
+// while another operation is still finishing with it.
+type pathLock struct {
+	mu   sync.Mutex
+	refs int
 }
 
 var (
 	pool   = make(map[string]*connEntry)
 	poolMu sync.Mutex
 
-	// pathLocks holds one mutex per resolved database path. Callers
-	// opening the SAME path serialize on their shared mutex (so a
-	// database is opened and migrated exactly once); callers opening
-	// DIFFERENT paths run concurrently instead of queueing behind one
-	// another's migrations. poolMu itself only guards the pool map's
-	// bookkeeping, never the (slow) open+migrate work.
-	pathLocks sync.Map // absPath -> *sync.Mutex
+	// pathLocks contains only paths with an active opener, waiter, or pooled
+	// connection. pathLocksMu protects both the map and each pathLock's refs;
+	// the pathLock mutex itself serializes the slow open/close lifecycle for
+	// one path. poolMu only guards pool bookkeeping, never slow database work.
+	pathLocks   = make(map[string]*pathLock)
+	pathLocksMu sync.Mutex
 
 	// onOpenNew runs after a cache miss, before the slow open+migrate
 	// work, for a database path not yet in the pool. Test seam only:
 	// lets tests pause one path mid-open to prove unrelated paths
 	// don't serialize behind it. Nil outside tests.
 	onOpenNew func(absPath string)
+
+	// onCloseEntry runs while the path lock is held, immediately before a
+	// pooled entry is closed. Test seam only; nil outside tests.
+	onCloseEntry func(absPath string)
+
+	// onPathLockAcquired runs after a path-lock registry reference is acquired.
+	// Test seam only; nil outside tests.
+	onPathLockAcquired func(absPath string)
 )
+
+func acquirePathLock(absPath string) *pathLock {
+	pathLocksMu.Lock()
+	lock := pathLocks[absPath]
+	if lock == nil {
+		lock = &pathLock{}
+		pathLocks[absPath] = lock
+	}
+	lock.refs++
+	pathLocksMu.Unlock()
+	if onPathLockAcquired != nil {
+		onPathLockAcquired(absPath)
+	}
+	return lock
+}
+
+func retainPathLock(pathLock *pathLock) {
+	pathLocksMu.Lock()
+	pathLock.refs++
+	pathLocksMu.Unlock()
+}
+
+func releasePathLock(absPath string, pathLock *pathLock) {
+	pathLocksMu.Lock()
+	pathLock.refs--
+	if pathLock.refs == 0 && pathLocks[absPath] == pathLock {
+		delete(pathLocks, absPath)
+	}
+	pathLocksMu.Unlock()
+}
 
 // Connect opens a SQLite database connection for the given data
 // directory and runs migrations. If a connection to the same database
@@ -132,8 +180,8 @@ func connect(ctx context.Context, dataDir string) (*connEntry, error) {
 		absPath = dbPath
 	}
 
-	// Serialize openers of THIS path only. poolMu is deliberately NOT
-	// held across the open/ping/migrate work below: it used to be, and
+	// Serialize lifecycle operations of THIS path only. poolMu is deliberately
+	// NOT held across the open/ping/migrate work below: it used to be, and
 	// one global lock made every unrelated dataDir in the process
 	// queue up behind a single fresh database's full migration run —
 	// under -race this serialized dozens of parallel tests' fresh
@@ -141,10 +189,12 @@ func connect(ctx context.Context, dataDir string) (*connEntry, error) {
 	// 10-minute timeout (task #637). Same-path callers still serialize
 	// here, so the "one connection per database file" guarantee below
 	// is unchanged.
-	pmAny, _ := pathLocks.LoadOrStore(absPath, &sync.Mutex{})
-	pathMu := pmAny.(*sync.Mutex)
-	pathMu.Lock()
-	defer pathMu.Unlock()
+	pathMu := acquirePathLock(absPath)
+	pathMu.mu.Lock()
+	defer func() {
+		pathMu.mu.Unlock()
+		releasePathLock(absPath, pathMu)
+	}()
 
 	poolMu.Lock()
 	if entry, ok := pool[absPath]; ok {
@@ -201,7 +251,11 @@ func connect(ctx context.Context, dataDir string) (*connEntry, error) {
 		readConn = conn
 	}
 
-	entry := &connEntry{db: conn, readDB: readConn, refCount: 1}
+	// Keep the path lock registered for as long as this pool entry exists.
+	// This reference is acquired before publishing the entry so a concurrent
+	// Release cannot remove the registry entry between those two operations.
+	retainPathLock(pathMu)
+	entry := &connEntry{db: conn, readDB: readConn, refCount: 1, pathLock: pathMu}
 	poolMu.Lock()
 	pool[absPath] = entry
 	poolMu.Unlock()
@@ -223,29 +277,43 @@ func Release(dataDir string) error {
 		absPath = dbPath
 	}
 
-	var entryToClose *connEntry
+	pathMu := acquirePathLock(absPath)
+	pathMu.mu.Lock()
+
 	poolMu.Lock()
 	entry, ok := pool[absPath]
 	if !ok {
 		poolMu.Unlock()
+		pathMu.mu.Unlock()
+		releasePathLock(absPath, pathMu)
 		return nil
 	}
 
 	entry.refCount--
 	if entry.refCount > 0 {
 		poolMu.Unlock()
+		pathMu.mu.Unlock()
+		releasePathLock(absPath, pathMu)
 		return nil
 	}
 
-	// refCount reached zero: remove from pool while holding the mutex
-	// to prevent concurrent Connect() from finding and incrementing it,
-	// then close the actual connections OUTSIDE the mutex to avoid
-	// holding poolMu during potentially slow sql.DB.Close() calls.
+	// refCount reached zero: remove from pool while holding the mutex to
+	// prevent concurrent Connect() from finding and incrementing it, then
+	// close the actual connections while pathMu is held. A waiter may already
+	// have acquired pathMu's registry reference; keeping the mutex until close
+	// completes prevents it from opening a new generation while the old one is
+	// still being torn down.
 	delete(pool, absPath)
-	entryToClose = entry
 	poolMu.Unlock()
 
-	return closeEntry(entryToClose)
+	if onCloseEntry != nil {
+		onCloseEntry(absPath)
+	}
+	closeErr := closeEntry(entry)
+	pathMu.mu.Unlock()
+	releasePathLock(absPath, pathMu)
+	releasePathLock(absPath, entry.pathLock)
+	return closeErr
 }
 
 // ReleaseAll forcibly closes the pooled connection for dataDir and removes
@@ -279,10 +347,15 @@ func ReleaseAll(dataDir string) error {
 		absPath = dbPath
 	}
 
+	pathMu := acquirePathLock(absPath)
+	pathMu.mu.Lock()
+
 	poolMu.Lock()
 	entry, ok := pool[absPath]
 	if !ok {
 		poolMu.Unlock()
+		pathMu.mu.Unlock()
+		releasePathLock(absPath, pathMu)
 		return nil
 	}
 	delete(pool, absPath)
@@ -296,7 +369,14 @@ func ReleaseAll(dataDir string) error {
 	entry.refCount = 0
 	poolMu.Unlock()
 
-	return closeEntry(entry)
+	if onCloseEntry != nil {
+		onCloseEntry(absPath)
+	}
+	closeErr := closeEntry(entry)
+	pathMu.mu.Unlock()
+	releasePathLock(absPath, pathMu)
+	releasePathLock(absPath, entry.pathLock)
+	return closeErr
 }
 
 // closeEntry closes both handles in entry, tolerating readDB == db (the
@@ -318,11 +398,27 @@ func closeEntry(entry *connEntry) error {
 // ResetPool closes all pooled connections and clears the pool. This is
 // intended for use in tests to ensure a clean state between test cases.
 func ResetPool() {
+	type pooledEntry struct {
+		path  string
+		entry *connEntry
+	}
+
+	entries := make([]pooledEntry, 0)
 	poolMu.Lock()
-	defer poolMu.Unlock()
 	for path, entry := range pool {
-		closeEntry(entry) //nolint:errcheck
 		delete(pool, path)
+		entries = append(entries, pooledEntry{path: path, entry: entry})
+	}
+	poolMu.Unlock()
+
+	for _, pooled := range entries {
+		pooled.entry.pathLock.mu.Lock()
+		if onCloseEntry != nil {
+			onCloseEntry(pooled.path)
+		}
+		closeEntry(pooled.entry) //nolint:errcheck
+		pooled.entry.pathLock.mu.Unlock()
+		releasePathLock(pooled.path, pooled.entry.pathLock)
 	}
 }
 
