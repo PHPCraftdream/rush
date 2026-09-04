@@ -696,7 +696,8 @@ func (c *Client) Session(ctx context.Context, sessionID string) (Session, error)
 // Client — the first call's result is cached and returned unchanged by
 // every later call, so a double defer or a defensive second Close never
 // re-runs cleanup or re-releases database references. A nil receiver or
-// a Client without an App returns the zero CloseResult and does nothing.
+// a Client without an App returns the zero CloseResult and transitions to
+// the closed admission state, so its later public methods remain safe.
 //
 // Ephemeral in-memory clients (Options.Mode == ModeLibrary with no
 // WorkingDir) follow the same policy as app.ShutdownWithResult: on a
@@ -756,6 +757,7 @@ func (c *Client) Close() CloseResult {
 		return CloseResult{}
 	}
 	if c.app == nil {
+		c.beginShutdown()
 		// Nothing to shut down, but record completion anyway so
 		// CloseEphemeralConnsForced's ordering guard does not
 		// report "before Close has finished" after Close was

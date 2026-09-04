@@ -69,3 +69,34 @@ func TestClientMethodsAfterClose(t *testing.T) {
 	_, ok = <-client.SubscribeSessions(ctx)
 	require.False(t, ok, "SubscribeSessions on a closed Client must return an already-closed channel")
 }
+
+// TestZeroValueClientMethodsAfterClose pins the closed admission contract
+// for the exported zero value. Close must make every later public method
+// safe even though the zero value has no App to call.
+func TestZeroValueClientMethodsAfterClose(t *testing.T) {
+	var client sdk.Client
+
+	first := client.Close()
+	require.False(t, first.Forced)
+	require.Empty(t, first.CleanupErrors)
+	require.Equal(t, first, client.Close(), "repeat Close must remain idempotent")
+
+	ctx := context.Background()
+	_, err := client.Run(ctx, sdk.RunRequest{Prompt: "after zero-value close"})
+	require.ErrorIs(t, err, sdk.ErrClientClosed)
+
+	_, err = client.RunWithCredentials(ctx, sdk.RunRequest{Prompt: "after zero-value close"}, sdk.CredentialSet{})
+	require.ErrorIs(t, err, sdk.ErrClientClosed)
+
+	_, err = client.Messages(ctx, "no-such-session")
+	require.ErrorIs(t, err, sdk.ErrClientClosed)
+
+	_, err = client.Session(ctx, "no-such-session")
+	require.ErrorIs(t, err, sdk.ErrClientClosed)
+
+	_, ok := <-client.SubscribeMessages(ctx)
+	require.False(t, ok, "SubscribeMessages on a zero-value Client after Close must return a closed channel")
+
+	_, ok = <-client.SubscribeSessions(ctx)
+	require.False(t, ok, "SubscribeSessions on a zero-value Client after Close must return a closed channel")
+}

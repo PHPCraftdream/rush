@@ -411,6 +411,10 @@ defer client.Close()
 `Close()` is idempotent — calling it more than once is safe and always
 returns the first call's result. It runs in three ordered phases:
 
+The exported zero-value `Client` is also safe to close. After `Close()` it
+rejects all error-returning methods with `sdk.ErrClientClosed` and returns
+already-closed channels from the subscription methods.
+
 1. **Admission closes.** From the instant `Close()` is called, new
    `Run`, `RunWithCredentials`, `Messages`, and `Session` calls return
    `sdk.ErrClientClosed`, and the Subscribe methods return an
