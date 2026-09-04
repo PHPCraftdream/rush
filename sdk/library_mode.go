@@ -186,17 +186,29 @@ func LibraryVirtualRoot() string { return tools.LibraryVirtualRoot }
 // current working directory. It has no DiskProvider/FolderScope seam
 // either: it is absent from folderScopeOpForTool and from workerToolNames,
 // so neither FolderScope grants nor the worker toolset layering re-add it.
-// None of the five is in folderScopeOpForTool
+// git_read is in the same category (#891, R15-2, P1, SDK review round
+// 15): it runs the real `git` binary as an OS subprocess with cmd.Dir
+// set to c.cfg.WorkingDir() (internal/agent/tools/git_read.go), which
+// for an ephemeral session is the synthetic LibraryVirtualRoot sentinel
+// -- a real, OS-interpreted host path -- so a git repository that
+// happens to exist at that path would have its status/diff/log/show/
+// blame data read and sent to the provider. It has no DiskProvider/
+// FolderScope seam either: it never goes through a DiskProvider at all,
+// and it is absent from folderScopeOpForTool and from workerToolNames
+// (it sits in folderScopeEscapeHatchTools alongside download and
+// agentic_fetch instead), so neither FolderScope grants nor the worker
+// toolset layering re-add it.
+// None of the six is in folderScopeOpForTool
 // (internal/agent/coordinator_tools.go), so applyCallFolderScope can
 // never re-add any of them regardless of a call's FolderScope grants --
 // agentic_fetch is in that file's folderScopeEscapeHatchTools for
 // exactly this reason -- and agentic_fetch is absent from
 // workerToolNames, so the R14-1 worker toolset layering cannot re-add
-// it either. All five stay hard-denied for every ephemeral call, scope
+// it either. All six stay hard-denied for every ephemeral call, scope
 // or no scope.
 var libraryEphemeralDisabledTools = []string{
 	"bash", "run_command", "download", tools.AgenticFetchToolName,
-	tools.RushLogsToolName,
+	tools.RushLogsToolName, tools.GitReadToolName,
 	"edit", "multiedit", "glob", "grep", "ls", "view", "write",
 	"fs_list", "fs_find", "fs_grep", "fs_read",
 	"fs_write", "fs_replace", "fs_write_lines", "fs_delete",

@@ -147,3 +147,32 @@ func TestApplyNoRealWorkspaceToolFloorNilSafe(t *testing.T) {
 	got = coord.applyNoRealWorkspaceToolFloor(nilOpts, input, nil)
 	require.Equal(t, floorInputTools, got.AllowedTools)
 }
+
+// TestApplyNoRealWorkspaceToolFloorStripsGitReadAndAgenticFetch pins the
+// R15-2/#891 and R14-7/#889 floor additions: git_read (which the
+// read-only base set for task sub-agents carries via
+// config.resolveReadOnlyTools, and which runs a real OS `git` subprocess
+// with cmd.Dir set to the synthetic sentinel on such a session) and
+// agentic_fetch (previously only incidentally safe via its absence from
+// workerToolNames and folderScopeOpForTool) are stripped regardless of
+// any layering, with nil AND custom disk alike -- the fs_*
+// custom-provider opt-in does not resurrect either of them.
+func TestApplyNoRealWorkspaceToolFloorStripsGitReadAndAgenticFetch(t *testing.T) {
+	coord := newRoleModelTestCoordinator(t, testEnv(t), false)
+	cfg := coord.cfg.Config()
+	cfg.Options = &config.Options{NoRealWorkspace: true}
+
+	input := append([]string(nil), floorInputTools...)
+	input = append(input, tools.GitReadToolName, tools.AgenticFetchToolName)
+
+	got := coord.applyNoRealWorkspaceToolFloor(cfg, config.Agent{AllowedTools: input}, nil)
+	require.Equal(t,
+		[]string{"todos", tools.AskQuestionToolName, "fetch"}, got.AllowedTools)
+
+	got = coord.applyNoRealWorkspaceToolFloor(cfg, config.Agent{AllowedTools: input}, fakeFloorDisk{})
+	require.Equal(t,
+		[]string{
+			"todos", tools.AskQuestionToolName, "fetch",
+			"fs_read", "fs_write", "fs_list",
+		}, got.AllowedTools)
+}

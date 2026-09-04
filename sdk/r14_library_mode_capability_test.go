@@ -196,13 +196,10 @@ func TestSDKLibraryModeEphemeralWorkerSubAgentToolsetFloored(t *testing.T) {
 	// The R14-1 floor: none of the host-disk/command tools the worker
 	// layering asked for (or folder-scope re-adds might bring back) may
 	// survive into the worker's final schema. rush_logs is the R15-1 /
-	// #890 fix under test in this worktree; git_read is #891's fix,
-	// landing in a separate worktree -- left out here so this list stays
-	// green on its own instead of asserting a name the floor doesn't
-	// cover yet.
+	// #890 fix; git_read is #891's fix, landing in this same pass.
 	for _, dangerous := range []string{
 		"write", "bash", "download", "edit", "multiedit", "run_command",
-		"view", "glob", "grep", "ls", "rush_logs",
+		"view", "glob", "grep", "ls", "rush_logs", "git_read",
 		"fs_read", "fs_write", "fs_list", "fs_delete",
 	} {
 		require.NotContains(t, workerNames, dangerous,

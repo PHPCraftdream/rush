@@ -403,7 +403,20 @@ func (c *coordinator) applyCallFolderScope(ctx context.Context, agent config.Age
 // "logs", "rush.log"), which collapses to the RELATIVE "logs/rush.log"
 // when DataDirectory is empty and is then resolved against the HOST
 // process's own working directory by a plain os.Stat/os.Open -- no
-// WorkingDir, DiskProvider, or FolderScope seam involved. This is the
+// WorkingDir, DiskProvider, or FolderScope seam involved. git_read
+// belongs here too (R15-2, P1, SDK review round 15): it runs
+// the real `git` binary as an OS subprocess with cmd.Dir set to
+// c.cfg.WorkingDir() (internal/agent/tools/git_read.go) -- for such a
+// session, the synthetic library sentinel, a real OS-interpreted host
+// path, so a git repository that happens to exist at that path would
+// have its status/diff/log/show/blame data read and sent to the
+// provider. It never goes through a DiskProvider at all, so the fs_*
+// custom-provider opt-in does not apply to it. agentic_fetch is listed
+// explicitly as well (R14-7, P3, round-15 review follow-up): it was
+// previously only INCIDENTALLY safe -- absent from workerToolNames and
+// folderScopeOpForTool, so no existing per-call layering re-added it --
+// and floor membership makes that denial unconditional rather than
+// dependent on two unrelated positive re-add lists. This is the
 // floor behind Options.DisabledTools
 // (sdk.libraryEphemeralDisabledTools): the disabled list only filters
 // the INITIAL AllowedTools, but per-call layering appends afterwards --
@@ -414,8 +427,10 @@ var noRealWorkspaceForbiddenTools = map[string]struct{}{
 	tools.BashToolName: {}, tools.RunCommandToolName: {}, tools.DownloadToolName: {},
 	tools.EditToolName: {}, tools.MultiEditToolName: {}, tools.WriteToolName: {},
 	tools.ViewToolName: {}, tools.GlobToolName: {}, tools.GrepToolName: {},
-	tools.LSToolName:       {},
-	tools.RushLogsToolName: {},
+	tools.LSToolName:           {},
+	tools.RushLogsToolName:     {},
+	tools.GitReadToolName:      {},
+	tools.AgenticFetchToolName: {},
 }
 
 // noRealWorkspaceScopedFSTools is the fs_* family's contribution to the

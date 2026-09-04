@@ -50,7 +50,7 @@ import (
 // (sdk/library_mode.go): every host-disk/command-execution tool an
 // ephemeral session must never hand the model by default.
 var r6_1DangerousToolNames = []string{
-	"bash", "run_command", "download", "rush_logs",
+	"bash", "run_command", "download", "rush_logs", "git_read",
 	"edit", "multiedit", "glob", "grep", "ls", "view", "write",
 	"fs_list", "fs_find", "fs_grep", "fs_read",
 	"fs_write", "fs_replace", "fs_write_lines", "fs_delete",
