@@ -61,6 +61,7 @@ var (
 	lifecycleMu sync.Mutex
 	owner       *Owner
 	initDone    = closedChannel()
+	generation  uint64
 )
 
 // ErrOwnerBusy reports that another application currently owns the process
@@ -72,14 +73,17 @@ var ErrOwnerBusy = errors.New("mcp: application owner is already active")
 // package predates multiple App instances and its tool/state maps remain
 // process-wide, so ownership is explicit rather than silently shared.
 type Owner struct {
-	implicit     bool
-	closing      bool
-	initCount    int
-	initWG       sync.WaitGroup
-	initDoneOnce sync.Once
-	cancel       context.CancelFunc
-	closeOnce    sync.Once
-	closeErr     error
+	implicit        bool
+	closing         bool
+	generation      uint64
+	lifecycleCtx    context.Context
+	lifecycleCancel context.CancelFunc
+	initCount       int
+	initWG          sync.WaitGroup
+	initDoneOnce    sync.Once
+	closeOnce       sync.Once
+	closeDone       chan struct{}
+	closeErr        error
 }
 
 func closedChannel() chan struct{} {
@@ -110,10 +114,19 @@ func acquire(implicit bool) (*Owner, error) {
 			allResources.Len() != 0 {
 			return nil, ErrOwnerBusy
 		}
+		owner.lifecycleCancel()
 		resetRegistryLocked()
 	}
 
-	o := &Owner{implicit: implicit}
+	generation++
+	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
+	o := &Owner{
+		implicit:        implicit,
+		generation:      generation,
+		lifecycleCtx:    lifecycleCtx,
+		lifecycleCancel: lifecycleCancel,
+		closeDone:       make(chan struct{}),
+	}
 	owner = o
 	initDone = make(chan struct{})
 	return o, nil
@@ -161,35 +174,58 @@ func (o *Owner) acceptsSession() bool {
 	return o.isCurrentLocked()
 }
 
+func (o *Owner) commitRenewal(generation uint64, name string, session *ClientSession, counts Counts) bool {
+	lifecycleMu.Lock()
+	if owner != o || o.closing || o.generation != generation {
+		lifecycleMu.Unlock()
+		_ = session.Close()
+		return false
+	}
+	sessions.Set(name, session)
+	updateState(name, StateConnected, nil, session, counts)
+	lifecycleMu.Unlock()
+	return true
+}
+
+func (o *Owner) operationContext(ctx context.Context) (context.Context, func()) {
+	operationCtx, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(o.lifecycleCtx, cancel)
+	return operationCtx, func() {
+		stop()
+		cancel()
+	}
+}
+
 // Close stops all initialization before taking its session snapshot. This
 // barrier is what prevents a session created after an old snapshot from
 // escaping cleanup. Startup is cancelled first, but the initialization
 // goroutines are still joined so their transports cannot outlive Close.
 func (o *Owner) Close(ctx context.Context) error {
 	o.closeOnce.Do(func() {
-		o.closeErr = o.close(ctx)
+		lifecycleMu.Lock()
+		if owner != o {
+			lifecycleMu.Unlock()
+			close(o.closeDone)
+			return
+		}
+		o.closing = true
+		o.lifecycleCancel()
+		lifecycleMu.Unlock()
+
+		go o.finishClose()
 	})
-	return o.closeErr
+
+	select {
+	case <-o.closeDone:
+		return o.closeErr
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
-func (o *Owner) close(ctx context.Context) error {
-	// The barrier must be joined even when the caller's cleanup deadline has
-	// elapsed; otherwise a late startup can escape into the next owner.
-	_ = ctx
-	lifecycleMu.Lock()
-	if owner != o {
-		lifecycleMu.Unlock()
-		return nil
-	}
-	o.closing = true
-	if o.cancel != nil {
-		o.cancel()
-	}
-	lifecycleMu.Unlock()
-
-	// Do not abandon this wait when the caller's cleanup context expires. A
-	// returned Close must not leave an initialization goroutine able to attach
-	// a newly-created process to the next lifecycle.
+func (o *Owner) finishClose() {
+	// Do not abandon this wait when a caller's cleanup context expires. The
+	// owner remains the lifecycle fence until every admitted operation exits.
 	o.initWG.Wait()
 
 	var wg sync.WaitGroup
@@ -206,13 +242,13 @@ func (o *Owner) close(ctx context.Context) error {
 	wg.Wait()
 
 	lifecycleMu.Lock()
-	defer lifecycleMu.Unlock()
 	if owner == o {
 		resetRegistryLocked()
 		owner = nil
 		initDone = closedChannel()
 	}
-	return nil
+	close(o.closeDone)
+	lifecycleMu.Unlock()
 }
 
 func resetRegistryLocked() {
@@ -366,13 +402,15 @@ func (o *Owner) Initialize(ctx context.Context, permissions permission.Service, 
 		cancel()
 		return
 	}
-	o.cancel = cancel
 	lifecycleMu.Unlock()
 	if !o.beginInit() {
 		cancel()
 		return
 	}
 	defer o.endInit()
+	stopOwner := context.AfterFunc(o.lifecycleCtx, cancel)
+	defer stopOwner()
+	defer cancel()
 	// Initialize states for all configured MCPs
 	for name, m := range cfg.Config().MCP {
 		if !o.acceptsSession() {
@@ -676,6 +714,19 @@ func RemoveServer(cfg *config.ConfigStore, name string) error {
 }
 
 func getOrRenewClient(ctx context.Context, cfg *config.ConfigStore, name string) (*ClientSession, error) {
+	o := currentOwner()
+	var generation uint64
+	if o != nil {
+		if !o.beginInit() {
+			return nil, ErrOwnerBusy
+		}
+		defer o.endInit()
+		generation = o.generation
+		var stop func()
+		ctx, stop = o.operationContext(ctx)
+		defer stop()
+	}
+
 	sess, ok := sessions.Get(name)
 	if !ok {
 		return nil, fmt.Errorf("mcp '%s' not available", name)
@@ -692,10 +743,19 @@ func getOrRenewClient(ctx context.Context, cfg *config.ConfigStore, name string)
 		return sess, nil
 	}
 	updateState(name, StateError, maybeTimeoutErr(err, timeout), nil, state.Counts)
+	_ = sess.Close()
 
 	sess, err = createSession(ctx, name, m, cfg.Resolver())
 	if err != nil {
 		return nil, err
+	}
+
+	if o != nil {
+		if !o.commitRenewal(generation, name, sess, state.Counts) {
+			_ = sess.Close()
+			return nil, ErrOwnerBusy
+		}
+		return sess, nil
 	}
 
 	updateState(name, StateConnected, nil, sess, state.Counts)
@@ -902,15 +962,59 @@ type headerRoundTripper struct {
 	ctx     context.Context
 }
 
-func (rt headerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+type ownerResponseBody struct {
+	io.ReadCloser
+	stop   func() bool
+	cancel context.CancelFunc
+	once   sync.Once
+}
+
+func (b *ownerResponseBody) release() {
+	b.once.Do(func() {
+		b.stop()
+		b.cancel()
+	})
+}
+
+func (b *ownerResponseBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	if err != nil {
+		b.release()
+	}
+	return n, err
+}
+
+func (b *ownerResponseBody) Close() error {
+	err := b.ReadCloser.Close()
+	b.release()
+	return err
+}
+
+func (rt *headerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	for k, v := range rt.headers {
 		req.Header.Set(k, v)
 	}
 	if rt.ctx != nil {
 		ctx, cancel := context.WithCancel(req.Context())
 		stop := context.AfterFunc(rt.ctx, cancel)
-		defer stop()
 		req = req.WithContext(ctx)
+		resp, err := http.DefaultTransport.RoundTrip(req)
+		if err != nil {
+			stop()
+			cancel()
+			return nil, err
+		}
+		if resp.Body == nil {
+			stop()
+			cancel()
+			return resp, nil
+		}
+		resp.Body = &ownerResponseBody{
+			ReadCloser: resp.Body,
+			stop:       stop,
+			cancel:     cancel,
+		}
+		return resp, nil
 	}
 	return http.DefaultTransport.RoundTrip(req)
 }

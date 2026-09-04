@@ -670,3 +670,129 @@ func TestOwnerCloseCancelsBlockedStartupBeforeCleanup(t *testing.T) {
 		return got
 	}())
 }
+
+func TestOwnerCloseVsRenewalDoesNotPublishLateSession(t *testing.T) {
+	owner, err := Acquire()
+	require.NoError(t, err)
+
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	server := mcp.NewServer(&mcp.Implementation{Name: "renewal-server"}, nil)
+	serverSession, err := server.Connect(context.Background(), serverTransport, nil)
+	require.NoError(t, err)
+	defer serverSession.Close()
+	createdCtx, createdCancel := context.WithCancel(context.Background())
+	defer createdCancel()
+	clientSession, err := mcp.NewClient(&mcp.Implementation{Name: "renewal-client"}, nil).
+		Connect(context.Background(), clientTransport, nil)
+	require.NoError(t, err)
+	created := &ClientSession{ClientSession: clientSession, cancel: createdCancel}
+
+	require.True(t, owner.beginInit())
+	closeStarted := make(chan error, 1)
+	go func() {
+		closeStarted <- owner.Close(context.Background())
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for owner.acceptsSession() && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	require.False(t, owner.acceptsSession())
+	require.False(t, owner.commitRenewal(owner.generation, "late-renewal", created, Counts{}))
+	require.Eventually(t, func() bool { return createdCtx.Err() != nil }, time.Second, time.Millisecond)
+	require.Empty(t, func() map[string]*ClientSession {
+		got := map[string]*ClientSession{}
+		for name, session := range sessions.Seq2() {
+			got[name] = session
+		}
+		return got
+	}())
+
+	owner.endInit()
+	require.NoError(t, <-closeStarted)
+	require.Eventually(t, func() bool {
+		_, ok := GetState("late-renewal")
+		return !ok
+	}, time.Second, time.Millisecond)
+}
+
+func TestHeaderRoundTripperKeepsOwnerCancellationUntilBodyClose(t *testing.T) {
+	serverCanceled := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+		close(serverCanceled)
+	}))
+	defer server.Close()
+
+	ownerCtx, ownerCancel := context.WithCancel(context.Background())
+	rt := &headerRoundTripper{ctx: ownerCtx}
+	req, err := http.NewRequest(http.MethodGet, server.URL, nil)
+	require.NoError(t, err)
+	resp, err := rt.RoundTrip(req)
+	require.NoError(t, err)
+	require.NotNil(t, resp.Body)
+
+	ownerCancel()
+	select {
+	case <-serverCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("owner cancellation did not reach the open response body")
+	}
+	require.NoError(t, resp.Body.Close())
+}
+
+func TestOwnerCloseDeadlineRetainsFenceUntilStuckSessionCloses(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	server := mcp.NewServer(&mcp.Implementation{Name: "stuck-server"}, nil)
+	mcp.AddTool(server, &mcp.Tool{Name: "stuck"}, func(context.Context, *mcp.CallToolRequest, any) (*mcp.CallToolResult, any, error) {
+		close(started)
+		<-release
+		return &mcp.CallToolResult{}, nil, nil
+	})
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	serverSession, err := server.Connect(context.Background(), serverTransport, nil)
+	require.NoError(t, err)
+	defer serverSession.Close()
+	clientSession, err := mcp.NewClient(&mcp.Implementation{Name: "stuck-client"}, nil).
+		Connect(context.Background(), clientTransport, nil)
+	require.NoError(t, err)
+	_, clientCancel := context.WithCancel(context.Background())
+	sess := &ClientSession{ClientSession: clientSession, cancel: clientCancel}
+	defer clientCancel()
+
+	owner, err := Acquire()
+	require.NoError(t, err)
+	sessions.Set("stuck", sess)
+	states.Set("stuck", ClientInfo{Name: "stuck", State: StateConnected, Client: sess})
+
+	callDone := make(chan error, 1)
+	go func() {
+		_, err := sess.CallTool(context.Background(), &mcp.CallToolParams{Name: "stuck"})
+		callDone <- err
+	}()
+	<-started
+
+	closeCtx, closeCancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer closeCancel()
+	require.ErrorIs(t, owner.Close(closeCtx), context.DeadlineExceeded)
+	_, err = Acquire()
+	require.ErrorIs(t, err, ErrOwnerBusy)
+
+	close(release)
+	require.Eventually(t, func() bool {
+		select {
+		case <-callDone:
+			return true
+		default:
+			return false
+		}
+	}, time.Second, time.Millisecond)
+	require.NoError(t, owner.Close(context.Background()))
+	next, err := Acquire()
+	require.NoError(t, err)
+	require.NoError(t, next.Close(context.Background()))
+}
