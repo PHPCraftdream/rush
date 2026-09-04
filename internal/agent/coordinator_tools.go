@@ -633,6 +633,10 @@ func (c *coordinator) buildTools(ctx context.Context, cfg *config.Config, agent 
 	// never receives it.
 	opts := cfg.Options
 	notifyDone := opts == nil || opts.NotifyOnBackgroundJobDone == nil || *opts.NotifyOnBackgroundJobDone
+	backgroundManager := c.background
+	if backgroundManager == nil {
+		backgroundManager = shell.NewBackgroundShellManager()
+	}
 	var onBgDone func(string, *shell.BackgroundShell)
 	if notifyDone {
 		onBgDone = func(sessionID string, sh *shell.BackgroundShell) {
@@ -643,10 +647,10 @@ func (c *coordinator) buildTools(ctx context.Context, cfg *config.Config, agent 
 	allTools = append(
 		allTools,
 		tools.NewAskQuestionTool(),
-		tools.NewBashTool(c.permissions, c.cfg.WorkingDir(), attribution, modelID, onBgDone),
+		tools.NewBashTool(c.permissions, c.cfg.WorkingDir(), attribution, modelID, onBgDone, backgroundManager),
 		tools.NewRushInfoTool(c.cfg, c.allSkills, c.activeSkills, c.skillTracker),
-		tools.NewJobOutputTool(),
-		tools.NewJobKillTool(),
+		tools.NewJobOutputTool(backgroundManager),
+		tools.NewJobKillTool(backgroundManager),
 		tools.NewDownloadTool(c.permissions, c.cfg.WorkingDir(), fetchClient(5*time.Minute)),
 		tools.NewEditTool(c.permissions, c.history, c.filetracker, c.cfg.WorkingDir()),
 		tools.NewMultiEditTool(c.permissions, c.history, c.filetracker, c.cfg.WorkingDir()),

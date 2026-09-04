@@ -278,6 +278,10 @@ type BackgroundShell struct {
 	ID          string
 	Command     string
 	Description string
+	// SessionID identifies the session that created this job. A manager is
+	// owned by one App/client; the session check prevents one session within
+	// that client from inspecting or terminating another session's job.
+	SessionID   string
 	Shell       *Shell
 	WorkingDir  string
 	StartTime   time.Time
@@ -324,12 +328,18 @@ type BackgroundShellManager struct {
 	// RUSH_MAX_BACKGROUND_JOBS. Per-manager, so lowering it in one test
 	// cannot be observed by a parallel sibling.
 	maxJobs int
+
+	// closed prevents a Start racing with App shutdown from creating a job
+	// after shutdown has detached the manager's registry snapshot.
+	closed bool
+	// idCounter is scoped to this manager/client. IDs are intentionally not a
+	// process-wide registry or authority boundary.
+	idCounter atomic.Uint64
 }
 
 var (
 	backgroundManager     *BackgroundShellManager
 	backgroundManagerOnce sync.Once
-	idCounter             atomic.Uint64
 )
 
 // newBackgroundShellManager creates a new BackgroundShellManager instance.
@@ -340,7 +350,18 @@ func newBackgroundShellManager() *BackgroundShellManager {
 	}
 }
 
-// GetBackgroundShellManager returns the singleton background shell manager.
+// NewBackgroundShellManager creates a background shell manager owned by one
+// App/client. Managers must be injected into the tools and App that use them;
+// they do not share jobs with other managers.
+func NewBackgroundShellManager() *BackgroundShellManager {
+	return newBackgroundShellManager()
+}
+
+// GetBackgroundShellManager returns the legacy process-local manager.
+//
+// Deprecated: App/client code must use NewBackgroundShellManager and inject
+// it into its tools. This compatibility accessor is retained for older
+// internal callers only and is not used by App construction.
 func GetBackgroundShellManager() *BackgroundShellManager {
 	backgroundManagerOnce.Do(func() {
 		backgroundManager = newBackgroundShellManager()
@@ -350,8 +371,23 @@ func GetBackgroundShellManager() *BackgroundShellManager {
 
 // Start creates and starts a new background shell with the given command.
 func (m *BackgroundShellManager) Start(ctx context.Context, workingDir string, blockFuncs []BlockFunc, command string, description string) (*BackgroundShell, error) {
+	return m.start(ctx, "", workingDir, blockFuncs, command, description)
+}
+
+// StartOwned creates a background shell owned by sessionID.
+func (m *BackgroundShellManager) StartOwned(ctx context.Context, sessionID, workingDir string, blockFuncs []BlockFunc, command string, description string) (*BackgroundShell, error) {
+	if sessionID == "" {
+		return nil, fmt.Errorf("session ID is required for background shell ownership")
+	}
+	return m.start(ctx, sessionID, workingDir, blockFuncs, command, description)
+}
+
+func (m *BackgroundShellManager) start(ctx context.Context, sessionID, workingDir string, blockFuncs []BlockFunc, command string, description string) (*BackgroundShell, error) {
 	m.startMu.Lock()
 	defer m.startMu.Unlock()
+	if m.closed {
+		return nil, fmt.Errorf("background shell manager is closed")
+	}
 
 	// Check job limit against ACTIVE jobs only (not shells.Len(), which also
 	// includes completed jobs retained for up to CompletedJobRetentionMinutes
@@ -378,7 +414,7 @@ func (m *BackgroundShellManager) Start(ctx context.Context, workingDir string, b
 			"command", command)
 	}
 
-	id := fmt.Sprintf("%03X", idCounter.Add(1))
+	id := fmt.Sprintf("%03X", m.idCounter.Add(1))
 
 	shell := NewShell(&Options{
 		WorkingDir: workingDir,
@@ -391,6 +427,7 @@ func (m *BackgroundShellManager) Start(ctx context.Context, workingDir string, b
 		ID:          id,
 		Command:     command,
 		Description: description,
+		SessionID:   sessionID,
 		WorkingDir:  workingDir,
 		StartTime:   time.Now(),
 		Shell:       shell,
@@ -449,6 +486,20 @@ func (m *BackgroundShellManager) Get(id string) (*BackgroundShell, bool) {
 	return m.shells.Get(id)
 }
 
+// GetOwned retrieves a job only when it belongs to sessionID. A foreign job
+// is deliberately indistinguishable from a missing job to avoid leaking its
+// existence through the tool API.
+func (m *BackgroundShellManager) GetOwned(sessionID, id string) (*BackgroundShell, bool) {
+	if sessionID == "" {
+		return nil, false
+	}
+	shell, ok := m.shells.Get(id)
+	if !ok || shell.SessionID != sessionID {
+		return nil, false
+	}
+	return shell, true
+}
+
 // ActiveJobs returns the number of currently-running background jobs (started
 // but not yet completed). This is the value the MaxBackgroundJobs concurrency
 // limit is enforced against; completed jobs retained for result querying are
@@ -462,6 +513,19 @@ func (m *BackgroundShellManager) ActiveJobs() int {
 func (m *BackgroundShellManager) Remove(id string) error {
 	_, ok := m.shells.Take(id)
 	if !ok {
+		return fmt.Errorf("background shell not found: %s", id)
+	}
+	return nil
+}
+
+// RemoveOwned removes a completed or otherwise already-detached job only
+// when it belongs to sessionID.
+func (m *BackgroundShellManager) RemoveOwned(sessionID, id string) error {
+	shell, ok := m.GetOwned(sessionID, id)
+	if !ok {
+		return fmt.Errorf("background shell not found: %s", id)
+	}
+	if _, ok := m.shells.Take(shell.ID); !ok {
 		return fmt.Errorf("background shell not found: %s", id)
 	}
 	return nil
@@ -490,6 +554,25 @@ func (m *BackgroundShellManager) Kill(ctx context.Context, id string) error {
 	return nil
 }
 
+// KillOwned terminates a job only when it belongs to sessionID.
+func (m *BackgroundShellManager) KillOwned(ctx context.Context, sessionID, id string) error {
+	shell, ok := m.GetOwned(sessionID, id)
+	if !ok {
+		return fmt.Errorf("background shell not found: %s", id)
+	}
+	if _, ok := m.shells.Take(shell.ID); !ok {
+		return fmt.Errorf("background shell not found: %s", id)
+	}
+
+	shell.cancel()
+	select {
+	case <-shell.done:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	return nil
+}
+
 // BackgroundShellInfo contains information about a background shell.
 type BackgroundShellInfo struct {
 	ID          string
@@ -506,18 +589,47 @@ func (m *BackgroundShellManager) List() []string {
 	return ids
 }
 
+// ListOwned returns only the job IDs owned by sessionID.
+func (m *BackgroundShellManager) ListOwned(sessionID string) []string {
+	if sessionID == "" {
+		return nil
+	}
+	ids := make([]string, 0)
+	for id, shell := range m.shells.Seq2() {
+		if shell.SessionID == sessionID {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
 // Cleanup removes completed jobs that have been finished for more than the
 // retention period, and — for completed jobs past the shorter
 // BufferRetentionMinutes but not yet past full retention — releases their
 // buffered stdout/stderr bytes to shrink memory use while keeping the job
 // record (status, exit code, Command, etc.) queryable for the full window.
 func (m *BackgroundShellManager) Cleanup() int {
+	return m.cleanup("")
+}
+
+// CleanupOwned releases and removes only jobs owned by sessionID.
+func (m *BackgroundShellManager) CleanupOwned(sessionID string) int {
+	if sessionID == "" {
+		return 0
+	}
+	return m.cleanup(sessionID)
+}
+
+func (m *BackgroundShellManager) cleanup(sessionID string) int {
 	now := time.Now().Unix()
 	retentionSeconds := int64(CompletedJobRetentionMinutes * 60)
 	bufferRetentionSeconds := int64(BufferRetentionMinutes * 60)
 
 	var toRemove []string
 	for shell := range m.shells.Seq() {
+		if sessionID != "" && shell.SessionID != sessionID {
+			continue
+		}
 		completedAt := shell.completedAt.Load()
 		if completedAt <= 0 {
 			continue
@@ -542,9 +654,31 @@ func (m *BackgroundShellManager) Cleanup() int {
 // KillAll terminates all background shells. The provided context bounds how
 // long the function waits for each shell to exit.
 func (m *BackgroundShellManager) KillAll(ctx context.Context) {
+	m.startMu.Lock()
 	shells := slices.Collect(m.shells.Seq())
 	m.shells.Reset(map[string]*BackgroundShell{})
+	m.startMu.Unlock()
+	m.cancelShells(ctx, shells)
+}
 
+// Close permanently closes this manager and stops all jobs owned by its
+// App/client. It is safe for concurrent Start and Close calls: a Start that
+// wins the lock is included in the shutdown snapshot, and later Starts are
+// rejected before they can create a process.
+func (m *BackgroundShellManager) Close(ctx context.Context) {
+	m.startMu.Lock()
+	if m.closed {
+		m.startMu.Unlock()
+		return
+	}
+	m.closed = true
+	shells := slices.Collect(m.shells.Seq())
+	m.shells.Reset(map[string]*BackgroundShell{})
+	m.startMu.Unlock()
+	m.cancelShells(ctx, shells)
+}
+
+func (m *BackgroundShellManager) cancelShells(ctx context.Context, shells []*BackgroundShell) {
 	var wg sync.WaitGroup
 	for _, shell := range shells {
 		wg.Go(func() {

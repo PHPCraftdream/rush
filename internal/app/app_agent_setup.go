@@ -12,6 +12,7 @@ import (
 	"charm.land/catwalk/pkg/catwalk"
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/shell"
 )
 
 func (app *App) UpdateAgentModel(ctx context.Context) error {
@@ -117,6 +118,9 @@ func (app *App) GetDefaultFastModel(providerID string) config.SelectedModel {
 // (internal/server/hub.go) handles event fan-out to browser clients directly
 // without going through tea.Msg. See CHANGELOG.fork.md Section 2.
 func (app *App) InitCoderAgent(ctx context.Context) error {
+	if app.BackgroundShellManager == nil {
+		app.BackgroundShellManager = shell.NewBackgroundShellManager()
+	}
 	coderAgentCfg := app.config.Config().Agents[config.AgentCoder]
 	if coderAgentCfg.ID == "" {
 		// Self-heal: config.Load/reload always call SetupAgents once
@@ -148,6 +152,7 @@ func (app *App) InitCoderAgent(ctx context.Context) error {
 		app.History,
 		app.FileTracker,
 		app.agentNotifications,
+		app.BackgroundShellManager,
 	)
 	if err != nil {
 		slog.Error("Failed to create coder agent", "err", err)

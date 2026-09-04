@@ -19,6 +19,8 @@ type mockBashPermissionService struct {
 	*pubsub.Broker[permission.PermissionRequest]
 }
 
+var testBackgroundManager = shell.NewBackgroundShellManager()
+
 func (m *mockBashPermissionService) Request(ctx context.Context, req permission.CreatePermissionRequest) (bool, error) {
 	return true, nil
 }
@@ -93,7 +95,7 @@ func TestBashTool_CustomAutoBackgroundThreshold(t *testing.T) {
 	require.NotEmpty(t, meta.ShellID)
 	require.Contains(t, resp.Content, "moved to background")
 
-	bgManager := shell.GetBackgroundShellManager()
+	bgManager := testBackgroundManager
 	require.NoError(t, bgManager.Kill(context.Background(), meta.ShellID))
 }
 
@@ -119,7 +121,7 @@ func TestBashTool_CustomAutoBackgroundThreshold(t *testing.T) {
 func TestBashTool_CtxCancelWaitsForConfirmedProcessKill(t *testing.T) {
 	workingDir := t.TempDir()
 	tool := newBashToolForTest(workingDir)
-	bgManager := shell.GetBackgroundShellManager()
+	bgManager := testBackgroundManager
 
 	before := make(map[string]bool, len(bgManager.List()))
 	for _, id := range bgManager.List() {
@@ -253,7 +255,7 @@ func (m *recordingPermissionService) DeletePermission(ctx context.Context, ruleI
 func newBashToolForTest(workingDir string) fantasy.AgentTool {
 	permissions := &mockBashPermissionService{Broker: pubsub.NewBroker[permission.PermissionRequest]()}
 	attribution := &config.Attribution{TrailerStyle: config.TrailerStyleNone}
-	return NewBashTool(permissions, workingDir, attribution, "test-model", nil)
+	return NewBashTool(permissions, workingDir, attribution, "test-model", nil, testBackgroundManager)
 }
 
 func newBashToolWithRecordingPerms(workingDir string, allow bool) (fantasy.AgentTool, *recordingPermissionService) {
@@ -262,7 +264,7 @@ func newBashToolWithRecordingPerms(workingDir string, allow bool) (fantasy.Agent
 		allow:  allow,
 	}
 	attribution := &config.Attribution{TrailerStyle: config.TrailerStyleNone}
-	return NewBashTool(perms, workingDir, attribution, "test-model", nil), perms
+	return NewBashTool(perms, workingDir, attribution, "test-model", nil, testBackgroundManager), perms
 }
 
 func TestBashPermissionsParams_RunAllowlistCommandContract(t *testing.T) {
@@ -378,7 +380,7 @@ func TestBashTool_OnBackgroundCompleteFires(t *testing.T) {
 		default:
 		}
 	}
-	tool := NewBashTool(permissions, workingDir, attribution, "test-model", onComplete)
+	tool := NewBashTool(permissions, workingDir, attribution, "test-model", onComplete, testBackgroundManager)
 	ctx := context.WithValue(context.Background(), SessionIDContextKey, "bg-complete-session")
 
 	resp := runBashTool(t, tool, ctx, BashParams{
@@ -403,5 +405,5 @@ func TestBashTool_OnBackgroundCompleteFires(t *testing.T) {
 	}
 
 	// Clean up the background shell if it is still tracked.
-	_ = shell.GetBackgroundShellManager().Kill(context.Background(), meta.ShellID)
+	_ = testBackgroundManager.Kill(context.Background(), meta.ShellID)
 }

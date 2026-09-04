@@ -38,7 +38,15 @@ type JobOutputResponseMetadata struct {
 	Elapsed          time.Duration `json:"elapsed"`
 }
 
-func NewJobOutputTool() fantasy.AgentTool {
+func NewJobOutputTool(managers ...*shell.BackgroundShellManager) fantasy.AgentTool {
+	owned := false
+	var bgManager *shell.BackgroundShellManager
+	if len(managers) > 0 && managers[0] != nil {
+		bgManager = managers[0]
+		owned = true
+	} else {
+		bgManager = shell.NewBackgroundShellManager()
+	}
 	return fantasy.NewAgentTool(
 		JobOutputToolName,
 		jobOutputDescription,
@@ -47,8 +55,17 @@ func NewJobOutputTool() fantasy.AgentTool {
 				return fantasy.NewTextErrorResponse("missing shell_id"), nil
 			}
 
-			bgManager := shell.GetBackgroundShellManager()
-			bgShell, ok := bgManager.Get(params.ShellID)
+			sessionID := GetSessionFromContext(ctx)
+			if owned && sessionID == "" {
+				return fantasy.NewTextErrorResponse("session ID is required for background shell ownership"), nil
+			}
+			var bgShell *shell.BackgroundShell
+			var ok bool
+			if owned {
+				bgShell, ok = bgManager.GetOwned(sessionID, params.ShellID)
+			} else {
+				bgShell, ok = bgManager.Get(params.ShellID)
+			}
 			if !ok {
 				return fantasy.NewTextErrorResponse(fmt.Sprintf("background shell not found: %s", params.ShellID)), nil
 			}

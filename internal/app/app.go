@@ -20,6 +20,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/permission"
 	"github.com/PHPCraftdream/rush/internal/pubsub"
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/shell"
 )
 
 // coordinatorAdapterImpl wraps agent.Coordinator to satisfy session.Coordinator,
@@ -85,11 +86,12 @@ func (a *coordinatorAdapterImpl) Run(ctx context.Context, callData session.Sessi
 }
 
 type App struct {
-	Sessions    session.Service
-	Messages    message.Service
-	History     history.Service
-	Permissions permission.Service
-	FileTracker filetracker.Service
+	Sessions               session.Service
+	Messages               message.Service
+	History                history.Service
+	Permissions            permission.Service
+	FileTracker            filetracker.Service
+	BackgroundShellManager *shell.BackgroundShellManager
 
 	AgentCoordinator agent.Coordinator
 
@@ -217,11 +219,12 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, opts ...O
 	}
 
 	app := &App{
-		Sessions:    sessions,
-		Messages:    messages,
-		History:     files,
-		Permissions: permission.NewPermissionService(ctx, store.WorkingDir(), skipPermissionsRequests, allowedTools, q),
-		FileTracker: filetracker.NewService(q),
+		Sessions:               sessions,
+		Messages:               messages,
+		History:                files,
+		Permissions:            permission.NewPermissionService(ctx, store.WorkingDir(), skipPermissionsRequests, allowedTools, q),
+		FileTracker:            filetracker.NewService(q),
+		BackgroundShellManager: shell.NewBackgroundShellManager(),
 
 		DB:      func() *sql.DB { return conn },
 		dataDir: dataDir,

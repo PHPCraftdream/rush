@@ -205,7 +205,13 @@ func blockFuncs() []shell.BlockFunc {
 	}
 }
 
-func NewBashTool(permissions permission.Service, workingDir string, attribution *config.Attribution, modelID string, onBackgroundComplete func(sessionID string, sh *shell.BackgroundShell)) fantasy.AgentTool {
+func NewBashTool(permissions permission.Service, workingDir string, attribution *config.Attribution, modelID string, onBackgroundComplete func(sessionID string, sh *shell.BackgroundShell), managers ...*shell.BackgroundShellManager) fantasy.AgentTool {
+	var bgManager *shell.BackgroundShellManager
+	if len(managers) > 0 && managers[0] != nil {
+		bgManager = managers[0]
+	} else {
+		bgManager = shell.NewBackgroundShellManager()
+	}
 	return fantasy.NewAgentTool(
 		BashToolName,
 		string(bashDescription(attribution, modelID)),
@@ -265,10 +271,9 @@ func NewBashTool(permissions permission.Service, workingDir string, attribution 
 			// If explicitly requested as background, start immediately with detached context
 			if params.RunInBackground {
 				startTime := time.Now()
-				bgManager := shell.GetBackgroundShellManager()
-				bgManager.Cleanup()
+				bgManager.CleanupOwned(sessionID)
 				// Use background context so it continues after tool returns
-				bgShell, err := bgManager.Start(context.Background(), execWorkingDir, blockFuncs(), params.Command, params.Description)
+				bgShell, err := bgManager.StartOwned(context.Background(), sessionID, execWorkingDir, blockFuncs(), params.Command, params.Description)
 				if err != nil {
 					// Start's only failure mode today is the MaxBackgroundJobs
 					// cap (internal/shell/background.go). That cap is session
@@ -285,7 +290,7 @@ func NewBashTool(permissions permission.Service, workingDir string, attribution 
 
 				if done {
 					// Command failed or completed very quickly
-					bgManager.Remove(bgShell.ID)
+					bgManager.RemoveOwned(sessionID, bgShell.ID)
 
 					interrupted := shell.IsInterrupt(execErr)
 					exitCode := shell.ExitCode(execErr)
@@ -332,9 +337,8 @@ func NewBashTool(permissions permission.Service, workingDir string, attribution 
 			startTime := time.Now()
 
 			// Start with detached context so it can survive if moved to background
-			bgManager := shell.GetBackgroundShellManager()
-			bgManager.Cleanup()
-			bgShell, err := bgManager.Start(context.Background(), execWorkingDir, blockFuncs(), params.Command, params.Description)
+			bgManager.CleanupOwned(sessionID)
+			bgShell, err := bgManager.StartOwned(context.Background(), sessionID, execWorkingDir, blockFuncs(), params.Command, params.Description)
 			if err != nil {
 				// Same MaxBackgroundJobs cap as the explicit-background
 				// branch above, here hit by a plain foreground command: the
@@ -397,7 +401,7 @@ func NewBashTool(permissions permission.Service, workingDir string, attribution 
 					// actually wait (up to killConfirmationTimeout) for
 					// shell.done to close.
 					killCtx, killCancel := context.WithTimeout(context.Background(), killConfirmationTimeout)
-					_ = bgManager.Kill(killCtx, bgShell.ID)
+					_ = bgManager.KillOwned(killCtx, sessionID, bgShell.ID)
 					killCancel()
 					return fantasy.ToolResponse{}, ctx.Err()
 				}
@@ -407,7 +411,7 @@ func NewBashTool(permissions permission.Service, workingDir string, attribution 
 				// Command completed within threshold - return synchronously
 				// Remove from background manager since we're returning directly
 				// Don't call Kill() as it cancels the context and corrupts the exit code
-				bgManager.Remove(bgShell.ID)
+				bgManager.RemoveOwned(sessionID, bgShell.ID)
 
 				interrupted := shell.IsInterrupt(execErr)
 				exitCode := shell.ExitCode(execErr)

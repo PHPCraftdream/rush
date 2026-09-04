@@ -22,19 +22,19 @@ func TestJobOutputTool_BoundedWaitReturnsWhileRunning(t *testing.T) {
 	// ...ReturnsCompletedWhenJobFinishes test also mutates. Running them in
 	// parallel is a data race under -race (caught by CI's race-enabled build).
 	workingDir := t.TempDir()
-	ctx := context.Background()
+	ctx := context.WithValue(context.Background(), SessionIDContextKey, "job-output-session")
 
-	bgManager := shell.GetBackgroundShellManager()
-	bgShell, err := bgManager.Start(ctx, workingDir, nil, "sleep 30", "")
+	bgManager := shell.NewBackgroundShellManager()
+	bgShell, err := bgManager.StartOwned(ctx, "job-output-session", workingDir, nil, "sleep 30", "")
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = bgManager.Kill(context.Background(), bgShell.ID) })
+	t.Cleanup(func() { bgManager.Close(context.Background()) })
 
 	// Shrink the bound so the test returns in well under a second.
 	originalMaxWait := jobOutputMaxWait
 	jobOutputMaxWait = 100 * time.Millisecond
 	t.Cleanup(func() { jobOutputMaxWait = originalMaxWait })
 
-	tool := NewJobOutputTool()
+	tool := NewJobOutputTool(bgManager)
 
 	input, err := json.Marshal(JobOutputParams{ShellID: bgShell.ID, Wait: true})
 	require.NoError(t, err)
@@ -70,12 +70,12 @@ func TestJobOutputTool_BoundedWaitReturnsCompletedWhenJobFinishes(t *testing.T) 
 	// NOT t.Parallel(): shares the package-global jobOutputMaxWait with the
 	// sibling ...ReturnsWhileRunning test — see the note there.
 	workingDir := t.TempDir()
-	ctx := context.Background()
+	ctx := context.WithValue(context.Background(), SessionIDContextKey, "job-output-session")
 
-	bgManager := shell.GetBackgroundShellManager()
-	bgShell, err := bgManager.Start(ctx, workingDir, nil, "echo 'all done'", "")
+	bgManager := shell.NewBackgroundShellManager()
+	bgShell, err := bgManager.StartOwned(ctx, "job-output-session", workingDir, nil, "echo 'all done'", "")
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = bgManager.Kill(context.Background(), bgShell.ID) })
+	t.Cleanup(func() { bgManager.Close(context.Background()) })
 
 	// Give the quick command time to finish before we ask for output.
 	require.Eventually(t, bgShell.IsDone, 5*time.Second, 25*time.Millisecond)
@@ -84,7 +84,7 @@ func TestJobOutputTool_BoundedWaitReturnsCompletedWhenJobFinishes(t *testing.T) 
 	jobOutputMaxWait = 100 * time.Millisecond
 	t.Cleanup(func() { jobOutputMaxWait = originalMaxWait })
 
-	tool := NewJobOutputTool()
+	tool := NewJobOutputTool(bgManager)
 
 	input, err := json.Marshal(JobOutputParams{ShellID: bgShell.ID, Wait: true})
 	require.NoError(t, err)

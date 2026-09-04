@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"charm.land/fantasy"
-	"github.com/PHPCraftdream/rush/internal/shell"
 	"github.com/stretchr/testify/require"
 )
 
@@ -40,7 +39,7 @@ import (
 func TestBashTool_BackgroundShellStartLimitIsModelVisibleNotFatal(t *testing.T) {
 	workingDir := t.TempDir()
 	tool := newBashToolForTest(workingDir)
-	bgManager := shell.GetBackgroundShellManager()
+	bgManager := testBackgroundManager
 
 	// Lower the cap for this test. What is under test is the BEHAVIOUR at
 	// the limit — a model-visible error rather than a fatal one — not the

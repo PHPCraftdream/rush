@@ -11,7 +11,6 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/db"
-	"github.com/PHPCraftdream/rush/internal/shell"
 )
 
 // ShutdownResult reports how an App shutdown completed.
@@ -220,9 +219,12 @@ func (app *App) releaseResources(stillBusy bool) ShutdownResult {
 	// Now run remaining cleanup tasks in parallel with an overall bounded timeout.
 	var wg sync.WaitGroup
 
-	// Kill all background shells.
+	// Stop only this App's background shells. The manager is created per App;
+	// it is never a process-wide registry shared by SDK clients.
 	wg.Go(func() {
-		shell.GetBackgroundShellManager().KillAll(shutdownCtx)
+		if app.BackgroundShellManager != nil {
+			app.BackgroundShellManager.Close(shutdownCtx)
+		}
 	})
 
 	// Call all cleanup functions.

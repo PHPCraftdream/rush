@@ -38,6 +38,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/permission"
 	"github.com/PHPCraftdream/rush/internal/pubsub"
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/shell"
 	"github.com/PHPCraftdream/rush/internal/skills"
 )
 
@@ -240,6 +241,7 @@ type coordinator struct {
 	filetracker filetracker.Service
 	prompt      *prompt.Prompt
 	notify      pubsub.Publisher[notify.Notification]
+	background  *shell.BackgroundShellManager
 
 	currentAgent SessionAgent
 	agents       map[string]SessionAgent
@@ -318,6 +320,7 @@ func NewCoordinator(
 	history history.Service,
 	filetracker filetracker.Service,
 	notify pubsub.Publisher[notify.Notification],
+	backgroundManagers ...*shell.BackgroundShellManager,
 ) (Coordinator, error) {
 	p, err := coderPrompt(prompt.WithWorkingDir(cfg.WorkingDir()))
 	if err != nil {
@@ -328,6 +331,11 @@ func NewCoordinator(
 	allSkills, activeSkills := discoverSkills(cfg)
 	skillTracker := skills.NewTracker(activeSkills)
 
+	background := shell.NewBackgroundShellManager()
+	if len(backgroundManagers) > 0 && backgroundManagers[0] != nil {
+		background = backgroundManagers[0]
+	}
+
 	c := &coordinator{
 		cfg:                    cfg,
 		sessions:               sessions,
@@ -337,6 +345,7 @@ func NewCoordinator(
 		filetracker:            filetracker,
 		prompt:                 p,
 		notify:                 notify,
+		background:             background,
 		agents:                 make(map[string]SessionAgent),
 		allSkills:              allSkills,
 		activeSkills:           activeSkills,

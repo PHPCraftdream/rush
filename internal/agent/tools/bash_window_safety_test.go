@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/agent/agentguard"
-	"github.com/PHPCraftdream/rush/internal/shell"
 	"github.com/stretchr/testify/require"
 )
 
@@ -32,7 +31,7 @@ func encodePowerShellPayload(t *testing.T, src string) string {
 // let Start run, and the window would already be open.
 func shellIDSet() map[string]bool {
 	out := map[string]bool{}
-	for _, id := range shell.GetBackgroundShellManager().List() {
+	for _, id := range testBackgroundManager.List() {
 		out[id] = true
 	}
 	return out
@@ -134,6 +133,6 @@ func TestBashTool_WindowSafetyControlCaseStillExecutes(t *testing.T) {
 		"the control command must run through a NEW background shell")
 
 	t.Cleanup(func() {
-		_ = shell.GetBackgroundShellManager().Kill(context.Background(), meta.ShellID)
+		_ = testBackgroundManager.Kill(context.Background(), meta.ShellID)
 	})
 }
