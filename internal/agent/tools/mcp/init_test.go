@@ -619,17 +619,18 @@ func TestOwnerCloseResetsRegistryAndAllowsNextLifecycle(t *testing.T) {
 
 func TestOwnerCloseCancelsBlockedStartupBeforeCleanup(t *testing.T) {
 	started := make(chan struct{})
-	canceled := make(chan struct{})
+	canceled := make(chan struct{}, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-started:
 		default:
 			close(started)
 		}
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		w.(http.Flusher).Flush()
 		<-r.Context().Done()
-		close(canceled)
+		signalStarted(canceled)
 	}))
 	defer server.Close()
 

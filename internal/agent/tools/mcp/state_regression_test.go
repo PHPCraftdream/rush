@@ -39,23 +39,16 @@ func waitForRequest(t *testing.T, started <-chan struct{}) {
 
 func TestDisableServerCancelsBlockedInitAndLeavesNoLateSession(t *testing.T) {
 	started := make(chan struct{}, 1)
-	canceled := make(chan struct{})
-	serverDone := make(chan struct{})
-	var serverDoneOnce sync.Once
+	canceled := make(chan struct{}, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		signalStarted(started)
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		w.(http.Flusher).Flush()
-		select {
-		case <-r.Context().Done():
-		case <-serverDone:
-		}
-		close(canceled)
+		<-r.Context().Done()
+		signalStarted(canceled)
 	}))
-	defer func() {
-		serverDoneOnce.Do(func() { close(serverDone) })
-		server.Close()
-	}()
+	defer server.Close()
 	const name = "blocked-disable"
 	store := persistedMCPStore(t, name, server.URL, false)
 	owner, err := Acquire()
@@ -74,8 +67,6 @@ func TestDisableServerCancelsBlockedInitAndLeavesNoLateSession(t *testing.T) {
 	require.True(t, admitted, "blocked initialization must retain its cancellation admission")
 
 	require.NoError(t, DisableServer(context.Background(), store, name))
-	serverDoneOnce.Do(func() { close(serverDone) })
-	server.CloseClientConnections()
 	select {
 	case <-canceled:
 	case <-time.After(5 * time.Second):
@@ -95,13 +86,14 @@ func TestDisableServerCancelsBlockedInitAndLeavesNoLateSession(t *testing.T) {
 
 func TestRemoveServerCancelsBlockedInitAndRejectsLateCommit(t *testing.T) {
 	started := make(chan struct{}, 1)
-	canceled := make(chan struct{})
+	canceled := make(chan struct{}, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		signalStarted(started)
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		w.(http.Flusher).Flush()
 		<-r.Context().Done()
-		close(canceled)
+		signalStarted(canceled)
 	}))
 	defer server.Close()
 	const name = "blocked-remove"
@@ -136,13 +128,14 @@ func TestRemoveServerCancelsBlockedInitAndRejectsLateCommit(t *testing.T) {
 
 func TestEnableServerFromOldOwnerCannotPublishIntoNewOwner(t *testing.T) {
 	started := make(chan struct{}, 1)
-	canceled := make(chan struct{})
+	canceled := make(chan struct{}, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		signalStarted(started)
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		w.(http.Flusher).Flush()
 		<-r.Context().Done()
-		close(canceled)
+		signalStarted(canceled)
 	}))
 	defer server.Close()
 	const name = "old-owner-enable"
@@ -167,13 +160,14 @@ func TestEnableServerFromOldOwnerCannotPublishIntoNewOwner(t *testing.T) {
 
 func TestHeaderRoundTripperCancelsBlockedRequestBeforeResponse(t *testing.T) {
 	started := make(chan struct{}, 1)
-	canceled := make(chan struct{})
+	canceled := make(chan struct{}, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		signalStarted(started)
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		w.(http.Flusher).Flush()
 		<-r.Context().Done()
-		close(canceled)
+		signalStarted(canceled)
 	}))
 	defer server.Close()
 
