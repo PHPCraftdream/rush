@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"io"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -685,7 +686,11 @@ func TestOwnerCloseVsRenewalDoesNotPublishLateSession(t *testing.T) {
 	clientSession, err := mcp.NewClient(&mcp.Implementation{Name: "renewal-client"}, nil).
 		Connect(context.Background(), clientTransport, nil)
 	require.NoError(t, err)
-	created := &ClientSession{ClientSession: clientSession, cancel: createdCancel}
+	closeCalls := 0
+	created := &ClientSession{ClientSession: clientSession, cancel: func() {
+		closeCalls++
+		createdCancel()
+	}}
 
 	require.True(t, owner.beginInit())
 	closeStarted := make(chan error, 1)
@@ -698,8 +703,9 @@ func TestOwnerCloseVsRenewalDoesNotPublishLateSession(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	require.False(t, owner.acceptsSession())
-	require.False(t, owner.commitRenewal(owner.generation, "late-renewal", created, Counts{}))
-	require.Eventually(t, func() bool { return createdCtx.Err() != nil }, time.Second, time.Millisecond)
+	require.ErrorIs(t, owner.commitRenewal(owner.generation, "late-renewal", created, Counts{}), ErrOwnerBusy)
+	require.ErrorIs(t, createdCtx.Err(), context.Canceled)
+	require.Equal(t, 1, closeCalls, "a rejected renewal session must be closed exactly once")
 	require.Empty(t, func() map[string]*ClientSession {
 		got := map[string]*ClientSession{}
 		for name, session := range sessions.Seq2() {
@@ -742,6 +748,50 @@ func TestHeaderRoundTripperKeepsOwnerCancellationUntilBodyClose(t *testing.T) {
 		t.Fatal("owner cancellation did not reach the open response body")
 	}
 	require.NoError(t, resp.Body.Close())
+}
+
+type closeAfterContextBody struct {
+	ctx     context.Context
+	started chan struct{}
+}
+
+func (*closeAfterContextBody) Read([]byte) (int, error) {
+	return 0, io.EOF
+}
+
+func (b *closeAfterContextBody) Close() error {
+	close(b.started)
+	<-b.ctx.Done()
+	return nil
+}
+
+func TestOwnerResponseBodyCloseCancelsBeforeUnderlyingClose(t *testing.T) {
+	requestCtx, requestCancel := context.WithCancel(context.Background())
+	defer requestCancel()
+	underlying := &closeAfterContextBody{ctx: requestCtx, started: make(chan struct{})}
+	stopCalls := 0
+	body := &ownerResponseBody{
+		ReadCloser: underlying,
+		stop: func() bool {
+			stopCalls++
+			return true
+		},
+		cancel: requestCancel,
+	}
+
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- body.Close() }()
+	<-underlying.started
+	select {
+	case err := <-closeDone:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		requestCancel()
+		<-closeDone
+		t.Fatal("response body Close did not cancel the request before closing the underlying body")
+	}
+	require.ErrorIs(t, requestCtx.Err(), context.Canceled)
+	require.Equal(t, 1, stopCalls)
 }
 
 func TestOwnerCloseDeadlineRetainsFenceUntilStuckSessionCloses(t *testing.T) {

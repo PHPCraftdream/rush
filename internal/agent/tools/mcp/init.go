@@ -49,7 +49,15 @@ type ClientSession struct {
 
 // Close cancels the session context and then closes the underlying session.
 func (s *ClientSession) Close() error {
+	s.cancelContext()
+	return s.closeTransport()
+}
+
+func (s *ClientSession) cancelContext() {
 	s.cancel()
+}
+
+func (s *ClientSession) closeTransport() error {
 	return s.ClientSession.Close()
 }
 
@@ -174,17 +182,19 @@ func (o *Owner) acceptsSession() bool {
 	return o.isCurrentLocked()
 }
 
-func (o *Owner) commitRenewal(generation uint64, name string, session *ClientSession, counts Counts) bool {
+// commitRenewal consumes session on every path: it either publishes the
+// session or closes it before returning an error.
+func (o *Owner) commitRenewal(generation uint64, name string, session *ClientSession, counts Counts) error {
 	lifecycleMu.Lock()
 	if owner != o || o.closing || o.generation != generation {
 		lifecycleMu.Unlock()
 		_ = session.Close()
-		return false
+		return ErrOwnerBusy
 	}
 	sessions.Set(name, session)
 	updateState(name, StateConnected, nil, session, counts)
 	lifecycleMu.Unlock()
-	return true
+	return nil
 }
 
 func (o *Owner) operationContext(ctx context.Context) (context.Context, func()) {
@@ -196,10 +206,13 @@ func (o *Owner) operationContext(ctx context.Context) (context.Context, func()) 
 	}
 }
 
-// Close stops all initialization before taking its session snapshot. This
-// barrier is what prevents a session created after an old snapshot from
-// escaping cleanup. Startup is cancelled first, but the initialization
-// goroutines are still joined so their transports cannot outlive Close.
+// Close starts shutdown and waits until it finishes or ctx expires. If ctx
+// expires, the process-wide owner remains fenced in closing state and rejects
+// Acquire until its single cleanup goroutine has joined every admitted
+// initialization or renewal and closed every session. A non-cooperative
+// session close can therefore retain the fence indefinitely; releasing it
+// would allow callbacks from that old session to mutate the next owner's
+// process-wide registry.
 func (o *Owner) Close(ctx context.Context) error {
 	o.closeOnce.Do(func() {
 		lifecycleMu.Lock()
@@ -228,18 +241,30 @@ func (o *Owner) finishClose() {
 	// owner remains the lifecycle fence until every admitted operation exits.
 	o.initWG.Wait()
 
-	var wg sync.WaitGroup
-	for name, session := range sessions.Seq2() {
-		wg.Go(func() {
-			if err := session.Close(); err != nil &&
-				!errors.Is(err, io.EOF) &&
-				!errors.Is(err, context.Canceled) &&
-				err.Error() != "signal: killed" {
-				slog.Warn("Failed to shutdown MCP client", "name", name, "error", err)
-			}
-		})
+	type namedSession struct {
+		name    string
+		session *ClientSession
 	}
-	wg.Wait()
+	var snapshot []namedSession
+	for name, session := range sessions.Seq2() {
+		snapshot = append(snapshot, namedSession{name: name, session: session})
+	}
+
+	// Cancel every transport before entering any potentially non-cooperative
+	// SDK Close. Close calls then run sequentially in this goroutine so a
+	// deadline-abandoned App cleanup retains no extra waiter or close fan-out
+	// goroutines beyond this one owner cleanup goroutine.
+	for _, item := range snapshot {
+		item.session.cancelContext()
+	}
+	for _, item := range snapshot {
+		if err := item.session.closeTransport(); err != nil &&
+			!errors.Is(err, io.EOF) &&
+			!errors.Is(err, context.Canceled) &&
+			err.Error() != "signal: killed" {
+			slog.Warn("Failed to shutdown MCP client", "name", item.name, "error", err)
+		}
+	}
 
 	lifecycleMu.Lock()
 	if owner == o {
@@ -751,9 +776,8 @@ func getOrRenewClient(ctx context.Context, cfg *config.ConfigStore, name string)
 	}
 
 	if o != nil {
-		if !o.commitRenewal(generation, name, sess, state.Counts) {
-			_ = sess.Close()
-			return nil, ErrOwnerBusy
+		if err := o.commitRenewal(generation, name, sess, state.Counts); err != nil {
+			return nil, err
 		}
 		return sess, nil
 	}
@@ -985,9 +1009,8 @@ func (b *ownerResponseBody) Read(p []byte) (int, error) {
 }
 
 func (b *ownerResponseBody) Close() error {
-	err := b.ReadCloser.Close()
 	b.release()
-	return err
+	return b.ReadCloser.Close()
 }
 
 func (rt *headerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
