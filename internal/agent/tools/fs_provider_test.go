@@ -16,6 +16,33 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// nonComparableDisk exercises provider identity with a value whose dynamic
+// type contains a slice. Its embedded provider supplies the filesystem
+// methods while the slice makes interface equality unsafe.
+type nonComparableDisk struct {
+	DiskProvider
+	tags []string
+}
+
+func TestDiskProviderIdentityPredicatesHandleNonComparableValues(t *testing.T) {
+	custom := DiskProvider(nonComparableDisk{
+		DiskProvider: OSDisk(),
+		tags:         []string{"custom"},
+	})
+
+	require.False(t, HasDiskProvider(nil))
+	require.False(t, IsOSDisk(nil))
+	require.False(t, IsCustomDiskProvider(nil))
+
+	require.True(t, HasDiskProvider(OSDisk()))
+	require.False(t, IsCustomDiskProvider(OSDisk()))
+	require.True(t, IsOSDisk(OSDisk()))
+
+	require.True(t, HasDiskProvider(custom))
+	require.False(t, IsOSDisk(custom))
+	require.True(t, IsCustomDiskProvider(custom))
+}
+
 // flattenFileHits turns a fsGrepSearchContext-shaped collector map into
 // the same []SearchLine shape OSDisk.Search produces, so a test can
 // compare the two without caring about map iteration order (callers use

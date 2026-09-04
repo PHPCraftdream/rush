@@ -659,7 +659,7 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 	// a command-keeping scope) are kept unchanged below.
 	if cfgOpts := app.config.Config().Options; cfgOpts != nil && cfgOpts.NoRealWorkspace &&
 		len(overrides.FolderScopes) > 0 &&
-		(overrides.DiskProvider == nil || overrides.DiskProvider == tools.OSDisk()) {
+		!tools.IsCustomDiskProvider(overrides.DiskProvider) {
 		return nil, errors.New(
 			"folder scopes on a session with no real working directory require a custom DiskProvider: " +
 				"RunOverrides.FolderScopes is set but DiskProvider is nil or the real OS disk, and an " +
@@ -731,7 +731,7 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 	// #859: two hard errors for RunOverrides.DiskProvider, both before
 	// any session work or provider traffic, mirroring "invalid folder
 	// scopes" above.
-	if overrides.DiskProvider != nil {
+	if tools.HasDiskProvider(overrides.DiskProvider) {
 		// (1) A DiskProvider without a FolderScope is a footgun: the
 		// legacy single-target file tools (view/write/edit/multiedit/
 		// glob/grep/ls) stay in the toolset when there is no scope to
@@ -759,7 +759,7 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 	// Queueing is what creates the orphan-restart risk Layers 1/2 refuse
 	// outright — forcing fail-fast here means a provider-carrying call
 	// never reaches that path in the first place.
-	failIfSessionBusy := req.FailIfSessionBusy || overrides.DiskProvider != nil
+	failIfSessionBusy := req.FailIfSessionBusy || tools.HasDiskProvider(overrides.DiskProvider)
 
 	// R1-1 (P0): build this run's IMMUTABLE per-call execution context
 	// and attach it to the run's context. Everything below that used to

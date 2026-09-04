@@ -17,11 +17,47 @@ import (
 // state, so it is safe to hand out as a package-level singleton.
 type osDisk struct{}
 
+// osDiskMarker identifies the canonical real-filesystem provider without
+// comparing arbitrary DiskProvider interface values. The unexported method
+// prevents providers outside this package from accidentally claiming the
+// canonical identity.
+type osDiskMarker interface {
+	isOSDisk()
+}
+
+func (osDisk) isOSDisk() {}
+
 var osDiskSingleton DiskProvider = osDisk{}
 
 // OSDisk returns the real-filesystem DiskProvider: the default every
 // fs_* constructor falls back to when no DiskProvider is supplied.
 func OSDisk() DiskProvider { return osDiskSingleton }
+
+// HasDiskProvider reports whether d contains a provider. It deliberately
+// uses a type switch rather than interface equality because DiskProvider's
+// dynamic type is allowed to contain maps or slices.
+func HasDiskProvider(d DiskProvider) bool {
+	switch d.(type) {
+	case nil:
+		return false
+	default:
+		return true
+	}
+}
+
+// IsOSDisk reports whether d is the canonical real-filesystem provider.
+// Custom providers, including providers whose dynamic values are not
+// comparable, are never compared as interface values.
+func IsOSDisk(d DiskProvider) bool {
+	_, ok := d.(osDiskMarker)
+	return ok
+}
+
+// IsCustomDiskProvider reports whether d is a non-nil provider other than
+// the canonical real filesystem.
+func IsCustomDiskProvider(d DiskProvider) bool {
+	return HasDiskProvider(d) && !IsOSDisk(d)
+}
 
 func (osDisk) Stat(_ context.Context, name string) (fs.FileInfo, error) {
 	return os.Stat(name)

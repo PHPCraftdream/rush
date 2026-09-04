@@ -15,6 +15,7 @@ import (
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/openrouter"
 	"github.com/PHPCraftdream/rush/internal/agent/prompt"
+	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/config"
 )
 
@@ -531,7 +532,7 @@ func scopedCallToolsRequired(ctx context.Context) bool {
 // context (RunSessionAgentCall inspects the durable call's CallOptions
 // directly, ahead of calling WithCallOptions).
 func scopedCallOptionsRequireDistinctTools(opts *CallOptions) bool {
-	return opts != nil && (opts.FolderScope != nil || opts.DiskProvider != nil ||
+	return opts != nil && (opts.FolderScope != nil || tools.HasDiskProvider(opts.DiskProvider) ||
 		opts.DisableSubAgents || opts.ModelRole != "")
 }
 

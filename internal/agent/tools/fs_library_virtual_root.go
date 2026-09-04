@@ -70,7 +70,7 @@ func libraryVirtualRootForOS() string {
 // syscalls are issued for a sentinel-rooted path, not merely that the
 // eventual result is denied.
 func rejectRealDiskUnderLibraryVirtualRoot(disk DiskProvider, resolved string) error {
-	if disk != OSDisk() {
+	if !IsOSDisk(disk) {
 		return nil
 	}
 	slashed := filepath.ToSlash(resolved)

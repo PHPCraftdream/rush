@@ -16,7 +16,11 @@ package agent
 // "persist and restore" one: dropping the call is the fail-closed
 // direction, since the host is still in-process and can retry.
 
-import "errors"
+import (
+	"errors"
+
+	"github.com/PHPCraftdream/rush/internal/agent/tools"
+)
 
 // ErrDiskProviderNotDurable is returned instead of enqueueing (or
 // rebuilding) a call that carries a caller-supplied DiskProvider.
@@ -26,5 +30,5 @@ var ErrDiskProviderNotDurable = errors.New(
 // callCarriesDiskProvider reports whether call's per-call options carry a
 // host-supplied filesystem that must never reach the durable run queue.
 func callCarriesDiskProvider(call SessionAgentCall) bool {
-	return call.CallOptions != nil && call.CallOptions.DiskProvider != nil
+	return call.CallOptions != nil && tools.HasDiskProvider(call.CallOptions.DiskProvider)
 }

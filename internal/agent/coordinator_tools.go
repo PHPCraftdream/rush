@@ -463,7 +463,7 @@ func (c *coordinator) applyNoRealWorkspaceToolFloor(cfg *config.Config, agent co
 	if cfg == nil || cfg.Options == nil || !cfg.Options.NoRealWorkspace {
 		return agent
 	}
-	customDisk := disk != nil && disk != tools.OSDisk()
+	customDisk := tools.IsCustomDiskProvider(disk)
 	stripped := make([]string, 0, len(agent.AllowedTools))
 	for _, name := range agent.AllowedTools {
 		if _, ok := noRealWorkspaceForbiddenTools[name]; ok {

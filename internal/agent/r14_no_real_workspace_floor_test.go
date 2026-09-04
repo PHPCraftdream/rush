@@ -22,6 +22,14 @@ import (
 // tools.OSDisk(), so every method can return zero values.
 type fakeFloorDisk struct{}
 
+// nonComparableFloorDisk is a value provider with a slice in its dynamic
+// value. Embedding the provider supplies the methods while keeping this
+// test focused on the floor's provider classification.
+type nonComparableFloorDisk struct {
+	tools.DiskProvider
+	marker []string
+}
+
 func (fakeFloorDisk) Stat(ctx context.Context, name string) (fs.FileInfo, error) {
 	return nil, nil
 }
@@ -96,6 +104,28 @@ func TestApplyNoRealWorkspaceToolFloorKeepsFsWithCustomDisk(t *testing.T) {
 
 	got := coord.applyNoRealWorkspaceToolFloor(
 		cfg, config.Agent{AllowedTools: floorInputTools}, fakeFloorDisk{})
+
+	require.Equal(t,
+		[]string{
+			"todos", tools.AskQuestionToolName, "fetch",
+			"fs_read", "fs_write", "fs_list",
+		}, got.AllowedTools)
+}
+
+// TestApplyNoRealWorkspaceToolFloorKeepsFsWithNonComparableCustomDisk pins
+// the custom-provider opt-in for a value whose dynamic type cannot be
+// compared. The floor must keep scoped fs_* tools without panicking.
+func TestApplyNoRealWorkspaceToolFloorKeepsFsWithNonComparableCustomDisk(t *testing.T) {
+	coord := newRoleModelTestCoordinator(t, testEnv(t), false)
+	cfg := coord.cfg.Config()
+	cfg.Options = &config.Options{NoRealWorkspace: true}
+
+	disk := nonComparableFloorDisk{
+		DiskProvider: tools.OSDisk(),
+		marker:       []string{"non-comparable"},
+	}
+	got := coord.applyNoRealWorkspaceToolFloor(
+		cfg, config.Agent{AllowedTools: floorInputTools}, disk)
 
 	require.Equal(t,
 		[]string{
