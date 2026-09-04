@@ -8,6 +8,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/csync"
+	"github.com/PHPCraftdream/rush/internal/pubsub"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -78,6 +79,35 @@ func RefreshResources(ctx context.Context, name string) {
 	prev, _ := states.Get(name)
 	prev.Counts.Resources = resourceCount
 	updateState(name, StateConnected, nil, lease.session, prev.Counts)
+}
+
+func refreshResources(name string, admission *serverAdmission) {
+	lease, err := currentClientLeaseFor(admission.owner.lifecycleCtx, name, admission)
+	if err != nil {
+		return
+	}
+	defer lease.close()
+	resources, err := getResources(lease.ctx, lease.session)
+	if err != nil {
+		if admission.valid() {
+			updateAdmissionState(admission, StateError, err, nil, Counts{})
+		}
+		return
+	}
+	lifecycleMu.Lock()
+	if !admission.validLocked() {
+		lifecycleMu.Unlock()
+		return
+	}
+	resourceCount := updateResources(name, resources)
+	prev, _ := states.Get(name)
+	prev.Counts.Resources = resourceCount
+	setState(name, StateConnected, nil, lease.session, prev.Counts)
+	brokerForEvent := broker
+	lifecycleMu.Unlock()
+	brokerForEvent.Publish(pubsub.UpdatedEvent, Event{
+		Type: EventStateChanged, Name: name, State: StateConnected, Counts: prev.Counts,
+	})
 }
 
 func getResources(ctx context.Context, c *ClientSession) ([]*Resource, error) {

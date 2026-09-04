@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/http/httptrace"
 	"os"
 	"os/exec"
 	"strings"
@@ -65,7 +67,7 @@ var (
 	sessions = csync.NewMap[string, *ClientSession]()
 	states   = csync.NewMap[string, ClientInfo]()
 	broker   = pubsub.NewBroker[Event]()
-	leases   = csync.NewMap[string, *serverLease]()
+	leases   = newLeaseRegistry()
 
 	lifecycleMu sync.Mutex
 	owner       *Owner
@@ -73,10 +75,97 @@ var (
 	generation  uint64
 )
 
+// leaseRegistry owns the per-server locks. References are held by lock
+// holders and waiters, so an entry can be reclaimed as soon as its last
+// operation leaves. In particular, a waiter keeps the old pointer alive until
+// it acquires and releases the lock, preventing an ABA replacement.
+type leaseRegistry struct {
+	mu      sync.Mutex
+	entries map[string]*serverLease
+}
+
+func newLeaseRegistry() *leaseRegistry {
+	return &leaseRegistry{entries: make(map[string]*serverLease)}
+}
+
 // serverLease serializes replacement and closing of one server session while
 // allowing concurrent callers to use the current session.
 type serverLease struct {
-	sync.RWMutex
+	mu       sync.RWMutex
+	registry *leaseRegistry
+	name     string
+	refs     int
+}
+
+// getRetained atomically looks up (or creates) a lease and reserves one
+// reference for the caller before another goroutine can reclaim the entry.
+func (r *leaseRegistry) getRetained(name string) *serverLease {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	lease, ok := r.entries[name]
+	if !ok {
+		lease = &serverLease{registry: r, name: name}
+		r.entries[name] = lease
+	}
+	lease.refs++
+	return lease
+}
+
+// retain keeps a lease entry alive while a caller transitions from a read
+// lock to a write lock or reacquires a read lock after renewal.
+func (r *leaseRegistry) retain(lease *serverLease) {
+	r.mu.Lock()
+	lease.refs++
+	r.mu.Unlock()
+}
+
+func (r *leaseRegistry) release(lease *serverLease) {
+	r.mu.Lock()
+	lease.refs--
+	if lease.refs == 0 && r.entries[lease.name] == lease {
+		delete(r.entries, lease.name)
+	}
+	r.mu.Unlock()
+}
+
+func (r *leaseRegistry) Len() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.entries)
+}
+
+func (r *leaseRegistry) reset() {
+	r.mu.Lock()
+	r.entries = make(map[string]*serverLease)
+	r.mu.Unlock()
+}
+
+func (l *serverLease) Lock() {
+	l.mu.Lock()
+}
+
+func (l *serverLease) Unlock() {
+	l.mu.Unlock()
+	l.registry.release(l)
+}
+
+func (l *serverLease) RLock() {
+	l.mu.RLock()
+}
+
+func (l *serverLease) RUnlock() {
+	l.mu.RUnlock()
+	l.registry.release(l)
+}
+
+func acquireServerLease(name string, write bool) *serverLease {
+	lease := leases.getRetained(name)
+	if write {
+		lease.Lock()
+	} else {
+		lease.RLock()
+	}
+	return lease
 }
 
 // clientLease keeps the server read lock and owner initialization fence until
@@ -93,7 +182,7 @@ func (l *clientLease) close() {
 }
 
 func serverLeaseFor(name string) *serverLease {
-	return leases.GetOrSet(name, func() *serverLease { return &serverLease{} })
+	return leases.getRetained(name)
 }
 
 // ErrOwnerBusy reports that another application currently owns the process
@@ -113,9 +202,159 @@ type Owner struct {
 	initCount       int
 	initWG          sync.WaitGroup
 	initDoneOnce    sync.Once
+	serverEpochs    map[string]uint64
+	serverCancels   map[string]map[uint64]context.CancelFunc
+	refreshCh       chan refreshRequest
+	refreshPending  map[refreshKey]struct{}
+	refreshWG       sync.WaitGroup
 	closeOnce       sync.Once
 	closeDone       chan struct{}
 	closeErr        error
+}
+
+type refreshKind uint8
+
+const (
+	refreshToolsKind refreshKind = iota
+	refreshPromptsKind
+	refreshResourcesKind
+)
+
+type refreshKey struct {
+	name  string
+	kind  refreshKind
+	epoch uint64
+}
+
+type refreshRequest struct {
+	kind      refreshKind
+	name      string
+	cfg       *config.ConfigStore
+	admission serverAdmission
+}
+
+// serverAdmission pins one owner generation and one server epoch. Its init
+// reference is held until the candidate or operation has completely exited,
+// allowing Owner.Close to fence all late work before registry reset.
+type serverAdmission struct {
+	owner            *Owner
+	generation       uint64
+	epoch            uint64
+	configGeneration uint64
+	cfg              *config.ConfigStore
+	name             string
+	ctx              context.Context
+	cancel           context.CancelFunc
+	stop             func()
+	once             *sync.Once
+}
+
+func (a *serverAdmission) done() {
+	if a == nil || a.owner == nil {
+		return
+	}
+	if a.once != nil {
+		a.once.Do(a.owner.endInit)
+	}
+	if a.stop != nil {
+		a.stop()
+	}
+	if a.cancel != nil {
+		a.cancel()
+	}
+	lifecycleMu.Lock()
+	if current, ok := a.owner.serverCancels[a.name]; ok {
+		delete(current, a.epoch)
+		if len(current) == 0 {
+			delete(a.owner.serverCancels, a.name)
+		}
+	}
+	lifecycleMu.Unlock()
+}
+
+func (a *serverAdmission) valid() bool {
+	if a == nil || a.owner == nil || a.cfg == nil {
+		return true
+	}
+	lifecycleMu.Lock()
+	valid := a.validLocked()
+	lifecycleMu.Unlock()
+	return valid
+}
+
+func (a *serverAdmission) validLocked() bool {
+	if a == nil || a.owner == nil || a.cfg == nil {
+		return true
+	}
+	valid := owner == a.owner && !a.owner.closing &&
+		a.owner.generation == a.generation &&
+		a.owner.serverEpochs[a.name] == a.epoch
+	if !valid {
+		return false
+	}
+	mcpConfig, exists := a.cfg.MCPConfig(a.name)
+	if !exists {
+		return false
+	}
+	return !mcpConfig.Disabled
+}
+
+func (o *Owner) admitServer(ctx context.Context, cfg *config.ConfigStore, name string, bump bool) (serverAdmission, error) {
+	lifecycleMu.Lock()
+	defer lifecycleMu.Unlock()
+	if !o.isCurrentLocked() {
+		return serverAdmission{}, ErrOwnerBusy
+	}
+	if bump {
+		for _, cancel := range o.serverCancels[name] {
+			cancel()
+		}
+		delete(o.serverCancels, name)
+		o.serverEpochs[name]++
+	}
+	var operationCtx context.Context
+	var cancel context.CancelFunc
+	var stop func()
+	if bump {
+		operationCtx, cancel = context.WithCancel(ctx)
+		stopFunc := context.AfterFunc(o.lifecycleCtx, cancel)
+		stop = func() { _ = stopFunc() }
+		if o.serverCancels[name] == nil {
+			o.serverCancels[name] = make(map[uint64]context.CancelFunc)
+		}
+		o.serverCancels[name][o.serverEpochs[name]] = cancel
+	} else {
+		operationCtx = ctx
+	}
+	admission := serverAdmission{
+		owner:            o,
+		generation:       o.generation,
+		epoch:            o.serverEpochs[name],
+		configGeneration: cfg.Generation(),
+		cfg:              cfg,
+		name:             name,
+		once:             new(sync.Once),
+		ctx:              operationCtx,
+		cancel:           cancel,
+		stop:             stop,
+	}
+	o.initCount++
+	o.initWG.Add(1)
+	return admission, nil
+}
+
+func (o *Owner) invalidateServer(name string) {
+	var cancels []context.CancelFunc
+	lifecycleMu.Lock()
+	for _, cancel := range o.serverCancels[name] {
+		cancels = append(cancels, cancel)
+	}
+	delete(o.serverCancels, name)
+	o.serverEpochs[name]++
+	lifecycleMu.Unlock()
+	for _, cancel := range cancels {
+		cancel()
+	}
 }
 
 func closedChannel() chan struct{} {
@@ -138,15 +377,22 @@ func acquireImplicit() (*Owner, error) {
 
 func acquire(implicit bool) (*Owner, error) {
 	lifecycleMu.Lock()
-	defer lifecycleMu.Unlock()
-
 	if owner != nil {
 		if !owner.implicit || owner.closing || owner.initCount != 0 || sessions.Len() != 0 ||
 			states.Len() != 0 || allTools.Len() != 0 || allPrompts.Len() != 0 ||
 			allResources.Len() != 0 {
+			lifecycleMu.Unlock()
 			return nil, ErrOwnerBusy
 		}
 		owner.lifecycleCancel()
+		oldOwner := owner
+		lifecycleMu.Unlock()
+		oldOwner.refreshWG.Wait()
+		lifecycleMu.Lock()
+		if owner != oldOwner {
+			lifecycleMu.Unlock()
+			return nil, ErrOwnerBusy
+		}
 		resetRegistryLocked()
 	}
 
@@ -158,9 +404,16 @@ func acquire(implicit bool) (*Owner, error) {
 		lifecycleCtx:    lifecycleCtx,
 		lifecycleCancel: lifecycleCancel,
 		closeDone:       make(chan struct{}),
+		serverEpochs:    make(map[string]uint64),
+		serverCancels:   make(map[string]map[uint64]context.CancelFunc),
+		refreshCh:       make(chan refreshRequest, 128),
+		refreshPending:  make(map[refreshKey]struct{}),
 	}
 	owner = o
 	initDone = make(chan struct{})
+	o.refreshWG.Add(1)
+	go o.refreshLoop()
+	lifecycleMu.Unlock()
 	return o, nil
 }
 
@@ -168,6 +421,79 @@ func currentOwner() *Owner {
 	lifecycleMu.Lock()
 	defer lifecycleMu.Unlock()
 	return owner
+}
+
+func (o *Owner) refreshLoop() {
+	defer o.refreshWG.Done()
+	for {
+		select {
+		case <-o.lifecycleCtx.Done():
+			return
+		case request := <-o.refreshCh:
+			o.runRefresh(request)
+		}
+	}
+}
+
+func (o *Owner) enqueueRefresh(request refreshRequest) {
+	lifecycleMu.Lock()
+	if owner != o || o.closing || request.admission.owner != o ||
+		o.serverEpochs[request.name] != request.admission.epoch {
+		lifecycleMu.Unlock()
+		return
+	}
+	key := refreshKey{name: request.name, kind: request.kind, epoch: request.admission.epoch}
+	if _, exists := o.refreshPending[key]; exists {
+		lifecycleMu.Unlock()
+		return
+	}
+	o.refreshPending[key] = struct{}{}
+	lifecycleMu.Unlock()
+
+	select {
+	case o.refreshCh <- request:
+	case <-o.lifecycleCtx.Done():
+		lifecycleMu.Lock()
+		delete(o.refreshPending, key)
+		lifecycleMu.Unlock()
+	default:
+		// A notification is advisory. The next notification or a reconnect
+		// will repopulate the advertised registry if a burst fills the queue.
+		lifecycleMu.Lock()
+		delete(o.refreshPending, key)
+		lifecycleMu.Unlock()
+	}
+}
+
+func (o *Owner) runRefresh(request refreshRequest) {
+	key := refreshKey{name: request.name, kind: request.kind, epoch: request.admission.epoch}
+	defer func() {
+		lifecycleMu.Lock()
+		delete(o.refreshPending, key)
+		lifecycleMu.Unlock()
+	}()
+	if !request.admission.valid() {
+		return
+	}
+	// Refresh owns a temporary lifecycle reference while it holds the server
+	// read lease and performs the SDK list call.
+	refreshAdmission, err := o.admitServer(o.lifecycleCtx, request.cfg, request.name, false)
+	if err != nil || refreshAdmission.epoch != request.admission.epoch {
+		if err == nil {
+			refreshAdmission.done()
+		}
+		return
+	}
+	defer refreshAdmission.done()
+	refreshAdmission.epoch = request.admission.epoch
+	switch request.kind {
+	case refreshToolsKind:
+		refreshTools(o.lifecycleCtx, request.cfg, request.name, &refreshAdmission)
+	case refreshPromptsKind:
+		refreshPrompts(request.name, &refreshAdmission)
+	case refreshResourcesKind:
+		refreshResources(request.name, &refreshAdmission)
+	}
 }
 
 func (o *Owner) isCurrentLocked() bool {
@@ -271,6 +597,9 @@ func (o *Owner) finishClose() {
 	// Do not abandon this wait when a caller's cleanup context expires. The
 	// owner remains the lifecycle fence until every admitted operation exits.
 	o.initWG.Wait()
+	// The notification worker is independently joined so no callback from
+	// this owner can publish into a later owner after the registry is reset.
+	o.refreshWG.Wait()
 
 	type namedSession struct {
 		name    string
@@ -323,6 +652,7 @@ func resetRegistryLocked() {
 	for name := range allResources.Seq2() {
 		allResources.Del(name)
 	}
+	leases.reset()
 	broker.Shutdown()
 	broker = pubsub.NewBroker[Event]()
 }
@@ -467,12 +797,21 @@ func (o *Owner) Initialize(ctx context.Context, permissions permission.Service, 
 	stopOwner := context.AfterFunc(o.lifecycleCtx, cancel)
 	defer stopOwner()
 	defer cancel()
-	// Initialize states for all configured MCPs
-	for name, m := range cfg.Config().MCP {
+	// Capture the configuration and each server admission before starting any
+	// goroutine. This prevents a later owner from being captured by a stale
+	// initializer and lets disable/remove cancel the exact startup attempt.
+	configured, _ := cfg.Snapshot()
+	if configured == nil {
+		o.finishInitialize()
+		return
+	}
+	resolver := cfg.Resolver()
+	for name, m := range configured.MCP {
 		if !o.acceptsSession() {
 			break
 		}
 		if m.Disabled {
+			o.invalidateServer(name)
 			updateState(name, StateDisabled, nil, nil, Counts{})
 			slog.Debug("Skipping disabled MCP", "name", name)
 			continue
@@ -483,11 +822,15 @@ func (o *Owner) Initialize(ctx context.Context, permissions permission.Service, 
 			continue
 		}
 
-		// Set initial starting state.
+		admission, err := o.admitServer(initCtx, cfg, name, true)
+		if err != nil {
+			break
+		}
 		wg.Add(1)
-		go func(name string, m config.MCPConfig) {
+		go func(name string, m config.MCPConfig, admission serverAdmission) {
 			defer func() {
 				wg.Done()
+				admission.done()
 				if r := recover(); r != nil {
 					var err error
 					switch v := r.(type) {
@@ -498,15 +841,17 @@ func (o *Owner) Initialize(ctx context.Context, permissions permission.Service, 
 					default:
 						err = fmt.Errorf("panic: %v", v)
 					}
-					updateState(name, StateError, err, nil, Counts{})
+					if admission.valid() {
+						updateState(name, StateError, err, nil, Counts{})
+					}
 					slog.Error("Panic in MCP client initialization", "error", err, "name", name)
 				}
 			}()
 
-			if err := initClient(initCtx, cfg, name, m, cfg.Resolver()); err != nil {
+			if err := initClientAdmitted(admission.ctx, cfg, name, m, resolver, &admission); err != nil {
 				slog.Debug("Failed to initialize MCP client", "name", name, "error", err)
 			}
-		}(name, m)
+		}(name, m, admission)
 	}
 	wg.Wait()
 	o.finishInitialize()
@@ -535,7 +880,7 @@ func InitializeSingle(ctx context.Context, name string, cfg *config.ConfigStore)
 			return err
 		}
 	}
-	m, exists := cfg.Config().MCP[name]
+	m, exists := cfg.MCPConfig(name)
 	if !exists {
 		return fmt.Errorf("mcp '%s' not found in configuration", name)
 	}
@@ -551,45 +896,90 @@ func InitializeSingle(ctx context.Context, name string, cfg *config.ConfigStore)
 
 // initClient initializes a single MCP client with the given configuration.
 func initClient(ctx context.Context, cfg *config.ConfigStore, name string, m config.MCPConfig, resolver config.VariableResolver) error {
+	var admission *serverAdmission
 	if o := currentOwner(); o != nil {
-		if !o.beginInit() {
+		admitted, err := o.admitServer(ctx, cfg, name, true)
+		if err != nil {
+			return err
+		}
+		admission = &admitted
+	}
+	return initClientAdmitted(ctx, cfg, name, m, resolver, admission)
+}
+
+func initClientAdmitted(ctx context.Context, cfg *config.ConfigStore, name string, m config.MCPConfig, resolver config.VariableResolver, admission *serverAdmission) error {
+	if admission != nil {
+		defer admission.done()
+		if !admission.valid() {
 			return ErrOwnerBusy
 		}
-		defer o.endInit()
 	}
-	// Set initial starting state.
-	updateState(name, StateStarting, nil, nil, Counts{})
+	if admission == nil {
+		updateState(name, StateStarting, nil, nil, Counts{})
+	} else {
+		updateAdmissionState(admission, StateStarting, nil, nil, Counts{})
+	}
 
+	operationCtx := ctx
+	finish := func() {}
+	if admission != nil {
+		operationCtx, finish = admission.owner.operationContext(ctx)
+		defer finish()
+	}
 	// createSession handles its own timeout internally.
-	session, err := createSession(ctx, name, m, resolver)
+	session, err := createSessionWithAdmission(operationCtx, name, m, resolver, admission)
 	if err != nil {
 		return err
 	}
 
-	tools, err := getTools(ctx, session)
+	tools, err := getTools(operationCtx, session)
 	if err != nil {
 		slog.Error("Error listing tools", "error", err, "name", name)
-		updateState(name, StateError, err, nil, Counts{})
-		session.Close()
+		if admission == nil || admission.valid() {
+			if admission == nil {
+				updateState(name, StateError, err, nil, Counts{})
+			} else {
+				updateAdmissionState(admission, StateError, err, nil, Counts{})
+			}
+		}
+		_ = session.Close()
 		return err
 	}
 
-	prompts, err := getPrompts(ctx, session)
+	prompts, err := getPrompts(operationCtx, session)
 	if err != nil {
 		slog.Error("Error listing prompts", "error", err, "name", name)
-		updateState(name, StateError, err, nil, Counts{})
-		session.Close()
+		if admission == nil || admission.valid() {
+			if admission == nil {
+				updateState(name, StateError, err, nil, Counts{})
+			} else {
+				updateAdmissionState(admission, StateError, err, nil, Counts{})
+			}
+		}
+		_ = session.Close()
 		return err
 	}
 
-	if o := currentOwner(); o != nil && !o.acceptsSession() {
+	if admission != nil && !admission.valid() {
 		_ = session.Close()
 		return ErrOwnerBusy
 	}
 	lease := serverLeaseFor(name)
 	lease.Lock()
 	defer lease.Unlock()
-	if o := currentOwner(); o != nil && !o.acceptsSession() {
+	lifecycleMu.Lock()
+	if admission != nil && !admission.validLocked() {
+		lifecycleMu.Unlock()
+		_ = session.Close()
+		return ErrOwnerBusy
+	}
+	if _, ok := cfg.MCPConfig(name); !ok {
+		lifecycleMu.Unlock()
+		_ = session.Close()
+		return ErrOwnerBusy
+	}
+	if currentConfig, _ := cfg.MCPConfig(name); currentConfig.Disabled {
+		lifecycleMu.Unlock()
 		_ = session.Close()
 		return ErrOwnerBusy
 	}
@@ -597,13 +987,18 @@ func initClient(ctx context.Context, cfg *config.ConfigStore, name string, m con
 	toolCount := updateTools(cfg, name, tools)
 	updatePrompts(name, prompts)
 	sessions.Set(name, session)
+	counts := Counts{
+		Tools:   toolCount,
+		Prompts: len(prompts),
+	}
+	setState(name, StateConnected, nil, session, counts)
+	brokerForEvent := broker
+	lifecycleMu.Unlock()
 	if hadOldSession && oldSession != session {
 		_ = oldSession.Close()
 	}
-
-	updateState(name, StateConnected, nil, session, Counts{
-		Tools:   toolCount,
-		Prompts: len(prompts),
+	brokerForEvent.Publish(pubsub.UpdatedEvent, Event{
+		Type: EventStateChanged, Name: name, State: StateConnected, Counts: counts,
 	})
 
 	return nil
@@ -611,26 +1006,20 @@ func initClient(ctx context.Context, cfg *config.ConfigStore, name string, m con
 
 // DisableSingle disables and closes a single MCP client by name.
 func DisableSingle(cfg *config.ConfigStore, name string) error {
+	o, err := ensureOwner()
+	if err != nil {
+		return err
+	}
+	if !o.beginInit() {
+		return ErrOwnerBusy
+	}
+	defer o.endInit()
+	o.invalidateServer(name)
 	lease := serverLeaseFor(name)
 	lease.Lock()
 	defer lease.Unlock()
-
-	session, ok := sessions.Get(name)
-	if ok {
-		if err := session.Close(); err != nil &&
-			!errors.Is(err, io.EOF) &&
-			!errors.Is(err, context.Canceled) &&
-			err.Error() != "signal: killed" {
-			slog.Warn("Error closing MCP session", "name", name, "error", err)
-		}
-		sessions.Del(name)
-	}
-
-	// Clear tools and prompts for this MCP.
-	updateTools(cfg, name, nil)
-	updatePrompts(name, nil)
-
-	// Update state to disabled.
+	closeSessionLocked(name)
+	clearAdvertised(name)
 	updateState(name, StateDisabled, nil, nil, Counts{})
 
 	slog.Info("Disabled mcp client", "name", name)
@@ -640,63 +1029,82 @@ func DisableSingle(cfg *config.ConfigStore, name string) error {
 // DisableServer disables an MCP server: closes its session, removes its tools,
 // and persists the disabled flag to config.
 func DisableServer(ctx context.Context, cfg *config.ConfigStore, name string) error {
-	mcpCfg, ok := cfg.Config().MCP[name]
+	o, err := ensureOwner()
+	if err != nil {
+		return err
+	}
+	if !o.beginInit() {
+		return ErrOwnerBusy
+	}
+	defer o.endInit()
+	mcpCfg, ok := cfg.MCPConfig(name)
 	if !ok {
 		return fmt.Errorf("MCP server %q not found", name)
 	}
-
-	_ = DisableSingle(cfg, name)
-
-	// Update in-memory config
-	mcpCfg.Disabled = true
-	c := cfg.Config()
-	c.MCP[name] = mcpCfg
-
-	// External servers (.mcp.json) persist disabled state to workspace config;
-	// user-configured servers persist to global config.
+	// Fence and cancel every admitted candidate before any persistence work.
+	// The lease below then makes the config/state transition linearizable with
+	// a candidate that is already returning from the SDK.
+	o.invalidateServer(name)
+	lease := serverLeaseFor(name)
+	lease.Lock()
+	defer lease.Unlock()
+	// Persist first. If disk persistence fails, the session and in-memory
+	// snapshot remain enabled, so the operation has no half-applied result.
 	scope := config.ScopeGlobal
 	if mcpCfg.Source == config.MCPSourceExternal {
 		scope = config.ScopeWorkspace
 	}
 	if err := cfg.SetConfigField(scope, fmt.Sprintf("mcp.%s.disabled", name), true); err != nil {
-		slog.Warn("Failed to persist MCP disabled state", "name", name, "err", err)
+		return fmt.Errorf("failed to persist MCP disabled state for %q: %w", name, err)
 	}
-
+	if _, ok := cfg.SetMCPDisabled(name, true); !ok {
+		return fmt.Errorf("MCP server %q disappeared while disabling", name)
+	}
+	closeSessionLocked(name)
+	clearAdvertised(name)
+	updateState(name, StateDisabled, nil, nil, Counts{})
 	return nil
 }
 
 // EnableServer re-enables a disabled MCP server and starts a new session.
 func EnableServer(ctx context.Context, cfg *config.ConfigStore, name string) error {
-	mcpCfg, ok := cfg.Config().MCP[name]
+	o, err := ensureOwner()
+	if err != nil {
+		return err
+	}
+	mcpCfg, ok := cfg.MCPConfig(name)
 	if !ok {
 		return fmt.Errorf("MCP server %q not found", name)
 	}
-
-	// Update in-memory config
-	mcpCfg.Disabled = false
-	c := cfg.Config()
-	c.MCP[name] = mcpCfg
-
-	// External servers (.mcp.json) persist enabled state to workspace config;
-	// user-configured servers persist to global config.
+	lease := serverLeaseFor(name)
+	lease.Lock()
 	scope := config.ScopeGlobal
 	if mcpCfg.Source == config.MCPSourceExternal {
 		scope = config.ScopeWorkspace
 	}
 	if err := cfg.SetConfigField(scope, fmt.Sprintf("mcp.%s.disabled", name), false); err != nil {
-		slog.Warn("Failed to persist MCP enabled state", "name", name, "err", err)
+		lease.Unlock()
+		return fmt.Errorf("failed to persist MCP enabled state for %q: %w", name, err)
 	}
-
-	updateState(name, StateStarting, nil, nil, Counts{})
-	if currentOwner() == nil {
-		var err error
-		_, err = acquireImplicit()
-		if err != nil {
-			return err
-		}
+	// The new admission below is the only initializer allowed to publish this
+	// epoch. A failed persistence round-trip therefore leaves the old epoch
+	// untouched and the operation has no half-applied lifecycle result.
+	o.invalidateServer(name)
+	updated, ok := cfg.SetMCPDisabled(name, false)
+	if !ok {
+		lease.Unlock()
+		return fmt.Errorf("MCP server %q disappeared while enabling", name)
 	}
+	admission, err := o.admitServer(ctx, cfg, name, true)
+	if err != nil {
+		lease.Unlock()
+		return err
+	}
+	updateAdmissionState(&admission, StateStarting, nil, nil, Counts{})
+	resolver := cfg.Resolver()
+	lease.Unlock()
 	go func() {
-		if err := initClient(ctx, cfg, name, mcpCfg, cfg.Resolver()); err != nil {
+		if err := initClientAdmitted(ctx, cfg, name, updated, resolver, &admission); err != nil {
 			slog.Error("Failed to enable MCP server", "name", name, "err", err)
 		}
 	}()
@@ -706,51 +1114,77 @@ func EnableServer(ctx context.Context, cfg *config.ConfigStore, name string) err
 // AddServer validates and adds a new MCP server. It attempts to connect; if
 // successful the server is added to the in-memory config and persisted to disk.
 func AddServer(ctx context.Context, cfg *config.ConfigStore, name string, mcpCfg config.MCPConfig) error {
-	if currentOwner() == nil {
-		var err error
-		_, err = acquireImplicit()
-		if err != nil {
-			return err
-		}
+	o, err := ensureOwner()
+	if err != nil {
+		return err
 	}
-	c := cfg.Config()
-	if _, exists := c.MCP[name]; exists {
+	lease := serverLeaseFor(name)
+	lease.Lock()
+	if _, exists := cfg.MCPConfig(name); exists {
+		lease.Unlock()
 		return fmt.Errorf("MCP server %q already exists", name)
 	}
-
-	// Ensure MCP map is initialised
-	if c.MCP == nil {
-		c.MCP = make(config.MCPs)
+	if !cfg.AddMCP(name, mcpCfg) {
+		lease.Unlock()
+		return fmt.Errorf("MCP server %q already exists", name)
 	}
-
-	// Optimistically add to in-memory so initClient can read DisabledTools etc.
-	c.MCP[name] = mcpCfg
-	updateState(name, StateStarting, nil, nil, Counts{})
-
-	initErr := initClient(ctx, cfg, name, mcpCfg, cfg.Resolver())
-	if errors.Is(initErr, ErrOwnerBusy) {
-		delete(c.MCP, name)
-		return ErrOwnerBusy
+	admission, err := o.admitServer(ctx, cfg, name, true)
+	if err != nil {
+		_, _ = cfg.RemoveMCP(name)
+		lease.Unlock()
+		return err
 	}
+	resolver := cfg.Resolver()
+	lease.Unlock()
+	initErr := initClientAdmitted(ctx, cfg, name, mcpCfg, resolver, &admission)
 	if initErr != nil {
-		delete(c.MCP, name)
+		lease.Lock()
+		_, _ = cfg.RemoveMCP(name)
+		o.invalidateServer(name)
+		clearAdvertised(name)
 		states.Del(name)
+		lease.Unlock()
+		if errors.Is(initErr, ErrOwnerBusy) {
+			return ErrOwnerBusy
+		}
 		return fmt.Errorf("failed to connect to MCP server %q: %w", name, initErr)
 	}
 
-	// Persist to config file
-	if err := cfg.SetConfigField(config.ScopeGlobal, fmt.Sprintf("mcp.%s", name), mcpCfg); err != nil {
-		slog.Warn("Failed to persist new MCP server", "name", name, "err", err)
+	// Hold the write lease while persisting so RemoveServer cannot remove the
+	// in-memory entry and then lose the race by being followed by this write.
+	lease.Lock()
+	if !admission.valid() {
+		_, _ = cfg.RemoveMCP(name)
+		clearAdvertised(name)
+		states.Del(name)
+		lease.Unlock()
+		return ErrOwnerBusy
 	}
-
+	if err := cfg.SetConfigField(config.ScopeGlobal, fmt.Sprintf("mcp.%s", name), mcpCfg); err != nil {
+		closeSessionLocked(name)
+		clearAdvertised(name)
+		_, _ = cfg.RemoveMCP(name)
+		o.invalidateServer(name)
+		states.Del(name)
+		lease.Unlock()
+		return fmt.Errorf("failed to persist MCP server %q: %w", name, err)
+	}
+	lease.Unlock()
 	return nil
 }
 
 // RemoveServer removes an MCP server, closes its session, and removes it from config.
 // External servers (from .mcp.json) cannot be removed — only disabled.
 func RemoveServer(cfg *config.ConfigStore, name string) error {
-	c := cfg.Config()
-	mcpCfg, exists := c.MCP[name]
+	o, err := ensureOwner()
+	if err != nil {
+		return err
+	}
+	if !o.beginInit() {
+		return ErrOwnerBusy
+	}
+	defer o.endInit()
+	mcpCfg, exists := cfg.MCPConfig(name)
 	if !exists {
 		return fmt.Errorf("MCP server %q not found", name)
 	}
@@ -761,31 +1195,41 @@ func RemoveServer(cfg *config.ConfigStore, name string) error {
 	lease := serverLeaseFor(name)
 	lease.Lock()
 	defer lease.Unlock()
+	if err := cfg.RemoveConfigField(config.ScopeGlobal, fmt.Sprintf("mcp.%s", name)); err != nil {
+		return fmt.Errorf("failed to remove MCP server %q from config: %w", name, err)
+	}
+	o.invalidateServer(name)
+	// RemoveConfigField may already have published the disk reload, in which
+	// case the copy-on-write removal is intentionally a no-op.
+	_, _ = cfg.RemoveMCP(name)
+	closeSessionLocked(name)
+	clearAdvertised(name)
+	states.Del(name)
+	publishEvent(pubsub.DeletedEvent, Event{Type: EventStateChanged, Name: name, State: StateDisabled})
+	return nil
+}
 
-	// Close session
-	if sess, ok := sessions.Get(name); ok {
-		_ = sess.Close()
+func ensureOwner() (*Owner, error) {
+	if o := currentOwner(); o != nil {
+		return o, nil
+	}
+	return acquireImplicit()
+}
+
+func closeSessionLocked(name string) {
+	if session, ok := sessions.Get(name); ok {
+		if err := session.Close(); err != nil && !errors.Is(err, io.EOF) &&
+			!errors.Is(err, context.Canceled) && err.Error() != "signal: killed" {
+			slog.Warn("Error closing MCP session", "name", name, "error", err)
+		}
 		sessions.Del(name)
 	}
+}
+
+func clearAdvertised(name string) {
 	allTools.Del(name)
-
-	// Remove from in-memory config
-	delete(c.MCP, name)
-
-	// Remove from states and broadcast deletion
-	states.Del(name)
-	publishEvent(pubsub.DeletedEvent, Event{
-		Type:  EventStateChanged,
-		Name:  name,
-		State: StateDisabled,
-	})
-
-	// Remove from persisted config
-	if err := cfg.RemoveConfigField(config.ScopeGlobal, fmt.Sprintf("mcp.%s", name)); err != nil {
-		slog.Warn("Failed to remove MCP from config", "name", name, "err", err)
-	}
-
-	return nil
+	allPrompts.Del(name)
+	allResources.Del(name)
 }
 
 func getOrRenewClient(ctx context.Context, cfg *config.ConfigStore, name string) (*clientLease, error) {
@@ -813,7 +1257,15 @@ func getOrRenewClient(ctx context.Context, cfg *config.ConfigStore, name string)
 		return nil, fmt.Errorf("mcp '%s' not available", name)
 	}
 
-	m := cfg.Config().MCP[name]
+	m, exists := cfg.MCPConfig(name)
+	if !exists || m.Disabled {
+		lease.RUnlock()
+		finish()
+		if o != nil {
+			o.endInit()
+		}
+		return nil, fmt.Errorf("mcp '%s' not available", name)
+	}
 	state, _ := states.Get(name)
 	timeout := mcpTimeout(m)
 	pingCtx, cancel := context.WithTimeout(operationCtx, timeout)
@@ -822,6 +1274,10 @@ func getOrRenewClient(ctx context.Context, cfg *config.ConfigStore, name string)
 	if err == nil {
 		return newClientLease(sess, operationCtx, lease, finish, o), nil
 	}
+	// Keep the lease object alive while upgrading from a read lock. Without
+	// this extra reference, the registry could reclaim the entry between
+	// RUnlock and Lock and let a new operation use an ABA-replaced lock.
+	lease.registry.retain(lease)
 	lease.RUnlock()
 
 	// Upgrade the read lease to an exclusive renewal lease. A writer waits for
@@ -837,6 +1293,7 @@ func getOrRenewClient(ctx context.Context, cfg *config.ConfigStore, name string)
 	current, currentOK := sessions.Get(name)
 	if currentOK && current != sess {
 		lease.Unlock()
+		lease.registry.retain(lease)
 		lease.RLock()
 		current, currentOK = sessions.Get(name)
 		if !currentOK {
@@ -880,6 +1337,7 @@ func getOrRenewClient(ctx context.Context, cfg *config.ConfigStore, name string)
 		publishStateEvent(name, StateConnected, nil, state.Counts)
 	}
 	lease.Unlock()
+	lease.registry.retain(lease)
 	lease.RLock()
 	current, currentOK = sessions.Get(name)
 	if !currentOK {
@@ -936,6 +1394,28 @@ func currentClientLease(ctx context.Context, name string) (*clientLease, error) 
 	return newClientLease(session, operationCtx, lease, finish, o), nil
 }
 
+func currentClientLeaseFor(ctx context.Context, name string, admission *serverAdmission) (*clientLease, error) {
+	if admission == nil || !admission.valid() {
+		return nil, ErrOwnerBusy
+	}
+	lease := serverLeaseFor(name)
+	lease.RLock()
+	if !admission.valid() {
+		lease.RUnlock()
+		return nil, ErrOwnerBusy
+	}
+	session, ok := sessions.Get(name)
+	if !ok {
+		lease.RUnlock()
+		return nil, fmt.Errorf("mcp '%s' not available", name)
+	}
+	return &clientLease{
+		session: session,
+		ctx:     ctx,
+		release: lease.RUnlock,
+	}, nil
+}
+
 func setState(name string, state State, err error, client *ClientSession, counts Counts) {
 	info := ClientInfo{
 		Name:   name,
@@ -948,7 +1428,14 @@ func setState(name string, state State, err error, client *ClientSession, counts
 	case StateConnected:
 		info.ConnectedAt = time.Now()
 	case StateError:
-		sessions.Del(name)
+		// A failed candidate must not remove a session that was already
+		// published for this server. Renewal sets the state to error before
+		// replacing the current session, while an initial/refresh candidate
+		// can report an error alongside an existing healthy session.
+		previous, exists := states.Get(name)
+		if !exists || previous.Client == nil {
+			sessions.Del(name)
+		}
 	}
 	states.Set(name, info)
 }
@@ -957,6 +1444,28 @@ func setState(name string, state State, err error, client *ClientSession, counts
 func updateState(name string, state State, err error, client *ClientSession, counts Counts) {
 	setState(name, state, err, client, counts)
 	publishStateEvent(name, state, err, counts)
+}
+
+func updateAdmissionState(admission *serverAdmission, state State, err error, client *ClientSession, counts Counts) {
+	if admission == nil {
+		updateState("", state, err, client, counts)
+		return
+	}
+	lifecycleMu.Lock()
+	if !admission.validLocked() {
+		lifecycleMu.Unlock()
+		return
+	}
+	setState(admission.name, state, err, client, counts)
+	brokerForEvent := broker
+	lifecycleMu.Unlock()
+	brokerForEvent.Publish(pubsub.UpdatedEvent, Event{
+		Type:   EventStateChanged,
+		Name:   admission.name,
+		State:  state,
+		Error:  err,
+		Counts: counts,
+	})
 }
 
 func publishStateEvent(name string, state State, err error, counts Counts) {
@@ -970,13 +1479,31 @@ func publishStateEvent(name string, state State, err error, counts Counts) {
 }
 
 func createSession(ctx context.Context, name string, m config.MCPConfig, resolver config.VariableResolver) (*ClientSession, error) {
+	return createSessionWithAdmission(ctx, name, m, resolver, nil)
+}
+
+func createSessionWithAdmission(ctx context.Context, name string, m config.MCPConfig, resolver config.VariableResolver, admission *serverAdmission) (*ClientSession, error) {
 	timeout := mcpTimeout(m)
 	mcpCtx, cancel := context.WithCancel(ctx)
 	cancelTimer := time.AfterFunc(timeout, cancel)
+	var stopAdmission func() bool
+	if admission != nil && admission.ctx != nil {
+		// Keep a direct cancellation edge from the per-server fence to the
+		// transport context. This matters for SDK transports that retain the
+		// request context internally while Connect is waiting for headers.
+		stopAdmission = context.AfterFunc(admission.ctx, cancel)
+		defer stopAdmission()
+	}
 
 	transport, err := createTransport(mcpCtx, m, resolver)
 	if err != nil {
-		updateState(name, StateError, err, nil, Counts{})
+		if admission == nil || admission.valid() {
+			if admission == nil {
+				updateState(name, StateError, err, nil, Counts{})
+			} else {
+				updateAdmissionState(admission, StateError, err, nil, Counts{})
+			}
+		}
 		slog.Error("Error creating MCP client", "error", err, "name", name)
 		cancel()
 		cancelTimer.Stop()
@@ -991,22 +1518,13 @@ func createSession(ctx context.Context, name string, m config.MCPConfig, resolve
 		},
 		&mcp.ClientOptions{
 			ToolListChangedHandler: func(context.Context, *mcp.ToolListChangedRequest) {
-				publishEvent(pubsub.UpdatedEvent, Event{
-					Type: EventToolsListChanged,
-					Name: name,
-				})
+				notifyListChanged(admission, name, refreshToolsKind)
 			},
 			PromptListChangedHandler: func(context.Context, *mcp.PromptListChangedRequest) {
-				publishEvent(pubsub.UpdatedEvent, Event{
-					Type: EventPromptsListChanged,
-					Name: name,
-				})
+				notifyListChanged(admission, name, refreshPromptsKind)
 			},
 			ResourceListChangedHandler: func(context.Context, *mcp.ResourceListChangedRequest) {
-				publishEvent(pubsub.UpdatedEvent, Event{
-					Type: EventResourcesListChanged,
-					Name: name,
-				})
+				notifyListChanged(admission, name, refreshResourcesKind)
 			},
 			LoggingMessageHandler: func(ctx context.Context, req *mcp.LoggingMessageRequest) {
 				level := parseLevel(req.Params.Level)
@@ -1018,7 +1536,14 @@ func createSession(ctx context.Context, name string, m config.MCPConfig, resolve
 	session, err := client.Connect(mcpCtx, transport, nil)
 	if err != nil {
 		err = maybeStdioErr(err, transport)
-		updateState(name, StateError, maybeTimeoutErr(err, timeout), nil, Counts{})
+		err = maybeTimeoutErr(err, timeout)
+		if admission == nil || admission.valid() {
+			if admission == nil {
+				updateState(name, StateError, err, nil, Counts{})
+			} else {
+				updateAdmissionState(admission, StateError, err, nil, Counts{})
+			}
+		}
 		slog.Error("MCP client failed to initialize", "error", err, "name", name)
 		cancel()
 		cancelTimer.Stop()
@@ -1028,6 +1553,35 @@ func createSession(ctx context.Context, name string, m config.MCPConfig, resolve
 	cancelTimer.Stop()
 	slog.Debug("MCP client initialized", "name", name)
 	return &ClientSession{session, cancel}, nil
+}
+
+func notifyListChanged(admission *serverAdmission, name string, kind refreshKind) {
+	eventType := listChangedEventType(kind)
+	if admission == nil || admission.owner == nil {
+		publishEvent(pubsub.UpdatedEvent, Event{Type: eventType, Name: name})
+		return
+	}
+	if !admission.valid() {
+		return
+	}
+	admission.owner.enqueueRefresh(refreshRequest{
+		kind:      kind,
+		name:      name,
+		cfg:       admission.cfg,
+		admission: *admission,
+	})
+	publishEvent(pubsub.UpdatedEvent, Event{Type: eventType, Name: name})
+}
+
+func listChangedEventType(kind refreshKind) EventType {
+	switch kind {
+	case refreshPromptsKind:
+		return EventPromptsListChanged
+	case refreshResourcesKind:
+		return EventResourcesListChanged
+	default:
+		return EventToolsListChanged
+	}
 }
 
 // maybeStdioErr if a stdio mcp prints an error in non-json format, it'll fail
@@ -1173,18 +1727,54 @@ func (rt *headerRoundTripper) RoundTrip(req *http.Request) (*http.Response, erro
 		req.Header.Set(k, v)
 	}
 	if rt.ctx != nil {
-		ctx, cancel := context.WithCancel(req.Context())
-		stop := context.AfterFunc(rt.ctx, cancel)
+		var connMu sync.Mutex
+		var requestConn net.Conn
+		canceled := false
+		ctx := httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{
+			GotConn: func(info httptrace.GotConnInfo) {
+				connMu.Lock()
+				defer connMu.Unlock()
+				requestConn = info.Conn
+				if canceled {
+					_ = info.Conn.Close()
+				}
+			},
+		})
+		ctx, cancel := context.WithCancel(ctx)
 		req = req.WithContext(ctx)
+		legacyCancel := make(chan struct{})
+		req.Cancel = legacyCancel
+		var cancelOnce sync.Once
+		cancelRequest := func() {
+			cancelOnce.Do(func() {
+				connMu.Lock()
+				canceled = true
+				if requestConn != nil {
+					_ = requestConn.Close()
+				}
+				connMu.Unlock()
+				close(legacyCancel)
+				cancel()
+				// The MCP SDK deliberately detaches its connection context from
+				// Connect's context. CancelRequest is retained here as an explicit
+				// transport fence for an HTTP request that is blocked before it has
+				// produced a response body; context cancellation alone is not
+				// sufficient for every Windows net/http transport path.
+				if transport, ok := http.DefaultTransport.(*http.Transport); ok {
+					transport.CancelRequest(req)
+				}
+			})
+		}
+		stop := context.AfterFunc(rt.ctx, cancelRequest)
 		resp, err := http.DefaultTransport.RoundTrip(req)
 		if err != nil {
 			stop()
-			cancel()
+			cancelRequest()
 			return nil, err
 		}
 		if resp.Body == nil {
 			stop()
-			cancel()
+			cancelRequest()
 			return resp, nil
 		}
 		resp.Body = &ownerResponseBody{

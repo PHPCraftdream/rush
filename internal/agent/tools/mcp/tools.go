@@ -12,6 +12,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/csync"
+	"github.com/PHPCraftdream/rush/internal/pubsub"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -145,6 +146,36 @@ func RefreshTools(ctx context.Context, cfg *config.ConfigStore, name string) {
 	updateState(name, StateConnected, nil, lease.session, prev.Counts)
 }
 
+func refreshTools(ctx context.Context, cfg *config.ConfigStore, name string, admission *serverAdmission) {
+	lease, err := currentClientLeaseFor(ctx, name, admission)
+	if err != nil {
+		return
+	}
+	defer lease.close()
+
+	tools, err := getTools(lease.ctx, lease.session)
+	if err != nil {
+		if admission.valid() {
+			updateAdmissionState(admission, StateError, err, nil, Counts{})
+		}
+		return
+	}
+	lifecycleMu.Lock()
+	if !admission.validLocked() {
+		lifecycleMu.Unlock()
+		return
+	}
+	toolCount := updateTools(cfg, name, tools)
+	prev, _ := states.Get(name)
+	prev.Counts.Tools = toolCount
+	setState(name, StateConnected, nil, lease.session, prev.Counts)
+	brokerForEvent := broker
+	lifecycleMu.Unlock()
+	brokerForEvent.Publish(pubsub.UpdatedEvent, Event{
+		Type: EventStateChanged, Name: name, State: StateConnected, Counts: prev.Counts,
+	})
+}
+
 func getTools(ctx context.Context, session *ClientSession) ([]*Tool, error) {
 	// Always call ListTools to get the actual available tools.
 	// The InitializeResult Capabilities.Tools field may be an empty object {},
@@ -157,7 +188,7 @@ func getTools(ctx context.Context, session *ClientSession) ([]*Tool, error) {
 }
 
 func updateTools(cfg *config.ConfigStore, name string, tools []*Tool) int {
-	mcpCfg, ok := cfg.Config().MCP[name]
+	mcpCfg, ok := cfg.MCPConfig(name)
 	if ok {
 		tools = filterTools(mcpCfg, tools)
 	}

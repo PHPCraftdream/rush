@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"maps"
 	"path/filepath"
 	"slices"
 	"sync"
@@ -278,6 +279,103 @@ func (s *ConfigStore) SetSkipPermissionRequests(v bool) {
 // Returns a copy so callers can't mutate the snapshot's backing array.
 func (s *ConfigStore) LoadedPaths() []string {
 	return slices.Clone(s.loadSnapshot().loadedPaths)
+}
+
+// MCPConfig returns a copy of one MCP server configuration and whether it
+// exists. The returned value is detached from the published snapshot.
+func (s *ConfigStore) MCPConfig(name string) (MCPConfig, bool) {
+	config := s.loadSnapshot().config
+	if config == nil {
+		return MCPConfig{}, false
+	}
+	mcpConfig, ok := config.MCP[name]
+	if !ok {
+		return MCPConfig{}, false
+	}
+	return cloneMCPConfig(mcpConfig), true
+}
+
+// UpdateMCP applies a copy-on-write mutation to one MCP server configuration.
+// It never mutates a published Config or any of its nested MCP maps.
+func (s *ConfigStore) UpdateMCP(name string, mutate func(*MCPConfig)) (MCPConfig, bool) {
+	s.publishMu.Lock()
+	defer s.publishMu.Unlock()
+	cur := s.loadSnapshot()
+	if cur.config == nil || cur.config.MCP == nil {
+		return MCPConfig{}, false
+	}
+	current, ok := cur.config.MCP[name]
+	if !ok {
+		return MCPConfig{}, false
+	}
+	updated := cloneMCPConfig(current)
+	mutate(&updated)
+	next := cur.clone()
+	cfgCopy := *cur.config
+	cfgCopy.MCP = maps.Clone(cur.config.MCP)
+	cfgCopy.MCP[name] = cloneMCPConfig(updated)
+	next.config = &cfgCopy
+	s.publishLocked(next)
+	return updated, true
+}
+
+// SetMCPDisabled updates one MCP server's disabled flag through the
+// copy-on-write publication path and returns the detached new value.
+func (s *ConfigStore) SetMCPDisabled(name string, disabled bool) (MCPConfig, bool) {
+	return s.UpdateMCP(name, func(m *MCPConfig) { m.Disabled = disabled })
+}
+
+// AddMCP publishes a new MCP server configuration if name is unused.
+func (s *ConfigStore) AddMCP(name string, mcpConfig MCPConfig) bool {
+	s.publishMu.Lock()
+	defer s.publishMu.Unlock()
+	cur := s.loadSnapshot()
+	if cur.config == nil {
+		return false
+	}
+	if _, exists := cur.config.MCP[name]; exists {
+		return false
+	}
+	next := cur.clone()
+	cfgCopy := *cur.config
+	cfgCopy.MCP = maps.Clone(cur.config.MCP)
+	if cfgCopy.MCP == nil {
+		cfgCopy.MCP = make(MCPs)
+	}
+	cfgCopy.MCP[name] = cloneMCPConfig(mcpConfig)
+	next.config = &cfgCopy
+	s.publishLocked(next)
+	return true
+}
+
+// RemoveMCP removes one MCP server and returns its detached configuration.
+func (s *ConfigStore) RemoveMCP(name string) (MCPConfig, bool) {
+	s.publishMu.Lock()
+	defer s.publishMu.Unlock()
+	cur := s.loadSnapshot()
+	if cur.config == nil {
+		return MCPConfig{}, false
+	}
+	current, ok := cur.config.MCP[name]
+	if !ok {
+		return MCPConfig{}, false
+	}
+	next := cur.clone()
+	cfgCopy := *cur.config
+	cfgCopy.MCP = maps.Clone(cur.config.MCP)
+	delete(cfgCopy.MCP, name)
+	next.config = &cfgCopy
+	s.publishLocked(next)
+	return cloneMCPConfig(current), true
+}
+
+func cloneMCPConfig(m MCPConfig) MCPConfig {
+	m.Env = maps.Clone(m.Env)
+	m.Args = slices.Clone(m.Args)
+	m.DisabledTools = slices.Clone(m.DisabledTools)
+	m.EnabledTools = slices.Clone(m.EnabledTools)
+	m.Headers = maps.Clone(m.Headers)
+	return m
 }
 
 // updateConfig applies a targeted, copy-on-write mutation to the store's

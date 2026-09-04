@@ -619,16 +619,17 @@ func TestOwnerCloseResetsRegistryAndAllowsNextLifecycle(t *testing.T) {
 
 func TestOwnerCloseCancelsBlockedStartupBeforeCleanup(t *testing.T) {
 	started := make(chan struct{})
+	canceled := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-started:
 		default:
 			close(started)
 		}
-		select {
-		case <-r.Context().Done():
-		case <-time.After(500 * time.Millisecond):
-		}
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+		close(canceled)
 	}))
 	defer server.Close()
 
@@ -658,6 +659,11 @@ func TestOwnerCloseCancelsBlockedStartupBeforeCleanup(t *testing.T) {
 	}
 
 	require.NoError(t, owner.Close(context.Background()))
+	select {
+	case <-canceled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("owner close did not cancel the blocked HTTP request")
+	}
 	select {
 	case <-initFinished:
 	case <-time.After(5 * time.Second):

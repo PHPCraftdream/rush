@@ -7,6 +7,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/csync"
+	"github.com/PHPCraftdream/rush/internal/pubsub"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -67,6 +68,35 @@ func RefreshPrompts(ctx context.Context, name string) {
 	prev, _ := states.Get(name)
 	prev.Counts.Prompts = len(prompts)
 	updateState(name, StateConnected, nil, lease.session, prev.Counts)
+}
+
+func refreshPrompts(name string, admission *serverAdmission) {
+	lease, err := currentClientLeaseFor(admission.owner.lifecycleCtx, name, admission)
+	if err != nil {
+		return
+	}
+	defer lease.close()
+	prompts, err := getPrompts(lease.ctx, lease.session)
+	if err != nil {
+		if admission.valid() {
+			updateAdmissionState(admission, StateError, err, nil, Counts{})
+		}
+		return
+	}
+	lifecycleMu.Lock()
+	if !admission.validLocked() {
+		lifecycleMu.Unlock()
+		return
+	}
+	updatePrompts(name, prompts)
+	prev, _ := states.Get(name)
+	prev.Counts.Prompts = len(prompts)
+	setState(name, StateConnected, nil, lease.session, prev.Counts)
+	brokerForEvent := broker
+	lifecycleMu.Unlock()
+	brokerForEvent.Publish(pubsub.UpdatedEvent, Event{
+		Type: EventStateChanged, Name: name, State: StateConnected, Counts: prev.Counts,
+	})
 }
 
 func getPrompts(ctx context.Context, c *ClientSession) ([]*Prompt, error) {
