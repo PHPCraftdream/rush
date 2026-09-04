@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -65,4 +66,38 @@ func TestBackgroundShellManager_CloseRacingStartDoesNotLoseJobs(t *testing.T) {
 
 	_, err := manager.StartOwned(context.Background(), "session", workingDir, nil, "echo should-not-start", "closed")
 	require.Error(t, err)
+}
+
+func TestBackgroundShellManager_CleanupRemovesExpiredJobsAcrossSessions(t *testing.T) {
+	manager := NewBackgroundShellManager()
+	stale, err := manager.StartOwned(t.Context(), "inactive-session", t.TempDir(), nil, "echo stale", "")
+	require.NoError(t, err)
+	stale.Wait()
+
+	active, err := manager.StartOwned(t.Context(), "active-session", t.TempDir(), nil, "sleep 30", "")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = manager.Kill(context.Background(), active.ID) })
+
+	stale.completedAt.Store(time.Now().Add(-time.Duration(CompletedJobRetentionMinutes+1) * time.Minute).Unix())
+	require.Equal(t, 1, manager.Cleanup())
+	_, ok := manager.Get(stale.ID)
+	require.False(t, ok, "global housekeeping must remove expired metadata from inactive sessions")
+	_, ok = manager.GetOwned("active-session", active.ID)
+	require.True(t, ok, "global housekeeping must not remove another session's active job")
+}
+
+func TestBackgroundShellManager_RemoveOwnedPreservesAuthorization(t *testing.T) {
+	manager := NewBackgroundShellManager()
+	job, err := manager.StartOwned(t.Context(), "owner-session", t.TempDir(), nil, "echo output", "")
+	require.NoError(t, err)
+	job.Wait()
+
+	require.Error(t, manager.RemoveOwned("foreign-session", job.ID))
+	_, ok := manager.GetOwned("owner-session", job.ID)
+	require.True(t, ok, "a foreign session must not remove another session's job")
+
+	require.NoError(t, manager.RemoveOwned("owner-session", job.ID))
+	require.True(t, job.bufReleased.Load())
+	_, ok = manager.Get(job.ID)
+	require.False(t, ok)
 }

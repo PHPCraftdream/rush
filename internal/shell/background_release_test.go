@@ -6,6 +6,7 @@ package shell
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -224,4 +225,69 @@ func TestBackgroundShell_ReleaseBuffers_Idempotent(t *testing.T) {
 		"second releaseBuffers must not change observable state")
 	require.Equal(t, totalBefore, bgShell.TotalWrittenBytes(),
 		"TotalWrittenBytes must still be unchanged after double release")
+}
+
+// TestBackgroundShellManager_Remove_ReleasesBuffersAndStopsTimer proves that
+// removing a completed job does not leave its retention timer and output
+// backing arrays alive until the normal retention deadline.
+func TestBackgroundShellManager_Remove_ReleasesBuffersAndStopsTimer(t *testing.T) {
+	manager := newBackgroundShellManager()
+	bgShell, err := manager.Start(t.Context(), t.TempDir(), nil, "echo removable", "")
+	require.NoError(t, err)
+	require.Eventually(t, bgShell.IsDone, 5*time.Second, 20*time.Millisecond)
+	require.Eventually(t, func() bool {
+		bgShell.retentionMu.Lock()
+		defer bgShell.retentionMu.Unlock()
+		return bgShell.retentionTimer != nil
+	}, time.Second, time.Millisecond)
+
+	require.NoError(t, manager.Remove(bgShell.ID))
+	require.True(t, bgShell.bufReleased.Load())
+	require.Zero(t, cap(bgShell.stdout.buf.Bytes()))
+	require.Zero(t, cap(bgShell.stderr.buf.Bytes()))
+
+	bgShell.retentionMu.Lock()
+	require.Nil(t, bgShell.retentionTimer)
+	require.True(t, bgShell.detached)
+	bgShell.retentionMu.Unlock()
+}
+
+// TestBackgroundShellManager_Remove_RacingCompletionReleasesBuffers proves
+// a removal that wins before completion still releases buffers when the job
+// exits, without waiting for the retention timer.
+func TestBackgroundShellManager_Remove_RacingCompletionReleasesBuffers(t *testing.T) {
+	manager := newBackgroundShellManager()
+	bgShell, err := manager.StartOwned(t.Context(), "session", t.TempDir(), nil, "sleep 0.2 && echo detached", "")
+	require.NoError(t, err)
+
+	require.NoError(t, manager.RemoveOwned("session", bgShell.ID))
+	bgShell.Wait()
+	require.True(t, bgShell.bufReleased.Load())
+	require.Zero(t, cap(bgShell.stdout.buf.Bytes()))
+	require.Zero(t, cap(bgShell.stderr.buf.Bytes()))
+}
+
+// TestBackgroundShell_ReleaseBuffers_Concurrent proves timer, cleanup, and
+// removal callers can converge on one release without a double-release race.
+func TestBackgroundShell_ReleaseBuffers_Concurrent(t *testing.T) {
+	t.Parallel()
+
+	bgShell := &BackgroundShell{
+		stdout: newBoundedBuffer(maxStreamBufferBytes),
+		stderr: newBoundedBuffer(maxStreamBufferBytes),
+		done:   make(chan struct{}),
+	}
+	_, err := bgShell.stdout.WriteString("concurrent output")
+	require.NoError(t, err)
+	close(bgShell.done)
+
+	var wg sync.WaitGroup
+	for range 100 {
+		wg.Go(bgShell.releaseBuffers)
+	}
+	wg.Wait()
+
+	require.True(t, bgShell.bufReleased.Load())
+	require.Zero(t, cap(bgShell.stdout.buf.Bytes()))
+	require.Zero(t, cap(bgShell.stderr.buf.Bytes()))
 }

@@ -271,7 +271,7 @@ func NewBashTool(permissions permission.Service, workingDir string, attribution 
 			// If explicitly requested as background, start immediately with detached context
 			if params.RunInBackground {
 				startTime := time.Now()
-				bgManager.CleanupOwned(sessionID)
+				bgManager.Cleanup()
 				// Use background context so it continues after tool returns
 				bgShell, err := bgManager.StartOwned(context.Background(), sessionID, execWorkingDir, blockFuncs(), params.Command, params.Description)
 				if err != nil {
@@ -337,7 +337,7 @@ func NewBashTool(permissions permission.Service, workingDir string, attribution 
 			startTime := time.Now()
 
 			// Start with detached context so it can survive if moved to background
-			bgManager.CleanupOwned(sessionID)
+			bgManager.Cleanup()
 			bgShell, err := bgManager.StartOwned(context.Background(), sessionID, execWorkingDir, blockFuncs(), params.Command, params.Description)
 			if err != nil {
 				// Same MaxBackgroundJobs cap as the explicit-background

@@ -293,6 +293,14 @@ type BackgroundShell struct {
 	exitErr     error
 	completedAt atomic.Int64 // Unix timestamp when job completed (0 if still running)
 	bufReleased atomic.Bool  // true once the stdout/stderr buffers have been released post-completion
+	releaseOnce sync.Once
+
+	// retentionMu serializes arming and stopping the completion buffer timer
+	// with its callback. detached is set when the job leaves the manager so a
+	// completion racing with Remove releases its buffers immediately.
+	retentionMu    sync.Mutex
+	retentionTimer *time.Timer
+	detached       bool
 }
 
 // BackgroundShellManager manages background shell instances.
@@ -455,27 +463,15 @@ func (m *BackgroundShellManager) start(ctx context.Context, sessionID, workingDi
 		m.activeJobs.Add(-1)
 		// Schedule buffer release on a timer so the (up to 6 MiB) buffered
 		// stdout/stderr is freed after bufferRetention even if no further
-		// bash task ever calls Cleanup. releaseBuffers is guarded by
-		// bufReleased, so a later Cleanup or duplicate fire is a no-op.
+		// bash task ever calls Cleanup. releaseBuffers is idempotent, so a
+		// later Cleanup or duplicate fire is a no-op.
 		//
 		// time.AfterFunc runs its callback on its own goroutine with no
-		// panic isolation of its own; releaseBuffers itself is a simple
-		// atomic-swap-guarded buffer reset with no known panic surface, but
-		// wrap it defensively anyway — the cost of an unnecessary recover()
+		// panic isolation of its own; releaseBuffers has no known panic
+		// surface. The cost of an unnecessary recover()
 		// here is negligible next to a silent process crash if that ever
 		// changes.
-		time.AfterFunc(bufferRetention, func() {
-			defer func() {
-				if r := recover(); r != nil {
-					slog.Error("background shell releaseBuffers panic",
-						"shell_id", bgShell.ID,
-						"command", bgShell.Command,
-						"panic", r,
-						"stack", string(debug.Stack()))
-				}
-			}()
-			bgShell.releaseBuffers()
-		})
+		bgShell.armBufferReleaseTimer(bufferRetention)
 	}()
 
 	return bgShell, nil
@@ -511,10 +507,11 @@ func (m *BackgroundShellManager) ActiveJobs() int {
 // Remove removes a background shell from the manager without terminating it.
 // This is useful when a shell has already completed and you just want to clean up tracking.
 func (m *BackgroundShellManager) Remove(id string) error {
-	_, ok := m.shells.Take(id)
+	shell, ok := m.shells.Take(id)
 	if !ok {
 		return fmt.Errorf("background shell not found: %s", id)
 	}
+	shell.detachFromManager()
 	return nil
 }
 
@@ -528,6 +525,7 @@ func (m *BackgroundShellManager) RemoveOwned(sessionID, id string) error {
 	if _, ok := m.shells.Take(shell.ID); !ok {
 		return fmt.Errorf("background shell not found: %s", id)
 	}
+	shell.detachFromManager()
 	return nil
 }
 
@@ -546,6 +544,7 @@ func (m *BackgroundShellManager) Kill(ctx context.Context, id string) error {
 	}
 
 	shell.cancel()
+	shell.detachFromManager()
 	select {
 	case <-shell.done:
 	case <-ctx.Done():
@@ -565,6 +564,7 @@ func (m *BackgroundShellManager) KillOwned(ctx context.Context, sessionID, id st
 	}
 
 	shell.cancel()
+	shell.detachFromManager()
 	select {
 	case <-shell.done:
 	case <-ctx.Done():
@@ -682,6 +682,7 @@ func (m *BackgroundShellManager) cancelShells(ctx context.Context, shells []*Bac
 	var wg sync.WaitGroup
 	for _, shell := range shells {
 		wg.Go(func() {
+			shell.detachFromManager()
 			shell.cancel()
 			select {
 			case <-shell.done:
@@ -725,23 +726,71 @@ func (bs *BackgroundShell) snapshotOutput() (stdout string, stderr string) {
 }
 
 // releaseBuffers drops the buffered stdout/stderr content (freeing the
-// memory) while leaving the job's status/metadata intact. Idempotent: the
-// first caller wins (via bufReleased CAS), subsequent callers return
-// immediately. Automatically scheduled via time.AfterFunc from the job's
-// completion goroutine (Start) after bufferRetention, and also reachable
-// from Cleanup when a subsequent bash task triggers it — whichever fires
-// first performs the release, the second is a no-op.
+// memory) while leaving the job's status/metadata intact. Idempotent: a
+// concurrent caller waits for the first release to finish and then returns.
+// Automatically scheduled via time.AfterFunc from the job's completion
+// goroutine (Start) after bufferRetention, and also reachable from Cleanup
+// when a subsequent bash task triggers it — whichever fires first performs
+// the release, the second is a no-op.
 func (bs *BackgroundShell) releaseBuffers() {
-	// Swap-based idempotency: the first caller (the completion timer in
-	// Start, or Cleanup) flips bufReleased false→true and performs the
-	// actual release; any later caller sees the already-true flag and
-	// returns immediately. This makes double-release safe regardless of
-	// call ordering between the timer and a subsequent Cleanup.
-	if bs.bufReleased.Swap(true) {
+	// sync.Once makes concurrent timer, cleanup, and removal callers wait for
+	// the first release to finish instead of merely observing a flag while the
+	// buffers are still being reset.
+	bs.releaseOnce.Do(func() {
+		bs.stdout.release()
+		bs.stderr.release()
+		bs.bufReleased.Store(true)
+	})
+}
+
+// armBufferReleaseTimer schedules the one-shot post-completion buffer
+// release. If Remove won a race with job completion, the buffers are released
+// immediately instead of installing a timer for a detached job.
+func (bs *BackgroundShell) armBufferReleaseTimer(retention time.Duration) {
+	bs.retentionMu.Lock()
+	if bs.detached {
+		bs.retentionMu.Unlock()
+		bs.releaseBuffers()
 		return
 	}
-	bs.stdout.release()
-	bs.stderr.release()
+
+	bs.retentionTimer = time.AfterFunc(retention, func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("Background shell releaseBuffers panic",
+					"shell_id", bs.ID,
+					"command", bs.Command,
+					"panic", r,
+					"stack", string(debug.Stack()))
+			}
+		}()
+
+		bs.retentionMu.Lock()
+		bs.retentionTimer = nil
+		bs.retentionMu.Unlock()
+		bs.releaseBuffers()
+	})
+	bs.retentionMu.Unlock()
+}
+
+// detachFromManager stops a pending retention timer and releases completed
+// output immediately. If completion is still in flight, detached makes its
+// completion path perform the release after the process exits.
+func (bs *BackgroundShell) detachFromManager() {
+	bs.retentionMu.Lock()
+	bs.detached = true
+	timer := bs.retentionTimer
+	bs.retentionTimer = nil
+	bs.retentionMu.Unlock()
+
+	if timer != nil {
+		timer.Stop()
+	}
+	// completedAt is stored immediately after ExecStream returns and before
+	// done is closed, so it also covers the narrow completion-to-close window.
+	if bs.completedAt.Load() > 0 || bs.IsDone() {
+		bs.releaseBuffers()
+	}
 }
 
 // OnDone registers fn to be called EXACTLY ONCE when this background shell
