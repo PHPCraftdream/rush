@@ -72,11 +72,13 @@ var (
 	// lifecycleMu gates the pool-wide ResetPool barrier. Normal operations
 	// only hold it long enough to register themselves; ResetPool blocks new
 	// operations and waits for all registered operations to finish before it
-	// snapshots the pool.
+	// snapshots the pool. lifecycleResetters gives queued resets preference
+	// during barrier handoff, so normal operations cannot enter between them.
 	lifecycleMu        sync.Mutex
 	lifecycleCond      = sync.NewCond(&lifecycleMu)
 	lifecycleActive    int
 	lifecycleResetting bool
+	lifecycleResetters int
 
 	// pathLocks contains only paths with an active opener, waiter, or pooled
 	// connection. pathLocksMu protects both the map and each pathLock's refs;
@@ -105,6 +107,14 @@ var (
 	// onPathLockAcquired runs after a path-lock registry reference is acquired.
 	// Test seam only; nil outside tests.
 	onPathLockAcquired func(absPath string)
+
+	// onResetBarrierAcquired runs after a ResetPool owns the lifecycle barrier
+	// and all active operations have drained. Test seam only; nil outside tests.
+	onResetBarrierAcquired func()
+
+	// onLifecycleOperationWaiting runs before a normal lifecycle operation
+	// waits behind resetters. Test seam only; nil outside tests.
+	onLifecycleOperationWaiting func()
 )
 
 func acquirePathLock(absPath string) *pathLock {
@@ -139,7 +149,10 @@ func releasePathLock(absPath string, pathLock *pathLock) {
 
 func beginLifecycleOperation() {
 	lifecycleMu.Lock()
-	for lifecycleResetting {
+	for lifecycleResetting || lifecycleResetters != 0 {
+		if onLifecycleOperationWaiting != nil {
+			onLifecycleOperationWaiting()
+		}
 		lifecycleCond.Wait()
 	}
 	lifecycleActive++
@@ -152,6 +165,27 @@ func endLifecycleOperation() {
 	if lifecycleActive == 0 {
 		lifecycleCond.Broadcast()
 	}
+	lifecycleMu.Unlock()
+}
+
+func beginPoolReset() {
+	lifecycleMu.Lock()
+	lifecycleResetters++
+	for lifecycleResetting {
+		lifecycleCond.Wait()
+	}
+	lifecycleResetters--
+	lifecycleResetting = true
+	for lifecycleActive != 0 {
+		lifecycleCond.Wait()
+	}
+	lifecycleMu.Unlock()
+}
+
+func endPoolReset() {
+	lifecycleMu.Lock()
+	lifecycleResetting = false
+	lifecycleCond.Broadcast()
 	lifecycleMu.Unlock()
 }
 
@@ -495,19 +529,12 @@ func ResetPool() {
 	// Release, and ReleaseAll operation registers with this gate, so no
 	// cache-miss opener can publish an entry after this snapshot or while the
 	// entries are being closed.
-	lifecycleMu.Lock()
-	lifecycleResetting = true
-	for lifecycleActive != 0 {
-		lifecycleCond.Wait()
-	}
-	lifecycleMu.Unlock()
+	beginPoolReset()
+	defer endPoolReset()
 
-	defer func() {
-		lifecycleMu.Lock()
-		lifecycleResetting = false
-		lifecycleCond.Broadcast()
-		lifecycleMu.Unlock()
-	}()
+	if onResetBarrierAcquired != nil {
+		onResetBarrierAcquired()
+	}
 
 	entries := make([]pooledEntry, 0)
 	poolMu.Lock()

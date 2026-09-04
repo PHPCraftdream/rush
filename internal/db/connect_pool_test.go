@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -229,6 +230,195 @@ func TestResetPool_WaitsForConnectBeforeClearingPool(t *testing.T) {
 	poolMu.Unlock()
 	require.False(t, pooled, "ResetPool returned with a newly-published entry still pooled")
 	require.Error(t, result.conn.Ping(), "ResetPool must close the entry before returning")
+}
+
+// TestResetPool_SerializesResettersAheadOfConnect pins reset writer
+// preference. A queued second reset must acquire the lifecycle barrier before
+// a Connect already waiting behind the first reset can enter its open path.
+func TestResetPool_SerializesResettersAheadOfConnect(t *testing.T) {
+	dataDir := t.TempDir()
+	absPath := absDBPath(t, dataDir)
+	seedConn, err := Connect(context.Background(), dataDir)
+	require.NoError(t, err)
+
+	firstCloseStarted := make(chan struct{})
+	allowFirstClose := make(chan struct{})
+	secondBarrierStarted := make(chan struct{})
+	allowSecondBarrier := make(chan struct{})
+	connectWaiting := make(chan struct{})
+	connectOpenStarted := make(chan struct{})
+	allowConnectOpen := make(chan struct{})
+	reset1Done := make(chan struct{})
+	reset2Done := make(chan struct{})
+	connectDone := make(chan struct {
+		conn *sql.DB
+		err  error
+	}, 1)
+
+	var (
+		firstCloseOnce     sync.Once
+		allowFirstOnce     sync.Once
+		secondBarrierOnce  sync.Once
+		allowSecondOnce    sync.Once
+		connectWaitingOnce sync.Once
+		connectOpenOnce    sync.Once
+		allowConnectOnce   sync.Once
+		resetBarrierCalls  atomic.Int32
+		workers            sync.WaitGroup
+	)
+
+	onCloseEntry = func(path string) {
+		if path != absPath {
+			return
+		}
+		firstCloseOnce.Do(func() { close(firstCloseStarted) })
+		<-allowFirstClose
+	}
+	onResetBarrierAcquired = func() {
+		if resetBarrierCalls.Add(1) != 2 {
+			return
+		}
+		secondBarrierOnce.Do(func() { close(secondBarrierStarted) })
+		<-allowSecondBarrier
+	}
+	onLifecycleOperationWaiting = func() {
+		connectWaitingOnce.Do(func() { close(connectWaiting) })
+	}
+	onOpenNew = func(path string) {
+		if path != absPath {
+			return
+		}
+		connectOpenOnce.Do(func() { close(connectOpenStarted) })
+		<-allowConnectOpen
+	}
+
+	t.Cleanup(func() {
+		allowFirstOnce.Do(func() { close(allowFirstClose) })
+		allowSecondOnce.Do(func() { close(allowSecondBarrier) })
+		allowConnectOnce.Do(func() { close(allowConnectOpen) })
+		workers.Wait()
+		onCloseEntry = nil
+		onResetBarrierAcquired = nil
+		onLifecycleOperationWaiting = nil
+		onOpenNew = nil
+		ResetPool()
+	})
+
+	workers.Add(1)
+	go func() {
+		defer workers.Done()
+		ResetPool()
+		close(reset1Done)
+	}()
+	select {
+	case <-firstCloseStarted:
+	case <-time.After(slowOpenBudget):
+		t.Fatal("first ResetPool did not reach the close seam")
+	}
+
+	workers.Add(1)
+	go func() {
+		defer workers.Done()
+		ResetPool()
+		close(reset2Done)
+	}()
+
+	// Wait until reset2 is provably queued behind reset1 before admitting the
+	// Connect contender. This avoids relying on goroutine scheduling order.
+	deadline := time.After(slowOpenBudget)
+	for {
+		lifecycleMu.Lock()
+		queuedResetters := lifecycleResetters
+		lifecycleMu.Unlock()
+		if queuedResetters == 1 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("second ResetPool did not queue behind the first")
+		case <-time.After(time.Millisecond):
+		}
+	}
+
+	workers.Add(1)
+	go func() {
+		defer workers.Done()
+		conn, connectErr := Connect(context.Background(), dataDir)
+		connectDone <- struct {
+			conn *sql.DB
+			err  error
+		}{conn: conn, err: connectErr}
+	}()
+	select {
+	case <-connectWaiting:
+	case <-time.After(slowOpenBudget):
+		t.Fatal("Connect did not queue behind the active reset")
+	}
+
+	select {
+	case <-connectOpenStarted:
+		t.Fatal("Connect entered its open path while the first reset was active")
+	default:
+	}
+
+	allowFirstOnce.Do(func() { close(allowFirstClose) })
+	select {
+	case <-reset1Done:
+	case <-time.After(slowOpenBudget):
+		t.Fatal("first ResetPool did not complete after its close seam resumed")
+	}
+	select {
+	case <-secondBarrierStarted:
+	case <-time.After(slowOpenBudget):
+		t.Fatal("second ResetPool did not acquire the barrier after the first")
+	}
+
+	select {
+	case <-connectOpenStarted:
+		t.Fatal("Connect entered its open path while the second reset was active")
+	default:
+	}
+	poolMu.Lock()
+	_, pooledDuringSecondReset := pool[absPath]
+	poolMu.Unlock()
+	require.False(t, pooledDuringSecondReset, "pool must remain empty while reset2 owns the barrier")
+
+	allowSecondOnce.Do(func() { close(allowSecondBarrier) })
+	select {
+	case <-reset2Done:
+	case <-time.After(slowOpenBudget):
+		t.Fatal("second ResetPool did not complete after its barrier resumed")
+	}
+	select {
+	case <-connectOpenStarted:
+	case <-time.After(slowOpenBudget):
+		t.Fatal("Connect did not enter its open path after both resets completed")
+	}
+
+	poolMu.Lock()
+	_, publishedBeforeOpenResumed := pool[absPath]
+	poolMu.Unlock()
+	require.False(t, publishedBeforeOpenResumed, "Connect published while its deterministic open seam was blocked")
+
+	allowConnectOnce.Do(func() { close(allowConnectOpen) })
+	result := <-connectDone
+	require.NoError(t, result.err)
+	require.NotNil(t, result.conn)
+	require.Error(t, seedConn.Ping(), "the first reset must close the original generation")
+	require.NoError(t, result.conn.Ping(), "the post-reset generation must remain open")
+
+	poolMu.Lock()
+	finalEntry, pooled := pool[absPath]
+	poolMu.Unlock()
+	require.True(t, pooled, "post-reset Connect must publish one final pool entry")
+	require.Same(t, result.conn, finalEntry.db, "final pool entry must own the post-reset handle")
+
+	workers.Wait()
+	onCloseEntry = nil
+	onResetBarrierAcquired = nil
+	onLifecycleOperationWaiting = nil
+	onOpenNew = nil
+	require.NoError(t, ReleaseConn(result.conn))
 }
 
 func TestReleaseConn_OldGenerationCannotReleaseNewGeneration(t *testing.T) {
