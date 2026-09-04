@@ -65,12 +65,36 @@ var (
 	sessions = csync.NewMap[string, *ClientSession]()
 	states   = csync.NewMap[string, ClientInfo]()
 	broker   = pubsub.NewBroker[Event]()
+	leases   = csync.NewMap[string, *serverLease]()
 
 	lifecycleMu sync.Mutex
 	owner       *Owner
 	initDone    = closedChannel()
 	generation  uint64
 )
+
+// serverLease serializes replacement and closing of one server session while
+// allowing concurrent callers to use the current session.
+type serverLease struct {
+	sync.RWMutex
+}
+
+// clientLease keeps the server read lock and owner initialization fence until
+// the caller has finished its actual MCP operation.
+type clientLease struct {
+	session *ClientSession
+	ctx     context.Context
+	release func()
+	once    sync.Once
+}
+
+func (l *clientLease) close() {
+	l.once.Do(l.release)
+}
+
+func serverLeaseFor(name string) *serverLease {
+	return leases.GetOrSet(name, func() *serverLease { return &serverLease{} })
+}
 
 // ErrOwnerBusy reports that another application currently owns the process
 // wide MCP registry. The SDK deliberately permits only one application-mode
@@ -192,9 +216,16 @@ func (o *Owner) commitRenewal(generation uint64, name string, session *ClientSes
 		return ErrOwnerBusy
 	}
 	sessions.Set(name, session)
-	updateState(name, StateConnected, nil, session, counts)
+	setState(name, StateConnected, nil, session, counts)
 	lifecycleMu.Unlock()
+	publishStateEvent(name, StateConnected, nil, counts)
 	return nil
+}
+
+func (o *Owner) acceptsGeneration(generation uint64) bool {
+	lifecycleMu.Lock()
+	defer lifecycleMu.Unlock()
+	return owner == o && !o.closing && o.generation == generation
 }
 
 func (o *Owner) operationContext(ctx context.Context) (context.Context, func()) {
@@ -555,9 +586,20 @@ func initClient(ctx context.Context, cfg *config.ConfigStore, name string, m con
 		_ = session.Close()
 		return ErrOwnerBusy
 	}
+	lease := serverLeaseFor(name)
+	lease.Lock()
+	defer lease.Unlock()
+	if o := currentOwner(); o != nil && !o.acceptsSession() {
+		_ = session.Close()
+		return ErrOwnerBusy
+	}
+	oldSession, hadOldSession := sessions.Get(name)
 	toolCount := updateTools(cfg, name, tools)
 	updatePrompts(name, prompts)
 	sessions.Set(name, session)
+	if hadOldSession && oldSession != session {
+		_ = oldSession.Close()
+	}
 
 	updateState(name, StateConnected, nil, session, Counts{
 		Tools:   toolCount,
@@ -569,6 +611,10 @@ func initClient(ctx context.Context, cfg *config.ConfigStore, name string, m con
 
 // DisableSingle disables and closes a single MCP client by name.
 func DisableSingle(cfg *config.ConfigStore, name string) error {
+	lease := serverLeaseFor(name)
+	lease.Lock()
+	defer lease.Unlock()
+
 	session, ok := sessions.Get(name)
 	if ok {
 		if err := session.Close(); err != nil &&
@@ -712,6 +758,10 @@ func RemoveServer(cfg *config.ConfigStore, name string) error {
 		return fmt.Errorf("MCP server %q is from .mcp.json and cannot be removed (disable it instead)", name)
 	}
 
+	lease := serverLeaseFor(name)
+	lease.Lock()
+	defer lease.Unlock()
+
 	// Close session
 	if sess, ok := sessions.Get(name); ok {
 		_ = sess.Close()
@@ -738,57 +788,155 @@ func RemoveServer(cfg *config.ConfigStore, name string) error {
 	return nil
 }
 
-func getOrRenewClient(ctx context.Context, cfg *config.ConfigStore, name string) (*ClientSession, error) {
+func getOrRenewClient(ctx context.Context, cfg *config.ConfigStore, name string) (*clientLease, error) {
 	o := currentOwner()
 	var generation uint64
+	operationCtx := ctx
+	finish := func() {}
 	if o != nil {
 		if !o.beginInit() {
 			return nil, ErrOwnerBusy
 		}
-		defer o.endInit()
 		generation = o.generation
-		var stop func()
-		ctx, stop = o.operationContext(ctx)
-		defer stop()
+		operationCtx, finish = o.operationContext(ctx)
 	}
 
+	lease := serverLeaseFor(name)
+	lease.RLock()
 	sess, ok := sessions.Get(name)
 	if !ok {
+		lease.RUnlock()
+		finish()
+		if o != nil {
+			o.endInit()
+		}
 		return nil, fmt.Errorf("mcp '%s' not available", name)
 	}
 
 	m := cfg.Config().MCP[name]
 	state, _ := states.Get(name)
-
 	timeout := mcpTimeout(m)
-	pingCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
+	pingCtx, cancel := context.WithTimeout(operationCtx, timeout)
 	err := sess.Ping(pingCtx, nil)
+	cancel()
 	if err == nil {
-		return sess, nil
+		return newClientLease(sess, operationCtx, lease, finish, o), nil
 	}
-	updateState(name, StateError, maybeTimeoutErr(err, timeout), nil, state.Counts)
-	_ = sess.Close()
+	lease.RUnlock()
 
-	sess, err = createSession(ctx, name, m, cfg.Resolver())
+	// Upgrade the read lease to an exclusive renewal lease. A writer waits for
+	// every in-flight operation on the old session before it can close it.
+	lease.Lock()
+	if o != nil && !o.acceptsGeneration(generation) {
+		lease.Unlock()
+		finish()
+		o.endInit()
+		return nil, ErrOwnerBusy
+	}
+
+	current, currentOK := sessions.Get(name)
+	if currentOK && current != sess {
+		lease.Unlock()
+		lease.RLock()
+		current, currentOK = sessions.Get(name)
+		if !currentOK {
+			lease.RUnlock()
+			finish()
+			if o != nil {
+				o.endInit()
+			}
+			return nil, fmt.Errorf("mcp '%s' not available", name)
+		}
+		return newClientLease(current, operationCtx, lease, finish, o), nil
+	}
+
+	failedErr := maybeTimeoutErr(err, timeout)
+	setState(name, StateError, failedErr, nil, state.Counts)
+	publishStateEvent(name, StateError, failedErr, state.Counts)
+	if currentOK {
+		_ = current.Close()
+	}
+
+	newSession, err := createSession(operationCtx, name, m, cfg.Resolver())
 	if err != nil {
+		lease.Unlock()
+		finish()
+		if o != nil {
+			o.endInit()
+		}
 		return nil, err
 	}
 
 	if o != nil {
-		if err := o.commitRenewal(generation, name, sess, state.Counts); err != nil {
+		if err := o.commitRenewal(generation, name, newSession, state.Counts); err != nil {
+			lease.Unlock()
+			finish()
+			o.endInit()
 			return nil, err
 		}
-		return sess, nil
+	} else {
+		sessions.Set(name, newSession)
+		setState(name, StateConnected, nil, newSession, state.Counts)
+		publishStateEvent(name, StateConnected, nil, state.Counts)
+	}
+	lease.Unlock()
+	lease.RLock()
+	current, currentOK = sessions.Get(name)
+	if !currentOK {
+		lease.RUnlock()
+		finish()
+		if o != nil {
+			o.endInit()
+		}
+		return nil, fmt.Errorf("mcp '%s' not available", name)
 	}
 
-	updateState(name, StateConnected, nil, sess, state.Counts)
-	sessions.Set(name, sess)
-	return sess, nil
+	return newClientLease(current, operationCtx, lease, finish, o), nil
 }
 
-// updateState updates the state of an MCP client and publishes an event
-func updateState(name string, state State, err error, client *ClientSession, counts Counts) {
+func newClientLease(session *ClientSession, ctx context.Context, lease *serverLease, finish func(), o *Owner) *clientLease {
+	return &clientLease{
+		session: session,
+		ctx:     ctx,
+		release: func() {
+			lease.RUnlock()
+			finish()
+			if o != nil {
+				o.endInit()
+			}
+		},
+	}
+}
+
+// currentClientLease admits an operation on the current session without a
+// health check. It is used by notification refreshers, which already receive
+// a session selected by the MCP transport.
+func currentClientLease(ctx context.Context, name string) (*clientLease, error) {
+	o := currentOwner()
+	operationCtx := ctx
+	finish := func() {}
+	if o != nil {
+		if !o.beginInit() {
+			return nil, ErrOwnerBusy
+		}
+		operationCtx, finish = o.operationContext(ctx)
+	}
+
+	lease := serverLeaseFor(name)
+	lease.RLock()
+	session, ok := sessions.Get(name)
+	if !ok {
+		lease.RUnlock()
+		finish()
+		if o != nil {
+			o.endInit()
+		}
+		return nil, fmt.Errorf("mcp '%s' not available", name)
+	}
+	return newClientLease(session, operationCtx, lease, finish, o), nil
+}
+
+func setState(name string, state State, err error, client *ClientSession, counts Counts) {
 	info := ClientInfo{
 		Name:   name,
 		State:  state,
@@ -803,8 +951,15 @@ func updateState(name string, state State, err error, client *ClientSession, cou
 		sessions.Del(name)
 	}
 	states.Set(name, info)
+}
 
-	// Publish state change event
+// updateState updates the state of an MCP client and publishes an event.
+func updateState(name string, state State, err error, client *ClientSession, counts Counts) {
+	setState(name, state, err, client, counts)
+	publishStateEvent(name, state, err, counts)
+}
+
+func publishStateEvent(name string, state State, err error, counts Counts) {
 	publishEvent(pubsub.UpdatedEvent, Event{
 		Type:   EventStateChanged,
 		Name:   name,

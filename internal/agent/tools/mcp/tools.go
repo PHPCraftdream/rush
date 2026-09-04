@@ -52,11 +52,12 @@ func RunTool(ctx context.Context, cfg *config.ConfigStore, name, toolName string
 		return ToolResult{}, fmt.Errorf("error parsing parameters: %s", err)
 	}
 
-	c, err := getOrRenewClient(ctx, cfg, name)
+	lease, err := getOrRenewClient(ctx, cfg, name)
 	if err != nil {
 		return ToolResult{}, err
 	}
-	result, err := c.CallTool(ctx, &mcp.CallToolParams{
+	defer lease.close()
+	result, err := lease.session.CallTool(lease.ctx, &mcp.CallToolParams{
 		Name:      toolName,
 		Arguments: args,
 	})
@@ -124,13 +125,14 @@ func RunTool(ctx context.Context, cfg *config.ConfigStore, name, toolName string
 // RefreshTools gets the updated list of tools from the MCP and updates the
 // global state.
 func RefreshTools(ctx context.Context, cfg *config.ConfigStore, name string) {
-	session, ok := sessions.Get(name)
-	if !ok {
+	lease, err := currentClientLease(ctx, name)
+	if err != nil {
 		slog.Warn("Refresh tools: no session", "name", name)
 		return
 	}
+	defer lease.close()
 
-	tools, err := getTools(ctx, session)
+	tools, err := getTools(lease.ctx, lease.session)
 	if err != nil {
 		updateState(name, StateError, err, nil, Counts{})
 		return
@@ -140,7 +142,7 @@ func RefreshTools(ctx context.Context, cfg *config.ConfigStore, name string) {
 
 	prev, _ := states.Get(name)
 	prev.Counts.Tools = toolCount
-	updateState(name, StateConnected, nil, session, prev.Counts)
+	updateState(name, StateConnected, nil, lease.session, prev.Counts)
 }
 
 func getTools(ctx context.Context, session *ClientSession) ([]*Tool, error) {

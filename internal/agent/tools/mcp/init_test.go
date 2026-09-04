@@ -12,6 +12,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/env"
+	"github.com/PHPCraftdream/rush/internal/pubsub"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/goleak"
@@ -720,6 +721,132 @@ func TestOwnerCloseVsRenewalDoesNotPublishLateSession(t *testing.T) {
 		_, ok := GetState("late-renewal")
 		return !ok
 	}, time.Second, time.Millisecond)
+}
+
+func TestOwnerCommitRenewalPublishesSuccessfulSession(t *testing.T) {
+	owner, err := Acquire()
+	require.NoError(t, err)
+
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	server := mcp.NewServer(&mcp.Implementation{Name: "renewal-server"}, nil)
+	serverSession, err := server.Connect(context.Background(), serverTransport, nil)
+	require.NoError(t, err)
+	defer serverSession.Close()
+	clientSession, err := mcp.NewClient(&mcp.Implementation{Name: "renewal-client"}, nil).
+		Connect(context.Background(), clientTransport, nil)
+	require.NoError(t, err)
+	_, clientCancel := context.WithCancel(context.Background())
+	defer clientCancel()
+	session := &ClientSession{ClientSession: clientSession, cancel: clientCancel}
+
+	const name = "successful-renewal"
+	states.Set(name, ClientInfo{Name: name, State: StateError})
+	eventsCtx, eventsCancel := context.WithCancel(context.Background())
+	defer eventsCancel()
+	events := SubscribeEvents(eventsCtx)
+
+	require.True(t, owner.beginInit())
+	commitDone := make(chan error, 1)
+	go func() {
+		commitDone <- owner.commitRenewal(owner.generation, name, session, Counts{Tools: 1})
+	}()
+
+	select {
+	case err := <-commitDone:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("successful renewal deadlocked while publishing its state")
+	}
+
+	got, ok := sessions.Get(name)
+	require.True(t, ok)
+	require.Same(t, session, got)
+	state, ok := GetState(name)
+	require.True(t, ok)
+	require.Equal(t, StateConnected, state.State)
+	require.Same(t, session, state.Client)
+
+	select {
+	case event := <-events:
+		require.Equal(t, pubsub.UpdatedEvent, event.Type)
+		require.Equal(t, name, event.Payload.Name)
+		require.Equal(t, StateConnected, event.Payload.State)
+	case <-time.After(time.Second):
+		t.Fatal("successful renewal did not publish a state event")
+	}
+
+	owner.endInit()
+	require.NoError(t, owner.Close(context.Background()))
+}
+
+func TestClientLeaseProtectsOperationFromRenewalAndClose(t *testing.T) {
+	const name = "leased-operation"
+	started := make(chan struct{})
+	release := make(chan struct{})
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	server := mcp.NewServer(&mcp.Implementation{Name: "lease-server"}, nil)
+	mcp.AddTool(server, &mcp.Tool{Name: "blocked"}, func(context.Context, *mcp.CallToolRequest, any) (*mcp.CallToolResult, any, error) {
+		close(started)
+		<-release
+		return &mcp.CallToolResult{}, nil, nil
+	})
+	serverSession, err := server.Connect(context.Background(), serverTransport, nil)
+	require.NoError(t, err)
+	defer serverSession.Close()
+	clientCtx, clientCancel := context.WithCancel(context.Background())
+	clientSession, err := mcp.NewClient(&mcp.Implementation{Name: "lease-client"}, nil).
+		Connect(clientCtx, clientTransport, nil)
+	require.NoError(t, err)
+	session := &ClientSession{ClientSession: clientSession, cancel: clientCancel}
+
+	owner, err := Acquire()
+	require.NoError(t, err)
+	sessions.Set(name, session)
+	states.Set(name, ClientInfo{Name: name, State: StateConnected, Client: session})
+	dataDir := t.TempDir()
+	store, err := config.Init(dataDir, dataDir, false)
+	require.NoError(t, err)
+	store.Config().MCP[name] = config.MCPConfig{Type: config.MCPStdio, Command: "echo"}
+
+	lease, err := getOrRenewClient(context.Background(), store, name)
+	require.NoError(t, err)
+	callDone := make(chan error, 1)
+	go func() {
+		_, callErr := lease.session.CallTool(lease.ctx, &mcp.CallToolParams{Name: "blocked"})
+		callDone <- callErr
+	}()
+	<-started
+
+	serverLease := serverLeaseFor(name)
+	renewalDone := make(chan struct{})
+	go func() {
+		serverLease.Lock()
+		serverLease.Unlock()
+		close(renewalDone)
+	}()
+	select {
+	case <-renewalDone:
+		t.Fatal("renewal acquired the lease while an MCP operation was active")
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	closeCtx, closeCancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	require.ErrorIs(t, owner.Close(closeCtx), context.DeadlineExceeded)
+	closeCancel()
+
+	close(release)
+	select {
+	case <-callDone:
+	case <-time.After(time.Second):
+		t.Fatal("MCP operation did not finish after the server was released")
+	}
+	lease.close()
+	select {
+	case <-renewalDone:
+	case <-time.After(time.Second):
+		t.Fatal("renewal remained blocked after the operation lease was released")
+	}
+	require.NoError(t, owner.Close(context.Background()))
 }
 
 func TestHeaderRoundTripperKeepsOwnerCancellationUntilBodyClose(t *testing.T) {

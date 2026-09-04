@@ -25,12 +25,13 @@ func Resources() iter.Seq2[string, []*Resource] {
 
 // ListResources returns the current resources for an MCP server.
 func ListResources(ctx context.Context, cfg *config.ConfigStore, name string) ([]*Resource, error) {
-	session, err := getOrRenewClient(ctx, cfg, name)
+	lease, err := getOrRenewClient(ctx, cfg, name)
 	if err != nil {
 		return nil, err
 	}
+	defer lease.close()
 
-	resources, err := getResources(ctx, session)
+	resources, err := getResources(lease.ctx, lease.session)
 	if err != nil {
 		return nil, err
 	}
@@ -38,17 +39,18 @@ func ListResources(ctx context.Context, cfg *config.ConfigStore, name string) ([
 	resourceCount := updateResources(name, resources)
 	prev, _ := states.Get(name)
 	prev.Counts.Resources = resourceCount
-	updateState(name, StateConnected, nil, session, prev.Counts)
+	updateState(name, StateConnected, nil, lease.session, prev.Counts)
 	return resources, nil
 }
 
 // ReadResource reads the contents of a resource from an MCP server.
 func ReadResource(ctx context.Context, cfg *config.ConfigStore, name, uri string) ([]*ResourceContents, error) {
-	session, err := getOrRenewClient(ctx, cfg, name)
+	lease, err := getOrRenewClient(ctx, cfg, name)
 	if err != nil {
 		return nil, err
 	}
-	result, err := session.ReadResource(ctx, &mcp.ReadResourceParams{URI: uri})
+	defer lease.close()
+	result, err := lease.session.ReadResource(lease.ctx, &mcp.ReadResourceParams{URI: uri})
 	if err != nil {
 		return nil, err
 	}
@@ -58,13 +60,14 @@ func ReadResource(ctx context.Context, cfg *config.ConfigStore, name, uri string
 // RefreshResources gets the updated list of resources from the MCP and updates the
 // global state.
 func RefreshResources(ctx context.Context, name string) {
-	session, ok := sessions.Get(name)
-	if !ok {
+	lease, err := currentClientLease(ctx, name)
+	if err != nil {
 		slog.Warn("Refresh resources: no session", "name", name)
 		return
 	}
+	defer lease.close()
 
-	resources, err := getResources(ctx, session)
+	resources, err := getResources(lease.ctx, lease.session)
 	if err != nil {
 		updateState(name, StateError, err, nil, Counts{})
 		return
@@ -74,7 +77,7 @@ func RefreshResources(ctx context.Context, name string) {
 
 	prev, _ := states.Get(name)
 	prev.Counts.Resources = resourceCount
-	updateState(name, StateConnected, nil, session, prev.Counts)
+	updateState(name, StateConnected, nil, lease.session, prev.Counts)
 }
 
 func getResources(ctx context.Context, c *ClientSession) ([]*Resource, error) {

@@ -21,11 +21,12 @@ func Prompts() iter.Seq2[string, []*Prompt] {
 
 // GetPromptMessages retrieves the content of an MCP prompt with the given arguments.
 func GetPromptMessages(ctx context.Context, cfg *config.ConfigStore, clientName, promptName string, args map[string]string) ([]string, error) {
-	c, err := getOrRenewClient(ctx, cfg, clientName)
+	lease, err := getOrRenewClient(ctx, cfg, clientName)
 	if err != nil {
 		return nil, err
 	}
-	result, err := c.GetPrompt(ctx, &mcp.GetPromptParams{
+	defer lease.close()
+	result, err := lease.session.GetPrompt(lease.ctx, &mcp.GetPromptParams{
 		Name:      promptName,
 		Arguments: args,
 	})
@@ -48,13 +49,14 @@ func GetPromptMessages(ctx context.Context, cfg *config.ConfigStore, clientName,
 // RefreshPrompts gets the updated list of prompts from the MCP and updates the
 // global state.
 func RefreshPrompts(ctx context.Context, name string) {
-	session, ok := sessions.Get(name)
-	if !ok {
+	lease, err := currentClientLease(ctx, name)
+	if err != nil {
 		slog.Warn("Refresh prompts: no session", "name", name)
 		return
 	}
+	defer lease.close()
 
-	prompts, err := getPrompts(ctx, session)
+	prompts, err := getPrompts(lease.ctx, lease.session)
 	if err != nil {
 		updateState(name, StateError, err, nil, Counts{})
 		return
@@ -64,7 +66,7 @@ func RefreshPrompts(ctx context.Context, name string) {
 
 	prev, _ := states.Get(name)
 	prev.Counts.Prompts = len(prompts)
-	updateState(name, StateConnected, nil, session, prev.Counts)
+	updateState(name, StateConnected, nil, lease.session, prev.Counts)
 }
 
 func getPrompts(ctx context.Context, c *ClientSession) ([]*Prompt, error) {
