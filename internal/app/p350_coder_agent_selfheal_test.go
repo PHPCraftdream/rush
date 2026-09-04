@@ -94,14 +94,7 @@ func TestReleaseGate_P350_InitCoderAgentSelfHealsMissingAgentsMap(t *testing.T) 
 
 	application, err := New(context.Background(), conn, store)
 	require.NoError(t, err, "App.New (via InitCoderAgent) must self-heal by calling SetupAgents when Agents[AgentCoder] is missing but a provider is configured")
-	t.Cleanup(func() {
-		if application.RunQueuePump != nil {
-			application.RunQueuePump.Stop()
-		}
-		for range application.dbReleasesNeeded {
-			require.NoError(t, db.Release(dataDir))
-		}
-	})
+	t.Cleanup(application.Shutdown)
 
 	require.NotNil(t, application.AgentCoordinator, "InitCoderAgent must have run and assigned a coordinator")
 }

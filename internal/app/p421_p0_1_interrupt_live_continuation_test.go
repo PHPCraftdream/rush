@@ -214,14 +214,7 @@ func TestRunNonInteractive_P0_1_LiveContinuation(t *testing.T) {
 
 	application, err := New(context.Background(), conn, store)
 	require.NoError(t, err)
-	t.Cleanup(func() {
-		if application.RunQueuePump != nil {
-			application.RunQueuePump.Stop()
-		}
-		for range application.dbReleasesNeeded {
-			require.NoError(t, db.Release(dataDir))
-		}
-	})
+	t.Cleanup(application.Shutdown)
 	require.NotNil(t, application.RunQueuePump, "App.New must start a RunQueuePump when dataDir is set")
 
 	sess, err := application.Sessions.Create(context.Background(), "p421-live-continuation")

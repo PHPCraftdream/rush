@@ -80,14 +80,7 @@ func newAdmissionRaceApp(t *testing.T, handler http.HandlerFunc) (*App, string) 
 
 	application, err := New(context.Background(), conn, store)
 	require.NoError(t, err)
-	t.Cleanup(func() {
-		if application.RunQueuePump != nil {
-			application.RunQueuePump.Stop()
-		}
-		for range application.dbReleasesNeeded {
-			require.NoError(t, db.Release(dataDir))
-		}
-	})
+	t.Cleanup(application.Shutdown)
 
 	sess, err := application.Sessions.Create(context.Background(), "admission-race-title")
 	require.NoError(t, err)

@@ -90,11 +90,7 @@ func TestAppNew_SkipAgentSetup_DoesNotInitAgentOrRecover(t *testing.T) {
 
 	application, err := New(context.Background(), conn, store, SkipAgentSetup())
 	require.NoError(t, err)
-	t.Cleanup(func() {
-		for range application.dbReleasesNeeded {
-			require.NoError(t, db.Release(dataDir))
-		}
-	})
+	t.Cleanup(application.Shutdown)
 
 	assert.Nil(t, application.AgentCoordinator,
 		"SkipAgentSetup must leave AgentCoordinator nil — InitCoderAgent must not run")

@@ -83,14 +83,7 @@ func TestExecuteRunRestoresAllowedToolsAfterDisableSubAgents(t *testing.T) {
 
 	application, err := New(context.Background(), conn, store)
 	require.NoError(t, err)
-	t.Cleanup(func() {
-		if application.RunQueuePump != nil {
-			application.RunQueuePump.Stop()
-		}
-		for range application.dbReleasesNeeded {
-			require.NoError(t, db.Release(dataDir))
-		}
-	})
+	t.Cleanup(application.Shutdown)
 
 	// A non-default title plus one pre-existing message keep needsTitle
 	// false, so the background title-generation provider call never

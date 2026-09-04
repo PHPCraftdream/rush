@@ -194,14 +194,7 @@ func TestAppNew_RunQueuePump_OrderingRace(t *testing.T) {
 	// already in the queue.
 	application, err := New(context.Background(), conn, store)
 	require.NoError(t, err)
-	t.Cleanup(func() {
-		if application.RunQueuePump != nil {
-			application.RunQueuePump.Stop()
-		}
-		for range application.dbReleasesNeeded {
-			require.NoError(t, db.Release(dataDir))
-		}
-	})
+	t.Cleanup(application.Shutdown)
 
 	// VERIFIED ASSUMPTION (pending-wait audit, 2026-08-17): the
 	// providerCalls term of this predicate is incremented ONLY by the

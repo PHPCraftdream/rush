@@ -187,19 +187,7 @@ func TestAppNew_RunQueuePump_ExecutesRealEnqueuedCall(t *testing.T) {
 	// THE call under test: the real, unmodified production entry point.
 	application, err := New(context.Background(), conn, store)
 	require.NoError(t, err)
-	t.Cleanup(func() {
-		if application.RunQueuePump != nil {
-			application.RunQueuePump.Stop()
-		}
-		// New() opens an additional read-only pool on top of the caller's
-		// own db.Connect above (see New's own doc comment on
-		// dbReleasesNeeded) — one db.Release call per Connect/ConnectRead,
-		// or a stale pool-refcount entry poisons t.TempDir()'s own RemoveAll
-		// cleanup (observed: "process cannot access the file" on Windows).
-		for range application.dbReleasesNeeded {
-			require.NoError(t, db.Release(dataDir))
-		}
-	})
+	t.Cleanup(application.Shutdown)
 
 	require.NotNil(t, application.RunQueuePump, "App.New must start a RunQueuePump when dataDir is set")
 	require.NotNil(t, application.AgentCoordinator, "InitCoderAgent must have run and assigned a coordinator")
