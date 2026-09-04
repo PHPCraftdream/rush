@@ -57,9 +57,183 @@ var (
 	sessions = csync.NewMap[string, *ClientSession]()
 	states   = csync.NewMap[string, ClientInfo]()
 	broker   = pubsub.NewBroker[Event]()
-	initOnce sync.Once
-	initDone = make(chan struct{})
+
+	lifecycleMu sync.Mutex
+	owner       *Owner
+	initDone    = closedChannel()
 )
+
+// ErrOwnerBusy reports that another application currently owns the process
+// wide MCP registry. The SDK deliberately permits only one application-mode
+// owner; library-mode Apps do not acquire this owner.
+var ErrOwnerBusy = errors.New("mcp: application owner is already active")
+
+// Owner is the lifetime token for the process-wide MCP registry. The MCP
+// package predates multiple App instances and its tool/state maps remain
+// process-wide, so ownership is explicit rather than silently shared.
+type Owner struct {
+	implicit     bool
+	closing      bool
+	initCount    int
+	initWG       sync.WaitGroup
+	initDoneOnce sync.Once
+	cancel       context.CancelFunc
+	closeOnce    sync.Once
+	closeErr     error
+}
+
+func closedChannel() chan struct{} {
+	ch := make(chan struct{})
+	close(ch)
+	return ch
+}
+
+// Acquire reserves the process-wide MCP registry for an application.
+func Acquire() (*Owner, error) {
+	return acquire(false)
+}
+
+// acquireImplicit supports the legacy package-level entry points. Unlike an
+// App-owned token, an idle implicit owner may be reclaimed after its registry
+// has been emptied by its caller.
+func acquireImplicit() (*Owner, error) {
+	return acquire(true)
+}
+
+func acquire(implicit bool) (*Owner, error) {
+	lifecycleMu.Lock()
+	defer lifecycleMu.Unlock()
+
+	if owner != nil {
+		if !owner.implicit || owner.closing || owner.initCount != 0 || sessions.Len() != 0 ||
+			states.Len() != 0 || allTools.Len() != 0 || allPrompts.Len() != 0 ||
+			allResources.Len() != 0 {
+			return nil, ErrOwnerBusy
+		}
+		resetRegistryLocked()
+	}
+
+	o := &Owner{implicit: implicit}
+	owner = o
+	initDone = make(chan struct{})
+	return o, nil
+}
+
+func currentOwner() *Owner {
+	lifecycleMu.Lock()
+	defer lifecycleMu.Unlock()
+	return owner
+}
+
+func (o *Owner) isCurrentLocked() bool {
+	return owner == o && !o.closing
+}
+
+func (o *Owner) beginInit() bool {
+	lifecycleMu.Lock()
+	defer lifecycleMu.Unlock()
+	if !o.isCurrentLocked() {
+		return false
+	}
+	o.initCount++
+	o.initWG.Add(1)
+	return true
+}
+
+func (o *Owner) endInit() {
+	lifecycleMu.Lock()
+	o.initCount--
+	lifecycleMu.Unlock()
+	o.initWG.Done()
+}
+
+func (o *Owner) finishInitialize() {
+	lifecycleMu.Lock()
+	defer lifecycleMu.Unlock()
+	if owner == o {
+		o.initDoneOnce.Do(func() { close(initDone) })
+	}
+}
+
+func (o *Owner) acceptsSession() bool {
+	lifecycleMu.Lock()
+	defer lifecycleMu.Unlock()
+	return o.isCurrentLocked()
+}
+
+// Close stops all initialization before taking its session snapshot. This
+// barrier is what prevents a session created after an old snapshot from
+// escaping cleanup. Startup is cancelled first, but the initialization
+// goroutines are still joined so their transports cannot outlive Close.
+func (o *Owner) Close(ctx context.Context) error {
+	o.closeOnce.Do(func() {
+		o.closeErr = o.close(ctx)
+	})
+	return o.closeErr
+}
+
+func (o *Owner) close(ctx context.Context) error {
+	// The barrier must be joined even when the caller's cleanup deadline has
+	// elapsed; otherwise a late startup can escape into the next owner.
+	_ = ctx
+	lifecycleMu.Lock()
+	if owner != o {
+		lifecycleMu.Unlock()
+		return nil
+	}
+	o.closing = true
+	if o.cancel != nil {
+		o.cancel()
+	}
+	lifecycleMu.Unlock()
+
+	// Do not abandon this wait when the caller's cleanup context expires. A
+	// returned Close must not leave an initialization goroutine able to attach
+	// a newly-created process to the next lifecycle.
+	o.initWG.Wait()
+
+	var wg sync.WaitGroup
+	for name, session := range sessions.Seq2() {
+		wg.Go(func() {
+			if err := session.Close(); err != nil &&
+				!errors.Is(err, io.EOF) &&
+				!errors.Is(err, context.Canceled) &&
+				err.Error() != "signal: killed" {
+				slog.Warn("Failed to shutdown MCP client", "name", name, "error", err)
+			}
+		})
+	}
+	wg.Wait()
+
+	lifecycleMu.Lock()
+	defer lifecycleMu.Unlock()
+	if owner == o {
+		resetRegistryLocked()
+		owner = nil
+		initDone = closedChannel()
+	}
+	return nil
+}
+
+func resetRegistryLocked() {
+	for name := range sessions.Seq2() {
+		sessions.Del(name)
+	}
+	for name := range states.Seq2() {
+		states.Del(name)
+	}
+	for name := range allTools.Seq2() {
+		allTools.Del(name)
+	}
+	for name := range allPrompts.Seq2() {
+		allPrompts.Del(name)
+	}
+	for name := range allResources.Seq2() {
+		allResources.Del(name)
+	}
+	broker.Shutdown()
+	broker = pubsub.NewBroker[Event]()
+}
 
 // State represents the current state of an MCP client
 type State int
@@ -124,7 +298,17 @@ type ClientInfo struct {
 
 // SubscribeEvents returns a channel for MCP events
 func SubscribeEvents(ctx context.Context) <-chan pubsub.Event[Event] {
-	return broker.Subscribe(ctx)
+	return currentBroker().Subscribe(ctx)
+}
+
+func currentBroker() *pubsub.Broker[Event] {
+	lifecycleMu.Lock()
+	defer lifecycleMu.Unlock()
+	return broker
+}
+
+func publishEvent(t pubsub.EventType, event Event) {
+	currentBroker().Publish(t, event)
 }
 
 // GetStates returns the current state of all MCP clients
@@ -139,28 +323,11 @@ func GetState(name string) (ClientInfo, bool) {
 
 // Close closes all MCP clients. This should be called during application shutdown.
 func Close(ctx context.Context) error {
-	var wg sync.WaitGroup
-	for name, session := range sessions.Seq2() {
-		wg.Go(func() {
-			done := make(chan error, 1)
-			go func() {
-				done <- session.Close()
-			}()
-			select {
-			case err := <-done:
-				if err != nil &&
-					!errors.Is(err, io.EOF) &&
-					!errors.Is(err, context.Canceled) &&
-					err.Error() != "signal: killed" {
-					slog.Warn("Failed to shutdown MCP client", "name", name, "error", err)
-				}
-			case <-ctx.Done():
-			}
-		})
+	o := currentOwner()
+	if o == nil {
+		return nil
 	}
-	wg.Wait()
-	broker.Shutdown()
-	return nil
+	return o.Close(ctx)
 }
 
 // Initialize initializes MCP clients based on the provided configuration.
@@ -173,10 +340,44 @@ func Close(ctx context.Context) error {
 // keeps starting every non-disabled server exactly as before this field
 // existed.
 func Initialize(ctx context.Context, permissions permission.Service, cfg *config.ConfigStore, restrictToCLIEnabled bool) {
+	o := currentOwner()
+	if o == nil {
+		var err error
+		o, err = acquireImplicit()
+		if err != nil {
+			slog.Error("Failed to acquire MCP application owner", "error", err)
+			return
+		}
+	}
+	o.Initialize(ctx, permissions, cfg, restrictToCLIEnabled)
+}
+
+// Initialize initializes MCP clients using this owner's lifecycle barrier.
+func (o *Owner) Initialize(ctx context.Context, permissions permission.Service, cfg *config.ConfigStore, restrictToCLIEnabled bool) {
 	slog.Info("Initializing MCP clients")
+	// The permission service is consumed later while tools are called. Keep it
+	// in the signature for compatibility with the existing startup contract.
+	_ = permissions
 	var wg sync.WaitGroup
+	initCtx, cancel := context.WithCancel(ctx)
+	lifecycleMu.Lock()
+	if owner != o || o.closing {
+		lifecycleMu.Unlock()
+		cancel()
+		return
+	}
+	o.cancel = cancel
+	lifecycleMu.Unlock()
+	if !o.beginInit() {
+		cancel()
+		return
+	}
+	defer o.endInit()
 	// Initialize states for all configured MCPs
 	for name, m := range cfg.Config().MCP {
+		if !o.acceptsSession() {
+			break
+		}
 		if m.Disabled {
 			updateState(name, StateDisabled, nil, nil, Counts{})
 			slog.Debug("Skipping disabled MCP", "name", name)
@@ -188,7 +389,7 @@ func Initialize(ctx context.Context, permissions permission.Service, cfg *config
 			continue
 		}
 
-		// Set initial starting state
+		// Set initial starting state.
 		wg.Add(1)
 		go func(name string, m config.MCPConfig) {
 			defer func() {
@@ -208,20 +409,23 @@ func Initialize(ctx context.Context, permissions permission.Service, cfg *config
 				}
 			}()
 
-			if err := initClient(ctx, cfg, name, m, cfg.Resolver()); err != nil {
+			if err := initClient(initCtx, cfg, name, m, cfg.Resolver()); err != nil {
 				slog.Debug("Failed to initialize MCP client", "name", name, "error", err)
 			}
 		}(name, m)
 	}
 	wg.Wait()
-	initOnce.Do(func() { close(initDone) })
+	o.finishInitialize()
 }
 
 // WaitForInit blocks until MCP initialization is complete.
 // If Initialize was never called, this returns immediately.
 func WaitForInit(ctx context.Context) error {
+	lifecycleMu.Lock()
+	done := initDone
+	lifecycleMu.Unlock()
 	select {
-	case <-initDone:
+	case <-done:
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
@@ -230,6 +434,13 @@ func WaitForInit(ctx context.Context) error {
 
 // InitializeSingle initializes a single MCP client by name.
 func InitializeSingle(ctx context.Context, name string, cfg *config.ConfigStore) error {
+	if currentOwner() == nil {
+		var err error
+		_, err = acquireImplicit()
+		if err != nil {
+			return err
+		}
+	}
 	m, exists := cfg.Config().MCP[name]
 	if !exists {
 		return fmt.Errorf("mcp '%s' not found in configuration", name)
@@ -246,6 +457,12 @@ func InitializeSingle(ctx context.Context, name string, cfg *config.ConfigStore)
 
 // initClient initializes a single MCP client with the given configuration.
 func initClient(ctx context.Context, cfg *config.ConfigStore, name string, m config.MCPConfig, resolver config.VariableResolver) error {
+	if o := currentOwner(); o != nil {
+		if !o.beginInit() {
+			return ErrOwnerBusy
+		}
+		defer o.endInit()
+	}
 	// Set initial starting state.
 	updateState(name, StateStarting, nil, nil, Counts{})
 
@@ -271,6 +488,10 @@ func initClient(ctx context.Context, cfg *config.ConfigStore, name string, m con
 		return err
 	}
 
+	if o := currentOwner(); o != nil && !o.acceptsSession() {
+		_ = session.Close()
+		return ErrOwnerBusy
+	}
 	toolCount := updateTools(cfg, name, tools)
 	updatePrompts(name, prompts)
 	sessions.Set(name, session)
@@ -358,6 +579,13 @@ func EnableServer(ctx context.Context, cfg *config.ConfigStore, name string) err
 	}
 
 	updateState(name, StateStarting, nil, nil, Counts{})
+	if currentOwner() == nil {
+		var err error
+		_, err = acquireImplicit()
+		if err != nil {
+			return err
+		}
+	}
 	go func() {
 		if err := initClient(ctx, cfg, name, mcpCfg, cfg.Resolver()); err != nil {
 			slog.Error("Failed to enable MCP server", "name", name, "err", err)
@@ -369,6 +597,13 @@ func EnableServer(ctx context.Context, cfg *config.ConfigStore, name string) err
 // AddServer validates and adds a new MCP server. It attempts to connect; if
 // successful the server is added to the in-memory config and persisted to disk.
 func AddServer(ctx context.Context, cfg *config.ConfigStore, name string, mcpCfg config.MCPConfig) error {
+	if currentOwner() == nil {
+		var err error
+		_, err = acquireImplicit()
+		if err != nil {
+			return err
+		}
+	}
 	c := cfg.Config()
 	if _, exists := c.MCP[name]; exists {
 		return fmt.Errorf("MCP server %q already exists", name)
@@ -383,10 +618,15 @@ func AddServer(ctx context.Context, cfg *config.ConfigStore, name string, mcpCfg
 	c.MCP[name] = mcpCfg
 	updateState(name, StateStarting, nil, nil, Counts{})
 
-	if err := initClient(ctx, cfg, name, mcpCfg, cfg.Resolver()); err != nil {
+	initErr := initClient(ctx, cfg, name, mcpCfg, cfg.Resolver())
+	if errors.Is(initErr, ErrOwnerBusy) {
+		delete(c.MCP, name)
+		return ErrOwnerBusy
+	}
+	if initErr != nil {
 		delete(c.MCP, name)
 		states.Del(name)
-		return fmt.Errorf("failed to connect to MCP server %q: %w", name, err)
+		return fmt.Errorf("failed to connect to MCP server %q: %w", name, initErr)
 	}
 
 	// Persist to config file
@@ -421,7 +661,7 @@ func RemoveServer(cfg *config.ConfigStore, name string) error {
 
 	// Remove from states and broadcast deletion
 	states.Del(name)
-	broker.Publish(pubsub.DeletedEvent, Event{
+	publishEvent(pubsub.DeletedEvent, Event{
 		Type:  EventStateChanged,
 		Name:  name,
 		State: StateDisabled,
@@ -481,7 +721,7 @@ func updateState(name string, state State, err error, client *ClientSession, cou
 	states.Set(name, info)
 
 	// Publish state change event
-	broker.Publish(pubsub.UpdatedEvent, Event{
+	publishEvent(pubsub.UpdatedEvent, Event{
 		Type:   EventStateChanged,
 		Name:   name,
 		State:  state,
@@ -512,19 +752,19 @@ func createSession(ctx context.Context, name string, m config.MCPConfig, resolve
 		},
 		&mcp.ClientOptions{
 			ToolListChangedHandler: func(context.Context, *mcp.ToolListChangedRequest) {
-				broker.Publish(pubsub.UpdatedEvent, Event{
+				publishEvent(pubsub.UpdatedEvent, Event{
 					Type: EventToolsListChanged,
 					Name: name,
 				})
 			},
 			PromptListChangedHandler: func(context.Context, *mcp.PromptListChangedRequest) {
-				broker.Publish(pubsub.UpdatedEvent, Event{
+				publishEvent(pubsub.UpdatedEvent, Event{
 					Type: EventPromptsListChanged,
 					Name: name,
 				})
 			},
 			ResourceListChangedHandler: func(context.Context, *mcp.ResourceListChangedRequest) {
-				broker.Publish(pubsub.UpdatedEvent, Event{
+				publishEvent(pubsub.UpdatedEvent, Event{
 					Type: EventResourcesListChanged,
 					Name: name,
 				})
@@ -623,6 +863,7 @@ func createTransport(ctx context.Context, m config.MCPConfig, resolver config.Va
 		client := &http.Client{
 			Transport: &headerRoundTripper{
 				headers: headers,
+				ctx:     ctx,
 			},
 		}
 		return &mcp.StreamableClientTransport{
@@ -644,6 +885,7 @@ func createTransport(ctx context.Context, m config.MCPConfig, resolver config.Va
 		client := &http.Client{
 			Transport: &headerRoundTripper{
 				headers: headers,
+				ctx:     ctx,
 			},
 		}
 		return &mcp.SSEClientTransport{
@@ -657,11 +899,18 @@ func createTransport(ctx context.Context, m config.MCPConfig, resolver config.Va
 
 type headerRoundTripper struct {
 	headers map[string]string
+	ctx     context.Context
 }
 
 func (rt headerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	for k, v := range rt.headers {
 		req.Header.Set(k, v)
+	}
+	if rt.ctx != nil {
+		ctx, cancel := context.WithCancel(req.Context())
+		stop := context.AfterFunc(rt.ctx, cancel)
+		defer stop()
+		req = req.WithContext(ctx)
 	}
 	return http.DefaultTransport.RoundTrip(req)
 }

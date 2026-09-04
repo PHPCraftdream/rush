@@ -3,8 +3,11 @@ package mcp
 import (
 	"context"
 	"maps"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/env"
@@ -581,4 +584,89 @@ func TestInitialize_RestrictToCLIEnabled(t *testing.T) {
 	require.True(t, ok)
 	require.NotEqual(t, StateDisabled, interactiveState.State,
 		"interactive mode must attempt every non-disabled server regardless of enabled_in_cli")
+}
+
+func TestOwnerCloseResetsRegistryAndAllowsNextLifecycle(t *testing.T) {
+	owner, err := Acquire()
+	require.NoError(t, err)
+
+	_, err = Acquire()
+	require.ErrorIs(t, err, ErrOwnerBusy,
+		"a live application owner must not be replaced even while its registry is empty")
+
+	states.Set("owner-probe", ClientInfo{Name: "owner-probe", State: StateConnected})
+
+	_, err = Acquire()
+	require.ErrorIs(t, err, ErrOwnerBusy,
+		"a second application owner must not share the live MCP registry")
+
+	require.NoError(t, owner.Close(context.Background()))
+	require.Empty(t, GetStates())
+	require.Empty(t, func() map[string][]*Tool {
+		got := map[string][]*Tool{}
+		for name, tools := range Tools() {
+			got[name] = tools
+		}
+		return got
+	}())
+
+	next, err := Acquire()
+	require.NoError(t, err, "a completed owner must not poison a later lifecycle")
+	require.NoError(t, next.Close(context.Background()))
+}
+
+func TestOwnerCloseCancelsBlockedStartupBeforeCleanup(t *testing.T) {
+	started := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-started:
+		default:
+			close(started)
+		}
+		select {
+		case <-r.Context().Done():
+		case <-time.After(500 * time.Millisecond):
+		}
+	}))
+	defer server.Close()
+
+	dataDir := t.TempDir()
+	store, err := config.Init(dataDir, dataDir, false)
+	require.NoError(t, err)
+	store.Config().MCP = config.MCPs{
+		"blocked-startup": {
+			Type:    config.MCPHttp,
+			URL:     server.URL,
+			Timeout: 60,
+		},
+	}
+
+	owner, err := Acquire()
+	require.NoError(t, err)
+	initFinished := make(chan struct{})
+	go func() {
+		owner.Initialize(context.Background(), nil, store, false)
+		close(initFinished)
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("MCP startup did not reach the blocked transport")
+	}
+
+	require.NoError(t, owner.Close(context.Background()))
+	select {
+	case <-initFinished:
+	case <-time.After(5 * time.Second):
+		t.Fatal("MCP initialization must finish before Owner.Close returns")
+	}
+	require.Empty(t, GetStates())
+	require.Empty(t, func() map[string][]*Tool {
+		got := map[string][]*Tool{}
+		for name, tools := range Tools() {
+			got[name] = tools
+		}
+		return got
+	}())
 }

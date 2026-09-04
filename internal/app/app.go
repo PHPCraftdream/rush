@@ -117,6 +117,7 @@ type App struct {
 	// global context and cleanup functions
 	globalCtx          context.Context
 	cleanupFuncs       []func(context.Context) error
+	mcpOwner           *mcp.Owner
 	agentNotifications *pubsub.Broker[notify.Notification]
 	events             *pubsub.Broker[any]
 
@@ -139,6 +140,7 @@ type Option func(*newOptions)
 
 type newOptions struct {
 	skipAgentSetup   bool
+	skipMCP          bool
 	restrictMCPToCLI bool
 }
 
@@ -155,6 +157,13 @@ type newOptions struct {
 // internal/cmd/root.go documents which commands qualify).
 func SkipAgentSetup() Option {
 	return func(o *newOptions) { o.skipAgentSetup = true }
+}
+
+// SkipMCP prevents App from acquiring the process-wide MCP application
+// owner. Library-mode clients use this option because they have no MCP
+// configuration and must never close the application's MCP registry.
+func SkipMCP() Option {
+	return func(o *newOptions) { o.skipMCP = true }
 }
 
 // RestrictMCPToCLI makes mcp.Initialize start only MCP servers whose
@@ -244,6 +253,18 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, opts ...O
 	// mode must stay exempt. RunNonInteractive arms the gate itself from
 	// config + CLI overrides on every run, so the run path is unaffected.
 	// Fork patch (run allowlist).
+	if !o.skipMCP && !o.skipAgentSetup {
+		mcpOwner, err := mcp.Acquire()
+		if err != nil {
+			if readConn != nil {
+				if relErr := db.Release(dataDir); relErr != nil {
+					slog.Error("Failed to release read-only DB reference after MCP owner acquisition failure", "error", relErr)
+				}
+			}
+			return nil, fmt.Errorf("failed to acquire MCP application owner: %w", err)
+		}
+		app.mcpOwner = mcpOwner
+	}
 
 	// Startup recovery: any assistant message left without a finish part
 	// from a previous run is treated as an interrupted turn — we add a
@@ -258,7 +279,13 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, opts ...O
 	// its post-#774 candidate-proportional cost — is pure waste for them.
 	if !o.skipAgentSetup {
 		app.recoverInterruptedTurns(ctx)
-		go mcp.Initialize(ctx, app.Permissions, store, o.restrictMCPToCLI)
+		if app.mcpOwner != nil {
+			if len(store.Config().MCP) == 0 {
+				app.mcpOwner.Initialize(ctx, app.Permissions, store, o.restrictMCPToCLI)
+			} else {
+				go app.mcpOwner.Initialize(ctx, app.Permissions, store, o.restrictMCPToCLI)
+			}
+		}
 	}
 
 	// Release the shared database connection(s) on shutdown. The pool
@@ -280,10 +307,11 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, opts ...O
 	app.dbReleasesNeeded = releases
 	// Run queue pump stop is now handled in Shutdown() synchronously (after CancelAll)
 	// to capture the stillBusy return value, not in cleanupFuncs.
-	app.cleanupFuncs = append(
-		app.cleanupFuncs,
-		func(ctx context.Context) error { return mcp.Close(ctx) },
-	)
+	if app.mcpOwner != nil {
+		app.cleanupFuncs = append(app.cleanupFuncs, func(ctx context.Context) error {
+			return app.mcpOwner.Close(ctx)
+		})
+	}
 
 	// Config-only commands (SkipAgentSetup) never touch AgentCoordinator or
 	// RunQueuePump, so both are left nil/zero and construction stops here.
@@ -297,6 +325,11 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, opts ...O
 		return app, nil
 	}
 	if err := app.InitCoderAgent(ctx); err != nil {
+		if app.mcpOwner != nil {
+			if closeErr := app.mcpOwner.Close(context.Background()); closeErr != nil {
+				slog.Error("Failed to close MCP owner after app initialization failure", "error", closeErr)
+			}
+		}
 		// Ownership split (task #778): New only ever took ONE reference
 		// itself — the ConnectRead above (when it succeeded; readConn is
 		// nil otherwise, and releasing a dataDir with no matching Connect/

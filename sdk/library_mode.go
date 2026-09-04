@@ -307,12 +307,10 @@ func openLibrary(ctx context.Context, o Options) (*Client, error) {
 		}
 	}
 
-	var mcpOpts []app.Option
-	if o.MCP == MCPAll {
-		mcpOpts = nil
-	} else {
-		mcpOpts = []app.Option{app.RestrictMCPToCLI()}
-	}
+	// Library mode deliberately does not acquire the process-wide MCP owner.
+	// Its MCP map is empty, and closing a library client must not close the
+	// application-mode client's MCP sessions or event broker.
+	mcpOpts := []app.Option{app.SkipMCP()}
 
 	application, err := app.New(ctx, conn, store, mcpOpts...)
 	if err != nil {
