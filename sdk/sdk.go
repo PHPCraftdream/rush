@@ -604,7 +604,8 @@ func (c *Client) RunWithCredentials(ctx context.Context, req RunRequest, creds C
 // regardless of who is subscribed, so open the subscription before or
 // during a Run and events arrive independently of the call that produced
 // them. Filter by ev.Payload.SessionID if you only care about one
-// session's output. The returned channel is closed when ctx is done (see
+// session's output. The returned channel is closed when ctx is done or when
+// the App is shut down, including through Client.Close (see
 // pubsub.Broker.Subscribe).
 //
 // No tenant filtering: events for every session reach every
@@ -613,8 +614,8 @@ func (c *Client) RunWithCredentials(ctx context.Context, req RunRequest, creds C
 //
 // Admission counts only the Subscribe call itself, never the
 // subscription's lifetime: a subscription admitted before Close started
-// stays bound to the caller's ctx (it simply stops receiving events once
-// the App has shut down), while a call that races Close either completes
+// stays bound to the caller's ctx and is closed when the App shuts down,
+// while a call that races Close either completes
 // against the live broker or returns an already-closed channel.
 //
 // On a closed Client the returned channel is already closed.

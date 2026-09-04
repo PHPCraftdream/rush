@@ -747,6 +747,13 @@ func NewPermissionService(ctx context.Context, workingDir string, skip bool, all
 	return svc
 }
 
+// Shutdown closes both permission brokers owned by the service. It is safe
+// to call repeatedly, which lets App shutdown remain idempotent.
+func (s *permissionService) Shutdown() {
+	s.Broker.Shutdown()
+	s.notificationBroker.Shutdown()
+}
+
 func (s *permissionService) ListSessionPermissions(ctx context.Context, sessionID string) ([]db.SessionPermission, error) {
 	return s.q.ListSessionPermissions(ctx, sessionID)
 }

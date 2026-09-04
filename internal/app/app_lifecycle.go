@@ -11,6 +11,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/pubsub"
 )
 
 // ShutdownResult reports how an App shutdown completed.
@@ -88,7 +89,10 @@ func (app *App) ShutdownAfterDrain(drained <-chan struct{}) ShutdownResult {
 	start := time.Now()
 	defer func() { slog.Debug("Shutdown took " + time.Since(start).String()) }()
 
-	return app.releaseResources(app.cancelAgentsBeforeRelease(drained))
+	app.shutdownOnce.Do(func() {
+		app.shutdownResult = app.releaseResources(app.cancelAgentsBeforeRelease(drained))
+	})
+	return app.shutdownResult
 }
 
 // cancelAgentsBeforeRelease is ShutdownAfterDrain's first phase: cancel
@@ -149,15 +153,27 @@ func (app *App) cancelAgentsBeforeRelease(drained <-chan struct{}) bool {
 func (app *App) releaseResources(stillBusy bool) ShutdownResult {
 	var result ShutdownResult
 
-	// Message and session subscriptions are owned by this App, not by the
-	// caller's context. Close both brokers before any database release so an
-	// SDK subscriber using context.Background receives EOF during Client.Close,
+	// All subscriptions exposed by this App are owned by the App, not by the
+	// caller's context. Close every broker before any database release so a
+	// subscriber using context.Background receives EOF during shutdown,
 	// including on the forced path while live publishers are unwinding.
 	if app.Messages != nil {
 		app.Messages.Shutdown()
 	}
 	if app.Sessions != nil {
 		app.Sessions.Shutdown()
+	}
+	if shutdowner, ok := app.History.(pubsub.Shutdowner); ok {
+		shutdowner.Shutdown()
+	}
+	if shutdowner, ok := app.Permissions.(pubsub.Shutdowner); ok {
+		shutdowner.Shutdown()
+	}
+	if app.agentNotifications != nil {
+		app.agentNotifications.Shutdown()
+	}
+	if app.events != nil {
+		app.events.Shutdown()
 	}
 
 	// Stop the run queue pump (task #340 P0-3). This must complete before DB

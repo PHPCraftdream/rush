@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
@@ -120,6 +121,12 @@ type App struct {
 	mcpOwner           *mcp.Owner
 	agentNotifications *pubsub.Broker[notify.Notification]
 	events             *pubsub.Broker[any]
+
+	// shutdownOnce makes the full App shutdown, including database release,
+	// safe to repeat when a caller has both an explicit shutdown and a cleanup
+	// hook.
+	shutdownOnce   sync.Once
+	shutdownResult ShutdownResult
 
 	// recoveryOrphanAge — internal test seam for recoverInterruptedTurns.
 	// nil = use the production default (30s). Tests set it to 0 so they

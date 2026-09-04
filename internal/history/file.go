@@ -55,6 +55,12 @@ func NewService(q *db.Queries, db *sql.DB) Service {
 	}
 }
 
+// Shutdown closes all file-history subscriptions owned by the service.
+// It is safe to call repeatedly.
+func (s *service) Shutdown() {
+	s.Broker.Shutdown()
+}
+
 func (s *service) Create(ctx context.Context, sessionID, path, content string) (File, error) {
 	return s.createWithVersion(ctx, sessionID, path, content, InitialVersion)
 }

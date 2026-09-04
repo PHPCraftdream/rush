@@ -183,14 +183,7 @@ func TestAppNew_DefaultPath_StillRunsRecoveryAndInitCoderAgent(t *testing.T) {
 
 	application, err := New(context.Background(), conn, store)
 	require.NoError(t, err)
-	t.Cleanup(func() {
-		if application.RunQueuePump != nil {
-			application.RunQueuePump.Stop()
-		}
-		for range application.dbReleasesNeeded {
-			require.NoError(t, db.Release(dataDir))
-		}
-	})
+	t.Cleanup(application.Shutdown)
 
 	assert.NotNil(t, application.AgentCoordinator,
 		"default New() path must still build AgentCoordinator")
@@ -200,4 +193,17 @@ func TestAppNew_DefaultPath_StillRunsRecoveryAndInitCoderAgent(t *testing.T) {
 	assert.True(t, got.IsFinished(),
 		"default New() path must still run recoverInterruptedTurns and recover the orphan")
 	assert.Equal(t, message.FinishReasonError, got.FinishReason())
+
+	// The first App must release its MCP owner and every DB reference before
+	// another default App can be created in the same process.
+	application.Shutdown()
+	conn2, err := db.Connect(context.Background(), dataDir)
+	require.NoError(t, err)
+	require.NotSame(t, conn, conn2,
+		"full App shutdown must release both its writer and read DB references")
+	application2, err := New(context.Background(), conn2, store)
+	require.NoError(t, err)
+	t.Cleanup(application2.Shutdown)
+	require.NotNil(t, application2.AgentCoordinator)
+	application2.Shutdown()
 }
