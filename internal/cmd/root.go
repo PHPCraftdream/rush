@@ -382,7 +382,7 @@ func setupApp(cmd *cobra.Command) (*app.App, error) {
 		// above), so we must release that reference ourselves here or
 		// it leaks the writer's pool reference — and, on Windows, its
 		// underlying file handle — for the life of the process.
-		if relErr := db.Release(cfg.Options.DataDirectory); relErr != nil {
+		if relErr := db.ReleaseConn(conn); relErr != nil {
 			slog.Error("Failed to release DB connection after app init failure", "error", relErr)
 		}
 		return nil, err
@@ -444,7 +444,7 @@ func setupAppLite(cmd *cobra.Command) (*app.App, error) {
 		// See the matching comment in setupApp: app.New only releases the
 		// ConnectRead reference it took itself on this path; our own
 		// db.Connect reference (conn) is ours to release.
-		if relErr := db.Release(cfg.Options.DataDirectory); relErr != nil {
+		if relErr := db.ReleaseConn(conn); relErr != nil {
 			slog.Error("Failed to release DB connection after app init failure", "error", relErr)
 		}
 		return nil, err

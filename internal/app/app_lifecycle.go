@@ -280,12 +280,21 @@ func (app *App) releaseResources(stillBusy bool) ShutdownResult {
 	//   live writers; the OS will reclaim file descriptors on process exit.
 	if app.dataDir != "" {
 		if !stillBusy {
-			// Graceful shutdown: wait synchronously for db.Release.
+			// Graceful shutdown: wait synchronously for generation-safe releases.
 			slog.Debug("Shutdown: closing database (graceful shutdown)")
-			for i := 0; i < app.dbReleasesNeeded; i++ {
-				if err := db.Release(app.dataDir); err != nil {
-					slog.Error("Shutdown: failed to release database connection", "error", err)
-					recordCleanupError(err)
+			if len(app.dbConns) > 0 {
+				for _, conn := range app.dbConns {
+					if err := db.ReleaseConn(conn); err != nil {
+						slog.Error("Shutdown: failed to release database connection", "error", err)
+						recordCleanupError(err)
+					}
+				}
+			} else {
+				for i := 0; i < app.dbReleasesNeeded; i++ {
+					if err := db.Release(app.dataDir); err != nil {
+						slog.Error("Shutdown: failed to release database connection", "error", err)
+						recordCleanupError(err)
+					}
 				}
 			}
 		} else {

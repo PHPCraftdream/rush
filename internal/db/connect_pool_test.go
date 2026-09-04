@@ -144,6 +144,161 @@ func TestConnect_UnrelatedDataDirsDoNotSerializeBehindMigration(t *testing.T) {
 	require.NoError(t, ReleaseAll(fastDir))
 }
 
+// TestResetPool_WaitsForConnectBeforeClearingPool proves ResetPool's
+// pool-wide barrier: a cache-miss Connect that is still migrating must finish
+// before ResetPool snapshots and closes the pool. In particular, ResetPool
+// must not return in the gap between that Connect's miss and publication.
+func TestResetPool_WaitsForConnectBeforeClearingPool(t *testing.T) {
+	dataDir := t.TempDir()
+	absPath := absDBPath(t, dataDir)
+	resume := make(chan struct{})
+	var resumeOnce sync.Once
+	openStarted := make(chan struct{})
+	connectDone := make(chan struct {
+		conn *sql.DB
+		err  error
+	}, 1)
+	resetDone := make(chan struct{})
+
+	onOpenNew = func(path string) {
+		if path != absPath {
+			return
+		}
+		close(openStarted)
+		<-resume
+	}
+	t.Cleanup(func() {
+		onOpenNew = nil
+		resumeOnce.Do(func() { close(resume) })
+		ResetPool()
+	})
+
+	go func() {
+		conn, err := Connect(context.Background(), dataDir)
+		connectDone <- struct {
+			conn *sql.DB
+			err  error
+		}{conn: conn, err: err}
+	}()
+	select {
+	case <-openStarted:
+	case <-time.After(slowOpenBudget):
+		t.Fatal("Connect did not reach the deterministic open seam")
+	}
+
+	go func() {
+		ResetPool()
+		close(resetDone)
+	}()
+
+	// Wait for ResetPool to publish its barrier state, rather than relying on
+	// a scheduler timing window. It cannot complete while Connect is active.
+	deadline := time.After(slowOpenBudget)
+	for {
+		lifecycleMu.Lock()
+		resetting := lifecycleResetting
+		lifecycleMu.Unlock()
+		if resetting {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("ResetPool did not establish its lifecycle barrier")
+		case <-time.After(time.Millisecond):
+		}
+	}
+
+	select {
+	case <-resetDone:
+		t.Fatal("ResetPool returned while Connect was still in its open lifecycle")
+	default:
+	}
+
+	resumeOnce.Do(func() { close(resume) })
+	result := <-connectDone
+	require.NoError(t, result.err)
+	require.NotNil(t, result.conn)
+	select {
+	case <-resetDone:
+	case <-time.After(slowOpenBudget):
+		t.Fatal("ResetPool did not finish after Connect completed")
+	}
+
+	poolMu.Lock()
+	_, pooled := pool[absPath]
+	poolMu.Unlock()
+	require.False(t, pooled, "ResetPool returned with a newly-published entry still pooled")
+	require.Error(t, result.conn.Ping(), "ResetPool must close the entry before returning")
+}
+
+func TestReleaseConn_OldGenerationCannotReleaseNewGeneration(t *testing.T) {
+	t.Cleanup(ResetPool)
+
+	for _, forceReset := range []struct {
+		name string
+		fn   func(string) error
+	}{
+		{name: "release-all", fn: ReleaseAll},
+		{name: "reset-pool", fn: func(string) error {
+			ResetPool()
+			return nil
+		}},
+	} {
+		t.Run(forceReset.name, func(t *testing.T) {
+			dataDir := t.TempDir()
+			oldConn, err := Connect(context.Background(), dataDir)
+			require.NoError(t, err)
+			require.NoError(t, forceReset.fn(dataDir))
+
+			newConn, err := Connect(context.Background(), dataDir)
+			require.NoError(t, err)
+			require.NotSame(t, oldConn, newConn)
+
+			// The old handle is the generation-safe release token. Its late
+			// release must be ignored after a forced reset, even though the
+			// path has been reused.
+			require.NoError(t, ReleaseConn(oldConn))
+			require.NoError(t, newConn.Ping())
+			require.NoError(t, ReleaseConn(newConn))
+			require.Error(t, newConn.Ping())
+		})
+	}
+}
+
+func TestReleaseConn_ConcurrentLateOldGenerationReleasesAreHarmless(t *testing.T) {
+	t.Cleanup(ResetPool)
+
+	dataDir := t.TempDir()
+	oldConn, err := Connect(context.Background(), dataDir)
+	require.NoError(t, err)
+	require.NoError(t, ReleaseAll(dataDir))
+
+	newConn, err := Connect(context.Background(), dataDir)
+	require.NoError(t, err)
+
+	const releasers = 32
+	start := make(chan struct{})
+	errs := make(chan error, releasers)
+	var wg sync.WaitGroup
+	for range releasers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			errs <- ReleaseConn(oldConn)
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for releaseErr := range errs {
+		require.NoError(t, releaseErr)
+	}
+
+	require.NoError(t, newConn.Ping(), "late releases from the old generation closed the new generation")
+	require.NoError(t, ReleaseConn(newConn))
+}
+
 // TestConnect_ConcurrentSamePathSharesOneEntry pins the invariant #637 must
 // not break: N concurrent Connect calls for the SAME dataDir must all return
 // the identical writer *sql.DB, backed by exactly one pool entry with

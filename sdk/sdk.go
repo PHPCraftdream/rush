@@ -471,7 +471,7 @@ func openApplication(ctx context.Context, o Options) (*Client, error) {
 		// took ownership of our conn, so this reference must be released
 		// here or the writer pool leaks (on Windows, its file handle
 		// with it). Mirrors setupApp in internal/cmd/root.go.
-		if relErr := db.Release(cfg.Options.DataDirectory); relErr != nil {
+		if relErr := db.ReleaseConn(conn); relErr != nil {
 			slog.Error("sdk: failed to release DB connection after app init failure", "error", relErr)
 		}
 		return nil, fmt.Errorf("sdk: failed to create app instance: %w", err)

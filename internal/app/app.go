@@ -106,13 +106,16 @@ type App struct {
 	// raw-SQL features that don't have their own sqlc-generated package.
 	DB func() *sql.DB
 
-	// dataDir is the path to .rush/ where the database lives. Stored here
-	// so Shutdown() can call db.Release() with knowledge of whether shutdown
-	// was graceful or forced.
+	// dataDir is the path to .rush/ where the database lives. Stored here for
+	// shutdown policy and diagnostics.
 	dataDir string
 
-	// dbReleasesNeeded tracks how many db.Release() calls to make on shutdown.
-	// One for each Connect/ConnectRead call during app startup.
+	// dbConns are generation-safe release tokens for pooled connections
+	// acquired during startup. Production-created Apps use these tokens.
+	dbConns []*sql.DB
+
+	// dbReleasesNeeded is retained for App values assembled by older internal
+	// tests. Those values do not have dbConns and use the compatibility path.
 	dbReleasesNeeded int
 
 	// global context and cleanup functions
@@ -206,8 +209,8 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, opts ...O
 	//
 	// This is additive to db.Connect, which the caller already invoked to
 	// obtain conn — ConnectRead shares that same pool entry's refCount, so
-	// the existing single db.Release(dataDir) call in the cleanup func
-	// below must become two (one per Connect/ConnectRead call this process
+	// both returned handles are retained as generation-safe cleanup tokens
+	// and released individually (one per Connect/ConnectRead call this process
 	// made) to avoid leaking the reader's reference. If the reader fails to
 	// open for any reason, we degrade to today's single-connection
 	// behavior (qRead/readDB alias the writer) rather than failing
@@ -264,7 +267,7 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, opts ...O
 		mcpOwner, err := mcp.Acquire()
 		if err != nil {
 			if readConn != nil {
-				if relErr := db.Release(dataDir); relErr != nil {
+				if relErr := db.ReleaseConn(readConn); relErr != nil {
 					slog.Error("Failed to release read-only DB reference after MCP owner acquisition failure", "error", relErr)
 				}
 			}
@@ -307,11 +310,10 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, opts ...O
 	// whether shutdown was graceful or forced, NOT via cleanupFuncs.
 	// This avoids the race where a timeout-abandoned Close() goroutine
 	// continues running after the process has exited.
-	releases := 1
+	app.dbConns = []*sql.DB{conn}
 	if readConn != nil {
-		releases++
+		app.dbConns = append(app.dbConns, readConn)
 	}
-	app.dbReleasesNeeded = releases
 	// Run queue pump stop is now handled in Shutdown() synchronously (after CancelAll)
 	// to capture the stillBusy return value, not in cleanupFuncs.
 	if app.mcpOwner != nil {
@@ -355,7 +357,7 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, opts ...O
 		// skipping this call would leak the pool entry (and its OS file
 		// handle) forever (task #778).
 		if readConn != nil {
-			if relErr := db.Release(dataDir); relErr != nil {
+			if relErr := db.ReleaseConn(readConn); relErr != nil {
 				slog.Error("app: failed to release read-only DB reference after init failure", "error", relErr)
 			}
 		}

@@ -125,7 +125,7 @@ func runStats(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to connect to database: %w", err)
 	}
-	defer conn.Close()
+	defer db.ReleaseConn(conn) //nolint:errcheck
 
 	stats, err := gatherStats(ctx, conn)
 	if err != nil {

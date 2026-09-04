@@ -52,6 +52,7 @@ type connEntry struct {
 	readDB   *sql.DB
 	refCount int
 	pathLock *pathLock
+	absPath  string
 }
 
 // pathLock serializes database lifecycle operations for one path. refs holds
@@ -68,12 +69,28 @@ var (
 	pool   = make(map[string]*connEntry)
 	poolMu sync.Mutex
 
+	// lifecycleMu gates the pool-wide ResetPool barrier. Normal operations
+	// only hold it long enough to register themselves; ResetPool blocks new
+	// operations and waits for all registered operations to finish before it
+	// snapshots the pool.
+	lifecycleMu        sync.Mutex
+	lifecycleCond      = sync.NewCond(&lifecycleMu)
+	lifecycleActive    int
+	lifecycleResetting bool
+
 	// pathLocks contains only paths with an active opener, waiter, or pooled
 	// connection. pathLocksMu protects both the map and each pathLock's refs;
 	// the pathLock mutex itself serializes the slow open/close lifecycle for
 	// one path. poolMu only guards pool bookkeeping, never slow database work.
 	pathLocks   = make(map[string]*pathLock)
 	pathLocksMu sync.Mutex
+
+	// Lock-order audit: lifecycleMu is not held while another lifecycle
+	// operation runs. For path operations, pathLocksMu is released before
+	// pathLock.mu is acquired, and pathLock.mu precedes poolMu. ResetPool
+	// releases poolMu before taking any pathLock.mu, so it cannot invert the
+	// normal pathLock.mu-to-poolMu order. Registry reference updates never
+	// hold poolMu, and final path-lock decrements happen after path unlock.
 
 	// onOpenNew runs after a cache miss, before the slow open+migrate
 	// work, for a database path not yet in the pool. Test seam only:
@@ -120,18 +137,36 @@ func releasePathLock(absPath string, pathLock *pathLock) {
 	pathLocksMu.Unlock()
 }
 
+func beginLifecycleOperation() {
+	lifecycleMu.Lock()
+	for lifecycleResetting {
+		lifecycleCond.Wait()
+	}
+	lifecycleActive++
+	lifecycleMu.Unlock()
+}
+
+func endLifecycleOperation() {
+	lifecycleMu.Lock()
+	lifecycleActive--
+	if lifecycleActive == 0 {
+		lifecycleCond.Broadcast()
+	}
+	lifecycleMu.Unlock()
+}
+
 // Connect opens a SQLite database connection for the given data
 // directory and runs migrations. If a connection to the same database
 // file already exists, the existing connection is returned with its
-// reference count incremented. Callers must pair each Connect with a
-// [Release] when they no longer need the connection.
+// reference count incremented. Callers should pair each Connect with
+// [ReleaseConn] using the returned *sql.DB when they no longer need it.
 //
 // Connect only ever returns the single-connection WRITER handle. Callers
 // that also want a concurrent read-only handle for hot, standalone read
 // paths (list/grep/call-tree queries that don't need read-your-own-write
 // consistency with a subsequent write in the same call) should additionally
 // call [ConnectRead] with the same dataDir — it shares this entry's
-// refCount, so a single [Release] tears down both.
+// refCount, so one [ReleaseConn] is needed for each returned handle.
 func Connect(ctx context.Context, dataDir string) (*sql.DB, error) {
 	entry, err := connect(ctx, dataDir)
 	if err != nil {
@@ -149,9 +184,9 @@ func Connect(ctx context.Context, dataDir string) (*sql.DB, error) {
 // calling ConnectRead alone still opens the writer underneath (migrations
 // must run before anything reads), it just returns the reader handle. Every
 // call increments the shared refCount, so a caller that calls both Connect
-// and ConnectRead for the same dataDir must call [Release] the same number
-// of times it called either one (once per Connect/ConnectRead pair, not
-// once per function).
+// and ConnectRead for the same dataDir must call [ReleaseConn] with the
+// returned handles the same number of times it called either one (once per
+// Connect/ConnectRead pair, not once per function).
 func ConnectRead(ctx context.Context, dataDir string) (*sql.DB, error) {
 	entry, err := connect(ctx, dataDir)
 	if err != nil {
@@ -164,12 +199,14 @@ func ConnectRead(ctx context.Context, dataDir string) (*sql.DB, error) {
 // opens (or reuses) the pool entry for dataDir, running migrations exactly
 // once, and increments the entry's refCount once per call — so callers that
 // want BOTH a writer and a reader handle for the same dataDir must call
-// [Release] twice (once per Connect/ConnectRead call they made), matching
+// [ReleaseConn] twice (once per Connect/ConnectRead call they made), matching
 // the existing "one Connect, one Release" contract extended to ConnectRead.
 func connect(ctx context.Context, dataDir string) (*connEntry, error) {
 	if dataDir == "" {
 		return nil, fmt.Errorf("data.dir is not set")
 	}
+	beginLifecycleOperation()
+	defer endLifecycleOperation()
 
 	dbPath := filepath.Join(dataDir, "rush.db")
 
@@ -255,7 +292,7 @@ func connect(ctx context.Context, dataDir string) (*connEntry, error) {
 	// This reference is acquired before publishing the entry so a concurrent
 	// Release cannot remove the registry entry between those two operations.
 	retainPathLock(pathMu)
-	entry := &connEntry{db: conn, readDB: readConn, refCount: 1, pathLock: pathMu}
+	entry := &connEntry{db: conn, readDB: readConn, refCount: 1, pathLock: pathMu, absPath: absPath}
 	poolMu.Lock()
 	pool[absPath] = entry
 	poolMu.Unlock()
@@ -267,33 +304,80 @@ func connect(ctx context.Context, dataDir string) (*connEntry, error) {
 // (writer and, if separate, reader) are closed and removed from the pool.
 //
 // A caller that obtained both a writer (Connect) and a reader (ConnectRead)
-// handle for the same dataDir must call Release once per call it made to
-// either function — the shared refCount is decremented once per Release,
+// handle for the same dataDir must call ReleaseConn once per call it made to
+// either function — the shared refCount is decremented once per ReleaseConn,
 // symmetric with connect()'s "increment once per call" contract.
 func Release(dataDir string) error {
+	beginLifecycleOperation()
+	defer endLifecycleOperation()
+
+	return releasePath(dataDir)
+}
+
+// ReleaseConn decrements the reference count for the pooled generation that
+// owns conn. The returned *sql.DB is the release token: if that generation
+// was forcibly removed and a new generation was opened for the same path,
+// ReleaseConn is a no-op and cannot affect the new generation.
+//
+// Callers should prefer ReleaseConn over Release. Release is retained for
+// compatibility with older callers, but a path-only release cannot identify
+// a generation after ReleaseAll or ResetPool and must not be used for a
+// cleanup that can outlive either operation.
+func ReleaseConn(conn *sql.DB) error {
+	if conn == nil {
+		return nil
+	}
+	beginLifecycleOperation()
+	defer endLifecycleOperation()
+
+	poolMu.Lock()
+	var entry *connEntry
+	for _, candidate := range pool {
+		if candidate.db == conn || candidate.readDB == conn {
+			entry = candidate
+			break
+		}
+	}
+	poolMu.Unlock()
+	if entry == nil {
+		return nil
+	}
+
+	return releaseEntry(entry.absPath, entry)
+}
+
+func releasePath(dataDir string) error {
 	dbPath := filepath.Join(dataDir, "rush.db")
 	absPath, err := filepath.Abs(dbPath)
 	if err != nil {
 		absPath = dbPath
 	}
 
+	return releaseEntry(absPath, nil)
+}
+
+func releaseEntry(absPath string, expected *connEntry) error {
 	pathMu := acquirePathLock(absPath)
 	pathMu.mu.Lock()
+	defer func() {
+		pathMu.mu.Unlock()
+		releasePathLock(absPath, pathMu)
+	}()
 
 	poolMu.Lock()
 	entry, ok := pool[absPath]
-	if !ok {
+	if !ok || (expected != nil && entry != expected) {
 		poolMu.Unlock()
-		pathMu.mu.Unlock()
-		releasePathLock(absPath, pathMu)
 		return nil
 	}
 
+	return releaseEntryLocked(absPath, entry)
+}
+
+func releaseEntryLocked(absPath string, entry *connEntry) error {
 	entry.refCount--
 	if entry.refCount > 0 {
 		poolMu.Unlock()
-		pathMu.mu.Unlock()
-		releasePathLock(absPath, pathMu)
 		return nil
 	}
 
@@ -310,8 +394,6 @@ func Release(dataDir string) error {
 		onCloseEntry(absPath)
 	}
 	closeErr := closeEntry(entry)
-	pathMu.mu.Unlock()
-	releasePathLock(absPath, pathMu)
 	releasePathLock(absPath, entry.pathLock)
 	return closeErr
 }
@@ -341,6 +423,9 @@ func Release(dataDir string) error {
 // t.Parallel()) for DIFFERENT dataDirs, unlike ResetPool which tears down
 // every pooled entry process-wide.
 func ReleaseAll(dataDir string) error {
+	beginLifecycleOperation()
+	defer endLifecycleOperation()
+
 	dbPath := filepath.Join(dataDir, "rush.db")
 	absPath, err := filepath.Abs(dbPath)
 	if err != nil {
@@ -395,13 +480,34 @@ func closeEntry(entry *connEntry) error {
 	return readErr
 }
 
-// ResetPool closes all pooled connections and clears the pool. This is
-// intended for use in tests to ensure a clean state between test cases.
+// ResetPool establishes a pool-wide lifecycle barrier, closes all pooled
+// connections, and clears the pool. It waits for in-flight Connect/Release
+// operations, so it returns only after no opener can publish a new entry.
+// This is intended for use in tests to ensure a clean state between test
+// cases.
 func ResetPool() {
 	type pooledEntry struct {
 		path  string
 		entry *connEntry
 	}
+
+	// Establish a pool-wide barrier before observing pool. Every Connect,
+	// Release, and ReleaseAll operation registers with this gate, so no
+	// cache-miss opener can publish an entry after this snapshot or while the
+	// entries are being closed.
+	lifecycleMu.Lock()
+	lifecycleResetting = true
+	for lifecycleActive != 0 {
+		lifecycleCond.Wait()
+	}
+	lifecycleMu.Unlock()
+
+	defer func() {
+		lifecycleMu.Lock()
+		lifecycleResetting = false
+		lifecycleCond.Broadcast()
+		lifecycleMu.Unlock()
+	}()
 
 	entries := make([]pooledEntry, 0)
 	poolMu.Lock()

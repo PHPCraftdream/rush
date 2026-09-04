@@ -327,7 +327,7 @@ func openLibrary(ctx context.Context, o Options) (*Client, error) {
 			// be released here or the writer pool leaks (on Windows,
 			// its file handle with it). Mirrors setupApp in
 			// internal/cmd/root.go.
-			if relErr := db.Release(dataDir); relErr != nil {
+			if relErr := db.ReleaseConn(conn); relErr != nil {
 				slog.Error("sdk: failed to release DB connection after app init failure", "error", relErr)
 			}
 		}
