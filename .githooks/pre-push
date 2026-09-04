@@ -59,9 +59,10 @@ step() { printf '\033[36m▸ %s\033[0m\n' "$1"; }
 # mid-compile with "runtime: VirtualAlloc ... errno=1455") while running
 # the unthrottled `go test ./...` below. Two independent layers, same
 # philosophy as CI's GOMEMLIMIT + batching:
-#   1. -p 2 everywhere (portable, no extra tooling, matches every CI step)
-#     and internal/agent tested ALONE with -parallel 2 on top of that,
-#     exactly like build.yml/test-agent split it out.
+#   1. -p 2 on every multi-package go build/test (portable, no extra
+#     tooling, matches every CI step); internal/agent is tested ALONE --
+#     a single package, where -p has nothing to parallelize -- with
+#     -parallel 2 on top, exactly like build.yml/test-agent split it out.
 #   2. run_capped: a HARD ceiling via safego.ps1 (this machine's Job-Object
 #     memory-cap + wall-clock-timeout wrapper, see CLAUDE.md) when present.
 #     It is a personal, machine-local tool, never committed to the repo --
@@ -233,13 +234,24 @@ fi
 # budget instead of one unthrottled `./...` call. See run_capped's comment
 # above for why this split exists at all (internal/agent + -p >1 is a
 # proven Windows OOM trigger CI already isolates; this hook now does too).
+#
+# Signature: run_test_segment <label> <size> <timeout> <flags> <pkgs...>
+# <flags> is THIS segment's go test throttling flags ("-parallel 2" or
+# "-p 2", deliberately word-split), and EVERY go test invocation below --
+# first attempt and BOTH retry branches -- must carry it: the
+# identified-package retry once rebuilt its command from the
+# failed-package list alone, silently dropping the flags and re-arming
+# the commit-limit OOM at the exact moment the first attempt had memory
+# pressure already peaking. .githooks/check_run_test_segment_retry_flags.sh
+# pins this invariant.
 run_test_segment() {
-	local label="$1" size="$2" timeout="$3"
-	shift 3
+	local label="$1" size="$2" timeout="$3" flags="$4"
+	shift 4
 	local test_log
 	test_log="$(mktemp)"
 	step "go test -short -failfast $label"
-	if run_capped "$size" "$timeout" go test -short -failfast "$@" 2>&1 | tee "$test_log"; then
+	# shellcheck disable=SC2086
+	if run_capped "$size" "$timeout" go test -short -failfast $flags "$@" 2>&1 | tee "$test_log"; then
 		printf '\033[32m(tests passed on the first attempt: %s)\033[0m\n' "$label"
 	else
 		# Package(s) that actually reported FAIL, e.g.
@@ -247,30 +259,42 @@ run_test_segment() {
 		failed_pkgs="$(grep -E '^FAIL[[:space:]]' "$test_log" | awk '{print $2}' | sort -u | tr '\n' ' ')"
 		if [ -z "${failed_pkgs// /}" ]; then
 			printf '\033[33m⚠ %s failed once — could not identify which package from the output, retrying the whole segment (known rare Windows flakiness, see comment above)\033[0m\n' "$label"
-			run_capped "$size" "$timeout" go test -short -failfast "$@" || fail "$label failed twice in a row — not the known flake, treat as real"
+			# shellcheck disable=SC2086
+			run_capped "$size" "$timeout" go test -short -failfast $flags "$@" || fail "$label failed twice in a row — not the known flake, treat as real"
 		else
 			printf '\033[33m⚠ %s failed once in: %s — retrying just that/those package(s) (known rare Windows flakiness, see comment above)\033[0m\n' "$label" "$failed_pkgs"
 			# shellcheck disable=SC2086
-			run_capped "$size" "$timeout" go test -short -failfast $failed_pkgs || fail "$label failed twice in a row in $failed_pkgs — not the known flake, treat as real"
+			run_capped "$size" "$timeout" go test -short -failfast $flags $failed_pkgs || fail "$label failed twice in a row in $failed_pkgs — not the known flake, treat as real"
 		fi
 		printf '\033[33m(tests passed on retry: %s)\033[0m\n' "$label"
 	fi
 	rm -f "$test_log"
 }
 
+# Regression guard (task #892): EVERY retry path inside run_test_segment
+# must re-apply this segment's throttling flags -- the identified-package
+# retry once rebuilt its go test command from the failed-package list
+# alone, silently dropping -parallel 2 / -p 2 and re-arming the very
+# commit-limit OOM the throttling exists to prevent, precisely when the
+# first attempt had memory pressure already peaking. The selftest uses a
+# mock go (no compilation) and runs before the real segments, so the
+# regression fails here before minutes of real test time are spent.
+step "run_test_segment retry paths preserve -p/-parallel throttling"
+bash .githooks/check_run_test_segment_retry_flags.sh || fail "run_test_segment retry dropped the throttling flags -- see output above"
+
 # internal/agent alone, throttled: 172+ t.Parallel() sites in one package
 # at default parallelism (GOMAXPROCS) is the single biggest commit-limit
 # contributor found this session -- -parallel 2 keeps peak concurrent test
 # state (sqlite DBs, httptest servers, SSE buffers) bounded regardless of
 # how many logical CPUs this machine has.
-run_test_segment "internal/agent (isolated, throttled)" 2g 300 -parallel 2 ./internal/agent/
+run_test_segment "internal/agent (isolated, throttled)" 2g 300 "-parallel 2" ./internal/agent/
 
 # Everything else, -p 2 like every CI test step in build.yml -- internal/agent
 # is excluded here (already covered above) so this list is never combined
 # with it under shared package-build parallelism, the other half of the
 # same proven Windows OOM trigger.
 # shellcheck disable=SC2046
-run_test_segment "./... (minus internal/agent)" 3g 480 -p 2 $(go list ./... | grep -v '^github.com/PHPCraftdream/rush/internal/agent$')
+run_test_segment "./... (minus internal/agent)" 3g 480 "-p 2" $(go list ./... | grep -v '^github.com/PHPCraftdream/rush/internal/agent$')
 
 # The process-group and lock-fence suites, which -short deliberately skips
 # (they spawn real child processes). build.yml runs these on ubuntu; mirror
