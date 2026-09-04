@@ -5,7 +5,9 @@
 package cliprovider
 
 import (
+	"errors"
 	"os"
+	"os/exec"
 	"slices"
 	"sync"
 
@@ -43,6 +45,22 @@ var testDisablePTY bool
 // On non-Windows this is a thin wrapper around exec.LookPath.
 func resolveBinary(name string) (string, error) {
 	return shell.LookPathSkippingWSL(name)
+}
+
+// resolveLaunchBinary preserves the legacy Start-time error for a genuinely
+// missing binary by returning its bare name, while propagating every other
+// resolver rejection. In particular, a WSL-only result is not equivalent to
+// "not found": falling back to the bare name would make os/exec repeat the
+// lookup without WSL filtering and launch the rejected WSL executable.
+func resolveLaunchBinary(name string) (string, error) {
+	resolved, err := resolveBinary(name)
+	if err == nil {
+		return resolved, nil
+	}
+	if errors.Is(err, exec.ErrNotFound) {
+		return name, nil
+	}
+	return "", err
 }
 
 // Available reports which CLI model specs are usable on this machine.

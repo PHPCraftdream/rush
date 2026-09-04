@@ -26,6 +26,11 @@ import (
 )
 
 func (m *cliModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.StreamResponse, error) {
+	binaryPath, resolveErr := resolveLaunchBinary(m.spec.Binary)
+	if resolveErr != nil {
+		return nil, fmt.Errorf("resolve %s: %w", m.spec.Binary, resolveErr)
+	}
+
 	yolo := m.yoloFn != nil && m.yoloFn()
 	// Fork patch: batch 14 — `rush run` has no human at the keyboard, so any
 	// inner CLI process MUST get bypass-permissions or it will hang on the
@@ -328,16 +333,10 @@ func (m *cliModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.Strea
 			// at the default 80-column width splits them across scanner tokens,
 			// causing json.Unmarshal to fail on every partial line.
 			_ = p.Resize(8192, 50)
-			// Resolve the binary to an absolute path before passing to go-pty.
-			// On Windows, go-pty/ConPTY may resolve binary names relative to
-			// cmd.Dir instead of PATH, so we do the PATH lookup ourselves —
-			// via resolveBinary so a bare "bash" cannot resolve to the WSL
-			// launcher ahead of Git Bash/MSYS on PATH (see resolveBinary's
-			// doc comment).
-			binaryPath := m.spec.Binary
-			if resolved, lookErr := resolveBinary(m.spec.Binary); lookErr == nil {
-				binaryPath = resolved
-			}
+			// The launch path was classified before any request resources were
+			// allocated. On Windows, go-pty/ConPTY may resolve bare names relative
+			// to cmd.Dir instead of PATH, and falling back from a WSL-only resolver
+			// rejection would launch the unsafe WSL executable.
 			ptycmd := p.CommandContext(ctx, binaryPath, args...)
 			ptycmd.Dir = m.workingDir
 			if startErr := ptycmd.Start(); startErr == nil {
@@ -482,18 +481,9 @@ func (m *cliModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.Strea
 
 	if proc.stdout == nil {
 		// Pipe fallback: large prompt (stdin required) or PTY unavailable.
-		// Resolve the binary explicitly via resolveBinary rather than
-		// letting os/exec's own bare-name lookup run at Start(): on Windows
-		// that lookup can hand back the WSL launcher (System32\bash.exe) if
-		// it precedes Git Bash/MSYS bash on PATH, which cannot run anything
-		// given the Windows-style m.workingDir/args we pass below. Falling
-		// through to the bare name on lookup failure preserves the previous
-		// error surface (os/exec's own "not found" from Start) for the
-		// genuinely-missing-binary case.
-		binaryPath := m.spec.Binary
-		if resolved, lookErr := resolveBinary(m.spec.Binary); lookErr == nil {
-			binaryPath = resolved
-		}
+		// binaryPath was resolved before any request resources were allocated.
+		// A genuinely missing binary remains bare so Start preserves the legacy
+		// error surface; every other resolver rejection has already returned.
 		cmd := platform.Command(ctx, binaryPath, args...)
 		cmd.Dir = m.workingDir
 		// Make the child a process-group leader so KillProcess can
