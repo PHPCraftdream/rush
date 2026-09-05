@@ -1395,21 +1395,18 @@ func DisableSingle(cfg *config.ConfigStore, name string) error {
 // and persists the disabled flag to config.
 func DisableServer(ctx context.Context, cfg *config.ConfigStore, name string) error {
 	return disableServerWithPersistence(ctx, cfg, name,
-		func(cfg *config.ConfigStore, scope config.Scope, name string) error {
-			if currentOwner := currentOwner(); currentOwner != nil &&
-				currentOwner.pendingGlobalAdd(name, cfg) != nil {
-				mcpCfg, ok := cfg.MCPConfig(name)
-				if !ok {
-					return config.ErrMCPNotFound
-				}
-				mcpCfg.Disabled = true
-				return cfg.PersistMCPConfig(scope, name, mcpCfg)
+		func(cfg *config.ConfigStore, scope config.Scope, name string, pending *config.MCPConfig) error {
+			if pending != nil {
+				return cfg.PersistMCPConfig(scope, name, *pending)
 			}
 			return cfg.PersistMCPDisabledOverride(scope, name, true)
 		})
 }
 
-type disableServerPersister func(*config.ConfigStore, config.Scope, string) error
+// disableServerPersister performs exactly one durable mutation. pending is the
+// complete disabled definition for an in-flight Add, or nil when an existing
+// durable definition only needs a disabled field overlay.
+type disableServerPersister func(*config.ConfigStore, config.Scope, string, *config.MCPConfig) error
 
 func disableServerWithPersistence(
 	ctx context.Context,
@@ -1445,21 +1442,17 @@ func disableServerWithPersistence(
 	}
 	// Persist first. If disk persistence fails, the session and in-memory
 	// snapshot remain enabled, so the operation has no half-applied result.
-	if err := persist(cfg, scope, name); err != nil {
+	transaction := o.pendingGlobalAdd(name, cfg)
+	var pending *config.MCPConfig
+	if transaction != nil {
+		fullConfig := mcpCfg
+		fullConfig.Disabled = true
+		pending = &fullConfig
+	}
+	if err := persist(cfg, scope, name, pending); err != nil {
 		return fmt.Errorf("failed to persist MCP disabled state for %q: %w", name, err)
 	}
-	if transaction := o.pendingGlobalAdd(name, cfg); transaction != nil {
-		// A pending Add has no durable definition for a disabled override to
-		// modify. Ensure a successful custom persister leaves the complete
-		// definition on disk rather than a disabled-only ghost.
-		mcpCfg.Disabled = true
-		if err := cfg.PersistMCPConfig(scope, name, mcpCfg); err != nil {
-			// The pending add did not exist on disk before this transaction. If
-			// the full write cannot complete, remove the partial override so the
-			// durable result is still either complete or absent.
-			_ = cfg.PersistRemoveMCPConfig(scope, name)
-			return fmt.Errorf("failed to persist complete MCP disabled state for %q: %w", name, err)
-		}
+	if transaction != nil {
 		transaction.markUserMutation()
 	}
 	// Persistence is the fallible part of this transaction. Only after it

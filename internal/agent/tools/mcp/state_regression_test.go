@@ -203,9 +203,10 @@ func testFailedServerMutation(t *testing.T, remove bool) {
 		})
 	} else {
 		err = disableServerWithPersistence(context.Background(), store, name,
-			func(*config.ConfigStore, config.Scope, string) error { return persistErr })
+			func(*config.ConfigStore, config.Scope, string, *config.MCPConfig) error { return persistErr })
 	}
 	require.ErrorIs(t, err, persistErr)
+	requireMCPFileLacks(t, config.GlobalConfigData(), name)
 	select {
 	case <-canceled:
 		t.Fatal("failed persistence canceled the startup candidate")
@@ -498,6 +499,104 @@ func TestPendingAddMutationCommitsCompleteConfigBeforeInvalidatingAdd(t *testing
 			require.False(t, hasPendingGlobalAdd(name))
 		})
 	}
+}
+
+func TestPendingAddDisableUsesOneWriteAndPreservesConcurrentWriter(t *testing.T) {
+	store := isolatedMCPStore(t)
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer func() { require.NoError(t, owner.Close(context.Background())) }()
+
+	const name = "pending-add-single-write"
+	addedConfig := config.MCPConfig{
+		Type:    config.MCPHttp,
+		URL:     "http://pending-single-write.example",
+		Timeout: 37,
+		Headers: map[string]string{"Authorization": "Bearer pending"},
+	}
+	initializerStarted := make(chan struct{})
+	releaseInitializer := make(chan struct{})
+	addDone := make(chan error, 1)
+	go func() {
+		addDone <- addServerWithInitializer(
+			context.Background(), store, name, addedConfig,
+			func(
+				_ context.Context,
+				cfg *config.ConfigStore,
+				serverName string,
+				_ config.MCPConfig,
+				_ config.VariableResolver,
+				admission *serverAdmission,
+			) error {
+				if err := publishPreparedClient(cfg, serverName, &preparedClient{
+					session: &ClientSession{},
+				}, admission); err != nil {
+					return err
+				}
+				admission.done()
+				close(initializerStarted)
+				<-releaseInitializer
+				return nil
+			},
+		)
+	}()
+	waitForRequest(t, initializerStarted)
+
+	var persistenceCalls atomic.Int32
+	selectedConfig := make(chan config.MCPConfig, 1)
+	releasePersistence := make(chan struct{})
+	disableDone := make(chan error, 1)
+	go func() {
+		disableDone <- disableServerWithPersistence(
+			context.Background(), store, name,
+			func(cfg *config.ConfigStore, scope config.Scope, serverName string, pending *config.MCPConfig) error {
+				if persistenceCalls.Add(1) != 1 {
+					return errors.New("disable persister called more than once")
+				}
+				if pending == nil {
+					return errors.New("pending Add did not select a full config write")
+				}
+				selectedConfig <- *pending
+				<-releasePersistence
+				return cfg.PersistMCPConfig(scope, serverName, *pending)
+			},
+		)
+	}()
+
+	var pendingConfig config.MCPConfig
+	select {
+	case pendingConfig = <-selectedConfig:
+	case <-time.After(time.Second):
+		t.Fatal("disable did not reach the injected persistence seam")
+	}
+	require.Equal(t, int32(1), persistenceCalls.Load())
+	require.True(t, pendingConfig.Disabled)
+	require.Equal(t, addedConfig.Type, pendingConfig.Type)
+	require.Equal(t, addedConfig.URL, pendingConfig.URL)
+	require.Equal(t, addedConfig.Timeout, pendingConfig.Timeout)
+	require.Equal(t, addedConfig.Headers, pendingConfig.Headers)
+
+	const concurrentName = "concurrent-file-writer"
+	concurrentConfig := config.MCPConfig{
+		Type: config.MCPHttp,
+		URL:  "http://concurrent-writer.example",
+	}
+	require.NoError(t, store.PersistMCPConfig(config.ScopeGlobal, concurrentName, concurrentConfig))
+	close(releasePersistence)
+	require.NoError(t, <-disableDone)
+	require.Equal(t, int32(1), persistenceCalls.Load())
+
+	disk := diskMCP(t)
+	var persistedPending config.MCPConfig
+	require.NoError(t, json.Unmarshal(disk[name], &persistedPending))
+	require.Equal(t, pendingConfig, persistedPending)
+	var persistedConcurrent config.MCPConfig
+	require.NoError(t, json.Unmarshal(disk[concurrentName], &persistedConcurrent))
+	require.Equal(t, concurrentConfig, persistedConcurrent)
+
+	close(releaseInitializer)
+	require.ErrorIs(t, <-addDone, ErrOwnerBusy)
+	require.False(t, hasPendingGlobalAdd(name))
 }
 
 func TestStaleAddRollbackPreservesNewerSameNameServer(t *testing.T) {

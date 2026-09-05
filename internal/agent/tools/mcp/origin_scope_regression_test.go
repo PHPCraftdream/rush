@@ -294,7 +294,7 @@ func TestBlockedProjectInitializerIsNotPendingGlobalAdd(t *testing.T) {
 	tests := map[string]func(context.Context, *config.ConfigStore, string, *atomic.Int32) error{
 		"disable": func(ctx context.Context, store *config.ConfigStore, name string, attempts *atomic.Int32) error {
 			return disableServerWithPersistence(ctx, store, name,
-				func(cfg *config.ConfigStore, scope config.Scope, serverName string) error {
+				func(cfg *config.ConfigStore, scope config.Scope, serverName string, _ *config.MCPConfig) error {
 					attempts.Add(1)
 					return cfg.PersistMCPDisabledOverride(scope, serverName, true)
 				})
