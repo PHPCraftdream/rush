@@ -62,11 +62,10 @@ const (
 	// without the original bytes.
 	BufferRetentionMinutes = 15
 
-	// onDoneReleaseGrace bounds how long a completion callback may retain a
-	// detached shell's output. The callback normally reads the output before
-	// this expires; a callback that blocks forever cannot retain multi-megabyte
-	// buffers forever.
-	onDoneReleaseGrace = time.Second
+	// detachedCallbackReleaseGrace bounds how long a completion callback may
+	// retain a detached shell's output. Attached jobs remain governed solely by
+	// BufferRetentionMinutes.
+	detachedCallbackReleaseGrace = time.Second
 
 	// maxStreamBufferBytes bounds how much of a single stdout/stderr stream a
 	// background job keeps resident in memory. A chatty/never-ending command
@@ -98,23 +97,6 @@ const (
 // add a tuning knob and a "which completed job to drop first" policy for
 // negligible gain. The concurrency limit (MaxBackgroundJobs) is enforced on
 // ACTIVE jobs only via BackgroundShellManager.activeJobs.
-
-// bufferRetention is the duration after completion before a job's buffered
-// stdout/stderr bytes are released via a one-shot time.AfterFunc armed in
-// Start's completion goroutine. Defaults to BufferRetentionMinutes; tests
-// override it to a short duration to exercise the timer path without waiting
-// 15 minutes.
-//
-// Deliberately NOT t.Setenv-style scoped: it's a plain package-level var
-// mutated directly (e.g. `bufferRetention = 50 * time.Millisecond`) by tests
-// in this package, with no lock guarding reads/writes. That's safe only as
-// long as no test overriding it ever runs under t.Parallel() — see the
-// identical warning on isolatedModelsEnv in internal/cmd/models_use_test.go
-// and on TestIsWSLLauncher_FallsBackWhenSystemRootUnset in
-// dispatch_windows_test.go for the same pattern. If a future test needs
-// t.Parallel() here, this must first become a per-manager field (or use
-// t.Setenv-equivalent synchronization) instead of a shared package var.
-var bufferRetention = time.Duration(BufferRetentionMinutes) * time.Minute
 
 // boundedBuffer is a thread-safe, size-bounded byte sink used for a single
 // background job's stdout or stderr stream.
@@ -302,12 +284,12 @@ type BackgroundShell struct {
 	releaseOnce sync.Once
 	onDoneCount atomic.Int64 // callbacks registered but not yet delivered
 
-	// retentionMu serializes arming and stopping the completion buffer timer
-	// with its callback. detached is set when the job leaves the manager so a
-	// completion racing with Remove releases its buffers immediately.
-	retentionMu    sync.Mutex
-	retentionTimer *time.Timer
-	detached       bool
+	// retentionMu serializes attached retention, detached callback release,
+	// callback registration/completion, and the detached transition.
+	retentionMu          sync.Mutex
+	retentionTimer       *time.Timer
+	detachedReleaseTimer *time.Timer
+	detached             bool
 }
 
 // BackgroundShellManager manages background shell instances.
@@ -344,6 +326,10 @@ type BackgroundShellManager struct {
 	// cannot be observed by a parallel sibling.
 	maxJobs int
 
+	// bufferRetention is per manager so tests can shorten the completion
+	// window without racing jobs owned by parallel managers.
+	bufferRetention time.Duration
+
 	// closed prevents a Start racing with App shutdown from creating a job
 	// after shutdown has detached the manager's registry snapshot.
 	closed bool
@@ -360,8 +346,9 @@ var (
 // newBackgroundShellManager creates a new BackgroundShellManager instance.
 func newBackgroundShellManager() *BackgroundShellManager {
 	return &BackgroundShellManager{
-		shells:  csync.NewMap[string, *BackgroundShell](),
-		maxJobs: maxJobsFromEnv(),
+		shells:          csync.NewMap[string, *BackgroundShell](),
+		maxJobs:         maxJobsFromEnv(),
+		bufferRetention: time.Duration(BufferRetentionMinutes) * time.Minute,
 	}
 }
 
@@ -490,7 +477,7 @@ func (m *BackgroundShellManager) start(ctx context.Context, sessionID, workingDi
 		// surface. The cost of an unnecessary recover()
 		// here is negligible next to a silent process crash if that ever
 		// changes.
-		bgShell.armBufferReleaseTimer(bufferRetention)
+		bgShell.armBufferReleaseTimer(m.bufferRetention)
 	}()
 
 	return bgShell, nil
@@ -768,11 +755,15 @@ func (bs *BackgroundShell) releaseBuffers() {
 func (bs *BackgroundShell) armBufferReleaseTimer(retention time.Duration) {
 	bs.retentionMu.Lock()
 	if bs.detached {
-		bs.retentionMu.Unlock()
 		// A callback registered before completion owns the final output until
-		// it has had a chance to read it. Its own watchdog performs the bounded
-		// release if the callback blocks; with no callback, release now.
-		if bs.onDoneCount.Load() == 0 {
+		// it has had a chance to read it. A tracked detached timer performs the
+		// bounded release if the callback blocks; with no callback, release now.
+		shouldRelease := bs.onDoneCount.Load() == 0
+		if !shouldRelease {
+			bs.armDetachedReleaseTimerLocked()
+		}
+		bs.retentionMu.Unlock()
+		if shouldRelease {
 			bs.releaseBuffers()
 		}
 		return
@@ -792,11 +783,39 @@ func (bs *BackgroundShell) armBufferReleaseTimer(retention time.Duration) {
 		bs.retentionMu.Lock()
 		bs.retentionTimer = nil
 		bs.retentionMu.Unlock()
-		if bs.onDoneCount.Load() == 0 {
+		// Attached jobs always release at their normal retention deadline;
+		// completion callbacks neither shorten nor extend that contract.
+		bs.releaseBuffers()
+	})
+	bs.retentionMu.Unlock()
+}
+
+// armDetachedReleaseTimerLocked gives pending callbacks a bounded chance to
+// consume final output after detachment. Exactly one tracked timer may exist.
+// Caller must hold retentionMu.
+func (bs *BackgroundShell) armDetachedReleaseTimerLocked() {
+	if bs.detachedReleaseTimer != nil || bs.bufReleased.Load() {
+		return
+	}
+	bs.detachedReleaseTimer = time.AfterFunc(detachedCallbackReleaseGrace, func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("Background shell detached releaseBuffers panic",
+					"shell_id", bs.ID,
+					"command", bs.Command,
+					"panic", r,
+					"stack", string(debug.Stack()))
+			}
+		}()
+
+		bs.retentionMu.Lock()
+		bs.detachedReleaseTimer = nil
+		shouldRelease := bs.detached && (bs.completedAt.Load() > 0 || bs.IsDone())
+		bs.retentionMu.Unlock()
+		if shouldRelease {
 			bs.releaseBuffers()
 		}
 	})
-	bs.retentionMu.Unlock()
 }
 
 // detachFromManager stops a pending retention timer and releases completed
@@ -805,17 +824,22 @@ func (bs *BackgroundShell) armBufferReleaseTimer(retention time.Duration) {
 func (bs *BackgroundShell) detachFromManager() {
 	bs.retentionMu.Lock()
 	bs.detached = true
-	timer := bs.retentionTimer
+	retentionTimer := bs.retentionTimer
 	bs.retentionTimer = nil
+	completed := bs.completedAt.Load() > 0 || bs.IsDone()
+	shouldRelease := completed && bs.onDoneCount.Load() == 0
+	if completed && !shouldRelease {
+		// This also covers a callback that began while the shell was attached
+		// and has already run longer than the grace period: its attached phase
+		// had no watchdog, so detachment starts a fresh bounded release window.
+		bs.armDetachedReleaseTimerLocked()
+	}
 	bs.retentionMu.Unlock()
 
-	if timer != nil {
-		timer.Stop()
+	if retentionTimer != nil {
+		retentionTimer.Stop()
 	}
-	// completedAt is stored before done is closed, so it also covers the narrow
-	// completion-to-close window. A pending callback must receive the real
-	// output before detached cleanup releases it.
-	if (bs.completedAt.Load() > 0 || bs.IsDone()) && bs.onDoneCount.Load() == 0 {
+	if shouldRelease {
 		bs.releaseBuffers()
 	}
 }
@@ -845,13 +869,20 @@ func (bs *BackgroundShell) OnDone(fn func()) {
 	bs.retentionMu.Unlock()
 	go func() {
 		<-bs.done
-		// Keep a detached callback's output available while fn performs its
-		// synchronous GetOutput/notify work. The watchdog is independent of fn,
-		// so a callback that never returns cannot retain the buffers forever.
-		releaseTimer := time.AfterFunc(onDoneReleaseGrace, bs.releaseBuffers)
-		defer releaseTimer.Stop()
 		defer func() {
-			if bs.onDoneCount.Add(-1) == 0 {
+			bs.retentionMu.Lock()
+			lastCallback := bs.onDoneCount.Add(-1) == 0
+			shouldRelease := bs.detached && lastCallback && (bs.completedAt.Load() > 0 || bs.IsDone())
+			detachedTimer := bs.detachedReleaseTimer
+			if shouldRelease {
+				bs.detachedReleaseTimer = nil
+			}
+			bs.retentionMu.Unlock()
+
+			if shouldRelease {
+				if detachedTimer != nil {
+					detachedTimer.Stop()
+				}
 				bs.releaseBuffers()
 			}
 		}()

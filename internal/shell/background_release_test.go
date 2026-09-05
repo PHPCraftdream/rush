@@ -142,17 +142,13 @@ func TestBoundedBuffer_Release_FreesBackingMemory(t *testing.T) {
 // subsequent bash task to trigger Cleanup. This is the core scheduling fix:
 // previously releaseBuffers was only reachable via Cleanup, which only ran
 // when the next bash task started.
-//
-// NOT parallel: temporarily overrides the package-level bufferRetention.
 func TestBackgroundShell_BufferReleaseTimer_FiresWithoutCleanup(t *testing.T) {
-	// Override the retention to a short window so the test runs fast.
-	originalRetention := bufferRetention
-	bufferRetention = 100 * time.Millisecond
-	t.Cleanup(func() { bufferRetention = originalRetention })
+	t.Parallel()
 
 	ctx := t.Context()
 	workingDir := t.TempDir()
 	manager := newBackgroundShellManager()
+	manager.bufferRetention = 100 * time.Millisecond
 
 	bgShell, err := manager.Start(ctx, workingDir, nil, "echo hi", "")
 	require.NoError(t, err)
@@ -267,6 +263,69 @@ func TestBackgroundShellManager_Remove_RacingCompletionReleasesBuffers(t *testin
 	require.Zero(t, cap(bgShell.stderr.buf.Bytes()))
 }
 
+type onDoneOutput struct {
+	stdout string
+	done   bool
+	err    error
+}
+
+// TestBackgroundShell_AttachedOnDoneRetainsOutput proves a completed callback
+// does not shorten an attached job's normal buffer-retention window.
+func TestBackgroundShell_AttachedOnDoneRetainsOutput(t *testing.T) {
+	t.Parallel()
+
+	bgShell := &BackgroundShell{
+		stdout: newBoundedBuffer(maxStreamBufferBytes),
+		stderr: newBoundedBuffer(maxStreamBufferBytes),
+		done:   make(chan struct{}),
+	}
+	callbackOutput := make(chan onDoneOutput, 1)
+	callbackFinished := make(chan struct{})
+	bgShell.OnDone(func() {
+		stdout, _, done, err := bgShell.GetOutput()
+		callbackOutput <- onDoneOutput{stdout: stdout, done: done, err: err}
+		close(callbackFinished)
+	})
+
+	_, err := bgShell.stdout.WriteString("attached retained output")
+	require.NoError(t, err)
+	bgShell.completedAt.Store(time.Now().Unix())
+	close(bgShell.done)
+	bgShell.armBufferReleaseTimer(time.Hour)
+
+	var output onDoneOutput
+	select {
+	case output = <-callbackOutput:
+	case <-time.After(time.Second):
+		t.Fatal("attached OnDone callback did not receive completion")
+	}
+	select {
+	case <-callbackFinished:
+	case <-time.After(time.Second):
+		t.Fatal("attached OnDone callback did not return")
+	}
+	require.Eventually(t, func() bool { return bgShell.onDoneCount.Load() == 0 }, time.Second, time.Millisecond,
+		"attached callback bookkeeping did not finish")
+	require.True(t, output.done)
+	require.NoError(t, output.err)
+	require.Equal(t, "attached retained output", output.stdout)
+	require.False(t, bgShell.bufReleased.Load(),
+		"attached callback return must not release output before retention")
+	stdout, _, done, err := bgShell.GetOutput()
+	require.True(t, done)
+	require.NoError(t, err)
+	require.Equal(t, "attached retained output", stdout)
+
+	bgShell.retentionMu.Lock()
+	retentionTimer := bgShell.retentionTimer
+	detachedTimer := bgShell.detachedReleaseTimer
+	bgShell.retentionMu.Unlock()
+	require.NotNil(t, retentionTimer)
+	require.Nil(t, detachedTimer)
+	bgShell.detachFromManager()
+	require.True(t, bgShell.bufReleased.Load())
+}
+
 // TestBackgroundShell_DetachBeforeComplete_DeliversOutputBeforeRelease proves
 // the detached completion ordering: OnDone sees the real terminal output, and
 // only then are the output backing arrays released.
@@ -281,12 +340,10 @@ func TestBackgroundShell_DetachBeforeComplete_DeliversOutputBeforeRelease(t *tes
 	callbackStarted := make(chan struct{})
 	callbackRelease := make(chan struct{})
 	callbackFinished := make(chan struct{})
-	var got string
+	callbackOutput := make(chan onDoneOutput, 1)
 	bgShell.OnDone(func() {
 		stdout, _, done, err := bgShell.GetOutput()
-		require.True(t, done)
-		require.NoError(t, err)
-		got = stdout
+		callbackOutput <- onDoneOutput{stdout: stdout, done: done, err: err}
 		close(callbackStarted)
 		<-callbackRelease
 		close(callbackFinished)
@@ -306,7 +363,10 @@ func TestBackgroundShell_DetachBeforeComplete_DeliversOutputBeforeRelease(t *tes
 	case <-time.After(time.Second):
 		t.Fatal("OnDone callback did not receive completion")
 	}
-	require.Equal(t, "real detached output", got)
+	output := <-callbackOutput
+	require.True(t, output.done)
+	require.NoError(t, output.err)
+	require.Equal(t, "real detached output", output.stdout)
 	require.False(t, bgShell.bufReleased.Load(),
 		"detached output must remain resident until callback delivery")
 
@@ -322,10 +382,10 @@ func TestBackgroundShell_DetachBeforeComplete_DeliversOutputBeforeRelease(t *tes
 	require.Zero(t, cap(bgShell.stderr.buf.Bytes()))
 }
 
-// TestBackgroundShell_DetachedCallbackWatchdogReleasesBuffers proves a
-// callback that never returns cannot retain detached output forever.
-func TestBackgroundShell_DetachedCallbackWatchdogReleasesBuffers(t *testing.T) {
-	t.Parallel()
+// TestBackgroundShell_DetachDuringStuckCallbackArmsBoundedRelease proves an
+// attached callback has no early watchdog, while a later detach starts a fresh
+// bounded release window even when that callback is already stuck.
+func TestBackgroundShell_DetachDuringStuckCallbackArmsBoundedRelease(t *testing.T) {
 
 	bgShell := &BackgroundShell{
 		stdout: newBoundedBuffer(maxStreamBufferBytes),
@@ -333,19 +393,59 @@ func TestBackgroundShell_DetachedCallbackWatchdogReleasesBuffers(t *testing.T) {
 		done:   make(chan struct{}),
 	}
 	callbackBlock := make(chan struct{})
-	bgShell.OnDone(func() { <-callbackBlock })
-	t.Cleanup(func() { close(callbackBlock) })
-	bgShell.detachFromManager()
-	_, err := bgShell.stdout.WriteString("output before stuck callback")
+	callbackFinished := make(chan struct{})
+	callbackOutput := make(chan onDoneOutput, 1)
+	var unblock sync.Once
+	releaseCallback := func() { unblock.Do(func() { close(callbackBlock) }) }
+	t.Cleanup(releaseCallback)
+	bgShell.OnDone(func() {
+		stdout, _, done, err := bgShell.GetOutput()
+		callbackOutput <- onDoneOutput{stdout: stdout, done: done, err: err}
+		<-callbackBlock
+		close(callbackFinished)
+	})
+	_, err := bgShell.stdout.WriteString("output before late detach")
 	require.NoError(t, err)
 	bgShell.completedAt.Store(time.Now().Unix())
 	close(bgShell.done)
 	bgShell.armBufferReleaseTimer(time.Hour)
 
-	require.Eventually(t, func() bool { return bgShell.bufReleased.Load() }, 2*time.Second, 10*time.Millisecond,
-		"callback watchdog must release buffers within a bounded interval")
+	var output onDoneOutput
+	select {
+	case output = <-callbackOutput:
+	case <-time.After(time.Second):
+		t.Fatal("attached callback did not start")
+	}
+	require.True(t, output.done)
+	require.NoError(t, output.err)
+	require.Equal(t, "output before late detach", output.stdout)
+
+	// An attached callback may run longer than the detached grace without
+	// affecting the normal retention timer.
+	time.Sleep(detachedCallbackReleaseGrace + 100*time.Millisecond)
+	require.False(t, bgShell.bufReleased.Load(),
+		"attached callback must not have a detached-release watchdog")
+
+	bgShell.detachFromManager()
+	bgShell.retentionMu.Lock()
+	detachedTimer := bgShell.detachedReleaseTimer
+	bgShell.retentionMu.Unlock()
+	require.NotNil(t, detachedTimer)
+	require.Eventually(t, func() bool { return bgShell.bufReleased.Load() }, 2*detachedCallbackReleaseGrace, 10*time.Millisecond,
+		"detaching a stuck callback must release buffers within a fresh bounded window")
 	require.Zero(t, cap(bgShell.stdout.buf.Bytes()))
 	require.Zero(t, cap(bgShell.stderr.buf.Bytes()))
+	bgShell.retentionMu.Lock()
+	detachedTimer = bgShell.detachedReleaseTimer
+	bgShell.retentionMu.Unlock()
+	require.Nil(t, detachedTimer)
+
+	releaseCallback()
+	select {
+	case <-callbackFinished:
+	case <-time.After(time.Second):
+		t.Fatal("stuck callback did not finish after release")
+	}
 }
 
 // TestBackgroundShell_ReleaseBuffers_Concurrent proves timer, cleanup, and
