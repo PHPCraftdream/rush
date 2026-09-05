@@ -361,7 +361,7 @@ func TestStaleAddRollbackPreservesNewerSameNameServer(t *testing.T) {
 	require.ErrorIs(t, <-oldDone, oldFailure)
 	currentConfig, exists := store.MCPConfig(name)
 	require.True(t, exists)
-	require.True(t, sameMCPConfig(replacement, currentConfig))
+	require.Equal(t, replacement, currentConfig)
 	currentSession, exists := sessions.Get(name)
 	require.True(t, exists)
 	state, exists := GetState(name)
@@ -475,7 +475,7 @@ func TestGetOrRenewClientKeepsLeaseIdentityAcrossConcurrentReplacement(t *testin
 	}, time.Second, time.Millisecond)
 }
 
-func TestRenewedSessionNotificationSchedulesRefresh(t *testing.T) {
+func TestRenewedSessionNotificationSurvivesConfigMutations(t *testing.T) {
 	const name = "renewed-notification"
 	server := mcp.NewServer(&mcp.Implementation{Name: "renewal-notification-server"}, nil)
 	mcp.AddTool(server, &mcp.Tool{Name: "initial"}, func(context.Context, *mcp.CallToolRequest, any) (*mcp.CallToolResult, any, error) {
@@ -512,6 +512,12 @@ func TestRenewedSessionNotificationSchedulesRefresh(t *testing.T) {
 	require.NotSame(t, old, client.session)
 	store.SetSkipPermissionRequests(true)
 	require.True(t, store.AddMCP("unrelated", config.MCPConfig{Type: config.MCPStdio, Command: "unused"}))
+	updated, exists := store.UpdateMCP(name, func(mcpConfig *config.MCPConfig) {
+		mcpConfig.DisabledTools = []string{"initial"}
+		mcpConfig.Timeout++
+	})
+	require.True(t, exists)
+	require.Equal(t, []string{"initial"}, updated.DisabledTools)
 
 	mcp.AddTool(server, &mcp.Tool{Name: "after-renewal"}, func(context.Context, *mcp.CallToolRequest, any) (*mcp.CallToolResult, any, error) {
 		return &mcp.CallToolResult{}, nil, nil
@@ -531,8 +537,9 @@ func TestRenewedSessionNotificationSchedulesRefresh(t *testing.T) {
 
 notified:
 	require.Eventually(t, func() bool {
-		return len(GetServerToolNames(name)) == 2
-	}, 5*time.Second, time.Millisecond, "renewed session notification did not refresh advertised tools")
+		return len(GetServerToolNames(name)) == 1
+	}, 5*time.Second, time.Millisecond, "same-server config mutation invalidated the renewed session notification")
+	require.Equal(t, []string{"after-renewal"}, GetServerToolNames(name), "refresh must apply the current disabled_tools filter")
 }
 
 func TestListChangedDuringRefreshSchedulesDirtyRerun(t *testing.T) {
@@ -622,12 +629,10 @@ func TestRefreshQueueSaturationCoalescesWithoutDropping(t *testing.T) {
 	}()
 
 	admissionFor := func(name string) serverAdmission {
-		mcpConfig, _ := store.MCPConfig(name)
 		return serverAdmission{
 			owner:      owner,
 			generation: owner.generation,
 			epoch:      owner.serverEpochs[name],
-			mcpConfig:  mcpConfig,
 			cfg:        store,
 			name:       name,
 			ctx:        owner.lifecycleCtx,

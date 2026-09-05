@@ -9,13 +9,11 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"maps"
 	"net"
 	"net/http"
 	"net/http/httptrace"
 	"os"
 	"os/exec"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -252,7 +250,6 @@ type serverAdmission struct {
 	owner      *Owner
 	generation uint64
 	epoch      uint64
-	mcpConfig  config.MCPConfig
 	cfg        *config.ConfigStore
 	name       string
 	ctx        context.Context
@@ -308,22 +305,7 @@ func (a *serverAdmission) validLocked() bool {
 	if !exists {
 		return false
 	}
-	return !mcpConfig.Disabled && sameMCPConfig(mcpConfig, a.mcpConfig)
-}
-
-func sameMCPConfig(a, b config.MCPConfig) bool {
-	return a.Command == b.Command &&
-		a.Type == b.Type &&
-		a.URL == b.URL &&
-		a.Disabled == b.Disabled &&
-		a.Timeout == b.Timeout &&
-		a.EnabledInCLI == b.EnabledInCLI &&
-		a.Source == b.Source &&
-		maps.Equal(a.Env, b.Env) &&
-		maps.Equal(a.Headers, b.Headers) &&
-		slices.Equal(a.Args, b.Args) &&
-		slices.Equal(a.DisabledTools, b.DisabledTools) &&
-		slices.Equal(a.EnabledTools, b.EnabledTools)
+	return !mcpConfig.Disabled
 }
 
 func (o *Owner) admitServer(ctx context.Context, cfg *config.ConfigStore, name string, bump bool) (serverAdmission, error) {
@@ -353,12 +335,10 @@ func (o *Owner) admitServer(ctx context.Context, cfg *config.ConfigStore, name s
 	} else {
 		operationCtx = ctx
 	}
-	mcpConfig, _ := cfg.MCPConfig(name)
 	admission := serverAdmission{
 		owner:      o,
 		generation: o.generation,
 		epoch:      o.serverEpochs[name],
-		mcpConfig:  mcpConfig,
 		cfg:        cfg,
 		name:       name,
 		once:       new(sync.Once),
@@ -380,12 +360,10 @@ func (o *Owner) snapshotServerAdmission(_ context.Context, cfg *config.ConfigSto
 	if !o.isCurrentLocked() {
 		return serverAdmission{}, ErrOwnerBusy
 	}
-	mcpConfig, _ := cfg.MCPConfig(name)
 	return serverAdmission{
 		owner:      o,
 		generation: o.generation,
 		epoch:      o.serverEpochs[name],
-		mcpConfig:  mcpConfig,
 		cfg:        cfg,
 		name:       name,
 		ctx:        o.lifecycleCtx,
