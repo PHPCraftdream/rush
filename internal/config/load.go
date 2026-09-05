@@ -184,7 +184,7 @@ func Load(workingDir, dataDir string, debug bool) (*ConfigStore, error) {
 	// initial staleness snapshot against it. We already hold publishMu, so
 	// call the Locked variant directly to avoid a re-entrant deadlock.
 	publish()
-	store.captureStalenessSnapshotLocked(loadedPaths)
+	store.captureStalenessSnapshotLocked(configAndMCPStalenessPaths(loadedPaths, workingDir))
 
 	return store, nil
 }

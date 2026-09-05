@@ -12,11 +12,19 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 
 	"github.com/PHPCraftdream/rush/internal/env"
 )
 
-var errReloadDiskChanged = errors.New("config files changed while reloading")
+const reloadMaxAttempts = 4
+
+var (
+	errReloadDiskChanged = errors.New("config files changed while reloading")
+	// ErrConfigReloadUnstable indicates that no stable file snapshot could be
+	// built within the bounded reload retry budget.
+	ErrConfigReloadUnstable = errors.New("config files remained unstable during reload")
+)
 
 type reloadFileFingerprint struct {
 	exists  bool
@@ -35,9 +43,9 @@ type reloadFileFingerprint struct {
 // reloadFromDiskUnlocked. A single hung "$(...)" in a config value used to
 // hold publishMu for the resolver's full timeout, which serialises every
 // reader/writer of the store — including unrelated runtime mutators like
-// SetSkipPermissionRequests — behind it. Only the final generation-check
-// and pointer swap take publishMu now, for a duration bounded by memory
-// operations, not shell subprocess I/O.
+// SetSkipPermissionRequests — behind it. Only the final fingerprint check
+// and pointer swap take publishMu now; shell subprocess and candidate-build
+// work never run under it.
 func (s *ConfigStore) ReloadFromDisk(ctx context.Context) error {
 	if s.workingDir == "" {
 		return fmt.Errorf("cannot reload: working directory not set")
@@ -67,19 +75,19 @@ func (s *ConfigStore) ReloadFromDisk(ctx context.Context) error {
 // `prev`, the snapshot published at the time the build started. If some
 // other writer (a copy-on-write mutator, e.g. SetSkipPermissionRequests)
 // publishes a newer generation while the build is still in flight, this
-// reload's candidate is stale only with respect to the fields it carries
-// FORWARD from prev unchanged (overrides, trackedConfigPaths, snapshots)
-// — cfg/resolver/knownProviders/loadedPaths/workspacePath are always
-// freshly built from disk regardless of what changed concurrently in
-// memory, so they can never regress. Rather than discarding a fully-built
-// candidate (expensive: it already paid the shell-resolution cost) or
+// reload's candidate is stale only with respect to runtime overrides carried
+// FORWARD from prev. Config, resolver, providers, loaded paths, workspace
+// path, and staleness fingerprints are freshly built from disk regardless of
+// what changed concurrently in memory, so they can never regress. Rather
+// than discarding a fully-built candidate (expensive: it already paid the
+// shell-resolution cost) or
 // silently overwriting the concurrent writer's change, the publish step
 // re-reads the CURRENT snapshot under publishMu and rebases just those
 // forwarded fields onto it before storing — the writer's change survives,
 // and the reload's fresh disk state still wins for everything reload
 // itself is authoritative over. This mirrors the reasoning already
-// applied to staleness tracking (CaptureStalenessSnapshot) for the same
-// class of "small piece of forwarded state, rebase onto latest" problem.
+// applied to runtime overrides for the same class of "small piece of
+// forwarded state, rebase onto latest" problem.
 func (s *ConfigStore) reloadFromDiskUnlocked(ctx context.Context) error {
 	s.reloadMu.Lock()
 	return s.runReloadLocked(ctx)
@@ -90,7 +98,7 @@ func (s *ConfigStore) reloadFromDiskUnlocked(ctx context.Context) error {
 // writer finishes after the candidate was published but before reloadMu is
 // released.
 func (s *ConfigStore) runReloadLocked(ctx context.Context) error {
-	for {
+	for attempt := 1; attempt <= reloadMaxAttempts; attempt++ {
 		err := s.buildAndPublishReload(ctx)
 		if err != nil && !errors.Is(err, errReloadDiskChanged) {
 			s.releaseReloadLock()
@@ -101,11 +109,22 @@ func (s *ConfigStore) runReloadLocked(ctx context.Context) error {
 				s.releaseReloadLock()
 				return ctxErr
 			}
+			if attempt == reloadMaxAttempts {
+				s.releaseReloadLock()
+				return fmt.Errorf("%w after %d attempts: %w", ErrConfigReloadUnstable, attempt, err)
+			}
 			continue
 		}
 
 		s.reloadPendingMu.Lock()
 		if s.reloadPending {
+			if attempt == reloadMaxAttempts {
+				// Leave the pending bit set. A later stable reload must consume it;
+				// clearing it here would lose the writer that exhausted our budget.
+				s.reloadMu.Unlock()
+				s.reloadPendingMu.Unlock()
+				return fmt.Errorf("%w after %d attempts: %w", ErrConfigReloadUnstable, attempt, errReloadDiskChanged)
+			}
 			s.reloadPending = false
 			s.reloadPendingMu.Unlock()
 			continue
@@ -117,10 +136,13 @@ func (s *ConfigStore) runReloadLocked(ctx context.Context) error {
 		s.reloadPendingMu.Unlock()
 		return nil
 	}
+	panic("unreachable")
 }
 
 func (s *ConfigStore) releaseReloadLock() {
+	s.reloadPendingMu.Lock()
 	s.reloadMu.Unlock()
+	s.reloadPendingMu.Unlock()
 }
 
 // buildAndPublishReload is reloadFromDiskUnlocked's body, factored out so
@@ -128,7 +150,10 @@ func (s *ConfigStore) releaseReloadLock() {
 // double-locking reloadMu (sync.Mutex is not reentrant).
 func (s *ConfigStore) buildAndPublishReload(ctx context.Context) error {
 	configPaths := lookupConfigs(s.workingDir)
-	fingerprints, err := captureReloadFingerprints(configPaths)
+	externalPaths := discoverMCPJSONFiles(s.workingDir)
+	inputPaths := append(slices.Clone(configPaths), mcpJSONCandidatePaths(s.workingDir)...)
+	inputPaths = append(inputPaths, s.globalDataPath)
+	fingerprints, err := captureReloadFingerprints(inputPaths)
 	if err != nil {
 		return fmt.Errorf("failed to fingerprint config for reload: %w", err)
 	}
@@ -175,8 +200,11 @@ func (s *ConfigStore) buildAndPublishReload(ctx context.Context) error {
 	// Keep .mcp.json discovery and the literal disabled-override merge
 	// consistent with the initial Load path. A reload after the external file
 	// appears must not silently drop those servers from the new snapshot.
-	if external := loadExternalMCPServers(s.workingDir); len(external) > 0 {
+	if external := loadExternalMCPServersFromPaths(externalPaths); len(external) > 0 {
 		mergeExternalMCPServers(cfg, s, external, loadedPaths)
+	}
+	if hook := s.reloadAfterExternalRead; hook != nil {
+		hook()
 	}
 
 	if err := cfg.ValidateHooks(); err != nil {
@@ -224,14 +252,12 @@ func (s *ConfigStore) buildAndPublishReload(ctx context.Context) error {
 	// why this is safe even if a concurrent writer published a newer
 	// generation while the above ran unlocked.
 	candidate := &storeSnapshot{
-		config:             cfg,
-		resolver:           resolver,
-		knownProviders:     providers,
-		loadedPaths:        loadedPaths,
-		trackedConfigPaths: prev.trackedConfigPaths,
-		snapshots:          prev.snapshots,
-		workspacePath:      workspacePath,
-		overrides:          prev.overrides,
+		config:         cfg,
+		resolver:       resolver,
+		knownProviders: providers,
+		loadedPaths:    loadedPaths,
+		workspacePath:  workspacePath,
+		overrides:      prev.overrides,
 	}
 
 	s.publishMu.Lock()
@@ -239,30 +265,27 @@ func (s *ConfigStore) buildAndPublishReload(ctx context.Context) error {
 	s.diskWriteMu.Lock()
 	defer s.diskWriteMu.Unlock()
 
-	if reloadFingerprintsChanged(fingerprints) {
+	if !sameReloadPathSet(externalPaths, discoverMCPJSONFiles(s.workingDir)) || reloadFingerprintsChanged(fingerprints) {
 		return errReloadDiskChanged
 	}
 
 	// Rebase: if the currently-published snapshot is no longer `prev`
 	// (some copy-on-write mutator published in the meantime), carry its
-	// overrides/staleness-tracking forward onto the candidate instead of
-	// the ones captured before the unlocked build — otherwise this
-	// publish would silently revert that concurrent change. cfg/resolver/
+	// runtime overrides onto the candidate instead of the ones captured
+	// before the unlocked build — otherwise this publish would silently
+	// revert that concurrent change. cfg/resolver/
 	// knownProviders/loadedPaths/workspacePath are NOT rebased: they are
 	// reload's own authoritative fresh-from-disk output regardless of
 	// what changed concurrently in memory.
 	cur := s.loadSnapshot()
 	if cur.generation != prev.generation {
 		candidate.overrides = cur.overrides
-		candidate.trackedConfigPaths = cur.trackedConfigPaths
-		candidate.snapshots = cur.snapshots
 	}
+	stalenessPaths := configAndMCPStalenessPaths(loadedPaths, s.workingDir)
+	stalenessPaths = append(stalenessPaths, workspacePath, s.globalDataPath)
+	candidate.trackedConfigPaths, candidate.snapshots = reloadStalenessState(stalenessPaths, fingerprints)
 
 	s.publishLocked(candidate)
-
-	// Caller (this function) already holds publishMu — use the Locked
-	// variant to avoid a re-entrant deadlock.
-	s.captureStalenessSnapshotLocked(loadedPaths)
 
 	return nil
 }
@@ -324,7 +347,10 @@ func captureReloadFingerprints(paths []string) (map[string]reloadFileFingerprint
 }
 
 func addReloadFingerprint(fingerprints map[string]reloadFileFingerprint, path string) error {
-	path = filepath.Clean(path)
+	if path == "" {
+		return nil
+	}
+	path = normalizeReloadPath(path)
 	if _, exists := fingerprints[path]; exists {
 		return nil
 	}
@@ -370,4 +396,59 @@ func reloadFingerprintsChanged(before map[string]reloadFileFingerprint) bool {
 		}
 	}
 	return false
+}
+
+func sameReloadPathSet(left, right []string) bool {
+	leftSet := make(map[string]struct{}, len(left))
+	for _, path := range left {
+		leftSet[normalizeReloadPath(path)] = struct{}{}
+	}
+	rightSet := make(map[string]struct{}, len(right))
+	for _, path := range right {
+		rightSet[normalizeReloadPath(path)] = struct{}{}
+	}
+	if len(leftSet) != len(rightSet) {
+		return false
+	}
+	for path := range rightSet {
+		if _, ok := leftSet[path]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func normalizeReloadPath(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return filepath.Clean(path)
+	}
+	return abs
+}
+
+func reloadStalenessState(paths []string, fingerprints map[string]reloadFileFingerprint) ([]string, map[string]fileSnapshot) {
+	trackedSet := make(map[string]struct{}, len(paths))
+	for _, path := range paths {
+		if path != "" {
+			trackedSet[normalizeReloadPath(path)] = struct{}{}
+		}
+	}
+	tracked := make([]string, 0, len(trackedSet))
+	for path := range trackedSet {
+		tracked = append(tracked, path)
+	}
+	slices.Sort(tracked)
+
+	snapshots := make(map[string]fileSnapshot, len(tracked))
+	for _, path := range tracked {
+		fingerprint := fingerprints[path]
+		snapshots[path] = fileSnapshot{
+			Path:        path,
+			Exists:      fingerprint.exists,
+			Size:        fingerprint.size,
+			ModTime:     fingerprint.modTime,
+			ContentHash: fingerprint.digest,
+		}
+	}
+	return tracked, snapshots
 }

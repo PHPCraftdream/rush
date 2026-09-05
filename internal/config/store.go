@@ -164,6 +164,10 @@ type ConfigStore struct {
 	// reloadAfterDiskRead is a white-box test seam. It is called after the
 	// candidate has read the rush config files and before it is published.
 	reloadAfterDiskRead func()
+
+	// reloadAfterExternalRead is a white-box test seam. It is called after
+	// the candidate has loaded its stable .mcp.json path set.
+	reloadAfterExternalRead func()
 }
 
 // loadSnapshot returns the current published snapshot. It never returns

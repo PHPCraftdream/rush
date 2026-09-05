@@ -61,35 +61,53 @@ func loadMCPJSON(path string) (map[string]MCPConfig, error) {
 	return result, nil
 }
 
-// discoverMCPJSONFiles returns paths to .mcp.json files in priority order
-// (lowest priority first): global (~/.claude/.mcp.json), then project root.
-func discoverMCPJSONFiles(workingDir string) []string {
+// mcpJSONCandidatePaths returns every location that may provide .mcp.json,
+// including files that do not currently exist. Keeping the candidate set
+// explicit lets staleness tracking detect later additions.
+func mcpJSONCandidatePaths(workingDir string) []string {
 	var paths []string
 
 	// Global: ~/.claude/.mcp.json
 	if homeDir := home.Dir(); homeDir != "" {
-		global := filepath.Join(homeDir, ".claude", ".mcp.json")
-		if _, err := os.Stat(global); err == nil {
-			paths = append(paths, global)
-		}
+		paths = append(paths, filepath.Join(homeDir, ".claude", ".mcp.json"))
 	}
 
 	// Project root: <workingDir>/.mcp.json
 	if workingDir != "" {
-		project := filepath.Join(workingDir, ".mcp.json")
-		if _, err := os.Stat(project); err == nil {
-			paths = append(paths, project)
-		}
+		paths = append(paths, filepath.Join(workingDir, ".mcp.json"))
 	}
 
 	return paths
 }
 
+// discoverMCPJSONFiles returns existing .mcp.json files in priority order
+// (lowest priority first): global (~/.claude/.mcp.json), then project root.
+func discoverMCPJSONFiles(workingDir string) []string {
+	var paths []string
+	for _, path := range mcpJSONCandidatePaths(workingDir) {
+		if info, err := os.Stat(path); err == nil && !info.IsDir() {
+			paths = append(paths, path)
+		}
+	}
+	return paths
+}
+
+func configAndMCPStalenessPaths(configPaths []string, workingDir string) []string {
+	return append(slices.Clone(configPaths), mcpJSONCandidatePaths(workingDir)...)
+}
+
 // loadExternalMCPServers discovers and loads all .mcp.json files, returning
 // a merged map of server configs. Later files override earlier ones.
 func loadExternalMCPServers(workingDir string) map[string]MCPConfig {
+	return loadExternalMCPServersFromPaths(discoverMCPJSONFiles(workingDir))
+}
+
+// loadExternalMCPServersFromPaths loads one previously discovered, stable
+// path set. Reload uses this variant so discovery itself is part of the
+// candidate fingerprint instead of being repeated halfway through the read.
+func loadExternalMCPServersFromPaths(paths []string) map[string]MCPConfig {
 	result := make(map[string]MCPConfig)
-	for _, path := range discoverMCPJSONFiles(workingDir) {
+	for _, path := range paths {
 		servers, err := loadMCPJSON(path)
 		if err != nil {
 			slog.Warn("Failed to load .mcp.json", "path", path, "err", err)
