@@ -235,6 +235,18 @@ jq -r '.error' "$out"         # error.message if non-success
   runs inherit it.
 - **`--stream`** — streams every token to stdout for live wrappers.
 
+#### Background shell ownership
+
+When `bash` runs a long-lived command in the background, it returns a shell
+ID for `job_output` and `job_kill`. The job belongs to the session that
+started it, and those tools can address only jobs owned by the current
+session. This is intentional per-App/session ownership: a sub-agent runs
+under a child session ID, so a job started by that child is not addressable
+by the parent session's `job_output` or `job_kill`, even if the child reports
+the shell ID in its result. There is no cross-session job handoff API; the
+child must inspect or terminate its own jobs before returning, or the host
+must arrange another explicit coordination path.
+
 #### Envelope fields worth knowing
 
 - `stripped_bytes` — how many bytes were removed from `final_text` by
@@ -712,6 +724,13 @@ the CLI? See [`sdk/README.md`](sdk/README.md) for the embeddable SDK —
 `sdk.Open` + `Client.Run` gets you a typed result envelope back, with
 support for explicit per-call provider credentials, ephemeral in-memory
 sessions, and concurrent multi-tenant use on one `Client`.
+
+Application-mode SDK clients acquire an exclusive process-wide MCP owner, so
+a second concurrent application-mode `sdk.Open` can fail with `ErrOwnerBusy`
+(wrapped through `app.New`). Use `ModeLibrary` to skip MCP entirely; library
+clients do not acquire that owner and may coexist with an application-mode
+client or with one another. See the SDK lifecycle section for the exact
+error-wrapping and shutdown contract.
 
 ## Getting Started
 

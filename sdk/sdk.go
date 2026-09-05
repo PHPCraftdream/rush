@@ -21,15 +21,17 @@
 //   - One application-mode Client per process. MCP client state
 //     (internal/agent/tools/mcp) is process-wide package state — one
 //     registry keyed by server name, plus process-wide
-//     initialization-complete signaling — so two simultaneous
-//     application-mode Clients would share one MCP layer instead of each
-//     owning one. Library mode (Options.Mode == ModeLibrary) starts no
-//     MCP servers at all, and multiple simultaneous library-mode Clients
-//     are supported and tested (each ephemeral client gets its own
-//     isolated in-memory database). Run one process per workspace for
-//     application mode — the same model `rush run` already uses, with
-//     lock-file + heartbeat, the battle-tested path in the sessions_*
-//     CLI family.
+//     initialization-complete signaling — so application mode acquires an
+//     exclusive process-wide MCP Owner. A second simultaneous
+//     application-mode Open fails with an error wrapping mcp.ErrOwnerBusy;
+//     application-mode Clients are not allowed to share that layer. Library
+//     mode (Options.Mode == ModeLibrary) starts no MCP servers and does not
+//     acquire the owner, so it can coexist with an application-mode Client;
+//     multiple simultaneous library-mode Clients are supported and tested
+//     (each ephemeral client gets its own isolated in-memory database). Run
+//     one process per workspace for application mode — the same model
+//     `rush run` already uses, with lock-file + heartbeat, the battle-tested
+//     path in the sessions_* CLI family.
 //
 //   - Core logging is redirected only if you ask for it. With
 //     SetupLogging false (the default) Open does not hijack the host's
@@ -262,10 +264,11 @@ type Options struct {
 	DataDir string
 	// Debug enables debug logging and config verbosity.
 	Debug bool
-	// MCP selects which MCP servers are started. Default
-	// MCPEnabledInCLI. There is deliberately no "off" mode: app.New has
-	// no such concept, and adding one would be a new feature, not a
-	// refactor.
+	// MCP selects which MCP servers application-mode Open starts. Default
+	// MCPEnabledInCLI. There is no off value in application mode: use
+	// ModeLibrary when the client must skip MCP entirely. Library mode passes
+	// app.SkipMCP, so it starts no MCP servers and does not acquire the
+	// process-wide MCP owner.
 	MCP MCPMode
 	// Stdout is the default destination for run output when a RunRequest
 	// does not carry its own Stdout. The SDK serializes writes through all
@@ -377,9 +380,12 @@ type Client struct {
 // Open wires up a full Rush instance for the given working directory:
 // config load (project rush.json discovery from WorkingDir), data
 // directory creation, project registration, database connect plus
-// migrations, and app construction with the requested MCP mode. It is the
-// library equivalent of internal/cmd's setupApp, minus os.Chdir,
-// unconditional logging setup, and cobra.
+// migrations, and app construction with the requested MCP mode. In
+// application mode, Open also acquires the exclusive process-wide MCP owner;
+// a concurrent second application-mode Open returns an error wrapping
+// mcp.ErrOwnerBusy. In library mode, Open skips MCP and does not acquire that
+// owner. Open is the library equivalent of internal/cmd's setupApp, minus
+// os.ChDir, unconditional logging setup, and cobra.
 func Open(ctx context.Context, o Options) (*Client, error) {
 	switch o.Mode {
 	case ModeApplication:

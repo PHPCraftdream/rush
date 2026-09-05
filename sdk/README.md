@@ -25,9 +25,15 @@ parameter (there is no fallback to the process's own working directory
 or a temp directory), but the caller doesn't have to `mkdir` a
 freshly-provisioned workspace by hand first.
 
-Use this mode when your host process manages one or more real,
-persistent project directories — the credentials, models, and tool
-settings all come from `rush.json` as usual.
+Use this mode when your host process manages a real, persistent project
+directory — the credentials, models, and tool settings all come from
+`rush.json` as usual. Opening an application-mode Client acquires the
+exclusive process-wide MCP owner. A concurrent second application-mode
+`Open` fails with an error wrapping `mcp.ErrOwnerBusy` (currently surfaced
+through `sdk.Open` as `sdk: failed to create app instance: failed to acquire
+MCP application owner: mcp: application owner is already active`). The SDK
+does not re-export the internal MCP sentinel, so consumers should treat this
+as an `Open` failure rather than rely on an SDK `errors.Is` sentinel.
 
 ### Library mode — explicit config, no persistence on disk
 
@@ -57,6 +63,10 @@ existing caller that never sets `Mode` is completely unaffected.
 `.mcp.json`, no global config. Every provider and model role comes from
 `LibraryConfig` instead. `LibraryConfig.Models` must define at least the
 `smart` role; the others (`fast`, `worker`, `reviewer`) are optional.
+Library mode also calls `app.SkipMCP()`: it starts no MCP servers and does
+not acquire the process-wide MCP owner. It can therefore coexist with an
+application-mode Client, and multiple library-mode Clients can coexist with
+one another.
 
 **`WorkingDir` is optional in this mode, and that choice matters:**
 
@@ -520,13 +530,14 @@ doc comment and worth repeating here:
 
 - **One application-mode `Client` per process.** MCP client state is
   process-wide (one registry keyed by server name, plus shared
-  initialization-complete signaling), so two simultaneous
-  application-mode Clients would share a single MCP layer rather than
-  each owning one. Library mode never starts MCP servers, and multiple
+  initialization-complete signaling), and application mode acquires it via
+  an exclusive MCP Owner. A second simultaneous application-mode `Open`
+  fails with an error wrapping `mcp.ErrOwnerBusy`; the Clients do not share
+  one MCP layer. Library mode never starts MCP servers or acquires the
+  owner, so it can coexist with an application-mode Client; multiple
   simultaneous library-mode Clients are supported and tested — each
-  ephemeral client gets its own isolated in-memory database. Run one
-  process per workspace for application mode, the same model `rush run`
-  itself uses.
+  ephemeral client gets its own isolated in-memory database. Run one process
+  per workspace for application mode, the same model `rush run` itself uses.
 - **The host's logger is untouched unless you opt in** via
   `Options.SetupLogging` — and that call is itself a process-wide
   singleton, so only the first `Open` with `SetupLogging: true` in a

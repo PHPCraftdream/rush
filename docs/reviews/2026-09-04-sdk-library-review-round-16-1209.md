@@ -214,6 +214,17 @@ interface, но любое сравнение такого interface через 
 predicate для canonical OS provider без interface equality и regression с
 value-provider, содержащим map.
 
+### Correction note (post-review, 2026-09-05)
+
+R16-6 is disconfirmed by the independent 36h review, section 4
+(`docs/reviews/2026-09-05-2047-commit-review-36h.md`). This finding and the
+R15-3 text it carries forward are retained as historical review text, not
+silently rewritten. The former comparisons against `nil` or `OSDisk()` could
+not panic for an external provider: `nil` comparison is safe, while a custom
+provider has a distinct dynamic type from the comparable, unexported
+`osDisk` value. The marker predicate is useful for explicit canonical
+identity, but the specific threat model in R15-3/R16-6 was unreachable.
+
 ### R16-7 — P2: `Close` zero-value Client не выполняет собственный closed contract
 
 `Client` — экспортируемый struct, поэтому внешний consumer может иметь его

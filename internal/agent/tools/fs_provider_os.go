@@ -18,7 +18,7 @@ import (
 type osDisk struct{}
 
 // osDiskMarker identifies the canonical real-filesystem provider without
-// comparing arbitrary DiskProvider interface values. The unexported method
+// using interface equality as the identity mechanism. The unexported method
 // prevents providers outside this package from accidentally claiming the
 // canonical identity.
 type osDiskMarker interface {
@@ -33,9 +33,10 @@ var osDiskSingleton DiskProvider = osDisk{}
 // fs_* constructor falls back to when no DiskProvider is supplied.
 func OSDisk() DiskProvider { return osDiskSingleton }
 
-// HasDiskProvider reports whether d contains a provider. It deliberately
-// uses a type switch rather than interface equality because DiskProvider's
-// dynamic type is allowed to contain maps or slices.
+// HasDiskProvider reports whether d is a non-nil interface value containing a
+// provider. The type switch keeps this presence check separate from the
+// canonical-identity check below; it does not impose a comparability
+// requirement on a provider's dynamic value.
 func HasDiskProvider(d DiskProvider) bool {
 	switch d.(type) {
 	case nil:
@@ -45,9 +46,12 @@ func HasDiskProvider(d DiskProvider) bool {
 	}
 }
 
-// IsOSDisk reports whether d is the canonical real-filesystem provider.
-// Custom providers, including providers whose dynamic values are not
-// comparable, are never compared as interface values.
+// IsOSDisk reports whether d is the canonical real-filesystem provider by
+// asserting the private marker interface. The marker is useful as an
+// explicit identity predicate and avoids making identity depend on interface
+// equality. It is not a workaround for a reachable panic in the former
+// comparisons: comparison with nil is always safe, and a custom provider has
+// a different dynamic type from the comparable osDisk value.
 func IsOSDisk(d DiskProvider) bool {
 	_, ok := d.(osDiskMarker)
 	return ok

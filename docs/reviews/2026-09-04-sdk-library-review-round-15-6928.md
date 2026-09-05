@@ -195,6 +195,18 @@ pass-through к `App.ExecuteRun`; recovery вокруг этой precondition н
 - добавить value-provider с `map` или `slice` и проверить, что documented
   `FolderScopes + DiskProvider` проходит без panic и получает `fs_*` schema.
 
+### Correction note (post-review, 2026-09-05)
+
+R15-3 is disconfirmed by the independent 36h review, section 4
+(`docs/reviews/2026-09-05-2047-commit-review-36h.md`). The original finding
+above is retained as historical review text rather than silently rewritten.
+In Go, interface comparison panics only when both dynamic types are the same
+uncomparable type: comparison with `nil` is safe, and a custom `DiskProvider`
+has a different dynamic type from the comparable, unexported `osDisk` value.
+The specific panic path described here was therefore unreachable. The marker
+predicate introduced later is still useful as an explicit canonical-identity
+mechanism, but it does not represent a fix for that alleged panic.
+
 ### R15-4 — P2: retry в pre-push теряет именно те throttling flags, ради которых сделан fix
 
 `run_test_segment` правильно получает полный argv первого запуска и повторяет
