@@ -54,6 +54,9 @@ func (s *ConfigStore) HasConfigField(scope Scope, key string) bool {
 	if err != nil {
 		return false
 	}
+	if name, field, ok := mcpLiteralField(key); ok {
+		return readLiteralMCPField(data, name, field)
+	}
 	return gjson.Get(string(data), key).Exists()
 }
 
@@ -198,6 +201,18 @@ func (s *ConfigStore) SetConfigField(scope Scope, key string, value any) error {
 // cross-process gap. After a successful write, it automatically reloads
 // config to keep in-memory state fresh.
 func (s *ConfigStore) SetConfigFields(scope Scope, kv map[string]any) error {
+	if len(kv) > 0 {
+		mcpOnly := true
+		for key := range kv {
+			if _, _, ok := mcpLiteralField(key); !ok {
+				mcpOnly = false
+				break
+			}
+		}
+		if mcpOnly {
+			return s.setMCPFields(scope, kv)
+		}
+	}
 	path, err := s.configPath(scope)
 	if err != nil {
 		return fmt.Errorf("%v: %w", kv, err)
@@ -277,6 +292,9 @@ func (s *ConfigStore) SetConfigFields(scope Scope, kv map[string]any) error {
 // to internalConfigWriteLockTimeout so a contended/wedged lock cannot stall
 // the whole config subsystem. See internalConfigWriteLockTimeout's doc.
 func (s *ConfigStore) RemoveConfigField(scope Scope, key string) error {
+	if _, _, ok := mcpLiteralField(key); ok {
+		return s.removeMCPField(scope, key)
+	}
 	path, err := s.configPath(scope)
 	if err != nil {
 		return fmt.Errorf("%s: %w", key, err)

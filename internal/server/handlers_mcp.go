@@ -100,12 +100,6 @@ func handleUpdateMCPServer(ctx context.Context, a *appPkg.App, c *Client, msg WS
 		c.reply(msg.ID, EventError, nil, "config not available")
 		return
 	}
-	// Remove old entry
-	if err := mcp.RemoveServer(store, p.OldName); err != nil {
-		c.reply(msg.ID, EventError, nil, err.Error())
-		return
-	}
-	// Add with new config
 	mcpCfg := config.MCPConfig{
 		Type:    config.MCPType(p.Type),
 		Command: p.Command,
@@ -115,7 +109,7 @@ func handleUpdateMCPServer(ctx context.Context, a *appPkg.App, c *Client, msg WS
 		Headers: p.Headers,
 		Timeout: p.Timeout,
 	}
-	if err := mcp.AddServer(ctx, store, p.Name, mcpCfg); err != nil {
+	if err := mcp.ReplaceServer(ctx, store, p.OldName, p.Name, mcpCfg); err != nil {
 		c.reply(msg.ID, EventError, nil, err.Error())
 		return
 	}

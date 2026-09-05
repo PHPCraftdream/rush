@@ -110,6 +110,13 @@ func (s *ConfigStore) buildAndPublishReload(ctx context.Context) error {
 		}
 	}
 
+	// Keep .mcp.json discovery and the literal disabled-override merge
+	// consistent with the initial Load path. A reload after the external file
+	// appears must not silently drop those servers from the new snapshot.
+	if external := loadExternalMCPServers(s.workingDir); len(external) > 0 {
+		mergeExternalMCPServers(cfg, s, external)
+	}
+
 	if err := cfg.ValidateHooks(); err != nil {
 		return fmt.Errorf("invalid hook configuration on reload: %w", err)
 	}

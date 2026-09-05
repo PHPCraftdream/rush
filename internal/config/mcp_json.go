@@ -114,37 +114,38 @@ func mergeExternalMCPServers(cfg *Config, store *ConfigStore, external map[strin
 			// Rush's own config defines this server — it takes precedence.
 			continue
 		}
-		// Check if the user has toggled this server off via the UI.
-		if store.HasConfigField(ScopeWorkspace, "mcp."+name+".disabled") {
-			workspacePath, _ := store.configPath(ScopeWorkspace)
-			data, _ := os.ReadFile(workspacePath)
-			if len(data) > 0 {
-				var ws struct {
-					MCP map[string]struct {
-						Disabled bool `json:"disabled"`
-					} `json:"mcp"`
-				}
-				if json.Unmarshal(data, &ws) == nil {
-					if srv, ok := ws.MCP[name]; ok {
-						extCfg.Disabled = srv.Disabled
-					}
-				}
-			}
-		} else if store.HasConfigField(ScopeGlobal, "mcp."+name+".disabled") {
-			data, _ := os.ReadFile(store.globalDataPath)
-			if len(data) > 0 {
-				var gs struct {
-					MCP map[string]struct {
-						Disabled bool `json:"disabled"`
-					} `json:"mcp"`
-				}
-				if json.Unmarshal(data, &gs) == nil {
-					if srv, ok := gs.MCP[name]; ok {
-						extCfg.Disabled = srv.Disabled
-					}
-				}
-			}
+		// Check if the user has toggled this server off via the UI. Decode the
+		// literal map key directly; constructing a dynamic gjson path would
+		// treat dots, wildcards, and backslashes in a server name as syntax.
+		if disabled, ok := readMCPDisabledOverride(store, ScopeWorkspace, name); ok {
+			extCfg.Disabled = disabled
+		} else if disabled, ok := readMCPDisabledOverride(store, ScopeGlobal, name); ok {
+			extCfg.Disabled = disabled
 		}
 		cfg.MCP[name] = extCfg
 	}
+}
+
+func readMCPDisabledOverride(store *ConfigStore, scope Scope, name string) (bool, bool) {
+	path, err := store.configPath(scope)
+	if err != nil {
+		return false, false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false, false
+	}
+	var root struct {
+		MCP map[string]struct {
+			Disabled *bool `json:"disabled"`
+		} `json:"mcp"`
+	}
+	if json.Unmarshal(data, &root) != nil {
+		return false, false
+	}
+	entry, ok := root.MCP[name]
+	if !ok || entry.Disabled == nil {
+		return false, false
+	}
+	return *entry.Disabled, true
 }
