@@ -125,7 +125,7 @@ func TestToGeminiTOML_ErrorsOnTripleQuoteInBody(t *testing.T) {
 
 func TestToSkillMD(t *testing.T) {
 	got := toSkillMD("rush", "My description", "Body text with $ARGUMENTS placeholder")
-	assert.True(t, strings.HasPrefix(got, claudeSlashCommandSentinel+"\n"))
+	assert.True(t, strings.HasPrefix(got, "---\nname: rush\ndescription: My description\n---\n"+claudeSlashCommandSentinel+"\n\n"))
 	assert.Contains(t, got, "name: rush\n")
 	assert.Contains(t, got, "description: My description\n")
 	assert.Contains(t, got, "$ARGUMENTS")

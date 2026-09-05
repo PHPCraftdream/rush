@@ -3,8 +3,10 @@ package cmd
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/skills"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -34,6 +36,22 @@ func runCodexDelInDir(t *testing.T, dir string) {
 	require.NoError(t, runCodexDel(dir))
 }
 
+func assertCodexSkillFrontmatter(t *testing.T, content []byte, name, canonicalTemplate string) {
+	t.Helper()
+	description, _, err := parseSlashCommandSource(canonicalTemplate)
+	require.NoError(t, err)
+
+	wantPrefix := "---\nname: " + name + "\ndescription: " + description + "\n---\n" +
+		claudeSlashCommandSentinel + "\n\n"
+	require.True(t, strings.HasPrefix(string(content), wantPrefix), "generated %s SKILL.md must begin with YAML frontmatter followed by the ownership sentinel", name)
+
+	parsed, err := skills.ParseContent(content)
+	require.NoError(t, err, "generated %s SKILL.md must parse as an Agent Skill", name)
+	assert.Equal(t, name, parsed.Name)
+	assert.Equal(t, description, parsed.Description)
+	assert.True(t, strings.HasPrefix(parsed.Instructions, claudeSlashCommandSentinel+"\n"))
+}
+
 // ---------------------------------------------------------------------------
 // codex-init tests
 // ---------------------------------------------------------------------------
@@ -45,6 +63,7 @@ func TestCodexInit_CreatesSlashCommand(t *testing.T) {
 	skillPath := filepath.Join(dir, ".agents", "skills", "rush", "SKILL.md")
 	bts, err := os.ReadFile(skillPath)
 	require.NoError(t, err)
+	assertCodexSkillFrontmatter(t, bts, "rush", claudeSlashCommandTemplate)
 	got := string(bts)
 	assert.Contains(t, got, claudeSlashCommandSentinel)
 	assert.Contains(t, got, "$ARGUMENTS")
@@ -78,6 +97,7 @@ func TestCodexInit_CreatesFallbackSkill(t *testing.T) {
 	skillPath := filepath.Join(dir, ".agents", "skills", "rush-fallback", "SKILL.md")
 	bts, err := os.ReadFile(skillPath)
 	require.NoError(t, err)
+	assertCodexSkillFrontmatter(t, bts, "rush-fallback", claudeFallbackCommandTemplate)
 	got := string(bts)
 	assert.Contains(t, got, claudeSlashCommandSentinel)
 	assert.Contains(t, got, "$ARGUMENTS")
@@ -93,6 +113,7 @@ func TestCodexInit_CreatesWrushSkillFromCanonicalTemplate(t *testing.T) {
 	skillPath := filepath.Join(dir, ".agents", "skills", "wrush", "SKILL.md")
 	bts, err := os.ReadFile(skillPath)
 	require.NoError(t, err)
+	assertCodexSkillFrontmatter(t, bts, "wrush", claudeWrushCommandTemplate)
 	got := string(bts)
 	assert.Contains(t, got, claudeSlashCommandSentinel)
 	assert.Contains(t, got, "$ARGUMENTS")

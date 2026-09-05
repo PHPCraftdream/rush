@@ -456,6 +456,8 @@ rush codex-init                  # install rush, rush-fallback and wrush
 
 This writes `rush/SKILL.md`, `rush-fallback/SKILL.md` and `wrush/SKILL.md`
 under `~/.agents/skills/` (or the project's `.agents/skills/` in local mode).
+Each file starts with valid YAML frontmatter; Rush's ownership sentinel follows
+the closing frontmatter delimiter so Codex can parse the Skill normally.
 The generated `wrush` Skill inherits its base instructions from the sibling
 `../rush/SKILL.md`, matching Codex's nested Skill-directory layout.
 `rush codex-del` removes only those Skills when they carry Rush's sentinel;

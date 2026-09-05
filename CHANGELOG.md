@@ -15,7 +15,9 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   sentinel-safe overwrite/removal behavior. `rush cli-refresh` refreshes all
   three Codex Skills as well. The Codex-specific `wrush` renderer rewrites
   canonical `rush.md` references to the sibling `../rush/SKILL.md` path used
-  by Codex's nested Skill layout.
+  by Codex's nested Skill layout. Generated Codex/Grok Skills now begin with
+  YAML frontmatter, with the ownership sentinel placed immediately afterward,
+  so strict Skill parsers accept them while safe refresh/removal still works.
 
 - **`/wrush` slash-command**, installed by `rush claude-init` alongside
   `/rush` and `/rush-fallback`. Behaviorally identical to `/rush` with

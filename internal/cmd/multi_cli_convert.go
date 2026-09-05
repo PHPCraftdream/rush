@@ -82,12 +82,15 @@ func toGeminiTOML(description, body string) (string, error) {
 // toSkillMD converts a description/body pair into Codex/Grok Skills-format
 // SKILL.md content. Both tools share the identical Skills convention:
 // `<skillsDir>/<name>/SKILL.md` with `name:`/`description:` front-matter.
+// The opening delimiter must be the file's first bytes for strict parsers;
+// the ownership sentinel therefore lives immediately after the closing
+// delimiter, where it remains parser-safe and discoverable by write/remove.
 func toSkillMD(name, description, body string) string {
-	return claudeSlashCommandSentinel + "\n" +
-		"---\n" +
+	return "---\n" +
 		"name: " + name + "\n" +
 		"description: " + description + "\n" +
-		"---\n\n" +
+		"---\n" +
+		claudeSlashCommandSentinel + "\n\n" +
 		"Any text you type after invoking this skill is the task — treat it exactly as `$ARGUMENTS` below would have been substituted.\n\n" +
 		body
 }
