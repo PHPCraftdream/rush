@@ -797,6 +797,111 @@ func TestOwnerCommitRenewalPublishesSuccessfulSession(t *testing.T) {
 	require.NoError(t, owner.Close(context.Background()))
 }
 
+func TestSessionContextPromotionLinearizesCancellation(t *testing.T) {
+	t.Run("cancellation wins", func(t *testing.T) {
+		ownerCtx, ownerCancel := context.WithCancel(context.Background())
+		defer ownerCancel()
+		candidateCtx, candidateCancel := context.WithCancel(context.Background())
+		candidateCancel()
+		handoff := &sessionContext{
+			owner: ownerCtx, candidate: candidateCtx, done: make(chan struct{}),
+		}
+
+		require.True(t, handoff.finish(candidateCtx, true))
+		require.False(t, handoff.promote())
+		require.ErrorIs(t, handoff.Err(), context.Canceled)
+		select {
+		case <-handoff.Done():
+		default:
+			t.Fatal("cancellation winner did not close the handoff context")
+		}
+	})
+
+	t.Run("promotion wins", func(t *testing.T) {
+		ownerCtx, ownerCancel := context.WithCancel(context.Background())
+		candidateCtx, candidateCancel := context.WithCancel(context.Background())
+		handoff := &sessionContext{
+			owner: ownerCtx, candidate: candidateCtx, done: make(chan struct{}),
+		}
+
+		require.True(t, handoff.promote())
+		candidateCancel()
+		require.False(t, handoff.finish(candidateCtx, true))
+		select {
+		case <-handoff.Done():
+			t.Fatal("candidate cancellation closed a promoted handoff context")
+		default:
+		}
+
+		ownerCancel()
+		require.True(t, handoff.finish(ownerCtx, false))
+		select {
+		case <-handoff.Done():
+		default:
+			t.Fatal("owner cancellation did not close the promoted handoff context")
+		}
+	})
+}
+
+func TestCommitRenewalPublishesOnlyAfterPromotion(t *testing.T) {
+	const (
+		rejectedName = "promotion-rejected"
+		acceptedName = "promotion-accepted"
+	)
+	store := config.NewTestStore(&config.Config{MCP: config.MCPs{
+		rejectedName: {Type: config.MCPStdio, Command: "unused"},
+		acceptedName: {Type: config.MCPStdio, Command: "unused"},
+	}})
+	owner, err := Acquire()
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, owner.Close(context.Background())) })
+
+	rejectedAdmission, err := owner.snapshotServerAdmission(context.Background(), store, rejectedName)
+	require.NoError(t, err)
+	rejectedCandidate, reject := context.WithCancel(context.Background())
+	reject()
+	rejectedHandoff := &sessionContext{
+		owner: owner.lifecycleCtx, candidate: rejectedCandidate, done: make(chan struct{}),
+	}
+	require.True(t, rejectedHandoff.finish(rejectedCandidate, true))
+	rejectedCloseCalls := 0
+	rejected := &ClientSession{
+		cancel:  func() { rejectedCloseCalls++ },
+		promote: rejectedHandoff.promote,
+	}
+	require.ErrorIs(t, owner.commitRenewal(&rejectedAdmission, rejectedName, rejected, Counts{}), ErrOwnerBusy)
+	require.Equal(t, 1, rejectedCloseCalls)
+	_, ok := sessions.Get(rejectedName)
+	require.False(t, ok)
+	_, ok = GetState(rejectedName)
+	require.False(t, ok)
+
+	acceptedAdmission, err := owner.snapshotServerAdmission(context.Background(), store, acceptedName)
+	require.NoError(t, err)
+	acceptedCandidate, cancelCandidate := context.WithCancel(context.Background())
+	acceptedHandoff := newSessionContext(owner.lifecycleCtx, acceptedCandidate)
+	acceptedCloseCalls := 0
+	accepted := &ClientSession{
+		cancel:  func() { acceptedCloseCalls++ },
+		promote: acceptedHandoff.promote,
+	}
+	require.NoError(t, owner.commitRenewal(&acceptedAdmission, acceptedName, accepted, Counts{}))
+	cancelCandidate()
+	require.False(t, acceptedHandoff.finish(acceptedCandidate, true))
+	select {
+	case <-acceptedHandoff.Done():
+		t.Fatal("candidate cancellation closed the committed session context")
+	default:
+	}
+	current, ok := sessions.Get(acceptedName)
+	require.True(t, ok)
+	require.Same(t, accepted, current)
+	require.Equal(t, 0, acceptedCloseCalls)
+
+	require.NoError(t, owner.Close(context.Background()))
+	require.Equal(t, 1, acceptedCloseCalls)
+}
+
 func TestClientLeaseProtectsOperationFromRenewalAndClose(t *testing.T) {
 	const name = "leased-operation"
 	started := make(chan struct{})

@@ -46,11 +46,12 @@ func parseLevel(level mcp.LoggingLevel) slog.Level {
 // on close.
 type ClientSession struct {
 	*mcp.ClientSession
-	cancel    context.CancelFunc
-	promote   func()
-	cleanup   func()
-	closeOnce sync.Once
-	closeErr  error
+	cancel     context.CancelFunc
+	promote    func() bool
+	cleanup    func()
+	cancelOnce sync.Once
+	closeOnce  sync.Once
+	closeErr   error
 }
 
 // Close cancels the session context and then closes the underlying session.
@@ -66,9 +67,11 @@ func (s *ClientSession) Close() error {
 }
 
 func (s *ClientSession) cancelContext() {
-	if s.cancel != nil {
-		s.cancel()
-	}
+	s.cancelOnce.Do(func() {
+		if s.cancel != nil {
+			s.cancel()
+		}
+	})
 }
 
 func (s *ClientSession) closeTransport() error {
@@ -78,10 +81,11 @@ func (s *ClientSession) closeTransport() error {
 	return s.ClientSession.Close()
 }
 
-func (s *ClientSession) promoteContext() {
-	if s.promote != nil {
-		s.promote()
+func (s *ClientSession) promoteContext() bool {
+	if s.promote == nil {
+		return true
 	}
+	return s.promote()
 }
 
 var (
@@ -639,10 +643,14 @@ func (o *Owner) commitRenewal(admission *serverAdmission, name string, session *
 		_ = session.Close()
 		return ErrOwnerBusy
 	}
+	if !session.promoteContext() {
+		lifecycleMu.Unlock()
+		_ = session.Close()
+		return ErrOwnerBusy
+	}
 	sessions.Set(name, session)
 	admission.committed = true
 	setState(name, StateConnected, nil, session, counts)
-	session.promoteContext()
 	lifecycleMu.Unlock()
 	publishStateEvent(name, StateConnected, nil, counts)
 	return nil
@@ -1091,6 +1099,11 @@ func initClientAdmitted(ctx context.Context, cfg *config.ConfigStore, name strin
 		_ = session.Close()
 		return ErrOwnerBusy
 	}
+	if !session.promoteContext() {
+		lifecycleMu.Unlock()
+		_ = session.Close()
+		return ErrOwnerBusy
+	}
 	oldSession, hadOldSession := sessions.Get(name)
 	toolCount := updateTools(cfg, name, tools)
 	updatePrompts(name, prompts)
@@ -1103,7 +1116,6 @@ func initClientAdmitted(ctx context.Context, cfg *config.ConfigStore, name strin
 		Prompts: len(prompts),
 	}
 	setState(name, StateConnected, nil, session, counts)
-	session.promoteContext()
 	brokerForEvent := broker
 	lifecycleMu.Unlock()
 	if hadOldSession && oldSession != session {
@@ -1877,10 +1889,11 @@ func createSessionWithAdmission(ctx context.Context, name string, m config.MCPCo
 			stopInitTimer()
 			cancelSession(context.Canceled)
 		},
-		promote: func() {
+		promote: func() bool {
 			if handoff != nil {
-				handoff.promote()
+				return handoff.promote()
 			}
+			return true
 		},
 		cleanup: cleanup,
 	}, nil
