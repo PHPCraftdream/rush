@@ -16,7 +16,6 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config"
@@ -1441,9 +1440,7 @@ func getOrRenewClient(ctx context.Context, cfg *config.ConfigStore, name string)
 	}
 	state, _ := states.Get(name)
 	timeout := mcpTimeout(m)
-	pingCtx, cancel := context.WithTimeout(operationCtx, timeout)
-	err := sess.Ping(pingCtx, nil)
-	cancel()
+	err := pingWithTimeout(operationCtx, sess, timeout)
 	if err == nil {
 		if admission != nil && !admission.valid() {
 			lease.RUnlock()
@@ -1508,9 +1505,8 @@ func getOrRenewClient(ctx context.Context, cfg *config.ConfigStore, name string)
 		return newClientLease(current, operationCtx, lease, finish, o), nil
 	}
 
-	failedErr := maybeTimeoutErr(err, timeout)
-	setState(name, StateError, failedErr, nil, state.Counts)
-	publishStateEvent(name, StateError, failedErr, state.Counts)
+	setState(name, StateError, err, nil, state.Counts)
+	publishStateEvent(name, StateError, err, state.Counts)
 	if currentOK {
 		_ = current.Close()
 	}
@@ -1574,6 +1570,15 @@ func getOrRenewClient(ctx context.Context, cfg *config.ConfigStore, name string)
 	}
 
 	return newClientLease(current, operationCtx, lease, finish, o), nil
+}
+
+func pingWithTimeout(ctx context.Context, session *ClientSession, timeout time.Duration) error {
+	timeoutCause := errors.New("mcp ping timeout")
+	pingCtx, cancel := context.WithTimeoutCause(ctx, timeout, timeoutCause)
+	err := session.Ping(pingCtx, nil)
+	errCause := context.Cause(pingCtx)
+	cancel()
+	return maybeTimeoutErr(err, timeout, errCause, timeoutCause)
 }
 
 func newClientLease(session *ClientSession, ctx context.Context, lease *serverLease, finish func(), o *Owner) *clientLease {
@@ -1714,10 +1719,10 @@ type sessionContext struct {
 	candidate context.Context
 	done      chan struct{}
 
-	mu        sync.Mutex
-	promoted  bool
-	err       error
-	closeOnce sync.Once
+	mu       sync.Mutex
+	promoted bool
+	err      error
+	closed   bool
 }
 
 func newSessionContext(owner, candidate context.Context) *sessionContext {
@@ -1729,35 +1734,38 @@ func newSessionContext(owner, candidate context.Context) *sessionContext {
 	go func() {
 		select {
 		case <-owner.Done():
-			s.finish(owner.Err())
+			s.finish(owner, false)
 		case <-candidate.Done():
-			s.mu.Lock()
-			promoted := s.promoted
-			s.mu.Unlock()
-			if !promoted {
-				s.finish(candidate.Err())
+			if s.finish(candidate, true) {
 				return
 			}
 			<-owner.Done()
-			s.finish(owner.Err())
+			s.finish(owner, false)
 		}
 	}()
 	return s
 }
 
-func (s *sessionContext) finish(err error) {
-	s.closeOnce.Do(func() {
-		s.mu.Lock()
-		s.err = err
-		s.mu.Unlock()
-		close(s.done)
-	})
+func (s *sessionContext) finish(source context.Context, candidate bool) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed || (candidate && s.promoted) {
+		return false
+	}
+	s.err = source.Err()
+	s.closed = true
+	close(s.done)
+	return true
 }
 
-func (s *sessionContext) promote() {
+func (s *sessionContext) promote() bool {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return false
+	}
 	s.promoted = true
-	s.mu.Unlock()
+	return true
 }
 
 func (s *sessionContext) Deadline() (time.Time, bool) { return s.owner.Deadline() }
@@ -1780,21 +1788,27 @@ func createSessionWithAdmission(ctx context.Context, name string, m config.MCPCo
 		handoff = newSessionContext(admission.owner.lifecycleCtx, admission.ctx)
 		sessionCtx = handoff
 	}
+	lifetimeCtx, cancelSession := context.WithCancelCause(sessionCtx)
 	timeoutCause := errors.New("mcp initialization timeout")
-	mcpCtx, cancel := context.WithCancelCause(sessionCtx)
-	timedOut := atomic.Bool{}
+	timerDone := make(chan struct{})
 	cancelTimer := time.AfterFunc(timeout, func() {
-		timedOut.Store(true)
-		cancel(timeoutCause)
+		cancelSession(timeoutCause)
+		close(timerDone)
 	})
-	stop := func() {
-		if !cancelTimer.Stop() {
-			return
-		}
-		cancel(nil)
+	var stopTimerOnce sync.Once
+	stopInitTimer := func() {
+		stopTimerOnce.Do(func() {
+			if !cancelTimer.Stop() {
+				<-timerDone
+			}
+		})
+	}
+	cancelFailedSession := func() {
+		stopInitTimer()
+		cancelSession(context.Canceled)
 	}
 
-	transport, err := createTransport(mcpCtx, m, resolver)
+	transport, err := createTransport(lifetimeCtx, m, resolver)
 	if err != nil {
 		if admission == nil || admission.valid() {
 			if admission == nil {
@@ -1804,7 +1818,7 @@ func createSessionWithAdmission(ctx context.Context, name string, m config.MCPCo
 			}
 		}
 		slog.Error("Error creating MCP client", "error", err, "name", name)
-		stop()
+		cancelFailedSession()
 		return nil, err
 	}
 
@@ -1831,13 +1845,16 @@ func createSessionWithAdmission(ctx context.Context, name string, m config.MCPCo
 		},
 	)
 
-	session, err := client.Connect(mcpCtx, transport, nil)
+	session, err := client.Connect(lifetimeCtx, transport, nil)
+	stopInitTimer()
+	timeoutErrCause := context.Cause(lifetimeCtx)
+	if err == nil && lifetimeCtx.Err() != nil {
+		err = lifetimeCtx.Err()
+		_ = session.Close()
+	}
 	if err != nil {
 		err = maybeStdioErr(err, transport)
-		if timedOut.Load() && errors.Is(context.Cause(mcpCtx), timeoutCause) {
-			err = errors.Join(err, context.DeadlineExceeded)
-		}
-		err = maybeTimeoutErr(err, timeout)
+		err = maybeTimeoutErr(err, timeout, timeoutErrCause, timeoutCause)
 		if admission == nil || admission.valid() {
 			if admission == nil {
 				updateState(name, StateError, err, nil, Counts{})
@@ -1846,7 +1863,7 @@ func createSessionWithAdmission(ctx context.Context, name string, m config.MCPCo
 			}
 		}
 		slog.Error("MCP client failed to initialize", "error", err, "name", name)
-		stop()
+		cancelSession(context.Canceled)
 		return nil, err
 	}
 
@@ -1856,7 +1873,10 @@ func createSessionWithAdmission(ctx context.Context, name string, m config.MCPCo
 	cleanup := transportCleanup(transport)
 	return &ClientSession{
 		ClientSession: session,
-		cancel:        func() { stop(); cancel(context.Canceled) },
+		cancel: func() {
+			stopInitTimer()
+			cancelSession(context.Canceled)
+		},
 		promote: func() {
 			if handoff != nil {
 				handoff.promote()
@@ -1935,8 +1955,8 @@ func maybeStdioErr(err error, transport mcp.Transport) error {
 	return err
 }
 
-func maybeTimeoutErr(err error, timeout time.Duration) error {
-	if errors.Is(err, context.DeadlineExceeded) {
+func maybeTimeoutErr(err error, timeout time.Duration, cause, timeoutCause error) error {
+	if cause == timeoutCause {
 		return fmt.Errorf("timed out after %s", timeout)
 	}
 	return err
@@ -2037,11 +2057,22 @@ type headerRoundTripper struct {
 }
 
 func cloneHTTPTransport() (*http.Transport, error) {
-	base, ok := http.DefaultTransport.(*http.Transport)
-	if !ok {
-		return nil, fmt.Errorf("mcp http transport must be an *http.Transport")
+	if base, ok := http.DefaultTransport.(*http.Transport); ok {
+		return base.Clone(), nil
 	}
-	return base.Clone(), nil
+	dialer := &net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}
+	return &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		DialContext:           dialer.DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: time.Second,
+	}, nil
 }
 
 func (rt *headerRoundTripper) CloseIdleConnections() {

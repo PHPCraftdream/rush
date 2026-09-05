@@ -763,6 +763,10 @@ func TestInitializePublishesHTTPSessionBeyondAdmission(t *testing.T) {
 	httpServer := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil))
 
 	store := persistedMCPStore(t, name, httpServer.URL, false)
+	_, ok := store.UpdateMCP(name, func(mcpConfig *config.MCPConfig) {
+		mcpConfig.Timeout = 1
+	})
+	require.True(t, ok)
 	owner, err := Acquire()
 	require.NoError(t, err)
 	defer func() {
@@ -775,8 +779,9 @@ func TestInitializePublishesHTTPSessionBeyondAdmission(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, StateConnected, state.State)
 	require.Equal(t, int32(1), initializeCalls.Load())
+	time.Sleep(1200 * time.Millisecond)
 
-	callCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	callCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	require.NoError(t, state.Client.Ping(callCtx, nil))
 	_, err = state.Client.CallTool(callCtx, &mcp.CallToolParams{Name: "echo"})
@@ -885,10 +890,45 @@ func TestHeaderRoundTripperUsesOwnedTransportPool(t *testing.T) {
 	secondRT.CloseIdleConnections()
 }
 
+type testRoundTripper func(*http.Request) (*http.Response, error)
+
+func (f testRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func TestCloneHTTPTransportFallsBackFromCustomDefault(t *testing.T) {
+	original := http.DefaultTransport
+	http.DefaultTransport = testRoundTripper(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("custom default transport must not be used")
+	})
+	t.Cleanup(func() { http.DefaultTransport = original })
+
+	first, err := cloneHTTPTransport()
+	require.NoError(t, err)
+	second, err := cloneHTTPTransport()
+	require.NoError(t, err)
+	require.NotSame(t, first, second)
+	require.True(t, first.ForceAttemptHTTP2)
+
+	transport, err := createTransport(context.Background(), config.MCPConfig{
+		Type: config.MCPHttp,
+		URL:  "https://mcp.example.com",
+	}, config.IdentityResolver())
+	require.NoError(t, err)
+	streamable, ok := transport.(*mcp.StreamableClientTransport)
+	require.True(t, ok)
+	roundTripper, ok := streamable.HTTPClient.Transport.(*headerRoundTripper)
+	require.True(t, ok)
+	require.NotSame(t, first, roundTripper.transport)
+	require.NotNil(t, roundTripper.transport)
+}
+
 func TestMaybeTimeoutErrPreservesNonTimeoutCancellation(t *testing.T) {
 	timeout := time.Second
-	require.ErrorIs(t, maybeTimeoutErr(context.Canceled, timeout), context.Canceled)
-	require.EqualError(t, maybeTimeoutErr(context.DeadlineExceeded, timeout), "timed out after 1s")
+	timeoutCause := errors.New("owned timeout")
+	require.ErrorIs(t, maybeTimeoutErr(context.Canceled, timeout, context.Canceled, timeoutCause), context.Canceled)
+	require.ErrorIs(t, maybeTimeoutErr(context.DeadlineExceeded, timeout, context.DeadlineExceeded, timeoutCause), context.DeadlineExceeded)
+	require.EqualError(t, maybeTimeoutErr(context.DeadlineExceeded, timeout, timeoutCause, timeoutCause), "timed out after 1s")
 }
 
 func TestSessionCancellationClassification(t *testing.T) {
@@ -919,6 +959,24 @@ func TestSessionCancellationClassification(t *testing.T) {
 		err := <-done
 		require.ErrorIs(t, err, context.Canceled)
 		require.NotContains(t, err.Error(), "timed out")
+	})
+
+	t.Run("caller deadline remains caller deadline", func(t *testing.T) {
+		server, started := newBlockingServer()
+		defer server.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancel()
+		done := make(chan error, 1)
+		go func() {
+			_, err := createSession(ctx, "caller-deadline", config.MCPConfig{
+				Type: config.MCPHttp, URL: server.URL, Timeout: 60,
+			}, config.IdentityResolver())
+			done <- err
+		}()
+		waitForRequest(t, started)
+		err := <-done
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+		require.NotContains(t, err.Error(), "timed out after 60s")
 	})
 
 	t.Run("admission cancellation remains canceled", func(t *testing.T) {
@@ -959,5 +1017,50 @@ func TestSessionCancellationClassification(t *testing.T) {
 		waitForRequest(t, started)
 		err := <-done
 		require.EqualError(t, err, "timed out after 1s")
+	})
+}
+
+func TestPingTimeoutClassification(t *testing.T) {
+	newSession := func(t *testing.T) (*ClientSession, func()) {
+		t.Helper()
+		serverTransport, clientTransport := mcp.NewInMemoryTransports()
+		server := mcp.NewServer(&mcp.Implementation{Name: "blocking-ping-server"}, nil)
+		server.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
+			return func(ctx context.Context, method string, request mcp.Request) (mcp.Result, error) {
+				if method == "ping" {
+					<-ctx.Done()
+					return nil, ctx.Err()
+				}
+				return next(ctx, method, request)
+			}
+		})
+		serverSession, err := server.Connect(context.Background(), serverTransport, nil)
+		require.NoError(t, err)
+		clientCtx, clientCancel := context.WithCancel(context.Background())
+		clientSession, err := mcp.NewClient(&mcp.Implementation{Name: "blocking-ping-client"}, nil).
+			Connect(clientCtx, clientTransport, nil)
+		require.NoError(t, err)
+		session := &ClientSession{ClientSession: clientSession, cancel: clientCancel}
+		return session, func() {
+			require.NoError(t, session.Close())
+			require.NoError(t, serverSession.Close())
+		}
+	}
+
+	t.Run("caller deadline", func(t *testing.T) {
+		session, cleanup := newSession(t)
+		defer cleanup()
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancel()
+		err := pingWithTimeout(ctx, session, time.Minute)
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+		require.NotContains(t, err.Error(), "timed out after 1m0s")
+	})
+
+	t.Run("owned timeout", func(t *testing.T) {
+		session, cleanup := newSession(t)
+		defer cleanup()
+		err := pingWithTimeout(context.Background(), session, 50*time.Millisecond)
+		require.EqualError(t, err, "timed out after 50ms")
 	})
 }
