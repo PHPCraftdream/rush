@@ -188,7 +188,9 @@ func TestHeaderRoundTripperCancelsBlockedRequestBeforeResponse(t *testing.T) {
 	defer server.Close()
 
 	ownerCtx, ownerCancel := context.WithCancel(context.Background())
-	rt := &headerRoundTripper{ctx: ownerCtx}
+	transport, err := cloneHTTPTransport()
+	require.NoError(t, err)
+	rt := &headerRoundTripper{ctx: ownerCtx, transport: transport}
 	req, err := http.NewRequest(http.MethodPost, server.URL, bytes.NewReader([]byte(`{"jsonrpc":"2.0"}`)))
 	require.NoError(t, err)
 	requestDone := make(chan error, 1)
@@ -316,7 +318,6 @@ func TestStaleAddRollbackPreservesNewerSameNameServer(t *testing.T) {
 	store := isolatedMCPStore(t)
 	owner, err := Acquire()
 	require.NoError(t, err)
-	defer func() { require.NoError(t, owner.Close(context.Background())) }()
 
 	oldStarted := make(chan struct{})
 	releaseOld := make(chan struct{})
@@ -353,7 +354,10 @@ func TestStaleAddRollbackPreservesNewerSameNameServer(t *testing.T) {
 		return &mcp.CallToolResult{}, nil, nil
 	})
 	httpServer := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return newServer }, nil))
-	defer httpServer.Close()
+	defer func() {
+		require.NoError(t, owner.Close(context.Background()))
+		httpServer.Close()
+	}()
 	replacement := config.MCPConfig{Type: config.MCPHttp, URL: httpServer.URL, Timeout: 60}
 	require.NoError(t, AddServer(context.Background(), store, name, replacement))
 
@@ -739,4 +743,221 @@ func signalStarted(ch chan struct{}) {
 	case ch <- struct{}{}:
 	default:
 	}
+}
+
+func TestInitializePublishesHTTPSessionBeyondAdmission(t *testing.T) {
+	const name = "initialize-live-session"
+	var initializeCalls atomic.Int32
+	server := mcp.NewServer(&mcp.Implementation{Name: "live-server"}, nil)
+	mcp.AddTool(server, &mcp.Tool{Name: "echo"}, func(context.Context, *mcp.CallToolRequest, any) (*mcp.CallToolResult, any, error) {
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "ok"}}}, nil, nil
+	})
+	server.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
+		return func(ctx context.Context, method string, request mcp.Request) (mcp.Result, error) {
+			if method == "initialize" {
+				initializeCalls.Add(1)
+			}
+			return next(ctx, method, request)
+		}
+	})
+	httpServer := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil))
+
+	store := persistedMCPStore(t, name, httpServer.URL, false)
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer func() {
+		require.NoError(t, owner.Close(context.Background()))
+		httpServer.Close()
+	}()
+
+	owner.Initialize(context.Background(), nil, store, false)
+	state, ok := GetState(name)
+	require.True(t, ok)
+	require.Equal(t, StateConnected, state.State)
+	require.Equal(t, int32(1), initializeCalls.Load())
+
+	callCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	require.NoError(t, state.Client.Ping(callCtx, nil))
+	_, err = state.Client.CallTool(callCtx, &mcp.CallToolParams{Name: "echo"})
+	require.NoError(t, err)
+	require.Equal(t, int32(1), initializeCalls.Load(), "admission completion must not retire the published session")
+}
+
+func TestInitializeSinglePinsOwnerAcrossRollover(t *testing.T) {
+	started := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		signalStarted(started)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	const name = "initialize-single-rollover"
+	store := persistedMCPStore(t, name, server.URL, false)
+	oldOwner, err := Acquire()
+	require.NoError(t, err)
+	oldDone := make(chan error, 1)
+	go func() { oldDone <- InitializeSingle(context.Background(), name, store) }()
+	waitForRequest(t, started)
+
+	require.NoError(t, oldOwner.Close(context.Background()))
+	newOwner, err := Acquire()
+	require.NoError(t, err)
+	defer func() { require.NoError(t, newOwner.Close(context.Background())) }()
+	require.Error(t, <-oldDone)
+	_, ok := sessions.Get(name)
+	require.False(t, ok, "a single-server initializer admitted by the old owner must not use the new owner")
+}
+
+func TestRefreshAdmissionDoesNotOwnInitializerCancellation(t *testing.T) {
+	const name = "refresh-admission-ownership"
+	store := config.NewTestStore(&config.Config{MCP: config.MCPs{
+		name: {Type: config.MCPStdio, Command: "unused"},
+	}})
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer func() { require.NoError(t, owner.Close(context.Background())) }()
+
+	initializer, err := owner.admitServer(context.Background(), store, name, true)
+	require.NoError(t, err)
+	refresh, err := owner.admitServer(owner.lifecycleCtx, store, name, false)
+	require.NoError(t, err)
+	refresh.done()
+
+	lifecycleMu.Lock()
+	_, retained := owner.serverCancels[name][initializer.epoch]
+	lifecycleMu.Unlock()
+	require.True(t, retained, "refresh cleanup must not remove the initializer cancellation")
+
+	owner.invalidateServer(name)
+	select {
+	case <-initializer.ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("server invalidation did not cancel the initializer")
+	}
+	initializer.done()
+}
+
+func TestInitializeBarrierIsGenerationScopedAcrossRollover(t *testing.T) {
+	oldOwner, err := Acquire()
+	require.NoError(t, err)
+
+	waitCtx, waitCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer waitCancel()
+	waitDone := make(chan error, 1)
+	go func() { waitDone <- WaitForInit(waitCtx) }()
+
+	require.NoError(t, oldOwner.Close(context.Background()))
+	select {
+	case err := <-waitDone:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("waiter captured by the old owner remained blocked after close")
+	}
+
+	newOwner, err := Acquire()
+	require.NoError(t, err)
+	defer func() { require.NoError(t, newOwner.Close(context.Background())) }()
+
+	oldOwner.Initialize(context.Background(), nil, config.NewTestStore(&config.Config{}), false)
+	newWaitCtx, newWaitCancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer newWaitCancel()
+	require.ErrorIs(t, WaitForInit(newWaitCtx), context.DeadlineExceeded,
+		"a stale old-owner invocation must not close the new owner's barrier")
+}
+
+func TestHeaderRoundTripperUsesOwnedTransportPool(t *testing.T) {
+	first, err := cloneHTTPTransport()
+	require.NoError(t, err)
+	second, err := cloneHTTPTransport()
+	require.NoError(t, err)
+	require.NotSame(t, first, second)
+	require.NotSame(t, http.DefaultTransport, first)
+	require.NotSame(t, http.DefaultTransport, second)
+
+	firstRT := &headerRoundTripper{transport: first}
+	secondRT := &headerRoundTripper{transport: second}
+	require.NotSame(t, firstRT.transport, secondRT.transport)
+	firstRT.CloseIdleConnections()
+	secondRT.CloseIdleConnections()
+}
+
+func TestMaybeTimeoutErrPreservesNonTimeoutCancellation(t *testing.T) {
+	timeout := time.Second
+	require.ErrorIs(t, maybeTimeoutErr(context.Canceled, timeout), context.Canceled)
+	require.EqualError(t, maybeTimeoutErr(context.DeadlineExceeded, timeout), "timed out after 1s")
+}
+
+func TestSessionCancellationClassification(t *testing.T) {
+	newBlockingServer := func() (*httptest.Server, <-chan struct{}) {
+		started := make(chan struct{}, 1)
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			signalStarted(started)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.(http.Flusher).Flush()
+			<-r.Context().Done()
+		})), started
+	}
+
+	t.Run("caller cancellation remains canceled", func(t *testing.T) {
+		server, started := newBlockingServer()
+		defer server.Close()
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() {
+			_, err := createSession(ctx, "caller-cancel", config.MCPConfig{
+				Type: config.MCPHttp, URL: server.URL, Timeout: 60,
+			}, config.IdentityResolver())
+			done <- err
+		}()
+		waitForRequest(t, started)
+		cancel()
+		err := <-done
+		require.ErrorIs(t, err, context.Canceled)
+		require.NotContains(t, err.Error(), "timed out")
+	})
+
+	t.Run("admission cancellation remains canceled", func(t *testing.T) {
+		server, started := newBlockingServer()
+		defer server.Close()
+		const name = "admission-cancel"
+		store := config.NewTestStore(&config.Config{MCP: config.MCPs{
+			name: {Type: config.MCPHttp, URL: server.URL, Timeout: 60},
+		}})
+		owner, err := Acquire()
+		require.NoError(t, err)
+		admission, err := owner.admitServer(context.Background(), store, name, true)
+		require.NoError(t, err)
+		done := make(chan error, 1)
+		go func() {
+			_, err := createSessionWithAdmission(admission.ctx, name, store.Config().MCP[name], config.IdentityResolver(), &admission)
+			done <- err
+		}()
+		waitForRequest(t, started)
+		owner.invalidateServer(name)
+		err = <-done
+		require.ErrorIs(t, err, context.Canceled)
+		require.NotContains(t, err.Error(), "timed out")
+		admission.done()
+		require.NoError(t, owner.Close(context.Background()))
+	})
+
+	t.Run("owned timeout reports timed out", func(t *testing.T) {
+		server, started := newBlockingServer()
+		defer server.Close()
+		done := make(chan error, 1)
+		go func() {
+			_, err := createSession(context.Background(), "owned-timeout", config.MCPConfig{
+				Type: config.MCPHttp, URL: server.URL, Timeout: 1,
+			}, config.IdentityResolver())
+			done <- err
+		}()
+		waitForRequest(t, started)
+		err := <-done
+		require.EqualError(t, err, "timed out after 1s")
+	})
 }

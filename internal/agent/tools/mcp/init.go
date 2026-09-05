@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config"
@@ -46,21 +47,42 @@ func parseLevel(level mcp.LoggingLevel) slog.Level {
 // on close.
 type ClientSession struct {
 	*mcp.ClientSession
-	cancel context.CancelFunc
+	cancel    context.CancelFunc
+	promote   func()
+	cleanup   func()
+	closeOnce sync.Once
+	closeErr  error
 }
 
 // Close cancels the session context and then closes the underlying session.
 func (s *ClientSession) Close() error {
-	s.cancelContext()
-	return s.closeTransport()
+	s.closeOnce.Do(func() {
+		s.cancelContext()
+		s.closeErr = s.closeTransport()
+		if s.cleanup != nil {
+			s.cleanup()
+		}
+	})
+	return s.closeErr
 }
 
 func (s *ClientSession) cancelContext() {
-	s.cancel()
+	if s.cancel != nil {
+		s.cancel()
+	}
 }
 
 func (s *ClientSession) closeTransport() error {
+	if s.ClientSession == nil {
+		return nil
+	}
 	return s.ClientSession.Close()
+}
+
+func (s *ClientSession) promoteContext() {
+	if s.promote != nil {
+		s.promote()
+	}
 }
 
 var (
@@ -211,8 +233,10 @@ type Owner struct {
 	initCount       int
 	initWG          sync.WaitGroup
 	initDoneOnce    sync.Once
+	initDone        chan struct{}
 	serverEpochs    map[string]uint64
-	serverCancels   map[string]map[uint64]context.CancelFunc
+	serverCancels   map[string]map[uint64]serverCancel
+	nextCancelToken uint64
 	refreshCh       chan struct{}
 	refreshPending  map[refreshKey]refreshRequest
 	refreshRunning  map[refreshKey]struct{}
@@ -220,6 +244,11 @@ type Owner struct {
 	closeOnce       sync.Once
 	closeDone       chan struct{}
 	closeErr        error
+}
+
+type serverCancel struct {
+	cancel context.CancelFunc
+	token  uint64
 }
 
 type refreshKind uint8
@@ -247,15 +276,17 @@ type refreshRequest struct {
 // reference is held until the candidate or operation has completely exited,
 // allowing Owner.Close to fence all late work before registry reset.
 type serverAdmission struct {
-	owner      *Owner
-	generation uint64
-	epoch      uint64
-	cfg        *config.ConfigStore
-	name       string
-	ctx        context.Context
-	cancel     context.CancelFunc
-	stop       func()
-	once       *sync.Once
+	owner             *Owner
+	generation        uint64
+	epoch             uint64
+	cfg               *config.ConfigStore
+	name              string
+	ctx               context.Context
+	cancel            context.CancelFunc
+	stop              func()
+	once              *sync.Once
+	serverCancelToken uint64
+	committed         bool
 }
 
 func (a *serverAdmission) done() {
@@ -268,17 +299,21 @@ func (a *serverAdmission) done() {
 	if a.stop != nil {
 		a.stop()
 	}
-	if a.cancel != nil {
-		a.cancel()
-	}
 	lifecycleMu.Lock()
-	if current, ok := a.owner.serverCancels[a.name]; ok {
-		delete(current, a.epoch)
-		if len(current) == 0 {
-			delete(a.owner.serverCancels, a.name)
+	if a.serverCancelToken != 0 {
+		if current, ok := a.owner.serverCancels[a.name]; ok {
+			if registered, ok := current[a.epoch]; ok && registered.token == a.serverCancelToken {
+				delete(current, a.epoch)
+				if len(current) == 0 {
+					delete(a.owner.serverCancels, a.name)
+				}
+			}
 		}
 	}
 	lifecycleMu.Unlock()
+	if a.cancel != nil {
+		a.cancel()
+	}
 }
 
 func (a *serverAdmission) valid() bool {
@@ -294,6 +329,9 @@ func (a *serverAdmission) valid() bool {
 func (a *serverAdmission) validLocked() bool {
 	if a == nil || a.owner == nil || a.cfg == nil {
 		return true
+	}
+	if a.ctx != nil && a.ctx.Err() != nil && !a.committed {
+		return false
 	}
 	valid := owner == a.owner && !a.owner.closing &&
 		a.owner.generation == a.generation &&
@@ -315,8 +353,8 @@ func (o *Owner) admitServer(ctx context.Context, cfg *config.ConfigStore, name s
 		return serverAdmission{}, ErrOwnerBusy
 	}
 	if bump {
-		for _, cancel := range o.serverCancels[name] {
-			cancel()
+		for _, registered := range o.serverCancels[name] {
+			registered.cancel()
 		}
 		delete(o.serverCancels, name)
 		o.serverEpochs[name]++
@@ -324,27 +362,31 @@ func (o *Owner) admitServer(ctx context.Context, cfg *config.ConfigStore, name s
 	var operationCtx context.Context
 	var cancel context.CancelFunc
 	var stop func()
+	var serverCancelToken uint64
 	if bump {
 		operationCtx, cancel = context.WithCancel(ctx)
 		stopFunc := context.AfterFunc(o.lifecycleCtx, cancel)
 		stop = func() { _ = stopFunc() }
 		if o.serverCancels[name] == nil {
-			o.serverCancels[name] = make(map[uint64]context.CancelFunc)
+			o.serverCancels[name] = make(map[uint64]serverCancel)
 		}
-		o.serverCancels[name][o.serverEpochs[name]] = cancel
+		o.nextCancelToken++
+		serverCancelToken = o.nextCancelToken
+		o.serverCancels[name][o.serverEpochs[name]] = serverCancel{cancel: cancel, token: serverCancelToken}
 	} else {
 		operationCtx = ctx
 	}
 	admission := serverAdmission{
-		owner:      o,
-		generation: o.generation,
-		epoch:      o.serverEpochs[name],
-		cfg:        cfg,
-		name:       name,
-		once:       new(sync.Once),
-		ctx:        operationCtx,
-		cancel:     cancel,
-		stop:       stop,
+		owner:             o,
+		generation:        o.generation,
+		epoch:             o.serverEpochs[name],
+		cfg:               cfg,
+		name:              name,
+		once:              new(sync.Once),
+		ctx:               operationCtx,
+		cancel:            cancel,
+		stop:              stop,
+		serverCancelToken: serverCancelToken,
 	}
 	o.initCount++
 	o.initWG.Add(1)
@@ -373,8 +415,8 @@ func (o *Owner) snapshotServerAdmission(_ context.Context, cfg *config.ConfigSto
 func (o *Owner) invalidateServer(name string) {
 	var cancels []context.CancelFunc
 	lifecycleMu.Lock()
-	for _, cancel := range o.serverCancels[name] {
-		cancels = append(cancels, cancel)
+	for _, registered := range o.serverCancels[name] {
+		cancels = append(cancels, registered.cancel)
 	}
 	delete(o.serverCancels, name)
 	o.serverEpochs[name]++
@@ -431,14 +473,15 @@ func acquire(implicit bool) (*Owner, error) {
 		lifecycleCtx:    lifecycleCtx,
 		lifecycleCancel: lifecycleCancel,
 		closeDone:       make(chan struct{}),
+		initDone:        make(chan struct{}),
 		serverEpochs:    make(map[string]uint64),
-		serverCancels:   make(map[string]map[uint64]context.CancelFunc),
+		serverCancels:   make(map[string]map[uint64]serverCancel),
 		refreshCh:       make(chan struct{}, 1),
 		refreshPending:  make(map[refreshKey]refreshRequest),
 		refreshRunning:  make(map[refreshKey]struct{}),
 	}
 	owner = o
-	initDone = make(chan struct{})
+	initDone = o.initDone
 	o.refreshWG.Add(1)
 	go o.refreshLoop()
 	lifecycleMu.Unlock()
@@ -568,7 +611,17 @@ func (o *Owner) finishInitialize() {
 	lifecycleMu.Lock()
 	defer lifecycleMu.Unlock()
 	if owner == o {
-		o.initDoneOnce.Do(func() { close(initDone) })
+		o.initDoneOnce.Do(func() { close(o.initDone) })
+	}
+}
+
+// signalInitialize closes only this owner's initialization barrier. A stale
+// invocation must never close the barrier installed for a newer owner.
+func (o *Owner) signalInitialize() {
+	lifecycleMu.Lock()
+	defer lifecycleMu.Unlock()
+	if owner == o {
+		o.initDoneOnce.Do(func() { close(o.initDone) })
 	}
 }
 
@@ -588,7 +641,9 @@ func (o *Owner) commitRenewal(admission *serverAdmission, name string, session *
 		return ErrOwnerBusy
 	}
 	sessions.Set(name, session)
+	admission.committed = true
 	setState(name, StateConnected, nil, session, counts)
+	session.promoteContext()
 	lifecycleMu.Unlock()
 	publishStateEvent(name, StateConnected, nil, counts)
 	return nil
@@ -664,7 +719,7 @@ func (o *Owner) finishClose() {
 		item.session.cancelContext()
 	}
 	for _, item := range snapshot {
-		if err := item.session.closeTransport(); err != nil &&
+		if err := item.session.Close(); err != nil &&
 			!errors.Is(err, io.EOF) &&
 			!errors.Is(err, context.Canceled) &&
 			err.Error() != "signal: killed" {
@@ -677,6 +732,7 @@ func (o *Owner) finishClose() {
 		resetRegistryLocked()
 		owner = nil
 		initDone = closedChannel()
+		o.initDoneOnce.Do(func() { close(o.initDone) })
 	}
 	close(o.closeDone)
 	lifecycleMu.Unlock()
@@ -832,11 +888,13 @@ func (o *Owner) Initialize(ctx context.Context, permissions permission.Service, 
 	if owner != o || o.closing {
 		lifecycleMu.Unlock()
 		cancel()
+		o.signalInitialize()
 		return
 	}
 	lifecycleMu.Unlock()
 	if !o.beginInit() {
 		cancel()
+		o.signalInitialize()
 		return
 	}
 	defer o.endInit()
@@ -919,38 +977,43 @@ func WaitForInit(ctx context.Context) error {
 
 // InitializeSingle initializes a single MCP client by name.
 func InitializeSingle(ctx context.Context, name string, cfg *config.ConfigStore) error {
-	if currentOwner() == nil {
+	o := currentOwner()
+	if o == nil {
 		var err error
-		_, err = acquireImplicit()
+		o, err = acquireImplicit()
 		if err != nil {
 			return err
 		}
 	}
+	if !o.beginInit() {
+		return ErrOwnerBusy
+	}
+	defer o.endInit()
+
 	m, exists := cfg.MCPConfig(name)
 	if !exists {
 		return fmt.Errorf("mcp '%s' not found in configuration", name)
 	}
 
 	if m.Disabled {
-		updateState(name, StateDisabled, nil, nil, Counts{})
+		lifecycleMu.Lock()
+		accepted := owner == o && !o.closing && o.generation == generation
+		if accepted {
+			setState(name, StateDisabled, nil, nil, Counts{})
+		}
+		lifecycleMu.Unlock()
+		if accepted {
+			publishStateEvent(name, StateDisabled, nil, Counts{})
+		}
 		slog.Debug("Skipping disabled MCP", "name", name)
 		return nil
 	}
 
-	return initClient(ctx, cfg, name, m, cfg.Resolver())
-}
-
-// initClient initializes a single MCP client with the given configuration.
-func initClient(ctx context.Context, cfg *config.ConfigStore, name string, m config.MCPConfig, resolver config.VariableResolver) error {
-	var admission *serverAdmission
-	if o := currentOwner(); o != nil {
-		admitted, err := o.admitServer(ctx, cfg, name, true)
-		if err != nil {
-			return err
-		}
-		admission = &admitted
+	admitted, err := o.admitServer(ctx, cfg, name, true)
+	if err != nil {
+		return err
 	}
-	return initClientAdmitted(ctx, cfg, name, m, resolver, admission)
+	return initClientAdmitted(admitted.ctx, cfg, name, m, cfg.Resolver(), &admitted)
 }
 
 func initClientAdmitted(ctx context.Context, cfg *config.ConfigStore, name string, m config.MCPConfig, resolver config.VariableResolver, admission *serverAdmission) error {
@@ -1033,11 +1096,15 @@ func initClientAdmitted(ctx context.Context, cfg *config.ConfigStore, name strin
 	toolCount := updateTools(cfg, name, tools)
 	updatePrompts(name, prompts)
 	sessions.Set(name, session)
+	if admission != nil {
+		admission.committed = true
+	}
 	counts := Counts{
 		Tools:   toolCount,
 		Prompts: len(prompts),
 	}
 	setState(name, StateConnected, nil, session, counts)
+	session.promoteContext()
 	brokerForEvent := broker
 	lifecycleMu.Unlock()
 	if hadOldSession && oldSession != session {
@@ -1118,6 +1185,10 @@ func EnableServer(ctx context.Context, cfg *config.ConfigStore, name string) err
 	if err != nil {
 		return err
 	}
+	if !o.beginInit() {
+		return ErrOwnerBusy
+	}
+	defer o.endInit()
 	mcpCfg, ok := cfg.MCPConfig(name)
 	if !ok {
 		return fmt.Errorf("MCP server %q not found", name)
@@ -1132,17 +1203,30 @@ func EnableServer(ctx context.Context, cfg *config.ConfigStore, name string) err
 		lease.Unlock()
 		return fmt.Errorf("failed to persist MCP enabled state for %q: %w", name, err)
 	}
+	rollbackPersistence := func() {
+		if err := cfg.SetConfigField(scope, fmt.Sprintf("mcp.%s.disabled", name), true); err != nil {
+			slog.Error("Failed to roll back MCP enabled state", "name", name, "error", err)
+		}
+		_, _ = cfg.SetMCPDisabled(name, true)
+	}
+	if !o.acceptsSession() {
+		rollbackPersistence()
+		lease.Unlock()
+		return ErrOwnerBusy
+	}
 	// The new admission below is the only initializer allowed to publish this
 	// epoch. A failed persistence round-trip therefore leaves the old epoch
 	// untouched and the operation has no half-applied lifecycle result.
 	o.invalidateServer(name)
 	updated, ok := cfg.SetMCPDisabled(name, false)
 	if !ok {
+		rollbackPersistence()
 		lease.Unlock()
 		return fmt.Errorf("MCP server %q disappeared while enabling", name)
 	}
 	admission, err := o.admitServer(ctx, cfg, name, true)
 	if err != nil {
+		rollbackPersistence()
 		lease.Unlock()
 		return err
 	}
@@ -1331,6 +1415,7 @@ func getOrRenewClient(ctx context.Context, cfg *config.ConfigStore, name string)
 		}
 		admission = &admitted
 		operationCtx, finish = o.operationContext(ctx)
+		admission.ctx = operationCtx
 	}
 
 	lease := serverLeaseFor(name)
@@ -1621,17 +1706,92 @@ func createSession(ctx context.Context, name string, m config.MCPConfig, resolve
 	return createSessionWithAdmission(ctx, name, m, resolver, nil)
 }
 
+// sessionContext is a handoff context for a candidate session. Admission and
+// owner cancellation can abort initialization, but once the candidate is
+// published admission completion must not cancel the SDK connection context.
+type sessionContext struct {
+	owner     context.Context
+	candidate context.Context
+	done      chan struct{}
+
+	mu        sync.Mutex
+	promoted  bool
+	err       error
+	closeOnce sync.Once
+}
+
+func newSessionContext(owner, candidate context.Context) *sessionContext {
+	s := &sessionContext{
+		owner:     owner,
+		candidate: candidate,
+		done:      make(chan struct{}),
+	}
+	go func() {
+		select {
+		case <-owner.Done():
+			s.finish(owner.Err())
+		case <-candidate.Done():
+			s.mu.Lock()
+			promoted := s.promoted
+			s.mu.Unlock()
+			if !promoted {
+				s.finish(candidate.Err())
+				return
+			}
+			<-owner.Done()
+			s.finish(owner.Err())
+		}
+	}()
+	return s
+}
+
+func (s *sessionContext) finish(err error) {
+	s.closeOnce.Do(func() {
+		s.mu.Lock()
+		s.err = err
+		s.mu.Unlock()
+		close(s.done)
+	})
+}
+
+func (s *sessionContext) promote() {
+	s.mu.Lock()
+	s.promoted = true
+	s.mu.Unlock()
+}
+
+func (s *sessionContext) Deadline() (time.Time, bool) { return s.owner.Deadline() }
+
+func (s *sessionContext) Done() <-chan struct{} { return s.done }
+
+func (s *sessionContext) Err() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.err
+}
+
+func (s *sessionContext) Value(key any) any { return s.owner.Value(key) }
+
 func createSessionWithAdmission(ctx context.Context, name string, m config.MCPConfig, resolver config.VariableResolver, admission *serverAdmission) (*ClientSession, error) {
 	timeout := mcpTimeout(m)
-	mcpCtx, cancel := context.WithCancel(ctx)
-	cancelTimer := time.AfterFunc(timeout, cancel)
-	var stopAdmission func() bool
-	if admission != nil && admission.ctx != nil {
-		// Keep a direct cancellation edge from the per-server fence to the
-		// transport context. This matters for SDK transports that retain the
-		// request context internally while Connect is waiting for headers.
-		stopAdmission = context.AfterFunc(admission.ctx, cancel)
-		defer stopAdmission()
+	var handoff *sessionContext
+	sessionCtx := ctx
+	if admission != nil && admission.owner != nil {
+		handoff = newSessionContext(admission.owner.lifecycleCtx, admission.ctx)
+		sessionCtx = handoff
+	}
+	timeoutCause := errors.New("mcp initialization timeout")
+	mcpCtx, cancel := context.WithCancelCause(sessionCtx)
+	timedOut := atomic.Bool{}
+	cancelTimer := time.AfterFunc(timeout, func() {
+		timedOut.Store(true)
+		cancel(timeoutCause)
+	})
+	stop := func() {
+		if !cancelTimer.Stop() {
+			return
+		}
+		cancel(nil)
 	}
 
 	transport, err := createTransport(mcpCtx, m, resolver)
@@ -1644,8 +1804,7 @@ func createSessionWithAdmission(ctx context.Context, name string, m config.MCPCo
 			}
 		}
 		slog.Error("Error creating MCP client", "error", err, "name", name)
-		cancel()
-		cancelTimer.Stop()
+		stop()
 		return nil, err
 	}
 
@@ -1675,6 +1834,9 @@ func createSessionWithAdmission(ctx context.Context, name string, m config.MCPCo
 	session, err := client.Connect(mcpCtx, transport, nil)
 	if err != nil {
 		err = maybeStdioErr(err, transport)
+		if timedOut.Load() && errors.Is(context.Cause(mcpCtx), timeoutCause) {
+			err = errors.Join(err, context.DeadlineExceeded)
+		}
 		err = maybeTimeoutErr(err, timeout)
 		if admission == nil || admission.valid() {
 			if admission == nil {
@@ -1684,14 +1846,43 @@ func createSessionWithAdmission(ctx context.Context, name string, m config.MCPCo
 			}
 		}
 		slog.Error("MCP client failed to initialize", "error", err, "name", name)
-		cancel()
-		cancelTimer.Stop()
+		stop()
 		return nil, err
 	}
 
-	cancelTimer.Stop()
+	// Keep the context live for the published SDK connection. The caller's
+	// operation context is intentionally not its lifetime context.
 	slog.Debug("MCP client initialized", "name", name)
-	return &ClientSession{session, cancel}, nil
+	cleanup := transportCleanup(transport)
+	return &ClientSession{
+		ClientSession: session,
+		cancel:        func() { stop(); cancel(context.Canceled) },
+		promote: func() {
+			if handoff != nil {
+				handoff.promote()
+			}
+		},
+		cleanup: cleanup,
+	}, nil
+}
+
+func transportCleanup(transport mcp.Transport) func() {
+	var roundTripper http.RoundTripper
+	switch transport := transport.(type) {
+	case *mcp.StreamableClientTransport:
+		if transport.HTTPClient != nil {
+			roundTripper = transport.HTTPClient.Transport
+		}
+	case *mcp.SSEClientTransport:
+		if transport.HTTPClient != nil {
+			roundTripper = transport.HTTPClient.Transport
+		}
+	}
+	owned, ok := roundTripper.(interface{ CloseIdleConnections() })
+	if !ok {
+		return nil
+	}
+	return owned.CloseIdleConnections
 }
 
 func notifyListChanged(admission *serverAdmission, name string, kind refreshKind) {
@@ -1745,7 +1936,7 @@ func maybeStdioErr(err error, transport mcp.Transport) error {
 }
 
 func maybeTimeoutErr(err error, timeout time.Duration) error {
-	if errors.Is(err, context.Canceled) {
+	if errors.Is(err, context.DeadlineExceeded) {
 		return fmt.Errorf("timed out after %s", timeout)
 	}
 	return err
@@ -1792,10 +1983,15 @@ func createTransport(ctx context.Context, m config.MCPConfig, resolver config.Va
 		if err != nil {
 			return nil, err
 		}
+		transport, err := cloneHTTPTransport()
+		if err != nil {
+			return nil, err
+		}
 		client := &http.Client{
 			Transport: &headerRoundTripper{
-				headers: headers,
-				ctx:     ctx,
+				headers:   headers,
+				ctx:       ctx,
+				transport: transport,
 			},
 		}
 		return &mcp.StreamableClientTransport{
@@ -1814,10 +2010,15 @@ func createTransport(ctx context.Context, m config.MCPConfig, resolver config.Va
 		if err != nil {
 			return nil, err
 		}
+		transport, err := cloneHTTPTransport()
+		if err != nil {
+			return nil, err
+		}
 		client := &http.Client{
 			Transport: &headerRoundTripper{
-				headers: headers,
-				ctx:     ctx,
+				headers:   headers,
+				ctx:       ctx,
+				transport: transport,
 			},
 		}
 		return &mcp.SSEClientTransport{
@@ -1830,8 +2031,23 @@ func createTransport(ctx context.Context, m config.MCPConfig, resolver config.Va
 }
 
 type headerRoundTripper struct {
-	headers map[string]string
-	ctx     context.Context
+	headers   map[string]string
+	ctx       context.Context
+	transport *http.Transport
+}
+
+func cloneHTTPTransport() (*http.Transport, error) {
+	base, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		return nil, fmt.Errorf("mcp http transport must be an *http.Transport")
+	}
+	return base.Clone(), nil
+}
+
+func (rt *headerRoundTripper) CloseIdleConnections() {
+	if rt.transport != nil {
+		rt.transport.CloseIdleConnections()
+	}
 }
 
 type ownerResponseBody struct {
@@ -1862,6 +2078,9 @@ func (b *ownerResponseBody) Close() error {
 }
 
 func (rt *headerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	if rt.transport == nil {
+		return nil, errors.New("mcp http transport is not initialized")
+	}
 	for k, v := range rt.headers {
 		req.Header.Set(k, v)
 	}
@@ -1899,13 +2118,11 @@ func (rt *headerRoundTripper) RoundTrip(req *http.Request) (*http.Response, erro
 				// transport fence for an HTTP request that is blocked before it has
 				// produced a response body; context cancellation alone is not
 				// sufficient for every Windows net/http transport path.
-				if transport, ok := http.DefaultTransport.(*http.Transport); ok {
-					transport.CancelRequest(req)
-				}
+				rt.transport.CancelRequest(req)
 			})
 		}
 		stop := context.AfterFunc(rt.ctx, cancelRequest)
-		resp, err := http.DefaultTransport.RoundTrip(req)
+		resp, err := rt.transport.RoundTrip(req)
 		if err != nil {
 			stop()
 			cancelRequest()
@@ -1923,7 +2140,7 @@ func (rt *headerRoundTripper) RoundTrip(req *http.Request) (*http.Response, erro
 		}
 		return resp, nil
 	}
-	return http.DefaultTransport.RoundTrip(req)
+	return rt.transport.RoundTrip(req)
 }
 
 func mcpTimeout(m config.MCPConfig) time.Duration {

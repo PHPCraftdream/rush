@@ -45,7 +45,7 @@ func TestMCPSession_CancelOnClose(t *testing.T) {
 	clientSession, err := client.Connect(ctx, clientTransport, nil)
 	require.NoError(t, err)
 
-	sess := &ClientSession{clientSession, cancel}
+	sess := &ClientSession{ClientSession: clientSession, cancel: cancel}
 
 	// Verify the context is not cancelled before close.
 	require.NoError(t, ctx.Err())
@@ -879,7 +879,9 @@ func TestHeaderRoundTripperKeepsOwnerCancellationUntilBodyClose(t *testing.T) {
 	defer server.Close()
 
 	ownerCtx, ownerCancel := context.WithCancel(context.Background())
-	rt := &headerRoundTripper{ctx: ownerCtx}
+	transport, err := cloneHTTPTransport()
+	require.NoError(t, err)
+	rt := &headerRoundTripper{ctx: ownerCtx, transport: transport}
 	req, err := http.NewRequest(http.MethodGet, server.URL, nil)
 	require.NoError(t, err)
 	resp, err := rt.RoundTrip(req)
