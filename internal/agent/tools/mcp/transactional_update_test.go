@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,11 +17,17 @@ import (
 
 func transactionalTestServer(t *testing.T, toolName, text string) *httptest.Server {
 	t.Helper()
+	_, httpServer := transactionalNotifyingServer(t, toolName, text)
+	return httpServer
+}
+
+func transactionalNotifyingServer(t *testing.T, toolName, text string) (*mcp.Server, *httptest.Server) {
+	t.Helper()
 	server := mcp.NewServer(&mcp.Implementation{Name: toolName}, nil)
 	mcp.AddTool(server, &mcp.Tool{Name: toolName}, func(context.Context, *mcp.CallToolRequest, any) (*mcp.CallToolResult, any, error) {
 		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}, nil, nil
 	})
-	return httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil))
+	return server, httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil))
 }
 
 func connectedTransactionalServer(t *testing.T, name string, httpServer *httptest.Server) (*config.ConfigStore, *Owner) {
@@ -54,7 +61,7 @@ func diskMCP(t *testing.T) map[string]json.RawMessage {
 }
 
 func TestReplaceServerFailedSameNamePreservesLiveServerAndDisk(t *testing.T) {
-	oldHTTP := transactionalTestServer(t, "old-tool", "old")
+	oldServer, oldHTTP := transactionalNotifyingServer(t, "old-tool", "old")
 	defer oldHTTP.Close()
 	store, owner := connectedTransactionalServer(t, "same-name", oldHTTP)
 	defer func() { require.NoError(t, owner.Close(context.Background())) }()
@@ -87,6 +94,43 @@ func TestReplaceServerFailedSameNamePreservesLiveServerAndDisk(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "old", result.Content)
 	require.Equal(t, oldDisk, diskMCP(t))
+	mcp.AddTool(oldServer, &mcp.Tool{Name: "after-failed-replace"}, func(context.Context, *mcp.CallToolRequest, any) (*mcp.CallToolResult, any, error) {
+		return &mcp.CallToolResult{}, nil, nil
+	})
+	require.Eventually(t, func() bool {
+		return len(GetServerToolNames("same-name")) == 2
+	}, 5*time.Second, time.Millisecond, "failed replacement invalidated the old session notification admission")
+}
+
+func TestReplaceServerPersistenceFailurePreservesOldAdmissionAndCallbacks(t *testing.T) {
+	oldServer, oldHTTP := transactionalNotifyingServer(t, "old-tool", "old")
+	newHTTP := transactionalTestServer(t, "new-tool", "new")
+	defer oldHTTP.Close()
+	defer newHTTP.Close()
+	store, owner := connectedTransactionalServer(t, "same-name", oldHTTP)
+	defer func() { require.NoError(t, owner.Close(context.Background())) }()
+	oldSession, ok := sessions.Get("same-name")
+	require.True(t, ok)
+	oldDisk := diskMCP(t)
+	persistErr := errors.New("injected persistence failure")
+
+	err := replaceServerWithPersistence(context.Background(), store, "same-name", "same-name", config.MCPConfig{
+		Type: config.MCPHttp, URL: newHTTP.URL, Timeout: 60,
+	}, func(*config.ConfigStore, string, string, config.MCPConfig) error {
+		return persistErr
+	})
+	require.ErrorIs(t, err, persistErr)
+	current, ok := sessions.Get("same-name")
+	require.True(t, ok)
+	require.Same(t, oldSession, current)
+	require.Equal(t, oldDisk, diskMCP(t))
+
+	mcp.AddTool(oldServer, &mcp.Tool{Name: "after-persist-failure"}, func(context.Context, *mcp.CallToolRequest, any) (*mcp.CallToolResult, any, error) {
+		return &mcp.CallToolResult{}, nil, nil
+	})
+	require.Eventually(t, func() bool {
+		return len(GetServerToolNames("same-name")) == 2
+	}, 5*time.Second, time.Millisecond, "persistence failure invalidated the old session notification admission")
 }
 
 func TestReplaceServerFailedRenamePreservesLiveServerAndDisk(t *testing.T) {
@@ -201,6 +245,101 @@ func TestReplaceServerSuccessfulRenameRemovesOnlyOldRuntimeState(t *testing.T) {
 	_, newPersisted := diskMCP(t)["new.name"]
 	require.False(t, oldPersisted)
 	require.True(t, newPersisted)
+}
+
+func TestReplacedRenameAdmissionTracksCommittedConfig(t *testing.T) {
+	oldHTTP := transactionalTestServer(t, "old-tool", "old")
+	newServer, newHTTP := transactionalNotifyingServer(t, "new-tool", "new")
+	defer oldHTTP.Close()
+	defer newHTTP.Close()
+	store, owner := connectedTransactionalServer(t, "old-name", oldHTTP)
+	defer func() { require.NoError(t, owner.Close(context.Background())) }()
+
+	require.NoError(t, ReplaceServer(context.Background(), store, "old-name", "new.name", config.MCPConfig{
+		Type: config.MCPHttp, URL: newHTTP.URL, Timeout: 60,
+	}))
+	mcp.AddTool(newServer, &mcp.Tool{Name: "valid-after-rename"}, func(context.Context, *mcp.CallToolRequest, any) (*mcp.CallToolResult, any, error) {
+		return &mcp.CallToolResult{}, nil, nil
+	})
+	require.Eventually(t, func() bool {
+		return len(GetServerToolNames("new.name")) == 2
+	}, 5*time.Second, time.Millisecond, "renamed session callback should be valid while committed config is enabled")
+
+	_, ok := store.SetMCPDisabled("new.name", true)
+	require.True(t, ok)
+	mcp.AddTool(newServer, &mcp.Tool{Name: "ignored-while-disabled"}, func(context.Context, *mcp.CallToolRequest, any) (*mcp.CallToolResult, any, error) {
+		return &mcp.CallToolResult{}, nil, nil
+	})
+	time.Sleep(50 * time.Millisecond)
+	require.Len(t, GetServerToolNames("new.name"), 2, "disabled committed config must invalidate renamed callbacks")
+
+	_, ok = store.SetMCPDisabled("new.name", false)
+	require.True(t, ok)
+	_, ok = store.RemoveMCP("new.name")
+	require.True(t, ok)
+	mcp.AddTool(newServer, &mcp.Tool{Name: "ignored-after-remove"}, func(context.Context, *mcp.CallToolRequest, any) (*mcp.CallToolResult, any, error) {
+		return &mcp.CallToolResult{}, nil, nil
+	})
+	time.Sleep(50 * time.Millisecond)
+	require.Len(t, GetServerToolNames("new.name"), 2, "removed committed config must invalidate renamed callbacks")
+}
+
+func TestReplaceServerDurableCommitDuringCloseHonorsCloseDeadline(t *testing.T) {
+	oldHTTP := transactionalTestServer(t, "old-tool", "old")
+	newServer, newHTTP := transactionalNotifyingServer(t, "new-tool", "new")
+	defer oldHTTP.Close()
+	defer newHTTP.Close()
+	store, owner := connectedTransactionalServer(t, "old-name", oldHTTP)
+	eventsCtx, cancelEvents := context.WithCancel(context.Background())
+	defer cancelEvents()
+	events := SubscribeEvents(eventsCtx)
+	durable := make(chan struct{})
+	releasePersistence := make(chan struct{})
+	replaceDone := make(chan error, 1)
+	go func() {
+		replaceDone <- replaceServerWithPersistence(context.Background(), store, "old-name", "new-name", config.MCPConfig{
+			Type: config.MCPHttp, URL: newHTTP.URL, Timeout: 60,
+		}, func(cfg *config.ConfigStore, oldName, newName string, mcpCfg config.MCPConfig) error {
+			err := cfg.PersistReplaceMCP(oldName, newName, mcpCfg)
+			close(durable)
+			<-releasePersistence
+			return err
+		})
+	}()
+	select {
+	case <-durable:
+	case <-time.After(5 * time.Second):
+		t.Fatal("replacement did not reach its durable commit")
+	}
+	mcp.AddTool(newServer, &mcp.Tool{Name: "candidate-only"}, func(context.Context, *mcp.CallToolRequest, any) (*mcp.CallToolResult, any, error) {
+		return &mcp.CallToolResult{}, nil, nil
+	})
+	select {
+	case event := <-events:
+		t.Fatalf("uncommitted replacement candidate published an event: %v", event)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	closeCtx, cancelClose := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	start := time.Now()
+	err := owner.Close(closeCtx)
+	cancelClose()
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Less(t, time.Since(start), 500*time.Millisecond, "lifecycle mutex blocked Owner.Close past its deadline")
+	close(releasePersistence)
+	require.NoError(t, <-replaceDone, "durable replacement remains successful when shutdown wins runtime publication")
+	require.NoError(t, owner.Close(context.Background()))
+	for event := range events {
+		require.False(t, event.Payload.Name == "new-name" && event.Payload.State == StateConnected,
+			"closing owner published a connected replacement session after durable commit")
+	}
+
+	disk := diskMCP(t)
+	_, oldExists := disk["old-name"]
+	_, newExists := disk["new-name"]
+	require.False(t, oldExists)
+	require.True(t, newExists)
+	require.False(t, hasSession("new-name"), "closing owner must not publish the prepared replacement session")
 }
 
 func mustStateExists(name string) bool {

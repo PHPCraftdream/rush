@@ -301,21 +301,22 @@ type refreshRequest struct {
 // reference is held until the candidate or operation has completely exited,
 // allowing Owner.Close to fence all late work before registry reset.
 type serverAdmission struct {
-	owner             *Owner
-	generation        uint64
-	epoch             uint64
-	cfg               *config.ConfigStore
-	name              string
-	ctx               context.Context
-	cancel            context.CancelFunc
-	stop              func()
-	once              *sync.Once
-	serverCancelToken uint64
-	committed         bool
-	suppressState     bool
-	allowConfigChange bool
-	committedName     string
-	committedEpoch    uint64
+	owner               *Owner
+	generation          uint64
+	epoch               uint64
+	cfg                 *config.ConfigStore
+	name                string
+	ctx                 context.Context
+	cancel              context.CancelFunc
+	stop                func()
+	once                *sync.Once
+	serverCancelToken   uint64
+	committed           bool
+	promoted            bool
+	suppressState       bool
+	suppressUntilCommit bool
+	committedName       string
+	committedEpoch      uint64
 }
 
 func (a *serverAdmission) done() {
@@ -331,8 +332,8 @@ func (a *serverAdmission) done() {
 	lifecycleMu.Lock()
 	if a.serverCancelToken != 0 {
 		if current, ok := a.owner.serverCancels[a.name]; ok {
-			if registered, ok := current[a.epoch]; ok && registered.token == a.serverCancelToken {
-				delete(current, a.epoch)
+			if registered, ok := current[a.serverCancelToken]; ok && registered.token == a.serverCancelToken {
+				delete(current, a.serverCancelToken)
 				if len(current) == 0 {
 					delete(a.owner.serverCancels, a.name)
 				}
@@ -355,11 +356,21 @@ func (a *serverAdmission) valid() bool {
 	return valid
 }
 
+func (a *serverAdmission) notificationsValid() bool {
+	if a == nil || a.owner == nil || a.cfg == nil {
+		return true
+	}
+	lifecycleMu.Lock()
+	valid := (!a.suppressUntilCommit || a.committed) && a.validLocked()
+	lifecycleMu.Unlock()
+	return valid
+}
+
 func (a *serverAdmission) validLocked() bool {
 	if a == nil || a.owner == nil || a.cfg == nil {
 		return true
 	}
-	if a.ctx != nil && a.ctx.Err() != nil && !a.committed {
+	if a.ctx != nil && a.ctx.Err() != nil && !a.committed && !a.promoted {
 		return false
 	}
 	admissionName := a.name
@@ -374,13 +385,7 @@ func (a *serverAdmission) validLocked() bool {
 	if !valid {
 		return false
 	}
-	if a.committed && a.allowConfigChange {
-		// A replacement marks the admission committed immediately after its
-		// durable config switch. The old literal key is intentionally gone at
-		// that point; owner/epoch fencing still protects every late callback.
-		return true
-	}
-	mcpConfig, exists := a.cfg.MCPConfig(a.name)
+	mcpConfig, exists := a.cfg.MCPConfig(admissionName)
 	if !exists {
 		return false
 	}
@@ -413,7 +418,7 @@ func (o *Owner) admitServer(ctx context.Context, cfg *config.ConfigStore, name s
 		}
 		o.nextCancelToken++
 		serverCancelToken = o.nextCancelToken
-		o.serverCancels[name][o.serverEpochs[name]] = serverCancel{cancel: cancel, token: serverCancelToken}
+		o.serverCancels[name][serverCancelToken] = serverCancel{cancel: cancel, token: serverCancelToken}
 	} else {
 		operationCtx = ctx
 	}
@@ -428,6 +433,41 @@ func (o *Owner) admitServer(ctx context.Context, cfg *config.ConfigStore, name s
 		cancel:            cancel,
 		stop:              stop,
 		serverCancelToken: serverCancelToken,
+	}
+	o.initCount++
+	o.initWG.Add(1)
+	return admission, nil
+}
+
+// admitReplacementCandidate registers a cancellable candidate against the
+// source server without changing its epoch. A failed replacement can then
+// remove only this token, leaving the published session's admission and
+// notification callbacks fully valid.
+func (o *Owner) admitReplacementCandidate(ctx context.Context, cfg *config.ConfigStore, name string) (serverAdmission, error) {
+	lifecycleMu.Lock()
+	defer lifecycleMu.Unlock()
+	if !o.isCurrentLocked() {
+		return serverAdmission{}, ErrOwnerBusy
+	}
+	operationCtx, cancel := context.WithCancel(ctx)
+	stopFunc := context.AfterFunc(o.lifecycleCtx, cancel)
+	if o.serverCancels[name] == nil {
+		o.serverCancels[name] = make(map[uint64]serverCancel)
+	}
+	o.nextCancelToken++
+	token := o.nextCancelToken
+	o.serverCancels[name][token] = serverCancel{cancel: cancel, token: token}
+	admission := serverAdmission{
+		owner:             o,
+		generation:        o.generation,
+		epoch:             o.serverEpochs[name],
+		cfg:               cfg,
+		name:              name,
+		once:              new(sync.Once),
+		ctx:               operationCtx,
+		cancel:            cancel,
+		stop:              func() { _ = stopFunc() },
+		serverCancelToken: token,
 	}
 	o.initCount++
 	o.initWG.Add(1)
@@ -454,13 +494,33 @@ func (o *Owner) snapshotServerAdmission(_ context.Context, cfg *config.ConfigSto
 }
 
 func (o *Owner) invalidateServer(name string) {
-	var cancels []context.CancelFunc
 	lifecycleMu.Lock()
+	cancels := o.invalidateServerLocked(name)
+	lifecycleMu.Unlock()
+	for _, cancel := range cancels {
+		cancel()
+	}
+}
+
+func (o *Owner) invalidateServerLocked(name string) []context.CancelFunc {
+	cancels := make([]context.CancelFunc, 0, len(o.serverCancels[name]))
 	for _, registered := range o.serverCancels[name] {
 		cancels = append(cancels, registered.cancel)
 	}
 	delete(o.serverCancels, name)
 	o.serverEpochs[name]++
+	return cancels
+}
+
+// cancelServerCandidates promptly aborts admitted initialization and
+// replacement work without changing the published server epoch. The caller
+// performs the epoch bump only after its own durable mutation succeeds.
+func (o *Owner) cancelServerCandidates(name string) {
+	lifecycleMu.Lock()
+	cancels := make([]context.CancelFunc, 0, len(o.serverCancels[name]))
+	for _, registered := range o.serverCancels[name] {
+		cancels = append(cancels, registered.cancel)
+	}
 	lifecycleMu.Unlock()
 	for _, cancel := range cancels {
 		cancel()
@@ -1235,13 +1295,16 @@ func DisableServer(ctx context.Context, cfg *config.ConfigStore, name string) er
 	if !ok {
 		return fmt.Errorf("MCP server %q not found", name)
 	}
+	o.cancelServerCandidates(name)
 	lease := serverLeaseFor(name)
 	lease.Lock()
 	defer lease.Unlock()
+	mcpCfg, ok = cfg.MCPConfig(name)
+	if !ok {
+		return fmt.Errorf("MCP server %q disappeared while disabling", name)
+	}
 	// The lease makes the config/state transition linearizable with a
-	// candidate that is already returning from the SDK. Invalidation while the
-	// lease is held cannot race the commit below.
-	o.invalidateServer(name)
+	// candidate that is already returning from the SDK.
 	// Persist first. If disk persistence fails, the session and in-memory
 	// snapshot remain enabled, so the operation has no half-applied result.
 	scope := config.ScopeGlobal
@@ -1254,6 +1317,7 @@ func DisableServer(ctx context.Context, cfg *config.ConfigStore, name string) er
 	if _, ok := cfg.SetMCPDisabled(name, true); !ok {
 		return fmt.Errorf("MCP server %q disappeared while disabling", name)
 	}
+	o.invalidateServer(name)
 	closeSessionLocked(name)
 	clearAdvertised(name)
 	updateState(name, StateDisabled, nil, nil, Counts{})
@@ -1334,6 +1398,21 @@ func AddServer(ctx context.Context, cfg *config.ConfigStore, name string, mcpCfg
 // session, tools, prompts, resources, and state switch as one lifecycle
 // transition.
 func ReplaceServer(ctx context.Context, cfg *config.ConfigStore, oldName, newName string, mcpCfg config.MCPConfig) error {
+	return replaceServerWithPersistence(ctx, cfg, oldName, newName, mcpCfg,
+		func(cfg *config.ConfigStore, oldName, newName string, mcpCfg config.MCPConfig) error {
+			return cfg.PersistReplaceMCP(oldName, newName, mcpCfg)
+		})
+}
+
+type replacementPersister func(*config.ConfigStore, string, string, config.MCPConfig) error
+
+func replaceServerWithPersistence(
+	ctx context.Context,
+	cfg *config.ConfigStore,
+	oldName, newName string,
+	mcpCfg config.MCPConfig,
+	persist replacementPersister,
+) error {
 	o, err := ensureOwner()
 	if err != nil {
 		return err
@@ -1364,13 +1443,13 @@ func ReplaceServer(ctx context.Context, cfg *config.ConfigStore, oldName, newNam
 		}
 	}
 
-	admission, err := o.admitServer(ctx, cfg, oldName, true)
+	admission, err := o.admitReplacementCandidate(ctx, cfg, oldName)
 	if err != nil {
 		unlockServerLeases(locked)
 		return err
 	}
 	admission.suppressState = true
-	admission.allowConfigChange = true
+	admission.suppressUntilCommit = true
 	resolver := cfg.Resolver()
 	unlockServerLeases(locked)
 
@@ -1401,13 +1480,51 @@ func ReplaceServer(ctx context.Context, cfg *config.ConfigStore, oldName, newNam
 		admission.done()
 		return ErrOwnerBusy
 	}
-	if err := cfg.PersistReplaceMCP(oldName, newName, mcpCfg); err != nil {
-		lifecycleMu.Unlock()
+	admission.promoted = true
+	lifecycleMu.Unlock()
+
+	// The durable atomic RMW may wait on an inter-process file lock for up to
+	// the config write timeout. Keep the ordered server leases, but never hold
+	// lifecycleMu here: Owner.Close must be able to mark the owner closing,
+	// cancel its contexts, and honor the caller's deadline while this I/O is
+	// stalled.
+	if err := persist(cfg, oldName, newName, mcpCfg); err != nil {
 		unlockServerLeases(locked)
 		_ = prepared.session.Close()
 		admission.done()
 		return fmt.Errorf("failed to persist MCP server replacement %q to %q: %w", oldName, newName, err)
 	}
+
+	lifecycleMu.Lock()
+	if owner != o || o.closing || o.generation != admission.generation ||
+		o.serverEpochs[oldName] != admission.epoch {
+		// Persistence is the transaction's durable linearization point. If
+		// shutdown won after that point, report success but never publish a
+		// session whose owner is already closing; the next owner will load the
+		// committed config from disk.
+		lifecycleMu.Unlock()
+		unlockServerLeases(locked)
+		_ = prepared.session.Close()
+		admission.done()
+		return nil
+	}
+	committedCfg, exists := cfg.MCPConfig(newName)
+	if !exists || committedCfg.Disabled {
+		lifecycleMu.Unlock()
+		unlockServerLeases(locked)
+		_ = prepared.session.Close()
+		admission.done()
+		return nil
+	}
+
+	var canceled []context.CancelFunc
+	canceled = append(canceled, o.invalidateServerLocked(oldName)...)
+	if newName != oldName {
+		canceled = append(canceled, o.invalidateServerLocked(newName)...)
+	}
+	admission.committed = true
+	admission.committedName = newName
+	admission.committedEpoch = o.serverEpochs[newName]
 
 	oldSession, hadOldSession := sessions.Get(oldName)
 	_, hadOldState := states.Get(oldName)
@@ -1422,15 +1539,15 @@ func ReplaceServer(ctx context.Context, cfg *config.ConfigStore, oldName, newNam
 	// belonging to the old session under either the reused or renamed key.
 	allResources.Del(newName)
 	sessions.Set(newName, prepared.session)
-	admission.committed = true
-	admission.committedName = newName
-	admission.committedEpoch = o.serverEpochs[newName]
 	counts := Counts{Tools: toolCount, Prompts: len(prepared.prompts)}
 	setState(newName, StateConnected, nil, prepared.session, counts)
 	brokerForEvent := broker
 	lifecycleMu.Unlock()
 	unlockServerLeases(locked)
 
+	for _, cancel := range canceled {
+		cancel()
+	}
 	if hadOldSession && oldSession != prepared.session {
 		_ = oldSession.Close()
 	}
@@ -1563,9 +1680,17 @@ func RemoveServer(cfg *config.ConfigStore, name string) error {
 		return fmt.Errorf("MCP server %q is from .mcp.json and cannot be removed (disable it instead)", name)
 	}
 
+	o.cancelServerCandidates(name)
 	lease := serverLeaseFor(name)
 	lease.Lock()
 	defer lease.Unlock()
+	mcpCfg, exists = cfg.MCPConfig(name)
+	if !exists {
+		return fmt.Errorf("MCP server %q disappeared while removing", name)
+	}
+	if mcpCfg.Source == config.MCPSourceExternal {
+		return fmt.Errorf("MCP server %q is from .mcp.json and cannot be removed (disable it instead)", name)
+	}
 	if err := cfg.PersistRemoveMCPConfig(config.ScopeGlobal, name); err != nil {
 		return fmt.Errorf("failed to remove MCP server %q from config: %w", name, err)
 	}
@@ -2117,7 +2242,7 @@ func notifyListChanged(admission *serverAdmission, name string, kind refreshKind
 		publishEvent(pubsub.UpdatedEvent, Event{Type: eventType, Name: name})
 		return
 	}
-	if !admission.valid() {
+	if !admission.notificationsValid() {
 		return
 	}
 	admission.owner.enqueueRefresh(refreshRequest{

@@ -1,10 +1,8 @@
 package config
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"maps"
 	"os"
 	"path/filepath"
@@ -38,10 +36,23 @@ func (s *ConfigStore) PersistRemoveMCPConfig(scope Scope, name string) error {
 // PersistMCPDisabledOverride atomically writes a disabled override for one
 // literal MCP server key. This is used for servers supplied by .mcp.json.
 func (s *ConfigStore) PersistMCPDisabledOverride(scope Scope, name string, disabled bool) error {
+	return s.PersistMCPFields(scope, name, map[string]any{"disabled": disabled})
+}
+
+// PersistMCPFields atomically updates fields within one literal MCP server
+// key. Both the server name and field names are treated as JSON object keys;
+// neither is interpreted as gjson/sjson path syntax.
+func (s *ConfigStore) PersistMCPFields(scope Scope, name string, fields map[string]any) error {
 	path, err := s.configPath(scope)
 	if err != nil {
 		return err
 	}
+
+	keys := make([]string, 0, len(fields))
+	for key := range fields {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
 
 	s.publishMu.Lock()
 	defer s.publishMu.Unlock()
@@ -55,11 +66,13 @@ func (s *ConfigStore) PersistMCPDisabledOverride(scope Scope, name string, disab
 		if entry == nil {
 			entry = make(map[string]json.RawMessage)
 		}
-		disabledJSON, err := json.Marshal(disabled)
-		if err != nil {
-			return fmt.Errorf("failed to encode MCP disabled state: %w", err)
+		for _, key := range keys {
+			raw, err := json.Marshal(fields[key])
+			if err != nil {
+				return fmt.Errorf("failed to encode MCP field %q: %w", key, err)
+			}
+			entry[key] = raw
 		}
-		entry["disabled"] = disabledJSON
 		raw, err := json.Marshal(entry)
 		if err != nil {
 			return fmt.Errorf("failed to encode MCP server %q: %w", name, err)
@@ -166,150 +179,4 @@ func (s *ConfigStore) persistMCPRawAt(path string, mutate func(map[string]json.R
 		}
 		return nil
 	})
-}
-
-// mcpLiteralField reports the exact server name and optional field encoded by
-// a legacy dotted config key. It is intentionally small: callers use the
-// whole-map persistence APIs above for writes, while this parser helps reads
-// remain compatible with existing callers.
-func mcpLiteralField(key string) (name, field string, ok bool) {
-	if len(key) < len("mcp.") || key[:len("mcp.")] != "mcp." {
-		return "", "", false
-	}
-	rest := key[len("mcp."):]
-	for _, candidate := range []string{"disabled", "command", "args", "env", "url", "headers", "timeout", "type", "disabled_tools", "enabled_tools", "enabled_in_cli"} {
-		suffix := "." + candidate
-		if len(rest) > len(suffix) && rest[len(rest)-len(suffix):] == suffix {
-			return rest[:len(rest)-len(suffix)], candidate, true
-		}
-	}
-	return rest, "", rest != ""
-}
-
-func readLiteralMCPField(data []byte, name, field string) bool {
-	var root map[string]json.RawMessage
-	if json.Unmarshal(data, &root) != nil {
-		return false
-	}
-	var servers map[string]json.RawMessage
-	if json.Unmarshal(root["mcp"], &servers) != nil {
-		return false
-	}
-	raw, exists := servers[name]
-	if !exists {
-		return false
-	}
-	if field == "" {
-		return true
-	}
-	var server map[string]json.RawMessage
-	if json.Unmarshal(raw, &server) != nil {
-		return false
-	}
-	_, exists = server[field]
-	return exists
-}
-
-func (s *ConfigStore) setMCPFields(scope Scope, fields map[string]any) error {
-	path, err := s.configPath(scope)
-	if err != nil {
-		return fmt.Errorf("%v: %w", fields, err)
-	}
-	s.publishMu.Lock()
-	keys := make([]string, 0, len(fields))
-	for key := range fields {
-		keys = append(keys, key)
-	}
-	slices.Sort(keys)
-	err = s.persistMCPRawAt(path, func(servers map[string]json.RawMessage) error {
-		for _, key := range keys {
-			value := fields[key]
-			name, field, ok := mcpLiteralField(key)
-			if !ok {
-				return fmt.Errorf("invalid MCP config field %q", key)
-			}
-			raw, err := json.Marshal(value)
-			if err != nil {
-				return fmt.Errorf("failed to encode config field %s: %w", key, err)
-			}
-			if field == "" {
-				servers[name] = raw
-				continue
-			}
-			entry := make(map[string]json.RawMessage)
-			if existing := servers[name]; len(existing) > 0 {
-				if err := json.Unmarshal(existing, &entry); err != nil {
-					return fmt.Errorf("failed to parse MCP server %q: %w", name, err)
-				}
-			}
-			if entry == nil {
-				entry = make(map[string]json.RawMessage)
-			}
-			entry[field] = raw
-			updated, err := json.Marshal(entry)
-			if err != nil {
-				return fmt.Errorf("failed to encode MCP server %q: %w", name, err)
-			}
-			servers[name] = updated
-		}
-		return nil
-	})
-	s.publishMu.Unlock()
-	if err != nil {
-		return err
-	}
-	if err := s.autoReload(context.Background()); err != nil {
-		slog.Warn("Config file updated but failed to reload in-memory state", "error", err)
-	}
-	return nil
-}
-
-func (s *ConfigStore) removeMCPField(scope Scope, key string) error {
-	path, err := s.configPath(scope)
-	if err != nil {
-		return fmt.Errorf("%s: %w", key, err)
-	}
-	if _, err := os.Stat(path); err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return fmt.Errorf("failed to stat config file: %w", err)
-	}
-	name, field, ok := mcpLiteralField(key)
-	if !ok {
-		return fmt.Errorf("invalid MCP config field %q", key)
-	}
-	s.publishMu.Lock()
-	err = s.persistMCPRawAt(path, func(servers map[string]json.RawMessage) error {
-		if field == "" {
-			delete(servers, name)
-			return nil
-		}
-		raw, exists := servers[name]
-		if !exists {
-			return nil
-		}
-		entry := make(map[string]json.RawMessage)
-		if err := json.Unmarshal(raw, &entry); err != nil {
-			return fmt.Errorf("failed to parse MCP server %q: %w", name, err)
-		}
-		if entry == nil {
-			entry = make(map[string]json.RawMessage)
-		}
-		delete(entry, field)
-		updated, err := json.Marshal(entry)
-		if err != nil {
-			return fmt.Errorf("failed to encode MCP server %q: %w", name, err)
-		}
-		servers[name] = updated
-		return nil
-	})
-	s.publishMu.Unlock()
-	if err != nil {
-		return err
-	}
-	if err := s.autoReload(context.Background()); err != nil {
-		slog.Warn("Config file updated but failed to reload in-memory state", "error", err)
-	}
-	return nil
 }

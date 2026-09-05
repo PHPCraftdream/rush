@@ -220,7 +220,7 @@ rush mcp enable my-server --global
 			return nil
 		}
 
-		if err := a.Store().SetConfigField(scope, "mcp."+id+".disabled", false); err != nil {
+		if err := a.Store().PersistMCPDisabledOverride(scope, id, false); err != nil {
 			return fmt.Errorf("failed to enable MCP server: %w", err)
 		}
 
@@ -261,7 +261,7 @@ rush mcp disable my-server --local
 			return nil
 		}
 
-		if err := a.Store().SetConfigField(scope, "mcp."+id+".disabled", true); err != nil {
+		if err := a.Store().PersistMCPDisabledOverride(scope, id, true); err != nil {
 			return fmt.Errorf("failed to disable MCP server: %w", err)
 		}
 
@@ -409,41 +409,20 @@ rush mcp add auth-server --type http --url http://api.example.com/mcp --header "
 			}
 		}
 
-		fields := map[string]any{
-			"mcp." + id + ".type": typeStr,
-		}
-
-		if command != "" {
-			fields["mcp."+id+".command"] = command
-		}
-		if mcpURL != "" {
-			fields["mcp."+id+".url"] = mcpURL
-		}
-
 		argSlice, _ := cmd.Flags().GetStringSlice("arg")
-		if len(argSlice) > 0 {
-			fields["mcp."+id+".args"] = argSlice
-		}
-
 		envStrs, _ := cmd.Flags().GetStringSlice("env")
-		if len(envStrs) > 0 {
-			envMap := parseKVPairs(envStrs)
-			envJSON, _ := json.Marshal(envMap)
-			fields["mcp."+id+".env"] = json.RawMessage(envJSON)
-		}
-
-		if enabledInCLI, _ := cmd.Flags().GetBool("enabled-in-cli"); enabledInCLI {
-			fields["mcp."+id+".enabled_in_cli"] = true
-		}
-
 		headers, _ := cmd.Flags().GetStringSlice("header")
-		if len(headers) > 0 {
-			headersMap := parseKVPairs(headers)
-			headersJSON, _ := json.Marshal(headersMap)
-			fields["mcp."+id+".headers"] = json.RawMessage(headersJSON)
+		enabledInCLI, _ := cmd.Flags().GetBool("enabled-in-cli")
+		mcpCfg := config.MCPConfig{
+			Type:         mcpType,
+			Command:      command,
+			URL:          mcpURL,
+			Args:         argSlice,
+			Env:          parseKVPairs(envStrs),
+			Headers:      parseKVPairs(headers),
+			EnabledInCLI: enabledInCLI,
 		}
-
-		if err := a.Store().SetConfigFields(scope, fields); err != nil {
+		if err := a.Store().PersistMCPConfig(scope, id, mcpCfg); err != nil {
 			return fmt.Errorf("failed to add MCP server: %w", err)
 		}
 
@@ -479,7 +458,7 @@ rush mcp rm old-server --local
 
 		id := args[0]
 
-		if err := a.Store().RemoveConfigField(scope, "mcp."+id); err != nil {
+		if err := a.Store().PersistRemoveMCPConfig(scope, id); err != nil {
 			return fmt.Errorf("failed to remove MCP server from %s scope: %w", scope, err)
 		}
 		fmt.Fprintf(os.Stderr, "removed MCP server %q from %s scope\n", id, scope)
@@ -531,49 +510,49 @@ rush mcp set my-server --enabled-in-cli=true
 
 		if cmd.Flags().Changed("command") {
 			v, _ := cmd.Flags().GetString("command")
-			updates["mcp."+id+".command"] = v
+			updates["command"] = v
 		}
 		if cmd.Flags().Changed("url") {
 			v, _ := cmd.Flags().GetString("url")
-			updates["mcp."+id+".url"] = v
+			updates["url"] = v
 		}
 		if cmd.Flags().Changed("type") {
 			v, _ := cmd.Flags().GetString("type")
-			updates["mcp."+id+".type"] = v
+			updates["type"] = v
 		}
 		if cmd.Flags().Changed("disabled") {
 			v, _ := cmd.Flags().GetBool("disabled")
-			updates["mcp."+id+".disabled"] = v
+			updates["disabled"] = v
 		}
 		if cmd.Flags().Changed("enabled-in-cli") {
 			v, _ := cmd.Flags().GetBool("enabled-in-cli")
-			updates["mcp."+id+".enabled_in_cli"] = v
+			updates["enabled_in_cli"] = v
 		}
 
 		argSlice, _ := cmd.Flags().GetStringSlice("arg")
 		if len(argSlice) > 0 {
-			updates["mcp."+id+".args"] = argSlice
+			updates["args"] = argSlice
 		}
 
 		envStrs, _ := cmd.Flags().GetStringSlice("env")
 		if len(envStrs) > 0 {
 			envMap := parseKVPairs(envStrs)
 			envJSON, _ := json.Marshal(envMap)
-			updates["mcp."+id+".env"] = json.RawMessage(envJSON)
+			updates["env"] = json.RawMessage(envJSON)
 		}
 
 		headers, _ := cmd.Flags().GetStringSlice("header")
 		if len(headers) > 0 {
 			headersMap := parseKVPairs(headers)
 			headersJSON, _ := json.Marshal(headersMap)
-			updates["mcp."+id+".headers"] = json.RawMessage(headersJSON)
+			updates["headers"] = json.RawMessage(headersJSON)
 		}
 
 		if len(updates) == 0 {
 			return fmt.Errorf("no fields to set — pass at least one of --command/--url/--type/--arg/--env/--header/--disabled")
 		}
 
-		if err := a.Store().SetConfigFields(scope, updates); err != nil {
+		if err := a.Store().PersistMCPFields(scope, id, updates); err != nil {
 			return fmt.Errorf("failed to update MCP server config: %w", err)
 		}
 		fmt.Fprintf(os.Stderr, "wrote %d field(s) to %s scope for MCP server %q\n", len(updates), scope, id)

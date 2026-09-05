@@ -833,7 +833,7 @@ func TestRefreshAdmissionDoesNotOwnInitializerCancellation(t *testing.T) {
 	refresh.done()
 
 	lifecycleMu.Lock()
-	_, retained := owner.serverCancels[name][initializer.epoch]
+	_, retained := owner.serverCancels[name][initializer.serverCancelToken]
 	lifecycleMu.Unlock()
 	require.True(t, retained, "refresh cleanup must not remove the initializer cancellation")
 
