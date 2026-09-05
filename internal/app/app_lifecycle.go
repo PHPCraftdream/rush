@@ -153,10 +153,28 @@ func (app *App) cancelAgentsBeforeRelease(drained <-chan struct{}) bool {
 func (app *App) releaseResources(stillBusy bool) ShutdownResult {
 	var result ShutdownResult
 
+	// Stop the run queue pump (task #340 P0-3). This must complete before DB
+	// close to ensure no pump goroutines are writing when we close the connection.
+	// It also deliberately precedes broker shutdown: a pump worker can publish
+	// its terminal event while it unwinds after cancellation, and subscribers
+	// must get the bounded Stop grace period to receive that event before EOF.
+	// Pump.Stop() returns true if shutdown was forced (workers still running
+	// after grace). On that path the brokers are closed immediately after the
+	// same bounded window; live workers retain the DB but cannot keep shutdown
+	// open indefinitely.
+	if app.RunQueuePump != nil {
+		pumpStillBusy := app.RunQueuePump.Stop()
+		stillBusy = stillBusy || pumpStillBusy
+		slog.Info("app: stopped run queue pump")
+	}
+
 	// All subscriptions exposed by this App are owned by the App, not by the
-	// caller's context. Close every broker before any database release so a
-	// subscriber using context.Background receives EOF during shutdown,
-	// including on the forced path while live publishers are unwinding.
+	// caller's context. Close every broker after the pump's bounded stop/drain
+	// chance so a subscriber using context.Background receives EOF only after
+	// terminal events from normally unwinding pump workers have been published.
+	// This ordering applies equally to graceful and forced shutdown. Forced
+	// shutdown does not wait for workers beyond Pump.Stop's grace period, which
+	// preserves the total shutdown bound and the no-DB-use-after-close policy.
 	if app.Messages != nil {
 		app.Messages.Shutdown()
 	}
@@ -174,15 +192,6 @@ func (app *App) releaseResources(stillBusy bool) ShutdownResult {
 	}
 	if app.events != nil {
 		app.events.Shutdown()
-	}
-
-	// Stop the run queue pump (task #340 P0-3). This must complete before DB
-	// close to ensure no pump goroutines are writing when we close the connection.
-	// Pump.Stop() returns true if shutdown was forced (workers still running after grace).
-	if app.RunQueuePump != nil {
-		pumpStillBusy := app.RunQueuePump.Stop()
-		stillBusy = stillBusy || pumpStillBusy
-		slog.Info("app: stopped run queue pump")
 	}
 	result.Forced = stillBusy
 

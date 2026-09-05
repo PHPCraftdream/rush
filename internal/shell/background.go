@@ -62,6 +62,12 @@ const (
 	// without the original bytes.
 	BufferRetentionMinutes = 15
 
+	// onDoneReleaseGrace bounds how long a completion callback may retain a
+	// detached shell's output. The callback normally reads the output before
+	// this expires; a callback that blocks forever cannot retain multi-megabyte
+	// buffers forever.
+	onDoneReleaseGrace = time.Second
+
 	// maxStreamBufferBytes bounds how much of a single stdout/stderr stream a
 	// background job keeps resident in memory. A chatty/never-ending command
 	// (`yes`, a noisy `watch`, a verbose build that never stops) would
@@ -294,6 +300,7 @@ type BackgroundShell struct {
 	completedAt atomic.Int64 // Unix timestamp when job completed (0 if still running)
 	bufReleased atomic.Bool  // true once the stdout/stderr buffers have been released post-completion
 	releaseOnce sync.Once
+	onDoneCount atomic.Int64 // callbacks registered but not yet delivered
 
 	// retentionMu serializes arming and stopping the completion buffer timer
 	// with its callback. detached is set when the job leaves the manager so a
@@ -454,13 +461,25 @@ func (m *BackgroundShellManager) start(ctx context.Context, sessionID, workingDi
 	m.activeJobs.Add(1)
 
 	go func() {
-		defer close(bgShell.done)
+		completionSignaled := false
+		defer func() {
+			// Preserve the terminal notification even if the shell executor
+			// panics before the ordinary completion path reaches close(done).
+			if !completionSignaled {
+				close(bgShell.done)
+			}
+		}()
 
 		err := shell.ExecStream(shellCtx, command, bgShell.stdout, bgShell.stderr)
 
 		bgShell.exitErr = err
 		bgShell.completedAt.Store(time.Now().Unix())
 		m.activeJobs.Add(-1)
+		// Publish completion before arming retention. OnDone callbacks use the
+		// close of done as their delivery gate, and detached completion must not
+		// release the buffers in the small window between those two operations.
+		close(bgShell.done)
+		completionSignaled = true
 		// Schedule buffer release on a timer so the (up to 6 MiB) buffered
 		// stdout/stderr is freed after bufferRetention even if no further
 		// bash task ever calls Cleanup. releaseBuffers is idempotent, so a
@@ -750,7 +769,12 @@ func (bs *BackgroundShell) armBufferReleaseTimer(retention time.Duration) {
 	bs.retentionMu.Lock()
 	if bs.detached {
 		bs.retentionMu.Unlock()
-		bs.releaseBuffers()
+		// A callback registered before completion owns the final output until
+		// it has had a chance to read it. Its own watchdog performs the bounded
+		// release if the callback blocks; with no callback, release now.
+		if bs.onDoneCount.Load() == 0 {
+			bs.releaseBuffers()
+		}
 		return
 	}
 
@@ -768,7 +792,9 @@ func (bs *BackgroundShell) armBufferReleaseTimer(retention time.Duration) {
 		bs.retentionMu.Lock()
 		bs.retentionTimer = nil
 		bs.retentionMu.Unlock()
-		bs.releaseBuffers()
+		if bs.onDoneCount.Load() == 0 {
+			bs.releaseBuffers()
+		}
 	})
 	bs.retentionMu.Unlock()
 }
@@ -786,9 +812,10 @@ func (bs *BackgroundShell) detachFromManager() {
 	if timer != nil {
 		timer.Stop()
 	}
-	// completedAt is stored immediately after ExecStream returns and before
-	// done is closed, so it also covers the narrow completion-to-close window.
-	if bs.completedAt.Load() > 0 || bs.IsDone() {
+	// completedAt is stored before done is closed, so it also covers the narrow
+	// completion-to-close window. A pending callback must receive the real
+	// output before detached cleanup releases it.
+	if (bs.completedAt.Load() > 0 || bs.IsDone()) && bs.onDoneCount.Load() == 0 {
 		bs.releaseBuffers()
 	}
 }
@@ -810,8 +837,24 @@ func (bs *BackgroundShell) OnDone(fn func()) {
 	if fn == nil {
 		return
 	}
+	// Serialize registration with detach/completion arming. This makes a
+	// callback registered before the completion transition visible to the
+	// detached release decision, instead of racing a zero-count observation.
+	bs.retentionMu.Lock()
+	bs.onDoneCount.Add(1)
+	bs.retentionMu.Unlock()
 	go func() {
 		<-bs.done
+		// Keep a detached callback's output available while fn performs its
+		// synchronous GetOutput/notify work. The watchdog is independent of fn,
+		// so a callback that never returns cannot retain the buffers forever.
+		releaseTimer := time.AfterFunc(onDoneReleaseGrace, bs.releaseBuffers)
+		defer releaseTimer.Stop()
+		defer func() {
+			if bs.onDoneCount.Add(-1) == 0 {
+				bs.releaseBuffers()
+			}
+		}()
 		defer func() {
 			if r := recover(); r != nil {
 				slog.Error("background shell OnDone callback panic",
