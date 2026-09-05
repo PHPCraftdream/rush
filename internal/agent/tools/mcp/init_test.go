@@ -683,6 +683,12 @@ func TestOwnerCloseCancelsBlockedStartupBeforeCleanup(t *testing.T) {
 func TestOwnerCloseVsRenewalDoesNotPublishLateSession(t *testing.T) {
 	owner, err := Acquire()
 	require.NoError(t, err)
+	const name = "late-renewal"
+	store := config.NewTestStore(&config.Config{MCP: config.MCPs{
+		name: {Type: config.MCPStdio, Command: "unused"},
+	}})
+	admission, err := owner.snapshotServerAdmission(context.Background(), store, name)
+	require.NoError(t, err)
 
 	serverTransport, clientTransport := mcp.NewInMemoryTransports()
 	server := mcp.NewServer(&mcp.Implementation{Name: "renewal-server"}, nil)
@@ -711,7 +717,7 @@ func TestOwnerCloseVsRenewalDoesNotPublishLateSession(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	require.False(t, owner.acceptsSession())
-	require.ErrorIs(t, owner.commitRenewal(owner.generation, "late-renewal", created, Counts{}), ErrOwnerBusy)
+	require.ErrorIs(t, owner.commitRenewal(&admission, name, created, Counts{}), ErrOwnerBusy)
 	require.ErrorIs(t, createdCtx.Err(), context.Canceled)
 	require.Equal(t, 1, closeCalls, "a rejected renewal session must be closed exactly once")
 	require.Empty(t, func() map[string]*ClientSession {
@@ -725,13 +731,19 @@ func TestOwnerCloseVsRenewalDoesNotPublishLateSession(t *testing.T) {
 	owner.endInit()
 	require.NoError(t, <-closeStarted)
 	require.Eventually(t, func() bool {
-		_, ok := GetState("late-renewal")
+		_, ok := GetState(name)
 		return !ok
 	}, time.Second, time.Millisecond)
 }
 
 func TestOwnerCommitRenewalPublishesSuccessfulSession(t *testing.T) {
 	owner, err := Acquire()
+	require.NoError(t, err)
+	const name = "successful-renewal"
+	store := config.NewTestStore(&config.Config{MCP: config.MCPs{
+		name: {Type: config.MCPStdio, Command: "unused"},
+	}})
+	admission, err := owner.snapshotServerAdmission(context.Background(), store, name)
 	require.NoError(t, err)
 
 	serverTransport, clientTransport := mcp.NewInMemoryTransports()
@@ -746,7 +758,6 @@ func TestOwnerCommitRenewalPublishesSuccessfulSession(t *testing.T) {
 	defer clientCancel()
 	session := &ClientSession{ClientSession: clientSession, cancel: clientCancel}
 
-	const name = "successful-renewal"
 	states.Set(name, ClientInfo{Name: name, State: StateError})
 	eventsCtx, eventsCancel := context.WithCancel(context.Background())
 	defer eventsCancel()
@@ -755,7 +766,7 @@ func TestOwnerCommitRenewalPublishesSuccessfulSession(t *testing.T) {
 	require.True(t, owner.beginInit())
 	commitDone := make(chan error, 1)
 	go func() {
-		commitDone <- owner.commitRenewal(owner.generation, name, session, Counts{Tools: 1})
+		commitDone <- owner.commitRenewal(&admission, name, session, Counts{Tools: 1})
 	}()
 
 	select {

@@ -113,14 +113,23 @@ func (r *leaseRegistry) getRetained(name string) *serverLease {
 
 // retain keeps a lease entry alive while a caller transitions from a read
 // lock to a write lock or reacquires a read lock after renewal.
-func (r *leaseRegistry) retain(lease *serverLease) {
+func (r *leaseRegistry) retain(lease *serverLease) bool {
 	r.mu.Lock()
+	if r.entries[lease.name] != lease || lease.refs == 0 {
+		r.mu.Unlock()
+		return false
+	}
 	lease.refs++
 	r.mu.Unlock()
+	return true
 }
 
 func (r *leaseRegistry) release(lease *serverLease) {
 	r.mu.Lock()
+	if lease.refs == 0 {
+		r.mu.Unlock()
+		return
+	}
 	lease.refs--
 	if lease.refs == 0 && r.entries[lease.name] == lease {
 		delete(r.entries, lease.name)
@@ -156,6 +165,14 @@ func (l *serverLease) RLock() {
 func (l *serverLease) RUnlock() {
 	l.mu.RUnlock()
 	l.registry.release(l)
+}
+
+// downgrade changes an exclusive lease into a shared lease without releasing
+// its registry reference. The caller can therefore safely continue using the
+// same lease object without an ABA replacement window.
+func (l *serverLease) downgrade() {
+	l.mu.Unlock()
+	l.mu.RLock()
 }
 
 func acquireServerLease(name string, write bool) *serverLease {
@@ -204,8 +221,9 @@ type Owner struct {
 	initDoneOnce    sync.Once
 	serverEpochs    map[string]uint64
 	serverCancels   map[string]map[uint64]context.CancelFunc
-	refreshCh       chan refreshRequest
-	refreshPending  map[refreshKey]struct{}
+	refreshCh       chan struct{}
+	refreshPending  map[refreshKey]refreshRequest
+	refreshRunning  map[refreshKey]struct{}
 	refreshWG       sync.WaitGroup
 	closeOnce       sync.Once
 	closeDone       chan struct{}
@@ -292,7 +310,11 @@ func (a *serverAdmission) validLocked() bool {
 	if !valid {
 		return false
 	}
-	mcpConfig, exists := a.cfg.MCPConfig(a.name)
+	configured, configGeneration := a.cfg.Snapshot()
+	if configGeneration != a.configGeneration || configured == nil {
+		return false
+	}
+	mcpConfig, exists := configured.MCP[a.name]
 	if !exists {
 		return false
 	}
@@ -302,6 +324,7 @@ func (a *serverAdmission) validLocked() bool {
 func (o *Owner) admitServer(ctx context.Context, cfg *config.ConfigStore, name string, bump bool) (serverAdmission, error) {
 	lifecycleMu.Lock()
 	defer lifecycleMu.Unlock()
+	_, configGeneration := cfg.Snapshot()
 	if !o.isCurrentLocked() {
 		return serverAdmission{}, ErrOwnerBusy
 	}
@@ -330,7 +353,7 @@ func (o *Owner) admitServer(ctx context.Context, cfg *config.ConfigStore, name s
 		owner:            o,
 		generation:       o.generation,
 		epoch:            o.serverEpochs[name],
-		configGeneration: cfg.Generation(),
+		configGeneration: configGeneration,
 		cfg:              cfg,
 		name:             name,
 		once:             new(sync.Once),
@@ -341,6 +364,27 @@ func (o *Owner) admitServer(ctx context.Context, cfg *config.ConfigStore, name s
 	o.initCount++
 	o.initWG.Add(1)
 	return admission, nil
+}
+
+// snapshotServerAdmission captures the lifecycle and configuration fence for
+// an operation. The caller owns the separate init reference used to keep the
+// owner alive while the operation runs.
+func (o *Owner) snapshotServerAdmission(_ context.Context, cfg *config.ConfigStore, name string) (serverAdmission, error) {
+	lifecycleMu.Lock()
+	defer lifecycleMu.Unlock()
+	if !o.isCurrentLocked() {
+		return serverAdmission{}, ErrOwnerBusy
+	}
+	_, configGeneration := cfg.Snapshot()
+	return serverAdmission{
+		owner:            o,
+		generation:       o.generation,
+		epoch:            o.serverEpochs[name],
+		configGeneration: configGeneration,
+		cfg:              cfg,
+		name:             name,
+		ctx:              o.lifecycleCtx,
+	}, nil
 }
 
 func (o *Owner) invalidateServer(name string) {
@@ -406,8 +450,9 @@ func acquire(implicit bool) (*Owner, error) {
 		closeDone:       make(chan struct{}),
 		serverEpochs:    make(map[string]uint64),
 		serverCancels:   make(map[string]map[uint64]context.CancelFunc),
-		refreshCh:       make(chan refreshRequest, 128),
-		refreshPending:  make(map[refreshKey]struct{}),
+		refreshCh:       make(chan struct{}, 1),
+		refreshPending:  make(map[refreshKey]refreshRequest),
+		refreshRunning:  make(map[refreshKey]struct{}),
 	}
 	owner = o
 	initDone = make(chan struct{})
@@ -429,16 +474,38 @@ func (o *Owner) refreshLoop() {
 		select {
 		case <-o.lifecycleCtx.Done():
 			return
-		case request := <-o.refreshCh:
-			o.runRefresh(request)
+		case <-o.refreshCh:
+			for {
+				request, ok := o.nextRefresh()
+				if !ok {
+					break
+				}
+				o.runRefresh(request)
+				select {
+				case <-o.lifecycleCtx.Done():
+					return
+				default:
+				}
+			}
 		}
 	}
+}
+
+func (o *Owner) nextRefresh() (refreshRequest, bool) {
+	lifecycleMu.Lock()
+	defer lifecycleMu.Unlock()
+	for key, request := range o.refreshPending {
+		delete(o.refreshPending, key)
+		o.refreshRunning[key] = struct{}{}
+		return request, true
+	}
+	return refreshRequest{}, false
 }
 
 func (o *Owner) enqueueRefresh(request refreshRequest) {
 	lifecycleMu.Lock()
 	if owner != o || o.closing || request.admission.owner != o ||
-		o.serverEpochs[request.name] != request.admission.epoch {
+		!request.admission.validLocked() {
 		lifecycleMu.Unlock()
 		return
 	}
@@ -447,21 +514,18 @@ func (o *Owner) enqueueRefresh(request refreshRequest) {
 		lifecycleMu.Unlock()
 		return
 	}
-	o.refreshPending[key] = struct{}{}
+	if _, exists := o.refreshRunning[key]; exists {
+		lifecycleMu.Unlock()
+		return
+	}
+	o.refreshPending[key] = request
 	lifecycleMu.Unlock()
 
 	select {
-	case o.refreshCh <- request:
-	case <-o.lifecycleCtx.Done():
-		lifecycleMu.Lock()
-		delete(o.refreshPending, key)
-		lifecycleMu.Unlock()
+	case o.refreshCh <- struct{}{}:
 	default:
-		// A notification is advisory. The next notification or a reconnect
-		// will repopulate the advertised registry if a burst fills the queue.
-		lifecycleMu.Lock()
-		delete(o.refreshPending, key)
-		lifecycleMu.Unlock()
+		// The pending map is the authoritative queue. The channel is only a
+		// wake-up edge, so a saturated channel does not drop a refresh.
 	}
 }
 
@@ -469,7 +533,7 @@ func (o *Owner) runRefresh(request refreshRequest) {
 	key := refreshKey{name: request.name, kind: request.kind, epoch: request.admission.epoch}
 	defer func() {
 		lifecycleMu.Lock()
-		delete(o.refreshPending, key)
+		delete(o.refreshRunning, key)
 		lifecycleMu.Unlock()
 	}()
 	if !request.admission.valid() {
@@ -534,9 +598,9 @@ func (o *Owner) acceptsSession() bool {
 
 // commitRenewal consumes session on every path: it either publishes the
 // session or closes it before returning an error.
-func (o *Owner) commitRenewal(generation uint64, name string, session *ClientSession, counts Counts) error {
+func (o *Owner) commitRenewal(admission *serverAdmission, name string, session *ClientSession, counts Counts) error {
 	lifecycleMu.Lock()
-	if owner != o || o.closing || o.generation != generation {
+	if admission == nil || admission.owner != o || admission.name != name || !admission.validLocked() {
 		lifecycleMu.Unlock()
 		_ = session.Close()
 		return ErrOwnerBusy
@@ -1135,6 +1199,15 @@ func AddServer(ctx context.Context, cfg *config.ConfigStore, name string, mcpCfg
 		return err
 	}
 	resolver := cfg.Resolver()
+	// Keep the lease entry alive while initialization runs without the write
+	// lock. RemoveServer must then wait on this exact lease instance instead of
+	// racing a reclaimed entry with an ABA replacement.
+	if !lease.registry.retain(lease) {
+		admission.done()
+		_, _ = cfg.RemoveMCP(name)
+		lease.Unlock()
+		return ErrOwnerBusy
+	}
 	lease.Unlock()
 	initErr := initClientAdmitted(ctx, cfg, name, mcpCfg, resolver, &admission)
 	if initErr != nil {
@@ -1154,6 +1227,7 @@ func AddServer(ctx context.Context, cfg *config.ConfigStore, name string, mcpCfg
 	// in-memory entry and then lose the race by being followed by this write.
 	lease.Lock()
 	if !admission.valid() {
+		closeSessionLocked(name)
 		_, _ = cfg.RemoveMCP(name)
 		clearAdvertised(name)
 		states.Del(name)
@@ -1234,14 +1308,19 @@ func clearAdvertised(name string) {
 
 func getOrRenewClient(ctx context.Context, cfg *config.ConfigStore, name string) (*clientLease, error) {
 	o := currentOwner()
-	var generation uint64
+	var admission *serverAdmission
 	operationCtx := ctx
 	finish := func() {}
 	if o != nil {
 		if !o.beginInit() {
 			return nil, ErrOwnerBusy
 		}
-		generation = o.generation
+		admitted, err := o.snapshotServerAdmission(ctx, cfg, name)
+		if err != nil {
+			o.endInit()
+			return nil, err
+		}
+		admission = &admitted
 		operationCtx, finish = o.operationContext(ctx)
 	}
 
@@ -1272,18 +1351,31 @@ func getOrRenewClient(ctx context.Context, cfg *config.ConfigStore, name string)
 	err := sess.Ping(pingCtx, nil)
 	cancel()
 	if err == nil {
+		if admission != nil && !admission.valid() {
+			lease.RUnlock()
+			finish()
+			o.endInit()
+			return nil, ErrOwnerBusy
+		}
 		return newClientLease(sess, operationCtx, lease, finish, o), nil
 	}
 	// Keep the lease object alive while upgrading from a read lock. Without
 	// this extra reference, the registry could reclaim the entry between
 	// RUnlock and Lock and let a new operation use an ABA-replaced lock.
-	lease.registry.retain(lease)
+	if !lease.registry.retain(lease) {
+		lease.RUnlock()
+		finish()
+		if o != nil {
+			o.endInit()
+		}
+		return nil, ErrOwnerBusy
+	}
 	lease.RUnlock()
 
 	// Upgrade the read lease to an exclusive renewal lease. A writer waits for
 	// every in-flight operation on the old session before it can close it.
 	lease.Lock()
-	if o != nil && !o.acceptsGeneration(generation) {
+	if admission != nil && !admission.valid() {
 		lease.Unlock()
 		finish()
 		o.endInit()
@@ -1292,9 +1384,24 @@ func getOrRenewClient(ctx context.Context, cfg *config.ConfigStore, name string)
 
 	current, currentOK := sessions.Get(name)
 	if currentOK && current != sess {
+		// Retain before dropping the write lock so this exact lease cannot be
+		// reclaimed before the read lock is reacquired.
+		if !lease.registry.retain(lease) {
+			lease.Unlock()
+			finish()
+			if o != nil {
+				o.endInit()
+			}
+			return nil, ErrOwnerBusy
+		}
 		lease.Unlock()
-		lease.registry.retain(lease)
 		lease.RLock()
+		if admission != nil && !admission.valid() {
+			lease.RUnlock()
+			finish()
+			o.endInit()
+			return nil, ErrOwnerBusy
+		}
 		current, currentOK = sessions.Get(name)
 		if !currentOK {
 			lease.RUnlock()
@@ -1314,7 +1421,14 @@ func getOrRenewClient(ctx context.Context, cfg *config.ConfigStore, name string)
 		_ = current.Close()
 	}
 
-	newSession, err := createSession(operationCtx, name, m, cfg.Resolver())
+	sessionCtx := operationCtx
+	if o != nil {
+		// The returned client lease owns only the caller's operation context.
+		// The renewed MCP session itself must survive that lease closing and
+		// remain attached to the owner until the next lifecycle transition.
+		sessionCtx = o.lifecycleCtx
+	}
+	newSession, err := createSessionWithAdmission(sessionCtx, name, m, cfg.Resolver(), admission)
 	if err != nil {
 		lease.Unlock()
 		finish()
@@ -1325,7 +1439,7 @@ func getOrRenewClient(ctx context.Context, cfg *config.ConfigStore, name string)
 	}
 
 	if o != nil {
-		if err := o.commitRenewal(generation, name, newSession, state.Counts); err != nil {
+		if err := o.commitRenewal(admission, name, newSession, state.Counts); err != nil {
 			lease.Unlock()
 			finish()
 			o.endInit()
@@ -1336,9 +1450,25 @@ func getOrRenewClient(ctx context.Context, cfg *config.ConfigStore, name string)
 		setState(name, StateConnected, nil, newSession, state.Counts)
 		publishStateEvent(name, StateConnected, nil, state.Counts)
 	}
+	// Retain before dropping the write lock so the returned read lease remains
+	// attached to this server's identity even when another goroutine is
+	// waiting to replace the session.
+	if !lease.registry.retain(lease) {
+		lease.Unlock()
+		finish()
+		if o != nil {
+			o.endInit()
+		}
+		return nil, ErrOwnerBusy
+	}
 	lease.Unlock()
-	lease.registry.retain(lease)
 	lease.RLock()
+	if admission != nil && !admission.valid() {
+		lease.RUnlock()
+		finish()
+		o.endInit()
+		return nil, ErrOwnerBusy
+	}
 	current, currentOK = sessions.Get(name)
 	if !currentOK {
 		lease.RUnlock()
