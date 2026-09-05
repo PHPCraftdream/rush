@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/pubsub"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/require"
 )
@@ -174,6 +175,25 @@ func hasSession(name string) bool {
 	return ok
 }
 
+func requireTransactionalEvent(
+	t *testing.T,
+	events <-chan pubsub.Event[Event],
+	eventType pubsub.EventType,
+	name string,
+	state State,
+) {
+	t.Helper()
+	select {
+	case event := <-events:
+		require.Equal(t, eventType, event.Type)
+		require.Equal(t, EventStateChanged, event.Payload.Type)
+		require.Equal(t, name, event.Payload.Name)
+		require.Equal(t, state, event.Payload.State)
+	case <-time.After(time.Second):
+		t.Fatalf("missing %s event for MCP server %q", eventType, name)
+	}
+}
+
 func TestReplaceServerSuccessfulSwapPublishesNewSessionOnce(t *testing.T) {
 	oldHTTP := transactionalTestServer(t, "old-tool", "old")
 	newHTTP := transactionalTestServer(t, "new-tool", "new")
@@ -245,6 +265,153 @@ func TestReplaceServerSuccessfulRenameRemovesOnlyOldRuntimeState(t *testing.T) {
 	_, newPersisted := diskMCP(t)["new.name"]
 	require.False(t, oldPersisted)
 	require.True(t, newPersisted)
+}
+
+func TestReplaceServerDisabledSameNameCommitsInactiveRuntime(t *testing.T) {
+	oldHTTP := transactionalTestServer(t, "old-tool", "old")
+	newHTTP := transactionalTestServer(t, "new-tool", "new")
+	defer oldHTTP.Close()
+	defer newHTTP.Close()
+	store, owner := connectedTransactionalServer(t, "same-name", oldHTTP)
+	defer func() { require.NoError(t, owner.Close(context.Background())) }()
+	allPrompts.Set("same-name", []*Prompt{{Name: "stale-prompt"}})
+	allResources.Set("same-name", []*Resource{{Name: "stale-resource", URI: "stale://resource"}})
+	eventsCtx, cancelEvents := context.WithCancel(context.Background())
+	defer cancelEvents()
+	events := SubscribeEvents(eventsCtx)
+
+	require.NoError(t, ReplaceServer(context.Background(), store, "same-name", "same-name", config.MCPConfig{
+		Type: config.MCPHttp, URL: newHTTP.URL, Timeout: 60, Disabled: true,
+	}))
+	require.False(t, hasSession("same-name"))
+	require.Empty(t, GetServerToolNames("same-name"))
+	_, hasPrompts := allPrompts.Get("same-name")
+	require.False(t, hasPrompts)
+	_, hasResources := allResources.Get("same-name")
+	require.False(t, hasResources)
+	state := mustState(t, "same-name")
+	require.Equal(t, StateDisabled, state.State)
+	require.Nil(t, state.Client)
+	configured, ok := store.MCPConfig("same-name")
+	require.True(t, ok)
+	require.True(t, configured.Disabled)
+	require.Equal(t, newHTTP.URL, configured.URL)
+	var persisted config.MCPConfig
+	require.NoError(t, json.Unmarshal(diskMCP(t)["same-name"], &persisted))
+	require.Equal(t, configured, persisted)
+	requireTransactionalEvent(t, events, pubsub.UpdatedEvent, "same-name", StateDisabled)
+}
+
+func TestReplaceServerDisabledRenameCommitsInactiveRuntime(t *testing.T) {
+	oldHTTP := transactionalTestServer(t, "old-tool", "old")
+	newHTTP := transactionalTestServer(t, "new-tool", "new")
+	defer oldHTTP.Close()
+	defer newHTTP.Close()
+	store, owner := connectedTransactionalServer(t, "old-name", oldHTTP)
+	defer func() { require.NoError(t, owner.Close(context.Background())) }()
+	allPrompts.Set("old-name", []*Prompt{{Name: "stale-prompt"}})
+	allResources.Set("old-name", []*Resource{{Name: "stale-resource", URI: "stale://resource"}})
+	eventsCtx, cancelEvents := context.WithCancel(context.Background())
+	defer cancelEvents()
+	events := SubscribeEvents(eventsCtx)
+
+	require.NoError(t, ReplaceServer(context.Background(), store, "old-name", "new-name", config.MCPConfig{
+		Type: config.MCPHttp, URL: newHTTP.URL, Timeout: 60, Disabled: true,
+	}))
+	for _, name := range []string{"old-name", "new-name"} {
+		require.False(t, hasSession(name))
+		require.Empty(t, GetServerToolNames(name))
+		_, hasPrompts := allPrompts.Get(name)
+		require.False(t, hasPrompts)
+		_, hasResources := allResources.Get(name)
+		require.False(t, hasResources)
+	}
+	require.False(t, mustStateExists("old-name"))
+	state := mustState(t, "new-name")
+	require.Equal(t, StateDisabled, state.State)
+	require.Nil(t, state.Client)
+	_, oldConfigured := store.MCPConfig("old-name")
+	configured, newConfigured := store.MCPConfig("new-name")
+	require.False(t, oldConfigured)
+	require.True(t, newConfigured)
+	require.True(t, configured.Disabled)
+	_, oldPersisted := diskMCP(t)["old-name"]
+	var persisted config.MCPConfig
+	require.NoError(t, json.Unmarshal(diskMCP(t)["new-name"], &persisted))
+	require.False(t, oldPersisted)
+	require.Equal(t, configured, persisted)
+	requireTransactionalEvent(t, events, pubsub.DeletedEvent, "old-name", StateDisabled)
+	requireTransactionalEvent(t, events, pubsub.UpdatedEvent, "new-name", StateDisabled)
+}
+
+func TestReplaceServerConcurrentPostPersistDisableCommitsInactiveRuntime(t *testing.T) {
+	oldHTTP := transactionalTestServer(t, "old-tool", "old")
+	newHTTP := transactionalTestServer(t, "new-tool", "new")
+	defer oldHTTP.Close()
+	defer newHTTP.Close()
+	store, owner := connectedTransactionalServer(t, "old-name", oldHTTP)
+	defer func() { require.NoError(t, owner.Close(context.Background())) }()
+
+	err := replaceServerWithPersistence(context.Background(), store, "old-name", "new-name", config.MCPConfig{
+		Type: config.MCPHttp, URL: newHTTP.URL, Timeout: 60,
+	}, func(cfg *config.ConfigStore, oldName, newName string, mcpCfg config.MCPConfig) error {
+		if err := cfg.PersistReplaceMCP(oldName, newName, mcpCfg); err != nil {
+			return err
+		}
+		if err := cfg.PersistMCPDisabledOverride(config.ScopeGlobal, newName, true); err != nil {
+			return err
+		}
+		_, ok := cfg.SetMCPDisabled(newName, true)
+		require.True(t, ok)
+		return nil
+	})
+	require.NoError(t, err)
+	require.False(t, hasSession("old-name"))
+	require.False(t, hasSession("new-name"))
+	require.Empty(t, GetServerToolNames("old-name"))
+	require.Empty(t, GetServerToolNames("new-name"))
+	require.Equal(t, StateDisabled, mustState(t, "new-name").State)
+	var persisted config.MCPConfig
+	require.NoError(t, json.Unmarshal(diskMCP(t)["new-name"], &persisted))
+	require.True(t, persisted.Disabled)
+}
+
+func TestReplaceServerMissingPostPersistConfigLeavesNoOrphanRuntime(t *testing.T) {
+	oldHTTP := transactionalTestServer(t, "old-tool", "old")
+	newHTTP := transactionalTestServer(t, "new-tool", "new")
+	defer oldHTTP.Close()
+	defer newHTTP.Close()
+	store, owner := connectedTransactionalServer(t, "old-name", oldHTTP)
+	defer func() { require.NoError(t, owner.Close(context.Background())) }()
+	eventsCtx, cancelEvents := context.WithCancel(context.Background())
+	defer cancelEvents()
+	events := SubscribeEvents(eventsCtx)
+
+	err := replaceServerWithPersistence(context.Background(), store, "old-name", "new-name", config.MCPConfig{
+		Type: config.MCPHttp, URL: newHTTP.URL, Timeout: 60,
+	}, func(cfg *config.ConfigStore, oldName, newName string, mcpCfg config.MCPConfig) error {
+		if err := cfg.PersistReplaceMCP(oldName, newName, mcpCfg); err != nil {
+			return err
+		}
+		if err := cfg.PersistRemoveMCPConfig(config.ScopeGlobal, newName); err != nil {
+			return err
+		}
+		_, ok := cfg.RemoveMCP(newName)
+		require.True(t, ok)
+		return nil
+	})
+	require.NoError(t, err)
+	for _, name := range []string{"old-name", "new-name"} {
+		require.False(t, hasSession(name))
+		require.Empty(t, GetServerToolNames(name))
+		require.False(t, mustStateExists(name))
+		_, configured := store.MCPConfig(name)
+		require.False(t, configured)
+		_, persisted := diskMCP(t)[name]
+		require.False(t, persisted)
+	}
+	requireTransactionalEvent(t, events, pubsub.DeletedEvent, "old-name", StateDisabled)
+	requireTransactionalEvent(t, events, pubsub.DeletedEvent, "new-name", StateDisabled)
 }
 
 func TestReplacedRenameAdmissionTracksCommittedConfig(t *testing.T) {

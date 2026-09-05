@@ -1509,19 +1509,63 @@ func replaceServerWithPersistence(
 		return nil
 	}
 	committedCfg, exists := cfg.MCPConfig(newName)
-	if !exists || committedCfg.Disabled {
-		lifecycleMu.Unlock()
-		unlockServerLeases(locked)
-		_ = prepared.session.Close()
-		admission.done()
-		return nil
-	}
-
 	var canceled []context.CancelFunc
 	canceled = append(canceled, o.invalidateServerLocked(oldName)...)
 	if newName != oldName {
 		canceled = append(canceled, o.invalidateServerLocked(newName)...)
 	}
+	if !exists || committedCfg.Disabled {
+		// The durable replacement succeeded, but its final config is not
+		// runnable (either the requested replacement is disabled, or a later
+		// ConfigStore mutation disabled/removed it before runtime publication).
+		// Treat that later state as an inactive commit: fence both names and
+		// remove every old/target runtime artifact. The operation still returns
+		// success because its durable RMW linearized successfully; events below
+		// describe the later effective state exactly.
+		oldSession, hadOldSession := sessions.Get(oldName)
+		newSession, hadNewSession := sessions.Get(newName)
+		clearAdvertised(oldName)
+		sessions.Del(oldName)
+		states.Del(oldName)
+		if newName != oldName {
+			clearAdvertised(newName)
+			sessions.Del(newName)
+			states.Del(newName)
+		}
+		if exists {
+			setState(newName, StateDisabled, nil, nil, Counts{})
+		}
+		brokerForEvent := broker
+		lifecycleMu.Unlock()
+		unlockServerLeases(locked)
+		for _, cancel := range canceled {
+			cancel()
+		}
+		_ = prepared.session.Close()
+		if hadOldSession && oldSession != prepared.session {
+			_ = oldSession.Close()
+		}
+		if newName != oldName && hadNewSession && newSession != prepared.session && newSession != oldSession {
+			_ = newSession.Close()
+		}
+		admission.done()
+		if newName != oldName {
+			brokerForEvent.Publish(pubsub.DeletedEvent, Event{
+				Type: EventStateChanged, Name: oldName, State: StateDisabled,
+			})
+		}
+		if exists {
+			brokerForEvent.Publish(pubsub.UpdatedEvent, Event{
+				Type: EventStateChanged, Name: newName, State: StateDisabled,
+			})
+		} else {
+			brokerForEvent.Publish(pubsub.DeletedEvent, Event{
+				Type: EventStateChanged, Name: newName, State: StateDisabled,
+			})
+		}
+		return nil
+	}
+
 	admission.committed = true
 	admission.committedName = newName
 	admission.committedEpoch = o.serverEpochs[newName]
