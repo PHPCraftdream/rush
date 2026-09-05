@@ -3,10 +3,13 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -15,11 +18,23 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func isolatedMCPStore(t *testing.T) *config.ConfigStore {
+	t.Helper()
+	root := t.TempDir()
+	configDir := filepath.Join(root, "global-config")
+	dataDir := filepath.Join(root, "global-data")
+	t.Setenv("RUSH_GLOBAL_CONFIG", configDir)
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+	t.Setenv("RUSH_GLOBAL_DATA", dataDir)
+	t.Setenv("XDG_DATA_HOME", dataDir)
+	store, err := config.Init(root, root, false)
+	require.NoError(t, err)
+	return store
+}
+
 func persistedMCPStore(t *testing.T, name, url string, disabled bool) *config.ConfigStore {
 	t.Helper()
-	dataDir := t.TempDir()
-	store, err := config.Init(dataDir, dataDir, false)
-	require.NoError(t, err)
+	store := isolatedMCPStore(t)
 	require.NoError(t, store.SetConfigField(config.ScopeGlobal, "mcp."+name, config.MCPConfig{
 		Type:     config.MCPHttp,
 		URL:      url,
@@ -252,9 +267,7 @@ func TestAddServerRetainsLeaseAcrossRemoveDuringInitialization(t *testing.T) {
 	}))
 	defer server.Close()
 
-	dataDir := t.TempDir()
-	store, err := config.Init(dataDir, dataDir, false)
-	require.NoError(t, err)
+	store := isolatedMCPStore(t)
 	owner, err := Acquire()
 	require.NoError(t, err)
 	defer func() { require.NoError(t, owner.Close(context.Background())) }()
@@ -298,31 +311,168 @@ func TestAddServerRetainsLeaseAcrossRemoveDuringInitialization(t *testing.T) {
 	require.Zero(t, finalRefs, "the Add/Remove sequence must not underflow lease references")
 }
 
-func TestServerLeaseDowngradeRetainsIdentityAndRefs(t *testing.T) {
-	const name = "lease-downgrade"
-	lease := serverLeaseFor(name)
-	lease.Lock()
-	lease.downgrade()
+func TestStaleAddRollbackPreservesNewerSameNameServer(t *testing.T) {
+	const name = "replaced-add"
+	store := isolatedMCPStore(t)
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer func() { require.NoError(t, owner.Close(context.Background())) }()
 
+	oldStarted := make(chan struct{})
+	releaseOld := make(chan struct{})
+	var releaseOldOnce sync.Once
+	defer func() { releaseOldOnce.Do(func() { close(releaseOld) }) }()
+	oldFailure := errors.New("old add failed")
+	oldDone := make(chan error, 1)
+	go func() {
+		oldDone <- addServerWithInitializer(
+			context.Background(),
+			store,
+			name,
+			config.MCPConfig{Type: config.MCPHttp, URL: "http://old.invalid"},
+			func(
+				_ context.Context,
+				_ *config.ConfigStore,
+				_ string,
+				_ config.MCPConfig,
+				_ config.VariableResolver,
+				admission *serverAdmission,
+			) error {
+				defer admission.done()
+				close(oldStarted)
+				<-releaseOld
+				return oldFailure
+			},
+		)
+	}()
+	waitForRequest(t, oldStarted)
+	require.NoError(t, RemoveServer(store, name))
+
+	newServer := mcp.NewServer(&mcp.Implementation{Name: "replacement-server"}, nil)
+	mcp.AddTool(newServer, &mcp.Tool{Name: "replacement-tool"}, func(context.Context, *mcp.CallToolRequest, any) (*mcp.CallToolResult, any, error) {
+		return &mcp.CallToolResult{}, nil, nil
+	})
+	httpServer := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return newServer }, nil))
+	defer httpServer.Close()
+	replacement := config.MCPConfig{Type: config.MCPHttp, URL: httpServer.URL, Timeout: 60}
+	require.NoError(t, AddServer(context.Background(), store, name, replacement))
+
+	releaseOldOnce.Do(func() { close(releaseOld) })
+	require.ErrorIs(t, <-oldDone, oldFailure)
+	currentConfig, exists := store.MCPConfig(name)
+	require.True(t, exists)
+	require.True(t, sameMCPConfig(replacement, currentConfig))
+	currentSession, exists := sessions.Get(name)
+	require.True(t, exists)
+	state, exists := GetState(name)
+	require.True(t, exists)
+	require.Equal(t, StateConnected, state.State)
+	require.Same(t, currentSession, state.Client)
+	require.Equal(t, []string{"replacement-tool"}, GetServerToolNames(name))
+}
+
+func TestGetOrRenewClientKeepsLeaseIdentityAcrossConcurrentReplacement(t *testing.T) {
+	const name = "concurrent-renewal"
+	pingStarted := make(chan struct{}, 2)
+	releasePings := make(chan struct{})
+	var releasePingsOnce sync.Once
+	oldServer := mcp.NewServer(&mcp.Implementation{Name: "old-server"}, nil)
+	oldServer.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
+		return func(ctx context.Context, method string, request mcp.Request) (mcp.Result, error) {
+			if method != "ping" {
+				return next(ctx, method, request)
+			}
+			pingStarted <- struct{}{}
+			<-releasePings
+			return nil, errors.New("force renewal")
+		}
+	})
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	oldServerSession, err := oldServer.Connect(context.Background(), serverTransport, nil)
+	require.NoError(t, err)
+	defer oldServerSession.Close()
+	oldClientSession, err := mcp.NewClient(&mcp.Implementation{Name: "old-client"}, nil).
+		Connect(context.Background(), clientTransport, nil)
+	require.NoError(t, err)
+	old := &ClientSession{ClientSession: oldClientSession, cancel: func() {}}
+
+	newServer := mcp.NewServer(&mcp.Implementation{Name: "new-server"}, nil)
+	mcp.AddTool(newServer, &mcp.Tool{Name: "new-tool"}, func(context.Context, *mcp.CallToolRequest, any) (*mcp.CallToolResult, any, error) {
+		return &mcp.CallToolResult{}, nil, nil
+	})
+	httpServer := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return newServer }, nil))
+	defer httpServer.Close()
+	store := persistedMCPStore(t, name, httpServer.URL, false)
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer func() { require.NoError(t, owner.Close(context.Background())) }()
+	defer func() { releasePingsOnce.Do(func() { close(releasePings) }) }()
+	sessions.Set(name, old)
+	states.Set(name, ClientInfo{Name: name, State: StateConnected, Client: old})
+
+	results := make(chan *clientLease, 2)
+	errs := make(chan error, 2)
+	for range 2 {
+		go func() {
+			client, renewErr := getOrRenewClient(context.Background(), store, name)
+			if renewErr != nil {
+				errs <- renewErr
+				return
+			}
+			results <- client
+		}()
+	}
+	waitForRequest(t, pingStarted)
+	waitForRequest(t, pingStarted)
+
+	leases.mu.Lock()
+	originalLease := leases.entries[name]
+	refsDuringPing := 0
+	if originalLease != nil {
+		refsDuringPing = originalLease.refs
+	}
+	leases.mu.Unlock()
+	require.NotNil(t, originalLease)
+	require.Equal(t, 2, refsDuringPing)
+	releasePingsOnce.Do(func() { close(releasePings) })
+
+	var first *clientLease
+	select {
+	case first = <-results:
+	case err := <-errs:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("first renewal did not complete")
+	}
+	require.Eventually(t, func() bool {
+		leases.mu.Lock()
+		defer leases.mu.Unlock()
+		return leases.entries[name] == originalLease && originalLease.refs == 2
+	}, time.Second, time.Millisecond, "the queued renewal must retain the original lease while the first caller reads")
+	first.close()
+
+	var second *clientLease
+	select {
+	case second = <-results:
+	case err := <-errs:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("queued renewal did not reacquire the current session")
+	}
+	require.Same(t, first.session, second.session)
 	leases.mu.Lock()
 	registered := leases.entries[name]
-	refs := lease.refs
+	refsAfterReacquire := originalLease.refs
 	leases.mu.Unlock()
-	require.Same(t, lease, registered, "write-to-read transition must not expose an ABA replacement window")
-	require.Equal(t, 1, refs)
+	require.Same(t, originalLease, registered, "getOrRenewClient must not cross an ABA-replaced lease")
+	require.Equal(t, 1, refsAfterReacquire)
+	second.close()
 
-	lookup := serverLeaseFor(name)
-	require.Same(t, lease, lookup)
-	lookup.RLock()
-	lookup.RUnlock()
-	lease.RUnlock()
-
-	leases.mu.Lock()
-	remaining := leases.entries[name]
-	finalRefs := lease.refs
-	leases.mu.Unlock()
-	require.Nil(t, remaining)
-	require.Zero(t, finalRefs)
+	require.Eventually(t, func() bool {
+		leases.mu.Lock()
+		defer leases.mu.Unlock()
+		return leases.entries[name] == nil && originalLease.refs == 0
+	}, time.Second, time.Millisecond)
 }
 
 func TestRenewedSessionNotificationSchedulesRefresh(t *testing.T) {
@@ -360,6 +510,8 @@ func TestRenewedSessionNotificationSchedulesRefresh(t *testing.T) {
 	require.NoError(t, err)
 	defer client.close()
 	require.NotSame(t, old, client.session)
+	store.SetSkipPermissionRequests(true)
+	require.True(t, store.AddMCP("unrelated", config.MCPConfig{Type: config.MCPStdio, Command: "unused"}))
 
 	mcp.AddTool(server, &mcp.Tool{Name: "after-renewal"}, func(context.Context, *mcp.CallToolRequest, any) (*mcp.CallToolResult, any, error) {
 		return &mcp.CallToolResult{}, nil, nil
@@ -381,6 +533,70 @@ notified:
 	require.Eventually(t, func() bool {
 		return len(GetServerToolNames(name)) == 2
 	}, 5*time.Second, time.Millisecond, "renewed session notification did not refresh advertised tools")
+}
+
+func TestListChangedDuringRefreshSchedulesDirtyRerun(t *testing.T) {
+	const name = "dirty-refresh"
+	firstObserved := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	var releaseFirstOnce sync.Once
+	var listCalls atomic.Int32
+	server := mcp.NewServer(&mcp.Implementation{Name: "dirty-refresh-server"}, nil)
+	mcp.AddTool(server, &mcp.Tool{Name: "first"}, func(context.Context, *mcp.CallToolRequest, any) (*mcp.CallToolResult, any, error) {
+		return &mcp.CallToolResult{}, nil, nil
+	})
+	server.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
+		return func(ctx context.Context, method string, request mcp.Request) (mcp.Result, error) {
+			result, err := next(ctx, method, request)
+			if method == "tools/list" && listCalls.Add(1) == 1 {
+				close(firstObserved)
+				<-releaseFirst
+			}
+			return result, err
+		}
+	})
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	serverSession, err := server.Connect(context.Background(), serverTransport, nil)
+	require.NoError(t, err)
+	defer serverSession.Close()
+	clientCtx, clientCancel := context.WithCancel(context.Background())
+	clientSession, err := mcp.NewClient(&mcp.Implementation{Name: "dirty-refresh-client"}, nil).
+		Connect(clientCtx, clientTransport, nil)
+	require.NoError(t, err)
+
+	store := config.NewTestStore(&config.Config{MCP: config.MCPs{
+		name: {Type: config.MCPStdio, Command: "unused"},
+	}})
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer func() { require.NoError(t, owner.Close(context.Background())) }()
+	session := &ClientSession{ClientSession: clientSession, cancel: clientCancel}
+	sessions.Set(name, session)
+	states.Set(name, ClientInfo{Name: name, State: StateConnected, Client: session})
+	admission, err := owner.admitServer(context.Background(), store, name, true)
+	require.NoError(t, err)
+	defer admission.done()
+	defer func() { releaseFirstOnce.Do(func() { close(releaseFirst) }) }()
+
+	notifyListChanged(&admission, name, refreshToolsKind)
+	waitForRequest(t, firstObserved)
+	mcp.AddTool(server, &mcp.Tool{Name: "latest"}, func(context.Context, *mcp.CallToolRequest, any) (*mcp.CallToolResult, any, error) {
+		return &mcp.CallToolResult{}, nil, nil
+	})
+	start := time.Now()
+	notifyListChanged(&admission, name, refreshToolsKind)
+	require.Less(t, time.Since(start), 100*time.Millisecond, "dirty notification must not block behind the in-flight list call")
+
+	key := refreshKey{name: name, kind: refreshToolsKind, epoch: admission.epoch}
+	lifecycleMu.Lock()
+	_, dirty := owner.refreshPending[key]
+	lifecycleMu.Unlock()
+	require.True(t, dirty, "a notification during an in-flight refresh must retain one coalesced rerun")
+	releaseFirstOnce.Do(func() { close(releaseFirst) })
+	require.Eventually(t, func() bool {
+		return listCalls.Load() >= 2 && len(GetServerToolNames(name)) == 2
+	}, time.Second, time.Millisecond, "the dirty rerun did not publish the latest tool list")
+	require.ElementsMatch(t, []string{"first", "latest"}, GetServerToolNames(name))
 }
 
 func TestRefreshQueueSaturationCoalescesWithoutDropping(t *testing.T) {
@@ -406,14 +622,15 @@ func TestRefreshQueueSaturationCoalescesWithoutDropping(t *testing.T) {
 	}()
 
 	admissionFor := func(name string) serverAdmission {
+		mcpConfig, _ := store.MCPConfig(name)
 		return serverAdmission{
-			owner:            owner,
-			generation:       owner.generation,
-			epoch:            owner.serverEpochs[name],
-			configGeneration: store.Generation(),
-			cfg:              store,
-			name:             name,
-			ctx:              owner.lifecycleCtx,
+			owner:      owner,
+			generation: owner.generation,
+			epoch:      owner.serverEpochs[name],
+			mcpConfig:  mcpConfig,
+			cfg:        store,
+			name:       name,
+			ctx:        owner.lifecycleCtx,
 		}
 	}
 	blockedAdmission := admissionFor(blockedName)

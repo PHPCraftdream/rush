@@ -9,11 +9,13 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptrace"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -167,14 +169,6 @@ func (l *serverLease) RUnlock() {
 	l.registry.release(l)
 }
 
-// downgrade changes an exclusive lease into a shared lease without releasing
-// its registry reference. The caller can therefore safely continue using the
-// same lease object without an ABA replacement window.
-func (l *serverLease) downgrade() {
-	l.mu.Unlock()
-	l.mu.RLock()
-}
-
 func acquireServerLease(name string, write bool) *serverLease {
 	lease := leases.getRetained(name)
 	if write {
@@ -255,16 +249,16 @@ type refreshRequest struct {
 // reference is held until the candidate or operation has completely exited,
 // allowing Owner.Close to fence all late work before registry reset.
 type serverAdmission struct {
-	owner            *Owner
-	generation       uint64
-	epoch            uint64
-	configGeneration uint64
-	cfg              *config.ConfigStore
-	name             string
-	ctx              context.Context
-	cancel           context.CancelFunc
-	stop             func()
-	once             *sync.Once
+	owner      *Owner
+	generation uint64
+	epoch      uint64
+	mcpConfig  config.MCPConfig
+	cfg        *config.ConfigStore
+	name       string
+	ctx        context.Context
+	cancel     context.CancelFunc
+	stop       func()
+	once       *sync.Once
 }
 
 func (a *serverAdmission) done() {
@@ -310,21 +304,31 @@ func (a *serverAdmission) validLocked() bool {
 	if !valid {
 		return false
 	}
-	configured, configGeneration := a.cfg.Snapshot()
-	if configGeneration != a.configGeneration || configured == nil {
-		return false
-	}
-	mcpConfig, exists := configured.MCP[a.name]
+	mcpConfig, exists := a.cfg.MCPConfig(a.name)
 	if !exists {
 		return false
 	}
-	return !mcpConfig.Disabled
+	return !mcpConfig.Disabled && sameMCPConfig(mcpConfig, a.mcpConfig)
+}
+
+func sameMCPConfig(a, b config.MCPConfig) bool {
+	return a.Command == b.Command &&
+		a.Type == b.Type &&
+		a.URL == b.URL &&
+		a.Disabled == b.Disabled &&
+		a.Timeout == b.Timeout &&
+		a.EnabledInCLI == b.EnabledInCLI &&
+		a.Source == b.Source &&
+		maps.Equal(a.Env, b.Env) &&
+		maps.Equal(a.Headers, b.Headers) &&
+		slices.Equal(a.Args, b.Args) &&
+		slices.Equal(a.DisabledTools, b.DisabledTools) &&
+		slices.Equal(a.EnabledTools, b.EnabledTools)
 }
 
 func (o *Owner) admitServer(ctx context.Context, cfg *config.ConfigStore, name string, bump bool) (serverAdmission, error) {
 	lifecycleMu.Lock()
 	defer lifecycleMu.Unlock()
-	_, configGeneration := cfg.Snapshot()
 	if !o.isCurrentLocked() {
 		return serverAdmission{}, ErrOwnerBusy
 	}
@@ -349,17 +353,18 @@ func (o *Owner) admitServer(ctx context.Context, cfg *config.ConfigStore, name s
 	} else {
 		operationCtx = ctx
 	}
+	mcpConfig, _ := cfg.MCPConfig(name)
 	admission := serverAdmission{
-		owner:            o,
-		generation:       o.generation,
-		epoch:            o.serverEpochs[name],
-		configGeneration: configGeneration,
-		cfg:              cfg,
-		name:             name,
-		once:             new(sync.Once),
-		ctx:              operationCtx,
-		cancel:           cancel,
-		stop:             stop,
+		owner:      o,
+		generation: o.generation,
+		epoch:      o.serverEpochs[name],
+		mcpConfig:  mcpConfig,
+		cfg:        cfg,
+		name:       name,
+		once:       new(sync.Once),
+		ctx:        operationCtx,
+		cancel:     cancel,
+		stop:       stop,
 	}
 	o.initCount++
 	o.initWG.Add(1)
@@ -375,15 +380,15 @@ func (o *Owner) snapshotServerAdmission(_ context.Context, cfg *config.ConfigSto
 	if !o.isCurrentLocked() {
 		return serverAdmission{}, ErrOwnerBusy
 	}
-	_, configGeneration := cfg.Snapshot()
+	mcpConfig, _ := cfg.MCPConfig(name)
 	return serverAdmission{
-		owner:            o,
-		generation:       o.generation,
-		epoch:            o.serverEpochs[name],
-		configGeneration: configGeneration,
-		cfg:              cfg,
-		name:             name,
-		ctx:              o.lifecycleCtx,
+		owner:      o,
+		generation: o.generation,
+		epoch:      o.serverEpochs[name],
+		mcpConfig:  mcpConfig,
+		cfg:        cfg,
+		name:       name,
+		ctx:        o.lifecycleCtx,
 	}, nil
 }
 
@@ -514,10 +519,9 @@ func (o *Owner) enqueueRefresh(request refreshRequest) {
 		lifecycleMu.Unlock()
 		return
 	}
-	if _, exists := o.refreshRunning[key]; exists {
-		lifecycleMu.Unlock()
-		return
-	}
+	// If the same key is already running, retaining one pending request marks
+	// it dirty. The worker will run it once more after the in-flight snapshot
+	// returns, coalescing any further notifications into that rerun.
 	o.refreshPending[key] = request
 	lifecycleMu.Unlock()
 
@@ -1178,10 +1182,33 @@ func EnableServer(ctx context.Context, cfg *config.ConfigStore, name string) err
 // AddServer validates and adds a new MCP server. It attempts to connect; if
 // successful the server is added to the in-memory config and persisted to disk.
 func AddServer(ctx context.Context, cfg *config.ConfigStore, name string, mcpCfg config.MCPConfig) error {
+	return addServerWithInitializer(ctx, cfg, name, mcpCfg, initClientAdmitted)
+}
+
+type admittedClientInitializer func(
+	context.Context,
+	*config.ConfigStore,
+	string,
+	config.MCPConfig,
+	config.VariableResolver,
+	*serverAdmission,
+) error
+
+func addServerWithInitializer(
+	ctx context.Context,
+	cfg *config.ConfigStore,
+	name string,
+	mcpCfg config.MCPConfig,
+	initialize admittedClientInitializer,
+) error {
 	o, err := ensureOwner()
 	if err != nil {
 		return err
 	}
+	if !o.beginInit() {
+		return ErrOwnerBusy
+	}
+	defer o.endInit()
 	lease := serverLeaseFor(name)
 	lease.Lock()
 	if _, exists := cfg.MCPConfig(name); exists {
@@ -1209,13 +1236,10 @@ func AddServer(ctx context.Context, cfg *config.ConfigStore, name string, mcpCfg
 		return ErrOwnerBusy
 	}
 	lease.Unlock()
-	initErr := initClientAdmitted(ctx, cfg, name, mcpCfg, resolver, &admission)
+	initErr := initialize(ctx, cfg, name, mcpCfg, resolver, &admission)
 	if initErr != nil {
 		lease.Lock()
-		_, _ = cfg.RemoveMCP(name)
-		o.invalidateServer(name)
-		clearAdvertised(name)
-		states.Del(name)
+		rollbackAddedServer(o, cfg, name, &admission)
 		lease.Unlock()
 		if errors.Is(initErr, ErrOwnerBusy) {
 			return ErrOwnerBusy
@@ -1227,24 +1251,31 @@ func AddServer(ctx context.Context, cfg *config.ConfigStore, name string, mcpCfg
 	// in-memory entry and then lose the race by being followed by this write.
 	lease.Lock()
 	if !admission.valid() {
-		closeSessionLocked(name)
-		_, _ = cfg.RemoveMCP(name)
-		clearAdvertised(name)
-		states.Del(name)
 		lease.Unlock()
 		return ErrOwnerBusy
 	}
 	if err := cfg.SetConfigField(config.ScopeGlobal, fmt.Sprintf("mcp.%s", name), mcpCfg); err != nil {
-		closeSessionLocked(name)
-		clearAdvertised(name)
-		_, _ = cfg.RemoveMCP(name)
-		o.invalidateServer(name)
-		states.Del(name)
+		rollbackAddedServer(o, cfg, name, &admission)
 		lease.Unlock()
 		return fmt.Errorf("failed to persist MCP server %q: %w", name, err)
 	}
 	lease.Unlock()
 	return nil
+}
+
+// rollbackAddedServer removes only the server instance represented by
+// admission. Callers hold the per-server write lease, so a newer epoch cannot
+// appear between the identity check and the rollback.
+func rollbackAddedServer(o *Owner, cfg *config.ConfigStore, name string, admission *serverAdmission) bool {
+	if admission == nil || admission.owner != o || admission.name != name || !admission.valid() {
+		return false
+	}
+	closeSessionLocked(name)
+	_, _ = cfg.RemoveMCP(name)
+	o.invalidateServer(name)
+	clearAdvertised(name)
+	states.Del(name)
+	return true
 }
 
 // RemoveServer removes an MCP server, closes its session, and removes it from config.
