@@ -290,6 +290,106 @@ func TestProjectMCPMutationsFailClosed(t *testing.T) {
 	requireMCPFileLacks(t, config.GlobalConfigData(), "project.mutations")
 }
 
+func TestBlockedProjectInitializerIsNotPendingGlobalAdd(t *testing.T) {
+	tests := map[string]func(context.Context, *config.ConfigStore, string, *atomic.Int32) error{
+		"disable": func(ctx context.Context, store *config.ConfigStore, name string, attempts *atomic.Int32) error {
+			return disableServerWithPersistence(ctx, store, name,
+				func(cfg *config.ConfigStore, scope config.Scope, serverName string) error {
+					attempts.Add(1)
+					return cfg.PersistMCPDisabledOverride(scope, serverName, true)
+				})
+		},
+		"remove": func(_ context.Context, store *config.ConfigStore, name string, attempts *atomic.Int32) error {
+			return removeServerWithScopedPersistence(store, name,
+				func(cfg *config.ConfigStore, scope config.Scope, serverName string) error {
+					attempts.Add(1)
+					return cfg.PersistRemoveMCPConfig(scope, serverName)
+				})
+		},
+	}
+	for testName, mutate := range tests {
+		t.Run(testName, func(t *testing.T) {
+			root := t.TempDir()
+			configDir := filepath.Join(root, "global-config")
+			dataDir := filepath.Join(root, "global-data")
+			t.Setenv("RUSH_GLOBAL_CONFIG", configDir)
+			t.Setenv("XDG_CONFIG_HOME", configDir)
+			t.Setenv("RUSH_GLOBAL_DATA", dataDir)
+			t.Setenv("XDG_DATA_HOME", dataDir)
+
+			server := modelmcp.NewServer(&modelmcp.Implementation{Name: "blocked-project"}, nil)
+			modelmcp.AddTool(server, &modelmcp.Tool{Name: "project-tool"}, func(context.Context, *modelmcp.CallToolRequest, any) (*modelmcp.CallToolResult, any, error) {
+				return &modelmcp.CallToolResult{}, nil, nil
+			})
+			delegate := modelmcp.NewStreamableHTTPHandler(func(*http.Request) *modelmcp.Server { return server }, nil)
+			started := make(chan struct{})
+			canceled := make(chan struct{}, 1)
+			release := make(chan struct{})
+			var blockOnce sync.Once
+			var releaseOnce sync.Once
+			httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				first := false
+				blockOnce.Do(func() {
+					first = true
+					close(started)
+				})
+				if first {
+					select {
+					case <-release:
+					case <-r.Context().Done():
+						signalStarted(canceled)
+						return
+					}
+				}
+				delegate.ServeHTTP(w, r)
+			}))
+			defer httpServer.Close()
+
+			name := "project.blocked." + testName
+			projectData, err := json.Marshal(map[string]any{"mcp": map[string]any{
+				name: config.MCPConfig{Type: config.MCPHttp, URL: httpServer.URL, Timeout: 60},
+			}})
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(filepath.Join(root, "rush.json"), projectData, 0o600))
+			store, err := config.Init(root, filepath.Join(root, "workspace-data"), false)
+			require.NoError(t, err)
+			owner, err := Acquire()
+			require.NoError(t, err)
+			defer func() {
+				releaseOnce.Do(func() { close(release) })
+				require.NoError(t, owner.Close(context.Background()))
+			}()
+
+			initializeDone := make(chan struct{})
+			go func() {
+				owner.Initialize(context.Background(), nil, store, false)
+				close(initializeDone)
+			}()
+			waitForRequest(t, started)
+			require.False(t, hasPendingGlobalAdd(name))
+
+			var persistenceAttempts atomic.Int32
+			err = mutate(context.Background(), store, name, &persistenceAttempts)
+			require.ErrorIs(t, err, config.ErrMCPUnwritableOrigin)
+			require.Zero(t, persistenceAttempts.Load())
+			requireMCPFileLacks(t, config.GlobalConfigData(), name)
+			select {
+			case <-canceled:
+				t.Fatal("scope rejection canceled the blocked project initializer")
+			default:
+			}
+
+			releaseOnce.Do(func() { close(release) })
+			select {
+			case <-initializeDone:
+			case <-time.After(5 * time.Second):
+				t.Fatal("project initializer did not finish after release")
+			}
+			require.Equal(t, StateConnected, mustState(t, name).State)
+		})
+	}
+}
+
 func TestReplaceServerRejectsScopeChangeBeforeDurableWrite(t *testing.T) {
 	store, root := originScopeStore(t)
 	workspacePath := filepath.Join(root, "rush.json")

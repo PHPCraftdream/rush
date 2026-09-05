@@ -250,26 +250,27 @@ var ErrOwnerBusy = errors.New("mcp: application owner is already active")
 // package predates multiple App instances and its tool/state maps remain
 // process-wide, so ownership is explicit rather than silently shared.
 type Owner struct {
-	implicit        bool
-	closing         bool
-	generation      uint64
-	lifecycleCtx    context.Context
-	lifecycleCancel context.CancelFunc
-	initCount       int
-	initWG          sync.WaitGroup
-	initStarted     bool
-	fullInitCount   int
-	initDone        chan struct{}
-	serverEpochs    map[string]uint64
-	serverCancels   map[string]map[uint64]serverCancel
-	nextCancelToken uint64
-	refreshCh       chan struct{}
-	refreshPending  map[refreshKey]refreshRequest
-	refreshRunning  map[refreshKey]struct{}
-	refreshWG       sync.WaitGroup
-	closeOnce       sync.Once
-	closeDone       chan struct{}
-	closeErr        error
+	implicit          bool
+	closing           bool
+	generation        uint64
+	lifecycleCtx      context.Context
+	lifecycleCancel   context.CancelFunc
+	initCount         int
+	initWG            sync.WaitGroup
+	initStarted       bool
+	fullInitCount     int
+	initDone          chan struct{}
+	serverEpochs      map[string]uint64
+	serverCancels     map[string]map[uint64]serverCancel
+	pendingGlobalAdds map[string]uint64
+	nextCancelToken   uint64
+	refreshCh         chan struct{}
+	refreshPending    map[refreshKey]refreshRequest
+	refreshRunning    map[refreshKey]struct{}
+	refreshWG         sync.WaitGroup
+	closeOnce         sync.Once
+	closeDone         chan struct{}
+	closeErr          error
 }
 
 type serverCancel struct {
@@ -332,6 +333,9 @@ func (a *serverAdmission) done() {
 	}
 	lifecycleMu.Lock()
 	if a.serverCancelToken != 0 {
+		if a.owner.pendingGlobalAdds[a.name] == a.serverCancelToken {
+			delete(a.owner.pendingGlobalAdds, a.name)
+		}
 		if current, ok := a.owner.serverCancels[a.name]; ok {
 			if registered, ok := current[a.serverCancelToken]; ok && registered.token == a.serverCancelToken {
 				delete(current, a.serverCancelToken)
@@ -475,6 +479,38 @@ func (o *Owner) admitReplacementCandidate(ctx context.Context, cfg *config.Confi
 	return admission, nil
 }
 
+// markPendingGlobalAdd records the one admission whose in-memory definition
+// is intentionally destined for the global config but has not reached disk
+// yet. Full initialization, replacement, renewal, and refresh admissions never
+// call this method and therefore can never authorize a global fallback.
+func (o *Owner) markPendingGlobalAdd(admission *serverAdmission) bool {
+	if admission == nil || admission.serverCancelToken == 0 {
+		return false
+	}
+	lifecycleMu.Lock()
+	defer lifecycleMu.Unlock()
+	if admission.owner != o || admission.name == "" || !o.isCurrentLocked() {
+		return false
+	}
+	registered, ok := o.serverCancels[admission.name][admission.serverCancelToken]
+	if !ok || registered.token != admission.serverCancelToken {
+		return false
+	}
+	o.pendingGlobalAdds[admission.name] = admission.serverCancelToken
+	return true
+}
+
+func (o *Owner) clearPendingGlobalAdd(admission *serverAdmission) {
+	if admission == nil || admission.serverCancelToken == 0 {
+		return
+	}
+	lifecycleMu.Lock()
+	if o.pendingGlobalAdds[admission.name] == admission.serverCancelToken {
+		delete(o.pendingGlobalAdds, admission.name)
+	}
+	lifecycleMu.Unlock()
+}
+
 // snapshotServerAdmission captures the lifecycle and configuration fence for
 // an operation. The caller owns the separate init reference used to keep the
 // owner alive while the operation runs.
@@ -570,17 +606,18 @@ func acquire(implicit bool) (*Owner, error) {
 	generation++
 	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
 	o := &Owner{
-		implicit:        implicit,
-		generation:      generation,
-		lifecycleCtx:    lifecycleCtx,
-		lifecycleCancel: lifecycleCancel,
-		closeDone:       make(chan struct{}),
-		initDone:        closedChannel(),
-		serverEpochs:    make(map[string]uint64),
-		serverCancels:   make(map[string]map[uint64]serverCancel),
-		refreshCh:       make(chan struct{}, 1),
-		refreshPending:  make(map[refreshKey]refreshRequest),
-		refreshRunning:  make(map[refreshKey]struct{}),
+		implicit:          implicit,
+		generation:        generation,
+		lifecycleCtx:      lifecycleCtx,
+		lifecycleCancel:   lifecycleCancel,
+		closeDone:         make(chan struct{}),
+		initDone:          closedChannel(),
+		serverEpochs:      make(map[string]uint64),
+		serverCancels:     make(map[string]map[uint64]serverCancel),
+		pendingGlobalAdds: make(map[string]uint64),
+		refreshCh:         make(chan struct{}, 1),
+		refreshPending:    make(map[refreshKey]refreshRequest),
+		refreshRunning:    make(map[refreshKey]struct{}),
 	}
 	owner = o
 	initDone = o.initDone
@@ -1719,20 +1756,25 @@ func resolveMCPMutationScope(cfg *config.ConfigStore, name string, mcpCfg config
 	// not on disk until initialization finishes. Preserve the cancellation
 	// path for a concurrent disable/remove of that in-flight add; an ordinary
 	// unowned in-memory definition remains fail-closed below.
-	if errors.Is(err, config.ErrMCPUnwritableOrigin) && hasActiveServerAdmission(name) {
+	if errors.Is(err, config.ErrMCPUnwritableOrigin) && hasPendingGlobalAdd(name) {
 		return config.ScopeGlobal, nil
 	}
 	return config.ScopeGlobal, err
 }
 
-func hasActiveServerAdmission(name string) bool {
+func hasPendingGlobalAdd(name string) bool {
 	lifecycleMu.Lock()
 	defer lifecycleMu.Unlock()
 	currentOwner := owner
 	if currentOwner == nil {
 		return false
 	}
-	return len(currentOwner.serverCancels[name]) > 0
+	token := currentOwner.pendingGlobalAdds[name]
+	if token == 0 {
+		return false
+	}
+	registered, ok := currentOwner.serverCancels[name][token]
+	return ok && registered.token == token
 }
 
 type admittedClientInitializer func(
@@ -1775,6 +1817,12 @@ func addServerWithInitializer(
 		lease.Unlock()
 		return err
 	}
+	if !o.markPendingGlobalAdd(&admission) {
+		admission.done()
+		_, _ = cfg.RemoveMCP(name)
+		lease.Unlock()
+		return ErrOwnerBusy
+	}
 	resolver := cfg.Resolver()
 	// Keep the lease entry alive while initialization runs without the write
 	// lock. RemoveServer must then wait on this exact lease instance instead of
@@ -1801,6 +1849,7 @@ func addServerWithInitializer(
 	// in-memory entry and then lose the race by being followed by this write.
 	lease.Lock()
 	if !admission.valid() {
+		o.clearPendingGlobalAdd(&admission)
 		lease.Unlock()
 		return ErrOwnerBusy
 	}
@@ -1809,6 +1858,7 @@ func addServerWithInitializer(
 		lease.Unlock()
 		return fmt.Errorf("failed to persist MCP server %q: %w", name, err)
 	}
+	o.clearPendingGlobalAdd(&admission)
 	lease.Unlock()
 	return nil
 }
@@ -1817,6 +1867,7 @@ func addServerWithInitializer(
 // admission. Callers hold the per-server write lease, so a newer epoch cannot
 // appear between the identity check and the rollback.
 func rollbackAddedServer(o *Owner, cfg *config.ConfigStore, name string, admission *serverAdmission) bool {
+	o.clearPendingGlobalAdd(admission)
 	if admission == nil || admission.owner != o || admission.name != name || !admission.valid() {
 		return false
 	}
