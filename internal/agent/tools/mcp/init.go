@@ -1329,23 +1329,24 @@ func disableServerWithPersistence(
 	defer o.endInit()
 	mcpCfg, ok := cfg.MCPConfig(name)
 	if !ok {
-		return fmt.Errorf("MCP server %q not found", name)
+		return fmt.Errorf("MCP server %q not found: %w", name, config.ErrMCPNotFound)
 	}
 	lease := serverLeaseFor(name)
 	lease.Lock()
 	defer lease.Unlock()
 	mcpCfg, ok = cfg.MCPConfig(name)
 	if !ok {
-		return fmt.Errorf("MCP server %q disappeared while disabling", name)
+		return fmt.Errorf("MCP server %q disappeared while disabling: %w", name, config.ErrMCPNotFound)
 	}
-	// The lease makes the config/state transition linearizable with a
-	// candidate that is already returning from the SDK.
+	// Resolve the origin while holding the ordered server lease. A user
+	// workspace definition must stay in the workspace file, while project,
+	// system, external, and otherwise unrepresentable definitions fail closed.
+	scope, err := resolveMCPMutationScope(cfg, name, mcpCfg)
+	if err != nil {
+		return fmt.Errorf("cannot determine writable scope for MCP server %q: %w", name, err)
+	}
 	// Persist first. If disk persistence fails, the session and in-memory
 	// snapshot remain enabled, so the operation has no half-applied result.
-	scope := config.ScopeGlobal
-	if mcpCfg.Source == config.MCPSourceExternal {
-		scope = config.ScopeWorkspace
-	}
 	if err := persist(cfg, scope, name); err != nil {
 		return fmt.Errorf("failed to persist MCP disabled state for %q: %w", name, err)
 	}
@@ -1374,13 +1375,19 @@ func EnableServer(ctx context.Context, cfg *config.ConfigStore, name string) err
 	defer o.endInit()
 	mcpCfg, ok := cfg.MCPConfig(name)
 	if !ok {
-		return fmt.Errorf("MCP server %q not found", name)
+		return fmt.Errorf("MCP server %q not found: %w", name, config.ErrMCPNotFound)
 	}
 	lease := serverLeaseFor(name)
 	lease.Lock()
-	scope := config.ScopeGlobal
-	if mcpCfg.Source == config.MCPSourceExternal {
-		scope = config.ScopeWorkspace
+	mcpCfg, ok = cfg.MCPConfig(name)
+	if !ok {
+		lease.Unlock()
+		return fmt.Errorf("MCP server %q disappeared while enabling", name)
+	}
+	scope, err := resolveMCPMutationScope(cfg, name, mcpCfg)
+	if err != nil {
+		lease.Unlock()
+		return fmt.Errorf("cannot determine writable scope for MCP server %q: %w", name, err)
 	}
 	if err := cfg.PersistMCPDisabledOverride(scope, name, false); err != nil {
 		lease.Unlock()
@@ -1436,13 +1443,14 @@ func AddServer(ctx context.Context, cfg *config.ConfigStore, name string, mcpCfg
 // session, tools, prompts, resources, and state switch as one lifecycle
 // transition.
 func ReplaceServer(ctx context.Context, cfg *config.ConfigStore, oldName, newName string, mcpCfg config.MCPConfig) error {
-	return replaceServerWithPersistence(ctx, cfg, oldName, newName, mcpCfg,
-		func(cfg *config.ConfigStore, oldName, newName string, mcpCfg config.MCPConfig) error {
-			return cfg.PersistReplaceMCP(oldName, newName, mcpCfg)
+	return replaceServerWithScopedPersistence(ctx, cfg, oldName, newName, mcpCfg,
+		func(cfg *config.ConfigStore, scope config.Scope, oldName, newName string, mcpCfg config.MCPConfig) error {
+			return cfg.PersistReplaceMCPInScope(scope, oldName, newName, mcpCfg)
 		})
 }
 
 type replacementPersister func(*config.ConfigStore, string, string, config.MCPConfig) error
+type scopedReplacementPersister func(*config.ConfigStore, config.Scope, string, string, config.MCPConfig) error
 
 func replaceServerWithPersistence(
 	ctx context.Context,
@@ -1451,6 +1459,29 @@ func replaceServerWithPersistence(
 	mcpCfg config.MCPConfig,
 	persist replacementPersister,
 ) error {
+	return replaceServerWithScopedPersistence(ctx, cfg, oldName, newName, mcpCfg,
+		func(cfg *config.ConfigStore, _ config.Scope, oldName, newName string, mcpCfg config.MCPConfig) error {
+			return persist(cfg, oldName, newName, mcpCfg)
+		})
+}
+
+func replaceServerWithScopedPersistence(
+	ctx context.Context,
+	cfg *config.ConfigStore,
+	oldName, newName string,
+	mcpCfg config.MCPConfig,
+	persist scopedReplacementPersister,
+) error {
+	// Resolve before acquiring an owner or admitting a candidate. This keeps
+	// an external, project, system, or ambiguous origin from causing any
+	// session, admission, network, or disk mutation.
+	scope, err := cfg.ResolveMCPWritableScope(oldName)
+	if err != nil {
+		return fmt.Errorf("cannot determine writable scope for MCP server %q: %w", oldName, err)
+	}
+	if mcpCfg.Source == config.MCPSourceExternal {
+		return fmt.Errorf("MCP server %q is from .mcp.json and cannot be replaced: %w", oldName, config.ErrMCPExternal)
+	}
 	o, err := ensureOwner()
 	if err != nil {
 		return err
@@ -1461,18 +1492,19 @@ func replaceServerWithPersistence(
 	defer o.endInit()
 
 	locked := lockServerLeases(oldName, newName)
-	if mcpCfg.Source == config.MCPSourceExternal {
-		unlockServerLeases(locked)
-		return fmt.Errorf("MCP server %q is from .mcp.json and cannot be replaced", oldName)
-	}
-	oldCfg, exists := cfg.MCPConfig(oldName)
+	_, exists := cfg.MCPConfig(oldName)
 	if !exists {
 		unlockServerLeases(locked)
-		return fmt.Errorf("MCP server %q not found", oldName)
+		return fmt.Errorf("MCP server %q disappeared after scope resolution: %w", oldName, config.ErrMCPNotFound)
 	}
-	if oldCfg.Source == config.MCPSourceExternal {
+	currentScope, err := cfg.ResolveMCPWritableScope(oldName)
+	if err != nil {
 		unlockServerLeases(locked)
-		return fmt.Errorf("MCP server %q is from .mcp.json and cannot be replaced", oldName)
+		return fmt.Errorf("MCP server %q became unwritable before candidate preparation: %w", oldName, err)
+	}
+	if currentScope != scope {
+		unlockServerLeases(locked)
+		return fmt.Errorf("MCP server %q writable scope changed from %s to %s before candidate preparation", oldName, scope, currentScope)
 	}
 	if oldName != newName {
 		if _, exists := cfg.MCPConfig(newName); exists {
@@ -1521,12 +1553,30 @@ func replaceServerWithPersistence(
 	admission.promoted = true
 	lifecycleMu.Unlock()
 
+	// Scope is derived from on-disk origin, which may have changed while the
+	// candidate was being prepared. Re-resolve while the ordered leases are
+	// still held and immediately before the durable write; otherwise a
+	// workspace replacement could silently land in the global file.
+	commitScope, err := cfg.ResolveMCPWritableScope(oldName)
+	if err != nil {
+		unlockServerLeases(locked)
+		_ = prepared.session.Close()
+		admission.done()
+		return fmt.Errorf("MCP server %q became unwritable before durable replacement: %w", oldName, err)
+	}
+	if commitScope != scope {
+		unlockServerLeases(locked)
+		_ = prepared.session.Close()
+		admission.done()
+		return fmt.Errorf("MCP server %q writable scope changed from %s to %s before durable replacement", oldName, scope, commitScope)
+	}
+
 	// The durable atomic RMW may wait on an inter-process file lock for up to
 	// the config write timeout. Keep the ordered server leases, but never hold
 	// lifecycleMu here: Owner.Close must be able to mark the owner closing,
 	// cancel its contexts, and honor the caller's deadline while this I/O is
 	// stalled.
-	if err := persist(cfg, oldName, newName, mcpCfg); err != nil {
+	if err := persist(cfg, commitScope, oldName, newName, mcpCfg); err != nil {
 		unlockServerLeases(locked)
 		_ = prepared.session.Close()
 		admission.done()
@@ -1650,6 +1700,41 @@ func hasMCPServer(cfg *config.ConfigStore, name string) bool {
 	return ok
 }
 
+// resolveMCPMutationScope resolves the writable origin for a disable/enable
+// operation. External definitions are intentionally represented by a
+// workspace-only disabled overlay; all other definitions must be owned by an
+// exact writable config scope.
+func resolveMCPMutationScope(cfg *config.ConfigStore, name string, mcpCfg config.MCPConfig) (config.Scope, error) {
+	if mcpCfg.Source == config.MCPSourceExternal {
+		if !cfg.HasWorkspaceConfig() {
+			return config.ScopeWorkspace, config.ErrNoWorkspaceConfig
+		}
+		return config.ScopeWorkspace, nil
+	}
+	scope, err := cfg.ResolveMCPWritableScope(name)
+	if err == nil {
+		return scope, nil
+	}
+	// AddServer has a deliberate global-scope contract, but its definition is
+	// not on disk until initialization finishes. Preserve the cancellation
+	// path for a concurrent disable/remove of that in-flight add; an ordinary
+	// unowned in-memory definition remains fail-closed below.
+	if errors.Is(err, config.ErrMCPUnwritableOrigin) && hasActiveServerAdmission(name) {
+		return config.ScopeGlobal, nil
+	}
+	return config.ScopeGlobal, err
+}
+
+func hasActiveServerAdmission(name string) bool {
+	lifecycleMu.Lock()
+	defer lifecycleMu.Unlock()
+	currentOwner := owner
+	if currentOwner == nil {
+		return false
+	}
+	return len(currentOwner.serverCancels[name]) > 0
+}
+
 type admittedClientInitializer func(
 	context.Context,
 	*config.ConfigStore,
@@ -1746,18 +1831,30 @@ func rollbackAddedServer(o *Owner, cfg *config.ConfigStore, name string, admissi
 // RemoveServer removes an MCP server, closes its session, and removes it from config.
 // External servers (from .mcp.json) cannot be removed — only disabled.
 func RemoveServer(cfg *config.ConfigStore, name string) error {
-	return removeServerWithPersistence(cfg, name,
-		func(cfg *config.ConfigStore, name string) error {
-			return cfg.PersistRemoveMCPConfig(config.ScopeGlobal, name)
+	return removeServerWithScopedPersistence(cfg, name,
+		func(cfg *config.ConfigStore, scope config.Scope, name string) error {
+			return cfg.PersistRemoveMCPConfig(scope, name)
 		})
 }
 
 type removeServerPersister func(*config.ConfigStore, string) error
+type scopedRemoveServerPersister func(*config.ConfigStore, config.Scope, string) error
 
 func removeServerWithPersistence(
 	cfg *config.ConfigStore,
 	name string,
 	persist removeServerPersister,
+) error {
+	return removeServerWithScopedPersistence(cfg, name,
+		func(cfg *config.ConfigStore, _ config.Scope, name string) error {
+			return persist(cfg, name)
+		})
+}
+
+func removeServerWithScopedPersistence(
+	cfg *config.ConfigStore,
+	name string,
+	persist scopedRemoveServerPersister,
 ) error {
 	o, err := ensureOwner()
 	if err != nil {
@@ -1769,10 +1866,10 @@ func removeServerWithPersistence(
 	defer o.endInit()
 	mcpCfg, exists := cfg.MCPConfig(name)
 	if !exists {
-		return fmt.Errorf("MCP server %q not found", name)
+		return fmt.Errorf("MCP server %q not found: %w", name, config.ErrMCPNotFound)
 	}
 	if mcpCfg.Source == config.MCPSourceExternal {
-		return fmt.Errorf("MCP server %q is from .mcp.json and cannot be removed (disable it instead)", name)
+		return fmt.Errorf("MCP server %q is from .mcp.json and cannot be removed (disable it instead): %w", name, config.ErrMCPExternal)
 	}
 
 	lease := serverLeaseFor(name)
@@ -1780,12 +1877,16 @@ func removeServerWithPersistence(
 	defer lease.Unlock()
 	mcpCfg, exists = cfg.MCPConfig(name)
 	if !exists {
-		return fmt.Errorf("MCP server %q disappeared while removing", name)
+		return fmt.Errorf("MCP server %q disappeared while removing: %w", name, config.ErrMCPNotFound)
 	}
 	if mcpCfg.Source == config.MCPSourceExternal {
-		return fmt.Errorf("MCP server %q is from .mcp.json and cannot be removed (disable it instead)", name)
+		return fmt.Errorf("MCP server %q is from .mcp.json and cannot be removed (disable it instead): %w", name, config.ErrMCPExternal)
 	}
-	if err := persist(cfg, name); err != nil {
+	scope, err := resolveMCPMutationScope(cfg, name, mcpCfg)
+	if err != nil {
+		return fmt.Errorf("cannot determine writable scope for MCP server %q: %w", name, err)
+	}
+	if err := persist(cfg, scope, name); err != nil {
 		return fmt.Errorf("failed to remove MCP server %q from config: %w", name, err)
 	}
 	// Persistence is the fallible part of this transaction. Only after it
