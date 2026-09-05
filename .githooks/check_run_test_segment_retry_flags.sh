@@ -40,13 +40,34 @@ if [ ! -f "$target" ]; then
 	exit 1
 fi
 
-extracted="$(mktemp)"
-argv_log="$(mktemp)"
-trap 'rm -f "$extracted" "$argv_log" "$count_file"' EXIT
+extracted=
+argv_log=
+count_file=
+cleanup() {
+	if [ -n "$extracted" ]; then
+		rm -f -- "$extracted" || :
+	fi
+	if [ -n "$argv_log" ]; then
+		rm -f -- "$argv_log" || :
+	fi
+	if [ -n "$count_file" ]; then
+		rm -f -- "$count_file" || :
+	fi
+}
+trap cleanup EXIT
+
+if ! extracted="$(mktemp)"; then
+	exit 1
+fi
+if ! argv_log="$(mktemp)"; then
+	exit 1
+fi
 # Pipeline subshells lose variable updates, so the invocation counter
 # lives in a file: the first-attempt go call runs on the left side of a
 # pipe and its writes must survive into the retry branch.
-count_file="$(mktemp)"
+if ! count_file="$(mktemp)"; then
+	exit 1
+fi
 printf '0' >"$count_file"
 
 # Extract the function only: from the line that opens it at column 0

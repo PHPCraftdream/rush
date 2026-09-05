@@ -27,8 +27,8 @@ func TestParentCostAccountedBackfill(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = conn.Close() })
 
-	// goose state is package-global (SetBaseFS in init, dialect in initGoose);
-	// restate both idempotently to be safe in isolation.
+	// This test drives goose's legacy API directly, so configure its
+	// package-global filesystem and dialect locally for isolation.
 	goose.SetBaseFS(FS)
 	require.NoError(t, goose.SetDialect("sqlite3"))
 

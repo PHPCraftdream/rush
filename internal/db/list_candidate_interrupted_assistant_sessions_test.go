@@ -11,9 +11,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// candDialectOnce mirrors pagDialectOnce in messages_pagination_test.go: the
-// goose dialect is a package-global set once via sync.Once, so these tests
-// stay non-parallel and share the guard rather than racing on it.
+// candDialectOnce mirrors pagDialectOnce in messages_pagination_test.go. The
+// legacy goose API keeps its dialect package-global. These tests stay
+// non-parallel and share a sync.Once guard rather than racing on that state.
 var candDialectOnce sync.Once
 
 const candFixedCreatedAt = int64(1700000000)

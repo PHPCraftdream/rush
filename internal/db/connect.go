@@ -30,14 +30,6 @@ var (
 //go:embed migrations/*.sql
 var FS embed.FS
 
-func init() {
-	goose.SetBaseFS(FS)
-
-	if testing.Testing() {
-		goose.SetLogger(goose.NopLogger())
-	}
-}
-
 // connEntry holds a shared database connection pair and its reference
 // count. db is the single-connection writer (SetMaxOpenConns(1) — see the
 // comment in Connect for why). readDB is a separate, read-only pool that

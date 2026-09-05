@@ -331,6 +331,12 @@ func TestOpenLibraryMode_TwoEphemeralClientsAreIsolated(t *testing.T) {
 // actual Open paths behind one barrier. The file-backed Connect deliberately
 // runs alongside the ephemeral Opens because both used to mutate goose's
 // package-global dialect while migrations were reading it.
+//
+// This is intentionally a race-detector regression: the pre-fix implementation
+// can pass every functional assertion below while racing on goose's global
+// dialect. Run this test with -race; completion and the assertions are only a
+// smoke check that all concurrent opens reached a usable result, while a clean
+// race-detector report is the guarantee this test is meant to establish.
 func TestOpenLibraryMode_ConcurrentEphemeralAndFileBackedOpen(t *testing.T) {
 	isolateGlobalConfigForWorkdirTest(t)
 

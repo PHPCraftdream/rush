@@ -11,13 +11,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// pagDialectOnce guards the global goose dialect set. The db package's init()
-// already calls goose.SetBaseFS(FS); the dialect is normally set lazily by
-// initGoose() (sync.Once) when Connect runs. These tests use openDB + goose.Up
-// directly rather than Connect, so they must ensure the dialect is set, but
-// calling goose.SetDialect from t.Parallel() tests races on the global. We
-// therefore set it once, serialized, and keep these tests non-parallel to
-// avoid adding pressure to the package's pre-existing global-goose race.
+// pagDialectOnce guards the legacy goose API's global dialect. These tests use
+// openDB + goose.Up directly rather than db.Migrate, so they must ensure the
+// dialect is set, but calling goose.SetDialect from t.Parallel() tests races
+// on the global. We therefore set it once, serialized, and keep these tests
+// non-parallel.
 
 const pagFixedCreatedAt = int64(1700000000)
 
