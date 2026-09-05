@@ -719,7 +719,7 @@ func (o *Owner) beginInitialize() bool {
 	if !o.isCurrentLocked() {
 		return false
 	}
-	if !o.initStarted {
+	if o.fullInitCount == 0 {
 		o.initStarted = true
 		o.initDone = make(chan struct{})
 		initDone = o.initDone

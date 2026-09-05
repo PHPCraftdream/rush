@@ -156,7 +156,8 @@ func refreshTools(ctx context.Context, cfg *config.ConfigStore, name string, adm
 	tools, err := getTools(lease.ctx, lease.session)
 	if err != nil {
 		if admission.valid() {
-			updateAdmissionState(admission, StateError, err, nil, Counts{})
+			previous, _ := states.Get(name)
+			updateAdmissionState(admission, StateError, err, lease.session, previous.Counts)
 		}
 		return
 	}

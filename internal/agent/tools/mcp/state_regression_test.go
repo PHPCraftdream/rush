@@ -733,8 +733,9 @@ func TestDirtyRefreshFailuresRetainCurrentSession(t *testing.T) {
 		cancel:        clientCancel,
 		cleanup:       func() { closeCalls.Add(1) },
 	}
+	initialCounts := Counts{Tools: 7, Prompts: 5, Resources: 3}
 	sessions.Set(name, session)
-	states.Set(name, ClientInfo{Name: name, State: StateConnected, Client: session})
+	states.Set(name, ClientInfo{Name: name, State: StateConnected, Client: session, Counts: initialCounts})
 	admission, err := owner.admitServer(context.Background(), store, name, true)
 	require.NoError(t, err)
 	defer admission.done()
@@ -752,6 +753,10 @@ func TestDirtyRefreshFailuresRetainCurrentSession(t *testing.T) {
 		current, _ := sessions.Get(name)
 		return current
 	}())
+	failedState, ok := GetState(name)
+	require.True(t, ok)
+	require.Same(t, session, failedState.Client)
+	require.Equal(t, initialCounts, failedState.Counts)
 	require.Equal(t, int32(0), closeCalls.Load(), "refresh failures must not close the live session")
 
 	notifyListChanged(&admission, name, refreshToolsKind)
@@ -1036,6 +1041,60 @@ func TestWaitForInitIsImmediateWithoutFullInitialize(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	require.NoError(t, WaitForInit(ctx))
+}
+
+func TestSequentialInitializeReopensInitBarrier(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var startedOnce sync.Once
+	var releaseOnce sync.Once
+	server := mcp.NewServer(&mcp.Implementation{Name: "sequential-full-server"}, nil)
+	delegate := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil)
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		first := false
+		startedOnce.Do(func() {
+			close(started)
+			first = true
+		})
+		if first {
+			select {
+			case <-release:
+			case <-r.Context().Done():
+				return
+			}
+		}
+		delegate.ServeHTTP(w, r)
+	}))
+	defer httpServer.Close()
+
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer func() { require.NoError(t, owner.Close(context.Background())) }()
+	defer func() { releaseOnce.Do(func() { close(release) }) }()
+
+	owner.Initialize(context.Background(), nil, config.NewLibraryStore(&config.Config{}, ""), false)
+	require.NoError(t, WaitForInit(context.Background()))
+
+	store := config.NewLibraryStore(&config.Config{MCP: config.MCPs{
+		"second": {Type: config.MCPHttp, URL: httpServer.URL, Timeout: 60},
+	}}, "")
+	secondDone := make(chan struct{})
+	go func() {
+		owner.Initialize(context.Background(), nil, store, false)
+		close(secondDone)
+	}()
+	waitForRequest(t, started)
+	waitCtx, waitCancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	require.ErrorIs(t, WaitForInit(waitCtx), context.DeadlineExceeded)
+	waitCancel()
+
+	releaseOnce.Do(func() { close(release) })
+	select {
+	case <-secondDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("second full initialization did not complete after release")
+	}
+	require.NoError(t, WaitForInit(context.Background()))
 }
 
 func TestInitializeSingleDoesNotOwnInitBarrier(t *testing.T) {

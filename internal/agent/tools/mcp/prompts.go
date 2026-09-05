@@ -79,7 +79,8 @@ func refreshPrompts(name string, admission *serverAdmission) {
 	prompts, err := getPrompts(lease.ctx, lease.session)
 	if err != nil {
 		if admission.valid() {
-			updateAdmissionState(admission, StateError, err, nil, Counts{})
+			previous, _ := states.Get(name)
+			updateAdmissionState(admission, StateError, err, lease.session, previous.Counts)
 		}
 		return
 	}
