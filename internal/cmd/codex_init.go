@@ -116,7 +116,10 @@ func installCodexSkills(skillsDir string) error {
 	if err != nil {
 		return fmt.Errorf("wrush skill: %w", err)
 	}
-	content3 := toSkillMD("wrush", desc3, body3)
+	content3, err := toCodexWrushSkillMD(desc3, body3)
+	if err != nil {
+		return fmt.Errorf("wrush skill: %w", err)
+	}
 	if err := writeSentinelledSkillDir(skillsDir, "wrush", claudeSlashCommandSentinel, content3); err != nil {
 		return fmt.Errorf("wrush skill: %w", err)
 	}

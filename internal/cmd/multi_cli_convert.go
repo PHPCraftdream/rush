@@ -92,6 +92,25 @@ func toSkillMD(name, description, body string) string {
 		body
 }
 
+// toCodexWrushSkillMD converts the canonical Claude /wrush body to Codex's
+// nested Skills layout. Claude places rush.md and wrush.md in one directory,
+// while Codex places them in sibling directories as rush/SKILL.md and
+// wrush/SKILL.md, so every reference to the inherited base instructions must
+// point one directory up.
+func toCodexWrushSkillMD(description, body string) (string, error) {
+	const (
+		claudeSameDirReference = "`rush.md` file in this same directory"
+		codexSiblingReference  = "sibling `../rush/SKILL.md` file"
+	)
+	if !strings.Contains(body, claudeSameDirReference) {
+		return "", fmt.Errorf("toCodexWrushSkillMD: expected canonical same-directory rush.md reference")
+	}
+
+	body = strings.ReplaceAll(body, claudeSameDirReference, codexSiblingReference)
+	body = strings.ReplaceAll(body, "rush.md", "../rush/SKILL.md")
+	return toSkillMD("wrush", description, body), nil
+}
+
 // writeSentinelledFile writes content to path, refusing to overwrite a file
 // that already exists but doesn't carry our sentinel substring (someone
 // else's file with the same name). Creates parent directories as needed.

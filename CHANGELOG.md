@@ -13,7 +13,9 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 - **Complete Codex delegation Skill installation.** `rush codex-init` and
   `rush codex-del` now include `rush`, `rush-fallback` and `wrush`, with
   sentinel-safe overwrite/removal behavior. `rush cli-refresh` refreshes all
-  three Codex Skills as well.
+  three Codex Skills as well. The Codex-specific `wrush` renderer rewrites
+  canonical `rush.md` references to the sibling `../rush/SKILL.md` path used
+  by Codex's nested Skill layout.
 
 - **`/wrush` slash-command**, installed by `rush claude-init` alongside
   `/rush` and `/rush-fallback`. Behaviorally identical to `/rush` with

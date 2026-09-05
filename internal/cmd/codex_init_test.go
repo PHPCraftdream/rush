@@ -98,6 +98,9 @@ func TestCodexInit_CreatesWrushSkillFromCanonicalTemplate(t *testing.T) {
 	assert.Contains(t, got, "$ARGUMENTS")
 	assert.Contains(t, got, "name: wrush")
 	assert.Contains(t, got, "dedicated git worktree")
+	assert.NotContains(t, got, "`rush.md` file in this same directory")
+	assert.NotContains(t, got, "rush.md")
+	assert.Contains(t, got, "sibling `../rush/SKILL.md` file")
 }
 
 func TestCodexInit_SlashCommandOverwritesWithSentinel(t *testing.T) {

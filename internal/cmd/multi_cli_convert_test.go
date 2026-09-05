@@ -61,6 +61,11 @@ func TestParseSlashCommandSource_RealTemplates(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEmpty(t, desc2)
 	assert.Contains(t, body2, "$ARGUMENTS")
+
+	desc3, body3, err := parseSlashCommandSource(claudeWrushCommandTemplate)
+	require.NoError(t, err)
+	assert.NotEmpty(t, desc3)
+	assert.Contains(t, body3, "$ARGUMENTS")
 }
 
 func TestParseSlashCommandSource_MissingOpeningDelimiter(t *testing.T) {
@@ -127,6 +132,24 @@ func TestToSkillMD(t *testing.T) {
 	assert.Contains(t, got, "Body text with $ARGUMENTS placeholder")
 	// The $ARGUMENTS placeholder in the body itself must NOT be rewritten.
 	assert.Contains(t, got, "treat it exactly as `$ARGUMENTS` below would have been substituted")
+}
+
+func TestToCodexWrushSkillMD_RewritesAllRushSkillReferences(t *testing.T) {
+	description, body, err := parseSlashCommandSource(claudeWrushCommandTemplate)
+	require.NoError(t, err)
+
+	got, err := toCodexWrushSkillMD(description, body)
+	require.NoError(t, err)
+
+	assert.NotContains(t, got, "`rush.md` file in this same directory")
+	assert.NotContains(t, got, "rush.md")
+	assert.Contains(t, got, "sibling `../rush/SKILL.md` file")
+	assert.Equal(t, strings.Count(body, "rush.md"), strings.Count(got, "../rush/SKILL.md"))
+}
+
+func TestToCodexWrushSkillMD_RejectsMissingCanonicalReference(t *testing.T) {
+	_, err := toCodexWrushSkillMD("description", "body without the expected reference")
+	assert.ErrorContains(t, err, "expected canonical same-directory rush.md reference")
 }
 
 // ---------------------------------------------------------------------------
