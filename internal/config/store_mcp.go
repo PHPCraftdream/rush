@@ -2,11 +2,26 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
 	"path/filepath"
 	"slices"
+)
+
+var (
+	// ErrMCPNotFound indicates that no effective MCP server has the requested
+	// literal name.
+	ErrMCPNotFound = errors.New("MCP server not found")
+	// ErrMCPExternal indicates that the effective server comes from .mcp.json.
+	ErrMCPExternal = errors.New("MCP server is from .mcp.json and is not writable")
+	// ErrMCPAmbiguous is kept as a semantic alias for callers that describe an
+	// external origin as ambiguous rather than non-writable.
+	ErrMCPAmbiguous = ErrMCPExternal
+	// ErrMCPUnwritableOrigin indicates that a project or system config owns the
+	// effective definition and neither writable Scope can represent it.
+	ErrMCPUnwritableOrigin = errors.New("MCP server has no writable config scope")
 )
 
 // PersistMCPConfig atomically upserts one literal MCP server key in a config
@@ -37,6 +52,80 @@ func (s *ConfigStore) PersistRemoveMCPConfig(scope Scope, name string) error {
 // literal MCP server key. This is used for servers supplied by .mcp.json.
 func (s *ConfigStore) PersistMCPDisabledOverride(scope Scope, name string, disabled bool) error {
 	return s.PersistMCPFields(scope, name, map[string]any{"disabled": disabled})
+}
+
+// ResolveMCPWritableScope returns the writable scope that owns the effective
+// literal MCP definition. A workspace definition wins over a global one.
+// External and project definitions fail closed because silently writing the
+// global data file would change a different server definition.
+func (s *ConfigStore) ResolveMCPWritableScope(name string) (Scope, error) {
+	current, exists := s.MCPConfig(name)
+	if !exists {
+		return ScopeGlobal, fmt.Errorf("%w: %q", ErrMCPNotFound, name)
+	}
+	if current.Source == MCPSourceExternal {
+		return ScopeGlobal, fmt.Errorf("%w: %q", ErrMCPExternal, name)
+	}
+
+	workspacePath, _ := s.configPath(ScopeWorkspace)
+	globalPath, _ := s.configPath(ScopeGlobal)
+	paths := s.LoadedPaths()
+	seen := make(map[string]struct{}, len(paths))
+	var owner string
+	for _, path := range paths {
+		if path == "" {
+			continue
+		}
+		path = filepath.Clean(path)
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return ScopeGlobal, fmt.Errorf("failed to read MCP origin %q: %w", name, err)
+		}
+		entry, ok := mcpEntryFromJSON(data, name)
+		if ok && (path != filepath.Clean(workspacePath) && path != filepath.Clean(globalPath) || !isMCPDisabledOnlyEntry(entry, true)) {
+			owner = path
+		}
+	}
+	// The computed workspace file is merged after lookupConfigs and therefore
+	// has the highest priority even when it was not in LoadedPaths.
+	if workspacePath != "" {
+		if data, err := os.ReadFile(workspacePath); err == nil {
+			entry, ok := mcpEntryFromJSON(data, name)
+			if ok && !isMCPDisabledOnlyEntry(entry, true) {
+				owner = filepath.Clean(workspacePath)
+			}
+		} else if !os.IsNotExist(err) {
+			return ScopeGlobal, fmt.Errorf("failed to read MCP origin %q: %w", name, err)
+		}
+	}
+	if owner == "" && globalPath != "" {
+		if data, err := os.ReadFile(globalPath); err == nil {
+			entry, ok := mcpEntryFromJSON(data, name)
+			if ok && !isMCPDisabledOnlyEntry(entry, true) {
+				owner = filepath.Clean(globalPath)
+			}
+		} else if !os.IsNotExist(err) {
+			return ScopeGlobal, fmt.Errorf("failed to read MCP origin %q: %w", name, err)
+		}
+	}
+
+	switch owner {
+	case filepath.Clean(workspacePath):
+		return ScopeWorkspace, nil
+	case filepath.Clean(globalPath):
+		return ScopeGlobal, nil
+	case "":
+		return ScopeGlobal, fmt.Errorf("%w: %q has no on-disk writable definition", ErrMCPUnwritableOrigin, name)
+	default:
+		return ScopeGlobal, fmt.Errorf("%w: %q is defined in %s", ErrMCPUnwritableOrigin, name, owner)
+	}
 }
 
 // PersistMCPFields atomically updates fields within one literal MCP server
@@ -87,7 +176,16 @@ func (s *ConfigStore) PersistMCPFields(scope Scope, name string, fields map[stri
 // committed before the snapshot changes, and the operation has no fallible
 // work after publication.
 func (s *ConfigStore) PersistReplaceMCP(oldName, newName string, value MCPConfig) error {
-	path, err := s.configPath(ScopeGlobal)
+	return s.PersistReplaceMCPInScope(ScopeGlobal, oldName, newName, value)
+}
+
+// PersistReplaceMCPInScope atomically removes oldName and sets newName in the
+// selected writable MCP map, then publishes a matching copy-on-write
+// snapshot. It is groundwork for callers that have already resolved the
+// effective MCP origin; runtime replacement wiring remains responsible for
+// choosing when to call it.
+func (s *ConfigStore) PersistReplaceMCPInScope(scope Scope, oldName, newName string, value MCPConfig) error {
+	path, err := s.configPath(scope)
 	if err != nil {
 		return err
 	}
@@ -115,11 +213,69 @@ func (s *ConfigStore) PersistReplaceMCP(oldName, newName string, value MCPConfig
 			cfgCopy.MCP = make(MCPs)
 		}
 		delete(cfgCopy.MCP, oldName)
+		if oldName != newName {
+			if fallback, ok := s.mcpFallbackAfterReplace(scope, oldName); ok {
+				cfgCopy.MCP[oldName] = fallback
+			}
+		}
 		cfgCopy.MCP[newName] = cloneMCPConfig(value)
 		next.config = &cfgCopy
 	}
 	s.publishLocked(next)
 	return nil
+}
+
+func (s *ConfigStore) mcpFallbackAfterReplace(scope Scope, name string) (MCPConfig, bool) {
+	otherScope := ScopeGlobal
+	if scope == ScopeGlobal {
+		otherScope = ScopeWorkspace
+	}
+	if path, err := s.configPath(otherScope); err == nil {
+		if fallback, ok := readMCPConfigAtPath(path, name); ok {
+			return fallback, true
+		}
+	}
+
+	// A global full definition can reveal an external server after it is
+	// removed. Preserve the same external connection details and overlay that
+	// the normal load path would apply.
+	external := loadExternalMCPServers(s.workingDir)
+	fallback, ok := external[name]
+	if !ok {
+		return MCPConfig{}, false
+	}
+	if disabled, ok := readMCPDisabledOverride(s, ScopeWorkspace, name); ok {
+		fallback.Disabled = disabled
+	} else if disabled, ok := readMCPDisabledOverride(s, ScopeGlobal, name); ok {
+		fallback.Disabled = disabled
+	}
+	return fallback, true
+}
+
+func readMCPConfigAtPath(path, name string) (MCPConfig, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return MCPConfig{}, false
+	}
+	entry, ok := mcpEntryFromJSON(data, name)
+	if !ok || isMCPDisabledOnlyEntry(entry, true) {
+		return MCPConfig{}, false
+	}
+	entryData, err := json.Marshal(entry)
+	if err != nil {
+		return MCPConfig{}, false
+	}
+	var fallback MCPConfig
+	if json.Unmarshal(entryData, &fallback) != nil {
+		return MCPConfig{}, false
+	}
+	return fallback, true
+}
+
+// PersistReplaceMCPAtScope is an explicit alias for the scoped replacement
+// API. It keeps the target scope prominent at call sites.
+func (s *ConfigStore) PersistReplaceMCPAtScope(scope Scope, oldName, newName string, value MCPConfig) error {
+	return s.PersistReplaceMCPInScope(scope, oldName, newName, value)
 }
 
 func (s *ConfigStore) persistMCPRaw(scope Scope, mutate func(map[string]json.RawMessage) error) error {

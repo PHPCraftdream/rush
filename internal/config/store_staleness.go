@@ -4,6 +4,7 @@
 package config
 
 import (
+	"crypto/sha256"
 	"maps"
 	"os"
 	"path/filepath"
@@ -12,10 +13,11 @@ import (
 
 // fileSnapshot captures metadata about a config file at a point in time.
 type fileSnapshot struct {
-	Path    string
-	Exists  bool
-	Size    int64
-	ModTime int64 // UnixNano
+	Path        string
+	Exists      bool
+	Size        int64
+	ModTime     int64 // UnixNano.
+	ContentHash [sha256.Size]byte
 }
 
 // StalenessResult contains the result of a staleness check.
@@ -62,6 +64,14 @@ func (s *ConfigStore) ConfigStaleness() StalenessResult {
 		if snapshot.Size != info.Size() || snapshot.ModTime != info.ModTime().UnixNano() {
 			result.Changed = append(result.Changed, path)
 			result.Dirty = true
+			continue
+		}
+		if snapshot.ContentHash != ([sha256.Size]byte{}) {
+			data, readErr := os.ReadFile(path)
+			if readErr != nil || sha256.Sum256(data) != snapshot.ContentHash {
+				result.Changed = append(result.Changed, path)
+				result.Dirty = true
+			}
 		}
 	}
 
@@ -106,6 +116,9 @@ func (s *ConfigStore) refreshStalenessSnapshotLocked() {
 		if exists {
 			snapshot.Size = info.Size()
 			snapshot.ModTime = info.ModTime().UnixNano()
+			if data, err := os.ReadFile(path); err == nil {
+				snapshot.ContentHash = sha256.Sum256(data)
+			}
 		}
 
 		next.snapshots[path] = snapshot

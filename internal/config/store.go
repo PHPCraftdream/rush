@@ -136,11 +136,10 @@ type ConfigStore struct {
 	// or SetProviderRuntimeConfig — for as long as the shell substitution
 	// ran (up to resolveTimeout).
 	//
-	// reloadFromDiskUnlocked takes reloadMu (via defer, held for its
-	// whole call), builds a full candidate snapshot from local variables
-	// ONLY (no store mutation), then — still holding reloadMu — takes
-	// publishMu just long enough to CAS-check the generation and
-	// publish. autoReload uses TryLock on reloadMu (not publishMu) to
+	// reloadFromDiskUnlocked takes reloadMu, builds a full candidate snapshot
+	// from local variables ONLY (no store mutation), then — still holding
+	// reloadMu — takes publishMu and diskWriteMu just long enough to verify
+	// fingerprints, capture staleness, and publish. autoReload uses TryLock on reloadMu (not publishMu) to
 	// preserve the original "skip a redundant reload when one is already
 	// in progress" behaviour without reintroducing the publishMu hold
 	// during the expensive candidate-build phase.
@@ -155,6 +154,16 @@ type ConfigStore struct {
 	// order — not any claim that the two locks are never held together —
 	// that rules out a deadlock here.
 	reloadMu sync.Mutex
+
+	// reloadPending is set by a disk writer that finishes while reloadMu is
+	// held. reloadPendingMu closes the hand-off gap when the reloader releases
+	// reloadMu.
+	reloadPendingMu sync.Mutex
+	reloadPending   bool
+
+	// reloadAfterDiskRead is a white-box test seam. It is called after the
+	// candidate has read the rush config files and before it is published.
+	reloadAfterDiskRead func()
 }
 
 // loadSnapshot returns the current published snapshot. It never returns

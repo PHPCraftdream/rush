@@ -77,7 +77,7 @@ func Load(workingDir, dataDir string, debug bool) (*ConfigStore, error) {
 	// them into the config. Servers defined in rush.json take precedence;
 	// the disabled state for external servers is read from rush's own config.
 	if external := loadExternalMCPServers(workingDir); len(external) > 0 {
-		mergeExternalMCPServers(cfg, store, external)
+		mergeExternalMCPServers(cfg, store, external, loadedPaths)
 	}
 
 	// Validate hooks after all config merging is complete so workspace

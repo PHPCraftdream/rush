@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 
 	"github.com/PHPCraftdream/rush/internal/home"
 )
@@ -105,21 +106,17 @@ func loadExternalMCPServers(workingDir string) map[string]MCPConfig {
 // mergeExternalMCPServers injects .mcp.json servers into the config's MCP map.
 // Servers already defined in rush.json take full precedence. For external
 // servers, the disabled state is read from the rush config store.
-func mergeExternalMCPServers(cfg *Config, store *ConfigStore, external map[string]MCPConfig) {
+func mergeExternalMCPServers(cfg *Config, store *ConfigStore, external map[string]MCPConfig, loadedPaths []string) {
 	if cfg.MCP == nil {
 		cfg.MCP = make(MCPs)
 	}
 	for name, extCfg := range external {
-		if _, exists := cfg.MCP[name]; exists {
-			// Rush's own config defines this server — it takes precedence.
+		disabled, overridden := externalMCPDisabledOverride(store, name, loadedPaths)
+		if _, exists := cfg.MCP[name]; exists && !overridden {
+			// A complete Rush definition takes precedence over .mcp.json.
 			continue
 		}
-		// Check if the user has toggled this server off via the UI. Decode the
-		// literal map key directly; constructing a dynamic gjson path would
-		// treat dots, wildcards, and backslashes in a server name as syntax.
-		if disabled, ok := readMCPDisabledOverride(store, ScopeWorkspace, name); ok {
-			extCfg.Disabled = disabled
-		} else if disabled, ok := readMCPDisabledOverride(store, ScopeGlobal, name); ok {
+		if overridden {
 			extCfg.Disabled = disabled
 		}
 		cfg.MCP[name] = extCfg
@@ -135,17 +132,88 @@ func readMCPDisabledOverride(store *ConfigStore, scope Scope, name string) (bool
 	if err != nil {
 		return false, false
 	}
+	entry, ok := mcpEntryFromJSON(data, name)
+	if !isMCPDisabledOnlyEntry(entry, ok) {
+		return false, false
+	}
+	raw, ok := entry["disabled"]
+	if !ok {
+		return false, false
+	}
+	var disabled bool
+	if json.Unmarshal(raw, &disabled) != nil {
+		return false, false
+	}
+	return disabled, true
+}
+
+// externalMCPDisabledOverride returns an overlay only when no complete Rush
+// definition owns name. Project definitions are deliberately treated as
+// complete definitions because they cannot be represented by Scope.
+func externalMCPDisabledOverride(store *ConfigStore, name string, loadedPaths []string) (bool, bool) {
+	if hasNonOverlayMCPDefinition(store, name, loadedPaths) {
+		return false, false
+	}
+	if disabled, ok := readMCPDisabledOverride(store, ScopeWorkspace, name); ok {
+		return disabled, true
+	}
+	return readMCPDisabledOverride(store, ScopeGlobal, name)
+}
+
+func hasNonOverlayMCPDefinition(store *ConfigStore, name string, loadedPaths []string) bool {
+	workspacePath, _ := store.configPath(ScopeWorkspace)
+	globalPath, _ := store.configPath(ScopeGlobal)
+	paths := append(slices.Clone(loadedPaths), workspacePath, globalPath)
+	seen := make(map[string]struct{}, len(paths))
+	for _, path := range paths {
+		if path == "" {
+			continue
+		}
+		path = filepath.Clean(path)
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		entry, ok := mcpEntryFromJSON(data, name)
+		if !ok {
+			continue
+		}
+		if path == filepath.Clean(workspacePath) || path == filepath.Clean(globalPath) {
+			if isMCPDisabledOnlyEntry(entry, true) {
+				continue
+			}
+		}
+		return true
+	}
+	return false
+}
+
+func isMCPDisabledOnlyEntry(entry map[string]json.RawMessage, exists bool) bool {
+	if !exists || len(entry) != 1 {
+		return false
+	}
+	_, hasDisabled := entry["disabled"]
+	return hasDisabled
+}
+
+func mcpEntryFromJSON(data []byte, name string) (map[string]json.RawMessage, bool) {
 	var root struct {
-		MCP map[string]struct {
-			Disabled *bool `json:"disabled"`
-		} `json:"mcp"`
+		MCP map[string]json.RawMessage `json:"mcp"`
 	}
 	if json.Unmarshal(data, &root) != nil {
-		return false, false
+		return nil, false
 	}
-	entry, ok := root.MCP[name]
-	if !ok || entry.Disabled == nil {
-		return false, false
+	raw, ok := root.MCP[name]
+	if !ok {
+		return nil, false
 	}
-	return *entry.Disabled, true
+	var entry map[string]json.RawMessage
+	if json.Unmarshal(raw, &entry) != nil || entry == nil {
+		return nil, false
+	}
+	return entry, true
 }

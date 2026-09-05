@@ -255,7 +255,7 @@ func (s *ConfigStore) SetConfigFields(scope Scope, kv map[string]any) error {
 	// here, because autoReload's own dedup guard is reloadMu.TryLock(),
 	// not publishMu — see Load's doc comment on why it now also holds
 	// reloadMu for exactly this reason.
-	if err := s.autoReload(context.Background()); err != nil {
+	if err := s.autoReloadAfterWrite(context.Background()); err != nil {
 		// Log warning but don't fail the write - disk is already updated.
 		slog.Warn("Config file updated but failed to reload in-memory state", "error", err)
 	}
@@ -293,7 +293,7 @@ func (s *ConfigStore) RemoveConfigField(scope Scope, key string) error {
 
 	// Auto-reload to keep in-memory state fresh after config edits.
 	// Runs OUTSIDE withConfigWriteLock (see SetConfigFields).
-	if err := s.autoReload(context.Background()); err != nil {
+	if err := s.autoReloadAfterWrite(context.Background()); err != nil {
 		slog.Warn("Config file updated but failed to reload in-memory state", "error", err)
 	}
 

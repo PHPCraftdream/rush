@@ -5,7 +5,9 @@ package config
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -13,6 +15,15 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/env"
 )
+
+var errReloadDiskChanged = errors.New("config files changed while reloading")
+
+type reloadFileFingerprint struct {
+	exists  bool
+	size    int64
+	modTime int64
+	digest  [sha256.Size]byte
+}
 
 // ReloadFromDisk re-runs the config load/merge flow and updates the
 // in-memory config atomically.
@@ -38,7 +49,9 @@ func (s *ConfigStore) ReloadFromDisk(ctx context.Context) error {
 // variables only — no store field is touched until the very end — then
 // publishes it under a short publishMu critical section.
 //
-// Two locks are involved, never held simultaneously by the same call:
+// Candidate construction uses reloadMu alone. Publication briefly nests
+// publishMu and diskWriteMu while it verifies that the files read for the
+// candidate have not changed:
 //
 //   - reloadMu serialises the candidate-build phase against other
 //     concurrent reload attempts (autoReload's TryLock on reloadMu skips a
@@ -46,9 +59,9 @@ func (s *ConfigStore) ReloadFromDisk(ctx context.Context) error {
 //     is purely about not wasting work building N candidates in parallel
 //     when one would do — it is NOT required for correctness, since the
 //     publish step below is itself safe against concurrent publishers.
-//   - publishMu guards only the generation-check + swap at the end. Its
-//     hold time is now bounded by a handful of map/pointer operations,
-//     never by config-file I/O or shell subprocess execution.
+//   - publishMu guards the final verification + swap. diskWriteMu is nested
+//     only for that short verification and snapshot capture, never during
+//     config parsing or shell subprocess execution.
 //
 // Base generation vs CAS semantics: the candidate is built starting from
 // `prev`, the snapshot published at the time the build started. If some
@@ -69,8 +82,45 @@ func (s *ConfigStore) ReloadFromDisk(ctx context.Context) error {
 // class of "small piece of forwarded state, rebase onto latest" problem.
 func (s *ConfigStore) reloadFromDiskUnlocked(ctx context.Context) error {
 	s.reloadMu.Lock()
-	defer s.reloadMu.Unlock()
-	return s.buildAndPublishReload(ctx)
+	return s.runReloadLocked(ctx)
+}
+
+// runReloadLocked retries a candidate if any config file changed during its
+// build. The pending flag closes the small hand-off window where a disk
+// writer finishes after the candidate was published but before reloadMu is
+// released.
+func (s *ConfigStore) runReloadLocked(ctx context.Context) error {
+	for {
+		err := s.buildAndPublishReload(ctx)
+		if err != nil && !errors.Is(err, errReloadDiskChanged) {
+			s.releaseReloadLock()
+			return err
+		}
+		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				s.releaseReloadLock()
+				return ctxErr
+			}
+			continue
+		}
+
+		s.reloadPendingMu.Lock()
+		if s.reloadPending {
+			s.reloadPending = false
+			s.reloadPendingMu.Unlock()
+			continue
+		}
+		// Keep the pending flag and reloadMu handshake atomic. A writer that
+		// arrives after this point will observe an unlocked reloadMu and can
+		// run its own queued reload.
+		s.reloadMu.Unlock()
+		s.reloadPendingMu.Unlock()
+		return nil
+	}
+}
+
+func (s *ConfigStore) releaseReloadLock() {
+	s.reloadMu.Unlock()
 }
 
 // buildAndPublishReload is reloadFromDiskUnlocked's body, factored out so
@@ -78,6 +128,10 @@ func (s *ConfigStore) reloadFromDiskUnlocked(ctx context.Context) error {
 // double-locking reloadMu (sync.Mutex is not reentrant).
 func (s *ConfigStore) buildAndPublishReload(ctx context.Context) error {
 	configPaths := lookupConfigs(s.workingDir)
+	fingerprints, err := captureReloadFingerprints(configPaths)
+	if err != nil {
+		return fmt.Errorf("failed to fingerprint config for reload: %w", err)
+	}
 	cfg, loadedPaths, err := loadFromConfigPaths(configPaths)
 	if err != nil {
 		return fmt.Errorf("failed to reload config: %w", err)
@@ -97,6 +151,11 @@ func (s *ConfigStore) buildAndPublishReload(ctx context.Context) error {
 	cfg.setDefaults(s.workingDir, dataDir)
 
 	workspacePath := filepath.Join(cfg.Options.DataDirectory, fmt.Sprintf("%s.json", appName))
+	if !pathAlreadyLoaded(loadedPaths, workspacePath) {
+		if err := addReloadFingerprint(fingerprints, workspacePath); err != nil {
+			return fmt.Errorf("failed to fingerprint workspace config for reload: %w", err)
+		}
+	}
 	if wsData, err := os.ReadFile(workspacePath); err == nil && len(wsData) > 0 && !pathAlreadyLoaded(loadedPaths, workspacePath) {
 		if !json.Valid(wsData) {
 			return fmt.Errorf("invalid JSON in config file %s", workspacePath)
@@ -109,12 +168,15 @@ func (s *ConfigStore) buildAndPublishReload(ctx context.Context) error {
 			loadedPaths = append(loadedPaths, workspacePath)
 		}
 	}
+	if hook := s.reloadAfterDiskRead; hook != nil {
+		hook()
+	}
 
 	// Keep .mcp.json discovery and the literal disabled-override merge
 	// consistent with the initial Load path. A reload after the external file
 	// appears must not silently drop those servers from the new snapshot.
 	if external := loadExternalMCPServers(s.workingDir); len(external) > 0 {
-		mergeExternalMCPServers(cfg, s, external)
+		mergeExternalMCPServers(cfg, s, external, loadedPaths)
 	}
 
 	if err := cfg.ValidateHooks(); err != nil {
@@ -174,6 +236,12 @@ func (s *ConfigStore) buildAndPublishReload(ctx context.Context) error {
 
 	s.publishMu.Lock()
 	defer s.publishMu.Unlock()
+	s.diskWriteMu.Lock()
+	defer s.diskWriteMu.Unlock()
+
+	if reloadFingerprintsChanged(fingerprints) {
+		return errReloadDiskChanged
+	}
 
 	// Rebase: if the currently-published snapshot is no longer `prev`
 	// (some copy-on-write mutator published in the meantime), carry its
@@ -219,6 +287,87 @@ func (s *ConfigStore) autoReload(ctx context.Context) error {
 	if !s.reloadMu.TryLock() {
 		return nil
 	}
-	defer s.reloadMu.Unlock()
-	return s.buildAndPublishReload(ctx)
+	return s.runReloadLocked(ctx)
+}
+
+// autoReloadAfterWrite queues one reload when a disk writer overlaps an
+// existing reload. Unlike autoReload, this path must not allow a write to be
+// stranded behind reloadMu after the current candidate has been published.
+func (s *ConfigStore) autoReloadAfterWrite(ctx context.Context) error {
+	if s.workingDir == "" {
+		return nil
+	}
+	if s.reloadMu.TryLock() {
+		return s.runReloadLocked(ctx)
+	}
+
+	s.reloadPendingMu.Lock()
+	s.reloadPending = true
+	s.reloadPendingMu.Unlock()
+	// The reload may have completed between the first TryLock and setting the
+	// pending bit. Take ownership when possible; otherwise the active reload
+	// observes the bit before releasing its locks.
+	if s.reloadMu.TryLock() {
+		return s.runReloadLocked(ctx)
+	}
+	return nil
+}
+
+func captureReloadFingerprints(paths []string) (map[string]reloadFileFingerprint, error) {
+	fingerprints := make(map[string]reloadFileFingerprint, len(paths))
+	for _, path := range paths {
+		if err := addReloadFingerprint(fingerprints, path); err != nil {
+			return nil, err
+		}
+	}
+	return fingerprints, nil
+}
+
+func addReloadFingerprint(fingerprints map[string]reloadFileFingerprint, path string) error {
+	path = filepath.Clean(path)
+	if _, exists := fingerprints[path]; exists {
+		return nil
+	}
+	fingerprint, err := readReloadFingerprint(path)
+	if err != nil {
+		return err
+	}
+	fingerprints[path] = fingerprint
+	return nil
+}
+
+func readReloadFingerprint(path string) (reloadFileFingerprint, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return reloadFileFingerprint{}, nil
+		}
+		return reloadFileFingerprint{}, err
+	}
+	if info.IsDir() {
+		return reloadFileFingerprint{}, nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return reloadFileFingerprint{}, nil
+		}
+		return reloadFileFingerprint{}, err
+	}
+	return reloadFileFingerprint{
+		exists:  !info.IsDir(),
+		size:    info.Size(),
+		modTime: info.ModTime().UnixNano(),
+		digest:  sha256.Sum256(data),
+	}, nil
+}
+
+func reloadFingerprintsChanged(before map[string]reloadFileFingerprint) bool {
+	for path, expected := range before {
+		actual, err := readReloadFingerprint(path)
+		if err != nil || actual != expected {
+			return true
+		}
+	}
+	return false
 }
