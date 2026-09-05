@@ -4,6 +4,7 @@
 package config
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -13,11 +14,14 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"time"
 
 	"github.com/PHPCraftdream/rush/internal/env"
 )
 
 const reloadMaxAttempts = 4
+
+const stableReadMaxAttempts = 4
 
 var (
 	errReloadDiskChanged = errors.New("config files changed while reloading")
@@ -31,6 +35,48 @@ type reloadFileFingerprint struct {
 	size    int64
 	modTime int64
 	digest  [sha256.Size]byte
+}
+
+var errStableReadUnstable = errors.New("config file remained unstable while reading")
+
+// readStableConfigFile returns bytes that were observed identically by two
+// consecutive reads. A fingerprint is made from those exact bytes; callers
+// must not fingerprint a path before reading it because that admits a stale
+// candidate when the file changes between the two operations.
+func readStableConfigFile(path string) ([]byte, reloadFileFingerprint, error) {
+	for attempt := 0; attempt < stableReadMaxAttempts; attempt++ {
+		first, err := os.ReadFile(path)
+		if err != nil {
+			return nil, reloadFileFingerprint{}, err
+		}
+		second, err := os.ReadFile(path)
+		if err != nil {
+			if os.IsNotExist(err) && attempt+1 < stableReadMaxAttempts {
+				continue
+			}
+			return nil, reloadFileFingerprint{}, err
+		}
+		if !bytes.Equal(first, second) {
+			continue
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			if os.IsNotExist(err) && attempt+1 < stableReadMaxAttempts {
+				continue
+			}
+			return nil, reloadFileFingerprint{}, err
+		}
+		if info.IsDir() {
+			return second, reloadFileFingerprint{}, nil
+		}
+		return second, reloadFileFingerprint{
+			exists:  true,
+			size:    int64(len(second)),
+			modTime: info.ModTime().UnixNano(),
+			digest:  sha256.Sum256(second),
+		}, nil
+	}
+	return nil, reloadFileFingerprint{}, errStableReadUnstable
 }
 
 // ReloadFromDisk re-runs the config load/merge flow and updates the
@@ -100,7 +146,7 @@ func (s *ConfigStore) reloadFromDiskUnlocked(ctx context.Context) error {
 func (s *ConfigStore) runReloadLocked(ctx context.Context) error {
 	for attempt := 1; attempt <= reloadMaxAttempts; attempt++ {
 		err := s.buildAndPublishReload(ctx)
-		if err != nil && !errors.Is(err, errReloadDiskChanged) {
+		if err != nil && !errors.Is(err, errReloadDiskChanged) && !errors.Is(err, errStableReadUnstable) {
 			s.releaseReloadLock()
 			return err
 		}
@@ -126,6 +172,7 @@ func (s *ConfigStore) runReloadLocked(ctx context.Context) error {
 				return fmt.Errorf("%w after %d attempts: %w", ErrConfigReloadUnstable, attempt, errReloadDiskChanged)
 			}
 			s.reloadPending = false
+			s.reloadPendingWaiter = false
 			s.reloadPendingMu.Unlock()
 			continue
 		}
@@ -141,6 +188,10 @@ func (s *ConfigStore) runReloadLocked(ctx context.Context) error {
 
 func (s *ConfigStore) releaseReloadLock() {
 	s.reloadPendingMu.Lock()
+	if s.reloadPendingWaiter {
+		s.reloadPending = false
+		s.reloadPendingWaiter = false
+	}
 	s.reloadMu.Unlock()
 	s.reloadPendingMu.Unlock()
 }
@@ -151,15 +202,19 @@ func (s *ConfigStore) releaseReloadLock() {
 func (s *ConfigStore) buildAndPublishReload(ctx context.Context) error {
 	configPaths := lookupConfigs(s.workingDir)
 	externalPaths := discoverMCPJSONFiles(s.workingDir)
-	inputPaths := append(slices.Clone(configPaths), mcpJSONCandidatePaths(s.workingDir)...)
-	inputPaths = append(inputPaths, s.globalDataPath)
-	fingerprints, err := captureReloadFingerprints(inputPaths)
-	if err != nil {
-		return fmt.Errorf("failed to fingerprint config for reload: %w", err)
-	}
-	cfg, loadedPaths, err := loadFromConfigPaths(configPaths)
+	cfg, loadedPaths, fingerprints, err := loadFromConfigPathsStable(configPaths)
 	if err != nil {
 		return fmt.Errorf("failed to reload config: %w", err)
+	}
+	for _, path := range lookupConfigCandidates(s.workingDir) {
+		if err := addReloadFingerprint(fingerprints, path); err != nil {
+			return fmt.Errorf("failed to fingerprint config for reload: %w", err)
+		}
+	}
+	for _, path := range mcpJSONCandidatePaths(s.workingDir) {
+		if err := addReloadFingerprint(fingerprints, path); err != nil {
+			return fmt.Errorf("failed to fingerprint MCP config for reload: %w", err)
+		}
 	}
 
 	// prev is read WITHOUT publishMu: it is only used to seed defaults
@@ -177,20 +232,28 @@ func (s *ConfigStore) buildAndPublishReload(ctx context.Context) error {
 
 	workspacePath := filepath.Join(cfg.Options.DataDirectory, fmt.Sprintf("%s.json", appName))
 	if !pathAlreadyLoaded(loadedPaths, workspacePath) {
-		if err := addReloadFingerprint(fingerprints, workspacePath); err != nil {
-			return fmt.Errorf("failed to fingerprint workspace config for reload: %w", err)
+		wsData, fingerprint, readErr := readStableConfigFile(workspacePath)
+		if readErr == nil {
+			fingerprints[normalizeReloadPath(workspacePath)] = fingerprint
+		} else if !os.IsNotExist(readErr) {
+			return fmt.Errorf("failed to read workspace config for reload: %w", readErr)
 		}
-	}
-	if wsData, err := os.ReadFile(workspacePath); err == nil && len(wsData) > 0 && !pathAlreadyLoaded(loadedPaths, workspacePath) {
-		if !json.Valid(wsData) {
-			return fmt.Errorf("invalid JSON in config file %s", workspacePath)
+		if readErr != nil {
+			if err := addReloadFingerprint(fingerprints, workspacePath); err != nil {
+				return fmt.Errorf("failed to fingerprint workspace config for reload: %w", err)
+			}
 		}
-		merged, mergeErr := loadFromBytes(append([][]byte{mustMarshalConfig(cfg)}, wsData))
-		if mergeErr == nil {
-			dataDir := cfg.Options.DataDirectory
-			*cfg = *merged
-			cfg.setDefaults(s.workingDir, dataDir)
-			loadedPaths = append(loadedPaths, workspacePath)
+		if readErr == nil && len(wsData) > 0 {
+			if !json.Valid(wsData) {
+				return fmt.Errorf("invalid JSON in config file %s", workspacePath)
+			}
+			merged, mergeErr := loadFromBytes(append([][]byte{mustMarshalConfig(cfg)}, wsData))
+			if mergeErr == nil {
+				dataDir := cfg.Options.DataDirectory
+				*cfg = *merged
+				cfg.setDefaults(s.workingDir, dataDir)
+				loadedPaths = append(loadedPaths, workspacePath)
+			}
 		}
 	}
 	if hook := s.reloadAfterDiskRead; hook != nil {
@@ -200,11 +263,19 @@ func (s *ConfigStore) buildAndPublishReload(ctx context.Context) error {
 	// Keep .mcp.json discovery and the literal disabled-override merge
 	// consistent with the initial Load path. A reload after the external file
 	// appears must not silently drop those servers from the new snapshot.
-	if external := loadExternalMCPServersFromPaths(externalPaths); len(external) > 0 {
+	external := loadExternalMCPServersFromStablePaths(externalPaths, fingerprints)
+	if len(external) > 0 {
 		mergeExternalMCPServers(cfg, s, external, loadedPaths)
 	}
 	if hook := s.reloadAfterExternalRead; hook != nil {
 		hook()
+	}
+	// The candidate is only publishable if every input still has the exact
+	// bytes that were parsed. This content check, rather than mtime alone,
+	// rejects an ABA edit that returns to the original metadata after the
+	// candidate parsed an intermediate version.
+	if !sameReloadPathSet(externalPaths, discoverMCPJSONFiles(s.workingDir)) || reloadFingerprintsChanged(fingerprints) {
+		return errReloadDiskChanged
 	}
 
 	if err := cfg.ValidateHooks(); err != nil {
@@ -281,7 +352,7 @@ func (s *ConfigStore) buildAndPublishReload(ctx context.Context) error {
 	if cur.generation != prev.generation {
 		candidate.overrides = cur.overrides
 	}
-	stalenessPaths := configAndMCPStalenessPaths(loadedPaths, s.workingDir)
+	stalenessPaths := configAndMCPStalenessPaths(lookupConfigCandidates(s.workingDir), s.workingDir)
 	stalenessPaths = append(stalenessPaths, workspacePath, s.globalDataPath)
 	candidate.trackedConfigPaths, candidate.snapshots = reloadStalenessState(stalenessPaths, fingerprints)
 
@@ -320,20 +391,45 @@ func (s *ConfigStore) autoReloadAfterWrite(ctx context.Context) error {
 	if s.workingDir == "" {
 		return nil
 	}
+	if s.initializing.Load() {
+		return nil
+	}
 	if s.reloadMu.TryLock() {
 		return s.runReloadLocked(ctx)
 	}
 
 	s.reloadPendingMu.Lock()
 	s.reloadPending = true
+	s.reloadPendingWaiter = true
 	s.reloadPendingMu.Unlock()
-	// The reload may have completed between the first TryLock and setting the
-	// pending bit. Take ownership when possible; otherwise the active reload
-	// observes the bit before releasing its locks.
-	if s.reloadMu.TryLock() {
-		return s.runReloadLocked(ctx)
+	// Take ownership of a successor instead of returning while the pending bit
+	// is merely a promise. This is the writer handoff: if the active reload
+	// fails before it reaches its pending check, this writer still performs the
+	// queued reload and receives its error.
+	for {
+		if s.reloadMu.TryLock() {
+			s.reloadPendingMu.Lock()
+			s.reloadPending = false
+			s.reloadPendingMu.Unlock()
+			return s.runReloadLocked(ctx)
+		}
+		select {
+		case <-ctx.Done():
+			// The active reload may have released between the failed TryLock
+			// above and cancellation. Clear our handoff marker if we can take
+			// ownership; otherwise releaseReloadLock will clear it on behalf
+			// of this canceled waiter.
+			if s.reloadMu.TryLock() {
+				s.reloadPendingMu.Lock()
+				s.reloadPending = false
+				s.reloadPendingWaiter = false
+				s.reloadPendingMu.Unlock()
+				s.reloadMu.Unlock()
+			}
+			return ctx.Err()
+		case <-time.After(10 * time.Millisecond):
+		}
 	}
-	return nil
 }
 
 func captureReloadFingerprints(paths []string) (map[string]reloadFileFingerprint, error) {
@@ -382,7 +478,7 @@ func readReloadFingerprint(path string) (reloadFileFingerprint, error) {
 	}
 	return reloadFileFingerprint{
 		exists:  !info.IsDir(),
-		size:    info.Size(),
+		size:    int64(len(data)),
 		modTime: info.ModTime().UnixNano(),
 		digest:  sha256.Sum256(data),
 	}, nil

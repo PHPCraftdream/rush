@@ -32,6 +32,10 @@ func loadMCPJSON(path string) (map[string]MCPConfig, error) {
 		return nil, err
 	}
 
+	return loadMCPJSONBytes(data)
+}
+
+func loadMCPJSONBytes(data []byte) (map[string]MCPConfig, error) {
 	var file mcpJSONFile
 	if err := json.Unmarshal(data, &file); err != nil {
 		return nil, err
@@ -121,6 +125,27 @@ func loadExternalMCPServersFromPaths(paths []string) map[string]MCPConfig {
 	return result
 }
 
+func loadExternalMCPServersFromStablePaths(paths []string, fingerprints map[string]reloadFileFingerprint) map[string]MCPConfig {
+	result := make(map[string]MCPConfig)
+	for _, path := range paths {
+		data, fingerprint, err := readStableConfigFile(path)
+		if err != nil {
+			slog.Warn("Failed to load .mcp.json", "path", path, "err", err)
+			continue
+		}
+		fingerprints[normalizeReloadPath(path)] = fingerprint
+		servers, err := loadMCPJSONBytes(data)
+		if err != nil {
+			slog.Warn("Failed to load .mcp.json", "path", path, "err", err)
+			continue
+		}
+		for name, cfg := range servers {
+			result[name] = cfg
+		}
+	}
+	return result
+}
+
 // mergeExternalMCPServers injects .mcp.json servers into the config's MCP map.
 // Servers already defined in rush.json take full precedence. For external
 // servers, the disabled state is read from the rush config store.
@@ -172,10 +197,33 @@ func externalMCPDisabledOverride(store *ConfigStore, name string, loadedPaths []
 	if hasNonOverlayMCPDefinition(store, name, loadedPaths) {
 		return false, false
 	}
-	if disabled, ok := readMCPDisabledOverride(store, ScopeWorkspace, name); ok {
-		return disabled, true
+	paths := slices.Clone(loadedPaths)
+	if workspacePath, err := store.configPath(ScopeWorkspace); err == nil {
+		paths = append(paths, workspacePath)
 	}
-	return readMCPDisabledOverride(store, ScopeGlobal, name)
+	var disabled bool
+	var overridden bool
+	seen := make(map[string]struct{}, len(paths))
+	for _, path := range paths {
+		path = filepath.Clean(path)
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		entry, ok := mcpEntryFromJSON(data, name)
+		if !isMCPDisabledOnlyEntry(entry, ok) {
+			continue
+		}
+		raw := entry["disabled"]
+		if json.Unmarshal(raw, &disabled) == nil {
+			overridden = true
+		}
+	}
+	return disabled, overridden
 }
 
 func hasNonOverlayMCPDefinition(store *ConfigStore, name string, loadedPaths []string) bool {
@@ -200,10 +248,8 @@ func hasNonOverlayMCPDefinition(store *ConfigStore, name string, loadedPaths []s
 		if !ok {
 			continue
 		}
-		if path == filepath.Clean(workspacePath) || path == filepath.Clean(globalPath) {
-			if isMCPDisabledOnlyEntry(entry, true) {
-				continue
-			}
+		if isMCPDisabledOnlyEntry(entry, true) {
+			continue
 		}
 		return true
 	}

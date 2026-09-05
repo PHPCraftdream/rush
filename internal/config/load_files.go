@@ -43,6 +43,36 @@ func lookupConfigs(cwd string) []string {
 	return append(configPaths, foundConfigs...)
 }
 
+// lookupConfigCandidates returns every fixed and bounded project path that
+// lookupConfigs can inspect, including paths that do not exist yet. Stale
+// tracking must retain these negative lookups so creating a previously
+// absent config file is observable by the watcher.
+func lookupConfigCandidates(cwd string) []string {
+	paths := []string{systemConfigPath, GlobalConfig(), GlobalConfigData()}
+	if cwd == "" {
+		return paths
+	}
+	abs, err := filepath.Abs(cwd)
+	if err != nil {
+		abs = filepath.Clean(cwd)
+	}
+	boundary := projectBoundary(cwd)
+	boundary, err = filepath.Abs(boundary)
+	if err != nil {
+		boundary = filepath.Clean(boundary)
+	}
+	for dir := abs; ; dir = filepath.Dir(dir) {
+		paths = append(paths,
+			filepath.Join(dir, appName+".json"),
+			filepath.Join(dir, "."+appName+".json"),
+		)
+		if sameDir(dir, boundary) || filepath.Dir(dir) == dir {
+			break
+		}
+	}
+	return paths
+}
+
 // pathAlreadyLoaded reports whether path (typically the computed workspace
 // config path) is already present in loadedPaths (the paths loadFromConfigPaths
 // already merged into cfg).
@@ -73,22 +103,33 @@ func pathAlreadyLoaded(loadedPaths []string, path string) bool {
 }
 
 func loadFromConfigPaths(configPaths []string) (*Config, []string, error) {
+	cfg, loaded, _, err := loadFromConfigPathsStable(configPaths)
+	return cfg, loaded, err
+}
+
+// loadFromConfigPathsStable loads each path from a bounded stable byte read.
+// The returned fingerprints describe the exact bytes supplied to the JSON
+// merge, rather than a separate stat taken before the read. That distinction
+// is what rejects an ABA edit (A -> B -> A) when B was the candidate parsed.
+func loadFromConfigPathsStable(configPaths []string) (*Config, []string, map[string]reloadFileFingerprint, error) {
 	var configs [][]byte
 	var loaded []string
+	fingerprints := make(map[string]reloadFileFingerprint, len(configPaths))
 
 	for _, path := range configPaths {
-		data, err := os.ReadFile(path)
+		data, fingerprint, err := readStableConfigFile(path)
 		if err != nil {
 			if os.IsNotExist(err) {
 				continue
 			}
-			return nil, nil, fmt.Errorf("failed to open config file %s: %w", path, err)
+			return nil, nil, nil, fmt.Errorf("failed to open config file %s: %w", path, err)
 		}
+		fingerprints[normalizeReloadPath(path)] = fingerprint
 		if len(data) == 0 {
 			continue
 		}
 		if !json.Valid(data) {
-			return nil, nil, fmt.Errorf("invalid JSON in config file %s", path)
+			return nil, nil, nil, fmt.Errorf("invalid JSON in config file %s", path)
 		}
 		configs = append(configs, data)
 		loaded = append(loaded, path)
@@ -96,9 +137,9 @@ func loadFromConfigPaths(configPaths []string) (*Config, []string, error) {
 
 	cfg, err := loadFromBytes(configs)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return cfg, loaded, nil
+	return cfg, loaded, fingerprints, nil
 }
 
 func loadFromBytes(configs [][]byte) (*Config, error) {
@@ -106,6 +147,7 @@ func loadFromBytes(configs [][]byte) (*Config, error) {
 		return &Config{}, nil
 	}
 
+	configs = sanitizeMCPDisabledOverlays(configs)
 	data, err := jsons.Merge(configs)
 	if err != nil {
 		return nil, err
@@ -116,6 +158,41 @@ func loadFromBytes(configs [][]byte) (*Config, error) {
 	}
 	warnUnknownModelSlots(data)
 	return &config, nil
+}
+
+// sanitizeMCPDisabledOverlays removes the special one-field MCP entries
+// before the generic deep merge runs. A disabled-only entry is an overlay for
+// an external .mcp.json server; treating it as an ordinary MCP definition
+// would incorrectly toggle a complete definition from another Rush scope.
+func sanitizeMCPDisabledOverlays(configs [][]byte) [][]byte {
+	cleaned := make([][]byte, 0, len(configs))
+	for _, data := range configs {
+		var root map[string]json.RawMessage
+		if json.Unmarshal(data, &root) != nil || root == nil {
+			cleaned = append(cleaned, data)
+			continue
+		}
+		var mcp map[string]json.RawMessage
+		if raw, ok := root["mcp"]; ok && json.Unmarshal(raw, &mcp) == nil && mcp != nil {
+			for name, rawEntry := range mcp {
+				var entry map[string]json.RawMessage
+				if json.Unmarshal(rawEntry, &entry) == nil && isMCPDisabledOnlyEntry(entry, true) {
+					delete(mcp, name)
+				}
+			}
+			encodedMCP, err := json.Marshal(mcp)
+			if err == nil {
+				root["mcp"] = encodedMCP
+			}
+		}
+		encoded, err := json.Marshal(root)
+		if err != nil {
+			cleaned = append(cleaned, data)
+			continue
+		}
+		cleaned = append(cleaned, encoded)
+	}
+	return cleaned
 }
 
 // knownModelSlots is the exhaustive set of keys the "models" object in

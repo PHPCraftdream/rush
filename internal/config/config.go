@@ -235,6 +235,28 @@ const (
 	MCPSourceExternal MCPSource = "external"
 )
 
+// MCPOriginKind identifies the layer that supplied an effective MCP server.
+// The distinction is intentionally retained separately from MCPSource:
+// project and system rush.json files are user configuration, but neither is
+// a writable MCP scope.
+type MCPOriginKind string
+
+const (
+	MCPOriginSystem    MCPOriginKind = "system"
+	MCPOriginProject   MCPOriginKind = "project"
+	MCPOriginGlobal    MCPOriginKind = "global"
+	MCPOriginWorkspace MCPOriginKind = "workspace"
+	MCPOriginExternal  MCPOriginKind = "external"
+)
+
+// MCPOrigin describes the effective source of an MCP definition.
+type MCPOrigin struct {
+	Kind     MCPOriginKind
+	Path     string
+	Scope    Scope
+	Writable bool
+}
+
 type MCPConfig struct {
 	Command       string            `json:"command,omitempty" jsonschema:"description=Command to execute for stdio MCP servers,example=npx"`
 	Env           map[string]string `json:"env,omitempty" jsonschema:"description=Environment variables to set for the MCP server"`

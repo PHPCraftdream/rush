@@ -111,7 +111,8 @@ type ConfigStore struct {
 
 	// diskWriteMu serialises the on-disk read-modify-write cycle
 	// (os.ReadFile → sjson.Set/Delete → atomicWriteFile) in
-	// SetConfigFields and RemoveConfigField. Without it, two concurrent
+	// SetConfigFields, RemoveConfigField, and MCP lifecycle transactions.
+	// Without it, two concurrent
 	// callers writing to the same rush.json path could each read the
 	// pre-write file, apply only their own key, and have the second
 	// atomicWriteFile clobber the first — a classic lost-update on the
@@ -156,10 +157,14 @@ type ConfigStore struct {
 	reloadMu sync.Mutex
 
 	// reloadPending is set by a disk writer that finishes while reloadMu is
-	// held. reloadPendingMu closes the hand-off gap when the reloader releases
-	// reloadMu.
-	reloadPendingMu sync.Mutex
-	reloadPending   bool
+	// held. A queued writer owns the successor handoff; reloadPendingMu closes
+	// the hand-off gap when the reloader releases reloadMu.
+	reloadPendingMu     sync.Mutex
+	reloadPending       bool
+	reloadPendingWaiter bool
+	// initializing is true only during Load's private setup. Writes made by
+	// that setup must not wait for reloadMu held by the same goroutine.
+	initializing atomic.Bool
 
 	// reloadAfterDiskRead is a white-box test seam. It is called after the
 	// candidate has read the rush config files and before it is published.
