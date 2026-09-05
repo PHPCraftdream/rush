@@ -142,6 +142,83 @@ func TestRemoveServerCancelsBlockedInitAndRejectsLateCommit(t *testing.T) {
 	require.False(t, ok)
 }
 
+func TestFailedDisableDoesNotCancelStartupCandidate(t *testing.T) {
+	testFailedServerMutation(t, false)
+}
+
+func TestFailedRemoveDoesNotCancelStartupCandidate(t *testing.T) {
+	testFailedServerMutation(t, true)
+}
+
+func testFailedServerMutation(t *testing.T, remove bool) {
+	t.Helper()
+	const name = "failed-persistence-candidate"
+	store := isolatedMCPStore(t)
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer func() { require.NoError(t, owner.Close(context.Background())) }()
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	defer func() { releaseOnce.Do(func() { close(release) }) }()
+	canceled := make(chan struct{}, 1)
+	addDone := make(chan error, 1)
+	go func() {
+		addDone <- addServerWithInitializer(
+			context.Background(),
+			store,
+			name,
+			config.MCPConfig{Type: config.MCPStdio, Command: "unused"},
+			func(
+				_ context.Context,
+				cfg *config.ConfigStore,
+				serverName string,
+				_ config.MCPConfig,
+				_ config.VariableResolver,
+				admission *serverAdmission,
+			) error {
+				defer admission.done()
+				updateAdmissionState(admission, StateStarting, nil, nil, Counts{})
+				close(started)
+				select {
+				case <-admission.ctx.Done():
+					signalStarted(canceled)
+					return admission.ctx.Err()
+				case <-release:
+				}
+				return publishPreparedClient(cfg, serverName, &preparedClient{
+					session: &ClientSession{},
+				}, admission)
+			},
+		)
+	}()
+	waitForRequest(t, started)
+	persistErr := errors.New("injected persistence failure")
+	if remove {
+		err = removeServerWithPersistence(store, name, func(*config.ConfigStore, string) error {
+			return persistErr
+		})
+	} else {
+		err = disableServerWithPersistence(context.Background(), store, name,
+			func(*config.ConfigStore, config.Scope, string) error { return persistErr })
+	}
+	require.ErrorIs(t, err, persistErr)
+	select {
+	case <-canceled:
+		t.Fatal("failed persistence canceled the startup candidate")
+	default:
+	}
+	releaseOnce.Do(func() { close(release) })
+	require.NoError(t, <-addDone)
+	current, ok := sessions.Get(name)
+	require.True(t, ok)
+	state, ok := GetState(name)
+	require.True(t, ok)
+	require.Equal(t, StateConnected, state.State)
+	require.Same(t, current, state.Client)
+}
+
 func TestEnableServerFromOldOwnerCannotPublishIntoNewOwner(t *testing.T) {
 	started := make(chan struct{}, 1)
 	canceled := make(chan struct{}, 1)
@@ -610,6 +687,83 @@ func TestListChangedDuringRefreshSchedulesDirtyRerun(t *testing.T) {
 	require.ElementsMatch(t, []string{"first", "latest"}, GetServerToolNames(name))
 }
 
+func TestDirtyRefreshFailuresRetainCurrentSession(t *testing.T) {
+	const name = "dirty-refresh-failures"
+	firstObserved := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	var releaseFirstOnce sync.Once
+	var listCalls atomic.Int32
+	var closeCalls atomic.Int32
+	server := mcp.NewServer(&mcp.Implementation{Name: "dirty-refresh-failures-server"}, nil)
+	mcp.AddTool(server, &mcp.Tool{Name: "run"}, func(context.Context, *mcp.CallToolRequest, any) (*mcp.CallToolResult, any, error) {
+		return &mcp.CallToolResult{}, nil, nil
+	})
+	server.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
+		return func(ctx context.Context, method string, request mcp.Request) (mcp.Result, error) {
+			if method == "tools/list" {
+				call := listCalls.Add(1)
+				if call == 1 {
+					close(firstObserved)
+					<-releaseFirst
+				}
+				if call <= 2 {
+					return nil, errors.New("injected refresh failure")
+				}
+			}
+			return next(ctx, method, request)
+		}
+	})
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	serverSession, err := server.Connect(context.Background(), serverTransport, nil)
+	require.NoError(t, err)
+	defer serverSession.Close()
+	clientCtx, clientCancel := context.WithCancel(context.Background())
+	clientSession, err := mcp.NewClient(&mcp.Implementation{Name: "dirty-refresh-failures-client"}, nil).
+		Connect(clientCtx, clientTransport, nil)
+	require.NoError(t, err)
+
+	store := config.NewTestStore(&config.Config{MCP: config.MCPs{
+		name: {Type: config.MCPStdio, Command: "unused"},
+	}})
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer func() { require.NoError(t, owner.Close(context.Background())) }()
+	session := &ClientSession{
+		ClientSession: clientSession,
+		cancel:        clientCancel,
+		cleanup:       func() { closeCalls.Add(1) },
+	}
+	sessions.Set(name, session)
+	states.Set(name, ClientInfo{Name: name, State: StateConnected, Client: session})
+	admission, err := owner.admitServer(context.Background(), store, name, true)
+	require.NoError(t, err)
+	defer admission.done()
+	defer func() { releaseFirstOnce.Do(func() { close(releaseFirst) }) }()
+
+	notifyListChanged(&admission, name, refreshToolsKind)
+	waitForRequest(t, firstObserved)
+	notifyListChanged(&admission, name, refreshToolsKind)
+	releaseFirstOnce.Do(func() { close(releaseFirst) })
+	require.Eventually(t, func() bool {
+		info, ok := GetState(name)
+		return ok && info.State == StateError && listCalls.Load() == 2
+	}, 5*time.Second, time.Millisecond, "two dirty refresh failures did not complete")
+	require.Same(t, session, func() *ClientSession {
+		current, _ := sessions.Get(name)
+		return current
+	}())
+	require.Equal(t, int32(0), closeCalls.Load(), "refresh failures must not close the live session")
+
+	notifyListChanged(&admission, name, refreshToolsKind)
+	require.Eventually(t, func() bool {
+		info, ok := GetState(name)
+		return ok && info.State == StateConnected && listCalls.Load() == 3
+	}, 5*time.Second, time.Millisecond, "a later refresh did not recover")
+	_, err = RunTool(context.Background(), store, name, "run", `{}`)
+	require.NoError(t, err)
+	require.Equal(t, int32(0), closeCalls.Load(), "recovering RunTool must retain the session")
+}
+
 func TestRefreshQueueSaturationCoalescesWithoutDropping(t *testing.T) {
 	const blockedName = "refresh-blocked"
 	const queued = 256
@@ -868,10 +1022,122 @@ func TestInitializeBarrierIsGenerationScopedAcrossRollover(t *testing.T) {
 	defer func() { require.NoError(t, newOwner.Close(context.Background())) }()
 
 	oldOwner.Initialize(context.Background(), nil, config.NewTestStore(&config.Config{}), false)
-	newWaitCtx, newWaitCancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	newWaitCtx, newWaitCancel := context.WithTimeout(context.Background(), time.Second)
 	defer newWaitCancel()
-	require.ErrorIs(t, WaitForInit(newWaitCtx), context.DeadlineExceeded,
-		"a stale old-owner invocation must not close the new owner's barrier")
+	require.NoError(t, WaitForInit(newWaitCtx),
+		"a new owner with no full Initialize must have an immediately completed barrier")
+}
+
+func TestWaitForInitIsImmediateWithoutFullInitialize(t *testing.T) {
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer func() { require.NoError(t, owner.Close(context.Background())) }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	require.NoError(t, WaitForInit(ctx))
+}
+
+func TestInitializeSingleDoesNotOwnInitBarrier(t *testing.T) {
+	tests := map[string]struct {
+		config  config.MCPConfig
+		wantErr bool
+	}{
+		"failed": {
+			config:  config.MCPConfig{Type: config.MCPHttp, URL: "http://127.0.0.1:1", Timeout: 1},
+			wantErr: true,
+		},
+		"disabled": {
+			config: config.MCPConfig{Type: config.MCPStdio, Command: "unused", Disabled: true},
+		},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			owner, err := Acquire()
+			require.NoError(t, err)
+			defer func() { require.NoError(t, owner.Close(context.Background())) }()
+			store := config.NewLibraryStore(&config.Config{MCP: config.MCPs{
+				"single": test.config,
+			}}, "")
+			err = InitializeSingle(context.Background(), "single", store)
+			if test.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			require.NoError(t, WaitForInit(ctx))
+		})
+	}
+}
+
+func TestSuccessfulInitializeSingleDoesNotOwnInitBarrier(t *testing.T) {
+	server := mcp.NewServer(&mcp.Implementation{Name: "single-server"}, nil)
+	httpServer := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
+		return server
+	}, nil))
+	defer httpServer.Close()
+
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer func() { require.NoError(t, owner.Close(context.Background())) }()
+	store := config.NewLibraryStore(&config.Config{MCP: config.MCPs{
+		"single": {Type: config.MCPHttp, URL: httpServer.URL, Timeout: 60},
+	}}, "")
+	require.NoError(t, InitializeSingle(context.Background(), "single", store))
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	require.NoError(t, WaitForInit(ctx))
+}
+
+func TestInitializeSingleCannotCompleteFullInitBarrier(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var startedOnce sync.Once
+	server := mcp.NewServer(&mcp.Implementation{Name: "full-server"}, nil)
+	delegate := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil)
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		first := false
+		startedOnce.Do(func() {
+			close(started)
+			first = true
+		})
+		if first {
+			select {
+			case <-release:
+			case <-r.Context().Done():
+				return
+			}
+		}
+		delegate.ServeHTTP(w, r)
+	}))
+	defer httpServer.Close()
+
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer func() { require.NoError(t, owner.Close(context.Background())) }()
+	store := config.NewLibraryStore(&config.Config{MCP: config.MCPs{
+		"full":   {Type: config.MCPHttp, URL: httpServer.URL, Timeout: 60},
+		"single": {Type: config.MCPStdio, Command: "unused", Disabled: true},
+	}}, "")
+	fullDone := make(chan struct{})
+	go func() {
+		owner.Initialize(context.Background(), nil, store, false)
+		close(fullDone)
+	}()
+	waitForRequest(t, started)
+	require.NoError(t, InitializeSingle(context.Background(), "single", store))
+	waitCtx, waitCancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	require.ErrorIs(t, WaitForInit(waitCtx), context.DeadlineExceeded)
+	waitCancel()
+	close(release)
+	select {
+	case <-fullDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("full initialization did not complete after release")
+	}
+	require.NoError(t, WaitForInit(context.Background()))
 }
 
 func TestHeaderRoundTripperUsesOwnedTransportPool(t *testing.T) {

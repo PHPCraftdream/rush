@@ -257,7 +257,8 @@ type Owner struct {
 	lifecycleCancel context.CancelFunc
 	initCount       int
 	initWG          sync.WaitGroup
-	initDoneOnce    sync.Once
+	initStarted     bool
+	fullInitCount   int
 	initDone        chan struct{}
 	serverEpochs    map[string]uint64
 	serverCancels   map[string]map[uint64]serverCancel
@@ -574,7 +575,7 @@ func acquire(implicit bool) (*Owner, error) {
 		lifecycleCtx:    lifecycleCtx,
 		lifecycleCancel: lifecycleCancel,
 		closeDone:       make(chan struct{}),
-		initDone:        make(chan struct{}),
+		initDone:        closedChannel(),
 		serverEpochs:    make(map[string]uint64),
 		serverCancels:   make(map[string]map[uint64]serverCancel),
 		refreshCh:       make(chan struct{}, 1),
@@ -709,6 +710,26 @@ func (o *Owner) beginInit() bool {
 	return true
 }
 
+// beginInitialize starts one full initialization barrier for this owner. The
+// barrier is opened lazily so an owner used only for single-server operations
+// does not make WaitForInit wait forever.
+func (o *Owner) beginInitialize() bool {
+	lifecycleMu.Lock()
+	defer lifecycleMu.Unlock()
+	if !o.isCurrentLocked() {
+		return false
+	}
+	if !o.initStarted {
+		o.initStarted = true
+		o.initDone = make(chan struct{})
+		initDone = o.initDone
+	}
+	o.fullInitCount++
+	o.initCount++
+	o.initWG.Add(1)
+	return true
+}
+
 func (o *Owner) endInit() {
 	lifecycleMu.Lock()
 	o.initCount--
@@ -718,19 +739,22 @@ func (o *Owner) endInit() {
 
 func (o *Owner) finishInitialize() {
 	lifecycleMu.Lock()
-	defer lifecycleMu.Unlock()
-	if owner == o {
-		o.initDoneOnce.Do(func() { close(o.initDone) })
+	if o.fullInitCount > 0 {
+		o.fullInitCount--
 	}
+	if o.fullInitCount == 0 && o.initStarted {
+		o.closeInitBarrierLocked()
+	}
+	lifecycleMu.Unlock()
 }
 
-// signalInitialize closes only this owner's initialization barrier. A stale
-// invocation must never close the barrier installed for a newer owner.
-func (o *Owner) signalInitialize() {
-	lifecycleMu.Lock()
-	defer lifecycleMu.Unlock()
-	if owner == o {
-		o.initDoneOnce.Do(func() { close(o.initDone) })
+func (o *Owner) closeInitBarrierLocked() {
+	if o.initStarted {
+		select {
+		case <-o.initDone:
+		default:
+			close(o.initDone)
+		}
 	}
 }
 
@@ -845,7 +869,7 @@ func (o *Owner) finishClose() {
 		resetRegistryLocked()
 		owner = nil
 		initDone = closedChannel()
-		o.initDoneOnce.Do(func() { close(o.initDone) })
+		o.closeInitBarrierLocked()
 	}
 	close(o.closeDone)
 	lifecycleMu.Unlock()
@@ -1001,13 +1025,11 @@ func (o *Owner) Initialize(ctx context.Context, permissions permission.Service, 
 	if owner != o || o.closing {
 		lifecycleMu.Unlock()
 		cancel()
-		o.signalInitialize()
 		return
 	}
 	lifecycleMu.Unlock()
-	if !o.beginInit() {
+	if !o.beginInitialize() {
 		cancel()
-		o.signalInitialize()
 		return
 	}
 	defer o.endInit()
@@ -1283,6 +1305,20 @@ func DisableSingle(cfg *config.ConfigStore, name string) error {
 // DisableServer disables an MCP server: closes its session, removes its tools,
 // and persists the disabled flag to config.
 func DisableServer(ctx context.Context, cfg *config.ConfigStore, name string) error {
+	return disableServerWithPersistence(ctx, cfg, name,
+		func(cfg *config.ConfigStore, scope config.Scope, name string) error {
+			return cfg.PersistMCPDisabledOverride(scope, name, true)
+		})
+}
+
+type disableServerPersister func(*config.ConfigStore, config.Scope, string) error
+
+func disableServerWithPersistence(
+	ctx context.Context,
+	cfg *config.ConfigStore,
+	name string,
+	persist disableServerPersister,
+) error {
 	o, err := ensureOwner()
 	if err != nil {
 		return err
@@ -1295,7 +1331,6 @@ func DisableServer(ctx context.Context, cfg *config.ConfigStore, name string) er
 	if !ok {
 		return fmt.Errorf("MCP server %q not found", name)
 	}
-	o.cancelServerCandidates(name)
 	lease := serverLeaseFor(name)
 	lease.Lock()
 	defer lease.Unlock()
@@ -1311,13 +1346,16 @@ func DisableServer(ctx context.Context, cfg *config.ConfigStore, name string) er
 	if mcpCfg.Source == config.MCPSourceExternal {
 		scope = config.ScopeWorkspace
 	}
-	if err := cfg.PersistMCPDisabledOverride(scope, name, true); err != nil {
+	if err := persist(cfg, scope, name); err != nil {
 		return fmt.Errorf("failed to persist MCP disabled state for %q: %w", name, err)
 	}
+	// Persistence is the fallible part of this transaction. Only after it
+	// succeeds may this operation invalidate candidates; the write lease keeps
+	// a candidate from publishing between these steps and the runtime update.
+	o.invalidateServer(name)
 	if _, ok := cfg.SetMCPDisabled(name, true); !ok {
 		return fmt.Errorf("MCP server %q disappeared while disabling", name)
 	}
-	o.invalidateServer(name)
 	closeSessionLocked(name)
 	clearAdvertised(name)
 	updateState(name, StateDisabled, nil, nil, Counts{})
@@ -1708,6 +1746,19 @@ func rollbackAddedServer(o *Owner, cfg *config.ConfigStore, name string, admissi
 // RemoveServer removes an MCP server, closes its session, and removes it from config.
 // External servers (from .mcp.json) cannot be removed — only disabled.
 func RemoveServer(cfg *config.ConfigStore, name string) error {
+	return removeServerWithPersistence(cfg, name,
+		func(cfg *config.ConfigStore, name string) error {
+			return cfg.PersistRemoveMCPConfig(config.ScopeGlobal, name)
+		})
+}
+
+type removeServerPersister func(*config.ConfigStore, string) error
+
+func removeServerWithPersistence(
+	cfg *config.ConfigStore,
+	name string,
+	persist removeServerPersister,
+) error {
 	o, err := ensureOwner()
 	if err != nil {
 		return err
@@ -1724,7 +1775,6 @@ func RemoveServer(cfg *config.ConfigStore, name string) error {
 		return fmt.Errorf("MCP server %q is from .mcp.json and cannot be removed (disable it instead)", name)
 	}
 
-	o.cancelServerCandidates(name)
 	lease := serverLeaseFor(name)
 	lease.Lock()
 	defer lease.Unlock()
@@ -1735,9 +1785,12 @@ func RemoveServer(cfg *config.ConfigStore, name string) error {
 	if mcpCfg.Source == config.MCPSourceExternal {
 		return fmt.Errorf("MCP server %q is from .mcp.json and cannot be removed (disable it instead)", name)
 	}
-	if err := cfg.PersistRemoveMCPConfig(config.ScopeGlobal, name); err != nil {
+	if err := persist(cfg, name); err != nil {
 		return fmt.Errorf("failed to remove MCP server %q from config: %w", name, err)
 	}
+	// Persistence is the fallible part of this transaction. Only after it
+	// succeeds may this operation invalidate candidates; the write lease keeps
+	// a candidate from publishing until runtime state is removed.
 	o.invalidateServer(name)
 	// RemoveConfigField may already have published the disk reload, in which
 	// case the copy-on-write removal is intentionally a no-op.
@@ -1882,6 +1935,12 @@ func getOrRenewClient(ctx context.Context, cfg *config.ConfigStore, name string)
 	setState(name, StateError, err, nil, state.Counts)
 	publishStateEvent(name, StateError, err, state.Counts)
 	if currentOK {
+		// The ping failure identifies the session that must be retired. Remove
+		// it explicitly; state transitions must never infer session ownership
+		// from the previous state's Client field.
+		if published, ok := sessions.Get(name); ok && published == current {
+			sessions.Del(name)
+		}
 		_ = current.Close()
 	}
 
@@ -2027,18 +2086,8 @@ func setState(name string, state State, err error, client *ClientSession, counts
 		Client: client,
 		Counts: counts,
 	}
-	switch state {
-	case StateConnected:
+	if state == StateConnected {
 		info.ConnectedAt = time.Now()
-	case StateError:
-		// A failed candidate must not remove a session that was already
-		// published for this server. Renewal sets the state to error before
-		// replacing the current session, while an initial/refresh candidate
-		// can report an error alongside an existing healthy session.
-		previous, exists := states.Get(name)
-		if !exists || previous.Client == nil {
-			sessions.Del(name)
-		}
 	}
 	states.Set(name, info)
 }
