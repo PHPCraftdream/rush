@@ -59,7 +59,8 @@ func RefreshPrompts(ctx context.Context, name string) {
 
 	prompts, err := getPrompts(lease.ctx, lease.session)
 	if err != nil {
-		updateState(name, StateError, err, nil, Counts{})
+		previous, _ := states.Get(name)
+		updateState(name, StateError, err, lease.session, previous.Counts)
 		return
 	}
 

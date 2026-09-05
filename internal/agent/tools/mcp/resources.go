@@ -70,7 +70,8 @@ func RefreshResources(ctx context.Context, name string) {
 
 	resources, err := getResources(lease.ctx, lease.session)
 	if err != nil {
-		updateState(name, StateError, err, nil, Counts{})
+		previous, _ := states.Get(name)
+		updateState(name, StateError, err, lease.session, previous.Counts)
 		return
 	}
 

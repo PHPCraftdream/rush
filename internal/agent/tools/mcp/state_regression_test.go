@@ -3,10 +3,12 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -390,6 +392,114 @@ func TestAddServerRetainsLeaseAcrossRemoveDuringInitialization(t *testing.T) {
 	require.Zero(t, finalRefs, "the Add/Remove sequence must not underflow lease references")
 }
 
+func TestPendingAddMutationCommitsCompleteConfigBeforeInvalidatingAdd(t *testing.T) {
+	tests := map[string]struct {
+		mutate func(*config.ConfigStore, string) error
+		check  func(*testing.T, string)
+	}{
+		"disable": {
+			mutate: func(store *config.ConfigStore, name string) error {
+				return DisableServer(context.Background(), store, name)
+			},
+			check: func(t *testing.T, name string) {
+				data, err := os.ReadFile(config.GlobalConfigData())
+				require.NoError(t, err)
+				var root struct {
+					MCP map[string]config.MCPConfig `json:"mcp"`
+				}
+				require.NoError(t, json.Unmarshal(data, &root))
+				persisted, ok := root.MCP[name]
+				require.True(t, ok)
+				require.Equal(t, config.MCPHttp, persisted.Type)
+				require.Equal(t, "http://pending-add.example", persisted.URL)
+				require.True(t, persisted.Disabled)
+			},
+		},
+		"remove": {
+			mutate: func(store *config.ConfigStore, name string) error {
+				return RemoveServer(store, name)
+			},
+			check: func(t *testing.T, name string) {
+				data, err := os.ReadFile(config.GlobalConfigData())
+				require.NoError(t, err)
+				var root struct {
+					MCP map[string]json.RawMessage `json:"mcp"`
+				}
+				require.NoError(t, json.Unmarshal(data, &root))
+				_, ok := root.MCP[name]
+				require.False(t, ok)
+			},
+		},
+	}
+	for testName, test := range tests {
+		t.Run(testName, func(t *testing.T) {
+			store := isolatedMCPStore(t)
+			owner, err := Acquire()
+			require.NoError(t, err)
+			defer func() { require.NoError(t, owner.Close(context.Background())) }()
+
+			const name = "pending-add-mutation"
+			release := make(chan struct{})
+			started := make(chan struct{})
+			addDone := make(chan error, 1)
+			go func() {
+				addDone <- addServerWithInitializer(
+					context.Background(), store, name,
+					config.MCPConfig{Type: config.MCPHttp, URL: "http://pending-add.example"},
+					func(
+						_ context.Context,
+						cfg *config.ConfigStore,
+						serverName string,
+						_ config.MCPConfig,
+						_ config.VariableResolver,
+						admission *serverAdmission,
+					) error {
+						if err := publishPreparedClient(cfg, serverName, &preparedClient{
+							session: &ClientSession{},
+						}, admission); err != nil {
+							return err
+						}
+						// The admission is deliberately finished before durable Add
+						// persistence to prove the transaction has its own lifetime.
+						admission.done()
+						close(started)
+						<-release
+						return nil
+					},
+				)
+			}()
+			waitForRequest(t, started)
+
+			lifecycleMu.Lock()
+			transaction := owner.pendingGlobalAdds[name]
+			lifecycleMu.Unlock()
+			require.NotNil(t, transaction)
+			select {
+			case <-transaction.done:
+				t.Fatal("pending Add transaction finished with only initializer admission")
+			default:
+			}
+
+			require.NoError(t, test.mutate(store, name))
+			test.check(t, name)
+			select {
+			case <-transaction.done:
+				t.Fatal("pending Add transaction finished before durable Add rollback")
+			default:
+			}
+
+			close(release)
+			require.ErrorIs(t, <-addDone, ErrOwnerBusy)
+			select {
+			case <-transaction.done:
+			case <-time.After(time.Second):
+				t.Fatal("pending Add transaction was not cleaned up")
+			}
+			require.False(t, hasPendingGlobalAdd(name))
+		})
+	}
+}
+
 func TestStaleAddRollbackPreservesNewerSameNameServer(t *testing.T) {
 	const name = "replaced-add"
 	store := isolatedMCPStore(t)
@@ -767,6 +877,75 @@ func TestDirtyRefreshFailuresRetainCurrentSession(t *testing.T) {
 	_, err = RunTool(context.Background(), store, name, "run", `{}`)
 	require.NoError(t, err)
 	require.Equal(t, int32(0), closeCalls.Load(), "recovering RunTool must retain the session")
+}
+
+func TestExportedRefreshFailuresRetainSessionCountsAndRecover(t *testing.T) {
+	const name = "exported-refresh-failures"
+	var calls sync.Map
+	server := mcp.NewServer(&mcp.Implementation{Name: "exported-refresh-server"}, nil)
+	mcp.AddTool(server, &mcp.Tool{Name: "tool"}, func(context.Context, *mcp.CallToolRequest, any) (*mcp.CallToolResult, any, error) {
+		return &mcp.CallToolResult{}, nil, nil
+	})
+	server.AddPrompt(&mcp.Prompt{Name: "prompt"}, nil)
+	server.AddResource(&mcp.Resource{URI: "file:///resource", Name: "resource"}, nil)
+	server.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
+		return func(ctx context.Context, method string, request mcp.Request) (mcp.Result, error) {
+			if method == "tools/list" || method == "prompts/list" || method == "resources/list" {
+				value, _ := calls.LoadOrStore(method, new(atomic.Int32))
+				count := value.(*atomic.Int32).Add(1)
+				if count <= 2 {
+					return nil, errors.New("injected exported refresh failure")
+				}
+			}
+			return next(ctx, method, request)
+		}
+	})
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	serverSession, err := server.Connect(context.Background(), serverTransport, nil)
+	require.NoError(t, err)
+	defer serverSession.Close()
+	clientCtx, clientCancel := context.WithCancel(context.Background())
+	clientSession, err := mcp.NewClient(&mcp.Implementation{Name: "exported-refresh-client"}, nil).
+		Connect(clientCtx, clientTransport, nil)
+	require.NoError(t, err)
+
+	store := config.NewTestStore(&config.Config{MCP: config.MCPs{
+		name: {Type: config.MCPStdio, Command: "unused"},
+	}})
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer func() { require.NoError(t, owner.Close(context.Background())) }()
+	session := &ClientSession{ClientSession: clientSession, cancel: clientCancel}
+	initialCounts := Counts{Tools: 7, Prompts: 5, Resources: 3}
+	sessions.Set(name, session)
+	states.Set(name, ClientInfo{Name: name, State: StateConnected, Client: session, Counts: initialCounts})
+
+	refreshes := []struct {
+		name   string
+		call   func()
+		counts Counts
+	}{
+		{name: "tools", call: func() { RefreshTools(context.Background(), store, name) }, counts: Counts{Tools: 1, Prompts: 5, Resources: 3}},
+		{name: "prompts", call: func() { RefreshPrompts(context.Background(), name) }, counts: Counts{Tools: 1, Prompts: 1, Resources: 3}},
+		{name: "resources", call: func() { RefreshResources(context.Background(), name) }, counts: Counts{Tools: 1, Prompts: 1, Resources: 1}},
+	}
+	for _, refresh := range refreshes {
+		for range 2 {
+			refresh.call()
+			state, ok := GetState(name)
+			require.True(t, ok)
+			require.Equal(t, StateError, state.State)
+			require.Same(t, session, state.Client)
+			require.Equal(t, initialCounts, state.Counts)
+		}
+		refresh.call()
+		state, ok := GetState(name)
+		require.True(t, ok)
+		require.Equal(t, StateConnected, state.State)
+		require.Same(t, session, state.Client)
+		require.Equal(t, refresh.counts, state.Counts)
+		initialCounts = refresh.counts
+	}
 }
 
 func TestRefreshQueueSaturationCoalescesWithoutDropping(t *testing.T) {

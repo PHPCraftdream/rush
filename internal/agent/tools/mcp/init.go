@@ -262,7 +262,7 @@ type Owner struct {
 	initDone          chan struct{}
 	serverEpochs      map[string]uint64
 	serverCancels     map[string]map[uint64]serverCancel
-	pendingGlobalAdds map[string]uint64
+	pendingGlobalAdds map[string]*addTransaction
 	nextCancelToken   uint64
 	refreshCh         chan struct{}
 	refreshPending    map[refreshKey]refreshRequest
@@ -276,6 +276,39 @@ type Owner struct {
 type serverCancel struct {
 	cancel context.CancelFunc
 	token  uint64
+}
+
+// addTransaction outlives the initializer admission for an AddServer call.
+// The admission is released as soon as initialization has published (or
+// rejected) a candidate, while this transaction remains until the durable
+// config commit or rollback has completed.
+type addTransaction struct {
+	name  string
+	cfg   *config.ConfigStore
+	token uint64
+	done  chan struct{}
+
+	once         sync.Once
+	mu           sync.Mutex
+	userMutation bool
+}
+
+func (t *addTransaction) markUserMutation() {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	t.userMutation = true
+	t.mu.Unlock()
+}
+
+func (t *addTransaction) hasUserMutation() bool {
+	if t == nil {
+		return false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.userMutation
 }
 
 type refreshKind uint8
@@ -333,9 +366,6 @@ func (a *serverAdmission) done() {
 	}
 	lifecycleMu.Lock()
 	if a.serverCancelToken != 0 {
-		if a.owner.pendingGlobalAdds[a.name] == a.serverCancelToken {
-			delete(a.owner.pendingGlobalAdds, a.name)
-		}
 		if current, ok := a.owner.serverCancels[a.name]; ok {
 			if registered, ok := current[a.serverCancelToken]; ok && registered.token == a.serverCancelToken {
 				delete(current, a.serverCancelToken)
@@ -479,36 +509,58 @@ func (o *Owner) admitReplacementCandidate(ctx context.Context, cfg *config.Confi
 	return admission, nil
 }
 
-// markPendingGlobalAdd records the one admission whose in-memory definition
-// is intentionally destined for the global config but has not reached disk
-// yet. Full initialization, replacement, renewal, and refresh admissions never
-// call this method and therefore can never authorize a global fallback.
-func (o *Owner) markPendingGlobalAdd(admission *serverAdmission) bool {
+// markPendingGlobalAdd records the one AddServer transaction whose in-memory
+// definition is intentionally destined for the global config but has not
+// reached disk yet. Full initialization, replacement, renewal, and refresh
+// admissions never call this method and therefore can never authorize a global
+// fallback.
+func (o *Owner) markPendingGlobalAdd(admission *serverAdmission, cfg *config.ConfigStore) (*addTransaction, bool) {
 	if admission == nil || admission.serverCancelToken == 0 {
-		return false
+		return nil, false
 	}
 	lifecycleMu.Lock()
 	defer lifecycleMu.Unlock()
 	if admission.owner != o || admission.name == "" || !o.isCurrentLocked() {
-		return false
+		return nil, false
 	}
 	registered, ok := o.serverCancels[admission.name][admission.serverCancelToken]
 	if !ok || registered.token != admission.serverCancelToken {
-		return false
+		return nil, false
 	}
-	o.pendingGlobalAdds[admission.name] = admission.serverCancelToken
-	return true
+	transaction := &addTransaction{
+		name:  admission.name,
+		cfg:   cfg,
+		token: admission.serverCancelToken,
+		done:  make(chan struct{}),
+	}
+	o.pendingGlobalAdds[admission.name] = transaction
+	return transaction, true
 }
 
-func (o *Owner) clearPendingGlobalAdd(admission *serverAdmission) {
-	if admission == nil || admission.serverCancelToken == 0 {
+// completePendingGlobalAdd removes only the exact transaction and closes its
+// completion signal. A newer same-name Add may already own the map entry.
+func (o *Owner) completePendingGlobalAdd(transaction *addTransaction) {
+	if transaction == nil {
 		return
 	}
+	transaction.once.Do(func() {
+		lifecycleMu.Lock()
+		if current := o.pendingGlobalAdds[transaction.name]; current == transaction && current.token == transaction.token {
+			delete(o.pendingGlobalAdds, transaction.name)
+		}
+		lifecycleMu.Unlock()
+		close(transaction.done)
+	})
+}
+
+func (o *Owner) pendingGlobalAdd(name string, cfg *config.ConfigStore) *addTransaction {
 	lifecycleMu.Lock()
-	if o.pendingGlobalAdds[admission.name] == admission.serverCancelToken {
-		delete(o.pendingGlobalAdds, admission.name)
+	defer lifecycleMu.Unlock()
+	transaction := o.pendingGlobalAdds[name]
+	if transaction == nil || transaction.cfg != cfg || transaction.token == 0 {
+		return nil
 	}
-	lifecycleMu.Unlock()
+	return transaction
 }
 
 // snapshotServerAdmission captures the lifecycle and configuration fence for
@@ -614,7 +666,7 @@ func acquire(implicit bool) (*Owner, error) {
 		initDone:          closedChannel(),
 		serverEpochs:      make(map[string]uint64),
 		serverCancels:     make(map[string]map[uint64]serverCancel),
-		pendingGlobalAdds: make(map[string]uint64),
+		pendingGlobalAdds: make(map[string]*addTransaction),
 		refreshCh:         make(chan struct{}, 1),
 		refreshPending:    make(map[refreshKey]refreshRequest),
 		refreshRunning:    make(map[refreshKey]struct{}),
@@ -1344,6 +1396,15 @@ func DisableSingle(cfg *config.ConfigStore, name string) error {
 func DisableServer(ctx context.Context, cfg *config.ConfigStore, name string) error {
 	return disableServerWithPersistence(ctx, cfg, name,
 		func(cfg *config.ConfigStore, scope config.Scope, name string) error {
+			if currentOwner := currentOwner(); currentOwner != nil &&
+				currentOwner.pendingGlobalAdd(name, cfg) != nil {
+				mcpCfg, ok := cfg.MCPConfig(name)
+				if !ok {
+					return config.ErrMCPNotFound
+				}
+				mcpCfg.Disabled = true
+				return cfg.PersistMCPConfig(scope, name, mcpCfg)
+			}
 			return cfg.PersistMCPDisabledOverride(scope, name, true)
 		})
 }
@@ -1386,6 +1447,20 @@ func disableServerWithPersistence(
 	// snapshot remain enabled, so the operation has no half-applied result.
 	if err := persist(cfg, scope, name); err != nil {
 		return fmt.Errorf("failed to persist MCP disabled state for %q: %w", name, err)
+	}
+	if transaction := o.pendingGlobalAdd(name, cfg); transaction != nil {
+		// A pending Add has no durable definition for a disabled override to
+		// modify. Ensure a successful custom persister leaves the complete
+		// definition on disk rather than a disabled-only ghost.
+		mcpCfg.Disabled = true
+		if err := cfg.PersistMCPConfig(scope, name, mcpCfg); err != nil {
+			// The pending add did not exist on disk before this transaction. If
+			// the full write cannot complete, remove the partial override so the
+			// durable result is still either complete or absent.
+			_ = cfg.PersistRemoveMCPConfig(scope, name)
+			return fmt.Errorf("failed to persist complete MCP disabled state for %q: %w", name, err)
+		}
+		transaction.markUserMutation()
 	}
 	// Persistence is the fallible part of this transaction. Only after it
 	// succeeds may this operation invalidate candidates; the write lease keeps
@@ -1756,25 +1831,25 @@ func resolveMCPMutationScope(cfg *config.ConfigStore, name string, mcpCfg config
 	// not on disk until initialization finishes. Preserve the cancellation
 	// path for a concurrent disable/remove of that in-flight add; an ordinary
 	// unowned in-memory definition remains fail-closed below.
-	if errors.Is(err, config.ErrMCPUnwritableOrigin) && hasPendingGlobalAdd(name) {
+	if errors.Is(err, config.ErrMCPUnwritableOrigin) && hasPendingGlobalAddFor(cfg, name) {
 		return config.ScopeGlobal, nil
 	}
 	return config.ScopeGlobal, err
 }
 
 func hasPendingGlobalAdd(name string) bool {
+	return hasPendingGlobalAddFor(nil, name)
+}
+
+func hasPendingGlobalAddFor(cfg *config.ConfigStore, name string) bool {
 	lifecycleMu.Lock()
 	defer lifecycleMu.Unlock()
 	currentOwner := owner
 	if currentOwner == nil {
 		return false
 	}
-	token := currentOwner.pendingGlobalAdds[name]
-	if token == 0 {
-		return false
-	}
-	registered, ok := currentOwner.serverCancels[name][token]
-	return ok && registered.token == token
+	transaction := currentOwner.pendingGlobalAdds[name]
+	return transaction != nil && transaction.token != 0 && (cfg == nil || transaction.cfg == cfg)
 }
 
 type admittedClientInitializer func(
@@ -1817,18 +1892,21 @@ func addServerWithInitializer(
 		lease.Unlock()
 		return err
 	}
-	if !o.markPendingGlobalAdd(&admission) {
+	transaction, ok := o.markPendingGlobalAdd(&admission, cfg)
+	if !ok {
 		admission.done()
 		_, _ = cfg.RemoveMCP(name)
 		lease.Unlock()
 		return ErrOwnerBusy
 	}
+	defer o.completePendingGlobalAdd(transaction)
 	resolver := cfg.Resolver()
 	// Keep the lease entry alive while initialization runs without the write
 	// lock. RemoveServer must then wait on this exact lease instance instead of
 	// racing a reclaimed entry with an ABA replacement.
 	if !lease.registry.retain(lease) {
 		admission.done()
+		o.completePendingGlobalAdd(transaction)
 		_, _ = cfg.RemoveMCP(name)
 		lease.Unlock()
 		return ErrOwnerBusy
@@ -1837,7 +1915,7 @@ func addServerWithInitializer(
 	initErr := initialize(ctx, cfg, name, mcpCfg, resolver, &admission)
 	if initErr != nil {
 		lease.Lock()
-		rollbackAddedServer(o, cfg, name, &admission)
+		rollbackAddedServer(o, cfg, name, &admission, transaction)
 		lease.Unlock()
 		if errors.Is(initErr, ErrOwnerBusy) {
 			return ErrOwnerBusy
@@ -1849,26 +1927,25 @@ func addServerWithInitializer(
 	// in-memory entry and then lose the race by being followed by this write.
 	lease.Lock()
 	if !admission.valid() {
-		o.clearPendingGlobalAdd(&admission)
+		rollbackAddedServer(o, cfg, name, &admission, transaction)
 		lease.Unlock()
 		return ErrOwnerBusy
 	}
 	if err := cfg.PersistMCPConfig(config.ScopeGlobal, name, mcpCfg); err != nil {
-		rollbackAddedServer(o, cfg, name, &admission)
+		rollbackAddedServer(o, cfg, name, &admission, transaction)
 		lease.Unlock()
 		return fmt.Errorf("failed to persist MCP server %q: %w", name, err)
 	}
-	o.clearPendingGlobalAdd(&admission)
 	lease.Unlock()
 	return nil
 }
 
-// rollbackAddedServer removes only the server instance represented by
-// admission. Callers hold the per-server write lease, so a newer epoch cannot
-// appear between the identity check and the rollback.
-func rollbackAddedServer(o *Owner, cfg *config.ConfigStore, name string, admission *serverAdmission) bool {
-	o.clearPendingGlobalAdd(admission)
-	if admission == nil || admission.owner != o || admission.name != name || !admission.valid() {
+// rollbackAddedServer removes only the server instance represented by the
+// exact add transaction. Callers hold the per-server write lease, so a newer
+// same-name transaction cannot be removed by a stale rollback.
+func rollbackAddedServer(o *Owner, cfg *config.ConfigStore, name string, admission *serverAdmission, transaction *addTransaction) bool {
+	if admission == nil || admission.owner != o || admission.name != name || transaction == nil ||
+		transaction.hasUserMutation() || o.pendingGlobalAdd(name, cfg) != transaction {
 		return false
 	}
 	closeSessionLocked(name)
@@ -1939,6 +2016,9 @@ func removeServerWithScopedPersistence(
 	}
 	if err := persist(cfg, scope, name); err != nil {
 		return fmt.Errorf("failed to remove MCP server %q from config: %w", name, err)
+	}
+	if transaction := o.pendingGlobalAdd(name, cfg); transaction != nil {
+		transaction.markUserMutation()
 	}
 	// Persistence is the fallible part of this transaction. Only after it
 	// succeeds may this operation invalidate candidates; the write lease keeps
