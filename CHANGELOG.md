@@ -10,6 +10,11 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **Complete Codex delegation Skill installation.** `rush codex-init` and
+  `rush codex-del` now include `rush`, `rush-fallback` and `wrush`, with
+  sentinel-safe overwrite/removal behavior. `rush cli-refresh` refreshes all
+  three Codex Skills as well.
+
 - **`/wrush` slash-command**, installed by `rush claude-init` alongside
   `/rush` and `/rush-fallback`. Behaviorally identical to `/rush` with
   one added hard rule: every delegated task runs inside a dedicated

@@ -5,10 +5,10 @@
 // "custom command"/"skill" — Claude Code uses `.claude/commands/*.md`
 // front-matter, Codex/Grok use Skills-style `<name>/SKILL.md`, Gemini uses
 // TOML, Qwen uses a different front-matter placeholder. Rather than
-// duplicate the source-of-truth prose four times, we keep ONE canonical
-// source per command (claudeSlashCommandTemplate / claudeFallbackCommandTemplate,
-// embedded in claude_init.go) and convert it into each tool's native format
-// here.
+// duplicate the source-of-truth prose across tools, we keep ONE canonical
+// source per command (claudeSlashCommandTemplate / claudeFallbackCommandTemplate /
+// claudeWrushCommandTemplate, embedded in claude_init.go) and convert it into
+// each tool's native format here.
 package cmd
 
 import (

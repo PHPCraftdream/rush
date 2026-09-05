@@ -447,6 +447,18 @@ If you drive Rush from another LLM (e.g. Claude Code), run once:
 rush claude-init                 # install /rush, /rush-fallback and /wrush
 ```
 
+For Codex CLI, install the same three Rush-owned delegation commands as
+Skills (global by default, or local with `--local`):
+
+```bash
+rush codex-init                  # install rush, rush-fallback and wrush
+```
+
+This writes `rush/SKILL.md`, `rush-fallback/SKILL.md` and `wrush/SKILL.md`
+under `~/.agents/skills/` (or the project's `.agents/skills/` in local mode).
+`rush codex-del` removes only those Skills when they carry Rush's sentinel;
+foreign files with the same names are preserved.
+
 This installs three slash-commands into `.claude/commands/`, each
 triggered explicitly by the operator — never auto-discovered:
 
@@ -810,7 +822,9 @@ section for the two things a rename tool cannot fix by itself:
 Instead of running all 10 `*-init`/`*-del` commands by hand, `rush
 cli-refresh` runs each tool's del-then-init pair back to back for all 5
 integrations at once (local dir by default, `--recursive [root]` for a
-directory tree, or `--global`; supports `--dry-run` too).
+directory tree, or `--global`; supports `--dry-run` too). For Codex, that
+refresh includes all three delegation Skills: `rush`, `rush-fallback` and
+`wrush`.
 
 Also update scripts that reference the old names directly: commands like
 `crush run` → `rush run`, paths like `.crush/` → `.rush/`, `crush.json` →
