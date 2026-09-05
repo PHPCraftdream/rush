@@ -8,11 +8,26 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/PHPCraftdream/rush/internal/env"
 )
 
 const defaultCatwalkURL = "https://catwalk.charm.land"
+
+var loadAfterProviderConfigTestHook struct {
+	sync.RWMutex
+	fn func(string)
+}
+
+func runLoadAfterProviderConfigTestHook(workingDir string) {
+	loadAfterProviderConfigTestHook.RLock()
+	hook := loadAfterProviderConfigTestHook.fn
+	loadAfterProviderConfigTestHook.RUnlock()
+	if hook != nil {
+		hook(workingDir)
+	}
+}
 
 // Load loads the configuration from the default paths and returns a
 // ConfigStore that owns both the pure-data Config and all runtime state.
@@ -197,15 +212,30 @@ func loadOnce(workingDir, dataDir string, debug bool) (*ConfigStore, error) {
 	defer store.publishMu.Unlock()
 	store.initializing.Store(true)
 	defer store.initializing.Store(false)
+	store.initialLoadFingerprints = fingerprints
+	defer func() { store.initialLoadFingerprints = nil }()
 
-	publish := func() {
+	publish := func() error {
+		runLoadAfterProviderConfigTestHook(workingDir)
+		store.diskWriteMu.Lock()
+		defer store.diskWriteMu.Unlock()
+		if !sameReloadPathSet(externalPaths, discoverMCPJSONFiles(workingDir)) || reloadFingerprintsChanged(fingerprints) {
+			return errReloadDiskChanged
+		}
+		stalenessPaths := configAndMCPStalenessPaths(lookupConfigCandidates(workingDir), workingDir)
+		stalenessPaths = append(stalenessPaths, workspacePath, globalDataPath)
+		trackedPaths, snapshots := reloadStalenessState(stalenessPaths, fingerprints)
 		store.snap.Store(&storeSnapshot{
-			config:         cfg,
-			resolver:       valueResolver,
-			knownProviders: knownProviders,
-			loadedPaths:    loadedPaths,
-			workspacePath:  workspacePath,
+			config:             cfg,
+			resolver:           valueResolver,
+			knownProviders:     knownProviders,
+			loadedPaths:        loadedPaths,
+			trackedConfigPaths: trackedPaths,
+			snapshots:          snapshots,
+			workspacePath:      workspacePath,
+			generation:         1,
 		})
+		return nil
 	}
 
 	if err := cfg.configureProviders(context.Background(), store, env, valueResolver, knownProviders); err != nil {
@@ -214,10 +244,9 @@ func loadOnce(workingDir, dataDir string, debug bool) (*ConfigStore, error) {
 
 	if !cfg.IsConfigured() {
 		slog.Warn("No providers configured")
-		publish()
-		store.captureStalenessSnapshotFromFingerprintsLocked(
-			configAndMCPStalenessPaths(lookupConfigCandidates(workingDir), workingDir), fingerprints,
-		)
+		if err := publish(); err != nil {
+			return nil, err
+		}
 		return store, nil
 	}
 
@@ -226,13 +255,12 @@ func loadOnce(workingDir, dataDir string, debug bool) (*ConfigStore, error) {
 	}
 	cfg.SetupAgents()
 
-	// Publish the fully-prepared generation in one shot, then capture the
-	// initial staleness snapshot against it. We already hold publishMu, so
-	// call the Locked variant directly to avoid a re-entrant deadlock.
-	publish()
-	store.captureStalenessSnapshotFromFingerprintsLocked(
-		configAndMCPStalenessPaths(lookupConfigCandidates(workingDir), workingDir), fingerprints,
-	)
+	// Verify and publish the fully-prepared generation together with the
+	// exact-byte staleness snapshot. publish holds diskWriteMu across the
+	// final verification and swap.
+	if err := publish(); err != nil {
+		return nil, err
+	}
 
 	return store, nil
 }

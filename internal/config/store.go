@@ -84,6 +84,9 @@ type ConfigStore struct {
 	// safe to read without synchronization.
 	workingDir     string
 	globalDataPath string // ~/.local/share/rush/rush.json
+	// systemConfigPathOverride is a white-box test seam for platforms such as
+	// Windows that have no native system config path.
+	systemConfigPathOverride string
 
 	// publishMu is the single mutex that serialises ALL snapshot
 	// publications — both ReloadFromDisk (which rebuilds the entire
@@ -165,6 +168,10 @@ type ConfigStore struct {
 	// initializing is true only during Load's private setup. Writes made by
 	// that setup must not wait for reloadMu held by the same goroutine.
 	initializing atomic.Bool
+	// initialLoadFingerprints points at Load's private expected-input map while
+	// provider/model setup is allowed to perform self-healing writes. It is
+	// read and updated only while diskWriteMu is held.
+	initialLoadFingerprints map[string]reloadFileFingerprint
 
 	// reloadAfterDiskRead is a white-box test seam. It is called after the
 	// candidate has read the rush config files and before it is published.

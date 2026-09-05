@@ -180,49 +180,6 @@ func (s *ConfigStore) captureStalenessSnapshotLocked(paths []string) {
 	s.refreshStalenessSnapshotLocked()
 }
 
-// captureStalenessSnapshotFromFingerprintsLocked publishes a staleness
-// snapshot whose hashes came from the exact candidate bytes. It is used by
-// initial Load so a write between parsing and a second snapshot read cannot
-// make a stale in-memory config appear clean.
-func (s *ConfigStore) captureStalenessSnapshotFromFingerprintsLocked(paths []string, fingerprints map[string]reloadFileFingerprint) {
-	seen := make(map[string]struct{}, len(paths))
-	for _, path := range paths {
-		if path != "" {
-			seen[normalizeReloadPath(path)] = struct{}{}
-		}
-	}
-	cur := s.loadSnapshot()
-	if cur.workspacePath != "" {
-		seen[normalizeReloadPath(cur.workspacePath)] = struct{}{}
-	}
-	if s.globalDataPath != "" {
-		seen[normalizeReloadPath(s.globalDataPath)] = struct{}{}
-	}
-	tracked := make([]string, 0, len(seen))
-	for path := range seen {
-		tracked = append(tracked, path)
-	}
-	slices.Sort(tracked)
-	snapshots := make(map[string]fileSnapshot, len(tracked))
-	for _, path := range tracked {
-		fingerprint, ok := fingerprints[path]
-		if !ok {
-			fingerprint, _ = readReloadFingerprint(path)
-		}
-		snapshots[path] = fileSnapshot{
-			Path:        path,
-			Exists:      fingerprint.exists,
-			Size:        fingerprint.size,
-			ModTime:     fingerprint.modTime,
-			ContentHash: fingerprint.digest,
-		}
-	}
-	next := cur.clone()
-	next.trackedConfigPaths = tracked
-	next.snapshots = snapshots
-	s.publishLocked(next)
-}
-
 // captureStalenessSnapshot is the lock-acquiring entry point for callers
 // that do NOT already hold publishMu (primarily white-box tests). Production
 // code paths that already hold publishMu (Load, reloadFromDiskLocked) call

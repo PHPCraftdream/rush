@@ -144,14 +144,13 @@ func validateMCPMutation(operation string, scope Scope, oldName, newName string,
 	if operation == "replace" && oldOrigin.Kind == MCPOriginExternal {
 		return fmt.Errorf("%w: %q", ErrMCPExternal, oldName)
 	}
-	if operation != "disable" && !oldOrigin.Writable {
-		return fmt.Errorf("%w: %q is defined in %s", ErrMCPUnwritableOrigin, oldName, oldOrigin.Path)
-	}
 	if operation == "disable" && oldOrigin.Kind == MCPOriginExternal {
 		if scope != ScopeWorkspace {
 			return fmt.Errorf("%w: external server overrides require workspace scope", ErrMCPExternal)
 		}
-	} else if oldOrigin.Writable && oldOrigin.Scope != scope {
+	} else if !oldOrigin.Writable {
+		return fmt.Errorf("%w: %q is defined in %s", ErrMCPUnwritableOrigin, oldName, oldOrigin.Path)
+	} else if oldOrigin.Scope != scope {
 		return fmt.Errorf("%w: %q is owned by %s, not %s", ErrMCPStale, oldName, oldOrigin.Scope, scope)
 	}
 	if operation == "replace" && oldName != newName {
@@ -311,7 +310,7 @@ func (s *ConfigStore) evaluateMCPFiles(files *mcpLockedFiles) (mcpEvaluation, er
 					return mcpEvaluation{}, fmt.Errorf("invalid JSON in config file %s", path)
 				}
 				input = append(input, data)
-				entryOrigins(origins, path, s.workspacePathValue(), s.globalDataPath, data)
+				entryOrigins(origins, path, s.workspacePathValue(), s.globalDataPath, s.systemConfigPathValue(), data)
 			}
 		} else {
 			fingerprints[path] = reloadFileFingerprint{}
@@ -353,12 +352,15 @@ func (s *ConfigStore) evaluateMCPFiles(files *mcpLockedFiles) (mcpEvaluation, er
 }
 
 func (s *ConfigStore) orderedMCPPaths() []string {
-	paths := []string{SystemConfig(), GlobalConfig(), s.globalDataPath}
+	paths := []string{s.systemConfigPathValue(), GlobalConfig(), s.globalDataPath}
 	fixed := make(map[string]struct{}, len(paths))
 	for _, path := range paths {
 		if path != "" {
 			fixed[normalizeReloadPath(path)] = struct{}{}
 		}
+	}
+	if systemPath := SystemConfig(); systemPath != "" {
+		fixed[normalizeReloadPath(systemPath)] = struct{}{}
 	}
 	for _, path := range lookupConfigCandidates(s.workingDir) {
 		if _, ok := fixed[normalizeReloadPath(path)]; !ok {
@@ -367,6 +369,13 @@ func (s *ConfigStore) orderedMCPPaths() []string {
 	}
 	paths = append(paths, s.configPathOrEmpty(ScopeWorkspace))
 	return uniqueNormalizedPaths(paths)
+}
+
+func (s *ConfigStore) systemConfigPathValue() string {
+	if s.systemConfigPathOverride != "" {
+		return s.systemConfigPathOverride
+	}
+	return SystemConfig()
 }
 
 func (s *ConfigStore) mcpPathData(files *mcpLockedFiles, path string) ([]byte, bool, error) {
@@ -386,7 +395,7 @@ func (s *ConfigStore) mcpPathData(files *mcpLockedFiles, path string) ([]byte, b
 	return data, true, nil
 }
 
-func entryOrigins(origins map[string]MCPOrigin, path, workspacePath, globalPath string, data []byte) {
+func entryOrigins(origins map[string]MCPOrigin, path, workspacePath, globalPath, systemPath string, data []byte) {
 	var root struct {
 		MCP map[string]json.RawMessage `json:"mcp"`
 	}
@@ -403,7 +412,7 @@ func entryOrigins(origins map[string]MCPOrigin, path, workspacePath, globalPath 
 			origin.Kind, origin.Scope, origin.Writable = MCPOriginWorkspace, ScopeWorkspace, true
 		} else if path == normalizeReloadPath(globalPath) {
 			origin.Kind, origin.Scope, origin.Writable = MCPOriginGlobal, ScopeGlobal, true
-		} else if path == normalizeReloadPath(SystemConfig()) {
+		} else if path == normalizeReloadPath(systemPath) {
 			origin.Kind = MCPOriginSystem
 		}
 		origins[name] = origin

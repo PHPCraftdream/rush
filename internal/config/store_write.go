@@ -173,6 +173,17 @@ func (s *ConfigStore) withConfigWriteLockCtx(ctx context.Context, path string, f
 	return fn()
 }
 
+// noteInitialLoadWriteLocked advances Load's expected fingerprint after one
+// of its own self-healing writes. The caller holds diskWriteMu, so the exact
+// bytes written and the final verification share the same in-process write
+// boundary. External edits after this point still fail the final digest check.
+func (s *ConfigStore) noteInitialLoadWriteLocked(path string, data []byte) {
+	if s.initialLoadFingerprints == nil {
+		return
+	}
+	s.initialLoadFingerprints[normalizeReloadPath(path)] = dataFingerprint(path, data)
+}
+
 // SetConfigField sets an sjson path/value pair in the config file for the
 // given scope. Callers with dynamic MCP server names must use the dedicated
 // PersistMCP* methods, which treat names as literal JSON keys; this legacy
@@ -237,9 +248,11 @@ func (s *ConfigStore) SetConfigFields(scope Scope, kv map[string]any) error {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			return fmt.Errorf("failed to create config directory %q: %w", path, err)
 		}
-		if err := atomicWriteFile(path, []byte(newValue), 0o600); err != nil {
+		written := []byte(newValue)
+		if err := atomicWriteFile(path, written, 0o600); err != nil {
 			return fmt.Errorf("failed to write config file: %w", err)
 		}
+		s.noteInitialLoadWriteLocked(path, written)
 		return nil
 	}); err != nil {
 		return err
@@ -339,9 +352,11 @@ func (s *ConfigStore) removeConfigFieldAt(ctx context.Context, path, key string)
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			return fmt.Errorf("failed to create config directory %q: %w", path, err)
 		}
-		if err := atomicWriteFile(path, []byte(newValue), 0o600); err != nil {
+		written := []byte(newValue)
+		if err := atomicWriteFile(path, written, 0o600); err != nil {
 			return fmt.Errorf("failed to write config file: %w", err)
 		}
+		s.noteInitialLoadWriteLocked(path, written)
 		return nil
 	})
 }
