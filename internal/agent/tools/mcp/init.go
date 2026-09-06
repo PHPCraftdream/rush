@@ -346,6 +346,8 @@ type serverAdmission struct {
 	generation          uint64
 	epoch               uint64
 	cfg                 *config.ConfigStore
+	configIdentity      config.MCPConfig
+	hasConfigIdentity   bool
 	name                string
 	ctx                 context.Context
 	cancel              context.CancelFunc
@@ -430,10 +432,21 @@ func (a *serverAdmission) validLocked() bool {
 	if !exists {
 		return false
 	}
+	if a.hasConfigIdentity && !reflect.DeepEqual(a.configIdentity, mcpConfig) {
+		return false
+	}
 	return !mcpConfig.Disabled
 }
 
 func (o *Owner) admitServer(ctx context.Context, cfg *config.ConfigStore, name string, bump bool) (serverAdmission, error) {
+	return o.admitServerWithConfig(ctx, cfg, name, config.MCPConfig{}, false, bump)
+}
+
+func (o *Owner) admitServerForConfig(ctx context.Context, cfg *config.ConfigStore, name string, mcpConfig config.MCPConfig, bump bool) (serverAdmission, error) {
+	return o.admitServerWithConfig(ctx, cfg, name, mcpConfig, true, bump)
+}
+
+func (o *Owner) admitServerWithConfig(ctx context.Context, cfg *config.ConfigStore, name string, mcpConfig config.MCPConfig, pinConfig, bump bool) (serverAdmission, error) {
 	lifecycleMu.Lock()
 	defer lifecycleMu.Unlock()
 	if !o.isCurrentLocked() {
@@ -468,6 +481,8 @@ func (o *Owner) admitServer(ctx context.Context, cfg *config.ConfigStore, name s
 		generation:        o.generation,
 		epoch:             o.serverEpochs[name],
 		cfg:               cfg,
+		configIdentity:    mcpConfig,
+		hasConfigIdentity: pinConfig,
 		name:              name,
 		once:              new(sync.Once),
 		ctx:               operationCtx,
@@ -2072,7 +2087,12 @@ func removeServerWithResultPersistence(
 
 	lease := serverLeaseFor(name)
 	lease.Lock()
-	defer lease.Unlock()
+	leaseLocked := true
+	defer func() {
+		if leaseLocked {
+			lease.Unlock()
+		}
+	}()
 	mcpCfg, exists = cfg.MCPConfig(name)
 	if !exists {
 		return fmt.Errorf("MCP server %q disappeared while removing: %w", name, config.ErrMCPNotFound)
@@ -2126,6 +2146,8 @@ func removeServerWithResultPersistence(
 			publishStateEvent(name, StateDisabled, nil, Counts{})
 			return nil
 		}
+		leaseLocked = false
+		lease.Unlock()
 		startFallback(context.Background(), cfg, name, result.NewConfig, o)
 		return nil
 	}
@@ -2179,13 +2201,29 @@ func currentMCPMutationResult(cfg *config.ConfigStore, operation, oldName, newNa
 }
 
 func startFallback(ctx context.Context, cfg *config.ConfigStore, name string, mcpCfg config.MCPConfig, o *Owner) {
-	if mcpCfg.Disabled {
-		updateState(name, StateDisabled, nil, nil, Counts{})
-		publishStateEvent(name, StateDisabled, nil, Counts{})
+	// The mutation result can be stale as soon as its lease is released. Take
+	// the old-name lease again and compare the effective definition before
+	// admitting a fallback. This lets a newer mutation either win before this
+	// handoff or invalidate this exact admission after it is released.
+	lease := serverLeaseFor(name)
+	lease.Lock()
+	current, exists := cfg.MCPConfig(name)
+	if !exists || !reflect.DeepEqual(current, mcpCfg) {
+		lease.Unlock()
 		return
 	}
-	admission, err := o.admitServer(ctx, cfg, name, true)
+	if current.Disabled {
+		setState(name, StateDisabled, nil, nil, Counts{})
+		brokerForEvent := broker
+		lease.Unlock()
+		brokerForEvent.Publish(pubsub.UpdatedEvent, Event{
+			Type: EventStateChanged, Name: name, State: StateDisabled,
+		})
+		return
+	}
+	admission, err := o.admitServerForConfig(ctx, cfg, name, current, true)
 	if err != nil {
+		lease.Unlock()
 		if !errors.Is(err, ErrOwnerBusy) {
 			updateState(name, StateError, err, nil, Counts{})
 			publishStateEvent(name, StateError, err, Counts{})
@@ -2194,8 +2232,9 @@ func startFallback(ctx context.Context, cfg *config.ConfigStore, name string, mc
 	}
 	updateAdmissionState(&admission, StateStarting, nil, nil, Counts{})
 	resolver := cfg.Resolver()
+	lease.Unlock()
 	go func() {
-		if err := initClientAdmittedWithState(ctx, cfg, name, mcpCfg, resolver, &admission, false); err != nil {
+		if err := initClientAdmittedWithState(ctx, cfg, name, current, resolver, &admission, false); err != nil {
 			slog.Error("Failed to initialize revealed MCP server", "name", name, "err", err)
 		}
 	}()
