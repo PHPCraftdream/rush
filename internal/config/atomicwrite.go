@@ -35,17 +35,20 @@ var ErrConfigHardLink = errors.New("config file has multiple hard links")
 // must not blindly retry such an operation: the logical write already won.
 var errAtomicWriteCommitted = errors.New("config write committed with uncertain durability")
 
-// CommitOutcome is the public, byte-free description of a commit that passed
-// the point of no return but returned an error afterwards. Committed means
-// that the atomic directory-entry update completed. Reconciled means a fresh
-// read proved that Path contains the requested bytes. Cause retains both the
-// config sentinel and the underlying operation error and is available through
-// errors.Is and errors.As via Unwrap.
+// CommitOutcome is the public, byte-free description of a config publication.
+// Committed means that the atomic directory-entry update is proven complete;
+// MaybeCommitted means that the API outcome cannot prove either side. A
+// MaybeCommitted outcome is intentionally distinct from Committed so callers
+// cannot retry a mutation as though publication definitely failed.
+// Reconciled means a fresh read proved that Path contains the requested bytes.
+// Cause retains both the config sentinel and the underlying operation error
+// and is available through errors.Is and errors.As via Unwrap.
 type CommitOutcome struct {
-	Committed  bool
-	Reconciled bool
-	Path       string
-	Cause      error
+	Committed      bool
+	MaybeCommitted bool
+	Reconciled     bool
+	Path           string
+	Cause          error
 }
 
 func (e *CommitOutcome) Error() string {
@@ -88,6 +91,8 @@ var configTestHooks struct {
 	renameNoReplace       func(int, string, int, string) error
 	renameatxNp           func(int, string, int, string, uint32) error
 	moveFileEx            func(*uint16, *uint16, uint32) error
+	setFileInformation    func(uintptr, uint32, *byte, uint32) error
+	flushFileBuffers      func(uintptr) error
 	unlinkTemp            func(int, string) error
 	syncParent            func(string) error
 	syncParentFD          func(int) error
@@ -194,6 +199,14 @@ func newCommitOutcome(path string, committed, reconciled bool, causes ...error) 
 		Reconciled: reconciled,
 		Path:       filepath.Clean(path),
 		Cause:      errors.Join(causes...),
+	}
+}
+
+func newMaybeCommitOutcome(path string, causes ...error) error {
+	return &CommitOutcome{
+		MaybeCommitted: true,
+		Path:           filepath.Clean(path),
+		Cause:          errors.Join(causes...),
 	}
 }
 

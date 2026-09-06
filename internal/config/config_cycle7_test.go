@@ -163,26 +163,32 @@ func TestCycle7WriterHandoffAfterNonRetryableReloadFailure(t *testing.T) {
 	store.workingDir = root
 	firstHook := make(chan struct{})
 	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseHook := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseHook)
 	var calls int
 	store.reloadAfterDiskRead = func() {
 		calls++
 		if calls == 1 {
-			require.NoError(t, os.WriteFile(path, []byte(`{"hooks":{"PreToolUse":[{"matcher":"[bad","command":"true"}]}}`), 0o600))
+			require.NoError(t, writeStableConfigFile(path, []byte(`{"hooks":{"PreToolUse":[{"matcher":"[bad","command":"true"}]}}`)))
 			close(firstHook)
 			<-release
 		} else {
-			require.NoError(t, os.WriteFile(path, []byte(`{"options":{}}`), 0o600))
+			require.NoError(t, writeStableConfigFile(path, []byte(`{"options":{}}`)))
 		}
 	}
 	reloadDone := make(chan error, 1)
 	go func() { reloadDone <- store.ReloadFromDisk(context.Background()) }()
-	<-firstHook
+	select {
+	case <-firstHook:
+	case <-time.After(5 * time.Second):
+		t.Fatal("reload did not reach the handoff hook")
+	}
 	writerDone := make(chan error, 1)
 	go func() { writerDone <- store.SetConfigField(ScopeGlobal, "writer", true) }()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		data, err := os.ReadFile(path)
-		require.NoError(t, err)
+		data := mustReadCycle7File(t, path)
 		if string(data) != "" && strings.Contains(string(data), "writer") {
 			break
 		}
@@ -191,9 +197,19 @@ func TestCycle7WriterHandoffAfterNonRetryableReloadFailure(t *testing.T) {
 		}
 		time.Sleep(time.Millisecond)
 	}
-	close(release)
-	require.Error(t, <-reloadDone)
-	require.NoError(t, <-writerDone)
+	releaseHook()
+	select {
+	case err := <-reloadDone:
+		require.Error(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("reload did not finish after release")
+	}
+	select {
+	case err := <-writerDone:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("writer did not finish")
+	}
 	store.reloadPendingMu.Lock()
 	require.False(t, store.reloadPending)
 	store.reloadPendingMu.Unlock()
@@ -206,15 +222,23 @@ func TestCycle7WriterHandoffAfterReloadBudgetExhaustion(t *testing.T) {
 	store := newTestConfigStore(testStoreOpts{config: &Config{}, globalDataPath: path})
 	store.workingDir = root
 	started := make(chan struct{})
+	release := make(chan struct{})
 	var once sync.Once
+	var releaseOnce sync.Once
+	releaseHook := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseHook)
 	calls := 0
 	store.reloadAfterDiskRead = func() {
 		once.Do(func() { close(started) })
 		if calls == 0 {
 			deadline := time.Now().Add(5 * time.Second)
 			for {
-				data, err := os.ReadFile(path)
-				require.NoError(t, err)
+				select {
+				case <-release:
+					return
+				default:
+				}
+				data := mustReadCycle7File(t, path)
 				if strings.Contains(string(data), "writer") {
 					break
 				}
@@ -225,22 +249,47 @@ func TestCycle7WriterHandoffAfterReloadBudgetExhaustion(t *testing.T) {
 			}
 		}
 		calls++
-		data, err := os.ReadFile(path)
-		require.NoError(t, err)
-		require.NoError(t, os.WriteFile(path, append(data, ' '), 0o600))
+		data := mustReadCycle7File(t, path)
+		require.NoError(t, writeStableConfigFile(path, append(data, ' ')))
 	}
 	reloadDone := make(chan error, 1)
 	go func() { reloadDone <- store.ReloadFromDisk(context.Background()) }()
-	<-started
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("reload did not reach the handoff hook")
+	}
 	writerDone := make(chan error, 1)
 	go func() { writerDone <- store.SetConfigField(ScopeGlobal, "writer", true) }()
-	require.Error(t, <-reloadDone)
-	if err := <-writerDone; err != nil {
-		require.ErrorIs(t, err, ErrConfigReloadUnstable)
+	select {
+	case err := <-reloadDone:
+		require.Error(t, err)
+	case <-time.After(5 * time.Second):
+		releaseHook()
+		t.Fatal("reload did not finish")
+	}
+	select {
+	case err := <-writerDone:
+		if err != nil {
+			require.ErrorIs(t, err, ErrConfigReloadUnstable)
+		}
+	case <-time.After(5 * time.Second):
+		releaseHook()
+		t.Fatal("writer did not finish")
 	}
 	store.reloadPendingMu.Lock()
 	require.False(t, store.reloadPending)
 	store.reloadPendingMu.Unlock()
+}
+
+func mustReadCycle7File(t *testing.T, path string) []byte {
+	t.Helper()
+	file, err := openStableConfigFile(path)
+	require.NoError(t, err)
+	defer file.Close()
+	data, err := readOpenedConfigBytes(file)
+	require.NoError(t, err)
+	return data
 }
 
 func setMCPFile(t *testing.T, path, name, url string) {

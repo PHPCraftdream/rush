@@ -224,6 +224,10 @@ func isolatedMCPConfigStore(t *testing.T) (*ConfigStore, string) {
 	t.Setenv("XDG_CONFIG_HOME", configDir)
 	t.Setenv("RUSH_GLOBAL_DATA", dataDir)
 	t.Setenv("XDG_DATA_HOME", dataDir)
+	// MCP transaction fixtures must not depend on provider discovery or
+	// mutate a process-wide provider cache while ConfigStore.Init loads.
+	t.Setenv("RUSH_DISABLE_PROVIDER_AUTO_UPDATE", "1")
+	t.Setenv("RUSH_PROVIDER_CACHE_ONLY", "1")
 	store, err := Init(root, root, false)
 	require.NoError(t, err)
 	return store, root

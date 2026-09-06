@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"unsafe"
 
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/windows"
@@ -119,4 +120,82 @@ func TestWindowsCommitMoveFileExAccessDeniedBeforePublicationLeavesIdenticalDest
 
 func TestWindowsParentSyncIsAProductionNoOp(t *testing.T) {
 	require.NoError(t, syncConfigParentOnDisk(filepath.Join(t.TempDir(), "does-not-exist")))
+}
+
+func TestRenameConfigTempHandleUsesPinnedParentAndRelativeName(t *testing.T) {
+	root := t.TempDir()
+	sourcePath := filepath.Join(root, "source.tmp")
+	require.NoError(t, os.WriteFile(sourcePath, []byte("source"), 0o600))
+	source, err := openWindowsConfigHandle(sourcePath, windows.GENERIC_READ|windows.GENERIC_WRITE|windows.DELETE, windows.FILE_FLAG_OPEN_REPARSE_POINT)
+	require.NoError(t, err)
+	defer source.Close()
+	parent, err := openWindowsConfigHandle(root, windows.GENERIC_READ|windows.GENERIC_WRITE, windows.FILE_FLAG_BACKUP_SEMANTICS|windows.FILE_FLAG_OPEN_REPARSE_POINT)
+	require.NoError(t, err)
+	defer parent.Close()
+
+	var gotClass uint32
+	var gotRoot windows.Handle
+	var gotName string
+	configTestHooks.Lock()
+	previous := configTestHooks.setFileInformation
+	configTestHooks.setFileInformation = func(_ uintptr, class uint32, buffer *byte, length uint32) error {
+		gotClass = class
+		info := (*windowsFileRenameInfo)(unsafe.Pointer(buffer))
+		gotRoot = info.RootDirectory
+		name := unsafe.Slice(&info.FileName[0], int(info.FileNameLength/2))
+		gotName = windows.UTF16ToString(name)
+		require.Equal(t, uint32(unsafe.Offsetof(windowsFileRenameInfo{}.FileName))+info.FileNameLength, length)
+		return nil
+	}
+	configTestHooks.Unlock()
+	t.Cleanup(func() {
+		configTestHooks.Lock()
+		configTestHooks.setFileInformation = previous
+		configTestHooks.Unlock()
+	})
+
+	require.NoError(t, renameConfigTempHandle(source, sourcePath, parent, "published.json", true))
+	require.Equal(t, uint32(windows.FileRenameInfoEx), gotClass)
+	require.Equal(t, windows.Handle(parent.Fd()), gotRoot)
+	require.Equal(t, "published.json", gotName)
+	require.NotContains(t, gotName, string(filepath.Separator))
+}
+
+func TestWindowsCommitPublishesThroughPinnedParentAfterPathMove(t *testing.T) {
+	root := t.TempDir()
+	parentPath := filepath.Join(root, "config")
+	movedParentPath := filepath.Join(root, "config.moved")
+	path := filepath.Join(parentPath, "rush.json")
+	data := []byte(`{"new":true}`)
+	decoy := []byte(`{"decoy":true}`)
+	require.NoError(t, os.Mkdir(parentPath, 0o755))
+	require.NoError(t, os.WriteFile(path, []byte(`{"old":true}`), 0o600))
+	_, expected, err := readStableConfigFile(path)
+	require.NoError(t, err)
+
+	configTestHooks.Lock()
+	previousCheck := configTestHooks.beforeCommitCheck
+	previousSync := configTestHooks.syncParentFD
+	configTestHooks.beforeCommitCheck = func() {
+		require.NoError(t, os.Rename(parentPath, movedParentPath))
+		require.NoError(t, os.Mkdir(parentPath, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(parentPath, "rush.json"), decoy, 0o600))
+	}
+	configTestHooks.syncParentFD = func(int) error { return nil }
+	configTestHooks.Unlock()
+	t.Cleanup(func() {
+		configTestHooks.Lock()
+		configTestHooks.beforeCommitCheck = previousCheck
+		configTestHooks.syncParentFD = previousSync
+		configTestHooks.Unlock()
+	})
+
+	_, err = commitConfigFile(path, path, data, 0o600, expected, -1, false)
+	var outcome *CommitOutcome
+	require.ErrorAs(t, err, &outcome)
+	require.True(t, outcome.Committed)
+	require.False(t, outcome.Reconciled)
+	require.ErrorIs(t, err, errConfigCommitUncertain)
+	require.Equal(t, data, mustReadFile(t, filepath.Join(movedParentPath, "rush.json")))
+	require.Equal(t, decoy, mustReadFile(t, path))
 }

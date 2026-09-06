@@ -65,7 +65,7 @@ func readStableConfigFileOwned(path string, expectedOwner int, enforceOwner bool
 	for attempt := 0; attempt < stableReadMaxAttempts; attempt++ {
 		beforeDiscovery := configDiscoveryFingerprint(path)
 		runConfigBeforeOpenHook(path)
-		file, err := os.Open(path)
+		file, err := openStableConfigFile(path)
 		if err != nil {
 			if os.IsNotExist(err) {
 				return nil, reloadFileFingerprint{
