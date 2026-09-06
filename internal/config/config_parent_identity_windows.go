@@ -3,7 +3,11 @@
 package config
 
 func configParentIdentity(path string) configFileIdentity {
-	parent, err := openWindowsConfigParent(path)
+	physicalPath, err := physicalWindowsConfigPath(path)
+	if err != nil {
+		return configFileIdentity{}
+	}
+	parent, err := openWindowsConfigParent(physicalPath)
 	if err != nil {
 		return configFileIdentity{}
 	}

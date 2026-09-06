@@ -82,3 +82,37 @@ func TestWindowsGenericConfigMutationRejectsHardLink(t *testing.T) {
 	require.Equal(t, contents, mustReadFile(t, path))
 	require.Equal(t, contents, mustReadFile(t, alias))
 }
+
+func TestWindowsConfigSymlinkAliasInDifferentDirectoryPublishesToTarget(t *testing.T) {
+	root := t.TempDir()
+	targetDir := filepath.Join(root, "target")
+	aliasDir := filepath.Join(root, "alias")
+	target := filepath.Join(targetDir, "rush.json")
+	alias := filepath.Join(aliasDir, "rush.json")
+	require.NoError(t, os.MkdirAll(targetDir, 0o755))
+	require.NoError(t, os.MkdirAll(aliasDir, 0o755))
+	contents := []byte(`{"options":{"debug":false}}`)
+	require.NoError(t, os.WriteFile(target, contents, 0o600))
+	if err := os.Symlink(target, alias); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	store := newTestConfigStore(testStoreOpts{
+		config:         &Config{Options: &Options{}},
+		globalDataPath: alias,
+	})
+	store.workingDir = root
+	require.NoError(t, store.SetConfigField(ScopeGlobal, "options.debug", true))
+	require.NoError(t, store.PersistMCPConfig(ScopeGlobal, "alias-test", MCPConfig{
+		Type: MCPHttp,
+		URL:  "http://alias.example",
+	}))
+
+	targetData := mustReadFile(t, target)
+	require.Contains(t, string(targetData), `"debug": true`)
+	require.Contains(t, string(targetData), "alias.example")
+	aliasInfo, err := os.Lstat(alias)
+	require.NoError(t, err)
+	require.NotEqual(t, 0, aliasInfo.Mode()&os.ModeSymlink)
+	require.Equal(t, targetData, mustReadFile(t, alias))
+}
