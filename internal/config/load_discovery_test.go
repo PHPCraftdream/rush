@@ -200,6 +200,24 @@ func TestLookupConfigCandidatesCanonicalizesSymlinkedNestedRepository(t *testing
 	require.NotContains(t, paths, filepath.Join(outer, "rush.json"))
 }
 
+func TestReadStableConfigDocumentsDeduplicatesCanonicalFileIdentity(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "rush.json")
+	aliasDir := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(root, aliasDir); err != nil {
+		t.Skipf("directory symlinks unavailable: %v", err)
+	}
+	require.NoError(t, os.WriteFile(path, []byte(`{"options":{"debug":true}}`), 0o600))
+
+	documents, err := readStableConfigDocuments([]string{path, filepath.Join(aliasDir, "rush.json")})
+	require.NoError(t, err)
+	require.Len(t, documents, 1, "one physical rush.json must produce one document")
+	_, loaded, fingerprints := configDocumentBytes(documents)
+	require.Len(t, loaded, 1)
+	require.Len(t, fingerprints, 1)
+	require.True(t, pathAlreadyLoaded(loaded, filepath.Join(aliasDir, "rush.json")))
+}
+
 func TestProjectSkillsDir_MonorepoGitRoot(t *testing.T) {
 	t.Parallel()
 

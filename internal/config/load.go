@@ -65,8 +65,8 @@ func loadOnce(workingDir, dataDir string, debug bool) (*ConfigStore, error) {
 
 	cfg.setDefaults(workingDir, dataDir)
 
-	globalDataPath := GlobalConfigData()
-	workspacePath := filepath.Join(cfg.Options.DataDirectory, fmt.Sprintf("%s.json", appName))
+	globalDataPath := normalizeReloadPath(GlobalConfigData())
+	workspacePath := normalizeReloadPath(filepath.Join(cfg.Options.DataDirectory, fmt.Sprintf("%s.json", appName)))
 
 	if debug {
 		cfg.Options.Debug = true
@@ -83,7 +83,7 @@ func loadOnce(workingDir, dataDir string, debug bool) (*ConfigStore, error) {
 		globalDataPath: globalDataPath,
 	}
 	// Load workspace config last so it has highest priority.
-	if !pathAlreadyLoaded(loadedPaths, workspacePath) {
+	if !pathAlreadyLoaded(loadedPaths, workspacePath) && eligibleWorkspaceConfig(workspacePath, workingDir) != "" {
 		wsData, fingerprint, readErr := readStableConfigFile(workspacePath)
 		if readErr == nil {
 			fingerprints[normalizeReloadPath(workspacePath)] = fingerprint

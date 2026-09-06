@@ -236,6 +236,30 @@ func TestMCPEnableDisable(t *testing.T) {
 	require.True(t, strings.Contains(string(data), `"disabled"`))
 }
 
+func TestWriteMCPDisabledMutationMessageReportsEffectiveShadow(t *testing.T) {
+	var output strings.Builder
+	writeMCPDisabledMutationMessage(&output, "shadowed", config.ScopeGlobal, false, config.MCPMutationResult{
+		NewExists: true,
+		NewConfig: config.MCPConfig{Disabled: true},
+		NewOrigin: config.MCPOrigin{Kind: config.MCPOriginWorkspace},
+	})
+
+	require.Contains(t, output.String(), "warning")
+	require.Contains(t, output.String(), `"shadowed" enabled in global scope`)
+	require.Contains(t, output.String(), "effectively disabled")
+	require.Contains(t, output.String(), "workspace scope")
+}
+
+func TestWriteMCPDisabledMutationMessageReportsScopedEffectiveState(t *testing.T) {
+	var output strings.Builder
+	writeMCPDisabledMutationMessage(&output, "server", config.ScopeWorkspace, true, config.MCPMutationResult{
+		NewExists: true,
+		NewConfig: config.MCPConfig{Disabled: true},
+	})
+
+	require.Equal(t, `MCP server "server" disabled in workspace scope (effective: disabled)`+"\n", output.String())
+}
+
 // TestMCPAdd_StdioValidation verifies that stdio MCP config produces correct
 // list items with command set.
 func TestMCPAdd_StdioValidation(t *testing.T) {

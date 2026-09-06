@@ -197,7 +197,12 @@ func TestConfigStorePersistReplaceMCPInScopeTargetsWorkspaceAndPreservesFallback
 
 func writeMCPDefinition(t *testing.T, path, name string) {
 	t.Helper()
-	data, err := json.Marshal(map[string]any{"mcp": map[string]any{name: MCPConfig{Type: MCPHttp, URL: "http://example.com"}}})
+	writeMCPDefinitionState(t, path, name, MCPConfig{Type: MCPHttp, URL: "http://example.com"})
+}
+
+func writeMCPDefinitionState(t *testing.T, path, name string, value MCPConfig) {
+	t.Helper()
+	data, err := json.Marshal(map[string]any{"mcp": map[string]any{name: value}})
 	require.NoError(t, err)
 	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
 	require.NoError(t, os.WriteFile(path, data, 0o600))
@@ -330,7 +335,7 @@ func TestConfigStoreExactMCPDisabledOverrideMutatesShadowedGlobal(t *testing.T) 
 	store, root := isolatedMCPConfigStore(t)
 	name := "shadowed-disabled"
 	workspacePath := filepath.Join(root, "rush.json")
-	writeMCPDefinition(t, workspacePath, name)
+	writeMCPDefinitionState(t, workspacePath, name, MCPConfig{Type: MCPHttp, URL: "http://workspace.example", Disabled: true})
 	require.NoError(t, store.ReloadFromDisk(context.Background()))
 	workspaceBefore, err := os.ReadFile(workspacePath)
 	require.NoError(t, err)
@@ -340,8 +345,8 @@ func TestConfigStoreExactMCPDisabledOverrideMutatesShadowedGlobal(t *testing.T) 
 	}))
 
 	// Exact scope controls the file being mutated, not whether the selected
-	// field contributes to the merged view. The workspace fixture omits the
-	// false disabled field, so it inherits the explicit true global value.
+	// field contributes to the merged view. The explicit workspace disabled
+	// value shadows the global enable.
 	require.NoError(t, store.PersistMCPDisabledOverrideExact(ScopeGlobal, name, true))
 	globalData, err := os.ReadFile(GlobalConfigData())
 	require.NoError(t, err)
@@ -357,7 +362,11 @@ func TestConfigStoreExactMCPDisabledOverrideMutatesShadowedGlobal(t *testing.T) 
 	require.NoError(t, err)
 	require.Equal(t, workspaceBefore, workspaceAfter)
 
-	require.NoError(t, store.PersistMCPDisabledOverrideExact(ScopeGlobal, name, false))
+	result, err := store.PersistMCPDisabledOverrideExactResult(ScopeGlobal, name, false)
+	require.NoError(t, err)
+	require.True(t, result.NewExists)
+	require.True(t, result.NewConfig.Disabled)
+	require.Equal(t, MCPOriginWorkspace, result.NewOrigin.Kind)
 	globalData, err = os.ReadFile(GlobalConfigData())
 	require.NoError(t, err)
 	entry, ok = mcpEntryFromJSON(globalData, name)
@@ -366,7 +375,7 @@ func TestConfigStoreExactMCPDisabledOverrideMutatesShadowedGlobal(t *testing.T) 
 	require.False(t, disabled)
 	effective, ok = store.MCPConfig(name)
 	require.True(t, ok)
-	require.False(t, effective.Disabled)
+	require.True(t, effective.Disabled)
 }
 
 func TestLoadFromBytesRejectsWrongTypedMCPDisabledOverlay(t *testing.T) {

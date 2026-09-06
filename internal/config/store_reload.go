@@ -229,8 +229,8 @@ func (s *ConfigStore) buildAndPublishReload(ctx context.Context) error {
 	}
 	cfg.setDefaults(s.workingDir, dataDir)
 
-	workspacePath := filepath.Join(cfg.Options.DataDirectory, fmt.Sprintf("%s.json", appName))
-	if !pathAlreadyLoaded(loadedPaths, workspacePath) {
+	workspacePath := normalizeReloadPath(filepath.Join(cfg.Options.DataDirectory, fmt.Sprintf("%s.json", appName)))
+	if !pathAlreadyLoaded(loadedPaths, workspacePath) && eligibleWorkspaceConfig(workspacePath, s.workingDir) != "" {
 		wsData, fingerprint, readErr := readStableConfigFile(workspacePath)
 		if readErr == nil {
 			fingerprints[normalizeReloadPath(workspacePath)] = fingerprint
@@ -525,11 +525,7 @@ func sameReloadPathSet(left, right []string) bool {
 }
 
 func normalizeReloadPath(path string) string {
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return filepath.Clean(path)
-	}
-	return abs
+	return canonicalConfigPath(path)
 }
 
 func reloadStalenessState(paths []string, fingerprints map[string]reloadFileFingerprint) ([]string, map[string]fileSnapshot) {

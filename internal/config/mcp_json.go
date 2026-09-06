@@ -74,12 +74,16 @@ func mcpJSONCandidatePaths(workingDir string) []string {
 
 	// Global: ~/.claude/.mcp.json
 	if homeDir := home.Dir(); homeDir != "" {
-		paths = append(paths, filepath.Join(homeDir, ".claude", ".mcp.json"))
+		if path := eligibleConfigCandidate(filepath.Join(homeDir, ".claude", ".mcp.json"), homeConfigOwner()); path != "" {
+			paths = append(paths, path)
+		}
 	}
 
 	// Project root: <workingDir>/.mcp.json
 	if workingDir != "" {
-		paths = append(paths, filepath.Join(workingDir, ".mcp.json"))
+		if path := eligibleWorkspaceConfig(filepath.Join(canonicalConfigPath(workingDir), ".mcp.json"), workingDir); path != "" {
+			paths = append(paths, path)
+		}
 	}
 
 	return paths

@@ -3,6 +3,7 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strings"
@@ -191,7 +192,7 @@ rush mcp show my-server --json
 var mcpEnableCmd = &cobra.Command{
 	Use:   "enable <id>",
 	Short: "Enable an MCP server",
-	Long:  `Set mcp.<id>.disabled = false in the chosen scope.`,
+	Long:  `Set mcp.<id>.disabled = false in the chosen scope. Reports when a higher-priority scope keeps the effective server disabled.`,
 	Args:  cobra.ExactArgs(1),
 	Example: `
 rush mcp enable my-server
@@ -214,11 +215,12 @@ rush mcp enable my-server --global
 			return fmt.Errorf("MCP server %q not found, see `rush mcp list`", id)
 		}
 
-		if err := a.Store().PersistMCPDisabledOverrideExact(scope, id, false); err != nil {
+		result, err := a.Store().PersistMCPDisabledOverrideExactResult(scope, id, false)
+		if err != nil {
 			return fmt.Errorf("failed to enable MCP server: %w", err)
 		}
 
-		fmt.Fprintf(os.Stderr, "✓ %s enabled\n", id)
+		writeMCPDisabledMutationMessage(os.Stderr, id, scope, false, result)
 		return nil
 	},
 }
@@ -226,7 +228,7 @@ rush mcp enable my-server --global
 var mcpDisableCmd = &cobra.Command{
 	Use:   "disable <id>",
 	Short: "Disable an MCP server",
-	Long:  `Set mcp.<id>.disabled = true in the chosen scope.`,
+	Long:  `Set mcp.<id>.disabled = true in the chosen scope. Reports when a higher-priority scope keeps the effective server enabled.`,
 	Args:  cobra.ExactArgs(1),
 	Example: `
 rush mcp disable my-server
@@ -249,11 +251,12 @@ rush mcp disable my-server --local
 			return fmt.Errorf("MCP server %q not found, see `rush mcp list`", id)
 		}
 
-		if err := a.Store().PersistMCPDisabledOverrideExact(scope, id, true); err != nil {
+		result, err := a.Store().PersistMCPDisabledOverrideExactResult(scope, id, true)
+		if err != nil {
 			return fmt.Errorf("failed to disable MCP server: %w", err)
 		}
 
-		fmt.Fprintf(os.Stderr, "%s disabled\n", id)
+		writeMCPDisabledMutationMessage(os.Stderr, id, scope, true, result)
 		return nil
 	},
 }
@@ -609,6 +612,26 @@ func makeMCPListItem(id string, m config.MCPConfig) mcpListItem {
 		Timeout:       m.Timeout,
 		Source:        string(m.Source),
 	}
+}
+
+func writeMCPDisabledMutationMessage(w io.Writer, id string, scope config.Scope, disabled bool, result config.MCPMutationResult) {
+	desired := "enabled"
+	effective := "enabled"
+	if disabled {
+		desired = "disabled"
+	}
+	if result.NewExists && result.NewConfig.Disabled {
+		effective = "disabled"
+	}
+	if result.NewExists && result.NewConfig.Disabled != disabled {
+		origin := string(result.NewOrigin.Kind)
+		if origin == "" {
+			origin = result.NewOrigin.Scope.String()
+		}
+		fmt.Fprintf(w, "warning: MCP server %q %s in %s scope, but is effectively %s due to the higher-priority %s scope\n", id, desired, scope, effective, origin)
+		return
+	}
+	fmt.Fprintf(w, "MCP server %q %s in %s scope (effective: %s)\n", id, desired, scope, effective)
 }
 
 func matchesMCPGrep(id string, m config.MCPConfig, pattern string) bool {

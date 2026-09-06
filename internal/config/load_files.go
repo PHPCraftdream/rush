@@ -37,7 +37,19 @@ func lookupConfigs(cwd string) []string {
 // tracking must retain these negative lookups so creating a previously
 // absent config file is observable by the watcher.
 func lookupConfigCandidates(cwd string) []string {
-	paths := []string{systemConfigPath, GlobalConfig(), GlobalConfigData()}
+	paths := make([]string, 0, 3)
+	for _, candidate := range []struct {
+		path  string
+		owner int
+	}{
+		{systemConfigPath, systemConfigOwner()},
+		{GlobalConfig(), homeConfigOwner()},
+		{GlobalConfigData(), homeConfigOwner()},
+	} {
+		if eligible := eligibleConfigCandidate(candidate.path, candidate.owner); eligible != "" {
+			paths = append(paths, eligible)
+		}
+	}
 	if cwd == "" {
 		return paths
 	}
@@ -79,19 +91,60 @@ func canonicalConfigPath(path string) string {
 	if err != nil {
 		return filepath.Clean(path)
 	}
+	abs = filepath.Clean(abs)
 	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
-		return resolved
+		return filepath.Clean(resolved)
+	} else if !os.IsNotExist(err) {
+		return abs
 	}
-	return filepath.Clean(abs)
+
+	// EvalSymlinks cannot resolve an absent leaf, but its existing parent may
+	// still be a symlink or junction. Resolve that parent so an absent
+	// candidate and the same candidate reached through an alias share the
+	// identity used by reload fingerprints.
+	var missing []string
+	for current := abs; ; current = filepath.Dir(current) {
+		missing = append(missing, filepath.Base(current))
+		parent := filepath.Dir(current)
+		resolved, resolveErr := filepath.EvalSymlinks(parent)
+		if resolveErr == nil {
+			for i := len(missing) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, missing[i])
+			}
+			return filepath.Clean(resolved)
+		}
+		if parent == current || !os.IsNotExist(resolveErr) {
+			return abs
+		}
+	}
 }
 
 func configOwnersMatch(expected, actual int) bool {
 	return expected == -1 || actual == expected
 }
 
+// eligibleWorkspaceConfig returns the workspace config only when the
+// working directory has a trustworthy owner and the config has that same
+// owner. A workspace config is project-scoped even when data_directory points
+// outside the checkout, so it uses the checkout policy rather than the home
+// or system policy.
+func eligibleWorkspaceConfig(path, workingDir string) string {
+	if workingDir == "" {
+		return ""
+	}
+	owner, err := fsext.Owner(canonicalConfigPath(workingDir))
+	if err != nil {
+		return ""
+	}
+	return eligibleConfigCandidate(path, owner)
+}
+
 // eligibleConfigCandidate retains absent candidates for negative staleness
 // tracking, while rejecting existing foreign-owned files and directories.
 func eligibleConfigCandidate(path string, owner int) string {
+	if path == "" {
+		return ""
+	}
 	info, err := os.Stat(path)
 	if os.IsNotExist(err) {
 		return path
@@ -129,9 +182,9 @@ func eligibleConfigCandidate(path string, owner int) string {
 // double-processing of one file's content) and for the concurrent-write
 // case (no second, possibly-different read of the same path).
 func pathAlreadyLoaded(loadedPaths []string, path string) bool {
-	clean := filepath.Clean(path)
+	clean := normalizeReloadPath(path)
 	return slices.ContainsFunc(loadedPaths, func(p string) bool {
-		return filepath.Clean(p) == clean
+		return normalizeReloadPath(p) == clean
 	})
 }
 
@@ -219,11 +272,10 @@ func configDocumentBytes(documents []stableConfigDocument) ([][]byte, []string, 
 		if !document.present {
 			continue
 		}
-		if len(document.data) == 0 {
-			continue
-		}
-		configs = append(configs, document.data)
 		loaded = append(loaded, document.path)
+		if len(document.data) > 0 {
+			configs = append(configs, document.data)
+		}
 	}
 	return configs, loaded, fingerprints
 }
