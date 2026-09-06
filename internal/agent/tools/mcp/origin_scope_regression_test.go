@@ -98,8 +98,6 @@ func TestReplaceServerWorkspaceLiteralNamePersistsAcrossReloadAndRestart(t *test
 	newName := "foo.timeout#*?"
 	oldHTTP := originTestServer(t, "old-tool", "old")
 	newHTTP := originTestServer(t, "new-tool", "new")
-	defer oldHTTP.Close()
-	defer newHTTP.Close()
 
 	require.NoError(t, store.PersistMCPConfig(config.ScopeWorkspace, oldName, config.MCPConfig{
 		Type: config.MCPHttp, URL: oldHTTP.URL, Timeout: 60,
@@ -161,8 +159,6 @@ func TestReplaceServerGlobalOriginKeepsGlobalPersistence(t *testing.T) {
 	newName := "global.bar"
 	oldHTTP := originTestServer(t, "old-tool", "old")
 	newHTTP := originTestServer(t, "new-tool", "new")
-	defer oldHTTP.Close()
-	defer newHTTP.Close()
 	require.NoError(t, store.PersistMCPConfig(config.ScopeGlobal, oldName, config.MCPConfig{
 		Type: config.MCPHttp, URL: oldHTTP.URL, Timeout: 60,
 	}))
@@ -300,11 +296,6 @@ func TestWorkspaceRemovalAndReplaceStartRevealedFallbacks(t *testing.T) {
 	externalServer := originTestServer(t, "external-fallback-tool", "external-fallback")
 	replaceServer := originTestServer(t, "replace-fallback-tool", "replace-fallback")
 	newServer := originTestServer(t, "replacement-tool", "replacement")
-	defer globalServer.Close()
-	defer projectServer.Close()
-	defer externalServer.Close()
-	defer replaceServer.Close()
-	defer newServer.Close()
 
 	globalName := "fallback.global#?"
 	projectName := "fallback.project#?"
@@ -568,7 +559,6 @@ func TestBlockedProjectInitializerIsNotPendingGlobalAdd(t *testing.T) {
 				delegate.ServeHTTP(w, r)
 			}))
 			cleanupTestMCPServer(t, server, httpServer)
-			defer httpServer.Close()
 
 			name := "project.blocked." + testName
 			projectData, err := json.Marshal(map[string]any{"mcp": map[string]any{
@@ -621,7 +611,6 @@ func TestReplaceServerRejectsScopeChangeBeforeDurableWrite(t *testing.T) {
 	globalPath := config.GlobalConfigData()
 	oldName := "scope-change"
 	oldHTTP := originTestServer(t, "old-tool", "old")
-	defer oldHTTP.Close()
 	require.NoError(t, store.PersistMCPConfig(config.ScopeWorkspace, oldName, config.MCPConfig{
 		Type: config.MCPHttp, URL: oldHTTP.URL, Timeout: 60,
 	}))
@@ -655,7 +644,6 @@ func TestReplaceServerRejectsScopeChangeBeforeDurableWrite(t *testing.T) {
 		delegate.ServeHTTP(w, r)
 	}))
 	cleanupTestMCPServer(t, candidateServer, candidate)
-	defer candidate.Close()
 
 	err = ReplaceServer(context.Background(), store, oldName, "scope-change-new", config.MCPConfig{
 		Type: config.MCPHttp, URL: candidate.URL, Timeout: 60,

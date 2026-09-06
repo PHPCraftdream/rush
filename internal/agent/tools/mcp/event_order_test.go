@@ -2,6 +2,8 @@ package mcp
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
 
@@ -260,6 +262,98 @@ func TestReplacePublishesBeforeBlockedCloseAndConcurrentRemove(t *testing.T) {
 	select {
 	case event := <-events:
 		t.Fatalf("replacement/remove published an extra event: %v", event)
+	default:
+	}
+}
+
+func TestReplaceRevealedFallbackStartsBeforeBlockedCloseAndMutation(t *testing.T) {
+	store := isolatedMCPStore(t)
+	const oldName = "replace-fallback-old"
+	const newName = "replace-fallback-new"
+	fallbackStarted := make(chan struct{})
+	releaseFallback := make(chan struct{})
+	var fallbackOnce sync.Once
+	fallbackHTTP := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fallbackOnce.Do(func() { close(fallbackStarted) })
+		select {
+		case <-r.Context().Done():
+		case <-releaseFallback:
+		}
+	}))
+	defer fallbackHTTP.Close()
+	oldConfig := config.MCPConfig{Type: config.MCPHttp, URL: fallbackHTTP.URL, Timeout: 60}
+	require.NoError(t, store.PersistMCPConfig(config.ScopeGlobal, oldName, oldConfig))
+	owner, err := Acquire()
+	require.NoError(t, err)
+	closeStarted := make(chan struct{})
+	var closeOnce sync.Once
+	releaseClose := make(chan struct{})
+	oldSession := &ClientSession{terminal: func() {
+		closeOnce.Do(func() { close(closeStarted) })
+		<-releaseClose
+	}}
+	sessions.Set(oldName, oldSession)
+	setState(oldName, StateConnected, nil, oldSession, Counts{})
+
+	eventsCtx, cancelEvents := context.WithCancel(context.Background())
+	defer cancelEvents()
+	events := SubscribeEvents(eventsCtx)
+	defer func() {
+		select {
+		case <-releaseFallback:
+		default:
+			close(releaseFallback)
+		}
+		select {
+		case <-releaseClose:
+		default:
+			close(releaseClose)
+		}
+		require.NoError(t, owner.Close(context.Background()))
+	}()
+
+	newConfig := config.MCPConfig{Type: config.MCPStdio, Command: newName}
+	replaceDone := make(chan error, 1)
+	go func() {
+		replaceDone <- replaceServerWithResultPersistenceAndPreparation(
+			context.Background(), store, oldName, newName, newConfig,
+			func(cfg *config.ConfigStore, _ config.Scope, oldName, newName string, value config.MCPConfig) (config.MCPMutationResult, error) {
+				cfg.AddMCP(newName, value)
+				return config.MCPMutationResult{
+					Operation:      "replace",
+					OldName:        oldName,
+					NewName:        newName,
+					NewExists:      true,
+					NewConfig:      value,
+					FallbackExists: true,
+					FallbackConfig: oldConfig,
+				}, nil
+			}, func(context.Context, *config.ConfigStore, string, config.MCPConfig, config.VariableResolver, *serverAdmission) (*preparedClient, error) {
+				return &preparedClient{session: &ClientSession{}}, nil
+			},
+		)
+	}()
+
+	requireTransactionalEvent(t, events, pubsub.UpdatedEvent, newName, StateConnected)
+	requireTransactionalEvent(t, events, pubsub.UpdatedEvent, oldName, StateStarting)
+	awaitMCPSignal(t, fallbackStarted)
+	awaitMCPSignal(t, closeStarted)
+
+	disableDone := make(chan error, 1)
+	go func() {
+		disableDone <- DisableServer(context.Background(), store, oldName)
+	}()
+	require.NoError(t, awaitMCPError(t, disableDone))
+	requireTransactionalEvent(t, events, pubsub.UpdatedEvent, oldName, StateDisabled)
+
+	close(releaseFallback)
+	close(releaseClose)
+	require.NoError(t, awaitMCPError(t, replaceDone))
+	select {
+	case event := <-events:
+		if event.Payload.Name == oldName && event.Payload.State == StateConnected {
+			t.Fatalf("fallback published after concurrent disable: %v", event)
+		}
 	default:
 	}
 }

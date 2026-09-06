@@ -65,7 +65,6 @@ func diskMCP(t *testing.T) map[string]json.RawMessage {
 
 func TestReplaceServerFailedSameNamePreservesLiveServerAndDisk(t *testing.T) {
 	oldServer, oldHTTP := transactionalNotifyingServer(t, "old-tool", "old")
-	defer oldHTTP.Close()
 	store, owner := connectedTransactionalServer(t, "same-name", oldHTTP)
 	defer func() { require.NoError(t, owner.Close(context.Background())) }()
 
@@ -108,8 +107,6 @@ func TestReplaceServerFailedSameNamePreservesLiveServerAndDisk(t *testing.T) {
 func TestReplaceServerPersistenceFailurePreservesOldAdmissionAndCallbacks(t *testing.T) {
 	oldServer, oldHTTP := transactionalNotifyingServer(t, "old-tool", "old")
 	newHTTP := transactionalTestServer(t, "new-tool", "new")
-	defer oldHTTP.Close()
-	defer newHTTP.Close()
 	store, owner := connectedTransactionalServer(t, "same-name", oldHTTP)
 	defer func() { require.NoError(t, owner.Close(context.Background())) }()
 	oldSession, ok := sessions.Get("same-name")
@@ -138,7 +135,6 @@ func TestReplaceServerPersistenceFailurePreservesOldAdmissionAndCallbacks(t *tes
 
 func TestReplaceServerFailedRenamePreservesLiveServerAndDisk(t *testing.T) {
 	oldHTTP := transactionalTestServer(t, "old-tool", "old")
-	defer oldHTTP.Close()
 	store, owner := connectedTransactionalServer(t, "old-name", oldHTTP)
 	defer func() { require.NoError(t, owner.Close(context.Background())) }()
 
@@ -175,8 +171,6 @@ func TestReplaceServerFailedRenamePreservesLiveServerAndDisk(t *testing.T) {
 func TestReplaceServerConditionalTargetCollisionPreservesOldRuntime(t *testing.T) {
 	oldHTTP := transactionalTestServer(t, "old-tool", "old")
 	newHTTP := transactionalTestServer(t, "new-tool", "new")
-	defer oldHTTP.Close()
-	defer newHTTP.Close()
 	store, root := originScopeStore(t)
 	oldName := "collision-old.literal#?"
 	newName := "collision-new.literal#?"
@@ -231,8 +225,6 @@ func requireTransactionalEvent(
 func TestReplaceServerSuccessfulSwapPublishesNewSessionOnce(t *testing.T) {
 	oldHTTP := transactionalTestServer(t, "old-tool", "old")
 	newHTTP := transactionalTestServer(t, "new-tool", "new")
-	defer oldHTTP.Close()
-	defer newHTTP.Close()
 	store, owner := connectedTransactionalServer(t, "same-name", oldHTTP)
 	defer func() { require.NoError(t, owner.Close(context.Background())) }()
 	oldSession, ok := sessions.Get("same-name")
@@ -273,8 +265,6 @@ func TestReplaceServerSuccessfulSwapPublishesNewSessionOnce(t *testing.T) {
 func TestReplaceServerSuccessfulRenameRemovesOnlyOldRuntimeState(t *testing.T) {
 	oldHTTP := transactionalTestServer(t, "old-tool", "old")
 	newHTTP := transactionalTestServer(t, "new-tool", "new")
-	defer oldHTTP.Close()
-	defer newHTTP.Close()
 	store, owner := connectedTransactionalServer(t, "old-name", oldHTTP)
 	defer func() { require.NoError(t, owner.Close(context.Background())) }()
 	allResources.Set("old-name", []*Resource{{Name: "old-resource", URI: "old://resource"}})
@@ -304,8 +294,6 @@ func TestReplaceServerSuccessfulRenameRemovesOnlyOldRuntimeState(t *testing.T) {
 func TestReplaceServerDisabledSameNameCommitsInactiveRuntime(t *testing.T) {
 	oldHTTP := transactionalTestServer(t, "old-tool", "old")
 	newHTTP := transactionalTestServer(t, "new-tool", "new")
-	defer oldHTTP.Close()
-	defer newHTTP.Close()
 	store, owner := connectedTransactionalServer(t, "same-name", oldHTTP)
 	defer func() { require.NoError(t, owner.Close(context.Background())) }()
 	allPrompts.Set("same-name", []*Prompt{{Name: "stale-prompt"}})
@@ -339,8 +327,6 @@ func TestReplaceServerDisabledSameNameCommitsInactiveRuntime(t *testing.T) {
 func TestReplaceServerDisabledRenameCommitsInactiveRuntime(t *testing.T) {
 	oldHTTP := transactionalTestServer(t, "old-tool", "old")
 	newHTTP := transactionalTestServer(t, "new-tool", "new")
-	defer oldHTTP.Close()
-	defer newHTTP.Close()
 	store, owner := connectedTransactionalServer(t, "old-name", oldHTTP)
 	defer func() { require.NoError(t, owner.Close(context.Background())) }()
 	allPrompts.Set("old-name", []*Prompt{{Name: "stale-prompt"}})
@@ -381,8 +367,6 @@ func TestReplaceServerDisabledRenameCommitsInactiveRuntime(t *testing.T) {
 func TestReplaceServerConcurrentPostPersistDisableCommitsInactiveRuntime(t *testing.T) {
 	oldHTTP := transactionalTestServer(t, "old-tool", "old")
 	newHTTP := transactionalTestServer(t, "new-tool", "new")
-	defer oldHTTP.Close()
-	defer newHTTP.Close()
 	store, owner := connectedTransactionalServer(t, "old-name", oldHTTP)
 	defer func() { require.NoError(t, owner.Close(context.Background())) }()
 
@@ -413,8 +397,6 @@ func TestReplaceServerConcurrentPostPersistDisableCommitsInactiveRuntime(t *test
 func TestReplaceServerMissingPostPersistConfigLeavesNoOrphanRuntime(t *testing.T) {
 	oldHTTP := transactionalTestServer(t, "old-tool", "old")
 	newHTTP := transactionalTestServer(t, "new-tool", "new")
-	defer oldHTTP.Close()
-	defer newHTTP.Close()
 	store, owner := connectedTransactionalServer(t, "old-name", oldHTTP)
 	defer func() { require.NoError(t, owner.Close(context.Background())) }()
 	eventsCtx, cancelEvents := context.WithCancel(context.Background())
@@ -450,8 +432,6 @@ func TestReplaceServerMissingPostPersistConfigLeavesNoOrphanRuntime(t *testing.T
 func TestReplacedRenameAdmissionTracksCommittedConfig(t *testing.T) {
 	oldHTTP := transactionalTestServer(t, "old-tool", "old")
 	newServer, newHTTP := transactionalNotifyingServer(t, "new-tool", "new")
-	defer oldHTTP.Close()
-	defer newHTTP.Close()
 	store, owner := connectedTransactionalServer(t, "old-name", oldHTTP)
 	defer func() { require.NoError(t, owner.Close(context.Background())) }()
 
@@ -487,8 +467,6 @@ func TestReplacedRenameAdmissionTracksCommittedConfig(t *testing.T) {
 func TestReplaceServerDurableCommitDuringCloseHonorsCloseDeadline(t *testing.T) {
 	oldHTTP := transactionalTestServer(t, "old-tool", "old")
 	newServer, newHTTP := transactionalNotifyingServer(t, "new-tool", "new")
-	defer oldHTTP.Close()
-	defer newHTTP.Close()
 	store, owner := connectedTransactionalServer(t, "old-name", oldHTTP)
 	eventsCtx, cancelEvents := context.WithCancel(context.Background())
 	defer cancelEvents()
@@ -549,7 +527,6 @@ func mustStateExists(name string) bool {
 
 func TestReplaceServerConcurrentRemoveRejectsCandidateWithoutStalePublish(t *testing.T) {
 	oldHTTP := transactionalTestServer(t, "old-tool", "old")
-	defer oldHTTP.Close()
 	store, owner := connectedTransactionalServer(t, "old-name", oldHTTP)
 	defer func() { require.NoError(t, owner.Close(context.Background())) }()
 
@@ -583,7 +560,6 @@ func TestReplaceServerConcurrentRemoveRejectsCandidateWithoutStalePublish(t *tes
 
 func TestReplaceServerConcurrentDisableRejectsCandidateAndKeepsDisabledState(t *testing.T) {
 	oldHTTP := transactionalTestServer(t, "old-tool", "old")
-	defer oldHTTP.Close()
 	store, owner := connectedTransactionalServer(t, "old-name", oldHTTP)
 	defer func() { require.NoError(t, owner.Close(context.Background())) }()
 
@@ -618,7 +594,6 @@ func TestReplaceServerConcurrentDisableRejectsCandidateAndKeepsDisabledState(t *
 
 func TestReplaceServerOwnerCloseRejectsCandidateWithoutCommit(t *testing.T) {
 	oldHTTP := transactionalTestServer(t, "old-tool", "old")
-	defer oldHTTP.Close()
 	store, owner := connectedTransactionalServer(t, "old-name", oldHTTP)
 
 	started := make(chan struct{}, 1)

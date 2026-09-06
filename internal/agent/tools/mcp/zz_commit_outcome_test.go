@@ -31,6 +31,14 @@ func injectedMCPPrecommitOutcome() error {
 	}
 }
 
+func injectedMCPMaybeCommitted() error {
+	return &config.CommitOutcome{
+		MaybeCommitted: true,
+		Path:           "injected-mcp-config",
+		Cause:          errors.New("injected maybe-committed outcome"),
+	}
+}
+
 func requireMCPCommitUncertainty(t *testing.T, err error, reconciled bool) {
 	t.Helper()
 	var outcome *config.CommitOutcome
@@ -45,6 +53,30 @@ func requireMCPPrecommitOutcome(t *testing.T, err error) {
 	require.ErrorAs(t, err, &outcome)
 	require.False(t, outcome.Committed)
 	require.False(t, outcome.Reconciled)
+}
+
+func requireMCPMaybeCommitted(t *testing.T, err error) {
+	t.Helper()
+	var outcome *config.CommitOutcome
+	require.ErrorAs(t, err, &outcome)
+	require.True(t, outcome.MaybeCommitted)
+	require.False(t, outcome.Committed)
+}
+
+func requireMCPUncertain(t *testing.T, owner *Owner, name string) {
+	t.Helper()
+	lifecycleMu.Lock()
+	_, uncertain := owner.uncertainServers[name]
+	lifecycleMu.Unlock()
+	require.True(t, uncertain, "MCP runtime must remain fenced until reload")
+}
+
+func requireMCPNotUncertain(t *testing.T, owner *Owner, name string) {
+	t.Helper()
+	lifecycleMu.Lock()
+	_, uncertain := owner.uncertainServers[name]
+	lifecycleMu.Unlock()
+	require.False(t, uncertain, "MCP uncertainty fence must clear after reload")
 }
 
 func closeCommitOutcomeTestOwner(t *testing.T, owner *Owner) {
@@ -252,6 +284,134 @@ func TestCommittedUnreconciledOutcomesFenceRuntime(t *testing.T) {
 	requireMCPCommitUncertainty(t, err, false)
 	require.False(t, hasSession("unreconciled"))
 	require.Equal(t, StateDisabled, mustState(t, "unreconciled").State)
+}
+
+func TestMaybeCommittedAddFencesUntilReload(t *testing.T) {
+	store := isolatedMCPStore(t)
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer closeCommitOutcomeTestOwner(t, owner)
+	const name = "maybe-add"
+
+	err = addServerWithInitializerAndPersistence(context.Background(), store, name,
+		config.MCPConfig{Type: config.MCPStdio, Command: name}, fakeMCPInitializer,
+		func(cfg *config.ConfigStore, scope config.Scope, name string, value config.MCPConfig) (config.MCPMutationResult, error) {
+			result, persistErr := cfg.PersistMCPConfigResult(scope, name, value)
+			require.NoError(t, persistErr)
+			return result, injectedMCPMaybeCommitted()
+		})
+
+	requireMCPMaybeCommitted(t, err)
+	requireMCPUncertain(t, owner, name)
+	require.False(t, hasSession(name))
+	require.Equal(t, StateDisabled, mustState(t, name).State)
+	require.NoError(t, ReloadAndReconcileMCPConfig(context.Background(), store))
+	requireMCPNotUncertain(t, owner, name)
+}
+
+func TestMaybeCommittedEnableFencesUntilReload(t *testing.T) {
+	store := isolatedMCPStore(t)
+	const name = "maybe-enable"
+	initial := config.MCPConfig{Type: config.MCPStdio, Command: name, Disabled: true}
+	require.NoError(t, store.PersistMCPConfig(config.ScopeGlobal, name, initial))
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer closeCommitOutcomeTestOwner(t, owner)
+
+	err = enableServerWithPersistenceAndInitializer(context.Background(), store, name,
+		func(cfg *config.ConfigStore, scope config.Scope, name string, pending *config.MCPConfig) (config.MCPMutationResult, error) {
+			result, persistErr := enableMCPConfig(cfg, scope, name, pending)
+			require.NoError(t, persistErr)
+			return result, injectedMCPMaybeCommitted()
+		}, fakeMCPInitializer)
+
+	requireMCPMaybeCommitted(t, err)
+	requireMCPUncertain(t, owner, name)
+	require.False(t, hasSession(name))
+	require.Equal(t, StateDisabled, mustState(t, name).State)
+	require.NoError(t, ReloadAndReconcileMCPConfig(context.Background(), store))
+	requireMCPNotUncertain(t, owner, name)
+}
+
+func TestMaybeCommittedDisableFencesUntilReload(t *testing.T) {
+	store := isolatedMCPStore(t)
+	const name = "maybe-disable"
+	require.NoError(t, store.PersistMCPConfig(config.ScopeGlobal, name, config.MCPConfig{Type: config.MCPStdio, Command: name}))
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer closeCommitOutcomeTestOwner(t, owner)
+	session := &ClientSession{}
+	sessions.Set(name, session)
+	setState(name, StateConnected, nil, session, Counts{})
+
+	err = disableServerWithResultPersistence(context.Background(), store, name,
+		func(cfg *config.ConfigStore, scope config.Scope, name string, pending *config.MCPConfig) (config.MCPMutationResult, error) {
+			result, persistErr := cfg.PersistMCPDisabledOverrideResult(scope, name, true)
+			require.NoError(t, persistErr)
+			return result, injectedMCPMaybeCommitted()
+		})
+
+	requireMCPMaybeCommitted(t, err)
+	requireMCPUncertain(t, owner, name)
+	require.False(t, hasSession(name))
+	require.Equal(t, StateDisabled, mustState(t, name).State)
+	require.NoError(t, ReloadAndReconcileMCPConfig(context.Background(), store))
+	requireMCPNotUncertain(t, owner, name)
+}
+
+func TestMaybeCommittedRemoveFencesUntilReload(t *testing.T) {
+	store := isolatedMCPStore(t)
+	const name = "maybe-remove"
+	require.NoError(t, store.PersistMCPConfig(config.ScopeGlobal, name, config.MCPConfig{Type: config.MCPStdio, Command: name}))
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer closeCommitOutcomeTestOwner(t, owner)
+	session := &ClientSession{}
+	sessions.Set(name, session)
+	setState(name, StateConnected, nil, session, Counts{})
+
+	err = removeServerWithResultPersistence(store, name,
+		func(cfg *config.ConfigStore, scope config.Scope, name string) (config.MCPMutationResult, error) {
+			result, persistErr := cfg.PersistRemoveMCPConfigResult(scope, name)
+			require.NoError(t, persistErr)
+			return result, injectedMCPMaybeCommitted()
+		})
+
+	requireMCPMaybeCommitted(t, err)
+	requireMCPUncertain(t, owner, name)
+	require.False(t, hasSession(name))
+	require.Equal(t, StateDisabled, mustState(t, name).State)
+	require.NoError(t, ReloadAndReconcileMCPConfig(context.Background(), store))
+	requireMCPNotUncertain(t, owner, name)
+}
+
+func TestMaybeCommittedReplaceFencesUntilReload(t *testing.T) {
+	store := isolatedMCPStore(t)
+	const name = "maybe-replace"
+	require.NoError(t, store.PersistMCPConfig(config.ScopeGlobal, name, config.MCPConfig{Type: config.MCPStdio, Command: "old"}))
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer closeCommitOutcomeTestOwner(t, owner)
+	oldSession := &ClientSession{}
+	sessions.Set(name, oldSession)
+	setState(name, StateConnected, nil, oldSession, Counts{})
+	newConfig := config.MCPConfig{Type: config.MCPStdio, Command: "new"}
+
+	err = replaceServerWithResultPersistenceAndPreparation(context.Background(), store, name, name, newConfig,
+		func(cfg *config.ConfigStore, scope config.Scope, oldName, newName string, value config.MCPConfig) (config.MCPMutationResult, error) {
+			result, persistErr := cfg.PersistReplaceMCPResult(scope, oldName, newName, value)
+			require.NoError(t, persistErr)
+			return result, injectedMCPMaybeCommitted()
+		}, func(context.Context, *config.ConfigStore, string, config.MCPConfig, config.VariableResolver, *serverAdmission) (*preparedClient, error) {
+			return &preparedClient{session: &ClientSession{}}, nil
+		})
+
+	requireMCPMaybeCommitted(t, err)
+	requireMCPUncertain(t, owner, name)
+	require.False(t, hasSession(name))
+	require.Equal(t, StateDisabled, mustState(t, name).State)
+	require.NoError(t, ReloadAndReconcileMCPConfig(context.Background(), store))
+	requireMCPNotUncertain(t, owner, name)
 }
 
 func TestTypedPrecommitOutcomeDoesNotCommitAdd(t *testing.T) {

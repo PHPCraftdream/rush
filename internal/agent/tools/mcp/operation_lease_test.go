@@ -158,7 +158,6 @@ func TestRenewalRetainsLeaseIdentityUntilAfterPublish(t *testing.T) {
 
 	newServer := mcp.NewServer(&mcp.Implementation{Name: "new-server"}, nil)
 	httpServer := newTestStreamableServer(t, newServer)
-	defer httpServer.Close()
 	store := persistedMCPStore(t, name, httpServer.URL, false)
 	owner, err := Acquire()
 	require.NoError(t, err)

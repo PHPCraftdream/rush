@@ -45,6 +45,7 @@ func cleanupTestMCPServer(t *testing.T, server *mcp.Server, httpServer *httptest
 			_ = session.Close()
 		}
 		httpServer.CloseClientConnections()
+		httpServer.Close()
 	})
 }
 
@@ -1005,7 +1006,6 @@ func TestStaleAddRollbackPreservesNewerSameNameServer(t *testing.T) {
 	cleanupTestMCPServer(t, newServer, httpServer)
 	defer func() {
 		require.NoError(t, owner.Close(context.Background()))
-		httpServer.Close()
 	}()
 	replacement := config.MCPConfig{Type: config.MCPHttp, URL: httpServer.URL, Timeout: 60}
 	require.NoError(t, AddServer(context.Background(), store, name, replacement))
@@ -1055,7 +1055,6 @@ func TestGetOrRenewClientKeepsLeaseIdentityAcrossConcurrentReplacement(t *testin
 	})
 	httpServer := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return newServer }, nil))
 	cleanupTestMCPServer(t, newServer, httpServer)
-	defer httpServer.Close()
 	store := persistedMCPStore(t, name, httpServer.URL, false)
 	owner, err := Acquire()
 	require.NoError(t, err)
@@ -1121,7 +1120,6 @@ func TestRenewedSessionNotificationSurvivesConfigMutations(t *testing.T) {
 	})
 	httpServer := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil))
 	cleanupTestMCPServer(t, server, httpServer)
-	defer httpServer.Close()
 
 	store := persistedMCPStore(t, name, httpServer.URL, false)
 	owner, err := Acquire()
@@ -1558,7 +1556,6 @@ func TestInitializePublishesHTTPSessionBeyondAdmission(t *testing.T) {
 	require.NoError(t, err)
 	defer func() {
 		require.NoError(t, owner.Close(context.Background()))
-		httpServer.Close()
 	}()
 
 	owner.Initialize(context.Background(), nil, store, false)
@@ -1612,8 +1609,6 @@ func TestInitializeSingleReplacesSameNameOldSession(t *testing.T) {
 	require.NoError(t, err)
 	defer func() {
 		closeCommitOutcomeTestOwner(t, owner)
-		httpServer.CloseClientConnections()
-		httpServer.Close()
 	}()
 
 	oldSession := &ClientSession{}
@@ -1690,8 +1685,6 @@ func TestInitializeSingleDefersCandidateNotificationWithOldSameNameSession(t *te
 		_ = oldClientSession.Close()
 		_ = oldServerSession.Close()
 		closeCommitOutcomeTestOwner(t, owner)
-		candidateHTTP.CloseClientConnections()
-		candidateHTTP.Close()
 	}()
 	oldSession := &ClientSession{ClientSession: oldClientSession}
 	sessions.Set(name, oldSession)
@@ -1795,8 +1788,6 @@ func TestInitializeSingleFailedCandidateDropsNotification(t *testing.T) {
 	defer func() {
 		candidateReleaseOnce.Do(func() { close(candidateRelease) })
 		closeCommitOutcomeTestOwner(t, owner)
-		candidateHTTP.CloseClientConnections()
-		candidateHTTP.Close()
 	}()
 
 	eventsCtx, cancelEvents := context.WithCancel(context.Background())
@@ -1923,7 +1914,6 @@ func TestSequentialInitializeReopensInitBarrier(t *testing.T) {
 		delegate.ServeHTTP(w, r)
 	}))
 	cleanupTestMCPServer(t, server, httpServer)
-	defer httpServer.Close()
 
 	owner, err := Acquire()
 	require.NoError(t, err)
@@ -1995,7 +1985,6 @@ func TestSuccessfulInitializeSingleDoesNotOwnInitBarrier(t *testing.T) {
 		return server
 	}, nil))
 	cleanupTestMCPServer(t, server, httpServer)
-	defer httpServer.Close()
 
 	owner, err := Acquire()
 	require.NoError(t, err)
@@ -2031,7 +2020,6 @@ func TestInitializeSingleCannotCompleteFullInitBarrier(t *testing.T) {
 		delegate.ServeHTTP(w, r)
 	}))
 	cleanupTestMCPServer(t, server, httpServer)
-	defer httpServer.Close()
 
 	owner, err := Acquire()
 	require.NoError(t, err)
