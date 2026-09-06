@@ -24,6 +24,10 @@ func configFileIdentityOf(info os.FileInfo) configFileIdentity {
 	return configFileIdentity{device: uint64(stat.Dev), inode: uint64(stat.Ino), valid: true}
 }
 
+func configFileIdentityOfOpened(_ *os.File, info os.FileInfo) configFileIdentity {
+	return configFileIdentityOf(info)
+}
+
 func configFileOwner(info os.FileInfo) (int, bool) {
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok {

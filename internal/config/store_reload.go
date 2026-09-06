@@ -34,13 +34,14 @@ var (
 )
 
 type reloadFileFingerprint struct {
-	exists    bool
-	size      int64
-	modTime   int64
-	digest    [sha256.Size]byte
-	owner     int
-	identity  configFileIdentity
-	discovery [sha256.Size]byte
+	exists          bool
+	size            int64
+	modTime         int64
+	digest          [sha256.Size]byte
+	owner           int
+	identity        configFileIdentity
+	discovery       [sha256.Size]byte
+	parentDiscovery [sha256.Size]byte
 }
 
 var errStableReadUnstable = errors.New("config file remained unstable while reading")
@@ -62,10 +63,14 @@ var errConfigOwnerMismatch = errors.New("config file owner does not match its tr
 func readStableConfigFileOwned(path string, expectedOwner int, enforceOwner bool) ([]byte, reloadFileFingerprint, error) {
 	for attempt := 0; attempt < stableReadMaxAttempts; attempt++ {
 		beforeDiscovery := configDiscoveryFingerprint(path)
+		runConfigBeforeOpenHook(path)
 		file, err := os.Open(path)
 		if err != nil {
 			if os.IsNotExist(err) {
-				return nil, reloadFileFingerprint{discovery: beforeDiscovery}, err
+				return nil, reloadFileFingerprint{
+					discovery:       beforeDiscovery,
+					parentDiscovery: configDiscoveryFingerprint(filepath.Dir(path)),
+				}, err
 			}
 			return nil, reloadFileFingerprint{}, err
 		}
@@ -76,7 +81,10 @@ func readStableConfigFileOwned(path string, expectedOwner int, enforceOwner bool
 		}
 		if info.IsDir() {
 			_ = file.Close()
-			return nil, reloadFileFingerprint{discovery: beforeDiscovery}, nil
+			return nil, reloadFileFingerprint{
+				discovery:       beforeDiscovery,
+				parentDiscovery: configDiscoveryFingerprint(filepath.Dir(path)),
+			}, nil
 		}
 		owner, ownerKnown := configFileOwner(info)
 		if enforceOwner && (!ownerKnown || owner != expectedOwner) {
@@ -119,11 +127,13 @@ func readStableConfigFileOwned(path string, expectedOwner int, enforceOwner bool
 			_ = file.Close()
 			continue
 		}
+		identity := configFileIdentityOfOpened(file, finalInfo)
 		_ = file.Close()
 		return second, reloadFileFingerprint{
 			exists: true, size: int64(len(second)), modTime: finalInfo.ModTime().UnixNano(),
 			digest: sha256.Sum256(second), owner: owner,
-			identity: configFileIdentityOf(finalInfo), discovery: afterDiscovery,
+			identity: identity, discovery: afterDiscovery,
+			parentDiscovery: configDiscoveryFingerprint(filepath.Dir(path)),
 		}, nil
 	}
 	return nil, reloadFileFingerprint{}, errStableReadUnstable

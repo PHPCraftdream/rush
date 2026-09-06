@@ -1,9 +1,42 @@
 package config
 
 import (
+	"crypto/sha256"
+	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 )
+
+var errConfigCommitVerification = errors.New("config destination could not be verified immediately before commit")
+
+var configTestHooks struct {
+	sync.Mutex
+	beforeOpen        func(string)
+	beforeCommitCheck func()
+}
+
+func runConfigBeforeOpenHook(path string) {
+	configTestHooks.Lock()
+	hook := configTestHooks.beforeOpen
+	configTestHooks.Unlock()
+	if hook != nil {
+		hook(path)
+	}
+}
+
+func runConfigBeforeCommitCheckHook() {
+	configTestHooks.Lock()
+	hook := configTestHooks.beforeCommitCheck
+	configTestHooks.Unlock()
+	if hook != nil {
+		hook()
+	}
+}
+
+func sameBytesFingerprint(data []byte, digest [sha256.Size]byte) bool {
+	return sha256.Sum256(data) == digest
+}
 
 // atomicWriteFile writes data to a file atomically by writing to a unique
 // temporary file in the same directory and renaming it into place. This

@@ -20,18 +20,33 @@ var (
 // durable MCP mutation. NewConfig/NewOrigin may describe a lower-priority
 // definition revealed by removing or replacing the old one.
 type MCPMutationResult struct {
-	Operation      string
-	OldName        string
-	NewName        string
-	OldExists      bool
-	NewExists      bool
-	OldConfig      MCPConfig
-	NewConfig      MCPConfig
-	OldOrigin      MCPOrigin
-	NewOrigin      MCPOrigin
-	FallbackExists bool
-	FallbackConfig MCPConfig
-	FallbackOrigin MCPOrigin
+	Operation             string
+	OldName               string
+	NewName               string
+	OldExists             bool
+	NewExists             bool
+	OldConfig             MCPConfig
+	NewConfig             MCPConfig
+	OldOrigin             MCPOrigin
+	NewOrigin             MCPOrigin
+	FallbackExists        bool
+	FallbackConfig        MCPConfig
+	FallbackOrigin        MCPOrigin
+	committedFingerprints map[string]reloadFileFingerprint
+}
+
+func committedMCPFingerprints(files *mcpLockedFiles) map[string]reloadFileFingerprint {
+	result := make(map[string]reloadFileFingerprint)
+	for _, record := range files.records {
+		if !files.changed[record.key] {
+			continue
+		}
+		for alias := range record.aliases {
+			result[alias] = files.fingerprints[alias]
+		}
+		result[record.commitPath] = files.fingerprints[record.commitPath]
+	}
+	return result
 }
 
 // ResolveMCPWritableScope resolves the effective owner at a fresh disk
@@ -178,6 +193,7 @@ func (s *ConfigStore) PersistMCPFields(scope Scope, name string, fields map[stri
 	slices.Sort(keys)
 	var effective MCPConfig
 	var effectiveExists bool
+	var committed map[string]reloadFileFingerprint
 	s.publishMu.Lock()
 	err = s.withMCPWriteLocks(func(files *mcpLockedFiles) error {
 		before, evalErr := s.evaluateMCPFiles(files)
@@ -204,13 +220,18 @@ func (s *ConfigStore) PersistMCPFields(scope Scope, name string, fields map[stri
 			return err
 		}
 		effectiveExists, effective, _ = afterValue(after, name)
-		return writeMCPFileChanges(files)
+		if err := s.writeMCPFileChanges(files); err != nil {
+			return err
+		}
+		committed = committedMCPFingerprints(files)
+		return nil
 	})
 	if err == nil {
 		// The selected file may be shadowed, so publish the effective value
 		// only after the exact file mutation has committed. A later reload
 		// remains authoritative for all other fields.
 		s.publishMCPValueLocked(name, effective, effectiveExists)
+		s.publishMCPStalenessLocked(committed)
 	}
 	s.publishMu.Unlock()
 	if err != nil {
@@ -234,13 +255,14 @@ func (s *ConfigStore) PersistMCPFieldsExact(scope Scope, name string, fields map
 	slices.Sort(keys)
 	var effective MCPConfig
 	var effectiveExists bool
+	var committed map[string]reloadFileFingerprint
 	s.publishMu.Lock()
 	err = s.withMCPWriteLocks(func(files *mcpLockedFiles) error {
 		before, evalErr := s.evaluateMCPFiles(files)
 		if evalErr != nil {
 			return evalErr
 		}
-		if !literalMCPEntryExists(files.data[path], name) {
+		if !literalMCPEntryExists(files.mcpData(path), name) {
 			return fmt.Errorf("%w: %q", ErrMCPNotFound, name)
 		}
 		if err := updateMCPFile(files, path, name, func(entry map[string]any) error {
@@ -259,10 +281,15 @@ func (s *ConfigStore) PersistMCPFieldsExact(scope Scope, name string, fields map
 			return err
 		}
 		effectiveExists, effective, _ = afterValue(after, name)
-		return writeMCPFileChanges(files)
+		if err := s.writeMCPFileChanges(files); err != nil {
+			return err
+		}
+		committed = committedMCPFingerprints(files)
+		return nil
 	})
 	if err == nil {
 		s.publishMCPValueLocked(name, effective, effectiveExists)
+		s.publishMCPStalenessLocked(committed)
 	}
 	s.publishMu.Unlock()
 	return err
@@ -329,5 +356,37 @@ func (s *ConfigStore) publishMCPValueLocked(name string, value MCPConfig, exists
 		delete(cfg.MCP, name)
 	}
 	next.config = &cfg
+	s.publishLocked(next)
+}
+
+// publishMCPStalenessLocked refreshes only the snapshots for a committed MCP
+// document. It must run after the rename, using the new opened-file identity;
+// retaining the pre-rename inode would make every successful mutation appear
+// stale and could publish an obsolete alias.
+func (s *ConfigStore) publishMCPStalenessLocked(committed map[string]reloadFileFingerprint) {
+	if len(committed) == 0 {
+		return
+	}
+	cur := s.loadSnapshot()
+	next := cur.clone()
+	if next.snapshots == nil {
+		next.snapshots = make(map[string]fileSnapshot)
+	} else {
+		next.snapshots = maps.Clone(next.snapshots)
+	}
+	for path, fingerprint := range committed {
+		key := normalizeDiscoveryPath(path)
+		snapshot, ok := next.snapshots[key]
+		if !ok {
+			continue
+		}
+		snapshot.Path = key
+		snapshot.Exists = fingerprint.exists
+		snapshot.Size = fingerprint.size
+		snapshot.ModTime = fingerprint.modTime
+		snapshot.ContentHash = fingerprint.digest
+		snapshot.fingerprint = fingerprint
+		next.snapshots[key] = snapshot
+	}
 	s.publishLocked(next)
 }

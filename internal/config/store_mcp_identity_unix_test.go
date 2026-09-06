@@ -5,6 +5,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/fsext"
@@ -92,6 +93,112 @@ func TestOwnedConfigReadChecksOwnerOnOpenedFile(t *testing.T) {
 
 	_, _, err = readStableConfigFileOwned(path, owner, true)
 	require.ErrorIs(t, err, errConfigOwnerMismatch)
+}
+
+func TestExactWorkspaceMutationSharesPhysicalSymlinkDocument(t *testing.T) {
+	root := t.TempDir()
+	global := filepath.Join(root, "global", "rush.json")
+	project := filepath.Join(root, "rush.json")
+	workspace := filepath.Join(root, "workspace", "rush.json")
+	setMCPFile(t, project, "old", "http://old.example")
+	require.NoError(t, os.MkdirAll(filepath.Dir(workspace), 0o755))
+	if err := os.Symlink(project, workspace); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	require.NoError(t, os.MkdirAll(filepath.Dir(global), 0o755))
+
+	store := newTestConfigStore(testStoreOpts{
+		config:         &Config{MCP: MCPs{}},
+		globalDataPath: global,
+		workspacePath:  workspace,
+	})
+	store.workingDir = root
+	store.captureStalenessSnapshot([]string{project, workspace})
+
+	result, err := store.mutateMCPExact("add", ScopeWorkspace, "new", "new", MCPConfig{
+		Type: MCPHttp, URL: "http://new.example",
+	}, nil)
+	require.NoError(t, err)
+	require.True(t, result.NewExists)
+	require.Equal(t, MCPOriginWorkspace, result.NewOrigin.Kind)
+	require.Equal(t, "http://new.example", result.NewConfig.URL)
+	projectData, err := os.ReadFile(project)
+	require.NoError(t, err)
+	workspaceData, err := os.ReadFile(workspace)
+	require.NoError(t, err)
+	require.Equal(t, projectData, workspaceData)
+	require.False(t, store.ConfigStaleness().Dirty)
+}
+
+func TestMCPCommitRejectsParentReplacement(t *testing.T) {
+	root := t.TempDir()
+	parent := filepath.Join(root, "config")
+	global := filepath.Join(parent, "rush.json")
+	setMCPFile(t, global, "old", "http://old.example")
+	store := newTestConfigStore(testStoreOpts{config: &Config{MCP: MCPs{}}, globalDataPath: global})
+	store.workingDir = root
+	var once sync.Once
+	configTestHooks.Lock()
+	previous := configTestHooks.beforeCommitCheck
+	configTestHooks.beforeCommitCheck = func() {
+		once.Do(func() {
+			moved := parent + ".old"
+			require.NoError(t, os.Rename(parent, moved))
+			require.NoError(t, os.MkdirAll(parent, 0o755))
+			setMCPFile(t, global, "replacement", "http://replacement.example")
+		})
+	}
+	configTestHooks.Unlock()
+	t.Cleanup(func() {
+		configTestHooks.Lock()
+		configTestHooks.beforeCommitCheck = previous
+		configTestHooks.Unlock()
+	})
+
+	_, err := store.PersistMCPConfigResult(ScopeGlobal, "new", MCPConfig{Type: MCPHttp, URL: "http://new.example"})
+	require.ErrorIs(t, err, ErrMCPStale)
+	got, err := os.ReadFile(global)
+	require.NoError(t, err)
+	require.Contains(t, string(got), "replacement")
+}
+
+func TestStableDocumentsDedupAfterPreOpenRetarget(t *testing.T) {
+	root := t.TempDir()
+	first := filepath.Join(root, "first.json")
+	second := filepath.Join(root, "second.json")
+	pathP := filepath.Join(root, "p.json")
+	pathQ := filepath.Join(root, "q.json")
+	require.NoError(t, os.WriteFile(first, []byte(`{"options":{"debug":true}}`), 0o600))
+	require.NoError(t, os.WriteFile(second, []byte(`{"options":{"debug":false}}`), 0o600))
+	if err := os.Symlink(first, pathP); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := os.Symlink(second, pathQ); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	var once sync.Once
+	configTestHooks.Lock()
+	previous := configTestHooks.beforeOpen
+	configTestHooks.beforeOpen = func(path string) {
+		if filepath.Clean(path) != filepath.Clean(pathP) {
+			return
+		}
+		once.Do(func() {
+			require.NoError(t, os.Remove(pathP))
+			require.NoError(t, os.Symlink(second, pathP))
+		})
+	}
+	configTestHooks.Unlock()
+	t.Cleanup(func() {
+		configTestHooks.Lock()
+		configTestHooks.beforeOpen = previous
+		configTestHooks.Unlock()
+	})
+
+	documents, err := readStableConfigDocuments([]string{pathP, pathQ})
+	require.NoError(t, err)
+	require.Len(t, documents, 1)
+	require.Len(t, documents[0].aliases, 2)
 }
 
 func TestWorkspaceOwnerPolicyAppliesOutsideCheckout(t *testing.T) {

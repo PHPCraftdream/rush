@@ -4,6 +4,7 @@
 package config
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -296,13 +297,13 @@ func readStableConfigDocuments(paths []string) ([]stableConfigDocument, error) {
 
 func readStableConfigDocumentsWithOwner(paths []string, owner func(string) (int, bool, error)) ([]stableConfigDocument, error) {
 	documents := make([]stableConfigDocument, 0, len(paths))
-	seen := make(map[string]int, len(paths))
+	seenPresent := make(map[configFileIdentity]int, len(paths))
+	seenAbsent := make(map[[sha256.Size]byte]int, len(paths))
 	for _, path := range paths {
 		discoveryPath := normalizeDiscoveryPath(path)
 		if discoveryPath == "" {
 			continue
 		}
-		canonicalPath := normalizeReloadPath(discoveryPath)
 		expectedOwner, enforceOwner := 0, false
 		var ownerErr error
 		if owner != nil {
@@ -316,14 +317,23 @@ func readStableConfigDocumentsWithOwner(paths []string, owner func(string) (int,
 			return nil, fmt.Errorf("failed to open config file %s: %w", discoveryPath, readErr)
 		}
 		alias := stableConfigAlias{path: discoveryPath, fingerprint: fingerprint}
-		if index, ok := seen[canonicalPath]; ok {
-			documents[index].aliases = append(documents[index].aliases, alias)
-			continue
-		}
-		seen[canonicalPath] = len(documents)
 		if readErr != nil {
+			if fingerprint.discovery != ([sha256.Size]byte{}) {
+				if index, ok := seenAbsent[fingerprint.discovery]; ok {
+					documents[index].aliases = append(documents[index].aliases, alias)
+					continue
+				}
+				seenAbsent[fingerprint.discovery] = len(documents)
+			}
 			documents = append(documents, stableConfigDocument{path: discoveryPath, aliases: []stableConfigAlias{alias}})
 			continue
+		}
+		if fingerprint.identity.valid {
+			if index, ok := seenPresent[fingerprint.identity]; ok {
+				documents[index].aliases = append(documents[index].aliases, alias)
+				continue
+			}
+			seenPresent[fingerprint.identity] = len(documents)
 		}
 		documents = append(documents, stableConfigDocument{
 			path: discoveryPath, data: data, fingerprint: fingerprint, present: fingerprint.exists,
