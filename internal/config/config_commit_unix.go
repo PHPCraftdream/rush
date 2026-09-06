@@ -57,6 +57,12 @@ func commitConfigFile(selectedPath, commitPath string, data []byte, perm os.File
 	}
 
 	base := filepath.Base(commitPath)
+	if expected.exists && expected.nlink > 1 {
+		expected, err = recoverConfigTempAlias(parent, base, expected, enforceOwner, expectedOwner)
+		if err != nil {
+			return reloadFileFingerprint{}, err
+		}
+	}
 	if err := verifyCommitEntry(parentFD, base, expected, enforceOwner, expectedOwner); err != nil {
 		return reloadFileFingerprint{}, err
 	}
