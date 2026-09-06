@@ -200,6 +200,27 @@ func TestLookupConfigCandidatesCanonicalizesSymlinkedNestedRepository(t *testing
 	require.NotContains(t, paths, filepath.Join(outer, "rush.json"))
 }
 
+func TestProjectConfigsPreservesProjectCandidatesAndNegativeStaleness(t *testing.T) {
+	isolateAllGlobalConfigPaths(t)
+	root := t.TempDir()
+	rushPath := filepath.Join(root, "rush.json")
+	dotRushPath := filepath.Join(root, ".rush.json")
+	require.NoError(t, os.WriteFile(rushPath, []byte(`{"options":{"debug":true}}`), 0o600))
+	require.NoError(t, os.WriteFile(dotRushPath, []byte(`{"options":{"debug":false}}`), 0o600))
+
+	configs := ProjectConfigs(root)
+	require.Contains(t, configs, rushPath)
+	require.Contains(t, configs, dotRushPath)
+
+	missing := filepath.Join(root, "later.json")
+	store := newTestConfigStore(testStoreOpts{config: &Config{}})
+	store.captureStalenessSnapshot([]string{missing})
+	require.NoError(t, os.WriteFile(missing, []byte(`{}`), 0o600))
+	result := store.ConfigStaleness()
+	require.True(t, result.Dirty)
+	require.Contains(t, result.Changed, missing)
+}
+
 func TestReadStableConfigDocumentsDeduplicatesCanonicalFileIdentity(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "rush.json")

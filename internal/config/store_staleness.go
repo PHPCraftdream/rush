@@ -4,10 +4,7 @@
 package config
 
 import (
-	"crypto/sha256"
 	"maps"
-	"os"
-	"path/filepath"
 	"slices"
 )
 
@@ -17,7 +14,8 @@ type fileSnapshot struct {
 	Exists      bool
 	Size        int64
 	ModTime     int64 // UnixNano.
-	ContentHash [sha256.Size]byte
+	ContentHash [32]byte
+	fingerprint reloadFileFingerprint
 }
 
 // StalenessResult contains the result of a staleness check.
@@ -39,17 +37,19 @@ func (s *ConfigStore) ConfigStaleness() StalenessResult {
 	for _, path := range sn.trackedConfigPaths {
 		snapshot, hadSnapshot := sn.snapshots[path]
 
-		info, err := os.Stat(path)
-		exists := err == nil && !info.IsDir()
-
-		if err != nil && !os.IsNotExist(err) {
+		fingerprint, err := readReloadFingerprint(path)
+		if err != nil {
 			result.Errors[path] = err
 			result.Dirty = true
 		}
+		exists := fingerprint.exists
 
 		if !exists {
 			if hadSnapshot && snapshot.Exists {
 				result.Missing = append(result.Missing, path)
+				result.Dirty = true
+			} else if hadSnapshot && snapshot.fingerprint != (reloadFileFingerprint{}) && snapshot.fingerprint != fingerprint {
+				result.Changed = append(result.Changed, path)
 				result.Dirty = true
 			}
 			continue
@@ -61,17 +61,17 @@ func (s *ConfigStore) ConfigStaleness() StalenessResult {
 			continue
 		}
 
-		if snapshot.Size != info.Size() || snapshot.ModTime != info.ModTime().UnixNano() {
+		if snapshot.fingerprint != (reloadFileFingerprint{}) && snapshot.fingerprint != fingerprint {
 			result.Changed = append(result.Changed, path)
 			result.Dirty = true
 			continue
 		}
-		if snapshot.ContentHash != ([sha256.Size]byte{}) {
-			data, readErr := os.ReadFile(path)
-			if readErr != nil || sha256.Sum256(data) != snapshot.ContentHash {
-				result.Changed = append(result.Changed, path)
-				result.Dirty = true
-			}
+		// Keep compatibility with snapshots created by older callers that only
+		// populated the public metadata fields.
+		if snapshot.Size != fingerprint.size || snapshot.ModTime != fingerprint.modTime ||
+			snapshot.ContentHash != ([32]byte{}) && snapshot.ContentHash != fingerprint.digest {
+			result.Changed = append(result.Changed, path)
+			result.Dirty = true
 		}
 	}
 
@@ -105,20 +105,11 @@ func (s *ConfigStore) refreshStalenessSnapshotLocked() {
 	}
 
 	for _, path := range next.trackedConfigPaths {
-		info, err := os.Stat(path)
-		exists := err == nil && !info.IsDir()
-
+		fingerprint, _ := readReloadFingerprint(path)
 		snapshot := fileSnapshot{
-			Path:   path,
-			Exists: exists,
-		}
-
-		if exists {
-			snapshot.Size = info.Size()
-			snapshot.ModTime = info.ModTime().UnixNano()
-			if data, err := os.ReadFile(path); err == nil {
-				snapshot.ContentHash = sha256.Sum256(data)
-			}
+			Path: path, Exists: fingerprint.exists, Size: fingerprint.size,
+			ModTime: fingerprint.modTime, ContentHash: fingerprint.digest,
+			fingerprint: fingerprint,
 		}
 
 		next.snapshots[path] = snapshot
@@ -145,26 +136,17 @@ func (s *ConfigStore) captureStalenessSnapshotLocked(paths []string) {
 		if p == "" {
 			continue
 		}
-		abs, err := filepath.Abs(p)
-		if err != nil {
-			abs = p
-		}
+		abs := normalizeDiscoveryPath(p)
 		seen[abs] = struct{}{}
 	}
 
 	cur := s.loadSnapshot()
 	workspacePath := cur.workspacePath
 	if workspacePath != "" {
-		abs, err := filepath.Abs(workspacePath)
-		if err == nil {
-			seen[abs] = struct{}{}
-		}
+		seen[normalizeDiscoveryPath(workspacePath)] = struct{}{}
 	}
 	if s.globalDataPath != "" {
-		abs, err := filepath.Abs(s.globalDataPath)
-		if err == nil {
-			seen[abs] = struct{}{}
-		}
+		seen[normalizeDiscoveryPath(s.globalDataPath)] = struct{}{}
 	}
 
 	tracked := make([]string, 0, len(seen))

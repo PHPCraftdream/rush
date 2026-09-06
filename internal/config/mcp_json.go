@@ -144,18 +144,37 @@ func loadExternalMCPServersFromStableDocuments(paths []string, fingerprints map[
 }
 
 func loadExternalMCPDocumentsStable(paths []string, fingerprints map[string]reloadFileFingerprint) ([]stableConfigDocument, map[string]MCPConfig, error) {
+	return loadExternalMCPDocumentsStableForWorkingDir(paths, fingerprints, "")
+}
+
+func loadExternalMCPDocumentsStableForWorkingDir(paths []string, fingerprints map[string]reloadFileFingerprint, workingDir string) ([]stableConfigDocument, map[string]MCPConfig, error) {
 	result := make(map[string]MCPConfig)
-	documents, err := readStableConfigDocuments(paths)
+	documents, err := readStableConfigDocumentsWithOwner(paths, func(path string) (int, bool, error) {
+		// The global external file follows the home policy; the project file
+		// follows the working-directory policy. This is intentionally separate
+		// from rush.json provenance.
+		globalPath := filepath.Join(home.Dir(), ".claude", ".mcp.json")
+		if normalizeReloadPath(path) == normalizeReloadPath(globalPath) {
+			return homeConfigOwner(), true, nil
+		}
+		return configOwnerForWorkingDir(workingDir)
+	})
 	if err != nil {
 		return nil, nil, err
 	}
 	for _, document := range documents {
 		if !document.present {
 			fingerprints[document.path] = reloadFileFingerprint{}
+			for _, alias := range document.aliases {
+				fingerprints[alias.path] = alias.fingerprint
+			}
 			continue
 		}
 		data := document.data
 		fingerprints[document.path] = document.fingerprint
+		for _, alias := range document.aliases {
+			fingerprints[alias.path] = alias.fingerprint
+		}
 		servers, err := loadMCPJSONBytes(data)
 		if err != nil {
 			return nil, nil, fmt.Errorf("invalid JSON in .mcp.json %s: %w", document.path, err)

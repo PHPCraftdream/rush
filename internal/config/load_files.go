@@ -22,9 +22,12 @@ import (
 // up. Global user-level config locations are always included
 // regardless of the boundary.
 func lookupConfigs(cwd string) []string {
-	paths := lookupConfigCandidates(cwd)
-	result := slices.Clone(paths[:min(3, len(paths))])
-	for _, path := range paths[min(3, len(paths)):] {
+	candidates := lookupConfigCandidateGroups(cwd)
+	// Keep global provenance separate from project provenance. The old
+	// first-three rule silently classified a project file as global whenever a
+	// global candidate was rejected by the owner policy.
+	result := slices.Clone(candidates.global)
+	for _, path := range candidates.project {
 		if info, err := os.Stat(path); err == nil && !info.IsDir() {
 			result = append(result, path)
 		}
@@ -37,7 +40,17 @@ func lookupConfigs(cwd string) []string {
 // tracking must retain these negative lookups so creating a previously
 // absent config file is observable by the watcher.
 func lookupConfigCandidates(cwd string) []string {
-	paths := make([]string, 0, 3)
+	candidates := lookupConfigCandidateGroups(cwd)
+	return append(candidates.global, candidates.project...)
+}
+
+type configCandidateGroups struct {
+	global  []string
+	project []string
+}
+
+func lookupConfigCandidateGroups(cwd string) configCandidateGroups {
+	candidates := configCandidateGroups{global: make([]string, 0, 3)}
 	for _, candidate := range []struct {
 		path  string
 		owner int
@@ -47,17 +60,17 @@ func lookupConfigCandidates(cwd string) []string {
 		{GlobalConfigData(), homeConfigOwner()},
 	} {
 		if eligible := eligibleConfigCandidate(candidate.path, candidate.owner); eligible != "" {
-			paths = append(paths, eligible)
+			candidates.global = append(candidates.global, eligible)
 		}
 	}
 	if cwd == "" {
-		return paths
+		return candidates
 	}
 	abs := canonicalConfigPath(cwd)
 	boundary := canonicalConfigPath(projectBoundary(abs))
 	owner, err := fsext.Owner(abs)
 	if err != nil {
-		return paths
+		return candidates
 	}
 	var projectPaths []string
 	for dir := abs; ; dir = filepath.Dir(dir) {
@@ -78,8 +91,36 @@ func lookupConfigCandidates(cwd string) []string {
 	// the nearest directory first, so reverse the complete candidate list as
 	// well as the historical existing-file discovery result.
 	slices.Reverse(projectPaths)
-	paths = append(paths, projectPaths...)
-	return paths
+	candidates.project = projectPaths
+	return candidates
+}
+
+// configOwnerForWorkingDir returns the explicit owner policy used when a
+// discovered file is opened. Discovery's path check is only a filter; this
+// second check closes the stat/open race.
+func configOwnerForWorkingDir(workingDir string) (int, bool, error) {
+	if workingDir == "" {
+		return 0, false, nil
+	}
+	owner, err := fsext.Owner(canonicalConfigPath(workingDir))
+	if err != nil {
+		return 0, false, err
+	}
+	return owner, true, nil
+}
+
+func configOwnerPolicyForPath(path, workingDir string) (int, bool, error) {
+	if path == "" {
+		return 0, false, nil
+	}
+	canonical := normalizeReloadPath(path)
+	if systemConfigPath != "" && canonical == normalizeReloadPath(systemConfigPath) {
+		return systemConfigOwner(), true, nil
+	}
+	if canonical == normalizeReloadPath(GlobalConfig()) || canonical == normalizeReloadPath(GlobalConfigData()) {
+		return homeConfigOwner(), true, nil
+	}
+	return configOwnerForWorkingDir(workingDir)
 }
 
 // canonicalConfigPath resolves the starting directory before both the git
@@ -203,7 +244,13 @@ func loadFromConfigPathsStable(configPaths []string) (*Config, []string, map[str
 }
 
 func loadConfigCandidateStable(configPaths []string) (*Config, []string, map[string]reloadFileFingerprint, []stableConfigDocument, error) {
-	documents, err := readStableConfigDocuments(configPaths)
+	return loadConfigCandidateStableForWorkingDir(configPaths, "")
+}
+
+func loadConfigCandidateStableForWorkingDir(configPaths []string, workingDir string) (*Config, []string, map[string]reloadFileFingerprint, []stableConfigDocument, error) {
+	documents, err := readStableConfigDocumentsWithOwner(configPaths, func(path string) (int, bool, error) {
+		return configOwnerPolicyForPath(path, workingDir)
+	})
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
@@ -218,6 +265,7 @@ func loadConfigCandidateStable(configPaths []string) (*Config, []string, map[str
 		}
 	}
 	configs, loaded, fingerprints := configDocumentBytes(documents)
+	addDocumentAliasFingerprints(fingerprints, documents)
 
 	cfg, err := loadFromBytes(configs)
 	if err != nil {
@@ -234,30 +282,52 @@ type stableConfigDocument struct {
 	data        []byte
 	fingerprint reloadFileFingerprint
 	present     bool
+	aliases     []stableConfigAlias
+}
+
+type stableConfigAlias struct {
+	path        string
+	fingerprint reloadFileFingerprint
 }
 
 func readStableConfigDocuments(paths []string) ([]stableConfigDocument, error) {
+	return readStableConfigDocumentsWithOwner(paths, nil)
+}
+
+func readStableConfigDocumentsWithOwner(paths []string, owner func(string) (int, bool, error)) ([]stableConfigDocument, error) {
 	documents := make([]stableConfigDocument, 0, len(paths))
-	seen := make(map[string]struct{}, len(paths))
+	seen := make(map[string]int, len(paths))
 	for _, path := range paths {
-		path = normalizeReloadPath(path)
-		if path == "" {
+		discoveryPath := normalizeDiscoveryPath(path)
+		if discoveryPath == "" {
 			continue
 		}
-		if _, ok := seen[path]; ok {
-			continue
-		}
-		seen[path] = struct{}{}
-		data, fingerprint, err := readStableConfigFile(path)
-		if err != nil {
-			if os.IsNotExist(err) {
-				documents = append(documents, stableConfigDocument{path: path})
-				continue
+		canonicalPath := normalizeReloadPath(discoveryPath)
+		expectedOwner, enforceOwner := 0, false
+		var ownerErr error
+		if owner != nil {
+			expectedOwner, enforceOwner, ownerErr = owner(discoveryPath)
+			if ownerErr != nil {
+				return nil, ownerErr
 			}
-			return nil, fmt.Errorf("failed to open config file %s: %w", path, err)
+		}
+		data, fingerprint, readErr := readStableConfigFileOwned(discoveryPath, expectedOwner, enforceOwner)
+		if readErr != nil && !os.IsNotExist(readErr) {
+			return nil, fmt.Errorf("failed to open config file %s: %w", discoveryPath, readErr)
+		}
+		alias := stableConfigAlias{path: discoveryPath, fingerprint: fingerprint}
+		if index, ok := seen[canonicalPath]; ok {
+			documents[index].aliases = append(documents[index].aliases, alias)
+			continue
+		}
+		seen[canonicalPath] = len(documents)
+		if readErr != nil {
+			documents = append(documents, stableConfigDocument{path: discoveryPath, aliases: []stableConfigAlias{alias}})
+			continue
 		}
 		documents = append(documents, stableConfigDocument{
-			path: path, data: data, fingerprint: fingerprint, present: fingerprint.exists,
+			path: discoveryPath, data: data, fingerprint: fingerprint, present: fingerprint.exists,
+			aliases: []stableConfigAlias{alias},
 		})
 	}
 	return documents, nil
@@ -278,6 +348,14 @@ func configDocumentBytes(documents []stableConfigDocument) ([][]byte, []string, 
 		}
 	}
 	return configs, loaded, fingerprints
+}
+
+func addDocumentAliasFingerprints(fingerprints map[string]reloadFileFingerprint, documents []stableConfigDocument) {
+	for _, document := range documents {
+		for _, alias := range document.aliases {
+			fingerprints[alias.path] = alias.fingerprint
+		}
+	}
 }
 
 func loadFromBytes(configs [][]byte) (*Config, error) {

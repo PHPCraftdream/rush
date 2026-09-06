@@ -58,7 +58,7 @@ func loadOnce(workingDir, dataDir string, debug bool) (*ConfigStore, error) {
 	// the create-after-discovery gap for project and workspace configuration.
 	configPaths := lookupConfigCandidates(workingDir)
 
-	cfg, loadedPaths, fingerprints, configDocuments, err := loadConfigCandidateStable(configPaths)
+	cfg, loadedPaths, fingerprints, configDocuments, err := loadConfigCandidateStableForWorkingDir(configPaths, workingDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load config from paths %v: %w", configPaths, err)
 	}
@@ -95,7 +95,7 @@ func loadOnce(workingDir, dataDir string, debug bool) (*ConfigStore, error) {
 			return nil, fmt.Errorf("failed to read workspace config %s: %w", workspacePath, readErr)
 		}
 		if readErr != nil {
-			fingerprints[normalizeReloadPath(workspacePath)] = reloadFileFingerprint{}
+			fingerprints[normalizeDiscoveryPath(workspacePath)] = fingerprint
 			configDocuments = append(configDocuments, stableConfigDocument{path: normalizeReloadPath(workspacePath)})
 		}
 		if readErr == nil && len(wsData) > 0 {
@@ -123,7 +123,7 @@ func loadOnce(workingDir, dataDir string, debug bool) (*ConfigStore, error) {
 	// them into the config. Servers defined in rush.json take precedence;
 	// the disabled state for external servers is read from rush's own config.
 	externalPaths := mcpJSONCandidatePaths(workingDir)
-	externalDocuments, _, err := loadExternalMCPDocumentsStable(externalPaths, fingerprints)
+	externalDocuments, _, err := loadExternalMCPDocumentsStableForWorkingDir(externalPaths, fingerprints, workingDir)
 	if err != nil {
 		if errors.Is(err, errStableReadUnstable) {
 			return nil, err
