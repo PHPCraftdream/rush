@@ -56,6 +56,7 @@ type MCPMutationResult struct {
 	FallbackConfig        MCPConfig
 	FallbackOrigin        MCPOrigin
 	committedFingerprints map[string]reloadFileFingerprint
+	committedMCPInputs    map[string][32]byte
 }
 
 // WithCurrentMCPMutation validates result against a fresh evaluation of the
@@ -298,6 +299,7 @@ func (s *ConfigStore) PersistMCPFields(scope Scope, name string, fields map[stri
 	var effective MCPConfig
 	var effectiveExists bool
 	var committed map[string]reloadFileFingerprint
+	var committedInputs map[string][32]byte
 	s.publishMu.Lock()
 	err = s.withMCPWriteLocks(func(files *mcpLockedFiles) error {
 		before, evalErr := s.evaluateMCPFiles(files)
@@ -327,6 +329,7 @@ func (s *ConfigStore) PersistMCPFields(scope Scope, name string, fields map[stri
 			return err
 		}
 		effectiveExists, effective, _ = afterValue(after, name)
+		committedInputs = after.mcpInputs
 		committed = committedMCPFingerprints(files)
 		writeErr := s.writeMCPFileChanges(files)
 		committed = committedMCPFingerprints(files)
@@ -339,7 +342,7 @@ func (s *ConfigStore) PersistMCPFields(scope Scope, name string, fields map[stri
 		// The selected file may be shadowed, so publish the effective value
 		// only after the exact file mutation has committed. A later reload
 		// remains authoritative for all other fields.
-		s.publishMCPValueAndStalenessLocked(name, effective, effectiveExists, committed)
+		s.publishMCPValueAndStalenessLocked(name, effective, effectiveExists, committed, committedInputs)
 	}
 	s.publishMu.Unlock()
 	if err != nil {
@@ -364,6 +367,7 @@ func (s *ConfigStore) PersistMCPFieldsExact(scope Scope, name string, fields map
 	var effective MCPConfig
 	var effectiveExists bool
 	var committed map[string]reloadFileFingerprint
+	var committedInputs map[string][32]byte
 	s.publishMu.Lock()
 	err = s.withMCPWriteLocks(func(files *mcpLockedFiles) error {
 		before, evalErr := s.evaluateMCPFiles(files)
@@ -392,6 +396,7 @@ func (s *ConfigStore) PersistMCPFieldsExact(scope Scope, name string, fields map
 			return err
 		}
 		effectiveExists, effective, _ = afterValue(after, name)
+		committedInputs = after.mcpInputs
 		committed = committedMCPFingerprints(files)
 		writeErr := s.writeMCPFileChanges(files)
 		committed = committedMCPFingerprints(files)
@@ -401,7 +406,7 @@ func (s *ConfigStore) PersistMCPFieldsExact(scope Scope, name string, fields map
 		return nil
 	})
 	if err == nil || mcpCommitWasReconciled(err) {
-		s.publishMCPValueAndStalenessLocked(name, effective, effectiveExists, committed)
+		s.publishMCPValueAndStalenessLocked(name, effective, effectiveExists, committed, committedInputs)
 	}
 	s.publishMu.Unlock()
 	return err
@@ -448,11 +453,11 @@ func (s *ConfigStore) publishMCPConfigLocked(oldName, newName string) {
 		delete(cfg.MCP, oldName)
 	}
 	next.config = &cfg
-	next.mcpRevisions = bumpMCPRevisions(cur.mcpRevisions, oldName, newName)
+	next.mcpRevisions = mcpRevisionDiff(cur.mcpRevisions, cur.config, next.config, cur.mcpInputs, next.mcpInputs)
 	s.publishLocked(next)
 }
 
-func (s *ConfigStore) publishMCPValueAndStalenessLocked(name string, value MCPConfig, exists bool, committed map[string]reloadFileFingerprint) {
+func (s *ConfigStore) publishMCPValueAndStalenessLocked(name string, value MCPConfig, exists bool, committed map[string]reloadFileFingerprint, committedInputs map[string][32]byte) {
 	cur := s.loadSnapshot()
 	if cur.config == nil {
 		return
@@ -469,7 +474,10 @@ func (s *ConfigStore) publishMCPValueAndStalenessLocked(name string, value MCPCo
 		delete(cfg.MCP, name)
 	}
 	next.config = &cfg
-	next.mcpRevisions = bumpMCPRevisions(cur.mcpRevisions, name)
+	if committedInputs != nil {
+		next.mcpInputs = maps.Clone(committedInputs)
+	}
+	next.mcpRevisions = mcpRevisionDiff(cur.mcpRevisions, cur.config, next.config, cur.mcpInputs, next.mcpInputs)
 	if len(committed) > 0 {
 		if next.snapshots == nil {
 			next.snapshots = make(map[string]fileSnapshot)

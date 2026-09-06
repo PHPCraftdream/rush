@@ -500,12 +500,20 @@ func TestCandidateListChangedPublishesAfterCommitAndRefreshesNewSession(t *testi
 	eventsCtx, cancelEvents := context.WithCancel(context.Background())
 	defer cancelEvents()
 	events := SubscribeEvents(eventsCtx)
+	initialAdmission := store.SnapshotMCPAdmission(name)
+	admission.mcpRevision = initialAdmission.MCPRevision
+	admission.resolverRevision = initialAdmission.ResolverRevision
 	notifyListChanged(&admission, name, refreshToolsKind)
 	select {
 	case event := <-events:
 		t.Fatalf("uncommitted candidate published an event: %v", event)
 	default:
 	}
+	_, changed := store.UpdateMCP(name, func(*config.MCPConfig) {})
+	require.True(t, changed)
+	finalAdmission := store.SnapshotMCPAdmission(name)
+	admission.mcpRevision = finalAdmission.MCPRevision
+	admission.resolverRevision = finalAdmission.ResolverRevision
 
 	newSession := &ClientSession{ClientSession: newClientSession}
 	require.NoError(t, owner.commitRenewal(&admission, name, newSession, Counts{}))
@@ -1177,6 +1185,236 @@ notified:
 		return len(GetServerToolNames(name)) == 1
 	}, 5*time.Second, time.Millisecond, "same-server config mutation invalidated the renewed session notification")
 	require.Equal(t, []string{"after-renewal"}, GetServerToolNames(name), "refresh must apply the current disabled_tools filter")
+}
+
+func TestPublishedHTTPNotificationSurvivesUnrelatedReload(t *testing.T) {
+	const name = "reload-live-notification"
+	server := mcp.NewServer(&mcp.Implementation{Name: "reload-live-server"}, nil)
+	mcp.AddTool(server, &mcp.Tool{Name: "initial"}, func(context.Context, *mcp.CallToolRequest, any) (*mcp.CallToolResult, any, error) {
+		return &mcp.CallToolResult{}, nil, nil
+	})
+	httpServer := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil))
+	cleanupTestMCPServer(t, server, httpServer)
+	store := persistedMCPStore(t, name, httpServer.URL, false)
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer func() { require.NoError(t, owner.Close(context.Background())) }()
+
+	owner.Initialize(context.Background(), nil, store, false)
+	require.Eventually(t, func() bool { return hasSession(name) }, 5*time.Second, time.Millisecond)
+	eventsCtx, cancelEvents := context.WithCancel(context.Background())
+	defer cancelEvents()
+	events := SubscribeEvents(eventsCtx)
+	require.NoError(t, store.SetConfigField(config.ScopeGlobal, "options.debug", true))
+	mcp.AddTool(server, &mcp.Tool{Name: "after-reload"}, func(context.Context, *mcp.CallToolRequest, any) (*mcp.CallToolResult, any, error) {
+		return &mcp.CallToolResult{}, nil, nil
+	})
+
+	seenNotification := false
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+	for !seenNotification {
+		select {
+		case event := <-events:
+			seenNotification = event.Payload.Name == name && event.Payload.Type == EventToolsListChanged
+		case <-deadline.C:
+			t.Fatal("published session lost its live notification after an unrelated reload")
+		}
+	}
+	require.Eventually(t, func() bool {
+		return len(GetServerToolNames(name)) == 2
+	}, 5*time.Second, time.Millisecond)
+}
+
+func TestReloadFencesPublishedSessionAfterRelevantMCPChange(t *testing.T) {
+	const name = "reload-replaced-session"
+	server := mcp.NewServer(&mcp.Implementation{Name: "reload-replaced-server"}, nil)
+	mcp.AddTool(server, &mcp.Tool{Name: "initial"}, func(context.Context, *mcp.CallToolRequest, any) (*mcp.CallToolResult, any, error) {
+		return &mcp.CallToolResult{}, nil, nil
+	})
+	httpServer := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil))
+	cleanupTestMCPServer(t, server, httpServer)
+	store := persistedMCPStore(t, name, httpServer.URL, false)
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer func() { require.NoError(t, owner.Close(context.Background())) }()
+	owner.Initialize(context.Background(), nil, store, false)
+	require.Eventually(t, func() bool { return hasSession(name) }, 5*time.Second, time.Millisecond)
+
+	require.NoError(t, store.PersistMCPFields(config.ScopeGlobal, name, map[string]any{
+		"url": "http://replacement.invalid/mcp",
+	}))
+	require.NoError(t, ReloadAndReconcileMCPConfig(context.Background(), store))
+	require.Eventually(t, func() bool { return !hasSession(name) }, 5*time.Second, time.Millisecond)
+	require.Empty(t, GetServerToolNames(name))
+}
+
+func TestInvalidCommittedNotificationClearsAllAdvertisedData(t *testing.T) {
+	const name = "invalid-committed-notification"
+	value := config.MCPConfig{Type: config.MCPStdio, Command: "server"}
+	store := config.NewTestStore(&config.Config{MCP: config.MCPs{name: value}})
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer func() { require.NoError(t, owner.Close(context.Background())) }()
+	session := &ClientSession{}
+	sessions.Set(name, session)
+	allTools.Set(name, []*Tool{{Name: "stale-tool"}})
+	allPrompts.Set(name, []*Prompt{{Name: "stale-prompt"}})
+	allResources.Set(name, []*Resource{{Name: "stale-resource", URI: "stale://resource"}})
+	setState(name, StateConnected, nil, session, Counts{Tools: 1, Prompts: 1, Resources: 1})
+
+	lifecycleMu.Lock()
+	admission := &serverAdmission{
+		owner: owner, generation: owner.generation, epoch: owner.serverEpochs[name],
+		cfg: store, name: name, committed: true, committedName: name,
+		committedEpoch: owner.serverEpochs[name], publishedSession: session,
+		configIdentity: value, hasConfigIdentity: true,
+	}
+	owner.committedAdmissions[name] = admission
+	lifecycleMu.Unlock()
+	_, ok := store.SetMCPDisabled(name, true)
+	require.True(t, ok)
+
+	eventsCtx, cancelEvents := context.WithCancel(context.Background())
+	defer cancelEvents()
+	events := SubscribeEvents(eventsCtx)
+	notifyListChanged(admission, name, refreshToolsKind)
+
+	require.Empty(t, GetServerToolNames(name))
+	_, ok = allPrompts.Get(name)
+	require.False(t, ok)
+	_, ok = allResources.Get(name)
+	require.False(t, ok)
+	_, ok = sessions.Get(name)
+	require.False(t, ok)
+	select {
+	case event := <-events:
+		require.Equal(t, EventStateChanged, event.Payload.Type)
+		require.Equal(t, StateDisabled, event.Payload.State)
+		require.Equal(t, name, event.Payload.Name)
+	case <-time.After(time.Second):
+		t.Fatal("invalid committed session did not publish one disabled event")
+	}
+	select {
+	case event := <-events:
+		t.Fatalf("invalid committed session published an extra event: %v", event)
+	default:
+	}
+}
+
+func TestGetOrRenewFencesStaleCommittedSessionBeforePing(t *testing.T) {
+	const name = "lazy-stale-session"
+	var pingCalls atomic.Int32
+	server := mcp.NewServer(&mcp.Implementation{Name: "lazy-stale-server"}, nil)
+	mcp.AddTool(server, &mcp.Tool{Name: "stale-tool"}, func(context.Context, *mcp.CallToolRequest, any) (*mcp.CallToolResult, any, error) {
+		return &mcp.CallToolResult{}, nil, nil
+	})
+	server.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
+		return func(ctx context.Context, method string, request mcp.Request) (mcp.Result, error) {
+			if method == "ping" {
+				pingCalls.Add(1)
+			}
+			return next(ctx, method, request)
+		}
+	})
+	httpServer := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil))
+	cleanupTestMCPServer(t, server, httpServer)
+	store := persistedMCPStore(t, name, httpServer.URL, false)
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer func() { require.NoError(t, owner.Close(context.Background())) }()
+	owner.Initialize(context.Background(), nil, store, false)
+	require.Eventually(t, func() bool { return hasSession(name) }, 5*time.Second, time.Millisecond)
+
+	require.NoError(t, store.SetConfigField(config.ScopeGlobal, "mcp."+name+".url", "http://replacement.invalid/mcp"))
+	client, err := getOrRenewClient(context.Background(), store, name)
+	require.Error(t, err)
+	require.Nil(t, client)
+	require.Zero(t, pingCalls.Load(), "stale session was used before validation")
+	require.Eventually(t, func() bool { return !hasSession(name) }, time.Second, time.Millisecond)
+	require.Empty(t, GetServerToolNames(name))
+	state, ok := states.Get(name)
+	require.True(t, ok)
+	require.Equal(t, StateDisabled, state.State)
+}
+
+func TestReloadReconciliationWaitsForNewerLeaseWinner(t *testing.T) {
+	const name = "reload-lease-winner"
+	oldConfig := config.MCPConfig{Type: config.MCPHttp, URL: "http://old.example"}
+	newConfig := config.MCPConfig{Type: config.MCPHttp, URL: "http://new.example"}
+	store := config.NewTestStore(&config.Config{MCP: config.MCPs{name: newConfig}})
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer func() { require.NoError(t, owner.Close(context.Background())) }()
+	oldSession := &ClientSession{}
+	newSession := &ClientSession{}
+	oldAdmission := &serverAdmission{
+		owner: owner, generation: owner.generation, epoch: owner.serverEpochs[name],
+		cfg: store, name: name, committed: true, committedName: name,
+		committedEpoch: owner.serverEpochs[name], publishedSession: oldSession,
+		configIdentity: oldConfig, hasConfigIdentity: true,
+	}
+	lifecycleMu.Lock()
+	sessions.Set(name, oldSession)
+	owner.committedAdmissions[name] = oldAdmission
+	lifecycleMu.Unlock()
+	allTools.Set(name, []*Tool{{Name: "old-tool"}})
+
+	lease := serverLeaseFor(name)
+	lease.Lock()
+	waiter := make(chan struct{})
+	var waiterOnce sync.Once
+	serverLeaseHooks.Lock()
+	serverLeaseHooks.beforeLockFn = func(candidate *serverLease) {
+		if candidate == lease {
+			waiterOnce.Do(func() { close(waiter) })
+		}
+	}
+	serverLeaseHooks.Unlock()
+	t.Cleanup(func() {
+		serverLeaseHooks.Lock()
+		serverLeaseHooks.beforeLockFn = nil
+		serverLeaseHooks.Unlock()
+	})
+
+	reconcileDone := make(chan struct{})
+	go func() {
+		owner.reconcilePublishedSessions(store)
+		close(reconcileDone)
+	}()
+	select {
+	case <-waiter:
+	case <-time.After(time.Second):
+		lease.Unlock()
+		t.Fatal("reconciliation did not reach the server lease")
+	}
+
+	lifecycleMu.Lock()
+	owner.serverEpochs[name]++
+	newAdmission := &serverAdmission{
+		owner: owner, generation: owner.generation, epoch: owner.serverEpochs[name],
+		cfg: store, name: name, committed: true, committedName: name,
+		committedEpoch: owner.serverEpochs[name], publishedSession: newSession,
+		configIdentity: newConfig, hasConfigIdentity: true,
+	}
+	sessions.Set(name, newSession)
+	owner.committedAdmissions[name] = newAdmission
+	allTools.Set(name, []*Tool{{Name: "new-tool"}})
+	setState(name, StateConnected, nil, newSession, Counts{Tools: 1})
+	lifecycleMu.Unlock()
+	lease.Unlock()
+	select {
+	case <-reconcileDone:
+	case <-time.After(time.Second):
+		t.Fatal("reconciliation did not finish after the server lease was released")
+	}
+	current, ok := sessions.Get(name)
+	require.True(t, ok)
+	require.Same(t, newSession, current)
+	require.Equal(t, []string{"new-tool"}, GetServerToolNames(name))
+	state, ok := states.Get(name)
+	require.True(t, ok)
+	require.Equal(t, StateConnected, state.State)
 }
 
 func TestListChangedDuringRefreshSchedulesDirtyRerun(t *testing.T) {

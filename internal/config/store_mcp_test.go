@@ -69,6 +69,21 @@ func TestConfigStoreExternalMCPDisabledOverlayPreservesDefinitionAcrossReloadAnd
 	assertExternalMCPDefinition(true, restarted)
 }
 
+func TestPersistedMCPRevisionUsesPostTransactionInputs(t *testing.T) {
+	store, _ := isolatedMCPConfigStore(t)
+	name := "stable-input"
+	value := MCPConfig{Type: MCPHttp, URL: "http://stable.example"}
+	require.NoError(t, store.PersistMCPConfig(ScopeGlobal, name, value))
+	initial := store.SnapshotMCPAdmission(name).MCPRevision
+	require.NoError(t, store.ReloadFromDisk(context.Background()))
+	require.Equal(t, initial, store.SnapshotMCPAdmission(name).MCPRevision)
+
+	require.NoError(t, store.PersistMCPFields(ScopeGlobal, name, map[string]any{
+		"url": "http://changed.example",
+	}))
+	require.Greater(t, store.SnapshotMCPAdmission(name).MCPRevision, initial)
+}
+
 func TestApplyCommittedMCPFingerprintRereadsEverySpelling(t *testing.T) {
 	root := t.TempDir()
 	physicalPath := filepath.Join(root, "physical", "rush.json")

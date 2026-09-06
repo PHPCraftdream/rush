@@ -13,10 +13,8 @@ import (
 	"hash"
 	"io"
 	"log/slog"
-	"maps"
 	"os"
 	"path/filepath"
-	"reflect"
 	"slices"
 	"time"
 
@@ -510,7 +508,7 @@ func (s *ConfigStore) buildAndPublishReload(ctx context.Context, expectedUncerta
 	if cur.generation != prev.generation {
 		candidate.overrides = cur.overrides
 	}
-	candidate.mcpRevisions = reloadMCPRevisions(cur.mcpRevisions, cur.config, candidate.config, cur.mcpInputs, candidate.mcpInputs)
+	candidate.mcpRevisions = mcpRevisionDiff(cur.mcpRevisions, cur.config, candidate.config, cur.mcpInputs, candidate.mcpInputs)
 	candidate.resolverRevision = cur.resolverRevision + 1
 	stalenessPaths := configAndMCPStalenessPaths(lookupConfigCandidates(s.workingDir), s.workingDir)
 	stalenessPaths = append(stalenessPaths, workspacePath, s.globalDataPath)
@@ -520,35 +518,6 @@ func (s *ConfigStore) buildAndPublishReload(ctx context.Context, expectedUncerta
 	s.clearMCPUncertainty(expectedUncertainty)
 
 	return nil
-}
-
-func reloadMCPRevisions(current map[string]uint64, previous, next *Config, previousInputs, nextInputs map[string][32]byte) map[string]uint64 {
-	result := maps.Clone(current)
-	if result == nil {
-		result = make(map[string]uint64)
-	}
-	names := make(map[string]struct{})
-	if previous != nil {
-		for name := range previous.MCP {
-			names[name] = struct{}{}
-		}
-	}
-	if next != nil {
-		for name := range next.MCP {
-			names[name] = struct{}{}
-		}
-	}
-	for name := range names {
-		previousConfig, previousExists := mcpConfig(previous, name)
-		nextConfig, nextExists := mcpConfig(next, name)
-		previousInput, previousHasInput := previousInputs[name]
-		nextInput, nextHasInput := nextInputs[name]
-		if previousExists != nextExists || previousExists && !reflect.DeepEqual(previousConfig, nextConfig) ||
-			previousHasInput && nextHasInput && previousInput != nextInput {
-			result[name]++
-		}
-	}
-	return result
 }
 
 func mcpConfig(cfg *Config, name string) (MCPConfig, bool) {

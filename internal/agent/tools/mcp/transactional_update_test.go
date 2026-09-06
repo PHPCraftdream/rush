@@ -451,7 +451,7 @@ func TestReplacedRenameAdmissionTracksCommittedConfig(t *testing.T) {
 		return &mcp.CallToolResult{}, nil, nil
 	})
 	time.Sleep(50 * time.Millisecond)
-	require.Len(t, GetServerToolNames("new.name"), 2, "disabled committed config must invalidate renamed callbacks")
+	require.Empty(t, GetServerToolNames("new.name"), "disabled committed config must clear renamed callbacks")
 
 	_, ok = store.SetMCPDisabled("new.name", false)
 	require.True(t, ok)
@@ -461,7 +461,7 @@ func TestReplacedRenameAdmissionTracksCommittedConfig(t *testing.T) {
 		return &mcp.CallToolResult{}, nil, nil
 	})
 	time.Sleep(50 * time.Millisecond)
-	require.Len(t, GetServerToolNames("new.name"), 2, "removed committed config must invalidate renamed callbacks")
+	require.Empty(t, GetServerToolNames("new.name"), "removed committed config must clear renamed callbacks")
 }
 
 func TestReplaceServerDurableCommitDuringCloseHonorsCloseDeadline(t *testing.T) {

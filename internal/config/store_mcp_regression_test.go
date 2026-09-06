@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"maps"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -67,6 +68,41 @@ func TestMCPAdmissionRevisionsIgnoreUnrelatedCOW(t *testing.T) {
 	require.False(t, ok)
 	_, ok = store.MCPConfig(name)
 	require.True(t, ok)
+}
+
+func TestMCPRevisionsTrackGenericCOWPerName(t *testing.T) {
+	const changed = "changed"
+	const unrelated = "unrelated"
+	store := NewTestStore(&Config{MCP: MCPs{
+		changed:   {Type: MCPStdio, Command: "old"},
+		unrelated: {Type: MCPStdio, Command: "untouched"},
+	}})
+	initialChanged := store.SnapshotMCPAdmission(changed).MCPRevision
+	initialUnrelated := store.SnapshotMCPAdmission(unrelated).MCPRevision
+
+	store.updateConfig(func(cfg *Config) {
+		cfg.MCP = maps.Clone(cfg.MCP)
+		cfg.MCP[changed] = MCPConfig{Type: MCPStdio, Command: "new"}
+	})
+
+	revisedChanged := store.SnapshotMCPAdmission(changed).MCPRevision
+	revisedUnrelated := store.SnapshotMCPAdmission(unrelated).MCPRevision
+	require.NotEqual(t, initialChanged, revisedChanged)
+	require.Equal(t, initialUnrelated, revisedUnrelated)
+}
+
+func TestMCPRevisionABAInvalidatesStagedReAdd(t *testing.T) {
+	const name = "aba"
+	value := MCPConfig{Type: MCPStdio, Command: "same"}
+	store := NewTestStore(&Config{MCP: MCPs{name: value}})
+	initial := store.SnapshotMCPAdmission(name).MCPRevision
+	_, ok := store.RemoveMCP(name)
+	require.True(t, ok)
+	require.True(t, store.AddMCP(name, value))
+	readded := store.SnapshotMCPAdmission(name).MCPRevision
+	require.Greater(t, readded, initial)
+	_, ok = store.RemoveMCPIfCurrent(name, value, initial)
+	require.False(t, ok)
 }
 
 func TestConfigStoreMCPMutatorsConcurrentPublication(t *testing.T) {

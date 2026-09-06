@@ -48,6 +48,7 @@ type mcpEvaluation struct {
 	configs      map[string]MCPConfig
 	origins      map[string]MCPOrigin
 	fingerprints map[string]reloadFileFingerprint
+	mcpInputs    map[string][sha256.Size]byte
 }
 
 func mcpRecordKey(path string, fingerprint reloadFileFingerprint) string {
@@ -284,6 +285,11 @@ func (s *ConfigStore) mutatePendingRemoveMCP(scope Scope, name string) (MCPMutat
 		result.committedFingerprints = committedMCPFingerprints(files)
 		writeErr := s.writeMCPFileChanges(files)
 		result.committedFingerprints = committedMCPFingerprints(files)
+		after, evalErr := s.evaluateMCPFiles(files)
+		if evalErr != nil {
+			return evalErr
+		}
+		result.committedMCPInputs = after.mcpInputs
 		return writeErr
 	})
 	if err == nil || mcpCommitWasReconciled(err) {
@@ -336,6 +342,7 @@ func (s *ConfigStore) mutateMCPEnableRollback(scope Scope, name string, token MC
 		}
 		result.NewExists, result.NewConfig, result.NewOrigin = afterValue(after, name)
 		result.committedFingerprints = committedMCPFingerprints(files)
+		result.committedMCPInputs = after.mcpInputs
 		return writeErr
 	})
 	if err == nil || mcpCommitWasReconciled(err) {
@@ -460,6 +467,7 @@ func (s *ConfigStore) mutateMCPWithMode(operation string, scope Scope, oldName, 
 			result.NewExists, result.NewConfig, result.NewOrigin = afterValue(after, oldName)
 		}
 		result.committedFingerprints = committedMCPFingerprints(files)
+		result.committedMCPInputs = after.mcpInputs
 		return writeErr
 	})
 	if err == nil || mcpCommitWasReconciled(err) {
@@ -848,7 +856,10 @@ func (s *ConfigStore) evaluateMCPFiles(files *mcpLockedFiles) (mcpEvaluation, er
 			}
 		}
 	}
-	return mcpEvaluation{configs: cfg.MCP, origins: origins, fingerprints: fingerprints}, nil
+	return mcpEvaluation{
+		configs: cfg.MCP, origins: origins, fingerprints: fingerprints,
+		mcpInputs: mcpInputFingerprints(rushDocuments, externalDocuments),
+	}, nil
 }
 
 func (s *ConfigStore) orderedMCPPaths() []string {
@@ -1039,7 +1050,10 @@ func (s *ConfigStore) publishMCPMutationLocked(result MCPMutationResult) {
 		}
 	}
 	next.config = &cfg
-	next.mcpRevisions = bumpMCPRevisions(cur.mcpRevisions, result.OldName, result.NewName)
+	if result.committedMCPInputs != nil {
+		next.mcpInputs = maps.Clone(result.committedMCPInputs)
+	}
+	next.mcpRevisions = mcpRevisionDiff(cur.mcpRevisions, cur.config, next.config, cur.mcpInputs, next.mcpInputs)
 	if len(result.committedFingerprints) > 0 {
 		if next.snapshots == nil {
 			next.snapshots = make(map[string]fileSnapshot)

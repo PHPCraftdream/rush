@@ -116,6 +116,21 @@ func TestEnableDockerMCP(t *testing.T) {
 	})
 }
 
+func TestPrepareDockerMCPConfigAssignsRevision(t *testing.T) {
+	setDockerMCPVersionRunner(t, func(context.Context) error { return nil })
+	store := NewTestStore(&Config{MCP: make(MCPs)})
+	prepared, err := store.PrepareDockerMCPConfig()
+	require.NoError(t, err)
+	require.Equal(t, DockerMCPConfig(), prepared)
+	revision := store.SnapshotMCPAdmission(DockerMCPName).MCPRevision
+	require.NotZero(t, revision)
+
+	_, ok := store.RemoveMCP(DockerMCPName)
+	require.True(t, ok)
+	require.True(t, store.AddMCP(DockerMCPName, prepared))
+	require.Greater(t, store.SnapshotMCPAdmission(DockerMCPName).MCPRevision, revision)
+}
+
 func TestDisableDockerMCP(t *testing.T) {
 	t.Parallel()
 

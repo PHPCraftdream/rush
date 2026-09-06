@@ -565,28 +565,29 @@ var ErrMCPConfigUncertain = errors.New("mcp: config mutation outcome is uncertai
 // package predates multiple App instances and its tool/state maps remain
 // process-wide, so ownership is explicit rather than silently shared.
 type Owner struct {
-	implicit          bool
-	closing           bool
-	generation        uint64
-	lifecycleCtx      context.Context
-	lifecycleCancel   context.CancelFunc
-	initCount         int
-	initWG            sync.WaitGroup
-	initStarted       bool
-	fullInitCount     int
-	initDone          chan struct{}
-	serverEpochs      map[string]uint64
-	serverCancels     map[string]map[uint64]serverCancel
-	pendingGlobalAdds map[string]*addTransaction
-	nextCancelToken   uint64
-	refreshCh         chan struct{}
-	refreshPending    map[refreshKey]refreshRequest
-	refreshRunning    map[refreshKey]struct{}
-	config            *config.ConfigStore
-	refreshWG         sync.WaitGroup
-	closeOnce         sync.Once
-	closeDone         chan struct{}
-	closeErr          error
+	implicit            bool
+	closing             bool
+	generation          uint64
+	lifecycleCtx        context.Context
+	lifecycleCancel     context.CancelFunc
+	initCount           int
+	initWG              sync.WaitGroup
+	initStarted         bool
+	fullInitCount       int
+	initDone            chan struct{}
+	serverEpochs        map[string]uint64
+	serverCancels       map[string]map[uint64]serverCancel
+	committedAdmissions map[string]*serverAdmission
+	pendingGlobalAdds   map[string]*addTransaction
+	nextCancelToken     uint64
+	refreshCh           chan struct{}
+	refreshPending      map[refreshKey]refreshRequest
+	refreshRunning      map[refreshKey]struct{}
+	config              *config.ConfigStore
+	refreshWG           sync.WaitGroup
+	closeOnce           sync.Once
+	closeDone           chan struct{}
+	closeErr            error
 }
 
 type serverCancel struct {
@@ -866,8 +867,15 @@ func (a *serverAdmission) validLocked() bool {
 	if a == nil || a.owner == nil || a.cfg == nil {
 		return true
 	}
-	if a.ctx != nil && a.ctx.Err() != nil && !a.committed && !a.promoted {
-		return false
+	if !a.committed {
+		return a.candidateValidLocked()
+	}
+	return a.committedValidLocked()
+}
+
+func (a *serverAdmission) committedValidLocked() bool {
+	if a == nil || a.owner == nil || a.cfg == nil {
+		return true
 	}
 	admissionName := a.name
 	admissionEpoch := a.epoch
@@ -884,29 +892,26 @@ func (a *serverAdmission) validLocked() bool {
 	if _, uncertain := a.cfg.MCPUncertaintyVersion(admissionName); uncertain {
 		return false
 	}
-	if a.hasConfigIdentity {
-		snapshot := a.cfg.SnapshotMCPAdmission(a.name)
-		if a.mcpRevision != 0 && snapshot.MCPRevision != a.mcpRevision ||
-			a.resolverRevision != 0 && snapshot.ResolverRevision != a.resolverRevision {
-			return false
-		}
-	}
-	if !a.committed && a.guardName != "" {
-		if a.owner.serverEpochs[a.guardName] != a.guardEpoch {
-			return false
-		}
-		if _, uncertain := a.cfg.MCPUncertaintyVersion(a.guardName); uncertain {
-			return false
-		}
-	}
 	mcpConfig, exists := a.cfg.MCPConfig(admissionName)
 	if !exists {
 		return false
 	}
-	if a.hasConfigIdentity && !reflect.DeepEqual(a.configIdentity, mcpConfig) {
+	if a.publishedSession != nil {
+		currentSession, sessionExists := sessions.Get(admissionName)
+		if !sessionExists || currentSession != a.publishedSession {
+			return false
+		}
+	}
+	if a.hasConfigIdentity && !mcpConnectionConfigEqual(a.configIdentity, mcpConfig) {
 		return false
 	}
 	return !mcpConfig.Disabled
+}
+
+func mcpConnectionConfigEqual(a, b config.MCPConfig) bool {
+	return a.Type == b.Type && a.Command == b.Command &&
+		reflect.DeepEqual(a.Env, b.Env) && reflect.DeepEqual(a.Args, b.Args) &&
+		a.URL == b.URL && reflect.DeepEqual(a.Headers, b.Headers)
 }
 
 func (o *Owner) admitServer(ctx context.Context, cfg *config.ConfigStore, name string, bump bool) (serverAdmission, error) {
@@ -1003,11 +1008,14 @@ func (o *Owner) admitReplacementCandidate(ctx context.Context, cfg *config.Confi
 	o.nextCancelToken++
 	token := o.nextCancelToken
 	o.serverCancels[name][token] = serverCancel{cancel: cancel, token: token}
+	admissionSnapshot := cfg.SnapshotMCPAdmission(name)
 	admission := serverAdmission{
 		owner:             o,
 		generation:        o.generation,
 		epoch:             o.serverEpochs[name],
 		cfg:               cfg,
+		mcpRevision:       admissionSnapshot.MCPRevision,
+		resolverRevision:  admissionSnapshot.ResolverRevision,
 		name:              name,
 		once:              new(sync.Once),
 		ctx:               operationCtx,
@@ -1111,11 +1119,14 @@ func (o *Owner) snapshotServerAdmission(_ context.Context, cfg *config.ConfigSto
 	o.nextCancelToken++
 	token := o.nextCancelToken
 	o.serverCancels[name][token] = serverCancel{cancel: cancel, token: token}
+	admissionSnapshot := cfg.SnapshotMCPAdmission(name)
 	return serverAdmission{
 		owner:             o,
 		generation:        o.generation,
 		epoch:             o.serverEpochs[name],
 		cfg:               cfg,
+		mcpRevision:       admissionSnapshot.MCPRevision,
+		resolverRevision:  admissionSnapshot.ResolverRevision,
 		name:              name,
 		ctx:               operationCtx,
 		cancel:            cancel,
@@ -1199,18 +1210,19 @@ func acquire(implicit bool) (*Owner, error) {
 	generation++
 	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
 	o := &Owner{
-		implicit:          implicit,
-		generation:        generation,
-		lifecycleCtx:      lifecycleCtx,
-		lifecycleCancel:   lifecycleCancel,
-		closeDone:         make(chan struct{}),
-		initDone:          closedChannel(),
-		serverEpochs:      make(map[string]uint64),
-		serverCancels:     make(map[string]map[uint64]serverCancel),
-		pendingGlobalAdds: make(map[string]*addTransaction),
-		refreshCh:         make(chan struct{}, 1),
-		refreshPending:    make(map[refreshKey]refreshRequest),
-		refreshRunning:    make(map[refreshKey]struct{}),
+		implicit:            implicit,
+		generation:          generation,
+		lifecycleCtx:        lifecycleCtx,
+		lifecycleCancel:     lifecycleCancel,
+		closeDone:           make(chan struct{}),
+		initDone:            closedChannel(),
+		serverEpochs:        make(map[string]uint64),
+		serverCancels:       make(map[string]map[uint64]serverCancel),
+		committedAdmissions: make(map[string]*serverAdmission),
+		pendingGlobalAdds:   make(map[string]*addTransaction),
+		refreshCh:           make(chan struct{}, 1),
+		refreshPending:      make(map[refreshKey]refreshRequest),
+		refreshRunning:      make(map[refreshKey]struct{}),
 	}
 	owner = o
 	initDone = o.initDone
@@ -1334,10 +1346,16 @@ func (o *Owner) activateRefreshesLocked(admission *serverAdmission) ([]Event, bo
 		request.admission.committed = admission.committed
 		request.admission.committedName = admission.committedName
 		request.admission.committedEpoch = admission.committedEpoch
+		request.admission.mcpRevision = admission.mcpRevision
+		request.admission.resolverRevision = admission.resolverRevision
+		request.admission.configIdentity = admission.configIdentity
+		request.admission.hasConfigIdentity = admission.hasConfigIdentity
+		request.admission.publishedSession = admission.publishedSession
 		if request.admission.committedName == "" {
 			request.admission.committedName = admission.name
 			request.admission.committedEpoch = admission.epoch
 		}
+		request.admission.committed = true
 		requestKey := refreshKeyForRequest(request)
 		if _, exists := o.refreshPending[requestKey]; !exists {
 			o.refreshPending[requestKey] = request
@@ -1410,6 +1428,12 @@ func (o *Owner) runRefresh(request refreshRequest) {
 		return
 	}
 	defer refreshAdmission.done()
+	refreshAdmission.committed = true
+	refreshAdmission.committedName = request.admission.committedName
+	refreshAdmission.committedEpoch = epoch
+	refreshAdmission.publishedSession = request.admission.publishedSession
+	refreshAdmission.configIdentity = request.admission.configIdentity
+	refreshAdmission.hasConfigIdentity = request.admission.hasConfigIdentity
 	refreshAdmission.epoch = epoch
 	switch request.kind {
 	case refreshToolsKind:
@@ -1473,6 +1497,7 @@ func reloadWithUncertaintyToken(ctx context.Context, token *uncertaintyReloadTok
 			return ErrMCPConfigUncertain
 		}
 	}
+	token.owner.reconcilePublishedSessions(token.cfg)
 	return nil
 }
 
@@ -1521,9 +1546,76 @@ func ReloadAndReconcileMCPConfig(ctx context.Context, cfg *config.ConfigStore) e
 		if ctx == nil {
 			ctx = context.Background()
 		}
-		return cfg.ReloadFromDisk(ctx)
+		if err := cfg.ReloadFromDisk(ctx); err != nil {
+			return err
+		}
+		if current != nil {
+			current.reconcilePublishedSessions(cfg)
+		}
+		return nil
 	}
 	return reloadWithUncertaintyToken(ctx, token)
+}
+
+// reconcilePublishedSessions fences connections whose committed transport no
+// longer matches the effective enabled MCP definition after a reload.
+func (o *Owner) reconcilePublishedSessions(cfg *config.ConfigStore) {
+	if o == nil || cfg == nil {
+		return
+	}
+	type sessionCandidate struct {
+		name      string
+		admission *serverAdmission
+		session   *ClientSession
+	}
+	type retiredSession struct {
+		name    string
+		session *ClientSession
+		cancels []context.CancelFunc
+	}
+	var candidates []sessionCandidate
+	var retired []retiredSession
+	lifecycleMu.Lock()
+	if owner != o || o.closing {
+		lifecycleMu.Unlock()
+		return
+	}
+	for name, admission := range o.committedAdmissions {
+		if admission == nil || admission.cfg != cfg || admission.committedValidLocked() || admission.publishedSession == nil {
+			continue
+		}
+		candidates = append(candidates, sessionCandidate{
+			name: name, admission: admission, session: admission.publishedSession,
+		})
+	}
+	lifecycleMu.Unlock()
+	slices.SortFunc(candidates, func(a, b sessionCandidate) int {
+		return strings.Compare(a.name, b.name)
+	})
+	for _, candidate := range candidates {
+		lease := serverLeaseFor(candidate.name)
+		lease.Lock()
+		lifecycleMu.Lock()
+		if owner != o || o.closing || o.committedAdmissions[candidate.name] != candidate.admission {
+			lifecycleMu.Unlock()
+			lease.Unlock()
+			continue
+		}
+		cancels, session, invalidated := o.detachInvalidCommittedSessionLocked(candidate.name, candidate.session, cfg)
+		lifecycleMu.Unlock()
+		lease.Unlock()
+		if !invalidated {
+			continue
+		}
+		retired = append(retired, retiredSession{name: candidate.name, session: session, cancels: cancels})
+	}
+	for _, item := range retired {
+		for _, cancel := range item.cancels {
+			cancel()
+		}
+		retireMCPClient(item.name, item.session)
+		publishStateEvent(item.name, StateDisabled, nil, Counts{})
+	}
 }
 
 func (o *Owner) rememberConfig(cfg *config.ConfigStore) error {
@@ -1629,6 +1721,18 @@ func (o *Owner) commitRenewalForLease(admission *serverAdmission, name string, s
 	oldSession, hadOldSession := sessions.Get(name)
 	sessions.Set(name, session)
 	admission.committed = true
+	admission.committedName = name
+	admission.committedEpoch = o.serverEpochs[name]
+	admission.publishedSession = session
+	if current, ok := admission.cfg.MCPConfig(name); ok {
+		admission.configIdentity = current
+		admission.hasConfigIdentity = true
+	}
+	if snapshot := admission.cfg.SnapshotMCPAdmission(name); snapshot.Exists {
+		admission.mcpRevision = snapshot.MCPRevision
+		admission.resolverRevision = snapshot.ResolverRevision
+	}
+	o.committedAdmissions[name] = admission
 	setState(name, StateConnected, nil, session, counts)
 	pendingEvents, wakeRefresh := o.activateRefreshesLocked(admission)
 	lifecycleMu.Unlock()
@@ -1726,6 +1830,7 @@ func (o *Owner) finishClose() {
 
 	lifecycleMu.Lock()
 	if owner == o {
+		clear(o.committedAdmissions)
 		resetRegistryLocked()
 		owner = nil
 		initDone = closedChannel()
@@ -2311,7 +2416,18 @@ func publishPreparedClientLocked(cfg *config.ConfigStore, name string, prepared 
 	sessions.Set(name, session)
 	if admission != nil {
 		admission.committed = true
+		admission.committedName = name
+		admission.committedEpoch = admission.owner.serverEpochs[name]
 		admission.publishedSession = session
+		if current, ok := cfg.MCPConfig(name); ok {
+			admission.configIdentity = current
+			admission.hasConfigIdentity = true
+		}
+		if snapshot := cfg.SnapshotMCPAdmission(name); snapshot.Exists {
+			admission.mcpRevision = snapshot.MCPRevision
+			admission.resolverRevision = snapshot.ResolverRevision
+		}
+		admission.owner.committedAdmissions[name] = admission
 	}
 	counts := Counts{
 		Tools:   toolCount,
@@ -3024,18 +3140,28 @@ func replaceServerWithResultPersistenceAndPreparation(
 			clearAdvertised(oldName)
 			sessions.Del(oldName)
 			states.Del(oldName)
+			delete(admission.owner.committedAdmissions, oldName)
 		}
 		if !newDisabled {
 			toolCount := updateTools(cfg, newName, prepared.tools)
 			updatePrompts(newName, prepared.prompts)
 			allResources.Del(newName)
 			sessions.Set(newName, prepared.session)
+			admission.publishedSession = prepared.session
+			admission.configIdentity = result.NewConfig
+			admission.hasConfigIdentity = true
+			if snapshot := cfg.SnapshotMCPAdmission(newName); snapshot.Exists {
+				admission.mcpRevision = snapshot.MCPRevision
+				admission.resolverRevision = snapshot.ResolverRevision
+			}
+			admission.owner.committedAdmissions[newName] = &admission
 			counts = Counts{Tools: toolCount, Prompts: len(prepared.prompts)}
 			setState(newName, StateConnected, nil, prepared.session, counts)
 		} else {
 			clearAdvertised(newName)
 			sessions.Del(newName)
 			states.Del(newName)
+			delete(admission.owner.committedAdmissions, newName)
 			if newExists {
 				setState(newName, StateDisabled, nil, nil, Counts{})
 			}
@@ -3383,6 +3509,7 @@ func addServerWithInitializerAndPersistence(
 	transaction.markDurable()
 	resultSnapshot := cfg.SnapshotMCPAdmission(name)
 	admission.mcpRevision = resultSnapshot.MCPRevision
+	admission.resolverRevision = resultSnapshot.ResolverRevision
 	admission.mutationResult = &result
 	// The durable Add outcome is complete before releasing the lease. A later
 	// RemoveServer must then use the ordinary conditional remove path rather
@@ -3748,6 +3875,9 @@ func fenceMCPRuntimeLocked(o *Owner, cfg *config.ConfigStore, name string) *Clie
 // detachSessionLocked removes the published session while the caller holds
 // the server write lease. The caller retires and closes it after unlocking.
 func detachSessionLocked(name string) *ClientSession {
+	if o := owner; o != nil {
+		delete(o.committedAdmissions, name)
+	}
 	if session, ok := sessions.Get(name); ok {
 		sessions.Del(name)
 		return session
@@ -3992,6 +4122,22 @@ func getOrRenewClient(ctx context.Context, cfg *config.ConfigStore, name string)
 			sess.operationMu.Unlock()
 		}
 		m, exists = cfg.MCPConfig(name)
+		if o != nil && ok {
+			lifecycleMu.Lock()
+			cancels, detached, invalidated := o.detachInvalidCommittedSessionLocked(name, sess, cfg)
+			lifecycleMu.Unlock()
+			if invalidated {
+				lease.Unlock()
+				for _, cancel := range cancels {
+					cancel()
+				}
+				retireMCPClient(name, detached)
+				publishStateEvent(name, StateDisabled, nil, Counts{})
+				finish()
+				o.endInit()
+				return nil, fmt.Errorf("MCP session %q no longer matches its current configuration", name)
+			}
+		}
 		if !ok || !exists || m.Disabled {
 			lease.Unlock()
 			finish()
@@ -4168,7 +4314,11 @@ func getOrRenewClient(ctx context.Context, cfg *config.ConfigStore, name string)
 		// it explicitly; state transitions must never infer session ownership
 		// from the previous state's Client field.
 		if published, ok := sessions.Get(name); ok && published == current {
-			sessions.Del(name)
+			lifecycleMu.Lock()
+			if published, stillCurrent := sessions.Get(name); stillCurrent && published == current {
+				detachSessionLocked(name)
+			}
+			lifecycleMu.Unlock()
 		}
 		detachedCurrent = current
 	}
@@ -4766,7 +4916,11 @@ func notifyListChanged(admission *serverAdmission, name string, kind refreshKind
 	// invalidate the generation and suppress both the refresh and its event.
 	lifecycleMu.Lock()
 	if !admission.notificationsValidLocked() {
+		committed := admission.committed
 		lifecycleMu.Unlock()
+		if committed {
+			fenceInvalidCommittedNotification(admission)
+		}
 		return
 	}
 	request := refreshRequest{
@@ -4805,6 +4959,56 @@ func notifyListChanged(admission *serverAdmission, name string, kind refreshKind
 	if wake {
 		admission.owner.signalRefresh()
 	}
+}
+
+func fenceInvalidCommittedNotification(admission *serverAdmission) {
+	if admission == nil || admission.owner == nil {
+		return
+	}
+	name := admission.committedName
+	if name == "" {
+		name = admission.name
+	}
+	lease := serverLeaseFor(name)
+	lease.Lock()
+	lifecycleMu.Lock()
+	current, exists := sessions.Get(name)
+	registered := admission.owner.committedAdmissions[name] == admission ||
+		(admission.owner.committedAdmissions[name] == nil && current == admission.publishedSession)
+	if registered && exists && current == admission.publishedSession && !admission.committedValidLocked() {
+		cancels := admission.owner.invalidateServerLocked(name)
+		detached := detachSessionLocked(name)
+		clearAdvertised(name)
+		setState(name, StateDisabled, nil, nil, Counts{})
+		lifecycleMu.Unlock()
+		lease.Unlock()
+		for _, cancel := range cancels {
+			cancel()
+		}
+		retireMCPClient(name, detached)
+		publishStateEvent(name, StateDisabled, nil, Counts{})
+		return
+	}
+	lifecycleMu.Unlock()
+	lease.Unlock()
+}
+
+// detachInvalidCommittedSessionLocked removes only the exact published
+// session represented by admission. The caller holds the server lease and
+// lifecycleMu, in that order.
+func (o *Owner) detachInvalidCommittedSessionLocked(name string, session *ClientSession, cfg *config.ConfigStore) ([]context.CancelFunc, *ClientSession, bool) {
+	if o == nil || session == nil || cfg == nil {
+		return nil, nil, false
+	}
+	admission := o.committedAdmissions[name]
+	if admission == nil || admission.cfg != cfg || admission.publishedSession != session || admission.committedValidLocked() {
+		return nil, nil, false
+	}
+	cancels := o.invalidateServerLocked(name)
+	detached := detachSessionLocked(name)
+	clearAdvertised(name)
+	setState(name, StateDisabled, nil, nil, Counts{})
+	return cancels, detached, true
 }
 
 func listChangedEventType(kind refreshKind) EventType {

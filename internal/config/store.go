@@ -387,7 +387,7 @@ func (s *ConfigStore) UpdateMCP(name string, mutate func(*MCPConfig)) (MCPConfig
 	cfgCopy.MCP = maps.Clone(cur.config.MCP)
 	cfgCopy.MCP[name] = cloneMCPConfig(updated)
 	next.config = &cfgCopy
-	next.mcpRevisions = bumpMCPRevisions(cur.mcpRevisions, name)
+	next.mcpRevisions = mcpRevisionDiff(cur.mcpRevisions, cur.config, next.config, cur.mcpInputs, next.mcpInputs, name)
 	s.publishLocked(next)
 	return updated, true
 }
@@ -417,7 +417,7 @@ func (s *ConfigStore) AddMCP(name string, mcpConfig MCPConfig) bool {
 	}
 	cfgCopy.MCP[name] = cloneMCPConfig(mcpConfig)
 	next.config = &cfgCopy
-	next.mcpRevisions = bumpMCPRevisions(cur.mcpRevisions, name)
+	next.mcpRevisions = mcpRevisionDiff(cur.mcpRevisions, cur.config, next.config, cur.mcpInputs, next.mcpInputs)
 	s.publishLocked(next)
 	return true
 }
@@ -439,7 +439,7 @@ func (s *ConfigStore) RemoveMCP(name string) (MCPConfig, bool) {
 	cfgCopy.MCP = maps.Clone(cur.config.MCP)
 	delete(cfgCopy.MCP, name)
 	next.config = &cfgCopy
-	next.mcpRevisions = bumpMCPRevisions(cur.mcpRevisions, name)
+	next.mcpRevisions = mcpRevisionDiff(cur.mcpRevisions, cur.config, next.config, cur.mcpInputs, next.mcpInputs)
 	s.publishLocked(next)
 	return cloneMCPConfig(current), true
 }
@@ -462,22 +462,9 @@ func (s *ConfigStore) RemoveMCPIfCurrent(name string, expected MCPConfig, revisi
 	cfgCopy.MCP = maps.Clone(cur.config.MCP)
 	delete(cfgCopy.MCP, name)
 	next.config = &cfgCopy
-	next.mcpRevisions = bumpMCPRevisions(cur.mcpRevisions, name)
+	next.mcpRevisions = mcpRevisionDiff(cur.mcpRevisions, cur.config, next.config, cur.mcpInputs, next.mcpInputs)
 	s.publishLocked(next)
 	return cloneMCPConfig(current), true
-}
-
-func bumpMCPRevisions(current map[string]uint64, names ...string) map[string]uint64 {
-	result := maps.Clone(current)
-	if result == nil {
-		result = make(map[string]uint64)
-	}
-	for _, name := range names {
-		if name != "" {
-			result[name]++
-		}
-	}
-	return result
 }
 
 func initialMCPRevisions(cfg *Config) map[string]uint64 {
@@ -552,6 +539,7 @@ func (s *ConfigStore) updateConfigLocked(mutate func(cfgCopy *Config)) {
 	}
 	mutate(&cfgCopy)
 	next.config = &cfgCopy
+	next.mcpRevisions = mcpRevisionDiff(cur.mcpRevisions, cur.config, next.config, cur.mcpInputs, next.mcpInputs)
 
 	s.publishLocked(next)
 }
