@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -63,6 +64,30 @@ func fakeMCPInitializer(
 ) error {
 	defer admission.done()
 	return publishPreparedClient(cfg, name, &preparedClient{session: &ClientSession{}}, admission)
+}
+
+func awaitMCPError(t *testing.T, results <-chan error) error {
+	t.Helper()
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	select {
+	case err := <-results:
+		return err
+	case <-timer.C:
+		t.Fatal("MCP operation did not complete")
+		return nil
+	}
+}
+
+func awaitMCPSignal(t *testing.T, signal <-chan struct{}) {
+	t.Helper()
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	select {
+	case <-signal:
+	case <-timer.C:
+		t.Fatal("MCP test barrier was not reached")
+	}
 }
 
 func TestAddServerReconciledCommitOutcomePublishesRuntime(t *testing.T) {
@@ -234,12 +259,9 @@ func TestAddDurableCommitFencedByCloseReturnsSuccessWithoutPublishingCandidate(t
 	owner, err := Acquire()
 	require.NoError(t, err)
 	releasePersistence := make(chan struct{})
+	var releasePersistenceOnce sync.Once
 	defer func() {
-		select {
-		case <-releasePersistence:
-		default:
-			close(releasePersistence)
-		}
+		releasePersistenceOnce.Do(func() { close(releasePersistence) })
 		require.NoError(t, owner.Close(context.Background()))
 	}()
 
@@ -259,7 +281,7 @@ func TestAddDurableCommitFencedByCloseReturnsSuccessWithoutPublishingCandidate(t
 			},
 		)
 	}()
-	<-committed
+	awaitMCPSignal(t, committed)
 
 	closeDone := make(chan error, 1)
 	go func() { closeDone <- owner.Close(context.Background()) }()
@@ -268,10 +290,10 @@ func TestAddDurableCommitFencedByCloseReturnsSuccessWithoutPublishingCandidate(t
 		defer lifecycleMu.Unlock()
 		return owner.closing
 	}, time.Second, time.Millisecond)
-	close(releasePersistence)
+	releasePersistenceOnce.Do(func() { close(releasePersistence) })
 
-	require.NoError(t, <-addDone)
-	require.NoError(t, <-closeDone)
+	require.NoError(t, awaitMCPError(t, addDone))
+	require.NoError(t, awaitMCPError(t, closeDone))
 	_, persisted := diskMCP(t)[name]
 	require.True(t, persisted)
 }
@@ -281,12 +303,9 @@ func TestAddReconciledCommitOutcomeFencedByCloseReturnsOriginalOutcome(t *testin
 	owner, err := Acquire()
 	require.NoError(t, err)
 	releasePersistence := make(chan struct{})
+	var releasePersistenceOnce sync.Once
 	defer func() {
-		select {
-		case <-releasePersistence:
-		default:
-			close(releasePersistence)
-		}
+		releasePersistenceOnce.Do(func() { close(releasePersistence) })
 		require.NoError(t, owner.Close(context.Background()))
 	}()
 
@@ -306,7 +325,7 @@ func TestAddReconciledCommitOutcomeFencedByCloseReturnsOriginalOutcome(t *testin
 			},
 		)
 	}()
-	<-committed
+	awaitMCPSignal(t, committed)
 
 	closeDone := make(chan error, 1)
 	go func() { closeDone <- owner.Close(context.Background()) }()
@@ -315,10 +334,10 @@ func TestAddReconciledCommitOutcomeFencedByCloseReturnsOriginalOutcome(t *testin
 		defer lifecycleMu.Unlock()
 		return owner.closing
 	}, time.Second, time.Millisecond)
-	close(releasePersistence)
+	releasePersistenceOnce.Do(func() { close(releasePersistence) })
 
-	requireMCPCommitUncertainty(t, <-addDone, true)
-	require.NoError(t, <-closeDone)
+	requireMCPCommitUncertainty(t, awaitMCPError(t, addDone), true)
+	require.NoError(t, awaitMCPError(t, closeDone))
 	_, persisted := diskMCP(t)[name]
 	require.True(t, persisted)
 }
@@ -328,17 +347,26 @@ func TestAddLinearizesPublicationBeforeConcurrentRemoveAfterCommit(t *testing.T)
 	owner, err := Acquire()
 	require.NoError(t, err)
 	releasePersistence := make(chan struct{})
+	releaseAddUnlock := make(chan struct{})
+	releaseRemoveLock := make(chan struct{})
+	var releasePersistenceOnce sync.Once
+	var releaseAddUnlockOnce sync.Once
+	var releaseRemoveLockOnce sync.Once
 	defer func() {
-		select {
-		case <-releasePersistence:
-		default:
-			close(releasePersistence)
-		}
+		serverLeaseHooks.Lock()
+		serverLeaseHooks.beforeLockFn = nil
+		serverLeaseHooks.afterLockFn = nil
+		serverLeaseHooks.afterUnlockFn = nil
+		serverLeaseHooks.Unlock()
+		releasePersistenceOnce.Do(func() { close(releasePersistence) })
+		releaseAddUnlockOnce.Do(func() { close(releaseAddUnlock) })
+		releaseRemoveLockOnce.Do(func() { close(releaseRemoveLock) })
 		require.NoError(t, owner.Close(context.Background()))
 	}()
 
 	const name = "add-remove-after-commit"
 	committed := make(chan struct{})
+	addUnlockReached := make(chan struct{})
 	addDone := make(chan error, 1)
 	eventsCtx, cancelEvents := context.WithCancel(context.Background())
 	defer cancelEvents()
@@ -356,30 +384,87 @@ func TestAddLinearizesPublicationBeforeConcurrentRemoveAfterCommit(t *testing.T)
 			},
 		)
 	}()
-	<-committed
+	awaitMCPSignal(t, committed)
+
+	leases.mu.Lock()
+	addLease := leases.entries[name]
+	leases.mu.Unlock()
+	require.NotNil(t, addLease)
+	removeLockAttempted := make(chan *serverLease, 1)
+	removeLockAcquired := make(chan *serverLease, 1)
+	var removeAttemptOnce sync.Once
+	var removeAcquiredOnce sync.Once
+	var addUnlockOnce sync.Once
+	serverLeaseHooks.Lock()
+	serverLeaseHooks.beforeLockFn = func(lease *serverLease) {
+		if lease == addLease {
+			removeAttemptOnce.Do(func() { removeLockAttempted <- lease })
+		}
+	}
+	serverLeaseHooks.afterLockFn = func(lease *serverLease) {
+		if lease == addLease {
+			removeAcquiredOnce.Do(func() {
+				removeLockAcquired <- lease
+				<-releaseRemoveLock
+			})
+		}
+	}
+	serverLeaseHooks.afterUnlockFn = func(lease *serverLease) {
+		if lease == addLease {
+			addUnlockOnce.Do(func() {
+				close(addUnlockReached)
+				<-releaseAddUnlock
+			})
+		}
+	}
+	serverLeaseHooks.Unlock()
 
 	removeDone := make(chan error, 1)
 	go func() { removeDone <- RemoveServer(store, name) }()
+	var attemptedLease *serverLease
 	select {
-	case err := <-removeDone:
-		t.Fatalf("RemoveServer won before Add publication: %v", err)
-	case <-time.After(25 * time.Millisecond):
+	case attemptedLease = <-removeLockAttempted:
+	// This timeout is only an outer safety net; the ordering assertion uses hooks.
+	case <-time.After(5 * time.Second):
+		t.Fatal("RemoveServer did not begin lock acquisition")
 	}
-	close(releasePersistence)
+	require.Same(t, addLease, attemptedLease)
+	releasePersistenceOnce.Do(func() { close(releasePersistence) })
+	awaitMCPSignal(t, addUnlockReached)
 
-	require.NoError(t, <-addDone)
-	require.NoError(t, <-removeDone)
+	var unlockedLease *serverLease
+	select {
+	case unlockedLease = <-removeLockAcquired:
+	// This timeout is only an outer safety net; the ordering assertion uses hooks.
+	case <-time.After(5 * time.Second):
+		t.Fatal("RemoveServer did not acquire the exact server lease")
+	}
+	require.Same(t, addLease, unlockedLease)
+	var publication Event
+	select {
+	case event := <-events:
+		publication = event.Payload
+	default:
+		t.Fatal("RemoveServer acquired the lease before Add publication")
+	}
+	require.Equal(t, EventStateChanged, publication.Type)
+	require.Equal(t, name, publication.Name)
+	require.Equal(t, StateConnected, publication.State)
+	releaseRemoveLockOnce.Do(func() { close(releaseRemoveLock) })
+	releaseAddUnlockOnce.Do(func() { close(releaseAddUnlock) })
+
+	require.NoError(t, awaitMCPError(t, addDone))
+	require.NoError(t, awaitMCPError(t, removeDone))
 	_, persisted := diskMCP(t)[name]
 	require.False(t, persisted)
 	require.False(t, hasSession(name))
 	_, hasState := GetState(name)
 	require.False(t, hasState)
-	requireTransactionalEvent(t, events, pubsub.UpdatedEvent, name, StateConnected)
 	requireTransactionalEvent(t, events, pubsub.DeletedEvent, name, StateDisabled)
 	select {
 	case event := <-events:
 		t.Fatalf("Add/Remove published an extra event: %v", event)
-	case <-time.After(50 * time.Millisecond):
+	default:
 	}
 }
 

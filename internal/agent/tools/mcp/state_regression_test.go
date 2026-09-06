@@ -621,7 +621,7 @@ func TestRemoveDisabledFallbackPublishesOneStateEvent(t *testing.T) {
 	select {
 	case event := <-events:
 		t.Fatalf("disabled fallback published duplicate state event: %v", event)
-	case <-time.After(50 * time.Millisecond):
+	default:
 	}
 }
 

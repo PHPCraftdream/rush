@@ -197,6 +197,45 @@ type serverLease struct {
 	renewalEndHook                func()
 }
 
+// serverLeaseHookSet provides deterministic test seams for lock ordering. It
+// is intentionally kept outside the lease state so production lock ownership
+// is unchanged.
+type serverLeaseHookSet struct {
+	sync.Mutex
+	beforeLockFn  func(*serverLease)
+	afterLockFn   func(*serverLease)
+	afterUnlockFn func(*serverLease)
+}
+
+var serverLeaseHooks serverLeaseHookSet
+
+func (h *serverLeaseHookSet) callBeforeLock(lease *serverLease) {
+	h.Lock()
+	fn := h.beforeLockFn
+	h.Unlock()
+	if fn != nil {
+		fn(lease)
+	}
+}
+
+func (h *serverLeaseHookSet) callAfterLock(lease *serverLease) {
+	h.Lock()
+	fn := h.afterLockFn
+	h.Unlock()
+	if fn != nil {
+		fn(lease)
+	}
+}
+
+func (h *serverLeaseHookSet) callAfterUnlock(lease *serverLease) {
+	h.Lock()
+	fn := h.afterUnlockFn
+	h.Unlock()
+	if fn != nil {
+		fn(lease)
+	}
+}
+
 // getRetained atomically looks up (or creates) a lease and reserves one
 // reference for the caller before another goroutine can reclaim the entry.
 func (r *leaseRegistry) getRetained(name string) *serverLease {
@@ -250,11 +289,14 @@ func (r *leaseRegistry) reset() {
 }
 
 func (l *serverLease) Lock() {
+	serverLeaseHooks.callBeforeLock(l)
 	l.mu.Lock()
+	serverLeaseHooks.callAfterLock(l)
 }
 
 func (l *serverLease) Unlock() {
 	l.mu.Unlock()
+	serverLeaseHooks.callAfterUnlock(l)
 	l.registry.release(l)
 }
 
