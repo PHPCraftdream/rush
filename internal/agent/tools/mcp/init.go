@@ -615,6 +615,7 @@ type serverAdmission struct {
 	once                *sync.Once
 	serverCancelToken   uint64
 	committed           bool
+	candidate           bool
 	promoted            bool
 	suppressState       bool
 	suppressUntilCommit bool
@@ -726,7 +727,11 @@ func (o *Owner) admitServer(ctx context.Context, cfg *config.ConfigStore, name s
 }
 
 func (o *Owner) admitServerForConfig(ctx context.Context, cfg *config.ConfigStore, name string, mcpConfig config.MCPConfig, bump bool) (serverAdmission, error) {
-	return o.admitServerWithConfig(ctx, cfg, name, mcpConfig, true, bump)
+	admission, err := o.admitServerWithConfig(ctx, cfg, name, mcpConfig, true, bump)
+	if err == nil {
+		admission.candidate = true
+	}
+	return admission, err
 }
 
 func (o *Owner) admitServerWithConfig(ctx context.Context, cfg *config.ConfigStore, name string, mcpConfig config.MCPConfig, pinConfig, bump bool) (serverAdmission, error) {
@@ -807,6 +812,7 @@ func (o *Owner) admitReplacementCandidate(ctx context.Context, cfg *config.Confi
 		cancel:            cancel,
 		stop:              func() { _ = stopFunc() },
 		serverCancelToken: token,
+		candidate:         true,
 	}
 	o.initCount++
 	o.initWG.Add(1)
@@ -1611,6 +1617,7 @@ func (o *Owner) Initialize(ctx context.Context, permissions permission.Service, 
 		if err != nil {
 			break
 		}
+		admission.candidate = true
 		wg.Add(1)
 		go func(name string, m config.MCPConfig, admission serverAdmission) {
 			defer func() {
@@ -1919,6 +1926,9 @@ func disableServerWithPersistence(
 ) error {
 	return disableServerWithResultPersistence(ctx, cfg, name, func(cfg *config.ConfigStore, scope config.Scope, name string, pending *config.MCPConfig) (config.MCPMutationResult, error) {
 		if err := persist(cfg, scope, name, pending); err != nil {
+			if outcome, committed := config.CommitOutcomeFromError(err); committed && outcome.Reconciled {
+				return currentMCPMutationResult(cfg, "disable", name, name), err
+			}
 			return config.MCPMutationResult{}, err
 		}
 		return currentMCPMutationResult(cfg, "disable", name, name), nil
@@ -1970,6 +1980,30 @@ func disableServerWithResultPersistence(
 	}
 	result, err := persist(cfg, scope, name, pending)
 	if err != nil {
+		if outcome, committed := config.CommitOutcomeFromError(err); committed && outcome.Reconciled {
+			if !result.NewExists {
+				return fmt.Errorf("failed to persist MCP disabled state for %q: %w", name, err)
+			}
+			if transaction != nil {
+				transaction.markUserMutation()
+			}
+			o.invalidateServer(name)
+			oldSession, hadOldSession := sessions.Get(name)
+			sessions.Del(name)
+			clearAdvertised(name)
+			updateState(name, StateDisabled, nil, nil, Counts{})
+			if hadOldSession {
+				retireMCPClient(name, oldSession)
+			}
+			return fmt.Errorf("failed to persist MCP disabled state for %q: %w", name, err)
+		}
+		if _, committed := config.CommitOutcomeFromError(err); committed {
+			if transaction != nil {
+				transaction.markUserMutation()
+			}
+			fenceMCPRuntime(o, name)
+			return fmt.Errorf("failed to persist MCP disabled state for %q: %w", name, err)
+		}
 		return fmt.Errorf("failed to persist MCP disabled state for %q: %w", name, err)
 	}
 	if !result.NewExists {
@@ -1994,6 +2028,24 @@ func disableServerWithResultPersistence(
 
 // EnableServer re-enables a disabled MCP server and starts a new session.
 func EnableServer(ctx context.Context, cfg *config.ConfigStore, name string) error {
+	return enableServerWithPersistence(ctx, cfg, name, func(cfg *config.ConfigStore, scope config.Scope, name string, pending *config.MCPConfig) (config.MCPMutationResult, error) {
+		return enableMCPConfig(cfg, scope, name, pending)
+	})
+}
+
+type enableServerResultPersister func(*config.ConfigStore, config.Scope, string, *config.MCPConfig) (config.MCPMutationResult, error)
+
+func enableServerWithPersistence(ctx context.Context, cfg *config.ConfigStore, name string, persist enableServerResultPersister) error {
+	return enableServerWithPersistenceAndInitializer(ctx, cfg, name, persist, initClientAdmitted)
+}
+
+func enableServerWithPersistenceAndInitializer(
+	ctx context.Context,
+	cfg *config.ConfigStore,
+	name string,
+	persist enableServerResultPersister,
+	initialize admittedClientInitializer,
+) error {
 	o, err := ensureOwner()
 	if err != nil {
 		return err
@@ -2027,10 +2079,23 @@ func EnableServer(ctx context.Context, cfg *config.ConfigStore, name string) err
 		fullConfig.Disabled = false
 		pending = &fullConfig
 	}
-	result, err := enableMCPConfig(cfg, scope, name, pending)
+	result, err := persist(cfg, scope, name, pending)
+	var commitUncertainty error
 	if err != nil {
-		lease.Unlock()
-		return fmt.Errorf("failed to persist MCP enabled state for %q: %w", name, err)
+		outcome, committed := config.CommitOutcomeFromError(err)
+		if !committed {
+			lease.Unlock()
+			return fmt.Errorf("failed to persist MCP enabled state for %q: %w", name, err)
+		}
+		if transaction != nil {
+			transaction.markUserMutation()
+		}
+		if !outcome.Reconciled {
+			fenceMCPRuntime(o, name)
+			lease.Unlock()
+			return fmt.Errorf("failed to persist MCP enabled state for %q: %w", name, err)
+		}
+		commitUncertainty = err
 	}
 	if transaction != nil {
 		transaction.markUserMutation()
@@ -2049,8 +2114,15 @@ func EnableServer(ctx context.Context, cfg *config.ConfigStore, name string) err
 		}
 	}
 	if !o.acceptsSession() {
-		rollbackPersistence()
+		if commitUncertainty == nil {
+			rollbackPersistence()
+		} else {
+			fenceMCPRuntime(o, name)
+		}
 		lease.Unlock()
+		if commitUncertainty != nil {
+			return fmt.Errorf("failed to persist MCP enabled state for %q: %w", name, commitUncertainty)
+		}
 		return ErrOwnerBusy
 	}
 	// The new admission below is the only initializer allowed to publish this
@@ -2058,24 +2130,38 @@ func EnableServer(ctx context.Context, cfg *config.ConfigStore, name string) err
 	// untouched and the operation has no half-applied lifecycle result.
 	o.invalidateServer(name)
 	if !result.NewExists {
+		if commitUncertainty != nil {
+			fenceMCPRuntime(o, name)
+			lease.Unlock()
+			return fmt.Errorf("failed to persist MCP enabled state for %q: %w", name, commitUncertainty)
+		}
 		rollbackPersistence()
 		lease.Unlock()
 		return fmt.Errorf("MCP server %q disappeared while enabling: %w", name, config.ErrMCPNotFound)
 	}
 	admission, err := o.admitServer(ctx, cfg, name, true)
 	if err != nil {
+		if commitUncertainty != nil {
+			fenceMCPRuntime(o, name)
+			lease.Unlock()
+			return fmt.Errorf("failed to persist MCP enabled state for %q: %w", name, commitUncertainty)
+		}
 		rollbackPersistence()
 		lease.Unlock()
 		return err
 	}
+	admission.candidate = true
 	updateAdmissionState(&admission, StateStarting, nil, nil, Counts{})
 	resolver := cfg.Resolver()
 	lease.Unlock()
 	go func() {
-		if err := initClientAdmitted(ctx, cfg, name, result.NewConfig, resolver, &admission); err != nil {
+		if err := initialize(ctx, cfg, name, result.NewConfig, resolver, &admission); err != nil {
 			slog.Error("Failed to enable MCP server", "name", name, "err", err)
 		}
 	}()
+	if commitUncertainty != nil {
+		return fmt.Errorf("failed to persist MCP enabled state for %q: %w", name, commitUncertainty)
+	}
 	return nil
 }
 
@@ -2118,6 +2204,9 @@ func replaceServerWithPersistence(
 	return replaceServerWithResultPersistence(ctx, cfg, oldName, newName, mcpCfg,
 		func(cfg *config.ConfigStore, _ config.Scope, oldName, newName string, mcpCfg config.MCPConfig) (config.MCPMutationResult, error) {
 			if err := persist(cfg, oldName, newName, mcpCfg); err != nil {
+				if outcome, committed := config.CommitOutcomeFromError(err); committed && outcome.Reconciled {
+					return currentMCPMutationResult(cfg, "replace", oldName, newName), err
+				}
 				return config.MCPMutationResult{}, err
 			}
 			return currentMCPMutationResult(cfg, "replace", oldName, newName), nil
@@ -2145,6 +2234,19 @@ func replaceServerWithResultPersistence(
 	oldName, newName string,
 	mcpCfg config.MCPConfig,
 	persist replacementResultPersister,
+) error {
+	return replaceServerWithResultPersistenceAndPreparation(ctx, cfg, oldName, newName, mcpCfg, persist, prepareClient)
+}
+
+type preparedClientFunc func(context.Context, *config.ConfigStore, string, config.MCPConfig, config.VariableResolver, *serverAdmission) (*preparedClient, error)
+
+func replaceServerWithResultPersistenceAndPreparation(
+	ctx context.Context,
+	cfg *config.ConfigStore,
+	oldName, newName string,
+	mcpCfg config.MCPConfig,
+	persist replacementResultPersister,
+	prepare preparedClientFunc,
 ) error {
 	// Resolve before acquiring an owner or admitting a candidate. This keeps
 	// an external, project, system, or ambiguous origin from causing any
@@ -2184,7 +2286,7 @@ func replaceServerWithResultPersistence(
 	resolver := cfg.Resolver()
 	unlockServerLeases(locked)
 
-	prepared, err := prepareClient(admission.ctx, cfg, newName, mcpCfg, resolver, &admission)
+	prepared, err := prepare(admission.ctx, cfg, newName, mcpCfg, resolver, &admission)
 	if err != nil {
 		admission.done()
 		if errors.Is(err, ErrOwnerBusy) {
@@ -2225,13 +2327,27 @@ func replaceServerWithResultPersistence(
 	// cancel its contexts, and honor the caller's deadline while this I/O is
 	// stalled.
 	result, err := persist(cfg, scope, oldName, newName, mcpCfg)
+	var commitUncertainty error
 	if err != nil {
-		unlockServerLeases(locked)
-		_ = prepared.session.Close()
-		admission.done()
-		return fmt.Errorf("failed to persist MCP server replacement %q to %q: %w", oldName, newName, err)
+		outcome, committed := config.CommitOutcomeFromError(err)
+		if committed && !outcome.Reconciled {
+			fenceMCPRuntime(o, oldName)
+			if newName != oldName {
+				fenceMCPRuntime(o, newName)
+			}
+			_ = prepared.session.Close()
+			admission.done()
+			unlockServerLeases(locked)
+			return fmt.Errorf("failed to persist MCP server replacement %q to %q: %w", oldName, newName, err)
+		}
+		if !committed {
+			unlockServerLeases(locked)
+			_ = prepared.session.Close()
+			admission.done()
+			return fmt.Errorf("failed to persist MCP server replacement %q to %q: %w", oldName, newName, err)
+		}
+		commitUncertainty = err
 	}
-
 	lifecycleMu.Lock()
 	if owner != o || o.closing || o.generation != admission.generation ||
 		o.serverEpochs[oldName] != admission.epoch {
@@ -2243,6 +2359,9 @@ func replaceServerWithResultPersistence(
 		unlockServerLeases(locked)
 		_ = prepared.session.Close()
 		admission.done()
+		if commitUncertainty != nil {
+			return fmt.Errorf("failed to persist MCP server replacement %q to %q: %w", oldName, newName, commitUncertainty)
+		}
 		return nil
 	}
 	var canceled []context.CancelFunc
@@ -2330,6 +2449,9 @@ func replaceServerWithResultPersistence(
 		})
 	}
 	publishListChangedEventsOn(brokerForEvent, pendingEvents)
+	if commitUncertainty != nil {
+		return fmt.Errorf("failed to persist MCP server replacement %q to %q: %w", oldName, newName, commitUncertainty)
+	}
 	return nil
 }
 
@@ -2389,6 +2511,22 @@ func addServerWithInitializer(
 	mcpCfg config.MCPConfig,
 	initialize admittedClientInitializer,
 ) error {
+	return addServerWithInitializerAndPersistence(ctx, cfg, name, mcpCfg, initialize,
+		func(cfg *config.ConfigStore, scope config.Scope, name string, mcpCfg config.MCPConfig) (config.MCPMutationResult, error) {
+			return cfg.PersistMCPConfigResult(scope, name, mcpCfg)
+		})
+}
+
+type addServerResultPersister func(*config.ConfigStore, config.Scope, string, config.MCPConfig) (config.MCPMutationResult, error)
+
+func addServerWithInitializerAndPersistence(
+	ctx context.Context,
+	cfg *config.ConfigStore,
+	name string,
+	mcpCfg config.MCPConfig,
+	initialize admittedClientInitializer,
+	persist addServerResultPersister,
+) error {
 	o, err := ensureOwner()
 	if err != nil {
 		return err
@@ -2416,6 +2554,7 @@ func addServerWithInitializer(
 		lease.Unlock()
 		return err
 	}
+	admission.candidate = true
 	transaction, ok := o.markPendingGlobalAdd(&admission, cfg, mcpCfg)
 	if !ok {
 		admission.done()
@@ -2471,8 +2610,22 @@ func addServerWithInitializer(
 		lease.Unlock()
 		return ErrOwnerBusy
 	}
-	result, err := cfg.PersistMCPConfigResult(config.ScopeGlobal, name, mcpCfg)
+	result, err := persist(cfg, config.ScopeGlobal, name, mcpCfg)
 	if err != nil {
+		outcome, committed := config.CommitOutcomeFromError(err)
+		if committed {
+			if !outcome.Reconciled {
+				// The durable state is unknown. Retire the candidate and remove
+				// the runtime candidate; a later reload owns config recovery.
+				fenceMCPRuntime(o, name)
+				o.completePendingGlobalAdd(transaction)
+				lease.Unlock()
+				return fmt.Errorf("failed to persist MCP server %q: %w", name, err)
+			}
+			o.completePendingGlobalAdd(transaction)
+			lease.Unlock()
+			return fmt.Errorf("failed to persist MCP server %q: %w", name, err)
+		}
 		rollbackAddedServer(o, cfg, name, &admission, transaction)
 		lease.Unlock()
 		return fmt.Errorf("failed to persist MCP server %q: %w", name, err)
@@ -2542,6 +2695,9 @@ func removeServerWithScopedPersistence(
 ) error {
 	return removeServerWithResultPersistence(cfg, name, func(cfg *config.ConfigStore, scope config.Scope, name string) (config.MCPMutationResult, error) {
 		if err := persist(cfg, scope, name); err != nil {
+			if outcome, committed := config.CommitOutcomeFromError(err); committed && outcome.Reconciled {
+				return currentMCPMutationResult(cfg, "remove", name, name), err
+			}
 			return config.MCPMutationResult{}, err
 		}
 		return currentMCPMutationResult(cfg, "remove", name, name), nil
@@ -2586,8 +2742,19 @@ func removeServerWithResultPersistence(
 	}
 	if transaction := o.pendingGlobalAdd(name, cfg); transaction != nil {
 		result, persistErr := persist(cfg, config.ScopeGlobal, name)
+		var commitUncertainty error
 		if persistErr != nil {
-			return fmt.Errorf("failed to remove pending MCP server %q from config: %w", name, persistErr)
+			outcome, committed := config.CommitOutcomeFromError(persistErr)
+			if !committed {
+				return fmt.Errorf("failed to remove pending MCP server %q from config: %w", name, persistErr)
+			}
+			transaction.markUserMutation()
+			if !outcome.Reconciled {
+				fenceMCPRuntime(o, name)
+				_, _ = cfg.RemoveMCP(name)
+				return fmt.Errorf("failed to remove pending MCP server %q from config: %w", name, persistErr)
+			}
+			commitUncertainty = persistErr
 		}
 		if result.NewExists {
 			return fmt.Errorf("MCP server %q remained configured after removal: %w", name, config.ErrMCPTargetExists)
@@ -2603,6 +2770,9 @@ func removeServerWithResultPersistence(
 			retireMCPClient(name, oldSession)
 		}
 		publishEvent(pubsub.DeletedEvent, Event{Type: EventStateChanged, Name: name, State: StateDisabled})
+		if commitUncertainty != nil {
+			return fmt.Errorf("failed to remove pending MCP server %q from config: %w", name, commitUncertainty)
+		}
 		return nil
 	}
 	scope, err := resolveMCPMutationScope(cfg, name, mcpCfg)
@@ -2610,8 +2780,17 @@ func removeServerWithResultPersistence(
 		return fmt.Errorf("cannot determine writable scope for MCP server %q: %w", name, err)
 	}
 	result, err := persist(cfg, scope, name)
+	var commitUncertainty error
 	if err != nil {
-		return fmt.Errorf("failed to remove MCP server %q from config: %w", name, err)
+		outcome, committed := config.CommitOutcomeFromError(err)
+		if !committed {
+			return fmt.Errorf("failed to remove MCP server %q from config: %w", name, err)
+		}
+		if !outcome.Reconciled {
+			fenceMCPRuntime(o, name)
+			return fmt.Errorf("failed to remove MCP server %q from config: %w", name, err)
+		}
+		commitUncertainty = err
 	}
 	// Persistence is the fallible part of this transaction. Only after it
 	// succeeds may this operation invalidate candidates; the write lease keeps
@@ -2628,14 +2807,23 @@ func removeServerWithResultPersistence(
 		if result.NewConfig.Disabled {
 			updateState(name, StateDisabled, nil, nil, Counts{})
 			publishStateEvent(name, StateDisabled, nil, Counts{})
+			if commitUncertainty != nil {
+				return fmt.Errorf("failed to remove MCP server %q from config: %w", name, commitUncertainty)
+			}
 			return nil
 		}
 		leaseLocked = false
 		lease.Unlock()
 		startFallback(context.Background(), cfg, name, result.NewConfig, o)
+		if commitUncertainty != nil {
+			return fmt.Errorf("failed to remove MCP server %q from config: %w", name, commitUncertainty)
+		}
 		return nil
 	}
 	publishEvent(pubsub.DeletedEvent, Event{Type: EventStateChanged, Name: name, State: StateDisabled})
+	if commitUncertainty != nil {
+		return fmt.Errorf("failed to remove MCP server %q from config: %w", name, commitUncertainty)
+	}
 	return nil
 }
 
@@ -2644,6 +2832,22 @@ func ensureOwner() (*Owner, error) {
 		return o, nil
 	}
 	return acquireImplicit()
+}
+
+// fenceMCPRuntime closes the runtime side of a mutation whose durable result
+// cannot be read back. It deliberately does not infer a config value or start
+// a fallback: a later reload must reconcile the unknown disk state first.
+func fenceMCPRuntime(o *Owner, name string) {
+	if o != nil {
+		o.invalidateServer(name)
+	}
+	oldSession, hadOldSession := sessions.Get(name)
+	sessions.Del(name)
+	clearAdvertised(name)
+	updateState(name, StateDisabled, nil, nil, Counts{})
+	if hadOldSession {
+		retireMCPClient(name, oldSession)
+	}
 }
 
 func closeSessionLocked(name string) {
@@ -3557,16 +3761,13 @@ func notifyListChanged(admission *serverAdmission, name string, kind refreshKind
 		cfg:       admission.cfg,
 		admission: *admission,
 	}
-	if !admission.committed && admission.serverCancelToken != 0 {
-		// A replacement candidate must remain dirty even when an old
-		// same-name session is still published. Its notification is never
-		// allowed to refresh that old session.
-		_, ready := sessions.Get(name)
-		if admission.suppressUntilCommit || !ready {
-			request.deferUntilCommit = true
-			request.candidateToken = admission.serverCancelToken
-			request.rawEvents = 1
-		}
+	if !admission.committed && admission.candidate && admission.serverCancelToken != 0 {
+		// Any uncommitted admission is a candidate, including InitializeSingle
+		// when it is replacing an already published same-name session. Its
+		// notification must remain attached to this exact token until commit.
+		request.deferUntilCommit = true
+		request.candidateToken = admission.serverCancelToken
+		request.rawEvents = 1
 	}
 	wake := admission.owner.enqueueRefreshLocked(request)
 	if request.deferUntilCommit {

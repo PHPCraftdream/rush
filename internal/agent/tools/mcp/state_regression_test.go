@@ -1538,6 +1538,29 @@ func TestInitializeSinglePinsOwnerAcrossRollover(t *testing.T) {
 	require.False(t, ok, "a single-server initializer admitted by the old owner must not use the new owner")
 }
 
+func TestInitializeSingleReplacesSameNameOldSession(t *testing.T) {
+	httpServer := transactionalTestServer(t, "initialize-single-new-tool", "new")
+	const name = "initialize-single-same-name"
+	store := persistedMCPStore(t, name, httpServer.URL, false)
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer func() {
+		closeCommitOutcomeTestOwner(t, owner)
+		httpServer.CloseClientConnections()
+		httpServer.Close()
+	}()
+
+	oldSession := &ClientSession{}
+	sessions.Set(name, oldSession)
+	setState(name, StateConnected, nil, oldSession, Counts{})
+
+	require.NoError(t, InitializeSingle(context.Background(), name, store))
+	current, ok := sessions.Get(name)
+	require.True(t, ok)
+	require.NotSame(t, oldSession, current)
+	require.Equal(t, StateConnected, mustState(t, name).State)
+}
+
 func TestRefreshAdmissionDoesNotOwnInitializerCancellation(t *testing.T) {
 	const name = "refresh-admission-ownership"
 	store := config.NewTestStore(&config.Config{MCP: config.MCPs{
