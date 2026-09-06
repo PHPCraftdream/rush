@@ -283,6 +283,7 @@ func TestReplaceRevealedFallbackStartsBeforeBlockedCloseAndMutation(t *testing.T
 	defer fallbackHTTP.Close()
 	oldConfig := config.MCPConfig{Type: config.MCPHttp, URL: fallbackHTTP.URL, Timeout: 60}
 	require.NoError(t, store.PersistMCPConfig(config.ScopeGlobal, oldName, oldConfig))
+	require.NoError(t, store.PersistMCPConfigExact(config.ScopeWorkspace, oldName, oldConfig))
 	owner, err := Acquire()
 	require.NoError(t, err)
 	closeStarted := make(chan struct{})
@@ -317,17 +318,8 @@ func TestReplaceRevealedFallbackStartsBeforeBlockedCloseAndMutation(t *testing.T
 	go func() {
 		replaceDone <- replaceServerWithResultPersistenceAndPreparation(
 			context.Background(), store, oldName, newName, newConfig,
-			func(cfg *config.ConfigStore, _ config.Scope, oldName, newName string, value config.MCPConfig) (config.MCPMutationResult, error) {
-				cfg.AddMCP(newName, value)
-				return config.MCPMutationResult{
-					Operation:      "replace",
-					OldName:        oldName,
-					NewName:        newName,
-					NewExists:      true,
-					NewConfig:      value,
-					FallbackExists: true,
-					FallbackConfig: oldConfig,
-				}, nil
+			func(cfg *config.ConfigStore, scope config.Scope, oldName, newName string, value config.MCPConfig) (config.MCPMutationResult, error) {
+				return cfg.PersistReplaceMCPResult(scope, oldName, newName, value)
 			}, func(context.Context, *config.ConfigStore, string, config.MCPConfig, config.VariableResolver, *serverAdmission) (*preparedClient, error) {
 				return &preparedClient{session: &ClientSession{}}, nil
 			},

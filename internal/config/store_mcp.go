@@ -58,31 +58,70 @@ type MCPMutationResult struct {
 	committedFingerprints map[string]reloadFileFingerprint
 }
 
-// WithCurrentMCPMutation runs fn while the result's store generation and
-// effective MCP identities are pinned against concurrent store publications.
+// WithCurrentMCPMutation validates result against a fresh evaluation of the
+// locked config files, then runs fn while that evaluation remains pinned.
+//
+// fn is the runtime publication callback only: it must not mutate config on
+// disk or re-enter ConfigStore persistence. It may block on lifecycle locks;
+// the shared config sidecar locks stay held until it returns.
 func (s *ConfigStore) WithCurrentMCPMutation(result MCPMutationResult, fn func() error) error {
 	s.publishMu.Lock()
 	defer s.publishMu.Unlock()
-	if !s.mcpMutationResultCurrentLocked(result) {
-		return ErrMCPMutationStale
-	}
-	return fn()
+	return s.withMCPWriteLocks(func(files *mcpLockedFiles) error {
+		evaluation, err := s.evaluateMCPFiles(files)
+		if err != nil {
+			return ErrMCPMutationStale
+		}
+		if !s.mcpMutationResultCurrentLocked(result, evaluation) {
+			return ErrMCPMutationStale
+		}
+		return fn()
+	})
 }
 
-func (s *ConfigStore) mcpMutationResultCurrentLocked(result MCPMutationResult) bool {
+func (s *ConfigStore) mcpMutationResultCurrentLocked(result MCPMutationResult, evaluation mcpEvaluation) bool {
 	if result.Generation != 0 && s.loadSnapshot().generation != result.Generation {
 		return false
 	}
-	if s.ConfigStaleness().Dirty {
-		return false
+
+	// The result records every exact spelling changed by its commit. Checking
+	// these bytes while the sidecars are held closes the release-and-recheck
+	// window that allowed another ConfigStore to replace the commit with an
+	// ABA-equivalent effective value.
+	for path, expected := range result.committedFingerprints {
+		actual, ok := mcpEvaluationFingerprint(evaluation.fingerprints, path)
+		if !ok || actual != expected {
+			return false
+		}
 	}
-	current, exists := s.MCPConfig(result.NewName)
+
+	// Preserve the old staleness fence for unrelated tracked inputs too. This
+	// also supports compatibility results assembled by lifecycle adapters that
+	// predate committedFingerprints.
+	snapshot := s.loadSnapshot()
+	for path, expected := range snapshot.snapshots {
+		if expected.fingerprint == (reloadFileFingerprint{}) {
+			continue
+		}
+		actual, ok := mcpEvaluationFingerprint(evaluation.fingerprints, path)
+		if !ok || expected.fingerprint != actual {
+			return false
+		}
+	}
+
+	current, exists := evaluation.configs[result.NewName]
 	if exists != result.NewExists || exists && !reflect.DeepEqual(current, result.NewConfig) {
 		return false
 	}
+	if exists && result.NewOrigin != (MCPOrigin{}) && evaluation.origins[result.NewName] != result.NewOrigin {
+		return false
+	}
 	if result.Operation == "replace" && result.OldName != result.NewName {
-		fallback, fallbackExists := s.MCPConfig(result.OldName)
+		fallback, fallbackExists := evaluation.configs[result.OldName]
 		if fallbackExists != result.FallbackExists || fallbackExists && !reflect.DeepEqual(fallback, result.FallbackConfig) {
+			return false
+		}
+		if fallbackExists && result.FallbackOrigin != (MCPOrigin{}) && evaluation.origins[result.OldName] != result.FallbackOrigin {
 			return false
 		}
 	}
