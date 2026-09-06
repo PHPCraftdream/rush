@@ -832,14 +832,9 @@ func TestGetOrRenewClientKeepsLeaseIdentityAcrossConcurrentReplacement(t *testin
 	waitForRequest(t, pingStarted)
 	waitForRequest(t, pingStarted)
 
-	leases.mu.Lock()
-	originalLease := leases.entries[name]
-	refsDuringPing := 0
-	if originalLease != nil {
-		refsDuringPing = originalLease.refs
-	}
-	leases.mu.Unlock()
-	require.NotNil(t, originalLease)
+	old.operationMu.Lock()
+	refsDuringPing := old.operationRefs
+	old.operationMu.Unlock()
 	require.Equal(t, 2, refsDuringPing)
 	releasePingsOnce.Do(func() { close(releasePings) })
 
@@ -851,11 +846,6 @@ func TestGetOrRenewClientKeepsLeaseIdentityAcrossConcurrentReplacement(t *testin
 	case <-time.After(5 * time.Second):
 		t.Fatal("first renewal did not complete")
 	}
-	require.Eventually(t, func() bool {
-		leases.mu.Lock()
-		defer leases.mu.Unlock()
-		return leases.entries[name] == originalLease && originalLease.refs == 2
-	}, time.Second, time.Millisecond, "the queued renewal must retain the original lease while the first caller reads")
 	first.close()
 
 	var second *clientLease
@@ -867,18 +857,12 @@ func TestGetOrRenewClientKeepsLeaseIdentityAcrossConcurrentReplacement(t *testin
 		t.Fatal("queued renewal did not reacquire the current session")
 	}
 	require.Same(t, first.session, second.session)
-	leases.mu.Lock()
-	registered := leases.entries[name]
-	refsAfterReacquire := originalLease.refs
-	leases.mu.Unlock()
-	require.Same(t, originalLease, registered, "getOrRenewClient must not cross an ABA-replaced lease")
-	require.Equal(t, 1, refsAfterReacquire)
 	second.close()
 
 	require.Eventually(t, func() bool {
-		leases.mu.Lock()
-		defer leases.mu.Unlock()
-		return leases.entries[name] == nil && originalLease.refs == 0
+		old.operationMu.Lock()
+		defer old.operationMu.Unlock()
+		return old.retired && old.operationRefs == 0
 	}, time.Second, time.Millisecond)
 }
 

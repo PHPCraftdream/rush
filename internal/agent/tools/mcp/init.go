@@ -55,6 +55,12 @@ type ClientSession struct {
 	cancelOnce sync.Once
 	closeOnce  sync.Once
 	closeErr   error
+
+	operationMu   sync.Mutex
+	operationRefs int
+	retired       bool
+	retireCtx     context.Context
+	retireCancel  context.CancelFunc
 }
 
 // Close cancels the session context and then closes the underlying session.
@@ -94,6 +100,63 @@ func (s *ClientSession) promoteContext() bool {
 	return s.promote()
 }
 
+// acquireOperation pins this session generation without holding the server
+// mutation lock. Retirement cancels only the operation context; the transport
+// is closed after the last pinned operation releases its reference.
+func (s *ClientSession) acquireOperation(ctx context.Context) (context.Context, func(), bool) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	s.operationMu.Lock()
+	defer s.operationMu.Unlock()
+	if s.retired {
+		return nil, nil, false
+	}
+	if s.retireCtx == nil {
+		s.retireCtx, s.retireCancel = context.WithCancel(context.Background())
+	}
+	operationCtx, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(s.retireCtx, cancel)
+	s.operationRefs++
+	var once sync.Once
+	release := func() {
+		once.Do(func() {
+			stop()
+			cancel()
+			s.releaseOperation()
+		})
+	}
+	return operationCtx, release, true
+}
+
+func (s *ClientSession) releaseOperation() {
+	s.operationMu.Lock()
+	if s.operationRefs > 0 {
+		s.operationRefs--
+	}
+	closeNow := s.retired && s.operationRefs == 0
+	s.operationMu.Unlock()
+	if closeNow {
+		_ = s.Close()
+	}
+}
+
+// retire detaches a session generation from publication. It returns true
+// only when the caller should close the transport immediately; otherwise the
+// final operation release performs the close.
+func (s *ClientSession) retire() bool {
+	s.operationMu.Lock()
+	if !s.retired {
+		s.retired = true
+		if s.retireCancel != nil {
+			s.retireCancel()
+		}
+	}
+	closeNow := s.operationRefs == 0
+	s.operationMu.Unlock()
+	return closeNow
+}
+
 var (
 	sessions = csync.NewMap[string, *ClientSession]()
 	states   = csync.NewMap[string, ClientInfo]()
@@ -122,10 +185,16 @@ func newLeaseRegistry() *leaseRegistry {
 // serverLease serializes replacement and closing of one server session while
 // allowing concurrent callers to use the current session.
 type serverLease struct {
-	mu       sync.RWMutex
-	registry *leaseRegistry
-	name     string
-	refs     int
+	mu                            sync.RWMutex
+	registry                      *leaseRegistry
+	name                          string
+	refs                          int
+	renewing                      bool
+	renewDone                     chan struct{}
+	renewalBeginHook              func()
+	renewalPublishHook            func()
+	renewalAfterPublishUnlockHook func()
+	renewalEndHook                func()
 }
 
 // getRetained atomically looks up (or creates) a lease and reserves one
@@ -198,6 +267,84 @@ func (l *serverLease) RUnlock() {
 	l.registry.release(l)
 }
 
+func (l *serverLease) beginRenewal() bool {
+	if l.renewing {
+		return false
+	}
+	l.renewing = true
+	l.renewDone = make(chan struct{})
+	return l.registry.retain(l)
+}
+
+func (l *serverLease) endRenewal() {
+	l.mu.Lock()
+	if !l.renewing {
+		l.mu.Unlock()
+		return
+	}
+	done := l.renewDone
+	l.renewing = false
+	l.renewDone = nil
+	close(done)
+	l.mu.Unlock()
+	l.registry.release(l)
+}
+
+func (l *serverLease) callRenewalEndHook() {
+	l.mu.Lock()
+	hook := l.renewalEndHook
+	l.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+}
+
+func (l *serverLease) callRenewalAfterPublishUnlockHook() {
+	l.mu.Lock()
+	hook := l.renewalAfterPublishUnlockHook
+	l.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+}
+
+// lockContext waits for the short mutation critical section while honoring
+// cancellation. Network calls must never run while this lock is held.
+func (l *serverLease) lockContext(ctx context.Context, write bool) bool {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	for {
+		if write {
+			if l.mu.TryLock() {
+				return true
+			}
+		} else if l.mu.TryRLock() {
+			return true
+		}
+		timer := time.NewTimer(time.Millisecond)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			l.registry.release(l)
+			return false
+		case <-timer.C:
+		}
+	}
+}
+
+// reacquireContext transitions an existing retained identity reference into a
+// new lock reference. The retained reference remains owned by the caller when
+// lock acquisition is canceled.
+func (l *serverLease) reacquireContext(ctx context.Context, write bool) bool {
+	if !l.registry.retain(l) {
+		return false
+	}
+	return l.lockContext(ctx, write)
+}
+
 func acquireServerLease(name string, write bool) *serverLease {
 	lease := leases.getRetained(name)
 	if write {
@@ -209,6 +356,11 @@ func acquireServerLease(name string, write bool) *serverLease {
 }
 
 func lockServerLeases(names ...string) []*serverLease {
+	locked, _ := lockServerLeasesContext(context.Background(), names...)
+	return locked
+}
+
+func lockServerLeasesContext(ctx context.Context, names ...string) ([]*serverLease, bool) {
 	ordered := slices.Clone(names)
 	slices.Sort(ordered)
 	locked := make([]*serverLease, 0, len(ordered))
@@ -217,10 +369,13 @@ func lockServerLeases(names ...string) []*serverLease {
 			continue
 		}
 		lease := serverLeaseFor(name)
-		lease.Lock()
+		if !lease.lockContext(ctx, true) {
+			unlockServerLeases(locked)
+			return nil, false
+		}
 		locked = append(locked, lease)
 	}
-	return locked
+	return locked, true
 }
 
 func unlockServerLeases(leases []*serverLease) {
@@ -902,10 +1057,14 @@ func (o *Owner) commitRenewal(admission *serverAdmission, name string, session *
 		_ = session.Close()
 		return ErrOwnerBusy
 	}
+	oldSession, hadOldSession := sessions.Get(name)
 	sessions.Set(name, session)
 	admission.committed = true
 	setState(name, StateConnected, nil, session, counts)
 	lifecycleMu.Unlock()
+	if hadOldSession && oldSession != session {
+		retireMCPClient(name, oldSession)
+	}
 	publishStateEvent(name, StateConnected, nil, counts)
 	return nil
 }
@@ -1376,7 +1535,14 @@ func publishPreparedClient(cfg *config.ConfigStore, name string, prepared *prepa
 	tools := prepared.tools
 	prompts := prepared.prompts
 	lease := serverLeaseFor(name)
-	lease.Lock()
+	lockCtx := context.Background()
+	if admission != nil && admission.ctx != nil {
+		lockCtx = admission.ctx
+	}
+	if !lease.lockContext(lockCtx, true) {
+		_ = session.Close()
+		return lockCtx.Err()
+	}
 	defer lease.Unlock()
 	lifecycleMu.Lock()
 	if admission != nil && !admission.validLocked() {
@@ -1414,7 +1580,7 @@ func publishPreparedClient(cfg *config.ConfigStore, name string, prepared *prepa
 	brokerForEvent := broker
 	lifecycleMu.Unlock()
 	if hadOldSession && oldSession != session {
-		_ = oldSession.Close()
+		retireMCPClient(name, oldSession)
 	}
 	brokerForEvent.Publish(pubsub.UpdatedEvent, Event{
 		Type: EventStateChanged, Name: name, State: StateConnected, Counts: counts,
@@ -1497,7 +1663,9 @@ func disableServerWithResultPersistence(
 		return fmt.Errorf("MCP server %q not found: %w", name, config.ErrMCPNotFound)
 	}
 	lease := serverLeaseFor(name)
-	lease.Lock()
+	if !lease.lockContext(ctx, true) {
+		return ctx.Err()
+	}
 	defer lease.Unlock()
 	mcpCfg, ok = cfg.MCPConfig(name)
 	if !ok {
@@ -1538,10 +1706,7 @@ func disableServerWithResultPersistence(
 	clearAdvertised(name)
 	updateState(name, StateDisabled, nil, nil, Counts{})
 	if hadOldSession {
-		if err := oldSession.Close(); err != nil && !errors.Is(err, io.EOF) &&
-			!errors.Is(err, context.Canceled) && err.Error() != "signal: killed" {
-			slog.Warn("Error closing MCP session", "name", name, "error", err)
-		}
+		retireMCPClient(name, oldSession)
 	}
 	return nil
 }
@@ -1561,7 +1726,9 @@ func EnableServer(ctx context.Context, cfg *config.ConfigStore, name string) err
 		return fmt.Errorf("MCP server %q not found: %w", name, config.ErrMCPNotFound)
 	}
 	lease := serverLeaseFor(name)
-	lease.Lock()
+	if !lease.lockContext(ctx, true) {
+		return ctx.Err()
+	}
 	mcpCfg, ok = cfg.MCPConfig(name)
 	if !ok {
 		lease.Unlock()
@@ -1717,7 +1884,10 @@ func replaceServerWithResultPersistence(
 	}
 	defer o.endInit()
 
-	locked := lockServerLeases(oldName, newName)
+	locked, lockedOK := lockServerLeasesContext(ctx, oldName, newName)
+	if !lockedOK {
+		return ctx.Err()
+	}
 	_, exists := cfg.MCPConfig(oldName)
 	if !exists {
 		unlockServerLeases(locked)
@@ -1742,7 +1912,12 @@ func replaceServerWithResultPersistence(
 		return fmt.Errorf("failed to connect to MCP server %q: %w", newName, err)
 	}
 
-	locked = lockServerLeases(oldName, newName)
+	locked, lockedOK = lockServerLeasesContext(ctx, oldName, newName)
+	if !lockedOK {
+		_ = prepared.session.Close()
+		admission.done()
+		return ctx.Err()
+	}
 	lifecycleMu.Lock()
 	if !admission.validLocked() {
 		lifecycleMu.Unlock()
@@ -1834,10 +2009,10 @@ func replaceServerWithResultPersistence(
 		cancel()
 	}
 	if hadOldSession && oldSession != prepared.session {
-		closeMCPClient(oldName, oldSession)
+		retireMCPClient(oldName, oldSession)
 	}
 	if newName != oldName && hadNewSession && newSession != prepared.session && newSession != oldSession {
-		closeMCPClient(newName, newSession)
+		retireMCPClient(newName, newSession)
 	}
 	if newDisabled {
 		closeMCPClient(newName, prepared.session)
@@ -1933,7 +2108,9 @@ func addServerWithInitializer(
 	}
 	defer o.endInit()
 	lease := serverLeaseFor(name)
-	lease.Lock()
+	if !lease.lockContext(ctx, true) {
+		return ctx.Err()
+	}
 	if _, exists := cfg.MCPConfig(name); exists {
 		lease.Unlock()
 		return fmt.Errorf("MCP server %q already exists", name)
@@ -1981,7 +2158,12 @@ func addServerWithInitializer(
 
 	// Hold the write lease while persisting so RemoveServer cannot remove the
 	// in-memory entry and then lose the race by being followed by this write.
-	lease.Lock()
+	if !lease.reacquireContext(ctx, true) {
+		lease.Lock()
+		rollbackAddedServer(o, cfg, name, &admission, transaction)
+		lease.Unlock()
+		return ctx.Err()
+	}
 	if !admission.valid() {
 		rollbackAddedServer(o, cfg, name, &admission, transaction)
 		lease.Unlock()
@@ -2116,7 +2298,7 @@ func removeServerWithResultPersistence(
 		clearAdvertised(name)
 		states.Del(name)
 		if hadOldSession {
-			closeMCPClient(name, oldSession)
+			retireMCPClient(name, oldSession)
 		}
 		publishEvent(pubsub.DeletedEvent, Event{Type: EventStateChanged, Name: name, State: StateDisabled})
 		return nil
@@ -2138,7 +2320,7 @@ func removeServerWithResultPersistence(
 	clearAdvertised(name)
 	states.Del(name)
 	if hadOldSession {
-		closeMCPClient(name, oldSession)
+		retireMCPClient(name, oldSession)
 	}
 	if result.NewExists {
 		if result.NewConfig.Disabled {
@@ -2164,8 +2346,8 @@ func ensureOwner() (*Owner, error) {
 
 func closeSessionLocked(name string) {
 	if session, ok := sessions.Get(name); ok {
-		closeMCPClient(name, session)
 		sessions.Del(name)
+		retireMCPClient(name, session)
 	}
 }
 
@@ -2177,6 +2359,13 @@ func closeMCPClient(name string, session *ClientSession) {
 		!errors.Is(err, context.Canceled) && err.Error() != "signal: killed" {
 		slog.Warn("Error closing MCP session", "name", name, "error", err)
 	}
+}
+
+func retireMCPClient(name string, session *ClientSession) {
+	if session == nil || !session.retire() {
+		return
+	}
+	closeMCPClient(name, session)
 }
 
 func currentMCPMutationResult(cfg *config.ConfigStore, operation, oldName, newName string) config.MCPMutationResult {
@@ -2206,7 +2395,9 @@ func startFallback(ctx context.Context, cfg *config.ConfigStore, name string, mc
 	// admitting a fallback. This lets a newer mutation either win before this
 	// handoff or invalidate this exact admission after it is released.
 	lease := serverLeaseFor(name)
-	lease.Lock()
+	if !lease.lockContext(ctx, true) {
+		return
+	}
 	current, exists := cfg.MCPConfig(name)
 	if !exists || !reflect.DeepEqual(current, mcpCfg) {
 		lease.Unlock()
@@ -2265,55 +2456,98 @@ func getOrRenewClient(ctx context.Context, cfg *config.ConfigStore, name string)
 		admission.ctx = operationCtx
 	}
 
-	lease := serverLeaseFor(name)
-	lease.RLock()
-	sess, ok := sessions.Get(name)
-	if !ok {
-		lease.RUnlock()
-		finish()
-		if o != nil {
-			o.endInit()
+	var lease *serverLease
+	var sess *ClientSession
+	var m config.MCPConfig
+	var ok, exists bool
+	var retired bool
+	var sessionCtx context.Context
+	var releaseSession func()
+	for {
+		lease = serverLeaseFor(name)
+		if !lease.lockContext(operationCtx, true) {
+			finish()
+			if o != nil {
+				o.endInit()
+			}
+			return nil, operationCtx.Err()
 		}
-		return nil, fmt.Errorf("mcp '%s' not available", name)
-	}
-
-	m, exists := cfg.MCPConfig(name)
-	if !exists || m.Disabled {
-		lease.RUnlock()
-		finish()
-		if o != nil {
-			o.endInit()
+		sess, ok = sessions.Get(name)
+		retired = false
+		if ok {
+			sess.operationMu.Lock()
+			retired = sess.retired
+			sess.operationMu.Unlock()
 		}
-		return nil, fmt.Errorf("mcp '%s' not available", name)
+		if (!ok || retired) && lease.renewing {
+			renewDone := lease.renewDone
+			lease.Unlock()
+			select {
+			case <-renewDone:
+				continue
+			case <-operationCtx.Done():
+				finish()
+				if o != nil {
+					o.endInit()
+				}
+				return nil, operationCtx.Err()
+			}
+		}
+		m, exists = cfg.MCPConfig(name)
+		if !ok || !exists || m.Disabled {
+			lease.Unlock()
+			finish()
+			if o != nil {
+				o.endInit()
+			}
+			return nil, fmt.Errorf("mcp '%s' not available", name)
+		}
+		var usable bool
+		sessionCtx, releaseSession, usable = sess.acquireOperation(operationCtx)
+		if !usable || !lease.registry.retain(lease) {
+			lease.Unlock()
+			if usable {
+				releaseSession()
+			}
+			finish()
+			if o != nil {
+				o.endInit()
+			}
+			return nil, fmt.Errorf("mcp '%s' not available", name)
+		}
+		lease.Unlock()
+		break
 	}
+	leaseRefTransferred := false
+	defer func() {
+		if leaseRefTransferred {
+			return
+		}
+		lease.registry.release(lease)
+	}()
 	state, _ := states.Get(name)
 	timeout := mcpTimeout(m)
-	err := pingWithTimeout(operationCtx, sess, timeout)
+	err := pingWithTimeout(sessionCtx, sess, timeout)
 	if err == nil {
 		if admission != nil && !admission.valid() {
-			lease.RUnlock()
+			releaseSession()
 			finish()
 			o.endInit()
 			return nil, ErrOwnerBusy
 		}
-		return newClientLease(sess, operationCtx, lease, finish, o), nil
+		leaseRefTransferred = true
+		return newClientLease(sess, sessionCtx, releaseSession, func() { lease.registry.release(lease) }, finish, o), nil
 	}
-	// Keep the lease object alive while upgrading from a read lock. Without
-	// this extra reference, the registry could reclaim the entry between
-	// RUnlock and Lock and let a new operation use an ABA-replaced lock.
-	if !lease.registry.retain(lease) {
-		lease.RUnlock()
+	// The health probe no longer owns a server lock. Release its generation
+	// reference before renewal so a writer can detach and replace it now.
+	releaseSession()
+	if !lease.reacquireContext(operationCtx, true) {
 		finish()
 		if o != nil {
 			o.endInit()
 		}
-		return nil, ErrOwnerBusy
+		return nil, operationCtx.Err()
 	}
-	lease.RUnlock()
-
-	// Upgrade the read lease to an exclusive renewal lease. A writer waits for
-	// every in-flight operation on the old session before it can close it.
-	lease.Lock()
 	if admission != nil && !admission.valid() {
 		lease.Unlock()
 		finish()
@@ -2323,35 +2557,88 @@ func getOrRenewClient(ctx context.Context, cfg *config.ConfigStore, name string)
 
 	current, currentOK := sessions.Get(name)
 	if currentOK && current != sess {
-		// Retain before dropping the write lock so this exact lease cannot be
-		// reclaimed before the read lock is reacquired.
-		if !lease.registry.retain(lease) {
-			lease.Unlock()
-			finish()
-			if o != nil {
-				o.endInit()
-			}
-			return nil, ErrOwnerBusy
-		}
+		currentCtx, releaseCurrent, usable := current.acquireOperation(operationCtx)
 		lease.Unlock()
-		lease.RLock()
-		if admission != nil && !admission.valid() {
-			lease.RUnlock()
-			finish()
-			o.endInit()
-			return nil, ErrOwnerBusy
-		}
-		current, currentOK = sessions.Get(name)
-		if !currentOK {
-			lease.RUnlock()
+		if !usable {
 			finish()
 			if o != nil {
 				o.endInit()
 			}
 			return nil, fmt.Errorf("mcp '%s' not available", name)
 		}
-		return newClientLease(current, operationCtx, lease, finish, o), nil
+		if admission != nil && !admission.valid() {
+			releaseCurrent()
+			finish()
+			o.endInit()
+			return nil, ErrOwnerBusy
+		}
+		leaseRefTransferred = true
+		return newClientLease(current, currentCtx, releaseCurrent, func() { lease.registry.release(lease) }, finish, o), nil
 	}
+	if lease.renewing {
+		renewDone := lease.renewDone
+		lease.Unlock()
+		select {
+		case <-renewDone:
+		case <-operationCtx.Done():
+			finish()
+			if o != nil {
+				o.endInit()
+			}
+			return nil, operationCtx.Err()
+		}
+		if !lease.reacquireContext(operationCtx, true) {
+			finish()
+			if o != nil {
+				o.endInit()
+			}
+			return nil, operationCtx.Err()
+		}
+		if admission != nil && !admission.valid() {
+			lease.Unlock()
+			finish()
+			o.endInit()
+			return nil, ErrOwnerBusy
+		}
+		current, currentOK = sessions.Get(name)
+		if !currentOK {
+			lease.Unlock()
+			finish()
+			if o != nil {
+				o.endInit()
+			}
+			return nil, fmt.Errorf("mcp '%s' not available", name)
+		}
+		currentCtx, releaseCurrent, usable := current.acquireOperation(operationCtx)
+		lease.Unlock()
+		if !usable {
+			finish()
+			if o != nil {
+				o.endInit()
+			}
+			return nil, fmt.Errorf("mcp '%s' not available", name)
+		}
+		leaseRefTransferred = true
+		return newClientLease(current, currentCtx, releaseCurrent, func() { lease.registry.release(lease) }, finish, o), nil
+	}
+	if !lease.beginRenewal() {
+		lease.Unlock()
+		finish()
+		if o != nil {
+			o.endInit()
+		}
+		return nil, ErrOwnerBusy
+	}
+	if lease.renewalBeginHook != nil {
+		lease.renewalBeginHook()
+	}
+	renewalActive := true
+	defer func() {
+		if renewalActive {
+			lease.endRenewal()
+			lease.callRenewalEndHook()
+		}
+	}()
 
 	setState(name, StateError, err, nil, state.Counts)
 	publishStateEvent(name, StateError, err, state.Counts)
@@ -2362,10 +2649,11 @@ func getOrRenewClient(ctx context.Context, cfg *config.ConfigStore, name string)
 		if published, ok := sessions.Get(name); ok && published == current {
 			sessions.Del(name)
 		}
-		_ = current.Close()
+		retireMCPClient(name, current)
 	}
+	lease.Unlock()
 
-	sessionCtx := operationCtx
+	sessionCtx = operationCtx
 	if o != nil {
 		// The returned client lease owns only the caller's operation context.
 		// The renewed MCP session itself must survive that lease closing and
@@ -2374,7 +2662,6 @@ func getOrRenewClient(ctx context.Context, cfg *config.ConfigStore, name string)
 	}
 	newSession, err := createSessionWithAdmission(sessionCtx, name, m, cfg.Resolver(), admission)
 	if err != nil {
-		lease.Unlock()
 		finish()
 		if o != nil {
 			o.endInit()
@@ -2382,6 +2669,21 @@ func getOrRenewClient(ctx context.Context, cfg *config.ConfigStore, name string)
 		return nil, err
 	}
 
+	if !lease.reacquireContext(operationCtx, true) {
+		_ = newSession.Close()
+		finish()
+		if o != nil {
+			o.endInit()
+		}
+		return nil, operationCtx.Err()
+	}
+	if admission != nil && !admission.valid() {
+		lease.Unlock()
+		_ = newSession.Close()
+		finish()
+		o.endInit()
+		return nil, ErrOwnerBusy
+	}
 	if o != nil {
 		if err := o.commitRenewal(admission, name, newSession, state.Counts); err != nil {
 			lease.Unlock()
@@ -2394,36 +2696,27 @@ func getOrRenewClient(ctx context.Context, cfg *config.ConfigStore, name string)
 		setState(name, StateConnected, nil, newSession, state.Counts)
 		publishStateEvent(name, StateConnected, nil, state.Counts)
 	}
-	// Retain before dropping the write lock so the returned read lease remains
-	// attached to this server's identity even when another goroutine is
-	// waiting to replace the session.
-	if !lease.registry.retain(lease) {
-		lease.Unlock()
+	if lease.renewalPublishHook != nil {
+		lease.renewalPublishHook()
+	}
+	newCtx, releaseNew, usable := newSession.acquireOperation(operationCtx)
+	lease.Unlock()
+	lease.callRenewalAfterPublishUnlockHook()
+	if !usable {
 		finish()
 		if o != nil {
 			o.endInit()
 		}
 		return nil, ErrOwnerBusy
 	}
-	lease.Unlock()
-	lease.RLock()
 	if admission != nil && !admission.valid() {
-		lease.RUnlock()
+		releaseNew()
 		finish()
 		o.endInit()
 		return nil, ErrOwnerBusy
 	}
-	current, currentOK = sessions.Get(name)
-	if !currentOK {
-		lease.RUnlock()
-		finish()
-		if o != nil {
-			o.endInit()
-		}
-		return nil, fmt.Errorf("mcp '%s' not available", name)
-	}
-
-	return newClientLease(current, operationCtx, lease, finish, o), nil
+	leaseRefTransferred = true
+	return newClientLease(newSession, newCtx, releaseNew, func() { lease.registry.release(lease) }, finish, o), nil
 }
 
 func pingWithTimeout(ctx context.Context, session *ClientSession, timeout time.Duration) error {
@@ -2435,12 +2728,15 @@ func pingWithTimeout(ctx context.Context, session *ClientSession, timeout time.D
 	return maybeTimeoutErr(err, timeout, errCause, timeoutCause)
 }
 
-func newClientLease(session *ClientSession, ctx context.Context, lease *serverLease, finish func(), o *Owner) *clientLease {
+func newClientLease(session *ClientSession, ctx context.Context, releaseSession, releaseLease func(), finish func(), o *Owner) *clientLease {
 	return &clientLease{
 		session: session,
 		ctx:     ctx,
 		release: func() {
-			lease.RUnlock()
+			releaseSession()
+			if releaseLease != nil {
+				releaseLease()
+			}
 			finish()
 			if o != nil {
 				o.endInit()
@@ -2464,17 +2760,32 @@ func currentClientLease(ctx context.Context, name string) (*clientLease, error) 
 	}
 
 	lease := serverLeaseFor(name)
-	lease.RLock()
+	if !lease.lockContext(operationCtx, true) {
+		finish()
+		if o != nil {
+			o.endInit()
+		}
+		return nil, operationCtx.Err()
+	}
 	session, ok := sessions.Get(name)
 	if !ok {
-		lease.RUnlock()
+		lease.Unlock()
 		finish()
 		if o != nil {
 			o.endInit()
 		}
 		return nil, fmt.Errorf("mcp '%s' not available", name)
 	}
-	return newClientLease(session, operationCtx, lease, finish, o), nil
+	sessionCtx, releaseSession, usable := session.acquireOperation(operationCtx)
+	lease.Unlock()
+	if !usable {
+		finish()
+		if o != nil {
+			o.endInit()
+		}
+		return nil, fmt.Errorf("mcp '%s' not available", name)
+	}
+	return newClientLease(session, sessionCtx, releaseSession, nil, finish, o), nil
 }
 
 func currentClientLeaseFor(ctx context.Context, name string, admission *serverAdmission) (*clientLease, error) {
@@ -2482,21 +2793,24 @@ func currentClientLeaseFor(ctx context.Context, name string, admission *serverAd
 		return nil, ErrOwnerBusy
 	}
 	lease := serverLeaseFor(name)
-	lease.RLock()
+	if !lease.lockContext(ctx, true) {
+		return nil, ctx.Err()
+	}
 	if !admission.valid() {
-		lease.RUnlock()
+		lease.Unlock()
 		return nil, ErrOwnerBusy
 	}
 	session, ok := sessions.Get(name)
 	if !ok {
-		lease.RUnlock()
+		lease.Unlock()
 		return nil, fmt.Errorf("mcp '%s' not available", name)
 	}
-	return &clientLease{
-		session: session,
-		ctx:     ctx,
-		release: lease.RUnlock,
-	}, nil
+	sessionCtx, releaseSession, usable := session.acquireOperation(ctx)
+	lease.Unlock()
+	if !usable {
+		return nil, fmt.Errorf("mcp '%s' not available", name)
+	}
+	return &clientLease{session: session, ctx: sessionCtx, release: releaseSession}, nil
 }
 
 func setState(name string, state State, err error, client *ClientSession, counts Counts) {
