@@ -379,10 +379,6 @@ rush mcp add auth-server --type http --url http://api.example.com/mcp --header "
 
 		id := args[0]
 
-		if _, exists := a.Config().MCP[id]; exists {
-			return fmt.Errorf("MCP server %q already exists; use `rush mcp set %s` to modify", id, id)
-		}
-
 		typeStr, _ := cmd.Flags().GetString("type")
 		if typeStr == "" {
 			return fmt.Errorf("--type is required (stdio, sse, or http)")
@@ -422,7 +418,7 @@ rush mcp add auth-server --type http --url http://api.example.com/mcp --header "
 			Headers:      parseKVPairs(headers),
 			EnabledInCLI: enabledInCLI,
 		}
-		if err := a.Store().PersistMCPConfig(scope, id, mcpCfg); err != nil {
+		if err := a.Store().PersistMCPConfigExact(scope, id, mcpCfg); err != nil {
 			return fmt.Errorf("failed to add MCP server: %w", err)
 		}
 
@@ -458,7 +454,7 @@ rush mcp rm old-server --local
 
 		id := args[0]
 
-		if err := a.Store().PersistRemoveMCPConfig(scope, id); err != nil {
+		if err := a.Store().PersistRemoveMCPConfigExact(scope, id); err != nil {
 			return fmt.Errorf("failed to remove MCP server from %s scope: %w", scope, err)
 		}
 		fmt.Fprintf(os.Stderr, "removed MCP server %q from %s scope\n", id, scope)
@@ -552,7 +548,7 @@ rush mcp set my-server --enabled-in-cli=true
 			return fmt.Errorf("no fields to set — pass at least one of --command/--url/--type/--arg/--env/--header/--disabled")
 		}
 
-		if err := a.Store().PersistMCPFields(scope, id, updates); err != nil {
+		if err := a.Store().PersistMCPFieldsExact(scope, id, updates); err != nil {
 			return fmt.Errorf("failed to update MCP server config: %w", err)
 		}
 		fmt.Fprintf(os.Stderr, "wrote %d field(s) to %s scope for MCP server %q\n", len(updates), scope, id)

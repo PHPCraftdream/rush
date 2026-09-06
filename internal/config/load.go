@@ -54,9 +54,11 @@ func Load(workingDir, dataDir string, debug bool) (*ConfigStore, error) {
 }
 
 func loadOnce(workingDir, dataDir string, debug bool) (*ConfigStore, error) {
-	configPaths := lookupConfigs(workingDir)
+	// Read every deterministic candidate, including absent paths. This closes
+	// the create-after-discovery gap for project and workspace configuration.
+	configPaths := lookupConfigCandidates(workingDir)
 
-	cfg, loadedPaths, fingerprints, err := loadFromConfigPathsStable(configPaths)
+	cfg, loadedPaths, fingerprints, configDocuments, err := loadConfigCandidateStable(configPaths)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load config from paths %v: %w", configPaths, err)
 	}
@@ -80,14 +82,35 @@ func loadOnce(workingDir, dataDir string, debug bool) (*ConfigStore, error) {
 		workingDir:     workingDir,
 		globalDataPath: globalDataPath,
 	}
-	for _, path := range lookupConfigCandidates(workingDir) {
-		if err := addReloadFingerprint(fingerprints, path); err != nil {
-			return nil, fmt.Errorf("failed to fingerprint config: %w", err)
+	// Load workspace config last so it has highest priority.
+	if !pathAlreadyLoaded(loadedPaths, workspacePath) {
+		wsData, fingerprint, readErr := readStableConfigFile(workspacePath)
+		if readErr == nil {
+			fingerprints[normalizeReloadPath(workspacePath)] = fingerprint
+			configDocuments = append(configDocuments, stableConfigDocument{
+				path: normalizeReloadPath(workspacePath), data: wsData,
+				fingerprint: fingerprint, present: fingerprint.exists,
+			})
+		} else if !os.IsNotExist(readErr) {
+			return nil, fmt.Errorf("failed to read workspace config %s: %w", workspacePath, readErr)
 		}
-	}
-	for _, path := range mcpJSONCandidatePaths(workingDir) {
-		if err := addReloadFingerprint(fingerprints, path); err != nil {
-			return nil, fmt.Errorf("failed to fingerprint MCP config: %w", err)
+		if readErr != nil {
+			fingerprints[normalizeReloadPath(workspacePath)] = reloadFileFingerprint{}
+			configDocuments = append(configDocuments, stableConfigDocument{path: normalizeReloadPath(workspacePath)})
+		}
+		if readErr == nil && len(wsData) > 0 {
+			if !json.Valid(wsData) {
+				return nil, fmt.Errorf("invalid JSON in config file %s", workspacePath)
+			}
+			merged, mergeErr := loadFromBytes(append([][]byte{mustMarshalConfig(cfg)}, wsData))
+			if mergeErr != nil {
+				return nil, fmt.Errorf("failed to merge workspace config %s: %w", workspacePath, mergeErr)
+			}
+			// Preserve defaults that setDefaults already applied.
+			dataDir := cfg.Options.DataDirectory
+			*cfg = *merged
+			cfg.setDefaults(workingDir, dataDir)
+			loadedPaths = append(loadedPaths, normalizeReloadPath(workspacePath))
 		}
 	}
 	store.snap.Store(&storeSnapshot{
@@ -96,43 +119,19 @@ func loadOnce(workingDir, dataDir string, debug bool) (*ConfigStore, error) {
 		loadedPaths:   loadedPaths,
 	})
 
-	// Load workspace config last so it has highest priority.
-	if !pathAlreadyLoaded(loadedPaths, workspacePath) {
-		wsData, fingerprint, readErr := readStableConfigFile(workspacePath)
-		if readErr == nil {
-			fingerprints[normalizeReloadPath(workspacePath)] = fingerprint
-		} else if !os.IsNotExist(readErr) {
-			return nil, fmt.Errorf("failed to read workspace config %s: %w", workspacePath, readErr)
-		}
-		if readErr != nil {
-			if err := addReloadFingerprint(fingerprints, workspacePath); err != nil {
-				return nil, fmt.Errorf("failed to fingerprint workspace config: %w", err)
-			}
-		}
-		if readErr == nil && len(wsData) > 0 {
-			if !json.Valid(wsData) {
-				return nil, fmt.Errorf("invalid JSON in config file %s", workspacePath)
-			}
-			merged, mergeErr := loadFromBytes(append([][]byte{mustMarshalConfig(cfg)}, wsData))
-			if mergeErr == nil {
-				// Preserve defaults that setDefaults already applied.
-				dataDir := cfg.Options.DataDirectory
-				*cfg = *merged
-				cfg.setDefaults(workingDir, dataDir)
-				loadedPaths = append(loadedPaths, workspacePath)
-			}
-		}
-	}
-
 	// Load MCP servers from .mcp.json files (Claude Code format) and merge
 	// them into the config. Servers defined in rush.json take precedence;
 	// the disabled state for external servers is read from rush's own config.
-	externalPaths := discoverMCPJSONFiles(workingDir)
-	external := loadExternalMCPServersFromStablePaths(externalPaths, fingerprints)
-	if len(external) > 0 {
-		mergeExternalMCPServers(cfg, store, external, loadedPaths)
+	externalPaths := mcpJSONCandidatePaths(workingDir)
+	externalDocuments, _, err := loadExternalMCPDocumentsStable(externalPaths, fingerprints)
+	if err != nil {
+		if errors.Is(err, errStableReadUnstable) {
+			return nil, err
+		}
+		return nil, fmt.Errorf("failed to load external MCP config: %w", err)
 	}
-	if !sameReloadPathSet(externalPaths, discoverMCPJSONFiles(workingDir)) || reloadFingerprintsChanged(fingerprints) {
+	mergeExternalMCPServersFromDocuments(cfg, configDocuments, externalDocuments)
+	if candidateInputsChanged(workingDir, configPaths, externalPaths, fingerprints) {
 		return nil, errReloadDiskChanged
 	}
 
@@ -219,7 +218,7 @@ func loadOnce(workingDir, dataDir string, debug bool) (*ConfigStore, error) {
 		runLoadAfterProviderConfigTestHook(workingDir)
 		store.diskWriteMu.Lock()
 		defer store.diskWriteMu.Unlock()
-		if !sameReloadPathSet(externalPaths, discoverMCPJSONFiles(workingDir)) || reloadFingerprintsChanged(fingerprints) {
+		if candidateInputsChanged(workingDir, configPaths, externalPaths, fingerprints) {
 			return errReloadDiskChanged
 		}
 		stalenessPaths := configAndMCPStalenessPaths(lookupConfigCandidates(workingDir), workingDir)
@@ -290,7 +289,7 @@ func loadOnce(workingDir, dataDir string, debug bool) (*ConfigStore, error) {
 // data_directory override either — the two resolutions are equivalent
 // for this field, not an approximation.
 func ResolveDataDirectory(workingDir, dataDir string) (string, error) {
-	configPaths := lookupConfigs(workingDir)
+	configPaths := lookupConfigCandidates(workingDir)
 
 	cfg, _, err := loadFromConfigPaths(configPaths)
 	if err != nil {

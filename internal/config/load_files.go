@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"slices"
 
-	"github.com/PHPCraftdream/rush/internal/fsext"
 	"github.com/qjebbs/go-jsons"
 )
 
@@ -22,25 +21,14 @@ import (
 // up. Global user-level config locations are always included
 // regardless of the boundary.
 func lookupConfigs(cwd string) []string {
-	// prepend default config paths
-	configPaths := []string{
-		systemConfigPath,
-		GlobalConfig(),
-		GlobalConfigData(),
+	paths := lookupConfigCandidates(cwd)
+	result := slices.Clone(paths[:min(3, len(paths))])
+	for _, path := range paths[min(3, len(paths)):] {
+		if info, err := os.Stat(path); err == nil && !info.IsDir() {
+			result = append(result, path)
+		}
 	}
-
-	configNames := []string{appName + ".json", "." + appName + ".json"}
-
-	foundConfigs, err := fsext.LookupBounded(cwd, projectBoundary(cwd), configNames...)
-	if err != nil {
-		// returns at least default configs
-		return configPaths
-	}
-
-	// reverse order so last config has more priority
-	slices.Reverse(foundConfigs)
-
-	return append(configPaths, foundConfigs...)
+	return result
 }
 
 // lookupConfigCandidates returns every fixed and bounded project path that
@@ -61,8 +49,9 @@ func lookupConfigCandidates(cwd string) []string {
 	if err != nil {
 		boundary = filepath.Clean(boundary)
 	}
+	var projectPaths []string
 	for dir := abs; ; dir = filepath.Dir(dir) {
-		paths = append(paths,
+		projectPaths = append(projectPaths,
 			filepath.Join(dir, appName+".json"),
 			filepath.Join(dir, "."+appName+".json"),
 		)
@@ -70,6 +59,11 @@ func lookupConfigCandidates(cwd string) []string {
 			break
 		}
 	}
+	// The merge contract is lowest priority first. The upward walk discovers
+	// the nearest directory first, so reverse the complete candidate list as
+	// well as the historical existing-file discovery result.
+	slices.Reverse(projectPaths)
+	paths = append(paths, projectPaths...)
 	return paths
 }
 
@@ -112,34 +106,82 @@ func loadFromConfigPaths(configPaths []string) (*Config, []string, error) {
 // merge, rather than a separate stat taken before the read. That distinction
 // is what rejects an ABA edit (A -> B -> A) when B was the candidate parsed.
 func loadFromConfigPathsStable(configPaths []string) (*Config, []string, map[string]reloadFileFingerprint, error) {
-	var configs [][]byte
-	var loaded []string
-	fingerprints := make(map[string]reloadFileFingerprint, len(configPaths))
+	cfg, loaded, fingerprints, _, err := loadConfigCandidateStable(configPaths)
+	return cfg, loaded, fingerprints, err
+}
 
-	for _, path := range configPaths {
-		data, fingerprint, err := readStableConfigFile(path)
-		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			return nil, nil, nil, fmt.Errorf("failed to open config file %s: %w", path, err)
-		}
-		fingerprints[normalizeReloadPath(path)] = fingerprint
-		if len(data) == 0 {
-			continue
-		}
-		if !json.Valid(data) {
-			return nil, nil, nil, fmt.Errorf("invalid JSON in config file %s", path)
-		}
-		configs = append(configs, data)
-		loaded = append(loaded, path)
+func loadConfigCandidateStable(configPaths []string) (*Config, []string, map[string]reloadFileFingerprint, []stableConfigDocument, error) {
+	documents, err := readStableConfigDocuments(configPaths)
+	if err != nil {
+		return nil, nil, nil, nil, err
 	}
+	for _, document := range documents {
+		if document.present && len(document.data) > 0 && !json.Valid(document.data) {
+			return nil, nil, nil, nil, fmt.Errorf("invalid JSON in config file %s", document.path)
+		}
+	}
+	configs, loaded, fingerprints := configDocumentBytes(documents)
 
 	cfg, err := loadFromBytes(configs)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
-	return cfg, loaded, fingerprints, nil
+	return cfg, loaded, fingerprints, documents, nil
+}
+
+// stableConfigDocument is the exact byte document used to build a candidate.
+// Keeping the bytes and fingerprint together prevents a second read from
+// supplying overlay metadata that belongs to a different generation.
+type stableConfigDocument struct {
+	path        string
+	data        []byte
+	fingerprint reloadFileFingerprint
+	present     bool
+}
+
+func readStableConfigDocuments(paths []string) ([]stableConfigDocument, error) {
+	documents := make([]stableConfigDocument, 0, len(paths))
+	seen := make(map[string]struct{}, len(paths))
+	for _, path := range paths {
+		path = normalizeReloadPath(path)
+		if path == "" {
+			continue
+		}
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		data, fingerprint, err := readStableConfigFile(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				documents = append(documents, stableConfigDocument{path: path})
+				continue
+			}
+			return nil, fmt.Errorf("failed to open config file %s: %w", path, err)
+		}
+		documents = append(documents, stableConfigDocument{
+			path: path, data: data, fingerprint: fingerprint, present: fingerprint.exists,
+		})
+	}
+	return documents, nil
+}
+
+func configDocumentBytes(documents []stableConfigDocument) ([][]byte, []string, map[string]reloadFileFingerprint) {
+	configs := make([][]byte, 0, len(documents))
+	loaded := make([]string, 0, len(documents))
+	fingerprints := make(map[string]reloadFileFingerprint, len(documents))
+	for _, document := range documents {
+		fingerprints[document.path] = document.fingerprint
+		if !document.present {
+			continue
+		}
+		if len(document.data) == 0 {
+			continue
+		}
+		configs = append(configs, document.data)
+		loaded = append(loaded, document.path)
+	}
+	return configs, loaded, fingerprints
 }
 
 func loadFromBytes(configs [][]byte) (*Config, error) {

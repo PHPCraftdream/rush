@@ -45,6 +45,16 @@ var errStableReadUnstable = errors.New("config file remained unstable while read
 // candidate when the file changes between the two operations.
 func readStableConfigFile(path string) ([]byte, reloadFileFingerprint, error) {
 	for attempt := 0; attempt < stableReadMaxAttempts; attempt++ {
+		info, statErr := os.Stat(path)
+		if statErr != nil {
+			if os.IsNotExist(statErr) {
+				return nil, reloadFileFingerprint{}, statErr
+			}
+			return nil, reloadFileFingerprint{}, statErr
+		}
+		if info.IsDir() {
+			return nil, reloadFileFingerprint{}, nil
+		}
 		first, err := os.ReadFile(path)
 		if err != nil {
 			return nil, reloadFileFingerprint{}, err
@@ -59,7 +69,7 @@ func readStableConfigFile(path string) ([]byte, reloadFileFingerprint, error) {
 		if !bytes.Equal(first, second) {
 			continue
 		}
-		info, err := os.Stat(path)
+		info, err = os.Stat(path)
 		if err != nil {
 			if os.IsNotExist(err) && attempt+1 < stableReadMaxAttempts {
 				continue
@@ -200,23 +210,12 @@ func (s *ConfigStore) releaseReloadLock() {
 // autoReload can call it directly after its own TryLock(reloadMu) without
 // double-locking reloadMu (sync.Mutex is not reentrant).
 func (s *ConfigStore) buildAndPublishReload(ctx context.Context) error {
-	configPaths := lookupConfigs(s.workingDir)
-	externalPaths := discoverMCPJSONFiles(s.workingDir)
-	cfg, loadedPaths, fingerprints, err := loadFromConfigPathsStable(configPaths)
+	configPaths := lookupConfigCandidates(s.workingDir)
+	externalPaths := mcpJSONCandidatePaths(s.workingDir)
+	cfg, loadedPaths, fingerprints, configDocuments, err := loadConfigCandidateStable(configPaths)
 	if err != nil {
 		return fmt.Errorf("failed to reload config: %w", err)
 	}
-	for _, path := range lookupConfigCandidates(s.workingDir) {
-		if err := addReloadFingerprint(fingerprints, path); err != nil {
-			return fmt.Errorf("failed to fingerprint config for reload: %w", err)
-		}
-	}
-	for _, path := range mcpJSONCandidatePaths(s.workingDir) {
-		if err := addReloadFingerprint(fingerprints, path); err != nil {
-			return fmt.Errorf("failed to fingerprint MCP config for reload: %w", err)
-		}
-	}
-
 	// prev is read WITHOUT publishMu: it is only used to seed defaults
 	// (dataDir) and as the starting point for the rebase-on-publish
 	// below. Reading it unlocked is safe because storeSnapshot is
@@ -235,25 +234,29 @@ func (s *ConfigStore) buildAndPublishReload(ctx context.Context) error {
 		wsData, fingerprint, readErr := readStableConfigFile(workspacePath)
 		if readErr == nil {
 			fingerprints[normalizeReloadPath(workspacePath)] = fingerprint
+			configDocuments = append(configDocuments, stableConfigDocument{
+				path: normalizeReloadPath(workspacePath), data: wsData,
+				fingerprint: fingerprint, present: fingerprint.exists,
+			})
 		} else if !os.IsNotExist(readErr) {
 			return fmt.Errorf("failed to read workspace config for reload: %w", readErr)
 		}
 		if readErr != nil {
-			if err := addReloadFingerprint(fingerprints, workspacePath); err != nil {
-				return fmt.Errorf("failed to fingerprint workspace config for reload: %w", err)
-			}
+			fingerprints[normalizeReloadPath(workspacePath)] = reloadFileFingerprint{}
+			configDocuments = append(configDocuments, stableConfigDocument{path: normalizeReloadPath(workspacePath)})
 		}
 		if readErr == nil && len(wsData) > 0 {
 			if !json.Valid(wsData) {
 				return fmt.Errorf("invalid JSON in config file %s", workspacePath)
 			}
-			merged, mergeErr := loadFromBytes(append([][]byte{mustMarshalConfig(cfg)}, wsData))
-			if mergeErr == nil {
-				dataDir := cfg.Options.DataDirectory
-				*cfg = *merged
-				cfg.setDefaults(s.workingDir, dataDir)
-				loadedPaths = append(loadedPaths, workspacePath)
+			merged, mergeErr := loadFromBytes(append([][]byte{mustMarshalConfig(cfg), wsData}))
+			if mergeErr != nil {
+				return fmt.Errorf("failed to merge workspace config %s: %w", workspacePath, mergeErr)
 			}
+			dataDir := cfg.Options.DataDirectory
+			*cfg = *merged
+			cfg.setDefaults(s.workingDir, dataDir)
+			loadedPaths = append(loadedPaths, normalizeReloadPath(workspacePath))
 		}
 	}
 	if hook := s.reloadAfterDiskRead; hook != nil {
@@ -263,10 +266,11 @@ func (s *ConfigStore) buildAndPublishReload(ctx context.Context) error {
 	// Keep .mcp.json discovery and the literal disabled-override merge
 	// consistent with the initial Load path. A reload after the external file
 	// appears must not silently drop those servers from the new snapshot.
-	external := loadExternalMCPServersFromStablePaths(externalPaths, fingerprints)
-	if len(external) > 0 {
-		mergeExternalMCPServers(cfg, s, external, loadedPaths)
+	externalDocuments, _, err := loadExternalMCPDocumentsStable(externalPaths, fingerprints)
+	if err != nil {
+		return fmt.Errorf("failed to load external MCP config during reload: %w", err)
 	}
+	mergeExternalMCPServersFromDocuments(cfg, configDocuments, externalDocuments)
 	if hook := s.reloadAfterExternalRead; hook != nil {
 		hook()
 	}
@@ -274,7 +278,7 @@ func (s *ConfigStore) buildAndPublishReload(ctx context.Context) error {
 	// bytes that were parsed. This content check, rather than mtime alone,
 	// rejects an ABA edit that returns to the original metadata after the
 	// candidate parsed an intermediate version.
-	if !sameReloadPathSet(externalPaths, discoverMCPJSONFiles(s.workingDir)) || reloadFingerprintsChanged(fingerprints) {
+	if candidateInputsChanged(s.workingDir, configPaths, externalPaths, fingerprints) {
 		return errReloadDiskChanged
 	}
 
@@ -336,7 +340,7 @@ func (s *ConfigStore) buildAndPublishReload(ctx context.Context) error {
 	s.diskWriteMu.Lock()
 	defer s.diskWriteMu.Unlock()
 
-	if !sameReloadPathSet(externalPaths, discoverMCPJSONFiles(s.workingDir)) || reloadFingerprintsChanged(fingerprints) {
+	if candidateInputsChanged(s.workingDir, configPaths, externalPaths, fingerprints) {
 		return errReloadDiskChanged
 	}
 
@@ -492,6 +496,12 @@ func reloadFingerprintsChanged(before map[string]reloadFileFingerprint) bool {
 		}
 	}
 	return false
+}
+
+func candidateInputsChanged(workingDir string, configPaths, externalPaths []string, fingerprints map[string]reloadFileFingerprint) bool {
+	return !sameReloadPathSet(configPaths, lookupConfigCandidates(workingDir)) ||
+		!sameReloadPathSet(externalPaths, mcpJSONCandidatePaths(workingDir)) ||
+		reloadFingerprintsChanged(fingerprints)
 }
 
 func sameReloadPathSet(left, right []string) bool {

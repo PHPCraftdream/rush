@@ -14,9 +14,10 @@ import (
 )
 
 type mcpLockedFiles struct {
-	data    map[string][]byte
-	present map[string]bool
-	changed map[string]bool
+	data         map[string][]byte
+	present      map[string]bool
+	changed      map[string]bool
+	fingerprints map[string]reloadFileFingerprint
 }
 
 type mcpEvaluation struct {
@@ -60,23 +61,34 @@ func (s *ConfigStore) withMCPWriteLocks(fn func(*mcpLockedFiles) error) error {
 		locks = append(locks, lock)
 	}
 	files := &mcpLockedFiles{
-		data: make(map[string][]byte, len(paths)), present: make(map[string]bool, len(paths)), changed: make(map[string]bool),
+		data: make(map[string][]byte, len(paths)), present: make(map[string]bool, len(paths)),
+		changed: make(map[string]bool), fingerprints: make(map[string]reloadFileFingerprint, len(paths)),
 	}
 	for _, path := range paths {
-		data, readErr := os.ReadFile(path)
+		data, fingerprint, readErr := readStableConfigFile(path)
 		if readErr != nil {
 			if os.IsNotExist(readErr) {
+				files.fingerprints[path] = reloadFileFingerprint{}
 				continue
 			}
 			return fmt.Errorf("failed to read config file: %w", readErr)
 		}
 		files.data[path] = data
 		files.present[path] = true
+		files.fingerprints[path] = fingerprint
 	}
 	return fn(files)
 }
 
 func (s *ConfigStore) mutateMCP(operation string, scope Scope, oldName, newName string, value MCPConfig, disabled *bool) (MCPMutationResult, error) {
+	return s.mutateMCPWithMode(operation, scope, oldName, newName, value, disabled, false)
+}
+
+func (s *ConfigStore) mutateMCPExact(operation string, scope Scope, oldName, newName string, value MCPConfig, disabled *bool) (MCPMutationResult, error) {
+	return s.mutateMCPWithMode(operation, scope, oldName, newName, value, disabled, true)
+}
+
+func (s *ConfigStore) mutateMCPWithMode(operation string, scope Scope, oldName, newName string, value MCPConfig, disabled *bool, exact bool) (MCPMutationResult, error) {
 	path, err := s.configPath(scope)
 	if err != nil {
 		return MCPMutationResult{}, err
@@ -95,11 +107,24 @@ func (s *ConfigStore) mutateMCP(operation string, scope Scope, oldName, newName 
 			Operation: operation, OldName: oldName, NewName: newName,
 			OldExists: oldOK, OldConfig: cloneMCPConfig(old), OldOrigin: oldOrigin,
 		}
-		if err := validateMCPMutation(operation, scope, oldName, newName, oldOK, oldOrigin, before.configs); err != nil {
+		if err := validateMCPMutation(operation, scope, oldName, newName, oldOK, oldOrigin, before.configs); err != nil && !exact {
 			// A zero-working-directory test store has no discoverable project
 			// pipeline. Its in-memory config is the only origin available.
 			if s.workingDir != "" || operation == "add" {
 				return err
+			}
+		}
+		if exact {
+			literalExists := literalMCPEntryExists(files.data[path], oldName)
+			switch operation {
+			case "add":
+				if literalExists {
+					return fmt.Errorf("%w: %q", ErrMCPTargetExists, newName)
+				}
+			case "remove", "set":
+				if !literalExists {
+					return fmt.Errorf("%w: %q", ErrMCPNotFound, oldName)
+				}
 			}
 		}
 		if err := s.prepareMCPFileMutation(files, path, operation, oldName, newName, value, disabled); err != nil {
@@ -241,6 +266,15 @@ func decodeMCPRoot(data []byte) (mcpRoot, error) {
 	return mcpRoot{raw: root, mcp: servers}, nil
 }
 
+func literalMCPEntryExists(data []byte, name string) bool {
+	root, err := decodeMCPRoot(data)
+	if err != nil {
+		return false
+	}
+	_, ok := root.mcp[name]
+	return ok
+}
+
 func updateMCPFile(files *mcpLockedFiles, path, name string, mutate func(map[string]any) error) error {
 	root, err := decodeMCPRoot(files.data[path])
 	if err != nil {
@@ -293,18 +327,26 @@ func writeMCPFileChanges(files *mcpLockedFiles) error {
 
 func (s *ConfigStore) evaluateMCPFiles(files *mcpLockedFiles) (mcpEvaluation, error) {
 	paths := s.orderedMCPPaths()
-	externalPaths := discoverMCPJSONFiles(s.workingDir)
+	externalPaths := mcpJSONCandidatePaths(s.workingDir)
 	input := make([][]byte, 0, len(paths))
 	fingerprints := make(map[string]reloadFileFingerprint, len(paths)+len(externalPaths))
 	origins := make(map[string]MCPOrigin)
+	rushDocuments := make([]stableConfigDocument, 0, len(paths))
 	for _, path := range paths {
 		path = normalizeReloadPath(path)
 		data, present, err := s.mcpPathData(files, path)
 		if err != nil {
 			return mcpEvaluation{}, err
 		}
+		fingerprint := files.fingerprints[path]
+		if !present {
+			fingerprint = reloadFileFingerprint{}
+		}
+		fingerprints[path] = fingerprint
+		rushDocuments = append(rushDocuments, stableConfigDocument{
+			path: path, data: data, fingerprint: fingerprint, present: present,
+		})
 		if present {
-			fingerprints[path] = fingerprintForBytes(path, data)
 			if len(data) > 0 {
 				if !json.Valid(data) {
 					return mcpEvaluation{}, fmt.Errorf("invalid JSON in config file %s", path)
@@ -312,14 +354,6 @@ func (s *ConfigStore) evaluateMCPFiles(files *mcpLockedFiles) (mcpEvaluation, er
 				input = append(input, data)
 				entryOrigins(origins, path, s.workspacePathValue(), s.globalDataPath, s.systemConfigPathValue(), data)
 			}
-		} else {
-			fingerprints[path] = reloadFileFingerprint{}
-		}
-	}
-	for _, path := range mcpJSONCandidatePaths(s.workingDir) {
-		path = normalizeReloadPath(path)
-		if _, ok := fingerprints[path]; !ok {
-			fingerprints[path] = reloadFileFingerprint{}
 		}
 	}
 	cfg, err := loadFromBytes(input)
@@ -329,12 +363,23 @@ func (s *ConfigStore) evaluateMCPFiles(files *mcpLockedFiles) (mcpEvaluation, er
 	if cfg.MCP == nil {
 		cfg.MCP = make(MCPs)
 	}
+	externalDocuments := make([]stableConfigDocument, 0, len(externalPaths))
 	for _, path := range externalPaths {
-		data, _, err := readStableConfigFile(path)
+		path = normalizeReloadPath(path)
+		data, present, err := s.mcpPathData(files, path)
 		if err != nil {
 			return mcpEvaluation{}, err
 		}
-		fingerprints[normalizeReloadPath(path)] = dataFingerprint(path, data)
+		fingerprint := files.fingerprints[path]
+		if !present {
+			fingerprint = reloadFileFingerprint{}
+		}
+		fingerprints[path] = fingerprint
+		document := stableConfigDocument{path: path, data: data, fingerprint: fingerprint, present: present}
+		externalDocuments = append(externalDocuments, document)
+		if !present {
+			continue
+		}
 		external, err := loadMCPJSONBytes(data)
 		if err != nil {
 			return mcpEvaluation{}, err
@@ -343,7 +388,7 @@ func (s *ConfigStore) evaluateMCPFiles(files *mcpLockedFiles) (mcpEvaluation, er
 			if _, rushDefined := origins[name]; rushDefined {
 				continue
 			}
-			ext.Disabled = externalOverlayValue(paths, files, name, ext.Disabled)
+			ext.Disabled = externalOverlayValue(rushDocuments, name, ext.Disabled)
 			cfg.MCP[name] = ext
 			origins[name] = MCPOrigin{Kind: MCPOriginExternal, Path: normalizeReloadPath(path), Scope: ScopeGlobal, Writable: false}
 		}
@@ -353,13 +398,13 @@ func (s *ConfigStore) evaluateMCPFiles(files *mcpLockedFiles) (mcpEvaluation, er
 
 func (s *ConfigStore) orderedMCPPaths() []string {
 	paths := []string{s.systemConfigPathValue(), GlobalConfig(), s.globalDataPath}
-	fixed := make(map[string]struct{}, len(paths))
+	fixed := make(map[string]struct{}, len(paths)+1)
 	for _, path := range paths {
 		if path != "" {
 			fixed[normalizeReloadPath(path)] = struct{}{}
 		}
 	}
-	if systemPath := SystemConfig(); systemPath != "" {
+	if systemPath := systemConfigPath; systemPath != "" {
 		fixed[normalizeReloadPath(systemPath)] = struct{}{}
 	}
 	for _, path := range lookupConfigCandidates(s.workingDir) {
@@ -379,20 +424,21 @@ func (s *ConfigStore) systemConfigPathValue() string {
 }
 
 func (s *ConfigStore) mcpPathData(files *mcpLockedFiles, path string) ([]byte, bool, error) {
-	if _, ok := files.data[path]; ok || files.present[path] {
+	if _, ok := files.fingerprints[path]; ok {
 		return files.data[path], files.present[path], nil
 	}
 	data, fingerprint, err := readStableConfigFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
+			files.fingerprints[path] = reloadFileFingerprint{}
 			return nil, false, nil
 		}
 		return nil, false, err
 	}
 	files.data[path] = data
-	files.present[path] = true
-	_ = fingerprint
-	return data, true, nil
+	files.present[path] = fingerprint.exists
+	files.fingerprints[path] = fingerprint
+	return data, fingerprint.exists, nil
 }
 
 func entryOrigins(origins map[string]MCPOrigin, path, workspacePath, globalPath, systemPath string, data []byte) {
@@ -419,23 +465,20 @@ func entryOrigins(origins map[string]MCPOrigin, path, workspacePath, globalPath,
 	}
 }
 
-func externalOverlayValue(paths []string, files *mcpLockedFiles, name string, fallback bool) bool {
-	overridden := false
-	for _, path := range paths {
-		data, present := files.data[normalizeReloadPath(path)], files.present[normalizeReloadPath(path)]
-		if !present {
+func externalOverlayValue(documents []stableConfigDocument, name string, fallback bool) bool {
+	for _, document := range documents {
+		if !document.present {
 			continue
 		}
-		entry, ok := mcpEntryFromJSON(data, name)
+		entry, ok := mcpEntryFromJSON(document.data, name)
 		if !isMCPDisabledOnlyEntry(entry, ok) {
 			continue
 		}
 		var disabled bool
 		if json.Unmarshal(entry["disabled"], &disabled) == nil {
-			fallback, overridden = disabled, true
+			fallback = disabled
 		}
 	}
-	_ = overridden
 	return fallback
 }
 
