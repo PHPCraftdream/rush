@@ -30,6 +30,18 @@ var errConfigCommitDurabilityUncertain = errors.New("config commit durability is
 // must not blindly retry such an operation: the logical write already won.
 var errAtomicWriteCommitted = errors.New("config write committed with uncertain durability")
 
+type atomicWriteCommittedError struct {
+	path  string
+	data  []byte
+	cause error
+}
+
+func (e *atomicWriteCommittedError) Error() string {
+	return fmt.Sprintf("%s: %v", errAtomicWriteCommitted, e.cause)
+}
+
+func (e *atomicWriteCommittedError) Unwrap() error { return errAtomicWriteCommitted }
+
 var configTestHooks struct {
 	sync.Mutex
 	beforeOpen        func(string)
@@ -115,7 +127,7 @@ func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
 		return err
 	}
 	if err := syncConfigParent(filepath.Dir(path)); err != nil {
-		return fmt.Errorf("%w: sync config parent: %v", errAtomicWriteCommitted, err)
+		return &atomicWriteCommittedError{path: path, data: append([]byte(nil), data...), cause: err}
 	}
 	return nil
 }

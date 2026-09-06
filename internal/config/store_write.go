@@ -5,6 +5,7 @@ package config
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -285,6 +286,7 @@ func (s *ConfigStore) SetConfigFields(scope Scope, kv map[string]any) error {
 		keys = append(keys, key)
 	}
 	slices.Sort(keys)
+	var committedErr error
 
 	// withConfigWriteLock serialises the read-modify-write both in-process
 	// (diskWriteMu) and across processes (OS lock on path+".lock") — see its
@@ -311,12 +313,23 @@ func (s *ConfigStore) SetConfigFields(scope Scope, kv map[string]any) error {
 		}
 		written := []byte(newValue)
 		if err := atomicWriteFile(lockedPath, written, 0o600); err != nil {
+			if errors.Is(err, errAtomicWriteCommitted) {
+				s.noteInitialLoadWriteLocked(path, written)
+				committedErr = err
+				return nil
+			}
 			return fmt.Errorf("failed to write config file: %w", err)
 		}
 		s.noteInitialLoadWriteLocked(path, written)
 		return nil
 	}); err != nil {
 		return err
+	}
+	if committedErr != nil {
+		if reloadErr := s.autoReloadAfterWrite(context.Background()); reloadErr != nil {
+			slog.Warn("Config file committed but in-memory reconciliation was incomplete", "path", path, "error", reloadErr)
+		}
+		return committedErr
 	}
 
 	// Auto-reload to keep in-memory state fresh after config edits. Runs
@@ -362,6 +375,11 @@ func (s *ConfigStore) RemoveConfigField(scope Scope, key string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), configWriteLockTimeout)
 	defer cancel()
 	if err := s.removeConfigFieldAt(ctx, path, key); err != nil {
+		if errors.Is(err, errAtomicWriteCommitted) {
+			if reloadErr := s.autoReloadAfterWrite(context.Background()); reloadErr != nil {
+				slog.Warn("Config field removal committed but in-memory reconciliation was incomplete", "path", path, "error", reloadErr)
+			}
+		}
 		return err
 	}
 
@@ -401,7 +419,8 @@ func (s *ConfigStore) removeConfigFieldAt(ctx context.Context, path, key string)
 		return fmt.Errorf("failed to stat config file: %w", err)
 	}
 
-	return s.withConfigWriteLockCtx(ctx, path, func(lockedPath string) error {
+	var committedErr error
+	if err := s.withConfigWriteLockCtx(ctx, path, func(lockedPath string) error {
 		data, err := os.ReadFile(lockedPath)
 		if err != nil {
 			return fmt.Errorf("failed to read config file: %w", err)
@@ -415,11 +434,19 @@ func (s *ConfigStore) removeConfigFieldAt(ctx context.Context, path, key string)
 		}
 		written := []byte(newValue)
 		if err := atomicWriteFile(lockedPath, written, 0o600); err != nil {
+			if errors.Is(err, errAtomicWriteCommitted) {
+				s.noteInitialLoadWriteLocked(path, written)
+				committedErr = err
+				return nil
+			}
 			return fmt.Errorf("failed to write config file: %w", err)
 		}
 		s.noteInitialLoadWriteLocked(path, written)
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
+	return committedErr
 }
 
 // removeConfigFieldBestEffort deletes a single key from the config file for

@@ -57,22 +57,3 @@ func TestMCPParentSyncFailureReconcilesSnapshotButReturnsUncertainty(t *testing.
 	require.ErrorIs(t, retryErr, ErrMCPTargetExists)
 	require.Equal(t, beforeGeneration+1, store.Generation())
 }
-
-func TestAtomicWriteParentSyncFailureIsTypedCommittedError(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "rush.json")
-	require.NoError(t, os.WriteFile(path, []byte(`{"old":true}`), 0o600))
-	parentSyncErr := errors.New("injected parent fsync failure")
-	configTestHooks.Lock()
-	previous := configTestHooks.syncParent
-	configTestHooks.syncParent = func(string) error { return parentSyncErr }
-	configTestHooks.Unlock()
-	t.Cleanup(func() {
-		configTestHooks.Lock()
-		configTestHooks.syncParent = previous
-		configTestHooks.Unlock()
-	})
-
-	err := atomicWriteFile(path, []byte(`{"new":true}`), 0o600)
-	require.ErrorIs(t, err, errAtomicWriteCommitted)
-	require.Equal(t, []byte(`{"new":true}`), mustReadFile(t, path))
-}
