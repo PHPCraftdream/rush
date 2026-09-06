@@ -660,6 +660,8 @@ type serverAdmission struct {
 	configIdentity      config.MCPConfig
 	hasConfigIdentity   bool
 	name                string
+	guardName           string
+	guardEpoch          uint64
 	ctx                 context.Context
 	cancel              context.CancelFunc
 	stop                func()
@@ -746,12 +748,69 @@ func (a *serverAdmission) notificationsValidLocked() bool {
 	return a.validLocked()
 }
 
+// bindGuardLocked adds the destination identity to a replacement candidate.
+// lifecycleMu must be held by the caller.
+func (a *serverAdmission) bindGuardLocked(name string) bool {
+	if a == nil || a.owner == nil || a.cfg == nil || name == "" || name == a.name {
+		return true
+	}
+	if _, uncertain := a.cfg.MCPUncertaintyVersion(name); uncertain {
+		return false
+	}
+	a.guardName = name
+	a.guardEpoch = a.owner.serverEpochs[name]
+	return true
+}
+
+// replacementValidLocked checks both identities before the durable replacement
+// is published. It does not require the old config to remain present after the
+// durable rename has committed.
+func (a *serverAdmission) replacementValidLocked() bool {
+	if a == nil || a.owner == nil || a.cfg == nil {
+		return true
+	}
+	if owner != a.owner || a.owner.closing || a.owner.generation != a.generation ||
+		!a.replacementNamesValidLocked() {
+		return false
+	}
+	return true
+}
+
+func (a *serverAdmission) replacementNamesValidLocked() bool {
+	if a == nil || a.owner == nil || a.cfg == nil {
+		return true
+	}
+	if a.owner.serverEpochs[a.name] != a.epoch {
+		return false
+	}
+	if _, uncertain := a.cfg.MCPUncertaintyVersion(a.name); uncertain {
+		return false
+	}
+	if a.guardName != "" && (a.owner.serverEpochs[a.guardName] != a.guardEpoch) {
+		return false
+	}
+	if a.guardName != "" {
+		if _, uncertain := a.cfg.MCPUncertaintyVersion(a.guardName); uncertain {
+			return false
+		}
+	}
+	return true
+}
+
 // candidateValidLocked validates a replacement candidate without consulting
 // the durable config. The durable replacement may already have committed and
 // removed the old name while runtime publication is still waiting on the
 // lifecycle lock. lifecycleMu must be held by the caller.
 func (a *serverAdmission) candidateValidLocked() bool {
 	_, uncertain := a.cfg.MCPUncertaintyVersion(a.name)
+	if a.guardName != "" {
+		if a.owner.serverEpochs[a.guardName] != a.guardEpoch {
+			return false
+		}
+		if _, guardUncertain := a.cfg.MCPUncertaintyVersion(a.guardName); guardUncertain {
+			return false
+		}
+	}
 	return (a.promoted || a.ctx == nil || a.ctx.Err() == nil) && owner == a.owner &&
 		!a.owner.closing && a.owner.generation == a.generation &&
 		a.owner.serverEpochs[a.name] == a.epoch && !uncertain
@@ -778,6 +837,14 @@ func (a *serverAdmission) validLocked() bool {
 	}
 	if _, uncertain := a.cfg.MCPUncertaintyVersion(admissionName); uncertain {
 		return false
+	}
+	if !a.committed && a.guardName != "" {
+		if a.owner.serverEpochs[a.guardName] != a.guardEpoch {
+			return false
+		}
+		if _, uncertain := a.cfg.MCPUncertaintyVersion(a.guardName); uncertain {
+			return false
+		}
 	}
 	mcpConfig, exists := a.cfg.MCPConfig(admissionName)
 	if !exists {
@@ -2313,6 +2380,17 @@ func enableServerWithPersistenceAndInitializer(
 	persist enableServerResultPersister,
 	initialize admittedClientInitializer,
 ) error {
+	return enableServerWithPersistenceAndInitializerAndRollback(ctx, cfg, name, persist, initialize, nil)
+}
+
+func enableServerWithPersistenceAndInitializerAndRollback(
+	ctx context.Context,
+	cfg *config.ConfigStore,
+	name string,
+	persist enableServerResultPersister,
+	initialize admittedClientInitializer,
+	rollbackPersist enableServerResultPersister,
+) error {
 	o, err := ensureOwner()
 	if err != nil {
 		return err
@@ -2378,22 +2456,52 @@ func enableServerWithPersistenceAndInitializer(
 	if transaction != nil {
 		transaction.markUserMutation()
 	}
-	rollbackPersistence := func() {
+	type rollbackResult struct {
+		err        error
+		needsFence bool
+	}
+	rollbackPersistence := func() rollbackResult {
 		var rollbackErr error
-		if transaction != nil {
+		if rollbackPersist != nil {
+			var rollback *config.MCPConfig
+			if transaction != nil {
+				rollbackConfig := mcpCfg
+				rollbackConfig.Disabled = true
+				rollback = &rollbackConfig
+			}
+			_, rollbackErr = rollbackPersist(cfg, scope, name, rollback)
+		} else if transaction != nil {
 			rollback := mcpCfg
 			rollback.Disabled = true
 			_, rollbackErr = cfg.PersistMCPConfigResult(scope, name, rollback)
 		} else {
 			_, rollbackErr = cfg.PersistMCPDisabledOverrideResult(scope, name, true)
 		}
-		if rollbackErr != nil {
-			slog.Error("Failed to roll back MCP enabled state", "name", name, "error", rollbackErr)
+		if rollbackErr == nil {
+			return rollbackResult{}
 		}
+		outcome, hasOutcome := config.CommitOutcomeFromError(rollbackErr)
+		return rollbackResult{err: rollbackErr, needsFence: hasOutcome && commitOutcomeNeedsRuntimeFence(outcome)}
+	}
+	rollbackAndReport := func(cause error) (*ClientSession, error) {
+		rollback := rollbackPersistence()
+		if rollback.err == nil {
+			return nil, cause
+		}
+		if rollback.needsFence {
+			detached := fenceMCPRuntimeLocked(o, cfg, name)
+			return detached, errors.Join(cause, ErrMCPConfigUncertain,
+				fmt.Errorf("failed to roll back MCP enabled state for %q: %w", name, rollback.err))
+		}
+		return nil, errors.Join(cause,
+			fmt.Errorf("failed to roll back MCP enabled state for %q: %w", name, rollback.err))
 	}
 	if !o.acceptsSession() {
 		if commitUncertainty == nil {
-			rollbackPersistence()
+			detached, rollbackErr := rollbackAndReport(ErrOwnerBusy)
+			lease.Unlock()
+			retireMCPClient(name, detached)
+			return rollbackErr
 		} else {
 			detached := fenceMCPRuntimeLocked(o, cfg, name)
 			lease.Unlock()
@@ -2417,9 +2525,10 @@ func enableServerWithPersistenceAndInitializer(
 			retireMCPClient(name, detached)
 			return fmt.Errorf("failed to persist MCP enabled state for %q: %w", name, commitUncertainty)
 		}
-		rollbackPersistence()
+		detached, rollbackErr := rollbackAndReport(fmt.Errorf("MCP server %q disappeared while enabling: %w", name, config.ErrMCPNotFound))
 		lease.Unlock()
-		return fmt.Errorf("MCP server %q disappeared while enabling: %w", name, config.ErrMCPNotFound)
+		retireMCPClient(name, detached)
+		return rollbackErr
 	}
 	admission, err := o.admitServer(ctx, cfg, name, true)
 	if err != nil {
@@ -2429,9 +2538,10 @@ func enableServerWithPersistenceAndInitializer(
 			retireMCPClient(name, detached)
 			return fmt.Errorf("failed to persist MCP enabled state for %q: %w", name, commitUncertainty)
 		}
-		rollbackPersistence()
+		detached, rollbackErr := rollbackAndReport(err)
 		lease.Unlock()
-		return err
+		retireMCPClient(name, detached)
+		return rollbackErr
 	}
 	admission.candidate = true
 	updateAdmissionState(&admission, StateStarting, nil, nil, Counts{})
@@ -2598,6 +2708,14 @@ func replaceServerWithResultPersistenceAndPreparation(
 		unlockServerLeases(locked)
 		return err
 	}
+	lifecycleMu.Lock()
+	guardBound := admission.bindGuardLocked(newName)
+	lifecycleMu.Unlock()
+	if !guardBound {
+		unlockServerLeases(locked)
+		admission.done()
+		return ErrMCPConfigUncertain
+	}
 	admission.suppressState = true
 	admission.suppressUntilCommit = true
 	resolver := cfg.Resolver()
@@ -2638,6 +2756,18 @@ func replaceServerWithResultPersistenceAndPreparation(
 	admission.promoted = true
 	lifecycleMu.Unlock()
 
+	// Recheck both identities immediately before the durable mutation. The
+	// leases prevent a concurrent server mutation from passing this guard.
+	lifecycleMu.Lock()
+	validForReplacement := admission.replacementValidLocked()
+	lifecycleMu.Unlock()
+	if !validForReplacement {
+		unlockServerLeases(locked)
+		_ = prepared.session.Close()
+		admission.done()
+		return ErrOwnerBusy
+	}
+
 	// The durable atomic RMW may wait on an inter-process file lock for up to
 	// the config write timeout. Keep the ordered server leases, but never hold
 	// lifecycleMu here: Owner.Close must be able to mark the owner closing,
@@ -2669,6 +2799,13 @@ func replaceServerWithResultPersistenceAndPreparation(
 		commitUncertainty = err
 	}
 	lifecycleMu.Lock()
+	if !admission.replacementNamesValidLocked() {
+		lifecycleMu.Unlock()
+		unlockServerLeases(locked)
+		_ = prepared.session.Close()
+		admission.done()
+		return ErrOwnerBusy
+	}
 	if owner != o || o.closing || o.generation != admission.generation ||
 		o.serverEpochs[oldName] != admission.epoch {
 		// Persistence is the transaction's durable linearization point. If
