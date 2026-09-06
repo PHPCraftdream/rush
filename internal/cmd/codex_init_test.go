@@ -150,6 +150,40 @@ func TestCodexInit_WrushOverwritesWithSentinel(t *testing.T) {
 	assert.NotContains(t, string(got), "old content")
 }
 
+func TestCodexInit_MigratesSentinelFirstOwnedSkills(t *testing.T) {
+	dir := t.TempDir()
+	skillsDir := filepath.Join(dir, ".agents", "skills")
+	tests := []struct {
+		name     string
+		template string
+	}{
+		{name: "rush", template: claudeSlashCommandTemplate},
+		{name: "rush-fallback", template: claudeFallbackCommandTemplate},
+		{name: "wrush", template: claudeWrushCommandTemplate},
+	}
+	for _, test := range tests {
+		path := filepath.Join(skillsDir, test.name, "SKILL.md")
+		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+		require.NoError(t, os.WriteFile(path, []byte(claudeSlashCommandSentinel+"\nlegacy content\n"), 0o644))
+	}
+
+	require.NoError(t, installCodexSkills(skillsDir))
+	for _, test := range tests {
+		content, err := os.ReadFile(filepath.Join(skillsDir, test.name, "SKILL.md"))
+		require.NoError(t, err)
+		assertCodexSkillFrontmatter(t, content, test.name, test.template)
+		assert.NotContains(t, string(content), "legacy content")
+	}
+}
+
+func TestWriteCodexSkillRejectsInvalidFrontmatter(t *testing.T) {
+	dir := t.TempDir()
+	err := writeCodexSkill(dir, "rush", claudeSlashCommandSentinel+"\ninvalid")
+	require.ErrorContains(t, err, "validate generated SKILL.md")
+	_, statErr := os.Stat(filepath.Join(dir, "rush", "SKILL.md"))
+	require.ErrorIs(t, statErr, os.ErrNotExist)
+}
+
 func TestCodexInit_SlashCommandSkipsWithoutSentinel(t *testing.T) {
 	dir := t.TempDir()
 	skillPath := filepath.Join(dir, ".agents", "skills", "rush", "SKILL.md")

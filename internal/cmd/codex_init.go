@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/PHPCraftdream/rush/internal/skills"
 	"github.com/spf13/cobra"
 )
 
@@ -99,7 +100,7 @@ func installCodexSkills(skillsDir string) error {
 		return fmt.Errorf("rush skill: %w", err)
 	}
 	content1 := toSkillMD("rush", desc1, body1)
-	if err := writeSentinelledSkillDir(skillsDir, "rush", claudeSlashCommandSentinel, content1); err != nil {
+	if err := writeCodexSkill(skillsDir, "rush", content1); err != nil {
 		return fmt.Errorf("rush skill: %w", err)
 	}
 
@@ -108,7 +109,7 @@ func installCodexSkills(skillsDir string) error {
 		return fmt.Errorf("rush-fallback skill: %w", err)
 	}
 	content2 := toSkillMD("rush-fallback", desc2, body2)
-	if err := writeSentinelledSkillDir(skillsDir, "rush-fallback", claudeSlashCommandSentinel, content2); err != nil {
+	if err := writeCodexSkill(skillsDir, "rush-fallback", content2); err != nil {
 		return fmt.Errorf("rush-fallback skill: %w", err)
 	}
 
@@ -120,10 +121,21 @@ func installCodexSkills(skillsDir string) error {
 	if err != nil {
 		return fmt.Errorf("wrush skill: %w", err)
 	}
-	if err := writeSentinelledSkillDir(skillsDir, "wrush", claudeSlashCommandSentinel, content3); err != nil {
+	if err := writeCodexSkill(skillsDir, "wrush", content3); err != nil {
 		return fmt.Errorf("wrush skill: %w", err)
 	}
 	return nil
+}
+
+func writeCodexSkill(skillsDir, name, content string) error {
+	parsed, err := skills.ParseContent([]byte(content))
+	if err != nil {
+		return fmt.Errorf("validate generated SKILL.md: %w", err)
+	}
+	if parsed.Name != name {
+		return fmt.Errorf("validate generated SKILL.md: name %q does not match %q", parsed.Name, name)
+	}
+	return writeSentinelledSkillDir(skillsDir, name, claudeSlashCommandSentinel, content)
 }
 
 func init() {
