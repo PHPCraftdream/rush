@@ -32,6 +32,40 @@ func configFileIdentityOfOpened(file *os.File, _ os.FileInfo) configFileIdentity
 	}
 }
 
+func configFileIdentityAtPath(path string) (configFileIdentity, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return configFileIdentity{}, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return configFileIdentity{}, err
+	}
+	if !info.Mode().IsRegular() {
+		return configFileIdentity{}, os.ErrInvalid
+	}
+	identity := configFileIdentityOfOpened(file, info)
+	if !identity.valid {
+		return configFileIdentity{}, os.ErrInvalid
+	}
+	return identity, nil
+}
+
+func removeConfigTempIfIdentity(path string, expected configFileIdentity) error {
+	identity, err := configFileIdentityAtPath(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if identity != expected {
+		return os.ErrInvalid
+	}
+	return os.Remove(path)
+}
+
 func configFileOwner(os.FileInfo) (int, bool) { return -1, true }
 
 func configFileNlinkOfOpened(file *os.File, _ os.FileInfo) uint64 {

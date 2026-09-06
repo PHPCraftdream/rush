@@ -5,6 +5,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"golang.org/x/sys/windows"
@@ -36,6 +37,13 @@ func renameConfigTemp(source, destination string, replace bool) error {
 			err = windows.MoveFileEx(from, to, flags)
 		}
 		if err == nil || !replace || !errors.Is(err, windows.ERROR_ACCESS_DENIED) || attempt == 7 {
+			return err
+		}
+		// Do not retry an access error after the source has disappeared. That
+		// is the observable signature of a publication whose WRITE_THROUGH
+		// result was lost; retrying would replace the original error with a
+		// misleading second failure and discard the durability signal.
+		if _, statErr := os.Stat(source); os.IsNotExist(statErr) {
 			return err
 		}
 		// A cooperating writer can still be completing its pre-lock handle

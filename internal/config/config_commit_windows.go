@@ -69,28 +69,60 @@ func commitConfigFile(selectedPath, commitPath string, data []byte, perm os.File
 	if err != nil {
 		return reloadFileFingerprint{}, err
 	}
+	stagedIdentity, err := configFileIdentityAtPath(tmp)
+	if err != nil {
+		_ = os.Remove(tmp)
+		return reloadFileFingerprint{}, fmt.Errorf("%w: identify staged config: %v", errConfigCommitVerification, err)
+	}
 	removeTemp := true
 	defer func() {
 		if removeTemp {
-			_ = os.Remove(tmp)
+			_ = removeConfigTempIfIdentity(tmp, stagedIdentity)
 		}
 	}()
 	runConfigBeforeCommitRenameHook()
 	renameErr := renameConfigTemp(tmp, commitPath, expected.exists)
 	if renameErr != nil {
-		// MoveFileEx normally reports success after publication, but an API
-		// failure can be ambiguous at that boundary. A matching destination is
-		// proof that this transaction may already have won; continue through the
-		// post-commit oracle so callers receive a CommitOutcome and do not retry
-		// a mutation that is already visible.
-		targetData, _, targetReadbackErr := readStableConfigFileOwned(commitPath, expectedOwner, enforceOwner)
-		if targetReadbackErr != nil || !sameBytesFingerprint(targetData, sha256.Sum256(data)) {
-			return reloadFileFingerprint{}, fmt.Errorf("%w: rename config file: %v", errConfigCommitVerification, renameErr)
+		// MoveFileEx can report an error after publishing when WRITE_THROUGH
+		// cannot establish durability. A matching destination alone is not
+		// enough: a pre-publication access failure can leave an old,
+		// byte-identical destination in place.
+		sourceIdentity, sourceErr := configFileIdentityAtPath(tmp)
+		_, targetFingerprint, targetErr := readStableConfigFileOwned(commitPath, expectedOwner, enforceOwner)
+		targetIsStaged := targetErr == nil && targetFingerprint.identity == stagedIdentity
+		sourceIsStaged := sourceErr == nil && sourceIdentity == stagedIdentity
+		if sourceIsStaged && !targetIsStaged {
+			causes := []error{renameErr}
+			if targetErr != nil && !os.IsNotExist(targetErr) {
+				causes = append(causes, targetErr)
+			} else if targetErr == nil && ((!expected.exists && targetFingerprint.exists) ||
+				(expected.exists && targetFingerprint.identity != expected.identity)) {
+				causes = append(causes, errConfigCommitVerification)
+			}
+			// The staged source is still the same inode, so publication has
+			// not happened. Keep removeTemp true and let the identity-checked
+			// defer remove only this transaction's temporary spelling.
+			return reloadFileFingerprint{}, newCommitOutcome(commitPath, false, false, causes...)
 		}
-		// The source spelling is also ambiguous after an API failure. Leave it
-		// alone rather than removing an entry that could still be live.
-		removeTemp = false
-	} else {
+		if !targetIsStaged {
+			// Neither side proves the result. Preserve an explicit committed
+			// uncertainty so callers do not retry a mutation that may have
+			// crossed the publication boundary.
+			causes := []error{errConfigCommitUncertain, errConfigCommitCommitted, renameErr}
+			if sourceErr != nil && !os.IsNotExist(sourceErr) {
+				causes = append(causes, sourceErr)
+			}
+			if targetErr != nil {
+				causes = append(causes, targetErr)
+			}
+			return reloadFileFingerprint{}, newCommitOutcome(commitPath, true, false, causes...)
+		}
+		// If the destination has the staged handle identity, publication is
+		// proven even when MoveFileEx returned an error. The source can still
+		// be present as an alias; identity-checked cleanup handles that case.
+		removeTemp = sourceErr != nil && os.IsNotExist(sourceErr)
+	}
+	if renameErr == nil {
 		removeTemp = false
 	}
 	hookErr := runConfigAfterCommitRenameHookForPath(commitPath)
@@ -117,10 +149,21 @@ func commitConfigFile(selectedPath, commitPath string, data []byte, perm os.File
 		if hookErr != nil {
 			causes = append(causes, hookErr)
 		}
+		if renameErr != nil {
+			causes = append(causes, errAtomicWriteCommitted, errConfigCommitDurabilityUncertain)
+		}
 		return reloadFileFingerprint{}, newCommitOutcome(commitPath, true, false, causes...)
 	}
 	if renameErr != nil || hookErr != nil || parentSyncErr != nil {
-		return committedFingerprint, newCommitOutcome(commitPath, true, true, commitPostCommitCauses(renameErr, hookErr, parentSyncErr)...)
+		return committedFingerprint, newCommitOutcome(commitPath, true, true, windowsCommitPostCommitCauses(renameErr, hookErr, parentSyncErr)...)
 	}
 	return committedFingerprint, nil
+}
+
+func windowsCommitPostCommitCauses(renameErr, hookErr, parentSyncErr error) []error {
+	causes := commitPostCommitCauses(renameErr, hookErr, parentSyncErr)
+	if renameErr != nil {
+		causes = append([]error{errAtomicWriteCommitted, errConfigCommitDurabilityUncertain}, causes...)
+	}
+	return causes
 }

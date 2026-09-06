@@ -52,7 +52,7 @@ func TestWindowsCommitMoveFileExFailureAfterPublicationReturnsCommitOutcome(t *t
 	_, expected, err := readStableConfigFile(path)
 	require.NoError(t, err)
 
-	apiErr := errors.New("MoveFileEx result lost after publication")
+	apiErr := windows.ERROR_ACCESS_DENIED
 	configTestHooks.Lock()
 	previous := configTestHooks.moveFileEx
 	configTestHooks.moveFileEx = func(from, to *uint16, _ uint32) error {
@@ -76,8 +76,45 @@ func TestWindowsCommitMoveFileExFailureAfterPublicationReturnsCommitOutcome(t *t
 	require.True(t, outcome.Committed)
 	require.True(t, outcome.Reconciled)
 	require.ErrorIs(t, outcome, errConfigCommitCommitted)
+	require.ErrorIs(t, outcome, errAtomicWriteCommitted)
+	require.ErrorIs(t, outcome, errConfigCommitDurabilityUncertain)
 	require.ErrorIs(t, outcome, apiErr)
 	require.Equal(t, data, mustReadFile(t, path))
+}
+
+func TestWindowsCommitMoveFileExAccessDeniedBeforePublicationLeavesIdenticalDestination(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "rush.json")
+	data := []byte(`{"same":true}`)
+	require.NoError(t, os.WriteFile(path, data, 0o600))
+	_, expected, err := readStableConfigFile(path)
+	require.NoError(t, err)
+
+	configTestHooks.Lock()
+	previous := configTestHooks.moveFileEx
+	configTestHooks.moveFileEx = func(_, _ *uint16, _ uint32) error {
+		return windows.ERROR_ACCESS_DENIED
+	}
+	configTestHooks.Unlock()
+	t.Cleanup(func() {
+		configTestHooks.Lock()
+		configTestHooks.moveFileEx = previous
+		configTestHooks.Unlock()
+	})
+
+	_, err = commitConfigFile(path, path, data, 0o600, expected, -1, false)
+	var outcome *CommitOutcome
+	require.ErrorAs(t, err, &outcome)
+	require.False(t, outcome.Committed)
+	require.False(t, outcome.Reconciled)
+	require.ErrorIs(t, outcome, windows.ERROR_ACCESS_DENIED)
+	require.Equal(t, data, mustReadFile(t, path))
+
+	entries, readDirErr := os.ReadDir(root)
+	require.NoError(t, readDirErr)
+	for _, entry := range entries {
+		require.NotContains(t, entry.Name(), ".tmp")
+	}
 }
 
 func TestWindowsParentSyncIsAProductionNoOp(t *testing.T) {

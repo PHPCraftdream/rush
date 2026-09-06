@@ -574,7 +574,8 @@ func (s *ConfigStore) writeMCPFileChanges(files *mcpLockedFiles) error {
 				// read proves that the requested bytes are present. Preserve the
 				// public outcome and upgrade its reconciliation status so every
 				// caller observes one authoritative status source.
-				if outcome, outcomeOK := CommitOutcomeFromError(commitErr); outcomeOK && outcome.Reconciled {
+				if outcome, outcomeOK := CommitOutcomeFromError(commitErr); outcomeOK && outcome.Reconciled &&
+					!errors.Is(outcome, errConfigCommitDurabilityUncertain) {
 					commitErr = nil
 				} else {
 					reconciled, ok := s.reconcileMCPCommit(record)
