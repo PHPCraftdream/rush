@@ -8,8 +8,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// syncConfigParent persists the directory entry update made by rename.
-func syncConfigParent(path string) error {
+// syncConfigParentOnDisk persists the directory entry update made by rename.
+func syncConfigParentOnDisk(path string) error {
 	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		return err

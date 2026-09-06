@@ -20,6 +20,11 @@ var errConfigCommitCommitted = errors.New("config commit completed")
 // next reload to reconcile the on-disk document.
 var errConfigCommitUncertain = errors.New("config commit outcome is uncertain")
 
+// errConfigCommitDurabilityUncertain means rename completed but the parent
+// directory could not be synced. Visible bytes are not enough to claim a
+// crash-durable commit, so callers must surface this outcome explicitly.
+var errConfigCommitDurabilityUncertain = errors.New("config commit durability is uncertain")
+
 // errAtomicWriteCommitted means the rename completed and the new bytes are in
 // the named destination, but a post-rename durability step failed. Callers
 // must not blindly retry such an operation: the logical write already won.
@@ -30,6 +35,7 @@ var configTestHooks struct {
 	beforeOpen        func(string)
 	beforeCommitCheck func()
 	afterCommitRename func() error
+	syncParent        func(string) error
 }
 
 func runConfigBeforeOpenHook(path string) {
@@ -58,6 +64,16 @@ func runConfigAfterCommitRenameHook() error {
 		return hook()
 	}
 	return nil
+}
+
+func syncConfigParent(path string) error {
+	configTestHooks.Lock()
+	hook := configTestHooks.syncParent
+	configTestHooks.Unlock()
+	if hook != nil {
+		return hook(path)
+	}
+	return syncConfigParentOnDisk(path)
 }
 
 func sameBytesFingerprint(data []byte, digest [sha256.Size]byte) bool {

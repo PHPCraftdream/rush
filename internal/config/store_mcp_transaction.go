@@ -280,20 +280,19 @@ func (s *ConfigStore) mutatePendingRemoveMCP(scope Scope, name string) (MCPMutat
 		if err := s.verifyMCPReadOnlyInputs(before.fingerprints, path); err != nil {
 			return err
 		}
-		if err := s.writeMCPFileChanges(files); err != nil {
-			return err
-		}
 		result.committedFingerprints = committedMCPFingerprints(files)
-		return nil
+		writeErr := s.writeMCPFileChanges(files)
+		result.committedFingerprints = committedMCPFingerprints(files)
+		return writeErr
 	})
-	if err == nil {
+	if err == nil || mcpCommitWasReconciled(err) {
 		s.publishMCPMutationLocked(result)
 	}
 	s.publishMu.Unlock()
-	if err != nil {
+	if err != nil && !mcpCommitWasReconciled(err) {
 		return MCPMutationResult{}, err
 	}
-	return result, nil
+	return result, err
 }
 
 func (s *ConfigStore) mutateMCPWithMode(operation string, scope Scope, oldName, newName string, value MCPConfig, disabled *bool, exact bool) (MCPMutationResult, error) {
@@ -354,9 +353,7 @@ func (s *ConfigStore) mutateMCPWithMode(operation string, scope Scope, oldName, 
 		if err := s.verifyMCPReadOnlyInputs(before.fingerprints, path); err != nil {
 			return err
 		}
-		if err := s.writeMCPFileChanges(files); err != nil {
-			return err
-		}
+		writeErr := s.writeMCPFileChanges(files)
 		after, err := s.evaluateMCPFiles(files)
 		if err != nil {
 			return err
@@ -369,16 +366,16 @@ func (s *ConfigStore) mutateMCPWithMode(operation string, scope Scope, oldName, 
 			result.NewExists, result.NewConfig, result.NewOrigin = afterValue(after, oldName)
 		}
 		result.committedFingerprints = committedMCPFingerprints(files)
-		return nil
+		return writeErr
 	})
-	if err == nil {
+	if err == nil || mcpCommitWasReconciled(err) {
 		s.publishMCPMutationLocked(result)
 	}
 	s.publishMu.Unlock()
-	if err != nil {
+	if err != nil && !mcpCommitWasReconciled(err) {
 		return MCPMutationResult{}, err
 	}
-	return result, nil
+	return result, err
 }
 
 func validateMCPMutation(operation string, scope Scope, oldName, newName string, oldOK bool, oldOrigin MCPOrigin, configs map[string]MCPConfig) error {
@@ -555,23 +552,29 @@ func (s *ConfigStore) writeMCPFileChanges(files *mcpLockedFiles) error {
 		}
 		committed, commitErr := commitConfigFile(record.selectedPath, record.commitPath, record.data, 0o600, record.expectation, owner, enforce)
 		if commitErr != nil {
+			if errors.Is(commitErr, errConfigCommitDurabilityUncertain) {
+				// Directory fsync failure is never converted to success. The
+				// bytes are reconciled into the transaction so its caller can
+				// publish a fresh snapshot, but the durability uncertainty is
+				// returned after that publication and must not be retried blindly.
+				reconciled, ok := s.reconcileMCPCommit(record)
+				if !ok {
+					return &mcpCommitUncertainError{cause: commitErr}
+				}
+				committed = reconciled
+				applyCommittedMCPFingerprint(files, record, committed)
+				record.expectation = committed
+				return &mcpCommitUncertainError{cause: commitErr, reconciled: true}
+			}
 			if errors.Is(commitErr, errConfigCommitUncertain) || errors.Is(commitErr, errConfigCommitCommitted) {
-				// Rename has already happened. Reconcile the bytes while the
-				// transaction locks are still held; this turns a post-rename
-				// verification/directory-sync error into an unambiguous success
-				// when the requested document is present, and otherwise reports
-				// an explicit uncertain outcome without retrying the mutation.
-				owner, enforce, ownerErr := s.mcpOwnerPolicy(record.selectedPath)
-				if ownerErr == nil {
-					data, reconciled, readErr := readStableConfigFileOwned(record.selectedPath, owner, enforce)
-					if readErr == nil && sameBytesFingerprint(data, sha256.Sum256(record.data)) {
-						committed = reconciled
-						commitErr = nil
-					}
+				// A readback/check-hook failure is recoverable when a fresh
+				// read proves that the requested bytes are present.
+				reconciled, ok := s.reconcileMCPCommit(record)
+				if !ok {
+					return &mcpCommitUncertainError{cause: commitErr}
 				}
-				if commitErr != nil {
-					return fmt.Errorf("%w: %v", ErrMCPCommitUncertain, commitErr)
-				}
+				committed = reconciled
+				commitErr = nil
 			} else if errors.Is(commitErr, errConfigCommitVerification) {
 				return fmt.Errorf("%w: %w", ErrMCPStale, commitErr)
 			}
@@ -579,21 +582,37 @@ func (s *ConfigStore) writeMCPFileChanges(files *mcpLockedFiles) error {
 				return fmt.Errorf("failed to write config file: %w", commitErr)
 			}
 		}
-		for alias := range record.aliases {
-			aliasFingerprint := files.fingerprints[alias]
-			aliasFingerprint.exists = committed.exists
-			aliasFingerprint.size = committed.size
-			aliasFingerprint.modTime = committed.modTime
-			aliasFingerprint.digest = committed.digest
-			aliasFingerprint.owner = committed.owner
-			aliasFingerprint.identity = committed.identity
-			files.fingerprints[alias] = aliasFingerprint
-		}
-		files.fingerprints[record.selectedPath] = committed
-		files.fingerprints[record.commitPath] = committed
+		applyCommittedMCPFingerprint(files, record, committed)
 		record.expectation = committed
 	}
 	return nil
+}
+
+func (s *ConfigStore) reconcileMCPCommit(record *mcpFileRecord) (reloadFileFingerprint, bool) {
+	owner, enforce, err := s.mcpOwnerPolicy(record.selectedPath)
+	if err != nil {
+		return reloadFileFingerprint{}, false
+	}
+	data, fingerprint, err := readStableConfigFileOwned(record.selectedPath, owner, enforce)
+	if err != nil || !sameBytesFingerprint(data, sha256.Sum256(record.data)) {
+		return reloadFileFingerprint{}, false
+	}
+	return fingerprint, true
+}
+
+func applyCommittedMCPFingerprint(files *mcpLockedFiles, record *mcpFileRecord, committed reloadFileFingerprint) {
+	for alias := range record.aliases {
+		aliasFingerprint := files.fingerprints[alias]
+		aliasFingerprint.exists = committed.exists
+		aliasFingerprint.size = committed.size
+		aliasFingerprint.modTime = committed.modTime
+		aliasFingerprint.digest = committed.digest
+		aliasFingerprint.owner = committed.owner
+		aliasFingerprint.identity = committed.identity
+		files.fingerprints[alias] = aliasFingerprint
+	}
+	files.fingerprints[record.selectedPath] = committed
+	files.fingerprints[record.commitPath] = committed
 }
 
 func (s *ConfigStore) evaluateMCPFiles(files *mcpLockedFiles) (mcpEvaluation, error) {

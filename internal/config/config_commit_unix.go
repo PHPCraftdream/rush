@@ -117,7 +117,7 @@ func commitConfigFile(selectedPath, commitPath string, data []byte, perm os.File
 		return committedFingerprint, fmt.Errorf("%w: post-rename check: %v", errConfigCommitCommitted, hookErr)
 	}
 	if parentSyncErr != nil {
-		return committedFingerprint, fmt.Errorf("%w: sync config parent: %v", errConfigCommitCommitted, parentSyncErr)
+		return committedFingerprint, fmt.Errorf("%w: sync config parent: %v", errConfigCommitDurabilityUncertain, parentSyncErr)
 	}
 	return committedFingerprint, nil
 }

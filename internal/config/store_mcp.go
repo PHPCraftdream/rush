@@ -17,6 +17,24 @@ var (
 	ErrMCPCommitUncertain  = errors.New("MCP config commit outcome is uncertain")
 )
 
+type mcpCommitUncertainError struct {
+	cause      error
+	reconciled bool
+}
+
+func (e *mcpCommitUncertainError) Error() string {
+	return fmt.Sprintf("%s: %v", ErrMCPCommitUncertain, e.cause)
+}
+
+func (e *mcpCommitUncertainError) Unwrap() []error {
+	return []error{ErrMCPCommitUncertain, e.cause}
+}
+
+func mcpCommitWasReconciled(err error) bool {
+	var outcome *mcpCommitUncertainError
+	return errors.As(err, &outcome) && outcome.reconciled
+}
+
 // MCPMutationResult describes the effective configuration on both sides of a
 // durable MCP mutation. NewConfig/NewOrigin may describe a lower-priority
 // definition revealed by removing or replacing the old one.
@@ -224,13 +242,15 @@ func (s *ConfigStore) PersistMCPFields(scope Scope, name string, fields map[stri
 			return err
 		}
 		effectiveExists, effective, _ = afterValue(after, name)
-		if err := s.writeMCPFileChanges(files); err != nil {
-			return err
-		}
 		committed = committedMCPFingerprints(files)
+		writeErr := s.writeMCPFileChanges(files)
+		committed = committedMCPFingerprints(files)
+		if writeErr != nil {
+			return writeErr
+		}
 		return nil
 	})
-	if err == nil {
+	if err == nil || mcpCommitWasReconciled(err) {
 		// The selected file may be shadowed, so publish the effective value
 		// only after the exact file mutation has committed. A later reload
 		// remains authoritative for all other fields.
@@ -287,13 +307,15 @@ func (s *ConfigStore) PersistMCPFieldsExact(scope Scope, name string, fields map
 			return err
 		}
 		effectiveExists, effective, _ = afterValue(after, name)
-		if err := s.writeMCPFileChanges(files); err != nil {
-			return err
-		}
 		committed = committedMCPFingerprints(files)
+		writeErr := s.writeMCPFileChanges(files)
+		committed = committedMCPFingerprints(files)
+		if writeErr != nil {
+			return writeErr
+		}
 		return nil
 	})
-	if err == nil {
+	if err == nil || mcpCommitWasReconciled(err) {
 		s.publishMCPValueAndStalenessLocked(name, effective, effectiveExists, committed)
 	}
 	s.publishMu.Unlock()

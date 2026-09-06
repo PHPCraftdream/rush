@@ -5,7 +5,6 @@ package config
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -312,11 +311,6 @@ func (s *ConfigStore) SetConfigFields(scope Scope, kv map[string]any) error {
 		}
 		written := []byte(newValue)
 		if err := atomicWriteFile(lockedPath, written, 0o600); err != nil {
-			if errors.Is(err, errAtomicWriteCommitted) {
-				slog.Warn("Config file update committed but parent durability is uncertain", "path", lockedPath, "error", err)
-				s.noteInitialLoadWriteLocked(path, written)
-				return nil
-			}
 			return fmt.Errorf("failed to write config file: %w", err)
 		}
 		s.noteInitialLoadWriteLocked(path, written)
@@ -421,11 +415,6 @@ func (s *ConfigStore) removeConfigFieldAt(ctx context.Context, path, key string)
 		}
 		written := []byte(newValue)
 		if err := atomicWriteFile(lockedPath, written, 0o600); err != nil {
-			if errors.Is(err, errAtomicWriteCommitted) {
-				slog.Warn("Config field removal committed but parent durability is uncertain", "path", lockedPath, "error", err)
-				s.noteInitialLoadWriteLocked(path, written)
-				return nil
-			}
 			return fmt.Errorf("failed to write config file: %w", err)
 		}
 		s.noteInitialLoadWriteLocked(path, written)
