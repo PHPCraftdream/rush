@@ -593,6 +593,9 @@ type refreshRequest struct {
 	// candidateToken keeps a deferred notification attached to the exact
 	// candidate admission. It must not be inferred from the server name.
 	candidateToken uint64
+	// rawEvents counts notifications deferred with this refresh. They become
+	// observable only after the candidate commits successfully.
+	rawEvents uint
 }
 
 // serverAdmission pins one owner generation and one server epoch. Its init
@@ -630,6 +633,9 @@ func (a *serverAdmission) done() {
 		a.stop()
 	}
 	lifecycleMu.Lock()
+	if a.serverCancelToken != 0 {
+		a.owner.discardDeferredRefreshesLocked(a.serverCancelToken)
+	}
 	if a.serverCancelToken != 0 {
 		if current, ok := a.owner.serverCancels[a.name]; ok {
 			if registered, ok := current[a.serverCancelToken]; ok && registered.token == a.serverCancelToken {
@@ -1071,7 +1077,12 @@ func (o *Owner) enqueueRefreshLocked(request refreshRequest) bool {
 		return false
 	}
 	key := refreshKeyForRequest(request)
-	if _, exists := o.refreshPending[key]; exists {
+	if existing, exists := o.refreshPending[key]; exists {
+		if request.deferUntilCommit && existing.deferUntilCommit &&
+			existing.candidateToken == request.candidateToken {
+			existing.rawEvents += request.rawEvents
+			o.refreshPending[key] = existing
+		}
 		return false
 	}
 	// If the same key is already running, retaining one pending request marks
@@ -1090,13 +1101,15 @@ func (o *Owner) signalRefresh() {
 	}
 }
 
-// activateRefreshesLocked releases refreshes retained by one exact candidate
-// after its session is published. lifecycleMu must be held by the caller.
-func (o *Owner) activateRefreshesLocked(admission *serverAdmission) bool {
+// activateRefreshesLocked atomically transitions deferred refreshes for one
+// exact committed candidate and returns raw notifications that may now be
+// published. lifecycleMu must be held by the caller.
+func (o *Owner) activateRefreshesLocked(admission *serverAdmission) ([]Event, bool) {
 	if admission == nil || admission.serverCancelToken == 0 {
-		return false
+		return nil, false
 	}
 	wake := false
+	var events []Event
 	for key, request := range o.refreshPending {
 		if !request.deferUntilCommit || request.candidateToken != admission.serverCancelToken {
 			continue
@@ -1114,10 +1127,36 @@ func (o *Owner) activateRefreshesLocked(admission *serverAdmission) bool {
 		requestKey := refreshKeyForRequest(request)
 		if _, exists := o.refreshPending[requestKey]; !exists {
 			o.refreshPending[requestKey] = request
+			wake = true
 		}
-		wake = true
+		for range request.rawEvents {
+			events = append(events, Event{
+				Type: listChangedEventType(request.kind),
+				Name: request.name,
+			})
+		}
 	}
-	return wake
+	return events, wake
+}
+
+func publishListChangedEvents(events []Event) {
+	for _, event := range events {
+		broker.Publish(pubsub.UpdatedEvent, event)
+	}
+}
+
+func publishListChangedEventsOn(brokerForEvent *pubsub.Broker[Event], events []Event) {
+	for _, event := range events {
+		brokerForEvent.Publish(pubsub.UpdatedEvent, event)
+	}
+}
+
+func (o *Owner) discardDeferredRefreshesLocked(candidateToken uint64) {
+	for key, request := range o.refreshPending {
+		if request.deferUntilCommit && request.candidateToken == candidateToken {
+			delete(o.refreshPending, key)
+		}
+	}
 }
 
 func refreshKeyForRequest(request refreshRequest) refreshKey {
@@ -1266,7 +1305,7 @@ func (o *Owner) commitRenewal(admission *serverAdmission, name string, session *
 	sessions.Set(name, session)
 	admission.committed = true
 	setState(name, StateConnected, nil, session, counts)
-	wakeRefresh := o.activateRefreshesLocked(admission)
+	pendingEvents, wakeRefresh := o.activateRefreshesLocked(admission)
 	lifecycleMu.Unlock()
 	if wakeRefresh {
 		o.signalRefresh()
@@ -1275,6 +1314,7 @@ func (o *Owner) commitRenewal(admission *serverAdmission, name string, session *
 		retireMCPClient(name, oldSession)
 	}
 	publishStateEvent(name, StateConnected, nil, counts)
+	publishListChangedEvents(pendingEvents)
 	return nil
 }
 
@@ -1808,9 +1848,10 @@ func publishPreparedClient(cfg *config.ConfigStore, name string, prepared *prepa
 		Prompts: len(prompts),
 	}
 	setState(name, StateConnected, nil, session, counts)
+	var pendingEvents []Event
 	wakeRefresh := false
 	if admission != nil && admission.owner != nil {
-		wakeRefresh = admission.owner.activateRefreshesLocked(admission)
+		pendingEvents, wakeRefresh = admission.owner.activateRefreshesLocked(admission)
 	}
 	brokerForEvent := broker
 	lifecycleMu.Unlock()
@@ -1823,6 +1864,7 @@ func publishPreparedClient(cfg *config.ConfigStore, name string, prepared *prepa
 	brokerForEvent.Publish(pubsub.UpdatedEvent, Event{
 		Type: EventStateChanged, Name: name, State: StateConnected, Counts: counts,
 	})
+	publishListChangedEventsOn(brokerForEvent, pendingEvents)
 
 	return nil
 }
@@ -2213,9 +2255,10 @@ func replaceServerWithResultPersistence(
 	admission.committed = newExists && !newDisabled
 	admission.committedName = newName
 	admission.committedEpoch = o.serverEpochs[newName]
+	var pendingEvents []Event
 	wakeRefresh := false
 	if admission.committed {
-		wakeRefresh = o.activateRefreshesLocked(&admission)
+		pendingEvents, wakeRefresh = o.activateRefreshesLocked(&admission)
 	}
 
 	oldSession, hadOldSession := sessions.Get(oldName)
@@ -2286,6 +2329,7 @@ func replaceServerWithResultPersistence(
 			Type: EventStateChanged, Name: newName, State: StateDisabled,
 		})
 	}
+	publishListChangedEventsOn(brokerForEvent, pendingEvents)
 	return nil
 }
 
@@ -3521,9 +3565,17 @@ func notifyListChanged(admission *serverAdmission, name string, kind refreshKind
 		if admission.suppressUntilCommit || !ready {
 			request.deferUntilCommit = true
 			request.candidateToken = admission.serverCancelToken
+			request.rawEvents = 1
 		}
 	}
 	wake := admission.owner.enqueueRefreshLocked(request)
+	if request.deferUntilCommit {
+		lifecycleMu.Unlock()
+		if wake {
+			admission.owner.signalRefresh()
+		}
+		return
+	}
 	if !wake {
 		// A duplicate pending/running request is still a valid notification;
 		// only generation admission decides whether its raw event is published.

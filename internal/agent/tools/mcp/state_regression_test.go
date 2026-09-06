@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/pubsub"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/require"
 )
@@ -360,11 +359,8 @@ func TestCandidateListChangedIsRetainedUntilExactCommit(t *testing.T) {
 	notifyListChanged(&admission, name, refreshToolsKind)
 	select {
 	case event := <-events:
-		require.Equal(t, pubsub.UpdatedEvent, event.Type)
-		require.Equal(t, EventToolsListChanged, event.Payload.Type)
-		require.Equal(t, name, event.Payload.Name)
-	case <-time.After(time.Second):
-		t.Fatal("candidate notification was dropped before commit")
+		t.Fatalf("uncommitted candidate published an event: %v", event)
+	default:
 	}
 
 	request, pending := func() (refreshRequest, bool) {
@@ -388,22 +384,139 @@ func TestCandidateListChangedIsRetainedUntilExactCommit(t *testing.T) {
 	_, ok := owner.nextRefresh()
 	require.False(t, ok, "a deferred candidate notification must wait for its commit")
 
-	newSession := &ClientSession{}
-	lifecycleMu.Lock()
-	admission.committed = true
-	admission.committedName = name
-	admission.committedEpoch = admission.epoch
-	sessions.Set(name, newSession)
-	require.True(t, owner.activateRefreshesLocked(&admission))
-	lifecycleMu.Unlock()
+}
+
+func TestFailedCandidateListChangedDropsDeferredEvent(t *testing.T) {
+	const name = "failed-candidate-notification"
+	store := config.NewTestStore(&config.Config{MCP: config.MCPs{
+		name: {Type: config.MCPStdio, Command: "unused"},
+	}})
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer func() { require.NoError(t, owner.Close(context.Background())) }()
+
+	session := &ClientSession{}
+	sessions.Set(name, session)
+	setState(name, StateConnected, nil, session, Counts{})
+	admission, err := owner.admitReplacementCandidate(context.Background(), store, name)
+	require.NoError(t, err)
+	admission.suppressUntilCommit = true
+
+	eventsCtx, cancelEvents := context.WithCancel(context.Background())
+	defer cancelEvents()
+	events := SubscribeEvents(eventsCtx)
+	notifyListChanged(&admission, name, refreshToolsKind)
+	admission.done()
 
 	lifecycleMu.Lock()
-	defer lifecycleMu.Unlock()
-	activated, ok := owner.refreshPending[refreshKey{name: name, kind: refreshToolsKind, epoch: admission.epoch}]
-	require.True(t, ok)
-	require.False(t, activated.deferUntilCommit)
-	require.Zero(t, activated.candidateToken)
-	require.True(t, activated.admission.committed)
+	for _, request := range owner.refreshPending {
+		require.NotEqual(t, admission.serverCancelToken, request.candidateToken)
+	}
+	lifecycleMu.Unlock()
+	_, ok := owner.nextRefresh()
+	require.False(t, ok, "failed candidate left a refresh queued")
+	select {
+	case event := <-events:
+		t.Fatalf("failed candidate published an event: %v", event)
+	default:
+	}
+}
+
+func TestCandidateListChangedPublishesAfterCommitAndRefreshesNewSession(t *testing.T) {
+	const name = "candidate-commit-notification"
+	oldServer := mcp.NewServer(&mcp.Implementation{Name: "old-server"}, nil)
+	mcp.AddTool(oldServer, &mcp.Tool{Name: "old-tool"}, func(context.Context, *mcp.CallToolRequest, any) (*mcp.CallToolResult, any, error) {
+		return &mcp.CallToolResult{}, nil, nil
+	})
+	var oldListCalls atomic.Int32
+	oldServer.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
+		return func(ctx context.Context, method string, request mcp.Request) (mcp.Result, error) {
+			if method == "tools/list" {
+				oldListCalls.Add(1)
+			}
+			return next(ctx, method, request)
+		}
+	})
+	oldServerTransport, oldClientTransport := mcp.NewInMemoryTransports()
+	oldServerSession, err := oldServer.Connect(context.Background(), oldServerTransport, nil)
+	require.NoError(t, err)
+	defer oldServerSession.Close()
+	oldClientSession, err := mcp.NewClient(&mcp.Implementation{Name: "old-client"}, nil).
+		Connect(context.Background(), oldClientTransport, nil)
+	require.NoError(t, err)
+
+	newServer := mcp.NewServer(&mcp.Implementation{Name: "new-server"}, nil)
+	mcp.AddTool(newServer, &mcp.Tool{Name: "new-tool"}, func(context.Context, *mcp.CallToolRequest, any) (*mcp.CallToolResult, any, error) {
+		return &mcp.CallToolResult{}, nil, nil
+	})
+	var newListCalls atomic.Int32
+	newServer.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
+		return func(ctx context.Context, method string, request mcp.Request) (mcp.Result, error) {
+			result, err := next(ctx, method, request)
+			if method == "tools/list" {
+				newListCalls.Add(1)
+			}
+			return result, err
+		}
+	})
+	newServerTransport, newClientTransport := mcp.NewInMemoryTransports()
+	newServerSession, err := newServer.Connect(context.Background(), newServerTransport, nil)
+	require.NoError(t, err)
+	defer newServerSession.Close()
+	newClientSession, err := mcp.NewClient(&mcp.Implementation{Name: "new-client"}, nil).
+		Connect(context.Background(), newClientTransport, nil)
+	require.NoError(t, err)
+
+	store := config.NewTestStore(&config.Config{MCP: config.MCPs{
+		name: {Type: config.MCPStdio, Command: "unused"},
+	}})
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer func() { require.NoError(t, owner.Close(context.Background())) }()
+	oldSession := &ClientSession{ClientSession: oldClientSession}
+	sessions.Set(name, oldSession)
+	setState(name, StateConnected, nil, oldSession, Counts{})
+	allTools.Set(name, []*Tool{{Name: "old-tool"}})
+
+	admission, err := owner.admitReplacementCandidate(context.Background(), store, name)
+	require.NoError(t, err)
+	admission.suppressUntilCommit = true
+	defer admission.done()
+	eventsCtx, cancelEvents := context.WithCancel(context.Background())
+	defer cancelEvents()
+	events := SubscribeEvents(eventsCtx)
+	notifyListChanged(&admission, name, refreshToolsKind)
+	select {
+	case event := <-events:
+		t.Fatalf("uncommitted candidate published an event: %v", event)
+	default:
+	}
+
+	newSession := &ClientSession{ClientSession: newClientSession}
+	require.NoError(t, owner.commitRenewal(&admission, name, newSession, Counts{}))
+
+	var rawEvents int
+	var refreshPublished bool
+	deadline := time.NewTimer(2 * time.Second)
+	defer deadline.Stop()
+	for !refreshPublished {
+		select {
+		case event := <-events:
+			if event.Payload.Type == EventToolsListChanged {
+				rawEvents++
+				require.Equal(t, name, event.Payload.Name)
+			}
+			if event.Payload.Type == EventStateChanged && event.Payload.State == StateConnected && event.Payload.Counts.Tools == 1 {
+				refreshPublished = true
+			}
+		case <-deadline.C:
+			t.Fatal("committed candidate did not publish its deferred notification")
+		}
+	}
+	require.Equal(t, 1, rawEvents, "candidate notification published more than once")
+	require.Equal(t, int32(1), newListCalls.Load())
+	require.Zero(t, oldListCalls.Load(), "candidate refresh used the old session")
+	require.Equal(t, []string{"new-tool"}, GetServerToolNames(name))
 }
 
 func TestAddServerRetainsLeaseAcrossRemoveDuringInitialization(t *testing.T) {
