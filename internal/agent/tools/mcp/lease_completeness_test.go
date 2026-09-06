@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -85,6 +86,80 @@ func TestRetiredClientCannotPublishAfterReplacement(t *testing.T) {
 	require.Equal(t, "winner-resource", resources[0].Name)
 	state, ok := GetState(name)
 	require.True(t, ok)
+	require.Same(t, newSession, state.Client)
+}
+
+func TestExportedRefreshResourcesRejectsStaleResultAfterReplacement(t *testing.T) {
+	const name = "exported-refresh-resources"
+	publishStarted := make(chan struct{}, 1)
+	releasePublish := make(chan struct{})
+	var releasePublishOnce sync.Once
+	server := mcp.NewServer(&mcp.Implementation{Name: "resources-server"}, nil)
+	server.AddResource(&mcp.Resource{URI: "old://resource", Name: "old-resource"}, nil)
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	serverSession, err := server.Connect(context.Background(), serverTransport, nil)
+	require.NoError(t, err)
+	defer serverSession.Close()
+	oldClient, err := mcp.NewClient(&mcp.Implementation{Name: "resources-client"}, nil).
+		Connect(context.Background(), clientTransport, nil)
+	require.NoError(t, err)
+	defer oldClient.Close()
+
+	store := config.NewTestStore(&config.Config{MCP: config.MCPs{
+		name: {Type: config.MCPStdio, Command: "unused"},
+	}})
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer func() { require.NoError(t, owner.Close(context.Background())) }()
+	owner.rememberConfig(store)
+	resourcesBeforePublishHook.Lock()
+	resourcesBeforePublishHook.fn = func() {
+		publishStarted <- struct{}{}
+		<-releasePublish
+	}
+	resourcesBeforePublishHook.Unlock()
+	defer func() {
+		resourcesBeforePublishHook.Lock()
+		resourcesBeforePublishHook.fn = nil
+		resourcesBeforePublishHook.Unlock()
+		releasePublishOnce.Do(func() { close(releasePublish) })
+	}()
+	oldSession := &ClientSession{ClientSession: oldClient}
+	sessions.Set(name, oldSession)
+	setState(name, StateConnected, nil, oldSession, Counts{Resources: 1})
+
+	refreshDone := make(chan struct{})
+	go func() {
+		RefreshResources(context.Background(), name)
+		close(refreshDone)
+	}()
+	select {
+	case <-publishStarted:
+	case <-time.After(time.Second):
+		t.Fatal("exported resource refresh did not reach the post-response publication seam")
+	}
+
+	newSession := &ClientSession{}
+	serverLease := serverLeaseFor(name)
+	serverLease.Lock()
+	owner.invalidateServer(name)
+	sessions.Set(name, newSession)
+	allResources.Set(name, []*Resource{{URI: "new://resource", Name: "new-resource"}})
+	setState(name, StateConnected, nil, newSession, Counts{Resources: 1})
+	serverLease.Unlock()
+	releasePublishOnce.Do(func() { close(releasePublish) })
+
+	select {
+	case <-refreshDone:
+	case <-time.After(time.Second):
+		t.Fatal("exported resource refresh did not finish")
+	}
+	resources, ok := allResources.Get(name)
+	require.True(t, ok)
+	require.Equal(t, "new-resource", resources[0].Name)
+	state, ok := GetState(name)
+	require.True(t, ok)
+	require.Equal(t, StateConnected, state.State)
 	require.Same(t, newSession, state.Client)
 }
 

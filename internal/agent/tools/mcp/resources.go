@@ -5,6 +5,7 @@ import (
 	"errors"
 	"iter"
 	"log/slog"
+	"sync"
 
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/csync"
@@ -18,6 +19,20 @@ type Resource = mcp.Resource
 type ResourceContents = mcp.ResourceContents
 
 var allResources = csync.NewMap[string, []*Resource]()
+
+var resourcesBeforePublishHook struct {
+	sync.Mutex
+	fn func()
+}
+
+func runResourcesBeforePublishHook() {
+	resourcesBeforePublishHook.Lock()
+	hook := resourcesBeforePublishHook.fn
+	resourcesBeforePublishHook.Unlock()
+	if hook != nil {
+		hook()
+	}
+}
 
 // Resources returns all available MCP resources.
 func Resources() iter.Seq2[string, []*Resource] {
@@ -87,11 +102,17 @@ func RefreshResources(ctx context.Context, name string) {
 		return
 	}
 
-	resourceCount := updateResources(name, resources)
-
-	prev, _ := states.Get(name)
-	prev.Counts.Resources = resourceCount
-	updateState(name, StateConnected, nil, lease.session, prev.Counts)
+	runResourcesBeforePublishHook()
+	var counts Counts
+	lease.publishIfCurrent(lease.ctx, func() {
+		resourceCount := updateResources(name, resources)
+		prev, _ := states.Get(name)
+		prev.Counts.Resources = resourceCount
+		counts = prev.Counts
+		setState(name, StateConnected, nil, lease.session, counts)
+	}, func() {
+		publishStateEvent(name, StateConnected, nil, counts)
+	})
 }
 
 func refreshResources(name string, admission *serverAdmission) {
