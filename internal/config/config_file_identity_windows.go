@@ -405,3 +405,33 @@ func sameConfigFileIdentity(left, right os.FileInfo) bool {
 	// the portable read-stability check, not a security decision.
 	return true
 }
+
+func configFilePathIdentityMatches(path string, opened *os.File, openedInfo os.FileInfo) (bool, error) {
+	current, err := openWindowsConfigHandle(path, windows.GENERIC_READ, 0)
+	if err != nil {
+		return false, err
+	}
+	defer current.Close()
+
+	currentInfo, err := current.Stat()
+	if err != nil {
+		return false, err
+	}
+	currentHandleInfo, err := windowsFileInformation(current)
+	if err != nil {
+		return false, err
+	}
+	if currentInfo.IsDir() || !currentInfo.Mode().IsRegular() || currentHandleInfo.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+		return false, nil
+	}
+	openedHandleInfo, err := windowsFileInformation(opened)
+	if err != nil {
+		return false, err
+	}
+	if openedInfo.IsDir() || !openedInfo.Mode().IsRegular() || openedHandleInfo.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+		return false, nil
+	}
+	openedIdentity := configFileIdentityOfOpened(opened, openedInfo)
+	currentIdentity := configFileIdentityOfOpened(current, currentInfo)
+	return openedIdentity.valid && openedIdentity == currentIdentity, nil
+}

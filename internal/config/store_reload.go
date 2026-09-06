@@ -110,6 +110,7 @@ func readStableConfigFileOwned(path string, expectedOwner int, enforceOwner bool
 			_ = file.Close()
 			continue
 		}
+		runConfigAfterStableReadHook(path)
 		finalInfo, err := file.Stat()
 		if err != nil {
 			_ = file.Close()
@@ -125,7 +126,7 @@ func readStableConfigFileOwned(path string, expectedOwner int, enforceOwner bool
 			_ = file.Close()
 			continue
 		}
-		pathInfo, err := os.Stat(path)
+		pathMatches, err := configFilePathIdentityMatches(path, file, info)
 		if err != nil {
 			_ = file.Close()
 			if os.IsNotExist(err) && attempt+1 < stableReadMaxAttempts {
@@ -133,7 +134,7 @@ func readStableConfigFileOwned(path string, expectedOwner int, enforceOwner bool
 			}
 			return nil, reloadFileFingerprint{}, err
 		}
-		if pathInfo.IsDir() || !sameConfigFileIdentity(info, pathInfo) {
+		if !pathMatches {
 			_ = file.Close()
 			continue
 		}

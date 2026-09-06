@@ -83,7 +83,7 @@ func commitConfigFile(selectedPath, commitPath string, data []byte, perm os.File
 	if err := verifyWindowsCommitDestinationHandle(parent, base, expected); err != nil {
 		return reloadFileFingerprint{}, err
 	}
-	renameErr := renameConfigTempHandle(staged.file, staged.path, parent, base, expected.exists)
+	renameErr := renameConfigTempHandle(staged.file, staged.path, parent, base, expected.exists, expected.identity)
 	if renameErr != nil {
 		return reloadFileFingerprint{}, classifyWindowsRenameFailure(publicationPath, parent, data, expected, expectedOwner, enforceOwner, staged, renameErr, &removeTemp, &stagedClosed)
 	}

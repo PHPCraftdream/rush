@@ -7,10 +7,126 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"unsafe"
 
 	"github.com/stretchr/testify/require"
+	"golang.org/x/sys/windows"
 )
+
+func renameWithNativeLegacyInfo(fd uintptr, buffer *byte, length uint32) error {
+	info := (*windowsFileRenameInfo)(unsafe.Pointer(buffer))
+	info.Flags = 1
+	var status windows.IO_STATUS_BLOCK
+	return windows.NtSetInformationFile(
+		windows.Handle(fd), &status, buffer, length, windows.FileRenameInformation,
+	)
+}
+
+func TestWindowsCommitHandleRenameRetriesTransientAccessDenied(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "rush.json")
+	data := []byte(`{"new":true}`)
+	require.NoError(t, os.WriteFile(path, []byte(`{"old":true}`), 0o600))
+	_, expected, err := readStableConfigFile(path)
+	require.NoError(t, err)
+
+	var attempts atomic.Int32
+	configTestHooks.Lock()
+	previous := configTestHooks.setFileInformation
+	configTestHooks.setFileInformation = func(fd uintptr, class uint32, buffer *byte, length uint32) error {
+		if class == windows.FileRenameInfoEx && attempts.Add(1) == 1 {
+			return windows.ERROR_ACCESS_DENIED
+		}
+		if class == windows.FileRenameInfoEx {
+			return renameWithNativeLegacyInfo(fd, buffer, length)
+		}
+		return windows.SetFileInformationByHandle(windows.Handle(fd), class, buffer, length)
+	}
+	configTestHooks.Unlock()
+	t.Cleanup(func() {
+		configTestHooks.Lock()
+		configTestHooks.setFileInformation = previous
+		configTestHooks.Unlock()
+	})
+
+	_, err = commitConfigFile(path, path, data, 0o600, expected, -1, false)
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, attempts.Load(), int32(2))
+	require.Equal(t, data, mustReadFile(t, path))
+}
+
+func TestWindowsCommitHandleRenameDoesNotRetryAfterAmbiguity(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "rush.json")
+	data := []byte(`{"new":true}`)
+	decoy := []byte(`{"decoy":true}`)
+	require.NoError(t, os.WriteFile(path, []byte(`{"old":true}`), 0o600))
+	_, expected, err := readStableConfigFile(path)
+	require.NoError(t, err)
+
+	var attempts atomic.Int32
+	configTestHooks.Lock()
+	previous := configTestHooks.setFileInformation
+	configTestHooks.setFileInformation = func(fd uintptr, class uint32, buffer *byte, length uint32) error {
+		if class == windows.FileRenameInfoEx && attempts.Add(1) == 1 {
+			require.NoError(t, os.Remove(path))
+			require.NoError(t, os.WriteFile(path, decoy, 0o600))
+			return windows.ERROR_ACCESS_DENIED
+		}
+		return windows.SetFileInformationByHandle(windows.Handle(fd), class, buffer, length)
+	}
+	configTestHooks.Unlock()
+	t.Cleanup(func() {
+		configTestHooks.Lock()
+		configTestHooks.setFileInformation = previous
+		configTestHooks.Unlock()
+	})
+
+	_, err = commitConfigFile(path, path, data, 0o600, expected, -1, false)
+	var outcome *CommitOutcome
+	require.ErrorAs(t, err, &outcome)
+	require.False(t, outcome.Committed)
+	require.Equal(t, int32(1), attempts.Load())
+	require.Equal(t, decoy, mustReadFile(t, path))
+}
+
+func TestWindowsCommitHandleRenameDoesNotRetryAfterPublication(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "rush.json")
+	data := []byte(`{"new":true}`)
+	require.NoError(t, os.WriteFile(path, []byte(`{"old":true}`), 0o600))
+	_, expected, err := readStableConfigFile(path)
+	require.NoError(t, err)
+
+	var attempts atomic.Int32
+	configTestHooks.Lock()
+	previous := configTestHooks.setFileInformation
+	configTestHooks.setFileInformation = func(fd uintptr, class uint32, buffer *byte, length uint32) error {
+		if class == windows.FileRenameInfoEx && attempts.Add(1) == 1 {
+			require.NoError(t, renameWithNativeLegacyInfo(fd, buffer, length))
+			return windows.ERROR_ACCESS_DENIED
+		}
+		if class == windows.FileRenameInfoEx {
+			return renameWithNativeLegacyInfo(fd, buffer, length)
+		}
+		return windows.SetFileInformationByHandle(windows.Handle(fd), class, buffer, length)
+	}
+	configTestHooks.Unlock()
+	t.Cleanup(func() {
+		configTestHooks.Lock()
+		configTestHooks.setFileInformation = previous
+		configTestHooks.Unlock()
+	})
+
+	_, err = commitConfigFile(path, path, data, 0o600, expected, -1, false)
+	var outcome *CommitOutcome
+	require.ErrorAs(t, err, &outcome)
+	require.True(t, outcome.Committed)
+	require.Equal(t, int32(1), attempts.Load())
+	require.Equal(t, data, mustReadFile(t, path))
+}
 
 func TestWindowsCommitExpectedAbsentRejectsFileCreatedBeforeRename(t *testing.T) {
 	root := t.TempDir()

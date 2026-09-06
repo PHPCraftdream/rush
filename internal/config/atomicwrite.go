@@ -82,6 +82,7 @@ func CommitOutcomeFromError(err error) (*CommitOutcome, bool) {
 var configTestHooks struct {
 	sync.Mutex
 	beforeOpen            func(string)
+	afterStableRead       func(string)
 	beforeCommitCheck     func()
 	afterCommitRename     func() error
 	afterCommitRenamePath func(string) error
@@ -104,6 +105,15 @@ var configTestHooks struct {
 func runConfigBeforeOpenHook(path string) {
 	configTestHooks.Lock()
 	hook := configTestHooks.beforeOpen
+	configTestHooks.Unlock()
+	if hook != nil {
+		hook(path)
+	}
+}
+
+func runConfigAfterStableReadHook(path string) {
+	configTestHooks.Lock()
+	hook := configTestHooks.afterStableRead
 	configTestHooks.Unlock()
 	if hook != nil {
 		hook(path)

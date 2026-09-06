@@ -49,3 +49,14 @@ func sameConfigFileIdentity(left, right os.FileInfo) bool {
 	b := configFileIdentityOf(right)
 	return a.valid && b.valid && a == b
 }
+
+func configFilePathIdentityMatches(path string, _ *os.File, openedInfo os.FileInfo) (bool, error) {
+	pathInfo, err := os.Stat(path)
+	if err != nil {
+		return false, err
+	}
+	if pathInfo.IsDir() {
+		return false, nil
+	}
+	return sameConfigFileIdentity(openedInfo, pathInfo), nil
+}
