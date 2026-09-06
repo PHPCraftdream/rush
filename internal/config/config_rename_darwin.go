@@ -2,7 +2,11 @@
 
 package config
 
-import "golang.org/x/sys/unix"
+import (
+	"errors"
+
+	"golang.org/x/sys/unix"
+)
 
 // Darwin exposes an atomic no-replace rename through renameatx_np. Passing the
 // already-open transaction directories keeps both operands descriptor-relative.
@@ -22,6 +26,16 @@ func renameConfigTempAt(oldDirFD int, oldName string, newDirFD int, newName stri
 	} else if nlink != 1 {
 		return false, ErrConfigHardLink
 	}
-	err := unix.RenameatxNp(oldDirFD, oldName, newDirFD, newName, unix.RENAME_EXCL)
+	configTestHooks.Lock()
+	renameatxNp := configTestHooks.renameatxNp
+	configTestHooks.Unlock()
+	if renameatxNp == nil {
+		renameatxNp = unix.RenameatxNp
+	}
+	err := renameatxNp(oldDirFD, oldName, newDirFD, newName, unix.RENAME_EXCL)
+	if errors.Is(err, unix.ENOSYS) || errors.Is(err, unix.EINVAL) ||
+		errors.Is(err, unix.ENOTSUP) || errors.Is(err, unix.EOPNOTSUPP) {
+		return publishConfigTempNoReplaceAt(oldDirFD, oldName, newDirFD, newName)
+	}
 	return err == nil, err
 }

@@ -2,7 +2,7 @@
 
 package config
 
-// Windows does not provide a portable directory fsync equivalent. The file
-// contents are flushed before rename; retaining this hook keeps the commit
-// sequence identical at its call sites on both platforms.
+// Windows has no portable directory fsync equivalent. The staged file is
+// flushed before rename, and MoveFileEx receives MOVEFILE_WRITE_THROUGH, so
+// this operation deliberately has no additional parent-sync effect or error.
 func syncConfigParentOnDisk(string) error { return nil }

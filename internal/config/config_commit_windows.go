@@ -76,10 +76,23 @@ func commitConfigFile(selectedPath, commitPath string, data []byte, perm os.File
 		}
 	}()
 	runConfigBeforeCommitRenameHook()
-	if err := renameConfigTemp(tmp, commitPath, expected.exists); err != nil {
-		return reloadFileFingerprint{}, fmt.Errorf("%w: rename config file: %v", errConfigCommitVerification, err)
+	renameErr := renameConfigTemp(tmp, commitPath, expected.exists)
+	if renameErr != nil {
+		// MoveFileEx normally reports success after publication, but an API
+		// failure can be ambiguous at that boundary. A matching destination is
+		// proof that this transaction may already have won; continue through the
+		// post-commit oracle so callers receive a CommitOutcome and do not retry
+		// a mutation that is already visible.
+		targetData, _, targetReadbackErr := readStableConfigFileOwned(commitPath, expectedOwner, enforceOwner)
+		if targetReadbackErr != nil || !sameBytesFingerprint(targetData, sha256.Sum256(data)) {
+			return reloadFileFingerprint{}, fmt.Errorf("%w: rename config file: %v", errConfigCommitVerification, renameErr)
+		}
+		// The source spelling is also ambiguous after an API failure. Leave it
+		// alone rather than removing an entry that could still be live.
+		removeTemp = false
+	} else {
+		removeTemp = false
 	}
-	removeTemp = false
 	hookErr := runConfigAfterCommitRenameHookForPath(commitPath)
 	parentSyncErr := syncConfigParent(filepath.Dir(commitPath))
 	committed, committedFingerprint, selectedReadbackErr := readStableConfigFileOwned(selectedPath, expectedOwner, enforceOwner)
@@ -95,6 +108,9 @@ func commitConfigFile(selectedPath, commitPath string, data []byte, perm os.File
 		if targetReadbackErr != nil {
 			causes = append(causes, targetReadbackErr)
 		}
+		if renameErr != nil {
+			causes = append(causes, renameErr)
+		}
 		if parentSyncErr != nil {
 			causes = append(causes, errAtomicWriteCommitted, errConfigCommitDurabilityUncertain, parentSyncErr)
 		}
@@ -103,8 +119,8 @@ func commitConfigFile(selectedPath, commitPath string, data []byte, perm os.File
 		}
 		return reloadFileFingerprint{}, newCommitOutcome(commitPath, true, false, causes...)
 	}
-	if hookErr != nil || parentSyncErr != nil {
-		return committedFingerprint, newCommitOutcome(commitPath, true, true, commitPostCommitCauses(nil, hookErr, parentSyncErr)...)
+	if renameErr != nil || hookErr != nil || parentSyncErr != nil {
+		return committedFingerprint, newCommitOutcome(commitPath, true, true, commitPostCommitCauses(renameErr, hookErr, parentSyncErr)...)
 	}
 	return committedFingerprint, nil
 }

@@ -22,12 +22,19 @@ func renameConfigTemp(source, destination string, replace bool) error {
 	if err != nil {
 		return fmt.Errorf("encode config path: %w", err)
 	}
-	var flags uint32
+	flags := uint32(windows.MOVEFILE_WRITE_THROUGH)
 	if replace {
-		flags = windows.MOVEFILE_REPLACE_EXISTING
+		flags |= windows.MOVEFILE_REPLACE_EXISTING
 	}
 	for attempt := 0; ; attempt++ {
-		err = windows.MoveFileEx(from, to, flags)
+		configTestHooks.Lock()
+		moveFileEx := configTestHooks.moveFileEx
+		configTestHooks.Unlock()
+		if moveFileEx != nil {
+			err = moveFileEx(from, to, flags)
+		} else {
+			err = windows.MoveFileEx(from, to, flags)
+		}
 		if err == nil || !replace || !errors.Is(err, windows.ERROR_ACCESS_DENIED) || attempt == 7 {
 			return err
 		}

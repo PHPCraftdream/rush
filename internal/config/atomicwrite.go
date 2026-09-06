@@ -86,6 +86,8 @@ var configTestHooks struct {
 	beforeMCPReconcile    func(string, []byte)
 	forceLinkNoReplace    bool
 	renameNoReplace       func(int, string, int, string) error
+	renameatxNp           func(int, string, int, string, uint32) error
+	moveFileEx            func(*uint16, *uint16, uint32) error
 	unlinkTemp            func(int, string) error
 	syncParent            func(string) error
 	syncParentFD          func(int) error
