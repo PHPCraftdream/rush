@@ -37,10 +37,16 @@ func ListResources(ctx context.Context, cfg *config.ConfigStore, name string) ([
 		return nil, err
 	}
 
-	resourceCount := updateResources(name, resources)
-	prev, _ := states.Get(name)
-	prev.Counts.Resources = resourceCount
-	updateState(name, StateConnected, nil, lease.session, prev.Counts)
+	var counts Counts
+	lease.publishIfCurrent(lease.ctx, func() {
+		resourceCount := updateResources(name, resources)
+		prev, _ := states.Get(name)
+		prev.Counts.Resources = resourceCount
+		counts = prev.Counts
+		setState(name, StateConnected, nil, lease.session, counts)
+	}, func() {
+		publishStateEvent(name, StateConnected, nil, counts)
+	})
 	return resources, nil
 }
 
@@ -70,8 +76,14 @@ func RefreshResources(ctx context.Context, name string) {
 
 	resources, err := getResources(lease.ctx, lease.session)
 	if err != nil {
-		previous, _ := states.Get(name)
-		updateState(name, StateError, err, lease.session, previous.Counts)
+		var counts Counts
+		lease.publishIfCurrent(lease.ctx, func() {
+			previous, _ := states.Get(name)
+			counts = previous.Counts
+			setState(name, StateError, err, lease.session, counts)
+		}, func() {
+			publishStateEvent(name, StateError, err, counts)
+		})
 		return
 	}
 
@@ -90,25 +102,26 @@ func refreshResources(name string, admission *serverAdmission) {
 	defer lease.close()
 	resources, err := getResources(lease.ctx, lease.session)
 	if err != nil {
-		if admission.valid() {
+		lease.publishIfCurrent(lease.ctx, func() {
 			previous, _ := states.Get(name)
-			updateAdmissionState(admission, StateError, err, lease.session, previous.Counts)
-		}
+			setState(name, StateError, err, lease.session, previous.Counts)
+		}, func() {
+			previous, _ := states.Get(name)
+			publishStateEvent(name, StateError, err, previous.Counts)
+		})
 		return
 	}
-	lifecycleMu.Lock()
-	if !admission.validLocked() {
-		lifecycleMu.Unlock()
-		return
-	}
-	resourceCount := updateResources(name, resources)
-	prev, _ := states.Get(name)
-	prev.Counts.Resources = resourceCount
-	setState(name, StateConnected, nil, lease.session, prev.Counts)
-	brokerForEvent := broker
-	lifecycleMu.Unlock()
-	brokerForEvent.Publish(pubsub.UpdatedEvent, Event{
-		Type: EventStateChanged, Name: name, State: StateConnected, Counts: prev.Counts,
+	var counts Counts
+	lease.publishIfCurrent(lease.ctx, func() {
+		resourceCount := updateResources(name, resources)
+		prev, _ := states.Get(name)
+		prev.Counts.Resources = resourceCount
+		counts = prev.Counts
+		setState(name, StateConnected, nil, lease.session, counts)
+	}, func() {
+		broker.Publish(pubsub.UpdatedEvent, Event{
+			Type: EventStateChanged, Name: name, State: StateConnected, Counts: counts,
+		})
 	})
 }
 

@@ -59,16 +59,27 @@ func RefreshPrompts(ctx context.Context, name string) {
 
 	prompts, err := getPrompts(lease.ctx, lease.session)
 	if err != nil {
-		previous, _ := states.Get(name)
-		updateState(name, StateError, err, lease.session, previous.Counts)
+		var counts Counts
+		lease.publishIfCurrent(lease.ctx, func() {
+			previous, _ := states.Get(name)
+			counts = previous.Counts
+			setState(name, StateError, err, lease.session, counts)
+		}, func() {
+			publishStateEvent(name, StateError, err, counts)
+		})
 		return
 	}
 
-	updatePrompts(name, prompts)
-
-	prev, _ := states.Get(name)
-	prev.Counts.Prompts = len(prompts)
-	updateState(name, StateConnected, nil, lease.session, prev.Counts)
+	var counts Counts
+	lease.publishIfCurrent(lease.ctx, func() {
+		updatePrompts(name, prompts)
+		prev, _ := states.Get(name)
+		prev.Counts.Prompts = len(prompts)
+		counts = prev.Counts
+		setState(name, StateConnected, nil, lease.session, counts)
+	}, func() {
+		publishStateEvent(name, StateConnected, nil, counts)
+	})
 }
 
 func refreshPrompts(name string, admission *serverAdmission) {
@@ -79,25 +90,27 @@ func refreshPrompts(name string, admission *serverAdmission) {
 	defer lease.close()
 	prompts, err := getPrompts(lease.ctx, lease.session)
 	if err != nil {
-		if admission.valid() {
+		var counts Counts
+		lease.publishIfCurrent(lease.ctx, func() {
 			previous, _ := states.Get(name)
-			updateAdmissionState(admission, StateError, err, lease.session, previous.Counts)
-		}
+			counts = previous.Counts
+			setState(name, StateError, err, lease.session, counts)
+		}, func() {
+			publishStateEvent(name, StateError, err, counts)
+		})
 		return
 	}
-	lifecycleMu.Lock()
-	if !admission.validLocked() {
-		lifecycleMu.Unlock()
-		return
-	}
-	updatePrompts(name, prompts)
-	prev, _ := states.Get(name)
-	prev.Counts.Prompts = len(prompts)
-	setState(name, StateConnected, nil, lease.session, prev.Counts)
-	brokerForEvent := broker
-	lifecycleMu.Unlock()
-	brokerForEvent.Publish(pubsub.UpdatedEvent, Event{
-		Type: EventStateChanged, Name: name, State: StateConnected, Counts: prev.Counts,
+	var counts Counts
+	lease.publishIfCurrent(lease.ctx, func() {
+		updatePrompts(name, prompts)
+		prev, _ := states.Get(name)
+		prev.Counts.Prompts = len(prompts)
+		counts = prev.Counts
+		setState(name, StateConnected, nil, lease.session, counts)
+	}, func() {
+		broker.Publish(pubsub.UpdatedEvent, Event{
+			Type: EventStateChanged, Name: name, State: StateConnected, Counts: counts,
+		})
 	})
 }
 

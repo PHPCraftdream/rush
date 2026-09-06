@@ -126,7 +126,7 @@ func RunTool(ctx context.Context, cfg *config.ConfigStore, name, toolName string
 // RefreshTools gets the updated list of tools from the MCP and updates the
 // global state.
 func RefreshTools(ctx context.Context, cfg *config.ConfigStore, name string) {
-	lease, err := currentClientLease(ctx, name)
+	lease, err := currentClientLease(ctx, name, cfg)
 	if err != nil {
 		slog.Warn("Refresh tools: no session", "name", name)
 		return
@@ -135,16 +135,27 @@ func RefreshTools(ctx context.Context, cfg *config.ConfigStore, name string) {
 
 	tools, err := getTools(lease.ctx, lease.session)
 	if err != nil {
-		previous, _ := states.Get(name)
-		updateState(name, StateError, err, lease.session, previous.Counts)
+		var counts Counts
+		lease.publishIfCurrent(lease.ctx, func() {
+			previous, _ := states.Get(name)
+			counts = previous.Counts
+			setState(name, StateError, err, lease.session, counts)
+		}, func() {
+			publishStateEvent(name, StateError, err, counts)
+		})
 		return
 	}
 
-	toolCount := updateTools(cfg, name, tools)
-
-	prev, _ := states.Get(name)
-	prev.Counts.Tools = toolCount
-	updateState(name, StateConnected, nil, lease.session, prev.Counts)
+	var counts Counts
+	lease.publishIfCurrent(lease.ctx, func() {
+		toolCount := updateTools(cfg, name, tools)
+		prev, _ := states.Get(name)
+		prev.Counts.Tools = toolCount
+		counts = prev.Counts
+		setState(name, StateConnected, nil, lease.session, counts)
+	}, func() {
+		publishStateEvent(name, StateConnected, nil, counts)
+	})
 }
 
 func refreshTools(ctx context.Context, cfg *config.ConfigStore, name string, admission *serverAdmission) {
@@ -156,25 +167,27 @@ func refreshTools(ctx context.Context, cfg *config.ConfigStore, name string, adm
 
 	tools, err := getTools(lease.ctx, lease.session)
 	if err != nil {
-		if admission.valid() {
+		var counts Counts
+		lease.publishIfCurrent(lease.ctx, func() {
 			previous, _ := states.Get(name)
-			updateAdmissionState(admission, StateError, err, lease.session, previous.Counts)
-		}
+			counts = previous.Counts
+			setState(name, StateError, err, lease.session, counts)
+		}, func() {
+			publishStateEvent(name, StateError, err, counts)
+		})
 		return
 	}
-	lifecycleMu.Lock()
-	if !admission.validLocked() {
-		lifecycleMu.Unlock()
-		return
-	}
-	toolCount := updateTools(cfg, name, tools)
-	prev, _ := states.Get(name)
-	prev.Counts.Tools = toolCount
-	setState(name, StateConnected, nil, lease.session, prev.Counts)
-	brokerForEvent := broker
-	lifecycleMu.Unlock()
-	brokerForEvent.Publish(pubsub.UpdatedEvent, Event{
-		Type: EventStateChanged, Name: name, State: StateConnected, Counts: prev.Counts,
+	var counts Counts
+	lease.publishIfCurrent(lease.ctx, func() {
+		toolCount := updateTools(cfg, name, tools)
+		prev, _ := states.Get(name)
+		prev.Counts.Tools = toolCount
+		counts = prev.Counts
+		setState(name, StateConnected, nil, lease.session, counts)
+	}, func() {
+		broker.Publish(pubsub.UpdatedEvent, Event{
+			Type: EventStateChanged, Name: name, State: StateConnected, Counts: counts,
+		})
 	})
 }
 
