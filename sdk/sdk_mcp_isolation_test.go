@@ -124,6 +124,120 @@ func TestApplicationMCPDoesNotEnterConcurrentLibrarySurface(t *testing.T) {
 	require.NotContains(t, string(second), "[mcp_configured]\\n")
 }
 
+func TestLibraryRunDoesNotWaitForPendingApplicationMCPInitialization(t *testing.T) {
+	isolateGlobalConfigForWorkdirTest(t)
+
+	const (
+		serverName = "pending-application-mcp"
+		marker     = "LIBRARY_RUN_DID_NOT_WAIT_FOR_MCP"
+	)
+
+	initializeStarted := make(chan struct{})
+	releaseInitialize := make(chan struct{})
+	var initializeOnce sync.Once
+	mcpServer := modelmcp.NewServer(
+		&modelmcp.Implementation{Name: serverName},
+		&modelmcp.ServerOptions{},
+	)
+	delegate := modelmcp.NewStreamableHTTPHandler(
+		func(*http.Request) *modelmcp.Server { return mcpServer }, nil,
+	)
+	mcpHTTP := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		if bytes.Contains(body, []byte(`"method":"initialize"`)) ||
+			bytes.Contains(body, []byte(`"method": "initialize"`)) {
+			initializeOnce.Do(func() { close(initializeStarted) })
+			select {
+			case <-releaseInitialize:
+			case <-r.Context().Done():
+				return
+			}
+		}
+		delegate.ServeHTTP(w, r)
+	}))
+	t.Cleanup(func() {
+		close(releaseInitialize)
+		mcpHTTP.Close()
+	})
+
+	provider := newR17MCPIsolationProvider(t, marker, "pending-library-rush-info")
+	applicationDir := t.TempDir()
+	applicationConfig := map[string]any{
+		"disable_default_providers": true,
+		"providers": map[string]any{
+			"probe": map[string]any{
+				"id": "probe", "name": "probe", "type": "openai-compat",
+				"base_url": provider.URL, "api_key": "probe", "discover_models": false,
+				"models": []any{map[string]any{
+					"id": "probe", "name": "probe", "context_window": 200000,
+					"default_max_tokens": 1000,
+				}},
+			},
+		},
+		"models": map[string]any{
+			"smart": map[string]string{"provider": "probe", "model": "probe"},
+			"fast":  map[string]string{"provider": "probe", "model": "probe"},
+		},
+		"mcp": map[string]any{
+			serverName: map[string]any{
+				"type": "http", "url": mcpHTTP.URL, "enabled_in_cli": true,
+			},
+		},
+	}
+	configData, err := json.Marshal(applicationConfig)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(applicationDir, "rush.json"), configData, 0o600))
+
+	application, err := sdk.Open(context.Background(), sdk.Options{
+		WorkingDir: applicationDir,
+		MCP:        sdk.MCPAll,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = application.Close() })
+
+	select {
+	case <-initializeStarted:
+	case <-time.After(10 * time.Second):
+		t.Fatal("application MCP initialization did not reach the deterministic barrier")
+	}
+
+	library, err := sdk.Open(context.Background(), sdk.Options{
+		Mode:          sdk.ModeLibrary,
+		LibraryConfig: libraryConfigFor(provider.URL, "library-key"),
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = library.Close() })
+
+	type runOutcome struct {
+		result *sdk.RunResult
+		err    error
+	}
+	runDone := make(chan runOutcome, 1)
+	go func() {
+		result, runErr := library.Run(context.Background(), sdk.RunRequest{
+			Prompt:      "Inspect rush_info and finish with the marker.",
+			Mode:        sdk.RunModeJSON,
+			Stdout:      io.Discard,
+			HideSpinner: true,
+		})
+		runDone <- runOutcome{result: result, err: runErr}
+	}()
+
+	select {
+	case outcome := <-runDone:
+		require.NoError(t, outcome.err)
+		require.NotNil(t, outcome.result)
+		require.Equal(t, marker, outcome.result.FinalText)
+	case <-time.After(10 * time.Second):
+		t.Fatal("library Run waited for pending application MCP initialization")
+	}
+}
+
 type r17MCPIsolationProvider struct {
 	URL string
 

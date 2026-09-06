@@ -624,9 +624,13 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 		}
 	}
 
-	// Wait for MCP initialization to complete before reading MCP tools.
-	if err := mcp.WaitForInit(ctx); err != nil {
-		return nil, fmt.Errorf("failed to wait for MCP initialization: %w", err)
+	// Wait for MCP initialization to complete before reading MCP tools. A
+	// library-mode App deliberately has no MCP owner, so it must not observe
+	// or wait on the application mode's process-wide initialization barrier.
+	if app.mcpOwner != nil {
+		if err := mcp.WaitForInit(ctx); err != nil {
+			return nil, fmt.Errorf("failed to wait for MCP initialization: %w", err)
+		}
 	}
 
 	// T10 (SDK folder scopes): the restricted-run spec merge is assembled
