@@ -13,10 +13,10 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// commitConfigFile verifies the selected spelling and then commits through a
-// descriptor for the resolved physical parent. The final rename therefore
-// cannot follow a replacement parent directory or replace a symlink alias;
-// commitPath is the physical target selected by the opened-file identity.
+// commitConfigFile verifies the selected spelling, pins commitPath as the
+// physical transaction target, and commits through a descriptor for its
+// parent. An external symlink retarget after that boundary is not serialized
+// with rename; readback reports it as an uncertain outcome.
 func commitConfigFile(selectedPath, commitPath string, data []byte, perm os.FileMode, expected reloadFileFingerprint, expectedOwner int, enforceOwner bool) (reloadFileFingerprint, error) {
 	if selectedPath == "" || commitPath == "" {
 		return reloadFileFingerprint{}, errConfigCommitVerification
@@ -30,7 +30,7 @@ func commitConfigFile(selectedPath, commitPath string, data []byte, perm os.File
 			return reloadFileFingerprint{}, fmt.Errorf("%w: %v", errConfigCommitVerification, err)
 		}
 	} else if !expected.exists || currentFingerprint.identity != expected.identity ||
-		currentFingerprint.owner != expected.owner || currentFingerprint.discovery != expected.discovery ||
+		currentFingerprint.owner != expected.owner || currentFingerprint.nlink != expected.nlink || currentFingerprint.discovery != expected.discovery ||
 		!sameBytesFingerprint(current, expected.digest) {
 		return reloadFileFingerprint{}, errConfigCommitVerification
 	}
@@ -59,6 +59,9 @@ func commitConfigFile(selectedPath, commitPath string, data []byte, perm os.File
 	if err := verifyCommitEntry(parentFD, base, expected, enforceOwner, expectedOwner); err != nil {
 		return reloadFileFingerprint{}, err
 	}
+	if expected.exists && (expected.nlink == 0 || expected.nlink > 1) {
+		return reloadFileFingerprint{}, ErrConfigHardLink
+	}
 	tmpFD, tmpName, err := openUniqueConfigTemp(parentFD, base, perm)
 	if err != nil {
 		return reloadFileFingerprint{}, err
@@ -68,7 +71,7 @@ func commitConfigFile(selectedPath, commitPath string, data []byte, perm os.File
 	defer func() {
 		_ = tmp.Close()
 		if removeTemp {
-			_ = unix.Unlinkat(parentFD, tmpName, 0)
+			_ = unlinkConfigTempAt(parentFD, tmpName)
 		}
 	}()
 	if _, err := tmp.Write(data); err != nil {
@@ -85,7 +88,7 @@ func commitConfigFile(selectedPath, commitPath string, data []byte, perm os.File
 	}
 	runConfigBeforeCommitCheckHook()
 	if current, fingerprint, readErr := readStableConfigFileOwned(selectedPath, expectedOwner, enforceOwner); readErr == nil {
-		if !expected.exists || fingerprint.identity != expected.identity || fingerprint.owner != expected.owner ||
+		if !expected.exists || fingerprint.identity != expected.identity || fingerprint.owner != expected.owner || fingerprint.nlink != expected.nlink ||
 			fingerprint.discovery != expected.discovery || !sameBytesFingerprint(current, expected.digest) {
 			return reloadFileFingerprint{}, errConfigCommitVerification
 		}
@@ -94,30 +97,57 @@ func commitConfigFile(selectedPath, commitPath string, data []byte, perm os.File
 	} else if fingerprint.discovery != expected.discovery || fingerprint.parentDiscovery != expected.parentDiscovery {
 		return reloadFileFingerprint{}, errConfigCommitVerification
 	}
+	if err := verifySelectedCommitPath(selectedPath, commitPath); err != nil {
+		return reloadFileFingerprint{}, err
+	}
 	if err := verifyCommitEntry(parentFD, base, expected, enforceOwner, expectedOwner); err != nil {
 		return reloadFileFingerprint{}, err
 	}
-	if err := unix.Renameat(parentFD, tmpName, parentFD, base); err != nil {
-		return reloadFileFingerprint{}, err
+	runConfigBeforeCommitRenameHook()
+	published, renameErr := renameConfigTempAt(parentFD, tmpName, parentFD, base, expected.exists)
+	if renameErr != nil && !published {
+		if !expected.exists {
+			return reloadFileFingerprint{}, fmt.Errorf("%w: no-replace rename: %w", errConfigCommitVerification, renameErr)
+		}
+		return reloadFileFingerprint{}, renameErr
 	}
-	removeTemp = false
+	if renameErr == nil {
+		removeTemp = false
+	}
 
 	// From this point onward the logical mutation has happened. Keep the
 	// result distinct from a pre-rename verification failure so callers do not
 	// retry a mutation that may already be visible on disk.
 	hookErr := runConfigAfterCommitRenameHook()
 	parentSyncErr := syncConfigParent(parentPath)
-	committed, committedFingerprint, err := readStableConfigFileOwned(selectedPath, expectedOwner, enforceOwner)
-	if err != nil || !sameBytesFingerprint(committed, sha256.Sum256(data)) ||
-		committedFingerprint.parentDiscovery != expected.parentDiscovery ||
+	committed, committedFingerprint, selectedReadbackErr := readStableConfigFileOwned(selectedPath, expectedOwner, enforceOwner)
+	targetData, _, targetReadbackErr := readStableConfigFileOwned(commitPath, expectedOwner, enforceOwner)
+	selectedMatches := selectedReadbackErr == nil && sameBytesFingerprint(committed, sha256.Sum256(data)) &&
+		committedFingerprint.parentDiscovery == expected.parentDiscovery &&
+		(!expected.exists && committedFingerprint.discovery != expected.discovery || expected.exists)
+	targetMatches := targetReadbackErr == nil && sameBytesFingerprint(targetData, sha256.Sum256(data))
+	if !selectedMatches || !targetMatches ||
 		(!expected.exists && committedFingerprint.discovery == expected.discovery) {
-		return reloadFileFingerprint{}, fmt.Errorf("%w: %w", errConfigCommitUncertain, errConfigCommitCommitted)
+		causes := []error{errConfigCommitUncertain, errConfigCommitCommitted}
+		if selectedReadbackErr != nil {
+			causes = append(causes, selectedReadbackErr)
+		}
+		if targetReadbackErr != nil {
+			causes = append(causes, targetReadbackErr)
+		}
+		if renameErr != nil {
+			causes = append(causes, renameErr)
+		}
+		if parentSyncErr != nil {
+			causes = append(causes, errAtomicWriteCommitted, errConfigCommitDurabilityUncertain, parentSyncErr)
+		}
+		if hookErr != nil {
+			causes = append(causes, hookErr)
+		}
+		return reloadFileFingerprint{}, newCommitOutcome(commitPath, true, false, causes...)
 	}
-	if hookErr != nil {
-		return committedFingerprint, fmt.Errorf("%w: post-rename check: %v", errConfigCommitCommitted, hookErr)
-	}
-	if parentSyncErr != nil {
-		return committedFingerprint, fmt.Errorf("%w: sync config parent: %v", errConfigCommitDurabilityUncertain, parentSyncErr)
+	if renameErr != nil || hookErr != nil || parentSyncErr != nil {
+		return committedFingerprint, newCommitOutcome(commitPath, true, true, commitPostCommitCauses(renameErr, hookErr, parentSyncErr)...)
 	}
 	return committedFingerprint, nil
 }
@@ -164,6 +194,9 @@ func verifyCommitEntry(parentFD int, base string, expected reloadFileFingerprint
 	if !expected.exists || !identity.valid || identity != expected.identity ||
 		(enforceOwner && (!ownerKnown || owner != expectedOwner)) {
 		return errConfigCommitVerification
+	}
+	if expected.nlink == 0 || expected.nlink > 1 || configFileNlinkOfOpened(file, info) != expected.nlink {
+		return ErrConfigHardLink
 	}
 	return nil
 }

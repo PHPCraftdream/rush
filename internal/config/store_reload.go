@@ -39,6 +39,7 @@ type reloadFileFingerprint struct {
 	modTime         int64
 	digest          [sha256.Size]byte
 	owner           int
+	nlink           uint64
 	identity        configFileIdentity
 	discovery       [sha256.Size]byte
 	parentDiscovery [sha256.Size]byte
@@ -128,10 +129,11 @@ func readStableConfigFileOwned(path string, expectedOwner int, enforceOwner bool
 			continue
 		}
 		identity := configFileIdentityOfOpened(file, finalInfo)
+		nlink := configFileNlinkOfOpened(file, finalInfo)
 		_ = file.Close()
 		return second, reloadFileFingerprint{
 			exists: true, size: int64(len(second)), modTime: finalInfo.ModTime().UnixNano(),
-			digest: sha256.Sum256(second), owner: owner,
+			digest: sha256.Sum256(second), owner: owner, nlink: nlink,
 			identity: identity, discovery: afterDiscovery,
 			parentDiscovery: configDiscoveryFingerprint(filepath.Dir(path)),
 		}, nil

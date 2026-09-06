@@ -34,6 +34,14 @@ func configFileIdentityOfOpened(file *os.File, _ os.FileInfo) configFileIdentity
 
 func configFileOwner(os.FileInfo) (int, bool) { return -1, true }
 
+func configFileNlinkOfOpened(file *os.File, _ os.FileInfo) uint64 {
+	var info windows.ByHandleFileInformation
+	if err := windows.GetFileInformationByHandle(windows.Handle(file.Fd()), &info); err != nil {
+		return 0
+	}
+	return uint64(info.NumberOfLinks)
+}
+
 func sameConfigFileIdentity(left, right os.FileInfo) bool {
 	// The opened handle identity is checked separately. FileInfo does not carry
 	// the handle's volume/file-index pair, so this path-level comparison is only

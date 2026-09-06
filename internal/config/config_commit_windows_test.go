@@ -38,3 +38,47 @@ func TestWindowsCommitExpectedAbsentRejectsFileCreatedBeforeRename(t *testing.T)
 	require.True(t, errors.Is(err, errConfigCommitVerification))
 	require.Equal(t, []byte(`{"already":"there"}`), mustReadFile(t, path))
 }
+
+func TestWindowsCommitExpectedAbsentNoReplaceClosesCheckCommitRace(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "rush.json")
+	_, expected, err := readStableConfigFile(path)
+	require.ErrorIs(t, err, os.ErrNotExist)
+
+	configTestHooks.Lock()
+	previous := configTestHooks.beforeCommitRename
+	configTestHooks.beforeCommitRename = func() {
+		_ = os.WriteFile(path, []byte(`{"winner":"other"}`), 0o600)
+	}
+	configTestHooks.Unlock()
+	t.Cleanup(func() {
+		configTestHooks.Lock()
+		configTestHooks.beforeCommitRename = previous
+		configTestHooks.Unlock()
+	})
+
+	_, err = commitConfigFile(path, path, []byte(`{"winner":"ours"}`), 0o600, expected, -1, false)
+	require.ErrorIs(t, err, errConfigCommitVerification)
+	require.Equal(t, []byte(`{"winner":"other"}`), mustReadFile(t, path))
+}
+
+func TestWindowsGenericConfigMutationRejectsHardLink(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "rush.json")
+	alias := filepath.Join(root, "alias.json")
+	contents := []byte(`{"options":{"debug":false}}`)
+	require.NoError(t, os.WriteFile(path, contents, 0o600))
+	if err := os.Link(path, alias); err != nil {
+		t.Skipf("hard links unavailable: %v", err)
+	}
+	_, fingerprint, readErr := readStableConfigFile(path)
+	require.NoError(t, readErr)
+	require.Greater(t, fingerprint.nlink, uint64(1))
+
+	store := newTestConfigStore(testStoreOpts{globalDataPath: path, config: &Config{Options: &Options{}}})
+	store.workingDir = root
+	err := store.SetConfigField(ScopeGlobal, "options.debug", true)
+	require.ErrorIs(t, err, ErrConfigHardLink)
+	require.Equal(t, contents, mustReadFile(t, path))
+	require.Equal(t, contents, mustReadFile(t, alias))
+}

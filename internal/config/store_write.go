@@ -109,7 +109,7 @@ const configWriteLockStallLogThreshold = 500 * time.Millisecond
 // Load/reloadFromDiskLocked (i.e. anything reachable from configureProviders
 // while publishMu is held) must call withConfigWriteLockCtx with a much
 // shorter, caller-supplied timeout instead — see internalConfigWriteLockTimeout.
-func (s *ConfigStore) withConfigWriteLock(path string, fn func(string) error) error {
+func (s *ConfigStore) withConfigWriteLock(path string, fn func(configWriteTarget) error) error {
 	ctx, cancel := context.WithTimeout(context.Background(), configWriteLockTimeout)
 	defer cancel()
 	return s.withConfigWriteLockCtx(ctx, path, fn)
@@ -192,7 +192,7 @@ func verifyConfigWriteTarget(target configWriteTarget) error {
 	return fmt.Errorf("%w: reread config target: %v", errConfigCommitVerification, err)
 }
 
-func (s *ConfigStore) withConfigWriteLockCtx(ctx context.Context, path string, fn func(string) error) error {
+func (s *ConfigStore) withConfigWriteLockCtx(ctx context.Context, path string, fn func(configWriteTarget) error) error {
 	s.diskWriteMu.Lock()
 	defer s.diskWriteMu.Unlock()
 	target, err := s.resolveConfigWriteTarget(path)
@@ -232,7 +232,7 @@ func (s *ConfigStore) withConfigWriteLockCtx(ctx context.Context, path string, f
 	// lock exists to prevent. Leaving a handful of empty *.lock sidecars
 	// next to rush.json is a one-time, bounded cost; deleting them is not.
 	defer lock.Release()
-	return fn(target.path)
+	return fn(target)
 }
 
 // noteInitialLoadWriteLocked advances Load's expected fingerprint after one
@@ -292,8 +292,8 @@ func (s *ConfigStore) SetConfigFields(scope Scope, kv map[string]any) error {
 	// (diskWriteMu) and across processes (OS lock on path+".lock") — see its
 	// doc comment. The lock is released before autoReload below so that
 	// autoReload's publishMu acquisition cannot deadlock.
-	if err := s.withConfigWriteLock(path, func(lockedPath string) error {
-		data, err := os.ReadFile(lockedPath)
+	if err := s.withConfigWriteLock(path, func(target configWriteTarget) error {
+		data, expected, err := readStableConfigFileOwned(target.selectedPath, target.owner, target.enforce)
 		if err != nil {
 			if os.IsNotExist(err) {
 				data = []byte("{}")
@@ -308,17 +308,24 @@ func (s *ConfigStore) SetConfigFields(scope Scope, kv map[string]any) error {
 				return fmt.Errorf("failed to set config field %s: %w", key, err)
 			}
 		}
-		if err := os.MkdirAll(filepath.Dir(lockedPath), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(target.path), 0o755); err != nil {
 			return fmt.Errorf("failed to create config directory %q: %w", path, err)
 		}
 		written := []byte(newValue)
-		if err := atomicWriteFile(lockedPath, written, 0o600); err != nil {
-			if errors.Is(err, errAtomicWriteCommitted) {
+		if !expected.exists {
+			_, expected, err = readStableConfigFileOwned(target.selectedPath, target.owner, target.enforce)
+			if err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("failed to verify config file before write: %w", err)
+			}
+		}
+		_, commitErr := commitConfigFile(target.selectedPath, target.path, written, 0o600, expected, target.owner, target.enforce)
+		if commitErr != nil {
+			if outcome, ok := CommitOutcomeFromError(commitErr); ok && outcome.Committed {
 				s.noteInitialLoadWriteLocked(path, written)
-				committedErr = err
+				committedErr = commitErr
 				return nil
 			}
-			return fmt.Errorf("failed to write config file: %w", err)
+			return fmt.Errorf("failed to write config file: %w", commitErr)
 		}
 		s.noteInitialLoadWriteLocked(path, written)
 		return nil
@@ -328,6 +335,7 @@ func (s *ConfigStore) SetConfigFields(scope Scope, kv map[string]any) error {
 	if committedErr != nil {
 		if reloadErr := s.autoReloadAfterWrite(context.Background()); reloadErr != nil {
 			slog.Warn("Config file committed but in-memory reconciliation was incomplete", "path", path, "error", reloadErr)
+			return errors.Join(committedErr, reloadErr)
 		}
 		return committedErr
 	}
@@ -375,9 +383,10 @@ func (s *ConfigStore) RemoveConfigField(scope Scope, key string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), configWriteLockTimeout)
 	defer cancel()
 	if err := s.removeConfigFieldAt(ctx, path, key); err != nil {
-		if errors.Is(err, errAtomicWriteCommitted) {
+		if outcome, ok := CommitOutcomeFromError(err); ok && outcome.Committed {
 			if reloadErr := s.autoReloadAfterWrite(context.Background()); reloadErr != nil {
 				slog.Warn("Config field removal committed but in-memory reconciliation was incomplete", "path", path, "error", reloadErr)
+				return errors.Join(err, reloadErr)
 			}
 		}
 		return err
@@ -420,8 +429,8 @@ func (s *ConfigStore) removeConfigFieldAt(ctx context.Context, path, key string)
 	}
 
 	var committedErr error
-	if err := s.withConfigWriteLockCtx(ctx, path, func(lockedPath string) error {
-		data, err := os.ReadFile(lockedPath)
+	if err := s.withConfigWriteLockCtx(ctx, path, func(target configWriteTarget) error {
+		data, expected, err := readStableConfigFileOwned(target.selectedPath, target.owner, target.enforce)
 		if err != nil {
 			return fmt.Errorf("failed to read config file: %w", err)
 		}
@@ -429,17 +438,18 @@ func (s *ConfigStore) removeConfigFieldAt(ctx context.Context, path, key string)
 		if err != nil {
 			return fmt.Errorf("failed to delete config field %s: %w", key, err)
 		}
-		if err := os.MkdirAll(filepath.Dir(lockedPath), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(target.path), 0o755); err != nil {
 			return fmt.Errorf("failed to create config directory %q: %w", path, err)
 		}
 		written := []byte(newValue)
-		if err := atomicWriteFile(lockedPath, written, 0o600); err != nil {
-			if errors.Is(err, errAtomicWriteCommitted) {
+		_, commitErr := commitConfigFile(target.selectedPath, target.path, written, 0o600, expected, target.owner, target.enforce)
+		if commitErr != nil {
+			if outcome, ok := CommitOutcomeFromError(commitErr); ok && outcome.Committed {
 				s.noteInitialLoadWriteLocked(path, written)
-				committedErr = err
+				committedErr = commitErr
 				return nil
 			}
-			return fmt.Errorf("failed to write config file: %w", err)
+			return fmt.Errorf("failed to write config file: %w", commitErr)
 		}
 		s.noteInitialLoadWriteLocked(path, written)
 		return nil

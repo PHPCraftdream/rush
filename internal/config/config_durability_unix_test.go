@@ -4,7 +4,6 @@ package config
 
 import (
 	"errors"
-	"os"
 	"path/filepath"
 	"testing"
 

@@ -21,7 +21,7 @@ func commitConfigFile(selectedPath, commitPath string, data []byte, perm os.File
 	}
 	current, fingerprint, err := readStableConfigFileOwned(selectedPath, expectedOwner, enforceOwner)
 	if expected.exists {
-		if err != nil || fingerprint.identity != expected.identity || fingerprint.discovery != expected.discovery ||
+		if err != nil || fingerprint.identity != expected.identity || fingerprint.nlink != expected.nlink || fingerprint.discovery != expected.discovery ||
 			!sameBytesFingerprint(current, expected.digest) {
 			return reloadFileFingerprint{}, errConfigCommitVerification
 		}
@@ -49,7 +49,7 @@ func commitConfigFile(selectedPath, commitPath string, data []byte, perm os.File
 	runConfigBeforeCommitCheckHook()
 	current, fingerprint, err = readStableConfigFileOwned(selectedPath, expectedOwner, enforceOwner)
 	if expected.exists {
-		if err != nil || fingerprint.identity != expected.identity || fingerprint.discovery != expected.discovery ||
+		if err != nil || fingerprint.identity != expected.identity || fingerprint.nlink != expected.nlink || fingerprint.discovery != expected.discovery ||
 			!sameBytesFingerprint(current, expected.digest) {
 			return reloadFileFingerprint{}, errConfigCommitVerification
 		}
@@ -59,13 +59,52 @@ func commitConfigFile(selectedPath, commitPath string, data []byte, perm os.File
 			return reloadFileFingerprint{}, errConfigCommitVerification
 		}
 	}
-	if err := atomicWriteFile(commitPath, data, perm); err != nil {
+	if expected.exists && (expected.nlink == 0 || expected.nlink > 1) {
+		return reloadFileFingerprint{}, ErrConfigHardLink
+	}
+	if err := verifySelectedCommitPath(selectedPath, commitPath); err != nil {
 		return reloadFileFingerprint{}, err
 	}
-	committed, committedFingerprint, err := readStableConfigFileOwned(selectedPath, expectedOwner, enforceOwner)
-	if err != nil || !sameBytesFingerprint(committed, sha256.Sum256(data)) ||
-		committedFingerprint.parentDiscovery != expected.parentDiscovery {
-		return reloadFileFingerprint{}, errConfigCommitVerification
+	tmp, err := stageConfigFile(commitPath, data, perm)
+	if err != nil {
+		return reloadFileFingerprint{}, err
+	}
+	removeTemp := true
+	defer func() {
+		if removeTemp {
+			_ = os.Remove(tmp)
+		}
+	}()
+	runConfigBeforeCommitRenameHook()
+	if err := renameConfigTemp(tmp, commitPath, expected.exists); err != nil {
+		return reloadFileFingerprint{}, fmt.Errorf("%w: rename config file: %v", errConfigCommitVerification, err)
+	}
+	removeTemp = false
+	hookErr := runConfigAfterCommitRenameHook()
+	parentSyncErr := syncConfigParent(filepath.Dir(commitPath))
+	committed, committedFingerprint, selectedReadbackErr := readStableConfigFileOwned(selectedPath, expectedOwner, enforceOwner)
+	targetData, _, targetReadbackErr := readStableConfigFileOwned(commitPath, expectedOwner, enforceOwner)
+	selectedMatches := selectedReadbackErr == nil && sameBytesFingerprint(committed, sha256.Sum256(data)) &&
+		committedFingerprint.parentDiscovery == expected.parentDiscovery
+	targetMatches := targetReadbackErr == nil && sameBytesFingerprint(targetData, sha256.Sum256(data))
+	if !selectedMatches || !targetMatches {
+		causes := []error{errConfigCommitUncertain, errConfigCommitCommitted}
+		if selectedReadbackErr != nil {
+			causes = append(causes, selectedReadbackErr)
+		}
+		if targetReadbackErr != nil {
+			causes = append(causes, targetReadbackErr)
+		}
+		if parentSyncErr != nil {
+			causes = append(causes, errAtomicWriteCommitted, errConfigCommitDurabilityUncertain, parentSyncErr)
+		}
+		if hookErr != nil {
+			causes = append(causes, hookErr)
+		}
+		return reloadFileFingerprint{}, newCommitOutcome(commitPath, true, false, causes...)
+	}
+	if hookErr != nil || parentSyncErr != nil {
+		return committedFingerprint, newCommitOutcome(commitPath, true, true, commitPostCommitCauses(nil, hookErr, parentSyncErr)...)
 	}
 	return committedFingerprint, nil
 }

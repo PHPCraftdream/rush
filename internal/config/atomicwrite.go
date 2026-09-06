@@ -25,29 +25,66 @@ var errConfigCommitUncertain = errors.New("config commit outcome is uncertain")
 // crash-durable commit, so callers must surface this outcome explicitly.
 var errConfigCommitDurabilityUncertain = errors.New("config commit durability is uncertain")
 
+// ErrConfigHardLink identifies a config file with more than one directory
+// entry. Atomic replacement would update only one spelling and leave the
+// other hard-link alias stale, so mutable config APIs reject it.
+var ErrConfigHardLink = errors.New("config file has multiple hard links")
+
 // errAtomicWriteCommitted means the rename completed and the new bytes are in
 // the named destination, but a post-rename durability step failed. Callers
 // must not blindly retry such an operation: the logical write already won.
 var errAtomicWriteCommitted = errors.New("config write committed with uncertain durability")
 
-type atomicWriteCommittedError struct {
-	path  string
-	data  []byte
-	cause error
+// CommitOutcome is the public, byte-free description of a commit that passed
+// the point of no return but returned an error afterwards. Committed means
+// that the atomic directory-entry update completed. Reconciled means a fresh
+// read proved that Path contains the requested bytes. Cause retains both the
+// config sentinel and the underlying operation error and is available through
+// errors.Is and errors.As via Unwrap.
+type CommitOutcome struct {
+	Committed  bool
+	Reconciled bool
+	Path       string
+	Cause      error
 }
 
-func (e *atomicWriteCommittedError) Error() string {
-	return fmt.Sprintf("%s: %v", errAtomicWriteCommitted, e.cause)
+func (e *CommitOutcome) Error() string {
+	if e == nil {
+		return "<nil>"
+	}
+	if e.Cause == nil {
+		return fmt.Sprintf("config commit outcome for %s", e.Path)
+	}
+	return fmt.Sprintf("config commit outcome for %s: %v", e.Path, e.Cause)
 }
 
-func (e *atomicWriteCommittedError) Unwrap() error { return errAtomicWriteCommitted }
+func (e *CommitOutcome) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Cause
+}
+
+// CommitOutcomeFromError extracts the public outcome from an error returned
+// by a generic or MCP config mutation. It also works when the outcome is
+// wrapped by a higher-level lifecycle error.
+func CommitOutcomeFromError(err error) (*CommitOutcome, bool) {
+	var outcome *CommitOutcome
+	if !errors.As(err, &outcome) {
+		return nil, false
+	}
+	return outcome, true
+}
 
 var configTestHooks struct {
 	sync.Mutex
-	beforeOpen        func(string)
-	beforeCommitCheck func()
-	afterCommitRename func() error
-	syncParent        func(string) error
+	beforeOpen         func(string)
+	beforeCommitCheck  func()
+	afterCommitRename  func() error
+	beforeCommitRename func()
+	forceLinkNoReplace bool
+	unlinkTemp         func(int, string) error
+	syncParent         func(string) error
 }
 
 func runConfigBeforeOpenHook(path string) {
@@ -78,6 +115,15 @@ func runConfigAfterCommitRenameHook() error {
 	return nil
 }
 
+func runConfigBeforeCommitRenameHook() {
+	configTestHooks.Lock()
+	hook := configTestHooks.beforeCommitRename
+	configTestHooks.Unlock()
+	if hook != nil {
+		hook()
+	}
+}
+
 func syncConfigParent(path string) error {
 	configTestHooks.Lock()
 	hook := configTestHooks.syncParent
@@ -92,42 +138,94 @@ func sameBytesFingerprint(data []byte, digest [sha256.Size]byte) bool {
 	return sha256.Sum256(data) == digest
 }
 
+func newCommitOutcome(path string, committed, reconciled bool, causes ...error) error {
+	return &CommitOutcome{
+		Committed:  committed,
+		Reconciled: reconciled,
+		Path:       filepath.Clean(path),
+		Cause:      errors.Join(causes...),
+	}
+}
+
+func commitPostCommitCauses(renameErr, hookErr, parentSyncErr error) []error {
+	causes := []error{errConfigCommitCommitted}
+	if renameErr != nil {
+		causes = append(causes, renameErr)
+	}
+	if hookErr != nil {
+		causes = append(causes, hookErr)
+	}
+	if parentSyncErr != nil {
+		causes = append(causes, errAtomicWriteCommitted, errConfigCommitDurabilityUncertain, parentSyncErr)
+	}
+	return causes
+}
+
+func verifySelectedCommitPath(selectedPath, commitPath string) error {
+	// This is a boundary check for selecting the physical transaction target,
+	// not a claim that an external symlink retarget can be serialized with the
+	// later rename. commitPath remains pinned after this check; a later
+	// retarget is reported as an uncertain readback outcome when it changes the
+	// selected spelling's visible bytes.
+	if normalizeReloadPath(selectedPath) != normalizeReloadPath(commitPath) {
+		return errConfigCommitVerification
+	}
+	return nil
+}
+
 // atomicWriteFile writes data to a file atomically by writing to a unique
 // temporary file in the same directory and renaming it into place. This
 // prevents concurrent readers from observing a partially-written file.
 func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
 	path = filepath.Clean(path)
-	dir := filepath.Dir(path)
-	f, err := os.CreateTemp(dir, filepath.Base(path)+".*.tmp")
+	tmp, err := stageConfigFile(path, data, perm)
 	if err != nil {
 		return err
 	}
-	tmp := f.Name()
-	if _, err := f.Write(data); err != nil {
-		f.Close()
-		os.Remove(tmp)
+	removeTemp := true
+	defer func() {
+		if removeTemp {
+			_ = os.Remove(tmp)
+		}
+	}()
+	if err := renameConfigTemp(tmp, path, true); err != nil {
 		return err
 	}
-	if err := f.Chmod(perm); err != nil {
-		f.Close()
-		os.Remove(tmp)
-		return err
-	}
-	if err := f.Sync(); err != nil {
-		f.Close()
-		os.Remove(tmp)
-		return err
-	}
-	if err := f.Close(); err != nil {
-		os.Remove(tmp)
-		return err
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp)
-		return err
-	}
+	removeTemp = false
 	if err := syncConfigParent(filepath.Dir(path)); err != nil {
-		return &atomicWriteCommittedError{path: path, data: append([]byte(nil), data...), cause: err}
+		return newCommitOutcome(path, true, false, errAtomicWriteCommitted, errConfigCommitDurabilityUncertain, err)
 	}
 	return nil
+}
+
+func stageConfigFile(path string, data []byte, perm os.FileMode) (string, error) {
+	dir := filepath.Dir(filepath.Clean(path))
+	f, err := os.CreateTemp(dir, filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return "", err
+	}
+	tmp := f.Name()
+	removeTemp := true
+	defer func() {
+		if removeTemp {
+			_ = os.Remove(tmp)
+		}
+	}()
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return "", err
+	}
+	if err := f.Chmod(perm); err != nil {
+		_ = f.Close()
+		return "", err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		return "", err
+	}
+	removeTemp = false
+	return tmp, nil
 }

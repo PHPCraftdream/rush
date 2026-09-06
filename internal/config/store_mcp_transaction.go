@@ -608,6 +608,7 @@ func applyCommittedMCPFingerprint(files *mcpLockedFiles, record *mcpFileRecord, 
 		aliasFingerprint.modTime = committed.modTime
 		aliasFingerprint.digest = committed.digest
 		aliasFingerprint.owner = committed.owner
+		aliasFingerprint.nlink = committed.nlink
 		aliasFingerprint.identity = committed.identity
 		files.fingerprints[alias] = aliasFingerprint
 	}
@@ -970,5 +971,5 @@ func dataFingerprint(path string, data []byte) reloadFileFingerprint {
 	if fingerprint, err := readReloadFingerprint(path); err == nil && fingerprint.exists && fingerprint.digest == digest {
 		return fingerprint
 	}
-	return reloadFileFingerprint{exists: true, size: int64(len(data)), digest: digest}
+	return reloadFileFingerprint{exists: true, size: int64(len(data)), digest: digest, nlink: 1}
 }

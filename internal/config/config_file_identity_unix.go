@@ -8,8 +8,8 @@ import (
 )
 
 // configFileIdentity is the platform-neutral portion of an opened-file
-// identity. Unix can verify it; Windows deliberately reports it unavailable
-// rather than pretending that a path check is an equivalent security proof.
+// identity. Unix derives it from the opened file's stat information; Windows
+// derives the equivalent identity from its handle API.
 type configFileIdentity struct {
 	device uint64
 	inode  uint64
@@ -34,6 +34,14 @@ func configFileOwner(info os.FileInfo) (int, bool) {
 		return 0, false
 	}
 	return int(stat.Uid), true
+}
+
+func configFileNlinkOfOpened(_ *os.File, info os.FileInfo) uint64 {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0
+	}
+	return uint64(stat.Nlink)
 }
 
 func sameConfigFileIdentity(left, right os.FileInfo) bool {
