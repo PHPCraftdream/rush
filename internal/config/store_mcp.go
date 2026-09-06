@@ -448,6 +448,7 @@ func (s *ConfigStore) publishMCPConfigLocked(oldName, newName string) {
 		delete(cfg.MCP, oldName)
 	}
 	next.config = &cfg
+	next.mcpRevisions = bumpMCPRevisions(cur.mcpRevisions, oldName, newName)
 	s.publishLocked(next)
 }
 
@@ -468,6 +469,7 @@ func (s *ConfigStore) publishMCPValueAndStalenessLocked(name string, value MCPCo
 		delete(cfg.MCP, name)
 	}
 	next.config = &cfg
+	next.mcpRevisions = bumpMCPRevisions(cur.mcpRevisions, name)
 	if len(committed) > 0 {
 		if next.snapshots == nil {
 			next.snapshots = make(map[string]fileSnapshot)

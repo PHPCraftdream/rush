@@ -3,6 +3,9 @@ package mcp
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -10,6 +13,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/pubsub"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/require"
 )
 
@@ -227,6 +231,178 @@ func TestRemoveRechecksUncertaintyAfterWaitingForLease(t *testing.T) {
 	testLeaseWaitUncertainty(t, true)
 }
 
+func TestDisableLeaseWaitUncertaintyDuringClose(t *testing.T) {
+	testLeaseWaitUncertaintyDuringClose(t, false)
+}
+
+func TestRemoveLeaseWaitUncertaintyDuringClose(t *testing.T) {
+	testLeaseWaitUncertaintyDuringClose(t, true)
+}
+
+func TestMutationPublicationTakesServerLeaseBeforeConfigLocks(t *testing.T) {
+	store := isolatedMCPStore(t)
+	const name = "publication-lock-order"
+	mcpConfig := config.MCPConfig{Type: config.MCPStdio, Command: name}
+	result, err := store.PersistMCPConfigResult(config.ScopeGlobal, name, mcpConfig)
+	require.NoError(t, err)
+	owner, err := Acquire()
+	require.NoError(t, err)
+	releasePersist := make(chan struct{})
+	defer func() {
+		select {
+		case <-releasePersist:
+		default:
+			close(releasePersist)
+		}
+		serverLeaseHooks.Lock()
+		serverLeaseHooks.beforeTryLockFn = nil
+		serverLeaseHooks.Unlock()
+		require.NoError(t, owner.Close(context.Background()))
+	}()
+
+	persistEntered := make(chan struct{})
+	disableDone := make(chan error, 1)
+	go func() {
+		disableDone <- disableServerWithResultPersistence(context.Background(), store, name,
+			func(cfg *config.ConfigStore, scope config.Scope, serverName string, _ *config.MCPConfig) (config.MCPMutationResult, error) {
+				close(persistEntered)
+				<-releasePersist
+				return cfg.PersistMCPDisabledOverrideResult(scope, serverName, true)
+			})
+	}()
+	awaitMCPSignal(t, persistEntered)
+
+	admission, err := owner.admitServerForConfig(context.Background(), store, name, mcpConfig, true)
+	require.NoError(t, err)
+	defer admission.done()
+	admission.mutationResult = &result
+	candidate := &preparedClient{session: &ClientSession{}}
+
+	leases.mu.Lock()
+	lease := leases.entries[name]
+	leases.mu.Unlock()
+	require.NotNil(t, lease)
+	helperAttempted := make(chan struct{})
+	var helperAttemptOnce sync.Once
+	var helperStarted atomic.Bool
+	serverLeaseHooks.Lock()
+	serverLeaseHooks.beforeTryLockFn = func(candidateLease *serverLease) {
+		if helperStarted.Load() && candidateLease == lease {
+			helperAttemptOnce.Do(func() { close(helperAttempted) })
+		}
+	}
+	serverLeaseHooks.Unlock()
+
+	helperDone := make(chan error, 1)
+	helperStarted.Store(true)
+	go func() {
+		helperDone <- publishPreparedClientWithMutation(store, name, candidate, &admission)
+	}()
+	awaitMCPSignal(t, helperAttempted)
+	close(releasePersist)
+	require.NoError(t, awaitMCPError(t, disableDone))
+	require.ErrorIs(t, awaitMCPError(t, helperDone), context.Canceled)
+}
+
+func testLeaseWaitUncertaintyDuringClose(t *testing.T, remove bool) {
+	t.Helper()
+	store := isolatedMCPStore(t)
+	const name = "lease-wait-close-uncertain"
+	require.NoError(t, store.PersistMCPConfig(config.ScopeGlobal, name, config.MCPConfig{
+		Type: config.MCPStdio, Command: name,
+	}))
+	owner, err := Acquire()
+	require.NoError(t, err)
+
+	persistStarted := make(chan struct{})
+	releasePersist := make(chan struct{})
+	aDone := make(chan error, 1)
+	if remove {
+		go func() {
+			aDone <- removeServerWithResultPersistence(store, name,
+				func(cfg *config.ConfigStore, scope config.Scope, serverName string) (config.MCPMutationResult, error) {
+					close(persistStarted)
+					<-releasePersist
+					result, persistErr := cfg.PersistRemoveMCPConfigResult(scope, serverName)
+					return result, errors.Join(persistErr, injectedMCPMaybeCommitted())
+				})
+		}()
+	} else {
+		go func() {
+			aDone <- disableServerWithResultPersistence(context.Background(), store, name,
+				func(cfg *config.ConfigStore, scope config.Scope, serverName string, _ *config.MCPConfig) (config.MCPMutationResult, error) {
+					close(persistStarted)
+					<-releasePersist
+					result, persistErr := cfg.PersistMCPDisabledOverrideResult(scope, serverName, true)
+					return result, errors.Join(persistErr, injectedMCPMaybeCommitted())
+				})
+		}()
+	}
+	awaitMCPSignal(t, persistStarted)
+
+	leases.mu.Lock()
+	lease := leases.entries[name]
+	leases.mu.Unlock()
+	require.NotNil(t, lease)
+	waiting := make(chan struct{})
+	var waitingOnce sync.Once
+	serverLeaseHooks.Lock()
+	serverLeaseHooks.beforeLockFn = func(candidate *serverLease) {
+		if candidate == lease {
+			waitingOnce.Do(func() { close(waiting) })
+		}
+	}
+	serverLeaseHooks.beforeTryLockFn = serverLeaseHooks.beforeLockFn
+	serverLeaseHooks.Unlock()
+	defer func() {
+		serverLeaseHooks.Lock()
+		serverLeaseHooks.beforeLockFn = nil
+		serverLeaseHooks.beforeTryLockFn = nil
+		serverLeaseHooks.afterLockFn = nil
+		serverLeaseHooks.afterUnlockFn = nil
+		serverLeaseHooks.Unlock()
+		select {
+		case <-releasePersist:
+		default:
+			close(releasePersist)
+		}
+		require.NoError(t, owner.Close(context.Background()))
+	}()
+
+	bPersisted := atomic.Bool{}
+	bDone := make(chan error, 1)
+	if remove {
+		go func() {
+			bDone <- removeServerWithResultPersistence(store, name,
+				func(*config.ConfigStore, config.Scope, string) (config.MCPMutationResult, error) {
+					bPersisted.Store(true)
+					return config.MCPMutationResult{}, errors.New("unexpected remove persistence")
+				})
+		}()
+	} else {
+		go func() {
+			bDone <- disableServerWithResultPersistence(context.Background(), store, name,
+				func(*config.ConfigStore, config.Scope, string, *config.MCPConfig) (config.MCPMutationResult, error) {
+					bPersisted.Store(true)
+					return config.MCPMutationResult{}, errors.New("unexpected disable persistence")
+				})
+		}()
+	}
+	awaitMCPSignal(t, waiting)
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- owner.Close(context.Background()) }()
+	require.Eventually(t, func() bool {
+		lifecycleMu.Lock()
+		defer lifecycleMu.Unlock()
+		return owner.closing
+	}, time.Second, time.Millisecond)
+	close(releasePersist)
+	requireMCPMaybeCommitted(t, awaitMCPError(t, aDone))
+	require.ErrorIs(t, awaitMCPError(t, bDone), ErrMCPConfigUncertain)
+	require.False(t, bPersisted.Load())
+	require.NoError(t, awaitMCPError(t, closeDone))
+}
+
 func testLeaseWaitUncertainty(t *testing.T, remove bool) {
 	t.Helper()
 	store := isolatedMCPStore(t)
@@ -316,4 +492,341 @@ func testLeaseWaitUncertainty(t *testing.T, remove bool) {
 	requireMCPMaybeCommitted(t, awaitMCPError(t, aDone))
 	require.ErrorIs(t, awaitMCPError(t, bDone), ErrMCPConfigUncertain)
 	require.False(t, bPersisted.Load())
+}
+
+func TestEnableRejectsChangedConfigBeforePublication(t *testing.T) {
+	store := isolatedMCPStore(t)
+	contender, err := config.Init(store.WorkingDir(), store.WorkingDir(), false)
+	require.NoError(t, err)
+	const name = "enable-stale-config"
+	initial := config.MCPConfig{Type: config.MCPHttp, URL: "http://enable-a.example", Disabled: true}
+	require.NoError(t, store.PersistMCPConfig(config.ScopeGlobal, name, initial))
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer func() { require.NoError(t, owner.Close(context.Background())) }()
+
+	persisted := make(chan struct{})
+	releasePersist := make(chan struct{})
+	enableDone := make(chan error, 1)
+	initializerDone := make(chan error, 1)
+	go func() {
+		enableDone <- enableServerWithPersistenceAndInitializer(
+			context.Background(), store, name,
+			func(cfg *config.ConfigStore, scope config.Scope, serverName string, pending *config.MCPConfig) (config.MCPMutationResult, error) {
+				result, persistErr := enableMCPConfig(cfg, scope, serverName, pending)
+				close(persisted)
+				<-releasePersist
+				return result, persistErr
+			},
+			func(_ context.Context, cfg *config.ConfigStore, serverName string, _ config.MCPConfig, _ config.VariableResolver, admission *serverAdmission) error {
+				defer admission.done()
+				candidate := &ClientSession{}
+				err := publishPreparedClient(cfg, serverName, &preparedClient{session: candidate}, admission)
+				initializerDone <- err
+				return err
+			},
+		)
+	}()
+	awaitMCPSignal(t, persisted)
+	replacement := config.MCPConfig{Type: config.MCPHttp, URL: "http://enable-b.example"}
+	require.NoError(t, contender.PersistMCPFieldsExact(config.ScopeGlobal, name, map[string]any{
+		"url": replacement.URL,
+	}))
+	close(releasePersist)
+	require.NoError(t, awaitMCPError(t, enableDone))
+	require.ErrorIs(t, awaitMCPError(t, initializerDone), config.ErrMCPMutationStale)
+	require.False(t, hasSession(name))
+	current, ok := contender.MCPConfig(name)
+	require.True(t, ok)
+	require.Equal(t, replacement, current)
+}
+
+func TestAddRejectsStoreGenerationChangedDuringPreparation(t *testing.T) {
+	store := isolatedMCPStore(t)
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer func() { require.NoError(t, owner.Close(context.Background())) }()
+
+	const name = "add-stale-generation"
+	prepareStarted := make(chan struct{})
+	releasePrepare := make(chan struct{})
+	addDone := make(chan error, 1)
+	go func() {
+		addDone <- addServerWithPreparationAndPersistence(
+			context.Background(), store, name,
+			config.MCPConfig{Type: config.MCPHttp, URL: "http://generation.example"},
+			func(context.Context, *config.ConfigStore, string, config.MCPConfig, config.VariableResolver, *serverAdmission) (*preparedClient, error) {
+				close(prepareStarted)
+				<-releasePrepare
+				return &preparedClient{session: &ClientSession{}}, nil
+			},
+			func(cfg *config.ConfigStore, scope config.Scope, serverName string, value config.MCPConfig) (config.MCPMutationResult, error) {
+				return cfg.PersistMCPConfigResult(scope, serverName, value)
+			},
+		)
+	}()
+	awaitMCPSignal(t, prepareStarted)
+	require.NoError(t, store.SetConfigField(config.ScopeGlobal, "options.debug", true))
+	close(releasePrepare)
+	require.ErrorIs(t, awaitMCPError(t, addDone), ErrOwnerBusy)
+	require.False(t, hasSession(name))
+	_, exists := store.MCPConfig(name)
+	require.False(t, exists)
+}
+
+func TestEnableRejectsStoreGenerationChangedBeforePublication(t *testing.T) {
+	store := isolatedMCPStore(t)
+	const name = "enable-stale-generation"
+	require.NoError(t, store.PersistMCPConfig(config.ScopeGlobal, name, config.MCPConfig{
+		Type: config.MCPHttp, URL: "http://generation-enable.example", Disabled: true,
+	}))
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer func() { require.NoError(t, owner.Close(context.Background())) }()
+
+	persisted := make(chan struct{})
+	releasePersist := make(chan struct{})
+	initializerStarted := make(chan struct{})
+	releaseInitializer := make(chan struct{})
+	enableDone := make(chan error, 1)
+	initializerDone := make(chan error, 1)
+	go func() {
+		enableDone <- enableServerWithPersistenceAndInitializer(
+			context.Background(), store, name,
+			func(cfg *config.ConfigStore, scope config.Scope, serverName string, pending *config.MCPConfig) (config.MCPMutationResult, error) {
+				result, persistErr := enableMCPConfig(cfg, scope, serverName, pending)
+				close(persisted)
+				<-releasePersist
+				return result, persistErr
+			},
+			func(_ context.Context, cfg *config.ConfigStore, serverName string, _ config.MCPConfig, _ config.VariableResolver, admission *serverAdmission) error {
+				defer admission.done()
+				close(initializerStarted)
+				<-releaseInitializer
+				err := publishPreparedClient(cfg, serverName, &preparedClient{session: &ClientSession{}}, admission)
+				initializerDone <- err
+				return err
+			},
+		)
+	}()
+	awaitMCPSignal(t, persisted)
+	close(releasePersist)
+	awaitMCPSignal(t, initializerStarted)
+	require.NoError(t, store.SetConfigField(config.ScopeGlobal, "options.debug", true))
+	close(releaseInitializer)
+	require.NoError(t, awaitMCPError(t, enableDone))
+	require.ErrorIs(t, awaitMCPError(t, initializerDone), config.ErrMCPMutationStale)
+	require.False(t, hasSession(name))
+}
+
+func TestMCPAdmissionSurvivesUnrelatedCOWUpdate(t *testing.T) {
+	const name = "unrelated-cow"
+	store := config.NewTestStore(&config.Config{MCP: config.MCPs{
+		name: {Type: config.MCPStdio, Command: name},
+	}})
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer closeCommitOutcomeTestOwner(t, owner)
+	require.NoError(t, owner.rememberConfig(store))
+
+	mcpConfig := config.MCPConfig{Type: config.MCPStdio, Command: name}
+	admission, err := owner.admitServerForConfig(context.Background(), store, name, mcpConfig, true)
+	require.NoError(t, err)
+	defer admission.done()
+	store.SetSkipPermissionRequests(true)
+	require.True(t, admission.valid())
+}
+
+func TestAddCloseRollsBackCanceledPendingConfig(t *testing.T) {
+	store := isolatedMCPStore(t)
+	const name = "close-pending-rollback"
+	owner, err := Acquire()
+	require.NoError(t, err)
+	eventsCtx, cancelEvents := context.WithCancel(context.Background())
+	defer cancelEvents()
+	events := SubscribeEvents(eventsCtx)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	started := make(chan struct{})
+	addDone := make(chan error, 1)
+	var persistCalled atomic.Bool
+	go func() {
+		addDone <- addServerWithPreparationAndPersistence(
+			ctx, store, name,
+			config.MCPConfig{Type: config.MCPStdio, Command: name},
+			func(_ context.Context, _ *config.ConfigStore, _ string, _ config.MCPConfig, _ config.VariableResolver, admission *serverAdmission) (*preparedClient, error) {
+				close(started)
+				<-admission.ctx.Done()
+				return nil, admission.ctx.Err()
+			},
+			func(*config.ConfigStore, config.Scope, string, config.MCPConfig) (config.MCPMutationResult, error) {
+				persistCalled.Store(true)
+				return config.MCPMutationResult{}, errors.New("unexpected persistence")
+			},
+		)
+	}()
+	awaitMCPSignal(t, started)
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- owner.Close(context.Background()) }()
+	require.Error(t, awaitMCPError(t, addDone))
+	require.False(t, persistCalled.Load())
+	require.NoError(t, awaitMCPError(t, closeDone))
+
+	_, exists := store.MCPConfig(name)
+	require.False(t, exists)
+	_, diskErr := os.ReadFile(config.GlobalConfigData())
+	require.ErrorIs(t, diskErr, os.ErrNotExist)
+	_, exists = sessions.Get(name)
+	require.False(t, exists)
+	_, exists = states.Get(name)
+	require.False(t, exists)
+	_, exists = allTools.Get(name)
+	require.False(t, exists)
+	_, exists = allPrompts.Get(name)
+	require.False(t, exists)
+	_, exists = allResources.Get(name)
+	require.False(t, exists)
+	select {
+	case event := <-events:
+		if event.Payload.Name == name {
+			t.Fatalf("canceled Add published an event: %#v", event)
+		}
+	default:
+	}
+
+	next, err := Acquire()
+	require.NoError(t, err)
+	defer func() { require.NoError(t, next.Close(context.Background())) }()
+	require.NoError(t, next.rememberConfig(store))
+	next.Initialize(context.Background(), nil, store, false)
+	require.False(t, hasSession(name))
+}
+
+func TestInitializeRejectsChangedConfigBeforePublication(t *testing.T) {
+	const name = "initialize-stale-config"
+	server := mcp.NewServer(&mcp.Implementation{Name: "stale-init"}, nil)
+	mcp.AddTool(server, &mcp.Tool{Name: "stale-tool"}, func(context.Context, *mcp.CallToolRequest, any) (*mcp.CallToolResult, any, error) {
+		return &mcp.CallToolResult{}, nil, nil
+	})
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var startOnce sync.Once
+	server.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
+		return func(ctx context.Context, method string, request mcp.Request) (mcp.Result, error) {
+			if method == "tools/list" {
+				startOnce.Do(func() { close(started) })
+				<-release
+			}
+			return next(ctx, method, request)
+		}
+	})
+	httpServer := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil))
+	cleanupTestMCPServer(t, server, httpServer)
+	store := persistedMCPStore(t, name, httpServer.URL, false)
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer func() { require.NoError(t, owner.Close(context.Background())) }()
+
+	initDone := make(chan struct{})
+	go func() {
+		owner.Initialize(context.Background(), nil, store, false)
+		close(initDone)
+	}()
+	awaitMCPSignal(t, started)
+	replacement := config.MCPConfig{Type: config.MCPHttp, URL: "http://initialize-b.example", Timeout: 60}
+	require.NoError(t, store.PersistMCPFieldsExact(config.ScopeGlobal, name, map[string]any{
+		"url": replacement.URL,
+	}))
+	close(release)
+	awaitMCPSignal(t, initDone)
+	require.False(t, hasSession(name))
+	current, ok := store.MCPConfig(name)
+	require.True(t, ok)
+	require.Equal(t, replacement, current)
+}
+
+func TestAddRejectsChangedConfigBeforePublication(t *testing.T) {
+	store := isolatedMCPStore(t)
+	contender, err := config.Init(store.WorkingDir(), store.WorkingDir(), false)
+	require.NoError(t, err)
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer func() { require.NoError(t, owner.Close(context.Background())) }()
+
+	const name = "add-stale-config"
+	added := config.MCPConfig{Type: config.MCPHttp, URL: "http://add-a.example"}
+	replacement := config.MCPConfig{Type: config.MCPHttp, URL: "http://add-b.example"}
+	err = addServerWithPreparationAndPersistence(
+		context.Background(), store, name, added,
+		func(context.Context, *config.ConfigStore, string, config.MCPConfig, config.VariableResolver, *serverAdmission) (*preparedClient, error) {
+			return &preparedClient{session: &ClientSession{}}, nil
+		},
+		func(cfg *config.ConfigStore, scope config.Scope, serverName string, value config.MCPConfig) (config.MCPMutationResult, error) {
+			result, persistErr := cfg.PersistMCPConfigResult(scope, serverName, value)
+			if persistErr != nil {
+				return result, persistErr
+			}
+			return result, contender.PersistMCPFieldsExact(config.ScopeGlobal, serverName, map[string]any{
+				"url": replacement.URL,
+			})
+		},
+	)
+	require.ErrorIs(t, err, config.ErrMCPMutationStale)
+	require.False(t, hasSession(name))
+	current, ok := contender.MCPConfig(name)
+	require.True(t, ok)
+	require.Equal(t, replacement, current)
+}
+
+func TestReplaceRejectsPendingAddDestinationBeforePreparation(t *testing.T) {
+	store := isolatedMCPStore(t)
+	const oldName = "replace-pending-old"
+	const newName = "replace-pending-new"
+	require.NoError(t, store.PersistMCPConfig(config.ScopeGlobal, oldName, config.MCPConfig{
+		Type: config.MCPStdio, Command: oldName,
+	}))
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer func() { require.NoError(t, owner.Close(context.Background())) }()
+
+	addStarted := make(chan struct{})
+	releaseAdd := make(chan struct{})
+	addDone := make(chan error, 1)
+	go func() {
+		addDone <- addServerWithInitializer(
+			context.Background(), store, newName,
+			config.MCPConfig{Type: config.MCPStdio, Command: newName},
+			func(_ context.Context, cfg *config.ConfigStore, serverName string, _ config.MCPConfig, _ config.VariableResolver, admission *serverAdmission) error {
+				defer admission.done()
+				if err := publishPreparedClient(cfg, serverName, &preparedClient{session: &ClientSession{}}, admission); err != nil {
+					return err
+				}
+				close(addStarted)
+				<-releaseAdd
+				return nil
+			},
+		)
+	}()
+	awaitMCPSignal(t, addStarted)
+
+	var persistCalled atomic.Bool
+	replaceErr := replaceServerWithResultPersistenceAndPreparation(
+		context.Background(), store, oldName, newName,
+		config.MCPConfig{Type: config.MCPStdio, Command: "replacement"},
+		func(cfg *config.ConfigStore, scope config.Scope, old, new string, value config.MCPConfig) (config.MCPMutationResult, error) {
+			persistCalled.Store(true)
+			return cfg.PersistReplaceMCPResult(scope, old, new, value)
+		},
+		func(context.Context, *config.ConfigStore, string, config.MCPConfig, config.VariableResolver, *serverAdmission) (*preparedClient, error) {
+			return &preparedClient{session: &ClientSession{}}, nil
+		},
+	)
+	require.ErrorIs(t, replaceErr, config.ErrMCPTargetExists)
+	require.False(t, persistCalled.Load())
+	close(releaseAdd)
+	require.NoError(t, awaitMCPError(t, addDone))
+	current, ok := store.MCPConfig(newName)
+	require.True(t, ok)
+	require.Equal(t, config.MCPConfig{Type: config.MCPStdio, Command: newName}, current)
 }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"maps"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -31,6 +32,9 @@ type RuntimeOverrides struct {
 type storeSnapshot struct {
 	config             *Config
 	resolver           VariableResolver
+	mcpRevisions       map[string]uint64
+	mcpInputs          map[string][32]byte
+	resolverRevision   uint64
 	knownProviders     []catwalk.Provider
 	loadedPaths        []string // config files that were successfully loaded
 	trackedConfigPaths []string // unique, normalized config file paths
@@ -228,6 +232,48 @@ func (s *ConfigStore) Snapshot() (*Config, uint64) {
 	return sn.config, sn.generation
 }
 
+// SnapshotWithResolver returns the config, resolver, and generation from one
+// immutable store snapshot.
+func (s *ConfigStore) SnapshotWithResolver() (*Config, VariableResolver, uint64) {
+	sn := s.loadSnapshot()
+	return sn.config, sn.resolver, sn.generation
+}
+
+// MCPAdmissionSnapshot captures the MCP definition and resolver revisions
+// from one immutable store snapshot.
+type MCPAdmissionSnapshot struct {
+	Config           *Config
+	Resolver         VariableResolver
+	MCPConfig        MCPConfig
+	Exists           bool
+	MCPRevision      uint64
+	ResolverRevision uint64
+	Generation       uint64
+}
+
+func (s *ConfigStore) SnapshotMCPAdmission(name string) MCPAdmissionSnapshot {
+	sn := s.loadSnapshot()
+	result := MCPAdmissionSnapshot{
+		Config:           sn.config,
+		Resolver:         sn.resolver,
+		MCPRevision:      sn.mcpRevisions[name],
+		ResolverRevision: sn.resolverRevision,
+		Generation:       sn.generation,
+	}
+	if sn.config != nil {
+		result.MCPConfig, result.Exists = sn.config.MCP[name]
+		if result.Exists {
+			result.MCPConfig = cloneMCPConfig(result.MCPConfig)
+		}
+	}
+	return result
+}
+
+func (s *ConfigStore) SnapshotWithResolverAndMCPRevisions() (*Config, VariableResolver, map[string]uint64, uint64) {
+	sn := s.loadSnapshot()
+	return sn.config, sn.resolver, maps.Clone(sn.mcpRevisions), sn.resolverRevision
+}
+
 // WorkingDir returns the current working directory.
 func (s *ConfigStore) WorkingDir() string {
 	return s.workingDir
@@ -341,6 +387,7 @@ func (s *ConfigStore) UpdateMCP(name string, mutate func(*MCPConfig)) (MCPConfig
 	cfgCopy.MCP = maps.Clone(cur.config.MCP)
 	cfgCopy.MCP[name] = cloneMCPConfig(updated)
 	next.config = &cfgCopy
+	next.mcpRevisions = bumpMCPRevisions(cur.mcpRevisions, name)
 	s.publishLocked(next)
 	return updated, true
 }
@@ -370,6 +417,7 @@ func (s *ConfigStore) AddMCP(name string, mcpConfig MCPConfig) bool {
 	}
 	cfgCopy.MCP[name] = cloneMCPConfig(mcpConfig)
 	next.config = &cfgCopy
+	next.mcpRevisions = bumpMCPRevisions(cur.mcpRevisions, name)
 	s.publishLocked(next)
 	return true
 }
@@ -391,8 +439,55 @@ func (s *ConfigStore) RemoveMCP(name string) (MCPConfig, bool) {
 	cfgCopy.MCP = maps.Clone(cur.config.MCP)
 	delete(cfgCopy.MCP, name)
 	next.config = &cfgCopy
+	next.mcpRevisions = bumpMCPRevisions(cur.mcpRevisions, name)
 	s.publishLocked(next)
 	return cloneMCPConfig(current), true
+}
+
+// RemoveMCPIfCurrent removes name only when the in-memory snapshot still has
+// the expected config at the expected MCP revision.
+func (s *ConfigStore) RemoveMCPIfCurrent(name string, expected MCPConfig, revision uint64) (MCPConfig, bool) {
+	s.publishMu.Lock()
+	defer s.publishMu.Unlock()
+	cur := s.loadSnapshot()
+	if cur.config == nil || revision != 0 && cur.mcpRevisions[name] != revision {
+		return MCPConfig{}, false
+	}
+	current, ok := cur.config.MCP[name]
+	if !ok || !reflect.DeepEqual(current, expected) {
+		return MCPConfig{}, false
+	}
+	next := cur.clone()
+	cfgCopy := *cur.config
+	cfgCopy.MCP = maps.Clone(cur.config.MCP)
+	delete(cfgCopy.MCP, name)
+	next.config = &cfgCopy
+	next.mcpRevisions = bumpMCPRevisions(cur.mcpRevisions, name)
+	s.publishLocked(next)
+	return cloneMCPConfig(current), true
+}
+
+func bumpMCPRevisions(current map[string]uint64, names ...string) map[string]uint64 {
+	result := maps.Clone(current)
+	if result == nil {
+		result = make(map[string]uint64)
+	}
+	for _, name := range names {
+		if name != "" {
+			result[name]++
+		}
+	}
+	return result
+}
+
+func initialMCPRevisions(cfg *Config) map[string]uint64 {
+	result := make(map[string]uint64)
+	if cfg != nil {
+		for name := range cfg.MCP {
+			result[name] = 1
+		}
+	}
+	return result
 }
 
 func cloneMCPConfig(m MCPConfig) MCPConfig {
@@ -465,8 +560,10 @@ func (s *ConfigStore) updateConfigLocked(mutate func(cfgCopy *Config)) {
 func NewTestStore(cfg *Config, loadedPaths ...string) *ConfigStore {
 	s := &ConfigStore{}
 	s.snap.Store(&storeSnapshot{
-		config:      cfg,
-		loadedPaths: loadedPaths,
+		config:           cfg,
+		mcpRevisions:     initialMCPRevisions(cfg),
+		resolverRevision: 1,
+		loadedPaths:      loadedPaths,
 	})
 	return s
 }
@@ -485,8 +582,10 @@ func NewTestStore(cfg *Config, loadedPaths ...string) *ConfigStore {
 func NewLibraryStore(cfg *Config, workingDir string) *ConfigStore {
 	s := &ConfigStore{workingDir: workingDir}
 	s.snap.Store(&storeSnapshot{
-		config:   cfg,
-		resolver: IdentityResolver(),
+		config:           cfg,
+		resolver:         IdentityResolver(),
+		mcpRevisions:     initialMCPRevisions(cfg),
+		resolverRevision: 1,
 	})
 	return s
 }
@@ -513,10 +612,12 @@ type testStoreOpts struct {
 func newTestConfigStore(opts testStoreOpts) *ConfigStore {
 	s := &ConfigStore{globalDataPath: opts.globalDataPath}
 	s.snap.Store(&storeSnapshot{
-		config:        opts.config,
-		workspacePath: opts.workspacePath,
-		resolver:      opts.resolver,
-		loadedPaths:   opts.loadedPaths,
+		config:           opts.config,
+		workspacePath:    opts.workspacePath,
+		resolver:         opts.resolver,
+		mcpRevisions:     initialMCPRevisions(opts.config),
+		resolverRevision: 1,
+		loadedPaths:      opts.loadedPaths,
 	})
 	return s
 }

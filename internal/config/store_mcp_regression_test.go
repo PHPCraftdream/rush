@@ -46,6 +46,29 @@ func TestConfigStoreMCPMutatorsPublishDetachedSnapshots(t *testing.T) {
 	require.Equal(t, oldGeneration+3, store.Generation())
 }
 
+func TestMCPAdmissionRevisionsIgnoreUnrelatedCOW(t *testing.T) {
+	const name = "stable"
+	value := MCPConfig{Type: MCPStdio, Command: "stable"}
+	store := NewTestStore(&Config{MCP: MCPs{name: value}})
+
+	initial := store.SnapshotMCPAdmission(name)
+	store.SetSkipPermissionRequests(true)
+	unchanged := store.SnapshotMCPAdmission(name)
+	require.Equal(t, initial.MCPRevision, unchanged.MCPRevision)
+	require.Equal(t, initial.ResolverRevision, unchanged.ResolverRevision)
+
+	updated, ok := store.UpdateMCP(name, func(*MCPConfig) {})
+	require.True(t, ok)
+	require.Equal(t, value, updated)
+	changed := store.SnapshotMCPAdmission(name)
+	require.NotEqual(t, initial.MCPRevision, changed.MCPRevision)
+	require.Equal(t, initial.ResolverRevision, changed.ResolverRevision)
+	_, ok = store.RemoveMCPIfCurrent(name, value, initial.MCPRevision)
+	require.False(t, ok)
+	_, ok = store.MCPConfig(name)
+	require.True(t, ok)
+}
+
 func TestConfigStoreMCPMutatorsConcurrentPublication(t *testing.T) {
 	store := NewTestStore(&Config{MCP: make(MCPs)})
 	const workers = 8

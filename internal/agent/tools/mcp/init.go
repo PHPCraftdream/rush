@@ -609,6 +609,7 @@ type addTransaction struct {
 	once         sync.Once
 	mu           sync.Mutex
 	userMutation bool
+	durable      bool
 }
 
 func (t *addTransaction) markUserMutation() {
@@ -627,6 +628,25 @@ func (t *addTransaction) hasUserMutation() bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.userMutation
+}
+
+func (t *addTransaction) markDurable() {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	t.durable = true
+	t.mu.Unlock()
+}
+
+func (t *addTransaction) isDurable() bool {
+	if t == nil {
+		return false
+	}
+	t.mu.Lock()
+	durable := t.durable
+	t.mu.Unlock()
+	return durable
 }
 
 type refreshKind uint8
@@ -670,6 +690,8 @@ type serverAdmission struct {
 	cfg                 *config.ConfigStore
 	configIdentity      config.MCPConfig
 	hasConfigIdentity   bool
+	mcpRevision         uint64
+	resolverRevision    uint64
 	name                string
 	guardName           string
 	guardEpoch          uint64
@@ -686,6 +708,8 @@ type serverAdmission struct {
 	committedName       string
 	committedEpoch      uint64
 	prepared            *preparedClient
+	publishedSession    *ClientSession
+	mutationResult      *config.MCPMutationResult
 	deferDone           bool
 	publishingPrepared  bool
 }
@@ -822,6 +846,17 @@ func (a *serverAdmission) candidateValidLocked() bool {
 			return false
 		}
 	}
+	if a.hasConfigIdentity {
+		snapshot := a.cfg.SnapshotMCPAdmission(a.name)
+		if a.mcpRevision != 0 && snapshot.MCPRevision != a.mcpRevision ||
+			a.resolverRevision != 0 && snapshot.ResolverRevision != a.resolverRevision {
+			return false
+		}
+		current, exists := snapshot.MCPConfig, snapshot.Exists
+		if !exists || current.Disabled || !reflect.DeepEqual(current, a.configIdentity) {
+			return false
+		}
+	}
 	return (a.promoted || a.ctx == nil || a.ctx.Err() == nil) && owner == a.owner &&
 		!a.owner.closing && a.owner.generation == a.generation &&
 		a.owner.serverEpochs[a.name] == a.epoch && !uncertain
@@ -848,6 +883,13 @@ func (a *serverAdmission) validLocked() bool {
 	}
 	if _, uncertain := a.cfg.MCPUncertaintyVersion(admissionName); uncertain {
 		return false
+	}
+	if a.hasConfigIdentity {
+		snapshot := a.cfg.SnapshotMCPAdmission(a.name)
+		if a.mcpRevision != 0 && snapshot.MCPRevision != a.mcpRevision ||
+			a.resolverRevision != 0 && snapshot.ResolverRevision != a.resolverRevision {
+			return false
+		}
 	}
 	if !a.committed && a.guardName != "" {
 		if a.owner.serverEpochs[a.guardName] != a.guardEpoch {
@@ -915,6 +957,7 @@ func (o *Owner) admitServerWithConfig(ctx context.Context, cfg *config.ConfigSto
 	} else {
 		operationCtx = ctx
 	}
+	admissionSnapshot := cfg.SnapshotMCPAdmission(name)
 	admission := serverAdmission{
 		owner:             o,
 		generation:        o.generation,
@@ -922,6 +965,8 @@ func (o *Owner) admitServerWithConfig(ctx context.Context, cfg *config.ConfigSto
 		cfg:               cfg,
 		configIdentity:    mcpConfig,
 		hasConfigIdentity: pinConfig,
+		mcpRevision:       admissionSnapshot.MCPRevision,
+		resolverRevision:  admissionSnapshot.ResolverRevision,
 		name:              name,
 		once:              new(sync.Once),
 		ctx:               operationCtx,
@@ -1381,9 +1426,7 @@ func (o *Owner) isCurrentLocked() bool {
 }
 
 func (o *Owner) isUncertain(cfg *config.ConfigStore, name string) bool {
-	lifecycleMu.Lock()
-	defer lifecycleMu.Unlock()
-	if !o.isCurrentLocked() || cfg == nil {
+	if cfg == nil {
 		return false
 	}
 	_, uncertain := cfg.MCPUncertaintyVersion(name)
@@ -1879,12 +1922,11 @@ func (o *Owner) Initialize(ctx context.Context, permissions permission.Service, 
 	// Capture the configuration and each server admission before starting any
 	// goroutine. This prevents a later owner from being captured by a stale
 	// initializer and lets disable/remove cancel the exact startup attempt.
-	configured, _ := cfg.Snapshot()
+	configured, resolver, mcpRevisions, resolverRevision := cfg.SnapshotWithResolverAndMCPRevisions()
 	if configured == nil {
 		o.finishInitialize()
 		return
 	}
-	resolver := cfg.Resolver()
 	for name, m := range configured.MCP {
 		if !o.acceptsSession() {
 			break
@@ -1935,11 +1977,13 @@ func (o *Owner) Initialize(ctx context.Context, permissions permission.Service, 
 			lease.Unlock()
 			continue
 		}
-		admission, err := o.admitServer(initCtx, cfg, name, true)
+		admission, err := o.admitServerForConfig(initCtx, cfg, name, m, true)
 		lease.Unlock()
 		if err != nil {
 			break
 		}
+		admission.mcpRevision = mcpRevisions[name]
+		admission.resolverRevision = resolverRevision
 		admission.candidate = true
 		wg.Add(1)
 		go func(name string, m config.MCPConfig, admission serverAdmission) {
@@ -2012,7 +2056,9 @@ func InitializeSingle(ctx context.Context, name string, cfg *config.ConfigStore)
 		return ctx.Err()
 	}
 
-	m, exists := cfg.MCPConfig(name)
+	admissionSnapshot := cfg.SnapshotMCPAdmission(name)
+	resolver := admissionSnapshot.Resolver
+	m, exists := admissionSnapshot.MCPConfig, admissionSnapshot.Exists
 	if !exists {
 		lease.Unlock()
 		return fmt.Errorf("mcp '%s' not found in configuration", name)
@@ -2060,8 +2106,10 @@ func InitializeSingle(ctx context.Context, name string, cfg *config.ConfigStore)
 		lease.Unlock()
 		return err
 	}
+	admitted.mcpRevision = admissionSnapshot.MCPRevision
+	admitted.resolverRevision = admissionSnapshot.ResolverRevision
 	lease.Unlock()
-	return initClientAdmitted(admitted.ctx, cfg, name, m, cfg.Resolver(), &admitted)
+	return initClientAdmitted(admitted.ctx, cfg, name, m, resolver, &admitted)
 }
 
 func initClientAdmitted(ctx context.Context, cfg *config.ConfigStore, name string, m config.MCPConfig, resolver config.VariableResolver, admission *serverAdmission) error {
@@ -2148,6 +2196,9 @@ func prepareClient(ctx context.Context, cfg *config.ConfigStore, name string, m 
 }
 
 func publishPreparedClient(cfg *config.ConfigStore, name string, prepared *preparedClient, admission *serverAdmission) error {
+	if admission != nil && admission.mutationResult != nil {
+		return publishPreparedClientWithMutation(cfg, name, prepared, admission)
+	}
 	session := prepared.session
 	lease := serverLeaseFor(name)
 	lockCtx := context.Background()
@@ -2168,6 +2219,55 @@ func publishPreparedClient(cfg *config.ConfigStore, name string, prepared *prepa
 		retireMCPClient(name, oldSession)
 	}
 	return nil
+}
+
+func publishPreparedClientWithMutation(cfg *config.ConfigStore, name string, prepared *preparedClient, admission *serverAdmission) error {
+	if admission == nil || admission.mutationResult == nil {
+		return publishPreparedClient(cfg, name, prepared, admission)
+	}
+	session := prepared.session
+	lockCtx := context.Background()
+	if admission.ctx != nil {
+		lockCtx = admission.ctx
+	}
+	lease := serverLeaseFor(name)
+	if !lease.lockContext(lockCtx, true) {
+		closeMCPClient(name, session)
+		return lockCtx.Err()
+	}
+	var oldSession *ClientSession
+	publicationErr := cfg.WithCurrentMCPMutation(*admission.mutationResult, func() error {
+		var err error
+		oldSession, err = publishPreparedClientLocked(cfg, name, prepared, admission)
+		return err
+	})
+	lease.Unlock()
+	if publicationErr != nil {
+		closeMCPClient(name, session)
+		return publicationErr
+	}
+	if oldSession != nil && oldSession != session {
+		retireMCPClient(name, oldSession)
+	}
+	return nil
+}
+
+func publishPreparedClientLockedWithMutation(
+	cfg *config.ConfigStore,
+	name string,
+	prepared *preparedClient,
+	admission *serverAdmission,
+) (*ClientSession, error) {
+	if admission == nil || admission.mutationResult == nil {
+		return publishPreparedClientLocked(cfg, name, prepared, admission)
+	}
+	var oldSession *ClientSession
+	err := cfg.WithCurrentMCPMutation(*admission.mutationResult, func() error {
+		var err error
+		oldSession, err = publishPreparedClientLocked(cfg, name, prepared, admission)
+		return err
+	})
+	return oldSession, err
 }
 
 // publishPreparedClientLocked publishes a prepared client while the caller
@@ -2211,6 +2311,7 @@ func publishPreparedClientLocked(cfg *config.ConfigStore, name string, prepared 
 	sessions.Set(name, session)
 	if admission != nil {
 		admission.committed = true
+		admission.publishedSession = session
 	}
 	counts := Counts{
 		Tools:   toolCount,
@@ -2342,6 +2443,10 @@ func disableServerWithResultPersistence(
 		unlock()
 		return ErrMCPConfigUncertain
 	}
+	if !o.acceptsSession() {
+		unlock()
+		return ErrOwnerBusy
+	}
 	// Resolve the origin while holding the ordered server lease. A user
 	// workspace definition must stay in the workspace file, while project,
 	// system, external, and otherwise unrepresentable definitions fail closed.
@@ -2358,6 +2463,10 @@ func disableServerWithResultPersistence(
 		fullConfig := mcpCfg
 		fullConfig.Disabled = true
 		pending = &fullConfig
+	}
+	if !o.acceptsSession() {
+		unlock()
+		return ErrOwnerBusy
 	}
 	result, err := persist(cfg, scope, name, pending)
 	if err != nil {
@@ -2560,6 +2669,14 @@ func enableServerWithPersistenceAndInitializerAndRollback(
 	// The new admission below is the only initializer allowed to publish this
 	// epoch. A failed persistence round-trip therefore leaves the old epoch
 	// untouched and the operation has no half-applied lifecycle result.
+	admissionSnapshot := cfg.SnapshotMCPAdmission(name)
+	resolver := admissionSnapshot.Resolver
+	if result.Generation != 0 && admissionSnapshot.Generation != result.Generation {
+		detached, rollbackErr := rollbackAndReport(config.ErrMCPMutationStale)
+		lease.Unlock()
+		retireMCPClient(name, detached)
+		return rollbackErr
+	}
 	o.invalidateServer(name)
 	if !result.NewExists {
 		if commitUncertainty != nil {
@@ -2573,7 +2690,7 @@ func enableServerWithPersistenceAndInitializerAndRollback(
 		retireMCPClient(name, detached)
 		return rollbackErr
 	}
-	admission, err := o.admitServer(ctx, cfg, name, true)
+	admission, err := o.admitServerForConfig(ctx, cfg, name, result.NewConfig, true)
 	if err != nil {
 		if commitUncertainty != nil {
 			detached := fenceMCPRuntimeLocked(o, cfg, name)
@@ -2587,8 +2704,16 @@ func enableServerWithPersistenceAndInitializerAndRollback(
 		return rollbackErr
 	}
 	admission.candidate = true
+	admission.mcpRevision = admissionSnapshot.MCPRevision
+	admission.resolverRevision = admissionSnapshot.ResolverRevision
+	admission.mutationResult = &result
+	if !admission.valid() {
+		detached, rollbackErr := rollbackAndReport(config.ErrMCPMutationStale)
+		lease.Unlock()
+		retireMCPClient(name, detached)
+		return rollbackErr
+	}
 	updateAdmissionState(&admission, StateStarting, nil, nil, Counts{})
-	resolver := cfg.Resolver()
 	lease.Unlock()
 	go func() {
 		if err := initialize(ctx, cfg, name, result.NewConfig, resolver, &admission); err != nil {
@@ -2740,6 +2865,10 @@ func replaceServerWithResultPersistenceAndPreparation(
 	locked, lockedOK := lockServerLeasesContext(ctx, oldName, newName)
 	if !lockedOK {
 		return ctx.Err()
+	}
+	if o.pendingGlobalAdd(newName, cfg) != nil {
+		unlockServerLeases(locked)
+		return fmt.Errorf("MCP server %q has a pending add: %w", newName, config.ErrMCPTargetExists)
 	}
 	_, exists := cfg.MCPConfig(oldName)
 	if !exists {
@@ -3103,13 +3232,17 @@ func addServerWithInitializerAndPersistence(
 		lease.Unlock()
 		return fmt.Errorf("MCP server %q already exists", name)
 	}
-	admission, err := o.admitServer(ctx, cfg, name, true)
+	admissionSnapshot := cfg.SnapshotMCPAdmission(name)
+	resolver := admissionSnapshot.Resolver
+	admission, err := o.admitServerForConfig(ctx, cfg, name, mcpCfg, true)
 	if err != nil {
 		_, _ = cfg.RemoveMCP(name)
 		lease.Unlock()
 		return err
 	}
 	admission.candidate = true
+	admission.mcpRevision = admissionSnapshot.MCPRevision
+	admission.resolverRevision = admissionSnapshot.ResolverRevision
 	admission.deferDone = true
 	admission.suppressState = true
 	admission.suppressUntilCommit = true
@@ -3121,7 +3254,6 @@ func addServerWithInitializerAndPersistence(
 		return ErrOwnerBusy
 	}
 	defer o.completePendingGlobalAdd(transaction)
-	resolver := cfg.Resolver()
 	// Keep the lease entry alive while initialization runs without the write
 	// lock. RemoveServer must then wait on this exact lease instance instead of
 	// racing a reclaimed entry with an ABA replacement.
@@ -3130,6 +3262,15 @@ func addServerWithInitializerAndPersistence(
 		o.completePendingGlobalAdd(transaction)
 		_, _ = cfg.RemoveMCP(name)
 		lease.Unlock()
+		return ErrOwnerBusy
+	}
+	if !admission.valid() {
+		detached := rollbackAddedServer(o, cfg, name, &admission, transaction)
+		prepared := discardPreparedClient(&admission)
+		admission.done()
+		lease.Unlock()
+		retireMCPClient(name, detached)
+		closeMCPClient(name, prepared)
 		return ErrOwnerBusy
 	}
 	// This is the initialization identity reference. It must be released on
@@ -3239,6 +3380,10 @@ func addServerWithInitializerAndPersistence(
 		closeMCPClient(name, prepared)
 		return fmt.Errorf("MCP server %q disappeared while persisting: %w", name, config.ErrMCPNotFound)
 	}
+	transaction.markDurable()
+	resultSnapshot := cfg.SnapshotMCPAdmission(name)
+	admission.mcpRevision = resultSnapshot.MCPRevision
+	admission.mutationResult = &result
 	// The durable Add outcome is complete before releasing the lease. A later
 	// RemoveServer must then use the ordinary conditional remove path rather
 	// than treating an already-persisted Add as still pending.
@@ -3252,7 +3397,7 @@ func addServerWithInitializerAndPersistence(
 		admission.publishingPrepared = true
 		admission.prepared = nil
 		lifecycleMu.Unlock()
-		oldSession, publishErr = publishPreparedClientLocked(cfg, name, prepared, &admission)
+		oldSession, publishErr = publishPreparedClientLockedWithMutation(cfg, name, prepared, &admission)
 	}
 	lease.Unlock()
 	if oldSession != nil && (prepared == nil || oldSession != prepared.session) {
@@ -3291,20 +3436,72 @@ func discardPreparedClient(admission *serverAdmission) *ClientSession {
 // rollbackAddedServer removes only the server instance represented by the
 // exact add transaction. Callers hold the per-server write lease, so a newer
 // same-name transaction cannot be removed by a stale rollback. Its detached
-// session is retired and closed after that lease is released.
+// session is retired and closed after that lease is released. Owner.Close may
+// be closing; the exact pending transaction is still safe to clean up.
 func rollbackAddedServer(o *Owner, cfg *config.ConfigStore, name string, admission *serverAdmission, transaction *addTransaction) *ClientSession {
 	if admission == nil || admission.owner != o || admission.name != name || transaction == nil ||
-		transaction.hasUserMutation() || o.pendingGlobalAdd(name, cfg) != transaction {
+		transaction.hasUserMutation() || transaction.isDurable() {
+		return nil
+	}
+	lifecycleMu.Lock()
+	valid := rollbackAdmissionValidLocked(o, cfg, name, admission, transaction, true)
+	expectedRevision := admission.mcpRevision
+	if expectedRevision == 0 {
+		expectedRevision = cfg.SnapshotMCPAdmission(name).MCPRevision
+	}
+	if !valid {
+		lifecycleMu.Unlock()
+		return nil
+	}
+	lifecycleMu.Unlock()
+	if _, removed := cfg.RemoveMCPIfCurrent(name, transaction.mcpConfig, expectedRevision); !removed {
+		return nil
+	}
+	lifecycleMu.Lock()
+	if !rollbackAdmissionValidLocked(o, cfg, name, admission, transaction, false) {
+		lifecycleMu.Unlock()
 		return nil
 	}
 	detached := detachSessionLocked(name)
-	if current, ok := cfg.MCPConfig(name); ok && reflect.DeepEqual(current, transaction.mcpConfig) {
-		_, _ = cfg.RemoveMCP(name)
-	}
-	o.invalidateServer(name)
+	canceled := o.invalidateServerLocked(name)
 	clearAdvertised(name)
 	states.Del(name)
+	lifecycleMu.Unlock()
+	for _, cancel := range canceled {
+		cancel()
+	}
 	return detached
+}
+
+func rollbackAdmissionValidLocked(
+	o *Owner,
+	cfg *config.ConfigStore,
+	name string,
+	admission *serverAdmission,
+	transaction *addTransaction,
+	configPresent bool,
+) bool {
+	if owner != o || o.generation != admission.generation ||
+		o.serverEpochs[name] != admission.epoch || o.pendingGlobalAdds[name] != transaction {
+		return false
+	}
+	currentSession, sessionExists := sessions.Get(name)
+	if admission.publishedSession != nil {
+		if !sessionExists || currentSession != admission.publishedSession {
+			return false
+		}
+	} else if sessionExists {
+		return false
+	}
+	if !configPresent {
+		_, exists := cfg.MCPConfig(name)
+		return !exists
+	}
+	if admission.mcpRevision != 0 && cfg.SnapshotMCPAdmission(name).MCPRevision != admission.mcpRevision {
+		return false
+	}
+	currentConfig, exists := cfg.MCPConfig(name)
+	return exists && reflect.DeepEqual(currentConfig, transaction.mcpConfig)
 }
 
 // RemoveServer removes an MCP server, closes its session, and removes it from config.
@@ -3389,6 +3586,10 @@ func removeServerWithResultPersistence(
 		unlock()
 		return ErrMCPConfigUncertain
 	}
+	if !o.acceptsSession() {
+		unlock()
+		return ErrOwnerBusy
+	}
 	if !exists {
 		unlock()
 		return fmt.Errorf("MCP server %q disappeared while removing: %w", name, config.ErrMCPNotFound)
@@ -3398,6 +3599,10 @@ func removeServerWithResultPersistence(
 		return fmt.Errorf("MCP server %q is from .mcp.json and cannot be removed (disable it instead): %w", name, config.ErrMCPExternal)
 	}
 	if transaction := o.pendingGlobalAdd(name, cfg); transaction != nil {
+		if !o.acceptsSession() {
+			unlock()
+			return ErrOwnerBusy
+		}
 		result, persistErr := persist(cfg, config.ScopeGlobal, name)
 		var commitUncertainty error
 		if persistErr != nil {
@@ -3439,6 +3644,10 @@ func removeServerWithResultPersistence(
 	if err != nil {
 		unlock()
 		return fmt.Errorf("cannot determine writable scope for MCP server %q: %w", name, err)
+	}
+	if !o.acceptsSession() {
+		unlock()
+		return ErrOwnerBusy
 	}
 	result, err := persist(cfg, scope, name)
 	var commitUncertainty error
@@ -3674,7 +3883,9 @@ func startFallback(ctx context.Context, cfg *config.ConfigStore, name string, mc
 		lease.Unlock()
 		return
 	}
-	current, exists := cfg.MCPConfig(name)
+	admissionSnapshot := cfg.SnapshotMCPAdmission(name)
+	resolver := admissionSnapshot.Resolver
+	current, exists := admissionSnapshot.MCPConfig, admissionSnapshot.Exists
 	if !exists || !reflect.DeepEqual(current, mcpCfg) {
 		lease.Unlock()
 		return
@@ -3697,8 +3908,9 @@ func startFallback(ctx context.Context, cfg *config.ConfigStore, name string, mc
 		}
 		return
 	}
+	admission.mcpRevision = admissionSnapshot.MCPRevision
+	admission.resolverRevision = admissionSnapshot.ResolverRevision
 	updateAdmissionState(&admission, StateStarting, nil, nil, Counts{})
-	resolver := cfg.Resolver()
 	lease.Unlock()
 	go func() {
 		if err := initClientAdmittedWithState(ctx, cfg, name, current, resolver, &admission, false); err != nil {
@@ -4196,6 +4408,18 @@ func updateAdmissionState(admission *serverAdmission, state State, err error, cl
 		updateState("", state, err, client, counts)
 		return
 	}
+	if admission.mutationResult != nil {
+		mutation := admission.mutationResult
+		_ = admission.cfg.WithCurrentMCPMutation(*mutation, func() error {
+			updateAdmissionStateUnpinned(admission, state, err, client, counts)
+			return nil
+		})
+		return
+	}
+	updateAdmissionStateUnpinned(admission, state, err, client, counts)
+}
+
+func updateAdmissionStateUnpinned(admission *serverAdmission, state State, err error, client *ClientSession, counts Counts) {
 	lifecycleMu.Lock()
 	if (admission.suppressState && !admission.committed) || !admission.validLocked() {
 		lifecycleMu.Unlock()

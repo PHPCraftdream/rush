@@ -1039,6 +1039,7 @@ func (s *ConfigStore) publishMCPMutationLocked(result MCPMutationResult) {
 		}
 	}
 	next.config = &cfg
+	next.mcpRevisions = bumpMCPRevisions(cur.mcpRevisions, result.OldName, result.NewName)
 	if len(result.committedFingerprints) > 0 {
 		if next.snapshots == nil {
 			next.snapshots = make(map[string]fileSnapshot)

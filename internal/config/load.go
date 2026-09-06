@@ -123,9 +123,11 @@ func loadOnce(workingDir, dataDir string, debug bool) (*ConfigStore, error) {
 		}
 	}
 	store.snap.Store(&storeSnapshot{
-		config:        cfg,
-		workspacePath: workspacePath,
-		loadedPaths:   loadedPaths,
+		config:           cfg,
+		mcpRevisions:     initialMCPRevisions(cfg),
+		resolverRevision: 1,
+		workspacePath:    workspacePath,
+		loadedPaths:      loadedPaths,
 	})
 
 	// Load MCP servers from .mcp.json files (Claude Code format) and merge
@@ -236,6 +238,9 @@ func loadOnce(workingDir, dataDir string, debug bool) (*ConfigStore, error) {
 		store.snap.Store(&storeSnapshot{
 			config:             cfg,
 			resolver:           valueResolver,
+			mcpRevisions:       initialMCPRevisions(cfg),
+			mcpInputs:          mcpInputFingerprints(configDocuments, externalDocuments),
+			resolverRevision:   1,
 			knownProviders:     knownProviders,
 			loadedPaths:        loadedPaths,
 			trackedConfigPaths: trackedPaths,
