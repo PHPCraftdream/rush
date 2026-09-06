@@ -551,6 +551,7 @@ func (s *ConfigStore) writeMCPFileChanges(files *mcpLockedFiles) error {
 			return fmt.Errorf("failed to determine config owner: %w", err)
 		}
 		committed, commitErr := commitConfigFile(record.selectedPath, record.commitPath, record.data, 0o600, record.expectation, owner, enforce)
+		commitReturnedNil := commitErr == nil
 		if commitErr != nil {
 			if errors.Is(commitErr, errConfigCommitDurabilityUncertain) {
 				// Directory fsync failure is never converted to success. The
@@ -562,7 +563,13 @@ func (s *ConfigStore) writeMCPFileChanges(files *mcpLockedFiles) error {
 					return &mcpCommitUncertainError{cause: commitErr}
 				}
 				committed = reconciled
-				applyCommittedMCPFingerprint(files, record, committed)
+				if fingerprintErr := s.applyCommittedMCPFingerprint(files, record, committed); fingerprintErr != nil {
+					cause := commitErr
+					if outcome, outcomeOK := CommitOutcomeFromError(commitErr); outcomeOK {
+						cause = cloneCommitOutcome(outcome, false)
+					}
+					return &mcpCommitUncertainError{cause: errors.Join(cause, fingerprintErr)}
+				}
 				record.expectation = committed
 				if outcome, outcomeOK := CommitOutcomeFromError(commitErr); outcomeOK {
 					commitErr = cloneCommitOutcome(outcome, true)
@@ -583,7 +590,13 @@ func (s *ConfigStore) writeMCPFileChanges(files *mcpLockedFiles) error {
 						return &mcpCommitUncertainError{cause: commitErr}
 					}
 					committed = reconciled
-					applyCommittedMCPFingerprint(files, record, committed)
+					if fingerprintErr := s.applyCommittedMCPFingerprint(files, record, committed); fingerprintErr != nil {
+						cause := commitErr
+						if outcome, outcomeOK := CommitOutcomeFromError(commitErr); outcomeOK {
+							cause = cloneCommitOutcome(outcome, false)
+						}
+						return &mcpCommitUncertainError{cause: errors.Join(cause, fingerprintErr)}
+					}
 					record.expectation = committed
 					if outcome, outcomeOK := CommitOutcomeFromError(commitErr); outcomeOK {
 						commitErr = cloneCommitOutcome(outcome, true)
@@ -597,7 +610,14 @@ func (s *ConfigStore) writeMCPFileChanges(files *mcpLockedFiles) error {
 				return fmt.Errorf("failed to write config file: %w", commitErr)
 			}
 		}
-		applyCommittedMCPFingerprint(files, record, committed)
+		if commitReturnedNil {
+			runConfigAfterMCPCommitHook(record.commitPath)
+		}
+		if fingerprintErr := s.applyCommittedMCPFingerprint(files, record, committed); fingerprintErr != nil {
+			outcome := newCommitOutcome(record.commitPath, true, false,
+				errConfigCommitCommitted, errConfigCommitUncertain, fingerprintErr)
+			return &mcpCommitUncertainError{cause: outcome}
+		}
 		record.expectation = committed
 	}
 	return nil
@@ -616,20 +636,31 @@ func (s *ConfigStore) reconcileMCPCommit(record *mcpFileRecord) (reloadFileFinge
 	return fingerprint, true
 }
 
-func applyCommittedMCPFingerprint(files *mcpLockedFiles, record *mcpFileRecord, committed reloadFileFingerprint) {
+func (s *ConfigStore) applyCommittedMCPFingerprint(files *mcpLockedFiles, record *mcpFileRecord, committed reloadFileFingerprint) error {
+	paths := make(map[string]struct{}, len(record.aliases)+2)
 	for alias := range record.aliases {
-		aliasFingerprint := files.fingerprints[alias]
-		aliasFingerprint.exists = committed.exists
-		aliasFingerprint.size = committed.size
-		aliasFingerprint.modTime = committed.modTime
-		aliasFingerprint.digest = committed.digest
-		aliasFingerprint.owner = committed.owner
-		aliasFingerprint.nlink = committed.nlink
-		aliasFingerprint.identity = committed.identity
-		files.fingerprints[alias] = aliasFingerprint
+		paths[normalizeDiscoveryPath(alias)] = struct{}{}
 	}
-	files.fingerprints[record.selectedPath] = committed
-	files.fingerprints[record.commitPath] = committed
+	paths[normalizeDiscoveryPath(record.selectedPath)] = struct{}{}
+	paths[normalizeDiscoveryPath(record.commitPath)] = struct{}{}
+	delete(paths, "")
+
+	for path := range paths {
+		expectedOwner, enforceOwner, ownerErr := s.mcpOwnerPolicy(path)
+		if ownerErr != nil {
+			return fmt.Errorf("%w: failed to determine config owner for %s: %w", errConfigCommitUncertain, path, ownerErr)
+		}
+		_, fingerprint, readErr := readStableConfigFileOwned(path, expectedOwner, enforceOwner)
+		if readErr != nil && !os.IsNotExist(readErr) {
+			return fmt.Errorf("%w: failed to reread committed config spelling %s: %w", errConfigCommitUncertain, path, readErr)
+		}
+		if fingerprint.exists != committed.exists || committed.exists &&
+			(fingerprint.digest != committed.digest || committed.identity.valid && fingerprint.identity != committed.identity) {
+			return fmt.Errorf("%w: committed config spelling %s does not match the published file", errConfigCommitUncertain, path)
+		}
+		files.fingerprints[path] = fingerprint
+	}
+	return nil
 }
 
 func (s *ConfigStore) evaluateMCPFiles(files *mcpLockedFiles) (mcpEvaluation, error) {

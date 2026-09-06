@@ -84,6 +84,60 @@ func TestMCPPostRenameFailureReconcilesCommittedDocument(t *testing.T) {
 	require.False(t, store.ConfigStaleness().Dirty)
 }
 
+func TestMCPPostCommitFingerprintFailureReturnsUnreconciledOutcome(t *testing.T) {
+	isolateAllGlobalConfigPaths(t)
+	root := t.TempDir()
+	physical := filepath.Join(root, "project", "rush.json")
+	alias := filepath.Join(root, "workspace", "rush.json")
+	setMCPFile(t, physical, "old", "http://old.example")
+	require.NoError(t, os.MkdirAll(filepath.Dir(alias), 0o755))
+	if err := os.Symlink(physical, alias); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	store := newTestConfigStore(testStoreOpts{
+		config:         &Config{MCP: MCPs{"old": {Type: MCPHttp, URL: "http://old.example"}}},
+		globalDataPath: physical,
+		workspacePath:  alias,
+	})
+	store.workingDir = root
+	store.captureStalenessSnapshot([]string{physical, alias})
+	beforeGeneration := store.Generation()
+	configTestHooks.Lock()
+	previous := configTestHooks.afterMCPCommit
+	var commitReturnedNil bool
+	configTestHooks.afterMCPCommit = func(path string) {
+		if normalizeReloadPath(path) == normalizeReloadPath(physical) {
+			commitReturnedNil = true
+			require.NoError(t, os.Remove(alias))
+		}
+	}
+	configTestHooks.Unlock()
+	t.Cleanup(func() {
+		configTestHooks.Lock()
+		configTestHooks.afterMCPCommit = previous
+		configTestHooks.Unlock()
+	})
+
+	err := store.PersistMCPConfigExact(ScopeWorkspace, "new", MCPConfig{
+		Type: MCPHttp, URL: "http://new.example",
+	})
+	require.True(t, commitReturnedNil, "the fingerprint failure must occur after a nil commit result")
+	outcome, ok := CommitOutcomeFromError(err)
+	require.True(t, ok)
+	require.True(t, outcome.Committed)
+	require.False(t, outcome.Reconciled)
+	require.Equal(t, normalizeReloadPath(physical), outcome.Path)
+	require.ErrorIs(t, outcome, errConfigCommitCommitted)
+	require.ErrorIs(t, outcome, errConfigCommitUncertain)
+	require.ErrorIs(t, err, ErrMCPCommitUncertain)
+	require.False(t, mcpCommitWasReconciled(err))
+	require.Equal(t, beforeGeneration, store.Generation())
+	_, exists := store.MCPConfig("new")
+	require.False(t, exists)
+	require.True(t, store.ConfigStaleness().Dirty)
+}
+
 func TestConfigWriteSymlinkAliasesSharePhysicalSidecarLock(t *testing.T) {
 	root := t.TempDir()
 	target := filepath.Join(root, "target.json")

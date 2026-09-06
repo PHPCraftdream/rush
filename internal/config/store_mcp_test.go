@@ -61,6 +61,44 @@ func TestConfigStoreExternalMCPDisabledOverlayPreservesDefinitionAcrossReloadAnd
 	assertExternalMCPDefinition(true, restarted)
 }
 
+func TestApplyCommittedMCPFingerprintRereadsEverySpelling(t *testing.T) {
+	root := t.TempDir()
+	physicalPath := filepath.Join(root, "physical", "rush.json")
+	aliasPath := filepath.Join(root, "alias", "rush.json")
+	initial := []byte(`{"mcp":{}}`)
+	committedData := []byte(`{"mcp":{"server":{"type":"http","url":"http://new.example"}}}`)
+	require.NoError(t, os.MkdirAll(filepath.Dir(physicalPath), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Dir(aliasPath), 0o755))
+	require.NoError(t, os.WriteFile(physicalPath, initial, 0o600))
+	if err := os.Symlink(physicalPath, aliasPath); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	_, aliasBefore, err := readStableConfigFile(aliasPath)
+	require.NoError(t, err)
+	physical := normalizeDiscoveryPath(physicalPath)
+	alias := normalizeDiscoveryPath(aliasPath)
+	files := &mcpLockedFiles{fingerprints: map[string]reloadFileFingerprint{alias: aliasBefore}}
+	record := &mcpFileRecord{
+		selectedPath: alias,
+		commitPath:   physical,
+		aliases:      map[string]struct{}{alias: {}},
+	}
+	store := newTestConfigStore(testStoreOpts{})
+	require.NoError(t, os.WriteFile(physicalPath, committedData, 0o600))
+	_, committed, err := readStableConfigFile(aliasPath)
+	require.NoError(t, err)
+
+	require.NoError(t, store.applyCommittedMCPFingerprint(files, record, committed))
+
+	_, physicalAfter, err := readStableConfigFile(physicalPath)
+	require.NoError(t, err)
+	_, aliasAfter, err := readStableConfigFile(aliasPath)
+	require.NoError(t, err)
+	require.Equal(t, physicalAfter, files.fingerprints[physical])
+	require.Equal(t, aliasAfter, files.fingerprints[alias])
+	require.NotEqual(t, physicalAfter.discovery, aliasAfter.discovery)
+}
+
 func TestConfigStoreResolveMCPWritableScope(t *testing.T) {
 	t.Run("global", func(t *testing.T) {
 		store, _ := isolatedMCPConfigStore(t)

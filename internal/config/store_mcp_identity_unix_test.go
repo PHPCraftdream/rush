@@ -99,7 +99,7 @@ func TestOwnedConfigReadChecksOwnerOnOpenedFile(t *testing.T) {
 func TestExactWorkspaceMutationSharesPhysicalSymlinkDocument(t *testing.T) {
 	root := t.TempDir()
 	global := filepath.Join(root, "global", "rush.json")
-	project := filepath.Join(root, "rush.json")
+	project := filepath.Join(root, "project", "rush.json")
 	workspace := filepath.Join(root, "workspace", "rush.json")
 	setMCPFile(t, project, "old", "http://old.example")
 	require.NoError(t, os.MkdirAll(filepath.Dir(workspace), 0o755))
@@ -128,6 +128,17 @@ func TestExactWorkspaceMutationSharesPhysicalSymlinkDocument(t *testing.T) {
 	workspaceData, err := os.ReadFile(workspace)
 	require.NoError(t, err)
 	require.Equal(t, projectData, workspaceData)
+	_, projectAfter, err := readStableConfigFile(project)
+	require.NoError(t, err)
+	_, workspaceAfter, err := readStableConfigFile(workspace)
+	require.NoError(t, err)
+	projectFingerprint := store.loadSnapshot().snapshots[normalizeDiscoveryPath(project)].fingerprint
+	workspaceFingerprint := store.loadSnapshot().snapshots[normalizeDiscoveryPath(workspace)].fingerprint
+	require.Equal(t, projectAfter, projectFingerprint)
+	require.Equal(t, workspaceAfter, workspaceFingerprint)
+	require.NotEqual(t, projectAfter.discovery, workspaceAfter.discovery)
+	require.NotEqual(t, projectAfter.parentDiscovery, workspaceAfter.parentDiscovery)
+	require.NotEqual(t, projectAfter.parentIdentity, workspaceAfter.parentIdentity)
 	require.False(t, store.ConfigStaleness().Dirty)
 }
 

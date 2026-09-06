@@ -85,18 +85,20 @@ var configTestHooks struct {
 	beforeCommitCheck     func()
 	afterCommitRename     func() error
 	afterCommitRenamePath func(string) error
-	beforeCommitRename    func()
-	beforeMCPReconcile    func(string, []byte)
-	forceLinkNoReplace    bool
-	renameNoReplace       func(int, string, int, string) error
-	renameatxNp           func(int, string, int, string, uint32) error
-	moveFileEx            func(*uint16, *uint16, uint32) error
-	setFileInformation    func(uintptr, uint32, *byte, uint32) error
-	flushFileBuffers      func(uintptr) error
-	unlinkTemp            func(int, string) error
-	syncParent            func(string) error
-	syncParentFD          func(int) error
-	syncParentFile        func(*os.File) error
+	// Test-only seam after a successful MCP commit.
+	afterMCPCommit     func(string)
+	beforeCommitRename func()
+	beforeMCPReconcile func(string, []byte)
+	forceLinkNoReplace bool
+	renameNoReplace    func(int, string, int, string) error
+	renameatxNp        func(int, string, int, string, uint32) error
+	moveFileEx         func(*uint16, *uint16, uint32) error
+	setFileInformation func(uintptr, uint32, *byte, uint32) error
+	flushFileBuffers   func(uintptr) error
+	unlinkTemp         func(int, string) error
+	syncParent         func(string) error
+	syncParentFD       func(int) error
+	syncParentFile     func(*os.File) error
 }
 
 func runConfigBeforeOpenHook(path string) {
@@ -139,6 +141,15 @@ func runConfigAfterCommitRenameHookForPath(path string) error {
 		return hook()
 	}
 	return nil
+}
+
+func runConfigAfterMCPCommitHook(path string) {
+	configTestHooks.Lock()
+	hook := configTestHooks.afterMCPCommit
+	configTestHooks.Unlock()
+	if hook != nil {
+		hook(path)
+	}
 }
 
 func runConfigBeforeCommitRenameHook() {

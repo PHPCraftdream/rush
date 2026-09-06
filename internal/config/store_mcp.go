@@ -60,9 +60,13 @@ func committedMCPFingerprints(files *mcpLockedFiles) map[string]reloadFileFinger
 			continue
 		}
 		for alias := range record.aliases {
-			result[alias] = files.fingerprints[alias]
+			if fingerprint, ok := files.fingerprints[alias]; ok {
+				result[alias] = fingerprint
+			}
 		}
-		result[record.commitPath] = files.fingerprints[record.commitPath]
+		if fingerprint, ok := files.fingerprints[record.commitPath]; ok {
+			result[record.commitPath] = fingerprint
+		}
 	}
 	return result
 }
