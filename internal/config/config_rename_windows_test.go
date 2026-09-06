@@ -119,6 +119,222 @@ func TestWindowsCommitMoveFileExAccessDeniedBeforePublicationLeavesIdenticalDest
 	}
 }
 
+func TestWindowsCommitHandleRetryRejectsInPlaceDestinationRewrite(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "rush.json")
+	oldData := []byte(`{"old":true}`)
+	changedData := []byte(`{"writer":true}`)
+	newData := []byte(`{"new":true}`)
+	require.NoError(t, os.WriteFile(path, oldData, 0o600))
+	_, expected, err := readStableConfigFile(path)
+	require.NoError(t, err)
+
+	attempts := 0
+	configTestHooks.Lock()
+	previous := configTestHooks.setFileInformation
+	configTestHooks.setFileInformation = func(_ uintptr, class uint32, _ *byte, _ uint32) error {
+		if class == windows.FileRenameInfoEx || class == windows.FileRenameInfo {
+			attempts++
+			if attempts == 1 {
+				require.NoError(t, os.WriteFile(path, changedData, 0o600))
+				return windows.ERROR_ACCESS_DENIED
+			}
+		}
+		return nil
+	}
+	configTestHooks.Unlock()
+	t.Cleanup(func() {
+		configTestHooks.Lock()
+		configTestHooks.setFileInformation = previous
+		configTestHooks.Unlock()
+	})
+
+	_, err = commitConfigFile(path, path, newData, 0o600, expected, -1, false)
+	var outcome *CommitOutcome
+	require.ErrorAs(t, err, &outcome)
+	require.False(t, outcome.Committed)
+	require.ErrorIs(t, outcome, errConfigCommitVerification)
+	require.Equal(t, 1, attempts)
+	require.Equal(t, changedData, mustReadFile(t, path))
+}
+
+func TestWindowsCommitHandleNoReplaceRetryRejectsDestinationCreation(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "rush.json")
+	newData := []byte(`{"new":true}`)
+	_, expected, err := readStableConfigFile(path)
+	require.ErrorIs(t, err, os.ErrNotExist)
+
+	attempts := 0
+	configTestHooks.Lock()
+	previous := configTestHooks.setFileInformation
+	configTestHooks.setFileInformation = func(_ uintptr, class uint32, _ *byte, _ uint32) error {
+		if class == windows.FileRenameInfoEx || class == windows.FileRenameInfo {
+			attempts++
+			if attempts == 1 {
+				require.NoError(t, os.WriteFile(path, []byte(`{"writer":true}`), 0o600))
+				return windows.ERROR_ACCESS_DENIED
+			}
+		}
+		return nil
+	}
+	configTestHooks.Unlock()
+	t.Cleanup(func() {
+		configTestHooks.Lock()
+		configTestHooks.setFileInformation = previous
+		configTestHooks.Unlock()
+	})
+
+	_, err = commitConfigFile(path, path, newData, 0o600, expected, -1, false)
+	var outcome *CommitOutcome
+	require.ErrorAs(t, err, &outcome)
+	require.False(t, outcome.Committed)
+	require.ErrorIs(t, outcome, errConfigCommitVerification)
+	require.Equal(t, 1, attempts)
+	require.Equal(t, []byte(`{"writer":true}`), mustReadFile(t, path))
+}
+
+func TestWindowsCommitHandleRetryUnchangedDestinationSucceeds(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "rush.json")
+	oldData := []byte(`{"old":true}`)
+	newData := []byte(`{"new":true}`)
+	require.NoError(t, os.WriteFile(path, oldData, 0o600))
+	_, expected, err := readStableConfigFile(path)
+	require.NoError(t, err)
+
+	attempts := 0
+	configTestHooks.Lock()
+	previous := configTestHooks.setFileInformation
+	configTestHooks.setFileInformation = func(_ uintptr, class uint32, _ *byte, _ uint32) error {
+		if class == windows.FileRenameInfoEx || class == windows.FileRenameInfo {
+			attempts++
+			if attempts == 1 {
+				configTestHooks.Lock()
+				configTestHooks.setFileInformation = nil
+				configTestHooks.Unlock()
+				return windows.ERROR_ACCESS_DENIED
+			}
+		}
+		return nil
+	}
+	configTestHooks.Unlock()
+	t.Cleanup(func() {
+		configTestHooks.Lock()
+		configTestHooks.setFileInformation = previous
+		configTestHooks.Unlock()
+	})
+
+	_, err = commitConfigFile(path, path, newData, 0o600, expected, -1, false)
+	require.NoError(t, err)
+	require.Equal(t, 1, attempts)
+	require.Equal(t, newData, mustReadFile(t, path))
+}
+
+func TestWindowsCommitHandleUnsupportedFallbackRejectsDestinationRewrite(t *testing.T) {
+	for _, unsupported := range []struct {
+		name string
+		err  error
+	}{
+		{name: "invalid parameter", err: windows.ERROR_INVALID_PARAMETER},
+		{name: "not supported", err: windows.ERROR_NOT_SUPPORTED},
+	} {
+		t.Run(unsupported.name, func(t *testing.T) {
+			root := t.TempDir()
+			path := filepath.Join(root, "rush.json")
+			oldData := []byte(`{"old":true}`)
+			writerData := []byte(`{"writer":true}`)
+			newData := []byte(`{"new":true}`)
+			require.NoError(t, os.WriteFile(path, oldData, 0o600))
+			_, expected, err := readStableConfigFile(path)
+			require.NoError(t, err)
+
+			calls := 0
+			configTestHooks.Lock()
+			previousRename := configTestHooks.setFileInformation
+			previousBeforeRename := configTestHooks.beforeCommitRename
+			configTestHooks.beforeCommitRename = func() {}
+			configTestHooks.setFileInformation = func(_ uintptr, class uint32, _ *byte, _ uint32) error {
+				if class == windows.FileRenameInfoEx {
+					calls++
+					require.NoError(t, os.WriteFile(path, writerData, 0o600))
+					return unsupported.err
+				}
+				if class == windows.FileRenameInfo {
+					calls++
+					t.Fatal("legacy rename was attempted after destination changed")
+				}
+				return nil
+			}
+			configTestHooks.Unlock()
+			t.Cleanup(func() {
+				configTestHooks.Lock()
+				configTestHooks.setFileInformation = previousRename
+				configTestHooks.beforeCommitRename = previousBeforeRename
+				configTestHooks.Unlock()
+			})
+
+			_, err = commitConfigFile(path, path, newData, 0o600, expected, -1, false)
+			var outcome *CommitOutcome
+			require.ErrorAs(t, err, &outcome)
+			require.False(t, outcome.Committed)
+			require.ErrorIs(t, outcome, errConfigCommitVerification)
+			require.Equal(t, 1, calls)
+			require.Equal(t, writerData, mustReadFile(t, path))
+		})
+	}
+}
+
+func TestWindowsCommitHandleUnsupportedFallbackUsesLegacyAfterFreshProof(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "rush.json")
+	oldData := []byte(`{"old":true}`)
+	newData := []byte(`{"new":true}`)
+	require.NoError(t, os.WriteFile(path, oldData, 0o600))
+	_, expected, err := readStableConfigFile(path)
+	require.NoError(t, err)
+
+	var stagedPath string
+	calls := 0
+	configTestHooks.Lock()
+	previousBeforeRename := configTestHooks.beforeCommitRename
+	previousRename := configTestHooks.setFileInformation
+	configTestHooks.beforeCommitRename = func() {
+		entries, readDirErr := os.ReadDir(root)
+		require.NoError(t, readDirErr)
+		for _, entry := range entries {
+			if strings.HasSuffix(entry.Name(), ".tmp") {
+				stagedPath = filepath.Join(root, entry.Name())
+				break
+			}
+		}
+		require.NotEmpty(t, stagedPath)
+	}
+	configTestHooks.setFileInformation = func(_ uintptr, class uint32, _ *byte, _ uint32) error {
+		if class == windows.FileRenameInfoEx {
+			calls++
+			return windows.ERROR_NOT_SUPPORTED
+		}
+		if class == windows.FileRenameInfo {
+			calls++
+			return os.Rename(stagedPath, path)
+		}
+		return nil
+	}
+	configTestHooks.Unlock()
+	t.Cleanup(func() {
+		configTestHooks.Lock()
+		configTestHooks.beforeCommitRename = previousBeforeRename
+		configTestHooks.setFileInformation = previousRename
+		configTestHooks.Unlock()
+	})
+
+	_, err = commitConfigFile(path, path, newData, 0o600, expected, -1, false)
+	require.NoError(t, err)
+	require.Equal(t, 2, calls)
+	require.Equal(t, newData, mustReadFile(t, path))
+}
+
 func TestWindowsParentSyncIsAProductionNoOp(t *testing.T) {
 	require.NoError(t, syncConfigParentOnDisk(filepath.Join(t.TempDir(), "does-not-exist")))
 }
@@ -213,7 +429,7 @@ func TestRenameConfigTempHandleUsesPinnedParentAndRelativeName(t *testing.T) {
 		configTestHooks.Unlock()
 	})
 
-	require.NoError(t, renameConfigTempHandle(source, sourcePath, parent, "published.json", true))
+	require.NoError(t, renameConfigTempHandle(source, sourcePath, parent, "published.json", true, reloadFileFingerprint{}, -1, false, sourcePath))
 	require.Equal(t, uint32(windows.FileRenameInfoEx), gotClass)
 	require.Equal(t, windows.Handle(parent.Fd()), gotRoot)
 	require.Equal(t, "published.json", gotName)

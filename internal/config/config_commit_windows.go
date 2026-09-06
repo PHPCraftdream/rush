@@ -50,7 +50,7 @@ func commitConfigFile(selectedPath, commitPath string, data []byte, perm os.File
 	if err := verifyWindowsCommitParent(parent, publicationPath, expected); err != nil {
 		return reloadFileFingerprint{}, errConfigCommitVerification
 	}
-	if err := verifyWindowsCommitDestinationHandle(parent, base, expected); err != nil {
+	if err := verifyWindowsCommitDestinationHandle(parent, base, expected, expectedOwner, enforceOwner, selectedPath); err != nil {
 		return reloadFileFingerprint{}, err
 	}
 	staged, err := stageConfigFileHandleAt(parent, publicationPath, data, perm)
@@ -73,17 +73,17 @@ func commitConfigFile(selectedPath, commitPath string, data []byte, perm os.File
 	if err := verifyWindowsCommitParent(parent, publicationPath, expected); err != nil {
 		return reloadFileFingerprint{}, errConfigCommitVerification
 	}
-	if err := verifyWindowsCommitDestinationHandle(parent, base, expected); err != nil {
+	if err := verifyWindowsCommitDestinationHandle(parent, base, expected, expectedOwner, enforceOwner, selectedPath); err != nil {
 		return reloadFileFingerprint{}, err
 	}
 	runConfigBeforeCommitRenameHook()
 	if err := verifyWindowsCommitParent(parent, publicationPath, expected); err != nil {
 		return reloadFileFingerprint{}, errConfigCommitVerification
 	}
-	if err := verifyWindowsCommitDestinationHandle(parent, base, expected); err != nil {
+	if err := verifyWindowsCommitDestinationHandle(parent, base, expected, expectedOwner, enforceOwner, selectedPath); err != nil {
 		return reloadFileFingerprint{}, err
 	}
-	renameErr := renameConfigTempHandle(staged.file, staged.path, parent, base, expected.exists, expected.identity)
+	renameErr := renameConfigTempHandle(staged.file, staged.path, parent, base, expected.exists, expected, expectedOwner, enforceOwner, selectedPath)
 	if renameErr != nil {
 		return reloadFileFingerprint{}, classifyWindowsRenameFailure(publicationPath, parent, data, expected, expectedOwner, enforceOwner, staged, renameErr, &removeTemp, &stagedClosed)
 	}
@@ -193,7 +193,7 @@ func physicalWindowsConfigPath(path string) (string, error) {
 	return filepath.Join(parent, filepath.Base(clean)), nil
 }
 
-func verifyWindowsCommitDestinationHandle(parent *os.File, name string, expected reloadFileFingerprint) error {
+func verifyWindowsCommitDestinationHandle(parent *os.File, name string, expected reloadFileFingerprint, expectedOwner int, enforceOwner bool, discoveryPath string) error {
 	file, err := openWindowsConfigEntryAt(parent, name)
 	if !expected.exists {
 		if isWindowsEntryNotFound(err) {
@@ -216,12 +216,20 @@ func verifyWindowsCommitDestinationHandle(parent *os.File, name string, expected
 	if err != nil || !info.Mode().IsRegular() || handleInfo.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
 		return errConfigCommitVerification
 	}
-	identity := configFileIdentityOfOpened(file, info)
-	if identity != expected.identity {
+	data, actual, err := readStableConfigHandle(file, expectedOwner, enforceOwner)
+	if err != nil || !expected.exists || actual.exists != expected.exists || actual.size != expected.size ||
+		actual.modTime != expected.modTime || actual.digest != expected.digest || actual.owner != expected.owner ||
+		actual.nlink != expected.nlink || actual.identity != expected.identity ||
+		!sameBytesFingerprint(data, expected.digest) {
 		return errConfigCommitVerification
 	}
-	nlink := configFileNlinkOfOpened(file, info)
-	if nlink != expected.nlink || nlink > 1 {
+	if expected.discovery != ([32]byte{}) && configDiscoveryFingerprint(discoveryPath) != expected.discovery {
+		return errConfigCommitVerification
+	}
+	if expected.parentDiscovery != ([32]byte{}) && configDiscoveryFingerprint(filepath.Dir(discoveryPath)) != expected.parentDiscovery {
+		return errConfigCommitVerification
+	}
+	if actual.nlink > 1 {
 		return ErrConfigHardLink
 	}
 	return nil

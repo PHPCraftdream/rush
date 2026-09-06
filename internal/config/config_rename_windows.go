@@ -21,7 +21,7 @@ type windowsFileRenameInfo struct {
 	FileName       [1]uint16
 }
 
-func renameConfigTempHandle(source *os.File, sourcePath string, parent *os.File, destination string, replace bool, expectedIdentity ...configFileIdentity) error {
+func renameConfigTempHandle(source *os.File, sourcePath string, parent *os.File, destination string, replace bool, expected reloadFileFingerprint, expectedOwner int, enforceOwner bool, discoveryPath string) error {
 	// Keep the old seam for existing deterministic tests. Production has no
 	// MoveFileEx hook and therefore always takes the handle-based path below.
 	configTestHooks.Lock()
@@ -77,10 +77,15 @@ func renameConfigTempHandle(source *os.File, sourcePath string, parent *os.File,
 	for attempt := 0; ; attempt++ {
 		err = setInfo(windows.FileRenameInfoEx, buffer)
 		if err == nil || (err != windows.ERROR_INVALID_PARAMETER && err != windows.ERROR_INVALID_FUNCTION && err != windows.ERROR_NOT_SUPPORTED) {
-			if !shouldRetryWindowsRename(err, attempt, source, sourcePath, parent, destination, replace, expectedIdentity) {
+			if err == nil {
+				return nil
+			}
+			if attempt+1 >= windowsRenameRetryAttempts || !errors.Is(err, windows.ERROR_ACCESS_DENIED) {
 				return err
 			}
-			time.Sleep(time.Duration(attempt+1) * 2 * time.Millisecond)
+			if retryErr := waitAndVerifyWindowsRenameRetry(source, sourcePath, parent, destination, replace, expected, expectedOwner, enforceOwner, discoveryPath, attempt); retryErr != nil {
+				return errors.Join(err, retryErr)
+			}
 			continue
 		}
 		legacyBuffer := append([]byte(nil), buffer...)
@@ -90,13 +95,27 @@ func renameConfigTempHandle(source *os.File, sourcePath string, parent *os.File,
 		} else {
 			legacyInfo.Flags = 0
 		}
+		if retryErr := verifyWindowsRenameRetryState(source, sourcePath, parent, destination, replace, expected, expectedOwner, enforceOwner, discoveryPath); retryErr != nil {
+			return errors.Join(err, retryErr)
+		}
 		err = setInfo(windows.FileRenameInfo, legacyBuffer)
 		if err == nil || !isUnsupportedRenameError(err) || hasSetFileInformationHook() {
-			if !shouldRetryWindowsRename(err, attempt, source, sourcePath, parent, destination, replace, expectedIdentity) {
+			if err == nil {
+				return nil
+			}
+			if !errors.Is(err, windows.ERROR_ACCESS_DENIED) {
 				return err
 			}
-			time.Sleep(time.Duration(attempt+1) * 2 * time.Millisecond)
+			if attempt+1 >= windowsRenameRetryAttempts {
+				return err
+			}
+			if retryErr := waitAndVerifyWindowsRenameRetry(source, sourcePath, parent, destination, replace, expected, expectedOwner, enforceOwner, discoveryPath, attempt); retryErr != nil {
+				return errors.Join(err, retryErr)
+			}
 			continue
+		}
+		if retryErr := verifyWindowsRenameRetryState(source, sourcePath, parent, destination, replace, expected, expectedOwner, enforceOwner, discoveryPath); retryErr != nil {
+			return errors.Join(err, retryErr)
 		}
 		var status windows.IO_STATUS_BLOCK
 		err = windows.NtSetInformationFile(
@@ -106,63 +125,82 @@ func renameConfigTempHandle(source *os.File, sourcePath string, parent *os.File,
 			uint32(len(legacyBuffer)),
 			windows.FileRenameInformation,
 		)
-		if !shouldRetryWindowsRename(err, attempt, source, sourcePath, parent, destination, replace, expectedIdentity) {
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, windows.ERROR_ACCESS_DENIED) || attempt+1 >= windowsRenameRetryAttempts {
 			return err
 		}
-		time.Sleep(time.Duration(attempt+1) * 2 * time.Millisecond)
+		if retryErr := waitAndVerifyWindowsRenameRetry(source, sourcePath, parent, destination, replace, expected, expectedOwner, enforceOwner, discoveryPath, attempt); retryErr != nil {
+			return errors.Join(err, retryErr)
+		}
 	}
 }
 
 const windowsRenameRetryAttempts = 8
 
-func shouldRetryWindowsRename(err error, attempt int, source *os.File, sourcePath string, parent *os.File, destination string, replace bool, expectedIdentity []configFileIdentity) bool {
-	if !errors.Is(err, windows.ERROR_ACCESS_DENIED) || attempt+1 >= windowsRenameRetryAttempts || len(expectedIdentity) != 1 {
-		return false
-	}
-	if replace && !expectedIdentity[0].valid {
-		return false
-	}
-	return windowsRenameRetryState(source, sourcePath, parent, destination, replace, expectedIdentity[0])
+func waitAndVerifyWindowsRenameRetry(source *os.File, sourcePath string, parent *os.File, destination string, replace bool, expected reloadFileFingerprint, expectedOwner int, enforceOwner bool, discoveryPath string, attempt int) error {
+	time.Sleep(time.Duration(attempt+1) * 2 * time.Millisecond)
+	return verifyWindowsRenameRetryState(source, sourcePath, parent, destination, replace, expected, expectedOwner, enforceOwner, discoveryPath)
 }
 
-func windowsRenameRetryState(source *os.File, sourcePath string, parent *os.File, destination string, replace bool, expectedIdentity configFileIdentity) bool {
-	// Retry only while the pinned parent proves the staged source and the
-	// expected destination state.
+func verifyWindowsRenameRetryState(source *os.File, sourcePath string, parent *os.File, destination string, replace bool, expected reloadFileFingerprint, expectedOwner int, enforceOwner bool, discoveryPath string) error {
+	// Validate after backoff while the publication handle remains pinned.
 	stagedIdentity := configFileIdentityOfOpened(source, nil)
 	if !stagedIdentity.valid {
-		return false
+		return errConfigCommitVerification
+	}
+	if expected.parentIdentity.valid && configFileIdentityOfOpened(parent, nil) != expected.parentIdentity {
+		return errConfigCommitVerification
+	}
+	if expected.parentDiscovery != ([32]byte{}) && configDiscoveryFingerprint(filepath.Dir(discoveryPath)) != expected.parentDiscovery {
+		return errConfigCommitVerification
 	}
 	staged, err := openWindowsConfigEntryAt(parent, filepath.Base(sourcePath))
 	if err != nil {
-		return false
+		return errConfigCommitVerification
 	}
 	defer staged.Close()
 	stagedInfo, err := staged.Stat()
 	if err != nil || stagedInfo.IsDir() {
-		return false
+		return errConfigCommitVerification
 	}
 	stagedHandleInfo, err := windowsFileInformation(staged)
 	if err != nil || stagedHandleInfo.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 || configFileIdentityOfOpened(staged, stagedInfo) != stagedIdentity {
-		return false
+		return errConfigCommitVerification
 	}
 
 	target, err := openWindowsConfigEntryAt(parent, filepath.Base(destination))
 	if !replace {
-		return isWindowsEntryNotFound(err) || os.IsNotExist(err)
+		if isWindowsEntryNotFound(err) || os.IsNotExist(err) {
+			return nil
+		}
+		return errConfigCommitVerification
 	}
 	if err != nil {
-		return false
+		return errConfigCommitVerification
 	}
 	defer target.Close()
 	targetInfo, err := target.Stat()
 	if err != nil || targetInfo.IsDir() {
-		return false
+		return errConfigCommitVerification
 	}
 	targetHandleInfo, err := windowsFileInformation(target)
 	if err != nil || targetHandleInfo.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-		return false
+		return errConfigCommitVerification
 	}
-	return expectedIdentity.valid && configFileIdentityOfOpened(target, targetInfo) == expectedIdentity
+	targetData, targetFingerprint, err := readStableConfigHandle(target, expectedOwner, enforceOwner)
+	if err != nil || !expected.exists || !expected.identity.valid || targetFingerprint.exists != expected.exists ||
+		targetFingerprint.size != expected.size || targetFingerprint.modTime != expected.modTime ||
+		targetFingerprint.digest != expected.digest || targetFingerprint.owner != expected.owner ||
+		targetFingerprint.nlink != expected.nlink || targetFingerprint.identity != expected.identity ||
+		!sameBytesFingerprint(targetData, expected.digest) {
+		return errConfigCommitVerification
+	}
+	if expected.discovery != ([32]byte{}) && configDiscoveryFingerprint(discoveryPath) != expected.discovery {
+		return errConfigCommitVerification
+	}
+	return nil
 }
 
 func isUnsupportedRenameError(err error) bool {
