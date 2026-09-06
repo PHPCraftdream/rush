@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
 	"sync/atomic"
@@ -146,4 +147,125 @@ func TestEnableRollbackUncertaintySurvivesOwnerRolloverUntilExactReload(t *testi
 	require.False(t, uncertain)
 	next.Initialize(context.Background(), nil, store, false)
 	require.False(t, hasSession(name))
+}
+
+func TestEnablePendingGlobalAddRollbackRestoresDisabledDefinition(t *testing.T) {
+	store := isolatedMCPStore(t)
+	owner, err := Acquire()
+	require.NoError(t, err)
+
+	const name = "enable-pending-rollback"
+	addStarted := make(chan struct{})
+	releaseAdd := make(chan struct{})
+	addDone := make(chan error, 1)
+	go func() {
+		addDone <- addServerWithInitializer(
+			context.Background(), store, name,
+			config.MCPConfig{Type: config.MCPHttp, URL: "http://pending-enable.example"},
+			func(
+				_ context.Context,
+				_ *config.ConfigStore,
+				_ string,
+				_ config.MCPConfig,
+				_ config.VariableResolver,
+				admission *serverAdmission,
+			) error {
+				admission.done()
+				close(addStarted)
+				<-releaseAdd
+				return nil
+			},
+		)
+	}()
+	awaitMCPSignal(t, addStarted)
+
+	enablePersisted := make(chan struct{})
+	releaseEnable := make(chan struct{})
+	enableDone := make(chan error, 1)
+	go func() {
+		enableDone <- enableServerWithPersistenceAndInitializer(
+			context.Background(), store, name,
+			func(cfg *config.ConfigStore, scope config.Scope, name string, pending *config.MCPConfig) (config.MCPMutationResult, error) {
+				result, persistErr := enableMCPConfig(cfg, scope, name, pending)
+				close(enablePersisted)
+				<-releaseEnable
+				return result, persistErr
+			},
+			func(context.Context, *config.ConfigStore, string, config.MCPConfig, config.VariableResolver, *serverAdmission) error {
+				return errors.New("initializer must not run after shutdown wins")
+			},
+		)
+	}()
+	awaitMCPSignal(t, enablePersisted)
+
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- owner.Close(context.Background()) }()
+	require.Eventually(t, func() bool {
+		lifecycleMu.Lock()
+		defer lifecycleMu.Unlock()
+		return owner.closing
+	}, time.Second, time.Millisecond)
+	close(releaseEnable)
+	require.ErrorIs(t, <-enableDone, ErrOwnerBusy)
+	close(releaseAdd)
+	require.ErrorIs(t, <-addDone, ErrOwnerBusy)
+	require.NoError(t, <-closeDone)
+
+	var persisted config.MCPConfig
+	require.NoError(t, json.Unmarshal(diskMCP(t)[name], &persisted))
+	require.Equal(t, "http://pending-enable.example", persisted.URL)
+	require.True(t, persisted.Disabled)
+}
+
+func TestEnableRollbackPreservesConcurrentDefinitionAndFencesStore(t *testing.T) {
+	store := isolatedMCPStore(t)
+	const name = "enable-concurrent-rollback"
+	initial := config.MCPConfig{Type: config.MCPHttp, URL: "http://old-enable.example", Disabled: true}
+	require.NoError(t, store.PersistMCPConfig(config.ScopeGlobal, name, initial))
+	contender, err := config.Init(store.WorkingDir(), store.Config().Options.DataDirectory, false)
+	require.NoError(t, err)
+	owner, err := Acquire()
+	require.NoError(t, err)
+
+	enablePersisted := make(chan struct{})
+	releaseEnable := make(chan struct{})
+	enableDone := make(chan error, 1)
+	go func() {
+		enableDone <- enableServerWithPersistenceAndInitializer(
+			context.Background(), store, name,
+			func(cfg *config.ConfigStore, scope config.Scope, name string, pending *config.MCPConfig) (config.MCPMutationResult, error) {
+				result, persistErr := enableMCPConfig(cfg, scope, name, pending)
+				close(enablePersisted)
+				<-releaseEnable
+				return result, persistErr
+			},
+			func(context.Context, *config.ConfigStore, string, config.MCPConfig, config.VariableResolver, *serverAdmission) error {
+				return errors.New("initializer must not run after shutdown wins")
+			},
+		)
+	}()
+	awaitMCPSignal(t, enablePersisted)
+	require.NoError(t, contender.PersistMCPFieldsExact(config.ScopeGlobal, name, map[string]any{
+		"url": "http://new-enable.example",
+	}))
+
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- owner.Close(context.Background()) }()
+	require.Eventually(t, func() bool {
+		lifecycleMu.Lock()
+		defer lifecycleMu.Unlock()
+		return owner.closing
+	}, time.Second, time.Millisecond)
+	close(releaseEnable)
+	enableErr := <-enableDone
+	require.ErrorIs(t, enableErr, ErrOwnerBusy)
+	require.ErrorIs(t, enableErr, ErrMCPConfigUncertain)
+	require.NoError(t, <-closeDone)
+
+	var persisted config.MCPConfig
+	require.NoError(t, json.Unmarshal(diskMCP(t)[name], &persisted))
+	require.Equal(t, "http://new-enable.example", persisted.URL)
+	require.False(t, persisted.Disabled)
+	_, uncertain := store.MCPUncertaintyVersion(name)
+	require.True(t, uncertain)
 }

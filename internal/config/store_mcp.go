@@ -195,6 +195,13 @@ func (s *ConfigStore) PersistMCPDisabledOverrideResult(scope Scope, name string,
 	return s.mutateMCP("disable", scope, name, name, MCPConfig{}, &disabled)
 }
 
+// PersistMCPEnableRollbackResult conditionally disables the exact definition
+// published by an Enable mutation. It is safe for both ordinary definitions
+// and pending global adds.
+func (s *ConfigStore) PersistMCPEnableRollbackResult(scope Scope, name string, token MCPMutationResult) (MCPMutationResult, error) {
+	return s.mutateMCPEnableRollback(scope, name, token)
+}
+
 // PersistMCPDisabledOverrideExact changes only the selected scope. It may
 // update a shadowed literal entry and may create a workspace overlay for an
 // external server, but it never redirects the write to another scope.

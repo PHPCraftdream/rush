@@ -9,6 +9,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 
 	"github.com/PHPCraftdream/rush/internal/home"
@@ -294,6 +295,98 @@ func (s *ConfigStore) mutatePendingRemoveMCP(scope Scope, name string) (MCPMutat
 		return MCPMutationResult{}, err
 	}
 	return result, err
+}
+
+func (s *ConfigStore) mutateMCPEnableRollback(scope Scope, name string, token MCPMutationResult) (MCPMutationResult, error) {
+	path, err := s.configPath(scope)
+	if err != nil {
+		return MCPMutationResult{}, err
+	}
+	path = normalizeReloadPath(path)
+	var result MCPMutationResult
+	s.publishMu.Lock()
+	err = s.withMCPWriteLocks(func(files *mcpLockedFiles) error {
+		before, err := s.evaluateMCPFiles(files)
+		if err != nil {
+			return err
+		}
+		if !s.mcpEnableRollbackTokenMatches(before, scope, name, token) {
+			return ErrMCPMutationStale
+		}
+		current := before.configs[name]
+		origin := before.origins[name]
+		result = MCPMutationResult{
+			Operation: "disable", OldName: name, NewName: name,
+			OldExists: true, OldConfig: cloneMCPConfig(current), OldOrigin: origin,
+		}
+		if err := validateMCPMutation("disable", scope, name, name, true, origin, before.configs); err != nil {
+			return err
+		}
+		disabled := true
+		if err := s.prepareMCPFileMutation(files, path, "disable", name, name, MCPConfig{}, &disabled); err != nil {
+			return err
+		}
+		if err := s.verifyMCPReadOnlyInputs(before.fingerprints, path); err != nil {
+			return err
+		}
+		writeErr := s.writeMCPFileChanges(files)
+		after, err := s.evaluateMCPFiles(files)
+		if err != nil {
+			return err
+		}
+		result.NewExists, result.NewConfig, result.NewOrigin = afterValue(after, name)
+		result.committedFingerprints = committedMCPFingerprints(files)
+		return writeErr
+	})
+	if err == nil || mcpCommitWasReconciled(err) {
+		result.Generation = s.loadSnapshot().generation + 1
+		s.publishMCPMutationLocked(result)
+	}
+	s.publishMu.Unlock()
+	if err != nil && !mcpCommitWasReconciled(err) {
+		return MCPMutationResult{}, err
+	}
+	return result, err
+}
+
+func (s *ConfigStore) mcpEnableRollbackTokenMatches(before mcpEvaluation, scope Scope, name string, token MCPMutationResult) bool {
+	if token.NewName != name || !token.NewExists || token.Operation != "add" && token.Operation != "disable" {
+		return false
+	}
+	if token.Generation != 0 && s.loadSnapshot().generation != token.Generation {
+		return false
+	}
+	current, exists := before.configs[name]
+	if !exists || !reflect.DeepEqual(current, token.NewConfig) || before.origins[name] != token.NewOrigin {
+		return false
+	}
+	if token.NewOrigin.Kind == MCPOriginExternal {
+		if scope != ScopeWorkspace {
+			return false
+		}
+	} else if token.NewOrigin.Scope != scope || !token.NewOrigin.Writable {
+		return false
+	}
+	for expectedPath, expected := range token.committedFingerprints {
+		actual, ok := mcpEvaluationFingerprint(before.fingerprints, expectedPath)
+		if !ok || actual != expected {
+			return false
+		}
+	}
+	return len(token.committedFingerprints) > 0
+}
+
+func mcpEvaluationFingerprint(fingerprints map[string]reloadFileFingerprint, path string) (reloadFileFingerprint, bool) {
+	if fingerprint, ok := fingerprints[path]; ok {
+		return fingerprint, true
+	}
+	discovery := normalizeDiscoveryPath(path)
+	for candidate, fingerprint := range fingerprints {
+		if normalizeDiscoveryPath(candidate) == discovery {
+			return fingerprint, true
+		}
+	}
+	return reloadFileFingerprint{}, false
 }
 
 func (s *ConfigStore) mutateMCPWithMode(operation string, scope Scope, oldName, newName string, value MCPConfig, disabled *bool, exact bool) (MCPMutationResult, error) {

@@ -2516,18 +2516,15 @@ func enableServerWithPersistenceAndInitializerAndRollback(
 				rollback = &rollbackConfig
 			}
 			_, rollbackErr = rollbackPersist(cfg, scope, name, rollback)
-		} else if transaction != nil {
-			rollback := mcpCfg
-			rollback.Disabled = true
-			_, rollbackErr = cfg.PersistMCPConfigResult(scope, name, rollback)
 		} else {
-			_, rollbackErr = cfg.PersistMCPDisabledOverrideResult(scope, name, true)
+			_, rollbackErr = cfg.PersistMCPEnableRollbackResult(scope, name, result)
 		}
 		if rollbackErr == nil {
 			return rollbackResult{}
 		}
 		outcome, hasOutcome := config.CommitOutcomeFromError(rollbackErr)
-		return rollbackResult{err: rollbackErr, needsFence: hasOutcome && commitOutcomeNeedsRuntimeFence(outcome)}
+		knownMismatch := errors.Is(rollbackErr, config.ErrMCPMutationStale)
+		return rollbackResult{err: rollbackErr, needsFence: knownMismatch || hasOutcome && commitOutcomeNeedsRuntimeFence(outcome)}
 	}
 	rollbackAndReport := func(cause error) (*ClientSession, error) {
 		rollback := rollbackPersistence()

@@ -52,6 +52,14 @@ func TestConfigStoreExternalMCPDisabledOverlayPreservesDefinitionAcrossReloadAnd
 		require.NoError(t, store.ReloadFromDisk(context.Background()))
 		assertExternalMCPDefinition(disabled, store)
 	}
+	rollbackToken, err := store.PersistMCPDisabledOverrideResult(ScopeWorkspace, name, false)
+	require.NoError(t, err)
+	_, err = store.PersistMCPEnableRollbackResult(ScopeWorkspace, name, rollbackToken)
+	require.NoError(t, err)
+	require.NoError(t, store.ReloadFromDisk(context.Background()))
+	assertExternalMCPDefinition(true, store)
+	require.NoError(t, store.PersistMCPDisabledOverride(ScopeWorkspace, name, false))
+	require.NoError(t, store.ReloadFromDisk(context.Background()))
 
 	restarted, err := Init(root, root, false)
 	require.NoError(t, err)
