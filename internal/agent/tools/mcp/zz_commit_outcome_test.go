@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/pubsub"
 	"github.com/stretchr/testify/require"
 )
 
@@ -226,6 +227,160 @@ func TestTypedPrecommitOutcomeDoesNotCommitAdd(t *testing.T) {
 	require.False(t, hasSession(name))
 	_, ok = GetState(name)
 	require.False(t, ok)
+}
+
+func TestAddDurableCommitFencedByCloseReturnsSuccessWithoutPublishingCandidate(t *testing.T) {
+	store := isolatedMCPStore(t)
+	owner, err := Acquire()
+	require.NoError(t, err)
+	releasePersistence := make(chan struct{})
+	defer func() {
+		select {
+		case <-releasePersistence:
+		default:
+			close(releasePersistence)
+		}
+		require.NoError(t, owner.Close(context.Background()))
+	}()
+
+	const name = "add-close-after-commit"
+	committed := make(chan struct{})
+	addDone := make(chan error, 1)
+	go func() {
+		addDone <- addServerWithInitializerAndPersistence(
+			context.Background(), store, name,
+			config.MCPConfig{Type: config.MCPStdio, Command: name},
+			fakeMCPInitializer,
+			func(cfg *config.ConfigStore, scope config.Scope, serverName string, value config.MCPConfig) (config.MCPMutationResult, error) {
+				result, persistErr := cfg.PersistMCPConfigResult(scope, serverName, value)
+				close(committed)
+				<-releasePersistence
+				return result, persistErr
+			},
+		)
+	}()
+	<-committed
+
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- owner.Close(context.Background()) }()
+	require.Eventually(t, func() bool {
+		lifecycleMu.Lock()
+		defer lifecycleMu.Unlock()
+		return owner.closing
+	}, time.Second, time.Millisecond)
+	close(releasePersistence)
+
+	require.NoError(t, <-addDone)
+	require.NoError(t, <-closeDone)
+	_, persisted := diskMCP(t)[name]
+	require.True(t, persisted)
+}
+
+func TestAddReconciledCommitOutcomeFencedByCloseReturnsOriginalOutcome(t *testing.T) {
+	store := isolatedMCPStore(t)
+	owner, err := Acquire()
+	require.NoError(t, err)
+	releasePersistence := make(chan struct{})
+	defer func() {
+		select {
+		case <-releasePersistence:
+		default:
+			close(releasePersistence)
+		}
+		require.NoError(t, owner.Close(context.Background()))
+	}()
+
+	const name = "add-uncertain-close-after-commit"
+	committed := make(chan struct{})
+	addDone := make(chan error, 1)
+	go func() {
+		addDone <- addServerWithInitializerAndPersistence(
+			context.Background(), store, name,
+			config.MCPConfig{Type: config.MCPStdio, Command: name},
+			fakeMCPInitializer,
+			func(cfg *config.ConfigStore, scope config.Scope, serverName string, value config.MCPConfig) (config.MCPMutationResult, error) {
+				result, persistErr := cfg.PersistMCPConfigResult(scope, serverName, value)
+				close(committed)
+				<-releasePersistence
+				return result, errors.Join(persistErr, injectedMCPCommitOutcome(true))
+			},
+		)
+	}()
+	<-committed
+
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- owner.Close(context.Background()) }()
+	require.Eventually(t, func() bool {
+		lifecycleMu.Lock()
+		defer lifecycleMu.Unlock()
+		return owner.closing
+	}, time.Second, time.Millisecond)
+	close(releasePersistence)
+
+	requireMCPCommitUncertainty(t, <-addDone, true)
+	require.NoError(t, <-closeDone)
+	_, persisted := diskMCP(t)[name]
+	require.True(t, persisted)
+}
+
+func TestAddLinearizesPublicationBeforeConcurrentRemoveAfterCommit(t *testing.T) {
+	store := isolatedMCPStore(t)
+	owner, err := Acquire()
+	require.NoError(t, err)
+	releasePersistence := make(chan struct{})
+	defer func() {
+		select {
+		case <-releasePersistence:
+		default:
+			close(releasePersistence)
+		}
+		require.NoError(t, owner.Close(context.Background()))
+	}()
+
+	const name = "add-remove-after-commit"
+	committed := make(chan struct{})
+	addDone := make(chan error, 1)
+	eventsCtx, cancelEvents := context.WithCancel(context.Background())
+	defer cancelEvents()
+	events := SubscribeEvents(eventsCtx)
+	go func() {
+		addDone <- addServerWithInitializerAndPersistence(
+			context.Background(), store, name,
+			config.MCPConfig{Type: config.MCPStdio, Command: name},
+			fakeMCPInitializer,
+			func(cfg *config.ConfigStore, scope config.Scope, serverName string, value config.MCPConfig) (config.MCPMutationResult, error) {
+				result, persistErr := cfg.PersistMCPConfigResult(scope, serverName, value)
+				close(committed)
+				<-releasePersistence
+				return result, persistErr
+			},
+		)
+	}()
+	<-committed
+
+	removeDone := make(chan error, 1)
+	go func() { removeDone <- RemoveServer(store, name) }()
+	select {
+	case err := <-removeDone:
+		t.Fatalf("RemoveServer won before Add publication: %v", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+	close(releasePersistence)
+
+	require.NoError(t, <-addDone)
+	require.NoError(t, <-removeDone)
+	_, persisted := diskMCP(t)[name]
+	require.False(t, persisted)
+	require.False(t, hasSession(name))
+	_, hasState := GetState(name)
+	require.False(t, hasState)
+	requireTransactionalEvent(t, events, pubsub.UpdatedEvent, name, StateConnected)
+	requireTransactionalEvent(t, events, pubsub.DeletedEvent, name, StateDisabled)
+	select {
+	case event := <-events:
+		t.Fatalf("Add/Remove published an extra event: %v", event)
+	case <-time.After(50 * time.Millisecond):
+	}
 }
 
 func TestTypedPrecommitOutcomeDoesNotDisableRuntime(t *testing.T) {

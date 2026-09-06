@@ -1990,50 +1990,63 @@ func prepareClient(ctx context.Context, cfg *config.ConfigStore, name string, m 
 
 func publishPreparedClient(cfg *config.ConfigStore, name string, prepared *preparedClient, admission *serverAdmission) error {
 	session := prepared.session
-	tools := prepared.tools
-	prompts := prepared.prompts
 	lease := serverLeaseFor(name)
 	lockCtx := context.Background()
 	if admission != nil && admission.ctx != nil {
 		lockCtx = admission.ctx
 	}
 	if !lease.lockContext(lockCtx, true) {
-		_ = session.Close()
+		closeMCPClient(name, session)
 		return lockCtx.Err()
 	}
-	defer lease.Unlock()
+	oldSession, err := publishPreparedClientLocked(cfg, name, prepared, admission)
+	lease.Unlock()
+	if err != nil {
+		closeMCPClient(name, session)
+		return err
+	}
+	if oldSession != nil && oldSession != session {
+		retireMCPClient(name, oldSession)
+	}
+	return nil
+}
+
+// publishPreparedClientLocked publishes a prepared client while the caller
+// holds the server write lease. Keeping durable commit and publication in one
+// lease transition closes the post-commit race with RemoveServer. The caller
+// must close a rejected candidate and retire the replaced session after it
+// releases the lease; those operations may touch the network.
+func publishPreparedClientLocked(cfg *config.ConfigStore, name string, prepared *preparedClient, admission *serverAdmission) (*ClientSession, error) {
+	session := prepared.session
+	tools := prepared.tools
+	prompts := prepared.prompts
 	lifecycleMu.Lock()
 	if admission != nil && !admission.validLocked() {
 		lifecycleMu.Unlock()
-		_ = session.Close()
-		return ErrOwnerBusy
+		return nil, ErrOwnerBusy
 	}
 	if _, ok := cfg.MCPConfig(name); !ok {
 		lifecycleMu.Unlock()
-		_ = session.Close()
-		return ErrOwnerBusy
+		return nil, ErrOwnerBusy
 	}
 	if currentConfig, _ := cfg.MCPConfig(name); currentConfig.Disabled {
 		lifecycleMu.Unlock()
-		_ = session.Close()
-		return ErrOwnerBusy
+		return nil, ErrOwnerBusy
 	}
 	if admission != nil && admission.suppressUntilCommit && !admission.committed && !admission.publishingPrepared {
 		if admission.prepared != nil {
 			lifecycleMu.Unlock()
-			_ = session.Close()
-			return ErrOwnerBusy
+			return nil, ErrOwnerBusy
 		}
 		admission.prepared = prepared
 		lifecycleMu.Unlock()
-		return nil
+		return nil, nil
 	}
 	if !session.promoteContext() {
 		lifecycleMu.Unlock()
-		_ = session.Close()
-		return ErrOwnerBusy
+		return nil, ErrOwnerBusy
 	}
-	oldSession, hadOldSession := sessions.Get(name)
+	oldSession, _ := sessions.Get(name)
 	toolCount := updateTools(cfg, name, tools)
 	updatePrompts(name, prompts)
 	sessions.Set(name, session)
@@ -2055,15 +2068,12 @@ func publishPreparedClient(cfg *config.ConfigStore, name string, prepared *prepa
 	if wakeRefresh {
 		admission.owner.signalRefresh()
 	}
-	if hadOldSession && oldSession != session {
-		retireMCPClient(name, oldSession)
-	}
 	brokerForEvent.Publish(pubsub.UpdatedEvent, Event{
 		Type: EventStateChanged, Name: name, State: StateConnected, Counts: counts,
 	})
 	publishListChangedEventsOn(brokerForEvent, pendingEvents)
 
-	return nil
+	return oldSession, nil
 }
 
 // DisableSingle disables and closes a single MCP client by name.
@@ -2918,21 +2928,35 @@ func addServerWithInitializerAndPersistence(
 	// RemoveServer must then use the ordinary conditional remove path rather
 	// than treating an already-persisted Add as still pending.
 	o.completePendingGlobalAdd(transaction)
-	lease.Unlock()
+	var oldSession *ClientSession
+	var publishErr error
+	var prepared *preparedClient
 	if admission.prepared != nil {
-		prepared := admission.prepared
+		prepared = admission.prepared
 		lifecycleMu.Lock()
 		admission.publishingPrepared = true
 		admission.prepared = nil
 		lifecycleMu.Unlock()
-		if publishErr := publishPreparedClient(cfg, name, prepared, &admission); publishErr != nil {
-			admission.done()
+		oldSession, publishErr = publishPreparedClientLocked(cfg, name, prepared, &admission)
+	}
+	lease.Unlock()
+	if oldSession != nil && (prepared == nil || oldSession != prepared.session) {
+		retireMCPClient(name, oldSession)
+	}
+	if prepared != nil {
+		if publishErr != nil {
+			closeMCPClient(name, prepared.session)
+		}
+		admission.done()
+		if publishErr != nil {
 			if errors.Is(publishErr, ErrOwnerBusy) {
-				return ErrOwnerBusy
+				if commitUncertainty != nil {
+					return fmt.Errorf("failed to persist MCP server %q: %w", name, commitUncertainty)
+				}
+				return nil
 			}
 			return fmt.Errorf("failed to publish MCP server %q: %w", name, publishErr)
 		}
-		admission.done()
 	}
 	if commitUncertainty != nil {
 		return fmt.Errorf("failed to persist MCP server %q: %w", name, commitUncertainty)
@@ -3118,7 +3142,6 @@ func removeServerWithResultPersistence(
 	if result.NewExists {
 		if result.NewConfig.Disabled {
 			updateState(name, StateDisabled, nil, nil, Counts{})
-			publishStateEvent(name, StateDisabled, nil, Counts{})
 			if commitUncertainty != nil {
 				return fmt.Errorf("failed to remove MCP server %q from config: %w", name, commitUncertainty)
 			}

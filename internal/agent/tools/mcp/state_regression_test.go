@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/pubsub"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/require"
 )
@@ -574,6 +575,54 @@ func TestAddServerRetainsLeaseAcrossRemoveDuringInitialization(t *testing.T) {
 	leases.mu.Unlock()
 	require.Nil(t, remaining, "the final release must reclaim the original lease")
 	require.Zero(t, finalRefs, "the Add/Remove sequence must not underflow lease references")
+}
+
+func TestRemoveDisabledFallbackPublishesOneStateEvent(t *testing.T) {
+	store := isolatedMCPStore(t)
+	const name = "remove-disabled-fallback-event"
+	configured := config.MCPConfig{Type: config.MCPStdio, Command: name}
+	require.NoError(t, store.PersistMCPConfig(config.ScopeGlobal, name, configured))
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer func() { require.NoError(t, owner.Close(context.Background())) }()
+	session := &ClientSession{}
+	sessions.Set(name, session)
+	setState(name, StateConnected, nil, session, Counts{})
+
+	eventsCtx, cancelEvents := context.WithCancel(context.Background())
+	defer cancelEvents()
+	events := SubscribeEvents(eventsCtx)
+	disabled := configured
+	disabled.Disabled = true
+	err = removeServerWithResultPersistence(store, name, func(
+		*config.ConfigStore,
+		config.Scope,
+		string,
+	) (config.MCPMutationResult, error) {
+		return config.MCPMutationResult{
+			Operation: "remove",
+			OldName:   name,
+			NewName:   name,
+			NewExists: true,
+			NewConfig: disabled,
+		}, nil
+	})
+	require.NoError(t, err)
+
+	select {
+	case event := <-events:
+		require.Equal(t, pubsub.UpdatedEvent, event.Type)
+		require.Equal(t, EventStateChanged, event.Payload.Type)
+		require.Equal(t, name, event.Payload.Name)
+		require.Equal(t, StateDisabled, event.Payload.State)
+	case <-time.After(time.Second):
+		t.Fatal("disabled fallback did not publish its state event")
+	}
+	select {
+	case event := <-events:
+		t.Fatalf("disabled fallback published duplicate state event: %v", event)
+	case <-time.After(50 * time.Millisecond):
+	}
 }
 
 func TestPendingAddMutationCommitsCompleteConfigBeforeInvalidatingAdd(t *testing.T) {
