@@ -130,6 +130,48 @@ func TestAutoReloadDisabledDuringReload(t *testing.T) {
 	store.publishMu.Unlock()
 }
 
+func TestReloadFromDisk_ContextDeadlineBeforeAdmission(t *testing.T) {
+	store, root := isolatedMCPConfigStore(t)
+	configPath := filepath.Join(root, "rush.json")
+	writeReloadAttemptConfig(t, configPath, 0)
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	store.reloadAfterDiskRead = func() {
+		once.Do(func() {
+			close(entered)
+			<-release
+		})
+	}
+
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- store.ReloadFromDisk(context.Background())
+	}()
+	<-entered
+
+	deadlineCtx, cancel := context.WithDeadline(context.Background(), time.Unix(0, 0))
+	require.ErrorIs(t, store.ReloadFromDisk(deadlineCtx), context.DeadlineExceeded)
+	cancel()
+
+	store.reloadPendingMu.Lock()
+	require.False(t, store.reloadPending)
+	require.False(t, store.reloadPendingWaiter)
+	store.reloadPendingMu.Unlock()
+
+	close(release)
+	require.NoError(t, <-firstDone)
+	require.True(t, store.reloadMu.TryLock())
+	store.reloadMu.Unlock()
+
+	writeReloadAttemptConfig(t, configPath, 1)
+	require.NoError(t, store.ReloadFromDisk(context.Background()))
+	latest, ok := store.MCPConfig("attempt")
+	require.True(t, ok)
+	require.Equal(t, "http://attempt-1.example", latest.URL)
+}
+
 // TestProviderUpdates_ConcurrentReloadNoRace runs SetProviderRuntimeConfig
 // and ReloadFromDisk concurrently to verify (via the -race detector) that
 // the publishMu guard prevents any data race between the in-memory provider

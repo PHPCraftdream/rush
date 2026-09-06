@@ -273,7 +273,9 @@ func (s *ConfigStore) ReloadFromDisk(ctx context.Context) error {
 // applied to runtime overrides for the same class of "small piece of
 // forwarded state, rebase onto latest" problem.
 func (s *ConfigStore) reloadFromDiskUnlocked(ctx context.Context) error {
-	s.reloadMu.Lock()
+	if err := s.reloadMu.LockContext(ctx); err != nil {
+		return err
+	}
 	return s.runReloadLocked(ctx)
 }
 

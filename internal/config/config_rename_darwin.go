@@ -2,15 +2,10 @@
 
 package config
 
-import (
-	"path/filepath"
-	"strconv"
+import "golang.org/x/sys/unix"
 
-	"golang.org/x/sys/unix"
-)
-
-// Darwin exposes an atomic no-replace rename through renamex_np. /dev/fd
-// keeps both operands rooted at the already-open transaction directories.
+// Darwin exposes an atomic no-replace rename through renameatx_np. Passing the
+// already-open transaction directories keeps both operands descriptor-relative.
 func renameConfigTempAt(oldDirFD int, oldName string, newDirFD int, newName string, replace bool) (bool, error) {
 	if replace {
 		err := unix.Renameat(oldDirFD, oldName, newDirFD, newName)
@@ -27,8 +22,6 @@ func renameConfigTempAt(oldDirFD int, oldName string, newDirFD int, newName stri
 	} else if nlink != 1 {
 		return false, ErrConfigHardLink
 	}
-	oldPath := filepath.Join("/dev/fd", strconv.Itoa(oldDirFD), oldName)
-	newPath := filepath.Join("/dev/fd", strconv.Itoa(newDirFD), newName)
-	err := unix.RenamexNp(oldPath, newPath, unix.RENAME_EXCL)
+	err := unix.RenameatxNp(oldDirFD, oldName, newDirFD, newName, unix.RENAME_EXCL)
 	return err == nil, err
 }

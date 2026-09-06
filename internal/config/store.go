@@ -157,7 +157,7 @@ type ConfigStore struct {
 	// acquires them in the reverse order. It is this consistent nesting
 	// order — not any claim that the two locks are never held together —
 	// that rules out a deadlock here.
-	reloadMu sync.Mutex
+	reloadMu reloadMutex
 
 	// reloadPending is set by a disk writer that finishes while reloadMu is
 	// held. A queued writer owns the successor handoff; reloadPendingMu closes
