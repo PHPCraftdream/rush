@@ -14,6 +14,7 @@ import (
 	"net/http/httptrace"
 	"os"
 	"os/exec"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -283,10 +284,11 @@ type serverCancel struct {
 // rejected) a candidate, while this transaction remains until the durable
 // config commit or rollback has completed.
 type addTransaction struct {
-	name  string
-	cfg   *config.ConfigStore
-	token uint64
-	done  chan struct{}
+	name      string
+	cfg       *config.ConfigStore
+	mcpConfig config.MCPConfig
+	token     uint64
+	done      chan struct{}
 
 	once         sync.Once
 	mu           sync.Mutex
@@ -514,7 +516,7 @@ func (o *Owner) admitReplacementCandidate(ctx context.Context, cfg *config.Confi
 // reached disk yet. Full initialization, replacement, renewal, and refresh
 // admissions never call this method and therefore can never authorize a global
 // fallback.
-func (o *Owner) markPendingGlobalAdd(admission *serverAdmission, cfg *config.ConfigStore) (*addTransaction, bool) {
+func (o *Owner) markPendingGlobalAdd(admission *serverAdmission, cfg *config.ConfigStore, mcpCfg config.MCPConfig) (*addTransaction, bool) {
 	if admission == nil || admission.serverCancelToken == 0 {
 		return nil, false
 	}
@@ -528,10 +530,11 @@ func (o *Owner) markPendingGlobalAdd(admission *serverAdmission, cfg *config.Con
 		return nil, false
 	}
 	transaction := &addTransaction{
-		name:  admission.name,
-		cfg:   cfg,
-		token: admission.serverCancelToken,
-		done:  make(chan struct{}),
+		name:      admission.name,
+		cfg:       cfg,
+		mcpConfig: mcpCfg,
+		token:     admission.serverCancelToken,
+		done:      make(chan struct{}),
 	}
 	o.pendingGlobalAdds[admission.name] = transaction
 	return transaction, true
@@ -1241,16 +1244,22 @@ func InitializeSingle(ctx context.Context, name string, cfg *config.ConfigStore)
 }
 
 func initClientAdmitted(ctx context.Context, cfg *config.ConfigStore, name string, m config.MCPConfig, resolver config.VariableResolver, admission *serverAdmission) error {
+	return initClientAdmittedWithState(ctx, cfg, name, m, resolver, admission, true)
+}
+
+func initClientAdmittedWithState(ctx context.Context, cfg *config.ConfigStore, name string, m config.MCPConfig, resolver config.VariableResolver, admission *serverAdmission, announceStarting bool) error {
 	if admission != nil {
 		defer admission.done()
 		if !admission.valid() {
 			return ErrOwnerBusy
 		}
 	}
-	if admission == nil {
-		updateState(name, StateStarting, nil, nil, Counts{})
-	} else {
-		updateAdmissionState(admission, StateStarting, nil, nil, Counts{})
+	if announceStarting {
+		if admission == nil {
+			updateState(name, StateStarting, nil, nil, Counts{})
+		} else {
+			updateAdmissionState(admission, StateStarting, nil, nil, Counts{})
+		}
 	}
 
 	operationCtx := ctx
@@ -1394,12 +1403,12 @@ func DisableSingle(cfg *config.ConfigStore, name string) error {
 // DisableServer disables an MCP server: closes its session, removes its tools,
 // and persists the disabled flag to config.
 func DisableServer(ctx context.Context, cfg *config.ConfigStore, name string) error {
-	return disableServerWithPersistence(ctx, cfg, name,
-		func(cfg *config.ConfigStore, scope config.Scope, name string, pending *config.MCPConfig) error {
+	return disableServerWithResultPersistence(ctx, cfg, name,
+		func(cfg *config.ConfigStore, scope config.Scope, name string, pending *config.MCPConfig) (config.MCPMutationResult, error) {
 			if pending != nil {
-				return cfg.PersistMCPConfig(scope, name, *pending)
+				return cfg.PersistMCPConfigResult(scope, name, *pending)
 			}
-			return cfg.PersistMCPDisabledOverride(scope, name, true)
+			return cfg.PersistMCPDisabledOverrideResult(scope, name, true)
 		})
 }
 
@@ -1408,11 +1417,27 @@ func DisableServer(ctx context.Context, cfg *config.ConfigStore, name string) er
 // durable definition only needs a disabled field overlay.
 type disableServerPersister func(*config.ConfigStore, config.Scope, string, *config.MCPConfig) error
 
+type disableServerResultPersister func(*config.ConfigStore, config.Scope, string, *config.MCPConfig) (config.MCPMutationResult, error)
+
 func disableServerWithPersistence(
 	ctx context.Context,
 	cfg *config.ConfigStore,
 	name string,
 	persist disableServerPersister,
+) error {
+	return disableServerWithResultPersistence(ctx, cfg, name, func(cfg *config.ConfigStore, scope config.Scope, name string, pending *config.MCPConfig) (config.MCPMutationResult, error) {
+		if err := persist(cfg, scope, name, pending); err != nil {
+			return config.MCPMutationResult{}, err
+		}
+		return currentMCPMutationResult(cfg, "disable", name, name), nil
+	})
+}
+
+func disableServerWithResultPersistence(
+	ctx context.Context,
+	cfg *config.ConfigStore,
+	name string,
+	persist disableServerResultPersister,
 ) error {
 	o, err := ensureOwner()
 	if err != nil {
@@ -1449,8 +1474,12 @@ func disableServerWithPersistence(
 		fullConfig.Disabled = true
 		pending = &fullConfig
 	}
-	if err := persist(cfg, scope, name, pending); err != nil {
+	result, err := persist(cfg, scope, name, pending)
+	if err != nil {
 		return fmt.Errorf("failed to persist MCP disabled state for %q: %w", name, err)
+	}
+	if !result.NewExists {
+		return fmt.Errorf("MCP server %q disappeared while disabling: %w", name, config.ErrMCPNotFound)
 	}
 	if transaction != nil {
 		transaction.markUserMutation()
@@ -1459,12 +1488,16 @@ func disableServerWithPersistence(
 	// succeeds may this operation invalidate candidates; the write lease keeps
 	// a candidate from publishing between these steps and the runtime update.
 	o.invalidateServer(name)
-	if _, ok := cfg.SetMCPDisabled(name, true); !ok {
-		return fmt.Errorf("MCP server %q disappeared while disabling", name)
-	}
-	closeSessionLocked(name)
+	oldSession, hadOldSession := sessions.Get(name)
+	sessions.Del(name)
 	clearAdvertised(name)
 	updateState(name, StateDisabled, nil, nil, Counts{})
+	if hadOldSession {
+		if err := oldSession.Close(); err != nil && !errors.Is(err, io.EOF) &&
+			!errors.Is(err, context.Canceled) && err.Error() != "signal: killed" {
+			slog.Warn("Error closing MCP session", "name", name, "error", err)
+		}
+	}
 	return nil
 }
 
@@ -1494,15 +1527,33 @@ func EnableServer(ctx context.Context, cfg *config.ConfigStore, name string) err
 		lease.Unlock()
 		return fmt.Errorf("cannot determine writable scope for MCP server %q: %w", name, err)
 	}
-	if err := cfg.PersistMCPDisabledOverride(scope, name, false); err != nil {
+	transaction := o.pendingGlobalAdd(name, cfg)
+	var pending *config.MCPConfig
+	if transaction != nil {
+		fullConfig := mcpCfg
+		fullConfig.Disabled = false
+		pending = &fullConfig
+	}
+	result, err := enableMCPConfig(cfg, scope, name, pending)
+	if err != nil {
 		lease.Unlock()
 		return fmt.Errorf("failed to persist MCP enabled state for %q: %w", name, err)
 	}
+	if transaction != nil {
+		transaction.markUserMutation()
+	}
 	rollbackPersistence := func() {
-		if err := cfg.PersistMCPDisabledOverride(scope, name, true); err != nil {
-			slog.Error("Failed to roll back MCP enabled state", "name", name, "error", err)
+		var rollbackErr error
+		if transaction != nil {
+			rollback := mcpCfg
+			rollback.Disabled = true
+			_, rollbackErr = cfg.PersistMCPConfigResult(scope, name, rollback)
+		} else {
+			_, rollbackErr = cfg.PersistMCPDisabledOverrideResult(scope, name, true)
 		}
-		_, _ = cfg.SetMCPDisabled(name, true)
+		if rollbackErr != nil {
+			slog.Error("Failed to roll back MCP enabled state", "name", name, "error", rollbackErr)
+		}
 	}
 	if !o.acceptsSession() {
 		rollbackPersistence()
@@ -1513,11 +1564,10 @@ func EnableServer(ctx context.Context, cfg *config.ConfigStore, name string) err
 	// epoch. A failed persistence round-trip therefore leaves the old epoch
 	// untouched and the operation has no half-applied lifecycle result.
 	o.invalidateServer(name)
-	updated, ok := cfg.SetMCPDisabled(name, false)
-	if !ok {
+	if !result.NewExists {
 		rollbackPersistence()
 		lease.Unlock()
-		return fmt.Errorf("MCP server %q disappeared while enabling", name)
+		return fmt.Errorf("MCP server %q disappeared while enabling: %w", name, config.ErrMCPNotFound)
 	}
 	admission, err := o.admitServer(ctx, cfg, name, true)
 	if err != nil {
@@ -1529,11 +1579,18 @@ func EnableServer(ctx context.Context, cfg *config.ConfigStore, name string) err
 	resolver := cfg.Resolver()
 	lease.Unlock()
 	go func() {
-		if err := initClientAdmitted(ctx, cfg, name, updated, resolver, &admission); err != nil {
+		if err := initClientAdmitted(ctx, cfg, name, result.NewConfig, resolver, &admission); err != nil {
 			slog.Error("Failed to enable MCP server", "name", name, "err", err)
 		}
 	}()
 	return nil
+}
+
+func enableMCPConfig(cfg *config.ConfigStore, scope config.Scope, name string, pending *config.MCPConfig) (config.MCPMutationResult, error) {
+	if pending != nil {
+		return cfg.PersistMCPConfigResult(scope, name, *pending)
+	}
+	return cfg.PersistMCPDisabledOverrideResult(scope, name, false)
 }
 
 // AddServer validates and adds a new MCP server. It attempts to connect; if
@@ -1548,14 +1605,15 @@ func AddServer(ctx context.Context, cfg *config.ConfigStore, name string, mcpCfg
 // session, tools, prompts, resources, and state switch as one lifecycle
 // transition.
 func ReplaceServer(ctx context.Context, cfg *config.ConfigStore, oldName, newName string, mcpCfg config.MCPConfig) error {
-	return replaceServerWithScopedPersistence(ctx, cfg, oldName, newName, mcpCfg,
-		func(cfg *config.ConfigStore, scope config.Scope, oldName, newName string, mcpCfg config.MCPConfig) error {
-			return cfg.PersistReplaceMCPInScope(scope, oldName, newName, mcpCfg)
+	return replaceServerWithResultPersistence(ctx, cfg, oldName, newName, mcpCfg,
+		func(cfg *config.ConfigStore, scope config.Scope, oldName, newName string, mcpCfg config.MCPConfig) (config.MCPMutationResult, error) {
+			return cfg.PersistReplaceMCPResult(scope, oldName, newName, mcpCfg)
 		})
 }
 
 type replacementPersister func(*config.ConfigStore, string, string, config.MCPConfig) error
 type scopedReplacementPersister func(*config.ConfigStore, config.Scope, string, string, config.MCPConfig) error
+type replacementResultPersister func(*config.ConfigStore, config.Scope, string, string, config.MCPConfig) (config.MCPMutationResult, error)
 
 func replaceServerWithPersistence(
 	ctx context.Context,
@@ -1564,9 +1622,12 @@ func replaceServerWithPersistence(
 	mcpCfg config.MCPConfig,
 	persist replacementPersister,
 ) error {
-	return replaceServerWithScopedPersistence(ctx, cfg, oldName, newName, mcpCfg,
-		func(cfg *config.ConfigStore, _ config.Scope, oldName, newName string, mcpCfg config.MCPConfig) error {
-			return persist(cfg, oldName, newName, mcpCfg)
+	return replaceServerWithResultPersistence(ctx, cfg, oldName, newName, mcpCfg,
+		func(cfg *config.ConfigStore, _ config.Scope, oldName, newName string, mcpCfg config.MCPConfig) (config.MCPMutationResult, error) {
+			if err := persist(cfg, oldName, newName, mcpCfg); err != nil {
+				return config.MCPMutationResult{}, err
+			}
+			return currentMCPMutationResult(cfg, "replace", oldName, newName), nil
 		})
 }
 
@@ -1576,6 +1637,21 @@ func replaceServerWithScopedPersistence(
 	oldName, newName string,
 	mcpCfg config.MCPConfig,
 	persist scopedReplacementPersister,
+) error {
+	return replaceServerWithResultPersistence(ctx, cfg, oldName, newName, mcpCfg, func(cfg *config.ConfigStore, scope config.Scope, oldName, newName string, mcpCfg config.MCPConfig) (config.MCPMutationResult, error) {
+		if err := persist(cfg, scope, oldName, newName, mcpCfg); err != nil {
+			return config.MCPMutationResult{}, err
+		}
+		return currentMCPMutationResult(cfg, "replace", oldName, newName), nil
+	})
+}
+
+func replaceServerWithResultPersistence(
+	ctx context.Context,
+	cfg *config.ConfigStore,
+	oldName, newName string,
+	mcpCfg config.MCPConfig,
+	persist replacementResultPersister,
 ) error {
 	// Resolve before acquiring an owner or admitting a candidate. This keeps
 	// an external, project, system, or ambiguous origin from causing any
@@ -1602,22 +1678,6 @@ func replaceServerWithScopedPersistence(
 		unlockServerLeases(locked)
 		return fmt.Errorf("MCP server %q disappeared after scope resolution: %w", oldName, config.ErrMCPNotFound)
 	}
-	currentScope, err := cfg.ResolveMCPWritableScope(oldName)
-	if err != nil {
-		unlockServerLeases(locked)
-		return fmt.Errorf("MCP server %q became unwritable before candidate preparation: %w", oldName, err)
-	}
-	if currentScope != scope {
-		unlockServerLeases(locked)
-		return fmt.Errorf("MCP server %q writable scope changed from %s to %s before candidate preparation", oldName, scope, currentScope)
-	}
-	if oldName != newName {
-		if _, exists := cfg.MCPConfig(newName); exists {
-			unlockServerLeases(locked)
-			return fmt.Errorf("MCP server %q already exists", newName)
-		}
-	}
-
 	admission, err := o.admitReplacementCandidate(ctx, cfg, oldName)
 	if err != nil {
 		unlockServerLeases(locked)
@@ -1639,7 +1699,7 @@ func replaceServerWithScopedPersistence(
 
 	locked = lockServerLeases(oldName, newName)
 	lifecycleMu.Lock()
-	if !admission.validLocked() || (oldName != newName && hasMCPServer(cfg, newName)) {
+	if !admission.validLocked() {
 		lifecycleMu.Unlock()
 		unlockServerLeases(locked)
 		_ = prepared.session.Close()
@@ -1658,30 +1718,13 @@ func replaceServerWithScopedPersistence(
 	admission.promoted = true
 	lifecycleMu.Unlock()
 
-	// Scope is derived from on-disk origin, which may have changed while the
-	// candidate was being prepared. Re-resolve while the ordered leases are
-	// still held and immediately before the durable write; otherwise a
-	// workspace replacement could silently land in the global file.
-	commitScope, err := cfg.ResolveMCPWritableScope(oldName)
-	if err != nil {
-		unlockServerLeases(locked)
-		_ = prepared.session.Close()
-		admission.done()
-		return fmt.Errorf("MCP server %q became unwritable before durable replacement: %w", oldName, err)
-	}
-	if commitScope != scope {
-		unlockServerLeases(locked)
-		_ = prepared.session.Close()
-		admission.done()
-		return fmt.Errorf("MCP server %q writable scope changed from %s to %s before durable replacement", oldName, scope, commitScope)
-	}
-
 	// The durable atomic RMW may wait on an inter-process file lock for up to
 	// the config write timeout. Keep the ordered server leases, but never hold
 	// lifecycleMu here: Owner.Close must be able to mark the owner closing,
 	// cancel its contexts, and honor the caller's deadline while this I/O is
 	// stalled.
-	if err := persist(cfg, commitScope, oldName, newName, mcpCfg); err != nil {
+	result, err := persist(cfg, scope, oldName, newName, mcpCfg)
+	if err != nil {
 		unlockServerLeases(locked)
 		_ = prepared.session.Close()
 		admission.done()
@@ -1701,83 +1744,43 @@ func replaceServerWithScopedPersistence(
 		admission.done()
 		return nil
 	}
-	committedCfg, exists := cfg.MCPConfig(newName)
 	var canceled []context.CancelFunc
 	canceled = append(canceled, o.invalidateServerLocked(oldName)...)
 	if newName != oldName {
 		canceled = append(canceled, o.invalidateServerLocked(newName)...)
 	}
-	if !exists || committedCfg.Disabled {
-		// The durable replacement succeeded, but its final config is not
-		// runnable (either the requested replacement is disabled, or a later
-		// ConfigStore mutation disabled/removed it before runtime publication).
-		// Treat that later state as an inactive commit: fence both names and
-		// remove every old/target runtime artifact. The operation still returns
-		// success because its durable RMW linearized successfully; events below
-		// describe the later effective state exactly.
-		oldSession, hadOldSession := sessions.Get(oldName)
-		newSession, hadNewSession := sessions.Get(newName)
-		clearAdvertised(oldName)
-		sessions.Del(oldName)
-		states.Del(oldName)
-		if newName != oldName {
-			clearAdvertised(newName)
-			sessions.Del(newName)
-			states.Del(newName)
-		}
-		if exists {
-			setState(newName, StateDisabled, nil, nil, Counts{})
-		}
-		brokerForEvent := broker
-		lifecycleMu.Unlock()
-		unlockServerLeases(locked)
-		for _, cancel := range canceled {
-			cancel()
-		}
-		_ = prepared.session.Close()
-		if hadOldSession && oldSession != prepared.session {
-			_ = oldSession.Close()
-		}
-		if newName != oldName && hadNewSession && newSession != prepared.session && newSession != oldSession {
-			_ = newSession.Close()
-		}
-		admission.done()
-		if newName != oldName {
-			brokerForEvent.Publish(pubsub.DeletedEvent, Event{
-				Type: EventStateChanged, Name: oldName, State: StateDisabled,
-			})
-		}
-		if exists {
-			brokerForEvent.Publish(pubsub.UpdatedEvent, Event{
-				Type: EventStateChanged, Name: newName, State: StateDisabled,
-			})
-		} else {
-			brokerForEvent.Publish(pubsub.DeletedEvent, Event{
-				Type: EventStateChanged, Name: newName, State: StateDisabled,
-			})
-		}
-		return nil
-	}
-
-	admission.committed = true
+	newExists := result.NewExists
+	newDisabled := !newExists || result.NewConfig.Disabled
+	admission.committed = newExists && !newDisabled
 	admission.committedName = newName
 	admission.committedEpoch = o.serverEpochs[newName]
 
 	oldSession, hadOldSession := sessions.Get(oldName)
 	_, hadOldState := states.Get(oldName)
+	newSession, hadNewSession := sessions.Get(newName)
 	if oldName != newName {
 		clearAdvertised(oldName)
 		sessions.Del(oldName)
 		states.Del(oldName)
 	}
-	toolCount := updateTools(cfg, newName, prepared.tools)
-	updatePrompts(newName, prepared.prompts)
-	// Resources are fetched lazily. A replacement must not expose resources
-	// belonging to the old session under either the reused or renamed key.
-	allResources.Del(newName)
-	sessions.Set(newName, prepared.session)
-	counts := Counts{Tools: toolCount, Prompts: len(prepared.prompts)}
-	setState(newName, StateConnected, nil, prepared.session, counts)
+	var counts Counts
+	if !newDisabled {
+		toolCount := updateTools(cfg, newName, prepared.tools)
+		updatePrompts(newName, prepared.prompts)
+		// Resources are fetched lazily. A replacement must not expose resources
+		// belonging to the old session under either the reused or renamed key.
+		allResources.Del(newName)
+		sessions.Set(newName, prepared.session)
+		counts = Counts{Tools: toolCount, Prompts: len(prepared.prompts)}
+		setState(newName, StateConnected, nil, prepared.session, counts)
+	} else {
+		clearAdvertised(newName)
+		sessions.Del(newName)
+		states.Del(newName)
+		if newExists {
+			setState(newName, StateDisabled, nil, nil, Counts{})
+		}
+	}
 	brokerForEvent := broker
 	lifecycleMu.Unlock()
 	unlockServerLeases(locked)
@@ -1786,23 +1789,38 @@ func replaceServerWithScopedPersistence(
 		cancel()
 	}
 	if hadOldSession && oldSession != prepared.session {
-		_ = oldSession.Close()
+		closeMCPClient(oldName, oldSession)
+	}
+	if newName != oldName && hadNewSession && newSession != prepared.session && newSession != oldSession {
+		closeMCPClient(newName, newSession)
+	}
+	if newDisabled {
+		closeMCPClient(newName, prepared.session)
 	}
 	admission.done()
-	if oldName != newName && hadOldState {
+	if oldName != newName && result.FallbackExists {
+		startFallback(context.Background(), cfg, oldName, result.FallbackConfig, o)
+	} else if oldName != newName && hadOldState {
 		brokerForEvent.Publish(pubsub.DeletedEvent, Event{
 			Type: EventStateChanged, Name: oldName, State: StateDisabled,
 		})
 	}
-	brokerForEvent.Publish(pubsub.UpdatedEvent, Event{
-		Type: EventStateChanged, Name: newName, State: StateConnected, Counts: counts,
-	})
+	if newExists {
+		if newDisabled {
+			brokerForEvent.Publish(pubsub.UpdatedEvent, Event{
+				Type: EventStateChanged, Name: newName, State: StateDisabled,
+			})
+		} else {
+			brokerForEvent.Publish(pubsub.UpdatedEvent, Event{
+				Type: EventStateChanged, Name: newName, State: StateConnected, Counts: counts,
+			})
+		}
+	} else if newName != oldName {
+		brokerForEvent.Publish(pubsub.DeletedEvent, Event{
+			Type: EventStateChanged, Name: newName, State: StateDisabled,
+		})
+	}
 	return nil
-}
-
-func hasMCPServer(cfg *config.ConfigStore, name string) bool {
-	_, ok := cfg.MCPConfig(name)
-	return ok
 }
 
 // resolveMCPMutationScope resolves the writable origin for a disable/enable
@@ -1824,7 +1842,7 @@ func resolveMCPMutationScope(cfg *config.ConfigStore, name string, mcpCfg config
 	// not on disk until initialization finishes. Preserve the cancellation
 	// path for a concurrent disable/remove of that in-flight add; an ordinary
 	// unowned in-memory definition remains fail-closed below.
-	if errors.Is(err, config.ErrMCPUnwritableOrigin) && hasPendingGlobalAddFor(cfg, name) {
+	if (errors.Is(err, config.ErrMCPUnwritableOrigin) || errors.Is(err, config.ErrMCPNotFound)) && hasPendingGlobalAddFor(cfg, name) {
 		return config.ScopeGlobal, nil
 	}
 	return config.ScopeGlobal, err
@@ -1885,7 +1903,7 @@ func addServerWithInitializer(
 		lease.Unlock()
 		return err
 	}
-	transaction, ok := o.markPendingGlobalAdd(&admission, cfg)
+	transaction, ok := o.markPendingGlobalAdd(&admission, cfg, mcpCfg)
 	if !ok {
 		admission.done()
 		_, _ = cfg.RemoveMCP(name)
@@ -1924,10 +1942,16 @@ func addServerWithInitializer(
 		lease.Unlock()
 		return ErrOwnerBusy
 	}
-	if err := cfg.PersistMCPConfig(config.ScopeGlobal, name, mcpCfg); err != nil {
+	result, err := cfg.PersistMCPConfigResult(config.ScopeGlobal, name, mcpCfg)
+	if err != nil {
 		rollbackAddedServer(o, cfg, name, &admission, transaction)
 		lease.Unlock()
 		return fmt.Errorf("failed to persist MCP server %q: %w", name, err)
+	}
+	if !result.NewExists {
+		rollbackAddedServer(o, cfg, name, &admission, transaction)
+		lease.Unlock()
+		return fmt.Errorf("MCP server %q disappeared while persisting: %w", name, config.ErrMCPNotFound)
 	}
 	lease.Unlock()
 	return nil
@@ -1942,7 +1966,9 @@ func rollbackAddedServer(o *Owner, cfg *config.ConfigStore, name string, admissi
 		return false
 	}
 	closeSessionLocked(name)
-	_, _ = cfg.RemoveMCP(name)
+	if current, ok := cfg.MCPConfig(name); ok && reflect.DeepEqual(current, transaction.mcpConfig) {
+		_, _ = cfg.RemoveMCP(name)
+	}
 	o.invalidateServer(name)
 	clearAdvertised(name)
 	states.Del(name)
@@ -1952,14 +1978,15 @@ func rollbackAddedServer(o *Owner, cfg *config.ConfigStore, name string, admissi
 // RemoveServer removes an MCP server, closes its session, and removes it from config.
 // External servers (from .mcp.json) cannot be removed — only disabled.
 func RemoveServer(cfg *config.ConfigStore, name string) error {
-	return removeServerWithScopedPersistence(cfg, name,
-		func(cfg *config.ConfigStore, scope config.Scope, name string) error {
-			return cfg.PersistRemoveMCPConfig(scope, name)
+	return removeServerWithResultPersistence(cfg, name,
+		func(cfg *config.ConfigStore, scope config.Scope, name string) (config.MCPMutationResult, error) {
+			return cfg.PersistRemoveMCPConfigResult(scope, name)
 		})
 }
 
 type removeServerPersister func(*config.ConfigStore, string) error
 type scopedRemoveServerPersister func(*config.ConfigStore, config.Scope, string) error
+type removeServerResultPersister func(*config.ConfigStore, config.Scope, string) (config.MCPMutationResult, error)
 
 func removeServerWithPersistence(
 	cfg *config.ConfigStore,
@@ -1976,6 +2003,19 @@ func removeServerWithScopedPersistence(
 	cfg *config.ConfigStore,
 	name string,
 	persist scopedRemoveServerPersister,
+) error {
+	return removeServerWithResultPersistence(cfg, name, func(cfg *config.ConfigStore, scope config.Scope, name string) (config.MCPMutationResult, error) {
+		if err := persist(cfg, scope, name); err != nil {
+			return config.MCPMutationResult{}, err
+		}
+		return currentMCPMutationResult(cfg, "remove", name, name), nil
+	})
+}
+
+func removeServerWithResultPersistence(
+	cfg *config.ConfigStore,
+	name string,
+	persist removeServerResultPersister,
 ) error {
 	o, err := ensureOwner()
 	if err != nil {
@@ -2003,26 +2043,67 @@ func removeServerWithScopedPersistence(
 	if mcpCfg.Source == config.MCPSourceExternal {
 		return fmt.Errorf("MCP server %q is from .mcp.json and cannot be removed (disable it instead): %w", name, config.ErrMCPExternal)
 	}
+	if transaction := o.pendingGlobalAdd(name, cfg); transaction != nil {
+		if result, persistErr := persist(cfg, config.ScopeGlobal, name); persistErr == nil {
+			// A custom persistence seam may model a pending removal as an
+			// already-completed operation. Keep its result authoritative.
+			if result.NewExists {
+				return fmt.Errorf("MCP server %q remained configured after removal", name)
+			}
+		} else if !errors.Is(persistErr, config.ErrMCPNotFound) {
+			return fmt.Errorf("failed to remove pending MCP server %q from config: %w", name, persistErr)
+		}
+		// A pending add has no durable owner yet. Materialize its complete
+		// definition before the atomic removal so the add transaction cannot
+		// later publish a live candidate over this user cancellation.
+		if _, err := cfg.PersistMCPConfigResult(config.ScopeGlobal, name, mcpCfg); err != nil {
+			return fmt.Errorf("failed to remove pending MCP server %q from config: %w", name, err)
+		}
+		if _, err := cfg.PersistRemoveMCPConfigResult(config.ScopeGlobal, name); err != nil {
+			transaction.markUserMutation()
+			return fmt.Errorf("failed to remove pending MCP server %q from config: %w", name, err)
+		}
+		transaction.markUserMutation()
+		o.invalidateServer(name)
+		_, _ = cfg.RemoveMCP(name)
+		oldSession, hadOldSession := sessions.Get(name)
+		sessions.Del(name)
+		clearAdvertised(name)
+		states.Del(name)
+		if hadOldSession {
+			closeMCPClient(name, oldSession)
+		}
+		publishEvent(pubsub.DeletedEvent, Event{Type: EventStateChanged, Name: name, State: StateDisabled})
+		return nil
+	}
 	scope, err := resolveMCPMutationScope(cfg, name, mcpCfg)
 	if err != nil {
 		return fmt.Errorf("cannot determine writable scope for MCP server %q: %w", name, err)
 	}
-	if err := persist(cfg, scope, name); err != nil {
+	result, err := persist(cfg, scope, name)
+	if err != nil {
 		return fmt.Errorf("failed to remove MCP server %q from config: %w", name, err)
-	}
-	if transaction := o.pendingGlobalAdd(name, cfg); transaction != nil {
-		transaction.markUserMutation()
 	}
 	// Persistence is the fallible part of this transaction. Only after it
 	// succeeds may this operation invalidate candidates; the write lease keeps
 	// a candidate from publishing until runtime state is removed.
 	o.invalidateServer(name)
-	// RemoveConfigField may already have published the disk reload, in which
-	// case the copy-on-write removal is intentionally a no-op.
-	_, _ = cfg.RemoveMCP(name)
-	closeSessionLocked(name)
+	oldSession, hadOldSession := sessions.Get(name)
+	sessions.Del(name)
 	clearAdvertised(name)
 	states.Del(name)
+	if hadOldSession {
+		closeMCPClient(name, oldSession)
+	}
+	if result.NewExists {
+		if result.NewConfig.Disabled {
+			updateState(name, StateDisabled, nil, nil, Counts{})
+			publishStateEvent(name, StateDisabled, nil, Counts{})
+			return nil
+		}
+		startFallback(context.Background(), cfg, name, result.NewConfig, o)
+		return nil
+	}
 	publishEvent(pubsub.DeletedEvent, Event{Type: EventStateChanged, Name: name, State: StateDisabled})
 	return nil
 }
@@ -2036,12 +2117,63 @@ func ensureOwner() (*Owner, error) {
 
 func closeSessionLocked(name string) {
 	if session, ok := sessions.Get(name); ok {
-		if err := session.Close(); err != nil && !errors.Is(err, io.EOF) &&
-			!errors.Is(err, context.Canceled) && err.Error() != "signal: killed" {
-			slog.Warn("Error closing MCP session", "name", name, "error", err)
-		}
+		closeMCPClient(name, session)
 		sessions.Del(name)
 	}
+}
+
+func closeMCPClient(name string, session *ClientSession) {
+	if session == nil {
+		return
+	}
+	if err := session.Close(); err != nil && !errors.Is(err, io.EOF) &&
+		!errors.Is(err, context.Canceled) && err.Error() != "signal: killed" {
+		slog.Warn("Error closing MCP session", "name", name, "error", err)
+	}
+}
+
+func currentMCPMutationResult(cfg *config.ConfigStore, operation, oldName, newName string) config.MCPMutationResult {
+	result := config.MCPMutationResult{
+		Operation: operation,
+		OldName:   oldName,
+		NewName:   newName,
+	}
+	if current, ok := cfg.MCPConfig(newName); ok {
+		result.NewExists = true
+		result.NewConfig = current
+	}
+	if current, ok := cfg.MCPConfig(oldName); ok {
+		result.OldExists = true
+		result.OldConfig = current
+		if operation == "remove" || (operation == "replace" && oldName != newName) {
+			result.FallbackExists = true
+			result.FallbackConfig = current
+		}
+	}
+	return result
+}
+
+func startFallback(ctx context.Context, cfg *config.ConfigStore, name string, mcpCfg config.MCPConfig, o *Owner) {
+	if mcpCfg.Disabled {
+		updateState(name, StateDisabled, nil, nil, Counts{})
+		publishStateEvent(name, StateDisabled, nil, Counts{})
+		return
+	}
+	admission, err := o.admitServer(ctx, cfg, name, true)
+	if err != nil {
+		if !errors.Is(err, ErrOwnerBusy) {
+			updateState(name, StateError, err, nil, Counts{})
+			publishStateEvent(name, StateError, err, Counts{})
+		}
+		return
+	}
+	updateAdmissionState(&admission, StateStarting, nil, nil, Counts{})
+	resolver := cfg.Resolver()
+	go func() {
+		if err := initClientAdmittedWithState(ctx, cfg, name, mcpCfg, resolver, &admission, false); err != nil {
+			slog.Error("Failed to initialize revealed MCP server", "name", name, "err", err)
+		}
+	}()
 }
 
 func clearAdvertised(name string) {

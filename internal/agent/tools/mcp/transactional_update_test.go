@@ -170,6 +170,38 @@ func TestReplaceServerFailedRenamePreservesLiveServerAndDisk(t *testing.T) {
 	require.Equal(t, oldDisk, diskMCP(t))
 }
 
+func TestReplaceServerConditionalTargetCollisionPreservesOldRuntime(t *testing.T) {
+	oldHTTP := transactionalTestServer(t, "old-tool", "old")
+	newHTTP := transactionalTestServer(t, "new-tool", "new")
+	defer oldHTTP.Close()
+	defer newHTTP.Close()
+	store, root := originScopeStore(t)
+	oldName := "collision-old.literal#?"
+	newName := "collision-new.literal#?"
+	require.NoError(t, store.PersistMCPConfig(config.ScopeGlobal, oldName, config.MCPConfig{
+		Type: config.MCPHttp, URL: oldHTTP.URL, Timeout: 60,
+	}))
+	require.NoError(t, store.ReloadFromDisk(context.Background()))
+	contender, err := config.Init(root, root, false)
+	require.NoError(t, err)
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer func() { require.NoError(t, owner.Close(context.Background())) }()
+	owner.Initialize(context.Background(), nil, store, false)
+	oldSession := mustSession(t, oldName)
+	winner := config.MCPConfig{Type: config.MCPHttp, URL: "http://winner.example"}
+	err = replaceServerWithResultPersistence(context.Background(), store, oldName, newName, config.MCPConfig{
+		Type: config.MCPHttp, URL: newHTTP.URL, Timeout: 60,
+	}, func(cfg *config.ConfigStore, scope config.Scope, oldName, newName string, mcpCfg config.MCPConfig) (config.MCPMutationResult, error) {
+		require.NoError(t, contender.PersistMCPConfig(config.ScopeGlobal, newName, winner))
+		return cfg.PersistReplaceMCPResult(scope, oldName, newName, mcpCfg)
+	})
+	require.ErrorIs(t, err, config.ErrMCPTargetExists)
+	require.Same(t, oldSession, mustSession(t, oldName))
+	require.False(t, hasSession(newName))
+	require.Equal(t, winner, requireMCPFileConfig(t, config.GlobalConfigData(), newName))
+}
+
 func hasSession(name string) bool {
 	_, ok := sessions.Get(name)
 	return ok
@@ -396,8 +428,7 @@ func TestReplaceServerMissingPostPersistConfigLeavesNoOrphanRuntime(t *testing.T
 		if err := cfg.PersistRemoveMCPConfig(config.ScopeGlobal, newName); err != nil {
 			return err
 		}
-		_, ok := cfg.RemoveMCP(newName)
-		require.True(t, ok)
+		_, _ = cfg.RemoveMCP(newName)
 		return nil
 	})
 	require.NoError(t, err)

@@ -71,6 +71,14 @@ func writeExternalMCPFile(t *testing.T, path, name string, value map[string]any)
 	require.NoError(t, os.WriteFile(path, data, 0o600))
 }
 
+func writeRushMCPDefinition(t *testing.T, path, name string, value config.MCPConfig) {
+	t.Helper()
+	data, err := json.Marshal(map[string]any{"mcp": map[string]any{name: value}})
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+	require.NoError(t, os.WriteFile(path, data, 0o600))
+}
+
 func originTestServer(t *testing.T, toolName, text string) *httptest.Server {
 	t.Helper()
 	server := modelmcp.NewServer(&modelmcp.Implementation{Name: toolName}, nil)
@@ -229,6 +237,220 @@ func TestExternalDisableKeepsFullDefinitionAndUsesWorkspaceOverlay(t *testing.T)
 	require.Equal(t, "http://external.example/mcp", external.URL)
 	require.Equal(t, map[string]string{"Authorization": "Bearer token"}, external.Headers)
 	require.True(t, external.Disabled)
+}
+
+func TestAddServerConditionalCollisionPreservesTargetAndOwnRuntime(t *testing.T) {
+	store, root := originScopeStore(t)
+	contender, err := config.Init(root, root, false)
+	require.NoError(t, err)
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer func() { require.NoError(t, owner.Close(context.Background())) }()
+
+	const name = "collision.literal#?"
+	candidateReady := make(chan struct{})
+	releaseCandidate := make(chan struct{})
+	addDone := make(chan error, 1)
+	candidate := config.MCPConfig{Type: config.MCPHttp, URL: "http://candidate.example"}
+	go func() {
+		addDone <- addServerWithInitializer(context.Background(), store, name, candidate,
+			func(_ context.Context, cfg *config.ConfigStore, serverName string, _ config.MCPConfig, _ config.VariableResolver, admission *serverAdmission) error {
+				defer admission.done()
+				if err := publishPreparedClient(cfg, serverName, &preparedClient{session: &ClientSession{}}, admission); err != nil {
+					return err
+				}
+				close(candidateReady)
+				<-releaseCandidate
+				return nil
+			})
+	}()
+	select {
+	case <-candidateReady:
+	case <-time.After(5 * time.Second):
+		t.Fatal("candidate did not reach the durable commit seam")
+	}
+	winner := config.MCPConfig{Type: config.MCPHttp, URL: "http://winner.example"}
+	require.NoError(t, contender.PersistMCPConfig(config.ScopeGlobal, name, winner))
+	close(releaseCandidate)
+	err = <-addDone
+	require.ErrorIs(t, err, config.ErrMCPTargetExists)
+	require.Equal(t, winner, requireMCPFileConfig(t, config.GlobalConfigData(), name))
+	require.False(t, hasSession(name), "a failed add must close only its own candidate session")
+	_, ok := GetState(name)
+	require.False(t, ok)
+}
+
+func TestWorkspaceRemovalAndReplaceStartRevealedFallbacks(t *testing.T) {
+	root := t.TempDir()
+	configDir := filepath.Join(root, "global-config")
+	dataDir := filepath.Join(root, "workspace-data")
+	t.Setenv("RUSH_GLOBAL_CONFIG", configDir)
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+	t.Setenv("RUSH_GLOBAL_DATA", filepath.Join(root, "global-data"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(root, "global-data"))
+	store, err := config.Init(root, dataDir, false)
+	require.NoError(t, err)
+	workspacePath := filepath.Join(dataDir, "rush.json")
+	globalPath := config.GlobalConfigData()
+
+	globalServer := originTestServer(t, "global-fallback-tool", "global-fallback")
+	projectServer := originTestServer(t, "project-fallback-tool", "project-fallback")
+	externalServer := originTestServer(t, "external-fallback-tool", "external-fallback")
+	replaceServer := originTestServer(t, "replace-fallback-tool", "replace-fallback")
+	newServer := originTestServer(t, "replacement-tool", "replacement")
+	defer globalServer.Close()
+	defer projectServer.Close()
+	defer externalServer.Close()
+	defer replaceServer.Close()
+	defer newServer.Close()
+
+	globalName := "fallback.global#?"
+	projectName := "fallback.project#?"
+	externalName := "fallback.external#?"
+	replaceName := "fallback.replace#?"
+	disabledName := "fallback.disabled#?"
+	writeRushMCPDefinition(t, globalPath, globalName, config.MCPConfig{Type: config.MCPHttp, URL: globalServer.URL, Timeout: 60})
+	writeRushMCPDefinition(t, filepath.Join(root, "rush.json"), projectName, config.MCPConfig{Type: config.MCPHttp, URL: projectServer.URL, Timeout: 60})
+	writeExternalMCPFile(t, filepath.Join(root, ".mcp.json"), externalName, map[string]any{"type": "http", "url": externalServer.URL})
+	writeRushMCPDefinition(t, filepath.Join(root, "rush.json"), replaceName, config.MCPConfig{Type: config.MCPHttp, URL: replaceServer.URL, Timeout: 60})
+	writeRushMCPDefinition(t, filepath.Join(root, "rush.json"), disabledName, config.MCPConfig{Type: config.MCPHttp, URL: "http://disabled-fallback.example", Disabled: true})
+	workspaceDefs := map[string]config.MCPConfig{
+		globalName:   {Type: config.MCPHttp, URL: "http://workspace-global.example", Timeout: 60},
+		projectName:  {Type: config.MCPHttp, URL: "http://workspace-project.example", Timeout: 60},
+		externalName: {Type: config.MCPHttp, URL: "http://workspace-external.example", Timeout: 60},
+		replaceName:  {Type: config.MCPHttp, URL: "http://workspace-replace.example", Timeout: 60},
+		disabledName: {Type: config.MCPHttp, URL: "http://workspace-disabled.example", Timeout: 60},
+	}
+	data, err := json.Marshal(map[string]any{"mcp": workspaceDefs})
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(filepath.Dir(workspacePath), 0o755))
+	require.NoError(t, os.WriteFile(workspacePath, data, 0o600))
+	// Preserve the disabled project fallback alongside the other project
+	// definitions by rewriting the project document with every entry.
+	projectDefs := map[string]config.MCPConfig{
+		projectName:  {Type: config.MCPHttp, URL: projectServer.URL, Timeout: 60},
+		replaceName:  {Type: config.MCPHttp, URL: replaceServer.URL, Timeout: 60},
+		disabledName: {Type: config.MCPHttp, URL: "http://disabled-fallback.example", Disabled: true},
+	}
+	data, err = json.Marshal(map[string]any{"mcp": projectDefs})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(root, "rush.json"), data, 0o600))
+	require.NoError(t, store.ReloadFromDisk(context.Background()))
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer func() { require.NoError(t, owner.Close(context.Background())) }()
+	owner.Initialize(context.Background(), nil, store, false)
+
+	for _, test := range []struct {
+		name string
+		tool string
+		want string
+	}{
+		{globalName, "global-fallback-tool", "global-fallback"},
+		{projectName, "project-fallback-tool", "project-fallback"},
+		{externalName, "external-fallback-tool", "external-fallback"},
+	} {
+		require.NoError(t, RemoveServer(store, test.name))
+		require.Eventually(t, func() bool {
+			state, ok := GetState(test.name)
+			return ok && state.State == StateConnected
+		}, 5*time.Second, time.Millisecond)
+		result, callErr := RunTool(context.Background(), store, test.name, test.tool, `{}`)
+		require.NoError(t, callErr)
+		require.Equal(t, test.want, result.Content)
+	}
+
+	require.NoError(t, ReplaceServer(context.Background(), store, replaceName, "replacement.literal#?", config.MCPConfig{
+		Type: config.MCPHttp, URL: newServer.URL, Timeout: 60,
+	}))
+	require.Eventually(t, func() bool {
+		state, ok := GetState(replaceName)
+		return ok && state.State == StateConnected
+	}, 5*time.Second, time.Millisecond)
+	require.Eventually(t, func() bool {
+		state, ok := GetState("replacement.literal#?")
+		return ok && state.State == StateConnected
+	}, 5*time.Second, time.Millisecond)
+	result, err := RunTool(context.Background(), store, replaceName, "replace-fallback-tool", `{}`)
+	require.NoError(t, err)
+	require.Equal(t, "replace-fallback", result.Content)
+	result, err = RunTool(context.Background(), store, "replacement.literal#?", "replacement-tool", `{}`)
+	require.NoError(t, err)
+	require.Equal(t, "replacement", result.Content)
+
+	require.NoError(t, RemoveServer(store, disabledName))
+	require.Eventually(t, func() bool {
+		state, ok := GetState(disabledName)
+		return ok && state.State == StateDisabled
+	}, 5*time.Second, time.Millisecond)
+	require.False(t, hasSession(disabledName))
+}
+
+func TestOwnerCloseFencesRevealedFallbackInitialization(t *testing.T) {
+	root := t.TempDir()
+	configDir := filepath.Join(root, "global-config")
+	dataDir := filepath.Join(root, "workspace-data")
+	t.Setenv("RUSH_GLOBAL_CONFIG", configDir)
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+	t.Setenv("RUSH_GLOBAL_DATA", filepath.Join(root, "global-data"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(root, "global-data"))
+	store, err := config.Init(root, dataDir, false)
+	require.NoError(t, err)
+	name := "fallback.close#?"
+	projectPath := filepath.Join(root, "rush.json")
+	workspacePath := filepath.Join(dataDir, "rush.json")
+	started := make(chan struct{})
+	canceled := make(chan struct{})
+	releaseHandler := make(chan struct{})
+	var startedOnce sync.Once
+	var canceledOnce sync.Once
+	server := modelmcp.NewServer(&modelmcp.Implementation{Name: "fallback-close"}, nil)
+	modelmcp.AddTool(server, &modelmcp.Tool{Name: "fallback-close-tool"}, func(context.Context, *modelmcp.CallToolRequest, any) (*modelmcp.CallToolResult, any, error) {
+		return &modelmcp.CallToolResult{}, nil, nil
+	})
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		startedOnce.Do(func() { close(started) })
+		select {
+		case <-r.Context().Done():
+			canceledOnce.Do(func() { close(canceled) })
+			return
+		case <-releaseHandler:
+			canceledOnce.Do(func() { close(canceled) })
+			return
+		}
+	}))
+	defer httpServer.Close()
+	writeRushMCPDefinition(t, projectPath, name, config.MCPConfig{Type: config.MCPHttp, URL: httpServer.URL, Timeout: 60})
+	writeRushMCPDefinition(t, workspacePath, name, config.MCPConfig{Type: config.MCPHttp, URL: "http://workspace-shadow.example", Timeout: 60})
+	require.NoError(t, store.ReloadFromDisk(context.Background()))
+	owner, err := Acquire()
+	require.NoError(t, err)
+	eventsCtx, cancelEvents := context.WithCancel(context.Background())
+	defer cancelEvents()
+	events := SubscribeEvents(eventsCtx)
+
+	require.NoError(t, RemoveServer(store, name))
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("revealed fallback did not begin initialization")
+	}
+	state, ok := GetState(name)
+	require.True(t, ok)
+	require.Equal(t, StateStarting, state.State)
+	require.NoError(t, owner.Close(context.Background()))
+	close(releaseHandler)
+	select {
+	case <-canceled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("owner close did not cancel fallback initialization")
+	}
+	require.False(t, hasSession(name))
+	_, ok = GetState(name)
+	require.False(t, ok)
+	for event := range events {
+		require.NotEqual(t, StateConnected, event.Payload.State)
+	}
 }
 
 func TestReplaceServerProjectOriginRejectsBeforeCandidateConnection(t *testing.T) {
@@ -417,13 +639,13 @@ func TestReplaceServerRejectsScopeChangeBeforeDurableWrite(t *testing.T) {
 	mutationErr := make(chan error, 1)
 	candidate := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		changed.Do(func() {
-			if err := store.PersistMCPConfig(config.ScopeGlobal, oldName, config.MCPConfig{
-				Type: config.MCPHttp, URL: oldHTTP.URL, Timeout: 60,
-			}); err != nil {
+			if err := store.PersistRemoveMCPConfig(config.ScopeWorkspace, oldName); err != nil {
 				mutationErr <- err
 				return
 			}
-			if err := store.PersistRemoveMCPConfig(config.ScopeWorkspace, oldName); err != nil {
+			if err := store.PersistMCPConfig(config.ScopeGlobal, oldName, config.MCPConfig{
+				Type: config.MCPHttp, URL: oldHTTP.URL, Timeout: 60,
+			}); err != nil {
 				mutationErr <- err
 			}
 		})
@@ -446,10 +668,10 @@ func TestReplaceServerRejectsScopeChangeBeforeDurableWrite(t *testing.T) {
 
 	// Restore the fixture so the postcondition is checked against the original
 	// origin, not the deliberate disk mutation used to trigger the race.
+	require.NoError(t, store.PersistRemoveMCPConfig(config.ScopeGlobal, oldName))
 	require.NoError(t, store.PersistMCPConfig(config.ScopeWorkspace, oldName, config.MCPConfig{
 		Type: config.MCPHttp, URL: oldHTTP.URL, Timeout: 60,
 	}))
-	require.NoError(t, store.PersistRemoveMCPConfig(config.ScopeGlobal, oldName))
 	require.NoError(t, store.ReloadFromDisk(context.Background()))
 	updated, ok := store.MCPConfig(oldName)
 	require.True(t, ok)
