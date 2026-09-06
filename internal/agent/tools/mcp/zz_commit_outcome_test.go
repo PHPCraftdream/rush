@@ -19,12 +19,29 @@ func injectedMCPCommitOutcome(reconciled bool) error {
 	}
 }
 
+func injectedMCPPrecommitOutcome() error {
+	return &config.CommitOutcome{
+		Committed:  false,
+		Reconciled: false,
+		Path:       "injected-mcp-config",
+		Cause:      errors.New("injected pre-commit failure"),
+	}
+}
+
 func requireMCPCommitUncertainty(t *testing.T, err error, reconciled bool) {
 	t.Helper()
 	var outcome *config.CommitOutcome
 	require.ErrorAs(t, err, &outcome)
 	require.True(t, outcome.Committed)
 	require.Equal(t, reconciled, outcome.Reconciled)
+}
+
+func requireMCPPrecommitOutcome(t *testing.T, err error) {
+	t.Helper()
+	var outcome *config.CommitOutcome
+	require.ErrorAs(t, err, &outcome)
+	require.False(t, outcome.Committed)
+	require.False(t, outcome.Reconciled)
 }
 
 func closeCommitOutcomeTestOwner(t *testing.T, owner *Owner) {
@@ -188,4 +205,80 @@ func TestCommittedUnreconciledOutcomesFenceRuntime(t *testing.T) {
 	requireMCPCommitUncertainty(t, err, false)
 	require.False(t, hasSession("unreconciled"))
 	require.Equal(t, StateDisabled, mustState(t, "unreconciled").State)
+}
+
+func TestTypedPrecommitOutcomeDoesNotCommitAdd(t *testing.T) {
+	store := isolatedMCPStore(t)
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer closeCommitOutcomeTestOwner(t, owner)
+
+	name := "precommit-add"
+	err = addServerWithInitializerAndPersistence(context.Background(), store, name,
+		config.MCPConfig{Type: config.MCPStdio, Command: name}, fakeMCPInitializer,
+		func(*config.ConfigStore, config.Scope, string, config.MCPConfig) (config.MCPMutationResult, error) {
+			return config.MCPMutationResult{}, injectedMCPPrecommitOutcome()
+		})
+
+	requireMCPPrecommitOutcome(t, err)
+	_, ok := store.MCPConfig(name)
+	require.False(t, ok)
+	require.False(t, hasSession(name))
+	_, ok = GetState(name)
+	require.False(t, ok)
+}
+
+func TestTypedPrecommitOutcomeDoesNotDisableRuntime(t *testing.T) {
+	store := isolatedMCPStore(t)
+	name := "precommit-disable"
+	require.NoError(t, store.PersistMCPConfig(config.ScopeGlobal, name, config.MCPConfig{
+		Type: config.MCPStdio, Command: name,
+	}))
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer closeCommitOutcomeTestOwner(t, owner)
+	session := &ClientSession{}
+	sessions.Set(name, session)
+	setState(name, StateConnected, nil, session, Counts{})
+
+	err = disableServerWithResultPersistence(context.Background(), store, name,
+		func(*config.ConfigStore, config.Scope, string, *config.MCPConfig) (config.MCPMutationResult, error) {
+			return config.MCPMutationResult{}, injectedMCPPrecommitOutcome()
+		})
+
+	requireMCPPrecommitOutcome(t, err)
+	configured, ok := store.MCPConfig(name)
+	require.True(t, ok)
+	require.False(t, configured.Disabled)
+	require.Same(t, session, mustSession(t, name))
+	require.Equal(t, StateConnected, mustState(t, name).State)
+}
+
+func TestTypedPrecommitOutcomeDoesNotReplaceRuntime(t *testing.T) {
+	store := isolatedMCPStore(t)
+	oldName := "precommit-replace"
+	require.NoError(t, store.PersistMCPConfig(config.ScopeGlobal, oldName, config.MCPConfig{
+		Type: config.MCPStdio, Command: "old",
+	}))
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer closeCommitOutcomeTestOwner(t, owner)
+	oldSession := &ClientSession{}
+	sessions.Set(oldName, oldSession)
+	setState(oldName, StateConnected, nil, oldSession, Counts{})
+
+	err = replaceServerWithResultPersistenceAndPreparation(context.Background(), store, oldName, oldName,
+		config.MCPConfig{Type: config.MCPStdio, Command: "new"},
+		func(*config.ConfigStore, config.Scope, string, string, config.MCPConfig) (config.MCPMutationResult, error) {
+			return config.MCPMutationResult{}, injectedMCPPrecommitOutcome()
+		}, func(context.Context, *config.ConfigStore, string, config.MCPConfig, config.VariableResolver, *serverAdmission) (*preparedClient, error) {
+			return &preparedClient{session: &ClientSession{}}, nil
+		})
+
+	requireMCPPrecommitOutcome(t, err)
+	configured, ok := store.MCPConfig(oldName)
+	require.True(t, ok)
+	require.Equal(t, "old", configured.Command)
+	require.Same(t, oldSession, mustSession(t, oldName))
+	require.Equal(t, StateConnected, mustState(t, oldName).State)
 }

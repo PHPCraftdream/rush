@@ -1561,6 +1561,210 @@ func TestInitializeSingleReplacesSameNameOldSession(t *testing.T) {
 	require.Equal(t, StateConnected, mustState(t, name).State)
 }
 
+func TestInitializeSingleDefersCandidateNotificationWithOldSameNameSession(t *testing.T) {
+	const name = "initialize-single-notification"
+	oldServer := mcp.NewServer(&mcp.Implementation{Name: "initialize-single-old"}, nil)
+	mcp.AddTool(oldServer, &mcp.Tool{Name: "old-tool"}, func(context.Context, *mcp.CallToolRequest, any) (*mcp.CallToolResult, any, error) {
+		return &mcp.CallToolResult{}, nil, nil
+	})
+	var oldListCalls atomic.Int32
+	oldServer.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
+		return func(ctx context.Context, method string, request mcp.Request) (mcp.Result, error) {
+			if method == "tools/list" {
+				oldListCalls.Add(1)
+			}
+			return next(ctx, method, request)
+		}
+	})
+	oldServerTransport, oldClientTransport := mcp.NewInMemoryTransports()
+	oldServerSession, err := oldServer.Connect(context.Background(), oldServerTransport, nil)
+	require.NoError(t, err)
+	oldClientSession, err := mcp.NewClient(&mcp.Implementation{Name: "initialize-single-old-client"}, nil).
+		Connect(context.Background(), oldClientTransport, nil)
+	require.NoError(t, err)
+
+	candidateReady := make(chan struct{})
+	candidateRelease := make(chan struct{})
+	var candidateReleaseOnce sync.Once
+	var candidateReadyOnce sync.Once
+	var candidate *mcp.Server
+	candidate = mcp.NewServer(&mcp.Implementation{Name: "initialize-single-candidate"}, &mcp.ServerOptions{
+		InitializedHandler: func(context.Context, *mcp.InitializedRequest) {
+			mcp.AddTool(candidate, &mcp.Tool{Name: "candidate-late"}, func(context.Context, *mcp.CallToolRequest, any) (*mcp.CallToolResult, any, error) {
+				return &mcp.CallToolResult{}, nil, nil
+			})
+		},
+	})
+	mcp.AddTool(candidate, &mcp.Tool{Name: "candidate-initial"}, func(context.Context, *mcp.CallToolRequest, any) (*mcp.CallToolResult, any, error) {
+		return &mcp.CallToolResult{}, nil, nil
+	})
+	candidate.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
+		return func(ctx context.Context, method string, request mcp.Request) (mcp.Result, error) {
+			if method == "tools/list" {
+				candidateReadyOnce.Do(func() { close(candidateReady) })
+				select {
+				case <-candidateRelease:
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+			}
+			return next(ctx, method, request)
+		}
+	})
+	candidateHTTP := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
+		return candidate
+	}, nil))
+
+	store := persistedMCPStore(t, name, candidateHTTP.URL, false)
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer func() {
+		candidateReleaseOnce.Do(func() { close(candidateRelease) })
+		_ = oldClientSession.Close()
+		_ = oldServerSession.Close()
+		closeCommitOutcomeTestOwner(t, owner)
+		candidateHTTP.CloseClientConnections()
+		candidateHTTP.Close()
+	}()
+	oldSession := &ClientSession{ClientSession: oldClientSession}
+	sessions.Set(name, oldSession)
+	setState(name, StateConnected, nil, oldSession, Counts{})
+	allTools.Set(name, []*Tool{{Name: "old-tool"}})
+
+	eventsCtx, cancelEvents := context.WithCancel(context.Background())
+	defer cancelEvents()
+	events := SubscribeEvents(eventsCtx)
+	initDone := make(chan error, 1)
+	go func() { initDone <- InitializeSingle(context.Background(), name, store) }()
+	select {
+	case <-candidateReady:
+	case <-time.After(5 * time.Second):
+		t.Fatal("InitializeSingle did not reach candidate tools/list")
+	}
+	require.Eventually(t, func() bool {
+		lifecycleMu.Lock()
+		defer lifecycleMu.Unlock()
+		for _, request := range owner.refreshPending {
+			if request.deferUntilCommit && request.candidateToken != 0 {
+				return true
+			}
+		}
+		return false
+	}, time.Second, time.Millisecond)
+drainBeforeCommit:
+	for {
+		select {
+		case event := <-events:
+			if event.Payload.Type == EventToolsListChanged {
+				t.Fatalf("candidate notification published before commit: %v", event)
+			}
+		default:
+			break drainBeforeCommit
+		}
+	}
+	candidateReleaseOnce.Do(func() { close(candidateRelease) })
+	require.NoError(t, <-initDone)
+
+	rawEvents := 0
+	refreshPublished := false
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+	for !refreshPublished || rawEvents != 1 {
+		select {
+		case event := <-events:
+			if event.Payload.Type == EventToolsListChanged {
+				rawEvents++
+			}
+			if event.Payload.Type == EventStateChanged && event.Payload.State == StateConnected && event.Payload.Counts.Tools == 2 {
+				refreshPublished = true
+			}
+		case <-deadline.C:
+			t.Fatal("committed candidate notification did not refresh the new session")
+		}
+	}
+	require.Equal(t, 1, rawEvents)
+	require.Zero(t, oldListCalls.Load())
+	require.ElementsMatch(t, []string{"candidate-initial", "candidate-late"}, GetServerToolNames(name))
+}
+
+func TestInitializeSingleFailedCandidateDropsNotification(t *testing.T) {
+	const name = "initialize-single-failed-notification"
+	candidateReady := make(chan struct{})
+	candidateRelease := make(chan struct{})
+	var candidateReadyOnce sync.Once
+	var candidateReleaseOnce sync.Once
+	var candidate *mcp.Server
+	candidate = mcp.NewServer(&mcp.Implementation{Name: "initialize-single-failed-candidate"}, &mcp.ServerOptions{
+		InitializedHandler: func(context.Context, *mcp.InitializedRequest) {
+			mcp.AddTool(candidate, &mcp.Tool{Name: "candidate-late"}, func(context.Context, *mcp.CallToolRequest, any) (*mcp.CallToolResult, any, error) {
+				return &mcp.CallToolResult{}, nil, nil
+			})
+		},
+	})
+	mcp.AddTool(candidate, &mcp.Tool{Name: "candidate-initial"}, func(context.Context, *mcp.CallToolRequest, any) (*mcp.CallToolResult, any, error) {
+		return &mcp.CallToolResult{}, nil, nil
+	})
+	candidate.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
+		return func(ctx context.Context, method string, request mcp.Request) (mcp.Result, error) {
+			if method == "tools/list" {
+				candidateReadyOnce.Do(func() { close(candidateReady) })
+				select {
+				case <-candidateRelease:
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+				return nil, errors.New("injected candidate list failure")
+			}
+			return next(ctx, method, request)
+		}
+	})
+	candidateHTTP := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
+		return candidate
+	}, nil))
+	store := persistedMCPStore(t, name, candidateHTTP.URL, false)
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer func() {
+		candidateReleaseOnce.Do(func() { close(candidateRelease) })
+		closeCommitOutcomeTestOwner(t, owner)
+		candidateHTTP.CloseClientConnections()
+		candidateHTTP.Close()
+	}()
+
+	eventsCtx, cancelEvents := context.WithCancel(context.Background())
+	defer cancelEvents()
+	events := SubscribeEvents(eventsCtx)
+	initDone := make(chan error, 1)
+	go func() { initDone <- InitializeSingle(context.Background(), name, store) }()
+	select {
+	case <-candidateReady:
+	case <-time.After(5 * time.Second):
+		t.Fatal("InitializeSingle did not reach failed candidate tools/list")
+	}
+	require.Eventually(t, func() bool {
+		lifecycleMu.Lock()
+		defer lifecycleMu.Unlock()
+		for _, request := range owner.refreshPending {
+			if request.deferUntilCommit && request.candidateToken != 0 {
+				return true
+			}
+		}
+		return false
+	}, time.Second, time.Millisecond)
+	candidateReleaseOnce.Do(func() { close(candidateRelease) })
+	require.Error(t, <-initDone)
+	time.Sleep(25 * time.Millisecond)
+	for {
+		select {
+		case event := <-events:
+			require.NotEqual(t, EventToolsListChanged, event.Payload.Type,
+				"failed candidate notification must not be published")
+		default:
+			return
+		}
+	}
+}
+
 func TestRefreshAdmissionDoesNotOwnInitializerCancellation(t *testing.T) {
 	const name = "refresh-admission-ownership"
 	store := config.NewTestStore(&config.Config{MCP: config.MCPs{

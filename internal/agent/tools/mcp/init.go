@@ -1926,7 +1926,7 @@ func disableServerWithPersistence(
 ) error {
 	return disableServerWithResultPersistence(ctx, cfg, name, func(cfg *config.ConfigStore, scope config.Scope, name string, pending *config.MCPConfig) (config.MCPMutationResult, error) {
 		if err := persist(cfg, scope, name, pending); err != nil {
-			if outcome, committed := config.CommitOutcomeFromError(err); committed && outcome.Reconciled {
+			if outcome, ok := config.CommitOutcomeFromError(err); ok && outcome.Committed && outcome.Reconciled {
 				return currentMCPMutationResult(cfg, "disable", name, name), err
 			}
 			return config.MCPMutationResult{}, err
@@ -1980,7 +1980,7 @@ func disableServerWithResultPersistence(
 	}
 	result, err := persist(cfg, scope, name, pending)
 	if err != nil {
-		if outcome, committed := config.CommitOutcomeFromError(err); committed && outcome.Reconciled {
+		if outcome, ok := config.CommitOutcomeFromError(err); ok && outcome.Committed && outcome.Reconciled {
 			if !result.NewExists {
 				return fmt.Errorf("failed to persist MCP disabled state for %q: %w", name, err)
 			}
@@ -1997,7 +1997,7 @@ func disableServerWithResultPersistence(
 			}
 			return fmt.Errorf("failed to persist MCP disabled state for %q: %w", name, err)
 		}
-		if _, committed := config.CommitOutcomeFromError(err); committed {
+		if outcome, ok := config.CommitOutcomeFromError(err); ok && outcome.Committed {
 			if transaction != nil {
 				transaction.markUserMutation()
 			}
@@ -2082,8 +2082,8 @@ func enableServerWithPersistenceAndInitializer(
 	result, err := persist(cfg, scope, name, pending)
 	var commitUncertainty error
 	if err != nil {
-		outcome, committed := config.CommitOutcomeFromError(err)
-		if !committed {
+		outcome, ok := config.CommitOutcomeFromError(err)
+		if !ok || !outcome.Committed {
 			lease.Unlock()
 			return fmt.Errorf("failed to persist MCP enabled state for %q: %w", name, err)
 		}
@@ -2204,7 +2204,7 @@ func replaceServerWithPersistence(
 	return replaceServerWithResultPersistence(ctx, cfg, oldName, newName, mcpCfg,
 		func(cfg *config.ConfigStore, _ config.Scope, oldName, newName string, mcpCfg config.MCPConfig) (config.MCPMutationResult, error) {
 			if err := persist(cfg, oldName, newName, mcpCfg); err != nil {
-				if outcome, committed := config.CommitOutcomeFromError(err); committed && outcome.Reconciled {
+				if outcome, ok := config.CommitOutcomeFromError(err); ok && outcome.Committed && outcome.Reconciled {
 					return currentMCPMutationResult(cfg, "replace", oldName, newName), err
 				}
 				return config.MCPMutationResult{}, err
@@ -2329,8 +2329,8 @@ func replaceServerWithResultPersistenceAndPreparation(
 	result, err := persist(cfg, scope, oldName, newName, mcpCfg)
 	var commitUncertainty error
 	if err != nil {
-		outcome, committed := config.CommitOutcomeFromError(err)
-		if committed && !outcome.Reconciled {
+		outcome, ok := config.CommitOutcomeFromError(err)
+		if ok && outcome.Committed && !outcome.Reconciled {
 			fenceMCPRuntime(o, oldName)
 			if newName != oldName {
 				fenceMCPRuntime(o, newName)
@@ -2340,7 +2340,7 @@ func replaceServerWithResultPersistenceAndPreparation(
 			unlockServerLeases(locked)
 			return fmt.Errorf("failed to persist MCP server replacement %q to %q: %w", oldName, newName, err)
 		}
-		if !committed {
+		if !ok || !outcome.Committed {
 			unlockServerLeases(locked)
 			_ = prepared.session.Close()
 			admission.done()
@@ -2612,8 +2612,8 @@ func addServerWithInitializerAndPersistence(
 	}
 	result, err := persist(cfg, config.ScopeGlobal, name, mcpCfg)
 	if err != nil {
-		outcome, committed := config.CommitOutcomeFromError(err)
-		if committed {
+		outcome, ok := config.CommitOutcomeFromError(err)
+		if ok && outcome.Committed {
 			if !outcome.Reconciled {
 				// The durable state is unknown. Retire the candidate and remove
 				// the runtime candidate; a later reload owns config recovery.
@@ -2695,7 +2695,7 @@ func removeServerWithScopedPersistence(
 ) error {
 	return removeServerWithResultPersistence(cfg, name, func(cfg *config.ConfigStore, scope config.Scope, name string) (config.MCPMutationResult, error) {
 		if err := persist(cfg, scope, name); err != nil {
-			if outcome, committed := config.CommitOutcomeFromError(err); committed && outcome.Reconciled {
+			if outcome, ok := config.CommitOutcomeFromError(err); ok && outcome.Committed && outcome.Reconciled {
 				return currentMCPMutationResult(cfg, "remove", name, name), err
 			}
 			return config.MCPMutationResult{}, err
@@ -2744,8 +2744,8 @@ func removeServerWithResultPersistence(
 		result, persistErr := persist(cfg, config.ScopeGlobal, name)
 		var commitUncertainty error
 		if persistErr != nil {
-			outcome, committed := config.CommitOutcomeFromError(persistErr)
-			if !committed {
+			outcome, ok := config.CommitOutcomeFromError(persistErr)
+			if !ok || !outcome.Committed {
 				return fmt.Errorf("failed to remove pending MCP server %q from config: %w", name, persistErr)
 			}
 			transaction.markUserMutation()
@@ -2782,8 +2782,8 @@ func removeServerWithResultPersistence(
 	result, err := persist(cfg, scope, name)
 	var commitUncertainty error
 	if err != nil {
-		outcome, committed := config.CommitOutcomeFromError(err)
-		if !committed {
+		outcome, ok := config.CommitOutcomeFromError(err)
+		if !ok || !outcome.Committed {
 			return fmt.Errorf("failed to remove MCP server %q from config: %w", name, err)
 		}
 		if !outcome.Reconciled {
