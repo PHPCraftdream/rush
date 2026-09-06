@@ -5,6 +5,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"testing"
 
@@ -160,6 +161,26 @@ func TestMCPCommitRejectsParentReplacement(t *testing.T) {
 	got, err := os.ReadFile(global)
 	require.NoError(t, err)
 	require.Contains(t, string(got), "replacement")
+}
+
+func TestMCPCommitIgnoresLegacyPIDTempCollision(t *testing.T) {
+	root := t.TempDir()
+	global := filepath.Join(root, "config", "rush.json")
+	setMCPFile(t, global, "old", "http://old.example")
+	legacyTemp := filepath.Join(filepath.Dir(global), ".rush.json."+strconv.FormatInt(int64(os.Getpid()), 10)+".tmp")
+	legacyContents := []byte("unrelated temporary data")
+	require.NoError(t, os.WriteFile(legacyTemp, legacyContents, 0o600))
+
+	store := newTestConfigStore(testStoreOpts{config: &Config{MCP: MCPs{}}, globalDataPath: global})
+	store.workingDir = root
+	_, err := store.PersistMCPConfigResult(ScopeGlobal, "new", MCPConfig{Type: MCPHttp, URL: "http://new.example"})
+	require.NoError(t, err)
+	gotLegacy, err := os.ReadFile(legacyTemp)
+	require.NoError(t, err)
+	require.Equal(t, legacyContents, gotLegacy)
+	gotConfig, err := os.ReadFile(global)
+	require.NoError(t, err)
+	require.Contains(t, string(gotConfig), "new")
 }
 
 func TestStableDocumentsDedupAfterPreOpenRetarget(t *testing.T) {

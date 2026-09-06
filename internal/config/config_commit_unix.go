@@ -3,11 +3,12 @@
 package config
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 
 	"golang.org/x/sys/unix"
 )
@@ -58,10 +59,9 @@ func commitConfigFile(selectedPath, commitPath string, data []byte, perm os.File
 	if err := verifyCommitEntry(parentFD, base, expected, enforceOwner, expectedOwner); err != nil {
 		return reloadFileFingerprint{}, err
 	}
-	tmpName := "." + base + "." + strconv.FormatInt(os.Getpid(), 10) + ".tmp"
-	tmpFD, err := unix.Openat(parentFD, tmpName, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC|unix.O_NOFOLLOW, uint32(perm.Perm()))
+	tmpFD, tmpName, err := openUniqueConfigTemp(parentFD, base, perm)
 	if err != nil {
-		return reloadFileFingerprint{}, fmt.Errorf("create temporary config: %w", err)
+		return reloadFileFingerprint{}, err
 	}
 	tmp := os.NewFile(uintptr(tmpFD), tmpName)
 	removeTemp := true
@@ -109,6 +109,26 @@ func commitConfigFile(selectedPath, commitPath string, data []byte, perm os.File
 		return reloadFileFingerprint{}, errConfigCommitVerification
 	}
 	return committedFingerprint, nil
+}
+
+const configTempNameAttempts = 16
+
+func openUniqueConfigTemp(parentFD int, base string, perm os.FileMode) (int, string, error) {
+	for range configTempNameAttempts {
+		suffix := make([]byte, 16)
+		if _, err := rand.Read(suffix); err != nil {
+			return -1, "", fmt.Errorf("create temporary config name: %w", err)
+		}
+		name := "." + base + "." + hex.EncodeToString(suffix) + ".tmp"
+		fd, err := unix.Openat(parentFD, name, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC|unix.O_NOFOLLOW, uint32(perm.Perm()))
+		if err == nil {
+			return fd, name, nil
+		}
+		if err != unix.EEXIST {
+			return -1, "", fmt.Errorf("create temporary config: %w", err)
+		}
+	}
+	return -1, "", fmt.Errorf("create temporary config: %w", errConfigCommitVerification)
 }
 
 func verifyCommitEntry(parentFD int, base string, expected reloadFileFingerprint, enforceOwner bool, expectedOwner int) error {
