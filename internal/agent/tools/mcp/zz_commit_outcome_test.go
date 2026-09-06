@@ -112,7 +112,7 @@ func awaitMCPSignal(t *testing.T, signal <-chan struct{}) {
 }
 
 func TestAddServerReconciledCommitOutcomePublishesRuntime(t *testing.T) {
-	store := providerlessMCPStore(t)
+	store := isolatedMCPStore(t)
 	owner, err := Acquire()
 	require.NoError(t, err)
 	defer closeCommitOutcomeTestOwner(t, owner)
@@ -135,7 +135,7 @@ func TestAddServerReconciledCommitOutcomePublishesRuntime(t *testing.T) {
 }
 
 func TestEnableServerReconciledCommitOutcomeStartsRuntime(t *testing.T) {
-	store := providerlessMCPStore(t)
+	store := isolatedMCPStore(t)
 	initial := config.MCPConfig{Type: config.MCPStdio, Command: "enable-outcome", Disabled: true}
 	require.NoError(t, store.PersistMCPConfig(config.ScopeGlobal, "enable-outcome", initial))
 	owner, err := Acquire()
@@ -159,7 +159,7 @@ func TestEnableServerReconciledCommitOutcomeStartsRuntime(t *testing.T) {
 }
 
 func TestDisableServerReconciledCommitOutcomeAppliesRuntime(t *testing.T) {
-	store := providerlessMCPStore(t)
+	store := isolatedMCPStore(t)
 	require.NoError(t, store.PersistMCPConfig(config.ScopeGlobal, "disable-outcome", config.MCPConfig{Type: config.MCPStdio, Command: "disable-outcome"}))
 	owner, err := Acquire()
 	require.NoError(t, err)
@@ -184,7 +184,7 @@ func TestDisableServerReconciledCommitOutcomeAppliesRuntime(t *testing.T) {
 }
 
 func TestRemoveServerReconciledCommitOutcomeAppliesRuntime(t *testing.T) {
-	store := providerlessMCPStore(t)
+	store := isolatedMCPStore(t)
 	require.NoError(t, store.PersistMCPConfig(config.ScopeGlobal, "remove-outcome", config.MCPConfig{Type: config.MCPStdio, Command: "remove-outcome"}))
 	owner, err := Acquire()
 	require.NoError(t, err)
@@ -209,7 +209,7 @@ func TestRemoveServerReconciledCommitOutcomeAppliesRuntime(t *testing.T) {
 }
 
 func TestReplaceServerReconciledCommitOutcomePublishesCandidate(t *testing.T) {
-	store := providerlessMCPStore(t)
+	store := isolatedMCPStore(t)
 	require.NoError(t, store.PersistMCPConfig(config.ScopeGlobal, "replace-outcome", config.MCPConfig{Type: config.MCPStdio, Command: "replace-old"}))
 	owner, err := Acquire()
 	require.NoError(t, err)
@@ -239,7 +239,7 @@ func TestReplaceServerReconciledCommitOutcomePublishesCandidate(t *testing.T) {
 }
 
 func TestCommittedUnreconciledOutcomesFenceRuntime(t *testing.T) {
-	store := providerlessMCPStore(t)
+	store := isolatedMCPStore(t)
 	require.NoError(t, store.PersistMCPConfig(config.ScopeGlobal, "unreconciled", config.MCPConfig{Type: config.MCPStdio, Command: "unreconciled"}))
 	owner, err := Acquire()
 	require.NoError(t, err)
@@ -255,7 +255,7 @@ func TestCommittedUnreconciledOutcomesFenceRuntime(t *testing.T) {
 }
 
 func TestTypedPrecommitOutcomeDoesNotCommitAdd(t *testing.T) {
-	store := providerlessMCPStore(t)
+	store := isolatedMCPStore(t)
 	owner, err := Acquire()
 	require.NoError(t, err)
 	defer closeCommitOutcomeTestOwner(t, owner)
@@ -276,7 +276,7 @@ func TestTypedPrecommitOutcomeDoesNotCommitAdd(t *testing.T) {
 }
 
 func TestAddDurableCommitFencedByCloseReturnsSuccessWithoutPublishingCandidate(t *testing.T) {
-	store := providerlessMCPStore(t)
+	store := isolatedMCPStore(t)
 	owner, err := Acquire()
 	require.NoError(t, err)
 	releasePersistence := make(chan struct{})
@@ -343,7 +343,7 @@ func TestAddDurableCommitFencedByCloseReturnsSuccessWithoutPublishingCandidate(t
 }
 
 func TestAddReconciledCommitOutcomeFencedByCloseReturnsOriginalOutcome(t *testing.T) {
-	store := providerlessMCPStore(t)
+	store := isolatedMCPStore(t)
 	owner, err := Acquire()
 	require.NoError(t, err)
 	releasePersistence := make(chan struct{})
@@ -410,7 +410,7 @@ func TestAddReconciledCommitOutcomeFencedByCloseReturnsOriginalOutcome(t *testin
 }
 
 func TestAddLinearizesPublicationBeforeConcurrentRemoveAfterCommit(t *testing.T) {
-	store := providerlessMCPStore(t)
+	store := isolatedMCPStore(t)
 	owner, err := Acquire()
 	require.NoError(t, err)
 	releasePersistence := make(chan struct{})
@@ -536,7 +536,7 @@ func TestAddLinearizesPublicationBeforeConcurrentRemoveAfterCommit(t *testing.T)
 }
 
 func TestRemovePublishesBeforeBlockedCloseAndConcurrentAdd(t *testing.T) {
-	store := providerlessMCPStore(t)
+	store := isolatedMCPStore(t)
 	const name = "remove-close-add-order"
 	configured := config.MCPConfig{Type: config.MCPStdio, Command: name}
 	require.NoError(t, store.PersistMCPConfig(config.ScopeGlobal, name, configured))
@@ -605,7 +605,7 @@ func TestRemovePublishesBeforeBlockedCloseAndConcurrentAdd(t *testing.T) {
 }
 
 func TestTypedPrecommitOutcomeDoesNotDisableRuntime(t *testing.T) {
-	store := providerlessMCPStore(t)
+	store := isolatedMCPStore(t)
 	name := "precommit-disable"
 	require.NoError(t, store.PersistMCPConfig(config.ScopeGlobal, name, config.MCPConfig{
 		Type: config.MCPStdio, Command: name,
@@ -631,7 +631,7 @@ func TestTypedPrecommitOutcomeDoesNotDisableRuntime(t *testing.T) {
 }
 
 func TestTypedPrecommitOutcomeDoesNotReplaceRuntime(t *testing.T) {
-	store := providerlessMCPStore(t)
+	store := isolatedMCPStore(t)
 	oldName := "precommit-replace"
 	require.NoError(t, store.PersistMCPConfig(config.ScopeGlobal, oldName, config.MCPConfig{
 		Type: config.MCPStdio, Command: "old",

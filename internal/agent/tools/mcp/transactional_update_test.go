@@ -28,7 +28,9 @@ func transactionalNotifyingServer(t *testing.T, toolName, text string) (*mcp.Ser
 	mcp.AddTool(server, &mcp.Tool{Name: toolName}, func(context.Context, *mcp.CallToolRequest, any) (*mcp.CallToolResult, any, error) {
 		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}, nil, nil
 	})
-	return server, httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil))
+	httpServer := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil))
+	cleanupTestMCPServer(t, server, httpServer)
+	return server, httpServer
 }
 
 func connectedTransactionalServer(t *testing.T, name string, httpServer *httptest.Server) (*config.ConfigStore, *Owner) {

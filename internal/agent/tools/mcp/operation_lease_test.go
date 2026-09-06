@@ -275,7 +275,9 @@ func TestRenewalRetainsLeaseIdentityUntilAfterPublish(t *testing.T) {
 
 func newTestStreamableServer(t *testing.T, server *mcp.Server) *httptest.Server {
 	t.Helper()
-	return httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
+	httpServer := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
 		return server
 	}, nil))
+	cleanupTestMCPServer(t, server, httpServer)
+	return httpServer
 }

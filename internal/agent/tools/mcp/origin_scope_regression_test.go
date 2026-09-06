@@ -85,7 +85,9 @@ func originTestServer(t *testing.T, toolName, text string) *httptest.Server {
 	modelmcp.AddTool(server, &modelmcp.Tool{Name: toolName}, func(context.Context, *modelmcp.CallToolRequest, any) (*modelmcp.CallToolResult, any, error) {
 		return &modelmcp.CallToolResult{Content: []modelmcp.Content{&modelmcp.TextContent{Text: text}}}, nil, nil
 	})
-	return httptest.NewServer(modelmcp.NewStreamableHTTPHandler(func(*http.Request) *modelmcp.Server { return server }, nil))
+	httpServer := httptest.NewServer(modelmcp.NewStreamableHTTPHandler(func(*http.Request) *modelmcp.Server { return server }, nil))
+	cleanupTestMCPServer(t, server, httpServer)
+	return httpServer
 }
 
 func TestReplaceServerWorkspaceLiteralNamePersistsAcrossReloadAndRestart(t *testing.T) {
@@ -565,6 +567,7 @@ func TestBlockedProjectInitializerIsNotPendingGlobalAdd(t *testing.T) {
 				}
 				delegate.ServeHTTP(w, r)
 			}))
+			cleanupTestMCPServer(t, server, httpServer)
 			defer httpServer.Close()
 
 			name := "project.blocked." + testName
@@ -651,6 +654,7 @@ func TestReplaceServerRejectsScopeChangeBeforeDurableWrite(t *testing.T) {
 		})
 		delegate.ServeHTTP(w, r)
 	}))
+	cleanupTestMCPServer(t, candidateServer, candidate)
 	defer candidate.Close()
 
 	err = ReplaceServer(context.Background(), store, oldName, "scope-change-new", config.MCPConfig{

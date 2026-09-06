@@ -23,6 +23,9 @@ import (
 
 func isolatedMCPStore(t *testing.T) *config.ConfigStore {
 	t.Helper()
+	// Isolated lifecycle fixtures must not fetch provider metadata. Keep this
+	// set before config.Init, which otherwise starts Catwalk and Hyper loads.
+	t.Setenv("RUSH_DISABLE_DEFAULT_PROVIDERS", "1")
 	root := t.TempDir()
 	configDir := filepath.Join(root, "global-config")
 	dataDir := filepath.Join(root, "global-data")
@@ -33,6 +36,16 @@ func isolatedMCPStore(t *testing.T) *config.ConfigStore {
 	store, err := config.Init(root, root, false)
 	require.NoError(t, err)
 	return store
+}
+
+func cleanupTestMCPServer(t *testing.T, server *mcp.Server, httpServer *httptest.Server) {
+	t.Helper()
+	t.Cleanup(func() {
+		for session := range server.Sessions() {
+			_ = session.Close()
+		}
+		httpServer.CloseClientConnections()
+	})
 }
 
 func persistedMCPStore(t *testing.T, name, url string, disabled bool) *config.ConfigStore {
@@ -989,6 +1002,7 @@ func TestStaleAddRollbackPreservesNewerSameNameServer(t *testing.T) {
 		return &mcp.CallToolResult{}, nil, nil
 	})
 	httpServer := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return newServer }, nil))
+	cleanupTestMCPServer(t, newServer, httpServer)
 	defer func() {
 		require.NoError(t, owner.Close(context.Background()))
 		httpServer.Close()
@@ -1040,6 +1054,7 @@ func TestGetOrRenewClientKeepsLeaseIdentityAcrossConcurrentReplacement(t *testin
 		return &mcp.CallToolResult{}, nil, nil
 	})
 	httpServer := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return newServer }, nil))
+	cleanupTestMCPServer(t, newServer, httpServer)
 	defer httpServer.Close()
 	store := persistedMCPStore(t, name, httpServer.URL, false)
 	owner, err := Acquire()
@@ -1105,6 +1120,7 @@ func TestRenewedSessionNotificationSurvivesConfigMutations(t *testing.T) {
 		return &mcp.CallToolResult{}, nil, nil
 	})
 	httpServer := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil))
+	cleanupTestMCPServer(t, server, httpServer)
 	defer httpServer.Close()
 
 	store := persistedMCPStore(t, name, httpServer.URL, false)
@@ -1531,6 +1547,7 @@ func TestInitializePublishesHTTPSessionBeyondAdmission(t *testing.T) {
 		}
 	})
 	httpServer := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil))
+	cleanupTestMCPServer(t, server, httpServer)
 
 	store := persistedMCPStore(t, name, httpServer.URL, false)
 	_, ok := store.UpdateMCP(name, func(mcpConfig *config.MCPConfig) {
@@ -1663,6 +1680,7 @@ func TestInitializeSingleDefersCandidateNotificationWithOldSameNameSession(t *te
 	candidateHTTP := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
 		return candidate
 	}, nil))
+	cleanupTestMCPServer(t, candidate, candidateHTTP)
 
 	store := persistedMCPStore(t, name, candidateHTTP.URL, false)
 	owner, err := Acquire()
@@ -1770,6 +1788,7 @@ func TestInitializeSingleFailedCandidateDropsNotification(t *testing.T) {
 	candidateHTTP := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
 		return candidate
 	}, nil))
+	cleanupTestMCPServer(t, candidate, candidateHTTP)
 	store := persistedMCPStore(t, name, candidateHTTP.URL, false)
 	owner, err := Acquire()
 	require.NoError(t, err)
@@ -1903,6 +1922,7 @@ func TestSequentialInitializeReopensInitBarrier(t *testing.T) {
 		}
 		delegate.ServeHTTP(w, r)
 	}))
+	cleanupTestMCPServer(t, server, httpServer)
 	defer httpServer.Close()
 
 	owner, err := Acquire()
@@ -1974,6 +1994,7 @@ func TestSuccessfulInitializeSingleDoesNotOwnInitBarrier(t *testing.T) {
 	httpServer := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
 		return server
 	}, nil))
+	cleanupTestMCPServer(t, server, httpServer)
 	defer httpServer.Close()
 
 	owner, err := Acquire()
@@ -2009,6 +2030,7 @@ func TestInitializeSingleCannotCompleteFullInitBarrier(t *testing.T) {
 		}
 		delegate.ServeHTTP(w, r)
 	}))
+	cleanupTestMCPServer(t, server, httpServer)
 	defer httpServer.Close()
 
 	owner, err := Acquire()

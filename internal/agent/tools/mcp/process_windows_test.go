@@ -34,7 +34,15 @@ func TestMain(m *testing.M) {
 		runLevel2Helper()
 		return
 	}
-	os.Exit(m.Run())
+	previousProviders, hadProviders := os.LookupEnv("RUSH_DISABLE_DEFAULT_PROVIDERS")
+	_ = os.Setenv("RUSH_DISABLE_DEFAULT_PROVIDERS", "1")
+	code := m.Run()
+	if hadProviders {
+		_ = os.Setenv("RUSH_DISABLE_DEFAULT_PROVIDERS", previousProviders)
+	} else {
+		_ = os.Unsetenv("RUSH_DISABLE_DEFAULT_PROVIDERS")
+	}
+	os.Exit(code)
 }
 
 // runLevel1Helper models a stdio MCP server that spawns its own child (an
