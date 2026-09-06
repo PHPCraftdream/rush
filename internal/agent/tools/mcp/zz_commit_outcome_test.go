@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -64,6 +65,26 @@ func fakeMCPInitializer(
 ) error {
 	defer admission.done()
 	return publishPreparedClient(cfg, name, &preparedClient{session: &ClientSession{}}, admission)
+}
+
+func countedAddInitializer(owner *Owner, closeCalls *atomic.Int32, cleanupBeforeReset *atomic.Bool) admittedClientInitializer {
+	return func(
+		_ context.Context,
+		cfg *config.ConfigStore,
+		name string,
+		_ config.MCPConfig,
+		_ config.VariableResolver,
+		admission *serverAdmission,
+	) error {
+		candidate := &ClientSession{cancel: func() {
+			closeCalls.Add(1)
+			if currentOwner() == owner {
+				cleanupBeforeReset.Store(true)
+			}
+		}}
+		defer admission.done()
+		return publishPreparedClient(cfg, name, &preparedClient{session: candidate}, admission)
+	}
 }
 
 func awaitMCPError(t *testing.T, results <-chan error) error {
@@ -266,13 +287,19 @@ func TestAddDurableCommitFencedByCloseReturnsSuccessWithoutPublishingCandidate(t
 	}()
 
 	const name = "add-close-after-commit"
+	var candidateCloseCalls atomic.Int32
+	var cleanupBeforeReset atomic.Bool
+	initialize := countedAddInitializer(owner, &candidateCloseCalls, &cleanupBeforeReset)
+	eventsCtx, cancelEvents := context.WithCancel(context.Background())
+	defer cancelEvents()
+	events := SubscribeEvents(eventsCtx)
 	committed := make(chan struct{})
 	addDone := make(chan error, 1)
 	go func() {
 		addDone <- addServerWithInitializerAndPersistence(
 			context.Background(), store, name,
 			config.MCPConfig{Type: config.MCPStdio, Command: name},
-			fakeMCPInitializer,
+			initialize,
 			func(cfg *config.ConfigStore, scope config.Scope, serverName string, value config.MCPConfig) (config.MCPMutationResult, error) {
 				result, persistErr := cfg.PersistMCPConfigResult(scope, serverName, value)
 				close(committed)
@@ -296,6 +323,23 @@ func TestAddDurableCommitFencedByCloseReturnsSuccessWithoutPublishingCandidate(t
 	require.NoError(t, awaitMCPError(t, closeDone))
 	_, persisted := diskMCP(t)[name]
 	require.True(t, persisted)
+	require.Equal(t, int32(1), candidateCloseCalls.Load(), "the rejected Add candidate must be closed exactly once")
+	require.True(t, cleanupBeforeReset.Load(), "candidate cleanup must finish before registry reset")
+	for {
+		select {
+		case event, ok := <-events:
+			if !ok {
+				return
+			}
+			if event.Payload.Name == name && (event.Payload.State == StateConnected ||
+				event.Payload.Type == EventToolsListChanged || event.Payload.Type == EventPromptsListChanged ||
+				event.Payload.Type == EventResourcesListChanged) {
+				t.Fatalf("Close winner published an Add candidate event: %v", event)
+			}
+		default:
+			return
+		}
+	}
 }
 
 func TestAddReconciledCommitOutcomeFencedByCloseReturnsOriginalOutcome(t *testing.T) {
@@ -310,13 +354,19 @@ func TestAddReconciledCommitOutcomeFencedByCloseReturnsOriginalOutcome(t *testin
 	}()
 
 	const name = "add-uncertain-close-after-commit"
+	var candidateCloseCalls atomic.Int32
+	var cleanupBeforeReset atomic.Bool
+	initialize := countedAddInitializer(owner, &candidateCloseCalls, &cleanupBeforeReset)
+	eventsCtx, cancelEvents := context.WithCancel(context.Background())
+	defer cancelEvents()
+	events := SubscribeEvents(eventsCtx)
 	committed := make(chan struct{})
 	addDone := make(chan error, 1)
 	go func() {
 		addDone <- addServerWithInitializerAndPersistence(
 			context.Background(), store, name,
 			config.MCPConfig{Type: config.MCPStdio, Command: name},
-			fakeMCPInitializer,
+			initialize,
 			func(cfg *config.ConfigStore, scope config.Scope, serverName string, value config.MCPConfig) (config.MCPMutationResult, error) {
 				result, persistErr := cfg.PersistMCPConfigResult(scope, serverName, value)
 				close(committed)
@@ -340,6 +390,23 @@ func TestAddReconciledCommitOutcomeFencedByCloseReturnsOriginalOutcome(t *testin
 	require.NoError(t, awaitMCPError(t, closeDone))
 	_, persisted := diskMCP(t)[name]
 	require.True(t, persisted)
+	require.Equal(t, int32(1), candidateCloseCalls.Load(), "the rejected Add candidate must be closed exactly once")
+	require.True(t, cleanupBeforeReset.Load(), "candidate cleanup must finish before registry reset")
+	for {
+		select {
+		case event, ok := <-events:
+			if !ok {
+				return
+			}
+			if event.Payload.Name == name && (event.Payload.State == StateConnected ||
+				event.Payload.Type == EventToolsListChanged || event.Payload.Type == EventPromptsListChanged ||
+				event.Payload.Type == EventResourcesListChanged) {
+				t.Fatalf("Close winner published an Add candidate event: %v", event)
+			}
+		default:
+			return
+		}
+	}
 }
 
 func TestAddLinearizesPublicationBeforeConcurrentRemoveAfterCommit(t *testing.T) {

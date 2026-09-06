@@ -42,6 +42,60 @@ func TestSuccessfulAddRemoveReclaimsEveryLeaseReference(t *testing.T) {
 	require.Zero(t, leases.Len(), "add followed by remove must reclaim the lease registry entry")
 }
 
+func TestDisableReleasesServerLeaseBeforeClosingDetachedTransport(t *testing.T) {
+	const name = "disable-close-order"
+	store := isolatedMCPStore(t)
+	configValue := config.MCPConfig{Type: config.MCPStdio, Command: "unused"}
+	require.NoError(t, store.PersistMCPConfig(config.ScopeGlobal, name, configValue))
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer func() { require.NoError(t, owner.Close(context.Background())) }()
+
+	closeStarted := make(chan struct{})
+	releaseClose := make(chan struct{})
+	session := &ClientSession{cancel: func() {
+		close(closeStarted)
+		<-releaseClose
+	}}
+	sessions.Set(name, session)
+	setState(name, StateConnected, nil, session, Counts{})
+
+	disableLeaseHeld := make(chan struct{})
+	disableDone := make(chan error, 1)
+	go func() {
+		disableDone <- disableServerWithResultPersistence(context.Background(), store, name,
+			func(cfg *config.ConfigStore, scope config.Scope, name string, pending *config.MCPConfig) (config.MCPMutationResult, error) {
+				result, persistErr := cfg.PersistMCPDisabledOverrideResult(scope, name, true)
+				close(disableLeaseHeld)
+				return result, persistErr
+			})
+	}()
+	awaitMCPSignal(t, disableLeaseHeld)
+
+	waiterAcquired := make(chan *serverLease, 1)
+	go func() {
+		lease := serverLeaseFor(name)
+		lease.Lock()
+		waiterAcquired <- lease
+		<-releaseClose
+		lease.Unlock()
+	}()
+
+	awaitMCPSignal(t, closeStarted)
+	select {
+	case lease := <-waiterAcquired:
+		leases.mu.Lock()
+		registered := leases.entries[name]
+		leases.mu.Unlock()
+		require.Same(t, lease, registered, "the waiter must acquire the exact server lease held by DisableServer")
+	case <-time.After(time.Second):
+		close(releaseClose)
+		t.Fatal("detached transport close blocked the next server-lease waiter")
+	}
+	close(releaseClose)
+	require.NoError(t, <-disableDone)
+}
+
 func TestAddRollbackConsumesItsLastLeaseReferenceOnce(t *testing.T) {
 	tests := map[string]struct {
 		cancelBeforeReacquire bool

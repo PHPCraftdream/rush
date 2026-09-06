@@ -584,10 +584,11 @@ type serverCancel struct {
 	token  uint64
 }
 
-// addTransaction outlives the initializer admission for an AddServer call.
-// The admission is released as soon as initialization has published (or
-// rejected) a candidate, while this transaction remains until the durable
-// config commit or rollback has completed.
+// addTransaction outlives the initializer phase of an AddServer call. The
+// Add admission and its server-lease identity remain retained through the
+// durable config commit, because RemoveServer must serialize against the
+// complete in-memory Add transaction. The transaction is released only after
+// that commit or its rollback has completed.
 type addTransaction struct {
 	name      string
 	cfg       *config.ConfigStore
@@ -682,7 +683,7 @@ func (a *serverAdmission) done() {
 		return
 	}
 	lifecycleMu.Lock()
-	// A prepared Add candidate owns its admission until the durable commit.
+	// A prepared Add candidate owns its admission through the durable commit.
 	// Initializer adapters are allowed to call done themselves, so keep that
 	// call harmless while the candidate is still staged for publication.
 	if a.deferDone && a.prepared != nil && !a.committed {
@@ -1495,18 +1496,24 @@ func (o *Owner) acceptsSession() bool {
 }
 
 // commitRenewal consumes session on every path: it either publishes the
-// session or closes it before returning an error.
+// session or closes it before returning an error. The lease-aware helper
+// below detaches the old session while the server lease is held and leaves
+// retirement and transport closes to the caller after that lease is released.
 func (o *Owner) commitRenewal(admission *serverAdmission, name string, session *ClientSession, counts Counts) error {
+	retired, err := o.commitRenewalForLease(admission, name, session, counts)
+	retireMCPClient(name, retired)
+	return err
+}
+
+func (o *Owner) commitRenewalForLease(admission *serverAdmission, name string, session *ClientSession, counts Counts) (*ClientSession, error) {
 	lifecycleMu.Lock()
 	if admission == nil || admission.owner != o || admission.name != name || !admission.validLocked() {
 		lifecycleMu.Unlock()
-		_ = session.Close()
-		return ErrOwnerBusy
+		return session, ErrOwnerBusy
 	}
 	if !session.promoteContext() {
 		lifecycleMu.Unlock()
-		_ = session.Close()
-		return ErrOwnerBusy
+		return session, ErrOwnerBusy
 	}
 	oldSession, hadOldSession := sessions.Get(name)
 	sessions.Set(name, session)
@@ -1517,12 +1524,15 @@ func (o *Owner) commitRenewal(admission *serverAdmission, name string, session *
 	if wakeRefresh {
 		o.signalRefresh()
 	}
-	if hadOldSession && oldSession != session {
-		retireMCPClient(name, oldSession)
+	if !hadOldSession || oldSession == session {
+		oldSession = nil
 	}
+	// The old session is detached by sessions.Set above. Its retirement and
+	// transport close are performed by the caller after the server lease is
+	// released.
 	publishStateEvent(name, StateConnected, nil, counts)
 	publishListChangedEvents(pendingEvents)
-	return nil
+	return oldSession, nil
 }
 
 func (o *Owner) acceptsGeneration(generation uint64) bool {
@@ -2134,11 +2144,12 @@ func DisableSingle(cfg *config.ConfigStore, name string) error {
 	defer o.endInit()
 	lease := serverLeaseFor(name)
 	lease.Lock()
-	defer lease.Unlock()
 	o.invalidateServer(name)
-	closeSessionLocked(name)
+	oldSession := detachSessionLocked(name)
 	clearAdvertised(name)
 	updateState(name, StateDisabled, nil, nil, Counts{})
+	lease.Unlock()
+	retireMCPClient(name, oldSession)
 
 	slog.Info("Disabled mcp client", "name", name)
 	return nil
@@ -2206,9 +2217,14 @@ func disableServerWithResultPersistence(
 	if !lease.lockContext(ctx, true) {
 		return ctx.Err()
 	}
-	defer lease.Unlock()
+	var detached *ClientSession
+	unlock := func() {
+		lease.Unlock()
+		retireMCPClient(name, detached)
+	}
 	mcpCfg, ok = cfg.MCPConfig(name)
 	if !ok {
+		unlock()
 		return fmt.Errorf("MCP server %q disappeared while disabling: %w", name, config.ErrMCPNotFound)
 	}
 	// Resolve the origin while holding the ordered server lease. A user
@@ -2216,6 +2232,7 @@ func disableServerWithResultPersistence(
 	// system, external, and otherwise unrepresentable definitions fail closed.
 	scope, err := resolveMCPMutationScope(cfg, name, mcpCfg)
 	if err != nil {
+		unlock()
 		return fmt.Errorf("cannot determine writable scope for MCP server %q: %w", name, err)
 	}
 	// Persist first. If disk persistence fails, the session and in-memory
@@ -2231,31 +2248,32 @@ func disableServerWithResultPersistence(
 	if err != nil {
 		if outcome, ok := config.CommitOutcomeFromError(err); ok && outcome.Committed && outcome.Reconciled {
 			if !result.NewExists {
+				unlock()
 				return fmt.Errorf("failed to persist MCP disabled state for %q: %w", name, err)
 			}
 			if transaction != nil {
 				transaction.markUserMutation()
 			}
 			o.invalidateServer(name)
-			oldSession, hadOldSession := sessions.Get(name)
-			sessions.Del(name)
+			detached = detachSessionLocked(name)
 			clearAdvertised(name)
 			updateState(name, StateDisabled, nil, nil, Counts{})
-			if hadOldSession {
-				retireMCPClient(name, oldSession)
-			}
+			unlock()
 			return fmt.Errorf("failed to persist MCP disabled state for %q: %w", name, err)
 		}
 		if outcome, ok := config.CommitOutcomeFromError(err); ok && outcome.Committed {
 			if transaction != nil {
 				transaction.markUserMutation()
 			}
-			fenceMCPRuntime(o, name)
+			detached = fenceMCPRuntimeLocked(o, name)
+			unlock()
 			return fmt.Errorf("failed to persist MCP disabled state for %q: %w", name, err)
 		}
+		unlock()
 		return fmt.Errorf("failed to persist MCP disabled state for %q: %w", name, err)
 	}
 	if !result.NewExists {
+		unlock()
 		return fmt.Errorf("MCP server %q disappeared while disabling: %w", name, config.ErrMCPNotFound)
 	}
 	if transaction != nil {
@@ -2265,13 +2283,10 @@ func disableServerWithResultPersistence(
 	// succeeds may this operation invalidate candidates; the write lease keeps
 	// a candidate from publishing between these steps and the runtime update.
 	o.invalidateServer(name)
-	oldSession, hadOldSession := sessions.Get(name)
-	sessions.Del(name)
+	detached = detachSessionLocked(name)
 	clearAdvertised(name)
 	updateState(name, StateDisabled, nil, nil, Counts{})
-	if hadOldSession {
-		retireMCPClient(name, oldSession)
-	}
+	unlock()
 	return nil
 }
 
@@ -2348,8 +2363,9 @@ func enableServerWithPersistenceAndInitializer(
 			transaction.markUserMutation()
 		}
 		if !outcome.Reconciled {
-			fenceMCPRuntime(o, name)
+			detached := fenceMCPRuntimeLocked(o, name)
 			lease.Unlock()
+			retireMCPClient(name, detached)
 			return fmt.Errorf("failed to persist MCP enabled state for %q: %w", name, err)
 		}
 		commitUncertainty = err
@@ -2374,12 +2390,15 @@ func enableServerWithPersistenceAndInitializer(
 		if commitUncertainty == nil {
 			rollbackPersistence()
 		} else {
-			fenceMCPRuntime(o, name)
+			detached := fenceMCPRuntimeLocked(o, name)
+			lease.Unlock()
+			retireMCPClient(name, detached)
+			if commitUncertainty != nil {
+				return fmt.Errorf("failed to persist MCP enabled state for %q: %w", name, commitUncertainty)
+			}
+			return ErrOwnerBusy
 		}
 		lease.Unlock()
-		if commitUncertainty != nil {
-			return fmt.Errorf("failed to persist MCP enabled state for %q: %w", name, commitUncertainty)
-		}
 		return ErrOwnerBusy
 	}
 	// The new admission below is the only initializer allowed to publish this
@@ -2388,8 +2407,9 @@ func enableServerWithPersistenceAndInitializer(
 	o.invalidateServer(name)
 	if !result.NewExists {
 		if commitUncertainty != nil {
-			fenceMCPRuntime(o, name)
+			detached := fenceMCPRuntimeLocked(o, name)
 			lease.Unlock()
+			retireMCPClient(name, detached)
 			return fmt.Errorf("failed to persist MCP enabled state for %q: %w", name, commitUncertainty)
 		}
 		rollbackPersistence()
@@ -2399,8 +2419,9 @@ func enableServerWithPersistenceAndInitializer(
 	admission, err := o.admitServer(ctx, cfg, name, true)
 	if err != nil {
 		if commitUncertainty != nil {
-			fenceMCPRuntime(o, name)
+			detached := fenceMCPRuntimeLocked(o, name)
 			lease.Unlock()
+			retireMCPClient(name, detached)
 			return fmt.Errorf("failed to persist MCP enabled state for %q: %w", name, commitUncertainty)
 		}
 		rollbackPersistence()
@@ -2620,13 +2641,16 @@ func replaceServerWithResultPersistenceAndPreparation(
 	if err != nil {
 		outcome, ok := config.CommitOutcomeFromError(err)
 		if ok && outcome.Committed && !outcome.Reconciled {
-			fenceMCPRuntime(o, oldName)
+			detachedOld := fenceMCPRuntimeLocked(o, oldName)
+			var detachedNew *ClientSession
 			if newName != oldName {
-				fenceMCPRuntime(o, newName)
+				detachedNew = fenceMCPRuntimeLocked(o, newName)
 			}
-			_ = prepared.session.Close()
-			admission.done()
 			unlockServerLeases(locked)
+			retireMCPClient(oldName, detachedOld)
+			retireMCPClient(newName, detachedNew)
+			closeMCPClient(newName, prepared.session)
+			admission.done()
 			return fmt.Errorf("failed to persist MCP server replacement %q to %q: %w", oldName, newName, err)
 		}
 		if !ok || !outcome.Committed {
@@ -2886,11 +2910,13 @@ func addServerWithInitializerAndPersistence(
 	initErr := initialize(ctx, cfg, name, mcpCfg, resolver, &admission)
 	if initErr != nil {
 		lease.Lock()
-		rollbackAddedServer(o, cfg, name, &admission, transaction)
-		discardPreparedClient(&admission)
+		detached := rollbackAddedServer(o, cfg, name, &admission, transaction)
+		prepared := discardPreparedClient(&admission)
 		admission.done()
 		initLeaseRetained = false
 		lease.Unlock()
+		retireMCPClient(name, detached)
+		closeMCPClient(name, prepared)
 		if errors.Is(initErr, ErrOwnerBusy) {
 			return ErrOwnerBusy
 		}
@@ -2901,18 +2927,22 @@ func addServerWithInitializerAndPersistence(
 	// in-memory entry and then lose the race by being followed by this write.
 	if !lease.reacquireContext(ctx, true) {
 		lease.Lock()
-		rollbackAddedServer(o, cfg, name, &admission, transaction)
-		discardPreparedClient(&admission)
+		detached := rollbackAddedServer(o, cfg, name, &admission, transaction)
+		prepared := discardPreparedClient(&admission)
 		admission.done()
 		initLeaseRetained = false
 		lease.Unlock()
+		retireMCPClient(name, detached)
+		closeMCPClient(name, prepared)
 		return ctx.Err()
 	}
 	if !admission.valid() {
-		rollbackAddedServer(o, cfg, name, &admission, transaction)
-		discardPreparedClient(&admission)
+		detached := rollbackAddedServer(o, cfg, name, &admission, transaction)
+		prepared := discardPreparedClient(&admission)
 		admission.done()
 		lease.Unlock()
+		retireMCPClient(name, detached)
+		closeMCPClient(name, prepared)
 		return ErrOwnerBusy
 	}
 	if admission.prepared != nil {
@@ -2923,10 +2953,12 @@ func addServerWithInitializerAndPersistence(
 		}
 		lifecycleMu.Unlock()
 		if !promoted {
-			rollbackAddedServer(o, cfg, name, &admission, transaction)
-			discardPreparedClient(&admission)
+			detached := rollbackAddedServer(o, cfg, name, &admission, transaction)
+			prepared := discardPreparedClient(&admission)
 			admission.done()
 			lease.Unlock()
+			retireMCPClient(name, detached)
+			closeMCPClient(name, prepared)
 			return ErrOwnerBusy
 		}
 	}
@@ -2938,11 +2970,13 @@ func addServerWithInitializerAndPersistence(
 			if !outcome.Reconciled {
 				// The durable state is unknown. Retire the candidate and remove
 				// the runtime candidate; a later reload owns config recovery.
-				fenceMCPRuntime(o, name)
-				discardPreparedClient(&admission)
+				detached := fenceMCPRuntimeLocked(o, name)
+				prepared := discardPreparedClient(&admission)
 				admission.done()
 				o.completePendingGlobalAdd(transaction)
 				lease.Unlock()
+				retireMCPClient(name, detached)
+				closeMCPClient(name, prepared)
 				return fmt.Errorf("failed to persist MCP server %q: %w", name, err)
 			}
 			if !admission.deferDone {
@@ -2952,18 +2986,22 @@ func addServerWithInitializerAndPersistence(
 			}
 			commitUncertainty = err
 		} else {
-			rollbackAddedServer(o, cfg, name, &admission, transaction)
-			discardPreparedClient(&admission)
+			detached := rollbackAddedServer(o, cfg, name, &admission, transaction)
+			prepared := discardPreparedClient(&admission)
 			admission.done()
 			lease.Unlock()
+			retireMCPClient(name, detached)
+			closeMCPClient(name, prepared)
 			return fmt.Errorf("failed to persist MCP server %q: %w", name, err)
 		}
 	}
 	if !result.NewExists {
-		rollbackAddedServer(o, cfg, name, &admission, transaction)
-		discardPreparedClient(&admission)
+		detached := rollbackAddedServer(o, cfg, name, &admission, transaction)
+		prepared := discardPreparedClient(&admission)
 		admission.done()
 		lease.Unlock()
+		retireMCPClient(name, detached)
+		closeMCPClient(name, prepared)
 		return fmt.Errorf("MCP server %q disappeared while persisting: %w", name, config.ErrMCPNotFound)
 	}
 	// The durable Add outcome is complete before releasing the lease. A later
@@ -3006,33 +3044,32 @@ func addServerWithInitializerAndPersistence(
 	return nil
 }
 
-func discardPreparedClient(admission *serverAdmission) {
+func discardPreparedClient(admission *serverAdmission) *ClientSession {
 	if admission == nil || admission.prepared == nil {
-		return
+		return nil
 	}
 	prepared := admission.prepared
 	admission.prepared = nil
-	if prepared.session != nil {
-		closeMCPClient(admission.name, prepared.session)
-	}
+	return prepared.session
 }
 
 // rollbackAddedServer removes only the server instance represented by the
 // exact add transaction. Callers hold the per-server write lease, so a newer
-// same-name transaction cannot be removed by a stale rollback.
-func rollbackAddedServer(o *Owner, cfg *config.ConfigStore, name string, admission *serverAdmission, transaction *addTransaction) bool {
+// same-name transaction cannot be removed by a stale rollback. Its detached
+// session is retired and closed after that lease is released.
+func rollbackAddedServer(o *Owner, cfg *config.ConfigStore, name string, admission *serverAdmission, transaction *addTransaction) *ClientSession {
 	if admission == nil || admission.owner != o || admission.name != name || transaction == nil ||
 		transaction.hasUserMutation() || o.pendingGlobalAdd(name, cfg) != transaction {
-		return false
+		return nil
 	}
-	closeSessionLocked(name)
+	detached := detachSessionLocked(name)
 	if current, ok := cfg.MCPConfig(name); ok && reflect.DeepEqual(current, transaction.mcpConfig) {
 		_, _ = cfg.RemoveMCP(name)
 	}
 	o.invalidateServer(name)
 	clearAdvertised(name)
 	states.Del(name)
-	return true
+	return detached
 }
 
 // RemoveServer removes an MCP server, closes its session, and removes it from config.
@@ -3105,17 +3142,18 @@ func removeServerWithResultPersistence(
 
 	lease := serverLeaseFor(name)
 	lease.Lock()
-	leaseLocked := true
-	defer func() {
-		if leaseLocked {
-			lease.Unlock()
-		}
-	}()
+	var detached *ClientSession
+	unlock := func() {
+		lease.Unlock()
+		retireMCPClient(name, detached)
+	}
 	mcpCfg, exists = cfg.MCPConfig(name)
 	if !exists {
+		unlock()
 		return fmt.Errorf("MCP server %q disappeared while removing: %w", name, config.ErrMCPNotFound)
 	}
 	if mcpCfg.Source == config.MCPSourceExternal {
+		unlock()
 		return fmt.Errorf("MCP server %q is from .mcp.json and cannot be removed (disable it instead): %w", name, config.ErrMCPExternal)
 	}
 	if transaction := o.pendingGlobalAdd(name, cfg); transaction != nil {
@@ -3124,29 +3162,29 @@ func removeServerWithResultPersistence(
 		if persistErr != nil {
 			outcome, ok := config.CommitOutcomeFromError(persistErr)
 			if !ok || !outcome.Committed {
+				unlock()
 				return fmt.Errorf("failed to remove pending MCP server %q from config: %w", name, persistErr)
 			}
 			transaction.markUserMutation()
 			if !outcome.Reconciled {
-				fenceMCPRuntime(o, name)
+				detached = fenceMCPRuntimeLocked(o, name)
 				_, _ = cfg.RemoveMCP(name)
+				unlock()
 				return fmt.Errorf("failed to remove pending MCP server %q from config: %w", name, persistErr)
 			}
 			commitUncertainty = persistErr
 		}
 		if result.NewExists {
+			unlock()
 			return fmt.Errorf("MCP server %q remained configured after removal: %w", name, config.ErrMCPTargetExists)
 		}
 		transaction.markUserMutation()
 		o.invalidateServer(name)
 		_, _ = cfg.RemoveMCP(name)
-		oldSession, hadOldSession := sessions.Get(name)
-		sessions.Del(name)
+		detached = detachSessionLocked(name)
 		clearAdvertised(name)
 		states.Del(name)
-		if hadOldSession {
-			retireMCPClient(name, oldSession)
-		}
+		unlock()
 		publishEvent(pubsub.DeletedEvent, Event{Type: EventStateChanged, Name: name, State: StateDisabled})
 		if commitUncertainty != nil {
 			return fmt.Errorf("failed to remove pending MCP server %q from config: %w", name, commitUncertainty)
@@ -3155,6 +3193,7 @@ func removeServerWithResultPersistence(
 	}
 	scope, err := resolveMCPMutationScope(cfg, name, mcpCfg)
 	if err != nil {
+		unlock()
 		return fmt.Errorf("cannot determine writable scope for MCP server %q: %w", name, err)
 	}
 	result, err := persist(cfg, scope, name)
@@ -3162,10 +3201,12 @@ func removeServerWithResultPersistence(
 	if err != nil {
 		outcome, ok := config.CommitOutcomeFromError(err)
 		if !ok || !outcome.Committed {
+			unlock()
 			return fmt.Errorf("failed to remove MCP server %q from config: %w", name, err)
 		}
 		if !outcome.Reconciled {
-			fenceMCPRuntime(o, name)
+			detached = fenceMCPRuntimeLocked(o, name)
+			unlock()
 			return fmt.Errorf("failed to remove MCP server %q from config: %w", name, err)
 		}
 		commitUncertainty = err
@@ -3174,29 +3215,26 @@ func removeServerWithResultPersistence(
 	// succeeds may this operation invalidate candidates; the write lease keeps
 	// a candidate from publishing until runtime state is removed.
 	o.invalidateServer(name)
-	oldSession, hadOldSession := sessions.Get(name)
-	sessions.Del(name)
+	detached = detachSessionLocked(name)
 	clearAdvertised(name)
 	states.Del(name)
-	if hadOldSession {
-		retireMCPClient(name, oldSession)
-	}
 	if result.NewExists {
 		if result.NewConfig.Disabled {
 			updateState(name, StateDisabled, nil, nil, Counts{})
+			unlock()
 			if commitUncertainty != nil {
 				return fmt.Errorf("failed to remove MCP server %q from config: %w", name, commitUncertainty)
 			}
 			return nil
 		}
-		leaseLocked = false
-		lease.Unlock()
+		unlock()
 		startFallback(context.Background(), cfg, name, result.NewConfig, o)
 		if commitUncertainty != nil {
 			return fmt.Errorf("failed to remove MCP server %q from config: %w", name, commitUncertainty)
 		}
 		return nil
 	}
+	unlock()
 	publishEvent(pubsub.DeletedEvent, Event{Type: EventStateChanged, Name: name, State: StateDisabled})
 	if commitUncertainty != nil {
 		return fmt.Errorf("failed to remove MCP server %q from config: %w", name, commitUncertainty)
@@ -3215,6 +3253,17 @@ func ensureOwner() (*Owner, error) {
 // cannot be read back. It deliberately does not infer a config value or start
 // a fallback: a later reload must reconcile the unknown disk state first.
 func fenceMCPRuntime(o *Owner, name string) {
+	lease := serverLeaseFor(name)
+	lease.Lock()
+	detached := fenceMCPRuntimeLocked(o, name)
+	lease.Unlock()
+	retireMCPClient(name, detached)
+}
+
+// fenceMCPRuntimeLocked detaches all published runtime state while the
+// caller holds the server write lease. The caller retires and closes the
+// returned session after the lease is released.
+func fenceMCPRuntimeLocked(o *Owner, name string) *ClientSession {
 	if o != nil {
 		lifecycleMu.Lock()
 		o.nextUncertainty++
@@ -3225,20 +3274,20 @@ func fenceMCPRuntime(o *Owner, name string) {
 			cancel()
 		}
 	}
-	oldSession, hadOldSession := sessions.Get(name)
-	sessions.Del(name)
+	detached := detachSessionLocked(name)
 	clearAdvertised(name)
 	updateState(name, StateDisabled, nil, nil, Counts{})
-	if hadOldSession {
-		retireMCPClient(name, oldSession)
-	}
+	return detached
 }
 
-func closeSessionLocked(name string) {
+// detachSessionLocked removes the published session while the caller holds
+// the server write lease. The caller retires and closes it after unlocking.
+func detachSessionLocked(name string) *ClientSession {
 	if session, ok := sessions.Get(name); ok {
 		sessions.Del(name)
-		retireMCPClient(name, session)
+		return session
 	}
+	return nil
 }
 
 func closeMCPClient(name string, session *ClientSession) {
@@ -3573,6 +3622,7 @@ func getOrRenewClient(ctx context.Context, cfg *config.ConfigStore, name string)
 
 	setState(name, StateError, err, nil, state.Counts)
 	publishStateEvent(name, StateError, err, state.Counts)
+	var detachedCurrent *ClientSession
 	if currentOK {
 		// The ping failure identifies the session that must be retired. Remove
 		// it explicitly; state transitions must never infer session ownership
@@ -3580,9 +3630,10 @@ func getOrRenewClient(ctx context.Context, cfg *config.ConfigStore, name string)
 		if published, ok := sessions.Get(name); ok && published == current {
 			sessions.Del(name)
 		}
-		retireMCPClient(name, current)
+		detachedCurrent = current
 	}
 	lease.Unlock()
+	retireMCPClient(name, detachedCurrent)
 
 	// The candidate connection remains caller-cancellable until promotion.
 	// createSessionWithAdmission then hands its lifetime context over to the
@@ -3614,12 +3665,15 @@ func getOrRenewClient(ctx context.Context, cfg *config.ConfigStore, name string)
 		return nil, ErrOwnerBusy
 	}
 	if o != nil {
-		if err := o.commitRenewal(admission, name, newSession, state.Counts); err != nil {
+		retiredSession, err := o.commitRenewalForLease(admission, name, newSession, state.Counts)
+		if err != nil {
 			lease.Unlock()
+			retireMCPClient(name, retiredSession)
 			finish()
 			o.endInit()
 			return nil, err
 		}
+		defer func() { retireMCPClient(name, retiredSession) }()
 	} else {
 		sessions.Set(name, newSession)
 		setState(name, StateConnected, nil, newSession, state.Counts)

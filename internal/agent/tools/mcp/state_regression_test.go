@@ -692,8 +692,8 @@ func TestPendingAddMutationCommitsCompleteConfigBeforeInvalidatingAdd(t *testing
 						}, admission); err != nil {
 							return err
 						}
-						// The admission is deliberately finished before durable Add
-						// persistence to prove the transaction has its own lifetime.
+						// The initializer signals done before durable Add persistence;
+						// Add retains the admission through its durable decision.
 						admission.done()
 						close(started)
 						<-release
@@ -709,7 +709,7 @@ func TestPendingAddMutationCommitsCompleteConfigBeforeInvalidatingAdd(t *testing
 			require.NotNil(t, transaction)
 			select {
 			case <-transaction.done:
-				t.Fatal("pending Add transaction finished with only initializer admission")
+				t.Fatal("pending Add transaction finished before the durable Add decision")
 			default:
 			}
 
@@ -717,7 +717,7 @@ func TestPendingAddMutationCommitsCompleteConfigBeforeInvalidatingAdd(t *testing
 			test.check(t, name)
 			select {
 			case <-transaction.done:
-				t.Fatal("pending Add transaction finished before durable Add rollback")
+				t.Fatal("pending Add transaction finished before the durable Add rollback")
 			default:
 			}
 
