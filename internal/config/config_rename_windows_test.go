@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"unsafe"
 
@@ -122,6 +123,64 @@ func TestWindowsParentSyncIsAProductionNoOp(t *testing.T) {
 	require.NoError(t, syncConfigParentOnDisk(filepath.Join(t.TempDir(), "does-not-exist")))
 }
 
+func TestWindowsAPIPathUsesExtendedLengthForLongDriveAndUNCPaths(t *testing.T) {
+	drivePath := filepath.Join(t.TempDir(), strings.Repeat("long-directory\\", 24), "rush.json")
+	require.Greater(t, len(drivePath), 260)
+	driveAPIPath, err := windowsConfigAPIPath(drivePath)
+	require.NoError(t, err)
+	require.True(t, strings.HasPrefix(driveAPIPath, `\\?\`))
+
+	uncPath := `\\server\share\` + strings.Repeat("long-directory\\", 24) + "rush.json"
+	uncAPIPath, err := windowsConfigAPIPath(uncPath)
+	require.NoError(t, err)
+	require.True(t, strings.HasPrefix(uncAPIPath, `\\?\UNC\`))
+}
+
+func TestWindowsStageSupportsLongPath(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, strings.Repeat("long-directory\\", 24), "rush.json")
+	require.Greater(t, len(path), 260)
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+
+	staged, err := stageConfigFileHandle(path, []byte(`{"long":true}`), 0o600)
+	require.NoError(t, err)
+	require.NoError(t, deleteWindowsConfigHandle(staged.file))
+	require.NoError(t, staged.file.Close())
+}
+
+func TestWindowsCommitSupportsLongPath(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, strings.Repeat("long-directory\\", 24), "rush.json")
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+	oldData := []byte(`{"old":true}`)
+	newData := []byte(`{"new":true}`)
+	require.NoError(t, os.WriteFile(path, oldData, 0o600))
+	_, expected, err := readStableConfigFile(path)
+	require.NoError(t, err)
+
+	_, err = commitConfigFile(path, path, newData, 0o600, expected, -1, false)
+	require.NoError(t, err)
+	require.Equal(t, newData, mustReadFile(t, path))
+}
+
+func TestWindowsAbsentFingerprintPinsParentIdentity(t *testing.T) {
+	root := t.TempDir()
+	parentPath := filepath.Join(root, "config")
+	path := filepath.Join(parentPath, "rush.json")
+	require.NoError(t, os.Mkdir(parentPath, 0o755))
+
+	_, expected, err := readStableConfigFile(path)
+	require.ErrorIs(t, err, os.ErrNotExist)
+	require.True(t, expected.parentIdentity.valid)
+
+	movedPath := filepath.Join(root, "config.moved")
+	require.NoError(t, os.Rename(parentPath, movedPath))
+	require.NoError(t, os.Mkdir(parentPath, 0o755))
+	_, actual, err := readStableConfigFile(path)
+	require.ErrorIs(t, err, os.ErrNotExist)
+	require.NotEqual(t, expected.parentIdentity, actual.parentIdentity)
+}
+
 func TestRenameConfigTempHandleUsesPinnedParentAndRelativeName(t *testing.T) {
 	root := t.TempDir()
 	sourcePath := filepath.Join(root, "source.tmp")
@@ -161,7 +220,7 @@ func TestRenameConfigTempHandleUsesPinnedParentAndRelativeName(t *testing.T) {
 	require.NotContains(t, gotName, string(filepath.Separator))
 }
 
-func TestWindowsCommitPublishesThroughPinnedParentAfterPathMove(t *testing.T) {
+func TestWindowsCommitRejectsPinnedParentAfterPathMove(t *testing.T) {
 	root := t.TempDir()
 	parentPath := filepath.Join(root, "config")
 	movedParentPath := filepath.Join(root, "config.moved")
@@ -191,11 +250,7 @@ func TestWindowsCommitPublishesThroughPinnedParentAfterPathMove(t *testing.T) {
 	})
 
 	_, err = commitConfigFile(path, path, data, 0o600, expected, -1, false)
-	var outcome *CommitOutcome
-	require.ErrorAs(t, err, &outcome)
-	require.True(t, outcome.Committed)
-	require.False(t, outcome.Reconciled)
-	require.ErrorIs(t, err, errConfigCommitUncertain)
-	require.Equal(t, data, mustReadFile(t, filepath.Join(movedParentPath, "rush.json")))
+	require.ErrorIs(t, err, errConfigCommitVerification)
+	require.Equal(t, []byte(`{"old":true}`), mustReadFile(t, filepath.Join(movedParentPath, "rush.json")))
 	require.Equal(t, decoy, mustReadFile(t, path))
 }

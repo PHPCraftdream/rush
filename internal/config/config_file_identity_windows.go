@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -111,7 +112,12 @@ func removeConfigTempIfIdentity(path string, expected configFileIdentity) error 
 }
 
 func openWindowsConfigHandle(path string, access, flags uint32) (*os.File, error) {
-	name, err := windows.UTF16PtrFromString(filepath.Clean(path))
+	clean := filepath.Clean(path)
+	apiPath, err := windowsConfigAPIPath(clean)
+	if err != nil {
+		return nil, err
+	}
+	name, err := windows.UTF16PtrFromString(apiPath)
 	if err != nil {
 		return nil, err
 	}
@@ -127,7 +133,25 @@ func openWindowsConfigHandle(path string, access, flags uint32) (*os.File, error
 	if err != nil {
 		return nil, err
 	}
-	return os.NewFile(uintptr(handle), filepath.Clean(path)), nil
+	return os.NewFile(uintptr(handle), clean), nil
+}
+
+func windowsConfigAPIPath(path string) (string, error) {
+	clean, err := filepath.Abs(filepath.Clean(path))
+	if err != nil {
+		return "", err
+	}
+	clean = filepath.Clean(clean)
+	if strings.HasPrefix(clean, `\\?\`) || strings.HasPrefix(clean, `\\.\`) {
+		return clean, nil
+	}
+	if strings.HasPrefix(clean, `\\`) {
+		return `\\?\UNC\` + strings.TrimPrefix(clean, `\\`), nil
+	}
+	if len(clean) >= 2 && clean[1] == ':' {
+		return `\\?\` + clean, nil
+	}
+	return clean, nil
 }
 
 func windowsFileInformation(file *os.File) (windows.ByHandleFileInformation, error) {
@@ -156,6 +180,7 @@ func openWindowsConfigParent(path string) (*os.File, error) {
 
 type windowsStagedConfigFile struct {
 	path     string
+	name     string
 	file     *os.File
 	identity configFileIdentity
 }
@@ -178,7 +203,11 @@ func stageConfigFileHandleAt(parent *os.File, path string, data []byte, perm os.
 		var handle windows.Handle
 		var err error
 		if parent == nil {
-			name, nameErr := windows.UTF16PtrFromString(tmpPath)
+			apiPath, pathErr := windowsConfigAPIPath(tmpPath)
+			if pathErr != nil {
+				return windowsStagedConfigFile{}, pathErr
+			}
+			name, nameErr := windows.UTF16PtrFromString(apiPath)
 			if nameErr != nil {
 				return windowsStagedConfigFile{}, nameErr
 			}
@@ -200,32 +229,36 @@ func stageConfigFileHandleAt(parent *os.File, path string, data []byte, perm os.
 			}
 			return windowsStagedConfigFile{}, fmt.Errorf("create temporary config: %w", err)
 		}
-		file := os.NewFile(uintptr(handle), tmpPath)
+		file := os.NewFile(uintptr(handle), filepath.Clean(tmpPath))
+		cleanup := true
+		defer func() {
+			if cleanup {
+				// Delete while the handle still pins the object.
+				_ = deleteWindowsConfigHandle(file)
+				_ = file.Close()
+			}
+		}()
 		info, statErr := file.Stat()
 		if statErr != nil {
-			_ = file.Close()
 			return windowsStagedConfigFile{}, statErr
 		}
 		identity := configFileIdentityOfOpened(file, info)
 		if !identity.valid || !info.Mode().IsRegular() {
-			_ = file.Close()
 			return windowsStagedConfigFile{}, os.ErrInvalid
 		}
 		if _, err := file.Write(data); err != nil {
-			_ = file.Close()
 			return windowsStagedConfigFile{}, err
 		}
 		if err := file.Chmod(perm); err != nil {
-			_ = file.Close()
 			return windowsStagedConfigFile{}, err
 		}
 		if err := file.Sync(); err != nil {
-			_ = file.Close()
 			return windowsStagedConfigFile{}, err
 		}
 		// The identity is deliberately captured while this DELETE-capable
 		// handle remains open. The pathname is not used as an identity oracle.
-		return windowsStagedConfigFile{path: tmpPath, file: file, identity: identity}, nil
+		cleanup = false
+		return windowsStagedConfigFile{path: filepath.Clean(tmpPath), name: filepath.Base(tmpPath), file: file, identity: identity}, nil
 	}
 	return windowsStagedConfigFile{}, fmt.Errorf("create temporary config: %w", os.ErrExist)
 }

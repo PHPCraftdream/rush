@@ -184,6 +184,24 @@ func TestWriteCodexSkillRejectsInvalidFrontmatter(t *testing.T) {
 	require.ErrorIs(t, statErr, os.ErrNotExist)
 }
 
+func TestWriteCodexSkillRejectsEmptyDescription(t *testing.T) {
+	dir := t.TempDir()
+	content := "---\nname: rush\ndescription: \"\"\n---\nbody\n"
+	err := writeCodexSkill(dir, "rush", content)
+	require.ErrorContains(t, err, "description is required")
+	_, statErr := os.Stat(filepath.Join(dir, "rush", "SKILL.md"))
+	require.ErrorIs(t, statErr, os.ErrNotExist)
+}
+
+func TestWriteCodexSkillRejectsOversizedDescription(t *testing.T) {
+	dir := t.TempDir()
+	content := "---\nname: rush\ndescription: " + strings.Repeat("a", skills.MaxDescriptionLength+1) + "\n---\nbody\n"
+	err := writeCodexSkill(dir, "rush", content)
+	require.ErrorContains(t, err, "description exceeds")
+	_, statErr := os.Stat(filepath.Join(dir, "rush", "SKILL.md"))
+	require.ErrorIs(t, statErr, os.ErrNotExist)
+}
+
 func TestCodexInit_SlashCommandSkipsWithoutSentinel(t *testing.T) {
 	dir := t.TempDir()
 	skillPath := filepath.Join(dir, ".agents", "skills", "rush", "SKILL.md")

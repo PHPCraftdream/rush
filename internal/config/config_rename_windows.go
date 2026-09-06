@@ -114,11 +114,19 @@ func hasSetFileInformationHook() bool {
 // true no-replace operation. os.Rename on Windows is intentionally not used:
 // its implementation requests replacement semantics.
 func renameConfigTemp(source, destination string, replace bool) error {
-	from, err := windows.UTF16PtrFromString(source)
+	apiSource, err := windowsConfigAPIPath(source)
 	if err != nil {
 		return fmt.Errorf("encode temporary config path: %w", err)
 	}
-	to, err := windows.UTF16PtrFromString(destination)
+	apiDestination, err := windowsConfigAPIPath(destination)
+	if err != nil {
+		return fmt.Errorf("encode config path: %w", err)
+	}
+	from, err := windows.UTF16PtrFromString(apiSource)
+	if err != nil {
+		return fmt.Errorf("encode temporary config path: %w", err)
+	}
+	to, err := windows.UTF16PtrFromString(apiDestination)
 	if err != nil {
 		return fmt.Errorf("encode config path: %w", err)
 	}

@@ -43,6 +43,7 @@ type reloadFileFingerprint struct {
 	identity        configFileIdentity
 	discovery       [sha256.Size]byte
 	parentDiscovery [sha256.Size]byte
+	parentIdentity  configFileIdentity
 }
 
 var errStableReadUnstable = errors.New("config file remained unstable while reading")
@@ -64,6 +65,7 @@ var errConfigOwnerMismatch = errors.New("config file owner does not match its tr
 func readStableConfigFileOwned(path string, expectedOwner int, enforceOwner bool) ([]byte, reloadFileFingerprint, error) {
 	for attempt := 0; attempt < stableReadMaxAttempts; attempt++ {
 		beforeDiscovery := configDiscoveryFingerprint(path)
+		beforeParentIdentity := configParentIdentity(path)
 		runConfigBeforeOpenHook(path)
 		file, err := openStableConfigFile(path)
 		if err != nil {
@@ -71,6 +73,7 @@ func readStableConfigFileOwned(path string, expectedOwner int, enforceOwner bool
 				return nil, reloadFileFingerprint{
 					discovery:       beforeDiscovery,
 					parentDiscovery: configDiscoveryFingerprint(filepath.Dir(path)),
+					parentIdentity:  beforeParentIdentity,
 				}, err
 			}
 			return nil, reloadFileFingerprint{}, err
@@ -85,6 +88,7 @@ func readStableConfigFileOwned(path string, expectedOwner int, enforceOwner bool
 			return nil, reloadFileFingerprint{
 				discovery:       beforeDiscovery,
 				parentDiscovery: configDiscoveryFingerprint(filepath.Dir(path)),
+				parentIdentity:  beforeParentIdentity,
 			}, nil
 		}
 		owner, ownerKnown := configFileOwner(info)
@@ -116,6 +120,11 @@ func readStableConfigFileOwned(path string, expectedOwner int, enforceOwner bool
 			_ = file.Close()
 			continue
 		}
+		afterParentIdentity := configParentIdentity(path)
+		if beforeParentIdentity != afterParentIdentity {
+			_ = file.Close()
+			continue
+		}
 		pathInfo, err := os.Stat(path)
 		if err != nil {
 			_ = file.Close()
@@ -136,6 +145,7 @@ func readStableConfigFileOwned(path string, expectedOwner int, enforceOwner bool
 			digest: sha256.Sum256(second), owner: owner, nlink: nlink,
 			identity: identity, discovery: afterDiscovery,
 			parentDiscovery: configDiscoveryFingerprint(filepath.Dir(path)),
+			parentIdentity:  afterParentIdentity,
 		}, nil
 	}
 	return nil, reloadFileFingerprint{}, errStableReadUnstable

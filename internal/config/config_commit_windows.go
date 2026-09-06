@@ -38,12 +38,18 @@ func commitConfigFile(selectedPath, commitPath string, data []byte, perm os.File
 		return reloadFileFingerprint{}, fmt.Errorf("%w: %v", errConfigCommitVerification, err)
 	}
 	defer parent.Close()
+	if err := verifyWindowsCommitParent(parent, publicationPath, expected); err != nil {
+		return reloadFileFingerprint{}, errConfigCommitVerification
+	}
 	if expected.parentDiscovery != ([32]byte{}) && configDiscoveryFingerprint(filepath.Dir(selectedPath)) != expected.parentDiscovery {
 		return reloadFileFingerprint{}, errConfigCommitVerification
 	}
 
 	runConfigBeforeCommitCheckHook()
 	base := filepath.Base(publicationPath)
+	if err := verifyWindowsCommitParent(parent, publicationPath, expected); err != nil {
+		return reloadFileFingerprint{}, errConfigCommitVerification
+	}
 	if err := verifyWindowsCommitDestinationHandle(parent, base, expected); err != nil {
 		return reloadFileFingerprint{}, err
 	}
@@ -64,16 +70,22 @@ func commitConfigFile(selectedPath, commitPath string, data []byte, perm os.File
 		}
 	}()
 
+	if err := verifyWindowsCommitParent(parent, publicationPath, expected); err != nil {
+		return reloadFileFingerprint{}, errConfigCommitVerification
+	}
 	if err := verifyWindowsCommitDestinationHandle(parent, base, expected); err != nil {
 		return reloadFileFingerprint{}, err
 	}
 	runConfigBeforeCommitRenameHook()
+	if err := verifyWindowsCommitParent(parent, publicationPath, expected); err != nil {
+		return reloadFileFingerprint{}, errConfigCommitVerification
+	}
 	if err := verifyWindowsCommitDestinationHandle(parent, base, expected); err != nil {
 		return reloadFileFingerprint{}, err
 	}
 	renameErr := renameConfigTempHandle(staged.file, staged.path, parent, base, expected.exists)
 	if renameErr != nil {
-		return reloadFileFingerprint{}, classifyWindowsRenameFailure(publicationPath, data, expected, expectedOwner, enforceOwner, staged, renameErr, &removeTemp, &stagedClosed)
+		return reloadFileFingerprint{}, classifyWindowsRenameFailure(publicationPath, parent, data, expected, expectedOwner, enforceOwner, staged, renameErr, &removeTemp, &stagedClosed)
 	}
 	removeTemp = false
 	flushErr := flushWindowsConfigHandle(staged.file)
@@ -138,12 +150,30 @@ func verifyWindowsCommitInput(path string, expected reloadFileFingerprint, expec
 	current, fingerprint, err := readStableConfigFileOwned(path, expectedOwner, enforceOwner)
 	if expected.exists {
 		if err != nil || fingerprint.identity != expected.identity || fingerprint.nlink != expected.nlink || fingerprint.discovery != expected.discovery ||
-			!sameBytesFingerprint(current, expected.digest) {
+			fingerprint.parentIdentity != expected.parentIdentity || !sameBytesFingerprint(current, expected.digest) {
 			return errConfigCommitVerification
 		}
 		return nil
 	}
-	if err == nil || !os.IsNotExist(err) || fingerprint.discovery != expected.discovery || fingerprint.parentDiscovery != expected.parentDiscovery {
+	if err == nil || !os.IsNotExist(err) || fingerprint.discovery != expected.discovery || fingerprint.parentDiscovery != expected.parentDiscovery ||
+		(expected.parentIdentity.valid && fingerprint.parentIdentity != expected.parentIdentity) {
+		return errConfigCommitVerification
+	}
+	return nil
+}
+
+func verifyWindowsCommitParent(parent *os.File, publicationPath string, expected reloadFileFingerprint) error {
+	pinned := configFileIdentityOfOpened(parent, nil)
+	if !pinned.valid || (expected.parentIdentity.valid && pinned != expected.parentIdentity) {
+		return errConfigCommitVerification
+	}
+	current, err := openWindowsConfigParent(publicationPath)
+	if err != nil {
+		return errConfigCommitVerification
+	}
+	defer current.Close()
+	currentIdentity := configFileIdentityOfOpened(current, nil)
+	if !currentIdentity.valid || currentIdentity != pinned {
 		return errConfigCommitVerification
 	}
 	return nil
@@ -197,32 +227,32 @@ func verifyWindowsCommitDestinationHandle(parent *os.File, name string, expected
 	return nil
 }
 
-func classifyWindowsRenameFailure(commitPath string, data []byte, expected reloadFileFingerprint, expectedOwner int, enforceOwner bool, staged windowsStagedConfigFile, renameErr error, removeTemp, stagedClosed *bool) error {
-	// The source identity is read from the still-open staged handle, while
-	// sourcePresent only answers whether its original directory entry remains.
-	sourceInfo, sourceStatErr := staged.file.Stat()
-	sourceIdentity := configFileIdentityOfOpened(staged.file, sourceInfo)
-	sourcePathIdentity, sourcePathErr := configFileIdentityAtPath(staged.path)
-	sourcePresent := sourcePathErr == nil && sourcePathIdentity == sourceIdentity && sourceIdentity == staged.identity
-	if !sourcePresent {
-		// Once the source spelling is gone, close the source handle before
-		// opening the destination for byte reconciliation. The identity was
-		// already captured from the handle above.
-		_ = staged.file.Close()
-		*stagedClosed = true
+func classifyWindowsRenameFailure(commitPath string, parent *os.File, data []byte, expected reloadFileFingerprint, expectedOwner int, enforceOwner bool, staged windowsStagedConfigFile, renameErr error, removeTemp, stagedClosed *bool) error {
+	// Resolve both directory entries through the pinned parent. The staged
+	// handle remains open until classification and cleanup are complete.
+	temp, tempErr := openWindowsConfigEntryAt(parent, staged.name)
+	target, targetErr := openWindowsConfigEntryAt(parent, filepath.Base(commitPath))
+	if temp != nil {
+		defer temp.Close()
 	}
-
-	targetIdentity, targetIdentityErr := configFileIdentityAtPath(commitPath)
-	targetStaged := targetIdentityErr == nil && targetIdentity == staged.identity
-	targetExpected := expected.exists && targetIdentityErr == nil && targetIdentity == expected.identity
-	targetAbsent := os.IsNotExist(targetIdentityErr)
+	if target != nil {
+		defer target.Close()
+	}
+	sourcePresent := tempErr == nil && configFileIdentityOfOpened(temp, nil) == staged.identity
+	targetIdentity := configFileIdentity{}
+	if targetErr == nil {
+		targetIdentity = configFileIdentityOfOpened(target, nil)
+	}
+	targetStaged := targetErr == nil && targetIdentity == staged.identity
+	targetExpected := expected.exists && targetErr == nil && targetIdentity == expected.identity
+	targetAbsent := isWindowsEntryNotFound(targetErr) || os.IsNotExist(targetErr)
 
 	if sourcePresent && !targetStaged {
 		// No publication is proven. Cleanup is performed by the opened staged
 		// handle; it cannot delete a foreign file at the temporary pathname.
 		causes := []error{renameErr}
-		if targetIdentityErr != nil && !targetAbsent {
-			causes = append(causes, targetIdentityErr)
+		if targetErr != nil && !targetAbsent {
+			causes = append(causes, targetErr)
 		}
 		if !expected.exists && !targetAbsent {
 			causes = append(causes, errConfigCommitVerification)
@@ -234,7 +264,7 @@ func classifyWindowsRenameFailure(commitPath string, data []byte, expected reloa
 		// write-through uncertainty and never delete the staged handle now that
 		// it denotes the published destination.
 		*removeTemp = false
-		reconciledData, _, readErr := readStableConfigFileOwned(commitPath, expectedOwner, enforceOwner)
+		reconciledData, _, readErr := readStableConfigHandle(target, expectedOwner, enforceOwner)
 		reconciled := readErr == nil && sameBytesFingerprint(reconciledData, sha256.Sum256(data))
 		causes := []error{errConfigCommitCommitted, errAtomicWriteCommitted, errConfigCommitDurabilityUncertain, renameErr}
 		if readErr != nil {
@@ -250,14 +280,11 @@ func classifyWindowsRenameFailure(commitPath string, data []byte, expected reloa
 	// callers can distinguish this byte-free state from a proven commit and
 	// must not retry without reconciling it themselves.
 	causes := []error{errConfigCommitUncertain, renameErr}
-	if sourceStatErr != nil {
-		causes = append(causes, sourceStatErr)
+	if tempErr != nil && !isWindowsEntryNotFound(tempErr) && !os.IsNotExist(tempErr) {
+		causes = append(causes, tempErr)
 	}
-	if sourcePathErr != nil && !os.IsNotExist(sourcePathErr) {
-		causes = append(causes, sourcePathErr)
-	}
-	if targetIdentityErr != nil {
-		causes = append(causes, targetIdentityErr)
+	if targetErr != nil {
+		causes = append(causes, targetErr)
 	}
 	return newMaybeCommitOutcome(commitPath, causes...)
 }

@@ -132,6 +132,9 @@ func writeCodexSkill(skillsDir, name, content string) error {
 	if err != nil {
 		return fmt.Errorf("validate generated SKILL.md: %w", err)
 	}
+	if err := parsed.Validate(); err != nil {
+		return fmt.Errorf("validate generated SKILL.md: %w", err)
+	}
 	if parsed.Name != name {
 		return fmt.Errorf("validate generated SKILL.md: name %q does not match %q", parsed.Name, name)
 	}
