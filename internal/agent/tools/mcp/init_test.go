@@ -843,6 +843,76 @@ func TestSessionContextPromotionLinearizesCancellation(t *testing.T) {
 	})
 }
 
+func TestClientSessionCloseAbortsPromotedCandidate(t *testing.T) {
+	ownerCtx, ownerCancel := context.WithCancel(context.Background())
+	defer ownerCancel()
+	candidateCtx, candidateCancel := context.WithCancel(context.Background())
+	defer candidateCancel()
+	handoff := newSessionContext(ownerCtx, candidateCtx)
+	require.True(t, handoff.promote())
+	session := &ClientSession{
+		cancel:   func() {},
+		terminal: handoff.abort,
+	}
+
+	require.NoError(t, session.Close())
+	select {
+	case <-handoff.Done():
+	case <-time.After(time.Second):
+		t.Fatal("closing a promoted candidate did not abort its context")
+	}
+	select {
+	case <-handoff.workerDone:
+	case <-time.After(time.Second):
+		t.Fatal("closing a promoted candidate left its handoff goroutine running")
+	}
+	require.ErrorIs(t, handoff.Err(), context.Canceled)
+}
+
+func TestPublishedSessionIgnoresCandidateCancellationUntilClose(t *testing.T) {
+	ownerCtx, ownerCancel := context.WithCancel(context.Background())
+	defer ownerCancel()
+	candidateCtx, candidateCancel := context.WithCancel(context.Background())
+	handoff := newSessionContext(ownerCtx, candidateCtx)
+	require.True(t, handoff.promote())
+	session := &ClientSession{
+		cancel:   func() {},
+		terminal: handoff.abort,
+	}
+
+	candidateCancel()
+	select {
+	case <-handoff.Done():
+		t.Fatal("candidate cancellation closed a published session context")
+	default:
+	}
+
+	require.NoError(t, session.Close())
+	select {
+	case <-handoff.workerDone:
+	case <-time.After(time.Second):
+		t.Fatal("closing the published session did not stop its handoff goroutine")
+	}
+}
+
+func TestRepeatedPromotedCandidateCloseStopsHandoff(t *testing.T) {
+	for range 32 {
+		ownerCtx, ownerCancel := context.WithCancel(context.Background())
+		candidateCtx, candidateCancel := context.WithCancel(context.Background())
+		handoff := newSessionContext(ownerCtx, candidateCtx)
+		require.True(t, handoff.promote())
+		session := &ClientSession{cancel: func() {}, terminal: handoff.abort}
+		require.NoError(t, session.Close())
+		select {
+		case <-handoff.workerDone:
+		case <-time.After(time.Second):
+			t.Fatal("repeated candidate close left a handoff goroutine running")
+		}
+		ownerCancel()
+		candidateCancel()
+	}
+}
+
 func TestCommitRenewalPublishesOnlyAfterPromotion(t *testing.T) {
 	const (
 		rejectedName = "promotion-rejected"

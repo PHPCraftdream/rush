@@ -88,6 +88,54 @@ func (s *ConfigStore) mutateMCPExact(operation string, scope Scope, oldName, new
 	return s.mutateMCPWithMode(operation, scope, oldName, newName, value, disabled, true)
 }
 
+func (s *ConfigStore) mutatePendingRemoveMCP(scope Scope, name string) (MCPMutationResult, error) {
+	if scope != ScopeGlobal {
+		return MCPMutationResult{}, fmt.Errorf("pending MCP removal requires global scope: %w", ErrMCPStale)
+	}
+
+	path, err := s.configPath(scope)
+	if err != nil {
+		return MCPMutationResult{}, err
+	}
+	path = normalizeReloadPath(path)
+	var result MCPMutationResult
+	s.publishMu.Lock()
+	err = s.withMCPWriteLocks(func(files *mcpLockedFiles) error {
+		before, err := s.evaluateMCPFiles(files)
+		if err != nil {
+			return err
+		}
+		if _, exists := before.configs[name]; exists {
+			return fmt.Errorf("%w: %q", ErrMCPTargetExists, name)
+		}
+		result = MCPMutationResult{
+			Operation: "remove", OldName: name, NewName: name,
+			OldExists: false, OldConfig: MCPConfig{}, OldOrigin: before.origins[name],
+		}
+		// Write the final absent state in one atomic operation. This may create
+		// an otherwise empty config file, but it never writes the pending
+		// definition, including if the process stops immediately afterward.
+		if err := s.prepareMCPFileMutation(files, path, "remove", name, name, MCPConfig{}, nil); err != nil {
+			return err
+		}
+		if err := s.verifyMCPReadOnlyInputs(before.fingerprints, path); err != nil {
+			return err
+		}
+		if err := writeMCPFileChanges(files); err != nil {
+			return err
+		}
+		return nil
+	})
+	if err == nil {
+		s.publishMCPMutationLocked(result)
+	}
+	s.publishMu.Unlock()
+	if err != nil {
+		return MCPMutationResult{}, err
+	}
+	return result, nil
+}
+
 func (s *ConfigStore) mutateMCPWithMode(operation string, scope Scope, oldName, newName string, value MCPConfig, disabled *bool, exact bool) (MCPMutationResult, error) {
 	path, err := s.configPath(scope)
 	if err != nil {

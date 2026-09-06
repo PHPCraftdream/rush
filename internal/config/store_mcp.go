@@ -98,6 +98,21 @@ func (s *ConfigStore) PersistRemoveMCPConfigResult(scope Scope, name string) (MC
 	return s.mutateMCP("remove", scope, name, name, MCPConfig{}, nil)
 }
 
+// PersistRemovePendingMCPConfigResult conditionally completes a pending MCP
+// add without ever writing its in-memory definition. It succeeds only while
+// the server is absent from the durable configuration; an existing durable
+// definition is a collision and is left untouched.
+func (s *ConfigStore) PersistRemovePendingMCPConfigResult(scope Scope, name string) (MCPMutationResult, error) {
+	return s.mutatePendingRemoveMCP(scope, name)
+}
+
+// PersistRemovePendingMCPConfig is the error-only form of
+// PersistRemovePendingMCPConfigResult.
+func (s *ConfigStore) PersistRemovePendingMCPConfig(scope Scope, name string) error {
+	_, err := s.PersistRemovePendingMCPConfigResult(scope, name)
+	return err
+}
+
 func (s *ConfigStore) PersistMCPDisabledOverride(scope Scope, name string, disabled bool) error {
 	_, err := s.PersistMCPDisabledOverrideResult(scope, name, disabled)
 	return err

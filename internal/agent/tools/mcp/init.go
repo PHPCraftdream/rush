@@ -50,6 +50,7 @@ type ClientSession struct {
 	*mcp.ClientSession
 	cancel     context.CancelFunc
 	promote    func() bool
+	terminal   func()
 	cleanup    func()
 	cancelOnce sync.Once
 	closeOnce  sync.Once
@@ -60,6 +61,9 @@ type ClientSession struct {
 func (s *ClientSession) Close() error {
 	s.closeOnce.Do(func() {
 		s.cancelContext()
+		if s.terminal != nil {
+			s.terminal()
+		}
 		s.closeErr = s.closeTransport()
 		if s.cleanup != nil {
 			s.cleanup()
@@ -560,6 +564,19 @@ func (o *Owner) pendingGlobalAdd(name string, cfg *config.ConfigStore) *addTrans
 	lifecycleMu.Lock()
 	defer lifecycleMu.Unlock()
 	transaction := o.pendingGlobalAdds[name]
+	if transaction == nil || transaction.cfg != cfg || transaction.token == 0 {
+		return nil
+	}
+	return transaction
+}
+
+func pendingGlobalAddFor(cfg *config.ConfigStore, name string) *addTransaction {
+	lifecycleMu.Lock()
+	defer lifecycleMu.Unlock()
+	if owner == nil {
+		return nil
+	}
+	transaction := owner.pendingGlobalAdds[name]
 	if transaction == nil || transaction.cfg != cfg || transaction.token == 0 {
 		return nil
 	}
@@ -1953,6 +1970,10 @@ func addServerWithInitializer(
 		lease.Unlock()
 		return fmt.Errorf("MCP server %q disappeared while persisting: %w", name, config.ErrMCPNotFound)
 	}
+	// The durable Add outcome is complete before releasing the lease. A later
+	// RemoveServer must then use the ordinary conditional remove path rather
+	// than treating an already-persisted Add as still pending.
+	o.completePendingGlobalAdd(transaction)
 	lease.Unlock()
 	return nil
 }
@@ -1980,6 +2001,9 @@ func rollbackAddedServer(o *Owner, cfg *config.ConfigStore, name string, admissi
 func RemoveServer(cfg *config.ConfigStore, name string) error {
 	return removeServerWithResultPersistence(cfg, name,
 		func(cfg *config.ConfigStore, scope config.Scope, name string) (config.MCPMutationResult, error) {
+			if pending := pendingGlobalAddFor(cfg, name); pending != nil {
+				return cfg.PersistRemovePendingMCPConfigResult(scope, name)
+			}
 			return cfg.PersistRemoveMCPConfigResult(scope, name)
 		})
 }
@@ -2044,24 +2068,12 @@ func removeServerWithResultPersistence(
 		return fmt.Errorf("MCP server %q is from .mcp.json and cannot be removed (disable it instead): %w", name, config.ErrMCPExternal)
 	}
 	if transaction := o.pendingGlobalAdd(name, cfg); transaction != nil {
-		if result, persistErr := persist(cfg, config.ScopeGlobal, name); persistErr == nil {
-			// A custom persistence seam may model a pending removal as an
-			// already-completed operation. Keep its result authoritative.
-			if result.NewExists {
-				return fmt.Errorf("MCP server %q remained configured after removal", name)
-			}
-		} else if !errors.Is(persistErr, config.ErrMCPNotFound) {
+		result, persistErr := persist(cfg, config.ScopeGlobal, name)
+		if persistErr != nil {
 			return fmt.Errorf("failed to remove pending MCP server %q from config: %w", name, persistErr)
 		}
-		// A pending add has no durable owner yet. Materialize its complete
-		// definition before the atomic removal so the add transaction cannot
-		// later publish a live candidate over this user cancellation.
-		if _, err := cfg.PersistMCPConfigResult(config.ScopeGlobal, name, mcpCfg); err != nil {
-			return fmt.Errorf("failed to remove pending MCP server %q from config: %w", name, err)
-		}
-		if _, err := cfg.PersistRemoveMCPConfigResult(config.ScopeGlobal, name); err != nil {
-			transaction.markUserMutation()
-			return fmt.Errorf("failed to remove pending MCP server %q from config: %w", name, err)
+		if result.NewExists {
+			return fmt.Errorf("MCP server %q remained configured after removal: %w", name, config.ErrMCPTargetExists)
 		}
 		transaction.markUserMutation()
 		o.invalidateServer(name)
@@ -2495,9 +2507,10 @@ func createSession(ctx context.Context, name string, m config.MCPConfig, resolve
 // owner cancellation can abort initialization, but once the candidate is
 // published admission completion must not cancel the SDK connection context.
 type sessionContext struct {
-	owner     context.Context
-	candidate context.Context
-	done      chan struct{}
+	owner      context.Context
+	candidate  context.Context
+	done       chan struct{}
+	workerDone chan struct{}
 
 	mu       sync.Mutex
 	promoted bool
@@ -2507,11 +2520,13 @@ type sessionContext struct {
 
 func newSessionContext(owner, candidate context.Context) *sessionContext {
 	s := &sessionContext{
-		owner:     owner,
-		candidate: candidate,
-		done:      make(chan struct{}),
+		owner:      owner,
+		candidate:  candidate,
+		done:       make(chan struct{}),
+		workerDone: make(chan struct{}),
 	}
 	go func() {
+		defer close(s.workerDone)
 		select {
 		case <-owner.Done():
 			s.finish(owner, false)
@@ -2519,8 +2534,12 @@ func newSessionContext(owner, candidate context.Context) *sessionContext {
 			if s.finish(candidate, true) {
 				return
 			}
-			<-owner.Done()
-			s.finish(owner, false)
+			select {
+			case <-owner.Done():
+				s.finish(owner, false)
+			case <-s.done:
+			}
+		case <-s.done:
 		}
 	}()
 	return s
@@ -2546,6 +2565,17 @@ func (s *sessionContext) promote() bool {
 	}
 	s.promoted = true
 	return true
+}
+
+func (s *sessionContext) abort() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return
+	}
+	s.err = context.Canceled
+	s.closed = true
+	close(s.done)
 }
 
 func (s *sessionContext) Deadline() (time.Time, bool) { return s.owner.Deadline() }
@@ -2662,6 +2692,11 @@ func createSessionWithAdmission(ctx context.Context, name string, m config.MCPCo
 				return handoff.promote()
 			}
 			return true
+		},
+		terminal: func() {
+			if handoff != nil {
+				handoff.abort()
+			}
 		},
 		cleanup: cleanup,
 	}, nil

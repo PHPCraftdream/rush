@@ -501,6 +501,123 @@ func TestPendingAddMutationCommitsCompleteConfigBeforeInvalidatingAdd(t *testing
 	}
 }
 
+func TestPendingAddRemoveUsesOneConditionalWriteWithoutEnabledWindow(t *testing.T) {
+	store := isolatedMCPStore(t)
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer func() { require.NoError(t, owner.Close(context.Background())) }()
+
+	const name = "pending-add-conditional-remove"
+	releaseInitializer := make(chan struct{})
+	initializerStarted := make(chan struct{})
+	addDone := make(chan error, 1)
+	go func() {
+		addDone <- addServerWithInitializer(
+			context.Background(), store, name,
+			config.MCPConfig{Type: config.MCPHttp, URL: "http://never-enabled.example"},
+			func(
+				_ context.Context,
+				cfg *config.ConfigStore,
+				serverName string,
+				_ config.MCPConfig,
+				_ config.VariableResolver,
+				admission *serverAdmission,
+			) error {
+				if err := publishPreparedClient(cfg, serverName, &preparedClient{
+					session: &ClientSession{},
+				}, admission); err != nil {
+					return err
+				}
+				admission.done()
+				close(initializerStarted)
+				<-releaseInitializer
+				return nil
+			},
+		)
+	}()
+	waitForRequest(t, initializerStarted)
+
+	var persistenceCalls atomic.Int32
+	err = removeServerWithResultPersistence(store, name, func(
+		cfg *config.ConfigStore,
+		scope config.Scope,
+		serverName string,
+	) (config.MCPMutationResult, error) {
+		if persistenceCalls.Add(1) != 1 {
+			return config.MCPMutationResult{}, errors.New("pending remove persisted more than once")
+		}
+		return cfg.PersistRemovePendingMCPConfigResult(scope, serverName)
+	})
+	require.NoError(t, err)
+	require.Equal(t, int32(1), persistenceCalls.Load())
+	disk := diskMCP(t)
+	_, persisted := disk[name]
+	require.False(t, persisted, "pending removal must never persist an enabled definition")
+	_, runtime := sessions.Get(name)
+	require.False(t, runtime)
+
+	close(releaseInitializer)
+	require.ErrorIs(t, <-addDone, ErrOwnerBusy)
+}
+
+func TestPendingAddRemoveRejectsDurableCollision(t *testing.T) {
+	root := t.TempDir()
+	configDir := filepath.Join(root, "global-config")
+	dataDir := filepath.Join(root, "global-data")
+	t.Setenv("RUSH_GLOBAL_CONFIG", configDir)
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+	t.Setenv("RUSH_GLOBAL_DATA", dataDir)
+	t.Setenv("XDG_DATA_HOME", dataDir)
+	store, err := config.Init(root, root, false)
+	require.NoError(t, err)
+	contender, err := config.Init(root, root, false)
+	require.NoError(t, err)
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer func() { require.NoError(t, owner.Close(context.Background())) }()
+
+	const name = "pending-add-collision"
+	releaseInitializer := make(chan struct{})
+	initializerStarted := make(chan struct{})
+	addDone := make(chan error, 1)
+	go func() {
+		addDone <- addServerWithInitializer(
+			context.Background(), store, name,
+			config.MCPConfig{Type: config.MCPHttp, URL: "http://pending.example"},
+			func(
+				_ context.Context,
+				cfg *config.ConfigStore,
+				serverName string,
+				_ config.MCPConfig,
+				_ config.VariableResolver,
+				admission *serverAdmission,
+			) error {
+				if err := publishPreparedClient(cfg, serverName, &preparedClient{
+					session: &ClientSession{},
+				}, admission); err != nil {
+					return err
+				}
+				admission.done()
+				close(initializerStarted)
+				<-releaseInitializer
+				return nil
+			},
+		)
+	}()
+	waitForRequest(t, initializerStarted)
+
+	winner := config.MCPConfig{Type: config.MCPHttp, URL: "http://winner.example"}
+	require.NoError(t, contender.PersistMCPConfig(config.ScopeGlobal, name, winner))
+	err = RemoveServer(store, name)
+	require.ErrorIs(t, err, config.ErrMCPTargetExists)
+	var persisted config.MCPConfig
+	require.NoError(t, json.Unmarshal(diskMCP(t)[name], &persisted))
+	require.Equal(t, winner, persisted)
+
+	close(releaseInitializer)
+	require.ErrorIs(t, <-addDone, config.ErrMCPTargetExists)
+}
+
 func TestPendingAddDisableUsesOneWriteAndPreservesConcurrentWriter(t *testing.T) {
 	store := isolatedMCPStore(t)
 	owner, err := Acquire()
