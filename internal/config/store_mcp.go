@@ -122,6 +122,28 @@ func (s *ConfigStore) PersistMCPDisabledOverrideResult(scope Scope, name string,
 	return s.mutateMCP("disable", scope, name, name, MCPConfig{}, &disabled)
 }
 
+// PersistMCPDisabledOverrideExact changes only the selected scope. It may
+// update a shadowed literal entry and may create a workspace overlay for an
+// external server, but it never redirects the write to another scope.
+func (s *ConfigStore) PersistMCPDisabledOverrideExact(scope Scope, name string, disabled bool) error {
+	_, err := s.PersistMCPDisabledOverrideExactResult(scope, name, disabled)
+	return err
+}
+
+func (s *ConfigStore) PersistMCPDisabledOverrideExactResult(scope Scope, name string, disabled bool) (MCPMutationResult, error) {
+	return s.mutateMCPExact("disable", scope, name, name, MCPConfig{}, &disabled)
+}
+
+// PersistMCPDisabledOverrideAtScope changes only the selected scope.
+func (s *ConfigStore) PersistMCPDisabledOverrideAtScope(scope Scope, name string, disabled bool) error {
+	return s.PersistMCPDisabledOverrideExact(scope, name, disabled)
+}
+
+// PersistMCPDisabledOverrideInScope changes only the selected scope.
+func (s *ConfigStore) PersistMCPDisabledOverrideInScope(scope Scope, name string, disabled bool) error {
+	return s.PersistMCPDisabledOverrideExact(scope, name, disabled)
+}
+
 func (s *ConfigStore) PersistReplaceMCP(oldName, newName string, value MCPConfig) error {
 	_, err := s.PersistReplaceMCPResult(ScopeGlobal, oldName, newName, value)
 	return err

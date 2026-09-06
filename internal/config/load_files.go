@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 
+	"github.com/PHPCraftdream/rush/internal/fsext"
 	"github.com/qjebbs/go-jsons"
 )
 
@@ -40,21 +41,23 @@ func lookupConfigCandidates(cwd string) []string {
 	if cwd == "" {
 		return paths
 	}
-	abs, err := filepath.Abs(cwd)
+	abs := canonicalConfigPath(cwd)
+	boundary := canonicalConfigPath(projectBoundary(abs))
+	owner, err := fsext.Owner(abs)
 	if err != nil {
-		abs = filepath.Clean(cwd)
-	}
-	boundary := projectBoundary(cwd)
-	boundary, err = filepath.Abs(boundary)
-	if err != nil {
-		boundary = filepath.Clean(boundary)
+		return paths
 	}
 	var projectPaths []string
 	for dir := abs; ; dir = filepath.Dir(dir) {
-		projectPaths = append(projectPaths,
-			filepath.Join(dir, appName+".json"),
-			filepath.Join(dir, "."+appName+".json"),
-		)
+		dirOwner, err := fsext.Owner(dir)
+		if err != nil || !configOwnersMatch(owner, dirOwner) {
+			break
+		}
+		for _, name := range []string{appName + ".json", "." + appName + ".json"} {
+			if candidate := eligibleConfigCandidate(filepath.Join(dir, name), owner); candidate != "" {
+				projectPaths = append(projectPaths, candidate)
+			}
+		}
 		if sameDir(dir, boundary) || filepath.Dir(dir) == dir {
 			break
 		}
@@ -65,6 +68,42 @@ func lookupConfigCandidates(cwd string) []string {
 	slices.Reverse(projectPaths)
 	paths = append(paths, projectPaths...)
 	return paths
+}
+
+// canonicalConfigPath resolves the starting directory before both the git
+// boundary probe and the upward walk. A symlinked working directory can point
+// into a nested repository; walking its lexical parents would otherwise let
+// the search escape that repository and adopt an unrelated parent config.
+func canonicalConfigPath(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return filepath.Clean(path)
+	}
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		return resolved
+	}
+	return filepath.Clean(abs)
+}
+
+func configOwnersMatch(expected, actual int) bool {
+	return expected == -1 || actual == expected
+}
+
+// eligibleConfigCandidate retains absent candidates for negative staleness
+// tracking, while rejecting existing foreign-owned files and directories.
+func eligibleConfigCandidate(path string, owner int) string {
+	info, err := os.Stat(path)
+	if os.IsNotExist(err) {
+		return path
+	}
+	if err != nil || info.IsDir() {
+		return ""
+	}
+	candidateOwner, err := fsext.Owner(path)
+	if err != nil || !configOwnersMatch(owner, candidateOwner) {
+		return ""
+	}
+	return path
 }
 
 // pathAlreadyLoaded reports whether path (typically the computed workspace
@@ -118,6 +157,11 @@ func loadConfigCandidateStable(configPaths []string) (*Config, []string, map[str
 	for _, document := range documents {
 		if document.present && len(document.data) > 0 && !json.Valid(document.data) {
 			return nil, nil, nil, nil, fmt.Errorf("invalid JSON in config file %s", document.path)
+		}
+		if document.present {
+			if err := validateMCPDisabledOverlays(document.data); err != nil {
+				return nil, nil, nil, nil, fmt.Errorf("invalid MCP configuration in config file %s: %w", document.path, err)
+			}
 		}
 	}
 	configs, loaded, fingerprints := configDocumentBytes(documents)
@@ -189,7 +233,11 @@ func loadFromBytes(configs [][]byte) (*Config, error) {
 		return &Config{}, nil
 	}
 
-	configs = sanitizeMCPDisabledOverlays(configs)
+	var err error
+	configs, err = sanitizeMCPDisabledOverlays(configs)
+	if err != nil {
+		return nil, err
+	}
 	data, err := jsons.Merge(configs)
 	if err != nil {
 		return nil, err
@@ -206,13 +254,16 @@ func loadFromBytes(configs [][]byte) (*Config, error) {
 // before the generic deep merge runs. A disabled-only entry is an overlay for
 // an external .mcp.json server; treating it as an ordinary MCP definition
 // would incorrectly toggle a complete definition from another Rush scope.
-func sanitizeMCPDisabledOverlays(configs [][]byte) [][]byte {
+func sanitizeMCPDisabledOverlays(configs [][]byte) ([][]byte, error) {
 	cleaned := make([][]byte, 0, len(configs))
 	for _, data := range configs {
 		var root map[string]json.RawMessage
 		if json.Unmarshal(data, &root) != nil || root == nil {
 			cleaned = append(cleaned, data)
 			continue
+		}
+		if err := validateMCPDisabledOverlays(data); err != nil {
+			return nil, err
 		}
 		var mcp map[string]json.RawMessage
 		if raw, ok := root["mcp"]; ok && json.Unmarshal(raw, &mcp) == nil && mcp != nil {
@@ -234,7 +285,30 @@ func sanitizeMCPDisabledOverlays(configs [][]byte) [][]byte {
 		}
 		cleaned = append(cleaned, encoded)
 	}
-	return cleaned
+	return cleaned, nil
+}
+
+func validateMCPDisabledOverlays(data []byte) error {
+	var root struct {
+		MCP map[string]json.RawMessage `json:"mcp"`
+	}
+	if err := json.Unmarshal(data, &root); err != nil {
+		return nil
+	}
+	for name, rawEntry := range root.MCP {
+		var entry map[string]json.RawMessage
+		if json.Unmarshal(rawEntry, &entry) != nil || !isMCPDisabledOnlyEntry(entry, true) {
+			continue
+		}
+		var disabled any
+		if err := json.Unmarshal(entry["disabled"], &disabled); err != nil {
+			return fmt.Errorf("invalid MCP disabled override for %q: disabled must be a boolean", name)
+		}
+		if _, ok := disabled.(bool); !ok {
+			return fmt.Errorf("invalid MCP disabled override for %q: disabled must be a boolean", name)
+		}
+	}
+	return nil
 }
 
 // knownModelSlots is the exhaustive set of keys the "models" object in

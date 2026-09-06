@@ -173,6 +173,33 @@ func TestLookupConfigs_BoundedByProject(t *testing.T) {
 	})
 }
 
+func TestLookupConfigCandidatesCanonicalizesSymlinkedNestedRepository(t *testing.T) {
+	outer := t.TempDir()
+	nested := filepath.Join(outer, "nested")
+	subdir := filepath.Join(nested, "packages", "app")
+	link := filepath.Join(outer, "linked-nested")
+	require.NoError(t, os.MkdirAll(subdir, 0o755))
+	if err := os.Symlink(nested, link); err != nil {
+		t.Skipf("directory symlinks unavailable: %v", err)
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(outer, "rush.json"), []byte(`{"options":{"debug":true}}`), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(nested, "rush.json"), []byte(`{"options":{"debug":false}}`), 0o600))
+
+	canonicalSubdir := canonicalConfigPath(subdir)
+	canonicalNested := canonicalConfigPath(nested)
+	lexicalSubdir := filepath.Join(link, "packages", "app")
+	worktreeRootCache.Store(canonicalSubdir, canonicalNested)
+	worktreeRootCache.Store(filepath.Clean(lexicalSubdir), canonicalNested)
+	t.Cleanup(func() {
+		worktreeRootCache.Delete(canonicalSubdir)
+		worktreeRootCache.Delete(filepath.Clean(lexicalSubdir))
+	})
+
+	paths := lookupConfigCandidates(lexicalSubdir)
+	require.Contains(t, paths, filepath.Join(canonicalNested, "rush.json"))
+	require.NotContains(t, paths, filepath.Join(outer, "rush.json"))
+}
+
 func TestProjectSkillsDir_MonorepoGitRoot(t *testing.T) {
 	t.Parallel()
 

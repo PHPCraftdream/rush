@@ -173,6 +173,16 @@ func (s *ConfigStore) mutateMCPWithMode(operation string, scope Scope, oldName, 
 				if !literalExists {
 					return fmt.Errorf("%w: %q", ErrMCPNotFound, oldName)
 				}
+			case "disable":
+				if literalExists {
+					break
+				}
+				if !oldOK {
+					return fmt.Errorf("%w: %q", ErrMCPNotFound, oldName)
+				}
+				if oldOrigin.Kind != MCPOriginExternal || scope != ScopeWorkspace {
+					return validateMCPMutation(operation, scope, oldName, newName, oldOK, oldOrigin, before.configs)
+				}
 			}
 		}
 		if err := s.prepareMCPFileMutation(files, path, operation, oldName, newName, value, disabled); err != nil {
@@ -399,6 +409,9 @@ func (s *ConfigStore) evaluateMCPFiles(files *mcpLockedFiles) (mcpEvaluation, er
 				if !json.Valid(data) {
 					return mcpEvaluation{}, fmt.Errorf("invalid JSON in config file %s", path)
 				}
+				if err := validateMCPDisabledOverlays(data); err != nil {
+					return mcpEvaluation{}, fmt.Errorf("invalid MCP configuration in config file %s: %w", path, err)
+				}
 				input = append(input, data)
 				entryOrigins(origins, path, s.workspacePathValue(), s.globalDataPath, s.systemConfigPathValue(), data)
 			}
@@ -410,6 +423,14 @@ func (s *ConfigStore) evaluateMCPFiles(files *mcpLockedFiles) (mcpEvaluation, er
 	}
 	if cfg.MCP == nil {
 		cfg.MCP = make(MCPs)
+	}
+	// Keep Rush-defined names separate from the effective origins map. The
+	// latter is populated with external origins below, so using it as the
+	// precedence set would make the global external document shadow the
+	// higher-priority project external document.
+	rushDefined := make(map[string]struct{}, len(origins))
+	for name := range origins {
+		rushDefined[name] = struct{}{}
 	}
 	externalDocuments := make([]stableConfigDocument, 0, len(externalPaths))
 	for _, path := range externalPaths {
@@ -433,7 +454,7 @@ func (s *ConfigStore) evaluateMCPFiles(files *mcpLockedFiles) (mcpEvaluation, er
 			return mcpEvaluation{}, err
 		}
 		for name, ext := range external {
-			if _, rushDefined := origins[name]; rushDefined {
+			if _, defined := rushDefined[name]; defined {
 				continue
 			}
 			ext.Disabled = externalOverlayValue(rushDocuments, name, ext.Disabled)

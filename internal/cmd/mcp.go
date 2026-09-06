@@ -191,9 +191,8 @@ rush mcp show my-server --json
 var mcpEnableCmd = &cobra.Command{
 	Use:   "enable <id>",
 	Short: "Enable an MCP server",
-	Long: `Set mcp.<id>.disabled = false in the chosen scope. Warns if the
-server is already enabled.`,
-	Args: cobra.ExactArgs(1),
+	Long:  `Set mcp.<id>.disabled = false in the chosen scope.`,
+	Args:  cobra.ExactArgs(1),
 	Example: `
 rush mcp enable my-server
 rush mcp enable my-server --global
@@ -210,17 +209,12 @@ rush mcp enable my-server --global
 		defer a.Shutdown()
 
 		id := args[0]
-		m, ok := a.Config().MCP[id]
+		_, ok := a.Config().MCP[id]
 		if !ok {
 			return fmt.Errorf("MCP server %q not found, see `rush mcp list`", id)
 		}
 
-		if !m.Disabled {
-			fmt.Fprintf(os.Stderr, "MCP server %q is already enabled\n", id)
-			return nil
-		}
-
-		if err := a.Store().PersistMCPDisabledOverride(scope, id, false); err != nil {
+		if err := a.Store().PersistMCPDisabledOverrideExact(scope, id, false); err != nil {
 			return fmt.Errorf("failed to enable MCP server: %w", err)
 		}
 
@@ -232,9 +226,8 @@ rush mcp enable my-server --global
 var mcpDisableCmd = &cobra.Command{
 	Use:   "disable <id>",
 	Short: "Disable an MCP server",
-	Long: `Set mcp.<id>.disabled = true in the chosen scope. Warns if the
-server is already disabled.`,
-	Args: cobra.ExactArgs(1),
+	Long:  `Set mcp.<id>.disabled = true in the chosen scope.`,
+	Args:  cobra.ExactArgs(1),
 	Example: `
 rush mcp disable my-server
 rush mcp disable my-server --local
@@ -251,17 +244,12 @@ rush mcp disable my-server --local
 		defer a.Shutdown()
 
 		id := args[0]
-		m, ok := a.Config().MCP[id]
+		_, ok := a.Config().MCP[id]
 		if !ok {
 			return fmt.Errorf("MCP server %q not found, see `rush mcp list`", id)
 		}
 
-		if m.Disabled {
-			fmt.Fprintf(os.Stderr, "MCP server %q is already disabled\n", id)
-			return nil
-		}
-
-		if err := a.Store().PersistMCPDisabledOverride(scope, id, true); err != nil {
+		if err := a.Store().PersistMCPDisabledOverrideExact(scope, id, true); err != nil {
 			return fmt.Errorf("failed to disable MCP server: %w", err)
 		}
 

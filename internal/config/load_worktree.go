@@ -77,14 +77,11 @@ func worktreeRoot(dir string) string {
 // fallback keeps Rush from silently adopting state files placed above
 // the current project.
 func projectBoundary(dir string) string {
+	dir = canonicalConfigPath(dir)
 	if root := worktreeRoot(dir); root != "" {
-		return root
+		return canonicalConfigPath(root)
 	}
-	abs, err := filepath.Abs(dir)
-	if err != nil {
-		return dir
-	}
-	return abs
+	return dir
 }
 
 // sameDir reports whether a and b refer to the same directory, accounting

@@ -325,3 +325,43 @@ func TestConfigStoreExternalMCPDisabledOverrideUsesLiteralName(t *testing.T) {
 	require.True(t, ok)
 	require.False(t, m.Disabled)
 }
+
+func TestConfigStoreExactMCPDisabledOverrideMutatesShadowedGlobal(t *testing.T) {
+	store, root := isolatedMCPConfigStore(t)
+	name := "shadowed-disabled"
+	workspacePath := filepath.Join(root, "rush.json")
+	writeMCPDefinition(t, workspacePath, name)
+	require.NoError(t, store.ReloadFromDisk(context.Background()))
+	require.NoError(t, store.PersistMCPConfigExact(ScopeGlobal, name, MCPConfig{
+		Type: MCPHttp,
+		URL:  "http://global.example",
+	}))
+
+	// The workspace definition remains effective, but the exact operation must
+	// mutate the literal global entry instead of rejecting the shadowed name.
+	require.NoError(t, store.PersistMCPDisabledOverrideExact(ScopeGlobal, name, true))
+	globalData, err := os.ReadFile(GlobalConfigData())
+	require.NoError(t, err)
+	entry, ok := mcpEntryFromJSON(globalData, name)
+	require.True(t, ok)
+	var disabled bool
+	require.NoError(t, json.Unmarshal(entry["disabled"], &disabled))
+	require.True(t, disabled)
+	effective, ok := store.MCPConfig(name)
+	require.True(t, ok)
+	require.False(t, effective.Disabled)
+
+	require.NoError(t, store.PersistMCPDisabledOverrideExact(ScopeGlobal, name, false))
+	globalData, err = os.ReadFile(GlobalConfigData())
+	require.NoError(t, err)
+	entry, ok = mcpEntryFromJSON(globalData, name)
+	require.True(t, ok)
+	require.NoError(t, json.Unmarshal(entry["disabled"], &disabled))
+	require.False(t, disabled)
+}
+
+func TestLoadFromBytesRejectsWrongTypedMCPDisabledOverlay(t *testing.T) {
+	_, err := loadFromBytes([][]byte{[]byte(`{"mcp":{"external":{"disabled":"true"}}}`)})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), `invalid MCP disabled override for "external"`)
+}
