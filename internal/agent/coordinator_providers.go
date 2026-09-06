@@ -742,7 +742,7 @@ func (c *coordinator) checkLivePeakHours(providerID string) error {
 	}
 	if staleness := c.cfg.ConfigStaleness(); staleness.Dirty {
 		reloadCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		if err := c.cfg.ReloadFromDisk(reloadCtx); err != nil {
+		if err := mcp.ReloadAndReconcileMCPConfig(reloadCtx, c.cfg); err != nil {
 			slog.Warn("Failed to reload config before peak-hours check", "provider", providerID, "err", err)
 		}
 		cancel()
