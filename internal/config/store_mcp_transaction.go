@@ -286,6 +286,7 @@ func (s *ConfigStore) mutatePendingRemoveMCP(scope Scope, name string) (MCPMutat
 		return writeErr
 	})
 	if err == nil || mcpCommitWasReconciled(err) {
+		result.Generation = s.loadSnapshot().generation + 1
 		s.publishMCPMutationLocked(result)
 	}
 	s.publishMu.Unlock()
@@ -369,6 +370,7 @@ func (s *ConfigStore) mutateMCPWithMode(operation string, scope Scope, oldName, 
 		return writeErr
 	})
 	if err == nil || mcpCommitWasReconciled(err) {
+		result.Generation = s.loadSnapshot().generation + 1
 		s.publishMCPMutationLocked(result)
 	}
 	s.publishMu.Unlock()

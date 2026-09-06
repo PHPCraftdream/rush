@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"reflect"
 	"slices"
 )
 
@@ -15,6 +16,7 @@ var (
 	ErrMCPTargetExists     = errors.New("MCP server target already exists")
 	ErrMCPStale            = errors.New("MCP server configuration changed while preparing mutation")
 	ErrMCPCommitUncertain  = errors.New("MCP config commit outcome is uncertain")
+	ErrMCPMutationStale    = errors.New("MCP mutation result is stale")
 )
 
 type mcpCommitUncertainError struct {
@@ -38,9 +40,12 @@ func mcpCommitWasReconciled(err error) bool {
 // durable MCP mutation. NewConfig/NewOrigin may describe a lower-priority
 // definition revealed by removing or replacing the old one.
 type MCPMutationResult struct {
-	Operation             string
-	OldName               string
-	NewName               string
+	Operation string
+	OldName   string
+	NewName   string
+	// Generation identifies the store snapshot published for this mutation.
+	// Lifecycle callers must not use a result after a newer snapshot exists.
+	Generation            uint64
 	OldExists             bool
 	NewExists             bool
 	OldConfig             MCPConfig
@@ -51,6 +56,37 @@ type MCPMutationResult struct {
 	FallbackConfig        MCPConfig
 	FallbackOrigin        MCPOrigin
 	committedFingerprints map[string]reloadFileFingerprint
+}
+
+// WithCurrentMCPMutation runs fn while the result's store generation and
+// effective MCP identities are pinned against concurrent store publications.
+func (s *ConfigStore) WithCurrentMCPMutation(result MCPMutationResult, fn func() error) error {
+	s.publishMu.Lock()
+	defer s.publishMu.Unlock()
+	if !s.mcpMutationResultCurrentLocked(result) {
+		return ErrMCPMutationStale
+	}
+	return fn()
+}
+
+func (s *ConfigStore) mcpMutationResultCurrentLocked(result MCPMutationResult) bool {
+	if result.Generation != 0 && s.loadSnapshot().generation != result.Generation {
+		return false
+	}
+	if s.ConfigStaleness().Dirty {
+		return false
+	}
+	current, exists := s.MCPConfig(result.NewName)
+	if exists != result.NewExists || exists && !reflect.DeepEqual(current, result.NewConfig) {
+		return false
+	}
+	if result.Operation == "replace" && result.OldName != result.NewName {
+		fallback, fallbackExists := s.MCPConfig(result.OldName)
+		if fallbackExists != result.FallbackExists || fallbackExists && !reflect.DeepEqual(fallback, result.FallbackConfig) {
+			return false
+		}
+	}
+	return true
 }
 
 func committedMCPFingerprints(files *mcpLockedFiles) map[string]reloadFileFingerprint {

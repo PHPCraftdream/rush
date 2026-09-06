@@ -202,9 +202,10 @@ type serverLease struct {
 // is unchanged.
 type serverLeaseHookSet struct {
 	sync.Mutex
-	beforeLockFn  func(*serverLease)
-	afterLockFn   func(*serverLease)
-	afterUnlockFn func(*serverLease)
+	beforeLockFn    func(*serverLease)
+	beforeTryLockFn func(*serverLease)
+	afterLockFn     func(*serverLease)
+	afterUnlockFn   func(*serverLease)
 }
 
 var serverLeaseHooks serverLeaseHookSet
@@ -212,6 +213,15 @@ var serverLeaseHooks serverLeaseHookSet
 func (h *serverLeaseHookSet) callBeforeLock(lease *serverLease) {
 	h.Lock()
 	fn := h.beforeLockFn
+	h.Unlock()
+	if fn != nil {
+		fn(lease)
+	}
+}
+
+func (h *serverLeaseHookSet) callBeforeTryLock(lease *serverLease) {
+	h.Lock()
+	fn := h.beforeTryLockFn
 	h.Unlock()
 	if fn != nil {
 		fn(lease)
@@ -364,6 +374,7 @@ func (l *serverLease) lockContext(ctx context.Context, write bool) bool {
 		return false
 	}
 	for {
+		serverLeaseHooks.callBeforeTryLock(l)
 		acquired := false
 		if write {
 			acquired = l.mu.TryLock()
@@ -1883,18 +1894,49 @@ func (o *Owner) Initialize(ctx context.Context, permissions permission.Service, 
 			continue
 		}
 		if m.Disabled {
+			lease := serverLeaseFor(name)
+			if !lease.lockContext(initCtx, true) {
+				break
+			}
+			current, exists := cfg.MCPConfig(name)
+			if !exists || !reflect.DeepEqual(current, m) {
+				lease.Unlock()
+				continue
+			}
 			o.invalidateServer(name)
 			updateState(name, StateDisabled, nil, nil, Counts{})
+			lease.Unlock()
 			slog.Debug("Skipping disabled MCP", "name", name)
 			continue
 		}
 		if restrictToCLIEnabled && !m.EnabledInCLI {
+			lease := serverLeaseFor(name)
+			if !lease.lockContext(initCtx, true) {
+				break
+			}
+			current, exists := cfg.MCPConfig(name)
+			if !exists || !reflect.DeepEqual(current, m) {
+				lease.Unlock()
+				continue
+			}
+			o.invalidateServer(name)
 			updateState(name, StateDisabled, nil, nil, Counts{})
+			lease.Unlock()
 			slog.Debug("Skipping MCP not enabled for CLI mode (set enabled_in_cli or pass --all-mcp)", "name", name)
 			continue
 		}
 
+		lease := serverLeaseFor(name)
+		if !lease.lockContext(initCtx, true) {
+			break
+		}
+		current, exists := cfg.MCPConfig(name)
+		if !exists || !reflect.DeepEqual(current, m) || o.isUncertain(cfg, name) {
+			lease.Unlock()
+			continue
+		}
 		admission, err := o.admitServer(initCtx, cfg, name, true)
+		lease.Unlock()
 		if err != nil {
 			break
 		}
@@ -2295,6 +2337,10 @@ func disableServerWithResultPersistence(
 	if !ok {
 		unlock()
 		return fmt.Errorf("MCP server %q disappeared while disabling: %w", name, config.ErrMCPNotFound)
+	}
+	if o.isUncertain(cfg, name) {
+		unlock()
+		return ErrMCPConfigUncertain
 	}
 	// Resolve the origin while holding the ordered server lease. A user
 	// workspace definition must stay in the workspace file, while project,
@@ -2775,6 +2821,7 @@ func replaceServerWithResultPersistenceAndPreparation(
 	// stalled.
 	result, err := persist(cfg, scope, oldName, newName, mcpCfg)
 	var commitUncertainty error
+	commitKnown := err == nil
 	if err != nil {
 		outcome, ok := config.CommitOutcomeFromError(err)
 		if ok && commitOutcomeNeedsRuntimeFence(outcome) {
@@ -2796,75 +2843,117 @@ func replaceServerWithResultPersistenceAndPreparation(
 			admission.done()
 			return fmt.Errorf("failed to persist MCP server replacement %q to %q: %w", oldName, newName, err)
 		}
+		commitKnown = true
 		commitUncertainty = err
 	}
-	lifecycleMu.Lock()
-	if !admission.replacementNamesValidLocked() {
+	var (
+		cleanup           replacementCleanup
+		cleanupNeeded     bool
+		canceled          []context.CancelFunc
+		newExists         bool
+		newDisabled       bool
+		pendingEvents     []Event
+		wakeRefresh       bool
+		oldSession        *ClientSession
+		hadOldSession     bool
+		hadOldState       bool
+		newSession        *ClientSession
+		hadNewSession     bool
+		counts            Counts
+		brokerForEvent    *pubsub.Broker[Event]
+		publicationResult error
+	)
+	publicationResult = cfg.WithCurrentMCPMutation(result, func() error {
+		lifecycleMu.Lock()
+		defer lifecycleMu.Unlock()
+		publicationValid := admission.replacementNamesValidLocked() &&
+			owner == o && !o.closing && o.generation == admission.generation &&
+			o.serverEpochs[oldName] == admission.epoch
+		if !publicationValid {
+			if !commitKnown {
+				return ErrOwnerBusy
+			}
+			cleanup = cleanupReplacementRuntimeLocked(o, cfg, oldName, newName)
+			cleanupNeeded = true
+			brokerForEvent = broker
+			return nil
+		}
+		canceled = append(canceled, o.invalidateServerLocked(oldName)...)
+		if newName != oldName {
+			canceled = append(canceled, o.invalidateServerLocked(newName)...)
+		}
+		newExists = result.NewExists
+		newDisabled = !newExists || result.NewConfig.Disabled
+		admission.committed = newExists && !newDisabled
+		admission.committedName = newName
+		admission.committedEpoch = o.serverEpochs[newName]
+		if admission.committed {
+			pendingEvents, wakeRefresh = o.activateRefreshesLocked(&admission)
+		}
+
+		oldSession, hadOldSession = sessions.Get(oldName)
+		_, hadOldState = states.Get(oldName)
+		newSession, hadNewSession = sessions.Get(newName)
+		if oldName != newName {
+			clearAdvertised(oldName)
+			sessions.Del(oldName)
+			states.Del(oldName)
+		}
+		if !newDisabled {
+			toolCount := updateTools(cfg, newName, prepared.tools)
+			updatePrompts(newName, prepared.prompts)
+			allResources.Del(newName)
+			sessions.Set(newName, prepared.session)
+			counts = Counts{Tools: toolCount, Prompts: len(prepared.prompts)}
+			setState(newName, StateConnected, nil, prepared.session, counts)
+		} else {
+			clearAdvertised(newName)
+			sessions.Del(newName)
+			states.Del(newName)
+			if newExists {
+				setState(newName, StateDisabled, nil, nil, Counts{})
+			}
+		}
+		brokerForEvent = broker
+		return nil
+	})
+	if errors.Is(publicationResult, config.ErrMCPMutationStale) {
+		if !commitKnown {
+			unlockServerLeases(locked)
+			_ = prepared.session.Close()
+			admission.done()
+			return ErrOwnerBusy
+		}
+		lifecycleMu.Lock()
+		cleanup = cleanupReplacementRuntimeLocked(o, cfg, oldName, newName)
+		cleanupNeeded = true
+		brokerForEvent = broker
 		lifecycleMu.Unlock()
+	} else if publicationResult != nil {
 		unlockServerLeases(locked)
 		_ = prepared.session.Close()
 		admission.done()
-		return ErrOwnerBusy
+		return publicationResult
 	}
-	if owner != o || o.closing || o.generation != admission.generation ||
-		o.serverEpochs[oldName] != admission.epoch {
-		// Persistence is the transaction's durable linearization point. If
-		// shutdown won after that point, report success but never publish a
-		// session whose owner is already closing; the next owner will load the
-		// committed config from disk.
-		lifecycleMu.Unlock()
+	if cleanupNeeded {
+		if brokerForEvent != nil {
+			for _, event := range cleanup.events {
+				brokerForEvent.Publish(event.kind, event.event)
+			}
+		}
 		unlockServerLeases(locked)
-		_ = prepared.session.Close()
+		for _, cancel := range cleanup.canceled {
+			cancel()
+		}
+		retireMCPClient(oldName, cleanup.detachedOld)
+		retireMCPClient(newName, cleanup.detachedNew)
+		closeMCPClient(newName, prepared.session)
 		admission.done()
 		if commitUncertainty != nil {
 			return fmt.Errorf("failed to persist MCP server replacement %q to %q: %w", oldName, newName, commitUncertainty)
 		}
 		return nil
 	}
-	var canceled []context.CancelFunc
-	canceled = append(canceled, o.invalidateServerLocked(oldName)...)
-	if newName != oldName {
-		canceled = append(canceled, o.invalidateServerLocked(newName)...)
-	}
-	newExists := result.NewExists
-	newDisabled := !newExists || result.NewConfig.Disabled
-	admission.committed = newExists && !newDisabled
-	admission.committedName = newName
-	admission.committedEpoch = o.serverEpochs[newName]
-	var pendingEvents []Event
-	wakeRefresh := false
-	if admission.committed {
-		pendingEvents, wakeRefresh = o.activateRefreshesLocked(&admission)
-	}
-
-	oldSession, hadOldSession := sessions.Get(oldName)
-	_, hadOldState := states.Get(oldName)
-	newSession, hadNewSession := sessions.Get(newName)
-	if oldName != newName {
-		clearAdvertised(oldName)
-		sessions.Del(oldName)
-		states.Del(oldName)
-	}
-	var counts Counts
-	if !newDisabled {
-		toolCount := updateTools(cfg, newName, prepared.tools)
-		updatePrompts(newName, prepared.prompts)
-		// Resources are fetched lazily. A replacement must not expose resources
-		// belonging to the old session under either the reused or renamed key.
-		allResources.Del(newName)
-		sessions.Set(newName, prepared.session)
-		counts = Counts{Tools: toolCount, Prompts: len(prepared.prompts)}
-		setState(newName, StateConnected, nil, prepared.session, counts)
-	} else {
-		clearAdvertised(newName)
-		sessions.Del(newName)
-		states.Del(newName)
-		if newExists {
-			setState(newName, StateDisabled, nil, nil, Counts{})
-		}
-	}
-	brokerForEvent := broker
-	lifecycleMu.Unlock()
 	if wakeRefresh {
 		o.signalRefresh()
 	}
@@ -3299,6 +3388,10 @@ func removeServerWithResultPersistence(
 		retireMCPClient(name, detached)
 	}
 	mcpCfg, exists = cfg.MCPConfig(name)
+	if o.isUncertain(cfg, name) {
+		unlock()
+		return ErrMCPConfigUncertain
+	}
 	if !exists {
 		unlock()
 		return fmt.Errorf("MCP server %q disappeared while removing: %w", name, config.ErrMCPNotFound)
@@ -3492,6 +3585,68 @@ func currentMCPMutationResult(cfg *config.ConfigStore, operation, oldName, newNa
 		}
 	}
 	return result
+}
+
+type replacementCleanup struct {
+	detachedOld *ClientSession
+	detachedNew *ClientSession
+	canceled    []context.CancelFunc
+	events      []replacementEvent
+}
+
+type replacementEvent struct {
+	kind  pubsub.EventType
+	event Event
+}
+
+// cleanupReplacementRuntimeLocked leaves both names inactive after a durable
+// replacement that can no longer publish its prepared candidate.
+func cleanupReplacementRuntimeLocked(o *Owner, cfg *config.ConfigStore, oldName, newName string) replacementCleanup {
+	cleanup := replacementCleanup{}
+	configured, _ := cfg.Snapshot()
+	seen := make(map[string]struct{}, 2)
+	for _, name := range []string{oldName, newName} {
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		cleanup.canceled = append(cleanup.canceled, o.invalidateServerLocked(name)...)
+		var hadRuntime bool
+		if name == oldName {
+			cleanup.detachedOld = detachSessionLocked(name)
+		} else {
+			cleanup.detachedNew = detachSessionLocked(name)
+		}
+		_, hadState := states.Get(name)
+		if name == oldName && cleanup.detachedOld != nil {
+			hadRuntime = true
+		}
+		if name == newName && cleanup.detachedNew != nil {
+			hadRuntime = true
+		}
+		clearAdvertised(name)
+		_, exists := configured.MCP[name]
+		if exists {
+			setState(name, StateDisabled, nil, nil, Counts{})
+			if name == newName || hadRuntime || hadState {
+				cleanup.events = append(cleanup.events, replacementEvent{
+					kind:  pubsub.UpdatedEvent,
+					event: Event{Type: EventStateChanged, Name: name, State: StateDisabled},
+				})
+			}
+		} else {
+			states.Del(name)
+			emitDeleted := (name == newName && oldName != newName) ||
+				(name != newName && (hadRuntime || hadState))
+			if emitDeleted {
+				cleanup.events = append(cleanup.events, replacementEvent{
+					kind:  pubsub.DeletedEvent,
+					event: Event{Type: EventStateChanged, Name: name, State: StateDisabled},
+				})
+			}
+		}
+	}
+	return cleanup
 }
 
 func commitOutcomeNeedsRuntimeFence(outcome *config.CommitOutcome) bool {
