@@ -76,6 +76,36 @@ func TestConfigStalenessDetectsSymlinkRetargetABA(t *testing.T) {
 	require.Contains(t, result.Changed, normalizeDiscoveryPath(alias))
 }
 
+func TestOwnedConfigReadChecksOwnerOnOpenedFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rush.json")
+	require.NoError(t, os.WriteFile(path, []byte(`{"options":{"debug":true}}`), 0o600))
+	owner, err := fsext.Owner(filepath.Dir(path))
+	require.NoError(t, err)
+	require.Equal(t, path, eligibleConfigCandidate(path, owner))
+	foreign := 0
+	if owner == foreign {
+		foreign = 1
+	}
+	if err := os.Chown(path, foreign, -1); err != nil {
+		t.Skipf("changing test-file ownership unavailable: %v", err)
+	}
+
+	_, _, err = readStableConfigFileOwned(path, owner, true)
+	require.ErrorIs(t, err, errConfigOwnerMismatch)
+}
+
+func TestWorkspaceOwnerPolicyAppliesOutsideCheckout(t *testing.T) {
+	isolateAllGlobalConfigPaths(t)
+	checkout := t.TempDir()
+	dataDir := t.TempDir()
+	workspacePath := filepath.Join(dataDir, "rush.json")
+	require.NoError(t, os.WriteFile(workspacePath, []byte(`{"mcp":{"foreign":{"type":"http"}}}`), 0o600))
+	makeForeignOwned(t, workspacePath)
+
+	_, err := Load(checkout, dataDir, false)
+	require.ErrorIs(t, err, errConfigOwnerMismatch)
+}
+
 func makeForeignOwned(t *testing.T, path string) {
 	t.Helper()
 	owner, err := fsext.Owner(path)

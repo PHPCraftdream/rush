@@ -66,7 +66,8 @@ func loadOnce(workingDir, dataDir string, debug bool) (*ConfigStore, error) {
 	cfg.setDefaults(workingDir, dataDir)
 
 	globalDataPath := normalizeReloadPath(GlobalConfigData())
-	workspacePath := normalizeReloadPath(filepath.Join(cfg.Options.DataDirectory, fmt.Sprintf("%s.json", appName)))
+	workspaceDiscoveryPath := normalizeDiscoveryPath(filepath.Join(cfg.Options.DataDirectory, fmt.Sprintf("%s.json", appName)))
+	workspacePath := normalizeReloadPath(workspaceDiscoveryPath)
 
 	if debug {
 		cfg.Options.Debug = true
@@ -83,20 +84,28 @@ func loadOnce(workingDir, dataDir string, debug bool) (*ConfigStore, error) {
 		globalDataPath: globalDataPath,
 	}
 	// Load workspace config last so it has highest priority.
-	if !pathAlreadyLoaded(loadedPaths, workspacePath) && eligibleWorkspaceConfig(workspacePath, workingDir) != "" {
-		wsData, fingerprint, readErr := readStableConfigFile(workspacePath)
+	if !pathAlreadyLoaded(loadedPaths, workspacePath) && workingDir != "" {
+		expectedOwner, enforceOwner, ownerErr := configOwnerForWorkingDir(workingDir)
+		if ownerErr != nil {
+			return nil, fmt.Errorf("failed to determine workspace config owner: %w", ownerErr)
+		}
+		wsData, fingerprint, readErr := readStableConfigFileOwned(workspaceDiscoveryPath, expectedOwner, enforceOwner)
 		if readErr == nil {
-			fingerprints[normalizeReloadPath(workspacePath)] = fingerprint
+			fingerprints[workspaceDiscoveryPath] = fingerprint
 			configDocuments = append(configDocuments, stableConfigDocument{
-				path: normalizeReloadPath(workspacePath), data: wsData,
+				path: workspaceDiscoveryPath, data: wsData,
 				fingerprint: fingerprint, present: fingerprint.exists,
+				aliases: []stableConfigAlias{{path: workspaceDiscoveryPath, fingerprint: fingerprint}},
 			})
 		} else if !os.IsNotExist(readErr) {
 			return nil, fmt.Errorf("failed to read workspace config %s: %w", workspacePath, readErr)
 		}
 		if readErr != nil {
-			fingerprints[normalizeDiscoveryPath(workspacePath)] = fingerprint
-			configDocuments = append(configDocuments, stableConfigDocument{path: normalizeReloadPath(workspacePath)})
+			fingerprints[workspaceDiscoveryPath] = fingerprint
+			configDocuments = append(configDocuments, stableConfigDocument{
+				path:    workspaceDiscoveryPath,
+				aliases: []stableConfigAlias{{path: workspaceDiscoveryPath, fingerprint: fingerprint}},
+			})
 		}
 		if readErr == nil && len(wsData) > 0 {
 			if !json.Valid(wsData) {

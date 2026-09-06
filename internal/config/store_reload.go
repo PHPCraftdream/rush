@@ -345,21 +345,30 @@ func (s *ConfigStore) buildAndPublishReload(ctx context.Context) error {
 	}
 	cfg.setDefaults(s.workingDir, dataDir)
 
-	workspacePath := normalizeReloadPath(filepath.Join(cfg.Options.DataDirectory, fmt.Sprintf("%s.json", appName)))
-	if !pathAlreadyLoaded(loadedPaths, workspacePath) && eligibleWorkspaceConfig(workspacePath, s.workingDir) != "" {
-		wsData, fingerprint, readErr := readStableConfigFile(workspacePath)
+	workspaceDiscoveryPath := normalizeDiscoveryPath(filepath.Join(cfg.Options.DataDirectory, fmt.Sprintf("%s.json", appName)))
+	workspacePath := normalizeReloadPath(workspaceDiscoveryPath)
+	if !pathAlreadyLoaded(loadedPaths, workspacePath) && s.workingDir != "" {
+		expectedOwner, enforceOwner, ownerErr := configOwnerForWorkingDir(s.workingDir)
+		if ownerErr != nil {
+			return fmt.Errorf("failed to determine workspace config owner: %w", ownerErr)
+		}
+		wsData, fingerprint, readErr := readStableConfigFileOwned(workspaceDiscoveryPath, expectedOwner, enforceOwner)
 		if readErr == nil {
-			fingerprints[normalizeReloadPath(workspacePath)] = fingerprint
+			fingerprints[workspaceDiscoveryPath] = fingerprint
 			configDocuments = append(configDocuments, stableConfigDocument{
-				path: normalizeReloadPath(workspacePath), data: wsData,
+				path: workspaceDiscoveryPath, data: wsData,
 				fingerprint: fingerprint, present: fingerprint.exists,
+				aliases: []stableConfigAlias{{path: workspaceDiscoveryPath, fingerprint: fingerprint}},
 			})
 		} else if !os.IsNotExist(readErr) {
 			return fmt.Errorf("failed to read workspace config for reload: %w", readErr)
 		}
 		if readErr != nil {
-			fingerprints[normalizeDiscoveryPath(workspacePath)] = fingerprint
-			configDocuments = append(configDocuments, stableConfigDocument{path: normalizeReloadPath(workspacePath)})
+			fingerprints[workspaceDiscoveryPath] = fingerprint
+			configDocuments = append(configDocuments, stableConfigDocument{
+				path:    workspaceDiscoveryPath,
+				aliases: []stableConfigAlias{{path: workspaceDiscoveryPath, fingerprint: fingerprint}},
+			})
 		}
 		if readErr == nil && len(wsData) > 0 {
 			if !json.Valid(wsData) {
