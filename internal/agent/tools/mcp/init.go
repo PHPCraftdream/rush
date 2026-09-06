@@ -542,6 +542,10 @@ func serverLeaseFor(name string) *serverLease {
 // owner; library-mode Apps do not acquire this owner.
 var ErrOwnerBusy = errors.New("mcp: application owner is already active")
 
+// ErrMCPConfigStoreBusy reports that an active owner is already bound to a
+// different config store.
+var ErrMCPConfigStoreBusy = errors.New("mcp: application owner is bound to a different config store")
+
 // ErrMCPConfigUncertain reports that a committed config mutation has not yet
 // been reconciled with a successful disk reload.
 var ErrMCPConfigUncertain = errors.New("mcp: config mutation outcome is uncertain")
@@ -550,22 +554,17 @@ var ErrMCPConfigUncertain = errors.New("mcp: config mutation outcome is uncertai
 // package predates multiple App instances and its tool/state maps remain
 // process-wide, so ownership is explicit rather than silently shared.
 type Owner struct {
-	implicit        bool
-	closing         bool
-	generation      uint64
-	lifecycleCtx    context.Context
-	lifecycleCancel context.CancelFunc
-	initCount       int
-	initWG          sync.WaitGroup
-	initStarted     bool
-	fullInitCount   int
-	initDone        chan struct{}
-	serverEpochs    map[string]uint64
-	// uncertainServers is a fail-closed fence for a committed config mutation
-	// whose disk result could not be reconciled. It is scoped to this owner so
-	// a fresh application owner starts only from a fresh config load.
-	uncertainServers  map[string]uint64
-	nextUncertainty   uint64
+	implicit          bool
+	closing           bool
+	generation        uint64
+	lifecycleCtx      context.Context
+	lifecycleCancel   context.CancelFunc
+	initCount         int
+	initWG            sync.WaitGroup
+	initStarted       bool
+	fullInitCount     int
+	initDone          chan struct{}
+	serverEpochs      map[string]uint64
 	serverCancels     map[string]map[uint64]serverCancel
 	pendingGlobalAdds map[string]*addTransaction
 	nextCancelToken   uint64
@@ -752,7 +751,7 @@ func (a *serverAdmission) notificationsValidLocked() bool {
 // removed the old name while runtime publication is still waiting on the
 // lifecycle lock. lifecycleMu must be held by the caller.
 func (a *serverAdmission) candidateValidLocked() bool {
-	_, uncertain := a.owner.uncertainServers[a.name]
+	_, uncertain := a.cfg.MCPUncertaintyVersion(a.name)
 	return (a.promoted || a.ctx == nil || a.ctx.Err() == nil) && owner == a.owner &&
 		!a.owner.closing && a.owner.generation == a.generation &&
 		a.owner.serverEpochs[a.name] == a.epoch && !uncertain
@@ -777,7 +776,7 @@ func (a *serverAdmission) validLocked() bool {
 	if !valid {
 		return false
 	}
-	if _, uncertain := a.owner.uncertainServers[admissionName]; uncertain {
+	if _, uncertain := a.cfg.MCPUncertaintyVersion(admissionName); uncertain {
 		return false
 	}
 	mcpConfig, exists := a.cfg.MCPConfig(admissionName)
@@ -808,7 +807,10 @@ func (o *Owner) admitServerWithConfig(ctx context.Context, cfg *config.ConfigSto
 	if !o.isCurrentLocked() {
 		return serverAdmission{}, ErrOwnerBusy
 	}
-	if _, uncertain := o.uncertainServers[name]; uncertain {
+	if o.config != nil && o.config != cfg {
+		return serverAdmission{}, ErrMCPConfigStoreBusy
+	}
+	if _, uncertain := cfg.MCPUncertaintyVersion(name); uncertain {
 		return serverAdmission{}, ErrMCPConfigUncertain
 	}
 	if bump {
@@ -864,7 +866,10 @@ func (o *Owner) admitReplacementCandidate(ctx context.Context, cfg *config.Confi
 	if !o.isCurrentLocked() {
 		return serverAdmission{}, ErrOwnerBusy
 	}
-	if _, uncertain := o.uncertainServers[name]; uncertain {
+	if o.config != nil && o.config != cfg {
+		return serverAdmission{}, ErrMCPConfigStoreBusy
+	}
+	if _, uncertain := cfg.MCPUncertaintyVersion(name); uncertain {
 		return serverAdmission{}, ErrMCPConfigUncertain
 	}
 	operationCtx, cancel := context.WithCancel(ctx)
@@ -970,7 +975,10 @@ func (o *Owner) snapshotServerAdmission(_ context.Context, cfg *config.ConfigSto
 	if !o.isCurrentLocked() {
 		return serverAdmission{}, ErrOwnerBusy
 	}
-	if _, uncertain := o.uncertainServers[name]; uncertain {
+	if o.config != nil && o.config != cfg {
+		return serverAdmission{}, ErrMCPConfigStoreBusy
+	}
+	if _, uncertain := cfg.MCPUncertaintyVersion(name); uncertain {
 		return serverAdmission{}, ErrMCPConfigUncertain
 	}
 	operationCtx, cancel := context.WithCancel(o.lifecycleCtx)
@@ -1075,7 +1083,6 @@ func acquire(implicit bool) (*Owner, error) {
 		closeDone:         make(chan struct{}),
 		initDone:          closedChannel(),
 		serverEpochs:      make(map[string]uint64),
-		uncertainServers:  make(map[string]uint64),
 		serverCancels:     make(map[string]map[uint64]serverCancel),
 		pendingGlobalAdds: make(map[string]*addTransaction),
 		refreshCh:         make(chan struct{}, 1),
@@ -1295,13 +1302,13 @@ func (o *Owner) isCurrentLocked() bool {
 	return owner == o && !o.closing
 }
 
-func (o *Owner) isUncertain(name string) bool {
+func (o *Owner) isUncertain(cfg *config.ConfigStore, name string) bool {
 	lifecycleMu.Lock()
 	defer lifecycleMu.Unlock()
-	if !o.isCurrentLocked() {
+	if !o.isCurrentLocked() || cfg == nil {
 		return false
 	}
-	_, uncertain := o.uncertainServers[name]
+	_, uncertain := cfg.MCPUncertaintyVersion(name)
 	return uncertain
 }
 
@@ -1314,21 +1321,10 @@ type uncertaintyReloadToken struct {
 func (o *Owner) captureUncertainty(cfg *config.ConfigStore, names ...string) (*uncertaintyReloadToken, bool) {
 	lifecycleMu.Lock()
 	defer lifecycleMu.Unlock()
-	if !o.isCurrentLocked() || o.config != cfg {
+	if !o.isCurrentLocked() || cfg == nil {
 		return nil, false
 	}
-	versions := make(map[string]uint64)
-	if len(names) == 0 {
-		for name, version := range o.uncertainServers {
-			versions[name] = version
-		}
-	} else {
-		for _, name := range names {
-			if version, uncertain := o.uncertainServers[name]; uncertain {
-				versions[name] = version
-			}
-		}
-	}
+	versions := cfg.MCPUncertaintyVersions(names...)
 	if len(versions) == 0 {
 		return nil, false
 	}
@@ -1351,18 +1347,8 @@ func reloadWithUncertaintyToken(ctx context.Context, token *uncertaintyReloadTok
 	if mcpReloadAfterSuccessHook != nil {
 		mcpReloadAfterSuccessHook()
 	}
-	lifecycleMu.Lock()
-	defer lifecycleMu.Unlock()
-	if owner != token.owner || token.owner.closing || token.owner.config != token.cfg {
-		return ErrMCPConfigUncertain
-	}
-	for name, version := range token.versions {
-		if current, ok := token.owner.uncertainServers[name]; ok && current == version {
-			delete(token.owner.uncertainServers, name)
-		}
-	}
 	for name := range token.versions {
-		if _, stillUncertain := token.owner.uncertainServers[name]; stillUncertain {
+		if _, ok := token.cfg.MCPUncertaintyVersion(name); ok {
 			return ErrMCPConfigUncertain
 		}
 	}
@@ -1419,15 +1405,19 @@ func ReloadAndReconcileMCPConfig(ctx context.Context, cfg *config.ConfigStore) e
 	return reloadWithUncertaintyToken(ctx, token)
 }
 
-func (o *Owner) rememberConfig(cfg *config.ConfigStore) {
+func (o *Owner) rememberConfig(cfg *config.ConfigStore) error {
 	if o == nil || cfg == nil {
-		return
+		return nil
 	}
 	lifecycleMu.Lock()
+	defer lifecycleMu.Unlock()
+	if o.config != nil && o.config != cfg {
+		return ErrMCPConfigStoreBusy
+	}
 	if o.isCurrentLocked() {
 		o.config = cfg
 	}
-	lifecycleMu.Unlock()
+	return nil
 }
 
 func (o *Owner) beginInit() bool {
@@ -1789,6 +1779,12 @@ func (o *Owner) Initialize(ctx context.Context, permissions permission.Service, 
 		cancel()
 		return
 	}
+	if o.config != nil && o.config != cfg {
+		lifecycleMu.Unlock()
+		cancel()
+		slog.Warn("Rejected MCP initialization for a different config store")
+		return
+	}
 	o.config = cfg
 	lifecycleMu.Unlock()
 	if err := o.reconcileAllUncertainty(ctx, cfg); err != nil {
@@ -1815,7 +1811,7 @@ func (o *Owner) Initialize(ctx context.Context, permissions permission.Service, 
 		if !o.acceptsSession() {
 			break
 		}
-		if o.isUncertain(name) {
+		if o.isUncertain(cfg, name) {
 			slog.Debug("Skipping MCP with unreconciled config mutation", "name", name)
 			continue
 		}
@@ -1891,7 +1887,9 @@ func InitializeSingle(ctx context.Context, name string, cfg *config.ConfigStore)
 			return err
 		}
 	}
-	o.rememberConfig(cfg)
+	if err := o.rememberConfig(cfg); err != nil {
+		return err
+	}
 	if err := o.reconcileUncertainty(ctx, cfg, name); err != nil {
 		return err
 	}
@@ -1913,7 +1911,7 @@ func InitializeSingle(ctx context.Context, name string, cfg *config.ConfigStore)
 	lifecycleMu.Lock()
 	uncertain := false
 	if o.isCurrentLocked() {
-		_, uncertain = o.uncertainServers[name]
+		_, uncertain = cfg.MCPUncertaintyVersion(name)
 	}
 	lifecycleMu.Unlock()
 	if uncertain {
@@ -2134,7 +2132,9 @@ func DisableSingle(cfg *config.ConfigStore, name string) error {
 	if err != nil {
 		return err
 	}
-	o.rememberConfig(cfg)
+	if err := o.rememberConfig(cfg); err != nil {
+		return err
+	}
 	if err := o.reconcileUncertainty(context.Background(), cfg, name); err != nil {
 		return err
 	}
@@ -2201,7 +2201,9 @@ func disableServerWithResultPersistence(
 	if err != nil {
 		return err
 	}
-	o.rememberConfig(cfg)
+	if err := o.rememberConfig(cfg); err != nil {
+		return err
+	}
 	if err := o.reconcileUncertainty(ctx, cfg, name); err != nil {
 		return err
 	}
@@ -2266,7 +2268,7 @@ func disableServerWithResultPersistence(
 			if transaction != nil {
 				transaction.markUserMutation()
 			}
-			detached = fenceMCPRuntimeLocked(o, name)
+			detached = fenceMCPRuntimeLocked(o, cfg, name)
 			unlock()
 			return fmt.Errorf("failed to persist MCP disabled state for %q: %w", name, err)
 		}
@@ -2315,7 +2317,9 @@ func enableServerWithPersistenceAndInitializer(
 	if err != nil {
 		return err
 	}
-	o.rememberConfig(cfg)
+	if err := o.rememberConfig(cfg); err != nil {
+		return err
+	}
 	if err := o.reconcileUncertainty(ctx, cfg, name); err != nil {
 		return err
 	}
@@ -2336,7 +2340,7 @@ func enableServerWithPersistenceAndInitializer(
 		lease.Unlock()
 		return fmt.Errorf("MCP server %q disappeared while enabling", name)
 	}
-	if o.isUncertain(name) {
+	if o.isUncertain(cfg, name) {
 		lease.Unlock()
 		return ErrMCPConfigUncertain
 	}
@@ -2364,7 +2368,7 @@ func enableServerWithPersistenceAndInitializer(
 			transaction.markUserMutation()
 		}
 		if commitOutcomeNeedsRuntimeFence(outcome) {
-			detached := fenceMCPRuntimeLocked(o, name)
+			detached := fenceMCPRuntimeLocked(o, cfg, name)
 			lease.Unlock()
 			retireMCPClient(name, detached)
 			return fmt.Errorf("failed to persist MCP enabled state for %q: %w", name, err)
@@ -2391,7 +2395,7 @@ func enableServerWithPersistenceAndInitializer(
 		if commitUncertainty == nil {
 			rollbackPersistence()
 		} else {
-			detached := fenceMCPRuntimeLocked(o, name)
+			detached := fenceMCPRuntimeLocked(o, cfg, name)
 			lease.Unlock()
 			retireMCPClient(name, detached)
 			if commitUncertainty != nil {
@@ -2408,7 +2412,7 @@ func enableServerWithPersistenceAndInitializer(
 	o.invalidateServer(name)
 	if !result.NewExists {
 		if commitUncertainty != nil {
-			detached := fenceMCPRuntimeLocked(o, name)
+			detached := fenceMCPRuntimeLocked(o, cfg, name)
 			lease.Unlock()
 			retireMCPClient(name, detached)
 			return fmt.Errorf("failed to persist MCP enabled state for %q: %w", name, commitUncertainty)
@@ -2420,7 +2424,7 @@ func enableServerWithPersistenceAndInitializer(
 	admission, err := o.admitServer(ctx, cfg, name, true)
 	if err != nil {
 		if commitUncertainty != nil {
-			detached := fenceMCPRuntimeLocked(o, name)
+			detached := fenceMCPRuntimeLocked(o, cfg, name)
 			lease.Unlock()
 			retireMCPClient(name, detached)
 			return fmt.Errorf("failed to persist MCP enabled state for %q: %w", name, commitUncertainty)
@@ -2558,7 +2562,9 @@ func replaceServerWithResultPersistenceAndPreparation(
 	if err != nil {
 		return err
 	}
-	o.rememberConfig(cfg)
+	if err := o.rememberConfig(cfg); err != nil {
+		return err
+	}
 	if err := o.reconcileUncertainty(ctx, cfg, oldName); err != nil {
 		return err
 	}
@@ -2642,10 +2648,10 @@ func replaceServerWithResultPersistenceAndPreparation(
 	if err != nil {
 		outcome, ok := config.CommitOutcomeFromError(err)
 		if ok && commitOutcomeNeedsRuntimeFence(outcome) {
-			detachedOld := fenceMCPRuntimeLocked(o, oldName)
+			detachedOld := fenceMCPRuntimeLocked(o, cfg, oldName)
 			var detachedNew *ClientSession
 			if newName != oldName {
-				detachedNew = fenceMCPRuntimeLocked(o, newName)
+				detachedNew = fenceMCPRuntimeLocked(o, cfg, newName)
 			}
 			unlockServerLeases(locked)
 			retireMCPClient(oldName, detachedOld)
@@ -2848,7 +2854,9 @@ func addServerWithInitializerAndPersistence(
 	if err != nil {
 		return err
 	}
-	o.rememberConfig(cfg)
+	if err := o.rememberConfig(cfg); err != nil {
+		return err
+	}
 	if err := o.reconcileUncertainty(ctx, cfg, name); err != nil {
 		return err
 	}
@@ -2860,7 +2868,7 @@ func addServerWithInitializerAndPersistence(
 	if !lease.lockContext(ctx, true) {
 		return ctx.Err()
 	}
-	if o.isUncertain(name) {
+	if o.isUncertain(cfg, name) {
 		lease.Unlock()
 		return ErrMCPConfigUncertain
 	}
@@ -2974,7 +2982,7 @@ func addServerWithInitializerAndPersistence(
 			if commitOutcomeNeedsRuntimeFence(outcome) {
 				// The durable state is unknown. Retire the candidate and remove
 				// the runtime candidate; a later reload owns config recovery.
-				detached := fenceMCPRuntimeLocked(o, name)
+				detached := fenceMCPRuntimeLocked(o, cfg, name)
 				prepared := discardPreparedClient(&admission)
 				admission.done()
 				o.completePendingGlobalAdd(transaction)
@@ -3128,7 +3136,9 @@ func removeServerWithResultPersistence(
 	if err != nil {
 		return err
 	}
-	o.rememberConfig(cfg)
+	if err := o.rememberConfig(cfg); err != nil {
+		return err
+	}
 	if err := o.reconcileUncertainty(context.Background(), cfg, name); err != nil {
 		return err
 	}
@@ -3171,7 +3181,7 @@ func removeServerWithResultPersistence(
 			}
 			transaction.markUserMutation()
 			if commitOutcomeNeedsRuntimeFence(outcome) {
-				detached = fenceMCPRuntimeLocked(o, name)
+				detached = fenceMCPRuntimeLocked(o, cfg, name)
 				_, _ = cfg.RemoveMCP(name)
 				unlock()
 				return fmt.Errorf("failed to remove pending MCP server %q from config: %w", name, persistErr)
@@ -3212,7 +3222,7 @@ func removeServerWithResultPersistence(
 			return fmt.Errorf("failed to remove MCP server %q from config: %w", name, err)
 		}
 		if commitOutcomeNeedsRuntimeFence(outcome) {
-			detached = fenceMCPRuntimeLocked(o, name)
+			detached = fenceMCPRuntimeLocked(o, cfg, name)
 			unlock()
 			return fmt.Errorf("failed to remove MCP server %q from config: %w", name, err)
 		}
@@ -3262,9 +3272,19 @@ func ensureOwner() (*Owner, error) {
 // cannot be read back. It deliberately does not infer a config value or start
 // a fallback: a later reload must reconcile the unknown disk state first.
 func fenceMCPRuntime(o *Owner, name string) {
+	if o == nil {
+		return
+	}
+	lifecycleMu.Lock()
+	cfg := o.config
+	lifecycleMu.Unlock()
+	fenceMCPRuntimeForConfig(o, cfg, name)
+}
+
+func fenceMCPRuntimeForConfig(o *Owner, cfg *config.ConfigStore, name string) {
 	lease := serverLeaseFor(name)
 	lease.Lock()
-	detached := fenceMCPRuntimeLocked(o, name)
+	detached := fenceMCPRuntimeLocked(o, cfg, name)
 	lease.Unlock()
 	retireMCPClient(name, detached)
 }
@@ -3272,11 +3292,11 @@ func fenceMCPRuntime(o *Owner, name string) {
 // fenceMCPRuntimeLocked detaches all published runtime state while the
 // caller holds the server write lease. The caller retires and closes the
 // returned session after the lease is released.
-func fenceMCPRuntimeLocked(o *Owner, name string) *ClientSession {
-	if o != nil {
+
+func fenceMCPRuntimeLocked(o *Owner, cfg *config.ConfigStore, name string) *ClientSession {
+	if o != nil && cfg != nil {
 		lifecycleMu.Lock()
-		o.nextUncertainty++
-		o.uncertainServers[name] = o.nextUncertainty
+		cfg.MarkMCPUncertain(name)
 		cancels := o.invalidateServerLocked(name)
 		lifecycleMu.Unlock()
 		for _, cancel := range cancels {
@@ -3361,7 +3381,7 @@ func startFallback(ctx context.Context, cfg *config.ConfigStore, name string, mc
 	if !lease.lockContext(ctx, true) {
 		return
 	}
-	if o.isUncertain(name) {
+	if o.isUncertain(cfg, name) {
 		lease.Unlock()
 		return
 	}
@@ -3410,7 +3430,9 @@ func getOrRenewClient(ctx context.Context, cfg *config.ConfigStore, name string)
 	operationCtx := ctx
 	finish := func() {}
 	if o != nil {
-		o.rememberConfig(cfg)
+		if err := o.rememberConfig(cfg); err != nil {
+			return nil, err
+		}
 		if err := o.reconcileUncertainty(ctx, cfg, name); err != nil {
 			return nil, err
 		}

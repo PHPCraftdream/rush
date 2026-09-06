@@ -77,7 +77,8 @@ func (sn *storeSnapshot) clone() *storeSnapshot {
 // single snap.Store — the old snapshot, and anything still holding a
 // reference to it, is left completely untouched.
 type ConfigStore struct {
-	snap atomic.Pointer[storeSnapshot]
+	snap           atomic.Pointer[storeSnapshot]
+	mcpUncertainty mcpUncertaintyState
 
 	// workingDir and globalDataPath are set once at construction time
 	// (Load / NewTestStore) and never mutated afterwards, so they are

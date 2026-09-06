@@ -66,16 +66,18 @@ func requireMCPMaybeCommitted(t *testing.T, err error) {
 func requireMCPUncertain(t *testing.T, owner *Owner, name string) {
 	t.Helper()
 	lifecycleMu.Lock()
-	_, uncertain := owner.uncertainServers[name]
+	cfg := owner.config
 	lifecycleMu.Unlock()
+	_, uncertain := cfg.MCPUncertaintyVersion(name)
 	require.True(t, uncertain, "MCP runtime must remain fenced until reload")
 }
 
 func requireMCPNotUncertain(t *testing.T, owner *Owner, name string) {
 	t.Helper()
 	lifecycleMu.Lock()
-	_, uncertain := owner.uncertainServers[name]
+	cfg := owner.config
 	lifecycleMu.Unlock()
+	_, uncertain := cfg.MCPUncertaintyVersion(name)
 	require.False(t, uncertain, "MCP uncertainty fence must clear after reload")
 }
 

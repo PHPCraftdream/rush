@@ -90,13 +90,8 @@ func TestReloadAndReconcilePreservesFenceRaisedDuringFinalize(t *testing.T) {
 
 	const name = "reload-finalize-race"
 	const clearedName = "reload-finalize-cleared"
-	lifecycleMu.Lock()
-	owner.nextUncertainty++
-	oldVersion := owner.nextUncertainty
-	owner.uncertainServers[name] = oldVersion
-	owner.nextUncertainty++
-	owner.uncertainServers[clearedName] = owner.nextUncertainty
-	lifecycleMu.Unlock()
+	oldVersion := store.MarkMCPUncertain(name)
+	store.MarkMCPUncertain(clearedName)
 
 	reloadReachedFinalize := make(chan struct{})
 	releaseFinalize := make(chan struct{})
@@ -113,11 +108,73 @@ func TestReloadAndReconcilePreservesFenceRaisedDuringFinalize(t *testing.T) {
 	close(releaseFinalize)
 
 	require.ErrorIs(t, <-reloadDone, ErrMCPConfigUncertain)
-	lifecycleMu.Lock()
-	currentVersion, stillFenced := owner.uncertainServers[name]
-	_, cleared := owner.uncertainServers[clearedName]
-	lifecycleMu.Unlock()
+	currentVersion, stillFenced := store.MCPUncertaintyVersion(name)
+	_, cleared := store.MCPUncertaintyVersion(clearedName)
 	require.True(t, stillFenced)
 	require.NotEqual(t, oldVersion, currentVersion)
 	require.False(t, cleared)
+}
+
+func TestMaybeCommittedFenceSurvivesOwnerRollover(t *testing.T) {
+	store := isolatedMCPStore(t)
+	owner, err := Acquire()
+	require.NoError(t, err)
+	require.NoError(t, owner.rememberConfig(store))
+
+	const name = "maybe-rollover"
+	err = addServerWithInitializerAndPersistence(context.Background(), store, name,
+		config.MCPConfig{Type: config.MCPStdio, Command: name}, fakeMCPInitializer,
+		func(cfg *config.ConfigStore, scope config.Scope, name string, value config.MCPConfig) (config.MCPMutationResult, error) {
+			result, persistErr := cfg.PersistMCPConfigResult(scope, name, value)
+			require.NoError(t, persistErr)
+			return result, injectedMCPMaybeCommitted()
+		})
+	requireMCPMaybeCommitted(t, err)
+	require.NoError(t, owner.Close(context.Background()))
+
+	next, err := Acquire()
+	require.NoError(t, err)
+	defer closeCommitOutcomeTestOwner(t, next)
+	require.NoError(t, next.rememberConfig(store))
+
+	admission, err := next.admitServer(context.Background(), store, name, false)
+	require.ErrorIs(t, err, ErrMCPConfigUncertain)
+	require.Empty(t, admission)
+
+	require.NoError(t, ReloadAndReconcileMCPConfig(context.Background(), store))
+	admission, err = next.admitServer(context.Background(), store, name, false)
+	require.NoError(t, err)
+	admission.done()
+}
+
+func TestWrongStoreReloadDoesNotClearMCPFence(t *testing.T) {
+	store := isolatedMCPStore(t)
+	otherStore := isolatedMCPStore(t)
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer closeCommitOutcomeTestOwner(t, owner)
+	require.NoError(t, owner.rememberConfig(store))
+
+	const name = "wrong-store-reload"
+	store.MarkMCPUncertain(name)
+	require.NoError(t, ReloadAndReconcileMCPConfig(context.Background(), otherStore))
+
+	_, err = owner.admitServer(context.Background(), store, name, false)
+	require.ErrorIs(t, err, ErrMCPConfigUncertain)
+}
+
+func TestOwnerRejectsConfigStoreSwitch(t *testing.T) {
+	store := isolatedMCPStore(t)
+	otherStore := isolatedMCPStore(t)
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer closeCommitOutcomeTestOwner(t, owner)
+	require.NoError(t, owner.rememberConfig(store))
+
+	require.ErrorIs(t, InitializeSingle(context.Background(), "switch", otherStore), ErrMCPConfigStoreBusy)
+	_, err = owner.admitServer(context.Background(), otherStore, "switch", false)
+	require.ErrorIs(t, err, ErrMCPConfigStoreBusy)
+	admission, err := owner.admitServer(context.Background(), store, "switch", false)
+	require.NoError(t, err)
+	admission.done()
 }

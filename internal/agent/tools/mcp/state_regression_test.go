@@ -1920,12 +1920,11 @@ func TestSequentialInitializeReopensInitBarrier(t *testing.T) {
 	defer func() { require.NoError(t, owner.Close(context.Background())) }()
 	defer func() { releaseOnce.Do(func() { close(release) }) }()
 
-	owner.Initialize(context.Background(), nil, config.NewLibraryStore(&config.Config{}, ""), false)
+	store := config.NewLibraryStore(&config.Config{}, "")
+	owner.Initialize(context.Background(), nil, store, false)
 	require.NoError(t, WaitForInit(context.Background()))
 
-	store := config.NewLibraryStore(&config.Config{MCP: config.MCPs{
-		"second": {Type: config.MCPHttp, URL: httpServer.URL, Timeout: 60},
-	}}, "")
+	require.True(t, store.AddMCP("second", config.MCPConfig{Type: config.MCPHttp, URL: httpServer.URL, Timeout: 60}))
 	secondDone := make(chan struct{})
 	go func() {
 		owner.Initialize(context.Background(), nil, store, false)

@@ -294,8 +294,9 @@ func (s *ConfigStore) reloadFromDiskUnlocked(ctx context.Context) error {
 // writer finishes after the candidate was published but before reloadMu is
 // released.
 func (s *ConfigStore) runReloadLocked(ctx context.Context) error {
+	expectedUncertainty := s.MCPUncertaintyVersions()
 	for attempt := 1; attempt <= reloadMaxAttempts; attempt++ {
-		err := s.buildAndPublishReload(ctx)
+		err := s.buildAndPublishReload(ctx, expectedUncertainty)
 		if err != nil && !errors.Is(err, errReloadDiskChanged) && !errors.Is(err, errStableReadUnstable) {
 			s.releaseReloadLock()
 			return err
@@ -349,7 +350,7 @@ func (s *ConfigStore) releaseReloadLock() {
 // buildAndPublishReload is reloadFromDiskUnlocked's body, factored out so
 // autoReload can call it directly after its own TryLock(reloadMu) without
 // double-locking reloadMu (sync.Mutex is not reentrant).
-func (s *ConfigStore) buildAndPublishReload(ctx context.Context) error {
+func (s *ConfigStore) buildAndPublishReload(ctx context.Context, expectedUncertainty map[string]uint64) error {
 	configPaths := lookupConfigCandidates(s.workingDir)
 	externalPaths := mcpJSONCandidatePaths(s.workingDir)
 	cfg, loadedPaths, fingerprints, configDocuments, err := loadConfigCandidateStableForWorkingDir(configPaths, s.workingDir)
@@ -510,6 +511,7 @@ func (s *ConfigStore) buildAndPublishReload(ctx context.Context) error {
 	candidate.trackedConfigPaths, candidate.snapshots = reloadStalenessState(stalenessPaths, fingerprints)
 
 	s.publishLocked(candidate)
+	s.clearMCPUncertainty(expectedUncertainty)
 
 	return nil
 }
