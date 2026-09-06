@@ -592,14 +592,8 @@ func TestRemovePublishesBeforeBlockedCloseAndConcurrentAdd(t *testing.T) {
 	}()
 	require.NoError(t, awaitMCPError(t, addDone))
 
-	first := <-events
-	require.Equal(t, pubsub.DeletedEvent, first.Type)
-	require.Equal(t, name, first.Payload.Name)
-	require.Equal(t, StateDisabled, first.Payload.State)
-	second := <-events
-	require.Equal(t, pubsub.UpdatedEvent, second.Type)
-	require.Equal(t, name, second.Payload.Name)
-	require.Equal(t, StateConnected, second.Payload.State)
+	requireTransactionalEvent(t, events, pubsub.DeletedEvent, name, StateDisabled)
+	requireTransactionalEvent(t, events, pubsub.UpdatedEvent, name, StateConnected)
 
 	close(releaseClose)
 	require.NoError(t, awaitMCPError(t, removeDone))

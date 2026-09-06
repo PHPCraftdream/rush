@@ -2721,27 +2721,10 @@ func replaceServerWithResultPersistenceAndPreparation(
 	}
 	brokerForEvent := broker
 	lifecycleMu.Unlock()
-	unlockServerLeases(locked)
-
-	for _, cancel := range canceled {
-		cancel()
-	}
 	if wakeRefresh {
 		o.signalRefresh()
 	}
-	if hadOldSession && oldSession != prepared.session {
-		retireMCPClient(oldName, oldSession)
-	}
-	if newName != oldName && hadNewSession && newSession != prepared.session && newSession != oldSession {
-		retireMCPClient(newName, newSession)
-	}
-	if newDisabled {
-		closeMCPClient(newName, prepared.session)
-	}
-	admission.done()
-	if oldName != newName && result.FallbackExists {
-		startFallback(context.Background(), cfg, oldName, result.FallbackConfig, o)
-	} else if oldName != newName && hadOldState {
+	if oldName != newName && !result.FallbackExists && hadOldState {
 		brokerForEvent.Publish(pubsub.DeletedEvent, Event{
 			Type: EventStateChanged, Name: oldName, State: StateDisabled,
 		})
@@ -2762,6 +2745,26 @@ func replaceServerWithResultPersistenceAndPreparation(
 		})
 	}
 	publishListChangedEventsOn(brokerForEvent, pendingEvents)
+	// Replacement events are part of its server-lease linearization point.
+	// Detached sessions and candidates are retired or closed only afterward.
+	unlockServerLeases(locked)
+
+	for _, cancel := range canceled {
+		cancel()
+	}
+	if hadOldSession && oldSession != prepared.session {
+		retireMCPClient(oldName, oldSession)
+	}
+	if newName != oldName && hadNewSession && newSession != prepared.session && newSession != oldSession {
+		retireMCPClient(newName, newSession)
+	}
+	if newDisabled {
+		closeMCPClient(newName, prepared.session)
+	}
+	admission.done()
+	if oldName != newName && result.FallbackExists {
+		startFallback(context.Background(), cfg, oldName, result.FallbackConfig, o)
+	}
 	if commitUncertainty != nil {
 		return fmt.Errorf("failed to persist MCP server replacement %q to %q: %w", oldName, newName, commitUncertainty)
 	}
@@ -3360,10 +3363,10 @@ func startFallback(ctx context.Context, cfg *config.ConfigStore, name string, mc
 	if current.Disabled {
 		setState(name, StateDisabled, nil, nil, Counts{})
 		brokerForEvent := broker
-		lease.Unlock()
 		brokerForEvent.Publish(pubsub.UpdatedEvent, Event{
 			Type: EventStateChanged, Name: name, State: StateDisabled,
 		})
+		lease.Unlock()
 		return
 	}
 	admission, err := o.admitServerForConfig(ctx, cfg, name, current, true)
