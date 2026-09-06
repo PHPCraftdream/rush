@@ -25,8 +25,14 @@ func commitConfigFile(selectedPath, commitPath string, data []byte, perm os.File
 			!sameBytesFingerprint(current, expected.digest) {
 			return reloadFileFingerprint{}, errConfigCommitVerification
 		}
-	} else if err != nil && (!os.IsNotExist(err) || fingerprint.discovery != expected.discovery) {
-		return reloadFileFingerprint{}, errConfigCommitVerification
+	} else {
+		// An expected-absent destination is part of the CAS precondition. A
+		// successful open here means another writer created the destination and
+		// must never be overwritten by this transaction.
+		if err == nil || !os.IsNotExist(err) || fingerprint.discovery != expected.discovery ||
+			fingerprint.parentDiscovery != expected.parentDiscovery {
+			return reloadFileFingerprint{}, errConfigCommitVerification
+		}
 	}
 	parent := filepath.Dir(commitPath)
 	parentInfo, err := os.Stat(parent)
@@ -47,8 +53,11 @@ func commitConfigFile(selectedPath, commitPath string, data []byte, perm os.File
 			!sameBytesFingerprint(current, expected.digest) {
 			return reloadFileFingerprint{}, errConfigCommitVerification
 		}
-	} else if err != nil && (!os.IsNotExist(err) || fingerprint.discovery != expected.discovery) {
-		return reloadFileFingerprint{}, errConfigCommitVerification
+	} else {
+		if err == nil || !os.IsNotExist(err) || fingerprint.discovery != expected.discovery ||
+			fingerprint.parentDiscovery != expected.parentDiscovery {
+			return reloadFileFingerprint{}, errConfigCommitVerification
+		}
 	}
 	if err := atomicWriteFile(commitPath, data, perm); err != nil {
 		return reloadFileFingerprint{}, err

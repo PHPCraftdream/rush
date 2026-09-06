@@ -14,6 +14,7 @@ var (
 	ErrMCPUnwritableOrigin = errors.New("MCP server has no writable config scope")
 	ErrMCPTargetExists     = errors.New("MCP server target already exists")
 	ErrMCPStale            = errors.New("MCP server configuration changed while preparing mutation")
+	ErrMCPCommitUncertain  = errors.New("MCP config commit outcome is uncertain")
 )
 
 // MCPMutationResult describes the effective configuration on both sides of a
@@ -200,6 +201,9 @@ func (s *ConfigStore) PersistMCPFields(scope Scope, name string, fields map[stri
 		if evalErr != nil {
 			return evalErr
 		}
+		if err := files.validateMutableTopology(); err != nil {
+			return err
+		}
 		_, oldOK := before.configs[name]
 		if err := validateMCPMutation("set", scope, name, name, oldOK, before.origins[name], before.configs); err != nil {
 			return err
@@ -230,8 +234,7 @@ func (s *ConfigStore) PersistMCPFields(scope Scope, name string, fields map[stri
 		// The selected file may be shadowed, so publish the effective value
 		// only after the exact file mutation has committed. A later reload
 		// remains authoritative for all other fields.
-		s.publishMCPValueLocked(name, effective, effectiveExists)
-		s.publishMCPStalenessLocked(committed)
+		s.publishMCPValueAndStalenessLocked(name, effective, effectiveExists, committed)
 	}
 	s.publishMu.Unlock()
 	if err != nil {
@@ -262,6 +265,9 @@ func (s *ConfigStore) PersistMCPFieldsExact(scope Scope, name string, fields map
 		if evalErr != nil {
 			return evalErr
 		}
+		if err := files.validateMutableTopology(); err != nil {
+			return err
+		}
 		if !literalMCPEntryExists(files.mcpData(path), name) {
 			return fmt.Errorf("%w: %q", ErrMCPNotFound, name)
 		}
@@ -288,8 +294,7 @@ func (s *ConfigStore) PersistMCPFieldsExact(scope Scope, name string, fields map
 		return nil
 	})
 	if err == nil {
-		s.publishMCPValueLocked(name, effective, effectiveExists)
-		s.publishMCPStalenessLocked(committed)
+		s.publishMCPValueAndStalenessLocked(name, effective, effectiveExists, committed)
 	}
 	s.publishMu.Unlock()
 	return err
@@ -339,7 +344,7 @@ func (s *ConfigStore) publishMCPConfigLocked(oldName, newName string) {
 	s.publishLocked(next)
 }
 
-func (s *ConfigStore) publishMCPValueLocked(name string, value MCPConfig, exists bool) {
+func (s *ConfigStore) publishMCPValueAndStalenessLocked(name string, value MCPConfig, exists bool, committed map[string]reloadFileFingerprint) {
 	cur := s.loadSnapshot()
 	if cur.config == nil {
 		return
@@ -356,37 +361,26 @@ func (s *ConfigStore) publishMCPValueLocked(name string, value MCPConfig, exists
 		delete(cfg.MCP, name)
 	}
 	next.config = &cfg
-	s.publishLocked(next)
-}
-
-// publishMCPStalenessLocked refreshes only the snapshots for a committed MCP
-// document. It must run after the rename, using the new opened-file identity;
-// retaining the pre-rename inode would make every successful mutation appear
-// stale and could publish an obsolete alias.
-func (s *ConfigStore) publishMCPStalenessLocked(committed map[string]reloadFileFingerprint) {
-	if len(committed) == 0 {
-		return
-	}
-	cur := s.loadSnapshot()
-	next := cur.clone()
-	if next.snapshots == nil {
-		next.snapshots = make(map[string]fileSnapshot)
-	} else {
-		next.snapshots = maps.Clone(next.snapshots)
-	}
-	for path, fingerprint := range committed {
-		key := normalizeDiscoveryPath(path)
-		snapshot, ok := next.snapshots[key]
-		if !ok {
-			continue
+	if len(committed) > 0 {
+		if next.snapshots == nil {
+			next.snapshots = make(map[string]fileSnapshot)
+		} else {
+			next.snapshots = maps.Clone(next.snapshots)
 		}
-		snapshot.Path = key
-		snapshot.Exists = fingerprint.exists
-		snapshot.Size = fingerprint.size
-		snapshot.ModTime = fingerprint.modTime
-		snapshot.ContentHash = fingerprint.digest
-		snapshot.fingerprint = fingerprint
-		next.snapshots[key] = snapshot
+		for path, fingerprint := range committed {
+			key := normalizeDiscoveryPath(path)
+			snapshot, ok := next.snapshots[key]
+			if !ok {
+				continue
+			}
+			snapshot.Path = key
+			snapshot.Exists = fingerprint.exists
+			snapshot.Size = fingerprint.size
+			snapshot.ModTime = fingerprint.modTime
+			snapshot.ContentHash = fingerprint.digest
+			snapshot.fingerprint = fingerprint
+			next.snapshots[key] = snapshot
+		}
 	}
 	s.publishLocked(next)
 }

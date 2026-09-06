@@ -37,6 +37,12 @@ type mcpFileRecord struct {
 	aliases      map[string]struct{}
 }
 
+// ErrMCPHardLinkTopology is returned before a mutable MCP transaction when
+// two distinct regular-file dirents share one inode. Renaming one dirent is
+// not an in-place hard-link update, so treating those aliases as one record
+// would leave the other dirent with stale bytes while claiming both changed.
+var ErrMCPHardLinkTopology = errors.New("MCP config has unsupported hard-link aliases")
+
 type mcpEvaluation struct {
 	configs      map[string]MCPConfig
 	origins      map[string]MCPOrigin
@@ -138,6 +144,20 @@ func (files *mcpLockedFiles) setMCPData(path string, data []byte) error {
 	return nil
 }
 
+func (files *mcpLockedFiles) validateMutableTopology() error {
+	for _, record := range files.records {
+		if !record.expectation.exists || len(record.aliases) < 2 {
+			continue
+		}
+		for alias := range record.aliases {
+			if normalizeReloadPath(alias) != record.commitPath {
+				return fmt.Errorf("%w: %s and %s", ErrMCPHardLinkTopology, record.commitPath, alias)
+			}
+		}
+	}
+	return nil
+}
+
 // withMCPWriteLocks is the single lock boundary for MCP lifecycle writes.
 // Lock order is publishMu (caller) -> diskWriteMu -> sorted sidecar locks.
 // Both writable files are locked even when only one is mutated; this makes
@@ -154,6 +174,19 @@ func (s *ConfigStore) withMCPWriteLocks(fn func(*mcpLockedFiles) error) error {
 	}
 	slices.Sort(paths)
 	paths = slices.Compact(paths)
+	targets := make(map[string]configWriteTarget, len(paths))
+	lockPaths := make([]string, 0, len(paths))
+	for _, path := range paths {
+		target, targetErr := s.resolveConfigWriteTarget(path)
+		if targetErr != nil {
+			return targetErr
+		}
+		if _, exists := targets[target.lockPath]; !exists {
+			targets[target.lockPath] = target
+			lockPaths = append(lockPaths, target.lockPath)
+		}
+	}
+	slices.Sort(lockPaths)
 
 	s.diskWriteMu.Lock()
 	defer s.diskWriteMu.Unlock()
@@ -165,12 +198,17 @@ func (s *ConfigStore) withMCPWriteLocks(fn func(*mcpLockedFiles) error) error {
 	}()
 	ctx, cancel := context.WithTimeout(context.Background(), configWriteLockTimeout)
 	defer cancel()
-	for _, path := range paths {
-		lock, lockErr := session.AcquireFileLockContext(ctx, path+".lock")
+	for _, lockPath := range lockPaths {
+		lock, lockErr := session.AcquireFileLockContext(ctx, lockPath)
 		if lockErr != nil {
-			return fmt.Errorf("failed to lock config file %q: %w", path, lockErr)
+			return fmt.Errorf("failed to lock config file %q: %w", lockPath, lockErr)
 		}
 		locks = append(locks, lock)
+	}
+	for _, target := range targets {
+		if err := verifyConfigWriteTarget(target); err != nil {
+			return fmt.Errorf("%w: config target %q changed while acquiring locks", ErrMCPStale, target.selectedPath)
+		}
 	}
 	files := &mcpLockedFiles{
 		data: make(map[string][]byte, len(paths)), present: make(map[string]bool, len(paths)),
@@ -223,6 +261,9 @@ func (s *ConfigStore) mutatePendingRemoveMCP(scope Scope, name string) (MCPMutat
 		if err != nil {
 			return err
 		}
+		if err := files.validateMutableTopology(); err != nil {
+			return err
+		}
 		if _, exists := before.configs[name]; exists {
 			return fmt.Errorf("%w: %q", ErrMCPTargetExists, name)
 		}
@@ -266,6 +307,9 @@ func (s *ConfigStore) mutateMCPWithMode(operation string, scope Scope, oldName, 
 	err = s.withMCPWriteLocks(func(files *mcpLockedFiles) error {
 		before, err := s.evaluateMCPFiles(files)
 		if err != nil {
+			return err
+		}
+		if err := files.validateMutableTopology(); err != nil {
 			return err
 		}
 		old, oldOK := before.configs[oldName]
@@ -509,12 +553,31 @@ func (s *ConfigStore) writeMCPFileChanges(files *mcpLockedFiles) error {
 		if err != nil {
 			return fmt.Errorf("failed to determine config owner: %w", err)
 		}
-		committed, err := commitConfigFile(record.selectedPath, record.commitPath, record.data, 0o600, record.expectation, owner, enforce)
-		if err != nil {
-			if errors.Is(err, errConfigCommitVerification) {
-				return fmt.Errorf("%w: %w", ErrMCPStale, err)
+		committed, commitErr := commitConfigFile(record.selectedPath, record.commitPath, record.data, 0o600, record.expectation, owner, enforce)
+		if commitErr != nil {
+			if errors.Is(commitErr, errConfigCommitUncertain) || errors.Is(commitErr, errConfigCommitCommitted) {
+				// Rename has already happened. Reconcile the bytes while the
+				// transaction locks are still held; this turns a post-rename
+				// verification/directory-sync error into an unambiguous success
+				// when the requested document is present, and otherwise reports
+				// an explicit uncertain outcome without retrying the mutation.
+				owner, enforce, ownerErr := s.mcpOwnerPolicy(record.selectedPath)
+				if ownerErr == nil {
+					data, reconciled, readErr := readStableConfigFileOwned(record.selectedPath, owner, enforce)
+					if readErr == nil && sameBytesFingerprint(data, sha256.Sum256(record.data)) {
+						committed = reconciled
+						commitErr = nil
+					}
+				}
+				if commitErr != nil {
+					return fmt.Errorf("%w: %v", ErrMCPCommitUncertain, commitErr)
+				}
+			} else if errors.Is(commitErr, errConfigCommitVerification) {
+				return fmt.Errorf("%w: %w", ErrMCPStale, commitErr)
 			}
-			return fmt.Errorf("failed to write config file: %w", err)
+			if commitErr != nil {
+				return fmt.Errorf("failed to write config file: %w", commitErr)
+			}
 		}
 		for alias := range record.aliases {
 			aliasFingerprint := files.fingerprints[alias]
@@ -617,7 +680,10 @@ func (s *ConfigStore) evaluateMCPFiles(files *mcpLockedFiles) (mcpEvaluation, er
 			}
 			ext.Disabled = externalOverlayValue(rushDocuments, name, ext.Disabled)
 			cfg.MCP[name] = ext
-			origins[name] = MCPOrigin{Kind: MCPOriginExternal, Path: normalizeReloadPath(path), Scope: ScopeGlobal, Writable: false}
+			origin := MCPOrigin{Kind: MCPOriginExternal, Path: normalizeReloadPath(path), Scope: ScopeGlobal, Writable: false}
+			if current, ok := origins[name]; !ok || mcpOriginPriority(origin) >= mcpOriginPriority(current) {
+				origins[name] = origin
+			}
 		}
 	}
 	return mcpEvaluation{configs: cfg.MCP, origins: origins, fingerprints: fingerprints}, nil
@@ -695,6 +761,10 @@ func (s *ConfigStore) mcpOwnerPolicy(path string) (int, bool, error) {
 }
 
 func entryOrigins(origins map[string]MCPOrigin, path, workspacePath, globalPath, systemPath string, data []byte) {
+	path = normalizeReloadPath(path)
+	workspacePath = normalizeReloadPath(workspacePath)
+	globalPath = normalizeReloadPath(globalPath)
+	systemPath = normalizeReloadPath(systemPath)
 	var root struct {
 		MCP map[string]json.RawMessage `json:"mcp"`
 	}
@@ -707,14 +777,33 @@ func entryOrigins(origins map[string]MCPOrigin, path, workspacePath, globalPath,
 			continue
 		}
 		origin := MCPOrigin{Kind: MCPOriginProject, Path: path, Scope: ScopeGlobal, Writable: false}
-		if path == normalizeReloadPath(workspacePath) {
+		if path == workspacePath {
 			origin.Kind, origin.Scope, origin.Writable = MCPOriginWorkspace, ScopeWorkspace, true
-		} else if path == normalizeReloadPath(globalPath) {
+		} else if path == globalPath {
 			origin.Kind, origin.Scope, origin.Writable = MCPOriginGlobal, ScopeGlobal, true
-		} else if path == normalizeReloadPath(systemPath) {
+		} else if path == systemPath {
 			origin.Kind = MCPOriginSystem
 		}
-		origins[name] = origin
+		if current, ok := origins[name]; !ok || mcpOriginPriority(origin) >= mcpOriginPriority(current) {
+			origins[name] = origin
+		}
+	}
+}
+
+func mcpOriginPriority(origin MCPOrigin) int {
+	switch origin.Kind {
+	case MCPOriginSystem:
+		return 1
+	case MCPOriginGlobal:
+		return 2
+	case MCPOriginProject:
+		return 3
+	case MCPOriginWorkspace:
+		return 4
+	case MCPOriginExternal:
+		return 5
+	default:
+		return 0
 	}
 }
 

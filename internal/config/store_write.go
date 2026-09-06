@@ -5,6 +5,7 @@ package config
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -108,7 +109,7 @@ const configWriteLockStallLogThreshold = 500 * time.Millisecond
 // Load/reloadFromDiskLocked (i.e. anything reachable from configureProviders
 // while publishMu is held) must call withConfigWriteLockCtx with a much
 // shorter, caller-supplied timeout instead — see internalConfigWriteLockTimeout.
-func (s *ConfigStore) withConfigWriteLock(path string, fn func() error) error {
+func (s *ConfigStore) withConfigWriteLock(path string, fn func(string) error) error {
 	ctx, cancel := context.WithTimeout(context.Background(), configWriteLockTimeout)
 	defer cancel()
 	return s.withConfigWriteLockCtx(ctx, path, fn)
@@ -138,21 +139,82 @@ func (s *ConfigStore) withConfigWriteLock(path string, fn func() error) error {
 // against a re-entrant caller that already holds publishMu and entered this
 // path (e.g. Load → configureProviders → RemoveConfigField). Lock ordering
 // is always diskWriteMu → inter-process file lock.
-func (s *ConfigStore) withConfigWriteLockCtx(ctx context.Context, path string, fn func() error) error {
+type configWriteTarget struct {
+	path         string
+	selectedPath string
+	lockPath     string
+	expected     reloadFileFingerprint
+	owner        int
+	enforce      bool
+}
+
+// resolveConfigWriteTarget pins the physical spelling used for the sidecar
+// lock before the lock is acquired. Symlink aliases consequently share one
+// sidecar rather than racing on alias.lock and target.lock independently.
+func (s *ConfigStore) resolveConfigWriteTarget(path string) (configWriteTarget, error) {
+	owner, enforce, err := s.mcpOwnerPolicy(path)
+	if err != nil {
+		return configWriteTarget{}, err
+	}
+	_, expected, readErr := readStableConfigFileOwned(path, owner, enforce)
+	if readErr != nil && !os.IsNotExist(readErr) {
+		return configWriteTarget{}, readErr
+	}
+	resolved := normalizeReloadPath(path)
+	if resolved == "" {
+		return configWriteTarget{}, fmt.Errorf("empty config write target")
+	}
+	return configWriteTarget{path: resolved, selectedPath: normalizeDiscoveryPath(path), lockPath: resolved + ".lock", expected: expected, owner: owner, enforce: enforce}, nil
+}
+
+// verifyConfigWriteTarget rereads the destination after the sidecar lock is
+// acquired. A cooperating writer may have committed a newer inode while this
+// caller waited, so the reread becomes the current read-modify-write base.
+// The resolved physical path must nevertheless remain the one pinned before
+// locking; an alias retarget is rejected.
+func verifyConfigWriteTarget(target configWriteTarget) error {
+	_, actual, err := readStableConfigFileOwned(target.selectedPath, target.owner, target.enforce)
+	if err == nil {
+		if target.expected.exists && !actual.identity.valid {
+			return errConfigCommitVerification
+		}
+		if normalizeReloadPath(target.selectedPath) != target.path {
+			return errConfigCommitVerification
+		}
+		return nil
+	}
+	if os.IsNotExist(err) && normalizeReloadPath(target.selectedPath) == target.path {
+		return nil
+	}
+	if normalizeReloadPath(target.selectedPath) != target.path {
+		return errConfigCommitVerification
+	}
+	return fmt.Errorf("%w: reread config target: %v", errConfigCommitVerification, err)
+}
+
+func (s *ConfigStore) withConfigWriteLockCtx(ctx context.Context, path string, fn func(string) error) error {
 	s.diskWriteMu.Lock()
 	defer s.diskWriteMu.Unlock()
+	target, err := s.resolveConfigWriteTarget(path)
+	if err != nil {
+		return fmt.Errorf("failed to resolve config file %q: %w", path, err)
+	}
 
 	waitStart := time.Now()
-	lock, err := session.AcquireFileLockContext(ctx, path+".lock")
+	lock, err := session.AcquireFileLockContext(ctx, target.lockPath)
 	if wait := time.Since(waitStart); wait >= configWriteLockStallLogThreshold {
 		// Diagnosability (see configWriteLockStallLogThreshold): without
 		// this, a contended or wedged sidecar lock just looks like "rush
 		// hangs on startup" with nothing pointing at the lock file.
 		slog.Warn("Config write waited unusually long for inter-process lock",
-			"path", path+".lock", "wait", wait, "succeeded", err == nil)
+			"path", target.lockPath, "wait", wait, "succeeded", err == nil)
 	}
 	if err != nil {
 		return fmt.Errorf("failed to lock config file %q: %w", path, err)
+	}
+	if err := verifyConfigWriteTarget(target); err != nil {
+		_ = lock.Release()
+		return fmt.Errorf("failed to verify config file %q: %w", path, err)
 	}
 	// Deliberately NOT calling os.Remove on the sidecar after Release: the
 	// lock file is left on disk permanently by design, not cleaned up here.
@@ -170,7 +232,7 @@ func (s *ConfigStore) withConfigWriteLockCtx(ctx context.Context, path string, f
 	// lock exists to prevent. Leaving a handful of empty *.lock sidecars
 	// next to rush.json is a one-time, bounded cost; deleting them is not.
 	defer lock.Release()
-	return fn()
+	return fn(target.path)
 }
 
 // noteInitialLoadWriteLocked advances Load's expected fingerprint after one
@@ -229,8 +291,8 @@ func (s *ConfigStore) SetConfigFields(scope Scope, kv map[string]any) error {
 	// (diskWriteMu) and across processes (OS lock on path+".lock") — see its
 	// doc comment. The lock is released before autoReload below so that
 	// autoReload's publishMu acquisition cannot deadlock.
-	if err := s.withConfigWriteLock(path, func() error {
-		data, err := os.ReadFile(path)
+	if err := s.withConfigWriteLock(path, func(lockedPath string) error {
+		data, err := os.ReadFile(lockedPath)
 		if err != nil {
 			if os.IsNotExist(err) {
 				data = []byte("{}")
@@ -245,11 +307,16 @@ func (s *ConfigStore) SetConfigFields(scope Scope, kv map[string]any) error {
 				return fmt.Errorf("failed to set config field %s: %w", key, err)
 			}
 		}
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(lockedPath), 0o755); err != nil {
 			return fmt.Errorf("failed to create config directory %q: %w", path, err)
 		}
 		written := []byte(newValue)
-		if err := atomicWriteFile(path, written, 0o600); err != nil {
+		if err := atomicWriteFile(lockedPath, written, 0o600); err != nil {
+			if errors.Is(err, errAtomicWriteCommitted) {
+				slog.Warn("Config file update committed but parent durability is uncertain", "path", lockedPath, "error", err)
+				s.noteInitialLoadWriteLocked(path, written)
+				return nil
+			}
 			return fmt.Errorf("failed to write config file: %w", err)
 		}
 		s.noteInitialLoadWriteLocked(path, written)
@@ -340,8 +407,8 @@ func (s *ConfigStore) removeConfigFieldAt(ctx context.Context, path, key string)
 		return fmt.Errorf("failed to stat config file: %w", err)
 	}
 
-	return s.withConfigWriteLockCtx(ctx, path, func() error {
-		data, err := os.ReadFile(path)
+	return s.withConfigWriteLockCtx(ctx, path, func(lockedPath string) error {
+		data, err := os.ReadFile(lockedPath)
 		if err != nil {
 			return fmt.Errorf("failed to read config file: %w", err)
 		}
@@ -349,11 +416,16 @@ func (s *ConfigStore) removeConfigFieldAt(ctx context.Context, path, key string)
 		if err != nil {
 			return fmt.Errorf("failed to delete config field %s: %w", key, err)
 		}
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(lockedPath), 0o755); err != nil {
 			return fmt.Errorf("failed to create config directory %q: %w", path, err)
 		}
 		written := []byte(newValue)
-		if err := atomicWriteFile(path, written, 0o600); err != nil {
+		if err := atomicWriteFile(lockedPath, written, 0o600); err != nil {
+			if errors.Is(err, errAtomicWriteCommitted) {
+				slog.Warn("Config field removal committed but parent durability is uncertain", "path", lockedPath, "error", err)
+				s.noteInitialLoadWriteLocked(path, written)
+				return nil
+			}
 			return fmt.Errorf("failed to write config file: %w", err)
 		}
 		s.noteInitialLoadWriteLocked(path, written)

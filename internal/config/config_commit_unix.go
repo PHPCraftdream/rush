@@ -102,11 +102,22 @@ func commitConfigFile(selectedPath, commitPath string, data []byte, perm os.File
 	}
 	removeTemp = false
 
+	// From this point onward the logical mutation has happened. Keep the
+	// result distinct from a pre-rename verification failure so callers do not
+	// retry a mutation that may already be visible on disk.
+	hookErr := runConfigAfterCommitRenameHook()
+	parentSyncErr := syncConfigParent(parentPath)
 	committed, committedFingerprint, err := readStableConfigFileOwned(selectedPath, expectedOwner, enforceOwner)
 	if err != nil || !sameBytesFingerprint(committed, sha256.Sum256(data)) ||
 		committedFingerprint.parentDiscovery != expected.parentDiscovery ||
 		(!expected.exists && committedFingerprint.discovery == expected.discovery) {
-		return reloadFileFingerprint{}, errConfigCommitVerification
+		return reloadFileFingerprint{}, fmt.Errorf("%w: %w", errConfigCommitUncertain, errConfigCommitCommitted)
+	}
+	if hookErr != nil {
+		return committedFingerprint, fmt.Errorf("%w: post-rename check: %v", errConfigCommitCommitted, hookErr)
+	}
+	if parentSyncErr != nil {
+		return committedFingerprint, fmt.Errorf("%w: sync config parent: %v", errConfigCommitCommitted, parentSyncErr)
 	}
 	return committedFingerprint, nil
 }

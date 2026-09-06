@@ -3,6 +3,7 @@ package config
 import (
 	"crypto/sha256"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -10,10 +11,25 @@ import (
 
 var errConfigCommitVerification = errors.New("config destination could not be verified immediately before commit")
 
+// errConfigCommitCommitted means rename completed. The caller can reconcile
+// the new bytes and publish them, but must not retry the logical mutation.
+var errConfigCommitCommitted = errors.New("config commit completed")
+
+// errConfigCommitUncertain means the post-rename state could not be read
+// back. The caller must surface an explicit uncertain outcome and leave the
+// next reload to reconcile the on-disk document.
+var errConfigCommitUncertain = errors.New("config commit outcome is uncertain")
+
+// errAtomicWriteCommitted means the rename completed and the new bytes are in
+// the named destination, but a post-rename durability step failed. Callers
+// must not blindly retry such an operation: the logical write already won.
+var errAtomicWriteCommitted = errors.New("config write committed with uncertain durability")
+
 var configTestHooks struct {
 	sync.Mutex
 	beforeOpen        func(string)
 	beforeCommitCheck func()
+	afterCommitRename func() error
 }
 
 func runConfigBeforeOpenHook(path string) {
@@ -32,6 +48,16 @@ func runConfigBeforeCommitCheckHook() {
 	if hook != nil {
 		hook()
 	}
+}
+
+func runConfigAfterCommitRenameHook() error {
+	configTestHooks.Lock()
+	hook := configTestHooks.afterCommitRename
+	configTestHooks.Unlock()
+	if hook != nil {
+		return hook()
+	}
+	return nil
 }
 
 func sameBytesFingerprint(data []byte, digest [sha256.Size]byte) bool {
@@ -59,6 +85,11 @@ func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
 		os.Remove(tmp)
 		return err
 	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return err
+	}
 	if err := f.Close(); err != nil {
 		os.Remove(tmp)
 		return err
@@ -66,6 +97,9 @@ func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
 	if err := os.Rename(tmp, path); err != nil {
 		os.Remove(tmp)
 		return err
+	}
+	if err := syncConfigParent(filepath.Dir(path)); err != nil {
+		return fmt.Errorf("%w: sync config parent: %v", errAtomicWriteCommitted, err)
 	}
 	return nil
 }
