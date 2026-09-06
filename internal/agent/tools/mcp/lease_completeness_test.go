@@ -42,6 +42,93 @@ func TestSuccessfulAddRemoveReclaimsEveryLeaseReference(t *testing.T) {
 	require.Zero(t, leases.Len(), "add followed by remove must reclaim the lease registry entry")
 }
 
+func TestAddRollbackConsumesItsLastLeaseReferenceOnce(t *testing.T) {
+	tests := map[string]struct {
+		cancelBeforeReacquire bool
+		want                  error
+	}{
+		"initializer error": {
+			want: errors.New("initializer failed"),
+		},
+		"canceled reacquire": {
+			cancelBeforeReacquire: true,
+			want:                  context.Canceled,
+		},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			store := isolatedMCPStore(t)
+			owner, err := Acquire()
+			require.NoError(t, err)
+			defer func() { require.NoError(t, owner.Close(context.Background())) }()
+
+			const serverName = "add-rollback-lease"
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			initializerReady := make(chan struct{})
+			releaseInitializer := make(chan struct{})
+			waiterRetained := make(chan struct{})
+			waiterAcquired := make(chan struct{})
+			releaseWaiter := make(chan struct{})
+			initialize := func(
+				_ context.Context,
+				_ *config.ConfigStore,
+				_ string,
+				_ config.MCPConfig,
+				_ config.VariableResolver,
+				admission *serverAdmission,
+			) error {
+				defer admission.done()
+				blocker := serverLeaseFor(serverName)
+				blocker.Lock()
+				go func() {
+					waiter := serverLeaseFor(serverName)
+					close(waiterRetained)
+					waiter.Lock()
+					close(waiterAcquired)
+					<-releaseWaiter
+					waiter.Unlock()
+				}()
+				<-waiterRetained
+				close(initializerReady)
+				<-releaseInitializer
+				blocker.Unlock()
+				<-waiterAcquired
+				if test.cancelBeforeReacquire {
+					return nil
+				}
+				return test.want
+			}
+
+			addDone := make(chan error, 1)
+			go func() {
+				addDone <- addServerWithInitializer(
+					ctx, store, serverName,
+					config.MCPConfig{Type: config.MCPStdio, Command: "unused"},
+					initialize,
+				)
+			}()
+			waitForRequest(t, initializerReady)
+			if test.cancelBeforeReacquire {
+				cancel()
+			}
+			close(releaseInitializer)
+			waitForRequest(t, waiterAcquired)
+			close(releaseWaiter)
+
+			got := <-addDone
+			if test.cancelBeforeReacquire {
+				require.ErrorIs(t, got, context.Canceled)
+			} else {
+				require.ErrorIs(t, got, test.want)
+			}
+			require.Zero(t, leases.Len())
+			_, exists := store.MCPConfig(serverName)
+			require.False(t, exists)
+		})
+	}
+}
+
 func TestRetiredClientCannotPublishAfterReplacement(t *testing.T) {
 	const name = "retired-publication"
 	store := config.NewTestStore(&config.Config{MCP: config.MCPs{

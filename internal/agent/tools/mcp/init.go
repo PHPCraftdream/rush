@@ -586,6 +586,9 @@ type refreshRequest struct {
 	name      string
 	cfg       *config.ConfigStore
 	admission serverAdmission
+	// deferUntilCommit retains a notification received before its candidate
+	// session is published.
+	deferUntilCommit bool
 }
 
 // serverAdmission pins one owner generation and one server epoch. Its init
@@ -654,9 +657,14 @@ func (a *serverAdmission) notificationsValid() bool {
 		return true
 	}
 	lifecycleMu.Lock()
-	valid := (!a.suppressUntilCommit || a.committed) && a.validLocked()
+	valid := a.notificationsValidLocked()
 	lifecycleMu.Unlock()
 	return valid
+}
+
+func (a *serverAdmission) notificationsValidLocked() bool {
+	return a == nil || a.owner == nil || a.cfg == nil ||
+		(!a.suppressUntilCommit || a.committed) && a.validLocked()
 }
 
 func (a *serverAdmission) validLocked() bool {
@@ -1006,6 +1014,16 @@ func (o *Owner) nextRefresh() (refreshRequest, bool) {
 	lifecycleMu.Lock()
 	defer lifecycleMu.Unlock()
 	for key, request := range o.refreshPending {
+		if !request.admission.validLocked() {
+			delete(o.refreshPending, key)
+			continue
+		}
+		if request.deferUntilCommit {
+			if _, ready := sessions.Get(request.name); !ready {
+				continue
+			}
+			request.deferUntilCommit = false
+		}
 		delete(o.refreshPending, key)
 		o.refreshRunning[key] = struct{}{}
 		return request, true
@@ -1015,10 +1033,19 @@ func (o *Owner) nextRefresh() (refreshRequest, bool) {
 
 func (o *Owner) enqueueRefresh(request refreshRequest) {
 	lifecycleMu.Lock()
+	wake := o.enqueueRefreshLocked(request)
+	lifecycleMu.Unlock()
+	if wake {
+		o.signalRefresh()
+	}
+}
+
+// enqueueRefreshLocked admits one generation of refresh work. lifecycleMu
+// must be held by the caller.
+func (o *Owner) enqueueRefreshLocked(request refreshRequest) bool {
 	if owner != o || o.closing || request.admission.owner != o ||
 		!request.admission.validLocked() {
-		lifecycleMu.Unlock()
-		return
+		return false
 	}
 	epoch := request.admission.epoch
 	if request.admission.committedName != "" {
@@ -1026,21 +1053,38 @@ func (o *Owner) enqueueRefresh(request refreshRequest) {
 	}
 	key := refreshKey{name: request.name, kind: request.kind, epoch: epoch}
 	if _, exists := o.refreshPending[key]; exists {
-		lifecycleMu.Unlock()
-		return
+		return false
 	}
 	// If the same key is already running, retaining one pending request marks
 	// it dirty. The worker will run it once more after the in-flight snapshot
 	// returns, coalescing any further notifications into that rerun.
 	o.refreshPending[key] = request
-	lifecycleMu.Unlock()
+	return true
+}
 
+func (o *Owner) signalRefresh() {
 	select {
 	case o.refreshCh <- struct{}{}:
 	default:
 		// The pending map is the authoritative queue. The channel is only a
 		// wake-up edge, so a saturated channel does not drop a refresh.
 	}
+}
+
+// activateRefreshesLocked releases refreshes retained by a candidate until
+// its session is published. lifecycleMu must be held by the caller.
+func (o *Owner) activateRefreshesLocked(name string, epoch uint64) bool {
+	wake := false
+	for key, request := range o.refreshPending {
+		if key.name != name || key.epoch != epoch || !request.deferUntilCommit {
+			continue
+		}
+		request.deferUntilCommit = false
+		request.admission.committed = true
+		o.refreshPending[key] = request
+		wake = true
+	}
+	return wake
 }
 
 func (o *Owner) runRefresh(request refreshRequest) {
@@ -1176,7 +1220,11 @@ func (o *Owner) commitRenewal(admission *serverAdmission, name string, session *
 	sessions.Set(name, session)
 	admission.committed = true
 	setState(name, StateConnected, nil, session, counts)
+	wakeRefresh := o.activateRefreshesLocked(name, admission.epoch)
 	lifecycleMu.Unlock()
+	if wakeRefresh {
+		o.signalRefresh()
+	}
 	if hadOldSession && oldSession != session {
 		retireMCPClient(name, oldSession)
 	}
@@ -1537,29 +1585,50 @@ func InitializeSingle(ctx context.Context, name string, cfg *config.ConfigStore)
 	}
 	defer o.endInit()
 
+	lease := serverLeaseFor(name)
+	if !lease.lockContext(ctx, true) {
+		return ctx.Err()
+	}
+
 	m, exists := cfg.MCPConfig(name)
 	if !exists {
+		lease.Unlock()
 		return fmt.Errorf("mcp '%s' not found in configuration", name)
 	}
 
 	if m.Disabled {
 		lifecycleMu.Lock()
-		accepted := owner == o && !o.closing && o.generation == generation
+		current, currentExists := cfg.MCPConfig(name)
+		accepted := o.isCurrentLocked() && currentExists && reflect.DeepEqual(current, m)
+		var canceled []context.CancelFunc
 		if accepted {
+			canceled = o.invalidateServerLocked(name)
 			setState(name, StateDisabled, nil, nil, Counts{})
 		}
-		lifecycleMu.Unlock()
+		brokerForEvent := broker
 		if accepted {
-			publishStateEvent(name, StateDisabled, nil, Counts{})
+			brokerForEvent.Publish(pubsub.UpdatedEvent, Event{
+				Type: EventStateChanged, Name: name, State: StateDisabled,
+			})
+		}
+		lifecycleMu.Unlock()
+		lease.Unlock()
+		for _, cancel := range canceled {
+			cancel()
+		}
+		if !accepted {
+			return ErrOwnerBusy
 		}
 		slog.Debug("Skipping disabled MCP", "name", name)
 		return nil
 	}
 
-	admitted, err := o.admitServer(ctx, cfg, name, true)
+	admitted, err := o.admitServerForConfig(ctx, cfg, name, m, true)
 	if err != nil {
+		lease.Unlock()
 		return err
 	}
+	lease.Unlock()
 	return initClientAdmitted(admitted.ctx, cfg, name, m, cfg.Resolver(), &admitted)
 }
 
@@ -1693,8 +1762,15 @@ func publishPreparedClient(cfg *config.ConfigStore, name string, prepared *prepa
 		Prompts: len(prompts),
 	}
 	setState(name, StateConnected, nil, session, counts)
+	wakeRefresh := false
+	if admission != nil && admission.owner != nil {
+		wakeRefresh = admission.owner.activateRefreshesLocked(name, admission.epoch)
+	}
 	brokerForEvent := broker
 	lifecycleMu.Unlock()
+	if wakeRefresh {
+		admission.owner.signalRefresh()
+	}
 	if hadOldSession && oldSession != session {
 		retireMCPClient(name, oldSession)
 	}
@@ -2276,6 +2352,7 @@ func addServerWithInitializer(
 	if initErr != nil {
 		lease.Lock()
 		rollbackAddedServer(o, cfg, name, &admission, transaction)
+		initLeaseRetained = false
 		lease.Unlock()
 		if errors.Is(initErr, ErrOwnerBusy) {
 			return ErrOwnerBusy
@@ -2288,6 +2365,7 @@ func addServerWithInitializer(
 	if !lease.reacquireContext(ctx, true) {
 		lease.Lock()
 		rollbackAddedServer(o, cfg, name, &admission, transaction)
+		initLeaseRetained = false
 		lease.Unlock()
 		return ctx.Err()
 	}
@@ -2797,13 +2875,11 @@ func getOrRenewClient(ctx context.Context, cfg *config.ConfigStore, name string)
 	}
 	lease.Unlock()
 
+	// The candidate connection remains caller-cancellable until promotion.
+	// createSessionWithAdmission then hands its lifetime context over to the
+	// owner when the candidate is committed, so a promoted session survives
+	// the caller's cancellation.
 	sessionCtx = operationCtx
-	if o != nil {
-		// The returned client lease owns only the caller's operation context.
-		// The renewed MCP session itself must survive that lease closing and
-		// remain attached to the owner until the next lifecycle transition.
-		sessionCtx = o.lifecycleCtx
-	}
 	newSession, err := createSessionWithAdmission(sessionCtx, name, m, cfg.Resolver(), admission)
 	if err != nil {
 		finish()
@@ -3064,10 +3140,12 @@ func createSession(ctx context.Context, name string, m config.MCPConfig, resolve
 // owner cancellation can abort initialization, but once the candidate is
 // published admission completion must not cancel the SDK connection context.
 type sessionContext struct {
-	owner      context.Context
-	candidate  context.Context
-	done       chan struct{}
-	workerDone chan struct{}
+	owner           context.Context
+	candidate       context.Context
+	done            chan struct{}
+	workerDone      chan struct{}
+	candidateStop   func() bool
+	candidateCancel context.CancelFunc
 
 	mu       sync.Mutex
 	promoted bool
@@ -3076,11 +3154,17 @@ type sessionContext struct {
 }
 
 func newSessionContext(owner, candidate context.Context) *sessionContext {
+	return newSessionContextWithCleanup(owner, candidate, nil, nil)
+}
+
+func newSessionContextWithCleanup(owner, candidate context.Context, candidateCancel context.CancelFunc, candidateStop func() bool) *sessionContext {
 	s := &sessionContext{
-		owner:      owner,
-		candidate:  candidate,
-		done:       make(chan struct{}),
-		workerDone: make(chan struct{}),
+		owner:           owner,
+		candidate:       candidate,
+		done:            make(chan struct{}),
+		workerDone:      make(chan struct{}),
+		candidateCancel: candidateCancel,
+		candidateStop:   candidateStop,
 	}
 	go func() {
 		defer close(s.workerDone)
@@ -3104,23 +3188,41 @@ func newSessionContext(owner, candidate context.Context) *sessionContext {
 
 func (s *sessionContext) finish(source context.Context, candidate bool) bool {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.closed || (candidate && s.promoted) {
+		s.mu.Unlock()
 		return false
 	}
 	s.err = source.Err()
 	s.closed = true
 	close(s.done)
+	cancel := s.candidateCancel
+	stop := s.candidateStop
+	s.candidateCancel = nil
+	s.candidateStop = nil
+	s.mu.Unlock()
+	if stop != nil {
+		stop()
+	}
+	if cancel != nil {
+		cancel()
+	}
 	return true
 }
 
 func (s *sessionContext) promote() bool {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.closed {
+		s.mu.Unlock()
 		return false
 	}
 	s.promoted = true
+	stop := s.candidateStop
+	s.candidateStop = nil
+	s.candidateCancel = nil
+	s.mu.Unlock()
+	if stop != nil {
+		stop()
+	}
 	return true
 }
 
@@ -3133,6 +3235,16 @@ func (s *sessionContext) abort() {
 	s.err = context.Canceled
 	s.closed = true
 	close(s.done)
+	cancel := s.candidateCancel
+	stop := s.candidateStop
+	s.candidateCancel = nil
+	s.candidateStop = nil
+	if stop != nil {
+		stop()
+	}
+	if cancel != nil {
+		cancel()
+	}
 }
 
 func (s *sessionContext) Deadline() (time.Time, bool) { return s.owner.Deadline() }
@@ -3152,7 +3264,19 @@ func createSessionWithAdmission(ctx context.Context, name string, m config.MCPCo
 	var handoff *sessionContext
 	sessionCtx := ctx
 	if admission != nil && admission.owner != nil {
-		handoff = newSessionContext(admission.owner.lifecycleCtx, admission.ctx)
+		candidateCtx := admission.ctx
+		var candidateCancel context.CancelFunc
+		var candidateStop func() bool
+		if ctx != nil {
+			candidateCtx, candidateCancel = context.WithCancel(admission.ctx)
+			candidateStop = context.AfterFunc(ctx, candidateCancel)
+		}
+		handoff = newSessionContextWithCleanup(
+			admission.owner.lifecycleCtx,
+			candidateCtx,
+			candidateCancel,
+			candidateStop,
+		)
 		sessionCtx = handoff
 	}
 	lifetimeCtx, cancelSession := context.WithCancelCause(sessionCtx)
@@ -3281,19 +3405,46 @@ func transportCleanup(transport mcp.Transport) func() {
 func notifyListChanged(admission *serverAdmission, name string, kind refreshKind) {
 	eventType := listChangedEventType(kind)
 	if admission == nil || admission.owner == nil {
-		publishEvent(pubsub.UpdatedEvent, Event{Type: eventType, Name: name})
+		lifecycleMu.Lock()
+		broker.Publish(pubsub.UpdatedEvent, Event{Type: eventType, Name: name})
+		lifecycleMu.Unlock()
 		return
 	}
-	if !admission.notificationsValid() {
+
+	// Admission, queueing, and the raw notification form one lifecycle
+	// transition. A delete or disable that wins the lifecycle lock first will
+	// invalidate the generation and suppress both the refresh and its event.
+	lifecycleMu.Lock()
+	if !admission.notificationsValidLocked() {
+		lifecycleMu.Unlock()
 		return
 	}
-	admission.owner.enqueueRefresh(refreshRequest{
+	request := refreshRequest{
 		kind:      kind,
 		name:      name,
 		cfg:       admission.cfg,
 		admission: *admission,
-	})
-	publishEvent(pubsub.UpdatedEvent, Event{Type: eventType, Name: name})
+	}
+	if !admission.committed {
+		if _, ready := sessions.Get(name); !ready {
+			request.deferUntilCommit = true
+		}
+	}
+	wake := admission.owner.enqueueRefreshLocked(request)
+	if !wake {
+		// A duplicate pending/running request is still a valid notification;
+		// only generation admission decides whether its raw event is published.
+		if owner != admission.owner || admission.owner.closing ||
+			!admission.validLocked() {
+			lifecycleMu.Unlock()
+			return
+		}
+	}
+	broker.Publish(pubsub.UpdatedEvent, Event{Type: eventType, Name: name})
+	lifecycleMu.Unlock()
+	if wake {
+		admission.owner.signalRefresh()
+	}
 }
 
 func listChangedEventType(kind refreshKind) EventType {
