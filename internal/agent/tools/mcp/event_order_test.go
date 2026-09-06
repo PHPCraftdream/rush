@@ -10,6 +10,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func providerlessMCPStore(t *testing.T) *config.ConfigStore {
+	t.Helper()
+	// Keep these lifecycle fixtures independent of provider discovery. The
+	// environment is restored by testing.T after each test.
+	t.Setenv("RUSH_DISABLE_DEFAULT_PROVIDERS", "1")
+	return isolatedMCPStore(t)
+}
+
 func TestReplacePublishesStateEventsForResultBranches(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -62,7 +70,7 @@ func TestReplacePublishesStateEventsForResultBranches(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			store := isolatedMCPStore(t)
+			store := providerlessMCPStore(t)
 			oldConfig := config.MCPConfig{Type: config.MCPStdio, Command: test.oldName}
 			require.NoError(t, store.PersistMCPConfig(config.ScopeGlobal, test.oldName, oldConfig))
 			owner, err := Acquire()
@@ -126,7 +134,7 @@ func TestReplacePublishesStateEventsForResultBranches(t *testing.T) {
 }
 
 func TestStartFallbackDisabledPublishesBeforeLeaseUnlock(t *testing.T) {
-	store := isolatedMCPStore(t)
+	store := providerlessMCPStore(t)
 	const name = "fallback-disabled-order"
 	disabled := config.MCPConfig{Type: config.MCPStdio, Command: name, Disabled: true}
 	require.NoError(t, store.PersistMCPConfig(config.ScopeGlobal, name, disabled))
@@ -168,7 +176,7 @@ func TestStartFallbackDisabledPublishesBeforeLeaseUnlock(t *testing.T) {
 }
 
 func TestReplacePublishesBeforeBlockedCloseAndConcurrentRemove(t *testing.T) {
-	store := isolatedMCPStore(t)
+	store := providerlessMCPStore(t)
 	const name = "replace-close-remove-order"
 	oldConfig := config.MCPConfig{Type: config.MCPStdio, Command: "old"}
 	require.NoError(t, store.PersistMCPConfig(config.ScopeGlobal, name, oldConfig))
