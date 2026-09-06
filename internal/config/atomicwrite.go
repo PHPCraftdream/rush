@@ -78,13 +78,18 @@ func CommitOutcomeFromError(err error) (*CommitOutcome, bool) {
 
 var configTestHooks struct {
 	sync.Mutex
-	beforeOpen         func(string)
-	beforeCommitCheck  func()
-	afterCommitRename  func() error
-	beforeCommitRename func()
-	forceLinkNoReplace bool
-	unlinkTemp         func(int, string) error
-	syncParent         func(string) error
+	beforeOpen            func(string)
+	beforeCommitCheck     func()
+	afterCommitRename     func() error
+	afterCommitRenamePath func(string) error
+	beforeCommitRename    func()
+	beforeMCPReconcile    func(string, []byte)
+	forceLinkNoReplace    bool
+	renameNoReplace       func(int, string, int, string) error
+	unlinkTemp            func(int, string) error
+	syncParent            func(string) error
+	syncParentFD          func(int) error
+	syncParentFile        func(*os.File) error
 }
 
 func runConfigBeforeOpenHook(path string) {
@@ -115,12 +120,35 @@ func runConfigAfterCommitRenameHook() error {
 	return nil
 }
 
+func runConfigAfterCommitRenameHookForPath(path string) error {
+	configTestHooks.Lock()
+	hookPath := configTestHooks.afterCommitRenamePath
+	hook := configTestHooks.afterCommitRename
+	configTestHooks.Unlock()
+	if hookPath != nil {
+		return hookPath(path)
+	}
+	if hook != nil {
+		return hook()
+	}
+	return nil
+}
+
 func runConfigBeforeCommitRenameHook() {
 	configTestHooks.Lock()
 	hook := configTestHooks.beforeCommitRename
 	configTestHooks.Unlock()
 	if hook != nil {
 		hook()
+	}
+}
+
+func runConfigBeforeMCPReconcileHook(path string, data []byte) {
+	configTestHooks.Lock()
+	hook := configTestHooks.beforeMCPReconcile
+	configTestHooks.Unlock()
+	if hook != nil {
+		hook(path, data)
 	}
 }
 
@@ -134,6 +162,26 @@ func syncConfigParent(path string) error {
 	return syncConfigParentOnDisk(path)
 }
 
+func syncConfigParentFile(file *os.File) error {
+	configTestHooks.Lock()
+	hookFD := configTestHooks.syncParentFD
+	hookFile := configTestHooks.syncParentFile
+	hookPath := configTestHooks.syncParent
+	configTestHooks.Unlock()
+	if hookFD != nil {
+		return hookFD(int(file.Fd()))
+	}
+	if hookFile != nil {
+		return hookFile(file)
+	}
+	if hookPath != nil {
+		// Keep the legacy test seam working. Production commits use the
+		// already-open descriptor below and never reopen this pathname.
+		return hookPath(file.Name())
+	}
+	return file.Sync()
+}
+
 func sameBytesFingerprint(data []byte, digest [sha256.Size]byte) bool {
 	return sha256.Sum256(data) == digest
 }
@@ -145,6 +193,15 @@ func newCommitOutcome(path string, committed, reconciled bool, causes ...error) 
 		Path:       filepath.Clean(path),
 		Cause:      errors.Join(causes...),
 	}
+}
+
+func cloneCommitOutcome(outcome *CommitOutcome, reconciled bool) *CommitOutcome {
+	if outcome == nil {
+		return nil
+	}
+	clone := *outcome
+	clone.Reconciled = reconciled
+	return &clone
 }
 
 func commitPostCommitCauses(renameErr, hookErr, parentSyncErr error) []error {

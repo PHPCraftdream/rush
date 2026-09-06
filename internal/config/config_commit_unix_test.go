@@ -114,3 +114,53 @@ func TestCommitOutcomeIsPublicAndPreservesCause(t *testing.T) {
 	require.ErrorIs(t, outcome, parentSyncErr)
 	require.NotContains(t, err.Error(), `{"new":true}`)
 }
+
+func TestUnixCommitSyncsPinnedParentAfterPathSwap(t *testing.T) {
+	root := t.TempDir()
+	parentPath := filepath.Join(root, "config")
+	require.NoError(t, os.Mkdir(parentPath, 0o755))
+	path := filepath.Join(parentPath, "rush.json")
+	require.NoError(t, os.WriteFile(path, []byte(`{"old":true}`), 0o600))
+	parentInfo, err := os.Stat(parentPath)
+	require.NoError(t, err)
+	wantParent := configFileIdentityOf(parentInfo)
+	var syncedParent configFileIdentity
+
+	configTestHooks.Lock()
+	previousAfter := configTestHooks.afterCommitRenamePath
+	previousSyncFile := configTestHooks.syncParentFile
+	configTestHooks.afterCommitRenamePath = func(hookPath string) error {
+		if hookPath != path {
+			return nil
+		}
+		if err := os.Rename(parentPath, parentPath+".moved"); err != nil {
+			return err
+		}
+		return os.Mkdir(parentPath, 0o755)
+	}
+	configTestHooks.syncParentFile = func(file *os.File) error {
+		info, statErr := file.Stat()
+		if statErr != nil {
+			return statErr
+		}
+		syncedParent = configFileIdentityOf(info)
+		return file.Sync()
+	}
+	configTestHooks.Unlock()
+	t.Cleanup(func() {
+		configTestHooks.Lock()
+		configTestHooks.afterCommitRenamePath = previousAfter
+		configTestHooks.syncParentFile = previousSyncFile
+		configTestHooks.Unlock()
+	})
+
+	_, expected, err := readStableConfigFile(path)
+	require.NoError(t, err)
+	_, err = commitConfigFile(path, path, []byte(`{"new":true}`), 0o600, expected, 0, false)
+	var outcome *CommitOutcome
+	require.ErrorAs(t, err, &outcome)
+	require.True(t, outcome.Committed)
+	require.False(t, outcome.Reconciled)
+	require.Equal(t, wantParent, syncedParent)
+	require.Equal(t, []byte(`{"new":true}`), mustReadFile(t, filepath.Join(parentPath+".moved", "rush.json")))
+}

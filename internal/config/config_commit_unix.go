@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -68,10 +69,17 @@ func commitConfigFile(selectedPath, commitPath string, data []byte, perm os.File
 	}
 	tmp := os.NewFile(uintptr(tmpFD), tmpName)
 	removeTemp := true
+	tmpInfo, err := tmp.Stat()
+	if err != nil {
+		_ = tmp.Close()
+		_ = unlinkConfigTempAt(parentFD, tmpName)
+		return reloadFileFingerprint{}, err
+	}
+	tmpIdentity := configFileIdentityOf(tmpInfo)
 	defer func() {
 		_ = tmp.Close()
 		if removeTemp {
-			_ = unlinkConfigTempAt(parentFD, tmpName)
+			_ = cleanupConfigTempAlias(parentFD, tmpName, tmpIdentity)
 		}
 	}()
 	if _, err := tmp.Write(data); err != nil {
@@ -113,13 +121,25 @@ func commitConfigFile(selectedPath, commitPath string, data []byte, perm os.File
 	}
 	if renameErr == nil {
 		removeTemp = false
+	} else if published {
+		// A linkat-based no-replace publication can fail after the destination
+		// link is visible, while removing the temporary spelling. Retry only
+		// after proving that the name still denotes our original inode.
+		if cleanupErr := cleanupConfigTempAlias(parentFD, tmpName, tmpIdentity); cleanupErr == nil {
+			removeTemp = false
+		} else {
+			renameErr = errors.Join(renameErr, cleanupErr)
+		}
+		// The publication boundary has passed. Do not perform another
+		// pathname mutation after the parent descriptor is synced.
+		removeTemp = false
 	}
 
 	// From this point onward the logical mutation has happened. Keep the
 	// result distinct from a pre-rename verification failure so callers do not
 	// retry a mutation that may already be visible on disk.
-	hookErr := runConfigAfterCommitRenameHook()
-	parentSyncErr := syncConfigParent(parentPath)
+	hookErr := runConfigAfterCommitRenameHookForPath(commitPath)
+	parentSyncErr := syncConfigParentFile(parent)
 	committed, committedFingerprint, selectedReadbackErr := readStableConfigFileOwned(selectedPath, expectedOwner, enforceOwner)
 	targetData, _, targetReadbackErr := readStableConfigFileOwned(commitPath, expectedOwner, enforceOwner)
 	selectedMatches := selectedReadbackErr == nil && sameBytesFingerprint(committed, sha256.Sum256(data)) &&

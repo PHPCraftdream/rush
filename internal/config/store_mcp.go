@@ -18,8 +18,7 @@ var (
 )
 
 type mcpCommitUncertainError struct {
-	cause      error
-	reconciled bool
+	cause error
 }
 
 func (e *mcpCommitUncertainError) Error() string {
@@ -31,8 +30,8 @@ func (e *mcpCommitUncertainError) Unwrap() []error {
 }
 
 func mcpCommitWasReconciled(err error) bool {
-	var outcome *mcpCommitUncertainError
-	return errors.As(err, &outcome) && outcome.reconciled
+	outcome, ok := CommitOutcomeFromError(err)
+	return ok && outcome.Committed && outcome.Reconciled
 }
 
 // MCPMutationResult describes the effective configuration on both sides of a

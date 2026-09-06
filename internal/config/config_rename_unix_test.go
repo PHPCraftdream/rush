@@ -57,6 +57,88 @@ func TestRenameConfigTempAtNoReplaceLeavesExistingDestination(t *testing.T) {
 	require.Equal(t, []byte(`{"new":true}`), mustReadFile(t, filepath.Join(root, tempName)))
 }
 
+func TestRenameConfigTempAtRejectsForeignHardLink(t *testing.T) {
+	root := t.TempDir()
+	tempName := ".rush.json.test.tmp"
+	aliasName := "foreign-alias"
+	destinationName := "rush.json"
+	tempPath := filepath.Join(root, tempName)
+	require.NoError(t, os.WriteFile(tempPath, []byte(`{"new":true}`), 0o600))
+	require.NoError(t, os.Link(tempPath, filepath.Join(root, aliasName)))
+
+	dirFD, err := unix.Open(root, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	require.NoError(t, err)
+	dir := os.NewFile(uintptr(dirFD), root)
+	t.Cleanup(func() { _ = dir.Close() })
+
+	configTestHooks.Lock()
+	previousForce := configTestHooks.forceLinkNoReplace
+	configTestHooks.forceLinkNoReplace = true
+	configTestHooks.Unlock()
+	t.Cleanup(func() {
+		configTestHooks.Lock()
+		configTestHooks.forceLinkNoReplace = previousForce
+		configTestHooks.Unlock()
+	})
+
+	published, err := renameConfigTempAt(dirFD, tempName, dirFD, destinationName, false)
+	require.ErrorIs(t, err, ErrConfigHardLink)
+	require.False(t, published)
+	require.NoError(t, os.Chmod(tempPath, 0o600))
+	require.Equal(t, []byte(`{"new":true}`), mustReadFile(t, filepath.Join(root, aliasName)))
+}
+
+func TestCommitLinkatDoesNotRemoveReplacedTemporaryAlias(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "rush.json")
+	data := []byte(`{"new":true}`)
+	_, expected, err := readStableConfigFile(path)
+	require.ErrorIs(t, err, os.ErrNotExist)
+
+	unlinkErr := errors.New("persistent temporary-name unlink failure")
+	configTestHooks.Lock()
+	previousForce := configTestHooks.forceLinkNoReplace
+	previousUnlink := configTestHooks.unlinkTemp
+	configTestHooks.forceLinkNoReplace = true
+	configTestHooks.unlinkTemp = func(dirFD int, name string) error {
+		if err := unix.Unlinkat(dirFD, name, 0); err != nil {
+			return err
+		}
+		foreignPath := filepath.Join(root, name)
+		if err := os.WriteFile(foreignPath, []byte(`{"foreign":true}`), 0o600); err != nil {
+			return err
+		}
+		return unlinkErr
+	}
+	configTestHooks.Unlock()
+	t.Cleanup(func() {
+		configTestHooks.Lock()
+		configTestHooks.forceLinkNoReplace = previousForce
+		configTestHooks.unlinkTemp = previousUnlink
+		configTestHooks.Unlock()
+	})
+
+	_, err = commitConfigFile(path, path, data, 0o600, expected, 0, false)
+	var outcome *CommitOutcome
+	require.ErrorAs(t, err, &outcome)
+	require.True(t, outcome.Committed)
+	require.True(t, outcome.Reconciled)
+	require.ErrorIs(t, outcome, unlinkErr)
+	entries, readDirErr := os.ReadDir(root)
+	require.NoError(t, readDirErr)
+	require.Len(t, entries, 2)
+	foreignFound := false
+	for _, entry := range entries {
+		if entry.Name() == "rush.json" {
+			continue
+		}
+		foreignFound = true
+		require.Equal(t, []byte(`{"foreign":true}`), mustReadFile(t, filepath.Join(root, entry.Name())))
+	}
+	require.True(t, foreignFound)
+	require.Equal(t, data, mustReadFile(t, path))
+}
+
 func TestCommitLinkatUnlinkFailureUsesPostCommitReconciliation(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "rush.json")

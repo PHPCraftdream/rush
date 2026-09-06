@@ -80,7 +80,7 @@ func commitConfigFile(selectedPath, commitPath string, data []byte, perm os.File
 		return reloadFileFingerprint{}, fmt.Errorf("%w: rename config file: %v", errConfigCommitVerification, err)
 	}
 	removeTemp = false
-	hookErr := runConfigAfterCommitRenameHook()
+	hookErr := runConfigAfterCommitRenameHookForPath(commitPath)
 	parentSyncErr := syncConfigParent(filepath.Dir(commitPath))
 	committed, committedFingerprint, selectedReadbackErr := readStableConfigFileOwned(selectedPath, expectedOwner, enforceOwner)
 	targetData, _, targetReadbackErr := readStableConfigFileOwned(commitPath, expectedOwner, enforceOwner)

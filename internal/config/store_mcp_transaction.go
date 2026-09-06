@@ -564,17 +564,31 @@ func (s *ConfigStore) writeMCPFileChanges(files *mcpLockedFiles) error {
 				committed = reconciled
 				applyCommittedMCPFingerprint(files, record, committed)
 				record.expectation = committed
-				return &mcpCommitUncertainError{cause: commitErr, reconciled: true}
+				if outcome, outcomeOK := CommitOutcomeFromError(commitErr); outcomeOK {
+					commitErr = cloneCommitOutcome(outcome, true)
+				}
+				return &mcpCommitUncertainError{cause: commitErr}
 			}
 			if errors.Is(commitErr, errConfigCommitUncertain) || errors.Is(commitErr, errConfigCommitCommitted) {
 				// A readback/check-hook failure is recoverable when a fresh
-				// read proves that the requested bytes are present.
-				reconciled, ok := s.reconcileMCPCommit(record)
-				if !ok {
+				// read proves that the requested bytes are present. Preserve the
+				// public outcome and upgrade its reconciliation status so every
+				// caller observes one authoritative status source.
+				if outcome, outcomeOK := CommitOutcomeFromError(commitErr); outcomeOK && outcome.Reconciled {
+					commitErr = nil
+				} else {
+					reconciled, ok := s.reconcileMCPCommit(record)
+					if !ok {
+						return &mcpCommitUncertainError{cause: commitErr}
+					}
+					committed = reconciled
+					applyCommittedMCPFingerprint(files, record, committed)
+					record.expectation = committed
+					if outcome, outcomeOK := CommitOutcomeFromError(commitErr); outcomeOK {
+						commitErr = cloneCommitOutcome(outcome, true)
+					}
 					return &mcpCommitUncertainError{cause: commitErr}
 				}
-				committed = reconciled
-				commitErr = nil
 			} else if errors.Is(commitErr, errConfigCommitVerification) {
 				return fmt.Errorf("%w: %w", ErrMCPStale, commitErr)
 			}
@@ -593,6 +607,7 @@ func (s *ConfigStore) reconcileMCPCommit(record *mcpFileRecord) (reloadFileFinge
 	if err != nil {
 		return reloadFileFingerprint{}, false
 	}
+	runConfigBeforeMCPReconcileHook(record.selectedPath, record.data)
 	data, fingerprint, err := readStableConfigFileOwned(record.selectedPath, owner, enforce)
 	if err != nil || !sameBytesFingerprint(data, sha256.Sum256(record.data)) {
 		return reloadFileFingerprint{}, false
