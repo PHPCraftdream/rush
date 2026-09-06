@@ -3184,8 +3184,11 @@ func removeServerWithResultPersistence(
 		detached = detachSessionLocked(name)
 		clearAdvertised(name)
 		states.Del(name)
-		unlock()
+		// The delete is part of this server's lease linearization point. It
+		// must reach subscribers before the lease is released to a same-name
+		// Add, and before the detached session can block in Close.
 		publishEvent(pubsub.DeletedEvent, Event{Type: EventStateChanged, Name: name, State: StateDisabled})
+		unlock()
 		if commitUncertainty != nil {
 			return fmt.Errorf("failed to remove pending MCP server %q from config: %w", name, commitUncertainty)
 		}
@@ -3227,6 +3230,7 @@ func removeServerWithResultPersistence(
 			}
 			return nil
 		}
+		publishEvent(pubsub.DeletedEvent, Event{Type: EventStateChanged, Name: name, State: StateDisabled})
 		unlock()
 		startFallback(context.Background(), cfg, name, result.NewConfig, o)
 		if commitUncertainty != nil {
@@ -3234,8 +3238,8 @@ func removeServerWithResultPersistence(
 		}
 		return nil
 	}
-	unlock()
 	publishEvent(pubsub.DeletedEvent, Event{Type: EventStateChanged, Name: name, State: StateDisabled})
+	unlock()
 	if commitUncertainty != nil {
 		return fmt.Errorf("failed to remove MCP server %q from config: %w", name, commitUncertainty)
 	}

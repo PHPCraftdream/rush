@@ -535,6 +535,81 @@ func TestAddLinearizesPublicationBeforeConcurrentRemoveAfterCommit(t *testing.T)
 	}
 }
 
+func TestRemovePublishesBeforeBlockedCloseAndConcurrentAdd(t *testing.T) {
+	store := isolatedMCPStore(t)
+	const name = "remove-close-add-order"
+	configured := config.MCPConfig{Type: config.MCPStdio, Command: name}
+	require.NoError(t, store.PersistMCPConfig(config.ScopeGlobal, name, configured))
+	owner, err := Acquire()
+	require.NoError(t, err)
+
+	closeStarted := make(chan struct{})
+	releaseClose := make(chan struct{})
+	oldSession := &ClientSession{terminal: func() {
+		close(closeStarted)
+		<-releaseClose
+	}}
+	sessions.Set(name, oldSession)
+	setState(name, StateConnected, nil, oldSession, Counts{})
+
+	eventsCtx, cancelEvents := context.WithCancel(context.Background())
+	defer cancelEvents()
+	events := SubscribeEvents(eventsCtx)
+
+	leaseUnlocked := make(chan struct{})
+	var leaseUnlockedOnce sync.Once
+	serverLeaseHooks.Lock()
+	serverLeaseHooks.afterUnlockFn = func(lease *serverLease) {
+		if lease.name == name {
+			leaseUnlockedOnce.Do(func() { close(leaseUnlocked) })
+		}
+	}
+	serverLeaseHooks.Unlock()
+	defer func() {
+		serverLeaseHooks.Lock()
+		serverLeaseHooks.beforeLockFn = nil
+		serverLeaseHooks.afterLockFn = nil
+		serverLeaseHooks.afterUnlockFn = nil
+		serverLeaseHooks.Unlock()
+		select {
+		case <-releaseClose:
+		default:
+			close(releaseClose)
+		}
+		require.NoError(t, owner.Close(context.Background()))
+	}()
+
+	removeDone := make(chan error, 1)
+	go func() { removeDone <- RemoveServer(store, name) }()
+	awaitMCPSignal(t, leaseUnlocked)
+	awaitMCPSignal(t, closeStarted)
+
+	addDone := make(chan error, 1)
+	go func() {
+		addDone <- addServerWithInitializer(
+			context.Background(), store, name, configured, fakeMCPInitializer,
+		)
+	}()
+	require.NoError(t, awaitMCPError(t, addDone))
+
+	first := <-events
+	require.Equal(t, pubsub.DeletedEvent, first.Type)
+	require.Equal(t, name, first.Payload.Name)
+	require.Equal(t, StateDisabled, first.Payload.State)
+	second := <-events
+	require.Equal(t, pubsub.UpdatedEvent, second.Type)
+	require.Equal(t, name, second.Payload.Name)
+	require.Equal(t, StateConnected, second.Payload.State)
+
+	close(releaseClose)
+	require.NoError(t, awaitMCPError(t, removeDone))
+	select {
+	case event := <-events:
+		t.Fatalf("remove published a late event after close release: %v", event)
+	default:
+	}
+}
+
 func TestTypedPrecommitOutcomeDoesNotDisableRuntime(t *testing.T) {
 	store := isolatedMCPStore(t)
 	name := "precommit-disable"
