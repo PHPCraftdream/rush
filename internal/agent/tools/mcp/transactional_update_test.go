@@ -514,8 +514,11 @@ func TestReplaceServerDurableCommitDuringCloseHonorsCloseDeadline(t *testing.T) 
 	})
 	select {
 	case event := <-events:
-		t.Fatalf("uncommitted replacement candidate published an event: %v", event)
-	case <-time.After(50 * time.Millisecond):
+		require.Equal(t, pubsub.UpdatedEvent, event.Type)
+		require.Equal(t, EventToolsListChanged, event.Payload.Type)
+		require.Equal(t, "new-name", event.Payload.Name)
+	case <-time.After(time.Second):
+		t.Fatal("replacement candidate notification was dropped before commit")
 	}
 
 	closeCtx, cancelClose := context.WithTimeout(context.Background(), 20*time.Millisecond)

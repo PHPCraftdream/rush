@@ -798,6 +798,28 @@ func TestOwnerCommitRenewalPublishesSuccessfulSession(t *testing.T) {
 }
 
 func TestSessionContextPromotionLinearizesCancellation(t *testing.T) {
+	t.Run("caller cancellation is observed synchronously", func(t *testing.T) {
+		ownerCtx, ownerCancel := context.WithCancel(context.Background())
+		defer ownerCancel()
+		callerCtx, callerCancel := context.WithCancel(context.Background())
+		candidateCtx, candidateCancel := context.WithCancel(context.Background())
+		handoff := newSessionContextWithCaller(ownerCtx, candidateCtx, callerCtx, candidateCancel, nil)
+		callerCancel()
+
+		require.False(t, handoff.promote())
+		require.ErrorIs(t, handoff.Err(), context.Canceled)
+		select {
+		case <-handoff.Done():
+		case <-time.After(time.Second):
+			t.Fatal("caller cancellation did not close the handoff context")
+		}
+		select {
+		case <-handoff.workerDone:
+		case <-time.After(time.Second):
+			t.Fatal("rejected promotion left its handoff goroutine running")
+		}
+	})
+
 	t.Run("cancellation wins", func(t *testing.T) {
 		ownerCtx, ownerCancel := context.WithCancel(context.Background())
 		defer ownerCancel()

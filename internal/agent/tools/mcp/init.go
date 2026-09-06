@@ -576,9 +576,10 @@ const (
 )
 
 type refreshKey struct {
-	name  string
-	kind  refreshKind
-	epoch uint64
+	name           string
+	kind           refreshKind
+	epoch          uint64
+	candidateToken uint64
 }
 
 type refreshRequest struct {
@@ -589,6 +590,9 @@ type refreshRequest struct {
 	// deferUntilCommit retains a notification received before its candidate
 	// session is published.
 	deferUntilCommit bool
+	// candidateToken keeps a deferred notification attached to the exact
+	// candidate admission. It must not be inferred from the server name.
+	candidateToken uint64
 }
 
 // serverAdmission pins one owner generation and one server epoch. Its init
@@ -663,8 +667,23 @@ func (a *serverAdmission) notificationsValid() bool {
 }
 
 func (a *serverAdmission) notificationsValidLocked() bool {
-	return a == nil || a.owner == nil || a.cfg == nil ||
-		(!a.suppressUntilCommit || a.committed) && a.validLocked()
+	if a == nil || a.owner == nil || a.cfg == nil {
+		return true
+	}
+	if a.suppressUntilCommit && !a.committed {
+		return a.candidateValidLocked()
+	}
+	return a.validLocked()
+}
+
+// candidateValidLocked validates a replacement candidate without consulting
+// the durable config. The durable replacement may already have committed and
+// removed the old name while runtime publication is still waiting on the
+// lifecycle lock. lifecycleMu must be held by the caller.
+func (a *serverAdmission) candidateValidLocked() bool {
+	return (a.promoted || a.ctx == nil || a.ctx.Err() == nil) && owner == a.owner &&
+		!a.owner.closing && a.owner.generation == a.generation &&
+		a.owner.serverEpochs[a.name] == a.epoch
 }
 
 func (a *serverAdmission) validLocked() bool {
@@ -1014,15 +1033,19 @@ func (o *Owner) nextRefresh() (refreshRequest, bool) {
 	lifecycleMu.Lock()
 	defer lifecycleMu.Unlock()
 	for key, request := range o.refreshPending {
+		if request.deferUntilCommit {
+			if !request.admission.notificationsValidLocked() {
+				delete(o.refreshPending, key)
+				continue
+			}
+			// A deferred request is activated only by the exact candidate
+			// admission that owns it. Seeing a session under the same name is
+			// insufficient: during same-name replacement it is the old session.
+			continue
+		}
 		if !request.admission.validLocked() {
 			delete(o.refreshPending, key)
 			continue
-		}
-		if request.deferUntilCommit {
-			if _, ready := sessions.Get(request.name); !ready {
-				continue
-			}
-			request.deferUntilCommit = false
 		}
 		delete(o.refreshPending, key)
 		o.refreshRunning[key] = struct{}{}
@@ -1044,14 +1067,10 @@ func (o *Owner) enqueueRefresh(request refreshRequest) {
 // must be held by the caller.
 func (o *Owner) enqueueRefreshLocked(request refreshRequest) bool {
 	if owner != o || o.closing || request.admission.owner != o ||
-		!request.admission.validLocked() {
+		!request.admission.notificationsValidLocked() {
 		return false
 	}
-	epoch := request.admission.epoch
-	if request.admission.committedName != "" {
-		epoch = request.admission.committedEpoch
-	}
-	key := refreshKey{name: request.name, kind: request.kind, epoch: epoch}
+	key := refreshKeyForRequest(request)
 	if _, exists := o.refreshPending[key]; exists {
 		return false
 	}
@@ -1071,20 +1090,47 @@ func (o *Owner) signalRefresh() {
 	}
 }
 
-// activateRefreshesLocked releases refreshes retained by a candidate until
-// its session is published. lifecycleMu must be held by the caller.
-func (o *Owner) activateRefreshesLocked(name string, epoch uint64) bool {
+// activateRefreshesLocked releases refreshes retained by one exact candidate
+// after its session is published. lifecycleMu must be held by the caller.
+func (o *Owner) activateRefreshesLocked(admission *serverAdmission) bool {
+	if admission == nil || admission.serverCancelToken == 0 {
+		return false
+	}
 	wake := false
 	for key, request := range o.refreshPending {
-		if key.name != name || key.epoch != epoch || !request.deferUntilCommit {
+		if !request.deferUntilCommit || request.candidateToken != admission.serverCancelToken {
 			continue
 		}
+		delete(o.refreshPending, key)
 		request.deferUntilCommit = false
-		request.admission.committed = true
-		o.refreshPending[key] = request
+		request.candidateToken = 0
+		request.admission.committed = admission.committed
+		request.admission.committedName = admission.committedName
+		request.admission.committedEpoch = admission.committedEpoch
+		if request.admission.committedName == "" {
+			request.admission.committedName = admission.name
+			request.admission.committedEpoch = admission.epoch
+		}
+		requestKey := refreshKeyForRequest(request)
+		if _, exists := o.refreshPending[requestKey]; !exists {
+			o.refreshPending[requestKey] = request
+		}
 		wake = true
 	}
 	return wake
+}
+
+func refreshKeyForRequest(request refreshRequest) refreshKey {
+	epoch := request.admission.epoch
+	if request.admission.committedName != "" {
+		epoch = request.admission.committedEpoch
+	}
+	return refreshKey{
+		name:           request.name,
+		kind:           request.kind,
+		epoch:          epoch,
+		candidateToken: request.candidateToken,
+	}
 }
 
 func (o *Owner) runRefresh(request refreshRequest) {
@@ -1092,7 +1138,7 @@ func (o *Owner) runRefresh(request refreshRequest) {
 	if request.admission.committedName != "" {
 		epoch = request.admission.committedEpoch
 	}
-	key := refreshKey{name: request.name, kind: request.kind, epoch: epoch}
+	key := refreshKeyForRequest(request)
 	defer func() {
 		lifecycleMu.Lock()
 		delete(o.refreshRunning, key)
@@ -1220,7 +1266,7 @@ func (o *Owner) commitRenewal(admission *serverAdmission, name string, session *
 	sessions.Set(name, session)
 	admission.committed = true
 	setState(name, StateConnected, nil, session, counts)
-	wakeRefresh := o.activateRefreshesLocked(name, admission.epoch)
+	wakeRefresh := o.activateRefreshesLocked(admission)
 	lifecycleMu.Unlock()
 	if wakeRefresh {
 		o.signalRefresh()
@@ -1764,7 +1810,7 @@ func publishPreparedClient(cfg *config.ConfigStore, name string, prepared *prepa
 	setState(name, StateConnected, nil, session, counts)
 	wakeRefresh := false
 	if admission != nil && admission.owner != nil {
-		wakeRefresh = admission.owner.activateRefreshesLocked(name, admission.epoch)
+		wakeRefresh = admission.owner.activateRefreshesLocked(admission)
 	}
 	brokerForEvent := broker
 	lifecycleMu.Unlock()
@@ -2167,6 +2213,10 @@ func replaceServerWithResultPersistence(
 	admission.committed = newExists && !newDisabled
 	admission.committedName = newName
 	admission.committedEpoch = o.serverEpochs[newName]
+	wakeRefresh := false
+	if admission.committed {
+		wakeRefresh = o.activateRefreshesLocked(&admission)
+	}
 
 	oldSession, hadOldSession := sessions.Get(oldName)
 	_, hadOldState := states.Get(oldName)
@@ -2200,6 +2250,9 @@ func replaceServerWithResultPersistence(
 
 	for _, cancel := range canceled {
 		cancel()
+	}
+	if wakeRefresh {
+		o.signalRefresh()
 	}
 	if hadOldSession && oldSession != prepared.session {
 		retireMCPClient(oldName, oldSession)
@@ -3142,6 +3195,7 @@ func createSession(ctx context.Context, name string, m config.MCPConfig, resolve
 type sessionContext struct {
 	owner           context.Context
 	candidate       context.Context
+	caller          context.Context
 	done            chan struct{}
 	workerDone      chan struct{}
 	candidateStop   func() bool
@@ -3158,9 +3212,18 @@ func newSessionContext(owner, candidate context.Context) *sessionContext {
 }
 
 func newSessionContextWithCleanup(owner, candidate context.Context, candidateCancel context.CancelFunc, candidateStop func() bool) *sessionContext {
+	return newSessionContextWithCaller(owner, candidate, nil, candidateCancel, candidateStop)
+}
+
+func newSessionContextWithCaller(
+	owner, candidate, caller context.Context,
+	candidateCancel context.CancelFunc,
+	candidateStop func() bool,
+) *sessionContext {
 	s := &sessionContext{
 		owner:           owner,
 		candidate:       candidate,
+		caller:          caller,
 		done:            make(chan struct{}),
 		workerDone:      make(chan struct{}),
 		candidateCancel: candidateCancel,
@@ -3215,6 +3278,20 @@ func (s *sessionContext) promote() bool {
 		s.mu.Unlock()
 		return false
 	}
+	// Promotion is the handoff linearization point. Check every context that
+	// can cancel the candidate while holding the same mutex that selects the
+	// winner over the cancellation worker. The caller check is essential:
+	// canceling a caller schedules candidate cancellation asynchronously, so
+	// checking only candidate.Err() permits a late publish.
+	for _, ctx := range []context.Context{s.owner, s.candidate, s.caller} {
+		if ctx == nil || ctx.Err() == nil {
+			continue
+		}
+		stop, cancel := s.rejectLocked(ctx.Err())
+		s.mu.Unlock()
+		stopCandidate(stop, cancel)
+		return false
+	}
 	s.promoted = true
 	stop := s.candidateStop
 	s.candidateStop = nil
@@ -3226,25 +3303,35 @@ func (s *sessionContext) promote() bool {
 	return true
 }
 
-func (s *sessionContext) abort() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.closed {
-		return
-	}
-	s.err = context.Canceled
+func (s *sessionContext) rejectLocked(err error) (func() bool, context.CancelFunc) {
+	s.err = err
 	s.closed = true
 	close(s.done)
-	cancel := s.candidateCancel
 	stop := s.candidateStop
-	s.candidateCancel = nil
+	cancel := s.candidateCancel
 	s.candidateStop = nil
+	s.candidateCancel = nil
+	return stop, cancel
+}
+
+func stopCandidate(stop func() bool, cancel context.CancelFunc) {
 	if stop != nil {
 		stop()
 	}
 	if cancel != nil {
 		cancel()
 	}
+}
+
+func (s *sessionContext) abort() {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return
+	}
+	stop, cancel := s.rejectLocked(context.Canceled)
+	s.mu.Unlock()
+	stopCandidate(stop, cancel)
 }
 
 func (s *sessionContext) Deadline() (time.Time, bool) { return s.owner.Deadline() }
@@ -3271,9 +3358,10 @@ func createSessionWithAdmission(ctx context.Context, name string, m config.MCPCo
 			candidateCtx, candidateCancel = context.WithCancel(admission.ctx)
 			candidateStop = context.AfterFunc(ctx, candidateCancel)
 		}
-		handoff = newSessionContextWithCleanup(
+		handoff = newSessionContextWithCaller(
 			admission.owner.lifecycleCtx,
 			candidateCtx,
+			ctx,
 			candidateCancel,
 			candidateStop,
 		)
@@ -3425,9 +3513,14 @@ func notifyListChanged(admission *serverAdmission, name string, kind refreshKind
 		cfg:       admission.cfg,
 		admission: *admission,
 	}
-	if !admission.committed {
-		if _, ready := sessions.Get(name); !ready {
+	if !admission.committed && admission.serverCancelToken != 0 {
+		// A replacement candidate must remain dirty even when an old
+		// same-name session is still published. Its notification is never
+		// allowed to refresh that old session.
+		_, ready := sessions.Get(name)
+		if admission.suppressUntilCommit || !ready {
 			request.deferUntilCommit = true
+			request.candidateToken = admission.serverCancelToken
 		}
 	}
 	wake := admission.owner.enqueueRefreshLocked(request)
@@ -3435,7 +3528,7 @@ func notifyListChanged(admission *serverAdmission, name string, kind refreshKind
 		// A duplicate pending/running request is still a valid notification;
 		// only generation admission decides whether its raw event is published.
 		if owner != admission.owner || admission.owner.closing ||
-			!admission.validLocked() {
+			!admission.notificationsValidLocked() {
 			lifecycleMu.Unlock()
 			return
 		}

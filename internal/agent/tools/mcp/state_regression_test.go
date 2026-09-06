@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/pubsub"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/require"
 )
@@ -334,6 +335,75 @@ func TestListChangedRefreshIsAsyncAndStaleAdmissionIsIgnored(t *testing.T) {
 	notifyListChanged(&admission, name, refreshToolsKind)
 	time.Sleep(25 * time.Millisecond)
 	require.Equal(t, []string{"keep"}, GetServerToolNames(name), "a stale notification must not refresh the registry")
+}
+
+func TestCandidateListChangedIsRetainedUntilExactCommit(t *testing.T) {
+	const name = "candidate-notification"
+	store := config.NewTestStore(&config.Config{MCP: config.MCPs{
+		name: {Type: config.MCPStdio, Command: "unused"},
+	}})
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer func() { require.NoError(t, owner.Close(context.Background())) }()
+
+	oldSession := &ClientSession{}
+	sessions.Set(name, oldSession)
+	setState(name, StateConnected, nil, oldSession, Counts{})
+	admission, err := owner.admitReplacementCandidate(context.Background(), store, name)
+	require.NoError(t, err)
+	admission.suppressUntilCommit = true
+	defer admission.done()
+
+	eventsCtx, cancelEvents := context.WithCancel(context.Background())
+	defer cancelEvents()
+	events := SubscribeEvents(eventsCtx)
+	notifyListChanged(&admission, name, refreshToolsKind)
+	select {
+	case event := <-events:
+		require.Equal(t, pubsub.UpdatedEvent, event.Type)
+		require.Equal(t, EventToolsListChanged, event.Payload.Type)
+		require.Equal(t, name, event.Payload.Name)
+	case <-time.After(time.Second):
+		t.Fatal("candidate notification was dropped before commit")
+	}
+
+	request, pending := func() (refreshRequest, bool) {
+		lifecycleMu.Lock()
+		defer lifecycleMu.Unlock()
+		for _, request := range owner.refreshPending {
+			if request.candidateToken == admission.serverCancelToken {
+				return request, true
+			}
+		}
+		return refreshRequest{}, false
+	}()
+	require.True(t, pending)
+	require.True(t, request.deferUntilCommit)
+	require.False(t, func() bool {
+		lifecycleMu.Lock()
+		defer lifecycleMu.Unlock()
+		_, running := owner.refreshRunning[refreshKeyForRequest(request)]
+		return running
+	}(), "pre-commit notification must not refresh the old session")
+	_, ok := owner.nextRefresh()
+	require.False(t, ok, "a deferred candidate notification must wait for its commit")
+
+	newSession := &ClientSession{}
+	lifecycleMu.Lock()
+	admission.committed = true
+	admission.committedName = name
+	admission.committedEpoch = admission.epoch
+	sessions.Set(name, newSession)
+	require.True(t, owner.activateRefreshesLocked(&admission))
+	lifecycleMu.Unlock()
+
+	lifecycleMu.Lock()
+	defer lifecycleMu.Unlock()
+	activated, ok := owner.refreshPending[refreshKey{name: name, kind: refreshToolsKind, epoch: admission.epoch}]
+	require.True(t, ok)
+	require.False(t, activated.deferUntilCommit)
+	require.Zero(t, activated.candidateToken)
+	require.True(t, activated.admission.committed)
 }
 
 func TestAddServerRetainsLeaseAcrossRemoveDuringInitialization(t *testing.T) {
