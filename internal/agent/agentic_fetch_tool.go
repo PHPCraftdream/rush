@@ -201,6 +201,7 @@ func (c *coordinator) agenticFetchTool(_ context.Context, client *http.Client) (
 				IsSubAgent: true,
 				Sessions:   c.sessions,
 				Messages:   c.messages,
+				Config:     c.cfg,
 				Tools:      fetchTools,
 			})
 

@@ -132,6 +132,10 @@ func TestRushInfo_MCPStates(t *testing.T) {
 
 	cfg := config.NewTestStore(&config.Config{
 		Providers: csync.NewMap[string, config.ProviderConfig](),
+		MCP: config.MCPs{
+			"github":     {},
+			"filesystem": {},
+		},
 	})
 
 	var b strings.Builder
@@ -143,6 +147,33 @@ func TestRushInfo_MCPStates(t *testing.T) {
 	filesystemIdx := strings.Index(output, "filesystem")
 	githubIdx := strings.Index(output, "github")
 	require.Less(t, filesystemIdx, githubIdx, "filesystem should appear before github")
+}
+
+func TestRushInfo_MCPStatesOnlyShowsConfiguredServers(t *testing.T) {
+	t.Parallel()
+
+	states := map[string]mcp.ClientInfo{
+		"owned": {
+			Name:   "owned",
+			State:  mcp.StateConnected,
+			Counts: mcp.Counts{Tools: 1},
+		},
+		"foreign": {
+			Name:  "foreign",
+			State: mcp.StateError,
+			Error: errors.New("must not be exposed"),
+		},
+	}
+	cfg := config.NewTestStore(&config.Config{
+		Providers: csync.NewMap[string, config.ProviderConfig](),
+		MCP:       config.MCPs{"owned": {}},
+	})
+
+	var b strings.Builder
+	writeMCP(&b, states, cfg)
+	output := b.String()
+	require.Contains(t, output, "owned = connected")
+	require.NotContains(t, output, "foreign")
 }
 
 func TestRushInfo_YoloMode(t *testing.T) {
@@ -253,7 +284,11 @@ func TestRushInfo_DeterministicOrdering(t *testing.T) {
 
 	cfg := config.NewTestStore(&config.Config{
 		Providers: providers,
-		Options:   &config.Options{DisabledTools: []string{"z-tool", "a-tool"}},
+		MCP: config.MCPs{
+			"z-mcp": {},
+			"a-mcp": {},
+		},
+		Options: &config.Options{DisabledTools: []string{"z-tool", "a-tool"}},
 		Permissions: &config.Permissions{
 			AllowedTools: []string{"z-perm", "a-perm"},
 		},

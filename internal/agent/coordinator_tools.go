@@ -98,6 +98,7 @@ func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, age
 		Sessions:           c.sessions,
 		Messages:           c.messages,
 		Tools:              nil,
+		Config:             c.cfg,
 		Notify:             c.notify,
 		StreamIdleTimeout:  streamIdleTimeout,
 		ToolMaxDuration:    toolMaxDuration,
@@ -510,25 +511,22 @@ func (c *coordinator) rejectScopedCallOnCLIProvider(ctx context.Context, role st
 // (does not change across a config reload), same precedent as
 // prompt.Build's store.WorkingDir()/store.Resolver() reads.
 //
-// MCP tools are the one deliberate exception (task #591/P2-1): the actual
-// tool set below still comes from tools.GetMCPTools, which enumerates the
-// package-level mcp.Tools() registry -- live MCP client connections and
-// their current tool schemas, refreshed asynchronously by each server's own
-// ToolListChangedHandler, EnableServer/DisableServer/RemoveServer, and
-// startup Initialize, none of which are driven by or synchronized with a
-// ConfigStore generation. That registry cannot be pinned to cfg without
+// MCP tool schemas are the one deliberate live-data exception (task #591/P2-1):
+// the tool set below comes from tools.GetMCPTools, which enumerates the
+// package-level mcp.Tools() registry -- live MCP client connections and their
+// current schemas, refreshed asynchronously by each server's own
+// ToolListChangedHandler, EnableServer/DisableServer/RemoveServer, and startup
+// Initialize. The registry cannot be pinned to cfg without
 // either freezing it to a stale tool schema/connection set (breaking
 // reconnection and live tool-list updates) or snapshotting live network
 // state, which is not what config generations represent. So len(cfg.MCP)
 // (the presence gate for ListMCPResourcesTool/ReadMCPResourceTool, the only
 // MCP-derived value that IS plain config data) is pinned like everything
-// else here, but the MCP tool set itself, and the AllowedMCP filter applied
-// to it below, read whatever the live registry holds at call time. A reload
-// landing mid-build can therefore still pair this build's pinned
-// prompt/options/allow-list with MCP tool implementations from a different
-// generation than the rest of the agent -- narrower than the pre-#576
-// torn read (every other tool and the prompt agree with each other and with
-// cfg), but real. See tools.GetMCPTools's doc for the registry side of this.
+// else here, while GetMCPTools applies the consuming ConfigStore's name filter
+// to the live schemas before the AllowedMCP filter. A reload landing mid-build
+// can still pair this build's pinned prompt/options/allow-list with a newer
+// schema for an owned server, which is the intended live-update behavior. See
+// tools.GetMCPTools's doc for the registry side of this.
 //
 // R3-1: when ctx carries CallOptions, the returned slice is scoped to that
 // ONE call (the DisableSubAgents filter, the per-call role gate and the folder-scope filter above

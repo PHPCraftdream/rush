@@ -306,7 +306,10 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	slog.Info("SessionAgent.Run: starting", "sessionID", call.SessionID, "model", smartModel.ModelCfg.Model, "promptLen", len(systemPrompt))
 
 	var instructions strings.Builder
-	for _, server := range mcp.GetStates() {
+	for name, server := range mcp.GetStates() {
+		if !mcp.IsConfigured(a.config, name) {
+			continue
+		}
 		if server.State != mcp.StateConnected {
 			continue
 		}

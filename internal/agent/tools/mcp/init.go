@@ -1086,6 +1086,19 @@ func GetStates() map[string]ClientInfo {
 	return states.Copy()
 }
 
+// IsConfigured reports whether name belongs to the consuming config store.
+// MCP runtime state is process-wide, so callers that serve more than one
+// ConfigStore must apply this ownership check before exposing registry data.
+// A nil store preserves the legacy package-level behavior used by internal
+// test fixtures that do not have a consuming configuration.
+func IsConfigured(cfg *config.ConfigStore, name string) bool {
+	if cfg == nil {
+		return true
+	}
+	_, ok := cfg.MCPConfig(name)
+	return ok
+}
+
 // GetState returns the state of a specific MCP client
 func GetState(name string) (ClientInfo, bool) {
 	return states.Get(name)

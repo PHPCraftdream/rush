@@ -157,6 +157,9 @@ func writeMCP(b *strings.Builder, states map[string]mcp.ClientInfo, cfg *config.
 		}
 		var entries []entry
 		for name, info := range states {
+			if !mcp.IsConfigured(cfg, name) {
+				continue
+			}
 			e := entry{
 				name:  name,
 				state: info.State,
@@ -172,26 +175,28 @@ func writeMCP(b *strings.Builder, states map[string]mcp.ClientInfo, cfg *config.
 			entries = append(entries, e)
 		}
 		slices.SortFunc(entries, func(a, b entry) int { return strings.Compare(a.name, b.name) })
-		b.WriteString("[mcp]\n")
-		for _, e := range entries {
-			switch e.state {
-			case mcp.StateConnected:
-				if e.connectedAt != "" {
-					fmt.Fprintf(b, "%s = connected (%d tools, %d resources) since %s\n", e.name, e.tools, e.resources, e.connectedAt)
-				} else {
-					fmt.Fprintf(b, "%s = connected (%d tools, %d resources)\n", e.name, e.tools, e.resources)
+		if len(entries) > 0 {
+			b.WriteString("[mcp]\n")
+			for _, e := range entries {
+				switch e.state {
+				case mcp.StateConnected:
+					if e.connectedAt != "" {
+						fmt.Fprintf(b, "%s = connected (%d tools, %d resources) since %s\n", e.name, e.tools, e.resources, e.connectedAt)
+					} else {
+						fmt.Fprintf(b, "%s = connected (%d tools, %d resources)\n", e.name, e.tools, e.resources)
+					}
+				case mcp.StateError:
+					if e.err != nil {
+						fmt.Fprintf(b, "%s = error: %s\n", e.name, e.err.Error())
+					} else {
+						fmt.Fprintf(b, "%s = error\n", e.name)
+					}
+				default:
+					fmt.Fprintf(b, "%s = %s\n", e.name, e.state)
 				}
-			case mcp.StateError:
-				if e.err != nil {
-					fmt.Fprintf(b, "%s = error: %s\n", e.name, e.err.Error())
-				} else {
-					fmt.Fprintf(b, "%s = error\n", e.name)
-				}
-			default:
-				fmt.Fprintf(b, "%s = %s\n", e.name, e.state)
 			}
+			b.WriteString("\n")
 		}
-		b.WriteString("\n")
 	}
 
 	// Write configured but not running MCP servers
@@ -199,7 +204,9 @@ func writeMCP(b *strings.Builder, states map[string]mcp.ClientInfo, cfg *config.
 	if len(c.MCP) > 0 {
 		runtimeNames := make(map[string]bool)
 		for name := range states {
-			runtimeNames[name] = true
+			if mcp.IsConfigured(cfg, name) {
+				runtimeNames[name] = true
+			}
 		}
 
 		type configuredEntry struct {

@@ -689,6 +689,9 @@ type externalMCPProxy struct {
 func (p *externalMCPProxy) ListTools() []cliprovider.ExternalMCPTool {
 	var result []cliprovider.ExternalMCPTool
 	for serverName, tools := range mcp.Tools() {
+		if !mcp.IsConfigured(p.cfg, serverName) {
+			continue
+		}
 		for _, t := range tools {
 			result = append(result, cliprovider.ExternalMCPTool{
 				ServerName:  serverName,

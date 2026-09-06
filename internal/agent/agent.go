@@ -527,6 +527,7 @@ type sessionAgent struct {
 	systemPromptPrefix *csync.Value[string]
 	systemPrompt       *csync.Value[string]
 	tools              *csync.Slice[fantasy.AgentTool]
+	config             *config.ConfigStore
 
 	// runWg tracks all active Run() calls across this agent. CancelAll waits
 	// on this WaitGroup to ensure all dispatcher goroutines have fully
@@ -746,7 +747,11 @@ type SessionAgentOptions struct {
 	Sessions             session.Service
 	Messages             message.Service
 	Tools                []fantasy.AgentTool
-	Notify               pubsub.Publisher[notify.Notification]
+	// Config is the MCP ownership scope for this agent. MCP runtime state is
+	// process-wide, so every turn filters registry-derived instructions by
+	// this consuming ConfigStore.
+	Config *config.ConfigStore
+	Notify pubsub.Publisher[notify.Notification]
 	// StreamIdleTimeout overrides streamIdleTimeoutDefault when > 0.
 	// Plumbed from Options.StreamIdleTimeoutSeconds in the coordinator.
 	StreamIdleTimeout time.Duration
@@ -846,6 +851,7 @@ func NewSessionAgent(
 		fastModel:                  csync.NewValue(opts.FastModel),
 		systemPromptPrefix:         csync.NewValue(opts.SystemPromptPrefix),
 		systemPrompt:               csync.NewValue(opts.SystemPrompt),
+		config:                     opts.Config,
 		isSubAgent:                 opts.IsSubAgent,
 		sessions:                   opts.Sessions,
 		messages:                   opts.Messages,

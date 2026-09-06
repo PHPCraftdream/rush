@@ -20,12 +20,13 @@ var whitelistDockerTools = []string{
 	"mcp_docker_code-mode",
 }
 
-// GetMCPTools gets all the currently available MCP tools.
+// GetMCPTools gets all the currently available MCP tools owned by cfg.
 //
-// "Currently available" is deliberately live, not pinned to any particular
-// config generation: this enumerates the package-level mcp.Tools() registry
+// The schemas are deliberately live, not pinned to any particular config
+// generation: this enumerates the package-level mcp.Tools() registry
 // (internal/agent/tools/mcp), which holds live MCP client connections and
-// their current tool schemas. That registry is refreshed asynchronously --
+// their current tool schemas, then keeps only server names present in cfg.
+// That registry is refreshed asynchronously --
 // by each server's own ToolListChangedHandler, by EnableServer/
 // DisableServer/RemoveServer, and by startup Initialize -- independently of
 // any single agent build. A caller (see coordinator.buildTools) that has
@@ -43,6 +44,9 @@ var whitelistDockerTools = []string{
 func GetMCPTools(permissions permission.Service, cfg *config.ConfigStore, wd string) []*Tool {
 	var result []*Tool
 	for mcpName, tools := range mcp.Tools() {
+		if !mcp.IsConfigured(cfg, mcpName) {
+			continue
+		}
 		for _, tool := range tools {
 			result = append(result, &Tool{
 				mcpName:     mcpName,
