@@ -332,13 +332,16 @@ func TestConfigStoreExactMCPDisabledOverrideMutatesShadowedGlobal(t *testing.T) 
 	workspacePath := filepath.Join(root, "rush.json")
 	writeMCPDefinition(t, workspacePath, name)
 	require.NoError(t, store.ReloadFromDisk(context.Background()))
+	workspaceBefore, err := os.ReadFile(workspacePath)
+	require.NoError(t, err)
 	require.NoError(t, store.PersistMCPConfigExact(ScopeGlobal, name, MCPConfig{
 		Type: MCPHttp,
 		URL:  "http://global.example",
 	}))
 
-	// The workspace definition remains effective, but the exact operation must
-	// mutate the literal global entry instead of rejecting the shadowed name.
+	// Exact scope controls the file being mutated, not whether the selected
+	// field contributes to the merged view. The workspace fixture omits the
+	// false disabled field, so it inherits the explicit true global value.
 	require.NoError(t, store.PersistMCPDisabledOverrideExact(ScopeGlobal, name, true))
 	globalData, err := os.ReadFile(GlobalConfigData())
 	require.NoError(t, err)
@@ -349,7 +352,10 @@ func TestConfigStoreExactMCPDisabledOverrideMutatesShadowedGlobal(t *testing.T) 
 	require.True(t, disabled)
 	effective, ok := store.MCPConfig(name)
 	require.True(t, ok)
-	require.False(t, effective.Disabled)
+	require.True(t, effective.Disabled)
+	workspaceAfter, err := os.ReadFile(workspacePath)
+	require.NoError(t, err)
+	require.Equal(t, workspaceBefore, workspaceAfter)
 
 	require.NoError(t, store.PersistMCPDisabledOverrideExact(ScopeGlobal, name, false))
 	globalData, err = os.ReadFile(GlobalConfigData())
@@ -358,6 +364,9 @@ func TestConfigStoreExactMCPDisabledOverrideMutatesShadowedGlobal(t *testing.T) 
 	require.True(t, ok)
 	require.NoError(t, json.Unmarshal(entry["disabled"], &disabled))
 	require.False(t, disabled)
+	effective, ok = store.MCPConfig(name)
+	require.True(t, ok)
+	require.False(t, effective.Disabled)
 }
 
 func TestLoadFromBytesRejectsWrongTypedMCPDisabledOverlay(t *testing.T) {
