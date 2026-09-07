@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -74,15 +75,22 @@ func waitForRequest(t *testing.T, started <-chan struct{}) {
 func TestDisableServerCancelsBlockedInitAndLeavesNoLateSession(t *testing.T) {
 	started := make(chan struct{}, 1)
 	canceled := make(chan struct{}, 1)
+	release := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		signalStarted(started)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		w.(http.Flusher).Flush()
-		<-r.Context().Done()
-		signalStarted(canceled)
+		select {
+		case <-r.Context().Done():
+			signalStarted(canceled)
+		case <-release:
+		}
 	}))
-	defer server.Close()
+	defer func() {
+		close(release)
+		server.Close()
+	}()
 	const name = "blocked-disable"
 	store := persistedMCPStore(t, name, server.URL, false)
 	owner, err := Acquire()
@@ -1851,6 +1859,22 @@ func signalStarted(ch chan struct{}) {
 	}
 }
 
+const stdioMCPHelperEnv = "RUSH_MCP_STDIO_HELPER"
+
+func TestMCPStdioHelper(t *testing.T) {
+	if os.Getenv(stdioMCPHelperEnv) != "1" {
+		return
+	}
+
+	server := mcp.NewServer(&mcp.Implementation{Name: "stdio-test-server"}, nil)
+	mcp.AddTool(server, &mcp.Tool{Name: "echo"}, func(context.Context, *mcp.CallToolRequest, any) (*mcp.CallToolResult, any, error) {
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "stdio-ok"}}}, nil, nil
+	})
+	if err := server.Run(context.Background(), &mcp.StdioTransport{}); err != nil && !errors.Is(err, io.EOF) {
+		t.Fatal(err)
+	}
+}
+
 func TestInitializePublishesHTTPSessionBeyondAdmission(t *testing.T) {
 	const name = "initialize-live-session"
 	var initializeCalls atomic.Int32
@@ -1893,6 +1917,40 @@ func TestInitializePublishesHTTPSessionBeyondAdmission(t *testing.T) {
 	_, err = state.Client.CallTool(callCtx, &mcp.CallToolParams{Name: "echo"})
 	require.NoError(t, err)
 	require.Equal(t, int32(1), initializeCalls.Load(), "admission completion must not retire the published session")
+}
+
+func TestInitializePublishesStdioSessionBeyondAdmission(t *testing.T) {
+	const name = "initialize-live-stdio-session"
+	store := isolatedMCPStore(t)
+	require.NoError(t, store.SetConfigField(config.ScopeGlobal, "mcp."+name, config.MCPConfig{
+		Type:    config.MCPStdio,
+		Command: os.Args[0],
+		Args:    []string{"-test.run=TestMCPStdioHelper"},
+		Env:     map[string]string{stdioMCPHelperEnv: "1"},
+		Timeout: 1,
+	}))
+
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		require.NoError(t, owner.Close(closeCtx))
+	}()
+
+	owner.Initialize(context.Background(), nil, store, false)
+	state, ok := GetState(name)
+	require.True(t, ok)
+	require.Equal(t, StateConnected, state.State)
+	time.Sleep(1200 * time.Millisecond)
+
+	callCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	require.NoError(t, state.Client.Ping(callCtx, nil))
+	result, err := state.Client.CallTool(callCtx, &mcp.CallToolParams{Name: "echo"})
+	require.NoError(t, err)
+	require.Len(t, result.Content, 1)
+	require.Equal(t, "stdio-ok", result.Content[0].(*mcp.TextContent).Text)
 }
 
 func TestInitializeSinglePinsOwnerAcrossRollover(t *testing.T) {

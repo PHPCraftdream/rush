@@ -462,11 +462,6 @@ func (m *BackgroundShellManager) start(ctx context.Context, sessionID, workingDi
 		bgShell.exitErr = err
 		bgShell.completedAt.Store(time.Now().Unix())
 		m.activeJobs.Add(-1)
-		// Publish completion before arming retention. OnDone callbacks use the
-		// close of done as their delivery gate, and detached completion must not
-		// release the buffers in the small window between those two operations.
-		close(bgShell.done)
-		completionSignaled = true
 		// Schedule buffer release on a timer so the (up to 6 MiB) buffered
 		// stdout/stderr is freed after bufferRetention even if no further
 		// bash task ever calls Cleanup. releaseBuffers is idempotent, so a
@@ -478,6 +473,11 @@ func (m *BackgroundShellManager) start(ctx context.Context, sessionID, workingDi
 		// here is negligible next to a silent process crash if that ever
 		// changes.
 		bgShell.armBufferReleaseTimer(m.bufferRetention)
+		// Arm retention before publishing completion. A detached job with no
+		// pending callback releases its buffers synchronously; closing done only
+		// after that keeps Wait's terminal-state contract complete.
+		close(bgShell.done)
+		completionSignaled = true
 	}()
 
 	return bgShell, nil

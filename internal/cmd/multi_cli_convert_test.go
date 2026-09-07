@@ -142,9 +142,18 @@ func TestToCodexWrushSkillMD_RewritesAllRushSkillReferences(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.NotContains(t, got, "`rush.md` file in this same directory")
-	assert.NotContains(t, got, "rush.md")
 	assert.Contains(t, got, "sibling `../rush/SKILL.md` file")
 	assert.Equal(t, strings.Count(body, "rush.md"), strings.Count(got, "../rush/SKILL.md"))
+}
+
+func TestToCodexWrushSkillMD_DoesNotRewriteWrushFilename(t *testing.T) {
+	const body = "Read the `rush.md` file in this same directory. Keep wrush.md unchanged."
+
+	got, err := toCodexWrushSkillMD("description", body)
+	require.NoError(t, err)
+	assert.Contains(t, got, "sibling `../rush/SKILL.md` file")
+	assert.Contains(t, got, "wrush.md")
+	assert.NotContains(t, got, "w../rush/SKILL.md")
 }
 
 func TestToCodexWrushSkillMD_RejectsMissingCanonicalReference(t *testing.T) {

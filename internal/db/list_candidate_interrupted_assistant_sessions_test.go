@@ -3,18 +3,11 @@ package db
 import (
 	"context"
 	"database/sql"
-	"sync"
 	"testing"
 
-	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-// candDialectOnce mirrors pagDialectOnce in messages_pagination_test.go. The
-// legacy goose API keeps its dialect package-global. These tests stay
-// non-parallel and share a sync.Once guard rather than racing on that state.
-var candDialectOnce sync.Once
 
 const candFixedCreatedAt = int64(1700000000)
 
@@ -24,10 +17,7 @@ func setupCandidateDB(t *testing.T) (context.Context, *sql.DB) {
 	conn, err := openDB(t.TempDir() + "/cand.db")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = conn.Close() })
-	candDialectOnce.Do(func() {
-		require.NoError(t, goose.SetDialect("sqlite3"))
-	})
-	require.NoError(t, goose.Up(conn, "migrations"))
+	require.NoError(t, Migrate(ctx, conn))
 	return ctx, conn
 }
 

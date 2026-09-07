@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -110,7 +111,7 @@ func toCodexWrushSkillMD(description, body string) (string, error) {
 	}
 
 	body = strings.ReplaceAll(body, claudeSameDirReference, codexSiblingReference)
-	body = strings.ReplaceAll(body, "rush.md", "../rush/SKILL.md")
+	body = regexp.MustCompile(`\brush\.md\b`).ReplaceAllString(body, "../rush/SKILL.md")
 	return toSkillMD("wrush", description, body), nil
 }
 

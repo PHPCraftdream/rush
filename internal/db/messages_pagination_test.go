@@ -4,24 +4,15 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"sync"
 	"testing"
 
-	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/require"
 )
-
-// pagDialectOnce guards the legacy goose API's global dialect. These tests use
-// openDB + goose.Up directly rather than db.Migrate, so they must ensure the
-// dialect is set, but calling goose.SetDialect from t.Parallel() tests races
-// on the global. We therefore set it once, serialized, and keep these tests
-// non-parallel.
 
 const pagFixedCreatedAt = int64(1700000000)
 
 // setupPaginationDB opens a fresh SQLite database and applies all migrations,
-// mirroring the pattern in cost_accounting_test.go.
-var pagDialectOnce sync.Once
+// through the provider-backed migration path used by production.
 
 func setupPaginationDB(t *testing.T) (context.Context, *sql.DB) {
 	t.Helper()
@@ -29,10 +20,7 @@ func setupPaginationDB(t *testing.T) (context.Context, *sql.DB) {
 	conn, err := openDB(t.TempDir() + "/pag.db")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = conn.Close() })
-	pagDialectOnce.Do(func() {
-		require.NoError(t, goose.SetDialect("sqlite3"))
-	})
-	require.NoError(t, goose.Up(conn, "migrations"))
+	require.NoError(t, Migrate(ctx, conn))
 	return ctx, conn
 }
 
