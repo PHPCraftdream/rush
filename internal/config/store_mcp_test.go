@@ -126,10 +126,22 @@ func TestMCPPathDataUsesNormalizedDiscoveryKeys(t *testing.T) {
 	t.Parallel()
 
 	root := t.TempDir()
-	path := filepath.Join(root, "rush.json")
-	alias := filepath.Join(root, "nested", "..", "rush.json")
+	physicalPath := filepath.Join(root, "physical", "rush.json")
+	aliasPath := filepath.Join(root, "alias", "rush.json")
+	require.NoError(t, os.MkdirAll(filepath.Dir(physicalPath), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Dir(aliasPath), 0o755))
 	data := []byte("{\"mcp\":{\"server\":{\"type\":\"http\"}}}")
-	fingerprint := reloadFileFingerprint{exists: true, size: int64(len(data))}
+	require.NoError(t, os.WriteFile(physicalPath, data, 0o600))
+	if err := os.Symlink(physicalPath, aliasPath); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	boundData, fingerprint, err := readStableConfigFile(aliasPath)
+	require.NoError(t, err)
+	require.Equal(t, data, boundData)
+	physical := normalizeDiscoveryPath(physicalPath)
+	alias := normalizeDiscoveryPath(aliasPath)
+	require.NotEqual(t, physical, alias)
+	require.Equal(t, normalizeReloadPath(physicalPath), normalizeReloadPath(aliasPath))
 	files := &mcpLockedFiles{
 		data:         make(map[string][]byte),
 		present:      make(map[string]bool),
@@ -139,11 +151,12 @@ func TestMCPPathDataUsesNormalizedDiscoveryKeys(t *testing.T) {
 		records:      make(map[string]*mcpFileRecord),
 	}
 
-	record := files.bindMCPPath(alias, data, true, fingerprint)
-	require.Same(t, record, files.mcpRecord(path))
+	record := files.bindMCPPath(aliasPath, boundData, true, fingerprint)
+	require.Same(t, record, files.mcpRecord(physicalPath))
+	require.NoError(t, os.Remove(physicalPath))
 
 	store := &ConfigStore{}
-	got, present, err := store.mcpPathData(files, path)
+	got, present, err := store.mcpPathData(files, physicalPath)
 	require.NoError(t, err)
 	require.True(t, present)
 	require.Equal(t, data, got)

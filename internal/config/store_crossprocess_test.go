@@ -25,7 +25,7 @@ import (
 // second atomicWriteFile rename would erase the first store's key — a silent
 // cross-process lost update. Run with -race.
 func TestSetConfigFields_TwoStoresSameFile_BothUpdatesSurvive(t *testing.T) {
-	t.Parallel()
+	// Keep this global file-publication stress test out of package parallelism.
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "rush.json")
 

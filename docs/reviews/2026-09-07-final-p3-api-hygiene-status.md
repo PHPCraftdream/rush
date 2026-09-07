@@ -13,7 +13,7 @@ defect; where a source report is absent, this record does not reconstruct it.
 | C1-15 | Historical and unverifiable from this branch. The R1/R2/R3 reports cited by older commits are absent from main; this review records their absence and does not recreate them. |
 | C2 CR-5 | Historical traceability issue. 2026-09-03-round-14-1328.md is present, but the separately cited 2026-09-03-sdk-library-review-round-14-0928.md remains absent and R14 identifiers were reused for incompatible reports. No unverifiable report was added. |
 | C2 CR-6 | Fixed. The CallOptionsSpec doc comment now keeps + permission.BuildFolderScope inside the FolderScope bullet. |
-| C2 CR-8 | Fixed before this session by 7c9637381: fs_list and fs_find each cache resolveScopedPath results within one item, reducing repeated results from the same spelling to one resolution. |
+| C2 CR-8 | Accepted bounded/security performance tradeoff. 7c9637381 only deduplicates repeated spellings; unique fs_find results are capped at 100 and fs_list uses its configured/default listing cap (default 1000), so worst-case resolution remains linear in returned results. Per-result resolveScopedPath is necessary because individual results may traverse symlinks or fall under deny carve-outs; no safe O(1) shortcut preserves those checks. |
 | C3-6 | Historical documentation correction. The round-15 review now says its driveless fixture did not establish the Windows attribution. |
 | C3-8 | Fixed. The helper comment now truthfully says failed observations are retried while attempts remain, with the final attempt reporting the failure; it no longer claims only timing noise can return false. |
 | C3-11 | Historical documentation correction. The round-15 review now records macOS /tmp as /private/tmp, and retracts its blanket correctness attribution. |
@@ -25,7 +25,7 @@ defect; where a source report is absent, this record does not reconstruct it.
 | F13 | Fixed. The sdk.Open doc comment now names os.Chdir correctly. |
 | F14 | Already fixed at current HEAD. getOrRenewClient passes operationCtx; published sessions use the handoff context in createSessionWithAdmission, and the current comments describe that flow. |
 | F15 | Accepted residual compatibility debt. MCP mutation still parses and pretty-prints the complete JSON document; preserving arbitrary user formatting would require a parser/editor rewrite. No risky rewrite was attempted. |
-| F16 | Fixed with regression coverage. The new test verifies that a path bound through one spelling is found through the normalized discovery key used by mcpPathData. |
+| F16 | Fixed with regression coverage. The test uses a real file symlink whose discovery spelling differs from the physical spelling while reload normalization agrees; it binds realistic readStableConfigFile bytes, removes the physical file, then requires mcpPathData to return the transaction-bound bytes. |
 | CH5-9 | Process note recorded here. Earlier empty-body commits were not amended or rewritten. The durable rationale is the current fencing chain: admission snapshots and revisions, server leases, operation references, session retirement, and context promotion together prevent stale MCP generations from publishing or being closed under live operations. |
 
 ## Additional remaining-P3 cross-check
@@ -61,4 +61,15 @@ Executed commands:
 - caps ... go test ./internal/session — PASS (85.992s).
 - caps ... go test ./sdk — PASS (22.145s).
 
-No test failures or flakes were encountered.
+The original verification passed; the follow-up run and its one diagnosed
+Windows test flake are recorded below.
+
+Follow-up acceptance verification:
+
+- The first full config-package run after strengthening F16 exposed a
+  Windows-only Access Denied flake in
+  TestSetConfigFields_TwoStoresSameFile_BothUpdatesSurvive at iteration 37.
+  The test's own two-writer oracle was sound, but its outer t.Parallel allowed
+  interference from package-global commit seams. The test now runs outside
+  package-level parallelism while retaining its internal concurrent writers.
+- $env:GOMAXPROCS='2'; caps 600 capm 3g capc 25 capt 2 belownormal go test ./internal/config — PASS (39.631s).
