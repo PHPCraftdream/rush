@@ -18,6 +18,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config"
@@ -232,8 +233,11 @@ type sessionCloser struct {
 	wake        chan struct{}
 	stop        chan struct{}
 	beforeClose func(closeRequest)
+	stopped     bool
+	work        atomic.Int32
 	stopOnce    sync.Once
 	wg          sync.WaitGroup
+	done        chan struct{}
 }
 
 func newSessionCloser() *sessionCloser {
@@ -241,6 +245,7 @@ func newSessionCloser() *sessionCloser {
 		pending: make(map[*ClientSession]closeRequest),
 		wake:    make(chan struct{}, 1),
 		stop:    make(chan struct{}),
+		done:    make(chan struct{}),
 	}
 }
 
@@ -254,8 +259,13 @@ func (c *sessionCloser) enqueue(request closeRequest) {
 		return
 	}
 	c.mu.Lock()
+	if c.stopped {
+		c.mu.Unlock()
+		return
+	}
 	if _, ok := c.pending[request.session]; !ok {
 		c.pending[request.session] = request
+		c.work.Add(1)
 	}
 	c.mu.Unlock()
 	select {
@@ -282,20 +292,24 @@ func (c *sessionCloser) hasPending() bool {
 
 func (c *sessionCloser) run() {
 	defer c.wg.Done()
+	defer close(c.done)
 	for {
 		if request, ok := c.take(); ok {
-			c.mu.Lock()
-			hook := c.beforeClose
-			c.mu.Unlock()
-			if hook != nil {
-				hook(request)
-			}
-			err := request.session.Close()
-			if request.shutdown {
-				logMCPShutdownError(request.name, err)
-			} else {
-				logMCPCloseError(request.name, err)
-			}
+			func() {
+				defer c.work.Add(-1)
+				c.mu.Lock()
+				hook := c.beforeClose
+				c.mu.Unlock()
+				if hook != nil {
+					hook(request)
+				}
+				err := request.session.Close()
+				if request.shutdown {
+					logMCPShutdownError(request.name, err)
+				} else {
+					logMCPCloseError(request.name, err)
+				}
+			}()
 			continue
 		}
 		select {
@@ -309,7 +323,12 @@ func (c *sessionCloser) run() {
 }
 
 func (c *sessionCloser) stopAndWait() {
-	c.stopOnce.Do(func() { close(c.stop) })
+	c.stopOnce.Do(func() {
+		c.mu.Lock()
+		c.stopped = true
+		c.mu.Unlock()
+		close(c.stop)
+	})
 	select {
 	case c.wake <- struct{}{}:
 	default:
@@ -896,7 +915,9 @@ type Owner struct {
 	config              *config.ConfigStore
 	refreshWG           sync.WaitGroup
 	closeOnce           sync.Once
+	closeDoneOnce       sync.Once
 	closeDone           chan struct{}
+	refreshDone         chan struct{}
 	closeErr            error
 	trackedSessions     map[*ClientSession]struct{}
 	trackedEmpty        chan struct{}
@@ -972,14 +993,18 @@ type fallbackWorker struct {
 	pending  []fallbackRequest
 	wake     chan struct{}
 	stop     chan struct{}
+	stopped  bool
+	work     atomic.Int32
 	stopOnce sync.Once
 	wg       sync.WaitGroup
+	done     chan struct{}
 }
 
 func newFallbackWorker() *fallbackWorker {
 	return &fallbackWorker{
 		wake: make(chan struct{}, 1),
 		stop: make(chan struct{}),
+		done: make(chan struct{}),
 	}
 }
 
@@ -993,7 +1018,12 @@ func (w *fallbackWorker) enqueue(request fallbackRequest) {
 		return
 	}
 	w.mu.Lock()
+	if w.stopped {
+		w.mu.Unlock()
+		return
+	}
 	w.pending = append(w.pending, request)
+	w.work.Add(1)
 	w.mu.Unlock()
 	select {
 	case w.wake <- struct{}{}:
@@ -1014,11 +1044,15 @@ func (w *fallbackWorker) take() (fallbackRequest, bool) {
 
 func (w *fallbackWorker) run() {
 	defer w.wg.Done()
+	defer close(w.done)
 	for {
 		if request, ok := w.take(); ok {
-			if request.ctx.Err() == nil {
-				startFallbackMutation(request.ctx, request.cfg, request.result, request.owner)
-			}
+			func() {
+				defer w.work.Add(-1)
+				if request.ctx.Err() == nil {
+					startFallbackMutation(request.ctx, request.cfg, request.result, request.owner)
+				}
+			}()
 			continue
 		}
 		select {
@@ -1030,7 +1064,12 @@ func (w *fallbackWorker) run() {
 }
 
 func (w *fallbackWorker) stopAndWait() {
-	w.stopOnce.Do(func() { close(w.stop) })
+	w.stopOnce.Do(func() {
+		w.mu.Lock()
+		w.stopped = true
+		w.mu.Unlock()
+		close(w.stop)
+	})
 	select {
 	case w.wake <- struct{}{}:
 	default:
@@ -1042,14 +1081,25 @@ func (o *Owner) enqueueSessionClose(session *ClientSession, shutdown bool) {
 	if o == nil || o.closer == nil {
 		return
 	}
+	lifecycleMu.Lock()
+	if owner != o {
+		lifecycleMu.Unlock()
+		return
+	}
 	session.closeStateMu.Lock()
 	name := session.closeName
 	session.closeStateMu.Unlock()
 	o.closer.enqueue(closeRequest{session: session, name: name, shutdown: shutdown})
+	lifecycleMu.Unlock()
 }
 
 func (o *Owner) enqueueFallback(cfg *config.ConfigStore, result config.MCPMutationResult) {
 	if o == nil || o.fallbackWorker == nil {
+		return
+	}
+	lifecycleMu.Lock()
+	if owner != o || o.closing {
+		lifecycleMu.Unlock()
 		return
 	}
 	o.fallbackWorker.enqueue(fallbackRequest{
@@ -1058,6 +1108,7 @@ func (o *Owner) enqueueFallback(cfg *config.ConfigStore, result config.MCPMutati
 		result: result,
 		owner:  o,
 	})
+	lifecycleMu.Unlock()
 }
 
 func adoptSessionForRetirement(name string, session *ClientSession) {
@@ -1711,25 +1762,48 @@ func acquireImplicit() (*Owner, error) {
 	return acquire(true)
 }
 
+// canReclaimLocked verifies that an implicit owner has no lifecycle work that
+// could outlive the registry reset. lifecycleMu must be held by the caller.
+func (o *Owner) canReclaimLocked() bool {
+	if o == nil || !o.implicit || o.closing || o.initCount != 0 || o.fullInitCount != 0 {
+		return false
+	}
+	if len(o.trackedSessions) != 0 || sessions.Len() != 0 || states.Len() != 0 ||
+		allTools.Len() != 0 || allPrompts.Len() != 0 || allResources.Len() != 0 {
+		return false
+	}
+	if len(o.serverCancels) != 0 || len(o.committedAdmissions) != 0 ||
+		len(o.pendingGlobalAdds) != 0 || len(o.refreshPending) != 0 || len(o.refreshRunning) != 0 {
+		return false
+	}
+	if o.closer != nil && o.closer.work.Load() != 0 {
+		return false
+	}
+	return o.fallbackWorker == nil || o.fallbackWorker.work.Load() == 0
+}
+
 func acquire(implicit bool) (*Owner, error) {
 	lifecycleMu.Lock()
 	if owner != nil {
-		if !owner.implicit || owner.closing || owner.initCount != 0 || len(owner.trackedSessions) != 0 || sessions.Len() != 0 ||
-			states.Len() != 0 || allTools.Len() != 0 || allPrompts.Len() != 0 ||
-			allResources.Len() != 0 {
+		oldOwner := owner
+		if !oldOwner.canReclaimLocked() {
 			lifecycleMu.Unlock()
 			return nil, ErrOwnerBusy
 		}
-		owner.lifecycleCancel()
-		oldOwner := owner
+		oldOwner.closing = true
+		oldOwner.lifecycleCancel()
 		lifecycleMu.Unlock()
-		oldOwner.refreshWG.Wait()
+
+		oldOwner.closeOnce.Do(func() {
+			oldOwner.finishClose(true)
+		})
+		<-oldOwner.closeDone
+
 		lifecycleMu.Lock()
 		if owner != oldOwner {
 			lifecycleMu.Unlock()
 			return nil, ErrOwnerBusy
 		}
-		resetRegistryLocked()
 	}
 
 	generation++
@@ -1752,6 +1826,7 @@ func acquire(implicit bool) (*Owner, error) {
 		trackedEmpty:        closedChannel(),
 		closer:              newSessionCloser(),
 		fallbackWorker:      newFallbackWorker(),
+		refreshDone:         make(chan struct{}),
 	}
 	o.closer.start()
 	o.fallbackWorker.start()
@@ -1771,6 +1846,7 @@ func currentOwner() *Owner {
 
 func (o *Owner) refreshLoop() {
 	defer o.refreshWG.Done()
+	defer close(o.refreshDone)
 	for {
 		select {
 		case <-o.lifecycleCtx.Done():
@@ -2400,14 +2476,14 @@ func (o *Owner) Close(ctx context.Context) error {
 		lifecycleMu.Lock()
 		if owner != o {
 			lifecycleMu.Unlock()
-			close(o.closeDone)
+			o.closeDoneOnce.Do(func() { close(o.closeDone) })
 			return
 		}
 		o.closing = true
 		o.lifecycleCancel()
 		lifecycleMu.Unlock()
 
-		go o.finishClose()
+		go o.finishClose(false)
 	})
 
 	select {
@@ -2418,7 +2494,7 @@ func (o *Owner) Close(ctx context.Context) error {
 	}
 }
 
-func (o *Owner) finishClose() {
+func (o *Owner) finishClose(reclaim bool) {
 	if o.fallbackWorker != nil {
 		o.fallbackWorker.stopAndWait()
 	}
@@ -2472,11 +2548,13 @@ func (o *Owner) finishClose() {
 	if owner == o {
 		clear(o.committedAdmissions)
 		resetRegistryLocked()
-		owner = nil
-		initDone = closedChannel()
+		if !reclaim {
+			owner = nil
+			initDone = closedChannel()
+		}
 		o.closeInitBarrierLocked()
 	}
-	close(o.closeDone)
+	o.closeDoneOnce.Do(func() { close(o.closeDone) })
 	lifecycleMu.Unlock()
 }
 
