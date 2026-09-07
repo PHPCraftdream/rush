@@ -31,6 +31,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -39,9 +40,12 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -247,38 +251,103 @@ func TestR6_1SnapshotPathDetectsNestedMutation(t *testing.T) {
 }
 
 func TestR6_1SnapshotPathIsCompleteAndDetectsNestedMutations(t *testing.T) {
+	t.Run("content modify", func(t *testing.T) {
+		root, nested := r6_1SnapshotFixture(t)
+		before := r6_1RequireLargeDeterministicSnapshot(t, root)
+		require.NoError(t, os.WriteFile(filepath.Join(nested, "000.txt"), []byte("changed"), 0o644))
+		after := r6_1SnapshotPath(t, root)
+		require.True(t, after.complete)
+		require.False(t, r6_1SnapshotsEqual(before, after), "nested content mutation must be observable")
+	})
+
+	t.Run("rename", func(t *testing.T) {
+		root, nested := r6_1SnapshotFixture(t)
+		before := r6_1RequireLargeDeterministicSnapshot(t, root)
+		require.NoError(t, os.Rename(filepath.Join(nested, "001.txt"), filepath.Join(nested, "renamed.txt")))
+		after := r6_1SnapshotPath(t, root)
+		require.True(t, after.complete)
+		require.False(t, r6_1SnapshotsEqual(before, after), "nested rename must be observable")
+	})
+
+	t.Run("delete", func(t *testing.T) {
+		root, nested := r6_1SnapshotFixture(t)
+		before := r6_1RequireLargeDeterministicSnapshot(t, root)
+		require.NoError(t, os.Remove(filepath.Join(nested, "002.txt")))
+		after := r6_1SnapshotPath(t, root)
+		require.True(t, after.complete)
+		require.False(t, r6_1SnapshotsEqual(before, after), "nested deletion must be observable")
+	})
+
+	t.Run("create", func(t *testing.T) {
+		root, nested := r6_1SnapshotFixture(t)
+		before := r6_1RequireLargeDeterministicSnapshot(t, root)
+		require.NoError(t, os.WriteFile(filepath.Join(nested, "created.txt"), []byte("sentinel"), 0o644))
+		after := r6_1SnapshotPath(t, root)
+		require.True(t, after.complete)
+		require.False(t, r6_1SnapshotsEqual(before, after), "nested creation must be observable")
+	})
+
+	t.Run("symlink target", func(t *testing.T) {
+		root, nested := r6_1SnapshotFixture(t)
+		link := filepath.Join(root, "link")
+		err := os.Symlink(filepath.Join(nested, "000.txt"), link)
+		if err != nil {
+			require.True(t, r6_1SymlinkCapabilityError(err), "symlink setup failed for an unexpected reason: %v", err)
+			t.Skipf("filesystem symlinks are unavailable: %v", err)
+		}
+		before := r6_1RequireLargeDeterministicSnapshot(t, root)
+		require.NoError(t, os.Remove(link))
+		require.NoError(t, os.Symlink(filepath.Join(nested, "001.txt"), link))
+		after := r6_1SnapshotPath(t, root)
+		require.True(t, after.complete)
+		require.False(t, r6_1SnapshotsEqual(before, after), "symlink target mutation must be observable")
+	})
+}
+
+func r6_1SnapshotFixture(t *testing.T) (string, string) {
+	t.Helper()
 	root := t.TempDir()
-	nested := filepath.Join(root, "deep", "nested", "tree")
+	nested := root
+	for i := 0; i < 10; i++ {
+		nested = filepath.Join(nested, fmt.Sprintf("level-%02d", i))
+	}
 	require.NoError(t, os.MkdirAll(nested, 0o755))
 	for i := 0; i < 600; i++ {
 		name := filepath.Join(nested, fmt.Sprintf("%03d.txt", i))
 		require.NoError(t, os.WriteFile(name, []byte("sentinel"), 0o644))
 	}
-	link := filepath.Join(root, "link")
-	require.NoError(t, os.Symlink(filepath.Join(nested, "000.txt"), link))
+	return root, nested
+}
+
+func r6_1RequireLargeDeterministicSnapshot(t *testing.T, root string) r6_1PathSnapshot {
+	t.Helper()
 	snapshot := r6_1SnapshotPath(t, root)
 	require.True(t, snapshot.complete)
+	require.Greater(t, len(snapshot.entries), 512, "snapshot must include more than 512 entries")
 	paths := make([]string, 0, len(snapshot.entries))
+	maxDepth := 0
 	for _, entry := range snapshot.entries {
 		paths = append(paths, entry.path)
+		maxDepth = max(maxDepth, strings.Count(entry.path, string(os.PathSeparator)))
 	}
 	require.True(t, sort.StringsAreSorted(paths), "snapshot entries must be deterministic")
+	require.Greater(t, maxDepth, 8, "snapshot must include a tree deeper than eight levels")
+	return snapshot
+}
 
-	require.NoError(t, os.WriteFile(filepath.Join(nested, "000.txt"), []byte("changed"), 0o644))
-	require.False(t, r6_1SnapshotsEqual(snapshot, r6_1SnapshotPath(t, root)), "nested content mutation must be observable")
-	require.NoError(t, os.WriteFile(filepath.Join(nested, "000.txt"), []byte("sentinel"), 0o644))
-	require.NoError(t, os.Rename(filepath.Join(nested, "001.txt"), filepath.Join(nested, "renamed.txt")))
-	require.False(t, r6_1SnapshotsEqual(snapshot, r6_1SnapshotPath(t, root)), "nested rename must be observable")
-	require.NoError(t, os.Rename(filepath.Join(nested, "renamed.txt"), filepath.Join(nested, "001.txt")))
-	require.NoError(t, os.Remove(filepath.Join(nested, "002.txt")))
-	require.False(t, r6_1SnapshotsEqual(snapshot, r6_1SnapshotPath(t, root)), "nested deletion must be observable")
-	require.NoError(t, os.WriteFile(filepath.Join(nested, "002.txt"), []byte("sentinel"), 0o644))
-	require.NoError(t, os.WriteFile(filepath.Join(nested, "created.txt"), []byte("sentinel"), 0o644))
-	require.False(t, r6_1SnapshotsEqual(snapshot, r6_1SnapshotPath(t, root)), "nested creation must be observable")
-	require.NoError(t, os.Remove(filepath.Join(nested, "created.txt")))
-	require.NoError(t, os.Remove(link))
-	require.NoError(t, os.Symlink(filepath.Join(nested, "001.txt"), link))
-	require.False(t, r6_1SnapshotsEqual(snapshot, r6_1SnapshotPath(t, root)), "symlink target mutation must be observable")
+func r6_1SymlinkCapabilityError(err error) bool {
+	if runtime.GOOS != "windows" {
+		return false
+	}
+	var errno syscall.Errno
+	if errors.As(err, &errno) {
+		switch errno {
+		case syscall.Errno(1), syscall.Errno(50), syscall.Errno(120), syscall.Errno(1314):
+			return true
+		}
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "privilege") || strings.Contains(message, "not supported") || strings.Contains(message, "unsupported")
 }
 
 func r6_1IsolatedLibraryVirtualRoot(t *testing.T) string {
