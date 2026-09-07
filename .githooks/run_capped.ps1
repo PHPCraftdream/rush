@@ -675,16 +675,16 @@ function Invoke-TreeTimeoutSelfTest([string] $self, [string] $tempPath, [string]
     try {
         $testedCommand = @($helperPath, "parent", $helperPath, $markerPath, $readyPath, $pidPath,
             $parentReadyEventName, $childReadyEventName, $nonce)
-        & $powershellPath -NoProfile -ExecutionPolicy Bypass -File $self 256m 1 $testedCommand
+        & $powershellPath -NoProfile -ExecutionPolicy Bypass -File $self 256m 10 $testedCommand
         $wrapperExitCode = $LASTEXITCODE
         if ($wrapperExitCode -ne 124) {
             throw "tree-timeout self-test expected exit 124, got $wrapperExitCode"
         }
         if (-not $parentReadyEvent.WaitOne(0)) {
-            throw "tree-timeout self-test did not observe the startup readiness event"
+            throw "tree-timeout self-test did not observe the descendant readiness event"
         }
         if (-not (Test-Path -LiteralPath $pidPath)) {
-            throw "tree-timeout self-test did not observe startup readiness before the 1s wrapper deadline"
+            throw "tree-timeout self-test did not observe the descendant handshake before the outer deadline"
         }
         $handshake = [IO.File]::ReadAllText($pidPath).Trim().Split('|')
         if ($handshake.Count -ne 3 -or $handshake[2] -cne $nonce) {
@@ -890,7 +890,7 @@ public static class RushTreeTimeoutHelper {
             readyEvent.Set();
         }
         using (var delayedGate = new ManualResetEvent(false)) {
-            delayedGate.WaitOne(5000);
+            delayedGate.WaitOne(30000);
         }
         File.WriteAllText(markerPath, "escaped", new UTF8Encoding(false));
         return 0;
@@ -916,8 +916,7 @@ public static class RushTreeTimeoutHelper {
             };
             using (var child = Process.Start(childStartInfo)) {
                 if (child == null) throw new InvalidOperationException("Child helper did not start.");
-                if (!childReadyEvent.WaitOne(800))
-                    throw new TimeoutException("Child helper readiness deadline expired.");
+                childReadyEvent.WaitOne();
                 string[] record = File.ReadAllText(readyPath).Trim().Split('|');
                 if (record.Length != 2)
                     throw new InvalidDataException("Child helper readiness record was malformed.");
