@@ -48,15 +48,23 @@ func parseLevel(level mcp.LoggingLevel) slog.Level {
 // on close.
 type ClientSession struct {
 	*mcp.ClientSession
-	cancel        context.CancelFunc
-	promote       func() bool
-	terminal      func()
-	cleanup       func()
-	cancelOnce    sync.Once
-	closeOnce     sync.Once
-	closeDoneOnce sync.Once
-	closeDone     chan struct{}
-	closeErr      error
+	cancel         context.CancelFunc
+	promote        func() bool
+	terminal       func()
+	cleanup        func()
+	cancelOnce     sync.Once
+	closeOnce      sync.Once
+	closeDoneOnce  sync.Once
+	closeDone      chan struct{}
+	closeErr       error
+	closeStateMu   sync.Mutex
+	closeFinished  bool
+	afterClose     []func()
+	closeOwnerOnce sync.Once
+	closeQueueOnce sync.Once
+	closeStarted   bool
+	closeName      string
+	owner          *Owner
 
 	operationMu   sync.Mutex
 	operationRefs int
@@ -69,6 +77,10 @@ type ClientSession struct {
 func (s *ClientSession) Close() error {
 	closeDone := s.closedDone()
 	s.closeOnce.Do(func() {
+		s.closeStateMu.Lock()
+		s.closeStarted = true
+		closeOwner := s.owner
+		s.closeStateMu.Unlock()
 		s.cancelContext()
 		if s.terminal != nil {
 			s.terminal()
@@ -77,9 +89,44 @@ func (s *ClientSession) Close() error {
 		if s.cleanup != nil {
 			s.cleanup()
 		}
+		s.closeStateMu.Lock()
+		s.closeFinished = true
+		callbacks := s.afterClose
+		s.afterClose = nil
+		s.closeStateMu.Unlock()
 		close(closeDone)
+		for _, callback := range callbacks {
+			callback()
+		}
+		s.closeOwnerOnce.Do(func() {
+			if closeOwner != nil {
+				closeOwner.untrackSession(s)
+			}
+		})
 	})
 	return s.closeErr
+}
+
+func (s *ClientSession) afterCloseContext(ctx context.Context, callback func()) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if ctx.Err() != nil {
+		return
+	}
+	wrapped := func() {
+		if ctx.Err() == nil {
+			callback()
+		}
+	}
+	s.closeStateMu.Lock()
+	if s.closeFinished {
+		s.closeStateMu.Unlock()
+		wrapped()
+		return
+	}
+	s.afterClose = append(s.afterClose, wrapped)
+	s.closeStateMu.Unlock()
 }
 
 func (s *ClientSession) closedDone() chan struct{} {
@@ -148,13 +195,12 @@ func (s *ClientSession) releaseOperation() {
 	closeNow := s.retired && s.operationRefs == 0
 	s.operationMu.Unlock()
 	if closeNow {
-		_ = s.Close()
+		s.queueClose()
 	}
 }
 
-// retire detaches a session generation from publication. It returns true
-// only when the caller should close the transport immediately; otherwise the
-// final operation release performs the close.
+// retire detaches a session generation from publication and queues its close
+// when no operation still pins the generation.
 func (s *ClientSession) retire() bool {
 	s.operationMu.Lock()
 	if !s.retired {
@@ -165,7 +211,129 @@ func (s *ClientSession) retire() bool {
 	}
 	closeNow := s.operationRefs == 0
 	s.operationMu.Unlock()
+	if closeNow {
+		s.queueClose()
+	}
 	return closeNow
+}
+
+type closeRequest struct {
+	session  *ClientSession
+	name     string
+	shutdown bool
+}
+
+// sessionCloser owns one close worker and a deduplicated pending set. The set
+// is bounded by tracked sessions, while a blocked SDK Close cannot create more
+// workers.
+type sessionCloser struct {
+	mu          sync.Mutex
+	pending     map[*ClientSession]closeRequest
+	wake        chan struct{}
+	stop        chan struct{}
+	beforeClose func(closeRequest)
+	stopOnce    sync.Once
+	wg          sync.WaitGroup
+}
+
+func newSessionCloser() *sessionCloser {
+	return &sessionCloser{
+		pending: make(map[*ClientSession]closeRequest),
+		wake:    make(chan struct{}, 1),
+		stop:    make(chan struct{}),
+	}
+}
+
+func (c *sessionCloser) start() {
+	c.wg.Add(1)
+	go c.run()
+}
+
+func (c *sessionCloser) enqueue(request closeRequest) {
+	if request.session == nil {
+		return
+	}
+	c.mu.Lock()
+	if _, ok := c.pending[request.session]; !ok {
+		c.pending[request.session] = request
+	}
+	c.mu.Unlock()
+	select {
+	case c.wake <- struct{}{}:
+	default:
+	}
+}
+
+func (c *sessionCloser) take() (closeRequest, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for session, request := range c.pending {
+		delete(c.pending, session)
+		return request, true
+	}
+	return closeRequest{}, false
+}
+
+func (c *sessionCloser) hasPending() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.pending) != 0
+}
+
+func (c *sessionCloser) run() {
+	defer c.wg.Done()
+	for {
+		if request, ok := c.take(); ok {
+			c.mu.Lock()
+			hook := c.beforeClose
+			c.mu.Unlock()
+			if hook != nil {
+				hook(request)
+			}
+			err := request.session.Close()
+			if request.shutdown {
+				logMCPShutdownError(request.name, err)
+			} else {
+				logMCPCloseError(request.name, err)
+			}
+			continue
+		}
+		select {
+		case <-c.wake:
+		case <-c.stop:
+			if !c.hasPending() {
+				return
+			}
+		}
+	}
+}
+
+func (c *sessionCloser) stopAndWait() {
+	c.stopOnce.Do(func() { close(c.stop) })
+	select {
+	case c.wake <- struct{}{}:
+	default:
+	}
+	c.wg.Wait()
+}
+
+func (s *ClientSession) queueClose() {
+	s.queueCloseWithMode(false)
+}
+
+// The first queue mode wins. A retirement already queued for normal close is
+// not upgraded during owner shutdown, avoiding duplicate close requests.
+func (s *ClientSession) queueCloseWithMode(shutdown bool) {
+	s.closeQueueOnce.Do(func() {
+		s.closeStateMu.Lock()
+		closeOwner := s.owner
+		s.closeStateMu.Unlock()
+		if closeOwner != nil {
+			closeOwner.enqueueSessionClose(s, shutdown)
+			return
+		}
+		_ = s.Close()
+	})
 }
 
 var (
@@ -194,10 +362,147 @@ func newLeaseRegistry() *leaseRegistry {
 	return &leaseRegistry{entries: make(map[string]*serverLease)}
 }
 
+type leaseWaiter struct {
+	write   bool
+	ready   chan struct{}
+	granted bool
+}
+
+// contextRWMutex is a fair, FIFO reader/writer lock with cancellation.
+// Readers are granted as one batch, but never bypass an earlier writer.
+type contextRWMutex struct {
+	mu              sync.Mutex
+	readers         int
+	writer          bool
+	waiters         []*leaseWaiter
+	waitHook        func(bool)
+	waiterAllocHook func(bool)
+}
+
+func (m *contextRWMutex) Lock() {
+	_ = m.lock(context.Background(), true)
+}
+
+func (m *contextRWMutex) Unlock() {
+	m.mu.Lock()
+	if !m.writer {
+		m.mu.Unlock()
+		panic("sync: unlock of unlocked contextRWMutex")
+	}
+	m.writer = false
+	m.grantLocked()
+	m.mu.Unlock()
+}
+
+func (m *contextRWMutex) RLock() {
+	_ = m.lock(context.Background(), false)
+}
+
+func (m *contextRWMutex) RUnlock() {
+	m.mu.Lock()
+	if m.readers == 0 {
+		m.mu.Unlock()
+		panic("sync: RUnlock of unlocked contextRWMutex")
+	}
+	m.readers--
+	if m.readers == 0 {
+		m.grantLocked()
+	}
+	m.mu.Unlock()
+}
+
+func (m *contextRWMutex) lockContext(ctx context.Context, write bool) bool {
+	return m.lock(ctx, write)
+}
+
+func (m *contextRWMutex) lock(ctx context.Context, write bool) bool {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if ctx.Err() != nil {
+		return false
+	}
+	m.mu.Lock()
+	if !m.writer && len(m.waiters) == 0 && (!write || m.readers == 0) {
+		if write {
+			m.writer = true
+		} else {
+			m.readers++
+		}
+		m.mu.Unlock()
+		return true
+	}
+	waiter := &leaseWaiter{write: write, ready: make(chan struct{})}
+	if m.waiterAllocHook != nil {
+		m.waiterAllocHook(write)
+	}
+	if m.waitHook != nil {
+		m.waitHook(write)
+	}
+	m.waiters = append(m.waiters, waiter)
+	m.mu.Unlock()
+
+	select {
+	case <-waiter.ready:
+		return true
+	case <-ctx.Done():
+		m.mu.Lock()
+		if waiter.granted {
+			if waiter.write {
+				m.writer = false
+				m.grantLocked()
+			} else {
+				m.readers--
+				if m.readers == 0 {
+					m.grantLocked()
+				}
+			}
+			m.mu.Unlock()
+			return false
+		}
+		for i, queued := range m.waiters {
+			if queued == waiter {
+				m.waiters = append(m.waiters[:i], m.waiters[i+1:]...)
+				break
+			}
+		}
+		m.grantLocked()
+		m.mu.Unlock()
+		return false
+	}
+}
+
+func (m *contextRWMutex) grantLocked() {
+	if m.writer || m.readers != 0 || len(m.waiters) == 0 {
+		return
+	}
+	if m.waiters[0].write {
+		waiter := m.waiters[0]
+		m.waiters = m.waiters[1:]
+		m.grantLockedWaiter(waiter)
+		return
+	}
+	for len(m.waiters) > 0 && !m.waiters[0].write {
+		waiter := m.waiters[0]
+		m.waiters = m.waiters[1:]
+		m.grantLockedWaiter(waiter)
+	}
+}
+
+func (m *contextRWMutex) grantLockedWaiter(waiter *leaseWaiter) {
+	waiter.granted = true
+	if waiter.write {
+		m.writer = true
+	} else {
+		m.readers++
+	}
+	close(waiter.ready)
+}
+
 // serverLease serializes replacement and closing of one server session while
 // allowing concurrent callers to use the current session.
 type serverLease struct {
-	mu                            sync.RWMutex
+	mu                            contextRWMutex
 	registry                      *leaseRegistry
 	name                          string
 	refs                          int
@@ -402,45 +707,21 @@ func (l *serverLease) lockContext(ctx context.Context, write bool) bool {
 		l.registry.release(l)
 		return false
 	}
-	for {
-		serverLeaseHooks.callBeforeTryLock(l)
-		acquired := false
-		if write {
-			acquired = l.mu.TryLock()
-		} else if l.mu.TryRLock() {
-			acquired = true
-		}
-		if acquired {
-			// Resolve the cancellation/acquisition race in favor of
-			// cancellation. Release the raw mutex before dropping the
-			// identity reference; Unlock would otherwise release a different
-			// ownership transition than the one this call acquired.
-			if ctx.Err() != nil {
-				if write {
-					l.mu.Unlock()
-				} else {
-					l.mu.RUnlock()
-				}
-				l.registry.release(l)
-				return false
-			}
-			return true
-		}
-		if ctx.Err() != nil {
-			l.registry.release(l)
-			return false
-		}
-		timer := time.NewTimer(time.Millisecond)
-		select {
-		case <-ctx.Done():
-			if !timer.Stop() {
-				<-timer.C
-			}
-			l.registry.release(l)
-			return false
-		case <-timer.C:
-		}
+	serverLeaseHooks.callBeforeTryLock(l)
+	if !l.mu.lockContext(ctx, write) {
+		l.registry.release(l)
+		return false
 	}
+	if ctx.Err() != nil {
+		if write {
+			l.mu.Unlock()
+		} else {
+			l.mu.RUnlock()
+		}
+		l.registry.release(l)
+		return false
+	}
+	return true
 }
 
 // reacquireContext transitions an existing retained identity reference into a
@@ -617,11 +898,180 @@ type Owner struct {
 	closeOnce           sync.Once
 	closeDone           chan struct{}
 	closeErr            error
+	trackedSessions     map[*ClientSession]struct{}
+	trackedEmpty        chan struct{}
+	closer              *sessionCloser
+	fallbackWorker      *fallbackWorker
 }
 
 type serverCancel struct {
 	cancel context.CancelFunc
 	token  uint64
+}
+
+// trackSessionLocked keeps the owner fence alive until a published generation
+// has completed its one transport close, including after detachment.
+func (o *Owner) trackSessionLocked(session *ClientSession, name string) {
+	if o == nil || session == nil {
+		return
+	}
+	session.closeStateMu.Lock()
+	if session.closeFinished || session.closeStarted {
+		session.closeStateMu.Unlock()
+		return
+	}
+	if o.trackedSessions == nil {
+		o.trackedSessions = make(map[*ClientSession]struct{})
+	}
+	if _, ok := o.trackedSessions[session]; ok {
+		session.closeStateMu.Unlock()
+		return
+	}
+	if len(o.trackedSessions) == 0 {
+		o.trackedEmpty = make(chan struct{})
+	}
+	o.trackedSessions[session] = struct{}{}
+	session.owner = o
+	session.closeName = name
+	session.closeStateMu.Unlock()
+}
+
+func (o *Owner) untrackSession(session *ClientSession) {
+	lifecycleMu.Lock()
+	if _, ok := o.trackedSessions[session]; ok {
+		delete(o.trackedSessions, session)
+		if len(o.trackedSessions) == 0 {
+			close(o.trackedEmpty)
+		}
+	}
+	lifecycleMu.Unlock()
+}
+
+func (o *Owner) waitTrackedSessions() {
+	for {
+		lifecycleMu.Lock()
+		if len(o.trackedSessions) == 0 {
+			lifecycleMu.Unlock()
+			return
+		}
+		done := o.trackedEmpty
+		lifecycleMu.Unlock()
+		<-done
+	}
+}
+
+type fallbackRequest struct {
+	ctx    context.Context
+	cfg    *config.ConfigStore
+	result config.MCPMutationResult
+	owner  *Owner
+}
+
+type fallbackWorker struct {
+	mu       sync.Mutex
+	pending  []fallbackRequest
+	wake     chan struct{}
+	stop     chan struct{}
+	stopOnce sync.Once
+	wg       sync.WaitGroup
+}
+
+func newFallbackWorker() *fallbackWorker {
+	return &fallbackWorker{
+		wake: make(chan struct{}, 1),
+		stop: make(chan struct{}),
+	}
+}
+
+func (w *fallbackWorker) start() {
+	w.wg.Add(1)
+	go w.run()
+}
+
+func (w *fallbackWorker) enqueue(request fallbackRequest) {
+	if request.owner == nil || request.ctx == nil || request.ctx.Err() != nil {
+		return
+	}
+	w.mu.Lock()
+	w.pending = append(w.pending, request)
+	w.mu.Unlock()
+	select {
+	case w.wake <- struct{}{}:
+	default:
+	}
+}
+
+func (w *fallbackWorker) take() (fallbackRequest, bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if len(w.pending) == 0 {
+		return fallbackRequest{}, false
+	}
+	request := w.pending[0]
+	w.pending = w.pending[1:]
+	return request, true
+}
+
+func (w *fallbackWorker) run() {
+	defer w.wg.Done()
+	for {
+		if request, ok := w.take(); ok {
+			if request.ctx.Err() == nil {
+				startFallbackMutation(request.ctx, request.cfg, request.result, request.owner)
+			}
+			continue
+		}
+		select {
+		case <-w.wake:
+		case <-w.stop:
+			return
+		}
+	}
+}
+
+func (w *fallbackWorker) stopAndWait() {
+	w.stopOnce.Do(func() { close(w.stop) })
+	select {
+	case w.wake <- struct{}{}:
+	default:
+	}
+	w.wg.Wait()
+}
+
+func (o *Owner) enqueueSessionClose(session *ClientSession, shutdown bool) {
+	if o == nil || o.closer == nil {
+		return
+	}
+	session.closeStateMu.Lock()
+	name := session.closeName
+	session.closeStateMu.Unlock()
+	o.closer.enqueue(closeRequest{session: session, name: name, shutdown: shutdown})
+}
+
+func (o *Owner) enqueueFallback(cfg *config.ConfigStore, result config.MCPMutationResult) {
+	if o == nil || o.fallbackWorker == nil {
+		return
+	}
+	o.fallbackWorker.enqueue(fallbackRequest{
+		ctx:    o.lifecycleCtx,
+		cfg:    cfg,
+		result: result,
+		owner:  o,
+	})
+}
+
+func adoptSessionForRetirement(name string, session *ClientSession) {
+	if session == nil {
+		return
+	}
+	lifecycleMu.Lock()
+	session.closeStateMu.Lock()
+	unowned := session.owner == nil
+	session.closeStateMu.Unlock()
+	if unowned && owner != nil && !owner.closing {
+		owner.trackSessionLocked(session, name)
+	}
+	lifecycleMu.Unlock()
 }
 
 // addTransaction outlives the initializer phase of an AddServer call. The
@@ -1264,7 +1714,7 @@ func acquireImplicit() (*Owner, error) {
 func acquire(implicit bool) (*Owner, error) {
 	lifecycleMu.Lock()
 	if owner != nil {
-		if !owner.implicit || owner.closing || owner.initCount != 0 || sessions.Len() != 0 ||
+		if !owner.implicit || owner.closing || owner.initCount != 0 || len(owner.trackedSessions) != 0 || sessions.Len() != 0 ||
 			states.Len() != 0 || allTools.Len() != 0 || allPrompts.Len() != 0 ||
 			allResources.Len() != 0 {
 			lifecycleMu.Unlock()
@@ -1298,7 +1748,13 @@ func acquire(implicit bool) (*Owner, error) {
 		refreshCh:           make(chan struct{}, 1),
 		refreshPending:      make(map[refreshKey]refreshRequest),
 		refreshRunning:      make(map[refreshKey]struct{}),
+		trackedSessions:     make(map[*ClientSession]struct{}),
+		trackedEmpty:        closedChannel(),
+		closer:              newSessionCloser(),
+		fallbackWorker:      newFallbackWorker(),
 	}
+	o.closer.start()
+	o.fallbackWorker.start()
 	owner = o
 	initDone = o.initDone
 	o.refreshWG.Add(1)
@@ -1584,6 +2040,12 @@ func reloadWithUncertaintyToken(ctx context.Context, token *uncertaintyReloadTok
 // between a successful disk reload and uncertainty finalization.
 var mcpReloadAfterSuccessHook func()
 
+var mcpInitTestHooks struct {
+	sync.Mutex
+	afterWaitGroupDone     func()
+	beforeSkippedAdmission func(string, config.MCPAdmissionSnapshot)
+}
+
 // reconcileUncertainty reloads the consuming store only when this owner has
 // an uncertainty fence for name. The reload is deliberately outside
 // lifecycleMu and every server lease.
@@ -1748,6 +2210,12 @@ func (o *Owner) endInit() {
 	o.initCount--
 	lifecycleMu.Unlock()
 	o.initWG.Done()
+	mcpInitTestHooks.Lock()
+	hook := mcpInitTestHooks.afterWaitGroupDone
+	mcpInitTestHooks.Unlock()
+	if hook != nil {
+		hook()
+	}
 }
 
 func (o *Owner) finishInitialize() {
@@ -1783,39 +2251,63 @@ func (o *Owner) acceptsSession() bool {
 // retirement and transport closes to the caller after that lease is released.
 func (o *Owner) commitRenewal(admission *serverAdmission, name string, session *ClientSession, counts Counts) error {
 	retired, err := o.commitRenewalForLease(admission, name, session, counts)
+	if err != nil && retired != nil {
+		retired.cancelContext()
+	}
 	retireMCPClient(name, retired)
 	return err
 }
 
 func (o *Owner) commitRenewalForLease(admission *serverAdmission, name string, session *ClientSession, counts Counts) (*ClientSession, error) {
-	lifecycleMu.Lock()
-	if admission == nil || admission.owner != o || admission.name != name || !admission.validLocked() {
-		lifecycleMu.Unlock()
+	if admission == nil || admission.cfg == nil {
 		return session, ErrOwnerBusy
 	}
-	if !session.promoteContext() {
-		lifecycleMu.Unlock()
-		return session, ErrOwnerBusy
+	snapshot := admission.mcpAdmission
+	if snapshot.Config == nil {
+		snapshot = admission.cfg.SnapshotMCPAdmission(name)
 	}
-	oldSession, hadOldSession := sessions.Get(name)
-	sessions.Set(name, session)
-	admission.committed = true
-	admission.committedName = name
-	admission.committedEpoch = o.serverEpochs[name]
-	admission.publishedSession = session
-	if current, ok := admission.cfg.MCPConfig(name); ok {
-		admission.configIdentity = current
-		admission.hasConfigIdentity = true
+	var (
+		oldSession    *ClientSession
+		hadOldSession bool
+		pendingEvents []Event
+		wakeRefresh   bool
+	)
+	err := admission.cfg.WithCurrentMCPAdmission(snapshot, name, func() error {
+		lifecycleMu.Lock()
+		defer lifecycleMu.Unlock()
+		if admission.owner != o || admission.name != name || !admission.validLocked() {
+			if admission.candidate && admission.configSnapshotStaleLocked() {
+				return config.ErrMCPMutationStale
+			}
+			return ErrOwnerBusy
+		}
+		if !session.promoteContext() {
+			return ErrOwnerBusy
+		}
+		oldSession, hadOldSession = sessions.Get(name)
+		o.trackSessionLocked(session, name)
+		sessions.Set(name, session)
+		admission.committed = true
+		admission.committedName = name
+		admission.committedEpoch = o.serverEpochs[name]
+		admission.publishedSession = session
+		if current, ok := admission.cfg.MCPConfig(name); ok {
+			admission.configIdentity = current
+			admission.hasConfigIdentity = true
+		}
+		if current := admission.cfg.SnapshotMCPAdmission(name); current.Exists {
+			admission.mcpRevision = current.MCPRevision
+			admission.resolverRevision = current.ResolverRevision
+			admission.mcpAdmission = current
+		}
+		o.committedAdmissions[name] = admission
+		setState(name, StateConnected, nil, session, counts)
+		pendingEvents, wakeRefresh = o.activateRefreshesLocked(admission)
+		return nil
+	})
+	if err != nil {
+		return session, err
 	}
-	if snapshot := admission.cfg.SnapshotMCPAdmission(name); snapshot.Exists {
-		admission.mcpRevision = snapshot.MCPRevision
-		admission.resolverRevision = snapshot.ResolverRevision
-		admission.mcpAdmission = snapshot
-	}
-	o.committedAdmissions[name] = admission
-	setState(name, StateConnected, nil, session, counts)
-	pendingEvents, wakeRefresh := o.activateRefreshesLocked(admission)
-	lifecycleMu.Unlock()
 	if wakeRefresh {
 		o.signalRefresh()
 	}
@@ -1876,6 +2368,9 @@ func (o *Owner) Close(ctx context.Context) error {
 }
 
 func (o *Owner) finishClose() {
+	if o.fallbackWorker != nil {
+		o.fallbackWorker.stopAndWait()
+	}
 	// Do not abandon this wait when a caller's cleanup context expires. The
 	// owner remains the lifecycle fence until every admitted operation exits.
 	o.initWG.Wait()
@@ -1887,25 +2382,39 @@ func (o *Owner) finishClose() {
 		name    string
 		session *ClientSession
 	}
-	var snapshot []namedSession
+	snapshotBySession := make(map[*ClientSession]string)
+	lifecycleMu.Lock()
 	for name, session := range sessions.Seq2() {
+		session.closeStateMu.Lock()
+		unowned := session.owner == nil
+		session.closeStateMu.Unlock()
+		if unowned {
+			o.trackSessionLocked(session, name)
+		}
+		snapshotBySession[session] = name
+	}
+	for session := range o.trackedSessions {
+		if _, ok := snapshotBySession[session]; !ok {
+			snapshotBySession[session] = ""
+		}
+	}
+	lifecycleMu.Unlock()
+	snapshot := make([]namedSession, 0, len(snapshotBySession))
+	for session, name := range snapshotBySession {
 		snapshot = append(snapshot, namedSession{name: name, session: session})
 	}
 
 	// Cancel every transport before entering any potentially non-cooperative
-	// SDK Close. Close calls then run sequentially in this goroutine so a
-	// deadline-abandoned App cleanup retains no extra waiter or close fan-out
-	// goroutines beyond this one owner cleanup goroutine.
+	// SDK Close. The owner closer then runs those closes sequentially.
 	for _, item := range snapshot {
 		item.session.cancelContext()
 	}
 	for _, item := range snapshot {
-		if err := item.session.Close(); err != nil &&
-			!errors.Is(err, io.EOF) &&
-			!errors.Is(err, context.Canceled) &&
-			err.Error() != "signal: killed" {
-			slog.Warn("Failed to shutdown MCP client", "name", item.name, "error", err)
-		}
+		item.session.queueCloseWithMode(true)
+	}
+	o.waitTrackedSessions()
+	if o.closer != nil {
+		o.closer.stopAndWait()
 	}
 
 	lifecycleMu.Lock()
@@ -2103,7 +2612,10 @@ func (o *Owner) Initialize(ctx context.Context, permissions permission.Service, 
 		cancel()
 		return
 	}
-	defer o.endInit()
+	defer func() {
+		o.finishInitialize()
+		o.endInit()
+	}()
 	stopOwner := context.AfterFunc(o.lifecycleCtx, cancel)
 	defer stopOwner()
 	defer cancel()
@@ -2111,21 +2623,26 @@ func (o *Owner) Initialize(ctx context.Context, permissions permission.Service, 
 	// captures its own config and resolver under its server lease.
 	configured, _, _, _ := cfg.SnapshotWithResolverAndMCPRevisions()
 	if configured == nil {
-		o.finishInitialize()
 		return
 	}
 	for name := range configured.MCP {
 		if !o.acceptsSession() {
 			break
 		}
-		for {
+		for attempt := 0; attempt < maxAdmissionRetries; attempt++ {
 			lease := serverLeaseFor(name)
 			if !lease.lockContext(initCtx, true) {
 				break
 			}
 			admissionSnapshot := cfg.SnapshotMCPAdmission(name)
-			if !admissionSnapshot.Exists || o.isUncertain(cfg, name) {
+			if !admissionSnapshot.Exists {
 				lease.Unlock()
+				_ = failClosedMCP(initCtx, name)
+				break
+			}
+			if o.isUncertain(cfg, name) {
+				lease.Unlock()
+				_ = failClosedMCP(initCtx, name)
 				break
 			}
 			if admissionSnapshot.MCPConfig.Disabled || restrictToCLIEnabled && !admissionSnapshot.MCPConfig.EnabledInCLI {
@@ -2133,6 +2650,14 @@ func (o *Owner) Initialize(ctx context.Context, permissions permission.Service, 
 				lease.Unlock()
 				skipped.finish()
 				if errors.Is(skippedErr, config.ErrMCPMutationStale) {
+					if admissionRetriesExhausted(attempt) {
+						failClosedInitializeMCP(initCtx, name, skippedErr)
+						break
+					}
+					if refreshErr := refreshAdmissionStore(initCtx, cfg); refreshErr != nil {
+						failClosedInitializeMCP(initCtx, name, refreshErr)
+						break
+					}
 					continue
 				}
 				if skippedErr != nil {
@@ -2146,6 +2671,10 @@ func (o *Owner) Initialize(ctx context.Context, permissions permission.Service, 
 				break
 			}
 			admission, err := o.admitServerForConfig(initCtx, cfg, name, admissionSnapshot.MCPConfig, true)
+			if err != nil {
+				lease.Unlock()
+				break
+			}
 			admission.mcpRevision = admissionSnapshot.MCPRevision
 			admission.resolverRevision = admissionSnapshot.ResolverRevision
 			admission.mcpAdmission = admissionSnapshot
@@ -2153,9 +2682,6 @@ func (o *Owner) Initialize(ctx context.Context, permissions permission.Service, 
 			admission.hasConfigIdentity = true
 			resolver := admissionSnapshot.Resolver
 			lease.Unlock()
-			if err != nil {
-				break
-			}
 			admission.candidate = true
 			wg.Add(1)
 			go func(name string, m config.MCPConfig, resolver config.VariableResolver, admission serverAdmission) {
@@ -2185,7 +2711,6 @@ func (o *Owner) Initialize(ctx context.Context, permissions permission.Service, 
 		}
 	}
 	wg.Wait()
-	o.finishInitialize()
 }
 
 // WaitForInit blocks until MCP initialization is complete.
@@ -2223,7 +2748,7 @@ func InitializeSingle(ctx context.Context, name string, cfg *config.ConfigStore)
 	}
 	defer o.endInit()
 
-	for attempt := 0; attempt < 2; attempt++ {
+	for attempt := 0; attempt < maxAdmissionRetries; attempt++ {
 		lease := serverLeaseFor(name)
 		if !lease.lockContext(ctx, true) {
 			return ctx.Err()
@@ -2252,6 +2777,14 @@ func InitializeSingle(ctx context.Context, name string, cfg *config.ConfigStore)
 			lease.Unlock()
 			skipped.finish()
 			if errors.Is(transitionErr, config.ErrMCPMutationStale) {
+				if admissionRetriesExhausted(attempt) {
+					failClosedInitializeMCP(ctx, name, transitionErr)
+					return transitionErr
+				}
+				if refreshErr := refreshAdmissionStore(ctx, cfg); refreshErr != nil {
+					failClosedInitializeMCP(ctx, name, refreshErr)
+					return refreshErr
+				}
 				continue
 			}
 			if transitionErr != nil {
@@ -2271,7 +2804,7 @@ func InitializeSingle(ctx context.Context, name string, cfg *config.ConfigStore)
 		admitted.mcpAdmission = admissionSnapshot
 		lease.Unlock()
 		err = initClientAdmitted(admitted.ctx, cfg, name, m, resolver, &admitted)
-		if !errors.Is(err, config.ErrMCPMutationStale) || ctx.Err() != nil || attempt == 1 {
+		if !errors.Is(err, config.ErrMCPMutationStale) || ctx.Err() != nil || admissionRetriesExhausted(attempt) {
 			if errors.Is(err, config.ErrMCPMutationStale) {
 				cleanupFailedAdmission(&admitted, err)
 			}
@@ -2291,6 +2824,10 @@ func initClientAdmitted(ctx context.Context, cfg *config.ConfigStore, name strin
 
 const maxAdmissionRetries = 2
 
+func admissionRetriesExhausted(attempt int) bool {
+	return attempt+1 >= maxAdmissionRetries
+}
+
 func initClientAdmittedWithRetry(
 	ctx context.Context,
 	cfg *config.ConfigStore,
@@ -2304,7 +2841,7 @@ func initClientAdmittedWithRetry(
 		if !errors.Is(err, config.ErrMCPMutationStale) {
 			return err
 		}
-		if ctx.Err() != nil || attempt+1 == maxAdmissionRetries {
+		if ctx.Err() != nil || admissionRetriesExhausted(attempt) {
 			cleanupFailedAdmission(admission, err)
 			return err
 		}
@@ -2607,6 +3144,13 @@ func publishPreparedClientLocked(cfg *config.ConfigStore, name string, prepared 
 	oldSession, _ := sessions.Get(name)
 	toolCount := updateTools(cfg, name, tools)
 	updatePrompts(name, prompts)
+	sessionOwner := owner
+	if admission != nil && admission.owner != nil {
+		sessionOwner = admission.owner
+	}
+	if sessionOwner != nil {
+		sessionOwner.trackSessionLocked(session, name)
+	}
 	sessions.Set(name, session)
 	if admission != nil {
 		admission.committed = true
@@ -3338,6 +3882,7 @@ func replaceServerWithResultPersistenceAndPreparation(
 			toolCount := updateTools(cfg, newName, prepared.tools)
 			updatePrompts(newName, prepared.prompts)
 			allResources.Del(newName)
+			admission.owner.trackSessionLocked(prepared.session, newName)
 			sessions.Set(newName, prepared.session)
 			admission.publishedSession = prepared.session
 			admission.configIdentity = result.NewConfig
@@ -3435,7 +3980,7 @@ func replaceServerWithResultPersistenceAndPreparation(
 	}
 	if hadOldSession && oldSession != prepared.session {
 		if oldName != newName && result.FallbackExists {
-			retireMCPClientAndWait(oldName, oldSession)
+			startFallbackAfterRetirement(oldName, oldSession, cfg, result, o)
 		} else {
 			retireMCPClient(oldName, oldSession)
 		}
@@ -3443,8 +3988,8 @@ func replaceServerWithResultPersistenceAndPreparation(
 	if newName != oldName && hadNewSession && newSession != prepared.session && newSession != oldSession {
 		retireMCPClient(newName, newSession)
 	}
-	if oldName != newName && result.FallbackExists {
-		startFallbackMutation(context.Background(), cfg, result, o)
+	if oldName != newName && result.FallbackExists && !hadOldSession {
+		o.enqueueFallback(cfg, result)
 	}
 	if newDisabled {
 		closeMCPClient(newName, prepared.session)
@@ -4012,8 +4557,7 @@ func removeServerWithResultPersistence(
 		}
 		publishEvent(pubsub.DeletedEvent, Event{Type: EventStateChanged, Name: name, State: StateDisabled})
 		lease.Unlock()
-		retireMCPClientAndWait(name, detached)
-		startFallbackMutation(context.Background(), cfg, result, o)
+		startFallbackAfterRetirement(name, detached, cfg, result, o)
 		if commitUncertainty != nil {
 			return fmt.Errorf("failed to remove MCP server %q from config: %w", name, commitUncertainty)
 		}
@@ -4101,28 +4645,48 @@ func closeMCPClient(name string, session *ClientSession) {
 	if session == nil {
 		return
 	}
-	if err := session.Close(); err != nil && !errors.Is(err, io.EOF) &&
+	if err := session.Close(); err != nil {
+		logMCPCloseError(name, err)
+	}
+}
+
+func logMCPCloseError(name string, err error) {
+	if err != nil && !errors.Is(err, io.EOF) &&
 		!errors.Is(err, context.Canceled) && err.Error() != "signal: killed" {
 		slog.Warn("Error closing MCP session", "name", name, "error", err)
 	}
 }
 
-func retireMCPClient(name string, session *ClientSession) {
-	if session == nil || !session.retire() {
-		return
+func logMCPShutdownError(name string, err error) {
+	if err != nil && !errors.Is(err, io.EOF) &&
+		!errors.Is(err, context.Canceled) && err.Error() != "signal: killed" {
+		slog.Warn("Failed to shutdown MCP client", "name", name, "error", err)
 	}
-	closeMCPClient(name, session)
 }
 
-func retireMCPClientAndWait(name string, session *ClientSession) {
+func retireMCPClient(name string, session *ClientSession) {
+	if session != nil {
+		adoptSessionForRetirement(name, session)
+		session.retire()
+	}
+}
+
+func startFallbackAfterRetirement(
+	name string,
+	session *ClientSession,
+	cfg *config.ConfigStore,
+	result config.MCPMutationResult,
+	o *Owner,
+) {
 	if session == nil {
+		o.enqueueFallback(cfg, result)
 		return
 	}
-	if session.retire() {
-		closeMCPClient(name, session)
-		return
-	}
-	<-session.closedDone()
+	adoptSessionForRetirement(name, session)
+	session.afterCloseContext(o.lifecycleCtx, func() {
+		o.enqueueFallback(cfg, result)
+	})
+	session.retire()
 }
 
 func currentMCPMutationResult(cfg *config.ConfigStore, operation, oldName, newName string) config.MCPMutationResult {
@@ -4313,6 +4877,81 @@ func clearAdvertised(name string) {
 }
 
 func getOrRenewClient(ctx context.Context, cfg *config.ConfigStore, name string) (*clientLease, error) {
+	lease, err := getOrRenewClientOnce(ctx, cfg, name)
+	for attempt := 0; errors.Is(err, config.ErrMCPMutationStale) && attempt < maxRenewalRecoveryAttempts; attempt++ {
+		lease, err = recoverStaleRenewal(ctx, cfg, name)
+	}
+	return lease, err
+}
+
+func recoverStaleRenewal(ctx context.Context, cfg *config.ConfigStore, name string) (*clientLease, error) {
+	if refreshErr := refreshAdmissionStore(ctx, cfg); refreshErr != nil {
+		return nil, refreshErr
+	}
+	snapshot := cfg.SnapshotMCPAdmission(name)
+	if !snapshot.Exists || snapshot.MCPConfig.Disabled {
+		if err := failClosedMCP(ctx, name); err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("mcp '%s' not available", name)
+	}
+	if err := InitializeSingle(ctx, name, cfg); err != nil {
+		latest := cfg.SnapshotMCPAdmission(name)
+		if !latest.Exists || latest.MCPConfig.Disabled {
+			if closeErr := failClosedMCP(ctx, name); closeErr != nil {
+				return nil, closeErr
+			}
+		}
+		return nil, err
+	}
+	return getOrRenewClientOnce(ctx, cfg, name)
+}
+
+// maxRenewalRecoveryAttempts excludes the initial renewal attempt.
+const maxRenewalRecoveryAttempts = 2
+
+func failClosedMCP(ctx context.Context, name string) error {
+	return failClosedMCPWithState(ctx, name, StateDisabled, nil)
+}
+
+func failClosedInitializeMCP(ctx context.Context, name string, cause error) {
+	if cause == nil || ctx == nil || ctx.Err() != nil {
+		return
+	}
+	_ = failClosedMCPWithState(ctx, name, StateError, cause)
+}
+
+func failClosedMCPWithState(ctx context.Context, name string, state State, stateErr error) error {
+	if ctx == nil {
+		return errors.New("mcp: nil context")
+	}
+	lease := serverLeaseFor(name)
+	if !lease.lockContext(ctx, true) {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return ErrOwnerBusy
+	}
+	var cancels []context.CancelFunc
+	var detached *ClientSession
+	lifecycleMu.Lock()
+	if current := owner; current != nil {
+		cancels = current.invalidateServerLocked(name)
+	}
+	detached = detachSessionLifecycleLocked(name)
+	clearAdvertised(name)
+	setState(name, state, stateErr, nil, Counts{})
+	lifecycleMu.Unlock()
+	lease.Unlock()
+	for _, cancel := range cancels {
+		cancel()
+	}
+	retireMCPClient(name, detached)
+	publishStateEvent(name, state, stateErr, Counts{})
+	return nil
+}
+
+func getOrRenewClientOnce(ctx context.Context, cfg *config.ConfigStore, name string) (*clientLease, error) {
 	o := currentOwner()
 	var admission *serverAdmission
 	operationCtx := ctx
@@ -4942,6 +5581,12 @@ func transitionSkippedMCP(
 	finalization := skippedMCPFinalization{}
 	var canceled []context.CancelFunc
 	var detached *ClientSession
+	mcpInitTestHooks.Lock()
+	hook := mcpInitTestHooks.beforeSkippedAdmission
+	mcpInitTestHooks.Unlock()
+	if hook != nil {
+		hook(name, snapshot)
+	}
 	err := cfg.WithCurrentMCPAdmission(snapshot, name, func() error {
 		lifecycleMu.Lock()
 		defer lifecycleMu.Unlock()

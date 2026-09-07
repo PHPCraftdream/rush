@@ -36,12 +36,14 @@ type storeSnapshot struct {
 	mcpInputs           map[string][32]byte
 	resolverRevision    uint64
 	resolverFingerprint [32]byte
-	knownProviders      []catwalk.Provider
-	loadedPaths         []string // config files that were successfully loaded
-	trackedConfigPaths  []string // unique, normalized config file paths
-	snapshots           map[string]fileSnapshot
-	workspacePath       string // .rush/rush.json (recomputed on every reload)
-	overrides           RuntimeOverrides
+	// resolverDynamic marks command substitutions in MCP fields.
+	resolverDynamic    bool
+	knownProviders     []catwalk.Provider
+	loadedPaths        []string // config files that were successfully loaded
+	trackedConfigPaths []string // unique, normalized config file paths
+	snapshots          map[string]fileSnapshot
+	workspacePath      string // .rush/rush.json (recomputed on every reload)
+	overrides          RuntimeOverrides
 
 	// generation is a monotonically increasing counter assigned at publish
 	// time (see ConfigStore.publishLocked). It exists so a long-running
@@ -395,6 +397,7 @@ func (s *ConfigStore) UpdateMCP(name string, mutate func(*MCPConfig)) (MCPConfig
 	cfgCopy.MCP[name] = cloneMCPConfig(updated)
 	next.config = &cfgCopy
 	next.mcpRevisions = mcpRevisionDiff(cur.mcpRevisions, cur.config, next.config, cur.mcpInputs, next.mcpInputs, name)
+	next.resolverDynamic = configHasDynamicMCPResolution(next.config)
 	s.publishLocked(next)
 	return updated, true
 }
@@ -425,6 +428,7 @@ func (s *ConfigStore) AddMCP(name string, mcpConfig MCPConfig) bool {
 	cfgCopy.MCP[name] = cloneMCPConfig(mcpConfig)
 	next.config = &cfgCopy
 	next.mcpRevisions = mcpRevisionDiff(cur.mcpRevisions, cur.config, next.config, cur.mcpInputs, next.mcpInputs)
+	next.resolverDynamic = configHasDynamicMCPResolution(next.config)
 	s.publishLocked(next)
 	return true
 }
@@ -447,6 +451,7 @@ func (s *ConfigStore) RemoveMCP(name string) (MCPConfig, bool) {
 	delete(cfgCopy.MCP, name)
 	next.config = &cfgCopy
 	next.mcpRevisions = mcpRevisionDiff(cur.mcpRevisions, cur.config, next.config, cur.mcpInputs, next.mcpInputs)
+	next.resolverDynamic = configHasDynamicMCPResolution(next.config)
 	s.publishLocked(next)
 	return cloneMCPConfig(current), true
 }
@@ -470,6 +475,7 @@ func (s *ConfigStore) RemoveMCPIfCurrent(name string, expected MCPConfig, revisi
 	delete(cfgCopy.MCP, name)
 	next.config = &cfgCopy
 	next.mcpRevisions = mcpRevisionDiff(cur.mcpRevisions, cur.config, next.config, cur.mcpInputs, next.mcpInputs)
+	next.resolverDynamic = configHasDynamicMCPResolution(next.config)
 	s.publishLocked(next)
 	return cloneMCPConfig(current), true
 }
@@ -547,6 +553,7 @@ func (s *ConfigStore) updateConfigLocked(mutate func(cfgCopy *Config)) {
 	mutate(&cfgCopy)
 	next.config = &cfgCopy
 	next.mcpRevisions = mcpRevisionDiff(cur.mcpRevisions, cur.config, next.config, cur.mcpInputs, next.mcpInputs)
+	next.resolverDynamic = configHasDynamicMCPResolution(next.config)
 
 	s.publishLocked(next)
 }
@@ -558,6 +565,7 @@ func NewTestStore(cfg *Config, loadedPaths ...string) *ConfigStore {
 		config:           cfg,
 		mcpRevisions:     initialMCPRevisions(cfg),
 		resolverRevision: 1,
+		resolverDynamic:  configHasDynamicMCPResolution(cfg),
 		loadedPaths:      loadedPaths,
 	})
 	return s
@@ -581,6 +589,7 @@ func NewLibraryStore(cfg *Config, workingDir string) *ConfigStore {
 		resolver:         IdentityResolver(),
 		mcpRevisions:     initialMCPRevisions(cfg),
 		resolverRevision: 1,
+		resolverDynamic:  configHasDynamicMCPResolution(cfg),
 	})
 	return s
 }
@@ -612,6 +621,7 @@ func newTestConfigStore(opts testStoreOpts) *ConfigStore {
 		resolver:         opts.resolver,
 		mcpRevisions:     initialMCPRevisions(opts.config),
 		resolverRevision: 1,
+		resolverDynamic:  configHasDynamicMCPResolution(opts.config),
 		loadedPaths:      opts.loadedPaths,
 	})
 	return s

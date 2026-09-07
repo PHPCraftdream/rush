@@ -137,10 +137,14 @@ func renameConfigTempHandle(source *os.File, sourcePath string, parent *os.File,
 	}
 }
 
-const windowsRenameRetryAttempts = 8
+const windowsRenameRetryAttempts = 32
 
 func waitAndVerifyWindowsRenameRetry(source *os.File, sourcePath string, parent *os.File, destination string, replace bool, expected reloadFileFingerprint, expectedOwner int, enforceOwner bool, discoveryPath string, attempt int) error {
-	time.Sleep(time.Duration(attempt+1) * 2 * time.Millisecond)
+	delay := time.Duration(attempt+1) * 2 * time.Millisecond
+	if delay > 50*time.Millisecond {
+		delay = 50 * time.Millisecond
+	}
+	time.Sleep(delay)
 	return verifyWindowsRenameRetryState(source, sourcePath, parent, destination, replace, expected, expectedOwner, enforceOwner, discoveryPath)
 }
 

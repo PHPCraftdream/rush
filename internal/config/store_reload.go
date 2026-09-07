@@ -481,6 +481,7 @@ func (s *ConfigStore) buildAndPublishReload(ctx context.Context, expectedUncerta
 		config:              cfg,
 		resolver:            resolver,
 		resolverFingerprint: resolverInputFingerprint(baseEnv.Env()),
+		resolverDynamic:     configHasDynamicMCPResolution(cfg),
 		mcpInputs:           mcpInputFingerprints(configDocuments, externalDocuments),
 		knownProviders:      providers,
 		loadedPaths:         loadedPaths,
@@ -510,7 +511,8 @@ func (s *ConfigStore) buildAndPublishReload(ctx context.Context, expectedUncerta
 		candidate.overrides = cur.overrides
 	}
 	candidate.mcpRevisions = mcpRevisionDiff(cur.mcpRevisions, cur.config, candidate.config, cur.mcpInputs, candidate.mcpInputs)
-	if candidate.resolverFingerprint != cur.resolverFingerprint {
+	// Command substitutions can change without environment changes.
+	if candidate.resolverFingerprint != cur.resolverFingerprint || candidate.resolverDynamic || cur.resolverDynamic {
 		candidate.resolverRevision = cur.resolverRevision + 1
 	} else {
 		candidate.resolverRevision = cur.resolverRevision

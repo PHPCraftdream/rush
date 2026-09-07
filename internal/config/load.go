@@ -236,18 +236,19 @@ func loadOnce(workingDir, dataDir string, debug bool) (*ConfigStore, error) {
 		stalenessPaths = append(stalenessPaths, workspacePath, globalDataPath)
 		trackedPaths, snapshots := reloadStalenessState(stalenessPaths, fingerprints)
 		store.snap.Store(&storeSnapshot{
-			config:             cfg,
-			resolver:           valueResolver,
-			mcpRevisions:       initialMCPRevisions(cfg),
-			mcpInputs:          mcpInputFingerprints(configDocuments, externalDocuments),
-			resolverRevision:   1,
+			config:              cfg,
+			resolver:            valueResolver,
+			mcpRevisions:        initialMCPRevisions(cfg),
+			mcpInputs:           mcpInputFingerprints(configDocuments, externalDocuments),
+			resolverRevision:    1,
 			resolverFingerprint: resolverInputFingerprint(env.Env()),
-			knownProviders:     knownProviders,
-			loadedPaths:        loadedPaths,
-			trackedConfigPaths: trackedPaths,
-			snapshots:          snapshots,
-			workspacePath:      workspacePath,
-			generation:         1,
+			resolverDynamic:     configHasDynamicMCPResolution(cfg),
+			knownProviders:      knownProviders,
+			loadedPaths:         loadedPaths,
+			trackedConfigPaths:  trackedPaths,
+			snapshots:           snapshots,
+			workspacePath:       workspacePath,
+			generation:          1,
 		})
 		return nil
 	}

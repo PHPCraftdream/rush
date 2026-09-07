@@ -756,9 +756,9 @@ func TestRemovePublishesBeforeBlockedCloseAndConcurrentAdd(t *testing.T) {
 
 	requireTransactionalEvent(t, events, pubsub.DeletedEvent, name, StateDisabled)
 	requireTransactionalEvent(t, events, pubsub.UpdatedEvent, name, StateConnected)
+	require.NoError(t, awaitMCPError(t, removeDone))
 
 	close(releaseClose)
-	require.NoError(t, awaitMCPError(t, removeDone))
 	select {
 	case event := <-events:
 		t.Fatalf("remove published a late event after close release: %v", event)

@@ -797,6 +797,72 @@ func TestOwnerCommitRenewalPublishesSuccessfulSession(t *testing.T) {
 	require.NoError(t, owner.Close(context.Background()))
 }
 
+func TestRenewalRejectsCrossStoreDiskReplacement(t *testing.T) {
+	testCrossStoreRenewalAdmission(t, false)
+}
+
+func TestRenewalRejectsCrossStoreDiskRemoval(t *testing.T) {
+	testCrossStoreRenewalAdmission(t, true)
+}
+
+func TestFailClosedMCPHonorsCallerCancellation(t *testing.T) {
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer func() { require.NoError(t, owner.Close(context.Background())) }()
+	const name = "fail-closed-canceled"
+	lease := serverLeaseFor(name)
+	lease.Lock()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err = failClosedMCP(ctx, name)
+	lease.Unlock()
+	require.ErrorIs(t, err, context.Canceled)
+}
+
+func testCrossStoreRenewalAdmission(t *testing.T, remove bool) {
+	t.Helper()
+	const name = "cross-store-renewal-admission"
+	store := persistedMCPStore(t, name, "http://old-renewal.example", false)
+	contender, err := config.Init(store.WorkingDir(), store.WorkingDir(), false)
+	require.NoError(t, err)
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer func() { require.NoError(t, owner.Close(context.Background())) }()
+
+	admission, err := owner.snapshotServerAdmission(context.Background(), store, name)
+	require.NoError(t, err)
+	if remove {
+		require.NoError(t, contender.PersistRemoveMCPConfigExact(config.ScopeGlobal, name))
+	} else {
+		require.NoError(t, contender.PersistMCPFieldsExact(config.ScopeGlobal, name, map[string]any{
+			"url": "http://new-renewal.example",
+		}))
+	}
+	session := newInMemoryRenewalSession(t)
+	require.True(t, owner.beginInit())
+	err = owner.commitRenewal(&admission, name, session, Counts{})
+	owner.endInit()
+	require.ErrorIs(t, err, config.ErrMCPMutationStale)
+	_, published := sessions.Get(name)
+	require.False(t, published, "a renewal from a stale cross-store snapshot must not publish")
+}
+
+func newInMemoryRenewalSession(t *testing.T) *ClientSession {
+	t.Helper()
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	server := mcp.NewServer(&mcp.Implementation{Name: "renewal-server"}, nil)
+	serverSession, err := server.Connect(context.Background(), serverTransport, nil)
+	require.NoError(t, err)
+	clientSession, err := mcp.NewClient(&mcp.Implementation{Name: "renewal-client"}, nil).
+		Connect(context.Background(), clientTransport, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_ = clientSession.Close()
+		_ = serverSession.Close()
+	})
+	return &ClientSession{ClientSession: clientSession}
+}
+
 func TestSessionContextPromotionLinearizesCancellation(t *testing.T) {
 	t.Run("caller cancellation is observed synchronously", func(t *testing.T) {
 		ownerCtx, ownerCancel := context.WithCancel(context.Background())

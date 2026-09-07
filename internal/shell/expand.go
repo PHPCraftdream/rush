@@ -119,6 +119,29 @@ func ExpandValue(ctx context.Context, value string, env []string) (string, error
 	return expand.Document(cfg, word)
 }
 
+// HasCommandSubstitution reports whether value contains a command substitution
+// according to the same document grammar used by ExpandValue. Parse failures
+// are treated as dynamic so a resolver revision cannot remain stale.
+func HasCommandSubstitution(value string) bool {
+	word, err := syntax.NewParser().Document(strings.NewReader(value))
+	if err != nil {
+		return true
+	}
+	if word == nil {
+		return false
+	}
+
+	found := false
+	syntax.Walk(word, func(node syntax.Node) bool {
+		if _, ok := node.(*syntax.CmdSubst); ok {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
+}
+
 // wrapCmdSubstErr attaches a bounded prefix of the inner command's stderr
 // to the original error, if any.
 func wrapCmdSubstErr(err error, stderrBytes []byte) error {

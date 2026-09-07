@@ -30,6 +30,52 @@ func TestConfigStoreReloadResolverRevisionTracksSemanticInputs(t *testing.T) {
 	require.Greater(t, changed.ResolverRevision, unchanged.ResolverRevision)
 }
 
+func TestMCPCommandSubstitutionDetectionMatchesExpandValueGrammar(t *testing.T) {
+	tests := map[string]bool{
+		"http://$(printf host)": true,
+		`"$(printf host)"`:      true,
+		`'$(printf host)'`:      true,
+		`\$(printf host)`:       false,
+		"`printf host`":         true,
+		"\\`printf host\\`":     false,
+		"$MCP_HOST":             false,
+		"$((1 + 2))":            false,
+		"$(":                    true,
+	}
+	for value, want := range tests {
+		require.Equal(t, want, hasCommandSubstitution(value), value)
+	}
+}
+
+func TestConfigStoreReloadResolverRevisionTracksCommandSubstitution(t *testing.T) {
+	store, _ := isolatedMCPConfigStore(t)
+	const name = "command-resolver-revision"
+	require.NoError(t, store.PersistMCPConfig(ScopeGlobal, name, MCPConfig{
+		Type: MCPHttp,
+		URL:  "http://$(printf dynamic).example",
+	}))
+	initial := store.SnapshotMCPAdmission(name)
+	require.NoError(t, store.ReloadFromDisk(context.Background()))
+	changed := store.SnapshotMCPAdmission(name)
+	require.Greater(t, changed.ResolverRevision, initial.ResolverRevision)
+}
+
+func TestPersistentMCPMutationPropagatesResolverDynamicMarker(t *testing.T) {
+	store, _ := isolatedMCPConfigStore(t)
+	const name = "persistent-command-marker"
+	require.NoError(t, store.PersistMCPConfig(ScopeGlobal, name, MCPConfig{
+		Type: MCPHttp,
+		URL:  "http://static.example",
+	}))
+	require.False(t, store.loadSnapshot().resolverDynamic)
+	require.NoError(t, store.PersistMCPFieldsExact(ScopeGlobal, name, map[string]any{
+		"headers": map[string]string{"X-Token": "$(printf token)"},
+	}))
+	require.True(t, store.loadSnapshot().resolverDynamic)
+	require.NoError(t, store.PersistRemoveMCPConfigExact(ScopeGlobal, name))
+	require.False(t, store.loadSnapshot().resolverDynamic)
+}
+
 func TestConfigStoreMCPMutatorsPublishDetachedSnapshots(t *testing.T) {
 	store := NewTestStore(&Config{MCP: MCPs{
 		"one": {

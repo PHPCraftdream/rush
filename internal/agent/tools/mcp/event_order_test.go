@@ -314,10 +314,12 @@ func TestReplaceRevealedFallbackWaitsForBlockedCloseAndMutation(t *testing.T) {
 	}()
 
 	newConfig := config.MCPConfig{Type: config.MCPStdio, Command: newName}
+	replaceCtx, cancelReplace := context.WithCancel(context.Background())
+	defer cancelReplace()
 	replaceDone := make(chan error, 1)
 	go func() {
 		replaceDone <- replaceServerWithResultPersistenceAndPreparation(
-			context.Background(), store, oldName, newName, newConfig,
+			replaceCtx, store, oldName, newName, newConfig,
 			func(cfg *config.ConfigStore, scope config.Scope, oldName, newName string, value config.MCPConfig) (config.MCPMutationResult, error) {
 				return cfg.PersistReplaceMCPResult(scope, oldName, newName, value)
 			}, func(context.Context, *config.ConfigStore, string, config.MCPConfig, config.VariableResolver, *serverAdmission) (*preparedClient, error) {
@@ -327,6 +329,7 @@ func TestReplaceRevealedFallbackWaitsForBlockedCloseAndMutation(t *testing.T) {
 	}()
 
 	requireTransactionalEvent(t, events, pubsub.UpdatedEvent, newName, StateConnected)
+	cancelReplace()
 	awaitMCPSignal(t, closeStarted)
 	select {
 	case <-fallbackStarted:

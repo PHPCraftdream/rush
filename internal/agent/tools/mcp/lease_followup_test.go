@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -49,35 +50,70 @@ func TestCanceledAddAfterRetainReclaimsUniqueLeaseReferences(t *testing.T) {
 	leases.mu.Unlock()
 }
 
-func TestRetireMCPClientAndWaitHandlesClosedAndRetiredSessions(t *testing.T) {
-	closed := &ClientSession{}
-	require.NoError(t, closed.Close())
-	retireMCPClientAndWait("already-closed", closed)
-	select {
-	case <-closed.closedDone():
-	default:
-		t.Fatal("already-closed session did not signal closedDone")
-	}
+func TestRetireMCPClientQueuesCloseAfterFinalRelease(t *testing.T) {
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer func() { require.NoError(t, owner.Close(context.Background())) }()
 
-	retired := &ClientSession{}
+	closeStarted := make(chan struct{})
+	releaseClose := make(chan struct{})
+	var closeCalls atomic.Int32
+	retired := &ClientSession{terminal: func() {
+		closeCalls.Add(1)
+		close(closeStarted)
+		<-releaseClose
+	}}
+	lifecycleMu.Lock()
+	owner.trackSessionLocked(retired, "retirement-handoff")
+	lifecycleMu.Unlock()
 	operationCtx, releaseOperation, usable := retired.acquireOperation(context.Background())
 	require.True(t, usable)
-	defer releaseOperation()
 	select {
 	case <-operationCtx.Done():
 		t.Fatal("operation was canceled before retirement")
 	default:
 	}
 	require.False(t, retired.retire())
-	waitDone := make(chan struct{})
+	retireDone := make(chan struct{})
 	go func() {
-		retireMCPClientAndWait("already-retired", retired)
-		close(waitDone)
+		retireMCPClient("retirement-handoff", retired)
+		close(retireDone)
 	}()
-	releaseOperation()
 	select {
-	case <-waitDone:
+	case <-retireDone:
 	case <-time.After(time.Second):
-		t.Fatal("retireMCPClientAndWait did not receive the final close handoff")
+		t.Fatal("retirement blocked while an operation was pinned")
 	}
+	select {
+	case <-closeStarted:
+		t.Fatal("close began while an operation was still pinned")
+	case <-retired.closedDone():
+		t.Fatal("retirement completed before final release")
+	default:
+	}
+
+	releaseDone := make(chan struct{})
+	go func() {
+		releaseOperation()
+		close(releaseDone)
+	}()
+	select {
+	case <-releaseDone:
+	case <-time.After(time.Second):
+		t.Fatal("final release waited for blocked Close")
+	}
+	<-closeStarted
+	require.Equal(t, int32(1), closeCalls.Load())
+	select {
+	case <-retired.closedDone():
+		t.Fatal("blocked Close completed before barrier release")
+	default:
+	}
+	close(releaseClose)
+	select {
+	case <-retired.closedDone():
+	case <-time.After(time.Second):
+		t.Fatal("retired Close did not finish after barrier release")
+	}
+	require.Equal(t, int32(1), closeCalls.Load())
 }

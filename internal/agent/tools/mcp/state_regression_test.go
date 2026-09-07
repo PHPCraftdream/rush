@@ -510,6 +510,7 @@ func TestCandidateListChangedPublishesAfterCommitAndRefreshesNewSession(t *testi
 	defer cancelEvents()
 	events := SubscribeEvents(eventsCtx)
 	initialAdmission := store.SnapshotMCPAdmission(name)
+	admission.mcpAdmission = initialAdmission
 	admission.mcpRevision = initialAdmission.MCPRevision
 	admission.resolverRevision = initialAdmission.ResolverRevision
 	notifyListChanged(&admission, name, refreshToolsKind)
@@ -521,6 +522,7 @@ func TestCandidateListChangedPublishesAfterCommitAndRefreshesNewSession(t *testi
 	_, changed := store.UpdateMCP(name, func(*config.MCPConfig) {})
 	require.True(t, changed)
 	finalAdmission := store.SnapshotMCPAdmission(name)
+	admission.mcpAdmission = finalAdmission
 	admission.mcpRevision = finalAdmission.MCPRevision
 	admission.resolverRevision = finalAdmission.ResolverRevision
 

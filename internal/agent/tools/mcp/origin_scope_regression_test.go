@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/pubsub"
 	modelmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/require"
 )
@@ -44,6 +45,54 @@ func originScopeStore(t *testing.T) (*config.ConfigStore, string) {
 	store, err := config.Init(root, root, false)
 	require.NoError(t, err)
 	return store, root
+}
+
+func TestRemoveWorkspaceOverrideStartsGlobalFallbackAfterClose(t *testing.T) {
+	store, root := originScopeStore(t)
+	const name = "remove-reveals-global"
+	fallback := originTestServer(t, "global-fallback-tool", "global-fallback")
+	writeRushMCPDefinition(t, config.GlobalConfigData(), name, config.MCPConfig{
+		Type: config.MCPHttp, URL: fallback.URL, Timeout: 60,
+	})
+	writeRushMCPDefinition(t, filepath.Join(root, "rush.json"), name, config.MCPConfig{
+		Type: config.MCPHttp, URL: "http://workspace-override.example", Timeout: 60,
+	})
+	require.NoError(t, store.ReloadFromDisk(context.Background()))
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer func() { require.NoError(t, owner.Close(context.Background())) }()
+
+	closeStarted := make(chan struct{})
+	releaseClose := make(chan struct{})
+	oldSession := &ClientSession{terminal: func() {
+		close(closeStarted)
+		<-releaseClose
+	}}
+	sessions.Set(name, oldSession)
+	setState(name, StateConnected, nil, oldSession, Counts{})
+	eventsCtx, cancelEvents := context.WithCancel(context.Background())
+	defer cancelEvents()
+	events := SubscribeEvents(eventsCtx)
+
+	removeDone := make(chan error, 1)
+	go func() { removeDone <- RemoveServer(store, name) }()
+	awaitMCPSignal(t, closeStarted)
+	require.NoError(t, awaitMCPError(t, removeDone))
+	requireTransactionalEvent(t, events, pubsub.DeletedEvent, name, StateDisabled)
+	select {
+	case event := <-events:
+		if event.Payload.Name == name && event.Payload.State == StateStarting {
+			t.Fatal("global fallback started before old Close completed")
+		}
+	default:
+	}
+
+	close(releaseClose)
+	requireTransactionalEvent(t, events, pubsub.UpdatedEvent, name, StateStarting)
+	requireTransactionalEvent(t, events, pubsub.UpdatedEvent, name, StateConnected)
+	result, err := RunTool(context.Background(), store, name, "global-fallback-tool", `{}`)
+	require.NoError(t, err)
+	require.Equal(t, "global-fallback", result.Content)
 }
 
 func requireMCPFileConfig(t *testing.T, path, name string) config.MCPConfig {

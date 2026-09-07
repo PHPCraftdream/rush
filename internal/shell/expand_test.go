@@ -75,6 +75,26 @@ func TestExpandValue_Success(t *testing.T) {
 			want:  "hi",
 		},
 		{
+			name:  "single quotes are literal document characters",
+			value: `'$(printf host)'`,
+			want:  "'host'",
+		},
+		{
+			name:  "backquote command substitution",
+			value: "`printf host`",
+			want:  "host",
+		},
+		{
+			name:  "escaped backquote is literal",
+			value: "\\`printf host\\`",
+			want:  "`printf host`",
+		},
+		{
+			name:  "escaped command substitution is literal",
+			value: `\$(printf host)`,
+			want:  "$(printf host)",
+		},
+		{
 			name:  "glob-like input round trips unchanged",
 			value: "*.go",
 			want:  "*.go",
@@ -174,6 +194,23 @@ func TestExpandValue_Errors(t *testing.T) {
 			"stderr should be bounded",
 		)
 	})
+}
+
+func TestHasCommandSubstitutionMatchesExpandValueGrammar(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]bool{
+		`'$(printf host)'`:  true,
+		"`printf host`":     true,
+		`\$(printf host)`:   false,
+		"\\`printf host\\`": false,
+		"$MCP_HOST":         false,
+		"$((1 + 2))":        false,
+		"$(":                true,
+	}
+	for value, want := range tests {
+		require.Equal(t, want, HasCommandSubstitution(value), value)
+	}
 }
 
 // TestExpandValue_StrictToggle pins the NoUnset escape hatch: when a

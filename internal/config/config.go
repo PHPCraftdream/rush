@@ -31,6 +31,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/csync"
 	"github.com/PHPCraftdream/rush/internal/oauth"
 	"github.com/PHPCraftdream/rush/internal/oauth/copilot"
+	"github.com/PHPCraftdream/rush/internal/shell"
 	"github.com/invopop/jsonschema"
 )
 
@@ -292,6 +293,44 @@ type MCPConfig struct {
 
 	// Source tracks where this config came from (runtime only, not serialized).
 	Source MCPSource `json:"-"`
+}
+
+func mcpConfigHasDynamicResolution(m MCPConfig) bool {
+	if hasCommandSubstitution(m.Command) || hasCommandSubstitution(m.URL) {
+		return true
+	}
+	for _, value := range m.Env {
+		if hasCommandSubstitution(value) {
+			return true
+		}
+	}
+	for _, value := range m.Args {
+		if hasCommandSubstitution(value) {
+			return true
+		}
+	}
+	for _, value := range m.Headers {
+		if hasCommandSubstitution(value) {
+			return true
+		}
+	}
+	return false
+}
+
+func configHasDynamicMCPResolution(cfg *Config) bool {
+	if cfg == nil {
+		return false
+	}
+	for _, m := range cfg.MCP {
+		if mcpConfigHasDynamicResolution(m) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasCommandSubstitution(value string) bool {
+	return shell.HasCommandSubstitution(value)
 }
 
 type TUIOptions struct {

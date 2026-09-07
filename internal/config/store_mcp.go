@@ -509,6 +509,7 @@ func (s *ConfigStore) publishMCPValueAndStalenessLocked(name string, value MCPCo
 		next.mcpInputs = maps.Clone(committedInputs)
 	}
 	next.mcpRevisions = mcpRevisionDiff(cur.mcpRevisions, cur.config, next.config, cur.mcpInputs, next.mcpInputs)
+	next.resolverDynamic = configHasDynamicMCPResolution(next.config)
 	if len(committed) > 0 {
 		if next.snapshots == nil {
 			next.snapshots = make(map[string]fileSnapshot)

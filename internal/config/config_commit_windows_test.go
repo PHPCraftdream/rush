@@ -57,6 +57,46 @@ func TestWindowsCommitHandleRenameRetriesTransientAccessDenied(t *testing.T) {
 	require.Equal(t, data, mustReadFile(t, path))
 }
 
+func TestWindowsCommitHandleRenameRetriesEightTransientAccessDenied(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "rush.json")
+	oldData := []byte(`{"old":true}`)
+	newData := []byte(`{"new":true}`)
+	require.NoError(t, os.WriteFile(path, oldData, 0o600))
+	_, expected, err := readStableConfigFile(path)
+	require.NoError(t, err)
+
+	const transientFailures = 8
+	var attempts atomic.Int32
+	configTestHooks.Lock()
+	previous := configTestHooks.setFileInformation
+	configTestHooks.setFileInformation = func(fd uintptr, class uint32, buffer *byte, length uint32) error {
+		if class == windows.FileRenameInfoEx {
+			attempt := attempts.Add(1)
+			if attempt <= transientFailures {
+				current, fingerprint, readErr := readStableConfigFile(path)
+				require.NoError(t, readErr)
+				require.Equal(t, oldData, current)
+				require.Equal(t, expected.identity, fingerprint.identity)
+				return windows.ERROR_ACCESS_DENIED
+			}
+			return renameWithNativeLegacyInfo(fd, buffer, length)
+		}
+		return windows.SetFileInformationByHandle(windows.Handle(fd), class, buffer, length)
+	}
+	configTestHooks.Unlock()
+	t.Cleanup(func() {
+		configTestHooks.Lock()
+		configTestHooks.setFileInformation = previous
+		configTestHooks.Unlock()
+	})
+
+	_, err = commitConfigFile(path, path, newData, 0o600, expected, -1, false)
+	require.NoError(t, err)
+	require.Equal(t, int32(transientFailures+1), attempts.Load())
+	require.Equal(t, newData, mustReadFile(t, path))
+}
+
 func TestWindowsCommitHandleRenameDoesNotRetryAfterAmbiguity(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "rush.json")
@@ -225,7 +265,7 @@ func TestWindowsConfigSymlinkAliasInDifferentDirectoryPublishesToTarget(t *testi
 	}))
 
 	targetData := mustReadFile(t, target)
-	require.Contains(t, string(targetData), `"debug": true`)
+	require.Contains(t, string(targetData), `"debug":true`)
 	require.Contains(t, string(targetData), "alias.example")
 	aliasInfo, err := os.Lstat(alias)
 	require.NoError(t, err)
