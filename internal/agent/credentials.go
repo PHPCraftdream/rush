@@ -179,6 +179,27 @@ type CredentialSet struct {
 	AllowConfiguredRoleFallback bool `json:"allow_configured_role_fallback,omitempty"`
 }
 
+// Clone returns a deep copy safe to retain for an asynchronous run.
+func (cs CredentialSet) Clone() CredentialSet {
+	clone := cs
+	if cs.Credentials != nil {
+		clone.Credentials = make([]Credential, len(cs.Credentials))
+		for i, cred := range cs.Credentials {
+			clone.Credentials[i] = cred
+			if cred.Models != nil {
+				clone.Credentials[i].Models = append([]CredentialModel(nil), cred.Models...)
+			}
+		}
+	}
+	if cs.Models != nil {
+		clone.Models = make(map[Role]ModelChoice, len(cs.Models))
+		for role, choice := range cs.Models {
+			clone.Models[role] = choice
+		}
+	}
+	return clone
+}
+
 // Validate checks the bundle's internal consistency: at least one
 // credential, at least one role choice, every choice naming a known
 // credential, non-empty provider types drawn from the nine ProviderType
@@ -340,14 +361,14 @@ func (c *coordinator) resolveCredentialsModels(ctx context.Context, sessionID st
 	fastChoice, fastCovered := creds.Models[RoleFast]
 
 	if !smartCovered {
-		return nil, fmt.Errorf("credential set does not cover the smart role (Models[RoleSmart]) and AllowConfiguredRoleFallback is false; smart drives every turn, so there is no safe fallback")
+		return nil, fmt.Errorf("credential set does not cover the smart role (Models[RoleSmart]); smart is required even when AllowConfiguredRoleFallback is true")
 	}
 	if !fastCovered && !creds.AllowConfiguredRoleFallback {
 		return nil, fmt.Errorf("credential set does not cover the fast role (Models[RoleFast], drives title generation) and AllowConfiguredRoleFallback is false; add the role or set the flag to serve it from the Client's configured models")
 	}
 
 	var base *resolvedOverrides
-	if creds.AllowConfiguredRoleFallback && (!smartCovered || !fastCovered) {
+	if creds.AllowConfiguredRoleFallback && !fastCovered {
 		var err error
 		base, err = c.resolveSessionModels(ctx, sessionID)
 		if err != nil {

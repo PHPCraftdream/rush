@@ -13,9 +13,14 @@ package sdk_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/PHPCraftdream/rush/sdk"
@@ -178,6 +183,127 @@ func TestCredentialSetValidateRequiresSmartRole(t *testing.T) {
 		sdk.RoleSmart: {Provider: "tenant-provider", Model: "tenant-model"},
 	})
 	require.NoError(t, onlySmart.Validate())
+}
+
+func TestCredentialSetCloneDeepCopiesMutableState(t *testing.T) {
+	original := offlineCreds(validStrictModels())
+	clone := original.Clone()
+
+	original.Credentials[0].Models[0].ID = "mutated-model"
+	original.Credentials = append(original.Credentials, sdk.Credential{Provider: "mutated"})
+	original.Models[sdk.RoleSmart] = sdk.ModelChoice{Provider: "mutated", Model: "mutated-model"}
+
+	require.Equal(t, "tenant-model", clone.Credentials[0].Models[0].ID)
+	require.Len(t, clone.Credentials, 1)
+	require.Equal(t, "tenant-provider", clone.Models[sdk.RoleSmart].Provider)
+}
+
+type credentialSnapshotProbe struct {
+	model     string
+	maxTokens int64
+}
+
+func runCredentialSnapshotProbe(
+	t *testing.T,
+	models map[sdk.Role]sdk.ModelChoice,
+	mutate func(*sdk.CredentialSet),
+) credentialSnapshotProbe {
+	t.Helper()
+	h := newStrictHarness(t)
+	seedTenantSession(t, h.workDir, "sdk-credential-snapshot")
+	h.tenant.srv.Close()
+
+	arrived := make(chan struct{})
+	release := make(chan struct{})
+	workerSeen := make(chan credentialSnapshotProbe, 1)
+	var mu sync.Mutex
+	topLevelTurns := 0
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if bytes.Contains(body, []byte("Generate a concise title")) {
+			sseChunks(t, w, []map[string]any{textChunk("probe", "title"), finishChunk("probe", "stop")})
+			return
+		}
+
+		names := r14ToolNamesFromBody(body)
+		if containsName(names, "agent") {
+			mu.Lock()
+			first := topLevelTurns == 0
+			topLevelTurns++
+			mu.Unlock()
+			if first {
+				close(arrived)
+				<-release
+				sseChunks(t, w, []map[string]any{
+					toolCallChunkNamed("probe", "snapshot-agent", "agent", map[string]any{
+						"prompt": "complete the delegated probe",
+					}),
+					finishChunk("probe", "tool_calls"),
+				})
+				return
+			}
+			sseChunks(t, w, []map[string]any{textChunk("probe", "SNAPSHOT_OK"), finishChunk("probe", "stop")})
+			return
+		}
+
+		var request struct {
+			Model               string `json:"model"`
+			MaxTokens           int64  `json:"max_tokens"`
+			MaxCompletionTokens int64  `json:"max_completion_tokens"`
+		}
+		require.NoError(t, json.Unmarshal(body, &request))
+		if request.MaxTokens == 0 {
+			request.MaxTokens = request.MaxCompletionTokens
+		}
+		workerSeen <- credentialSnapshotProbe{model: request.Model, maxTokens: request.MaxTokens}
+		sseChunks(t, w, []map[string]any{textChunk("probe", "worker done"), finishChunk("probe", "stop")})
+	}))
+	t.Cleanup(srv.Close)
+	h.tenant = &credentialServer{srv: srv, auth: map[string]int{}}
+
+	creds := strictCreds(h, models, false)
+	runDone := make(chan error, 1)
+	go func() {
+		_, err := runStrictTurn(t, h, "sdk-credential-snapshot", creds)
+		runDone <- err
+	}()
+	<-arrived
+	mutate(&creds)
+	close(release)
+	require.NoError(t, <-runDone)
+
+	select {
+	case probe := <-workerSeen:
+		return probe
+	default:
+		t.Fatal("the delegated worker made no provider request")
+		return credentialSnapshotProbe{}
+	}
+}
+
+func TestRunWithCredentialsSnapshotsCallerStateBeforeDelegation(t *testing.T) {
+	t.Run("models map", func(t *testing.T) {
+		probe := runCredentialSnapshotProbe(t, validStrictModels(), func(creds *sdk.CredentialSet) {
+			creds.Credentials[0].Models[0].ID = "mutated-model"
+			creds.Models[sdk.RoleWorker] = sdk.ModelChoice{
+				Provider: "tenant-provider",
+				Model:    "mutated-model",
+			}
+		})
+		require.Equal(t, "tenant-model", probe.model,
+			"the delegated worker must use the pre-call Models map")
+	})
+
+	t.Run("nested credential model metadata", func(t *testing.T) {
+		models := validStrictModels()
+		models[sdk.RoleWorker] = sdk.ModelChoice{Provider: "tenant-provider", Model: "tenant-model"}
+		probe := runCredentialSnapshotProbe(t, models, func(creds *sdk.CredentialSet) {
+			creds.Credentials[0].Models[0].DefaultMaxTokens = 7777
+		})
+		require.Equal(t, int64(1000), probe.maxTokens,
+			"the delegated worker must use pre-call nested credential metadata")
+	})
 }
 
 func TestRunWithCredentialsTypoRoleFailsBeforeAnyTraffic(t *testing.T) {

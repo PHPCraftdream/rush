@@ -675,6 +675,19 @@ func (c *coordinator) RebuildSessionAgentCall(ctx context.Context, data session.
 		}
 		rebuiltCallOptions.FolderScope = &compiledScope
 	}
+	if rebuiltCallOptions != nil && rebuiltCallOptions.FolderScope != nil {
+		replayCtx := WithCallOptions(ctx, rebuiltCallOptions)
+		if err := c.rejectScopedCallOnCLIProvider(replayCtx, "smart", smartProviderCfg); err != nil {
+			return SessionAgentCall{}, err
+		}
+		if workerModelCfg, ok := cfg.Models[config.SelectedModelTypeWorker]; ok && workerModelCfg.Model != "" {
+			if workerProviderCfg, ok := cfg.Providers.Get(workerModelCfg.Provider); ok {
+				if err := c.rejectScopedCallOnCLIProvider(replayCtx, "worker", workerProviderCfg); err != nil {
+					return SessionAgentCall{}, err
+				}
+			}
+		}
+	}
 
 	return SessionAgentCall{
 		SessionID:        data.SessionID,

@@ -588,6 +588,7 @@ func (c *Client) RunWithCredentials(ctx context.Context, req RunRequest, creds C
 		return nil, ErrClientClosed
 	}
 	defer c.release()
+	creds = creds.Clone()
 	if req.Stdout == nil && c.stdout != nil {
 		req.Stdout = c.defaultWriter(c.stdout)
 	}

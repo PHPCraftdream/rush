@@ -8,6 +8,8 @@ package agent
 // below never spawn a real claude/codex/gemini/qwen binary.
 
 import (
+	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -18,6 +20,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/csync"
 	"github.com/PHPCraftdream/rush/internal/permission"
+	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -171,4 +174,69 @@ func TestFolderScope_CredentialsCheckConfiguredWorkerProvider(t *testing.T) {
 	require.Error(t, err, "credentialed scoped calls must reject a configured CLI worker too")
 	assert.Contains(t, err.Error(), "worker")
 	assert.Contains(t, err.Error(), "cli")
+}
+
+func TestCredentialsMissingSmartFallbackFlagIsTruthful(t *testing.T) {
+	env := testEnv(t)
+	coord := newFolderScopeCLICoordinator(t, env, openai.Name, openai.Name, false)
+	sess, err := coord.sessions.Create(t.Context(), "missing-smart-boundary")
+	require.NoError(t, err)
+	for _, allowFallback := range []bool{false, true} {
+		t.Run(strconv.FormatBool(allowFallback), func(t *testing.T) {
+			creds := &CredentialSet{
+				Credentials: []Credential{{Provider: "tenant", Type: ProviderTypeOpenAI}},
+				Models: map[Role]ModelChoice{
+					RoleFast: {Provider: "tenant", Model: "fast"},
+				},
+				AllowConfiguredRoleFallback: allowFallback,
+			}
+			_, err := coord.resolveCredentialsModels(t.Context(), sess.ID, creds)
+			require.Error(t, err)
+			require.Contains(t, err.Error(), "smart is required")
+			require.NotContains(t, err.Error(), "is false")
+		})
+	}
+}
+
+func TestRebuildSessionAgentCallRejectsScopedCLIModelsAfterRestart(t *testing.T) {
+	stubCLIAvailability(t)
+	t.Run("smart", func(t *testing.T) {
+		env := testEnv(t)
+		coord := newFolderScopeCLICoordinator(t, env, cliprovider.ProviderType, openai.Name, false)
+		data := session.SessionAgentCallData{
+			SessionID:  "replay-cli-smart",
+			SmartModel: &session.ModelCfg{Provider: "smart-provider", Model: "cli-claude-sonnet"},
+			FolderScopeSpec: &session.FolderScopeSpec{
+				WorkingDir: env.workingDir,
+				Entries:    []session.FolderScopeEntry{{Dir: ".", Ops: []session.FileOp{"read"}}},
+			},
+		}
+		row, err := json.Marshal(data)
+		require.NoError(t, err)
+		var restarted session.SessionAgentCallData
+		require.NoError(t, json.Unmarshal(row, &restarted))
+		_, err = coord.RebuildSessionAgentCall(t.Context(), restarted)
+		require.ErrorContains(t, err, "smart")
+		require.ErrorContains(t, err, "CLI provider")
+	})
+
+	t.Run("worker", func(t *testing.T) {
+		env := testEnv(t)
+		coord := newFolderScopeCLICoordinator(t, env, openai.Name, cliprovider.ProviderType, true)
+		data := session.SessionAgentCallData{
+			SessionID:  "replay-cli-worker",
+			SmartModel: &session.ModelCfg{Provider: "smart-provider", Model: "cli-claude-sonnet"},
+			FolderScopeSpec: &session.FolderScopeSpec{
+				WorkingDir: env.workingDir,
+				Entries:    []session.FolderScopeEntry{{Dir: ".", Ops: []session.FileOp{"read"}}},
+			},
+		}
+		row, err := json.Marshal(data)
+		require.NoError(t, err)
+		var restarted session.SessionAgentCallData
+		require.NoError(t, json.Unmarshal(row, &restarted))
+		_, err = coord.RebuildSessionAgentCall(t.Context(), restarted)
+		require.ErrorContains(t, err, "worker")
+		require.ErrorContains(t, err, "CLI provider")
+	})
 }
