@@ -2,12 +2,28 @@ package config
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/env"
 	"github.com/PHPCraftdream/rush/internal/shell"
 )
+
+// resolverInputFingerprint records the semantic input to the shell resolver.
+// The resolver object itself is intentionally not compared: every reload gets
+// a fresh process-environment reader and its identity is not semantic state.
+func resolverInputFingerprint(values []string) [32]byte {
+	copyValues := slices.Clone(values)
+	slices.Sort(copyValues)
+	hash := sha256.New()
+	for _, value := range copyValues {
+		hash.Write([]byte(value))
+		hash.Write([]byte{0})
+	}
+	return sha256.Sum256(hash.Sum(nil))
+}
 
 // resolveTimeout bounds how long a single ResolveValue call may spend
 // inside shell expansion (including any command substitution), as a

@@ -816,7 +816,7 @@ func TestReplaceRejectsSourceEditDuringPreparation(t *testing.T) {
 	require.False(t, exists)
 }
 
-func TestReplaceRejectsResolverReloadDuringPreparation(t *testing.T) {
+func TestReplaceAllowsNoOpReloadDuringPreparation(t *testing.T) {
 	store := isolatedMCPStore(t)
 	const oldName = "resolver-reload-old"
 	const newName = "resolver-reload-new"
@@ -844,6 +844,80 @@ func TestReplaceRejectsResolverReloadDuringPreparation(t *testing.T) {
 		)
 	}()
 	awaitMCPSignal(t, prepared)
+	require.NoError(t, store.ReloadFromDisk(context.Background()))
+	close(release)
+	require.NoError(t, awaitMCPError(t, done))
+	current, exists := store.MCPConfig(newName)
+	require.True(t, exists)
+	require.Equal(t, replacement, current)
+}
+
+func TestReplaceAllowsUnrelatedCOWDuringPreparation(t *testing.T) {
+	store := isolatedMCPStore(t)
+	const oldName = "unrelated-cow-replace-old"
+	const newName = "unrelated-cow-replace-new"
+	oldConfig := config.MCPConfig{Type: config.MCPHttp, URL: "http://unrelated-cow-source.example"}
+	replacement := config.MCPConfig{Type: config.MCPHttp, URL: "http://unrelated-cow-replacement.example"}
+	require.NoError(t, store.PersistMCPConfig(config.ScopeGlobal, oldName, oldConfig))
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer func() { require.NoError(t, owner.Close(context.Background())) }()
+
+	prepared := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- replaceServerWithResultPersistenceAndPreparation(
+			context.Background(), store, oldName, newName, replacement,
+			func(cfg *config.ConfigStore, scope config.Scope, old, new string, value config.MCPConfig) (config.MCPMutationResult, error) {
+				return cfg.PersistReplaceMCPResult(scope, old, new, value)
+			},
+			func(context.Context, *config.ConfigStore, string, config.MCPConfig, config.VariableResolver, *serverAdmission) (*preparedClient, error) {
+				close(prepared)
+				<-release
+				return &preparedClient{session: &ClientSession{}}, nil
+			},
+		)
+	}()
+	awaitMCPSignal(t, prepared)
+	store.SetSkipPermissionRequests(true)
+	close(release)
+	require.NoError(t, awaitMCPError(t, done))
+	current, exists := store.MCPConfig(newName)
+	require.True(t, exists)
+	require.Equal(t, replacement, current)
+}
+
+func TestReplaceRejectsSemanticResolverChangeDuringPreparation(t *testing.T) {
+	t.Setenv("RUSH_MCP_REPLACE_RESOLVER_TEST", "old")
+	store := isolatedMCPStore(t)
+	const oldName = "semantic-resolver-replace-old"
+	const newName = "semantic-resolver-replace-new"
+	oldConfig := config.MCPConfig{Type: config.MCPHttp, URL: "http://semantic-resolver-source.example"}
+	replacement := config.MCPConfig{Type: config.MCPHttp, URL: "http://semantic-resolver-replacement.example"}
+	require.NoError(t, store.PersistMCPConfig(config.ScopeGlobal, oldName, oldConfig))
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer func() { require.NoError(t, owner.Close(context.Background())) }()
+
+	prepared := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- replaceServerWithResultPersistenceAndPreparation(
+			context.Background(), store, oldName, newName, replacement,
+			func(cfg *config.ConfigStore, scope config.Scope, old, new string, value config.MCPConfig) (config.MCPMutationResult, error) {
+				return cfg.PersistReplaceMCPResult(scope, old, new, value)
+			},
+			func(context.Context, *config.ConfigStore, string, config.MCPConfig, config.VariableResolver, *serverAdmission) (*preparedClient, error) {
+				close(prepared)
+				<-release
+				return &preparedClient{session: &ClientSession{}}, nil
+			},
+		)
+	}()
+	awaitMCPSignal(t, prepared)
+	t.Setenv("RUSH_MCP_REPLACE_RESOLVER_TEST", "new")
 	require.NoError(t, store.ReloadFromDisk(context.Background()))
 	close(release)
 	require.ErrorIs(t, awaitMCPError(t, done), ErrOwnerBusy)

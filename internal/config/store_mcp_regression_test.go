@@ -1,6 +1,7 @@
 package config
 
 import (
+	"context"
 	"fmt"
 	"maps"
 	"sync"
@@ -9,6 +10,25 @@ import (
 
 	"github.com/stretchr/testify/require"
 )
+
+func TestConfigStoreReloadResolverRevisionTracksSemanticInputs(t *testing.T) {
+	t.Setenv("RUSH_MCP_RESOLVER_REVISION_TEST", "before")
+	store, _ := isolatedMCPConfigStore(t)
+	const name = "resolver-revision-stable"
+	require.NoError(t, store.PersistMCPConfig(ScopeGlobal, name, MCPConfig{
+		Type: MCPHttp,
+		URL:  "http://resolver-revision.example",
+	}))
+	stable := store.SnapshotMCPAdmission(name)
+	require.NoError(t, store.ReloadFromDisk(context.Background()))
+	unchanged := store.SnapshotMCPAdmission(name)
+	require.Equal(t, stable.ResolverRevision, unchanged.ResolverRevision)
+
+	t.Setenv("RUSH_MCP_RESOLVER_REVISION_TEST", "after")
+	require.NoError(t, store.ReloadFromDisk(context.Background()))
+	changed := store.SnapshotMCPAdmission(name)
+	require.Greater(t, changed.ResolverRevision, unchanged.ResolverRevision)
+}
 
 func TestConfigStoreMCPMutatorsPublishDetachedSnapshots(t *testing.T) {
 	store := NewTestStore(&Config{MCP: MCPs{

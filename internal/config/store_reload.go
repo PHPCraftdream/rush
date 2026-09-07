@@ -478,13 +478,14 @@ func (s *ConfigStore) buildAndPublishReload(ctx context.Context, expectedUncerta
 	// why this is safe even if a concurrent writer published a newer
 	// generation while the above ran unlocked.
 	candidate := &storeSnapshot{
-		config:         cfg,
-		resolver:       resolver,
-		mcpInputs:      mcpInputFingerprints(configDocuments, externalDocuments),
-		knownProviders: providers,
-		loadedPaths:    loadedPaths,
-		workspacePath:  workspacePath,
-		overrides:      prev.overrides,
+		config:              cfg,
+		resolver:            resolver,
+		resolverFingerprint: resolverInputFingerprint(baseEnv.Env()),
+		mcpInputs:           mcpInputFingerprints(configDocuments, externalDocuments),
+		knownProviders:      providers,
+		loadedPaths:         loadedPaths,
+		workspacePath:       workspacePath,
+		overrides:           prev.overrides,
 	}
 
 	s.publishMu.Lock()
@@ -509,7 +510,11 @@ func (s *ConfigStore) buildAndPublishReload(ctx context.Context, expectedUncerta
 		candidate.overrides = cur.overrides
 	}
 	candidate.mcpRevisions = mcpRevisionDiff(cur.mcpRevisions, cur.config, candidate.config, cur.mcpInputs, candidate.mcpInputs)
-	candidate.resolverRevision = cur.resolverRevision + 1
+	if candidate.resolverFingerprint != cur.resolverFingerprint {
+		candidate.resolverRevision = cur.resolverRevision + 1
+	} else {
+		candidate.resolverRevision = cur.resolverRevision
+	}
 	stalenessPaths := configAndMCPStalenessPaths(lookupConfigCandidates(s.workingDir), s.workingDir)
 	stalenessPaths = append(stalenessPaths, workspacePath, s.globalDataPath)
 	candidate.trackedConfigPaths, candidate.snapshots = reloadStalenessState(stalenessPaths, fingerprints)

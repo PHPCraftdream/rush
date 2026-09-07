@@ -85,10 +85,10 @@ func (s *ConfigStore) WithCurrentMCPMutation(result MCPMutationResult, fn func()
 func (s *ConfigStore) WithCurrentMCPAdmission(snapshot MCPAdmissionSnapshot, name string, fn func() error) error {
 	s.publishMu.Lock()
 	defer s.publishMu.Unlock()
-	if !s.mcpAdmissionSnapshotCurrent(snapshot, name) {
-		return ErrMCPMutationStale
-	}
-	if !snapshot.HasMCPInput {
+	if s.workingDir == "" && s.globalDataPath == "" {
+		if !s.mcpAdmissionSnapshotCurrent(snapshot, name) {
+			return ErrMCPMutationStale
+		}
 		return fn()
 	}
 	return s.withMCPAdmissionLocks(func(files *mcpLockedFiles) error {
@@ -99,8 +99,8 @@ func (s *ConfigStore) WithCurrentMCPAdmission(snapshot MCPAdmissionSnapshot, nam
 		if err != nil {
 			return ErrMCPMutationStale
 		}
-		diskValue, diskExists := evaluation.configs[name]
-		if diskExists != snapshot.Exists || diskExists && !reflect.DeepEqual(diskValue, snapshot.MCPConfig) {
+		input, hasInput := evaluation.mcpInputs[name]
+		if hasInput != snapshot.HasMCPInput || hasInput && input != snapshot.MCPInput {
 			return ErrMCPMutationStale
 		}
 		return fn()

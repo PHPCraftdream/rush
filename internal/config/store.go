@@ -30,17 +30,18 @@ type RuntimeOverrides struct {
 // ConfigStore is constructed and never change afterwards, so they don't
 // need to be part of the versioned snapshot.
 type storeSnapshot struct {
-	config             *Config
-	resolver           VariableResolver
-	mcpRevisions       map[string]uint64
-	mcpInputs          map[string][32]byte
-	resolverRevision   uint64
-	knownProviders     []catwalk.Provider
-	loadedPaths        []string // config files that were successfully loaded
-	trackedConfigPaths []string // unique, normalized config file paths
-	snapshots          map[string]fileSnapshot
-	workspacePath      string // .rush/rush.json (recomputed on every reload)
-	overrides          RuntimeOverrides
+	config              *Config
+	resolver            VariableResolver
+	mcpRevisions        map[string]uint64
+	mcpInputs           map[string][32]byte
+	resolverRevision    uint64
+	resolverFingerprint [32]byte
+	knownProviders      []catwalk.Provider
+	loadedPaths         []string // config files that were successfully loaded
+	trackedConfigPaths  []string // unique, normalized config file paths
+	snapshots           map[string]fileSnapshot
+	workspacePath       string // .rush/rush.json (recomputed on every reload)
+	overrides           RuntimeOverrides
 
 	// generation is a monotonically increasing counter assigned at publish
 	// time (see ConfigStore.publishLocked). It exists so a long-running

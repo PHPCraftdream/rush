@@ -241,6 +241,7 @@ func loadOnce(workingDir, dataDir string, debug bool) (*ConfigStore, error) {
 			mcpRevisions:       initialMCPRevisions(cfg),
 			mcpInputs:          mcpInputFingerprints(configDocuments, externalDocuments),
 			resolverRevision:   1,
+			resolverFingerprint: resolverInputFingerprint(env.Env()),
 			knownProviders:     knownProviders,
 			loadedPaths:        loadedPaths,
 			trackedConfigPaths: trackedPaths,
