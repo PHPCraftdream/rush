@@ -634,11 +634,21 @@ func withoutCallOptions(ctx context.Context) context.Context {
 // (an immutable value bound to the context before the build started).
 func (c *coordinator) workerSubAgentActiveForCall(ctx context.Context, cfg *config.Config) bool {
 	if creds := callCredentialsFrom(ctx); creds != nil {
-		_, covered := creds.Models[RoleWorker]
 		if opts := callOptionsFrom(ctx); opts != nil && opts.ModelRole != "" {
-			return covered && opts.ModelRole == config.SelectedModelTypeSmart
+			if opts.ModelRole != config.SelectedModelTypeSmart {
+				return false
+			}
 		}
-		return covered
+		// An explicit tenant worker always enables worker/orchestrator
+		// policy. When it is omitted, retain the established smart-run
+		// orchestration policy driven by the configured worker slot; the
+		// actual credentialed sub-agent model still falls back to tenant
+		// smart and never uses that operator worker.
+		if _, covered := creds.Models[RoleWorker]; covered {
+			return true
+		}
+		workerModelCfg, ok := cfg.Models[config.SelectedModelTypeWorker]
+		return ok && workerModelCfg.Model != ""
 	}
 	if opts := callOptionsFrom(ctx); opts != nil && opts.ModelRole != "" {
 		if opts.ModelRole != config.SelectedModelTypeSmart {
