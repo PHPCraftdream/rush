@@ -125,6 +125,19 @@ while IFS= read -r file; do
 		# by the file's own db.Release.
 		continue
 		;;
+	internal/app/app_broker_shutdown_test.go|\
+	internal/app/app_new_skip_agent_setup_test.go|\
+	internal/app/app_run_admission_race_test.go|\
+	internal/app/app_run_json_envelope_golden_test.go|\
+	internal/app/app_run_toolgate_restore_test.go|\
+	internal/app/p348_p0_1_ordering_race_test.go|\
+	internal/app/p348_p0_1_pump_coordinator_wiring_test.go|\
+	internal/app/p350_coder_agent_selfheal_test.go|\
+	internal/app/p421_p0_1_interrupt_live_continuation_test.go)
+		# These tests hand their connection to App.Shutdown, whose production
+		# lifecycle owns the matching db.Release call.
+		continue
+		;;
 	esac
 
 	# Strip full-line // comments before counting, so prose like

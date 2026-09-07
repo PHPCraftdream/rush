@@ -63,6 +63,9 @@ jobs:
       - name: test files pair db.Connect/db.ConnectRead with db.Release (ref-counted pool contract)
         if: matrix.os == 'ubuntu-latest'
         run: bash .githooks/check_db_release_pairing.sh
+      - name: self-test db release pairing guard
+        if: matrix.os == 'ubuntu-latest'
+        run: bash .githooks/check_db_release_pairing_selftest.sh
       # Regenerate the sqlc output and fail if it drifts from what's
       # committed. Pinned to v1.30.0 — the exact version this repo's own
       # sqlc.yaml targets and whose byte/rune span-counting bug the ASCII
@@ -100,8 +103,10 @@ jobs:
       # Splitting into one named step per logical package group makes
       # the failing step's NAME the diagnosis -- no log-reading needed
       # to find which area broke. Flags (-short -failfast -p 2) are
-      # unchanged from the old single step; this is a pure regrouping,
-      # not a coverage or flag change.
+      # unchanged from the old single step and coverage is preserved, but
+      # package groups now run sequentially rather than sharing one
+      # cross-group -p 2 scheduler. This trades some wall-clock time for
+      # clearer failure ownership and lower peak memory.
       #
       # The LAST step is a computed catch-all, not a hand-maintained
       # list: it runs every package not explicitly claimed by an
@@ -274,14 +279,31 @@ jobs:
           # both builtins require bash 4+. Portable while-read loop works
           # on bash 3.2, bash 4/5, and Windows' Git Bash alike.
           names=()
+          if ! name_list="$(mktemp)"; then
+            echo "::error::could not create a temporary test-name list"
+            exit 1
+          fi
+          cleanup_name_list() { rm -f -- "${name_list:-}" || :; }
+          trap cleanup_name_list EXIT
+          if ! grep -h -E '^func Test[A-Za-z0-9_]+\(' internal/agent/*_test.go \
+            | sed -n -E 's/^func (Test[A-Za-z0-9_]+)\(.*/\1/p' \
+            | sed '/^TestMain$/d' \
+            | LC_ALL=C sort -u >"$name_list"; then
+            echo "::error::failed to extract internal/agent test names"
+            exit 1
+          fi
+          if [ ! -s "$name_list" ]; then
+            echo "::error::no internal/agent tests were extracted"
+            exit 1
+          fi
           while IFS= read -r name; do
-            names+=("$name")
-          done < <(
-            grep -h "^func Test" internal/agent/*_test.go \
-              | sed 's/func \(Test[A-Za-z0-9_]*\).*/\1/' \
-              | LC_ALL=C sort -u
-          )
+            [ -n "$name" ] && names+=("$name")
+          done <"$name_list"
           total=${#names[@]}
+          if [ "$total" -eq 0 ]; then
+            echo "::error::internal/agent test-name list is empty"
+            exit 1
+          fi
           # windows-latest hit a genuine runtime: VirtualAlloc ... errno=1455
           # (ERROR_COMMITMENT_LIMIT -- the paging file is too small, not
           # physical RAM exhaustion) inside batch 1/4 alone, ~99 tests into a
@@ -426,14 +448,31 @@ jobs:
         run: |
           set -uo pipefail
           names=()
+          if ! name_list="$(mktemp)"; then
+            echo "::error::could not create a temporary test-name list"
+            exit 1
+          fi
+          cleanup_name_list() { rm -f -- "${name_list:-}" || :; }
+          trap cleanup_name_list EXIT
+          if ! grep -h -E '^func Test[A-Za-z0-9_]+\(' internal/agent/*_test.go \
+            | sed -n -E 's/^func (Test[A-Za-z0-9_]+)\(.*/\1/p' \
+            | sed '/^TestMain$/d' \
+            | LC_ALL=C sort -u >"$name_list"; then
+            echo "::error::failed to extract internal/agent test names"
+            exit 1
+          fi
+          if [ ! -s "$name_list" ]; then
+            echo "::error::no internal/agent tests were extracted"
+            exit 1
+          fi
           while IFS= read -r name; do
-            names+=("$name")
-          done < <(
-            grep -h "^func Test" internal/agent/*_test.go \
-              | sed 's/func \(Test[A-Za-z0-9_]*\).*/\1/' \
-              | LC_ALL=C sort -u
-          )
+            [ -n "$name" ] && names+=("$name")
+          done <"$name_list"
           total=${#names[@]}
+          if [ "$total" -eq 0 ]; then
+            echo "::error::internal/agent test-name list is empty"
+            exit 1
+          fi
           batches=5
           size=$(( (total + batches - 1) / batches ))
           status=0

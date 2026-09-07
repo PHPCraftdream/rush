@@ -466,15 +466,26 @@ func TestReleaseGate_P350_LeaseRenewedDuringLongExecution(t *testing.T) {
 type queuedNotExecutedThenSuccessCoordinator struct {
 	busyUntilCall int64
 	calls         atomic.Int64
+	mu            sync.Mutex
+	callTimes     []time.Time
 }
 
 func (c *queuedNotExecutedThenSuccessCoordinator) Run(ctx context.Context, callData session.SessionAgentCallData) (*any, error) {
 	n := c.calls.Add(1)
+	c.mu.Lock()
+	c.callTimes = append(c.callTimes, time.Now())
+	c.mu.Unlock()
 	if n <= c.busyUntilCall {
 		return nil, session.ErrCallQueuedNotExecuted
 	}
 	var result any = "ok"
 	return &result, nil
+}
+
+func (c *queuedNotExecutedThenSuccessCoordinator) callTimesSnapshot() []time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]time.Time(nil), c.callTimes...)
 }
 
 // TestReleaseGate_P350_QueuedNotExecutedBacksOffWithoutAttemptPenalty proves
@@ -553,6 +564,7 @@ func TestReleaseGate_P350_QueuedNotExecutedBacksOffWithoutAttemptPenalty(t *test
 		"coordinator must eventually be called past busyUntilCall — if this times out, the entry "+
 			"was dead-lettered (deleted) before reaching that call count, meaning ErrCallQueuedNotExecuted "+
 			"recoveries are still counting toward RunQueueMaxAttempts")
+	assertRetryCyclePace(t, coord.callTimesSnapshot())
 
 	// Weak predicate, kept deliberately — this is the third
 	// `len(pending) == 0` site in this file and the only one 5c160413

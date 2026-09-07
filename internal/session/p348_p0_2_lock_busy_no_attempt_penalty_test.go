@@ -25,6 +25,7 @@ package session_test
 import (
 	"context"
 	"encoding/json"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -40,10 +41,15 @@ import (
 type busyThenSuccessCoordinator struct {
 	busyUntilCall int64
 	calls         atomic.Int64
+	mu            sync.Mutex
+	callTimes     []time.Time
 }
 
 func (c *busyThenSuccessCoordinator) Run(ctx context.Context, callData session.SessionAgentCallData) (*any, error) {
 	n := c.calls.Add(1)
+	c.mu.Lock()
+	c.callTimes = append(c.callTimes, time.Now())
+	c.mu.Unlock()
 	if n <= c.busyUntilCall {
 		return nil, &session.SessionLockBusyError{Path: "test-lock-path", HolderPID: 12345}
 	}
@@ -51,17 +57,45 @@ func (c *busyThenSuccessCoordinator) Run(ctx context.Context, callData session.S
 	return &result, nil
 }
 
+func (c *busyThenSuccessCoordinator) callTimesSnapshot() []time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]time.Time(nil), c.callTimes...)
+}
+
+func assertRetryCyclePace(t *testing.T, times []time.Time) {
+	t.Helper()
+	require.GreaterOrEqual(t, len(times), 2, "retry coordinator must record multiple cycles")
+	const maxCycleGap = 2 * time.Second
+	for i := 1; i < len(times); i++ {
+		require.LessOrEqual(t, times[i].Sub(times[i-1]), maxCycleGap,
+			"retry cycle %d took longer than %s; the 20s completion window must not hide a pace regression",
+			i, maxCycleGap)
+	}
+}
+
 // alwaysFailingCoordinator always returns a plain (non-busy, non-terminal)
 // error, simulating a genuinely broken call that should eventually be
 // dead-lettered.
 type alwaysFailingCoordinator struct {
-	calls atomic.Int64
-	err   error
+	calls     atomic.Int64
+	err       error
+	mu        sync.Mutex
+	callTimes []time.Time
 }
 
 func (c *alwaysFailingCoordinator) Run(ctx context.Context, callData session.SessionAgentCallData) (*any, error) {
 	c.calls.Add(1)
+	c.mu.Lock()
+	c.callTimes = append(c.callTimes, time.Now())
+	c.mu.Unlock()
 	return nil, c.err
+}
+
+func (c *alwaysFailingCoordinator) callTimesSnapshot() []time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]time.Time(nil), c.callTimes...)
 }
 
 // TestReleaseGate_P0_2_LockBusyNeverExhaustsRetries proves that an entry
@@ -141,6 +175,7 @@ func TestReleaseGate_P0_2_LockBusyNeverExhaustsRetries(t *testing.T) {
 		"coordinator must eventually be called past busyUntilCall — if this times out, the entry "+
 			"was terminal-failed (deleted) before reaching that call count, meaning lock-busy "+
 			"failures are still counting toward RunQueueMaxAttempts")
+	assertRetryCyclePace(t, coord.callTimesSnapshot())
 
 	// Now confirm the entry is actually gone (acked), sustained across
 	// several more ticks — not just transiently absent between a lease and
@@ -209,6 +244,7 @@ func TestReleaseGate_P0_2_GenuineFailureStillExhaustsAfterMaxAttempts(t *testing
 		return coord.calls.Load() >= int64(session.RunQueueMaxAttempts)
 	}, 20*time.Second, 20*time.Millisecond,
 		"coordinator should be called RunQueueMaxAttempts times before the entry is dead-lettered")
+	assertRetryCyclePace(t, coord.callTimesSnapshot())
 
 	// Now confirm the entry is actually gone (dead-lettered), sustained
 	// across several more ticks — the max-attempts branch terminal-fails

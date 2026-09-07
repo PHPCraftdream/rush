@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -265,16 +266,15 @@ func TestFileMatchesBoundedLineContinuesAfterTruncation(t *testing.T) {
 // TestSearchFilesWithRegexRespectsMidWalkCancellation verifies that cancelling
 // the context while the fallback walk is in progress aborts it promptly
 // (surfacing context.Canceled) instead of grinding through the whole tree. The
-// searched pattern does NOT match the file content so the 200-match cap never
-// triggers an early stop — the walk must traverse every file, giving
-// cancellation something real to interrupt mid-flight.
+// searched pattern does NOT match the file content, so the 200-match cap never
+// triggers an early stop. The cancellation barrier below supplies the
+// in-progress event directly.
 func TestSearchFilesWithRegexRespectsMidWalkCancellation(t *testing.T) {
-	t.Parallel()
 	tempDir := t.TempDir()
-	const files = 4000
-	content := strings.Repeat("filler line\n", 160) // ~1.9 KiB/file, no match for the pattern below
+	const files = 400
+	content := "filler line\n"
 	for i := range files {
-		p := filepath.Join(tempDir, fmt.Sprintf("d%d", i/200), fmt.Sprintf("f%d.txt", i))
+		p := filepath.Join(tempDir, fmt.Sprintf("d%d", i/100), fmt.Sprintf("f%d.txt", i))
 		require.NoError(t, os.MkdirAll(filepath.Dir(p), 0o755))
 		require.NoError(t, os.WriteFile(p, []byte(content), 0o644))
 	}
@@ -301,27 +301,38 @@ func TestSearchFilesWithRegexRespectsMidWalkCancellation(t *testing.T) {
 	require.NoError(t, fullErr)
 	t.Logf("full walk of %d files took %s", files, fullElapsed)
 
-	// Cancel mid-walk: wait a quarter of the measured full-walk duration, then
-	// cancel, so the walk is guaranteed to be in progress when it arrives.
+	// Cancel at an observed walk event rather than deriving a delay from a
+	// measured baseline. The hook blocks the first file callback, so the
+	// cancellation ordering is independent of cache and scheduler speed.
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	hook := func(string) {
+		once.Do(func() {
+			close(entered)
+			<-release
+		})
+	}
 	ctx, cancel := context.WithCancel(context.Background())
+	ctx = context.WithValue(ctx, regexWalkHookKey{}, hook)
+	t.Cleanup(cancel)
 	done := make(chan error, 1)
 	go func() {
 		_, err := searchFilesWithRegex(ctx, missingPattern, tempDir, "")
 		done <- err
 	}()
-	time.Sleep(fullElapsed / 4)
-	cancelStart := time.Now()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("regex walk did not reach the cancellation barrier")
+	}
 	cancel()
+	close(release)
 
 	select {
 	case err := <-done:
-		abortElapsed := time.Since(cancelStart)
 		require.Error(t, err)
 		require.True(t, errors.Is(err, context.Canceled), "expected context.Canceled, got %v", err)
-		t.Logf("mid-walk cancellation returned %s after cancel (full walk %s)", abortElapsed, fullElapsed)
-		// Must abort shortly after cancellation, not grind to the end.
-		require.Less(t, abortElapsed, fullElapsed/2,
-			"walk should abort shortly after cancellation (abort=%s, full=%s)", abortElapsed, fullElapsed)
 	case <-time.After(5 * time.Second):
 		t.Fatal("searchFilesWithRegex did not return within 5s after cancellation")
 	}

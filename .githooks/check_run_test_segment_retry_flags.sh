@@ -83,7 +83,11 @@ fi
 # test: a retry failing twice is a state this test must never reach.
 step() { printf 'step: %s\n' "$1"; }
 fail() {
-	printf 'FAIL: fail() reached (a retry failed twice): %s\n' "$1" >&2
+	if [ "${allow_expected_failure:-0}" -eq 1 ]; then
+		printf 'EXPECTED: fail() reached for the deliberate cleanup case: %s\n' "$1" >&2
+	else
+		printf 'FAIL: fail() reached (a retry failed twice): %s\n' "$1" >&2
+	fi
 	exit 1
 }
 # Passthrough wrapper: the machine-local safego.ps1 memory cap is out of
@@ -92,6 +96,12 @@ run_capped() {
 	local size="$1" timeout="$2"
 	shift 2
 	"$@"
+}
+cleanup_test_log() {
+	if [ -n "${test_log:-}" ]; then
+		rm -f -- "$test_log" || :
+		test_log=""
+	fi
 }
 
 # Mock go: first invocation fails like a real single-package failure
@@ -148,6 +158,17 @@ expect_argv_line_contains() {
 	esac
 }
 
+expect_no_files() {
+	desc="$1"
+	dir="$2"
+	if [ -z "$(find "$dir" -type f -print -quit 2>/dev/null)" ]; then
+		printf 'PASS: %s\n' "$desc"
+	else
+		printf 'FAIL: %s -- temporary files remain in %s\n' "$desc" "$dir"
+		failures=$((failures + 1))
+	fi
+}
+
 # Case 1 -- THE regression: the first attempt fails with an identifiable
 # package, so the retry takes the identified-package branch. Before the
 # fix, that branch rebuilt the command from the package list alone and
@@ -172,6 +193,26 @@ run_test_segment "selftest case 2 (whole-segment retry)" 1g 30 "-parallel 2" ./c
 expect_status "case 2: segment passes via retry" 0 "$?"
 expect_argv_line_contains "case 2: RETRY carries the throttling flags" 2 "-parallel 2"
 expect_argv_line_contains "case 2: RETRY re-runs the original package pattern" 2 "./case2/pkg/"
+
+# Case 3 -- cleanup must run when the second attempt fails and fail() exits.
+# Use a private TMPDIR so the assertion observes exactly the test log made by
+# run_test_segment, not unrelated system temporary files.
+failure_tmp="$(mktemp -d)"
+(
+	TMPDIR="$failure_tmp"
+	export TMPDIR
+	allow_expected_failure=1
+	export allow_expected_failure
+	go() {
+		printf 'FAIL\tgithub.com/example/pkg\t1.23s\n'
+		return 1
+	}
+	run_test_segment "selftest case 3 (failed retry cleanup)" 1g 30 "-parallel 2" ./failure/pkg/ >/dev/null
+)
+failure_status=$?
+expect_status "case 3: failed retry exits 1" 1 "$failure_status"
+expect_no_files "case 3: failed retry removes its temporary log" "$failure_tmp"
+rm -rf -- "$failure_tmp"
 
 if [ "$failures" -gt 0 ]; then
 	printf 'check_run_test_segment_retry_flags: %d failure(s) against %s\n' "$failures" "$target"

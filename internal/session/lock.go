@@ -112,6 +112,15 @@ func WithClearHolderMetadataFn(fn func(path string, expectedGeneration string)) 
 	}
 }
 
+// WithCleanupDone closes done after Release's metadata cleanup function has
+// returned. It is a test-only ordering seam for callers that must join the
+// complete primary-file and sidecar cleanup, including deferred file close.
+func WithCleanupDone(done chan<- struct{}) LockOption {
+	return func(lk *SessionLock) {
+		lk.cleanupDone = done
+	}
+}
+
 // WithHeartbeatInterval overrides how often the heartbeat goroutine touches
 // the lock file's mtime, in place of the production lockHeartbeatInterval
 // (10s). Test-only seam (task #453, following up on task #450's test-speed
@@ -183,6 +192,8 @@ type SessionLock struct {
 	// tests can inject blocking behavior via LockOption to prove unlock/close
 	// happen before metadata cleanup.
 	clearHolderMetadataFn func(path string, expectedGeneration string)
+	// cleanupDone is an optional test-only completion signal.
+	cleanupDone chan<- struct{}
 	// heartbeatInterval overrides lockHeartbeatInterval for this instance's
 	// heartbeat goroutine. Zero means "use the production interval" — see
 	// WithHeartbeatInterval.
@@ -544,6 +555,7 @@ func (l *SessionLock) Release() error {
 			path := l.Path
 			generation := l.generation
 			cleanupFn := l.clearHolderMetadataFn
+			cleanupDoneSignal := l.cleanupDone
 
 			// Clear diagnostic metadata (best-effort, may hang on slow FS/AV/SMB).
 			// This runs AFTER unlockFile and Close, in a goroutine, so:
@@ -572,6 +584,9 @@ func (l *SessionLock) Release() error {
 			cleanupDone := make(chan struct{})
 			go func() {
 				cleanupFn(path, generation)
+				if cleanupDoneSignal != nil {
+					close(cleanupDoneSignal)
+				}
 				close(cleanupDone)
 			}()
 			select {

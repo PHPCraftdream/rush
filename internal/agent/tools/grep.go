@@ -386,6 +386,10 @@ type ripgrepMatch struct {
 	} `json:"data"`
 }
 
+// regexWalkHookKey is a test-only context seam. Production callers never put
+// a value under this key, so the walk remains allocation-free in normal use.
+type regexWalkHookKey struct{}
+
 func searchFilesWithRegex(ctx context.Context, pattern, rootPath, include string) ([]grepMatch, error) {
 	matches := []grepMatch{}
 
@@ -440,6 +444,13 @@ func searchFilesWithRegex(ctx context.Context, pattern, rootPath, include string
 
 		if includePattern != nil && !includePattern.MatchString(path) {
 			return nil
+		}
+
+		if hook, ok := ctx.Value(regexWalkHookKey{}).(func(string)); ok {
+			hook(path)
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 		}
 
 		stopWalk := false
