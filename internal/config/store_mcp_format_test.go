@@ -112,21 +112,53 @@ func TestMCPDocumentEditorSupportsEmptyMissingAndExternalContainers(t *testing.T
 
 func TestMCPDocumentEditorRetainsDuplicateKeyPolicy(t *testing.T) {
 	data := []byte(`{"mcp":{"duplicate":{"type":"http","url":"first"},"keep":{"type":"http"},"duplicate":{"type":"http","url":"last"}}}`)
+	require.Equal(t, 2, mcpDocumentEntryKeyCount(t, data, "duplicate"))
+	require.Equal(t, 1, mcpDocumentEntryKeyCount(t, data, "keep"))
+
 	removed, err := editMCPDocument(data, "rush.json", "remove", "duplicate", "duplicate", MCPConfig{}, nil, nil)
 	require.NoError(t, err)
-	var root struct {
+	var removedRoot struct {
 		MCP map[string]json.RawMessage `json:"mcp"`
 	}
-	require.NoError(t, json.Unmarshal(removed, &root))
-	require.NotContains(t, root.MCP, "duplicate")
-	require.Contains(t, root.MCP, "keep")
+	require.NoError(t, json.Unmarshal(removed, &removedRoot))
+	require.Equal(t, 0, mcpDocumentEntryKeyCount(t, removed, "duplicate"))
+	require.Equal(t, 1, mcpDocumentEntryKeyCount(t, removed, "keep"))
+	require.Len(t, removedRoot.MCP, 1)
+	require.NotContains(t, removedRoot.MCP, "duplicate")
+	require.Contains(t, removedRoot.MCP, "keep")
 
 	replaced, err := editMCPDocument(data, "rush.json", "replace", "duplicate", "renamed", MCPConfig{Type: MCPHttp, URL: "new"}, nil, nil)
 	require.NoError(t, err)
-	require.NoError(t, json.Unmarshal(replaced, &root))
-	require.NotContains(t, root.MCP, "duplicate")
-	require.Contains(t, root.MCP, "renamed")
-	require.Contains(t, root.MCP, "keep")
+	var replacedRoot struct {
+		MCP map[string]json.RawMessage `json:"mcp"`
+	}
+	require.NoError(t, json.Unmarshal(replaced, &replacedRoot))
+	require.Equal(t, 0, mcpDocumentEntryKeyCount(t, replaced, "duplicate"))
+	require.Equal(t, 1, mcpDocumentEntryKeyCount(t, replaced, "renamed"))
+	require.Equal(t, 1, mcpDocumentEntryKeyCount(t, replaced, "keep"))
+	require.Len(t, replacedRoot.MCP, 2)
+	require.NotContains(t, replacedRoot.MCP, "duplicate")
+	require.Contains(t, replacedRoot.MCP, "renamed")
+	require.Contains(t, replacedRoot.MCP, "keep")
+}
+
+func mcpDocumentEntryKeyCount(t *testing.T, data []byte, key string) int {
+	t.Helper()
+	root, err := scanMCPJSONObject(data)
+	require.NoError(t, err)
+	containerMember := lastMCPMember(root.members, "mcp")
+	require.NotNil(t, containerMember)
+	_, container, err := scanMCPJSONValue(data, containerMember.valueStart)
+	require.NoError(t, err)
+	require.NotNil(t, container)
+
+	count := 0
+	for _, member := range container.members {
+		if member.key == key {
+			count++
+		}
+	}
+	return count
 }
 
 func TestMCPDocumentEditorRemovalPreservesClosingWhitespace(t *testing.T) {
