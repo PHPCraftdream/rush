@@ -196,6 +196,9 @@ func (s *ClientSession) releaseOperation() {
 	closeNow := s.retired && s.operationRefs == 0
 	s.operationMu.Unlock()
 	if closeNow {
+		// Cancel before enqueueing so a blocked earlier Close cannot keep this
+		// retired generation's lifetime resources alive.
+		s.cancelContext()
 		s.queueClose()
 	}
 }
@@ -213,6 +216,10 @@ func (s *ClientSession) retire() bool {
 	closeNow := s.operationRefs == 0
 	s.operationMu.Unlock()
 	if closeNow {
+		// Cancellation is intentionally outside operationMu and before queueing:
+		// cancel must remain nonblocking and cannot run while lifecycle locks are
+		// held.
+		s.cancelContext()
 		s.queueClose()
 	}
 	return closeNow

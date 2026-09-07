@@ -127,6 +127,167 @@ func TestOperationLeaseDefersCloseUntilFinalReference(t *testing.T) {
 	require.True(t, session.retire())
 }
 
+func TestRetiredSessionsCancelBeforeABlockedClose(t *testing.T) {
+	owner, err := Acquire()
+	require.NoError(t, err)
+
+	releaseFirstClose := make(chan struct{})
+	var releaseFirstOnce sync.Once
+	releaseFirst := func() { releaseFirstOnce.Do(func() { close(releaseFirstClose) }) }
+	firstCloseStarted := make(chan struct{})
+	var closeStarts atomic.Int32
+	owner.closer.mu.Lock()
+	owner.closer.beforeClose = func(closeRequest) {
+		closeStarts.Add(1)
+	}
+	owner.closer.mu.Unlock()
+	defer func() {
+		releaseFirst()
+		owner.closer.mu.Lock()
+		owner.closer.beforeClose = nil
+		owner.closer.mu.Unlock()
+		require.NoError(t, owner.Close(context.Background()))
+	}()
+
+	first := &ClientSession{
+		cancel: func() {},
+		terminal: func() {
+			close(firstCloseStarted)
+			<-releaseFirstClose
+		},
+	}
+	lifecycleMu.Lock()
+	owner.trackSessionLocked(first, "blocked-first")
+	lifecycleMu.Unlock()
+	retireMCPClient("blocked-first", first)
+	select {
+	case <-firstCloseStarted:
+	case <-time.After(time.Second):
+		t.Fatal("first retired session did not enter Close")
+	}
+
+	const laterCount = 3
+	later := make([]*ClientSession, 0, laterCount)
+	canceled := make([]chan struct{}, 0, laterCount)
+	var laterCloseCalls atomic.Int32
+	var laterCancelCalls atomic.Int32
+	var laterCleanupCalls atomic.Int32
+	for i := 0; i < laterCount; i++ {
+		cancelled := make(chan struct{})
+		cancelOnce := sync.Once{}
+		session := &ClientSession{
+			cancel: func() {
+				laterCancelCalls.Add(1)
+				cancelOnce.Do(func() { close(cancelled) })
+			},
+			terminal: func() { laterCloseCalls.Add(1) },
+			cleanup:  func() { laterCleanupCalls.Add(1) },
+		}
+		lifecycleMu.Lock()
+		owner.trackSessionLocked(session, "blocked-later")
+		lifecycleMu.Unlock()
+		later = append(later, session)
+		canceled = append(canceled, cancelled)
+		retireMCPClient("blocked-later", session)
+	}
+
+	for _, cancelled := range canceled {
+		select {
+		case <-cancelled:
+		case <-time.After(time.Second):
+			t.Fatal("retired session lifetime context was not canceled before enqueue")
+		}
+	}
+	require.Equal(t, int32(1), closeStarts.Load(), "the blocked closer must remain serial")
+	require.Equal(t, int32(laterCount), laterCancelCalls.Load())
+	require.Zero(t, laterCloseCalls.Load(), "later Close calls must remain queued")
+	require.Zero(t, laterCleanupCalls.Load(), "later cleanup must remain queued")
+	for _, session := range later {
+		select {
+		case <-session.closedDone():
+			t.Fatal("later session closed while the first Close was blocked")
+		default:
+		}
+	}
+
+	releaseFirst()
+	for _, session := range later {
+		select {
+		case <-session.closedDone():
+		case <-time.After(time.Second):
+			t.Fatal("closer did not drain a later retired session")
+		}
+	}
+	require.Equal(t, int32(laterCount), laterCloseCalls.Load())
+}
+
+func TestPinnedRetirementCancelsOnFinalReleaseBeforeBlockedClose(t *testing.T) {
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer func() { require.NoError(t, owner.Close(context.Background())) }()
+
+	canceled := make(chan struct{})
+	closeStarted := make(chan struct{})
+	releaseClose := make(chan struct{})
+	var cancelOnce sync.Once
+	var cancelCalls atomic.Int32
+	session := &ClientSession{
+		cancel: func() {
+			cancelCalls.Add(1)
+			cancelOnce.Do(func() { close(canceled) })
+		},
+		terminal: func() {
+			close(closeStarted)
+			<-releaseClose
+		},
+	}
+	lifecycleMu.Lock()
+	owner.trackSessionLocked(session, "pinned-retirement")
+	lifecycleMu.Unlock()
+
+	_, release, usable := session.acquireOperation(context.Background())
+	require.True(t, usable)
+	require.False(t, session.retire())
+	select {
+	case <-canceled:
+		t.Fatal("pinned retirement canceled the lifetime context")
+	default:
+	}
+
+	released := make(chan struct{})
+	go func() {
+		release()
+		close(released)
+	}()
+	select {
+	case <-released:
+	case <-time.After(time.Second):
+		t.Fatal("final operation release waited for blocked Close")
+	}
+	select {
+	case <-canceled:
+	case <-time.After(time.Second):
+		t.Fatal("final operation release did not cancel the lifetime context")
+	}
+	require.Equal(t, int32(1), cancelCalls.Load())
+	select {
+	case <-closeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("final operation release did not queue Close")
+	}
+	select {
+	case <-session.closedDone():
+		t.Fatal("blocked Close completed before its barrier was released")
+	default:
+	}
+	close(releaseClose)
+	select {
+	case <-session.closedDone():
+	case <-time.After(time.Second):
+		t.Fatal("Close did not finish after its barrier was released")
+	}
+}
+
 func TestRenewalRetainsLeaseIdentityUntilAfterPublish(t *testing.T) {
 	const name = "renewal-identity-barrier"
 	beginReached := make(chan struct{})
