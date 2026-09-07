@@ -131,9 +131,20 @@ func fsFindOne(ctx context.Context, disk DiskProvider, scope permission.FolderSc
 	// doc comment for why. The rendered path stays the original spelling.
 	dropped := 0
 	kept := make([]string, 0, len(files))
+	resolvedCache := make(map[string]string, len(files))
 	for _, f := range files {
-		resolved, err := resolveScopedPath(ctx, disk, workingDir, f)
-		if err != nil {
+		resolved, ok := resolvedCache[f]
+		if !ok {
+			var err error
+			resolved, err = resolveScopedPath(ctx, disk, workingDir, f)
+			if err != nil {
+				resolvedCache[f] = ""
+				dropped++
+				continue
+			}
+			resolvedCache[f] = resolved
+		}
+		if resolved == "" {
 			dropped++
 			continue
 		}

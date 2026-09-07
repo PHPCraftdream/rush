@@ -470,7 +470,7 @@ func TestErrorContract_BadModelInputIsAResponseNotAnError(t *testing.T) {
 			tool: "fs_grep",
 			desc: `malformed regex "("`,
 			run: func() (fantasy.ToolResponse, error) {
-				return run(NewFSGrepTool(workingDir, fsBatchTestScope(t, workingDir, permission.FileOpGrep), nil),
+				return run(NewFSGrepTool(workingDir, fsBatchTestScope(t, workingDir, permission.FileOpGrep), config.ToolGrep{}, nil),
 					FSGrepToolName,
 					FSGrepParams{Items: []FSGrepItem{{Pattern: "(", Path: workingDir}}})
 			},

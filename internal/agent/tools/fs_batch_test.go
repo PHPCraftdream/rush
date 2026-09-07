@@ -308,6 +308,29 @@ func TestFSBatchReadBudgetSkipsRest(t *testing.T) {
 	require.Contains(t, resp.Content, "[2] skipped last.txt: read-output budget exhausted")
 }
 
+func TestFSBatchReadBudgetCountsEveryRenderedBlock(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	first := strings.Repeat("a", FSBatchMaxReadOutput/2)
+	second := strings.Repeat("b", FSBatchMaxReadOutput)
+	items := []fsBatchTestItem{{Path: "failed.txt"}, {Path: "too-large.txt"}}
+	execute := func(_ context.Context, group FSBatchGroup[fsBatchTestItem]) ([]FSItemOutcome, error) {
+		if group.Items[0].Item.Path == "failed.txt" {
+			return []FSItemOutcome{{Status: FSStatusFailed, Error: "read failed", Block: first}}, nil
+		}
+		return []FSItemOutcome{{Status: FSStatusOK, Block: second}}, nil
+	}
+	resp, err := fsBatchTestRun(context.Background(), dir,
+		fsBatchTestScope(t, dir, permission.FileOpRead), items, execute)
+	require.NoError(t, err)
+	meta := fsBatchTestMetadata(t, resp)
+	require.Equal(t, FSStatusFailed, meta.Items[0].Status)
+	require.Equal(t, FSStatusTruncated, meta.Items[1].Status)
+	require.Contains(t, meta.Items[1].Error, "budget")
+	require.Contains(t, resp.Content, first[:32])
+	require.NotContains(t, resp.Content, second[:32])
+}
+
 func TestFSBatchDenialIsLoggedPerItem(t *testing.T) {
 	// Swaps the process-wide default logger: keep this test sequential.
 	prev := slog.Default()

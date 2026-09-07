@@ -223,3 +223,57 @@ func TestFSFindFakeProviderAliasResultRespectsCanonicalDenyCarveOut(t *testing.T
 
 	requireRealDirEmpty(t, tmp)
 }
+
+func TestFSListCachesDuplicateResultResolution(t *testing.T) {
+	t.Parallel()
+	tmp := t.TempDir()
+	workingDir := filepath.Join(tmp, "virtual")
+	disk := newFakeDisk()
+	disk.putDir(workingDir)
+	visible := filepath.Join(workingDir, "visible.txt")
+	disk.putFile(visible, "x")
+	disk.listResult = ListResult{Entries: []string{visible, visible}}
+	scope, err := permission.BuildFolderScope(permission.FolderScopeSpec{
+		WorkingDir: workingDir,
+		Entries:    []permission.FolderScopeEntry{{Dir: workingDir, Ops: []permission.FileOp{permission.FileOpList}}},
+	})
+	require.NoError(t, err)
+	tool := NewFSListTool(scope, workingDir, config.ToolLs{}, disk)
+	raw, err := json.Marshal(FSListParams{Items: []FSListItem{{Path: "."}}})
+	require.NoError(t, err)
+	_, err = tool.Run(t.Context(), fantasy.ToolCall{ID: "list-cache", Input: string(raw)})
+	require.NoError(t, err)
+	require.Equal(t, 1, countDiskCalls(disk.Calls(), "EvalSymlinks:"+visible))
+}
+
+func TestFSFindCachesDuplicateResultResolution(t *testing.T) {
+	t.Parallel()
+	tmp := t.TempDir()
+	workingDir := filepath.Join(tmp, "virtual")
+	disk := newFakeDisk()
+	disk.putDir(workingDir)
+	visible := filepath.Join(workingDir, "visible.txt")
+	disk.putFile(visible, "x")
+	disk.findResult = FindResult{Paths: []string{visible, visible}}
+	scope, err := permission.BuildFolderScope(permission.FolderScopeSpec{
+		WorkingDir: workingDir,
+		Entries:    []permission.FolderScopeEntry{{Dir: workingDir, Ops: []permission.FileOp{permission.FileOpFind}}},
+	})
+	require.NoError(t, err)
+	tool := NewFSFindTool(scope, workingDir, disk)
+	raw, err := json.Marshal(FSFindParams{Items: []FSFindItem{{Pattern: "*.txt", Path: "."}}})
+	require.NoError(t, err)
+	_, err = tool.Run(t.Context(), fantasy.ToolCall{ID: "find-cache", Input: string(raw)})
+	require.NoError(t, err)
+	require.Equal(t, 1, countDiskCalls(disk.Calls(), "EvalSymlinks:"+visible))
+}
+
+func countDiskCalls(calls []string, want string) int {
+	count := 0
+	for _, call := range calls {
+		if call == want {
+			count++
+		}
+	}
+	return count
+}

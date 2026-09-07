@@ -186,13 +186,15 @@ func fsReadOne(ctx context.Context, disk DiskProvider, absPath string, rawPath s
 		return "", fmt.Errorf("file content is not valid UTF-8")
 	}
 
-	lastLine := win.firstLine - 1
+	firstLine, lastLine := win.firstLine, win.firstLine-1
 	if content != "" {
 		lastLine = win.firstLine + strings.Count(content, "\n")
+	} else {
+		firstLine, lastLine = 0, 0
 	}
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "<file path=%q lines=%q status=\"ok\">\n", rawPath, fmt.Sprintf("%d-%d", win.firstLine, lastLine))
+	fmt.Fprintf(&b, "<file path=%q lines=%q status=\"ok\">\n", rawPath, fmt.Sprintf("%d-%d", firstLine, lastLine))
 	b.WriteString(addLineNumbers(content, win.firstLine))
 	if hasMore {
 		fmt.Fprintf(&b, "\n\n(File has more lines. Use start_line/end_line to read beyond line %d)", lastLine)

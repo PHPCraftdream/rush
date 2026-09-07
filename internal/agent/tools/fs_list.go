@@ -160,10 +160,21 @@ func fsListOne(ctx context.Context, disk DiskProvider, scope permission.FolderSc
 	// see fsListOne's doc comment for why.
 	dropped := 0
 	allowed := make([]string, 0, len(files))
+	resolvedCache := make(map[string]string, len(files))
 	for _, f := range files {
 		native := filepath.FromSlash(f)
-		resolved, err := resolveScopedPath(ctx, disk, workingDir, native)
-		if err != nil {
+		resolved, ok := resolvedCache[native]
+		if !ok {
+			var err error
+			resolved, err = resolveScopedPath(ctx, disk, workingDir, native)
+			if err != nil {
+				resolvedCache[native] = ""
+				dropped++
+				continue
+			}
+			resolvedCache[native] = resolved
+		}
+		if resolved == "" {
 			dropped++
 			continue
 		}

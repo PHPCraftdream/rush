@@ -73,7 +73,7 @@ type FSGrepParams struct {
 // twice: once per item root by the batch runner's preflight, and once
 // per match path here — a root check cannot vouch for paths found
 // underneath it.
-func NewFSGrepTool(workingDir string, scope permission.FolderScope, disk DiskProvider) fantasy.AgentTool {
+func NewFSGrepTool(workingDir string, scope permission.FolderScope, grepConfig config.ToolGrep, disk DiskProvider) fantasy.AgentTool {
 	disk = diskOrOS(disk)
 	return fantasy.NewAgentTool(
 		FSGrepToolName,
@@ -90,7 +90,7 @@ func NewFSGrepTool(workingDir string, scope permission.FolderScope, disk DiskPro
 				Execute: func(ctx context.Context, group FSBatchGroup[FSGrepItem]) ([]FSItemOutcome, error) {
 					outcomes := make([]FSItemOutcome, len(group.Items))
 					for i, member := range group.Items {
-						outcomes[i] = fsGrepRunItem(ctx, disk, workingDir, scope, group.Path, member.Item)
+						outcomes[i] = fsGrepRunItem(ctx, disk, grepConfig, workingDir, scope, group.Path, member.Item)
 					}
 					return outcomes, nil
 				},
@@ -120,13 +120,13 @@ func fsGrepPreflight(_ context.Context, item FSGrepItem, _ int, _ string) (permi
 // through disk.Search — for the real disk that is ripgrep-then-fallback
 // (fsGrepSearchContext, unchanged), for an injected provider it is
 // whatever that provider implements, with no rg subprocess ever spawned.
-func fsGrepRunItem(ctx context.Context, disk DiskProvider, workingDir string, scope permission.FolderScope, rootPath string, item FSGrepItem) FSItemOutcome {
+func fsGrepRunItem(ctx context.Context, disk DiskProvider, grepConfig config.ToolGrep, workingDir string, scope permission.FolderScope, rootPath string, item FSGrepItem) FSItemOutcome {
 	pattern := item.Pattern
 	if item.LiteralText {
 		pattern = escapeRegexPattern(pattern)
 	}
 
-	searchCtx, cancel := context.WithTimeout(ctx, config.ToolGrep{}.GetTimeout())
+	searchCtx, cancel := context.WithTimeout(ctx, grepConfig.GetTimeout())
 	defer cancel()
 
 	budget := newFSGrepBudget()
@@ -141,7 +141,16 @@ func fsGrepRunItem(ctx context.Context, disk DiskProvider, workingDir string, sc
 	if err != nil {
 		return FSItemOutcome{Status: FSStatusFailed, Error: fmt.Sprintf("error searching files: %v", err)}
 	}
+	matchedPaths := make(map[string]struct{})
 	for _, line := range searchResult.Lines {
+		if line.Hit {
+			matchedPaths[line.Path] = struct{}{}
+		}
+	}
+	for _, line := range searchResult.Lines {
+		if _, matched := matchedPaths[line.Path]; !matched {
+			continue
+		}
 		file := files[line.Path]
 		if file == nil {
 			file = newFSGrepFileHits()
@@ -417,8 +426,7 @@ func scanFileWithContext(ctx context.Context, filePath string, regex *regexp.Reg
 	}
 	defer file.Close()
 
-	collector := newFSGrepFileHits()
-	files[filePath] = collector
+	var collector *fsGrepFileHits
 
 	type ringEntry struct {
 		num  int
@@ -450,6 +458,10 @@ func scanFileWithContext(ctx context.Context, filePath string, regex *regexp.Reg
 		}
 
 		if isHit || readAhead > 0 {
+			if collector == nil {
+				collector = newFSGrepFileHits()
+				files[filePath] = collector
+			}
 			if isHit {
 				readAhead = contextLines
 			} else {

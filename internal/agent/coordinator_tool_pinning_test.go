@@ -20,6 +20,7 @@ import (
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/openai"
 	"github.com/PHPCraftdream/rush/internal/agent/prompt"
+	agenttools "github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/csync"
 	"github.com/PHPCraftdream/rush/internal/message"
@@ -673,7 +674,7 @@ func TestFolderScope_PinsPerCallScopedToolsetWithoutCrossContamination(t *testin
 		// legacy file tools
 		"view", "glob", "grep", "ls", "write", "edit", "multiedit",
 		// escape hatches
-		"download", "git_read", "agentic_fetch", "list_mcp_resources", "read_mcp_resource",
+		"download", "git_read", "agentic_fetch", "rush_logs", "list_mcp_resources", "read_mcp_resource",
 		// command tools without KeepsCommandTools
 		"bash", "run_command", "job_output", "job_kill",
 		// fs_* tools whose op the scope does not grant
@@ -707,6 +708,21 @@ func TestFolderScope_PinsPerCallScopedToolsetWithoutCrossContamination(t *testin
 	names, modelCalls := rec.snapshot()
 	assert.Empty(t, names, "resolveSessionModels must never SetTools the shared currentAgent")
 	assert.Zero(t, modelCalls)
+}
+
+func TestFolderScopeRemovesRushLogsFromConstructedToolset(t *testing.T) {
+	env := testEnv(t)
+	coord := newToolPinningCoordinator(t, env, false)
+	cfg, _ := coord.cfg.Snapshot()
+	cfg.Options.DataDirectory = t.TempDir()
+	coderCfg, ok := cfg.Agents[config.AgentCoder]
+	require.True(t, ok)
+	scope := newFolderScope(t, env.workingDir, permission.FileOpRead)
+	names := pinnedToolNames(mustBuildTools(t, coord,
+		WithCallOptions(t.Context(), &CallOptions{FolderScope: &scope}),
+		cfg, coderCfg, false))
+	assert.NotContains(t, names, agenttools.RushLogsToolName,
+		"a folder-scoped toolset must not expose the host log reader")
 }
 
 // TestUpdateModels_NeverPublishesFolderScopeFilter extends the
@@ -847,6 +863,30 @@ func TestFolderScope_CommandToolsFollowKeepsCommandTools(t *testing.T) {
 	namesStripped := pinnedToolNames(mustBuildTools(t, coord, ctxStripped, cfgSnap, coderCfg, false))
 	assertToolsOmit(t, namesStripped, commandTools...)
 	assert.Contains(t, namesStripped, "fs_read")
+}
+
+func TestScopedEmptyToolsetDoesNotFallBackToSharedTools(t *testing.T) {
+	env := testEnv(t)
+	coord := newToolPinningCoordinator(t, env, false)
+	cfg, _ := coord.cfg.Snapshot()
+	coderCfg, ok := cfg.Agents[config.AgentCoder]
+	require.True(t, ok)
+	coderCfg.AllowedTools = []string{}
+	scope := permission.FolderScope{}
+	ctx := WithCallOptions(t.Context(), &CallOptions{FolderScope: &scope})
+
+	_, err := coord.pinCallTools(ctx, cfgWithCoder(cfg, coderCfg))
+	require.ErrorIs(t, err, ErrScopedCallToolsUnavailable)
+}
+
+func cfgWithCoder(cfg *config.Config, coder config.Agent) *config.Config {
+	copy := *cfg
+	copy.Agents = make(map[string]config.Agent, len(cfg.Agents))
+	for name, agent := range cfg.Agents {
+		copy.Agents[name] = agent
+	}
+	copy.Agents[config.AgentCoder] = coder
+	return &copy
 }
 
 // TestFolderScope_StripsAgenticFetchEvenWhenSubAgentsAllowed proves the

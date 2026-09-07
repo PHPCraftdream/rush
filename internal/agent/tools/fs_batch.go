@@ -67,6 +67,9 @@ const (
 	// FSStatusSkipped marks an item that was never attempted because a
 	// batch-level budget was spent before its turn.
 	FSStatusSkipped = "skipped"
+	// FSStatusTruncated marks an item whose rendered block did not fit in
+	// the remaining batch output budget.
+	FSStatusTruncated = "truncated"
 )
 
 // Batch caps. FSBatchMaxItems is enforced by RunFSBatch as a whole-call
@@ -78,8 +81,9 @@ const (
 	FSBatchMaxItems = 50
 	// FSBatchMaxReadOutput is the total read output one call may emit
 	// across all items (view.go's MaxViewSize, deliberately reused).
-	// RunFSBatch enforces it between execution groups: items scheduled
-	// after the budget is spent are reported as skipped, not executed.
+	// RunFSBatch enforces it on every rendered block: items scheduled after
+	// the budget is spent are reported as skipped, and an oversized block is
+	// reported as truncated without being emitted.
 	FSBatchMaxReadOutput = MaxViewSize
 	// FSBatchMaxGrepMatchesPerItem caps the matches one grep-style item
 	// may report. Keep in step with grep.go's MaxResults default (100).
@@ -377,8 +381,13 @@ func RunFSBatch[I any](ctx context.Context, batch FSBatch[I]) (fantasy.ToolRespo
 			result.Diff = outcome.Diff
 			results[at] = result
 			if outcome.Block != "" {
-				blocks[at] = outcome.Block
-				if outcome.Status == FSStatusOK {
+				if len(outcome.Block) > FSBatchMaxReadOutput-emitted {
+					result.Status = FSStatusTruncated
+					result.Error = fmt.Sprintf(
+						"read-output budget exhausted (%d bytes per call)", FSBatchMaxReadOutput)
+					results[at] = result
+				} else {
+					blocks[at] = outcome.Block
 					emitted += len(outcome.Block)
 				}
 			}

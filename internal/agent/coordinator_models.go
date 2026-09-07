@@ -596,6 +596,9 @@ func (c *coordinator) pinCallTools(ctx context.Context, cfg *config.Config) ([]f
 	if pinCallToolsReadyGateSeam != nil {
 		pinCallToolsReadyGateSeam()
 	}
+	if required && len(tools) == 0 {
+		return fail(errors.New("per-call toolset is empty"))
+	}
 	// The toolset embeds a freshly built sub-agent (buildTools -> agentTool
 	// -> buildAgent), whose prompt/tool builds run asynchronously on the
 	// ready gate. Drain the gate before returning so the turn cannot

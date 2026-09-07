@@ -379,6 +379,9 @@ func readTextFileFrom(ctx context.Context, disk DiskProvider, filePath string, o
 		if err != nil && err != io.EOF {
 			return "", false, err
 		}
+		if err == io.EOF && lineText == "" {
+			break
+		}
 		lineText = strings.TrimSuffix(lineText, "\n")
 		lineText = strings.TrimSuffix(lineText, "\r")
 		if len(lineText) > MaxLineLength {

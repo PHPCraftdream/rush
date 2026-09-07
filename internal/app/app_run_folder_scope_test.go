@@ -70,3 +70,19 @@ func TestFSToolsForScopeCarveOutOnlyGrantsNothing(t *testing.T) {
 	scope := compileScopeForTest(t, permission.FolderScopeEntry{Dir: "."})
 	assert.Empty(t, fsToolsForScope(scope))
 }
+
+func TestFSToolsForScopeUsesEveryCoordinatorOperationMapping(t *testing.T) {
+	t.Parallel()
+	ops := make([]permission.FileOp, 0, len(tools.FolderScopeToolOperations())+2)
+	for _, op := range tools.FolderScopeToolOperations() {
+		ops = append(ops, op)
+	}
+	ops = append(ops, permission.FileOpCreate, permission.FileOpOverwrite)
+	scope := compileScopeForTest(t, permission.FolderScopeEntry{Dir: ".", Ops: ops})
+
+	want := tools.FolderScopeToolNames(*scope)
+	assert.ElementsMatch(t, want, fsToolsForScope(scope))
+	for name := range tools.FolderScopeToolOperations() {
+		assert.Contains(t, want, name)
+	}
+}

@@ -72,6 +72,7 @@ type fakeDisk struct {
 	// many times Search was invoked.
 	searchLines []SearchLine
 	searchCalls int
+	searchFn    func(context.Context, SearchRequest) (DiskSearchResult, error)
 
 	// listResult / findResult are returned verbatim by List / Find.
 	listResult ListResult
@@ -231,11 +232,14 @@ func (f *fakeDisk) Find(_ context.Context, req FindRequest) (FindResult, error) 
 	return f.findResult, nil
 }
 
-func (f *fakeDisk) Search(_ context.Context, req SearchRequest) (DiskSearchResult, error) {
+func (f *fakeDisk) Search(ctx context.Context, req SearchRequest) (DiskSearchResult, error) {
 	f.mu.Lock()
 	f.searchCalls++
 	f.mu.Unlock()
 	f.record("Search:" + req.Dir)
+	if f.searchFn != nil {
+		return f.searchFn(ctx, req)
+	}
 	return DiskSearchResult{Lines: f.searchLines}, nil
 }
 
@@ -444,7 +448,7 @@ func TestFSGrepUsesInjectedDiskProviderAndNeverSpawnsRipgrep(t *testing.T) {
 	}
 
 	scope := fsBatchTestScope(t, workingDir, permission.FileOpGrep)
-	tool := NewFSGrepTool(workingDir, scope, disk)
+	tool := NewFSGrepTool(workingDir, scope, config.ToolGrep{}, disk)
 
 	raw, err := json.Marshal(FSGrepParams{Items: []FSGrepItem{{Pattern: "needle", Path: workingDir}}})
 	require.NoError(t, err)
@@ -649,7 +653,7 @@ func TestFSToolsNilDiskProviderStillUsesTheRealDisk(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "real.txt"), []byte("needle\n"), 0o644))
-		tool := NewFSGrepTool(dir, fsBatchTestScope(t, dir, permission.FileOpGrep), nil)
+		tool := NewFSGrepTool(dir, fsBatchTestScope(t, dir, permission.FileOpGrep), config.ToolGrep{}, nil)
 		raw, err := json.Marshal(FSGrepParams{Items: []FSGrepItem{{Pattern: "needle", Path: dir}}})
 		require.NoError(t, err)
 		resp, err := tool.Run(context.Background(), fantasy.ToolCall{ID: "c", Input: string(raw)})

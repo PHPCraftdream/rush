@@ -97,6 +97,31 @@ func TestFSReadAddressingModes(t *testing.T) {
 	require.NotContains(t, blockOf(t, resp.Content, wantFull), "(File has more lines")
 }
 
+func TestFSReadLineSemantics(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	trailing := filepath.Join(dir, "trailing.txt")
+	nonTrailing := filepath.Join(dir, "non-trailing.txt")
+	empty := filepath.Join(dir, "empty.txt")
+	require.NoError(t, os.WriteFile(trailing, []byte("alpha\nbeta\n"), 0o644))
+	require.NoError(t, os.WriteFile(nonTrailing, []byte("alpha\nbeta"), 0o644))
+	require.NoError(t, os.WriteFile(empty, nil, 0o644))
+
+	resp := fsReadRun(t, fsBatchTestScope(t, dir, permission.FileOpRead), dir, []FSReadItem{
+		{Path: trailing},
+		{Path: nonTrailing},
+		{Path: empty},
+		{Path: trailing, StartLine: 2, EndLine: 2},
+	})
+	require.False(t, resp.IsError)
+	require.Contains(t, resp.Content, fmt.Sprintf(`<file path=%q lines="1-2" status="ok">`, trailing))
+	require.Contains(t, resp.Content, fmt.Sprintf(`<file path=%q lines="1-2" status="ok">`, nonTrailing))
+	require.Contains(t, resp.Content, fmt.Sprintf(`<file path=%q lines="0-0" status="ok">`, empty))
+	require.Contains(t, resp.Content, fmt.Sprintf(`<file path=%q lines="2-2" status="ok">`, trailing))
+	require.NotContains(t, blockOf(t, resp.Content, fmt.Sprintf(`<file path=%q lines="1-2" status="ok">`, trailing)), "     3|")
+	require.NotContains(t, resp.Content, "     0|")
+}
+
 func TestFSReadMixedScopeBatch(t *testing.T) {
 	t.Parallel()
 

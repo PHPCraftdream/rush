@@ -302,14 +302,15 @@ var folderScopeLegacyFileTools = map[string]struct{}{
 
 // folderScopeEscapeHatchTools read or write outside any path policy a
 // folder scope can express, so a scoped call never sees them: download
-// writes arbitrary paths, git_read reads the whole repository, the MCP
-// resource tools would expose whatever the configured servers serve
-// (AllowedMCP is cleared below for the same reason), and agentic_fetch
-// builds its own unscooped view/glob/grep in a temp dir.
+// writes arbitrary paths, git_read reads the whole repository, rush_logs
+// reads the host log, the MCP resource tools would expose whatever the
+// configured servers serve, and agentic_fetch builds its own unscooped
+// view/glob/grep in a temp dir.
 var folderScopeEscapeHatchTools = map[string]struct{}{
 	tools.DownloadToolName: {}, tools.GitReadToolName: {},
 	tools.AgenticFetchToolName: {}, tools.ListMCPResourcesToolName: {},
 	tools.ReadMCPResourceToolName: {},
+	tools.RushLogsToolName:        {},
 }
 
 // folderScopeCommandTools execute shell commands, which trivially
@@ -326,15 +327,7 @@ var folderScopeCommandTools = map[string]struct{}{
 // gates its presence in a scoped toolset. fs_write is the one
 // exception: it appears when EITHER create or overwrite is granted,
 // because its per-item check picks the operation by path existence.
-var folderScopeOpForTool = map[string]permission.FileOp{
-	tools.FSListToolName:       permission.FileOpList,
-	tools.FSFindToolName:       permission.FileOpFind,
-	tools.FSGrepToolName:       permission.FileOpGrep,
-	tools.FSReadToolName:       permission.FileOpRead,
-	tools.FSReplaceToolName:    permission.FileOpReplace,
-	tools.FSWriteLinesToolName: permission.FileOpWriteLines,
-	tools.FSDeleteToolName:     permission.FileOpDelete,
-}
+var folderScopeOpForTool = tools.FolderScopeToolOperations()
 
 // applyCallFolderScope implements the per-call scoped filesystem
 // toolset: when ctx carries CallOptions.FolderScope, the agent's
@@ -675,7 +668,7 @@ func (c *coordinator) buildTools(ctx context.Context, cfg *config.Config, agent 
 		tools.NewFSListTool(scope, c.cfg.WorkingDir(), cfg.Tools.Ls, disk),
 		tools.NewFSFindTool(scope, c.cfg.WorkingDir(), disk),
 		tools.NewFSReadTool(scope, c.filetracker, c.cfg.WorkingDir(), disk),
-		tools.NewFSGrepTool(c.cfg.WorkingDir(), scope, disk),
+		tools.NewFSGrepTool(c.cfg.WorkingDir(), scope, cfg.Tools.Grep, disk),
 		tools.NewFSWriteTool(scope, c.permissions, c.history, c.filetracker, c.cfg.WorkingDir(), disk),
 		tools.NewFSReplaceTool(scope, c.permissions, c.history, c.filetracker, c.cfg.WorkingDir(), disk),
 		tools.NewFSWriteLinesTool(scope, c.permissions, c.history, c.filetracker, c.cfg.WorkingDir(), disk),
@@ -703,7 +696,7 @@ func (c *coordinator) buildTools(ctx context.Context, cfg *config.Config, agent 
 		)
 	}
 
-	var filteredTools []fantasy.AgentTool
+	filteredTools := make([]fantasy.AgentTool, 0, len(allTools))
 	for _, tool := range allTools {
 		if slices.Contains(agent.AllowedTools, tool.Info().Name) {
 			filteredTools = append(filteredTools, tool)

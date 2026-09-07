@@ -389,6 +389,27 @@ func (c *coordinator) resolveCredentialsModels(ctx context.Context, sessionID st
 		}
 		resolved.fast = fast
 	}
+	var workerProviderCfg config.ProviderConfig
+	var workerConfigured bool
+	if workerChoice, workerCovered := creds.Models[RoleWorker]; workerCovered {
+		workerCredential, ok := creds.credential(workerChoice.Provider)
+		if !ok {
+			return nil, fmt.Errorf("model choice references provider %q which is not in the credential set", workerChoice.Provider)
+		}
+		workerProviderCfg = credentialProviderConfig(workerCredential)
+		workerConfigured = true
+	} else {
+		cfg, _ := c.cfg.Snapshot()
+		workerModelCfg, ok := cfg.Models[config.SelectedModelTypeWorker]
+		if ok && workerModelCfg.Model != "" {
+			workerProviderCfg, workerConfigured = cfg.Providers.Get(workerModelCfg.Provider)
+		}
+	}
+	if workerConfigured {
+		if err := c.rejectScopedCallOnCLIProvider(ctx, "worker", workerProviderCfg); err != nil {
+			return nil, err
+		}
+	}
 
 	cfg, _ := c.cfg.Snapshot()
 	// F1: pin THIS call's coder toolset exactly like

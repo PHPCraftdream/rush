@@ -146,3 +146,29 @@ func TestFolderScope_RejectsCLIWorkerProvider(t *testing.T) {
 	_, err = coord.resolveSessionModels(WithCallOptions(t.Context(), &CallOptions{}), sess.ID)
 	require.NoError(t, err)
 }
+
+func TestFolderScope_CredentialsCheckConfiguredWorkerProvider(t *testing.T) {
+	stubCLIAvailability(t)
+	env := testEnv(t)
+	coord := newFolderScopeCLICoordinator(t, env, openai.Name, cliprovider.ProviderType, true)
+	sess, err := coord.sessions.Create(t.Context(), "cli-worker-credentials-scoped")
+	require.NoError(t, err)
+	scope := newFolderScope(t, env.workingDir, permission.FileOpRead)
+	ctx := WithCallOptions(t.Context(), &CallOptions{FolderScope: &scope})
+	creds := &CredentialSet{
+		Credentials: []Credential{{
+			Provider: "tenant-provider",
+			Type:     ProviderTypeOpenAI,
+			APIKey:   "tenant-key",
+		}},
+		Models: map[Role]ModelChoice{
+			RoleSmart: {Provider: "tenant-provider", Model: "tenant-smart"},
+			RoleFast:  {Provider: "tenant-provider", Model: "tenant-fast"},
+		},
+	}
+
+	_, err = coord.resolveCredentialsModels(ctx, sess.ID, creds)
+	require.Error(t, err, "credentialed scoped calls must reject a configured CLI worker too")
+	assert.Contains(t, err.Error(), "worker")
+	assert.Contains(t, err.Error(), "cli")
+}

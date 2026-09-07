@@ -9,8 +9,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/permission"
 	"github.com/stretchr/testify/require"
 )
@@ -21,7 +23,7 @@ func fsGrepTestRun(t *testing.T, ctx context.Context, workingDir string, scope p
 	t.Helper()
 	input, err := json.Marshal(FSGrepParams{Items: items})
 	require.NoError(t, err)
-	tool := NewFSGrepTool(workingDir, scope, nil)
+	tool := NewFSGrepTool(workingDir, scope, config.ToolGrep{}, nil)
 	resp, err := tool.Run(ctx, fantasy.ToolCall{ID: "c1", Name: FSGrepToolName, Input: string(input)})
 	require.NoError(t, err)
 	return resp
@@ -159,6 +161,26 @@ func TestFSGrepPreflightRejectsContextLinesOutOfRange(t *testing.T) {
 	require.Len(t, meta.Items, 1)
 	require.Equal(t, FSStatusOK, meta.Items[0].Status)
 	require.Contains(t, resp.Content, "<match ")
+}
+
+func TestFSGrepUsesConfiguredTimeout(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	disk := newFakeDisk()
+	disk.putDir(dir)
+	disk.searchFn = func(ctx context.Context, _ SearchRequest) (DiskSearchResult, error) {
+		<-ctx.Done()
+		return DiskSearchResult{}, ctx.Err()
+	}
+	timeout := time.Duration(0)
+	tool := NewFSGrepTool(dir, fsBatchTestScope(t, dir, permission.FileOpGrep), config.ToolGrep{Timeout: &timeout}, disk)
+	input, err := json.Marshal(FSGrepParams{Items: []FSGrepItem{{Pattern: "needle", Path: dir}}})
+	require.NoError(t, err)
+	resp, err := tool.Run(t.Context(), fantasy.ToolCall{ID: "timeout", Name: FSGrepToolName, Input: string(input)})
+	require.NoError(t, err)
+	meta := fsBatchTestMetadata(t, resp)
+	require.Equal(t, FSStatusFailed, meta.Items[0].Status)
+	require.Contains(t, meta.Items[0].Error, "context deadline exceeded")
 }
 
 func TestFSGrepFallbackLineBudgetCapsOutput(t *testing.T) {
