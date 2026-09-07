@@ -122,6 +122,33 @@ func TestApplyCommittedMCPFingerprintRereadsEverySpelling(t *testing.T) {
 	require.NotEqual(t, physicalAfter.discovery, aliasAfter.discovery)
 }
 
+func TestMCPPathDataUsesNormalizedDiscoveryKeys(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	path := filepath.Join(root, "rush.json")
+	alias := filepath.Join(root, "nested", "..", "rush.json")
+	data := []byte("{\"mcp\":{\"server\":{\"type\":\"http\"}}}")
+	fingerprint := reloadFileFingerprint{exists: true, size: int64(len(data))}
+	files := &mcpLockedFiles{
+		data:         make(map[string][]byte),
+		present:      make(map[string]bool),
+		changed:      make(map[string]bool),
+		fingerprints: make(map[string]reloadFileFingerprint),
+		pathRecords:  make(map[string]string),
+		records:      make(map[string]*mcpFileRecord),
+	}
+
+	record := files.bindMCPPath(alias, data, true, fingerprint)
+	require.Same(t, record, files.mcpRecord(path))
+
+	store := &ConfigStore{}
+	got, present, err := store.mcpPathData(files, path)
+	require.NoError(t, err)
+	require.True(t, present)
+	require.Equal(t, data, got)
+}
+
 func TestConfigStoreResolveMCPWritableScope(t *testing.T) {
 	t.Run("global", func(t *testing.T) {
 		store, _ := isolatedMCPConfigStore(t)

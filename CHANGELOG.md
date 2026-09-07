@@ -30,6 +30,14 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   tree or index under any circumstance. `rush claude-del` removes it
   along with the other two commands.
 
+### Changed
+
+- Workspace configuration now fails closed on trust uncertainty. A workspace
+  config whose ownership cannot be verified, or whose working directory/config
+  cannot be statted, causes load or reload to fail instead of being silently
+  accepted. Missing workspace config remains valid; foreign global and project
+  candidates continue to be skipped during discovery.
+
 ## [0.2.0-alpha.1] - 2026-08-28
 
 ### Added

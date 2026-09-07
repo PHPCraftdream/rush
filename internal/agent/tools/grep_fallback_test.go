@@ -371,12 +371,10 @@ func TestFileMatchesHonoursDeadlineMidHugeLine(t *testing.T) {
 }
 
 // fileMatchesHonoursDeadlineMidHugeLineAttempt runs one baseline +
-// deadline-bounded measurement pair. Returns true when the invariant held
-// (the test is done, pass). Returns false only for the specific timing-noise
-// shapes described above, and only when attempts remain -- on the last
-// attempt, or for any non-timing failure (I/O error, no return within 10s),
-// it fails the test immediately via require/t.Fatal instead of returning
-// false, exactly as the original single-shot version did.
+// deadline-bounded measurement pair. Returns true when the invariant held.
+// On any failed observation, returns false while attempts remain so the next
+// attempt can distinguish timing noise from a repeatable failure; the final
+// attempt reports the observed failure through require/t.Fatal.
 func fileMatchesHonoursDeadlineMidHugeLineAttempt(t *testing.T, attempt, attempts int) bool {
 	t.Helper()
 	tempDir := t.TempDir()

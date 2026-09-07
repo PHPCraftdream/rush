@@ -9,8 +9,9 @@ import (
 )
 
 var (
-	ErrMCPNotFound         = errors.New("MCP server not found")
-	ErrMCPExternal         = errors.New("MCP server is from .mcp.json and is not writable")
+	ErrMCPNotFound = errors.New("MCP server not found")
+	ErrMCPExternal = errors.New("MCP server is from .mcp.json and is not writable")
+	// ErrMCPAmbiguous remains an alias for compatibility with older callers.
 	ErrMCPAmbiguous        = ErrMCPExternal
 	ErrMCPUnwritableOrigin = errors.New("MCP server has no writable config scope")
 	ErrMCPTargetExists     = errors.New("MCP server target already exists")
@@ -485,25 +486,6 @@ func (s *ConfigStore) PersistRemoveMCPConfigInScope(scope Scope, name string) er
 
 func (s *ConfigStore) PersistMCPFieldsInScope(scope Scope, name string, fields map[string]any) error {
 	return s.PersistMCPFieldsExact(scope, name, fields)
-}
-
-func (s *ConfigStore) publishMCPConfigLocked(oldName, newName string) {
-	cur := s.loadSnapshot()
-	if cur.config == nil {
-		return
-	}
-	next := cur.clone()
-	cfg := *cur.config
-	cfg.MCP = maps.Clone(cur.config.MCP)
-	if cfg.MCP == nil {
-		cfg.MCP = make(MCPs)
-	}
-	if oldName != newName {
-		delete(cfg.MCP, oldName)
-	}
-	next.config = &cfg
-	next.mcpRevisions = mcpRevisionDiff(cur.mcpRevisions, cur.config, next.config, cur.mcpInputs, next.mcpInputs)
-	s.publishLocked(next)
 }
 
 func (s *ConfigStore) publishMCPValueAndStalenessLocked(name string, value MCPConfig, exists bool, committed map[string]reloadFileFingerprint, committedInputs map[string][32]byte) {

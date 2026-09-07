@@ -898,6 +898,12 @@ $HOME/.local/share/rush/rush.json
 > - `RUSH_GLOBAL_CONFIG`
 > - `RUSH_GLOBAL_DATA`
 
+Workspace trust is fail-closed: if the workspace config or its working
+directory cannot be statted, or the config is owned by a different user,
+Rush refuses to load or reload that workspace configuration. Missing workspace
+config is still allowed; foreign-owned global and project candidates are
+skipped during discovery.
+
 ### LSPs
 
 Rush can use LSPs for additional context to help inform its decisions, just

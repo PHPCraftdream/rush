@@ -385,7 +385,7 @@ type Client struct {
 // a concurrent second application-mode Open returns an error wrapping
 // mcp.ErrOwnerBusy. In library mode, Open skips MCP and does not acquire that
 // owner. Open is the library equivalent of internal/cmd's setupApp, minus
-// os.ChDir, unconditional logging setup, and cobra.
+// os.Chdir, unconditional logging setup, and cobra.
 func Open(ctx context.Context, o Options) (*Client, error) {
 	switch o.Mode {
 	case ModeApplication:

@@ -4558,12 +4558,9 @@ func getOrRenewClient(ctx context.Context, cfg *config.ConfigStore, name string)
 	if lease.renewalBeginHook != nil {
 		lease.renewalBeginHook()
 	}
-	renewalActive := true
 	defer func() {
-		if renewalActive {
-			lease.endRenewal()
-			lease.callRenewalEndHook()
-		}
+		lease.endRenewal()
+		lease.callRenewalEndHook()
 	}()
 
 	setState(name, StateError, err, nil, state.Counts)

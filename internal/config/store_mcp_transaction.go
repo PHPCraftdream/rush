@@ -1124,23 +1124,6 @@ func (s *ConfigStore) configPathOrEmpty(scope Scope) string {
 
 func (s *ConfigStore) workspacePathValue() string { return s.loadSnapshot().workspacePath }
 
-func uniqueNormalizedPaths(paths []string) []string {
-	seen := make(map[string]struct{}, len(paths))
-	result := make([]string, 0, len(paths))
-	for _, path := range paths {
-		if path == "" {
-			continue
-		}
-		path = normalizeReloadPath(path)
-		if _, ok := seen[path]; ok {
-			continue
-		}
-		seen[path] = struct{}{}
-		result = append(result, path)
-	}
-	return result
-}
-
 func uniqueMCPPaths(paths []string) []string {
 	seen := make(map[string]struct{}, len(paths))
 	result := make([]string, 0, len(paths))
@@ -1156,10 +1139,6 @@ func uniqueMCPPaths(paths []string) []string {
 		result = append(result, path)
 	}
 	return result
-}
-
-func fingerprintForBytes(path string, data []byte) reloadFileFingerprint {
-	return dataFingerprint(path, data)
 }
 
 func dataFingerprint(path string, data []byte) reloadFileFingerprint {
