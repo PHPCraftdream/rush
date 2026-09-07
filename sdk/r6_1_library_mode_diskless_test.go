@@ -45,6 +45,7 @@ import (
 	"testing"
 	"time"
 
+	agenttools "github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/sdk"
 	"github.com/stretchr/testify/require"
 )
@@ -124,10 +125,10 @@ func (cs *r6_1CapturingServer) mainTurnBody(t *testing.T) []byte {
 // later comparison can prove the path was not created, deleted, or
 // modified in between -- whether or not it already existed beforehand.
 type r6_1PathSnapshot struct {
-	path      string
-	statErr   string
-	entries   []r6_1EntrySnapshot
-	truncated bool
+	path     string
+	statErr  string
+	entries  []r6_1EntrySnapshot
+	complete bool
 }
 
 type r6_1EntrySnapshot struct {
@@ -140,43 +141,37 @@ type r6_1EntrySnapshot struct {
 	link      string
 }
 
-const (
-	r6_1SnapshotMaxDepth   = 8
-	r6_1SnapshotMaxEntries = 512
-)
-
 func r6_1SnapshotsEqual(before, after r6_1PathSnapshot) bool {
-	return !before.truncated && !after.truncated && reflect.DeepEqual(before, after)
+	return before.complete && after.complete && reflect.DeepEqual(before, after)
 }
 
-// r6_1SnapshotPath captures a bounded tree without following symlinks. A
-// stat or read error is part of the state so collision hosts remain valid.
+// r6_1SnapshotPath captures a complete tree without following symlinks.
 func r6_1SnapshotPath(t *testing.T, root string) r6_1PathSnapshot {
 	t.Helper()
-	snap := r6_1PathSnapshot{path: root}
-	entryCount := 0
-	var walk func(string, string, int)
-	walk = func(path, rel string, depth int) {
-		if entryCount >= r6_1SnapshotMaxEntries {
-			snap.truncated = true
-			return
-		}
-		entryCount++
+	snap := r6_1PathSnapshot{path: root, complete: true}
+	var walk func(string, string)
+	walk = func(path, rel string) {
 		entry := r6_1EntrySnapshot{path: rel}
 		info, err := os.Lstat(path)
 		if err != nil {
 			entry.statErr = err.Error()
+			snap.complete = false
 			snap.entries = append(snap.entries, entry)
 			return
 		}
 		entry.mode, entry.size, entry.modTime = info.Mode(), info.Size(), info.ModTime()
 		switch {
 		case info.Mode()&os.ModeSymlink != 0:
-			entry.link, _ = os.Readlink(path)
+			entry.link, err = os.Readlink(path)
+			if err != nil {
+				entry.statErr = err.Error()
+				snap.complete = false
+			}
 		case info.Mode().IsRegular():
 			file, openErr := os.Open(path)
 			if openErr != nil {
 				entry.statErr = openErr.Error()
+				snap.complete = false
 				break
 			}
 			hash := sha256.New()
@@ -184,8 +179,10 @@ func r6_1SnapshotPath(t *testing.T, root string) r6_1PathSnapshot {
 			closeErr := file.Close()
 			if copyErr != nil {
 				entry.statErr = copyErr.Error()
+				snap.complete = false
 			} else if closeErr != nil {
 				entry.statErr = closeErr.Error()
+				snap.complete = false
 			} else {
 				entry.contentID = fmt.Sprintf("%x", hash.Sum(nil))
 			}
@@ -194,51 +191,40 @@ func r6_1SnapshotPath(t *testing.T, root string) r6_1PathSnapshot {
 		if !info.IsDir() {
 			return
 		}
-		if depth >= r6_1SnapshotMaxDepth {
-			snap.truncated = true
-			return
-		}
-		if entryCount >= r6_1SnapshotMaxEntries {
-			snap.truncated = true
-			return
-		}
 		dir, openErr := os.Open(path)
 		if openErr != nil {
 			snap.entries[len(snap.entries)-1].statErr = openErr.Error()
+			snap.complete = false
 			return
 		}
-		remaining := r6_1SnapshotMaxEntries - entryCount
-		children, readErr := dir.ReadDir(remaining + 1)
+		children, readErr := dir.ReadDir(-1)
 		closeErr := dir.Close()
 		if readErr != nil && readErr != io.EOF {
 			snap.entries[len(snap.entries)-1].statErr = readErr.Error()
+			snap.complete = false
 			return
 		}
 		if closeErr != nil {
 			snap.entries[len(snap.entries)-1].statErr = closeErr.Error()
-			return
-		}
-		if len(children) > remaining {
-			snap.truncated = true
+			snap.complete = false
 			return
 		}
 		sort.Slice(children, func(i, j int) bool { return children[i].Name() < children[j].Name() })
 		for _, child := range children {
-			walk(filepath.Join(path, child.Name()), filepath.Join(rel, child.Name()), depth+1)
+			walk(filepath.Join(path, child.Name()), filepath.Join(rel, child.Name()))
 		}
 	}
-	walk(root, ".", 0)
+	walk(root, ".")
 	sort.Slice(snap.entries, func(i, j int) bool { return snap.entries[i].path < snap.entries[j].path })
 	return snap
 }
 
-// r6_1RequirePathUnchanged fails when any bounded-tree state differs.
+// r6_1RequirePathUnchanged fails closed when a complete comparison is impossible.
 func r6_1RequirePathUnchanged(t *testing.T, before r6_1PathSnapshot) {
 	t.Helper()
 	after := r6_1SnapshotPath(t, before.path)
-	if before.truncated || after.truncated {
-		t.Skipf("sentinel snapshot is incomplete; bounded traversal cannot prove it unchanged")
-	}
+	require.True(t, before.complete, "the before snapshot must be complete")
+	require.True(t, after.complete, "the after snapshot must be complete")
 	require.Equal(t, before, after,
 		"the sentinel root %q must not be created, deleted, or modified by this test", before.path)
 }
@@ -254,39 +240,54 @@ func TestR6_1SnapshotPathDetectsNestedMutation(t *testing.T) {
 	require.NoError(t, os.WriteFile(target, []byte("after"), 0o644))
 	after := r6_1SnapshotPath(t, root)
 
-	require.False(t, before.truncated)
-	require.False(t, after.truncated)
+	require.True(t, before.complete)
+	require.True(t, after.complete)
 	require.False(t, r6_1SnapshotsEqual(before, after),
 		"a mutation below a pre-existing nested directory must be observable")
 }
 
-func TestR6_1SnapshotPathSortsEntriesAndRejectsTruncation(t *testing.T) {
+func TestR6_1SnapshotPathIsCompleteAndDetectsNestedMutations(t *testing.T) {
 	root := t.TempDir()
-	for _, name := range []string{"z.txt", "a.txt", "m.txt"} {
-		require.NoError(t, os.WriteFile(filepath.Join(root, name), []byte(name), 0o644))
+	nested := filepath.Join(root, "deep", "nested", "tree")
+	require.NoError(t, os.MkdirAll(nested, 0o755))
+	for i := 0; i < 600; i++ {
+		name := filepath.Join(nested, fmt.Sprintf("%03d.txt", i))
+		require.NoError(t, os.WriteFile(name, []byte("sentinel"), 0o644))
 	}
+	link := filepath.Join(root, "link")
+	require.NoError(t, os.Symlink(filepath.Join(nested, "000.txt"), link))
 	snapshot := r6_1SnapshotPath(t, root)
-	require.False(t, snapshot.truncated)
+	require.True(t, snapshot.complete)
 	paths := make([]string, 0, len(snapshot.entries))
 	for _, entry := range snapshot.entries {
 		paths = append(paths, entry.path)
 	}
 	require.True(t, sort.StringsAreSorted(paths), "snapshot entries must be deterministic")
 
-	oversized := t.TempDir()
-	for i := 0; i < r6_1SnapshotMaxEntries+1; i++ {
-		require.NoError(t, os.WriteFile(filepath.Join(oversized, fmt.Sprintf("%03d", i)), nil, 0o644))
-	}
-	incomplete := r6_1SnapshotPath(t, oversized)
-	require.True(t, incomplete.truncated)
-	require.False(t, r6_1SnapshotsEqual(incomplete, incomplete),
-		"an incomplete snapshot must never prove that the whole sentinel is unchanged")
-	completed := false
-	require.True(t, t.Run("incomplete assertion skips", func(t *testing.T) {
-		r6_1RequirePathUnchanged(t, incomplete)
-		completed = true
-	}))
-	require.False(t, completed, "an incomplete unchanged assertion must skip, not claim success")
+	require.NoError(t, os.WriteFile(filepath.Join(nested, "000.txt"), []byte("changed"), 0o644))
+	require.False(t, r6_1SnapshotsEqual(snapshot, r6_1SnapshotPath(t, root)), "nested content mutation must be observable")
+	require.NoError(t, os.WriteFile(filepath.Join(nested, "000.txt"), []byte("sentinel"), 0o644))
+	require.NoError(t, os.Rename(filepath.Join(nested, "001.txt"), filepath.Join(nested, "renamed.txt")))
+	require.False(t, r6_1SnapshotsEqual(snapshot, r6_1SnapshotPath(t, root)), "nested rename must be observable")
+	require.NoError(t, os.Rename(filepath.Join(nested, "renamed.txt"), filepath.Join(nested, "001.txt")))
+	require.NoError(t, os.Remove(filepath.Join(nested, "002.txt")))
+	require.False(t, r6_1SnapshotsEqual(snapshot, r6_1SnapshotPath(t, root)), "nested deletion must be observable")
+	require.NoError(t, os.WriteFile(filepath.Join(nested, "002.txt"), []byte("sentinel"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(nested, "created.txt"), []byte("sentinel"), 0o644))
+	require.False(t, r6_1SnapshotsEqual(snapshot, r6_1SnapshotPath(t, root)), "nested creation must be observable")
+	require.NoError(t, os.Remove(filepath.Join(nested, "created.txt")))
+	require.NoError(t, os.Remove(link))
+	require.NoError(t, os.Symlink(filepath.Join(nested, "001.txt"), link))
+	require.False(t, r6_1SnapshotsEqual(snapshot, r6_1SnapshotPath(t, root)), "symlink target mutation must be observable")
+}
+
+func r6_1IsolatedLibraryVirtualRoot(t *testing.T) string {
+	t.Helper()
+	previous := agenttools.LibraryVirtualRoot
+	root := t.TempDir()
+	agenttools.LibraryVirtualRoot = root
+	t.Cleanup(func() { agenttools.LibraryVirtualRoot = previous })
+	return root
 }
 
 // TestSDKLibraryModeEphemeralDefaultToolsetExcludesRealDiskAndCommandTools
@@ -356,7 +357,8 @@ func TestSDKLibraryModeEphemeralWriteAndBashAttemptsNeverTouchRealDisk(t *testin
 	// activity, so the end-of-test comparison can prove this run
 	// touched nothing under it whether or not the path already
 	// exists on this host (see the tail assertion below).
-	sentinelBefore := r6_1SnapshotPath(t, sdk.LibraryVirtualRoot())
+	sentinelRoot := r6_1IsolatedLibraryVirtualRoot(t)
+	sentinelBefore := r6_1SnapshotPath(t, sentinelRoot)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
@@ -418,21 +420,8 @@ func TestSDKLibraryModeEphemeralWriteAndBashAttemptsNeverTouchRealDisk(t *testin
 	_, statErr := os.Stat(hostTarget)
 	require.True(t, os.IsNotExist(statErr), "the write attempt must never reach the real disk (%s)", hostTarget)
 
-	// Nothing under the OS interpretation of the sentinel root was
-	// created, deleted, or modified either. This is deliberately a
-	// before/after STATE comparison, not an existence assertion: a
-	// real host collision with this exact path (a mapped K: drive on
-	// Windows, a pre-existing /rush-library-mode-root on Unix) is
-	// explicitly tolerated by the production guard --
-	// internal/agent/tools/fs_library_virtual_root.go refuses every
-	// real-disk operation resolving under the sentinel BEFORE the
-	// first disk.Stat, whether or not something real is already
-	// there -- so asserting the path's absence would encode a
-	// host-topology assumption that fails on collision machines even
-	// though production is correct (R14-5, same class as the two CI
-	// failures fixed in 73878311). What proves the security property
-	// is "this test's run changed nothing under the sentinel",
-	// whichever state the host started in.
+	// The guard's root is injected to a private temp tree for this test, so
+	// this complete before/after comparison never reads a host config path.
 	r6_1RequirePathUnchanged(t, sentinelBefore)
 }
 
