@@ -13,7 +13,6 @@ import (
 	"slices"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -201,7 +200,7 @@ func (s *ConfigStore) withConfigWriteLockCtx(ctx context.Context, path string, f
 	}
 
 	waitStart := time.Now()
-	lock, err := session.AcquireFileLockContext(ctx, target.lockPath)
+	lock, err := acquireConfigFileLock(ctx, target.lockPath)
 	if wait := time.Since(waitStart); wait >= configWriteLockStallLogThreshold {
 		// Diagnosability (see configWriteLockStallLogThreshold): without
 		// this, a contended or wedged sidecar lock just looks like "rush
@@ -213,7 +212,7 @@ func (s *ConfigStore) withConfigWriteLockCtx(ctx context.Context, path string, f
 		return fmt.Errorf("failed to lock config file %q: %w", path, err)
 	}
 	if err := verifyConfigWriteTarget(target); err != nil {
-		_ = lock.Release()
+		_ = releaseConfigFileLock(target.lockPath, lock)
 		return fmt.Errorf("failed to verify config file %q: %w", path, err)
 	}
 	// Deliberately NOT calling os.Remove on the sidecar after Release: the
@@ -231,7 +230,7 @@ func (s *ConfigStore) withConfigWriteLockCtx(ctx context.Context, path string, f
 	// old one is still locked — reintroducing exactly the split-brain this
 	// lock exists to prevent. Leaving a handful of empty *.lock sidecars
 	// next to rush.json is a one-time, bounded cost; deleting them is not.
-	defer lock.Release()
+	defer releaseConfigFileLock(target.lockPath, lock)
 	return fn(target)
 }
 

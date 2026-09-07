@@ -1,12 +1,15 @@
 package config
 
 import (
+	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/PHPCraftdream/rush/internal/session"
 )
 
 var errConfigCommitVerification = errors.New("config destination could not be verified immediately before commit")
@@ -90,6 +93,8 @@ var configTestHooks struct {
 	afterMCPCommit     func(string)
 	beforeCommitRename func()
 	beforeMCPReconcile func(string, []byte)
+	acquireConfigLock  func(context.Context, string) (*session.FileLock, error)
+	releaseConfigLock  func(string, *session.FileLock) error
 	forceLinkNoReplace bool
 	renameNoReplace    func(int, string, int, string) error
 	renameatxNp        func(int, string, int, string, uint32) error
@@ -178,6 +183,26 @@ func runConfigBeforeMCPReconcileHook(path string, data []byte) {
 	if hook != nil {
 		hook(path, data)
 	}
+}
+
+func acquireConfigFileLock(ctx context.Context, path string) (*session.FileLock, error) {
+	configTestHooks.Lock()
+	hook := configTestHooks.acquireConfigLock
+	configTestHooks.Unlock()
+	if hook != nil {
+		return hook(ctx, path)
+	}
+	return session.AcquireFileLockContext(ctx, path)
+}
+
+func releaseConfigFileLock(path string, lock *session.FileLock) error {
+	configTestHooks.Lock()
+	hook := configTestHooks.releaseConfigLock
+	configTestHooks.Unlock()
+	if hook != nil {
+		return hook(path, lock)
+	}
+	return lock.Release()
 }
 
 func syncConfigParent(path string) error {

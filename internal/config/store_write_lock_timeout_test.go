@@ -1,6 +1,7 @@
 package config
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -78,27 +79,52 @@ func TestRemoveConfigFieldBestEffort_BoundedByInternalTimeout(t *testing.T) {
 
 // TestRemoveConfigFieldBestEffort_SucceedsQuicklyWhenLockFree is the
 // control case: with no external contention, removeConfigFieldBestEffort
-// must complete quickly (well under internalConfigWriteLockTimeout) and
-// actually remove the key from disk. Without this, a bug that made the
-// function ALWAYS wait out the full 2s (e.g. an inverted contention check)
-// would slip through the timeout-bound test above, which only asserts an
-// upper bound.
+// must make one successful lock acquisition, release it, and remove the key.
+// The injected acquire/release seams make those states explicit without a
+// scheduler-dependent elapsed-time assertion.
 func TestRemoveConfigFieldBestEffort_SucceedsQuicklyWhenLockFree(t *testing.T) {
-	t.Parallel()
-
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "rush.json")
 	const key = "providers.anthropic.oauth"
 	require.NoError(t, os.WriteFile(configPath, []byte(`{"providers":{"anthropic":{"oauth":{"access_token":"secret"}}}}`), 0o600))
 
 	store := newTestConfigStore(testStoreOpts{globalDataPath: configPath})
+	entered := make(chan string, 1)
+	acquired := make(chan string, 1)
+	released := make(chan string, 1)
+	attempts := 0
+	configTestHooks.Lock()
+	previousAcquire := configTestHooks.acquireConfigLock
+	previousRelease := configTestHooks.releaseConfigLock
+	configTestHooks.acquireConfigLock = func(ctx context.Context, path string) (*session.FileLock, error) {
+		attempts++
+		entered <- path
+		lock, err := session.TryAcquireFileLock(path)
+		if err == nil {
+			acquired <- path
+		}
+		return lock, err
+	}
+	configTestHooks.releaseConfigLock = func(path string, lock *session.FileLock) error {
+		err := lock.Release()
+		if err == nil {
+			released <- path
+		}
+		return err
+	}
+	configTestHooks.Unlock()
+	t.Cleanup(func() {
+		configTestHooks.Lock()
+		configTestHooks.acquireConfigLock = previousAcquire
+		configTestHooks.releaseConfigLock = previousRelease
+		configTestHooks.Unlock()
+	})
 
-	start := time.Now()
 	store.removeConfigFieldBestEffort(ScopeGlobal, key)
-	elapsed := time.Since(start)
-
-	assert.Less(t, elapsed, 500*time.Millisecond,
-		"expected removeConfigFieldBestEffort to complete quickly with no lock contention, took %s", elapsed)
+	require.Equal(t, 1, attempts, "lock-free removal must make one acquisition call")
+	require.Equal(t, configPath+".lock", <-entered)
+	require.Equal(t, configPath+".lock", <-acquired)
+	require.Equal(t, configPath+".lock", <-released)
 
 	data, rerr := os.ReadFile(configPath)
 	require.NoError(t, rerr)

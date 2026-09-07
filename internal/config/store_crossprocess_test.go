@@ -1,11 +1,14 @@
 package config
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -25,13 +28,67 @@ import (
 // second atomicWriteFile rename would erase the first store's key — a silent
 // cross-process lost update. Run with -race.
 func TestSetConfigFields_TwoStoresSameFile_BothUpdatesSurvive(t *testing.T) {
-	// Keep this global file-publication stress test out of package parallelism.
+	// Keep this global file-publication test out of package parallelism.
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "rush.json")
+	var releaseFirstCommit sync.Once
+	firstCommit := make(chan struct{})
+	secondAcquireReady := make(chan struct{})
+	allowSecondProbe := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	var allowSecondProbeOnce sync.Once
+	secondProbeResult := make(chan error, 1)
+	acquireEntered := make(chan int, 2)
+	acquireAcquired := make(chan int, 2)
+	var acquireCalls atomic.Int32
+	var commitCalls atomic.Int32
+	configTestHooks.Lock()
+	previousBeforeCommitRename := configTestHooks.beforeCommitRename
+	previousAcquire := configTestHooks.acquireConfigLock
+	configTestHooks.beforeCommitRename = func() {
+		if commitCalls.Add(1) == 1 {
+			close(firstCommit)
+			<-releaseFirst
+		}
+	}
+	configTestHooks.acquireConfigLock = func(ctx context.Context, path string) (*session.FileLock, error) {
+		id := int(acquireCalls.Add(1))
+		acquireEntered <- id
+		if id == 2 {
+			close(secondAcquireReady)
+			<-allowSecondProbe
+			probe, probeErr := session.TryAcquireFileLock(path)
+			secondProbeResult <- probeErr
+			if probeErr == nil {
+				acquireAcquired <- id
+				return probe, nil
+			}
+			<-releaseFirst
+			lock, err := session.AcquireFileLockContext(ctx, path)
+			if err == nil {
+				acquireAcquired <- id
+			}
+			return lock, err
+		}
+		lock, err := session.AcquireFileLockContext(ctx, path)
+		if err == nil {
+			acquireAcquired <- id
+		}
+		return lock, err
+	}
+	configTestHooks.Unlock()
+	t.Cleanup(func() {
+		configTestHooks.Lock()
+		configTestHooks.beforeCommitRename = previousBeforeCommitRename
+		configTestHooks.acquireConfigLock = previousAcquire
+		configTestHooks.Unlock()
+		releaseFirstCommit.Do(func() { close(releaseFirst) })
+		allowSecondProbeOnce.Do(func() { close(allowSecondProbe) })
+	})
 
-	// Many iterations widen the window: under the pre-fix code this lost an
-	// update on a large fraction of iterations; under the fix it never does.
-	const iterations = 100
+	// Pause the first publication at the commit boundary so the second writer
+	// must encounter the sidecar lock in a deterministic state.
+	const iterations = 1
 	for i := range iterations {
 		require.NoError(t, os.WriteFile(configPath, []byte(`{}`), 0o600))
 
@@ -61,6 +118,26 @@ func TestSetConfigFields_TwoStoresSameFile_BothUpdatesSurvive(t *testing.T) {
 			})
 		}()
 		close(start)
+		require.Equal(t, 1, <-acquireEntered)
+		require.Equal(t, 2, <-acquireEntered)
+		require.Equal(t, 1, <-acquireAcquired)
+		require.Empty(t, acquireAcquired, "the second writer must not acquire before the first commit is released")
+		<-firstCommit
+		<-secondAcquireReady
+
+		probe, probeErr := session.TryAcquireFileLock(configPath + ".lock")
+		if probeErr == nil {
+			_ = probe.Release()
+			require.FailNow(t, "the first writer must hold the sidecar lock while its commit is paused")
+		}
+		var contended *session.ErrLockContended
+		require.ErrorAs(t, probeErr, &contended)
+
+		allowSecondProbeOnce.Do(func() { close(allowSecondProbe) })
+		secondProbeErr := <-secondProbeResult
+		require.ErrorAs(t, secondProbeErr, &contended)
+		releaseFirstCommit.Do(func() { close(releaseFirst) })
+		require.Equal(t, 2, <-acquireAcquired)
 		wg.Wait()
 
 		require.NoError(t, err1, "iter %d: store1 write failed", i)
