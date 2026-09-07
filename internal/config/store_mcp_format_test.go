@@ -209,6 +209,85 @@ func TestRushJSONMutationDoesNotSelectUnrelatedMCPServersKey(t *testing.T) {
 	require.Contains(t, root, "mcpServers")
 }
 
+func TestRushLogicalSymlinkUsesRushSchemaForPhysicalMCPName(t *testing.T) {
+	store, root := isolatedMCPConfigStore(t)
+	logical := GlobalConfigData()
+	physical := filepath.Join(root, "physical", ".mcp.json")
+	original := []byte(`{"mcpServers":{"sentinel":{"type":"http","url":"untouched"}},"mcp":{"old":{"type":"http","url":"old"}}}`)
+	require.NoError(t, os.MkdirAll(filepath.Dir(physical), 0o755))
+	require.NoError(t, os.WriteFile(physical, original, 0o600))
+	if err := os.MkdirAll(filepath.Dir(logical), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(physical, logical); err != nil {
+		t.Skipf("logical rush.json symlink unavailable: %v", err)
+	}
+
+	require.NoError(t, store.ReloadFromDisk(t.Context()))
+	require.NoError(t, store.PersistMCPConfig(ScopeGlobal, "added", MCPConfig{Type: MCPHttp, URL: "http://added"}))
+	require.NoError(t, store.ReloadFromDisk(t.Context()))
+	added, ok := store.MCPConfig("added")
+	require.True(t, ok)
+	require.Equal(t, "http://added", added.URL)
+
+	require.NoError(t, store.PersistMCPDisabledOverride(ScopeGlobal, "added", true))
+	require.NoError(t, store.ReloadFromDisk(t.Context()))
+	added, ok = store.MCPConfig("added")
+	require.True(t, ok)
+	require.True(t, added.Disabled)
+
+	require.NoError(t, store.PersistReplaceMCPInScope(ScopeGlobal, "old", "replaced", MCPConfig{Type: MCPHttp, URL: "http://replaced"}))
+	require.NoError(t, store.ReloadFromDisk(t.Context()))
+	_, ok = store.MCPConfig("old")
+	require.False(t, ok)
+	replaced, ok := store.MCPConfig("replaced")
+	require.True(t, ok)
+	require.Equal(t, "http://replaced", replaced.URL)
+
+	require.NoError(t, store.PersistRemoveMCPConfig(ScopeGlobal, "replaced"))
+	require.NoError(t, store.ReloadFromDisk(t.Context()))
+	_, ok = store.MCPConfig("replaced")
+	require.False(t, ok)
+	after, err := os.ReadFile(physical)
+	require.NoError(t, err)
+	require.Contains(t, string(after), `"mcpServers":{"sentinel":{"type":"http","url":"untouched"}}`)
+	require.NotContains(t, string(after), `"mcpServers":{"added"`)
+	var document map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(after, &document))
+	require.Contains(t, document, "mcp")
+}
+
+func TestMCPTransactionUsesRushSchemaForPhysicalMCPBasename(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".mcp.json")
+	original := []byte(`{"mcpServers":{"sentinel":{"type":"http","url":"untouched"}}}`)
+	files := &mcpLockedFiles{
+		data:         make(map[string][]byte),
+		present:      make(map[string]bool),
+		changed:      make(map[string]bool),
+		fingerprints: make(map[string]reloadFileFingerprint),
+		pathRecords:  make(map[string]string),
+		records:      make(map[string]*mcpFileRecord),
+	}
+	files.bindMCPPath(path, original, true, dataFingerprint(path, original))
+
+	require.NoError(t, (&ConfigStore{}).prepareMCPFileMutation(files, path, "add", "added", "added", MCPConfig{
+		Type: MCPHttp, URL: "http://added",
+	}, nil))
+	require.NoError(t, updateMCPFile(files, path, "added", func(entry map[string]any) error {
+		entry["timeout"] = 30
+		return nil
+	}))
+
+	updated := files.mcpData(path)
+	var root map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(updated, &root))
+	require.Equal(t, json.RawMessage(`{"sentinel":{"type":"http","url":"untouched"}}`), root["mcpServers"])
+	var mcp map[string]MCPConfig
+	require.NoError(t, json.Unmarshal(root["mcp"], &mcp))
+	require.Equal(t, "http://added", mcp["added"].URL)
+	require.Equal(t, 30, mcp["added"].Timeout)
+}
+
 func TestMCPDocumentEditorMutatesNullEntryWithoutLosingUnrelatedBytes(t *testing.T) {
 	data := []byte(`{"before":"sentinel","mcp":{"null-entry":null,"sibling":{"type":"http"}},"after":"sentinel"}`)
 	disabled, err := editMCPDocument(data, "rush.json", "disable", "null-entry", "null-entry", MCPConfig{}, ptr(true), nil)

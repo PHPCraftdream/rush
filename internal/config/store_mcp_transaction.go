@@ -527,7 +527,7 @@ func validateMCPMutation(operation string, scope Scope, oldName, newName string,
 }
 
 func (s *ConfigStore) prepareMCPFileMutation(files *mcpLockedFiles, path, operation, oldName, newName string, value MCPConfig, disabled *bool) error {
-	data, err := editMCPDocument(files.mcpData(path), path, operation, oldName, newName, value, disabled, nil)
+	data, err := editMCPDocumentWithKind(files.mcpData(path), mcpDocumentRush, operation, oldName, newName, value, disabled, nil)
 	if err != nil {
 		return err
 	}
@@ -565,7 +565,7 @@ func literalMCPEntryExists(data []byte, name string) bool {
 }
 
 func updateMCPFile(files *mcpLockedFiles, path, name string, mutate func(map[string]any) error) error {
-	data, err := editMCPDocument(files.mcpData(path), path, "update", name, name, MCPConfig{}, nil, mutate)
+	data, err := editMCPDocumentWithKind(files.mcpData(path), mcpDocumentRush, "update", name, name, MCPConfig{}, nil, mutate)
 	if err != nil {
 		return err
 	}
@@ -588,11 +588,22 @@ type mcpJSONEdit struct {
 	replacement []byte
 }
 
+type mcpDocumentKind uint8
+
+const (
+	mcpDocumentRush mcpDocumentKind = iota
+	mcpDocumentExternal
+)
+
 // editMCPDocument changes only the selected MCP container or entry. The JSON
 // decoder remains the semantic validator; the scanner supplies byte spans so
 // unrelated user formatting never passes through a whole-document encoder.
 func editMCPDocument(data []byte, path, operation, oldName, newName string, value MCPConfig, disabled *bool, mutate func(map[string]any) error) ([]byte, error) {
-	containerName := mcpContainerName(path)
+	return editMCPDocumentWithKind(data, mcpDocumentKindForPath(path), operation, oldName, newName, value, disabled, mutate)
+}
+
+func editMCPDocumentWithKind(data []byte, kind mcpDocumentKind, operation, oldName, newName string, value MCPConfig, disabled *bool, mutate func(map[string]any) error) ([]byte, error) {
+	containerName := mcpContainerNameForKind(kind)
 	var rootRaw map[string]json.RawMessage
 	if len(data) > 0 {
 		if err := json.Unmarshal(data, &rootRaw); err != nil {
@@ -743,7 +754,18 @@ func mcpMutationEntry(data []byte, container *mcpJSONObject, oldName, newName st
 }
 
 func mcpContainerName(path string) string {
+	return mcpContainerNameForKind(mcpDocumentKindForPath(path))
+}
+
+func mcpDocumentKindForPath(path string) mcpDocumentKind {
 	if strings.EqualFold(filepath.Base(path), ".mcp.json") {
+		return mcpDocumentExternal
+	}
+	return mcpDocumentRush
+}
+
+func mcpContainerNameForKind(kind mcpDocumentKind) string {
+	if kind == mcpDocumentExternal {
 		return "mcpServers"
 	}
 	return "mcp"
