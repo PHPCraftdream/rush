@@ -1051,19 +1051,19 @@ func TestMCPAdmissionHoldsSidecarsThroughSkippedTransition(t *testing.T) {
 	require.NoError(t, <-writerDone)
 }
 
-func TestMCPAdmissionFinalTurnRevalidatesAfterLifecycleContention(t *testing.T) {
+func TestMCPAdmissionFinalTurnValidatesAfterLifecycleAcquisition(t *testing.T) {
 	for _, external := range []bool{false, true} {
 		name := "project"
 		if external {
 			name = "external"
 		}
 		t.Run(name, func(t *testing.T) {
-			runMCPAdmissionFinalTurnContention(t, external)
+			runMCPAdmissionFinalTurnSourceChange(t, external)
 		})
 	}
 }
 
-func runMCPAdmissionFinalTurnContention(t *testing.T, external bool) {
+func runMCPAdmissionFinalTurnSourceChange(t *testing.T, external bool) {
 	t.Helper()
 	store := isolatedMCPStore(t)
 	const name = "admission-final-turn-contention"
@@ -1085,60 +1085,32 @@ func runMCPAdmissionFinalTurnContention(t *testing.T, external bool) {
 	require.NoError(t, store.ReloadFromDisk(context.Background()))
 	snapshot := store.SnapshotMCPAdmission(name)
 
-	var validations atomic.Int32
-	holderAcquired := make(chan struct{})
-	releaseHolder := make(chan struct{})
-	var firstValidation sync.Once
+	var sourceChanges atomic.Int32
 	mcpInitTestHooks.Lock()
-	previousBefore := mcpInitTestHooks.beforeAdmissionValidate
-	previousAfter := mcpInitTestHooks.afterAdmissionValidate
-	previousFailure := mcpInitTestHooks.onAdmissionTryLockFail
-	mcpInitTestHooks.beforeAdmissionValidate = func(hookName string) {
-		if hookName == name {
-			validations.Add(1)
-		}
-	}
-	mcpInitTestHooks.afterAdmissionValidate = func(hookName string) {
+	previous := mcpInitTestHooks.beforeAdmissionFinalValidate
+	mcpInitTestHooks.beforeAdmissionFinalValidate = func(hookName string) {
 		if hookName != name {
 			return
 		}
-		if validations.Load() != 1 {
-			return
-		}
-		firstValidation.Do(func() {
-			go func() {
-				lifecycleMu.Lock()
-				close(holderAcquired)
-				<-releaseHolder
-				lifecycleMu.Unlock()
-			}()
-			<-holderAcquired
-			write("http://changed-while-lifecycle-held.example")
-		})
-	}
-	mcpInitTestHooks.onAdmissionTryLockFail = func(hookName string) {
-		if hookName == name {
-			close(releaseHolder)
-		}
+		sourceChanges.Add(1)
+		write("http://changed-before-lifecycle-turn.example")
 	}
 	mcpInitTestHooks.Unlock()
 	defer func() {
 		mcpInitTestHooks.Lock()
-		mcpInitTestHooks.beforeAdmissionValidate = previousBefore
-		mcpInitTestHooks.afterAdmissionValidate = previousAfter
-		mcpInitTestHooks.onAdmissionTryLockFail = previousFailure
+		mcpInitTestHooks.beforeAdmissionFinalValidate = previous
 		mcpInitTestHooks.Unlock()
 	}()
 
 	published := false
 	err := store.WithCurrentMCPAdmission(snapshot, name, func(guard config.MCPAdmissionGuard) error {
-		return withMCPAdmissionFinalTurn(name, guard, func() error {
+		return withMCPAdmissionFinalTurn(context.Background(), name, guard, func() error {
 			published = true
 			return nil
 		})
 	})
 	require.ErrorIs(t, err, config.ErrMCPMutationStale)
-	require.GreaterOrEqual(t, validations.Load(), int32(2))
+	require.Equal(t, int32(1), sourceChanges.Load())
 	require.False(t, published)
 	_, ok := GetState(name)
 	require.False(t, ok)

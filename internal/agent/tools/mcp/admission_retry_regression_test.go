@@ -504,8 +504,8 @@ func runDirectAdmissionSourceMutation(t *testing.T, external, remove bool) {
 	events := SubscribeEvents(eventsCtx)
 	var calls atomic.Int32
 	mcpInitTestHooks.Lock()
-	previous := mcpInitTestHooks.beforeAdmissionValidate
-	mcpInitTestHooks.beforeAdmissionValidate = func(hookName string) {
+	previous := mcpInitTestHooks.beforeAdmissionTurn
+	mcpInitTestHooks.beforeAdmissionTurn = func(hookName string) {
 		if hookName != name {
 			return
 		}
@@ -521,7 +521,7 @@ func runDirectAdmissionSourceMutation(t *testing.T, external, remove bool) {
 	mcpInitTestHooks.Unlock()
 	defer func() {
 		mcpInitTestHooks.Lock()
-		mcpInitTestHooks.beforeAdmissionValidate = previous
+		mcpInitTestHooks.beforeAdmissionTurn = previous
 		mcpInitTestHooks.Unlock()
 	}()
 

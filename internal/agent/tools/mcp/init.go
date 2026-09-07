@@ -362,7 +362,7 @@ var (
 	broker      = pubsub.NewBroker[Event]()
 	leases      = newLeaseRegistry()
 
-	lifecycleMu sync.Mutex
+	lifecycleMu contextRWMutex
 	owner       *Owner
 	initDone    = closedChannel()
 	generation  uint64
@@ -2118,59 +2118,52 @@ var mcpReloadAfterSuccessHook func()
 
 var mcpInitTestHooks struct {
 	sync.Mutex
-	afterWaitGroupDone      func()
-	beforeSkippedAdmission  func(string, config.MCPAdmissionSnapshot)
-	beforeAdmissionValidate func(string)
-	afterAdmissionValidate  func(string)
-	onAdmissionTryLockFail  func(string)
+	afterWaitGroupDone           func()
+	beforeSkippedAdmission       func(string, config.MCPAdmissionSnapshot)
+	beforeAdmissionTurn          func(string)
+	beforeAdmissionFinalValidate func(string)
 }
 
-func runBeforeAdmissionValidate(name string) {
+func runBeforeAdmissionTurn(name string) {
 	mcpInitTestHooks.Lock()
-	hook := mcpInitTestHooks.beforeAdmissionValidate
+	hook := mcpInitTestHooks.beforeAdmissionTurn
 	mcpInitTestHooks.Unlock()
 	if hook != nil {
 		hook(name)
 	}
 }
 
-func runAfterAdmissionValidate(name string) {
+func runBeforeAdmissionFinalValidate(name string) {
 	mcpInitTestHooks.Lock()
-	hook := mcpInitTestHooks.afterAdmissionValidate
+	hook := mcpInitTestHooks.beforeAdmissionFinalValidate
 	mcpInitTestHooks.Unlock()
 	if hook != nil {
 		hook(name)
 	}
 }
 
-func runOnAdmissionTryLockFail(name string) {
-	mcpInitTestHooks.Lock()
-	hook := mcpInitTestHooks.onAdmissionTryLockFail
-	mcpInitTestHooks.Unlock()
-	if hook != nil {
-		hook(name)
+// withMCPAdmissionFinalTurn takes one cancelable lifecycle turn, then performs
+// the final source validation immediately before the guarded mutation.
+func withMCPAdmissionFinalTurn(ctx context.Context, name string, guard config.MCPAdmissionGuard, mutate func() error) error {
+	if ctx == nil {
+		ctx = context.Background()
 	}
-}
-
-// withMCPAdmissionFinalTurn validates outside lifecycleMu and owns the lock
-// for the validLocked checks and registry mutation.
-func withMCPAdmissionFinalTurn(name string, guard config.MCPAdmissionGuard, mutate func() error) error {
-	for {
-		lifecycleMu.Lock()
-		lifecycleMu.Unlock()
-		runBeforeAdmissionValidate(name)
-		if err := guard.ValidateCurrent(); err != nil {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	runBeforeAdmissionTurn(name)
+	if !lifecycleMu.lockContext(ctx, true) {
+		if err := ctx.Err(); err != nil {
 			return err
 		}
-		runAfterAdmissionValidate(name)
-		if lifecycleMu.TryLock() {
-			defer lifecycleMu.Unlock()
-			return mutate()
-		}
-		runOnAdmissionTryLockFail(name)
-		lifecycleMu.Lock()
-		lifecycleMu.Unlock()
+		return context.Canceled
 	}
+	defer lifecycleMu.Unlock()
+	runBeforeAdmissionFinalValidate(name)
+	if err := guard.ValidateCurrent(); err != nil {
+		return err
+	}
+	return mutate()
 }
 
 // reconcileUncertainty reloads the consuming store only when this owner has
@@ -2400,7 +2393,7 @@ func (o *Owner) commitRenewalForLease(admission *serverAdmission, name string, s
 		wakeRefresh   bool
 	)
 	err := admission.cfg.WithCurrentMCPAdmission(snapshot, name, func(guard config.MCPAdmissionGuard) error {
-		return withMCPAdmissionFinalTurn(name, guard, func() error {
+		return withMCPAdmissionFinalTurn(admission.ctx, name, guard, func() error {
 			if admission.owner != o || admission.name != name || !admission.validLocked() {
 				if admission.candidate && admission.configSnapshotStaleLocked() {
 					return config.ErrMCPMutationStale
@@ -2775,7 +2768,7 @@ func (o *Owner) Initialize(ctx context.Context, permissions permission.Service, 
 				break
 			}
 			if admissionSnapshot.MCPConfig.Disabled || restrictToCLIEnabled && !admissionSnapshot.MCPConfig.EnabledInCLI {
-				skipped, skippedErr := transitionSkippedMCP(o, cfg, name, admissionSnapshot)
+				skipped, skippedErr := transitionSkippedMCP(initCtx, o, cfg, name, admissionSnapshot)
 				lease.Unlock()
 				skipped.finish()
 				if errors.Is(skippedErr, config.ErrMCPMutationStale) {
@@ -2902,7 +2895,7 @@ func InitializeSingle(ctx context.Context, name string, cfg *config.ConfigStore)
 		}
 
 		if m.Disabled {
-			skipped, transitionErr := transitionSkippedMCP(o, cfg, name, admissionSnapshot)
+			skipped, transitionErr := transitionSkippedMCP(ctx, o, cfg, name, admissionSnapshot)
 			lease.Unlock()
 			skipped.finish()
 			if errors.Is(transitionErr, config.ErrMCPMutationStale) {
@@ -3017,7 +3010,7 @@ func retryAdmission(
 		return nil, config.MCPConfig{}, nil, fmt.Errorf("mcp '%s' not found in configuration", name)
 	}
 	if snapshot.MCPConfig.Disabled {
-		skipped, err := transitionSkippedMCP(o, cfg, name, snapshot)
+		skipped, err := transitionSkippedMCP(ctx, o, cfg, name, snapshot)
 		lease.Unlock()
 		skipped.finish()
 		return nil, config.MCPConfig{}, nil, err
@@ -3168,7 +3161,7 @@ func publishPreparedClient(cfg *config.ConfigStore, name string, prepared *prepa
 			snapshot = cfg.SnapshotMCPAdmission(name)
 		}
 		err = cfg.WithCurrentMCPAdmission(snapshot, name, func(guard config.MCPAdmissionGuard) error {
-			return withMCPAdmissionFinalTurn(name, guard, func() error {
+			return withMCPAdmissionFinalTurn(lockCtx, name, guard, func() error {
 				oldSession, err = publishPreparedClientUnderLifecycle(cfg, name, prepared, admission)
 				return err
 			})
@@ -5705,6 +5698,7 @@ func (f skippedMCPFinalization) finish() {
 }
 
 func transitionSkippedMCP(
+	ctx context.Context,
 	o *Owner,
 	cfg *config.ConfigStore,
 	name string,
@@ -5720,7 +5714,7 @@ func transitionSkippedMCP(
 		hook(name, snapshot)
 	}
 	err := cfg.WithCurrentMCPAdmission(snapshot, name, func(guard config.MCPAdmissionGuard) error {
-		return withMCPAdmissionFinalTurn(name, guard, func() error {
+		return withMCPAdmissionFinalTurn(ctx, name, guard, func() error {
 			if !o.isCurrentLocked() {
 				return ErrOwnerBusy
 			}

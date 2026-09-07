@@ -269,3 +269,64 @@ func TestEnableRollbackPreservesConcurrentDefinitionAndFencesStore(t *testing.T)
 	_, uncertain := store.MCPUncertaintyVersion(name)
 	require.True(t, uncertain)
 }
+
+func TestMCPAdmissionFinalTurnCancellationReleasesConfigLocks(t *testing.T) {
+	store := isolatedMCPStore(t)
+	contender, err := config.Init(store.WorkingDir(), store.WorkingDir(), false)
+	require.NoError(t, err)
+	const name = "admission-final-turn-canceled"
+	require.NoError(t, store.PersistMCPConfig(config.ScopeGlobal, name, config.MCPConfig{
+		Type: config.MCPHttp, URL: "http://admission-cancel.example",
+	}))
+	snapshot := store.SnapshotMCPAdmission(name)
+
+	lifecycleMu.Lock()
+	defer lifecycleMu.Unlock()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	entered := make(chan struct{})
+	var turnCalls atomic.Int32
+	var published atomic.Bool
+	mcpInitTestHooks.Lock()
+	previous := mcpInitTestHooks.beforeAdmissionTurn
+	mcpInitTestHooks.beforeAdmissionTurn = func(hookName string) {
+		if hookName == name {
+			turnCalls.Add(1)
+			close(entered)
+		}
+	}
+	mcpInitTestHooks.Unlock()
+	defer func() {
+		mcpInitTestHooks.Lock()
+		mcpInitTestHooks.beforeAdmissionTurn = previous
+		mcpInitTestHooks.Unlock()
+	}()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- store.WithCurrentMCPAdmission(snapshot, name, func(guard config.MCPAdmissionGuard) error {
+			return withMCPAdmissionFinalTurn(ctx, name, guard, func() error {
+				published.Store(true)
+				return nil
+			})
+		})
+	}()
+	awaitMCPSignal(t, entered)
+	cancel()
+	require.ErrorIs(t, <-done, context.Canceled)
+	require.Equal(t, int32(1), turnCalls.Load())
+	require.False(t, published.Load())
+
+	writerDone := make(chan error, 1)
+	go func() {
+		writerDone <- contender.PersistMCPFieldsExact(config.ScopeGlobal, name, map[string]any{
+			"url": "http://admission-cancel-writer.example",
+		})
+	}()
+	select {
+	case err := <-writerDone:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("config sidecar lock remained held after admission cancellation")
+	}
+}

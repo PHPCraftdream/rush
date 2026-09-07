@@ -717,7 +717,7 @@ func TestOwnerCloseVsRenewalDoesNotPublishLateSession(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	require.False(t, owner.acceptsSession())
-	require.ErrorIs(t, owner.commitRenewal(&admission, name, created, Counts{}), ErrOwnerBusy)
+	require.ErrorIs(t, owner.commitRenewal(&admission, name, created, Counts{}), context.Canceled)
 	require.ErrorIs(t, createdCtx.Err(), context.Canceled)
 	require.Equal(t, 1, closeCalls, "a rejected renewal session must be closed exactly once")
 	require.Empty(t, func() map[string]*ClientSession {

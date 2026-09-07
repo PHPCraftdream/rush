@@ -22,9 +22,9 @@ var (
 )
 
 // MCPAdmissionGuard is the final source validation boundary for a runtime
-// publication. Call ValidateCurrent after waiting for the lifecycle turn but
-// before taking lifecycleMu for mutation; it performs the disk reads needed
-// to verify every input captured by admission.
+// publication. Call ValidateCurrent while holding the lifecycle turn and
+// immediately before mutation; it performs the disk reads needed to verify
+// every input captured by admission.
 type MCPAdmissionGuard struct {
 	store        *ConfigStore
 	fingerprints map[string]reloadFileFingerprint
