@@ -57,6 +57,30 @@ func TestRestartOrphaned_RefusesToEnqueueDiskProviderCall(t *testing.T) {
 		"the refused call must NEVER reach the durable run queue — a rebuilt row would silently restart on the real disk")
 }
 
+func TestRestartOrphaned_RefusesToEnqueueCredentialedCall(t *testing.T) {
+	env := testEnv(t)
+	sess, err := env.sessions.Create(t.Context(), "credential-orphan-refusal")
+	require.NoError(t, err)
+	sa := NewSessionAgent(SessionAgentOptions{
+		Sessions: env.sessions,
+		Messages: env.messages,
+	}).(*sessionAgent)
+	call := SessionAgentCall{
+		SessionID: sess.ID,
+		Prompt:    "orphaned tenant work",
+		Credentials: &CredentialSet{
+			Credentials: []Credential{{Provider: "tenant", Type: ProviderTypeOpenAI, APIKey: "secret"}},
+			Models:      map[Role]ModelChoice{RoleSmart: {Provider: "tenant", Model: "tenant-model"}},
+		},
+	}
+
+	retryErr := sa.restartOrphanedWithRetry([]SessionAgentCall{call})
+	require.ErrorIs(t, retryErr, ErrCredentialSetNotDurable)
+	pending, err := env.sessions.ListPendingRunQueueEntries(t.Context())
+	require.NoError(t, err)
+	require.Empty(t, pending, "tenant credentials must never be replaced by an operator replay")
+}
+
 // TestRestartOrphaned_StillEnqueuesPlainCalls is the control: a call with
 // no DiskProvider at all is unaffected by the new check and still
 // durably enqueues normally.
@@ -115,6 +139,27 @@ func TestStartDetachedRun_RefusesDiskProviderCall(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, pending,
 		"the refused call must NEVER reach the durable run queue")
+}
+
+func TestStartDetachedRun_RefusesCredentialedCall(t *testing.T) {
+	env := testEnv(t)
+	sess, err := env.sessions.Create(t.Context(), "credential-detached-refusal")
+	require.NoError(t, err)
+	coord := &coordinator{cfg: &config.ConfigStore{}, sessions: env.sessions, messages: env.messages}
+	call := SessionAgentCall{
+		SessionID: sess.ID,
+		Prompt:    "detached tenant work",
+		Credentials: &CredentialSet{
+			Credentials: []Credential{{Provider: "tenant", Type: ProviderTypeOpenAI, APIKey: "secret"}},
+			Models:      map[Role]ModelChoice{RoleSmart: {Provider: "tenant", Model: "tenant-model"}},
+		},
+	}
+
+	startErr := coord.startDetachedRun(t.Context(), call)
+	require.ErrorIs(t, startErr, ErrCredentialSetNotDurable)
+	pending, err := env.sessions.ListPendingRunQueueEntries(t.Context())
+	require.NoError(t, err)
+	require.Empty(t, pending, "tenant credentials must never be serialized into the durable queue")
 }
 
 // TestStartDetachedRun_StillEnqueuesPlainCalls is the control for

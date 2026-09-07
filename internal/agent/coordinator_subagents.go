@@ -152,7 +152,9 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 	// error for the same reason: falling through to `model` would run
 	// tenant work on the shared config.
 	var credProviderCfg *config.ProviderConfig
+	var callCreds *CredentialSet
 	if creds := callCredentialsFrom(ctx); creds != nil {
+		callCreds = creds
 		choice, covered := creds.Models[RoleWorker]
 		if !covered {
 			choice, covered = creds.Models[RoleSmart]
@@ -208,6 +210,7 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 			PresencePenalty:  model.ModelCfg.PresencePenalty,
 			NonInteractive:   true,
 			SmartModel:       &pinnedModel,
+			Credentials:      callCreds,
 		})
 	}
 	var result *fantasy.AgentResult

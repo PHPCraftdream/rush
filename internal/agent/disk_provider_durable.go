@@ -27,8 +27,20 @@ import (
 var ErrDiskProviderNotDurable = errors.New(
 	"agent: a call with a caller-supplied disk provider cannot be durably queued")
 
+// ErrCredentialSetNotDurable is returned when a process-local tenant
+// credential bundle reaches a durable handoff path.
+var ErrCredentialSetNotDurable = errors.New(
+	"agent: a call with per-call credentials cannot be durably queued")
+
 // callCarriesDiskProvider reports whether call's per-call options carry a
 // host-supplied filesystem that must never reach the durable run queue.
 func callCarriesDiskProvider(call SessionAgentCall) bool {
 	return call.CallOptions != nil && tools.HasDiskProvider(call.CallOptions.DiskProvider)
+}
+
+// callCarriesNonDurableDependency reports whether rebuilding a call from a
+// durable row could change its execution identity. Both credentials and a
+// caller-supplied DiskProvider are process-local and must stay in-process.
+func callCarriesNonDurableDependency(call SessionAgentCall) bool {
+	return call.Credentials != nil || callCarriesDiskProvider(call)
 }

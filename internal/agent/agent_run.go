@@ -310,7 +310,8 @@ func (a *sessionAgent) RunWithReservedOwnership(ctx context.Context, call Sessio
 // fields and as InterruptAndSend-style callers expect); runCtx is the
 // cancelable context every turn in the loop derives from.
 func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCall, epoch uint64, runCancel context.CancelFunc) (*fantasy.AgentResult, error) {
-	defer a.getMailbox(call.SessionID).clearCurrentCall()
+	mb := a.getMailbox(call.SessionID)
+	defer mb.clearCurrentCall(epoch)
 	// We now own call.SessionID's reservation, under ownership era `epoch`,
 	// for the entire loop below, including every queue-drain turn. Released
 	// exactly once, whichever way the loop ends, via THIS defer.
@@ -451,7 +452,6 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 		// not: deterministically land a concurrent Cancel() inside the
 		// window between a reclaim and the loop's own re-arm, instead of
 		// racing the two for the next mb.mu acquisition.
-		mb := a.getMailbox(call.SessionID)
 		if mb.testLoopRearmSeam != nil {
 			mb.testLoopRearmSeam()
 		}
@@ -474,6 +474,7 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 		// interrupt landed in this exact window, which is the overwhelming
 		// majority of iterations.
 		call = mb.reclaimReplacementOrKeep(call)
+		mb.setCurrentCall(call)
 		// R3-4: activate THIS call's carried restricted-run policy exactly
 		// when the call becomes the active turn — whether it won ownership
 		// immediately (tryReserveSession), was queued and is now drained as
@@ -518,9 +519,8 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 		// preamble is now part of a cancelable generation that is SEPARATE
 		// from the durable dispatcher cancel.
 		mb.beginGeneration(turnCancel)
-		mb.setCurrentCall(call)
 		result, next, hasNext, err := a.runTurn(turnCtx, call, lk, epoch, runCancel)
-		mb.clearCurrentCall()
+		mb.clearCurrentCall(epoch)
 		turnCancel()
 		if !hasNext {
 			return result, err

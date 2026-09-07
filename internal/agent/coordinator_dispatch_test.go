@@ -10,6 +10,7 @@ import (
 
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
+	"charm.land/fantasy/providers/openai"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/csync"
 	"github.com/PHPCraftdream/rush/internal/message"
@@ -182,4 +183,119 @@ func TestHandleInterruptTick_DiskProviderUsesInProcessReplacement(t *testing.T) 
 	fired, err = coord.handleInterruptTick(ctx, sess.ID)
 	require.NoError(t, err)
 	assert.False(t, fired, "the consumed inject must not be delivered twice")
+}
+
+func TestHandleInterruptTick_CredentialedRunUsesTenantReplacement(t *testing.T) {
+	env := testEnv(t)
+	cfg, err := config.Init(env.workingDir, "", false)
+	require.NoError(t, err)
+	cfg.Config().Providers.Set("operator-provider", config.ProviderConfig{
+		ID: "operator-provider", Type: openai.Name,
+		Models: []catwalk.Model{{ID: "operator-model", Name: "Operator Model"}},
+	})
+	cfg.Config().Models[config.SelectedModelTypeSmart] = config.SelectedModel{Provider: "operator-provider", Model: "operator-model"}
+	cfg.Config().Models[config.SelectedModelTypeFast] = config.SelectedModel{Provider: "operator-provider", Model: "operator-model"}
+
+	tenantCreds := &CredentialSet{
+		Credentials: []Credential{{Provider: "tenant-provider", Type: ProviderTypeOpenAI, APIKey: "tenant-key"}},
+		Models: map[Role]ModelChoice{
+			RoleSmart: {Provider: "tenant-provider", Model: "tenant-model"},
+			RoleFast:  {Provider: "tenant-provider", Model: "tenant-fast"},
+		},
+	}
+	current := newMockAgent("operator-provider", 4096, func(context.Context, SessionAgentCall) (*fantasy.AgentResult, error) {
+		return agentResultWithText("ok"), nil
+	})
+	sess, err := env.sessions.Create(t.Context(), "credentialed-interrupt")
+	require.NoError(t, err)
+	current.activeCall = SessionAgentCall{
+		SessionID:   sess.ID,
+		Prompt:      "active tenant turn",
+		Credentials: tenantCreds,
+		SmartModel:  &Model{ModelCfg: config.SelectedModel{Provider: "tenant-provider", Model: "tenant-model"}},
+	}
+	current.hasActiveCall = true
+	coord := &coordinator{
+		cfg: cfg, sessions: env.sessions, messages: env.messages,
+		currentAgent: current, modelCache: csync.NewMap[string, cachedModelPair](),
+	}
+
+	msg, err := env.messages.Create(t.Context(), sess.ID, message.CreateMessageParams{
+		Role: message.User, Parts: []message.ContentPart{message.TextContent{Text: "tenant replacement"}},
+	})
+	require.NoError(t, err)
+	require.NoError(t, env.sessions.CreatePendingInject(t.Context(), session.PendingInject{
+		SessionID: sess.ID, MessageID: msg.ID, Content: msg.FullText(), Interrupt: true,
+	}))
+
+	fired, err := coord.handleInterruptTick(t.Context(), sess.ID)
+	require.NoError(t, err)
+	require.True(t, fired)
+	require.Len(t, current.interruptAndReplaced, 1)
+	replacement := current.interruptAndReplaced[0]
+	assert.Same(t, tenantCreds, replacement.Credentials)
+	require.NotNil(t, replacement.SmartModel)
+	assert.Equal(t, "tenant-provider", replacement.SmartModel.ModelCfg.Provider)
+	assert.Equal(t, "tenant-model", replacement.SmartModel.ModelCfg.Model)
+	assert.False(t, replacement.FromDurableQueue)
+	pending, err := env.sessions.ListPendingRunQueueEntries(t.Context())
+	require.NoError(t, err)
+	assert.Empty(t, pending, "a credentialed interrupt must not be serialized for operator replay")
+	fired, err = coord.handleInterruptTick(t.Context(), sess.ID)
+	require.NoError(t, err)
+	assert.False(t, fired, "the interrupt must be delivered exactly once")
+}
+
+func TestHandleInterruptTick_RetriesUntilActiveSnapshotPublished(t *testing.T) {
+	env := testEnv(t)
+	cfg, err := config.Init(env.workingDir, "", false)
+	require.NoError(t, err)
+	cfg.Config().Providers.Set("operator-provider", config.ProviderConfig{
+		ID: "operator-provider", Type: openai.Name,
+		Models: []catwalk.Model{{ID: "operator-model", Name: "Operator Model"}},
+	})
+	cfg.Config().Models[config.SelectedModelTypeSmart] = config.SelectedModel{Provider: "operator-provider", Model: "operator-model"}
+	cfg.Config().Models[config.SelectedModelTypeFast] = config.SelectedModel{Provider: "operator-provider", Model: "operator-model"}
+	current := newMockAgent("operator-provider", 4096, func(context.Context, SessionAgentCall) (*fantasy.AgentResult, error) {
+		return agentResultWithText("ok"), nil
+	})
+	sess, err := env.sessions.Create(t.Context(), "snapshot-publication-window")
+	require.NoError(t, err)
+	disk := newFakeDiskProvider(nil)
+	current.activeCallOwned = true
+	current.activeCall = SessionAgentCall{
+		SessionID:   sess.ID,
+		CallOptions: &CallOptions{DiskProvider: disk},
+	}
+	coord := &coordinator{
+		cfg: cfg, sessions: env.sessions, messages: env.messages,
+		currentAgent: current, modelCache: csync.NewMap[string, cachedModelPair](),
+	}
+	msg, err := env.messages.Create(t.Context(), sess.ID, message.CreateMessageParams{
+		Role: message.User, Parts: []message.ContentPart{message.TextContent{Text: "publish then interrupt"}},
+	})
+	require.NoError(t, err)
+	inject := session.PendingInject{SessionID: sess.ID, MessageID: msg.ID, Content: msg.FullText(), Interrupt: true}
+	require.NoError(t, env.sessions.CreatePendingInject(t.Context(), inject))
+
+	fired, err := coord.handleInterruptTick(t.Context(), sess.ID)
+	require.NoError(t, err)
+	assert.False(t, fired)
+	assert.Empty(t, current.interruptAndReplaced)
+	row, err := env.sessions.PeekInterruptInject(t.Context(), sess.ID)
+	require.NoError(t, err)
+	require.NotNil(t, row, "an unpublished active snapshot must not consume the interrupt")
+
+	current.mu.Lock()
+	current.activeSnapshotReady = true
+	current.mu.Unlock()
+	fired, err = coord.handleInterruptTick(t.Context(), sess.ID)
+	require.NoError(t, err)
+	assert.True(t, fired)
+	require.Len(t, current.interruptAndReplaced, 1)
+	assert.Same(t, disk, current.interruptAndReplaced[0].CallOptions.DiskProvider)
+	fired, err = coord.handleInterruptTick(t.Context(), sess.ID)
+	require.NoError(t, err)
+	assert.False(t, fired)
+	assert.Len(t, current.interruptAndReplaced, 1, "the published snapshot must receive the interrupt exactly once")
 }

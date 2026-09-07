@@ -27,6 +27,8 @@ func (mb *mailbox) submit(call SessionAgentCall, dispatcherCancel context.Cancel
 		mb.state = mbOwned
 		mb.dispatcherCancel = dispatcherCancel
 		mb.epoch++
+		copy := call
+		mb.currentCall = &copy
 		return true, mb.epoch // caller (Run) becomes the new owner, runs call itself
 	}
 	// mb.state == mbOwned OR mb.state == mbReleasing both land here (#296/

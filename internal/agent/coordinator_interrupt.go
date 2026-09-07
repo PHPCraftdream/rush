@@ -158,6 +158,14 @@ func (c *coordinator) startInterruptTicker(ctx context.Context, sessionID string
 // commits, the call is durably enqueued and nothing after that point
 // (Notify, InterruptAndReplace) can lose it.
 func (c *coordinator) handleInterruptTick(ctx context.Context, sessionID string) (bool, error) {
+	// Ownership is published before the first generation starts. If a
+	// reservation exists but its call snapshot is not visible yet, retry the
+	// tick: consuming now could rebuild with operator credentials or disk.
+	activeCall, owned, published := activeCallStateForSession(c.currentAgent, sessionID)
+	if owned && !published {
+		return false, nil
+	}
+
 	// First, peek at the row to get the message reference (SELECT only, no delete)
 	pi, err := c.sessions.PeekInterruptInject(ctx, sessionID)
 	if err != nil {
@@ -173,12 +181,12 @@ func (c *coordinator) handleInterruptTick(ctx context.Context, sessionID string)
 		return false, fmt.Errorf("interrupt inject references missing message %q: %w", pi.MessageID, getErr)
 	}
 
-	// A caller-supplied DiskProvider cannot cross the durable queue boundary.
-	// If the active owner carries one, hand the persisted message directly to
-	// that owner's mailbox so the replacement keeps the provider and is
-	// executed exactly once in-process.
-	if activeCall, ok := activeCallForSession(c.currentAgent, sessionID); ok && callCarriesDiskProvider(activeCall) {
-		return c.handleActiveDiskProviderInterrupt(ctx, pi, injMsg, activeCall)
+	// Non-durable dependencies cannot cross the durable queue boundary. If the
+	// active owner carries credentials or a DiskProvider, hand the persisted
+	// message directly to that owner's mailbox so the replacement retains the
+	// exact in-process execution identity.
+	if published && callCarriesNonDurableDependency(activeCall) {
+		return c.handleActiveNonDurableInterrupt(ctx, pi, injMsg, activeCall)
 	}
 
 	// Resolve the session's model configuration from the DB or config
@@ -266,15 +274,23 @@ type activeCallSnapshotter interface {
 	ActiveCall(sessionID string) (SessionAgentCall, bool)
 }
 
-func activeCallForSession(currentAgent SessionAgent, sessionID string) (SessionAgentCall, bool) {
-	snapshotter, ok := currentAgent.(activeCallSnapshotter)
-	if !ok {
-		return SessionAgentCall{}, false
-	}
-	return snapshotter.ActiveCall(sessionID)
+type activeCallInspector interface {
+	ActiveCallState(sessionID string) (SessionAgentCall, bool, bool)
 }
 
-func (c *coordinator) handleActiveDiskProviderInterrupt(
+func activeCallStateForSession(currentAgent SessionAgent, sessionID string) (SessionAgentCall, bool, bool) {
+	if inspector, ok := currentAgent.(activeCallInspector); ok {
+		return inspector.ActiveCallState(sessionID)
+	}
+	snapshotter, ok := currentAgent.(activeCallSnapshotter)
+	if !ok {
+		return SessionAgentCall{}, false, true
+	}
+	call, published := snapshotter.ActiveCall(sessionID)
+	return call, published, published
+}
+
+func (c *coordinator) handleActiveNonDurableInterrupt(
 	ctx context.Context,
 	pi *session.PendingInject,
 	msg message.Message,
@@ -295,9 +311,9 @@ func (c *coordinator) handleActiveDiskProviderInterrupt(
 	}
 	if !c.currentAgent.InterruptAndReplace(call.SessionID, call) {
 		if err := c.recreatePendingInjectRow(ctx, call); err != nil {
-			return false, fmt.Errorf("active disk-provider run ended before interrupt delivery and recovery failed: %w", err)
+			return false, fmt.Errorf("active non-durable run ended before interrupt delivery and recovery failed: %w", err)
 		}
-		return false, fmt.Errorf("active disk-provider run ended before interrupt delivery; message was restored for the next run")
+		return false, fmt.Errorf("active non-durable run ended before interrupt delivery; message was restored for the next run")
 	}
 	c.messages.Notify(msg)
 	return true, nil
@@ -394,6 +410,11 @@ func (c *coordinator) startDetachedRun(ctx context.Context, call SessionAgentCal
 		slog.Error("coordinator: refusing to durably enqueue a call carrying a caller-supplied disk provider",
 			"session_id", call.SessionID, "logical_call_id", call.LogicalCallID)
 		return fmt.Errorf("%w (session=%s)", ErrDiskProviderNotDurable, call.SessionID)
+	}
+	if call.Credentials != nil {
+		slog.Error("coordinator: refusing to durably enqueue a call carrying per-call credentials",
+			"session_id", call.SessionID, "logical_call_id", call.LogicalCallID)
+		return fmt.Errorf("%w (session=%s)", ErrCredentialSetNotDurable, call.SessionID)
 	}
 
 	// P0-2 fix: delete the pending_injects row at the START to prevent

@@ -633,6 +633,13 @@ func withoutCallOptions(ctx context.Context) context.Context {
 // existing mutex discipline; the per-call read is race-free by construction
 // (an immutable value bound to the context before the build started).
 func (c *coordinator) workerSubAgentActiveForCall(ctx context.Context, cfg *config.Config) bool {
+	if creds := callCredentialsFrom(ctx); creds != nil {
+		_, covered := creds.Models[RoleWorker]
+		if opts := callOptionsFrom(ctx); opts != nil && opts.ModelRole != "" {
+			return covered && opts.ModelRole == config.SelectedModelTypeSmart
+		}
+		return covered
+	}
 	if opts := callOptionsFrom(ctx); opts != nil && opts.ModelRole != "" {
 		if opts.ModelRole != config.SelectedModelTypeSmart {
 			return false
@@ -705,6 +712,28 @@ func (c *coordinator) buildAgentModels(ctx context.Context, isSubAgent bool) (Mo
 // caller with nothing to pin (buildAgentModels above) takes its own fresh
 // Snapshot() and delegates here, so behavior for those callers is unchanged.
 func (c *coordinator) buildAgentModelsFromCfg(ctx context.Context, cfg *config.Config, isSubAgent bool) (Model, Model, error) {
+	if creds := callCredentialsFrom(ctx); creds != nil {
+		choice := creds.Models[RoleSmart]
+		if isSubAgent {
+			// A worker choice is the only tenant worker slot. When it is
+			// omitted, dispatch deliberately falls back to tenant smart.
+			if workerChoice, ok := creds.Models[RoleWorker]; ok {
+				choice = workerChoice
+			}
+		}
+		smart, _, err := c.buildCredentialModel(ctx, creds, choice)
+		if err != nil {
+			return Model{}, Model{}, err
+		}
+		fast := smart
+		if fastChoice, ok := creds.Models[RoleFast]; ok {
+			fast, _, err = c.buildCredentialModel(ctx, creds, fastChoice)
+			if err != nil {
+				return Model{}, Model{}, err
+			}
+		}
+		return smart, fast, nil
+	}
 	smartModelCfg, ok := cfg.Models[config.SelectedModelTypeSmart]
 	if !ok {
 		return Model{}, Model{}, errSmartModelNotSelected

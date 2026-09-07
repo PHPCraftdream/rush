@@ -313,18 +313,22 @@ func (c *coordinator) RunWithCredentials(ctx context.Context, sessionID, prompt 
 	if creds == nil {
 		return nil, fmt.Errorf("RunWithCredentials: credentials are required")
 	}
-	if err := creds.Validate(); err != nil {
+	// Retain an immutable deep copy for the whole in-process call. The
+	// context and SessionAgentCall must carry the same snapshot so an
+	// interrupt cannot rebuild this call through operator configuration.
+	callCreds := creds.Clone()
+	if err := callCreds.Validate(); err != nil {
 		return nil, fmt.Errorf("RunWithCredentials: %w", err)
 	}
 
-	pinned, err := c.resolveCredentialsModels(ctx, sessionID, creds)
+	pinned, err := c.resolveCredentialsModels(ctx, sessionID, &callCreds)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve models from per-call credentials: %w", err)
 	}
 
 	// Sub-agent spawns inside this turn (the `agent` tool, agentic_fetch)
 	// must see the same tenant credentials.
-	return c.runInternal(withCallCredentials(ctx, creds), sessionID, prompt, pinned, attachments...)
+	return c.runInternal(withCallCredentials(ctx, &callCreds), sessionID, prompt, pinned, attachments...)
 }
 
 // resolveCallModels resolves a call's model snapshot through its
@@ -412,19 +416,21 @@ func (c *coordinator) resolveCredentialsModels(ctx context.Context, sessionID st
 	}
 	var workerProviderCfg config.ProviderConfig
 	var workerConfigured bool
-	if workerChoice, workerCovered := creds.Models[RoleWorker]; workerCovered {
+	workerChoice, workerCovered := creds.Models[RoleWorker]
+	if !workerCovered {
+		// runSubAgent uses the tenant smart choice when the tenant omits
+		// worker. Validate that effective fallback, not the unrelated
+		// operator worker slot.
+		workerChoice = smartChoice
+		workerCovered = true
+	}
+	if workerCovered {
 		workerCredential, ok := creds.credential(workerChoice.Provider)
 		if !ok {
 			return nil, fmt.Errorf("model choice references provider %q which is not in the credential set", workerChoice.Provider)
 		}
 		workerProviderCfg = credentialProviderConfig(workerCredential)
 		workerConfigured = true
-	} else {
-		cfg, _ := c.cfg.Snapshot()
-		workerModelCfg, ok := cfg.Models[config.SelectedModelTypeWorker]
-		if ok && workerModelCfg.Model != "" {
-			workerProviderCfg, workerConfigured = cfg.Providers.Get(workerModelCfg.Provider)
-		}
 	}
 	if workerConfigured {
 		if err := c.rejectScopedCallOnCLIProvider(ctx, "worker", workerProviderCfg); err != nil {
@@ -445,7 +451,7 @@ func (c *coordinator) resolveCredentialsModels(ctx context.Context, sessionID st
 	// (FolderScope, DiskProvider, DisableSubAgents, or a tool-shaping
 	// ModelRole) and the build could not produce one — see
 	// ErrScopedCallToolsUnavailable's doc comment (coordinator_models.go).
-	tools, err := c.pinCallTools(ctx, cfg)
+	tools, err := c.pinCallTools(withCallCredentials(ctx, creds), cfg)
 	if err != nil {
 		return nil, err
 	}

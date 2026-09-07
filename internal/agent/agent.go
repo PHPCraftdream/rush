@@ -269,6 +269,9 @@ type SessionAgentCall struct {
 	SmartModel         *Model
 	FastModel          *Model
 	SystemPromptPrefix *string
+	// Credentials keeps non-durable per-call provider credentials attached to
+	// the in-process call snapshot. It is never serialized or rebuilt.
+	Credentials *CredentialSet `json:"-"`
 
 	// SystemPrompt pins the BASE system prompt — the one applyModelOverrides
 	// rebuilds from the resolved provider/model. It is distinct from, and

@@ -284,6 +284,7 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 		FolderScopeSpec:      folderScopeSpecFrom(ctx),
 		FailIfSessionBusy:    callOpts != nil && callOpts.FailIfSessionBusy,
 		SmartModel:           &pinnedSmart,
+		Credentials:          creds,
 		LogicalCallID:        uuid.New().String(), // P2-1: generate stable ID once
 		OnUserMessageCreated: func(id string) { createdUserMessageID = id },
 		// Stamp the entry-channel origin (see buildCall): createUserMessage
@@ -376,6 +377,7 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 			FolderScopeSpec:      trackCall.FolderScopeSpec,
 			FailIfSessionBusy:    trackCall.FailIfSessionBusy,
 			SmartModel:           &pinnedSmart,
+			Credentials:          trackCall.Credentials,
 			LogicalCallID:        trackCall.LogicalCallID, // Preserve logical ID
 			ExistingMessageID:    trackCall.ExistingMessageID,
 			OnUserMessageCreated: trackCall.OnUserMessageCreated,

@@ -45,7 +45,14 @@ func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, age
 		return nil, err
 	}
 
-	smartProviderCfg, _ := cfg.Providers.Get(smart.ModelCfg.Provider)
+	var smartProviderCfg config.ProviderConfig
+	if creds := callCredentialsFrom(ctx); creds != nil {
+		if cred, ok := creds.credential(smart.ModelCfg.Provider); ok {
+			smartProviderCfg = credentialProviderConfig(cred)
+		}
+	} else {
+		smartProviderCfg, _ = cfg.Providers.Get(smart.ModelCfg.Provider)
+	}
 	opts := cfg.Options
 	var streamIdleTimeout time.Duration
 	if opts != nil && opts.StreamIdleTimeoutSeconds > 0 {

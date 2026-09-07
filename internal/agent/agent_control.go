@@ -85,6 +85,13 @@ func (a *sessionAgent) ActiveCall(sessionID string) (SessionAgentCall, bool) {
 	return a.getMailbox(sessionID).currentCallSnapshot()
 }
 
+// ActiveCallState reports ownership separately from active-call publication.
+// An owned mailbox with no published snapshot is a retryable admission window,
+// not permission to route an interrupt through the durable queue.
+func (a *sessionAgent) ActiveCallState(sessionID string) (SessionAgentCall, bool, bool) {
+	return a.getMailbox(sessionID).currentCallState()
+}
+
 // InjectMessage — see SessionAgent interface comment. Persists immediately
 // (UI updates via the same pubsub path that handleSendMessage uses) and, if
 // the session is currently running, atomically queues the persisted row into

@@ -150,7 +150,7 @@ func TestFolderScope_RejectsCLIWorkerProvider(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestFolderScope_CredentialsCheckConfiguredWorkerProvider(t *testing.T) {
+func TestFolderScope_CredentialsUseTenantFallbackInsteadOfConfiguredWorker(t *testing.T) {
 	stubCLIAvailability(t)
 	env := testEnv(t)
 	coord := newFolderScopeCLICoordinator(t, env, openai.Name, cliprovider.ProviderType, true)
@@ -170,10 +170,53 @@ func TestFolderScope_CredentialsCheckConfiguredWorkerProvider(t *testing.T) {
 		},
 	}
 
-	_, err = coord.resolveCredentialsModels(ctx, sess.ID, creds)
-	require.Error(t, err, "credentialed scoped calls must reject a configured CLI worker too")
+	pinned, err := coord.resolveCredentialsModels(ctx, sess.ID, creds)
+	require.NoError(t, err, "an unrelated operator CLI worker must not reject the tenant fallback")
+	require.NotNil(t, pinned)
+	assert.Equal(t, "tenant-provider", pinned.smart.ModelCfg.Provider)
+	assert.Equal(t, "tenant-smart", pinned.smart.ModelCfg.Model)
+	assert.NotContains(t, pinned.smart.ModelCfg.Provider, "worker-provider")
+}
+
+func TestFolderScope_CredentialsExplicitWorkerUsesTenantRolePolicy(t *testing.T) {
+	stubCLIAvailability(t)
+	env := testEnv(t)
+	coord := newFolderScopeCLICoordinator(t, env, openai.Name, cliprovider.ProviderType, true)
+	sess, err := coord.sessions.Create(t.Context(), "tenant-worker-scoped")
+	require.NoError(t, err)
+	scope := newFolderScope(t, env.workingDir, permission.FileOpRead)
+	ctx := WithCallOptions(t.Context(), &CallOptions{FolderScope: &scope})
+	creds := &CredentialSet{
+		Credentials: []Credential{{Provider: "tenant-provider", Type: ProviderTypeOpenAI}},
+		Models: map[Role]ModelChoice{
+			RoleSmart:  {Provider: "tenant-provider", Model: "tenant-smart"},
+			RoleFast:   {Provider: "tenant-provider", Model: "tenant-fast"},
+			RoleWorker: {Provider: "tenant-provider", Model: "tenant-worker"},
+		},
+	}
+
+	pinned, err := coord.resolveCredentialsModels(ctx, sess.ID, creds)
+	require.NoError(t, err, "an explicit tenant worker must be checked as the tenant provider, not operator CLI")
+	require.NotNil(t, pinned)
+	assert.Equal(t, "tenant-provider", pinned.smart.ModelCfg.Provider)
+}
+
+func TestFolderScope_ExplicitTenantCLIWorkerStillRejected(t *testing.T) {
+	stubCLIAvailability(t)
+	env := testEnv(t)
+	coord := newFolderScopeCLICoordinator(t, env, openai.Name, openai.Name, false)
+	scope := newFolderScope(t, env.workingDir, permission.FileOpRead)
+	ctx := WithCallOptions(t.Context(), &CallOptions{FolderScope: &scope})
+
+	// CLI is intentionally not a CredentialSet provider type: tenant
+	// credentials are API-key based. Keep the scoped-role policy pinned for
+	// any internal provider resolution that supplies a CLI worker.
+	err := coord.rejectScopedCallOnCLIProvider(ctx, "worker", config.ProviderConfig{
+		ID: "tenant-cli-worker", Type: cliprovider.ProviderType,
+	})
+	require.Error(t, err)
 	assert.Contains(t, err.Error(), "worker")
-	assert.Contains(t, err.Error(), "cli")
+	assert.Contains(t, err.Error(), "CLI provider")
 }
 
 func TestCredentialsMissingSmartFallbackFlagIsTruthful(t *testing.T) {

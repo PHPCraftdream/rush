@@ -28,9 +28,11 @@ func (mb *mailbox) setCurrentCall(call SessionAgentCall) {
 	mb.mu.Unlock()
 }
 
-func (mb *mailbox) clearCurrentCall() {
+func (mb *mailbox) clearCurrentCall(epoch uint64) {
 	mb.mu.Lock()
-	mb.currentCall = nil
+	if mb.epoch == epoch {
+		mb.currentCall = nil
+	}
 	mb.mu.Unlock()
 }
 
@@ -41,6 +43,22 @@ func (mb *mailbox) currentCallSnapshot() (SessionAgentCall, bool) {
 		return SessionAgentCall{}, false
 	}
 	return *mb.currentCall, true
+}
+
+// currentCallState distinguishes an idle mailbox from an owned mailbox whose
+// active call has not been published yet. The latter is retryable for
+// interrupt delivery: consuming a pending interrupt before its in-process
+// dependencies are visible could force an unsafe durable rebuild.
+func (mb *mailbox) currentCallState() (SessionAgentCall, bool, bool) {
+	mb.mu.Lock()
+	defer mb.mu.Unlock()
+	if mb.state != mbOwned {
+		return SessionAgentCall{}, false, true
+	}
+	if mb.currentCall == nil {
+		return SessionAgentCall{}, true, false
+	}
+	return *mb.currentCall, true, true
 }
 
 // beginCompact atomically claims mailbox ownership for a compaction (manual

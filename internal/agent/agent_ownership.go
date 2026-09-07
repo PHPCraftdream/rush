@@ -440,6 +440,12 @@ func (a *sessionAgent) restartOrphanedWithRetry(calls []SessionAgentCall) error 
 				callErrs[i] = fmt.Errorf("%w (session=%s)", ErrDiskProviderNotDurable, call.SessionID)
 				return
 			}
+			if call.Credentials != nil {
+				slog.Error("agent: refusing to durably enqueue a call carrying per-call credentials",
+					"session_id", call.SessionID, "logical_call_id", call.LogicalCallID)
+				callErrs[i] = fmt.Errorf("%w (session=%s)", ErrCredentialSetNotDurable, call.SessionID)
+				return
+			}
 
 			// P2-1: Generate idempotency key from LogicalCallID (stable per logical request)
 			// instead of timestamp (which changes on every retry). Fallback to timestamp

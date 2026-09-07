@@ -37,6 +37,8 @@ type mockSessionAgent struct {
 	interruptAndReplaced []SessionAgentCall
 	activeCall           SessionAgentCall
 	hasActiveCall        bool
+	activeCallOwned      bool
+	activeSnapshotReady  bool
 }
 
 // interruptAndReplacedSnapshot returns a thread-safe copy of
@@ -82,6 +84,16 @@ func (m *mockSessionAgent) ActiveCall(_ string) (SessionAgentCall, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.activeCall, m.hasActiveCall
+}
+
+func (m *mockSessionAgent) ActiveCallState(_ string) (SessionAgentCall, bool, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	owned := m.hasActiveCall || m.activeCallOwned
+	if !owned {
+		return SessionAgentCall{}, false, true
+	}
+	return m.activeCall, true, m.activeSnapshotReady || m.hasActiveCall
 }
 
 func (m *mockSessionAgent) InjectMessage(_ context.Context, call SessionAgentCall) (message.Message, error) {
@@ -160,6 +172,34 @@ func newMockAgent(providerID string, maxTokens int64, runFunc func(context.Conte
 		},
 		runFunc: runFunc,
 	}
+}
+
+func TestRunSubAgent_CredentialWorkerFallbackUsesTenantSmart(t *testing.T) {
+	env := testEnv(t)
+	coord := newTestCoordinator(t, env, "operator-provider", config.ProviderConfig{ID: "operator-provider"})
+	parent, err := env.sessions.Create(t.Context(), "credential-worker-fallback")
+	require.NoError(t, err)
+	creds := &CredentialSet{
+		Credentials: []Credential{{Provider: "tenant-provider", Type: ProviderTypeOpenAI, APIKey: "tenant-key"}},
+		Models: map[Role]ModelChoice{
+			RoleSmart: {Provider: "tenant-provider", Model: "tenant-smart"},
+		},
+	}
+	var observed SessionAgentCall
+	agent := newMockAgent("operator-provider", 4096, func(_ context.Context, call SessionAgentCall) (*fantasy.AgentResult, error) {
+		observed = call
+		return agentResultWithText("tenant worker"), nil
+	})
+
+	resp, err := coord.runSubAgent(withCallCredentials(t.Context(), creds), subAgentParams{
+		Agent: agent, SessionID: parent.ID, AgentMessageID: "msg-fallback", ToolCallID: "call-fallback",
+		Prompt: "use the effective worker model", SessionTitle: "Tenant worker",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "tenant-provider", observed.SmartModel.ModelCfg.Provider)
+	assert.Equal(t, "tenant-smart", observed.SmartModel.ModelCfg.Model)
+	assert.Same(t, creds, observed.Credentials)
+	assert.Equal(t, "tenant worker", resp.Content)
 }
 
 // agentResultWithText creates a minimal AgentResult with the given text response.
