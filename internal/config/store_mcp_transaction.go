@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strings"
 
 	"github.com/PHPCraftdream/rush/internal/home"
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -97,6 +98,9 @@ func (files *mcpLockedFiles) mcpRecord(path string) *mcpFileRecord {
 	if recordKey, ok := files.pathRecords[key]; ok {
 		return files.records[recordKey]
 	}
+	if _, known := files.data[key]; !known {
+		return nil
+	}
 	if canonical := normalizeReloadPath(path); canonical != "" {
 		if recordKey, ok := files.pathRecords[canonical]; ok {
 			return files.records[recordKey]
@@ -165,6 +169,14 @@ func (files *mcpLockedFiles) validateMutableTopology() error {
 // Both writable files are locked even when only one is mutated; this makes
 // origin/existence/target checks one cross-process linearization point.
 func (s *ConfigStore) withMCPWriteLocks(fn func(*mcpLockedFiles) error) error {
+	return s.withMCPLocks(false, fn)
+}
+
+func (s *ConfigStore) withMCPAdmissionLocks(fn func(*mcpLockedFiles) error) error {
+	return s.withMCPLocks(true, fn)
+}
+
+func (s *ConfigStore) withMCPLocks(admission bool, fn func(*mcpLockedFiles) error) error {
 	paths := make([]string, 0, 2)
 	globalPath, err := s.configPath(ScopeGlobal)
 	if err != nil {
@@ -207,9 +219,11 @@ func (s *ConfigStore) withMCPWriteLocks(fn func(*mcpLockedFiles) error) error {
 		}
 		locks = append(locks, lock)
 	}
-	for _, target := range targets {
-		if err := verifyConfigWriteTarget(target); err != nil {
-			return fmt.Errorf("%w: config target %q changed while acquiring locks", ErrMCPStale, target.selectedPath)
+	if !admission {
+		for _, target := range targets {
+			if err := verifyConfigWriteTarget(target); err != nil {
+				return fmt.Errorf("%w: config target %q changed while acquiring locks", ErrMCPStale, target.selectedPath)
+			}
 		}
 	}
 	files := &mcpLockedFiles{
@@ -920,6 +934,23 @@ func (s *ConfigStore) mcpPathData(files *mcpLockedFiles, path string) ([]byte, b
 }
 
 func (s *ConfigStore) mcpOwnerPolicy(path string) (int, bool, error) {
+	if strings.EqualFold(filepath.Base(path), ".mcp.json") {
+		if strings.EqualFold(
+			normalizeDiscoveryPath(path),
+			normalizeDiscoveryPath(filepath.Join(home.Dir(), ".claude", ".mcp.json")),
+		) {
+			return homeConfigOwner(), true, nil
+		}
+		s.workingDirOwnerOnce.Do(func() {
+			var enforce bool
+			s.workingDirOwner, enforce, s.workingDirOwnerErr = configOwnerForWorkingDir(s.workingDir)
+			_ = enforce
+		})
+		if s.workingDirOwnerErr != nil {
+			return 0, false, s.workingDirOwnerErr
+		}
+		return s.workingDirOwner, s.workingDir != "", nil
+	}
 	canonical := normalizeReloadPath(path)
 	if systemPath := s.systemConfigPathValue(); systemPath != "" && canonical == normalizeReloadPath(systemPath) {
 		return systemConfigOwner(), true, nil
@@ -930,7 +961,15 @@ func (s *ConfigStore) mcpOwnerPolicy(path string) (int, bool, error) {
 	if canonical == normalizeReloadPath(filepath.Join(home.Dir(), ".claude", ".mcp.json")) {
 		return homeConfigOwner(), true, nil
 	}
-	return configOwnerForWorkingDir(s.workingDir)
+	s.workingDirOwnerOnce.Do(func() {
+		var enforce bool
+		s.workingDirOwner, enforce, s.workingDirOwnerErr = configOwnerForWorkingDir(s.workingDir)
+		_ = enforce
+	})
+	if s.workingDirOwnerErr != nil {
+		return 0, false, s.workingDirOwnerErr
+	}
+	return s.workingDirOwner, s.workingDir != "", nil
 }
 
 func entryOrigins(origins map[string]MCPOrigin, path, workspacePath, globalPath, systemPath string, data []byte) {

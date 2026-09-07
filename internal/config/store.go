@@ -87,8 +87,11 @@ type ConfigStore struct {
 	// workingDir and globalDataPath are set once at construction time
 	// (Load / NewTestStore) and never mutated afterwards, so they are
 	// safe to read without synchronization.
-	workingDir     string
-	globalDataPath string // ~/.local/share/rush/rush.json
+	workingDir          string
+	globalDataPath      string // ~/.local/share/rush/rush.json
+	workingDirOwnerOnce sync.Once
+	workingDirOwner     int
+	workingDirOwnerErr  error
 	// systemConfigPathOverride is a white-box test seam for platforms such as
 	// Windows that have no native system config path.
 	systemConfigPathOverride string
@@ -246,6 +249,8 @@ type MCPAdmissionSnapshot struct {
 	Resolver         VariableResolver
 	MCPConfig        MCPConfig
 	Exists           bool
+	MCPInput         [32]byte
+	HasMCPInput      bool
 	MCPRevision      uint64
 	ResolverRevision uint64
 	Generation       uint64
@@ -260,6 +265,7 @@ func (s *ConfigStore) SnapshotMCPAdmission(name string) MCPAdmissionSnapshot {
 		ResolverRevision: sn.resolverRevision,
 		Generation:       sn.generation,
 	}
+	result.MCPInput, result.HasMCPInput = sn.mcpInputs[name]
 	if sn.config != nil {
 		result.MCPConfig, result.Exists = sn.config.MCP[name]
 		if result.Exists {

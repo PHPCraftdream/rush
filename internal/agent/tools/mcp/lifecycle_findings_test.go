@@ -779,6 +779,78 @@ func TestAddRejectsChangedConfigBeforePublication(t *testing.T) {
 	require.Equal(t, replacement, current)
 }
 
+func TestReplaceRejectsSourceEditDuringPreparation(t *testing.T) {
+	store := isolatedMCPStore(t)
+	const oldName = "source-edit-old"
+	const newName = "source-edit-new"
+	oldConfig := config.MCPConfig{Type: config.MCPHttp, URL: "http://source-a.example"}
+	replacement := config.MCPConfig{Type: config.MCPHttp, URL: "http://replacement.example"}
+	require.NoError(t, store.PersistMCPConfig(config.ScopeGlobal, oldName, oldConfig))
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer func() { require.NoError(t, owner.Close(context.Background())) }()
+
+	prepared := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- replaceServerWithResultPersistenceAndPreparation(
+			context.Background(), store, oldName, newName, replacement,
+			func(cfg *config.ConfigStore, scope config.Scope, old, new string, value config.MCPConfig) (config.MCPMutationResult, error) {
+				return cfg.PersistReplaceMCPResult(scope, old, new, value)
+			},
+			func(context.Context, *config.ConfigStore, string, config.MCPConfig, config.VariableResolver, *serverAdmission) (*preparedClient, error) {
+				close(prepared)
+				<-release
+				return &preparedClient{session: &ClientSession{}}, nil
+			},
+		)
+	}()
+	awaitMCPSignal(t, prepared)
+	require.NoError(t, store.PersistMCPFieldsExact(config.ScopeGlobal, oldName, map[string]any{
+		"url": "http://source-b.example",
+	}))
+	close(release)
+	require.ErrorIs(t, awaitMCPError(t, done), ErrOwnerBusy)
+	_, exists := store.MCPConfig(newName)
+	require.False(t, exists)
+}
+
+func TestReplaceRejectsResolverReloadDuringPreparation(t *testing.T) {
+	store := isolatedMCPStore(t)
+	const oldName = "resolver-reload-old"
+	const newName = "resolver-reload-new"
+	oldConfig := config.MCPConfig{Type: config.MCPHttp, URL: "http://resolver-source.example"}
+	replacement := config.MCPConfig{Type: config.MCPHttp, URL: "http://resolver-replacement.example"}
+	require.NoError(t, store.PersistMCPConfig(config.ScopeGlobal, oldName, oldConfig))
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer func() { require.NoError(t, owner.Close(context.Background())) }()
+
+	prepared := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- replaceServerWithResultPersistenceAndPreparation(
+			context.Background(), store, oldName, newName, replacement,
+			func(cfg *config.ConfigStore, scope config.Scope, old, new string, value config.MCPConfig) (config.MCPMutationResult, error) {
+				return cfg.PersistReplaceMCPResult(scope, old, new, value)
+			},
+			func(context.Context, *config.ConfigStore, string, config.MCPConfig, config.VariableResolver, *serverAdmission) (*preparedClient, error) {
+				close(prepared)
+				<-release
+				return &preparedClient{session: &ClientSession{}}, nil
+			},
+		)
+	}()
+	awaitMCPSignal(t, prepared)
+	require.NoError(t, store.ReloadFromDisk(context.Background()))
+	close(release)
+	require.ErrorIs(t, awaitMCPError(t, done), ErrOwnerBusy)
+	_, exists := store.MCPConfig(newName)
+	require.False(t, exists)
+}
+
 func TestReplaceRejectsPendingAddDestinationBeforePreparation(t *testing.T) {
 	store := isolatedMCPStore(t)
 	const oldName = "replace-pending-old"
@@ -829,4 +901,213 @@ func TestReplaceRejectsPendingAddDestinationBeforePreparation(t *testing.T) {
 	current, ok := store.MCPConfig(newName)
 	require.True(t, ok)
 	require.Equal(t, config.MCPConfig{Type: config.MCPStdio, Command: newName}, current)
+}
+
+func TestReplaceFallbackSelectionIgnoresAbsentOrDisabledReplacement(t *testing.T) {
+	fallback := config.MCPConfig{Type: config.MCPHttp, URL: "http://fallback.example"}
+	for _, replacement := range []config.MCPConfig{
+		{},
+		{Type: config.MCPHttp, URL: "http://replacement.example", Disabled: true},
+	} {
+		name, selected, exists := fallbackDefinition(config.MCPMutationResult{
+			Operation:      "replace",
+			OldName:        "old",
+			NewName:        "new",
+			NewExists:      replacement.URL != "",
+			NewConfig:      replacement,
+			FallbackExists: true,
+			FallbackConfig: fallback,
+		})
+		require.Equal(t, "old", name)
+		require.True(t, exists)
+		require.Equal(t, fallback, selected)
+	}
+}
+
+func TestMCPAdmissionRejectsSecondStoreChangeBeforePin(t *testing.T) {
+	store := isolatedMCPStore(t)
+	contender, err := config.Init(store.WorkingDir(), store.WorkingDir(), false)
+	require.NoError(t, err)
+	const name = "admission-cross-store-stale"
+	require.NoError(t, store.PersistMCPConfig(config.ScopeGlobal, name, config.MCPConfig{
+		Type: config.MCPHttp, URL: "http://admission-a.example",
+	}))
+	snapshot := store.SnapshotMCPAdmission(name)
+	require.NoError(t, contender.PersistMCPFieldsExact(config.ScopeGlobal, name, map[string]any{
+		"url": "http://admission-b.example",
+	}))
+	require.ErrorIs(t, store.WithCurrentMCPAdmission(snapshot, name, func() error { return nil }), config.ErrMCPMutationStale)
+}
+
+func TestMCPAdmissionHoldsSidecarsThroughSkippedTransition(t *testing.T) {
+	store := isolatedMCPStore(t)
+	contender, err := config.Init(store.WorkingDir(), store.WorkingDir(), false)
+	require.NoError(t, err)
+	const name = "admission-cross-store-block"
+	require.NoError(t, store.PersistMCPConfig(config.ScopeGlobal, name, config.MCPConfig{
+		Type: config.MCPHttp, URL: "http://admission-block.example", Disabled: true,
+	}))
+	snapshot := store.SnapshotMCPAdmission(name)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	publicationDone := make(chan error, 1)
+	go func() {
+		publicationDone <- store.WithCurrentMCPAdmission(snapshot, name, func() error {
+			close(entered)
+			<-release
+			return nil
+		})
+	}()
+	awaitMCPSignal(t, entered)
+	writerDone := make(chan error, 1)
+	go func() {
+		writerDone <- contender.PersistMCPFieldsExact(config.ScopeGlobal, name, map[string]any{
+			"url": "http://admission-blocked-writer.example",
+		})
+	}()
+	select {
+	case err := <-writerDone:
+		t.Fatalf("second store crossed the admission sidecar lock: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	require.NoError(t, <-publicationDone)
+	require.NoError(t, <-writerDone)
+}
+
+func TestInitializeSingleDisabledDetachesPublishedRuntime(t *testing.T) {
+	const name = "disabled-detaches-runtime"
+	store := isolatedMCPStore(t)
+	store.Config().MCP = config.MCPs{
+		name: {Type: config.MCPHttp, URL: "http://disabled.example", Disabled: true},
+	}
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer func() { require.NoError(t, owner.Close(context.Background())) }()
+	require.NoError(t, owner.rememberConfig(store))
+	session := &ClientSession{}
+	sessions.Set(name, session)
+	setState(name, StateConnected, nil, session, Counts{Tools: 1, Prompts: 1})
+	allTools.Set(name, []*Tool{{Name: "stale-tool"}})
+	allPrompts.Set(name, []*Prompt{{Name: "stale-prompt"}})
+	allResources.Set(name, []*Resource{{Name: "stale-resource"}})
+
+	eventsCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	events := SubscribeEvents(eventsCtx)
+	require.NoError(t, InitializeSingle(context.Background(), name, store))
+	require.False(t, hasSession(name))
+	require.Empty(t, GetServerToolNames(name))
+	state, ok := GetState(name)
+	require.True(t, ok)
+	require.Equal(t, StateDisabled, state.State)
+	requireTransactionalEvent(t, events, pubsub.UpdatedEvent, name, StateDisabled)
+	select {
+	case event := <-events:
+		t.Fatalf("disabled transition published duplicate event: %v", event)
+	default:
+	}
+}
+
+func TestInitializeCLISkipDetachesPublishedRuntime(t *testing.T) {
+	const name = "cli-skip-detaches-runtime"
+	store := isolatedMCPStore(t)
+	store.Config().MCP = config.MCPs{
+		name: {Type: config.MCPHttp, URL: "http://cli-skip.example", EnabledInCLI: false},
+	}
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer func() { require.NoError(t, owner.Close(context.Background())) }()
+	session := &ClientSession{}
+	sessions.Set(name, session)
+	setState(name, StateConnected, nil, session, Counts{Tools: 1})
+	allTools.Set(name, []*Tool{{Name: "stale-cli-tool"}})
+
+	eventsCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	events := SubscribeEvents(eventsCtx)
+	owner.Initialize(context.Background(), nil, store, true)
+	require.False(t, hasSession(name))
+	require.Empty(t, GetServerToolNames(name))
+	state, ok := GetState(name)
+	require.True(t, ok)
+	require.Equal(t, StateDisabled, state.State)
+	requireTransactionalEvent(t, events, pubsub.UpdatedEvent, name, StateDisabled)
+	select {
+	case event := <-events:
+		t.Fatalf("CLI skip published duplicate event: %v", event)
+	default:
+	}
+}
+
+func TestStaleAdmissionCleanupLeavesNoOwnerlessStarting(t *testing.T) {
+	const name = "stale-admission-cleanup"
+	store := isolatedMCPStore(t)
+	result, err := store.PersistMCPConfigResult(config.ScopeGlobal, name, config.MCPConfig{
+		Type: config.MCPHttp, URL: "http://stale-admission.example",
+	})
+	require.NoError(t, err)
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer func() { require.NoError(t, owner.Close(context.Background())) }()
+	require.NoError(t, owner.rememberConfig(store))
+	admission, err := owner.admitServerForConfig(context.Background(), store, name, result.NewConfig, true)
+	require.NoError(t, err)
+	defer admission.done()
+	admission.mutationResult = &result
+	updateAdmissionState(&admission, StateStarting, nil, nil, Counts{})
+	eventsCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	events := SubscribeEvents(eventsCtx)
+	require.NoError(t, store.SetConfigField(config.ScopeGlobal, "options.debug", true))
+	session := &ClientSession{}
+	err = publishPreparedClientWithMutation(store, name, &preparedClient{session: session}, &admission)
+	require.ErrorIs(t, err, config.ErrMCPMutationStale)
+	cleanupFailedAdmission(&admission, err)
+	state, ok := GetState(name)
+	require.True(t, ok)
+	require.NotEqual(t, StateStarting, state.State)
+	require.Equal(t, StateError, state.State)
+	require.False(t, hasSession(name))
+	requireTransactionalEvent(t, events, pubsub.UpdatedEvent, name, StateError)
+	select {
+	case event := <-events:
+		t.Fatalf("stale cleanup published duplicate event: %v", event)
+	default:
+	}
+}
+
+func TestSkippedTransitionReleasesLeaseBeforeBlockingRetirement(t *testing.T) {
+	const name = "skipped-blocking-retirement"
+	store := isolatedMCPStore(t)
+	store.Config().MCP = config.MCPs{
+		name: {Type: config.MCPHttp, URL: "http://skipped-blocking.example", Disabled: true},
+	}
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer func() { require.NoError(t, owner.Close(context.Background())) }()
+	terminalEntered := make(chan struct{})
+	releaseTerminal := make(chan struct{})
+	session := &ClientSession{terminal: func() {
+		close(terminalEntered)
+		<-releaseTerminal
+	}}
+	sessions.Set(name, session)
+	setState(name, StateConnected, nil, session, Counts{})
+
+	initDone := make(chan error, 1)
+	go func() { initDone <- InitializeSingle(context.Background(), name, store) }()
+	awaitMCPSignal(t, terminalEntered)
+
+	mutationDone := make(chan error, 1)
+	go func() { mutationDone <- DisableSingle(store, name) }()
+	select {
+	case err := <-mutationDone:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("same-name mutation could not acquire lease while retirement was blocked")
+	}
+	close(releaseTerminal)
+	require.NoError(t, <-initDone)
+	require.False(t, hasSession(name))
 }

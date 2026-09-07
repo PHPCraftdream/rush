@@ -80,6 +80,45 @@ func (s *ConfigStore) WithCurrentMCPMutation(result MCPMutationResult, fn func()
 	})
 }
 
+// WithCurrentMCPAdmission validates an immutable MCP admission snapshot and
+// runs fn while the config snapshot and disk inputs remain pinned.
+func (s *ConfigStore) WithCurrentMCPAdmission(snapshot MCPAdmissionSnapshot, name string, fn func() error) error {
+	s.publishMu.Lock()
+	defer s.publishMu.Unlock()
+	if !s.mcpAdmissionSnapshotCurrent(snapshot, name) {
+		return ErrMCPMutationStale
+	}
+	if !snapshot.HasMCPInput {
+		return fn()
+	}
+	return s.withMCPAdmissionLocks(func(files *mcpLockedFiles) error {
+		if !s.mcpAdmissionSnapshotCurrent(snapshot, name) {
+			return ErrMCPMutationStale
+		}
+		evaluation, err := s.evaluateMCPFiles(files)
+		if err != nil {
+			return ErrMCPMutationStale
+		}
+		diskValue, diskExists := evaluation.configs[name]
+		if diskExists != snapshot.Exists || diskExists && !reflect.DeepEqual(diskValue, snapshot.MCPConfig) {
+			return ErrMCPMutationStale
+		}
+		return fn()
+	})
+}
+
+func (s *ConfigStore) mcpAdmissionSnapshotCurrent(snapshot MCPAdmissionSnapshot, name string) bool {
+	current := s.loadSnapshot()
+	if current.generation < snapshot.Generation ||
+		current.mcpRevisions[name] != snapshot.MCPRevision ||
+		current.resolverRevision != snapshot.ResolverRevision ||
+		current.config == nil {
+		return false
+	}
+	value, exists := current.config.MCP[name]
+	return exists == snapshot.Exists && (!exists || reflect.DeepEqual(value, snapshot.MCPConfig))
+}
+
 func (s *ConfigStore) mcpMutationResultCurrentLocked(result MCPMutationResult, evaluation mcpEvaluation) bool {
 	if result.Generation != 0 && s.loadSnapshot().generation != result.Generation {
 		return false
@@ -105,7 +144,7 @@ func (s *ConfigStore) mcpMutationResultCurrentLocked(result MCPMutationResult, e
 			continue
 		}
 		actual, ok := mcpEvaluationFingerprint(evaluation.fingerprints, path)
-		if !ok || expected.fingerprint != actual {
+		if !ok || !reloadFingerprintContentEqual(expected.fingerprint, actual) {
 			return false
 		}
 	}
@@ -127,6 +166,16 @@ func (s *ConfigStore) mcpMutationResultCurrentLocked(result MCPMutationResult, e
 		}
 	}
 	return true
+}
+
+func reloadFingerprintContentEqual(expected, actual reloadFileFingerprint) bool {
+	if expected.exists != actual.exists || expected.size != actual.size || expected.digest != actual.digest {
+		return false
+	}
+	if !expected.exists {
+		return true
+	}
+	return expected == actual
 }
 
 func committedMCPFingerprints(files *mcpLockedFiles) map[string]reloadFileFingerprint {
