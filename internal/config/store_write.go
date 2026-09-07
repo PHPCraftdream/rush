@@ -497,7 +497,7 @@ func (s *ConfigStore) removeConfigFieldBestEffort(scope Scope, key string) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), internalConfigWriteLockTimeout)
+	ctx, cancel := configContextWithTimeout(context.Background(), internalConfigWriteLockTimeout)
 	defer cancel()
 	if err := s.removeConfigFieldAt(ctx, path, key); err != nil {
 		slog.Warn("Best-effort config field removal did not complete; will retry on next reload",

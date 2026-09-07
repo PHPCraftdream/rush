@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
 )
@@ -95,6 +96,7 @@ var configTestHooks struct {
 	beforeMCPReconcile func(string, []byte)
 	acquireConfigLock  func(context.Context, string) (*session.FileLock, error)
 	releaseConfigLock  func(string, *session.FileLock) error
+	withConfigTimeout  func(context.Context, time.Duration) (context.Context, context.CancelFunc)
 	forceLinkNoReplace bool
 	renameNoReplace    func(int, string, int, string) error
 	renameatxNp        func(int, string, int, string, uint32) error
@@ -203,6 +205,16 @@ func releaseConfigFileLock(path string, lock *session.FileLock) error {
 		return hook(path, lock)
 	}
 	return lock.Release()
+}
+
+func configContextWithTimeout(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	configTestHooks.Lock()
+	hook := configTestHooks.withConfigTimeout
+	configTestHooks.Unlock()
+	if hook != nil {
+		return hook(parent, timeout)
+	}
+	return context.WithTimeout(parent, timeout)
 }
 
 func syncConfigParent(path string) error {

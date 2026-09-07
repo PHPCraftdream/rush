@@ -13,75 +13,91 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-// TestRemoveConfigFieldBestEffort_BoundedByInternalTimeout is the regression
-// test for H-2 (task #153, commit 4c16a65f): removeConfigFieldBestEffort is
-// the ONLY call path used by configureProviders' legacy
-// "providers.anthropic" OAuth cleanup, which runs synchronously inside
-// Load/reloadFromDiskLocked WHILE publishMu is held for the entire call.
-// Before this fix, that cleanup went through the public, 30s-budget
-// withConfigWriteLock; since publishMu gates every reader of the config
-// store (including app startup via Load itself), a contended or wedged
-// sibling rush process holding the on-disk rush.json.lock sidecar could
-// stall the ENTIRE config subsystem for up to 30s. The fix added
-// internalConfigWriteLockTimeout (2s) specifically for this call path.
-//
-// This test contends the exact lock file removeConfigFieldAt/
-// withConfigWriteLockCtx acquires (path+".lock", via
-// session.AcquireFileLockContext/session.TryAcquireFileLock — the same
-// sidecar a second real rush process would take) for well longer than
-// internalConfigWriteLockTimeout, then calls removeConfigFieldBestEffort
-// and asserts it returns within a bound that proves the SHORT (2s) timeout
-// was used, not the full 30s configWriteLockTimeout and not an unbounded
-// wait.
+// TestRemoveConfigFieldBestEffort_BoundedByInternalTimeout proves the
+// best-effort path selects its internal lock budget without waiting on it.
 func TestRemoveConfigFieldBestEffort_BoundedByInternalTimeout(t *testing.T) {
-	t.Parallel()
-
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "rush.json")
 	const key = "providers.anthropic.oauth"
 	require.NoError(t, os.WriteFile(configPath, []byte(`{"providers":{"anthropic":{"oauth":{"access_token":"secret"}}}}`), 0o600))
 
-	// Hold the exact sidecar lock file removeConfigFieldAt contends on,
-	// standing in for a sibling rush process that has it wedged/busy.
-	// Held for well longer than internalConfigWriteLockTimeout (2s) and
-	// released only after the assertions below run, via t.Cleanup.
+	store := newTestConfigStore(testStoreOpts{globalDataPath: configPath})
+	var observedTimeout time.Duration
+	var acquireCalls int
+	configTestHooks.Lock()
+	previousAcquire := configTestHooks.acquireConfigLock
+	previousTimeout := configTestHooks.withConfigTimeout
+	configTestHooks.withConfigTimeout = func(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+		observedTimeout = timeout
+		ctx, cancel := context.WithTimeout(parent, timeout)
+		cancel()
+		return ctx, cancel
+	}
+	configTestHooks.acquireConfigLock = func(ctx context.Context, path string) (*session.FileLock, error) {
+		acquireCalls++
+		_, hasDeadline := ctx.Deadline()
+		require.True(t, hasDeadline, "lock acquisition must receive a deadline")
+		require.ErrorIs(t, ctx.Err(), context.Canceled, "lock acquisition must receive a canceled context")
+		require.Equal(t, configPath+".lock", path)
+		return nil, context.DeadlineExceeded
+	}
+	configTestHooks.Unlock()
+	t.Cleanup(func() {
+		configTestHooks.Lock()
+		configTestHooks.acquireConfigLock = previousAcquire
+		configTestHooks.withConfigTimeout = previousTimeout
+		configTestHooks.Unlock()
+	})
+
+	store.removeConfigFieldBestEffort(ScopeGlobal, key)
+	require.Equal(t, internalConfigWriteLockTimeout, observedTimeout,
+		"best-effort removal must inject the internal lock timeout")
+	require.Equal(t, 1, acquireCalls, "best-effort removal must make one controlled acquisition")
+
+	data, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+	assert.True(t, gjson.Get(string(data), key).Exists(),
+		"key must still be present after controlled lock acquisition failure")
+}
+
+// TestRemoveConfigFieldBestEffort_PreservesContentWhenExternalLockHeld keeps
+// the real sidecar-lock content-preservation check independent of the timeout
+// oracle above.
+func TestRemoveConfigFieldBestEffort_PreservesContentWhenExternalLockHeld(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "rush.json")
+	const key = "providers.anthropic.oauth"
+	require.NoError(t, os.WriteFile(configPath, []byte(`{"providers":{"anthropic":{"oauth":{"access_token":"secret"}}}}`), 0o600))
+
 	externalLock, err := session.TryAcquireFileLock(configPath + ".lock")
 	require.NoError(t, err, "test setup: must be able to take the sidecar lock before the call under test runs")
+	t.Cleanup(func() { _ = externalLock.Release() })
+
+	configTestHooks.Lock()
+	previousTimeout := configTestHooks.withConfigTimeout
+	configTestHooks.withConfigTimeout = func(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+		ctx, cancel := context.WithTimeout(parent, timeout)
+		cancel()
+		return ctx, cancel
+	}
+	configTestHooks.Unlock()
 	t.Cleanup(func() {
-		_ = externalLock.Release()
+		configTestHooks.Lock()
+		configTestHooks.withConfigTimeout = previousTimeout
+		configTestHooks.Unlock()
 	})
 
 	store := newTestConfigStore(testStoreOpts{globalDataPath: configPath})
-
-	start := time.Now()
-	// removeConfigFieldBestEffort returns nothing and must never panic —
-	// it logs and swallows failure by contract (see its doc comment), so
-	// simply completing normally (this call returning at all) already
-	// proves no panic escaped.
 	store.removeConfigFieldBestEffort(ScopeGlobal, key)
-	elapsed := time.Since(start)
 
-	assert.GreaterOrEqual(t, elapsed, internalConfigWriteLockTimeout,
-		"expected the call to wait out roughly the full internal timeout budget before giving up (contended the whole time)")
-	assert.Less(t, elapsed, 5*time.Second,
-		"expected removeConfigFieldBestEffort to give up around internalConfigWriteLockTimeout (2s); "+
-			"took %s — this must stay well under configWriteLockTimeout (30s), proving the SHORT bound was actually used", elapsed)
-
-	// The on-disk key must be untouched: the write never happened because
-	// the lock could not be acquired within budget. This confirms the
-	// failure was swallowed rather than partially applied or corrupting
-	// the file.
 	data, rerr := os.ReadFile(configPath)
 	require.NoError(t, rerr)
 	assert.True(t, gjson.Get(string(data), key).Exists(),
-		"key must still be present on disk — the best-effort removal must not have gone through while the sidecar lock was externally held")
+		"key must still be present when the external sidecar lock is held")
 }
 
-// TestRemoveConfigFieldBestEffort_SucceedsQuicklyWhenLockFree is the
-// control case: with no external contention, removeConfigFieldBestEffort
-// must make one successful lock acquisition, release it, and remove the key.
-// The injected acquire/release seams make those states explicit without a
-// scheduler-dependent elapsed-time assertion.
+// TestRemoveConfigFieldBestEffort_SucceedsQuicklyWhenLockFree is the control
+// case: a free lock is acquired, released, and the key is removed.
 func TestRemoveConfigFieldBestEffort_SucceedsQuicklyWhenLockFree(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "rush.json")
