@@ -2,6 +2,8 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -453,6 +455,95 @@ func runForcedStaleSkippedInitialize(t *testing.T, single bool) {
 	waitCtx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	require.NoError(t, WaitForInit(waitCtx))
+}
+
+func TestAdmissionRejectsDirectProjectRushSourceReplaceBeforePublication(t *testing.T) {
+	runDirectAdmissionSourceMutation(t, false, false)
+}
+
+func TestAdmissionRejectsDirectExternalMCPSourceRemovalBeforePublication(t *testing.T) {
+	runDirectAdmissionSourceMutation(t, true, true)
+}
+
+func runDirectAdmissionSourceMutation(t *testing.T, external, remove bool) {
+	t.Helper()
+	name := "direct-source-admission"
+	if external {
+		name += "-external"
+	} else {
+		name += "-project"
+	}
+	if remove {
+		name += "-remove"
+	}
+	candidate := newRetryCandidate(t, name+"-tool", false)
+	store := isolatedMCPStore(t)
+	path := filepath.Join(store.WorkingDir(), "rush.json")
+	key := "mcp"
+	if external {
+		path = filepath.Join(store.WorkingDir(), ".mcp.json")
+		key = "mcpServers"
+	}
+	write := func(url string) {
+		data, err := json.Marshal(map[string]any{key: map[string]any{
+			name: map[string]any{"type": "http", "url": url},
+		}})
+		require.NoError(t, err)
+		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+		require.NoError(t, os.WriteFile(path, data, 0o600))
+	}
+	write(candidate.http.URL)
+	require.NoError(t, store.ReloadFromDisk(context.Background()))
+
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer func() { require.NoError(t, owner.Close(context.Background())) }()
+
+	eventsCtx, cancelEvents := context.WithCancel(context.Background())
+	defer cancelEvents()
+	events := SubscribeEvents(eventsCtx)
+	var calls atomic.Int32
+	mcpInitTestHooks.Lock()
+	previous := mcpInitTestHooks.beforeAdmissionValidate
+	mcpInitTestHooks.beforeAdmissionValidate = func(hookName string) {
+		if hookName != name {
+			return
+		}
+		attempt := calls.Add(1)
+		if remove {
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				t.Errorf("remove source: %v", err)
+			}
+			return
+		}
+		write(fmt.Sprintf("%s?replacement=%d", candidate.http.URL, attempt))
+	}
+	mcpInitTestHooks.Unlock()
+	defer func() {
+		mcpInitTestHooks.Lock()
+		mcpInitTestHooks.beforeAdmissionValidate = previous
+		mcpInitTestHooks.Unlock()
+	}()
+
+	err = InitializeSingle(context.Background(), name, store)
+	require.Error(t, err)
+	require.GreaterOrEqual(t, calls.Load(), int32(1))
+	_, ok := sessions.Get(name)
+	require.False(t, ok)
+	require.Empty(t, GetServerToolNames(name))
+	if state, stateOK := GetState(name); stateOK {
+		require.NotEqual(t, StateConnected, state.State)
+	}
+	for {
+		select {
+		case event := <-events:
+			if event.Payload.Name == name && event.Payload.State == StateConnected {
+				t.Fatalf("stale admission published a connected event: %#v", event)
+			}
+		default:
+			return
+		}
+	}
 }
 
 func TestGetOrRenewClientRetriesCrossStoreReplacement(t *testing.T) {

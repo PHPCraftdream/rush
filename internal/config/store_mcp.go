@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"os"
 	"reflect"
 	"slices"
 )
@@ -19,6 +20,27 @@ var (
 	ErrMCPCommitUncertain  = errors.New("MCP config commit outcome is uncertain")
 	ErrMCPMutationStale    = errors.New("MCP mutation result is stale")
 )
+
+// MCPAdmissionGuard is the final source validation boundary for a runtime
+// publication. Call ValidateCurrent after waiting for the lifecycle turn but
+// before taking lifecycleMu for mutation; it performs the disk reads needed
+// to verify every input captured by admission.
+type MCPAdmissionGuard struct {
+	store        *ConfigStore
+	fingerprints map[string]reloadFileFingerprint
+}
+
+// ValidateCurrent rejects admission when any discovered source changed after
+// the initial evaluation, including a missing file becoming present.
+func (g MCPAdmissionGuard) ValidateCurrent() error {
+	if g.store == nil {
+		return ErrMCPMutationStale
+	}
+	if err := g.store.validateMCPAdmissionInputs(g.fingerprints); err != nil {
+		return fmt.Errorf("%w: %w", ErrMCPMutationStale, err)
+	}
+	return nil
+}
 
 type mcpCommitUncertainError struct {
 	cause error
@@ -83,14 +105,14 @@ func (s *ConfigStore) WithCurrentMCPMutation(result MCPMutationResult, fn func()
 
 // WithCurrentMCPAdmission validates an immutable MCP admission snapshot and
 // runs fn while the config snapshot and disk inputs remain pinned.
-func (s *ConfigStore) WithCurrentMCPAdmission(snapshot MCPAdmissionSnapshot, name string, fn func() error) error {
+func (s *ConfigStore) WithCurrentMCPAdmission(snapshot MCPAdmissionSnapshot, name string, fn func(MCPAdmissionGuard) error) error {
 	s.publishMu.Lock()
 	defer s.publishMu.Unlock()
 	if s.workingDir == "" && s.globalDataPath == "" {
 		if !s.mcpAdmissionSnapshotCurrent(snapshot, name) {
 			return ErrMCPMutationStale
 		}
-		return fn()
+		return fn(MCPAdmissionGuard{store: s})
 	}
 	return s.withMCPAdmissionLocks(func(files *mcpLockedFiles) error {
 		if !s.mcpAdmissionSnapshotCurrent(snapshot, name) {
@@ -104,8 +126,39 @@ func (s *ConfigStore) WithCurrentMCPAdmission(snapshot MCPAdmissionSnapshot, nam
 		if hasInput != snapshot.HasMCPInput || hasInput && input != snapshot.MCPInput {
 			return ErrMCPMutationStale
 		}
-		return fn()
+		return fn(MCPAdmissionGuard{store: s, fingerprints: cloneReloadFingerprints(evaluation.fingerprints)})
 	})
+}
+
+func cloneReloadFingerprints(source map[string]reloadFileFingerprint) map[string]reloadFileFingerprint {
+	if source == nil {
+		return nil
+	}
+	result := make(map[string]reloadFileFingerprint, len(source))
+	for path, fingerprint := range source {
+		result[path] = fingerprint
+	}
+	return result
+}
+
+func (s *ConfigStore) validateMCPAdmissionInputs(expected map[string]reloadFileFingerprint) error {
+	for path, fingerprint := range expected {
+		expectedOwner, enforceOwner, ownerErr := s.mcpOwnerPolicy(path)
+		if ownerErr != nil {
+			return fmt.Errorf("failed to determine owner for %s: %w", path, ownerErr)
+		}
+		_, actual, err := readStableConfigFileOwned(path, expectedOwner, enforceOwner)
+		if os.IsNotExist(err) {
+			err = nil
+		}
+		if err != nil {
+			return fmt.Errorf("failed to read MCP admission source %s: %w", path, err)
+		}
+		if actual != fingerprint {
+			return fmt.Errorf("MCP admission source changed: %s", path)
+		}
+	}
+	return nil
 }
 
 func (s *ConfigStore) mcpAdmissionSnapshotCurrent(snapshot MCPAdmissionSnapshot, name string) bool {

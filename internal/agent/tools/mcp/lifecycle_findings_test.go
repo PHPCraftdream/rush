@@ -2,10 +2,12 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -1010,7 +1012,7 @@ func TestMCPAdmissionRejectsSecondStoreChangeBeforePin(t *testing.T) {
 	require.NoError(t, contender.PersistMCPFieldsExact(config.ScopeGlobal, name, map[string]any{
 		"url": "http://admission-b.example",
 	}))
-	require.ErrorIs(t, store.WithCurrentMCPAdmission(snapshot, name, func() error { return nil }), config.ErrMCPMutationStale)
+	require.ErrorIs(t, store.WithCurrentMCPAdmission(snapshot, name, func(config.MCPAdmissionGuard) error { return nil }), config.ErrMCPMutationStale)
 }
 
 func TestMCPAdmissionHoldsSidecarsThroughSkippedTransition(t *testing.T) {
@@ -1026,7 +1028,7 @@ func TestMCPAdmissionHoldsSidecarsThroughSkippedTransition(t *testing.T) {
 	release := make(chan struct{})
 	publicationDone := make(chan error, 1)
 	go func() {
-		publicationDone <- store.WithCurrentMCPAdmission(snapshot, name, func() error {
+		publicationDone <- store.WithCurrentMCPAdmission(snapshot, name, func(config.MCPAdmissionGuard) error {
 			close(entered)
 			<-release
 			return nil
@@ -1047,6 +1049,99 @@ func TestMCPAdmissionHoldsSidecarsThroughSkippedTransition(t *testing.T) {
 	close(release)
 	require.NoError(t, <-publicationDone)
 	require.NoError(t, <-writerDone)
+}
+
+func TestMCPAdmissionFinalTurnRevalidatesAfterLifecycleContention(t *testing.T) {
+	for _, external := range []bool{false, true} {
+		name := "project"
+		if external {
+			name = "external"
+		}
+		t.Run(name, func(t *testing.T) {
+			runMCPAdmissionFinalTurnContention(t, external)
+		})
+	}
+}
+
+func runMCPAdmissionFinalTurnContention(t *testing.T, external bool) {
+	t.Helper()
+	store := isolatedMCPStore(t)
+	const name = "admission-final-turn-contention"
+	path := filepath.Join(store.WorkingDir(), "rush.json")
+	key := "mcp"
+	if external {
+		path = filepath.Join(store.WorkingDir(), ".mcp.json")
+		key = "mcpServers"
+	}
+	write := func(url string) {
+		data, err := json.Marshal(map[string]any{key: map[string]any{name: map[string]any{
+			"type": "http", "url": url,
+		}}})
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(path, data, 0o600))
+	}
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+	write("http://initial.example")
+	require.NoError(t, store.ReloadFromDisk(context.Background()))
+	snapshot := store.SnapshotMCPAdmission(name)
+
+	var validations atomic.Int32
+	holderAcquired := make(chan struct{})
+	releaseHolder := make(chan struct{})
+	var firstValidation sync.Once
+	mcpInitTestHooks.Lock()
+	previousBefore := mcpInitTestHooks.beforeAdmissionValidate
+	previousAfter := mcpInitTestHooks.afterAdmissionValidate
+	previousFailure := mcpInitTestHooks.onAdmissionTryLockFail
+	mcpInitTestHooks.beforeAdmissionValidate = func(hookName string) {
+		if hookName == name {
+			validations.Add(1)
+		}
+	}
+	mcpInitTestHooks.afterAdmissionValidate = func(hookName string) {
+		if hookName != name {
+			return
+		}
+		if validations.Load() != 1 {
+			return
+		}
+		firstValidation.Do(func() {
+			go func() {
+				lifecycleMu.Lock()
+				close(holderAcquired)
+				<-releaseHolder
+				lifecycleMu.Unlock()
+			}()
+			<-holderAcquired
+			write("http://changed-while-lifecycle-held.example")
+		})
+	}
+	mcpInitTestHooks.onAdmissionTryLockFail = func(hookName string) {
+		if hookName == name {
+			close(releaseHolder)
+		}
+	}
+	mcpInitTestHooks.Unlock()
+	defer func() {
+		mcpInitTestHooks.Lock()
+		mcpInitTestHooks.beforeAdmissionValidate = previousBefore
+		mcpInitTestHooks.afterAdmissionValidate = previousAfter
+		mcpInitTestHooks.onAdmissionTryLockFail = previousFailure
+		mcpInitTestHooks.Unlock()
+	}()
+
+	published := false
+	err := store.WithCurrentMCPAdmission(snapshot, name, func(guard config.MCPAdmissionGuard) error {
+		return withMCPAdmissionFinalTurn(name, guard, func() error {
+			published = true
+			return nil
+		})
+	})
+	require.ErrorIs(t, err, config.ErrMCPMutationStale)
+	require.GreaterOrEqual(t, validations.Load(), int32(2))
+	require.False(t, published)
+	_, ok := GetState(name)
+	require.False(t, ok)
 }
 
 func TestInitializeSingleDisabledDetachesPublishedRuntime(t *testing.T) {
