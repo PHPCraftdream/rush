@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -540,6 +541,89 @@ func TestCandidateListChangedPublishesAfterCommitAndRefreshesNewSession(t *testi
 	require.Equal(t, int32(1), newListCalls.Load())
 	require.Zero(t, oldListCalls.Load(), "candidate refresh used the old session")
 	require.Equal(t, []string{"new-tool"}, GetServerToolNames(name))
+}
+
+func TestReplacementCandidateListChangedUsesCommittedDestinationAdmission(t *testing.T) {
+	const name = "replacement-candidate-notification"
+	store := isolatedMCPStore(t)
+	require.NoError(t, store.PersistMCPConfig(config.ScopeGlobal, name, config.MCPConfig{Type: config.MCPStdio, Command: "old"}))
+	owner, err := Acquire()
+	require.NoError(t, err)
+	defer func() { require.NoError(t, owner.Close(context.Background())) }()
+
+	oldServer := mcp.NewServer(&mcp.Implementation{Name: "old-server"}, nil)
+	oldTransport, oldClientTransport := mcp.NewInMemoryTransports()
+	oldServerSession, err := oldServer.Connect(context.Background(), oldTransport, nil)
+	require.NoError(t, err)
+	defer oldServerSession.Close()
+	oldClientSession, err := mcp.NewClient(&mcp.Implementation{Name: "old-client"}, nil).
+		Connect(context.Background(), oldClientTransport, nil)
+	require.NoError(t, err)
+
+	newServer := mcp.NewServer(&mcp.Implementation{Name: "new-server"}, nil)
+	mcp.AddTool(newServer, &mcp.Tool{Name: "prepared-tool"}, func(context.Context, *mcp.CallToolRequest, any) (*mcp.CallToolResult, any, error) {
+		return &mcp.CallToolResult{}, nil, nil
+	})
+	var newListCalls atomic.Int32
+	newServer.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
+		return func(ctx context.Context, method string, request mcp.Request) (mcp.Result, error) {
+			result, err := next(ctx, method, request)
+			if method == "tools/list" {
+				newListCalls.Add(1)
+			}
+			return result, err
+		}
+	})
+	newTransport, newClientTransport := mcp.NewInMemoryTransports()
+	newServerSession, err := newServer.Connect(context.Background(), newTransport, nil)
+	require.NoError(t, err)
+	defer newServerSession.Close()
+	newClientSession, err := mcp.NewClient(&mcp.Implementation{Name: "new-client"}, nil).
+		Connect(context.Background(), newClientTransport, nil)
+	require.NoError(t, err)
+
+	oldSession := &ClientSession{ClientSession: oldClientSession}
+	sessions.Set(name, oldSession)
+	setState(name, StateConnected, nil, oldSession, Counts{Tools: 1})
+	allTools.Set(name, []*Tool{{Name: "old-tool"}})
+
+	eventsCtx, cancelEvents := context.WithCancel(context.Background())
+	defer cancelEvents()
+	events := SubscribeEvents(eventsCtx)
+	prepare := func(_ context.Context, _ *config.ConfigStore, serverName string, _ config.MCPConfig, _ config.VariableResolver, admission *serverAdmission) (*preparedClient, error) {
+		notifyListChanged(admission, serverName, refreshToolsKind)
+		mcp.AddTool(newServer, &mcp.Tool{Name: "committed-tool"}, func(context.Context, *mcp.CallToolRequest, any) (*mcp.CallToolResult, any, error) {
+			return &mcp.CallToolResult{}, nil, nil
+		})
+		return &preparedClient{
+			session: &ClientSession{ClientSession: newClientSession},
+			tools:   []*Tool{{Name: "prepared-tool"}},
+		}, nil
+	}
+
+	err = replaceServerWithResultPersistenceAndPreparation(
+		context.Background(), store, name, name,
+		config.MCPConfig{Type: config.MCPStdio, Command: "new"},
+		func(cfg *config.ConfigStore, scope config.Scope, oldName, newName string, value config.MCPConfig) (config.MCPMutationResult, error) {
+			return cfg.PersistReplaceMCPResult(scope, oldName, newName, value)
+		}, prepare,
+	)
+	require.NoError(t, err)
+
+	var listChanged int
+	require.Eventually(t, func() bool {
+		select {
+		case event := <-events:
+			if event.Payload.Name == name && event.Payload.Type == EventToolsListChanged {
+				listChanged++
+			}
+		default:
+		}
+		tools := GetServerToolNames(name)
+		return listChanged == 1 && slices.Contains(tools, "committed-tool")
+	}, 2*time.Second, time.Millisecond)
+	require.Equal(t, int32(1), newListCalls.Load())
+	require.NotContains(t, GetServerToolNames(name), "old-tool")
 }
 
 func TestAddServerRetainsLeaseAcrossRemoveDuringInitialization(t *testing.T) {

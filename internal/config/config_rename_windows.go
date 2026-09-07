@@ -171,6 +171,9 @@ func verifyWindowsRenameRetryState(source *os.File, sourcePath string, parent *o
 	}
 
 	target, err := openWindowsConfigEntryAt(parent, filepath.Base(destination))
+	if err == nil {
+		defer target.Close()
+	}
 	if !replace {
 		if isWindowsEntryNotFound(err) || os.IsNotExist(err) {
 			return nil
@@ -180,7 +183,6 @@ func verifyWindowsRenameRetryState(source *os.File, sourcePath string, parent *o
 	if err != nil {
 		return errConfigCommitVerification
 	}
-	defer target.Close()
 	targetInfo, err := target.Stat()
 	if err != nil || targetInfo.IsDir() {
 		return errConfigCommitVerification

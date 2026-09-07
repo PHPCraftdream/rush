@@ -266,7 +266,7 @@ func TestReplacePublishesBeforeBlockedCloseAndConcurrentRemove(t *testing.T) {
 	}
 }
 
-func TestReplaceRevealedFallbackStartsBeforeBlockedCloseAndMutation(t *testing.T) {
+func TestReplaceRevealedFallbackWaitsForBlockedCloseAndMutation(t *testing.T) {
 	store := isolatedMCPStore(t)
 	const oldName = "replace-fallback-old"
 	const newName = "replace-fallback-new"
@@ -327,9 +327,15 @@ func TestReplaceRevealedFallbackStartsBeforeBlockedCloseAndMutation(t *testing.T
 	}()
 
 	requireTransactionalEvent(t, events, pubsub.UpdatedEvent, newName, StateConnected)
-	requireTransactionalEvent(t, events, pubsub.UpdatedEvent, oldName, StateStarting)
-	awaitMCPSignal(t, fallbackStarted)
 	awaitMCPSignal(t, closeStarted)
+	select {
+	case <-fallbackStarted:
+		t.Fatal("fallback started before the detached session closed")
+	default:
+	}
+	close(releaseClose)
+	awaitMCPSignal(t, fallbackStarted)
+	requireTransactionalEvent(t, events, pubsub.UpdatedEvent, oldName, StateStarting)
 
 	disableDone := make(chan error, 1)
 	go func() {
@@ -339,7 +345,6 @@ func TestReplaceRevealedFallbackStartsBeforeBlockedCloseAndMutation(t *testing.T
 	requireTransactionalEvent(t, events, pubsub.UpdatedEvent, oldName, StateDisabled)
 
 	close(releaseFallback)
-	close(releaseClose)
 	require.NoError(t, awaitMCPError(t, replaceDone))
 	select {
 	case event := <-events:

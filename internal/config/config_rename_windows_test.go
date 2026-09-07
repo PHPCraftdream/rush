@@ -436,6 +436,42 @@ func TestRenameConfigTempHandleUsesPinnedParentAndRelativeName(t *testing.T) {
 	require.NotContains(t, gotName, string(filepath.Separator))
 }
 
+func TestWindowsRenameRetryClosesExistingNoReplaceTarget(t *testing.T) {
+	root := t.TempDir()
+	sourcePath := filepath.Join(root, "source.tmp")
+	targetPath := filepath.Join(root, "published.json")
+	require.NoError(t, os.WriteFile(sourcePath, []byte("source"), 0o600))
+	require.NoError(t, os.WriteFile(targetPath, []byte("target"), 0o600))
+	source, err := openWindowsConfigHandle(sourcePath, windows.GENERIC_READ|windows.GENERIC_WRITE|windows.DELETE, windows.FILE_FLAG_OPEN_REPARSE_POINT)
+	require.NoError(t, err)
+	defer source.Close()
+	parent, err := openWindowsConfigHandle(root, windows.GENERIC_READ|windows.GENERIC_WRITE, windows.FILE_FLAG_BACKUP_SEMANTICS|windows.FILE_FLAG_OPEN_REPARSE_POINT)
+	require.NoError(t, err)
+	defer parent.Close()
+
+	configTestHooks.Lock()
+	previous := configTestHooks.setFileInformation
+	configTestHooks.setFileInformation = func(_ uintptr, class uint32, _ *byte, _ uint32) error {
+		if class == windows.FileRenameInfoEx {
+			return windows.ERROR_INVALID_PARAMETER
+		}
+		return nil
+	}
+	configTestHooks.Unlock()
+	t.Cleanup(func() {
+		configTestHooks.Lock()
+		configTestHooks.setFileInformation = previous
+		configTestHooks.Unlock()
+	})
+
+	for range 32 {
+		err = renameConfigTempHandle(source, sourcePath, parent, filepath.Base(targetPath), false, reloadFileFingerprint{}, -1, false, sourcePath)
+		require.ErrorIs(t, err, errConfigCommitVerification)
+		require.NoError(t, os.Remove(targetPath), "retry verification must close an existing no-replace target")
+		require.NoError(t, os.WriteFile(targetPath, []byte("target"), 0o600))
+	}
+}
+
 func TestWindowsCommitRejectsPinnedParentAfterPathMove(t *testing.T) {
 	root := t.TempDir()
 	parentPath := filepath.Join(root, "config")
