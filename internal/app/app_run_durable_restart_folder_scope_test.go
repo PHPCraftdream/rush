@@ -141,8 +141,10 @@ func TestExecuteRunDurablyOrphanedScopedCallRestartsScoped(t *testing.T) {
 	select {
 	case o := <-outcomes:
 		require.Equal(t, 2, o.idx)
-		require.NoError(t, o.err, "the queueing caller must return cleanly")
+		require.Error(t, o.err)
+		require.ErrorIs(t, o.err, ErrRunQueued)
 		require.NotNil(t, o.res)
+		require.Equal(t, "queued", o.res.ExitReason)
 	case <-time.After(60 * time.Second):
 		t.Fatal("queued scoped call did not return")
 	}

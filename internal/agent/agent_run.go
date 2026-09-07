@@ -310,6 +310,7 @@ func (a *sessionAgent) RunWithReservedOwnership(ctx context.Context, call Sessio
 // fields and as InterruptAndSend-style callers expect); runCtx is the
 // cancelable context every turn in the loop derives from.
 func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCall, epoch uint64, runCancel context.CancelFunc) (*fantasy.AgentResult, error) {
+	defer a.getMailbox(call.SessionID).clearCurrentCall()
 	// We now own call.SessionID's reservation, under ownership era `epoch`,
 	// for the entire loop below, including every queue-drain turn. Released
 	// exactly once, whichever way the loop ends, via THIS defer.
@@ -517,7 +518,9 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 		// preamble is now part of a cancelable generation that is SEPARATE
 		// from the durable dispatcher cancel.
 		mb.beginGeneration(turnCancel)
+		mb.setCurrentCall(call)
 		result, next, hasNext, err := a.runTurn(turnCtx, call, lk, epoch, runCancel)
+		mb.clearCurrentCall()
 		turnCancel()
 		if !hasNext {
 			return result, err

@@ -88,6 +88,7 @@ func TestRunAgentTurnRecovered_NilResultNoError(t *testing.T) {
 	resp := <-done
 	require.NoError(t, resp.err, "a legacy-queued call must not be reported as a failure")
 	assert.Nil(t, resp.result)
+	assert.True(t, resp.queued, "nil result must be represented as queued, not as a successful empty turn")
 }
 
 // TestRunAgentTurnRecovered_Success verifies the plain happy path still

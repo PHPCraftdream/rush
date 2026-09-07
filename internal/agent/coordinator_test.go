@@ -35,6 +35,8 @@ type mockSessionAgent struct {
 	queuedCalls          []SessionAgentCall
 	mu                   sync.Mutex
 	interruptAndReplaced []SessionAgentCall
+	activeCall           SessionAgentCall
+	hasActiveCall        bool
 }
 
 // interruptAndReplacedSnapshot returns a thread-safe copy of
@@ -74,6 +76,12 @@ func (m *mockSessionAgent) InterruptAndReplace(_ string, call SessionAgentCall) 
 	m.interruptAndReplaced = append(m.interruptAndReplaced, call)
 	m.mu.Unlock()
 	return true
+}
+
+func (m *mockSessionAgent) ActiveCall(_ string) (SessionAgentCall, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.activeCall, m.hasActiveCall
 }
 
 func (m *mockSessionAgent) InjectMessage(_ context.Context, call SessionAgentCall) (message.Message, error) {

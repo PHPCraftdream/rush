@@ -513,6 +513,14 @@ func watchdogFinishMessage(cause watchdogCause, toolMaxDuration, hardCap, idleTi
 	}
 }
 
+func composeWatchdogFinishBody(sessionID string, cause watchdogCause, toolMaxDuration, hardCap, idleTimeout time.Duration, provider string) string {
+	_, body := watchdogFinishMessage(cause, toolMaxDuration, hardCap, idleTimeout, provider)
+	if cause == causeHardCap {
+		body = fmt.Sprintf("%s\n\n%s", body, WatchdogResumeGuidance(sessionID, "--timeout-hard-cap"))
+	}
+	return body
+}
+
 // watchdogToolResultMessage maps a watchdogCause to the tool-result content
 // recorded for any tool call still unfinished when the watchdog fired. This
 // is the MODEL-facing counterpart of watchdogFinishMessage: the human sees

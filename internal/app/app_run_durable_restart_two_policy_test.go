@@ -193,8 +193,10 @@ func TestExecuteRunDurablyOrphanedQueuedCallsEachRunUnderTheirOwnPolicy(t *testi
 		select {
 		case o := <-outcomes:
 			seen[o.idx] = true
-			require.NoError(t, o.err, "queued call %d must not fail", o.idx)
+			require.Error(t, o.err)
+			require.ErrorIs(t, o.err, ErrRunQueued)
 			require.NotNil(t, o.res)
+			require.Equal(t, "queued", o.res.ExitReason)
 		case <-time.After(60 * time.Second):
 			t.Fatalf("queued calls did not return (seen=%v)", seen)
 		}

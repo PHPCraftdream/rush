@@ -86,6 +86,21 @@ func TestWatchdogFinishMessage_AllThreeCausesDistinct(t *testing.T) {
 	assert.Contains(t, idleBody, provider, "idle-stall body must name the provider — it genuinely is the cause here")
 }
 
+func TestComposeWatchdogFinishBody_DoesNotMislabelToolTimeoutAsRunTimeout(t *testing.T) {
+	const (
+		toolMaxDuration = 45 * time.Minute
+		hardCap         = 20 * time.Minute
+		idleTimeout     = 3 * time.Minute
+	)
+
+	toolBody := composeWatchdogFinishBody("sess-1", causeToolTimeout, toolMaxDuration, hardCap, idleTimeout, "anthropic")
+	assert.Contains(t, toolBody, toolMaxDuration.String())
+	assert.NotContains(t, toolBody, "--timeout")
+
+	hardCapBody := composeWatchdogFinishBody("sess-1", causeHardCap, toolMaxDuration, hardCap, idleTimeout, "anthropic")
+	assert.Contains(t, hardCapBody, "--timeout-hard-cap")
+}
+
 // TestWatchdogFinishMessage_IdleStallTitleMatchesRetryConstant is the
 // regression test for task #236: "Stream stalled" used to be hardcoded
 // independently in watchdogFinishMessage's causeIdleStall branch AND in

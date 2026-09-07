@@ -103,6 +103,11 @@ func (c *coordinator) startInterruptTicker(ctx context.Context, sessionID string
 				tickCancel()
 
 				if err != nil {
+					if errors.Is(err, ErrDiskProviderNotDurable) {
+						slog.Error("coordinator: interrupt-inject cannot cross the durable queue for this DiskProvider-backed run; retry after the active run ends",
+							"session_id", sessionID, "err", err)
+						return
+					}
 					if errors.Is(err, context.DeadlineExceeded) {
 						// This is a signal that some operation inside handleInterruptTick
 						// blocked without respecting ctx cancellation. Log at warning level
@@ -166,6 +171,14 @@ func (c *coordinator) handleInterruptTick(ctx context.Context, sessionID string)
 	injMsg, getErr := c.messages.Get(ctx, pi.MessageID)
 	if getErr != nil {
 		return false, fmt.Errorf("interrupt inject references missing message %q: %w", pi.MessageID, getErr)
+	}
+
+	// A caller-supplied DiskProvider cannot cross the durable queue boundary.
+	// If the active owner carries one, hand the persisted message directly to
+	// that owner's mailbox so the replacement keeps the provider and is
+	// executed exactly once in-process.
+	if activeCall, ok := activeCallForSession(c.currentAgent, sessionID); ok && callCarriesDiskProvider(activeCall) {
+		return c.handleActiveDiskProviderInterrupt(ctx, pi, injMsg, activeCall)
 	}
 
 	// Resolve the session's model configuration from the DB or config
@@ -246,6 +259,47 @@ func (c *coordinator) handleInterruptTick(ctx context.Context, sessionID string)
 		slog.Debug("coordinator: interrupt tick enqueued durable call for idle session",
 			"session_id", sessionID, "idempotency_key", idempotencyKey)
 	}
+	return true, nil
+}
+
+type activeCallSnapshotter interface {
+	ActiveCall(sessionID string) (SessionAgentCall, bool)
+}
+
+func activeCallForSession(currentAgent SessionAgent, sessionID string) (SessionAgentCall, bool) {
+	snapshotter, ok := currentAgent.(activeCallSnapshotter)
+	if !ok {
+		return SessionAgentCall{}, false
+	}
+	return snapshotter.ActiveCall(sessionID)
+}
+
+func (c *coordinator) handleActiveDiskProviderInterrupt(
+	ctx context.Context,
+	pi *session.PendingInject,
+	msg message.Message,
+	active SessionAgentCall,
+) (bool, error) {
+	call := active
+	call.Prompt = msg.FullText()
+	call.ExistingMessageID = pi.MessageID
+	call.InjectID = ""
+	call.FromDurableQueue = false
+	call.LogicalCallID = uuid.New().String()
+
+	// Consume the signal before handing off the in-process replacement. If the
+	// owner disappeared in the narrow window, recreate it so the next normal
+	// run remains the durable owner rather than silently losing the inject.
+	if err := c.sessions.DeleteInterruptInject(ctx, pi.ID); err != nil {
+		return false, fmt.Errorf("failed to consume disk-provider interrupt for session %s: %w", call.SessionID, err)
+	}
+	if !c.currentAgent.InterruptAndReplace(call.SessionID, call) {
+		if err := c.recreatePendingInjectRow(ctx, call); err != nil {
+			return false, fmt.Errorf("active disk-provider run ended before interrupt delivery and recovery failed: %w", err)
+		}
+		return false, fmt.Errorf("active disk-provider run ended before interrupt delivery; message was restored for the next run")
+	}
+	c.messages.Notify(msg)
 	return true, nil
 }
 

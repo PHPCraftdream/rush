@@ -78,6 +78,13 @@ func (a *sessionAgent) InterruptAndReplace(sessionID string, call SessionAgentCa
 	return true
 }
 
+// ActiveCall returns the current in-process call when a generation is live.
+// Coordinator control paths use this to preserve non-serializable options
+// during an interrupt; ordinary queueing never exposes the call.
+func (a *sessionAgent) ActiveCall(sessionID string) (SessionAgentCall, bool) {
+	return a.getMailbox(sessionID).currentCallSnapshot()
+}
+
 // InjectMessage — see SessionAgent interface comment. Persists immediately
 // (UI updates via the same pubsub path that handleSendMessage uses) and, if
 // the session is currently running, atomically queues the persisted row into

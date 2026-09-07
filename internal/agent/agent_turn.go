@@ -1803,20 +1803,14 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 				"provider", smartModel.ModelCfg.Provider,
 			)
 			cause := watchdogCause(watchdogCauseVal.Load())
-			title, body := watchdogFinishMessage(
+			title, _ := watchdogFinishMessage(
 				cause,
 				toolMaxDuration,
 				timeoutHardCap,
 				idleTimeout,
 				smartModel.ModelCfg.Provider,
 			)
-			if cause == causeToolTimeout || cause == causeHardCap {
-				flag := "--timeout"
-				if cause == causeHardCap {
-					flag = "--timeout-hard-cap"
-				}
-				body = fmt.Sprintf("%s\n\n%s", body, WatchdogResumeGuidance(call.SessionID, flag))
-			}
+			body := composeWatchdogFinishBody(call.SessionID, cause, toolMaxDuration, timeoutHardCap, idleTimeout, smartModel.ModelCfg.Provider)
 			currentAssistant.AddFinish(message.FinishReasonError, title, body)
 		} else if isCancelErr {
 			currentAssistant.AddFinish(message.FinishReasonCanceled, "User canceled request", "")

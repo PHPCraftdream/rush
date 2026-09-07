@@ -143,7 +143,9 @@ func TestExecuteRunDurablyOrphanedQueuedCallRunsUnderSessionBaseline(t *testing.
 	select {
 	case o := <-outcomes:
 		require.Equal(t, 2, o.idx)
-		require.NoError(t, o.err, "legacy queueing call must not fail")
+		require.Error(t, o.err)
+		require.ErrorIs(t, o.err, ErrRunQueued)
+		require.Equal(t, "queued", o.res.ExitReason)
 		require.NotNil(t, o.res)
 	case <-time.After(60 * time.Second):
 		t.Fatal("queued call did not return while the owner was still mid-turn")

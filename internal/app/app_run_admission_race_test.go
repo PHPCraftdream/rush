@@ -443,13 +443,17 @@ func TestExecuteRunSameSessionLegacyQueueingStillQueuesBehindOwner(t *testing.T)
 			// error is expected for BOTH, and res may carry whatever the
 			// session-wide message stream had seen by queue time — its
 			// FinalText is deliberately NOT asserted.
-			require.NoError(t, o.err, "legacy queueing call %d must not fail", o.idx)
-			require.NotErrorIs(t, o.err, agent.ErrSessionBusy)
 			require.NotNil(t, o.res)
 			switch o.idx {
 			case 1:
+				require.NoError(t, o.err)
 				winnerDone = true
 			case 2:
+				require.Error(t, o.err)
+				require.ErrorIs(t, o.err, ErrRunQueued)
+				require.Equal(t, "queued", o.res.ExitReason)
+				require.Contains(t, o.res.Warnings, "prompt was queued behind an active session run; this invocation did not execute it")
+				require.Empty(t, o.res.FinalText)
 				loserDone = true
 			}
 			got++

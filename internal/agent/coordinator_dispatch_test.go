@@ -121,3 +121,65 @@ func TestHandleInterruptTick(t *testing.T) {
 		assert.Empty(t, agent.cancelled)
 	})
 }
+
+func TestHandleInterruptTick_DiskProviderUsesInProcessReplacement(t *testing.T) {
+	const providerID = "test-provider"
+	env := testEnv(t)
+	cfg, err := config.Init(env.workingDir, "", false)
+	require.NoError(t, err)
+	cfg.Config().Providers.Set(providerID, config.ProviderConfig{
+		ID:     providerID,
+		Type:   "openai",
+		Models: []catwalk.Model{{ID: "test-model", Name: "Test Model", DefaultMaxTokens: 4096}},
+	})
+	cfg.Config().Models[config.SelectedModelTypeSmart] = config.SelectedModel{Provider: providerID, Model: "test-model"}
+	cfg.Config().Models[config.SelectedModelTypeFast] = config.SelectedModel{Provider: providerID, Model: "test-model"}
+
+	current := newMockAgent(providerID, 4096, func(_ context.Context, _ SessionAgentCall) (*fantasy.AgentResult, error) {
+		return agentResultWithText("ok"), nil
+	})
+	disk := newFakeDiskProvider(nil)
+	sessID := "disk-provider-interrupt"
+	current.activeCall = SessionAgentCall{
+		SessionID:   sessID,
+		Prompt:      "active",
+		CallOptions: &CallOptions{DiskProvider: disk},
+	}
+	current.hasActiveCall = true
+	coord := &coordinator{
+		cfg:          cfg,
+		sessions:     env.sessions,
+		messages:     env.messages,
+		currentAgent: current,
+		modelCache:   csync.NewMap[string, cachedModelPair](),
+	}
+
+	ctx := t.Context()
+	sess, err := env.sessions.Create(ctx, sessID)
+	require.NoError(t, err)
+	msg, err := env.messages.Create(ctx, sess.ID, message.CreateMessageParams{
+		Role:  message.User,
+		Parts: []message.ContentPart{message.TextContent{Text: "replace active"}},
+	})
+	require.NoError(t, err)
+	require.NoError(t, env.sessions.CreatePendingInject(ctx, session.PendingInject{
+		SessionID: sess.ID, MessageID: msg.ID, Content: msg.FullText(), Interrupt: true,
+	}))
+
+	fired, err := coord.handleInterruptTick(ctx, sess.ID)
+	require.NoError(t, err)
+	require.True(t, fired)
+	require.Len(t, current.interruptAndReplaced, 1)
+	replacement := current.interruptAndReplaced[0]
+	assert.Same(t, disk, replacement.CallOptions.DiskProvider)
+	assert.False(t, replacement.FromDurableQueue)
+	assert.Equal(t, msg.ID, replacement.ExistingMessageID)
+	assert.Empty(t, replacement.InjectID, "the in-process replacement must not retain a durable inject owner")
+
+	pending, err := env.sessions.ListPendingRunQueueEntries(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, pending, "a DiskProvider interrupt must not cross the durable queue")
+	fired, err = coord.handleInterruptTick(ctx, sess.ID)
+	require.NoError(t, err)
+	assert.False(t, fired, "the consumed inject must not be delivered twice")
+}

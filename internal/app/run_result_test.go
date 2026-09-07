@@ -331,6 +331,16 @@ func TestRunFailed(t *testing.T) {
 	}
 }
 
+func TestBuildRunResult_QueuedAlwaysOverridesCapturedOwnerFinish(t *testing.T) {
+	result := buildRunResult(
+		"s1", "owner text", "", "stop", &runQueuedError{sessionID: "s1"}, false,
+		nil, 0, 0, 0, "", "", 0, "", "", nil, "",
+	)
+
+	assert.Equal(t, "queued", result.ExitReason)
+	assert.Contains(t, result.Warnings, "prompt was queued behind an active session run; this invocation did not execute it")
+}
+
 // TestRunIncompleteError_Message ensures the sentinel renders both with and
 // without detail (it drives stderr diagnostics on a non-zero exit).
 func TestRunIncompleteError_Message(t *testing.T) {

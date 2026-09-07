@@ -21,6 +21,28 @@ func (mb *mailbox) beginGeneration(cancel context.CancelFunc) (genID uint64) {
 	return mb.current.id
 }
 
+func (mb *mailbox) setCurrentCall(call SessionAgentCall) {
+	mb.mu.Lock()
+	copy := call
+	mb.currentCall = &copy
+	mb.mu.Unlock()
+}
+
+func (mb *mailbox) clearCurrentCall() {
+	mb.mu.Lock()
+	mb.currentCall = nil
+	mb.mu.Unlock()
+}
+
+func (mb *mailbox) currentCallSnapshot() (SessionAgentCall, bool) {
+	mb.mu.Lock()
+	defer mb.mu.Unlock()
+	if mb.currentCall == nil || mb.state != mbOwned {
+		return SessionAgentCall{}, false
+	}
+	return *mb.currentCall, true
+}
+
 // beginCompact atomically claims mailbox ownership for a compaction (manual
 // /compact or inline auto-summarize). It is the atomic check-and-reserve
 // that replaces the old non-atomic IsSessionBusy + runSummarize pair

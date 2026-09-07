@@ -144,6 +144,11 @@ type mailbox struct {
 	// state != mbOwned. Interrupt/Cancel target THIS, never dispatcherCancel.
 	current generation
 
+	// currentCall is the immutable call being executed by the active
+	// generation. It is retained only for in-process control paths that must
+	// preserve non-serializable call options, such as a DiskProvider interrupt.
+	currentCall *SessionAgentCall
+
 	// submitted holds pending SessionAgentCall values submitted while
 	// owned — replaces messageQueue for the "queue a normal follow-up"
 	// case. Kept as an unbounded slice (matching messageQueue's FIFO

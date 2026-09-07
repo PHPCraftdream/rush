@@ -359,6 +359,7 @@ func (app *App) resolveSession(ctx context.Context, continueSessionID string, us
 type agentTurnResponse struct {
 	result *fantasy.AgentResult
 	err    error
+	queued bool
 }
 
 // runAgentTurnRecovered runs runFn (normally app.AgentCoordinator.Run) on the
@@ -429,7 +430,7 @@ func runAgentTurnRecovered(
 		// review, R3 follow-up: CI's macOS runner hit the queueing
 		// window; a fast idle dev machine almost never does, which is
 		// why this went unnoticed until load-sensitive CI exposed it).
-		done <- agentTurnResponse{}
+		done <- agentTurnResponse{queued: true}
 		return
 	}
 	done <- agentTurnResponse{
@@ -1256,6 +1257,16 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 	// see the select loop's own doc for why this split exists.
 	finish := func(runErr error) (*RunResult, error) {
 		stopSpinner()
+		if errors.Is(runErr, ErrRunQueued) {
+			// The shared session stream may have delivered the active owner's
+			// messages before the mailbox reported this call as queued. Do not
+			// attribute that output or its tool calls to the queued prompt.
+			finalText = ""
+			finalReason = ""
+			finalErrTitle = ""
+			finalErrDetails = ""
+			toolCallCounts = make(map[string]int)
+		}
 		isCanceled := runErr != nil && (errors.Is(runErr, context.Canceled) || errors.Is(runErr, agent.ErrRequestCancelled))
 
 		if mode == RunModeJSON {
@@ -1438,6 +1449,9 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 
 		select {
 		case result := <-done:
+			if result.queued {
+				return finish(&runQueuedError{sessionID: sess.ID})
+			}
 			runErr := result.err
 			isCanceled := runErr != nil && (errors.Is(runErr, context.Canceled) || errors.Is(runErr, agent.ErrRequestCancelled))
 

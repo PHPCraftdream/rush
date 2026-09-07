@@ -194,7 +194,9 @@ func buildSessionUsageInfo(report message.UsageReport) *SessionUsageInfo {
 // the model's optimistic "stop"/"end_turn".
 func buildRunResult(sessionID, finalText, assistantNotes, finalReason string, err error, canceled bool, toolCounts map[string]int, deltaTokens int64, deltaCost float64, duration time.Duration, finalErrTitle, finalErrDetails string, strippedBytes int, stripErrMsg, stripErrReason string, subAgentOutputs []SubAgentOutput, reductionWarning string) RunResult {
 	reason := finalReason
-	if reason == "" {
+	if errors.Is(err, ErrRunQueued) {
+		reason = "queued"
+	} else if reason == "" {
 		switch {
 		case canceled:
 			reason = "canceled"
@@ -231,6 +233,9 @@ func buildRunResult(sessionID, finalText, assistantNotes, finalReason string, er
 
 	// Warnings: non-fatal observations the orchestrator should see.
 	var warnings []string
+	if reason == "queued" {
+		warnings = append(warnings, "prompt was queued behind an active session run; this invocation did not execute it")
+	}
 	// Fan-out without composition: model dispatched at least one sub-agent
 	// (`agent`/`agentic_fetch`) but the turn ended with no final text. The
 	// orchestrator asked for a structured answer and got an empty string,
@@ -239,7 +244,7 @@ func buildRunResult(sessionID, finalText, assistantNotes, finalReason string, er
 	// the actual content sits in the sub-session DB rows the orchestrator
 	// can't easily see. Telling them to either prompt for a wrap-up
 	// summary or fetch the sub-session data explicitly.
-	if reason != "error" && reason != "canceled" && reason != "awaiting_answer" && strings.TrimSpace(finalText) == "" {
+	if reason != "error" && reason != "canceled" && reason != "awaiting_answer" && reason != "queued" && strings.TrimSpace(finalText) == "" {
 		fanoutCalls := toolCounts["agent"] + toolCounts["agentic_fetch"]
 		if fanoutCalls > 0 {
 			warnings = append(warnings, fmt.Sprintf(

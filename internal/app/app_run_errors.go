@@ -120,6 +120,23 @@ type runIncompleteError struct {
 	cause error
 }
 
+// ErrRunQueued marks a legacy mailbox admission that was accepted for a
+// different active owner. The prompt remains owned by that mailbox and this
+// invocation must not claim a completed result.
+var ErrRunQueued = errors.New("run queued behind an active session")
+
+type runQueuedError struct {
+	sessionID string
+}
+
+func (e *runQueuedError) Error() string {
+	return fmt.Sprintf("run for session %q was queued behind an active run; this invocation did not execute it", e.sessionID)
+}
+
+func (e *runQueuedError) Unwrap() error {
+	return errors.Join(ErrRunQueued, agent.ErrSessionBusy)
+}
+
 func (e *runIncompleteError) Error() string {
 	if e.detail != "" {
 		return fmt.Sprintf("run did not complete cleanly (%s): %s", e.reason, e.detail)
