@@ -109,6 +109,13 @@ type Service interface {
 	DeletePermission(ctx context.Context, ruleID string) error
 }
 
+// RestrictedRunAuthorizer lets command tools check a per-call restricted-run
+// policy without entering the interactive permission flow. Implementations
+// are optional so lightweight permission test doubles remain valid.
+type RestrictedRunAuthorizer interface {
+	AuthorizeRestrictedRun(opts CreatePermissionRequest) (restricted bool, allowed bool)
+}
+
 // SessionRunAllowlistManager is the OPTIONAL per-session extension of the
 // restricted-run gate (R1-1). Consumers type-assert on it instead of it
 // living on Service so every existing Service test fake keeps compiling
@@ -554,6 +561,28 @@ func (s *permissionService) Request(ctx context.Context, opts CreatePermissionRe
 	case granted := <-respCh:
 		return granted, nil
 	}
+}
+
+// AuthorizeRestrictedRun checks the policy that would govern opts on the
+// auto-approved path. It deliberately ignores interactive approval state:
+// callers use it before a shortcut that would otherwise skip Request.
+func (s *permissionService) AuthorizeRestrictedRun(opts CreatePermissionRequest) (bool, bool) {
+	s.runAllowlistBySessionMu.RLock()
+	sessionEntry, hasSessionGate := s.runAllowlistBySession[opts.SessionID]
+	baseline, hasBaseline := s.runAllowlistBaselineBySession[opts.SessionID]
+	s.runAllowlistBySessionMu.RUnlock()
+
+	gate := s.runAllowlistGate.load()
+	switch {
+	case hasSessionGate:
+		gate = sessionEntry.allowlist
+	case hasBaseline:
+		gate = baseline
+	}
+	if !gate.IsRestricted() {
+		return false, true
+	}
+	return true, gate.allowsRequest(opts)
 }
 
 func (s *permissionService) AutoApproveSession(sessionID string) {

@@ -198,10 +198,9 @@ func MergeRunAllowlistSpecs(a, b RunAllowlistSpec) RunAllowlistSpec {
 //	"exact:cmd"  → whole-string equality after TrimSpace
 //	anything else → word-boundary prefix (the common case, e.g. "git diff")
 //
-// The prefix, exact, and glob forms are compound-guarded at match time,
-// not at compile time — the pattern itself is always valid even if it
-// would never match a compound command. Only regex is exempt from the
-// compound guard.
+// The prefix, exact, and glob forms are syntax-guarded at match time, not at
+// compile time — the pattern itself is always valid even if it would never
+// match a compound or nonliteral command. Only regex is exempt.
 func compileBashPattern(raw string) (compiledBashPattern, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -282,17 +281,18 @@ func bashCommandAllowed(patterns []compiledBashPattern, cmd string) bool {
 		return false
 	}
 	compound := shell.IsCompoundCommand(command)
+	_, simple := shell.ParseSimpleCommand(command)
 	for _, p := range patterns {
 		switch p.kind {
 		case bashPatternPrefix:
-			if compound {
+			if compound || !simple {
 				continue
 			}
 			if prefixWordBoundary(p.value, command) {
 				return true
 			}
 		case bashPatternExact:
-			if compound {
+			if compound || !simple {
 				continue
 			}
 			if p.value == command {
@@ -303,7 +303,7 @@ func bashCommandAllowed(patterns []compiledBashPattern, cmd string) bool {
 			// must not authorise a compound command (`glob:ls *` cannot
 			// approve "ls && rm -rf /"). Operators who genuinely need to
 			// match a compound command must use an explicit regex.
-			if compound {
+			if compound || !simple {
 				continue
 			}
 			if p.re != nil && p.re.MatchString(command) {

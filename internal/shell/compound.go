@@ -6,6 +6,39 @@ import (
 	"mvdan.cc/sh/v3/syntax"
 )
 
+// ParseSimpleCommand returns the literal argv of one simple command. It
+// rejects variable assignments, redirections, expansions, and control syntax.
+func ParseSimpleCommand(cmd string) ([]string, bool) {
+	file, err := syntax.NewParser().Parse(strings.NewReader(cmd), "")
+	if err != nil || len(file.Stmts) != 1 {
+		return nil, false
+	}
+	stmt := file.Stmts[0]
+	if stmt.Background || stmt.Negated || stmt.Coprocess || stmt.Disown || stmt.Semicolon.IsValid() || len(stmt.Redirs) != 0 {
+		return nil, false
+	}
+	call, ok := stmt.Cmd.(*syntax.CallExpr)
+	if !ok || len(call.Assigns) != 0 || len(call.Args) == 0 {
+		return nil, false
+	}
+
+	args := make([]string, len(call.Args))
+	for i, word := range call.Args {
+		if len(word.Parts) != 1 {
+			return nil, false
+		}
+		lit, ok := word.Parts[0].(*syntax.Lit)
+		if !ok {
+			return nil, false
+		}
+		if strings.ContainsAny(lit.Value, "*?") || strings.HasPrefix(lit.Value, "~") {
+			return nil, false
+		}
+		args[i] = lit.Value
+	}
+	return args, true
+}
+
 // IsCompoundCommand reports whether cmd is anything other than a single
 // simple command — i.e. it chains (`;`, a raw newline, `&&`, `||`, `|`),
 // backgrounds (`&`), substitutes (`$(...)`, backticks), or opens a

@@ -89,6 +89,8 @@ func TestBashCommandAllowed_PrefixRefusesCompoundCommands(t *testing.T) {
 	assert.False(t, bashCommandAllowed(patterns, "ls; rm -rf /"))
 	assert.False(t, bashCommandAllowed(patterns, "ls $(rm -rf /)"))
 	assert.False(t, bashCommandAllowed(patterns, "ls `whoami`"))
+	assert.False(t, bashCommandAllowed(patterns, "ls > output.txt"))
+	assert.False(t, bashCommandAllowed(patterns, "VALUE=unsafe ls"))
 	// A lone safe command still matches.
 	assert.True(t, bashCommandAllowed(patterns, "ls -la"))
 }

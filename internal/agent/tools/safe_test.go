@@ -1,23 +1,6 @@
 package tools
 
-// B-1 regression test (found by a full-project @rush --role reviewer
-// audit, 2026-08-11): safeCommands used to include command-wrapper
-// utilities (env, nice, nohup, time, timeout) that execute an arbitrary
-// subcommand. isSafeReadOnlyCommand matches on prefix alone, so
-// "env rm -rf ./secrets", "timeout 10 ./exfil.sh", "nice npm install
-// malicious-package" etc. all matched the wrapper's own prefix and were
-// treated as safe read-only — skipping permissions.Request entirely (see
-// bash.go's NewBashTool) and letting the wrapped, genuinely arbitrary
-// subcommand run completely unchecked. This defeated --restrict-run's
-// deny-by-default guarantee for any allowlist that didn't happen to also
-// block these five wrapper names specifically.
-//
-// REVERT CHECK PROCEDURE:
-//  1. In safe.go, add "env", "nice", "nohup", "time", "timeout" back to
-//     safeCommands.
-//  2. Run: go test ./internal/agent/tools -run TestSafeCommands_WrapperUtilitiesAreNotSafe -v
-//  3. FAIL: isSafeReadOnlyCommand("env rm -rf /") returns true.
-//  4. Remove them again and PASS.
+// Wrapper commands are excluded because they can execute arbitrary subcommands.
 
 import "testing"
 
@@ -39,10 +22,7 @@ func TestSafeCommands_WrapperUtilitiesAreNotSafe(t *testing.T) {
 	}
 }
 
-// TestSafeCommands_GenuinelySafeCommandsStillFast proves the fix didn't
-// overcorrect: ordinary read-only commands (including the replacement
-// printenv suggested for env's legitimate use) still skip the permission
-// prompt.
+// TestSafeCommands_GenuinelySafeCommandsStillFast covers ordinary read-only commands.
 func TestSafeCommands_GenuinelySafeCommandsStillFast(t *testing.T) {
 	safe := []string{
 		"ls -la",
@@ -59,9 +39,7 @@ func TestSafeCommands_GenuinelySafeCommandsStillFast(t *testing.T) {
 	}
 }
 
-// TestSafeCommands_CompoundCommandsNeverSafe proves the compound-command
-// guard (shell.IsCompoundCommand) still applies even for an otherwise-safe
-// prefix, so a safe command can never smuggle a chained destructive one.
+// TestSafeCommands_CompoundCommandsNeverSafe covers shell control syntax.
 func TestSafeCommands_CompoundCommandsNeverSafe(t *testing.T) {
 	compound := []string{
 		"git status && rm -rf /",
@@ -71,6 +49,31 @@ func TestSafeCommands_CompoundCommandsNeverSafe(t *testing.T) {
 	for _, cmd := range compound {
 		if isSafeReadOnlyCommand(cmd) {
 			t.Errorf("isSafeReadOnlyCommand(%q) = true, want false — a compound command must always require the permission prompt", cmd)
+		}
+	}
+}
+
+func TestSafeCommands_GitTransportFormsAreNotSafe(t *testing.T) {
+	for _, command := range []string{
+		"git ls-remote origin",
+		"git ls-remote helper::origin",
+		"git remote show origin",
+		"git remote show origin -n",
+		"git remote -n show origin",
+	} {
+		if isSafeReadOnlyCommand(command) {
+			t.Errorf("isSafeReadOnlyCommand(%q) = true, want false", command)
+		}
+	}
+
+	for _, command := range []string{
+		"git remote",
+		"git remote -v",
+		"git remote get-url origin",
+		"git remote show -n origin",
+	} {
+		if !isSafeReadOnlyCommand(command) {
+			t.Errorf("isSafeReadOnlyCommand(%q) = false, want true", command)
 		}
 	}
 }
