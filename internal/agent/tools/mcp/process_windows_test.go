@@ -25,6 +25,12 @@ import (
 // which pins the same class of bug for background shell commands.
 const helperEnvVar = "RUSH_MCP_TEST_HELPER"
 
+func requireStdioDiagnosticProcessConfig(t *testing.T, cmd *exec.Cmd) {
+	t.Helper()
+	require.NotNil(t, cmd.Cancel)
+	require.Equal(t, 5*time.Second, cmd.WaitDelay)
+}
+
 func TestMain(m *testing.M) {
 	switch os.Getenv(helperEnvVar) {
 	case "level1":

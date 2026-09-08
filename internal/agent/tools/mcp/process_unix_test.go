@@ -3,12 +3,23 @@
 package mcp
 
 import (
+	"os/exec"
 	"testing"
+	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/require"
 )
+
+func requireStdioDiagnosticProcessConfig(t *testing.T, cmd *exec.Cmd) {
+	t.Helper()
+	require.NotNil(t, cmd.Cancel)
+	require.Equal(t, 5*time.Second, cmd.WaitDelay)
+	require.NotNil(t, cmd.SysProcAttr)
+	require.True(t, cmd.SysProcAttr.Setpgid,
+		"diagnostic child must lead its own process group")
+}
 
 // TestCreateTransport_StdioProcessGroup pins that a stdio MCP child is spawned
 // as its own process-group leader with a cancel hook wired up. This is what

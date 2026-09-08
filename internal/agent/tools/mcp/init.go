@@ -376,6 +376,29 @@ var (
 	generation  uint64
 )
 
+const (
+	stdioDiagnosticTimeout   = 5 * time.Second
+	stdioDiagnosticMaxOutput = 32 << 10
+)
+
+// ErrStdioDiagnosticTooLarge reports that a diagnostic rerun exceeded its
+// bounded output budget.
+var ErrStdioDiagnosticTooLarge = errors.New("MCP stdio diagnostic output exceeded limit")
+
+// StdioDiagnosticOutputLimitError reports the byte budget exceeded by a
+// diagnostic rerun.
+type StdioDiagnosticOutputLimitError struct {
+	Limit int
+}
+
+func (e *StdioDiagnosticOutputLimitError) Error() string {
+	return fmt.Sprintf("MCP stdio diagnostic output exceeded %d-byte limit", e.Limit)
+}
+
+func (e *StdioDiagnosticOutputLimitError) Unwrap() error {
+	return ErrStdioDiagnosticTooLarge
+}
+
 // leaseRegistry owns the per-server locks. References are held by lock
 // holders and waiters, so an entry can be reclaimed as soon as its last
 // operation leaves. In particular, a waiter keeps the old pointer alive until
@@ -6313,14 +6336,126 @@ func mcpTimeout(m config.MCPConfig) time.Duration {
 	return time.Duration(cmp.Or(m.Timeout, 15)) * time.Second
 }
 
+// stdioDiagnosticWriter retains a bounded prefix while allowing stdout and
+// stderr to write concurrently. The first write beyond the limit cancels the
+// diagnostic command through onLimit.
+type stdioDiagnosticWriter struct {
+	mu       sync.Mutex
+	limit    int
+	buf      []byte
+	onLimit  func()
+	exceeded bool
+	limitErr error
+	once     sync.Once
+}
+
+func newStdioDiagnosticWriter(limit int, onLimit func()) *stdioDiagnosticWriter {
+	return &stdioDiagnosticWriter{limit: limit, onLimit: onLimit}
+}
+
+func (w *stdioDiagnosticWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	if w.exceeded {
+		err := w.limitErr
+		w.mu.Unlock()
+		return 0, err
+	}
+	remaining := w.limit - len(w.buf)
+	if len(p) <= remaining {
+		w.buf = append(w.buf, p...)
+		w.mu.Unlock()
+		return len(p), nil
+	}
+	if remaining > 0 {
+		w.buf = append(w.buf, p[:remaining]...)
+	}
+	w.exceeded = true
+	w.limitErr = &StdioDiagnosticOutputLimitError{Limit: w.limit}
+	err := w.limitErr
+	w.mu.Unlock()
+	w.once.Do(func() {
+		if w.onLimit != nil {
+			w.onLimit()
+		}
+	})
+	return remaining, err
+}
+
+func (w *stdioDiagnosticWriter) Bytes() []byte {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]byte(nil), w.buf...)
+}
+
+func (w *stdioDiagnosticWriter) Exceeded() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.exceeded
+}
+
+func (w *stdioDiagnosticWriter) LimitError() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.limitErr
+}
+
+func sanitizeStdioDiagnosticPrefix(output []byte) string {
+	if len(output) > stdioDiagnosticMaxOutput {
+		output = output[:stdioDiagnosticMaxOutput]
+	}
+	sanitized := make([]byte, len(output))
+	for i, b := range output {
+		if b == '\t' || b == '\r' || b == '\n' || (b >= 0x20 && b != 0x7f) {
+			sanitized[i] = b
+			continue
+		}
+		sanitized[i] = '?'
+	}
+	return string(sanitized)
+}
+
+func diagnosticCommand(ctx context.Context, old *exec.Cmd) *exec.Cmd {
+	args := old.Args
+	if len(args) > 0 {
+		args = args[1:]
+	}
+	cmd := platform.Command(ctx, old.Path, args...)
+	if len(old.Args) > 0 {
+		// platform.Command gives the new process the correct argument count;
+		// restore a custom argv[0] when the original command supplied one.
+		cmd.Args = append([]string(nil), old.Args...)
+	}
+	if old.Env != nil {
+		cmd.Env = append([]string{}, old.Env...)
+	}
+	cmd.Dir = old.Dir
+	if old.ExtraFiles != nil {
+		cmd.ExtraFiles = append([]*os.File{}, old.ExtraFiles...)
+	}
+	if old.SysProcAttr != nil {
+		attrs := *old.SysProcAttr
+		cmd.SysProcAttr = &attrs
+	}
+	configureStdioProcess(cmd)
+	return cmd
+}
+
 func stdioCheck(old *exec.Cmd) error {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+	if old == nil {
+		return errors.New("MCP stdio diagnostic command unavailable")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), stdioDiagnosticTimeout)
 	defer cancel()
-	cmd := platform.Command(ctx, old.Path, old.Args...)
-	cmd.Env = old.Env
-	out, err := cmd.CombinedOutput()
+	writer := newStdioDiagnosticWriter(stdioDiagnosticMaxOutput, cancel)
+	cmd := diagnosticCommand(ctx, old)
+	cmd.Stdout = writer
+	cmd.Stderr = writer
+	err := cmd.Run()
+	if writer.Exceeded() {
+		return fmt.Errorf("%w: %s", writer.LimitError(), sanitizeStdioDiagnosticPrefix(writer.Bytes()))
+	}
 	if err == nil || errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return nil
 	}
-	return fmt.Errorf("%w: %s", err, string(out))
+	return fmt.Errorf("%w: %s", err, sanitizeStdioDiagnosticPrefix(writer.Bytes()))
 }
