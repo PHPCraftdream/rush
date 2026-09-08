@@ -80,7 +80,25 @@ func (mb *mailbox) isStopped() bool {
 func (mb *mailbox) interruptAndReplace(call SessionAgentCall) (context.CancelFunc, bool) {
 	mb.mu.Lock()
 	defer mb.mu.Unlock()
+	return mb.interruptAndReplaceLocked(call)
+}
 
+// interruptAndReplaceIfCurrent is the compare-and-act form used when a
+// coordinator first snapshots a non-durable active call. The token check and
+// replacement recording share one mb.mu critical section, so a newer call
+// cannot be cancelled or replaced by a stale snapshot.
+func (mb *mailbox) interruptAndReplaceIfCurrent(token activeCallToken, call SessionAgentCall) (context.CancelFunc, bool) {
+	mb.mu.Lock()
+	defer mb.mu.Unlock()
+	if mb.state != mbOwned || mb.stopped || token.call == nil ||
+		mb.epoch != token.epoch || mb.current.id != token.generation ||
+		mb.currentCall != token.call {
+		return nil, false
+	}
+	return mb.interruptAndReplaceLocked(call)
+}
+
+func (mb *mailbox) interruptAndReplaceLocked(call SessionAgentCall) (context.CancelFunc, bool) {
 	if mb.state != mbOwned || mb.stopped {
 		// Nobody running: behave like a plain submit that also happens to
 		// return "no cancel needed" — the caller (coordinator) then starts

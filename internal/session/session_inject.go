@@ -148,7 +148,8 @@ func (s *service) PeekInterruptInject(ctx context.Context, sessionID string) (*P
 
 // DeleteInterruptInject removes a specific pending inject row by ID.
 // Used by detached interrupt runs to delete the durable pending row AFTER
-// they have confirmed execution (acquired OS lock). P0-2 fix.
+// they have confirmed execution (acquired OS lock). P0-2 fix. It returns
+// sql.ErrNoRows when another consumer already removed the row.
 func (s *service) DeleteInterruptInject(ctx context.Context, injectID string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -156,8 +157,16 @@ func (s *service) DeleteInterruptInject(ctx context.Context, injectID string) er
 	}
 	defer tx.Rollback() //nolint:errcheck
 
-	if _, delErr := tx.ExecContext(ctx, `DELETE FROM pending_injects WHERE id = ?`, injectID); delErr != nil {
+	result, delErr := tx.ExecContext(ctx, `DELETE FROM pending_injects WHERE id = ?`, injectID)
+	if delErr != nil {
 		return delErr
+	}
+	rows, rowsErr := result.RowsAffected()
+	if rowsErr != nil {
+		return rowsErr
+	}
+	if rows == 0 {
+		return sql.ErrNoRows
 	}
 	if err := tx.Commit(); err != nil {
 		return err

@@ -6,6 +6,7 @@ package agent
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -161,7 +162,7 @@ func (c *coordinator) handleInterruptTick(ctx context.Context, sessionID string)
 	// Ownership is published before the first generation starts. If a
 	// reservation exists but its call snapshot is not visible yet, retry the
 	// tick: consuming now could rebuild with operator credentials or disk.
-	activeCall, owned, published := activeCallStateForSession(c.currentAgent, sessionID)
+	activeCall, activeToken, owned, published, tokenAvailable := activeCallStateForSession(c.currentAgent, sessionID)
 	if owned && !published {
 		return false, nil
 	}
@@ -186,7 +187,7 @@ func (c *coordinator) handleInterruptTick(ctx context.Context, sessionID string)
 	// message directly to that owner's mailbox so the replacement retains the
 	// exact in-process execution identity.
 	if published && callCarriesNonDurableDependency(activeCall) {
-		return c.handleActiveNonDurableInterrupt(ctx, pi, injMsg, activeCall)
+		return c.handleActiveNonDurableInterrupt(ctx, pi, injMsg, activeCall, activeToken, tokenAvailable)
 	}
 
 	// Resolve the session's model configuration from the DB or config
@@ -262,7 +263,7 @@ func (c *coordinator) handleInterruptTick(ctx context.Context, sessionID string)
 	// InterruptAndReplace atomically records call and cancels only the
 	// in-flight generation (design §4). Since we've already enqueued durably,
 	// we just need to cancel the in-flight generation if there is one.
-	if !c.currentAgent.InterruptAndReplace(sessionID, call) {
+	if !interruptAndReplaceSnapshot(c.currentAgent, sessionID, call, activeToken, tokenAvailable) {
 		// No owner — session is idle, the durable enqueue already handles it
 		slog.Debug("coordinator: interrupt tick enqueued durable call for idle session",
 			"session_id", sessionID, "idempotency_key", idempotencyKey)
@@ -278,16 +279,40 @@ type activeCallInspector interface {
 	ActiveCallState(sessionID string) (SessionAgentCall, bool, bool)
 }
 
-func activeCallStateForSession(currentAgent SessionAgent, sessionID string) (SessionAgentCall, bool, bool) {
+type activeCallTokenInspector interface {
+	ActiveCallStateWithToken(sessionID string) (SessionAgentCall, activeCallToken, bool, bool)
+}
+
+type activeCallReplacer interface {
+	InterruptAndReplaceIfCurrent(sessionID string, call SessionAgentCall, token activeCallToken) bool
+}
+
+func activeCallStateForSession(currentAgent SessionAgent, sessionID string) (SessionAgentCall, activeCallToken, bool, bool, bool) {
+	if inspector, ok := currentAgent.(activeCallTokenInspector); ok {
+		call, token, owned, published := inspector.ActiveCallStateWithToken(sessionID)
+		return call, token, owned, published, true
+	}
 	if inspector, ok := currentAgent.(activeCallInspector); ok {
-		return inspector.ActiveCallState(sessionID)
+		call, owned, published := inspector.ActiveCallState(sessionID)
+		return call, activeCallToken{}, owned, published, false
 	}
 	snapshotter, ok := currentAgent.(activeCallSnapshotter)
 	if !ok {
-		return SessionAgentCall{}, false, true
+		return SessionAgentCall{}, activeCallToken{}, false, true, false
 	}
 	call, published := snapshotter.ActiveCall(sessionID)
-	return call, published, published
+	return call, activeCallToken{}, published, published, false
+}
+
+func interruptAndReplaceSnapshot(currentAgent SessionAgent, sessionID string, call SessionAgentCall, token activeCallToken, tokenAvailable bool) bool {
+	if tokenAvailable {
+		replacer, ok := currentAgent.(activeCallReplacer)
+		if !ok {
+			return false
+		}
+		return replacer.InterruptAndReplaceIfCurrent(sessionID, call, token)
+	}
+	return currentAgent.InterruptAndReplace(sessionID, call)
 }
 
 func (c *coordinator) handleActiveNonDurableInterrupt(
@@ -295,6 +320,8 @@ func (c *coordinator) handleActiveNonDurableInterrupt(
 	pi *session.PendingInject,
 	msg message.Message,
 	active SessionAgentCall,
+	token activeCallToken,
+	tokenAvailable bool,
 ) (bool, error) {
 	call := active
 	call.Prompt = msg.FullText()
@@ -307,13 +334,16 @@ func (c *coordinator) handleActiveNonDurableInterrupt(
 	// owner disappeared in the narrow window, recreate it so the next normal
 	// run remains the durable owner rather than silently losing the inject.
 	if err := c.sessions.DeleteInterruptInject(ctx, pi.ID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
 		return false, fmt.Errorf("failed to consume disk-provider interrupt for session %s: %w", call.SessionID, err)
 	}
-	if !c.currentAgent.InterruptAndReplace(call.SessionID, call) {
-		if err := c.recreatePendingInjectRow(ctx, call); err != nil {
+	if !interruptAndReplaceSnapshot(c.currentAgent, call.SessionID, call, token, tokenAvailable) {
+		if err := c.restorePendingInjectRow(ctx, pi); err != nil {
 			return false, fmt.Errorf("active non-durable run ended before interrupt delivery and recovery failed: %w", err)
 		}
-		return false, fmt.Errorf("active non-durable run ended before interrupt delivery; message was restored for the next run")
+		return false, nil
 	}
 	c.messages.Notify(msg)
 	return true, nil
@@ -423,10 +453,18 @@ func (c *coordinator) startDetachedRun(ctx context.Context, call SessionAgentCal
 		slog.Debug("coordinator: detached run deleting pending_injects row at start",
 			"inject_id", call.InjectID)
 		if delErr := c.sessions.DeleteInterruptInject(ctx, call.InjectID); delErr != nil {
+			if errors.Is(delErr, sql.ErrNoRows) {
+				// Another detached consumer won ownership of this inject. Its
+				// durable handoff is authoritative; do not enqueue a duplicate.
+				slog.Debug("coordinator: detached run inject was already consumed; skipping duplicate",
+					"inject_id", call.InjectID)
+				return nil
+			}
 			slog.Error("coordinator: detached run failed to delete pending_injects row at start",
 				"inject_id", call.InjectID, "err", delErr)
-			// Continue anyway — row still exists, so duplicates may occur,
-			// but this is better than data loss.
+			// A genuine DB error leaves ownership uncertain. Continue to the
+			// durable enqueue so the call remains recoverable; enqueue failure
+			// below recreates the inject row.
 		} else {
 			slog.Debug("coordinator: detached run deleted pending_injects row at start",
 				"inject_id", call.InjectID)
@@ -522,6 +560,19 @@ func (c *coordinator) recreatePendingInjectRow(originalCtx context.Context, call
 	}
 	slog.Info("coordinator: successfully recreated pending_injects row for future retry",
 		"new_inject_id", inject.ID, "old_inject_id", call.InjectID)
+	return nil
+}
+
+// restorePendingInjectRow puts back the exact row consumed before a stale
+// snapshot was rejected. Retaining its ID and creation time makes a retry
+// idempotent and preserves FIFO ordering; a competing consumer is detected by
+// DeleteInterruptInject returning sql.ErrNoRows before this function runs.
+func (c *coordinator) restorePendingInjectRow(originalCtx context.Context, pi *session.PendingInject) error {
+	recoveryCtx, cancel := context.WithTimeout(context.WithoutCancel(originalCtx), 10*time.Second)
+	defer cancel()
+	if err := c.sessions.CreatePendingInject(recoveryCtx, *pi); err != nil {
+		return fmt.Errorf("failed to restore pending_injects row %q: %w", pi.ID, err)
+	}
 	return nil
 }
 

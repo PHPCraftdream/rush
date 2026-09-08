@@ -92,6 +92,27 @@ func (a *sessionAgent) ActiveCallState(sessionID string) (SessionAgentCall, bool
 	return a.getMailbox(sessionID).currentCallState()
 }
 
+// ActiveCallStateWithToken is the internal compare-and-act snapshot used by
+// coordinator interrupt delivery. ActiveCallState remains unchanged for
+// compatibility with existing control implementations and test doubles.
+func (a *sessionAgent) ActiveCallStateWithToken(sessionID string) (SessionAgentCall, activeCallToken, bool, bool) {
+	return a.getMailbox(sessionID).currentCallStateWithToken()
+}
+
+// InterruptAndReplaceIfCurrent delivers an interrupt only when token still
+// identifies the mailbox's current published generation. It returns false for
+// an owner or generation transition without touching the newer call.
+func (a *sessionAgent) InterruptAndReplaceIfCurrent(sessionID string, call SessionAgentCall, token activeCallToken) bool {
+	cancelFn, matched := a.getMailbox(sessionID).interruptAndReplaceIfCurrent(token, call)
+	if !matched {
+		return false
+	}
+	if cancelFn != nil {
+		cancelFn()
+	}
+	return true
+}
+
 // InjectMessage — see SessionAgent interface comment. Persists immediately
 // (UI updates via the same pubsub path that handleSendMessage uses) and, if
 // the session is currently running, atomically queues the persisted row into

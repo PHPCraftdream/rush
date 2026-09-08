@@ -8,6 +8,15 @@ import (
 	"context"
 )
 
+// activeCallToken identifies the exact published call and generation observed
+// under mb.mu. The call pointer is an identity fence in addition to the
+// monotonic ownership and generation counters.
+type activeCallToken struct {
+	epoch      uint64
+	generation uint64
+	call       *SessionAgentCall
+}
+
 // beginGeneration implements design §5: called by Run's loop before each
 // turn (replacing today's activeRequests.Set(call.SessionID, cancel)
 // re-arm). It bumps the per-session generation counter and records cancel
@@ -59,6 +68,24 @@ func (mb *mailbox) currentCallState() (SessionAgentCall, bool, bool) {
 		return SessionAgentCall{}, true, false
 	}
 	return *mb.currentCall, true, true
+}
+
+// currentCallStateWithToken snapshots the active call and its delivery fence
+// atomically. A caller must use the returned token for any later conditional
+// handoff; the copied call alone is not sufficient to identify the generation.
+func (mb *mailbox) currentCallStateWithToken() (SessionAgentCall, activeCallToken, bool, bool) {
+	mb.mu.Lock()
+	defer mb.mu.Unlock()
+
+	if mb.state != mbOwned {
+		return SessionAgentCall{}, activeCallToken{}, false, true
+	}
+	token := activeCallToken{epoch: mb.epoch, generation: mb.current.id}
+	if mb.currentCall == nil {
+		return SessionAgentCall{}, token, true, false
+	}
+	token.call = mb.currentCall
+	return *mb.currentCall, token, true, true
 }
 
 // beginCompact atomically claims mailbox ownership for a compaction (manual

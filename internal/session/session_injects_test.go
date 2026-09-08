@@ -4,11 +4,44 @@
 package session
 
 import (
+	"database/sql"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestDeleteInterruptInject_ReportsAlreadyConsumed(t *testing.T) {
+	sqlDB, q := newTestDB(t)
+	svc := NewService(q, sqlDB)
+	ctx := t.Context()
+	sess, err := svc.Create(ctx, "delete-once")
+	require.NoError(t, err)
+
+	first := PendingInject{ID: "delete-once-row", SessionID: sess.ID, MessageID: "msg", Content: "payload", Interrupt: true, CreatedAt: 1234}
+	require.NoError(t, svc.CreatePendingInject(ctx, first))
+	require.NoError(t, svc.DeleteInterruptInject(ctx, first.ID))
+	require.ErrorIs(t, svc.DeleteInterruptInject(ctx, first.ID), sql.ErrNoRows)
+
+	concurrent := PendingInject{ID: "delete-concurrent-row", SessionID: sess.ID, MessageID: "msg-2", Content: "payload-2", Interrupt: true, CreatedAt: 1235}
+	require.NoError(t, svc.CreatePendingInject(ctx, concurrent))
+	sqlDB.SetMaxOpenConns(1)
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	for range 2 {
+		go func() {
+			<-start
+			results <- svc.DeleteInterruptInject(ctx, concurrent.ID)
+		}()
+	}
+	close(start)
+	errA, errB := <-results, <-results
+	assert.True(t,
+		(errA == nil && errors.Is(errB, sql.ErrNoRows)) ||
+			(errB == nil && errors.Is(errA, sql.ErrNoRows)),
+		"concurrent delete must have exactly one owner: %v, %v", errA, errB)
+}
 
 // TestPendingInjects exercises the cross-process inject queue foundation:
 // enqueue a row, drain it (which must return it AND delete it), and confirm a

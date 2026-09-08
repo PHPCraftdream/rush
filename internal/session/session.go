@@ -275,7 +275,8 @@ type Service interface {
 	ConsumeInterruptInjectAndEnqueue(ctx context.Context, sessionID, injectID, idempotencyKey string, callData []byte) (*PendingInject, error)
 	// DeleteInterruptInject removes a specific pending inject row by ID.
 	// Used by detached interrupt runs to delete the durable pending row AFTER
-	// they have confirmed execution (acquired OS lock). P0-2 fix.
+	// they have confirmed execution (acquired OS lock). P0-2 fix. It returns
+	// sql.ErrNoRows when another consumer already removed the row.
 	DeleteInterruptInject(ctx context.Context, injectID string) error
 
 	// Agent tool session management
