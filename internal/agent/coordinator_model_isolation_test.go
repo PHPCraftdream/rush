@@ -6,11 +6,66 @@ package agent
 // first version of that fix's model cache.
 
 import (
+	"context"
+	"fmt"
+	"strings"
+	"sync"
 	"testing"
 
+	"charm.land/catwalk/pkg/catwalk"
+	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
+
+func TestConcurrentSessionResolutionDoesNotRewriteSharedModelPair(t *testing.T) {
+	env := testEnv(t)
+	coord := newWorkerToolTestCoordinator(t, env, false)
+	shared := NewSessionAgent(SessionAgentOptions{
+		SmartModel: Model{ModelCfg: config.SelectedModel{Provider: "smart-provider", Model: "smart-model"}, CatwalkCfg: catwalk.Model{ContextWindow: 200000}},
+		FastModel:  Model{ModelCfg: config.SelectedModel{Provider: "fast-provider", Model: "fast-model"}, CatwalkCfg: catwalk.Model{ContextWindow: 200000}},
+		Sessions:   env.sessions,
+		Messages:   env.messages,
+	}).(*sessionAgent)
+	coord.currentAgent = shared
+
+	sessA, err := env.sessions.Create(t.Context(), "resolution A")
+	require.NoError(t, err)
+	sessB, err := env.sessions.Create(t.Context(), "resolution B")
+	require.NoError(t, err)
+	require.NoError(t, env.sessions.UpdateModels(t.Context(), sessA.ID,
+		&session.ModelSlotUpdate{Provider: "smart-provider", Model: "smart-model-a"},
+		&session.ModelSlotUpdate{Provider: "fast-provider", Model: "fast-model-a"}))
+	require.NoError(t, env.sessions.UpdateModels(t.Context(), sessB.ID,
+		&session.ModelSlotUpdate{Provider: "smart-provider", Model: "smart-model-b"},
+		&session.ModelSlotUpdate{Provider: "fast-provider", Model: "fast-model-b"}))
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	for _, id := range []string{sessA.ID, sessB.ID} {
+		wg.Add(1)
+		go func(sessionID string) {
+			defer wg.Done()
+			resolved, resolveErr := coord.resolveSessionModelsInternal(context.Background(), sessionID, false)
+			if resolveErr != nil {
+				errs <- resolveErr
+				return
+			}
+			if !strings.Contains(resolved.smart.ModelCfg.Model, "smart-model-") ||
+				!strings.Contains(resolved.fast.ModelCfg.Model, "fast-model-") {
+				errs <- fmt.Errorf("unexpected resolved pair: smart=%s fast=%s", resolved.smart.ModelCfg.Model, resolved.fast.ModelCfg.Model)
+			}
+		}(id)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		require.NoError(t, err)
+	}
+
+	require.Equal(t, "smart-model", shared.smartModel.Get().ModelCfg.Model)
+	require.Equal(t, "fast-model", shared.fastModel.Get().ModelCfg.Model)
+}
 
 // TestResolveSessionModels_SmallModelNotSwappedWithLarge is the regression
 // test for a bug found reviewing the /rush-delegated per-session model

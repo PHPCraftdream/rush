@@ -257,8 +257,12 @@ type SessionAgentCallData struct {
 	// live fantasy.LanguageModel and CatwalkCfg) is reconstructed by the
 	// coordinator during pump execution (ROUND 3).
 	// Pointers, so "explicitly set" is distinguishable from "zero value"
-	SmartModel         *ModelCfg
-	FastModel          *ModelCfg
+	SmartModel *ModelCfg
+	FastModel  *ModelCfg
+	// PersistSmartModel/PersistFastModel carry explicit ExecuteRun model-slot
+	// requests through durable replay. Nil preserves the slot on admission.
+	PersistSmartModel  *ModelSlotUpdate `json:"persist_smart_model,omitempty"`
+	PersistFastModel   *ModelSlotUpdate `json:"persist_fast_model,omitempty"`
 	SystemPromptPrefix *string
 	SystemPrompt       *string
 }

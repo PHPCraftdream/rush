@@ -22,56 +22,44 @@ func (app *App) UpdateAgentModel(ctx context.Context) error {
 	return app.AgentCoordinator.UpdateModels(ctx)
 }
 
-// overrideModelsForNonInteractive parses the model strings and temporarily
-// overrides the model configurations, then rebuilds the agent.
+// resolveModelOverridesForNonInteractive parses and validates model strings
+// without publishing or changing any process-wide model state.
 // Format: "model-name" (searches all providers) or "provider/model-name".
-// Model matching is case-insensitive.
-// If smartModel is provided but fastModel is not, the fast model defaults to
-// the provider's default fast model.
-func (app *App) overrideModelsForNonInteractive(ctx context.Context, smartModel, fastModel string) error {
+func (app *App) resolveModelOverridesForNonInteractive(smartModel, fastModel string) (*agent.ModelOverride, *agent.ModelOverride, error) {
 	providers := app.config.Config().Providers.Copy()
 
 	smartMatches, fastMatches, err := findModels(providers, smartModel, fastModel)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 
-	var smartProviderID string
+	var smartOverride, fastOverride *agent.ModelOverride
 
-	// Override smart model.
 	if smartModel != "" {
 		found, err := validateMatches(smartMatches, smartModel, "smart")
 		if err != nil {
-			return err
+			return nil, nil, err
 		}
-		smartProviderID = found.provider
 		slog.Info("Overriding smart model for non-interactive run", "provider", found.provider, "model", found.modelID)
-		app.config.SetSelectedModelRuntime(config.SelectedModelTypeSmart, config.SelectedModel{
+		smartOverride = &agent.ModelOverride{
 			Provider: found.provider,
 			Model:    found.modelID,
-		})
+		}
 	}
 
-	// Override fast model.
-	switch {
-	case fastModel != "":
+	if fastModel != "" {
 		found, err := validateMatches(fastMatches, fastModel, "fast")
 		if err != nil {
-			return err
+			return nil, nil, err
 		}
 		slog.Info("Overriding fast model for non-interactive run", "provider", found.provider, "model", found.modelID)
-		app.config.SetSelectedModelRuntime(config.SelectedModelTypeFast, config.SelectedModel{
+		fastOverride = &agent.ModelOverride{
 			Provider: found.provider,
 			Model:    found.modelID,
-		})
-
-	case smartModel != "":
-		// No fast model specified, but smart model was - use provider's default.
-		fastCfg := app.GetDefaultFastModel(smartProviderID)
-		app.config.SetSelectedModelRuntime(config.SelectedModelTypeFast, fastCfg)
+		}
 	}
 
-	return app.AgentCoordinator.UpdateModels(ctx)
+	return smartOverride, fastOverride, nil
 }
 
 // GetDefaultFastModel returns the default fast model for the given

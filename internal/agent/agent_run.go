@@ -434,6 +434,31 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 			a.runAllowlists.ClearSessionRunAllowlistForCall(call.SessionID, armedCallID)
 		}
 	}()
+	// Persist explicit model slots after reclaim selects each active call. The
+	// mailbox and inter-process session lock are already owned; one UpdateModels
+	// call writes both slots atomically, and logical-call dedup avoids replaying
+	// a stale first-call update on a later promotion.
+	persistedModelCalls := make(map[string]struct{})
+	persistCallModels := func(active SessionAgentCall) error {
+		if active.PersistSmartModel == nil && active.PersistFastModel == nil {
+			return nil
+		}
+		if active.LogicalCallID != "" {
+			if _, ok := persistedModelCalls[active.LogicalCallID]; ok {
+				return nil
+			}
+		}
+		if a.sessions == nil {
+			return errors.New("agent: cannot persist model overrides without a session service")
+		}
+		if err := a.sessions.UpdateModels(runCtx, active.SessionID, active.PersistSmartModel, active.PersistFastModel); err != nil {
+			return fmt.Errorf("failed to persist admitted model overrides: %w", err)
+		}
+		if active.LogicalCallID != "" {
+			persistedModelCalls[active.LogicalCallID] = struct{}{}
+		}
+		return nil
+	}
 
 	// Turn loop: replaces the three recursive a.Run(ctx, ...) call sites
 	// that used to live inside runTurn's body (cancel-drain, end-of-turn
@@ -474,6 +499,12 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 		// interrupt landed in this exact window, which is the overwhelming
 		// majority of iterations.
 		call = mb.reclaimReplacementOrKeep(call)
+		if err := persistCallModels(call); err != nil {
+			if durableErr := a.restartOrphanedWithRetry([]SessionAgentCall{call}); durableErr != nil {
+				return nil, fmt.Errorf("%w; failed to durably recover the admitted call: %v", err, durableErr)
+			}
+			return nil, err
+		}
 		mb.setCurrentCall(call)
 		// R3-4: activate THIS call's carried restricted-run policy exactly
 		// when the call becomes the active turn — whether it won ownership

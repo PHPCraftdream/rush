@@ -824,6 +824,8 @@ func (c *coordinator) RebuildSessionAgentCall(ctx context.Context, data session.
 		InjectID:             data.InjectID,
 		SmartModel:           &smartModel,
 		FastModel:            &fastModel,
+		PersistSmartModel:    data.PersistSmartModel,
+		PersistFastModel:     data.PersistFastModel,
 		SystemPromptPrefix:   data.SystemPromptPrefix,
 		SystemPrompt:         data.SystemPrompt,
 		// R5-7 (P2 security review): restore the persisted entry-channel

@@ -655,6 +655,15 @@ func (c *coordinator) RunWithOverrides(ctx context.Context, sessionID, prompt st
 	// Carry session-level reasoning effort into the overrides so that
 	// applyModelOverrides restores it after resetting the model config.
 	if sess, err := c.sessions.Get(ctx, sessionID); err == nil {
+		// An omitted slot inherits the target session's durable override. This
+		// keeps a one-slot ExecuteRun override from silently switching the other
+		// slot back to the process default.
+		if smart == nil && sess.SmartModelID != "" {
+			smart = &ModelOverride{Provider: sess.SmartModelProvider, Model: sess.SmartModelID}
+		}
+		if fast == nil && sess.FastModelID != "" {
+			fast = &ModelOverride{Provider: sess.FastModelProvider, Model: sess.FastModelID}
+		}
 		if smart != nil && smart.ReasoningEffort == "" && sess.SmartModelReasoningEffort != "" {
 			smart.ReasoningEffort = sess.SmartModelReasoningEffort
 		}
@@ -723,6 +732,24 @@ func (c *coordinator) RunWithReservedOwnership(ctx context.Context, sessionID, p
 	if err := c.readyWg.Wait(); err != nil {
 		c.currentAgent.ReleaseExclusive(sessionID, epoch, cancel)
 		return nil, err
+	}
+
+	// Preserve durable session overrides for slots omitted by this call before
+	// building the pinned snapshot. ExecuteRun persists its requested slots at
+	// the agent handoff, so this read still observes the prior session state.
+	if sess, getErr := c.sessions.Get(ctx, sessionID); getErr == nil {
+		if smart == nil && sess.SmartModelID != "" {
+			smart = &ModelOverride{Provider: sess.SmartModelProvider, Model: sess.SmartModelID}
+		}
+		if fast == nil && sess.FastModelID != "" {
+			fast = &ModelOverride{Provider: sess.FastModelProvider, Model: sess.FastModelID}
+		}
+		if smart != nil && smart.ReasoningEffort == "" {
+			smart.ReasoningEffort = sess.SmartModelReasoningEffort
+		}
+		if fast != nil && fast.ReasoningEffort == "" {
+			fast.ReasoningEffort = sess.FastModelReasoningEffort
+		}
 	}
 
 	var pinned *resolvedOverrides

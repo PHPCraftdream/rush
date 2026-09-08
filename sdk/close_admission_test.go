@@ -111,6 +111,26 @@ type gatedRunCoordinator struct {
 	kind string
 }
 
+type gatedOnlyRunCoordinator struct {
+	agent.Coordinator
+	seq  *seqRecorder
+	gate *admissionGate
+	kind string
+}
+
+func (c *gatedOnlyRunCoordinator) Run(ctx context.Context, sessionID, prompt string, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
+	c.seq.record(c.kind + ":entered")
+	c.gate.signalEntered()
+	<-c.gate.release
+	c.seq.record(c.kind + ":delegating")
+	return c.Coordinator.Run(ctx, sessionID, prompt, attachments...)
+}
+
+func (c *gatedOnlyRunCoordinator) CancelAll() bool {
+	c.seq.record("shutdown:CancelAll")
+	return c.Coordinator.CancelAll()
+}
+
 func (c *gatedRunCoordinator) Run(ctx context.Context, sessionID, prompt string, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
 	c.seq.record(c.kind + ":entered")
 	c.gate.signalEntered()
@@ -328,7 +348,7 @@ func TestCloseWaitsForAdmittedRunBeforeShutdown(t *testing.T) {
 		client := newAdmissionTestClient(t, provider.URL)
 		gate := newAdmissionGate()
 		seq := &seqRecorder{}
-		client.app.AgentCoordinator = &gatedRunCoordinator{
+		client.app.AgentCoordinator = &gatedOnlyRunCoordinator{
 			Coordinator: client.app.AgentCoordinator,
 			seq:         seq,
 			gate:        gate,

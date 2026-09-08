@@ -29,6 +29,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/permission"
+	"github.com/PHPCraftdream/rush/internal/session"
 )
 
 // CallOptions carries one run's per-call execution policy. The zero value
@@ -137,6 +138,63 @@ type CallOptions struct {
 	// agentic_fetch or MCP tools, all of which keep hitting the real disk
 	// regardless of this field.
 	DiskProvider tools.DiskProvider
+}
+
+type sessionModelPersistenceContextKey struct{}
+
+type sessionModelPersistence struct {
+	smart *session.ModelSlotUpdate
+	fast  *session.ModelSlotUpdate
+}
+
+// WithSessionModelPersistence carries explicit ExecuteRun model-slot writes
+// to the eventual SessionAgentCall without making them shared coordinator
+// state. The values are copied before being attached to the context.
+func WithSessionModelPersistence(ctx context.Context, smart, fast *session.ModelSlotUpdate) context.Context {
+	copyUpdate := func(update *session.ModelSlotUpdate) *session.ModelSlotUpdate {
+		if update == nil {
+			return nil
+		}
+		copy := *update
+		return &copy
+	}
+	return context.WithValue(ctx, sessionModelPersistenceContextKey{}, sessionModelPersistence{
+		smart: copyUpdate(smart),
+		fast:  copyUpdate(fast),
+	})
+}
+
+func sessionModelPersistenceFrom(ctx context.Context) (smart, fast *session.ModelSlotUpdate) {
+	persistence, _ := ctx.Value(sessionModelPersistenceContextKey{}).(sessionModelPersistence)
+	return persistence.smart, persistence.fast
+}
+
+type modelOverridesContextKey struct{}
+
+type modelOverridesContextValue struct {
+	smart *ModelOverride
+	fast  *ModelOverride
+}
+
+// WithModelOverrides carries resolved model choices through credentialed
+// ExecuteRun calls without touching coordinator-wide model state.
+func WithModelOverrides(ctx context.Context, smart, fast *ModelOverride) context.Context {
+	copyOverride := func(override *ModelOverride) *ModelOverride {
+		if override == nil {
+			return nil
+		}
+		copy := *override
+		return &copy
+	}
+	return context.WithValue(ctx, modelOverridesContextKey{}, modelOverridesContextValue{
+		smart: copyOverride(smart),
+		fast:  copyOverride(fast),
+	})
+}
+
+func modelOverridesFrom(ctx context.Context) (smart, fast *ModelOverride) {
+	overrides, _ := ctx.Value(modelOverridesContextKey{}).(modelOverridesContextValue)
+	return overrides.smart, overrides.fast
 }
 
 // callOptionsContextKey is the unexported context key carrying *CallOptions.

@@ -603,10 +603,17 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 		credsRunner = cr
 	}
 
-	if smartModel != "" || fastModel != "" {
-		if err := app.overrideModelsForNonInteractive(ctx, smartModel, fastModel); err != nil {
-			return nil, fmt.Errorf("failed to override models: %w", err)
-		}
+	smartOverride, fastOverride, err := app.resolveModelOverridesForNonInteractive(smartModel, fastModel)
+	if err != nil {
+		return nil, fmt.Errorf("failed to override models: %w", err)
+	}
+	modelOverrideRequested := smartOverride != nil || fastOverride != nil
+	var persistedSmartModel, persistedFastModel *session.ModelSlotUpdate
+	if smartOverride != nil {
+		persistedSmartModel = &session.ModelSlotUpdate{Provider: smartOverride.Provider, Model: smartOverride.Model}
+	}
+	if fastOverride != nil {
+		persistedFastModel = &session.ModelSlotUpdate{Provider: fastOverride.Provider, Model: fastOverride.Model}
 	}
 
 	var (
@@ -836,6 +843,10 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 		FailIfSessionBusy: failIfSessionBusy,
 	}
 	ctx = agent.WithCallOptions(ctx, callOpts)
+	if modelOverrideRequested {
+		ctx = agent.WithSessionModelPersistence(ctx, persistedSmartModel, persistedFastModel)
+		ctx = agent.WithModelOverrides(ctx, smartOverride, fastOverride)
+	}
 
 	// Fork patch (orchestrator UX): --agents single. The agent /
 	// agentic_fetch tools are stripped from the coder's toolset for THIS
@@ -1223,6 +1234,13 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 	done := make(chan agentTurnResponse, 1)
 
 	runFn := func(ctx context.Context, sessionID, prompt string) (*fantasy.AgentResult, error) {
+		if reservedHold != nil && modelOverrideRequested {
+			return app.AgentCoordinator.RunWithReservedOwnership(ctx, sessionID, prompt,
+				reservedEpoch, reservedCancel, func() { reservedHandoff.Store(true) }, smartOverride, fastOverride)
+		}
+		if modelOverrideRequested {
+			return app.AgentCoordinator.RunWithOverrides(ctx, sessionID, prompt, smartOverride, fastOverride)
+		}
 		return app.AgentCoordinator.Run(ctx, sessionID, prompt)
 	}
 	if credsRunner != nil {

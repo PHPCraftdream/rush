@@ -273,6 +273,13 @@ type SessionAgentCall struct {
 	// the in-process call snapshot. It is never serialized or rebuilt.
 	Credentials *CredentialSet `json:"-"`
 
+	// PersistSmartModel/PersistFastModel are the explicitly requested session
+	// slots for an admitted ExecuteRun. They are written after the mailbox and
+	// inter-process session lock are both acquired, so a rejected call cannot
+	// alter durable session state. Nil means leave that slot untouched.
+	PersistSmartModel *session.ModelSlotUpdate `json:"-"`
+	PersistFastModel  *session.ModelSlotUpdate `json:"-"`
+
 	// SystemPrompt pins the BASE system prompt — the one applyModelOverrides
 	// rebuilds from the resolved provider/model. It is distinct from, and
 	// lower precedence than, SystemPromptOverride: the override is the

@@ -26,10 +26,77 @@ import (
 	"encoding/json"
 	"testing"
 
+	"charm.land/catwalk/pkg/catwalk"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 )
+
+func TestExecuteRunModelSlotPersistenceDurableRoundTrip(t *testing.T) {
+	original := SessionAgentCall{
+		SessionID: "model-slot-roundtrip",
+		Prompt:    "persist model slots",
+		PersistSmartModel: &session.ModelSlotUpdate{
+			Provider: "provider-a",
+			Model:    "smart-a",
+		},
+		PersistFastModel: &session.ModelSlotUpdate{
+			Provider: "provider-b",
+			Model:    "fast-b",
+		},
+	}
+
+	data := ToSessionAgentCallData(original)
+	raw, err := json.Marshal(data)
+	require.NoError(t, err)
+	require.Contains(t, string(raw), `"persist_smart_model":{"provider":"provider-a","model":"smart-a"}`)
+	require.Contains(t, string(raw), `"persist_fast_model":{"provider":"provider-b","model":"fast-b"}`)
+	var decoded session.SessionAgentCallData
+	require.NoError(t, json.Unmarshal(raw, &decoded))
+
+	rebuilt, err := FromSessionAgentCallData(decoded)
+	require.NoError(t, err)
+	require.Equal(t, original.PersistSmartModel, rebuilt.PersistSmartModel)
+	require.Equal(t, original.PersistFastModel, rebuilt.PersistFastModel)
+	var legacy session.SessionAgentCallData
+	require.NoError(t, json.Unmarshal([]byte(`{"SessionID":"legacy","Prompt":"old row"}`), &legacy))
+	require.Nil(t, legacy.PersistSmartModel)
+	require.Nil(t, legacy.PersistFastModel)
+}
+
+func TestDurableReplayRebuildPersistsModelSlotsAtTurnAdmission(t *testing.T) {
+	env := testEnv(t)
+	coord := newRoleModelTestCoordinator(t, env, false)
+	sess, err := env.sessions.Create(t.Context(), "durable-model-replay")
+	require.NoError(t, err)
+
+	data := session.SessionAgentCallData{
+		SessionID: sess.ID,
+		Prompt:    "replayed model override",
+		SmartModel: &session.ModelCfg{
+			Provider: "smart-provider",
+			Model:    "smart-model",
+		},
+		FastModel: &session.ModelCfg{
+			Provider: "fast-provider",
+			Model:    "fast-model",
+		},
+		PersistSmartModel: &session.ModelSlotUpdate{Provider: "smart-provider", Model: "smart-model"},
+		PersistFastModel:  &session.ModelSlotUpdate{Provider: "fast-provider", Model: "fast-model"},
+	}
+	rebuilt, err := coord.RebuildSessionAgentCall(t.Context(), data)
+	require.NoError(t, err)
+	rebuilt.SmartModel = &Model{Model: &mockModel{}, CatwalkCfg: catwalk.Model{ContextWindow: 200000, DefaultMaxTokens: 1000}}
+	rebuilt.FastModel = &Model{Model: &mockModel{}, CatwalkCfg: catwalk.Model{ContextWindow: 200000, DefaultMaxTokens: 1000}}
+	coord.currentAgent = testSessionAgent(env, &mockModel{}, &mockModel{}, "")
+
+	_, err = coord.RunSessionAgentCall(t.Context(), rebuilt)
+	require.NoError(t, err)
+	after, err := env.sessions.Get(t.Context(), sess.ID)
+	require.NoError(t, err)
+	require.Equal(t, "smart-model", after.SmartModelID)
+	require.Equal(t, "fast-model", after.FastModelID)
+}
 
 // TestLogicalCallID_DurableRoundTripPreservesIdempotency is the end-to-end
 // regression test for the LogicalCallID serialization loss bug.

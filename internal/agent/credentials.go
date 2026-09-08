@@ -363,6 +363,18 @@ var credentialReasoningLevels = []string{"low", "medium", "high"}
 func (c *coordinator) resolveCredentialsModels(ctx context.Context, sessionID string, creds *CredentialSet) (*resolvedOverrides, error) {
 	smartChoice, smartCovered := creds.Models[RoleSmart]
 	fastChoice, fastCovered := creds.Models[RoleFast]
+	if smartOverride, fastOverride := modelOverridesFrom(ctx); smartOverride != nil || fastOverride != nil {
+		if smartOverride != nil {
+			smartChoice.Provider = smartOverride.Provider
+			smartChoice.Model = smartOverride.Model
+			smartCovered = true
+		}
+		if fastOverride != nil {
+			fastChoice.Provider = fastOverride.Provider
+			fastChoice.Model = fastOverride.Model
+			fastCovered = true
+		}
+	}
 
 	if !smartCovered {
 		return nil, fmt.Errorf("credential set does not cover the smart role (Models[RoleSmart]); smart is required even when AllowConfiguredRoleFallback is true")
@@ -381,6 +393,7 @@ func (c *coordinator) resolveCredentialsModels(ctx context.Context, sessionID st
 	}
 
 	resolved := &resolvedOverrides{credentials: creds}
+	resolved.persistSmartModel, resolved.persistFastModel = sessionModelPersistenceFrom(ctx)
 	if base != nil {
 		resolved.smart = base.smart
 		resolved.fast = base.fast

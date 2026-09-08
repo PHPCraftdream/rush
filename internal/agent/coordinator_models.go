@@ -17,6 +17,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/prompt"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/session"
 )
 
 // resolvedOverrides is what applyModelOverrides computed, captured so the
@@ -63,6 +64,10 @@ type resolvedOverrides struct {
 	// pin nothing; the call falls back to the shared toolset exactly like a
 	// legacy caller.
 	tools []fantasy.AgentTool
+	// Explicit ExecuteRun model-slot writes, applied only after the session
+	// agent owns the inter-process lock.
+	persistSmartModel *session.ModelSlotUpdate
+	persistFastModel  *session.ModelSlotUpdate
 }
 
 // resolveSessionModels builds the full per-call snapshot for a turn —
@@ -198,6 +203,7 @@ func (c *coordinator) resolveSessionModelsInternal(ctx context.Context, sessionI
 		smart: smartModel,
 		fast:  fastModel,
 	}
+	resolved.persistSmartModel, resolved.persistFastModel = sessionModelPersistenceFrom(ctx)
 
 	// Resolve prompt prefix from provider config using the same atomic snapshot.
 	smartProviderCfg, ok := cfg.Providers.Get(smartModel.ModelCfg.Provider)
@@ -380,6 +386,7 @@ func (c *coordinator) applyModelOverrides(ctx context.Context, smart, fast *Mode
 	}
 
 	resolved := &resolvedOverrides{smart: smartModel, fast: fastModel}
+	resolved.persistSmartModel, resolved.persistFastModel = sessionModelPersistenceFrom(ctx)
 
 	if smartProviderCfg, ok := cfg.Providers.Get(smartModel.ModelCfg.Provider); ok {
 		resolved.promptPrefix = smartProviderCfg.SystemPromptPrefix
@@ -441,6 +448,8 @@ func (r *resolvedOverrides) pin(call *SessionAgentCall) {
 	if r.tools != nil {
 		call.Tools = r.tools
 	}
+	call.PersistSmartModel = r.persistSmartModel
+	call.PersistFastModel = r.persistFastModel
 }
 
 // resolveSessionSystemPrompt loads the per-session system prompt from the DB,

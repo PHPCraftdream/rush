@@ -46,6 +46,14 @@ func fromSessionModelCfg(cfg session.ModelCfg) config.SelectedModel {
 	}
 }
 
+func toSessionModelSlotUpdate(update *session.ModelSlotUpdate) *session.ModelSlotUpdate {
+	if update == nil {
+		return nil
+	}
+	copy := *update
+	return &copy
+}
+
 // toSessionRunAllowlistSpec converts permission.RunAllowlistSpec to its
 // session.SessionAgentCallData mirror type (session.RunAllowlistSpec). See
 // that type's doc for why the mirror exists.
@@ -190,6 +198,7 @@ func fromSessionFolderScopeSpec(spec *session.FolderScopeSpec) *permission.Folde
 // RunAllowlistSpec round-trips so a pump-driven restart can recompile and re-arm the caller's declared policy (R4-1/R4-2/R4-3).
 // FolderScopeSpec round-trips so a pump-driven restart can recompile the call's folder scope (T12).
 // CallOptionsSpec round-trips the rest of the call's replay-relevant CallOptions execution policy (DisableSubAgents, ModelRole, timeout-watchdog policy) so a pump-driven restart reconstructs all of it together instead of just the folder scope (R5-3).
+// Explicit model-slot persistence requests round-trip so an admitted ExecuteRun retains its session selection after a durable restart.
 //
 // LogicalCallID is serialized to ensure the stable idempotency key survives
 // the durable serialization boundary (P2-1 fix, P0-1 release blocker).
@@ -218,6 +227,8 @@ func ToSessionAgentCallData(call SessionAgentCall) session.SessionAgentCallData 
 		InjectID:             call.InjectID,
 		SmartModel:           smartModel,
 		FastModel:            fastModel,
+		PersistSmartModel:    toSessionModelSlotUpdate(call.PersistSmartModel),
+		PersistFastModel:     toSessionModelSlotUpdate(call.PersistFastModel),
 		SystemPromptPrefix:   call.SystemPromptPrefix,
 		SystemPrompt:         call.SystemPrompt,
 		Origin:               call.Origin,
@@ -278,6 +289,8 @@ func FromSessionAgentCallData(callData session.SessionAgentCallData) (SessionAge
 		SystemPromptPrefix:   callData.SystemPromptPrefix,
 		SystemPrompt:         callData.SystemPrompt,
 		Origin:               callData.Origin,
+		PersistSmartModel:    toSessionModelSlotUpdate(callData.PersistSmartModel),
+		PersistFastModel:     toSessionModelSlotUpdate(callData.PersistFastModel),
 		RunAllowlistSpec:     fromSessionRunAllowlistSpec(callData.RunAllowlistSpec),
 		FolderScopeSpec:      fromSessionFolderScopeSpec(callData.FolderScopeSpec),
 		CallOptions:          opts,

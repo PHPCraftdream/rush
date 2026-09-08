@@ -108,8 +108,8 @@ type Session struct {
 // slot (large or small), passed to Service.UpdateModels. See UpdateModels'
 // doc comment for the nil-vs-non-nil semantics.
 type ModelSlotUpdate struct {
-	Provider string
-	Model    string
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
 }
 
 type Service interface {
