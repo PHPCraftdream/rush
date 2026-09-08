@@ -450,20 +450,78 @@ func (c *coordinator) currentProviderConfig(providerID string) (config.ProviderC
 	return providerCfg, nil
 }
 
-func (c *coordinator) buildAnthropicProvider(baseURL, apiKey string, headers map[string]string, providerID string) (fantasy.Provider, error) {
-	var opts []anthropic.Option
+func anthropicHeaderValue(headers map[string]string, name string) (string, bool) {
+	keys := make([]string, 0, len(headers))
+	for key := range headers {
+		if strings.EqualFold(key, name) {
+			keys = append(keys, key)
+		}
+	}
+	if len(keys) == 0 {
+		return "", false
+	}
+	if value, ok := headers[name]; ok {
+		return value, true
+	}
+	slices.Sort(keys)
+	return headers[keys[0]], true
+}
+
+func setAnthropicHeader(headers map[string]string, name, value string) {
+	for key := range headers {
+		if strings.EqualFold(key, name) {
+			delete(headers, key)
+		}
+	}
+	headers[name] = value
+}
+
+func configureAnthropicAuthHeaders(headers map[string]string, apiKey, providerID string) map[string]string {
+	headers = maps.Clone(headers)
+	if headers == nil {
+		headers = make(map[string]string)
+	}
+	operatorAPIKey, hasOperatorAPIKey := anthropicHeaderValue(headers, "x-api-key")
+	operatorAuthorization, hasOperatorAuthorization := anthropicHeaderValue(headers, "Authorization")
+
+	// Remove all case variants before adding one canonical value. This makes
+	// auth precedence independent of map iteration order.
+	setAnthropicHeader(headers, "x-api-key", "")
+	setAnthropicHeader(headers, "Authorization", "")
 
 	switch {
 	case strings.HasPrefix(apiKey, "Bearer "):
-		// NOTE: Prevent the SDK from picking up the API key from env.
-		os.Setenv("ANTHROPIC_API_KEY", "")
-		headers["Authorization"] = apiKey
+		setAnthropicHeader(headers, "x-api-key", "")
+		setAnthropicHeader(headers, "Authorization", apiKey)
 	case providerID == string(catwalk.InferenceProviderMiniMax) || providerID == string(catwalk.InferenceProviderMiniMaxChina):
-		// NOTE: Prevent the SDK from picking up the API key from env.
-		os.Setenv("ANTHROPIC_API_KEY", "")
-		headers["Authorization"] = "Bearer " + apiKey
+		setAnthropicHeader(headers, "x-api-key", "")
+		setAnthropicHeader(headers, "Authorization", "Bearer "+apiKey)
 	case apiKey != "":
-		// X-Api-Key header
+		setAnthropicHeader(headers, "x-api-key", apiKey)
+		if hasOperatorAuthorization {
+			setAnthropicHeader(headers, "Authorization", operatorAuthorization)
+		}
+	default:
+		if hasOperatorAPIKey {
+			setAnthropicHeader(headers, "x-api-key", operatorAPIKey)
+		}
+		if hasOperatorAuthorization {
+			setAnthropicHeader(headers, "Authorization", operatorAuthorization)
+		}
+	}
+
+	return headers
+}
+
+func (c *coordinator) buildAnthropicProvider(baseURL, apiKey string, headers map[string]string, providerID string) (fantasy.Provider, error) {
+	var opts []anthropic.Option
+	headers = configureAnthropicAuthHeaders(headers, apiKey, providerID)
+
+	if apiKey != "" &&
+		!strings.HasPrefix(apiKey, "Bearer ") &&
+		providerID != string(catwalk.InferenceProviderMiniMax) &&
+		providerID != string(catwalk.InferenceProviderMiniMaxChina) {
+		// X-Api-Key header.
 		opts = append(opts, anthropic.WithAPIKey(apiKey))
 	}
 
@@ -698,10 +756,12 @@ func (c *coordinator) buildProvider(providerCfg config.ProviderConfig, model con
 			baseURL = hyper.BaseURL() + "/v1"
 			headers["x-rush-id"] = event.GetID()
 		case string(catwalk.InferenceProviderZAI):
-			if providerCfg.ExtraBody == nil {
-				providerCfg.ExtraBody = map[string]any{}
+			extraBody := maps.Clone(providerCfg.ExtraBody)
+			if extraBody == nil {
+				extraBody = make(map[string]any)
 			}
-			providerCfg.ExtraBody["tool_stream"] = true
+			extraBody["tool_stream"] = true
+			return c.buildOpenaiCompatProvider(baseURL, apiKey, headers, extraBody, providerCfg.ID, isSubAgent)
 		}
 		return c.buildOpenaiCompatProvider(baseURL, apiKey, headers, providerCfg.ExtraBody, providerCfg.ID, isSubAgent)
 	case cliprovider.ProviderType:
