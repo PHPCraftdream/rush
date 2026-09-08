@@ -715,6 +715,126 @@ public static class RushOutputPump {
         public override void Write(byte[] buffer, int offset, int count) { throw new NotSupportedException(); }
     }
 
+    private sealed class GeneratedReadStream : Stream {
+        private readonly long length;
+        private readonly int bound;
+        private long position;
+        public int MaxReadRequest { get; private set; }
+
+        public GeneratedReadStream(long length, int bound) {
+            this.length = length;
+            this.bound = bound;
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) {
+            if (count > bound)
+                throw new InvalidOperationException("Copy requested more than its fixed buffer.");
+            if (count == 0 || position == length) return 0;
+            if (count > MaxReadRequest) MaxReadRequest = count;
+            int read = (int)Math.Min((long)count, length - position);
+            for (int index = 0; index < read; index++)
+                buffer[offset + index] = (byte)('a' + ((position + index) % 26));
+            position += read;
+            return read;
+        }
+
+        public override bool CanRead { get { return true; } }
+        public override bool CanSeek { get { return false; } }
+        public override bool CanWrite { get { return false; } }
+        public override long Length { get { return length; } }
+        public override long Position {
+            get { return position; }
+            set { throw new NotSupportedException(); }
+        }
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) { throw new NotSupportedException(); }
+        public override void SetLength(long value) { throw new NotSupportedException(); }
+        public override void Write(byte[] buffer, int offset, int count) { throw new NotSupportedException(); }
+    }
+
+    private sealed class FragmentedReadStream : Stream {
+        private readonly byte[] data;
+        private int position;
+
+        public FragmentedReadStream(byte[] data) {
+            this.data = data;
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) {
+            if (count == 0 || position == data.Length) return 0;
+            buffer[offset] = data[position++];
+            return 1;
+        }
+
+        public override bool CanRead { get { return true; } }
+        public override bool CanSeek { get { return false; } }
+        public override bool CanWrite { get { return false; } }
+        public override long Length { get { return data.Length; } }
+        public override long Position {
+            get { return position; }
+            set { throw new NotSupportedException(); }
+        }
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) { throw new NotSupportedException(); }
+        public override void SetLength(long value) { throw new NotSupportedException(); }
+        public override void Write(byte[] buffer, int offset, int count) { throw new NotSupportedException(); }
+    }
+
+    private sealed class CountingHashTextWriter : TextWriter {
+        private const ulong HashOffset = 1469598103934665603UL;
+        private const ulong HashPrime = 1099511628211UL;
+        private ulong hash = HashOffset;
+        public bool IsDisposed { get; private set; }
+        public long Total { get; private set; }
+        public int MaxSingleWrite { get; private set; }
+        public ulong Hash { get { return hash; } }
+        public override Encoding Encoding { get { return new UTF8Encoding(false); } }
+
+        public override void Write(char[] buffer, int index, int count) {
+            Add(buffer, index, count);
+        }
+
+        public override void Write(string value) {
+            if (value == null) throw new ArgumentNullException("value");
+            if (value.Length > BufferSize)
+                throw new InvalidOperationException("Output pump issued an oversized write.");
+            AddHash(value, 0, value.Length);
+        }
+
+        public override void Flush() {
+            if (IsDisposed) throw new ObjectDisposedException("CountingHashTextWriter");
+        }
+
+        private void Add(char[] buffer, int index, int count) {
+            if (IsDisposed) throw new ObjectDisposedException("CountingHashTextWriter");
+            if (count > BufferSize)
+                throw new InvalidOperationException("Output pump issued an oversized write.");
+            if (index < 0 || count < 0 || buffer.Length - index < count)
+                throw new ArgumentOutOfRangeException();
+            if (count > MaxSingleWrite) MaxSingleWrite = count;
+            for (int offset = 0; offset < count; offset++) {
+                hash ^= buffer[index + offset];
+                hash *= HashPrime;
+            }
+            Total += count;
+        }
+
+        private void AddHash(string value, int index, int count) {
+            if (IsDisposed) throw new ObjectDisposedException("CountingHashTextWriter");
+            if (count > MaxSingleWrite) MaxSingleWrite = count;
+            for (int offset = 0; offset < count; offset++) {
+                hash ^= value[index + offset];
+                hash *= HashPrime;
+            }
+            Total += count;
+        }
+
+        protected override void Dispose(bool disposing) {
+            IsDisposed = true;
+            base.Dispose(disposing);
+        }
+    }
+
     private sealed class RecordingTextWriter : TextWriter {
         private readonly StringBuilder output = new StringBuilder();
         public bool IsDisposed { get; private set; }
@@ -847,21 +967,68 @@ public static class RushOutputPump {
             throw new InvalidOperationException("Output pump lifecycle self-test closed a failed destination.");
     }
 
-    public static void VerifyBoundedPump() {
-        string expected = new string('x', BufferSize + 5);
-        byte[] input = new UTF8Encoding(false).GetBytes(expected);
-        var source = new GuardedReadStream(input, BufferSize);
+    private static ulong HashGeneratedAscii(long length) {
+        ulong hash = 1469598103934665603UL;
+        for (long position = 0; position < length; position++) {
+            hash ^= (char)('a' + (position % 26));
+            hash *= 1099511628211UL;
+        }
+        return hash;
+    }
+
+    private static void VerifyFragmentedEncoding(string expected, Encoding encoding,
+        bool includePreamble) {
+        byte[] payload = encoding.GetBytes(expected);
+        byte[] preamble = includePreamble ? encoding.GetPreamble() : new byte[0];
+        if (includePreamble && preamble.Length == 0)
+            throw new InvalidOperationException("Fragmented output pump self-test expected an encoding preamble.");
+        byte[] input = new byte[preamble.Length + payload.Length];
+        Buffer.BlockCopy(preamble, 0, input, 0, preamble.Length);
+        Buffer.BlockCopy(payload, 0, input, preamble.Length, payload.Length);
+        var source = new FragmentedReadStream(input);
         var destination = new RecordingTextWriter();
+        var pump = Start(source, destination, encoding);
+        try {
+            pump.Wait();
+        } finally {
+            pump.Dispose();
+        }
+        if (destination.IsDisposed || destination.ToString() != expected)
+            throw new InvalidOperationException("Fragmented output pump self-test decoded text incorrectly.");
+        destination.Write("tail");
+        if (destination.ToString() != expected + "tail")
+            throw new InvalidOperationException("Fragmented output pump self-test closed its destination.");
+    }
+
+    private static void VerifyFragmentedEncodings() {
+        const string expected = "A\u00e9\u2603\ud83d\ude00\u4e2d";
+        VerifyFragmentedEncoding(expected, new UTF8Encoding(true), true);
+        VerifyFragmentedEncoding(expected, new UTF8Encoding(false), false);
+        VerifyFragmentedEncoding(expected, new UnicodeEncoding(false, true), true);
+        VerifyFragmentedEncoding(expected, new UnicodeEncoding(true, true), true);
+        VerifyFragmentedEncoding(expected, new UTF32Encoding(false, true), true);
+        VerifyFragmentedEncoding(expected, new UTF32Encoding(true, true), true);
+    }
+
+    public static void VerifyBoundedPump() {
+        const int payloadLength = BufferSize * 3 + 17;
+        var source = new GeneratedReadStream(payloadLength, BufferSize);
+        var destination = new CountingHashTextWriter();
         var pump = Start(source, destination, new UTF8Encoding(false));
         try {
             pump.Wait();
         } finally {
             pump.Dispose();
         }
-        destination.Write("tail");
         if (source.MaxReadRequest > BufferSize || destination.IsDisposed ||
-                destination.ToString() != expected + "tail")
-            throw new InvalidOperationException("Bounded output pump self-test did not drain to EOF.");
+                destination.Total != payloadLength ||
+                destination.Hash != HashGeneratedAscii(payloadLength) ||
+                destination.MaxSingleWrite > BufferSize)
+            throw new InvalidOperationException("Bounded output pump self-test did not use fixed-size writes.");
+        destination.Write("tail");
+        if (destination.Total != payloadLength + 4 || destination.IsDisposed)
+            throw new InvalidOperationException("Bounded output pump self-test closed its destination.");
+        VerifyFragmentedEncodings();
     }
 }
 '@
