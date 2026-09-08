@@ -978,17 +978,53 @@ func lastMCPMember(members []mcpJSONMember, key string) *mcpJSONMember {
 }
 
 func applyMCPJSONEdits(data []byte, edits ...mcpJSONEdit) []byte {
-	for i := 0; i < len(edits); i++ {
-		for j := i + 1; j < len(edits); j++ {
-			if edits[j].start > edits[i].start {
-				edits[i], edits[j] = edits[j], edits[i]
-			}
+	if len(edits) == 0 {
+		return append([]byte(nil), data...)
+	}
+	ordered := slices.Clone(edits)
+	slices.SortStableFunc(ordered, func(left, right mcpJSONEdit) int {
+		if left.start < right.start {
+			return -1
 		}
+		if left.start > right.start {
+			return 1
+		}
+		if left.end < right.end {
+			return -1
+		}
+		if left.end > right.end {
+			return 1
+		}
+		return 0
+	})
+
+	maxInt := int(^uint(0) >> 1)
+	resultLen := len(data)
+	for index, edit := range ordered {
+		if edit.start < 0 || edit.end < 0 || edit.start > edit.end || edit.end > len(data) {
+			panic(fmt.Sprintf("invalid MCP JSON edit span %d:%d for document length %d", edit.start, edit.end, len(data)))
+		}
+		if index > 0 && ordered[index-1].end > edit.start {
+			panic(fmt.Sprintf("overlapping MCP JSON edit spans %d:%d and %d:%d", ordered[index-1].start, ordered[index-1].end, edit.start, edit.end))
+		}
+		resultLen -= edit.end - edit.start
+		if len(edit.replacement) > maxInt-resultLen {
+			panic("MCP JSON edit result length overflows int")
+		}
+		resultLen += len(edit.replacement)
 	}
-	result := append([]byte(nil), data...)
-	for _, edit := range edits {
-		result = append(append(append([]byte(nil), result[:edit.start]...), edit.replacement...), result[edit.end:]...)
+
+	var result []byte
+	if resultLen > 0 {
+		result = make([]byte, resultLen)
 	}
+	sourceStart, destinationStart := 0, 0
+	for _, edit := range ordered {
+		destinationStart += copy(result[destinationStart:], data[sourceStart:edit.start])
+		destinationStart += copy(result[destinationStart:], edit.replacement)
+		sourceStart = edit.end
+	}
+	copy(result[destinationStart:], data[sourceStart:])
 	return result
 }
 

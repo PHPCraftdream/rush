@@ -3,8 +3,11 @@ package config
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -140,6 +143,125 @@ func TestMCPDocumentEditorRetainsDuplicateKeyPolicy(t *testing.T) {
 	require.NotContains(t, replacedRoot.MCP, "duplicate")
 	require.Contains(t, replacedRoot.MCP, "renamed")
 	require.Contains(t, replacedRoot.MCP, "keep")
+}
+
+func TestMCPDocumentEditorScalesAlternatingDuplicateMembers(t *testing.T) {
+	const memberPairs = 128
+
+	var source, removeWant, renameWant strings.Builder
+	source.WriteString("{\r\n  \"prefix\": 1,\r\n  \"mcp\": {\r\n")
+	removeWant.WriteString("{\r\n  \"prefix\": 1,\r\n  \"mcp\": {\r\n")
+	renameWant.WriteString("{\r\n  \"prefix\": 1,\r\n  \"mcp\": {\r\n")
+	for index := 0; index < memberPairs; index++ {
+		fmt.Fprintf(&source, "    \"target\": {\"type\":\"http\",\"url\":\"target-%03d\"},\r\n", index)
+		fmt.Fprintf(&source, "    \"keep-%03d\": {\"type\":\"http\",\"url\":\"keep-%03d\"}", index, index)
+		fmt.Fprintf(&removeWant, "    \"keep-%03d\": {\"type\":\"http\",\"url\":\"keep-%03d\"}", index, index)
+		fmt.Fprintf(&renameWant, "    \"keep-%03d\": {\"type\":\"http\",\"url\":\"keep-%03d\"}", index, index)
+		if index+1 < memberPairs {
+			source.WriteString(",\r\n")
+			removeWant.WriteString(",\r\n")
+			renameWant.WriteString(",\r\n")
+		}
+	}
+	source.WriteString("\r\n  },\r\n  \"suffix\": 2\r\n}\r\n")
+	removeWant.WriteString("\r\n  },\r\n  \"suffix\": 2\r\n}\r\n")
+	renameWant.WriteString(",\r\n    \"renamed\":{\"type\":\"http\",\"url\":\"http://renamed\"}\r\n  },\r\n  \"suffix\": 2\r\n}\r\n")
+
+	data := []byte(source.String())
+	removed, err := editMCPDocument(data, "rush.json", "remove", "target", "target", MCPConfig{}, nil, nil)
+	require.NoError(t, err)
+	require.Equal(t, removeWant.String(), string(removed))
+	require.True(t, json.Valid(removed))
+	require.Equal(t, 0, mcpDocumentEntryKeyCount(t, removed, "target"))
+	var removedRoot struct {
+		MCP map[string]json.RawMessage `json:"mcp"`
+	}
+	require.NoError(t, json.Unmarshal(removed, &removedRoot))
+	require.Len(t, removedRoot.MCP, memberPairs)
+
+	renameValue := MCPConfig{Type: MCPHttp, URL: "http://renamed"}
+	rename, err := editMCPDocument(data, "rush.json", "replace", "target", "renamed", renameValue, nil, nil)
+	require.NoError(t, err)
+	require.Equal(t, renameWant.String(), string(rename))
+	require.True(t, json.Valid(rename))
+	require.Equal(t, 0, mcpDocumentEntryKeyCount(t, rename, "target"))
+	require.Equal(t, 1, mcpDocumentEntryKeyCount(t, rename, "renamed"))
+}
+
+func TestApplyMCPJSONEditsHandlesArbitraryOrderAdjacentGrowthShrinkAndAliases(t *testing.T) {
+	data := []byte("0123456789")
+	edits := []mcpJSONEdit{
+		{start: 6, end: 8, replacement: []byte("LONG")},
+		{start: 2, end: 4, replacement: data[8:10]},
+		{start: 4, end: 6},
+	}
+	originalEdits := slices.Clone(edits)
+
+	got := applyMCPJSONEdits(data, edits...)
+
+	require.Equal(t, []byte("0189LONG89"), got)
+	require.Equal(t, originalEdits, edits)
+}
+
+func TestApplyMCPJSONEditsHandlesZeroAndOneEdit(t *testing.T) {
+	data := []byte("abc")
+
+	require.Equal(t, data, applyMCPJSONEdits(data))
+	require.Equal(t, []byte("aXc"), applyMCPJSONEdits(data, mcpJSONEdit{
+		start: 1, end: 2, replacement: []byte("X"),
+	}))
+}
+
+func TestApplyMCPJSONEditsPreservesEmptyAndCRLFBytes(t *testing.T) {
+	data := []byte("left\r\nold\r\nright")
+	got := applyMCPJSONEdits(data, mcpJSONEdit{
+		start:       len("left\r\n"),
+		end:         len("left\r\nold"),
+		replacement: []byte("new\r\nvalue"),
+	})
+
+	require.Equal(t, []byte("left\r\nnew\r\nvalue\r\nright"), got)
+}
+
+func TestApplyMCPJSONEditsRejectsInvalidSpans(t *testing.T) {
+	data := []byte("012345")
+	for name, edits := range map[string][]mcpJSONEdit{
+		"negative start":   {{start: -1, end: 1}},
+		"end before start": {{start: 3, end: 2}},
+		"end beyond data":  {{start: 1, end: len(data) + 1}},
+		"overlap":          {{start: 1, end: 4}, {start: 3, end: 5}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			require.Panics(t, func() {
+				applyMCPJSONEdits(data, edits...)
+			})
+		})
+	}
+}
+
+func TestApplyMCPJSONEditsAllocationsDoNotScalePerEdit(t *testing.T) {
+	makeEdits := func(count int) []mcpJSONEdit {
+		edits := make([]mcpJSONEdit, count)
+		for index := range edits {
+			edits[index] = mcpJSONEdit{start: index * 2, end: index*2 + 1, replacement: []byte("x")}
+		}
+		return edits
+	}
+
+	smallData := bytes.Repeat([]byte("a."), 8)
+	largeData := bytes.Repeat([]byte("a."), 64)
+	smallEdits := makeEdits(8)
+	largeEdits := makeEdits(64)
+	var got []byte
+	smallAllocs := testing.AllocsPerRun(100, func() {
+		got = applyMCPJSONEdits(smallData, smallEdits...)
+	})
+	largeAllocs := testing.AllocsPerRun(100, func() {
+		got = applyMCPJSONEdits(largeData, largeEdits...)
+	})
+	require.NotEmpty(t, got)
+	require.LessOrEqual(t, largeAllocs, smallAllocs+2,
+		"edit assembly allocations must be independent of edit count")
 }
 
 func mcpDocumentEntryKeyCount(t *testing.T, data []byte, key string) int {
