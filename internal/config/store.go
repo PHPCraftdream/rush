@@ -191,6 +191,10 @@ type ConfigStore struct {
 	// reloadAfterExternalRead is a white-box test seam. It is called after
 	// the candidate has loaded its stable .mcp.json path set.
 	reloadAfterExternalRead func()
+
+	// reloadResolverExpander is a white-box test seam for cancellation during
+	// candidate construction. It is nil on production stores.
+	reloadResolverExpander Expander
 }
 
 // loadSnapshot returns the current published snapshot. It never returns

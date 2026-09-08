@@ -495,13 +495,17 @@ func (s *ConfigStore) buildAndPublishReload(ctx context.Context, expectedUncerta
 		return fmt.Errorf("invalid hook configuration on reload: %w", err)
 	}
 
-	// env/resolver are built fresh from the real process environment on
-	// every reload. ctx is now threaded all the way into ResolveValue
-	// (via configureProviders → resolver.ResolveValue), so a caller that
-	// cancels ctx (e.g. app shutdown) can abort an in-flight shell
-	// substitution instead of waiting out the full resolveTimeout.
+	// env/resolvers are built fresh from the real process environment on
+	// every reload. The candidate resolver carries ctx so cancellation can
+	// abort an in-flight shell substitution, while the resolver published
+	// below must remain usable after this reload returns.
 	baseEnv := env.New()
-	resolver := NewShellVariableResolver(baseEnv, WithContext(ctx))
+	candidateResolverOpts := []ShellResolverOption{WithContext(ctx)}
+	if s.reloadResolverExpander != nil {
+		candidateResolverOpts = append(candidateResolverOpts, WithExpander(s.reloadResolverExpander))
+	}
+	candidateResolver := NewShellVariableResolver(baseEnv, candidateResolverOpts...)
+	runtimeResolver := NewShellVariableResolver(baseEnv)
 	providers, err := Providers(cfg)
 	if err != nil {
 		return fmt.Errorf("failed to load providers during reload: %w", err)
@@ -513,7 +517,7 @@ func (s *ConfigStore) buildAndPublishReload(ctx context.Context, expectedUncerta
 	// reloadMu (serialising it against other reload attempts) but NOT
 	// publishMu — a hung shell substitution here no longer blocks
 	// SetSkipPermissionRequests/SetProviderRuntimeConfig/other readers.
-	if err := cfg.configureProviders(ctx, s, baseEnv, resolver, providers); err != nil {
+	if err := cfg.configureProviders(ctx, s, baseEnv, candidateResolver, providers); err != nil {
 		return fmt.Errorf("failed to configure providers during reload: %w", err)
 	}
 
@@ -537,7 +541,7 @@ func (s *ConfigStore) buildAndPublishReload(ctx context.Context, expectedUncerta
 	// generation while the above ran unlocked.
 	candidate := &storeSnapshot{
 		config:              cfg,
-		resolver:            resolver,
+		resolver:            runtimeResolver,
 		resolverFingerprint: resolverInputFingerprint(baseEnv.Env()),
 		resolverDynamic:     configHasDynamicMCPResolution(cfg),
 		mcpInputs:           mcpInputFingerprints(configDocuments, externalDocuments),
