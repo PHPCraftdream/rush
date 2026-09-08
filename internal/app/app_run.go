@@ -28,6 +28,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/format"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/permission"
+	"github.com/PHPCraftdream/rush/internal/pubsub"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/term"
@@ -54,6 +55,10 @@ var messageEventsClosedSeam func()
 // message subscription is installed and immediately before the turn starts.
 // nil in production.
 var executeRunBeforeTurnLaunchSeam func()
+
+// executeRunDoneCaseSeam is a test-only hook invoked after the done result is
+// selected and before queued message events are drained. nil in production.
+var executeRunDoneCaseSeam func()
 
 // RunMode picks the output format for RunNonInteractive.
 type RunMode int
@@ -1266,6 +1271,16 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 	}
 	// Subscribe before launching the turn. The message broker is live-only;
 	// a fast provider can publish and finish before a later subscriber exists.
+	baselineIDs := make(map[string]struct{})
+	baselineKnown := true
+	if existing, listErr := app.Messages.List(ctx, sess.ID); listErr != nil {
+		baselineKnown = false
+		slog.Warn("run: failed to snapshot pre-run messages; terminal reconciliation will use live events", "session", sess.ID, "err", listErr)
+	} else {
+		for _, msg := range existing {
+			baselineIDs[msg.ID] = struct{}{}
+		}
+	}
 	messageEvents := app.Messages.Subscribe(ctx)
 	startTurn()
 	messageReadBytes := make(map[string]int)
@@ -1276,6 +1291,95 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 	var finalReason string                    // last assistant Finish.Reason seen, for JSON output
 	var finalErrTitle, finalErrDetails string // Finish.Message + Finish.Details, surfaced into envelope.Error when reason=error
 	var printed bool
+	var reconciliationDiagnostic string
+
+	handleMessageEvent := func(event pubsub.Event[message.Message]) error {
+		msg := event.Payload
+		if msg.SessionID != sess.ID || msg.Role != message.Assistant || len(msg.Parts) == 0 {
+			return nil
+		}
+		stopSpinner()
+
+		// Tool-call names always go to stderr - one short line per new call.
+		for _, p := range msg.Parts {
+			if tc, ok := p.(message.ToolCall); ok && tc.Name != "" && !seenToolCalls[tc.ID] {
+				seenToolCalls[tc.ID] = true
+				toolCallCounts[tc.Name]++
+				prefix := ""
+				if stderrTTY {
+					prefix = "\r" + ansi.EraseEntireLine
+				}
+				fmt.Fprintf(stderr, prefix+"▶ %s\n", tc.Name)
+			}
+		}
+
+		// Live events drive progress and streaming. The persisted row below
+		// is authoritative for the terminal envelope.
+		if msg.IsFinished() {
+			finalText = msg.FullText()
+			for _, p := range msg.Parts {
+				if f, ok := p.(message.Finish); ok {
+					finalReason = string(f.Reason)
+					finalErrTitle = f.Message
+					finalErrDetails = f.Details
+					break
+				}
+			}
+		}
+
+		switch mode {
+		case RunModeJSON:
+			// Suppress per-message stdout; the summary is printed below.
+		case RunModeTerse:
+			if !msg.IsFinished() || printedFinal[msg.ID] {
+				return nil
+			}
+			text := strings.TrimLeft(msg.FullText(), " \t\n")
+			if text != "" {
+				printedFinal[msg.ID] = true
+				printed = true
+				fmt.Fprint(stdout, text)
+			}
+		case RunModeStream:
+			content := msg.FullText()
+			readBytes := messageReadBytes[msg.ID]
+			if len(content) < readBytes {
+				slog.Error("Non-interactive: message content is shorter than read bytes", "message_length", len(content), "read_bytes", readBytes)
+				return fmt.Errorf("message content is shorter than read bytes: %d < %d", len(content), readBytes)
+			}
+			part := content[readBytes:]
+			if readBytes == 0 {
+				part = strings.TrimLeft(part, " \t")
+			}
+			if printed || strings.TrimSpace(part) != "" {
+				printed = true
+				fmt.Fprint(stdout, part)
+			}
+			messageReadBytes[msg.ID] = len(content)
+		}
+		return nil
+	}
+
+	drainMessageEvents := func() error {
+		for messageEvents != nil {
+			select {
+			case event, ok := <-messageEvents:
+				if !ok {
+					messageEvents = nil
+					if messageEventsClosedSeam != nil {
+						messageEventsClosedSeam()
+					}
+					continue
+				}
+				if err := handleMessageEvent(event); err != nil {
+					return err
+				}
+			default:
+				return nil
+			}
+		}
+		return nil
+	}
 
 	defer func() {
 		if progress && stderrTTY {
@@ -1297,6 +1401,11 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 	// BOTH that case AND drainDone's case (a durable continuation's outcome,
 	// possibly arriving well after the original done fired) can reach it —
 	// see the select loop's own doc for why this split exists.
+	var (
+		cachedTerminal       *terminalReconciliation
+		cachedTerminalCtx    context.Context
+		cachedTerminalCancel context.CancelFunc
+	)
 	finish := func(runErr error) (*RunResult, error) {
 		stopSpinner()
 		if errors.Is(runErr, ErrRunQueued) {
@@ -1309,14 +1418,46 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 			finalErrDetails = ""
 			toolCallCounts = make(map[string]int)
 		}
-		isCanceled := runErr != nil && (errors.Is(runErr, context.Canceled) || errors.Is(runErr, agent.ErrRequestCancelled))
+		isCanceled := runErr != nil && (errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded) || errors.Is(runErr, agent.ErrRequestCancelled))
+		finalCtx := cachedTerminalCtx
+		finalCancel := cachedTerminalCancel
+		if finalCtx == nil {
+			finalCtx, finalCancel = context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
+		}
+		defer finalCancel()
+		if !errors.Is(runErr, ErrRunQueued) {
+			var reconciled terminalReconciliation
+			var reconcileErr error
+			authoritativeTerminal := false
+			if cachedTerminal != nil {
+				reconciled = *cachedTerminal
+				authoritativeTerminal = true
+			} else {
+				reconciled, reconcileErr = app.reconcileTerminalMessage(finalCtx, sess.ID, baselineIDs, baselineKnown, runStart)
+			}
+			if reconcileErr != nil {
+				reconciliationDiagnostic = "authoritative terminal message reconciliation failed: " + reconcileErr.Error() + "; using live run events"
+				slog.Warn("run: failed to reconcile authoritative terminal message", "session", sess.ID, "err", reconcileErr)
+			} else {
+				// Replay the committed row through the normal output handler.
+				// It emits only unread content, so a dropped terminal event cannot
+				// lose output or duplicate it.
+				if outputErr := handleMessageEvent(pubsub.Event[message.Message]{Payload: reconciled.message}); outputErr != nil {
+					return nil, outputErr
+				}
+				toolCallCounts = reconciled.toolCalls
+				authoritativeTerminal = true
+			}
+			if authoritativeTerminal && isCanceled && !runFailed(finalReason, nil, false) {
+				runErr = nil
+				isCanceled = false
+			}
+		}
 
 		if mode == RunModeJSON {
 			// Re-fetch the session row so the usage delta reflects
 			// the writes the agent made during the run.
-			usageCtx, usageCancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
-			freshSess, usageErr := app.Sessions.Get(usageCtx, sess.ID)
-			usageCancel()
+			freshSess, usageErr := app.Sessions.Get(finalCtx, sess.ID)
 			deltaTokens := int64(0)
 			deltaCost := float64(0)
 			if usageErr != nil {
@@ -1382,7 +1523,7 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 			var reductionWarning string
 			subAgentCalls := toolCallCounts["agent"] + toolCallCounts["agentic_fetch"]
 			if subAgentCalls > 0 {
-				count, totalChars := app.subAgentSummaryStats(ctx, sess.ID)
+				count, totalChars := app.subAgentSummaryStats(finalCtx, sess.ID)
 				if count >= 2 && totalChars > 0 {
 					parentChars := len(finalTextOut)
 					ratio := float64(parentChars) / float64(totalChars)
@@ -1395,7 +1536,7 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 				}
 			}
 			if overrides.AggregationMode == "attach" {
-				subOutputs = app.collectSubAgentOutputs(ctx, sess.ID)
+				subOutputs = app.collectSubAgentOutputs(finalCtx, sess.ID)
 			}
 			summary := buildRunResult(
 				sess.ID, finalTextOut, assistantNotes, finalReason, runErr, isCanceled,
@@ -1407,16 +1548,19 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 				strippedBytes, stripErr, stripErrReason,
 				subOutputs, reductionWarning,
 			)
+			if reconciliationDiagnostic != "" {
+				summary.Warnings = append(summary.Warnings, reconciliationDiagnostic)
+			}
 			// Per-message token/cache accounting for the session (task
 			// #480). Best-effort: an orchestrator losing statistics must
 			// never turn a successful run into a failed one.
-			if report, uErr := app.Messages.UsageBySession(ctx, sess.ID); uErr != nil {
+			if report, uErr := app.Messages.UsageBySession(finalCtx, sess.ID); uErr != nil {
 				slog.Warn("run: failed to read per-message usage for the JSON envelope", "session", sess.ID, "err", uErr)
 			} else {
 				summary.Usage.Session = buildSessionUsageInfo(report)
 			}
 			// Fork patch: batch 8 — surface orphan partial text.
-			if partial := app.findOrphanPartial(ctx, sess.ID); partial != nil {
+			if partial := app.findOrphanPartial(finalCtx, sess.ID); partial != nil {
 				summary.RecoveredPartial = partial
 				summary.Warnings = append(summary.Warnings, fmt.Sprintf(
 					"recovered %d chars of partial assistant text from session %s — model run was interrupted",
@@ -1509,6 +1653,12 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 
 		select {
 		case result := <-done:
+			if executeRunDoneCaseSeam != nil {
+				executeRunDoneCaseSeam()
+			}
+			if err := drainMessageEvents(); err != nil {
+				return nil, err
+			}
 			if result.queued {
 				return finish(&runQueuedError{sessionID: sess.ID})
 			}
@@ -1554,98 +1704,49 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 
 		case event, ok := <-messageEvents:
 			if !ok {
-				// H-2 (task #779): app.Messages.Subscribe's channel closes
-				// either when ctx is cancelled OR when the broker itself is
-				// closed independently of ctx (see pubsub.Broker.Close /
-				// Broker.Subscribe). A receive on a closed channel succeeds
-				// immediately and forever with a zero-value event, so
-				// without this guard this branch would spin hot on
-				// zero-value events until (or unless) ctx.Done() happened
-				// to be the one picked by `select` — and if the broker
-				// closed independently of ctx, ctx.Done() might never fire
-				// at all, so the loop would never terminate. Nil-ing the
-				// local channel variable makes this case block forever
-				// from here on, so `select` falls through cleanly to the
-				// `done`/`drainDone`/`ctx.Done()` cases instead of spinning
-				// — the other cases still decide when the loop actually
-				// exits.
 				messageEvents = nil
 				if messageEventsClosedSeam != nil {
 					messageEventsClosedSeam()
 				}
 				continue
 			}
-			msg := event.Payload
-			if msg.SessionID == sess.ID && msg.Role == message.Assistant && len(msg.Parts) > 0 {
-				stopSpinner()
-
-				// Tool-call names always go to stderr — one short line per
-				// new call. This gives wrappers and humans a heartbeat
-				// without exposing inputs / outputs.
-				for _, p := range msg.Parts {
-					if tc, ok := p.(message.ToolCall); ok && tc.Name != "" && !seenToolCalls[tc.ID] {
-						seenToolCalls[tc.ID] = true
-						toolCallCounts[tc.Name]++
-						prefix := ""
-						if stderrTTY {
-							prefix = "\r" + ansi.EraseEntireLine
-						}
-						fmt.Fprintf(stderr, prefix+"▶ %s\n", tc.Name)
-					}
-				}
-
-				// Track final state for JSON mode regardless of which
-				// output mode is active — JSON output materialises after
-				// the run completes, so we accumulate as we go.
-				if msg.IsFinished() {
-					finalText = msg.FullText()
-					for _, p := range msg.Parts {
-						if f, ok := p.(message.Finish); ok {
-							finalReason = string(f.Reason)
-							finalErrTitle = f.Message
-							finalErrDetails = f.Details
-							break
-						}
-					}
-				}
-
-				switch mode {
-				case RunModeJSON:
-					// Suppress per-message stdout entirely; the summary is
-					// printed below after `done` fires.
-				case RunModeTerse:
-					if !msg.IsFinished() || printedFinal[msg.ID] {
-						continue
-					}
-					text := strings.TrimLeft(msg.FullText(), " \t\n")
-					if text != "" {
-						printedFinal[msg.ID] = true
-						printed = true
-						fmt.Fprint(stdout, text)
-					}
-				case RunModeStream:
-					content := msg.FullText()
-					readBytes := messageReadBytes[msg.ID]
-					if len(content) < readBytes {
-						slog.Error("Non-interactive: message content is shorter than read bytes", "message_length", len(content), "read_bytes", readBytes)
-						return nil, fmt.Errorf("message content is shorter than read bytes: %d < %d", len(content), readBytes)
-					}
-					part := content[readBytes:]
-					if readBytes == 0 {
-						part = strings.TrimLeft(part, " \t")
-					}
-					if printed || strings.TrimSpace(part) != "" {
-						printed = true
-						fmt.Fprint(stdout, part)
-					}
-					messageReadBytes[msg.ID] = len(content)
-				}
+			if err := handleMessageEvent(event); err != nil {
+				return nil, err
 			}
-
 		case <-ctx.Done():
-			stopSpinner()
-			hookExitReason = "cancelled"
-			return nil, ctx.Err()
+			probeCtx, probeCancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
+			reconciled, reconcileErr := app.reconcileTerminalMessage(probeCtx, sess.ID, baselineIDs, baselineKnown, runStart)
+			if reconcileErr == nil {
+				cachedTerminal = &reconciled
+				cachedTerminalCtx = probeCtx
+				cachedTerminalCancel = probeCancel
+				return finish(ctx.Err())
+			}
+			probeCancel()
+			// Cancellation and the buffered turn result can become ready in
+			// either order. Prefer the committed result when it is already
+			// available so final reconciliation still runs.
+			select {
+			case result := <-done:
+				if err := drainMessageEvents(); err != nil {
+					return nil, err
+				}
+				if result.queued {
+					return finish(&runQueuedError{sessionID: sess.ID})
+				}
+				if result.err != nil && (errors.Is(result.err, context.Canceled) || errors.Is(result.err, agent.ErrRequestCancelled)) && app.RunQueuePump != nil {
+					go func(originalErr error) {
+						queuedResult, drainErr := app.RunQueuePump.DrainSessionNow(ctx, sess.ID)
+						drainDone <- drainOutcomeError(sess.ID, queuedResult, drainErr, originalErr)
+					}(result.err)
+					continue
+				}
+				return finish(result.err)
+			default:
+				stopSpinner()
+				hookExitReason = "cancelled"
+				return nil, ctx.Err()
+			}
 		}
 	}
 }
