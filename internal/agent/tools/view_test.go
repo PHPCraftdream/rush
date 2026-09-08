@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -207,6 +208,173 @@ func TestReadTextFileAllowsExactMaxContentSize(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "abcd\nefgh", content)
 	require.False(t, hasMore)
+}
+
+type generatedReadSegment struct {
+	literal string
+	fill    byte
+	count   int64
+}
+
+type generatedReadCloser struct {
+	segments  []generatedReadSegment
+	segment   int
+	offset    int64
+	readBytes int64
+	maxRead   int
+}
+
+func (r *generatedReadCloser) Read(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+
+	read := 0
+	for read < len(p) && r.segment < len(r.segments) {
+		segment := r.segments[r.segment]
+		var remaining int64
+		if segment.literal != "" {
+			remaining = int64(len(segment.literal)) - r.offset
+		} else {
+			remaining = segment.count - r.offset
+		}
+		if remaining <= 0 {
+			r.segment++
+			r.offset = 0
+			continue
+		}
+
+		take := min(int64(len(p)-read), remaining)
+		if segment.literal != "" {
+			copy(p[read:read+int(take)], segment.literal[r.offset:r.offset+take])
+		} else {
+			for i := range p[read : read+int(take)] {
+				p[read+i] = segment.fill
+			}
+		}
+		read += int(take)
+		r.offset += take
+	}
+
+	if read == 0 {
+		return 0, io.EOF
+	}
+	r.readBytes += int64(read)
+	if read > r.maxRead {
+		r.maxRead = read
+	}
+	return read, nil
+}
+
+func (r *generatedReadCloser) Close() error { return nil }
+
+type generatedReadDisk struct {
+	DiskProvider
+	reader io.ReadCloser
+}
+
+func (d generatedReadDisk) Open(context.Context, string) (io.ReadCloser, error) {
+	return d.reader, nil
+}
+
+func TestReadTextFileFromSkipsGeneratedLongLines(t *testing.T) {
+	t.Parallel()
+
+	const skippedBytes = MaxLineLength * 64
+	reader := &generatedReadCloser{segments: []generatedReadSegment{
+		{fill: 's', count: skippedBytes},
+		{literal: "\nselected\n"},
+	}}
+	disk := generatedReadDisk{DiskProvider: OSDisk(), reader: reader}
+
+	content, hasMore, err := readTextFileFrom(t.Context(), disk, "generated", 1, 1, 0)
+	require.NoError(t, err)
+	require.Equal(t, "selected", content)
+	require.False(t, hasMore)
+	require.GreaterOrEqual(t, reader.readBytes, int64(skippedBytes))
+	require.LessOrEqual(t, reader.maxRead, 4096)
+}
+
+func TestReadTextFileFromBoundsGeneratedSelectedLine(t *testing.T) {
+	t.Parallel()
+
+	reader := &generatedReadCloser{segments: []generatedReadSegment{
+		{fill: 'x', count: int64(MaxLineLength*64 + 1)},
+		{literal: "\r\nnext"},
+	}}
+	disk := generatedReadDisk{DiskProvider: OSDisk(), reader: reader}
+
+	content, hasMore, err := readTextFileFrom(t.Context(), disk, "generated", 0, 1, 0)
+	require.NoError(t, err)
+	require.Equal(t, strings.Repeat("x", MaxLineLength)+"...", content)
+	require.True(t, hasMore)
+	require.LessOrEqual(t, len(content), MaxLineLength+3)
+}
+
+func TestReadTextFileFromPreservesLineBoundaries(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		segments []generatedReadSegment
+		want     string
+		more     bool
+	}{
+		{
+			name: "line just over limit",
+			segments: []generatedReadSegment{
+				{fill: 'a', count: MaxLineLength + 1},
+			},
+			want: strings.Repeat("a", MaxLineLength) + "...",
+		},
+		{
+			name: "carriage return is not truncated",
+			segments: []generatedReadSegment{
+				{fill: 'b', count: MaxLineLength},
+				{literal: "\r\n"},
+			},
+			want: strings.Repeat("b", MaxLineLength),
+		},
+		{
+			name: "split CRLF",
+			segments: []generatedReadSegment{
+				{fill: 'c', count: 4095},
+				{literal: "\r\nnext"},
+			},
+			want: strings.Repeat("c", MaxLineLength) + "...",
+			more: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			reader := &generatedReadCloser{segments: test.segments}
+			disk := generatedReadDisk{DiskProvider: OSDisk(), reader: reader}
+
+			content, hasMore, err := readTextFileFrom(t.Context(), disk, "generated", 0, 1, 0)
+			require.NoError(t, err)
+			require.Equal(t, test.want, content)
+			require.Equal(t, test.more, hasMore)
+		})
+	}
+}
+
+func TestReadTextFileFromPeekDoesNotConsumeNextGeneratedLine(t *testing.T) {
+	t.Parallel()
+
+	const nextLineBytes = MaxLineLength * 64
+	reader := &generatedReadCloser{segments: []generatedReadSegment{
+		{literal: "first\n"},
+		{fill: 'p', count: nextLineBytes},
+		{literal: "\n"},
+	}}
+	disk := generatedReadDisk{DiskProvider: OSDisk(), reader: reader}
+
+	content, hasMore, err := readTextFileFrom(t.Context(), disk, "generated", 0, 1, 0)
+	require.NoError(t, err)
+	require.Equal(t, "first", content)
+	require.True(t, hasMore)
+	require.LessOrEqual(t, reader.readBytes, int64(8192), "peek should inspect one buffered fragment")
 }
 
 type mockViewPermissionService struct {

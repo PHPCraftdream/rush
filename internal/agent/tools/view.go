@@ -82,6 +82,7 @@ const (
 	// round-trip for every read.
 	DefaultReadLimit = 500
 	MaxLineLength    = 2000
+	viewReaderBuffer = 4096
 )
 
 type contentTooLargeError struct {
@@ -358,15 +359,18 @@ func readTextFileFrom(ctx context.Context, disk DiskProvider, filePath string, o
 	}
 	defer file.Close()
 
-	reader := bufio.NewReader(file)
+	reader := bufio.NewReaderSize(file, viewReaderBuffer)
 	skipped := 0
 	for skipped < offset {
-		_, err := reader.ReadString('\n')
+		line, err := readViewBoundedLine(reader, false)
 		if err != nil {
 			if err == io.EOF {
 				return "", false, nil
 			}
 			return "", false, err
+		}
+		if !line.terminated {
+			return "", false, nil
 		}
 		skipped++
 	}
@@ -375,18 +379,17 @@ func readTextFileFrom(ctx context.Context, disk DiskProvider, filePath string, o
 	contentSize := 0
 
 	for len(lines) < limit {
-		lineText, err := reader.ReadString('\n')
-		if err != nil && err != io.EOF {
+		line, err := readViewBoundedLine(reader, true)
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
 			return "", false, err
 		}
-		if err == io.EOF && lineText == "" {
+		if !line.present {
 			break
 		}
-		lineText = strings.TrimSuffix(lineText, "\n")
-		lineText = strings.TrimSuffix(lineText, "\r")
-		if len(lineText) > MaxLineLength {
-			lineText = stringext.Truncate(lineText, MaxLineLength) + "..."
-		}
+		lineText := line.text
 		projectedSize := contentSize + len(lineText)
 		if len(lines) > 0 {
 			projectedSize++
@@ -396,7 +399,7 @@ func readTextFileFrom(ctx context.Context, disk DiskProvider, filePath string, o
 		}
 		contentSize = projectedSize
 		lines = append(lines, lineText)
-		if err == io.EOF {
+		if !line.terminated {
 			break
 		}
 	}
@@ -404,11 +407,91 @@ func readTextFileFrom(ctx context.Context, disk DiskProvider, filePath string, o
 	// Peek one more line only when we filled the limit.
 	hasMore := false
 	if len(lines) == limit {
-		lineText, peekErr := reader.ReadString('\n')
-		hasMore = len(lineText) > 0 || peekErr == nil
+		hasMore, _ = peekViewLine(reader)
 	}
 
 	return strings.Join(lines, "\n"), hasMore, nil
+}
+
+type boundedLine struct {
+	text       string
+	present    bool
+	terminated bool
+}
+
+// readViewBoundedLine consumes one line while retaining only its bounded prefix.
+func readViewBoundedLine(reader *bufio.Reader, retain bool) (boundedLine, error) {
+	const retainedLimit = MaxLineLength + 1
+
+	var retained []byte
+	tooLong := false
+	sawContent := false
+	if retain {
+		retained = make([]byte, 0, retainedLimit)
+	}
+
+	for {
+		fragment, err := reader.ReadSlice('\n')
+		if len(fragment) > 0 {
+			sawContent = true
+		}
+		terminated := len(fragment) > 0 && fragment[len(fragment)-1] == '\n'
+		if terminated {
+			fragment = fragment[:len(fragment)-1]
+		}
+
+		if retain {
+			if remaining := retainedLimit - len(retained); remaining > 0 {
+				keep := min(len(fragment), remaining)
+				retained = append(retained, fragment[:keep]...)
+				if keep < len(fragment) {
+					tooLong = true
+				}
+			} else if len(fragment) > 0 {
+				tooLong = true
+			}
+		}
+
+		if err != nil && err != io.EOF && err != bufio.ErrBufferFull {
+			return boundedLine{present: sawContent}, err
+		}
+		if terminated {
+			return boundedLine{
+				text:       finishBoundedLine(retained, tooLong),
+				present:    true,
+				terminated: true,
+			}, nil
+		}
+		if err == io.EOF {
+			if !sawContent {
+				return boundedLine{}, io.EOF
+			}
+			return boundedLine{
+				text:    finishBoundedLine(retained, tooLong),
+				present: true,
+			}, nil
+		}
+	}
+}
+
+func finishBoundedLine(retained []byte, tooLong bool) string {
+	if !tooLong && len(retained) == MaxLineLength+1 && retained[len(retained)-1] != '\r' {
+		tooLong = true
+	}
+	if !tooLong {
+		if len(retained) > 0 && retained[len(retained)-1] == '\r' {
+			retained = retained[:len(retained)-1]
+		}
+		return string(retained)
+	}
+
+	return stringext.Truncate(string(retained[:MaxLineLength]), MaxLineLength) + "..."
+}
+
+// peekViewLine reads only the first available fragment of the next line.
+func peekViewLine(reader *bufio.Reader) (bool, error) {
+	fragment, err := reader.ReadSlice('\n')
+	return len(fragment) > 0 || err == nil, err
 }
 
 func getImageMimeType(filePath string) (bool, string) {
