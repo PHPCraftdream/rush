@@ -42,6 +42,14 @@ import (
 func Test401Retry_RebuildsCallWithFreshCredentials(t *testing.T) {
 	env := testEnv(t)
 	coord := newWorkerToolTestCoordinator(t, env, false)
+	t.Setenv("C6_P1_KEY", "fresh-key")
+	for _, providerID := range []string{"smart-provider", "fast-provider"} {
+		providerCfg, ok := coord.cfg.Config().Providers.Get(providerID)
+		require.True(t, ok)
+		providerCfg.APIKey = "stale-key"
+		providerCfg.APIKeyTemplate = "$C6_P1_KEY"
+		coord.cfg.SetProviderRuntimeConfig(providerID, providerCfg)
+	}
 
 	sess, err := env.sessions.Create(t.Context(), "401 retry probe")
 	require.NoError(t, err)

@@ -26,6 +26,7 @@ type SummarizeSnapshot struct {
 	model           Model
 	providerOptions fantasy.ProviderOptions
 	promptPrefix    string
+	providerCfg     config.ProviderConfig
 }
 
 func (c *coordinator) GetSystemPrompt() string {
@@ -100,29 +101,51 @@ func (c *coordinator) Summarize(ctx context.Context, sessionID string, snapshot 
 		}
 	}
 
-	// Refresh OAuth token if needed using the provider from the snapshot.
-	// Auth identity is already captured in the snapshot via providerCfg,
-	// which is read once during snapshot construction, so no additional
-	// pinning is needed here (task #341, P1-1).
-	providerCfg, ok := c.cfg.Config().Providers.Get(snapshot.model.ModelCfg.Provider)
-	if !ok {
-		return errModelProviderNotConfigured
+	providerCfg := snapshot.providerCfg
+	if providerCfg.ID == "" {
+		var err error
+		providerCfg, err = c.currentProviderConfig(snapshot.model.ModelCfg.Provider)
+		if err != nil {
+			return err
+		}
 	}
 	if err := checkPeakHours(providerCfg); err != nil {
 		return err
 	}
 
-	if err := c.refreshTokenIfExpired(ctx, providerCfg); err != nil {
-		slog.Error("Failed to refresh OAuth2 token before summarize. Proceeding with existing token.", "error", err)
+	currentSnapshot := snapshot
+	rebuildSnapshot := func() error {
+		freshProviderCfg, err := c.currentProviderConfig(currentSnapshot.model.ModelCfg.Provider)
+		if err != nil {
+			return err
+		}
+		freshModel, err := c.rebuildPinnedModel(ctx, currentSnapshot.model, freshProviderCfg, false)
+		if err != nil {
+			return fmt.Errorf("failed to rebuild summarize model: %w", err)
+		}
+		currentSnapshot = &SummarizeSnapshot{
+			model:           freshModel,
+			providerOptions: getProviderOptions(sessionID, freshModel, freshProviderCfg),
+			promptPrefix:    currentSnapshot.promptPrefix,
+			providerCfg:     freshProviderCfg,
+		}
+		providerCfg = freshProviderCfg
+		return nil
+	}
+
+	if providerCfg.OAuthToken != nil && providerCfg.OAuthToken.IsExpired() {
+		if err := c.refreshOAuth2Token(ctx, providerCfg); err != nil {
+			slog.Error("Failed to refresh OAuth2 token before summarize. Proceeding with existing token.", "error", err)
+		} else if err := rebuildSnapshot(); err != nil {
+			return err
+		}
 	}
 
 	summarize := func() error {
-		return c.currentAgent.Summarize(ctx, sessionID, snapshot)
+		return c.currentAgent.Summarize(ctx, sessionID, currentSnapshot)
 	}
 
-	// Summarize doesn't need a rebuild callback since it uses a pre-built
-	// snapshot that doesn't capture a provider client.
-	return c.runWithUnauthorizedRetry(ctx, providerCfg, summarize, nil)
+	return c.runWithUnauthorizedRetry(ctx, providerCfg, summarize, rebuildSnapshot)
 }
 
 // buildSummarizeSnapshot creates an immutable snapshot for a summarize operation,
@@ -138,8 +161,8 @@ func (c *coordinator) buildSummarizeSnapshot(ctx context.Context, sessionID stri
 	}
 
 	// Get the provider config for this model.
-	providerCfg, ok := c.cfg.Config().Providers.Get(resolved.smart.ModelCfg.Provider)
-	if !ok {
+	providerCfg := resolved.providerCfg
+	if providerCfg.ID == "" {
 		return nil, errModelProviderNotConfigured
 	}
 
@@ -157,6 +180,7 @@ func (c *coordinator) buildSummarizeSnapshot(ctx context.Context, sessionID stri
 		model:           resolved.smart,
 		providerOptions: opts,
 		promptPrefix:    promptPrefix,
+		providerCfg:     providerCfg,
 	}, nil
 }
 

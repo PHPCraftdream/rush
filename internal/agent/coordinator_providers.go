@@ -414,6 +414,42 @@ func mergeCallOptions(sessionID string, model Model, cfg config.ProviderConfig) 
 	return modelOptions, temp, topP, topK, freqPenalty, presPenalty
 }
 
+// rebuildPinnedModel rebuilds only the provider client for a previously
+// selected model. The selected model config and its catalog metadata stay
+// pinned; refreshed provider state must not re-resolve the current defaults.
+func (c *coordinator) rebuildPinnedModel(ctx context.Context, model Model, providerCfg config.ProviderConfig, isSubAgent bool) (Model, error) {
+	if providerCfg.ID == "" {
+		return Model{}, errModelProviderNotConfigured
+	}
+
+	provider, err := c.buildProvider(providerCfg, model.ModelCfg, isSubAgent)
+	if err != nil {
+		return Model{}, err
+	}
+
+	modelID := model.ModelCfg.Model
+	if providerCfg.ID == openrouter.Name && isExactoSupported(modelID) {
+		modelID += ":exacto"
+	}
+	languageModel, err := provider.LanguageModel(ctx, modelID)
+	if err != nil {
+		return Model{}, err
+	}
+
+	model.Model = languageModel
+	model.FlatRate = providerCfg.FlatRate
+	return model, nil
+}
+
+func (c *coordinator) currentProviderConfig(providerID string) (config.ProviderConfig, error) {
+	cfg, _ := c.cfg.Snapshot()
+	providerCfg, ok := cfg.Providers.Get(providerID)
+	if !ok {
+		return config.ProviderConfig{}, errModelProviderNotConfigured
+	}
+	return providerCfg, nil
+}
+
 func (c *coordinator) buildAnthropicProvider(baseURL, apiKey string, headers map[string]string, providerID string) (fantasy.Provider, error) {
 	var opts []anthropic.Option
 
@@ -797,21 +833,22 @@ func checkPeakHours(providerCfg config.ProviderConfig) error {
 // After credential refresh, rebuildCall is invoked to reconstruct the call
 // with fresh credentials, ensuring the retry uses a new provider client
 // rather than the stale pinned client from the original attempt (task #341,
-// P1-2).
+// P1-2). A rebuild failure replaces the stale 401 so callers classify the
+// terminal local failure correctly.
+var errUnauthorizedRefreshUnavailable = errors.New("credential refresh is unavailable")
+
+var errUnauthorizedRebuildUnavailable = errors.New("cannot retry unauthorized request without a call rebuild")
+
 func (c *coordinator) runWithUnauthorizedRetry(ctx context.Context, providerCfg config.ProviderConfig, fn func() error, rebuildCall func() error) error {
 	err := fn()
 	if err != nil && c.isUnauthorized(err) {
 		if retryErr := c.retryAfterUnauthorized(ctx, providerCfg); retryErr == nil {
-			// After credential refresh, rebuild the call with fresh models
-			// to use the new provider client (task #341, P1-2). rebuildCall
-			// is nil for callers that don't pin a call to a specific model
-			// snapshot (e.g. summarize, sub-agent delegation) — fn() itself
-			// re-resolves what it needs on each invocation for those paths,
-			// so there is nothing to rebuild.
-			if rebuildCall != nil {
-				if rebuildErr := rebuildCall(); rebuildErr != nil {
-					return rebuildErr
-				}
+			// Rebuild with the refreshed provider client before retrying.
+			if rebuildCall == nil {
+				return errUnauthorizedRebuildUnavailable
+			}
+			if rebuildErr := rebuildCall(); rebuildErr != nil {
+				return rebuildErr
 			}
 			return fn()
 		}
@@ -832,7 +869,7 @@ func (c *coordinator) retryAfterUnauthorized(ctx context.Context, providerCfg co
 		slog.Debug("Received 401. Refreshing API Key template and retrying", "provider", providerCfg.ID)
 		return c.refreshApiKeyTemplate(ctx, providerCfg)
 	default:
-		return nil
+		return errUnauthorizedRefreshUnavailable
 	}
 }
 
@@ -842,7 +879,13 @@ func (c *coordinator) isUnauthorized(err error) bool {
 }
 
 func (c *coordinator) refreshOAuth2Token(ctx context.Context, providerCfg config.ProviderConfig) error {
-	if err := c.cfg.RefreshOAuthToken(ctx, config.ScopeGlobal, providerCfg.ID); err != nil {
+	var err error
+	if c.refreshOAuth2TokenFn != nil {
+		err = c.refreshOAuth2TokenFn(ctx, providerCfg)
+	} else {
+		err = c.cfg.RefreshOAuthToken(ctx, config.ScopeGlobal, providerCfg.ID)
+	}
+	if err != nil {
 		slog.Error("Failed to refresh OAuth token after 401 error", "provider", providerCfg.ID, "error", err)
 		return err
 	}

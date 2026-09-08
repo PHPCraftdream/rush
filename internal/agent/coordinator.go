@@ -302,6 +302,10 @@ type coordinator struct {
 	// resolveSessionModels's own comment for why a per-slot cache
 	// previously mismatched smart/fast roles.
 	modelCache *csync.Map[string, cachedModelPair]
+
+	// refreshOAuth2TokenFn is nil in production. Tests use it to install a
+	// deterministic refreshed provider credential without network traffic.
+	refreshOAuth2TokenFn func(context.Context, config.ProviderConfig) error
 }
 
 // cachedModelPair holds a resolved (smart, fast) Model pair as built

@@ -31,6 +31,7 @@ import (
 type mockSessionAgent struct {
 	model                Model
 	runFunc              func(ctx context.Context, call SessionAgentCall) (*fantasy.AgentResult, error)
+	summarizeFunc        func(context.Context, string, *SummarizeSnapshot) error
 	cancelled            []string
 	queuedCalls          []SessionAgentCall
 	mu                   sync.Mutex
@@ -101,7 +102,10 @@ func (m *mockSessionAgent) InjectMessage(_ context.Context, call SessionAgentCal
 	return message.Message{SessionID: call.SessionID}, nil
 }
 
-func (m *mockSessionAgent) Summarize(context.Context, string, *SummarizeSnapshot) error {
+func (m *mockSessionAgent) Summarize(ctx context.Context, sessionID string, snapshot *SummarizeSnapshot) error {
+	if m.summarizeFunc != nil {
+		return m.summarizeFunc(ctx, sessionID, snapshot)
+	}
 	return nil
 }
 func (m *mockSessionAgent) SummarizeQueued(string) bool { return false }

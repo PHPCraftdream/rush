@@ -195,8 +195,40 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 		return fantasy.ToolResponse{}, err
 	}
 
-	// Run the agent
-	pinnedModel := model
+	// Run the agent. Keep the selected model pinned while refreshing the
+	// provider identity; a refresh must not switch this call to new defaults.
+	initialModel := model
+	pinnedModel := &initialModel
+	rebuildCall := func() error {
+		if callCreds != nil {
+			return errUnauthorizedRefreshUnavailable
+		}
+		freshProviderCfg, err := c.currentProviderConfig(model.ModelCfg.Provider)
+		if err != nil {
+			return err
+		}
+		freshModel, err := c.rebuildPinnedModel(ctx, model, freshProviderCfg, true)
+		if err != nil {
+			return fmt.Errorf("failed to rebuild sub-agent model: %w", err)
+		}
+		pinnedModel = &freshModel
+		model = freshModel
+		providerCfg = freshProviderCfg
+		maxTokens = model.CatwalkCfg.DefaultMaxTokens
+		if model.ModelCfg.MaxTokens != 0 {
+			maxTokens = model.ModelCfg.MaxTokens
+		}
+		return nil
+	}
+
+	if callCreds == nil && providerCfg.OAuthToken != nil && providerCfg.OAuthToken.IsExpired() {
+		if err := c.refreshOAuth2Token(ctx, providerCfg); err != nil {
+			slog.Error("Failed to refresh OAuth2 token before sub-agent run. Proceeding with existing token.", "error", err)
+		} else if err := rebuildCall(); err != nil {
+			return fantasy.ToolResponse{}, err
+		}
+	}
+
 	run := func() (*fantasy.AgentResult, error) {
 		return params.Agent.Run(ctx, SessionAgentCall{
 			SessionID:        session.ID,
@@ -209,7 +241,7 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 			FrequencyPenalty: model.ModelCfg.FrequencyPenalty,
 			PresencePenalty:  model.ModelCfg.PresencePenalty,
 			NonInteractive:   true,
-			SmartModel:       &pinnedModel,
+			SmartModel:       pinnedModel,
 			Credentials:      callCreds,
 		})
 	}
@@ -218,7 +250,7 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 		var runErr error
 		result, runErr = run()
 		return runErr
-	}, nil)
+	}, rebuildCall)
 	// Notify only if still unauthorized after retry.
 	if err != nil && c.isUnauthorized(err) && c.notify != nil && model.ModelCfg.Provider == hyper.Name {
 		c.notify.Publish(pubsub.CreatedEvent, notify.Notification{
