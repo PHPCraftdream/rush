@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"html/template"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"os/exec"
@@ -24,7 +25,9 @@ import (
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/csync"
+	"github.com/PHPCraftdream/rush/internal/filepathext"
 	"github.com/PHPCraftdream/rush/internal/fsext"
+	"github.com/PHPCraftdream/rush/internal/permission"
 	"github.com/PHPCraftdream/rush/internal/stringext"
 )
 
@@ -167,7 +170,11 @@ func escapeRegexPattern(pattern string) string {
 	return escaped
 }
 
-func NewGrepTool(workingDir string, config config.ToolGrep) fantasy.AgentTool {
+func NewGrepTool(workingDir string, config config.ToolGrep, permissionServices ...permission.Service) fantasy.AgentTool {
+	var permissions permission.Service
+	if len(permissionServices) > 0 {
+		permissions = permissionServices[0]
+	}
 	return fantasy.NewAgentTool(
 		GrepToolName,
 		grepDescription(),
@@ -181,12 +188,29 @@ func NewGrepTool(workingDir string, config config.ToolGrep) fantasy.AgentTool {
 				searchPattern = escapeRegexPattern(params.Pattern)
 			}
 
-			searchPath := cmp.Or(params.Path, workingDir)
+			searchPath := filepathext.SmartJoin(workingDir, cmp.Or(params.Path, workingDir))
+			anchor, allowed, err := authorizeWorkspaceRead(
+				ctx,
+				permissions,
+				workingDir,
+				searchPath,
+				GrepToolName,
+				"read",
+				call.ID,
+				params,
+			)
+			if err != nil {
+				return fantasy.NewTextErrorResponse(fmt.Sprintf("error authorizing search path: %v", err)), nil
+			}
+			if !allowed {
+				return NewPermissionDeniedResponse(), nil
+			}
+			defer anchor.Close()
 
 			searchCtx, cancel := context.WithTimeout(ctx, config.GetTimeout())
 			defer cancel()
 
-			matches, truncated, err := searchFiles(searchCtx, searchPattern, searchPath, params.Include, 100)
+			matches, truncated, err := searchFilesFS(searchCtx, searchPattern, anchor, params.Include, 100)
 			if err != nil {
 				return fantasy.NewTextErrorResponse(fmt.Sprintf("error searching files: %v", err)), nil
 			}
@@ -266,6 +290,107 @@ func searchFiles(ctx context.Context, pattern, rootPath, include string, limit i
 		}
 	}
 	return matches, truncated, nil
+}
+
+// searchFilesFS performs the bounded fallback search through an anchored FS.
+// Ripgrep cannot consume fs.FS, so rooted searches deliberately use this
+// equivalent bounded walker instead of reopening a path by name.
+func searchFilesFS(ctx context.Context, pattern string, anchor *readAnchor, include string, limit int) ([]grepMatch, bool, error) {
+	regex, err := searchRegexCache.get(pattern)
+	if err != nil {
+		return nil, false, fmt.Errorf("invalid regex pattern: %w", err)
+	}
+	var includePattern *regexp.Regexp
+	if include != "" {
+		includePattern, err = globRegexCache.get(globToRegex(include))
+		if err != nil {
+			return nil, false, fmt.Errorf("invalid include pattern: %w", err)
+		}
+	}
+
+	root := anchor.FS()
+	start := anchor.rootPath()
+	walker := fsext.NewFastGlobWalkerFSAt(root, start)
+	h := &boundedMatchHeap{}
+	capacity := limit
+	if capacity < 1 {
+		capacity = 1
+	}
+	var seq int64
+	var totalMatches int64
+	err = fs.WalkDir(root, start, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return nil
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if entry.IsDir() {
+			if walker.ShouldSkipDir(path) {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if walker.ShouldSkip(path) || fsext.SkipHidden(path) {
+			return nil
+		}
+		relPath := path
+		if start != "." {
+			relPath, _ = filepath.Rel(start, path)
+		}
+		if includePattern != nil && !includePattern.MatchString(filepath.ToSlash(relPath)) {
+			return nil
+		}
+		info, infoErr := entry.Info()
+		if infoErr != nil {
+			return nil
+		}
+		displayPath := filepath.Join(anchor.displayRoot(), filepath.FromSlash(path))
+		if path == start {
+			displayPath = anchor.path
+		} else if start != "." {
+			displayPath = filepath.Join(anchor.displayRoot(), filepath.FromSlash(relPath))
+		}
+		if hook, ok := ctx.Value(regexWalkHookKey{}).(func(string)); ok {
+			hook(displayPath)
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+		}
+		matchErr := fileMatchesFS(ctx, root, path, regex, func(lm lineMatch) bool {
+			seq++
+			totalMatches++
+			candidate := grepMatch{path: displayPath, modTime: info.ModTime(), lineNum: lm.lineNum, charNum: lm.charNum, lineText: lm.lineText, seq: seq}
+			if h.Len() < capacity {
+				heap.Push(h, candidate)
+			} else if !evictFirst(candidate, (*h)[0]) {
+				(*h)[0] = candidate
+				heap.Fix(h, 0)
+			}
+			return true
+		})
+		if matchErr != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return nil
+		}
+		return nil
+	})
+	if err != nil && !errors.Is(err, fs.SkipAll) {
+		return nil, false, err
+	}
+	matches := []grepMatch(*h)
+	sort.SliceStable(matches, func(i, j int) bool {
+		if !matches[i].modTime.Equal(matches[j].modTime) {
+			return matches[i].modTime.After(matches[j].modTime)
+		}
+		return matches[i].seq < matches[j].seq
+	})
+	if limit < 1 {
+		matches = nil
+	}
+	return matches, totalMatches > int64(limit), nil
 }
 
 func searchWithRipgrep(ctx context.Context, pattern, path, include string, limit int) ([]grepMatch, bool, error) {
@@ -633,6 +758,68 @@ func fileMatches(ctx context.Context, filePath string, pattern *regexp.Regexp, o
 		}
 	}
 
+	return nil
+}
+
+func fileMatchesFS(ctx context.Context, fsys fs.FS, path string, pattern *regexp.Regexp, onMatch func(lineMatch) bool) error {
+	if pattern == nil {
+		return nil
+	}
+	file, err := fsys.Open(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	prefix := make([]byte, 512)
+	n, err := file.Read(prefix)
+	if err != nil && err != io.EOF {
+		return err
+	}
+	contentType := http.DetectContentType(prefix[:n])
+	if !(strings.HasPrefix(contentType, "text/") || contentType == "application/json" || contentType == "application/xml" || contentType == "application/javascript" || contentType == "application/x-sh") {
+		return nil
+	}
+	var reader io.Reader = io.MultiReader(bytes.NewReader(prefix[:n]), file)
+	if seeker, ok := file.(io.Seeker); ok {
+		if _, err := seeker.Seek(0, io.SeekStart); err != nil {
+			return err
+		}
+		reader = file
+	}
+	return fileMatchesReader(ctx, reader, pattern, onMatch)
+}
+
+func fileMatchesReader(ctx context.Context, source io.Reader, pattern *regexp.Regexp, onMatch func(lineMatch) bool) error {
+	reader := bufio.NewReader(source)
+	var lineBuf bytes.Buffer
+	lineNum := 0
+	for {
+		truncated, rerr := readBoundedLine(ctx, reader, &lineBuf, maxFallbackLineBytes)
+		lineNum++
+		if rerr != nil && rerr != io.EOF {
+			return rerr
+		}
+		if rerr == io.EOF && lineBuf.Len() == 0 {
+			break
+		}
+		line := strings.TrimSuffix(lineBuf.String(), "\r")
+		if loc := pattern.FindStringIndex(line); loc != nil {
+			lineText := line
+			if truncated {
+				lineText += fallbackTruncateSuffix
+			}
+			if !onMatch(lineMatch{lineNum: lineNum, charNum: loc[0] + 1, lineText: lineText}) {
+				return nil
+			}
+		}
+		if rerr == io.EOF {
+			break
+		}
+		if lineNum%1024 == 0 && ctx.Err() != nil {
+			return ctx.Err()
+		}
+	}
 	return nil
 }
 

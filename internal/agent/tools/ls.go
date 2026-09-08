@@ -4,8 +4,10 @@ import (
 	"cmp"
 	"context"
 	_ "embed"
+	"errors"
 	"fmt"
 	"html/template"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -83,46 +85,25 @@ func NewLsTool(permissions permission.Service, workingDir string, lsConfig confi
 
 			searchPath = filepathext.SmartJoin(workingDir, searchPath)
 
-			// Check if directory is outside working directory and request permission if needed
-			absWorkingDir, err := filepath.Abs(workingDir)
-			if err != nil {
-				return fantasy.NewTextErrorResponse(fmt.Sprintf("error resolving working directory: %v", err)), nil
+			anchor, allowed, authErr := authorizeWorkspaceRead(
+				ctx,
+				permissions,
+				workingDir,
+				searchPath,
+				LSToolName,
+				"list",
+				call.ID,
+				LSPermissionsParams(params),
+			)
+			if authErr != nil {
+				return fantasy.NewTextErrorResponse(fmt.Sprintf("error authorizing search path: %v", authErr)), nil
 			}
-
-			absSearchPath, err := filepath.Abs(searchPath)
-			if err != nil {
-				return fantasy.NewTextErrorResponse(fmt.Sprintf("error resolving search path: %v", err)), nil
+			if !allowed {
+				return NewPermissionDeniedResponse(), nil
 			}
+			defer anchor.Close()
 
-			relPath, err := filepath.Rel(absWorkingDir, absSearchPath)
-			if err != nil || strings.HasPrefix(relPath, "..") {
-				// Directory is outside working directory, request permission
-				sessionID := GetSessionFromContext(ctx)
-				if sessionID == "" {
-					return fantasy.ToolResponse{}, fmt.Errorf("session ID is required for accessing directories outside working directory")
-				}
-
-				granted, err := permissions.Request(
-					ctx,
-					permission.CreatePermissionRequest{
-						SessionID:   sessionID,
-						Path:        absSearchPath,
-						ToolCallID:  call.ID,
-						ToolName:    LSToolName,
-						Action:      "list",
-						Description: fmt.Sprintf("List directory outside working directory: %s", absSearchPath),
-						Params:      LSPermissionsParams(params),
-					},
-				)
-				if err != nil {
-					return fantasy.ToolResponse{}, err
-				}
-				if !granted {
-					return NewPermissionDeniedResponse(), nil
-				}
-			}
-
-			output, metadata, err := ListDirectoryTree(searchPath, params, lsConfig)
+			output, metadata, err := listDirectoryTreeFS(anchor.FS(), anchor.displayRoot(), anchor.rootPath(), params, lsConfig)
 			if err != nil {
 				return fantasy.NewTextErrorResponse(err.Error()), nil
 			}
@@ -142,7 +123,7 @@ func ListDirectoryTree(searchPath string, params LSParams, lsConfig config.ToolL
 
 	depth, limit := lsConfig.Limits()
 	maxFiles := cmp.Or(limit, maxLSFiles)
-	files, truncated, err := fsext.ListDirectory(
+	files, truncated, err := fsext.ListDirectoryNoFollow(
 		searchPath,
 		params.Ignore,
 		cmp.Or(params.Depth, depth),
@@ -166,6 +147,28 @@ func ListDirectoryTree(searchPath string, params LSParams, lsConfig config.ToolL
 		output = fmt.Sprintf("The directory tree is shown up to a depth of %d. Use a higher depth and a specific path to see more levels.\n", cmp.Or(params.Depth, depth))
 	}
 	return output + "\n" + printTree(tree, searchPath), metadata, nil
+}
+
+func listDirectoryTreeFS(fsys fs.FS, displayRoot string, start string, params LSParams, lsConfig config.ToolLs) (string, LSResponseMetadata, error) {
+	if _, err := fs.Stat(fsys, start); errors.Is(err, fs.ErrNotExist) {
+		return "", LSResponseMetadata{}, fmt.Errorf("path does not exist: %s", displayRoot)
+	}
+	depth, limit := lsConfig.Limits()
+	maxFiles := cmp.Or(limit, maxLSFiles)
+	files, truncated, err := fsext.ListDirectoryFS(fsys, start, displayRoot, params.Ignore, cmp.Or(params.Depth, depth), maxFiles)
+	if err != nil {
+		return "", LSResponseMetadata{}, fmt.Errorf("error listing directory: %w", err)
+	}
+	metadata := LSResponseMetadata{NumberOfFiles: len(files), Truncated: truncated}
+	tree := createFileTree(files, displayRoot)
+	var output string
+	if truncated {
+		output = fmt.Sprintf("There are more than %d files in the directory. Use a more specific path or use the Glob tool to find specific files. The first %[1]d files and directories are included below.\n", maxFiles)
+	}
+	if depth > 0 {
+		output = fmt.Sprintf("The directory tree is shown up to a depth of %d. Use a higher depth and a specific path to see more levels.\n", cmp.Or(params.Depth, depth))
+	}
+	return output + "\n" + printTree(tree, displayRoot), metadata, nil
 }
 
 func createFileTree(sortedPaths []string, rootPath string) []*TreeNode {

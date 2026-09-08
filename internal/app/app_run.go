@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"os"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -654,6 +655,17 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 	}
 	runSpec.AllowBash = append(runSpec.AllowBash, overrides.AllowBash...)
 	runSpec.AllowTools = append(runSpec.AllowTools, overrides.AllowTools...)
+	if runSpec.Restrict {
+		// Delegation is the parent turn's policy-carrying mechanism; the
+		// child turn is separately gated with the inherited allowlist.
+		// Keep delegation tools dispatchable so their child permission
+		// requests can produce the authoritative decided notification.
+		for _, name := range subAgentToolNames {
+			if !slices.Contains(runSpec.AllowTools, name) {
+				runSpec.AllowTools = append(runSpec.AllowTools, name)
+			}
+		}
+	}
 
 	// R14-2 (P0, SDK review round 14): a config with no real workspace
 	// (sdk.ModeLibrary with no WorkingDir) must never resolve per-call

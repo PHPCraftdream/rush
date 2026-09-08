@@ -90,6 +90,11 @@ func (m *Tool) MCPToolName() string {
 	return m.tool.Name
 }
 
+// RestrictedRunAction identifies the permission action used by the MCP
+// tool's own Request call. It lets central dispatch preserve tool:action
+// allowlists even when the MCP name is dynamic.
+func (m *Tool) RestrictedRunAction() string { return "execute" }
+
 func (m *Tool) Info() fantasy.ToolInfo {
 	parameters := make(map[string]any)
 	required := make([]string, 0)

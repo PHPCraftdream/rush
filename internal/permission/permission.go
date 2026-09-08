@@ -51,6 +51,12 @@ func hookApproved(ctx context.Context, toolCallID string) bool {
 	return v == toolCallID
 }
 
+// HookApprovalGranted reports whether a PreToolUse allow decision approved
+// this exact call. Central dispatch uses the same stamp as Request.
+func HookApprovalGranted(ctx context.Context, toolCallID string) bool {
+	return hookApproved(ctx, toolCallID)
+}
+
 type CreatePermissionRequest struct {
 	SessionID   string `json:"session_id"`
 	ToolCallID  string `json:"tool_call_id"`
@@ -114,6 +120,23 @@ type Service interface {
 // are optional so lightweight permission test doubles remain valid.
 type RestrictedRunAuthorizer interface {
 	AuthorizeRestrictedRun(opts CreatePermissionRequest) (restricted bool, allowed bool)
+}
+
+type RestrictedRunContextAuthorizer interface {
+	AuthorizeRestrictedRunContext(ctx context.Context, opts CreatePermissionRequest) (restricted bool, allowed bool)
+}
+
+// RestrictedRunToolAuthorizer checks the coarse tool gate before dispatch.
+// Tool-specific permission requests still enforce their action and path.
+type RestrictedRunToolAuthorizer interface {
+	AuthorizeRestrictedTool(opts CreatePermissionRequest) (restricted bool, allowed bool)
+}
+
+// RestrictedRunDispatchAuthorizer is the central pre-Request gate. A denied
+// dispatch publishes the same decided notification Request would publish;
+// an allowed dispatch leaves publication to the underlying tool Request.
+type RestrictedRunDispatchAuthorizer interface {
+	AuthorizeRestrictedDispatch(ctx context.Context, opts CreatePermissionRequest) (restricted bool, allowed bool)
 }
 
 // SessionRunAllowlistManager is the OPTIONAL per-session extension of the
@@ -409,13 +432,7 @@ func (s *permissionService) Deny(permission PermissionRequest) {
 }
 
 func (s *permissionService) Request(ctx context.Context, opts CreatePermissionRequest) (bool, error) {
-	if s.skip.Load() {
-		return true, nil
-	}
-
-	// Check if the tool/action combination is in the allowlist
-	commandKey := opts.ToolName + ":" + opts.Action
-	if slices.Contains(s.allowedTools, commandKey) || slices.Contains(s.allowedTools, opts.ToolName) {
+	if s.preGateAllows(opts) {
 		return true, nil
 	}
 
@@ -563,10 +580,61 @@ func (s *permissionService) Request(ctx context.Context, opts CreatePermissionRe
 	}
 }
 
+// preGateAllows is the shared fast path used by Request and by central
+// dispatch authorization. These grants intentionally precede run.allowlist.
+func (s *permissionService) preGateAllows(opts CreatePermissionRequest) bool {
+	if s.skip.Load() {
+		return true
+	}
+	commandKey := opts.ToolName + ":" + opts.Action
+	return slices.Contains(s.allowedTools, commandKey) || slices.Contains(s.allowedTools, opts.ToolName)
+}
+
 // AuthorizeRestrictedRun checks the policy that would govern opts on the
 // auto-approved path. It deliberately ignores interactive approval state:
 // callers use it before a shortcut that would otherwise skip Request.
 func (s *permissionService) AuthorizeRestrictedRun(opts CreatePermissionRequest) (bool, bool) {
+	if s.preGateAllows(opts) {
+		return false, true
+	}
+	return s.authorizeRestricted(opts, false)
+}
+
+func (s *permissionService) AuthorizeRestrictedRunContext(ctx context.Context, opts CreatePermissionRequest) (bool, bool) {
+	if HookApprovalGranted(ctx, opts.ToolCallID) {
+		return false, true
+	}
+	return s.AuthorizeRestrictedRun(opts)
+}
+
+// AuthorizeRestrictedTool checks the exact tool/action dispatch contract.
+func (s *permissionService) AuthorizeRestrictedTool(opts CreatePermissionRequest) (bool, bool) {
+	if s.preGateAllows(opts) {
+		return false, true
+	}
+	return s.authorizeRestricted(opts, true)
+}
+
+func (s *permissionService) AuthorizeRestrictedDispatch(ctx context.Context, opts CreatePermissionRequest) (bool, bool) {
+	if s.preGateAllows(opts) {
+		return false, true
+	}
+	restricted, allowed := s.authorizeRestricted(opts, falseOrTool(opts))
+	if restricted && !allowed {
+		s.notificationBroker.Publish(pubsub.CreatedEvent, PermissionNotification{
+			ToolCallID: opts.ToolCallID,
+			Denied:     true,
+		})
+	}
+	return restricted, allowed
+}
+
+func falseOrTool(opts CreatePermissionRequest) bool {
+	_, command := opts.Params.(runAllowlistCommandProvider)
+	return !command
+}
+
+func (s *permissionService) authorizeRestricted(opts CreatePermissionRequest, toolAction bool) (bool, bool) {
 	s.runAllowlistBySessionMu.RLock()
 	sessionEntry, hasSessionGate := s.runAllowlistBySession[opts.SessionID]
 	baseline, hasBaseline := s.runAllowlistBaselineBySession[opts.SessionID]
@@ -581,6 +649,9 @@ func (s *permissionService) AuthorizeRestrictedRun(opts CreatePermissionRequest)
 	}
 	if !gate.IsRestricted() {
 		return false, true
+	}
+	if toolAction {
+		return true, gate.toolAllowed(opts.ToolName, opts.Action)
 	}
 	return true, gate.allowsRequest(opts)
 }

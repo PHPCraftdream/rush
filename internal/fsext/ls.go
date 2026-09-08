@@ -3,6 +3,7 @@ package fsext
 import (
 	"cmp"
 	"errors"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -145,11 +146,25 @@ type directoryLister struct {
 	// all ancestor patterns. This allows O(1) matching per file.
 	combinedMatchers *csync.Map[string, gitignore.Matcher]
 	rootPath         string
+	fsys             fs.FS
 }
 
 func NewDirectoryLister(rootPath string) *directoryLister {
 	return &directoryLister{
 		rootPath:         rootPath,
+		dirPatterns:      csync.NewMap[string, []gitignore.Pattern](),
+		combinedMatchers: csync.NewMap[string, gitignore.Matcher](),
+	}
+}
+
+func newDirectoryListerFS(fsys fs.FS) *directoryLister {
+	return newDirectoryListerFSAt(fsys, ".")
+}
+
+func newDirectoryListerFSAt(fsys fs.FS, rootPath string) *directoryLister {
+	return &directoryLister{
+		rootPath:         rootPath,
+		fsys:             fsys,
 		dirPatterns:      csync.NewMap[string, []gitignore.Pattern](),
 		combinedMatchers: csync.NewMap[string, gitignore.Matcher](),
 	}
@@ -178,7 +193,14 @@ func (dl *directoryLister) getDirPatterns(dir string) []gitignore.Pattern {
 
 		for _, ignoreFile := range []string{".gitignore", ".rushignore"} {
 			ignPath := filepath.Join(dir, ignoreFile)
-			if content, err := os.ReadFile(ignPath); err == nil {
+			var content []byte
+			var err error
+			if dl.fsys != nil {
+				content, err = fs.ReadFile(dl.fsys, filepath.ToSlash(ignPath))
+			} else {
+				content, err = os.ReadFile(ignPath)
+			}
+			if err == nil {
 				lines := strings.Split(string(content), "\n")
 				allPatterns = append(allPatterns, parsePatterns(lines, domain)...)
 			}
@@ -272,13 +294,68 @@ func (dl *directoryLister) shouldIgnore(path string, ignorePatterns []string, is
 
 // ListDirectory lists files and directories in the specified path.
 func ListDirectory(initialPath string, ignorePatterns []string, depth, limit int) ([]string, bool, error) {
+	return listDirectory(initialPath, ignorePatterns, depth, limit, true)
+}
+
+// ListDirectoryNoFollow is the authorization-safe variant for callers that
+// must never traverse directory symlinks.
+func ListDirectoryNoFollow(initialPath string, ignorePatterns []string, depth, limit int) ([]string, bool, error) {
+	return listDirectory(initialPath, ignorePatterns, depth, limit, false)
+}
+
+// ListDirectoryFS lists an anchored fs.FS without re-resolving paths through
+// the host filesystem.
+func ListDirectoryFS(fsys fs.FS, start, displayRoot string, ignorePatterns []string, depth, limit int) ([]string, bool, error) {
+	found := csync.NewSlice[string]()
+	dl := newDirectoryListerFSAt(fsys, filepath.ToSlash(start))
+	err := fs.WalkDir(fsys, filepath.ToSlash(start), func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		isDir := d.IsDir()
+		if dl.shouldIgnore(path, ignorePatterns, isDir) {
+			if isDir {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if filepath.ToSlash(path) != filepath.ToSlash(start) {
+			displayPath := path
+			if start != "." {
+				displayPath, _ = filepath.Rel(start, path)
+			}
+			displayPath = filepath.Join(displayRoot, filepath.FromSlash(displayPath))
+			if isDir {
+				displayPath += string(filepath.Separator)
+			}
+			found.Append(displayPath)
+		}
+		if isDir && depth > 0 && path != start {
+			rel, _ := filepath.Rel(start, path)
+			if len(pathToComponents(rel)) >= depth {
+				return fs.SkipDir
+			}
+		}
+		if limit > 0 && found.Len() >= limit {
+			return fs.SkipAll
+		}
+		return nil
+	})
+	if err != nil && !errors.Is(err, fs.SkipAll) {
+		return nil, false, err
+	}
+	matches, truncated := truncate(slices.Collect(found.Seq()), limit)
+	return matches, truncated || errors.Is(err, fs.SkipAll), nil
+}
+
+func listDirectory(initialPath string, ignorePatterns []string, depth, limit int, follow bool) ([]string, bool, error) {
 	found := csync.NewSlice[string]()
 	dl := NewDirectoryLister(initialPath)
 
 	slog.Debug("Listing directory", "path", initialPath, "depth", depth, "limit", limit, "ignorePatterns", ignorePatterns)
 
 	conf := fastwalk.Config{
-		Follow:   true,
+		Follow:   follow,
 		ToSlash:  fastwalk.DefaultToSlash(),
 		Sort:     fastwalk.SortDirsFirst,
 		MaxDepth: depth,

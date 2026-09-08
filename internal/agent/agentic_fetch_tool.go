@@ -171,8 +171,8 @@ func (c *coordinator) agenticFetchTool(_ context.Context, client *http.Client) (
 			fetchTools := []fantasy.AgentTool{
 				webFetchTool,
 				webSearchTool,
-				tools.NewGlobTool(tmpDir),
-				tools.NewGrepTool(tmpDir, c.cfg.Config().Tools.Grep),
+				tools.NewGlobTool(tmpDir, c.permissions),
+				tools.NewGrepTool(tmpDir, c.cfg.Config().Tools.Grep, c.permissions),
 				tools.NewSourcegraphTool(client),
 				tools.NewViewTool(c.permissions, c.filetracker, nil, tmpDir),
 			}
@@ -198,11 +198,12 @@ func (c *coordinator) agenticFetchTool(_ context.Context, client *http.Client) (
 				// same 90s grace as the actual parent — recreating #200's
 				// symmetric-cancel-out bug specifically for the
 				// agentic_fetch path. Found by @oh's review.
-				IsSubAgent: true,
-				Sessions:   c.sessions,
-				Messages:   c.messages,
-				Config:     c.cfg,
-				Tools:      fetchTools,
+				IsSubAgent:     true,
+				Sessions:       c.sessions,
+				Messages:       c.messages,
+				Config:         c.cfg,
+				Tools:          fetchTools,
+				RestrictedRuns: restrictedRunAuthorizer(c.permissions),
 			})
 
 			return c.runSubAgent(ctx, subAgentParams{

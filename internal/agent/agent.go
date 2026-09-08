@@ -736,7 +736,8 @@ type sessionAgent struct {
 	// turn start and clear it at loop end (R3-4). Nil (tests, bare
 	// fixtures) disables the mechanism entirely — no session entry is
 	// ever armed.
-	runAllowlists permission.SessionRunAllowlistManager
+	runAllowlists  permission.SessionRunAllowlistManager
+	restrictedRuns permission.RestrictedRunAuthorizer
 }
 
 type SessionAgentOptions struct {
@@ -844,6 +845,8 @@ type SessionAgentOptions struct {
 	// fixtures) disables the mechanism entirely — no session entry is
 	// ever armed.
 	RunAllowlists permission.SessionRunAllowlistManager
+	// RestrictedRuns is the final dispatch gate for per-call tool allowlists.
+	RestrictedRuns permission.RestrictedRunAuthorizer
 }
 
 func NewSessionAgent(
@@ -859,7 +862,7 @@ func NewSessionAgent(
 		sessions:                   opts.Sessions,
 		messages:                   opts.Messages,
 		disableAutoSummarize:       opts.DisableAutoSummarize,
-		tools:                      csync.NewSliceFrom(wrapToolsWithErrorLogging(opts.Tools)),
+		tools:                      csync.NewSliceFrom(wrapToolsWithErrorLogging(wrapToolsWithRestrictedRun(opts.Tools, opts.RestrictedRuns))),
 		isYolo:                     opts.IsYolo,
 		notify:                     opts.Notify,
 		activeRequests:             csync.NewMap[string, context.CancelFunc](),
@@ -880,6 +883,7 @@ func NewSessionAgent(
 		toolCleanupGrace:           opts.ToolCleanupGrace,
 		peakHoursCheck:             opts.PeakHoursCheck,
 		runAllowlists:              opts.RunAllowlists,
+		restrictedRuns:             opts.RestrictedRuns,
 		sessionPreambleMaxDuration: opts.SessionPreambleMaxDuration,
 		titleGenerationMaxDuration: opts.TitleGenerationMaxDuration,
 	}
@@ -894,7 +898,7 @@ func (a *sessionAgent) SetModels(smart Model, fast Model) {
 // for error logging: these two are the only doors tools have into a
 // sessionAgent, so covering both means no assembly site can forget to.
 func (a *sessionAgent) SetTools(tools []fantasy.AgentTool) {
-	a.tools.SetSlice(wrapToolsWithErrorLogging(tools))
+	a.tools.SetSlice(wrapToolsWithErrorLogging(wrapToolsWithRestrictedRun(tools, a.restrictedRuns)))
 }
 
 func (a *sessionAgent) SetSystemPrompt(systemPrompt string) {

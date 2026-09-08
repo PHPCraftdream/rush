@@ -3,6 +3,7 @@ package fsext
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -71,6 +72,21 @@ func NewFastGlobWalker(searchPath string) *FastGlobWalker {
 	}
 }
 
+// NewFastGlobWalkerFS creates a gitignore-aware walker rooted at an fs.FS.
+// The FS may be an os.Root filesystem, so traversal remains anchored.
+func NewFastGlobWalkerFS(fsys fs.FS) *FastGlobWalker {
+	return &FastGlobWalker{directoryLister: newDirectoryListerFS(fsys)}
+}
+
+func newFastGlobWalkerFSAt(fsys fs.FS, rootPath string) *FastGlobWalker {
+	return &FastGlobWalker{directoryLister: newDirectoryListerFSAt(fsys, rootPath)}
+}
+
+// NewFastGlobWalkerFSAt creates an anchored walker whose ignore root is start.
+func NewFastGlobWalkerFSAt(fsys fs.FS, start string) *FastGlobWalker {
+	return newFastGlobWalkerFSAt(fsys, filepath.ToSlash(start))
+}
+
 // ShouldSkip checks if a file path should be skipped based on hierarchical gitignore,
 // rushignore, and hidden file rules.
 func (w *FastGlobWalker) ShouldSkip(path string) bool {
@@ -95,7 +111,69 @@ func GlobGitignoreAware(pattern string, cwd string, limit int) ([]string, bool, 
 	return globWithDoubleStar(pattern, cwd, limit, true)
 }
 
+// GlobGitignoreAwareNoFollow is the authorization-safe variant for callers
+// that must never traverse directory symlinks.
+func GlobGitignoreAwareNoFollow(pattern string, cwd string, limit int) ([]string, bool, error) {
+	return globWithDoubleStarFollow(pattern, cwd, limit, true, false)
+}
+
+// GlobGitignoreAwareFS is the anchored counterpart of GlobGitignoreAware.
+func GlobGitignoreAwareFS(fsys fs.FS, start, displayRoot, pattern string, limit int) ([]string, bool, error) {
+	pattern = filepath.ToSlash(pattern)
+	walker := newFastGlobWalkerFSAt(fsys, filepath.ToSlash(start))
+	found := csync.NewSlice[FileInfo]()
+	err := fs.WalkDir(fsys, filepath.ToSlash(start), func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		isDir := d.IsDir()
+		if isDir {
+			if walker.ShouldSkipDir(path) {
+				return fs.SkipDir
+			}
+		} else if walker.ShouldSkip(path) {
+			return nil
+		}
+		relPath := path
+		if start != "." {
+			relPath, _ = filepath.Rel(start, path)
+		}
+		relPath = filepath.ToSlash(relPath)
+		matched, matchErr := doublestar.Match(pattern, relPath)
+		if matchErr != nil || !matched {
+			return nil
+		}
+		info, infoErr := d.Info()
+		if infoErr != nil {
+			return nil
+		}
+		displayPath := path
+		if start != "." {
+			displayPath, _ = filepath.Rel(start, path)
+		}
+		found.Append(FileInfo{Path: filepath.Join(displayRoot, filepath.FromSlash(displayPath)), ModTime: info.ModTime()})
+		if limit > 0 && found.Len() >= limit*2 {
+			return fs.SkipAll
+		}
+		return nil
+	})
+	if err != nil && !errors.Is(err, fs.SkipAll) {
+		return nil, false, fmt.Errorf("fs walk error: %w", err)
+	}
+	matches := slices.SortedFunc(found.Seq(), func(a, b FileInfo) int { return b.ModTime.Compare(a.ModTime) })
+	matches, truncated := truncate(matches, limit)
+	results := make([]string, len(matches))
+	for i, match := range matches {
+		results[i] = match.Path
+	}
+	return results, truncated || errors.Is(err, fs.SkipAll), nil
+}
+
 func globWithDoubleStar(pattern, searchPath string, limit int, gitignore bool) ([]string, bool, error) {
+	return globWithDoubleStarFollow(pattern, searchPath, limit, gitignore, true)
+}
+
+func globWithDoubleStarFollow(pattern, searchPath string, limit int, gitignore, follow bool) ([]string, bool, error) {
 	// Normalize pattern to forward slashes on Windows so their config can use
 	// backslashes
 	pattern = filepath.ToSlash(pattern)
@@ -103,7 +181,7 @@ func globWithDoubleStar(pattern, searchPath string, limit int, gitignore bool) (
 	walker := NewFastGlobWalker(searchPath)
 	found := csync.NewSlice[FileInfo]()
 	conf := fastwalk.Config{
-		Follow:  true,
+		Follow:  follow,
 		ToSlash: fastwalk.DefaultToSlash(),
 		Sort:    fastwalk.SortFilesFirst,
 	}

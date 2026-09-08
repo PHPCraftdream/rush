@@ -51,6 +51,14 @@ func (h *hookedTool) SetProviderOptions(opts fantasy.ProviderOptions) {
 	h.inner.SetProviderOptions(opts)
 }
 
+func (h *hookedTool) RestrictedRunAction() string {
+	provider, ok := h.inner.(interface{ RestrictedRunAction() string })
+	if !ok {
+		return ""
+	}
+	return provider.RestrictedRunAction()
+}
+
 func (h *hookedTool) Run(ctx context.Context, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
 	sessionID := tools.GetSessionFromContext(ctx)
 	result, err := h.runner.Run(ctx, hooks.EventPreToolUse, sessionID, call.Name, call.Input)

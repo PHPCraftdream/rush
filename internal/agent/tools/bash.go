@@ -256,7 +256,12 @@ func NewBashTool(permissions permission.Service, workingDir string, attribution 
 				Description: fmt.Sprintf("Execute command: %s", params.Command),
 				Params:      BashPermissionsParams(params),
 			}
-			if authorizer, ok := permissions.(permission.RestrictedRunAuthorizer); ok {
+			if authorizer, ok := permissions.(permission.RestrictedRunContextAuthorizer); ok {
+				restricted, allowed := authorizer.AuthorizeRestrictedRunContext(ctx, permissionRequest)
+				if restricted && !allowed {
+					return NewPermissionDeniedResponse(), nil
+				}
+			} else if authorizer, ok := permissions.(permission.RestrictedRunAuthorizer); ok {
 				restricted, allowed := authorizer.AuthorizeRestrictedRun(permissionRequest)
 				if restricted && !allowed {
 					return NewPermissionDeniedResponse(), nil

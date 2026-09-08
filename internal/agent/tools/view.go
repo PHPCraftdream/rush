@@ -12,7 +12,9 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"syscall"
 	"unicode/utf8"
 
 	"charm.land/fantasy"
@@ -61,6 +63,12 @@ const (
 	ViewResourceUnset ViewResourceType = ""
 	ViewResourceSkill ViewResourceType = "skill"
 )
+
+type viewAfterAnchorSeamKey struct{}
+
+func withViewAfterAnchorSeam(ctx context.Context, seam func(*readAnchor)) context.Context {
+	return context.WithValue(ctx, viewAfterAnchorSeamKey{}, seam)
+}
 
 type ViewResponseMetadata struct {
 	FilePath            string           `json:"file_path"`
@@ -119,7 +127,7 @@ func NewViewTool(
 			filePath := filepathext.SmartJoin(workingDir, params.FilePath)
 
 			// Check if file is outside working directory and request permission if needed
-			absWorkingDir, err := filepath.Abs(workingDir)
+			_, err := filepath.Abs(workingDir)
 			if err != nil {
 				// workingDir is tool wiring, not model input, so strictly
 				// this failure is retry-invariant. It still answers as a
@@ -141,8 +149,6 @@ func NewViewTool(
 					params.FilePath, err)), nil
 			}
 
-			relPath, err := filepath.Rel(absWorkingDir, absFilePath)
-			isOutsideWorkDir := err != nil || strings.HasPrefix(relPath, "..")
 			isSkillFile := isInSkillsPath(absFilePath, skillsPaths)
 
 			sessionID := GetSessionFromContext(ctx)
@@ -157,56 +163,52 @@ func NewViewTool(
 				return fantasy.ToolResponse{}, fmt.Errorf("session ID is required for recording file reads and for accessing files outside the working directory")
 			}
 
-			// Request permission for files outside working directory, unless it's a skill file.
-			if isOutsideWorkDir && !isSkillFile {
-				granted, permReqErr := permissions.Request(
+			// Resolve symlink aliases before any Stat/read operation follows them.
+			var anchor *readAnchor
+			if !isSkillFile {
+				var allowed bool
+				var authErr error
+				anchor, allowed, authErr = authorizeWorkspaceRead(
 					ctx,
-					permission.CreatePermissionRequest{
-						SessionID:   sessionID,
-						Path:        absFilePath,
-						ToolCallID:  call.ID,
-						ToolName:    ViewToolName,
-						Action:      "read",
-						Description: fmt.Sprintf("Read file outside working directory: %s", absFilePath),
-						Params:      ViewPermissionsParams(params),
-					},
+					permissions,
+					workingDir,
+					absFilePath,
+					ViewToolName,
+					"read",
+					call.ID,
+					ViewPermissionsParams(params),
 				)
-				if permReqErr != nil {
-					return fantasy.ToolResponse{}, permReqErr
+				if authErr != nil {
+					return fantasy.NewTextErrorResponse(fmt.Sprintf("Cannot access %s: %v", absFilePath, authErr)), nil
 				}
-				if !granted {
+				if !allowed {
 					return NewPermissionDeniedResponse(), nil
 				}
+			} else {
+				anchor, err = anchorExternalPath(absFilePath)
+				if err != nil {
+					return fantasy.NewTextErrorResponse(fmt.Sprintf("Cannot access %s: %v", absFilePath, err)), nil
+				}
+			}
+			defer anchor.Close()
+			if seam, ok := ctx.Value(viewAfterAnchorSeamKey{}).(func(*readAnchor)); ok {
+				seam(anchor)
 			}
 
-			// Check if file exists
-			fileInfo, err := os.Stat(filePath)
+			// Check if file exists through the anchored root.
+			fileInfo, err := anchor.root.Stat(anchor.rootPath())
 			if err != nil {
-				if os.IsNotExist(err) {
+				if errors.Is(err, fs.ErrNotExist) {
 					// Try to offer suggestions for similarly named files
-					dir := filepath.Dir(filePath)
-					base := filepath.Base(filePath)
-
-					dirEntries, dirErr := os.ReadDir(dir)
-					if dirErr == nil {
-						var suggestions []string
-						for _, entry := range dirEntries {
-							if strings.Contains(strings.ToLower(entry.Name()), strings.ToLower(base)) ||
-								strings.Contains(strings.ToLower(base), strings.ToLower(entry.Name())) {
-								suggestions = append(suggestions, filepath.Join(dir, entry.Name()))
-								if len(suggestions) >= 3 {
-									break
-								}
-							}
-						}
-
-						if len(suggestions) > 0 {
-							return fantasy.NewTextErrorResponse(fmt.Sprintf("File not found: %s\n\nDid you mean one of these?\n%s",
-								filePath, strings.Join(suggestions, "\n"))), nil
-						}
+					suggestions := anchoredSuggestions(anchor, filePath)
+					if len(suggestions) > 0 {
+						return fantasy.NewTextErrorResponse(fmt.Sprintf("File not found: %s\n\nDid you mean one of these?\n%s",
+							filePath, strings.Join(suggestions, "\n"))), nil
 					}
-
 					return fantasy.NewTextErrorResponse(fmt.Sprintf("File not found: %s", filePath)), nil
+				}
+				if isSharingViolation(err) {
+					return fantasy.NewTextErrorResponse(fmt.Sprintf("Cannot read %s: %v", filePath, err)), nil
 				}
 				if osFailureIsFatal(err) {
 					return fantasy.ToolResponse{}, fmt.Errorf("error accessing file: %w", err)
@@ -230,7 +232,7 @@ func NewViewTool(
 				}
 			}
 
-			isSupportedImage, mimeType := getImageMimeType(filePath)
+			isSupportedImage, mimeType := getImageMimeType(anchor.rootPath())
 			if isSupportedImage {
 				if fileInfo.Size() > MaxViewSize {
 					return fantasy.NewTextErrorResponse(fmt.Sprintf("Image file is too large (%d bytes). Maximum size is %d bytes",
@@ -241,7 +243,7 @@ func NewViewTool(
 					return fantasy.NewTextErrorResponse(fmt.Sprintf("This model (%s) does not support image data.", modelName)), nil
 				}
 
-				imageData, readErr := os.ReadFile(filePath)
+				imageData, readErr := readFileFromAnchor(anchor)
 				if readErr != nil {
 					if osFailureIsFatal(readErr) {
 						return fantasy.ToolResponse{}, fmt.Errorf("error reading image file: %w", readErr)
@@ -267,7 +269,7 @@ func NewViewTool(
 			if isSkillFile {
 				maxContentSize = 0
 			}
-			content, hasMore, err := readTextFile(filePath, params.Offset, params.Limit, maxContentSize)
+			content, hasMore, err := readTextFileFromAnchor(ctx, anchor, params.Offset, params.Limit, maxContentSize)
 			if err != nil {
 				var tooLarge contentTooLargeError
 				if errors.As(err, &tooLarge) {
@@ -316,6 +318,39 @@ func NewViewTool(
 	)
 }
 
+func anchoredSuggestions(anchor *readAnchor, requestedPath string) []string {
+	rootPath := anchor.rootPath()
+	parent := filepath.ToSlash(filepath.Dir(filepath.FromSlash(rootPath)))
+	if parent == "" {
+		parent = "."
+	}
+	entries, err := fs.ReadDir(anchor.FS(), parent)
+	if err != nil {
+		return nil
+	}
+	base := strings.ToLower(filepath.Base(requestedPath))
+	suggestions := make([]string, 0, 3)
+	for _, entry := range entries {
+		name := entry.Name()
+		lowerName := strings.ToLower(name)
+		if strings.Contains(lowerName, base) || strings.Contains(base, lowerName) {
+			suggestions = append(suggestions, filepath.Join(filepath.Dir(requestedPath), name))
+			if len(suggestions) >= 3 {
+				break
+			}
+		}
+	}
+	return suggestions
+}
+
+func isSharingViolation(err error) bool {
+	if runtime.GOOS != "windows" {
+		return false
+	}
+	var errno syscall.Errno
+	return errors.As(err, &errno) && errno == syscall.Errno(32)
+}
+
 func addLineNumbers(content string, startLine int) string {
 	if content == "" {
 		return ""
@@ -346,6 +381,28 @@ func addLineNumbers(content string, startLine int) string {
 // readTextFileFrom instead, so it can honour an injected DiskProvider.
 func readTextFile(filePath string, offset, limit, maxContentSize int) (string, bool, error) {
 	return readTextFileFrom(context.Background(), OSDisk(), filePath, offset, limit, maxContentSize)
+}
+
+type anchoredReadDisk struct {
+	DiskProvider
+	root *os.Root
+}
+
+func (d anchoredReadDisk) Open(_ context.Context, name string) (io.ReadCloser, error) {
+	return d.root.Open(name)
+}
+
+func readTextFileFromAnchor(ctx context.Context, anchor *readAnchor, offset, limit, maxContentSize int) (string, bool, error) {
+	return readTextFileFrom(ctx, anchoredReadDisk{DiskProvider: OSDisk(), root: anchor.root}, anchor.rootPath(), offset, limit, maxContentSize)
+}
+
+func readFileFromAnchor(anchor *readAnchor) ([]byte, error) {
+	file, err := anchor.root.Open(anchor.rootPath())
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	return io.ReadAll(file)
 }
 
 // readTextFileFrom is readTextFile's provider-aware core: identical

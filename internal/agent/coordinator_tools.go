@@ -111,6 +111,7 @@ func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, age
 		ToolMaxDuration:    toolMaxDuration,
 		DataDirectory:      dataDirectory,
 		RunAllowlists:      runAllowlists,
+		RestrictedRuns:     restrictedRunAuthorizer(c.permissions),
 		CheckpointInterval: checkpointInterval, // Fork patch: batch 8
 		// Fork patch: peak-hours mid-turn re-check. Deliberately LIVE, not
 		// pinned to cfg above: this is a runtime *policy* check re-evaluated
@@ -654,8 +655,8 @@ func (c *coordinator) buildTools(ctx context.Context, cfg *config.Config, agent 
 		tools.NewMultiEditTool(c.permissions, c.history, c.filetracker, c.cfg.WorkingDir()),
 		tools.NewFetchTool(c.permissions, c.cfg.WorkingDir(), fetchClient(30*time.Second)),
 		tools.NewGitReadTool(c.cfg.WorkingDir()),
-		tools.NewGlobTool(c.cfg.WorkingDir()),
-		tools.NewGrepTool(c.cfg.WorkingDir(), cfg.Tools.Grep),
+		tools.NewGlobTool(c.cfg.WorkingDir(), c.permissions),
+		tools.NewGrepTool(c.cfg.WorkingDir(), cfg.Tools.Grep, c.permissions),
 		tools.NewLsTool(c.permissions, c.cfg.WorkingDir(), cfg.Tools.Ls),
 		tools.NewReadDelegationTranscriptTool(c.sessions, c.messages),
 		tools.NewRunCommandTool(c.permissions, c.cfg.WorkingDir()),
@@ -742,6 +743,11 @@ func (c *coordinator) buildTools(ctx context.Context, cfg *config.Config, agent 
 		return strings.Compare(a.Info().Name, b.Info().Name)
 	})
 
+	// Per-call pinned tool slices bypass sessionAgent.SetTools, so apply the
+	// restricted-run gate at this assembly boundary as well as at the agent
+	// boundary. This keeps every actual dispatch path fail-closed. Hooks are
+	// applied outside this wrapper below so PreToolUse runs first.
+	filteredTools = wrapToolsWithRestrictedRun(filteredTools, restrictedRunAuthorizer(c.permissions))
 	// Wrap tools with hook interception for the top-level agent only.
 	// Sub-agents (the `agent` task tool, `agentic_fetch`, etc.) run
 	// without hook interception to avoid firing the user's hook N times

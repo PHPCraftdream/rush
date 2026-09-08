@@ -16,6 +16,7 @@ import (
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/filepathext"
 	"github.com/PHPCraftdream/rush/internal/fsext"
+	"github.com/PHPCraftdream/rush/internal/permission"
 )
 
 const GlobToolName = "glob"
@@ -48,7 +49,11 @@ type GlobResponseMetadata struct {
 	Truncated     bool `json:"truncated"`
 }
 
-func NewGlobTool(workingDir string) fantasy.AgentTool {
+func NewGlobTool(workingDir string, permissionServices ...permission.Service) fantasy.AgentTool {
+	var permissions permission.Service
+	if len(permissionServices) > 0 {
+		permissions = permissionServices[0]
+	}
 	return fantasy.NewAgentTool(
 		GlobToolName,
 		globDescription(),
@@ -57,9 +62,26 @@ func NewGlobTool(workingDir string) fantasy.AgentTool {
 				return fantasy.NewTextErrorResponse("pattern is required"), nil
 			}
 
-			searchPath := cmp.Or(params.Path, workingDir)
+			searchPath := filepathext.SmartJoin(workingDir, cmp.Or(params.Path, workingDir))
+			anchor, allowed, err := authorizeWorkspaceRead(
+				ctx,
+				permissions,
+				workingDir,
+				searchPath,
+				GlobToolName,
+				"read",
+				call.ID,
+				params,
+			)
+			if err != nil {
+				return fantasy.NewTextErrorResponse(fmt.Sprintf("error authorizing search path: %v", err)), nil
+			}
+			if !allowed {
+				return NewPermissionDeniedResponse(), nil
+			}
+			defer anchor.Close()
 
-			files, truncated, err := globFiles(ctx, params.Pattern, searchPath, 100)
+			files, truncated, err := globFilesFS(ctx, params.Pattern, anchor, 100)
 			if err != nil {
 				return fantasy.NewTextErrorResponse(fmt.Sprintf("error finding files: %v", err)), nil
 			}
@@ -97,7 +119,11 @@ func globFiles(ctx context.Context, pattern, searchPath string, limit int) ([]st
 		slog.Warn("Ripgrep execution failed, falling back to doublestar", "error", err)
 	}
 
-	return fsext.GlobGitignoreAware(pattern, searchPath, limit)
+	return fsext.GlobGitignoreAwareNoFollow(pattern, searchPath, limit)
+}
+
+func globFilesFS(_ context.Context, pattern string, anchor *readAnchor, limit int) ([]string, bool, error) {
+	return fsext.GlobGitignoreAwareFS(anchor.FS(), anchor.rootPath(), anchor.displayRoot(), pattern, limit)
 }
 
 func runRipgrep(cmd *exec.Cmd, searchRoot string, limit int) ([]string, error) {

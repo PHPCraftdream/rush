@@ -11,6 +11,8 @@ package agent
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -170,6 +172,83 @@ func TestResolveSessionModels_PinsPerCallDisableSubAgents(t *testing.T) {
 	names, modelCalls := rec.snapshot()
 	assert.Empty(t, names, "resolveSessionModels must never SetTools the shared currentAgent")
 	assert.Zero(t, modelCalls, "resolveSessionModels must never SetModels the shared currentAgent")
+}
+
+func TestPinnedBuildToolsEnforceRestrictedLegacyDispatch(t *testing.T) {
+	env := testEnv(t)
+	coord := newToolPinningCoordinator(t, env, false)
+	coord.permissions.SetSkipRequests(false)
+	sessionID := "pinned-read-auth"
+	secretPath := filepath.Join(env.workingDir, "pinned-secret.txt")
+	require.NoError(t, os.WriteFile(secretPath, []byte("pinned-secret"), 0o600))
+
+	arm := func(allowTools ...string) {
+		allowlist, err := permission.BuildRunAllowlist(permission.RunAllowlistSpec{
+			Restrict:   true,
+			AllowTools: allowTools,
+		})
+		require.NoError(t, err)
+		coord.permissions.(permission.SessionRunAllowlistManager).SetSessionRunAllowlist(sessionID, allowlist)
+	}
+	find := func(toolset []fantasy.AgentTool, name string) fantasy.AgentTool {
+		for _, tool := range toolset {
+			if tool.Info().Name == name {
+				return tool
+			}
+		}
+		t.Fatalf("pinned toolset did not contain %q", name)
+		return nil
+	}
+	callContext := func() context.Context {
+		return context.WithValue(t.Context(), agenttools.SessionIDContextKey, sessionID)
+	}
+
+	arm("view")
+	pinned, err := coord.pinCallTools(t.Context(), coord.cfg.Config())
+	require.NoError(t, err)
+	glob := find(pinned, agenttools.GlobToolName)
+	resp, err := glob.Run(callContext(), fantasy.ToolCall{
+		ID:    "pinned-denied",
+		Name:  agenttools.GlobToolName,
+		Input: `{"pattern":"*"}`,
+	})
+	require.NoError(t, err)
+	require.True(t, resp.IsError)
+	require.NotContains(t, resp.Content, "pinned-secret.txt")
+
+	arm(agenttools.GlobToolName)
+	pinned, err = coord.pinCallTools(t.Context(), coord.cfg.Config())
+	require.NoError(t, err)
+	resp, err = find(pinned, agenttools.GlobToolName).Run(callContext(), fantasy.ToolCall{
+		ID:    "pinned-allowed",
+		Name:  agenttools.GlobToolName,
+		Input: `{"pattern":"*"}`,
+	})
+	require.NoError(t, err)
+	require.False(t, resp.IsError)
+	require.Contains(t, resp.Content, "pinned-secret.txt")
+
+	runPinned := func(toolName, allow, input string) (fantasy.ToolResponse, error) {
+		arm(allow)
+		pinned, pinErr := coord.pinCallTools(t.Context(), coord.cfg.Config())
+		require.NoError(t, pinErr)
+		return find(pinned, toolName).Run(callContext(), fantasy.ToolCall{ID: toolName + "-action", Name: toolName, Input: input})
+	}
+	resp, err = runPinned(agenttools.ViewToolName, "view:write", `{"file_path":"pinned-secret.txt"}`)
+	require.NoError(t, err)
+	require.True(t, resp.IsError)
+	require.NotContains(t, resp.Content, "pinned-secret")
+	resp, err = runPinned(agenttools.ViewToolName, "view:read", `{"file_path":"pinned-secret.txt"}`)
+	require.NoError(t, err)
+	require.False(t, resp.IsError)
+	require.Contains(t, resp.Content, "pinned-secret")
+	resp, err = runPinned(agenttools.LSToolName, "ls:read", `{}`)
+	require.NoError(t, err)
+	require.True(t, resp.IsError)
+	resp, err = runPinned(agenttools.LSToolName, "ls:list", `{}`)
+	require.NoError(t, err)
+	require.False(t, resp.IsError)
+	require.Contains(t, resp.Content, "pinned-secret.txt")
 }
 
 // TestResolveSessionModels_RolePolicyAgreesAcrossPromptModelAndTools catches
