@@ -3,10 +3,12 @@ package shell
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"mvdan.cc/sh/v3/expand"
@@ -14,10 +16,33 @@ import (
 	"mvdan.cc/sh/v3/syntax"
 )
 
-// maxInnerStderrBytes bounds how much stderr from a failing $(...) is
-// surfaced in the returned error, to avoid leaking a secret that happened
-// to be embedded in a failing inner command.
-const maxInnerStderrBytes = 512
+const (
+	// maxInnerStdoutBytes bounds each command substitution's stdout. 64 KiB is
+	// enough for a config value while keeping accidental producers harmless.
+	maxInnerStdoutBytes = 64 << 10
+	// maxInnerStderrBytes bounds retained diagnostics from a command
+	// substitution, including diagnostics from commands that fail.
+	maxInnerStderrBytes = 512
+)
+
+// ErrCommandSubstitutionOutputLimit identifies output that exceeded a command
+// substitution stream's byte budget.
+var ErrCommandSubstitutionOutputLimit = errors.New("command substitution output limit exceeded")
+
+// CommandSubstitutionOutputLimitError reports which command substitution
+// stream exceeded its byte budget.
+type CommandSubstitutionOutputLimitError struct {
+	Stream string
+	Limit  int
+}
+
+func (e *CommandSubstitutionOutputLimitError) Error() string {
+	return fmt.Sprintf("command substitution %s exceeded %d-byte output limit", e.Stream, e.Limit)
+}
+
+func (e *CommandSubstitutionOutputLimitError) Unwrap() error {
+	return ErrCommandSubstitutionOutputLimit
+}
 
 // NoUnset controls whether ExpandValue treats unset variables as an
 // error. Default false matches bash: $UNSET expands to "". Store true
@@ -82,14 +107,28 @@ func ExpandValue(ctx context.Context, value string, env []string) (string, error
 
 	strict := NoUnset.Load()
 
-	var stderrBuf bytes.Buffer
 	cfg := &expand.Config{
 		Env:     expand.ListEnviron(env...),
 		NoUnset: strict,
 		CmdSubst: func(w io.Writer, cs *syntax.CmdSubst) error {
-			stderrBuf.Reset()
+			stderrBuf := new(bytes.Buffer)
+			runCtx, cancel := context.WithCancel(ctx)
+			defer cancel()
+			limits := &commandSubstitutionLimitState{cancel: cancel}
+			stdout := &commandSubstitutionWriter{
+				dst:    w,
+				limit:  maxInnerStdoutBytes,
+				stream: "stdout",
+				state:  limits,
+			}
+			stderr := &commandSubstitutionWriter{
+				dst:    stderrBuf,
+				limit:  maxInnerStderrBytes,
+				stream: "stderr",
+				state:  limits,
+			}
 			runnerOpts := []interp.RunnerOption{
-				interp.StdIO(nil, w, &stderrBuf),
+				interp.StdIO(nil, stdout, stderr),
 				interp.Interactive(false),
 				interp.Env(expand.ListEnviron(env...)),
 				interp.Dir(s.cwd),
@@ -108,8 +147,12 @@ func ExpandValue(ctx context.Context, value string, env []string) (string, error
 			if rerr != nil {
 				return rerr
 			}
-			if rerr := runner.Run(ctx, &syntax.File{Stmts: cs.Stmts}); rerr != nil {
-				return wrapCmdSubstErr(rerr, stderrBuf.Bytes())
+			rerr = runner.Run(runCtx, &syntax.File{Stmts: cs.Stmts})
+			if limitErr := limits.err(); limitErr != nil {
+				return wrapCmdSubstErr(limitErr, stderr.bytes())
+			}
+			if rerr != nil {
+				return wrapCmdSubstErr(rerr, stderr.bytes())
 			}
 			return nil
 		},
@@ -117,6 +160,85 @@ func ExpandValue(ctx context.Context, value string, env []string) (string, error
 	}
 
 	return expand.Document(cfg, word)
+}
+
+type commandSubstitutionLimitState struct {
+	mu     sync.Mutex
+	cancel context.CancelFunc
+	limit  *CommandSubstitutionOutputLimitError
+}
+
+func (s *commandSubstitutionLimitState) overflow(stream string, limit int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.limit == nil {
+		s.limit = &CommandSubstitutionOutputLimitError{Stream: stream, Limit: limit}
+		s.cancel()
+	}
+	return s.limit
+}
+
+func (s *commandSubstitutionLimitState) err() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.limit == nil {
+		return nil
+	}
+	return s.limit
+}
+
+type commandSubstitutionWriter struct {
+	mu       sync.Mutex
+	dst      io.Writer
+	limit    int
+	stream   string
+	state    *commandSubstitutionLimitState
+	written  int
+	overflow error
+}
+
+func (w *commandSubstitutionWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if len(p) == 0 {
+		return 0, nil
+	}
+	if w.overflow != nil {
+		return 0, w.overflow
+	}
+	remaining := w.limit - w.written
+	if remaining <= 0 {
+		w.overflow = w.state.overflow(w.stream, w.limit)
+		return 0, w.overflow
+	}
+
+	allowed := len(p)
+	if allowed > remaining {
+		allowed = remaining
+	}
+	n, err := w.dst.Write(p[:allowed])
+	w.written += n
+	if err != nil {
+		return n, err
+	}
+	if n != allowed {
+		return n, io.ErrShortWrite
+	}
+	if allowed != len(p) {
+		w.overflow = w.state.overflow(w.stream, w.limit)
+		return allowed, w.overflow
+	}
+	return n, nil
+}
+
+func (w *commandSubstitutionWriter) bytes() []byte {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	buf, ok := w.dst.(*bytes.Buffer)
+	if !ok {
+		return nil
+	}
+	return append([]byte(nil), buf.Bytes()...)
 }
 
 // HasCommandSubstitution reports whether value contains a command substitution

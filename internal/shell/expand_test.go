@@ -1,6 +1,8 @@
 package shell
 
 import (
+	"context"
+	"os"
 	"strings"
 	"testing"
 
@@ -194,6 +196,153 @@ func TestExpandValue_Errors(t *testing.T) {
 			"stderr should be bounded",
 		)
 	})
+}
+
+func TestExpandValue_CommandSubstitutionOutputBounds(t *testing.T) {
+	t.Parallel()
+
+	stdout := strings.Repeat("o", maxInnerStdoutBytes)
+	got, err := ExpandValue(
+		t.Context(),
+		"$(printf '%s' '"+stdout+"')",
+		nil,
+	)
+	require.NoError(t, err)
+	require.Equal(t, stdout, got)
+
+	_, err = ExpandValue(
+		t.Context(),
+		"$(printf '%s' '"+stdout+"o')",
+		nil,
+	)
+	var limitErr *CommandSubstitutionOutputLimitError
+	require.ErrorAs(t, err, &limitErr)
+	require.ErrorIs(t, err, ErrCommandSubstitutionOutputLimit)
+	require.Equal(t, "stdout", limitErr.Stream)
+	require.Equal(t, maxInnerStdoutBytes, limitErr.Limit)
+}
+
+func TestExpandValue_CommandSubstitutionStderrBound(t *testing.T) {
+	t.Parallel()
+
+	stderr := strings.Repeat("e", maxInnerStderrBytes)
+	_, err := ExpandValue(
+		t.Context(),
+		"$(printf '%s' '"+stderr+"e' 1>&2; exit 7)",
+		nil,
+	)
+	var limitErr *CommandSubstitutionOutputLimitError
+	require.ErrorAs(t, err, &limitErr)
+	require.ErrorIs(t, err, ErrCommandSubstitutionOutputLimit)
+	require.Equal(t, "stderr", limitErr.Stream)
+	require.Contains(t, err.Error(), stderr)
+	require.NotContains(t, err.Error(), strings.Repeat("e", maxInnerStderrBytes+1))
+
+	_, err = ExpandValue(
+		t.Context(),
+		"$(printf '%s' '"+stderr+"' 1>&2; exit 7)",
+		nil,
+	)
+	require.Error(t, err)
+	require.NotErrorIs(t, err, ErrCommandSubstitutionOutputLimit)
+	require.Contains(t, err.Error(), "exit status 7")
+}
+
+func TestExpandValue_CommandSubstitutionLimitIsolation(t *testing.T) {
+	t.Parallel()
+
+	stdout := strings.Repeat("x", maxInnerStdoutBytes)
+	got, err := ExpandValue(
+		t.Context(),
+		"$(printf '%s' '"+stdout+"')$(printf ok)",
+		nil,
+	)
+	require.NoError(t, err)
+	require.Equal(t, stdout+"ok", got)
+
+	got, err = ExpandValue(t.Context(), `$(printf first)$(printf second)`, nil)
+	require.NoError(t, err)
+	require.Equal(t, "firstsecond", got)
+}
+
+func TestExpandValue_CommandSubstitutionNestedAndParentCancellation(t *testing.T) {
+	t.Parallel()
+
+	got, err := ExpandValue(
+		t.Context(),
+		`$(printf '%s' "$(printf nested)")`,
+		nil,
+	)
+	require.NoError(t, err)
+	require.Equal(t, "nested", got)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	_, err = ExpandValue(
+		ctx,
+		"$(printf '%s' '"+strings.Repeat("x", maxInnerStdoutBytes+1)+"')",
+		nil,
+	)
+	require.ErrorIs(t, err, ErrCommandSubstitutionOutputLimit)
+	require.NoError(t, ctx.Err())
+
+	got, err = ExpandValue(ctx, `$(printf after)`, nil)
+	require.NoError(t, err)
+	require.Equal(t, "after", got)
+}
+
+func TestCommandSubstitutionWriterStopsProducer(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	state := &commandSubstitutionLimitState{cancel: cancel}
+	dst := new(strings.Builder)
+	w := &commandSubstitutionWriter{
+		dst:    dst,
+		limit:  4,
+		stream: "stdout",
+		state:  state,
+	}
+
+	n, err := w.Write([]byte("12345"))
+	require.Equal(t, 4, n)
+	require.ErrorIs(t, err, ErrCommandSubstitutionOutputLimit)
+	require.Equal(t, "1234", dst.String())
+	require.ErrorIs(t, ctx.Err(), context.Canceled)
+
+	n, err = w.Write([]byte("6"))
+	require.Zero(t, n)
+	require.ErrorIs(t, err, ErrCommandSubstitutionOutputLimit)
+
+	state = &commandSubstitutionLimitState{cancel: func() {}}
+	dst.Reset()
+	w = &commandSubstitutionWriter{
+		dst:    dst,
+		limit:  4,
+		stream: "stdout",
+		state:  state,
+	}
+	n, err = w.Write([]byte("1234"))
+	require.Equal(t, 4, n)
+	require.NoError(t, err)
+	n, err = w.Write(nil)
+	require.Zero(t, n)
+	require.NoError(t, err)
+}
+
+func TestExpandValue_CommandSubstitutionOutputLimitDoesNotCreateFiles(t *testing.T) {
+	t.Parallel()
+
+	marker := t.TempDir() + string(os.PathSeparator) + "marker"
+	env := []string{"MARKER=" + marker}
+	_, err := ExpandValue(
+		t.Context(),
+		"$(printf '%s' '"+strings.Repeat("x", maxInnerStdoutBytes+1)+"'; printf marker > \"$MARKER\")",
+		env,
+	)
+	require.ErrorIs(t, err, ErrCommandSubstitutionOutputLimit)
+	_, statErr := os.Stat(marker)
+	require.ErrorIs(t, statErr, os.ErrNotExist)
 }
 
 func TestHasCommandSubstitutionMatchesExpandValueGrammar(t *testing.T) {
