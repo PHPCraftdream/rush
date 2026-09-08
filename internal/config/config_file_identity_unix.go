@@ -28,6 +28,21 @@ func configFileIdentityOfOpened(_ *os.File, info os.FileInfo) configFileIdentity
 	return configFileIdentityOf(info)
 }
 
+func configFileIdentityAtPath(path string) (configFileIdentity, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return configFileIdentity{}, err
+	}
+	if !info.Mode().IsRegular() {
+		return configFileIdentity{}, os.ErrInvalid
+	}
+	identity := configFileIdentityOf(info)
+	if !identity.valid {
+		return configFileIdentity{}, os.ErrInvalid
+	}
+	return identity, nil
+}
+
 func configFileOwner(info os.FileInfo) (int, bool) {
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok {

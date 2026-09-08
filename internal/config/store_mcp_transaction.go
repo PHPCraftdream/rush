@@ -24,6 +24,7 @@ type mcpLockedFiles struct {
 	changed      map[string]bool
 	fingerprints map[string]reloadFileFingerprint
 	pathRecords  map[string]string
+	targetKeys   map[string]string
 	records      map[string]*mcpFileRecord
 }
 
@@ -66,6 +67,11 @@ func mcpRecordKey(path string, fingerprint reloadFileFingerprint) string {
 func (files *mcpLockedFiles) bindMCPPath(path string, data []byte, present bool, fingerprint reloadFileFingerprint) *mcpFileRecord {
 	discoveryPath := normalizeDiscoveryPath(path)
 	key := mcpRecordKey(discoveryPath, fingerprint)
+	if !fingerprint.exists {
+		if targetKey := files.targetKeys[discoveryPath]; targetKey != "" {
+			key = "target:" + targetKey
+		}
+	}
 	record, ok := files.records[key]
 	if !ok {
 		record = &mcpFileRecord{
@@ -200,26 +206,61 @@ func (s *ConfigStore) withMCPLocks(ctx context.Context, fn func(*mcpLockedFiles)
 	}
 	slices.Sort(paths)
 	paths = slices.Compact(paths)
-	targets := make(map[string]configWriteTarget, len(paths))
+	type lockGroup struct {
+		key      string
+		lockPath string
+		targets  []configWriteTarget
+	}
+	groupsByKey := make(map[string]*lockGroup, len(paths))
 	targetBySelectedPath := make(map[string]configWriteTarget, len(paths))
-	lockPaths := make([]string, 0, len(paths))
 	for _, path := range paths {
 		target, targetErr := s.resolveConfigWriteTarget(path)
 		if targetErr != nil {
 			return targetErr
 		}
 		runConfigAfterMCPResolveTargetHook(&target)
-		if _, exists := targets[target.lockPath]; !exists {
-			targets[target.lockPath] = target
-			lockPaths = append(lockPaths, target.lockPath)
+		targetKey := configWriteTargetDedupKey(target)
+		if group, exists := groupsByKey[targetKey]; exists {
+			group.targets = append(group.targets, target)
+		} else {
+			groupsByKey[targetKey] = &lockGroup{
+				key: targetKey, lockPath: target.lockPath,
+				targets: []configWriteTarget{target},
+			}
 		}
 		targetBySelectedPath[target.selectedPath] = target
 	}
-	slices.Sort(lockPaths)
+	groups := make([]*lockGroup, 0, len(groupsByKey))
+	for _, group := range groupsByKey {
+		groups = append(groups, group)
+	}
+	slices.SortFunc(groups, func(left, right *lockGroup) int {
+		if left.lockPath < right.lockPath {
+			return -1
+		}
+		if left.lockPath > right.lockPath {
+			return 1
+		}
+		return strings.Compare(left.key, right.key)
+	})
+	// A pathological retarget during resolution can produce distinct target
+	// identities with one lock pathname. Acquire that pathname only once while
+	// retaining every logical target for binding verification.
+	mergedGroups := make([]*lockGroup, 0, len(groups))
+	groupsByLockPath := make(map[string]*lockGroup, len(groups))
+	for _, group := range groups {
+		if existing, ok := groupsByLockPath[group.lockPath]; ok {
+			existing.targets = append(existing.targets, group.targets...)
+			continue
+		}
+		groupsByLockPath[group.lockPath] = group
+		mergedGroups = append(mergedGroups, group)
+	}
+	groups = mergedGroups
 
 	s.diskWriteMu.Lock()
 	defer s.diskWriteMu.Unlock()
-	locks := make([]*session.FileLock, 0, len(paths))
+	locks := make([]*session.FileLock, 0, len(groups))
 	defer func() {
 		for i := len(locks) - 1; i >= 0; i-- {
 			_ = locks[i].Release()
@@ -228,16 +269,16 @@ func (s *ConfigStore) withMCPLocks(ctx context.Context, fn func(*mcpLockedFiles)
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	for _, lockPath := range lockPaths {
-		lock, lockErr := acquireConfigFileLock(ctx, lockPath)
+	for _, group := range groups {
+		lock, lockErr := acquireConfigFileLock(ctx, group.lockPath)
 		if lockErr != nil {
-			return fmt.Errorf("failed to lock config file %q: %w", lockPath, lockErr)
+			return fmt.Errorf("failed to lock config file %q: %w", group.lockPath, lockErr)
 		}
 		locks = append(locks, lock)
-		for _, target := range targets {
-			if target.lockPath != lockPath {
-				continue
-			}
+		slices.SortFunc(group.targets, func(left, right configWriteTarget) int {
+			return strings.Compare(left.selectedPath, right.selectedPath)
+		})
+		for _, target := range group.targets {
 			if err := verifyConfigTargetBindingAfterLock(target); err != nil {
 				return fmt.Errorf("%w: config target %q changed while acquiring locks", ErrMCPStale, target.selectedPath)
 			}
@@ -246,7 +287,8 @@ func (s *ConfigStore) withMCPLocks(ctx context.Context, fn func(*mcpLockedFiles)
 	files := &mcpLockedFiles{
 		data: make(map[string][]byte, len(paths)), present: make(map[string]bool, len(paths)),
 		changed: make(map[string]bool), fingerprints: make(map[string]reloadFileFingerprint, len(paths)),
-		pathRecords: make(map[string]string, len(paths)), records: make(map[string]*mcpFileRecord, len(paths)),
+		pathRecords: make(map[string]string, len(paths)), targetKeys: make(map[string]string, len(paths)),
+		records: make(map[string]*mcpFileRecord, len(paths)),
 	}
 	for _, path := range paths {
 		expectedOwner, enforceOwner, ownerErr := s.mcpOwnerPolicy(path)
@@ -255,6 +297,7 @@ func (s *ConfigStore) withMCPLocks(ctx context.Context, fn func(*mcpLockedFiles)
 		}
 		data, fingerprint, readErr := readStableConfigFileOwned(path, expectedOwner, enforceOwner)
 		target := targetBySelectedPath[normalizeDiscoveryPath(path)]
+		files.targetKeys[normalizeDiscoveryPath(path)] = configWriteTargetDedupKey(target)
 		if readErr != nil {
 			if os.IsNotExist(readErr) {
 				if err := verifyConfigTargetBinding(target, fingerprint, readErr); err != nil {

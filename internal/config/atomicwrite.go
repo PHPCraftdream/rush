@@ -318,10 +318,20 @@ func verifySelectedCommitPath(selectedPath, commitPath string) error {
 	// later rename. commitPath remains pinned after this check; a later
 	// retarget is reported as an uncertain readback outcome when it changes the
 	// selected spelling's visible bytes.
-	if normalizeReloadPath(selectedPath) != normalizeReloadPath(commitPath) {
+	if normalizeReloadPath(selectedPath) != normalizeReloadPath(commitPath) &&
+		!caseEquivalentConfigPaths(selectedPath, commitPath) {
 		return errConfigCommitVerification
 	}
 	return nil
+}
+
+func caseEquivalentConfigPaths(selectedPath, commitPath string) bool {
+	if !configEquivalentLeafNames(filepath.Dir(commitPath), filepath.Base(selectedPath), filepath.Base(commitPath)) {
+		return false
+	}
+	selectedParent, commitParent := configParentIdentity(selectedPath), configParentIdentity(commitPath)
+	return selectedParent.valid && selectedParent == commitParent &&
+		configDirectoryIsCaseInsensitive(filepath.Dir(commitPath))
 }
 
 // atomicWriteFile writes data to a file atomically by writing to a unique

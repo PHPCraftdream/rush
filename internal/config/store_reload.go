@@ -242,9 +242,12 @@ func configAliasChainFingerprint(path string) [sha256.Size]byte {
 			continue
 		}
 		isLeaf := i == len(components)-1
-		if isLeaf && info.Mode()&os.ModeSymlink == 0 {
-			_, _ = io.WriteString(h, "regular-leaf|")
-			_, _ = io.WriteString(h, info.Mode().String())
+		if isLeaf && info.Mode().IsRegular() {
+			// Regular-file permissions and inode identity belong to the fresh
+			// descriptor fingerprint, not to the stable alias chain. Atomic
+			// publication is allowed to change both while retaining the same
+			// logical target.
+			_, _ = io.WriteString(h, "regular-leaf|regular")
 		} else {
 			writeConfigDiscoveryInfo(h, info)
 			if info.Mode()&os.ModeSymlink != 0 {
