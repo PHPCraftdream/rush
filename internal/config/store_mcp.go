@@ -1,12 +1,18 @@
 package config
 
 import (
+	"bytes"
+	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"maps"
 	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
+	"sync"
+	"sync/atomic"
 )
 
 var (
@@ -22,23 +28,115 @@ var (
 )
 
 // MCPAdmissionGuard is the final source validation boundary for a runtime
-// publication. Call ValidateCurrent while holding the lifecycle turn and
-// immediately before mutation; it performs the disk reads needed to verify
-// every input captured by admission.
+// publication. Its token is prepared while the config sidecars are held, so
+// ValidateCurrent is deliberately memory-only and safe under lifecycleMu.
 type MCPAdmissionGuard struct {
-	store        *ConfigStore
-	fingerprints map[string]reloadFileFingerprint
+	store *ConfigStore
+	ref   *mcpAdmissionTokenRef
 }
 
-// ValidateCurrent rejects admission when any discovered source changed after
-// the initial evaluation, including a missing file becoming present.
+type mcpAdmissionTokenRef struct {
+	mu    sync.Mutex
+	token *mcpAdmissionToken
+}
+
+type mcpAdmissionToken struct {
+	store        *ConfigStore
+	snapshot     MCPAdmissionSnapshot
+	name         string
+	fingerprints map[string]reloadFileFingerprint
+	absent       map[string]reloadFileFingerprint
+	handles      map[string]*os.File
+	closeOnce    sync.Once
+	closed       atomic.Bool
+}
+
+func (t *mcpAdmissionToken) close() {
+	if t == nil {
+		return
+	}
+	t.closeOnce.Do(func() {
+		for _, file := range t.handles {
+			if file != nil {
+				_ = file.Close()
+			}
+		}
+		t.handles = nil
+		t.closed.Store(true)
+	})
+}
+
+func (r *mcpAdmissionTokenRef) current() *mcpAdmissionToken {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	token := r.token
+	r.mu.Unlock()
+	return token
+}
+
+func (r *mcpAdmissionTokenRef) replace(token *mcpAdmissionToken) {
+	if r == nil {
+		if token != nil {
+			token.close()
+		}
+		return
+	}
+	r.mu.Lock()
+	previous := r.token
+	r.token = token
+	r.mu.Unlock()
+	previous.close()
+}
+
+func (r *mcpAdmissionTokenRef) close() {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	token := r.token
+	r.token = nil
+	r.mu.Unlock()
+	token.close()
+}
+
+// ValidateCurrent rejects admission when the immutable prepared token was
+// closed or its in-memory generation fence is no longer current. Disk changes
+// that race after token preparation linearize after this admission turn; disk
+// writers using the sidecar protocol cannot overlap the prepared token.
 func (g MCPAdmissionGuard) ValidateCurrent() error {
-	if g.store == nil {
+	token := g.ref.current()
+	if g.store == nil || token == nil || token.store != g.store || token.closed.Load() {
 		return ErrMCPMutationStale
 	}
-	if err := g.store.validateMCPAdmissionInputs(g.fingerprints); err != nil {
-		return fmt.Errorf("%w: %w", ErrMCPMutationStale, err)
+	if !g.store.mcpAdmissionSnapshotCurrent(token.snapshot, token.name) {
+		return ErrMCPMutationStale
 	}
+	return nil
+}
+
+// RevalidateCurrent refreshes the pinned token before the lifecycle turn. It
+// may perform filesystem I/O and must never be called while lifecycleMu is
+// held. ValidateCurrent is the corresponding memory-only lifecycle check.
+func (g MCPAdmissionGuard) RevalidateCurrent() error {
+	return g.RevalidateCurrentContext(context.Background())
+}
+
+// RevalidateCurrentContext is the context-aware form of RevalidateCurrent.
+func (g MCPAdmissionGuard) RevalidateCurrentContext(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	token := g.ref.current()
+	if g.store == nil || token == nil || token.store != g.store || token.closed.Load() {
+		return ErrMCPMutationStale
+	}
+	next, err := g.store.prepareMCPAdmissionToken(ctx, token.snapshot, token.name, token.fingerprints)
+	if err != nil {
+		return err
+	}
+	g.ref.replace(next)
 	return nil
 }
 
@@ -106,15 +204,36 @@ func (s *ConfigStore) WithCurrentMCPMutation(result MCPMutationResult, fn func()
 // WithCurrentMCPAdmission validates an immutable MCP admission snapshot and
 // runs fn while the config snapshot and disk inputs remain pinned.
 func (s *ConfigStore) WithCurrentMCPAdmission(snapshot MCPAdmissionSnapshot, name string, fn func(MCPAdmissionGuard) error) error {
+	ctx, cancel := configContextWithTimeout(context.Background(), configWriteLockTimeout)
+	defer cancel()
+	return s.WithCurrentMCPAdmissionContext(ctx, snapshot, name, fn)
+}
+
+// WithCurrentMCPAdmissionContext prepares and validates the source token
+// before invoking fn. The caller context is used for every sidecar lock wait;
+// fn is the only callback that may run while the locks are held.
+func (s *ConfigStore) WithCurrentMCPAdmissionContext(ctx context.Context, snapshot MCPAdmissionSnapshot, name string, fn func(MCPAdmissionGuard) error) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	s.publishMu.Lock()
 	defer s.publishMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if s.workingDir == "" && s.globalDataPath == "" {
 		if !s.mcpAdmissionSnapshotCurrent(snapshot, name) {
 			return ErrMCPMutationStale
 		}
-		return fn(MCPAdmissionGuard{store: s})
+		token := &mcpAdmissionToken{store: s, snapshot: snapshot, name: name}
+		ref := &mcpAdmissionTokenRef{token: token}
+		defer ref.close()
+		return fn(MCPAdmissionGuard{store: s, ref: ref})
 	}
-	err := s.withMCPAdmissionLocks(func(files *mcpLockedFiles) error {
+	err := s.withMCPAdmissionLocksContext(ctx, func(files *mcpLockedFiles) error {
 		if !s.mcpAdmissionSnapshotCurrent(snapshot, name) {
 			return ErrMCPMutationStale
 		}
@@ -126,12 +245,176 @@ func (s *ConfigStore) WithCurrentMCPAdmission(snapshot MCPAdmissionSnapshot, nam
 		if hasInput != snapshot.HasMCPInput || hasInput && input != snapshot.MCPInput {
 			return ErrMCPMutationStale
 		}
-		return fn(MCPAdmissionGuard{store: s, fingerprints: cloneReloadFingerprints(evaluation.fingerprints)})
+		token, tokenErr := s.prepareMCPAdmissionToken(ctx, snapshot, name, evaluation.fingerprints)
+		if tokenErr != nil {
+			return tokenErr
+		}
+		ref := &mcpAdmissionTokenRef{token: token}
+		defer ref.close()
+		return fn(MCPAdmissionGuard{store: s, ref: ref})
 	})
 	if errors.Is(err, ErrMCPStale) {
 		return fmt.Errorf("%w: %w", ErrMCPMutationStale, err)
 	}
 	return err
+}
+
+func (s *ConfigStore) prepareMCPAdmissionToken(ctx context.Context, snapshot MCPAdmissionSnapshot, name string, fingerprints map[string]reloadFileFingerprint) (*mcpAdmissionToken, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	token := &mcpAdmissionToken{
+		store: s, snapshot: snapshot, name: name,
+		fingerprints: cloneReloadFingerprints(fingerprints),
+		absent:       make(map[string]reloadFileFingerprint),
+		handles:      make(map[string]*os.File),
+	}
+	for path, fingerprint := range token.fingerprints {
+		if err := ctx.Err(); err != nil {
+			token.close()
+			return nil, err
+		}
+		if !fingerprint.exists {
+			absence, err := stableMCPAdmissionAbsence(ctx, path, fingerprint)
+			if err != nil {
+				token.close()
+				return nil, err
+			}
+			token.absent[path] = absence
+			if err := ctx.Err(); err != nil {
+				token.close()
+				return nil, err
+			}
+			continue
+		}
+		expectedOwner, enforceOwner, ownerErr := s.mcpOwnerPolicy(path)
+		if ownerErr != nil {
+			token.close()
+			return nil, ownerErr
+		}
+		if err := ctx.Err(); err != nil {
+			token.close()
+			return nil, err
+		}
+		file, err := openStableConfigFile(path)
+		if err != nil {
+			token.close()
+			return nil, fmt.Errorf("%w: failed to prepare MCP admission source %s: %v", ErrMCPMutationStale, path, err)
+		}
+		if err := ctx.Err(); err != nil {
+			_ = file.Close()
+			token.close()
+			return nil, err
+		}
+		if err := validatePreparedAdmissionFile(ctx, path, file, fingerprint, expectedOwner, enforceOwner); err != nil {
+			_ = file.Close()
+			token.close()
+			return nil, err
+		}
+		token.handles[path] = file
+		if err := ctx.Err(); err != nil {
+			token.close()
+			return nil, err
+		}
+	}
+	return token, nil
+}
+
+func stableMCPAdmissionAbsence(ctx context.Context, path string, expected reloadFileFingerprint) (reloadFileFingerprint, error) {
+	if err := ctx.Err(); err != nil {
+		return reloadFileFingerprint{}, err
+	}
+	first, err := mcpAdmissionAbsenceFingerprint(path)
+	if err != nil {
+		return reloadFileFingerprint{}, err
+	}
+	if contextErr := ctx.Err(); contextErr != nil {
+		return reloadFileFingerprint{}, contextErr
+	}
+	second, err := mcpAdmissionAbsenceFingerprint(path)
+	if err != nil {
+		return reloadFileFingerprint{}, err
+	}
+	if contextErr := ctx.Err(); contextErr != nil {
+		return reloadFileFingerprint{}, contextErr
+	}
+	if first != second || second != expected {
+		return reloadFileFingerprint{}, ErrMCPMutationStale
+	}
+	return second, nil
+}
+
+func mcpAdmissionAbsenceFingerprint(path string) (reloadFileFingerprint, error) {
+	if _, err := os.Lstat(path); err == nil || !os.IsNotExist(err) {
+		return reloadFileFingerprint{}, ErrMCPMutationStale
+	}
+	return reloadFileFingerprint{
+		discovery:       configDiscoveryFingerprint(path),
+		parentDiscovery: configDiscoveryFingerprint(filepath.Dir(path)),
+		parentIdentity:  configParentIdentity(path),
+		aliasChain:      configAliasChainFingerprint(path),
+	}, nil
+}
+
+func validatePreparedAdmissionFile(ctx context.Context, path string, file *os.File, expected reloadFileFingerprint, expectedOwner int, enforceOwner bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	info, err := file.Stat()
+	if err != nil {
+		return ErrMCPMutationStale
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%w: %s", ErrMCPMutationStale, ErrConfigNonRegular)
+	}
+	owner, ownerKnown := configFileOwner(info)
+	if enforceOwner && (!ownerKnown || owner != expectedOwner) {
+		return ErrMCPMutationStale
+	}
+	first, err := readOpenedConfigBytes(file)
+	if err != nil {
+		return ErrMCPMutationStale
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	second, err := readOpenedConfigBytes(file)
+	if err != nil || !bytes.Equal(first, second) {
+		return ErrMCPMutationStale
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	finalInfo, err := file.Stat()
+	if err != nil || !finalInfo.Mode().IsRegular() {
+		return ErrMCPMutationStale
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	owner, ownerKnown = configFileOwner(finalInfo)
+	actualNlink := configFileNlinkOfOpened(file, finalInfo)
+	if (expected.identity.valid || enforceOwner) && (!ownerKnown || owner != expected.owner) ||
+		expected.nlink != 0 && actualNlink != expected.nlink ||
+		expected.size != int64(len(second)) || expected.modTime != finalInfo.ModTime().UnixNano() ||
+		expected.digest != sha256.Sum256(second) ||
+		expected.discovery != configDiscoveryFingerprint(path) ||
+		expected.parentDiscovery != configDiscoveryFingerprint(filepath.Dir(path)) ||
+		expected.parentIdentity != configParentIdentity(path) ||
+		expected.aliasChain != configAliasChainFingerprint(path) {
+		return ErrMCPMutationStale
+	}
+	pathMatches, err := configFilePathIdentityMatches(path, file, finalInfo)
+	if err != nil || !pathMatches {
+		return ErrMCPMutationStale
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return nil
 }
 
 func cloneReloadFingerprints(source map[string]reloadFileFingerprint) map[string]reloadFileFingerprint {
@@ -143,26 +426,6 @@ func cloneReloadFingerprints(source map[string]reloadFileFingerprint) map[string
 		result[path] = fingerprint
 	}
 	return result
-}
-
-func (s *ConfigStore) validateMCPAdmissionInputs(expected map[string]reloadFileFingerprint) error {
-	for path, fingerprint := range expected {
-		expectedOwner, enforceOwner, ownerErr := s.mcpOwnerPolicy(path)
-		if ownerErr != nil {
-			return fmt.Errorf("failed to determine owner for %s: %w", path, ownerErr)
-		}
-		_, actual, err := readStableConfigFileOwned(path, expectedOwner, enforceOwner)
-		if os.IsNotExist(err) {
-			err = nil
-		}
-		if err != nil {
-			return fmt.Errorf("failed to read MCP admission source %s: %w", path, err)
-		}
-		if actual != fingerprint {
-			return fmt.Errorf("MCP admission source changed: %s", path)
-		}
-	}
-	return nil
 }
 
 func (s *ConfigStore) mcpAdmissionSnapshotCurrent(snapshot MCPAdmissionSnapshot, name string) bool {

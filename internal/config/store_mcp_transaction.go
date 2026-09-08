@@ -170,14 +170,25 @@ func (files *mcpLockedFiles) validateMutableTopology() error {
 // Both writable files are locked even when only one is mutated; this makes
 // origin/existence/target checks one cross-process linearization point.
 func (s *ConfigStore) withMCPWriteLocks(fn func(*mcpLockedFiles) error) error {
-	return s.withMCPLocks(fn)
+	ctx, cancel := configContextWithTimeout(context.Background(), configWriteLockTimeout)
+	defer cancel()
+	return s.withMCPLocks(ctx, fn)
 }
 
 func (s *ConfigStore) withMCPAdmissionLocks(fn func(*mcpLockedFiles) error) error {
-	return s.withMCPLocks(fn)
+	ctx, cancel := configContextWithTimeout(context.Background(), configWriteLockTimeout)
+	defer cancel()
+	return s.withMCPAdmissionLocksContext(ctx, fn)
 }
 
-func (s *ConfigStore) withMCPLocks(fn func(*mcpLockedFiles) error) error {
+func (s *ConfigStore) withMCPAdmissionLocksContext(ctx context.Context, fn func(*mcpLockedFiles) error) error {
+	return s.withMCPLocks(ctx, fn)
+}
+
+func (s *ConfigStore) withMCPLocks(ctx context.Context, fn func(*mcpLockedFiles) error) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	paths := make([]string, 0, 2)
 	globalPath, err := s.configPath(ScopeGlobal)
 	if err != nil {
@@ -214,10 +225,11 @@ func (s *ConfigStore) withMCPLocks(fn func(*mcpLockedFiles) error) error {
 			_ = locks[i].Release()
 		}
 	}()
-	ctx, cancel := context.WithTimeout(context.Background(), configWriteLockTimeout)
-	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	for _, lockPath := range lockPaths {
-		lock, lockErr := session.AcquireFileLockContext(ctx, lockPath)
+		lock, lockErr := acquireConfigFileLock(ctx, lockPath)
 		if lockErr != nil {
 			return fmt.Errorf("failed to lock config file %q: %w", lockPath, lockErr)
 		}

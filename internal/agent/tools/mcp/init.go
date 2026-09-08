@@ -767,6 +767,7 @@ var ErrMCPConfigUncertain = errors.New("mcp: config mutation outcome is uncertai
 type Owner struct {
 	implicit            bool
 	closing             bool
+	closeRequested      atomic.Bool
 	generation          uint64
 	lifecycleCtx        context.Context
 	lifecycleCancel     context.CancelFunc
@@ -1636,7 +1637,7 @@ func acquireImplicit() (*Owner, error) {
 // canReclaimLocked verifies that an implicit owner has no lifecycle work that
 // could outlive the registry reset. lifecycleMu must be held by the caller.
 func (o *Owner) canReclaimLocked() bool {
-	if o == nil || !o.implicit || o.closing || o.initCount != 0 || o.fullInitCount != 0 {
+	if o == nil || !o.implicit || o.closing || o.closeRequested.Load() || o.initCount != 0 || o.fullInitCount != 0 {
 		return false
 	}
 	if len(o.trackedSessions) != 0 || sessions.Len() != 0 || states.Len() != 0 ||
@@ -1661,13 +1662,9 @@ func acquire(implicit bool) (*Owner, error) {
 			lifecycleMu.Unlock()
 			return nil, ErrOwnerBusy
 		}
-		oldOwner.closing = true
-		oldOwner.lifecycleCancel()
 		lifecycleMu.Unlock()
 
-		oldOwner.closeOnce.Do(func() {
-			oldOwner.finishClose(true)
-		})
+		oldOwner.requestClose(true)
 		<-oldOwner.closeDone
 
 		lifecycleMu.Lock()
@@ -1925,7 +1922,7 @@ func (o *Owner) runRefresh(request refreshRequest) {
 }
 
 func (o *Owner) isCurrentLocked() bool {
-	return owner == o && !o.closing
+	return owner == o && !o.closing && !o.closeRequested.Load()
 }
 
 func (o *Owner) isUncertain(cfg *config.ConfigStore, name string) bool {
@@ -1993,6 +1990,7 @@ var mcpInitTestHooks struct {
 	beforeSkippedAdmission       func(string, config.MCPAdmissionSnapshot)
 	beforeAdmissionTurn          func(string)
 	beforeAdmissionFinalValidate func(string)
+	beforeCloseRequest           func(*Owner)
 }
 
 func runBeforeAdmissionTurn(name string) {
@@ -2013,8 +2011,17 @@ func runBeforeAdmissionFinalValidate(name string) {
 	}
 }
 
-// withMCPAdmissionFinalTurn takes one cancelable lifecycle turn, then performs
-// the final source validation immediately before the guarded mutation.
+func runBeforeCloseRequest(owner *Owner) {
+	mcpInitTestHooks.Lock()
+	hook := mcpInitTestHooks.beforeCloseRequest
+	mcpInitTestHooks.Unlock()
+	if hook != nil {
+		hook(owner)
+	}
+}
+
+// withMCPAdmissionFinalTurn revalidates the pinned source token before taking
+// lifecycleMu. The lifecycle turn itself is memory-only before mutation.
 func withMCPAdmissionFinalTurn(ctx context.Context, name string, guard config.MCPAdmissionGuard, mutate func() error) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -2023,6 +2030,13 @@ func withMCPAdmissionFinalTurn(ctx context.Context, name string, guard config.MC
 		return err
 	}
 	runBeforeAdmissionTurn(name)
+	runBeforeAdmissionFinalValidate(name)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := guard.RevalidateCurrentContext(ctx); err != nil {
+		return err
+	}
 	if !lifecycleMu.LockContext(ctx, true) {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -2030,7 +2044,6 @@ func withMCPAdmissionFinalTurn(ctx context.Context, name string, guard config.MC
 		return context.Canceled
 	}
 	defer lifecycleMu.Unlock()
-	runBeforeAdmissionFinalValidate(name)
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -2269,7 +2282,7 @@ func (o *Owner) commitRenewalForLease(admission *serverAdmission, name string, s
 		pendingEvents []Event
 		wakeRefresh   bool
 	)
-	err := admission.cfg.WithCurrentMCPAdmission(snapshot, name, func(guard config.MCPAdmissionGuard) error {
+	err := admission.cfg.WithCurrentMCPAdmissionContext(admission.ctx, snapshot, name, func(guard config.MCPAdmissionGuard) error {
 		return withMCPAdmissionFinalTurn(admission.ctx, name, guard, func() error {
 			if admission.owner != o || admission.name != name || !admission.validLocked() {
 				if admission.candidate && admission.configSnapshotStaleLocked() {
@@ -2334,6 +2347,31 @@ func (o *Owner) operationContext(ctx context.Context) (context.Context, func()) 
 	}
 }
 
+// requestClose starts the one shutdown coordinator. The coordinator owns the
+// lifecycle mutex acquisition, so a caller can observe context cancellation
+// while another lifecycle turn is still active.
+func (o *Owner) requestClose(reclaim bool) {
+	if o == nil {
+		return
+	}
+	o.closeRequested.Store(true)
+	runBeforeCloseRequest(o)
+	o.closeOnce.Do(func() { go o.coordinateClose(reclaim) })
+}
+
+func (o *Owner) coordinateClose(reclaim bool) {
+	lifecycleMu.Lock()
+	if owner != o {
+		lifecycleMu.Unlock()
+		o.closeDoneOnce.Do(func() { close(o.closeDone) })
+		return
+	}
+	o.closing = true
+	o.lifecycleCancel()
+	lifecycleMu.Unlock()
+	o.finishClose(reclaim)
+}
+
 // Close starts shutdown and waits until it finishes or ctx expires. If ctx
 // expires, the process-wide owner remains fenced in closing state and rejects
 // Acquire until its single cleanup goroutine has joined every admitted
@@ -2342,19 +2380,10 @@ func (o *Owner) operationContext(ctx context.Context) (context.Context, func()) 
 // would allow callbacks from that old session to mutate the next owner's
 // process-wide registry.
 func (o *Owner) Close(ctx context.Context) error {
-	o.closeOnce.Do(func() {
-		lifecycleMu.Lock()
-		if owner != o {
-			lifecycleMu.Unlock()
-			o.closeDoneOnce.Do(func() { close(o.closeDone) })
-			return
-		}
-		o.closing = true
-		o.lifecycleCancel()
-		lifecycleMu.Unlock()
-
-		go o.finishClose(false)
-	})
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	o.requestClose(false)
 
 	select {
 	case <-o.closeDone:
@@ -3037,7 +3066,7 @@ func publishPreparedClient(cfg *config.ConfigStore, name string, prepared *prepa
 		if snapshot.Config == nil {
 			snapshot = cfg.SnapshotMCPAdmission(name)
 		}
-		err = cfg.WithCurrentMCPAdmission(snapshot, name, func(guard config.MCPAdmissionGuard) error {
+		err = cfg.WithCurrentMCPAdmissionContext(lockCtx, snapshot, name, func(guard config.MCPAdmissionGuard) error {
 			return withMCPAdmissionFinalTurn(lockCtx, name, guard, func() error {
 				oldSession, err = publishPreparedClientUnderLifecycle(cfg, name, prepared, admission)
 				return err
@@ -5590,7 +5619,7 @@ func transitionSkippedMCP(
 	if hook != nil {
 		hook(name, snapshot)
 	}
-	err := cfg.WithCurrentMCPAdmission(snapshot, name, func(guard config.MCPAdmissionGuard) error {
+	err := cfg.WithCurrentMCPAdmissionContext(ctx, snapshot, name, func(guard config.MCPAdmissionGuard) error {
 		return withMCPAdmissionFinalTurn(ctx, name, guard, func() error {
 			if !o.isCurrentLocked() {
 				return ErrOwnerBusy

@@ -28,6 +28,9 @@ const stableReadMaxAttempts = 4
 
 var (
 	errReloadDiskChanged = errors.New("config files changed while reloading")
+	// ErrConfigNonRegular rejects pipes, devices, sockets, and directories as
+	// configuration sources before their contents are read.
+	ErrConfigNonRegular = errors.New("config source is not a regular file")
 	// ErrConfigReloadUnstable indicates that no stable file snapshot could be
 	// built within the bounded reload retry budget.
 	ErrConfigReloadUnstable = errors.New("config files remained unstable during reload")
@@ -81,83 +84,83 @@ func readStableConfigFileOwned(path string, expectedOwner int, enforceOwner bool
 			}
 			return nil, reloadFileFingerprint{}, err
 		}
-		info, err := file.Stat()
-		if err != nil {
-			_ = file.Close()
-			return nil, reloadFileFingerprint{}, err
-		}
-		if info.IsDir() {
-			_ = file.Close()
-			return nil, reloadFileFingerprint{
-				discovery:       beforeDiscovery,
-				parentDiscovery: configDiscoveryFingerprint(filepath.Dir(path)),
-				parentIdentity:  beforeParentIdentity,
-				aliasChain:      configAliasChainFingerprint(path),
-			}, nil
-		}
-		owner, ownerKnown := configFileOwner(info)
-		if enforceOwner && (!ownerKnown || owner != expectedOwner) {
-			_ = file.Close()
-			return nil, reloadFileFingerprint{}, errConfigOwnerMismatch
-		}
-		first, err := readOpenedConfigBytes(file)
-		if err != nil {
-			_ = file.Close()
-			return nil, reloadFileFingerprint{}, err
-		}
-		second, err := readOpenedConfigBytes(file)
-		if err != nil {
-			_ = file.Close()
-			return nil, reloadFileFingerprint{}, err
-		}
-		if !bytes.Equal(first, second) {
-			_ = file.Close()
-			continue
-		}
-		runConfigAfterStableReadHook(path)
-		finalInfo, err := file.Stat()
-		if err != nil {
-			_ = file.Close()
-			return nil, reloadFileFingerprint{}, err
-		}
-		afterDiscovery := configDiscoveryFingerprint(path)
-		if beforeDiscovery != afterDiscovery {
-			_ = file.Close()
-			continue
-		}
-		afterParentIdentity := configParentIdentity(path)
-		if beforeParentIdentity != afterParentIdentity {
-			_ = file.Close()
-			continue
-		}
-		pathMatches, err := configFilePathIdentityMatches(path, file, info)
-		if err != nil {
-			_ = file.Close()
-			if os.IsNotExist(err) && attempt+1 < stableReadMaxAttempts {
-				continue
+		data, fingerprint, retry, readErr := func() ([]byte, reloadFileFingerprint, bool, error) {
+			defer file.Close()
+			info, statErr := file.Stat()
+			if statErr != nil {
+				return nil, reloadFileFingerprint{}, false, statErr
 			}
-			return nil, reloadFileFingerprint{}, err
-		}
-		if !pathMatches {
-			_ = file.Close()
+			if !info.Mode().IsRegular() {
+				return nil, reloadFileFingerprint{}, false, fmt.Errorf("%w: %s", ErrConfigNonRegular, path)
+			}
+			owner, ownerKnown := configFileOwner(info)
+			if enforceOwner && (!ownerKnown || owner != expectedOwner) {
+				return nil, reloadFileFingerprint{}, false, errConfigOwnerMismatch
+			}
+			first, readErr := readOpenedConfigBytes(file)
+			if readErr != nil {
+				return nil, reloadFileFingerprint{}, false, readErr
+			}
+			second, readErr := readOpenedConfigBytes(file)
+			if readErr != nil {
+				return nil, reloadFileFingerprint{}, false, readErr
+			}
+			if !bytes.Equal(first, second) {
+				return nil, reloadFileFingerprint{}, true, nil
+			}
+			runConfigAfterStableReadHook(path)
+			finalInfo, statErr := file.Stat()
+			if statErr != nil {
+				return nil, reloadFileFingerprint{}, false, statErr
+			}
+			afterDiscovery := configDiscoveryFingerprint(path)
+			if beforeDiscovery != afterDiscovery {
+				return nil, reloadFileFingerprint{}, true, nil
+			}
+			afterParentIdentity := configParentIdentity(path)
+			if beforeParentIdentity != afterParentIdentity {
+				return nil, reloadFileFingerprint{}, true, nil
+			}
+			pathMatches, identityErr := configFilePathIdentityMatches(path, file, info)
+			if identityErr != nil {
+				if os.IsNotExist(identityErr) && attempt+1 < stableReadMaxAttempts {
+					return nil, reloadFileFingerprint{}, true, nil
+				}
+				return nil, reloadFileFingerprint{}, false, identityErr
+			}
+			if !pathMatches {
+				return nil, reloadFileFingerprint{}, true, nil
+			}
+			identity := configFileIdentityOfOpened(file, finalInfo)
+			nlink := configFileNlinkOfOpened(file, finalInfo)
+			return second, reloadFileFingerprint{
+				exists: true, size: int64(len(second)), modTime: finalInfo.ModTime().UnixNano(),
+				digest: sha256.Sum256(second), owner: owner, nlink: nlink,
+				identity: identity, discovery: afterDiscovery,
+				parentDiscovery: configDiscoveryFingerprint(filepath.Dir(path)),
+				parentIdentity:  afterParentIdentity,
+				aliasChain:      configAliasChainFingerprint(path),
+			}, false, nil
+		}()
+		if retry {
 			continue
 		}
-		identity := configFileIdentityOfOpened(file, finalInfo)
-		nlink := configFileNlinkOfOpened(file, finalInfo)
-		_ = file.Close()
-		return second, reloadFileFingerprint{
-			exists: true, size: int64(len(second)), modTime: finalInfo.ModTime().UnixNano(),
-			digest: sha256.Sum256(second), owner: owner, nlink: nlink,
-			identity: identity, discovery: afterDiscovery,
-			parentDiscovery: configDiscoveryFingerprint(filepath.Dir(path)),
-			parentIdentity:  afterParentIdentity,
-			aliasChain:      configAliasChainFingerprint(path),
-		}, nil
+		if readErr != nil {
+			return nil, reloadFileFingerprint{}, readErr
+		}
+		return data, fingerprint, nil
 	}
 	return nil, reloadFileFingerprint{}, errStableReadUnstable
 }
 
 func readOpenedConfigBytes(file *os.File) ([]byte, error) {
+	info, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, ErrConfigNonRegular
+	}
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
 		return nil, err
 	}

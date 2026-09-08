@@ -250,6 +250,46 @@ func TestOwnerCloseKeepsFenceWhileDetachedCloseBlocks(t *testing.T) {
 	require.NoError(t, next.Close(context.Background()))
 }
 
+func TestOwnerCloseCancellationWinsWhileLifecycleIsHeld(t *testing.T) {
+	owner, err := Acquire()
+	require.NoError(t, err)
+
+	closeRequested := make(chan struct{})
+	var requestOnce sync.Once
+	mcpInitTestHooks.Lock()
+	previous := mcpInitTestHooks.beforeCloseRequest
+	mcpInitTestHooks.beforeCloseRequest = func(requested *Owner) {
+		if requested == owner {
+			requestOnce.Do(func() { close(closeRequested) })
+		}
+	}
+	mcpInitTestHooks.Unlock()
+	t.Cleanup(func() {
+		mcpInitTestHooks.Lock()
+		mcpInitTestHooks.beforeCloseRequest = previous
+		mcpInitTestHooks.Unlock()
+	})
+
+	lifecycleMu.Lock()
+	ctx, cancel := context.WithCancel(context.Background())
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- owner.Close(ctx) }()
+	awaitMCPSignal(t, closeRequested)
+	cancel()
+	require.ErrorIs(t, <-closeDone, context.Canceled)
+	select {
+	case <-owner.closeDone:
+		t.Fatal("close coordinator completed while lifecycleMu was held")
+	default:
+	}
+	lifecycleMu.Unlock()
+
+	require.NoError(t, owner.Close(context.Background()))
+	next, err := Acquire()
+	require.NoError(t, err)
+	require.NoError(t, next.Close(context.Background()))
+}
+
 func TestTrackRejectsAdoptionAfterCloseBegins(t *testing.T) {
 	owner, err := Acquire()
 	require.NoError(t, err)
