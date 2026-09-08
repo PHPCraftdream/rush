@@ -46,6 +46,8 @@ using System.ComponentModel;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 using Microsoft.Win32.SafeHandles;
 
 public static class RushJobObject {
@@ -435,17 +437,6 @@ public static class RushJobObject {
         }
     }
 
-    public static StreamReader CreateReader(IntPtr handle, Encoding encoding) {
-        var safeHandle = new SafeFileHandle(handle, true);
-        try {
-            return new StreamReader(new FileStream(safeHandle, FileAccess.Read, 4096, false),
-                encoding, true, 4096, false);
-        } catch {
-            safeHandle.Dispose();
-            throw;
-        }
-    }
-
     public static void Assign(IntPtr job, IntPtr process) {
         if (!AssignProcessToJobObject(job, process)) throw LastError();
     }
@@ -521,6 +512,358 @@ public static class RushJobObject {
         return commandLine.ToString();
     }
 }
+
+public static class RushOutputPump {
+    public const int BufferSize = 8192;
+
+    internal sealed class LifecycleHooks {
+        public Action BeforeSettle;
+        public Action Settled;
+        public Action DisposeStarted;
+        public Action DisposeCompleted;
+    }
+
+    public static Encoding WithoutPreamble(Encoding encoding) {
+        if (encoding == null) throw new ArgumentNullException("encoding");
+        switch (encoding.CodePage) {
+            case 65001: return new UTF8Encoding(false);
+            case 1200: return new UnicodeEncoding(false, false);
+            case 1201: return new UnicodeEncoding(true, false);
+            case 12000: return new UTF32Encoding(false, false);
+            case 12001: return new UTF32Encoding(true, false);
+            default: return encoding;
+        }
+    }
+
+    public sealed class Pump : IDisposable {
+        private readonly StreamReader reader;
+        private readonly TextWriter destination;
+        private readonly CancellationTokenSource cancellation = new CancellationTokenSource();
+        private readonly Task task;
+        private readonly object state = new object();
+        private readonly LifecycleHooks hooks;
+        private int disposed;
+        private bool settled;
+        private bool disposeComplete;
+        private bool ctsDisposed;
+
+        internal Pump(StreamReader reader, TextWriter destination) :
+            this(reader, destination, null) { }
+
+        internal Pump(StreamReader reader, TextWriter destination, LifecycleHooks hooks) {
+            this.reader = reader;
+            this.destination = destination;
+            this.hooks = hooks;
+            try {
+                task = Task.Run(() => {
+                        try {
+                            Copy(reader, destination, cancellation.Token);
+                        } finally {
+                            reader.Dispose();
+                            Settle();
+                        }
+                    });
+                task.ContinueWith(completed => { var ignored = completed.Exception; },
+                    CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted |
+                    TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+            } catch {
+                reader.Dispose();
+                cancellation.Dispose();
+                throw;
+            }
+        }
+
+        private void Settle() {
+            if (hooks != null && hooks.BeforeSettle != null) hooks.BeforeSettle();
+            bool disposeCancellation;
+            lock (state) {
+                settled = true;
+                disposeCancellation = disposeComplete && !ctsDisposed;
+                if (disposeCancellation) ctsDisposed = true;
+            }
+            if (hooks != null && hooks.Settled != null) hooks.Settled();
+            if (disposeCancellation) cancellation.Dispose();
+        }
+
+        public bool Wait(int timeoutMilliseconds) {
+            if (!task.Wait(timeoutMilliseconds)) return false;
+            task.GetAwaiter().GetResult();
+            return true;
+        }
+
+        public void Wait() {
+            task.GetAwaiter().GetResult();
+        }
+
+        public void Dispose() {
+            bool performDispose;
+            lock (state) {
+                performDispose = disposed == 0;
+                if (performDispose) disposed = 1;
+            }
+            if (performDispose) {
+                if (hooks != null && hooks.DisposeStarted != null) hooks.DisposeStarted();
+                try {
+                    cancellation.Cancel();
+                } finally {
+                    try {
+                        reader.Dispose();
+                    } finally {
+                        FinishDispose();
+                    }
+                }
+            }
+            if (task.IsCompleted) task.GetAwaiter().GetResult();
+        }
+
+        private void FinishDispose() {
+            bool disposeCancellation;
+            lock (state) {
+                disposeComplete = true;
+                disposeCancellation = settled && !ctsDisposed;
+                if (disposeCancellation) ctsDisposed = true;
+            }
+            if (disposeCancellation) cancellation.Dispose();
+            if (hooks != null && hooks.DisposeCompleted != null) hooks.DisposeCompleted();
+        }
+    }
+
+    private static void Copy(StreamReader reader, TextWriter destination,
+        CancellationToken cancellation) {
+        char[] buffer = new char[BufferSize];
+        int read;
+        while ((read = reader.Read(buffer, 0, buffer.Length)) != 0) {
+            cancellation.ThrowIfCancellationRequested();
+            destination.Write(buffer, 0, read);
+        }
+        destination.Flush();
+    }
+
+    private static Pump StartOwned(Stream source, TextWriter destination, Encoding encoding,
+        LifecycleHooks hooks) {
+        if (source == null) throw new ArgumentNullException("source");
+        if (destination == null) throw new ArgumentNullException("destination");
+        if (encoding == null) throw new ArgumentNullException("encoding");
+        StreamReader reader = null;
+        try {
+            reader = new StreamReader(source, encoding, true, BufferSize, false);
+            source = null;
+            return new Pump(reader, destination, hooks);
+        } catch {
+            if (reader != null) reader.Dispose();
+            if (source != null) source.Dispose();
+            throw;
+        }
+    }
+
+    public static Pump Start(Stream source, TextWriter destination, Encoding encoding) {
+        return StartOwned(source, destination, encoding, null);
+    }
+
+    private static Pump StartLifecycleTest(Stream source, TextWriter destination,
+        Encoding encoding, LifecycleHooks hooks) {
+        return StartOwned(source, destination, encoding, hooks);
+    }
+
+    public static Pump Start(IntPtr handle, TextWriter destination, Encoding encoding) {
+        if (handle == IntPtr.Zero || handle == new IntPtr(-1))
+            throw new ArgumentException("The pipe read handle is invalid.", "handle");
+        var safeHandle = new SafeFileHandle(handle, true);
+        try {
+            var source = new FileStream(safeHandle, FileAccess.Read, BufferSize, false);
+            return StartOwned(source, destination, encoding, null);
+        } catch {
+            safeHandle.Dispose();
+            throw;
+        }
+    }
+
+    private sealed class GuardedReadStream : Stream {
+        private readonly byte[] data;
+        private readonly int bound;
+        private int position;
+        public int MaxReadRequest { get; private set; }
+
+        public GuardedReadStream(byte[] data, int bound) {
+            this.data = data;
+            this.bound = bound;
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) {
+            if (count > bound)
+                throw new InvalidOperationException("Copy requested more than its fixed buffer.");
+            if (count > MaxReadRequest) MaxReadRequest = count;
+            int available = data.Length - position;
+            if (available == 0) return 0;
+            int read = Math.Min(count, available);
+            Array.Copy(data, position, buffer, offset, read);
+            position += read;
+            return read;
+        }
+
+        public override bool CanRead { get { return true; } }
+        public override bool CanSeek { get { return false; } }
+        public override bool CanWrite { get { return false; } }
+        public override long Length { get { return data.Length; } }
+        public override long Position {
+            get { return position; }
+            set { throw new NotSupportedException(); }
+        }
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) { throw new NotSupportedException(); }
+        public override void SetLength(long value) { throw new NotSupportedException(); }
+        public override void Write(byte[] buffer, int offset, int count) { throw new NotSupportedException(); }
+    }
+
+    private sealed class RecordingTextWriter : TextWriter {
+        private readonly StringBuilder output = new StringBuilder();
+        public bool IsDisposed { get; private set; }
+        public override Encoding Encoding { get { return new UTF8Encoding(false); } }
+
+        public override void Write(char[] buffer, int index, int count) {
+            if (IsDisposed) throw new ObjectDisposedException("RecordingTextWriter");
+            output.Append(buffer, index, count);
+        }
+
+        public override void Flush() {
+            if (IsDisposed) throw new ObjectDisposedException("RecordingTextWriter");
+        }
+
+        public override string ToString() { return output.ToString(); }
+
+        protected override void Dispose(bool disposing) {
+            IsDisposed = true;
+            base.Dispose(disposing);
+        }
+    }
+
+    private sealed class ThrowingTextWriter : TextWriter {
+        public bool IsDisposed { get; private set; }
+        public override Encoding Encoding { get { return new UTF8Encoding(false); } }
+
+        public override void Write(char[] buffer, int index, int count) {
+            throw new InvalidOperationException("Output destination failure.");
+        }
+
+        public override void Flush() { }
+
+        protected override void Dispose(bool disposing) {
+            IsDisposed = true;
+            base.Dispose(disposing);
+        }
+    }
+
+    private static void WaitForSignal(WaitHandle signal, string name) {
+        if (!signal.WaitOne(5000))
+            throw new InvalidOperationException("Output pump lifecycle self-test timed out: " + name);
+    }
+
+    private static void WaitForTask(Task task, string name) {
+        if (!task.Wait(5000))
+            throw new InvalidOperationException("Output pump lifecycle self-test task timed out: " + name);
+        task.GetAwaiter().GetResult();
+    }
+
+    private static void VerifyDisposeOrdering(bool settleFirst) {
+        var settleSignal = new ManualResetEvent(false);
+        var releaseSettle = new ManualResetEvent(false);
+        var beforeSettleSignal = new ManualResetEvent(false);
+        var releaseBeforeSettle = new ManualResetEvent(false);
+        var disposeStarted = new ManualResetEvent(false);
+        var disposeCompleted = new ManualResetEvent(false);
+        var destination = new RecordingTextWriter();
+        Pump pump = null;
+        Task disposeTask = null;
+        try {
+            var hooks = new LifecycleHooks {
+                BeforeSettle = settleFirst ? null : (Action)(() => {
+                    beforeSettleSignal.Set();
+                    WaitForSignal(releaseBeforeSettle, "before-settle release");
+                }),
+                Settled = settleFirst ? (Action)(() => {
+                    settleSignal.Set();
+                    WaitForSignal(releaseSettle, "settle release");
+                }) : null,
+                DisposeStarted = () => disposeStarted.Set(),
+                DisposeCompleted = () => disposeCompleted.Set()
+            };
+            pump = StartLifecycleTest(new GuardedReadStream(new byte[0], BufferSize),
+                destination, new UTF8Encoding(false), hooks);
+            if (settleFirst) {
+                WaitForSignal(settleSignal, "settle commit");
+            } else {
+                WaitForSignal(beforeSettleSignal, "settle attempt");
+            }
+            disposeTask = Task.Run(() => pump.Dispose());
+            WaitForSignal(disposeStarted, "dispose commit");
+            WaitForSignal(disposeCompleted, "dispose completion");
+            if (settleFirst) releaseSettle.Set(); else releaseBeforeSettle.Set();
+            WaitForTask(disposeTask, "dispose");
+            if (!pump.Wait(5000))
+                throw new InvalidOperationException("Output pump lifecycle self-test pump timed out.");
+            pump.Dispose();
+            pump.Dispose();
+            destination.Write("tail");
+            if (destination.IsDisposed || destination.ToString() != "tail")
+                throw new InvalidOperationException("Output pump lifecycle self-test closed its destination.");
+        } finally {
+            releaseSettle.Set();
+            releaseBeforeSettle.Set();
+            if (disposeTask != null) {
+                try { disposeTask.Wait(5000); } catch { }
+            }
+            if (pump != null) {
+                try { pump.Dispose(); } catch { }
+            }
+            settleSignal.Dispose();
+            releaseSettle.Dispose();
+            beforeSettleSignal.Dispose();
+            releaseBeforeSettle.Dispose();
+            disposeStarted.Dispose();
+            disposeCompleted.Dispose();
+        }
+    }
+
+    public static void VerifyDisposeLifecycle() {
+        VerifyDisposeOrdering(true);
+        VerifyDisposeOrdering(false);
+        var destination = new ThrowingTextWriter();
+        var pump = Start(new GuardedReadStream(new byte[] { 0x78 }, BufferSize),
+            destination, new UTF8Encoding(false));
+        bool observed = false;
+        try {
+            pump.Wait();
+        } catch (InvalidOperationException error) {
+            if (error.Message != "Output destination failure.") throw;
+            observed = true;
+        }
+        if (!observed) throw new InvalidOperationException("Output pump lifecycle self-test missed task failure.");
+        for (int index = 0; index < 2; index++) {
+            try { pump.Dispose(); } catch (InvalidOperationException error) {
+                if (error.Message != "Output destination failure.") throw;
+            }
+        }
+        if (destination.IsDisposed)
+            throw new InvalidOperationException("Output pump lifecycle self-test closed a failed destination.");
+    }
+
+    public static void VerifyBoundedPump() {
+        string expected = new string('x', BufferSize + 5);
+        byte[] input = new UTF8Encoding(false).GetBytes(expected);
+        var source = new GuardedReadStream(input, BufferSize);
+        var destination = new RecordingTextWriter();
+        var pump = Start(source, destination, new UTF8Encoding(false));
+        try {
+            pump.Wait();
+        } finally {
+            pump.Dispose();
+        }
+        destination.Write("tail");
+        if (source.MaxReadRequest > BufferSize || destination.IsDisposed ||
+                destination.ToString() != expected + "tail")
+            throw new InvalidOperationException("Bounded output pump self-test did not drain to EOF.");
+    }
+}
 '@
 
 function Convert-MemoryLimit([string] $value) {
@@ -532,6 +875,46 @@ function Convert-MemoryLimit([string] $value) {
         "k" { return $number * 1KB }
         "m" { return $number * 1MB }
         "g" { return $number * 1GB }
+    }
+}
+
+function Wait-OutputPumps($stdoutPump, $stderrPump, [int] $timeoutMilliseconds = -1,
+    [bool] $allowIncomplete = $false) {
+    $pumps = @(@($stdoutPump, $stderrPump) | Where-Object { $null -ne $_ })
+    if ($pumps.Count -eq 0) { return }
+    if ($timeoutMilliseconds -lt 0) {
+        foreach ($pump in $pumps) { $pump.Wait() }
+        return
+    }
+    $watch = [Diagnostics.Stopwatch]::StartNew()
+    $incomplete = $false
+    $failure = $null
+    foreach ($pump in $pumps) {
+        $remaining = $timeoutMilliseconds - [int]$watch.ElapsedMilliseconds
+        if ($remaining -le 0) {
+            $incomplete = $true
+            continue
+        }
+        try {
+            if (-not $pump.Wait($remaining)) { $incomplete = $true }
+        } catch {
+            if ($null -eq $failure) { $failure = $_ }
+        }
+    }
+    if ($incomplete -or $null -ne $failure) {
+        $initialFailure = $failure
+        foreach ($pump in $pumps) {
+            try { $pump.Dispose() } catch { }
+        }
+        foreach ($pump in $pumps) {
+            try { [void]$pump.Wait(1000) } catch {
+                if ($null -eq $failure) { $failure = $_ }
+            }
+        }
+        if ($null -ne $initialFailure) { throw $initialFailure }
+        if ($allowIncomplete) { return }
+        if ($null -ne $failure) { throw $failure }
+        throw "Output pump did not complete after the child process terminated"
     }
 }
 
@@ -638,22 +1021,67 @@ function Invoke-CapturedSelfTestProcess([string[]] $arguments, [Text.Encoding] $
     $psi.StandardErrorEncoding = $encoding
     $process = New-Object System.Diagnostics.Process
     $process.StartInfo = $psi
+    $stdoutPath = [IO.Path]::Combine([IO.Path]::GetTempPath(), "rush-capture-" + [Guid]::NewGuid().ToString("N") + ".out")
+    $stderrPath = [IO.Path]::Combine([IO.Path]::GetTempPath(), "rush-capture-" + [Guid]::NewGuid().ToString("N") + ".err")
+    $stdoutFile = $null
+    $stderrFile = $null
+    $stdoutWriter = $null
+    $stderrWriter = $null
+    $stdoutPump = $null
+    $stderrPump = $null
+    $pumpsSettled = $false
+    $processStarted = $false
     try {
         if (-not $process.Start()) { throw "self-test process did not start" }
-        $stdout = $process.StandardOutput.ReadToEndAsync()
-        $stderr = $process.StandardError.ReadToEndAsync()
+        $processStarted = $true
+        $stdoutFile = [IO.File]::Open($stdoutPath, [IO.FileMode]::Create,
+            [IO.FileAccess]::Write, [IO.FileShare]::Read)
+        $stderrFile = [IO.File]::Open($stderrPath, [IO.FileMode]::Create,
+            [IO.FileAccess]::Write, [IO.FileShare]::Read)
+        $stdoutWriter = [IO.StreamWriter]::new($stdoutFile,
+            [RushOutputPump]::WithoutPreamble($encoding), [RushOutputPump]::BufferSize, $true)
+        $stderrWriter = [IO.StreamWriter]::new($stderrFile,
+            [RushOutputPump]::WithoutPreamble($encoding), [RushOutputPump]::BufferSize, $true)
+        $stdoutPump = [RushOutputPump]::Start($process.StandardOutput.BaseStream,
+            $stdoutWriter, $encoding)
+        $stderrPump = [RushOutputPump]::Start($process.StandardError.BaseStream,
+            $stderrWriter, $encoding)
         if (-not $process.WaitForExit(10000)) {
             $process.Kill()
             [void]$process.WaitForExit(5000)
             throw "self-test process timed out"
         }
+        Wait-OutputPumps $stdoutPump $stderrPump
+        $pumpsSettled = $true
+        $stdoutWriter.Flush()
+        $stderrWriter.Flush()
+        $stdoutWriter.Dispose()
+        $stdoutWriter = $null
+        $stderrWriter.Dispose()
+        $stderrWriter = $null
+        $stdoutFile.Dispose()
+        $stdoutFile = $null
+        $stderrFile.Dispose()
+        $stderrFile = $null
         [pscustomobject]@{
             ExitCode = $process.ExitCode
-            Stdout = $stdout.Result
-            Stderr = $stderr.Result
+            Stdout = [IO.File]::ReadAllText($stdoutPath, $encoding)
+            Stderr = [IO.File]::ReadAllText($stderrPath, $encoding)
         }
     } finally {
+        if ($processStarted -and -not $process.HasExited) {
+            try { $process.Kill() } catch { }
+            try { [void]$process.WaitForExit(5000) } catch { }
+        }
+        if (($stdoutPump -ne $null -or $stderrPump -ne $null) -and -not $pumpsSettled) {
+            try { Wait-OutputPumps $stdoutPump $stderrPump } catch { }
+        }
+        if ($stdoutWriter -ne $null) { $stdoutWriter.Dispose() }
+        if ($stderrWriter -ne $null) { $stderrWriter.Dispose() }
+        if ($stdoutFile -ne $null) { $stdoutFile.Dispose() }
+        if ($stderrFile -ne $null) { $stderrFile.Dispose() }
         $process.Dispose()
+        Remove-Item -LiteralPath $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -731,6 +1159,8 @@ function Invoke-TreeTimeoutSelfTest([string] $self, [string] $tempPath, [string]
 }
 
 if ($SelfTest) {
+    [RushOutputPump]::VerifyDisposeLifecycle()
+    [RushOutputPump]::VerifyBoundedPump()
     Invoke-AtomicLaunchSelfTest
     $self = $MyInvocation.MyCommand.Path
     $powershellPath = [IO.Path]::Combine($PSHOME, "powershell.exe")
@@ -754,6 +1184,8 @@ public static class RushArgumentOracle {
         $argumentDriver = [IO.Path]::Combine($selfTestTempPath, "argument-driver.ps1")
         Set-Content -LiteralPath $argumentDriver -Encoding UTF8 -Value @'
 param([string]$Self, [string]$Helper)
+$previousEncoding = [Console]::OutputEncoding
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 $values = @(
     "", "space value", "embedded`"quote", "trailing\",
     [string]::Concat([char]0x0416, [char]0x0430, [char]0x0440, "-",
@@ -761,6 +1193,7 @@ $values = @(
         " ", [char]0xD83C, [char]0xDF0D)
 )
 & $Self 256m 30 $Helper $values[0] $values[1] $values[2] $values[3] $values[4]
+[Console]::OutputEncoding = $previousEncoding
 exit $LASTEXITCODE
 '@
         $argumentValues = @(
@@ -800,8 +1233,7 @@ using System;
 using System.IO;
 using System.Text;
 public static class RushEncodingOracle {
-    private static void Write(Stream stream, string value) {
-        var encoding = new UTF8Encoding(false);
+    private static void Write(Stream stream, Encoding encoding, string value) {
         byte[] preamble = encoding.GetPreamble();
         byte[] data = encoding.GetBytes(value);
         stream.Write(preamble, 0, preamble.Length);
@@ -809,22 +1241,101 @@ public static class RushEncodingOracle {
         stream.Flush();
     }
     public static void Main() {
-        Write(Console.OpenStandardOutput(), "\u00e9");
-        Write(Console.OpenStandardError(), "\u00ef");
+        Write(Console.OpenStandardOutput(), new UTF8Encoding(false), "\u00e9");
+        Write(Console.OpenStandardError(), new UTF8Encoding(false), "\u00ef");
     }
 }
 '@
         Add-Type -TypeDefinition $encodingSource -OutputAssembly $encodingExecutable -OutputType ConsoleApplication
         $selfTestProcessEncoding = New-Object System.Text.UTF8Encoding($false)
+        $outputDriver = [IO.Path]::Combine($selfTestTempPath, "output-driver.ps1")
+        Set-Content -LiteralPath $outputDriver -Encoding UTF8 -Value @'
+param([string]$Self, [string]$Executable)
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+& $Self 256m 30 $Executable
+exit $LASTEXITCODE
+'@
         $unicodeResult = Invoke-CapturedSelfTestProcess @(
-            $powershellPath, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $self,
-            "256m", "30", $encodingExecutable
+            $powershellPath, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $outputDriver,
+            $self, $encodingExecutable
         ) $selfTestProcessEncoding $powershellPath
         $expectedUnicodeStdout = [string][char]0x00E9
         $expectedUnicodeStderr = [string][char]0x00EF
         if ($unicodeResult.ExitCode -ne 0 -or $unicodeResult.Stdout -ne $expectedUnicodeStdout -or
                 $unicodeResult.Stderr -ne $expectedUnicodeStderr) {
             throw "encoding self-test returned unexpected stdout/stderr: exit=$($unicodeResult.ExitCode), out=[$($unicodeResult.Stdout)], err=[$($unicodeResult.Stderr)]"
+        }
+
+        $utf16Executable = [IO.Path]::Combine($selfTestTempPath, "utf16-encoding.exe")
+        $utf16Source = @'
+using System;
+using System.IO;
+using System.Text;
+public static class RushUtf16EncodingOracle {
+    private static void Write(Stream stream, Encoding encoding, string value) {
+        byte[] preamble = encoding.GetPreamble();
+        byte[] data = encoding.GetBytes(value);
+        stream.Write(preamble, 0, preamble.Length);
+        stream.Write(data, 0, data.Length);
+        stream.Flush();
+    }
+    public static void Main() {
+        Write(Console.OpenStandardOutput(), new UnicodeEncoding(false, true), "utf16-\u0416");
+        Write(Console.OpenStandardError(), new UnicodeEncoding(true, true), "utf16-\u754C");
+    }
+}
+'@
+        Add-Type -TypeDefinition $utf16Source -OutputAssembly $utf16Executable -OutputType ConsoleApplication
+        $utf16Result = Invoke-CapturedSelfTestProcess @(
+            $powershellPath, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $outputDriver,
+            $self, $utf16Executable
+        ) $selfTestProcessEncoding $powershellPath
+        $expectedUtf16Stdout = "utf16-" + [char]0x0416
+        $expectedUtf16Stderr = "utf16-" + [char]0x754C
+        if ($utf16Result.ExitCode -ne 0 -or $utf16Result.Stdout -ne $expectedUtf16Stdout -or
+                $utf16Result.Stderr -ne $expectedUtf16Stderr) {
+            throw "UTF-16 encoding self-test returned unexpected streams: exit=$($utf16Result.ExitCode)"
+        }
+
+        $interleavedExecutable = [IO.Path]::Combine($selfTestTempPath, "interleaved.exe")
+        $interleavedSource = @'
+using System;
+using System.IO;
+using System.Text;
+public static class RushInterleavedOracle {
+    public static void Main() {
+        Stream stdout = Console.OpenStandardOutput();
+        Stream stderr = Console.OpenStandardError();
+        for (int index = 0; index < 32; index++) {
+            byte[] output = Encoding.UTF8.GetBytes("out-" + index + "-Ж\n");
+            byte[] error = Encoding.UTF8.GetBytes("err-" + index + "-界\n");
+            stdout.Write(output, 0, output.Length);
+            stdout.Flush();
+            stderr.Write(error, 0, error.Length);
+            stderr.Flush();
+        }
+    }
+}
+'@
+        Add-Type -TypeDefinition $interleavedSource -OutputAssembly $interleavedExecutable -OutputType ConsoleApplication
+        $interleavedResult = Invoke-CapturedSelfTestProcess @(
+            $powershellPath, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $outputDriver,
+            $self, $interleavedExecutable
+        ) $selfTestProcessEncoding $powershellPath
+        $expectedInterleavedStdout = ((0..31 | ForEach-Object { "out-$($_)-Ж" }) -join "`n") + "`n"
+        $expectedInterleavedStderr = ((0..31 | ForEach-Object { "err-$($_)-界" }) -join "`n") + "`n"
+        if ($interleavedResult.ExitCode -ne 0 -or $interleavedResult.Stdout -ne $expectedInterleavedStdout -or
+                $interleavedResult.Stderr -ne $expectedInterleavedStderr) {
+            throw "interleaved output self-test returned unexpected streams: exit=$($interleavedResult.ExitCode)"
+        }
+
+        $missingExecutable = [IO.Path]::Combine($selfTestTempPath, "missing.exe")
+        $createFailureResult = Invoke-CapturedSelfTestProcess @(
+            $powershellPath, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $outputDriver,
+            $self, $missingExecutable
+        ) $selfTestProcessEncoding $powershellPath
+        if ($createFailureResult.ExitCode -eq 0 -or $createFailureResult.Stderr.Length -eq 0) {
+            throw "create-failure self-test did not surface process creation failure"
         }
 
         [RushJobObject]::ValidateLayouts((Convert-MemoryLimit "256m"))
@@ -1002,29 +1513,37 @@ $threadHandle = [IntPtr]::Zero
 $stdoutReadHandle = [IntPtr]::Zero
 $stderrReadHandle = [IntPtr]::Zero
 $job = [IntPtr]::Zero
-$stdoutReader = $null
-$stderrReader = $null
-$stdoutTask = $null
-$stderrTask = $null
+$stdoutPump = $null
+$stderrPump = $null
+$stdoutDestination = $null
+$stderrDestination = $null
+$stdoutRaw = $null
+$stderrRaw = $null
+$consoleEncoding = [Console]::OutputEncoding
 $assigned = $false
 $jobClosed = $false
-$consoleEncoding = [Console]::OutputEncoding
+$exitCode = $null
+$pumpsSettled = $false
 
 try {
     $job = [RushJobObject]::Create($memoryBytes)
     [RushJobObject]::CreateSuspended($commandLine, [ref]$processHandle, [ref]$threadHandle, [ref]$stdoutReadHandle, [ref]$stderrReadHandle)
     try {
-        $stdoutReader = [RushJobObject]::CreateReader($stdoutReadHandle, $consoleEncoding)
+        $stdoutRaw = [Console]::OpenStandardOutput()
+        $stdoutDestination = [IO.StreamWriter]::new($stdoutRaw,
+            [RushOutputPump]::WithoutPreamble($consoleEncoding), [RushOutputPump]::BufferSize, $true)
+        $stdoutPump = [RushOutputPump]::Start($stdoutReadHandle, $stdoutDestination, $consoleEncoding)
     } finally {
         $stdoutReadHandle = [IntPtr]::Zero
     }
     try {
-        $stderrReader = [RushJobObject]::CreateReader($stderrReadHandle, $consoleEncoding)
+        $stderrRaw = [Console]::OpenStandardError()
+        $stderrDestination = [IO.StreamWriter]::new($stderrRaw,
+            [RushOutputPump]::WithoutPreamble($consoleEncoding), [RushOutputPump]::BufferSize, $true)
+        $stderrPump = [RushOutputPump]::Start($stderrReadHandle, $stderrDestination, $consoleEncoding)
     } finally {
         $stderrReadHandle = [IntPtr]::Zero
     }
-    $stdoutTask = $stdoutReader.ReadToEndAsync()
-    $stderrTask = $stderrReader.ReadToEndAsync()
     [RushJobObject]::Assign($job, $processHandle)
     $assigned = $true
     [RushJobObject]::Resume($threadHandle)
@@ -1044,8 +1563,12 @@ try {
         $exitCode = [RushJobObject]::ExitCode($processHandle)
     }
 
-    [Console]::Write($stdoutTask.Result)
-    [Console]::Error.Write($stderrTask.Result)
+    if ($exitCode -eq 124) {
+        Wait-OutputPumps $stdoutPump $stderrPump 5000 $true
+    } else {
+        Wait-OutputPumps $stdoutPump $stderrPump
+    }
+    $pumpsSettled = $true
     exit $exitCode
 } finally {
     if ($processHandle -ne [IntPtr]::Zero) {
@@ -1058,11 +1581,30 @@ try {
         } catch { }
         try { [RushJobObject]::Wait($processHandle, 5000) | Out-Null } catch { }
     }
+    $pumpCleanupError = $null
+    if (($stdoutPump -ne $null -or $stderrPump -ne $null) -and -not $pumpsSettled) {
+        try {
+            Wait-OutputPumps $stdoutPump $stderrPump 5000 ($exitCode -eq 124)
+        } catch {
+            $pumpCleanupError = $_
+        }
+    }
     if ($job -ne [IntPtr]::Zero) { [RushJobObject]::Close($job) }
-    if ($stdoutReader -ne $null) { $stdoutReader.Dispose() }
-    if ($stderrReader -ne $null) { $stderrReader.Dispose() }
+    try { if ($stdoutPump -ne $null) { $stdoutPump.Dispose() } } catch {
+        if ($null -eq $pumpCleanupError) { $pumpCleanupError = $_ }
+    }
+    try { if ($stderrPump -ne $null) { $stderrPump.Dispose() } } catch {
+        if ($null -eq $pumpCleanupError) { $pumpCleanupError = $_ }
+    }
+    try { if ($stdoutDestination -ne $null) { $stdoutDestination.Dispose() } } catch {
+        if ($null -eq $pumpCleanupError) { $pumpCleanupError = $_ }
+    }
+    try { if ($stderrDestination -ne $null) { $stderrDestination.Dispose() } } catch {
+        if ($null -eq $pumpCleanupError) { $pumpCleanupError = $_ }
+    }
     if ($stdoutReadHandle -ne [IntPtr]::Zero) { [RushJobObject]::Close($stdoutReadHandle) }
     if ($stderrReadHandle -ne [IntPtr]::Zero) { [RushJobObject]::Close($stderrReadHandle) }
     if ($processHandle -ne [IntPtr]::Zero) { [RushJobObject]::Close($processHandle) }
     if ($threadHandle -ne [IntPtr]::Zero) { [RushJobObject]::Close($threadHandle) }
+    if ($null -ne $pumpCleanupError) { throw $pumpCleanupError }
 }
