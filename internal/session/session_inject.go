@@ -249,3 +249,46 @@ func (s *service) ConsumeInterruptInjectAndEnqueue(ctx context.Context, sessionI
 	}
 	return &pi, nil
 }
+
+// ReconcileInterruptInjectEnqueue removes the exact durable replacement made
+// for inject and restores inject in one transaction. idempotencyKey identifies
+// one attempt, not the source inject. A missing replacement is treated as an
+// already-completed reconciliation, which makes retry after an ambiguous
+// commit safe without deleting another attempt's row or restoring its source.
+func (s *service) ReconcileInterruptInjectEnqueue(ctx context.Context, inject PendingInject, idempotencyKey string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	result, err := tx.ExecContext(ctx,
+		`DELETE FROM session_run_queue WHERE id = ? AND session_id = ?`,
+		idempotencyKey, inject.SessionID,
+	)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return nil
+	}
+
+	interrupt := int64(0)
+	if inject.Interrupt {
+		interrupt = 1
+	}
+	_, err = tx.ExecContext(ctx,
+		`INSERT INTO pending_injects (id, session_id, message_id, content, interrupt, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(id) DO NOTHING`,
+		inject.ID, inject.SessionID, inject.MessageID, inject.Content, interrupt, inject.CreatedAt,
+	)
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
+}

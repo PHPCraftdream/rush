@@ -234,6 +234,10 @@ func (m *mockSessionService) ConsumeInterruptInjectAndEnqueue(context.Context, s
 	return nil, nil
 }
 
+func (m *mockSessionService) ReconcileInterruptInjectEnqueue(context.Context, session.PendingInject, string) error {
+	return nil
+}
+
 func (m *mockSessionService) DeleteInterruptInject(context.Context, string) error {
 	return nil
 }

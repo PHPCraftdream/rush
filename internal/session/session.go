@@ -273,6 +273,11 @@ type Service interface {
 	// Returns error on failure — the transaction is rolled back, so the row
 	// remains for retry.
 	ConsumeInterruptInjectAndEnqueue(ctx context.Context, sessionID, injectID, idempotencyKey string, callData []byte) (*PendingInject, error)
+	// ReconcileInterruptInjectEnqueue atomically removes the replacement row
+	// for this attempt, identified by its per-attempt idempotencyKey, and
+	// restores the exact interrupt row. It is idempotent: a missing
+	// replacement is already reconciled and must not restore the source again.
+	ReconcileInterruptInjectEnqueue(ctx context.Context, inject PendingInject, idempotencyKey string) error
 	// DeleteInterruptInject removes a specific pending inject row by ID.
 	// Used by detached interrupt runs to delete the durable pending row AFTER
 	// they have confirmed execution (acquired OS lock). P0-2 fix. It returns

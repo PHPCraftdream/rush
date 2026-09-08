@@ -156,8 +156,9 @@ func (c *coordinator) startInterruptTicker(ctx context.Context, sessionID string
 // atomic consume — PeekInterruptInject does not delete, so a failure there
 // simply leaves the row in place for the next tick to retry naturally; no
 // explicit recreation is needed. Once ConsumeInterruptInjectAndEnqueue
-// commits, the call is durably enqueued and nothing after that point
-// (Notify, InterruptAndReplace) can lose it.
+// commits, the call is durably enqueued. A generation fence loss then
+// atomically removes that exact candidate and restores the source row before
+// the tick reports no delivery.
 func (c *coordinator) handleInterruptTick(ctx context.Context, sessionID string) (bool, error) {
 	// Ownership is published before the first generation starts. If a
 	// reservation exists but its call snapshot is not visible yet, retry the
@@ -190,20 +191,26 @@ func (c *coordinator) handleInterruptTick(ctx context.Context, sessionID string)
 		return c.handleActiveNonDurableInterrupt(ctx, pi, injMsg, activeCall, activeToken, tokenAvailable)
 	}
 
-	// Resolve the session's model configuration from the DB or config
-	// defaults so this cross-process interrupt tick respects a persisted
-	// per-session model override instead of falling back to the shared/
-	// global model (same class of bug as InterruptAndSend,
-	// closed for that call site separately).
-	pinned, resolveErr := c.resolveSessionModels(ctx, sessionID)
-	if resolveErr != nil {
-		return false, fmt.Errorf("failed to resolve session models for interrupt tick: %w", resolveErr)
-	}
-
-	// Build the call
-	call, buildErr := c.buildCall(ctx, sessionID, injMsg.FullText(), pinned, nil)
-	if buildErr != nil {
-		return false, buildErr
+	var call SessionAgentCall
+	if owned && published {
+		// The ticker context belongs to the dispatcher that started the active
+		// turn. It is not the policy context of that turn, and may already be
+		// stale after the dispatcher has moved to another queued call. Copy the
+		// published call so every policy and pinned value comes from that turn.
+		call = activeCall
+		call.Prompt = injMsg.FullText()
+		call.Attachments = nil
+	} else {
+		// An idle session has no active policy snapshot. Resolve a fresh call
+		// from the tick context, as the normal detached path does.
+		pinned, resolveErr := c.resolveSessionModels(ctx, sessionID)
+		if resolveErr != nil {
+			return false, fmt.Errorf("failed to resolve session models for interrupt tick: %w", resolveErr)
+		}
+		call, err = c.buildCall(ctx, sessionID, injMsg.FullText(), pinned, nil)
+		if err != nil {
+			return false, err
+		}
 	}
 
 	// Layer 1 (T9 shape, design doc §7.3): refuse outright, BEFORE the
@@ -222,6 +229,11 @@ func (c *coordinator) handleInterruptTick(ctx context.Context, sessionID string)
 	// Reference the existing row; the agent must not re-create it.
 	call.ExistingMessageID = pi.MessageID
 	call.InjectID = pi.ID
+	// Each durable handoff is an attempt, not the source inject's identity.
+	// The source ID remains in InjectID so restoring and retrying the source
+	// cannot let stale cleanup delete a later attempt's queue row.
+	call.LogicalCallID = uuid.NewString()
+	call.OnUserMessageCreated = nil
 
 	// Mark as originating from the durable queue so InterruptAndReplace skips
 	// mb.replacement to avoid double-execution (P0-1 fix). The pump will execute
@@ -257,17 +269,28 @@ func (c *coordinator) handleInterruptTick(ctx context.Context, sessionID string)
 		return false, nil
 	}
 
-	// Notify the message so web UI renders it live
-	c.messages.Notify(injMsg)
-
 	// InterruptAndReplace atomically records call and cancels only the
 	// in-flight generation (design §4). Since we've already enqueued durably,
 	// we just need to cancel the in-flight generation if there is one.
-	if !interruptAndReplaceSnapshot(c.currentAgent, sessionID, call, activeToken, tokenAvailable) {
+	delivered := interruptAndReplaceSnapshot(c.currentAgent, sessionID, call, activeToken, tokenAvailable)
+	if !delivered && owned && published {
+		// The generation fence lost after the durable transaction committed.
+		// Remove only this candidate and restore the exact source row; a newer
+		// generation's queue entry is never selected by this reconciliation.
+		if reconcileErr := c.reconcileInterruptInjectEnqueue(ctx, *enqueuedPi, idempotencyKey); reconcileErr != nil {
+			return false, fmt.Errorf("failed to reconcile undelivered interrupt inject: %w", reconcileErr)
+		}
+		return false, nil
+	}
+	if !delivered {
 		// No owner — session is idle, the durable enqueue already handles it
 		slog.Debug("coordinator: interrupt tick enqueued durable call for idle session",
 			"session_id", sessionID, "idempotency_key", idempotencyKey)
 	}
+
+	// Notify only after ownership delivery succeeds, or after an idle durable
+	// enqueue has become the authoritative owner of the message.
+	c.messages.Notify(injMsg)
 	return true, nil
 }
 
@@ -572,6 +595,18 @@ func (c *coordinator) restorePendingInjectRow(originalCtx context.Context, pi *s
 	defer cancel()
 	if err := c.sessions.CreatePendingInject(recoveryCtx, *pi); err != nil {
 		return fmt.Errorf("failed to restore pending_injects row %q: %w", pi.ID, err)
+	}
+	return nil
+}
+
+// reconcileInterruptInjectEnqueue uses a bounded recovery context because the
+// ticker's context can be canceled immediately after a generation loses the
+// delivery race. The candidate and source row must still be reconciled then.
+func (c *coordinator) reconcileInterruptInjectEnqueue(originalCtx context.Context, pi session.PendingInject, idempotencyKey string) error {
+	recoveryCtx, cancel := context.WithTimeout(context.WithoutCancel(originalCtx), 10*time.Second)
+	defer cancel()
+	if err := c.sessions.ReconcileInterruptInjectEnqueue(recoveryCtx, pi, idempotencyKey); err != nil {
+		return err
 	}
 	return nil
 }
