@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"os"
 	"path/filepath"
@@ -102,13 +103,45 @@ func (r *mcpAdmissionTokenRef) close() {
 }
 
 // ValidateCurrent rejects admission when the immutable prepared token was
-// closed or its in-memory generation fence is no longer current. Disk changes
-// that race after token preparation linearize after this admission turn; disk
-// writers using the sidecar protocol cannot overlap the prepared token.
+// closed or its in-memory generation fence is no longer current. It performs
+// no filesystem I/O and is safe while lifecycleMu is held.
 func (g MCPAdmissionGuard) ValidateCurrent() error {
 	token := g.ref.current()
 	if g.store == nil || token == nil || token.store != g.store || token.closed.Load() {
 		return ErrMCPMutationStale
+	}
+	if !g.store.mcpAdmissionSnapshotCurrent(token.snapshot, token.name) {
+		return ErrMCPMutationStale
+	}
+	return nil
+}
+
+// FinalValidateCurrentContext verifies the pinned source bytes and identities
+// at the lifecycle publication boundary. It performs bounded filesystem I/O
+// and must be called only while the caller's lifecycle critical section is
+// held.
+func (g MCPAdmissionGuard) FinalValidateCurrentContext(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	token := g.ref.current()
+	if g.store == nil || token == nil || token.store != g.store || token.closed.Load() {
+		return ErrMCPMutationStale
+	}
+	if !g.store.mcpAdmissionSnapshotCurrent(token.snapshot, token.name) {
+		return ErrMCPMutationStale
+	}
+	if err := g.store.validateMCPAdmissionTokenContext(ctx, token); err != nil {
+		if contextErr := ctx.Err(); contextErr != nil {
+			return contextErr
+		}
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	if !g.store.mcpAdmissionSnapshotCurrent(token.snapshot, token.name) {
 		return ErrMCPMutationStale
@@ -413,6 +446,186 @@ func validatePreparedAdmissionFile(ctx context.Context, path string, file *os.Fi
 	}
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	return nil
+}
+
+const mcpAdmissionVerifyBufferSize = 32 << 10
+
+type mcpAdmissionReadSeeker interface {
+	io.Reader
+	io.Seeker
+}
+
+// verifyMCPAdmissionBytes hashes exactly the expected size and then probes for
+// one extra byte. Memory use is independent of the file size.
+func verifyMCPAdmissionBytes(ctx context.Context, file mcpAdmissionReadSeeker, expectedSize int64, expectedDigest [sha256.Size]byte) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if expectedSize < 0 {
+		return ErrMCPMutationStale
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return ErrMCPMutationStale
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	hash := sha256.New()
+	var buffer [mcpAdmissionVerifyBufferSize]byte
+	remaining := expectedSize
+	for remaining > 0 {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		request := int64(len(buffer))
+		if remaining < request {
+			request = remaining
+		}
+		read, err := file.Read(buffer[:request])
+		if read > 0 {
+			_, _ = hash.Write(buffer[:read])
+			remaining -= int64(read)
+		}
+		if err != nil {
+			return ErrMCPMutationStale
+		}
+		if read == 0 {
+			return ErrMCPMutationStale
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	var extra [1]byte
+	read, err := file.Read(extra[:])
+	if err != nil && !errors.Is(err, io.EOF) {
+		return ErrMCPMutationStale
+	}
+	if read != 0 {
+		return ErrMCPMutationStale
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	var actualDigest [sha256.Size]byte
+	copy(actualDigest[:], hash.Sum(nil))
+	if actualDigest != expectedDigest {
+		return ErrMCPMutationStale
+	}
+	return nil
+}
+
+func validateFinalMCPAdmissionFile(
+	ctx context.Context,
+	path string,
+	file *os.File,
+	expected reloadFileFingerprint,
+	expectedOwner int,
+	enforceOwner bool,
+) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if file == nil || !expected.exists {
+		return ErrMCPMutationStale
+	}
+	info, err := file.Stat()
+	if err != nil {
+		return ErrMCPMutationStale
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() || info.Size() != expected.size {
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("%w: %s", ErrMCPMutationStale, ErrConfigNonRegular)
+		}
+		return ErrMCPMutationStale
+	}
+	owner, ownerKnown := configFileOwner(info)
+	if enforceOwner && (!ownerKnown || owner != expectedOwner) {
+		return ErrMCPMutationStale
+	}
+	identity := configFileIdentityOfOpened(file, info)
+	if expected.identity.valid && identity != expected.identity {
+		return ErrMCPMutationStale
+	}
+	if expected.nlink != 0 && configFileNlinkOfOpened(file, info) != expected.nlink {
+		return ErrMCPMutationStale
+	}
+	if err := verifyMCPAdmissionBytes(ctx, file, expected.size, expected.digest); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	finalInfo, err := file.Stat()
+	if err != nil || !finalInfo.Mode().IsRegular() || finalInfo.Size() != expected.size {
+		return ErrMCPMutationStale
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	finalOwner, finalOwnerKnown := configFileOwner(finalInfo)
+	finalIdentity := configFileIdentityOfOpened(file, finalInfo)
+	finalNlink := configFileNlinkOfOpened(file, finalInfo)
+	if (expected.identity.valid || enforceOwner) && (!finalOwnerKnown || finalOwner != expected.owner) ||
+		expected.identity.valid && finalIdentity != expected.identity ||
+		expected.nlink != 0 && finalNlink != expected.nlink ||
+		expected.modTime != finalInfo.ModTime().UnixNano() ||
+		expected.discovery != configDiscoveryFingerprint(path) ||
+		expected.parentDiscovery != configDiscoveryFingerprint(filepath.Dir(path)) ||
+		expected.parentIdentity != configParentIdentity(path) ||
+		expected.aliasChain != configAliasChainFingerprint(path) {
+		return ErrMCPMutationStale
+	}
+	pathMatches, err := configFilePathIdentityMatches(path, file, finalInfo)
+	if err != nil || !pathMatches {
+		return ErrMCPMutationStale
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *ConfigStore) validateMCPAdmissionTokenContext(ctx context.Context, token *mcpAdmissionToken) error {
+	paths := make([]string, 0, len(token.fingerprints))
+	for path := range token.fingerprints {
+		paths = append(paths, path)
+	}
+	slices.Sort(paths)
+	for _, path := range paths {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if token.closed.Load() {
+			return ErrMCPMutationStale
+		}
+		expected := token.fingerprints[path]
+		if !expected.exists {
+			absence, err := mcpAdmissionAbsenceFingerprint(path)
+			if err != nil {
+				return err
+			}
+			if absence != token.absent[path] {
+				return ErrMCPMutationStale
+			}
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			continue
+		}
+		file := token.handles[path]
+		expectedOwner, enforceOwner, err := s.mcpOwnerPolicy(path)
+		if err != nil {
+			return err
+		}
+		if err := validateFinalMCPAdmissionFile(ctx, path, file, expected, expectedOwner, enforceOwner); err != nil {
+			return err
+		}
 	}
 	return nil
 }

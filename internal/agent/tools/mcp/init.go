@@ -2009,11 +2009,12 @@ var mcpReloadAfterSuccessHook func()
 
 var mcpInitTestHooks struct {
 	sync.Mutex
-	afterWaitGroupDone           func()
-	beforeSkippedAdmission       func(string, config.MCPAdmissionSnapshot)
-	beforeAdmissionTurn          func(string)
-	beforeAdmissionFinalValidate func(string)
-	beforeCloseRequest           func(*Owner)
+	afterWaitGroupDone            func()
+	beforeSkippedAdmission        func(string, config.MCPAdmissionSnapshot)
+	beforeAdmissionTurn           func(string)
+	beforeAdmissionFinalValidate  func(string)
+	afterAdmissionFinalRevalidate func(string)
+	beforeCloseRequest            func(*Owner)
 }
 
 func runBeforeAdmissionTurn(name string) {
@@ -2034,6 +2035,15 @@ func runBeforeAdmissionFinalValidate(name string) {
 	}
 }
 
+func runAfterAdmissionFinalRevalidate(name string) {
+	mcpInitTestHooks.Lock()
+	hook := mcpInitTestHooks.afterAdmissionFinalRevalidate
+	mcpInitTestHooks.Unlock()
+	if hook != nil {
+		hook(name)
+	}
+}
+
 func runBeforeCloseRequest(owner *Owner) {
 	mcpInitTestHooks.Lock()
 	hook := mcpInitTestHooks.beforeCloseRequest
@@ -2044,7 +2054,7 @@ func runBeforeCloseRequest(owner *Owner) {
 }
 
 // withMCPAdmissionFinalTurn revalidates the pinned source token before taking
-// lifecycleMu. The lifecycle turn itself is memory-only before mutation.
+// lifecycleMu, then verifies its bytes at the final publication boundary.
 func withMCPAdmissionFinalTurn(ctx context.Context, name string, guard config.MCPAdmissionGuard, mutate func() error) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -2060,6 +2070,7 @@ func withMCPAdmissionFinalTurn(ctx context.Context, name string, guard config.MC
 	if err := guard.RevalidateCurrentContext(ctx); err != nil {
 		return err
 	}
+	runAfterAdmissionFinalRevalidate(name)
 	if !lifecycleMu.LockContext(ctx, true) {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -2070,7 +2081,7 @@ func withMCPAdmissionFinalTurn(ctx context.Context, name string, guard config.MC
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := guard.ValidateCurrent(); err != nil {
+	if err := guard.FinalValidateCurrentContext(ctx); err != nil {
 		return err
 	}
 	if err := ctx.Err(); err != nil {
