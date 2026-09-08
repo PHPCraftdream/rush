@@ -3,19 +3,24 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/filetracker"
 	"github.com/PHPCraftdream/rush/internal/permission"
 	"github.com/PHPCraftdream/rush/internal/pubsub"
+	"github.com/PHPCraftdream/rush/internal/skills"
 	"github.com/stretchr/testify/require"
 )
 
@@ -174,6 +179,68 @@ func TestViewToolBlocksOversizedImages(t *testing.T) {
 	require.Contains(t, resp.Content, "Image file is too large")
 }
 
+func TestLegacyViewReportsSelectedBlankLine(t *testing.T) {
+	t.Parallel()
+
+	workingDir := t.TempDir()
+	path := filepath.Join(workingDir, "blank.txt")
+	require.NoError(t, os.WriteFile(path, []byte("\nsecond"), 0o644))
+	tool := newViewToolForTest(workingDir)
+	ctx := context.WithValue(t.Context(), SessionIDContextKey, "blank-session")
+	resp := runViewTool(t, tool, ctx, ViewParams{FilePath: path, Limit: 1})
+	require.False(t, resp.IsError)
+	require.Contains(t, resp.Content, "     1|")
+
+	var meta ViewResponseMetadata
+	require.NoError(t, json.Unmarshal([]byte(resp.Metadata), &meta))
+	require.Empty(t, meta.Content)
+}
+
+func TestViewSkillMetadataUsesBoundedOpenedBytes(t *testing.T) {
+	t.Parallel()
+
+	workingDir := t.TempDir()
+	path := filepath.Join(workingDir, "SKILL.md")
+	initial := "---\nname: skill-a\ndescription: A\n---\nbody-a"
+	replacement := filepath.Join(workingDir, "SKILL.replaced.md")
+	require.NoError(t, os.WriteFile(path, []byte(initial), 0o644))
+
+	parserCalls := 0
+	var parsed []byte
+	parser := func(content []byte) (*skills.Skill, error) {
+		parserCalls++
+		parsed = append([]byte(nil), content...)
+		if err := os.Rename(path, replacement); err == nil {
+			file, err := os.Create(path)
+			require.NoError(t, err)
+			defer file.Close()
+			_, err = fmt.Fprintln(file, "---\nname: skill-b\ndescription: B\n---")
+			require.NoError(t, err)
+			for range 102 {
+				_, err = file.WriteString(strings.Repeat("replacement-body ", 120))
+				require.NoError(t, err)
+				_, err = file.WriteString("\n")
+				require.NoError(t, err)
+			}
+		}
+		return skills.ParseContent(content)
+	}
+
+	tracker := skills.NewTracker([]*skills.Skill{{Name: "skill-a"}})
+	tool := NewViewTool(&mockViewPermissionService{Broker: pubsub.NewBroker[permission.PermissionRequest]()}, mockFileTracker{}, tracker, workingDir, workingDir)
+	ctx := context.WithValue(t.Context(), SessionIDContextKey, "skill-session")
+	ctx = withViewSkillParser(ctx, parser)
+	resp := runViewTool(t, tool, ctx, ViewParams{FilePath: path})
+	require.False(t, resp.IsError)
+	require.Equal(t, 1, parserCalls)
+	require.Equal(t, initial, string(parsed))
+
+	var meta ViewResponseMetadata
+	require.NoError(t, json.Unmarshal([]byte(resp.Metadata), &meta))
+	require.Equal(t, "skill-a", meta.ResourceName)
+	require.True(t, tracker.IsLoaded("skill-a"))
+}
+
 func TestReadTextFileEnforcesMaxContentSize(t *testing.T) {
 	t.Parallel()
 
@@ -272,6 +339,69 @@ type generatedReadDisk struct {
 	DiskProvider
 	reader io.ReadCloser
 }
+
+type cancellableEndlessReader struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (r *cancellableEndlessReader) Read([]byte) (int, error) {
+	return 0, errors.New("plain Read must not be used")
+}
+
+func (r *cancellableEndlessReader) ReadContext(ctx context.Context, p []byte) (int, error) {
+	select {
+	case <-r.started:
+	default:
+		close(r.started)
+	}
+	select {
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	case <-r.release:
+		for i := range p {
+			p[i] = 'x'
+		}
+		return len(p), nil
+	}
+}
+
+func (r *cancellableEndlessReader) Close() error { return nil }
+
+type lookaheadErrorReader struct {
+	read bool
+}
+
+type closeUnblocksReader struct {
+	started   chan struct{}
+	closed    chan struct{}
+	startOnce sync.Once
+	closeOnce sync.Once
+	closeCall atomic.Int32
+}
+
+func (r *closeUnblocksReader) Read([]byte) (int, error) {
+	r.startOnce.Do(func() { close(r.started) })
+	<-r.closed
+	return 0, io.ErrClosedPipe
+}
+
+func (r *closeUnblocksReader) Close() error {
+	r.closeCall.Add(1)
+	r.closeOnce.Do(func() { close(r.closed) })
+	return nil
+}
+
+func (r *lookaheadErrorReader) Read(p []byte) (int, error) {
+	if r.read {
+		return 0, errors.New("injected lookahead failure")
+	}
+	r.read = true
+	copy(p, "first\n")
+	return len("first\n"), nil
+}
+
+func (r *lookaheadErrorReader) Close() error { return nil }
 
 func (d generatedReadDisk) Open(context.Context, string) (io.ReadCloser, error) {
 	return d.reader, nil
@@ -375,6 +505,136 @@ func TestReadTextFileFromPeekDoesNotConsumeNextGeneratedLine(t *testing.T) {
 	require.Equal(t, "first", content)
 	require.True(t, hasMore)
 	require.LessOrEqual(t, reader.readBytes, int64(8192), "peek should inspect one buffered fragment")
+}
+
+func TestReadTextFileFromCancellationStopsEndlessLine(t *testing.T) {
+	t.Parallel()
+
+	reader := &cancellableEndlessReader{started: make(chan struct{}), release: make(chan struct{})}
+	disk := generatedReadDisk{DiskProvider: OSDisk(), reader: reader}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := readTextFileFrom(ctx, disk, "generated", 0, 1, 0)
+		done <- err
+	}()
+
+	<-reader.started
+	cancel()
+	close(reader.release)
+	err := <-done
+	require.ErrorIs(t, err, context.Canceled)
+}
+
+func TestReadTextFileFromCancellationClosesPlainReaderOnce(t *testing.T) {
+	t.Parallel()
+
+	reader := &closeUnblocksReader{started: make(chan struct{}), closed: make(chan struct{})}
+	disk := generatedReadDisk{DiskProvider: OSDisk(), reader: reader}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := readTextFileFrom(ctx, disk, "generated", 0, 1, 0)
+		done <- err
+	}()
+
+	<-reader.started
+	cancel()
+	err := <-done
+	require.ErrorIs(t, err, context.Canceled)
+	require.Equal(t, int32(1), reader.closeCall.Load())
+}
+
+func TestReadBoundedBytesAcceptsExactLimitAndRejectsOneByteOver(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name  string
+		count int64
+		err   bool
+	}{
+		{name: "exact", count: MaxViewSize, err: false},
+		{name: "overflow", count: MaxViewSize + 1, err: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			reader := &generatedReadCloser{segments: []generatedReadSegment{{fill: 'x', count: test.count}}}
+			data, err := readBoundedBytes(t.Context(), reader, MaxViewSize)
+			if test.err {
+				require.ErrorAs(t, err, &contentTooLargeError{})
+				require.Empty(t, data)
+			} else {
+				require.NoError(t, err)
+				require.Len(t, data, MaxViewSize)
+			}
+			require.LessOrEqual(t, reader.maxRead, viewReaderBuffer)
+		})
+	}
+}
+
+func TestExternalSkillWindowHasFiniteByteCap(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name  string
+		extra int64
+		err   bool
+	}{
+		{name: "exact cap"},
+		{name: "one byte over", extra: 1, err: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			segments := make([]generatedReadSegment, 0, 205)
+			for range 102 {
+				segments = append(segments,
+					generatedReadSegment{fill: 's', count: MaxLineLength},
+					generatedReadSegment{literal: "\n"},
+				)
+			}
+			segments = append(segments, generatedReadSegment{fill: 's', count: 698 + test.extra})
+			reader := &generatedReadCloser{segments: segments}
+			window, err := readTextFileWindowFromReader(t.Context(), reader, 0, maxReadLines, MaxViewSize)
+			if test.err {
+				require.ErrorAs(t, err, &contentTooLargeError{})
+				require.Empty(t, window)
+			} else {
+				require.NoError(t, err)
+				require.Len(t, window.content, MaxViewSize)
+			}
+		})
+	}
+}
+
+func TestReadTextFileUTF8TruncationKeepsValidBoundary(t *testing.T) {
+	t.Parallel()
+
+	for _, width := range []struct {
+		name string
+		text string
+		want string
+	}{
+		{name: "two-byte", text: strings.Repeat("a", MaxLineLength-1) + "é", want: strings.Repeat("a", MaxLineLength-1) + "..."},
+		{name: "three-byte", text: strings.Repeat("a", MaxLineLength-2) + "€", want: strings.Repeat("a", MaxLineLength-2) + "..."},
+		{name: "four-byte", text: strings.Repeat("a", MaxLineLength-3) + "😀", want: strings.Repeat("a", MaxLineLength-3) + "..."},
+		{name: "exact-two-byte", text: strings.Repeat("a", MaxLineLength-2) + "é", want: strings.Repeat("a", MaxLineLength-2) + "é"},
+	} {
+		t.Run(width.name, func(t *testing.T) {
+			reader := &generatedReadCloser{segments: []generatedReadSegment{{literal: width.text}}}
+			disk := generatedReadDisk{DiskProvider: OSDisk(), reader: reader}
+			content, _, err := readTextFileFrom(t.Context(), disk, "generated", 0, 1, 0)
+			require.NoError(t, err)
+			require.True(t, utf8.ValidString(content))
+			require.Equal(t, width.want, content)
+		})
+	}
+}
+
+func TestReadTextFileFromPropagatesLookaheadError(t *testing.T) {
+	t.Parallel()
+
+	disk := generatedReadDisk{DiskProvider: OSDisk(), reader: &lookaheadErrorReader{}}
+	_, _, err := readTextFileFrom(t.Context(), disk, "generated", 0, 1, 0)
+	require.EqualError(t, err, "injected lookahead failure")
 }
 
 type mockViewPermissionService struct {

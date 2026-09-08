@@ -10,10 +10,10 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
-	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"unicode/utf8"
 
@@ -70,6 +70,12 @@ func withViewAfterAnchorSeam(ctx context.Context, seam func(*readAnchor)) contex
 	return context.WithValue(ctx, viewAfterAnchorSeamKey{}, seam)
 }
 
+type viewSkillParserKey struct{}
+
+func withViewSkillParser(ctx context.Context, parser func([]byte) (*skills.Skill, error)) context.Context {
+	return context.WithValue(ctx, viewSkillParserKey{}, parser)
+}
+
 type ViewResponseMetadata struct {
 	FilePath            string           `json:"file_path"`
 	Content             string           `json:"content"`
@@ -91,6 +97,7 @@ const (
 	DefaultReadLimit = 500
 	MaxLineLength    = 2000
 	viewReaderBuffer = 4096
+	maxReadLines     = 1_000_000
 )
 
 type contentTooLargeError struct {
@@ -115,6 +122,9 @@ func NewViewTool(
 		func(ctx context.Context, params ViewParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
 			if params.FilePath == "" {
 				return fantasy.NewTextErrorResponse("file_path is required"), nil
+			}
+			if err := validateViewParams(params); err != nil {
+				return fantasy.NewTextErrorResponse(err.Error()), nil
 			}
 
 			// Handle builtin skill files (rush: prefix).
@@ -194,9 +204,15 @@ func NewViewTool(
 			if seam, ok := ctx.Value(viewAfterAnchorSeamKey{}).(func(*readAnchor)); ok {
 				seam(anchor)
 			}
+			if err := ctx.Err(); err != nil {
+				return fantasy.ToolResponse{}, err
+			}
 
 			// Check if file exists through the anchored root.
 			fileInfo, err := anchor.root.Stat(anchor.rootPath())
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return fantasy.ToolResponse{}, ctxErr
+			}
 			if err != nil {
 				if errors.Is(err, fs.ErrNotExist) {
 					// Try to offer suggestions for similarly named files
@@ -218,33 +234,48 @@ func NewViewTool(
 					filePath, err)), nil
 			}
 
-			// Check if it's a directory
+			// Check if it's a directory or another non-regular object before
+			// opening. This keeps FIFO/device opens fail-closed.
 			if fileInfo.IsDir() {
 				return fantasy.NewTextErrorResponse(fmt.Sprintf("Path is a directory, not a file: %s", filePath)), nil
 			}
+			if !fileInfo.Mode().IsRegular() {
+				return fantasy.NewTextErrorResponse(fmt.Sprintf("Path is not a regular file: %s", filePath)), nil
+			}
 
-			// Set default limit if not provided (no limit for SKILL.md files)
+			// Set the default line window. External skill files remain byte-bounded.
 			if params.Limit <= 0 {
 				if isSkillFile {
-					params.Limit = 1000000 // Effectively no limit for skill files
+					params.Limit = maxReadLines
 				} else {
 					params.Limit = DefaultReadLimit
 				}
 			}
 
 			isSupportedImage, mimeType := getImageMimeType(anchor.rootPath())
-			if isSupportedImage {
-				if fileInfo.Size() > MaxViewSize {
-					return fantasy.NewTextErrorResponse(fmt.Sprintf("Image file is too large (%d bytes). Maximum size is %d bytes",
-						fileInfo.Size(), MaxViewSize)), nil
+			file, openErr := openOwnedRegularAnchorFile(ctx, anchor)
+			if openErr != nil {
+				if osFailureIsFatal(openErr) {
+					return fantasy.ToolResponse{}, fmt.Errorf("error opening file: %w", openErr)
 				}
+				return fantasy.NewTextErrorResponse(fmt.Sprintf(
+					"Cannot read %s: %v. The file was found but could not be opened as a regular file. No file content was returned. Try a different path or use a corrected form of this one.",
+					filePath, openErr)), nil
+			}
+			defer file.Close()
+			if isSupportedImage {
 				if !GetSupportsImagesFromContext(ctx) {
 					modelName := GetModelNameFromContext(ctx)
 					return fantasy.NewTextErrorResponse(fmt.Sprintf("This model (%s) does not support image data.", modelName)), nil
 				}
 
-				imageData, readErr := readFileFromAnchor(anchor)
+				imageData, readErr := readBoundedBytes(ctx, file, MaxViewSize)
 				if readErr != nil {
+					var tooLarge contentTooLargeError
+					if errors.As(readErr, &tooLarge) {
+						return fantasy.NewTextErrorResponse(fmt.Sprintf("Image file is too large (%d bytes). Maximum size is %d bytes",
+							tooLarge.Size, tooLarge.Max)), nil
+					}
 					if osFailureIsFatal(readErr) {
 						return fantasy.ToolResponse{}, fmt.Errorf("error reading image file: %w", readErr)
 					}
@@ -264,12 +295,11 @@ func NewViewTool(
 				return fantasy.NewImageResponse(imageData, mimeType), nil
 			}
 
-			// Read the file content
+			// External skill files are model-visible OS files and keep the same
+			// finite byte cap as ordinary files. Embedded builtin skills are
+			// handled separately above.
 			maxContentSize := MaxViewSize
-			if isSkillFile {
-				maxContentSize = 0
-			}
-			content, hasMore, err := readTextFileFromAnchor(ctx, anchor, params.Offset, params.Limit, maxContentSize)
+			window, err := readTextFileWindowFromReader(ctx, file, params.Offset, params.Limit, maxContentSize)
 			if err != nil {
 				var tooLarge contentTooLargeError
 				if errors.As(err, &tooLarge) {
@@ -283,16 +313,17 @@ func NewViewTool(
 					"Cannot read %s: %v. The file was found but could not be read — it may have been deleted or locked by another process since it was found, or the path lacks read permission. No file content was returned. Try viewing it again or use a different path.",
 					filePath, err)), nil
 			}
+			content := window.content
 			if !utf8.ValidString(content) {
 				return fantasy.NewTextErrorResponse("File content is not valid UTF-8"), nil
 			}
 
 			output := "<file>\n"
-			output += addLineNumbers(content, params.Offset+1)
+			output += addLineNumbersForCount(content, params.Offset+1, window.lineCount)
 
-			if hasMore {
+			if window.hasMore {
 				output += fmt.Sprintf("\n\n(File has more lines. Use 'offset' parameter to read beyond line %d)",
-					params.Offset+len(strings.Split(content, "\n")))
+					params.Offset+window.lineCount)
 			}
 			output += "\n</file>\n"
 			filetracker.RecordRead(ctx, sessionID, filePath)
@@ -301,8 +332,12 @@ func NewViewTool(
 				FilePath: filePath,
 				Content:  content,
 			}
-			if isSkillFile {
-				if skill, err := skills.Parse(filePath); err == nil {
+			if isSkillFile && params.Offset == 0 {
+				parseSkill := skills.ParseContent
+				if injected, ok := ctx.Value(viewSkillParserKey{}).(func([]byte) (*skills.Skill, error)); ok {
+					parseSkill = injected
+				}
+				if skill, err := parseSkill([]byte(content)); err == nil {
 					meta.ResourceType = ViewResourceSkill
 					meta.ResourceName = skill.Name
 					meta.ResourceDescription = skill.Description
@@ -376,6 +411,29 @@ func addLineNumbers(content string, startLine int) string {
 	return strings.Join(result, "\n")
 }
 
+func addLineNumbersForCount(content string, startLine, lineCount int) string {
+	if content != "" || lineCount != 1 {
+		return addLineNumbers(content, startLine)
+	}
+	return fmt.Sprintf("%6d|", startLine)
+}
+
+func validateViewParams(params ViewParams) error {
+	if params.Offset < 0 {
+		return fmt.Errorf("offset must be 0 or greater")
+	}
+	if params.Offset > maxReadLines {
+		return fmt.Errorf("offset must be no greater than %d", maxReadLines)
+	}
+	if params.Limit < 0 {
+		return fmt.Errorf("limit must be 0 or greater")
+	}
+	if params.Limit > maxReadLines {
+		return fmt.Errorf("limit must be no greater than %d", maxReadLines)
+	}
+	return nil
+}
+
 // readTextFile keeps its exact signature for the legacy view tool: it
 // always reads through the real disk. fs_read routes through
 // readTextFileFrom instead, so it can honour an injected DiskProvider.
@@ -383,51 +441,96 @@ func readTextFile(filePath string, offset, limit, maxContentSize int) (string, b
 	return readTextFileFrom(context.Background(), OSDisk(), filePath, offset, limit, maxContentSize)
 }
 
-type anchoredReadDisk struct {
-	DiskProvider
-	root *os.Root
-}
-
-func (d anchoredReadDisk) Open(_ context.Context, name string) (io.ReadCloser, error) {
-	return d.root.Open(name)
-}
-
 func readTextFileFromAnchor(ctx context.Context, anchor *readAnchor, offset, limit, maxContentSize int) (string, bool, error) {
-	return readTextFileFrom(ctx, anchoredReadDisk{DiskProvider: OSDisk(), root: anchor.root}, anchor.rootPath(), offset, limit, maxContentSize)
+	window, err := readTextFileWindowFromAnchor(ctx, anchor, offset, limit, maxContentSize)
+	if err != nil {
+		return "", false, err
+	}
+	return window.content, window.hasMore, nil
 }
 
 func readFileFromAnchor(anchor *readAnchor) ([]byte, error) {
-	file, err := anchor.root.Open(anchor.rootPath())
+	file, err := openOwnedRegularAnchorFile(context.Background(), anchor)
 	if err != nil {
 		return nil, err
 	}
 	defer file.Close()
-	return io.ReadAll(file)
+	return readBoundedBytes(context.Background(), file, MaxViewSize)
 }
 
 // readTextFileFrom is readTextFile's provider-aware core: identical
 // bounded line-window logic, its one real disk call (Open) routed
 // through disk instead of os.Open directly.
 func readTextFileFrom(ctx context.Context, disk DiskProvider, filePath string, offset, limit, maxContentSize int) (string, bool, error) {
-	disk = diskOrOS(disk)
-	file, err := disk.Open(ctx, filePath)
+	window, err := readTextFileWindow(ctx, disk, filePath, offset, limit, maxContentSize)
 	if err != nil {
 		return "", false, err
 	}
-	defer file.Close()
+	return window.content, window.hasMore, nil
+}
 
-	reader := bufio.NewReaderSize(file, viewReaderBuffer)
+type textReadWindow struct {
+	content   string
+	hasMore   bool
+	lineCount int
+}
+
+func readTextFileWindow(ctx context.Context, disk DiskProvider, filePath string, offset, limit, maxContentSize int) (textReadWindow, error) {
+	if err := validateReadWindow(offset, limit, maxContentSize); err != nil {
+		return textReadWindow{}, err
+	}
+	disk = diskOrOS(disk)
+	var file io.ReadCloser
+	var err error
+	if IsOSDisk(disk) {
+		file, err = openOwnedRegularOSFile(ctx, filePath)
+	} else {
+		if err = ctx.Err(); err == nil {
+			file, err = disk.Open(ctx, filePath)
+			if err == nil {
+				file = ownReadCloser(ctx, file)
+			}
+		}
+	}
+	if err != nil {
+		return textReadWindow{}, err
+	}
+	defer file.Close()
+	if err := ctx.Err(); err != nil {
+		return textReadWindow{}, err
+	}
+	return readTextFileWindowFromReader(ctx, file, offset, limit, maxContentSize)
+}
+
+func readTextFileWindowFromAnchor(ctx context.Context, anchor *readAnchor, offset, limit, maxContentSize int) (textReadWindow, error) {
+	if err := validateReadWindow(offset, limit, maxContentSize); err != nil {
+		return textReadWindow{}, err
+	}
+	file, err := openOwnedRegularAnchorFile(ctx, anchor)
+	if err != nil {
+		return textReadWindow{}, err
+	}
+	defer file.Close()
+	return readTextFileWindowFromReader(ctx, file, offset, limit, maxContentSize)
+}
+
+func readTextFileWindowFromReader(ctx context.Context, file io.Reader, offset, limit, maxContentSize int) (textReadWindow, error) {
+	if err := validateReadWindow(offset, limit, maxContentSize); err != nil {
+		return textReadWindow{}, err
+	}
+
+	reader := bufio.NewReaderSize(contextReader{ctx: ctx, reader: file}, viewReaderBuffer)
 	skipped := 0
 	for skipped < offset {
-		line, err := readViewBoundedLine(reader, false)
+		line, err := readViewBoundedLine(ctx, reader, false)
 		if err != nil {
 			if err == io.EOF {
-				return "", false, nil
+				return textReadWindow{}, nil
 			}
-			return "", false, err
+			return textReadWindow{}, err
 		}
 		if !line.terminated {
-			return "", false, nil
+			return textReadWindow{}, nil
 		}
 		skipped++
 	}
@@ -436,12 +539,12 @@ func readTextFileFrom(ctx context.Context, disk DiskProvider, filePath string, o
 	contentSize := 0
 
 	for len(lines) < limit {
-		line, err := readViewBoundedLine(reader, true)
+		line, err := readViewBoundedLine(ctx, reader, true)
 		if err != nil {
 			if err == io.EOF {
 				break
 			}
-			return "", false, err
+			return textReadWindow{}, err
 		}
 		if !line.present {
 			break
@@ -452,7 +555,7 @@ func readTextFileFrom(ctx context.Context, disk DiskProvider, filePath string, o
 			projectedSize++
 		}
 		if maxContentSize > 0 && projectedSize > maxContentSize {
-			return "", false, contentTooLargeError{Size: projectedSize, Max: maxContentSize}
+			return textReadWindow{}, contentTooLargeError{Size: projectedSize, Max: maxContentSize}
 		}
 		contentSize = projectedSize
 		lines = append(lines, lineText)
@@ -464,10 +567,33 @@ func readTextFileFrom(ctx context.Context, disk DiskProvider, filePath string, o
 	// Peek one more line only when we filled the limit.
 	hasMore := false
 	if len(lines) == limit {
-		hasMore, _ = peekViewLine(reader)
+		var err error
+		hasMore, err = peekViewLine(ctx, reader)
+		if err != nil {
+			return textReadWindow{}, err
+		}
 	}
 
-	return strings.Join(lines, "\n"), hasMore, nil
+	return textReadWindow{content: strings.Join(lines, "\n"), hasMore: hasMore, lineCount: len(lines)}, nil
+}
+
+func validateReadWindow(offset, limit, maxContentSize int) error {
+	if offset < 0 {
+		return fmt.Errorf("offset must be 0 or greater")
+	}
+	if offset > maxReadLines {
+		return fmt.Errorf("offset must be no greater than %d", maxReadLines)
+	}
+	if limit < 0 {
+		return fmt.Errorf("limit must be 0 or greater")
+	}
+	if limit > maxReadLines {
+		return fmt.Errorf("limit must be no greater than %d", maxReadLines)
+	}
+	if maxContentSize < 0 || maxContentSize > MaxViewSize {
+		return fmt.Errorf("maximum content size must be between 0 and %d", MaxViewSize)
+	}
+	return nil
 }
 
 type boundedLine struct {
@@ -477,7 +603,7 @@ type boundedLine struct {
 }
 
 // readViewBoundedLine consumes one line while retaining only its bounded prefix.
-func readViewBoundedLine(reader *bufio.Reader, retain bool) (boundedLine, error) {
+func readViewBoundedLine(ctx context.Context, reader *bufio.Reader, retain bool) (boundedLine, error) {
 	const retainedLimit = MaxLineLength + 1
 
 	var retained []byte
@@ -488,7 +614,13 @@ func readViewBoundedLine(reader *bufio.Reader, retain bool) (boundedLine, error)
 	}
 
 	for {
+		if err := ctx.Err(); err != nil {
+			return boundedLine{present: sawContent}, err
+		}
 		fragment, err := reader.ReadSlice('\n')
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return boundedLine{present: sawContent}, ctxErr
+		}
 		if len(fragment) > 0 {
 			sawContent = true
 		}
@@ -542,13 +674,153 @@ func finishBoundedLine(retained []byte, tooLong bool) string {
 		return string(retained)
 	}
 
-	return stringext.Truncate(string(retained[:MaxLineLength]), MaxLineLength) + "..."
+	return stringext.Truncate(string(retained), MaxLineLength) + "..."
 }
 
 // peekViewLine reads only the first available fragment of the next line.
-func peekViewLine(reader *bufio.Reader) (bool, error) {
+func peekViewLine(ctx context.Context, reader *bufio.Reader) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
 	fragment, err := reader.ReadSlice('\n')
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return len(fragment) > 0, ctxErr
+	}
+	if err == io.EOF {
+		return len(fragment) > 0, nil
+	}
+	if err == bufio.ErrBufferFull {
+		return true, nil
+	}
 	return len(fragment) > 0 || err == nil, err
+}
+
+type contextReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
+// ownedReadCloser closes an opened reader when ctx is canceled and exactly
+// once when normal cleanup races that cancellation. A malicious Close method
+// can still block its caller; ordinary close-unblocks readers are covered.
+type ownedReadCloser struct {
+	reader io.ReadCloser
+	stop   func() bool
+	once   sync.Once
+	err    error
+}
+
+func ownReadCloser(ctx context.Context, reader io.ReadCloser) *ownedReadCloser {
+	owned := &ownedReadCloser{reader: reader}
+	owned.stop = context.AfterFunc(ctx, func() {
+		_ = owned.closeUnderlying()
+	})
+	return owned
+}
+
+func (r *ownedReadCloser) Read(p []byte) (int, error) {
+	return r.reader.Read(p)
+}
+
+func (r *ownedReadCloser) ReadContext(ctx context.Context, p []byte) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	var n int
+	var err error
+	if reader, ok := r.reader.(contextRead); ok {
+		n, err = reader.ReadContext(ctx, p)
+	} else {
+		n, err = r.reader.Read(p)
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return n, ctxErr
+	}
+	return n, err
+}
+
+func (r *ownedReadCloser) closeUnderlying() error {
+	r.once.Do(func() { r.err = r.reader.Close() })
+	return r.err
+}
+
+func (r *ownedReadCloser) Close() error {
+	if r.stop != nil {
+		r.stop()
+	}
+	return r.closeUnderlying()
+}
+
+func openOwnedRegularOSFile(ctx context.Context, path string) (io.ReadCloser, error) {
+	file, err := openRegularOSFile(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	return ownReadCloser(ctx, file), nil
+}
+
+func openOwnedRegularAnchorFile(ctx context.Context, anchor *readAnchor) (io.ReadCloser, error) {
+	file, err := openRegularAnchorFile(ctx, anchor)
+	if err != nil {
+		return nil, err
+	}
+	return ownReadCloser(ctx, file), nil
+}
+
+type contextRead interface {
+	ReadContext(context.Context, []byte) (int, error)
+}
+
+func (r contextReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	var n int
+	var err error
+	if reader, ok := r.reader.(contextRead); ok {
+		n, err = reader.ReadContext(r.ctx, p)
+	} else {
+		n, err = r.reader.Read(p)
+	}
+	if ctxErr := r.ctx.Err(); ctxErr != nil {
+		return n, ctxErr
+	}
+	return n, err
+}
+
+func readBoundedBytes(ctx context.Context, reader io.Reader, max int) ([]byte, error) {
+	if max < 0 || max >= int(^uint(0)>>1) {
+		return nil, fmt.Errorf("maximum byte size is invalid: %d", max)
+	}
+	data := make([]byte, 0, min(max+1, viewReaderBuffer))
+	buf := make([]byte, viewReaderBuffer)
+	for len(data) <= max {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		remaining := max + 1 - len(data)
+		if remaining < len(buf) {
+			buf = buf[:remaining]
+		}
+		n, err := contextReader{ctx: ctx, reader: reader}.Read(buf)
+		if n > 0 {
+			data = append(data, buf[:n]...)
+			if len(data) > max {
+				return nil, contentTooLargeError{Size: len(data), Max: max}
+			}
+		}
+		if err != nil {
+			if err == io.EOF {
+				return data, nil
+			}
+			return nil, err
+		}
+	}
+	return data, nil
+}
+
+func addLineNumbersForWindow(content string, startLine, lineCount int) string {
+	return addLineNumbersForCount(content, startLine, lineCount)
 }
 
 func getImageMimeType(filePath string) (bool, string) {
@@ -630,6 +902,9 @@ func isInSkillsPath(filePath string, skillsPaths []string) bool {
 
 // readBuiltinFile reads a file from the embedded builtin skills filesystem.
 func readBuiltinFile(params ViewParams, skillTracker *skills.Tracker) (fantasy.ToolResponse, error) {
+	if err := validateViewParams(params); err != nil {
+		return fantasy.NewTextErrorResponse(err.Error()), nil
+	}
 	embeddedPath := "builtin/" + strings.TrimPrefix(params.FilePath, skills.BuiltinPrefix)
 	builtinFS := skills.BuiltinFS()
 
@@ -645,7 +920,7 @@ func readBuiltinFile(params ViewParams, skillTracker *skills.Tracker) (fantasy.T
 
 	limit := params.Limit
 	if limit <= 0 {
-		limit = 1000000 // Effectively no limit for skill files.
+		limit = maxReadLines // Embedded content is trusted and separately bounded by its asset.
 	}
 
 	lines := strings.Split(content, "\n")
@@ -658,7 +933,7 @@ func readBuiltinFile(params ViewParams, skillTracker *skills.Tracker) (fantasy.T
 	}
 
 	output := "<file>\n"
-	output += addLineNumbers(strings.Join(lines, "\n"), offset+1)
+	output += addLineNumbersForCount(strings.Join(lines, "\n"), offset+1, len(lines))
 	if hasMore {
 		output += fmt.Sprintf("\n\n(File has more lines. Use 'offset' parameter to read beyond line %d)",
 			offset+len(lines))

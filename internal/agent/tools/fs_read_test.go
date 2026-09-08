@@ -201,3 +201,56 @@ func TestFSReadFullFileTooLargeFailsPerItem(t *testing.T) {
 	require.Contains(t, meta.Items[0].Error, "start_line/end_line")
 	require.NotContains(t, resp.Content, "<file path=")
 }
+
+func TestFSReadUTF8TruncationKeepsValidBoundary(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name string
+		text string
+		want string
+	}{
+		{name: "two-byte", text: strings.Repeat("a", MaxLineLength-1) + "é", want: strings.Repeat("a", MaxLineLength-1) + "..."},
+		{name: "three-byte", text: strings.Repeat("a", MaxLineLength-2) + "€", want: strings.Repeat("a", MaxLineLength-2) + "..."},
+		{name: "four-byte", text: strings.Repeat("a", MaxLineLength-3) + "😀", want: strings.Repeat("a", MaxLineLength-3) + "..."},
+		{name: "exact-two-byte", text: strings.Repeat("a", MaxLineLength-2) + "é", want: strings.Repeat("a", MaxLineLength-2) + "é"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			reader := &generatedReadCloser{segments: []generatedReadSegment{{literal: test.text}}}
+			disk := generatedReadDisk{DiskProvider: OSDisk(), reader: reader}
+			block, err := fsReadOne(t.Context(), disk, "generated", "generated", FSReadItem{Path: "generated", StartLine: 1, EndLine: 1})
+			require.NoError(t, err)
+			require.Contains(t, block, test.want)
+		})
+	}
+}
+
+func TestFSReadReportsSelectedBlankLine(t *testing.T) {
+	t.Parallel()
+
+	reader := &generatedReadCloser{segments: []generatedReadSegment{{literal: "\nsecond"}}}
+	disk := generatedReadDisk{DiskProvider: OSDisk(), reader: reader}
+	block, err := fsReadOne(t.Context(), disk, "generated", "generated", FSReadItem{Path: "generated", StartLine: 1, EndLine: 1})
+	require.NoError(t, err)
+	require.Contains(t, block, `lines="1-1"`)
+	require.Contains(t, block, "     1|")
+}
+
+func TestFSReadWindowRejectsIntegerExtremes(t *testing.T) {
+	t.Parallel()
+
+	window, err := fsReadWindowOf(FSReadItem{Path: "x", Line: int(^uint(0) >> 1), Radius: 1})
+	require.Error(t, err)
+	require.Empty(t, window)
+	window, err = fsReadWindowOf(FSReadItem{Path: "x", Line: 1, Radius: int(^uint(0) >> 1)})
+	require.Error(t, err)
+	require.Empty(t, window)
+	window, err = fsReadWindowOf(FSReadItem{Path: "x", StartLine: -1, EndLine: 1})
+	require.Error(t, err)
+	require.Empty(t, window)
+
+	resp, err := readBuiltinFile(ViewParams{FilePath: "rush:missing", Offset: -1}, nil)
+	require.NoError(t, err)
+	require.True(t, resp.IsError)
+	require.Contains(t, resp.Content, "offset must be 0 or greater")
+}

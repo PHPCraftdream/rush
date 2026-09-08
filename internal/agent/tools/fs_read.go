@@ -21,6 +21,8 @@ const FSReadToolName = "fs_read"
 // (MaxViewSize) is what actually bounds the result.
 const fsReadFullFileLimit = 1_000_000
 
+const fsReadMaxWindowLines = 1_000_000
+
 //go:embed fs_read.md.tpl
 var fsReadDescriptionTmpl []byte
 
@@ -105,20 +107,35 @@ func fsReadWindowOf(item FSReadItem) (fsReadWindow, error) {
 		if item.StartLine < 1 {
 			return fsReadWindow{}, fmt.Errorf("start_line must be 1 or greater")
 		}
+		if item.StartLine > fsReadMaxWindowLines {
+			return fsReadWindow{}, fmt.Errorf("start_line must be no greater than %d", fsReadMaxWindowLines)
+		}
 		if item.EndLine != 0 && item.EndLine < item.StartLine {
 			return fsReadWindow{}, fmt.Errorf("end_line (%d) is before start_line (%d)", item.EndLine, item.StartLine)
+		}
+		if item.EndLine > fsReadMaxWindowLines {
+			return fsReadWindow{}, fmt.Errorf("end_line must be no greater than %d", fsReadMaxWindowLines)
 		}
 		limit := fsReadFullFileLimit
 		if item.EndLine != 0 {
 			limit = item.EndLine - item.StartLine + 1
+		}
+		if limit < 1 || limit > fsReadMaxWindowLines {
+			return fsReadWindow{}, fmt.Errorf("line range is too large (maximum %d lines)", fsReadMaxWindowLines)
 		}
 		return fsReadWindow{offset: item.StartLine - 1, limit: limit, firstLine: item.StartLine}, nil
 	case hasRadius:
 		if item.Line < 1 {
 			return fsReadWindow{}, fmt.Errorf("line must be 1 or greater")
 		}
+		if item.Line > fsReadMaxWindowLines {
+			return fsReadWindow{}, fmt.Errorf("line must be no greater than %d", fsReadMaxWindowLines)
+		}
 		if item.Radius < 0 {
 			return fsReadWindow{}, fmt.Errorf("radius must be 0 or greater")
+		}
+		if item.Radius > (fsReadMaxWindowLines-1)/2 {
+			return fsReadWindow{}, fmt.Errorf("radius is too large (maximum %d)", (fsReadMaxWindowLines-1)/2)
 		}
 		first := max(item.Line-item.Radius, 1)
 		return fsReadWindow{offset: first - 1, limit: 2*item.Radius + 1, firstLine: first}, nil
@@ -174,7 +191,7 @@ func fsReadOne(ctx context.Context, disk DiskProvider, absPath string, rawPath s
 	if err != nil {
 		return "", err
 	}
-	content, hasMore, err := readTextFileFrom(ctx, disk, absPath, win.offset, win.limit, MaxViewSize)
+	window, err := readTextFileWindow(ctx, disk, absPath, win.offset, win.limit, MaxViewSize)
 	if err != nil {
 		var tooLarge contentTooLargeError
 		if errors.As(err, &tooLarge) {
@@ -182,21 +199,22 @@ func fsReadOne(ctx context.Context, disk DiskProvider, absPath string, rawPath s
 		}
 		return "", fmt.Errorf("error reading file: %w", err)
 	}
+	content := window.content
 	if !utf8.ValidString(content) {
 		return "", fmt.Errorf("file content is not valid UTF-8")
 	}
 
 	firstLine, lastLine := win.firstLine, win.firstLine-1
-	if content != "" {
-		lastLine = win.firstLine + strings.Count(content, "\n")
+	if window.lineCount > 0 {
+		lastLine = win.firstLine + window.lineCount - 1
 	} else {
 		firstLine, lastLine = 0, 0
 	}
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "<file path=%q lines=%q status=\"ok\">\n", rawPath, fmt.Sprintf("%d-%d", firstLine, lastLine))
-	b.WriteString(addLineNumbers(content, win.firstLine))
-	if hasMore {
+	b.WriteString(addLineNumbersForWindow(content, win.firstLine, window.lineCount))
+	if window.hasMore {
 		fmt.Fprintf(&b, "\n\n(File has more lines. Use start_line/end_line to read beyond line %d)", lastLine)
 	}
 	b.WriteString("\n</file>\n")

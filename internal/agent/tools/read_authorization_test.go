@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -218,6 +219,46 @@ func TestAnchoredReadRootSurvivesWorkspacePathRetarget(t *testing.T) {
 	listed, _, err := fsext.ListDirectoryFS(root.FS(), ".", displayRoot, nil, -1, 100)
 	require.NoError(t, err)
 	require.NotContains(t, strings.Join(listed, "\n"), "secret.txt")
+}
+
+func TestAnchoredReadConsumesOpenedHandleAfterPathReplacement(t *testing.T) {
+	t.Parallel()
+
+	workspace := t.TempDir()
+	path := filepath.Join(workspace, "file.txt")
+	require.NoError(t, os.WriteFile(path, []byte("old-content"), 0o600))
+	root, err := os.OpenRoot(workspace)
+	require.NoError(t, err)
+	defer root.Close()
+
+	file, err := openRegularAnchorFile(t.Context(), &readAnchor{root: root, rel: "file.txt", path: path})
+	require.NoError(t, err)
+	defer file.Close()
+
+	replaced := filepath.Join(workspace, "replacement.txt")
+	if err := os.Rename(path, replaced); err != nil {
+		t.Skipf("path replacement is not supported while a file is open: %v", err)
+	}
+	require.NoError(t, os.WriteFile(path, []byte("new-content"), 0o600))
+	data, err := readBoundedBytes(t.Context(), file, MaxViewSize)
+	require.NoError(t, err)
+	require.Equal(t, "old-content", string(data))
+}
+
+func TestOpenedHandleIdentityIsStructural(t *testing.T) {
+	t.Parallel()
+
+	type source struct{ content string }
+	open := func(s *source) io.ReadCloser {
+		return io.NopCloser(strings.NewReader(s.content))
+	}
+
+	logical := &source{content: "opened-A"}
+	opened := open(logical)
+	logical.content = "replacement-B"
+	window, err := readTextFileWindowFromReader(t.Context(), opened, 0, 1, MaxViewSize)
+	require.NoError(t, err)
+	require.Equal(t, "opened-A", window.content)
 }
 
 func TestAnchoredGrepKeepsNewestMatchesAfterEarlyWalk(t *testing.T) {
