@@ -2,9 +2,7 @@ package tools
 
 import (
 	"fmt"
-	"path/filepath"
 	"runtime"
-	"strings"
 )
 
 // LibraryVirtualRoot is the canonical definition backing sdk.LibraryVirtualRoot
@@ -73,9 +71,7 @@ func rejectRealDiskUnderLibraryVirtualRoot(disk DiskProvider, resolved string) e
 	if !IsOSDisk(disk) {
 		return nil
 	}
-	slashed := filepath.ToSlash(resolved)
-	sentinel := filepath.ToSlash(LibraryVirtualRoot)
-	if slashed != sentinel && !strings.HasPrefix(slashed, sentinel+"/") {
+	if !pathIsUnderLibraryVirtualRoot(resolved, LibraryVirtualRoot) {
 		return nil
 	}
 	return fmt.Errorf(
