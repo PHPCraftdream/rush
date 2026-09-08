@@ -170,14 +170,14 @@ func (files *mcpLockedFiles) validateMutableTopology() error {
 // Both writable files are locked even when only one is mutated; this makes
 // origin/existence/target checks one cross-process linearization point.
 func (s *ConfigStore) withMCPWriteLocks(fn func(*mcpLockedFiles) error) error {
-	return s.withMCPLocks(false, fn)
+	return s.withMCPLocks(fn)
 }
 
 func (s *ConfigStore) withMCPAdmissionLocks(fn func(*mcpLockedFiles) error) error {
-	return s.withMCPLocks(true, fn)
+	return s.withMCPLocks(fn)
 }
 
-func (s *ConfigStore) withMCPLocks(admission bool, fn func(*mcpLockedFiles) error) error {
+func (s *ConfigStore) withMCPLocks(fn func(*mcpLockedFiles) error) error {
 	paths := make([]string, 0, 2)
 	globalPath, err := s.configPath(ScopeGlobal)
 	if err != nil {
@@ -190,16 +190,19 @@ func (s *ConfigStore) withMCPLocks(admission bool, fn func(*mcpLockedFiles) erro
 	slices.Sort(paths)
 	paths = slices.Compact(paths)
 	targets := make(map[string]configWriteTarget, len(paths))
+	targetBySelectedPath := make(map[string]configWriteTarget, len(paths))
 	lockPaths := make([]string, 0, len(paths))
 	for _, path := range paths {
 		target, targetErr := s.resolveConfigWriteTarget(path)
 		if targetErr != nil {
 			return targetErr
 		}
+		runConfigAfterMCPResolveTargetHook(&target)
 		if _, exists := targets[target.lockPath]; !exists {
 			targets[target.lockPath] = target
 			lockPaths = append(lockPaths, target.lockPath)
 		}
+		targetBySelectedPath[target.selectedPath] = target
 	}
 	slices.Sort(lockPaths)
 
@@ -219,10 +222,11 @@ func (s *ConfigStore) withMCPLocks(admission bool, fn func(*mcpLockedFiles) erro
 			return fmt.Errorf("failed to lock config file %q: %w", lockPath, lockErr)
 		}
 		locks = append(locks, lock)
-	}
-	if !admission {
 		for _, target := range targets {
-			if err := verifyConfigWriteTarget(target); err != nil {
+			if target.lockPath != lockPath {
+				continue
+			}
+			if err := verifyConfigTargetBindingAfterLock(target); err != nil {
 				return fmt.Errorf("%w: config target %q changed while acquiring locks", ErrMCPStale, target.selectedPath)
 			}
 		}
@@ -238,8 +242,12 @@ func (s *ConfigStore) withMCPLocks(admission bool, fn func(*mcpLockedFiles) erro
 			return ownerErr
 		}
 		data, fingerprint, readErr := readStableConfigFileOwned(path, expectedOwner, enforceOwner)
+		target := targetBySelectedPath[normalizeDiscoveryPath(path)]
 		if readErr != nil {
 			if os.IsNotExist(readErr) {
+				if err := verifyConfigTargetBinding(target, fingerprint, readErr); err != nil {
+					return fmt.Errorf("%w: config target %q changed while reading", ErrMCPStale, path)
+				}
 				files.bindMCPPath(path, nil, false, fingerprint)
 				continue
 			}
@@ -247,6 +255,9 @@ func (s *ConfigStore) withMCPLocks(admission bool, fn func(*mcpLockedFiles) erro
 				return fmt.Errorf("%w: unsafe config input %s", ErrMCPStale, path)
 			}
 			return fmt.Errorf("failed to read config file: %w", readErr)
+		}
+		if err := verifyConfigTargetBinding(target, fingerprint, nil); err != nil {
+			return fmt.Errorf("%w: config target %q changed while reading", ErrMCPStale, path)
 		}
 		files.bindMCPPath(path, data, true, fingerprint)
 	}

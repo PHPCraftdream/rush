@@ -114,7 +114,7 @@ func (s *ConfigStore) WithCurrentMCPAdmission(snapshot MCPAdmissionSnapshot, nam
 		}
 		return fn(MCPAdmissionGuard{store: s})
 	}
-	return s.withMCPAdmissionLocks(func(files *mcpLockedFiles) error {
+	err := s.withMCPAdmissionLocks(func(files *mcpLockedFiles) error {
 		if !s.mcpAdmissionSnapshotCurrent(snapshot, name) {
 			return ErrMCPMutationStale
 		}
@@ -128,6 +128,10 @@ func (s *ConfigStore) WithCurrentMCPAdmission(snapshot MCPAdmissionSnapshot, nam
 		}
 		return fn(MCPAdmissionGuard{store: s, fingerprints: cloneReloadFingerprints(evaluation.fingerprints)})
 	})
+	if errors.Is(err, ErrMCPStale) {
+		return fmt.Errorf("%w: %w", ErrMCPMutationStale, err)
+	}
+	return err
 }
 
 func cloneReloadFingerprints(source map[string]reloadFileFingerprint) map[string]reloadFileFingerprint {

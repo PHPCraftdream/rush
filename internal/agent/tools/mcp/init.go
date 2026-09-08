@@ -21,6 +21,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/tools/mcp/internal/contextlock"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/csync"
 	"github.com/PHPCraftdream/rush/internal/home"
@@ -369,7 +370,7 @@ var (
 	broker      = pubsub.NewBroker[Event]()
 	leases      = newLeaseRegistry()
 
-	lifecycleMu contextRWMutex
+	lifecycleMu contextlock.RWMutex
 	owner       *Owner
 	initDone    = closedChannel()
 	generation  uint64
@@ -388,147 +389,10 @@ func newLeaseRegistry() *leaseRegistry {
 	return &leaseRegistry{entries: make(map[string]*serverLease)}
 }
 
-type leaseWaiter struct {
-	write   bool
-	ready   chan struct{}
-	granted bool
-}
-
-// contextRWMutex is a fair, FIFO reader/writer lock with cancellation.
-// Readers are granted as one batch, but never bypass an earlier writer.
-type contextRWMutex struct {
-	mu              sync.Mutex
-	readers         int
-	writer          bool
-	waiters         []*leaseWaiter
-	waitHook        func(bool)
-	waiterAllocHook func(bool)
-}
-
-func (m *contextRWMutex) Lock() {
-	_ = m.lock(context.Background(), true)
-}
-
-func (m *contextRWMutex) Unlock() {
-	m.mu.Lock()
-	if !m.writer {
-		m.mu.Unlock()
-		panic("sync: unlock of unlocked contextRWMutex")
-	}
-	m.writer = false
-	m.grantLocked()
-	m.mu.Unlock()
-}
-
-func (m *contextRWMutex) RLock() {
-	_ = m.lock(context.Background(), false)
-}
-
-func (m *contextRWMutex) RUnlock() {
-	m.mu.Lock()
-	if m.readers == 0 {
-		m.mu.Unlock()
-		panic("sync: RUnlock of unlocked contextRWMutex")
-	}
-	m.readers--
-	if m.readers == 0 {
-		m.grantLocked()
-	}
-	m.mu.Unlock()
-}
-
-func (m *contextRWMutex) lockContext(ctx context.Context, write bool) bool {
-	return m.lock(ctx, write)
-}
-
-func (m *contextRWMutex) lock(ctx context.Context, write bool) bool {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if ctx.Err() != nil {
-		return false
-	}
-	m.mu.Lock()
-	if !m.writer && len(m.waiters) == 0 && (!write || m.readers == 0) {
-		if write {
-			m.writer = true
-		} else {
-			m.readers++
-		}
-		m.mu.Unlock()
-		return true
-	}
-	waiter := &leaseWaiter{write: write, ready: make(chan struct{})}
-	if m.waiterAllocHook != nil {
-		m.waiterAllocHook(write)
-	}
-	if m.waitHook != nil {
-		m.waitHook(write)
-	}
-	m.waiters = append(m.waiters, waiter)
-	m.mu.Unlock()
-
-	select {
-	case <-waiter.ready:
-		return true
-	case <-ctx.Done():
-		m.mu.Lock()
-		if waiter.granted {
-			if waiter.write {
-				m.writer = false
-				m.grantLocked()
-			} else {
-				m.readers--
-				if m.readers == 0 {
-					m.grantLocked()
-				}
-			}
-			m.mu.Unlock()
-			return false
-		}
-		for i, queued := range m.waiters {
-			if queued == waiter {
-				m.waiters = append(m.waiters[:i], m.waiters[i+1:]...)
-				break
-			}
-		}
-		m.grantLocked()
-		m.mu.Unlock()
-		return false
-	}
-}
-
-func (m *contextRWMutex) grantLocked() {
-	if m.writer || m.readers != 0 || len(m.waiters) == 0 {
-		return
-	}
-	if m.waiters[0].write {
-		waiter := m.waiters[0]
-		m.waiters = m.waiters[1:]
-		m.grantLockedWaiter(waiter)
-		return
-	}
-	for len(m.waiters) > 0 && !m.waiters[0].write {
-		waiter := m.waiters[0]
-		m.waiters = m.waiters[1:]
-		m.grantLockedWaiter(waiter)
-	}
-}
-
-func (m *contextRWMutex) grantLockedWaiter(waiter *leaseWaiter) {
-	waiter.granted = true
-	if waiter.write {
-		m.writer = true
-	} else {
-		m.readers++
-	}
-	close(waiter.ready)
-}
-
 // serverLease serializes replacement and closing of one server session while
 // allowing concurrent callers to use the current session.
 type serverLease struct {
-	mu                            contextRWMutex
+	mu                            contextlock.RWMutex
 	registry                      *leaseRegistry
 	name                          string
 	refs                          int
@@ -734,7 +598,7 @@ func (l *serverLease) lockContext(ctx context.Context, write bool) bool {
 		return false
 	}
 	serverLeaseHooks.callBeforeTryLock(l)
-	if !l.mu.lockContext(ctx, write) {
+	if !l.mu.LockContext(ctx, write) {
 		l.registry.release(l)
 		return false
 	}
@@ -2159,7 +2023,7 @@ func withMCPAdmissionFinalTurn(ctx context.Context, name string, guard config.MC
 		return err
 	}
 	runBeforeAdmissionTurn(name)
-	if !lifecycleMu.lockContext(ctx, true) {
+	if !lifecycleMu.LockContext(ctx, true) {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -2167,7 +2031,13 @@ func withMCPAdmissionFinalTurn(ctx context.Context, name string, guard config.MC
 	}
 	defer lifecycleMu.Unlock()
 	runBeforeAdmissionFinalValidate(name)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := guard.ValidateCurrent(); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 	return mutate()

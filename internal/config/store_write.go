@@ -172,18 +172,51 @@ func (s *ConfigStore) resolveConfigWriteTarget(path string) (configWriteTarget, 
 // The resolved physical path must nevertheless remain the one pinned before
 // locking; an alias retarget is rejected.
 func verifyConfigWriteTarget(target configWriteTarget) error {
+	return verifyConfigTarget(target)
+}
+
+func verifyConfigTarget(target configWriteTarget) error {
 	_, actual, err := readStableConfigFileOwned(target.selectedPath, target.owner, target.enforce)
+	return verifyConfigTargetBinding(target, actual, err)
+}
+
+func verifyConfigTargetBindingAfterLock(target configWriteTarget) error {
+	runConfigBeforeMCPTargetBindingVerificationHook(&target)
+	return verifyConfigTarget(target)
+}
+
+// verifyConfigTargetBinding confirms the physical path and discovery chain
+// selected before locking are still the ones reached through the logical
+// pathname. It deliberately ignores leaf bytes and inode churn: another
+// cooperating writer may have replaced the file while this caller waited.
+func verifyConfigTargetBinding(target configWriteTarget, actual reloadFileFingerprint, err error) error {
 	if err == nil {
+		if normalizeReloadPath(target.selectedPath) != target.path {
+			return errConfigCommitVerification
+		}
 		if target.expected.exists && !actual.identity.valid {
 			return errConfigCommitVerification
 		}
-		if normalizeReloadPath(target.selectedPath) != target.path {
+		if target.expected.exists && (actual.aliasChain != target.expected.aliasChain ||
+			actual.parentDiscovery != target.expected.parentDiscovery ||
+			actual.parentIdentity != target.expected.parentIdentity) {
+			return errConfigCommitVerification
+		}
+		if !target.expected.exists && target.expected.parentIdentity.valid &&
+			(actual.parentDiscovery != target.expected.parentDiscovery || actual.parentIdentity != target.expected.parentIdentity) {
 			return errConfigCommitVerification
 		}
 		return nil
 	}
 	if os.IsNotExist(err) && normalizeReloadPath(target.selectedPath) == target.path {
-		return nil
+		if !target.expected.exists && !target.expected.parentIdentity.valid {
+			return nil
+		}
+		if actual.aliasChain == target.expected.aliasChain &&
+			actual.parentDiscovery == target.expected.parentDiscovery &&
+			actual.parentIdentity == target.expected.parentIdentity {
+			return nil
+		}
 	}
 	if normalizeReloadPath(target.selectedPath) != target.path {
 		return errConfigCommitVerification

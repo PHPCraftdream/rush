@@ -7,8 +7,33 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/stretchr/testify/require"
 )
+
+func TestMCPAdmissionFinalTurnCancellationAfterAcquisitionReleasesLifecycle(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mcpInitTestHooks.Lock()
+	previous := mcpInitTestHooks.beforeAdmissionFinalValidate
+	mcpInitTestHooks.beforeAdmissionFinalValidate = func(string) { cancel() }
+	mcpInitTestHooks.Unlock()
+	defer func() {
+		mcpInitTestHooks.Lock()
+		mcpInitTestHooks.beforeAdmissionFinalValidate = previous
+		mcpInitTestHooks.Unlock()
+	}()
+
+	var mutated atomic.Bool
+	err := withMCPAdmissionFinalTurn(ctx, "canceled-after-acquisition", config.MCPAdmissionGuard{}, func() error {
+		mutated.Store(true)
+		return nil
+	})
+	require.ErrorIs(t, err, context.Canceled)
+	require.False(t, mutated.Load())
+	lifecycleMu.Lock()
+	lifecycleMu.Unlock()
+}
 
 func TestServerLeaseContentionUsesOneCancelableQueueWait(t *testing.T) {
 	lease := serverLeaseFor("queued-contention")
@@ -45,155 +70,6 @@ func TestServerLeaseContentionUsesOneCancelableQueueWait(t *testing.T) {
 
 	lease.Unlock()
 	require.Zero(t, leases.Len())
-}
-
-func TestContextRWMutexReadersJoinBeforeWriterQueue(t *testing.T) {
-	var lock contextRWMutex
-	lock.RLock()
-
-	readerQueued := make(chan struct{})
-	readerAcquired := make(chan struct{})
-	readerRelease := make(chan struct{})
-	lock.waitHook = func(write bool) {
-		if !write {
-			close(readerQueued)
-		}
-	}
-	go func() {
-		if !lock.lockContext(context.Background(), false) {
-			return
-		}
-		close(readerAcquired)
-		<-readerRelease
-		lock.RUnlock()
-	}()
-	select {
-	case <-readerAcquired:
-	case <-readerQueued:
-		t.Fatal("a reader queued behind an active reader")
-	case <-time.After(time.Second):
-		t.Fatal("second reader did not acquire")
-	}
-	close(readerRelease)
-	lock.RUnlock()
-}
-
-func TestContextRWMutexWriterQueueBlocksLaterReaders(t *testing.T) {
-	var lock contextRWMutex
-	lock.RLock()
-	writerQueued := make(chan struct{})
-	readerQueued := make(chan struct{})
-	var queuedOnce atomic.Int32
-	lock.waitHook = func(write bool) {
-		if write {
-			if queuedOnce.Add(1) == 1 {
-				close(writerQueued)
-			}
-			return
-		}
-		close(readerQueued)
-	}
-
-	writerAcquired := make(chan struct{})
-	go func() {
-		if lock.lockContext(context.Background(), true) {
-			close(writerAcquired)
-		}
-	}()
-	<-writerQueued
-	readerAcquired := make(chan struct{})
-	go func() {
-		if lock.lockContext(context.Background(), false) {
-			close(readerAcquired)
-			lock.RUnlock()
-		}
-	}()
-	<-readerQueued
-	lock.RUnlock()
-	select {
-	case <-writerAcquired:
-	case <-readerAcquired:
-		t.Fatal("reader bypassed a queued writer")
-	case <-time.After(time.Second):
-		t.Fatal("queued writer did not acquire")
-	}
-	select {
-	case <-readerAcquired:
-		t.Fatal("reader acquired while writer held the lock")
-	default:
-	}
-	lock.Unlock()
-	select {
-	case <-readerAcquired:
-	case <-time.After(time.Second):
-		t.Fatal("reader did not acquire after writer release")
-	}
-}
-
-func TestContextRWMutexCanceledWaiterPreservesNextGrant(t *testing.T) {
-	var lock contextRWMutex
-	lock.Lock()
-	firstQueued := make(chan struct{})
-	secondQueued := make(chan struct{})
-	var queued atomic.Int32
-	lock.waitHook = func(bool) {
-		switch queued.Add(1) {
-		case 1:
-			close(firstQueued)
-		case 2:
-			close(secondQueued)
-		}
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	firstDone := make(chan bool, 1)
-	go func() { firstDone <- lock.lockContext(ctx, true) }()
-	<-firstQueued
-	secondAcquired := make(chan struct{})
-	go func() {
-		if lock.lockContext(context.Background(), true) {
-			close(secondAcquired)
-		}
-	}()
-	<-secondQueued
-	cancel()
-	require.False(t, <-firstDone)
-	lock.Unlock()
-	select {
-	case <-secondAcquired:
-	case <-time.After(time.Second):
-		t.Fatal("next writer lost its grant after canceled waiter removal")
-	}
-	lock.Unlock()
-}
-
-func TestContextRWMutexMisusePanicsLikeRWMutex(t *testing.T) {
-	var lock contextRWMutex
-	require.Panics(t, lock.Unlock)
-	require.Panics(t, lock.RUnlock)
-}
-
-func TestContextRWMutexFastPathConstructsNoWaiter(t *testing.T) {
-	var lock contextRWMutex
-	var allocations atomic.Int32
-	lock.waiterAllocHook = func(bool) { allocations.Add(1) }
-
-	require.True(t, lock.lockContext(context.Background(), false))
-	lock.RUnlock()
-	require.True(t, lock.lockContext(context.Background(), true))
-	lock.Unlock()
-	require.Zero(t, allocations.Load())
-
-	lock.Lock()
-	queued := make(chan struct{})
-	lock.waitHook = func(bool) { close(queued) }
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan bool, 1)
-	go func() { done <- lock.lockContext(ctx, true) }()
-	<-queued
-	cancel()
-	require.False(t, <-done)
-	require.Equal(t, int32(1), allocations.Load())
-	lock.Unlock()
 }
 
 func TestRetirementReleaseQueuesExactlyOneBlockingClose(t *testing.T) {

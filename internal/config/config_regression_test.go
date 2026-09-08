@@ -5,12 +5,131 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
+
+func TestMCPAdmissionRejectsLogicalRetargetAfterSidecarResolution(t *testing.T) {
+	root := t.TempDir()
+	aPath := filepath.Join(root, "a", "rush.json")
+	bPath := filepath.Join(root, "b", "rush.json")
+	logicalPath := filepath.Join(root, "rush.json")
+	data := []byte(`{"mcp":{"server":{"type":"http","url":"http://same.example"}}}`)
+	require.NoError(t, os.MkdirAll(filepath.Dir(aPath), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Dir(bPath), 0o755))
+	require.NoError(t, os.WriteFile(aPath, data, 0o600))
+	require.NoError(t, os.WriteFile(bPath, data, 0o600))
+	if err := os.Symlink(aPath, logicalPath); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	store := newTestConfigStore(testStoreOpts{
+		config:         &Config{MCP: MCPs{"server": {Type: MCPHttp, URL: "http://same.example"}}},
+		globalDataPath: logicalPath,
+	})
+	snapshot := store.SnapshotMCPAdmission("server")
+	var retarget sync.Once
+	configTestHooks.Lock()
+	previous := configTestHooks.afterMCPResolveTarget
+	configTestHooks.afterMCPResolveTarget = func(target *configWriteTarget) {
+		if normalizeDiscoveryPath(target.selectedPath) != normalizeDiscoveryPath(logicalPath) {
+			return
+		}
+		retarget.Do(func() {
+			require.NoError(t, os.Remove(logicalPath))
+			require.NoError(t, os.Symlink(bPath, logicalPath))
+		})
+	}
+	configTestHooks.Unlock()
+	t.Cleanup(func() {
+		configTestHooks.Lock()
+		configTestHooks.afterMCPResolveTarget = previous
+		configTestHooks.Unlock()
+	})
+
+	var published bool
+	err := store.WithCurrentMCPAdmission(snapshot, "server", func(MCPAdmissionGuard) error {
+		published = true
+		return nil
+	})
+	require.ErrorIs(t, err, ErrMCPMutationStale)
+	require.False(t, published)
+
+	contender := newTestConfigStore(testStoreOpts{
+		config:         &Config{MCP: MCPs{"server": {Type: MCPHttp, URL: "http://same.example"}}},
+		globalDataPath: logicalPath,
+	})
+	require.NoError(t, contender.PersistMCPFieldsExact(ScopeGlobal, "server", map[string]any{
+		"url": "http://b.example",
+	}))
+	require.Equal(t, data, mustReadFile(t, aPath))
+	require.Contains(t, string(mustReadFile(t, bPath)), "http://b.example")
+}
+
+func TestVerifyConfigTargetBindingRejectsInvalidExistingIdentity(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rush.json")
+	aliasChain := [32]byte{1}
+	identity := configFileIdentity{device: 1, inode: 1, valid: true}
+	target := configWriteTarget{
+		path: path, selectedPath: path,
+		expected: reloadFileFingerprint{exists: true, identity: identity, aliasChain: aliasChain},
+	}
+	actual := target.expected
+	actual.identity = configFileIdentity{}
+
+	err := verifyConfigTargetBinding(target, actual, nil)
+	require.ErrorIs(t, err, errConfigCommitVerification)
+}
+
+func TestMCPAdmissionInvokesBindingVerifierAfterSidecarAcquisition(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "rush.json")
+	data := []byte(`{"mcp":{"server":{"type":"http","url":"http://same.example"}}}`)
+	require.NoError(t, os.WriteFile(path, data, 0o600))
+	store := newTestConfigStore(testStoreOpts{
+		config:         &Config{MCP: MCPs{"server": {Type: MCPHttp, URL: "http://same.example"}}},
+		globalDataPath: path,
+	})
+	snapshot := store.SnapshotMCPAdmission("server")
+	// Synchronize the white-box snapshot with the exact disk input so this
+	// oracle reaches the binding verifier rather than an earlier stale fence.
+	require.NoError(t, store.withMCPAdmissionLocks(func(files *mcpLockedFiles) error {
+		evaluation, err := store.evaluateMCPFiles(files)
+		if err != nil {
+			return err
+		}
+		input, ok := evaluation.mcpInputs["server"]
+		snapshot.MCPInput, snapshot.HasMCPInput = input, ok
+		return nil
+	}))
+
+	var verified bool
+	configTestHooks.Lock()
+	previous := configTestHooks.beforeMCPTargetBindingVerification
+	configTestHooks.beforeMCPTargetBindingVerification = func(target *configWriteTarget) {
+		verified = true
+		target.expected.aliasChain[0] ^= 0xff
+	}
+	configTestHooks.Unlock()
+	t.Cleanup(func() {
+		configTestHooks.Lock()
+		configTestHooks.beforeMCPTargetBindingVerification = previous
+		configTestHooks.Unlock()
+	})
+
+	var published bool
+	err := store.WithCurrentMCPAdmission(snapshot, "server", func(MCPAdmissionGuard) error {
+		published = true
+		return nil
+	})
+	require.True(t, verified)
+	require.ErrorIs(t, err, ErrMCPMutationStale)
+	require.False(t, published)
+}
 
 func TestMCPFieldsPublishConfigAndFingerprintInOneGeneration(t *testing.T) {
 	root := t.TempDir()

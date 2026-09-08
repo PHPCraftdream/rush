@@ -91,22 +91,25 @@ var configTestHooks struct {
 	afterCommitRename     func() error
 	afterCommitRenamePath func(string) error
 	// Test-only seam after a successful MCP commit.
-	afterMCPCommit     func(string)
-	beforeCommitRename func()
-	beforeMCPReconcile func(string, []byte)
-	acquireConfigLock  func(context.Context, string) (*session.FileLock, error)
-	releaseConfigLock  func(string, *session.FileLock) error
-	withConfigTimeout  func(context.Context, time.Duration) (context.Context, context.CancelFunc)
-	forceLinkNoReplace bool
-	renameNoReplace    func(int, string, int, string) error
-	renameatxNp        func(int, string, int, string, uint32) error
-	moveFileEx         func(*uint16, *uint16, uint32) error
-	setFileInformation func(uintptr, uint32, *byte, uint32) error
-	flushFileBuffers   func(uintptr) error
-	unlinkTemp         func(int, string) error
-	syncParent         func(string) error
-	syncParentFD       func(int) error
-	syncParentFile     func(*os.File) error
+	afterMCPCommit func(string)
+	// Test-only seam between target resolution and sidecar acquisition.
+	afterMCPResolveTarget              func(*configWriteTarget)
+	beforeMCPTargetBindingVerification func(*configWriteTarget)
+	beforeCommitRename                 func()
+	beforeMCPReconcile                 func(string, []byte)
+	acquireConfigLock                  func(context.Context, string) (*session.FileLock, error)
+	releaseConfigLock                  func(string, *session.FileLock) error
+	withConfigTimeout                  func(context.Context, time.Duration) (context.Context, context.CancelFunc)
+	forceLinkNoReplace                 bool
+	renameNoReplace                    func(int, string, int, string) error
+	renameatxNp                        func(int, string, int, string, uint32) error
+	moveFileEx                         func(*uint16, *uint16, uint32) error
+	setFileInformation                 func(uintptr, uint32, *byte, uint32) error
+	flushFileBuffers                   func(uintptr) error
+	unlinkTemp                         func(int, string) error
+	syncParent                         func(string) error
+	syncParentFD                       func(int) error
+	syncParentFile                     func(*os.File) error
 }
 
 func runConfigBeforeOpenHook(path string) {
@@ -166,6 +169,24 @@ func runConfigAfterMCPCommitHook(path string) {
 	configTestHooks.Unlock()
 	if hook != nil {
 		hook(path)
+	}
+}
+
+func runConfigAfterMCPResolveTargetHook(target *configWriteTarget) {
+	configTestHooks.Lock()
+	hook := configTestHooks.afterMCPResolveTarget
+	configTestHooks.Unlock()
+	if hook != nil {
+		hook(target)
+	}
+}
+
+func runConfigBeforeMCPTargetBindingVerificationHook(target *configWriteTarget) {
+	configTestHooks.Lock()
+	hook := configTestHooks.beforeMCPTargetBindingVerification
+	configTestHooks.Unlock()
+	if hook != nil {
+		hook(target)
 	}
 }
 

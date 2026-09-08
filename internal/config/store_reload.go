@@ -44,6 +44,8 @@ type reloadFileFingerprint struct {
 	discovery       [sha256.Size]byte
 	parentDiscovery [sha256.Size]byte
 	parentIdentity  configFileIdentity
+	// aliasChain excludes mutable regular-file metadata at the leaf.
+	aliasChain [sha256.Size]byte
 }
 
 var errStableReadUnstable = errors.New("config file remained unstable while reading")
@@ -74,6 +76,7 @@ func readStableConfigFileOwned(path string, expectedOwner int, enforceOwner bool
 					discovery:       beforeDiscovery,
 					parentDiscovery: configDiscoveryFingerprint(filepath.Dir(path)),
 					parentIdentity:  beforeParentIdentity,
+					aliasChain:      configAliasChainFingerprint(path),
 				}, err
 			}
 			return nil, reloadFileFingerprint{}, err
@@ -89,6 +92,7 @@ func readStableConfigFileOwned(path string, expectedOwner int, enforceOwner bool
 				discovery:       beforeDiscovery,
 				parentDiscovery: configDiscoveryFingerprint(filepath.Dir(path)),
 				parentIdentity:  beforeParentIdentity,
+				aliasChain:      configAliasChainFingerprint(path),
 			}, nil
 		}
 		owner, ownerKnown := configFileOwner(info)
@@ -147,6 +151,7 @@ func readStableConfigFileOwned(path string, expectedOwner int, enforceOwner bool
 			identity: identity, discovery: afterDiscovery,
 			parentDiscovery: configDiscoveryFingerprint(filepath.Dir(path)),
 			parentIdentity:  afterParentIdentity,
+			aliasChain:      configAliasChainFingerprint(path),
 		}, nil
 	}
 	return nil, reloadFileFingerprint{}, errStableReadUnstable
@@ -196,6 +201,53 @@ func configDiscoveryFingerprint(path string) [sha256.Size]byte {
 		if info.Mode()&os.ModeSymlink != 0 {
 			if target, readErr := os.Readlink(component); readErr == nil {
 				_, _ = io.WriteString(h, target)
+			}
+		}
+		_, _ = io.WriteString(h, "\x00")
+	}
+	return sha256.Sum256(h.Sum(nil))
+}
+
+// configAliasChainFingerprint records the lexical path and every directory or
+// symlink in its discovery chain. Metadata belonging only to a regular-file
+// leaf is omitted so a cooperating atomic writer may replace its inode while
+// retaining the same physical binding.
+func configAliasChainFingerprint(path string) [sha256.Size]byte {
+	h := sha256.New()
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		abs = filepath.Clean(path)
+	}
+	abs = filepath.Clean(abs)
+	var components []string
+	for current := abs; ; current = filepath.Dir(current) {
+		components = append(components, current)
+		parent := filepath.Dir(current)
+		if parent == current {
+			break
+		}
+	}
+	slices.Reverse(components)
+	for i, component := range components {
+		_, _ = io.WriteString(h, component)
+		_, _ = io.WriteString(h, "\x00")
+		info, statErr := os.Lstat(component)
+		if statErr != nil {
+			_, _ = io.WriteString(h, "missing:")
+			_, _ = io.WriteString(h, statErr.Error())
+			_, _ = io.WriteString(h, "\x00")
+			continue
+		}
+		isLeaf := i == len(components)-1
+		if isLeaf && info.Mode()&os.ModeSymlink == 0 {
+			_, _ = io.WriteString(h, "regular-leaf|")
+			_, _ = io.WriteString(h, info.Mode().String())
+		} else {
+			writeConfigDiscoveryInfo(h, info)
+			if info.Mode()&os.ModeSymlink != 0 {
+				if target, readErr := os.Readlink(component); readErr == nil {
+					_, _ = io.WriteString(h, target)
+				}
 			}
 		}
 		_, _ = io.WriteString(h, "\x00")
