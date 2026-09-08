@@ -49,6 +49,11 @@ const cleanupTimeout = 2 * time.Second
 // from wall-clock loop termination.
 var messageEventsClosedSeam func()
 
+// executeRunBeforeTurnLaunchSeam is a test-only hook called after the live
+// message subscription is installed and immediately before the turn starts.
+// nil in production.
+var executeRunBeforeTurnLaunchSeam func()
+
 // RunMode picks the output format for RunNonInteractive.
 type RunMode int
 
@@ -1223,9 +1228,16 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 		hookExitReason = "cancelled"
 		return nil, err
 	}
-	go runAgentTurnRecovered(ctx, sess.ID, prompt, runFn, done)
-
+	startTurn := func() {
+		if executeRunBeforeTurnLaunchSeam != nil {
+			executeRunBeforeTurnLaunchSeam()
+		}
+		go runAgentTurnRecovered(ctx, sess.ID, prompt, runFn, done)
+	}
+	// Subscribe before launching the turn. The message broker is live-only;
+	// a fast provider can publish and finish before a later subscriber exists.
 	messageEvents := app.Messages.Subscribe(ctx)
+	startTurn()
 	messageReadBytes := make(map[string]int)
 	seenToolCalls := make(map[string]bool)
 	toolCallCounts := make(map[string]int)    // name → count, for JSON output
@@ -1272,7 +1284,25 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 		if mode == RunModeJSON {
 			// Re-fetch the session row so the usage delta reflects
 			// the writes the agent made during the run.
-			freshSess, _ := app.Sessions.Get(ctx, sess.ID)
+			usageCtx, usageCancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
+			freshSess, usageErr := app.Sessions.Get(usageCtx, sess.ID)
+			usageCancel()
+			deltaTokens := int64(0)
+			deltaCost := float64(0)
+			if usageErr != nil {
+				slog.Warn("run: failed to read session usage for the JSON envelope; reporting zero deltas", "session", sess.ID, "err", usageErr)
+			} else {
+				deltaTokens = freshSess.PromptTokens + freshSess.CompletionTokens - tokensBefore
+				deltaCost = freshSess.Cost - costBefore
+				if deltaTokens < 0 {
+					slog.Warn("run: session token usage moved backwards; reporting zero delta", "session", sess.ID, "before", tokensBefore, "after", freshSess.PromptTokens+freshSess.CompletionTokens)
+					deltaTokens = 0
+				}
+				if deltaCost < 0 {
+					slog.Warn("run: session cost moved backwards; reporting zero delta", "session", sess.ID, "before", costBefore, "after", freshSess.Cost)
+					deltaCost = 0
+				}
+			}
 			// Fork patch (orchestrator UX): when the caller asked
 			// for JSON, defang the persistent "model wrapped its
 			// final JSON in a ```json fence and added prose" case
@@ -1340,8 +1370,8 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 			summary := buildRunResult(
 				sess.ID, finalTextOut, assistantNotes, finalReason, runErr, isCanceled,
 				toolCallCounts,
-				freshSess.PromptTokens+freshSess.CompletionTokens-tokensBefore,
-				freshSess.Cost-costBefore,
+				deltaTokens,
+				deltaCost,
 				time.Since(runStart),
 				finalErrTitle, finalErrDetails,
 				strippedBytes, stripErr, stripErrReason,
