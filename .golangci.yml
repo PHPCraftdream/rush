@@ -87,19 +87,7 @@ linters:
         linters:
           - revive
         text: 'file-length-limit: file length is'
-      - path: '^internal/config/store_mcp_transaction\.go$' # file-size-ratchet
-        linters:
-          - revive
-        text: 'file-length-limit: file length is'
       - path: '^internal/app/app_run\.go$' # file-size-ratchet
-        linters:
-          - revive
-        text: 'file-length-limit: file length is'
-      - path: '^internal/cmd/migrate\.go$' # file-size-ratchet
-        linters:
-          - revive
-        text: 'file-length-limit: file length is'
-      - path: '^internal/session/run_queue_drain_session\.go$' # file-size-ratchet
         linters:
           - revive
         text: 'file-length-limit: file length is'
@@ -111,39 +99,11 @@ linters:
         linters:
           - revive
         text: 'file-length-limit: file length is'
-      - path: '^internal/config/config\.go$' # file-size-ratchet
-        linters:
-          - revive
-        text: 'file-length-limit: file length is'
       - path: '^internal/agent/agent_cache_keepalive_test\.go$' # file-size-ratchet
         linters:
           - revive
         text: 'file-length-limit: file length is'
-      - path: '^internal/session/lock\.go$' # file-size-ratchet
-        linters:
-          - revive
-        text: 'file-length-limit: file length is'
-      - path: '^internal/server/handlers_agent\.go$' # file-size-ratchet
-        linters:
-          - revive
-        text: 'file-length-limit: file length is'
       - path: '^internal/server/p655_rerun_idset_regression_test\.go$' # file-size-ratchet
-        linters:
-          - revive
-        text: 'file-length-limit: file length is'
-      - path: '^internal/config/store_mcp\.go$' # file-size-ratchet
-        linters:
-          - revive
-        text: 'file-length-limit: file length is'
-      - path: '^internal/shell/background\.go$' # file-size-ratchet
-        linters:
-          - revive
-        text: 'file-length-limit: file length is'
-      - path: '^internal/agent/tools/grep\.go$' # file-size-ratchet
-        linters:
-          - revive
-        text: 'file-length-limit: file length is'
-      - path: '^internal/message/message\.go$' # file-size-ratchet
         linters:
           - revive
         text: 'file-length-limit: file length is'
