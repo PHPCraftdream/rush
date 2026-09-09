@@ -131,10 +131,13 @@ func (m *RWMutex) LockContext(ctx context.Context, write bool) bool {
 }
 
 func (m *RWMutex) grantLocked() {
-	if m.writer || m.readers != 0 || len(m.waiters) == 0 {
+	if m.writer || len(m.waiters) == 0 {
 		return
 	}
 	if m.waiters[0].write {
+		if m.readers != 0 {
+			return
+		}
 		w := m.waiters[0]
 		m.waiters = m.waiters[1:]
 		m.grantLockedWaiter(w)

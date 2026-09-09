@@ -2,6 +2,7 @@ package contextlock
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -20,6 +21,18 @@ func (c *cancelAtErrContext) Err() error {
 		return context.Canceled
 	}
 	return nil
+}
+
+func requireLockState(t *testing.T, lock *RWMutex, readers int, writer bool, waiters int, firstWaiterWrite *bool) {
+	t.Helper()
+	lock.mu.Lock()
+	defer lock.mu.Unlock()
+	require.Equal(t, readers, lock.readers)
+	require.Equal(t, writer, lock.writer)
+	require.Len(t, lock.waiters, waiters)
+	if firstWaiterWrite != nil {
+		require.Equal(t, *firstWaiterWrite, lock.waiters[0].write)
+	}
 }
 
 func TestCancellationWinsBeforeFastGrant(t *testing.T) {
@@ -147,6 +160,248 @@ func TestWriterQueueBlocksLaterReaders(t *testing.T) {
 	case <-readerAcquired:
 	case <-time.After(time.Second):
 		t.Fatal("reader did not acquire after writer release")
+	}
+}
+
+func TestCanceledWriterUnblocksQueuedReaders(t *testing.T) {
+	var lock RWMutex
+	lock.RLock()
+
+	writerQueued := make(chan struct{})
+	readerQueued := make(chan struct{})
+	lock.waitHook = func(write bool) {
+		if write {
+			close(writerQueued)
+			return
+		}
+		close(readerQueued)
+	}
+
+	writerCtx, cancelWriter := context.WithCancel(context.Background())
+	readerCtx, cancelReader := context.WithCancel(context.Background())
+	writerResult := make(chan bool, 1)
+	writerDone := make(chan struct{})
+	go func() {
+		defer close(writerDone)
+		writerResult <- lock.LockContext(writerCtx, true)
+	}()
+	<-writerQueued
+
+	readerRelease := make(chan struct{})
+	readerDone := make(chan struct{})
+	go func() {
+		defer close(readerDone)
+		if lock.LockContext(readerCtx, false) {
+			<-readerRelease
+			lock.RUnlock()
+		}
+	}()
+	<-readerQueued
+
+	var releaseReaderOnce sync.Once
+	releaseReader := func() {
+		releaseReaderOnce.Do(func() { close(readerRelease) })
+	}
+	r1Held := true
+	releaseR1 := func() {
+		if r1Held {
+			lock.RUnlock()
+			r1Held = false
+		}
+	}
+	writerResultRead := false
+	writerWon := false
+	t.Cleanup(func() {
+		cancelWriter()
+		cancelReader()
+		releaseReader()
+		releaseR1()
+		if writerResultRead && writerWon {
+			lock.Unlock()
+		}
+		<-writerDone
+		<-readerDone
+	})
+
+	cancelWriter()
+	writerWon = <-writerResult
+	writerResultRead = true
+	require.False(t, writerWon)
+	requireLockState(t, &lock, 2, false, 0, nil)
+
+	releaseReader()
+	releaseR1()
+	<-writerDone
+	<-readerDone
+}
+
+func TestQueuedWriterPreservesReaderFairness(t *testing.T) {
+	var lock RWMutex
+	lock.RLock()
+
+	writerQueued := make(chan struct{})
+	readerQueued := make(chan struct{})
+	lock.waitHook = func(write bool) {
+		if write {
+			close(writerQueued)
+			return
+		}
+		close(readerQueued)
+	}
+
+	writerRelease := make(chan struct{})
+	writerDone := make(chan struct{})
+	writerCtx, cancelWriter := context.WithCancel(context.Background())
+	go func() {
+		defer close(writerDone)
+		if lock.LockContext(writerCtx, true) {
+			<-writerRelease
+			lock.Unlock()
+		}
+	}()
+	<-writerQueued
+
+	readerCtx, cancelReader := context.WithCancel(context.Background())
+	readerRelease := make(chan struct{})
+	readerDone := make(chan struct{})
+	go func() {
+		defer close(readerDone)
+		if lock.LockContext(readerCtx, false) {
+			<-readerRelease
+			lock.RUnlock()
+		}
+	}()
+	<-readerQueued
+
+	var releaseWriterOnce sync.Once
+	releaseWriter := func() {
+		releaseWriterOnce.Do(func() { close(writerRelease) })
+	}
+	var releaseReaderOnce sync.Once
+	releaseReader := func() {
+		releaseReaderOnce.Do(func() { close(readerRelease) })
+	}
+	r1Held := true
+	releaseR1 := func() {
+		if r1Held {
+			lock.RUnlock()
+			r1Held = false
+		}
+	}
+	t.Cleanup(func() {
+		cancelWriter()
+		cancelReader()
+		releaseWriter()
+		releaseReader()
+		releaseR1()
+		<-writerDone
+		<-readerDone
+	})
+
+	releaseR1()
+	readerWaiter := false
+	requireLockState(t, &lock, 0, true, 1, &readerWaiter)
+
+	releaseWriter()
+	<-writerDone
+	requireLockState(t, &lock, 1, false, 0, nil)
+
+	releaseReader()
+	<-readerDone
+}
+
+func TestCanceledWriterRacesUnlock(t *testing.T) {
+	for i := 0; i < 100; i++ {
+		var lock RWMutex
+		lock.RLock()
+
+		writerQueued := make(chan struct{})
+		readerQueued := make(chan struct{})
+		lock.waitHook = func(write bool) {
+			if write {
+				close(writerQueued)
+				return
+			}
+			close(readerQueued)
+		}
+
+		writerCtx, cancelWriter := context.WithCancel(context.Background())
+		readerCtx, cancelReader := context.WithCancel(context.Background())
+		writerResult := make(chan bool, 1)
+		writerDone := make(chan struct{})
+		writerRelease := make(chan struct{})
+		go func() {
+			defer close(writerDone)
+			if lock.LockContext(writerCtx, true) {
+				writerResult <- true
+				<-writerRelease
+				lock.Unlock()
+				return
+			}
+			writerResult <- false
+		}()
+		<-writerQueued
+		readerRelease := make(chan struct{})
+		readerDone := make(chan struct{})
+		go func() {
+			defer close(readerDone)
+			if lock.LockContext(readerCtx, false) {
+				<-readerRelease
+				lock.RUnlock()
+			}
+		}()
+		<-readerQueued
+
+		var releaseWriterOnce sync.Once
+		releaseWriter := func() {
+			releaseWriterOnce.Do(func() { close(writerRelease) })
+		}
+		var releaseReaderOnce sync.Once
+		releaseReader := func() {
+			releaseReaderOnce.Do(func() { close(readerRelease) })
+		}
+		r1Held := true
+		t.Cleanup(func() {
+			cancelWriter()
+			cancelReader()
+			releaseWriter()
+			releaseReader()
+			if r1Held {
+				lock.RUnlock()
+			}
+			<-writerDone
+			<-readerDone
+		})
+
+		start := make(chan struct{})
+		var race sync.WaitGroup
+		race.Add(2)
+		go func() {
+			defer race.Done()
+			<-start
+			cancelWriter()
+		}()
+		go func() {
+			defer race.Done()
+			<-start
+			lock.RUnlock()
+		}()
+		close(start)
+		race.Wait()
+		r1Held = false
+
+		writerWon := <-writerResult
+		if writerWon {
+			readerWaiter := false
+			requireLockState(t, &lock, 0, true, 1, &readerWaiter)
+			releaseWriter()
+			<-writerDone
+		} else {
+			requireLockState(t, &lock, 1, false, 0, nil)
+		}
+		<-writerDone
+		releaseReader()
+		<-readerDone
 	}
 }
 
