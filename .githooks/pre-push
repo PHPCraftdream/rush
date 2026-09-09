@@ -233,16 +233,40 @@ bash .githooks/check_stale_model_slots.sh || fail "stale large/small model-slot 
 step "test files pair db.Connect/db.ConnectRead with db.Release (ref-counted pool contract)"
 bash .githooks/check_db_release_pairing.sh || fail "unpaired db.Connect/db.ConnectRead in a test file -- see output above"
 
+# The operator's file-size rule: no hand-written source file over 1000
+# lines -- a bigger file gets decomposed. Pre-existing debt ships under a
+# RATCHET allowlist (.githooks/file_size_allowlist.txt): a listed file
+# may stay over the limit but fails the moment it grows, and must be
+# removed from the list once it drops to the limit. Generated files are
+# skipped by content (go.dev/s/generatedcode marker in the first 10
+# lines). .golangci.yml enforces the same limit a second way, via
+# revive's file-length-limit rule with exclusions mirroring the
+# allowlist; the selftest below fails while those two disagree.
+step "no hand-written source file over 1000 lines (ratcheted allowlist)"
+bash .githooks/check_file_size.sh || fail "file-size ratchet violated -- see output above"
+
+step "file-size guard self-test (throwaway repos + allowlist <-> .golangci.yml bijection)"
+bash .githooks/check_file_size_selftest.sh || fail "file-size guard self-test failed"
+
 # The web UI's typecheck. rsbuild (pnpm build) does NOT check types, so
 # without this nothing in the project does — which is how five errors,
 # including a required prop that silently changed how tool groups render,
 # sat in the tree unnoticed. Skipped when the dependencies are not
 # installed: a Go-only change should not have to run pnpm install first.
+#
+# oxlint rides the same guard, for the same reason and with the same
+# escape hatch. Its `lint` script pins --max-warnings to the measured
+# baseline: oxlint exits 0 on warnings by default, so without that flag
+# the step would pass no matter how many findings piled up. The number in
+# web/package.json may only go down.
 if [ -d web/node_modules ]; then
 	step "pnpm typecheck (web)"
 	(cd web && pnpm typecheck) || fail "web typecheck failed"
+
+	step "pnpm lint (web, oxlint — max-lines 1000 + warning ratchet)"
+	(cd web && pnpm lint) || fail "web lint failed -- fix the findings, or lower nothing: the ratchet only goes down"
 else
-	printf '\033[33m⚠ skipping the web typecheck — web/node_modules is absent (run: cd web && pnpm install)\033[0m\n'
+	printf '\033[33m⚠ skipping the web typecheck and lint — web/node_modules is absent (run: cd web && pnpm install)\033[0m\n'
 fi
 
 # run_test_segment: same first-attempt/parse-failed-packages/retry-once

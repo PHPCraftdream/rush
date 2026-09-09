@@ -3,7 +3,7 @@ import { useStore } from "@nanostores/react";
 import { X, Undo2 } from "lucide-react";
 import { $config, clearSessionModelSlot } from "../store";
 import { ws } from "../ws";
-import { buildProviderGroups, buildModelList, type ModelItem } from "./ModelSelector";
+import { buildModelList, type ModelItem } from "./ModelSelector";
 import type { Session, WSMessage } from "../types";
 import { effortLevelsFor, clampEffort } from "../effort";
 
@@ -297,11 +297,6 @@ export function ScopedModelsModal({ onClose, activeSession }: { onClose: () => v
   const [scopedModels, setScopedModels] = useState<ScopedModelsWire | null>(null);
 
   const allModels = useMemo(() => buildModelList(config), [config]);
-  // Providers without an enabled/API-key-set state are still filtered out by
-  // buildProviderGroups already (CLI providers excepted) — reuse the same
-  // list ModelSelector shows so this modal never offers a model that can't
-  // actually run.
-  useMemo(() => buildProviderGroups(config), [config]);
 
   const refresh = useCallback(() => {
     ws.send("get_scoped_models", {});

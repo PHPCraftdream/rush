@@ -123,29 +123,29 @@ export const ToolActivityGroup = memo(function ToolActivityGroup({ items, live, 
   // its own rendering and lives outside the row schema. Same for the matching
   // tool_result if any.
   const { actions, rawAgentParts } = useMemo(() => {
-    const actions: ActionItem[] = [];
-    const rawAgentParts: { part: ContentPart; idx: number; messageID?: string }[] = [];
+    const actionsOut: ActionItem[] = [];
+    const rawAgentPartsOut: { part: ContentPart; idx: number; messageID?: string }[] = [];
     const indexByCallID = new Map<string, number>();
-    for (const { part, idx, createdAt, messageID, partIndex, model, effort } of items) {
+    for (const { part, idx, createdAt, messageID, partIndex, model: partModel, effort: partEffort } of items) {
       if (part.type === "thinking") {
         const text = (part as { type: "thinking"; Thinking: string }).Thinking ?? "";
         // Per-row model/effort from the part's own source message (burst path);
         // falls back to group-level props (single-message path via AssistantContent).
-        actions.push({ kind: "thinking", text, idx, key: `think-${idx}`, createdAt, messageID, partIndex, model, effort });
+        actionsOut.push({ kind: "thinking", text, idx, key: `think-${idx}`, createdAt, messageID, partIndex, model: partModel, effort: partEffort });
       } else if (part.type === "tool_call") {
-        if (part.Name === "agent") { rawAgentParts.push({ part, idx, messageID }); continue; }
+        if (part.Name === "agent") { rawAgentPartsOut.push({ part, idx, messageID }); continue; }
         const a: ActionItem = { kind: "tool", callPart: part, idx, key: `call-${part.ID}`, createdAt };
-        indexByCallID.set(part.ID, actions.length);
-        actions.push(a);
+        indexByCallID.set(part.ID, actionsOut.length);
+        actionsOut.push(a);
       } else if (part.type === "tool_result") {
-        if (part.Name === "agent") { rawAgentParts.push({ part, idx, messageID }); continue; }
+        if (part.Name === "agent") { rawAgentPartsOut.push({ part, idx, messageID }); continue; }
         const pos = indexByCallID.get(part.ToolCallID);
         if (pos !== undefined) {
-          const slot = actions[pos];
+          const slot = actionsOut[pos];
           if (slot.kind === "tool") slot.resultPart = part;
           // intentionally keep the earlier createdAt: that's when the action began
         } else {
-          actions.push({ kind: "tool", resultPart: part, idx, key: `res-${part.ToolCallID}-${idx}`, createdAt });
+          actionsOut.push({ kind: "tool", resultPart: part, idx, key: `res-${part.ToolCallID}-${idx}`, createdAt });
         }
       }
     }
@@ -153,7 +153,7 @@ export const ToolActivityGroup = memo(function ToolActivityGroup({ items, live, 
     // job_output polling). Keep the LAST occurrence (freshest result) and
     // annotate it with repeatCount so the UI can show "×N".
     const deduped: ActionItem[] = [];
-    for (const a of actions) {
+    for (const a of actionsOut) {
       const prev = deduped[deduped.length - 1];
       if (
         prev &&
@@ -172,7 +172,7 @@ export const ToolActivityGroup = memo(function ToolActivityGroup({ items, live, 
         deduped.push(a);
       }
     }
-    return { actions: deduped, rawAgentParts };
+    return { actions: deduped, rawAgentParts: rawAgentPartsOut };
   }, [items]);
 
   const tally = useMemo(() => {

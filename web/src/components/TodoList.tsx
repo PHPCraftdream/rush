@@ -318,7 +318,7 @@ export function TodoList({ sessionID, todos }: { sessionID: string; todos: Todo[
               todo={t}
               index={i}
               total={todos.length}
-              onChange={(t) => changeTodo(i, t)}
+              onChange={(next) => changeTodo(i, next)}
               onDelete={() => deleteTodo(i)}
               onMove={(dir) => moveTodo(i, dir)}
             />

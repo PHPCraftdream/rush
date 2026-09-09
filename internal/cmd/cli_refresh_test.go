@@ -86,6 +86,12 @@ func TestCLIRefresh_LocalReplacesLegacyClaudeAndCodexFiles(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(wrushSkill), "dedicated git worktree")
 
+	_, err = os.Stat(filepath.Join(dir, ".agents", "skills", "wcrush", "SKILL.md"))
+	require.NoError(t, err)
+	wcrushSkill, err := os.ReadFile(filepath.Join(dir, ".agents", "skills", "wcrush", "SKILL.md"))
+	require.NoError(t, err)
+	assert.Contains(t, string(wcrushSkill), "sibling `../wrush/SKILL.md` file")
+
 	// Gemini/grok/qwen also got installed (all 5 run unconditionally).
 	_, err = os.Stat(filepath.Join(dir, ".gemini", "commands", "rush.toml"))
 	require.NoError(t, err)
@@ -134,7 +140,7 @@ func TestCLIRefresh_GlobalMode(t *testing.T) {
 	_, err = os.Stat(qwenNew)
 	require.NoError(t, err)
 
-	for _, name := range []string{"rush", "rush-fallback", "wrush"} {
+	for _, name := range []string{"rush", "rush-fallback", "wrush", "wcrush"} {
 		_, err = os.Stat(filepath.Join(home, ".agents", "skills", name, "SKILL.md"))
 		require.NoError(t, err, "global Codex %s Skill should be refreshed", name)
 	}
@@ -193,6 +199,8 @@ func TestCLIRefresh_RecursiveGatesOnAnyOfTheFiveDirs(t *testing.T) {
 	_, err := os.Stat(filepath.Join(project, ".agents", "skills", "rush", "SKILL.md"))
 	require.NoError(t, err)
 	_, err = os.Stat(filepath.Join(project, ".agents", "skills", "wrush", "SKILL.md"))
+	require.NoError(t, err)
+	_, err = os.Stat(filepath.Join(project, ".agents", "skills", "wcrush", "SKILL.md"))
 	require.NoError(t, err)
 	// Claude wasn't previously installed here, but since the directory
 	// qualified via the codex gate, all 5 tools run unconditionally.

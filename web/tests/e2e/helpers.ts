@@ -30,7 +30,7 @@ export async function cleanupE2ESessions(page: Page) {
 
   for (const session of sessionsList) {
     await page.evaluate((id: string) => {
-      const ws = ((window as unknown) as Record<string, unknown>)["__mockWS"] as WebSocket);
+      const ws = ((window as unknown) as Record<string, unknown>)["__mockWS"] as WebSocket;
       if (ws && ws.readyState === 1) {
         ws.send(JSON.stringify({ type: "delete_session", payload: { sessionID: id } }));
       }

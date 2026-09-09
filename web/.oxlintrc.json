@@ -1,0 +1,48 @@
+// Oxlint config. `max-lines` is an error (hard rule); everything else is a
+// warning held by a ratchet: package.json `lint` runs with --max-warnings=101,
+// the measured baseline. Warnings may only go down — lower the number as
+// findings are fixed, never raise it.
+{
+  "plugins": ["react", "typescript", "jsx-a11y"],
+  // Enable react-hooks rules: in this oxlint version react-hooks rules ship inside the `react` plugin.
+  "categories": {
+    "correctness": "warn",
+    "suspicious": "warn",
+    "perf": "warn"
+  },
+  "rules": {
+    // False positive: project uses the automatic JSX runtime (React 19 / rsbuild),
+    // so `React` never needs to be in scope.
+    "react/react-in-jsx-scope": "off",
+    // Underscore-prefixed names are intentional: build-time define globals
+    // (env.d.ts, injected by rsbuild), private-by-convention store fields,
+    // and test globals injected by the Playwright fixtures.
+    "eslint/no-underscore-dangle": [
+      "warn",
+      {
+        "allow": [
+          "__GIT_COMMIT__",
+          "__GIT_COUNT__",
+          "__GIT_BRANCH__",
+          "_connect",
+          "_msgPartTracker",
+          "_queueIDCounter",
+          "__wsSent",
+          "__wsDials",
+          "__wsReceived"
+        ]
+      }
+    ],
+    // Raw line metric (same as wc -l), mirrors Go-side revive file-length-limit and the shell guard.
+    "max-lines": ["error", { "max": 1000, "skipBlankLines": false, "skipComments": false }]
+  },
+  "overrides": [
+    {
+      // Ratchet removed in task #927 when src/store.ts is split.
+      "files": ["src/store.ts"],
+      "rules": {
+        "max-lines": "off"
+      }
+    }
+  ]
+}

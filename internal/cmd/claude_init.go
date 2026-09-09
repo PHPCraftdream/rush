@@ -50,6 +50,19 @@ var claudeFallbackCommandTemplate string
 //go:embed claude_wrush_command.md
 var claudeWrushCommandTemplate string
 
+// claudeWcrushCommandTemplate is the canonical /wcrush slash-command body
+// minus the sentinel marker. /wcrush is /wrush with one added hard rule:
+// the sub-agent never runs the tests — phase 1 writes and statically
+// verifies, phase 2 runs the suites on the orchestrator's explicit
+// permission in the same session. Everything else is inherited by pointing
+// at wrush.md in the same directory. Same rationale as the other
+// templates: kept in a sibling .md file, reuses the shared
+// claudeSlashCommandSentinel (ownership checks are scoped per filename,
+// wcrush.md here).
+//
+//go:embed claude_wcrush_command.md
+var claudeWcrushCommandTemplate string
+
 // claudeInitBlockPattern matches any version of the legacy inserted block —
 // `<!-- crush-claude-init:v1 --> … <!-- /crush-claude-init -->`.
 // Kept around because `claude-init` still runs it on existing CLAUDE.md
@@ -80,8 +93,8 @@ func resolveCommandsDir(cwd string, global bool) (string, error) {
 
 var claudeInitCmd = &cobra.Command{
 	Use:   "claude-init",
-	Short: "Install the /rush, /rush-fallback and /wrush slash-commands and strip legacy CLAUDE.md block",
-	Long: `Set up rush's ` + "`/rush`" + `, ` + "`/rush-fallback`" + ` and ` + "`/wrush`" + ` slash-commands in
+	Short: "Install the /rush, /rush-fallback, /wrush and /wcrush slash-commands and strip legacy CLAUDE.md block",
+	Long: `Set up rush's ` + "`/rush`" + `, ` + "`/rush-fallback`" + `, ` + "`/wrush`" + ` and ` + "`/wcrush`" + ` slash-commands in
 Claude Code.
 
 The slash-command files are written to ` + "`~/.claude/commands/`" + ` by default
@@ -98,21 +111,25 @@ Concretely:
      ` + "`/rush`" + ` except it always runs the delegation inside a dedicated
      git worktree instead of the primary checkout, cleaning up (or
      merging back) once the work is verified.
+  4. Write ` + "`.claude/commands/wcrush.md`" + ` — ` + "`/wcrush`" + `, identical to
+     ` + "`/wrush`" + ` except the sub-agent never runs the tests: phase 1
+     writes and statically verifies, phase 2 runs the suites on the
+     orchestrator's explicit permission.
 
      Each file is skipped (with a warning) if it exists without our
      sentinel — we never overwrite a file we don't own.
 
-  4. In local mode only: strip any pre-existing crush-claude-init block
+  5. In local mode only: strip any pre-existing crush-claude-init block
      from ` + "`CLAUDE.md`" + ` (any version v1..vN). If the file becomes empty
      it is removed.
 
 ` + "`claude-init`" + ` no longer writes anything into ` + "`CLAUDE.md`" + `. Delegation is
-explicit-only — invoke ` + "`/rush <task>`" + ` or ` + "`/wrush <task>`" + ` when you want it.
+explicit-only — invoke ` + "`/rush <task>`" + `, ` + "`/wrush <task>`" + ` or ` + "`/wcrush <task>`" + ` when you want it.
 
 For per-model commands, agents and skills, use ` + "`cah install`" + ` from the
 cc-arch-hands repo.`,
 	Example: `
-# Install / refresh the /rush, /rush-fallback and /wrush slash-commands globally — the default
+# Install / refresh the /rush, /rush-fallback, /wrush and /wcrush slash-commands globally — the default
 rush claude-init
 
 # Install into the current project instead
@@ -162,6 +179,10 @@ rush claude-init --cwd /path/to/project
 		// Install / refresh the /wrush slash-command.
 		if err := writeWrushCommandToDir(cmdDir); err != nil {
 			return fmt.Errorf("wrush slash command: %w", err)
+		}
+		// Install / refresh the /wcrush slash-command.
+		if err := writeWcrushCommandToDir(cmdDir); err != nil {
+			return fmt.Errorf("wcrush slash command: %w", err)
 		}
 		return nil
 	},
@@ -289,6 +310,36 @@ func writeWrushCommandToDir(dir string) error {
 // git-worktree isolation described in the template itself.
 func claudeWrushCommandContent() string {
 	return claudeSlashCommandSentinel + "\n" + claudeWrushCommandTemplate
+}
+
+func writeWcrushCommandToDir(dir string) error {
+	path := filepath.Join(dir, "wcrush.md")
+	if data, err := os.ReadFile(path); err == nil {
+		if !strings.Contains(string(data), claudeSlashCommandSentinel) {
+			fmt.Fprintf(os.Stderr, "warning: %s exists but does not contain our sentinel — skipping (someone else owns that file)\n", path)
+			return nil
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("read %s: %w", path, err)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", dir, err)
+	}
+	if err := os.WriteFile(path, []byte(claudeWcrushCommandContent()), 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	fmt.Fprintf(os.Stderr, "wrote %s\n", path)
+	return nil
+}
+
+// claudeWcrushCommandContent returns the body of `.claude/commands/wcrush.md`.
+// Sentinel marker is prepended so claude-del can recognise files we own
+// without parsing content. Triggered ONLY by an explicit `/wcrush <task>`
+// from the operator — same trigger discipline as /wrush, plus the
+// mandatory two-phase (write now, verify later) contract described in
+// the template itself.
+func claudeWcrushCommandContent() string {
+	return claudeSlashCommandSentinel + "\n" + claudeWcrushCommandTemplate
 }
 
 func init() {

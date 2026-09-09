@@ -84,7 +84,7 @@ func TestCodexInit_GlobalScopeCreatesAllDelegationSkills(t *testing.T) {
 	require.NoError(t, cmd.ParseFlags([]string{"--global"}))
 	require.NoError(t, codexInitCmd.RunE(cmd, nil))
 
-	for _, name := range []string{"rush", "rush-fallback", "wrush"} {
+	for _, name := range []string{"rush", "rush-fallback", "wrush", "wcrush"} {
 		_, err := os.Stat(filepath.Join(home, ".agents", "skills", name, "SKILL.md"))
 		require.NoError(t, err, "global %s Skill should be installed", name)
 	}
@@ -124,6 +124,24 @@ func TestCodexInit_CreatesWrushSkillFromCanonicalTemplate(t *testing.T) {
 	assert.Contains(t, got, "sibling `../rush/SKILL.md` file")
 }
 
+func TestCodexInit_CreatesWcrushSkillFromCanonicalTemplate(t *testing.T) {
+	dir := t.TempDir()
+	runCodexInitInDir(t, dir)
+
+	skillPath := filepath.Join(dir, ".agents", "skills", "wcrush", "SKILL.md")
+	bts, err := os.ReadFile(skillPath)
+	require.NoError(t, err)
+	assertCodexSkillFrontmatter(t, bts, "wcrush", claudeWcrushCommandTemplate)
+	got := string(bts)
+	assert.Contains(t, got, claudeSlashCommandSentinel)
+	assert.Contains(t, got, "$ARGUMENTS")
+	assert.Contains(t, got, "name: wcrush")
+	assert.Contains(t, got, "## Mandatory: two phases")
+	assert.NotContains(t, got, "`wrush.md` file in this")
+	assert.NotContains(t, got, "rush.md")
+	assert.Contains(t, got, "sibling `../wrush/SKILL.md` file")
+}
+
 func TestCodexInit_SlashCommandOverwritesWithSentinel(t *testing.T) {
 	dir := t.TempDir()
 	runCodexInitInDir(t, dir)
@@ -150,6 +168,20 @@ func TestCodexInit_WrushOverwritesWithSentinel(t *testing.T) {
 	assert.NotContains(t, string(got), "old content")
 }
 
+func TestCodexInit_WcrushOverwritesWithSentinel(t *testing.T) {
+	dir := t.TempDir()
+	runCodexInitInDir(t, dir)
+	skillPath := filepath.Join(dir, ".agents", "skills", "wcrush", "SKILL.md")
+	require.NoError(t, os.MkdirAll(filepath.Dir(skillPath), 0o755))
+	require.NoError(t, os.WriteFile(skillPath, []byte(claudeSlashCommandSentinel+"\nold content\n"), 0o644))
+
+	runCodexInitInDir(t, dir)
+	got, err := os.ReadFile(skillPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(got), "## Mandatory: two phases")
+	assert.NotContains(t, string(got), "old content")
+}
+
 func TestCodexInit_MigratesSentinelFirstOwnedSkills(t *testing.T) {
 	dir := t.TempDir()
 	skillsDir := filepath.Join(dir, ".agents", "skills")
@@ -160,6 +192,7 @@ func TestCodexInit_MigratesSentinelFirstOwnedSkills(t *testing.T) {
 		{name: "rush", template: claudeSlashCommandTemplate},
 		{name: "rush-fallback", template: claudeFallbackCommandTemplate},
 		{name: "wrush", template: claudeWrushCommandTemplate},
+		{name: "wcrush", template: claudeWcrushCommandTemplate},
 	}
 	for _, test := range tests {
 		path := filepath.Join(skillsDir, test.name, "SKILL.md")
@@ -221,6 +254,22 @@ func TestCodexInit_SlashCommandSkipsWithoutSentinel(t *testing.T) {
 func TestCodexInit_WrushSkipsWithoutSentinel(t *testing.T) {
 	dir := t.TempDir()
 	skillPath := filepath.Join(dir, ".agents", "skills", "wrush", "SKILL.md")
+	require.NoError(t, os.MkdirAll(filepath.Dir(skillPath), 0o755))
+	require.NoError(t, os.WriteFile(skillPath, []byte("someone else's file"), 0o644))
+
+	stderr := captureStderr(t, func() {
+		runCodexInitInDir(t, dir)
+	})
+
+	assert.Contains(t, stderr, "does not contain our sentinel")
+	bts, err := os.ReadFile(skillPath)
+	require.NoError(t, err)
+	assert.Equal(t, "someone else's file", string(bts))
+}
+
+func TestCodexInit_WcrushSkipsWithoutSentinel(t *testing.T) {
+	dir := t.TempDir()
+	skillPath := filepath.Join(dir, ".agents", "skills", "wcrush", "SKILL.md")
 	require.NoError(t, os.MkdirAll(filepath.Dir(skillPath), 0o755))
 	require.NoError(t, os.WriteFile(skillPath, []byte("someone else's file"), 0o644))
 
@@ -302,6 +351,36 @@ func TestCodexDel_RefusesWrushWithoutSentinel(t *testing.T) {
 	assert.Equal(t, "not ours", string(bts))
 }
 
+func TestCodexDel_RemovesWcrushWithSentinel(t *testing.T) {
+	dir := t.TempDir()
+	skillPath := filepath.Join(dir, ".agents", "skills", "wcrush", "SKILL.md")
+	require.NoError(t, os.MkdirAll(filepath.Dir(skillPath), 0o755))
+	require.NoError(t, os.WriteFile(skillPath, []byte(claudeSlashCommandSentinel+"\nwcrush content\n"), 0o644))
+
+	runCodexDelInDir(t, dir)
+
+	_, err := os.Stat(skillPath)
+	assert.True(t, os.IsNotExist(err), "wcrush skill should be removed when it has our sentinel")
+	_, err = os.Stat(filepath.Dir(skillPath))
+	assert.True(t, os.IsNotExist(err), "now-empty wcrush skill directory should be removed")
+}
+
+func TestCodexDel_RefusesWcrushWithoutSentinel(t *testing.T) {
+	dir := t.TempDir()
+	skillPath := filepath.Join(dir, ".agents", "skills", "wcrush", "SKILL.md")
+	require.NoError(t, os.MkdirAll(filepath.Dir(skillPath), 0o755))
+	require.NoError(t, os.WriteFile(skillPath, []byte("not ours"), 0o644))
+
+	stderr := captureStderr(t, func() {
+		runCodexDelInDir(t, dir)
+	})
+
+	assert.Contains(t, stderr, "refusing to delete")
+	bts, err := os.ReadFile(skillPath)
+	require.NoError(t, err)
+	assert.Equal(t, "not ours", string(bts))
+}
+
 func TestCodexDel_IdempotentOnSecondRun(t *testing.T) {
 	dir := t.TempDir()
 	runCodexInitInDir(t, dir)
@@ -352,6 +431,12 @@ func TestCodexDel_RemovesLegacyPrerenameInstall(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Dir(wrushPath), 0o755))
 	require.NoError(t, os.WriteFile(wrushPath, []byte(wrushContent), 0o644))
 
+	// Seed wcrush/SKILL.md with new sentinel
+	wcrushPath := filepath.Join(skillsDir, "wcrush", "SKILL.md")
+	wcrushContent := "<!-- rush-slash-command:v1 -->\nnew wcrush skill\n"
+	require.NoError(t, os.MkdirAll(filepath.Dir(wcrushPath), 0o755))
+	require.NoError(t, os.WriteFile(wcrushPath, []byte(wcrushContent), 0o644))
+
 	// Seed a foreign crush/SKILL.md WITHOUT any sentinel - should survive
 	foreignCrushPath := filepath.Join(skillsDir, "foreign-crush", "SKILL.md")
 	foreignContent := "This is a foreign skill without our sentinel\n"
@@ -378,6 +463,9 @@ func TestCodexDel_RemovesLegacyPrerenameInstall(t *testing.T) {
 
 	_, err = os.Stat(wrushPath)
 	assert.True(t, os.IsNotExist(err), "wrush/SKILL.md with new sentinel should be removed")
+
+	_, err = os.Stat(wcrushPath)
+	assert.True(t, os.IsNotExist(err), "wcrush/SKILL.md with new sentinel should be removed")
 
 	// Foreign skill without sentinel should survive
 	foreignData, err := os.ReadFile(foreignCrushPath)

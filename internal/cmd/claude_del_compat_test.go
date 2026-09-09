@@ -101,3 +101,43 @@ func TestClaudeDel_PreservesForeignFileAtLegacyPath(t *testing.T) {
 	assert.Contains(t, stderr, "crush.md")
 	assert.Contains(t, stderr, "missing sentinel")
 }
+
+// TestClaudeDel_RemovesWcrushCommandWithSentinel verifies that claude-del
+// removes a wcrush.md file that carries our sentinel.
+func TestClaudeDel_RemovesWcrushCommandWithSentinel(t *testing.T) {
+	dir := t.TempDir()
+	wcrushPath := filepath.Join(dir, ".claude", "commands", "wcrush.md")
+	require.NoError(t, os.MkdirAll(filepath.Dir(wcrushPath), 0o755))
+	require.NoError(t, os.WriteFile(wcrushPath, []byte("<!-- rush-slash-command:v1 -->\nwcrush command\n"), 0o644))
+
+	stderr := captureStderr(t, func() {
+		require.NoError(t, runClaudeDel(dir))
+	})
+
+	_, err := os.Stat(wcrushPath)
+	assert.True(t, os.IsNotExist(err), "wcrush.md with our sentinel should be removed")
+	assert.Contains(t, stderr, "removed")
+	assert.Contains(t, stderr, "wcrush.md")
+}
+
+// TestClaudeDel_PreservesForeignFileAtWcrushPath verifies that claude-del
+// refuses to delete a foreign file at the wcrush.md path if it doesn't
+// contain our sentinel.
+func TestClaudeDel_PreservesForeignFileAtWcrushPath(t *testing.T) {
+	dir := t.TempDir()
+	wcrushPath := filepath.Join(dir, ".claude", "commands", "wcrush.md")
+	require.NoError(t, os.MkdirAll(filepath.Dir(wcrushPath), 0o755))
+	foreignContent := "This is a foreign file without our sentinel\n"
+	require.NoError(t, os.WriteFile(wcrushPath, []byte(foreignContent), 0o644))
+
+	stderr := captureStderr(t, func() {
+		require.NoError(t, runClaudeDel(dir))
+	})
+
+	foreignData, err := os.ReadFile(wcrushPath)
+	require.NoError(t, err)
+	assert.Equal(t, foreignContent, string(foreignData), "foreign wcrush.md without sentinel should survive")
+	assert.Contains(t, stderr, "refusing to delete")
+	assert.Contains(t, stderr, "wcrush.md")
+	assert.Contains(t, stderr, "missing sentinel")
+}

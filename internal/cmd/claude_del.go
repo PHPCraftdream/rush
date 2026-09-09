@@ -11,16 +11,17 @@ import (
 
 var claudeDelCmd = &cobra.Command{
 	Use:   "claude-del",
-	Short: "Remove the /rush, /rush-fallback and /wrush slash-commands and strip legacy CLAUDE.md block",
-	Long: `Undo ` + "`rush claude-init`" + `: remove the /rush, /rush-fallback and /wrush
+	Short: "Remove the /rush, /rush-fallback, /wrush and /wcrush slash-commands and strip legacy CLAUDE.md block",
+	Long: `Undo ` + "`rush claude-init`" + `: remove the /rush, /rush-fallback, /wrush and /wcrush
 slash-commands and strip any crush-claude-init block from CLAUDE.md.
 
 Only files that carry our sentinel are removed — foreign files with the
 same name are left alone with a warning.
 
 This also removes legacy crush.md and crush-fallback.md files from a
-pre-rename install (if they contain the legacy sentinel). /wrush has no
-pre-rename legacy name, since it did not exist before the rename.
+pre-rename install (if they contain the legacy sentinel). /wrush and
+/wcrush have no pre-rename legacy name, since they did not exist before
+the rename.
 
 Default is --global (~/.claude/commands/). Use --local (or --cwd, which
 implies it) to target the current project's .claude/commands/ instead.
@@ -77,7 +78,10 @@ rush claude-del --cwd /path/to/project
 		if err := removeFallbackCommandFromDir(cmdDir); err != nil {
 			return err
 		}
-		return removeWrushCommandFromDir(cmdDir)
+		if err := removeWrushCommandFromDir(cmdDir); err != nil {
+			return err
+		}
+		return removeWcrushCommandFromDir(cmdDir)
 	},
 }
 
@@ -94,7 +98,10 @@ func runClaudeDel(cwd string) error {
 	if err := removeFallbackCommandFromDir(cmdDir); err != nil {
 		return err
 	}
-	return removeWrushCommandFromDir(cmdDir)
+	if err := removeWrushCommandFromDir(cmdDir); err != nil {
+		return err
+	}
+	return removeWcrushCommandFromDir(cmdDir)
 }
 
 const (
@@ -139,6 +146,13 @@ func removeFallbackCommandFromDir(dir string) error {
 // crush->rush rename.
 func removeWrushCommandFromDir(dir string) error {
 	return removeFileIfOurs(dir, "wrush.md")
+}
+
+// removeWcrushCommandFromDir removes wcrush.md from the directory if it
+// contains our sentinel. No legacy pre-rename name: /wcrush postdates the
+// crush->rush rename.
+func removeWcrushCommandFromDir(dir string) error {
+	return removeFileIfOurs(dir, "wcrush.md")
 }
 
 // removeFileIfOurs deletes the file at dir/name if it contains either the

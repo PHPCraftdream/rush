@@ -355,6 +355,70 @@ func TestClaudeInit_WrushCommandSkipsWithoutSentinel(t *testing.T) {
 	assert.Equal(t, "someone else's file", string(bts))
 }
 
+func TestClaudeInit_CreatesWcrushCommand(t *testing.T) {
+	dir := t.TempDir()
+	runClaudeInitInDir(t, dir)
+
+	wcrushPath := filepath.Join(dir, ".claude", "commands", "wcrush.md")
+	bts, err := os.ReadFile(wcrushPath)
+	require.NoError(t, err)
+	got := string(bts)
+	assert.Contains(t, got, claudeSlashCommandSentinel)
+	assert.Contains(t, got, "$ARGUMENTS")
+	assert.Contains(t, got, "/wcrush")
+	assert.Contains(t, got, "opt-in only")
+	assert.Contains(t, got, "## Mandatory: two phases")
+	assert.Contains(t, got, "read the `wrush.md` file in this")
+	assert.NotContains(t, got, "NAME PROVISIONAL")
+}
+
+func TestClaudeInit_WcrushCommandOverwritesWithSentinel(t *testing.T) {
+	dir := t.TempDir()
+	runClaudeInitInDir(t, dir)
+	wcrushPath := filepath.Join(dir, ".claude", "commands", "wcrush.md")
+	first, err := os.ReadFile(wcrushPath)
+	require.NoError(t, err)
+
+	runClaudeInitInDir(t, dir)
+	second, err := os.ReadFile(wcrushPath)
+	require.NoError(t, err)
+	assert.Equal(t, string(first), string(second))
+}
+
+func TestClaudeInit_WcrushCommandSkipsWithoutSentinel(t *testing.T) {
+	dir := t.TempDir()
+	wcrushPath := filepath.Join(dir, ".claude", "commands", "wcrush.md")
+	require.NoError(t, os.MkdirAll(filepath.Dir(wcrushPath), 0o755))
+	require.NoError(t, os.WriteFile(wcrushPath, []byte("someone else's file"), 0o644))
+
+	stderr := captureStderr(t, func() {
+		runClaudeInitInDir(t, dir)
+	})
+
+	assert.Contains(t, stderr, "does not contain our sentinel")
+	bts, err := os.ReadFile(wcrushPath)
+	require.NoError(t, err)
+	assert.Equal(t, "someone else's file", string(bts))
+}
+
+func TestClaudeInit_GlobalScopeInstallsAllSlashCommands(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	cmd := &cobra.Command{}
+	cmd.Flags().Bool("global", false, "")
+	cmd.Flags().Bool("local", false, "")
+	cmd.Flags().StringP("cwd", "c", "", "")
+	require.NoError(t, cmd.ParseFlags([]string{"--global"}))
+	require.NoError(t, claudeInitCmd.RunE(cmd, nil))
+
+	for _, name := range []string{"rush.md", "rush-fallback.md", "wrush.md", "wcrush.md"} {
+		_, err := os.Stat(filepath.Join(home, ".claude", "commands", name))
+		require.NoError(t, err, "global %s should be installed", name)
+	}
+}
+
 func TestClaudeDel_RemovesSlashCommandWithSentinel(t *testing.T) {
 	dir := t.TempDir()
 	slashPath := filepath.Join(dir, ".claude", "commands", "rush.md")
