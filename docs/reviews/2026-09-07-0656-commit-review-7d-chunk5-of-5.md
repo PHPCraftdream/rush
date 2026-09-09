@@ -1,5 +1,9 @@
 # Ревью коммитов, chunk 5/5 (`3f3850d7b..f2914d53c`)
 
+> Сверка статусов 2026-09-09 по коммиту `4c2f11bd3` (main): закрытия,
+> произошедшие после написания ревью, помечены закрывающими коммитами;
+> неподтверждённые закрытия оставлены открытыми.
+
 43 коммита от 2026-09-06 07:07 до 2026-09-07 01:15 CEST — последний срез
 7-дневного окна `da53fe42a..f2914d53c`, заканчивающийся на текущем tip'е.
 Проверка: корректность, полнота, пропущенные edge cases, невакуумность
@@ -165,6 +169,12 @@ context is intentionally not its lifetime context»).
 
 ## 2. CH5-1 (**P0**): гонка на `Owner.committedAdmissions` — `fatal error: concurrent map writes`
 
+**ЗАКРЫТО** `00c9911f5` (2026-09-07): удаление из `committedAdmissions`
+выполняется под `lifecycleMu` (`detachSessionLocked` →
+`detachSessionLifecycleLocked`); кросс-серверный оракул —
+`committed_admissions_sync_test.go`, расширен в `0175b1e04`. Сверено
+2026-09-09.
+
 Введено в **`f2914d53c`** — самом свежем коммите диапазона.
 
 `f2914d53c` добавил process-wide карту `Owner.committedAdmissions`
@@ -261,6 +271,11 @@ setState» (как уже сделано в `getOrRenewClient:4317-4321` и
 
 Введено в **`3c3b7dde0`**, живо на tip'е.
 
+**ЗАКРЫТО** `70c98f828` (2026-09-07): «сессии нет» снова ждёт
+`renewDone` вместо ошибки (hook `renewalWaitHook`; тест
+`TestGetOrRenewClientWaitsForDetachedRenewalWinner`). Сверено
+2026-09-09.
+
 `3c3b7dde0` переставил порядок проверок в цикле `getOrRenewClient`.
 Было (`3f3850d7b:internal/agent/tools/mcp/init.go:2475-2503`):
 
@@ -321,6 +336,11 @@ renewal). После этого блок `:4163-4169` снова станови�
 ## 4. CH5-3 (**P1**): любой успешный `ReloadFromDisk` убивает все MCP-кандидаты в полёте
 
 Введено в **`779802b20`**.
+
+**ЗАКРЫТО** `00c9911f5` (2026-09-07): `resolverRevision` теперь растёт
+только при реальной смене resolver (`resolverFingerprint` в
+`store_reload.go`), обычный reload кандидатов не фенсит. Сверено
+2026-09-09.
 
 `779802b20` добавил в `serverAdmission` поля `mcpRevision`/`resolverRevision`
 (`init.go:693-694`) и стал проверять их в `candidateValidLocked`
@@ -660,9 +680,9 @@ writeMCPFileChanges (store_mcp_transaction.go:633-727)
 | ID | Severity | Коммит | Описание | Статус |
 |---|---|---|---|---|
 | CR-1 | — | `01e909d0` (истор.) | `Initialize` отменял ctx транспортов сразу после инициализации | **Закрыт на tip'е `f2914d53c`.** Механизм: handoff `sessionContext` + `promote` (`init.go:4761-4781`, `:4687-4716`, `:4861-4883`); транспорт деривируется из `lifetimeCtx ← handoff`, а не из `initCtx`. Закрыли `5c8641e7` + `b7d8614f` (вне моего диапазона, chunk 4); в моём диапазоне `922316af4` укрепил цепочку, сняв временный костыль `sessionCtx = o.lifecycleCtx` в renewal. Трассировка проверена по живому файлу, не по commit message |
-| CH5-1 | **P0** | `f2914d53c` | `detachSessionLocked` (`init.go:3877-3886`) делает `delete(owner.committedAdmissions, name)` без `lifecycleMu`; шесть вызовов (`:2474`, `:2599`, `:2627`, `:3757`, `:3798`, `:3869`) держат только server lease → concurrent map write с `publishPreparedClientLocked:2430` / `commitRenewalForLease:1735` для другого имени → `fatal error: concurrent map writes`, нерекаверимое падение процесса | Открыт |
-| CH5-3 | **P1** | `779802b20` | `candidateValidLocked` (`init.go:850-856`) фенсит кандидата по `resolverRevision`, а `store_reload.go:512` инкрементирует его на каждом reload'е → любой reload (в т.ч. из `checkLivePeakHours`, `coordinator_providers.go:745`) обрывает поднимающийся MCP-сервер без ретрая | Открыт |
-| CH5-2 | P2 | `3c3b7dde0` | В `getOrRenewClient` проверка «сессии нет» (`init.go:4141`) переехала выше ожидания `renewDone` (`:4149`) → конкурентные вызовы во время renewal получают `mcp '…' not available`; `:4163-4169` стал мёртвым кодом | Открыт |
+| CH5-1 | **P0** | `f2914d53c` | `detachSessionLocked` (`init.go:3877-3886`) делает `delete(owner.committedAdmissions, name)` без `lifecycleMu`; шесть вызовов (`:2474`, `:2599`, `:2627`, `:3757`, `:3798`, `:3869`) держат только server lease → concurrent map write с `publishPreparedClientLocked:2430` / `commitRenewalForLease:1735` для другого имени → `fatal error: concurrent map writes`, нерекаверимое падение процесса | **ЗАКРЫТО** `00c9911f5` (detach под `lifecycleMu`); оракул `0175b1e04` (сверено 2026-09-09) |
+| CH5-3 | **P1** | `779802b20` | `candidateValidLocked` (`init.go:850-856`) фенсит кандидата по `resolverRevision`, а `store_reload.go:512` инкрементирует его на каждом reload'е → любой reload (в т.ч. из `checkLivePeakHours`, `coordinator_providers.go:745`) обрывает поднимающийся MCP-сервер без ретрая | **ЗАКРЫТО** `00c9911f5` (revision растёт только при смене `resolverFingerprint`; сверено 2026-09-09) |
+| CH5-2 | P2 | `3c3b7dde0` | В `getOrRenewClient` проверка «сессии нет» (`init.go:4141`) переехала выше ожидания `renewDone` (`:4149`) → конкурентные вызовы во время renewal получают `mcp '…' not available`; `:4163-4169` стал мёртвым кодом | **ЗАКРЫТО** `70c98f828` (ожидание `renewDone` восстановлено; сверено 2026-09-09) |
 | CH5-4 | P2 | `59d1d8d9d` | Недостижимые `lease.Unlock()`/`return ErrOwnerBusy` (`init.go:2782-2783`) после if/else, обе ветки которого терминальны; вероятная красная проверка `govet`/`unreachable` в `golangci-lint` CI | Открыт |
 | CH5-6 | P2 | серия (design) | Uncertainty-fence снимается только полным успешным `ReloadFromDisk`; тот падает по не связанным с MCP причинам (провайдеры, hooks, зависшая shell-подстановка) → сервер остаётся отключённым до рестарта, без внятного лога | Открыт, design note |
 | CH5-5 | P3 | `79215f9d5`, `28c14030c` | Утечка `*os.File` в `verifyWindowsRenameRetryState` (`config_rename_windows.go:173-179`) на пути `!replace && err == nil` | Открыт |
@@ -680,10 +700,10 @@ writeMCPFileChanges (store_mcp_transaction.go:633-727)
 `candidateValidLocked` обрывает инициализацию MCP при любом reload'е
 конфига, без ретрая). Обе находки — в двух самых поздних содержательных
 коммитах диапазона; обе в коде, который правился в этом же окне ради
-надёжности lifecycle'а, и обе не покрыты новыми тестами.
+надёжности lifecycle'а, и обе не покрыты новыми тестами. Сверка
+2026-09-09: обе закрыты в `00c9911f5`.
 
-**Подождёт:** CH5-2 (спорадические `mcp '…' not available` во время
-renewal), CH5-4 (мёртвый код, вероятно красный `golangci-lint`), CH5-6
+**Подождёт:** CH5-4 (мёртвый код, вероятно красный `golangci-lint`), CH5-6
 (fail-closed uncertainty без диагностики), CH5-5/CH5-7/CH5-8/CH5-9.
 
 **CR-1 закрыт** — проверено трассировкой `Owner.Initialize` →

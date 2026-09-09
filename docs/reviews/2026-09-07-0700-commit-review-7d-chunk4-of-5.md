@@ -1,5 +1,9 @@
 # Ревью коммитов, 7-дневное окно — chunk 4 из 5 (`7b3c935e..3f3850d7`)
 
+> Сверка статусов 2026-09-09 по коммиту `4c2f11bd3` (main): закрытия,
+> произошедшие после написания ревью, помечены закрывающими коммитами;
+> неподтверждённые закрытия оставлены открытыми.
+
 Обзор 43 коммитов от 2026-09-04 16:09 до 2026-09-06 07:40 CEST. Это
 четвёртый из пяти непересекающихся срезов окна `da53fe42..f2914d53`;
 остальные четыре чанка ревьюятся отдельно и здесь не разбираются.
@@ -529,7 +533,8 @@ application-mode App.
 
 ## 6. Shutdown ordering и background-буферы (`b9656981`, `229393f2`)
 
-**Статус: закрывает CR-8 и CR-12; вносит F1.**
+**Статус: закрывает CR-8 и CR-12; вносил F1 (закрыт 2026-09-09:
+`3e7f9df2` вернул `close(done)` после `armBufferReleaseTimer`).**
 
 `b9656981` переставляет `app.RunQueuePump.Stop()` **перед** shutdown
 брокеров (`internal/app/app_lifecycle.go:166` до `:179-194`). Это ровно
@@ -682,7 +687,7 @@ refcount (F2, закрыта сразу за диапазоном) и одна g
 | ID | Severity | Коммит | Описание | Статус |
 |---|---|---|---|---|
 | CR-1 | **P0/P1** (историч.) | `01e909d0` (вне диапазона) | Контекст транспорта начальной MCP-сессии отменялся на выходе из `Initialize`/`initClientAdmitted` | **Закрыт в диапазоне: `5c8641e7` (`sessionContext` handoff) + `b7d8614f` (promotion до публикации, отказуемая promote).** Регрессия `TestInitializePublishesHTTPSessionBeyondAdmission` невакуумна |
-| F1 | **P2** | `b9656981` | `close(bgShell.done)` перенесён **перед** `armBufferReleaseTimer` (`internal/shell/background.go:468` vs `:480`), но `TestBackgroundShellManager_Remove_RacingCompletionReleasesBuffers` (`internal/shell/background_release_test.go:254-264`) читает `bgShell.bufReleased.Load()` сразу после `bgShell.Wait()`. Между `close(done)` и освобождением буферов теперь есть окно, в котором assert видит `false` | **Открыт, воспроизводится и на tip `f2914d53`** |
+| F1 | **P2** | `b9656981` | `close(bgShell.done)` перенесён **перед** `armBufferReleaseTimer` (`internal/shell/background.go:468` vs `:480`), но `TestBackgroundShellManager_Remove_RacingCompletionReleasesBuffers` (`internal/shell/background_release_test.go:254-264`) читает `bgShell.bufReleased.Load()` сразу после `bgShell.Wait()`. Между `close(done)` и освобождением буферов теперь есть окно, в котором assert видит `false` | **ЗАКРЫТО** `3e7f9df2` (2026-09-07): `close(done)` снова выполняется после `armBufferReleaseTimer`, окно синхронизации устранено (сверено 2026-09-09); исторически — открыт, воспроизводился на tip `f2914d53` |
 | F2 | P2 | `e3b79c04` | `addServerWithInitializer` берёт identity-ссылку `lease.registry.retain(lease)` (`init.go:2140`) и затем `lease.reacquireContext(ctx, true)` (`:2161`), который берёт вторую ссылку, а освобождает только один `lease.Unlock()`. На успешном пути (`:2187`), на `!admission.valid()` (`:2169`) и на ошибках persist (`:2176`, `:2181`) остаётся +1 ссылка навсегда → запись `leases.entries[name]` не переиспользуется/не освобождается | **Закрыт сразу за диапазоном в `3c3b7dde` (`initLeaseRetained` + `defer lease.registry.release`)** |
 | F4 | P1 (историч.) | `5c8641e7` | На success-пути `createSessionWithAdmission` удалён `cancelTimer.Stop()` и не добавлен эквивалент: таймер connect-фазы оставался взведённым и через `mcpTimeout` (по умолчанию 15 с) отменял `mcpCtx` уже опубликованной сессии | **Закрыт в диапазоне через 12 минут: `99371d14` (`stopInitTimer` после `Connect`, `init.go:3025`)** |
 | F5 | P3 | `ee32c4a8` | Удаление `db.init()` убрало единственный `goose.SetBaseFS(FS)`. `internal/db/list_candidate_interrupted_assistant_sessions_test.go:30` и `internal/db/messages_pagination_test.go:35` вызывают `goose.Up(conn, "migrations")` без установки base FS и работают только потому, что goose по умолчанию читает `migrations/` относительно cwd, а `go test` ставит cwd = каталог пакета, где каталог реально лежит | Открыт, латентная хрупкость |
@@ -729,7 +734,9 @@ promotion выполняется до публикации, под `lifecycleMu`
 оракул: `TestBackgroundShellManager_Remove_RacingCompletionReleasesBuffers`
 должен использовать `require.Eventually` на `bufReleased` вместо
 мгновенной проверки после `Wait()` (или ждать явного сигнала о
-завершении `armBufferReleaseTimer`).
+завершении `armBufferReleaseTimer`). Сверка 2026-09-09: устарело —
+`3e7f9df2` восстановил порядок
+`armBufferReleaseTimer` → `close(done)`, F1 закрыт.
 
 **Подождёт:** F5-F17 — nit'ы, стухшие комментарии, мёртвая поверхность
 API и два design note (F10 busy-poll lease, F12 синхронное закрытие
