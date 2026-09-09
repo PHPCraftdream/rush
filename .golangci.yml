@@ -79,10 +79,6 @@ linters:
         linters:
           - revive
         text: 'file-length-limit: file length is'
-      - path: '^internal/cmd/migrate_test\.go$' # file-size-ratchet
-        linters:
-          - revive
-        text: 'file-length-limit: file length is'
       - path: '^internal/agent/agent_turn\.go$' # file-size-ratchet
         linters:
           - revive

@@ -35,14 +35,5 @@
     ],
     // Raw line metric (same as wc -l), mirrors Go-side revive file-length-limit and the shell guard.
     "max-lines": ["error", { "max": 1000, "skipBlankLines": false, "skipComments": false }]
-  },
-  "overrides": [
-    {
-      // Ratchet removed in task #927 when src/store.ts is split.
-      "files": ["src/store.ts"],
-      "rules": {
-        "max-lines": "off"
-      }
-    }
-  ]
+  }
 }
