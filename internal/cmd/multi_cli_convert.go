@@ -7,7 +7,8 @@
 // TOML, Qwen uses a different front-matter placeholder. Rather than
 // duplicate the source-of-truth prose across tools, we keep ONE canonical
 // source per command (claudeSlashCommandTemplate / claudeFallbackCommandTemplate /
-// claudeWrushCommandTemplate, embedded in claude_init.go) and convert it into
+// claudeWrushCommandTemplate / claudeWcrushCommandTemplate, embedded in
+// claude_init.go) and convert it into
 // each tool's native format here.
 package cmd
 
@@ -113,6 +114,31 @@ func toCodexWrushSkillMD(description, body string) (string, error) {
 	body = strings.ReplaceAll(body, claudeSameDirReference, codexSiblingReference)
 	body = regexp.MustCompile(`\brush\.md\b`).ReplaceAllString(body, "../rush/SKILL.md")
 	return toSkillMD("wrush", description, body), nil
+}
+
+// toCodexWcrushSkillMD converts the canonical Claude /wcrush body to Codex's
+// nested Skills layout. Claude places rush.md, wrush.md and wcrush.md in one
+// directory, while Codex places them in sibling directories as rush/SKILL.md,
+// wrush/SKILL.md and wcrush/SKILL.md, so every reference to the inherited
+// base instructions must point one directory up. The canonical
+// same-directory wrush.md reference may be line-wrapped in the Markdown
+// source, so validation runs on whitespace-collapsed text and the readable
+// phrase rewrite tolerates a line break inside it; the word-boundary
+// rewrite below catches any remaining occurrences regardless of wrapping.
+func toCodexWcrushSkillMD(description, body string) (string, error) {
+	const (
+		claudeSameDirReference = "`wrush.md` file in this same directory"
+		codexSiblingReference  = "sibling `../wrush/SKILL.md` file"
+	)
+	collapsed := strings.Join(strings.Fields(body), " ")
+	if !strings.Contains(collapsed, claudeSameDirReference) {
+		return "", fmt.Errorf("toCodexWcrushSkillMD: expected canonical same-directory wrush.md reference")
+	}
+
+	wrappedPhrase := regexp.MustCompile(regexp.QuoteMeta("`wrush.md` file in this") + `\s+same directory`)
+	body = wrappedPhrase.ReplaceAllString(body, codexSiblingReference)
+	body = regexp.MustCompile(`\bwrush\.md\b`).ReplaceAllString(body, "../wrush/SKILL.md")
+	return toSkillMD("wcrush", description, body), nil
 }
 
 // writeSentinelledFile writes content to path, refusing to overwrite a file

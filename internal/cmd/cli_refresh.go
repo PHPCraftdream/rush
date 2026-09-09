@@ -42,8 +42,8 @@ type cliRefreshTool struct {
 }
 
 // cliRefreshTools is the single source of truth for the 5 tool integrations
-// this command refreshes. Codex's init/del pair covers all three Rush-owned
-// delegation Skills (rush, rush-fallback and wrush). Built from the same
+// this command refreshes. Codex's init/del pair covers all four Rush-owned
+// delegation Skills (rush, rush-fallback, wrush and wcrush). Built from the same
 // resolve*Dir / del / init
 // functions the standalone <tool>-init/<tool>-del commands already use, so
 // there is no risk of drift between "what claude-init does" and "what
@@ -138,8 +138,8 @@ Three mutually exclusive modes:
   3. --global: operate on each tool's global scope (~/.claude/commands,
      ~/.agents/skills, ~/.gemini/commands, ~/.grok/skills, ~/.qwen/commands).
 
-For Codex, this refresh includes all three delegation Skills: rush,
-rush-fallback and wrush.
+For Codex, this refresh includes all four delegation Skills: rush,
+rush-fallback, wrush and wcrush.
 
 --recursive and --global are mutually exclusive.
 

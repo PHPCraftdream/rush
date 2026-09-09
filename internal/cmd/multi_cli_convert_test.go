@@ -66,6 +66,11 @@ func TestParseSlashCommandSource_RealTemplates(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEmpty(t, desc3)
 	assert.Contains(t, body3, "$ARGUMENTS")
+
+	desc4, body4, err := parseSlashCommandSource(claudeWcrushCommandTemplate)
+	require.NoError(t, err)
+	assert.NotEmpty(t, desc4)
+	assert.Contains(t, body4, "$ARGUMENTS")
 }
 
 func TestParseSlashCommandSource_MissingOpeningDelimiter(t *testing.T) {
@@ -161,6 +166,35 @@ func TestToCodexWrushSkillMD_RejectsMissingCanonicalReference(t *testing.T) {
 	assert.ErrorContains(t, err, "expected canonical same-directory rush.md reference")
 }
 
+func TestToCodexWcrushSkillMD_RewritesAllWrushSkillReferences(t *testing.T) {
+	description, body, err := parseSlashCommandSource(claudeWcrushCommandTemplate)
+	require.NoError(t, err)
+
+	got, err := toCodexWcrushSkillMD(description, body)
+	require.NoError(t, err)
+
+	assert.NotContains(t, got, "`wrush.md` file in this")
+	assert.NotContains(t, got, "wrush.md")
+	assert.Contains(t, got, "sibling `../wrush/SKILL.md` file")
+	assert.Equal(t, strings.Count(body, "wrush.md"), strings.Count(got, "../wrush/SKILL.md"))
+	assert.Contains(t, got, "../wrush/SKILL.md's checklist")
+	assert.Contains(t, got, "name: wcrush")
+}
+
+func TestToCodexWcrushSkillMD_AcceptsLineWrappedCanonicalReference(t *testing.T) {
+	const body = "Read the `wrush.md` file in this\nsame directory in full before starting."
+
+	got, err := toCodexWcrushSkillMD("description", body)
+	require.NoError(t, err)
+	assert.Contains(t, got, "sibling `../wrush/SKILL.md` file")
+	assert.NotContains(t, got, "wrush.md")
+}
+
+func TestToCodexWcrushSkillMD_RejectsMissingCanonicalReference(t *testing.T) {
+	_, err := toCodexWcrushSkillMD("description", "body without the expected reference")
+	assert.ErrorContains(t, err, "expected canonical same-directory wrush.md reference")
+}
+
 // ---------------------------------------------------------------------------
 // Regression guard: source templates must never contain literal triple
 // quotes, since toGeminiTOML embeds bodies into a TOML triple-quoted
@@ -170,4 +204,6 @@ func TestToCodexWrushSkillMD_RejectsMissingCanonicalReference(t *testing.T) {
 func TestNoTripleQuotesInSource(t *testing.T) {
 	assert.NotContains(t, claudeSlashCommandTemplate, `"""`)
 	assert.NotContains(t, claudeFallbackCommandTemplate, `"""`)
+	assert.NotContains(t, claudeWrushCommandTemplate, `"""`)
+	assert.NotContains(t, claudeWcrushCommandTemplate, `"""`)
 }
