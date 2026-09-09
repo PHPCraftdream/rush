@@ -489,7 +489,7 @@ func (c *coordinator) buildCredentialModel(ctx context.Context, creds *Credentia
 		MaxTokens:       choice.MaxTokens,
 	}
 
-	provider, err := c.buildProvider(provCfg, modelCfg, false)
+	provider, err := c.buildProviderWithLiteralCredentials(provCfg, modelCfg, false)
 	if err != nil {
 		return Model{}, config.ProviderConfig{}, fmt.Errorf("failed to build provider %q from per-call credentials: %w", cred.Provider, err)
 	}

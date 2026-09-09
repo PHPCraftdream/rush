@@ -708,6 +708,19 @@ func (c *coordinator) isAnthropicThinking(model config.SelectedModel) bool {
 }
 
 func (c *coordinator) buildProvider(providerCfg config.ProviderConfig, model config.SelectedModel, isSubAgent bool) (fantasy.Provider, error) {
+	apiKey, _ := c.cfg.Resolve(providerCfg.APIKey)
+	baseURL, _ := c.cfg.Resolve(providerCfg.BaseURL)
+	return c.buildProviderWithValues(providerCfg, model, isSubAgent, apiKey, baseURL)
+}
+
+// buildProviderWithLiteralCredentials builds a provider from credentials that
+// are already resolved by the caller. Per-call tenant credentials are opaque
+// values, so this boundary deliberately does not consult the config resolver.
+func (c *coordinator) buildProviderWithLiteralCredentials(providerCfg config.ProviderConfig, model config.SelectedModel, isSubAgent bool) (fantasy.Provider, error) {
+	return c.buildProviderWithValues(providerCfg, model, isSubAgent, providerCfg.APIKey, providerCfg.BaseURL)
+}
+
+func (c *coordinator) buildProviderWithValues(providerCfg config.ProviderConfig, model config.SelectedModel, isSubAgent bool, apiKey, baseURL string) (fantasy.Provider, error) {
 	headers := maps.Clone(providerCfg.ExtraHeaders)
 	if headers == nil {
 		headers = make(map[string]string)
@@ -721,9 +734,6 @@ func (c *coordinator) buildProvider(providerCfg config.ProviderConfig, model con
 			headers["anthropic-beta"] = "interleaved-thinking-2025-05-14"
 		}
 	}
-
-	apiKey, _ := c.cfg.Resolve(providerCfg.APIKey)
-	baseURL, _ := c.cfg.Resolve(providerCfg.BaseURL)
 
 	switch providerCfg.ID {
 	case string(catwalk.InferenceProviderOpenCodeGo), string(catwalk.InferenceProviderOpenCodeZen):

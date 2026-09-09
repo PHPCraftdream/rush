@@ -564,9 +564,17 @@ func (s *ConfigStore) updateConfigLocked(mutate func(cfgCopy *Config)) {
 
 // NewTestStore creates a ConfigStore for testing purposes.
 func NewTestStore(cfg *Config, loadedPaths ...string) *ConfigStore {
+	return NewTestStoreWithResolver(cfg, nil, loadedPaths...)
+}
+
+// NewTestStoreWithResolver creates a ConfigStore for tests with an explicit
+// resolver, allowing callers to exercise the same resolver boundary as an
+// application-loaded store without disk I/O.
+func NewTestStoreWithResolver(cfg *Config, resolver VariableResolver, loadedPaths ...string) *ConfigStore {
 	s := &ConfigStore{}
 	s.snap.Store(&storeSnapshot{
 		config:           cfg,
+		resolver:         resolver,
 		mcpRevisions:     initialMCPRevisions(cfg),
 		resolverRevision: 1,
 		resolverDynamic:  configHasDynamicMCPResolution(cfg),
