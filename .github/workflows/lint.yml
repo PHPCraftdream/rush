@@ -76,3 +76,30 @@ jobs:
         with:
           args: --config=.golangci.yml --timeout=10m ./internal/db/...
           version: v2.13
+  # The web UI's own gates. Neither of these is covered by the Go jobs
+  # above, and until oxlint landed nothing but tsc looked at web/ at all.
+  # `pnpm lint` carries a --max-warnings ratchet pinned to the measured
+  # baseline, because oxlint exits 0 on warnings by default; it also
+  # enforces the same 1000-line file limit revive enforces on the Go side.
+  # Single runner on purpose: this is static analysis of platform-agnostic
+  # TypeScript, so a three-OS matrix would buy nothing.
+  lint-web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Enable pnpm via corepack
+        run: corepack enable
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "22"
+      - name: Install dependencies
+        working-directory: web
+        run: pnpm install --frozen-lockfile
+      - name: tsc --noEmit
+        working-directory: web
+        run: pnpm typecheck
+      - name: oxlint
+        working-directory: web
+        run: pnpm lint
