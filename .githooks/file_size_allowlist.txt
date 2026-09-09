@@ -9,8 +9,5 @@
 # file-length-limit exclusion (tagged "# file-size-ratchet") from
 # .golangci.yml. web/src/store.ts needs no yml entry -- revive only
 # lints Go.
-internal/agent/tools/mcp/state_regression_test.go 2620
 internal/agent/agent_turn.go 1981
 internal/app/app_run.go 1777
-internal/agent/tools/mcp/init_test.go 1384
-internal/agent/tools/mcp/lifecycle_findings_test.go 1254
