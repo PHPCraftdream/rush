@@ -35,10 +35,10 @@ async function setBusy(page: Page, sessionID: string, busy: boolean) {
 // Drop a file onto the composer (works whether the agent is busy or not)
 // and wait for its badge to appear.
 async function dropFile(page: Page, name: string, contents: string) {
-  await page.evaluate(({ name, contents }) => {
+  await page.evaluate(({ name: fileName, contents: fileContents }) => {
     const dropArea = document.querySelector("div[class*='rounded-2xl'][class*='bg-base-overlay']");
     if (!dropArea) throw new Error("composer drop area not found");
-    const file = new File([contents], name, { type: "image/png" });
+    const file = new File([fileContents], fileName, { type: "image/png" });
     const dt = new DataTransfer();
     dt.items.add(file);
     dropArea.dispatchEvent(new DragEvent("drop", { dataTransfer: dt, bubbles: true }));

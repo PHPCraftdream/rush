@@ -12,6 +12,7 @@
     "dev": "rsbuild dev",
     "build": "rsbuild build",
     "typecheck": "tsc --noEmit",
+    "lint": "oxlint --max-warnings=101",
     "preview": "rsbuild preview",
     "test": "node scripts/run-tests.mjs",
     "test:ui": "node scripts/run-tests.mjs --ui"
@@ -40,6 +41,7 @@
     "autoprefixer": "^10.4.21",
     "babel-loader": "^10.1.1",
     "babel-plugin-react-compiler": "^1.0.0",
+    "oxlint": "1.82.0",
     "postcss": "^8.5.3",
     "tailwindcss": "^3.4.17",
     "typescript": "^5.8.3"
