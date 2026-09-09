@@ -5,6 +5,7 @@ package shell
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"mvdan.cc/sh/v3/interp"
 )
 
 // helperEnvVar switches this test binary into one of two "leaky process
@@ -134,4 +136,19 @@ func TestBackgroundShellManager_Kill_TreeKillsOrphanedGrandchild_Windows(t *test
 	require.Less(t, elapsed, 30*time.Second,
 		"Kill must tree-kill the orphaned grandchild and return promptly; "+
 			"without tree-kill it hangs until the grandchild's own sleep ends")
+}
+
+func TestWindowsCommandResultCancellationPrecedence(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// Wait winning before the callback starts preserves a natural result even
+	// when the context is canceled immediately afterward.
+	require.NoError(t, windowsCommandResult(ctx, io.Discard, nil, false))
+	naturalExit := interp.ExitStatus(7)
+	require.Equal(t, naturalExit, windowsCommandResult(ctx, io.Discard, naturalExit, false))
+
+	// A callback that won the wait linearization maps the result to the
+	// caller's cancellation classification.
+	require.ErrorIs(t, windowsCommandResult(ctx, io.Discard, naturalExit, true), context.Canceled)
 }

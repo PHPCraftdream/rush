@@ -5,7 +5,9 @@ package shell
 import (
 	"context"
 	"fmt"
+	"io"
 	"os/exec"
+	"sync"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/platform"
@@ -64,7 +66,22 @@ func processGroupExecHandler(killTimeout time.Duration, registerProcess func(int
 			if registerProcess != nil && cmd.Process != nil {
 				registerProcess(cmd.Process.Pid)
 			}
+			var waitMu sync.Mutex
+			waitFinished := false
+			cancellationWon := false
+			cancelStarted := make(chan struct{})
+			cancelDone := make(chan struct{})
 			stopf := context.AfterFunc(ctx, func() {
+				close(cancelStarted)
+				defer close(cancelDone)
+				waitMu.Lock()
+				if waitFinished {
+					waitMu.Unlock()
+					return
+				}
+				cancellationWon = true
+				pid := cmd.Process.Pid
+				waitMu.Unlock()
 				// cmd.Stdout/Stderr here are plain io.Writers (our
 				// boundedBuffer, not *os.File), so os/exec backs them with an
 				// OS pipe and a copy-goroutine that cmd.Wait() joins. That
@@ -81,22 +98,41 @@ func processGroupExecHandler(killTimeout time.Duration, registerProcess func(int
 				// exact same class of problem in `rush sessions kill` —
 				// it kills the direct process AND everything Windows
 				// recorded as its descendant.
-				if cmd.Process != nil {
-					_ = session.KillProcess(cmd.Process.Pid)
+				if pid > 0 {
+					_ = session.KillProcess(pid)
 				}
 			})
-			defer stopf()
 			err = cmd.Wait()
+			waitMu.Lock()
+			waitFinished = true
+			waitMu.Unlock()
+			if !stopf() {
+				<-cancelStarted
+				<-cancelDone
+			}
+			waitMu.Lock()
+			canceled := cancellationWon
+			waitMu.Unlock()
+			return windowsCommandResult(ctx, hc.Stderr, err, canceled)
 		}
+		return windowsCommandResult(ctx, hc.Stderr, err, false)
+	}
+}
 
-		switch err := err.(type) {
-		case *exec.ExitError:
-			return interp.ExitStatus(err.ExitCode())
-		case *exec.Error:
-			fmt.Fprintf(hc.Stderr, "%v\n", err)
-			return interp.ExitStatus(127)
-		default:
-			return err
+func windowsCommandResult(ctx context.Context, stderr io.Writer, err error, cancellationWon bool) error {
+	if cancellationWon {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
 		}
+	}
+
+	switch err := err.(type) {
+	case *exec.ExitError:
+		return interp.ExitStatus(err.ExitCode())
+	case *exec.Error:
+		fmt.Fprintf(stderr, "%v\n", err)
+		return interp.ExitStatus(127)
+	default:
+		return err
 	}
 }

@@ -403,6 +403,137 @@ func TestCreateTransport_HeadersResolution(t *testing.T) {
 	})
 }
 
+type contextRecordingResolver struct {
+	contexts []context.Context
+	markers  []any
+	values   []string
+}
+
+func (r *contextRecordingResolver) ResolveValue(string) (string, error) {
+	panic("runtime MCP resolution used the background-only API")
+}
+
+func (r *contextRecordingResolver) ResolveValueContext(ctx context.Context, value string) (string, error) {
+	r.contexts = append(r.contexts, ctx)
+	r.markers = append(r.markers, ctx.Value(contextMarkerKey{}))
+	r.values = append(r.values, value)
+	return value, nil
+}
+
+type contextMarkerKey struct{}
+
+func TestCreateTransport_PassesLifetimeContextToEveryRuntimeField(t *testing.T) {
+	t.Parallel()
+	marker := "mcp-operation"
+	ctx := context.WithValue(context.Background(), contextMarkerKey{}, marker)
+
+	t.Run("stdio", func(t *testing.T) {
+		r := &contextRecordingResolver{}
+		m := config.MCPConfig{
+			Type:    config.MCPStdio,
+			Command: "echo",
+			Args:    []string{"arg-1", "arg-2"},
+			Env:     map[string]string{"A": "env-a", "B": "env-b"},
+		}
+		tr, err := createTransport(ctx, m, r)
+		require.NoError(t, err)
+		require.NotNil(t, tr)
+		for _, got := range r.contexts {
+			require.Same(t, ctx, got)
+		}
+		require.Equal(t, []any{marker, marker, marker, marker, marker}, r.markers)
+		require.Equal(t, []string{"echo", "arg-1", "arg-2", "env-a", "env-b"}, r.values)
+	})
+
+	t.Run("http", func(t *testing.T) {
+		r := &contextRecordingResolver{}
+		m := config.MCPConfig{
+			Type:    config.MCPHttp,
+			URL:     "https://example.test/mcp",
+			Headers: map[string]string{"Authorization": "token", "X-Trace": "trace"},
+		}
+		tr, err := createTransport(ctx, m, r)
+		require.NoError(t, err)
+		require.NotNil(t, tr)
+		for _, got := range r.contexts {
+			require.Same(t, ctx, got)
+		}
+		require.Equal(t, []any{marker, marker, marker}, r.markers)
+		require.Equal(t, []string{"https://example.test/mcp", "token", "trace"}, r.values)
+	})
+
+	t.Run("sse", func(t *testing.T) {
+		r := &contextRecordingResolver{}
+		m := config.MCPConfig{
+			Type:    config.MCPSSE,
+			URL:     "https://example.test/events",
+			Headers: map[string]string{"Authorization": "token", "X-Trace": "trace"},
+		}
+		tr, err := createTransport(ctx, m, r)
+		require.NoError(t, err)
+		require.NotNil(t, tr)
+		for _, got := range r.contexts {
+			require.Same(t, ctx, got)
+		}
+		require.Equal(t, []any{marker, marker, marker}, r.markers)
+		require.Equal(t, []string{"https://example.test/events", "token", "trace"}, r.values)
+	})
+}
+
+func TestCreateTransport_PreCanceledContextWinsFieldValidation(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	resolver := &contextRecordingResolver{}
+	for _, m := range []config.MCPConfig{
+		{Type: config.MCPStdio, Command: ""},
+		{Type: config.MCPHttp, URL: "$"},
+		{Type: config.MCPSSE, URL: ""},
+	} {
+		tr, err := createTransport(ctx, m, resolver)
+		require.Nil(t, tr)
+		require.ErrorIs(t, err, context.Canceled)
+	}
+	require.Empty(t, resolver.contexts)
+}
+
+func TestOwnerCloseJoinsCanceledRuntimeMCPResolution(t *testing.T) {
+	owner, err := Acquire()
+	require.NoError(t, err)
+
+	const name = "runtime-resolution-close"
+	m := config.MCPConfig{Type: config.MCPStdio, Command: "$(blocked)"}
+	store := config.NewLibraryStore(&config.Config{MCP: config.MCPs{name: m}}, t.TempDir())
+	admission, err := owner.admitServerForConfig(context.Background(), store, name, m, true)
+	require.NoError(t, err)
+
+	entered := make(chan struct{})
+	resolver := config.NewShellVariableResolver(env.NewFromMap(nil), config.WithExpander(func(ctx context.Context, _ string, _ []string) (string, error) {
+		close(entered)
+		<-ctx.Done()
+		return "", ctx.Err()
+	}))
+	result := make(chan error, 1)
+	go func() {
+		defer admission.done()
+		_, err := createSessionWithAdmission(context.Background(), name, m, resolver, &admission)
+		result <- err
+	}()
+
+	<-entered
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- owner.Close(context.Background()) }()
+
+	select {
+	case err := <-result:
+		require.ErrorIs(t, err, context.Canceled)
+		require.NoError(t, <-closeDone)
+	case err := <-closeDone:
+		require.NoError(t, err)
+		require.ErrorIs(t, <-result, context.Canceled)
+	}
+}
+
 // TestCreateSession_ResolutionFailureUpdatesState pins the user-visible
 // half of the regression fix: when any of command/args/env/headers/url
 // fails to resolve, createSession must publish StateError to the state

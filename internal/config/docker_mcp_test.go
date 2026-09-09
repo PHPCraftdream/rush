@@ -132,11 +132,9 @@ func TestPrepareDockerMCPConfigAssignsRevision(t *testing.T) {
 }
 
 func TestDisableDockerMCP(t *testing.T) {
-	t.Parallel()
+	isolateAllGlobalConfigPaths(t)
 
 	t.Run("removes docker mcp from config", func(t *testing.T) {
-		t.Parallel()
-
 		// Create a temporary directory for config.
 		tmpDir := t.TempDir()
 		configPath := filepath.Join(tmpDir, "rush.json")
@@ -172,8 +170,6 @@ func TestDisableDockerMCP(t *testing.T) {
 	})
 
 	t.Run("does nothing when MCP is nil", func(t *testing.T) {
-		t.Parallel()
-
 		cfg := &Config{
 			MCP: nil,
 		}
@@ -189,7 +185,9 @@ func TestDisableDockerMCP(t *testing.T) {
 }
 
 func TestEnableDockerMCPWithRealDockerWhenAvailable(t *testing.T) {
-	t.Parallel()
+	operatorGlobalPath := normalizeReloadPath(GlobalConfig())
+	operatorDataPath := normalizeReloadPath(GlobalConfigData())
+	isolateAllGlobalConfigPaths(t)
 
 	if !IsDockerMCPAvailable() {
 		t.Skip("docker mcp not available on this machine")
@@ -206,6 +204,11 @@ func TestEnableDockerMCPWithRealDockerWhenAvailable(t *testing.T) {
 		globalDataPath: configPath,
 		resolver:       NewShellVariableResolver(env.New()),
 	})
+	store.systemConfigPathOverride = filepath.Join(tmpDir, "missing-system", "rush.json")
+	for _, path := range store.orderedMCPPaths() {
+		require.NotEqual(t, operatorGlobalPath, normalizeReloadPath(path))
+		require.NotEqual(t, operatorDataPath, normalizeReloadPath(path))
+	}
 
 	err := store.EnableDockerMCP()
 	require.NoError(t, err)

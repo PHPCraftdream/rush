@@ -1,12 +1,22 @@
 package config
 
 import (
+	"bufio"
 	"context"
 	"errors"
+	"fmt"
+	"io"
+	"net"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/PHPCraftdream/rush/internal/env"
+	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
 
@@ -53,6 +63,232 @@ func TestShellVariableResolver_DelegatesToExpander(t *testing.T) {
 	require.Equal(t, 1, fe.calls)
 	require.Equal(t, "hello $FOO", fe.lastValue)
 	require.Contains(t, fe.lastEnv, "FOO=bar")
+}
+
+func TestShellVariableResolver_ContextCancellationStopsExpansion(t *testing.T) {
+	t.Parallel()
+
+	entered := make(chan struct{})
+	r := NewShellVariableResolver(env.NewFromMap(nil), WithExpander(func(ctx context.Context, _ string, _ []string) (string, error) {
+		close(entered)
+		<-ctx.Done()
+		return "", ctx.Err()
+	}))
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := ResolveValueContext(ctx, r, "$(blocked)")
+		done <- err
+	}()
+
+	<-entered
+	cancel()
+	err := <-done
+	require.ErrorIs(t, err, context.Canceled)
+}
+
+func TestShellVariableResolver_ContextDeadlineBeatsResolverCeiling(t *testing.T) {
+	entered := make(chan struct{})
+	r := NewShellVariableResolver(env.NewFromMap(nil), WithExpander(func(ctx context.Context, _ string, _ []string) (string, error) {
+		close(entered)
+		select {
+		case <-ctx.Done():
+			return "", errors.New("expander context closed before trigger")
+		default:
+		}
+		<-ctx.Done()
+		return "", ctx.Err()
+	}))
+	ctx := newControlledDeadlineContext()
+	done := make(chan error, 1)
+	go func() {
+		_, err := ResolveValueContext(ctx, r, "$(deadline)")
+		done <- err
+	}()
+
+	<-entered
+	ctx.trigger()
+	<-ctx.Done()
+	err := <-done
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+}
+
+type controlledDeadlineContext struct {
+	done chan struct{}
+	once sync.Once
+}
+
+func newControlledDeadlineContext() *controlledDeadlineContext {
+	return &controlledDeadlineContext{done: make(chan struct{})}
+}
+
+func (c *controlledDeadlineContext) Deadline() (time.Time, bool) {
+	return time.Unix(4102444800, 0), true
+}
+
+func (c *controlledDeadlineContext) Done() <-chan struct{} { return c.done }
+
+func (c *controlledDeadlineContext) Err() error {
+	select {
+	case <-c.done:
+		return context.DeadlineExceeded
+	default:
+		return nil
+	}
+}
+
+func (c *controlledDeadlineContext) Value(any) any { return nil }
+
+func (c *controlledDeadlineContext) trigger() {
+	c.once.Do(func() { close(c.done) })
+}
+
+type cancelingContextResolver struct {
+	cancel context.CancelFunc
+}
+
+func (r cancelingContextResolver) ResolveValue(value string) (string, error) {
+	return value, nil
+}
+
+func (r cancelingContextResolver) ResolveValueContext(_ context.Context, value string) (string, error) {
+	r.cancel()
+	return value, nil
+}
+
+type legacyResolver struct {
+	calls int
+}
+
+func (r *legacyResolver) ResolveValue(value string) (string, error) {
+	r.calls++
+	return value, nil
+}
+
+func TestResolveValueContext_LinearizesCancellationAroundResolver(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	resolver := cancelingContextResolver{cancel: cancel}
+	_, err := ResolveValueContext(ctx, resolver, "value")
+	require.ErrorIs(t, err, context.Canceled)
+}
+
+func TestResolveValueContext_PrechecksIdentityAndLegacyResolvers(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := ResolveValueContext(ctx, IdentityResolver(), "value")
+	require.ErrorIs(t, err, context.Canceled)
+
+	legacy := &legacyResolver{}
+	_, err = ResolveValueContext(context.Background(), legacy, "value")
+	require.ErrorIs(t, err, ErrContextResolverUnsupported)
+	require.Zero(t, legacy.calls)
+
+	_, err = ResolveValueContext(ctx, legacy, "value")
+	require.ErrorIs(t, err, context.Canceled)
+	require.Zero(t, legacy.calls)
+}
+
+const resolveCommandHelperEnv = "RUSH_RESOLVE_COMMAND_HELPER"
+
+type resolveResult struct {
+	value string
+	err   error
+}
+
+func TestResolveValueCommandSubstitutionHelper(t *testing.T) {
+	if os.Getenv(resolveCommandHelperEnv) != "1" {
+		return
+	}
+	conn, err := net.Dial("tcp", os.Getenv("RUSH_RESOLVE_COMMAND_HELPER_ADDR"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, err := fmt.Fprintf(conn, "%d\n", os.Getpid()); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.Copy(io.Discard, conn)
+}
+
+func TestShellVariableResolver_CommandSubstitutionCancellationReapsChild(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+
+	accepted := make(chan net.Conn, 1)
+	acceptErr := make(chan error, 1)
+	acceptDone := make(chan struct{})
+	go func() {
+		defer close(acceptDone)
+		conn, err := listener.Accept()
+		if err != nil {
+			acceptErr <- err
+			return
+		}
+		accepted <- conn
+	}()
+	defer func() {
+		_ = listener.Close()
+		<-acceptDone
+	}()
+
+	self, err := os.Executable()
+	require.NoError(t, err)
+	command := fmt.Sprintf("$(%s -test.run=^TestResolveValueCommandSubstitutionHelper$)", strconv.Quote(filepath.ToSlash(self)))
+	r := NewShellVariableResolver(env.NewFromMap(map[string]string{
+		"PATH":                             os.Getenv("PATH"),
+		resolveCommandHelperEnv:            "1",
+		"RUSH_RESOLVE_COMMAND_HELPER_ADDR": listener.Addr().String(),
+	}))
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan resolveResult, 1)
+	go func() {
+		value, err := ResolveValueContext(ctx, r, command)
+		done <- resolveResult{value: value, err: err}
+	}()
+
+	var conn net.Conn
+	resultReceived := false
+	var readDone chan struct{}
+	defer func() {
+		cancel()
+		if !resultReceived {
+			<-done
+		}
+		if conn != nil {
+			_ = conn.Close()
+		}
+		if readDone != nil {
+			<-readDone
+		}
+	}()
+	select {
+	case conn = <-accepted:
+	case err := <-acceptErr:
+		require.NoError(t, err)
+	case result := <-done:
+		resultReceived = true
+		t.Fatalf("resolver exited before helper connected: %v", result.err)
+	}
+	pidLine, err := bufio.NewReader(conn).ReadString('\n')
+	require.NoError(t, err)
+	pid, err := strconv.Atoi(strings.TrimSpace(pidLine))
+	require.NoError(t, err)
+	readDone = make(chan struct{})
+	go func() {
+		_, _ = io.Copy(io.Discard, conn)
+		close(readDone)
+	}()
+
+	cancel()
+	result := <-done
+	resultReceived = true
+	require.ErrorIs(t, result.err, context.Canceled)
+	<-readDone
+	require.False(t, session.IsProcessAlive(pid))
 }
 
 func TestShellVariableResolver_LoneDollarIsError(t *testing.T) {

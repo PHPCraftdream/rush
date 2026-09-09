@@ -3,6 +3,7 @@ package config
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"slices"
 	"time"
@@ -54,11 +55,49 @@ type VariableResolver interface {
 	ResolveValue(value string) (string, error)
 }
 
+// ContextVariableResolver resolves a value with the context of one runtime
+// operation. Implementations must treat the configured resolver timeout as a
+// ceiling, not as a replacement for ctx cancellation or its deadline.
+type ContextVariableResolver interface {
+	VariableResolver
+	ResolveValueContext(ctx context.Context, value string) (string, error)
+}
+
+// ErrContextResolverUnsupported identifies a legacy resolver that cannot
+// honor a caller-owned operation context.
+var ErrContextResolverUnsupported = errors.New("variable resolver does not support context-aware resolution")
+
+// ResolveValueContext resolves value with ctx. A legacy resolver is rejected
+// rather than silently falling back to its background-only operation.
+func ResolveValueContext(ctx context.Context, resolver VariableResolver, value string) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if resolver == nil {
+		return "", fmt.Errorf("no variable resolver configured")
+	}
+	if contextual, ok := resolver.(ContextVariableResolver); ok {
+		resolved, err := contextual.ResolveValueContext(ctx, value)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return "", ctxErr
+		}
+		return resolved, err
+	}
+	return "", ErrContextResolverUnsupported
+}
+
 // identityResolver is a no-op resolver that returns values unchanged.
 // Used in client mode where variable resolution is handled server-side.
 type identityResolver struct{}
 
 func (identityResolver) ResolveValue(value string) (string, error) {
+	return value, nil
+}
+
+func (identityResolver) ResolveValueContext(_ context.Context, value string) (string, error) {
 	return value, nil
 }
 
@@ -145,6 +184,19 @@ func NewShellVariableResolver(e env.Env, opts ...ShellResolverOption) VariableRe
 // strict mode is available via shell.NoUnset for callers that want the
 // old nounset-on behaviour back.
 func (r *shellVariableResolver) ResolveValue(value string) (string, error) {
+	return r.resolveValue(r.ctx, value)
+}
+
+// ResolveValueContext resolves one value using the caller's operation
+// context. A nil context uses the resolver's configured base context.
+func (r *shellVariableResolver) ResolveValueContext(ctx context.Context, value string) (string, error) {
+	if ctx == nil {
+		ctx = r.ctx
+	}
+	return r.resolveValue(ctx, value)
+}
+
+func (r *shellVariableResolver) resolveValue(base context.Context, value string) (string, error) {
 	// Preserve the historical backward-compat contract: a lone "$" is a
 	// malformed config value, not a legal literal. The underlying shell
 	// parser would accept it as a literal; we reject it here so existing
@@ -153,7 +205,6 @@ func (r *shellVariableResolver) ResolveValue(value string) (string, error) {
 		return "", fmt.Errorf("invalid value format: %s", value)
 	}
 
-	base := r.ctx
 	if base == nil {
 		base = context.Background()
 	}

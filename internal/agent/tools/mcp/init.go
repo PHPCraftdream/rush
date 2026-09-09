@@ -6132,20 +6132,26 @@ func maybeTimeoutErr(err error, timeout time.Duration, cause, timeoutCause error
 }
 
 func createTransport(ctx context.Context, m config.MCPConfig, resolver config.VariableResolver) (mcp.Transport, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	switch m.Type {
 	case config.MCPStdio:
-		command, err := resolver.ResolveValue(m.Command)
+		command, err := config.ResolveValueContext(ctx, resolver, m.Command)
 		if err != nil {
 			return nil, fmt.Errorf("invalid mcp command: %w", err)
 		}
 		if strings.TrimSpace(command) == "" {
 			return nil, fmt.Errorf("mcp stdio config requires a non-empty 'command' field")
 		}
-		args, err := m.ResolvedArgs(resolver)
+		args, err := m.ResolvedArgsContext(ctx, resolver)
 		if err != nil {
 			return nil, err
 		}
-		envs, err := m.ResolvedEnv(resolver)
+		envs, err := m.ResolvedEnvContext(ctx, resolver)
 		if err != nil {
 			return nil, err
 		}
@@ -6161,14 +6167,14 @@ func createTransport(ctx context.Context, m config.MCPConfig, resolver config.Va
 			Command: cmd,
 		}, nil
 	case config.MCPHttp:
-		url, err := m.ResolvedURL(resolver)
+		url, err := m.ResolvedURLContext(ctx, resolver)
 		if err != nil {
 			return nil, err
 		}
 		if strings.TrimSpace(url) == "" {
 			return nil, fmt.Errorf("mcp http config requires a non-empty 'url' field")
 		}
-		headers, err := m.ResolvedHeaders(resolver)
+		headers, err := m.ResolvedHeadersContext(ctx, resolver)
 		if err != nil {
 			return nil, err
 		}
@@ -6188,14 +6194,14 @@ func createTransport(ctx context.Context, m config.MCPConfig, resolver config.Va
 			HTTPClient: client,
 		}, nil
 	case config.MCPSSE:
-		url, err := m.ResolvedURL(resolver)
+		url, err := m.ResolvedURLContext(ctx, resolver)
 		if err != nil {
 			return nil, err
 		}
 		if strings.TrimSpace(url) == "" {
 			return nil, fmt.Errorf("mcp sse config requires a non-empty 'url' field")
 		}
-		headers, err := m.ResolvedHeaders(resolver)
+		headers, err := m.ResolvedHeadersContext(ctx, resolver)
 		if err != nil {
 			return nil, err
 		}
