@@ -16,7 +16,7 @@ linters:
     - noctx
     - nolintlint
     # - prealloc
-    # - revive
+    - revive
     - rowserrcheck
     - sqlclosecheck
     - staticcheck
@@ -29,6 +29,25 @@ linters:
     - errcheck
     - ineffassign
     - unused
+  settings:
+    revive:
+      # Exactly one rule: the operator's file-size limit. A non-empty
+      # `rules` list REPLACES revive's default rule set (verified against
+      # golangci-lint v2.13.1 pkg/golinters/revive: the settings are
+      # decoded into a fresh lint.Config and defaults are only re-added
+      # for enable-all-rules/enable-default-rules), so enabling revive
+      # here adds no other revive rule.
+      # skipComments/skipBlankLines must stay false: the count must stay
+      # the raw line count that .githooks/check_file_size.sh ratchets on
+      # -- that agreement is what makes
+      # .githooks/file_size_allowlist.txt the single source of truth for
+      # both layers.
+      rules:
+        - name: file-length-limit
+          arguments:
+            - max: 1000
+              skipComments: false
+              skipBlankLines: false
   exclusions:
     generated: lax
     presets:
@@ -49,6 +68,89 @@ linters:
         linters:
           - staticcheck
         text: "SA1019"
+      # file-size ratchet: one entry per .go line of
+      # .githooks/file_size_allowlist.txt (the allowlist is the single
+      # source of truth; revive only lints Go, so web/src/store.ts lives
+      # in the allowlist only). The "# file-size-ratchet" tag on each
+      # path line is load-bearing: the selftest enforces the allowlist
+      # <-> yml bijection through it, in both directions. Remove both
+      # sides together when a file is decomposed.
+      - path: '^internal/agent/tools/mcp/init\.go$' # file-size-ratchet
+        linters:
+          - revive
+        text: 'file-length-limit: file length is'
+      - path: '^internal/agent/tools/mcp/state_regression_test\.go$' # file-size-ratchet
+        linters:
+          - revive
+        text: 'file-length-limit: file length is'
+      - path: '^internal/cmd/migrate_test\.go$' # file-size-ratchet
+        linters:
+          - revive
+        text: 'file-length-limit: file length is'
+      - path: '^internal/agent/agent_turn\.go$' # file-size-ratchet
+        linters:
+          - revive
+        text: 'file-length-limit: file length is'
+      - path: '^internal/config/store_mcp_transaction\.go$' # file-size-ratchet
+        linters:
+          - revive
+        text: 'file-length-limit: file length is'
+      - path: '^internal/app/app_run\.go$' # file-size-ratchet
+        linters:
+          - revive
+        text: 'file-length-limit: file length is'
+      - path: '^internal/cmd/migrate\.go$' # file-size-ratchet
+        linters:
+          - revive
+        text: 'file-length-limit: file length is'
+      - path: '^internal/session/run_queue_drain_session\.go$' # file-size-ratchet
+        linters:
+          - revive
+        text: 'file-length-limit: file length is'
+      - path: '^internal/agent/tools/mcp/init_test\.go$' # file-size-ratchet
+        linters:
+          - revive
+        text: 'file-length-limit: file length is'
+      - path: '^internal/agent/tools/mcp/lifecycle_findings_test\.go$' # file-size-ratchet
+        linters:
+          - revive
+        text: 'file-length-limit: file length is'
+      - path: '^internal/config/config\.go$' # file-size-ratchet
+        linters:
+          - revive
+        text: 'file-length-limit: file length is'
+      - path: '^internal/agent/agent_cache_keepalive_test\.go$' # file-size-ratchet
+        linters:
+          - revive
+        text: 'file-length-limit: file length is'
+      - path: '^internal/session/lock\.go$' # file-size-ratchet
+        linters:
+          - revive
+        text: 'file-length-limit: file length is'
+      - path: '^internal/server/handlers_agent\.go$' # file-size-ratchet
+        linters:
+          - revive
+        text: 'file-length-limit: file length is'
+      - path: '^internal/server/p655_rerun_idset_regression_test\.go$' # file-size-ratchet
+        linters:
+          - revive
+        text: 'file-length-limit: file length is'
+      - path: '^internal/config/store_mcp\.go$' # file-size-ratchet
+        linters:
+          - revive
+        text: 'file-length-limit: file length is'
+      - path: '^internal/shell/background\.go$' # file-size-ratchet
+        linters:
+          - revive
+        text: 'file-length-limit: file length is'
+      - path: '^internal/agent/tools/grep\.go$' # file-size-ratchet
+        linters:
+          - revive
+        text: 'file-length-limit: file length is'
+      - path: '^internal/message/message\.go$' # file-size-ratchet
+        linters:
+          - revive
+        text: 'file-length-limit: file length is'
 issues:
   max-issues-per-linter: 0
   max-same-issues: 0

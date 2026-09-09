@@ -1,0 +1,31 @@
+# file-size ratchet -- see .githooks/check_file_size.sh.
+#
+# One line per known violation of the 1000-line rule, seeded 2026-09-09
+# with the exact current line counts. A listed file may stay over the
+# limit but the guard fails the moment it GROWS, and fails with a
+# "remove it from" message once it is at or under 1000.
+#
+# When you decompose a file: delete its line here AND its
+# file-length-limit exclusion (tagged "# file-size-ratchet") from
+# .golangci.yml. web/src/store.ts needs no yml entry -- revive only
+# lints Go.
+internal/agent/tools/mcp/init.go 6478
+internal/agent/tools/mcp/state_regression_test.go 2620
+internal/cmd/migrate_test.go 1982
+internal/agent/agent_turn.go 1981
+internal/config/store_mcp_transaction.go 1799
+internal/app/app_run.go 1777
+internal/cmd/migrate.go 1659
+internal/session/run_queue_drain_session.go 1539
+internal/agent/tools/mcp/init_test.go 1384
+internal/agent/tools/mcp/lifecycle_findings_test.go 1254
+internal/config/config.go 1169
+internal/agent/agent_cache_keepalive_test.go 1164
+internal/session/lock.go 1119
+internal/server/handlers_agent.go 1102
+internal/server/p655_rerun_idset_regression_test.go 1069
+internal/config/store_mcp.go 1068
+web/src/store.ts 1053
+internal/shell/background.go 1024
+internal/agent/tools/grep.go 1011
+internal/message/message.go 1005
