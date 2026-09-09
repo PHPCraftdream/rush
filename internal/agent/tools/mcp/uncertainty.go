@@ -3,9 +3,10 @@ package mcp
 import (
 	"context"
 	"errors"
-	"github.com/PHPCraftdream/rush/internal/config"
 	"slices"
 	"strings"
+
+	"github.com/PHPCraftdream/rush/internal/config"
 )
 
 // ErrMCPConfigUncertain reports that a committed config mutation has not yet
@@ -249,6 +250,7 @@ func fenceMCPRuntimeLocked(o *Owner, cfg *config.ConfigStore, name string) *Clie
 	updateState(name, StateDisabled, nil, nil, Counts{})
 	return detached
 }
+
 func commitOutcomeNeedsRuntimeFence(outcome *config.CommitOutcome) bool {
 	return outcome != nil && (outcome.MaybeCommitted || (outcome.Committed && !outcome.Reconciled))
 }

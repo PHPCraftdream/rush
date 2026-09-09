@@ -4,10 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/pubsub"
 	"reflect"
 	"sync"
+
+	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/pubsub"
 )
 
 // addTransaction outlives the initializer phase of an AddServer call. The
@@ -119,9 +120,11 @@ func (o *Owner) ReplaceServer(ctx context.Context, cfg *config.ConfigStore, oldN
 		})
 }
 
-type replacementPersister func(*config.ConfigStore, string, string, config.MCPConfig) error
-type scopedReplacementPersister func(*config.ConfigStore, config.Scope, string, string, config.MCPConfig) error
-type replacementResultPersister func(*config.ConfigStore, config.Scope, string, string, config.MCPConfig) (config.MCPMutationResult, error)
+type (
+	replacementPersister       func(*config.ConfigStore, string, string, config.MCPConfig) error
+	scopedReplacementPersister func(*config.ConfigStore, config.Scope, string, string, config.MCPConfig) error
+	replacementResultPersister func(*config.ConfigStore, config.Scope, string, string, config.MCPConfig) (config.MCPMutationResult, error)
+)
 
 func replaceServerWithPersistence(
 	ctx context.Context,

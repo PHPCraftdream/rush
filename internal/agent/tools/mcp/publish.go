@@ -2,9 +2,10 @@ package mcp
 
 import (
 	"context"
+	"log/slog"
+
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/pubsub"
-	"log/slog"
 )
 
 type preparedClient struct {

@@ -3,13 +3,14 @@ package mcp
 import (
 	"context"
 	"errors"
-	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/pubsub"
 	"io"
 	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/pubsub"
 )
 
 // ErrOwnerBusy reports that another application currently owns the process

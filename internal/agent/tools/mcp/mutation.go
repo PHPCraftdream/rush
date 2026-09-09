@@ -4,10 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/pubsub"
 	"log/slog"
 	"reflect"
+
+	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/pubsub"
 )
 
 // DisableSingle disables and closes a single MCP client by name.
@@ -574,9 +575,11 @@ func (o *Owner) RemoveServer(cfg *config.ConfigStore, name string) error {
 		})
 }
 
-type removeServerPersister func(*config.ConfigStore, string) error
-type scopedRemoveServerPersister func(*config.ConfigStore, config.Scope, string) error
-type removeServerResultPersister func(*config.ConfigStore, config.Scope, string) (config.MCPMutationResult, error)
+type (
+	removeServerPersister       func(*config.ConfigStore, string) error
+	scopedRemoveServerPersister func(*config.ConfigStore, config.Scope, string) error
+	removeServerResultPersister func(*config.ConfigStore, config.Scope, string) (config.MCPMutationResult, error)
+)
 
 func removeServerWithPersistence(
 	cfg *config.ConfigStore,

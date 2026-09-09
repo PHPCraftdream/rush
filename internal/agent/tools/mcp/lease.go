@@ -4,11 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/PHPCraftdream/rush/internal/agent/tools/mcp/internal/contextlock"
-	"github.com/PHPCraftdream/rush/internal/config"
 	"slices"
 	"sync"
 	"time"
+
+	"github.com/PHPCraftdream/rush/internal/agent/tools/mcp/internal/contextlock"
+	"github.com/PHPCraftdream/rush/internal/config"
 )
 
 // leaseRegistry owns the per-server locks. References are held by lock

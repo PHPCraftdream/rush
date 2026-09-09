@@ -64,7 +64,6 @@ func newRipgrepJSONError(err error) *RipgrepJSONError {
 }
 
 func searchWithRipgrepCommand(cmd *exec.Cmd, limit, scannerMaxBytes int, statFns ...func(string) (os.FileInfo, error)) ([]grepMatch, bool, error) {
-
 	// Stream rg's stdout line-by-line instead of buffering the entire output.
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

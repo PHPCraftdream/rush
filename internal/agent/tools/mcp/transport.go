@@ -5,10 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/home"
-	"github.com/PHPCraftdream/rush/internal/platform"
-	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"io"
 	"net"
 	"net/http"
@@ -18,6 +14,11 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/home"
+	"github.com/PHPCraftdream/rush/internal/platform"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 const (

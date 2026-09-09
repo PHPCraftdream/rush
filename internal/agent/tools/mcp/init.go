@@ -6,13 +6,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"sync"
+
 	"github.com/PHPCraftdream/rush/internal/agent/tools/mcp/internal/contextlock"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/csync"
 	"github.com/PHPCraftdream/rush/internal/permission"
 	"github.com/PHPCraftdream/rush/internal/pubsub"
-	"log/slog"
-	"sync"
 )
 
 var (
