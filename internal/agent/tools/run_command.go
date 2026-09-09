@@ -99,7 +99,7 @@ type runCommandDescriptionData struct {
 
 func runCommandDescription() string {
 	return renderTemplate(runCommandDescriptionTpl, runCommandDescriptionData{
-		BannedCommands:  strings.Join(bannedCommands, ", "),
+		BannedCommands:  strings.Join(shell.BannedCommands(), ", "),
 		MaxOutputLength: MaxOutputLength,
 		DefaultTimeout:  runCommandDefaultTimeoutSeconds,
 		MaxTimeout:      runCommandMaxTimeoutSeconds,
@@ -122,7 +122,7 @@ func NewRunCommandTool(permissions permission.Service, workingDir string) fantas
 			// argument blockers like `go install` / `npm install --global` /
 			// `go test -exec`) — deliberately NOT a second list, so the two
 			// surfaces cannot drift apart.
-			for _, blocker := range blockFuncs() {
+			for _, blocker := range shell.CanonicalBlockFuncs() {
 				if blocker(argv) {
 					return fantasy.NewTextErrorResponse(fmt.Sprintf(
 						"program %q with these arguments is not allowed (run_command reuses the bash tool's block list)",
@@ -130,11 +130,9 @@ func NewRunCommandTool(permissions permission.Service, workingDir string) fantas
 				}
 			}
 
-			// Same fork architectural rule as bash.go: an agent inside rush
-			// should EXECUTE work, not re-delegate to yet another agent.
-			// Keep this site aligned with bash.go's identical CheckAll call
-			// so the two surfaces stay in lockstep.
-			if guardErr := agentguard.CheckAll(RunCommandPermissionsParams(params).RunAllowlistCommand()); guardErr != nil {
+			// Structured argv must be checked without synthesizing a shell
+			// string, which can lose argument boundaries and wrapper options.
+			if guardErr := agentguard.CheckArgs(argv); guardErr != nil {
 				return fantasy.NewTextErrorResponse(guardErr.Error()), nil
 			}
 

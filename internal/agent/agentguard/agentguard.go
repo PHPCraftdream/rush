@@ -15,11 +15,11 @@
 package agentguard
 
 import (
-	"encoding/base64"
 	"fmt"
 	"runtime"
 	"strings"
-	"unicode/utf16"
+
+	"github.com/PHPCraftdream/rush/internal/shell"
 )
 
 // DeniedError is returned by Check when a command is blocked. It is
@@ -156,6 +156,73 @@ func Check(command string) error {
 	return nil
 }
 
+// CheckArgs applies the agent recursion policy to already-expanded argv. It
+// is the lossless counterpart to Check for direct-launch tools such as
+// run_command and for runtime shell interception.
+func CheckArgs(args []string) error {
+	if len(args) == 0 {
+		return nil
+	}
+	return checkArgvCandidates(args, strings.Join(args, " "))
+}
+
+// CommandBlockFunc adapts the agent policy to Rush's runtime shell boundary.
+// Callers use it alongside the canonical hard-deny block funcs so dynamic
+// command heads are checked after expansion and before process creation.
+func CommandBlockFunc() shell.BlockFunc {
+	return func(args []string) bool {
+		return CheckArgs(args) != nil
+	}
+}
+
+func checkArgvCandidates(args []string, snippet string) error {
+	for _, candidate := range shell.CommandCandidatesForPlatform(args, true) {
+		if len(candidate) == 0 || strings.HasPrefix(candidate[0], "\x00") {
+			continue
+		}
+		if err := checkArgvCandidate(candidate, snippet); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func checkArgvCandidate(args []string, snippet string) error {
+	if len(args) == 0 {
+		return nil
+	}
+	head := canonicalName(args[0])
+	if head == "&" {
+		return checkArgvCandidates(args[1:], snippet)
+	}
+	if reason, ok := deniedAgents[head]; ok {
+		return &DeniedError{
+			Tool:    head,
+			Reason:  "AI agent CLI invocation is blocked by rush's architecture (would recurse / multiply cost). Tool: " + reason,
+			Snippet: snippet,
+		}
+	}
+	if packageRunners[head] {
+		pkg := extractPackageRunnerTarget(head, args[1:])
+		canon := canonicalName(pkg)
+		if reason, ok := deniedNpmPackages[canon]; ok {
+			return &DeniedError{Tool: pkg, Reason: reason + " — blocked", Snippet: snippet}
+		}
+		if reason, ok := deniedPypiPackages[canon]; ok {
+			return &DeniedError{Tool: pkg, Reason: reason + " — blocked", Snippet: snippet}
+		}
+		if reason, ok := deniedAgents[canon]; ok {
+			return &DeniedError{Tool: pkg, Reason: reason + " (via package runner) — blocked", Snippet: snippet}
+		}
+	}
+	if commandWrappers[head] {
+		if inner := extractWrapperInner(args[1:]); inner != "" {
+			return Check(inner)
+		}
+	}
+	return nil
+}
+
 // CheckAll runs every pre-execution command-string guard this package
 // defines, in a fixed order, and returns the first refusal. Today that is
 // Check (AI-agent recursion denylist — all platforms) followed, on
@@ -276,6 +343,12 @@ stripLoop:
 
 func checkSegment(segment string) error {
 	tokens := tokenize(segment)
+	if len(tokens) == 0 {
+		return nil
+	}
+	if err := checkArgvCandidates(tokens, segment); err != nil {
+		return err
+	}
 	res := resolveCommandHead(tokens)
 
 	// Recursively check any split-string payloads collected during wrapper stripping.
@@ -300,7 +373,9 @@ func checkSegment(segment string) error {
 		}
 	}
 
-	// Shell runner: ... -c "X" — re-check X.
+	// Shell runners are already recursively inspected by the shared shell
+	// candidate iterator above. The fallback retains support for PowerShell
+	// call operators and command wrappers represented inside the payload.
 	if shellRunners[headCanon] {
 		if inner := extractShellInner(headCanon, rest); inner != "" {
 			if err := Check(inner); err != nil {
@@ -410,6 +485,23 @@ func checkSegmentWindowSafety(segment string) *WindowOpenerError {
 	tokens := tokenize(segment)
 	if len(tokens) == 0 {
 		return nil
+	}
+	for _, candidate := range shell.CommandCandidatesForPlatform(tokens, true) {
+		if len(candidate) == 0 || strings.HasPrefix(candidate[0], "\x00") {
+			continue
+		}
+		head := canonicalName(candidate[0])
+		if head == "&" {
+			for _, nested := range candidate[1:] {
+				if windowOpenerVerbs[canonicalName(nested)] {
+					return &WindowOpenerError{Verb: canonicalName(nested), Snippet: segment}
+				}
+			}
+			continue
+		}
+		if windowOpenerVerbs[head] {
+			return &WindowOpenerError{Verb: head, Snippet: segment}
+		}
 	}
 
 	res := resolveCommandHead(tokens)
@@ -665,56 +757,35 @@ func tokenize(s string) []string {
 	return out
 }
 
-// extractShellInner reads -c / /c / -Command argument from a shell wrapper.
-// For -EncodedCommand the base64 payload is decoded (UTF-16LE per
-// PowerShell's convention) before being returned for re-checking.
-func extractShellInner(shell string, rest []string) string {
-	for i, t := range rest {
-		switch shell {
+// extractShellInner is a compatibility fallback for shell payloads that use
+// PowerShell's call operator or another wrapper syntax. Standard shell forms
+// are handled by shell.CommandCandidatesForPlatform before this fallback.
+func extractShellInner(shellName string, rest []string) string {
+	for i, token := range rest {
+		switch shellName {
 		case "cmd", "cmd.exe":
-			// cmd /c "..."  or  cmd /k "..."
-			if (strings.EqualFold(t, "/c") || strings.EqualFold(t, "/k")) && i+1 < len(rest) {
+			if (strings.EqualFold(token, "/c") || strings.EqualFold(token, "/k")) && i+1 < len(rest) {
 				return strings.Join(rest[i+1:], " ")
 			}
 		case "powershell", "powershell.exe", "pwsh", "pwsh.exe":
-			// -EncodedCommand <base64-utf16le>: decode, then recurse.
-			if strings.EqualFold(t, "-encodedcommand") || strings.EqualFold(t, "-enc") || strings.EqualFold(t, "-e") {
+			if strings.EqualFold(token, "-encodedcommand") || strings.EqualFold(token, "-enc") || strings.EqualFold(token, "-e") {
 				if i+1 < len(rest) {
-					if decoded := decodePowerShellEncoded(rest[i+1]); decoded != "" {
+					if decoded, ok := shell.DecodePowerShellEncodedCommand(rest[i+1]); ok {
 						return decoded
 					}
 				}
 				continue
 			}
-			if (strings.EqualFold(t, "-c") || strings.EqualFold(t, "-command")) && i+1 < len(rest) {
+			if (strings.EqualFold(token, "-c") || strings.EqualFold(token, "-command")) && i+1 < len(rest) {
 				return strings.Join(rest[i+1:], " ")
 			}
-		default: // bash / sh / dash / zsh / ksh / fish / nu
-			if t == "-c" && i+1 < len(rest) {
+		default:
+			if token == "-c" && i+1 < len(rest) {
 				return rest[i+1]
 			}
 		}
 	}
 	return ""
-}
-
-// decodePowerShellEncoded decodes the base64 payload of
-// `powershell -EncodedCommand <b64>`. PowerShell expects the input to be
-// UTF-16LE encoded BEFORE base64. Returns "" if anything goes wrong (we
-// then fall through to allowing the segment — safer than crashing).
-func decodePowerShellEncoded(b64 string) string {
-	raw, err := base64.StdEncoding.DecodeString(b64)
-	if err != nil {
-		return ""
-	}
-	if len(raw)%2 != 0 {
-		return ""
-	}
-	u16 := make([]uint16, len(raw)/2)
-	for i := 0; i < len(u16); i++ {
-		u16[i] = uint16(raw[2*i]) | uint16(raw[2*i+1])<<8
-	}
-	return string(utf16.Decode(u16))
 }
 
 // extractWrapperInner pulls out the actual command from a wrapper-style

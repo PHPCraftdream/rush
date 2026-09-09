@@ -12,16 +12,15 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strings"
 
 	"github.com/PHPCraftdream/rush/internal/agent/agentguard"
 	"github.com/PHPCraftdream/rush/internal/permission"
 	"github.com/PHPCraftdream/rush/internal/platform"
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/shell"
 	"github.com/bmatcuk/doublestar/v4"
 	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -135,6 +134,9 @@ func registerBashTool(srv *mcp.Server, perms permission.Service, sessionID strin
 		// surfaces cannot diverge again. See internal/agent/agentguard.
 		if guardErr := agentguard.CheckAll(input.Command); guardErr != nil {
 			return toolError(guardErr.Error()), nil, nil
+		}
+		if shell.CommandBlocked(input.Command) {
+			return toolError("command is not allowed for security reasons"), nil, nil
 		}
 
 		wd := workingDir
@@ -551,18 +553,21 @@ func resolvePath(path, workingDir string) string {
 }
 
 func runShell(ctx context.Context, command, dir string) (string, error) {
-	var cmd *exec.Cmd
-	if runtime.GOOS == "windows" {
-		cmd = platform.Command(ctx, "cmd.exe", "/c", command)
-	} else {
-		cmd = platform.Command(ctx, "bash", "-c", command)
-	}
-	cmd.Dir = dir
 	var buf bytes.Buffer
-	cmd.Stdout = &buf
-	cmd.Stderr = &buf
-	err := cmd.Run()
+	env := append(os.Environ(), shell.RushEnvMarkers()...)
+	err := shell.Run(ctx, shell.RunOptions{
+		Command:    command,
+		Cwd:        dir,
+		Env:        env,
+		Stdout:     &buf,
+		Stderr:     &buf,
+		BlockFuncs: mcpBashBlockFuncs(),
+	})
 	return buf.String(), err
+}
+
+func mcpBashBlockFuncs() []shell.BlockFunc {
+	return append(shell.CanonicalBlockFuncs(), agentguard.CommandBlockFunc())
 }
 
 func sliceLines(content string, start, end int) string {

@@ -338,6 +338,33 @@ func TestCheck_BlocksEncodedCommand(t *testing.T) {
 	require.Error(t, err, "encoded command containing 'claude' must be decoded and blocked: %s", cmd)
 }
 
+func TestCheckAllUsesSharedNestedShellCandidates(t *testing.T) {
+	require.Error(t, CheckAll(`bash -lc 'claude'`))
+
+	src := "claude"
+	u16 := make([]byte, 0, len(src)*2)
+	for _, r := range src {
+		u16 = append(u16, byte(r), 0)
+	}
+	encoded := base64.StdEncoding.EncodeToString(u16)
+	require.Error(t, CheckAll("powershell -EncodedCommand "+encoded))
+
+	// This represents the argv after the shell expanded `$blocked`; no real
+	// CLI is launched by the test.
+	require.Error(t, CheckArgs([]string{"claude"}))
+	require.True(t, CommandBlockFunc()([]string{"claude"}))
+
+	missing := "C:/rush-test-missing/claude"
+	encodedMissing := base64.StdEncoding.EncodeToString(func() []byte {
+		raw := make([]byte, 0, len(missing)*2+8)
+		for _, r := range "& '" + missing + "'" {
+			raw = append(raw, byte(r), 0)
+		}
+		return raw
+	}())
+	require.Error(t, CheckArgs([]string{"powershell", "-EncodedCommand", encodedMissing}))
+}
+
 func TestIsEnvAssignment(t *testing.T) {
 	assert.True(t, isEnvAssignment("FOO=bar"))
 	assert.True(t, isEnvAssignment("F_OO123=value"))

@@ -2,8 +2,10 @@ package cliprovider
 
 import (
 	"context"
+	"encoding/base64"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -20,6 +22,17 @@ type recordingMCPPermissionService struct {
 	mu       sync.Mutex
 	requests []permission.CreatePermissionRequest
 	deny     bool
+}
+
+func TestMCPBashRuntimeBlockFuncsIncludeAgentGuard(t *testing.T) {
+	found := false
+	for _, blocker := range mcpBashBlockFuncs() {
+		if blocker([]string{"claude"}) {
+			found = true
+			break
+		}
+	}
+	require.True(t, found, "MCP Bash must include the agent runtime blocker")
 }
 
 func (s *recordingMCPPermissionService) Request(ctx context.Context, opts permission.CreatePermissionRequest) (bool, error) {
@@ -135,6 +148,77 @@ func TestMCPServerAutoApproveUsesOwningSession(t *testing.T) {
 	require.False(t, result.IsError)
 	require.Len(t, result.Content, 1)
 	require.Equal(t, "read through MCP", result.Content[0].(*mcp.TextContent).Text)
+}
+
+func TestMCPServerAutoApproveCannotOverrideCanonicalBashDeny(t *testing.T) {
+	workingDir := t.TempDir()
+	sentinel := filepath.Join(workingDir, "sentinel")
+	missingCurl := filepath.ToSlash(filepath.Join(workingDir, "curl"))
+	missingClaude := filepath.ToSlash(filepath.Join(workingDir, "claude"))
+	perms := newMCPTestPermissionService(t, workingDir)
+	perms.AutoApproveSession("owner-session")
+	client := connectMCPTestClient(t, newMCPTestServer(t, perms, "owner-session", workingDir, nil))
+
+	result := callMCPTool(t, client, "Bash", mcpBashInput{
+		Command:     "/usr/bin/curl > " + sentinel,
+		Description: "blocked command",
+	})
+	require.True(t, result.IsError)
+	require.Contains(t, result.Content[0].(*mcp.TextContent).Text, "not allowed")
+	require.NoFileExists(t, sentinel, "permission auto-approval must not override a hard ban")
+
+	nested := callMCPTool(t, client, "Bash", mcpBashInput{
+		Command:     "bash -lc 'curl > " + sentinel + "'",
+		Description: "nested blocked command",
+	})
+	require.True(t, nested.IsError)
+	require.Contains(t, nested.Content[0].(*mcp.TextContent).Text, "not allowed")
+	require.NoFileExists(t, sentinel)
+
+	callOperator := callMCPTool(t, client, "Bash", mcpBashInput{
+		Command:     "powershell -Command \"& '" + missingCurl + "'\"",
+		Description: "PowerShell call operator curl",
+	})
+	require.True(t, callOperator.IsError)
+	require.Contains(t, callOperator.Content[0].(*mcp.TextContent).Text, "not allowed")
+	require.NoFileExists(t, sentinel)
+
+	dynamic := callMCPTool(t, client, "Bash", mcpBashInput{
+		Command:     "blocked='" + missingCurl + "'; $blocked",
+		Description: "runtime-expanded blocked command",
+	})
+	require.True(t, dynamic.IsError)
+	require.Contains(t, dynamic.Content[0].(*mcp.TextContent).Text, "not allowed")
+
+	agent := callMCPTool(t, client, "Bash", mcpBashInput{
+		Command:     "blocked='" + missingClaude + "'; $blocked",
+		Description: "runtime-expanded agent command",
+	})
+	require.True(t, agent.IsError)
+	agentText := agent.Content[0].(*mcp.TextContent).Text
+	require.True(t, strings.Contains(agentText, "agentguard") || strings.Contains(agentText, "not allowed"), agentText)
+
+	nestedAgent := callMCPTool(t, client, "Bash", mcpBashInput{
+		Command:     "bash -lc '" + missingClaude + "'",
+		Description: "nested missing agent command",
+	})
+	require.True(t, nestedAgent.IsError)
+	require.Contains(t, nestedAgent.Content[0].(*mcp.TextContent).Text, "agentguard")
+
+	encoded := callMCPTool(t, client, "Bash", mcpBashInput{
+		Command:     "powershell -EncodedCommand " + encodeMCPPowerShellPayload("& '"+missingClaude+"'"),
+		Description: "encoded agent command",
+	})
+	require.True(t, encoded.IsError)
+	require.Contains(t, encoded.Content[0].(*mcp.TextContent).Text, "agentguard")
+}
+
+func encodeMCPPowerShellPayload(value string) string {
+	raw := make([]byte, 0, len(value)*2)
+	for _, r := range value {
+		raw = append(raw, byte(r), byte(r>>8))
+	}
+	return base64.StdEncoding.EncodeToString(raw)
 }
 
 func TestMCPServerRestrictedSessionAllowlistUsesBashInput(t *testing.T) {

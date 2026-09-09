@@ -52,6 +52,14 @@ func scriptDispatchHandler(blockFuncs []BlockFunc) func(next interp.ExecHandlerF
 			if len(args) == 0 || !isPathPrefixed(args[0]) {
 				return next(ctx, args)
 			}
+			// Path-prefixed commands are dispatched before the ordinary exec
+			// middleware. Apply deny rules here too so a banned absolute path
+			// cannot reach file probing (or any process seam) first.
+			for _, blockFunc := range blockFuncs {
+				if blockFunc(args) {
+					return fmt.Errorf("command is not allowed for security reasons: %q", args[0])
+				}
+			}
 
 			// Resolve relative paths against the interpreter's cwd, not
 			// the process cwd — hook commands are authored with the hook

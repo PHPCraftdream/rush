@@ -16,11 +16,9 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"slices"
 	"strings"
 	"sync"
 
-	"github.com/charmbracelet/x/exp/slice"
 	"mvdan.cc/sh/v3/interp"
 	"mvdan.cc/sh/v3/syntax"
 )
@@ -178,59 +176,6 @@ func (s *Shell) SetBlockFuncs(blockFuncs []BlockFunc) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.blockFuncs = blockFuncs
-}
-
-// CommandsBlocker creates a BlockFunc that blocks exact command matches
-func CommandsBlocker(cmds []string) BlockFunc {
-	bannedSet := make(map[string]struct{})
-	for _, cmd := range cmds {
-		bannedSet[cmd] = struct{}{}
-	}
-
-	return func(args []string) bool {
-		if len(args) == 0 {
-			return false
-		}
-		_, ok := bannedSet[args[0]]
-		return ok
-	}
-}
-
-// ArgumentsBlocker creates a BlockFunc that blocks specific subcommand
-func ArgumentsBlocker(cmd string, args []string, flags []string) BlockFunc {
-	return func(parts []string) bool {
-		if len(parts) == 0 || parts[0] != cmd {
-			return false
-		}
-
-		argParts, flagParts := splitArgsFlags(parts[1:])
-		if len(argParts) < len(args) || len(flagParts) < len(flags) {
-			return false
-		}
-
-		argsMatch := slices.Equal(argParts[:len(args)], args)
-		flagsMatch := slice.IsSubset(flags, flagParts)
-
-		return argsMatch && flagsMatch
-	}
-}
-
-func splitArgsFlags(parts []string) (args []string, flags []string) {
-	args = make([]string, 0, len(parts))
-	flags = make([]string, 0, len(parts))
-	for _, part := range parts {
-		if strings.HasPrefix(part, "-") {
-			// Extract flag name before '=' if present
-			flag := part
-			if before, _, ok := strings.Cut(part, "="); ok {
-				flag = before
-			}
-			flags = append(flags, flag)
-		} else {
-			args = append(args, part)
-		}
-	}
-	return args, flags
 }
 
 // newInterp creates a new interpreter with the current shell state. A nil

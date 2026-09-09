@@ -84,81 +84,8 @@ type bashDescriptionData struct {
 	RgAvailable     bool
 }
 
-var bannedCommands = []string{
-	// Network/Download tools
-	"alias",
-	"aria2c",
-	"axel",
-	"chrome",
-	"curl",
-	"curlie",
-	"firefox",
-	"http-prompt",
-	"httpie",
-	"links",
-	"lynx",
-	"nc",
-	"safari",
-	"scp",
-	"ssh",
-	"telnet",
-	"w3m",
-	"wget",
-	"xh",
-
-	// System administration
-	"doas",
-	"su",
-	"sudo",
-
-	// Package managers
-	"apk",
-	"apt",
-	"apt-cache",
-	"apt-get",
-	"dnf",
-	"dpkg",
-	"emerge",
-	"home-manager",
-	"makepkg",
-	"opkg",
-	"pacman",
-	"paru",
-	"pkg",
-	"pkg_add",
-	"pkg_delete",
-	"portage",
-	"rpm",
-	"yay",
-	"yum",
-	"zypper",
-
-	// System modification
-	"at",
-	"batch",
-	"chkconfig",
-	"crontab",
-	"fdisk",
-	"mkfs",
-	"mount",
-	"parted",
-	"service",
-	"systemctl",
-	"umount",
-
-	// Network configuration
-	"firewall-cmd",
-	"ifconfig",
-	"ip",
-	"iptables",
-	"netstat",
-	"pfctl",
-	"route",
-	"ufw",
-}
-
 func bashDescription(attribution *config.Attribution, modelID string) string {
-	bannedCommandsStr := strings.Join(bannedCommands, ", ")
+	bannedCommandsStr := strings.Join(shell.BannedCommands(), ", ")
 	var out bytes.Buffer
 	if err := bashDescriptionTpl.Execute(&out, bashDescriptionData{
 		BannedCommands:  bannedCommandsStr,
@@ -174,35 +101,7 @@ func bashDescription(attribution *config.Attribution, modelID string) string {
 }
 
 func blockFuncs() []shell.BlockFunc {
-	return []shell.BlockFunc{
-		shell.CommandsBlocker(bannedCommands),
-
-		// System package managers
-		shell.ArgumentsBlocker("apk", []string{"add"}, nil),
-		shell.ArgumentsBlocker("apt", []string{"install"}, nil),
-		shell.ArgumentsBlocker("apt-get", []string{"install"}, nil),
-		shell.ArgumentsBlocker("dnf", []string{"install"}, nil),
-		shell.ArgumentsBlocker("pacman", nil, []string{"-S"}),
-		shell.ArgumentsBlocker("pkg", []string{"install"}, nil),
-		shell.ArgumentsBlocker("yum", []string{"install"}, nil),
-		shell.ArgumentsBlocker("zypper", []string{"install"}, nil),
-
-		// Language-specific package managers
-		shell.ArgumentsBlocker("brew", []string{"install"}, nil),
-		shell.ArgumentsBlocker("cargo", []string{"install"}, nil),
-		shell.ArgumentsBlocker("gem", []string{"install"}, nil),
-		shell.ArgumentsBlocker("go", []string{"install"}, nil),
-		shell.ArgumentsBlocker("npm", []string{"install"}, []string{"--global"}),
-		shell.ArgumentsBlocker("npm", []string{"install"}, []string{"-g"}),
-		shell.ArgumentsBlocker("pip", []string{"install"}, []string{"--user"}),
-		shell.ArgumentsBlocker("pip3", []string{"install"}, []string{"--user"}),
-		shell.ArgumentsBlocker("pnpm", []string{"add"}, []string{"--global"}),
-		shell.ArgumentsBlocker("pnpm", []string{"add"}, []string{"-g"}),
-		shell.ArgumentsBlocker("yarn", []string{"global", "add"}, nil),
-
-		// `go test -exec` can run arbitrary commands
-		shell.ArgumentsBlocker("go", []string{"test"}, []string{"-exec"}),
-	}
+	return append(shell.CanonicalBlockFuncs(), agentguard.CommandBlockFunc())
 }
 
 func NewBashTool(permissions permission.Service, workingDir string, attribution *config.Attribution, modelID string, onBackgroundComplete func(sessionID string, sh *shell.BackgroundShell), managers ...*shell.BackgroundShellManager) fantasy.AgentTool {
@@ -236,6 +135,9 @@ func NewBashTool(permissions permission.Service, workingDir string, attribution 
 			// nor a process.
 			if guardErr := agentguard.CheckAll(params.Command); guardErr != nil {
 				return fantasy.NewTextErrorResponse(guardErr.Error()), nil
+			}
+			if shell.CommandBlocked(params.Command) {
+				return fantasy.NewTextErrorResponse("command is not allowed for security reasons"), nil
 			}
 
 			// Determine working directory
@@ -308,6 +210,9 @@ func NewBashTool(permissions permission.Service, workingDir string, attribution 
 					}
 
 					stdout = formatOutput(stdout, stderr, execErr)
+					if isSecurityBlockError(execErr) {
+						return fantasy.NewTextErrorResponse(stdout), nil
+					}
 
 					metadata := BashResponseMetadata{
 						StartTime:        startTime.UnixMilli(),
@@ -429,6 +334,9 @@ func NewBashTool(permissions permission.Service, workingDir string, attribution 
 				}
 
 				stdout = formatOutput(stdout, stderr, execErr)
+				if isSecurityBlockError(execErr) {
+					return fantasy.NewTextErrorResponse(stdout), nil
+				}
 
 				metadata := BashResponseMetadata{
 					StartTime:        startTime.UnixMilli(),
@@ -463,6 +371,10 @@ func NewBashTool(permissions permission.Service, workingDir string, attribution 
 			return fantasy.WithResponseMetadata(fantasy.NewTextResponse(response), metadata), nil
 		},
 	)
+}
+
+func isSecurityBlockError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "command is not allowed for security reasons")
 }
 
 // formatOutput formats the output of a completed command with error handling

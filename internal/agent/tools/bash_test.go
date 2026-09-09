@@ -3,6 +3,8 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -75,6 +77,72 @@ func TestBashTool_DefaultAutoBackgroundThreshold(t *testing.T) {
 	require.False(t, meta.Background)
 	require.Empty(t, meta.ShellID)
 	require.Contains(t, meta.Output, "done")
+}
+
+func TestBashToolCanonicalDenyPreventsForegroundAndBackgroundExecution(t *testing.T) {
+	workingDir := t.TempDir()
+	sentinel := filepath.Join(workingDir, "sentinel")
+	perms := &recordingPermissionService{
+		Broker: pubsub.NewBroker[permission.PermissionRequest](),
+		allow:  true,
+	}
+	manager := shell.NewBackgroundShellManager()
+	attribution := &config.Attribution{TrailerStyle: config.TrailerStyleNone}
+	tool := NewBashTool(perms, workingDir, attribution, "test-model", nil, manager)
+	ctx := context.WithValue(context.Background(), SessionIDContextKey, "policy-session")
+
+	for i, background := range []bool{false, true} {
+		command := "/usr/bin/curl > " + sentinel
+		if i == 1 {
+			command = "bash -lc 'curl > " + sentinel + "'"
+		}
+		resp := runBashTool(t, tool, ctx, BashParams{
+			Command:         command,
+			RunInBackground: background,
+		})
+		require.True(t, resp.IsError, "banned command must be rejected")
+		require.NotContains(t, resp.Content, "permission")
+		require.NoFileExists(t, sentinel, "blocked command must not create its redirection")
+	}
+	require.Zero(t, perms.requestCount, "hard bans must run before permission approval")
+	require.Empty(t, manager.List(), "hard bans must not start a background job")
+}
+
+func TestBashToolAgentGuardRuntimeBoundary(t *testing.T) {
+	workingDir := t.TempDir()
+	missingClaude := filepath.ToSlash(filepath.Join(workingDir, "claude"))
+	perms := &recordingPermissionService{
+		Broker: pubsub.NewBroker[permission.PermissionRequest](),
+		allow:  true,
+	}
+	manager := shell.NewBackgroundShellManager()
+	attribution := &config.Attribution{TrailerStyle: config.TrailerStyleNone}
+	tool := NewBashTool(perms, workingDir, attribution, "test-model", nil, manager)
+	ctx := context.WithValue(context.Background(), SessionIDContextKey, "agent-guard-session")
+
+	for _, command := range []string{
+		"bash -lc '" + missingClaude + "'",
+		"blocked='" + missingClaude + "'; $blocked",
+		"powershell -EncodedCommand " + encodePowerShellPayload(t, "& '"+missingClaude+"'"),
+	} {
+		resp := runBashTool(t, tool, ctx, BashParams{Command: command})
+		require.True(t, resp.IsError, command)
+		require.True(t,
+			strings.Contains(resp.Content, "agentguard") || strings.Contains(resp.Content, "not allowed for security reasons"),
+			"missing agent must be denied before execution: %s", resp.Content)
+		require.NotContains(t, resp.Content, "permission", command)
+	}
+}
+
+func TestBashRuntimeBlockFuncsIncludeAgentGuard(t *testing.T) {
+	found := false
+	for _, blocker := range blockFuncs() {
+		if blocker([]string{"claude"}) {
+			found = true
+			break
+		}
+	}
+	require.True(t, found, "foreground and background Bash must share the agent runtime blocker")
 }
 
 func TestBashTool_CustomAutoBackgroundThreshold(t *testing.T) {

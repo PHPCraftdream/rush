@@ -109,19 +109,32 @@ func TestRunCommand_NoShellInterpretation(t *testing.T) {
 
 func TestRunCommand_BannedProgram(t *testing.T) {
 	dir := t.TempDir()
+	missingCurl := filepath.ToSlash(filepath.Join(dir, "curl"))
+	missingClaude := filepath.ToSlash(filepath.Join(dir, "claude"))
+	missingSudo := filepath.ToSlash(filepath.Join(dir, "sudo"))
+	missingGo := filepath.ToSlash(filepath.Join(dir, "go"))
 	tool := newRunCommandToolForTest(t, dir)
 	ctx := context.WithValue(context.Background(), SessionIDContextKey, "test-session")
 
 	resp := runRunCommandTool(t, tool, ctx, RunCommandParams{
-		Program: "curl",
-		Args:    []string{"https://invalid"},
+		Program: missingCurl,
 	})
 	require.True(t, resp.IsError, "curl must be rejected")
 	assert.Contains(t, resp.Content, "not allowed")
 
+	for _, params := range []RunCommandParams{
+		{Program: "env", Args: []string{missingCurl}},
+		{Program: "bash", Args: []string{"-c", missingCurl}},
+		{Program: "bash", Args: []string{"-lc", missingClaude}},
+		{Program: "powershell", Args: []string{"-EncodedCommand", encodePowerShellPayload(t, "& '"+missingClaude+"'")}},
+	} {
+		resp = runRunCommandTool(t, tool, ctx, params)
+		require.True(t, resp.IsError, "%q must be rejected", params)
+		assert.True(t, strings.Contains(resp.Content, "not allowed") || strings.Contains(resp.Content, "agentguard"), "%q: %s", params, resp.Content)
+	}
+
 	resp = runRunCommandTool(t, tool, ctx, RunCommandParams{
-		Program: "sudo",
-		Args:    []string{"ls"},
+		Program: missingSudo,
 	})
 	require.True(t, resp.IsError, "sudo must be rejected")
 	assert.Contains(t, resp.Content, "not allowed")
@@ -129,11 +142,22 @@ func TestRunCommand_BannedProgram(t *testing.T) {
 	// Argument-blocker parity with the bash tool: `go install` is blocked
 	// even though the program itself is fine.
 	resp = runRunCommandTool(t, tool, ctx, RunCommandParams{
-		Program: "go",
+		Program: missingGo,
 		Args:    []string{"install", "example.com/x"},
 	})
 	require.True(t, resp.IsError, "go install must be rejected")
 	assert.Contains(t, resp.Content, "not allowed")
+
+	resp = runRunCommandTool(t, tool, ctx, RunCommandParams{
+		Program: "echo",
+		Args:    []string{"curl"},
+	})
+	require.False(t, resp.IsError, "curl as an ordinary argument must be allowed")
+	assert.NotContains(t, resp.Content, "not allowed")
+
+	resp = runRunCommandTool(t, tool, ctx, RunCommandParams{Program: "mycurl"})
+	require.True(t, resp.IsError, "a lookalike executable may fail normally")
+	assert.NotContains(t, resp.Content, "not allowed")
 }
 
 func TestRunCommand_WorkingDirContainment(t *testing.T) {
