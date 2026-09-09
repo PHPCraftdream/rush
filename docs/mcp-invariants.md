@@ -26,8 +26,8 @@ respectively); the rows below reflect the closed state.
 | INV-03 | Work authorized by an admission dies the moment its owner, owner generation, or the server's epoch changes — and an epoch is bumped only after the mutation's durable write is known to have succeeded, so a failed mutation never invalidates a healthy published session. | `serverAdmission` 1112-1143, `validLocked` 1304-1312, `committedValidLocked` 1327-1360, bump 1392-1398 and `invalidateServerLocked` 1617-1625, `cancelServerCandidates` (no bump) 1630-1640 | TestFailedDisableDoesNotCancelStartupCandidate, TestFailedRemoveDoesNotCancelStartupCandidate, TestReplaceKnownCommitFencesRuntimeAfterEpochInvalidation, TestRetiredClientCannotPublishAfterReplacement, TestDisableServerCancelsBlockedInitAndLeavesNoLateSession, TestRemoveServerCancelsBlockedInitAndRejectsLateCommit | `963d584a` (admission model); defect from `cf12608e` fixed by `71df8f19` (failed replace keeps old admission) |
 | INV-04 | Owner shutdown joins every admitted initialization, refresh worker, and session close before resetting the process-wide registry — and an expired Close deadline leaves the owner fenced in closing state rather than letting old-owner callbacks touch the next owner's registry. | `finishClose` 2430-2492 (joins 2436-2439, cancel-before-close 2469-2474, reset 2480-2491), `Close` contract 2409-2428, `trackSessionLocked` 830-853 | TestOwnerCloseDeadlineRetainsFenceUntilStuckSessionCloses, TestOwnerCloseKeepsFenceWhileDetachedCloseBlocks, TestOwnerCloseResetsRegistryAndAllowsNextLifecycle, TestOwnerCloseJoinsCanceledRuntimeMCPResolution, TestOwnerCloseCancelsBlockedStartupBeforeCleanup, TestTrackRejectsAdoptionAfterCloseBegins | `5c8641e7` (tracked lifecycle joins), `01e909d0` (deadline keeps fence, R17-3), `60c81f78` (cancel-then-sequential-close) |
 | INV-05 | Every mutation of `Owner.committedAdmissions` happens under `lifecycleMu` — a per-server lease is not sufficient, because disable/remove of server A and publish/renew of server B touch the same plain Go map on different names. | `detachSessionLocked` 4689-4693 (lock taken inside), `detachSessionLifecycleLocked` 4697-4707; writes 2346, 3235, 3944/3960/3967; reader 6057 | TestCommittedAdmissionsDisableAndPublishCrossServer, TestCommittedAdmissionsDifferentNameDetachIsSynchronized, TestCommittedAdmissionsDetachStructuralOracle (committed_admissions_sync_test.go) | Introduced unsynchronized by `f2914d53c` (CH5-1, P0); law learned by `00c9911f5`; cross-server oracle `0175b1e0` (stage 0.2) |
-| INV-06 | Lock discipline: a server lease is taken before `lifecycleMu` and never the reverse; no network or disk I/O runs while holding `lifecycleMu` or a server lease; context cancellation happens outside lifecycle locks. | order comments 4687-4688, 6077-6079; no-I/O 610-611, 3863-3867, 1978-1983, 2093-2095; cancel-outside 219-224 | TestMutationPublicationTakesServerLeaseBeforeConfigLocks, TestDisableReleasesServerLeaseBeforeClosingDetachedTransport, TestSkippedTransitionReleasesLeaseBeforeBlockingRetirement, TestFailClosedMCPHonorsCallerCancellation, TestMCPAdmissionFinalTurnCancellationReleasesConfigLocks; **NO-TEST for the no-I/O-under-lock clause** — asserted by comments and review reading only (chunk 5 §7 verified it manually) | `00c9911f5` (fixed detach order), `a470adf6` (moved transport closes outside the lease), `3e7f9df2`/era reviews (order verified) |
-| INV-07 | Each server name has one lease instance that serializes replacement/close while readers share it; the registry refcounts identity so a waiter can never have its lease entry reclaimed and swapped underneath it (no ABA); multi-server operations take leases in sorted name order. | registry 402-546 (`getRetained` 498, `retain` 512, `release` 523), add retains entry across init 4194-4212, sorted multi-lock 665-681 | TestLeaseRegistryReclaimsChurnAndProtectsWaiterFromABA, TestAddServerRetainsLeaseAcrossRemoveDuringInitialization, TestSuccessfulAddRemoveReclaimsEveryLeaseReference, TestCanceledAddAfterRetainReclaimsUniqueLeaseReferences, TestAddRollbackConsumesItsLastLeaseReferenceOnce; **NO-TEST for the sorted-order clause** (no test asserts acquisition order of two names) | `92f2ee9a` (refcounted registry), `2c23fcd3` (ABA-safe `retain` bool) |
+| INV-06 | Lock discipline: a server lease is taken before `lifecycleMu` and never the reverse; no network or disk I/O runs while holding `lifecycleMu` or a server lease; context cancellation happens outside lifecycle locks. | order comments 4687-4688, 6077-6079; no-I/O 610-611, 3863-3867, 1978-1983, 2093-2095; cancel-outside 219-224 | TestMutationPublicationTakesServerLeaseBeforeConfigLocks, TestDisableReleasesServerLeaseBeforeClosingDetachedTransport, TestSkippedTransitionReleasesLeaseBeforeBlockingRetirement, TestFailClosedMCPHonorsCallerCancellation, TestMCPAdmissionFinalTurnCancellationReleasesConfigLocks, TestReplacePersistRunsOutsideLifecycleLock, TestUncertaintyReloadRunsOutsideLifecycleLocks (no-I/O clause: lock-state probes at the replace-persist and uncertainty-reload seams, lock_discipline_test.go; scope limits in "NO-TEST findings") | `00c9911f5` (fixed detach order), `a470adf6` (moved transport closes outside the lease), `3e7f9df2`/era reviews (order verified) |
+| INV-07 | Each server name has one lease instance that serializes replacement/close while readers share it; the registry refcounts identity so a waiter can never have its lease entry reclaimed and swapped underneath it (no ABA); multi-server operations take leases in sorted name order. | registry 402-546 (`getRetained` 498, `retain` 512, `release` 523), add retains entry across init 4194-4212, sorted multi-lock 665-681 | TestLeaseRegistryReclaimsChurnAndProtectsWaiterFromABA, TestAddServerRetainsLeaseAcrossRemoveDuringInitialization, TestSuccessfulAddRemoveReclaimsEveryLeaseReference, TestCanceledAddAfterRetainReclaimsUniqueLeaseReferences, TestAddRollbackConsumesItsLastLeaseReferenceOnce, TestReplaceServerAcquiresLeasesInSortedNameOrder (sorted-order clause, lock_discipline_test.go) | `92f2ee9a` (refcounted registry), `2c23fcd3` (ABA-safe `retain` bool) |
 | INV-08 | For one server name, the durable config commit, the runtime swap, and the subscriber-visible events form one linearization point against concurrent remove/disable/add — a remove can never interleave between an Add's disk commit and its publication, and a same-name Add cannot start before subscribers have seen the deletion. | `publishPreparedClientLocked` contract 3172-3176, publish paths 3078-3121 / 4279-4341; remove publish-in-lease 4573-4577; replace events-before-unlock 4039-4041 | TestAddLinearizesPublicationBeforeConcurrentRemoveAfterCommit, TestRemovePublishesBeforeBlockedCloseAndConcurrentAdd (zz_commit_outcome_test.go), TestRemoveDisabledFallbackPublishesOneStateEvent, TestStartFallbackDisabledPublishesBeforeLeaseUnlock, TestReplacePublishesBeforeBlockedCloseAndConcurrentRemove, TestStartFallbackDoesNotReplaceNewerSession (event_order_test.go) | `46f68de7` (commit+publish one lease turn), `49c92cb1` (remove event), `a62a37e6` (replacement events), `62371a33` (pinned against disk) |
 | INV-09 | Replacement connects and promotes the new session before the durable rename commits, then switches config, session, advertised data, and state as one transition; any pre-commit failure leaves the old server exactly as it was. | `ReplaceServer` contract 3665-3669, flow 3825-3977 (promote 3841-3848, no-lifecycleMu persist 3863-3868, publication 3912-3977) | TestReplaceServerFailedSameNamePreservesLiveServerAndDisk, TestReplaceServerFailedRenamePreservesLiveServerAndDisk, TestReplaceServerSuccessfulSwapPublishesNewSessionOnce, TestReplaceServerSuccessfulRenameRemovesOnlyOldRuntimeState, TestReplaceServerPersistenceFailurePreservesOldAdmissionAndCallbacks (transactional_update_test.go) | `cf12608e` (transactional replace), `71df8f19` (admission survival), `14b8677d` (inactive replacements finalized) |
 | INV-10 | A rename replacement is fenced on both identities — source and destination — so a concurrent change or uncertainty on either name invalidates the candidate before the durable commit. | `bindGuardLocked` 1216-1226, `replacementNamesValidLocked` 1253-1272, guard use 3803-3810 + 3915-3917 | TestReplaceServerConditionalTargetCollisionPreservesOldRuntime, TestReplacedRenameAdmissionTracksCommittedConfig, TestReplaceRejectsPendingAddDestinationBeforePreparation, TestReplaceRejectsDestinationFenceRaisedDuringPreparation | `59d1d8d9` (rename/rollback fences), `c7dfca65` (stale replacement results fenced) |
@@ -473,17 +473,56 @@ deepest mechanism-coupled oracles: `TestRenewalRetainsLeaseIdentityUntilAfterPub
 | TestSessionCancellationClassification | state_regression_test.go | INV-01 | caller cancel/deadline, admission cancel, owned timeout classified (4 subtests) |
 | TestPingTimeoutClassification | state_regression_test.go | INV-01 | same classification on the ping path (2 subtests) |
 
-## NO-TEST findings (input for stage 1.4)
+## NO-TEST findings — closed by stage 1.4 (task #905)
 
-- INV-06, clause "no network or disk I/O while holding `lifecycleMu` or a
-  server lease": enforced only by comments (610-611, 3863-3867, 1978-1983)
-  and manually verified in chunk-5 review §7. No test fails if a future
-  change performs I/O under the lock.
-- INV-07, clause "multi-server operations take leases in sorted name order":
-  `lockServerLeasesContext` sorts (665-681), but no test asserts the
-  acquisition order of two names; a deadlock-ordering regression would pass
-  the current suite.
-- Everything else above has at least one named, non-vacuum oracle.
+Both clause-level gaps below were closed by the new file
+`internal/agent/tools/mcp/lock_discipline_test.go`. This supersedes the
+stage-1.2 statement that the two gaps "stand unchanged and are the complete
+1.4 backlog". Both new tests are revert-checked: each was shown to fail when
+its guarded behaviour was temporarily broken, and to pass again after a
+byte-exact restore.
+
+- INV-07, "multi-server operations take leases in sorted name order":
+  COVERED by `TestReplaceServerAcquiresLeasesInSortedNameOrder`. It drives a
+  rename `ReplaceServer` whose call site passes (oldName, newName) in reverse
+  lexical order (`zz-order-source` → `aa-order-target`), records every lease
+  acquisition attempt through `serverLeaseHooks.beforeTryLockFn`, and asserts
+  the observed order is the sorted order. Removing `slices.Sort` from
+  `lockServerLeasesContext` fails the test with the two names swapped. The
+  test pins the shared sort inside `lockServerLeasesContext`, so both
+  multi-name lock rounds of ReplaceServer — and any future caller of that
+  helper — are covered by construction.
+- INV-06, "no network or disk I/O while holding `lifecycleMu` or a server
+  lease": COVERED NARROWLY, at two of the call sites the invariant names.
+  - `TestReplacePersistRunsOutsideLifecycleLock` probes `lifecycleMu` free at
+    the durable replacement write (the injected `persist` seam of
+    `replaceServerWithResultPersistenceAndPreparation`). The ordered server
+    leases are held at that seam by design ("Keep the ordered server leases,
+    but never hold lifecycleMu here") and are deliberately not probed there.
+  - `TestUncertaintyReloadRunsOutsideLifecycleLocks` probes `lifecycleMu` and
+    every lease entry in the registry write-free at the uncertainty reload's
+    finalize seam (`mcpReloadAfterSuccessHook` in
+    `reloadWithUncertaintyToken`), with a live seeded lease entry so the
+    lease leg cannot pass vacuously.
+  - Revert-checks: holding `lifecycleMu` across the persist call, or across
+    the reload and its finalization, makes the respective test fail in under
+    a second with the held lock named.
+
+  REMAINING UNCOVERED, stated precisely:
+  - The general law is not directly assertable in Go; only instrumented seams
+    are oracles. Other I/O sites — the network connect in candidate
+    preparation, and the persist seams of add/enable/disable/remove — have no
+    lock probe.
+  - The reload observation point is the finalize seam AFTER the disk read
+    returns. A regression that holds `lifecycleMu` only around the raw read
+    and releases before finalization would not be caught; a hold through
+    finalization — the realistic shape — is caught. Holding it through the
+    whole function is independently impossible: `reconcilePublishedSessions`
+    re-takes `lifecycleMu` and self-deadlocks (the deferred-hold revert-check
+    demonstrated this as a 10-minute test hang — itself evidence the lock
+    discipline is load-bearing).
+  - The probes test the write side only; read-locked (RLock) lease holders
+    are not probed anywhere.
 
 ## Review-vs-code notes
 
