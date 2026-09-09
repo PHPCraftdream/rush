@@ -699,8 +699,8 @@ func (c *coordinator) buildTools(ctx context.Context, cfg *config.Config, agent 
 	if len(cfg.MCP) > 0 {
 		allTools = append(
 			allTools,
-			tools.NewListMCPResourcesTool(c.cfg, c.permissions),
-			tools.NewReadMCPResourceTool(c.cfg, c.permissions),
+			tools.NewListMCPResourcesTool(c.cfg, c.permissions, c.mcpOwner),
+			tools.NewReadMCPResourceTool(c.cfg, c.permissions, c.mcpOwner),
 		)
 	}
 
@@ -716,7 +716,7 @@ func (c *coordinator) buildTools(ctx context.Context, cfg *config.Config, agent 
 	// below IS from the pinned cfg/agent, so the allow-list decision itself
 	// is consistent with the rest of this build; only the candidate tool set
 	// it is applied to can be from a different generation.
-	for _, tool := range tools.GetMCPTools(c.permissions, c.cfg, c.cfg.WorkingDir()) {
+	for _, tool := range tools.GetMCPTools(c.permissions, c.cfg, c.cfg.WorkingDir(), c.mcpOwner) {
 		if agent.AllowedMCP == nil {
 			// No MCP restrictions
 			filteredTools = append(filteredTools, tool)

@@ -727,7 +727,7 @@ func (l *clientLease) lockForPublish(ctx context.Context) (*serverLease, bool) {
 }
 
 func (l *clientLease) validForPublishLocked() bool {
-	if l.owner != nil && (owner != l.owner || l.owner.closing ||
+	if l.owner != nil && (!(l.owner.standalone || owner == l.owner) || l.owner.closing ||
 		l.owner.generation != l.generation || l.owner.serverEpochs[l.name] != l.epoch) {
 		return false
 	}
@@ -788,7 +788,16 @@ var ErrMCPConfigUncertain = errors.New("mcp: config mutation outcome is uncertai
 // package predates multiple App instances and its tool/state maps remain
 // process-wide, so ownership is explicit rather than silently shared.
 type Owner struct {
-	implicit            bool
+	implicit bool
+	// Standalone marks an owner reserved by an embedder that needs its own
+	// MCP lifecycle independent of the process-wide installed owner (the SDK
+	// multi-App case). A standalone owner participates in the shared
+	// name-keyed registry like any owner, but it is never installed in the
+	// package owner slot, never reclaims, never resets the shared registry on
+	// Close, and only cleans up its own entries. Two owners configuring the
+	// same server name share one registry entry, which is unsupported;
+	// disjoint configs are the contract.
+	standalone          bool
 	closing             bool
 	closeRequested      atomic.Bool
 	generation          uint64
@@ -977,7 +986,7 @@ func (o *Owner) enqueueSessionClose(session *ClientSession, shutdown bool) {
 		return
 	}
 	lifecycleMu.Lock()
-	if owner != o {
+	if owner != o && !o.standalone {
 		lifecycleMu.Unlock()
 		return
 	}
@@ -993,7 +1002,7 @@ func (o *Owner) enqueueFallback(cfg *config.ConfigStore, result config.MCPMutati
 		return
 	}
 	lifecycleMu.Lock()
-	if owner != o || o.closing {
+	if owner != o && !o.standalone || o.closing {
 		lifecycleMu.Unlock()
 		return
 	}
@@ -1232,7 +1241,7 @@ func (a *serverAdmission) replacementValidLocked() bool {
 	if a == nil || a.owner == nil || a.cfg == nil {
 		return true
 	}
-	if owner != a.owner || a.owner.closing || a.owner.generation != a.generation ||
+	if owner != a.owner && !a.owner.standalone || a.owner.closing || a.owner.generation != a.generation ||
 		!a.replacementNamesValidLocked() || !a.sourceConfigValidLocked() {
 		return false
 	}
@@ -1296,7 +1305,7 @@ func (a *serverAdmission) candidateValidLocked() bool {
 			return false
 		}
 	}
-	return (a.promoted || a.ctx == nil || a.ctx.Err() == nil) && owner == a.owner &&
+	return (a.promoted || a.ctx == nil || a.ctx.Err() == nil) && (a.owner.standalone || owner == a.owner) &&
 		!a.owner.closing && a.owner.generation == a.generation &&
 		a.owner.serverEpochs[a.name] == a.epoch && !uncertain
 }
@@ -1334,7 +1343,7 @@ func (a *serverAdmission) committedValidLocked() bool {
 		admissionName = a.committedName
 		admissionEpoch = a.committedEpoch
 	}
-	valid := owner == a.owner && !a.owner.closing &&
+	valid := (a.owner.standalone || owner == a.owner) && !a.owner.closing &&
 		a.owner.generation == a.generation &&
 		a.owner.serverEpochs[admissionName] == admissionEpoch
 	if !valid {
@@ -1650,6 +1659,49 @@ func Acquire() (*Owner, error) {
 	return acquire(false)
 }
 
+// AcquireStandalone reserves a standalone MCP owner for an embedder that
+// needs its own MCP lifecycle independent of the process-wide installed
+// owner (the SDK multi-App case). It never contends for the installed owner
+// slot, so it never fails with ErrOwnerBusy because of another owner.
+func AcquireStandalone() (*Owner, error) {
+	return acquireStandalone()
+}
+
+// acquireStandalone mirrors acquire(false) without installing the owner in
+// the package owner slot: a standalone owner never reclaims, never contends
+// for the slot, and only cleans up its own registry entries on Close.
+func acquireStandalone() (*Owner, error) {
+	lifecycleMu.Lock()
+	generation++
+	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
+	o := &Owner{
+		standalone:          true,
+		generation:          generation,
+		lifecycleCtx:        lifecycleCtx,
+		lifecycleCancel:     lifecycleCancel,
+		closeDone:           make(chan struct{}),
+		initDone:            closedChannel(),
+		serverEpochs:        make(map[string]uint64),
+		serverCancels:       make(map[string]map[uint64]serverCancel),
+		committedAdmissions: make(map[string]*serverAdmission),
+		pendingGlobalAdds:   make(map[string]*addTransaction),
+		refreshCh:           make(chan struct{}, 1),
+		refreshPending:      make(map[refreshKey]refreshRequest),
+		refreshRunning:      make(map[refreshKey]struct{}),
+		trackedSessions:     make(map[*ClientSession]struct{}),
+		trackedEmpty:        closedChannel(),
+		closer:              newSessionCloser(),
+		fallbackWorker:      newFallbackWorker(),
+		refreshDone:         make(chan struct{}),
+	}
+	o.closer.start()
+	o.fallbackWorker.start()
+	o.refreshWG.Add(1)
+	go o.refreshLoop()
+	lifecycleMu.Unlock()
+	return o, nil
+}
+
 // acquireImplicit supports the legacy package-level entry points. Unlike an
 // App-owned token, an idle implicit owner may be reclaimed after its registry
 // has been emptied by its caller.
@@ -1796,7 +1848,7 @@ func (o *Owner) enqueueRefresh(request refreshRequest) {
 // enqueueRefreshLocked admits one generation of refresh work. lifecycleMu
 // must be held by the caller.
 func (o *Owner) enqueueRefreshLocked(request refreshRequest) bool {
-	if owner != o || o.closing || request.admission.owner != o ||
+	if owner != o && !o.standalone || request.admission.owner != o ||
 		!request.admission.notificationsValidLocked() {
 		return false
 	}
@@ -1944,8 +1996,10 @@ func (o *Owner) runRefresh(request refreshRequest) {
 	}
 }
 
+// A standalone owner is self-current: it is never installed in the
+// package owner slot, so only its own closing state gates admission.
 func (o *Owner) isCurrentLocked() bool {
-	return owner == o && !o.closing && !o.closeRequested.Load()
+	return (o.standalone || owner == o) && !o.closing && !o.closeRequested.Load()
 }
 
 func (o *Owner) isUncertain(cfg *config.ConfigStore, name string) bool {
@@ -2142,6 +2196,35 @@ func ReloadAndReconcileMCPConfig(ctx context.Context, cfg *config.ConfigStore) e
 	return reloadWithUncertaintyToken(ctx, token)
 }
 
+// ReloadAndReconcileMCPConfig owns the reload boundary. It captures the
+// current owner's uncertainty versions before reading disk and clears only
+// versions unchanged by the time the successful reload is finalized.
+// A nil receiver resolves the process-current owner exactly like the
+// package-level ReloadAndReconcileMCPConfig function, so callers holding an
+// optional owner can call the method unconditionally.
+func (o *Owner) ReloadAndReconcileMCPConfig(ctx context.Context, cfg *config.ConfigStore) error {
+	if o == nil {
+		return ReloadAndReconcileMCPConfig(ctx, cfg)
+	}
+	if cfg == nil {
+		return errors.New("mcp: nil config store")
+	}
+	var token *uncertaintyReloadToken
+	captured, _ := o.captureUncertainty(cfg)
+	token = captured
+	if token == nil {
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		if err := cfg.ReloadFromDisk(ctx); err != nil {
+			return err
+		}
+		o.reconcilePublishedSessions(cfg)
+		return nil
+	}
+	return reloadWithUncertaintyToken(ctx, token)
+}
+
 // reconcilePublishedSessions fences connections whose committed transport no
 // longer matches the effective enabled MCP definition after a reload.
 func (o *Owner) reconcilePublishedSessions(cfg *config.ConfigStore) {
@@ -2161,7 +2244,7 @@ func (o *Owner) reconcilePublishedSessions(cfg *config.ConfigStore) {
 	var candidates []sessionCandidate
 	var retired []retiredSession
 	lifecycleMu.Lock()
-	if owner != o || o.closing {
+	if owner != o && !o.standalone || o.closing {
 		lifecycleMu.Unlock()
 		return
 	}
@@ -2181,7 +2264,7 @@ func (o *Owner) reconcilePublishedSessions(cfg *config.ConfigStore) {
 		lease := serverLeaseFor(candidate.name)
 		lease.Lock()
 		lifecycleMu.Lock()
-		if owner != o || o.closing || o.committedAdmissions[candidate.name] != candidate.admission {
+		if owner != o && !o.standalone || o.closing || o.committedAdmissions[candidate.name] != candidate.admission {
 			lifecycleMu.Unlock()
 			lease.Unlock()
 			continue
@@ -2241,7 +2324,11 @@ func (o *Owner) beginInitialize() bool {
 	if o.fullInitCount == 0 {
 		o.initStarted = true
 		o.initDone = make(chan struct{})
-		initDone = o.initDone
+		// A standalone owner must never clobber the installed owner's
+		// initDone mirror.
+		if !o.standalone {
+			initDone = o.initDone
+		}
 	}
 	o.fullInitCount++
 	o.initCount++
@@ -2369,7 +2456,7 @@ func (o *Owner) commitRenewalForLease(admission *serverAdmission, name string, s
 func (o *Owner) acceptsGeneration(generation uint64) bool {
 	lifecycleMu.Lock()
 	defer lifecycleMu.Unlock()
-	return owner == o && !o.closing && o.generation == generation
+	return (o.standalone || (owner == o && o.generation == generation)) && !o.closing
 }
 
 func (o *Owner) operationContext(ctx context.Context) (context.Context, func()) {
@@ -2393,9 +2480,12 @@ func (o *Owner) requestClose(reclaim bool) {
 	o.closeOnce.Do(func() { go o.coordinateClose(reclaim) })
 }
 
+// coordinateClose runs the single shutdown coordinator. A standalone owner
+// is never installed in the package owner slot, so it always proceeds with
+// its own shutdown instead of short-circuiting on the slot identity.
 func (o *Owner) coordinateClose(reclaim bool) {
 	lifecycleMu.Lock()
-	if owner != o {
+	if owner != o && !o.standalone {
 		lifecycleMu.Unlock()
 		o.closeDoneOnce.Do(func() { close(o.closeDone) })
 		return
@@ -2414,6 +2504,9 @@ func (o *Owner) coordinateClose(reclaim bool) {
 // would allow callbacks from that old session to mutate the next owner's
 // process-wide registry.
 func (o *Owner) Close(ctx context.Context) error {
+	if o == nil {
+		return Close(ctx)
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -2428,6 +2521,8 @@ func (o *Owner) Close(ctx context.Context) error {
 }
 
 func (o *Owner) finishClose(reclaim bool) {
+	// A standalone owner shuts down only its own lifecycle; the shared
+	// registry reset and slot teardown belong to the installed owner.
 	if o.fallbackWorker != nil {
 		o.fallbackWorker.stopAndWait()
 	}
@@ -2444,14 +2539,18 @@ func (o *Owner) finishClose(reclaim bool) {
 	}
 	snapshotBySession := make(map[*ClientSession]string)
 	lifecycleMu.Lock()
-	for name, session := range sessions.Seq2() {
-		session.closeStateMu.Lock()
-		unowned := session.owner == nil
-		session.closeStateMu.Unlock()
-		if unowned {
-			o.trackSessionLocked(session, name)
+	// A standalone owner must not adopt unowned global sessions: they may
+	// belong to the installed owner. It closes only its tracked sessions.
+	if !o.standalone {
+		for name, session := range sessions.Seq2() {
+			session.closeStateMu.Lock()
+			unowned := session.owner == nil
+			session.closeStateMu.Unlock()
+			if unowned {
+				o.trackSessionLocked(session, name)
+			}
+			snapshotBySession[session] = name
 		}
-		snapshotBySession[session] = name
 	}
 	for session := range o.trackedSessions {
 		if _, ok := snapshotBySession[session]; !ok {
@@ -2486,9 +2585,33 @@ func (o *Owner) finishClose(reclaim bool) {
 			initDone = closedChannel()
 		}
 		o.closeInitBarrierLocked()
+	} else if o.standalone {
+		o.clearOwnRegistryEntriesLocked()
 	}
 	o.closeDoneOnce.Do(func() { close(o.closeDone) })
 	lifecycleMu.Unlock()
+}
+
+// clearOwnRegistryEntriesLocked removes only this standalone owner's own
+// entries from the shared name-keyed maps. It never touches the broker, the
+// global lease registry, the installed-owner slot, or the initDone mirror,
+// which belong to the installed owner. Callers hold lifecycleMu.
+func (o *Owner) clearOwnRegistryEntriesLocked() {
+	names := make(map[string]struct{})
+	for name := range o.committedAdmissions {
+		names[name] = struct{}{}
+	}
+	for name := range o.serverEpochs {
+		names[name] = struct{}{}
+	}
+	for name := range names {
+		sessions.Del(name)
+		states.Del(name)
+		stateOwners.Del(name)
+		allTools.Del(name)
+		allPrompts.Del(name)
+		allResources.Del(name)
+	}
 }
 
 func resetRegistryLocked() {
@@ -2581,6 +2704,19 @@ func SubscribeEvents(ctx context.Context) <-chan pubsub.Event[Event] {
 	return currentBroker().Subscribe(ctx)
 }
 
+// SubscribeEvents returns a channel for MCP events.
+// A nil receiver resolves the process-current owner exactly like the
+// package-level SubscribeEvents function, so callers holding an optional
+// owner can call the method unconditionally.
+func (o *Owner) SubscribeEvents(ctx context.Context) <-chan pubsub.Event[Event] {
+	if o == nil {
+		return SubscribeEvents(ctx)
+	}
+	// The event broker is shared process-wide name-keyed state; events are
+	// not filtered per owner here.
+	return SubscribeEvents(ctx)
+}
+
 func currentBroker() *pubsub.Broker[Event] {
 	lifecycleMu.Lock()
 	defer lifecycleMu.Unlock()
@@ -2596,6 +2732,19 @@ func GetStates() map[string]ClientInfo {
 	return states.Copy()
 }
 
+// GetStates returns the current state of all MCP clients.
+// A nil receiver resolves the process-current owner exactly like the
+// package-level GetStates function, so callers holding an optional owner can
+// call the method unconditionally.
+func (o *Owner) GetStates() map[string]ClientInfo {
+	if o == nil {
+		return GetStates()
+	}
+	// The registry data is shared name-keyed state; owner-scoping of reads
+	// happens through IsConfigured filtering at consumers.
+	return GetStates()
+}
+
 // IsConfigured reports whether name belongs to the consuming config store.
 // MCP runtime state is process-wide, so callers that serve more than one
 // ConfigStore must apply this ownership check before exposing registry data.
@@ -2609,9 +2758,35 @@ func IsConfigured(cfg *config.ConfigStore, name string) bool {
 	return ok
 }
 
+// IsConfigured reports whether name belongs to the consuming config store.
+// A nil receiver resolves the process-current owner exactly like the
+// package-level IsConfigured function, so callers holding an optional owner
+// can call the method unconditionally.
+func (o *Owner) IsConfigured(cfg *config.ConfigStore, name string) bool {
+	if o == nil {
+		return IsConfigured(cfg, name)
+	}
+	// The registry data is shared name-keyed state; owner-scoping of reads
+	// happens through IsConfigured filtering at consumers.
+	return IsConfigured(cfg, name)
+}
+
 // GetState returns the state of a specific MCP client
 func GetState(name string) (ClientInfo, bool) {
 	return states.Get(name)
+}
+
+// GetState returns the state of a specific MCP client.
+// A nil receiver resolves the process-current owner exactly like the
+// package-level GetState function, so callers holding an optional owner can
+// call the method unconditionally.
+func (o *Owner) GetState(name string) (ClientInfo, bool) {
+	if o == nil {
+		return GetState(name)
+	}
+	// The registry data is shared name-keyed state; owner-scoping of reads
+	// happens through IsConfigured filtering at consumers.
+	return GetState(name)
 }
 
 // Close closes all MCP clients. This should be called during application shutdown.
@@ -2647,6 +2822,10 @@ func Initialize(ctx context.Context, permissions permission.Service, cfg *config
 
 // Initialize initializes MCP clients using this owner's lifecycle barrier.
 func (o *Owner) Initialize(ctx context.Context, permissions permission.Service, cfg *config.ConfigStore, restrictToCLIEnabled bool) {
+	if o == nil {
+		Initialize(ctx, permissions, cfg, restrictToCLIEnabled)
+		return
+	}
 	slog.Info("Initializing MCP clients")
 	// The permission service is consumed later while tools are called. Keep it
 	// in the signature for compatibility with the existing startup contract.
@@ -2654,7 +2833,7 @@ func (o *Owner) Initialize(ctx context.Context, permissions permission.Service, 
 	var wg sync.WaitGroup
 	initCtx, cancel := context.WithCancel(ctx)
 	lifecycleMu.Lock()
-	if owner != o || o.closing {
+	if owner != o && !o.standalone || o.closing {
 		lifecycleMu.Unlock()
 		cancel()
 		return
@@ -2789,6 +2968,26 @@ func WaitForInit(ctx context.Context) error {
 	}
 }
 
+// WaitForInit blocks until MCP initialization is complete.
+// If Initialize was never called, this returns immediately.
+// A nil receiver resolves the process-current owner exactly like the
+// package-level WaitForInit function, so callers holding an optional owner
+// can call the method unconditionally.
+func (o *Owner) WaitForInit(ctx context.Context) error {
+	if o == nil {
+		return WaitForInit(ctx)
+	}
+	lifecycleMu.Lock()
+	done := o.initDone
+	lifecycleMu.Unlock()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // InitializeSingle initializes a single MCP client by name.
 func InitializeSingle(ctx context.Context, name string, cfg *config.ConfigStore) error {
 	o := currentOwner()
@@ -2799,6 +2998,21 @@ func InitializeSingle(ctx context.Context, name string, cfg *config.ConfigStore)
 			return err
 		}
 	}
+	return initializeSingleForOwner(o, ctx, name, cfg)
+}
+
+// InitializeSingle initializes a single MCP client by name.
+// A nil receiver resolves the process-current owner exactly like the
+// package-level InitializeSingle function, so callers holding an optional
+// owner can call the method unconditionally.
+func (o *Owner) InitializeSingle(ctx context.Context, name string, cfg *config.ConfigStore) error {
+	if o == nil {
+		return InitializeSingle(ctx, name, cfg)
+	}
+	return initializeSingleForOwner(o, ctx, name, cfg)
+}
+
+func initializeSingleForOwner(o *Owner, ctx context.Context, name string, cfg *config.ConfigStore) error {
 	if err := o.rememberConfig(cfg); err != nil {
 		return err
 	}
@@ -3262,6 +3476,21 @@ func DisableSingle(cfg *config.ConfigStore, name string) error {
 	if err != nil {
 		return err
 	}
+	return disableSingleForOwner(o, cfg, name)
+}
+
+// DisableSingle closes the session for a single MCP client by name.
+// A nil receiver resolves the process-current owner exactly like the
+// package-level DisableSingle function, so callers holding an optional owner
+// can call the method unconditionally.
+func (o *Owner) DisableSingle(cfg *config.ConfigStore, name string) error {
+	if o == nil {
+		return DisableSingle(cfg, name)
+	}
+	return disableSingleForOwner(o, cfg, name)
+}
+
+func disableSingleForOwner(o *Owner, cfg *config.ConfigStore, name string) error {
 	if err := o.rememberConfig(cfg); err != nil {
 		return err
 	}
@@ -3289,6 +3518,24 @@ func DisableSingle(cfg *config.ConfigStore, name string) error {
 // and persists the disabled flag to config.
 func DisableServer(ctx context.Context, cfg *config.ConfigStore, name string) error {
 	return disableServerWithResultPersistence(ctx, cfg, name,
+		func(cfg *config.ConfigStore, scope config.Scope, name string, pending *config.MCPConfig) (config.MCPMutationResult, error) {
+			if pending != nil {
+				return cfg.PersistMCPConfigResult(scope, name, *pending)
+			}
+			return cfg.PersistMCPDisabledOverrideResult(scope, name, true)
+		})
+}
+
+// DisableServer disables an MCP server: closes its session, removes its tools,
+// and persists the disabled flag to config.
+// A nil receiver resolves the process-current owner exactly like the
+// package-level DisableServer function, so callers holding an optional owner
+// can call the method unconditionally.
+func (o *Owner) DisableServer(ctx context.Context, cfg *config.ConfigStore, name string) error {
+	if o == nil {
+		return DisableServer(ctx, cfg, name)
+	}
+	return disableServerWithResultPersistenceForOwner(o, ctx, cfg, name,
 		func(cfg *config.ConfigStore, scope config.Scope, name string, pending *config.MCPConfig) (config.MCPMutationResult, error) {
 			if pending != nil {
 				return cfg.PersistMCPConfigResult(scope, name, *pending)
@@ -3331,6 +3578,16 @@ func disableServerWithResultPersistence(
 	if err != nil {
 		return err
 	}
+	return disableServerWithResultPersistenceForOwner(o, ctx, cfg, name, persist)
+}
+
+func disableServerWithResultPersistenceForOwner(
+	o *Owner,
+	ctx context.Context,
+	cfg *config.ConfigStore,
+	name string,
+	persist disableServerResultPersister,
+) error {
 	if err := o.rememberConfig(cfg); err != nil {
 		return err
 	}
@@ -3442,10 +3699,37 @@ func EnableServer(ctx context.Context, cfg *config.ConfigStore, name string) err
 	})
 }
 
+// EnableServer re-enables a disabled MCP server and starts a new session.
+// A nil receiver resolves the process-current owner exactly like the
+// package-level EnableServer function, so callers holding an optional owner
+// can call the method unconditionally.
+func (o *Owner) EnableServer(ctx context.Context, cfg *config.ConfigStore, name string) error {
+	if o == nil {
+		return EnableServer(ctx, cfg, name)
+	}
+	return enableServerWithPersistenceForOwner(o, ctx, cfg, name, func(cfg *config.ConfigStore, scope config.Scope, name string, pending *config.MCPConfig) (config.MCPMutationResult, error) {
+		return enableMCPConfig(cfg, scope, name, pending)
+	})
+}
+
 type enableServerResultPersister func(*config.ConfigStore, config.Scope, string, *config.MCPConfig) (config.MCPMutationResult, error)
 
 func enableServerWithPersistence(ctx context.Context, cfg *config.ConfigStore, name string, persist enableServerResultPersister) error {
-	return enableServerWithPersistenceAndInitializer(ctx, cfg, name, persist, initClientAdmitted)
+	o, err := ensureOwner()
+	if err != nil {
+		return err
+	}
+	return enableServerWithPersistenceForOwner(o, ctx, cfg, name, persist)
+}
+
+func enableServerWithPersistenceForOwner(
+	o *Owner,
+	ctx context.Context,
+	cfg *config.ConfigStore,
+	name string,
+	persist enableServerResultPersister,
+) error {
+	return enableServerWithPersistenceAndInitializerForOwner(o, ctx, cfg, name, persist, initClientAdmitted)
 }
 
 func enableServerWithPersistenceAndInitializer(
@@ -3455,7 +3739,22 @@ func enableServerWithPersistenceAndInitializer(
 	persist enableServerResultPersister,
 	initialize admittedClientInitializer,
 ) error {
-	return enableServerWithPersistenceAndInitializerAndRollback(ctx, cfg, name, persist, initialize, nil)
+	o, err := ensureOwner()
+	if err != nil {
+		return err
+	}
+	return enableServerWithPersistenceAndInitializerForOwner(o, ctx, cfg, name, persist, initialize)
+}
+
+func enableServerWithPersistenceAndInitializerForOwner(
+	o *Owner,
+	ctx context.Context,
+	cfg *config.ConfigStore,
+	name string,
+	persist enableServerResultPersister,
+	initialize admittedClientInitializer,
+) error {
+	return enableServerWithPersistenceAndInitializerAndRollbackForOwner(o, ctx, cfg, name, persist, initialize, nil)
 }
 
 func enableServerWithPersistenceAndInitializerAndRollback(
@@ -3470,6 +3769,18 @@ func enableServerWithPersistenceAndInitializerAndRollback(
 	if err != nil {
 		return err
 	}
+	return enableServerWithPersistenceAndInitializerAndRollbackForOwner(o, ctx, cfg, name, persist, initialize, rollbackPersist)
+}
+
+func enableServerWithPersistenceAndInitializerAndRollbackForOwner(
+	o *Owner,
+	ctx context.Context,
+	cfg *config.ConfigStore,
+	name string,
+	persist enableServerResultPersister,
+	initialize admittedClientInitializer,
+	rollbackPersist enableServerResultPersister,
+) error {
 	if err := o.rememberConfig(cfg); err != nil {
 		return err
 	}
@@ -3662,6 +3973,21 @@ func AddServer(ctx context.Context, cfg *config.ConfigStore, name string, mcpCfg
 		})
 }
 
+// AddServer validates and adds a new MCP server. It attempts to connect; if
+// successful the server is added to the in-memory config and persisted to disk.
+// A nil receiver resolves the process-current owner exactly like the
+// package-level AddServer function, so callers holding an optional owner can
+// call the method unconditionally.
+func (o *Owner) AddServer(ctx context.Context, cfg *config.ConfigStore, name string, mcpCfg config.MCPConfig) error {
+	if o == nil {
+		return AddServer(ctx, cfg, name, mcpCfg)
+	}
+	return addServerWithPreparationAndPersistenceForOwner(o, ctx, cfg, name, mcpCfg, prepareClient,
+		func(cfg *config.ConfigStore, scope config.Scope, name string, mcpCfg config.MCPConfig) (config.MCPMutationResult, error) {
+			return cfg.PersistMCPConfigResult(scope, name, mcpCfg)
+		})
+}
+
 // ReplaceServer prepares a new MCP session completely before changing the
 // configured server. The old session and its advertised data remain live
 // until the durable remove-and-set has committed, at which point the config,
@@ -3669,6 +3995,24 @@ func AddServer(ctx context.Context, cfg *config.ConfigStore, name string, mcpCfg
 // transition.
 func ReplaceServer(ctx context.Context, cfg *config.ConfigStore, oldName, newName string, mcpCfg config.MCPConfig) error {
 	return replaceServerWithResultPersistence(ctx, cfg, oldName, newName, mcpCfg,
+		func(cfg *config.ConfigStore, scope config.Scope, oldName, newName string, mcpCfg config.MCPConfig) (config.MCPMutationResult, error) {
+			return cfg.PersistReplaceMCPResult(scope, oldName, newName, mcpCfg)
+		})
+}
+
+// ReplaceServer prepares a new MCP session completely before changing the
+// configured server. The old session and its advertised data remain live
+// until the durable remove-and-set has committed, at which point the config,
+// session, tools, prompts, resources, and state switch as one lifecycle
+// transition.
+// A nil receiver resolves the process-current owner exactly like the
+// package-level ReplaceServer function, so callers holding an optional owner
+// can call the method unconditionally.
+func (o *Owner) ReplaceServer(ctx context.Context, cfg *config.ConfigStore, oldName, newName string, mcpCfg config.MCPConfig) error {
+	if o == nil {
+		return ReplaceServer(ctx, cfg, oldName, newName, mcpCfg)
+	}
+	return replaceServerWithResultPersistenceForOwner(o, ctx, cfg, oldName, newName, mcpCfg,
 		func(cfg *config.ConfigStore, scope config.Scope, oldName, newName string, mcpCfg config.MCPConfig) (config.MCPMutationResult, error) {
 			return cfg.PersistReplaceMCPResult(scope, oldName, newName, mcpCfg)
 		})
@@ -3719,7 +4063,22 @@ func replaceServerWithResultPersistence(
 	mcpCfg config.MCPConfig,
 	persist replacementResultPersister,
 ) error {
-	return replaceServerWithResultPersistenceAndPreparation(ctx, cfg, oldName, newName, mcpCfg, persist, prepareClient)
+	o, err := ensureOwner()
+	if err != nil {
+		return err
+	}
+	return replaceServerWithResultPersistenceForOwner(o, ctx, cfg, oldName, newName, mcpCfg, persist)
+}
+
+func replaceServerWithResultPersistenceForOwner(
+	o *Owner,
+	ctx context.Context,
+	cfg *config.ConfigStore,
+	oldName, newName string,
+	mcpCfg config.MCPConfig,
+	persist replacementResultPersister,
+) error {
+	return replaceServerWithResultPersistenceAndPreparationForOwner(o, ctx, cfg, oldName, newName, mcpCfg, persist, prepareClient)
 }
 
 type preparedClientFunc func(context.Context, *config.ConfigStore, string, config.MCPConfig, config.VariableResolver, *serverAdmission) (*preparedClient, error)
@@ -3732,7 +4091,23 @@ func addServerWithPreparationAndPersistence(
 	prepare preparedClientFunc,
 	persist addServerResultPersister,
 ) error {
-	return addServerWithInitializerAndPersistence(ctx, cfg, name, mcpCfg,
+	o, err := ensureOwner()
+	if err != nil {
+		return err
+	}
+	return addServerWithPreparationAndPersistenceForOwner(o, ctx, cfg, name, mcpCfg, prepare, persist)
+}
+
+func addServerWithPreparationAndPersistenceForOwner(
+	o *Owner,
+	ctx context.Context,
+	cfg *config.ConfigStore,
+	name string,
+	mcpCfg config.MCPConfig,
+	prepare preparedClientFunc,
+	persist addServerResultPersister,
+) error {
+	return addServerWithInitializerAndPersistenceForOwner(o, ctx, cfg, name, mcpCfg,
 		func(ctx context.Context, cfg *config.ConfigStore, name string, mcpCfg config.MCPConfig, resolver config.VariableResolver, admission *serverAdmission) error {
 			admission.deferDone = true
 			admission.suppressState = true
@@ -3753,12 +4128,24 @@ func replaceServerWithResultPersistenceAndPreparation(
 	persist replacementResultPersister,
 	prepare preparedClientFunc,
 ) error {
-	if mcpCfg.Source == config.MCPSourceExternal {
-		return fmt.Errorf("MCP server %q is from .mcp.json and cannot be replaced: %w", oldName, config.ErrMCPExternal)
-	}
 	o, err := ensureOwner()
 	if err != nil {
 		return err
+	}
+	return replaceServerWithResultPersistenceAndPreparationForOwner(o, ctx, cfg, oldName, newName, mcpCfg, persist, prepare)
+}
+
+func replaceServerWithResultPersistenceAndPreparationForOwner(
+	o *Owner,
+	ctx context.Context,
+	cfg *config.ConfigStore,
+	oldName, newName string,
+	mcpCfg config.MCPConfig,
+	persist replacementResultPersister,
+	prepare preparedClientFunc,
+) error {
+	if mcpCfg.Source == config.MCPSourceExternal {
+		return fmt.Errorf("MCP server %q is from .mcp.json and cannot be replaced: %w", oldName, config.ErrMCPExternal)
 	}
 	if err := o.rememberConfig(cfg); err != nil {
 		return err
@@ -3913,7 +4300,7 @@ func replaceServerWithResultPersistenceAndPreparation(
 		lifecycleMu.Lock()
 		defer lifecycleMu.Unlock()
 		publicationValid := admission.replacementNamesValidLocked() &&
-			owner == o && !o.closing && o.generation == admission.generation &&
+			(o.standalone || owner == o) && !o.closing && o.generation == admission.generation &&
 			o.serverEpochs[oldName] == admission.epoch
 		if !publicationValid {
 			if !commitKnown {
@@ -4142,6 +4529,18 @@ func addServerWithInitializerAndPersistence(
 	if err != nil {
 		return err
 	}
+	return addServerWithInitializerAndPersistenceForOwner(o, ctx, cfg, name, mcpCfg, initialize, persist)
+}
+
+func addServerWithInitializerAndPersistenceForOwner(
+	o *Owner,
+	ctx context.Context,
+	cfg *config.ConfigStore,
+	name string,
+	mcpCfg config.MCPConfig,
+	initialize admittedClientInitializer,
+	persist addServerResultPersister,
+) error {
 	if err := o.rememberConfig(cfg); err != nil {
 		return err
 	}
@@ -4421,7 +4820,7 @@ func rollbackAdmissionValidLocked(
 	transaction *addTransaction,
 	configPresent bool,
 ) bool {
-	if owner != o || o.generation != admission.generation ||
+	if !o.standalone && (owner != o || o.generation != admission.generation) ||
 		o.serverEpochs[name] != admission.epoch || o.pendingGlobalAdds[name] != transaction {
 		return false
 	}
@@ -4448,6 +4847,24 @@ func rollbackAdmissionValidLocked(
 // External servers (from .mcp.json) cannot be removed — only disabled.
 func RemoveServer(cfg *config.ConfigStore, name string) error {
 	return removeServerWithResultPersistence(cfg, name,
+		func(cfg *config.ConfigStore, scope config.Scope, name string) (config.MCPMutationResult, error) {
+			if pending := pendingGlobalAddFor(cfg, name); pending != nil {
+				return cfg.PersistRemovePendingMCPConfigResult(scope, name)
+			}
+			return cfg.PersistRemoveMCPConfigResult(scope, name)
+		})
+}
+
+// RemoveServer removes an MCP server, closes its session, and removes it from
+// config. External servers (from .mcp.json) cannot be removed — only disabled.
+// A nil receiver resolves the process-current owner exactly like the
+// package-level RemoveServer function, so callers holding an optional owner
+// can call the method unconditionally.
+func (o *Owner) RemoveServer(cfg *config.ConfigStore, name string) error {
+	if o == nil {
+		return RemoveServer(cfg, name)
+	}
+	return removeServerWithResultPersistenceForOwner(o, cfg, name,
 		func(cfg *config.ConfigStore, scope config.Scope, name string) (config.MCPMutationResult, error) {
 			if pending := pendingGlobalAddFor(cfg, name); pending != nil {
 				return cfg.PersistRemovePendingMCPConfigResult(scope, name)
@@ -4496,6 +4913,15 @@ func removeServerWithResultPersistence(
 	if err != nil {
 		return err
 	}
+	return removeServerWithResultPersistenceForOwner(o, cfg, name, persist)
+}
+
+func removeServerWithResultPersistenceForOwner(
+	o *Owner,
+	cfg *config.ConfigStore,
+	name string,
+	persist removeServerResultPersister,
+) error {
 	if err := o.rememberConfig(cfg); err != nil {
 		return err
 	}
@@ -4942,14 +5368,22 @@ func clearAdvertised(name string) {
 }
 
 func getOrRenewClient(ctx context.Context, cfg *config.ConfigStore, name string) (*clientLease, error) {
-	lease, err := getOrRenewClientOnce(ctx, cfg, name)
+	return getOrRenewClientForOwner(currentOwner(), ctx, cfg, name)
+}
+
+func getOrRenewClientForOwner(o *Owner, ctx context.Context, cfg *config.ConfigStore, name string) (*clientLease, error) {
+	lease, err := getOrRenewClientOnceForOwner(o, ctx, cfg, name)
 	for attempt := 0; errors.Is(err, config.ErrMCPMutationStale) && attempt < maxRenewalRecoveryAttempts; attempt++ {
-		lease, err = recoverStaleRenewal(ctx, cfg, name)
+		lease, err = recoverStaleRenewalForOwner(o, ctx, cfg, name)
 	}
 	return lease, err
 }
 
 func recoverStaleRenewal(ctx context.Context, cfg *config.ConfigStore, name string) (*clientLease, error) {
+	return recoverStaleRenewalForOwner(currentOwner(), ctx, cfg, name)
+}
+
+func recoverStaleRenewalForOwner(o *Owner, ctx context.Context, cfg *config.ConfigStore, name string) (*clientLease, error) {
 	if refreshErr := refreshAdmissionStore(ctx, cfg); refreshErr != nil {
 		return nil, refreshErr
 	}
@@ -4960,16 +5394,22 @@ func recoverStaleRenewal(ctx context.Context, cfg *config.ConfigStore, name stri
 		}
 		return nil, fmt.Errorf("mcp '%s' not available", name)
 	}
-	if err := InitializeSingle(ctx, name, cfg); err != nil {
+	var initErr error
+	if o == nil {
+		initErr = InitializeSingle(ctx, name, cfg)
+	} else {
+		initErr = initializeSingleForOwner(o, ctx, name, cfg)
+	}
+	if initErr != nil {
 		latest := cfg.SnapshotMCPAdmission(name)
 		if !latest.Exists || latest.MCPConfig.Disabled {
 			if closeErr := failClosedMCP(ctx, name); closeErr != nil {
 				return nil, closeErr
 			}
 		}
-		return nil, err
+		return nil, initErr
 	}
-	return getOrRenewClientOnce(ctx, cfg, name)
+	return getOrRenewClientOnceForOwner(o, ctx, cfg, name)
 }
 
 // maxRenewalRecoveryAttempts excludes the initial renewal attempt.
@@ -5017,7 +5457,14 @@ func failClosedMCPWithState(ctx context.Context, name string, state State, state
 }
 
 func getOrRenewClientOnce(ctx context.Context, cfg *config.ConfigStore, name string) (*clientLease, error) {
-	o := currentOwner()
+	return getOrRenewClientOnceForOwner(currentOwner(), ctx, cfg, name)
+}
+
+// getOrRenewClientOnceForOwner binds the renewal admission and the follower
+// wait to the given owner instead of the process-current one. A nil owner
+// skips the admission block exactly like the legacy path. Callers hold no
+// lifecycle lock.
+func getOrRenewClientOnceForOwner(o *Owner, ctx context.Context, cfg *config.ConfigStore, name string) (*clientLease, error) {
 	var admission *serverAdmission
 	operationCtx := ctx
 	finish := func() {}
@@ -5410,7 +5857,10 @@ func admissionEpoch(admission *serverAdmission, o *Owner, name string) uint64 {
 // health check. It is used by notification refreshers, which already receive
 // a session selected by the MCP transport.
 func currentClientLease(ctx context.Context, name string, configs ...*config.ConfigStore) (*clientLease, error) {
-	o := currentOwner()
+	return currentClientLeaseForOwner(currentOwner(), ctx, name, configs...)
+}
+
+func currentClientLeaseForOwner(o *Owner, ctx context.Context, name string, configs ...*config.ConfigStore) (*clientLease, error) {
 	operationCtx := ctx
 	finish := func() {}
 	if o != nil {

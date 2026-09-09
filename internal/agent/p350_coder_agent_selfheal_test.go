@@ -101,6 +101,6 @@ func TestReleaseGate_P350_NewCoordinatorSelfHealsMissingAgentsMap(t *testing.T) 
 	cfg.Config().Agents = map[string]config.Agent{}
 	require.Empty(t, cfg.Config().Agents[config.AgentCoder].ID, "precondition: Agents[AgentCoder] must be genuinely missing before NewCoordinator runs")
 
-	_, err = NewCoordinator(t.Context(), cfg, env.sessions, env.messages, env.permissions, env.history, *env.filetracker, nil)
+	_, err = NewCoordinator(t.Context(), cfg, env.sessions, env.messages, env.permissions, env.history, *env.filetracker, nil, nil)
 	require.NoError(t, err, "NewCoordinator must self-heal by calling SetupAgents when Agents[AgentCoder] is missing but a provider is configured")
 }

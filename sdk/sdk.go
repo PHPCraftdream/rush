@@ -18,20 +18,21 @@
 //
 // v1 boundaries, stated honestly:
 //
-//   - One application-mode Client per process. MCP client state
-//     (internal/agent/tools/mcp) is process-wide package state — one
-//     registry keyed by server name, plus process-wide
-//     initialization-complete signaling — so application mode acquires an
-//     exclusive process-wide MCP Owner. A second simultaneous
-//     application-mode Open fails with an error wrapping mcp.ErrOwnerBusy;
-//     application-mode Clients are not allowed to share that layer. Library
-//     mode (Options.Mode == ModeLibrary) starts no MCP servers and does not
-//     acquire the owner, so it can coexist with an application-mode Client;
-//     multiple simultaneous library-mode Clients are supported and tested
-//     (each ephemeral client gets its own isolated in-memory database). Run
-//     one process per workspace for application mode — the same model
-//     `rush run` already uses, with lock-file + heartbeat, the battle-tested
-//     path in the sessions_* CLI family.
+//   - Application-mode MCP ownership is two-tier. The first
+//     application-mode Open in a process takes the process-wide MCP Owner
+//     exactly as before. A second application-mode Open reserves a
+//     standalone Owner (mcp.AcquireStandalone) instead of failing with
+//     mcp.ErrOwnerBusy, so two application-mode Clients coexist, each
+//     routing its MCP operations through its own Owner. The underlying
+//     registry is still name-keyed process state: two Clients configuring
+//     the same server name share one registry entry, so disjoint server
+//     configs remain the contract — a server configured in the first
+//     Client is never visible to the second's surfaces. Library
+//     mode (Options.Mode == ModeLibrary) starts no MCP servers and does
+//     not acquire an owner, so it coexists with any application-mode
+//     Client; multiple simultaneous library-mode Clients are supported and
+//     tested (each ephemeral client gets its own isolated in-memory
+//     database).
 //
 //   - Core logging is redirected only if you ask for it. With
 //     SetupLogging false (the default) Open does not hijack the host's
@@ -54,6 +55,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
+	"github.com/PHPCraftdream/rush/internal/agent/tools/mcp"
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/db"
@@ -267,8 +269,11 @@ type Options struct {
 	// MCP selects which MCP servers application-mode Open starts. Default
 	// MCPEnabledInCLI. There is no off value in application mode: use
 	// ModeLibrary when the client must skip MCP entirely. Library mode passes
-	// app.SkipMCP, so it starts no MCP servers and does not acquire the
-	// process-wide MCP owner.
+	// app.SkipMCP, so it starts no MCP servers and does not acquire an MCP
+	// owner. Application mode takes the process-wide MCP owner for the first
+	// client in the process; a second application-mode Open reserves a
+	// standalone owner (see mcp.AcquireStandalone) so the two clients keep
+	// independent MCP registries — keep each client's server names disjoint.
 	MCP MCPMode
 	// Stdout is the default destination for run output when a RunRequest
 	// does not carry its own Stdout. The SDK serializes writes through all
@@ -381,9 +386,11 @@ type Client struct {
 // config load (project rush.json discovery from WorkingDir), data
 // directory creation, project registration, database connect plus
 // migrations, and app construction with the requested MCP mode. In
-// application mode, Open also acquires the exclusive process-wide MCP owner;
-// a concurrent second application-mode Open returns an error wrapping
-// mcp.ErrOwnerBusy. In library mode, Open skips MCP and does not acquire that
+// application mode, Open also acquires an MCP owner: the first client in
+// the process takes the process-wide owner, and a second application-mode
+// Open reserves a standalone owner instead of failing, so the two clients
+// coexist with independent MCP registries (disjoint server configs are the
+// contract). In library mode, Open skips MCP and does not acquire an
 // owner. Open is the library equivalent of internal/cmd's setupApp, minus
 // os.Chdir, unconditional logging setup, and cobra.
 func Open(ctx context.Context, o Options) (*Client, error) {
@@ -469,9 +476,31 @@ func openApplication(ctx context.Context, o Options) (*Client, error) {
 		mcpOpts = []app.Option{app.RestrictMCPToCLI()}
 	}
 
+	// Application mode owns an MCP lifecycle for this client. The first
+	// client in the process takes the process-wide owner exactly as the CLI
+	// does; ErrOwnerBusy means a live peer holds that slot, so this client
+	// reserves a standalone owner instead and both run independent MCP
+	// registries. Every MCP operation the App performs is routed through
+	// this owner (app.WithMCPOwner), never through the package-level
+	// current-owner resolution.
+	mcpOwner, err := mcp.Acquire()
+	if errors.Is(err, mcp.ErrOwnerBusy) {
+		mcpOwner, err = mcp.AcquireStandalone()
+	}
+	if err != nil {
+		if relErr := db.ReleaseConn(conn); relErr != nil {
+			slog.Error("sdk: failed to release DB connection after MCP owner acquisition failure", "error", relErr)
+		}
+		return nil, fmt.Errorf("sdk: failed to acquire MCP owner: %w", err)
+	}
+	mcpOpts = append(mcpOpts, app.WithMCPOwner(mcpOwner))
+
 	application, err := app.New(ctx, conn, store, mcpOpts...)
 	if err != nil {
 		slog.Error("sdk: failed to create app instance", "error", err)
+		if closeErr := mcpOwner.Close(context.Background()); closeErr != nil {
+			slog.Error("sdk: failed to close MCP owner after app init failure", "error", closeErr)
+		}
 		// Ownership split: app.New releases only the ConnectRead
 		// reference it acquired internally on this error path; it never
 		// took ownership of our conn, so this reference must be released

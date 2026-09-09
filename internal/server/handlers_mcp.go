@@ -7,7 +7,6 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/PHPCraftdream/rush/internal/agent/tools/mcp"
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
 )
@@ -25,9 +24,14 @@ func handleSetMCPDisabled(ctx context.Context, a *appPkg.App, c *Client, msg WSM
 	}
 	var err error
 	if p.Disabled {
-		err = mcp.DisableServer(ctx, store, p.Name)
+		// Mutations route through the App's own MCP owner (task #923): a second
+		// application-mode App holds a standalone owner, and package-level calls
+		// would resolve the process-current (first App's) owner and fail with
+		// mcp.ErrMCPConfigStoreBusy. Nil-safe: a SkipMCP App keeps the legacy
+		// package-function behavior.
+		err = a.MCPOwner().DisableServer(ctx, store, p.Name)
 	} else {
-		err = mcp.EnableServer(ctx, store, p.Name)
+		err = a.MCPOwner().EnableServer(ctx, store, p.Name)
 	}
 	if err != nil {
 		c.reply(msg.ID, EventError, nil, err.Error())
@@ -60,7 +64,7 @@ func handleAddMCPServer(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 		Headers: p.Headers,
 		Timeout: p.Timeout,
 	}
-	if err := mcp.AddServer(ctx, store, p.Name, mcpCfg); err != nil {
+	if err := a.MCPOwner().AddServer(ctx, store, p.Name, mcpCfg); err != nil {
 		c.reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
@@ -78,7 +82,7 @@ func handleRemoveMCPServer(a *appPkg.App, c *Client, msg WSMessage) {
 		c.reply(msg.ID, EventError, nil, "config not available")
 		return
 	}
-	if err := mcp.RemoveServer(store, p.Name); err != nil {
+	if err := a.MCPOwner().RemoveServer(store, p.Name); err != nil {
 		c.reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
@@ -109,7 +113,7 @@ func handleUpdateMCPServer(ctx context.Context, a *appPkg.App, c *Client, msg WS
 		Headers: p.Headers,
 		Timeout: p.Timeout,
 	}
-	if err := mcp.ReplaceServer(ctx, store, p.OldName, p.Name, mcpCfg); err != nil {
+	if err := a.MCPOwner().ReplaceServer(ctx, store, p.OldName, p.Name, mcpCfg); err != nil {
 		c.reply(msg.ID, EventError, nil, err.Error())
 		return
 	}

@@ -39,9 +39,54 @@ func Resources() iter.Seq2[string, []*Resource] {
 	return allResources.Seq2()
 }
 
+// Resources returns all available MCP resources.
+// A nil receiver resolves the process-current owner exactly like the
+// package-level Resources function, so callers holding an optional owner can
+// call the method unconditionally.
+func (o *Owner) Resources() iter.Seq2[string, []*Resource] {
+	if o == nil {
+		return Resources()
+	}
+	// The registry data is shared name-keyed state; owner-scoping of reads
+	// happens through IsConfigured filtering at consumers.
+	return Resources()
+}
+
 // ListResources returns the current resources for an MCP server.
 func ListResources(ctx context.Context, cfg *config.ConfigStore, name string) ([]*Resource, error) {
 	lease, err := getOrRenewClient(ctx, cfg, name)
+	if err != nil {
+		return nil, err
+	}
+	defer lease.close()
+
+	resources, err := getResources(lease.ctx, lease.session)
+	if err != nil {
+		return nil, err
+	}
+
+	var counts Counts
+	lease.publishIfCurrent(lease.ctx, func() {
+		resourceCount := updateResources(name, resources)
+		prev, _ := states.Get(name)
+		prev.Counts.Resources = resourceCount
+		counts = prev.Counts
+		setState(name, StateConnected, nil, lease.session, counts)
+	}, func() {
+		publishStateEvent(name, StateConnected, nil, counts)
+	})
+	return resources, nil
+}
+
+// ListResources returns the current resources for an MCP server.
+// A nil receiver resolves the process-current owner exactly like the
+// package-level ListResources function, so callers holding an optional owner
+// can call the method unconditionally.
+func (o *Owner) ListResources(ctx context.Context, cfg *config.ConfigStore, name string) ([]*Resource, error) {
+	if o == nil {
+		return ListResources(ctx, cfg, name)
+	}
+	lease, err := getOrRenewClientForOwner(o, ctx, cfg, name)
 	if err != nil {
 		return nil, err
 	}
@@ -79,10 +124,73 @@ func ReadResource(ctx context.Context, cfg *config.ConfigStore, name, uri string
 	return result.Contents, nil
 }
 
+// ReadResource reads the contents of a resource from an MCP server.
+// A nil receiver resolves the process-current owner exactly like the
+// package-level ReadResource function, so callers holding an optional owner
+// can call the method unconditionally.
+func (o *Owner) ReadResource(ctx context.Context, cfg *config.ConfigStore, name, uri string) ([]*ResourceContents, error) {
+	if o == nil {
+		return ReadResource(ctx, cfg, name, uri)
+	}
+	lease, err := getOrRenewClientForOwner(o, ctx, cfg, name)
+	if err != nil {
+		return nil, err
+	}
+	defer lease.close()
+	result, err := lease.session.ReadResource(lease.ctx, &mcp.ReadResourceParams{URI: uri})
+	if err != nil {
+		return nil, err
+	}
+	return result.Contents, nil
+}
+
 // RefreshResources gets the updated list of resources from the MCP and updates the
 // global state.
 func RefreshResources(ctx context.Context, name string) {
 	lease, err := currentClientLease(ctx, name)
+	if err != nil {
+		slog.Warn("Refresh resources: no session", "name", name)
+		return
+	}
+	defer lease.close()
+
+	resources, err := getResources(lease.ctx, lease.session)
+	if err != nil {
+		var counts Counts
+		lease.publishIfCurrent(lease.ctx, func() {
+			previous, _ := states.Get(name)
+			counts = previous.Counts
+			setState(name, StateError, err, lease.session, counts)
+		}, func() {
+			publishStateEvent(name, StateError, err, counts)
+		})
+		return
+	}
+
+	runResourcesBeforePublishHook()
+	var counts Counts
+	lease.publishIfCurrent(lease.ctx, func() {
+		resourceCount := updateResources(name, resources)
+		prev, _ := states.Get(name)
+		prev.Counts.Resources = resourceCount
+		counts = prev.Counts
+		setState(name, StateConnected, nil, lease.session, counts)
+	}, func() {
+		publishStateEvent(name, StateConnected, nil, counts)
+	})
+}
+
+// RefreshResources gets the updated list of resources from the MCP and updates
+// the global state.
+// A nil receiver resolves the process-current owner exactly like the
+// package-level RefreshResources function, so callers holding an optional
+// owner can call the method unconditionally.
+func (o *Owner) RefreshResources(ctx context.Context, name string) {
+	if o == nil {
+		RefreshResources(ctx, name)
+		return
+	}
+	lease, err := currentClientLeaseForOwner(o, ctx, name)
 	if err != nil {
 		slog.Warn("Refresh resources: no session", "name", name)
 		return

@@ -30,6 +30,7 @@ import (
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/notify"
 	"github.com/PHPCraftdream/rush/internal/agent/prompt"
+	"github.com/PHPCraftdream/rush/internal/agent/tools/mcp"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/filetracker"
 	"github.com/PHPCraftdream/rush/internal/history"
@@ -242,6 +243,10 @@ type coordinator struct {
 	notify      pubsub.Publisher[notify.Notification]
 	background  *shell.BackgroundShellManager
 
+	// mcpOwner is this config's MCP lifecycle owner (task #923). Nil keeps
+	// the legacy process-current-owner resolution via the package functions.
+	mcpOwner *mcp.Owner
+
 	currentAgent SessionAgent
 	agents       map[string]SessionAgent
 
@@ -337,6 +342,7 @@ func NewCoordinator(
 	history history.Service,
 	filetracker filetracker.Service,
 	notify pubsub.Publisher[notify.Notification],
+	mcpOwner *mcp.Owner,
 	backgroundManagers ...*shell.BackgroundShellManager,
 ) (Coordinator, error) {
 	p, err := coderPrompt(prompt.WithWorkingDir(cfg.WorkingDir()))
@@ -363,6 +369,7 @@ func NewCoordinator(
 		prompt:                 p,
 		notify:                 notify,
 		background:             background,
+		mcpOwner:               mcpOwner,
 		agents:                 make(map[string]SessionAgent),
 		allSkills:              allSkills,
 		activeSkills:           activeSkills,
