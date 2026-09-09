@@ -179,6 +179,22 @@ type fsGrepLine struct {
 	hit  bool
 }
 
+// ErrFSGrepLineTooLong identifies a fallback source line whose unbounded
+// suffix could contain a match that the bounded scanner cannot inspect.
+var ErrFSGrepLineTooLong = errors.New("fs_grep source line exceeds fallback limit")
+
+// FSGrepLineTooLongError preserves the source line and configured limit.
+type FSGrepLineTooLongError struct {
+	line  int
+	limit int
+}
+
+func (e *FSGrepLineTooLongError) Error() string {
+	return fmt.Sprintf("fs_grep source line %d exceeds fallback limit of %d bytes", e.line, e.limit)
+}
+
+func (e *FSGrepLineTooLongError) Unwrap() error { return ErrFSGrepLineTooLong }
+
 // fsGrepFileHits collects, for one file, every line that belongs to some
 // rendered window plus which lines are hits. Lines may arrive twice —
 // rg emits a line once per role (context of one hit, match of the next)
@@ -208,9 +224,7 @@ func (f *fsGrepFileHits) add(lineNum int, text string, hit bool, budget *fsGrepB
 			return false
 		}
 		f.seen[lineNum] = struct{}{}
-		if len(text) > maxGrepContentWidth {
-			text = stringext.Truncate(text, maxGrepContentWidth) + "..."
-		}
+		text = truncateFSGrepContent(text)
 		f.lines[lineNum] = fsGrepLine{text: text, hit: hit}
 		f.maxLine = max(f.maxLine, lineNum)
 	} else if hit && !prev.hit {
@@ -222,6 +236,20 @@ func (f *fsGrepFileHits) add(lineNum int, text string, hit bool, budget *fsGrepB
 		f.hits = append(f.hits, lineNum)
 	}
 	return true
+}
+
+// truncateFSGrepContent bounds retained and rendered content while keeping a
+// fallback overflow marker visible when one is already present.
+func truncateFSGrepContent(text string) string {
+	if len(text) <= maxGrepContentWidth {
+		return text
+	}
+	if strings.HasSuffix(text, fallbackTruncateSuffix) {
+		contentWidth := maxGrepContentWidth - len(fallbackTruncateSuffix)
+		return stringext.Truncate(text[:len(text)-len(fallbackTruncateSuffix)], contentWidth) + fallbackTruncateSuffix
+	}
+	const marker = "..."
+	return stringext.Truncate(text, maxGrepContentWidth-len(marker)) + marker
 }
 
 // fsGrepBudget is the per-item output cap: FSBatchMaxGrepMatchesPerItem
@@ -245,12 +273,12 @@ func (b *fsGrepBudget) spent() bool { return b.remaining <= 0 }
 
 // fsGrepSearchContext runs the radius-aware search: ripgrep when
 // available, the regex fallback walk otherwise. If the ripgrep run
-// failed after emitting partial output, the partial lines are discarded
-// before the fallback so one file can never render twice under two path
-// spellings; budget already spent on them is not refunded, which can
-// only shrink output.
+// failed after emitting partial output, the partial lines are discarded and
+// the budget is restored before fallback so one file can never render twice
+// under two path spellings.
 func fsGrepSearchContext(ctx context.Context, pattern, rootPath, include string, contextLines int, files map[string]*fsGrepFileHits, budget *fsGrepBudget) error {
-	err := searchWithRipgrepContext(ctx, pattern, rootPath, include, contextLines, files, budget)
+	originalBudget := budget.remaining
+	err := fsGrepRipgrepSearch(ctx, pattern, rootPath, include, contextLines, files, budget)
 	if err == nil {
 		return nil
 	}
@@ -259,7 +287,34 @@ func fsGrepSearchContext(ctx context.Context, pattern, rootPath, include string,
 	if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return err
 	}
+	var outputErr *RipgrepJSONError
+	if errors.As(err, &outputErr) {
+		return err
+	}
 	clear(files)
+	budget.remaining = originalBudget
+	return fsGrepFallbackSearch(ctx, pattern, rootPath, include, contextLines, files, budget)
+}
+
+type fsGrepRipgrepSearchFunc func(context.Context, string, string, string, int, map[string]*fsGrepFileHits, *fsGrepBudget) error
+
+type fsGrepRipgrepSearchKey struct{}
+
+func fsGrepRipgrepSearch(ctx context.Context, pattern, rootPath, include string, contextLines int, files map[string]*fsGrepFileHits, budget *fsGrepBudget) error {
+	if fn, ok := ctx.Value(fsGrepRipgrepSearchKey{}).(fsGrepRipgrepSearchFunc); ok {
+		return fn(ctx, pattern, rootPath, include, contextLines, files, budget)
+	}
+	return searchWithRipgrepContext(ctx, pattern, rootPath, include, contextLines, files, budget)
+}
+
+type fsGrepFallbackSearchFunc func(context.Context, string, string, string, int, map[string]*fsGrepFileHits, *fsGrepBudget) error
+
+type fsGrepFallbackSearchKey struct{}
+
+func fsGrepFallbackSearch(ctx context.Context, pattern, rootPath, include string, contextLines int, files map[string]*fsGrepFileHits, budget *fsGrepBudget) error {
+	if fn, ok := ctx.Value(fsGrepFallbackSearchKey{}).(fsGrepFallbackSearchFunc); ok {
+		return fn(ctx, pattern, rootPath, include, contextLines, files, budget)
+	}
 	return searchFilesWithRegexContext(ctx, pattern, rootPath, include, contextLines, files, budget)
 }
 
@@ -288,7 +343,12 @@ func runRipgrepContextSearch(ctx context.Context, cmd *exec.Cmd, files map[strin
 	if err != nil {
 		return err
 	}
+	var diagnostic boundedRipgrepDiagnostic
+	cmd.Stderr = &diagnostic
 	if err := cmd.Start(); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		return err
 	}
 
@@ -297,12 +357,20 @@ func runRipgrepContextSearch(ctx context.Context, cmd *exec.Cmd, files map[strin
 		_, _ = io.Copy(io.Discard, stdout)
 	}
 	waitErr := cmd.Wait()
+	if waitErr != nil {
+		waitErr = wrapRipgrepDiagnostic(waitErr, diagnostic.String())
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
 	if parseErr != nil {
+		if waitErr != nil && !isRipgrepNoMatch(waitErr) {
+			return fmt.Errorf("%w (ripgrep process: %v)", parseErr, waitErr)
+		}
 		return parseErr
 	}
 	if waitErr != nil {
-		var exitErr *exec.ExitError
-		if errors.As(waitErr, &exitErr) && exitErr.ExitCode() == 1 {
+		if isRipgrepNoMatch(waitErr) {
 			return nil // rg exit code 1 = no matches found.
 		}
 		return waitErr
@@ -310,31 +378,60 @@ func runRipgrepContextSearch(ctx context.Context, cmd *exec.Cmd, files map[strin
 	return nil
 }
 
+const maxRipgrepDiagnosticBytes = 64 * 1024
+
+type boundedRipgrepDiagnostic struct {
+	data []byte
+}
+
+func (b *boundedRipgrepDiagnostic) Write(p []byte) (int, error) {
+	if len(b.data) < maxRipgrepDiagnosticBytes {
+		n := min(len(p), maxRipgrepDiagnosticBytes-len(b.data))
+		b.data = append(b.data, p[:n]...)
+	}
+	return len(p), nil
+}
+
+func (b *boundedRipgrepDiagnostic) String() string { return string(b.data) }
+
+func wrapRipgrepDiagnostic(err error, diagnostic string) error {
+	if diagnostic == "" {
+		return err
+	}
+	return fmt.Errorf("%w: %s", err, diagnostic)
+}
+
+func isRipgrepNoMatch(err error) bool {
+	var exitErr *exec.ExitError
+	return errors.As(err, &exitErr) && exitErr.ExitCode() == 1
+}
+
 // parseRipgrepContextStream parses rg --json lines. Exactly one new
 // event type is handled relative to the legacy parser: "context", whose
 // data shape (path, lines.text, line_number) is identical to "match".
-// begin/end/summary events, unparseable lines and lines without a
-// usable number are skipped. Stops at EOF, on the item's spent budget,
-// or on a scanner error.
+// begin/end/summary events are skipped. Malformed events are errors. Stops at
+// EOF, on the item's spent budget, or on a scanner error.
 func parseRipgrepContextStream(r io.Reader, files map[string]*fsGrepFileHits, budget *fsGrepBudget) error {
 	scanner := bufio.NewScanner(r)
 	// Allow long lines (minified JS etc.) — up to 4 MiB per JSON line,
 	// matching the legacy parser.
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	lineNum := 0
 	for scanner.Scan() {
+		lineNum++
 		line := scanner.Bytes()
 		if len(line) == 0 {
 			continue
 		}
 		var msg ripgrepMatch
 		if err := json.Unmarshal(line, &msg); err != nil {
-			continue
+			return newRipgrepJSONError(fmt.Errorf("invalid JSON at stream line %d: %w", lineNum, err))
 		}
 		if msg.Type != "match" && msg.Type != "context" {
 			continue
 		}
-		if msg.Data.Path.Text == "" || msg.Data.LineNumber <= 0 {
-			continue
+		if msg.Data.Path.Text == "" || msg.Data.LineNumber <= 0 || msg.Data.Lines.Text == "" {
+			return newRipgrepJSONError(fmt.Errorf("incomplete %s event at stream line %d", msg.Type, lineNum))
 		}
 		file := files[msg.Data.Path.Text]
 		if file == nil {
@@ -346,7 +443,10 @@ func parseRipgrepContextStream(r io.Reader, files map[string]*fsGrepFileHits, bu
 			return nil // Budget spent; caller drains and stops.
 		}
 	}
-	return scanner.Err()
+	if err := scanner.Err(); err != nil {
+		return newRipgrepJSONError(err)
+	}
+	return nil
 }
 
 // searchFilesWithRegexContext walks rootPath with the same skip rules as
@@ -398,6 +498,10 @@ func searchFilesWithRegexContext(ctx context.Context, pattern, rootPath, include
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
+			var lineErr *FSGrepLineTooLongError
+			if errors.As(err, &lineErr) {
+				return err
+			}
 			return nil // Skip files we cannot read, like the legacy walk.
 		}
 		if budget.spent() {
@@ -425,6 +529,10 @@ func scanFileWithContext(ctx context.Context, filePath string, regex *regexp.Reg
 		return err
 	}
 	defer file.Close()
+	return scanFSGrepReader(ctx, file, regex, contextLines, filePath, files, budget)
+}
+
+func scanFSGrepReader(ctx context.Context, source io.Reader, regex *regexp.Regexp, contextLines int, filePath string, files map[string]*fsGrepFileHits, budget *fsGrepBudget) error {
 
 	var collector *fsGrepFileHits
 
@@ -435,7 +543,7 @@ func scanFileWithContext(ctx context.Context, filePath string, regex *regexp.Reg
 	var ring []ringEntry // The last contextLines lines not yet recorded.
 	readAhead := 0       // Lines that must still be recorded after a hit.
 
-	reader := bufio.NewReader(file)
+	reader := bufio.NewReader(source)
 	var lineBuf bytes.Buffer
 	lineNum := 0
 	for {
@@ -450,12 +558,12 @@ func scanFileWithContext(ctx context.Context, filePath string, regex *regexp.Reg
 		if rerr == io.EOF && lineBuf.Len() == 0 {
 			break
 		}
+		if truncated {
+			return &FSGrepLineTooLongError{line: lineNum, limit: maxFallbackLineBytes}
+		}
 
 		text := strings.TrimSuffix(lineBuf.String(), "\r")
 		isHit := regex.MatchString(text)
-		if truncated {
-			text += fallbackTruncateSuffix
-		}
 
 		if isHit || readAhead > 0 {
 			if collector == nil {
@@ -484,7 +592,7 @@ func scanFileWithContext(ctx context.Context, filePath string, regex *regexp.Reg
 				return nil
 			}
 		} else {
-			ring = append(ring, ringEntry{lineNum, text})
+			ring = append(ring, ringEntry{lineNum, truncateFSGrepContent(text)})
 			if len(ring) > contextLines {
 				ring = ring[len(ring)-contextLines:]
 			}

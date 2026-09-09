@@ -41,6 +41,21 @@ func TestRipgrepSearchProcessHelper(t *testing.T) {
 		}
 	case "valid-exit-1":
 		writeLine("valid match")
+	case "fs-overflow-drain":
+		writeOversizedFSGrepJSONLine(path)
+		chunk := strings.Repeat("x", 16*1024)
+		for range 8 {
+			_, _ = os.Stdout.Write([]byte(chunk))
+		}
+	case "fs-stderr":
+		chunk := strings.Repeat("d", 4096)
+		remaining := maxRipgrepDiagnosticBytes + 1
+		for remaining > 0 {
+			n := min(remaining, len(chunk))
+			_, _ = os.Stderr.Write([]byte(chunk[:n]))
+			remaining -= n
+		}
+		os.Exit(2)
 	default:
 		os.Exit(3)
 	}
@@ -51,6 +66,22 @@ func TestRipgrepSearchProcessHelper(t *testing.T) {
 	if scenario == "overflow-exit-2" {
 		os.Exit(2)
 	}
+}
+
+func writeOversizedFSGrepJSONLine(path string) {
+	pathJSON, _ := json.Marshal(path)
+	prefix := fmt.Sprintf(`{"type":"match","data":{"path":{"text":%s},"lines":{"text":"`, pathJSON)
+	suffix := `"},"line_number":1}}
+` // The newline is part of the JSON stream, not the line text.
+	_, _ = os.Stdout.Write([]byte(prefix))
+	remaining := maxRipgrepJSONLineBytes + 2 - len(prefix) - len(suffix)
+	chunk := strings.Repeat("x", 64*1024)
+	for remaining > 0 {
+		n := min(remaining, len(chunk))
+		_, _ = os.Stdout.Write([]byte(chunk[:n]))
+		remaining -= n
+	}
+	_, _ = os.Stdout.Write([]byte(suffix))
 }
 
 func testRipgrepJSONLine(path, text string) []byte {

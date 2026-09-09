@@ -3,13 +3,17 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/config"
@@ -219,8 +223,8 @@ func TestParseRipgrepContextStream(t *testing.T) {
 		`{"type":"end","data":{"path":{"text":"f.txt"}}}`,
 		`{"type":"summary","data":{"elapsed_total":{"secs":0}}}`,
 		`{"type":"match","data":{"path":{"text":"g.txt"},"line_number":2,"lines":{"text":"hit\n"}}}`,
-		`not json at all`,
-		`{"type":"match","data":{"path":{"text":"z.txt"},"line_number":0,"lines":{"text":"nope\n"}}}`,
+		`{"type":"summary","data":{"elapsed_total":{"secs":0}}}`,
+		`{"type":"summary","data":{"elapsed_total":{"secs":0}}}`,
 		`{"type":"context","data":{"path":{"text":"f.txt"},"line_number":6,"lines":{"text":"after\n"}}}`,
 		`{"type":"match","data":{"path":{"text":"f.txt"},"line_number":6,"lines":{"text":"after\n"}}}`,
 	}, "\n")
@@ -240,6 +244,189 @@ func TestParseRipgrepContextStream(t *testing.T) {
 	// the first context arrival of line 6, plus g.txt line 2. The
 	// context-then-match upgrade of f.txt line 6 spends nothing.
 	require.Equal(t, 96, budget.remaining)
+}
+
+func TestParseRipgrepContextStreamRejectsMalformedAndOversizedInput(t *testing.T) {
+	t.Parallel()
+
+	files := map[string]*fsGrepFileHits{}
+	budget := newFSGrepBudget()
+	err := parseRipgrepContextStream(strings.NewReader("not json\n"), files, &budget)
+	var outputErr *RipgrepJSONError
+	require.ErrorAs(t, err, &outputErr)
+	require.ErrorIs(t, err, ErrRipgrepJSONOutput)
+	require.NotErrorIs(t, err, ErrRipgrepJSONOutputTooLong)
+
+	files = map[string]*fsGrepFileHits{}
+	budget = newFSGrepBudget()
+	err = parseRipgrepContextStream(&repeatingByteReader{remaining: maxRipgrepJSONLineBytes + 1}, files, &budget)
+	require.ErrorIs(t, err, ErrRipgrepJSONOutputTooLong)
+}
+
+func TestFSGrepOverflowDoesNotInvokeFallback(t *testing.T) {
+	t.Parallel()
+	called := 0
+	ctx := context.WithValue(t.Context(), fsGrepFallbackSearchKey{}, fsGrepFallbackSearchFunc(func(context.Context, string, string, string, int, map[string]*fsGrepFileHits, *fsGrepBudget) error {
+		called++
+		return nil
+	}))
+	ctx = context.WithValue(ctx, fsGrepRipgrepSearchKey{}, fsGrepRipgrepSearchFunc(func(_ context.Context, _ string, _ string, _ string, _ int, _ map[string]*fsGrepFileHits, budget *fsGrepBudget) error {
+		budget.remaining = 3
+		return newRipgrepJSONError(io.ErrUnexpectedEOF)
+	}))
+
+	files := map[string]*fsGrepFileHits{}
+	budget := fsGrepBudget{remaining: 7}
+	err := fsGrepSearchContext(ctx, "needle", t.TempDir(), "", 0, files, &budget)
+	var outputErr *RipgrepJSONError
+	require.ErrorAs(t, err, &outputErr)
+	require.Zero(t, called)
+	require.Equal(t, 3, budget.remaining)
+
+	ctx = context.WithValue(t.Context(), fsGrepFallbackSearchKey{}, fsGrepFallbackSearchFunc(func(context.Context, string, string, string, int, map[string]*fsGrepFileHits, *fsGrepBudget) error {
+		called++
+		return nil
+	}))
+	ctx = context.WithValue(ctx, fsGrepRipgrepSearchKey{}, fsGrepRipgrepSearchFunc(func(_ context.Context, _ string, _ string, _ string, _ int, _ map[string]*fsGrepFileHits, budget *fsGrepBudget) error {
+		budget.remaining = 2
+		return context.Canceled
+	}))
+	budget = fsGrepBudget{remaining: 7}
+	err = fsGrepSearchContext(ctx, "needle", t.TempDir(), "", 0, files, &budget)
+	require.ErrorIs(t, err, context.Canceled)
+	require.Equal(t, 2, budget.remaining)
+	require.Zero(t, called)
+}
+
+func TestFSGrepFallbackRestoresBudgetAfterEligibleRgFailure(t *testing.T) {
+	const originalBudget = 7
+	called := false
+	ctx := context.WithValue(t.Context(), fsGrepRipgrepSearchKey{}, fsGrepRipgrepSearchFunc(func(_ context.Context, _ string, _ string, _ string, _ int, files map[string]*fsGrepFileHits, budget *fsGrepBudget) error {
+		partial := newFSGrepFileHits()
+		for line := 1; line <= originalBudget; line++ {
+			require.True(t, partial.add(line, "partial", true, budget))
+		}
+		files["partial.txt"] = partial
+		return errors.New("rg execution failed")
+	}))
+	ctx = context.WithValue(ctx, fsGrepFallbackSearchKey{}, fsGrepFallbackSearchFunc(func(_ context.Context, _ string, _ string, _ string, _ int, files map[string]*fsGrepFileHits, budget *fsGrepBudget) error {
+		called = true
+		require.Equal(t, originalBudget, budget.remaining)
+		fallback := newFSGrepFileHits()
+		require.True(t, fallback.add(1, "needle", true, budget))
+		files["fallback.txt"] = fallback
+		return nil
+	}))
+
+	files := map[string]*fsGrepFileHits{}
+	budget := fsGrepBudget{remaining: originalBudget}
+	require.NoError(t, fsGrepSearchContext(ctx, "needle", t.TempDir(), "", 0, files, &budget))
+	require.True(t, called)
+	require.Equal(t, originalBudget-1, budget.remaining)
+	require.NotContains(t, files, "partial.txt")
+	require.Contains(t, files, "fallback.txt")
+}
+
+type repeatingByteReader struct {
+	remaining int
+}
+
+func TestFSGrepFallbackOverflowIsTyped(t *testing.T) {
+	t.Parallel()
+	files := map[string]*fsGrepFileHits{}
+	budget := newFSGrepBudget()
+	err := scanFSGrepReader(t.Context(), &repeatingByteReader{remaining: maxFallbackLineBytes + 1}, regexp.MustCompile("needle"), 1, "generated.txt", files, &budget)
+	var lineErr *FSGrepLineTooLongError
+	require.ErrorAs(t, err, &lineErr)
+	require.ErrorIs(t, err, ErrFSGrepLineTooLong)
+	require.Empty(t, files)
+}
+
+func TestFSGrepContextStorageIsBoundedAndUTF8Safe(t *testing.T) {
+	t.Parallel()
+	const contextLines = 50
+	long := strings.Repeat("x", maxGrepContentWidth+100)
+	var source strings.Builder
+	for range contextLines {
+		source.WriteString(long)
+		source.WriteByte('\n')
+	}
+	source.WriteString("needle\n")
+	for range contextLines {
+		source.WriteString(long)
+		source.WriteByte('\n')
+	}
+
+	files := map[string]*fsGrepFileHits{}
+	budget := fsGrepBudget{remaining: contextLines*2 + 1}
+	require.NoError(t, scanFSGrepReader(t.Context(), strings.NewReader(source.String()), regexp.MustCompile("needle"), contextLines, "generated.txt", files, &budget))
+	collector := files["generated.txt"]
+	require.Len(t, collector.lines, contextLines*2+1)
+	var retained int
+	for _, line := range collector.lines {
+		retained += len(line.text)
+		require.LessOrEqual(t, len(line.text), maxGrepContentWidth)
+	}
+	require.LessOrEqual(t, retained, (contextLines*2+1)*maxGrepContentWidth)
+
+	utf8Source := strings.Repeat("界", 300) + " needle\n"
+	files = map[string]*fsGrepFileHits{}
+	budget = newFSGrepBudget()
+	require.NoError(t, scanFSGrepReader(t.Context(), strings.NewReader(utf8Source), regexp.MustCompile("needle"), 0, "utf8.txt", files, &budget))
+	line := files["utf8.txt"].lines[1].text
+	require.True(t, utf8.ValidString(line))
+	require.True(t, strings.HasSuffix(line, "..."))
+}
+
+func TestRipgrepContextSearchReapsAfterOverflow(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	cmd := testRipgrepCommand(ctx, "fs-overflow-drain", filepath.Join(t.TempDir(), "match.txt"))
+	files := map[string]*fsGrepFileHits{}
+	budget := newFSGrepBudget()
+	err := runRipgrepContextSearch(ctx, cmd, files, &budget)
+	require.ErrorIs(t, err, ErrRipgrepJSONOutputTooLong)
+	require.NoError(t, ctx.Err())
+}
+
+func TestRipgrepContextSearchBoundsDiagnostics(t *testing.T) {
+	cmd := testRipgrepCommand(t.Context(), "fs-stderr", filepath.Join(t.TempDir(), "match.txt"))
+	files := map[string]*fsGrepFileHits{}
+	budget := newFSGrepBudget()
+	err := runRipgrepContextSearch(t.Context(), cmd, files, &budget)
+	require.Error(t, err)
+	require.LessOrEqual(t, len(err.Error()), maxRipgrepDiagnosticBytes+2048)
+}
+
+func TestBoundedRipgrepDiagnosticReportsFullConsumption(t *testing.T) {
+	var diagnostic boundedRipgrepDiagnostic
+	input := strings.Repeat("d", maxRipgrepDiagnosticBytes+1)
+	n, err := diagnostic.Write([]byte(input))
+	require.NoError(t, err)
+	require.Equal(t, len(input), n)
+	require.Len(t, diagnostic.data, maxRipgrepDiagnosticBytes)
+}
+
+func TestRipgrepContextSearchCancellationWins(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	cmd := testRipgrepCommand(ctx, "fs-overflow-drain", filepath.Join(t.TempDir(), "match.txt"))
+	files := map[string]*fsGrepFileHits{}
+	budget := newFSGrepBudget()
+	err := runRipgrepContextSearch(ctx, cmd, files, &budget)
+	require.ErrorIs(t, err, context.Canceled)
+}
+
+func (r *repeatingByteReader) Read(p []byte) (int, error) {
+	if r.remaining == 0 {
+		return 0, io.EOF
+	}
+	n := min(len(p), r.remaining)
+	for i := range p[:n] {
+		p[i] = 'x'
+	}
+	r.remaining -= n
+	return n, nil
 }
 
 func TestRipgrepContextSearchWithRealRg(t *testing.T) {
