@@ -192,6 +192,82 @@ func (s *ConfigStore) withMCPAdmissionLocksContext(ctx context.Context, fn func(
 }
 
 func (s *ConfigStore) withMCPLocks(ctx context.Context, fn func(*mcpLockedFiles) error) error {
+	return s.withMCPLocksUsingCaseSensitivity(ctx, fn, configPlatformCaseSensitivity)
+}
+
+type mcpLockGroup struct {
+	key      string
+	lockPath string
+	targets  []configWriteTarget
+}
+
+func configMCPAdmissionLockGroups(
+	targets []configWriteTarget,
+	caseSensitivity func(string) configCaseSensitivity,
+) ([]*mcpLockGroup, map[string]configWriteTarget, map[string]string) {
+	groupsByKey := make(map[string]*mcpLockGroup, len(targets))
+	targetBySelectedPath := make(map[string]configWriteTarget, len(targets))
+	targetKeyBySelectedPath := make(map[string]string, len(targets))
+	caseDecisions := make(map[configFileIdentity]configCaseSensitivity, len(targets))
+	for _, target := range targets {
+		sensitivity := configCaseSensitivityUnknown
+		parent := target.expected.parentIdentity
+		if parent.valid {
+			var ok bool
+			sensitivity, ok = caseDecisions[parent]
+			if !ok {
+				if caseSensitivity != nil {
+					sensitivity = caseSensitivity(filepath.Dir(target.path))
+				}
+				caseDecisions[parent] = sensitivity
+			}
+		}
+		targetKey := configWriteTargetDedupKeyWithCaseSensitivity(target, sensitivity)
+		if group, exists := groupsByKey[targetKey]; exists {
+			group.targets = append(group.targets, target)
+		} else {
+			groupsByKey[targetKey] = &mcpLockGroup{
+				key: targetKey, lockPath: target.lockPath,
+				targets: []configWriteTarget{target},
+			}
+		}
+		targetBySelectedPath[target.selectedPath] = target
+		targetKeyBySelectedPath[target.selectedPath] = targetKey
+	}
+	groups := make([]*mcpLockGroup, 0, len(groupsByKey))
+	for _, group := range groupsByKey {
+		groups = append(groups, group)
+	}
+	slices.SortFunc(groups, func(left, right *mcpLockGroup) int {
+		if left.lockPath < right.lockPath {
+			return -1
+		}
+		if left.lockPath > right.lockPath {
+			return 1
+		}
+		return strings.Compare(left.key, right.key)
+	})
+	// A pathological retarget during resolution can produce distinct target
+	// identities with one lock pathname. Acquire that pathname only once while
+	// retaining every logical target for binding verification.
+	mergedGroups := make([]*mcpLockGroup, 0, len(groups))
+	groupsByLockPath := make(map[string]*mcpLockGroup)
+	for _, group := range groups {
+		if existing, ok := groupsByLockPath[group.lockPath]; ok {
+			existing.targets = append(existing.targets, group.targets...)
+			continue
+		}
+		groupsByLockPath[group.lockPath] = group
+		mergedGroups = append(mergedGroups, group)
+	}
+	return mergedGroups, targetBySelectedPath, targetKeyBySelectedPath
+}
+
+func (s *ConfigStore) withMCPLocksUsingCaseSensitivity(
+	ctx context.Context,
+	fn func(*mcpLockedFiles) error,
+	caseSensitivity func(string) configCaseSensitivity,
+) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -206,57 +282,16 @@ func (s *ConfigStore) withMCPLocks(ctx context.Context, fn func(*mcpLockedFiles)
 	}
 	slices.Sort(paths)
 	paths = slices.Compact(paths)
-	type lockGroup struct {
-		key      string
-		lockPath string
-		targets  []configWriteTarget
-	}
-	groupsByKey := make(map[string]*lockGroup, len(paths))
-	targetBySelectedPath := make(map[string]configWriteTarget, len(paths))
+	targets := make([]configWriteTarget, 0, len(paths))
 	for _, path := range paths {
 		target, targetErr := s.resolveConfigWriteTarget(path)
 		if targetErr != nil {
 			return targetErr
 		}
 		runConfigAfterMCPResolveTargetHook(&target)
-		targetKey := configWriteTargetDedupKey(target)
-		if group, exists := groupsByKey[targetKey]; exists {
-			group.targets = append(group.targets, target)
-		} else {
-			groupsByKey[targetKey] = &lockGroup{
-				key: targetKey, lockPath: target.lockPath,
-				targets: []configWriteTarget{target},
-			}
-		}
-		targetBySelectedPath[target.selectedPath] = target
+		targets = append(targets, target)
 	}
-	groups := make([]*lockGroup, 0, len(groupsByKey))
-	for _, group := range groupsByKey {
-		groups = append(groups, group)
-	}
-	slices.SortFunc(groups, func(left, right *lockGroup) int {
-		if left.lockPath < right.lockPath {
-			return -1
-		}
-		if left.lockPath > right.lockPath {
-			return 1
-		}
-		return strings.Compare(left.key, right.key)
-	})
-	// A pathological retarget during resolution can produce distinct target
-	// identities with one lock pathname. Acquire that pathname only once while
-	// retaining every logical target for binding verification.
-	mergedGroups := make([]*lockGroup, 0, len(groups))
-	groupsByLockPath := make(map[string]*lockGroup, len(groups))
-	for _, group := range groups {
-		if existing, ok := groupsByLockPath[group.lockPath]; ok {
-			existing.targets = append(existing.targets, group.targets...)
-			continue
-		}
-		groupsByLockPath[group.lockPath] = group
-		mergedGroups = append(mergedGroups, group)
-	}
-	groups = mergedGroups
+	groups, targetBySelectedPath, targetKeyBySelectedPath := configMCPAdmissionLockGroups(targets, caseSensitivity)
 
 	s.diskWriteMu.Lock()
 	defer s.diskWriteMu.Unlock()
@@ -297,7 +332,7 @@ func (s *ConfigStore) withMCPLocks(ctx context.Context, fn func(*mcpLockedFiles)
 		}
 		data, fingerprint, readErr := readStableConfigFileOwned(path, expectedOwner, enforceOwner)
 		target := targetBySelectedPath[normalizeDiscoveryPath(path)]
-		files.targetKeys[normalizeDiscoveryPath(path)] = configWriteTargetDedupKey(target)
+		files.targetKeys[normalizeDiscoveryPath(path)] = targetKeyBySelectedPath[target.selectedPath]
 		if readErr != nil {
 			if os.IsNotExist(readErr) {
 				if err := verifyConfigTargetBinding(target, fingerprint, readErr); err != nil {

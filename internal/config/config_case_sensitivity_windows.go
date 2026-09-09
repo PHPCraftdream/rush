@@ -6,7 +6,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -16,11 +15,18 @@ import (
 // Older filesystems without this information class retain Windows' historical
 // case-insensitive default; ambiguous errors fail closed.
 func configPlatformCaseFoldLeaf(dir, leaf string) (string, bool) {
+	return configFoldCaseLeaf(leaf, configPlatformCaseSensitivity(dir))
+}
+
+func configPlatformCaseSensitivity(dir string) configCaseSensitivity {
 	caseInsensitive, err := windowsConfigDirectoryCaseInsensitive(dir)
-	if err != nil || !caseInsensitive {
-		return "", false
+	if err != nil {
+		return configCaseSensitivityUnknown
 	}
-	return strings.ToLower(leaf), true
+	if caseInsensitive {
+		return configCaseSensitivityInsensitive
+	}
+	return configCaseSensitivitySensitive
 }
 
 func windowsConfigDirectoryCaseInsensitive(path string) (bool, error) {

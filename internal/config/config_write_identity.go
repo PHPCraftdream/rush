@@ -10,6 +10,10 @@ import (
 // Missing files use the sidecar identity when available, then the parent
 // identity and a case-aware leaf key.
 func configWriteTargetDedupKey(target configWriteTarget) string {
+	return configWriteTargetDedupKeyWithCaseFold(target, configPlatformCaseFoldLeaf)
+}
+
+func configWriteTargetDedupKeyWithCaseFold(target configWriteTarget, caseFold func(string, string) (string, bool)) string {
 	if target.expected.exists && target.expected.identity.valid {
 		return configWriteIdentityKey("file", target.expected.identity)
 	}
@@ -26,11 +30,19 @@ func configWriteTargetDedupKey(target configWriteTarget) string {
 	}
 
 	leaf := filepath.Base(target.path)
-	leaf, _ = configPlatformCaseFoldLeaf(filepath.Dir(target.path), leaf)
+	if caseFold != nil {
+		leaf, _ = caseFold(filepath.Dir(target.path), leaf)
+	}
 	if leaf == "" {
 		leaf = filepath.Base(target.path)
 	}
 	return fmt.Sprintf("missing-parent:%d:%d:%s", parent.device, parent.inode, leaf)
+}
+
+func configWriteTargetDedupKeyWithCaseSensitivity(target configWriteTarget, sensitivity configCaseSensitivity) string {
+	return configWriteTargetDedupKeyWithCaseFold(target, func(_, leaf string) (string, bool) {
+		return configFoldCaseLeaf(leaf, sensitivity)
+	})
 }
 
 func configWriteIdentityKey(kind string, identity configFileIdentity) string {

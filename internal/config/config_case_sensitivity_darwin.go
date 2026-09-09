@@ -4,7 +4,6 @@ package config
 
 import (
 	"path/filepath"
-	"strings"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -17,13 +16,17 @@ const (
 // configPlatformCaseFoldLeaf reads APFS/HFS volume capabilities without
 // creating a directory entry. Unknown capability results fail closed.
 func configPlatformCaseFoldLeaf(dir, leaf string) (string, bool) {
+	return configFoldCaseLeaf(leaf, configPlatformCaseSensitivity(dir))
+}
+
+func configPlatformCaseSensitivity(dir string) configCaseSensitivity {
 	path, err := filepath.Abs(filepath.Clean(dir))
 	if err != nil {
-		return "", false
+		return configCaseSensitivityUnknown
 	}
 	pathPtr, err := unix.BytePtrFromString(path)
 	if err != nil {
-		return "", false
+		return configCaseSensitivityUnknown
 	}
 	attrs := unix.Attrlist{Bitmapcount: 5, Volattr: unix.ATTR_VOL_INFO | unix.ATTR_VOL_CAPABILITIES}
 	buffer := make([]byte, darwinVolumeCapabilityAttributeSize)
@@ -37,11 +40,14 @@ func configPlatformCaseFoldLeaf(dir, leaf string) (string, bool) {
 		0,
 	)
 	if errno != 0 {
-		return "", false
+		return configCaseSensitivityUnknown
 	}
 	caseInsensitive, known := configParseDarwinVolumeCapabilities(buffer)
-	if !known || !caseInsensitive {
-		return "", false
+	if !known {
+		return configCaseSensitivityUnknown
 	}
-	return strings.ToLower(leaf), true
+	if caseInsensitive {
+		return configCaseSensitivityInsensitive
+	}
+	return configCaseSensitivitySensitive
 }
