@@ -233,6 +233,21 @@ bash .githooks/check_stale_model_slots.sh || fail "stale large/small model-slot 
 step "test files pair db.Connect/db.ConnectRead with db.Release (ref-counted pool contract)"
 bash .githooks/check_db_release_pairing.sh || fail "unpaired db.Connect/db.ConnectRead in a test file -- see output above"
 
+# The operator's file-size rule: no hand-written source file over 1000
+# lines -- a bigger file gets decomposed. Pre-existing debt ships under a
+# RATCHET allowlist (.githooks/file_size_allowlist.txt): a listed file
+# may stay over the limit but fails the moment it grows, and must be
+# removed from the list once it drops to the limit. Generated files are
+# skipped by content (go.dev/s/generatedcode marker in the first 10
+# lines). .golangci.yml enforces the same limit a second way, via
+# revive's file-length-limit rule with exclusions mirroring the
+# allowlist; the selftest below fails while those two disagree.
+step "no hand-written source file over 1000 lines (ratcheted allowlist)"
+bash .githooks/check_file_size.sh || fail "file-size ratchet violated -- see output above"
+
+step "file-size guard self-test (throwaway repos + allowlist <-> .golangci.yml bijection)"
+bash .githooks/check_file_size_selftest.sh || fail "file-size guard self-test failed"
+
 # The web UI's typecheck. rsbuild (pnpm build) does NOT check types, so
 # without this nothing in the project does — which is how five errors,
 # including a required prop that silently changed how tool groups render,
