@@ -5,6 +5,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/message"
@@ -16,15 +17,17 @@ import (
 // It counts Update calls and captures the last flushed message.
 // Fork patch: batch 8 — test-only mock.
 type mockCheckpointMsgSvc struct {
-	mu          sync.Mutex
-	updateCount atomic.Int64
-	lastUpdated *message.Message
+	mu           sync.Mutex
+	updateCount  atomic.Int64
+	lastUpdated  *message.Message
+	updateSignal chan struct{}
 	*pubsub.Broker[message.Message]
 }
 
 func newMockCheckpointMsgSvc() *mockCheckpointMsgSvc {
 	return &mockCheckpointMsgSvc{
-		Broker: pubsub.NewBroker[message.Message](),
+		updateSignal: make(chan struct{}, 1),
+		Broker:       pubsub.NewBroker[message.Message](),
 	}
 }
 
@@ -42,6 +45,10 @@ func (m *mockCheckpointMsgSvc) Update(_ context.Context, msg message.Message) er
 	m.updateCount.Add(1)
 	cp := msg.Clone()
 	m.lastUpdated = &cp
+	select {
+	case m.updateSignal <- struct{}{}:
+	default:
+	}
 	return nil
 }
 
@@ -238,44 +245,42 @@ func TestCheckpointDisabledWhenZero(t *testing.T) {
 // (simulating OnStepFinish) stops the checkpoint ticker before the final
 // write and no further writes happen after stop.
 func TestCheckpointStoppedOnStepFinish(t *testing.T) {
-	t.Parallel()
-	msgSvc := newMockCheckpointMsgSvc()
-	interval := 30 * time.Millisecond
+	synctest.Test(t, func(t *testing.T) {
+		msgSvc := newMockCheckpointMsgSvc()
 
-	ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithCancel(t.Context())
 
-	var sessionLock sync.Mutex
-	currentAssistant := &message.Message{
-		ID:        "test-msg-id",
-		SessionID: "test-session",
-		Role:      message.Assistant,
-	}
+		var sessionLock sync.Mutex
+		currentAssistant := &message.Message{
+			ID:        "test-msg-id",
+			SessionID: "test-session",
+			Role:      message.Assistant,
+		}
 
-	done := runCheckpointTicker(ctx, interval, msgSvc, currentAssistant, &sessionLock)
+		done := runCheckpointTicker(ctx, 30*time.Millisecond, msgSvc, currentAssistant, &sessionLock)
+		synctest.Wait()
 
-	sessionLock.Lock()
-	currentAssistant.AppendContent("text")
-	sessionLock.Unlock()
+		sessionLock.Lock()
+		currentAssistant.AppendContent("text")
+		sessionLock.Unlock()
 
-	// Wait for at least one tick.
-	time.Sleep(interval * 3)
+		// Wait for the real ticker's update; synctest advances virtual time.
+		<-msgSvc.updateSignal
 
-	countBeforeStop := msgSvc.updateCount.Load()
-	require.GreaterOrEqual(t, countBeforeStop, int64(1), "at least one checkpoint before stop")
+		countBeforeStop := msgSvc.updateCount.Load()
+		require.GreaterOrEqual(t, countBeforeStop, int64(1), "at least one checkpoint before stop")
 
-	// Stop the checkpoint (simulates OnStepFinish).
-	cancel()
-	<-done
+		// Stop the checkpoint (simulates OnStepFinish).
+		cancel()
+		<-done
 
-	// Add more content — no more writes expected because ticker is stopped.
-	sessionLock.Lock()
-	currentAssistant.AppendContent("more text after stop")
-	sessionLock.Unlock()
+		// Add more content — no more writes expected because ticker is stopped.
+		sessionLock.Lock()
+		currentAssistant.AppendContent("more text after stop")
+		sessionLock.Unlock()
 
-	time.Sleep(interval * 3)
-
-	countAfterStop := msgSvc.updateCount.Load()
-	require.Equal(t, countBeforeStop, countAfterStop, "no more writes after stop")
+		require.Equal(t, countBeforeStop, msgSvc.updateCount.Load(), "no more writes after stop")
+	})
 }
 
 // runCheckpointTickerFixed replicates the POST-FIX checkpoint goroutine from

@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -15,38 +16,32 @@ import (
 // exercised here — that's a property of the integration, not of this unit.
 
 func TestStreamWatchdog_BumpKeepsItAlive(t *testing.T) {
-	t.Parallel()
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
 
-	// 3x the original 80/10ms/20ms-bump timings (same ratios): observed
-	// flaking under CI load, a real wall-clock race against actual
-	// scheduling jitter rather than a logic bug -- more absolute headroom,
-	// same relative behavior under test.
-	const idle = 240 * time.Millisecond
-	const tick = 30 * time.Millisecond
+		// The synctest bubble supplies virtual time, so this test has no scheduler
+		// or wall-clock threshold race.
+		const idle = 240 * time.Millisecond
+		const tick = 30 * time.Millisecond
 
-	var fired atomic.Int32
-	wd := startStreamWatchdog(ctx, cancel, idle, tick, func(time.Duration, watchdogCause) {
-		fired.Add(1)
-	}, false, 0, 0, 0, nil)
-	// Bump every 60ms for ~900ms — well past idle*3 worth of ticks.
-	// Watchdog must NOT fire.
-	stop := time.After(900 * time.Millisecond)
-loop:
-	for {
-		select {
-		case <-stop:
-			break loop
-		case <-time.After(60 * time.Millisecond):
+		var fired atomic.Int32
+		wd := startStreamWatchdog(ctx, cancel, idle, tick, func(time.Duration, watchdogCause) {
+			fired.Add(1)
+		}, false, 0, 0, 0, nil)
+		// Bump every 60ms for 1.2s, well past idleTimeout.
+		// Watchdog must NOT fire.
+		for i := 0; i < 20; i++ {
+			time.Sleep(60 * time.Millisecond)
 			wd.bump()
 		}
-	}
 
-	assert.Equal(t, int32(0), fired.Load(),
-		"watchdog must not fire while bump() is called more often than idleTimeout")
-	assert.False(t, wd.stalled.Load(), "stalled flag must stay false")
-	assert.NoError(t, ctx.Err(), "ctx must not be cancelled by the watchdog")
+		assert.Equal(t, int32(0), fired.Load(),
+			"watchdog must not fire while bump() is called more often than idleTimeout")
+		assert.False(t, wd.stalled.Load(), "stalled flag must stay false")
+		assert.NoError(t, ctx.Err(), "ctx must not be cancelled by the watchdog")
+		cancel()
+		<-wd.done
+	})
 }
 
 func TestStreamWatchdog_FiresOnNoActivity(t *testing.T) {

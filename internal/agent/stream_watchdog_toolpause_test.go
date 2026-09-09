@@ -9,6 +9,7 @@ import (
 	"context"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -126,45 +127,42 @@ func TestStreamWatchdog_ToolPauseBoundedByCap(t *testing.T) {
 // running UNDER the cap does not trip the backstop, and that after the
 // tool finishes the watchdog still fires normally on idle.
 func TestStreamWatchdog_ToolPauseUnderCapDoesNotFire(t *testing.T) {
-	t.Parallel()
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
 
-	const idle = 60 * time.Millisecond
-	const tick = 10 * time.Millisecond
-	const toolMaxDuration = 5 * time.Second // generous — well above the tool runtime
+		const idle = 60 * time.Millisecond
+		const tick = 10 * time.Millisecond
+		const toolMaxDuration = 5 * time.Second // generous — well above the tool runtime
 
-	var fired atomic.Int32
-	var firedCause atomic.Int32
-	wd := startStreamWatchdog(ctx, cancel, idle, tick, func(_ time.Duration, cause watchdogCause) {
-		fired.Add(1)
-		firedCause.Store(int32(cause))
-	}, false, 0, toolMaxDuration, 0, nil)
-	defer func() {
-		cancel()
+		var fired atomic.Int32
+		var firedCause atomic.Int32
+		wd := startStreamWatchdog(ctx, cancel, idle, tick, func(_ time.Duration, cause watchdogCause) {
+			fired.Add(1)
+			firedCause.Store(int32(cause))
+		}, false, 0, toolMaxDuration, 0, nil)
+		defer func() {
+			cancel()
+			<-wd.done
+		}()
+
+		// Tool runs for a few idle periods — well under the cap. The
+		// watchdog must NOT fire.
+		wd.toolStarted()
+		time.Sleep(idle * 3)
+		assert.Equal(t, int32(0), fired.Load(),
+			"watchdog must not fire while a tool runs under the cap")
+		assert.False(t, wd.stalled.Load())
+		assert.NoError(t, ctx.Err())
+
+		// Tool finishes; with no further activity the watchdog resumes and
+		// must fire on idle afterwards (cause==causeIdleStall).
+		wd.toolFinished()
 		<-wd.done
-	}()
-
-	// Tool runs for a few idle periods — well under the cap. The
-	// watchdog must NOT fire.
-	wd.toolStarted()
-	time.Sleep(idle * 3)
-	assert.Equal(t, int32(0), fired.Load(),
-		"watchdog must not fire while a tool runs under the cap")
-	assert.False(t, wd.stalled.Load())
-	assert.NoError(t, ctx.Err())
-
-	// Tool finishes; with no further activity the watchdog resumes and
-	// must fire on idle afterwards (cause==causeIdleStall).
-	wd.toolFinished()
-	select {
-	case <-wd.done:
-	case <-time.After(idle + 300*time.Millisecond):
-		t.Fatal("watchdog must fire on idle after the tool finished")
-	}
-	assert.Equal(t, int32(1), fired.Load())
-	assert.Equal(t, causeIdleStall, watchdogCause(firedCause.Load()), "the post-tool fire must be an idle fire, not a tool timeout")
-	assert.True(t, wd.stalled.Load())
+		assert.Equal(t, int32(1), fired.Load())
+		assert.Equal(t, causeIdleStall, watchdogCause(firedCause.Load()), "the post-tool fire must be an idle fire, not a tool timeout")
+		assert.True(t, wd.stalled.Load())
+		cancel()
+	})
 }
 
 // TestStreamWatchdog_SequentialBatchProgressResetsCapClock is the regression
@@ -187,58 +185,49 @@ func TestStreamWatchdog_ToolPauseUnderCapDoesNotFire(t *testing.T) {
 // total span, ~120ms, is well past it) — the watchdog must NOT fire, since
 // every gap between consecutive finishes resets the clock.
 func TestStreamWatchdog_SequentialBatchProgressResetsCapClock(t *testing.T) {
-	t.Parallel()
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
 
-	const idle = 5 * time.Second // large — idle path must not confound this test
-	const tick = 10 * time.Millisecond
-	const toolMaxDuration = 600 * time.Millisecond
-	// stepGap < toolMaxDuration; 4 steps sum to ~1200ms > toolMaxDuration.
-	// Scaled 10x up from an earlier 30ms/60ms version (task #320): the
-	// invariant this test needs is "each individual gap stays under the
-	// cap", and that margin was only 30ms wide — well inside typical
-	// scheduler jitter for a goroutine under -race in a full-package
-	// parallel run, where a delayed time.Sleep wakeup could push a single
-	// gap over the cap and flake the test on pure scheduling luck, not a
-	// real bug. Same 2x ratio, ten times the absolute margin.
-	const stepGap = 300 * time.Millisecond
+		const idle = 5 * time.Second // large — idle path must not confound this test
+		const tick = 10 * time.Millisecond
+		const toolMaxDuration = 600 * time.Millisecond
+		// The synctest bubble makes each gap exact while the cumulative span
+		// remains larger than the cap.
+		const stepGap = 300 * time.Millisecond
 
-	var fired atomic.Int32
-	wd := startStreamWatchdog(ctx, cancel, idle, tick, func(time.Duration, watchdogCause) {
-		fired.Add(1)
-	}, false, 0, toolMaxDuration, 0, nil)
+		var fired atomic.Int32
+		wd := startStreamWatchdog(ctx, cancel, idle, tick, func(time.Duration, watchdogCause) {
+			fired.Add(1)
+		}, false, 0, toolMaxDuration, 0, nil)
 
-	// fantasy fires OnToolCall for every tool in the step before executing
-	// any of them — simulate that: all four "start" near-simultaneously.
-	wd.toolStarted()
-	wd.toolStarted()
-	wd.toolStarted()
-	wd.toolStarted()
+		// fantasy fires OnToolCall for every tool in the step before executing
+		// any of them — simulate that: all four "start" near-simultaneously.
+		wd.toolStarted()
+		wd.toolStarted()
+		wd.toolStarted()
+		wd.toolStarted()
 
-	// They finish one at a time, ~300ms apart — each gap is safely under
-	// the 600ms cap, but the cumulative batch span (~1200ms) is not.
-	for i := 0; i < 4; i++ {
-		time.Sleep(stepGap)
-		wd.toolFinished()
-	}
+		// They finish one at a time, ~300ms apart — each gap is safely under
+		// the 600ms cap, but the cumulative batch span (~1200ms) is not.
+		for i := 0; i < 4; i++ {
+			time.Sleep(stepGap)
+			wd.toolFinished()
+		}
 
-	assert.Equal(t, int32(0), fired.Load(),
-		"watchdog must not fire for a sequential batch whose individual step gaps stay under the cap, even though the cumulative span exceeds it")
-	assert.False(t, wd.stalled.Load())
-	assert.NoError(t, ctx.Err())
+		assert.Equal(t, int32(0), fired.Load(),
+			"watchdog must not fire for a sequential batch whose individual step gaps stay under the cap, even though the cumulative span exceeds it")
+		assert.False(t, wd.stalled.Load())
+		assert.NoError(t, ctx.Err())
 
-	// A genuinely stuck tool must still be caught: after the batch above
-	// fully finishes (toolsInFlight back to 0), start one more tool and let
-	// it run well past the cap with no further progress — this must fire.
-	wd.toolStarted()
-	select {
-	case <-wd.done:
-	case <-time.After(toolMaxDuration + time.Second):
-		t.Fatal("watchdog must still fire for a genuinely stuck tool after a healthy sequential batch")
-	}
-	assert.Equal(t, int32(1), fired.Load())
-	assert.True(t, wd.stalled.Load())
+		// A genuinely stuck tool must still be caught: after the batch above
+		// fully finishes (toolsInFlight back to 0), start one more tool and let
+		// it run well past the cap with no further progress — this must fire.
+		wd.toolStarted()
+		<-wd.done
+		assert.Equal(t, int32(1), fired.Load())
+		assert.True(t, wd.stalled.Load())
+		cancel()
+	})
 }
 
 // TestStreamWatchdog_ToolCleanupGraceDelaysFire is the regression test for
