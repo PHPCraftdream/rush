@@ -137,7 +137,7 @@ func (a *serverAdmission) replacementValidLocked() bool {
 	if a == nil || a.owner == nil || a.cfg == nil {
 		return true
 	}
-	if owner != a.owner || a.owner.closing || a.owner.generation != a.generation ||
+	if owner != a.owner && !a.owner.standalone || a.owner.closing || a.owner.generation != a.generation ||
 		!a.replacementNamesValidLocked() || !a.sourceConfigValidLocked() {
 		return false
 	}
@@ -201,7 +201,7 @@ func (a *serverAdmission) candidateValidLocked() bool {
 			return false
 		}
 	}
-	return (a.promoted || a.ctx == nil || a.ctx.Err() == nil) && owner == a.owner &&
+	return (a.promoted || a.ctx == nil || a.ctx.Err() == nil) && (a.owner.standalone || owner == a.owner) &&
 		!a.owner.closing && a.owner.generation == a.generation &&
 		a.owner.serverEpochs[a.name] == a.epoch && !uncertain
 }
@@ -239,7 +239,7 @@ func (a *serverAdmission) committedValidLocked() bool {
 		admissionName = a.committedName
 		admissionEpoch = a.committedEpoch
 	}
-	valid := owner == a.owner && !a.owner.closing &&
+	valid := (a.owner.standalone || owner == a.owner) && !a.owner.closing &&
 		a.owner.generation == a.generation &&
 		a.owner.serverEpochs[admissionName] == admissionEpoch
 	if !valid {

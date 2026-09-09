@@ -339,7 +339,7 @@ func (l *clientLease) lockForPublish(ctx context.Context) (*serverLease, bool) {
 }
 
 func (l *clientLease) validForPublishLocked() bool {
-	if l.owner != nil && (owner != l.owner || l.owner.closing ||
+	if l.owner != nil && (!(l.owner.standalone || owner == l.owner) || l.owner.closing ||
 		l.owner.generation != l.generation || l.owner.serverEpochs[l.name] != l.epoch) {
 		return false
 	}
@@ -384,14 +384,22 @@ func serverLeaseFor(name string) *serverLease {
 }
 
 func getOrRenewClient(ctx context.Context, cfg *config.ConfigStore, name string) (*clientLease, error) {
-	lease, err := getOrRenewClientOnce(ctx, cfg, name)
+	return getOrRenewClientForOwner(currentOwner(), ctx, cfg, name)
+}
+
+func getOrRenewClientForOwner(o *Owner, ctx context.Context, cfg *config.ConfigStore, name string) (*clientLease, error) {
+	lease, err := getOrRenewClientOnceForOwner(o, ctx, cfg, name)
 	for attempt := 0; errors.Is(err, config.ErrMCPMutationStale) && attempt < maxRenewalRecoveryAttempts; attempt++ {
-		lease, err = recoverStaleRenewal(ctx, cfg, name)
+		lease, err = recoverStaleRenewalForOwner(o, ctx, cfg, name)
 	}
 	return lease, err
 }
 
 func recoverStaleRenewal(ctx context.Context, cfg *config.ConfigStore, name string) (*clientLease, error) {
+	return recoverStaleRenewalForOwner(currentOwner(), ctx, cfg, name)
+}
+
+func recoverStaleRenewalForOwner(o *Owner, ctx context.Context, cfg *config.ConfigStore, name string) (*clientLease, error) {
 	if refreshErr := refreshAdmissionStore(ctx, cfg); refreshErr != nil {
 		return nil, refreshErr
 	}
@@ -402,23 +410,36 @@ func recoverStaleRenewal(ctx context.Context, cfg *config.ConfigStore, name stri
 		}
 		return nil, fmt.Errorf("mcp '%s' not available", name)
 	}
-	if err := InitializeSingle(ctx, name, cfg); err != nil {
+	var initErr error
+	if o == nil {
+		initErr = InitializeSingle(ctx, name, cfg)
+	} else {
+		initErr = initializeSingleForOwner(o, ctx, name, cfg)
+	}
+	if initErr != nil {
 		latest := cfg.SnapshotMCPAdmission(name)
 		if !latest.Exists || latest.MCPConfig.Disabled {
 			if closeErr := failClosedMCP(ctx, name); closeErr != nil {
 				return nil, closeErr
 			}
 		}
-		return nil, err
+		return nil, initErr
 	}
-	return getOrRenewClientOnce(ctx, cfg, name)
+	return getOrRenewClientOnceForOwner(o, ctx, cfg, name)
 }
 
 // maxRenewalRecoveryAttempts excludes the initial renewal attempt.
 const maxRenewalRecoveryAttempts = 2
 
 func getOrRenewClientOnce(ctx context.Context, cfg *config.ConfigStore, name string) (*clientLease, error) {
-	o := currentOwner()
+	return getOrRenewClientOnceForOwner(currentOwner(), ctx, cfg, name)
+}
+
+// getOrRenewClientOnceForOwner binds the renewal admission and the follower
+// wait to the given owner instead of the process-current one. A nil owner
+// skips the admission block exactly like the legacy path. Callers hold no
+// lifecycle lock.
+func getOrRenewClientOnceForOwner(o *Owner, ctx context.Context, cfg *config.ConfigStore, name string) (*clientLease, error) {
 	var admission *serverAdmission
 	operationCtx := ctx
 	finish := func() {}
@@ -789,7 +810,10 @@ func newClientLease(session *ClientSession, ctx context.Context, releaseSession,
 // health check. It is used by notification refreshers, which already receive
 // a session selected by the MCP transport.
 func currentClientLease(ctx context.Context, name string, configs ...*config.ConfigStore) (*clientLease, error) {
-	o := currentOwner()
+	return currentClientLeaseForOwner(currentOwner(), ctx, name, configs...)
+}
+
+func currentClientLeaseForOwner(o *Owner, ctx context.Context, name string, configs ...*config.ConfigStore) (*clientLease, error) {
 	operationCtx := ctx
 	finish := func() {}
 	if o != nil {

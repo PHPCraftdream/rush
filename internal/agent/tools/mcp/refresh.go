@@ -98,7 +98,7 @@ func (o *Owner) enqueueRefresh(request refreshRequest) {
 // enqueueRefreshLocked admits one generation of refresh work. lifecycleMu
 // must be held by the caller.
 func (o *Owner) enqueueRefreshLocked(request refreshRequest) bool {
-	if owner != o || o.closing || request.admission.owner != o ||
+	if owner != o && !o.standalone || request.admission.owner != o ||
 		!request.admission.notificationsValidLocked() {
 		return false
 	}

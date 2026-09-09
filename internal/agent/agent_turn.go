@@ -306,10 +306,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	slog.Info("SessionAgent.Run: starting", "sessionID", call.SessionID, "model", smartModel.ModelCfg.Model, "promptLen", len(systemPrompt))
 
 	var instructions strings.Builder
-	// Deliberately on the package wrappers: read-only global-map getters with
-	// no owner dimension until the registry maps become per-owner; isolation
-	// comes from the IsConfigured filter below.
-	for name, server := range mcp.GetStates() {
+	for name, server := range mcp.GetStates() { // deliberately on the package wrappers: read-only getters; the IsConfigured filter below is the isolation mechanism
 		if !mcp.IsConfigured(a.config, name) {
 			continue
 		}

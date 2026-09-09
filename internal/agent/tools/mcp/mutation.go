@@ -16,6 +16,21 @@ func DisableSingle(cfg *config.ConfigStore, name string) error {
 	if err != nil {
 		return err
 	}
+	return disableSingleForOwner(o, cfg, name)
+}
+
+// DisableSingle closes the session for a single MCP client by name.
+// A nil receiver resolves the process-current owner exactly like the
+// package-level DisableSingle function, so callers holding an optional owner
+// can call the method unconditionally.
+func (o *Owner) DisableSingle(cfg *config.ConfigStore, name string) error {
+	if o == nil {
+		return DisableSingle(cfg, name)
+	}
+	return disableSingleForOwner(o, cfg, name)
+}
+
+func disableSingleForOwner(o *Owner, cfg *config.ConfigStore, name string) error {
 	if err := o.rememberConfig(cfg); err != nil {
 		return err
 	}
@@ -43,6 +58,24 @@ func DisableSingle(cfg *config.ConfigStore, name string) error {
 // and persists the disabled flag to config.
 func DisableServer(ctx context.Context, cfg *config.ConfigStore, name string) error {
 	return disableServerWithResultPersistence(ctx, cfg, name,
+		func(cfg *config.ConfigStore, scope config.Scope, name string, pending *config.MCPConfig) (config.MCPMutationResult, error) {
+			if pending != nil {
+				return cfg.PersistMCPConfigResult(scope, name, *pending)
+			}
+			return cfg.PersistMCPDisabledOverrideResult(scope, name, true)
+		})
+}
+
+// DisableServer disables an MCP server: closes its session, removes its tools,
+// and persists the disabled flag to config.
+// A nil receiver resolves the process-current owner exactly like the
+// package-level DisableServer function, so callers holding an optional owner
+// can call the method unconditionally.
+func (o *Owner) DisableServer(ctx context.Context, cfg *config.ConfigStore, name string) error {
+	if o == nil {
+		return DisableServer(ctx, cfg, name)
+	}
+	return disableServerWithResultPersistenceForOwner(o, ctx, cfg, name,
 		func(cfg *config.ConfigStore, scope config.Scope, name string, pending *config.MCPConfig) (config.MCPMutationResult, error) {
 			if pending != nil {
 				return cfg.PersistMCPConfigResult(scope, name, *pending)
@@ -85,6 +118,16 @@ func disableServerWithResultPersistence(
 	if err != nil {
 		return err
 	}
+	return disableServerWithResultPersistenceForOwner(o, ctx, cfg, name, persist)
+}
+
+func disableServerWithResultPersistenceForOwner(
+	o *Owner,
+	ctx context.Context,
+	cfg *config.ConfigStore,
+	name string,
+	persist disableServerResultPersister,
+) error {
 	if err := o.rememberConfig(cfg); err != nil {
 		return err
 	}
@@ -196,10 +239,37 @@ func EnableServer(ctx context.Context, cfg *config.ConfigStore, name string) err
 	})
 }
 
+// EnableServer re-enables a disabled MCP server and starts a new session.
+// A nil receiver resolves the process-current owner exactly like the
+// package-level EnableServer function, so callers holding an optional owner
+// can call the method unconditionally.
+func (o *Owner) EnableServer(ctx context.Context, cfg *config.ConfigStore, name string) error {
+	if o == nil {
+		return EnableServer(ctx, cfg, name)
+	}
+	return enableServerWithPersistenceForOwner(o, ctx, cfg, name, func(cfg *config.ConfigStore, scope config.Scope, name string, pending *config.MCPConfig) (config.MCPMutationResult, error) {
+		return enableMCPConfig(cfg, scope, name, pending)
+	})
+}
+
 type enableServerResultPersister func(*config.ConfigStore, config.Scope, string, *config.MCPConfig) (config.MCPMutationResult, error)
 
 func enableServerWithPersistence(ctx context.Context, cfg *config.ConfigStore, name string, persist enableServerResultPersister) error {
-	return enableServerWithPersistenceAndInitializer(ctx, cfg, name, persist, initClientAdmitted)
+	o, err := ensureOwner()
+	if err != nil {
+		return err
+	}
+	return enableServerWithPersistenceForOwner(o, ctx, cfg, name, persist)
+}
+
+func enableServerWithPersistenceForOwner(
+	o *Owner,
+	ctx context.Context,
+	cfg *config.ConfigStore,
+	name string,
+	persist enableServerResultPersister,
+) error {
+	return enableServerWithPersistenceAndInitializerForOwner(o, ctx, cfg, name, persist, initClientAdmitted)
 }
 
 func enableServerWithPersistenceAndInitializer(
@@ -209,7 +279,22 @@ func enableServerWithPersistenceAndInitializer(
 	persist enableServerResultPersister,
 	initialize admittedClientInitializer,
 ) error {
-	return enableServerWithPersistenceAndInitializerAndRollback(ctx, cfg, name, persist, initialize, nil)
+	o, err := ensureOwner()
+	if err != nil {
+		return err
+	}
+	return enableServerWithPersistenceAndInitializerForOwner(o, ctx, cfg, name, persist, initialize)
+}
+
+func enableServerWithPersistenceAndInitializerForOwner(
+	o *Owner,
+	ctx context.Context,
+	cfg *config.ConfigStore,
+	name string,
+	persist enableServerResultPersister,
+	initialize admittedClientInitializer,
+) error {
+	return enableServerWithPersistenceAndInitializerAndRollbackForOwner(o, ctx, cfg, name, persist, initialize, nil)
 }
 
 func enableServerWithPersistenceAndInitializerAndRollback(
@@ -224,6 +309,18 @@ func enableServerWithPersistenceAndInitializerAndRollback(
 	if err != nil {
 		return err
 	}
+	return enableServerWithPersistenceAndInitializerAndRollbackForOwner(o, ctx, cfg, name, persist, initialize, rollbackPersist)
+}
+
+func enableServerWithPersistenceAndInitializerAndRollbackForOwner(
+	o *Owner,
+	ctx context.Context,
+	cfg *config.ConfigStore,
+	name string,
+	persist enableServerResultPersister,
+	initialize admittedClientInitializer,
+	rollbackPersist enableServerResultPersister,
+) error {
 	if err := o.rememberConfig(cfg); err != nil {
 		return err
 	}
@@ -459,6 +556,24 @@ func RemoveServer(cfg *config.ConfigStore, name string) error {
 		})
 }
 
+// RemoveServer removes an MCP server, closes its session, and removes it from
+// config. External servers (from .mcp.json) cannot be removed — only disabled.
+// A nil receiver resolves the process-current owner exactly like the
+// package-level RemoveServer function, so callers holding an optional owner
+// can call the method unconditionally.
+func (o *Owner) RemoveServer(cfg *config.ConfigStore, name string) error {
+	if o == nil {
+		return RemoveServer(cfg, name)
+	}
+	return removeServerWithResultPersistenceForOwner(o, cfg, name,
+		func(cfg *config.ConfigStore, scope config.Scope, name string) (config.MCPMutationResult, error) {
+			if pending := pendingGlobalAddFor(cfg, name); pending != nil {
+				return cfg.PersistRemovePendingMCPConfigResult(scope, name)
+			}
+			return cfg.PersistRemoveMCPConfigResult(scope, name)
+		})
+}
+
 type removeServerPersister func(*config.ConfigStore, string) error
 type scopedRemoveServerPersister func(*config.ConfigStore, config.Scope, string) error
 type removeServerResultPersister func(*config.ConfigStore, config.Scope, string) (config.MCPMutationResult, error)
@@ -499,6 +614,15 @@ func removeServerWithResultPersistence(
 	if err != nil {
 		return err
 	}
+	return removeServerWithResultPersistenceForOwner(o, cfg, name, persist)
+}
+
+func removeServerWithResultPersistenceForOwner(
+	o *Owner,
+	cfg *config.ConfigStore,
+	name string,
+	persist removeServerResultPersister,
+) error {
 	if err := o.rememberConfig(cfg); err != nil {
 		return err
 	}

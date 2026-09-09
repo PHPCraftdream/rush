@@ -646,9 +646,7 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 	// library-mode App deliberately has no MCP owner, so it must not observe
 	// or wait on the application mode's process-wide initialization barrier.
 	if app.mcpOwner != nil {
-		// Bound to this App's own owner: a second application-mode App in
-		// the same process must not observe the installed owner's barrier.
-		if err := app.mcpOwner.WaitForInit(ctx); err != nil {
+		if err := app.mcpOwner.WaitForInit(ctx); err != nil { // bound to this App's own owner, not the installed owner's barrier
 			return nil, fmt.Errorf("failed to wait for MCP initialization: %w", err)
 		}
 	}

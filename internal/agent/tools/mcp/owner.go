@@ -25,7 +25,16 @@ var ErrMCPConfigStoreBusy = errors.New("mcp: application owner is bound to a dif
 // package predates multiple App instances and its tool/state maps remain
 // process-wide, so ownership is explicit rather than silently shared.
 type Owner struct {
-	implicit            bool
+	implicit bool
+	// Standalone marks an owner reserved by an embedder that needs its own
+	// MCP lifecycle independent of the process-wide installed owner (the SDK
+	// multi-App case). A standalone owner participates in the shared
+	// name-keyed registry like any owner, but it is never installed in the
+	// package owner slot, never reclaims, never resets the shared registry on
+	// Close, and only cleans up its own entries. Two owners configuring the
+	// same server name share one registry entry, which is unsupported;
+	// disjoint configs are the contract.
+	standalone          bool
 	closing             bool
 	closeRequested      atomic.Bool
 	generation          uint64
@@ -214,7 +223,7 @@ func (o *Owner) enqueueSessionClose(session *ClientSession, shutdown bool) {
 		return
 	}
 	lifecycleMu.Lock()
-	if owner != o {
+	if owner != o && !o.standalone {
 		lifecycleMu.Unlock()
 		return
 	}
@@ -230,7 +239,7 @@ func (o *Owner) enqueueFallback(cfg *config.ConfigStore, result config.MCPMutati
 		return
 	}
 	lifecycleMu.Lock()
-	if owner != o || o.closing {
+	if owner != o && !o.standalone || o.closing {
 		lifecycleMu.Unlock()
 		return
 	}
@@ -266,6 +275,49 @@ func closedChannel() chan struct{} {
 // Acquire reserves the process-wide MCP registry for an application.
 func Acquire() (*Owner, error) {
 	return acquire(false)
+}
+
+// AcquireStandalone reserves a standalone MCP owner for an embedder that
+// needs its own MCP lifecycle independent of the process-wide installed
+// owner (the SDK multi-App case). It never contends for the installed owner
+// slot, so it never fails with ErrOwnerBusy because of another owner.
+func AcquireStandalone() (*Owner, error) {
+	return acquireStandalone()
+}
+
+// acquireStandalone mirrors acquire(false) without installing the owner in
+// the package owner slot: a standalone owner never reclaims, never contends
+// for the slot, and only cleans up its own registry entries on Close.
+func acquireStandalone() (*Owner, error) {
+	lifecycleMu.Lock()
+	generation++
+	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
+	o := &Owner{
+		standalone:          true,
+		generation:          generation,
+		lifecycleCtx:        lifecycleCtx,
+		lifecycleCancel:     lifecycleCancel,
+		closeDone:           make(chan struct{}),
+		initDone:            closedChannel(),
+		serverEpochs:        make(map[string]uint64),
+		serverCancels:       make(map[string]map[uint64]serverCancel),
+		committedAdmissions: make(map[string]*serverAdmission),
+		pendingGlobalAdds:   make(map[string]*addTransaction),
+		refreshCh:           make(chan struct{}, 1),
+		refreshPending:      make(map[refreshKey]refreshRequest),
+		refreshRunning:      make(map[refreshKey]struct{}),
+		trackedSessions:     make(map[*ClientSession]struct{}),
+		trackedEmpty:        closedChannel(),
+		closer:              newSessionCloser(),
+		fallbackWorker:      newFallbackWorker(),
+		refreshDone:         make(chan struct{}),
+	}
+	o.closer.start()
+	o.fallbackWorker.start()
+	o.refreshWG.Add(1)
+	go o.refreshLoop()
+	lifecycleMu.Unlock()
+	return o, nil
 }
 
 // acquireImplicit supports the legacy package-level entry points. Unlike an
@@ -353,8 +405,10 @@ func currentOwner() *Owner {
 	return owner
 }
 
+// A standalone owner is self-current: it is never installed in the
+// package owner slot, so only its own closing state gates admission.
 func (o *Owner) isCurrentLocked() bool {
-	return owner == o && !o.closing && !o.closeRequested.Load()
+	return (o.standalone || owner == o) && !o.closing && !o.closeRequested.Load()
 }
 
 func (o *Owner) rememberConfig(cfg *config.ConfigStore) error {
@@ -381,7 +435,7 @@ func (o *Owner) acceptsSession() bool {
 func (o *Owner) acceptsGeneration(generation uint64) bool {
 	lifecycleMu.Lock()
 	defer lifecycleMu.Unlock()
-	return owner == o && !o.closing && o.generation == generation
+	return (o.standalone || (owner == o && o.generation == generation)) && !o.closing
 }
 
 func (o *Owner) operationContext(ctx context.Context) (context.Context, func()) {
@@ -405,9 +459,12 @@ func (o *Owner) requestClose(reclaim bool) {
 	o.closeOnce.Do(func() { go o.coordinateClose(reclaim) })
 }
 
+// coordinateClose runs the single shutdown coordinator. A standalone owner
+// is never installed in the package owner slot, so it always proceeds with
+// its own shutdown instead of short-circuiting on the slot identity.
 func (o *Owner) coordinateClose(reclaim bool) {
 	lifecycleMu.Lock()
-	if owner != o {
+	if owner != o && !o.standalone {
 		lifecycleMu.Unlock()
 		o.closeDoneOnce.Do(func() { close(o.closeDone) })
 		return
@@ -426,6 +483,9 @@ func (o *Owner) coordinateClose(reclaim bool) {
 // would allow callbacks from that old session to mutate the next owner's
 // process-wide registry.
 func (o *Owner) Close(ctx context.Context) error {
+	if o == nil {
+		return Close(ctx)
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -440,6 +500,8 @@ func (o *Owner) Close(ctx context.Context) error {
 }
 
 func (o *Owner) finishClose(reclaim bool) {
+	// A standalone owner shuts down only its own lifecycle; the shared
+	// registry reset and slot teardown belong to the installed owner.
 	if o.fallbackWorker != nil {
 		o.fallbackWorker.stopAndWait()
 	}
@@ -456,14 +518,18 @@ func (o *Owner) finishClose(reclaim bool) {
 	}
 	snapshotBySession := make(map[*ClientSession]string)
 	lifecycleMu.Lock()
-	for name, session := range sessions.Seq2() {
-		session.closeStateMu.Lock()
-		unowned := session.owner == nil
-		session.closeStateMu.Unlock()
-		if unowned {
-			o.trackSessionLocked(session, name)
+	// A standalone owner must not adopt unowned global sessions: they may
+	// belong to the installed owner. It closes only its tracked sessions.
+	if !o.standalone {
+		for name, session := range sessions.Seq2() {
+			session.closeStateMu.Lock()
+			unowned := session.owner == nil
+			session.closeStateMu.Unlock()
+			if unowned {
+				o.trackSessionLocked(session, name)
+			}
+			snapshotBySession[session] = name
 		}
-		snapshotBySession[session] = name
 	}
 	for session := range o.trackedSessions {
 		if _, ok := snapshotBySession[session]; !ok {
@@ -498,9 +564,33 @@ func (o *Owner) finishClose(reclaim bool) {
 			initDone = closedChannel()
 		}
 		o.closeInitBarrierLocked()
+	} else if o.standalone {
+		o.clearOwnRegistryEntriesLocked()
 	}
 	o.closeDoneOnce.Do(func() { close(o.closeDone) })
 	lifecycleMu.Unlock()
+}
+
+// clearOwnRegistryEntriesLocked removes only this standalone owner's own
+// entries from the shared name-keyed maps. It never touches the broker, the
+// global lease registry, the installed-owner slot, or the initDone mirror,
+// which belong to the installed owner. Callers hold lifecycleMu.
+func (o *Owner) clearOwnRegistryEntriesLocked() {
+	names := make(map[string]struct{})
+	for name := range o.committedAdmissions {
+		names[name] = struct{}{}
+	}
+	for name := range o.serverEpochs {
+		names[name] = struct{}{}
+	}
+	for name := range names {
+		sessions.Del(name)
+		states.Del(name)
+		stateOwners.Del(name)
+		allTools.Del(name)
+		allPrompts.Del(name)
+		allResources.Del(name)
+	}
 }
 
 func resetRegistryLocked() {
@@ -593,6 +683,19 @@ func SubscribeEvents(ctx context.Context) <-chan pubsub.Event[Event] {
 	return currentBroker().Subscribe(ctx)
 }
 
+// SubscribeEvents returns a channel for MCP events.
+// A nil receiver resolves the process-current owner exactly like the
+// package-level SubscribeEvents function, so callers holding an optional
+// owner can call the method unconditionally.
+func (o *Owner) SubscribeEvents(ctx context.Context) <-chan pubsub.Event[Event] {
+	if o == nil {
+		return SubscribeEvents(ctx)
+	}
+	// The event broker is shared process-wide name-keyed state; events are
+	// not filtered per owner here.
+	return SubscribeEvents(ctx)
+}
+
 func currentBroker() *pubsub.Broker[Event] {
 	lifecycleMu.Lock()
 	defer lifecycleMu.Unlock()
@@ -608,6 +711,19 @@ func GetStates() map[string]ClientInfo {
 	return states.Copy()
 }
 
+// GetStates returns the current state of all MCP clients.
+// A nil receiver resolves the process-current owner exactly like the
+// package-level GetStates function, so callers holding an optional owner can
+// call the method unconditionally.
+func (o *Owner) GetStates() map[string]ClientInfo {
+	if o == nil {
+		return GetStates()
+	}
+	// The registry data is shared name-keyed state; owner-scoping of reads
+	// happens through IsConfigured filtering at consumers.
+	return GetStates()
+}
+
 // IsConfigured reports whether name belongs to the consuming config store.
 // MCP runtime state is process-wide, so callers that serve more than one
 // ConfigStore must apply this ownership check before exposing registry data.
@@ -621,9 +737,35 @@ func IsConfigured(cfg *config.ConfigStore, name string) bool {
 	return ok
 }
 
+// IsConfigured reports whether name belongs to the consuming config store.
+// A nil receiver resolves the process-current owner exactly like the
+// package-level IsConfigured function, so callers holding an optional owner
+// can call the method unconditionally.
+func (o *Owner) IsConfigured(cfg *config.ConfigStore, name string) bool {
+	if o == nil {
+		return IsConfigured(cfg, name)
+	}
+	// The registry data is shared name-keyed state; owner-scoping of reads
+	// happens through IsConfigured filtering at consumers.
+	return IsConfigured(cfg, name)
+}
+
 // GetState returns the state of a specific MCP client
 func GetState(name string) (ClientInfo, bool) {
 	return states.Get(name)
+}
+
+// GetState returns the state of a specific MCP client.
+// A nil receiver resolves the process-current owner exactly like the
+// package-level GetState function, so callers holding an optional owner can
+// call the method unconditionally.
+func (o *Owner) GetState(name string) (ClientInfo, bool) {
+	if o == nil {
+		return GetState(name)
+	}
+	// The registry data is shared name-keyed state; owner-scoping of reads
+	// happens through IsConfigured filtering at consumers.
+	return GetState(name)
 }
 
 // Close closes all MCP clients. This should be called during application shutdown.
