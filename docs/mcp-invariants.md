@@ -47,6 +47,112 @@ respectively); the rows below reflect the closed state.
 | INV-24 | A published session is retired only when its own effective definition diverges from what it was connected with — unrelated config writes, other servers' mutations, and no-op reloads must not disturb it. | `committedValidLocked` + `mcpConnectionConfigEqual` 1327-1366 (definition equality, not revision counters), `getOrRenewClientOnce` pre-ping fence 5086-5101 | TestPublishedHTTPNotificationSurvivesUnrelatedReload, TestGetOrRenewFencesStaleCommittedSessionBeforePing, TestReloadFencesPublishedSessionAfterRelevantMCPChange, TestRenewedSessionNotificationSurvivesConfigMutations, TestMCPAdmissionSurvivesUnrelatedCOWUpdate | `f2914d53c` ("preserve MCP session identity across revisions") |
 | INV-25 | The source bytes a session is admitted from are captured under the server lease and revalidated at the final publication boundary; a no-op reload does not invalidate the candidate, but a semantic change to the definition or its resolved values fails the admission (stale) and the caller retries with a fresh disk snapshot a bounded number of times. | `withMCPAdmissionFinalTurn` 2058-2091, revision pinning 1288-1298, bounded retry 2887-2928 + 2937-2969 | TestMCPAdmissionFinalSourceLinearizationRejectsInPlaceChanges, TestMCPAdmissionFinalSourceLinearizationRejectsExpectedAbsentCreation, TestInitializeSlowCandidateSurvivesNoOpReload, TestReplaceAllowsNoOpReloadDuringPreparation, TestInitializeRejectsSemanticResolverChangeAndRetriesFreshCandidate, TestMCPAdmissionFinalTurnValidatesAfterLifecycleAcquisition, TestCreateTransport_PassesLifetimeContextToEveryRuntimeField, TestGetOrRenewClientBoundsCrossStoreChurn | `779802b2` (revisions; introduced CH5-3 over-fencing), `00c9911f5` (no-op vs semantic distinction — CH5-3 closed), `87de26a7` (revalidate all sources), `d2288666` (final source linearization) |
 
+## Classification: S / M / X (stage 1.3)
+
+Task #904. The question asked of every row: if the nine package globals of
+`init.go:366-377` were fields of one `Owner` — only `currentOwner *Owner` and
+its swap mutex left at package level, the 27 exported functions thin wrappers
+over `currentOwner()` — could the law still be broken? If the only way to break
+it required two owners sharing process-global state, it is **S** (structural:
+the guard becomes unreachable and can be deleted). If it constrains ordering or
+exclusion within a single owner, it is **M** (mechanical: the mechanism stays,
+localized). **X** (speculative: no observable failure, no test) — none found,
+consistent with stage 1.2's zero-vacuous result. Verdicts were decided by
+reading the code each row points at, at HEAD `d181f3942`; tests staying green
+proves nothing about a law that has become unreachable, so no verdict rests on
+test outcomes. This section only labels laws; designing the target structure is
+stage 2's job.
+
+Five rows are mixed (one clause structural, one mechanical) and are split
+rather than force-labelled: INV-02, INV-03, INV-04, INV-15, INV-22. "Structural
+at" names the plan §2.3 migration step after which the S-law is unbreakable.
+
+| ID | Class | Structural at (§2.3) | Why |
+|---|---|---|---|
+| INV-01 | M | — | The law binds the caller/admission/init-timeout contexts of a single owner's in-flight initialization (promote handoff 5768-5797); no owner pair is involved, so the handoff mechanism must stay. |
+| INV-02a | S | 3.8 (`owner`+`lifecycleMu`) | With per-Owner state an old owner's work can only touch its own fields, so "all state belongs to exactly one active Owner" holds by construction and the `owner == o` guards (1383, 1947-1949, 2481) plus the cross-owner filtering rationale become dead. |
+| INV-02b | M | — | An `Owner` still binds its ConfigStore lazily (`rememberConfig` 2212-2214; `Acquire()` takes no store) and the implicit owner must still be proven empty before replacement (`canReclaimLocked` 1662-1678, `acquire` 1684-1697) or an abandoned owner leaks live transports/processes — both ordering laws within one owner's lifetime. |
+| INV-03a | S | 3.1+3.7 (`stateOwners`, `sessions`) | The `owner == a.owner` and generation legs of validity (1299-1301, 1337-1339) exist only so a stale admission cannot reach a shared registry; owner-relative state makes them tautological (deletable at 3.8). |
+| INV-03b | M | — | Epoch invalidation with bump-only-after-durable-write (1392-1398) and cancel-without-bump (1630-1640) is ordering among a single owner's own mutations. |
+| INV-04a | M | — | Joining every admitted init, refresh worker and session close before reset (2436-2478), plus the within-owner closing fence, is resource-lifecycle ordering inside the dying owner; removing it leaks transports/processes even with no second owner. |
+| INV-04b | S | 3.7 (`sessions`) | The expired-deadline fence's stated purpose — old-owner callbacks must not mutate the next owner's registry (2409-2415, `if owner == o` 2481) — becomes unreachable when callbacks cannot address another owner's fields. |
+| INV-05 | M | — | Disable/remove of server A racing publish/renew of server B hits the same `committedAdmissions` map of the SAME owner, so the exclusion survives per-Owner state untouched. |
+| INV-06 | M | — | Lease-before-`lifecycleMu` order, no-I/O-under-lock and cancel-outside-lock are lock discipline inside one owner (4687-4696, 6077-6079); the migration neither enforces nor removes them. |
+| INV-07 | M | — | Refcounted lease identity, ABA protection and (untested) sorted multi-lock order are mechanisms of one owner's registry with no cross-owner clause. |
+| INV-08 | M | — | Commit/publish/events as one linearization point against same-name remove/add is ordering under one name's lease inside one owner. |
+| INV-09 | M | — | Transactional replace (promote-before-commit, single transition, no half-applied failure) is a multi-step ordering law within one owner. |
+| INV-10 | M | — | Dual-identity (source+destination) fencing guards one owner's rename against its own concurrent mutations. |
+| INV-11 | M | — | Add-as-transaction with guarded rollback is staging and cleanup discipline within one owner. |
+| INV-12 | M | — | Persist-before-invalidate and the pending-add one-write are durability ordering between one owner and its store, and the store is outside the migration's scope. |
+| INV-13 | M | — | Conditional enable rollback (CAS-or-fence) arbitrates concurrent writers on one owner's store. |
+| INV-14 | M | — | The unreadable-outcome fence acts through the ConfigStore (`MarkMCPUncertain` 4674), which stays; the fail-closed discipline is unchanged by ownership. |
+| INV-15a | S | none — pre-existing | The fence already lives on the ConfigStore (`internal/config/mcp_uncertainty.go:88`), not in any of the nine globals, so "survives rollover" holds by placement today and after the migration; nothing becomes deletable — stage 2 must simply never move it into `Owner`. |
+| INV-15b | M | — | The version-check clear discipline (capture before reload 1965-1976; clear-only-versions-observed-before-the-read, `store_reload.go:356`/`587`) is a real ordering mechanism on the store and survives the migration untouched. |
+| INV-16 | M | — | Candidate-token deferral, activation and discard are publication ordering within one owner. |
+| INV-17 | M | — | Refresh coalescing, dirty-rerun and re-admission are mechanisms of one owner's queue and epochs. |
+| INV-18 | M | — | State-event token ownership is exclusion among one owner's admissions. |
+| INV-19 | M | — | Renewal single-flight and operation pinning are exclusion/ordering within one owner's sessions. |
+| INV-20 | M | — | HTTP cancellation fencing is transport-lifetime binding within one admission; owners are irrelevant to it. |
+| INV-21 | M | — | Stdio process-group kill and bounded diagnostics are transport-level laws with no owner dimension at all. |
+| INV-22a | M | — | Lazy barrier creation, reopen per full init, and close-before-initWG-drain (2232-2284, 2488) are close-ordering inside one owner. |
+| INV-22b | S | 3.3 (`initDone`) | The barrier channel is already per-owner (`o.initDone`); its cross-rollover leg is carried only by the package mirror (`initDone = o.initDone` 1725/2244, read by `WaitForInit` 2782, reset 2486), which dies when `initDone` moves. |
+| INV-23 | M | — | Granting the global-scope fallback only to a registered pending Add (`resolveMCPMutationScope` 4073-4092) is an authorization law inside one owner's mutation flow; ownership placement neither enforces nor removes it. |
+| INV-24 | M | — | Retire-on-definition-divergence (`mcpConnectionConfigEqual` 1327-1366) judges one owner's published session against its own store; unrelated-write tolerance is within-owner semantics, not cross-owner isolation. |
+| INV-25 | M | — | Source capture under the lease, final-turn revalidation and bounded retry (2058-2091, 2887-2969) order one owner's admission against the store and disk, which the migration does not touch. |
+
+### Summary
+
+| Class | Count | IDs |
+|---|---|---|
+| S | 5 | INV-02a, INV-03a, INV-04b, INV-15a (pre-existing), INV-22b |
+| M | 25 | 20 whole rows (01, 05-14, 16-21, 23-25) + halves 02b, 03b, 04a, 15b, 22a |
+| X | 0 | — |
+
+X is empty and that is the finding, not an omission: stage 1.2 found zero
+vacuous tests, and the two NO-TEST clauses (INV-06 no-I/O-under-lock, INV-07
+sorted lease order) are clauses of M laws, not speculative guards.
+
+S-invariants in the order the migration makes them structural (plan §2.3 step
+order):
+
+1. INV-22b — step 3.3 (`initDone`).
+2. INV-03a — steps 3.1+3.7 (`stateOwners`, `sessions`); guard text deletable
+   at 3.8.
+3. INV-04b — step 3.7 (`sessions`).
+4. INV-02a — step 3.8 (`owner` + `lifecycleMu`, last).
+5. INV-15a — no step: pre-existing structural law (fence on the store);
+   migration-neutral.
+
+**M > 10 — the stage-3 `init.go` < 2000-line target must be revisited.** The
+plan expected M 5-8 with S the majority; the code says the opposite: 20 of 25
+laws are wholly mechanical and 5 more carry a mechanical half. The lease
+registry, admissions, transactions, refresh queue, promote handoff, transport
+fences and the rest of the M machinery are the bulk of the ~5800 added lines,
+and the ownership migration simplifies them (drops cross-owner branches) but
+deletes none of them; the only guard code the migration removes is the small S
+set above. "< 2000 = upstream 1391 + an honest allowance" was priced for an
+S-majority registry, so stage 2 should re-derive the line budget by counting
+which guard bodies implement S-laws versus M-laws before committing to a
+number.
+
+Findings about the plan's assumed structure, for stage 2 to resolve (not
+redesigned here):
+
+- The shared-state set is 12 package globals, not nine: `allTools`
+  (tools.go:29), `allPrompts` (prompts.go:16) and `allResources`
+  (resources.go:21) are consulted by `canReclaimLocked` (init.go:1666-1668),
+  cleared by `resetRegistryLocked` (2504-2512) and read by the exported
+  getters. No S-law above is fully unbreakable until these three move too.
+- INV-02a's isolation payoff holds only while consumers route through their
+  acquired `*Owner`. Under thin wrappers over `currentOwner()`, a second
+  ConfigStore in one process (the SDK multi-App case that motivated
+  `07a69d8f`) still reaches the current owner's registry through name-only
+  getters, so the `IsConfigured` per-store filtering convention
+  (init.go:2599-2610) may remain necessary even after the migration.
+- Step 3.2 (`broker`) carries no S-conversion: the broker is already shut down
+  and recreated at registry reset (init.go:2514-2515), so no invariant depends
+  on cross-rollover event continuity.
+
 ## Test → invariant map
 
 Task #903, stage 1.2. One row per test function in
