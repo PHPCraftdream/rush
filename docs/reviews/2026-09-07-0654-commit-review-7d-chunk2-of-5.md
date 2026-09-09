@@ -1,5 +1,9 @@
 # Ревью коммитов — 7-дневное окно, chunk 2 из 5 (`7b928bb4b..1d3cdf4a7`)
 
+> Сверка статусов 2026-09-09 по коммиту `4c2f11bd3` (main): закрытия,
+> произошедшие после написания ревью, помечены закрывающими коммитами;
+> неподтверждённые закрытия оставлены открытыми.
+
 Обзор 43 коммитов от 2026-09-02 09:21 до 2026-09-03 16:34 CEST (39 обычных
 + 4 merge). Тематически диапазон закрывает scoped `fs_*` toolset (T7–T12),
 pluggable `DiskProvider` (#856–#859), `/wrush` slash-command, и три волны
@@ -177,7 +181,12 @@ prompt-side флаг (`coordinator_models.go`), так что per-call подс�
 свидетельство, что review-цикл здесь работает, а не как открытую
 находку.
 
-### CR-1 (P2, открыто): folder scope не снимает `rush_logs`
+### CR-1 (P2, ЗАКРЫТО 2026-09-09): folder scope не снимает `rush_logs`
+
+**ЗАКРЫТО** `7c9637381` (2026-09-07): `tools.RushLogsToolName` добавлен
+в `folderScopeEscapeHatchTools`
+(`internal/agent/coordinator_tools.go:317-322`). Текст ниже —
+исторический: на момент написания находка была открыта.
 
 `applyCallFolderScope` снимает legacy-file, escape-hatch, command и
 негрантованные `fs_*` инструменты, но `rush_logs` не входит ни в один
@@ -698,7 +707,7 @@ driveless-namespace, но его название и комментарий вв
 
 | ID | Severity | Находка | Где | Статус |
 |---|---|---|---|---|
-| CR-1 | P2 | folder scope не снимает `rush_logs` → чтение host-лога вне scope | `internal/agent/coordinator_tools.go:309` | открыто на HEAD |
+| CR-1 | P2 | folder scope не снимает `rush_logs` → чтение host-лога вне scope | `internal/agent/coordinator_tools.go:309` | **ЗАКРЫТО** `7c9637381`: `rush_logs` в `folderScopeEscapeHatchTools` (сверено 2026-09-09) |
 | CR-2 | P2 | T9-отказ не покрывает worker-роль на credentials-пути (расходится с commit message) | `internal/agent/credentials.go:374` | открыто на HEAD |
 | CR-3 | P2 | `inject --interrupt` — молчаливый no-op против DiskProvider-прогона, Warn каждые 3 с | `internal/agent/coordinator_interrupt.go:194`, `internal/agent/coordinator_run.go:110` | открыто на HEAD |
 | CR-4 | P1 | floor без `git_read`/`agentic_fetch`/`rush_logs` на конце диапазона | `internal/agent/coordinator_tools.go:427` @ `eab5d508a` | закрыто вне диапазона (`abed8946`, `31ea604f`) |
@@ -746,4 +755,4 @@ merge-message `1d3cdf4a7`, где автор опровергает свою ж�
 (CR-1, правка в одну строку с наибольшим отношением пользы к риску),
 добавить worker-проверку в `resolveCredentialsModels` (CR-2), и
 обнулять `DiskProvider` при построении interrupt-inject call'а вместо
-вечного отказа (CR-3). Остальное — P3, ждёт.
+вечного отказа (CR-3). Остальное — P3, ждёт. Сверка 2026-09-09: CR-1 закрыт коммитом `7c9637381`.

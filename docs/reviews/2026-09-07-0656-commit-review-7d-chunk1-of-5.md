@@ -1,5 +1,9 @@
 # Commit review — 7-day window, chunk 1 of 5 (`da53fe42a..7b928bb4b`)
 
+> Reconciled 2026-09-09 against commit `4c2f11bd3` (main): the
+> reconciliation closure list contained no C1 items, so every status
+> below stands as written (items marked "closed at tip" remain closed).
+
 43 commits, 2026-08-31 12:15 → 2026-09-02 09:14 CEST. This is the first
 slice of the 215-commit window `da53fe42a..f2914d53c`, split by chain
 position across five independent reviewers; chunks 2–5 are not covered
