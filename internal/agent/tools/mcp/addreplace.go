@@ -74,6 +74,21 @@ func AddServer(ctx context.Context, cfg *config.ConfigStore, name string, mcpCfg
 		})
 }
 
+// AddServer validates and adds a new MCP server. It attempts to connect; if
+// successful the server is added to the in-memory config and persisted to disk.
+// A nil receiver resolves the process-current owner exactly like the
+// package-level AddServer function, so callers holding an optional owner can
+// call the method unconditionally.
+func (o *Owner) AddServer(ctx context.Context, cfg *config.ConfigStore, name string, mcpCfg config.MCPConfig) error {
+	if o == nil {
+		return AddServer(ctx, cfg, name, mcpCfg)
+	}
+	return addServerWithPreparationAndPersistenceForOwner(o, ctx, cfg, name, mcpCfg, prepareClient,
+		func(cfg *config.ConfigStore, scope config.Scope, name string, mcpCfg config.MCPConfig) (config.MCPMutationResult, error) {
+			return cfg.PersistMCPConfigResult(scope, name, mcpCfg)
+		})
+}
+
 // ReplaceServer prepares a new MCP session completely before changing the
 // configured server. The old session and its advertised data remain live
 // until the durable remove-and-set has committed, at which point the config,
@@ -81,6 +96,24 @@ func AddServer(ctx context.Context, cfg *config.ConfigStore, name string, mcpCfg
 // transition.
 func ReplaceServer(ctx context.Context, cfg *config.ConfigStore, oldName, newName string, mcpCfg config.MCPConfig) error {
 	return replaceServerWithResultPersistence(ctx, cfg, oldName, newName, mcpCfg,
+		func(cfg *config.ConfigStore, scope config.Scope, oldName, newName string, mcpCfg config.MCPConfig) (config.MCPMutationResult, error) {
+			return cfg.PersistReplaceMCPResult(scope, oldName, newName, mcpCfg)
+		})
+}
+
+// ReplaceServer prepares a new MCP session completely before changing the
+// configured server. The old session and its advertised data remain live
+// until the durable remove-and-set has committed, at which point the config,
+// session, tools, prompts, resources, and state switch as one lifecycle
+// transition.
+// A nil receiver resolves the process-current owner exactly like the
+// package-level ReplaceServer function, so callers holding an optional owner
+// can call the method unconditionally.
+func (o *Owner) ReplaceServer(ctx context.Context, cfg *config.ConfigStore, oldName, newName string, mcpCfg config.MCPConfig) error {
+	if o == nil {
+		return ReplaceServer(ctx, cfg, oldName, newName, mcpCfg)
+	}
+	return replaceServerWithResultPersistenceForOwner(o, ctx, cfg, oldName, newName, mcpCfg,
 		func(cfg *config.ConfigStore, scope config.Scope, oldName, newName string, mcpCfg config.MCPConfig) (config.MCPMutationResult, error) {
 			return cfg.PersistReplaceMCPResult(scope, oldName, newName, mcpCfg)
 		})
@@ -131,7 +164,22 @@ func replaceServerWithResultPersistence(
 	mcpCfg config.MCPConfig,
 	persist replacementResultPersister,
 ) error {
-	return replaceServerWithResultPersistenceAndPreparation(ctx, cfg, oldName, newName, mcpCfg, persist, prepareClient)
+	o, err := ensureOwner()
+	if err != nil {
+		return err
+	}
+	return replaceServerWithResultPersistenceForOwner(o, ctx, cfg, oldName, newName, mcpCfg, persist)
+}
+
+func replaceServerWithResultPersistenceForOwner(
+	o *Owner,
+	ctx context.Context,
+	cfg *config.ConfigStore,
+	oldName, newName string,
+	mcpCfg config.MCPConfig,
+	persist replacementResultPersister,
+) error {
+	return replaceServerWithResultPersistenceAndPreparationForOwner(o, ctx, cfg, oldName, newName, mcpCfg, persist, prepareClient)
 }
 
 func addServerWithPreparationAndPersistence(
@@ -142,7 +190,23 @@ func addServerWithPreparationAndPersistence(
 	prepare preparedClientFunc,
 	persist addServerResultPersister,
 ) error {
-	return addServerWithInitializerAndPersistence(ctx, cfg, name, mcpCfg,
+	o, err := ensureOwner()
+	if err != nil {
+		return err
+	}
+	return addServerWithPreparationAndPersistenceForOwner(o, ctx, cfg, name, mcpCfg, prepare, persist)
+}
+
+func addServerWithPreparationAndPersistenceForOwner(
+	o *Owner,
+	ctx context.Context,
+	cfg *config.ConfigStore,
+	name string,
+	mcpCfg config.MCPConfig,
+	prepare preparedClientFunc,
+	persist addServerResultPersister,
+) error {
+	return addServerWithInitializerAndPersistenceForOwner(o, ctx, cfg, name, mcpCfg,
 		func(ctx context.Context, cfg *config.ConfigStore, name string, mcpCfg config.MCPConfig, resolver config.VariableResolver, admission *serverAdmission) error {
 			admission.deferDone = true
 			admission.suppressState = true
@@ -163,12 +227,24 @@ func replaceServerWithResultPersistenceAndPreparation(
 	persist replacementResultPersister,
 	prepare preparedClientFunc,
 ) error {
-	if mcpCfg.Source == config.MCPSourceExternal {
-		return fmt.Errorf("MCP server %q is from .mcp.json and cannot be replaced: %w", oldName, config.ErrMCPExternal)
-	}
 	o, err := ensureOwner()
 	if err != nil {
 		return err
+	}
+	return replaceServerWithResultPersistenceAndPreparationForOwner(o, ctx, cfg, oldName, newName, mcpCfg, persist, prepare)
+}
+
+func replaceServerWithResultPersistenceAndPreparationForOwner(
+	o *Owner,
+	ctx context.Context,
+	cfg *config.ConfigStore,
+	oldName, newName string,
+	mcpCfg config.MCPConfig,
+	persist replacementResultPersister,
+	prepare preparedClientFunc,
+) error {
+	if mcpCfg.Source == config.MCPSourceExternal {
+		return fmt.Errorf("MCP server %q is from .mcp.json and cannot be replaced: %w", oldName, config.ErrMCPExternal)
 	}
 	if err := o.rememberConfig(cfg); err != nil {
 		return err
@@ -323,7 +399,7 @@ func replaceServerWithResultPersistenceAndPreparation(
 		lifecycleMu.Lock()
 		defer lifecycleMu.Unlock()
 		publicationValid := admission.replacementNamesValidLocked() &&
-			owner == o && !o.closing && o.generation == admission.generation &&
+			(o.standalone || owner == o) && !o.closing && o.generation == admission.generation &&
 			o.serverEpochs[oldName] == admission.epoch
 		if !publicationValid {
 			if !commitKnown {
@@ -512,6 +588,18 @@ func addServerWithInitializerAndPersistence(
 	if err != nil {
 		return err
 	}
+	return addServerWithInitializerAndPersistenceForOwner(o, ctx, cfg, name, mcpCfg, initialize, persist)
+}
+
+func addServerWithInitializerAndPersistenceForOwner(
+	o *Owner,
+	ctx context.Context,
+	cfg *config.ConfigStore,
+	name string,
+	mcpCfg config.MCPConfig,
+	initialize admittedClientInitializer,
+	persist addServerResultPersister,
+) error {
 	if err := o.rememberConfig(cfg); err != nil {
 		return err
 	}
@@ -791,7 +879,7 @@ func rollbackAdmissionValidLocked(
 	transaction *addTransaction,
 	configPresent bool,
 ) bool {
-	if owner != o || o.generation != admission.generation ||
+	if !o.standalone && (owner != o || o.generation != admission.generation) ||
 		o.serverEpochs[name] != admission.epoch || o.pendingGlobalAdds[name] != transaction {
 		return false
 	}

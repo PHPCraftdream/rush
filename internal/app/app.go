@@ -152,6 +152,7 @@ type newOptions struct {
 	skipAgentSetup   bool
 	skipMCP          bool
 	restrictMCPToCLI bool
+	mcpOwner         *mcp.Owner
 }
 
 // SkipAgentSetup builds the App without recoverInterruptedTurns,
@@ -188,6 +189,28 @@ func SkipMCP() Option {
 // change what the web UI does.
 func RestrictMCPToCLI() Option {
 	return func(o *newOptions) { o.restrictMCPToCLI = true }
+}
+
+// WithMCPOwner supplies the MCP lifecycle owner the App should use instead
+// of acquiring the process-wide one itself. The SDK's application-mode Open
+// passes the owner it acquired (falling back to mcp.AcquireStandalone when
+// the process-wide slot is held by a live client) so two application-mode
+// clients can coexist in one process, each routing its MCP operations
+// through its own owner. A nil value means "not provided": New then
+// acquires the process-wide owner itself, exactly as callers that omit
+// this option always have. Two owners sharing one server name still share
+// one registry entry; disjoint server configs remain the contract.
+func WithMCPOwner(owner *mcp.Owner) Option {
+	return func(o *newOptions) { o.mcpOwner = owner }
+}
+
+// MCPOwner returns the MCP lifecycle owner this App routes its MCP
+// operations through, or nil when the App was built with SkipMCP (library
+// mode) or SkipAgentSetup. Server handlers and agent plumbing use this to
+// bind operations to this App's registry instead of resolving the
+// process-current owner behind their back.
+func (a *App) MCPOwner() *mcp.Owner {
+	return a.mcpOwner
 }
 
 // New initializes a new application instance.
@@ -264,14 +287,18 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, opts ...O
 	// config + CLI overrides on every run, so the run path is unaffected.
 	// Fork patch (run allowlist).
 	if !o.skipMCP && !o.skipAgentSetup {
-		mcpOwner, err := mcp.Acquire()
-		if err != nil {
-			if readConn != nil {
-				if relErr := db.ReleaseConn(readConn); relErr != nil {
-					slog.Error("Failed to release read-only DB reference after MCP owner acquisition failure", "error", relErr)
+		mcpOwner := o.mcpOwner
+		if mcpOwner == nil {
+			var err error
+			mcpOwner, err = mcp.Acquire()
+			if err != nil {
+				if readConn != nil {
+					if relErr := db.ReleaseConn(readConn); relErr != nil {
+						slog.Error("Failed to release read-only DB reference after MCP owner acquisition failure", "error", relErr)
+					}
 				}
+				return nil, fmt.Errorf("failed to acquire MCP application owner: %w", err)
 			}
-			return nil, fmt.Errorf("failed to acquire MCP application owner: %w", err)
 		}
 		app.mcpOwner = mcpOwner
 	}

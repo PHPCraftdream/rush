@@ -129,7 +129,7 @@ func TestP1_3_CoordinatorSummarizeSingleRead(t *testing.T) {
 	})
 
 	// Create a coordinator with the spy agent.
-	c, err := NewCoordinator(t.Context(), cfg, env.sessions, env.messages, env.permissions, env.history, *env.filetracker, nil)
+	c, err := NewCoordinator(t.Context(), cfg, env.sessions, env.messages, env.permissions, env.history, *env.filetracker, nil, nil)
 	require.NoError(t, err)
 	coord := c.(*coordinator)
 	coord.currentAgent = spyAgent

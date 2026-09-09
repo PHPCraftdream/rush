@@ -27,13 +27,15 @@ freshly-provisioned workspace by hand first.
 
 Use this mode when your host process manages a real, persistent project
 directory — the credentials, models, and tool settings all come from
-`rush.json` as usual. Opening an application-mode Client acquires the
-exclusive process-wide MCP owner. A concurrent second application-mode
-`Open` fails with an error wrapping `mcp.ErrOwnerBusy` (currently surfaced
-through `sdk.Open` as `sdk: failed to create app instance: failed to acquire
-MCP application owner: mcp: application owner is already active`). The SDK
-does not re-export the internal MCP sentinel, so consumers should treat this
-as an `Open` failure rather than rely on an SDK `errors.Is` sentinel.
+`rush.json` as usual. Opening an application-mode Client acquires an MCP
+owner: the first client in the process takes the process-wide owner; a
+second concurrent application-mode `Open` reserves a standalone owner
+instead of failing, so two application-mode Clients coexist, each routing
+its MCP operations through its own owner. The registry underneath is still
+one name-keyed process table: keep each client's server names disjoint — a
+server configured in the first client is never visible to the second's
+surfaces, but two clients configuring the same server name would share one
+registry entry.
 
 ### Library mode — explicit config, no persistence on disk
 
@@ -528,16 +530,19 @@ func main() {
 A few embedding limitations are stated honestly in `sdk.go`'s package
 doc comment and worth repeating here:
 
-- **One application-mode `Client` per process.** MCP client state is
-  process-wide (one registry keyed by server name, plus shared
-  initialization-complete signaling), and application mode acquires it via
-  an exclusive MCP Owner. A second simultaneous application-mode `Open`
-  fails with an error wrapping `mcp.ErrOwnerBusy`; the Clients do not share
-  one MCP layer. Library mode never starts MCP servers or acquires the
-  owner, so it can coexist with an application-mode Client; multiple
-  simultaneous library-mode Clients are supported and tested — each
-  ephemeral client gets its own isolated in-memory database. Run one process
-  per workspace for application mode, the same model `rush run` itself uses.
+- **Application-mode MCP ownership is two-tier.** The first
+  application-mode `Open` in a process takes the process-wide MCP owner
+  exactly as before; a second application-mode `Open` reserves a standalone
+  owner instead of failing with `mcp.ErrOwnerBusy`, so two application-mode
+  Clients coexist — each routing its MCP operations through its own owner,
+  with independent initialization barriers and shutdown. The registry
+  underneath is still one name-keyed process table, so the Clients must keep
+  their server configs disjoint: a server configured in the first client is
+  never visible to the second's surfaces, but the same server name in both
+  clients would share one registry entry. Library mode never starts MCP
+  servers or acquires an owner, so it can coexist with any application-mode
+  Client; multiple simultaneous library-mode Clients are supported and
+  tested — each ephemeral client gets its own isolated in-memory database.
 - **The host's logger is untouched unless you opt in** via
   `Options.SetupLogging` — and that call is itself a process-wide
   singleton, so only the first `Open` with `SetupLogging: true` in a

@@ -107,6 +107,8 @@ rush mcp list --grep stdio
 				cmdOrURL = dash(m.URL)
 			}
 			tools := "-"
+			// Config-only CLI command, read-only state getter: package-level
+			// resolution is correct.
 			if info, ok := mcpmanager.GetState(id); ok {
 				tools = fmt.Sprintf("%d", info.Counts.Tools)
 			}

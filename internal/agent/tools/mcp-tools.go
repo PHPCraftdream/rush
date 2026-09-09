@@ -40,8 +40,9 @@ var whitelistDockerTools = []string{
 // or fighting the reconnection logic in the mcp package, not closing a
 // torn read. cfg is passed through to each returned *Tool for use at Run
 // time (permission requests, mcp.RunTool's getOrRenewClient) and stays live
-// for the same reason.
-func GetMCPTools(permissions permission.Service, cfg *config.ConfigStore, wd string) []*Tool {
+// for the same reason. owner is this config's MCP lifecycle owner (task
+// #923); nil keeps the legacy process-current-owner resolution.
+func GetMCPTools(permissions permission.Service, cfg *config.ConfigStore, wd string, owner *mcp.Owner) []*Tool {
 	var result []*Tool
 	for mcpName, tools := range mcp.Tools() {
 		if !mcp.IsConfigured(cfg, mcpName) {
@@ -54,6 +55,7 @@ func GetMCPTools(permissions permission.Service, cfg *config.ConfigStore, wd str
 				permissions: permissions,
 				workingDir:  wd,
 				cfg:         cfg,
+				owner:       owner,
 			})
 		}
 	}
@@ -62,11 +64,14 @@ func GetMCPTools(permissions permission.Service, cfg *config.ConfigStore, wd str
 
 // Tool is a tool from a MCP.
 type Tool struct {
-	mcpName         string
-	tool            *mcp.Tool
-	cfg             *config.ConfigStore
-	permissions     permission.Service
-	workingDir      string
+	mcpName     string
+	tool        *mcp.Tool
+	cfg         *config.ConfigStore
+	permissions permission.Service
+	workingDir  string
+	// owner is this config's MCP lifecycle owner; nil keeps the legacy
+	// process-current-owner resolution (nil-safe methods).
+	owner           *mcp.Owner
 	providerOptions fantasy.ProviderOptions
 }
 
@@ -153,7 +158,7 @@ func (m *Tool) Run(ctx context.Context, params fantasy.ToolCall) (fantasy.ToolRe
 		}
 	}
 
-	result, err := mcp.RunTool(ctx, m.cfg, m.mcpName, m.tool.Name, params.Input)
+	result, err := m.owner.RunTool(ctx, m.cfg, m.mcpName, m.tool.Name, params.Input)
 	if err != nil {
 		return fantasy.NewTextErrorResponse(err.Error()), nil
 	}

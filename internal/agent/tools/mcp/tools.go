@@ -33,6 +33,19 @@ func Tools() iter.Seq2[string, []*Tool] {
 	return allTools.Seq2()
 }
 
+// Tools returns all available MCP tools.
+// A nil receiver resolves the process-current owner exactly like the
+// package-level Tools function, so callers holding an optional owner can call
+// the method unconditionally.
+func (o *Owner) Tools() iter.Seq2[string, []*Tool] {
+	if o == nil {
+		return Tools()
+	}
+	// The registry data is shared name-keyed state; owner-scoping of reads
+	// happens through IsConfigured filtering at consumers.
+	return Tools()
+}
+
 // GetServerToolNames returns the names of all tools registered for the given server.
 func GetServerToolNames(name string) []string {
 	tools, ok := allTools.Get(name)
@@ -44,6 +57,20 @@ func GetServerToolNames(name string) []string {
 		names = append(names, t.Name)
 	}
 	return names
+}
+
+// GetServerToolNames returns the names of all tools registered for the given
+// server.
+// A nil receiver resolves the process-current owner exactly like the
+// package-level GetServerToolNames function, so callers holding an optional
+// owner can call the method unconditionally.
+func (o *Owner) GetServerToolNames(name string) []string {
+	if o == nil {
+		return GetServerToolNames(name)
+	}
+	// The registry data is shared name-keyed state; owner-scoping of reads
+	// happens through IsConfigured filtering at consumers.
+	return GetServerToolNames(name)
 }
 
 // RunTool runs an MCP tool with the given input parameters.
@@ -123,10 +150,133 @@ func RunTool(ctx context.Context, cfg *config.ConfigStore, name, toolName string
 	}, nil
 }
 
+// RunTool runs an MCP tool with the given input parameters.
+// A nil receiver resolves the process-current owner exactly like the
+// package-level RunTool function, so callers holding an optional owner can
+// call the method unconditionally.
+func (o *Owner) RunTool(ctx context.Context, cfg *config.ConfigStore, name, toolName string, input string) (ToolResult, error) {
+	if o == nil {
+		return RunTool(ctx, cfg, name, toolName, input)
+	}
+	var args map[string]any
+	if err := json.Unmarshal([]byte(input), &args); err != nil {
+		return ToolResult{}, fmt.Errorf("error parsing parameters: %s", err)
+	}
+
+	lease, err := getOrRenewClientForOwner(o, ctx, cfg, name)
+	if err != nil {
+		return ToolResult{}, err
+	}
+	defer lease.close()
+	result, err := lease.session.CallTool(lease.ctx, &mcp.CallToolParams{
+		Name:      toolName,
+		Arguments: args,
+	})
+	if err != nil {
+		return ToolResult{}, err
+	}
+
+	if len(result.Content) == 0 {
+		return ToolResult{Type: "text", Content: ""}, nil
+	}
+
+	var textParts []string
+	var imageData []byte
+	var imageMimeType string
+	var audioData []byte
+	var audioMimeType string
+
+	for _, v := range result.Content {
+		switch content := v.(type) {
+		case *mcp.TextContent:
+			textParts = append(textParts, content.Text)
+		case *mcp.ImageContent:
+			if imageData == nil {
+				imageData = content.Data
+				imageMimeType = content.MIMEType
+			}
+		case *mcp.AudioContent:
+			if audioData == nil {
+				audioData = content.Data
+				audioMimeType = content.MIMEType
+			}
+		default:
+			textParts = append(textParts, fmt.Sprintf("%v", v))
+		}
+	}
+
+	textContent := strings.Join(textParts, "\n")
+
+	if imageData != nil {
+		return ToolResult{
+			Type:      "image",
+			Content:   textContent,
+			Data:      ensureRawBytes(imageData),
+			MediaType: imageMimeType,
+		}, nil
+	}
+
+	if audioData != nil {
+		return ToolResult{
+			Type:      "media",
+			Content:   textContent,
+			Data:      ensureRawBytes(audioData),
+			MediaType: audioMimeType,
+		}, nil
+	}
+
+	return ToolResult{
+		Type:    "text",
+		Content: textContent,
+	}, nil
+}
+
 // RefreshTools gets the updated list of tools from the MCP and updates the
 // global state.
 func RefreshTools(ctx context.Context, cfg *config.ConfigStore, name string) {
 	lease, err := currentClientLease(ctx, name, cfg)
+	if err != nil {
+		slog.Warn("Refresh tools: no session", "name", name)
+		return
+	}
+	defer lease.close()
+
+	tools, err := getTools(lease.ctx, lease.session)
+	if err != nil {
+		var counts Counts
+		lease.publishIfCurrent(lease.ctx, func() {
+			previous, _ := states.Get(name)
+			counts = previous.Counts
+			setState(name, StateError, err, lease.session, counts)
+		}, func() {
+			publishStateEvent(name, StateError, err, counts)
+		})
+		return
+	}
+
+	var counts Counts
+	lease.publishIfCurrent(lease.ctx, func() {
+		toolCount := updateTools(cfg, name, tools)
+		prev, _ := states.Get(name)
+		prev.Counts.Tools = toolCount
+		counts = prev.Counts
+		setState(name, StateConnected, nil, lease.session, counts)
+	}, func() {
+		publishStateEvent(name, StateConnected, nil, counts)
+	})
+}
+
+// RefreshTools gets the updated list of tools from the MCP and updates the
+// global state.
+// A nil receiver resolves the process-current owner exactly like the
+// package-level RefreshTools function, so callers holding an optional owner
+// can call the method unconditionally.
+func (o *Owner) RefreshTools(ctx context.Context, cfg *config.ConfigStore, name string) {
+	if o == nil {
+		RefreshTools(ctx, cfg, name)
+		return
+	}
+	lease, err := currentClientLeaseForOwner(o, ctx, name, cfg)
 	if err != nil {
 		slog.Warn("Refresh tools: no session", "name", name)
 		return

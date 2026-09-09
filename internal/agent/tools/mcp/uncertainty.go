@@ -119,6 +119,35 @@ func ReloadAndReconcileMCPConfig(ctx context.Context, cfg *config.ConfigStore) e
 	return reloadWithUncertaintyToken(ctx, token)
 }
 
+// ReloadAndReconcileMCPConfig owns the reload boundary. It captures the
+// current owner's uncertainty versions before reading disk and clears only
+// versions unchanged by the time the successful reload is finalized.
+// A nil receiver resolves the process-current owner exactly like the
+// package-level ReloadAndReconcileMCPConfig function, so callers holding an
+// optional owner can call the method unconditionally.
+func (o *Owner) ReloadAndReconcileMCPConfig(ctx context.Context, cfg *config.ConfigStore) error {
+	if o == nil {
+		return ReloadAndReconcileMCPConfig(ctx, cfg)
+	}
+	if cfg == nil {
+		return errors.New("mcp: nil config store")
+	}
+	var token *uncertaintyReloadToken
+	captured, _ := o.captureUncertainty(cfg)
+	token = captured
+	if token == nil {
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		if err := cfg.ReloadFromDisk(ctx); err != nil {
+			return err
+		}
+		o.reconcilePublishedSessions(cfg)
+		return nil
+	}
+	return reloadWithUncertaintyToken(ctx, token)
+}
+
 // reconcilePublishedSessions fences connections whose committed transport no
 // longer matches the effective enabled MCP definition after a reload.
 func (o *Owner) reconcilePublishedSessions(cfg *config.ConfigStore) {
@@ -138,7 +167,7 @@ func (o *Owner) reconcilePublishedSessions(cfg *config.ConfigStore) {
 	var candidates []sessionCandidate
 	var retired []retiredSession
 	lifecycleMu.Lock()
-	if owner != o || o.closing {
+	if owner != o && !o.standalone || o.closing {
 		lifecycleMu.Unlock()
 		return
 	}
@@ -158,7 +187,7 @@ func (o *Owner) reconcilePublishedSessions(cfg *config.ConfigStore) {
 		lease := serverLeaseFor(candidate.name)
 		lease.Lock()
 		lifecycleMu.Lock()
-		if owner != o || o.closing || o.committedAdmissions[candidate.name] != candidate.admission {
+		if owner != o && !o.standalone || o.closing || o.committedAdmissions[candidate.name] != candidate.admission {
 			lifecycleMu.Unlock()
 			lease.Unlock()
 			continue

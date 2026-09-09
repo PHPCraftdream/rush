@@ -28,7 +28,7 @@ const ListMCPResourcesToolName = "list_mcp_resources"
 //go:embed list_mcp_resources.md
 var listMCPResourcesDescription string
 
-func NewListMCPResourcesTool(cfg *config.ConfigStore, permissions permission.Service) fantasy.AgentTool {
+func NewListMCPResourcesTool(cfg *config.ConfigStore, permissions permission.Service, owner *mcp.Owner) fantasy.AgentTool {
 	return fantasy.NewParallelAgentTool(
 		ListMCPResourcesToolName,
 		listMCPResourcesDescription,
@@ -63,7 +63,7 @@ func NewListMCPResourcesTool(cfg *config.ConfigStore, permissions permission.Ser
 				return NewPermissionDeniedResponse(), nil
 			}
 
-			resources, err := mcp.ListResources(ctx, cfg, params.MCPName)
+			resources, err := owner.ListResources(ctx, cfg, params.MCPName)
 			if err != nil {
 				return fantasy.NewTextErrorResponse(err.Error()), nil
 			}

@@ -126,6 +126,10 @@ func loadInvocableSkillsFromDir(dir, prefix string) []CustomCommand {
 }
 
 // LoadMCPPrompts loads custom commands from available MCP servers.
+//
+// The mcp calls here (Prompts, and GetPromptMessages in GetMCPPrompt) stay on
+// the package wrappers: the free function has no owner in scope (no App is
+// reachable); single-owner CLI/TUI callers keep package-level resolution.
 func LoadMCPPrompts() ([]MCPPrompt, error) {
 	var commands []MCPPrompt
 	for mcpName, prompts := range mcp.Prompts() {

@@ -775,7 +775,7 @@ func (c *coordinator) buildProviderWithValues(providerCfg config.ProviderConfig,
 		}
 		return c.buildOpenaiCompatProvider(baseURL, apiKey, headers, providerCfg.ExtraBody, providerCfg.ID, isSubAgent)
 	case cliprovider.ProviderType:
-		return cliprovider.New(c.cfg.WorkingDir(), c.cfg.Config().Options.DataDirectory, c.permissions.SkipRequests, c.permissions, c.sessions, &externalMCPProxy{cfg: c.cfg}), nil
+		return cliprovider.New(c.cfg.WorkingDir(), c.cfg.Config().Options.DataDirectory, c.permissions.SkipRequests, c.permissions, c.sessions, &externalMCPProxy{cfg: c.cfg, owner: c.mcpOwner}), nil
 	default:
 		// Known custom providers (litellm, ollama, omlx, lmstudio) are
 		// openai-compat under the hood.
@@ -789,11 +789,14 @@ func (c *coordinator) buildProviderWithValues(providerCfg config.ProviderConfig,
 // externalMCPProxy implements cliprovider.ExternalMCPProxy by delegating to
 // the internal mcp package for tool listing and execution.
 type externalMCPProxy struct {
-	cfg *config.ConfigStore
+	cfg   *config.ConfigStore
+	owner *mcp.Owner
 }
 
 func (p *externalMCPProxy) ListTools() []cliprovider.ExternalMCPTool {
 	var result []cliprovider.ExternalMCPTool
+	// Read path stays on the package wrappers: the registry maps are shared
+	// name-keyed state; the IsConfigured cfg filter IS the isolation mechanism.
 	for serverName, tools := range mcp.Tools() {
 		if !mcp.IsConfigured(p.cfg, serverName) {
 			continue
@@ -811,7 +814,7 @@ func (p *externalMCPProxy) ListTools() []cliprovider.ExternalMCPTool {
 }
 
 func (p *externalMCPProxy) CallTool(ctx context.Context, serverName, toolName, inputJSON string) (string, error) {
-	result, err := mcp.RunTool(ctx, p.cfg, serverName, toolName, inputJSON)
+	result, err := p.owner.RunTool(ctx, p.cfg, serverName, toolName, inputJSON)
 	if err != nil {
 		return "", err
 	}
@@ -848,7 +851,7 @@ func (c *coordinator) checkLivePeakHours(providerID string) error {
 	}
 	if staleness := c.cfg.ConfigStaleness(); staleness.Dirty {
 		reloadCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		if err := mcp.ReloadAndReconcileMCPConfig(reloadCtx, c.cfg); err != nil {
+		if err := c.mcpOwner.ReloadAndReconcileMCPConfig(reloadCtx, c.cfg); err != nil {
 			slog.Warn("Failed to reload config before peak-hours check", "provider", providerID, "err", err)
 		}
 		cancel()

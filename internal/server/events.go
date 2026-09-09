@@ -92,7 +92,10 @@ func subscribeAndBroadcast(ctx context.Context, a *appPkg.App, h *Hub) {
 		}
 	}()
 
-	// MCP state changes ΓÇö broadcast a full snapshot of all servers on each event.
+	// MCP state changes — broadcast a full snapshot of all servers on each
+	// event. Read/broker surfaces are process-wide by design (shared
+	// name-keyed registry + shared event bus); isolation via IsConfigured
+	// filtering in buildMCPSnapshot below.
 	go func() {
 		ch := mcp.SubscribeEvents(ctx)
 		for {

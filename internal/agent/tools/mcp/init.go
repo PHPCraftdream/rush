@@ -51,7 +51,11 @@ func (o *Owner) beginInitialize() bool {
 	if o.fullInitCount == 0 {
 		o.initStarted = true
 		o.initDone = make(chan struct{})
-		initDone = o.initDone
+		// A standalone owner must never clobber the installed owner's
+		// initDone mirror.
+		if !o.standalone {
+			initDone = o.initDone
+		}
 	}
 	o.fullInitCount++
 	o.initCount++
@@ -113,6 +117,10 @@ func Initialize(ctx context.Context, permissions permission.Service, cfg *config
 
 // Initialize initializes MCP clients using this owner's lifecycle barrier.
 func (o *Owner) Initialize(ctx context.Context, permissions permission.Service, cfg *config.ConfigStore, restrictToCLIEnabled bool) {
+	if o == nil {
+		Initialize(ctx, permissions, cfg, restrictToCLIEnabled)
+		return
+	}
 	slog.Info("Initializing MCP clients")
 	// The permission service is consumed later while tools are called. Keep it
 	// in the signature for compatibility with the existing startup contract.
@@ -120,7 +128,7 @@ func (o *Owner) Initialize(ctx context.Context, permissions permission.Service, 
 	var wg sync.WaitGroup
 	initCtx, cancel := context.WithCancel(ctx)
 	lifecycleMu.Lock()
-	if owner != o || o.closing {
+	if owner != o && !o.standalone || o.closing {
 		lifecycleMu.Unlock()
 		cancel()
 		return
@@ -255,6 +263,26 @@ func WaitForInit(ctx context.Context) error {
 	}
 }
 
+// WaitForInit blocks until MCP initialization is complete.
+// If Initialize was never called, this returns immediately.
+// A nil receiver resolves the process-current owner exactly like the
+// package-level WaitForInit function, so callers holding an optional owner
+// can call the method unconditionally.
+func (o *Owner) WaitForInit(ctx context.Context) error {
+	if o == nil {
+		return WaitForInit(ctx)
+	}
+	lifecycleMu.Lock()
+	done := o.initDone
+	lifecycleMu.Unlock()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // InitializeSingle initializes a single MCP client by name.
 func InitializeSingle(ctx context.Context, name string, cfg *config.ConfigStore) error {
 	o := currentOwner()
@@ -265,6 +293,21 @@ func InitializeSingle(ctx context.Context, name string, cfg *config.ConfigStore)
 			return err
 		}
 	}
+	return initializeSingleForOwner(o, ctx, name, cfg)
+}
+
+// InitializeSingle initializes a single MCP client by name.
+// A nil receiver resolves the process-current owner exactly like the
+// package-level InitializeSingle function, so callers holding an optional
+// owner can call the method unconditionally.
+func (o *Owner) InitializeSingle(ctx context.Context, name string, cfg *config.ConfigStore) error {
+	if o == nil {
+		return InitializeSingle(ctx, name, cfg)
+	}
+	return initializeSingleForOwner(o, ctx, name, cfg)
+}
+
+func initializeSingleForOwner(o *Owner, ctx context.Context, name string, cfg *config.ConfigStore) error {
 	if err := o.rememberConfig(cfg); err != nil {
 		return err
 	}

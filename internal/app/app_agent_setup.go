@@ -140,6 +140,7 @@ func (app *App) InitCoderAgent(ctx context.Context) error {
 		app.History,
 		app.FileTracker,
 		app.agentNotifications,
+		app.mcpOwner,
 		app.BackgroundShellManager,
 	)
 	if err != nil {

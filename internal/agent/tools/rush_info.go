@@ -36,6 +36,9 @@ func NewRushInfoTool(
 }
 
 func buildRushInfo(cfg *config.ConfigStore, allSkills []*skills.Skill, activeSkills []*skills.Skill, skillTracker *skills.Tracker) string {
+	// The mcp calls below are read-only global-map getters; isolation comes
+	// from the IsConfigured filtering inside writeMCP; there is no owner
+	// dimension until the registry maps are per-owner.
 	var b strings.Builder
 
 	writeConfigFiles(&b, cfg)
