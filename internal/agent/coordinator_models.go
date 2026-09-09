@@ -84,7 +84,8 @@ func (c *coordinator) resolveSessionModels(ctx context.Context, sessionID string
 // The returned snapshot includes both smart and fast models, the provider's system
 // prompt prefix, and the built system prompt (if a prompt template is available).
 //
-// Results are cached per unique (config generation, provider+model+reasoning_effort) pair.
+// Results are cached per unique structured key containing the config generation
+// and each smart/fast provider, model, and reasoning-effort field.
 // The config generation is included so that any config change (reload, credential update,
 // etc.) invalidates the cache, preventing stale clients from being reused (task #341, P1-3).
 //
@@ -170,33 +171,32 @@ func (c *coordinator) resolveSessionModelsInternal(ctx context.Context, sessionI
 	//
 	// Use the atomic generation from Snapshot(), not a separate Generation()
 	// call, to ensure consistency (task #341, P1-3).
-	pairCacheKey := fmt.Sprintf("gen:%d|%s:%s:%s|%s:%s:%s",
-		gen,
-		smartCfg.Provider, smartCfg.Model, smartCfg.ReasoningEffort,
-		fastCfg.Provider, fastCfg.Model, fastCfg.ReasoningEffort)
+	pairCacheKey := modelPairCacheKey{
+		generation:     gen,
+		smartProvider:  smartCfg.Provider,
+		smartModel:     smartCfg.Model,
+		smartReasoning: smartCfg.ReasoningEffort,
+		fastProvider:   fastCfg.Provider,
+		fastModel:      fastCfg.Model,
+		fastReasoning:  fastCfg.ReasoningEffort,
+	}
 
 	// c.modelCache is nil for any *coordinator built as a struct literal
 	// instead of via NewCoordinator (several existing test fixtures in this
 	// package do exactly that — see e.g. newWorkerToolTestCoordinator).
-	// csync.Map's methods dereference the receiver's mutex, so calling
-	// Get/Set on a nil *csync.Map panics; treat a nil cache as "caching
-	// disabled" rather than requiring every coordinator constructor to
-	// remember to initialize it.
+	// Treat a nil cache as "caching disabled" rather than requiring every
+	// coordinator constructor to remember to initialize it.
 	var smartModel, fastModel Model
-	var cacheHit bool
-	if c.modelCache != nil {
-		if cached, ok := c.modelCache.Get(pairCacheKey); ok {
-			smartModel, fastModel, cacheHit = cached.smart, cached.fast, true
-		}
+	cached, cacheHit, cacheEpoch := c.getCachedModelPair(pairCacheKey)
+	if cacheHit {
+		smartModel, fastModel = cached.smart, cached.fast
 	}
 	if !cacheHit {
-		smartModel, fastModel, err = c.buildModelsFromCfg(ctx, cfg, smartCfg, fastCfg, false)
+		smartModel, fastModel, err = c.buildCachedModelPair(ctx, cfg, smartCfg, fastCfg)
 		if err != nil {
 			return nil, fmt.Errorf("failed to build models: %w", err)
 		}
-		if c.modelCache != nil {
-			c.modelCache.Set(pairCacheKey, cachedModelPair{smart: smartModel, fast: fastModel})
-		}
+		c.setCachedModelPairIfCurrent(pairCacheKey, cachedModelPair{smart: smartModel, fast: fastModel}, cacheEpoch)
 	}
 
 	resolved := &resolvedOverrides{
@@ -938,7 +938,20 @@ func (c *coordinator) UpdateModels(ctx context.Context) error {
 // updates (OAuth token refresh, API key re-resolution) to ensure cached models
 // with stale clients are not reused (task #341, P1-3).
 func (c *coordinator) clearModelCache() {
-	if c.modelCache != nil {
-		c.modelCache.Reset(make(map[string]cachedModelPair))
+	c.modelCacheMu.Lock()
+	defer c.modelCacheMu.Unlock()
+
+	c.modelCacheEpoch++
+	if c.modelCache == nil {
+		return
+	}
+	if cache, ok := c.modelCache.(*boundedModelPairCache); ok {
+		cache.clear()
+		return
+	}
+	if cache, ok := c.modelCache.(interface {
+		Reset(map[string]cachedModelPair)
+	}); ok {
+		cache.Reset(make(map[string]cachedModelPair))
 	}
 }

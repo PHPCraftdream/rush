@@ -31,7 +31,6 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/notify"
 	"github.com/PHPCraftdream/rush/internal/agent/prompt"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/csync"
 	"github.com/PHPCraftdream/rush/internal/filetracker"
 	"github.com/PHPCraftdream/rush/internal/history"
 	"github.com/PHPCraftdream/rush/internal/message"
@@ -301,7 +300,10 @@ type coordinator struct {
 	// buildModelsFromCfg call always fills both roles together — see
 	// resolveSessionModels's own comment for why a per-slot cache
 	// previously mismatched smart/fast roles.
-	modelCache *csync.Map[string, cachedModelPair]
+	modelCache       modelPairCache
+	modelCacheMu     sync.Mutex
+	modelCacheEpoch  uint64
+	modelPairBuilder func(context.Context, *config.Config, config.SelectedModel, config.SelectedModel) (Model, Model, error)
 
 	// refreshOAuth2TokenFn is nil in production. Tests use it to install a
 	// deterministic refreshed provider credential without network traffic.
@@ -314,6 +316,17 @@ type cachedModelPair struct {
 	smart Model
 	fast  Model
 }
+
+// modelPairCache is the small cache surface used by model resolution. Keeping
+// it narrow preserves compatibility with existing csync.Map fixtures.
+type modelPairCache interface {
+	Len() int
+}
+
+// modelCacheMaxEntries bounds the number of resolved model pairs retained by a
+// production coordinator. Entries are LRU-evicted, so historical config
+// generations and arbitrary per-session overrides cannot grow without bound.
+const modelCacheMaxEntries = 16
 
 func NewCoordinator(
 	ctx context.Context,
@@ -355,7 +368,7 @@ func NewCoordinator(
 		activeSkills:           activeSkills,
 		skillTracker:           skillTracker,
 		consecutiveAutoResumes: make(map[string]int),
-		modelCache:             csync.NewMap[string, cachedModelPair](),
+		modelCache:             newBoundedModelPairCache(modelCacheMaxEntries),
 	}
 
 	agentCfg, ok := cfg.Config().Agents[config.AgentCoder]
