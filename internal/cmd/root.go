@@ -95,10 +95,13 @@ Companion CLI subcommands for scripting and CI:
   - ` + "`rush queue`" + `           batch task queue — add / list / run / rm / clear / show.
   - ` + "`rush models`" + `          use / list / set / unset — atom-based model selection
                           with short codes (o47x, s46h, hl, etc.).
-  - ` + "`rush claude-init`" + `     install the /rush, /rush-fallback and /wrush
-                          slash-commands into .claude/commands/ (/wrush
-                          is /rush but forced through an isolated git
-                          worktree).
+  - ` + "`rush claude-init`" + `     install the /rush, /rush-fallback, /wrush
+                          and /wcrush slash-commands into
+                          .claude/commands/ (/wrush is /rush but forced
+                          through an isolated git worktree; /wcrush is
+                          /wrush but the sub-agent never runs the tests —
+                          verification moves to a second,
+                          orchestrator-driven phase).
   - ` + "`rush system-prompt`" + `   print the system prompt that would be sent.
   - ` + "`rush ping`" + `            health-check (verify API connectivity).
 

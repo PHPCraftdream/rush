@@ -1,10 +1,11 @@
-// Fork addition: `codex-init` installs the `rush`/`rush-fallback`/`wrush` slash
+// Fork addition: `codex-init` installs the `rush`/`rush-fallback`/`wrush`/`wcrush` slash
 // commands as Codex CLI Skills (`.agents/skills/<name>/SKILL.md`). First of
 // the `<tool>-init`/`<tool>-del` family alongside claude-init/claude-del;
 // gemini-init/gemini-del, grok-init/grok-del and qwen-init/qwen-del follow
 // the same pattern, converting from the same canonical source templates
 // (claudeSlashCommandTemplate / claudeFallbackCommandTemplate /
-// claudeWrushCommandTemplate, embedded in claude_init.go) via the helpers in
+// claudeWrushCommandTemplate / claudeWcrushCommandTemplate, embedded in
+// claude_init.go) via the helpers in
 // multi_cli_convert.go.
 package cmd
 
@@ -36,12 +37,13 @@ func resolveCodexSkillsDir(cwd string, global bool) (string, error) {
 
 var codexInitCmd = &cobra.Command{
 	Use:   "codex-init",
-	Short: "Install the rush/rush-fallback/wrush Skills for Codex CLI",
+	Short: "Install the rush/rush-fallback/wrush/wcrush Skills for Codex CLI",
 	Long: `Set up rush's delegation Skills in Codex CLI.
 
 Codex CLI Skills are written to ` + "`~/.agents/skills/rush/SKILL.md`" + `,
-` + "`~/.agents/skills/rush-fallback/SKILL.md`" + ` and
-` + "`~/.agents/skills/wrush/SKILL.md`" + ` by default (the GLOBAL scope,
+` + "`~/.agents/skills/rush-fallback/SKILL.md`" + `,
+` + "`~/.agents/skills/wrush/SKILL.md`" + ` and
+` + "`~/.agents/skills/wcrush/SKILL.md`" + ` by default (the GLOBAL scope,
 available in every project). Use --local (or --cwd, which implies it) to
 scope them to the current project's ` + "`.agents/skills/`" + ` instead.
 
@@ -92,8 +94,8 @@ rush codex-init --cwd /path/to/project
 	},
 }
 
-// installCodexSkills writes the rush, rush-fallback and wrush Skills into
-// skillsDir. Extracted so codex_init_test.go can drive it directly.
+// installCodexSkills writes the rush, rush-fallback, wrush and wcrush Skills
+// into skillsDir. Extracted so codex_init_test.go can drive it directly.
 func installCodexSkills(skillsDir string) error {
 	desc1, body1, err := parseSlashCommandSource(claudeSlashCommandTemplate)
 	if err != nil {
@@ -123,6 +125,18 @@ func installCodexSkills(skillsDir string) error {
 	}
 	if err := writeCodexSkill(skillsDir, "wrush", content3); err != nil {
 		return fmt.Errorf("wrush skill: %w", err)
+	}
+
+	desc4, body4, err := parseSlashCommandSource(claudeWcrushCommandTemplate)
+	if err != nil {
+		return fmt.Errorf("wcrush skill: %w", err)
+	}
+	content4, err := toCodexWcrushSkillMD(desc4, body4)
+	if err != nil {
+		return fmt.Errorf("wcrush skill: %w", err)
+	}
+	if err := writeCodexSkill(skillsDir, "wcrush", content4); err != nil {
+		return fmt.Errorf("wcrush skill: %w", err)
 	}
 	return nil
 }

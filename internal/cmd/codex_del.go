@@ -1,5 +1,5 @@
 // Fork addition: `codex-del` undoes `codex-init` — removes the
-// rush/rush-fallback/wrush Codex CLI Skills. See codex_init.go for context.
+// rush/rush-fallback/wrush/wcrush Codex CLI Skills. See codex_init.go for context.
 package cmd
 
 import (
@@ -13,8 +13,8 @@ import (
 
 var codexDelCmd = &cobra.Command{
 	Use:   "codex-del",
-	Short: "Remove the rush/rush-fallback/wrush Skills from Codex CLI",
-	Long: `Undo ` + "`rush codex-init`" + `: remove the rush, rush-fallback and wrush Skills
+	Short: "Remove the rush/rush-fallback/wrush/wcrush Skills from Codex CLI",
+	Long: `Undo ` + "`rush codex-init`" + `: remove the rush, rush-fallback, wrush and wcrush Skills
 from Codex CLI's Skills directory.
 
 Only Skills that carry our sentinel are removed — foreign SKILL.md files
@@ -90,8 +90,8 @@ func containsAnyCodexSentinel(data string) bool {
 		strings.Contains(data, legacyCodexSlashCommandSentinel)
 }
 
-// removeCodexSkills removes the rush/rush-fallback/wrush Skills and the
-// legacy crush/crush-fallback Skills from skillsDir.
+// removeCodexSkills removes the rush/rush-fallback/wrush/wcrush Skills and
+// the legacy crush/crush-fallback Skills from skillsDir.
 func removeCodexSkills(skillsDir string) error {
 	// Remove new rush-named Skills
 	if err := removeSentinelledSkillDir(skillsDir, "rush", claudeSlashCommandSentinel); err != nil {
@@ -101,6 +101,9 @@ func removeCodexSkills(skillsDir string) error {
 		return err
 	}
 	if err := removeSentinelledSkillDir(skillsDir, "wrush", claudeSlashCommandSentinel); err != nil {
+		return err
+	}
+	if err := removeSentinelledSkillDir(skillsDir, "wcrush", claudeSlashCommandSentinel); err != nil {
 		return err
 	}
 	// Remove legacy crush-named Skills (accept either sentinel)

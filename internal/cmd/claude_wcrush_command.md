@@ -2,12 +2,6 @@
 description: Delegate this task to a rush sub-agent that must work only inside an isolated git worktree and never run the tests — execution and verification move to a second, orchestrator-driven phase
 ---
 
-<!-- NAME PROVISIONAL: the operator asked for /wcrush, but the sibling
-     commands are /rush, /rush-fallback and /wrush — the name sits oddly
-     in the fork's crush→rush convention. Task #922 pins the name into
-     claude_init.go/claude_del.go paths, the multi-CLI converters and
-     the tests; revisit it there before cementing `wcrush.md`. -->
-
 This skill is **opt-in only** — invoked by typing `/wcrush <task>`.
 **Do NOT auto-invoke on later turns.**
 
