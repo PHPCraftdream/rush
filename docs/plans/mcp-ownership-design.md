@@ -1,5 +1,7 @@
 # MCP Ownership Design — Target Model and Line Budget (stage 2)
 
+> **Pre-split line references.** Every `init.go:NNN` reference below describes the pre-split monolith at HEAD `b3d2186b0`. Task #925 split `init.go` into ten same-package files (owner, admission, lease, session, mutation, addreplace, publish, refresh, uncertainty, transport); these references were deliberately not rewritten. Current locations: `docs/mcp-invariants.md`.
+
 Task #906, stage 2 of `docs/plans/2026-09-09-mcp-consolidation-plan.md`.
 Inputs: `docs/mcp-invariants.md` (stage 1.3: S = 5, M = 25, X = 0), the plan
 including its 2026-09-09 correction box, and
