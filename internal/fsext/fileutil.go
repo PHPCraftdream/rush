@@ -220,7 +220,15 @@ func globWithDoubleStarFollow(pattern, searchPath string, limit int, gitignore, 
 			return nil
 		}
 
-		found.Append(FileInfo{Path: path, ModTime: info.ModTime()})
+		// filepath.Clean, not the raw walk path: the walker joins onto
+		// searchPath with whatever separators the caller passed, so a cwd
+		// carrying forward slashes on Windows (a TMPDIR set that way, for
+		// instance) would yield "D:/a/b.txt" here while the anchored
+		// GlobGitignoreAwareFS counterpart yields "D:\a\b.txt" for the same
+		// file -- it builds its result with filepath.Join. Two functions
+		// documented as counterparts must not disagree about what a path
+		// looks like. On Linux and macOS this is a no-op.
+		found.Append(FileInfo{Path: filepath.Clean(path), ModTime: info.ModTime()})
 		if limit > 0 && found.Len() >= limit*2 { // NOTE: why x2?
 			return filepath.SkipAll
 		}
