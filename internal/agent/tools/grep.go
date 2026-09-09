@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"cmp"
 	"container/heap"
+	"container/list"
 	"context"
 	_ "embed"
 	"encoding/json"
@@ -20,47 +21,107 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/csync"
 	"github.com/PHPCraftdream/rush/internal/filepathext"
 	"github.com/PHPCraftdream/rush/internal/fsext"
 	"github.com/PHPCraftdream/rush/internal/permission"
 	"github.com/PHPCraftdream/rush/internal/stringext"
 )
 
-// regexCache provides thread-safe caching of compiled regex patterns
+const regexCacheCapacity = 128
+
+// regexCache is a bounded LRU of compiled patterns. Invalid patterns are not
+// retained; concurrent callers share one in-flight compilation instead.
 type regexCache struct {
-	*csync.Map[string, *regexp.Regexp]
+	mu         sync.Mutex
+	capacity   int
+	entries    map[string]*list.Element
+	lru        *list.List
+	pending    map[string]*regexCompile
+	generation uint64
 }
 
-// newRegexCache creates a new regex cache
-func newRegexCache() *regexCache {
+type regexCacheEntry struct {
+	key string
+	re  *regexp.Regexp
+}
+
+type regexCompile struct {
+	done chan struct{}
+	re   *regexp.Regexp
+	err  error
+}
+
+// newRegexCache creates a cache using regexCacheCapacity, or a requested
+// capacity for deterministic tests. Capacity zero disables retention.
+func newRegexCache(capacities ...int) *regexCache {
+	capacity := regexCacheCapacity
+	if len(capacities) > 0 {
+		capacity = max(0, capacities[0])
+	}
 	return &regexCache{
-		Map: csync.NewMap[string, *regexp.Regexp](),
+		capacity: capacity,
+		entries:  make(map[string]*list.Element),
+		lru:      list.New(),
+		pending:  make(map[string]*regexCompile),
 	}
 }
 
-// get retrieves a compiled regex from cache or compiles and caches it
+// get retrieves a compiled regex from the cache or compiles and caches it.
 func (rc *regexCache) get(pattern string) (*regexp.Regexp, error) {
-	re, ok := rc.Get(pattern)
-	if ok && re != nil {
+	rc.mu.Lock()
+	if element := rc.entries[pattern]; element != nil {
+		rc.lru.MoveToFront(element)
+		re := element.Value.(regexCacheEntry).re
+		rc.mu.Unlock()
 		return re, nil
 	}
-	re, err := regexp.Compile(pattern)
-	if err != nil {
-		return nil, err
+	if pending := rc.pending[pattern]; pending != nil {
+		rc.mu.Unlock()
+		<-pending.done
+		return pending.re, pending.err
 	}
-	rc.Set(pattern, re)
-	return re, nil
+	pending := &regexCompile{done: make(chan struct{})}
+	rc.pending[pattern] = pending
+	generation := rc.generation
+	rc.mu.Unlock()
+
+	re, err := regexp.Compile(pattern)
+
+	rc.mu.Lock()
+	pending.re, pending.err = re, err
+	delete(rc.pending, pattern)
+	if err == nil && rc.capacity > 0 && generation == rc.generation {
+		element := rc.lru.PushFront(regexCacheEntry{key: pattern, re: re})
+		rc.entries[pattern] = element
+		for rc.lru.Len() > rc.capacity {
+			element := rc.lru.Back()
+			delete(rc.entries, element.Value.(regexCacheEntry).key)
+			rc.lru.Remove(element)
+		}
+	}
+	close(pending.done)
+	rc.mu.Unlock()
+	return re, err
 }
 
-// ResetCache clears compiled regex caches to prevent unbounded growth across sessions.
+// ResetCache clears compiled regex caches. In-flight compilations complete for
+// their current callers but are not inserted into a cache reset meanwhile.
 func ResetCache() {
-	searchRegexCache.Reset(map[string]*regexp.Regexp{})
-	globRegexCache.Reset(map[string]*regexp.Regexp{})
+	searchRegexCache.reset()
+	globRegexCache.reset()
+}
+
+func (rc *regexCache) reset() {
+	rc.mu.Lock()
+	rc.entries = make(map[string]*list.Element)
+	rc.lru.Init()
+	rc.generation++
+	rc.mu.Unlock()
 }
 
 // Global regex cache instances
@@ -85,6 +146,51 @@ type grepMatch struct {
 	charNum  int
 	lineText string
 	seq      int64 // insertion order, for stable sort tie-breaking
+}
+
+const ripgrepStatCacheCapacity = 128
+
+type statCacheEntry struct {
+	path string
+	info os.FileInfo
+}
+
+// boundedStatCache keeps the one-stat-per-active-file optimization without
+// retaining a path for every file in a high-cardinality rg stream.
+type boundedStatCache struct {
+	capacity int
+	entries  map[string]*list.Element
+	lru      *list.List
+}
+
+func newBoundedStatCache(capacity int) *boundedStatCache {
+	return &boundedStatCache{
+		capacity: max(0, capacity),
+		entries:  make(map[string]*list.Element),
+		lru:      list.New(),
+	}
+}
+
+func (c *boundedStatCache) get(path string, stat func(string) (os.FileInfo, error)) (os.FileInfo, error) {
+	if element := c.entries[path]; element != nil {
+		c.lru.MoveToFront(element)
+		return element.Value.(statCacheEntry).info, nil
+	}
+	info, err := stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if c.capacity == 0 {
+		return info, nil
+	}
+	element := c.lru.PushFront(statCacheEntry{path: path, info: info})
+	c.entries[path] = element
+	if c.lru.Len() > c.capacity {
+		oldest := c.lru.Back()
+		delete(c.entries, oldest.Value.(statCacheEntry).path)
+		c.lru.Remove(oldest)
+	}
+	return info, nil
 }
 
 // boundedMatchHeap is a min-heap keyed by eviction priority: the root is the
@@ -440,7 +546,7 @@ func newRipgrepJSONError(err error) *RipgrepJSONError {
 	}
 }
 
-func searchWithRipgrepCommand(cmd *exec.Cmd, limit, scannerMaxBytes int) ([]grepMatch, bool, error) {
+func searchWithRipgrepCommand(cmd *exec.Cmd, limit, scannerMaxBytes int, statFns ...func(string) (os.FileInfo, error)) ([]grepMatch, bool, error) {
 
 	// Stream rg's stdout line-by-line instead of buffering the entire output.
 	stdout, err := cmd.StdoutPipe()
@@ -451,10 +557,16 @@ func searchWithRipgrepCommand(cmd *exec.Cmd, limit, scannerMaxBytes int) ([]grep
 		return nil, false, err
 	}
 
-	// statCache ensures one os.Stat call per unique file path, not one per
-	// submatch. A file with N matches previously triggered N Stat syscalls;
-	// now it triggers exactly one.
-	statCache := make(map[string]os.FileInfo)
+	stat := os.Stat
+	if len(statFns) > 0 && statFns[0] != nil {
+		stat = statFns[0]
+	}
+	capacity := max(0, limit)
+	statCapacity := ripgrepStatCacheCapacity
+	if capacity == 0 {
+		statCapacity = 0
+	}
+	statCache := newBoundedStatCache(statCapacity)
 	h := &boundedMatchHeap{}
 	var seq int64
 
@@ -478,13 +590,9 @@ func searchWithRipgrepCommand(cmd *exec.Cmd, limit, scannerMaxBytes int) ([]grep
 		// Only take the first submatch per line (matches original behaviour).
 		sub := match.Data.Submatches[0]
 
-		fi, ok := statCache[match.Data.Path.Text]
-		if !ok {
-			fi, err = os.Stat(match.Data.Path.Text)
-			if err != nil {
-				continue // Skip files we can't access.
-			}
-			statCache[match.Data.Path.Text] = fi
+		fi, statErr := statCache.get(match.Data.Path.Text, stat)
+		if statErr != nil {
+			continue // Skip files we can't access.
 		}
 
 		seq++
@@ -497,9 +605,9 @@ func searchWithRipgrepCommand(cmd *exec.Cmd, limit, scannerMaxBytes int) ([]grep
 			seq:      seq,
 		}
 
-		if h.Len() < limit {
+		if capacity > 0 && h.Len() < capacity {
 			heap.Push(h, gm)
-		} else if !evictFirst(gm, (*h)[0]) {
+		} else if capacity > 0 && !evictFirst(gm, (*h)[0]) {
 			// gm is less evictable than the root — it deserves a spot.
 			(*h)[0] = gm
 			heap.Fix(h, 0)
@@ -544,7 +652,7 @@ func searchWithRipgrepCommand(cmd *exec.Cmd, limit, scannerMaxBytes int) ([]grep
 		return matches[i].seq < matches[j].seq
 	})
 
-	return matches, seq > int64(limit), nil
+	return matches, (limit <= 0 && seq > 0) || (limit > 0 && seq > int64(limit)), nil
 }
 
 type ripgrepMatch struct {

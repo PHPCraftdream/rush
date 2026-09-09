@@ -5,7 +5,10 @@ package tools
 
 import (
 	"regexp"
+	"sync"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestRegexCache(t *testing.T) {
@@ -32,6 +35,46 @@ func TestRegexCache(t *testing.T) {
 	if !regex1.MatchString("test123pattern") {
 		t.Error("Regex should match test string")
 	}
+}
+
+func TestRegexCacheCapacityAndEviction(t *testing.T) {
+	cache := newRegexCache(2)
+	first, err := cache.get("a")
+	require.NoError(t, err)
+	_, err = cache.get("b")
+	require.NoError(t, err)
+	_, err = cache.get("c")
+	require.NoError(t, err)
+	require.Len(t, cache.entries, 2)
+	secondA, err := cache.get("a")
+	require.NoError(t, err)
+	require.NotSame(t, first, secondA, "the least-recently-used entry must be evicted")
+}
+
+func TestRegexCacheConcurrentSameKeyAndInvalidPattern(t *testing.T) {
+	cache := newRegexCache(2)
+	const callers = 32
+	results := make([]*regexp.Regexp, callers)
+	errs := make([]error, callers)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := range callers {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			results[i], errs[i] = cache.get("same")
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	for i := range callers {
+		require.NoError(t, errs[i])
+		require.Same(t, results[0], results[i])
+	}
+	_, err := cache.get("[")
+	require.Error(t, err)
+	require.NotContains(t, cache.entries, "[")
 }
 
 func TestGlobToRegexCaching(t *testing.T) {

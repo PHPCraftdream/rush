@@ -41,6 +41,16 @@ func TestRipgrepSearchProcessHelper(t *testing.T) {
 		}
 	case "valid-exit-1":
 		writeLine("valid match")
+	case "stat-many":
+		for i := range 180 {
+			writeAtPath(filepath.Join(path, fmt.Sprintf("file-%03d.txt", i)), "needle")
+		}
+	case "stat-nine":
+		for i := range 9 {
+			writeAtPath(filepath.Join(path, fmt.Sprintf("file-%03d.txt", i)), "needle")
+		}
+	case "no-match":
+		os.Exit(1)
 	case "fs-overflow-drain":
 		writeOversizedFSGrepJSONLine(path)
 		chunk := strings.Repeat("x", 16*1024)
@@ -68,6 +78,14 @@ func TestRipgrepSearchProcessHelper(t *testing.T) {
 	}
 }
 
+func writeAtPath(path, text string) {
+	pathJSON, _ := json.Marshal(path)
+	textJSON, _ := json.Marshal(text)
+	_, _ = fmt.Fprintf(os.Stdout,
+		`{"type":"match","data":{"path":{"text":%s},"lines":{"text":%s},"line_number":1,"submatches":[{"start":0}]}}`+"\n",
+		pathJSON, textJSON)
+}
+
 func writeOversizedFSGrepJSONLine(path string) {
 	pathJSON, _ := json.Marshal(path)
 	prefix := fmt.Sprintf(`{"type":"match","data":{"path":{"text":%s},"lines":{"text":"`, pathJSON)
@@ -91,6 +109,17 @@ func testRipgrepJSONLine(path, text string) []byte {
 		`{"type":"match","data":{"path":{"text":%s},"lines":{"text":%s},"line_number":1,"submatches":[{"start":0}]}}`+"\n",
 		pathJSON, textJSON))
 }
+
+type syntheticFileInfo struct {
+	name string
+}
+
+func (i syntheticFileInfo) Name() string     { return i.name }
+func (syntheticFileInfo) Size() int64        { return 1 }
+func (syntheticFileInfo) Mode() os.FileMode  { return 0o644 }
+func (syntheticFileInfo) ModTime() time.Time { return time.Unix(1, 0) }
+func (syntheticFileInfo) IsDir() bool        { return false }
+func (syntheticFileInfo) Sys() any           { return nil }
 
 func testRipgrepCommand(ctx context.Context, scenario, path string) *exec.Cmd {
 	cmd := platform.Command(ctx, os.Args[0], "-test.run=TestRipgrepSearchProcessHelper", "--")
@@ -119,6 +148,71 @@ func TestSearchWithRipgrepRejectsFirstOversizedJSONMatch(t *testing.T) {
 	require.ErrorIs(t, err, ErrRipgrepJSONOutputTooLong)
 	require.ErrorIs(t, err, bufio.ErrTooLong)
 	require.Empty(t, matches)
+	require.False(t, truncated)
+}
+
+func TestSearchWithRipgrepBoundsStatCacheAndPreservesTopK(t *testing.T) {
+	root := t.TempDir()
+	cmd := testRipgrepCommand(t.Context(), "stat-many", root)
+	var statCalls int
+	stat := func(path string) (os.FileInfo, error) {
+		statCalls++
+		return syntheticFileInfo{name: filepath.Base(path)}, nil
+	}
+
+	matches, truncated, err := searchWithRipgrepCommand(cmd, 9, maxRipgrepJSONLineBytes, stat)
+	require.NoError(t, err)
+	require.True(t, truncated)
+	require.Len(t, matches, 9)
+	require.Equal(t, 180, statCalls)
+
+	cache := newBoundedStatCache(4)
+	for i := range 40 {
+		_, err := cache.get(fmt.Sprintf("path-%d", i), stat)
+		require.NoError(t, err)
+	}
+	require.Len(t, cache.entries, 4)
+}
+
+func TestSearchWithRipgrepZeroLimitMatchesRegexFallbackSemantics(t *testing.T) {
+	root := t.TempDir()
+	stat := func(string) (os.FileInfo, error) {
+		return syntheticFileInfo{name: "synthetic"}, nil
+	}
+
+	matches, truncated, err := searchWithRipgrepCommand(
+		testRipgrepCommand(t.Context(), "stat-many", root), 0, maxRipgrepJSONLineBytes, stat,
+	)
+	require.NoError(t, err)
+	require.Empty(t, matches)
+	require.True(t, truncated)
+
+	matches, truncated, err = searchWithRipgrepCommand(
+		testRipgrepCommand(t.Context(), "no-match", root), 0, maxRipgrepJSONLineBytes, stat,
+	)
+	require.NoError(t, err)
+	require.Empty(t, matches)
+	require.False(t, truncated)
+}
+
+func TestSearchWithRipgrepLimitBoundaries(t *testing.T) {
+	root := t.TempDir()
+	stat := func(string) (os.FileInfo, error) {
+		return syntheticFileInfo{name: "synthetic"}, nil
+	}
+
+	matches, truncated, err := searchWithRipgrepCommand(
+		testRipgrepCommand(t.Context(), "stat-nine", root), 1, maxRipgrepJSONLineBytes, stat,
+	)
+	require.NoError(t, err)
+	require.Len(t, matches, 1)
+	require.True(t, truncated)
+
+	matches, truncated, err = searchWithRipgrepCommand(
+		testRipgrepCommand(t.Context(), "stat-nine", root), 9, maxRipgrepJSONLineBytes, stat,
+	)
+	require.NoError(t, err)
+	require.Len(t, matches, 9)
 	require.False(t, truncated)
 }
 
