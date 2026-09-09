@@ -18,6 +18,99 @@ version is correct by default. Upstream changes are imported only when:
 If any of those fails, **drop the upstream commit** with a one-line note
 in the merge commit (`SKIP <hash>: <reason>`).
 
+## Review Stop Rule — When a Review Series Ends
+
+Reviews of this repository MUST have a termination condition. Without one
+they do not converge: reviewing concurrent code over shared mutable state
+always yields one more reachable interleaving, and every guard added to
+close one widens the state space for the next. That is not hypothetical —
+it is what happened to `internal/agent/tools/mcp/init.go` between
+2026-09-02 and 2026-09-09: 683 lines held steady for two weeks, then grew
+to 6478 across ~150 `fix:` commits in one week, while still producing
+fresh P0 defects. See `docs/plans/2026-09-09-mcp-consolidation-plan.md`.
+
+The rule, for every review cycle:
+
+- **P0/P1 with a reproducible failure scenario** — fix in the same cycle.
+  "Reproducible" means a concrete input/state that produces a wrong result,
+  a crash, or a hang; not "this interleaving looks unprotected".
+- **P2/P3** — record in the backlog, **do NOT fix in the same cycle**.
+  They are inputs to a future planned piece of work, not to this one.
+- **A review that finds no P0/P1 ends the series.** Do not schedule the
+  next round to confirm the absence.
+
+A follow-up round is justified only by a new P0/P1, a new subsystem, or an
+explicit operator request — never by "the previous review's P3 list is
+still open".
+
+## No Source File Over 1000 Lines
+
+A hand-written `.go`, `.ts` or `.tsx` file over 1000 lines gets
+decomposed. This is the operator's rule, and it is backed by checks
+because the informal version of it decayed — `init.go` above is what
+that looks like.
+
+Three layers enforce it:
+
+- `.githooks/check_file_size.sh`, run by `pre-push`, over every tracked
+  `.go`/`.ts`/`.tsx` file. Generated files are skipped by their
+  `Code generated … DO NOT EDIT` marker, not by name.
+- `revive`'s `file-length-limit` in `.golangci.yml`, at the same 1000
+  with `skipComments`/`skipBlankLines` both false so the count matches
+  `wc -l`.
+- `max-lines` in `web/.oxlintrc.json` for the TypeScript side.
+
+`.githooks/file_size_allowlist.txt` is a **ratchet, not an exemption
+list**: a listed file may stay over the limit but fails the moment it
+grows, and fails just as loudly once it drops to the limit and is still
+listed. The allowlist is the single source of truth; the `.golangci.yml`
+exclusions are derived from it, and `check_file_size_selftest.sh`
+asserts that bijection in both directions. When you decompose a file,
+remove it from **both** lists in the same commit.
+
+**"Into a folder" means files in the same package directory, never a
+sub-package.** Go treats a directory as one package, so moving a
+declaration between files in it changes nothing — no visibility change,
+no import change, no initialization-order change. A sub-package would
+force exporting whatever crosses the new boundary, which for the MCP
+package means its twelve package-level variables: the globals migration
+this fork examined and rejected, arrived at through the back door.
+
+Prove a split is a pure move before believing it:
+
+```bash
+git show HEAD:<old>.go | grep -hE '^(func|type|var|const) ' | sort > before.txt
+cat <new...>.go        | grep -hE '^(func|type|var|const) ' | sort > after.txt
+diff before.txt after.txt          # MUST be empty
+```
+
+For TypeScript the equivalent oracle is the sorted list of exported
+names. For test files, also check the test-function count is unchanged.
+
+## The MCP Subsystem — Read the Registry First
+
+`internal/agent/tools/mcp` is the fork's most defect-dense subsystem and
+the one where reviews stopped converging. Before changing anything in
+it, read `docs/mcp-invariants.md`: 25 invariants, each anchored to the
+code that enforces it and mapped to the tests that would catch its
+violation. The map is maintained — the ten-file split re-anchored every
+row in the same commit that moved the code, because a registry that lies
+about where its law lives is worse than no registry.
+
+Two conclusions from that work, so they are not re-litigated:
+
+- **The package's globals are not migrating to `Owner`.** It was costed:
+  `docs/plans/mcp-ownership-design.md` measured the full migration's
+  benefit at 33 lines, because the identity branches degenerate into
+  closing-fences rather than disappearing. 20 of the 25 invariants are
+  mechanical — they constrain ordering within one owner and survive
+  per-owner state unchanged, so the migration would not have prevented
+  either P0 this subsystem actually produced.
+- **Multi-`App` isolation is an API problem, not a state problem.**
+  It is solved by the two-tier surface (methods on `*Owner`, package
+  functions delegating to the process-current one) plus standalone
+  owners, not by moving state.
+
 ## What This Fork IS — Repositioned Identity
 
 The fork is positioned as **agent-tooling**: a CLI optimised for
@@ -38,6 +131,36 @@ are:
   `cmd/models_atoms.go`
 - React web UI under `web/` (Playwright e2e) — replaces upstream TUI
 - Pre-push hook mirroring CI under `.githooks/pre-push`
+- `/wcrush` — the two-phase delegation contract (see below)
+
+## `/wcrush` — Write in Parallel, Verify in Series
+
+`/wcrush` is `/wrush` plus one hard rule: **the sub-agent never runs
+tests.** Phase 1 writes the code and proves it compiles — `go build`,
+`go vet`, `gofmt` are required, not optional — then hands over with a
+written list of what it wrote, what each test is meant to catch, and the
+revert-check it intends for each. Phase 2 resumes the *same* session
+(`rush run --role smart --session <id>`; omitting `--role` exits 1
+immediately) once the orchestrator authorises the runs.
+
+Two reasons, and the second is not theoretical:
+
+- **Memory.** Two concurrent `go test -race` runs on this machine hit
+  Windows `ERROR_COMMITMENT_LIMIT` (`errno=1455`) and take each other
+  down. Thinking and writing cost almost nothing; the suites are the
+  expensive part, so they serialise. Note this bites for heavy
+  *compilation* too, not just tests — two agents each driving builds
+  over a large package is enough.
+- **Safety.** An agent that never runs tests never neuters production
+  code to watch one fail, so it cannot die mid-revert-check and leave
+  the neutering behind. That happened: an agent hung having injected a
+  `lifecycleMu.Lock()` around a disk read, and only worktree isolation
+  kept it out of the main checkout.
+
+One thing the command's own body gets wrong if read literally: the
+`smart` role has **no write tools** and always delegates to a worker.
+Do not instruct such an agent not to spawn sub-agents — it will obey and
+be unable to do the task. Constrain it to one worker at a time instead.
 
 ## What This Fork REMOVED — Do NOT Re-import
 
