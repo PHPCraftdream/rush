@@ -32,7 +32,7 @@ import (
 // them. Tool names are prefixed with the server name to avoid collisions.
 // Each tool call goes through perms.Request so the user can approve/deny it
 // in the rush UI (or auto-approve in yolo mode).
-func registerExternalMCPTools(ctx context.Context, srv *mcp.Server, perms permission.Service, workingDir string, proxy ExternalMCPProxy, toolCh chan mcpToolEvent) {
+func registerExternalMCPTools(ctx context.Context, srv *mcp.Server, perms permission.Service, sessionID string, workingDir string, proxy ExternalMCPProxy, toolCh chan mcpToolEvent) {
 	for _, ext := range proxy.ListTools() {
 		ext := ext // capture
 		toolName := ext.ServerName + "__" + ext.Name
@@ -64,7 +64,7 @@ func registerExternalMCPTools(ctx context.Context, srv *mcp.Server, perms permis
 				var params any
 				_ = json.Unmarshal(req.Params.Arguments, &params)
 				granted, err := perms.Request(reqCtx, permission.CreatePermissionRequest{
-					SessionID:   mcpSessionID,
+					SessionID:   sessionID,
 					ToolCallID:  id,
 					ToolName:    "mcp_" + toolName,
 					Description: fmt.Sprintf("call %s on MCP server %s", ext.Name, ext.ServerName),
@@ -115,7 +115,7 @@ type mcpBashInput struct {
 // the built-in bash tool (see internal/permission/runallowlist.go).
 func (p mcpBashInput) RunAllowlistCommand() string { return p.Command }
 
-func registerBashTool(srv *mcp.Server, perms permission.Service, workingDir string, toolCh chan mcpToolEvent) {
+func registerBashTool(srv *mcp.Server, perms permission.Service, sessionID string, workingDir string, toolCh chan mcpToolEvent) {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "Bash",
 		Description: "Execute a shell command. Requires user approval.",
@@ -148,7 +148,7 @@ func registerBashTool(srv *mcp.Server, perms permission.Service, workingDir stri
 		defer emitToolEnd(toolCh, id)
 
 		granted, err := perms.Request(ctx, permission.CreatePermissionRequest{
-			SessionID:   mcpSessionID,
+			SessionID:   sessionID,
 			ToolCallID:  id,
 			ToolName:    "bash",
 			Description: input.Description,
@@ -182,7 +182,7 @@ type mcpViewInput struct {
 	EndLine   int    `json:"end_line,omitempty"   description:"Last line to read (0 = end of file)"`
 }
 
-func registerViewTool(srv *mcp.Server, perms permission.Service, workingDir string, toolCh chan mcpToolEvent) {
+func registerViewTool(srv *mcp.Server, perms permission.Service, sessionID string, workingDir string, toolCh chan mcpToolEvent) {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "Read",
 		Description: "Read the contents of a file.",
@@ -196,7 +196,7 @@ func registerViewTool(srv *mcp.Server, perms permission.Service, workingDir stri
 
 		path := resolvePath(input.Path, workingDir)
 		granted, err := perms.Request(ctx, permission.CreatePermissionRequest{
-			SessionID:   mcpSessionID,
+			SessionID:   sessionID,
 			ToolCallID:  id,
 			ToolName:    "view",
 			Description: "Read file: " + input.Path,
@@ -265,7 +265,7 @@ type mcpWriteInput struct {
 	Content string `json:"content" description:"Content to write to the file"`
 }
 
-func registerWriteTool(srv *mcp.Server, perms permission.Service, workingDir string, toolCh chan mcpToolEvent) {
+func registerWriteTool(srv *mcp.Server, perms permission.Service, sessionID string, workingDir string, toolCh chan mcpToolEvent) {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "Write",
 		Description: "Write content to a file, creating or overwriting it.",
@@ -282,7 +282,7 @@ func registerWriteTool(srv *mcp.Server, perms permission.Service, workingDir str
 
 		path := resolvePath(input.Path, workingDir)
 		granted, err := perms.Request(ctx, permission.CreatePermissionRequest{
-			SessionID:   mcpSessionID,
+			SessionID:   sessionID,
 			ToolCallID:  id,
 			ToolName:    "write",
 			Description: "Write file: " + input.Path,
@@ -310,7 +310,7 @@ type mcpGlobInput struct {
 	Path    string `json:"path,omitempty" description:"Directory to search in"`
 }
 
-func registerGlobTool(srv *mcp.Server, perms permission.Service, workingDir string, toolCh chan mcpToolEvent) {
+func registerGlobTool(srv *mcp.Server, perms permission.Service, sessionID string, workingDir string, toolCh chan mcpToolEvent) {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "Glob",
 		Description: "Find files matching a glob pattern.",
@@ -328,7 +328,7 @@ func registerGlobTool(srv *mcp.Server, perms permission.Service, workingDir stri
 		}
 
 		granted, err := perms.Request(ctx, permission.CreatePermissionRequest{
-			SessionID:   mcpSessionID,
+			SessionID:   sessionID,
 			ToolCallID:  id,
 			ToolName:    "glob",
 			Description: "Find files: " + input.Pattern,
@@ -363,7 +363,7 @@ type mcpGrepInput struct {
 	Glob    string `json:"glob,omitempty" description:"File glob filter (e.g. *.go)"`
 }
 
-func registerGrepTool(srv *mcp.Server, perms permission.Service, workingDir string, toolCh chan mcpToolEvent) {
+func registerGrepTool(srv *mcp.Server, perms permission.Service, sessionID string, workingDir string, toolCh chan mcpToolEvent) {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "Grep",
 		Description: "Search file contents using a regular expression.",
@@ -381,7 +381,7 @@ func registerGrepTool(srv *mcp.Server, perms permission.Service, workingDir stri
 		}
 
 		granted, err := perms.Request(ctx, permission.CreatePermissionRequest{
-			SessionID:   mcpSessionID,
+			SessionID:   sessionID,
 			ToolCallID:  id,
 			ToolName:    "grep",
 			Description: "Search: " + input.Pattern,
@@ -519,11 +519,6 @@ func registerTodosTool(srv *mcp.Server, sessions session.Service, sessionID stri
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
-
-// mcpSessionID is used as the session ID for permission requests made by the
-// MCP server. It is a fixed string because the MCP server is not tied to a
-// specific rush session.
-const mcpSessionID = "cli-mcp"
 
 func toolText(text string) *mcp.CallToolResult {
 	return &mcp.CallToolResult{

@@ -86,6 +86,10 @@ func (s *rushMCPServer) mcpURL() string {
 // If token is empty a cryptographically random one is generated.
 // sessions and sessionID are used by the todos tool to persist task updates.
 func newRushMCPServer(ctx context.Context, perms permission.Service, sessions session.Service, sessionID string, workingDir string, token string, mcpProxy ExternalMCPProxy) (*rushMCPServer, error) {
+	if perms != nil && sessionID == "" {
+		return nil, fmt.Errorf("cliprovider: MCP server requires a session ID when permissions are enabled")
+	}
+
 	if token == "" {
 		// 32-byte random token → 64-char hex string.
 		tokenBytes := make([]byte, 32)
@@ -104,7 +108,7 @@ func newRushMCPServer(ctx context.Context, perms permission.Service, sessions se
 	toolCh := make(chan mcpToolEvent, 32)
 	registerMCPTools(srv, perms, sessions, sessionID, workingDir, toolCh)
 	if mcpProxy != nil {
-		registerExternalMCPTools(ctx, srv, perms, workingDir, mcpProxy, toolCh)
+		registerExternalMCPTools(ctx, srv, perms, sessionID, workingDir, mcpProxy, toolCh)
 	}
 
 	rawHandler := mcp.NewStreamableHTTPHandler(
@@ -156,11 +160,11 @@ func newRushMCPServer(ctx context.Context, perms permission.Service, sessions se
 // Each tool requests permission via perms.Request before executing.
 // toolCh, if non-nil, receives start/end notifications for each tool call.
 func registerMCPTools(srv *mcp.Server, perms permission.Service, sessions session.Service, sessionID string, workingDir string, toolCh chan mcpToolEvent) {
-	registerBashTool(srv, perms, workingDir, toolCh)
-	registerViewTool(srv, perms, workingDir, toolCh)
-	registerWriteTool(srv, perms, workingDir, toolCh)
-	registerGlobTool(srv, perms, workingDir, toolCh)
-	registerGrepTool(srv, perms, workingDir, toolCh)
+	registerBashTool(srv, perms, sessionID, workingDir, toolCh)
+	registerViewTool(srv, perms, sessionID, workingDir, toolCh)
+	registerWriteTool(srv, perms, sessionID, workingDir, toolCh)
+	registerGlobTool(srv, perms, sessionID, workingDir, toolCh)
+	registerGrepTool(srv, perms, sessionID, workingDir, toolCh)
 	if sessions != nil && sessionID != "" {
 		registerTodosTool(srv, sessions, sessionID)
 	}
