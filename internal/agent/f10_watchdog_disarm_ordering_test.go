@@ -159,24 +159,38 @@ func TestRunTurn_DisarmsWatchdogOnErrorReturn_NotJustSuccessPath(t *testing.T) {
 	agentIface := testSessionAgent(env, erroringModel{}, hangingModel, "test system prompt")
 	sa := agentIface.(*sessionAgent)
 
-	const hardCap = 80 * time.Millisecond
-	const titleGrace = 400 * time.Millisecond
+	// hardCap must comfortably outlast runTurn's SYNCHRONOUS post-Stream
+	// bookkeeping (handleStreamFailure's DB List/Update calls here; the
+	// success path's summarize/silent-compact work in the general case) --
+	// disarm() only runs from the DEFERRED joinTitle(), after that
+	// bookkeeping returns, so the watchdog stays armed for the whole of it
+	// on every path, not just during the title-join wait this test targets.
+	// An earlier 80ms/400ms pair flaked under -race on a loaded machine:
+	// SQLite writes occasionally pushed elapsed to ~80.3ms, just past the
+	// cap, before disarm() was ever reached (task #942 investigation).
+	// 500ms/850ms keeps that same >6x hardCap/titleGrace ratio the original
+	// pair had, with an order of magnitude more headroom for that
+	// synchronous work's real-world variance.
+	const hardCap = 500 * time.Millisecond
+	const titleGrace = 850 * time.Millisecond
 	sa.SetTimeoutOptions(false, hardCap)
 	sa.titleJoinGrace = titleGrace
-	// Must outlast hardCap (80ms) so it can't cut in before the hard cap
-	// could refire, but otherwise as short as possible: hangingTitleModel
-	// blocks the background title-generation goroutine (detached from
-	// Run's own return via titleJoinGrace) for up to this whole duration,
-	// orphaned and (before the explicit wait below was added) still
-	// running well after this test itself reports its own PASS/FAIL --
-	// confirmed via CI diagnostics this session (visible
-	// as "sql: database is closed" errors from this exact kind of
-	// leftover goroutine racing a later test's own db.Release teardown,
-	// and as measurable scheduler/CPU pressure while it overlaps dozens of
-	// subsequent tests). 1s is orders of magnitude longer than hardCap and
-	// two orders shorter than the old 10s.
-	sa.titleGenerationMaxDuration = 1 * time.Second
-	sa.streamWatchdogTick = 5 * time.Millisecond // default tick is 30s -- far too coarse to observe an 80ms hard cap within this test's window
+	// Must outlast hardCap so it can't cut in before the hard cap could
+	// refire, but otherwise as short as possible: hangingTitleModel blocks
+	// the background title-generation goroutine (detached from Run's own
+	// return via titleJoinGrace) for up to this whole duration, orphaned
+	// and (before the explicit wait below was added) still running well
+	// after this test itself reports its own PASS/FAIL -- confirmed via CI
+	// diagnostics this session (visible as "sql: database is closed"
+	// errors from this exact kind of leftover goroutine racing a later
+	// test's own db.Release teardown, and as measurable scheduler/CPU
+	// pressure while it overlaps dozens of subsequent tests). Must also
+	// stay above titleGrace so the grace-timeout branch (not this
+	// deadline) is what bounds join()'s wait -- see the comment at the
+	// wait for hangingModel.done below for why cancel() then unblocks the
+	// model well before this duration anyway.
+	sa.titleGenerationMaxDuration = 1200 * time.Millisecond
+	sa.streamWatchdogTick = 5 * time.Millisecond // default tick is 30s -- far too coarse to observe a sub-second hard cap within this test's window
 
 	sess, err := env.sessions.Create(t.Context(), "New Session")
 	require.NoError(t, err)
@@ -216,7 +230,7 @@ func TestRunTurn_DisarmsWatchdogOnErrorReturn_NotJustSuccessPath(t *testing.T) {
 
 	// The title-generation goroutine is detached from Run's return by
 	// titleJoinGrace and only unblocks when titleCtx's own
-	// titleGenerationMaxDuration deadline (1s above) fires — potentially
+	// titleGenerationMaxDuration deadline (set above) fires — potentially
 	// AFTER this test has already reported a result, at which point its
 	// wakeup can race a later test's db.Release teardown ("sql: database
 	// is closed"). Wait for hangingTitleModel.Stream to actually return so
