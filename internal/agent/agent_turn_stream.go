@@ -90,10 +90,18 @@ type turnStreamConfig struct {
 //   - shared with this turn's ticker goroutines (turnCheckpointWriter,
 //     turnUINotifier, peakHoursWatcher) and so always touched under mu:
 //     currentAssistant.
-//   - stepMessages/stepTools: written under mu in prepareStep but read
-//     without mu in onStepFinish, preserved exactly as the original
-//     runTurn had it. This asymmetry is a separate, already-tracked
-//     finding (task #941), not something this mechanical split changes.
+//   - stepMessages/stepTools: written under mu in prepareStep, read
+//     without mu in onStepFinish's applyStepUsage. Investigated as task
+//     #941: not a real race despite the asymmetry — prepareStep and
+//     onStepFinish for a given step (and across steps) never run
+//     concurrently with EACH OTHER (same "fantasy invokes every callback
+//     sequentially from one loop" guarantee documented on recordStepFinish
+//     below), and no ticker goroutine reads either field directly; every
+//     value they hand out (scheduleCacheKeepAlive's arguments) is a plain
+//     slice-header copy, not a pointer back into these fields. The mu.Lock
+//     around the write is therefore vestigial, not load-bearing; left as
+//     mu.Lock rather than removed, since removing it would be a second,
+//     unrelated behavior change riding on a decomposition task.
 type turnStream struct {
 	a      *sessionAgent
 	ctx    context.Context // outer ctx: survives genCtx's cancellation, used where a write must land even mid-cancel
