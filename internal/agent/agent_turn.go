@@ -720,59 +720,11 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	startCheckpoint := checkpoint.start
 	stopCheckpoint := checkpoint.stop
 
-	// latestMsgCh holds at most one pending UI snapshot (latest-value semantics).
-	// A ticker goroutine drains it at ~20fps, decoupling the token arrival rate
-	// from the bubbletea render rate so streaming is visible in the UI.
-	latestMsgCh := make(chan message.Message, 1)
-	go func() {
-		ticker := time.NewTicker(50 * time.Millisecond)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-genCtx.Done():
-				// Flush any final pending snapshot before exiting.
-				select {
-				case msg := <-latestMsgCh:
-					a.messages.Notify(msg)
-				default:
-				}
-				return
-			case <-ticker.C:
-				select {
-				case msg := <-latestMsgCh:
-					a.messages.Notify(msg)
-				default:
-				}
-			}
-		}
-	}()
-
-	// notifyUI enqueues the latest assistant snapshot for the ticker goroutine.
-	// It never blocks: if the channel already has a pending snapshot, the old
-	// one is discarded and replaced with the newest state.
-	notifyUI := func() error {
-		sessionLock.Lock()
-		if currentAssistant == nil {
-			sessionLock.Unlock()
-			return nil
-		}
-		msg := currentAssistant.Clone()
-		sessionLock.Unlock()
-		select {
-		case latestMsgCh <- msg:
-		default:
-			// Channel full — discard stale snapshot and enqueue fresh one.
-			select {
-			case <-latestMsgCh:
-			default:
-			}
-			select {
-			case latestMsgCh <- msg:
-			default:
-			}
-		}
-		return nil
-	}
+	// Decouples token arrival from UI render rate. See turnUINotifier's
+	// doc in agent_turn_ui_notify.go.
+	uiNotifier := newTurnUINotifier(a, genCtx, &sessionLock, &currentAssistant)
+	uiNotifier.start()
+	notifyUI := uiNotifier.notify
 
 	// Fork patch: batch 8 — track final composition phase for forensic
 	// logging. Set to true on each tool boundary; OnTextDelta checks and
@@ -1208,10 +1160,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 			sessionLock.Unlock()
 			// Drain any pending UI snapshot so the ticker goroutine does not
 			// publish a stale state after messages.Update writes the final one.
-			select {
-			case <-latestMsgCh:
-			default:
-			}
+			uiNotifier.drainPending()
 
 			updatedSession, getSessionErr := a.sessions.Get(ctx, call.SessionID)
 			if getSessionErr != nil {
