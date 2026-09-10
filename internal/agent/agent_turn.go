@@ -447,39 +447,11 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	// cancel an interrupt must hit.
 	genID := a.getMailbox(call.SessionID).beginGeneration(cancel)
 
-	// Closed by the title goroutine when it returns; nil when no title was
-	// requested. The deferred bounded join below selects on it. A
-	// sync.WaitGroup used to serve this role, but a WaitGroup can only be
-	// waited on unconditionally — and an unconditional wait is exactly the
-	// defect being fixed here (see the join's own comment).
-	var titleDone chan struct{}
-	if needsTitle {
-		// Derived from genCtx (not the outer ctx runTurn was called with) so
-		// the stream watchdog cancelling genCtx — idle timeout, tool
-		// timeout, hard cap — also cuts off an in-flight title generation
-		// instead of leaving it to run on an unbounded parent context. Also
-		// independently capped by effectiveTitleGenerationMaxDuration as a
-		// backstop: generateTitle's two model attempts are each a blocking
-		// agent.Stream with no timeout of their own, so a provider that
-		// never returns (hung connection, stream never closed) must not be
-		// able to keep the deferred join below from returning even if
-		// genCtx's own cancellation somehow doesn't unblock it.
-		titleCtx, titleCancel := context.WithTimeout(genCtx, a.effectiveTitleGenerationMaxDuration())
-		titleDone = make(chan struct{})
-		// Safe without admission gate: runWg.Add(1) here is always called
-		// from inside an already-admitted Run() call, so runWg counter is
-		// guaranteed >= 1 at this point. Per sync.WaitGroup contract, Add(1)
-		// when counter is > 0 may happen at any time, including concurrently
-		// with Wait. The real race P1-1 closes is Add starting when counter is
-		// zero and Wait starts between the check and the Add.
-		a.runWg.Add(1)
-		go func() {
-			defer close(titleDone)
-			defer a.runWg.Done()
-			defer titleCancel()
-			a.generateTitle(titleCtx, call.SessionID, call.Prompt, cfg)
-		}()
-	}
+	// Launches the title-generation goroutine; joined later via
+	// turnTitleJoiner once the stream watchdog exists. See
+	// startTitleGeneration's doc in agent_turn_title.go for why launch and
+	// join are deliberately NOT the same constructor.
+	titleDone := startTitleGeneration(a, genCtx, needsTitle, call.SessionID, call.Prompt, cfg)
 	// The bounded join for this goroutine is declared AFTER `defer cancel()`
 	// below, which by LIFO makes it run BEFORE it. That ordering is the
 	// whole point — see the comment at the join itself.
@@ -578,49 +550,8 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	// late-finishing title attempt fails to save and the fallback stamps
 	// the default instead. See agent_title.go's titleJoinGrace doc for the
 	// full accounting.
-	var titleJoinOnce sync.Once
-	joinTitle := func() {
-		titleJoinOnce.Do(func() {
-			// Disarm the watchdog FIRST, on every path that reaches this
-			// Once body — not just the success path. joinTitle is called
-			// both explicitly (success path, right before the final
-			// cancel()) and via the deferred call registered right after
-			// this closure is declared, which is what actually runs on
-			// EVERY early return (error paths, cancel-drain, summarize
-			// failure, ...). Those early returns used to reach only the
-			// bare defer, with disarm() sitting after them on the
-			// success-path-only tail of runTurn — so an early return could
-			// leave the watchdog armed for the whole titleJoinGrace wait
-			// below. The turn's real work is finished by the time ANY
-			// caller of joinTitle runs (an early return means the turn is
-			// already ending; the success path has already produced its
-			// result); all that remains from here is this bounded wait and
-			// the eventual cancel(). --timeout-hard-cap is absolute from
-			// turn start rather than idle-based, so without this a turn
-			// that finished just inside the cap could be pushed over it by
-			// the wait alone -- firing a stall dump for a turn that had
-			// already finished, and cancelling the very title being waited
-			// for. The goroutine still exits on genCtx and is still joined
-			// by the deferred <-wd.done regardless of disarm.
-			wd.disarm()
-			if titleDone == nil {
-				return
-			}
-			grace := titleJoinGrace
-			if a.titleJoinGrace > 0 {
-				grace = a.titleJoinGrace
-			}
-			select {
-			case <-titleDone:
-			case <-time.After(grace):
-				slog.Warn(
-					"agent: abandoning title generation that outlived its deadline — the turn is not held open for it",
-					"session_id", call.SessionID,
-					"grace", grace,
-				)
-			}
-		})
-	}
+	titleJoiner := newTurnTitleJoiner(wd, titleDone, a.titleJoinGrace, call.SessionID)
+	joinTitle := titleJoiner.join
 	defer joinTitle()
 	// NOTE: no `defer a.activeRequests.Del(call.SessionID)` here (unlike the
 	// pre-turn-loop code). The busy reservation for call.SessionID is
