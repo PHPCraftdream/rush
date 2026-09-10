@@ -5,24 +5,17 @@
 package agent
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
 	"charm.land/fantasy"
-	"charm.land/fantasy/providers/anthropic"
-	"charm.land/fantasy/providers/google"
-	"charm.land/fantasy/providers/openai"
 
 	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
-	"github.com/PHPCraftdream/rush/internal/agent/hyper"
 	"github.com/PHPCraftdream/rush/internal/agent/notify"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/agent/tools/mcp"
@@ -30,7 +23,6 @@ import (
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/pubsub"
 	"github.com/PHPCraftdream/rush/internal/session"
-	"github.com/PHPCraftdream/rush/internal/stringext"
 )
 
 // logProviderWarnings emits each fantasy CallWarning from a step at WARN
@@ -269,6 +261,12 @@ var runTurnToolsSnapshotSeam func()
 // end-of-turn queue check, or a /compact drain) with next set to that call;
 // the caller's loop is expected to invoke runTurn(ctx, next) again in that
 // case. When hasNext is false, result/err are Run's final return values.
+//
+// The callback set fantasy invokes during the Stream call below lives on
+// turnStream (agent_turn_stream.go/agent_turn_step.go/agent_turn_failure.go)
+// — this function builds it, calls Stream, and dispatches on the result;
+// the preamble above and the tail below are deliberately NOT moved there,
+// since neither is fantasy callback state.
 func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *session.SessionLock, epoch uint64, runCancel context.CancelFunc) (res *fantasy.AgentResult, next SessionAgentCall, hasNext bool, resErr error) {
 	// A real turn is starting: any stale keep-alive scheduled for this
 	// session's prior idle state is moot and must not race this turn's own
@@ -336,8 +334,6 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 		fantasy.WithTools(agentTools...),
 		fantasy.WithUserAgent(userAgent),
 	)
-
-	sessionLock := sync.Mutex{}
 
 	// Bounded: see sessionPreambleMaxDurationDefault doc. No watchdog is
 	// running yet at this point in Run(), so an unbounded ctx here can hang
@@ -585,82 +581,54 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 		historyIDs[m.ID] = struct{}{}
 	}
 
-	var currentAssistant *message.Message
-	var stepMessages []fantasy.Message
-	// stepTools is the tools list PrepareStep actually decided on for the
-	// most recent step (prepared.Tools, resolved in PrepareStep from the
-	// call's pinned slice, or from a.tools.Copy() for legacy calls that pin
-	// nothing — see that assignment's comment) — NOT the outer agentTools
-	// snapshot above, which can go stale if SetTools/an MCP update lands
-	// between turn start and a step's PrepareStep. Cache-related code that
-	// needs "what was actually sent" (the keep-alive replay) must use this,
-	// not agentTools.
-	var stepTools []fantasy.AgentTool
-	var shouldSummarize bool
-	// sanitizedToolCalls tracks tool call IDs whose input JSON was malformed
-	// and got replaced with "{}" by sanitizeToolInput, so OnToolResult can
-	// surface a clear error to the model instead of letting it silently
-	// operate on empty args (or, worse, get stuck resending unparsable input
-	// on every subsequent turn).
-	sanitizedToolCalls := make(map[string]bool)
+	// stepHistory/loopDetected/loopDetail/sanitizedToolCalls/shouldSummarize/
+	// silentCompactNeeded/currentAssistant/currentSession/stepMessages/
+	// stepTools/the tool-boundary phase tracker all live on turnStream now
+	// (agent_turn_stream.go) — the fantasy callbacks that touch them are
+	// turnStream methods, not inline closures, so this function no longer
+	// declares any of them itself.
+	ts := newTurnStream(turnStreamConfig{
+		a:                a,
+		ctx:              ctx,
+		genCtx:           genCtx,
+		cancel:           cancel,
+		call:             call,
+		genID:            genID,
+		smartModel:       smartModel,
+		promptPrefix:     promptPrefix,
+		historyIDs:       historyIDs,
+		currentSession:   currentSession,
+		bumpActivity:     bumpActivity,
+		toolStarted:      toolStarted,
+		toolFinished:     toolFinished,
+		wd:               wd,
+		watchdogCauseVal: &watchdogCauseVal,
+		toolMaxDuration:  toolMaxDuration,
+		timeoutHardCap:   timeoutHardCap,
+		idleTimeout:      idleTimeout,
+	})
 
-	// stepHistory accumulates every fantasy.StepResult seen by OnStepFinish,
-	// in arrival order. fantasy's internal Run loop calls OnStepFinish for a
-	// step BEFORE it evaluates StopWhen on that same step, so the
-	// loop-detection StopWhen closure cannot set a flag in time for that
-	// step's OnStepFinish. We therefore recompute loop detection directly in
-	// OnStepFinish from our own history (the StopWhen closure still calls
-	// hasRepeatedToolCalls independently to decide whether to break the loop
-	// — a small amount of redundant compute is simpler than sharing state
-	// across fantasy's OnStepFinish-before-StopWhen ordering boundary).
-	var stepHistory []fantasy.StepResult
-
-	// loopDetected / loopDetail are computed inside OnStepFinish (from
-	// stepHistory) so the AddFinish call in the SAME callback invocation can
-	// record a non-empty message/details. The finish REASON stays
-	// FinishReasonEndTurn (a loop-detected stop is still a form of "done" and
-	// must not be reclassified away from it — see the comment on loopDetail
-	// in loop_detection.go); the distinction from a voluntary model finish
-	// is carried in the Finish part's message/details text so an
-	// operator/orchestrator can tell that a legitimate polling pattern may
-	// have been truncated.
-	var loopDetected bool
-	var loopDetail loopDetail
 	// Aborts this turn when the provider enters its peak-hours window
 	// mid-stream. See peakHoursWatcher's doc in agent_turn_peakhours.go.
-	peakHours := newPeakHoursWatcher(a, call.SessionID, ctx, genCtx, &sessionLock, &currentAssistant)
-	setPeakHoursAbortErr := peakHours.setAbortErr
+	peakHours := newPeakHoursWatcher(a, call.SessionID, ctx, genCtx, &ts.mu, &ts.currentAssistant)
+	ts.setPeakHoursAbortErr = peakHours.setAbortErr
 	getPeakHoursAbortErr := peakHours.getAbortErr
-
-	// silentCompactNeeded records that PrepareStep's sliding-window trim
-	// fired this turn. The silent compact runs SYNCHRONOUSLY after the turn's
-	// main work completes (under the turn's mailbox ownership), not as a
-	// background goroutine — a goroutine that deleted messages concurrently
-	// with the active turn was the P0-4 data-corruption bug (#268). Running
-	// synchronously under the same ownership guarantees no concurrent turn or
-	// compaction can touch the history while the compact's snapshot/delete
-	// is in flight.
-	var silentCompactNeeded bool
 
 	// Mid-stream persistence (Fork patch: batch 8). See
 	// turnCheckpointWriter's doc in agent_turn_checkpoint.go for the full
 	// design -- generation fencing, why the exit signal is a dedicated
-	// channel and not genCtx, and the sessionLock/no-lock-across-Update
-	// invariant it shares with runTurn.
-	checkpoint := newTurnCheckpointWriter(a, call.SessionID, genCtx, &sessionLock, &currentAssistant)
-	startCheckpoint := checkpoint.start
-	stopCheckpoint := checkpoint.stop
+	// channel and not genCtx, and the mu/no-lock-across-Update invariant it
+	// shares with turnStream's other callbacks.
+	checkpoint := newTurnCheckpointWriter(a, call.SessionID, genCtx, &ts.mu, &ts.currentAssistant)
+	ts.startCheckpoint = checkpoint.start
+	ts.stopCheckpoint = checkpoint.stop
 
 	// Decouples token arrival from UI render rate. See turnUINotifier's
 	// doc in agent_turn_ui_notify.go.
-	uiNotifier := newTurnUINotifier(a, genCtx, &sessionLock, &currentAssistant)
+	uiNotifier := newTurnUINotifier(a, genCtx, &ts.mu, &ts.currentAssistant)
 	uiNotifier.start()
-	notifyUI := uiNotifier.notify
-
-	// Fork patch: batch 8 — track final composition phase for forensic
-	// logging. Set to true on each tool boundary; OnTextDelta checks and
-	// resets it to emit at most once per step.
-	sawToolBoundary := true
+	ts.notifyUI = uiNotifier.notify
+	ts.drainPendingUI = uiNotifier.drainPending
 
 	peakHoursWatchDone := peakHours.start()
 	if a.peakHoursCheck != nil {
@@ -672,603 +640,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	if call.MaxOutputTokens > 0 {
 		maxOutputTokens = &call.MaxOutputTokens
 	}
-	result, err := agent.Stream(genCtx, fantasy.AgentStreamCall{
-		Prompt:           message.PromptWithTextAttachments(call.Prompt, call.Attachments),
-		Files:            files,
-		Messages:         history,
-		Headers:          sessionHeaders(call.SessionID),
-		ProviderOptions:  call.ProviderOptions,
-		MaxOutputTokens:  maxOutputTokens,
-		TopP:             call.TopP,
-		Temperature:      call.Temperature,
-		PresencePenalty:  call.PresencePenalty,
-		TopK:             call.TopK,
-		FrequencyPenalty: call.FrequencyPenalty,
-		PrepareStep: func(callContext context.Context, options fantasy.PrepareStepFunctionOptions) (_ context.Context, prepared fantasy.PrepareStepResult, err error) {
-			// PrepareStep runs before the first token of the step and can
-			// take non-trivial time (sliding-window trim, background
-			// summarise kickoff, cache-control wiring). Bump first so a
-			// slow prepare doesn't trip the watchdog before the stream
-			// even starts.
-			bumpActivity()
-			prepared.Messages = options.Messages
-			for i := range prepared.Messages {
-				prepared.Messages[i].ProviderOptions = nil
-			}
-
-			// R3-1: the call's PINNED tool slice when it carries one —
-			// identical at every step, immune to a concurrent call's
-			// SetTools landing between steps. Only legacy calls (nothing
-			// pinned) re-read the shared slice (updated by SetTools when
-			// MCP tools change). The cache-control marker is re-applied per
-			// step through the same per-step wrapper the turn's initial
-			// tool list uses; withProviderOptionsOnLast clones before
-			// writing, so the pinned slice itself is never mutated.
-			pinnedStepTools := call.Tools
-			if pinnedStepTools == nil {
-				pinnedStepTools = a.tools.Copy()
-			}
-			prepared.Tools = withProviderOptionsOnLast(pinnedStepTools, a.getCacheControlOptions())
-
-			for _, inj := range a.drainDueInjects(call.SessionID, genID, historyIDs) {
-				prepared.Messages = append(prepared.Messages, inj.ToAIMessage()...)
-			}
-
-			// Cross-process inject drain: rows written by another process
-			// (`rush sessions inject`) into pending_injects. The message
-			// row already exists in the DB (the CLI created it at inject
-			// time for immediate web-UI visibility), so we only load it by
-			// message_id and splice it in — no second Create, no dup row.
-			// DrainPendingInjects deletes the consumed non-interrupt rows in
-			// the same transaction (delete-after-read).
-			pending, hasInterrupt, drainErr := a.sessions.DrainPendingInjects(callContext, call.SessionID)
-			if drainErr != nil {
-				return callContext, prepared, drainErr
-			}
-			if hasInterrupt {
-				// Defensive: interrupt rows are meant to be consumed by the
-				// interrupt ticker before PrepareStep runs. If one is still
-				// here it is a race, not a normal path.
-				slog.Warn("pending interrupt inject present during non-interrupt PrepareStep drain",
-					"session_id", call.SessionID)
-			}
-			for _, inj := range pending {
-				injMsg, getErr := a.messages.Get(callContext, inj.MessageID)
-				if getErr != nil {
-					// The referenced message vanished (e.g. cascade delete):
-					// skip it rather than aborting the whole step.
-					slog.Warn("pending inject references missing message, skipping",
-						"session_id", call.SessionID, "message_id", inj.MessageID, "error", getErr)
-					continue
-				}
-				prepared.Messages = append(prepared.Messages, injMsg.ToAIMessage()...)
-				// The row was written by a foreign process (`rush sessions
-				// inject`), so its Create() never published through THIS
-				// process's message broker. If a web UI happens to be
-				// attached to this process for the session, Notify pushes
-				// the already-persisted message so it renders live instead
-				// of waiting for a page reload.
-				a.messages.Notify(injMsg)
-			}
-
-			// Sliding-window context management: when the context is nearly
-			// full, trim old messages so the agent can keep running without
-			// blocking on a synchronous summarisation call.
-			if !a.disableAutoSummarize {
-				cw := int64(smartModel.CatwalkCfg.ContextWindow)
-				if cw > 0 {
-					usedTokens := currentSession.CompletionTokens + currentSession.PromptTokens
-					remaining := cw - usedTokens
-					var slideThreshold int64
-					if cw > largeContextWindowThreshold {
-						slideThreshold = largeContextWindowBuffer
-					} else {
-						slideThreshold = int64(float64(cw) * smallContextWindowRatio)
-					}
-					if remaining <= slideThreshold {
-						targetTokens := int64(float64(cw) * contextSlideRatio)
-						prepared.Messages = trimMessagesToWindow(prepared.Messages, targetTokens)
-
-						// Record that a silent compact is needed — it runs
-						// synchronously AFTER the turn completes (under the
-						// turn's mailbox ownership), not as a concurrent
-						// goroutine. A goroutine deleting messages while the
-						// turn is still streaming was the P0-4 data corruption
-						// bug (#268).
-						silentCompactNeeded = true
-					}
-				}
-			}
-
-			prepared.Messages = a.workaroundProviderMediaLimitations(prepared.Messages, smartModel)
-
-			lastSystemRoleInx := 0
-			systemMessageUpdated := false
-			for i, msg := range prepared.Messages {
-				// Only add cache control to the last message.
-				if msg.Role == fantasy.MessageRoleSystem {
-					lastSystemRoleInx = i
-				} else if !systemMessageUpdated {
-					prepared.Messages[lastSystemRoleInx].ProviderOptions = a.getCacheControlOptions()
-					systemMessageUpdated = true
-				}
-				// Than add cache control to the last 2 messages.
-				if i > len(prepared.Messages)-3 {
-					prepared.Messages[i].ProviderOptions = a.getCacheControlOptions()
-				}
-			}
-
-			if promptPrefix != "" {
-				prepared.Messages = append([]fantasy.Message{fantasy.NewSystemMessage(promptPrefix)}, prepared.Messages...)
-			}
-
-			sessionLock.Lock()
-			stepMessages = cloneFantasyMessages(prepared.Messages)
-			stepTools = append([]fantasy.AgentTool(nil), prepared.Tools...)
-			sessionLock.Unlock()
-
-			var assistantMsg message.Message
-			// Provenance is recorded from the model that ACTUALLY produced
-			// the message, not from the configuration that selected it.
-			//
-			// Both values feed `GROUP BY model, provider` in the usage and
-			// cost reports (internal/db/stats.sql.go, messages.sql.go), and
-			// the two summarize paths in agent_compaction.go have always
-			// recorded Model.Model()/Provider(). While this line recorded
-			// ModelCfg instead, a provider whose canonical id differs from
-			// the configured one would split a single session into two
-			// groups in `rush sessions cost` — with neither number looking
-			// wrong enough to notice.
-			assistantMsg, err = a.messages.Create(callContext, call.SessionID, message.CreateMessageParams{
-				Role:            message.Assistant,
-				Parts:           []message.ContentPart{},
-				Model:           smartModel.Model.Model(),
-				Provider:        smartModel.Model.Provider(),
-				ReasoningEffort: currentSession.SmartModelReasoningEffort,
-			})
-			if err != nil {
-				return callContext, prepared, err
-			}
-			callContext = context.WithValue(callContext, tools.MessageIDContextKey, assistantMsg.ID)
-			callContext = context.WithValue(callContext, tools.SupportsImagesContextKey, smartModel.CatwalkCfg.SupportsImages)
-			callContext = context.WithValue(callContext, tools.ModelNameContextKey, smartModel.CatwalkCfg.Name)
-			sessionLock.Lock()
-			currentAssistant = &assistantMsg
-			sessionLock.Unlock()
-			return callContext, prepared, err
-		},
-		OnReasoningStart: func(id string, reasoning fantasy.ReasoningContent) error {
-			bumpActivity()
-			slog.Debug("agent: OnReasoningStart called", "id", id)
-			sessionLock.Lock()
-			currentAssistant.AppendReasoningContent(reasoning.Text)
-			snap := currentAssistant.Clone()
-			sessionLock.Unlock()
-			return a.messages.Update(genCtx, snap)
-		},
-		OnReasoningDelta: func(id string, text string) error {
-			bumpActivity()
-			slog.Debug("agent: OnReasoningDelta called", "len", len(text))
-			sessionLock.Lock()
-			currentAssistant.AppendReasoningContent(text)
-			sessionLock.Unlock()
-			return notifyUI()
-		},
-		OnReasoningEnd: func(id string, reasoning fantasy.ReasoningContent) error {
-			bumpActivity()
-			sessionLock.Lock()
-			// handle anthropic signature
-			if anthropicData, ok := reasoning.ProviderMetadata[anthropic.Name]; ok {
-				if reasoning, ok := anthropicData.(*anthropic.ReasoningOptionMetadata); ok {
-					currentAssistant.AppendReasoningSignature(reasoning.Signature)
-				}
-			}
-			if googleData, ok := reasoning.ProviderMetadata[google.Name]; ok {
-				if reasoning, ok := googleData.(*google.ReasoningMetadata); ok {
-					currentAssistant.AppendThoughtSignature(reasoning.Signature, reasoning.ToolID)
-				}
-			}
-			if openaiData, ok := reasoning.ProviderMetadata[openai.Name]; ok {
-				if reasoning, ok := openaiData.(*openai.ResponsesReasoningMetadata); ok {
-					currentAssistant.SetReasoningResponsesData(reasoning)
-				}
-			}
-			currentAssistant.FinishThinking()
-			snap := currentAssistant.Clone()
-			sessionLock.Unlock()
-			return a.messages.Update(genCtx, snap)
-		},
-		OnTextDelta: func(id string, text string) error {
-			bumpActivity()
-			// Fork patch: batch 8 — start the checkpoint ticker on the
-			// first text delta of this step (lazily, once only).
-			startCheckpoint()
-			sessionLock.Lock()
-			// Fork patch: batch 8 — emit final-composition log at most
-			// once per step, on the first text delta after a tool boundary.
-			if sawToolBoundary && currentAssistant != nil {
-				sawToolBoundary = false
-				slog.Info(
-					"agent: final composition started",
-					"session_id", call.SessionID,
-					"message_id", currentAssistant.ID,
-					"chars_in_message_so_far", len(currentAssistant.FullText()),
-				)
-			}
-			// Strip leading newline from initial text content. This is is
-			// particularly important in non-interactive mode where leading
-			// newlines are very visible.
-			if len(currentAssistant.Parts) == 0 {
-				text = strings.TrimPrefix(text, "\n")
-			}
-
-			currentAssistant.AppendContent(text)
-			sessionLock.Unlock()
-			return notifyUI()
-		},
-		OnToolInputStart: func(id string, toolName string) error {
-			bumpActivity()
-			sawToolBoundary = true // Fork patch: batch 8
-			toolCall := message.ToolCall{
-				ID:               id,
-				Name:             toolName,
-				ProviderExecuted: false,
-				Finished:         false,
-			}
-			sessionLock.Lock()
-			currentAssistant.AddToolCall(toolCall)
-			snap := currentAssistant.Clone()
-			sessionLock.Unlock()
-			// Use parent ctx instead of genCtx to ensure the update succeeds
-			// even if the request is canceled mid-stream
-			return a.messages.Update(ctx, snap)
-		},
-		OnToolInputDelta: func(id string, delta string) error {
-			bumpActivity()
-			sessionLock.Lock()
-			currentAssistant.AppendToolCallInput(id, delta)
-			sessionLock.Unlock()
-			return nil // don't spam DB on every delta; ToolInputEnd will persist
-		},
-		OnToolInputEnd: func(id string) error {
-			bumpActivity()
-			sessionLock.Lock()
-			currentAssistant.FinishToolCall(id)
-			snap := currentAssistant.Clone()
-			sessionLock.Unlock()
-			return a.messages.Update(genCtx, snap)
-		},
-		OnRetry: func(err *fantasy.ProviderError, delay time.Duration) {
-			bumpActivity()
-			slog.Warn("Provider request failed, retrying", providerRetryLogFields(err, delay)...)
-		},
-		OnWarnings: func(warnings []fantasy.CallWarning) error {
-			for _, w := range warnings {
-				slog.Warn("Provider warning", "type", w.Type, "message", w.Message)
-			}
-			return nil
-		},
-		OnToolCall: func(tc fantasy.ToolCallContent) error {
-			bumpActivity()
-			// A tool is about to execute — pause the stall watchdog until its
-			// result arrives (OnToolResult). fantasy fires every OnToolCall
-			// for a step before executing any tool, so the counter brackets
-			// the whole executeTools window. The same toolMaxDuration cap
-			// bounds every tool, including a sub-agent delegation (the
-			// `agent` tool) — see toolExecutionMaxDefault's doc in agent.go.
-			toolStarted()
-			sawToolBoundary = true // Fork patch: batch 8
-			input, wasSanitized := sanitizeToolInput(tc.ToolName, tc.ToolCallID, tc.Input)
-			if wasSanitized {
-				sanitizedToolCalls[tc.ToolCallID] = true
-			}
-			toolCall := message.ToolCall{
-				ID:               tc.ToolCallID,
-				Name:             tc.ToolName,
-				Input:            input,
-				ProviderExecuted: false,
-				Finished:         true,
-			}
-			sessionLock.Lock()
-			currentAssistant.AddToolCall(toolCall)
-			snap := currentAssistant.Clone()
-			sessionLock.Unlock()
-			// Use parent ctx instead of genCtx to ensure the update succeeds
-			// even if the request is canceled mid-stream
-			return a.messages.Update(ctx, snap)
-		},
-		OnToolResult: func(result fantasy.ToolResultContent) error {
-			bumpActivity()
-			// Tool finished — resume the stall watchdog (and restart its idle
-			// window so the tool's runtime isn't counted against the provider).
-			toolFinished()
-			sawToolBoundary = true // Fork patch: batch 8
-			toolResult := a.convertToToolResult(result)
-			if sanitizedToolCalls[result.ToolCallID] {
-				toolResult.Content = "Tool call failed: arguments were not valid JSON. Please check your tool call format and try again."
-				toolResult.IsError = true
-			}
-			sessionLock.Lock()
-			sessionID := currentAssistant.SessionID
-			sessionLock.Unlock()
-			// Use parent ctx instead of genCtx to ensure the message is created
-			// even if the request is canceled mid-stream
-			_, createMsgErr := a.messages.Create(ctx, sessionID, message.CreateMessageParams{
-				Role: message.Tool,
-				Parts: []message.ContentPart{
-					toolResult,
-				},
-			})
-			return createMsgErr
-		},
-		OnStepFinish: func(stepResult fantasy.StepResult) error {
-			bumpActivity()
-			// Accumulate this step and recompute loop detection NOW, in this
-			// callback invocation, so the AddFinish chain below can use the
-			// result for THIS step. Fantasy calls OnStepFinish BEFORE
-			// StopWhen for the same step, so relying on the StopWhen closure
-			// to set loopDetected would read a stale (still-false) flag for
-			// the very step that trips the detector — the loop would break
-			// with empty finish text and no later OnStepFinish to fix it.
-			// See the comment on stepHistory above for the ordering rationale.
-			stepHistory = append(stepHistory, stepResult)
-			loopDetected, loopDetail = hasRepeatedToolCalls(stepHistory, loopDetectionWindowSize, loopDetectionMaxRepeats)
-			// Surface provider CallWarnings (malformed tool-call sanitization,
-			// unsupported settings, etc.) that fantasy otherwise discards
-			// silently. Visible in logs only — does not interrupt the turn.
-			logProviderWarnings(stepResult.Warnings)
-			// Fork patch: batch 8 — stop the checkpoint ticker BEFORE the
-			// final write so the ticker doesn't race with OnStepFinish.
-			stopCheckpoint()
-			sawToolBoundary = true // Fork patch: batch 8 — reset for next step
-			finishReason := message.FinishReasonUnknown
-			switch stepResult.FinishReason {
-			case fantasy.FinishReasonLength:
-				finishReason = message.FinishReasonMaxTokens
-			case fantasy.FinishReasonStop:
-				finishReason = message.FinishReasonEndTurn
-			case fantasy.FinishReasonToolCalls:
-				finishReason = message.FinishReasonToolUse
-			}
-			// If a tool result halted the turn (e.g. a hook halt or a
-			// permission denial), the step ends on FinishReasonToolCalls but
-			// the model will not be called again. Treat it as the end of the
-			// turn so the UI can render the assistant footer.
-			if finishReason == message.FinishReasonToolUse {
-				for _, tr := range stepResult.Content.ToolResults() {
-					if tr.StopTurn {
-						finishReason = message.FinishReasonEndTurn
-						break
-					}
-				}
-			}
-			// Fork patch: surface empty-stream as a visible error.
-			// Some providers (e.g. z.ai) sometimes close the stream without
-			// sending any content (no text, no tool_call, no reasoning) and
-			// without an explicit finish reason. The upstream code records this
-			// as FinishReasonUnknown with empty parts, which the WUI renders as
-			// a blank assistant block — looking like a session lockup. Convert
-			// this case to an error so both the WUI fallback and the user see
-			// an actionable message. See CHANGELOG.fork.md section 4.D.
-			//
-			// currentAssistant reads/mutations below are under sessionLock:
-			// OnStepFinish never runs concurrently with the other streaming
-			// callbacks (fantasy invokes them sequentially from one loop),
-			// but it DOES run concurrently with the checkpoint ticker and
-			// the peak-hours watcher goroutines, which also touch
-			// currentAssistant.
-			sessionLock.Lock()
-			if finishReason == message.FinishReasonUnknown &&
-				currentAssistant.FullText() == "" &&
-				currentAssistant.ReasoningContent().Thinking == "" &&
-				len(currentAssistant.ToolCalls()) == 0 {
-				slog.Warn(
-					"agent: empty stream from provider — recording as error",
-					"sessionID", call.SessionID,
-					"provider", smartModel.ModelCfg.Provider,
-					"model", smartModel.ModelCfg.Model,
-				)
-				currentAssistant.AddFinish(
-					message.FinishReasonError,
-					"Empty response",
-					fmt.Sprintf(
-						"Provider %q closed the stream for model %q without returning any content. This is usually a transient provider/network issue — please retry.",
-						smartModel.ModelCfg.Provider, smartModel.ModelCfg.Model,
-					),
-				)
-			} else if loopDetected {
-				// Loop detection force-stopped the turn. The reason stays
-				// FinishReasonEndTurn (NOT a new distinct enum value) so
-				// reclassifyCrashedAsDone / sessions-why keep treating this as
-				// "done" — but the message/details are non-empty so an operator
-				// or orchestrator can distinguish "model finished voluntarily"
-				// from "we truncated a likely loop (possibly a legitimate poll)".
-				loopMsg, loopDetails := loopDetectedFinishText(loopDetail)
-				currentAssistant.AddFinish(finishReason, loopMsg, loopDetails)
-			} else {
-				currentAssistant.AddFinish(finishReason, "", "")
-			}
-			sessionLock.Unlock()
-			// Drain any pending UI snapshot so the ticker goroutine does not
-			// publish a stale state after messages.Update writes the final one.
-			uiNotifier.drainPending()
-
-			updatedSession, getSessionErr := a.sessions.Get(ctx, call.SessionID)
-			if getSessionErr != nil {
-				return getSessionErr
-			}
-			// Fork merge note (origin/main 6ed8852b "fix(agent): estimate
-			// missing streamed usage"): if the provider omits the final
-			// usage chunk, use upstream's token estimator so our sliding
-			// context window stays accurate. We drop the "estimated" flag
-			// (TUI marker — see CHANGELOG.fork.md Section 2).
-			usage, estimated := fallbackStepUsage(stepMessages, stepResult)
-			// Normalize once, upstream of both updateSessionUsage and
-			// recordMessageUsage, so InputTokens is exclusive-of-cache for
-			// every provider before either consumer sees it.
-			usage = normalizeProviderUsage(smartModel.Model.Provider(), usage)
-			costDelta := a.updateSessionUsage(smartModel, &updatedSession, usage, a.openrouterCost(stepResult.ProviderMetadata))
-			if costDelta != 0 {
-				if _, costErr := a.sessions.IncrementCost(ctx, updatedSession.ID, costDelta); costErr != nil {
-					return costErr
-				}
-			}
-			if sessionErr := a.sessions.SetUsage(ctx, updatedSession.ID, updatedSession.PromptTokens, updatedSession.CompletionTokens); sessionErr != nil {
-				return sessionErr
-			}
-			// Per-message breakdown (task #469). The session-level figures
-			// above are a last-snapshot overwrite plus a running cost, which
-			// cannot answer "how well is the cache working" for a message, a
-			// model, or a day. currentAssistant.ID is read under sessionLock
-			// because the checkpoint ticker and peak-hours watcher also touch
-			// currentAssistant (same reason the AddFinish block above locks).
-			sessionLock.Lock()
-			assistantID := currentAssistant.ID
-			sessionLock.Unlock()
-			a.recordMessageUsage(ctx, assistantID, smartModel, usage, costDelta, estimated)
-			if usage.CacheCreationTokens > 0 {
-				a.scheduleCacheKeepAlive(call.SessionID, smartModel, stepMessages, stepTools, call.ProviderOptions, call.MaxCost)
-			}
-			currentSession = updatedSession
-
-			// Fork patch: batch 30 — cancel + runaway protection.
-			// Check DB cancel flag (cross-process signal) and cost/token caps.
-			canc, cancErr := a.sessions.IsCancelRequested(ctx, call.SessionID)
-			if cancErr != nil {
-				// A failed read is NOT treated as a cancellation: a transient
-				// DB error is no evidence the operator asked for one, and
-				// aborting on it would turn every hiccup into what looks like
-				// a user abort. But it must not be silent either — if the
-				// operator did request a cancel and this is the read that
-				// failed, the turn runs on with nothing in the log to say why
-				// the request appeared to be ignored.
-				slog.Warn("could not read the cancel-requested flag; continuing the turn",
-					"session_id", call.SessionID, "err", cancErr)
-			}
-			if cancErr == nil && canc {
-				if cancelFn, ok := a.activeRequests.Get(call.SessionID); ok {
-					cancelFn()
-				}
-				return fmt.Errorf("session %s cancelled by user", call.SessionID)
-			}
-			// BUG-4 (full-project reviewer audit, 2026-08-11): these abort
-			// paths (max-cost, max-tokens, and peak-hours below) stop the
-			// turn ONLY via the cancelFunc looked up from activeRequests —
-			// returning an error from OnStepFinish alone does NOT break
-			// fantasy's loop (see the peak-hours note ~30 lines below). This
-			// is safe today ONLY because runTurn stores the turn's genCtx
-			// cancel via activeRequests.Set before the agent.Stream call
-			// whose OnStepFinish looks it up, and nothing ever calls
-			// activeRequests.Del for this key (entries live forever — see
-			// IsBusy's doc). Any future change that reclaims an
-			// activeRequests entry before the turn ends silently turns these
-			// aborts into no-ops: the error is returned but the turn keeps
-			// running. Pinned by TestActiveRequests_HoldsLiveCancelDuringTurn.
-			if call.MaxCost > 0 && updatedSession.Cost > call.MaxCost {
-				slog.Warn(
-					"agent: aborting — max-cost exceeded",
-					"session_id", call.SessionID,
-					"cost", updatedSession.Cost,
-					"max", call.MaxCost,
-				)
-				if cancelFn, ok := a.activeRequests.Get(call.SessionID); ok {
-					cancelFn()
-				}
-				return fmt.Errorf("session %s aborted: cost $%.4f exceeds max $%.4f",
-					call.SessionID, updatedSession.Cost, call.MaxCost)
-			}
-			totalTokens := updatedSession.PromptTokens + updatedSession.CompletionTokens
-			if call.MaxTokens > 0 && totalTokens > call.MaxTokens {
-				slog.Warn(
-					"agent: aborting — max-tokens exceeded",
-					"session_id", call.SessionID,
-					"tokens", totalTokens,
-					"max", call.MaxTokens,
-				)
-				if cancelFn, ok := a.activeRequests.Get(call.SessionID); ok {
-					cancelFn()
-				}
-				return fmt.Errorf("session %s aborted: %d tokens exceeds max %d",
-					call.SessionID, totalTokens, call.MaxTokens)
-			}
-
-			// Fork patch: peak-hours is normally only checked once, at the
-			// START of a turn (coordinator.buildCall/runInternal) — an
-			// already-in-flight turn was never re-checked, so a long turn
-			// that started before the window opened ran straight through
-			// it. Re-check here, once per step, so a turn stops as soon as
-			// the provider enters its peak-hours window, not just on the
-			// next NEW invocation.
-			if a.peakHoursCheck != nil {
-				if pErr := a.peakHoursCheck(); pErr != nil {
-					if setPeakHoursAbortErr(pErr) {
-						slog.Warn("agent: aborting — provider entered peak-hours mid-turn",
-							"session_id", call.SessionID, "error", pErr)
-						peakMsg, peakDetails := peakHoursStoppedFinishText(pErr)
-						sessionLock.Lock()
-						currentAssistant.AddFinish(message.FinishReasonError, peakMsg, peakDetails)
-						snap := currentAssistant.Clone()
-						sessionLock.Unlock()
-						// Use the parent ctx (not genCtx) for the DB write —
-						// genCtx dies as soon as we cancel below.
-						if uErr := a.messages.Update(ctx, snap); uErr != nil {
-							slog.Warn("agent: failed to persist peak-hours finish message", "error", uErr)
-						}
-						if cancelFn, ok := a.activeRequests.Get(call.SessionID); ok {
-							cancelFn()
-						}
-					}
-					// Stash the specific error so Run() can return it
-					// AFTER fantasy's agent.Stream exits. We must call
-					// cancelFn() to break fantasy's loop (returning an
-					// error from OnStepFinish alone doesn't stop it), but
-					// cancel() makes fantasy return context.Canceled —
-					// swallowing our pErr. The stash lets Run() replace
-					// that generic error with the real one.
-					return pErr
-				}
-			}
-
-			sessionLock.Lock()
-			snap := currentAssistant.Clone()
-			sessionLock.Unlock()
-			return a.messages.Update(genCtx, snap)
-		},
-		StopWhen: []fantasy.StopCondition{
-			func(_ []fantasy.StepResult) bool {
-				cw := int64(smartModel.CatwalkCfg.ContextWindow)
-				// If context window is unknown (0), skip auto-summarize
-				// to avoid immediately truncating custom/local models.
-				if cw == 0 {
-					return false
-				}
-				tokens := currentSession.CompletionTokens + currentSession.PromptTokens
-				remaining := cw - tokens
-				var threshold int64
-				if cw > largeContextWindowThreshold {
-					threshold = largeContextWindowBuffer
-				} else {
-					threshold = int64(float64(cw) * smallContextWindowRatio)
-				}
-				if (remaining <= threshold) && !a.disableAutoSummarize {
-					shouldSummarize = true
-					return true
-				}
-				return false
-			},
-			func(steps []fantasy.StepResult) bool {
-				// StopWhen runs AFTER OnStepFinish for the same step, so by the
-				// time this executes, OnStepFinish has already appended to
-				// stepHistory and recomputed loopDetected/loopDetail. We only
-				// need to return the boolean here to tell fantasy to break the
-				// loop — do NOT mutate loopDetected/loopDetail here, OnStepFinish
-				// owns them (mutating here would race for the last step's
-				// finish text and re-introduce the stale-flag bug).
-				detected, _ := hasRepeatedToolCalls(steps, loopDetectionWindowSize, loopDetectionMaxRepeats)
-				return detected
-			},
-		},
-	})
+	result, err := agent.Stream(genCtx, ts.streamCall(history, files, maxOutputTokens))
 	// Defensive: normally OnStepFinish stops the checkpoint ticker (via
 	// stopCheckpoint()) before its own final write. But if agent.Stream
 	// returned an error before any step completed (e.g. the very first
@@ -1278,245 +650,13 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	// call more than once: after the first call the stop channel is nil'd,
 	// so subsequent calls hit the nil guard and return immediately (no
 	// second wait, no double-close).
-	stopCheckpoint()
+	ts.stopCheckpoint()
 	err = normalizeTurnError(err, getPeakHoursAbortErr)
 	if err != nil {
-		isHyper := smartModel.ModelCfg.Provider == hyper.Name
-		isCancelErr := errors.Is(err, context.Canceled)
-		isWatchdogStall := isCancelErr && wd.stalled.Load()
-		// `rush run --timeout` bounds the whole invocation via
-		// context.WithTimeout on the root ctx (run.go); when it fires
-		// mid-turn, ctx.Err() is context.DeadlineExceeded, NOT
-		// context.Canceled, so isCancelErr above never catches it. Without
-		// this branch it fell into the generic `else` below as "Provider
-		// Error" with a bare "context deadline exceeded" — indistinguishable
-		// from a real provider failure and useless to `sessions why`.
-		isRunTimeout := errors.Is(err, context.DeadlineExceeded)
-		// If userMessageCreated is true (either we just created it or
-		// call.ExistingMessageID was set), the call has already left a
-		// persistent trace. Wrap the error to prevent duplicate execution
-		// on retry (task #339). This handles ALL errors after user message
-		// creation, not just those after currentAssistant is set.
-		//
-		// The wrapping must happen BEFORE we check nilAssistant because
-		// errors in PrepareStep (before currentAssistant is set) also need
-		// to be wrapped. See call_attempted_error.go for the design rationale.
-		if userMessageCreated {
-			err = &ErrCallAlreadyAttempted{Err: err}
-		}
-		// currentAssistant is only ever reassigned (never set back to nil)
-		// by PrepareStep, under sessionLock. agent.Stream has already
-		// returned by this point so no streaming callback can race this
-		// read, but the peak-hours watcher goroutine may still be alive
-		// (it only stops when genCtx is cancelled by the deferred cancel()
-		// at the end of Run) and touches currentAssistant under the same
-		// lock, so guard the read too.
-		sessionLock.Lock()
-		nilAssistant := currentAssistant == nil
-		sessionLock.Unlock()
-		if nilAssistant {
-			return result, SessionAgentCall{}, false, err
-		}
-		// All DB writes in the error path use a detached context. The outer
-		// ctx may itself be cancelled — in `rush run` it's the
-		// signal.NotifyContext from fang, so Ctrl-C cancels it too; in the
-		// web UI a request abort cancels it; the stream watchdog above
-		// cancels genCtx (whose parent is ctx, so it doesn't cancel ctx,
-		// but defensively we still detach). Without a detached ctx the
-		// finish part Update fails with context.Canceled and the assistant
-		// ends up half-saved in the DB — the "silent dying" pattern
-		// observed in 162-promise-all. Codec must surface control: the
-		// finish part MUST land on disk before we return.
-		flushCtx, flushCancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
-		defer flushCancel()
-		// Ensure we finish thinking on error to close the reasoning state.
-		// From here to the final flush below, currentAssistant's Parts are
-		// mutated in place; every touch (including the plain reads used to
-		// build msgs/toolCalls) takes sessionLock to stay consistent with
-		// the peak-hours watcher goroutine that may still be running.
-		sessionLock.Lock()
-		currentAssistant.FinishThinking()
-		toolCalls := currentAssistant.ToolCalls()
-		sessionID := currentAssistant.SessionID
-		sessionLock.Unlock()
-		msgs, createErr := a.messages.List(flushCtx, sessionID)
-		if createErr != nil {
-			return nil, SessionAgentCall{}, false, &ErrCallAlreadyAttempted{Err: createErr}
-		}
-		for _, tc := range toolCalls {
-			if !tc.Finished {
-				tc.Finished = true
-				tc.Input = "{}"
-				sessionLock.Lock()
-				currentAssistant.AddToolCall(tc)
-				snap := currentAssistant.Clone()
-				sessionLock.Unlock()
-				updateErr := a.messages.Update(flushCtx, snap)
-				if updateErr != nil {
-					return nil, SessionAgentCall{}, false, &ErrCallAlreadyAttempted{Err: updateErr}
-				}
-			}
-
-			found := false
-			for _, msg := range msgs {
-				if msg.Role == message.Tool {
-					for _, tr := range msg.ToolResults() {
-						if tr.ToolCallID == tc.ID {
-							found = true
-							break
-						}
-					}
-				}
-				if found {
-					break
-				}
-			}
-			if found {
-				continue
-			}
-			content := "There was an error while executing the tool"
-			if isWatchdogStall {
-				content = watchdogToolResultMessage(
-					watchdogCause(watchdogCauseVal.Load()),
-					toolMaxDuration,
-					timeoutHardCap,
-					idleTimeout,
-					smartModel.ModelCfg.Provider,
-				)
-			} else if isCancelErr {
-				content = "Error: user cancelled assistant tool calling"
-			}
-			toolResult := message.ToolResult{
-				ToolCallID: tc.ID,
-				Name:       tc.Name,
-				Content:    content,
-				IsError:    true,
-			}
-			_, createErr = a.messages.Create(flushCtx, sessionID, message.CreateMessageParams{
-				Role: message.Tool,
-				Parts: []message.ContentPart{
-					toolResult,
-				},
-			})
-			if createErr != nil {
-				return nil, SessionAgentCall{}, false, &ErrCallAlreadyAttempted{Err: createErr}
-			}
-		}
-		var fantasyErr *fantasy.Error
-		var providerErr *fantasy.ProviderError
-		var peakErr *PeakHoursError
-		var awaitingErr *AwaitingAnswerError
-		const defaultTitle = "Provider Error"
-		// None of the branches below perform I/O — they only decide which
-		// AddFinish to record based on err/isWatchdogStall/etc. — so the
-		// whole chain can run under a single lock/unlock pair guarding the
-		// currentAssistant mutation, matching the pattern used everywhere
-		// else in Run().
-		sessionLock.Lock()
-		if isWatchdogStall {
-			// Close the observability loop: the watchdog goroutine already
-			// emitted its slog.Warn at fire-time, but a log reader
-			// chasing the trail needs to see that the stall actually
-			// made it into the user-visible finish part on this session.
-			slog.Info(
-				"agent: watchdog stall surfaced as FinishReasonError",
-				"session_id", call.SessionID,
-				"provider", smartModel.ModelCfg.Provider,
-			)
-			cause := watchdogCause(watchdogCauseVal.Load())
-			title, _ := watchdogFinishMessage(
-				cause,
-				toolMaxDuration,
-				timeoutHardCap,
-				idleTimeout,
-				smartModel.ModelCfg.Provider,
-			)
-			body := composeWatchdogFinishBody(call.SessionID, cause, toolMaxDuration, timeoutHardCap, idleTimeout, smartModel.ModelCfg.Provider)
-			currentAssistant.AddFinish(message.FinishReasonError, title, body)
-		} else if isCancelErr {
-			currentAssistant.AddFinish(message.FinishReasonCanceled, "User canceled request", "")
-		} else if isRunTimeout {
-			currentAssistant.AddFinish(
-				message.FinishReasonError,
-				"Run timeout exceeded",
-				fmt.Sprintf(
-					"The run's --timeout deadline expired while this turn was still in flight (e.g. a long tool call or sub-agent delegation).\n\n%s",
-					WatchdogResumeGuidance(call.SessionID, "--timeout"),
-				),
-			)
-		} else if isHyper && errors.As(err, &providerErr) && providerErr.StatusCode == http.StatusUnauthorized {
-			currentAssistant.AddFinish(message.FinishReasonError, "Unauthorized", `Please re-authenticate with Hyper. You can also run "rush auth" to re-authenticate.`)
-		} else if isHyper && errors.As(err, &providerErr) && providerErr.StatusCode == http.StatusPaymentRequired {
-			url := hyper.BaseURL()
-			currentAssistant.AddFinish(message.FinishReasonError, "No credits", "You're out of credits. Add more at "+url)
-		} else if errors.As(err, &providerErr) {
-			if providerErr.Message == "The requested model is not supported." {
-				url := "https://github.com/settings/copilot/features"
-				currentAssistant.AddFinish(
-					message.FinishReasonError,
-					"Copilot model not enabled",
-					fmt.Sprintf("%q is not enabled in Copilot. Go to the following page to enable it. Then, wait 5 minutes before trying again. %s", smartModel.CatwalkCfg.Name, url),
-				)
-			} else {
-				currentAssistant.AddFinish(message.FinishReasonError, cmp.Or(stringext.Capitalize(providerErr.Title), defaultTitle), providerErr.Message)
-			}
-		} else if errors.As(err, &fantasyErr) {
-			currentAssistant.AddFinish(message.FinishReasonError, cmp.Or(stringext.Capitalize(fantasyErr.Title), defaultTitle), fantasyErr.Message)
-		} else if errors.As(err, &peakErr) {
-			// Re-derive the same (msg, details) OnStepFinish's peak-hours
-			// check already wrote (with the RESUME AT guidance) — this
-			// path (err forced to peakHoursAbortErr) ALSO reaches here,
-			// and AddFinish always replaces the prior finish part, so
-			// without this branch the generic `else` below would
-			// overwrite the useful message with a bare "Provider Error:
-			// <terse text>" that drops the resume-time guidance entirely.
-			peakMsg, peakDetails := peakHoursStoppedFinishText(err)
-			currentAssistant.AddFinish(message.FinishReasonError, peakMsg, peakDetails)
-		} else if errors.As(err, &awaitingErr) {
-			// Same rationale as the peakErr branch above: without this,
-			// the generic `else` below would overwrite the question/options/
-			// resume-command guidance with a bare "Provider Error: <text>".
-			awaitingMsg, awaitingDetails := awaitingAnswerStoppedFinishText(err)
-			currentAssistant.AddFinish(message.FinishReasonError, awaitingMsg, awaitingDetails)
-		} else {
-			currentAssistant.AddFinish(message.FinishReasonError, defaultTitle, err.Error())
-		}
-		snap := currentAssistant.Clone()
-		sessionLock.Unlock()
-		// Detached flush (flushCtx is context.WithoutCancel + 15s timeout,
-		// created at the top of this error block). This is the call that
-		// MUST land on disk — without it the assistant message has tool
-		// calls but no finish part, and the WUI/recovery sees it as still
-		// in-flight forever.
-		updateErr := a.messages.Update(flushCtx, snap)
-		if updateErr != nil {
-			slog.Error(
-				"agent: failed to persist final finish part",
-				"session_id", call.SessionID,
-				"err", updateErr,
-			)
-			return nil, SessionAgentCall{}, false, &ErrCallAlreadyAttempted{Err: updateErr}
-		}
-
-		// Drain on cancel via the mailbox's generation-aware drain (design
-		// §4): an interrupt-and-replace payload (mb.replacement) takes
-		// precedence over a plain queued follow-up (mb.submitted). The
-		// busy reservation itself stays claimed (Run's loop is about to
-		// run another turn for the same sessionID) and is only released
-		// by Run() once the loop has no more queued work.
-		if isCancelErr {
-			if next, ok := a.getMailbox(call.SessionID).drainAfterCancel(); ok {
-				cancel()
-				return nil, next, true, nil
-			}
-		}
-		// err was already wrapped in ErrCallAlreadyAttempted above (if
-		// userMessageCreated), so return it directly rather than wrapping
-		// it a second time.
-		return nil, SessionAgentCall{}, false, err
+		return ts.handleStreamFailure(result, err, userMessageCreated)
 	}
 
-	if shouldSummarize {
+	if ts.shouldSummarize {
 		// Run the compaction inline (runSummarizeBody, not the public
 		// Summarize/runSummarize path) so it never calls back into Run():
 		// Run() is still on the stack here, holding the OS lock and the
@@ -1533,9 +673,9 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 			return nil, SessionAgentCall{}, false, &ErrCallAlreadyAttempted{Err: summarizeErr}
 		}
 		// If the agent wasn't done...
-		sessionLock.Lock()
-		hasPendingToolCalls := len(currentAssistant.ToolCalls()) > 0
-		sessionLock.Unlock()
+		ts.mu.Lock()
+		hasPendingToolCalls := len(ts.currentAssistant.ToolCalls()) > 0
+		ts.mu.Unlock()
 		if hasPendingToolCalls {
 			// P0-2 fix: create continuation call and return it directly as the
 			// next turn. This is INTERNAL continuation of the same logical execution,
@@ -1557,7 +697,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	// above (the two would be redundant, and running both would race for
 	// SummaryMessageID). genCtx is still alive here (cancel() hasn't fired
 	// yet), so Cancel(sessionID) can interrupt this if needed.
-	if !shouldSummarize && silentCompactNeeded {
+	if !ts.shouldSummarize && ts.silentCompactNeeded {
 		if silentErr := a.runSummarizeSilent(genCtx, call.SessionID, call.ProviderOptions, smartModel, promptPrefix); silentErr != nil {
 			slog.Warn("silent summarise failed", "session_id", call.SessionID, "err", silentErr)
 		}
@@ -1576,7 +716,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	if !call.NonInteractive && a.notify != nil {
 		a.notify.Publish(pubsub.CreatedEvent, notify.Notification{
 			SessionID:    call.SessionID,
-			SessionTitle: currentSession.Title,
+			SessionTitle: ts.currentSession.Title,
 			Type:         notify.TypeAgentFinished,
 		})
 	}

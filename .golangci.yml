@@ -105,10 +105,6 @@ linters:
       # path line is load-bearing: the selftest enforces the allowlist
       # <-> yml bijection through it, in both directions. Remove both
       # sides together when a file is decomposed.
-      - path: '^internal/agent/agent_turn\.go$' # file-size-ratchet
-        linters:
-          - revive
-        text: 'file-length-limit: file length is'
       - path: '^internal/app/app_run\.go$' # file-size-ratchet
         linters:
           - revive

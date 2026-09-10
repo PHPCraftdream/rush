@@ -1,0 +1,266 @@
+package agent
+
+import (
+	"cmp"
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"time"
+
+	"charm.land/fantasy"
+
+	"github.com/PHPCraftdream/rush/internal/agent/hyper"
+	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/stringext"
+)
+
+// handleStreamFailure is runTurn's error path once agent.Stream returns a
+// non-nil err (already passed through normalizeTurnError by the caller).
+// Moved out mechanically (task #933/#938) — this was the largest cluster
+// runTurn's callback set had that an earlier pass over this function missed
+// entirely, since it isn't a fantasy callback at all, just the block of
+// runTurn's own body that runs right after the Stream call returns. It is a
+// pure function of ts's settled callback state plus the two locals runTurn
+// still owns at the call site (result, userMessageCreated): no defer, no
+// goroutine, nothing outlives this call.
+func (ts *turnStream) handleStreamFailure(
+	result *fantasy.AgentResult,
+	err error,
+	userMessageCreated bool,
+) (*fantasy.AgentResult, SessionAgentCall, bool, error) {
+	isHyper := ts.smartModel.ModelCfg.Provider == hyper.Name
+	isCancelErr := errors.Is(err, context.Canceled)
+	isWatchdogStall := isCancelErr && ts.wd.stalled.Load()
+	// `rush run --timeout` bounds the whole invocation via
+	// context.WithTimeout on the root ctx (run.go); when it fires
+	// mid-turn, ctx.Err() is context.DeadlineExceeded, NOT
+	// context.Canceled, so isCancelErr above never catches it. Without
+	// this branch it fell into the generic `else` below as "Provider
+	// Error" with a bare "context deadline exceeded" — indistinguishable
+	// from a real provider failure and useless to `sessions why`.
+	isRunTimeout := errors.Is(err, context.DeadlineExceeded)
+	// If userMessageCreated is true (either we just created it or
+	// call.ExistingMessageID was set), the call has already left a
+	// persistent trace. Wrap the error to prevent duplicate execution
+	// on retry (task #339). This handles ALL errors after user message
+	// creation, not just those after currentAssistant is set.
+	//
+	// The wrapping must happen BEFORE we check nilAssistant because
+	// errors in PrepareStep (before currentAssistant is set) also need
+	// to be wrapped. See call_attempted_error.go for the design rationale.
+	if userMessageCreated {
+		err = &ErrCallAlreadyAttempted{Err: err}
+	}
+	// currentAssistant is only ever reassigned (never set back to nil)
+	// by PrepareStep, under mu. agent.Stream has already
+	// returned by this point so no streaming callback can race this
+	// read, but the peak-hours watcher goroutine may still be alive
+	// (it only stops when genCtx is cancelled by the deferred cancel()
+	// at the end of Run) and touches currentAssistant under the same
+	// lock, so guard the read too.
+	ts.mu.Lock()
+	nilAssistant := ts.currentAssistant == nil
+	ts.mu.Unlock()
+	if nilAssistant {
+		return result, SessionAgentCall{}, false, err
+	}
+	// All DB writes in the error path use a detached context. The outer
+	// ctx may itself be cancelled — in `rush run` it's the
+	// signal.NotifyContext from fang, so Ctrl-C cancels it too; in the
+	// web UI a request abort cancels it; the stream watchdog above
+	// cancels genCtx (whose parent is ctx, so it doesn't cancel ctx,
+	// but defensively we still detach). Without a detached ctx the
+	// finish part Update fails with context.Canceled and the assistant
+	// ends up half-saved in the DB — the "silent dying" pattern
+	// observed in 162-promise-all. Codec must surface control: the
+	// finish part MUST land on disk before we return.
+	flushCtx, flushCancel := context.WithTimeout(context.WithoutCancel(ts.ctx), 15*time.Second)
+	defer flushCancel()
+	// Ensure we finish thinking on error to close the reasoning state.
+	// From here to the final flush below, currentAssistant's Parts are
+	// mutated in place; every touch (including the plain reads used to
+	// build msgs/toolCalls) takes mu to stay consistent with
+	// the peak-hours watcher goroutine that may still be running.
+	ts.mu.Lock()
+	ts.currentAssistant.FinishThinking()
+	toolCalls := ts.currentAssistant.ToolCalls()
+	sessionID := ts.currentAssistant.SessionID
+	ts.mu.Unlock()
+	msgs, createErr := ts.a.messages.List(flushCtx, sessionID)
+	if createErr != nil {
+		return nil, SessionAgentCall{}, false, &ErrCallAlreadyAttempted{Err: createErr}
+	}
+	for _, tc := range toolCalls {
+		if !tc.Finished {
+			tc.Finished = true
+			tc.Input = "{}"
+			ts.mu.Lock()
+			ts.currentAssistant.AddToolCall(tc)
+			snap := ts.currentAssistant.Clone()
+			ts.mu.Unlock()
+			updateErr := ts.a.messages.Update(flushCtx, snap)
+			if updateErr != nil {
+				return nil, SessionAgentCall{}, false, &ErrCallAlreadyAttempted{Err: updateErr}
+			}
+		}
+
+		found := false
+		for _, msg := range msgs {
+			if msg.Role == message.Tool {
+				for _, tr := range msg.ToolResults() {
+					if tr.ToolCallID == tc.ID {
+						found = true
+						break
+					}
+				}
+			}
+			if found {
+				break
+			}
+		}
+		if found {
+			continue
+		}
+		content := "There was an error while executing the tool"
+		if isWatchdogStall {
+			content = watchdogToolResultMessage(
+				watchdogCause(ts.watchdogCauseVal.Load()),
+				ts.toolMaxDuration,
+				ts.timeoutHardCap,
+				ts.idleTimeout,
+				ts.smartModel.ModelCfg.Provider,
+			)
+		} else if isCancelErr {
+			content = "Error: user cancelled assistant tool calling"
+		}
+		toolResult := message.ToolResult{
+			ToolCallID: tc.ID,
+			Name:       tc.Name,
+			Content:    content,
+			IsError:    true,
+		}
+		_, createErr = ts.a.messages.Create(flushCtx, sessionID, message.CreateMessageParams{
+			Role: message.Tool,
+			Parts: []message.ContentPart{
+				toolResult,
+			},
+		})
+		if createErr != nil {
+			return nil, SessionAgentCall{}, false, &ErrCallAlreadyAttempted{Err: createErr}
+		}
+	}
+	var fantasyErr *fantasy.Error
+	var providerErr *fantasy.ProviderError
+	var peakErr *PeakHoursError
+	var awaitingErr *AwaitingAnswerError
+	const defaultTitle = "Provider Error"
+	// None of the branches below perform I/O — they only decide which
+	// AddFinish to record based on err/isWatchdogStall/etc. — so the
+	// whole chain can run under a single lock/unlock pair guarding the
+	// currentAssistant mutation, matching the pattern used everywhere
+	// else in Run().
+	ts.mu.Lock()
+	if isWatchdogStall {
+		// Close the observability loop: the watchdog goroutine already
+		// emitted its slog.Warn at fire-time, but a log reader
+		// chasing the trail needs to see that the stall actually
+		// made it into the user-visible finish part on this session.
+		slog.Info(
+			"agent: watchdog stall surfaced as FinishReasonError",
+			"session_id", ts.call.SessionID,
+			"provider", ts.smartModel.ModelCfg.Provider,
+		)
+		cause := watchdogCause(ts.watchdogCauseVal.Load())
+		title, _ := watchdogFinishMessage(
+			cause,
+			ts.toolMaxDuration,
+			ts.timeoutHardCap,
+			ts.idleTimeout,
+			ts.smartModel.ModelCfg.Provider,
+		)
+		body := composeWatchdogFinishBody(ts.call.SessionID, cause, ts.toolMaxDuration, ts.timeoutHardCap, ts.idleTimeout, ts.smartModel.ModelCfg.Provider)
+		ts.currentAssistant.AddFinish(message.FinishReasonError, title, body)
+	} else if isCancelErr {
+		ts.currentAssistant.AddFinish(message.FinishReasonCanceled, "User canceled request", "")
+	} else if isRunTimeout {
+		ts.currentAssistant.AddFinish(
+			message.FinishReasonError,
+			"Run timeout exceeded",
+			fmt.Sprintf(
+				"The run's --timeout deadline expired while this turn was still in flight (e.g. a long tool call or sub-agent delegation).\n\n%s",
+				WatchdogResumeGuidance(ts.call.SessionID, "--timeout"),
+			),
+		)
+	} else if isHyper && errors.As(err, &providerErr) && providerErr.StatusCode == http.StatusUnauthorized {
+		ts.currentAssistant.AddFinish(message.FinishReasonError, "Unauthorized", `Please re-authenticate with Hyper. You can also run "rush auth" to re-authenticate.`)
+	} else if isHyper && errors.As(err, &providerErr) && providerErr.StatusCode == http.StatusPaymentRequired {
+		url := hyper.BaseURL()
+		ts.currentAssistant.AddFinish(message.FinishReasonError, "No credits", "You're out of credits. Add more at "+url)
+	} else if errors.As(err, &providerErr) {
+		if providerErr.Message == "The requested model is not supported." {
+			url := "https://github.com/settings/copilot/features"
+			ts.currentAssistant.AddFinish(
+				message.FinishReasonError,
+				"Copilot model not enabled",
+				fmt.Sprintf("%q is not enabled in Copilot. Go to the following page to enable it. Then, wait 5 minutes before trying again. %s", ts.smartModel.CatwalkCfg.Name, url),
+			)
+		} else {
+			ts.currentAssistant.AddFinish(message.FinishReasonError, cmp.Or(stringext.Capitalize(providerErr.Title), defaultTitle), providerErr.Message)
+		}
+	} else if errors.As(err, &fantasyErr) {
+		ts.currentAssistant.AddFinish(message.FinishReasonError, cmp.Or(stringext.Capitalize(fantasyErr.Title), defaultTitle), fantasyErr.Message)
+	} else if errors.As(err, &peakErr) {
+		// Re-derive the same (msg, details) OnStepFinish's peak-hours
+		// check already wrote (with the RESUME AT guidance) — this
+		// path (err forced to peakHoursAbortErr) ALSO reaches here,
+		// and AddFinish always replaces the prior finish part, so
+		// without this branch the generic `else` below would
+		// overwrite the useful message with a bare "Provider Error:
+		// <terse text>" that drops the resume-time guidance entirely.
+		peakMsg, peakDetails := peakHoursStoppedFinishText(err)
+		ts.currentAssistant.AddFinish(message.FinishReasonError, peakMsg, peakDetails)
+	} else if errors.As(err, &awaitingErr) {
+		// Same rationale as the peakErr branch above: without this,
+		// the generic `else` below would overwrite the question/options/
+		// resume-command guidance with a bare "Provider Error: <text>".
+		awaitingMsg, awaitingDetails := awaitingAnswerStoppedFinishText(err)
+		ts.currentAssistant.AddFinish(message.FinishReasonError, awaitingMsg, awaitingDetails)
+	} else {
+		ts.currentAssistant.AddFinish(message.FinishReasonError, defaultTitle, err.Error())
+	}
+	snap := ts.currentAssistant.Clone()
+	ts.mu.Unlock()
+	// Detached flush (flushCtx is context.WithoutCancel + 15s timeout,
+	// created at the top of this error block). This is the call that
+	// MUST land on disk — without it the assistant message has tool
+	// calls but no finish part, and the WUI/recovery sees it as still
+	// in-flight forever.
+	updateErr := ts.a.messages.Update(flushCtx, snap)
+	if updateErr != nil {
+		slog.Error(
+			"agent: failed to persist final finish part",
+			"session_id", ts.call.SessionID,
+			"err", updateErr,
+		)
+		return nil, SessionAgentCall{}, false, &ErrCallAlreadyAttempted{Err: updateErr}
+	}
+
+	// Drain on cancel via the mailbox's generation-aware drain (design
+	// §4): an interrupt-and-replace payload (mb.replacement) takes
+	// precedence over a plain queued follow-up (mb.submitted). The
+	// busy reservation itself stays claimed (Run's loop is about to
+	// run another turn for the same sessionID) and is only released
+	// by Run() once the loop has no more queued work.
+	if isCancelErr {
+		if next, ok := ts.a.getMailbox(ts.call.SessionID).drainAfterCancel(); ok {
+			ts.cancel()
+			return nil, next, true, nil
+		}
+	}
+	// err was already wrapped in ErrCallAlreadyAttempted above (if
+	// userMessageCreated), so return it directly rather than wrapping
+	// it a second time.
+	return nil, SessionAgentCall{}, false, err
+}
