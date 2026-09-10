@@ -9,6 +9,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/session"
 )
 
 // prepareStep, onStepFinish and stopConditions are runTurn's remaining
@@ -171,27 +172,71 @@ func (ts *turnStream) prepareStep(callContext context.Context, options fantasy.P
 	return callContext, prepared, err
 }
 
+// onStepFinish is fantasy's per-step callback, split into 8 named phases
+// (task #940) after the mechanical move in task #939 kept it as one
+// ~230-line body. Each phase is verified by a targeted revert-check (break
+// the invariant, confirm the specific existing test fails with the specific
+// expected symptom, restore) rather than a diff — a behavioral split has no
+// diff oracle. The phase order below IS the invariant in three places:
+// stopStepTicker must run before recordStepFinish touches currentAssistant
+// (else the checkpoint ticker races the final write); recordStepHistory
+// must run before recordStepFinish reads loopDetected (fantasy calls
+// OnStepFinish before StopWhen for the same step, so a stale flag here
+// never gets fixed by a later step); and enforceRunawayCaps/recheckPeakHours
+// must call activeRequests' cancelFn(), not just return an error, because
+// returning an error from OnStepFinish alone does not break fantasy's loop
+// (BUG-4, pinned by TestActiveRequests_HoldsLiveCancelDuringTurn).
 func (ts *turnStream) onStepFinish(stepResult fantasy.StepResult) error {
 	ts.bumpActivity()
-	// Accumulate this step and recompute loop detection NOW, in this
-	// callback invocation, so the AddFinish chain below can use the
-	// result for THIS step. Fantasy calls OnStepFinish BEFORE
-	// StopWhen for the same step, so relying on the StopWhen closure
-	// to set loopDetected would read a stale (still-false) flag for
-	// the very step that trips the detector — the loop would break
-	// with empty finish text and no later OnStepFinish to fix it.
-	// See the comment on stepHistory in turnStream's doc for the
-	// ordering rationale.
-	ts.stepHistory = append(ts.stepHistory, stepResult)
-	ts.loopDetected, ts.loopDetail = hasRepeatedToolCalls(ts.stepHistory, loopDetectionWindowSize, loopDetectionMaxRepeats)
+	ts.recordStepHistory(stepResult)
 	// Surface provider CallWarnings (malformed tool-call sanitization,
 	// unsupported settings, etc.) that fantasy otherwise discards
 	// silently. Visible in logs only — does not interrupt the turn.
 	logProviderWarnings(stepResult.Warnings)
-	// Fork patch: batch 8 — stop the checkpoint ticker BEFORE the
-	// final write so the ticker doesn't race with OnStepFinish.
+	ts.stopStepTicker()
+
+	finishReason := classifyStepFinishReason(stepResult)
+	ts.recordStepFinish(finishReason)
+
+	updatedSession, err := ts.applyStepUsage(stepResult)
+	if err != nil {
+		return err
+	}
+	if err := ts.enforceRunawayCaps(updatedSession); err != nil {
+		return err
+	}
+	if err := ts.recheckPeakHours(); err != nil {
+		return err
+	}
+	return ts.persistStepFinish()
+}
+
+// recordStepHistory accumulates this step and recomputes loop detection
+// NOW, in this callback invocation, so recordStepFinish below can use the
+// result for THIS step. Fantasy calls OnStepFinish BEFORE StopWhen for the
+// same step, so relying on the StopWhen closure to set loopDetected would
+// read a stale (still-false) flag for the very step that trips the
+// detector — the loop would break with empty finish text and no later
+// OnStepFinish to fix it. See turnStream's doc for the ordering rationale.
+func (ts *turnStream) recordStepHistory(stepResult fantasy.StepResult) {
+	ts.stepHistory = append(ts.stepHistory, stepResult)
+	ts.loopDetected, ts.loopDetail = hasRepeatedToolCalls(ts.stepHistory, loopDetectionWindowSize, loopDetectionMaxRepeats)
+}
+
+// stopStepTicker stops the checkpoint ticker BEFORE the final write below so
+// it doesn't race with OnStepFinish (Fork patch: batch 8), and resets the
+// tool-boundary phase tracker for the next step.
+func (ts *turnStream) stopStepTicker() {
 	ts.stopCheckpoint()
-	ts.phase = phaseToolBoundary // Fork patch: batch 8 — reset for next step
+	ts.phase = phaseToolBoundary
+}
+
+// classifyStepFinishReason maps fantasy's step finish reason to this
+// package's, then upgrades FinishReasonToolUse to FinishReasonEndTurn when a
+// tool result halted the turn (e.g. a hook halt or a permission denial): the
+// step ends on FinishReasonToolCalls but the model will not be called
+// again, so the UI must still render the assistant footer.
+func classifyStepFinishReason(stepResult fantasy.StepResult) message.FinishReason {
 	finishReason := message.FinishReasonUnknown
 	switch stepResult.FinishReason {
 	case fantasy.FinishReasonLength:
@@ -201,10 +246,6 @@ func (ts *turnStream) onStepFinish(stepResult fantasy.StepResult) error {
 	case fantasy.FinishReasonToolCalls:
 		finishReason = message.FinishReasonToolUse
 	}
-	// If a tool result halted the turn (e.g. a hook halt or a
-	// permission denial), the step ends on FinishReasonToolCalls but
-	// the model will not be called again. Treat it as the end of the
-	// turn so the UI can render the assistant footer.
 	if finishReason == message.FinishReasonToolUse {
 		for _, tr := range stepResult.Content.ToolResults() {
 			if tr.StopTurn {
@@ -213,21 +254,24 @@ func (ts *turnStream) onStepFinish(stepResult fantasy.StepResult) error {
 			}
 		}
 	}
-	// Fork patch: surface empty-stream as a visible error.
-	// Some providers (e.g. z.ai) sometimes close the stream without
-	// sending any content (no text, no tool_call, no reasoning) and
-	// without an explicit finish reason. The upstream code records this
-	// as FinishReasonUnknown with empty parts, which the WUI renders as
-	// a blank assistant block — looking like a session lockup. Convert
-	// this case to an error so both the WUI fallback and the user see
-	// an actionable message. See CHANGELOG.fork.md section 4.D.
-	//
-	// currentAssistant reads/mutations below are under mu:
-	// OnStepFinish never runs concurrently with the other streaming
-	// callbacks (fantasy invokes them sequentially from one loop),
-	// but it DOES run concurrently with the checkpoint ticker and
-	// the peak-hours watcher goroutines, which also touch
-	// currentAssistant.
+	return finishReason
+}
+
+// recordStepFinish writes this step's Finish part onto currentAssistant.
+// Fork patch: surface empty-stream as a visible error. Some providers (e.g.
+// z.ai) sometimes close the stream without sending any content (no text, no
+// tool_call, no reasoning) and without an explicit finish reason. The
+// upstream code records this as FinishReasonUnknown with empty parts, which
+// the WUI renders as a blank assistant block — looking like a session
+// lockup. Convert this case to an error so both the WUI fallback and the
+// user see an actionable message. See CHANGELOG.fork.md section 4.D.
+//
+// currentAssistant reads/mutations below are under mu: OnStepFinish never
+// runs concurrently with the other streaming callbacks (fantasy invokes
+// them sequentially from one loop), but it DOES run concurrently with the
+// checkpoint ticker and the peak-hours watcher goroutines, which also touch
+// currentAssistant.
+func (ts *turnStream) recordStepFinish(finishReason message.FinishReason) {
 	ts.mu.Lock()
 	if finishReason == message.FinishReasonUnknown &&
 		ts.currentAssistant.FullText() == "" &&
@@ -263,10 +307,17 @@ func (ts *turnStream) onStepFinish(stepResult fantasy.StepResult) error {
 	// Drain any pending UI snapshot so the ticker goroutine does not
 	// publish a stale state after messages.Update writes the final one.
 	ts.drainPendingUI()
+}
 
+// applyStepUsage fetches the session row this step just updated, folds in
+// this step's usage/cost, and records both the session- and message-level
+// breakdown. Any error here short-circuits OnStepFinish exactly as it did
+// before this split — cap enforcement and the peak-hours recheck never run
+// against a session snapshot that failed to load or persist.
+func (ts *turnStream) applyStepUsage(stepResult fantasy.StepResult) (session.Session, error) {
 	updatedSession, getSessionErr := ts.a.sessions.Get(ts.ctx, ts.call.SessionID)
 	if getSessionErr != nil {
-		return getSessionErr
+		return session.Session{}, getSessionErr
 	}
 	// Fork merge note (origin/main 6ed8852b "fix(agent): estimate
 	// missing streamed usage"): if the provider omits the final
@@ -281,18 +332,18 @@ func (ts *turnStream) onStepFinish(stepResult fantasy.StepResult) error {
 	costDelta := ts.a.updateSessionUsage(ts.smartModel, &updatedSession, usage, ts.a.openrouterCost(stepResult.ProviderMetadata))
 	if costDelta != 0 {
 		if _, costErr := ts.a.sessions.IncrementCost(ts.ctx, updatedSession.ID, costDelta); costErr != nil {
-			return costErr
+			return session.Session{}, costErr
 		}
 	}
 	if sessionErr := ts.a.sessions.SetUsage(ts.ctx, updatedSession.ID, updatedSession.PromptTokens, updatedSession.CompletionTokens); sessionErr != nil {
-		return sessionErr
+		return session.Session{}, sessionErr
 	}
 	// Per-message breakdown (task #469). The session-level figures
 	// above are a last-snapshot overwrite plus a running cost, which
 	// cannot answer "how well is the cache working" for a message, a
 	// model, or a day. currentAssistant.ID is read under mu
 	// because the checkpoint ticker and peak-hours watcher also touch
-	// currentAssistant (same reason the AddFinish block above locks).
+	// currentAssistant (same reason recordStepFinish locks).
 	ts.mu.Lock()
 	assistantID := ts.currentAssistant.ID
 	ts.mu.Unlock()
@@ -301,9 +352,23 @@ func (ts *turnStream) onStepFinish(stepResult fantasy.StepResult) error {
 		ts.a.scheduleCacheKeepAlive(ts.call.SessionID, ts.smartModel, ts.stepMessages, ts.stepTools, ts.call.ProviderOptions, ts.call.MaxCost)
 	}
 	ts.currentSession = updatedSession
+	return updatedSession, nil
+}
 
-	// Fork patch: batch 30 — cancel + runaway protection.
-	// Check DB cancel flag (cross-process signal) and cost/token caps.
+// enforceRunawayCaps implements Fork patch: batch 30 — cancel + runaway
+// protection: the DB cancel flag (cross-process signal) and the cost/token
+// caps. BUG-4 (full-project reviewer audit, 2026-08-11): these abort paths
+// (max-cost, max-tokens; peak-hours is recheckPeakHours below) stop the
+// turn ONLY via the cancelFunc looked up from activeRequests — returning an
+// error from OnStepFinish alone does NOT break fantasy's loop. This is safe
+// today ONLY because runTurn stores the turn's genCtx cancel via
+// activeRequests.Set before the agent.Stream call whose OnStepFinish looks
+// it up, and nothing ever calls activeRequests.Del for this key (entries
+// live forever — see IsBusy's doc). Any future change that reclaims an
+// activeRequests entry before the turn ends silently turns these aborts
+// into no-ops: the error is returned but the turn keeps running. Pinned by
+// TestActiveRequests_HoldsLiveCancelDuringTurn.
+func (ts *turnStream) enforceRunawayCaps(updatedSession session.Session) error {
 	canc, cancErr := ts.a.sessions.IsCancelRequested(ts.ctx, ts.call.SessionID)
 	if cancErr != nil {
 		// A failed read is NOT treated as a cancellation: a transient
@@ -322,19 +387,6 @@ func (ts *turnStream) onStepFinish(stepResult fantasy.StepResult) error {
 		}
 		return fmt.Errorf("session %s cancelled by user", ts.call.SessionID)
 	}
-	// BUG-4 (full-project reviewer audit, 2026-08-11): these abort
-	// paths (max-cost, max-tokens, and peak-hours below) stop the
-	// turn ONLY via the cancelFunc looked up from activeRequests —
-	// returning an error from OnStepFinish alone does NOT break
-	// fantasy's loop (see the peak-hours note ~30 lines below). This
-	// is safe today ONLY because runTurn stores the turn's genCtx
-	// cancel via activeRequests.Set before the agent.Stream call
-	// whose OnStepFinish looks it up, and nothing ever calls
-	// activeRequests.Del for this key (entries live forever — see
-	// IsBusy's doc). Any future change that reclaims an
-	// activeRequests entry before the turn ends silently turns these
-	// aborts into no-ops: the error is returned but the turn keeps
-	// running. Pinned by TestActiveRequests_HoldsLiveCancelDuringTurn.
 	if ts.call.MaxCost > 0 && updatedSession.Cost > ts.call.MaxCost {
 		slog.Warn(
 			"agent: aborting — max-cost exceeded",
@@ -362,44 +414,50 @@ func (ts *turnStream) onStepFinish(stepResult fantasy.StepResult) error {
 		return fmt.Errorf("session %s aborted: %d tokens exceeds max %d",
 			ts.call.SessionID, totalTokens, ts.call.MaxTokens)
 	}
+	return nil
+}
 
-	// Fork patch: peak-hours is normally only checked once, at the
-	// START of a turn (coordinator.buildCall/runInternal) — an
-	// already-in-flight turn was never re-checked, so a long turn
-	// that started before the window opened ran straight through
-	// it. Re-check here, once per step, so a turn stops as soon as
-	// the provider enters its peak-hours window, not just on the
-	// next NEW invocation.
-	if ts.a.peakHoursCheck != nil {
-		if pErr := ts.a.peakHoursCheck(); pErr != nil {
-			if ts.setPeakHoursAbortErr(pErr) {
-				slog.Warn("agent: aborting — provider entered peak-hours mid-turn",
-					"session_id", ts.call.SessionID, "error", pErr)
-				peakMsg, peakDetails := peakHoursStoppedFinishText(pErr)
-				ts.mu.Lock()
-				ts.currentAssistant.AddFinish(message.FinishReasonError, peakMsg, peakDetails)
-				snap := ts.currentAssistant.Clone()
-				ts.mu.Unlock()
-				// Use the parent ctx (not genCtx) for the DB write —
-				// genCtx dies as soon as we cancel below.
-				if uErr := ts.a.messages.Update(ts.ctx, snap); uErr != nil {
-					slog.Warn("agent: failed to persist peak-hours finish message", "error", uErr)
-				}
-				if cancelFn, ok := ts.a.activeRequests.Get(ts.call.SessionID); ok {
-					cancelFn()
-				}
-			}
-			// Stash the specific error so Run() can return it
-			// AFTER fantasy's agent.Stream exits. We must call
-			// cancelFn() to break fantasy's loop (returning an
-			// error from OnStepFinish alone doesn't stop it), but
-			// cancel() makes fantasy return context.Canceled —
-			// swallowing our pErr. The stash lets Run() replace
-			// that generic error with the real one.
-			return pErr
+// recheckPeakHours re-checks the provider's peak-hours window once per step
+// (Fork patch). Peak-hours is normally only checked once, at the START of a
+// turn (coordinator.buildCall/runInternal) — an already-in-flight turn was
+// never re-checked, so a long turn that started before the window opened
+// ran straight through it.
+func (ts *turnStream) recheckPeakHours() error {
+	if ts.a.peakHoursCheck == nil {
+		return nil
+	}
+	pErr := ts.a.peakHoursCheck()
+	if pErr == nil {
+		return nil
+	}
+	if ts.setPeakHoursAbortErr(pErr) {
+		slog.Warn("agent: aborting — provider entered peak-hours mid-turn",
+			"session_id", ts.call.SessionID, "error", pErr)
+		peakMsg, peakDetails := peakHoursStoppedFinishText(pErr)
+		ts.mu.Lock()
+		ts.currentAssistant.AddFinish(message.FinishReasonError, peakMsg, peakDetails)
+		snap := ts.currentAssistant.Clone()
+		ts.mu.Unlock()
+		// Use the parent ctx (not genCtx) for the DB write —
+		// genCtx dies as soon as we cancel below.
+		if uErr := ts.a.messages.Update(ts.ctx, snap); uErr != nil {
+			slog.Warn("agent: failed to persist peak-hours finish message", "error", uErr)
+		}
+		if cancelFn, ok := ts.a.activeRequests.Get(ts.call.SessionID); ok {
+			cancelFn()
 		}
 	}
+	// Stash the specific error so Run() can return it AFTER fantasy's
+	// agent.Stream exits. We must call cancelFn() to break fantasy's loop
+	// (returning an error from OnStepFinish alone doesn't stop it), but
+	// cancel() makes fantasy return context.Canceled — swallowing our
+	// pErr. The stash lets Run() replace that generic error with the real
+	// one.
+	return pErr
+}
 
+// persistStepFinish is OnStepFinish's normal-path final write.
+func (ts *turnStream) persistStepFinish() error {
 	ts.mu.Lock()
 	snap := ts.currentAssistant.Clone()
 	ts.mu.Unlock()
