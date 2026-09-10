@@ -10,4 +10,4 @@
 # .golangci.yml. web/src/store.ts needs no yml entry -- revive only
 # lints Go.
 internal/agent/agent_turn.go 1981
-internal/app/app_run.go 1777
+internal/app/app_run.go 1472
