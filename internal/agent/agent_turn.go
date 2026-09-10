@@ -695,30 +695,11 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	// have been truncated.
 	var loopDetected bool
 	var loopDetail loopDetail
-	// peakHoursAbortErr is stashed by the peak-hours checks when they detect
-	// the provider entered its window mid-turn. The checks must call
-	// cancelFn() to break fantasy's agent loop (returning an error alone
-	// doesn't stop it), but cancel() makes fantasy return context.Canceled —
-	// swallowing the specific *PeakHoursError. After agent.Stream() returns,
-	// Run() checks this and replaces the generic context.Canceled with the
-	// real error so it reaches the coordinator and ultimately
-	// RunNonInteractive's stderr output.
-	var peakHoursAbortMu sync.Mutex
-	var peakHoursAbortErr error
-	setPeakHoursAbortErr := func(err error) bool {
-		peakHoursAbortMu.Lock()
-		defer peakHoursAbortMu.Unlock()
-		if peakHoursAbortErr != nil {
-			return false
-		}
-		peakHoursAbortErr = err
-		return true
-	}
-	getPeakHoursAbortErr := func() error {
-		peakHoursAbortMu.Lock()
-		defer peakHoursAbortMu.Unlock()
-		return peakHoursAbortErr
-	}
+	// Aborts this turn when the provider enters its peak-hours window
+	// mid-stream. See peakHoursWatcher's doc in agent_turn_peakhours.go.
+	peakHours := newPeakHoursWatcher(a, call.SessionID, ctx, genCtx, &sessionLock, &currentAssistant)
+	setPeakHoursAbortErr := peakHours.setAbortErr
+	getPeakHoursAbortErr := peakHours.getAbortErr
 
 	// silentCompactNeeded records that PrepareStep's sliding-window trim
 	// fired this turn. The silent compact runs SYNCHRONOUSLY after the turn's
@@ -798,52 +779,9 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	// resets it to emit at most once per step.
 	sawToolBoundary := true
 
-	peakHoursWatchDone := make(chan struct{})
+	peakHoursWatchDone := peakHours.start()
 	if a.peakHoursCheck != nil {
-		go func() {
-			defer close(peakHoursWatchDone)
-			ticker := time.NewTicker(peakHoursPollInterval)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-genCtx.Done():
-					return
-				case <-ticker.C:
-					pErr := a.peakHoursCheck()
-					if pErr == nil {
-						continue
-					}
-					if !setPeakHoursAbortErr(pErr) {
-						return
-					}
-					slog.Warn("agent: aborting — provider entered peak-hours mid-turn",
-						"session_id", call.SessionID, "error", pErr)
-					peakMsg, peakDetails := peakHoursStoppedFinishText(pErr)
-					sessionLock.Lock()
-					var snap message.Message
-					haveSnap := currentAssistant != nil
-					if haveSnap {
-						currentAssistant.AddFinish(message.FinishReasonError, peakMsg, peakDetails)
-						snap = currentAssistant.Clone()
-					}
-					sessionLock.Unlock()
-					if haveSnap {
-						flushCtx, flushCancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
-						if uErr := a.messages.Update(flushCtx, snap); uErr != nil {
-							slog.Warn("agent: failed to persist peak-hours finish message", "error", uErr)
-						}
-						flushCancel()
-					}
-					if cancelFn, ok := a.activeRequests.Get(call.SessionID); ok {
-						cancelFn()
-					}
-					return
-				}
-			}
-		}()
 		defer func() { cancel(); <-peakHoursWatchDone }()
-	} else {
-		close(peakHoursWatchDone)
 	}
 
 	// Don't send MaxOutputTokens if 0 — some providers (e.g. LM Studio) reject it
