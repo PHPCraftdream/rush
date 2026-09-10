@@ -68,6 +68,7 @@ func TestGetOrRenewClientWaitsForDetachedRenewalWinner(t *testing.T) {
 			setState(serverName, StateConnected, nil, oldSession, Counts{})
 
 			lease := serverLeaseFor(serverName)
+			defer leases.release(lease)
 			waitStarted := make(chan struct{})
 			var waitOnce sync.Once
 			lease.mu.Lock()

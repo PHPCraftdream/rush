@@ -32,11 +32,33 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- Split `ExecuteRun` into smaller same-package files without changing its
+  public API or execution behavior. Removed the corresponding file-size
+  exemption.
+- Made watchdog shutdown and configuration-reload handoff regression tests
+  event-driven, and tightened database-connection cleanup checks for failed
+  application initialization.
+
 - Workspace configuration now fails closed on trust uncertainty. A workspace
   config whose ownership cannot be verified, or whose working directory/config
   cannot be statted, causes load or reload to fail instead of being silently
   accepted. Missing workspace config remains valid; foreign global and project
   candidates continue to be skipped during discovery.
+
+### Fixed
+
+- **MCP isolation across application lifecycles.** Closing an installed or
+  standalone owner no longer clears another owner's connections, advertised
+  data, event subscriptions, or disabled/error/starting states. Surviving
+  owners retain their server-lease identity across installed-owner rollover;
+  closing the last owner still cleans up its resources. This applies to
+  owners with disjoint server names; sharing a server name remains unsupported.
+- **Concurrent launches of different npm binary builds.** A launch now pins
+  its executable in a private temporary directory before running it, so another
+  build's cache cleanup cannot cause a startup `ENOENT`. If hardlinks are
+  unavailable or the shared cache entry was already removed, the launcher
+  copies the installed executable instead. Private launch files are removed
+  after the child exits; unavailable-cache fallback remains supported.
 
 ## [0.2.0-alpha.1] - 2026-08-28
 

@@ -67,6 +67,7 @@ if (!fs.existsSync(binary)) {
 // Any failure anywhere in this block falls back to the pre-existing
 // behaviour: spawn `binary` straight out of node_modules.
 let launchTarget = binary;
+let privateLaunchDir;
 try {
   const key = hashFileSync(binary);
 
@@ -75,9 +76,9 @@ try {
   const targetDir = path.join(binCacheDir, key);
   const targetPath = path.join(targetDir, binName);
 
+  // Pin the selected cache file before sweeping other build keys.
+  fs.mkdirSync(binCacheDir, { recursive: true });
   if (!fs.existsSync(targetPath)) {
-    fs.mkdirSync(binCacheDir, { recursive: true });
-
     // Unique-per-process tmp dir so two concurrent first-launches never
     // write into the same staging path (plan §10 Г5).
     const tmpDir = path.join(
@@ -109,6 +110,21 @@ try {
     }
   }
 
+  privateLaunchDir = path.join(
+    binCacheDir,
+    '.tmp-launch-' + process.pid + '-' + process.hrtime.bigint().toString(36),
+  );
+  fs.mkdirSync(privateLaunchDir);
+  const privateLaunchPath = path.join(privateLaunchDir, binName);
+  try {
+    fs.linkSync(targetPath, privateLaunchPath);
+  } catch (_) {
+    fs.copyFileSync(binary, privateLaunchPath);
+  }
+  if (process.platform !== 'win32') {
+    fs.chmodSync(privateLaunchPath, 0o755);
+  }
+
   // Best-effort sweep of stale build caches. Never allowed to block or
   // fail the actual launch — every removal is individually guarded, and
   // the whole block is wrapped again below by the outer try/catch.
@@ -128,7 +144,7 @@ try {
     // Sweeping is pure housekeeping; never let it affect the launch.
   }
 
-  launchTarget = targetPath;
+  launchTarget = privateLaunchPath;
 } catch (cacheErr) {
   process.stderr.write(
     'rush: warning: binary cache unavailable (' + cacheErr.message + '); ' +
@@ -137,7 +153,12 @@ try {
   launchTarget = binary;
 }
 
-var result = spawnSync(launchTarget, process.argv.slice(2), { stdio: 'inherit' });
+var result;
+try {
+  result = spawnSync(launchTarget, process.argv.slice(2), { stdio: 'inherit' });
+} finally {
+  releasePrivateLaunchDir(privateLaunchDir);
+}
 
 // Spawn-time failure (ENOENT/EACCES) — the binary couldn't be launched.
 if (result.error) {
@@ -200,4 +221,13 @@ function resolveCacheRoot() {
     return path.join(os.homedir(), 'Library', 'Caches');
   }
   return process.env.XDG_CACHE_HOME || path.join(os.homedir(), '.cache');
+}
+
+function releasePrivateLaunchDir(privateDir) {
+  if (!privateDir) return;
+  try {
+    fs.rmSync(privateDir, { recursive: true, force: true });
+  } catch (_) {
+    // Best-effort cleanup only.
+  }
 }

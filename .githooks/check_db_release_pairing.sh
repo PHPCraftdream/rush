@@ -26,7 +26,7 @@
 # Heuristic (same philosophy as this repo's other guards -- same-file
 # occurrence counting, not static analysis): for every tracked
 # *_test.go file that mentions db.Connect( or db.ConnectRead( at least
-# once, count mentions of db.Release( and db.ReleaseAll( in the same
+# once, count db.Release(, db.ReleaseAll( and db.ReleaseConn( in the same
 # file, with full-line // comments stripped first. If the release count
 # is lower than the connect count, the file is a violation. Disclosed
 # imprecision, accepted deliberately:
@@ -60,6 +60,8 @@
 #     helper in file B that Connects and Releases) is invisible to a
 #     same-file count by construction: the helper file carries both
 #     sides, so it pairs.
+#   - db.ReleaseConn( releases one reference by connection identity and
+#     counts just like db.Release(, without the path-generation ambiguity.
 #
 # Implementation note: the per-file loop runs only over files that
 # mention db.Connect/db.ConnectRead (~40 today), never over every
@@ -147,10 +149,10 @@ while IFS= read -r file; do
 	code="$(grep -v '^[[:space:]]*//' "$file" 2>/dev/null || true)"
 
 	connects="$(printf '%s\n' "$code" | grep -o -E 'db\.(Connect|ConnectRead)\(' | wc -l)"
-	releases="$(printf '%s\n' "$code" | grep -o -E 'db\.(Release|ReleaseAll)\(' | wc -l)"
+	releases="$(printf '%s\n' "$code" | grep -o -E 'db\.(Release|ReleaseAll|ReleaseConn)\(' | wc -l)"
 
 	if [ "$((releases))" -lt "$((connects))" ]; then
-		violations="${violations}  ${file}: ${connects} db.Connect/ConnectRead call(s), ${releases} db.Release/ReleaseAll call(s)"$'\n'
+		violations="${violations}  ${file}: ${connects} db.Connect/ConnectRead call(s), ${releases} db.Release/ReleaseAll/ReleaseConn call(s)"$'\n'
 	fi
 done <<<"$conn_files"
 

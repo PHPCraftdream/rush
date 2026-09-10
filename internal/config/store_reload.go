@@ -638,6 +638,9 @@ func (s *ConfigStore) autoReloadAfterWrite(ctx context.Context) error {
 	s.reloadPending = true
 	s.reloadPendingWaiter = true
 	s.reloadPendingMu.Unlock()
+	if hook := s.reloadAfterWriteQueued; hook != nil {
+		hook()
+	}
 	// Take ownership of a successor instead of returning while the pending bit
 	// is merely a promise. This is the writer handoff: if the active reload
 	// fails before it reaches its pending check, this writer still performs the

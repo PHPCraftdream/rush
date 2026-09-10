@@ -156,60 +156,94 @@ func TestCycle7StalenessTracksNegativeLookupAndMCPCandidates(t *testing.T) {
 }
 
 func TestCycle7WriterHandoffAfterNonRetryableReloadFailure(t *testing.T) {
+	isolateAllGlobalConfigPaths(t)
 	root := t.TempDir()
 	path := filepath.Join(root, "rush.json")
 	require.NoError(t, os.WriteFile(path, []byte(`{"options":{}}`), 0o600))
 	store := newTestConfigStore(testStoreOpts{config: &Config{}, globalDataPath: path, workspacePath: filepath.Join(root, "ws.json")})
 	store.workingDir = root
 	firstHook := make(chan struct{})
+	writerQueued := make(chan struct{})
 	release := make(chan struct{})
 	var releaseOnce sync.Once
 	releaseHook := func() { releaseOnce.Do(func() { close(release) }) }
-	t.Cleanup(releaseHook)
+	store.reloadAfterWriteQueued = func() { close(writerQueued) }
+
 	var calls int
+	var hookErr error
 	store.reloadAfterDiskRead = func() {
 		calls++
-		if calls == 1 {
-			require.NoError(t, writeStableConfigFile(path, []byte(`{"hooks":{"PreToolUse":[{"matcher":"[bad","command":"true"}]}}`)))
+		switch calls {
+		case 1:
+			hookErr = writeStableConfigFile(path, []byte(`{"hooks":{"PreToolUse":[{"matcher":"[bad","command":"true"}]}}`))
 			close(firstHook)
 			<-release
-		} else {
-			require.NoError(t, writeStableConfigFile(path, []byte(`{"options":{}}`)))
+		case 3:
+			// Only the successor repairs the hook; retain the writer's data.
+			var data []byte
+			data, _, hookErr = readStableConfigFile(path)
+			if hookErr != nil {
+				return
+			}
+			var document map[string]any
+			hookErr = json.Unmarshal(data, &document)
+			if hookErr != nil {
+				return
+			}
+			delete(document, "hooks")
+			data, hookErr = json.Marshal(document)
+			if hookErr == nil {
+				hookErr = writeStableConfigFile(path, data)
+			}
 		}
 	}
+
+	ctx, cancel := context.WithCancel(t.Context())
 	reloadDone := make(chan error, 1)
-	go func() { reloadDone <- store.ReloadFromDisk(context.Background()) }()
+	reloadExited := make(chan struct{})
+	var writerExited chan struct{}
+	defer func() {
+		releaseHook()
+		cancel()
+		<-reloadExited
+		if writerExited != nil {
+			<-writerExited
+		}
+	}()
+	go func() {
+		defer close(reloadExited)
+		reloadDone <- store.ReloadFromDisk(ctx)
+	}()
 	select {
 	case <-firstHook:
-	case <-time.After(5 * time.Second):
-		t.Fatal("reload did not reach the handoff hook")
-	}
-	writerDone := make(chan error, 1)
-	go func() { writerDone <- store.SetConfigField(ScopeGlobal, "writer", true) }()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		data := mustReadCycle7File(t, path)
-		if string(data) != "" && strings.Contains(string(data), "writer") {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("writer did not complete its disk write")
-		}
-		time.Sleep(time.Millisecond)
-	}
-	releaseHook()
-	select {
+		require.NoError(t, hookErr)
 	case err := <-reloadDone:
-		require.Error(t, err)
-	case <-time.After(5 * time.Second):
-		t.Fatal("reload did not finish after release")
+		t.Fatalf("reload returned before its handoff hook: %v", err)
 	}
+
+	writerDone := make(chan error, 1)
+	writerExited = make(chan struct{})
+	go func() {
+		defer close(writerExited)
+		writerDone <- store.SetConfigField(ScopeGlobal, "options.debug", true)
+	}()
 	select {
+	case <-writerQueued:
 	case err := <-writerDone:
-		require.NoError(t, err)
-	case <-time.After(5 * time.Second):
-		t.Fatal("writer did not finish")
+		t.Fatalf("writer returned before queuing its successor reload: %v", err)
 	}
+	var written Config
+	require.NoError(t, json.Unmarshal(mustReadCycle7File(t, path), &written))
+	require.NotNil(t, written.Options)
+	require.True(t, written.Options.Debug)
+	releaseHook()
+
+	require.ErrorContains(t, <-reloadDone, "invalid hook configuration")
+	require.NoError(t, <-writerDone)
+	<-writerExited
+	require.NoError(t, hookErr)
+	require.GreaterOrEqual(t, calls, 3, "the queued writer must build a successor")
+	require.True(t, store.Config().Options.Debug, "the successor must publish the writer's value")
 	store.reloadPendingMu.Lock()
 	require.False(t, store.reloadPending)
 	store.reloadPendingMu.Unlock()

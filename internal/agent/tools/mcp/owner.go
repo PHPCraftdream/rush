@@ -317,6 +317,7 @@ func acquireStandalone() (*Owner, error) {
 	o.fallbackWorker.start()
 	o.refreshWG.Add(1)
 	go o.refreshLoop()
+	standaloneOwners[o] = struct{}{}
 	lifecycleMu.Unlock()
 	return o, nil
 }
@@ -501,8 +502,8 @@ func (o *Owner) Close(ctx context.Context) error {
 }
 
 func (o *Owner) finishClose(reclaim bool) {
-	// A standalone owner shuts down only its own lifecycle; the shared
-	// registry reset and slot teardown belong to the installed owner.
+	// A standalone owner shuts down only its own lifecycle; shared registry
+	// cleanup and slot teardown belong to the installed owner.
 	if o.fallbackWorker != nil {
 		o.fallbackWorker.stopAndWait()
 	}
@@ -519,14 +520,12 @@ func (o *Owner) finishClose(reclaim bool) {
 	}
 	snapshotBySession := make(map[*ClientSession]string)
 	lifecycleMu.Lock()
-	// A standalone owner must not adopt unowned global sessions: they may
-	// belong to the installed owner. It closes only its tracked sessions.
-	if !o.standalone {
-		for name, session := range sessions.Seq2() {
-			session.closeStateMu.Lock()
-			unowned := session.owner == nil
-			session.closeStateMu.Unlock()
-			if unowned {
+	for name, session := range sessions.Seq2() {
+		session.closeStateMu.Lock()
+		sessionOwner := session.owner
+		session.closeStateMu.Unlock()
+		if sessionOwner == o || (!o.standalone && sessionOwner == nil) {
+			if sessionOwner == nil {
 				o.trackSessionLocked(session, name)
 			}
 			snapshotBySession[session] = name
@@ -558,25 +557,28 @@ func (o *Owner) finishClose(reclaim bool) {
 
 	lifecycleMu.Lock()
 	if owner == o {
-		clear(o.committedAdmissions)
-		resetRegistryLocked()
+		o.clearRegistryEntriesLocked()
 		if !reclaim {
 			owner = nil
 			initDone = closedChannel()
 		}
 		o.closeInitBarrierLocked()
 	} else if o.standalone {
-		o.clearOwnRegistryEntriesLocked()
+		o.clearRegistryEntriesLocked()
+	}
+	if o.standalone {
+		delete(standaloneOwners, o)
+	}
+	if (owner == nil || (owner == o && reclaim)) && len(standaloneOwners) == 0 {
+		resetBrokerLocked()
 	}
 	o.closeDoneOnce.Do(func() { close(o.closeDone) })
 	lifecycleMu.Unlock()
 }
 
-// clearOwnRegistryEntriesLocked removes only this standalone owner's own
-// entries from the shared name-keyed maps. It never touches the broker, the
-// global lease registry, the installed-owner slot, or the initDone mirror,
-// which belong to the installed owner. Callers hold lifecycleMu.
-func (o *Owner) clearOwnRegistryEntriesLocked() {
+// clearRegistryEntriesLocked removes only this owner's entries from the
+// shared name-keyed maps. Callers hold lifecycleMu.
+func (o *Owner) clearRegistryEntriesLocked() {
 	names := make(map[string]struct{})
 	for name := range o.committedAdmissions {
 		names[name] = struct{}{}
@@ -584,36 +586,68 @@ func (o *Owner) clearOwnRegistryEntriesLocked() {
 	for name := range o.serverEpochs {
 		names[name] = struct{}{}
 	}
+	if !o.standalone {
+		for name := range states.Seq2() {
+			names[name] = struct{}{}
+		}
+		for name := range allTools.Seq2() {
+			names[name] = struct{}{}
+		}
+		for name := range allPrompts.Seq2() {
+			names[name] = struct{}{}
+		}
+		for name := range allResources.Seq2() {
+			names[name] = struct{}{}
+		}
+	}
 	for name := range names {
+		if session, ok := sessions.Get(name); ok {
+			session.closeStateMu.Lock()
+			sessionOwner := session.owner
+			session.closeStateMu.Unlock()
+			if sessionOwner != o {
+				continue
+			}
+		}
+		if admission, ok := stateOwners.Get(name); ok && admission.owner != o {
+			continue
+		}
+		if hasForeignServerClaimLocked(o, name) {
+			continue
+		}
 		sessions.Del(name)
 		states.Del(name)
 		stateOwners.Del(name)
 		allTools.Del(name)
 		allPrompts.Del(name)
 		allResources.Del(name)
+		leases.deleteIfUnused(name)
 	}
+	clear(o.committedAdmissions)
+	clear(o.serverCancels)
+	clear(o.pendingGlobalAdds)
+	clear(o.serverEpochs)
+	clear(o.refreshPending)
+	clear(o.refreshRunning)
 }
 
-func resetRegistryLocked() {
-	for name := range sessions.Seq2() {
-		sessions.Del(name)
+func hasForeignServerClaimLocked(o *Owner, name string) bool {
+	if current := owner; current != nil && current != o {
+		if _, ok := current.serverEpochs[name]; ok {
+			return true
+		}
 	}
-	for name := range states.Seq2() {
-		states.Del(name)
+	for other := range standaloneOwners {
+		if other != o {
+			if _, ok := other.serverEpochs[name]; ok {
+				return true
+			}
+		}
 	}
-	for name := range stateOwners.Seq2() {
-		stateOwners.Del(name)
-	}
-	for name := range allTools.Seq2() {
-		allTools.Del(name)
-	}
-	for name := range allPrompts.Seq2() {
-		allPrompts.Del(name)
-	}
-	for name := range allResources.Seq2() {
-		allResources.Del(name)
-	}
-	leases.reset()
+	return false
+}
+
+func resetBrokerLocked() {
 	broker.Shutdown()
 	broker = pubsub.NewBroker[Event]()
 }

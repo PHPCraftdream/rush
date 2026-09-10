@@ -29,6 +29,7 @@ const { spawnSync, spawn } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const vm = require('node:vm');
 
 const RUSH_JS = path.join(__dirname, 'rush.js');
 const PLATFORM = process.platform + '-' + process.arch;
@@ -68,12 +69,91 @@ function makeFixture(prefix, opts) {
   );
 
   const binPath = path.join(pkgDir, 'bin', BIN_NAME);
-  fs.writeFileSync(binPath, opts.binContent || 'fake-binary-content-v1');
+  if (opts.realBinary) {
+    if (process.platform === 'win32') {
+      fs.copyFileSync(process.execPath, binPath);
+      if (opts.binSuffix) fs.appendFileSync(binPath, opts.binSuffix);
+    } else {
+      const label = opts.binLabel || opts.binSuffix || 'fixture';
+      fs.writeFileSync(
+        binPath,
+        '#!/usr/bin/env node\n// ' + label + '\nprocess.stdout.write("fixture\\n");\n',
+      );
+      fs.chmodSync(binPath, 0o755);
+    }
+  } else {
+    fs.writeFileSync(binPath, opts.binContent || 'fake-binary-content-v1');
+  }
 
   const cacheDir = path.join(root, 'cache');
   fs.mkdirSync(cacheDir, { recursive: true });
 
   return { root, nodeModules, pkgDir, binPath, cacheDir };
+}
+
+class LauncherExit extends Error {
+  constructor(code) {
+    super('launcher exited');
+    this.code = code;
+  }
+}
+
+function runLauncherInVm(fixture, hooks) {
+  hooks = typeof hooks === 'function' ? { beforeSpawn: hooks } : (hooks || {});
+  const source = fs.readFileSync(RUSH_JS, 'utf8');
+  const realRequire = require;
+  const launchRequire = (request) => {
+    if (request === 'node:child_process') {
+      const childProcess = realRequire(request);
+      return Object.assign({}, childProcess, {
+        spawnSync(...args) {
+          if (hooks.beforeSpawn) hooks.beforeSpawn();
+          return childProcess.spawnSync(...args);
+        },
+      });
+    }
+    if (request === 'node:fs' && (hooks.beforePin || hooks.failLink)) {
+      const fsModule = realRequire(request);
+      return new Proxy(fsModule, {
+        get(target, property, receiver) {
+          if (property !== 'linkSync') return Reflect.get(target, property, receiver);
+          return (...args) => {
+            if (hooks.beforePin) hooks.beforePin();
+            if (hooks.failLink) {
+              const err = new Error('hardlinks unavailable in test');
+              err.code = 'EOPNOTSUPP';
+              throw err;
+            }
+            return target.linkSync(...args);
+          };
+        },
+      });
+    }
+    return realRequire(request);
+  };
+  launchRequire.resolve = (request) => {
+    if (request === PKG_NAME + '/package.json') return path.join(fixture.pkgDir, 'package.json');
+    return realRequire.resolve(request);
+  };
+
+  const launchProcess = Object.create(process);
+  launchProcess.env = Object.assign({}, process.env, {
+    RUSH_BIN_CACHE: fixture.cacheDir,
+  });
+  launchProcess.argv = [process.execPath, RUSH_JS, '--version'];
+  launchProcess.exit = (code) => { throw new LauncherExit(code); };
+
+  try {
+    vm.runInNewContext(source, {
+      Buffer,
+      process: launchProcess,
+      require: launchRequire,
+    }, { filename: RUSH_JS });
+  } catch (err) {
+    if (!(err instanceof LauncherExit)) throw err;
+    return err.code;
+  }
+  throw new Error('launcher returned without calling process.exit');
 }
 
 // Runs rush.js as a child process against a fixture. Returns the spawnSync
@@ -369,53 +449,156 @@ async function testConcurrentFirstLaunch() {
 }
 
 // ---------------------------------------------------------------------
-// 4. Fallback: when the cache directory cannot be resolved/used, the
+// 4. Eviction before pin: an older cache key may disappear before linking,
+//    so the launcher must recover by copying the installed executable.
+// ---------------------------------------------------------------------
+function testConcurrentDifferentBuildLaunches() {
+  const fxA = makeFixture('rush-live-a', { realBinary: true });
+  const fxB = makeFixture('rush-live-b', { realBinary: true, binSuffix: 'build-b' });
+  try {
+    fxB.cacheDir = fxA.cacheDir;
+
+    const nestedExitCodes = [];
+    let evictedKey;
+    const exitA = runLauncherInVm(fxA, {
+      beforePin: () => {
+        evictedKey = listCacheDirs(path.join(fxA.cacheDir, 'rush', 'bin'))[0];
+        nestedExitCodes.push(runLauncherInVm(fxB));
+      },
+    });
+
+    assert.deepStrictEqual(
+      nestedExitCodes,
+      [0],
+      'newer build failed while evicting the older build cache entry',
+    );
+    assert.strictEqual(exitA, 0, 'older build failed after the eviction sweep ran');
+    assert.ok(evictedKey, 'older shared cache key was not created before eviction');
+    assert.ok(
+      !fs.existsSync(path.join(fxA.cacheDir, 'rush', 'bin', evictedKey)),
+      'older shared cache key was not evicted before pin fallback',
+    );
+
+    const binCacheDir = path.join(fxA.cacheDir, 'rush', 'bin');
+    const cacheDirs = listCacheDirs(binCacheDir);
+    assert.ok(
+      cacheDirs.length <= 1,
+      'expected stale shared keys to be evicted: ' + JSON.stringify(cacheDirs),
+    );
+    assert.strictEqual(
+      fs.readdirSync(binCacheDir).filter((name) => name.startsWith('.tmp-')).length,
+      0,
+      'private launch directory was not cleaned after both children exited',
+    );
+  } finally {
+    fs.rmSync(fxA.root, { recursive: true, force: true });
+    fs.rmSync(fxB.root, { recursive: true, force: true });
+  }
+}
+
+function testHardlinkFallback() {
+  const fx = makeFixture('rush-link-fallback', { realBinary: true });
+  try {
+    const exitCode = runLauncherInVm(fx, { failLink: true });
+    assert.strictEqual(exitCode, 0, 'copy fallback failed to launch the installed binary');
+
+    const binCacheDir = path.join(fx.cacheDir, 'rush', 'bin');
+    assert.strictEqual(listCacheDirs(binCacheDir).length, 1, 'cache entry missing after copy fallback');
+    assert.strictEqual(
+      fs.readdirSync(binCacheDir).filter((name) => name.startsWith('.tmp-')).length,
+      0,
+      'private copy directory was not cleaned after launch',
+    );
+  } finally {
+    fs.rmSync(fx.root, { recursive: true, force: true });
+  }
+}
+
+function testHardlinkPinSurvivesEviction() {
+  const fxA = makeFixture('rush-pinned-a', { realBinary: true });
+  const fxB = makeFixture('rush-pinned-b', { realBinary: true, binSuffix: 'build-b' });
+  try {
+    fxB.cacheDir = fxA.cacheDir;
+
+    const nestedExitCodes = [];
+    let evictedKey;
+    const exitA = runLauncherInVm(fxA, {
+      beforeSpawn: () => {
+        evictedKey = listCacheDirs(path.join(fxA.cacheDir, 'rush', 'bin'))[0];
+        nestedExitCodes.push(runLauncherInVm(fxB));
+      },
+    });
+
+    assert.deepStrictEqual(nestedExitCodes, [0], 'newer build failed during cache eviction');
+    assert.strictEqual(exitA, 0, 'hardlinked older build failed after cache eviction');
+    assert.ok(evictedKey, 'older shared cache key was not created before pinning');
+    assert.ok(
+      !fs.existsSync(path.join(fxA.cacheDir, 'rush', 'bin', evictedKey)),
+      'older shared cache key was not evicted after the pinned launch began',
+    );
+
+    const binCacheDir = path.join(fxA.cacheDir, 'rush', 'bin');
+    assert.strictEqual(
+      fs.readdirSync(binCacheDir).filter((name) => name.startsWith('.tmp-')).length,
+      0,
+      'private launch directory was not cleaned after both children exited',
+    );
+  } finally {
+    fs.rmSync(fxA.root, { recursive: true, force: true });
+    fs.rmSync(fxB.root, { recursive: true, force: true });
+  }
+}
+
+// ---------------------------------------------------------------------
+// 7. Fallback: when the cache directory cannot be resolved/used, the
 //    wrapper must not throw an unhandled exception — it should print the
 //    "binary cache unavailable" warning and fall back to the original
 //    binary path.
 // ---------------------------------------------------------------------
 function testCacheUnavailableFallback() {
   const fx = makeFixture('rush-fallback', { version: '0.1.7', binContent: 'fake-binary-content-fallback' });
+  try {
+    // Point RUSH_BIN_CACHE at a path that cannot be created as a directory:
+    // a path that has a *file* (not a directory) as one of its intermediate
+    // path segments. fs.mkdirSync({recursive:true}) will fail with ENOTDIR
+    // when trying to create a subdirectory under a plain file. This reliably
+    // triggers the wrapper's outer catch without touching any real ACL/perms
+    // machinery (which is unreliable to set up portably in a test).
+    const blockerFile = path.join(fx.root, 'not-a-directory');
+    fs.writeFileSync(blockerFile, 'blocker');
+    const bogusCacheRoot = path.join(blockerFile, 'nested', 'cache');
 
-  // Point RUSH_BIN_CACHE at a path that cannot be created as a directory:
-  // a path that has a *file* (not a directory) as one of its intermediate
-  // path segments. fs.mkdirSync({recursive:true}) will fail with ENOTDIR
-  // when trying to create a subdirectory under a plain file. This reliably
-  // triggers the wrapper's outer catch without touching any real ACL/perms
-  // machinery (which is unreliable to set up portably in a test).
-  const blockerFile = path.join(fx.root, 'not-a-directory');
-  fs.writeFileSync(blockerFile, 'blocker');
-  const bogusCacheRoot = path.join(blockerFile, 'nested', 'cache');
+    const env = Object.assign({}, process.env, {
+      NODE_PATH: fx.nodeModules,
+      RUSH_BIN_CACHE: bogusCacheRoot,
+    });
+    const result = spawnSync(process.execPath, [RUSH_JS, '--version'], { env, encoding: 'utf8' });
 
-  const env = Object.assign({}, process.env, {
-    NODE_PATH: fx.nodeModules,
-    RUSH_BIN_CACHE: bogusCacheRoot,
-  });
-  const result = spawnSync(process.execPath, [RUSH_JS, '--version'], { env, encoding: 'utf8' });
+    assert.ok(
+      !result.error || result.error.code !== 'undefined',
+      'wrapper process failed to launch at all (should have run and fallen back instead): ' +
+        (result.error && result.error.message),
+    );
+    assert.strictEqual(result.status, 1, 'genuine startup failure must remain an exit 1');
 
-  assert.ok(
-    !result.error || result.error.code !== 'undefined',
-    'wrapper process failed to launch at all (should have run and fallen back instead): ' +
-      (result.error && result.error.message),
-  );
+    assert.ok(
+      /rush: warning: binary cache unavailable/.test(result.stderr || ''),
+      'expected the "binary cache unavailable" fallback warning on stderr, got:\n' + (result.stderr || '(empty)'),
+    );
 
-  assert.ok(
-    /rush: warning: binary cache unavailable/.test(result.stderr || ''),
-    'expected the "binary cache unavailable" fallback warning on stderr, got:\n' + (result.stderr || '(empty)'),
-  );
-
-  // Fallback means it attempted to launch the ORIGINAL binary path
-  // directly (fx.binPath), not a cache copy. Since our fake binary isn't a
-  // real executable, spawnSync inside rush.js will itself fail to exec it
-  // and rush.js will report that via its own "failed to launch" message
-  // referencing fx.binPath — confirming launchTarget fell back correctly.
-  assert.ok(
-    (result.stderr || '').includes(fx.binPath) || (result.stdout || '').includes(fx.binPath),
-    'expected the fallback launch attempt to reference the original binary path ' +
-      fx.binPath + ', got stderr:\n' + (result.stderr || '(empty)') + '\nstdout:\n' + (result.stdout || '(empty)'),
-  );
-
-  fs.rmSync(fx.root, { recursive: true, force: true });
+    // Fallback means it attempted to launch the ORIGINAL binary path
+    // directly (fx.binPath), not a cache copy. Since our fake binary isn't a
+    // real executable, spawnSync inside rush.js will itself fail to exec it
+    // and rush.js will report that via its own "failed to launch" message
+    // referencing fx.binPath — confirming launchTarget fell back correctly.
+    assert.ok(
+      (result.stderr || '').includes(fx.binPath) || (result.stdout || '').includes(fx.binPath),
+      'expected the fallback launch attempt to reference the original binary path ' +
+        fx.binPath + ', got stderr:\n' + (result.stderr || '(empty)') + '\nstdout:\n' + (result.stdout || '(empty)'),
+    );
+  } finally {
+    fs.rmSync(fx.root, { recursive: true, force: true });
+  }
 }
 
 (async () => {
@@ -433,7 +616,10 @@ function testCacheUnavailableFallback() {
       process.stdout.write((err && err.stack ? err.stack : String(err)) + '\n');
     }
   })();
-  section('4. fallback when cache is unavailable', testCacheUnavailableFallback);
+  section('4. concurrent different-build launch', testConcurrentDifferentBuildLaunches);
+  section('5. hardlink fallback', testHardlinkFallback);
+  section('6. hardlink pin survives eviction', testHardlinkPinSurvivesEviction);
+  section('7. fallback when cache is unavailable', testCacheUnavailableFallback);
 
   if (failures > 0) {
     process.stderr.write('\n' + failures + ' section(s) FAILED\n');

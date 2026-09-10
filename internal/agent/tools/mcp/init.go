@@ -23,10 +23,11 @@ var (
 	broker      = pubsub.NewBroker[Event]()
 	leases      = newLeaseRegistry()
 
-	lifecycleMu contextlock.RWMutex
-	owner       *Owner
-	initDone    = closedChannel()
-	generation  uint64
+	lifecycleMu      contextlock.RWMutex
+	owner            *Owner
+	initDone         = closedChannel()
+	generation       uint64
+	standaloneOwners = make(map[*Owner]struct{})
 )
 
 func (o *Owner) beginInit() bool {

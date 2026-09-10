@@ -111,6 +111,9 @@ type turnTitleJoiner struct {
 	once sync.Once
 }
 
+// Test-only seam; nil in production.
+var turnTitleJoinAfterDisarmSeam func()
+
 func newTurnTitleJoiner(wd streamWatchdog, done chan struct{}, overrideGrace time.Duration, sessionID string) *turnTitleJoiner {
 	return &turnTitleJoiner{wd: wd, done: done, overrideGrace: overrideGrace, sessionID: sessionID}
 }
@@ -118,6 +121,9 @@ func newTurnTitleJoiner(wd streamWatchdog, done chan struct{}, overrideGrace tim
 func (j *turnTitleJoiner) join() {
 	j.once.Do(func() {
 		j.wd.disarm()
+		if turnTitleJoinAfterDisarmSeam != nil {
+			turnTitleJoinAfterDisarmSeam()
+		}
 		if j.done == nil {
 			return
 		}

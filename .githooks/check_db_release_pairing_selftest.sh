@@ -39,6 +39,10 @@ trap 'rm -rf "$mock_dir"' EXIT
 cat >"$mock_dir/git" <<'EOF'
 #!/usr/bin/env bash
 if [ "${1:-}" = "grep" ]; then
+	if [ -n "${CHECK_DB_SELFTEST_FIXTURE:-}" ]; then
+		printf '%s\n' "$CHECK_DB_SELFTEST_FIXTURE"
+		exit 0
+	fi
 	if [ "${CHECK_DB_SELFTEST_GREP_EXIT:-1}" -ne 1 ]; then
 		printf 'check_db_release_pairing_selftest: forced git grep exit %s\n' "$CHECK_DB_SELFTEST_GREP_EXIT" >&2
 	fi
@@ -85,6 +89,19 @@ esac
 # must remain a pass, not be treated as an error.
 CHECK_DB_SELFTEST_GREP_EXIT=1 CHECK_DB_SELFTEST_REAL_GIT="$real_git" PATH="$mock_dir:$PATH" bash "$target" >/dev/null 2>&1
 expect_status "git grep exit 1 (zero matches) stays a pass (exit 0)" 0 "$?"
+
+fixture="$mock_dir/pair_test.go"
+printf '%s\n' 'package p' 'func f() { db.Connect(ctx, "fixture"); db.ReleaseConn(conn) }' >"$fixture"
+CHECK_DB_SELFTEST_FIXTURE="$fixture" CHECK_DB_SELFTEST_REAL_GIT="$real_git" PATH="$mock_dir:$PATH" bash "$target" >/dev/null 2>&1
+expect_status "ReleaseConn pairs one Connect" 0 "$?"
+
+printf '%s\n' 'package p' 'func f() { db.Connect(ctx, "fixture"); db.ConnectRead(ctx, "fixture"); db.ReleaseConn(conn) }' >"$fixture"
+CHECK_DB_SELFTEST_FIXTURE="$fixture" CHECK_DB_SELFTEST_REAL_GIT="$real_git" PATH="$mock_dir:$PATH" bash "$target" >/dev/null 2>&1
+expect_status "one ReleaseConn cannot pair two connections" 1 "$?"
+
+printf '%s\n' 'package p' 'func f() { db.Connect(ctx, "fixture") }' >"$fixture"
+CHECK_DB_SELFTEST_FIXTURE="$fixture" CHECK_DB_SELFTEST_REAL_GIT="$real_git" PATH="$mock_dir:$PATH" bash "$target" >/dev/null 2>&1
+expect_status "an unpaired connection still fails" 1 "$?"
 
 if [ "$failures" -gt 0 ]; then
 	printf 'check_db_release_pairing self-test: %d failure(s)\n' "$failures"

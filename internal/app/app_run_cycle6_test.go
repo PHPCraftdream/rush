@@ -82,6 +82,9 @@ func newCycle6RunApp(t *testing.T) cycle6RunApp {
 	conn, err := db.Connect(context.Background(), dataDir)
 	require.NoError(t, err)
 	application, err := New(context.Background(), conn, store)
+	if err != nil {
+		err = errors.Join(err, db.ReleaseConn(conn))
+	}
 	require.NoError(t, err)
 	t.Cleanup(application.Shutdown)
 

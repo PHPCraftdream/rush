@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -92,6 +93,9 @@ func newModelOverrideApp(t *testing.T) modelOverrideApp {
 	conn, err := db.Connect(context.Background(), dataDir)
 	require.NoError(t, err)
 	application, err := New(context.Background(), conn, store)
+	if err != nil {
+		err = errors.Join(err, db.ReleaseConn(conn))
+	}
 	require.NoError(t, err)
 	t.Cleanup(application.Shutdown)
 
@@ -285,6 +289,9 @@ func TestExecuteRunModelOverrideSurvivesFreshAppContinuation(t *testing.T) {
 	require.NoError(t, err)
 	require.NotSame(t, oldDB, conn)
 	fresh, err := New(t.Context(), conn, freshStore)
+	if err != nil {
+		err = errors.Join(err, db.ReleaseConn(conn))
+	}
 	require.NoError(t, err)
 	t.Cleanup(fresh.Shutdown)
 	after, err := fresh.Sessions.Get(t.Context(), sess.ID)

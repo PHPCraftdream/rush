@@ -1,11 +1,24 @@
 package agent
 
 import (
+	"context"
+	"errors"
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
+
+var errStopAfterStepFinish = errors.New("stop after step finish")
+
+type sentinelSessionService struct {
+	session.Service
+}
+
+func (sentinelSessionService) Get(context.Context, string) (session.Session, error) {
+	return session.Session{}, errStopAfterStepFinish
+}
 
 // TestOnStepFinishRecordsLoopDetectionOnTheTrippingStep pins task #940's
 // ordering invariant directly against onStepFinish's own phase methods
@@ -35,7 +48,10 @@ func TestOnStepFinishRecordsLoopDetectionOnTheTrippingStep(t *testing.T) {
 
 	assistant := &message.Message{ID: "asst-1", SessionID: "sess-1"}
 	ts := &turnStream{
+		a:              &sessionAgent{sessions: sentinelSessionService{}},
 		call:           SessionAgentCall{SessionID: "sess-1"},
+		bumpActivity:   func() {},
+		stopCheckpoint: func() {},
 		drainPendingUI: func() {},
 	}
 	ts.currentAssistant = assistant
@@ -49,11 +65,9 @@ func TestOnStepFinishRecordsLoopDetectionOnTheTrippingStep(t *testing.T) {
 		// Simulate that here so the guard doesn't short-circuit before
 		// loop detection ever gets a chance to run.
 		assistant.AddToolCall(message.ToolCall{ID: f.name, Name: f.name, Finished: true})
-		// Mirrors onStepFinish's own call order for these two phases --
-		// this is the assertion, not incidental setup.
-		ts.recordStepHistory(step)
-		finishReason := classifyStepFinishReason(step)
-		ts.recordStepFinish(finishReason)
+		// The sentinel Get returns after recordStepFinish, so this drives the
+		// real callback through the phases under test without a full session.
+		require.ErrorIs(t, ts.onStepFinish(step), errStopAfterStepFinish)
 
 		if fin, ok := lastFinishPart(assistant); ok && fin.Message != "" {
 			firedOnStep = i

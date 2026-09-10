@@ -8,6 +8,19 @@ This is the npm-package changelog, not the fork's engineering decision
 log — see [`CHANGELOG.fork.md`](../../CHANGELOG.fork.md) at the repo
 root for the full per-file merge/divergence history.
 
+## [Unreleased]
+
+### Fixed
+
+- Launching different binary builds concurrently no longer fails with `ENOENT`
+  when one launch removes the other's shared cache entry. Each launch pins its
+  executable in a private temporary directory, using a copy if hardlinks are
+  unavailable or eviction happens before pinning, and cleans it up after exit.
+  The existing fallback when the cache is unavailable is preserved.
+- MCP owners with disjoint server names now retain their connections and
+  states when another owner closes. See the root
+  [changelog](../../CHANGELOG.md#unreleased) for shared runtime changes.
+
 ## [0.2.0-alpha.0]
 
 - Renamed: the npm distribution is now published as `@phpcraftdream/rush` (binary `rush`) — same package, same version line, previously published as `@phpcraftdream/crush`.

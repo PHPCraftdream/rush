@@ -152,10 +152,13 @@ func (r *leaseRegistry) Len() int {
 	return len(r.entries)
 }
 
-func (r *leaseRegistry) reset() {
+func (r *leaseRegistry) deleteIfUnused(name string) {
 	r.mu.Lock()
-	r.entries = make(map[string]*serverLease)
-	r.mu.Unlock()
+	defer r.mu.Unlock()
+	lease, ok := r.entries[name]
+	if ok && lease.refs == 0 {
+		delete(r.entries, name)
+	}
 }
 
 func (l *serverLease) Lock() {
