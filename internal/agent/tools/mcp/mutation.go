@@ -331,15 +331,14 @@ func enableServerWithPersistenceAndInitializerAndRollbackForOwner(
 		return ErrOwnerBusy
 	}
 	defer o.endInit()
-	mcpCfg, ok := cfg.MCPConfig(name)
-	if !ok {
+	if _, ok := cfg.MCPConfig(name); !ok {
 		return fmt.Errorf("MCP server %q not found: %w", name, config.ErrMCPNotFound)
 	}
 	lease := serverLeaseFor(name)
 	if !lease.lockContext(ctx, true) {
 		return ctx.Err()
 	}
-	mcpCfg, ok = cfg.MCPConfig(name)
+	mcpCfg, ok := cfg.MCPConfig(name)
 	if !ok {
 		lease.Unlock()
 		return fmt.Errorf("MCP server %q disappeared while enabling", name)
