@@ -2,7 +2,6 @@ package config
 
 import (
 	"context"
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -15,23 +14,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestDarwinVolumeCapabilityParser(t *testing.T) {
-	buffer := make([]byte, configVolumeCapabilityAttributeSize)
-	binary.LittleEndian.PutUint32(buffer[:4], configVolumeCapabilityAttributeSize)
-	binary.LittleEndian.PutUint32(buffer[20:24], configVolumeCapabilityCaseSensitive)
-	caseInsensitive, known := configParseDarwinVolumeCapabilities(buffer)
-	require.True(t, known)
-	require.True(t, caseInsensitive)
-
-	binary.LittleEndian.PutUint32(buffer[4:8], configVolumeCapabilityCaseSensitive)
-	caseInsensitive, known = configParseDarwinVolumeCapabilities(buffer)
-	require.True(t, known)
-	require.False(t, caseInsensitive)
-
-	binary.LittleEndian.PutUint32(buffer[20:24], 0)
-	caseInsensitive, known = configParseDarwinVolumeCapabilities(buffer)
-	require.False(t, known)
-	require.False(t, caseInsensitive)
+func TestDarwinPathconfCaseSensitivity(t *testing.T) {
+	t.Parallel()
+	require.Equal(t, configCaseSensitivityInsensitive, configDarwinCaseSensitivityFromPathconf(0, nil))
+	require.Equal(t, configCaseSensitivitySensitive, configDarwinCaseSensitivityFromPathconf(1, nil))
+	for _, value := range []int{-1, 2} {
+		require.Equal(t, configCaseSensitivityUnknown, configDarwinCaseSensitivityFromPathconf(value, nil))
+	}
+	for _, value := range []int{-1, 0, 1} {
+		require.Equal(t, configCaseSensitivityUnknown, configDarwinCaseSensitivityFromPathconf(value, os.ErrPermission))
+	}
 }
 
 func TestConfigAliasChainFingerprintIgnoresRegularLeafMode(t *testing.T) {

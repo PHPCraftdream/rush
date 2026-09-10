@@ -47,6 +47,9 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- macOS configuration case-sensitivity detection now uses the supported
+  libSystem `pathconf` wrapper instead of a deprecated direct syscall,
+  preserving fail-closed handling for unknown filesystem capabilities.
 - **MCP isolation across application lifecycles.** Closing an installed or
   standalone owner no longer clears another owner's connections, advertised
   data, event subscriptions, or disabled/error/starting states. Surviving

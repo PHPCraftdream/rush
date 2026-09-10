@@ -1,7 +1,6 @@
 package config
 
 import (
-	"encoding/binary"
 	"errors"
 	"os"
 	"path/filepath"
@@ -188,22 +187,16 @@ func configASCIINameFold(name string) string {
 	return string(folded)
 }
 
-const (
-	configVolumeCapabilityCaseSensitive = uint32(0x100)
-	configVolumeCapabilityAttributeSize = 4 + 8*4
-)
-
-// configParseDarwinVolumeCapabilities parses length plus the first capability
-// and valid arrays returned by getattrlist(2).
-func configParseDarwinVolumeCapabilities(buffer []byte) (caseInsensitive, known bool) {
-	if len(buffer) < configVolumeCapabilityAttributeSize ||
-		binary.LittleEndian.Uint32(buffer[:4]) < configVolumeCapabilityAttributeSize {
-		return false, false
+func configDarwinCaseSensitivityFromPathconf(value int, err error) configCaseSensitivity {
+	if err != nil {
+		return configCaseSensitivityUnknown
 	}
-	capabilities := binary.LittleEndian.Uint32(buffer[4:8])
-	valid := binary.LittleEndian.Uint32(buffer[20:24])
-	if valid&configVolumeCapabilityCaseSensitive == 0 {
-		return false, false
+	switch value {
+	case 0:
+		return configCaseSensitivityInsensitive
+	case 1:
+		return configCaseSensitivitySensitive
+	default:
+		return configCaseSensitivityUnknown
 	}
-	return capabilities&configVolumeCapabilityCaseSensitive == 0, true
 }
