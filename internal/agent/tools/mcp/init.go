@@ -420,8 +420,8 @@ func initClientAdmittedWithState(ctx context.Context, cfg *config.ConfigStore, n
 	}
 
 	operationCtx := ctx
-	finish := func() {}
 	if admission != nil {
+		var finish func()
 		operationCtx, finish = admission.owner.operationContext(ctx)
 		defer finish()
 	}

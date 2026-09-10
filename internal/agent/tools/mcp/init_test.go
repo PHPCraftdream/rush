@@ -423,6 +423,7 @@ func TestCreateTransport_PassesLifetimeContextToEveryRuntimeField(t *testing.T) 
 	ctx := context.WithValue(context.Background(), contextMarkerKey{}, marker)
 
 	t.Run("stdio", func(t *testing.T) {
+		t.Parallel()
 		r := &contextRecordingResolver{}
 		m := config.MCPConfig{
 			Type:    config.MCPStdio,
@@ -441,6 +442,7 @@ func TestCreateTransport_PassesLifetimeContextToEveryRuntimeField(t *testing.T) 
 	})
 
 	t.Run("http", func(t *testing.T) {
+		t.Parallel()
 		r := &contextRecordingResolver{}
 		m := config.MCPConfig{
 			Type:    config.MCPHttp,
@@ -458,6 +460,7 @@ func TestCreateTransport_PassesLifetimeContextToEveryRuntimeField(t *testing.T) 
 	})
 
 	t.Run("sse", func(t *testing.T) {
+		t.Parallel()
 		r := &contextRecordingResolver{}
 		m := config.MCPConfig{
 			Type:    config.MCPSSE,

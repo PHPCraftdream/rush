@@ -714,7 +714,7 @@ func fileMatchesFS(ctx context.Context, fsys fs.FS, path string, pattern *regexp
 	if !(strings.HasPrefix(contentType, "text/") || contentType == "application/json" || contentType == "application/xml" || contentType == "application/javascript" || contentType == "application/x-sh") {
 		return nil
 	}
-	var reader io.Reader = io.MultiReader(bytes.NewReader(prefix[:n]), file)
+	reader := io.MultiReader(bytes.NewReader(prefix[:n]), file)
 	if seeker, ok := file.(io.Seeker); ok {
 		if _, err := seeker.Seek(0, io.SeekStart); err != nil {
 			return err

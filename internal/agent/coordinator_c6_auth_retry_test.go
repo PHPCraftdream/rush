@@ -219,9 +219,8 @@ func TestSummarize_ProactiveRefreshRebuildsImmutableSnapshot(t *testing.T) {
 	require.NoError(t, err)
 	snapshot, err := coord.buildSummarizeSnapshot(t.Context(), session.ID)
 	require.NoError(t, err)
-	oldClient := snapshot.model.Model
 	snapshot.model.Model = &c6IdentityModel{tag: "old-client"}
-	oldClient = snapshot.model.Model
+	oldClient := snapshot.model.Model
 
 	coord.refreshOAuth2TokenFn = func(_ context.Context, _ config.ProviderConfig) error {
 		fresh := config.ProviderConfig{

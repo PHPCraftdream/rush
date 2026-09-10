@@ -204,7 +204,8 @@ func fsReadOne(ctx context.Context, disk DiskProvider, absPath string, rawPath s
 		return "", fmt.Errorf("file content is not valid UTF-8")
 	}
 
-	firstLine, lastLine := win.firstLine, win.firstLine-1
+	var lastLine int
+	firstLine := win.firstLine
 	if window.lineCount > 0 {
 		lastLine = win.firstLine + window.lineCount - 1
 	} else {

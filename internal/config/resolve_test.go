@@ -203,7 +203,8 @@ func TestResolveValueCommandSubstitutionHelper(t *testing.T) {
 	if os.Getenv(resolveCommandHelperEnv) != "1" {
 		return
 	}
-	conn, err := net.Dial("tcp", os.Getenv("RUSH_RESOLVE_COMMAND_HELPER_ADDR"))
+	var dialer net.Dialer
+	conn, err := dialer.DialContext(t.Context(), "tcp", os.Getenv("RUSH_RESOLVE_COMMAND_HELPER_ADDR"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,7 +216,8 @@ func TestResolveValueCommandSubstitutionHelper(t *testing.T) {
 }
 
 func TestShellVariableResolver_CommandSubstitutionCancellationReapsChild(t *testing.T) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	var listenCfg net.ListenConfig
+	listener, err := listenCfg.Listen(t.Context(), "tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 
 	accepted := make(chan net.Conn, 1)

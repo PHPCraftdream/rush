@@ -478,6 +478,7 @@ func TestReadTextFileFromPreservesLineBoundaries(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			reader := &generatedReadCloser{segments: test.segments}
 			disk := generatedReadDisk{DiskProvider: OSDisk(), reader: reader}
 
@@ -558,6 +559,7 @@ func TestReadBoundedBytesAcceptsExactLimitAndRejectsOneByteOver(t *testing.T) {
 		{name: "overflow", count: MaxViewSize + 1, err: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			reader := &generatedReadCloser{segments: []generatedReadSegment{{fill: 'x', count: test.count}}}
 			data, err := readBoundedBytes(t.Context(), reader, MaxViewSize)
 			if test.err {
@@ -584,6 +586,7 @@ func TestExternalSkillWindowHasFiniteByteCap(t *testing.T) {
 		{name: "one byte over", extra: 1, err: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			segments := make([]generatedReadSegment, 0, 205)
 			for range 102 {
 				segments = append(segments,
@@ -619,6 +622,7 @@ func TestReadTextFileUTF8TruncationKeepsValidBoundary(t *testing.T) {
 		{name: "exact-two-byte", text: strings.Repeat("a", MaxLineLength-2) + "é", want: strings.Repeat("a", MaxLineLength-2) + "é"},
 	} {
 		t.Run(width.name, func(t *testing.T) {
+			t.Parallel()
 			reader := &generatedReadCloser{segments: []generatedReadSegment{{literal: width.text}}}
 			disk := generatedReadDisk{DiskProvider: OSDisk(), reader: reader}
 			content, _, err := readTextFileFrom(t.Context(), disk, "generated", 0, 1, 0)

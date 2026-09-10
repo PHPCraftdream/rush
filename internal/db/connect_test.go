@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"math"
 	"sync"
 	"testing"
 	"time"
@@ -272,10 +273,22 @@ func TestConcurrentReadersAndWriter_WriteLatencyStable(t *testing.T) {
 		return elapsed / writes
 	}
 
-	baseline := measureWriteLatency(0)
-	loaded := measureWriteLatency(16)
+	// Best of three, and the two series interleaved rather than run one
+	// after the other. Both details attack the same failure: this measures
+	// wall-clock on a machine whose load it does not control, and it flaked
+	// when the whole package ran under -race. Scheduler interference can
+	// only ever make a sample SLOWER, so the minimum of several is the
+	// closest estimate of the real cost; interleaving stops the first
+	// series from being systematically luckier than the second.
+	const samples = 3
+	baseline := time.Duration(math.MaxInt64)
+	loaded := time.Duration(math.MaxInt64)
+	for range samples {
+		baseline = min(baseline, measureWriteLatency(0))
+		loaded = min(loaded, measureWriteLatency(16))
+	}
 
-	t.Logf("avg write latency: 0 readers=%s, 16 readers=%s", baseline, loaded)
+	t.Logf("avg write latency (best of %d): 0 readers=%s, 16 readers=%s", samples, baseline, loaded)
 
 	// Allow generous headroom (this runs on shared CI hardware and SQLite
 	// driver overhead varies) — the point is proving there's no gross

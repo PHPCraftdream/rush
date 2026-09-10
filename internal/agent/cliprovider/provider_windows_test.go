@@ -100,7 +100,7 @@ func requireRealBash(t *testing.T) string {
 	if err != nil {
 		t.Skipf("no non-WSL bash on PATH; skipping WSL-first regression test: %v", err)
 	}
-	if err := exec.Command(path, "-c", "exit 0").Run(); err != nil {
+	if err := exec.CommandContext(t.Context(), path, "-c", "exit 0").Run(); err != nil {
 		t.Skipf("bash %q is not runnable; skipping WSL-first regression test: %v", path, err)
 	}
 	return path

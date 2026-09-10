@@ -533,7 +533,6 @@ func scanFileWithContext(ctx context.Context, filePath string, regex *regexp.Reg
 }
 
 func scanFSGrepReader(ctx context.Context, source io.Reader, regex *regexp.Regexp, contextLines int, filePath string, files map[string]*fsGrepFileHits, budget *fsGrepBudget) error {
-
 	var collector *fsGrepFileHits
 
 	type ringEntry struct {

@@ -539,12 +539,10 @@ func (s *ConfigStore) orderedMCPPaths() []string {
 	}
 	appendSafe(GlobalConfig(), homeConfigOwner())
 	appendSafe(s.globalDataPath, homeConfigOwner())
-	for _, path := range lookupConfigCandidates(s.workingDir) {
-		// lookupConfigCandidates applies the same global/project owner policy;
-		// retain its discovery spelling so mcpPathData can bind the alias to the
-		// opened file identity.
-		paths = append(paths, path)
-	}
+	// lookupConfigCandidates applies the same global/project owner policy;
+	// retain its discovery spelling so mcpPathData can bind the alias to the
+	// opened file identity.
+	paths = append(paths, lookupConfigCandidates(s.workingDir)...)
 	if workspacePath := s.configPathOrEmpty(ScopeWorkspace); workspacePath != "" {
 		if owner, enforce, err := configOwnerForWorkingDir(s.workingDir); err == nil && (!enforce || eligibleConfigCandidate(workspacePath, owner) != "") {
 			paths = append(paths, workspacePath)
@@ -640,11 +638,12 @@ func entryOrigins(origins map[string]MCPOrigin, path, workspacePath, globalPath,
 			continue
 		}
 		origin := MCPOrigin{Kind: MCPOriginProject, Path: path, Scope: ScopeGlobal, Writable: false}
-		if path == workspacePath {
+		switch path {
+		case workspacePath:
 			origin.Kind, origin.Scope, origin.Writable = MCPOriginWorkspace, ScopeWorkspace, true
-		} else if path == globalPath {
+		case globalPath:
 			origin.Kind, origin.Scope, origin.Writable = MCPOriginGlobal, ScopeGlobal, true
-		} else if path == systemPath {
+		case systemPath:
 			origin.Kind = MCPOriginSystem
 		}
 		if current, ok := origins[name]; !ok || mcpOriginPriority(origin) >= mcpOriginPriority(current) {

@@ -108,6 +108,11 @@ func TestGetOrRenewClientWaitsForDetachedRenewalWinner(t *testing.T) {
 			if test.cancelWait {
 				waiterCtx, cancelWaiter = context.WithCancel(context.Background())
 			}
+			// Every t.Fatal below returns without reaching the explicit
+			// cancelWaiter() call in the cancelWait branch, which leaked the
+			// context on each failure path. Cancelling twice is a no-op, and
+			// so is cancelling the func(){} default.
+			defer cancelWaiter()
 			waiterDone := make(chan *clientLease, 1)
 			waiterErr := make(chan error, 1)
 			go func() {

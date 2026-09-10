@@ -68,6 +68,36 @@ linters:
         linters:
           - staticcheck
         text: "SA1019"
+      # SA2001 "empty critical section": lock-then-immediately-unlock is not
+      # dead code in these files, it is the idiom being used on purpose.
+      # In the mcp tests it is a barrier -- take the lease, so the goroutine
+      # blocks until whoever holds it releases, then proceed -- and in
+      # state_regression_refresh_test.go it is a 500-iteration churn loop
+      # stressing lease reclamation. In contextlock_alloc_test.go the
+      # lock/unlock pair IS the operation whose allocations
+      # testing.AllocsPerRun measures; removing it would delete the test.
+      - path: internal/agent/tools/mcp/.*_test\.go
+        linters:
+          - staticcheck
+        text: "SA2001"
+      # The MCP SDK detaches its connection context from Connect's context,
+      # so this transport keeps the pre-context cancellation path as an
+      # explicit fence for a request blocked before it has produced a
+      # response body -- context cancellation alone is not sufficient on
+      # every Windows net/http path. See the comment at the call site.
+      - path: internal/agent/tools/mcp/transport\.go
+        linters:
+          - staticcheck
+        text: "SA1019"
+      # QF* are staticcheck's optional "quickfix" suggestions, not
+      # correctness findings. QF1001 in particular rewrites guard conditions
+      # through De Morgan's law; the identity guards in the MCP package are
+      # deliberately written in the positive form (owner != o && !o.standalone)
+      # so that the standalone relaxation reads as one clause, and inverting
+      # them would obscure exactly the thing reviewers need to see.
+      - linters:
+          - staticcheck
+        text: "QF1001"
       # file-size ratchet: one entry per .go line of
       # .githooks/file_size_allowlist.txt (the allowlist is the single
       # source of truth; revive only lints Go, so web/src/store.ts lives

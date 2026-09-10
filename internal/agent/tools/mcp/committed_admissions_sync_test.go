@@ -119,7 +119,7 @@ func TestCommittedAdmissionsDisableAndPublishCrossServer(t *testing.T) {
 			lease := serverLeaseFor(disabled)
 			lease.Lock()
 			lifecycleMu.Lock()
-			_, _ = owner.committedAdmissions[disabled]
+			_ = owner.committedAdmissions[disabled]
 			lifecycleMu.Unlock()
 			lease.Unlock()
 		}

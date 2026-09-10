@@ -201,7 +201,7 @@ func TestConfigStoreResolveMCPWritableScope(t *testing.T) {
 	})
 
 	t.Run("project definition fails closed", func(t *testing.T) {
-		store, root := isolatedMCPConfigStore(t)
+		_, root := isolatedMCPConfigStore(t)
 		writeMCPDefinition(t, filepath.Join(root, "rush.json"), "project.name")
 		// Keep the writable workspace file elsewhere so root/rush.json is a
 		// project definition rather than the workspace scope.

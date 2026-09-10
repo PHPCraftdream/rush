@@ -58,6 +58,7 @@ func TestHooksRunBeforeRestrictedDispatch(t *testing.T) {
 	}
 
 	t.Run("allow hook admits omitted legacy tool", func(t *testing.T) {
+		t.Parallel()
 		probe := &dispatchProbeTool{name: "view"}
 		tool := newLayered(t, probe, newRunner(t, `echo '{"decision":"allow"}'`), build(t, permission.RunAllowlistSpec{Restrict: true}))
 		resp, err := tool.Run(ctx(t), fantasy.ToolCall{ID: "hook-allow", Name: "view"})
@@ -67,6 +68,7 @@ func TestHooksRunBeforeRestrictedDispatch(t *testing.T) {
 	})
 
 	t.Run("silent hook remains denied", func(t *testing.T) {
+		t.Parallel()
 		probe := &dispatchProbeTool{name: "view"}
 		tool := newLayered(t, probe, newRunner(t, `exit 0`), build(t, permission.RunAllowlistSpec{Restrict: true}))
 		resp, err := tool.Run(ctx(t), fantasy.ToolCall{ID: "hook-silent", Name: "view"})
@@ -77,6 +79,7 @@ func TestHooksRunBeforeRestrictedDispatch(t *testing.T) {
 
 	for _, decision := range []string{"deny", "halt"} {
 		t.Run(decision+" hook never reaches inner tool", func(t *testing.T) {
+			t.Parallel()
 			probe := &dispatchProbeTool{name: "view"}
 			output := fmt.Sprintf(`echo '{"decision":"deny","%s":true}'`, map[string]string{"halt": "halt", "deny": "reason"}[decision])
 			if decision == "deny" {
@@ -91,6 +94,7 @@ func TestHooksRunBeforeRestrictedDispatch(t *testing.T) {
 	}
 
 	t.Run("updated input is evaluated by command gate", func(t *testing.T) {
+		t.Parallel()
 		probe := &dispatchProbeTool{name: tools.BashToolName}
 		tool := newLayered(t, probe, newRunner(t, `echo '{"updated_input":{"command":"echo allowed"}}'`), build(t, permission.RunAllowlistSpec{Restrict: true, AllowBash: []string{"exact:echo allowed"}}))
 		resp, err := tool.Run(ctx(t), fantasy.ToolCall{ID: "hook-rewrite", Name: tools.BashToolName, Input: `{"command":"echo denied"}`})
@@ -121,6 +125,7 @@ func TestRealBashHookApprovalReachesInnerRestrictedGate(t *testing.T) {
 	}
 
 	t.Run("safe echo is allowed by exact hook approval", func(t *testing.T) {
+		t.Parallel()
 		svc := permission.NewPermissionService(t.Context(), t.TempDir(), false, nil, nil)
 		arm(t, svc)
 		tool := newBash(t, svc, newRunner(t, `echo '{"decision":"allow"}'`))
@@ -131,6 +136,7 @@ func TestRealBashHookApprovalReachesInnerRestrictedGate(t *testing.T) {
 	})
 
 	t.Run("gated command is allowed by exact hook approval", func(t *testing.T) {
+		t.Parallel()
 		work := t.TempDir()
 		svc := permission.NewPermissionService(t.Context(), work, false, nil, nil)
 		arm(t, svc)
@@ -145,6 +151,7 @@ func TestRealBashHookApprovalReachesInnerRestrictedGate(t *testing.T) {
 	})
 
 	t.Run("silent hook produces one central denial", func(t *testing.T) {
+		t.Parallel()
 		svc := permission.NewPermissionService(t.Context(), t.TempDir(), false, nil, nil)
 		arm(t, svc)
 		notifications := svc.SubscribeNotifications(t.Context())
@@ -171,6 +178,7 @@ func TestRealBashHookApprovalReachesInnerRestrictedGate(t *testing.T) {
 	})
 
 	t.Run("approval for another call ID does not bypass", func(t *testing.T) {
+		t.Parallel()
 		svc := permission.NewPermissionService(t.Context(), t.TempDir(), false, nil, nil)
 		arm(t, svc)
 		tool := newBash(t, svc, newRunner(t, `exit 0`))
@@ -181,6 +189,7 @@ func TestRealBashHookApprovalReachesInnerRestrictedGate(t *testing.T) {
 	})
 
 	t.Run("updated input is assessed after hook", func(t *testing.T) {
+		t.Parallel()
 		svc := permission.NewPermissionService(t.Context(), t.TempDir(), false, nil, nil)
 		arm(t, svc, "exact:echo updated")
 		tool := newBash(t, svc, newRunner(t, `echo '{"updated_input":{"command":"echo updated"}}'`))
@@ -208,6 +217,7 @@ func TestRestrictedRunGateUsesExactToolActions(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			probe := &dispatchProbeTool{name: test.tool}
 			svc := permission.NewPermissionService(t.Context(), t.TempDir(), false, nil, nil)
 			allowlist, err := permission.BuildRunAllowlist(permission.RunAllowlistSpec{
@@ -235,6 +245,7 @@ func TestRestrictedRunGatePreservesPermissionFastPaths(t *testing.T) {
 	t.Parallel()
 
 	t.Run("global tool action grant bypasses restricted gate", func(t *testing.T) {
+		t.Parallel()
 		probe := &dispatchProbeTool{name: "view"}
 		svc := permission.NewPermissionService(t.Context(), t.TempDir(), false, []string{"view"}, nil)
 		allowlist, err := permission.BuildRunAllowlist(permission.RunAllowlistSpec{Restrict: true})
@@ -250,6 +261,7 @@ func TestRestrictedRunGatePreservesPermissionFastPaths(t *testing.T) {
 	})
 
 	t.Run("global matching tool action grant bypasses restricted gate", func(t *testing.T) {
+		t.Parallel()
 		probe := &dispatchProbeTool{name: "view"}
 		svc := permission.NewPermissionService(t.Context(), t.TempDir(), false, []string{"view:read"}, nil)
 		allowlist, err := permission.BuildRunAllowlist(permission.RunAllowlistSpec{Restrict: true, AllowTools: []string{"view:write"}})
@@ -265,6 +277,7 @@ func TestRestrictedRunGatePreservesPermissionFastPaths(t *testing.T) {
 	})
 
 	t.Run("skip grants dispatch before restricted gate", func(t *testing.T) {
+		t.Parallel()
 		probe := &dispatchProbeTool{name: "view"}
 		svc := permission.NewPermissionService(t.Context(), t.TempDir(), true, nil, nil)
 		allowlist, err := permission.BuildRunAllowlist(permission.RunAllowlistSpec{Restrict: true})
@@ -280,6 +293,7 @@ func TestRestrictedRunGatePreservesPermissionFastPaths(t *testing.T) {
 	})
 
 	t.Run("global command grant bypasses restricted gate", func(t *testing.T) {
+		t.Parallel()
 		svc := permission.NewPermissionService(t.Context(), t.TempDir(), false, []string{"bash"}, nil)
 		allowlist, err := permission.BuildRunAllowlist(permission.RunAllowlistSpec{Restrict: true})
 		require.NoError(t, err)
@@ -339,6 +353,7 @@ func TestRestrictedRunGateUsesDynamicMCPActionProvider(t *testing.T) {
 		{"unrelated action denied", "mcp_server_tool:read", false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			probe := &dispatchProbeTool{name: "mcp_server_tool", action: "execute"}
 			svc := permission.NewPermissionService(t.Context(), t.TempDir(), false, nil, nil)
 			allowlist, err := permission.BuildRunAllowlist(permission.RunAllowlistSpec{Restrict: true, AllowTools: []string{test.allow}})
@@ -385,6 +400,7 @@ func TestRestrictedRunGateCoversLegacyToolDispatch(t *testing.T) {
 	t.Parallel()
 
 	t.Run("omitted tool is denied before execution through SetTools", func(t *testing.T) {
+		t.Parallel()
 		probe := &dispatchProbeTool{}
 		svc := permission.NewPermissionService(t.Context(), t.TempDir(), false, nil, nil)
 		allowlist, err := permission.BuildRunAllowlist(permission.RunAllowlistSpec{
@@ -409,6 +425,7 @@ func TestRestrictedRunGateCoversLegacyToolDispatch(t *testing.T) {
 	})
 
 	t.Run("allowlisted legacy tool executes", func(t *testing.T) {
+		t.Parallel()
 		probe := &dispatchProbeTool{}
 		svc := permission.NewPermissionService(t.Context(), t.TempDir(), false, nil, nil)
 		allowlist, err := permission.BuildRunAllowlist(permission.RunAllowlistSpec{
@@ -433,6 +450,7 @@ func TestRestrictedRunGateCoversLegacyToolDispatch(t *testing.T) {
 	})
 
 	t.Run("real glob dispatch cannot read an omitted tool", func(t *testing.T) {
+		t.Parallel()
 		workspace := t.TempDir()
 		secret := filepath.Join(workspace, "secret.txt")
 		require.NoError(t, os.WriteFile(secret, []byte("must not be returned"), 0o600))

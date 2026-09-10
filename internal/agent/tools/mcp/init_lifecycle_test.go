@@ -568,7 +568,7 @@ func TestHeaderRoundTripperKeepsOwnerCancellationUntilBodyClose(t *testing.T) {
 	transport, err := cloneHTTPTransport()
 	require.NoError(t, err)
 	rt := &headerRoundTripper{ctx: ownerCtx, transport: transport}
-	req, err := http.NewRequest(http.MethodGet, server.URL, nil)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, server.URL, nil)
 	require.NoError(t, err)
 	resp, err := rt.RoundTrip(req)
 	require.NoError(t, err)

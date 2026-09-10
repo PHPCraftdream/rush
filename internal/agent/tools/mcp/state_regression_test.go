@@ -293,11 +293,17 @@ func TestHeaderRoundTripperCancelsBlockedRequestBeforeResponse(t *testing.T) {
 	transport, err := cloneHTTPTransport()
 	require.NoError(t, err)
 	rt := &headerRoundTripper{ctx: ownerCtx, transport: transport}
-	req, err := http.NewRequest(http.MethodPost, server.URL, bytes.NewReader([]byte(`{"jsonrpc":"2.0"}`)))
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, server.URL, bytes.NewReader([]byte(`{"jsonrpc":"2.0"}`)))
 	require.NoError(t, err)
 	requestDone := make(chan error, 1)
 	go func() {
-		_, err := rt.RoundTrip(req)
+		// The point of this test is that ownerCancel unblocks RoundTrip, so
+		// the response is normally nil here. Close it on the path where the
+		// race resolves the other way, rather than leaking a connection.
+		resp, err := rt.RoundTrip(req)
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
 		requestDone <- err
 	}()
 	waitForRequest(t, started)
@@ -405,7 +411,6 @@ func TestCandidateListChangedIsRetainedUntilExactCommit(t *testing.T) {
 	}(), "pre-commit notification must not refresh the old session")
 	_, ok := owner.nextRefresh()
 	require.False(t, ok, "a deferred candidate notification must wait for its commit")
-
 }
 
 func TestFailedCandidateListChangedDropsDeferredEvent(t *testing.T) {

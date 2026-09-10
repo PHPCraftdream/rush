@@ -458,7 +458,7 @@ func (s *ConfigStore) buildAndPublishReload(ctx context.Context, expectedUncerta
 			if !json.Valid(wsData) {
 				return fmt.Errorf("invalid JSON in config file %s", workspacePath)
 			}
-			merged, mergeErr := loadFromBytes(append([][]byte{mustMarshalConfig(cfg), wsData}))
+			merged, mergeErr := loadFromBytes([][]byte{mustMarshalConfig(cfg), wsData})
 			if mergeErr != nil {
 				return fmt.Errorf("failed to merge workspace config %s: %w", workspacePath, mergeErr)
 			}

@@ -162,6 +162,28 @@ One thing the command's own body gets wrong if read literally: the
 Do not instruct such an agent not to spawn sub-agents — it will obey and
 be unable to do the task. Constrain it to one worker at a time instead.
 
+### The memory ceiling is shared, not per-process
+
+5 GB is the operator's stated ceiling for what any one heavy operation
+on this machine may claim — and it is a ceiling on top of everything
+else already running (other agents, the IDE, the OS), not a personal
+allowance for that operation alone. Claim well under it, not up to it.
+
+Never run a full-tree `go test ./...`, `go build ./...` or
+`golangci-lint run` bare. Wrap it in `win-nice`'s `capm`, and serialise
+both across packages and within them: `capm 2g go test -p 1 -parallel 1
+-count=1 ./...`. `-p 2`/`-parallel 2` is not "safely under the ceiling"
+once every other process on the box is counted too.
+
+Two failures from one session established why this is a hard rule, not
+a suggestion: a bare `go test ./...` crashed the Go runtime itself with
+a stack overflow (`Exception 0xc00000fd`, exit 139) — not a test
+failure, the test binary dying — and three separate `errno=1455`
+(`ERROR_COMMITMENT_LIMIT`) kills came from ordinary-looking parallel
+Go builds/lints that individually looked fine. `capm 12g`, then `capm
+5g`, were both tried and both corrected downward before `capm 2g -p 1`
+finally ran clean twice in a row.
+
 ## What This Fork REMOVED — Do NOT Re-import
 
 Upstream commits touching any of these MUST be skipped:

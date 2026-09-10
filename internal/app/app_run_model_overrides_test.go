@@ -346,12 +346,10 @@ func TestExecuteRunQueuedOverridePersistsWhenPromoted(t *testing.T) {
 	}()
 
 	var queued bool
-	select {
-	case outcome := <-outcomes:
-		require.Equal(t, 2, outcome.idx)
-		require.ErrorIs(t, outcome.err, ErrRunQueued)
-		queued = true
-	}
+	outcome := <-outcomes
+	require.Equal(t, 2, outcome.idx)
+	require.ErrorIs(t, outcome.err, ErrRunQueued)
+	queued = true
 	require.True(t, queued)
 	close(h.release)
 	require.NoError(t, (<-outcomes).err)
@@ -402,7 +400,7 @@ func TestExecuteRunQueuedOverridePersistenceFailureSkipsProviderAndCleansMailbox
 	queuedErr := <-outcomes
 	require.ErrorIs(t, queuedErr, ErrRunQueued)
 	close(h.release)
-	_ = <-outcomes
+	<-outcomes
 
 	select {
 	case model := <-h.requests:

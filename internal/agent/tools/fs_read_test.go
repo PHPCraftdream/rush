@@ -216,6 +216,7 @@ func TestFSReadUTF8TruncationKeepsValidBoundary(t *testing.T) {
 		{name: "exact-two-byte", text: strings.Repeat("a", MaxLineLength-2) + "é", want: strings.Repeat("a", MaxLineLength-2) + "é"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			reader := &generatedReadCloser{segments: []generatedReadSegment{{literal: test.text}}}
 			disk := generatedReadDisk{DiskProvider: OSDisk(), reader: reader}
 			block, err := fsReadOne(t.Context(), disk, "generated", "generated", FSReadItem{Path: "generated", StartLine: 1, EndLine: 1})

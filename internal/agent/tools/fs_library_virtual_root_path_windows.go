@@ -16,9 +16,7 @@ func pathIsUnderLibraryVirtualRoot(path, root string) bool {
 func normalizeWindowsLibraryPath(path string) string {
 	path = strings.ReplaceAll(path, "/", `\`)
 	const extendedPrefix = `\\?\`
-	if strings.HasPrefix(path, extendedPrefix) {
-		path = path[len(extendedPrefix):]
-	}
+	path = strings.TrimPrefix(path, extendedPrefix)
 	path = filepath.Clean(path)
 	path = strings.ReplaceAll(path, "/", `\`)
 	return strings.ToLower(path)

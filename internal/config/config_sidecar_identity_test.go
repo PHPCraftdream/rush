@@ -360,14 +360,14 @@ func TestConfigWriteTargetPermissionTransitionSupportsFreshRMW(t *testing.T) {
 	target2, err := store2.resolveConfigWriteTarget(path)
 	require.NoError(t, err)
 
-	lock1, err := acquireConfigFileLock(nil, target1.lockPath)
+	lock1, err := acquireConfigFileLock(t.Context(), target1.lockPath)
 	require.NoError(t, err)
 	_, err = commitConfigFile(target1.selectedPath, target1.path, []byte(`{"existing":true,"first":true}`), 0o600,
 		target1.expected, target1.owner, target1.enforce)
 	require.NoError(t, err)
 	require.NoError(t, lock1.Release())
 
-	lock2, err := acquireConfigFileLock(nil, target2.lockPath)
+	lock2, err := acquireConfigFileLock(t.Context(), target2.lockPath)
 	require.NoError(t, err)
 	defer lock2.Release()
 	require.NoError(t, verifyConfigTarget(target2))

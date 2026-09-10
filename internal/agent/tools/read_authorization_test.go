@@ -74,6 +74,12 @@ func TestLegacyReadToolsAuthorizeOutsideRootsAndRejectSymlinks(t *testing.T) {
 		{"glob", glob, GlobParams{Pattern: "*", Path: outside}},
 		{"ls", ls, LSParams{Path: outside}},
 	} {
+		// NOT t.Parallel(): the assertions after this loop read
+		// deny.requests, which the subtests append to. Parallel subtests are
+		// deferred until this function returns, so those assertions would run
+		// against an empty slice -- and the appends themselves would race,
+		// since the recorder is unsynchronised. tparallel is disabled for
+		// this test rather than satisfied by breaking it.
 		t.Run(test.name, func(t *testing.T) {
 			resp := runReadAuthTool(t, test.tool, test.name, test.params)
 			require.True(t, resp.IsError)
@@ -144,6 +150,8 @@ func TestLegacyReadToolsAuthorizeOutsideRootsAndRejectSymlinks(t *testing.T) {
 		{"glob-symlink", NewGlobTool(workspace, denySymlink), GlobParams{Pattern: "*", Path: linkDir}},
 		{"ls-symlink", NewLsTool(denySymlink, workspace, config.ToolLs{}), LSParams{Path: linkDir}},
 	} {
+		// Not parallel, for the same reason as the loop above: denySymlink is
+		// asserted on immediately after this loop.
 		t.Run(test.name, func(t *testing.T) {
 			resp := runReadAuthTool(t, test.tool, strings.TrimSuffix(test.name, "-symlink"), test.params)
 			require.True(t, resp.IsError)
@@ -176,6 +184,7 @@ func TestLegacyReadToolsAuthorizeOutsideRootsAndRejectSymlinks(t *testing.T) {
 		{"ls-authorized-symlink", NewLsTool(allow, workspace, config.ToolLs{}), LSParams{Path: linkDir}, "secret.txt"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			resp := runReadAuthTool(t, test.tool, strings.SplitN(test.name, "-", 2)[0], test.params)
 			require.Contains(t, resp.Content, test.want)
 		})
@@ -195,14 +204,14 @@ func TestAnchoredReadRootSurvivesWorkspacePathRetarget(t *testing.T) {
 
 	moved := workspace + "-moved"
 	renameErr := os.Rename(workspace, moved)
+	// When the rename fails, there is deliberately nothing to do: Windows keeps
+	// the anchored directory handle open and rejects a replacement rename, and
+	// that refusal is itself the structural no-retarget guarantee. The test
+	// then continues against the live root and asserts its contents.
 	retargeted := renameErr == nil
 	if retargeted {
 		require.NoError(t, os.Mkdir(workspace, 0o700))
 		require.NoError(t, os.WriteFile(filepath.Join(workspace, "secret.txt"), []byte("external-bytes"), 0o600))
-	} else {
-		// Windows keeps the anchored directory handle open and rejects a
-		// replacement rename. That is itself the structural no-retarget
-		// guarantee; continue with the live root and assert its contents.
 	}
 
 	displayRoot := workspace

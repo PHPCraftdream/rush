@@ -386,7 +386,6 @@ func TestBackgroundShell_DetachBeforeComplete_DeliversOutputBeforeRelease(t *tes
 // attached callback has no early watchdog, while a later detach starts a fresh
 // bounded release window even when that callback is already stuck.
 func TestBackgroundShell_DetachDuringStuckCallbackArmsBoundedRelease(t *testing.T) {
-
 	bgShell := &BackgroundShell{
 		stdout: newBoundedBuffer(maxStreamBufferBytes),
 		stderr: newBoundedBuffer(maxStreamBufferBytes),

@@ -229,7 +229,7 @@ func TestResetPool_WaitsForConnectBeforeClearingPool(t *testing.T) {
 	_, pooled := pool[absPath]
 	poolMu.Unlock()
 	require.False(t, pooled, "ResetPool returned with a newly-published entry still pooled")
-	require.Error(t, result.conn.Ping(), "ResetPool must close the entry before returning")
+	require.Error(t, result.conn.PingContext(t.Context()), "ResetPool must close the entry before returning")
 }
 
 // TestResetPool_SerializesResettersAheadOfConnect pins reset writer
@@ -404,8 +404,8 @@ func TestResetPool_SerializesResettersAheadOfConnect(t *testing.T) {
 	result := <-connectDone
 	require.NoError(t, result.err)
 	require.NotNil(t, result.conn)
-	require.Error(t, seedConn.Ping(), "the first reset must close the original generation")
-	require.NoError(t, result.conn.Ping(), "the post-reset generation must remain open")
+	require.Error(t, seedConn.PingContext(t.Context()), "the first reset must close the original generation")
+	require.NoError(t, result.conn.PingContext(t.Context()), "the post-reset generation must remain open")
 
 	poolMu.Lock()
 	finalEntry, pooled := pool[absPath]
@@ -448,9 +448,9 @@ func TestReleaseConn_OldGenerationCannotReleaseNewGeneration(t *testing.T) {
 			// release must be ignored after a forced reset, even though the
 			// path has been reused.
 			require.NoError(t, ReleaseConn(oldConn))
-			require.NoError(t, newConn.Ping())
+			require.NoError(t, newConn.PingContext(t.Context()))
 			require.NoError(t, ReleaseConn(newConn))
-			require.Error(t, newConn.Ping())
+			require.Error(t, newConn.PingContext(t.Context()))
 		})
 	}
 }
@@ -485,7 +485,7 @@ func TestReleaseConn_ConcurrentLateOldGenerationReleasesAreHarmless(t *testing.T
 		require.NoError(t, releaseErr)
 	}
 
-	require.NoError(t, newConn.Ping(), "late releases from the old generation closed the new generation")
+	require.NoError(t, newConn.PingContext(t.Context()), "late releases from the old generation closed the new generation")
 	require.NoError(t, ReleaseConn(newConn))
 }
 

@@ -14,18 +14,16 @@ import (
 	"github.com/pressly/goose/v3"
 )
 
-var (
-	pragmas = map[string]string{
-		"foreign_keys":  "ON",
-		"journal_mode":  "WAL",
-		"page_size":     "4096",
-		"temp_store":    "MEMORY",
-		"cache_size":    "-8000",
-		"synchronous":   "NORMAL",
-		"secure_delete": "ON",
-		"busy_timeout":  "30000",
-	}
-)
+var pragmas = map[string]string{
+	"foreign_keys":  "ON",
+	"journal_mode":  "WAL",
+	"page_size":     "4096",
+	"temp_store":    "MEMORY",
+	"cache_size":    "-8000",
+	"synchronous":   "NORMAL",
+	"secure_delete": "ON",
+	"busy_timeout":  "30000",
+}
 
 //go:embed migrations/*.sql
 var FS embed.FS
