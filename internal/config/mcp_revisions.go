@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"maps"
 	"reflect"
+	"sort"
 )
 
 // mcpInputFingerprints fingerprints only the MCP entries in each source
@@ -15,14 +16,27 @@ func mcpInputFingerprints(rush, external []stableConfigDocument) map[string][sha
 		path    string
 		entries map[string]json.RawMessage
 	}
-	documents := make([]document, 0, len(rush)+len(external))
+	documentsByPath := make(map[string]document, len(rush)+len(external))
 	names := make(map[string]struct{})
+	addDocument := func(sourceDocument stableConfigDocument, entries map[string]json.RawMessage) {
+		path := normalizeReloadPath(sourceDocument.path)
+		if path == "" {
+			path = normalizeDiscoveryPath(sourceDocument.path)
+		}
+		if existing, ok := documentsByPath[path]; ok {
+			if len(existing.entries) == 0 && len(entries) != 0 {
+				documentsByPath[path] = document{path: path, entries: entries}
+			}
+			return
+		}
+		documentsByPath[path] = document{path: path, entries: entries}
+	}
 	for _, sourceDocument := range rush {
 		var root struct {
 			MCP map[string]json.RawMessage `json:"mcp"`
 		}
 		if json.Unmarshal(sourceDocument.data, &root) == nil {
-			documents = append(documents, document{path: sourceDocument.path, entries: root.MCP})
+			addDocument(sourceDocument, root.MCP)
 			for name := range root.MCP {
 				names[name] = struct{}{}
 			}
@@ -33,12 +47,17 @@ func mcpInputFingerprints(rush, external []stableConfigDocument) map[string][sha
 			MCPServers map[string]json.RawMessage `json:"mcpServers"`
 		}
 		if json.Unmarshal(sourceDocument.data, &root) == nil {
-			documents = append(documents, document{path: sourceDocument.path, entries: root.MCPServers})
+			addDocument(sourceDocument, root.MCPServers)
 			for name := range root.MCPServers {
 				names[name] = struct{}{}
 			}
 		}
 	}
+	documents := make([]document, 0, len(documentsByPath))
+	for _, document := range documentsByPath {
+		documents = append(documents, document)
+	}
+	sort.Slice(documents, func(i, j int) bool { return documents[i].path < documents[j].path })
 	result := make(map[string][sha256.Size]byte, len(names))
 	for name := range names {
 		hash := sha256.New()

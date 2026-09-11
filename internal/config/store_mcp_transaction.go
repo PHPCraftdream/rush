@@ -767,24 +767,17 @@ func (s *ConfigStore) publishMCPMutationLocked(result MCPMutationResult) {
 		} else {
 			next.snapshots = maps.Clone(next.snapshots)
 		}
-		matched := make(map[string]struct{}, len(result.committedFingerprints))
-		for path, fingerprint := range result.committedFingerprints {
-			key := normalizeDiscoveryPath(path)
-			if snapshot, ok := next.snapshots[key]; ok {
-				updateMCPCommittedSnapshot(&snapshot, key, fingerprint)
-				next.snapshots[key] = snapshot
-				matched[key] = struct{}{}
-			}
-		}
-		for path, fingerprint := range result.committedFingerprints {
+		for path, fallback := range result.committedFingerprints {
 			for key, snapshot := range next.snapshots {
-				if _, ok := matched[key]; ok || normalizeReloadPath(key) != normalizeReloadPath(path) {
+				if normalizeReloadPath(key) != normalizeReloadPath(path) {
 					continue
+				}
+				fingerprint := fallback
+				if current, err := readReloadFingerprint(key); err == nil {
+					fingerprint = current
 				}
 				updateMCPCommittedSnapshot(&snapshot, key, fingerprint)
 				next.snapshots[key] = snapshot
-				matched[key] = struct{}{}
-				break
 			}
 		}
 	}
