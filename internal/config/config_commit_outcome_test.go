@@ -2,7 +2,6 @@ package config
 
 import (
 	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -44,7 +43,7 @@ func TestMCPReconcileReturnsReconciledPublicCommitOutcome(t *testing.T) {
 	require.ErrorAs(t, err, &outcome)
 	require.True(t, outcome.Committed)
 	require.True(t, outcome.Reconciled)
-	require.Equal(t, filepath.Clean(path), outcome.Path)
+	require.Equal(t, normalizeReloadPath(path), outcome.Path)
 	require.ErrorIs(t, outcome, errConfigCommitUncertain)
 	require.ErrorIs(t, outcome, errConfigCommitCommitted)
 	require.ErrorIs(t, err, ErrMCPCommitUncertain)

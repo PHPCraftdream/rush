@@ -33,6 +33,19 @@ func isolatedMCPStore(t *testing.T) *config.ConfigStore {
 	t.Setenv("XDG_CONFIG_HOME", configDir)
 	t.Setenv("RUSH_GLOBAL_DATA", dataDir)
 	t.Setenv("XDG_DATA_HOME", dataDir)
+	providerPath := filepath.Join(configDir, "rush.json")
+	require.NoError(t, os.MkdirAll(configDir, 0o700))
+	require.NoError(t, os.WriteFile(providerPath, []byte(`{
+  "providers": {
+    "test": {
+      "id": "test",
+      "base_url": "https://example.invalid/v1",
+      "api_key": "test-key",
+      "discover_models": false,
+      "models": [{"id": "model", "name": "Test model"}]
+    }
+  }
+}`), 0o600))
 	store, err := config.Init(root, root, false)
 	require.NoError(t, err)
 	return store
