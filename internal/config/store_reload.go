@@ -172,11 +172,7 @@ func readOpenedConfigBytes(file *os.File) ([]byte, error) {
 // even when the final target and bytes happen to return to their old values.
 func configDiscoveryFingerprint(path string) [sha256.Size]byte {
 	h := sha256.New()
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		abs = filepath.Clean(path)
-	}
-	abs = filepath.Clean(abs)
+	abs := configFingerprintPath(path)
 	var components []string
 	for current := abs; ; current = filepath.Dir(current) {
 		components = append(components, current)
@@ -217,11 +213,7 @@ func configDiscoveryFingerprint(path string) [sha256.Size]byte {
 // retaining the same physical binding.
 func configAliasChainFingerprint(path string) [sha256.Size]byte {
 	h := sha256.New()
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		abs = filepath.Clean(path)
-	}
-	abs = filepath.Clean(abs)
+	abs := configFingerprintPath(path)
 	var components []string
 	for current := abs; ; current = filepath.Dir(current) {
 		components = append(components, current)
@@ -259,6 +251,18 @@ func configAliasChainFingerprint(path string) [sha256.Size]byte {
 		_, _ = io.WriteString(h, "\x00")
 	}
 	return sha256.Sum256(h.Sum(nil))
+}
+
+// configFingerprintPath folds the leaf spelling when the containing directory
+// is case-insensitive. Case-only aliases are one filesystem object there and
+// must not produce different staleness fingerprints.
+func configFingerprintPath(path string) string {
+	abs := normalizeDiscoveryPath(path)
+	dir, leaf := filepath.Dir(abs), filepath.Base(abs)
+	if folded, ok := configPlatformCaseFoldLeaf(dir, leaf); ok {
+		return filepath.Join(dir, folded)
+	}
+	return abs
 }
 
 func writeConfigDiscoveryInfo(h hash.Hash, info os.FileInfo) {
