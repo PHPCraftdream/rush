@@ -561,7 +561,14 @@ func (s *ConfigStore) systemConfigPathValue() string {
 func (s *ConfigStore) mcpPathData(files *mcpLockedFiles, path string) ([]byte, bool, error) {
 	key := normalizeDiscoveryPath(path)
 	if record := files.mcpRecord(key); record != nil {
-		return record.data, record.expectation.exists, nil
+		fingerprint, ok := files.fingerprints[key]
+		if !ok {
+			fingerprint = rebindReloadFingerprintPath(path, record.expectation)
+			files.fingerprints[key] = fingerprint
+		}
+		files.data[key] = record.data
+		files.present[key] = fingerprint.exists
+		return record.data, fingerprint.exists, nil
 	}
 	expectedOwner, enforceOwner, ownerErr := s.mcpOwnerPolicy(path)
 	if ownerErr != nil {
