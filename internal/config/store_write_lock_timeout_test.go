@@ -38,7 +38,7 @@ func TestRemoveConfigFieldBestEffort_BoundedByInternalTimeout(t *testing.T) {
 		_, hasDeadline := ctx.Deadline()
 		require.True(t, hasDeadline, "lock acquisition must receive a deadline")
 		require.ErrorIs(t, ctx.Err(), context.Canceled, "lock acquisition must receive a canceled context")
-		require.Equal(t, configPath+".lock", path)
+		require.Equal(t, normalizeReloadPath(configPath)+".lock", path)
 		return nil, context.DeadlineExceeded
 	}
 	configTestHooks.Unlock()
