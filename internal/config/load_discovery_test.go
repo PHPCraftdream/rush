@@ -202,7 +202,7 @@ func TestLookupConfigCandidatesCanonicalizesSymlinkedNestedRepository(t *testing
 
 func TestProjectConfigsPreservesProjectCandidatesAndNegativeStaleness(t *testing.T) {
 	isolateAllGlobalConfigPaths(t)
-	root := t.TempDir()
+	root := normalizeReloadPath(t.TempDir())
 	rushPath := filepath.Join(root, "rush.json")
 	dotRushPath := filepath.Join(root, ".rush.json")
 	require.NoError(t, os.WriteFile(rushPath, []byte(`{"options":{"debug":true}}`), 0o600))
