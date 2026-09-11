@@ -123,7 +123,8 @@ func TestCycle7FingerprintUsesExactCandidateBytesAcrossABA(t *testing.T) {
 	a := []byte(`{"mcp":{"server":{"type":"http","url":"http://a"}}}`)
 	b := []byte(`{"mcp":{"server":{"type":"http","url":"http://b"}}}`)
 	require.NoError(t, os.WriteFile(path, a, 0o600))
-	parsed, fingerprint, err := readStableConfigFile(path)
+	canonicalPath := normalizeReloadPath(path)
+	parsed, fingerprint, err := readStableConfigFile(canonicalPath)
 	require.NoError(t, err)
 	require.Equal(t, a, parsed)
 	// The path returns to A after the candidate was read. A candidate parsed
@@ -131,14 +132,14 @@ func TestCycle7FingerprintUsesExactCandidateBytesAcrossABA(t *testing.T) {
 	// not change, while an unchanged A remains clean.
 	require.NoError(t, os.WriteFile(path, b, 0o600))
 	require.NoError(t, os.WriteFile(path, a, 0o600))
-	current, currentFingerprint, err := readStableConfigFile(path)
+	current, currentFingerprint, err := readStableConfigFile(canonicalPath)
 	require.NoError(t, err)
 	require.Equal(t, a, current)
-	require.False(t, reloadFingerprintsChanged(map[string]reloadFileFingerprint{normalizeReloadPath(path): currentFingerprint}))
+	require.False(t, reloadFingerprintsChanged(map[string]reloadFileFingerprint{canonicalPath: currentFingerprint}))
 	require.NotEqual(t, sha256.Sum256(b), fingerprint.digest)
 	candidateB := fingerprint
 	candidateB.digest = sha256.Sum256(b)
-	require.True(t, reloadFingerprintsChanged(map[string]reloadFileFingerprint{normalizeReloadPath(path): candidateB}))
+	require.True(t, reloadFingerprintsChanged(map[string]reloadFileFingerprint{canonicalPath: candidateB}))
 }
 
 func TestCycle7StalenessTracksNegativeLookupAndMCPCandidates(t *testing.T) {

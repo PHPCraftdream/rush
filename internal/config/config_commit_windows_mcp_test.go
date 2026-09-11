@@ -42,7 +42,7 @@ func TestPersistMCPPreservesMoveFileExDurabilityUncertaintyAfterReconcile(t *tes
 	require.ErrorIs(t, err, windows.ERROR_ACCESS_DENIED)
 	require.True(t, result.NewExists)
 	require.Equal(t, "http://durability.example", result.NewConfig.URL)
-	require.Equal(t, filepath.Clean(path), outcome.Path)
+	require.Equal(t, normalizeReloadPath(path), outcome.Path)
 
 	entries, readDirErr := os.ReadDir(filepath.Dir(path))
 	require.NoError(t, readDirErr)
