@@ -138,9 +138,10 @@ func TestRemoveConfigFieldBestEffort_SucceedsQuicklyWhenLockFree(t *testing.T) {
 
 	store.removeConfigFieldBestEffort(ScopeGlobal, key)
 	require.Equal(t, 1, attempts, "lock-free removal must make one acquisition call")
-	require.Equal(t, configPath+".lock", <-entered)
-	require.Equal(t, configPath+".lock", <-acquired)
-	require.Equal(t, configPath+".lock", <-released)
+	lockPath := normalizeReloadPath(configPath) + ".lock"
+	require.Equal(t, lockPath, <-entered)
+	require.Equal(t, lockPath, <-acquired)
+	require.Equal(t, lockPath, <-released)
 
 	data, rerr := os.ReadFile(configPath)
 	require.NoError(t, rerr)
