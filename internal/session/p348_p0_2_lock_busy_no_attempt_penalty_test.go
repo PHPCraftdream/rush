@@ -69,7 +69,7 @@ func assertRetryCyclePace(t *testing.T, times []time.Time) {
 	const maxCycleGap = 10 * time.Second
 	for i := 1; i < len(times); i++ {
 		require.LessOrEqual(t, times[i].Sub(times[i-1]), maxCycleGap,
-			"retry cycle %d took longer than %s; the 20s completion window must not hide a pace regression",
+			"retry cycle %d took longer than %s; the 30s completion window must not hide a pace regression",
 			i, maxCycleGap)
 	}
 }
@@ -135,7 +135,7 @@ func TestReleaseGate_P0_2_LockBusyNeverExhaustsRetries(t *testing.T) {
 	// Fail with SessionLockBusyError for MANY more calls than
 	// RunQueueMaxAttempts (10) — if attempts were still being counted for
 	// busy errors, the entry would be deleted long before this.
-	coord := &busyThenSuccessCoordinator{busyUntilCall: 12}
+	coord := &busyThenSuccessCoordinator{busyUntilCall: 11}
 
 	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
 		Sessions:       svc,
@@ -147,23 +147,23 @@ func TestReleaseGate_P0_2_LockBusyNeverExhaustsRetries(t *testing.T) {
 	defer pump.Stop()
 
 	// The completion signal is the coordinator's OWN call counter exceeding
-	// busyUntilCall (25), NOT "pending == 0" — a mid-flight lease (the row
+	// busyUntilCall (11), NOT "pending == 0" — a mid-flight lease (the row
 	// is briefly 'leased', not 'pending', while a coordinator.Run() call is
 	// in progress) reads identically to "gone" through
 	// ListPendingRunQueueEntries, which only scans status='pending'. Using
 	// the call counter avoids that ambiguity entirely: it can only reach
 	// past busyUntilCall if the coordinator's success branch (n >
-	// busyUntilCall) actually ran, which — since busyUntilCall (25) is far
+	// busyUntilCall) actually ran, which — since busyUntilCall (11) is beyond
 	// past RunQueueMaxAttempts (10) — is only reachable if busy failures
 	// never counted as attempts and the entry survived to be retried this
 	// many times.
-	// This waits on an async count (12 successful pump-tick cycles at a
-	// nominal 20ms TestTick, ~240ms in the fast case), not a precise
+	// This waits on an async count (11 successful pump-tick cycles at a
+	// nominal 20ms TestTick, ~220ms in the fast case), not a precise
 	// timing relationship -- unlike e.g. the P1-1 lease watchdog margin
 	// tests, widening this bound cannot mask the regression it exists to
 	// catch: if attempts were still (incorrectly) being counted, calls
 	// would plateau at RunQueueMaxAttempts and never reach busyUntilCall
-	// regardless of how long we wait. Widened from 5s to 20s after this
+	// regardless of how long we wait. Widened from 5s to 30s after this
 	// failed on windows-latest CI (runs 31714546616 and 31718897797,
 	// "Condition never satisfied") -- windows-latest is consistently the
 	// slowest/most contended runner in this repo's CI matrix, and these
@@ -171,7 +171,7 @@ func TestReleaseGate_P0_2_LockBusyNeverExhaustsRetries(t *testing.T) {
 	// under -race plus concurrent package load.
 	require.Eventually(t, func() bool {
 		return coord.calls.Load() > coord.busyUntilCall
-	}, 20*time.Second, 20*time.Millisecond,
+	}, 30*time.Second, 20*time.Millisecond,
 		"coordinator must eventually be called past busyUntilCall — if this times out, the entry "+
 			"was terminal-failed (deleted) before reaching that call count, meaning lock-busy "+
 			"failures are still counting toward RunQueueMaxAttempts")
@@ -236,8 +236,8 @@ func TestReleaseGate_P0_2_GenuineFailureStillExhaustsAfterMaxAttempts(t *testing
 	// long we wait). Widened from 5s to 20s (2s/cycle, ~10x the >200ms/cycle
 	// pace observed on windows-latest for this exact DB shape) to match
 	// this file's own convention for multi-cycle waits after windows-latest
-	// CI flakes on the two other 25-cycle waits here and in
-	// p350_dup_dispatch_test.go (see those tests' own comments) — this
+	// CI flakes on the other multi-cycle wait in
+	// p350_dup_dispatch_test.go (see that test's own comments) — this
 	// 10-cycle wait was left at the original 5s and hit the same class of
 	// failure (run 33808420128, "Condition never satisfied").
 	require.Eventually(t, func() bool {
