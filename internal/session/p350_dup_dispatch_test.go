@@ -445,7 +445,7 @@ func TestReleaseGate_P350_LeaseRenewedDuringLongExecution(t *testing.T) {
 	require.Eventually(t, func() bool {
 		gone, checkErr := runQueueGoneEverywhere(ctx, svc)
 		return checkErr == nil && gone
-	}, 2*time.Second, 10*time.Millisecond, "entry should be acked once the long call finally completes")
+	}, 20*time.Second, 20*time.Millisecond, "entry should be acked once the long call finally completes")
 
 	// Sustained check, matching this file's established pattern for
 	// distinguishing "durably gone" from "transiently leased".

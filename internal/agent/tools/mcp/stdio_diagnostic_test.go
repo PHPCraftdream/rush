@@ -90,10 +90,12 @@ func TestStdioDiagnosticCommandPreservesStartupAttributes(t *testing.T) {
 		require.NotSame(t, old.SysProcAttr, cmd.SysProcAttr)
 	}
 
-	err := stdioCheck(old)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), `MCPDIAG env="preserved"`)
-	require.Contains(t, err.Error(), fmt.Sprintf(`dir=%q`, filepath.Clean(dir)))
+	checkErr := stdioCheck(old)
+	require.Error(t, checkErr)
+	require.Contains(t, checkErr.Error(), `MCPDIAG env="preserved"`)
+	canonicalDir, err := filepath.EvalSymlinks(dir)
+	require.NoError(t, err)
+	require.Contains(t, checkErr.Error(), fmt.Sprintf(`dir=%q`, filepath.Clean(canonicalDir)))
 }
 
 func TestStdioCheckDoesNotDuplicateArgv0(t *testing.T) {

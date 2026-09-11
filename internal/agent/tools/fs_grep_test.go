@@ -169,7 +169,8 @@ func TestFSGrepPreflightRejectsContextLinesOutOfRange(t *testing.T) {
 
 func TestFSGrepUsesConfiguredTimeout(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
 	disk := newFakeDisk()
 	disk.putDir(dir)
 	disk.searchFn = func(ctx context.Context, _ SearchRequest) (DiskSearchResult, error) {
