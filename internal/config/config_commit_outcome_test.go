@@ -15,16 +15,15 @@ func TestMCPReconcileReturnsReconciledPublicCommitOutcome(t *testing.T) {
 	configTestHooks.Lock()
 	previousAfter := configTestHooks.afterCommitRenamePath
 	previousReconcile := configTestHooks.beforeMCPReconcile
+	var removed, restored bool
+	var restoreErr error
 	configTestHooks.afterCommitRenamePath = func(hookPath string) error {
-		if hookPath != path {
-			return nil
-		}
+		removed = true
 		return os.Remove(hookPath)
 	}
 	configTestHooks.beforeMCPReconcile = func(reconcilePath string, reconcileData []byte) {
-		if reconcilePath == path {
-			_ = os.WriteFile(reconcilePath, reconcileData, 0o600)
-		}
+		restored = true
+		restoreErr = os.WriteFile(reconcilePath, reconcileData, 0o600)
 	}
 	configTestHooks.Unlock()
 	t.Cleanup(func() {
@@ -38,6 +37,9 @@ func TestMCPReconcileReturnsReconciledPublicCommitOutcome(t *testing.T) {
 		Type: MCPHttp,
 		URL:  "http://reconciled.example",
 	})
+	require.True(t, removed, "post-rename fault injection did not run")
+	require.True(t, restored, "MCP reconciliation did not run")
+	require.NoError(t, restoreErr)
 	var outcome *CommitOutcome
 	require.ErrorAs(t, err, &outcome)
 	require.True(t, outcome.Committed)

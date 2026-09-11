@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/fsext"
 	"github.com/stretchr/testify/require"
 )
 
@@ -86,6 +87,8 @@ func TestCycle7DisableNonWritableOriginsFailsClosed(t *testing.T) {
 		workspacePath := filepath.Join(root, "workspace-data", "rush.json")
 		systemPath := filepath.Join(root, "system", "rush.json")
 		setMCPFile(t, systemPath, "server", "http://system.example")
+		systemOwner, ownerErr := fsext.Owner(systemPath)
+		require.NoError(t, ownerErr)
 		store := newTestConfigStore(testStoreOpts{
 			config:         &Config{},
 			globalDataPath: globalPath,
@@ -95,7 +98,11 @@ func TestCycle7DisableNonWritableOriginsFailsClosed(t *testing.T) {
 		store.systemConfigPathOverride = systemPath
 
 		_, err := store.PersistMCPDisabledOverrideResult(ScopeWorkspace, "server", true)
-		require.ErrorIs(t, err, ErrMCPUnwritableOrigin)
+		if systemOwner == systemConfigOwner() {
+			require.ErrorIs(t, err, ErrMCPUnwritableOrigin)
+		} else {
+			require.ErrorIs(t, err, ErrMCPNotFound)
+		}
 		requireNoConfigFile(t, globalPath)
 		requireNoConfigFile(t, workspacePath)
 	})
