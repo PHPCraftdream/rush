@@ -94,7 +94,7 @@ func TestMCPAdmissionTokenCleanupOnPanic(t *testing.T) {
 }
 
 func TestMCPAdmissionRejectsAppearanceOfAbsentHigherPrioritySource(t *testing.T) {
-	root := t.TempDir()
+	root := normalizeReloadPath(t.TempDir())
 	t.Setenv("RUSH_GLOBAL_CONFIG", filepath.Join(root, "global-config"))
 	globalPath := filepath.Join(root, "global-data", "rush.json")
 	projectPath := filepath.Join(root, "rush.json")
