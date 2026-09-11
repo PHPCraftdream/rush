@@ -48,7 +48,7 @@ func TestConfigWriteTargetDedupKeyUsesExistingFileIdentity(t *testing.T) {
 }
 
 func TestConfigWriteTargetDedupKeyUsesExistingSidecarIdentity(t *testing.T) {
-	root := t.TempDir()
+	root := normalizeReloadPath(t.TempDir())
 	lockPath := filepath.Join(root, "rush.json.lock")
 	require.NoError(t, os.WriteFile(lockPath, nil, 0o600))
 	parent := configParentIdentity(filepath.Join(root, "rush.json"))
