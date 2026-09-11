@@ -429,22 +429,11 @@ func TestReleaseGate_P350_LeaseRenewedDuringLongExecution(t *testing.T) {
 
 	close(coord.release)
 
-	// Wait for the row to be Acked (deleted) — not merely leased.
-	//
-	// A pending-only predicate here is weak in this test's specific shape:
-	// after close(coord.release) the first poll already finds pending empty
-	// (the row is leased), so the wait degenerates to a no-op and the
-	// "acked" claim is actually verified only by the 100ms sustained loop
-	// below — which itself passes vacuously while the row is still leased.
-	// That accidental coverage relies on the coordinator's Run returning
-	// (and the Ack landing) within ~100ms of release; a slower coordinator
-	// would silently turn both the wait and the loop into no-ops and the
-	// final calls==1 assertion would lose its ordering anchor. Waiting for
-	// "gone from pending AND leased" makes the wait mean what its message
-	// says and re-anchors the sustained loop as a genuine durability check.
+	// Wait for this probe row to be Acked (deleted), not merely leased. A
+	// row-specific lookup avoids observing unrelated test state.
 	require.Eventually(t, func() bool {
-		gone, checkErr := runQueueGoneEverywhere(ctx, svc)
-		return checkErr == nil && gone
+		entry, checkErr := svc.GetRunQueueEntry(ctx, "lease-renewal-probe")
+		return checkErr == nil && entry == nil
 	}, 20*time.Second, 20*time.Millisecond, "entry should be acked once the long call finally completes")
 
 	// Sustained check, matching this file's established pattern for
