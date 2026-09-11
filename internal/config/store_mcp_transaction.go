@@ -701,15 +701,32 @@ func (s *ConfigStore) verifyMCPReadOnlyInputs(expected map[string]reloadFileFing
 			return fmt.Errorf("%w: %s", ErrMCPStale, path)
 		}
 		_, actual, err := readStableConfigFileOwned(path, expectedOwner, enforceOwner)
-		if os.IsNotExist(err) {
+		missing := os.IsNotExist(err)
+		if missing {
 			// A missing candidate still carries its discovery-chain fingerprint.
 			err = nil
+		}
+		if missing && configEquivalentMissingMCPInput(path, selected, fingerprint, actual) {
+			continue
 		}
 		if err != nil || actual != fingerprint {
 			return fmt.Errorf("%w: %s", ErrMCPStale, path)
 		}
 	}
 	return nil
+}
+
+func configEquivalentMissingMCPInput(path, selected string, expected, actual reloadFileFingerprint) bool {
+	if expected.exists || actual.exists || !expected.parentIdentity.valid ||
+		expected.parentIdentity != actual.parentIdentity ||
+		expected.parentDiscovery != actual.parentDiscovery {
+		return false
+	}
+	if filepath.Dir(path) != filepath.Dir(selected) ||
+		!configEquivalentLeafNames(filepath.Dir(path), filepath.Base(path), filepath.Base(selected)) {
+		return false
+	}
+	return true
 }
 
 func (s *ConfigStore) publishMCPMutationLocked(result MCPMutationResult) {
