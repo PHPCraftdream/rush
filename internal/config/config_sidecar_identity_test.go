@@ -385,7 +385,7 @@ func TestConfigWriteTargetPermissionTransitionSupportsFreshRMW(t *testing.T) {
 }
 
 func TestMCPAdmissionDeduplicatesCaseSpellingsWhenFilesystemDoes(t *testing.T) {
-	root := t.TempDir()
+	root := normalizeReloadPath(t.TempDir())
 	if !configDirectoryIsCaseInsensitive(root) {
 		t.Skip("filesystem is case-sensitive")
 	}
