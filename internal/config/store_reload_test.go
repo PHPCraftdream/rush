@@ -28,15 +28,15 @@ func TestReloadStalenessStateRebindsAliasedFingerprints(t *testing.T) {
 	fingerprint, err := readReloadFingerprint(path)
 	require.NoError(t, err)
 
-	canonical := normalizeReloadPath(path)
 	tracked, snapshots := reloadStalenessState(
 		[]string{path},
 		map[string]reloadFileFingerprint{normalizeDiscoveryPath(path): fingerprint},
 	)
-	require.Equal(t, []string{canonical}, tracked)
-	current, err := readReloadFingerprint(canonical)
+	discovery := normalizeDiscoveryPath(path)
+	require.Equal(t, []string{discovery}, tracked)
+	current, err := readReloadFingerprint(path)
 	require.NoError(t, err)
-	require.Equal(t, current, snapshots[canonical].fingerprint)
+	require.Equal(t, current, snapshots[discovery].fingerprint)
 }
 
 // TestReloadFromDisk_UsesNewConfigValues is a regression test ensuring that

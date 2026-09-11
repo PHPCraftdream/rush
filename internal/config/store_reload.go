@@ -781,7 +781,7 @@ func reloadStalenessState(paths []string, fingerprints map[string]reloadFileFing
 	trackedSet := make(map[string]struct{}, len(paths))
 	for _, path := range paths {
 		if path != "" {
-			trackedSet[normalizeReloadPath(path)] = struct{}{}
+			trackedSet[normalizeDiscoveryPath(path)] = struct{}{}
 		}
 	}
 	tracked := make([]string, 0, len(trackedSet))
