@@ -768,18 +768,18 @@ func (s *ConfigStore) publishMCPMutationLocked(result MCPMutationResult) {
 			next.snapshots = maps.Clone(next.snapshots)
 		}
 		for path, fingerprint := range result.committedFingerprints {
-			key := normalizeDiscoveryPath(path)
-			snapshot, ok := next.snapshots[key]
-			if !ok {
-				continue
+			for key, snapshot := range next.snapshots {
+				if normalizeReloadPath(key) != normalizeReloadPath(path) {
+					continue
+				}
+				snapshot.Path = key
+				snapshot.Exists = fingerprint.exists
+				snapshot.Size = fingerprint.size
+				snapshot.ModTime = fingerprint.modTime
+				snapshot.ContentHash = fingerprint.digest
+				snapshot.fingerprint = fingerprint
+				next.snapshots[key] = snapshot
 			}
-			snapshot.Path = key
-			snapshot.Exists = fingerprint.exists
-			snapshot.Size = fingerprint.size
-			snapshot.ModTime = fingerprint.modTime
-			snapshot.ContentHash = fingerprint.digest
-			snapshot.fingerprint = fingerprint
-			next.snapshots[key] = snapshot
 		}
 	}
 	s.publishLocked(next)
