@@ -767,22 +767,37 @@ func (s *ConfigStore) publishMCPMutationLocked(result MCPMutationResult) {
 		} else {
 			next.snapshots = maps.Clone(next.snapshots)
 		}
+		matched := make(map[string]struct{}, len(result.committedFingerprints))
+		for path, fingerprint := range result.committedFingerprints {
+			key := normalizeDiscoveryPath(path)
+			if snapshot, ok := next.snapshots[key]; ok {
+				updateMCPCommittedSnapshot(&snapshot, key, fingerprint)
+				next.snapshots[key] = snapshot
+				matched[key] = struct{}{}
+			}
+		}
 		for path, fingerprint := range result.committedFingerprints {
 			for key, snapshot := range next.snapshots {
-				if normalizeReloadPath(key) != normalizeReloadPath(path) {
+				if _, ok := matched[key]; ok || normalizeReloadPath(key) != normalizeReloadPath(path) {
 					continue
 				}
-				snapshot.Path = key
-				snapshot.Exists = fingerprint.exists
-				snapshot.Size = fingerprint.size
-				snapshot.ModTime = fingerprint.modTime
-				snapshot.ContentHash = fingerprint.digest
-				snapshot.fingerprint = fingerprint
+				updateMCPCommittedSnapshot(&snapshot, key, fingerprint)
 				next.snapshots[key] = snapshot
+				matched[key] = struct{}{}
+				break
 			}
 		}
 	}
 	s.publishLocked(next)
+}
+
+func updateMCPCommittedSnapshot(snapshot *fileSnapshot, key string, fingerprint reloadFileFingerprint) {
+	snapshot.Path = key
+	snapshot.Exists = fingerprint.exists
+	snapshot.Size = fingerprint.size
+	snapshot.ModTime = fingerprint.modTime
+	snapshot.ContentHash = fingerprint.digest
+	snapshot.fingerprint = fingerprint
 }
 
 func (s *ConfigStore) configPathOrEmpty(scope Scope) string {
