@@ -275,7 +275,18 @@ func (s *ConfigStore) noteInitialLoadWriteLocked(path string, data []byte) {
 	if s.initialLoadFingerprints == nil {
 		return
 	}
-	s.initialLoadFingerprints[normalizeReloadPath(path)] = dataFingerprint(path, data)
+	canonical := normalizeReloadPath(path)
+	updated := false
+	for candidate := range s.initialLoadFingerprints {
+		if normalizeReloadPath(candidate) != canonical {
+			continue
+		}
+		s.initialLoadFingerprints[candidate] = dataFingerprint(candidate, data)
+		updated = true
+	}
+	if !updated {
+		s.initialLoadFingerprints[canonical] = dataFingerprint(path, data)
+	}
 }
 
 // SetConfigField sets an sjson path/value pair in the config file for the
