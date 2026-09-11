@@ -13,6 +13,33 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestNoteInitialLoadWriteUpdatesEquivalentFingerprintAliases(t *testing.T) {
+	physicalRoot := t.TempDir()
+	aliasRoot := filepath.Join(t.TempDir(), "root-alias")
+	if err := os.Symlink(physicalRoot, aliasRoot); err != nil {
+		t.Skipf("directory symlinks unavailable: %v", err)
+	}
+
+	path := filepath.Join(aliasRoot, "rush.json")
+	oldData := []byte(`{"options":{"debug":false}}`)
+	newData := []byte(`{"options":{"debug":true}}`)
+	require.NoError(t, os.WriteFile(path, oldData, 0o600))
+	oldFingerprint, err := readReloadFingerprint(path)
+	require.NoError(t, err)
+
+	store := &ConfigStore{initialLoadFingerprints: map[string]reloadFileFingerprint{
+		normalizeDiscoveryPath(path): oldFingerprint,
+	}}
+	require.NoError(t, os.WriteFile(path, newData, 0o600))
+	store.noteInitialLoadWriteLocked(path, newData)
+
+	updated, ok := store.initialLoadFingerprints[normalizeDiscoveryPath(path)]
+	require.True(t, ok)
+	current, err := readReloadFingerprint(path)
+	require.NoError(t, err)
+	require.Equal(t, current, updated)
+}
+
 func TestConfigStore_ConfigPath_GlobalAlwaysWorks(t *testing.T) {
 	t.Parallel()
 

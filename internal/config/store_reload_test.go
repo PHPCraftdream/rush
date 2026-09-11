@@ -16,6 +16,29 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestReloadStalenessStateRebindsAliasedFingerprints(t *testing.T) {
+	physicalRoot := t.TempDir()
+	aliasRoot := filepath.Join(t.TempDir(), "root-alias")
+	if err := os.Symlink(physicalRoot, aliasRoot); err != nil {
+		t.Skipf("directory symlinks unavailable: %v", err)
+	}
+
+	path := filepath.Join(aliasRoot, "rush.json")
+	require.NoError(t, os.WriteFile(path, []byte(`{"options":{"debug":true}}`), 0o600))
+	fingerprint, err := readReloadFingerprint(path)
+	require.NoError(t, err)
+
+	canonical := normalizeReloadPath(path)
+	tracked, snapshots := reloadStalenessState(
+		[]string{path},
+		map[string]reloadFileFingerprint{normalizeDiscoveryPath(path): fingerprint},
+	)
+	require.Equal(t, []string{canonical}, tracked)
+	current, err := readReloadFingerprint(canonical)
+	require.NoError(t, err)
+	require.Equal(t, current, snapshots[canonical].fingerprint)
+}
+
 // TestReloadFromDisk_UsesNewConfigValues is a regression test ensuring that
 // ReloadFromDisk updates store state BEFORE running model/agent setup,
 // so the new config values are used rather than stale pre-reload values.

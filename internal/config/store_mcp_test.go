@@ -153,8 +153,51 @@ func TestMCPPathDataUsesNormalizedDiscoveryKeys(t *testing.T) {
 
 	record := files.bindMCPPath(aliasPath, boundData, true, fingerprint)
 	require.Same(t, record, files.mcpRecord(physicalPath))
+	store := &ConfigStore{}
+	_, present, err := store.mcpPathData(files, physicalPath)
+	require.NoError(t, err)
+	require.True(t, present)
+	physicalFingerprint, ok := files.fingerprints[normalizeDiscoveryPath(physicalPath)]
+	require.True(t, ok)
+	_, expectedPhysical, err := readStableConfigFile(physicalPath)
+	require.NoError(t, err)
+	require.Equal(t, expectedPhysical, physicalFingerprint)
 	require.NoError(t, os.Remove(physicalPath))
 
+	got, present, err := store.mcpPathData(files, physicalPath)
+	require.NoError(t, err)
+	require.True(t, present)
+	require.Equal(t, data, got)
+}
+
+func TestMCPPathDataResolvesNonCanonicalPhysicalSpelling(t *testing.T) {
+	physicalRoot := t.TempDir()
+	aliasRoot := filepath.Join(t.TempDir(), "root-alias")
+	if err := os.Symlink(physicalRoot, aliasRoot); err != nil {
+		t.Skipf("directory symlinks unavailable: %v", err)
+	}
+
+	physicalPath := filepath.Join(aliasRoot, "physical", "rush.json")
+	aliasPath := filepath.Join(physicalRoot, "alias", "rush.json")
+	require.NoError(t, os.MkdirAll(filepath.Dir(physicalPath), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Dir(aliasPath), 0o755))
+	data := []byte("{\"mcp\":{\"server\":{\"type\":\"http\"}}}")
+	require.NoError(t, os.WriteFile(physicalPath, data, 0o600))
+	if err := os.Symlink(physicalPath, aliasPath); err != nil {
+		t.Skipf("file symlinks unavailable: %v", err)
+	}
+
+	boundData, fingerprint, err := readStableConfigFile(aliasPath)
+	require.NoError(t, err)
+	files := &mcpLockedFiles{
+		data:         make(map[string][]byte),
+		present:      make(map[string]bool),
+		changed:      make(map[string]bool),
+		fingerprints: make(map[string]reloadFileFingerprint),
+		pathRecords:  make(map[string]string),
+		records:      make(map[string]*mcpFileRecord),
+	}
+	files.bindMCPPath(aliasPath, boundData, true, fingerprint)
 	store := &ConfigStore{}
 	got, present, err := store.mcpPathData(files, physicalPath)
 	require.NoError(t, err)
