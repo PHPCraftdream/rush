@@ -102,9 +102,6 @@ func (files *mcpLockedFiles) mcpRecord(path string) *mcpFileRecord {
 	if recordKey, ok := files.pathRecords[key]; ok {
 		return files.records[recordKey]
 	}
-	if _, known := files.data[key]; !known {
-		return nil
-	}
 	if canonical := normalizeReloadPath(path); canonical != "" {
 		if recordKey, ok := files.pathRecords[canonical]; ok {
 			return files.records[recordKey]

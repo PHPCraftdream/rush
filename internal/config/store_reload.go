@@ -781,7 +781,7 @@ func reloadStalenessState(paths []string, fingerprints map[string]reloadFileFing
 	trackedSet := make(map[string]struct{}, len(paths))
 	for _, path := range paths {
 		if path != "" {
-			trackedSet[normalizeDiscoveryPath(path)] = struct{}{}
+			trackedSet[normalizeReloadPath(path)] = struct{}{}
 		}
 	}
 	tracked := make([]string, 0, len(trackedSet))
@@ -792,10 +792,7 @@ func reloadStalenessState(paths []string, fingerprints map[string]reloadFileFing
 
 	snapshots := make(map[string]fileSnapshot, len(tracked))
 	for _, path := range tracked {
-		fingerprint := fingerprints[path]
-		if fingerprint == (reloadFileFingerprint{}) {
-			fingerprint = fingerprints[normalizeReloadPath(path)]
-		}
+		fingerprint := reloadFingerprintForPath(fingerprints, path)
 		snapshots[path] = fileSnapshot{
 			Path:        path,
 			Exists:      fingerprint.exists,
@@ -806,4 +803,28 @@ func reloadStalenessState(paths []string, fingerprints map[string]reloadFileFing
 		}
 	}
 	return tracked, snapshots
+}
+
+func reloadFingerprintForPath(fingerprints map[string]reloadFileFingerprint, path string) reloadFileFingerprint {
+	if fingerprint, ok := fingerprints[path]; ok {
+		return rebindReloadFingerprintPath(path, fingerprint)
+	}
+	canonical := normalizeReloadPath(path)
+	if fingerprint, ok := fingerprints[canonical]; ok {
+		return rebindReloadFingerprintPath(path, fingerprint)
+	}
+	for candidate, fingerprint := range fingerprints {
+		if normalizeReloadPath(candidate) == canonical {
+			return rebindReloadFingerprintPath(path, fingerprint)
+		}
+	}
+	return reloadFileFingerprint{}
+}
+
+func rebindReloadFingerprintPath(path string, fingerprint reloadFileFingerprint) reloadFileFingerprint {
+	fingerprint.discovery = configDiscoveryFingerprint(path)
+	fingerprint.parentDiscovery = configDiscoveryFingerprint(filepath.Dir(path))
+	fingerprint.parentIdentity = configParentIdentity(path)
+	fingerprint.aliasChain = configAliasChainFingerprint(path)
+	return fingerprint
 }
