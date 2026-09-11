@@ -43,7 +43,11 @@ func mcpInputFingerprints(rush, external []stableConfigDocument) map[string][sha
 	for name := range names {
 		hash := sha256.New()
 		for _, document := range documents {
-			hash.Write([]byte(document.path))
+			path := normalizeReloadPath(document.path)
+			if path == "" {
+				path = normalizeDiscoveryPath(document.path)
+			}
+			hash.Write([]byte(path))
 			if raw, ok := document.entries[name]; ok {
 				hash.Write([]byte{1})
 				hash.Write(raw)
