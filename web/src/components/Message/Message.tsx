@@ -12,6 +12,7 @@ import { AssistantHoverActions } from "./AssistantHoverActions";
 import { BackgroundJobNotice } from "./BackgroundJobNotice";
 import { CheckboxContextMenu } from "./CheckboxContextMenu";
 import { SummaryMessage } from "./SummaryMessage";
+import { TimeBadge } from "./TimeBadge";
 import { UserContent } from "./UserContent";
 import { UserHoverActions } from "./UserHoverActions";
 import { extractText, isTerminallyFinished } from "./textParts";
@@ -179,6 +180,9 @@ export const Message = memo(function Message({
               fill="currentColor"
             />
           )}
+          {/* Timestamp is always visible (not gated on hover), unlike the
+              copy/edit/delete/fork/star controls below. */}
+          <TimeBadge epochSec={message.CreatedAt} />
           {hovered && (
             isUser ? (
               <UserHoverActions

@@ -7,7 +7,6 @@ import type { Message as Msg } from "../../types";
 import { togglePinMessage } from "../../store";
 import { CopyButton } from "./CopyButton";
 import { CopyTurnButton } from "./CopyTurnButton";
-import { TimeBadge } from "./TimeBadge";
 import { DurationBadge } from "./DurationBadge";
 import { UsageBadge } from "./UsageBadge";
 import { EffortBadge } from "./EffortBadge";
@@ -50,7 +49,7 @@ export const AssistantHoverActions = memo(function AssistantHoverActions({
         )}
       </div>
       <div className="flex items-center gap-2 ml-auto">
-        <TimeBadge epochSec={message.CreatedAt} />
+        {/* Timestamp now lives in the always-visible strip in Message.tsx. */}
         <DurationBadge message={message} />
         <UsageBadge usage={message.Usage} />
         {message.Model && (
