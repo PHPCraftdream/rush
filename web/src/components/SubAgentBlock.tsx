@@ -8,8 +8,10 @@ import { Bot } from "lucide-react";
 import { $subAgentMessages, $messages, $activeSessionID, registerSubAgentSession } from "../store";
 import { sendLoadMessages } from "../ws";
 import type { Message, ContentPart, FinishPart } from "../types";
+import { formatActionArgs } from "../toolFormat";
 import { SummaryMessage } from "./Message/SummaryMessage";
 import { FinishErrorBlock } from "./Message/FinishErrorBlock";
+import { TimeBadge } from "./Message/TimeBadge";
 import { isTerminallyFinished } from "./Message/textParts";
 
 const MD_REMARK = [remarkGfm, remarkBreaks];
@@ -34,12 +36,20 @@ const SubAgentMessage = memo(function SubAgentMessage({ message, completed }: { 
 
   return (
     <div className="py-1">
-      {toolCalls.map((tc, i) => (
-        <div key={i} className="flex items-center gap-1.5 text-xs text-text-subtle py-0.5">
-          <span className="text-mauve font-semibold">{tc.Name}</span>
-          {!completed.has(tc.ID) && <span className="animate-pulse">running...</span>}
-        </div>
-      ))}
+      {toolCalls.map((tc, i) => {
+        // No per-tool-call timestamp exists in the sub-agent transcript;
+        // tool calls are grouped within one message, so the owning
+        // message's CreatedAt is the best available approximation.
+        const subject = formatActionArgs(tc.Name, tc.Input);
+        return (
+          <div key={i} className="flex items-center gap-1.5 text-xs text-text-subtle py-0.5">
+            <span className="text-mauve font-semibold">{tc.Name}</span>
+            <span className="text-text font-mono truncate flex-1 min-w-0">{subject}</span>
+            {!completed.has(tc.ID) && <span className="animate-pulse shrink-0">running...</span>}
+            <TimeBadge epochSec={message.CreatedAt} />
+          </div>
+        );
+      })}
       {text && (
         <div className="md text-sm text-text-muted">
           <ReactMarkdown remarkPlugins={MD_REMARK} rehypePlugins={MD_REHYPE}>{text}</ReactMarkdown>

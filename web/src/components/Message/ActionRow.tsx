@@ -5,6 +5,7 @@ import { useState, useCallback, memo } from "react";
 import { BrainCircuit, Pencil, Trash2, ChevronDown, ChevronUp } from "lucide-react";
 import type { ContentPart } from "../../types";
 import { updateMessagePart, deleteMessagePart } from "../../store";
+import { formatActionArgs } from "../../toolFormat";
 import { ConfirmDialog } from "../ConfirmDialog";
 import { CopyButton } from "./CopyButton";
 import { EditForm } from "./EditForm";
@@ -12,34 +13,6 @@ import { EffortBadge } from "./EffortBadge";
 import { TimeBadge } from "./TimeBadge";
 import { ToolCallBlock } from "./ToolCallBlock";
 import { ToolResultBlock } from "./ToolResultBlock";
-
-// formatActionArgs — one-line preview shown in the collapsed row header.
-// Picks the most useful identifying argument for known tool names so the
-// reader scans by file path / command / pattern, not by raw JSON.
-function formatActionArgs(name: string, input: string): string {
-  if (!input) return "";
-  let parsed: Record<string, unknown> = {};
-  try { parsed = JSON.parse(input) as Record<string, unknown>; } catch { return ""; }
-  const s = (k: string) => typeof parsed[k] === "string" ? (parsed[k] as string) : "";
-  switch (name) {
-    case "bash":      return s("command");
-    case "view":      return s("file_path") || s("path") || s("filePath");
-    case "write":
-    case "edit":
-    case "multiedit": return s("file_path");
-    case "glob":      return s("pattern");
-    case "grep":      return [s("pattern"), s("path")].filter(Boolean).join(" · ");
-    case "ls":        return s("path");
-    case "fetch":     return s("url");
-    case "download":  return s("url");
-    case "agent":     return s("prompt") || s("description");
-    default: {
-      // First string value in the object as a sensible fallback.
-      for (const v of Object.values(parsed)) if (typeof v === "string" && v) return v;
-      return "";
-    }
-  }
-}
 
 export type ActionItem =
   | {
