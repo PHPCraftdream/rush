@@ -430,18 +430,28 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 
 	// Auto-retry on transient provider failures. The agent may have written
 	// a FinishReasonError message (stream stall, empty stream) or returned a
-	// transient error (429 overload, 5xx, GOAWAY/EOF, network drop); we
-	// re-run the turn with the same prompt after exponential backoff as long
-	// as it produced NO content (so a re-run cannot clobber a partial answer)
-	// AND the failure is not operator-actionable (quota wall, auth, context
-	// overflow, bad request, user cancel).
+	// transient error (429 overload, 5xx, GOAWAY/EOF, network drop). There
+	// are two distinct recovery shapes, picked per-attempt by
+	// shouldContinueTurn/shouldRetryTurn:
+	//
+	//   - NO content produced yet: blind resend of the SAME prompt, reusing
+	//     the user message row (shouldRetryTurn / createdUserMessageID
+	//     below) so nothing is duplicated.
+	//   - Partial content already produced (the common real-world case: a
+	//     watchdog stall or rate-limit hits mid-stream, after the model has
+	//     already written text/reasoning/a tool call) — a blind resend would
+	//     either duplicate that work or discard it, so shouldRetryTurn
+	//     deliberately refuses to retry here. Instead we send a
+	//     CONTINUATION prompt (see continuationPrompt) as a fresh turn: the
+	//     partial assistant message stays in history untouched, and the
+	//     model is asked to pick up where it left off.
+	//
+	// Both paths share the same transient/terminal classification
+	// (classifyProviderError, isQuotaLimit) and the same backoff schedule.
 	// "Solve it ourselves before bothering the user" — provider hiccups
 	// (rate limits, HTTP/2 stalls, brief capacity drops) usually clear
 	// within tens of seconds, so 2 retries after 10s + 30s of backoff
 	// absorb the common cases without the orchestrator having to know.
-	// The retried turn appears in session history as a fresh user+
-	// assistant pair, which the model sees alongside the previous
-	// failed attempt — slightly noisy but functionally correct.
 	maxRetries := streamStallRetriesDefault
 	if opts := c.cfg.Config().Options; opts != nil && opts.StreamStallRetries != nil {
 		// Explicit override (including explicit 0 to disable entirely).
@@ -451,17 +461,29 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 		}
 	}
 	for attempt := 1; attempt <= maxRetries; attempt++ {
-		if !c.shouldRetryTurn(ctx, sessionID, originalErr) {
-			break
-		}
-		// Reuse the user message the first attempt already created instead
-		// of letting the retry's runTurn create a fresh one -- otherwise
-		// the operator sees their own prompt duplicated once per retry.
-		// createdUserMessageID is empty only if OnUserMessageCreated never
-		// fired (e.g. the call already carried an ExistingMessageID of its
-		// own), in which case there's nothing to overwrite.
-		if createdUserMessageID != "" {
-			trackCall.ExistingMessageID = createdUserMessageID
+		partial, isContinuation := c.shouldContinueTurn(ctx, sessionID, originalErr)
+		if isContinuation {
+			// Fresh follow-up prompt, fresh user message: the partial
+			// assistant message is left exactly as it is in history, and
+			// createdUserMessageID is intentionally NOT reused here — the
+			// continuation is a new logical turn, not an edit of the
+			// original request.
+			trackCall.Prompt = continuationPrompt(prompt, partial)
+			trackCall.ExistingMessageID = ""
+		} else {
+			if !c.shouldRetryTurn(ctx, sessionID, originalErr) {
+				break
+			}
+			// Reuse the user message the first attempt already created
+			// instead of letting the retry's runTurn create a fresh one --
+			// otherwise the operator sees their own prompt duplicated once
+			// per retry. createdUserMessageID is empty only if
+			// OnUserMessageCreated never fired (e.g. the call already
+			// carried an ExistingMessageID of its own), in which case
+			// there's nothing to overwrite.
+			if createdUserMessageID != "" {
+				trackCall.ExistingMessageID = createdUserMessageID
+			}
 		}
 		backoff := streamStallRetryBaseBackoff
 		for i := 1; i < attempt; i++ {
@@ -473,6 +495,7 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 			"attempt", attempt+1,
 			"max_attempts", maxRetries+1,
 			"backoff", backoff.String(),
+			"continuation", isContinuation,
 		)
 		select {
 		case <-ctx.Done():
@@ -483,6 +506,28 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 	}
 
 	return result, originalErr
+}
+
+// continuationPrompt builds the follow-up prompt sent when a turn already
+// produced partial content (text/reasoning/a tool call) before a transient
+// provider failure interrupted it. Unlike the blind-retry path, this never
+// resends the original prompt verbatim -- that would ask the model to
+// redo work it may have already done, or contradict a tool call it already
+// made. Instead it names the interruption explicitly and hands back
+// whatever text the model had produced, mirroring the shape of the
+// shouldSummarize continuation call in agent_turn.go (same idea -- "the
+// previous attempt was cut short, continue it" -- for a different cause).
+func continuationPrompt(originalPrompt string, partial message.Message) string {
+	partialText := strings.TrimSpace(partial.FullText())
+	if partialText == "" {
+		// Progress was reasoning/a tool call only, no visible text yet --
+		// nothing to quote back, so just name the interruption.
+		return fmt.Sprintf("Your previous response was interrupted by a transient provider error (e.g. a stream stall or rate limit) before any text was produced. Continue working on the original request: `%s`", originalPrompt)
+	}
+	return fmt.Sprintf(
+		"Your previous response to the request `%s` was interrupted by a transient provider error (e.g. a stream stall or rate limit) partway through. Here is what you had written so far:\n\n%s\n\nContinue exactly where you left off. Do not repeat the text above and do not restart the task from scratch.",
+		originalPrompt, partialText,
+	)
 }
 
 // retryClass partitions a turn-terminating failure into "surface it" vs
@@ -643,6 +688,50 @@ func (c *coordinator) shouldRetryTurn(ctx context.Context, sessionID string, err
 		return true
 	}
 	return classifyProviderError(err) == classTransient
+}
+
+// shouldContinueTurn decides whether a turn that already produced partial
+// content (text/reasoning/a tool call) before failing should be resumed via
+// a CONTINUATION prompt, as opposed to a blind resend (shouldRetryTurn) or
+// a terminal failure. This is the path shouldRetryTurn deliberately never
+// takes: turnMadeProgress(msg) == true makes shouldRetryTurn bail out, on
+// the theory that a blind resend of the same prompt would either duplicate
+// or discard that partial work. shouldContinueTurn covers exactly that
+// case for a transient failure -- the real-world shape a watchdog stall
+// or rate limit actually takes, since either can fire well after the model
+// started streaming a reply.
+//
+// Returns the partial assistant message and true only when: an assistant
+// message exists, its finish reason is FinishReasonError, it DID make
+// progress, and the failure reads as transient -- either the persisted
+// "Stream stalled" finish title (matching shouldRetryTurn's stall check),
+// or classifyProviderError(err) == classTransient. A nil err paired with
+// progress is left alone (returns false): that combination doesn't
+// correspond to any known transient signal (the nil-err retry path exists
+// only for the empty-stream-close case, which by definition has no
+// content), so it's surfaced rather than guessed at.
+func (c *coordinator) shouldContinueTurn(ctx context.Context, sessionID string, err error) (message.Message, bool) {
+	msg, ok := c.lastAssistantMessage(ctx, sessionID)
+	if !ok {
+		return message.Message{}, false
+	}
+	fp := msg.FinishPart()
+	if fp == nil || fp.Reason != message.FinishReasonError {
+		return message.Message{}, false
+	}
+	if !turnMadeProgress(msg) {
+		return message.Message{}, false
+	}
+	if fp.Message == streamStalledFinishTitle {
+		return msg, true
+	}
+	if err == nil {
+		return message.Message{}, false
+	}
+	if classifyProviderError(err) == classTransient {
+		return msg, true
+	}
+	return message.Message{}, false
 }
 
 // RunWithOverrides implements Coordinator. It is like Run but uses the given

@@ -322,6 +322,225 @@ func TestShouldRetryTurn(t *testing.T) {
 	})
 }
 
+func TestShouldContinueTurn(t *testing.T) {
+	stallFinish := message.Finish{Reason: message.FinishReasonError, Message: streamStalledFinishTitle}
+	overloadFinish := message.Finish{Reason: message.FinishReasonError, Message: "Empty response"}
+	cleanFinish := message.Finish{Reason: message.FinishReasonEndTurn}
+
+	overloadErr := providerErr(http.StatusTooManyRequests, "The service may be temporarily overloaded")
+	quotaErr := providerErr(http.StatusTooManyRequests, "Your quota has been exhausted")
+
+	t.Run("stall with partial text continues", func(t *testing.T) {
+		env := testEnv(t)
+		coord, sid := appendAssistant(t, env, []message.ContentPart{
+			message.TextContent{Text: "partial answer"},
+			stallFinish,
+		})
+		msg, ok := coord.shouldContinueTurn(t.Context(), sid, context.Canceled)
+		assert.True(t, ok)
+		assert.Equal(t, "partial answer", msg.FullText())
+	})
+
+	t.Run("transient error with partial text continues", func(t *testing.T) {
+		env := testEnv(t)
+		coord, sid := appendAssistant(t, env, []message.ContentPart{
+			message.TextContent{Text: "partial answer"},
+			overloadFinish,
+		})
+		_, ok := coord.shouldContinueTurn(t.Context(), sid, overloadErr)
+		assert.True(t, ok)
+	})
+
+	t.Run("transient error with partial reasoning only continues", func(t *testing.T) {
+		env := testEnv(t)
+		coord, sid := appendAssistant(t, env, []message.ContentPart{
+			message.ReasoningContent{Thinking: "considering options..."},
+			overloadFinish,
+		})
+		_, ok := coord.shouldContinueTurn(t.Context(), sid, overloadErr)
+		assert.True(t, ok)
+	})
+
+	t.Run("terminal (quota) error with partial text does not continue", func(t *testing.T) {
+		env := testEnv(t)
+		coord, sid := appendAssistant(t, env, []message.ContentPart{
+			message.TextContent{Text: "partial answer"},
+			overloadFinish,
+		})
+		_, ok := coord.shouldContinueTurn(t.Context(), sid, quotaErr)
+		assert.False(t, ok)
+	})
+
+	t.Run("no progress does not continue (blind-retry path owns it)", func(t *testing.T) {
+		env := testEnv(t)
+		coord, sid := appendAssistant(t, env, []message.ContentPart{overloadFinish})
+		_, ok := coord.shouldContinueTurn(t.Context(), sid, overloadErr)
+		assert.False(t, ok)
+	})
+
+	t.Run("nil error with progress does not continue", func(t *testing.T) {
+		env := testEnv(t)
+		coord, sid := appendAssistant(t, env, []message.ContentPart{
+			message.TextContent{Text: "partial answer"},
+			overloadFinish,
+		})
+		_, ok := coord.shouldContinueTurn(t.Context(), sid, nil)
+		assert.False(t, ok)
+	})
+
+	t.Run("clean finish does not continue", func(t *testing.T) {
+		env := testEnv(t)
+		coord, sid := appendAssistant(t, env, []message.ContentPart{
+			message.TextContent{Text: "done"},
+			cleanFinish,
+		})
+		_, ok := coord.shouldContinueTurn(t.Context(), sid, overloadErr)
+		assert.False(t, ok)
+	})
+
+	t.Run("no assistant message does not continue", func(t *testing.T) {
+		env := testEnv(t)
+		cfg, err := config.Init(env.workingDir, "", false)
+		require.NoError(t, err)
+		coord := &coordinator{cfg: cfg, sessions: env.sessions, messages: env.messages}
+		sess, err := env.sessions.Create(t.Context(), "empty")
+		require.NoError(t, err)
+		_, ok := coord.shouldContinueTurn(t.Context(), sess.ID, overloadErr)
+		assert.False(t, ok)
+	})
+}
+
+func TestContinuationPrompt(t *testing.T) {
+	t.Run("quotes partial text and asks to continue", func(t *testing.T) {
+		partial := message.Message{Role: message.Assistant, Parts: []message.ContentPart{
+			message.TextContent{Text: "here is the start of my answer"},
+		}}
+		got := continuationPrompt("do the thing", partial)
+		assert.Contains(t, got, "do the thing")
+		assert.Contains(t, got, "here is the start of my answer")
+		assert.Contains(t, got, "Continue")
+	})
+
+	t.Run("no partial text falls back to naming the interruption", func(t *testing.T) {
+		partial := message.Message{Role: message.Assistant, Parts: []message.ContentPart{
+			message.ReasoningContent{Thinking: "thinking..."},
+		}}
+		got := continuationPrompt("do the thing", partial)
+		assert.Contains(t, got, "do the thing")
+		assert.NotContains(t, got, "thinking...")
+	})
+}
+
+// TestRunInternal_ContinuationRetry_PreservesPartialContent reproduces the
+// real-world incident this fix targets: a watchdog stall (or rate limit)
+// fires AFTER the model has already streamed partial content. Before this
+// fix, shouldRetryTurn's turnMadeProgress guard made the turn fail
+// terminally the instant any content existed -- exactly the case that
+// matters in practice, since a 3-minute stream-stall watchdog almost always
+// fires mid-answer, not before the first token. This test asserts the turn
+// now continues instead of dying, and that the partial assistant message is
+// left untouched in history (not overwritten, not duplicated).
+func TestRunInternal_ContinuationRetry_PreservesPartialContent(t *testing.T) {
+	const providerID = "test-continuation-retry"
+	const prompt = "write a long report"
+
+	orig := streamStallRetryBaseBackoff
+	streamStallRetryBaseBackoff = time.Millisecond
+	t.Cleanup(func() { streamStallRetryBaseBackoff = orig })
+
+	env := testEnv(t)
+	cfg, err := config.Init(env.workingDir, "", false)
+	require.NoError(t, err)
+	providerCfg := config.ProviderConfig{
+		ID:   providerID,
+		Type: "openai",
+		Models: []catwalk.Model{
+			{ID: "test-model", Name: "Test Model", DefaultMaxTokens: 4096},
+		},
+	}
+	cfg.Config().Providers.Set(providerID, providerCfg)
+	sel := config.SelectedModel{Provider: providerID, Model: "test-model"}
+	cfg.Config().Models[config.SelectedModelTypeSmart] = sel
+	cfg.Config().Models[config.SelectedModelTypeFast] = sel
+
+	coord := &coordinator{
+		cfg:        cfg,
+		sessions:   env.sessions,
+		messages:   env.messages,
+		modelCache: csync.NewMap[string, cachedModelPair](),
+	}
+
+	sess, err := env.sessions.Create(t.Context(), "continuation-retry-test")
+	require.NoError(t, err)
+
+	callCount := 0
+	var secondCallPrompt string
+	agent := newMockAgent(providerID, 4096, func(_ context.Context, call SessionAgentCall) (*fantasy.AgentResult, error) {
+		callCount++
+		if callCount == 1 {
+			require.Empty(t, call.ExistingMessageID, "first attempt must create its own user message")
+			userMsg, err := env.messages.Create(t.Context(), sess.ID, message.CreateMessageParams{
+				Role:  message.User,
+				Parts: []message.ContentPart{message.TextContent{Text: prompt}},
+			})
+			require.NoError(t, err)
+			require.NotNil(t, call.OnUserMessageCreated)
+			call.OnUserMessageCreated(userMsg.ID)
+
+			// The model wrote a partial answer before a transient watchdog
+			// stall cut the stream -- this is the case the fix targets.
+			_, err = env.messages.Create(t.Context(), sess.ID, message.CreateMessageParams{
+				Role: message.Assistant,
+				Parts: []message.ContentPart{
+					message.TextContent{Text: "Section 1: Introduction. Here is the beginning of the report..."},
+					message.Finish{Reason: message.FinishReasonError, Message: streamStalledFinishTitle},
+				},
+			})
+			require.NoError(t, err)
+			return nil, context.Canceled // watchdog stalls surface as context.Canceled
+		}
+		// Continuation attempt: must NOT reuse the original user message
+		// (this is a fresh follow-up turn, not an edit), and its prompt must
+		// reference the partial content instead of blindly repeating the
+		// original prompt.
+		secondCallPrompt = call.Prompt
+		assert.Empty(t, call.ExistingMessageID, "continuation must create a fresh user message, not overwrite the original")
+		_, err := env.messages.Create(t.Context(), sess.ID, message.CreateMessageParams{
+			Role: message.Assistant,
+			Parts: []message.ContentPart{
+				message.TextContent{Text: "Section 2: Conclusion."},
+				message.Finish{Reason: message.FinishReasonEndTurn},
+			},
+		})
+		require.NoError(t, err)
+		return agentResultWithText("Section 2: Conclusion."), nil
+	})
+	coord.currentAgent = agent
+
+	pinned, err := coord.resolveSessionModels(t.Context(), sess.ID)
+	require.NoError(t, err)
+
+	res, err := coord.runInternal(t.Context(), sess.ID, prompt, pinned)
+	require.NoError(t, err)
+	require.NotNil(t, res)
+	assert.Equal(t, 2, callCount, "exactly one continuation attempt expected")
+
+	assert.Contains(t, secondCallPrompt, prompt, "continuation prompt must reference the original request")
+	assert.Contains(t, secondCallPrompt, "Section 1: Introduction", "continuation prompt must quote the partial content")
+
+	msgs, err := env.messages.List(t.Context(), sess.ID)
+	require.NoError(t, err)
+	var assistantTexts []string
+	for _, m := range msgs {
+		if m.Role == message.Assistant {
+			assistantTexts = append(assistantTexts, m.FullText())
+		}
+	}
+	require.Len(t, assistantTexts, 2, "the partial assistant message must be preserved, not overwritten")
+	assert.Contains(t, assistantTexts[0], "Section 1: Introduction", "the original partial answer must survive untouched")
+	assert.Contains(t, assistantTexts[1], "Section 2: Conclusion")
+}
+
 // TestRunInternal_RetryReusesUserMessage_NoDuplicate reproduces a real
 // incident: a session where the same prompt appeared multiple times in
 // history after transient provider failures. Each retry created a fresh
