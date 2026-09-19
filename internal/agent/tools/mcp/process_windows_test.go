@@ -40,15 +40,7 @@ func TestMain(m *testing.M) {
 		runLevel2Helper()
 		return
 	}
-	previousProviders, hadProviders := os.LookupEnv("RUSH_DISABLE_DEFAULT_PROVIDERS")
-	_ = os.Setenv("RUSH_DISABLE_DEFAULT_PROVIDERS", "1")
-	code := m.Run()
-	if hadProviders {
-		_ = os.Setenv("RUSH_DISABLE_DEFAULT_PROVIDERS", previousProviders)
-	} else {
-		_ = os.Unsetenv("RUSH_DISABLE_DEFAULT_PROVIDERS")
-	}
-	os.Exit(code)
+	os.Exit(m.Run())
 }
 
 // runLevel1Helper models a stdio MCP server that spawns its own child (an
@@ -96,6 +88,16 @@ func runLevel2Helper() {
 // dead parent — the same class of leak internal/shell/exec_windows.go fixed
 // for background shell commands.
 func TestConfigureStdioProcess_CancelTreeKillsOrphanedGrandchild_Windows(t *testing.T) {
+	// This used to be forced package-wide from TestMain (m.Run()), which
+	// silently broke every OTHER test in this package that calls
+	// config.Init() expecting default/embedded providers to be available
+	// (e.g. TestOwnerCloseCancelsBlockedStartupBeforeCleanup) -- TestMain
+	// is one per package/binary, so a package-wide override there leaks
+	// into every test compiled into the same Windows test binary, not just
+	// this one. Scoped here instead, t.Setenv reverts it automatically
+	// when this test ends.
+	t.Setenv("RUSH_DISABLE_DEFAULT_PROVIDERS", "1")
+
 	self, err := os.Executable()
 	require.NoError(t, err)
 
