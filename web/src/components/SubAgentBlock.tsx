@@ -12,6 +12,7 @@ import { formatActionArgs } from "../toolFormat";
 import { SummaryMessage } from "./Message/SummaryMessage";
 import { FinishErrorBlock } from "./Message/FinishErrorBlock";
 import { TimeBadge } from "./Message/TimeBadge";
+import { EffortBadge } from "./Message/EffortBadge";
 import { isTerminallyFinished } from "./Message/textParts";
 
 const MD_REMARK = [remarkGfm, remarkBreaks];
@@ -95,14 +96,28 @@ export const SubAgentBlock = memo(function SubAgentBlock({
   // parent's flag above), so per-row running state must come from the
   // sub-session's own tool_result parts — they live on role=tool messages
   // inside this same transcript.
-  const completedCallIDs = useMemo(() => {
+  // Model/effort the sub-agent actually started with: the FIRST assistant
+  // message with a non-empty value (not the last, which may belong to a
+  // later handoff/compaction step) — mirrors the intent of `errorFinish`
+  // below, which instead wants the LAST assistant message for its own
+  // purpose (final finish reason). Folded into this same pass over
+  // `messages` (rather than a separate useMemo) to avoid adding a third
+  // exhaustive-deps warning on `messages` alongside the two pre-existing
+  // ones.
+  const { completedCallIDs, model, effort } = useMemo(() => {
     const ids = new Set<string>();
+    let firstModel = "";
+    let firstEffort = "";
     for (const m of messages) {
       for (const p of m.Parts ?? []) {
         if (p.type === "tool_result") ids.add(p.ToolCallID);
       }
+      if (m.Role === "assistant") {
+        if (!firstModel && m.Model) firstModel = m.Model;
+        if (!firstEffort && m.ReasoningEffort) firstEffort = m.ReasoningEffort;
+      }
     }
-    return ids;
+    return { completedCallIDs: ids, model: firstModel, effort: firstEffort };
   }, [messages]);
 
   // "done" means this sub-agent's RUN is over — the `agent` tool returned.
@@ -229,6 +244,8 @@ export const SubAgentBlock = memo(function SubAgentBlock({
       >
         <Bot size={15} className={`shrink-0 ${isRunning ? "text-accent animate-pulse" : "text-text-subtle"}`} />
         <span className="font-semibold text-sm">Agent</span>
+        {model && <span className="text-xs text-text-subtle font-mono shrink-0">{model}</span>}
+        <EffortBadge effort={effort} />
         {isRunning && <span className="text-xs text-text-subtle animate-pulse">running...</span>}
         {done && (errorFinish ? (
           <span className="text-xs text-red font-medium">error</span>
