@@ -8,7 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -93,9 +93,42 @@ func TestStdioDiagnosticCommandPreservesStartupAttributes(t *testing.T) {
 	checkErr := stdioCheck(old)
 	require.Error(t, checkErr)
 	require.Contains(t, checkErr.Error(), `MCPDIAG env="preserved"`)
-	canonicalDir, err := filepath.EvalSymlinks(dir)
+
+	// Compare the spawned child's reported working directory to dir BY
+	// IDENTITY (os.SameFile), not exact string equality: on a Windows
+	// runner with a long account name (e.g. "runneradmin"), NTFS can
+	// generate an 8.3 short-name alias ("RUNNER~1") for that path
+	// component, and the child's own os.Getwd() may report either form
+	// depending on how CreateProcess set up its working directory --
+	// both refer to the exact same directory. filepath.EvalSymlinks only
+	// resolves symlinks/junctions, not short/long name aliasing, so it
+	// cannot normalize this by itself; os.Stat + os.SameFile compares by
+	// the underlying file identity instead of the path spelling.
+	gotDir := extractQuotedField(t, checkErr.Error(), "dir")
+	wantInfo, err := os.Stat(dir)
 	require.NoError(t, err)
-	require.Contains(t, checkErr.Error(), fmt.Sprintf(`dir=%q`, filepath.Clean(canonicalDir)))
+	gotInfo, err := os.Stat(gotDir)
+	require.NoError(t, err)
+	require.True(t, os.SameFile(wantInfo, gotInfo),
+		"child reported dir %q must be the same directory as %q", gotDir, dir)
+}
+
+// extractQuotedField pulls a `key="value"` field (Go %q-quoted, as produced
+// by TestMCPStdioDiagnosticHelper's env-dir mode) out of a larger message
+// and returns the decoded value. strconv.QuotedPrefix/Unquote handle the
+// quoting correctly even when the value itself contains backslashes
+// (Windows paths).
+func extractQuotedField(t *testing.T, s, key string) string {
+	t.Helper()
+	marker := key + `="`
+	idx := strings.Index(s, marker)
+	require.GreaterOrEqualf(t, idx, 0, "field %q not found in %q", key, s)
+	rest := s[idx+len(key)+1:]
+	quoted, err := strconv.QuotedPrefix(rest)
+	require.NoError(t, err)
+	val, err := strconv.Unquote(quoted)
+	require.NoError(t, err)
+	return val
 }
 
 func TestStdioCheckDoesNotDuplicateArgv0(t *testing.T) {

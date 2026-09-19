@@ -121,9 +121,20 @@ func countedAddInitializer(owner *Owner, closeCalls *atomic.Int32, cleanupBefore
 	}
 }
 
+// mcpAwaitTimeout bounds awaitMCPError/awaitMCPSignal across every caller in
+// this package (85 call sites as of this writing). 5s flaked under real
+// load: TestInitializeRejectsChangedConfigBeforePublication needs a full
+// real HTTP MCP handshake (initialize + tools/list against an httptest
+// server) to complete before its middleware observes tools/list and closes
+// the barrier, and that occasionally exceeded 5s when running alongside the
+// rest of this package's tests (reproduced locally: failed 1 of 3
+// consecutive solo runs). Not CI-specific -- confirmed the same flake
+// locally, unrelated to any of this session's actual code changes.
+const mcpAwaitTimeout = 15 * time.Second
+
 func awaitMCPError(t *testing.T, results <-chan error) error {
 	t.Helper()
-	timer := time.NewTimer(5 * time.Second)
+	timer := time.NewTimer(mcpAwaitTimeout)
 	defer timer.Stop()
 	select {
 	case err := <-results:
@@ -136,7 +147,7 @@ func awaitMCPError(t *testing.T, results <-chan error) error {
 
 func awaitMCPSignal(t *testing.T, signal <-chan struct{}) {
 	t.Helper()
-	timer := time.NewTimer(5 * time.Second)
+	timer := time.NewTimer(mcpAwaitTimeout)
 	defer timer.Stop()
 	select {
 	case <-signal:
