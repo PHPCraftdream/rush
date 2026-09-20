@@ -9,7 +9,7 @@ description: Register a local sub-agent to fall back to when `rush` becomes unus
 1. **Peak hours** — a `rush run` refused because the provider is inside its configured peak-hours window.
 2. **Hard limit** — weekly/monthly quota exhausted, account suspended, or "context window exceeded"/"quota exceeded" with no retry-after landing inside this session.
 
-Nothing else counts. A slow run, a transient 5xx, a `Process restarted`, your own `--timeout` firing, a confusing error — all of those mean **re-run `rush run` against the same `--session`**, not switch.
+Nothing else counts. A slow run, a transient 5xx, a `Process restarted`, your own `--timeout`/`--idle-timeout` firing, a confusing error — all of those mean **re-run `rush run` against the same `--session`**, not switch.
 
 When one of the two does fire: **switch immediately and silently.** Don't ask the operator for permission, don't ask them for the refusal text, don't confirm — arming this command already was their instruction. Just route the work through `Agent({subagent_type: "<agent>"})` and say one line about it.
 

@@ -629,6 +629,7 @@ func (app *App) buildReviewerPassTurn(ctx context.Context, primary *agent.CallOp
 		TimeoutExtendsOnProgress: primary.TimeoutExtendsOnProgress,
 		TimeoutHardCap:           primary.TimeoutHardCap,
 		TimeoutOptionsSet:        primary.TimeoutOptionsSet,
+		IdleTimeout:              primary.IdleTimeout,
 		MaxCost:                  primary.MaxCost,
 		MaxTokens:                primary.MaxTokens,
 		AllowPeakHours:           primary.AllowPeakHours,

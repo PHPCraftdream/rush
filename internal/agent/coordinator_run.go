@@ -682,6 +682,12 @@ func (c *coordinator) shouldRetryTurn(ctx context.Context, sessionID string, err
 		return false
 	}
 	if fp.Message == streamStalledFinishTitle {
+		// A call armed with a positive CallOptions.IdleTimeout (`rush run
+		// --idle-timeout`) wants a stall to end the run outright, not
+		// retry — see IdleTimeout's doc in call_options.go.
+		if callOpts := callOptionsFrom(ctx); callOpts != nil && callOpts.IdleTimeout > 0 {
+			return false
+		}
 		return true
 	}
 	if err == nil {
@@ -723,6 +729,10 @@ func (c *coordinator) shouldContinueTurn(ctx context.Context, sessionID string, 
 		return message.Message{}, false
 	}
 	if fp.Message == streamStalledFinishTitle {
+		// See the matching check in shouldRetryTurn.
+		if callOpts := callOptionsFrom(ctx); callOpts != nil && callOpts.IdleTimeout > 0 {
+			return message.Message{}, false
+		}
 		return msg, true
 	}
 	if err == nil {

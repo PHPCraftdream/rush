@@ -339,6 +339,7 @@ func (app *App) prepareExecuteRun(ctx context.Context, req RunRequest) (_ contex
 		// whose only presence signal is this predicate. See
 		// CallOptions.TimeoutOptionsSet.
 		TimeoutOptionsSet: overrides.TimeoutOptionsSet || overrides.TimeoutExtendsOnProgress || overrides.TimeoutHardCap > 0,
+		IdleTimeout:       overrides.IdleTimeout,
 		MaxCost:           overrides.MaxCost,
 		MaxTokens:         overrides.MaxTokens,
 		AllowPeakHours:    overrides.AllowPeakHours,

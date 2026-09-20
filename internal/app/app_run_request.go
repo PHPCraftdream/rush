@@ -117,6 +117,13 @@ type RunOverrides struct {
 	// The context-level deadline is applied separately by the caller.
 	// Fork patch (operator UX).
 	Timeout time.Duration
+	// IdleTimeout overrides the stream watchdog's idle-stall threshold
+	// for this call (agent.CallOptions.IdleTimeout) and makes a stall
+	// terminal instead of transparently retried — see that field's doc.
+	// `rush run --idle-timeout` (default 15m) sets this; 0 means "no
+	// override for this call" (agent.buildReviewerPassTurn's follow-up
+	// turn leaves it unset on purpose, see below).
+	IdleTimeout time.Duration
 	// RestrictedRun enables the restricted-run permission model for
 	// this non-interactive invocation, merged with
 	// permissions.run.restrict from config. When armed, only allowlist

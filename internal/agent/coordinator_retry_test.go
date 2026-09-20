@@ -278,6 +278,16 @@ func TestShouldRetryTurn(t *testing.T) {
 		assert.True(t, coord.shouldRetryTurn(t.Context(), sid, context.Canceled))
 	})
 
+	t.Run("stall title does not retry when the call carries a positive IdleTimeout", func(t *testing.T) {
+		// `rush run --idle-timeout` (CallOptions.IdleTimeout > 0) must end
+		// the run outright instead of silently absorbing
+		// streamStallRetriesDefault extra attempts — see IdleTimeout's doc.
+		env := testEnv(t)
+		coord, sid := appendAssistant(t, env, []message.ContentPart{stallFinish})
+		ctx := WithCallOptions(t.Context(), &CallOptions{IdleTimeout: 15 * time.Minute})
+		assert.False(t, coord.shouldRetryTurn(ctx, sid, context.Canceled))
+	})
+
 	t.Run("empty-stream finish with nil error retries", func(t *testing.T) {
 		env := testEnv(t)
 		coord, sid := appendAssistant(t, env, []message.ContentPart{emptyStreamFinish})
@@ -339,6 +349,17 @@ func TestShouldContinueTurn(t *testing.T) {
 		msg, ok := coord.shouldContinueTurn(t.Context(), sid, context.Canceled)
 		assert.True(t, ok)
 		assert.Equal(t, "partial answer", msg.FullText())
+	})
+
+	t.Run("stall with partial text does not continue when the call carries a positive IdleTimeout", func(t *testing.T) {
+		env := testEnv(t)
+		coord, sid := appendAssistant(t, env, []message.ContentPart{
+			message.TextContent{Text: "partial answer"},
+			stallFinish,
+		})
+		ctx := WithCallOptions(t.Context(), &CallOptions{IdleTimeout: 15 * time.Minute})
+		_, ok := coord.shouldContinueTurn(ctx, sid, context.Canceled)
+		assert.False(t, ok, "an --idle-timeout-armed call must end the run, not resume via a continuation prompt")
 	})
 
 	t.Run("transient error with partial text continues", func(t *testing.T) {

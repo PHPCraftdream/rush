@@ -38,6 +38,10 @@ instead:
 
 - your own `--timeout` fired — re-run `rush run` against the **same
   `--session` id** with a larger `--timeout`.
+- `--idle-timeout` fired (agent went quiet for 15m+, the default) —
+  re-run against the same `--session` id once; if it fires again on
+  the same task, that's a real stuck-agent signal, not noise — stop
+  and report it instead of retrying blindly.
 - situational HTTP 429 with short retry-after — wait it out, re-run.
 - 5xx / network blip — re-run; escalate to the user if it persists.
 - operator-side errors (bad flag, missing workspace, malformed prompt)
@@ -178,11 +182,10 @@ externally; rush's own orchestrating model already owns that resume.
   not the plain two-positional form, which only touches smart/fast.
 - Stable, task-meaningful `--session` id (issue/branch/topic slug) —
   same id continues across runs and is recognisable in `sessions watch`.
-- `--timeout 60m` as the standard ceiling, on every run. It's generous
-  on purpose: a mid-edit timeout leaves partial state, so a long
-  ceiling is cheap insurance (the run still ends once the task is
-  done). Drop lower only for a genuinely tiny task where you want a
-  fast failure signal.
+- No `--timeout` needed — a launched run has no overall time limit by
+  default; it ends on its own once the task is done. `--idle-timeout`
+  (default 15m, see the bottom of this file) already ends a genuinely
+  stuck run for you, so don't add `--timeout` "just in case".
 - Run in the background (`Bash` `run_in_background: true`), redirect
   to `.rush/stdin/<task>.{out,err}`, react on the completion
   notification. Don't sleep-poll for output — do run the liveness
@@ -198,7 +201,7 @@ externally; rush's own orchestrating model already owns that resume.
 
   ```
   # Correct
-  Bash({ command: "rush run --role smart --session foo --timeout 60m --json < .rush/stdin/foo.prompt > .rush/stdin/foo.out 2> .rush/stdin/foo.err", run_in_background: true })
+  Bash({ command: "rush run --role smart --session foo --json < .rush/stdin/foo.prompt > .rush/stdin/foo.out 2> .rush/stdin/foo.err", run_in_background: true })
 
   # Wrong — false-completes instantly, invites session-id reuse before the real process exits
   Bash({ command: "rush run ... > out 2> err &\necho launched pid $!", run_in_background: true })
@@ -261,8 +264,8 @@ rush run --restrict-run --role fast \
 
 - `--restrict-run` arms deny-by-default. Anything not matched below is
   denied **cleanly and immediately** — the model sees a fast "no" and
-  adapts, the run does not block until `--timeout` waiting on a
-  permission prompt nobody can answer.
+  adapts, instead of sitting on a permission prompt nobody can answer
+  until `--idle-timeout` eventually notices the silence.
 - `--allow-tool <name>` (repeatable) permits a non-bash tool or a
   `tool:action` pair, e.g. `view`, `edit:write`. `bash` /
   `bash:execute` listed here are silent no-ops by design — bash is
@@ -343,9 +346,11 @@ has — reach for this before manually cross-referencing `list`/`locks`).
 without a summary — deliberate, so "I stopped watching" never reads as
 "session ended".
 
-**Liveness watchdog — check every ~10 minutes.** A 60m ceiling is a
-long time to be blind, so don't just wait for the completion
-notification. Probe the session is still alive periodically:
+**Liveness watchdog — check every ~10 minutes.** A launched run has no
+overall time limit by default, so don't just wait for the completion
+notification — a healthy long task and a silently-dead process look
+the same from the outside until something checks. Probe the session is
+still alive periodically:
 
 ```
 rush sessions locks <id>   # heartbeat: alive / ping / stopping / offline
@@ -355,9 +360,9 @@ This is a liveness probe, not output polling — the completion
 notification still delivers the result. But if the heartbeat reads
 `offline`/`stopping` with no completion notification, the holder died
 silently: stop waiting, inspect `.rush/stdin/<task>.{out,err}` +
-`rush sessions last <id>` (or `rush sessions why <id>`), and
-re-launch into the same `--session` rather than burning the rest of
-the 60m on a dead process.
+`rush sessions last <id>` (or `rush sessions why <id>`), and re-launch
+into the same `--session` rather than waiting indefinitely on a dead
+process.
 
 **Tear the watchdog down when it has nothing left to watch.** The
 10-minute cycle exists only to babysit live runs. Once a session
@@ -477,6 +482,22 @@ actually done, what *you* ran, and any compromises or re-delegations.
   `tool_call`; fall back to `git status` + `rush sessions last <id>`.
 - `rush sessions watch <id>` — confirm the process really exited.
   Lock-alive heartbeat is the truth.
+
+## Time limits, for the rare case you need one
+
+A launched run has no overall time limit by default (`--timeout`
+defaults to `0`) — it just runs until the agent finishes. The only
+built-in backstop is `--idle-timeout` (default `15m`): it ends the run
+if the agent goes fully quiet (no streamed output, no tool call/result)
+for that long, and unlike an ordinary provider stall it never silently
+retries — you'll see the run actually end. A tool call that's still
+running counts as activity, so a genuinely long build/test doesn't trip
+it. Pass `--idle-timeout <duration>` to change it, or `0` to disable it
+outright.
+
+Only reach for `--timeout <duration>` on top of that when the run must
+fit a hard external deadline (a CI job slot, a cron window) — it's an
+extra ceiling on the WHOLE run, not a replacement for the above.
 
 ## Task
 

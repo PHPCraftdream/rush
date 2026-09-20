@@ -414,3 +414,33 @@ func TestWatchdogTimeoutPolicyForCall_ConcurrentCallsAreIsolated(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// TestEffectiveIdleTimeoutForCall_PrecedenceOrder pins the idle-stall
+// threshold precedence for `rush run --idle-timeout`: a positive per-call
+// override wins over the sessionAgent's shared streamIdleTimeout, which in
+// turn wins over the package default. Mirrors
+// TestWatchdogTimeoutPolicyForCall_DeliberateZeroIsNotInheritance's shape
+// for the sibling watchdog knob.
+func TestEffectiveIdleTimeoutForCall_PrecedenceOrder(t *testing.T) {
+	env := testEnv(t)
+
+	t.Run("no override anywhere falls back to the package default", func(t *testing.T) {
+		sa := testSessionAgent(env, nil, nil, "test prompt").(*sessionAgent)
+		assert.Equal(t, streamIdleTimeoutDefault, sa.effectiveIdleTimeoutForCall(nil))
+		assert.Equal(t, streamIdleTimeoutDefault, sa.effectiveIdleTimeoutForCall(&CallOptions{}))
+	})
+
+	t.Run("shared streamIdleTimeout wins over the package default", func(t *testing.T) {
+		sa := testSessionAgent(env, nil, nil, "test prompt").(*sessionAgent)
+		sa.streamIdleTimeout = 3 * time.Minute
+		assert.Equal(t, 3*time.Minute, sa.effectiveIdleTimeoutForCall(nil))
+		assert.Equal(t, 3*time.Minute, sa.effectiveIdleTimeoutForCall(&CallOptions{}))
+	})
+
+	t.Run("per-call override wins over everything", func(t *testing.T) {
+		sa := testSessionAgent(env, nil, nil, "test prompt").(*sessionAgent)
+		sa.streamIdleTimeout = 3 * time.Minute
+		got := sa.effectiveIdleTimeoutForCall(&CallOptions{IdleTimeout: 15 * time.Minute})
+		assert.Equal(t, 15*time.Minute, got)
+	})
+}

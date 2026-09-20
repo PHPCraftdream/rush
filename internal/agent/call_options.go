@@ -51,6 +51,23 @@ type CallOptions struct {
 	TimeoutExtendsOnProgress bool
 	TimeoutHardCap           time.Duration
 
+	// IdleTimeout overrides the per-turn stream watchdog's idle-stall
+	// threshold (streamIdleTimeoutDefault / the sessionAgent's shared
+	// streamIdleTimeout) for this call. Zero means "no override — fall
+	// back to the shared/default path", same convention as the rest of
+	// this struct.
+	//
+	// A positive value ALSO makes an idle-stall fire on this call
+	// terminal: shouldRetryTurn/shouldContinueTurn (coordinator_run.go)
+	// refuse to transparently retry/continue it, instead of silently
+	// absorbing up to streamStallRetriesDefault extra attempts first.
+	// This is `rush run --idle-timeout`'s backstop — once the run's own
+	// graceful --timeout defaults to disabled, a genuinely stuck
+	// invocation must end outright rather than retry into an unbounded
+	// wait. Every other caller (web UI, interactive sessions) leaves
+	// this zero and keeps today's retry-on-transient-stall behaviour.
+	IdleTimeout time.Duration
+
 	// TimeoutOptionsSet marks the two timeout fields above as THIS
 	// call's deliberate policy (R3-6). Without it they are
 	// indistinguishable from "unset": a non-nil CallOptions with both
@@ -236,6 +253,21 @@ func (a *sessionAgent) watchdogTimeoutPolicyForCall(call *CallOptions) (extendsO
 		return call.TimeoutExtendsOnProgress, call.TimeoutHardCap
 	}
 	return a.timeoutExtendsOnProgress, a.timeoutHardCap
+}
+
+// effectiveIdleTimeoutForCall resolves the per-turn stream watchdog's
+// idle-stall threshold: the call's own override when positive, otherwise
+// the sessionAgent's shared streamIdleTimeout, otherwise
+// streamIdleTimeoutDefault. Mirrors watchdogTimeoutPolicyForCall's
+// call-wins-over-shared-state precedence.
+func (a *sessionAgent) effectiveIdleTimeoutForCall(call *CallOptions) time.Duration {
+	if call != nil && call.IdleTimeout > 0 {
+		return call.IdleTimeout
+	}
+	if a.streamIdleTimeout > 0 {
+		return a.streamIdleTimeout
+	}
+	return streamIdleTimeoutDefault
 }
 
 // folderScopeSpecContextKey is the unexported context key carrying

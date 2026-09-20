@@ -458,10 +458,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	// cancels genCtx and the agent.Stream call below returns with
 	// context.Canceled, routing into the error path that records
 	// FinishReasonError("Stream stalled") on the assistant message.
-	idleTimeout := streamIdleTimeoutDefault
-	if a.streamIdleTimeout > 0 {
-		idleTimeout = a.streamIdleTimeout
-	}
+	idleTimeout := a.effectiveIdleTimeoutForCall(call.CallOptions)
 	toolMaxDuration := a.effectiveToolMaxDuration()
 	toolCleanupGrace := a.effectiveToolCleanupGrace()
 	// R1-1: resolve the watchdog's deadline-extension policy per call.

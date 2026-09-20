@@ -230,3 +230,51 @@ func TestResolveDefaultHardTimeout_NonPositiveFallsBackToDefault(t *testing.T) {
 			"non-positive input %q must fall back to default", in)
 	}
 }
+
+// --- --timeout / --idle-timeout flag defaults ----------------------------
+//
+// Regression coverage for the "no overall time limit by default, but a
+// bounded inactivity backstop" redesign: `rush run` used to default
+// --timeout to 60m; it now defaults to 0 (disabled — unbounded run) and
+// relies on the new --idle-timeout (default 15m) to end a genuinely stuck
+// invocation. A future edit silently reverting either default would not
+// otherwise be caught by any test.
+
+func TestRunCmdTimeoutFlag_DefaultsToDisabled(t *testing.T) {
+	flag := runCmd.Flags().Lookup("timeout")
+	require.NotNil(t, flag, "--timeout flag must exist")
+	assert.Equal(t, "0", flag.DefValue, "rush run must have no overall time limit by default")
+}
+
+func TestRunCmdIdleTimeoutFlag_DefaultsTo15Minutes(t *testing.T) {
+	flag := runCmd.Flags().Lookup("idle-timeout")
+	require.NotNil(t, flag, "--idle-timeout flag must exist")
+	assert.Equal(t, "15m", flag.DefValue, "the inactivity backstop must default to 15m")
+	dur, err := parseDurationFlexible(flag.DefValue)
+	require.NoError(t, err)
+	assert.Equal(t, 15*time.Minute, dur)
+}
+
+func TestParseDurationFlexible(t *testing.T) {
+	cases := []struct {
+		in   string
+		want time.Duration
+	}{
+		{"", 0},
+		{"0", 0},
+		{"900", 900 * time.Second},
+		{"15m", 15 * time.Minute},
+		{"90s", 90 * time.Second},
+		{"1h", time.Hour},
+	}
+	for _, c := range cases {
+		got, err := parseDurationFlexible(c.in)
+		require.NoErrorf(t, err, "input %q", c.in)
+		assert.Equalf(t, c.want, got, "input %q", c.in)
+	}
+}
+
+func TestParseDurationFlexible_Invalid(t *testing.T) {
+	_, err := parseDurationFlexible("not-a-duration")
+	assert.Error(t, err)
+}

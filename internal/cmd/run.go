@@ -181,11 +181,6 @@ Sub-agent aggregation (only matters when --agents permits fan-out):
                             sub-agent outputs to <40% of their combined
                             character count.
 
-Use --timeout to bound the run from outside (the agent gets a clean
-cancel + the partial answer is preserved in the session and is included
-in --json output). Plain numbers are treated as seconds: --timeout 900
-is the same as --timeout 900s or --timeout 15m.
-
 Runaway protection:
   --max-cost 0.50     abort when session cost (USD) crosses the threshold
   --max-tokens 100k   abort when prompt+completion tokens cross the limit
@@ -285,7 +280,13 @@ tools must NOT touch. Example:
 The tools fail with a visible error to the model when a forbidden path
 is targeted; the model then either retries with a different path or
 falls back to returning the content via final_text — both of which
-keep the redirect target intact.`,
+keep the redirect target intact.
+
+Time limits (usually leave both alone): --timeout bounds the WHOLE run
+and defaults to 0 (disabled — no limit). --idle-timeout (default 15m)
+already ends the run if the agent goes quiet for that long, so most
+invocations don't need --timeout at all; only reach for it when a run
+must fit a hard external deadline (a CI job slot, a cron window).`,
 	Example: `
 # Run a simple prompt
 rush run "Guess my 5 favorite Pokémon"
@@ -340,10 +341,6 @@ rush run --role smart --stream "explain this codebase"
 rush run --role smart --max-cost 0.50 --max-tokens 100k "refactor storage"
 # After run: rush sessions show <id> → "Cost: $0.32 / $0.50 budget (64%)"
 
-# Flexible timeout: plain number = seconds (saved to session budget)
-rush run --role smart --timeout 900 --session "long-task" "refactor the storage layer"
-# During run: rush sessions locks → "ELAPSED 3m0s  BUDGET 15m0s"
-
 # On-finish hook (env: RUSH_SESSION_ID, RUSH_EXIT_REASON, RUSH_COST_USD, ...)
 rush run --role smart --on-finish "echo done >> /tmp/log" "analyze codebase"
 
@@ -394,16 +391,17 @@ rush run --role reviewer --session "pr-42-review" "review this diff"
 rush run --role smart --json --agents with-agents --aggregation concat \
           --session "flat-audit" < /tmp/p.txt > /tmp/audit.json
 
-# Hard time limit — partial answer is still preserved in the session
-# (and surfaced in --json's exit_reason / final_text)
-rush run --timeout 5m --session "long-task" "refactor the storage layer"
-
 # Scope an unattended CI run: only view + the listed bash commands are
 # approved; everything else is denied cleanly (no UI to hang on).
 rush run --restrict-run --role fast \
           --allow-tool view \
           --allow-bash 'git diff' --allow-bash 'glob:go *' \
           --session "ci-123" "summarize the diff"
+
+# Rarely needed: a run has no overall time limit by default (--idle-timeout
+# already ends it after 15m of inactivity). --timeout is only for fitting a
+# hard external deadline, e.g. a CI job slot.
+rush run --role smart --timeout 5m --session "long-task" "refactor the storage layer"
   `,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// FIRST, before any slow boot work (config load, MCP init): if all
@@ -418,6 +416,7 @@ rush run --restrict-run --role fast \
 			stream, _           = cmd.Flags().GetBool("stream")
 			asJSON, _           = cmd.Flags().GetBool("json")
 			timeout, _          = cmd.Flags().GetString("timeout")
+			idleTimeout, _      = cmd.Flags().GetString("idle-timeout")
 			role, _             = cmd.Flags().GetString("role")
 			effort, _           = cmd.Flags().GetString("effort")
 			smartModel, _       = cmd.Flags().GetString("model")
@@ -575,6 +574,19 @@ rush run --restrict-run --role fast \
 		hardCapDur, err := parseDurationFlexible(timeoutHardCap)
 		if err != nil {
 			return fmt.Errorf("--timeout-hard-cap: %w", err)
+		}
+		idleTimeoutDur, err := parseDurationFlexible(idleTimeout)
+		if err != nil {
+			return fmt.Errorf("--idle-timeout: %w", err)
+		}
+		if idleTimeoutDur <= 0 {
+			// "0" (or the flag's own zero value) means "disable this
+			// call's inactivity backstop" — the underlying stream
+			// watchdog has no native off-switch, so a very large
+			// duration stands in for one. Still bounded eventually by
+			// --timeout (if set) and the default hard wall-clock backstop
+			// below.
+			idleTimeoutDur = idleTimeoutDisabledSentinel
 		}
 
 		// Fork patch: batch 30 — parse --max-cost and --max-tokens.
@@ -792,6 +804,7 @@ rush run --restrict-run --role fast \
 			MaxCost:                  maxCost,                  // Fork patch: batch 30
 			MaxTokens:                maxTokens,                // Fork patch: batch 30
 			Timeout:                  timeoutDur,               // Fork patch: operator UX (budget display)
+			IdleTimeout:              idleTimeoutDur,           // Fork patch: inactivity backstop
 			RestrictedRun:            restrictRun,              // Fork patch: run allowlist
 			AllowBash:                allowBash,                // Fork patch: run allowlist
 			AllowTools:               allowTool,                // Fork patch: run allowlist
@@ -818,7 +831,8 @@ func init() {
 	runCmd.Flags().String("effort", "", "Reasoning effort for this turn: low|medium|high. Applies to whichever slot --role picked. Persisted on the session so subsequent runs inherit it.")
 	runCmd.Flags().Bool("stream", false, "Stream every assistant token to stdout. Default is terse: tool-call names on stderr + final answer on stdout.")
 	runCmd.Flags().Bool("json", false, "Emit one JSON object on stdout summarising the run (session_id, final_text, tool_calls, usage, duration, exit_reason). Mutually exclusive with --stream.")
-	runCmd.Flags().String("timeout", "60m", "Abort the run after this duration (e.g. 30s, 5m, 900 — plain number = seconds). A hard wall-clock kill force-exits the process 60s past this even on a freeze. Default 60m; pass 0 to disable the graceful deadline (a 6h default hard backstop still applies — override via RUSH_RUN_DEFAULT_HARD_TIMEOUT).")
+	runCmd.Flags().String("timeout", "0", "Abort the run after this duration (e.g. 30s, 5m, 900 — plain number = seconds). A hard wall-clock kill force-exits the process 60s past this even on a freeze. Default 0 (disabled — the run has no overall time limit; see --idle-timeout for the inactivity backstop and RUSH_RUN_DEFAULT_HARD_TIMEOUT for the 6h last-resort cap).")
+	runCmd.Flags().String("idle-timeout", "15m", "End the run if the agent produces no activity (no streamed output, no tool call/result) for this long — a stuck tool call still counts as activity and is bounded separately. Terminal: unlike a provider stall on other rush entry points, this never silently retries. e.g. 5m, 900, 0 to disable. Default 15m.")
 	runCmd.Flags().StringP("model", "m", "", "Model to use. Accepts 'model' or 'provider/model' to disambiguate models with the same name across providers")
 	runCmd.Flags().String("fast-model", "", "Fast model to use. If not provided, uses the default fast model for the provider")
 	runCmd.Flags().StringP("session", "s", "", "Session ID to continue OR create. If a session with this id exists it is continued; otherwise a new one is created with this id. Accepts a hash prefix for existing sessions only.")
@@ -914,6 +928,14 @@ func parseDurationFlexible(s string) (time.Duration, error) {
 // ignores ctx), NOT a task-completion expectation — see the comment at the
 // call site for the full rationale.
 const defaultHardKillTimeout = 6 * time.Hour
+
+// idleTimeoutDisabledSentinel stands in for "no inactivity backstop" when
+// the operator passes --idle-timeout 0: the underlying stream watchdog has
+// no native off-switch, only a threshold, so a duration long enough to
+// never practically fire (well short of overflowing time.Time arithmetic)
+// serves the same purpose. The run is still eventually bounded by
+// --timeout (if set) and the default hard wall-clock backstop.
+const idleTimeoutDisabledSentinel = 100 * 365 * 24 * time.Hour
 
 // resolveDefaultHardTimeout resolves the default hard-kill backstop duration
 // from the RUSH_RUN_DEFAULT_HARD_TIMEOUT env var, falling back to

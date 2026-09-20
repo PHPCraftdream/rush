@@ -152,7 +152,7 @@ The canonical pattern an orchestrator should be writing:
 out=/tmp/audit-A.json
 RUSH_FORBID_WRITES="$out" \
   rush run --role smart --session "audit-A" \
-            --json --format json --timeout 10m \
+            --json --format json \
             < /tmp/audit-A.prompt > "$out" 2>"$out.err"
 jq -r '.exit_reason' "$out"   # "end_turn" on success, "invalid_json" if model broke contract, "error" otherwise
 jq -r '.final_text'   "$out"  # the raw JSON the model produced (validated)
@@ -218,8 +218,6 @@ jq -r '.error' "$out"         # error.message if non-success
   warning fires in `envelope.warnings` when parent collapses sub-agent
   outputs to <40% of their combined character count, regardless of
   which mode is in use.
-- **`--timeout <duration>`** — hard wall-clock cap; the partial answer
-  is preserved in the session and surfaced in the envelope.
 - **`--timeout-extends-on-progress`** — when set, the stream watchdog
   resets its idle deadline every time streaming activity occurs, so
   long compositions (code generation, multi-section reports) are not
@@ -237,6 +235,16 @@ jq -r '.error' "$out"         # error.message if non-success
 - **`--system-prompt[-file]`** — persists onto the session so follow-up
   runs inherit it.
 - **`--stream`** — streams every token to stdout for live wrappers.
+- **`--idle-timeout <duration>`** (default `15m`) — ends the run if the
+  agent goes quiet for this long (no streamed output, no tool
+  call/result; a long-running tool call is not "quiet"). Terminal —
+  unlike a plain provider stall elsewhere, it never silently retries.
+  Usually left alone.
+- **`--timeout <duration>`** (default `0`, i.e. disabled) — an
+  additional hard wall-clock cap on the whole run, for when a task
+  must fit an external deadline (a CI slot, a cron window). Most
+  invocations don't need it: `--idle-timeout` already bounds a stuck
+  agent, and `rush run` otherwise runs until the agent finishes.
 
 #### Background shell ownership
 
@@ -668,9 +676,9 @@ four slots. Missing keys are a no-op.
 - You run a multi-section audit / refactor / migration as 5+ parallel
   `rush run` invocations against one repo and need the cost
   accounting + lock-file + atomic-write guarantees that follow.
-- You wrap LLMs in CI: stable `--session` key per build matrix,
-  `--timeout` for budget control, `--json` for jq-parseable output,
-  `--format json` for raw JSON contracts with validation.
+- You wrap LLMs in CI: stable `--session` key per build matrix, `--json`
+  for jq-parseable output, `--format json` for raw JSON contracts with
+  validation, `--timeout` when a run must fit a hard job-slot deadline.
 - You want a long-running embedded coding agent reachable over a
   browser-served WebSocket from a thin React UI.
 
