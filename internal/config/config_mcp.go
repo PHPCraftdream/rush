@@ -273,6 +273,11 @@ type Options struct {
 	// instance-metadata (169.254.169.254 et al.) through final_text.
 	// Enable only in trusted local-dev/self-hosted setups.
 	AllowPrivateNetworkFetch bool `json:"allow_private_network_fetch,omitempty" jsonschema:"description=Allow download/fetch/web tools to reach loopback/private/link-local network addresses. Off by default as an SSRF defense-in-depth measure; enable only for trusted local-dev/self-hosted use.,default=false"`
+	// Network configures outbound network behavior (proxy and custom
+	// DNS/DoH resolution) applied to all provider HTTP connections.
+	// Each provider may override any field individually via its own
+	// provider.network block.
+	Network *NetworkConfig `json:"network,omitempty" jsonschema:"description=Global outbound network settings (proxy\\, custom DNS/DoH) for provider HTTP connections; providers may override per field"`
 	// StreamIdleTimeoutSeconds overrides the default 3-minute stream
 	// watchdog timeout (see internal/agent/stream_watchdog.go). The
 	// watchdog cancels the LLM streaming request if the provider stops

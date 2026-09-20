@@ -180,6 +180,10 @@ type ProviderConfig struct {
 	// weekday mask. An overnight window (start > end) wraps past
 	// midnight. Absent / null = feature off.
 	PeakHours *PeakHoursWindow `json:"peak_hours,omitempty" jsonschema:"description=Optional local-time window during which this provider is refused. Times are HH:MM in the machine local clock\\, no timezone\\, no weekday mask. Overnight window (start > end) wraps past midnight. Absent = feature off.,example={\"start\":\"09:00\",\"end\":\"18:00\"}"`
+	// Network, when non-nil, overrides outbound network behavior (proxy,
+	// custom DNS/DoH) for this provider. Overrides are PER FIELD: an
+	// empty field inherits the global options.network value.
+	Network *NetworkConfig `json:"network,omitempty" jsonschema:"description=Outbound network settings (proxy\\, custom DNS/DoH) for this provider; overrides options.network per field"`
 }
 
 // ToProvider converts the [ProviderConfig] to a [catwalk.Provider].
