@@ -299,7 +299,9 @@ func TestResolveProviderHTTPClientComposedRequest(t *testing.T) {
 		client.Timeout = 10 * time.Second
 		t.Cleanup(client.CloseIdleConnections)
 
-		resp, err := client.Get(target.ts.URL)
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, target.ts.URL, nil)
+		require.NoError(t, err)
+		resp, err := client.Do(req)
 		require.NoError(t, err)
 		defer func() { _ = resp.Body.Close() }()
 		require.Equal(t, http.StatusOK, resp.StatusCode)
@@ -327,7 +329,9 @@ func TestResolveProviderHTTPClientComposedRequest(t *testing.T) {
 		client.Timeout = 10 * time.Second
 		t.Cleanup(client.CloseIdleConnections)
 
-		resp, err := client.Get(target.ts.URL)
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, target.ts.URL, nil)
+		require.NoError(t, err)
+		resp, err := client.Do(req)
 		require.NoError(t, err)
 		defer func() { _ = resp.Body.Close() }()
 		require.Equal(t, http.StatusOK, resp.StatusCode)
