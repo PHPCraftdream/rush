@@ -1447,6 +1447,88 @@ To add specific models to the configuration, configure as such:
 }
 ```
 
+### Provider Network (Proxy, Custom DNS, DoH)
+
+Outbound LLM provider connections can be routed through a proxy and/or use a
+custom DNS resolver instead of the operating system's. This is configured
+entirely in `rush.json` — there is no CLI flag. It applies to every provider
+type that makes outbound HTTP calls (Anthropic, OpenAI, OpenRouter, Vercel,
+Azure, Bedrock, Google, Vertex, OpenAI-compatible and custom providers).
+
+**Global default** — `options.network` applies to every provider:
+
+```json
+{
+  "$schema": "https://charm.land/crush.json",
+  "options": {
+    "network": {
+      "proxy": "socks5://127.0.0.1:1080"
+    }
+  }
+}
+```
+
+**Per-provider override** — `providers.<id>.network` cascades **per field**
+over the global block: a provider that only sets `proxy` still inherits the
+global `dns_server`/`doh_url`, and vice versa. A field set on both uses the
+provider's value.
+
+```json
+{
+  "$schema": "https://charm.land/crush.json",
+  "options": {
+    "network": {
+      "dns_server": "1.1.1.1"
+    }
+  },
+  "providers": {
+    "my-provider": {
+      "type": "openai-compat",
+      "base_url": "https://api.example.com/v1",
+      "api_key": "$EXAMPLE_API_KEY",
+      "network": {
+        "proxy": "http://proxy.corp.internal:8080"
+      },
+      "models": []
+    }
+  }
+}
+```
+
+**Combined proxy + DoH** — when both are configured, even the DNS lookup is
+tunneled through the proxy, so no hostname ever resolves on the local
+network:
+
+```json
+{
+  "$schema": "https://charm.land/crush.json",
+  "options": {
+    "network": {
+      "proxy": "socks5://user:pass@10.0.0.2:1080",
+      "doh_url": "https://cloudflare-dns.com/dns-query"
+    }
+  }
+}
+```
+
+How the pieces interact:
+
+- **Proxy only** — the proxy resolves hostnames itself. HTTP proxies
+  (`http://`) are tunneled via CONNECT; SOCKS5 (`socks5://` or `socks5h://`)
+  passes hostnames to the server unresolved. Userinfo authentication
+  (`socks5://user:pass@host:port`) is supported.
+- **DNS/DoH only** — hostnames resolve through the configured server and the
+  connection dials the resolved IP directly. If both `dns_server` and
+  `doh_url` are set, `doh_url` wins (documented precedence, not an error); a
+  `dns_server` without a port gets port 53 appended.
+- **Both** — the DNS/DoH lookup itself goes through the proxy and the final
+  connection uses the same proxy. Nothing touches the OS resolver.
+
+A malformed `proxy` or `doh_url` (unsupported scheme, unparseable URL) fails
+the provider build loudly at startup instead of silently falling back to a
+direct connection. CLI providers (`claude`, `gemini`, `codex`, `qwen` — the
+`cliprovider` type) shell out to a local binary and ignore this setting.
+
 ### Local Models
 
 Local models can also be configured via OpenAI-compatible API. Here are two common examples:

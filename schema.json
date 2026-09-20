@@ -209,6 +209,11 @@
             120
           ]
         },
+        "enabled_in_cli": {
+          "type": "boolean",
+          "description": "Whether this server starts during non-interactive CLI invocations (rush run and other CLI subcommands). Off by default -- interactive web/TUI sessions always start non-disabled servers regardless. Override for one run with --all-mcp.",
+          "default": false
+        },
         "headers": {
           "additionalProperties": {
             "type": "string"
@@ -322,6 +327,33 @@
         "fast": {
           "$ref": "#/$defs/SelectedModel",
           "description": "Fast (cheap) slot for this preset"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "NetworkConfig": {
+      "properties": {
+        "proxy": {
+          "type": "string",
+          "description": "Proxy URL (socks5:// or http://) for outbound provider connections",
+          "examples": [
+            "socks5://127.0.0.1:1080"
+          ]
+        },
+        "dns_server": {
+          "type": "string",
+          "description": "Custom DNS server (host or host:port, default port 53) for resolving provider hostnames",
+          "examples": [
+            "1.1.1.1"
+          ]
+        },
+        "doh_url": {
+          "type": "string",
+          "description": "DNS-over-HTTPS endpoint for resolving provider hostnames; wins over dns_server if both are set",
+          "examples": [
+            "https://cloudflare-dns.com/dns-query"
+          ]
         }
       },
       "additionalProperties": false,
@@ -470,6 +502,10 @@
           "type": "boolean",
           "description": "Allow download/fetch/web tools to reach loopback/private/link-local network addresses. Off by default as an SSRF defense-in-depth measure; enable only for trusted local-dev/self-hosted use.",
           "default": false
+        },
+        "network": {
+          "$ref": "#/$defs/NetworkConfig",
+          "description": "Global outbound network settings (proxy, custom DNS/DoH) for provider HTTP connections; providers may override per field"
         },
         "stream_idle_timeout_seconds": {
           "type": "integer",
@@ -666,6 +702,10 @@
         "peak_hours": {
           "$ref": "#/$defs/PeakHoursWindow",
           "description": "Optional local-time window during which this provider is refused. Times are HH:MM in the machine local clock, no timezone, no weekday mask. Overnight window (start \u003e end) wraps past midnight. Absent = feature off."
+        },
+        "network": {
+          "$ref": "#/$defs/NetworkConfig",
+          "description": "Outbound network settings (proxy, custom DNS/DoH) for this provider; overrides options.network per field"
         }
       },
       "additionalProperties": false,

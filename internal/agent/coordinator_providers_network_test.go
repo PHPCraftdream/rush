@@ -1,0 +1,379 @@
+package agent
+
+import (
+	"context"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"sync"
+	"testing"
+	"time"
+
+	"charm.land/fantasy"
+	"charm.land/fantasy/providers/openaicompat"
+	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/log"
+	"github.com/stretchr/testify/require"
+)
+
+// probeTargetBody is the fixed payload the plain target double serves;
+// matching it proves the response really traversed the whole chain.
+const probeTargetBody = "hello from target"
+
+// probeChatCompletionBody is the fake openai-compat completion served by
+// the end-to-end target server in test C.
+const probeChatCompletionBody = `{"id":"c1","object":"chat.completion","created":1,"model":"probe-model","choices":[{"index":0,"message":{"role":"assistant","content":"pong"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`
+
+// newNetworkTestStore builds a coordinator config store whose Options
+// are exactly opts (Debug:false with no network block when opts is
+// nil), so each test controls Debug and the global network settings.
+func newNetworkTestStore(t *testing.T, opts *config.Options) *config.ConfigStore {
+	t.Helper()
+	if opts == nil {
+		opts = &config.Options{Debug: false}
+	}
+	return config.NewLibraryStore(&config.Config{Options: opts}, t.TempDir())
+}
+
+// hostOnlyOfAuthority strips a trailing :port from an authority,
+// returning the input unchanged when it carries no port.
+func hostOnlyOfAuthority(authority string) string {
+	host, _, err := net.SplitHostPort(authority)
+	if err != nil {
+		return authority
+	}
+	return host
+}
+
+// hostPortOfURL parses rawURL and returns its host:port authority.
+func hostPortOfURL(t *testing.T, rawURL string) string {
+	t.Helper()
+	u, err := url.Parse(rawURL)
+	require.NoError(t, err)
+	return u.Host
+}
+
+// targetDouble is a plain loopback HTTP server that counts hits under a
+// mutex and answers every request with a fixed status, content type and
+// body.
+type targetDouble struct {
+	ts          *httptest.Server
+	mu          sync.Mutex
+	hits        int
+	status      int
+	contentType string
+	body        string
+}
+
+// startTargetDouble starts the target double and registers its cleanup.
+func startTargetDouble(t *testing.T, status int, contentType, body string) *targetDouble {
+	t.Helper()
+	td := &targetDouble{status: status, contentType: contentType, body: body}
+	td.ts = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		td.mu.Lock()
+		td.hits++
+		td.mu.Unlock()
+		w.Header().Set("Content-Type", contentType)
+		w.WriteHeader(status)
+		_, _ = io.WriteString(w, body)
+	}))
+	t.Cleanup(td.ts.Close)
+	return td
+}
+
+// hitCount returns a snapshot of the recorded hit count.
+func (td *targetDouble) hitCount() int {
+	td.mu.Lock()
+	defer td.mu.Unlock()
+	return td.hits
+}
+
+// proxyDouble is a minimal local HTTP forward proxy: it records the
+// authority of every request it sees and "resolves" non-IP-literal
+// hosts proxy-side by forwarding them to the fixed fallback target, so
+// a .invalid hostname can only succeed by traversing the proxy.
+type proxyDouble struct {
+	ts          *httptest.Server
+	fallback    string
+	mu          sync.Mutex
+	authorities []string
+}
+
+// startProxyDouble starts the proxy double and registers its cleanup.
+func startProxyDouble(t *testing.T, fallbackTarget string) *proxyDouble {
+	t.Helper()
+	p := &proxyDouble{fallback: fallbackTarget}
+	p.ts = httptest.NewServer(http.HandlerFunc(p.handle))
+	t.Cleanup(p.ts.Close)
+	return p
+}
+
+// URL returns the proxy's http://127.0.0.1:port base URL.
+func (p *proxyDouble) URL() string { return p.ts.URL }
+
+// seen returns a snapshot of the recorded authorities in arrival order.
+func (p *proxyDouble) seen() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]string(nil), p.authorities...)
+}
+
+// record appends one authority under the mutex.
+func (p *proxyDouble) record(authority string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.authorities = append(p.authorities, authority)
+}
+
+// proxyHopByHopHeaders are stripped from relayed proxy responses.
+var proxyHopByHopHeaders = []string{"Connection", "Proxy-Connection", "Keep-Alive"}
+
+// handle records the request authority and relays the absolute-form
+// proxy request: IP-literal hosts are dialed as-is, names go to the
+// fixed fallback target.
+func (p *proxyDouble) handle(w http.ResponseWriter, r *http.Request) {
+	p.record(r.Host)
+	// Clone shares Body; RoundTrip consumes it exactly once.
+	out := r.Clone(r.Context())
+	// Server-received requests carry RequestURI, which client
+	// transports reject; clear it before re-sending.
+	out.RequestURI = ""
+	if net.ParseIP(hostOnlyOfAuthority(out.URL.Host)) == nil {
+		out.URL.Host = p.fallback
+	}
+	resp, err := http.DefaultTransport.RoundTrip(out)
+	if err != nil {
+		http.Error(w, "upstream request failed: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer func() { _ = resp.Body.Close() }()
+	for _, hop := range proxyHopByHopHeaders {
+		resp.Header.Del(hop)
+	}
+	for k, vv := range resp.Header {
+		for _, v := range vv {
+			w.Header().Add(k, v)
+		}
+	}
+	w.WriteHeader(resp.StatusCode)
+	_, _ = io.Copy(w, resp.Body)
+}
+
+func TestResolveProviderHTTPClient(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nothing configured returns nil client", func(t *testing.T) {
+		t.Parallel()
+		coord := &coordinator{cfg: newNetworkTestStore(t, nil)}
+		client, err := coord.resolveProviderHTTPClient(config.ProviderConfig{ID: "probe"})
+		require.NoError(t, err)
+		require.Nil(t, client)
+	})
+
+	t.Run("proxy only builds http proxy transport", func(t *testing.T) {
+		t.Parallel()
+		coord := &coordinator{cfg: newNetworkTestStore(t, nil)}
+		client, err := coord.resolveProviderHTTPClient(config.ProviderConfig{
+			ID:      "probe",
+			Network: &config.NetworkConfig{Proxy: "http://127.0.0.1:1"},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, client)
+		t.Cleanup(client.CloseIdleConnections)
+		tr, ok := client.Transport.(*http.Transport)
+		require.True(t, ok)
+		require.NotNil(t, tr.Proxy)
+		require.Nil(t, tr.DialContext)
+	})
+
+	t.Run("doh only builds resolver transport", func(t *testing.T) {
+		t.Parallel()
+		coord := &coordinator{cfg: newNetworkTestStore(t, nil)}
+		client, err := coord.resolveProviderHTTPClient(config.ProviderConfig{
+			ID:      "probe",
+			Network: &config.NetworkConfig{DoHURL: "https://cloudflare-dns.com/dns-query"},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, client)
+		t.Cleanup(client.CloseIdleConnections)
+		tr, ok := client.Transport.(*http.Transport)
+		require.True(t, ok)
+		require.NotNil(t, tr.DialContext)
+		require.Nil(t, tr.Proxy)
+	})
+
+	t.Run("debug only wraps default transport", func(t *testing.T) {
+		t.Parallel()
+		coord := &coordinator{cfg: newNetworkTestStore(t, &config.Options{Debug: true})}
+		client, err := coord.resolveProviderHTTPClient(config.ProviderConfig{ID: "probe"})
+		require.NoError(t, err)
+		require.NotNil(t, client)
+		t.Cleanup(client.CloseIdleConnections)
+		retry, ok := client.Transport.(*log.RetryTransport)
+		require.True(t, ok)
+		logger, ok := retry.Transport.(*log.HTTPRoundTripLogger)
+		require.True(t, ok)
+		require.Equal(t, http.DefaultTransport, logger.Transport)
+	})
+
+	t.Run("debug and network compose into one chain", func(t *testing.T) {
+		t.Parallel()
+		coord := &coordinator{cfg: newNetworkTestStore(t, &config.Options{Debug: true})}
+		client, err := coord.resolveProviderHTTPClient(config.ProviderConfig{
+			ID:      "probe",
+			Network: &config.NetworkConfig{Proxy: "http://127.0.0.1:1"},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, client)
+		t.Cleanup(client.CloseIdleConnections)
+		retry, ok := client.Transport.(*log.RetryTransport)
+		require.True(t, ok)
+		logger, ok := retry.Transport.(*log.HTTPRoundTripLogger)
+		require.True(t, ok)
+		tr, ok := logger.Transport.(*http.Transport)
+		require.True(t, ok)
+		require.NotNil(t, tr.Proxy)
+	})
+
+	t.Run("provider fields cascade per field over globals", func(t *testing.T) {
+		t.Parallel()
+		coord := &coordinator{cfg: newNetworkTestStore(t, &config.Options{
+			Network: &config.NetworkConfig{DNSServer: "1.1.1.1"},
+		})}
+		client, err := coord.resolveProviderHTTPClient(config.ProviderConfig{
+			ID:      "probe",
+			Network: &config.NetworkConfig{Proxy: "http://127.0.0.1:1"},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, client)
+		t.Cleanup(client.CloseIdleConnections)
+		// Resolver active plus proxy set means tunneled-dial mode: a
+		// struct-level override would produce the opposite shape.
+		tr, ok := client.Transport.(*http.Transport)
+		require.True(t, ok)
+		require.NotNil(t, tr.DialContext)
+		require.Nil(t, tr.Proxy)
+	})
+
+	t.Run("malformed proxy config is a wrapped error", func(t *testing.T) {
+		t.Parallel()
+		coord := &coordinator{cfg: newNetworkTestStore(t, nil)}
+		client, err := coord.resolveProviderHTTPClient(config.ProviderConfig{
+			ID:      "probe",
+			Network: &config.NetworkConfig{Proxy: "ftp://example.com:21"},
+		})
+		require.Error(t, err)
+		require.Nil(t, client)
+		require.Contains(t, err.Error(), "probe")
+	})
+
+	t.Run("malformed doh url is a wrapped error", func(t *testing.T) {
+		t.Parallel()
+		coord := &coordinator{cfg: newNetworkTestStore(t, nil)}
+		client, err := coord.resolveProviderHTTPClient(config.ProviderConfig{
+			ID:      "probe",
+			Network: &config.NetworkConfig{DoHURL: "https://[::1"},
+		})
+		require.Error(t, err)
+		require.Nil(t, client)
+		require.Contains(t, err.Error(), "probe")
+	})
+}
+
+func TestResolveProviderHTTPClientComposedRequest(t *testing.T) {
+	t.Parallel()
+
+	t.Run("network only request traverses the proxy", func(t *testing.T) {
+		t.Parallel()
+		target := startTargetDouble(t, http.StatusOK, "text/plain", probeTargetBody)
+		proxy := startProxyDouble(t, hostPortOfURL(t, target.ts.URL))
+		coord := &coordinator{cfg: newNetworkTestStore(t, nil)}
+		client, err := coord.resolveProviderHTTPClient(config.ProviderConfig{
+			ID:      "probe",
+			Network: &config.NetworkConfig{Proxy: proxy.URL()},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, client)
+		client.Timeout = 10 * time.Second
+		t.Cleanup(client.CloseIdleConnections)
+
+		resp, err := client.Get(target.ts.URL)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		body, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		require.Equal(t, probeTargetBody, string(body))
+
+		require.Contains(t, proxy.seen(), hostPortOfURL(t, target.ts.URL))
+		require.GreaterOrEqual(t, target.hitCount(), 1)
+	})
+
+	t.Run("debug and network compose over the proxy", func(t *testing.T) {
+		t.Parallel()
+		target := startTargetDouble(t, http.StatusOK, "text/plain", probeTargetBody)
+		proxy := startProxyDouble(t, hostPortOfURL(t, target.ts.URL))
+		coord := &coordinator{cfg: newNetworkTestStore(t, &config.Options{Debug: true})}
+		client, err := coord.resolveProviderHTTPClient(config.ProviderConfig{
+			ID:      "probe",
+			Network: &config.NetworkConfig{Proxy: proxy.URL()},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, client)
+		_, ok := client.Transport.(*log.RetryTransport)
+		require.True(t, ok)
+		client.Timeout = 10 * time.Second
+		t.Cleanup(client.CloseIdleConnections)
+
+		resp, err := client.Get(target.ts.URL)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		body, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		require.Equal(t, probeTargetBody, string(body))
+
+		require.Contains(t, proxy.seen(), hostPortOfURL(t, target.ts.URL))
+		require.GreaterOrEqual(t, target.hitCount(), 1)
+	})
+}
+
+func TestBuildProviderRoutesThroughConfiguredProxy(t *testing.T) {
+	t.Parallel()
+	target := startTargetDouble(t, http.StatusOK, "application/json", probeChatCompletionBody)
+	proxy := startProxyDouble(t, hostPortOfURL(t, target.ts.URL))
+
+	store := newNetworkTestStore(t, nil)
+	providerCfg := config.ProviderConfig{
+		ID:      "probe-provider",
+		Type:    openaicompat.Name,
+		APIKey:  "test-key",
+		BaseURL: "http://probe.invalid/v1",
+		Network: &config.NetworkConfig{Proxy: proxy.URL()},
+	}
+	coord := &coordinator{cfg: store}
+	provider, err := coord.buildProvider(providerCfg, config.SelectedModel{}, false)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	lm, err := provider.LanguageModel(ctx, "probe-model")
+	require.NoError(t, err)
+	_, err = lm.Generate(ctx, fantasy.Call{})
+	require.NoError(t, err)
+
+	// probe.invalid cannot resolve in DNS, so the request can only
+	// succeed by traversing the proxy to the fallback target.
+	authorities := proxy.seen()
+	var sawProbeHost bool
+	for _, authority := range authorities {
+		if hostOnlyOfAuthority(authority) == "probe.invalid" {
+			sawProbeHost = true
+			break
+		}
+	}
+	require.True(t, sawProbeHost, "proxy saw authorities %v", authorities)
+	require.GreaterOrEqual(t, target.hitCount(), 1)
+}

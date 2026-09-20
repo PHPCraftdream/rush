@@ -525,6 +525,21 @@ history) flagged remaining HIGH-severity gaps:
   the review turn off the primary turn's one-shot fail-fast ownership
   era token (a stale claim would present a dead epoch to the mailbox).
 
+### 4.L — Provider network wiring (proxy / DNS / DoH, `internal/nettransport`)
+
+`options.network` (global) and `providers.<id>.network` (per-provider,
+per-field cascade) now take effect on every fantasy provider's outbound
+HTTP client. `internal/agent/coordinator_providers_network.go` resolves the
+cascaded config once per provider build and `internal/nettransport` turns
+it into a proxy/DNS/DoH `*http.Client` — nil when nothing is configured, so
+an unconfigured install behaves byte-identically to before. Debug
+request/response logging composes on top via the new
+`log.NewHTTPClientWithTransport`, and Copilot rides the same transport via
+`copilot.NewClientWithTransport`. CLI providers are excluded (they shell
+out to a local binary). A malformed proxy/DoH value fails the provider
+build loudly. Documented in README under "Provider Network";
+`schema.json` regenerated.
+
 ## 5. In-code markers
 
 Whenever we patch an **upstream** file in a non-obvious way we leave a

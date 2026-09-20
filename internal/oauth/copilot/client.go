@@ -17,14 +17,22 @@ var assistantRolePattern = regexp.MustCompile(`"role"\s*:\s*"assistant"`)
 // NewClient creates a new HTTP client with a custom transport that adds the
 // X-Initiator header based on message history in the request body.
 func NewClient(isSubAgent, debug bool) *http.Client {
+	return NewClientWithTransport(isSubAgent, debug, nil)
+}
+
+// NewClientWithTransport layers base underneath the initiator transport so
+// a configured proxy/DNS network transport applies to Copilot traffic too.
+// A nil base keeps the historical behavior.
+func NewClientWithTransport(isSubAgent, debug bool, base http.RoundTripper) *http.Client {
 	return &http.Client{
-		Transport: &initiatorTransport{debug: debug, isSubAgent: isSubAgent},
+		Transport: &initiatorTransport{debug: debug, isSubAgent: isSubAgent, base: base},
 	}
 }
 
 type initiatorTransport struct {
 	debug      bool
 	isSubAgent bool
+	base       http.RoundTripper
 }
 
 func (t *initiatorTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -75,7 +83,16 @@ func (t *initiatorTransport) RoundTrip(req *http.Request) (*http.Response, error
 
 func (t *initiatorTransport) roundTrip(req *http.Request) (*http.Response, error) {
 	if t.debug {
-		return log.NewHTTPClient().Transport.RoundTrip(req)
+		return log.NewHTTPClientWithTransport(t.baseTransport()).Transport.RoundTrip(req)
 	}
-	return http.DefaultTransport.RoundTrip(req)
+	return t.baseTransport().RoundTrip(req)
+}
+
+// baseTransport returns the configured base round tripper, defaulting to
+// http.DefaultTransport when none was supplied.
+func (t *initiatorTransport) baseTransport() http.RoundTripper {
+	if t.base != nil {
+		return t.base
+	}
+	return http.DefaultTransport
 }

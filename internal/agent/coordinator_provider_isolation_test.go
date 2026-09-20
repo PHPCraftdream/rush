@@ -145,7 +145,7 @@ func TestBuildAnthropicProviderPreservesEnvironmentAndAuthSelection(t *testing.T
 		t.Run(tc.name, func(t *testing.T) {
 			requestHeaders = nil
 			wantHeaders := maps.Clone(tc.headers)
-			provider, err := coord.buildAnthropicProvider(server.URL, tc.apiKey, tc.headers, tc.providerID)
+			provider, err := coord.buildAnthropicProvider(server.URL, tc.apiKey, tc.headers, tc.providerID, nil)
 			require.NoError(t, err)
 			assert.Equal(t, wantHeaders, tc.headers)
 			model, err := provider.LanguageModel(context.Background(), "probe-model")
@@ -206,7 +206,7 @@ func TestBuildAnthropicProviderConcurrentHeterogeneousBuildsPreserveEnvironment(
 			go func() {
 				defer wg.Done()
 				<-start
-				_, err := coord.buildAnthropicProvider("", tc.apiKey, map[string]string{"aUtHoRiZaTiOn": "operator", "X-API-KEY": "operator-key"}, tc.providerID)
+				_, err := coord.buildAnthropicProvider("", tc.apiKey, map[string]string{"aUtHoRiZaTiOn": "operator", "X-API-KEY": "operator-key"}, tc.providerID, nil)
 				if err != nil {
 					errs <- err
 				}

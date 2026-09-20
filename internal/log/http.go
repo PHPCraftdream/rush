@@ -53,10 +53,18 @@ var LogHTTPBodies = func() bool {
 
 // NewHTTPClient creates an HTTP client with debug logging and retry on 5xx errors.
 func NewHTTPClient() *http.Client {
+	return NewHTTPClientWithTransport(http.DefaultTransport)
+}
+
+// NewHTTPClientWithTransport creates an HTTP client with debug logging and
+// retry on 5xx errors, layering both on top of the given base transport
+// instead of http.DefaultTransport. Callers with a custom proxy/DNS
+// transport pass it here so logging and retry compose on top of it.
+func NewHTTPClientWithTransport(base http.RoundTripper) *http.Client {
 	return &http.Client{
 		Transport: &RetryTransport{
 			Transport: &HTTPRoundTripLogger{
-				Transport: http.DefaultTransport,
+				Transport: base,
 			},
 		},
 	}
