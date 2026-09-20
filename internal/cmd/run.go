@@ -62,6 +62,18 @@ Four roles exist:
   reviewer           optional, no alias; the strongest slot, for explicit
                       review invocations. Never auto-selected anywhere —
                       reachable only via --role reviewer.
+                      Reviewer auto-pass: with a Reviewer model configured,
+                      a successful --role smart run is automatically
+                      continued with one more turn on the Reviewer model
+                      that reviews everything the session did and states
+                      its own conclusion. That conclusion — not the smart
+                      agent's own last message — becomes the run's actual
+                      output ("final_text" in --json, the printed text in
+                      the other modes). Runs that failed, were canceled,
+                      timed out, or queued are returned unchanged, and an
+                      explicit --role reviewer invocation is never
+                      extended. Unconfigure the reviewer to disable the
+                      pass.
 worker/reviewer are configured with "rush models use <smart> <fast>
 --worker <model> --reviewer <model>" (or the web UI / rush.json's
 models.worker / models.reviewer directly). The actual model id behind

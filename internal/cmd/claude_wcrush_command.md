@@ -83,6 +83,15 @@ fix what fails.
 immediately with code 1. (Learned the hard way in the motivating
 session.)
 
+**Reviewer auto-pass:** if a reviewer model is configured, this
+phase-2 resume is a `--role smart` run — so once it finishes cleanly,
+rush appends one more turn on the Reviewer model that reviews the whole
+phase-1+phase-2 session and ends with its own conclusion. That
+conclusion is the run's `final_text`; the phase-2 agent's own last
+message is not. Do not mistake the review turn for unrequested extra
+work: it is driven by rush itself, and unconfiguring the reviewer
+turns it off.
+
 ## Carried over from wrush.md, unchanged
 
 Phase 2 moves who runs what, not any of wrush.md's rules — restated

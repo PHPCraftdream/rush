@@ -170,7 +170,10 @@ jq -r '.error' "$out"         # error.message if non-success
   indirectly when a worker is configured and a `--role smart` run
   dispatches a sub-agent via the `agent` tool), and `reviewer`
   (optional, no alias, the strongest slot, for explicit review
-  invocations — never auto-selected). `worker`/`reviewer` are
+  invocations — never auto-selected as the run's role, but note the
+  reviewer auto-pass below, which uses the configured reviewer model
+  for an automatic follow-up turn after a successful `--role smart`
+  run). `worker`/`reviewer` are
   configured via the web UI or `rush.json`'s `models.worker` /
   `models.reviewer` (`rush models use` manages smart/fast; see
   `--worker`/`--reviewer` flags below for the other two). No silent
@@ -308,6 +311,19 @@ work (editing, writing, running commands) to the `agent` tool in
 worker-context-sized chunks instead of implementing inline — one file
 or logical change per delegation, with enough standalone context since
 the worker doesn't see the parent conversation.
+
+**Reviewer auto-pass:** when a `reviewer` model is configured and a
+`--role smart` run finishes cleanly, `rush run` automatically continues
+the SAME session with one more turn on the Reviewer model that reviews
+everything the session did and states its own conclusion. That
+conclusion — not the smart agent's own last message — becomes the run's
+actual output (`final_text` in `--json`, the printed text in the other
+modes). Runs that failed, were canceled, timed out, or queued are
+returned unchanged; an explicit `--role reviewer` invocation is never
+extended; and the reviewer's model override is a one-off (never
+persisted on the session's slots, so a later plain `rush run --session
+<id>` still resolves the session's normal smart model). Unconfiguring
+the reviewer turns the pass off — there is no flag.
 
 A worker sub-agent can itself call `ask_question` and pause. That
 does **not** end the orchestrator's turn (unlike the top-level case

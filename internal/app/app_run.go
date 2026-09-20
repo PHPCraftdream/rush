@@ -8,7 +8,6 @@ package app
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -19,9 +18,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent"
-	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/permission"
-	"github.com/PHPCraftdream/rush/internal/pubsub"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -434,8 +431,6 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 		}()
 	}
 
-	done := make(chan agentTurnResponse, 1)
-
 	runFn := func(ctx context.Context, sessionID, prompt string) (*fantasy.AgentResult, error) {
 		if reservedHold != nil && modelOverrideRequested {
 			return app.AgentCoordinator.RunWithReservedOwnership(ctx, sessionID, prompt,
@@ -461,124 +456,29 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 		hookExitReason = "cancelled"
 		return nil, err
 	}
-	startTurn := func() {
-		if executeRunBeforeTurnLaunchSeam != nil {
-			executeRunBeforeTurnLaunchSeam()
-		}
-		go runAgentTurnRecovered(ctx, sess.ID, prompt, runFn, done)
+	// The event loop now lives on executeRunLoop (app_run_reviewer.go) so
+	// it can run twice: once for the primary turn, and — only when the
+	// reviewer pass fires — once more for the review turn, whose finish()
+	// result becomes this function's return value. The progress-bar/
+	// trailing-newline defer below stays registered here (before the
+	// first phase) so its LIFO position among this function's defers is
+	// unchanged.
+	loop := &executeRunLoop{
+		app:            app,
+		sess:           sess,
+		ctx:            ctx,
+		mode:           mode,
+		overrides:      overrides,
+		stdout:         stdout,
+		stderr:         stderr,
+		stderrTTY:      stderrTTY,
+		progress:       progress,
+		stopSpinner:    stopSpinner,
+		runStart:       runStart,
+		tokensBefore:   tokensBefore,
+		costBefore:     costBefore,
+		hookExitReason: &hookExitReason,
 	}
-	// Subscribe before launching the turn. The message broker is live-only;
-	// a fast provider can publish and finish before a later subscriber exists.
-	baselineIDs := make(map[string]struct{})
-	baselineKnown := true
-	if existing, listErr := app.Messages.List(ctx, sess.ID); listErr != nil {
-		baselineKnown = false
-		slog.Warn("run: failed to snapshot pre-run messages; terminal reconciliation will use live events", "session", sess.ID, "err", listErr)
-	} else {
-		for _, msg := range existing {
-			baselineIDs[msg.ID] = struct{}{}
-		}
-	}
-	messageEvents := app.Messages.Subscribe(ctx)
-	startTurn()
-	messageReadBytes := make(map[string]int)
-	seenToolCalls := make(map[string]bool)
-	toolCallCounts := make(map[string]int)    // name → count, for JSON output
-	printedFinal := make(map[string]bool)     // for terse mode: print once per finished assistant msg
-	var finalText string                      // last assistant FullText seen, for JSON output
-	var finalReason string                    // last assistant Finish.Reason seen, for JSON output
-	var finalErrTitle, finalErrDetails string // Finish.Message + Finish.Details, surfaced into envelope.Error when reason=error
-	var printed bool
-	var reconciliationDiagnostic string
-
-	handleMessageEvent := func(event pubsub.Event[message.Message]) error {
-		msg := event.Payload
-		if msg.SessionID != sess.ID || msg.Role != message.Assistant || len(msg.Parts) == 0 {
-			return nil
-		}
-		stopSpinner()
-
-		// Tool-call names always go to stderr - one short line per new call.
-		for _, p := range msg.Parts {
-			if tc, ok := p.(message.ToolCall); ok && tc.Name != "" && !seenToolCalls[tc.ID] {
-				seenToolCalls[tc.ID] = true
-				toolCallCounts[tc.Name]++
-				prefix := ""
-				if stderrTTY {
-					prefix = "\r" + ansi.EraseEntireLine
-				}
-				fmt.Fprintf(stderr, prefix+"▶ %s\n", tc.Name)
-			}
-		}
-
-		// Live events drive progress and streaming. The persisted row below
-		// is authoritative for the terminal envelope.
-		if msg.IsFinished() {
-			finalText = msg.FullText()
-			for _, p := range msg.Parts {
-				if f, ok := p.(message.Finish); ok {
-					finalReason = string(f.Reason)
-					finalErrTitle = f.Message
-					finalErrDetails = f.Details
-					break
-				}
-			}
-		}
-
-		switch mode {
-		case RunModeJSON:
-			// Suppress per-message stdout; the summary is printed below.
-		case RunModeTerse:
-			if !msg.IsFinished() || printedFinal[msg.ID] {
-				return nil
-			}
-			text := strings.TrimLeft(msg.FullText(), " \t\n")
-			if text != "" {
-				printedFinal[msg.ID] = true
-				printed = true
-				fmt.Fprint(stdout, text)
-			}
-		case RunModeStream:
-			content := msg.FullText()
-			readBytes := messageReadBytes[msg.ID]
-			if len(content) < readBytes {
-				slog.Error("Non-interactive: message content is shorter than read bytes", "message_length", len(content), "read_bytes", readBytes)
-				return fmt.Errorf("message content is shorter than read bytes: %d < %d", len(content), readBytes)
-			}
-			part := content[readBytes:]
-			if readBytes == 0 {
-				part = strings.TrimLeft(part, " \t")
-			}
-			if printed || strings.TrimSpace(part) != "" {
-				printed = true
-				fmt.Fprint(stdout, part)
-			}
-			messageReadBytes[msg.ID] = len(content)
-		}
-		return nil
-	}
-
-	drainMessageEvents := func() error {
-		for messageEvents != nil {
-			select {
-			case event, ok := <-messageEvents:
-				if !ok {
-					messageEvents = nil
-					if messageEventsClosedSeam != nil {
-						messageEventsClosedSeam()
-					}
-					continue
-				}
-				if err := handleMessageEvent(event); err != nil {
-					return err
-				}
-			default:
-				return nil
-			}
-		}
-		return nil
-	}
-
 	defer func() {
 		if progress && stderrTTY {
 			_, _ = fmt.Fprintf(stderr, ansi.ResetProgressBar)
@@ -592,361 +492,21 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 		}
 	}()
 
-	// finish builds the final envelope/error from runErr plus whatever
-	// finalText/finalReason/toolCallCounts have accumulated via messageEvents
-	// so far, and is the sole return point for a completed run. Extracted
-	// (task #421/P0-1) from the body of `case result := <-done:` below so
-	// BOTH that case AND drainDone's case (a durable continuation's outcome,
-	// possibly arriving well after the original done fired) can reach it —
-	// see the select loop's own doc for why this split exists.
-	var (
-		cachedTerminal       *terminalReconciliation
-		cachedTerminalCtx    context.Context
-		cachedTerminalCancel context.CancelFunc
-	)
-	finish := func(runErr error) (*RunResult, error) {
-		stopSpinner()
-		if errors.Is(runErr, ErrRunQueued) {
-			// The shared session stream may have delivered the active owner's
-			// messages before the mailbox reported this call as queued. Do not
-			// attribute that output or its tool calls to the queued prompt.
-			finalText = ""
-			finalReason = ""
-			finalErrTitle = ""
-			finalErrDetails = ""
-			toolCallCounts = make(map[string]int)
-		}
-		isCanceled := runErr != nil && (errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded) || errors.Is(runErr, agent.ErrRequestCancelled))
-		finalCtx := cachedTerminalCtx
-		finalCancel := cachedTerminalCancel
-		if finalCtx == nil {
-			finalCtx, finalCancel = context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
-		}
-		defer finalCancel()
-		if !errors.Is(runErr, ErrRunQueued) {
-			var reconciled terminalReconciliation
-			var reconcileErr error
-			authoritativeTerminal := false
-			if cachedTerminal != nil {
-				reconciled = *cachedTerminal
-				authoritativeTerminal = true
-			} else {
-				reconciled, reconcileErr = app.reconcileTerminalMessage(finalCtx, sess.ID, baselineIDs, baselineKnown, runStart)
-			}
-			if reconcileErr != nil {
-				reconciliationDiagnostic = "authoritative terminal message reconciliation failed: " + reconcileErr.Error() + "; using live run events"
-				slog.Warn("run: failed to reconcile authoritative terminal message", "session", sess.ID, "err", reconcileErr)
-			} else {
-				// Replay the committed row through the normal output handler.
-				// It emits only unread content, so a dropped terminal event cannot
-				// lose output or duplicate it.
-				if outputErr := handleMessageEvent(pubsub.Event[message.Message]{Payload: reconciled.message}); outputErr != nil {
-					return nil, outputErr
-				}
-				toolCallCounts = reconciled.toolCalls
-				authoritativeTerminal = true
-			}
-			if authoritativeTerminal && isCanceled && !runFailed(finalReason, nil, false) {
-				runErr = nil
-				isCanceled = false
-			}
-		}
-
-		if mode == RunModeJSON {
-			// Re-fetch the session row so the usage delta reflects
-			// the writes the agent made during the run.
-			freshSess, usageErr := app.Sessions.Get(finalCtx, sess.ID)
-			deltaTokens := int64(0)
-			deltaCost := float64(0)
-			if usageErr != nil {
-				slog.Warn("run: failed to read session usage for the JSON envelope; reporting zero deltas", "session", sess.ID, "err", usageErr)
-			} else {
-				deltaTokens = freshSess.PromptTokens + freshSess.CompletionTokens - tokensBefore
-				deltaCost = freshSess.Cost - costBefore
-				if deltaTokens < 0 {
-					slog.Warn("run: session token usage moved backwards; reporting zero delta", "session", sess.ID, "before", tokensBefore, "after", freshSess.PromptTokens+freshSess.CompletionTokens)
-					deltaTokens = 0
-				}
-				if deltaCost < 0 {
-					slog.Warn("run: session cost moved backwards; reporting zero delta", "session", sess.ID, "before", costBefore, "after", freshSess.Cost)
-					deltaCost = 0
-				}
-			}
-			// Fork patch (orchestrator UX): when the caller asked
-			// for JSON, defang the persistent "model wrapped its
-			// final JSON in a ```json fence and added prose" case
-			// here so wrappers can pipe final_text straight into
-			// jq. The original is preserved in assistant_notes.
-			//
-			// Fork patch (orchestrator UX): stripAndExtractJSON handles
-			// the common fast-model failure mode: prose preamble + JSON,
-			// or even multiple JSON values separated by prose (observed
-			// with GLM-5-turbo). Returns a wrapped JSON array when N≥2
-			// valid values are found, a single value for N=1, and
-			// ErrInvalidStripJSON for N=0 (original text preserved in
-			// final_text so the orchestrator can inspect what the model
-			// actually said).
-			finalTextOut := finalText
-			assistantNotes := ""
-			strippedBytes := 0
-			stripErr := ""
-			stripErrReason := ""
-			if overrides.StripJSONFences && finalReason != "error" && finalReason != "canceled" {
-				cleaned, notes, vErr := stripAndExtractJSON(finalText)
-				finalTextOut = cleaned
-				assistantNotes = notes
-				strippedBytes = len(finalText) - len(cleaned)
-				if strippedBytes < 0 {
-					strippedBytes = 0
-				}
-				if vErr != nil {
-					stripErr = vErr.Error()
-					stripErrReason = "invalid_json"
-				}
-			}
-			// Fork patch (orchestrator UX): sub-agent aggregation.
-			// session-#3 (2026-05-17) feedback measured a 7×
-			// reduction where parent collapsed sub-agent outputs
-			// into a one-paragraph wrap-up. Two responses:
-			//
-			// 1. ALWAYS-ON warning when reduction ratio is bad
-			//    (≥3 sub-agents emitted output AND final_text is
-			//    <40% of their combined chars). Operator sees it
-			//    in envelope.warnings without flipping a flag.
-			// 2. OPT-IN --aggregation=attach: collect each
-			//    sub-agent's last assistant text into
-			//    envelope.SubAgentOutputs so the orchestrator
-			//    recovers the lost detail.
-			var subOutputs []SubAgentOutput
-			var reductionWarning string
-			subAgentCalls := toolCallCounts["agent"] + toolCallCounts["agentic_fetch"]
-			if subAgentCalls > 0 {
-				count, totalChars := app.subAgentSummaryStats(finalCtx, sess.ID)
-				if count >= 2 && totalChars > 0 {
-					parentChars := len(finalTextOut)
-					ratio := float64(parentChars) / float64(totalChars)
-					if ratio < 0.4 {
-						reductionWarning = fmt.Sprintf(
-							"reduction-loss: final_text is %d chars (%.0f%% of %d combined sub-agent chars across %d sub-session(s)). The parent likely summarised away detail. Re-run with --aggregation=attach or --aggregation=concat to recover; or query the sub-sessions directly.",
-							parentChars, ratio*100, totalChars, count,
-						)
-					}
-				}
-			}
-			if overrides.AggregationMode == "attach" {
-				subOutputs = app.collectSubAgentOutputs(finalCtx, sess.ID)
-			}
-			summary := buildRunResult(
-				sess.ID, finalTextOut, assistantNotes, finalReason, runErr, isCanceled,
-				toolCallCounts,
-				deltaTokens,
-				deltaCost,
-				time.Since(runStart),
-				finalErrTitle, finalErrDetails,
-				strippedBytes, stripErr, stripErrReason,
-				subOutputs, reductionWarning,
-			)
-			if reconciliationDiagnostic != "" {
-				summary.Warnings = append(summary.Warnings, reconciliationDiagnostic)
-			}
-			// Per-message token/cache accounting for the session (task
-			// #480). Best-effort: an orchestrator losing statistics must
-			// never turn a successful run into a failed one.
-			if report, uErr := app.Messages.UsageBySession(finalCtx, sess.ID); uErr != nil {
-				slog.Warn("run: failed to read per-message usage for the JSON envelope", "session", sess.ID, "err", uErr)
-			} else {
-				summary.Usage.Session = buildSessionUsageInfo(report)
-			}
-			// Fork patch: batch 8 — surface orphan partial text.
-			if partial := app.findOrphanPartial(finalCtx, sess.ID); partial != nil {
-				summary.RecoveredPartial = partial
-				summary.Warnings = append(summary.Warnings, fmt.Sprintf(
-					"recovered %d chars of partial assistant text from session %s — model run was interrupted",
-					partial.Chars, sess.ID,
-				))
-			}
-			hookExitReason = summary.ExitReason
-			if runFailed(finalReason, runErr, isCanceled) {
-				return &summary, &runIncompleteError{reason: summary.ExitReason, detail: summary.Error, cause: runErr}
-			}
-			return &summary, nil
-		}
-
-		if runErr != nil {
-			if guidance := sessionBusyGuidance(sess.ID, runErr); guidance != "" {
-				slog.Warn("Non-interactive run rejected because session is already locked",
-					"session_id", sess.ID,
-					"guidance", guidance,
-					"err", runErr)
-				fmt.Fprintf(stderr, "\n%s\n\n", guidance)
-			}
-			// Peak-hours refusal carries multiline orchestrator
-			// guidance (RESUME AT + don't-retry instructions) that
-			// fang's ERROR box truncates at the first newline. Print
-			// the guidance to stderr separately BEFORE the ERROR box
-			// so the operator / orchestrator actually sees it.
-			// Reuses agent.PeakHoursGuidance so the stderr text stays
-			// identical to the DB finish-message details recorded by
-			// peakHoursStoppedFinishText (sessions why / diff, etc.).
-			var peakErr *agent.PeakHoursError
-			if errors.As(runErr, &peakErr) {
-				fmt.Fprintf(stderr, "\n%s\n\n", agent.PeakHoursGuidance(peakErr))
-			}
-			if isCanceled {
-				slog.Debug("Non-interactive: agent processing cancelled", "session_id", sess.ID)
-				hookExitReason = "cancelled"
-				return nil, cancelledRunError(runErr, finalReason, finalErrTitle, finalErrDetails)
-			}
-			hookExitReason = "error"
-			return nil, fmt.Errorf("agent processing failed: %w", runErr)
-		}
-		// runErr == nil, but the turn may still have ended in-band on an
-		// error / canceled / max_tokens finish — not a clean completion,
-		// so exit non-zero (the final text is already on stdout).
-		if runFailed(finalReason, runErr, isCanceled) {
-			reason := finalReason
-			if reason == "" {
-				reason = "error"
-			}
-			hookExitReason = reason
-			detail := finalErrTitle
-			if finalErrDetails != "" {
-				if detail != "" {
-					detail += ": "
-				}
-				detail += finalErrDetails
-			}
-			return nil, &runIncompleteError{reason: reason, detail: detail}
-		}
-		hookExitReason = "stop"
-		return nil, nil
+	result, resultErr := loop.runTurnPhase(prompt, runFn)
+	// Fork patch (reviewer pass): a CLEAN primary phase (no error — which
+	// already excludes failed, canceled, timed-out, max-cost/max-tokens
+	// and queued outcomes, since finish() maps every one of those to a
+	// non-nil error) on a --role smart run with a Reviewer model
+	// configured continues the SAME session with one more turn on the
+	// Reviewer model. That turn's own finish() result — envelope,
+	// hookExitReason, ended_reason — becomes ExecuteRun's return value;
+	// no retry/recovery is attempted if the review turn itself fails.
+	if resultErr == nil && shouldRunReviewerPass(overrides.ModelRole, app.config.Config()) {
+		reviewRunFn, reviewCtx := app.buildReviewerPassTurn(ctx, setup.callOpts)
+		loop.resetForReviewerPass(reviewCtx)
+		result, resultErr = loop.runTurnPhase(reviewerPassPrompt, reviewRunFn)
 	}
-
-	// drainDone carries the outcome of a P0-1 durable-continuation drain
-	// (see the `case result := <-done` branch below) back into this same
-	// select loop, on its OWN turn through the loop rather than synchronously
-	// inside done's case body. This matters: DrainSessionNow can take
-	// seconds (a real second provider round-trip) and, while it runs, the
-	// continuation's OWN assistant messages are published to the same
-	// message broker messageEvents is subscribed to — those messages MUST
-	// still be read by `case event := <-messageEvents` (that's what updates
-	// finalText/finalReason/toolCallCounts, and what streams live output in
-	// RunModeStream/Terse) while the drain is in flight. Calling
-	// DrainSessionNow synchronously inside done's own case body would block
-	// this entire select for the drain's whole duration, starving
-	// messageEvents and leaving finalText/finalReason stuck at whatever the
-	// CANCELLED first generation had produced — confirmed directly: an
-	// earlier, synchronous-in-place version of this fix passed a superficial
-	// smoke test but failed a stricter end-to-end regression test
-	// (TestRunNonInteractive_P0_1_LiveContinuation) with the continuation's
-	// own content never reaching the envelope.
-	drainDone := make(chan error, 1)
-
-	for {
-		if progress && stderrTTY {
-			// HACK: Reinitialize the terminal progress bar on every iteration
-			// so it doesn't get hidden by the terminal due to inactivity.
-			_, _ = fmt.Fprintf(stderr, ansi.SetIndeterminateProgressBar)
-		}
-
-		select {
-		case result := <-done:
-			if executeRunDoneCaseSeam != nil {
-				executeRunDoneCaseSeam()
-			}
-			if err := drainMessageEvents(); err != nil {
-				return nil, err
-			}
-			if result.queued {
-				return finish(&runQueuedError{sessionID: sess.ID})
-			}
-			runErr := result.err
-			isCanceled := runErr != nil && (errors.Is(runErr, context.Canceled) || errors.Is(runErr, agent.ErrRequestCancelled))
-
-			// P0-1 fix (task #421): a cross-process interrupt landing on a
-			// busy session (rush sessions inject --interrupt) cancels the
-			// in-flight generation and durably enqueues its replacement
-			// (handleInterruptTick), deliberately WITHOUT a live mailbox
-			// handoff — the durable run_queue row is the only remaining
-			// owner (see mailbox.go's FromDurableQueue guard). Without this,
-			// that row sits pending until the background RunQueuePump's
-			// next tick (3s in production) happens to fire before this
-			// process exits — a race this short-lived process routinely
-			// loses, since the rest of this select fires within
-			// milliseconds of the cancellation. DrainSessionNow runs any
-			// such pending continuation to completion, in THIS process,
-			// before the envelope is built from what would otherwise be a
-			// stale, cancelled-generation result.
-			//
-			// isCanceled gates this deliberately: DrainSessionNow itself is
-			// a no-op (DrainNoWork) when nothing is pending, so a plain
-			// user/--timeout cancellation with no durable continuation is
-			// unaffected — the drainDone case below restores the ORIGINAL
-			// runErr in that case, rather than fabricating a success.
-			//
-			// Runs in its OWN goroutine (see drainDone's doc above for why
-			// synchronous-in-place doesn't work) — this select loop keeps
-			// servicing messageEvents (and ctx.Done()) the whole time.
-			if isCanceled && app.RunQueuePump != nil {
-				go func(originalErr error) {
-					result, drainErr := app.RunQueuePump.DrainSessionNow(ctx, sess.ID)
-					drainDone <- drainOutcomeError(sess.ID, result, drainErr, originalErr)
-				}(runErr)
-				continue
-			}
-
-			return finish(runErr)
-
-		case drainErr := <-drainDone:
-			return finish(drainErr)
-
-		case event, ok := <-messageEvents:
-			if !ok {
-				messageEvents = nil
-				if messageEventsClosedSeam != nil {
-					messageEventsClosedSeam()
-				}
-				continue
-			}
-			if err := handleMessageEvent(event); err != nil {
-				return nil, err
-			}
-		case <-ctx.Done():
-			probeCtx, probeCancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
-			reconciled, reconcileErr := app.reconcileTerminalMessage(probeCtx, sess.ID, baselineIDs, baselineKnown, runStart)
-			if reconcileErr == nil {
-				cachedTerminal = &reconciled
-				cachedTerminalCtx = probeCtx
-				cachedTerminalCancel = probeCancel
-				return finish(ctx.Err())
-			}
-			probeCancel()
-			// Cancellation and the buffered turn result can become ready in
-			// either order. Prefer the committed result when it is already
-			// available so final reconciliation still runs.
-			select {
-			case result := <-done:
-				if err := drainMessageEvents(); err != nil {
-					return nil, err
-				}
-				if result.queued {
-					return finish(&runQueuedError{sessionID: sess.ID})
-				}
-				if result.err != nil && (errors.Is(result.err, context.Canceled) || errors.Is(result.err, agent.ErrRequestCancelled)) && app.RunQueuePump != nil {
-					go func(originalErr error) {
-						queuedResult, drainErr := app.RunQueuePump.DrainSessionNow(ctx, sess.ID)
-						drainDone <- drainOutcomeError(sess.ID, queuedResult, drainErr, originalErr)
-					}(result.err)
-					continue
-				}
-				return finish(result.err)
-			default:
-				stopSpinner()
-				hookExitReason = "cancelled"
-				return nil, ctx.Err()
-			}
-		}
-	}
+	return result, resultErr
 }
 
 // RunNonInteractive runs a single agent turn and writes its result to

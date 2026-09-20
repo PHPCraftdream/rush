@@ -105,6 +105,33 @@ func shouldBypassSubAgentBan(role config.SelectedModelType, cfg *config.Config) 
 	return ok && workerModelCfg.Model != ""
 }
 
+// shouldRunReviewerPass decides whether a finished `rush run` invocation
+// should be followed by the automatic reviewer pass: one extra agent turn
+// on the same session, driven by the Reviewer model slot, whose own
+// response becomes the run's final output (the functional equivalent of
+// the operator manually running `rush run --role reviewer --session
+// <same-id>` right after the smart run finished).
+//
+// Fork patch (reviewer pass): fires only when ALL of:
+//   - role == SelectedModelTypeSmart: the run declared --role smart.
+//     An explicit --role fast/worker/reviewer invocation is never
+//     auto-followed by a review — the operator already chose a specific
+//     slot on purpose.
+//   - a Reviewer model slot is configured with a non-empty Model. No
+//     reviewer means the run must behave byte-identically to before the
+//     feature existed; unconfiguring the reviewer is the off switch (the
+//     same design as the worker bypass above — no flag of its own).
+func shouldRunReviewerPass(role config.SelectedModelType, cfg *config.Config) bool {
+	if role != config.SelectedModelTypeSmart {
+		return false
+	}
+	if cfg == nil {
+		return false
+	}
+	reviewerModelCfg, ok := cfg.Models[config.SelectedModelTypeReviewer]
+	return ok && reviewerModelCfg.Model != ""
+}
+
 // runAllowlistSpecFromConfig reads the config-derived restricted-run
 // allowlist spec (pre-compilation). Returns an inert spec (Restrict =
 // false) when permissions.run is absent or disabled, preserving the

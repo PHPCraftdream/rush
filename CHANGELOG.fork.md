@@ -506,6 +506,25 @@ history) flagged remaining HIGH-severity gaps:
   that needs documentation + an HTTP/SSE-transport recommendation,
   not a code fix. Tracked separately.
 
+### 4.K — Reviewer pass on clean `--role smart` runs (`internal/app/`)
+
+- `internal/app/app_run_reviewer.go` — when a Reviewer model is
+  configured (`rush models use ... --reviewer <model>`), a CLEAN
+  `--role smart` `ExecuteRun` (no error / cancel / timeout / queue)
+  continues the SAME session with one more turn on the Reviewer model:
+  it reviews what the session actually did and ends with its own
+  conclusion, and that conclusion — not the smart agent's last message —
+  becomes the run's final output (`final_text` in --json). One-off by
+  design: the reviewer override is never persisted on the session's
+  model slots, so a later plain `rush run --session <id>` still resolves
+  the session's normal smart model. Unconfiguring the reviewer is the
+  off switch; there is no flag. The ExecuteRun event loop was extracted
+  verbatim into `executeRunLoop.runTurnPhase` so the same phase can run
+  twice (primary turn + review turn) in one invocation.
+- `internal/agent/agent_ownership.go` — `ClearReservedOwnership` keeps
+  the review turn off the primary turn's one-shot fail-fast ownership
+  era token (a stale claim would present a dead epoch to the mailbox).
+
 ## 5. In-code markers
 
 Whenever we patch an **upstream** file in a non-obvious way we leave a

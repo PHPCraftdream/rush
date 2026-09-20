@@ -709,3 +709,13 @@ func reservedOwnershipFrom(ctx context.Context) *reservedOwnership {
 	token, _ := ctx.Value(reservedOwnershipContextKey{}).(*reservedOwnership)
 	return token
 }
+
+// ClearReservedOwnership returns a child of ctx on which reservedOwnershipFrom
+// finds no token (a typed nil under the same key): a later Run on that context
+// takes the normal mailbox.submit path even though an ancestor context carried
+// an era. Used by ExecuteRun's reviewer pass — a second turn on the same
+// session in the same process must queue like any fresh call, never continue
+// (or stale-claim) the primary turn's one-shot era token.
+func ClearReservedOwnership(ctx context.Context) context.Context {
+	return context.WithValue(ctx, reservedOwnershipContextKey{}, (*reservedOwnership)(nil))
+}

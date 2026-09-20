@@ -128,6 +128,16 @@ configured (or the run isn't `--role smart`). Don't rely on `--agents
 single` as a hard guarantee against delegation; if you genuinely need
 that guarantee, don't configure a worker for the run.
 
+**Reviewer auto-pass:** when a `reviewer` model is configured, a
+successful `--role smart` run is automatically continued with one more
+turn on the Reviewer model that reviews the whole session and ends with
+its own conclusion — and that conclusion, not the smart agent's own
+last message, is what the invocation returns as `final_text`. Failed,
+canceled, timed-out, or queued runs are returned unchanged; an explicit
+`--role reviewer` invocation is never extended; the reviewer override
+is never persisted on the session. Unconfigure the reviewer to turn
+the pass off.
+
 **The one distinction you must never blur:** a worker sub-agent calling
 `ask_question` mid-delegation is completely different from the
 top-level question flow documented above, and it does **not** surface
