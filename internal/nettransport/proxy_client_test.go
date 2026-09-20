@@ -116,7 +116,7 @@ func TestSOCKS5ProxyOnlyMode(t *testing.T) {
 		proxy := startSOCKS5Proxy(t, "u", "p", targetHostport)
 		client := buildClient(t, config.NetworkConfig{Proxy: "socks5://u:wrong@" + proxy.addr()})
 
-		req, err := http.NewRequest(http.MethodGet,
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet,
 			"http://socks-resolved.invalid:"+strconv.Itoa(requirePort(t, targetHostport))+"/", nil)
 		require.NoError(t, err)
 		resp, err := client.Do(req)

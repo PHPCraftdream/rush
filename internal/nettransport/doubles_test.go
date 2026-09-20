@@ -1,6 +1,7 @@
 package nettransport
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/binary"
 	"io"
@@ -82,7 +83,7 @@ func hostOnlyOfURL(t *testing.T, raw string) string {
 // response whose body matches wantBody exactly.
 func requireBody(t *testing.T, client *http.Client, rawURL, wantBody string) {
 	t.Helper()
-	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, rawURL, nil)
 	require.NoError(t, err)
 	resp, err := client.Do(req)
 	require.NoError(t, err)
@@ -256,7 +257,9 @@ func (p *httpProxyDouble) handleConnect(w http.ResponseWriter, r *http.Request) 
 	if host := hostOnly(r.Host); isIPLiteral(host) {
 		upstreamAddr = r.Host
 	}
-	upstream, err := net.DialTimeout("tcp", upstreamAddr, testClientTimeout)
+	dialCtx, dialCancel := context.WithTimeout(r.Context(), testClientTimeout)
+	defer dialCancel()
+	upstream, err := (&net.Dialer{}).DialContext(dialCtx, "tcp", upstreamAddr)
 	if err != nil {
 		_, _ = clientConn.Write([]byte("HTTP/1.1 502 Bad Gateway\r\n\r\n"))
 		return
@@ -336,7 +339,7 @@ type socksProxyDouble struct {
 // cleanup. An empty user means the no-auth method is offered.
 func startSOCKS5Proxy(t *testing.T, user, pass, fallbackTarget string) *socksProxyDouble {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	p := &socksProxyDouble{ln: ln, user: user, pass: pass, fallback: fallbackTarget}
 	t.Cleanup(func() { _ = ln.Close() })
@@ -535,7 +538,9 @@ func (p *socksProxyDouble) handleConn(conn net.Conn) {
 	case p.fallback == "":
 		upstreamAddr = net.JoinHostPort(addr, strconv.Itoa(port))
 	}
-	upstream, err := net.DialTimeout("tcp", upstreamAddr, testClientTimeout)
+	dialCtx, dialCancel := context.WithTimeout(context.Background(), testClientTimeout)
+	upstream, err := (&net.Dialer{}).DialContext(dialCtx, "tcp", upstreamAddr)
+	dialCancel()
 	if err != nil {
 		_ = socksReply(conn, socksRepGeneralFailure)
 		return
@@ -575,7 +580,7 @@ func startDNSServer(t *testing.T, answerIP net.IP) *dnsServerDouble {
 	t.Helper()
 	udpConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
 	require.NoError(t, err)
-	tcpLn, err := net.Listen("tcp", "127.0.0.1:0")
+	tcpLn, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	d := &dnsServerDouble{udp: udpConn, tcp: tcpLn, answerIP: answerIP}
 	t.Cleanup(func() {
