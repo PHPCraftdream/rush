@@ -358,6 +358,217 @@ func TestDoHLookupRespectsContextCancellation(t *testing.T) {
 	}
 }
 
+// setSocksHandshakeTimeoutForTest shortens the SOCKS5 handshake budget
+// for the duration of one test and restores it afterwards. The budget
+// is a package var because these tests drive BuildHTTPClient, which
+// offers no parameter channel for it; tests calling this helper are
+// deliberately serial (no t.Parallel) so no parallel test can observe
+// the shortened budget.
+func setSocksHandshakeTimeoutForTest(t *testing.T, d time.Duration) {
+	t.Helper()
+	old := socksHandshakeTimeout
+	socksHandshakeTimeout = d
+	t.Cleanup(func() { socksHandshakeTimeout = old })
+}
+
+// silentSocksStub accepts TCP connections, reads one RFC 1928
+// greeting, answers a valid no-auth method selection so the client
+// proceeds into the CONNECT round trip, signals, and then goes silent
+// forever — the R2-1 premise: the proxy accepted the connection and
+// holds the handshake in flight without ever answering it.
+type silentSocksStub struct {
+	ln      net.Listener
+	gotOnce chan struct{}
+	once    sync.Once
+	live    atomic.Int64
+}
+
+func startSilentSocksStub(t *testing.T) *silentSocksStub {
+	t.Helper()
+	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	s := &silentSocksStub{ln: ln, gotOnce: make(chan struct{})}
+	t.Cleanup(func() { _ = ln.Close() })
+	go s.serve()
+	return s
+}
+
+func (s *silentSocksStub) addr() string { return s.ln.Addr().String() }
+
+func (s *silentSocksStub) liveCount() int64 { return s.live.Load() }
+
+func (s *silentSocksStub) waitGotGreeting(t *testing.T) {
+	t.Helper()
+	select {
+	case <-s.gotOnce:
+	case <-time.After(testAbortWait):
+		t.Fatal("stub never observed the SOCKS5 greeting")
+	}
+}
+
+func (s *silentSocksStub) serve() {
+	for {
+		conn, err := s.ln.Accept()
+		if err != nil {
+			return
+		}
+		s.live.Add(1)
+		go s.handleConn(conn)
+	}
+}
+
+// handleConn reads the greeting, signals, then blocks on reads until
+// the connection ends, so liveCount observes client-side closes.
+func (s *silentSocksStub) handleConn(conn net.Conn) {
+	defer s.live.Add(-1)
+	defer func() { _ = conn.Close() }()
+	_ = conn.SetDeadline(time.Now().Add(30 * time.Second))
+
+	var head [2]byte
+	if _, err := io.ReadFull(conn, head[:]); err != nil {
+		return
+	}
+	if head[0] != 0x05 {
+		return
+	}
+	methods := make([]byte, head[1])
+	if _, err := io.ReadFull(conn, methods); err != nil {
+		return
+	}
+	// A valid no-auth selection: the real client now sends its CONNECT
+	// request and blocks on the reply — the handshake is in flight.
+	if _, err := conn.Write([]byte{0x05, 0x00}); err != nil {
+		return
+	}
+	s.once.Do(func() { close(s.gotOnce) })
+
+	var sink [1]byte
+	for {
+		if _, err := conn.Read(sink[:]); err != nil {
+			return
+		}
+	}
+}
+
+// TestSOCKS5HandshakeBoundedOnCancelledRequest proves the R2-1 fix on
+// the proxy-only path: a request through BuildHTTPClient against a
+// silent SOCKS5 proxy returns promptly when the request is cancelled,
+// AND the inner SOCKS5 dial dies with it. The second half is the
+// discriminator: net/http detaches the dial context from the request
+// (getConn's context.WithoutCancel), so before the fix the handshake
+// kept the stub's socket open indefinitely even though the request
+// itself had long returned. Serial: shortens the handshake budget.
+func TestSOCKS5HandshakeBoundedOnCancelledRequest(t *testing.T) {
+	setSocksHandshakeTimeoutForTest(t, 250*time.Millisecond)
+
+	stub := startSilentSocksStub(t)
+	client, err := BuildHTTPClient(config.NetworkConfig{Proxy: "socks5://" + stub.addr()})
+	require.NoError(t, err)
+	require.NotNil(t, client)
+	t.Cleanup(client.CloseIdleConnections)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	type requestResult struct {
+		err error
+	}
+	result := make(chan requestResult, 1)
+	go func() {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+			"http://socks-silent.invalid:65535/", nil)
+		if err != nil {
+			result <- requestResult{err: err}
+			return
+		}
+		resp, err := client.Do(req)
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
+		result <- requestResult{err: err}
+	}()
+
+	// Establish the premise: the handshake is genuinely in flight —
+	// the stub received the greeting and answered method selection, so
+	// the client is inside the CONNECT round trip. Not "the dial was
+	// merely slow to connect".
+	stub.waitGotGreeting(t)
+	cancel()
+
+	select {
+	case res := <-result:
+		require.Error(t, res.err, "cancelled request over a silent SOCKS5 proxy must fail")
+	case <-time.After(testAbortWait):
+		t.Fatal("cancelled request did not return within the bound")
+	}
+
+	// The inner SOCKS5 dial must die with the request: only the
+	// dialer's own budget can close the socket, because net/http
+	// detached the dial context from the cancellation. The stub's
+	// connection ends only when the client side is really gone.
+	require.Eventually(t, func() bool { return stub.liveCount() == 0 },
+		5*time.Second, 50*time.Millisecond,
+		"stub connection must be closed once the dialer's own budget aborts the handshake")
+}
+
+// TestDoHOverSocks5NestedDialBounded proves the R2-1 fix on the nested
+// path: with DoHURL routed through the SOCKS5 proxy, the DoH lookup's
+// own dial is a second, inner SOCKS5 dial inside the resolver's
+// transport. The DoH client timeout bounds the lookup's return, but
+// only the dialer's own budget closes the inner socket — before the
+// fix it stayed open indefinitely after the lookup had already failed.
+// The DoH endpoint is a .invalid hostname so the lookup cannot be
+// skipped, and the target is too, so the outer dial needs it. Serial:
+// shortens the handshake budget.
+func TestDoHOverSocks5NestedDialBounded(t *testing.T) {
+	setSocksHandshakeTimeoutForTest(t, 250*time.Millisecond)
+
+	stub := startSilentSocksStub(t)
+	cfg := config.NetworkConfig{
+		Proxy:  "socks5://" + stub.addr(),
+		DoHURL: "http://doh-silent.invalid:65535/dns-query",
+	}
+	client, err := BuildHTTPClient(cfg)
+	require.NoError(t, err)
+	require.NotNil(t, client)
+	t.Cleanup(client.CloseIdleConnections)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	start := time.Now()
+	errCh := make(chan error, 1)
+	go func() {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+			"http://target-silent.invalid:65535/", nil)
+		if err != nil {
+			errCh <- err
+			return
+		}
+		resp, err := client.Do(req)
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
+		errCh <- err
+	}()
+
+	// Premise: the inner nested dial is genuinely in flight — the stub
+	// received the greeting of the DoH transport's SOCKS5 exchange and
+	// answered method selection.
+	stub.waitGotGreeting(t)
+	cancel()
+
+	select {
+	case err := <-errCh:
+		require.Error(t, err, "request needing a DoH lookup through a silent SOCKS5 proxy must fail")
+		require.Less(t, time.Since(start), testAbortWait,
+			"the nested SOCKS5 dial must be bounded by the dialer's own budget, not the DoH client timeout")
+	case <-time.After(testAbortWait + time.Second):
+		t.Fatal("request did not return within the bound")
+	}
+
+	require.Eventually(t, func() bool { return stub.liveCount() == 0 },
+		5*time.Second, 50*time.Millisecond,
+		"nested DoH-over-SOCKS5 dial must close the proxy socket")
+}
+
 // TestBuildTransportBoundedTimeouts pins the F4 transport defaults: a
 // zero TLSHandshakeTimeout lets a stuck handshake hang a provider
 // connection forever, and a zero IdleConnTimeout keeps keep-alive

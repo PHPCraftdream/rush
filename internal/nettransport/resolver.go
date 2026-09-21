@@ -153,13 +153,13 @@ const dohClientTimeout = 10 * time.Second
 
 // newDoHResolver builds a resolver that queries an RFC 8484
 // DNS-over-HTTPS endpoint. When proxyURL is non-nil the endpoint's
-// client routes through that proxy: the stdlib http.Transport
-// understands both http:// and socks5:// proxy URLs, so this single
-// field tunnels the DoH lookup through either proxy type, with the
-// endpoint hostname resolved by the proxy itself. timeout is the
-// per-exchange budget the client owns (tests pass a shorter one); the
-// returned transport is owned by the resolver and must be tracked by
-// the caller for keep-alive cleanup.
+// client routes through that proxy: an HTTP proxy is set as
+// http.Transport.Proxy, while a SOCKS5 proxy is tunneled with our own
+// bounded socksDialer (see the comment at the call site), in both
+// cases with the endpoint hostname resolved by the proxy itself.
+// timeout is the per-exchange budget the client owns (tests pass a
+// shorter one); the returned transport is owned by the resolver and
+// must be tracked by the caller for keep-alive cleanup.
 func newDoHResolver(endpoint string, proxyURL *url.URL, timeout time.Duration) (resolveFunc, *http.Transport, error) {
 	tr := &http.Transport{
 		ForceAttemptHTTP2:   true,
@@ -167,7 +167,25 @@ func newDoHResolver(endpoint string, proxyURL *url.URL, timeout time.Duration) (
 		IdleConnTimeout:     transportIdleConnTimeout,
 	}
 	if proxyURL != nil {
-		tr.Proxy = http.ProxyURL(proxyURL)
+		if proxyURL.Scheme == "socks5" || proxyURL.Scheme == "socks5h" {
+			// Tunnel DoH through the SOCKS5 proxy with our own dialer
+			// instead of tr.Proxy: net/http's built-in SOCKS5 handshake
+			// (transport.go dialConn) runs under the detached dial
+			// context with no deadline of its own, so the DoH client
+			// timeout bounds client.Do's return but not the inner dial
+			// — a silent proxy would leave that socket hanging forever
+			// after the lookup had already failed. socksDialer's
+			// synthesized deadline closes it. Endpoint hostnames still
+			// reach the proxy unresolved (ATYP=0x03) and net/http still
+			// layers TLS on top, so the wire behavior is identical.
+			dial, err := socksDialer(proxyURL, socksHandshakeTimeout)
+			if err != nil {
+				return nil, nil, err
+			}
+			tr.DialContext = dial
+		} else {
+			tr.Proxy = http.ProxyURL(proxyURL)
+		}
 	}
 	client := &http.Client{Transport: tr, Timeout: timeout}
 	resolve := func(ctx context.Context, host string) (net.IP, error) {

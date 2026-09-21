@@ -19,6 +19,25 @@ const connectHandshakeTimeout = 30 * time.Second
 // query, including the time the query spends tunneled through a proxy.
 const dnsQueryTimeout = 30 * time.Second
 
+// socksHandshakeTimeout bounds one SOCKS5 exchange end to end: the TCP
+// dial to the proxy plus the greeting, optional authentication, and
+// CONNECT round trip that x/net performs over the raw connection. It
+// is a var only so tests can shorten it through BuildHTTPClient, which
+// has no parameter channel for it; production code must never assign
+// it, and the tests that do are serial (no t.Parallel).
+//
+// The budget is synthesized as a context deadline rather than enforced
+// by handshakeGuard: x/net's SOCKS client sets a deadline on the raw
+// socket only when the context already carries one (internal/socks
+// client.go, connect), and clears it again before returning the
+// established tunnel, while the stop() join point of a guard sits
+// exactly where x/net — not Rush — owns the connection. The budget
+// must also be owned outright: net/http detaches the dial context
+// from the request's cancellation (getConn's context.WithoutCancel),
+// so neither caller cancellation nor any client timeout would
+// otherwise bound a silent proxy.
+var socksHandshakeTimeout = 30 * time.Second
+
 // handshakeGuard bounds a blocking handshake phase on an established
 // connection. The phase's Write/Read calls take no context, so the
 // guard bounds them twice: a provisional deadline on the raw socket,

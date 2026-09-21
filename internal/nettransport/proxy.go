@@ -26,7 +26,7 @@ type dialFunc func(ctx context.Context, network, addr string) (net.Conn, error)
 func proxyDialer(pu *url.URL) (dialFunc, error) {
 	switch pu.Scheme {
 	case "socks5", "socks5h":
-		return socksDialer(pu)
+		return socksDialer(pu, socksHandshakeTimeout)
 	case "http":
 		return connectDialer(pu), nil
 	default:
@@ -42,14 +42,31 @@ func proxyDialer(pu *url.URL) (dialFunc, error) {
 // when the host is not an IP literal, x/net's socks layer sends the
 // domain name to the server (ATYP=0x03) so the SOCKS5 server resolves
 // it. Do not pre-resolve the host here.
-func socksDialer(pu *url.URL) (dialFunc, error) {
+//
+// timeout bounds the whole exchange — the TCP dial to the proxy plus
+// greeting, optional auth, and CONNECT — by synthesizing a deadline
+// into the dial context. x/net's SOCKS client honors a context
+// deadline by setting it on the raw socket for the handshake phase
+// and clears it again before returning the established tunnel, so the
+// caller receives an unmodified connection on success; see
+// socksHandshakeTimeout for why the bound must be synthesized at all.
+func socksDialer(pu *url.URL, timeout time.Duration) (dialFunc, error) {
 	var auth *proxy.Auth
 	if u := pu.User; u != nil {
 		// Any username enables auth; a missing password is "".
 		pass, _ := u.Password()
 		auth = &proxy.Auth{User: u.Username(), Password: pass}
 	}
-	d, err := proxy.SOCKS5("tcp", pu.Host, auth, proxy.Direct)
+	// A socks5://host authority without a port means the default SOCKS
+	// port 1080 (net/http's canonicalAddr behavior for Proxy URLs),
+	// not a dial error; x/net dials the address verbatim, so the
+	// default is filled in here. This keeps the DoH resolver's switch
+	// from tr.Proxy to this dialer wire-identical for such configs.
+	proxyAddr := pu.Host
+	if pu.Port() == "" {
+		proxyAddr = net.JoinHostPort(pu.Hostname(), "1080")
+	}
+	d, err := proxy.SOCKS5("tcp", proxyAddr, auth, proxy.Direct)
 	if err != nil {
 		return nil, fmt.Errorf("create SOCKS5 dialer for proxy %q: %w", pu.Host, err)
 	}
@@ -61,7 +78,14 @@ func socksDialer(pu *url.URL) (dialFunc, error) {
 			"SOCKS5 dialer for proxy %q does not implement proxy.ContextDialer", pu.Host)
 	}
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
-		return ctxDialer.DialContext(ctx, network, addr)
+		// The whole exchange must finish inside the budget even when
+		// the caller's context is net/http's detached, never-cancelling
+		// dial context: WithTimeout carries the deadline to both the
+		// raw TCP dial and x/net's handshake, and if the caller's own
+		// deadline is earlier, it wins.
+		dialCtx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		return ctxDialer.DialContext(dialCtx, network, addr)
 	}, nil
 }
 
