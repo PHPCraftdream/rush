@@ -501,7 +501,16 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 	// Reviewer model. That turn's own finish() result — envelope,
 	// hookExitReason, ended_reason — becomes ExecuteRun's return value;
 	// no retry/recovery is attempted if the review turn itself fails.
-	if resultErr == nil && shouldRunReviewerPass(overrides.ModelRole, app.config.Config()) {
+	//
+	// F2 (2026-09-21 weekly audit): a CREDENTIALED run (req.Credentials,
+	// sdk.Client.RunWithCredentials) never auto-follows with the review
+	// turn. The review turn goes through RunWithOverrides — the GLOBAL
+	// config path — so a tenant whose own credential set has no reviewer
+	// slot would silently send its session transcript to the operator's
+	// globally-configured reviewer provider. Until the reviewer pass
+	// participates in the same per-call credential isolation, it is off
+	// entirely for credentialed runs.
+	if resultErr == nil && req.Credentials == nil && shouldRunReviewerPass(overrides.ModelRole, app.config.Config()) {
 		reviewRunFn, reviewCtx := app.buildReviewerPassTurn(ctx, setup.callOpts)
 		loop.resetForReviewerPass(reviewCtx)
 		result, resultErr = loop.runTurnPhase(reviewerPassPrompt, reviewRunFn)

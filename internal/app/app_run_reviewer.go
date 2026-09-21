@@ -380,6 +380,15 @@ func (s *executeRunLoop) finish(runErr error) (*RunResult, error) {
 				return nil, outputErr
 			}
 			s.toolCallCounts = reconciled.toolCalls
+			// F3 (2026-09-21 weekly audit): a successful continuation chain
+			// leaves each attempt's partial text in its own history row and
+			// the reconciled terminal message alone carries only the tail.
+			// combinedText is the full chain text; it is empty unless the
+			// terminal message resumed such a chain, so ordinary runs keep
+			// the terminal row's own text.
+			if reconciled.combinedText != "" {
+				s.finalText = reconciled.combinedText
+			}
 			authoritativeTerminal = true
 		}
 		if authoritativeTerminal && isCanceled && !runFailed(s.finalReason, nil, false) {
@@ -565,10 +574,29 @@ func (s *executeRunLoop) finish(runErr error) (*RunResult, error) {
 // assistant message as the run's new terminal one (the primary turn's
 // messages are all in the baseline now).
 //
+// ctx IS the review turn's context (buildReviewerPassTurn's reviewCtx,
+// carrying ModelRole=reviewer / DisableSubAgents=true and cleared model
+// persistence plus reserved ownership), and it must also become s.ctx:
+// runTurnPhase launches its turn with `go runAgentTurnRecovered(s.ctx,
+// ...)`, so without this assignment the review turn would execute under
+// the PRIMARY phase's context — keeping the orchestrator's smart-role
+// CallOptions (worker-delegation toolset) and the stale reserved-
+// ownership token instead of the reviewer's isolation.
+//
+// The reassignment is race-free: runTurnPhase is synchronous and has
+// already returned when this runs (the caller reaches the reviewer gate
+// only after the primary runTurnPhase returned), and the turn goroutine
+// reads s.ctx exactly once, at `go` statement evaluation time — every
+// later read of s.ctx happens on this same goroutine, strictly after.
+// The primary phase's message subscription (created under the old ctx)
+// stays valid: it is canceled only by ExecuteRun's own defer, and the
+// run ctx is an ancestor of reviewCtx.
+//
 // runStart/tokensBefore/costBefore are deliberately NOT reset: the final
 // envelope's cost/token/duration numbers must cover the WHOLE invocation
 // (primary turn + review turn combined), not just the review phase.
 func (s *executeRunLoop) resetForReviewerPass(ctx context.Context) {
+	s.ctx = ctx
 	s.finalText = ""
 	s.finalReason = ""
 	s.finalErrTitle = ""

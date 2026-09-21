@@ -16,6 +16,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/db"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -40,6 +41,7 @@ type reviewerPassApp struct {
 	mu       sync.Mutex
 	requests []string
 	bodies   []string
+	toolSets [][]string
 }
 
 func (h *reviewerPassApp) requestedModels() []string {
@@ -54,7 +56,26 @@ func (h *reviewerPassApp) recordedBodies() string {
 	return strings.Join(h.bodies, "\n---\n")
 }
 
+func (h *reviewerPassApp) requestedToolSets() [][]string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make([][]string, len(h.toolSets))
+	copy(out, h.toolSets)
+	return out
+}
+
+// reviewerPassAppOpts selects which model slots the harness configures.
+type reviewerPassAppOpts struct {
+	withReviewer bool
+	withWorker   bool
+}
+
 func newReviewerPassApp(t *testing.T, withReviewer bool) *reviewerPassApp {
+	t.Helper()
+	return newReviewerPassAppOpts(t, reviewerPassAppOpts{withReviewer: withReviewer})
+}
+
+func newReviewerPassAppOpts(t *testing.T, opts reviewerPassAppOpts) *reviewerPassApp {
 	t.Helper()
 	isolationTmp := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", isolationTmp)
@@ -71,11 +92,23 @@ func newReviewerPassApp(t *testing.T, withReviewer bool) *reviewerPassApp {
 		require.NoError(t, err)
 		var req struct {
 			Model string `json:"model"`
+			Tools []struct {
+				Function struct {
+					Name string `json:"name"`
+				} `json:"function"`
+			} `json:"tools"`
 		}
 		require.NoError(t, json.Unmarshal(body, &req))
+		toolNames := make([]string, 0, len(req.Tools))
+		for _, tl := range req.Tools {
+			if tl.Function.Name != "" {
+				toolNames = append(toolNames, tl.Function.Name)
+			}
+		}
 		h.mu.Lock()
 		h.requests = append(h.requests, req.Model)
 		h.bodies = append(h.bodies, string(body))
+		h.toolSets = append(h.toolSets, toolNames)
 		h.mu.Unlock()
 		content := reviewerPassPrimaryText
 		if req.Model == reviewerPassReviewerModel {
@@ -90,17 +123,26 @@ func newReviewerPassApp(t *testing.T, withReviewer bool) *reviewerPassApp {
 	}))
 	t.Cleanup(srv.Close)
 
-	modelsJSON := `"models": {
-    "smart": {"provider":"openaicompat","model":"smart-default"},
-    "fast": {"provider":"openaicompat","model":"fast-default"}
-  }`
-	if withReviewer {
-		modelsJSON = `"models": {
-    "smart": {"provider":"openaicompat","model":"smart-default"},
-    "fast": {"provider":"openaicompat","model":"fast-default"},
-    "reviewer": {"provider":"openaicompat","model":"` + reviewerPassReviewerModel + `"}
-  }`
+	selected := []string{
+		`"smart": {"provider":"openaicompat","model":"smart-default"}`,
+		`"fast": {"provider":"openaicompat","model":"fast-default"}`,
 	}
+	providerModels := []string{
+		`{"id":"smart-default","context_window":200000,"default_max_tokens":1000}`,
+		`{"id":"fast-default","context_window":200000,"default_max_tokens":1000}`,
+	}
+	if opts.withReviewer {
+		selected = append(selected, `"reviewer": {"provider":"openaicompat","model":"`+reviewerPassReviewerModel+`"}`)
+		providerModels = append(providerModels, `{"id":"`+reviewerPassReviewerModel+`","context_window":200000,"default_max_tokens":1000}`)
+	}
+	if opts.withWorker {
+		selected = append(selected, `"worker": {"provider":"openaicompat","model":"reviewer-pass-worker"}`)
+		providerModels = append(providerModels, `{"id":"reviewer-pass-worker","context_window":200000,"default_max_tokens":1000}`)
+	}
+	modelsJSON := `"models": {
+    ` + strings.Join(selected, `,
+    `) + `
+  }`
 	dataDir := t.TempDir()
 	rushJSON := fmt.Sprintf(`{
   "disable_default_providers": true,
@@ -109,21 +151,23 @@ func newReviewerPassApp(t *testing.T, withReviewer bool) *reviewerPassApp {
       "id": "openaicompat", "type": "openai-compat", "base_url": %q,
       "api_key": "probe", "discover_models": false,
       "models": [
-        {"id":"smart-default","context_window":200000,"default_max_tokens":1000},
-        {"id":"fast-default","context_window":200000,"default_max_tokens":1000},
-        {"id":%q,"context_window":200000,"default_max_tokens":1000}
+        %s
       ]
     }
   },
   %s
-}`, srv.URL, reviewerPassReviewerModel, modelsJSON)
+}`, srv.URL, strings.Join(providerModels, `,
+        `), modelsJSON)
 	require.NoError(t, os.WriteFile(filepath.Join(dataDir, "rush.json"), []byte(rushJSON), 0o644))
 	store, err := config.Init(dataDir, dataDir, false)
 	require.NoError(t, err)
 	store.SetSelectedModelRuntime(config.SelectedModelTypeSmart, config.SelectedModel{Provider: "openaicompat", Model: "smart-default"})
 	store.SetSelectedModelRuntime(config.SelectedModelTypeFast, config.SelectedModel{Provider: "openaicompat", Model: "fast-default"})
-	if withReviewer {
+	if opts.withReviewer {
 		store.SetSelectedModelRuntime(config.SelectedModelTypeReviewer, config.SelectedModel{Provider: "openaicompat", Model: reviewerPassReviewerModel})
+	}
+	if opts.withWorker {
+		store.SetSelectedModelRuntime(config.SelectedModelTypeWorker, config.SelectedModel{Provider: "openaicompat", Model: "reviewer-pass-worker"})
 	}
 	store.SetupAgents()
 
@@ -228,4 +272,44 @@ func TestExecuteRunExplicitReviewerRoleIsNotAutoFollowed(t *testing.T) {
 		"an explicit --role reviewer run must not be followed by an automatic review pass")
 	require.Equal(t, reviewerPassReviewerText, result.FinalText)
 	require.Equal(t, "end_turn", result.ExitReason, "a clean openai-compat run ends with the end_turn finish reason")
+}
+
+// TestExecuteRunReviewerPassTurnUsesReviewerCallOptions pins F1
+// (2026-09-21 weekly audit): the review turn must EXECUTE under the
+// review context (ModelRole=reviewer, DisableSubAgents=true), not under
+// the primary phase's stale context. With a worker configured the
+// primary --role smart turn runs in orchestrator mode (worker-delegation
+// `agent` tool present, direct edit tools stripped); if the review turn
+// reused that context it would present the same orchestrator toolset.
+// The fix makes resetForReviewerPass assign reviewCtx to the loop's ctx,
+// so the review request must instead carry a plain reviewer toolset.
+func TestExecuteRunReviewerPassTurnUsesReviewerCallOptions(t *testing.T) {
+	h := newReviewerPassAppOpts(t, reviewerPassAppOpts{withReviewer: true, withWorker: true})
+	sess := createModelOverrideSession(t, h.app, "reviewer-pass-toolset")
+
+	result, err := runReviewerPassExecuteRun(t, h, sess.ID, RunOverrides{ModelRole: config.SelectedModelTypeSmart})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	require.Equal(t, []string{"smart-default", reviewerPassReviewerModel}, h.requestedModels(),
+		"the clean smart run must be followed by exactly one review turn on the reviewer model")
+
+	sets := h.requestedToolSets()
+	require.Len(t, sets, 2, "both the primary and the review turn must present a toolset")
+
+	// Primary: --role smart with a worker configured runs in orchestrator
+	// mode — worker delegation present, direct edit tools stripped.
+	assert.Contains(t, sets[0], "agent", "primary orchestrator turn must keep the delegation tool")
+	assert.NotContains(t, sets[0], "edit")
+	assert.NotContains(t, sets[0], "multiedit")
+	assert.NotContains(t, sets[0], "write")
+
+	// Review turn: must run as a plain reviewer call — edit tools back,
+	// sub-agent tools gone. Before the F1 fix the review turn executed
+	// under the primary's CallOptions and this assertion failed.
+	assert.Contains(t, sets[1], "edit", "the review turn must not run in orchestrator mode")
+	assert.NotContains(t, sets[1], "agent", "the review turn must not carry the worker-delegation tool")
+	assert.NotContains(t, sets[1], "agentic_fetch")
+
+	require.Equal(t, reviewerPassReviewerText, result.FinalText)
 }
