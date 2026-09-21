@@ -530,6 +530,28 @@ func continuationPrompt(originalPrompt string, partial message.Message) string {
 	)
 }
 
+// Continuation prompt openings, shared between continuationPrompt (the
+// producer) and IsContinuationPrompt (the recognizer the run loop's
+// terminal reconciliation uses to find continuation chain boundaries in
+// the committed history).
+const (
+	continuationPromptPrefixPartialText = "Your previous response to the request `"
+	continuationPromptPrefixNoText      = "Your previous response was interrupted"
+)
+
+// IsContinuationPrompt reports whether text is a coordinator-generated
+// continuation prompt (see continuationPrompt) — the fresh user message
+// the transient-retry loop sends after an attempt was interrupted
+// mid-stream. The run loop's terminal reconciliation walks the committed
+// rows backward across these boundaries to reassemble a continuation
+// chain's full text; a genuine user turn must end that walk, so the
+// recognizer has to match the producer exactly. It lives next to
+// continuationPrompt so any wording change updates both in one commit.
+func IsContinuationPrompt(text string) bool {
+	return strings.HasPrefix(text, continuationPromptPrefixPartialText) ||
+		strings.HasPrefix(text, continuationPromptPrefixNoText)
+}
+
 // retryClass partitions a turn-terminating failure into "surface it" vs
 // "transparently re-run it". See shouldRetryTurn for the policy.
 type retryClass int

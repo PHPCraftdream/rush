@@ -55,11 +55,63 @@ const (
 	sseDone      = "data: [DONE]\n\n"
 )
 
+// sseToolCallChunk streams one complete OpenAI-style function tool call
+// as a single delta: fantasy's openai provider emits the whole tool call
+// as soon as the accumulated arguments parse as valid JSON.
+func sseToolCallChunk(name, args string) string {
+	nameJSON, _ := json.Marshal(name)
+	argsJSON, _ := json.Marshal(args)
+	return "data: " + fmt.Sprintf(`{"id":"cont","object":"chat.completion.chunk","created":1,"model":"probe","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"name":%s,"arguments":%s}}]},"finish_reason":null}]}`+"\n\n", nameJSON, argsJSON)
+}
+
+// sseToolCallsFinishChunk ends a streaming step that produced tool calls.
+func sseToolCallsFinishChunk() string {
+	return "data: " + `{"id":"cont","object":"chat.completion.chunk","created":1,"model":"probe","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}` + "\n\n"
+}
+
 // newContinuationApp builds a real App whose provider stub replays the
 // audit repro. withReviewer additionally configures a reviewer slot on
 // the same stub (model contReviewModel) so the scoping test can run the
 // reviewer pass after the continuation.
 func newContinuationApp(t *testing.T, withReviewer bool) *App {
+	t.Helper()
+	return newContinuationAppWithStub(t, withReviewer, defaultContinuationSmartStub)
+}
+
+// defaultContinuationSmartStub is the audit-repro provider behavior for
+// the smart slot: attempt 1 streams the partial text and dies mid-stream,
+// requests 2-3 fail fast (fantasy's internal step retries), and request 4
+// — the coordinator's continuation attempt — completes cleanly.
+func defaultContinuationSmartStub(n int, w http.ResponseWriter, _ *http.Request) {
+	switch {
+	case n == 1:
+		// The turn's first attempt: stream the partial text, give the
+		// client a moment to read it, then kill the connection
+		// mid-stream (transient EOF).
+		_, _ = fmt.Fprint(w, sseChunk(contPartialText))
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		time.Sleep(300 * time.Millisecond)
+		panic(http.ErrAbortHandler)
+	case n == 2 || n == 3:
+		// fantasy's internal step retries: fail fast so the step
+		// ultimately errors out and the coordinator's own
+		// continuation retry takes over.
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = fmt.Fprint(w, `{"error":{"message":"transient stub failure","type":"server_error"}}`)
+	default:
+		// The coordinator's continuation attempt: clean finish.
+		_, _ = fmt.Fprint(w, sseChunk(contFinalText))
+		_, _ = fmt.Fprint(w, sseStopChunk)
+		_, _ = fmt.Fprint(w, sseDone)
+	}
+}
+
+// newContinuationAppWithStub builds the same app as newContinuationApp
+// but lets a test replace the smart slot's scripted responses. n is the
+// 1-based request count for the smart model within the test run.
+func newContinuationAppWithStub(t *testing.T, withReviewer bool, smartStub func(n int, w http.ResponseWriter, r *http.Request)) *App {
 	t.Helper()
 	isolationTmp := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", isolationTmp)
@@ -99,29 +151,7 @@ func newContinuationApp(t *testing.T, withReviewer bool) *App {
 			_, _ = fmt.Fprint(w, sseDone)
 			return
 		}
-		switch {
-		case n == 1:
-			// The turn's first attempt: stream the partial text, give the
-			// client a moment to read it, then kill the connection
-			// mid-stream (transient EOF).
-			_, _ = fmt.Fprint(w, sseChunk(contPartialText))
-			if f, ok := w.(http.Flusher); ok {
-				f.Flush()
-			}
-			time.Sleep(300 * time.Millisecond)
-			panic(http.ErrAbortHandler)
-		case n == 2 || n == 3:
-			// fantasy's internal step retries: fail fast so the step
-			// ultimately errors out and the coordinator's own
-			// continuation retry takes over.
-			w.WriteHeader(http.StatusInternalServerError)
-			_, _ = fmt.Fprint(w, `{"error":{"message":"transient stub failure","type":"server_error"}}`)
-		default:
-			// The coordinator's continuation attempt: clean finish.
-			_, _ = fmt.Fprint(w, sseChunk(contFinalText))
-			_, _ = fmt.Fprint(w, sseStopChunk)
-			_, _ = fmt.Fprint(w, sseDone)
-		}
+		smartStub(n, w, r)
 	}))
 	t.Cleanup(srv.Close)
 
@@ -316,4 +346,203 @@ func TestContinuationChainText(t *testing.T) {
 			assert.Equal(t, tt.want, continuationChainText(tt.assistants, terminal))
 		})
 	}
+}
+
+// TestContinuationChainTextAcrossToolStepsAndUserTurns pins the R2-2
+// walk rules over WHOLE messages, not just assistants: a tool call +
+// tool result pair belonging to the continuation attempt itself must not
+// break the chain, a genuine user turn must, and a boundary cut mid-JSON
+// string must reassemble byte-for-byte instead of getting a separator
+// injected.
+func TestContinuationChainTextAcrossToolStepsAndUserTurns(t *testing.T) {
+	t.Parallel()
+
+	errFinish := func() message.ContentPart {
+		return message.Finish{Reason: message.FinishReasonError, Message: "Stream stalled"}
+	}
+	okFinish := message.Finish{Reason: message.FinishReasonEndTurn}
+	toolFinish := message.Finish{Reason: message.FinishReasonToolUse}
+	contPrompt := func(id string) message.Message {
+		return message.Message{ID: id, Role: message.User, Parts: []message.ContentPart{
+			message.TextContent{Text: "Your previous response to the request `write a long report` was interrupted by a transient provider error (e.g. a stream stall or rate limit) partway through. Here is what you had written so far:\n\npartial\n\nContinue exactly where you left off. Do not repeat the text above and do not restart the task from scratch."},
+		}}
+	}
+	realPrompt := func(id, text string) message.Message {
+		return message.Message{ID: id, Role: message.User, Parts: []message.ContentPart{
+			message.TextContent{Text: text},
+		}}
+	}
+	newMsg := func(id string, role message.MessageRole, parts ...message.ContentPart) message.Message {
+		return message.Message{ID: id, Role: role, Parts: parts}
+	}
+
+	tests := []struct {
+		name       string
+		run        []message.Message
+		terminalID string
+		want       string
+	}{
+		{
+			name: "tool step inside the continuation attempt keeps the chain",
+			run: []message.Message{
+				newMsg("u1", message.User, message.TextContent{Text: "write a long report"}),
+				newMsg("a1", message.Assistant, message.TextContent{Text: "Section 1: Introduction"}, errFinish()),
+				contPrompt("u2"),
+				newMsg("a2", message.Assistant,
+					message.ToolCall{ID: "call-1", Name: "view", Input: `{"file_path":"notes.md"}`}, toolFinish),
+				newMsg("t2", message.Tool, message.ToolResult{ToolCallID: "call-1", Name: "view", Content: "ok"}),
+				newMsg("a3", message.Assistant, message.TextContent{Text: "Section 2: Conclusion"}, okFinish),
+			},
+			terminalID: "a3",
+			want:       "Section 1: Introduction\n\nSection 2: Conclusion",
+		},
+		{
+			name: "real user turn between attempts breaks the chain",
+			run: []message.Message{
+				newMsg("a1", message.Assistant, message.TextContent{Text: "Part 1"}, errFinish()),
+				contPrompt("u2"),
+				newMsg("a2", message.Assistant, message.TextContent{Text: "Part 2"}, errFinish()),
+				realPrompt("u3", "actually, start over"),
+				newMsg("a3", message.Assistant, message.TextContent{Text: "Part 3"}, okFinish),
+			},
+			terminalID: "a3",
+			want:       "",
+		},
+		{
+			name: "unrelated completed turn before the chain stays out",
+			run: []message.Message{
+				newMsg("a0", message.Assistant, message.TextContent{Text: "Unrelated earlier turn"}, okFinish),
+				realPrompt("u1", "write a long report"),
+				newMsg("a1", message.Assistant, message.TextContent{Text: "Section 1"}, errFinish()),
+				contPrompt("u2"),
+				newMsg("a2", message.Assistant, message.TextContent{Text: "Section 2"}, okFinish),
+			},
+			terminalID: "a2",
+			want:       "Section 1\n\nSection 2",
+		},
+		{
+			name: "mid-JSON-string interruption joins byte-for-byte",
+			run: []message.Message{
+				newMsg("u1", message.User, message.TextContent{Text: "emit json"}),
+				newMsg("a1", message.Assistant, message.TextContent{Text: `{"text":"hello`}, errFinish()),
+				contPrompt("u2"),
+				newMsg("a2", message.Assistant, message.TextContent{Text: ` world"}`}, okFinish),
+			},
+			terminalID: "a2",
+			want:       `{"text":"hello world"}`,
+		},
+		{
+			name: "every attempt in a multi-attempt chain may carry a tool step",
+			run: []message.Message{
+				newMsg("a1", message.Assistant, message.TextContent{Text: "Part 1"}, errFinish()),
+				contPrompt("u2"),
+				newMsg("a2", message.Assistant, message.TextContent{Text: "Part 2"}, errFinish()),
+				contPrompt("u3"),
+				newMsg("a3", message.Assistant,
+					message.ToolCall{ID: "call-1", Name: "view", Input: `{}`}, toolFinish),
+				newMsg("t3", message.Tool, message.ToolResult{ToolCallID: "call-1", Name: "view", Content: "ok"}),
+				newMsg("a4", message.Assistant, message.TextContent{Text: "Part 3"}, okFinish),
+			},
+			terminalID: "a4",
+			want:       "Part 1\n\nPart 2\n\nPart 3",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var terminal message.Message
+			for _, m := range tt.run {
+				if m.ID == tt.terminalID {
+					terminal = m
+				}
+			}
+			require.NotNil(t, terminal)
+			assert.Equal(t, tt.want, continuationChainText(tt.run, terminal))
+		})
+	}
+}
+
+// TestExecuteRunContinuationChainWithToolStepReturnsFullText is R2-2
+// mechanism A end to end: the continuation attempt legitimately starts
+// with a tool call (view) before completing the answer. Before the fix
+// the chain walk stopped at the tool-use row and the returned envelope
+// carried only the tail.
+func TestExecuteRunContinuationChainWithToolStepReturnsFullText(t *testing.T) {
+	viewTarget := filepath.Join(t.TempDir(), "notes.md")
+	require.NoError(t, os.WriteFile(viewTarget, []byte("some notes"), 0o644))
+	toolArgs, err := json.Marshal(map[string]string{"file_path": viewTarget})
+	require.NoError(t, err)
+
+	app := newContinuationAppWithStub(t, false, func(n int, w http.ResponseWriter, r *http.Request) {
+		switch {
+		case n == 1:
+			_, _ = fmt.Fprint(w, sseChunk(contPartialText))
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+			time.Sleep(300 * time.Millisecond)
+			panic(http.ErrAbortHandler)
+		case n == 2 || n == 3:
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = fmt.Fprint(w, `{"error":{"message":"transient stub failure","type":"server_error"}}`)
+		case n == 4:
+			// The continuation attempt first calls a tool — a clean
+			// tool-loop round, not a failure.
+			_, _ = fmt.Fprint(w, sseToolCallChunk("view", string(toolArgs)))
+			_, _ = fmt.Fprint(w, sseToolCallsFinishChunk())
+			_, _ = fmt.Fprint(w, sseDone)
+		default:
+			// The round after the view result: clean finish.
+			_, _ = fmt.Fprint(w, sseChunk(contFinalText))
+			_, _ = fmt.Fprint(w, sseStopChunk)
+			_, _ = fmt.Fprint(w, sseDone)
+		}
+	})
+
+	result, err := runContinuationExecuteRun(t, app)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	assert.Equal(t, contPartialText+"\n\n"+contFinalText, result.FinalText,
+		"the chain with an intervening tool step must return the full combined text in the envelope")
+}
+
+// TestExecuteRunContinuationMidJSONStringJoinsWithoutSeparator is R2-2
+// mechanism B end to end: the stream dies INSIDE a JSON string value and
+// the continuation completes it. The combined final_text must be the
+// exact bytes the uninterrupted stream would have produced — valid JSON
+// with no injected separator — or --format json callers get invalid
+// output from a semantically correct continuation.
+func TestExecuteRunContinuationMidJSONStringJoinsWithoutSeparator(t *testing.T) {
+	const partial = `{"text":"hello`
+	const tail = ` world"}`
+
+	app := newContinuationAppWithStub(t, false, func(n int, w http.ResponseWriter, r *http.Request) {
+		switch {
+		case n == 1:
+			_, _ = fmt.Fprint(w, sseChunk(partial))
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+			time.Sleep(300 * time.Millisecond)
+			panic(http.ErrAbortHandler)
+		case n == 2 || n == 3:
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = fmt.Fprint(w, `{"error":{"message":"transient stub failure","type":"server_error"}}`)
+		default:
+			_, _ = fmt.Fprint(w, sseChunk(tail))
+			_, _ = fmt.Fprint(w, sseStopChunk)
+			_, _ = fmt.Fprint(w, sseDone)
+		}
+	})
+
+	result, err := runContinuationExecuteRun(t, app)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	require.Equal(t, `{"text":"hello world"}`, result.FinalText,
+		"a mid-JSON-string interruption must reassemble byte-for-byte, without any injected separator")
+	assert.True(t, json.Valid([]byte(result.FinalText)),
+		"combined output must remain valid JSON")
 }

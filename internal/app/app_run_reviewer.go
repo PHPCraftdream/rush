@@ -643,7 +643,15 @@ func (s *executeRunLoop) resetForReviewerPass(ctx context.Context) {
 //   - the reserved-ownership era token (fail-fast callers): the primary
 //     turn consumed or released that era, and the token is one-shot; an
 //     unclaimed leftover must not be stale-claimed into a dead epoch by
-//     the review turn — it must queue like any fresh call.
+//     the review turn — it is cleared so the review turn re-claims like
+//     any fresh call. R2-3: a fail-fast caller keeps that contract on
+//     the review turn too — FailIfSessionBusy is carried over from the
+//     primary options, so if another caller claims the session between
+//     the primary phase ending and the review turn being admitted, the
+//     mailbox's atomic submit check refuses the review call outright
+//     instead of queueing it behind the other owner for later execution,
+//     and ExecuteRun fails fast with an error wrapping
+//     agent.ErrSessionBusy rather than returning ErrRunQueued.
 func (app *App) buildReviewerPassTurn(ctx context.Context, primary *agent.CallOptions) (turnRunFunc, context.Context) {
 	reviewerCfg := app.config.Config().Models[config.SelectedModelTypeReviewer]
 	reviewerOverride := &agent.ModelOverride{
@@ -661,8 +669,14 @@ func (app *App) buildReviewerPassTurn(ctx context.Context, primary *agent.CallOp
 		MaxCost:                  primary.MaxCost,
 		MaxTokens:                primary.MaxTokens,
 		AllowPeakHours:           primary.AllowPeakHours,
-		FolderScope:              primary.FolderScope,
-		DiskProvider:             primary.DiskProvider,
+		// R2-3: honor the caller's fail-fast busy policy on the review
+		// turn too. The decision itself stays at the mailbox reservation
+		// (sessionAgent.Run -> mailbox.submit), which is atomic under
+		// mb.mu: a competing claim between the phases is rejected for
+		// this call with nothing left in the other owner's queue.
+		FailIfSessionBusy: primary.FailIfSessionBusy,
+		FolderScope:       primary.FolderScope,
+		DiskProvider:      primary.DiskProvider,
 	}
 	reviewCtx := agent.WithCallOptions(ctx, reviewCallOpts)
 	reviewCtx = agent.WithSessionModelPersistence(reviewCtx, nil, nil)

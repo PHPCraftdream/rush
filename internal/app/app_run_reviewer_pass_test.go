@@ -12,8 +12,10 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/stretchr/testify/assert"
@@ -312,4 +314,84 @@ func TestExecuteRunReviewerPassTurnUsesReviewerCallOptions(t *testing.T) {
 	assert.NotContains(t, sets[1], "agentic_fetch")
 
 	require.Equal(t, reviewerPassReviewerText, result.FinalText)
+}
+
+// TestExecuteRunReviewerPassFailFastSurvivesInterPhaseClaim pins R2-3:
+// the SDK's FailIfSessionBusy contract must survive the primary ->
+// reviewer phase handoff. Caller A (fail-fast, smart + reviewer) finishes
+// its primary phase; before A's review turn is admitted, caller B claims
+// the same session via ReserveExclusive — the same atomic claim
+// ExecuteRun itself uses. A's ExecuteRun must then fail fast with an
+// error wrapping agent.ErrSessionBusy — NOT queue — and nothing of A's
+// review turn may ever execute, not when B releases and not when B's own
+// queue drains afterwards: the review turn carries write/bash tools, so
+// a queued reviewer call executing under B's lifecycle after A already
+// received a failure is exactly the violation this pins.
+func TestExecuteRunReviewerPassFailFastSurvivesInterPhaseClaim(t *testing.T) {
+	h := newReviewerPassApp(t, true)
+	sess := createModelOverrideSession(t, h.app, "reviewer-pass-fail-fast")
+
+	origSeam := executeRunBeforeTurnLaunchSeam
+	var launches atomic.Int32
+	readyForB := make(chan struct{})
+	bClaimed := make(chan struct{})
+	executeRunBeforeTurnLaunchSeam = func() {
+		if launches.Add(1) == 2 {
+			// A's primary phase returned; the review turn is about to
+			// launch. Hold it here until B owns the session.
+			close(readyForB)
+			<-bClaimed
+		}
+	}
+	t.Cleanup(func() { executeRunBeforeTurnLaunchSeam = origSeam })
+
+	type runOutcome struct {
+		result *RunResult
+		err    error
+	}
+	resultA := make(chan runOutcome, 1)
+	go func() {
+		res, err := h.app.ExecuteRun(context.Background(), RunRequest{
+			Prompt:            "do the thing",
+			ContinueSessionID: sess.ID,
+			Overrides:         RunOverrides{ModelRole: config.SelectedModelTypeSmart},
+			Mode:              RunModeJSON,
+			Stdout:            io.Discard,
+			Stderr:            io.Discard,
+			HideSpinner:       true,
+			FailIfSessionBusy: true,
+		})
+		resultA <- runOutcome{res, err}
+	}()
+
+	<-readyForB
+	holdCtx, epoch, cancel, ok := h.app.AgentCoordinator.ReserveExclusive(context.Background(), sess.ID)
+	require.True(t, ok, "B must be able to claim the session in the window between A's phases")
+	close(bClaimed)
+	require.NoError(t, holdCtx.Err(), "B's exclusive hold must be live while A is refused")
+
+	outcome := <-resultA
+	require.Error(t, outcome.err, "A's run must fail fast once B owns the session")
+	require.ErrorIs(t, outcome.err, agent.ErrSessionBusy,
+		"the SDK fail-fast contract must surface agent.ErrSessionBusy from the reviewer phase")
+	require.NotErrorIs(t, outcome.err, ErrRunQueued,
+		"A's review turn must be REFUSED, not queued behind B's ownership")
+
+	require.NotContains(t, h.requestedModels(), reviewerPassReviewerModel,
+		"A's reviewer call must not reach the provider while B owns the session")
+
+	// Release B's claim and let B's own queue drain. Before the fix A's
+	// reviewer call sat in the mailbox's submitted queue and the release
+	// handed it to a fresh detached run — executed long after A was gone.
+	h.app.AgentCoordinator.ReleaseExclusive(sess.ID, epoch, cancel)
+
+	resultB, err := runReviewerPassExecuteRun(t, h, sess.ID, RunOverrides{SmartModel: "openaicompat/fast-default"})
+	require.NoError(t, err)
+	require.NotNil(t, resultB)
+
+	models := h.requestedModels()
+	require.Equal(t, []string{"smart-default", "fast-default"}, models,
+		"exactly A's primary turn and B's own turn may reach the provider — A's reviewer call must never execute")
+	require.Equal(t, reviewerPassPrimaryText, resultB.FinalText,
+		"B's own turn must own the envelope, not a deferred reviewer call from A")
 }

@@ -6,7 +6,10 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
+	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/message"
 )
 
@@ -43,16 +46,21 @@ func (app *App) reconcileTerminalMessage(
 		found    bool
 		calls    = make(map[string]int)
 		seen     = make(map[string]struct{})
-		// runAssistants collects this run's assistant rows in commit
-		// order so the continuation chain below can walk backwards from
-		// the terminal message.
-		runAssistants []message.Message
+		// runMessages collects this run's rows in commit order —
+		// assistant steps, the coordinator's continuation prompts
+		// between them, and tool results — so the continuation chain
+		// walk below can tell a same-attempt tool-loop step apart from
+		// a separate turn's boundary.
+		runMessages []message.Message
 	)
 	for _, msg := range messages {
-		if msg.Role != message.Assistant || !isRunMessage(msg, baselineIDs, baselineKnown) {
+		if !isRunMessage(msg, baselineIDs, baselineKnown) {
 			continue
 		}
-		runAssistants = append(runAssistants, msg)
+		runMessages = append(runMessages, msg)
+		if msg.Role != message.Assistant {
+			continue
+		}
 		for _, call := range msg.ToolCalls() {
 			if call.ID != "" {
 				if _, ok := seen[call.ID]; ok {
@@ -76,7 +84,7 @@ func (app *App) reconcileTerminalMessage(
 	return terminalReconciliation{
 		message:      terminal,
 		toolCalls:    calls,
-		combinedText: continuationChainText(runAssistants, terminal),
+		combinedText: continuationChainText(runMessages, terminal),
 	}, nil
 }
 
@@ -87,20 +95,31 @@ func (app *App) reconcileTerminalMessage(
 // continue in a fresh message, so the run's full answer is spread across
 // several rows and the terminal row alone carries only the tail.
 //
-// The walk starts at the row before the terminal and consumes only
-// consecutive assistant rows whose finish reason is error — exactly the
-// rows a continuation chain leaves behind (the continuation prompts
-// between them are user rows and are skipped). Any other assistant row —
-// a clean tool-loop round, a separate turn — stops the walk, so text is
-// never combined across unrelated messages. A terminal message that
-// itself ended in error returns "": the run failed, and there is no
-// successful continuation to attach anything to.
-func continuationChainText(runAssistants []message.Message, terminal message.Message) string {
+// The walk starts at the row before the terminal and moves backward over
+// whole messages (not just assistants) so it can recognize the boundaries
+// it crosses:
+//   - a tool result row belongs to the tool-loop step of the attempt
+//     being walked and is skipped without breaking the chain;
+//   - a clean assistant row is skipped the same way only while it is a
+//     tool-loop step (it carries the tool calls, or ends on
+//     FinishReasonToolUse) — any other clean row is a completed turn and
+//     stops the walk;
+//   - a user row is a turn boundary. Only the coordinator's own
+//     continuation prompt (agent.IsContinuationPrompt, matched against
+//     the producer agent's continuationPrompt verbatim) keeps the chain
+//     alive across it; a genuine user turn — including this run's own
+//     original prompt — stops the walk, so text is never combined across
+//     unrelated messages. A failed attempt's text joins the chain; a
+//     tool step's narration does not.
+//
+// A terminal message that itself ended in error returns "": the run
+// failed, and there is no successful continuation to attach anything to.
+func continuationChainText(runMessages []message.Message, terminal message.Message) string {
 	if fp := terminal.FinishPart(); fp != nil && fp.Reason == message.FinishReasonError {
 		return ""
 	}
 	termIdx := -1
-	for i, msg := range runAssistants {
+	for i, msg := range runMessages {
 		if msg.ID == terminal.ID {
 			termIdx = i
 			break
@@ -110,24 +129,73 @@ func continuationChainText(runAssistants []message.Message, terminal message.Mes
 		return ""
 	}
 	var parts []string
+collect:
 	for i := termIdx - 1; i >= 0; i-- {
-		msg := runAssistants[i]
-		fp := msg.FinishPart()
-		if fp == nil || fp.Reason != message.FinishReasonError {
-			break
-		}
-		if text := strings.TrimSpace(msg.FullText()); text != "" {
-			parts = append(parts, text)
+		msg := runMessages[i]
+		switch {
+		case msg.Role == message.Tool:
+			// A tool result of the attempt being walked.
+		case msg.Role == message.User:
+			if !agent.IsContinuationPrompt(msg.FullText()) {
+				break collect
+			}
+		case msg.Role == message.Assistant:
+			if fp := msg.FinishPart(); fp != nil && fp.Reason == message.FinishReasonError {
+				if text := msg.FullText(); strings.TrimSpace(text) != "" {
+					parts = append(parts, text)
+				}
+				continue
+			}
+			if len(msg.ToolCalls()) == 0 && msg.FinishReason() != message.FinishReasonToolUse {
+				break collect
+			}
+		default:
+			break collect
 		}
 	}
 	if len(parts) == 0 {
 		return ""
 	}
 	slices.Reverse(parts)
-	if text := strings.TrimSpace(terminal.FullText()); text != "" {
-		parts = append(parts, text)
+	combined := ""
+	for _, part := range parts {
+		combined = joinContinuationText(combined, part)
 	}
-	return strings.Join(parts, "\n\n")
+	return joinContinuationText(combined, terminal.FullText())
+}
+
+// joinContinuationText appends next to acc the way the coordinator's
+// continuation retry split one answer stream. When either side already
+// carries the boundary whitespace, the fragments are joined byte-for-byte:
+// an interruption cut mid-content (inside a JSON string, a word, an
+// indented code line) leaves that whitespace to the continuation's first
+// token, so inserting a separator would corrupt the payload (R2-2,
+// mechanism B): partial `{"text":"hello` plus continuation ` world"}`
+// must become `{"text":"hello world"}`, never
+// `{"text":"hello\n\n world"}`. Only when both sides are bare does it
+// synthesize the paragraph break between two independently readable
+// blocks.
+func joinContinuationText(acc, next string) string {
+	if acc == "" {
+		return next
+	}
+	if next == "" {
+		return acc
+	}
+	if endsWithSpace(acc) || startsWithSpace(next) {
+		return acc + next
+	}
+	return acc + "\n\n" + next
+}
+
+func startsWithSpace(s string) bool {
+	r, _ := utf8.DecodeRuneInString(s)
+	return unicode.IsSpace(r)
+}
+
+func endsWithSpace(s string) bool {
+	r, _ := utf8.DecodeLastRuneInString(s)
+	return unicode.IsSpace(r)
 }
 
 func isRunMessage(
