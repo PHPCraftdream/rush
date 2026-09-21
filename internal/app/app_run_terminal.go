@@ -132,14 +132,14 @@ func continuationChainText(runMessages []message.Message, terminal message.Messa
 collect:
 	for i := termIdx - 1; i >= 0; i-- {
 		msg := runMessages[i]
-		switch {
-		case msg.Role == message.Tool:
+		switch msg.Role {
+		case message.Tool:
 			// A tool result of the attempt being walked.
-		case msg.Role == message.User:
+		case message.User:
 			if !agent.IsContinuationPrompt(msg.FullText()) {
 				break collect
 			}
-		case msg.Role == message.Assistant:
+		case message.Assistant:
 			if fp := msg.FinishPart(); fp != nil && fp.Reason == message.FinishReasonError {
 				if text := msg.FullText(); strings.TrimSpace(text) != "" {
 					parts = append(parts, text)

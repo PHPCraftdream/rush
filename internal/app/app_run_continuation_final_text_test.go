@@ -83,8 +83,8 @@ func newContinuationApp(t *testing.T, withReviewer bool) *App {
 // requests 2-3 fail fast (fantasy's internal step retries), and request 4
 // — the coordinator's continuation attempt — completes cleanly.
 func defaultContinuationSmartStub(n int, w http.ResponseWriter, _ *http.Request) {
-	switch {
-	case n == 1:
+	switch n {
+	case 1:
 		// The turn's first attempt: stream the partial text, give the
 		// client a moment to read it, then kill the connection
 		// mid-stream (transient EOF).
@@ -94,7 +94,7 @@ func defaultContinuationSmartStub(n int, w http.ResponseWriter, _ *http.Request)
 		}
 		time.Sleep(300 * time.Millisecond)
 		panic(http.ErrAbortHandler)
-	case n == 2 || n == 3:
+	case 2, 3:
 		// fantasy's internal step retries: fail fast so the step
 		// ultimately errors out and the coordinator's own
 		// continuation retry takes over.
@@ -475,18 +475,18 @@ func TestExecuteRunContinuationChainWithToolStepReturnsFullText(t *testing.T) {
 	require.NoError(t, err)
 
 	app := newContinuationAppWithStub(t, false, func(n int, w http.ResponseWriter, r *http.Request) {
-		switch {
-		case n == 1:
+		switch n {
+		case 1:
 			_, _ = fmt.Fprint(w, sseChunk(contPartialText))
 			if f, ok := w.(http.Flusher); ok {
 				f.Flush()
 			}
 			time.Sleep(300 * time.Millisecond)
 			panic(http.ErrAbortHandler)
-		case n == 2 || n == 3:
+		case 2, 3:
 			w.WriteHeader(http.StatusInternalServerError)
 			_, _ = fmt.Fprint(w, `{"error":{"message":"transient stub failure","type":"server_error"}}`)
-		case n == 4:
+		case 4:
 			// The continuation attempt first calls a tool — a clean
 			// tool-loop round, not a failure.
 			_, _ = fmt.Fprint(w, sseToolCallChunk("view", string(toolArgs)))
@@ -519,15 +519,15 @@ func TestExecuteRunContinuationMidJSONStringJoinsWithoutSeparator(t *testing.T) 
 	const tail = ` world"}`
 
 	app := newContinuationAppWithStub(t, false, func(n int, w http.ResponseWriter, r *http.Request) {
-		switch {
-		case n == 1:
+		switch n {
+		case 1:
 			_, _ = fmt.Fprint(w, sseChunk(partial))
 			if f, ok := w.(http.Flusher); ok {
 				f.Flush()
 			}
 			time.Sleep(300 * time.Millisecond)
 			panic(http.ErrAbortHandler)
-		case n == 2 || n == 3:
+		case 2, 3:
 			w.WriteHeader(http.StatusInternalServerError)
 			_, _ = fmt.Fprint(w, `{"error":{"message":"transient stub failure","type":"server_error"}}`)
 		default:
