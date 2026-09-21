@@ -10,6 +10,16 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config"
 )
 
+// transportTLSHandshakeTimeout and transportIdleConnTimeout mirror
+// http.DefaultTransport's values. Zero TLSHandshakeTimeout lets a
+// stuck TLS handshake hang a provider connection forever; zero
+// IdleConnTimeout keeps keep-alive sockets open indefinitely after
+// their last use.
+const (
+	transportTLSHandshakeTimeout = 10 * time.Second
+	transportIdleConnTimeout     = 90 * time.Second
+)
+
 // BuildHTTPClient returns a *http.Client configured per cfg's proxy/DNS
 // settings, or nil if cfg is the zero value (nothing configured — the
 // caller keeps its own default client unchanged, byte-identical to the
@@ -28,6 +38,17 @@ func BuildHTTPClient(cfg config.NetworkConfig) (*http.Client, error) {
 // BuildTransport returns an *http.Transport per cfg's proxy/DNS
 // settings, or nil when nothing is configured at all — no transport is
 // built in that case so the caller can keep its own default.
+//
+// Transports are cached per distinct resolved NetworkConfig and shared
+// by every caller with the same configuration, mirroring
+// http.DefaultTransport's process-wide sharing: every fresh transport
+// owns keep-alive pools (and, for DoH, a second transport hidden in
+// the resolver closure), so building one per provider build or model
+// override would let idle connections grow with the number of builds
+// instead of active calls. The cache is small and LRU-bounded
+// (transportCacheCapacity); evicting an entry closes its idle
+// connections immediately, and every transport also carries
+// transportIdleConnTimeout as a backstop.
 func BuildTransport(cfg config.NetworkConfig) (*http.Transport, error) {
 	rs, err := resolveConfig(cfg)
 	if err != nil {
@@ -35,6 +56,9 @@ func BuildTransport(cfg config.NetworkConfig) (*http.Transport, error) {
 	}
 	if rs.empty() {
 		return nil, nil
+	}
+	if tr := sharedTransport(rs); tr != nil {
+		return tr, nil
 	}
 
 	var proxyDial dialFunc
@@ -45,14 +69,19 @@ func BuildTransport(cfg config.NetworkConfig) (*http.Transport, error) {
 		}
 	}
 
-	resolver, err := buildResolver(rs, proxyDial)
+	resolver, resolverTransports, err := buildResolver(rs, proxyDial)
 	if err != nil {
 		return nil, err
 	}
 
 	// ForceAttemptHTTP2 mirrors http.DefaultTransport's automatic h2
-	// upgrade behavior for a transport built from scratch.
-	tr := &http.Transport{ForceAttemptHTTP2: true}
+	// upgrade behavior for a transport built from scratch; the two
+	// timeouts mirror its defaults (see the constants above).
+	tr := &http.Transport{
+		ForceAttemptHTTP2:   true,
+		TLSHandshakeTimeout: transportTLSHandshakeTimeout,
+		IdleConnTimeout:     transportIdleConnTimeout,
+	}
 
 	switch {
 	case resolver != nil:
@@ -74,6 +103,7 @@ func BuildTransport(cfg config.NetworkConfig) (*http.Transport, error) {
 		tr.DialContext = proxyDial
 	}
 
+	cacheTransport(rs, tr, resolverTransports)
 	return tr, nil
 }
 

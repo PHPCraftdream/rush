@@ -96,3 +96,13 @@ func (t *initiatorTransport) baseTransport() http.RoundTripper {
 	}
 	return http.DefaultTransport
 }
+
+// CloseIdleConnections forwards to the base transport so closing idle
+// connections through the wrapper client reaches the real keep-alive
+// pool instead of silently doing nothing; see RetryTransport.CloseIdleConnections
+// in internal/log for the same forwarding pattern.
+func (t *initiatorTransport) CloseIdleConnections() {
+	if owned, ok := t.baseTransport().(interface{ CloseIdleConnections() }); ok {
+		owned.CloseIdleConnections()
+	}
+}

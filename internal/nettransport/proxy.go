@@ -78,21 +78,48 @@ func connectDialer(pu *url.URL) dialFunc {
 		if err != nil {
 			return nil, fmt.Errorf("dial proxy %q: %w", pu.Host, err)
 		}
+
+		// The CONNECT exchange is plain blocking I/O with no context
+		// parameter, so bound it explicitly: provisional deadline on
+		// the socket plus a watcher that closes it when ctx is
+		// cancelled. Without this, a proxy that accepts TCP but never
+		// answers CONNECT holds the dial open indefinitely, regardless
+		// of the caller giving up.
+		guard := armHandshakeGuard(ctx, conn, connectHandshakeTimeout)
 		if err := writeConnectRequest(conn, pu, addr); err != nil {
 			_ = conn.Close()
+			if abortErr := guard.stop(); abortErr != nil {
+				return nil, fmt.Errorf("CONNECT to proxy %q: %w", pu.Host, abortErr)
+			}
 			return nil, err
 		}
 		br := bufio.NewReader(conn)
 		resp, err := http.ReadResponse(br, &http.Request{Method: "CONNECT"})
 		if err != nil {
 			_ = conn.Close()
+			if abortErr := guard.stop(); abortErr != nil {
+				return nil, fmt.Errorf("CONNECT to proxy %q: %w", pu.Host, abortErr)
+			}
 			return nil, fmt.Errorf("read CONNECT response from proxy %q: %w", pu.Host, err)
 		}
 		if resp.StatusCode != http.StatusOK {
 			_ = conn.Close()
 			_ = resp.Body.Close()
+			if abortErr := guard.stop(); abortErr != nil {
+				return nil, fmt.Errorf("CONNECT to proxy %q: %w", pu.Host, abortErr)
+			}
 			return nil, fmt.Errorf(
 				"proxy %q refused CONNECT to %q: %s", pu.Host, addr, resp.Status)
+		}
+
+		// Tunnel confirmed. Stop the watcher and clear the provisional
+		// deadline BEFORE handing the connection back, so the caller
+		// owns an unmodified, unwatched socket. A non-nil error here
+		// means cancellation or the deadline closed the socket while
+		// the 200 was being observed — that success is void.
+		if abortErr := guard.stop(); abortErr != nil {
+			_ = conn.Close()
+			return nil, fmt.Errorf("CONNECT to proxy %q: %w", pu.Host, abortErr)
 		}
 		// The bufio.Reader may have buffered bytes beyond the response
 		// head; bufferedConn drains them first so a TLS handshake over

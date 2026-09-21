@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"golang.org/x/net/dns/dnsmessage"
 )
@@ -22,17 +23,25 @@ type resolveFunc func(ctx context.Context, host string) (net.IP, error)
 // Precedence: DoH endpoint first, then DNS-over-TCP through the proxy
 // when both a DNS server and a proxy exist (UDP cannot tunnel through
 // CONNECT-style proxies), then plain DNS over UDP, and finally no
-// custom resolution at all (nil, nil).
-func buildResolver(rs resolved, proxyDial dialFunc) (resolveFunc, error) {
+// custom resolution at all (nil, nil, nil). The second return value
+// lists the transports the resolver owns (the DoH endpoint's HTTP
+// transport) so their keep-alive pools stay reachable for cleanup.
+func buildResolver(rs resolved, proxyDial dialFunc) (resolveFunc, []*http.Transport, error) {
 	switch {
 	case rs.dohURL != "":
-		return newDoHResolver(rs.dohURL, rs.proxyURL)
+		fn, tr, err := newDoHResolver(rs.dohURL, rs.proxyURL, dohClientTimeout)
+		if err != nil {
+			return nil, nil, err
+		}
+		return fn, []*http.Transport{tr}, nil
 	case rs.dnsServer != "" && proxyDial != nil:
-		return dnsOverTCPResolver(rs.dnsServer, proxyDial), nil
+		fn := dnsOverTCPResolver(rs.dnsServer, proxyDial)
+		return fn, nil, nil
 	case rs.dnsServer != "":
-		return plainDNSResolver(rs.dnsServer), nil
+		fn := plainDNSResolver(rs.dnsServer)
+		return fn, nil, nil
 	default:
-		return nil, nil
+		return nil, nil, nil
 	}
 }
 
@@ -133,19 +142,35 @@ func answerIP(msg *dnsmessage.Message) (net.IP, bool) {
 	return nil, false
 }
 
+// dohClientTimeout bounds every DoH exchange with a deadline the DoH
+// client owns outright. Passing ctx into the request is not enough on
+// its own: this resolver runs inside net/http's own dial machinery,
+// which detaches the dial context from the request's cancellation (Go
+// 1.26 transport.go getConn wraps it in context.WithoutCancel), so
+// cancelling the outer HTTP request does not bound an in-flight lookup
+// happening inside a dial.
+const dohClientTimeout = 10 * time.Second
+
 // newDoHResolver builds a resolver that queries an RFC 8484
 // DNS-over-HTTPS endpoint. When proxyURL is non-nil the endpoint's
 // client routes through that proxy: the stdlib http.Transport
 // understands both http:// and socks5:// proxy URLs, so this single
 // field tunnels the DoH lookup through either proxy type, with the
-// endpoint hostname resolved by the proxy itself.
-func newDoHResolver(endpoint string, proxyURL *url.URL) (resolveFunc, error) {
-	tr := &http.Transport{ForceAttemptHTTP2: true}
+// endpoint hostname resolved by the proxy itself. timeout is the
+// per-exchange budget the client owns (tests pass a shorter one); the
+// returned transport is owned by the resolver and must be tracked by
+// the caller for keep-alive cleanup.
+func newDoHResolver(endpoint string, proxyURL *url.URL, timeout time.Duration) (resolveFunc, *http.Transport, error) {
+	tr := &http.Transport{
+		ForceAttemptHTTP2:   true,
+		TLSHandshakeTimeout: transportTLSHandshakeTimeout,
+		IdleConnTimeout:     transportIdleConnTimeout,
+	}
 	if proxyURL != nil {
 		tr.Proxy = http.ProxyURL(proxyURL)
 	}
-	client := &http.Client{Transport: tr}
-	return func(ctx context.Context, host string) (net.IP, error) {
+	client := &http.Client{Transport: tr, Timeout: timeout}
+	resolve := func(ctx context.Context, host string) (net.IP, error) {
 		for _, qtype := range []dnsmessage.Type{dnsmessage.TypeA, dnsmessage.TypeAAAA} {
 			ip, err := dohQuery(ctx, client, endpoint, host, qtype)
 			if err != nil {
@@ -158,7 +183,8 @@ func newDoHResolver(endpoint string, proxyURL *url.URL) (resolveFunc, error) {
 		}
 		return nil, fmt.Errorf(
 			"no A/AAAA answer for %q from DoH endpoint %s", host, endpoint)
-	}, nil
+	}
+	return resolve, tr, nil
 }
 
 // dohQuery performs one RFC 8484 query against the endpoint. POST is
@@ -248,6 +274,15 @@ func dnsTCPQuery(ctx context.Context, server string, proxyDial dialFunc,
 		return nil, fmt.Errorf("dial DNS server %s through proxy: %w", server, err)
 	}
 	defer func() { _ = conn.Close() }()
+
+	// The write/read sequence below is plain blocking I/O with no
+	// context parameter, so bound it like the CONNECT handshake: a
+	// silent DNS server (or a tunnel that stalls carrying the query)
+	// must not hold the lookup open past its budget or past the
+	// caller's cancellation. The connection is closed on return, so
+	// the guard never transfers ownership anywhere.
+	guard := armHandshakeGuard(ctx, conn, dnsQueryTimeout)
+	defer func() { _ = guard.stop() }()
 
 	// RFC 1035 section 4.2.2: prefix the message with its 2-byte
 	// big-endian length.

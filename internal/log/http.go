@@ -139,6 +139,17 @@ func (r *RetryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return nil, http.ErrHandlerTimeout
 }
 
+// CloseIdleConnections forwards to the wrapped transport chain so a
+// caller closing idle connections through the wrapper client actually
+// reaches the real keep-alive pool: http.Client only consults its
+// Transport field's own CloseIdleConnections method, so a wrapper
+// without one silently misses the base transport's pool.
+func (r *RetryTransport) CloseIdleConnections() {
+	if owned, ok := r.Transport.(interface{ CloseIdleConnections() }); ok {
+		owned.CloseIdleConnections()
+	}
+}
+
 // isRetryable reports whether req is safe to repeat.
 func isRetryable(req *http.Request) bool {
 	switch req.Method {
@@ -255,6 +266,18 @@ func (h *HTTPRoundTripLogger) RoundTrip(req *http.Request) (*http.Response, erro
 		)
 	})
 	return resp, nil
+}
+
+// CloseIdleConnections forwards to the wrapped transport; see
+// RetryTransport.CloseIdleConnections for why the forwarding must be
+// explicit.
+func (h *HTTPRoundTripLogger) CloseIdleConnections() {
+	if h.Transport == nil {
+		return
+	}
+	if owned, ok := h.Transport.(interface{ CloseIdleConnections() }); ok {
+		owned.CloseIdleConnections()
+	}
 }
 
 // concatBody returns a ReadCloser that yields prefix then the remaining
