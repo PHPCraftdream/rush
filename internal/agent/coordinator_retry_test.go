@@ -576,6 +576,7 @@ func TestRunInternal_ContinuationRetry_PreservesPartialContent(t *testing.T) {
 // and "resume" it with a continuation prompt — an unauthorized retry
 // execution quoting text A's call never produced.
 func TestRetryClassifiers_AttemptScopedEvidence(t *testing.T) {
+	t.Parallel()
 	partialStalledParts := func(text string) []message.ContentPart {
 		return []message.ContentPart{
 			message.TextContent{Text: text},
