@@ -6,8 +6,6 @@ import (
 	"slices"
 	"strings"
 	"time"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/message"
@@ -164,38 +162,23 @@ collect:
 	return joinContinuationText(combined, terminal.FullText())
 }
 
-// joinContinuationText appends next to acc the way the coordinator's
-// continuation retry split one answer stream. When either side already
-// carries the boundary whitespace, the fragments are joined byte-for-byte:
-// an interruption cut mid-content (inside a JSON string, a word, an
-// indented code line) leaves that whitespace to the continuation's first
-// token, so inserting a separator would corrupt the payload (R2-2,
-// mechanism B): partial `{"text":"hello` plus continuation ` world"}`
-// must become `{"text":"hello world"}`, never
-// `{"text":"hello\n\n world"}`. Only when both sides are bare does it
-// synthesize the paragraph break between two independently readable
-// blocks.
+// joinContinuationText appends next to acc byte-for-byte. The fragments
+// are pieces of ONE answer stream that a transient failure cut at an
+// arbitrary byte offset, and the coordinator's continuation prompt tells
+// the model to continue exactly where it left off, so whatever belonged
+// at the cut — a space, a paragraph break, nothing at all mid-word — is
+// the continuation's own first bytes, not something to synthesize here.
+// A cut with no whitespace on either side is the common mid-token or
+// mid-structure case: partial `{"text":"hel` plus continuation `lo"}`
+// must become `{"text":"hello"}`, and a guessed `"\n\n"` corrupts the
+// payload into invalid JSON (R2-2 / F3, 2026-09-22 audit). Nothing
+// observable distinguishes a paragraph-boundary cut from a mid-token cut
+// — a stalled stream carries the same error finish either way — so no
+// separator heuristic can be reliable. Where a break is genuinely lost
+// because the model did not re-emit one after a boundary cut, the cost
+// is cosmetic; an injected separator is corruption.
 func joinContinuationText(acc, next string) string {
-	if acc == "" {
-		return next
-	}
-	if next == "" {
-		return acc
-	}
-	if endsWithSpace(acc) || startsWithSpace(next) {
-		return acc + next
-	}
-	return acc + "\n\n" + next
-}
-
-func startsWithSpace(s string) bool {
-	r, _ := utf8.DecodeRuneInString(s)
-	return unicode.IsSpace(r)
-}
-
-func endsWithSpace(s string) bool {
-	r, _ := utf8.DecodeLastRuneInString(s)
-	return unicode.IsSpace(r)
+	return acc + next
 }
 
 func isRunMessage(

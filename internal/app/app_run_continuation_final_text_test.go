@@ -282,7 +282,7 @@ func TestContinuationChainText(t *testing.T) {
 				newMsg("a2", message.TextContent{Text: "Section 2: Conclusion"}, okFinish),
 			},
 			terminalID: "a2",
-			want:       "Section 1: Introduction\n\nSection 2: Conclusion",
+			want:       "Section 1: IntroductionSection 2: Conclusion",
 		},
 		{
 			name: "walk stops at an unrelated clean assistant message",
@@ -292,7 +292,7 @@ func TestContinuationChainText(t *testing.T) {
 				newMsg("a2", message.TextContent{Text: "Section 2"}, okFinish),
 			},
 			terminalID: "a2",
-			want:       "Section 1\n\nSection 2",
+			want:       "Section 1Section 2",
 		},
 		{
 			name: "multiple failed attempts combine in chronological order",
@@ -302,7 +302,7 @@ func TestContinuationChainText(t *testing.T) {
 				newMsg("a3", message.TextContent{Text: "Part 3"}, okFinish),
 			},
 			terminalID: "a3",
-			want:       "Part 1\n\nPart 2\n\nPart 3",
+			want:       "Part 1Part 2Part 3",
 		},
 		{
 			name: "empty failed attempts are skipped but do not break the chain",
@@ -312,7 +312,7 @@ func TestContinuationChainText(t *testing.T) {
 				newMsg("a3", message.TextContent{Text: "Part 3"}, okFinish),
 			},
 			terminalID: "a3",
-			want:       "Part 2\n\nPart 3",
+			want:       "Part 2Part 3",
 		},
 		{
 			name: "terminal that itself failed is left alone",
@@ -394,7 +394,7 @@ func TestContinuationChainTextAcrossToolStepsAndUserTurns(t *testing.T) {
 				newMsg("a3", message.Assistant, message.TextContent{Text: "Section 2: Conclusion"}, okFinish),
 			},
 			terminalID: "a3",
-			want:       "Section 1: Introduction\n\nSection 2: Conclusion",
+			want:       "Section 1: IntroductionSection 2: Conclusion",
 		},
 		{
 			name: "real user turn between attempts breaks the chain",
@@ -418,7 +418,7 @@ func TestContinuationChainTextAcrossToolStepsAndUserTurns(t *testing.T) {
 				newMsg("a2", message.Assistant, message.TextContent{Text: "Section 2"}, okFinish),
 			},
 			terminalID: "a2",
-			want:       "Section 1\n\nSection 2",
+			want:       "Section 1Section 2",
 		},
 		{
 			name: "mid-JSON-string interruption joins byte-for-byte",
@@ -444,7 +444,7 @@ func TestContinuationChainTextAcrossToolStepsAndUserTurns(t *testing.T) {
 				newMsg("a4", message.Assistant, message.TextContent{Text: "Part 3"}, okFinish),
 			},
 			terminalID: "a4",
-			want:       "Part 1\n\nPart 2\n\nPart 3",
+			want:       "Part 1Part 2Part 3",
 		},
 	}
 
@@ -504,7 +504,7 @@ func TestExecuteRunContinuationChainWithToolStepReturnsFullText(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, result)
 
-	assert.Equal(t, contPartialText+"\n\n"+contFinalText, result.FinalText,
+	assert.Equal(t, contPartialText+contFinalText, result.FinalText,
 		"the chain with an intervening tool step must return the full combined text in the envelope")
 }
 
@@ -543,6 +543,159 @@ func TestExecuteRunContinuationMidJSONStringJoinsWithoutSeparator(t *testing.T) 
 
 	require.Equal(t, `{"text":"hello world"}`, result.FinalText,
 		"a mid-JSON-string interruption must reassemble byte-for-byte, without any injected separator")
+	assert.True(t, json.Valid([]byte(result.FinalText)),
+		"combined output must remain valid JSON")
+}
+
+// TestContinuationChainTextJoinsByteExact pins the R2-2 / F3 join
+// contract at unit level: continuation fragments are byte-exact pieces
+// of one interrupted stream, so the join never synthesizes a separator.
+// A cut with no whitespace on either side is the common mid-token and
+// mid-structure case, and a guessed "\n\n" corrupts the payload — into
+// invalid JSON for the JSON-string and JSON-number shapes.
+func TestContinuationChainTextJoinsByteExact(t *testing.T) {
+	t.Parallel()
+
+	errFinish := func() message.ContentPart {
+		return message.Finish{Reason: message.FinishReasonError, Message: "Stream stalled"}
+	}
+	okFinish := message.Finish{Reason: message.FinishReasonEndTurn}
+	newMsg := func(id string, parts ...message.ContentPart) message.Message {
+		return message.Message{ID: id, Role: message.Assistant, Parts: parts}
+	}
+
+	tests := []struct {
+		name       string
+		run        []message.Message
+		terminalID string
+		want       string
+		wantJSON   bool
+	}{
+		{
+			name: "mid-JSON-string cut with no whitespace on either side",
+			run: []message.Message{
+				newMsg("a1", message.TextContent{Text: `{"text":"hel`}, errFinish()),
+				newMsg("a2", message.TextContent{Text: `lo"}`}, okFinish),
+			},
+			terminalID: "a2",
+			want:       `{"text":"hello"}`,
+			wantJSON:   true,
+		},
+		{
+			name: "plain mid-word cut",
+			run: []message.Message{
+				newMsg("a1", message.TextContent{Text: "hel"}, errFinish()),
+				newMsg("a2", message.TextContent{Text: "lo"}, okFinish),
+			},
+			terminalID: "a2",
+			want:       "hello",
+		},
+		{
+			name: "JSON number cut",
+			run: []message.Message{
+				newMsg("a1", message.TextContent{Text: `{"n":1`}, errFinish()),
+				newMsg("a2", message.TextContent{Text: `2}`}, okFinish),
+			},
+			terminalID: "a2",
+			want:       `{"n":12}`,
+			wantJSON:   true,
+		},
+		{
+			name: "several attempts cut mid-word reassemble in order",
+			run: []message.Message{
+				newMsg("a1", message.TextContent{Text: "Hel"}, errFinish()),
+				newMsg("a2", message.TextContent{Text: "lo"}, errFinish()),
+				newMsg("a3", message.TextContent{Text: ", world"}, okFinish),
+			},
+			terminalID: "a3",
+			want:       "Hello, world",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var terminal message.Message
+			for _, m := range tt.run {
+				if m.ID == tt.terminalID {
+					terminal = m
+				}
+			}
+			require.NotNil(t, terminal)
+			got := continuationChainText(tt.run, terminal)
+			assert.Equal(t, tt.want, got)
+			if tt.wantJSON {
+				assert.True(t, json.Valid([]byte(got)),
+					"joined JSON payload must stay valid")
+			}
+		})
+	}
+}
+
+// runByteCutContinuationE2E drives the audit repro with the stream
+// severed at an arbitrary byte cut: attempt 1 streams partial and dies
+// mid-stream, requests 2-3 fail fast (fantasy's internal step retries),
+// and the coordinator's continuation attempt streams tail to a clean
+// finish.
+func runByteCutContinuationE2E(t *testing.T, partial, tail string) *RunResult {
+	t.Helper()
+
+	app := newContinuationAppWithStub(t, false, func(n int, w http.ResponseWriter, r *http.Request) {
+		switch n {
+		case 1:
+			_, _ = fmt.Fprint(w, sseChunk(partial))
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+			time.Sleep(300 * time.Millisecond)
+			panic(http.ErrAbortHandler)
+		case 2, 3:
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = fmt.Fprint(w, `{"error":{"message":"transient stub failure","type":"server_error"}}`)
+		default:
+			_, _ = fmt.Fprint(w, sseChunk(tail))
+			_, _ = fmt.Fprint(w, sseStopChunk)
+			_, _ = fmt.Fprint(w, sseDone)
+		}
+	})
+
+	result, err := runContinuationExecuteRun(t, app)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	return result
+}
+
+// TestExecuteRunContinuationMidJSONStringWithoutSpaceJoinsExactly is the
+// R2-2 / F3 repro end to end: the existing
+// TestExecuteRunContinuationMidJSONStringJoinsWithoutSeparator only
+// exercises a tail that happens to START with a space, which satisfied
+// the old whitespace-edge heuristic. A stream can die at any offset; a
+// cut with no whitespace on either side must still reassemble to the
+// exact bytes, valid JSON, with no separator injected.
+func TestExecuteRunContinuationMidJSONStringWithoutSpaceJoinsExactly(t *testing.T) {
+	result := runByteCutContinuationE2E(t, `{"text":"hel`, `lo"}`)
+	require.Equal(t, `{"text":"hello"}`, result.FinalText,
+		"a mid-JSON-string cut with no boundary whitespace must reassemble byte-for-byte")
+	assert.True(t, json.Valid([]byte(result.FinalText)),
+		"combined output must remain valid JSON")
+}
+
+// TestExecuteRunContinuationMidWordJoinsExactly pins the plain mid-word
+// cut outside any structured payload: hel + lo is hello, never a word
+// torn apart by an injected separator.
+func TestExecuteRunContinuationMidWordJoinsExactly(t *testing.T) {
+	result := runByteCutContinuationE2E(t, "hel", "lo")
+	require.Equal(t, "hello", result.FinalText,
+		"a mid-word cut must reassemble the word exactly")
+}
+
+// TestExecuteRunContinuationMidNumberJoinsExactly pins a cut inside a
+// JSON number: {"n":1 + 2} is {"n":12}, never invalid JSON with literal
+// newlines inside the number.
+func TestExecuteRunContinuationMidNumberJoinsExactly(t *testing.T) {
+	result := runByteCutContinuationE2E(t, `{"n":1`, `2}`)
+	require.Equal(t, `{"n":12}`, result.FinalText,
+		"a mid-number cut must reassemble the JSON document exactly")
 	assert.True(t, json.Valid([]byte(result.FinalText)),
 		"combined output must remain valid JSON")
 }
