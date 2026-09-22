@@ -924,7 +924,7 @@ func TestRunInternal_SuccessfulResultNotClobberedByConcurrentStalledMessage(t *t
 
 	callCount := 0
 	var seenPrompts []string
-	var ownResult = agentResultWithText("A's clean final answer")
+	ownResult := agentResultWithText("A's clean final answer")
 	agent := newMockAgent(providerID, 4096, func(_ context.Context, call SessionAgentCall) (*fantasy.AgentResult, error) {
 		callCount++
 		seenPrompts = append(seenPrompts, call.Prompt)
