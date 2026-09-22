@@ -8,6 +8,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.2.0-alpha.2] - 2026-09-22
+
 ### Added
 
 - **Complete Codex delegation Skill installation.** `rush codex-init` and
@@ -30,8 +32,57 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   tree or index under any circumstance. `rush claude-del` removes it
   along with the other two commands.
 
+- **Auto-reviewer pass.** After a clean `--role smart` run, if a reviewer
+  model is configured, `rush run` automatically follows up with a second,
+  isolated pass asking the reviewer to add its own conclusion — the
+  reviewer runs with its own model/tool policy (sub-agent delegation
+  disabled, no session-model persistence) and its result, not the
+  primary pass's, becomes the run's final output. Skipped entirely for
+  credentialed (tenant) calls, so a tenant's transcript never reaches a
+  globally-configured reviewer it didn't request.
+
+- **Provider network configuration.** A provider can now be routed through
+  an HTTP or SOCKS5 proxy and/or a custom DNS server / DNS-over-HTTPS
+  resolver, configured per-provider in `rush.json`. All of the resulting
+  network paths (CONNECT tunnel, SOCKS5 handshake, plain and DoH DNS
+  lookups) are bounded by their own deadline and respect cancellation, so
+  a silent or slow proxy/resolver cannot hang a request indefinitely.
+
+- **`rush run --idle-timeout`** (default 15 minutes). `--timeout` now
+  defaults to *disabled* — a run has no overall time limit unless you set
+  one — and `--idle-timeout` is the new backstop: if the agent produces no
+  activity (not just no output — tool execution keeps the clock paused)
+  for the configured duration, the run ends with a dedicated error instead
+  of hanging forever. Unlike a transient stream stall, an idle-timeout
+  expiry is terminal — the run does not auto-retry.
+
+- **Peak-hours exit message.** A provider's peak-hours refusal window
+  (`rush providers set <id> --peak-hours HH:MM-HH:MM`) can now carry an
+  optional custom message, set from the web UI's provider settings (shown
+  once the peak-hours checkbox is enabled). When a run exits because of
+  the window, the message is appended after a blank-line separator to the
+  guidance shown on stderr and recorded in the session's finish details.
+
+- Web UI: message timestamps are now always visible, not just on hover;
+  sub-agent block headers show the model and reasoning effort used; and
+  sub-agent tool-call blocks show an argument preview alongside their
+  timestamp.
+
 ### Changed
 
+- A turn interrupted mid-stream by a transient provider failure (stall,
+  rate limit, brief outage) and then successfully continued now returns
+  its FULL answer, byte-exact, across the entire continuation chain —
+  including when the continuation itself calls a tool before finishing.
+  Previously the returned text could silently drop the interrupted first
+  half, or corrupt structured output (e.g. `--format json`) by inserting
+  a stray blank line at the exact byte the stream was cut.
+- Retry/continuation decisions are now scoped strictly to the assistant
+  message the current call's own attempt produced. Previously, on a
+  session shared by two concurrent callers, one caller's transient stall
+  could be misread as evidence belonging to a *different* caller's
+  already-successful or already-refused call, triggering a spurious extra
+  turn built from the wrong caller's partial text.
 - Split `ExecuteRun` into smaller same-package files without changing its
   public API or execution behavior. Removed the corresponding file-size
   exemption.

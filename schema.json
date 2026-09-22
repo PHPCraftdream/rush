@@ -572,6 +572,10 @@
           "examples": [
             "18:00"
           ]
+        },
+        "message": {
+          "type": "string",
+          "description": "Optional custom text appended to the peak-hours exit message"
         }
       },
       "additionalProperties": false,
