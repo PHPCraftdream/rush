@@ -890,6 +890,7 @@ func checkPeakHours(providerCfg config.ProviderConfig) error {
 		Start:      w.Start,
 		End:        w.End,
 		ReopensAt:  end,
+		Message:    w.Message,
 	}
 }
 

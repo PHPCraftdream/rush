@@ -71,7 +71,7 @@ func peakHoursFromWire(w *PeakHoursWirePayload) (*config.PeakHoursWindow, error)
 	if w == nil {
 		return nil, nil
 	}
-	window := config.PeakHoursWindow{Start: w.Start, End: w.End}
+	window := config.PeakHoursWindow{Start: w.Start, End: w.End, Message: w.Message}
 	if err := window.Validate(); err != nil {
 		return nil, err
 	}
@@ -85,7 +85,7 @@ func peakHoursToWire(w *config.PeakHoursWindow) *PeakHoursWirePayload {
 	if w == nil {
 		return nil
 	}
-	return &PeakHoursWirePayload{Start: w.Start, End: w.End}
+	return &PeakHoursWirePayload{Start: w.Start, End: w.End, Message: w.Message}
 }
 
 // scopeFromWire resolves a provider-config wire scope string ("global" /

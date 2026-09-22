@@ -843,7 +843,7 @@ export type ConfigScope = "global" | "local";
 export function addCustomProvider(payload: {
   id: string; name?: string; type: string; baseUrl: string; apiKey?: string;
   models?: { id: string; name: string; contextWindow?: number; costPer1mIn?: number; costPer1mOut?: number }[];
-  peakHours?: { start: string; end: string } | null;
+  peakHours?: { start: string; end: string; message?: string } | null;
   scope?: ConfigScope;
 }, msgID?: string) {
   ws.send("add_custom_provider", payload, msgID);
@@ -856,7 +856,7 @@ export function removeCustomProvider(id: string, scope?: ConfigScope, msgID?: st
 export function updateCustomProvider(payload: {
   oldId: string; id: string; name?: string; type: string; baseUrl: string; apiKey?: string;
   models?: { id: string; name: string; contextWindow?: number; costPer1mIn?: number; costPer1mOut?: number }[];
-  peakHours?: { start: string; end: string } | null;
+  peakHours?: { start: string; end: string; message?: string } | null;
   scope?: ConfigScope;
 }, msgID?: string) {
   ws.send("update_custom_provider", payload, msgID);
@@ -871,7 +871,7 @@ export function updateCustomProvider(payload: {
 // key, or model list.
 export function setProviderPeakHours(payload: {
   id: string;
-  peakHours: { start: string; end: string } | null;
+  peakHours: { start: string; end: string; message?: string } | null;
   scope?: ConfigScope;
 }, msgID?: string) {
   ws.send("set_provider_peak_hours", payload, msgID);

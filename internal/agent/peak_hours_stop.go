@@ -37,7 +37,7 @@ func PeakHoursGuidance(err error) string {
 			pe.ReopensAt.Format(time.RFC3339),
 		)
 	}
-	return fmt.Sprintf(
+	guidance := fmt.Sprintf(
 		"%s\n\n"+
 			"This is not a crash — rush is intentionally refusing/halting because "+
 			"of the provider's peak-hours window. rush is exiting now; it will "+
@@ -49,6 +49,13 @@ func PeakHoursGuidance(err error) string {
 			"operator explicitly asked for that specific run.",
 		resumeLine,
 	)
+	// Operator-authored custom message (config.PeakHoursWindow.Message),
+	// appended after a blank-line separator, exactly as with the sections
+	// above — empty by default, so this is a no-op unless configured.
+	if pe != nil && pe.Message != "" {
+		guidance += "\n\n" + pe.Message
+	}
+	return guidance
 }
 
 // peakHoursStoppedFinishText builds the (msg, details) pair recorded as the

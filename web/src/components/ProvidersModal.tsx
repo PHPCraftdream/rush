@@ -101,11 +101,11 @@ function ProviderForm({
   onSubmit,
   onCancel,
 }: {
-  initial?: { id: string; name: string; type: string; baseUrl: string; models: ModelDraft[]; peakHours?: { start: string; end: string } | null; scope?: ConfigScope };
+  initial?: { id: string; name: string; type: string; baseUrl: string; models: ModelDraft[]; peakHours?: { start: string; end: string; message?: string } | null; scope?: ConfigScope };
   submitLabel: string;
   onSubmit: (data: {
     id: string; name: string; type: string; baseUrl: string; apiKey: string; models: ModelDraft[];
-    peakHours: { start: string; end: string } | null; scope: ConfigScope;
+    peakHours: { start: string; end: string; message?: string } | null; scope: ConfigScope;
   }) => Promise<unknown>;
   onCancel: () => void;
 }) {
@@ -118,6 +118,7 @@ function ProviderForm({
   const [peakEnabled, setPeakEnabled] = useState(!!initial?.peakHours?.start && !!initial?.peakHours?.end);
   const [peakStart, setPeakStart] = useState(initial?.peakHours?.start ?? "09:00");
   const [peakEnd, setPeakEnd] = useState(initial?.peakHours?.end ?? "18:00");
+  const [peakMessage, setPeakMessage] = useState(initial?.peakHours?.message ?? "");
   // Prefill from the provider's effective scope as reported by the server
   // wire — editing must write back to the scope the effective config
   // actually lives in, not silently create a global entry under a
@@ -160,7 +161,9 @@ function ProviderForm({
     models.every((m) => m.id.trim() !== "" && m.name.trim() !== "") &&
     (!peakEnabled || (HH_MM_RE.test(peakStart) && HH_MM_RE.test(peakEnd)));
 
-  const peakHours = peakEnabled && peakStart && peakEnd ? { start: peakStart, end: peakEnd } : null;
+  const peakHours = peakEnabled && peakStart && peakEnd
+    ? { start: peakStart, end: peakEnd, message: peakMessage.trim() || undefined }
+    : null;
 
   async function submit() {
     const err = validate();
@@ -336,6 +339,19 @@ function ProviderForm({
           </div>
         )}
         {peakEnabled && (
+          <div>
+            <label className="block text-[11px] text-text-subtle mb-1">Exit message (optional)</label>
+            <textarea
+              rows={2}
+              placeholder="Shown after a blank line when rush exits because of this window"
+              value={peakMessage}
+              onChange={(e) => setPeakMessage(e.target.value)}
+              className="w-full text-xs bg-canvas border border-surface rounded-lg px-2.5 py-1.5 outline-none focus:border-accent/50 text-text placeholder:text-text-muted/50 resize-none"
+              data-test-id="provider-form-peak-message"
+            />
+          </div>
+        )}
+        {peakEnabled && (
           <p className="text-[10px] text-text-muted">
             {isPeakHoursActive(peakHours) ? "Active now" : "Outside window"} · overnight windows supported
           </p>
@@ -385,7 +401,7 @@ function BuiltinProviderEditor({
   onCancel,
 }: {
   id: string;
-  initial: { start: string; end: string } | null | undefined;
+  initial: { start: string; end: string; message?: string } | null | undefined;
   initialScope?: ConfigScope;
   apiKeySet?: boolean;
   onCancel: () => void;
@@ -393,6 +409,7 @@ function BuiltinProviderEditor({
   const [enabled, setEnabled] = useState(!!initial?.start && !!initial?.end);
   const [start, setStart] = useState(initial?.start ?? "09:00");
   const [end, setEnd] = useState(initial?.end ?? "18:00");
+  const [message, setMessage] = useState(initial?.message ?? "");
   const [scope, setScope] = useState<ConfigScope>(initialScope ?? "global");
   const [apiKey, setApiKey] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -420,7 +437,7 @@ function BuiltinProviderEditor({
     setBusy(true);
     try {
       await Promise.all([
-        wsRequest("set_provider_peak_hours", { id, peakHours: enabled ? { start, end } : null, scope }),
+        wsRequest("set_provider_peak_hours", { id, peakHours: enabled ? { start, end, message: message.trim() || undefined } : null, scope }),
         ...(apiKey.trim() ? [wsRequest("set_provider_key", { providerID: id, apiKey: apiKey.trim() })] : []),
       ]);
       if (disposedRef.current) return;
@@ -541,6 +558,19 @@ function BuiltinProviderEditor({
               data-test-id="peak-hours-only-end"
             />
           </div>
+        </div>
+      )}
+      {enabled && (
+        <div>
+          <label className="block text-[11px] text-text-subtle mb-1">Exit message (optional)</label>
+          <textarea
+            rows={2}
+            placeholder="Shown after a blank line when rush exits because of this window"
+            value={message}
+            onChange={(e) => setMessage(e.target.value)}
+            className="w-full text-xs bg-canvas border border-surface rounded-lg px-2.5 py-1.5 outline-none focus:border-accent/50 text-text placeholder:text-text-muted/50 resize-none"
+            data-test-id="peak-hours-only-message"
+          />
         </div>
       )}
 

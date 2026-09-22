@@ -42,3 +42,34 @@ func TestPeakHoursStoppedFinishText(t *testing.T) {
 		}
 	})
 }
+
+func TestPeakHoursGuidance_CustomMessage(t *testing.T) {
+	reopensAt := time.Date(2026, 7, 8, 12, 0, 0, 0, time.Local)
+
+	t.Run("custom message is appended after a blank-line separator", func(t *testing.T) {
+		err := &PeakHoursError{ProviderID: "zai", Start: "08:00", End: "12:00", ReopensAt: reopensAt, Message: "Ping #ops-oncall before overriding this window."}
+		guidance := PeakHoursGuidance(err)
+
+		if !strings.HasSuffix(guidance, "\n\nPing #ops-oncall before overriding this window.") {
+			t.Fatalf("guidance must end with a blank-line separator followed by the exact custom message verbatim, got %q", guidance)
+		}
+	})
+
+	t.Run("empty message leaves guidance unchanged from the no-message case", func(t *testing.T) {
+		withoutMessage := &PeakHoursError{ProviderID: "zai", Start: "08:00", End: "12:00", ReopensAt: reopensAt}
+		withEmptyMessage := &PeakHoursError{ProviderID: "zai", Start: "08:00", End: "12:00", ReopensAt: reopensAt, Message: ""}
+
+		if PeakHoursGuidance(withoutMessage) != PeakHoursGuidance(withEmptyMessage) {
+			t.Fatal("an empty Message must be a no-op, not append a stray blank-line separator")
+		}
+	})
+
+	t.Run("peakHoursStoppedFinishText carries the custom message through details", func(t *testing.T) {
+		err := &PeakHoursError{ProviderID: "zai", Start: "08:00", End: "12:00", ReopensAt: reopensAt, Message: "See runbook RB-42."}
+		_, details := peakHoursStoppedFinishText(err)
+
+		if !strings.Contains(details, "See runbook RB-42.") {
+			t.Fatalf("details %q must include the custom message (peakHoursStoppedFinishText delegates to PeakHoursGuidance)", details)
+		}
+	})
+}

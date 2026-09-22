@@ -38,6 +38,19 @@ func TestPeakHoursFromWire_Valid(t *testing.T) {
 	require.Equal(t, &config.PeakHoursWindow{Start: "09:00", End: "18:00"}, w)
 }
 
+func TestPeakHoursFromWire_CarriesMessage(t *testing.T) {
+	w, err := peakHoursFromWire(&PeakHoursWirePayload{Start: "09:00", End: "18:00", Message: "Ping #ops-oncall first."})
+	require.NoError(t, err)
+	require.Equal(t, &config.PeakHoursWindow{Start: "09:00", End: "18:00", Message: "Ping #ops-oncall first."}, w)
+}
+
+func TestPeakHoursFromWire_EmptyMessageOmitted(t *testing.T) {
+	// No message set is the common case and must not synthesize one.
+	w, err := peakHoursFromWire(&PeakHoursWirePayload{Start: "09:00", End: "18:00"})
+	require.NoError(t, err)
+	require.Empty(t, w.Message)
+}
+
 func TestPeakHoursFromWire_ValidOvernight(t *testing.T) {
 	w, err := peakHoursFromWire(&PeakHoursWirePayload{Start: "22:00", End: "06:00"})
 	require.NoError(t, err)
@@ -81,6 +94,11 @@ func TestPeakHoursToWire_Set(t *testing.T) {
 	require.Equal(t, &PeakHoursWirePayload{Start: "22:00", End: "06:00"}, w)
 }
 
+func TestPeakHoursToWire_CarriesMessage(t *testing.T) {
+	w := peakHoursToWire(&config.PeakHoursWindow{Start: "22:00", End: "06:00", Message: "Ping #ops-oncall first."})
+	require.Equal(t, &PeakHoursWirePayload{Start: "22:00", End: "06:00", Message: "Ping #ops-oncall first."}, w)
+}
+
 // TestPeakHoursWirePayload_JSONRoundTrip locks the wire JSON shape: the
 // client sends/expects lowerCamelCase "start"/"end" keys matching
 // config.PeakHoursWindow's own json tags, so the WS payload must
@@ -95,6 +113,24 @@ func TestPeakHoursWirePayload_JSONRoundTrip(t *testing.T) {
 	out, err := json.Marshal(p)
 	require.NoError(t, err)
 	require.JSONEq(t, in, string(out))
+}
+
+// TestPeakHoursWirePayload_MessageJSONRoundTrip locks the "message" wire
+// key (lowerCamelCase, matching config.PeakHoursWindow's own json tag) and
+// its omission when unset.
+func TestPeakHoursWirePayload_MessageJSONRoundTrip(t *testing.T) {
+	in := `{"start":"09:00","end":"18:00","message":"Ping #ops-oncall first."}`
+	var p PeakHoursWirePayload
+	require.NoError(t, json.Unmarshal([]byte(in), &p))
+	require.Equal(t, "Ping #ops-oncall first.", p.Message)
+
+	out, err := json.Marshal(p)
+	require.NoError(t, err)
+	require.JSONEq(t, in, string(out))
+
+	empty, err := json.Marshal(PeakHoursWirePayload{Start: "09:00", End: "18:00"})
+	require.NoError(t, err)
+	require.NotContains(t, string(empty), "message", "an unset message must be omitted, not sent as an empty string")
 }
 
 // TestProviderWireIncludesPeakHours confirms the ConfigWire DTO exposes

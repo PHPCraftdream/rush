@@ -27,11 +27,16 @@ import (
 // network/provider-discovery disabled, so the output is produced by the real
 // rendering code in providers.go — not a reimplementation.
 //
-// cmd is the real providersShowCmd/providersListCmd. providerJSON is the raw
-// JSON for the "providers" object written into the isolated global rush.json
-// before the command runs. args is the positional/flag payload parsed onto cmd
-// (e.g. "with-peak" for show, "--json" for list).
-func runProvidersCmdInIsolatedApp(t *testing.T, cmd *cobra.Command, providerJSON, args string) string {
+// cmd is the real providersShowCmd/providersListCmd/providersSetCmd.
+// providerJSON is the raw JSON for the "providers" object written into the
+// isolated global rush.json before the command runs. args is the
+// positional/flag payload parsed onto cmd (e.g. "with-peak" for show,
+// "--json" for list, "with-peak --peak-hours 10:00-20:00" for a write
+// command). Returns the captured stdout and the path of the isolated
+// global rush.json — the second is for write-command tests that need to
+// read back what was actually persisted, since this harness has no
+// access to the *app.App created inside RunE.
+func runProvidersCmdInIsolatedApp(t *testing.T, cmd *cobra.Command, providerJSON, args string) (stdout, dataPath string) {
 	t.Helper()
 	tmp := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", tmp)
@@ -111,6 +116,16 @@ func runProvidersCmdInIsolatedApp(t *testing.T, cmd *cobra.Command, providerJSON
 		runArgs = strings.Fields(args)
 	}
 	require.NoError(t, cmd.ParseFlags(runArgs))
+	// cmd.RunE below is invoked as cmd.RunE(carrier, runArgs) — carrier,
+	// not cmd, so setupAppLite(cmd) inside RunE (whose "cmd" parameter is
+	// carrier at call time) can read the debug/data-dir/cwd flags only
+	// carrier defines. But every subcommand-owned flag (peak-hours,
+	// api-key, json, ...) was just parsed onto cmd's OWN FlagSet above —
+	// without merging it in here, RunE's Flags().Changed/Get* calls would
+	// silently see carrier's empty FlagSet instead. AddFlagSet shares the
+	// underlying *pflag.Flag values (not copies), so carrier sees the
+	// exact Value/Changed state cmd.ParseFlags just set.
+	carrier.Flags().AddFlagSet(cmd.Flags())
 
 	// Capture os.Stdout — providers list/show write there directly.
 	var buf bytes.Buffer
@@ -128,7 +143,7 @@ func runProvidersCmdInIsolatedApp(t *testing.T, cmd *cobra.Command, providerJSON
 	<-done
 
 	require.NoError(t, runErr, "command RunE failed; stdout was:\n%s", buf.String())
-	return buf.String()
+	return buf.String(), globalDataPath
 }
 
 const peakFixtureJSON = `{
@@ -140,6 +155,14 @@ const peakFixtureJSON = `{
       "base_url": "https://api.openai.com/v1",
       "models": [{"id": "gpt-4o"}],
       "peak_hours": {"start": "09:00", "end": "18:00"}
+    },
+    "with-peak-message": {
+      "name": "With Peak Message",
+      "type": "openai",
+      "api_key": "sk-1234567890abcdef",
+      "base_url": "https://api.openai.com/v1",
+      "models": [{"id": "gpt-4o"}],
+      "peak_hours": {"start": "09:00", "end": "18:00", "message": "Ping #ops-oncall first."}
     },
     "no-peak": {
       "name": "No Peak",
@@ -154,20 +177,30 @@ func TestProvidersShow_PeakHoursRendering(t *testing.T) {
 	// Regression: this previously reimplemented the peak-hours line inline
 	// and asserted the duplicate against itself. It now runs the real
 	// providersShowCmd.RunE and asserts on the actual emitted stdout.
-	out := runProvidersCmdInIsolatedApp(t, providersShowCmd, peakFixtureJSON, "with-peak")
+	out, _ := runProvidersCmdInIsolatedApp(t, providersShowCmd, peakFixtureJSON, "with-peak")
 
 	assert.Contains(t, out, "id:          with-peak")
 	assert.Contains(t, out, "peak hours:  09:00-18:00 (currently:")
 	// The state must be one of the two real branches the command emits.
 	assert.True(t, strings.Contains(out, "(currently: in peak)") || strings.Contains(out, "(currently: not in peak)"),
 		"expected a real 'currently:' state in output:\n%s", out)
+	assert.NotContains(t, out, "peak hours message", "a provider with no configured message must not show the line")
+}
+
+func TestProvidersShow_PeakHoursMessageRendering(t *testing.T) {
+	// The message is web-UI-only (no CLI flag sets it) — show must still
+	// surface it for a CLI-only operator, since it's otherwise invisible.
+	out, _ := runProvidersCmdInIsolatedApp(t, providersShowCmd, peakFixtureJSON, "with-peak-message")
+
+	assert.Contains(t, out, "id:          with-peak-message")
+	assert.Contains(t, out, "peak hours message: Ping #ops-oncall first.")
 }
 
 func TestProvidersShow_NoPeakHoursOmitsLine(t *testing.T) {
 	// Regression: this previously only asserted p.PeakHours == nil without
 	// running the command. It now runs the real providersShowCmd.RunE on a
 	// provider without peak hours and asserts the line is absent.
-	out := runProvidersCmdInIsolatedApp(t, providersShowCmd, peakFixtureJSON, "no-peak")
+	out, _ := runProvidersCmdInIsolatedApp(t, providersShowCmd, peakFixtureJSON, "no-peak")
 
 	assert.Contains(t, out, "id:          no-peak")
 	assert.NotContains(t, out, "peak hours", "show must omit the peak-hours line when PeakHours is nil")
@@ -177,7 +210,7 @@ func TestProvidersList_PeakColumn(t *testing.T) {
 	// Regression: this previously reimplemented the PEAK column rendering
 	// inline. It now runs the real providersListCmd.RunE and asserts on the
 	// actual table output.
-	out := runProvidersCmdInIsolatedApp(t, providersListCmd, peakFixtureJSON, "")
+	out, _ := runProvidersCmdInIsolatedApp(t, providersListCmd, peakFixtureJSON, "")
 
 	assert.Contains(t, out, "PEAK", "list header must include the PEAK column")
 	assert.Contains(t, out, "with-peak", "with-peak row must be present")

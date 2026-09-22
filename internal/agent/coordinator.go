@@ -75,6 +75,9 @@ type PeakHoursError struct {
 	ProviderID string
 	Start, End string // HH:MM, as configured
 	ReopensAt  time.Time
+	// Message is the operator-authored config.PeakHoursWindow.Message, if
+	// any — appended to PeakHoursGuidance's output.
+	Message string
 }
 
 func (e *PeakHoursError) Error() string {

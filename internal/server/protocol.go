@@ -327,8 +327,9 @@ type CustomModelPayload struct {
 // type so the WS layer can marshal/unmarshal it directly without a
 // remapping step.
 type PeakHoursWirePayload struct {
-	Start string `json:"start,omitempty"`
-	End   string `json:"end,omitempty"`
+	Start   string `json:"start,omitempty"`
+	End     string `json:"end,omitempty"`
+	Message string `json:"message,omitempty"`
 }
 
 // AddCustomProviderPayload adds a fully custom provider.

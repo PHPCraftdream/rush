@@ -14,6 +14,11 @@ import (
 type PeakHoursWindow struct {
 	Start string `json:"start" jsonschema:"description=Window start in local time HH:MM,example=09:00"`
 	End   string `json:"end"   jsonschema:"description=Window end in local time HH:MM,example=18:00"`
+	// Message is an optional operator-authored note appended (after a
+	// blank-line separator) to the peak-hours refusal guidance shown when
+	// rush exits because of this window. Empty by default; purely
+	// cosmetic, not validated.
+	Message string `json:"message,omitempty" jsonschema:"description=Optional custom text appended to the peak-hours exit message"`
 }
 
 // Validate parses the window's HH:MM strings. A malformed string is a

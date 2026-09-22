@@ -170,7 +170,9 @@ export interface ProviderInfo {
   scope?: "global" | "local";
   // Peak-hours window in local browser time ("HH:MM"). null/absent means no
   // restriction. Mirrors server PeakHoursWirePayload (lowerCamelCase keys).
-  peakHours?: { start: string; end: string } | null;
+  // message is an optional operator note appended to the exit guidance
+  // when a run refuses/halts because of this window.
+  peakHours?: { start: string; end: string; message?: string } | null;
 }
 
 export interface ConfigPayload {

@@ -179,6 +179,13 @@ var providersShowCmd = &cobra.Command{
 				state = "in peak"
 			}
 			fmt.Fprintf(os.Stdout, "peak hours:  %s-%s (currently: %s)\n", p.PeakHours.Start, p.PeakHours.End, state)
+			if p.PeakHours.Message != "" {
+				// Read-only visibility: this field is only settable from the
+				// web UI (there is no --peak-hours-message CLI flag), so a
+				// CLI-only operator would otherwise have no way to see what
+				// message is configured.
+				fmt.Fprintf(os.Stdout, "peak hours message: %s\n", p.PeakHours.Message)
+			}
 		}
 		return nil
 	},
@@ -193,7 +200,13 @@ untouched, so you can update just an API key without erasing the
 base URL.
 
 Pass --disabled=true to disable a provider without losing its
-credentials; --disabled=false to re-enable.`,
+credentials; --disabled=false to re-enable.
+
+--peak-hours only carries the HH:MM-HH:MM window; a --peak-hours
+update here preserves any custom exit message already configured for
+this window. The message itself has no CLI flag — set it from the
+web UI's provider settings (shown once the peak-hours checkbox is
+on) or "rush providers show <id>" to see the current value.`,
 	Args: cobra.ExactArgs(1),
 	Example: `
 # Set api key in global config (default scope)
@@ -236,7 +249,9 @@ rush providers set openai --peak-hours 09:00-18:00
 			updates["providers."+id+".disable"] = v
 		}
 		clearPeakHours := false
-		if cmd.Flags().Changed("peak-hours") {
+		var peakHoursWindow *config.PeakHoursWindow
+		peakHoursChanged := cmd.Flags().Changed("peak-hours")
+		if peakHoursChanged {
 			v, _ := cmd.Flags().GetString("peak-hours")
 			w, err := parsePeakHoursWindow(v)
 			if err != nil {
@@ -245,10 +260,10 @@ rush providers set openai --peak-hours 09:00-18:00
 			if w == nil {
 				clearPeakHours = true
 			} else {
-				updates["providers."+id+".peak_hours"] = w
+				peakHoursWindow = w
 			}
 		}
-		if len(updates) == 0 && !clearPeakHours {
+		if len(updates) == 0 && !peakHoursChanged {
 			return fmt.Errorf("no fields to set — pass at least one of --api-key/--base-url/--type/--name/--disabled/--peak-hours")
 		}
 
@@ -257,6 +272,17 @@ rush providers set openai --peak-hours 09:00-18:00
 			return err
 		}
 		defer a.Shutdown()
+
+		if peakHoursWindow != nil {
+			// --peak-hours only carries HH:MM-HH:MM: preserve a message
+			// configured through the web UI rather than silently dropping
+			// it on a bare time-window update, matching this command's own
+			// "only the flags you pass are written" contract.
+			if existing, ok := a.Store().Config().Providers.Get(id); ok && existing.PeakHours != nil {
+				peakHoursWindow.Message = existing.PeakHours.Message
+			}
+			updates["providers."+id+".peak_hours"] = peakHoursWindow
+		}
 
 		if clearPeakHours {
 			if err := a.Store().RemoveConfigField(scope, "providers."+id+".peak_hours"); err != nil {
