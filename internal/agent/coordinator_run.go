@@ -19,6 +19,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/notify"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/pubsub"
+	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/google/uuid"
 )
 
@@ -412,6 +413,11 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 
 	beforeLoaded := c.skillTracker.LoadedNames()
 	var result *fantasy.AgentResult
+	// R3-1: evidence baseline for the retry classifiers — the session's
+	// last assistant row BEFORE this call's first attempt. Only rows
+	// created after this point by this call's own turns may drive retry
+	// decisions below.
+	attemptBaseline := c.lastAssistantMessageID(ctx, sessionID)
 	originalErr := c.runWithUnauthorizedRetry(ctx, providerCfg, func() error {
 		var err error
 		result, err = run()
@@ -452,6 +458,15 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 	// (rate limits, HTTP/2 stalls, brief capacity drops) usually clear
 	// within tens of seconds, so 2 retries after 10s + 30s of backoff
 	// absorb the common cases without the orchestrator having to know.
+	//
+	// R3-1: a retry decision must never be driven by evidence this call
+	// did not create. An admission refusal (ErrSessionBusy,
+	// ErrAgentShuttingDown, OS session-lock busy) means no provider turn
+	// ever started, and a session's last assistant row may have been
+	// written by a concurrent caller's stalled turn — so the classifiers
+	// gate on a pre-attempt baseline (attemptBaseline below): only an
+	// assistant row this call's own attempt created may authorize a
+	// retry or continuation.
 	maxRetries := streamStallRetriesDefault
 	if opts := c.cfg.Config().Options; opts != nil && opts.StreamStallRetries != nil {
 		// Explicit override (including explicit 0 to disable entirely).
@@ -461,7 +476,7 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 		}
 	}
 	for attempt := 1; attempt <= maxRetries; attempt++ {
-		partial, isContinuation := c.shouldContinueTurn(ctx, sessionID, originalErr)
+		partial, isContinuation := c.shouldContinueTurn(ctx, sessionID, originalErr, attemptBaseline)
 		if isContinuation {
 			// Fresh follow-up prompt, fresh user message: the partial
 			// assistant message is left exactly as it is in history, and
@@ -471,7 +486,7 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 			trackCall.Prompt = continuationPrompt(prompt, partial)
 			trackCall.ExistingMessageID = ""
 		} else {
-			if !c.shouldRetryTurn(ctx, sessionID, originalErr) {
+			if !c.shouldRetryTurn(ctx, sessionID, originalErr, attemptBaseline) {
 				break
 			}
 			// Reuse the user message the first attempt already created
@@ -502,6 +517,9 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 			return result, ctx.Err()
 		case <-time.After(backoff):
 		}
+		// R3-1: re-baseline so the next attempt is judged only against
+		// rows its own turn creates, not rows left by earlier attempts.
+		attemptBaseline = c.lastAssistantMessageID(ctx, sessionID)
 		result, originalErr = run()
 	}
 
@@ -620,6 +638,23 @@ func classifyProviderError(err error) retryClass {
 	return classTerminal
 }
 
+// turnAttemptRefused reports whether err is an admission-shaped refusal:
+// the call never started a provider turn, so there is no attempt outcome
+// for the retry classifiers to act on. ErrSessionBusy (mailbox busy,
+// agent_run.go) and ErrAgentShuttingDown (shutdown admission gate) are
+// returned before any provider request begins; the OS session-lock busy
+// error (runOwned) refuses after mailbox admission but before the first
+// turn. R3-1: a refusal must never be reclassified as a transient turn
+// failure — the stale/foreign message rows a concurrent caller left in
+// the session are not this call's evidence.
+func turnAttemptRefused(err error) bool {
+	if errors.Is(err, ErrSessionBusy) || errors.Is(err, ErrAgentShuttingDown) {
+		return true
+	}
+	var lockBusy *session.SessionLockBusyError
+	return errors.As(err, &lockBusy)
+}
+
 // isQuotaLimit reports whether a 429 is a hard usage/quota wall (resets on
 // the order of hours) rather than a momentary overload. The two share
 // status 429, so we discriminate on the provider's message text.
@@ -678,6 +713,19 @@ func (c *coordinator) lastAssistantMessage(ctx context.Context, sessionID string
 	return message.Message{}, false
 }
 
+// lastAssistantMessageID returns the ID of the session's most recent
+// assistant message, or "" on a DB error or when none exists. It is the
+// per-attempt baseline for the retry classifiers: only an assistant row
+// created AFTER this baseline (a different ID) can count as evidence the
+// current call's own attempt produced.
+func (c *coordinator) lastAssistantMessageID(ctx context.Context, sessionID string) string {
+	msg, ok := c.lastAssistantMessage(ctx, sessionID)
+	if !ok {
+		return ""
+	}
+	return msg.ID
+}
+
 // shouldRetryTurn decides whether a finished turn should be transparently
 // re-run. A turn qualifies ONLY if it ended in error WITHOUT producing any
 // content (so a re-run cannot clobber a partial answer) AND the failure is
@@ -686,14 +734,33 @@ func (c *coordinator) lastAssistantMessage(ctx context.Context, sessionID string
 // stall is one transient class among several.
 //
 // Decision order:
+//   - admission refusal (ErrSessionBusy/ErrAgentShuttingDown/OS session-lock
+//     busy — turnAttemptRefused) → no attempt ran, don't retry
 //   - no assistant message / clean finish / user-cancel finish → don't retry
+//   - evidence scoping (R3-1): the last assistant row must be one this
+//     call's own attempt created (ID != attemptBaselineID) — a foreign or
+//     pre-existing row never authorizes a retry
 //   - turn produced any content                                 → don't retry
 //   - persisted "Stream stalled" title (err is context.Canceled) → retry
 //   - turn returned no error (empty-stream close)                → retry
 //   - otherwise classify the returned error                      → transient?
-func (c *coordinator) shouldRetryTurn(ctx context.Context, sessionID string, err error) bool {
+func (c *coordinator) shouldRetryTurn(ctx context.Context, sessionID string, err error, attemptBaselineID string) bool {
+	// R3-1: an admission refusal means this call never started a provider
+	// request — classify nothing, not even the message lookup.
+	if turnAttemptRefused(err) {
+		return false
+	}
 	msg, ok := c.lastAssistantMessage(ctx, sessionID)
 	if !ok {
+		return false
+	}
+	// R3-1: evidence scoping. Only an assistant row this call's own attempt
+	// created (an ID different from the pre-attempt baseline) may drive a
+	// retry/continuation decision. The session's last row at classification
+	// time may belong to another caller's turn or to an earlier turn — a
+	// stalled foreign message must not resurrect a refused or unrelated
+	// attempt as a continuation.
+	if msg.ID == attemptBaselineID {
 		return false
 	}
 	fp := msg.FinishPart()
@@ -729,18 +796,36 @@ func (c *coordinator) shouldRetryTurn(ctx context.Context, sessionID string, err
 // or rate limit actually takes, since either can fire well after the model
 // started streaming a reply.
 //
-// Returns the partial assistant message and true only when: an assistant
-// message exists, its finish reason is FinishReasonError, it DID make
-// progress, and the failure reads as transient -- either the persisted
+// Returns the partial assistant message and true only when: no admission
+// refusal is present (turnAttemptRefused — no attempt ran, R3-1), an
+// assistant message exists, it is evidence of THIS call's own attempt (ID
+// differs from attemptBaselineID, R3-1 evidence scoping — a foreign or
+// pre-existing row never authorizes a continuation), its finish reason is
+// FinishReasonError, it DID make progress, and the failure reads as
+// transient -- either the persisted
 // "Stream stalled" finish title (matching shouldRetryTurn's stall check),
 // or classifyProviderError(err) == classTransient. A nil err paired with
 // progress is left alone (returns false): that combination doesn't
 // correspond to any known transient signal (the nil-err retry path exists
 // only for the empty-stream-close case, which by definition has no
 // content), so it's surfaced rather than guessed at.
-func (c *coordinator) shouldContinueTurn(ctx context.Context, sessionID string, err error) (message.Message, bool) {
+func (c *coordinator) shouldContinueTurn(ctx context.Context, sessionID string, err error, attemptBaselineID string) (message.Message, bool) {
+	// R3-1: an admission refusal means this call never started a provider
+	// request — classify nothing, not even the message lookup.
+	if turnAttemptRefused(err) {
+		return message.Message{}, false
+	}
 	msg, ok := c.lastAssistantMessage(ctx, sessionID)
 	if !ok {
+		return message.Message{}, false
+	}
+	// R3-1: evidence scoping. Only an assistant row this call's own attempt
+	// created (an ID different from the pre-attempt baseline) may drive a
+	// retry/continuation decision. The session's last row at classification
+	// time may belong to another caller's turn or to an earlier turn — a
+	// stalled foreign message must not resurrect a refused or unrelated
+	// attempt as a continuation.
+	if msg.ID == attemptBaselineID {
 		return message.Message{}, false
 	}
 	fp := msg.FinishPart()

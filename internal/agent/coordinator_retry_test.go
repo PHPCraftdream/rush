@@ -7,6 +7,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/csync"
 	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -275,7 +277,7 @@ func TestShouldRetryTurn(t *testing.T) {
 	t.Run("stall title with nil error retries", func(t *testing.T) {
 		env := testEnv(t)
 		coord, sid := appendAssistant(t, env, []message.ContentPart{stallFinish})
-		assert.True(t, coord.shouldRetryTurn(t.Context(), sid, context.Canceled))
+		assert.True(t, coord.shouldRetryTurn(t.Context(), sid, context.Canceled, "" /* Fresh session: no pre-attempt assistant rows. */))
 	})
 
 	t.Run("stall title does not retry when the call carries a positive IdleTimeout", func(t *testing.T) {
@@ -285,25 +287,25 @@ func TestShouldRetryTurn(t *testing.T) {
 		env := testEnv(t)
 		coord, sid := appendAssistant(t, env, []message.ContentPart{stallFinish})
 		ctx := WithCallOptions(t.Context(), &CallOptions{IdleTimeout: 15 * time.Minute})
-		assert.False(t, coord.shouldRetryTurn(ctx, sid, context.Canceled))
+		assert.False(t, coord.shouldRetryTurn(ctx, sid, context.Canceled, "" /* Fresh session: no pre-attempt assistant rows. */))
 	})
 
 	t.Run("empty-stream finish with nil error retries", func(t *testing.T) {
 		env := testEnv(t)
 		coord, sid := appendAssistant(t, env, []message.ContentPart{emptyStreamFinish})
-		assert.True(t, coord.shouldRetryTurn(t.Context(), sid, nil))
+		assert.True(t, coord.shouldRetryTurn(t.Context(), sid, nil, "" /* Fresh session: no pre-attempt assistant rows. */))
 	})
 
 	t.Run("429 overload error retries", func(t *testing.T) {
 		env := testEnv(t)
 		coord, sid := appendAssistant(t, env, []message.ContentPart{emptyStreamFinish})
-		assert.True(t, coord.shouldRetryTurn(t.Context(), sid, overloadErr))
+		assert.True(t, coord.shouldRetryTurn(t.Context(), sid, overloadErr, "" /* Fresh session: no pre-attempt assistant rows. */))
 	})
 
 	t.Run("429 quota error does not retry", func(t *testing.T) {
 		env := testEnv(t)
 		coord, sid := appendAssistant(t, env, []message.ContentPart{emptyStreamFinish})
-		assert.False(t, coord.shouldRetryTurn(t.Context(), sid, quotaErr))
+		assert.False(t, coord.shouldRetryTurn(t.Context(), sid, quotaErr, "" /* Fresh session: no pre-attempt assistant rows. */))
 	})
 
 	t.Run("turn with content does not retry even on transient error", func(t *testing.T) {
@@ -312,13 +314,13 @@ func TestShouldRetryTurn(t *testing.T) {
 			message.TextContent{Text: "partial answer"},
 			emptyStreamFinish,
 		})
-		assert.False(t, coord.shouldRetryTurn(t.Context(), sid, overloadErr))
+		assert.False(t, coord.shouldRetryTurn(t.Context(), sid, overloadErr, "" /* Fresh session: no pre-attempt assistant rows. */))
 	})
 
 	t.Run("clean end_turn finish does not retry", func(t *testing.T) {
 		env := testEnv(t)
 		coord, sid := appendAssistant(t, env, []message.ContentPart{cleanFinish})
-		assert.False(t, coord.shouldRetryTurn(t.Context(), sid, nil))
+		assert.False(t, coord.shouldRetryTurn(t.Context(), sid, nil, "" /* Fresh session: no pre-attempt assistant rows. */))
 	})
 
 	t.Run("no assistant message does not retry", func(t *testing.T) {
@@ -328,7 +330,7 @@ func TestShouldRetryTurn(t *testing.T) {
 		coord := &coordinator{cfg: cfg, sessions: env.sessions, messages: env.messages}
 		sess, err := env.sessions.Create(t.Context(), "empty")
 		require.NoError(t, err)
-		assert.False(t, coord.shouldRetryTurn(t.Context(), sess.ID, overloadErr))
+		assert.False(t, coord.shouldRetryTurn(t.Context(), sess.ID, overloadErr, "" /* Fresh session: no pre-attempt assistant rows. */))
 	})
 }
 
@@ -346,7 +348,7 @@ func TestShouldContinueTurn(t *testing.T) {
 			message.TextContent{Text: "partial answer"},
 			stallFinish,
 		})
-		msg, ok := coord.shouldContinueTurn(t.Context(), sid, context.Canceled)
+		msg, ok := coord.shouldContinueTurn(t.Context(), sid, context.Canceled, "" /* Fresh session: no pre-attempt assistant rows. */)
 		assert.True(t, ok)
 		assert.Equal(t, "partial answer", msg.FullText())
 	})
@@ -358,7 +360,7 @@ func TestShouldContinueTurn(t *testing.T) {
 			stallFinish,
 		})
 		ctx := WithCallOptions(t.Context(), &CallOptions{IdleTimeout: 15 * time.Minute})
-		_, ok := coord.shouldContinueTurn(ctx, sid, context.Canceled)
+		_, ok := coord.shouldContinueTurn(ctx, sid, context.Canceled, "" /* Fresh session: no pre-attempt assistant rows. */)
 		assert.False(t, ok, "an --idle-timeout-armed call must end the run, not resume via a continuation prompt")
 	})
 
@@ -368,7 +370,7 @@ func TestShouldContinueTurn(t *testing.T) {
 			message.TextContent{Text: "partial answer"},
 			overloadFinish,
 		})
-		_, ok := coord.shouldContinueTurn(t.Context(), sid, overloadErr)
+		_, ok := coord.shouldContinueTurn(t.Context(), sid, overloadErr, "" /* Fresh session: no pre-attempt assistant rows. */)
 		assert.True(t, ok)
 	})
 
@@ -378,7 +380,7 @@ func TestShouldContinueTurn(t *testing.T) {
 			message.ReasoningContent{Thinking: "considering options..."},
 			overloadFinish,
 		})
-		_, ok := coord.shouldContinueTurn(t.Context(), sid, overloadErr)
+		_, ok := coord.shouldContinueTurn(t.Context(), sid, overloadErr, "" /* Fresh session: no pre-attempt assistant rows. */)
 		assert.True(t, ok)
 	})
 
@@ -388,14 +390,14 @@ func TestShouldContinueTurn(t *testing.T) {
 			message.TextContent{Text: "partial answer"},
 			overloadFinish,
 		})
-		_, ok := coord.shouldContinueTurn(t.Context(), sid, quotaErr)
+		_, ok := coord.shouldContinueTurn(t.Context(), sid, quotaErr, "" /* Fresh session: no pre-attempt assistant rows. */)
 		assert.False(t, ok)
 	})
 
 	t.Run("no progress does not continue (blind-retry path owns it)", func(t *testing.T) {
 		env := testEnv(t)
 		coord, sid := appendAssistant(t, env, []message.ContentPart{overloadFinish})
-		_, ok := coord.shouldContinueTurn(t.Context(), sid, overloadErr)
+		_, ok := coord.shouldContinueTurn(t.Context(), sid, overloadErr, "" /* Fresh session: no pre-attempt assistant rows. */)
 		assert.False(t, ok)
 	})
 
@@ -405,7 +407,7 @@ func TestShouldContinueTurn(t *testing.T) {
 			message.TextContent{Text: "partial answer"},
 			overloadFinish,
 		})
-		_, ok := coord.shouldContinueTurn(t.Context(), sid, nil)
+		_, ok := coord.shouldContinueTurn(t.Context(), sid, nil, "" /* Fresh session: no pre-attempt assistant rows. */)
 		assert.False(t, ok)
 	})
 
@@ -415,7 +417,7 @@ func TestShouldContinueTurn(t *testing.T) {
 			message.TextContent{Text: "done"},
 			cleanFinish,
 		})
-		_, ok := coord.shouldContinueTurn(t.Context(), sid, overloadErr)
+		_, ok := coord.shouldContinueTurn(t.Context(), sid, overloadErr, "" /* Fresh session: no pre-attempt assistant rows. */)
 		assert.False(t, ok)
 	})
 
@@ -426,7 +428,7 @@ func TestShouldContinueTurn(t *testing.T) {
 		coord := &coordinator{cfg: cfg, sessions: env.sessions, messages: env.messages}
 		sess, err := env.sessions.Create(t.Context(), "empty")
 		require.NoError(t, err)
-		_, ok := coord.shouldContinueTurn(t.Context(), sess.ID, overloadErr)
+		_, ok := coord.shouldContinueTurn(t.Context(), sess.ID, overloadErr, "" /* Fresh session: no pre-attempt assistant rows. */)
 		assert.False(t, ok)
 	})
 }
@@ -560,6 +562,194 @@ func TestRunInternal_ContinuationRetry_PreservesPartialContent(t *testing.T) {
 	require.Len(t, assistantTexts, 2, "the partial assistant message must be preserved, not overwritten")
 	assert.Contains(t, assistantTexts[0], "Section 1: Introduction", "the original partial answer must survive untouched")
 	assert.Contains(t, assistantTexts[1], "Section 2: Conclusion")
+}
+
+// TestRetryClassifiers_AttemptScopedEvidence pins the R3-1 fix: the retry
+// classifiers must only act on evidence the CURRENT call's own attempt
+// produced. Two independent guards enforce this — an admission-shaped
+// refusal (ErrSessionBusy, ErrAgentShuttingDown, OS session-lock busy)
+// short-circuits classification entirely, and an assistant row whose ID
+// matches the pre-attempt baseline is someone else's (or an earlier
+// attempt's) evidence and never authorizes a retry or continuation.
+// Without these guards, caller A refused at admission would observe
+// caller B's stalled partial assistant message as the session's last row
+// and "resume" it with a continuation prompt — an unauthorized retry
+// execution quoting text A's call never produced.
+func TestRetryClassifiers_AttemptScopedEvidence(t *testing.T) {
+	partialStalledParts := func(text string) []message.ContentPart {
+		return []message.ContentPart{
+			message.TextContent{Text: text},
+			message.Finish{Reason: message.FinishReasonError, Message: streamStalledFinishTitle},
+		}
+	}
+
+	t.Run("admission refusal with foreign stalled partial does not continue", func(t *testing.T) {
+		t.Parallel()
+		env := testEnv(t)
+		// Caller B's stalled partial is the session's last assistant row.
+		coord, sid := appendAssistant(t, env, partialStalledParts("partial answer"))
+		// Mirrors agent_run.go's pre-attempt refusal exactly (including
+		// the %w wrap the fail-fast caller sees). The refusal guard must
+		// fire regardless of the baseline value, hence "".
+		busyErr := fmt.Errorf("session %q is already processing another request: %w", sid, ErrSessionBusy)
+		_, ok := coord.shouldContinueTurn(t.Context(), sid, busyErr, "" /* Fresh session: no pre-attempt assistant rows. */)
+		assert.False(t, ok, "a refused call must not resume a foreign stalled message as a continuation")
+		assert.False(t, coord.shouldRetryTurn(t.Context(), sid, busyErr, "" /* Fresh session: no pre-attempt assistant rows. */), "a refused call must not be retried")
+	})
+
+	t.Run("shutdown refusal does not retry or continue", func(t *testing.T) {
+		t.Parallel()
+		env := testEnv(t)
+		coord, sid := appendAssistant(t, env, partialStalledParts("partial answer"))
+		_, ok := coord.shouldContinueTurn(t.Context(), sid, ErrAgentShuttingDown, "" /* Fresh session: no pre-attempt assistant rows. */)
+		assert.False(t, ok, "a shutdown refusal means no attempt ran — nothing to resume")
+		assert.False(t, coord.shouldRetryTurn(t.Context(), sid, ErrAgentShuttingDown, "" /* Fresh session: no pre-attempt assistant rows. */), "a shutdown refusal must not be retried")
+	})
+
+	t.Run("own stalled attempt still continues", func(t *testing.T) {
+		t.Parallel()
+		env := testEnv(t)
+		cfg, err := config.Init(env.workingDir, "", false)
+		require.NoError(t, err)
+		coord := &coordinator{cfg: cfg, sessions: env.sessions, messages: env.messages}
+		sess, err := env.sessions.Create(t.Context(), "own-attempt-evidence")
+		require.NoError(t, err)
+		// Baseline BEFORE this call's own attempt commits its row.
+		baseline := coord.lastAssistantMessageID(t.Context(), sess.ID)
+		appended, err := env.messages.Create(t.Context(), sess.ID, message.CreateMessageParams{
+			Role:  message.Assistant,
+			Parts: partialStalledParts("partial answer"),
+		})
+		require.NoError(t, err)
+		msg, ok := coord.shouldContinueTurn(t.Context(), sess.ID, context.Canceled, baseline)
+		assert.True(t, ok, "a stall of this call's own partial attempt still resumes via a continuation")
+		assert.Equal(t, "partial answer", msg.FullText())
+		assert.Equal(t, appended.ID, msg.ID)
+	})
+
+	t.Run("pre-existing error row with no new evidence does not retry", func(t *testing.T) {
+		t.Parallel()
+		env := testEnv(t)
+		// A stalled no-progress row from an earlier turn is the session's
+		// last assistant row; the baseline pins it as NOT this attempt's.
+		coord, sid := appendAssistant(t, env, []message.ContentPart{
+			message.Finish{Reason: message.FinishReasonError, Message: streamStalledFinishTitle},
+		})
+		baseline := coord.lastAssistantMessageID(t.Context(), sid)
+		require.NotEmpty(t, baseline)
+		transientErr := providerErr(http.StatusTooManyRequests, "The service may be temporarily overloaded")
+		assert.False(t, coord.shouldRetryTurn(t.Context(), sid, transientErr, baseline), "a transient error with no new evidence must not resurrect an earlier turn as a retry")
+		_, ok := coord.shouldContinueTurn(t.Context(), sid, transientErr, baseline)
+		assert.False(t, ok, "a transient error with no new evidence must not continue an earlier turn either")
+	})
+
+	t.Run("os-lock busy refusal does not retry", func(t *testing.T) {
+		t.Parallel()
+		env := testEnv(t)
+		coord, sid := appendAssistant(t, env, partialStalledParts("partial answer"))
+		// Constructed per internal/session/lock.go's SessionLockBusyError
+		// shape; runOwned wraps it as `session %q is already in use: %w`.
+		lockBusy := &session.SessionLockBusyError{Path: "/data/locks/" + sid, HolderPID: 424242}
+		lockErr := fmt.Errorf("session %q is already in use: %w", sid, lockBusy)
+		_, ok := coord.shouldContinueTurn(t.Context(), sid, lockErr, "" /* Fresh session: no pre-attempt assistant rows. */)
+		assert.False(t, ok, "an OS session-lock refusal means no attempt ran — nothing to resume")
+		assert.False(t, coord.shouldRetryTurn(t.Context(), sid, lockErr, "" /* Fresh session: no pre-attempt assistant rows. */), "an OS session-lock refusal must not be retried")
+	})
+}
+
+// TestRunInternal_NoRetryAfterAdmissionRefusal_WithForeignStalledMessage
+// reproduces the R3-1 bug end-to-end at the coordinator level: caller A is
+// refused at mailbox admission (FailIfSessionBusy, the exact error
+// agent_run.go produces BEFORE any provider request), while caller B's
+// stalled partial assistant message is the session's last row. Before the
+// fix, the retry loop's shouldContinueTurn saw B's row, decided A's failed
+// call had partial progress worth resuming, and re-ran A's call as a
+// continuation quoting B's text — an unauthorized retry execution. The
+// refusal must surface untouched: exactly one provider call, the original
+// prompt, B's message preserved, no retry attempt after the backoff.
+// Deliberate scope: a true ExecuteRun-level test needs internal/app files
+// owned by a sibling task; runInternal + the mock agent IS the
+// coordinator's own retry machinery, and the mailbox refusal itself is
+// covered by existing fail-fast tests.
+func TestRunInternal_NoRetryAfterAdmissionRefusal_WithForeignStalledMessage(t *testing.T) {
+	const providerID = "test-busy-refusal"
+	const prompt = "A's reviewer prompt"
+
+	orig := streamStallRetryBaseBackoff
+	streamStallRetryBaseBackoff = time.Millisecond
+	t.Cleanup(func() { streamStallRetryBaseBackoff = orig })
+
+	env := testEnv(t)
+	cfg, err := config.Init(env.workingDir, "", false)
+	require.NoError(t, err)
+	providerCfg := config.ProviderConfig{
+		ID:   providerID,
+		Type: "openai",
+		Models: []catwalk.Model{
+			{ID: "test-model", Name: "Test Model", DefaultMaxTokens: 4096},
+		},
+	}
+	cfg.Config().Providers.Set(providerID, providerCfg)
+	sel := config.SelectedModel{Provider: providerID, Model: "test-model"}
+	cfg.Config().Models[config.SelectedModelTypeSmart] = sel
+	cfg.Config().Models[config.SelectedModelTypeFast] = sel
+
+	coord := &coordinator{
+		cfg:        cfg,
+		sessions:   env.sessions,
+		messages:   env.messages,
+		modelCache: csync.NewMap[string, cachedModelPair](),
+	}
+
+	sess, err := env.sessions.Create(t.Context(), "busy-refusal-test")
+	require.NoError(t, err)
+
+	// Seed caller B's history: B's stalled partial is the session's last
+	// assistant row before A's fail-fast call ever starts.
+	_, err = env.messages.Create(t.Context(), sess.ID, message.CreateMessageParams{
+		Role:  message.User,
+		Parts: []message.ContentPart{message.TextContent{Text: "review this"}},
+	})
+	require.NoError(t, err)
+	_, err = env.messages.Create(t.Context(), sess.ID, message.CreateMessageParams{
+		Role: message.Assistant,
+		Parts: []message.ContentPart{
+			message.TextContent{Text: "B's partial answer, cut off"},
+			message.Finish{Reason: message.FinishReasonError, Message: streamStalledFinishTitle},
+		},
+	})
+	require.NoError(t, err)
+
+	callCount := 0
+	var recordedPrompt string
+	agent := newMockAgent(providerID, 4096, func(_ context.Context, call SessionAgentCall) (*fantasy.AgentResult, error) {
+		callCount++
+		recordedPrompt = call.Prompt
+		// Fail-fast caller A: exactly the pre-attempt refusal
+		// agent_run.go produces for FailIfSessionBusy calls.
+		return nil, fmt.Errorf("session %q is already processing another request: %w", call.SessionID, ErrSessionBusy)
+	})
+	coord.currentAgent = agent
+
+	pinned, err := coord.resolveSessionModels(t.Context(), sess.ID)
+	require.NoError(t, err)
+
+	res, err := coord.runInternal(t.Context(), sess.ID, prompt, pinned)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrSessionBusy, "the fail-fast refusal must surface, not be swallowed by the retry machinery")
+	assert.Nil(t, res)
+	assert.Equal(t, 1, callCount, "no second provider call may happen — not immediately, and no retry exists to run after B releases")
+	assert.Equal(t, prompt, recordedPrompt, "the prompt must never be rewritten into a continuation quoting B's text")
+
+	msgs, err := env.messages.List(t.Context(), sess.ID)
+	require.NoError(t, err)
+	var lastAssistantText string
+	for _, m := range msgs {
+		if m.Role == message.Assistant {
+			lastAssistantText = m.FullText()
+		}
+	}
+	assert.Contains(t, lastAssistantText, "B's partial answer", "caller B's stalled message must remain the last assistant row, untouched")
 }
 
 // TestRunInternal_RetryReusesUserMessage_NoDuplicate reproduces a real
