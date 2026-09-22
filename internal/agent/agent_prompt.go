@@ -549,7 +549,8 @@ func providerRetryLogFields(err *fantasy.ProviderError, delay time.Duration) []a
 }
 
 // sanitizeToolInput validates tool call JSON from the provider.
-// Malformed input is replaced with an empty object to prevent
+// Malformed input — and a bare null payload, which is valid JSON but
+// carries no arguments — is replaced with an empty object to prevent
 // stuck conversations from truncated or malformed model output.
 // The second return value indicates whether sanitization occurred.
 func sanitizeToolInput(toolName, toolCallID, input string) (string, bool) {
@@ -558,6 +559,17 @@ func sanitizeToolInput(toolName, toolCallID, input string) (string, bool) {
 			"tool", toolName,
 			"id", toolCallID,
 			"input_len", len(input),
+		)
+		return "{}", true
+	}
+	// A bare null payload is valid JSON but carries no arguments; every
+	// consumer treats it the same as an empty object, so normalize it at
+	// the source instead of letting a null literal reach the transcript,
+	// where non-defensive readers (the web formatter) dereference it.
+	if trimmed := strings.TrimSpace(input); trimmed == "null" {
+		slog.Warn("Null tool call JSON from provider, replacing with empty object",
+			"tool", toolName,
+			"id", toolCallID,
 		)
 		return "{}", true
 	}

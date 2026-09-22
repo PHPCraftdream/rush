@@ -1,7 +1,8 @@
 // configureProviders core tests: known/custom provider merging and
-// overrides, Bedrock/VertexAI credential gating, provider IDs,
-// enabled/configured state, agent tool allow-lists, and the shared
-// testStore helper.
+// overrides (including preserved fields such as peak_hours and the
+// provider-level network block), Bedrock/VertexAI credential gating,
+// provider IDs, enabled/configured state, agent tool allow-lists, and
+// the shared testStore helper.
 
 package config
 
@@ -544,4 +545,81 @@ func TestConfig_configureProvidersWithDisabledProvider(t *testing.T) {
 	prov, exists := cfg.Providers.Get("openai")
 	require.True(t, exists)
 	require.True(t, prov.Disable)
+}
+
+// TestConfig_configureProviders_PreservesProviderNetwork is a regression test
+// for a bug where the `prepared := ProviderConfig{...}` literal for known
+// (catalog) providers did not copy the user's provider-level network block
+// (proxy, custom DNS/DoH). configureProviders runs on both initial Load()
+// and every ReloadFromDisk() and replaces the user's map entry via
+// c.Providers.Set(string(p.ID), prepared), so any network override set under
+// providers.<id> was silently dropped on every config load — while sibling
+// user-owned fields like peak_hours, disable, and system_prompt_prefix were
+// carried over.
+func TestConfig_configureProviders_PreservesProviderNetwork(t *testing.T) {
+	knownProviders := []catwalk.Provider{
+		{
+			ID:          "openai",
+			APIKey:      "$OPENAI_API_KEY",
+			APIEndpoint: "https://api.openai.com/v1",
+			Models: []catwalk.Model{{
+				ID: "test-model",
+			}},
+		},
+	}
+
+	t.Run("provider network survives known-provider rebuild", func(t *testing.T) {
+		cfg := &Config{
+			Providers: csync.NewMap[string, ProviderConfig](),
+		}
+		providerNetwork := &NetworkConfig{Proxy: "socks5://127.0.0.1:1080"}
+		cfg.Providers.Set("openai", ProviderConfig{
+			APIKey:  "xyz",
+			BaseURL: "https://api.openai.com/v2",
+			Network: providerNetwork,
+		})
+		cfg.setDefaults("/tmp", "")
+		// No global options.network in this subtest: the provider-level
+		// block alone must round-trip the rebuild.
+
+		env := env.NewFromMap(map[string]string{
+			"OPENAI_API_KEY": "test-key",
+		})
+		resolver := NewShellVariableResolver(env)
+		err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, knownProviders)
+		require.NoError(t, err)
+
+		pc, ok := cfg.Providers.Get("openai")
+		require.True(t, ok)
+		require.NotNil(t, pc.Network, "provider-level network must survive the prepared rebuild (configureProviders runs on every Load/ReloadFromDisk)")
+		require.Equal(t, "socks5://127.0.0.1:1080", pc.Network.Proxy)
+	})
+
+	t.Run("provider network wins over global network", func(t *testing.T) {
+		cfg := &Config{
+			Providers: csync.NewMap[string, ProviderConfig](),
+		}
+		providerNetwork := &NetworkConfig{DNSServer: "1.1.1.1"}
+		cfg.Providers.Set("openai", ProviderConfig{
+			APIKey:  "xyz",
+			Network: providerNetwork,
+		})
+		cfg.setDefaults("/tmp", "")
+		// setDefaults guarantees cfg.Options != nil (load_defaults.go checks
+		// c.Options == nil first); now set the global network to prove the
+		// provider-level block is not dropped in its favor.
+		cfg.Options.Network = &NetworkConfig{Proxy: "http://global-proxy.example:8080"}
+
+		env := env.NewFromMap(map[string]string{
+			"OPENAI_API_KEY": "test-key",
+		})
+		resolver := NewShellVariableResolver(env)
+		err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, knownProviders)
+		require.NoError(t, err)
+
+		pc, ok := cfg.Providers.Get("openai")
+		require.True(t, ok)
+		require.NotNil(t, pc.Network, "provider-level network override must not be dropped in favor of the global one")
+		require.Equal(t, providerNetwork, pc.Network, "effective network must be the provider-level config, not the global one")
+	})
 }

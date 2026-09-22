@@ -357,7 +357,7 @@ func TestExecuteRunCycle7ReconcileToolCallsUsesOnlyNewRows(t *testing.T) {
 	second.AddFinish(message.FinishReasonEndTurn, "", "")
 	require.NoError(t, h.app.Messages.Update(context.Background(), second))
 
-	reconciled, err := h.app.reconcileTerminalMessage(context.Background(), h.sess.ID, baseline, true, time.Now())
+	reconciled, err := h.app.reconcileTerminalMessage(context.Background(), h.sess.ID, baseline, true, time.Now(), "")
 	require.NoError(t, err)
 	require.Equal(t, "authoritative final", reconciled.message.FullText())
 	require.Equal(t, map[string]int{"edit": 1, "bash": 1, "view": 1}, reconciled.toolCalls)

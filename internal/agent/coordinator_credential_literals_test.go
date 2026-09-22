@@ -74,7 +74,7 @@ func TestBuildCredentialModelUsesLiteralCredentialValues(t *testing.T) {
 			RoleSmart: {Provider: "tenant", Model: "tenant-model"},
 		},
 	}
-	model, providerCfg, err := coord.buildCredentialModel(t.Context(), creds, creds.Models[RoleSmart])
+	model, providerCfg, err := coord.buildCredentialModel(t.Context(), coord.cfg.Config(), creds, creds.Models[RoleSmart])
 	require.NoError(t, err)
 	require.Equal(t, apiKey, providerCfg.APIKey)
 	require.Equal(t, baseURL, providerCfg.BaseURL)
@@ -102,7 +102,7 @@ func TestBuildProviderStillResolvesConfiguredValues(t *testing.T) {
 		BaseURL: server.URL,
 	}
 
-	provider, err := coord.buildProvider(providerCfg, config.SelectedModel{}, false)
+	provider, err := coord.buildProvider(coord.cfg.Config(), providerCfg, config.SelectedModel{}, false)
 	require.NoError(t, err)
 	languageModel, err := provider.LanguageModel(t.Context(), "configured-model")
 	require.NoError(t, err)

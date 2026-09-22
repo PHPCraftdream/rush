@@ -274,13 +274,13 @@ func TestDNSTCPQueryRespectsContextCancellation(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	type queryResult struct {
-		ip  net.IP
+		ips []net.IP
 		err error
 	}
 	result := make(chan queryResult, 1)
 	go func() {
-		ip, err := resolver(ctx, "silent.invalid")
-		result <- queryResult{ip: ip, err: err}
+		ips, err := resolver(ctx, "silent.invalid")
+		result <- queryResult{ips: ips, err: err}
 	}()
 
 	stub.waitGotQuery(t)
@@ -289,7 +289,7 @@ func TestDNSTCPQueryRespectsContextCancellation(t *testing.T) {
 	select {
 	case res := <-result:
 		require.Error(t, res.err, "cancelled DNS-over-TCP query must fail")
-		require.Nil(t, res.ip)
+		require.Nil(t, res.ips)
 	case <-time.After(testAbortWait):
 		t.Fatal("cancelled DNS query did not return within the bound")
 	}
@@ -317,11 +317,11 @@ func TestDoHLookupClientOwnedTimeout(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	start := time.Now()
-	ip, err := resolve(ctx, "silent.invalid")
+	ips, err := resolve(ctx, "silent.invalid")
 	elapsed := time.Since(start)
 
 	require.Error(t, err, "DoH lookup against a silent endpoint must fail on the client-owned timeout")
-	require.Nil(t, ip)
+	require.Nil(t, ips)
 	require.Less(t, elapsed, testAbortWait,
 		"the client-owned timeout must bound the lookup well before the outer context")
 }
@@ -572,7 +572,8 @@ func TestDoHOverSocks5NestedDialBounded(t *testing.T) {
 // TestBuildTransportBoundedTimeouts pins the F4 transport defaults: a
 // zero TLSHandshakeTimeout lets a stuck handshake hang a provider
 // connection forever, and a zero IdleConnTimeout keeps keep-alive
-// sockets open indefinitely.
+// sockets open indefinitely. It also pins R6-1: the proxy-only HTTP
+// transport must carry a bounded DialContext.
 func TestBuildTransportBoundedTimeouts(t *testing.T) {
 	t.Parallel()
 
@@ -581,6 +582,7 @@ func TestBuildTransportBoundedTimeouts(t *testing.T) {
 	require.NotNil(t, tr)
 	require.Equal(t, 10*time.Second, tr.TLSHandshakeTimeout)
 	require.Equal(t, 90*time.Second, tr.IdleConnTimeout)
+	require.NotNil(t, tr.DialContext, "proxy-only HTTP transport must carry a bounded DialContext (R6-1)")
 }
 
 // keepAliveStub is an HTTP/1.1 server with keep-alive and no
@@ -652,13 +654,15 @@ func (c *trackedConn) Close() error {
 	return c.Conn.Close()
 }
 
-// TestTransportCacheEvictionReleasesIdleConns proves the F5 fix: the
-// shared transport cache's LRU eviction really closes the evicted
-// entry's keep-alive pool — observable as the stub server's live
-// connection count going back down and the next request re-dialing —
-// not just as an in-memory cache size change. Assumes the mandated
-// serialized flags (-p 1 -parallel 1) so no other test's inserts land
-// between the two warm-up requests.
+// TestTransportCacheEvictionReleasesIdleConns proves the F5 fix: LRU
+// eviction in a transport cache really closes the evicted entry's
+// keep-alive pool — observable as the stub server's live connection
+// count going back down and the next request re-dialing — not just as
+// an in-memory cache size change. The test drives the exact production
+// builder against its OWN isolated cache instance: the shared
+// process-wide cache is fair game for other parallel tests'
+// insertions, so an eviction there between the two warm-up requests is
+// a legal schedule, not an oracle failure (audit R2-6).
 func TestTransportCacheEvictionReleasesIdleConns(t *testing.T) {
 	t.Parallel()
 
@@ -668,17 +672,22 @@ func TestTransportCacheEvictionReleasesIdleConns(t *testing.T) {
 	// config still puts a resolver-mode transport plus its hidden DoH
 	// transport into the cache entry.
 	cfg := config.NetworkConfig{DoHURL: "http://127.0.0.1:65535/doh-never-queried"}
-	client, err := BuildHTTPClient(cfg)
+	cache := newTransportCache()
+	tr, err := buildTransportWithCache(cfg, cache)
 	require.NoError(t, err)
-	require.NotNil(t, client)
+	require.NotNil(t, tr)
+	client := &http.Client{Transport: tr}
 	// A second client built from the SAME config must share the
 	// cached transport, so the two warm-up requests pool onto one
 	// connection — this is what makes the assertion below
 	// discriminate cache reuse, not just one transport's keep-alive.
-	client2, err := BuildHTTPClient(cfg)
+	tr2, err := buildTransportWithCache(cfg, cache)
 	require.NoError(t, err)
-	require.NotNil(t, client2)
+	require.NotNil(t, tr2)
+	require.True(t, tr == tr2, "same-config builds must share the cached transport")
+	client2 := &http.Client{Transport: tr2}
 	t.Cleanup(client.CloseIdleConnections)
+	t.Cleanup(client2.CloseIdleConnections)
 
 	stubURL := "http://" + stub.ln.Addr().String() + "/"
 	fetch := func(c *http.Client) {
@@ -707,7 +716,7 @@ func TestTransportCacheEvictionReleasesIdleConns(t *testing.T) {
 		evictCfg := config.NetworkConfig{
 			DoHURL: fmt.Sprintf("http://127.0.0.1:65535/evict-%d?nonce=%d", i, time.Now().UnixNano()),
 		}
-		tr, err := BuildTransport(evictCfg)
+		tr, err := buildTransportWithCache(evictCfg, cache)
 		require.NoError(t, err)
 		require.NotNil(t, tr)
 		t.Cleanup(tr.CloseIdleConnections)

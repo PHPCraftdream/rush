@@ -32,9 +32,13 @@ type transportCache struct {
 	entries map[string]*cachedTransports
 }
 
-var sharedTransports = &transportCache{
-	entries: make(map[string]*cachedTransports, transportCacheCapacity),
+// newTransportCache returns an empty cache with the standard
+// capacity.
+func newTransportCache() *transportCache {
+	return &transportCache{entries: make(map[string]*cachedTransports, transportCacheCapacity)}
 }
+
+var sharedTransports = newTransportCache()
 
 // transportCacheKey canonically renders a resolved config. The \x1f
 // separators cannot occur inside a URL or authority rendering, so no
@@ -98,14 +102,14 @@ func (c *transportCache) put(key string, main *http.Transport, resolver []*http.
 	}
 }
 
-// sharedTransport returns the transport previously built for rs, or
-// nil when none is cached yet.
-func sharedTransport(rs resolved) *http.Transport {
-	return sharedTransports.get(transportCacheKey(rs))
+// sharedTransport returns the transport previously built for rs in
+// this cache, or nil when none is cached yet.
+func (c *transportCache) sharedTransport(rs resolved) *http.Transport {
+	return c.get(transportCacheKey(rs))
 }
 
 // cacheTransport records main (plus any resolver-owned transports) as
-// the shared entry for rs.
-func cacheTransport(rs resolved, main *http.Transport, resolver []*http.Transport) {
-	sharedTransports.put(transportCacheKey(rs), main, resolver)
+// this cache's entry for rs.
+func (c *transportCache) cacheTransport(rs resolved, main *http.Transport, resolver []*http.Transport) {
+	c.put(transportCacheKey(rs), main, resolver)
 }

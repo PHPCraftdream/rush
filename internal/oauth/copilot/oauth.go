@@ -144,7 +144,7 @@ func tryGetToken(ctx context.Context, deviceCode string) (*oauth.Token, error) {
 		if result.AccessToken == "" {
 			return nil, errPending
 		}
-		return getCopilotToken(ctx, result.AccessToken)
+		return getCopilotToken(ctx, nil, result.AccessToken)
 	case "authorization_pending":
 		return nil, errPending
 	case "slow_down":
@@ -154,7 +154,8 @@ func tryGetToken(ctx context.Context, deviceCode string) (*oauth.Token, error) {
 	}
 }
 
-func getCopilotToken(ctx context.Context, githubToken string) (*oauth.Token, error) {
+func getCopilotToken(ctx context.Context, client *http.Client, githubToken string) (*oauth.Token, error) {
+	client = refreshHTTPClient(client)
 	req, err := http.NewRequestWithContext(ctx, "GET", copilotTokenURL, nil)
 	if err != nil {
 		return nil, err
@@ -165,7 +166,6 @@ func getCopilotToken(ctx context.Context, githubToken string) (*oauth.Token, err
 		req.Header.Set(k, v)
 	}
 
-	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -202,7 +202,34 @@ func getCopilotToken(ctx context.Context, githubToken string) (*oauth.Token, err
 	return copilotToken, nil
 }
 
-// RefreshToken refreshes the Copilot token using the GitHub token.
+// RefreshToken refreshes the Copilot token using the GitHub token, on
+// the default network route.
 func RefreshToken(ctx context.Context, githubToken string) (*oauth.Token, error) {
-	return getCopilotToken(ctx, githubToken)
+	return RefreshTokenWithClient(ctx, nil, githubToken)
+}
+
+// RefreshTokenWithClient is RefreshToken with an explicit HTTP client
+// (R5-2): callers that resolved a provider network policy (proxy/DNS
+// transport) pass it here so the refresh request rides the same route
+// as inference instead of silently bypassing it. A nil client keeps
+// the historical bare default-route client.
+func RefreshTokenWithClient(ctx context.Context, client *http.Client, githubToken string) (*oauth.Token, error) {
+	return getCopilotToken(ctx, client, githubToken)
+}
+
+// refreshHTTPClient resolves the client one OAuth refresh request uses:
+// nil keeps the historical bare default-route client, and a configured
+// client that carries no timeout of its own gets the same 30s ceiling
+// cloned on, so threading a Transport through never drops the deadline
+// the bare client used to impose.
+func refreshHTTPClient(client *http.Client) *http.Client {
+	if client == nil {
+		return &http.Client{Timeout: 30 * time.Second}
+	}
+	if client.Timeout != 0 {
+		return client
+	}
+	clone := *client
+	clone.Timeout = 30 * time.Second
+	return &clone
 }

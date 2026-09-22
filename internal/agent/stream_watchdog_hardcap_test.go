@@ -9,6 +9,7 @@ import (
 	"context"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -323,4 +324,69 @@ func TestStreamWatchdog_HardCapWhileToolInFlightDistinctFromIdleStall(t *testing
 	assert.Equal(t, causeIdleStall, gotIdle, "genuine provider idle-stall must report causeIdleStall")
 	assert.NotEqual(t, gotHardCap, gotIdle,
 		"a hard-cap fire while a tool is in flight and a genuine idle-stall must be distinguishable, not collapse to the same cause")
+}
+
+// TestStreamWatchdog_ExtendsOnProgress_ZeroHardCapKeepsExtending is the
+// regression test for R6-2: with extendsOnProgress enabled and hardCap 0
+// (no cap configured), the extended deadline used to be unconditionally
+// clamped back to hardDeadline — which, with cap==0, is just a copy of
+// absoluteDeadline (start+idle) — so "extension" was actually an absolute
+// deadline and a stream producing steady progress was killed the moment
+// the original idle window elapsed. This test runs the report's exact
+// scenario under virtual time: idle 20s, a bump every 1s for 90s. Before
+// the fix the watchdog fired at ~20s; after it, it must stay quiet for
+// the whole bumping window and still fire with causeIdleStall once
+// progress actually stops.
+func TestStreamWatchdog_ExtendsOnProgress_ZeroHardCapKeepsExtending(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+
+		const idle = 20 * time.Second
+		const tick = 500 * time.Millisecond
+
+		var fired atomic.Int32
+		var firedCause atomic.Int32
+		wd := startStreamWatchdog(ctx, cancel, idle, tick, func(_ time.Duration, cause watchdogCause) {
+			fired.Add(1)
+			firedCause.Store(int32(cause))
+		}, true, 0, 0, 0, nil)
+		defer func() {
+			cancel()
+			<-wd.done
+		}()
+
+		// Steady progress every second for 90 virtual seconds — 4.5x the
+		// idle window. Before the R6-2 fix the watchdog fired at ~20s;
+		// it must never fire while progress keeps arriving.
+		for i := 0; i < 90; i++ {
+			time.Sleep(time.Second)
+			if wd.stalled.Load() {
+				t.Fatalf("watchdog fired despite continuous progress with hardCap=0 (at bump %d)", i+1)
+			}
+			select {
+			case <-wd.done:
+				t.Fatal("watchdog fired despite continuous progress with hardCap=0")
+			default:
+			}
+			wd.bump()
+		}
+		assert.Equal(t, int32(0), fired.Load(),
+			"a zero hard cap must not clamp the extended deadline back to start+idle")
+		assert.False(t, wd.stalled.Load())
+
+		// Progress stops: the (extended) idle window must still elapse and
+		// the watchdog must still fire — proving extension works, not that
+		// the watchdog was disabled. The last bump was at virtual t=90s,
+		// so the extended deadline is ~110s; 40s of waiting covers it.
+		select {
+		case <-wd.done:
+		case <-time.After(2 * idle):
+			t.Fatal("watchdog never fired after progress stopped")
+		}
+		assert.Equal(t, int32(1), fired.Load())
+		assert.True(t, wd.stalled.Load())
+		assert.Equal(t, causeIdleStall, watchdogCause(firedCause.Load()),
+			"a fire after progress stopped must report causeIdleStall, not causeHardCap")
+	})
 }

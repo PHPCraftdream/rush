@@ -182,7 +182,7 @@ func TestRunSubAgent_401CredentialedCallFailsClosed(t *testing.T) {
 			RoleSmart: {Provider: "tenant-provider", Model: "tenant-model"},
 		},
 	}
-	tenantModel, tenantProvider, err := coord.buildCredentialModel(t.Context(), creds, creds.Models[RoleSmart])
+	tenantModel, tenantProvider, err := coord.buildCredentialModel(t.Context(), coord.cfg.Config(), creds, creds.Models[RoleSmart])
 	require.NoError(t, err)
 	require.Equal(t, "tenant-provider", tenantProvider.ID)
 	parent, err := env.sessions.Create(t.Context(), "credentialed auth retry")

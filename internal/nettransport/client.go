@@ -2,6 +2,7 @@ package nettransport
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -18,7 +19,26 @@ import (
 const (
 	transportTLSHandshakeTimeout = 10 * time.Second
 	transportIdleConnTimeout     = 90 * time.Second
+
+	// transportDialTimeout bounds one initial TCP connect attempt
+	// made by transport-managed dialers. Without it stdlib's
+	// zero-value dialer (no Timeout of its own) governs the connect:
+	// the TLS/CONNECT/idle budgets only start AFTER the TCP
+	// handshake, and net/http detaches the dial context from request
+	// cancellation, so neither the request's cancel nor a client
+	// timeout ends a stuck dial.
+	transportDialTimeout = 30 * time.Second
+
+	// resolvedDialBudget bounds the WHOLE fallback sequence across a
+	// resolved address list (all A records, then AAAA), rather than
+	// each attempt separately.
+	resolvedDialBudget = 2 * transportDialTimeout
 )
+
+// transportDialer is the shared bounded dialer for
+// transport-managed initial TCP connects; net.Dialer is safe for
+// concurrent use.
+var transportDialer = &net.Dialer{Timeout: transportDialTimeout}
 
 // BuildHTTPClient returns a *http.Client configured per cfg's proxy/DNS
 // settings, or nil if cfg is the zero value (nothing configured — the
@@ -50,6 +70,14 @@ func BuildHTTPClient(cfg config.NetworkConfig) (*http.Client, error) {
 // connections immediately, and every transport also carries
 // transportIdleConnTimeout as a backstop.
 func BuildTransport(cfg config.NetworkConfig) (*http.Transport, error) {
+	return buildTransportWithCache(cfg, sharedTransports)
+}
+
+// buildTransportWithCache is BuildTransport parameterized over the
+// transport cache, so tests can drive the exact production assembly
+// against an isolated cache instead of the process-wide shared one
+// (audit R2-6).
+func buildTransportWithCache(cfg config.NetworkConfig, cache *transportCache) (*http.Transport, error) {
 	rs, err := resolveConfig(cfg)
 	if err != nil {
 		return nil, err
@@ -57,7 +85,7 @@ func BuildTransport(cfg config.NetworkConfig) (*http.Transport, error) {
 	if rs.empty() {
 		return nil, nil
 	}
-	if tr := sharedTransport(rs); tr != nil {
+	if tr := cache.sharedTransport(rs); tr != nil {
 		return tr, nil
 	}
 
@@ -94,8 +122,13 @@ func BuildTransport(cfg config.NetworkConfig) (*http.Transport, error) {
 		tr.DialContext = resolvedDialer(resolver, proxyDial)
 	case rs.proxyURL.Scheme == "http":
 		// Proxy-only HTTP: the stdlib handles CONNECT/absolute-form
-		// requests and proxy-side name resolution for free.
+		// requests and proxy-side name resolution for free. With Proxy
+		// set, stdlib dials the PROXY address through DialContext; the
+		// bound matters because stdlib's zero dialer has no timeout of
+		// its own and the dial context is detached from request
+		// cancellation (R6-1).
 		tr.Proxy = http.ProxyURL(rs.proxyURL)
+		tr.DialContext = transportDialer.DialContext
 	default:
 		// Proxy-only SOCKS5: the SOCKS5 dialer IS the tunnel, and
 		// hostnames reach the server unresolved for proxy-side
@@ -103,34 +136,68 @@ func BuildTransport(cfg config.NetworkConfig) (*http.Transport, error) {
 		tr.DialContext = proxyDial
 	}
 
-	cacheTransport(rs, tr, resolverTransports)
+	cache.cacheTransport(rs, tr, resolverTransports)
 	return tr, nil
 }
 
 // resolvedDialer dials "host:port" addresses, resolving non-IP
-// hostnames through the custom resolver first. When proxyDial is
-// non-nil the TARGET connection also goes through the proxy; dialing
-// the already-resolved IP is deliberate — it avoids a second,
-// redundant name resolution inside the SOCKS5 server, since with a
-// custom resolver configured the client-side answer is authoritative.
+// hostnames through the custom resolver first, then falls back
+// through the full resolved address list (A records then AAAA) under
+// one overall budget (resolvedDialBudget). TLS SNI and certificate
+// verification are untouched: http.Transport layers TLS on the
+// returned connection using the request's original hostname. When
+// proxyDial is non-nil the TARGET connection also goes through the
+// proxy; dialing the already-resolved IP is deliberate — it avoids a
+// second, redundant name resolution inside the SOCKS5 server, since
+// with a custom resolver configured the client-side answer is
+// authoritative.
 func resolvedDialer(resolver resolveFunc, proxyDial dialFunc) dialFunc {
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
 		host, port, err := net.SplitHostPort(addr)
 		if err != nil {
 			return nil, fmt.Errorf("split address %q: %w", addr, err)
 		}
-		target := addr
+		targets := []string{addr}
 		if net.ParseIP(host) == nil {
-			ip, err := resolver(ctx, host)
+			ips, err := resolver(ctx, host)
 			if err != nil {
 				return nil, err
 			}
-			target = net.JoinHostPort(ip.String(), port)
+			if len(ips) == 0 {
+				return nil, fmt.Errorf("resolver returned no addresses for %q", host)
+			}
+			targets = make([]string, 0, len(ips))
+			for _, ip := range ips {
+				targets = append(targets, net.JoinHostPort(ip.String(), port))
+			}
 		}
-		if proxyDial != nil {
-			return proxyDial(ctx, network, target)
+		dialCtx, cancel := context.WithTimeout(ctx, resolvedDialBudget)
+		defer cancel()
+		errs := make([]error, 0, len(targets))
+		for i, target := range targets {
+			// The budget is only consulted from the second attempt
+			// on, so the first attempt always runs.
+			if i > 0 && dialCtx.Err() != nil {
+				break
+			}
+			conn, err := dialTarget(dialCtx, network, target, proxyDial)
+			if err == nil {
+				return conn, nil
+			}
+			errs = append(errs, err)
 		}
-		d := net.Dialer{Timeout: 30 * time.Second}
-		return d.DialContext(ctx, network, target)
+		return nil, fmt.Errorf("dial %q: %w", addr, errors.Join(errs...))
 	}
+}
+
+// dialTarget dials one resolved address through proxyDial when
+// set, or a bounded direct TCP dial otherwise.
+func dialTarget(ctx context.Context, network, target string,
+	proxyDial dialFunc,
+) (net.Conn, error) {
+	if proxyDial != nil {
+		return proxyDial(ctx, network, target)
+	}
+	d := net.Dialer{Timeout: transportDialTimeout}
+	return d.DialContext(ctx, network, target)
 }

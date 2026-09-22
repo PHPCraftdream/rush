@@ -740,13 +740,13 @@ func (c *coordinator) buildAgentModelsFromCfg(ctx context.Context, cfg *config.C
 				choice = workerChoice
 			}
 		}
-		smart, _, err := c.buildCredentialModel(ctx, creds, choice)
+		smart, _, err := c.buildCredentialModel(ctx, cfg, creds, choice)
 		if err != nil {
 			return Model{}, Model{}, err
 		}
 		fast := smart
 		if fastChoice, ok := creds.Models[RoleFast]; ok {
-			fast, _, err = c.buildCredentialModel(ctx, creds, fastChoice)
+			fast, _, err = c.buildCredentialModel(ctx, cfg, creds, fastChoice)
 			if err != nil {
 				return Model{}, Model{}, err
 			}
@@ -783,7 +783,7 @@ func (c *coordinator) buildModelsFromCfg(ctx context.Context, cfg *config.Config
 		return Model{}, Model{}, errSmartModelProviderNotConfigured
 	}
 
-	smartProvider, err := c.buildProvider(smartProviderCfg, smartModelCfg, isSubAgent)
+	smartProvider, err := c.buildProvider(cfg, smartProviderCfg, smartModelCfg, isSubAgent)
 	if err != nil {
 		return Model{}, Model{}, err
 	}
@@ -793,7 +793,7 @@ func (c *coordinator) buildModelsFromCfg(ctx context.Context, cfg *config.Config
 		return Model{}, Model{}, errFastModelProviderNotConfigured
 	}
 
-	fastProvider, err := c.buildProvider(fastProviderCfg, fastModelCfg, true)
+	fastProvider, err := c.buildProvider(cfg, fastProviderCfg, fastModelCfg, true)
 	if err != nil {
 		return Model{}, Model{}, err
 	}

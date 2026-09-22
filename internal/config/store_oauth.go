@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"time"
 
@@ -161,27 +162,39 @@ func (s *ConfigStore) SetProviderRuntimeConfig(providerID string, pc ProviderCon
 }
 
 // copilotRefreshTokenFn and hyperExchangeTokenFn indirect the two external
-// OAuth refresh calls used by RefreshOAuthToken below. They default to the
-// real network-calling implementations; tests override them (package-private,
-// restored via t.Cleanup) to simulate a slow refresh call — e.g. one that
-// blocks until a concurrent ReloadFromDisk has published a new generation —
-// without making a real network call or depending on hyper.BaseURL()'s
-// process-wide sync.OnceValue memoization (see the caveat on
-// TestProviders_ConcurrentErrorCollection_NotLost in provider_test.go for why
-// that value cannot be safely redirected per-test).
+// OAuth refresh calls used by RefreshOAuthTokenWithClient below. They default
+// to the real network-calling implementations; tests override them
+// (package-private, restored via t.Cleanup) to simulate a slow refresh call —
+// e.g. one that blocks until a concurrent ReloadFromDisk has published a new
+// generation — without making a real network call or depending on
+// hyper.BaseURL()'s process-wide sync.OnceValue memoization (see the caveat
+// on TestProviders_ConcurrentErrorCollection_NotLost in provider_test.go for
+// why that value cannot be safely redirected per-test). R5-2: both take the
+// *http.Client resolved from the provider's network policy (nil = default
+// route).
 var (
-	copilotRefreshTokenFn = copilot.RefreshToken
-	hyperExchangeTokenFn  = hyper.ExchangeToken
+	copilotRefreshTokenFn = copilot.RefreshTokenWithClient
+	hyperExchangeTokenFn  = hyper.ExchangeTokenWithClient
 )
 
-// RefreshOAuthToken refreshes the OAuth token for the given provider.
+// RefreshOAuthToken refreshes the OAuth token for the given provider on
+// the default network route. See RefreshOAuthTokenWithClient.
+func (s *ConfigStore) RefreshOAuthToken(ctx context.Context, scope Scope, providerID string) error {
+	return s.RefreshOAuthTokenWithClient(ctx, scope, providerID, nil)
+}
+
+// RefreshOAuthTokenWithClient refreshes the OAuth token for the given
+// provider. client carries the network policy the refresh request must
+// ride (R5-2): the coordinator passes the provider's resolved proxy/DNS
+// HTTP client so auth lifecycle traffic follows the same route as
+// inference; nil keeps the helpers' default-route client.
 // Before making an external refresh request, it checks the config file on
 // disk to see if another Rush session has already refreshed the token. If
 // a newer, unexpired token is found, it is used instead of refreshing. If
 // the exchange fails (e.g. because another session already rotated the
 // refresh token), the disk is re-checked to recover the other session's
 // token.
-func (s *ConfigStore) RefreshOAuthToken(ctx context.Context, scope Scope, providerID string) error {
+func (s *ConfigStore) RefreshOAuthTokenWithClient(ctx context.Context, scope Scope, providerID string, client *http.Client) error {
 	providers := s.loadSnapshot().config.Providers
 	providerConfig, exists := providers.Get(providerID)
 	if !exists {
@@ -206,9 +219,9 @@ func (s *ConfigStore) RefreshOAuthToken(ctx context.Context, scope Scope, provid
 	var refreshErr error
 	switch providerID {
 	case string(catwalk.InferenceProviderCopilot):
-		refreshedToken, refreshErr = copilotRefreshTokenFn(ctx, providerConfig.OAuthToken.RefreshToken)
+		refreshedToken, refreshErr = copilotRefreshTokenFn(ctx, client, providerConfig.OAuthToken.RefreshToken)
 	case hyperp.Name:
-		refreshedToken, refreshErr = hyperExchangeTokenFn(ctx, providerConfig.OAuthToken.RefreshToken)
+		refreshedToken, refreshErr = hyperExchangeTokenFn(ctx, client, providerConfig.OAuthToken.RefreshToken)
 	default:
 		return fmt.Errorf("OAuth refresh not supported for provider %s", providerID)
 	}

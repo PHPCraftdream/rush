@@ -159,6 +159,17 @@ type CallOptionsSpec struct {
 	TimeoutOptionsSet        bool          `json:"timeout_options_set,omitempty"`
 	TimeoutExtendsOnProgress bool          `json:"timeout_extends_on_progress,omitempty"`
 	TimeoutHardCap           time.Duration `json:"timeout_hard_cap,omitempty"`
+	// IdleTimeout mirrors agent.CallOptions.IdleTimeout: this call's
+	// stream-watchdog idle-stall override. Zero is "unset — fall back to
+	// the shared/default policy"; a positive value is the override AND
+	// makes an idle stall terminal for the call. A deliberately disabled
+	// backstop arrives as the CLI's large positive sentinel
+	// (idleTimeoutDisabledSentinel in internal/cmd), never as a special
+	// conversion-side value, so a plain duration round-trip preserves all
+	// three states (F7). Additive field: rows persisted before it existed
+	// decode as zero, which is the unset semantics they were written
+	// with, so CallOptionsSpecVersion stays at 1.
+	IdleTimeout time.Duration `json:"idle_timeout,omitempty"`
 }
 
 // SessionAgentCallData is a durable, serializable subset of agent.SessionAgentCall

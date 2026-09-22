@@ -463,6 +463,82 @@ func TestContinuationChainTextAcrossToolStepsAndUserTurns(t *testing.T) {
 	}
 }
 
+// TestContinuationChainTextKeepsWhitespaceOnlyFailedAttempt pins the
+// R2-2 error-finish branch: a failed attempt's text joins the chain
+// unconditionally, because the join is byte-exact and a whitespace-only
+// fragment can be real content — a lone space cut between two halves of
+// one answer — not noise to strip.
+func TestContinuationChainTextKeepsWhitespaceOnlyFailedAttempt(t *testing.T) {
+	t.Parallel()
+
+	errFinish := func() message.ContentPart {
+		return message.Finish{Reason: message.FinishReasonError, Message: "Stream stalled"}
+	}
+	okFinish := message.Finish{Reason: message.FinishReasonEndTurn}
+	contPrompt := func(id string) message.Message {
+		return message.Message{ID: id, Role: message.User, Parts: []message.ContentPart{
+			message.TextContent{Text: "Your previous response to the request `emit json` was interrupted by a transient provider error (e.g. a stream stall or rate limit) partway through. Here is what you had written so far:\n\npartial\n\nContinue exactly where you left off. Do not repeat the text above and do not restart the task from scratch."},
+		}}
+	}
+	newMsg := func(id string, role message.MessageRole, parts ...message.ContentPart) message.Message {
+		return message.Message{ID: id, Role: role, Parts: parts}
+	}
+
+	tests := []struct {
+		name       string
+		run        []message.Message
+		terminalID string
+		want       string
+	}{
+		{
+			name: "the audit repro chain reassembles byte-for-byte",
+			run: []message.Message{
+				newMsg("u1", message.User, message.TextContent{Text: "emit json"}),
+				newMsg("a1", message.Assistant, message.TextContent{Text: `{"text":"a`}, errFinish()),
+				newMsg("a2", message.Assistant, message.TextContent{Text: " "}, errFinish()),
+				contPrompt("u2"),
+				newMsg("a3", message.Assistant, message.TextContent{Text: `b"}`}, okFinish),
+			},
+			terminalID: "a3",
+			want:       `{"text":"a b"}`,
+		},
+		{
+			name: "empty failed attempts contribute nothing but do not break the chain",
+			run: []message.Message{
+				newMsg("a1", message.Assistant, errFinish()),
+				newMsg("a2", message.Assistant, message.TextContent{Text: "Part 2"}, errFinish()),
+				newMsg("a3", message.Assistant, message.TextContent{Text: "Part 3"}, okFinish),
+			},
+			terminalID: "a3",
+			want:       "Part 2Part 3",
+		},
+		{
+			name: "whitespace-only attempt between two text attempts keeps its bytes",
+			run: []message.Message{
+				newMsg("a1", message.Assistant, message.TextContent{Text: "Part 1"}, errFinish()),
+				newMsg("a2", message.Assistant, message.TextContent{Text: "\n"}, errFinish()),
+				newMsg("a3", message.Assistant, message.TextContent{Text: "Part 2"}, okFinish),
+			},
+			terminalID: "a3",
+			want:       "Part 1\nPart 2",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var terminal message.Message
+			for _, m := range tt.run {
+				if m.ID == tt.terminalID {
+					terminal = m
+				}
+			}
+			require.NotNil(t, terminal)
+			assert.Equal(t, tt.want, continuationChainText(tt.run, terminal))
+		})
+	}
+}
+
 // TestExecuteRunContinuationChainWithToolStepReturnsFullText is R2-2
 // mechanism A end to end: the continuation attempt legitimately starts
 // with a tool call (view) before completing the answer. Before the fix

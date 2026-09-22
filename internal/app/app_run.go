@@ -510,11 +510,22 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 	// globally-configured reviewer provider. Until the reviewer pass
 	// participates in the same per-call credential isolation, it is off
 	// entirely for credentialed runs.
-	if resultErr == nil && req.Credentials == nil && shouldRunReviewerPass(overrides.ModelRole, app.config.Config()) {
+	// R2-4: the gate refuses to open a new phase for a run the parent
+	// canceled — either finish() recorded a committed success that
+	// suppressed a cancellation (canceledAfterCommit), or the cancel
+	// landed in the window between finish() returning and this check.
+	// In both cases the committed primary result is the run's final
+	// answer; a review turn would run a new phase under a dead context.
+	if resultErr == nil && req.Credentials == nil &&
+		!loop.canceledAfterCommit && loop.ctx.Err() == nil &&
+		shouldRunReviewerPass(overrides.ModelRole, app.config.Config()) {
 		reviewRunFn, reviewCtx := app.buildReviewerPassTurn(ctx, setup.callOpts)
 		loop.resetForReviewerPass(reviewCtx)
 		result, resultErr = loop.runTurnPhase(reviewerPassPrompt, reviewRunFn)
 	}
+	// R5-3: terse output is published only now — after the gate has
+	// decided which phase's result is the run's single final answer.
+	loop.flushTerseOutput()
 	return result, resultErr
 }
 

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
@@ -14,6 +13,15 @@ import (
 type terminalReconciliation struct {
 	message   message.Message
 	toolCalls map[string]int
+	// toolCallByID maps each distinct tool-call ID in this phase's rows
+	// to its tool name (F8, 2026-09-22 audit): the run-wide tool
+	// inventory merges the phases' reconciliations by ID, so a call
+	// listed in both phases is still counted once.
+	toolCallByID map[string]string
+	// toolCallsNoID counts this phase's tool calls that carry no ID and
+	// therefore cannot be ID-deduplicated across phases; each phase
+	// contributes them as reported.
+	toolCallsNoID map[string]int
 	// combinedText, when non-empty, is the terminal message's text
 	// prefixed with the texts of the failed assistant attempts a
 	// successful continuation chain resumed from (see
@@ -27,12 +35,23 @@ type terminalReconciliation struct {
 // reconcileTerminalMessage reads the committed assistant rows for this run.
 // The baseline ID set fences out messages that existed before the turn,
 // including rows created in the same second as the run.
+//
+// ownID, when non-empty, additionally restricts which row may become the
+// terminal to the exact assistant message THIS call's own runInternal
+// invocation produced (R8-3, 2026-09-22 audit): without it, a committed A
+// that releases its session before its own reconciliation runs can have a
+// legitimately later B's answer on the same session picked up instead,
+// since both rows are equally "new" relative to A's baseline. ownID is the
+// additional filter; baseline stays in effect either way. Empty ownID
+// (the recorder was never armed, or the call ended before any message was
+// created) falls back to the historical baseline-only selection.
 func (app *App) reconcileTerminalMessage(
 	ctx context.Context,
 	sessionID string,
 	baselineIDs map[string]struct{},
 	baselineKnown bool,
 	runStart time.Time,
+	ownID string,
 ) (terminalReconciliation, error) {
 	messages, err := app.Messages.List(ctx, sessionID)
 	if err != nil {
@@ -44,6 +63,8 @@ func (app *App) reconcileTerminalMessage(
 		found    bool
 		calls    = make(map[string]int)
 		seen     = make(map[string]struct{})
+		byID     = make(map[string]string)
+		noID     = make(map[string]int)
 		// runMessages collects this run's rows in commit order —
 		// assistant steps, the coordinator's continuation prompts
 		// between them, and tool results — so the continuation chain
@@ -65,24 +86,29 @@ func (app *App) reconcileTerminalMessage(
 					continue
 				}
 				seen[call.ID] = struct{}{}
+				byID[call.ID] = call.Name
+			} else {
+				noID[call.Name]++
 			}
 			calls[call.Name]++
 		}
-		if msg.IsFinished() {
+		if msg.IsFinished() && (ownID == "" || msg.ID == ownID) {
 			terminal = msg
 			found = true
 		}
 	}
 	if !found {
-		return terminalReconciliation{toolCalls: calls}, fmt.Errorf(
+		return terminalReconciliation{toolCalls: calls, toolCallByID: byID, toolCallsNoID: noID}, fmt.Errorf(
 			"no committed terminal assistant message found for run started at %s",
 			runStart.UTC().Format(time.RFC3339),
 		)
 	}
 	return terminalReconciliation{
-		message:      terminal,
-		toolCalls:    calls,
-		combinedText: continuationChainText(runMessages, terminal),
+		message:       terminal,
+		toolCalls:     calls,
+		toolCallByID:  byID,
+		toolCallsNoID: noID,
+		combinedText:  continuationChainText(runMessages, terminal),
 	}, nil
 }
 
@@ -108,7 +134,10 @@ func (app *App) reconcileTerminalMessage(
 //     alive across it; a genuine user turn — including this run's own
 //     original prompt — stops the walk, so text is never combined across
 //     unrelated messages. A failed attempt's text joins the chain; a
-//     tool step's narration does not.
+//     tool step's narration does not. An attempt whose text is empty
+//     or whitespace-only joins the chain too (R2-2, 2026-09-22
+//     audit): the join is byte-exact, so a lone space cut between two
+//     attempts is real content, not noise to strip.
 //
 // A terminal message that itself ended in error returns "": the run
 // failed, and there is no successful continuation to attach anything to.
@@ -139,9 +168,7 @@ collect:
 			}
 		case message.Assistant:
 			if fp := msg.FinishPart(); fp != nil && fp.Reason == message.FinishReasonError {
-				if text := msg.FullText(); strings.TrimSpace(text) != "" {
-					parts = append(parts, text)
-				}
+				parts = append(parts, msg.FullText())
 				continue
 			}
 			if len(msg.ToolCalls()) == 0 && msg.FinishReason() != message.FinishReasonToolUse {

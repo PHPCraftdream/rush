@@ -6,6 +6,7 @@ package config
 
 import (
 	"context"
+	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
@@ -324,7 +325,7 @@ func TestRefreshOAuthToken_SurvivesReloadDuringNetworkCall(t *testing.T) {
 	reachedNetworkCall := make(chan struct{})
 	reloadDone := make(chan struct{})
 	origFn := hyperExchangeTokenFn
-	hyperExchangeTokenFn = func(ctx context.Context, refreshToken string) (*oauth.Token, error) {
+	hyperExchangeTokenFn = func(ctx context.Context, _ *http.Client, refreshToken string) (*oauth.Token, error) {
 		close(reachedNetworkCall)
 		<-reloadDone
 		return &oauth.Token{

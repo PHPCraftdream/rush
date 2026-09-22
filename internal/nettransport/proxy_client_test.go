@@ -157,11 +157,14 @@ func TestCombinedPlainDNSThroughProxyMode(t *testing.T) {
 		require.Equal(t, 0, dnsSrv.hitsUDP())
 		// (b) The fake name really reached our DNS server.
 		require.Contains(t, dnsSrv.names(), "tunneled-dns.invalid")
-		// (c)+(d) Exactly two dials traversed the proxy, IN ORDER: the
-		// DNS-over-TCP lookup to the DNS server (IP literal), then the
-		// final connection to the RESOLVED 127.0.0.1 target — the
-		// hostname was never re-sent to the proxy.
+		// (c)+(d) Exactly three dials traversed the proxy, IN ORDER: the
+		// DNS-over-TCP resolver's A query, then its AAAA query (R4-2,
+		// 2026-09-22 round-8 audit — both families are queried
+		// unconditionally now, each opening its own fresh connection),
+		// then the final connection to the RESOLVED 127.0.0.1 target —
+		// the hostname was never re-sent to the proxy.
 		require.Equal(t, []socksRequestDouble{
+			{Atyp: 0x01, Addr: "127.0.0.1", Port: dnsPort},
 			{Atyp: 0x01, Addr: "127.0.0.1", Port: dnsPort},
 			{Atyp: 0x01, Addr: "127.0.0.1", Port: targetPort},
 		}, proxy.requests())
@@ -182,9 +185,10 @@ func TestCombinedPlainDNSThroughProxyMode(t *testing.T) {
 		require.GreaterOrEqual(t, dnsSrv.hitsTCP(), 1)
 		require.Equal(t, 0, dnsSrv.hitsUDP())
 		require.Contains(t, dnsSrv.names(), "tunneled-dns.invalid")
-		// CONNECT authority-form order: DNS lookup first, resolved-IP
-		// target connection second.
-		require.Equal(t, []string{dnsSrv.tcpAddr(), targetHostport}, proxy.seen())
+		// CONNECT authority-form order: the DNS-over-TCP resolver's A
+		// query, then its AAAA query (R4-2, each opens its own fresh
+		// connection), then the resolved-IP target connection.
+		require.Equal(t, []string{dnsSrv.tcpAddr(), dnsSrv.tcpAddr(), targetHostport}, proxy.seen())
 	})
 }
 
@@ -213,6 +217,13 @@ func TestCombinedDoHThroughProxyMode(t *testing.T) {
 		require.Contains(t, doh.names(), "tunneled-doh.invalid")
 		// DoH query and final connection both traversed the proxy, as
 		// two IP-literal dials in order; the hostname itself never did.
+		// Still two dials despite R4-2 querying both A and AAAA now: the
+		// DoH client's http.Transport keeps the SOCKS5-tunneled
+		// connection alive and reuses it for the second (AAAA) request,
+		// so only one SOCKS5 CONNECT is ever issued for the lookup —
+		// unlike the HTTP-proxy subtest below, where the proxy double
+		// records one entry per absolute-form request regardless of
+		// connection reuse.
 		require.Equal(t, []socksRequestDouble{
 			{Atyp: 0x01, Addr: "127.0.0.1", Port: dohPort},
 			{Atyp: 0x01, Addr: "127.0.0.1", Port: targetPort},
@@ -233,8 +244,12 @@ func TestCombinedDoHThroughProxyMode(t *testing.T) {
 
 		require.GreaterOrEqual(t, doh.hits(), 1)
 		require.Contains(t, doh.names(), "tunneled-doh.invalid")
-		// The inner DoH client's absolute-form request hits the proxy
-		// first, then the outer CONNECT to the resolved IP.
-		require.Equal(t, []string{hostOnlyOfURL(t, doh.URL()), targetHostport}, proxy.seen())
+		// The inner DoH client's absolute-form requests hit the proxy
+		// first — the A query, then the AAAA query (R4-2: both families
+		// queried unconditionally; unlike the SOCKS5 subtest above, the
+		// proxy double records each absolute-form request regardless of
+		// TCP keep-alive reuse) — then the outer CONNECT to the resolved
+		// IP.
+		require.Equal(t, []string{hostOnlyOfURL(t, doh.URL()), hostOnlyOfURL(t, doh.URL()), targetHostport}, proxy.seen())
 	})
 }

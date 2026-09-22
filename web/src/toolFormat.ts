@@ -10,6 +10,14 @@ export function formatActionArgs(name: string, input: string): string {
   if (!input) return "";
   let parsed: Record<string, unknown> = {};
   try { parsed = JSON.parse(input) as Record<string, unknown>; } catch { return ""; }
+  // JSON.parse also succeeds for non-object payloads ("null", "42",
+  // '"text"', "[1,2]"), and everything below assumes an object: indexing
+  // parsed[k] on null throws a TypeError out here, past the catch. Treat
+  // any non-object (null, scalar, array) as "no structured input" — a bare
+  // JSON string previews itself, anything else shows nothing.
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return typeof parsed === "string" ? parsed : "";
+  }
   const s = (k: string) => typeof parsed[k] === "string" ? (parsed[k] as string) : "";
   switch (name) {
     case "bash":      return s("command");

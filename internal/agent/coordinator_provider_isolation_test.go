@@ -55,7 +55,7 @@ func TestBuildProviderZAIExtraBodySnapshotIsolation(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			provider, err := coord.buildProvider(providerCfg, config.SelectedModel{}, false)
+			provider, err := coord.buildProvider(coord.cfg.Config(), providerCfg, config.SelectedModel{}, false)
 			if err != nil {
 				errs <- err
 				return
@@ -226,7 +226,7 @@ func TestBuildAnthropicProviderConcurrentHeterogeneousBuildsPreserveEnvironment(
 		require.NoError(t, err)
 	}
 
-	_, err := coord.buildProvider(config.ProviderConfig{ID: "unsupported", Type: "unsupported"}, config.SelectedModel{}, false)
+	_, err := coord.buildProvider(coord.cfg.Config(), config.ProviderConfig{ID: "unsupported", Type: "unsupported"}, config.SelectedModel{}, false)
 	require.Error(t, err)
 	assert.Equal(t, "sentinel-process-key", os.Getenv("ANTHROPIC_API_KEY"))
 	assert.Equal(t, "sentinel-process-token", os.Getenv("ANTHROPIC_AUTH_TOKEN"))

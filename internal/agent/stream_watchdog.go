@@ -211,7 +211,11 @@ func startStreamWatchdog(
 	var toolStartedAt atomic.Int64
 	// absoluteDeadline is the original deadline from process start.
 	absoluteDeadline := startTime.Add(idleTimeout)
-	// hardDeadline is the hard cap (e.g. 4x idleTimeout).
+	// hardDeadline is the hard cap (e.g. 4x idleTimeout). When hardCap == 0
+	// (no cap configured) it merely mirrors absoluteDeadline — start+idle —
+	// and every consumer of it gates on hardCap > 0 before using or
+	// clamping against it (R6-2): treating the mirror as a real cap would
+	// silently cancel progress-based deadline extension.
 	hardDeadline := absoluteDeadline
 	if hardCap > 0 {
 		hardDeadline = startTime.Add(hardCap)
@@ -229,9 +233,11 @@ func startStreamWatchdog(
 			recordActivity()
 		}
 		if extendsOnProgress {
-			// Extend the absolute deadline, capped at hardDeadline.
+			// Extend the absolute deadline, capped at hardDeadline when one is
+			// configured (R6-2: cap==0 means no cap — never clamp to
+			// absoluteDeadline).
 			newDeadline := now.Add(idleTimeout)
-			if newDeadline.After(hardDeadline) {
+			if hardCap > 0 && newDeadline.After(hardDeadline) {
 				newDeadline = hardDeadline
 			}
 			// Rate-limited INFO log for extensions.
@@ -430,17 +436,23 @@ func startStreamWatchdog(
 
 				if extendsOnProgress {
 					// Effective deadline: max(absoluteDeadline,
-					// lastActivity+idleTimeout), capped at hardDeadline.
-					// hardDeadline is not re-checked here — the unconditional
-					// check above already covers it — but effectiveDeadline
-					// is still capped at hardDeadline so extension never
-					// reports a deadline past the hard cap.
+					// lastActivity+idleTimeout), capped at hardDeadline — but
+					// only when a cap is actually configured (R6-2): cap==0
+					// means "no hard cap", and with cap==0 hardDeadline is
+					// just a copy of absoluteDeadline, so an unconditional
+					// clamp here used to cancel the extension entirely and
+					// turn it into an absolute start+idle deadline, killing
+					// continuously-responding streams. hardDeadline is not
+					// re-checked here — the unconditional hardCap > 0 check
+					// above already covers it — but effectiveDeadline is
+					// still capped at hardDeadline, when one exists, so
+					// extension never reports a deadline past the hard cap.
 					effectiveDeadline := absoluteDeadline
 					extended := lastActivity.Add(idleTimeout)
 					if extended.After(effectiveDeadline) {
 						effectiveDeadline = extended
 					}
-					if effectiveDeadline.After(hardDeadline) {
+					if hardCap > 0 && effectiveDeadline.After(hardDeadline) {
 						effectiveDeadline = hardDeadline
 					}
 					if now.After(effectiveDeadline) {

@@ -21,6 +21,7 @@
 package nettransport
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -76,7 +77,8 @@ func resolveConfig(cfg config.NetworkConfig) (resolved, error) {
 	if cfg.Proxy != "" {
 		pu, err := url.Parse(cfg.Proxy)
 		if err != nil {
-			return resolved{}, fmt.Errorf("parse proxy URL %q: %w", cfg.Proxy, err)
+			return resolved{}, fmt.Errorf("parse proxy URL %s: %w",
+				redactedURL(cfg.Proxy), urlErrReason(err))
 		}
 		switch pu.Scheme {
 		case "socks5", "socks5h":
@@ -88,11 +90,12 @@ func resolveConfig(cfg config.NetworkConfig) (resolved, error) {
 			// Handled via a CONNECT tunnel.
 		default:
 			return resolved{}, fmt.Errorf(
-				"unsupported proxy scheme %q in %q (supported: socks5, socks5h, http)",
-				pu.Scheme, cfg.Proxy)
+				"unsupported proxy scheme %q in %s (supported: socks5, socks5h, http)",
+				pu.Scheme, redactedURL(cfg.Proxy))
 		}
 		if pu.Host == "" {
-			return resolved{}, fmt.Errorf("proxy URL %q has no host", cfg.Proxy)
+			return resolved{}, fmt.Errorf(
+				"proxy URL %s has no host", redactedURL(cfg.Proxy))
 		}
 		rs.proxyURL = pu
 	}
@@ -100,7 +103,8 @@ func resolveConfig(cfg config.NetworkConfig) (resolved, error) {
 	switch {
 	case cfg.DoHURL != "":
 		if _, err := url.Parse(cfg.DoHURL); err != nil {
-			return resolved{}, fmt.Errorf("parse DoH URL %q: %w", cfg.DoHURL, err)
+			return resolved{}, fmt.Errorf("parse DoH URL %s: %w",
+				redactedURL(cfg.DoHURL), urlErrReason(err))
 		}
 		rs.dohURL = cfg.DoHURL
 	case cfg.DNSServer != "":
@@ -113,4 +117,41 @@ func resolveConfig(cfg config.NetworkConfig) (resolved, error) {
 	}
 
 	return rs, nil
+}
+
+// redactedURL renders a raw URL string safe for error messages:
+// userinfo, query and fragment are stripped so secrets in those
+// components cannot leak into persisted diagnostics, while scheme,
+// host and path stay for troubleshootability. Input that does not
+// parse degrades to a fixed placeholder instead of echoing
+// potentially secret-bearing text.
+func redactedURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "(unparseable URL)"
+	}
+	return redactedURLValue(u)
+}
+
+// redactedURLValue is redactedURL for an already-parsed URL.
+func redactedURLValue(u *url.URL) string {
+	clone := *u
+	clone.User = nil
+	clone.RawQuery = ""
+	clone.ForceQuery = false
+	clone.Fragment = ""
+	clone.RawFragment = ""
+	return clone.String()
+}
+
+// urlErrReason unwraps a *url.Error to its underlying reason: the
+// stdlib error string embeds the raw input URL via its Op and URL
+// fields, which would defeat the redaction of the surrounding
+// message.
+func urlErrReason(err error) error {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		return ue.Err
+	}
+	return err
 }

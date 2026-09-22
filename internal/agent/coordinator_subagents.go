@@ -160,7 +160,9 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 			choice, covered = creds.Models[RoleSmart]
 		}
 		if covered {
-			credModel, provCfg, err := c.buildCredentialModel(ctx, creds, choice)
+			// One atomic snapshot for this build's provider + network reads (F6).
+			cfg, _ := c.cfg.Snapshot()
+			credModel, provCfg, err := c.buildCredentialModel(ctx, cfg, creds, choice)
 			if err != nil {
 				return fantasy.ToolResponse{}, fmt.Errorf("failed to build sub-agent model from per-call credentials: %w", err)
 			}

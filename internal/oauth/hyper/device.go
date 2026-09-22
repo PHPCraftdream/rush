@@ -147,8 +147,18 @@ func pollOnce(ctx context.Context, deviceCode string) (TokenResponse, error) {
 	return result, nil
 }
 
-// ExchangeToken exchanges a refresh token for an access token.
+// ExchangeToken exchanges a refresh token for an access token, on the
+// default network route.
 func ExchangeToken(ctx context.Context, refreshToken string) (*oauth.Token, error) {
+	return ExchangeTokenWithClient(ctx, nil, refreshToken)
+}
+
+// ExchangeTokenWithClient is ExchangeToken with an explicit HTTP client
+// (R5-2): callers that resolved a provider network policy (proxy/DNS
+// transport) pass it here so the refresh request rides the same route
+// as inference instead of silently bypassing it. A nil client keeps
+// the historical bare default-route client.
+func ExchangeTokenWithClient(ctx context.Context, client *http.Client, refreshToken string) (*oauth.Token, error) {
 	reqBody := map[string]string{
 		"refresh_token": refreshToken,
 	}
@@ -167,7 +177,7 @@ func ExchangeToken(ctx context.Context, refreshToken string) (*oauth.Token, erro
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "rush")
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	client = refreshHTTPClient(client)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("execute request: %w", err)
@@ -246,4 +256,21 @@ func IntrospectToken(ctx context.Context, accessToken string) (*IntrospectTokenR
 	}
 
 	return &result, nil
+}
+
+// refreshHTTPClient resolves the client one OAuth refresh request uses:
+// nil keeps the historical bare default-route client, and a configured
+// client that carries no timeout of its own gets the same 30s ceiling
+// cloned on, so threading a Transport through never drops the deadline
+// the bare client used to impose.
+func refreshHTTPClient(client *http.Client) *http.Client {
+	if client == nil {
+		return &http.Client{Timeout: 30 * time.Second}
+	}
+	if client.Timeout != 0 {
+		return client
+	}
+	clone := *client
+	clone.Timeout = 30 * time.Second
+	return &clone
 }

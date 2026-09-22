@@ -27,6 +27,16 @@ import (
 // hadn't run yet), and got rejected with "already in use". runTurn below is
 // the extracted single-turn body; Run just loops it.
 func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy.AgentResult, error) {
+	// R7-1: capture the DIRECT caller's admission recorder, then detach it
+	// for everything downstream. A queued admission is only this Run
+	// invocation's own outcome; a nested Run reached through this turn's
+	// tools (a sub-agent's child session) shares ctx and must never mark
+	// an ancestor's recorder. The (nil, nil) queued return contract is
+	// unchanged: internal/app detects the queued case by (nil, nil) at two
+	// boundaries (app_run_turn.go, app.go's pump adapter), so the
+	// admission status travels beside the contract, not inside the error.
+	adm := turnAdmissionFrom(ctx)
+	ctx = withoutTurnAdmission(ctx)
 	if call.Prompt == "" && !message.ContainsTextAttachment(call.Attachments) {
 		return nil, ErrEmptyPrompt
 	}
@@ -87,6 +97,13 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 		// instead of falling into the queue.
 		if call.FailIfSessionBusy {
 			return nil, fmt.Errorf("session %q is already processing another request: %w", call.SessionID, ErrSessionBusy)
+		}
+		// R7-1: report the queued admission to the direct caller's retry
+		// loop before the historical silent return. Whether this queued
+		// copy is later drained and executed -- and how that dispatch
+		// ends -- belongs to whoever executed it, not to this invocation.
+		if adm != nil {
+			adm.markQueued()
 		}
 		return nil, nil
 	}

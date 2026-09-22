@@ -98,6 +98,7 @@ func toSessionCallOptionsSpec(o *CallOptions) *session.CallOptionsSpec {
 		TimeoutOptionsSet:        o.TimeoutOptionsSet,
 		TimeoutExtendsOnProgress: o.TimeoutExtendsOnProgress,
 		TimeoutHardCap:           o.TimeoutHardCap,
+		IdleTimeout:              o.IdleTimeout,
 	}
 }
 
@@ -137,6 +138,7 @@ func fromSessionCallOptionsSpec(spec *session.CallOptionsSpec) (*CallOptions, er
 		TimeoutOptionsSet:        spec.TimeoutOptionsSet,
 		TimeoutExtendsOnProgress: spec.TimeoutExtendsOnProgress,
 		TimeoutHardCap:           spec.TimeoutHardCap,
+		IdleTimeout:              spec.IdleTimeout,
 	}, nil
 }
 

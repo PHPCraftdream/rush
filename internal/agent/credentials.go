@@ -336,8 +336,24 @@ func (c *coordinator) RunWithCredentials(ctx context.Context, sessionID, prompt 
 // ordinary session path. Single funnel so the initial resolve and
 // runInternal's 401 rebuild agree on which credentials a call belongs
 // to.
+//
+// R5-1: when the caller armed per-call model overrides on ctx
+// (WithModelOverrides — e.g. the reviewer pass's temporary
+// reviewer-model override), a rebuild re-applies them instead of
+// falling back to the durable session/config smart slot. Without this,
+// a mid-turn 401 followed by a successful credential refresh silently
+// changed the model identity mid-reviewer-pass: Reviewer -> 401 ->
+// refresh -> Smart. Only the credentials for the SAME already-selected
+// provider refresh; the model choice itself survives the rebuild. The
+// overrides stay transient: applyModelOverrides reads model
+// persistence from ctx, and callers that must not persist (the review
+// turn) carry cleared persistence, so the temporary choice is still
+// never written over the durable smart slot.
 func (c *coordinator) resolveCallModels(ctx context.Context, sessionID string, creds *CredentialSet) (*resolvedOverrides, error) {
 	if creds == nil {
+		if smartOverride, fastOverride := modelOverridesFrom(ctx); smartOverride != nil || fastOverride != nil {
+			return c.applyModelOverrides(ctx, smartOverride, fastOverride)
+		}
 		return c.resolveSessionModels(ctx, sessionID)
 	}
 	return c.resolveCredentialsModels(ctx, sessionID, creds)
@@ -402,8 +418,14 @@ func (c *coordinator) resolveCredentialsModels(ctx context.Context, sessionID st
 		resolved.providerCfg = base.providerCfg
 	}
 
+	// One atomic snapshot for the whole resolve (F6): the provider clients
+	// built below and the coder toolset at the bottom must read the global
+	// network defaults from the SAME generation this resolve runs in, not
+	// from a second, later independent read.
+	cfg, _ := c.cfg.Snapshot()
+
 	if smartCovered {
-		smart, providerCfg, err := c.buildCredentialModel(ctx, creds, smartChoice)
+		smart, providerCfg, err := c.buildCredentialModel(ctx, cfg, creds, smartChoice)
 		if err != nil {
 			return nil, err
 		}
@@ -421,7 +443,7 @@ func (c *coordinator) resolveCredentialsModels(ctx context.Context, sessionID st
 		resolved.systemPrompt = ""
 	}
 	if fastCovered {
-		fast, _, err := c.buildCredentialModel(ctx, creds, fastChoice)
+		fast, _, err := c.buildCredentialModel(ctx, cfg, creds, fastChoice)
 		if err != nil {
 			return nil, err
 		}
@@ -451,7 +473,6 @@ func (c *coordinator) resolveCredentialsModels(ctx context.Context, sessionID st
 		}
 	}
 
-	cfg, _ := c.cfg.Snapshot()
 	// F1: pin THIS call's coder toolset exactly like
 	// resolveSessionModels/applyModelOverrides do, built from THIS call's
 	// ctx so buildTools' per-call filters (CallOptions.DisableSubAgents,
@@ -475,7 +496,9 @@ func (c *coordinator) resolveCredentialsModels(ctx context.Context, sessionID st
 // buildCredentialModel builds one ad-hoc Model (fresh provider client,
 // never cached) plus its provider config from the tenant's credential
 // and model choice. Used for every role a call's CredentialSet covers.
-func (c *coordinator) buildCredentialModel(ctx context.Context, creds *CredentialSet, choice ModelChoice) (Model, config.ProviderConfig, error) {
+// cfg is the caller's pinned config snapshot (F6); it only supplies the
+// global network defaults for the provider HTTP client.
+func (c *coordinator) buildCredentialModel(ctx context.Context, cfg *config.Config, creds *CredentialSet, choice ModelChoice) (Model, config.ProviderConfig, error) {
 	cred, ok := creds.credential(choice.Provider)
 	if !ok {
 		return Model{}, config.ProviderConfig{}, fmt.Errorf("model choice references provider %q which is not in the credential set", choice.Provider)
@@ -489,7 +512,7 @@ func (c *coordinator) buildCredentialModel(ctx context.Context, creds *Credentia
 		MaxTokens:       choice.MaxTokens,
 	}
 
-	provider, err := c.buildProviderWithLiteralCredentials(provCfg, modelCfg, false)
+	provider, err := c.buildProviderWithLiteralCredentials(cfg, provCfg, modelCfg, false)
 	if err != nil {
 		return Model{}, config.ProviderConfig{}, fmt.Errorf("failed to build provider %q from per-call credentials: %w", cred.Provider, err)
 	}

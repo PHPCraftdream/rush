@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -31,8 +33,8 @@ func proxyDialer(pu *url.URL) (dialFunc, error) {
 		return connectDialer(pu), nil
 	default:
 		return nil, fmt.Errorf(
-			"unsupported proxy scheme %q in %q (supported: socks5, socks5h, http)",
-			pu.Scheme, pu.String())
+			"unsupported proxy scheme %q in %s (supported: socks5, socks5h, http)",
+			pu.Scheme, redactedURLValue(pu))
 	}
 }
 
@@ -89,18 +91,38 @@ func socksDialer(pu *url.URL, timeout time.Duration) (dialFunc, error) {
 	}, nil
 }
 
+// maxConnectResponseHead bounds the CONNECT response head —
+// status line plus headers — with the same budget the stdlib
+// CONNECT path gives its LimitedReader. The handshake deadline
+// bounds time; this bounds the bytes a hostile or misbehaving
+// proxy can make us allocate for the head.
+const maxConnectResponseHead = int64(http.DefaultMaxHeaderBytes)
+
+// proxyDialAddr renders the TCP address the CONNECT dialer opens
+// to the proxy: pu.Host with the default HTTP proxy port 80
+// filled in when absent, mirroring net/http's canonicalAddr for
+// proxy URLs. Hostname strips the brackets from an IPv6 literal
+// and JoinHostPort restores them.
+func proxyDialAddr(pu *url.URL) string {
+	if pu.Port() == "" {
+		return net.JoinHostPort(pu.Hostname(), "80")
+	}
+	return pu.Host
+}
+
 // connectDialer returns a dialFunc that tunnels through an HTTP proxy
 // using the CONNECT method. Each dial opens a fresh TCP connection to
 // the proxy, sends "CONNECT <addr>", and on a 200 response returns the
 // raw connection as the tunnel.
 func connectDialer(pu *url.URL) dialFunc {
+	proxyAddr := proxyDialAddr(pu)
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
 		// The proxy tunnel itself is always plain TCP, regardless of
 		// what the target connection will carry inside it.
 		d := net.Dialer{Timeout: 30 * time.Second}
-		conn, err := d.DialContext(ctx, "tcp", pu.Host)
+		conn, err := d.DialContext(ctx, "tcp", proxyAddr)
 		if err != nil {
-			return nil, fmt.Errorf("dial proxy %q: %w", pu.Host, err)
+			return nil, fmt.Errorf("dial proxy %q: %w", proxyAddr, err)
 		}
 
 		// The CONNECT exchange is plain blocking I/O with no context
@@ -117,12 +139,18 @@ func connectDialer(pu *url.URL) dialFunc {
 			}
 			return nil, err
 		}
-		br := bufio.NewReader(conn)
+		lr := &io.LimitedReader{R: conn, N: maxConnectResponseHead}
+		br := bufio.NewReader(lr)
 		resp, err := http.ReadResponse(br, &http.Request{Method: "CONNECT"})
 		if err != nil {
 			_ = conn.Close()
 			if abortErr := guard.stop(); abortErr != nil {
 				return nil, fmt.Errorf("CONNECT to proxy %q: %w", pu.Host, abortErr)
+			}
+			if lr.N <= 0 {
+				return nil, fmt.Errorf(
+					"CONNECT response head from proxy %q exceeded the %d-byte head limit",
+					pu.Host, maxConnectResponseHead)
 			}
 			return nil, fmt.Errorf("read CONNECT response from proxy %q: %w", pu.Host, err)
 		}
@@ -145,6 +173,11 @@ func connectDialer(pu *url.URL) dialFunc {
 			_ = conn.Close()
 			return nil, fmt.Errorf("CONNECT to proxy %q: %w", pu.Host, abortErr)
 		}
+		// The head-only byte budget is lifted now that the tunnel is
+		// confirmed: the limit exists for the response head, not the
+		// payload, and bytes the parser already buffered past the head
+		// are still served first through bufferedConn.
+		lr.N = math.MaxInt64
 		// The bufio.Reader may have buffered bytes beyond the response
 		// head; bufferedConn drains them first so a TLS handshake over
 		// the tunnel never loses bytes.

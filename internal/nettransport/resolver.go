@@ -16,8 +16,10 @@ import (
 	"golang.org/x/net/dns/dnsmessage"
 )
 
-// resolveFunc resolves a hostname to exactly one IP address.
-type resolveFunc func(ctx context.Context, host string) (net.IP, error)
+// resolveFunc resolves a hostname to its usable IP addresses — every
+// A record in the server's answer order first, then the AAAA records
+// as fallback.
+type resolveFunc func(ctx context.Context, host string) ([]net.IP, error)
 
 // buildResolver wires the custom resolver per the resolved config.
 // Precedence: DoH endpoint first, then DNS-over-TCP through the proxy
@@ -56,31 +58,32 @@ func plainDNSResolver(server string) resolveFunc {
 			return d.DialContext(ctx, network, server)
 		},
 	}
-	return func(ctx context.Context, host string) (net.IP, error) {
+	return func(ctx context.Context, host string) ([]net.IP, error) {
 		addrs, err := res.LookupHost(ctx, host)
 		if err != nil {
 			return nil, fmt.Errorf("lookup %q via DNS server %s: %w", host, server, err)
 		}
-		// Prefer the first parseable IPv4 address, falling back to the
-		// first IPv6 one; unparseable entries are skipped.
-		var firstV6 net.IP
+		// Collect every parseable IPv4 address in the server's answer
+		// order first, then every IPv6 one as fallback; unparseable
+		// entries are skipped.
+		var v4, v6 []net.IP
 		for _, a := range addrs {
 			ip := net.ParseIP(a)
 			if ip == nil {
 				continue
 			}
 			if ip.To4() != nil {
-				return ip, nil
-			}
-			if firstV6 == nil {
-				firstV6 = ip
+				v4 = append(v4, ip)
+			} else {
+				v6 = append(v6, ip)
 			}
 		}
-		if firstV6 != nil {
-			return firstV6, nil
+		ips := append(v4, v6...)
+		if len(ips) == 0 {
+			return nil, fmt.Errorf(
+				"no parseable IP address for %q from DNS server %s", host, server)
 		}
-		return nil, fmt.Errorf(
-			"no parseable IP address for %q from DNS server %s", host, server)
+		return ips, nil
 	}
 }
 
@@ -124,22 +127,24 @@ func packQuery(host string, qtype dnsmessage.Type) ([]byte, error) {
 	return buf, nil
 }
 
-// answerIP returns the first A or AAAA answer record converted to a
-// net.IP, reporting false when the message contains neither.
-func answerIP(msg *dnsmessage.Message) (net.IP, bool) {
+// answerIPs collects every A and AAAA answer record, in message
+// order, converted to a net.IP; the bool reports whether the message
+// contained at least one usable answer.
+func answerIPs(msg *dnsmessage.Message) ([]net.IP, bool) {
+	var ips []net.IP
 	for _, ans := range msg.Answers {
 		switch ans.Header.Type {
 		case dnsmessage.TypeA:
 			if a, ok := ans.Body.(*dnsmessage.AResource); ok {
-				return net.IP(a.A[:]), true
+				ips = append(ips, net.IP(a.A[:]))
 			}
 		case dnsmessage.TypeAAAA:
 			if aaaa, ok := ans.Body.(*dnsmessage.AAAAResource); ok {
-				return net.IP(aaaa.AAAA[:]), true
+				ips = append(ips, net.IP(aaaa.AAAA[:]))
 			}
 		}
 	}
-	return nil, false
+	return ips, len(ips) > 0
 }
 
 // dohClientTimeout bounds every DoH exchange with a deadline the DoH
@@ -187,20 +192,44 @@ func newDoHResolver(endpoint string, proxyURL *url.URL, timeout time.Duration) (
 			tr.Proxy = http.ProxyURL(proxyURL)
 		}
 	}
+	// Bounded initial TCP connect for the direct and HTTP-proxy
+	// routes: the SOCKS5 route above already set its own bounded
+	// dialer, but a nil DialContext would leave stdlib's zero dialer
+	// (no timeout) governing the connect, and net/http detaches the
+	// dial context from the DoH client's timeout, so dohClientTimeout
+	// would not end a stuck dial.
+	if tr.DialContext == nil {
+		tr.DialContext = transportDialer.DialContext
+	}
 	client := &http.Client{Transport: tr, Timeout: timeout}
-	resolve := func(ctx context.Context, host string) (net.IP, error) {
-		for _, qtype := range []dnsmessage.Type{dnsmessage.TypeA, dnsmessage.TypeAAAA} {
-			ip, err := dohQuery(ctx, client, endpoint, host, qtype)
-			if err != nil {
-				return nil, err
-			}
-			if ip != nil {
-				return ip, nil
-			}
-			// NOERROR with no usable A answer: fall through to AAAA.
+	resolve := func(ctx context.Context, host string) ([]net.IP, error) {
+		// R4-2 (2026-09-22 round-8 audit): query BOTH families
+		// unconditionally, not AAAA-only-when-A-is-empty. The DNS layer
+		// resolving A does not prove those addresses are reachable — a
+		// firewall or IPv4-only-blocked route can leave every A address
+		// undialable while an AAAA address for the same name works fine,
+		// and the resolver has no way to know that at resolution time.
+		// The dialer (resolvedDialer/dialTarget in client.go) already
+		// falls back through the full returned list, so combining both
+		// families here is what actually makes that fallback reach a
+		// working AAAA address. The client's keep-alive transport reuses
+		// one connection for both requests, so this does not double the
+		// proxy dial count the way a fresh-connection-per-query resolver
+		// would.
+		a, aErr := dohQuery(ctx, client, endpoint, host, dnsmessage.TypeA)
+		aaaa, aaaaErr := dohQuery(ctx, client, endpoint, host, dnsmessage.TypeAAAA)
+		ips := append(a, aaaa...)
+		if len(ips) > 0 {
+			return ips, nil
+		}
+		if aErr != nil {
+			return nil, aErr
+		}
+		if aaaaErr != nil {
+			return nil, aaaaErr
 		}
 		return nil, fmt.Errorf(
-			"no A/AAAA answer for %q from DoH endpoint %s", host, endpoint)
+			"no A/AAAA answer for %q from DoH endpoint %s", host, redactedURL(endpoint))
 	}
 	return resolve, tr, nil
 }
@@ -211,7 +240,7 @@ func newDoHResolver(endpoint string, proxyURL *url.URL, timeout time.Duration) (
 // RFC 8484 section 4.1 allows both forms.
 func dohQuery(ctx context.Context, client *http.Client, endpoint, host string,
 	qtype dnsmessage.Type,
-) (net.IP, error) {
+) ([]net.IP, error) {
 	query, err := packQuery(host, qtype)
 	if err != nil {
 		return nil, err
@@ -225,31 +254,40 @@ func dohQuery(ctx context.Context, client *http.Client, endpoint, host string,
 	req.Header.Set("Accept", "application/dns-message")
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("DoH request to %s for %q: %w", endpoint, host, err)
+		// R2-5 residual (2026-09-22 round-8 audit): net/http returns a
+		// *url.Error here, and its own Error() string embeds the raw
+		// endpoint URL with the query string intact (only userinfo is
+		// stripped by the stdlib) -- a secret in the DoH endpoint's query
+		// would survive %w's formatting even though %s above already
+		// uses the safe redacted form. urlErrReason unwraps to the
+		// underlying cause (e.g. a dial/timeout error), which does not
+		// carry the endpoint URL, while preserving it for errors.Is/As.
+		return nil, fmt.Errorf("DoH request to %s for %q: %w",
+			redactedURL(endpoint), host, urlErrReason(err))
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf(
-			"DoH endpoint %s returned %s for %q", endpoint, resp.Status, host)
+			"DoH endpoint %s returned %s for %q", redactedURL(endpoint), resp.Status, host)
 	}
 	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/dns-message") {
 		return nil, fmt.Errorf(
-			"DoH endpoint %s returned unexpected Content-Type %q", endpoint, ct)
+			"DoH endpoint %s returned unexpected Content-Type %q", redactedURL(endpoint), ct)
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 	if err != nil {
-		return nil, fmt.Errorf("read DoH response from %s: %w", endpoint, err)
+		return nil, fmt.Errorf("read DoH response from %s: %w", redactedURL(endpoint), err)
 	}
 	var msg dnsmessage.Message
 	if err := msg.Unpack(body); err != nil {
-		return nil, fmt.Errorf("unpack DoH response from %s: %w", endpoint, err)
+		return nil, fmt.Errorf("unpack DoH response from %s: %w", redactedURL(endpoint), err)
 	}
 	if msg.RCode != dnsmessage.RCodeSuccess {
 		return nil, fmt.Errorf(
-			"DoH endpoint %s returned rcode %s for %q", endpoint, msg.RCode, host)
+			"DoH endpoint %s returned rcode %s for %q", redactedURL(endpoint), msg.RCode, host)
 	}
-	if ip, ok := answerIP(&msg); ok {
-		return ip, nil
+	if ips, ok := answerIPs(&msg); ok {
+		return ips, nil
 	}
 	return nil, nil // NOERROR but no usable answer record.
 }
@@ -260,18 +298,23 @@ func dohQuery(ctx context.Context, client *http.Client, endpoint, host string,
 // required because UDP cannot tunnel through CONNECT-style proxies,
 // with RFC 1035 section 4.2.2 framing (a 2-byte big-endian length
 // prefix before each message). Each query opens its own connection —
-// simple and correct, with no pipelining.
+// simple and correct, with no pipelining; both A and AAAA are queried
+// unconditionally (R4-2, 2026-09-22 round-8 audit — see newDoHResolver's
+// doc for why "A succeeded" does not mean "A is dialable"), so a lookup
+// now opens two connections instead of one.
 func dnsOverTCPResolver(server string, proxyDial dialFunc) resolveFunc {
-	return func(ctx context.Context, host string) (net.IP, error) {
-		for _, qtype := range []dnsmessage.Type{dnsmessage.TypeA, dnsmessage.TypeAAAA} {
-			ip, err := dnsTCPQuery(ctx, server, proxyDial, host, qtype)
-			if err != nil {
-				return nil, err
-			}
-			if ip != nil {
-				return ip, nil
-			}
-			// NOERROR with no usable A answer: fall through to AAAA.
+	return func(ctx context.Context, host string) ([]net.IP, error) {
+		a, aErr := dnsTCPQuery(ctx, server, proxyDial, host, dnsmessage.TypeA)
+		aaaa, aaaaErr := dnsTCPQuery(ctx, server, proxyDial, host, dnsmessage.TypeAAAA)
+		ips := append(a, aaaa...)
+		if len(ips) > 0 {
+			return ips, nil
+		}
+		if aErr != nil {
+			return nil, aErr
+		}
+		if aaaaErr != nil {
+			return nil, aaaaErr
 		}
 		return nil, fmt.Errorf(
 			"no A/AAAA answer for %q from DNS server %s", host, server)
@@ -282,7 +325,7 @@ func dnsOverTCPResolver(server string, proxyDial dialFunc) resolveFunc {
 // connection, closing it afterwards.
 func dnsTCPQuery(ctx context.Context, server string, proxyDial dialFunc,
 	host string, qtype dnsmessage.Type,
-) (net.IP, error) {
+) ([]net.IP, error) {
 	query, err := packQuery(host, qtype)
 	if err != nil {
 		return nil, err
@@ -335,8 +378,8 @@ func dnsTCPQuery(ctx context.Context, server string, proxyDial dialFunc,
 		return nil, fmt.Errorf(
 			"DNS server %s returned rcode %s for %q", server, msg.RCode, host)
 	}
-	if ip, ok := answerIP(&msg); ok {
-		return ip, nil
+	if ips, ok := answerIPs(&msg); ok {
+		return ips, nil
 	}
 	return nil, nil // NOERROR but no usable answer record.
 }

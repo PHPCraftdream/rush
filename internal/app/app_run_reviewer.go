@@ -75,13 +75,15 @@ type executeRunLoop struct {
 
 	// Per-phase tracking state. resetForReviewerPass zeroes these (plus a
 	// fresh baselineIDs snapshot) between the primary and review turns.
+	// canceledAfterCommit and the invocationToolCalls/invocationToolCallIDs
+	// inventory are excluded: the first is read after the reset, the second
+	// must span both phases (F8).
 	baselineIDs      map[string]struct{}
 	baselineKnown    bool
 	messageEvents    <-chan pubsub.Event[message.Message]
 	messageReadBytes map[string]int
 	seenToolCalls    map[string]bool
 	toolCallCounts   map[string]int
-	printedFinal     map[string]bool
 	finalText        string
 	finalReason      string
 	finalErrTitle    string
@@ -90,9 +92,32 @@ type executeRunLoop struct {
 	// reconciliationDiagnostic is produced/consumed inside finish only.
 	reconciliationDiagnostic string
 
+	// canceledAfterCommit records that finish() treated a committed
+	// success as the phase's outcome even though the parent context was
+	// already canceled (the authoritativeTerminal suppression in
+	// finish). The reviewer gate must not start a new phase for a run
+	// whose parent canceled it, no matter how clean the committed
+	// primary looks (R2-4, 2026-09-22 audit).
+	canceledAfterCommit bool
+
+	// invocationToolCalls is the run-wide tool-call inventory: it spans
+	// BOTH phases (primary turn + review turn) and is deliberately NOT
+	// reset by resetForReviewerPass, so cost/duration/tool_calls keep
+	// covering the whole invocation (F8, 2026-09-22 audit).
+	// invocationToolCallIDs deduplicates by tool-call ID across phases.
+	invocationToolCalls   map[string]int
+	invocationToolCallIDs map[string]struct{}
+
 	cachedTerminal       *terminalReconciliation
 	cachedTerminalCtx    context.Context
 	cachedTerminalCancel context.CancelFunc
+
+	// callResultRec is this phase's call-result recorder (R8-3): armed
+	// fresh at the top of runTurnPhase, carried on the ctx the turn
+	// goroutine runs under, and read back by both reconcileTerminalMessage
+	// call sites to scope reconciliation to THIS phase's own runInternal
+	// invocation instead of any newer, not-in-baseline row.
+	callResultRec *agent.CallResultRecorder
 }
 
 // runTurnPhase runs one "snapshot baseline → subscribe (if needed) →
@@ -102,11 +127,15 @@ type executeRunLoop struct {
 // reviewer pass fires, once more for the review turn.
 func (s *executeRunLoop) runTurnPhase(prompt string, runFn turnRunFunc) (*RunResult, error) {
 	done := make(chan agentTurnResponse, 1)
+	// R8-3: a fresh recorder per phase -- the primary turn and the review
+	// turn are separate runInternal invocations, each with its own result
+	// identity.
+	s.callResultRec = agent.NewCallResultRecorder()
 	startTurn := func() {
 		if executeRunBeforeTurnLaunchSeam != nil {
 			executeRunBeforeTurnLaunchSeam()
 		}
-		go runAgentTurnRecovered(s.ctx, s.sess.ID, prompt, runFn, done)
+		go runAgentTurnRecovered(agent.WithCallResultRecorder(s.ctx, s.callResultRec), s.sess.ID, prompt, runFn, done)
 	}
 	// Snapshot the pre-turn messages and subscribe before launching the
 	// turn. The message broker is live-only; a fast provider can publish
@@ -133,7 +162,6 @@ func (s *executeRunLoop) runTurnPhase(prompt string, runFn turnRunFunc) (*RunRes
 	s.messageReadBytes = make(map[string]int)
 	s.seenToolCalls = make(map[string]bool)
 	s.toolCallCounts = make(map[string]int)
-	s.printedFinal = make(map[string]bool)
 	startTurn()
 	drainDone := make(chan error, 1)
 
@@ -193,6 +221,17 @@ func (s *executeRunLoop) runTurnPhase(prompt string, runFn turnRunFunc) (*RunRes
 			return s.finish(runErr)
 
 		case drainErr := <-drainDone:
+			// R8-3's ownID scoping only covers a message THIS phase's own
+			// runInternal invocation produced. A drained continuation
+			// (DrainSessionNow, task #421/P0-1) executes through the
+			// durable queue pump's own separate ctx chain, so it never
+			// reports into s.callResultRec -- the ID captured there
+			// belongs to the ORIGINAL, now-superseded attempt. Reset to a
+			// fresh (empty) recorder so reconciliation falls back to its
+			// pre-R8-3 baseline-only scan, exactly what the original P0-1
+			// fix relies on to find the drained continuation's own
+			// committed row.
+			s.callResultRec = agent.NewCallResultRecorder()
 			return s.finish(drainErr)
 
 		case event, ok := <-s.messageEvents:
@@ -208,7 +247,7 @@ func (s *executeRunLoop) runTurnPhase(prompt string, runFn turnRunFunc) (*RunRes
 			}
 		case <-s.ctx.Done():
 			probeCtx, probeCancel := context.WithTimeout(context.WithoutCancel(s.ctx), cleanupTimeout)
-			reconciled, reconcileErr := s.app.reconcileTerminalMessage(probeCtx, s.sess.ID, s.baselineIDs, s.baselineKnown, s.runStart)
+			reconciled, reconcileErr := s.app.reconcileTerminalMessage(probeCtx, s.sess.ID, s.baselineIDs, s.baselineKnown, s.runStart, s.callResultRec.Resolve())
 			if reconcileErr == nil {
 				s.cachedTerminal = &reconciled
 				s.cachedTerminalCtx = probeCtx
@@ -283,15 +322,11 @@ func (s *executeRunLoop) handleMessageEvent(event pubsub.Event[message.Message])
 	case RunModeJSON:
 		// Suppress per-message stdout; the summary is printed below.
 	case RunModeTerse:
-		if !msg.IsFinished() || s.printedFinal[msg.ID] {
-			return nil
-		}
-		text := strings.TrimLeft(msg.FullText(), " \t\n")
-		if text != "" {
-			s.printedFinal[msg.ID] = true
-			s.printed = true
-			fmt.Fprint(s.stdout, text)
-		}
+		// R5-3 (2026-09-22 audit): nothing is published per message.
+		// Publishing here put the primary's text on stdout before the
+		// reviewer gate decided, so an auto-reviewed run emitted
+		// "PRIMARYREVIEW\n" concatenated. flushTerseOutput prints the
+		// single selected final result once, after the gate.
 	case RunModeStream:
 		content := msg.FullText()
 		readBytes := s.messageReadBytes[msg.ID]
@@ -333,6 +368,71 @@ func (s *executeRunLoop) drainMessageEvents() error {
 	return nil
 }
 
+// mergeReconciledToolCalls folds one phase's reconciled tool inventory
+// into the run-wide accounting (F8, 2026-09-22 audit). finish used to
+// REPLACE toolCallCounts with the current phase's reconciled counts, so
+// after resetForReviewerPass zeroed them the final envelope's tool_calls
+// covered the review turn alone and the primary phase's calls
+// disappeared — including from the sub-agent reduction warning. Calls
+// with an ID are deduplicated across phases; ID-less calls cannot be
+// keyed and are added as reported.
+func (s *executeRunLoop) mergeReconciledToolCalls(reconciled terminalReconciliation) {
+	s.ensureInvocationToolInventory()
+	for id, name := range reconciled.toolCallByID {
+		if _, dup := s.invocationToolCallIDs[id]; dup {
+			continue
+		}
+		s.invocationToolCallIDs[id] = struct{}{}
+		s.invocationToolCalls[name]++
+	}
+	for name, count := range reconciled.toolCallsNoID {
+		s.invocationToolCalls[name] += count
+	}
+	s.toolCallCounts = s.invocationToolCalls
+}
+
+// foldLiveToolCallCounts is the reconcile-failure fallback: the phase's
+// live-event counts (already ID-deduplicated within the phase by
+// handleMessageEvent) join the run-wide inventory so a failed lookup in
+// one phase does not erase the other phase's calls. Aggregated counts
+// cannot be ID-deduplicated across phases; that residual belongs to the
+// degraded path the reconciliation diagnostic already warns about.
+func (s *executeRunLoop) foldLiveToolCallCounts() {
+	if len(s.toolCallCounts) == 0 {
+		return
+	}
+	s.ensureInvocationToolInventory()
+	for name, count := range s.toolCallCounts {
+		s.invocationToolCalls[name] += count
+	}
+	s.toolCallCounts = s.invocationToolCalls
+}
+
+func (s *executeRunLoop) ensureInvocationToolInventory() {
+	if s.invocationToolCalls == nil {
+		s.invocationToolCalls = make(map[string]int)
+	}
+	if s.invocationToolCallIDs == nil {
+		s.invocationToolCallIDs = make(map[string]struct{})
+	}
+}
+
+// flushTerseOutput prints the run's buffered terse output exactly once,
+// after ExecuteRun has selected the single final result: the primary's
+// own for a run without the reviewer pass, the review turn's conclusion
+// otherwise. Publishing per finished message instead put the primary's
+// text on stdout before the gate decided, so an auto-reviewed run
+// emitted "PRIMARYREVIEW\n" concatenated (R5-3, 2026-09-22 audit).
+// finalText is the selected final text — authoritative reconciliation,
+// continuation-chain combination and the queued-outcome clear have all
+// already been applied by finish().
+func (s *executeRunLoop) flushTerseOutput() {
+	if s.mode != RunModeTerse {
+		return
+	}
+	fmt.Fprint(s.stdout, strings.TrimLeft(s.finalText, " \t\n"))
+}
+
 // finish builds the final envelope/error from runErr plus whatever
 // finalText/finalReason/toolCallCounts have accumulated via messageEvents
 // so far, and is the sole return point for a completed run. Extracted
@@ -367,11 +467,12 @@ func (s *executeRunLoop) finish(runErr error) (*RunResult, error) {
 			reconciled = *s.cachedTerminal
 			authoritativeTerminal = true
 		} else {
-			reconciled, reconcileErr = s.app.reconcileTerminalMessage(finalCtx, s.sess.ID, s.baselineIDs, s.baselineKnown, s.runStart)
+			reconciled, reconcileErr = s.app.reconcileTerminalMessage(finalCtx, s.sess.ID, s.baselineIDs, s.baselineKnown, s.runStart, s.callResultRec.Resolve())
 		}
 		if reconcileErr != nil {
 			s.reconciliationDiagnostic = "authoritative terminal message reconciliation failed: " + reconcileErr.Error() + "; using live run events"
 			slog.Warn("run: failed to reconcile authoritative terminal message", "session", s.sess.ID, "err", reconcileErr)
+			s.foldLiveToolCallCounts()
 		} else {
 			// Replay the committed row through the normal output handler.
 			// It emits only unread content, so a dropped terminal event cannot
@@ -379,7 +480,7 @@ func (s *executeRunLoop) finish(runErr error) (*RunResult, error) {
 			if outputErr := s.handleMessageEvent(pubsub.Event[message.Message]{Payload: reconciled.message}); outputErr != nil {
 				return nil, outputErr
 			}
-			s.toolCallCounts = reconciled.toolCalls
+			s.mergeReconciledToolCalls(reconciled)
 			// F3 (2026-09-21 weekly audit): a successful continuation chain
 			// leaves each attempt's partial text in its own history row and
 			// the reconciled terminal message alone carries only the tail.
@@ -392,8 +493,29 @@ func (s *executeRunLoop) finish(runErr error) (*RunResult, error) {
 			authoritativeTerminal = true
 		}
 		if authoritativeTerminal && isCanceled && !runFailed(s.finalReason, nil, false) {
-			runErr = nil
-			isCanceled = false
+			if s.finalReason == string(message.FinishReasonEndTurn) {
+				// R2-4: the parent canceled after this turn had already
+				// committed a successful terminal message. The committed
+				// success is still this phase's outcome, but it must not
+				// look clean to the reviewer gate: record the cancel so
+				// no new phase starts for a canceled run.
+				s.canceledAfterCommit = true
+				runErr = nil
+				isCanceled = false
+			} else {
+				// R8-2 (2026-09-22 audit): the reconciled row is a
+				// non-terminal Finish (tool_use in the proven scenario) --
+				// it proves only that ONE intermediate step committed, not
+				// that the logical call itself completed. A tool_use step
+				// is always followed by a further step, and that step's own
+				// outcome (success, error, or the cancellation itself) is
+				// exactly what got missed. Do not let an intermediate
+				// step's Finish silence a real cancellation; clear the
+				// stale mid-step label so the envelope reports the actual
+				// outcome (buildRunResult falls back to "canceled" for an
+				// empty reason) instead of a misleading "tool_use" success.
+				s.finalReason = ""
+			}
 		}
 	}
 
@@ -597,13 +719,28 @@ func (s *executeRunLoop) finish(runErr error) (*RunResult, error) {
 // (primary turn + review turn combined), not just the review phase.
 func (s *executeRunLoop) resetForReviewerPass(ctx context.Context) {
 	s.ctx = ctx
+	// R2-4: the cached terminal reconciliation belongs to the phase
+	// that built it. Its probe context derives from that phase's own
+	// ctx, and finish()'s defer has already fired its cancel, so a
+	// triple carried across the phase boundary would make the next
+	// finish() mistake the previous phase's terminal message for this
+	// one's and read usage off a dead context. Release and drop all
+	// three as one unit.
+	if s.cachedTerminalCancel != nil {
+		s.cachedTerminalCancel()
+	}
+	s.cachedTerminal = nil
+	s.cachedTerminalCtx = nil
+	s.cachedTerminalCancel = nil
 	s.finalText = ""
 	s.finalReason = ""
 	s.finalErrTitle = ""
 	s.finalErrDetails = ""
 	s.toolCallCounts = make(map[string]int)
 	s.seenToolCalls = make(map[string]bool)
-	s.printedFinal = make(map[string]bool)
+	// invocationToolCalls/invocationToolCallIDs deliberately survive the
+	// reset: the final envelope's tool_calls and the sub-agent reduction
+	// warning must span both phases (F8, 2026-09-22 audit).
 	s.messageReadBytes = make(map[string]int)
 	s.reconciliationDiagnostic = ""
 	s.baselineIDs = make(map[string]struct{})
@@ -679,6 +816,13 @@ func (app *App) buildReviewerPassTurn(ctx context.Context, primary *agent.CallOp
 		DiskProvider:      primary.DiskProvider,
 	}
 	reviewCtx := agent.WithCallOptions(ctx, reviewCallOpts)
+	// R5-1: carry the temporary reviewer override on the review turn's
+	// ctx so the 401 rebuild path (coordinator.resolveCallModels)
+	// re-applies the SAME override instead of silently resetting the
+	// model identity to the session/config smart slot after a
+	// credential refresh. Persistence stays cleared below, so the
+	// override still never lands in the durable session slots.
+	reviewCtx = agent.WithModelOverrides(reviewCtx, reviewerOverride, nil)
 	reviewCtx = agent.WithSessionModelPersistence(reviewCtx, nil, nil)
 	reviewCtx = agent.ClearReservedOwnership(reviewCtx)
 	reviewRunFn := func(ctx context.Context, sessionID, prompt string) (*fantasy.AgentResult, error) {
