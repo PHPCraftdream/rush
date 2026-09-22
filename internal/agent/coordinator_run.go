@@ -260,10 +260,11 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 	// attempt (previously: operator sees their own message duplicated once
 	// per retry).
 	var createdUserMessageID string
-	// attemptAssistantMsgID captures the ID of the assistant row THIS
-	// call's attempt wrote (see OnAssistantMessageCreated below). R3-1
-	// (round 5): retry classification may act only on this exact row.
-	var attemptAssistantMsgID string
+	// curAttempt is the CURRENT run() attempt's evidence capture target
+	// (coordinator_attempt_evidence.go). R3-1 (round 6): every attempt
+	// gets a FRESH instance via armAttempt below; classification acts
+	// only on the row the classified attempt itself reported.
+	curAttempt := newAttemptEvidence()
 	agentCall := SessionAgentCall{
 		SessionID:            sessionID,
 		Prompt:               prompt,
@@ -292,13 +293,13 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 		Credentials:          creds,
 		LogicalCallID:        uuid.New().String(), // P2-1: generate stable ID once
 		OnUserMessageCreated: func(id string) { createdUserMessageID = id },
-		// R3-1 (round 5): captures the ID of the assistant row THIS
-		// attempt's turn created (for multi-step or 401-retried runs the
-		// LAST prepared step wins). The retry classifiers below classify
-		// ONLY this row -- never the session-wide last assistant message,
-		// which a concurrent caller's turn can own by the time
-		// classification runs.
-		OnAssistantMessageCreated: func(id string) { attemptAssistantMsgID = id },
+		// R3-1: the CURRENT attempt's sink (for multi-step or
+		// 401-retried runs the LAST prepared step wins). armAttempt
+		// swaps a fresh one in before every run(), and each
+		// SessionAgentCall copy keeps only the sink it was armed with --
+		// a queued copy drained by another goroutine can never write a
+		// later attempt's evidence.
+		OnAssistantMessageCreated: curAttempt.record,
 		// Stamp the entry-channel origin (see buildCall): createUserMessage
 		// persists it on the user message this turn creates.
 		Origin: CallOriginFrom(ctx),
@@ -313,6 +314,18 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 	trackCall := &agentCall
 	run := func() (*fantasy.AgentResult, error) {
 		return c.currentAgent.Run(ctx, *trackCall)
+	}
+
+	// armAttempt installs a FRESH per-attempt evidence capture into the
+	// current call (R3-1, round 6); it must run immediately before EVERY
+	// run() invocation -- the initial one and each retry below (the
+	// runWithUnauthorizedRetry fn arms itself too, covering the 401
+	// path, whose rebuildCall preserves the current attempt's sink).
+	// resolve() the armed instance synchronously once run() returns:
+	// later recordings are async dispatches of older queued copies.
+	armAttempt := func() {
+		curAttempt = newAttemptEvidence()
+		trackCall.OnAssistantMessageCreated = curAttempt.record
 	}
 
 	// rebuildCall reconstructs the call after credential refresh, preserving
@@ -427,9 +440,13 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 	var result *fantasy.AgentResult
 	originalErr := c.runWithUnauthorizedRetry(ctx, providerCfg, func() error {
 		var err error
+		armAttempt()
 		result, err = run()
 		return err
 	}, rebuildCall)
+	// Only what THIS attempt's own turn reported before run() returned
+	// counts; a queued (nil,nil) attempt leaves it empty.
+	attemptAssistantMsgID := curAttempt.resolve()
 	logTurnSkillUsage(sessionID, prompt, c.activeSkills, c.skillTracker, beforeLoaded)
 
 	// Notify only if still unauthorized after retry — a successful
@@ -526,10 +543,11 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 			return result, ctx.Err()
 		case <-time.After(backoff):
 		}
-		// The next attempt's OnAssistantMessageCreated callback refreshes
-		// attemptAssistantMsgID to the row ITS OWN turn writes, so each
-		// attempt is still judged only on its own evidence.
+		// Fresh capture target for the next attempt (R3-1, round 6);
+		// this attempt's instance is sealed by the resolve() below.
+		armAttempt()
 		result, originalErr = run()
+		attemptAssistantMsgID = curAttempt.resolve()
 	}
 
 	return result, originalErr

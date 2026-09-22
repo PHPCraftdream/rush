@@ -553,3 +553,110 @@ func TestRunInternal_TransientContinuationUsesOwnPartialNotNewerForeignRow(t *te
 	}
 	assert.True(t, foundB, "caller B's message must remain in history untouched")
 }
+
+// TestRunInternal_QueuedAttemptNotRetriedOnStaleEvidence reproduces the
+// R3-1 round-6 residual (mechanism A) end-to-end: attempt 1 stalls after
+// real partial progress (a legitimate continuation retry); attempt 2 is
+// the exact shape agent_run.go's Run produces for a QUEUED admission
+// (mailbox busy, !FailIfSessionBusy): it returns (nil, nil) immediately
+// WITHOUT running PrepareStep, so OnAssistantMessageCreated never fires
+// for it. Before the fix, the shared attemptAssistantMsgID still held
+// attempt 1's row ID, so the next classification treated attempt 1's
+// stalled partial as attempt 2's evidence, rewrote the prompt into
+// another continuation, and enqueued a SECOND queued copy behind the
+// first -- an unauthorized duplicate continuation execution. With
+// per-attempt evidence the queued attempt has none (its capture target
+// stays empty), both classifiers refuse, and the loop ends returning
+// (nil, nil) -- a queued-and-abandoned call has nothing to report: the
+// caller that got queued is not the one who sees the eventual dispatch
+// result.
+func TestRunInternal_QueuedAttemptNotRetriedOnStaleEvidence(t *testing.T) {
+	const providerID = "test-queued-stale"
+	const prompt = "A's prompt that gets queued"
+
+	orig := streamStallRetryBaseBackoff
+	streamStallRetryBaseBackoff = time.Millisecond
+	t.Cleanup(func() { streamStallRetryBaseBackoff = orig })
+
+	env := testEnv(t)
+	cfg, err := config.Init(env.workingDir, "", false)
+	require.NoError(t, err)
+	providerCfg := config.ProviderConfig{
+		ID:   providerID,
+		Type: "openai",
+		Models: []catwalk.Model{
+			{ID: "test-model", Name: "Test Model", DefaultMaxTokens: 4096},
+		},
+	}
+	cfg.Config().Providers.Set(providerID, providerCfg)
+	sel := config.SelectedModel{Provider: providerID, Model: "test-model"}
+	cfg.Config().Models[config.SelectedModelTypeSmart] = sel
+	cfg.Config().Models[config.SelectedModelTypeFast] = sel
+
+	coord := &coordinator{
+		cfg:        cfg,
+		sessions:   env.sessions,
+		messages:   env.messages,
+		modelCache: csync.NewMap[string, cachedModelPair](),
+	}
+
+	sess, err := env.sessions.Create(t.Context(), "queued-stale-evidence")
+	require.NoError(t, err)
+
+	callCount := 0
+	var seenPrompts []string
+	agent := newMockAgent(providerID, 4096, func(_ context.Context, call SessionAgentCall) (*fantasy.AgentResult, error) {
+		callCount++
+		seenPrompts = append(seenPrompts, call.Prompt)
+		if callCount == 1 {
+			// Attempt 1: a real watchdog stall after real progress.
+			userMsg, err := env.messages.Create(t.Context(), sess.ID, message.CreateMessageParams{
+				Role:  message.User,
+				Parts: []message.ContentPart{message.TextContent{Text: prompt}},
+			})
+			require.NoError(t, err)
+			require.NotNil(t, call.OnUserMessageCreated)
+			call.OnUserMessageCreated(userMsg.ID)
+			partialRow, err := env.messages.Create(t.Context(), sess.ID, message.CreateMessageParams{
+				Role: message.Assistant,
+				Parts: []message.ContentPart{
+					message.TextContent{Text: "A's stalled partial answer"},
+					message.Finish{Reason: message.FinishReasonError, Message: streamStalledFinishTitle},
+				},
+			})
+			require.NoError(t, err)
+			require.NotNil(t, call.OnAssistantMessageCreated)
+			call.OnAssistantMessageCreated(partialRow.ID)
+			return nil, context.Canceled // watchdog stalls surface as context.Canceled
+		}
+		// Attempt 2: the queued-admission shape -- Run returned (nil,
+		// nil) without ever starting the turn: no rows, no callbacks.
+		// (The prompt is the legitimate continuation of attempt 1's OWN
+		// partial; a spurious attempt 3 would show up here as callCount
+		// >= 3 with another continuation prompt.)
+		require.Contains(t, call.Prompt, "A's stalled partial answer")
+		return nil, nil
+	})
+	coord.currentAgent = agent
+
+	pinned, err := coord.resolveSessionModels(t.Context(), sess.ID)
+	require.NoError(t, err)
+
+	res, err := coord.runInternal(t.Context(), sess.ID, prompt, pinned)
+	require.NoError(t, err, "a queued-and-abandoned call has nothing to report")
+	assert.Nil(t, res)
+	assert.Equal(t, 2, callCount, "a queued attempt must not be re-enqueued off attempt 1's stale evidence -- no attempt 3")
+	require.Len(t, seenPrompts, 2)
+	assert.Equal(t, prompt, seenPrompts[0], "attempt 1 sends the original prompt")
+
+	// Attempt 1's partial row must be untouched by the abandoned retry.
+	msgs, err := env.messages.List(t.Context(), sess.ID)
+	require.NoError(t, err)
+	var lastAssistantText string
+	for _, m := range msgs {
+		if m.Role == message.Assistant {
+			lastAssistantText = m.FullText()
+		}
+	}
+	assert.Equal(t, "A's stalled partial answer", lastAssistantText, "the partial row attempt 1 wrote must remain the last assistant row, untouched")
+}
