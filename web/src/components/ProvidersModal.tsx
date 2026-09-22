@@ -340,8 +340,11 @@ function ProviderForm({
         )}
         {peakEnabled && (
           <div>
-            <label className="block text-[11px] text-text-subtle mb-1">Exit message (optional)</label>
+            <label htmlFor="provider-form-peak-message" className="block text-[11px] text-text-subtle mb-1">
+              Exit message (optional)
+            </label>
             <textarea
+              id="provider-form-peak-message"
               rows={2}
               placeholder="Shown after a blank line when rush exits because of this window"
               value={peakMessage}
@@ -562,8 +565,11 @@ function BuiltinProviderEditor({
       )}
       {enabled && (
         <div>
-          <label className="block text-[11px] text-text-subtle mb-1">Exit message (optional)</label>
+          <label htmlFor="peak-hours-only-message" className="block text-[11px] text-text-subtle mb-1">
+            Exit message (optional)
+          </label>
           <textarea
+            id="peak-hours-only-message"
             rows={2}
             placeholder="Shown after a blank line when rush exits because of this window"
             value={message}
