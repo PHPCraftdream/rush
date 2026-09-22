@@ -169,6 +169,12 @@ func (ts *turnStream) prepareStep(callContext context.Context, options fantasy.P
 	ts.mu.Lock()
 	ts.currentAssistant = &assistantMsg
 	ts.mu.Unlock()
+	// R3-1 (round 5): report this row's ID to the caller (e.g. the
+	// coordinator's transient-retry loop) so classification can act on
+	// THIS attempt's own evidence instead of session-wide last-row state.
+	if ts.call.OnAssistantMessageCreated != nil {
+		ts.call.OnAssistantMessageCreated(assistantMsg.ID)
+	}
 	return callContext, prepared, err
 }
 

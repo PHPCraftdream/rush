@@ -242,6 +242,19 @@ type SessionAgentCall struct {
 	// keep working now that not every field is a plain value type.
 	OnUserMessageCreated func(messageID string) `json:"-"`
 
+	// OnAssistantMessageCreated, if non-nil, is invoked once for EVERY
+	// assistant message row the turn creates (PrepareStep runs once per
+	// step, so a multi-step tool loop fires it once per step; the LAST
+	// invocation names the turn's terminal assistant row). Lets a caller
+	// identify the exact row THIS call's turn wrote instead of
+	// re-deriving it from session-wide state -- coordinator_run.go's
+	// transient-retry loop classifies only this row, because the
+	// session's last assistant message at classification time can belong
+	// to a concurrent caller's turn (R3-1, round 5).
+	// json:"-": in-process callback, never durable-queue-persisted (same
+	// rationale as OnUserMessageCreated above).
+	OnAssistantMessageCreated func(messageID string) `json:"-"`
+
 	// InjectID, when non-empty, is the ID of a pending_injects row that
 	// must be deleted AFTER successful OS lock acquisition. Set by the
 	// cross-process interrupt inject path (startDetachedRun) to
