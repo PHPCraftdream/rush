@@ -516,7 +516,7 @@ export function ChatInput() {
       const el = textareaRef.current;
       if (!el) return;
       el.style.height = "auto";
-      el.style.height = Math.min(el.scrollHeight, 240) + "px";
+      el.style.height = Math.min(el.scrollHeight, 720) + "px";
       el.focus();
       const len = el.value.length;
       el.setSelectionRange(len, len);
@@ -664,7 +664,7 @@ export function ChatInput() {
     }
     const el = e.target;
     el.style.height = "auto";
-    el.style.height = Math.min(el.scrollHeight, 240) + "px";
+    el.style.height = Math.min(el.scrollHeight, 720) + "px";
   }
 
   async function onFileChange(e: React.ChangeEvent<HTMLInputElement>) {
@@ -811,7 +811,7 @@ export function ChatInput() {
             autoFocus
             rows={1}
             data-test-id="chat-input-textarea"
-            className="flex-1 bg-transparent border-none outline-none resize-none text-text leading-relaxed min-h-[28px] max-h-80 overflow-y-auto disabled:cursor-not-allowed placeholder:text-text-subtle font-medium" style={{ fontSize: "var(--chat-font-size)" }}
+            className="flex-1 bg-transparent border-none outline-none resize-none text-text leading-relaxed min-h-[28px] max-h-[960px] overflow-y-auto disabled:cursor-not-allowed placeholder:text-text-subtle font-medium" style={{ fontSize: "var(--chat-font-size)" }}
           />
           <div className="flex items-center gap-2 shrink-0">
             <input
