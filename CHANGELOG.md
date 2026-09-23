@@ -8,6 +8,17 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.2.0-alpha.4] - 2026-09-23
+
+### Fixed
+
+- **`rush run` could still exit "queued behind an active run" after
+  draining pending work.** When the drained turn lost its lease (the DB
+  stalled past the watchdog margin) it was still unwinding when the drain
+  returned, and the new turn queued behind it. After draining, `rush run`
+  now waits until this process's current turn on the session actually
+  releases it.
+
 ## [0.2.0-alpha.3] - 2026-09-23
 
 ### Added
