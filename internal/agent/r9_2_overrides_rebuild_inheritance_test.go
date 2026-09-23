@@ -60,6 +60,11 @@ func TestRunWithOverrides_401RebuildKeepsInheritedSmartSlot_R9_2(t *testing.T) {
 	})
 	cfg.Config().Models[config.SelectedModelTypeSmart] = config.SelectedModel{Provider: "global-provider", Model: "global-model"}
 	cfg.Config().Models[config.SelectedModelTypeFast] = config.SelectedModel{Provider: "fast-provider", Model: "fast-model"}
+	// config.Load skips SetupAgents when no provider is configured from the
+	// environment (clean CI runners); NewCoordinator self-heals that, this
+	// struct-literal coordinator must too, or the 401 path's UpdateModels
+	// fails with errCoderAgentNotConfigured and the retry never runs.
+	cfg.SetupAgents()
 
 	coord := &coordinator{
 		cfg:        cfg,
