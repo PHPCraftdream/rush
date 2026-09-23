@@ -17,26 +17,46 @@ import (
 	"github.com/PHPCraftdream/rush/internal/db"
 	rushlog "github.com/PHPCraftdream/rush/internal/log"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// runProvidersCmdInIsolatedApp executes a real providers subcommand's RunE
-// against an isolated config fixture, capturing real stdout. It stands up a
-// full app via setupApp (the same path the CLI uses) in a temp data dir with
-// network/provider-discovery disabled, so the output is produced by the real
-// rendering code in providers.go — not a reimplementation.
+// runProvidersCmdInIsolatedAppFull executes a real providers subcommand's
+// RunE against an isolated config fixture, capturing real stdout. It stands
+// up a full app via setupApp (the same path the CLI uses) in a temp data dir
+// with network/provider-discovery disabled, so the output is produced by the
+// real rendering code in providers.go — not a reimplementation.
 //
-// cmd is the real providersShowCmd/providersListCmd/providersSetCmd.
-// providerJSON is the raw JSON for the "providers" object written into the
-// isolated global rush.json before the command runs. args is the
-// positional/flag payload parsed onto cmd (e.g. "with-peak" for show,
+// cmd is the real providersShowCmd/providersListCmd/providersSetCmd/
+// providersAddCmd. providerJSON is the raw JSON for the "providers" object
+// written into the isolated global rush.json before the command runs. args
+// is the positional/flag payload parsed onto cmd (e.g. "with-peak" for show,
 // "--json" for list, "with-peak --peak-hours 10:00-20:00" for a write
-// command). Returns the captured stdout and the path of the isolated
-// global rush.json — the second is for write-command tests that need to
-// read back what was actually persisted, since this harness has no
-// access to the *app.App created inside RunE.
-func runProvidersCmdInIsolatedApp(t *testing.T, cmd *cobra.Command, providerJSON, args string) (stdout, dataPath string) {
+// command).
+//
+// dataDir selects the config layout the command runs under — pass "" or a
+// relative suffix such as ".rush":
+//
+//   - "" keeps the historical behaviour: the carrier's --data-dir is the
+//     isolated global data dir (tmp), so the workspace scope collapses onto
+//     the SAME file as the global scope (both resolve to
+//     <tmp>/rush.json — global is RUSH_GLOBAL_DATA, workspace is
+//     <DataDirectory>/rush.json). workspacePath is returned as "" because
+//     the two are indistinguishable; use this for single-scope tests.
+//   - ".rush" (production layout <cwd>/.rush) points the carrier's
+//     --data-dir at <workDir>/.rush, which makes the workspace scope a
+//     DIFFERENT file from the global one. Use this when a test passes
+//     --local and must read back / distinguish the workspace file from the
+//     untouched global one.
+//
+// Returns the captured stdout, the global rush.json path
+// (RUSH_GLOBAL_DATA/rush.json) and the workspace rush.json path — "" when
+// dataDir is "", otherwise <dataDir>/rush.json, exactly what
+// configPath(ScopeWorkspace) resolves to (workspace = <DataDirectory>/
+// rush.json, appName "rush"). runErr is the raw RunE error, RETURNED rather
+// than failed on so callers can assert on it.
+func runProvidersCmdInIsolatedAppFull(t *testing.T, cmd *cobra.Command, providerJSON, args, dataDir string) (stdout, globalPath, workspacePath string, runErr error) {
 	t.Helper()
 	tmp := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", tmp)
@@ -80,13 +100,21 @@ func runProvidersCmdInIsolatedApp(t *testing.T, cmd *cobra.Command, providerJSON
 	// are normally rootCmd persistent flags; build a carrier command that
 	// carries them so we can invoke the real subcommand's RunE directly.
 	ctx, cancel := context.WithCancel(context.Background())
+	// dataDir == "" collapses the workspace scope onto the global file, so
+	// the pooled SQLite connection lives directly under tmp. Otherwise it
+	// lives under the workspace data dir (<workDir>/<dataDir>).
+	dbDir := tmp
+	if dataDir != "" {
+		dbDir = filepath.Join(workDir, dataDir)
+	}
+	workspaceDataPath := filepath.Join(dbDir, "rush.json")
 	t.Cleanup(func() {
 		_ = os.Chdir(orig)
-		// setupApp opens a pooled SQLite connection under tmp; cancel ctx
-		// and release THIS test's own connection so t.TempDir cleanup
-		// doesn't hit a locked rush.db / rush.log on Windows.
+		// setupApp opens a pooled SQLite connection under the data dir;
+		// cancel ctx and release THIS test's own connection so t.TempDir
+		// cleanup doesn't hit a locked rush.db / rush.log on Windows.
 		//
-		// db.Release(tmp), not db.ResetPool(): this file alone has ~19
+		// db.Release(dir), not db.ResetPool(): this file alone has ~19
 		// t.Parallel() tests sharing this helper. ResetPool() used to nuke
 		// the ENTIRE process-wide connection pool, including any other
 		// still-running parallel test's live connection to a different
@@ -94,21 +122,23 @@ func runProvidersCmdInIsolatedApp(t *testing.T, cmd *cobra.Command, providerJSON
 		// handle-release lag, and a genuine contributor to this package's
 		// Windows-only "process cannot access the file" flakiness.
 		cancel()
-		_ = db.Release(tmp)
+		_ = db.Release(dbDir)
 	})
 	carrier := &cobra.Command{Use: "rush"}
 	carrier.Flags().Bool("debug", false, "")
-	carrier.Flags().String("data-dir", tmp, "")
+	carrier.Flags().String("data-dir", dbDir, "")
 	carrier.Flags().String("cwd", workDir, "")
 	carrier.SetContext(ctx)
 
-	// Reset the subcommand's own flags so state from a prior invocation in
-	// the same process (e.g. a leftover --json) doesn't leak in.
-	for _, fl := range []string{"json", "grep"} {
-		if f := cmd.Flags().Lookup(fl); f != nil {
-			_ = f.Value.Set(f.DefValue)
-		}
-	}
+	// Reset EVERY flag of the subcommand so state from a prior invocation in
+	// the same process doesn't leak in — pflag's Changed otherwise survives
+	// between tests, and since these command values are package-level
+	// singletons (e.g. a prior test's --peak-hours) would corrupt a later
+	// message-only test. DefValue is the registered default.
+	cmd.Flags().VisitAll(func(f *pflag.Flag) {
+		_ = f.Value.Set(f.DefValue)
+		f.Changed = false
+	})
 	cmd.SetArgs(nil)
 
 	var runArgs []string
@@ -136,14 +166,27 @@ func runProvidersCmdInIsolatedApp(t *testing.T, cmd *cobra.Command, providerJSON
 	done := make(chan struct{})
 	go func() { _, _ = io.Copy(&buf, r); close(done) }()
 
-	runErr := cmd.RunE(carrier, runArgs)
+	runErr = cmd.RunE(carrier, runArgs)
 
 	_ = w.Close()
 	os.Stdout = oldOut
 	<-done
 
-	require.NoError(t, runErr, "command RunE failed; stdout was:\n%s", buf.String())
-	return buf.String(), globalDataPath
+	if dataDir == "" {
+		// The workspace scope collapses onto the global file — both resolve
+		// to tmp/rush.json — so there is no distinct path to return.
+		return buf.String(), globalDataPath, "", runErr
+	}
+	return buf.String(), globalDataPath, workspaceDataPath, runErr
+}
+
+// runProvidersCmdInIsolatedApp is runProvidersCmdInIsolatedAppFull with
+// the workspace scope collapsed onto the global config file (dataDir "")
+// and RunE errors failing the test.
+func runProvidersCmdInIsolatedApp(t *testing.T, cmd *cobra.Command, providerJSON, args string) (stdout, dataPath string) {
+	out, globalPath, _, runErr := runProvidersCmdInIsolatedAppFull(t, cmd, providerJSON, args, "")
+	require.NoError(t, runErr, "command RunE failed; stdout was:\n%s", out)
+	return out, globalPath
 }
 
 const peakFixtureJSON = `{
@@ -188,8 +231,9 @@ func TestProvidersShow_PeakHoursRendering(t *testing.T) {
 }
 
 func TestProvidersShow_PeakHoursMessageRendering(t *testing.T) {
-	// The message is web-UI-only (no CLI flag sets it) — show must still
-	// surface it for a CLI-only operator, since it's otherwise invisible.
+	// The message is settable from the CLI via --peak-hours-message, but it
+	// can also come from the web UI — show must surface it either way, since
+	// it's otherwise invisible to a CLI-only operator.
 	out, _ := runProvidersCmdInIsolatedApp(t, providersShowCmd, peakFixtureJSON, "with-peak-message")
 
 	assert.Contains(t, out, "id:          with-peak-message")

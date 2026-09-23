@@ -180,10 +180,7 @@ var providersShowCmd = &cobra.Command{
 			}
 			fmt.Fprintf(os.Stdout, "peak hours:  %s-%s (currently: %s)\n", p.PeakHours.Start, p.PeakHours.End, state)
 			if p.PeakHours.Message != "" {
-				// Read-only visibility: this field is only settable from the
-				// web UI (there is no --peak-hours-message CLI flag), so a
-				// CLI-only operator would otherwise have no way to see what
-				// message is configured.
+				// Show the configured refusal message (set via --peak-hours-message).
 				fmt.Fprintf(os.Stdout, "peak hours message: %s\n", p.PeakHours.Message)
 			}
 		}
@@ -202,11 +199,12 @@ base URL.
 Pass --disabled=true to disable a provider without losing its
 credentials; --disabled=false to re-enable.
 
---peak-hours only carries the HH:MM-HH:MM window; a --peak-hours
-update here preserves any custom exit message already configured for
-this window. The message itself has no CLI flag — set it from the
-web UI's provider settings (shown once the peak-hours checkbox is
-on) or "rush providers show <id>" to see the current value.`,
+--peak-hours sets the refusal window (HH:MM-HH:MM, local time);
+--peak-hours-message sets the custom text shown when a request is
+refused inside that window. A time-only --peak-hours update preserves
+the existing message; --peak-hours-message "" clears the message and
+keeps the window; --peak-hours off clears both. The message requires
+a window — set --peak-hours first.`,
 	Args: cobra.ExactArgs(1),
 	Example: `
 # Set api key in global config (default scope)
@@ -220,6 +218,12 @@ rush providers set hyper --disabled=true
 
 # Refuse to run during business hours (local time); clear with "off"
 rush providers set openai --peak-hours 09:00-18:00
+
+# Customise the peak-hours refusal text (workspace scope only)
+rush providers set openai --local --peak-hours-message "Ping #ops-oncall before retrying"
+
+# Set window and message together
+rush providers set openai --peak-hours 09:00-18:00 --peak-hours-message "Low quota until 18:00"
   `,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		scope, err := scopeFromFlags(cmd, config.ScopeGlobal)
@@ -263,8 +267,13 @@ rush providers set openai --peak-hours 09:00-18:00
 				peakHoursWindow = w
 			}
 		}
-		if len(updates) == 0 && !peakHoursChanged {
-			return fmt.Errorf("no fields to set — pass at least one of --api-key/--base-url/--type/--name/--disabled/--peak-hours")
+		messageChanged := cmd.Flags().Changed("peak-hours-message")
+		peakHoursMessage := ""
+		if messageChanged {
+			peakHoursMessage, _ = cmd.Flags().GetString("peak-hours-message")
+		}
+		if len(updates) == 0 && !peakHoursChanged && !messageChanged {
+			return fmt.Errorf("no fields to set — pass at least one of --api-key/--base-url/--type/--name/--disabled/--peak-hours/--peak-hours-message")
 		}
 
 		a, err := setupAppLite(cmd)
@@ -273,13 +282,31 @@ rush providers set openai --peak-hours 09:00-18:00
 		}
 		defer a.Shutdown()
 
-		if peakHoursWindow != nil {
-			// --peak-hours only carries HH:MM-HH:MM: preserve a message
-			// configured through the web UI rather than silently dropping
-			// it on a bare time-window update, matching this command's own
-			// "only the flags you pass are written" contract.
-			if existing, ok := a.Store().Config().Providers.Get(id); ok && existing.PeakHours != nil {
-				peakHoursWindow.Message = existing.PeakHours.Message
+		if peakHoursWindow != nil || (messageChanged && !clearPeakHours) {
+			// The merged provider view this command already uses for
+			// every other field (workspace overrides global).
+			var existing *config.PeakHoursWindow
+			if p, ok := a.Store().Config().Providers.Get(id); ok && p.PeakHours != nil {
+				w := *p.PeakHours
+				existing = &w
+			}
+			if peakHoursWindow != nil {
+				// --peak-hours alone only carries HH:MM-HH:MM: preserve
+				// the existing message; --peak-hours-message overrides it.
+				if messageChanged {
+					peakHoursWindow.Message = peakHoursMessage
+				} else if existing != nil {
+					peakHoursWindow.Message = existing.Message
+				}
+			} else {
+				// Message-only update: rewrite the effective window with
+				// the new message so the target scope keeps a complete,
+				// valid peak_hours object, never a bare message fragment.
+				if existing == nil {
+					return fmt.Errorf("provider %q has no peak-hours window — set one first with `rush providers set %s --peak-hours HH:MM-HH:MM`", id, id)
+				}
+				peakHoursWindow = existing
+				peakHoursWindow.Message = peakHoursMessage
 			}
 			updates["providers."+id+".peak_hours"] = peakHoursWindow
 		}
@@ -304,15 +331,19 @@ rush providers set openai --peak-hours 09:00-18:00
 var providersAddCmd = &cobra.Command{
 	Use:   "add <id>",
 	Short: "Add a new provider",
-	Long: `Add a new provider to the chosen scope (default: global). Specify the
-provider type, name, and optionally a base URL and API key.`,
+	Long: `Add a new provider to the chosen scope (default: global). Specify
+the provider type, name, and optionally a base URL, API key,
+peak-hours window, and peak-hours refusal message.`,
 	Args: cobra.ExactArgs(1),
 	Example: `
 # Add a catwalk-known provider (Z.AI)
 rush providers add zai --name "Z.AI" --type openai-compat --base-url https://api.z.ai --api-key $ZAI_API_KEY
 
 # Add a custom OpenAI-compatible provider
-rush providers add local-llm --name "Local LLM" --type openai-compat --base-url http://localhost:8000/v1 --api-key none`,
+rush providers add local-llm --name "Local LLM" --type openai-compat --base-url http://localhost:8000/v1 --api-key none
+
+# Add with a peak-hours window and custom refusal message
+rush providers add zai --name "Z.AI" --type openai-compat --peak-hours 09:00-18:00 --peak-hours-message "Low quota until 18:00"`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		scope, err := scopeFromFlags(cmd, config.ScopeGlobal)
 		if err != nil {
@@ -339,6 +370,18 @@ rush providers add local-llm --name "Local LLM" --type openai-compat --base-url 
 				return fmt.Errorf("invalid --peak-hours: %w", err)
 			}
 			peakHours = ph
+		}
+
+		peakHoursMessage := ""
+		messageSet := cmd.Flags().Changed("peak-hours-message")
+		if messageSet {
+			peakHoursMessage, _ = cmd.Flags().GetString("peak-hours-message")
+			if peakHours == nil {
+				// A refusal message is only shown inside a window; absent
+				// --peak-hours (or "off") means there is none.
+				return fmt.Errorf("--peak-hours-message requires --peak-hours HH:MM-HH:MM")
+			}
+			peakHours.Message = peakHoursMessage
 		}
 
 		if name == "" {
@@ -839,6 +882,7 @@ func init() {
 	providersSetCmd.Flags().String("name", "", "Human-readable display name shown in the WUI")
 	providersSetCmd.Flags().Bool("disabled", false, "Mark provider as disabled (kept in config, ignored at runtime)")
 	providersSetCmd.Flags().String("peak-hours", "", "Peak-hours window as HH:MM-HH:MM (local time). Pass 'off' or empty to clear.")
+	providersSetCmd.Flags().String("peak-hours-message", "", "Custom text shown when a request is refused during the peak-hours window. Empty string clears it. Requires an existing --peak-hours window.")
 
 	for _, c := range []*cobra.Command{providersEnableCmd, providersDisableCmd, providersAddCmd} {
 		c.Flags().Bool("global", false, "Target the global config (~/.local/share/rush/rush.json). Default when neither --global nor --local is given.")
@@ -852,6 +896,7 @@ func init() {
 	providersAddCmd.Flags().String("api-key", "", "API key for the provider (optional, can be set later)")
 	providersAddCmd.Flags().Bool("enable", true, "Enable the provider after creation (default: true)")
 	providersAddCmd.Flags().String("peak-hours", "", "Optional peak-hours window as HH:MM-HH:MM (local time). Provider is refused during this window.")
+	providersAddCmd.Flags().String("peak-hours-message", "", "Optional custom text shown when a request is refused during the peak-hours window. Requires --peak-hours.")
 
 	providersUpdateCmd.Flags().Bool("all", false, "Update all enabled providers")
 

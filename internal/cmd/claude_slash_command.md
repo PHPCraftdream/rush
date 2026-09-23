@@ -54,9 +54,11 @@ transient failures.
 
 A provider can refuse to run during a local-time window (`rush
 providers set <id> --peak-hours HH:MM-HH:MM`, overnight wrap allowed,
-`--peak-hours off` clears it). `rush run --allow-peak-hours` bypasses
-that refusal for one invocation only — no persistent config-level
-equivalent exists.
+`--peak-hours off` clears it; `--peak-hours-message "..."` sets a
+custom refusal note and `--peak-hours-message ""` clears it — both
+honor `--local`). `rush run --allow-peak-hours` bypasses that refusal
+for one invocation only — no persistent config-level equivalent
+exists.
 
 **Never add `--allow-peak-hours` on your own initiative.** Only pass it
 when a human operator has explicitly asked, in this specific request,

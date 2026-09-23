@@ -1702,6 +1702,38 @@ rush providers add myProvider --name "My Provider" --type openai \
   --api-key $KEY --no-enable
 ```
 
+### Peak-hours refusal window and message
+
+A provider can be configured to refuse requests during a local-time
+window, with an optional custom note appended to the refusal.
+
+```bash
+# Refuse during business hours (local time); clear with "off"
+rush providers set openai --peak-hours 09:00-18:00
+
+# Custom message shown when a request is refused inside the window
+rush providers set openai --peak-hours-message "Ping #ops-oncall before retrying"
+
+# Set window and message together, written only to the workspace config
+rush providers set openai --local --peak-hours 09:00-18:00 \
+  --peak-hours-message "Low quota until 18:00"
+
+# Same flags at creation time
+rush providers add zai --name "Z.AI" --type openai-compat \
+  --peak-hours 09:00-18:00 --peak-hours-message "Low quota until 18:00"
+```
+
+Notes:
+
+- A time-only `--peak-hours` update preserves the configured message.
+- `--peak-hours-message ""` clears the message and keeps the window;
+  `--peak-hours off` clears both.
+- The message requires a window — set `--peak-hours` first.
+- Like the other provider fields, `--local` writes only to the
+  workspace config (`./.rush/rush.json`); the default is the global
+  config.
+- `rush providers show <id>` prints the configured message.
+
 ### Remove a provider
 
 ```bash
