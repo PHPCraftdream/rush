@@ -313,6 +313,17 @@ func buildRunResult(sessionID, finalText, assistantNotes, finalReason string, er
 	// looks unfinished (ends mid-sentence or with a leading-in
 	// punctuation like ":") so the operator sees "model was about to
 	// continue".
+	// Peak-hours refusal (pre-flight or mid-turn stop): the envelope must
+	// carry the same guidance as stderr/DB, incl. the operator's message.
+	var peakErr *agent.PeakHoursError
+	if errors.As(err, &peakErr) {
+		if guidance := agent.PeakHoursGuidance(peakErr); !strings.Contains(errMsg, guidance) {
+			if errMsg != "" {
+				errMsg += "\n\n"
+			}
+			errMsg += guidance
+		}
+	}
 	if reason == "error" && errMsg == "" {
 		errMsg = "unknown error (provider returned an error finish without a message — likely causes: provider HTTP error, stream stall before watchdog fired, OOM-kill, context-window overflow). Re-run with --verbose for stderr detail."
 	}

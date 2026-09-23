@@ -73,3 +73,11 @@ func TestPeakHoursGuidance_CustomMessage(t *testing.T) {
 		}
 	})
 }
+
+func TestPeakHoursStoppedFinishText_IncludesOperatorMessage(t *testing.T) {
+	pe := &PeakHoursError{ProviderID: "zai", Start: "20:00", End: "23:59", ReopensAt: time.Now().Add(time.Hour), Message: "OPERATOR-NOTE: resume after midnight"}
+	_, details := peakHoursStoppedFinishText(pe)
+	if !strings.Contains(details, pe.Message) {
+		t.Fatalf("mid-turn stop details %q must carry the operator message", details)
+	}
+}
