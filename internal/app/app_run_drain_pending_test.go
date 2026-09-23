@@ -62,3 +62,62 @@ func TestExecuteRun_WaitsForLocalPumpTurnInsteadOfQueueing(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, outstanding, "no durable row may be left behind")
 }
+
+// Regression (2026-09-23, r2-15 on alpha.3): the drain can return while a
+// turn in this process still owns the session (there: the pump's turn lost
+// its lease and was still unwinding). The run must wait for that owner to
+// release instead of queueing behind it and exiting "queued".
+func TestExecuteRun_WaitsForLocalOwnerAfterDrainReturns(t *testing.T) {
+	ownerStarted := make(chan struct{})
+	releaseOwner := make(chan struct{})
+	var ownerOnce sync.Once
+	var freshDone atomic.Bool
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		switch {
+		case strings.Contains(string(body), "FRESH_TURN_MARKER"):
+			freshDone.Store(true)
+			admissionWriteSSE(w, []string{admissionSSEText("c1", "fresh ok"), admissionSSEStop("c1", "stop")})
+		case strings.Contains(string(body), "OWNER_TURN_MARKER"):
+			ownerOnce.Do(func() { close(ownerStarted) })
+			<-releaseOwner
+			admissionWriteSSE(w, []string{admissionSSEText("c0", "owner ok"), admissionSSEStop("c0", "stop")})
+		default:
+			admissionWriteSSE(w, []string{admissionSSEText("c2", "other ok"), admissionSSEStop("c2", "stop")})
+		}
+	}
+	application, sessionID := newAdmissionRaceApp(t, handler)
+
+	outcomes := make(chan admissionOutcome, 2)
+	start := make(chan struct{})
+	admissionLaunch(t, application, sessionID, outcomes, start, 1, "OWNER_TURN_MARKER", RunOverrides{}, false)
+	close(start)
+	select {
+	case <-ownerStarted:
+	case <-time.After(30 * time.Second):
+		t.Fatal("owner turn never reached the provider")
+	}
+	// Pending durable work exists while the local owner is mid-turn: the
+	// drain finds the session busy and returns without running anything.
+	require.NoError(t, application.Sessions.EnqueueRunQueueEntry(t.Context(), "pending-row", sessionID,
+		[]byte(`{"SessionID":"`+sessionID+`","Prompt":"PENDING_ROW_MARKER"}`)))
+	time.AfterFunc(1500*time.Millisecond, func() { close(releaseOwner) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	res, err := application.ExecuteRun(ctx, RunRequest{
+		Prompt: "FRESH_TURN_MARKER", Mode: RunModeJSON, ContinueSessionID: sessionID,
+		Stdout: io.Discard, Stderr: io.Discard, HideSpinner: true,
+	})
+	require.NoError(t, err, "the run must wait for the local owner, not report queued")
+	require.NotNil(t, res)
+	require.Equal(t, "end_turn", res.ExitReason)
+	require.True(t, freshDone.Load(), "the run's own turn must execute")
+
+	select {
+	case o := <-outcomes:
+		require.NoError(t, o.err, "the owner turn must complete, not be cancelled")
+	case <-time.After(30 * time.Second):
+		t.Fatal("owner turn did not finish")
+	}
+}
