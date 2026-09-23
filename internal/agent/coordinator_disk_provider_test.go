@@ -346,8 +346,11 @@ func TestUpdateModels_NeverPublishesCallerDiskProvider(t *testing.T) {
 	require.Len(t, published, 1, "UpdateModels must publish exactly one global toolset")
 	assert.Equal(t, 1, modelCalls)
 
-	resp := runFSRead(t, fsReadToolFrom(t, published[0]), realPath)
-	assert.True(t, resp.IsError, "the global toolset's fs_read has a zero FolderScope and must deny every read")
+	// The global toolset is unscoped, so it carries no fs_* tool at all
+	// (a zero-scope fs_read could only deny) -- nothing can reach fake.
+	for _, tool := range published[0] {
+		assert.NotEqual(t, "fs_read", tool.Info().Name, "the unscoped global toolset must not offer fs_read")
+	}
 	assert.Equal(t, 0, fake.callCount(),
 		"the caller's DiskProvider must never be reached by the globally published toolset")
 }

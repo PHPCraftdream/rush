@@ -337,6 +337,19 @@ var folderScopeCommandTools = map[string]struct{}{
 // because its per-item check picks the operation by path existence.
 var folderScopeOpForTool = tools.FolderScopeToolOperations()
 
+// withoutFolderScopeTools drops every fs_* tool from agent.AllowedTools.
+func withoutFolderScopeTools(agent config.Agent) config.Agent {
+	kept := make([]string, 0, len(agent.AllowedTools))
+	for _, name := range agent.AllowedTools {
+		if _, ok := folderScopeOpForTool[name]; ok || name == tools.FSWriteToolName {
+			continue
+		}
+		kept = append(kept, name)
+	}
+	agent.AllowedTools = kept
+	return agent
+}
+
 // applyCallFolderScope implements the per-call scoped filesystem
 // toolset: when ctx carries CallOptions.FolderScope, the agent's
 // AllowedTools is replaced with the tools that scope allows and
@@ -344,8 +357,8 @@ var folderScopeOpForTool = tools.FolderScopeToolOperations()
 // filesystem MCP server would bypass the scope wholesale. It MUST run
 // after buildToolsAgentConfigForCall: worker layering ADDS
 // bash/edit/write to a worker sub-agent's list, and this filter has to
-// see that final list to strip them again. A context without
-// CallOptions changes nothing, exactly like applyCallDisableSubAgents.
+// see that final list to strip them again. A context without a
+// FolderScope only loses the fs_* tools (they would deny every path).
 //
 // Every fs_* name is decided by the scope's Grants here and never left
 // to fall through from the incoming list (which the post-T7 defaults DO
@@ -357,7 +370,9 @@ var folderScopeOpForTool = tools.FolderScopeToolOperations()
 func (c *coordinator) applyCallFolderScope(ctx context.Context, agent config.Agent) config.Agent {
 	opts := callOptionsFrom(ctx)
 	if opts == nil || opts.FolderScope == nil {
-		return agent
+		// No scope: fs_* would be built with the zero scope and deny every
+		// path, so the model burns turns on refusals. Hide them.
+		return withoutFolderScopeTools(agent)
 	}
 	scope := *opts.FolderScope
 
