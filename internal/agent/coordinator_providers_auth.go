@@ -98,16 +98,19 @@ var errUnauthorizedRebuildUnavailable = errors.New("cannot retry unauthorized re
 func (c *coordinator) runWithUnauthorizedRetry(ctx context.Context, providerCfg config.ProviderConfig, fn func() error, rebuildCall func() error) error {
 	err := fn()
 	if err != nil && c.isUnauthorized(err) {
-		if retryErr := c.retryAfterUnauthorized(ctx, providerCfg); retryErr == nil {
-			// Rebuild with the refreshed provider client before retrying.
-			if rebuildCall == nil {
-				return errUnauthorizedRebuildUnavailable
-			}
-			if rebuildErr := rebuildCall(); rebuildErr != nil {
-				return rebuildErr
-			}
-			return fn()
+		retryErr := c.retryAfterUnauthorized(ctx, providerCfg)
+		if retryErr != nil {
+			slog.Warn("401 retry skipped: credential refresh failed", "provider", providerCfg.ID, "error", retryErr)
+			return err
 		}
+		// Rebuild with the refreshed provider client before retrying.
+		if rebuildCall == nil {
+			return errUnauthorizedRebuildUnavailable
+		}
+		if rebuildErr := rebuildCall(); rebuildErr != nil {
+			return rebuildErr
+		}
+		return fn()
 	}
 	return err
 }
