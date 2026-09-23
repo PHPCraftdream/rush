@@ -8,6 +8,38 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.2.0-alpha.3] - 2026-09-23
+
+### Added
+
+- **`--peak-hours-message` for `rush providers set` / `add`.** The custom
+  text shown when a provider refuses a request inside its peak-hours
+  window is now settable from the CLI (previously web UI only). A
+  message-only update keeps the window, `--peak-hours-message ""` clears
+  it, a missing window is an error, and `--local` writes a complete
+  `peak_hours` object to the workspace config only.
+
+### Fixed
+
+- **`rush run` hung forever with "queued behind an active run".** When a
+  run ended (e.g. by `--timeout`) with a call still queued, that call was
+  saved as durable work. Every later `rush run` on the session lost the
+  race to its own process's background pump, exited "queued", and that
+  exit cancelled the pump's turn — so the session never progressed, and
+  `sessions kill` / `reset` / `reap` did not help. `rush run` now first
+  executes (or waits for) the session's pending durable work, then its
+  own prompt. Already-stuck sessions recover on the next run.
+- **Agents wasted turns on "outside every folder scope" refusals.** The
+  scoped `fs_*` tools were offered even without a `--folder` scope, where
+  they deny every path. Unscoped runs no longer expose them.
+- **Peak-hours refusal in `--json` lost the guidance and operator
+  message.** The envelope's `error` now carries `RESUME AT` and the
+  configured message for both a start-of-run refusal and a mid-turn stop.
+- **401 retry skipped silently.** The reason a credential-refresh retry
+  was skipped is now logged instead of swallowed.
+- **npm launcher leaked `.tmp-launch-*` directories on Windows** when the
+  just-exited binary was still image-locked; removal now retries.
+
 ## [0.2.0-alpha.2] - 2026-09-22
 
 ### Added
