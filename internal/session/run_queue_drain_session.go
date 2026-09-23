@@ -74,6 +74,9 @@ func (p *RunQueuePump) DrainSessionNow(ctx context.Context, sessionID string) (D
 		// cleared it. See admitSession.
 		releaseSession, otherEntry, admitted := p.admitSession(sessionID)
 		if !admitted {
+			otherEntry.observeAssistantIDs(func(id string) {
+				recordDrainAssistantIdentityLive(ctx, id)
+			})
 			// Something in THIS pump instance is already executing for this
 			// session -- the background tick, having won the lease race, or
 			// (in principle) a second concurrent drain call. Wait for its
@@ -129,6 +132,9 @@ func (p *RunQueuePump) DrainSessionNow(ctx context.Context, sessionID string) (D
 			// more pending work).
 			outcomeDrained, outcomeRowID, outcomeErr, stopNow := classifyBackgroundOutcome(otherEntry.outcome)
 			if outcomeDrained {
+				if outcomeErr == nil {
+					recordDrainAssistantIdentity(ctx, otherEntry.outcome.assistantIDs, otherEntry.outcome.terminalAssistantID)
+				}
 				// This outcome came from admissionEntry.done, which only
 				// closes AFTER the other execution's own Ack/Nack/
 				// TerminalFail write has already landed (see
@@ -364,17 +370,19 @@ func (p *RunQueuePump) DrainSessionNow(ctx context.Context, sessionID string) (D
 			// function's job is only to make the release order panic-safe,
 			// not to swallow the panic.
 			var execErr error
+			var assistantIDs map[string]struct{}
+			var terminalAssistantID string
 			func() {
 				defer p.workerWg.Done()
 				defer func() { <-p.execSem }()
 				defer func() {
 					if r := recover(); r != nil {
-						releaseSession(executedOutcome(leased.ID, fmt.Errorf("run_queue_pump: executeEntrySync panicked: %v", r)))
+						releaseSession(executedOutcome(leased.ID, fmt.Errorf("run_queue_pump: executeEntrySync panicked: %v", r), nil, ""))
 						panic(r) // preserve normal panic propagation/crash behavior
 					}
-					releaseSession(executedOutcome(leased.ID, execErr))
+					releaseSession(executedOutcome(leased.ID, execErr, assistantIDs, terminalAssistantID))
 				}()
-				execErr = p.executeEntrySync(ctx, leased)
+				assistantIDs, terminalAssistantID, execErr = p.executeEntrySync(ctx, leased, otherEntry)
 			}()
 
 			// Classify through the same helper the wait branch above uses.
@@ -386,9 +394,10 @@ func (p *RunQueuePump) DrainSessionNow(ctx context.Context, sessionID string) (D
 			// stacked interrupt), exactly as the pre-existing "turn actually
 			// ran" branch below already did before this outcome could also
 			// arrive via a wait.
-			outcomeDrained, _, outcomeErr, stopNow := classifyBackgroundOutcome(executedOutcome(leased.ID, execErr))
+			outcomeDrained, _, outcomeErr, stopNow := classifyBackgroundOutcome(executedOutcome(leased.ID, execErr, assistantIDs, terminalAssistantID))
 			if outcomeDrained {
 				if outcomeErr == nil {
+					recordDrainAssistantIdentity(ctx, assistantIDs, terminalAssistantID)
 					// A clean success: THIS row's ID is known (leased.ID),
 					// so record it against that exact ID -- clearing any
 					// earlier failure THIS SAME ROW had accumulated (the

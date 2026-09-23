@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -80,7 +81,7 @@ const (
 //     2026-08-18 release-readiness review), which made `rush run` tell the
 //     operator a durable continuation had completed when nothing had been
 //     committed at all.
-func (p *RunQueuePump) executeEntrySync(ctx context.Context, leased *RunQueueEntry) error {
+func (p *RunQueuePump) executeEntrySync(ctx context.Context, leased *RunQueueEntry, admission *admissionEntry) (map[string]struct{}, string, error) {
 	// newDBCtx creates a fresh, short-lived (30s) context for a single DB
 	// write, deliberately rooted in context.Background() rather than p.ctx or
 	// execCtx: it must outlive both the pump's own lifecycle (Ack/Nack/
@@ -127,6 +128,33 @@ func (p *RunQueuePump) executeEntrySync(ctx context.Context, leased *RunQueueEnt
 	// execution context is cancelled, which is exactly when they matter most.
 	execCtx, execCancel := context.WithCancel(ctx)
 	defer execCancel()
+	assistantIDs := make(map[string]struct{})
+	var terminalAssistantID string
+	var assistantIDMu sync.Mutex
+	identitySealed := false
+	execCtx = WithExecutionAssistantIdentity(execCtx, func(id string) {
+		assistantIDMu.Lock()
+		if identitySealed || id == "" {
+			assistantIDMu.Unlock()
+			return
+		}
+		assistantIDs[id] = struct{}{}
+		terminalAssistantID = id
+		assistantIDMu.Unlock()
+		admission.publishAssistantID(id)
+		recordDrainAssistantIdentityLive(ctx, id)
+	})
+	sealAssistantIdentities := func() {
+		assistantIDMu.Lock()
+		identitySealed = true
+		assistantIDMu.Unlock()
+		admission.sealAssistantIDs()
+	}
+	resultIdentity := func() (map[string]struct{}, string) {
+		assistantIDMu.Lock()
+		defer assistantIDMu.Unlock()
+		return cloneAssistantIDs(assistantIDs), terminalAssistantID
+	}
 
 	// leaseLost tracks whether this execution lost its lease ownership during
 	// the renewal loop. When true, we skip all outcome writes (Ack/Nack/TerminalFail)
@@ -166,7 +194,8 @@ func (p *RunQueuePump) executeEntrySync(ctx context.Context, leased *RunQueueEnt
 		if termErr := p.cfg.Sessions.TerminalFailRunQueueEntry(parseDBCtx, leased.ID, p.cfg.PumpInstanceID); termErr != nil {
 			slog.Error("run_queue_pump: terminal fail failed", "id", leased.ID, "err", termErr, "instance_id", p.cfg.PumpInstanceID)
 		}
-		return err
+		ids, terminalID := resultIdentity()
+		return ids, terminalID, err
 	}
 
 	// Renew this lease periodically while Coordinator.Run is in flight.
@@ -534,6 +563,7 @@ func (p *RunQueuePump) executeEntrySync(ctx context.Context, leased *RunQueueEnt
 
 	// Attempt to execute via coordinator.Run
 	_, err := p.cfg.Coordinator.Run(execCtx, callData)
+	sealAssistantIdentities()
 
 	// Stop renewing IMMEDIATELY once Run returns, synchronously, before any
 	// of the outcome-handling below touches the row's lease (Ack/Nack/
@@ -570,7 +600,8 @@ func (p *RunQueuePump) executeEntrySync(ctx context.Context, leased *RunQueueEnt
 	// to stop the in-flight Coordinator.Run as early as possible.
 	if leaseLost.Load() {
 		slog.Debug("run_queue_pump: execution aborted due to lease loss, skipping outcome write (reconciliation deferred to new owner)", "id", leased.ID, "session_id", leased.SessionID, "instance_id", p.cfg.PumpInstanceID)
-		return errLeaseLost
+		ids, terminalID := resultIdentity()
+		return ids, terminalID, errLeaseLost
 	}
 
 	// Fresh 30s budget for the outcome write below, created only now —
@@ -616,10 +647,12 @@ func (p *RunQueuePump) executeEntrySync(ctx context.Context, leased *RunQueueEnt
 		// travels this same path rather than being mistaken for a commit.
 		if _, ackErr := p.cfg.Sessions.AckRunQueueEntry(dbCtx, leased.ID, p.cfg.PumpInstanceID); ackErr != nil {
 			slog.Error("run_queue_pump: ack failed after success — the turn ran but was not committed, and may run again after the lease expires", "id", leased.ID, "session_id", leased.SessionID, "err", ackErr, "instance_id", p.cfg.PumpInstanceID)
-			return fmt.Errorf("%w: %w", ErrTurnCommitFailed, ackErr)
+			ids, terminalID := resultIdentity()
+			return ids, terminalID, fmt.Errorf("%w: %w", ErrTurnCommitFailed, ackErr)
 		}
 		slog.Info("run_queue_pump: executed entry successfully", "id", leased.ID, "session_id", leased.SessionID, "instance_id", p.cfg.PumpInstanceID)
-		return nil
+		ids, terminalID := resultIdentity()
+		return ids, terminalID, nil
 	}
 
 	// ErrCallQueuedNotExecuted means the call was appended to a genuinely
@@ -663,7 +696,8 @@ func (p *RunQueuePump) executeEntrySync(ctx context.Context, leased *RunQueueEnt
 		p.busyBackoffUntil[leased.SessionID] = time.Now().Add(p.leaseTTL())
 		p.busyBackoffMu.Unlock()
 		slog.Debug("run_queue_pump: call was queued into an externally-owned session, backed off locally without an attempt penalty", "id", leased.ID, "session_id", leased.SessionID, "instance_id", p.cfg.PumpInstanceID)
-		return err
+		ids, terminalID := resultIdentity()
+		return ids, terminalID, err
 	}
 
 	// Failure: determine if it's retryable or terminal
@@ -676,7 +710,8 @@ func (p *RunQueuePump) executeEntrySync(ctx context.Context, leased *RunQueueEnt
 			slog.Error("run_queue_pump: terminal fail failed", "id", leased.ID, "err", termErr, "instance_id", p.cfg.PumpInstanceID)
 		}
 		slog.Warn("run_queue_pump: entry terminal failed (already attempted)", "id", leased.ID, "session_id", leased.SessionID, "err", err, "instance_id", p.cfg.PumpInstanceID)
-		return err
+		ids, terminalID := resultIdentity()
+		return ids, terminalID, err
 	}
 
 	// SessionLockBusyError means another live process legitimately holds the
@@ -692,7 +727,8 @@ func (p *RunQueuePump) executeEntrySync(ctx context.Context, leased *RunQueueEnt
 			slog.Error("run_queue_pump: no-penalty nack failed", "id", leased.ID, "err", nackErr, "instance_id", p.cfg.PumpInstanceID)
 		}
 		slog.Debug("run_queue_pump: entry blocked by session lock contention, will retry without attempt penalty", "id", leased.ID, "session_id", leased.SessionID, "instance_id", p.cfg.PumpInstanceID)
-		return err
+		ids, terminalID := resultIdentity()
+		return ids, terminalID, err
 	}
 
 	// Retryable failure: nack and let the pump retry on next tick
@@ -700,5 +736,6 @@ func (p *RunQueuePump) executeEntrySync(ctx context.Context, leased *RunQueueEnt
 		slog.Error("run_queue_pump: nack failed", "id", leased.ID, "err", nackErr, "instance_id", p.cfg.PumpInstanceID)
 	}
 	slog.Debug("run_queue_pump: entry failed, will retry", "id", leased.ID, "session_id", leased.SessionID, "err", err, "attempts", leased.Attempts+1, "instance_id", p.cfg.PumpInstanceID)
-	return err
+	ids, terminalID := resultIdentity()
+	return ids, terminalID, err
 }

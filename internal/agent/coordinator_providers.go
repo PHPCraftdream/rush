@@ -414,13 +414,22 @@ func mergeCallOptions(sessionID string, model Model, cfg config.ProviderConfig) 
 // rebuildPinnedModel rebuilds only the provider client for a previously
 // selected model. The selected model config and its catalog metadata stay
 // pinned; refreshed provider state must not re-resolve the current defaults.
-func (c *coordinator) rebuildPinnedModel(ctx context.Context, model Model, providerCfg config.ProviderConfig, isSubAgent bool) (Model, error) {
+//
+// cfg MUST be the SAME snapshot providerCfg was resolved from (round-9 F6
+// residual): this rebuild used to receive providerCfg from the caller's
+// fetch but take the global network/debug defaults from its own second,
+// later c.cfg.Snapshot() — a reload landing between the two reads built
+// buildProvider(cfgB, providerCfgA), a provider+network pairing that never
+// existed in any single config generation (e.g. generation A's provider
+// DNS with generation B's global proxy). Threading the caller's snapshot
+// down — the same pattern buildProvider and resolveProviderHTTPClient
+// already use — makes the pair atomic by construction. Callers get both
+// values from one read via rebuildInputs.
+func (c *coordinator) rebuildPinnedModel(ctx context.Context, cfg *config.Config, model Model, providerCfg config.ProviderConfig, isSubAgent bool) (Model, error) {
 	if providerCfg.ID == "" {
 		return Model{}, errModelProviderNotConfigured
 	}
 
-	// One atomic snapshot for this rebuild's provider + network reads (F6).
-	cfg, _ := c.cfg.Snapshot()
 	provider, err := c.buildProvider(cfg, providerCfg, model.ModelCfg, isSubAgent)
 	if err != nil {
 		return Model{}, err
@@ -438,6 +447,22 @@ func (c *coordinator) rebuildPinnedModel(ctx context.Context, model Model, provi
 	model.Model = languageModel
 	model.FlatRate = providerCfg.FlatRate
 	return model, nil
+}
+
+// rebuildInputs returns the config snapshot and the named provider's config
+// FROM THAT SAME snapshot, for the pinned-model rebuild paths (sub-agent
+// refresh, summarize refresh). Fetching both from one store read is the
+// whole point (round-9 F6 residual): the previous flow read providerCfg via
+// currentProviderConfig's snapshot and let rebuildPinnedModel take a
+// second, separately-timed snapshot for the globals, so a reload landing
+// between the two reads handed the rebuild a mixed cross-generation pair.
+func (c *coordinator) rebuildInputs(providerID string) (*config.Config, config.ProviderConfig, error) {
+	cfg, _ := c.cfg.Snapshot()
+	providerCfg, ok := cfg.Providers.Get(providerID)
+	if !ok {
+		return nil, config.ProviderConfig{}, errModelProviderNotConfigured
+	}
+	return cfg, providerCfg, nil
 }
 
 func (c *coordinator) currentProviderConfig(providerID string) (config.ProviderConfig, error) {

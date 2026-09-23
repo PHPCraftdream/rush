@@ -151,7 +151,9 @@ func TestMailbox_ReclaimReplacementOrKeep_StillPushesToFrontAfterMigration(t *te
 
 	got := mb.reclaimReplacementOrKeep(callA)
 
-	require.Equal(t, callD, got, "D (the replacement) must be returned to run next")
+	require.Equal(t, callD.SessionID, got.SessionID, "D (the replacement) must be returned to run next")
+	require.Equal(t, callD.Prompt, got.Prompt)
+	require.True(t, got.replacementHandoff)
 	require.Nil(t, mb.replacement, "replacement must be consumed")
 	require.Equal(t, []SessionAgentCall{callA, callB}, mb.submitted,
 		"A must be pushed to the FRONT of submitted (ahead of B), preserving FIFO order — "+

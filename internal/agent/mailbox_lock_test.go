@@ -583,7 +583,9 @@ func TestMailbox_DrainAfterCancel_ClearsStaleCancelHandle(t *testing.T) {
 		next, ok := mb.drainAfterCancel()
 
 		require.True(t, ok)
-		require.Equal(t, replacement, next)
+		require.Equal(t, replacement.SessionID, next.SessionID)
+		require.Equal(t, replacement.Prompt, next.Prompt)
+		require.True(t, next.replacementHandoff, "replacement extraction must preserve callback provenance")
 		require.Nil(t, mb.current.cancel, "current.cancel must be cleared on the replacement branch — otherwise "+
 			"Cancel()/InterruptAndReplace() call the stale, already-cancelled PRIOR generation's cancel func "+
 			"instead of ever reaching the dispatcherCancel fallback (round 13 review, fourth instance)")

@@ -259,6 +259,7 @@ func (mb *mailbox) drainOrReleaseFinal(
 		if mb.replacement != nil {
 			next := *mb.replacement
 			mb.replacement = nil
+			next.replacementHandoff = true
 			mb.current.cancel = nil
 			mb.mu.Unlock()
 			return next, true, nil, nil

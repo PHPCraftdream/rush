@@ -115,11 +115,11 @@ func (c *coordinator) Summarize(ctx context.Context, sessionID string, snapshot 
 
 	currentSnapshot := snapshot
 	rebuildSnapshot := func() error {
-		freshProviderCfg, err := c.currentProviderConfig(currentSnapshot.model.ModelCfg.Provider)
+		cfg, freshProviderCfg, err := c.rebuildInputs(currentSnapshot.model.ModelCfg.Provider)
 		if err != nil {
 			return err
 		}
-		freshModel, err := c.rebuildPinnedModel(ctx, currentSnapshot.model, freshProviderCfg, false)
+		freshModel, err := c.rebuildPinnedModel(ctx, cfg, currentSnapshot.model, freshProviderCfg, false)
 		if err != nil {
 			return fmt.Errorf("failed to rebuild summarize model: %w", err)
 		}

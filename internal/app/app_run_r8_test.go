@@ -143,3 +143,58 @@ func TestExecuteRunReconciliationIgnoresLaterSessionOwnersRow(t *testing.T) {
 	require.Equal(t, "terminal text", result.FinalText,
 		"A's own reconciliation must not pick up B's later row on the same session")
 }
+
+// TestExecuteRunReconciliationExcludesLaterSessionOwnersToolCalls pins the
+// R8-3 residual (2026-09-22 round-9 audit): even with the ownID filter
+// correctly keeping FinalText scoped to A's own row, tool-call collection
+// used to run over EVERY row in the run's baseline-filtered message list
+// regardless of ownID -- so a later, independent B's own tool call still
+// landed in A's ToolCalls even though A's FinalText was already correct.
+// B's row here carries a tool call created AFTER A's own terminal row, in
+// the same afterRun hook ordering as
+// TestExecuteRunReconciliationIgnoresLaterSessionOwnersRow.
+func TestExecuteRunReconciliationExcludesLaterSessionOwnersToolCalls(t *testing.T) {
+	h := newCycle6RunApp(t)
+	underlying := h.app.Messages
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	h.app.AgentCoordinator = &cycle7BarrierCoordinator{
+		Coordinator: h.app.AgentCoordinator,
+		entered:     entered,
+		release:     release,
+		afterRun: func(sessionID string) error {
+			created, err := underlying.Create(context.Background(), sessionID, message.CreateMessageParams{
+				Role: message.Assistant,
+				Parts: []message.ContentPart{
+					message.TextContent{Text: "hijacked answer"},
+					message.ToolCall{ID: "b-tool-1", Name: "hijacked_tool"},
+				},
+			})
+			if err != nil {
+				return err
+			}
+			created.AddFinish(message.FinishReasonEndTurn, "", "")
+			return underlying.Update(context.Background(), created)
+		},
+	}
+	go func() {
+		<-entered
+		close(release)
+	}()
+
+	result, err := h.app.ExecuteRun(context.Background(), RunRequest{
+		Prompt:            "answer immediately",
+		Mode:              RunModeJSON,
+		ContinueSessionID: h.sess.ID,
+		Stdout:            io.Discard,
+		Stderr:            io.Discard,
+		HideSpinner:       true,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, "terminal text", result.FinalText)
+	for _, tc := range result.ToolCalls {
+		require.NotEqual(t, "hijacked_tool", tc.Name,
+			"R8-3 residual: a later session owner's tool call must not be folded into this reconciliation's ToolCalls")
+	}
+}

@@ -142,8 +142,7 @@ func (c *coordinator) refreshOAuth2Token(ctx context.Context, providerCfg config
 		// R5-2: refresh rides the SAME provider network policy (proxy/DNS
 		// transport) inference uses, so an auth endpoint reachable only
 		// through the configured route cannot split inference (works)
-		// from refresh (fails). One atomic read supplies the global
-		// network defaults for this standalone call. resolveProviderHTTPClient
+		// from refresh (fails). resolveProviderHTTPClient
 		// returns (nil, nil) when NEITHER a proxy/DNS/DoH override NOR
 		// debug logging is configured at all — that nil legitimately
 		// means "no policy to enforce", and the helpers' historical
@@ -154,7 +153,17 @@ func (c *coordinator) refreshOAuth2Token(ctx context.Context, providerCfg config
 		// explicitly meant to require (R5-2 residual, 2026-09-22 round-8
 		// audit — the earlier "log and fall back" version of this code
 		// did exactly that). Refuse instead of downgrading silently.
-		httpClient, clientErr := c.resolveProviderHTTPClient(c.cfg.Config(), providerCfg)
+		// F6 round-11: pair a fresh same-generation provider entry with cfg
+		// instead of the callers stale one -- same cross-generation bug
+		// rebuildInputs closed for the pinned-rebuild paths. Falls back to
+		// the callers copy if the provider is gone from the fresh snapshot.
+		cfg, _ := c.cfg.Snapshot()
+		if cfg.Providers != nil {
+			if freshProviderCfg, ok := cfg.Providers.Get(providerCfg.ID); ok {
+				providerCfg = freshProviderCfg
+			}
+		}
+		httpClient, clientErr := c.resolveProviderHTTPClient(cfg, providerCfg)
 		if clientErr != nil {
 			return fmt.Errorf("resolve provider network client for OAuth refresh: %w", clientErr)
 		}
@@ -177,8 +186,9 @@ func (c *coordinator) refreshApiKeyTemplate(ctx context.Context, providerCfg con
 		return err
 	}
 
-	providerCfg.APIKey = newAPIKey
-	c.cfg.SetProviderRuntimeConfig(providerCfg.ID, providerCfg)
+	if !c.cfg.SetProviderRuntimeAPIKeyIfTemplate(providerCfg.ID, providerCfg.APIKeyTemplate, providerCfg.APIKey, newAPIKey) {
+		return errUnauthorizedRefreshUnavailable
+	}
 
 	if err := c.UpdateModels(ctx); err != nil {
 		return err

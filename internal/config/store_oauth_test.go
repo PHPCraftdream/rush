@@ -6,6 +6,8 @@ package config
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -287,7 +289,6 @@ func TestSetProviderRuntimeConfig_VisibleImmediatelyAndDiscardedByReload(t *test
 func TestRefreshOAuthToken_SurvivesReloadDuringNetworkCall(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "rush.json")
-	require.NoError(t, os.WriteFile(configPath, []byte("{}"), 0o600))
 
 	oldToken := &oauth.Token{
 		AccessToken:  "old-access-token",
@@ -295,6 +296,13 @@ func TestRefreshOAuthToken_SurvivesReloadDuringNetworkCall(t *testing.T) {
 		ExpiresIn:    3600,
 		ExpiresAt:    time.Now().Add(-time.Hour).Unix(), // expired, forces refresh
 	}
+	content, err := json.Marshal(map[string]any{
+		"providers": map[string]any{
+			"hyper": map[string]any{"api_key": oldToken.AccessToken, "oauth": oldToken},
+		},
+	})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(configPath, content, 0o600))
 	providers := csync.NewMap[string, ProviderConfig]()
 	providers.Set(hyperp.Name, ProviderConfig{
 		ID:         hyperp.Name,
@@ -401,4 +409,112 @@ func TestRefreshOAuthToken_SurvivesReloadDuringNetworkCall(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, "old-access-token", orphanedPC.APIKey,
 		"the orphaned pre-reload map must be untouched by RefreshOAuthToken's write")
+}
+
+func TestRefreshOAuthToken_DiskReplacementWinsConcurrentRefresh(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "rush.json")
+	oldToken := &oauth.Token{AccessToken: "old-access", RefreshToken: "refresh-old", ExpiresIn: 3600, ExpiresAt: time.Now().Add(-time.Hour).Unix()}
+	replacement := &oauth.Token{AccessToken: "replacement-access", RefreshToken: "refresh-new", ExpiresIn: 3600, ExpiresAt: time.Now().Add(time.Hour).Unix()}
+	content, err := json.Marshal(map[string]any{
+		"providers": map[string]any{
+			"hyper": map[string]any{"api_key": oldToken.AccessToken, "oauth": oldToken},
+		},
+	})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(configPath, content, 0o600))
+	providers := csync.NewMap[string, ProviderConfig]()
+	providers.Set(hyperp.Name, ProviderConfig{ID: hyperp.Name, APIKey: oldToken.AccessToken, OAuthToken: oldToken})
+	store := newTestConfigStore(testStoreOpts{config: &Config{Providers: providers}, globalDataPath: configPath})
+
+	reachedNetwork := make(chan struct{})
+	releaseNetwork := make(chan struct{})
+	original := hyperExchangeTokenFn
+	hyperExchangeTokenFn = func(context.Context, *http.Client, string) (*oauth.Token, error) {
+		close(reachedNetwork)
+		<-releaseNetwork
+		return &oauth.Token{AccessToken: "stale-refresh-result", RefreshToken: "refresh-stale", ExpiresIn: 3600, ExpiresAt: time.Now().Add(time.Hour).Unix()}, nil
+	}
+	t.Cleanup(func() { hyperExchangeTokenFn = original })
+	errCh := make(chan error, 1)
+	go func() { errCh <- store.RefreshOAuthToken(context.Background(), ScopeGlobal, hyperp.Name) }()
+	select {
+	case <-reachedNetwork:
+	case <-time.After(10 * time.Second):
+		t.Fatal("refresh did not reach network call")
+	}
+
+	require.NoError(t, store.SetConfigFields(ScopeGlobal, map[string]any{
+		"providers.hyper.api_key": replacement.AccessToken,
+		"providers.hyper.oauth":   replacement,
+	}))
+	close(releaseNetwork)
+	select {
+	case err := <-errCh:
+		require.ErrorContains(t, err, "credentials changed")
+	case <-time.After(10 * time.Second):
+		t.Fatal("refresh did not return")
+	}
+	diskToken, err := store.loadTokenFromDisk(ScopeGlobal, hyperp.Name)
+	require.NoError(t, err)
+	require.Equal(t, replacement.AccessToken, diskToken.AccessToken)
+	require.Equal(t, replacement.RefreshToken, diskToken.RefreshToken)
+}
+
+func TestRefreshOAuthToken_CommittedDurabilityErrorSynchronizesMemory(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "rush.json")
+	oldToken := &oauth.Token{AccessToken: "old-access", RefreshToken: "refresh-old", ExpiresIn: 3600, ExpiresAt: time.Now().Add(-time.Hour).Unix()}
+	content, err := json.Marshal(map[string]any{
+		"providers": map[string]any{
+			hyperp.Name: map[string]any{"api_key": oldToken.AccessToken, "oauth": oldToken},
+		},
+	})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(configPath, content, 0o600))
+	providers := csync.NewMap[string, ProviderConfig]()
+	providers.Set(hyperp.Name, ProviderConfig{ID: hyperp.Name, APIKey: oldToken.AccessToken, OAuthToken: oldToken})
+	store := newTestConfigStore(testStoreOpts{config: &Config{Providers: providers}, globalDataPath: configPath})
+
+	refreshed := &oauth.Token{AccessToken: "new-access", RefreshToken: "refresh-new", ExpiresIn: 3600, ExpiresAt: time.Now().Add(time.Hour).Unix()}
+	originalExchange := hyperExchangeTokenFn
+	hyperExchangeTokenFn = func(context.Context, *http.Client, string) (*oauth.Token, error) {
+		return refreshed, nil
+	}
+	t.Cleanup(func() { hyperExchangeTokenFn = originalExchange })
+
+	durabilityErr := errors.New("injected parent fsync failure")
+	configTestHooks.Lock()
+	originalSyncParent := configTestHooks.syncParent
+	configTestHooks.syncParent = func(string) error { return durabilityErr }
+	configTestHooks.Unlock()
+	t.Cleanup(func() {
+		configTestHooks.Lock()
+		configTestHooks.syncParent = originalSyncParent
+		configTestHooks.Unlock()
+	})
+
+	err = store.RefreshOAuthToken(context.Background(), ScopeGlobal, hyperp.Name)
+	var outcome *CommitOutcome
+	require.ErrorAs(t, err, &outcome)
+	require.True(t, outcome.Committed)
+	require.ErrorIs(t, err, durabilityErr)
+
+	current, ok := store.Config().Providers.Get(hyperp.Name)
+	require.True(t, ok)
+	require.Equal(t, refreshed.AccessToken, current.APIKey)
+	require.Equal(t, refreshed.RefreshToken, current.OAuthToken.RefreshToken)
+	diskToken, err := store.loadTokenFromDisk(ScopeGlobal, hyperp.Name)
+	require.NoError(t, err)
+	require.Equal(t, refreshed.AccessToken, diskToken.AccessToken)
+}
+
+func TestSetupGitHubCopilotClonesExtraHeaders(t *testing.T) {
+	provider := ProviderConfig{ExtraHeaders: map[string]string{"X-Custom": "kept"}}
+	publishedHeaders := provider.ExtraHeaders
+	provider.SetupGitHubCopilot()
+	require.Equal(t, map[string]string{"X-Custom": "kept"}, publishedHeaders)
+	require.Equal(t, "kept", provider.ExtraHeaders["X-Custom"])
+	provider.ExtraHeaders["X-Custom"] = "changed"
+	require.Equal(t, "kept", publishedHeaders["X-Custom"])
 }

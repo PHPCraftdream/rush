@@ -42,9 +42,8 @@ type terminalReconciliation struct {
 // that releases its session before its own reconciliation runs can have a
 // legitimately later B's answer on the same session picked up instead,
 // since both rows are equally "new" relative to A's baseline. ownID is the
-// additional filter; baseline stays in effect either way. Empty ownID
-// (the recorder was never armed, or the call ended before any message was
-// created) falls back to the historical baseline-only selection.
+// additional filter; baseline stays in effect either way. Empty ownID is
+// accepted only for a durable continuation with explicit queue ownership.
 func (app *App) reconcileTerminalMessage(
 	ctx context.Context,
 	sessionID string,
@@ -52,6 +51,7 @@ func (app *App) reconcileTerminalMessage(
 	baselineKnown bool,
 	runStart time.Time,
 	ownID string,
+	ownIDs map[string]struct{},
 ) (terminalReconciliation, error) {
 	messages, err := app.Messages.List(ctx, sessionID)
 	if err != nil {
@@ -71,16 +71,55 @@ func (app *App) reconcileTerminalMessage(
 		// walk below can tell a same-attempt tool-loop step apart from
 		// a separate turn's boundary.
 		runMessages []message.Message
+		// pastOwn tracks whether this call's own row (ownID) has already
+		// been observed (R8-3 residual, 2026-09-22 round-9 audit). A row
+		// created AFTER this call's own terminal row cannot belong to
+		// this call -- this call's own dispatcher returns as soon as it
+		// writes that row -- so it must belong to a later, independent
+		// caller on the same session. Without this, tool calls from that
+		// later caller's own turn were folded into THIS reconciliation's
+		// inventory even though the ownID filter above already correctly
+		// keeps its FinalText out.
+		pastOwn bool
+		toolIDs = make(map[string]struct{})
 	)
 	for _, msg := range messages {
 		if !isRunMessage(msg, baselineIDs, baselineKnown) {
 			continue
 		}
-		runMessages = append(runMessages, msg)
-		if msg.Role != message.Assistant {
+		if ownID == "" {
 			continue
 		}
+		if pastOwn {
+			continue
+		}
+		if msg.Role != message.Assistant {
+			switch msg.Role {
+			case message.Tool:
+				for _, part := range msg.Parts {
+					if result, ok := part.(message.ToolResult); ok {
+						if _, belongs := toolIDs[result.ToolCallID]; belongs {
+							runMessages = append(runMessages, msg)
+							delete(toolIDs, result.ToolCallID)
+						}
+					}
+				}
+			case message.User:
+				if agent.IsContinuationPrompt(msg.FullText()) {
+					runMessages = append(runMessages, msg)
+				}
+			}
+			continue
+		}
+		if _, owned := ownIDs[msg.ID]; !owned {
+			toolIDs = make(map[string]struct{})
+			continue
+		}
+		runMessages = append(runMessages, msg)
 		for _, call := range msg.ToolCalls() {
+			if call.ID != "" {
+				toolIDs[call.ID] = struct{}{}
+			}
 			if call.ID != "" {
 				if _, ok := seen[call.ID]; ok {
 					continue
@@ -92,9 +131,12 @@ func (app *App) reconcileTerminalMessage(
 			}
 			calls[call.Name]++
 		}
-		if msg.IsFinished() && (ownID == "" || msg.ID == ownID) {
+		if msg.IsFinished() && msg.ID == ownID {
 			terminal = msg
 			found = true
+		}
+		if msg.ID == ownID {
+			pastOwn = true
 		}
 	}
 	if !found {

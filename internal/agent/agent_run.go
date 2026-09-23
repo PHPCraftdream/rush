@@ -515,7 +515,9 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 		// A no-op (returns call unchanged) on every iteration where no
 		// interrupt landed in this exact window, which is the overwhelming
 		// majority of iterations.
+		previousCall := call
 		call = mb.reclaimReplacementOrKeep(call)
+		inheritReplacementIdentityCallback(&previousCall, &call)
 		if err := persistCallModels(call); err != nil {
 			if durableErr := a.restartOrphanedWithRetry([]SessionAgentCall{call}); durableErr != nil {
 				return nil, fmt.Errorf("%w; failed to durably recover the admitted call: %v", err, durableErr)
@@ -573,8 +575,19 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 		if !hasNext {
 			return result, err
 		}
+		inheritReplacementIdentityCallback(&call, &next)
 		call = next
 	}
+}
+
+func inheritReplacementIdentityCallback(previous, next *SessionAgentCall) {
+	if !next.replacementHandoff {
+		return
+	}
+	if next.OnAssistantMessageCreated == nil {
+		next.OnAssistantMessageCreated = previous.OnAssistantMessageCreated
+	}
+	next.replacementHandoff = false
 }
 
 // runPreReservedOwnership is Run's body for a call whose ownership era was

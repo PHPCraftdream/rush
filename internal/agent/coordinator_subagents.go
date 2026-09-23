@@ -205,11 +205,11 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 		if callCreds != nil {
 			return errUnauthorizedRefreshUnavailable
 		}
-		freshProviderCfg, err := c.currentProviderConfig(model.ModelCfg.Provider)
+		cfg, freshProviderCfg, err := c.rebuildInputs(model.ModelCfg.Provider)
 		if err != nil {
 			return err
 		}
-		freshModel, err := c.rebuildPinnedModel(ctx, model, freshProviderCfg, true)
+		freshModel, err := c.rebuildPinnedModel(ctx, cfg, model, freshProviderCfg, true)
 		if err != nil {
 			return fmt.Errorf("failed to rebuild sub-agent model: %w", err)
 		}

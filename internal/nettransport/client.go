@@ -31,7 +31,9 @@ const (
 
 	// resolvedDialBudget bounds the WHOLE fallback sequence across a
 	// resolved address list (all A records, then AAAA), rather than
-	// each attempt separately.
+	// each attempt separately. That total is divided across the
+	// candidates (see perAddressTimeout), so a slow — not only
+	// refused — early address cannot swallow the whole budget.
 	resolvedDialBudget = 2 * transportDialTimeout
 )
 
@@ -143,15 +145,27 @@ func buildTransportWithCache(cfg config.NetworkConfig, cache *transportCache) (*
 // resolvedDialer dials "host:port" addresses, resolving non-IP
 // hostnames through the custom resolver first, then falls back
 // through the full resolved address list (A records then AAAA) under
-// one overall budget (resolvedDialBudget). TLS SNI and certificate
-// verification are untouched: http.Transport layers TLS on the
-// returned connection using the request's original hostname. When
+// one overall budget (resolvedDialBudget). That budget is shared
+// across the candidates: each attempt gets a slice of the remaining
+// budget, capped at transportDialTimeout, so a slow — not merely
+// refused — early candidate cannot starve a later reachable one. TLS
+// SNI and certificate verification are untouched: http.Transport layers TLS
+// on the returned connection using the request's original hostname. When
 // proxyDial is non-nil the TARGET connection also goes through the
 // proxy; dialing the already-resolved IP is deliberate — it avoids a
 // second, redundant name resolution inside the SOCKS5 server, since
 // with a custom resolver configured the client-side answer is
 // authoritative.
 func resolvedDialer(resolver resolveFunc, proxyDial dialFunc) dialFunc {
+	return resolvedDialerWithBudget(resolver, proxyDial, resolvedDialBudget)
+}
+
+// resolvedDialerWithBudget is resolvedDialer with the overall dial
+// budget injected instead of the fixed resolvedDialBudget, so tests
+// can shrink it — the same seam newDoHResolver uses for its timeout.
+func resolvedDialerWithBudget(resolver resolveFunc, proxyDial dialFunc,
+	budget time.Duration,
+) dialFunc {
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
 		host, port, err := net.SplitHostPort(addr)
 		if err != nil {
@@ -171,8 +185,9 @@ func resolvedDialer(resolver resolveFunc, proxyDial dialFunc) dialFunc {
 				targets = append(targets, net.JoinHostPort(ip.String(), port))
 			}
 		}
-		dialCtx, cancel := context.WithTimeout(ctx, resolvedDialBudget)
+		dialCtx, cancel := context.WithTimeout(ctx, budget)
 		defer cancel()
+		deadline, _ := dialCtx.Deadline() // always set by WithTimeout
 		errs := make([]error, 0, len(targets))
 		for i, target := range targets {
 			// The budget is only consulted from the second attempt
@@ -180,7 +195,11 @@ func resolvedDialer(resolver resolveFunc, proxyDial dialFunc) dialFunc {
 			if i > 0 && dialCtx.Err() != nil {
 				break
 			}
-			conn, err := dialTarget(dialCtx, network, target, proxyDial)
+			remaining := max(0, time.Until(deadline))
+			attemptCtx, attemptCancel := context.WithTimeout(
+				dialCtx, perAddressTimeout(remaining, len(targets)-i))
+			conn, err := dialTarget(attemptCtx, network, target, proxyDial)
+			attemptCancel()
 			if err == nil {
 				return conn, nil
 			}
@@ -200,4 +219,14 @@ func dialTarget(ctx context.Context, network, target string,
 	}
 	d := net.Dialer{Timeout: transportDialTimeout}
 	return d.DialContext(ctx, network, target)
+}
+
+// perAddressTimeout gives early candidates a smaller share so one slow
+// address leaves later candidates time to connect. The total deadline
+// remains authoritative and the final candidate can use all remaining time.
+func perAddressTimeout(remaining time.Duration, candidates int) time.Duration {
+	if candidates <= 1 {
+		return transportDialTimeout
+	}
+	return min(remaining/(2*time.Duration(candidates)), transportDialTimeout)
 }

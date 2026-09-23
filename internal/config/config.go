@@ -217,6 +217,15 @@ func (c *ProviderConfig) ToProvider() catwalk.Provider {
 }
 
 func (c *ProviderConfig) SetupGitHubCopilot() {
+	if c.ExtraHeaders == nil {
+		c.ExtraHeaders = make(map[string]string)
+	} else {
+		headers := make(map[string]string, len(c.ExtraHeaders))
+		for key, value := range c.ExtraHeaders {
+			headers[key] = value
+		}
+		c.ExtraHeaders = headers
+	}
 	maps.Copy(c.ExtraHeaders, copilot.Headers())
 }
 

@@ -16,6 +16,7 @@ import (
 	"io"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"charm.land/fantasy"
@@ -118,6 +119,7 @@ type executeRunLoop struct {
 	// call sites to scope reconciliation to THIS phase's own runInternal
 	// invocation instead of any newer, not-in-baseline row.
 	callResultRec *agent.CallResultRecorder
+	eventOwner    *agent.CallResultRecorder
 }
 
 // runTurnPhase runs one "snapshot baseline → subscribe (if needed) →
@@ -131,6 +133,7 @@ func (s *executeRunLoop) runTurnPhase(prompt string, runFn turnRunFunc) (*RunRes
 	// turn are separate runInternal invocations, each with its own result
 	// identity.
 	s.callResultRec = agent.NewCallResultRecorder()
+	s.eventOwner = s.callResultRec
 	startTurn := func() {
 		if executeRunBeforeTurnLaunchSeam != nil {
 			executeRunBeforeTurnLaunchSeam()
@@ -163,7 +166,7 @@ func (s *executeRunLoop) runTurnPhase(prompt string, runFn turnRunFunc) (*RunRes
 	s.seenToolCalls = make(map[string]bool)
 	s.toolCallCounts = make(map[string]int)
 	startTurn()
-	drainDone := make(chan error, 1)
+	drainDone := make(chan drainCompletion, 1)
 
 	for {
 		if s.progress && s.stderrTTY {
@@ -177,6 +180,7 @@ func (s *executeRunLoop) runTurnPhase(prompt string, runFn turnRunFunc) (*RunRes
 			if executeRunDoneCaseSeam != nil {
 				executeRunDoneCaseSeam()
 			}
+			s.callResultRec.Seal()
 			if err := s.drainMessageEvents(); err != nil {
 				return nil, err
 			}
@@ -211,16 +215,46 @@ func (s *executeRunLoop) runTurnPhase(prompt string, runFn turnRunFunc) (*RunRes
 			// synchronous-in-place doesn't work) — this select loop keeps
 			// servicing messageEvents (and ctx.Done()) the whole time.
 			if isCanceled && s.app.RunQueuePump != nil {
-				go func(originalErr error) {
-					result, drainErr := s.app.RunQueuePump.DrainSessionNow(s.ctx, s.sess.ID)
-					drainDone <- drainOutcomeError(s.sess.ID, result, drainErr, originalErr)
-				}(runErr)
+				originalOwner := s.eventOwner
+				recorder := agent.NewCallResultRecorder()
+				assistantIDs := make(map[string]struct{})
+				var terminalAssistantID string
+				var assistantIDsMu sync.Mutex
+				captureAssistantID := func(id string) {
+					if id == "" {
+						return
+					}
+					if _, existed := s.baselineIDs[id]; existed {
+						return
+					}
+					assistantIDsMu.Lock()
+					assistantIDs[id] = struct{}{}
+					terminalAssistantID = id
+					recorder.RecordConfirmed(id)
+					assistantIDsMu.Unlock()
+				}
+				s.eventOwner = recorder
+				go func(originalErr error, recorder *agent.CallResultRecorder, originalOwner *agent.CallResultRecorder) {
+					drainCtx := session.WithDrainAssistantIdentity(s.ctx, func(ids map[string]struct{}, terminalID string) {
+						confirmedTerminal := recordDrainAssistantIDs(&assistantIDsMu, recorder, assistantIDs, s.baselineIDs, ids, terminalID)
+						assistantIDsMu.Lock()
+						terminalAssistantID = confirmedTerminal
+						assistantIDsMu.Unlock()
+					})
+					drainCtx = session.WithDrainAssistantIdentityLive(drainCtx, captureAssistantID)
+					result, drainErr := s.app.RunQueuePump.DrainSessionNow(drainCtx, s.sess.ID)
+					assistantIDsMu.Lock()
+					confirmedIDs := cloneAssistantIDSet(assistantIDs)
+					confirmedTerminalID := terminalAssistantID
+					assistantIDsMu.Unlock()
+					drainDone <- drainCompletion{result: result, err: drainOutcomeError(s.sess.ID, result, drainErr, originalErr), recorder: recorder, originalOwner: originalOwner, assistantIDs: confirmedIDs, terminalAssistantID: confirmedTerminalID}
+				}(runErr, recorder, originalOwner)
 				continue
 			}
 
 			return s.finish(runErr)
 
-		case drainErr := <-drainDone:
+		case completion := <-drainDone:
 			// R8-3's ownID scoping only covers a message THIS phase's own
 			// runInternal invocation produced. A drained continuation
 			// (DrainSessionNow, task #421/P0-1) executes through the
@@ -231,8 +265,8 @@ func (s *executeRunLoop) runTurnPhase(prompt string, runFn turnRunFunc) (*RunRes
 			// pre-R8-3 baseline-only scan, exactly what the original P0-1
 			// fix relies on to find the drained continuation's own
 			// committed row.
-			s.callResultRec = agent.NewCallResultRecorder()
-			return s.finish(drainErr)
+			s.adoptDrainIdentity(completion)
+			return s.finish(completion.err)
 
 		case event, ok := <-s.messageEvents:
 			if !ok {
@@ -247,7 +281,7 @@ func (s *executeRunLoop) runTurnPhase(prompt string, runFn turnRunFunc) (*RunRes
 			}
 		case <-s.ctx.Done():
 			probeCtx, probeCancel := context.WithTimeout(context.WithoutCancel(s.ctx), cleanupTimeout)
-			reconciled, reconcileErr := s.app.reconcileTerminalMessage(probeCtx, s.sess.ID, s.baselineIDs, s.baselineKnown, s.runStart, s.callResultRec.Resolve())
+			reconciled, reconcileErr := s.app.reconcileTerminalMessage(probeCtx, s.sess.ID, s.baselineIDs, s.baselineKnown, s.runStart, s.callResultRec.Resolve(), s.callResultRec.IDs())
 			if reconcileErr == nil {
 				s.cachedTerminal = &reconciled
 				s.cachedTerminalCtx = probeCtx
@@ -260,6 +294,7 @@ func (s *executeRunLoop) runTurnPhase(prompt string, runFn turnRunFunc) (*RunRes
 			// available so final reconciliation still runs.
 			select {
 			case result := <-done:
+				s.callResultRec.Seal()
 				if err := s.drainMessageEvents(); err != nil {
 					return nil, err
 				}
@@ -267,10 +302,40 @@ func (s *executeRunLoop) runTurnPhase(prompt string, runFn turnRunFunc) (*RunRes
 					return s.finish(&runQueuedError{sessionID: s.sess.ID})
 				}
 				if result.err != nil && (errors.Is(result.err, context.Canceled) || errors.Is(result.err, agent.ErrRequestCancelled)) && s.app.RunQueuePump != nil {
-					go func(originalErr error) {
-						queuedResult, drainErr := s.app.RunQueuePump.DrainSessionNow(s.ctx, s.sess.ID)
-						drainDone <- drainOutcomeError(s.sess.ID, queuedResult, drainErr, originalErr)
-					}(result.err)
+					originalOwner := s.eventOwner
+					recorder := agent.NewCallResultRecorder()
+					assistantIDs := make(map[string]struct{})
+					var terminalAssistantID string
+					var assistantIDsMu sync.Mutex
+					captureAssistantID := func(id string) {
+						if id == "" {
+							return
+						}
+						if _, existed := s.baselineIDs[id]; existed {
+							return
+						}
+						assistantIDsMu.Lock()
+						assistantIDs[id] = struct{}{}
+						terminalAssistantID = id
+						recorder.RecordConfirmed(id)
+						assistantIDsMu.Unlock()
+					}
+					s.eventOwner = recorder
+					go func(originalErr error, recorder *agent.CallResultRecorder, originalOwner *agent.CallResultRecorder) {
+						drainCtx := session.WithDrainAssistantIdentity(s.ctx, func(ids map[string]struct{}, terminalID string) {
+							confirmedTerminal := recordDrainAssistantIDs(&assistantIDsMu, recorder, assistantIDs, s.baselineIDs, ids, terminalID)
+							assistantIDsMu.Lock()
+							terminalAssistantID = confirmedTerminal
+							assistantIDsMu.Unlock()
+						})
+						drainCtx = session.WithDrainAssistantIdentityLive(drainCtx, captureAssistantID)
+						queuedResult, drainErr := s.app.RunQueuePump.DrainSessionNow(drainCtx, s.sess.ID)
+						assistantIDsMu.Lock()
+						confirmedIDs := cloneAssistantIDSet(assistantIDs)
+						confirmedTerminalID := terminalAssistantID
+						assistantIDsMu.Unlock()
+						drainDone <- drainCompletion{result: queuedResult, err: drainOutcomeError(s.sess.ID, queuedResult, drainErr, originalErr), recorder: recorder, originalOwner: originalOwner, assistantIDs: confirmedIDs, terminalAssistantID: confirmedTerminalID}
+					}(result.err, recorder, originalOwner)
 					continue
 				}
 				return s.finish(result.err)
@@ -287,7 +352,7 @@ func (s *executeRunLoop) runTurnPhase(prompt string, runFn turnRunFunc) (*RunRes
 // per-phase tracking state and the streaming output modes.
 func (s *executeRunLoop) handleMessageEvent(event pubsub.Event[message.Message]) error {
 	msg := event.Payload
-	if msg.SessionID != s.sess.ID || msg.Role != message.Assistant || len(msg.Parts) == 0 {
+	if msg.SessionID != s.sess.ID || msg.Role != message.Assistant || len(msg.Parts) == 0 || !s.eventOwner.Owns(msg.ID) {
 		return nil
 	}
 	s.stopSpinner()
@@ -397,10 +462,17 @@ func (s *executeRunLoop) mergeReconciledToolCalls(reconciled terminalReconciliat
 // one phase does not erase the other phase's calls. Aggregated counts
 // cannot be ID-deduplicated across phases; that residual belongs to the
 // degraded path the reconciliation diagnostic already warns about.
+//
+// Always ends with toolCallCounts aliasing the run-wide inventory, even
+// when THIS phase contributed nothing (F8 residual, 2026-09-22 round-9
+// audit): an early return here for the empty case used to skip that
+// aliasing step too, so a reviewer refused before its own first assistant
+// row — reconciliation then fails outright, since resetForReviewerPass's
+// baseline already fences out every primary-phase row — left
+// toolCallCounts pointing at the (still-empty, freshly reset) per-phase
+// map forever, wiping the primary phase's already-reconciled inventory
+// out of the final envelope instead of merely adding nothing to it.
 func (s *executeRunLoop) foldLiveToolCallCounts() {
-	if len(s.toolCallCounts) == 0 {
-		return
-	}
 	s.ensureInvocationToolInventory()
 	for name, count := range s.toolCallCounts {
 		s.invocationToolCalls[name] += count
@@ -442,6 +514,7 @@ func (s *executeRunLoop) flushTerseOutput() {
 // select loop's own doc for why this split exists.
 func (s *executeRunLoop) finish(runErr error) (*RunResult, error) {
 	s.stopSpinner()
+	s.callResultRec.Seal()
 	if errors.Is(runErr, ErrRunQueued) {
 		// The shared session stream may have delivered the active owner's
 		// messages before the mailbox reported this call as queued. Do not
@@ -467,7 +540,7 @@ func (s *executeRunLoop) finish(runErr error) (*RunResult, error) {
 			reconciled = *s.cachedTerminal
 			authoritativeTerminal = true
 		} else {
-			reconciled, reconcileErr = s.app.reconcileTerminalMessage(finalCtx, s.sess.ID, s.baselineIDs, s.baselineKnown, s.runStart, s.callResultRec.Resolve())
+			reconciled, reconcileErr = s.app.reconcileTerminalMessage(finalCtx, s.sess.ID, s.baselineIDs, s.baselineKnown, s.runStart, s.callResultRec.Resolve(), s.callResultRec.IDs())
 		}
 		if reconcileErr != nil {
 			s.reconciliationDiagnostic = "authoritative terminal message reconciliation failed: " + reconcileErr.Error() + "; using live run events"
@@ -719,6 +792,8 @@ func (s *executeRunLoop) finish(runErr error) (*RunResult, error) {
 // (primary turn + review turn combined), not just the review phase.
 func (s *executeRunLoop) resetForReviewerPass(ctx context.Context) {
 	s.ctx = ctx
+	s.callResultRec = nil
+	s.eventOwner = nil
 	// R2-4: the cached terminal reconciliation belongs to the phase
 	// that built it. Its probe context derives from that phase's own
 	// ctx, and finish()'s defer has already fired its cancel, so a

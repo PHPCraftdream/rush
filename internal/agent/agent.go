@@ -255,6 +255,9 @@ type SessionAgentCall struct {
 	// rationale as OnUserMessageCreated above).
 	OnAssistantMessageCreated func(messageID string) `json:"-"`
 
+	// replacementHandoff marks a call extracted from mailbox.replacement.
+	replacementHandoff bool
+
 	// InjectID, when non-empty, is the ID of a pending_injects row that
 	// must be deleted AFTER successful OS lock acquisition. Set by the
 	// cross-process interrupt inject path (startDetachedRun) to

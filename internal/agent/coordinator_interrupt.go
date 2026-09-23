@@ -852,6 +852,28 @@ func (c *coordinator) RunSessionAgentCall(ctx context.Context, call SessionAgent
 	if err := c.readyWg.Wait(); err != nil {
 		return nil, err
 	}
+	// Durable calls bypass runInternal, so wire both result identities here.
+	// The session callback is also required when a background pump execution is
+	// later observed by DrainSessionNow.
+	originalOnAssistantMessageCreated := call.OnAssistantMessageCreated
+	if recorder := callResultRecorderFrom(ctx); recorder != nil {
+		recorder.BeginCall()
+		record := recorder.Capture()
+		call.OnAssistantMessageCreated = func(id string) {
+			record(id)
+			session.RecordExecutionAssistantIdentity(ctx, id)
+			if originalOnAssistantMessageCreated != nil {
+				originalOnAssistantMessageCreated(id)
+			}
+		}
+	} else {
+		call.OnAssistantMessageCreated = func(id string) {
+			session.RecordExecutionAssistantIdentity(ctx, id)
+			if originalOnAssistantMessageCreated != nil {
+				originalOnAssistantMessageCreated(id)
+			}
+		}
+	}
 
 	sessionID := call.SessionID
 

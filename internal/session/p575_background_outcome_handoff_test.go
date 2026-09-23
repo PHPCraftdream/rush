@@ -22,6 +22,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -37,9 +38,11 @@ import (
 // DrainSessionNow call can be forced deterministically instead of hoping
 // timing lines up.
 type gatedCoordinator struct {
-	calls   atomic.Int64
-	started chan struct{}
-	release chan error // send the desired Run() return value to unblock
+	calls      atomic.Int64
+	started    chan struct{}
+	release    chan error // send the desired Run() return value to unblock
+	identity   string
+	identities []string
 }
 
 func newGatedCoordinator() *gatedCoordinator {
@@ -51,6 +54,10 @@ func newGatedCoordinator() *gatedCoordinator {
 
 func (c *gatedCoordinator) Run(ctx context.Context, callData session.SessionAgentCallData) (*any, error) {
 	c.calls.Add(1)
+	session.RecordExecutionAssistantIdentity(ctx, c.identity)
+	for _, id := range c.identities {
+		session.RecordExecutionAssistantIdentity(ctx, id)
+	}
 	select {
 	case c.started <- struct{}{}:
 	default:
@@ -61,6 +68,129 @@ func (c *gatedCoordinator) Run(ctx context.Context, callData session.SessionAgen
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
+}
+
+func TestDrainSessionNow_WaitedExecution_CarriesAllAssistantIdentities(t *testing.T) {
+	gate := newGatedCoordinator()
+	gate.identities = []string{"assistant-tool-step", "assistant-final"}
+	pump, sessID := oneEntrySetup(t, "wait-identity", gate)
+	defer pump.Stop()
+
+	var assistantIDs map[string]struct{}
+	var terminalAssistantID string
+	drainCtx := session.WithDrainAssistantIdentity(context.Background(), func(ids map[string]struct{}, terminalID string) {
+		assistantIDs = ids
+		terminalAssistantID = terminalID
+	})
+	done := make(chan struct{})
+	var result session.DrainResult
+	var drainErr error
+	go func() {
+		defer close(done)
+		result, drainErr = pump.DrainSessionNow(drainCtx, sessID)
+	}()
+
+	gate.release <- nil
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("DrainSessionNow did not finish after the background execution")
+	}
+	require.Equal(t, session.DrainComplete, result)
+	require.NoError(t, drainErr)
+	require.Equal(t, map[string]struct{}{"assistant-tool-step": {}, "assistant-final": {}}, assistantIDs)
+	require.Equal(t, "assistant-final", terminalAssistantID)
+}
+
+type sequentialIdentityCoordinator struct {
+	calls atomic.Int64
+}
+
+func (c *sequentialIdentityCoordinator) Run(ctx context.Context, _ session.SessionAgentCallData) (*any, error) {
+	call := c.calls.Add(1)
+	session.RecordExecutionAssistantIdentity(ctx, fmt.Sprintf("assistant-row-%d", call))
+	return nil, nil
+}
+
+func TestDrainSessionNow_SequentialRowsPreserveAllAssistantIdentities(t *testing.T) {
+	sess, svc := setupTestSession(t, "sequential-identities")
+	coordinator := &sequentialIdentityCoordinator{}
+	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
+		Sessions:       svc,
+		Coordinator:    coordinator,
+		PumpInstanceID: "test-pump-sequential-identities",
+	})
+	defer pump.Stop()
+
+	for i := 1; i <= 2; i++ {
+		callData, err := json.Marshal(map[string]any{"SessionID": sess.ID, "Prompt": "continue"})
+		require.NoError(t, err)
+		require.NoError(t, svc.EnqueueRunQueueEntry(context.Background(), fmt.Sprintf("sequential-identities-%d", i), sess.ID, callData))
+	}
+
+	var assistantIDs map[string]struct{}
+	var terminalAssistantID string
+	drainCtx := session.WithDrainAssistantIdentity(context.Background(), func(ids map[string]struct{}, terminalID string) {
+		for id := range ids {
+			if assistantIDs == nil {
+				assistantIDs = make(map[string]struct{})
+			}
+			assistantIDs[id] = struct{}{}
+		}
+		terminalAssistantID = terminalID
+	})
+	result, err := pump.DrainSessionNow(drainCtx, sess.ID)
+	require.NoError(t, err)
+	require.Equal(t, session.DrainComplete, result)
+	require.Equal(t, int64(2), coordinator.calls.Load())
+	require.Equal(t, map[string]struct{}{"assistant-row-1": {}, "assistant-row-2": {}}, assistantIDs)
+	require.Equal(t, "assistant-row-2", terminalAssistantID)
+}
+
+func TestDrainSessionNow_WaitedExecution_PublishesAssistantIDBeforeCompletion(t *testing.T) {
+	gate := newGatedCoordinator()
+	gate.identity = "assistant-tool-step"
+	pump, sessID := oneEntrySetup(t, "wait-live-identity", gate)
+	defer pump.Stop()
+
+	liveID := make(chan string, 1)
+	refused := make(chan struct{})
+	pump.SetTestAfterAdmissionRefusalForTest(func(string) { close(refused) })
+	drainCtx := session.WithDrainAssistantIdentityLive(context.Background(), func(id string) {
+		liveID <- id
+	})
+	done := make(chan struct{})
+	var result session.DrainResult
+	var drainErr error
+	go func() {
+		defer close(done)
+		result, drainErr = pump.DrainSessionNow(drainCtx, sessID)
+	}()
+
+	select {
+	case <-refused:
+	case <-time.After(5 * time.Second):
+		t.Fatal("DrainSessionNow did not observe the background admission")
+	}
+	select {
+	case id := <-liveID:
+		require.Equal(t, "assistant-tool-step", id)
+	case <-time.After(5 * time.Second):
+		t.Fatal("DrainSessionNow did not publish the assistant identity while the background execution was in flight")
+	}
+	select {
+	case <-done:
+		t.Fatal("DrainSessionNow completed before the background execution was released")
+	default:
+	}
+	gate.release <- nil
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("DrainSessionNow did not finish after the background execution")
+	}
+	require.Equal(t, session.DrainComplete, result)
+	require.NoError(t, drainErr)
 }
 
 // oneEntrySetup enqueues a SINGLE durable entry for a fresh session and

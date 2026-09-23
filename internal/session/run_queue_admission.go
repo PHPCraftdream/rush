@@ -4,7 +4,10 @@
 
 package session
 
-import "sync"
+import (
+	"context"
+	"sync"
+)
 
 // admissionEntry is the shared record one admitted execution publishes for
 // anyone else asking about the same session while it runs. It exists so a
@@ -41,6 +44,61 @@ type admissionEntry struct {
 	// its OWN row ID instead of a synthetic one a later same-row success
 	// can never clear.
 	outcome admissionOutcome
+
+	identityMu        sync.Mutex
+	assistantIDs      map[string]struct{}
+	identityListeners []func(string)
+	identitySealed    bool
+}
+
+func (e *admissionEntry) publishAssistantID(id string) {
+	if e == nil || id == "" {
+		return
+	}
+	e.identityMu.Lock()
+	if e.identitySealed {
+		e.identityMu.Unlock()
+		return
+	}
+	if e.assistantIDs == nil {
+		e.assistantIDs = make(map[string]struct{})
+	}
+	if _, exists := e.assistantIDs[id]; exists {
+		e.identityMu.Unlock()
+		return
+	}
+	e.assistantIDs[id] = struct{}{}
+	listeners := append([]func(string){}, e.identityListeners...)
+	e.identityMu.Unlock()
+	for _, listener := range listeners {
+		listener(id)
+	}
+}
+
+func (e *admissionEntry) observeAssistantIDs(listener func(string)) {
+	if e == nil || listener == nil {
+		return
+	}
+	e.identityMu.Lock()
+	ids := make([]string, 0, len(e.assistantIDs))
+	for id := range e.assistantIDs {
+		ids = append(ids, id)
+	}
+	e.identityListeners = append(e.identityListeners, listener)
+	e.identityMu.Unlock()
+	for _, id := range ids {
+		listener(id)
+	}
+}
+
+func (e *admissionEntry) sealAssistantIDs() {
+	if e == nil {
+		return
+	}
+	e.identityMu.Lock()
+	e.identitySealed = true
+	e.identityListeners = nil
+	e.identityMu.Unlock()
 }
 
 // outcomeKind classifies what admitSession's admitted caller actually did
@@ -117,6 +175,12 @@ type admissionOutcome struct {
 	// happened"); non-nil for outcomeTerminalDeleted means the terminal
 	// write itself failed, leaving the row's fate unconfirmed.
 	err error
+
+	// assistantIDs are the assistant rows produced by this execution.
+	assistantIDs map[string]struct{}
+
+	// terminalAssistantID is the last assistant row produced by this execution.
+	terminalAssistantID string
 }
 
 // noRowTouched builds the outcome every early-return admission release must
@@ -136,8 +200,77 @@ func busyOutcome(err error) admissionOutcome {
 
 // executedOutcome builds the outcome an admission release must publish
 // after executeEntrySync actually ran rowID to some resolution.
-func executedOutcome(rowID string, err error) admissionOutcome {
-	return admissionOutcome{rowID: rowID, kind: outcomeExecuted, err: err}
+func executedOutcome(rowID string, err error, assistantIDs map[string]struct{}, terminalAssistantID string) admissionOutcome {
+	outcome := admissionOutcome{rowID: rowID, kind: outcomeExecuted, err: err}
+	// executeEntrySync returns an isolated snapshot, so ownership transfers
+	// directly into the immutable admission outcome without a second copy.
+	outcome.assistantIDs = assistantIDs
+	outcome.terminalAssistantID = terminalAssistantID
+	return outcome
+}
+
+func cloneAssistantIDs(ids map[string]struct{}) map[string]struct{} {
+	if len(ids) == 0 {
+		return nil
+	}
+	clone := make(map[string]struct{}, len(ids))
+	for id := range ids {
+		clone[id] = struct{}{}
+	}
+	return clone
+}
+
+type drainAssistantIdentityKey struct{}
+
+// WithDrainAssistantIdentity captures the row produced by a drained call.
+func WithDrainAssistantIdentity(ctx context.Context, capture func(map[string]struct{}, string)) context.Context {
+	return context.WithValue(ctx, drainAssistantIdentityKey{}, capture)
+}
+
+func recordDrainAssistantIdentity(ctx context.Context, ids map[string]struct{}, terminalID string) {
+	if capture, ok := ctx.Value(drainAssistantIdentityKey{}).(func(map[string]struct{}, string)); ok && len(ids) > 0 {
+		capture(cloneAssistantIDs(ids), terminalID)
+	}
+}
+
+type executionAssistantIdentityKey struct{}
+
+// WithExecutionAssistantIdentity captures the row produced by a queue call.
+func WithExecutionAssistantIdentity(ctx context.Context, capture func(string)) context.Context {
+	return context.WithValue(ctx, executionAssistantIdentityKey{}, capture)
+}
+
+// ExecutionAssistantIdentityRecorder returns the direct execution's identity sink.
+func ExecutionAssistantIdentityRecorder(ctx context.Context) func(string) {
+	if capture, ok := ctx.Value(executionAssistantIdentityKey{}).(func(string)); ok {
+		return capture
+	}
+	return func(string) {}
+}
+
+// WithoutExecutionAssistantIdentity detaches the sink from nested agent calls.
+func WithoutExecutionAssistantIdentity(ctx context.Context) context.Context {
+	return context.WithValue(ctx, executionAssistantIdentityKey{}, (func(string))(nil))
+}
+
+// RecordExecutionAssistantIdentity reports the row produced by a queue call.
+func RecordExecutionAssistantIdentity(ctx context.Context, id string) {
+	if capture, ok := ctx.Value(executionAssistantIdentityKey{}).(func(string)); ok && id != "" {
+		capture(id)
+	}
+}
+
+type drainAssistantIdentityLiveKey struct{}
+
+// WithDrainAssistantIdentityLive observes rows as their execution creates them.
+func WithDrainAssistantIdentityLive(ctx context.Context, capture func(string)) context.Context {
+	return context.WithValue(ctx, drainAssistantIdentityLiveKey{}, capture)
+}
+
+func recordDrainAssistantIdentityLive(ctx context.Context, id string) {
+	if capture, ok := ctx.Value(drainAssistantIdentityLiveKey{}).(func(string)); ok && id != "" {
+		capture(id)
+	}
 }
 
 // terminalDeletedOutcome builds the outcome an admission release must
@@ -261,7 +394,7 @@ func (p *RunQueuePump) AdmitSessionForTest(sessionID string) (release func(outco
 		return nil, ok
 	}
 	return func(outcome error) {
-		rel(executedOutcome("", outcome))
+		rel(executedOutcome("", outcome, nil, ""))
 	}, ok
 }
 

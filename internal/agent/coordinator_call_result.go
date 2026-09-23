@@ -25,21 +25,99 @@ import (
 // only intended caller -- arms one per ExecuteRun phase and reads it after
 // the phase's turn goroutine has returned.
 type CallResultRecorder struct {
-	mu sync.Mutex
-	id string
+	mu         sync.Mutex
+	id         string
+	ids        map[string]struct{}
+	generation uint64
+	sealed     bool
 }
 
 // NewCallResultRecorder returns a recorder that has not yet captured an ID.
 func NewCallResultRecorder() *CallResultRecorder { return &CallResultRecorder{} }
 
-// record overwrites the captured ID. Called only by runInternal, once,
-// right before it returns, with whatever curAttempt.resolve() produced for
-// the attempt actually being returned -- the same value its own retry
-// classifiers use to scope themselves to this call (R3-1).
-func (r *CallResultRecorder) record(id string) {
+// BeginCall clears identity accumulated by an earlier call using the same
+// context, as can happen when a durable drain executes several queue rows.
+func (r *CallResultRecorder) BeginCall() {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	r.id = ""
+	r.ids = nil
+	r.generation++
+	r.sealed = false
+	r.mu.Unlock()
+}
+
+// Seal rejects callbacks that arrive after this call has completed.
+func (r *CallResultRecorder) Seal() {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	r.sealed = true
+	r.mu.Unlock()
+}
+
+// Capture returns a callback restricted to the current call generation.
+func (r *CallResultRecorder) Capture() func(string) {
+	if r == nil {
+		return func(string) {}
+	}
+	r.mu.Lock()
+	generation := r.generation
+	r.mu.Unlock()
+	return func(id string) {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		if id == "" || r.generation != generation || r.sealed {
+			return
+		}
+		r.id = id
+		if r.ids == nil {
+			r.ids = make(map[string]struct{})
+		}
+		r.ids[id] = struct{}{}
+	}
+}
+
+// Owns reports whether id was created by this recorded call.
+func (r *CallResultRecorder) Owns(id string) bool {
+	if r == nil || id == "" {
+		return false
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	_, ok := r.ids[id]
+	return ok
+}
+
+// IDs returns the assistant rows created by the current call.
+func (r *CallResultRecorder) IDs() map[string]struct{} {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	ids := make(map[string]struct{}, len(r.ids))
+	for id := range r.ids {
+		ids[id] = struct{}{}
+	}
+	return ids
+}
+
+// RecordConfirmed adopts an identity confirmed by a durable queue execution.
+func (r *CallResultRecorder) RecordConfirmed(id string) {
+	if r == nil || id == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.ids == nil {
+		r.ids = make(map[string]struct{})
+	}
 	r.id = id
+	r.ids[id] = struct{}{}
 }
 
 // Resolve reads the captured ID ("" if runInternal never reached the point

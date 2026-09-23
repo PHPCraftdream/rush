@@ -36,7 +36,7 @@ func (p *RunQueuePump) processEntry(ctx context.Context, entry *RunQueueEntry) {
 	// it left open (P1-1). Admission now covers the lease attempt too, which
 	// is a few milliseconds a concurrent drain may have to wait, in exchange
 	// for there being no window at all.
-	releaseSession, _, admitted := p.admitSession(entry.SessionID)
+	releaseSession, admission, admitted := p.admitSession(entry.SessionID)
 	if !admitted {
 		slog.Debug("run_queue_pump: session already has an execution in flight from this pump, deferring", "id", entry.ID, "session_id", entry.SessionID, "instance_id", p.cfg.PumpInstanceID)
 		return
@@ -232,7 +232,7 @@ func (p *RunQueuePump) processEntry(ctx context.Context, entry *RunQueueEntry) {
 	// The execution parent has to be the pump's own lifetime, so that Stop()
 	// ends it and nothing else does.
 	sessionHandedOff = true
-	go p.executeEntry(p.ctx, leased, releaseSession)
+	go p.executeEntry(p.ctx, leased, releaseSession, admission)
 }
 
 // executeEntry runs a leased entry and handles success/failure. Called
@@ -257,7 +257,7 @@ func (p *RunQueuePump) processEntry(ctx context.Context, entry *RunQueueEntry) {
 // no way to later supersede an observed failure with a same-row retry
 // success instead of stranding it under a synthetic, unclearable key (task
 // #613/F4).
-func (p *RunQueuePump) executeEntry(ctx context.Context, leased *RunQueueEntry, releaseSession func(outcome admissionOutcome)) {
+func (p *RunQueuePump) executeEntry(ctx context.Context, leased *RunQueueEntry, releaseSession func(outcome admissionOutcome), admission *admissionEntry) {
 	defer p.workerWg.Done()
 
 	// Release the semaphore slot when execution completes (P1-4).
@@ -276,12 +276,14 @@ func (p *RunQueuePump) executeEntry(ctx context.Context, leased *RunQueueEntry, 
 	// call forever on otherEntry.done — a panic must not be able to hang a
 	// caller that did nothing wrong.
 	var execErr error
+	var assistantIDs map[string]struct{}
+	var terminalAssistantID string
 	defer func() {
 		if r := recover(); r != nil {
-			releaseSession(executedOutcome(leased.ID, fmt.Errorf("run_queue_pump: executeEntrySync panicked: %v", r)))
+			releaseSession(executedOutcome(leased.ID, fmt.Errorf("run_queue_pump: executeEntrySync panicked: %v", r), nil, ""))
 			panic(r) // preserve normal panic propagation/crash behavior
 		}
-		releaseSession(executedOutcome(leased.ID, execErr))
+		releaseSession(executedOutcome(leased.ID, execErr, assistantIDs, terminalAssistantID))
 	}()
 
 	// executeEntrySync's return value already carries everything any
@@ -292,5 +294,5 @@ func (p *RunQueuePump) executeEntry(ctx context.Context, leased *RunQueueEntry, 
 	// SAME session may be parked on this admission's done channel waiting
 	// for exactly this value, so it is always published via releaseSession,
 	// never silently discarded.
-	execErr = p.executeEntrySync(ctx, leased)
+	assistantIDs, terminalAssistantID, execErr = p.executeEntrySync(ctx, leased, admission)
 }

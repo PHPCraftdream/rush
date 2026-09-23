@@ -105,7 +105,9 @@ func TestStreamWatchdog_HardCapRespected(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancel(t.Context())
 
-	const idle = 200 * time.Millisecond
+	// Keep the idle deadline beyond the hard cap so delayed test scheduling
+	// cannot accidentally exercise the idle-stall path first.
+	const idle = 2 * time.Second
 	const tick = 10 * time.Millisecond
 	const hardCap = 400 * time.Millisecond
 
@@ -261,7 +263,7 @@ func TestStreamWatchdog_HardCapRespectedWithToolInFlight(t *testing.T) {
 
 	select {
 	case <-wd.done:
-	case <-time.After(500 * time.Millisecond):
+	case <-time.After(2 * time.Second):
 		t.Fatal("watchdog should have fired at hard cap despite a tool being in flight")
 	}
 

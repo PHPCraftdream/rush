@@ -279,6 +279,7 @@ func (mb *mailbox) reclaimReplacementOrKeep(call SessionAgentCall) SessionAgentC
 	if mb.replacement != nil {
 		next := *mb.replacement
 		mb.replacement = nil
+		next.replacementHandoff = true
 		mb.submitted = append([]SessionAgentCall{call}, mb.submitted...)
 		return next
 	}
@@ -335,6 +336,7 @@ func (mb *mailbox) drainAfterCancel() (SessionAgentCall, bool) {
 	if mb.replacement != nil {
 		next := *mb.replacement
 		mb.replacement = nil
+		next.replacementHandoff = true
 		mb.current.cancel = nil
 		return next, true
 	}

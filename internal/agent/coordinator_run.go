@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"charm.land/fantasy"
@@ -16,6 +17,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/notify"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/pubsub"
+	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/google/uuid"
 )
 
@@ -158,7 +160,11 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 	// overwrite the top-level caller's own captured ID with a child
 	// session's unrelated message.
 	callResult := callResultRecorderFrom(ctx)
+	callResult.BeginCall()
+	callResultRecord := callResult.Capture()
+	executionIdentityRecord := session.ExecutionAssistantIdentityRecorder(ctx)
 	ctx = withoutCallResultRecorder(ctx)
+	ctx = session.WithoutExecutionAssistantIdentity(ctx)
 
 	model := pinned.smart
 
@@ -269,6 +275,7 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 	// gets a FRESH instance via armAttempt below; classification acts
 	// only on the row the classified attempt itself reported.
 	curAttempt := newAttemptEvidence()
+	var sealCurrentAttemptIdentity func()
 	// attemptAdmission is the CURRENT attempt's ADMISSION outcome (R7-1):
 	// did this run() invocation execute a turn, or merely queue behind a
 	// current owner? Deliberately separate from attemptEvidence -- a
@@ -324,7 +331,11 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 	// a 401 credential refresh (task #341, P1-2).
 	trackCall := &agentCall
 	run := func() (*fantasy.AgentResult, error) {
-		return c.currentAgent.Run(withTurnAdmission(ctx, attemptAdmission), *trackCall)
+		result, err := c.currentAgent.Run(withTurnAdmission(ctx, attemptAdmission), *trackCall)
+		if sealCurrentAttemptIdentity != nil {
+			sealCurrentAttemptIdentity()
+		}
+		return result, err
 	}
 
 	// armAttempt installs a FRESH per-attempt evidence capture into the
@@ -337,9 +348,30 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 	// It also re-arms the admission recorder so every attempt reports its
 	// own admission outcome (R7-1).
 	armAttempt := func() {
-		curAttempt = newAttemptEvidence()
+		attempt := newAttemptEvidence()
+		curAttempt = attempt
 		attemptAdmission = newTurnAdmission()
-		trackCall.OnAssistantMessageCreated = curAttempt.record
+		admission := attemptAdmission
+		var identityMu sync.Mutex
+		identityOpen := true
+		sealAttemptIdentity := func() {
+			identityMu.Lock()
+			identityOpen = false
+			identityMu.Unlock()
+		}
+		trackCall.OnAssistantMessageCreated = func(id string) {
+			attempt.record(id)
+			callResultRecord(id)
+			if admission.wasQueued() {
+				return
+			}
+			identityMu.Lock()
+			if identityOpen {
+				executionIdentityRecord(id)
+			}
+			identityMu.Unlock()
+		}
+		sealCurrentAttemptIdentity = sealAttemptIdentity
 	}
 
 	// rebuildCall reconstructs the call after credential refresh, preserving
@@ -472,7 +504,10 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 	// now, so a later retry attempt's reassignment (below) is what actually
 	// gets reported.
 	if callResult != nil {
-		defer func() { callResult.record(attemptAssistantMsgID) }()
+		defer func() { callResultRecord(attemptAssistantMsgID) }()
+	}
+	if !attemptAdmission.wasQueued() {
+		defer func() { executionIdentityRecord(attemptAssistantMsgID) }()
 	}
 	logTurnSkillUsage(sessionID, prompt, c.activeSkills, c.skillTracker, beforeLoaded)
 
@@ -624,6 +659,19 @@ func (c *coordinator) RunWithOverrides(ctx context.Context, sessionID, prompt st
 		}
 	}
 
+	// R9-2 (round-9 audit): the session-inheritance fill-in above lives on
+	// this function's own LOCAL smart/fast variables. Without re-arming
+	// ctx, resolveCallModels' 401-rebuild path (credentials.go) reads
+	// modelOverridesFrom(ctx) -- whatever the CALLER originally armed via
+	// WithModelOverrides, e.g. the reviewer pass's (reviewerOverride, nil)
+	// -- and never sees this inheritance step at all. A single omitted
+	// slot then silently reset from the session's durable choice to the
+	// global config default on every credential-refresh rebuild, even
+	// though the FIRST attempt (built from the augmented pair right below)
+	// used the correct one. Re-arming with the augmented pair makes both
+	// resolutions agree.
+	ctx = WithModelOverrides(ctx, smart, fast)
+
 	pinned, err := c.applyModelOverrides(ctx, smart, fast)
 	if err != nil {
 		return nil, err
@@ -681,6 +729,20 @@ func (c *coordinator) ReleaseExclusive(sessionID string, epoch uint64, cancel co
 // handleRerunMessage) to transfer release responsibility exactly when the
 // handoff occurs.
 func (c *coordinator) RunWithReservedOwnership(ctx context.Context, sessionID, prompt string, epoch uint64, cancel context.CancelFunc, onHandoff func(), smart, fast *ModelOverride, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
+	// R8-3 residual (round-9 audit): this entry point never went through
+	// runInternal, so it never reported into the caller's CallResultRecorder
+	// -- an empty recorder made internal/app's terminal reconciliation fall
+	// back to "any newer row is mine", the exact R8-3 race the recorder
+	// exists to close. Capture and detach here too, mirroring runInternal's
+	// own top -- detach so a nested Run reached through this turn's tools
+	// (sub-agent delegation) cannot report into this call's recorder.
+	callResult := callResultRecorderFrom(ctx)
+	callResult.BeginCall()
+	callResultRecord := callResult.Capture()
+	executionIdentityRecord := session.ExecutionAssistantIdentityRecorder(ctx)
+	ctx = withoutCallResultRecorder(ctx)
+	ctx = session.WithoutExecutionAssistantIdentity(ctx)
+
 	if err := c.readyWg.Wait(); err != nil {
 		c.currentAgent.ReleaseExclusive(sessionID, epoch, cancel)
 		return nil, err
@@ -721,7 +783,18 @@ func (c *coordinator) RunWithReservedOwnership(ctx context.Context, sessionID, p
 		c.currentAgent.ReleaseExclusive(sessionID, epoch, cancel)
 		return nil, err
 	}
-
+	// No retry loop exists in this entry point (unlike runInternal), so the
+	// recorder can be wired directly onto the one call instead of going
+	// through a per-attempt evidence capture: runOwned's own carry-over
+	// (R9-1) propagates this to any accepted in-process replacement.
+	if callResult != nil {
+		call.OnAssistantMessageCreated = func(id string) {
+			callResultRecord(id)
+			executionIdentityRecord(id)
+		}
+	} else {
+		call.OnAssistantMessageCreated = executionIdentityRecord
+	}
 	// HANDOFF LINE: from here on, SessionAgent.RunWithReservedOwnership (and,
 	// past ITS OWN handoff line, runOwned's defer) owns releasing this
 	// reservation exactly once. Nothing after this line may call

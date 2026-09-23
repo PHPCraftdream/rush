@@ -130,6 +130,58 @@ func TestRunSubAgent_401RebuildsPinnedSharedClient(t *testing.T) {
 	require.Equal(t, "replacement-model", coord.cfg.Config().Models[config.SelectedModelTypeSmart].Model)
 }
 
+func TestRuntimeAPIKeyRefreshPreservesReloadedProviderConfig(t *testing.T) {
+	env := testEnv(t)
+	coord := newWorkerToolTestCoordinator(t, env, false)
+	t.Setenv("C6_REFRESHED_KEY", "fresh-key")
+	const providerID = "smart-provider"
+	c6ConfigureProvider(t, coord, providerID, "pinned-model", "stale-key", nil)
+
+	stale, ok := coord.cfg.Config().Providers.Get(providerID)
+	require.True(t, ok)
+	stale.APIKeyTemplate = "$C6_REFRESHED_KEY"
+	coord.cfg.SetProviderRuntimeConfig(providerID, stale)
+
+	// Simulate a reload after the retry captured its provider snapshot.
+	current, ok := coord.cfg.Config().Providers.Get(providerID)
+	require.True(t, ok)
+	current.BaseURL = "https://reloaded.example/v1"
+	current.Disable = true
+	current.Network = &config.NetworkConfig{Proxy: "http://proxy.example:8080"}
+	current.Models = []catwalk.Model{{ID: "reloaded-model", DefaultMaxTokens: 456}}
+	coord.cfg.SetProviderRuntimeConfig(providerID, current)
+
+	require.True(t, coord.cfg.SetProviderRuntimeAPIKeyIfTemplate(providerID, stale.APIKeyTemplate, stale.APIKey, "fresh-key"))
+
+	got, ok := coord.cfg.Config().Providers.Get(providerID)
+	require.True(t, ok)
+	require.Equal(t, "fresh-key", got.APIKey)
+	require.Equal(t, current.BaseURL, got.BaseURL)
+	require.Equal(t, current.Disable, got.Disable)
+	require.Equal(t, current.Network, got.Network)
+	require.Equal(t, current.Models, got.Models)
+}
+
+func TestRuntimeAPIKeyRefreshDoesNotOverwriteNewResolvedKey(t *testing.T) {
+	env := testEnv(t)
+	coord := newWorkerToolTestCoordinator(t, env, false)
+	const providerID = "smart-provider"
+	c6ConfigureProvider(t, coord, providerID, "pinned-model", "stale-key", nil)
+	stale, ok := coord.cfg.Config().Providers.Get(providerID)
+	require.True(t, ok)
+	stale.APIKeyTemplate = "$KEY_TEMPLATE"
+	coord.cfg.SetProviderRuntimeConfig(providerID, stale)
+
+	current := stale
+	current.APIKey = "newer-resolved-key"
+	coord.cfg.SetProviderRuntimeConfig(providerID, current)
+
+	require.False(t, coord.cfg.SetProviderRuntimeAPIKeyIfTemplate(providerID, stale.APIKeyTemplate, stale.APIKey, "late-key"))
+	got, ok := coord.cfg.Config().Providers.Get(providerID)
+	require.True(t, ok)
+	require.Equal(t, "newer-resolved-key", got.APIKey)
+}
+
 func TestRunWithUnauthorizedRetry_RebuildFailuresAreTerminal(t *testing.T) {
 	rebuildErr := errors.New("local rebuild failed")
 	tests := []struct {

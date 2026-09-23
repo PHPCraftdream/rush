@@ -371,8 +371,10 @@ func TestMailbox_ReclaimReplacementOrKeep_ReplacementPreemptsStaleCall(t *testin
 
 	got := mb.reclaimReplacementOrKeep(staleCall)
 
-	require.Equal(t, replacement, got, "a recorded replacement must pre-empt the loop's stale call, not merely "+
+	require.Equal(t, replacement.SessionID, got.SessionID, "a recorded replacement must pre-empt the loop's stale call, not merely "+
 		"run after it — this is what makes InterruptAndReplace actually mean replace instead of queue-behind")
+	require.Equal(t, replacement.Prompt, got.Prompt)
+	require.True(t, got.replacementHandoff)
 	require.Nil(t, mb.replacement, "the replacement must be cleared once consumed, so it is not run a second time "+
 		"by a later drain")
 	require.Equal(t, []SessionAgentCall{staleCall}, mb.submitted, "the pre-empted stale call must NOT be discarded — "+
@@ -403,8 +405,10 @@ func TestMailbox_ReclaimReplacementOrKeep_MultiElementQueue_OnlyReordersNothingI
 
 	got := mb.reclaimReplacementOrKeep(callA)
 
-	require.Equal(t, callD, got, "D must run next — the interrupt's whole point is pre-empting whatever the loop "+
+	require.Equal(t, callD.SessionID, got.SessionID, "D must run next — the interrupt's whole point is pre-empting whatever the loop "+
 		"was about to run")
+	require.Equal(t, callD.Prompt, got.Prompt)
+	require.True(t, got.replacementHandoff)
 	require.Nil(t, mb.replacement)
 	require.Equal(t, []SessionAgentCall{callA, callB, callC}, mb.submitted,
 		"A must be restored to the FRONT of mb.submitted (ahead of B and C, preserving original FIFO order "+
@@ -423,7 +427,9 @@ func TestMailbox_DrainAfterCancel_PrefersReplacementOverSubmitted(t *testing.T) 
 	next, ok := mb.drainAfterCancel()
 
 	require.True(t, ok)
-	require.Equal(t, replacement, next, "replacement must win over submitted")
+	require.Equal(t, replacement.SessionID, next.SessionID, "replacement must win over submitted")
+	require.Equal(t, replacement.Prompt, next.Prompt)
+	require.True(t, next.replacementHandoff)
 	require.Nil(t, mb.replacement, "replacement must be cleared after being drained")
 	require.Len(t, mb.submitted, 1, "submitted queue must be untouched when replacement was drained")
 }
@@ -566,7 +572,9 @@ func TestMailbox_InterruptThenDrainAfterCancel_SequenceRoundTrips(t *testing.T) 
 
 	next, ok := mb.drainAfterCancel()
 	require.True(t, ok)
-	require.Equal(t, replacement, next)
+	require.Equal(t, replacement.SessionID, next.SessionID)
+	require.Equal(t, replacement.Prompt, next.Prompt)
+	require.True(t, next.replacementHandoff)
 }
 
 // TestMailbox_DrainOrRelease_ConcurrentSubmitInFinalDrainWindow_P0_3 is the

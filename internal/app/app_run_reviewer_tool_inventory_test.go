@@ -107,3 +107,34 @@ func TestMergeReconciledToolCallsDeduplicatesAcrossPhases(t *testing.T) {
 	require.Equal(t, loop.invocationToolCalls, loop.toolCallCounts,
 		"toolCallCounts must alias the run-wide inventory")
 }
+
+// TestFoldLiveToolCallCountsAliasesInventoryEvenWhenPhaseContributedNothing
+// pins the F8 residual (2026-09-22 round-9 audit): foldLiveToolCallCounts
+// used to return early when THIS phase's own toolCallCounts was empty,
+// skipping the toolCallCounts = invocationToolCalls aliasing step too --
+// not just the (genuinely empty) folding loop. A reviewer refused before
+// its own first assistant row (e.g. a peak-hours or provider-config
+// refusal at turn start) never creates any message at all, so
+// reconciliation fails outright and finish() falls back to this function
+// with an empty per-phase toolCallCounts (resetForReviewerPass zeroed it).
+// The early return then left toolCallCounts pointing at that empty map
+// forever, wiping the primary phase's already-reconciled inventory out of
+// the final envelope instead of merely adding nothing to it.
+func TestFoldLiveToolCallCountsAliasesInventoryEvenWhenPhaseContributedNothing(t *testing.T) {
+	loop := &executeRunLoop{}
+
+	// Primary phase already reconciled successfully with one tool call.
+	loop.mergeReconciledToolCalls(terminalReconciliation{
+		toolCallByID: map[string]string{"c1": "view"},
+	})
+
+	// Reviewer phase: resetForReviewerPass zeroed toolCallCounts, and the
+	// phase was refused before creating any row of its own.
+	loop.toolCallCounts = make(map[string]int)
+	loop.foldLiveToolCallCounts()
+
+	require.Equal(t, map[string]int{"view": 1}, loop.toolCallCounts,
+		"the primary phase's already-reconciled inventory must survive an empty reviewer-phase fold")
+	require.Equal(t, loop.invocationToolCalls, loop.toolCallCounts,
+		"toolCallCounts must alias the run-wide inventory even when this phase added nothing")
+}

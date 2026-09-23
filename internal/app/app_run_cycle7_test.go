@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"sync"
 	"testing"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/pubsub"
+	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
 
@@ -75,6 +77,7 @@ type cycle7ShrinkingMessages struct {
 
 func (s *cycle7ShrinkingMessages) Subscribe(ctx context.Context) <-chan pubsub.Event[message.Message] {
 	events := make(chan pubsub.Event[message.Message])
+	underlying := s.Service.Subscribe(ctx)
 	go func() {
 		defer close(events)
 		select {
@@ -82,10 +85,25 @@ func (s *cycle7ShrinkingMessages) Subscribe(ctx context.Context) <-chan pubsub.E
 		case <-ctx.Done():
 			return
 		}
+		assistantID := ""
+		for assistantID == "" {
+			select {
+			case event, ok := <-underlying:
+				if !ok {
+					return
+				}
+				msg := event.Payload
+				if msg.SessionID == s.sessionID && msg.Role == message.Assistant {
+					assistantID = msg.ID
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
 		events <- pubsub.Event[message.Message]{
 			Type: pubsub.UpdatedEvent,
 			Payload: message.Message{
-				ID:        "shrinking-message",
+				ID:        assistantID,
 				SessionID: s.sessionID,
 				Role:      message.Assistant,
 				Parts:     []message.ContentPart{message.TextContent{Text: "long"}},
@@ -94,7 +112,7 @@ func (s *cycle7ShrinkingMessages) Subscribe(ctx context.Context) <-chan pubsub.E
 		events <- pubsub.Event[message.Message]{
 			Type: pubsub.UpdatedEvent,
 			Payload: message.Message{
-				ID:        "shrinking-message",
+				ID:        assistantID,
 				SessionID: s.sessionID,
 				Role:      message.Assistant,
 				Parts:     []message.ContentPart{message.TextContent{Text: "x"}},
@@ -357,10 +375,249 @@ func TestExecuteRunCycle7ReconcileToolCallsUsesOnlyNewRows(t *testing.T) {
 	second.AddFinish(message.FinishReasonEndTurn, "", "")
 	require.NoError(t, h.app.Messages.Update(context.Background(), second))
 
-	reconciled, err := h.app.reconcileTerminalMessage(context.Background(), h.sess.ID, baseline, true, time.Now(), "")
+	reconciled, err := h.app.reconcileTerminalMessage(context.Background(), h.sess.ID, baseline, true, time.Now(), second.ID, map[string]struct{}{first.ID: {}, second.ID: {}})
 	require.NoError(t, err)
 	require.Equal(t, "authoritative final", reconciled.message.FullText())
 	require.Equal(t, map[string]int{"edit": 1, "bash": 1, "view": 1}, reconciled.toolCalls)
+}
+
+func TestExecuteRunCycle7EmptyRecorderCannotSelectAnotherTerminal(t *testing.T) {
+	h := newCycle6RunApp(t)
+	foreign, err := h.app.Messages.Create(context.Background(), h.sess.ID, message.CreateMessageParams{
+		Role:  message.Assistant,
+		Parts: []message.ContentPart{message.TextContent{Text: "foreign result"}},
+	})
+	require.NoError(t, err)
+	foreign.AddFinish(message.FinishReasonEndTurn, "", "")
+	require.NoError(t, h.app.Messages.Update(context.Background(), foreign))
+
+	_, err = h.app.reconcileTerminalMessage(context.Background(), h.sess.ID, map[string]struct{}{}, true, time.Now(), "", nil)
+	require.Error(t, err, "an empty recorder after fail-fast must not claim another session owner's result")
+}
+
+func TestDrainIdentityRequiresExecutedOwnedAttempt(t *testing.T) {
+	loop := &executeRunLoop{}
+	original := agent.NewCallResultRecorder()
+	originalID := "original"
+	original.Capture()(originalID)
+	loop.callResultRec = original
+	loop.eventOwner = original
+
+	noWork := agent.NewCallResultRecorder()
+	noWork.Capture()("unconfirmed")
+	require.False(t, loop.adoptDrainIdentity(drainCompletion{
+		result: session.DrainNoWork, recorder: noWork, originalOwner: original,
+		assistantIDs:        map[string]struct{}{"unconfirmed": {}},
+		terminalAssistantID: "unconfirmed",
+	}))
+	require.Same(t, original, loop.callResultRec)
+	require.Same(t, original, loop.eventOwner)
+	emptyComplete := agent.NewCallResultRecorder()
+	require.False(t, loop.adoptDrainIdentity(drainCompletion{
+		result: session.DrainComplete, recorder: emptyComplete, originalOwner: original,
+		assistantIDs:        map[string]struct{}{"missing": {}},
+		terminalAssistantID: "missing",
+	}))
+	require.Same(t, original, loop.callResultRec)
+	require.False(t, loop.adoptDrainIdentity(drainCompletion{
+		result: session.DrainPartial, recorder: noWork, originalOwner: original,
+	}))
+	require.Same(t, original, loop.callResultRec)
+
+	queued := agent.NewCallResultRecorder()
+	queued.Capture()("earlier-queued-call")
+	lateCallback := queued.Capture()
+	queued.BeginCall()
+	lateCallback("late-earlier-queued-call")
+	queued.RecordConfirmed("assistant-tool-step")
+	queued.RecordConfirmed("completed-continuation")
+	require.True(t, loop.adoptDrainIdentity(drainCompletion{
+		result: session.DrainComplete, recorder: queued, originalOwner: original,
+		assistantIDs:        map[string]struct{}{"assistant-tool-step": {}, "completed-continuation": {}},
+		terminalAssistantID: "completed-continuation",
+	}))
+	require.Equal(t, "completed-continuation", loop.callResultRec.Resolve())
+	require.True(t, loop.eventOwner.Owns("assistant-tool-step"))
+	require.True(t, loop.eventOwner.Owns("completed-continuation"))
+	require.False(t, loop.callResultRec.Owns("earlier-queued-call"))
+	loop.callResultRec.Seal()
+	queued.Capture()("late-after-completion")
+	require.False(t, loop.callResultRec.Owns("late-after-completion"))
+}
+
+func TestDrainIdentityRejectsForeignAndMismatchedConfirmedRows(t *testing.T) {
+	original := agent.NewCallResultRecorder()
+	original.Capture()("original")
+	loop := &executeRunLoop{callResultRec: original, eventOwner: original}
+	drained := agent.NewCallResultRecorder()
+	drained.RecordConfirmed("actual")
+	drained.RecordConfirmed("resolved-elsewhere")
+
+	require.False(t, loop.adoptDrainIdentity(drainCompletion{
+		result: session.DrainComplete, recorder: drained, originalOwner: original,
+		assistantIDs:        map[string]struct{}{"foreign": {}, "resolved-elsewhere": {}},
+		terminalAssistantID: "resolved-elsewhere",
+	}))
+	require.Same(t, original, loop.callResultRec)
+	require.False(t, loop.adoptDrainIdentity(drainCompletion{
+		result: session.DrainComplete, recorder: drained, originalOwner: original,
+		assistantIDs:        map[string]struct{}{"actual": {}},
+		terminalAssistantID: "actual",
+	}))
+	require.Same(t, original, loop.callResultRec)
+	require.Same(t, original, loop.eventOwner)
+
+	mismatched := agent.NewCallResultRecorder()
+	mismatched.RecordConfirmed("actual")
+	mismatched.RecordConfirmed("late-or-foreign")
+	require.False(t, loop.adoptDrainIdentity(drainCompletion{
+		result: session.DrainComplete, recorder: mismatched, originalOwner: original,
+		assistantIDs:        map[string]struct{}{"actual": {}},
+		terminalAssistantID: "actual",
+	}))
+	require.Same(t, original, loop.eventOwner)
+}
+
+func TestDrainIdentityKeepsAllAssistantRowsForLiveEvents(t *testing.T) {
+	recorder := agent.NewCallResultRecorder()
+	recorder.RecordConfirmed("assistant-tool-step")
+	recorder.RecordConfirmed("assistant-final")
+	loop := &executeRunLoop{sess: session.Session{ID: "session"}, mode: RunModeStream, stopSpinner: func() {}}
+	loop.eventOwner = recorder
+	loop.seenToolCalls = make(map[string]bool)
+	loop.toolCallCounts = make(map[string]int)
+	loop.messageReadBytes = make(map[string]int)
+	var output bytes.Buffer
+	loop.stdout = &output
+	loop.stderr = io.Discard
+	for _, item := range []struct {
+		id   string
+		text string
+		call string
+	}{
+		{id: "assistant-tool-step", text: "step", call: "edit"},
+		{id: "assistant-final", text: "final", call: "view"},
+	} {
+		loop.handleMessageEvent(pubsub.Event[message.Message]{Payload: message.Message{
+			ID: item.id, SessionID: "session", Role: message.Assistant,
+			Parts: []message.ContentPart{message.TextContent{Text: item.text}, message.ToolCall{ID: item.id + "-call", Name: item.call}},
+		}})
+	}
+	require.Equal(t, "stepfinal", output.String())
+	require.Equal(t, map[string]int{"edit": 1, "view": 1}, loop.toolCallCounts)
+}
+
+func TestDrainIdentityProcessesToolRowBeforeCompletion(t *testing.T) {
+	original := agent.NewCallResultRecorder()
+	original.Capture()("original")
+	recorder := agent.NewCallResultRecorder()
+	loop := &executeRunLoop{
+		sess:             session.Session{ID: "session"},
+		mode:             RunModeStream,
+		stopSpinner:      func() {},
+		stdout:           &bytes.Buffer{},
+		stderr:           io.Discard,
+		seenToolCalls:    make(map[string]bool),
+		toolCallCounts:   make(map[string]int),
+		messageReadBytes: make(map[string]int),
+		callResultRec:    original,
+		eventOwner:       recorder,
+	}
+	toolRow := "assistant-tool-step"
+	recorder.RecordConfirmed(toolRow)
+	require.NoError(t, loop.handleMessageEvent(pubsub.Event[message.Message]{Payload: message.Message{
+		ID: toolRow, SessionID: "session", Role: message.Assistant,
+		Parts: []message.ContentPart{message.TextContent{Text: "working"}, message.ToolCall{ID: "tool-call", Name: "edit"}},
+	}}))
+	require.Equal(t, "working", loop.stdout.(*bytes.Buffer).String())
+	require.Equal(t, map[string]int{"edit": 1}, loop.toolCallCounts)
+
+	finalID := "assistant-final"
+	recorder.RecordConfirmed(finalID)
+	require.True(t, loop.adoptDrainIdentity(drainCompletion{
+		result: session.DrainComplete, recorder: recorder, originalOwner: original,
+		assistantIDs: map[string]struct{}{toolRow: {}, finalID: {}}, terminalAssistantID: finalID,
+	}))
+	require.True(t, loop.eventOwner.Owns(toolRow))
+	require.True(t, loop.eventOwner.Owns(finalID))
+}
+
+func TestDrainIdentityConfirmsTerminalIDAfterFullSet(t *testing.T) {
+	for attempt := range 100 {
+		recorder := agent.NewCallResultRecorder()
+		confirmed := make(map[string]struct{})
+		ids := map[string]struct{}{"assistant-tool-step": {}, "assistant-terminal": {}}
+		terminal := recordDrainAssistantIDs(&sync.Mutex{}, recorder, confirmed, nil, ids, "assistant-terminal")
+		require.Equal(t, "assistant-terminal", terminal)
+		require.Equal(t, "assistant-terminal", recorder.Resolve(), "attempt %d", attempt)
+		require.True(t, recorder.Owns("assistant-tool-step"))
+		require.True(t, recorder.Owns("assistant-terminal"))
+		loop := &executeRunLoop{}
+		require.True(t, loop.adoptDrainIdentity(drainCompletion{
+			result: session.DrainComplete, recorder: recorder,
+			assistantIDs: ids, terminalAssistantID: terminal,
+		}))
+	}
+
+	missingTerminal := agent.NewCallResultRecorder()
+	confirmed := make(map[string]struct{})
+	terminal := recordDrainAssistantIDs(&sync.Mutex{}, missingTerminal, confirmed, nil,
+		map[string]struct{}{"assistant-tool-step": {}}, "assistant-terminal")
+	require.Empty(t, terminal)
+	require.False(t, (&executeRunLoop{}).adoptDrainIdentity(drainCompletion{
+		result: session.DrainComplete, recorder: missingTerminal,
+		assistantIDs: map[string]struct{}{"assistant-tool-step": {}}, terminalAssistantID: "assistant-terminal",
+	}))
+}
+
+func TestLiveMessageEventsIgnoreForeignOwner(t *testing.T) {
+	loop := &executeRunLoop{sess: session.Session{ID: "session"}, mode: RunModeStream, stopSpinner: func() {}}
+	loop.eventOwner = agent.NewCallResultRecorder()
+	loop.eventOwner.Capture()("owned")
+	loop.seenToolCalls = make(map[string]bool)
+	loop.toolCallCounts = make(map[string]int)
+	loop.messageReadBytes = make(map[string]int)
+	var output bytes.Buffer
+	loop.stdout = &output
+	loop.stderr = io.Discard
+	loop.handleMessageEvent(pubsub.Event[message.Message]{Payload: message.Message{
+		ID: "foreign", SessionID: "session", Role: message.Assistant,
+		Parts: []message.ContentPart{message.TextContent{Text: "foreign"}, message.ToolCall{ID: "foreign-call", Name: "bash"}},
+	}})
+	loop.handleMessageEvent(pubsub.Event[message.Message]{Payload: message.Message{
+		ID: "owned", SessionID: "session", Role: message.Assistant,
+		Parts: []message.ContentPart{message.TextContent{Text: "owned"}, message.ToolCall{ID: "owned-call", Name: "view"}},
+	}})
+	require.Equal(t, "owned", output.String())
+	require.Equal(t, map[string]int{"view": 1}, loop.toolCallCounts)
+}
+
+func TestTerminalReconciliationExcludesForeignInterleavedToolCalls(t *testing.T) {
+	h := newCycle6RunApp(t)
+	baseline := map[string]struct{}{}
+	add := func(parts ...message.ContentPart) message.Message {
+		msg, err := h.app.Messages.Create(context.Background(), h.sess.ID, message.CreateMessageParams{Role: message.Assistant, Parts: parts})
+		require.NoError(t, err)
+		return msg
+	}
+	first := add(message.ToolCall{ID: "ours", Name: "view"})
+	require.NoError(t, h.app.Messages.Update(context.Background(), first))
+	toolResult, err := h.app.Messages.Create(context.Background(), h.sess.ID, message.CreateMessageParams{
+		Role: message.Tool, Parts: []message.ContentPart{message.ToolResult{ToolCallID: "ours", Name: "view", Content: "ok"}},
+	})
+	require.NoError(t, err)
+	require.NoError(t, h.app.Messages.Update(context.Background(), toolResult))
+	foreign := add(message.ToolCall{ID: "theirs", Name: "bash"})
+	foreign.AddFinish(message.FinishReasonEndTurn, "", "")
+	require.NoError(t, h.app.Messages.Update(context.Background(), foreign))
+	last := add(message.TextContent{Text: "done"})
+	last.AddFinish(message.FinishReasonEndTurn, "", "")
+	require.NoError(t, h.app.Messages.Update(context.Background(), last))
+
+	reconciled, err := h.app.reconcileTerminalMessage(context.Background(), h.sess.ID, baseline, true, time.Now(), last.ID, map[string]struct{}{first.ID: {}, last.ID: {}})
+	require.NoError(t, err)
+	require.Equal(t, "done", reconciled.message.FullText())
+	require.Equal(t, map[string]int{"view": 1}, reconciled.toolCalls)
 }
 
 func TestExecuteRunCycle7ShrinkingStreamEventRemainsHardFailure(t *testing.T) {

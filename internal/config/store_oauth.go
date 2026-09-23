@@ -6,10 +6,14 @@ package config
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
+	"reflect"
+	"slices"
 	"time"
 
 	"charm.land/catwalk/pkg/catwalk"
@@ -19,6 +23,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/oauth/copilot"
 	"github.com/PHPCraftdream/rush/internal/oauth/hyper"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 // SetProviderAPIKey sets the API key for a provider and persists it.
@@ -161,6 +166,30 @@ func (s *ConfigStore) SetProviderRuntimeConfig(providerID string, pc ProviderCon
 	s.publishLocked(next)
 }
 
+// SetProviderRuntimeAPIKeyIfTemplate updates a resolved key only if neither
+// its source template nor the currently published resolved value changed.
+func (s *ConfigStore) SetProviderRuntimeAPIKeyIfTemplate(providerID, template, expectedAPIKey, apiKey string) bool {
+	s.publishMu.Lock()
+	defer s.publishMu.Unlock()
+	cur := s.loadSnapshot()
+	if cur.config == nil || cur.config.Providers == nil {
+		return false
+	}
+	pc, ok := cur.config.Providers.Get(providerID)
+	if !ok || pc.APIKeyTemplate != template || pc.APIKey != expectedAPIKey {
+		return false
+	}
+	pc.APIKey = apiKey
+	next := cur.clone()
+	cfgCopy := *cur.config
+	providersCopy := cur.config.Providers.Copy()
+	providersCopy[providerID] = pc
+	cfgCopy.Providers = csync.NewMapFrom(providersCopy)
+	next.config = &cfgCopy
+	s.publishLocked(next)
+	return true
+}
+
 // copilotRefreshTokenFn and hyperExchangeTokenFn indirect the two external
 // OAuth refresh calls used by RefreshOAuthTokenWithClient below. They default
 // to the real network-calling implementations; tests override them
@@ -204,6 +233,7 @@ func (s *ConfigStore) RefreshOAuthTokenWithClient(ctx context.Context, scope Sco
 	if providerConfig.OAuthToken == nil {
 		return fmt.Errorf("provider %s does not have an OAuth token", providerID)
 	}
+	expectedToken := providerConfig.OAuthToken
 
 	// Check if another session refreshed the token recently by reading
 	// the current token from the config file on disk.
@@ -238,39 +268,139 @@ func (s *ConfigStore) RefreshOAuthTokenWithClient(ctx context.Context, scope Sco
 		}
 		return fmt.Errorf("failed to refresh OAuth token for provider %s: %w", providerID, refreshErr)
 	}
-
-	slog.Info("Successfully refreshed OAuth token", "provider", providerID)
-	providerConfig.OAuthToken = refreshedToken
-	providerConfig.APIKey = refreshedToken.AccessToken
-
-	switch providerID {
-	case string(catwalk.InferenceProviderCopilot):
-		providerConfig.SetupGitHubCopilot()
+	if refreshedToken == nil {
+		return fmt.Errorf("OAuth refresh for provider %s returned no token", providerID)
 	}
 
-	// Use SetProviderRuntimeConfig to publish a new snapshot with incremented
-	// generation, ensuring cache invalidation works correctly (task #341, P1-3).
-	s.SetProviderRuntimeConfig(providerID, providerConfig)
-
-	if err := s.SetConfigFields(scope, map[string]any{
-		fmt.Sprintf("providers.%s.api_key", providerID): refreshedToken.AccessToken,
-		fmt.Sprintf("providers.%s.oauth", providerID):   refreshedToken,
-	}); err != nil {
-		return fmt.Errorf("failed to persist refreshed token: %w", err)
+	slog.Info("Successfully refreshed OAuth token", "provider", providerID)
+	committed, err := s.setOAuthTokenIfCurrent(scope, providerID, expectedToken, refreshedToken)
+	if !committed {
+		if err != nil {
+			return fmt.Errorf("failed to persist refreshed token: %w", err)
+		}
+		return fmt.Errorf("provider %s credentials changed during OAuth refresh", providerID)
+	}
+	if err != nil {
+		outcome, ok := CommitOutcomeFromError(err)
+		if !ok || !outcome.Committed {
+			return fmt.Errorf("failed to persist refreshed token: %w", err)
+		}
+	}
+	tokenToApply := refreshedToken
+	if err != nil {
+		// A later process may already have replaced the committed bytes.
+		// Prefer the token currently on disk when it can be read; the
+		// in-memory CAS below still protects a newer in-process credential.
+		if diskToken, diskErr := s.loadTokenFromDisk(scope, providerID); diskErr == nil && diskToken != nil {
+			tokenToApply = diskToken
+		}
+	}
+	applyErr := s.applyOAuthToken(providerID, expectedToken, tokenToApply)
+	if applyErr != nil {
+		if err != nil {
+			return errors.Join(fmt.Errorf("failed to persist refreshed token: %w", err), applyErr)
+		}
+		return applyErr
+	}
+	if err != nil {
+		return fmt.Errorf("refreshed token committed but durability is uncertain: %w", err)
+	}
+	if err := s.autoReloadAfterWrite(context.Background()); err != nil {
+		slog.Warn("Refreshed OAuth token committed but in-memory reconciliation was incomplete", "provider", providerID, "error", err)
 	}
 
 	return nil
 }
 
+var errOAuthCredentialCAS = errors.New("OAuth credentials changed on disk")
+
+func (s *ConfigStore) setOAuthTokenIfCurrent(scope Scope, providerID string, expected, token *oauth.Token) (bool, error) {
+	path, err := s.configPath(scope)
+	if err != nil {
+		return false, err
+	}
+	keys := []string{fmt.Sprintf("providers.%s.api_key", providerID), fmt.Sprintf("providers.%s.oauth", providerID)}
+	slices.Sort(keys)
+	var committedErr error
+	err = s.withConfigWriteLock(path, func(target configWriteTarget) error {
+		data, fingerprint, readErr := readStableConfigFileOwned(target.selectedPath, target.owner, target.enforce)
+		if readErr != nil {
+			return fmt.Errorf("failed to read config file: %w", readErr)
+		}
+		var current oauth.Token
+		if decodeErr := json.Unmarshal([]byte(gjson.Get(string(data), fmt.Sprintf("providers.%s.oauth", providerID)).Raw), &current); decodeErr != nil || expected == nil || !reflect.DeepEqual(&current, expected) || gjson.Get(string(data), fmt.Sprintf("providers.%s.api_key", providerID)).String() != expected.AccessToken {
+			return errOAuthCredentialCAS
+		}
+		newValue := string(data)
+		for _, key := range keys {
+			var value any = token
+			if key == fmt.Sprintf("providers.%s.api_key", providerID) {
+				value = token.AccessToken
+			}
+			newValue, err = sjson.Set(newValue, key, value)
+			if err != nil {
+				return fmt.Errorf("failed to set config field %s: %w", key, err)
+			}
+		}
+		if err := os.MkdirAll(filepath.Dir(target.path), 0o755); err != nil {
+			return fmt.Errorf("failed to create config directory %q: %w", path, err)
+		}
+		_, commitErr := commitConfigFile(target.selectedPath, target.path, []byte(newValue), 0o600, fingerprint, target.owner, target.enforce)
+		if commitErr != nil {
+			if outcome, ok := CommitOutcomeFromError(commitErr); ok && outcome.Committed {
+				s.noteInitialLoadWriteLocked(path, []byte(newValue))
+				committedErr = commitErr
+				return nil
+			}
+			return fmt.Errorf("failed to write config file: %w", commitErr)
+		}
+		s.noteInitialLoadWriteLocked(path, []byte(newValue))
+		return nil
+	})
+	if errors.Is(err, errOAuthCredentialCAS) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if committedErr != nil {
+		return true, committedErr
+	}
+	return true, nil
+}
+
 // applyToken updates the in-memory provider config with the given token
 // and publishes a new snapshot with incremented generation (task #341, P1-3).
 func (s *ConfigStore) applyToken(providerConfig ProviderConfig, token *oauth.Token, providerID string) error {
+	return s.applyOAuthToken(providerID, providerConfig.OAuthToken, token)
+}
+
+func (s *ConfigStore) applyOAuthToken(providerID string, expected *oauth.Token, token *oauth.Token) error {
+	s.publishMu.Lock()
+	defer s.publishMu.Unlock()
+	cur := s.loadSnapshot()
+	if cur.config == nil || cur.config.Providers == nil {
+		return fmt.Errorf("provider %s disappeared during OAuth refresh", providerID)
+	}
+	providerConfig, exists := cur.config.Providers.Get(providerID)
+	if exists && providerConfig.OAuthToken != nil && reflect.DeepEqual(providerConfig.OAuthToken, token) && providerConfig.APIKey == token.AccessToken {
+		return nil
+	}
+	if !exists || providerConfig.OAuthToken == nil || expected == nil || providerConfig.APIKey != expected.AccessToken || !reflect.DeepEqual(providerConfig.OAuthToken, expected) {
+		return fmt.Errorf("provider %s credentials changed during OAuth refresh", providerID)
+	}
 	providerConfig.OAuthToken = token
 	providerConfig.APIKey = token.AccessToken
 	if providerID == string(catwalk.InferenceProviderCopilot) {
 		providerConfig.SetupGitHubCopilot()
 	}
-	s.SetProviderRuntimeConfig(providerID, providerConfig)
+	next := cur.clone()
+	cfgCopy := *cur.config
+	providersCopy := cur.config.Providers.Copy()
+	providersCopy[providerID] = providerConfig
+	cfgCopy.Providers = csync.NewMapFrom(providersCopy)
+	next.config = &cfgCopy
+	s.publishLocked(next)
 	return nil
 }
 
