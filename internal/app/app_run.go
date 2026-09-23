@@ -87,6 +87,16 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 		return nil, fmt.Errorf("failed to create session for non-interactive mode: %w", err)
 	}
 
+	// Durable work accepted earlier for this session runs FIRST (FIFO), in
+	// this call, before our own turn. Otherwise this process's own pump
+	// admits it concurrently, our turn queues behind it and exits "queued",
+	// and that exit cancels the pump's turn — a self-perpetuating hang
+	// (2026-09-23, five sessions after a --timeout). Fail-fast callers keep
+	// their immediate-busy contract.
+	if !failIfSessionBusy {
+		app.drainPendingBeforeRun(ctx, sess.ID)
+	}
+
 	// FailIfSessionBusy (sdk.Client.Run/RunWithCredentials): reject the
 	// request when the session already has an in-process owner, instead
 	// of silently queueing behind it. Opt-in on purpose: `rush run` and
