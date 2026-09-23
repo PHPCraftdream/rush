@@ -45,6 +45,11 @@ type fakeEnv struct {
 	// to the SAME database file (db.Connect(ctx, dbDir)) rather than
 	// accidentally standing up an unrelated, empty database.
 	dbDir string
+	// cleanup is the owning test's t.Cleanup. testSessionAgent uses it to
+	// join the agent's background goroutines (e.g. a title generation
+	// outliving its bounded join) before the DB is released: on Windows a
+	// goroutine still holding rush.db makes TempDir removal fail.
+	cleanup func(func())
 }
 
 type builderFunc func(t *testing.T, r *vcr.Recorder) (fantasy.LanguageModel, error)
@@ -120,6 +125,7 @@ func testEnv(t *testing.T) fakeEnv {
 		&filetrackerService,
 		conn,
 		dbDir,
+		t.Cleanup,
 	}
 }
 
@@ -147,6 +153,10 @@ func testSessionAgent(env fakeEnv, smart, fast fantasy.LanguageModel, systemProm
 		Messages:     env.messages,
 		Tools:        tools,
 	})
+	// Registered after testEnv's cleanup, so (LIFO) it runs first.
+	if sa, ok := agent.(*sessionAgent); ok && env.cleanup != nil {
+		env.cleanup(sa.runWg.Wait)
+	}
 	return agent
 }
 
