@@ -207,14 +207,36 @@ var (
 )
 
 // RefreshOAuthToken refreshes the OAuth token for the given provider on
-// the default network route. See RefreshOAuthTokenWithClient.
+// the default network route. The provider entry is read from one atomic
+// snapshot read so the token and the (nil, default-route) client are
+// consistent by construction. See RefreshOAuthTokenWithClient.
 func (s *ConfigStore) RefreshOAuthToken(ctx context.Context, scope Scope, providerID string) error {
-	return s.RefreshOAuthTokenWithClient(ctx, scope, providerID, nil)
+	providerConfig, ok := s.loadSnapshot().config.Providers.Get(providerID)
+	if !ok {
+		return fmt.Errorf("provider %s not found", providerID)
+	}
+	return s.RefreshOAuthTokenWithClient(ctx, scope, providerConfig, nil)
 }
 
 // RefreshOAuthTokenWithClient refreshes the OAuth token for the given
-// provider. client carries the network policy the refresh request must
-// ride (R5-2): the coordinator passes the provider's resolved proxy/DNS
+// provider. providerConfig MUST be the entry resolved from the SAME
+// config snapshot generation client was built from (F6 round-12
+// residual): the refresh token sent to the exchange and the network
+// route carrying it must come from one generation. This function
+// deliberately does NOT re-resolve the provider with a second, fresh
+// loadSnapshot of its own — that independently-timed read used to pair
+// the caller's generation-A client with a generation-B token when a
+// reload landed between the caller's snapshot and this call, sending
+// the exchange over a route the token's generation never required
+// (silently bypassing a just-configured proxy, or failing against an
+// endpoint only the new route can reach). Handing in an entry from a
+// superseded generation is fine: the publish-time CAS below
+// (setOAuthTokenIfCurrent / applyOAuthToken) still refuses the result
+// if the credentials moved on meanwhile, and the disk preflight still
+// adopts a token another session refreshed.
+//
+// client carries the network policy the refresh request must ride
+// (R5-2): the coordinator passes the provider's resolved proxy/DNS
 // HTTP client so auth lifecycle traffic follows the same route as
 // inference; nil keeps the helpers' default-route client.
 // Before making an external refresh request, it checks the config file on
@@ -223,12 +245,11 @@ func (s *ConfigStore) RefreshOAuthToken(ctx context.Context, scope Scope, provid
 // the exchange fails (e.g. because another session already rotated the
 // refresh token), the disk is re-checked to recover the other session's
 // token.
-func (s *ConfigStore) RefreshOAuthTokenWithClient(ctx context.Context, scope Scope, providerID string, client *http.Client) error {
-	providers := s.loadSnapshot().config.Providers
-	providerConfig, exists := providers.Get(providerID)
-	if !exists {
-		return fmt.Errorf("provider %s not found", providerID)
+func (s *ConfigStore) RefreshOAuthTokenWithClient(ctx context.Context, scope Scope, providerConfig ProviderConfig, client *http.Client) error {
+	if providerConfig.ID == "" {
+		return fmt.Errorf("provider config for OAuth refresh has no ID")
 	}
+	providerID := providerConfig.ID
 
 	if providerConfig.OAuthToken == nil {
 		return fmt.Errorf("provider %s does not have an OAuth token", providerID)

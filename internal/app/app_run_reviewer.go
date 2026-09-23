@@ -538,7 +538,6 @@ func (s *executeRunLoop) finish(runErr error) (*RunResult, error) {
 		authoritativeTerminal := false
 		if s.cachedTerminal != nil {
 			reconciled = *s.cachedTerminal
-			authoritativeTerminal = true
 		} else {
 			reconciled, reconcileErr = s.app.reconcileTerminalMessage(finalCtx, s.sess.ID, s.baselineIDs, s.baselineKnown, s.runStart, s.callResultRec.Resolve(), s.callResultRec.IDs())
 		}
@@ -563,7 +562,22 @@ func (s *executeRunLoop) finish(runErr error) (*RunResult, error) {
 			if reconciled.combinedText != "" {
 				s.finalText = reconciled.combinedText
 			}
-			authoritativeTerminal = true
+			// R12-1 (round-12 audit): reconcileErr==nil only proves SOME
+			// committed row matching callResultRec's own ID was found -- it
+			// does not prove the row is the CURRENT live owner's confirmed
+			// result. A durable drain (isCanceled branches above) hands
+			// s.eventOwner to a fresh recorder without touching
+			// s.callResultRec; if that drain has not yet confirmed via
+			// drainDone/adoptDrainIdentity, the row found here still names
+			// the SUPERSEDED original call, and handleMessageEvent's own
+			// Owns() filter just rejected replaying it into s.finalText/
+			// s.finalReason -- those fields, if set, are leftover from an
+			// earlier, still-unconfirmed live event the drain published.
+			// Gate authoritativeTerminal on the SAME ownership check
+			// handleMessageEvent used, so a superseded row can never
+			// borrow the not-yet-durable owner's leftover live state into
+			// a fabricated success below.
+			authoritativeTerminal = s.eventOwner.Owns(reconciled.message.ID)
 		}
 		if authoritativeTerminal && isCanceled && !runFailed(s.finalReason, nil, false) {
 			if s.finalReason == string(message.FinishReasonEndTurn) {

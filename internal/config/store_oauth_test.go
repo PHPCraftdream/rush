@@ -1,6 +1,6 @@
 // OAuth and provider-token tests: loadTokenFromDisk, RefreshOAuthToken
-// (including the reload-during-network-call regression), and
-// SetProviderRuntimeConfig visibility versus reload.
+// (including the reload-during-network-call and cross-generation-pairing
+// regressions), and SetProviderRuntimeConfig visibility versus reload.
 
 package config
 
@@ -517,4 +517,213 @@ func TestSetupGitHubCopilotClonesExtraHeaders(t *testing.T) {
 	require.Equal(t, "kept", provider.ExtraHeaders["X-Custom"])
 	provider.ExtraHeaders["X-Custom"] = "changed"
 	require.Equal(t, "kept", publishedHeaders["X-Custom"])
+}
+
+// TestRefreshOAuthTokenWithClient_RefreshesTokenFromHandedInGeneration is
+// the F6 round-12 regression test for the window BETWEEN the two already
+// covered intervals: after the caller built the HTTP client from config
+// generation A (a reload landing BEFORE the client build is covered by
+// the agent package's TestRefreshOAuth2Token_UsesFreshSameSnapshotProviderPair;
+// one landing AFTER the network call started by
+// TestRefreshOAuthToken_SurvivesReloadDuringNetworkCall) but before the
+// token to refresh is resolved. RefreshOAuthTokenWithClient used to run
+// its own loadSnapshot for that lookup, so a reload publishing generation
+// B in this window paired the caller's generation-A client with
+// generation B's refresh token — an exchange riding the old route with
+// the new generation's credential, which can silently bypass a
+// just-configured proxy (or fail against an endpoint only the new route
+// can reach). The proactive and 401 callers are not distinguishable from
+// this package (both funnel through the agent package's single
+// refreshOAuth2Token call site), so the caller role is replayed here
+// directly: capture (provider entry, client) from generation A, publish
+// generation B with a different refresh token AND a different
+// per-provider network policy, then call the store with the generation-A
+// pair.
+func TestRefreshOAuthTokenWithClient_RefreshesTokenFromHandedInGeneration(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "rush.json")
+
+	genAToken := &oauth.Token{
+		AccessToken:  "gen-a-access",
+		RefreshToken: "refresh-gen-a",
+		ExpiresIn:    3600,
+		ExpiresAt:    time.Now().Add(-time.Hour).Unix(), // expired, forces refresh
+	}
+	content, err := json.Marshal(map[string]any{
+		"providers": map[string]any{
+			hyperp.Name: map[string]any{"api_key": genAToken.AccessToken, "oauth": genAToken},
+		},
+	})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(configPath, content, 0o600))
+
+	providers := csync.NewMap[string, ProviderConfig]()
+	providers.Set(hyperp.Name, ProviderConfig{
+		ID:         hyperp.Name,
+		Name:       "Hyper",
+		APIKey:     genAToken.AccessToken,
+		OAuthToken: genAToken,
+	})
+	store := newTestConfigStore(testStoreOpts{
+		config:         &Config{Providers: providers},
+		globalDataPath: configPath,
+	})
+
+	// Caller role: capture the provider entry and build the client from
+	// ONE generation-A read, exactly as the coordinator's
+	// refreshOAuth2Token does before calling the store.
+	genAProvider, ok := store.Config().Providers.Get(hyperp.Name)
+	require.True(t, ok)
+	clientFromGenA := &http.Client{}
+
+	// The reload lands in the window: generation B replaces the token
+	// (different refresh token) and adds a per-provider network policy
+	// generation A never had, via the same in-memory publish path
+	// SetProviderRuntimeConfig gives real callers. Disk keeps generation
+	// A's expired token, so neither generation's preflight disk check
+	// can short-circuit the exchange — the observed refresh token is
+	// then the only thing separating the fixed code from the bug.
+	genBToken := &oauth.Token{
+		AccessToken:  "gen-b-access",
+		RefreshToken: "refresh-gen-b",
+		ExpiresIn:    3600,
+		ExpiresAt:    time.Now().Add(-time.Hour).Unix(),
+	}
+	genBProvider := genAProvider
+	genBProvider.APIKey = genBToken.AccessToken
+	genBProvider.OAuthToken = genBToken
+	genBProvider.Network = &NetworkConfig{Proxy: "socks5://127.0.0.1:1080"}
+	store.SetProviderRuntimeConfig(hyperp.Name, genBProvider)
+
+	freshProvider, ok := store.Config().Providers.Get(hyperp.Name)
+	require.True(t, ok)
+	require.Equal(t, "refresh-gen-b", freshProvider.OAuthToken.RefreshToken,
+		"sanity check: generation B must be live, so the old internal re-read would see it")
+
+	var observedClient *http.Client
+	var observedRefreshToken string
+	exchangeCalls := 0
+	origFn := hyperExchangeTokenFn
+	hyperExchangeTokenFn = func(_ context.Context, client *http.Client, refreshToken string) (*oauth.Token, error) {
+		exchangeCalls++
+		observedClient = client
+		observedRefreshToken = refreshToken
+		return &oauth.Token{
+			AccessToken:  "refreshed-access",
+			RefreshToken: "refreshed-refresh",
+			ExpiresIn:    3600,
+			ExpiresAt:    time.Now().Add(time.Hour).Unix(),
+		}, nil
+	}
+	t.Cleanup(func() { hyperExchangeTokenFn = origFn })
+
+	err = store.RefreshOAuthTokenWithClient(context.Background(), ScopeGlobal, genAProvider, clientFromGenA)
+
+	// The disk token is expired, so the exchange must run exactly once —
+	// and it must carry generation A's refresh token over generation A's
+	// client. The old code re-resolved the provider internally here and
+	// sent refresh-gen-b over clientFromGenA: exactly the
+	// CA-paired-with-TB pairing this assertion fails on.
+	require.Equal(t, 1, exchangeCalls, "token exchange must run exactly once")
+	require.Same(t, clientFromGenA, observedClient,
+		"the exchange must ride the caller-provided client unchanged")
+	require.Equal(t, "refresh-gen-a", observedRefreshToken,
+		"the exchanged refresh token must come from the SAME generation as the client: "+
+			"a generation-A client paired with a generation-B token is the F6 round-12 defect")
+
+	// Publish-time CAS: generation B landed while the attempt was in
+	// flight, so the refreshed result must be refused instead of
+	// clobbering it. This is the existing protective behavior, not the
+	// regression oracle above.
+	require.ErrorContains(t, err, "credentials changed")
+}
+
+// TestRefreshOAuthTokenWithClient_DiskReplacementDuringWindowNeverPairsCrossGeneration
+// is the same round-12 window as
+// TestRefreshOAuthTokenWithClient_RefreshesTokenFromHandedInGeneration
+// with the audit's exact counterexample disk state: generation B (a new
+// unexpired token AND a new required network policy) is present BOTH in
+// memory and on disk before the store call, so the handed-in
+// generation-A pair is stale in every readable location. The store must
+// adopt the disk token (already live in memory) and never send an
+// exchange — the old code instead re-read generation B internally and
+// "refreshed" its token by sending refresh-gen-b over clientFromGenA,
+// the CA-paired-with-TB pairing the audit ruled out.
+func TestRefreshOAuthTokenWithClient_DiskReplacementDuringWindowNeverPairsCrossGeneration(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "rush.json")
+
+	genAToken := &oauth.Token{
+		AccessToken:  "gen-a-access",
+		RefreshToken: "refresh-gen-a",
+		ExpiresIn:    3600,
+		ExpiresAt:    time.Now().Add(-time.Hour).Unix(),
+	}
+	content, err := json.Marshal(map[string]any{
+		"providers": map[string]any{
+			hyperp.Name: map[string]any{"api_key": genAToken.AccessToken, "oauth": genAToken},
+		},
+	})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(configPath, content, 0o600))
+
+	providers := csync.NewMap[string, ProviderConfig]()
+	providers.Set(hyperp.Name, ProviderConfig{
+		ID:         hyperp.Name,
+		Name:       "Hyper",
+		APIKey:     genAToken.AccessToken,
+		OAuthToken: genAToken,
+	})
+	store := newTestConfigStore(testStoreOpts{
+		config:         &Config{Providers: providers},
+		globalDataPath: configPath,
+	})
+
+	genAProvider, ok := store.Config().Providers.Get(hyperp.Name)
+	require.True(t, ok)
+	clientFromGenA := &http.Client{}
+
+	genBToken := &oauth.Token{
+		AccessToken:  "gen-b-access",
+		RefreshToken: "refresh-gen-b",
+		ExpiresIn:    3600,
+		ExpiresAt:    time.Now().Add(time.Hour).Unix(), // unexpired: the disk preflight can adopt it
+	}
+	genBProvider := genAProvider
+	genBProvider.APIKey = genBToken.AccessToken
+	genBProvider.OAuthToken = genBToken
+	genBProvider.Network = &NetworkConfig{Proxy: "socks5://127.0.0.1:1080"}
+	store.SetProviderRuntimeConfig(hyperp.Name, genBProvider)
+	require.NoError(t, store.SetConfigFields(ScopeGlobal, map[string]any{
+		"providers.hyper.api_key": genBToken.AccessToken,
+		"providers.hyper.oauth":   genBToken,
+	}))
+
+	exchangeCalls := 0
+	origFn := hyperExchangeTokenFn
+	hyperExchangeTokenFn = func(context.Context, *http.Client, string) (*oauth.Token, error) {
+		exchangeCalls++
+		return &oauth.Token{
+			AccessToken:  "refreshed-access",
+			RefreshToken: "refreshed-refresh",
+			ExpiresIn:    3600,
+			ExpiresAt:    time.Now().Add(time.Hour).Unix(),
+		}, nil
+	}
+	t.Cleanup(func() { hyperExchangeTokenFn = origFn })
+
+	err = store.RefreshOAuthTokenWithClient(context.Background(), ScopeGlobal, genAProvider, clientFromGenA)
+
+	// Generation B's token must never be sent over generation A's
+	// client. The disk preflight sees generation B already live (on disk
+	// and in memory), so the correct outcome is "nothing to refresh".
+	require.Zero(t, exchangeCalls,
+		"the exchange must not run against a stale generation pair: a generation-B token "+
+			"sent over the generation-A client is the F6 round-12 defect")
+	require.NoError(t, err)
+
+	current, ok := store.Config().Providers.Get(hyperp.Name)
+	require.True(t, ok)
+	require.Equal(t, "gen-b-access", current.APIKey,
+		"the disk token, already live in memory, must win without any exchange")
 }

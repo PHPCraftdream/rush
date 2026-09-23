@@ -167,7 +167,11 @@ func (c *coordinator) refreshOAuth2Token(ctx context.Context, providerCfg config
 		if clientErr != nil {
 			return fmt.Errorf("resolve provider network client for OAuth refresh: %w", clientErr)
 		}
-		err = c.cfg.RefreshOAuthTokenWithClient(ctx, config.ScopeGlobal, providerCfg.ID, httpClient)
+		// F6 round-12: hand the SAME providerCfg entry the client was
+		// built from to the store, so the token it refreshes comes from
+		// the exact generation the client came from instead of a fresh,
+		// independently-timed store read.
+		err = c.cfg.RefreshOAuthTokenWithClient(ctx, config.ScopeGlobal, providerCfg, httpClient)
 	}
 	if err != nil {
 		slog.Error("Failed to refresh OAuth token after 401 error", "provider", providerCfg.ID, "error", err)
