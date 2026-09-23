@@ -256,7 +256,7 @@ function testContentHashCatchesSameSizeSameMtimeSwap() {
     'new key missing after sweep: ' + JSON.stringify(remaining),
   );
 
-  fs.rmSync(fx.root, { recursive: true, force: true });
+  fs.rmSync(fx.root, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
 }
 
 // ---------------------------------------------------------------------
@@ -342,7 +342,7 @@ function testKeyRegression() {
       'installed package',
   );
 
-  fs.rmSync(fx.root, { recursive: true, force: true });
+  fs.rmSync(fx.root, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
 }
 
 // ---------------------------------------------------------------------
@@ -382,7 +382,7 @@ function testCacheReuse() {
       'wrapper to skip the copy when targetPath already exists',
   );
 
-  fs.rmSync(fx.root, { recursive: true, force: true });
+  fs.rmSync(fx.root, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
 }
 
 // ---------------------------------------------------------------------
@@ -445,7 +445,7 @@ async function testConcurrentFirstLaunch() {
       'key, got: ' + JSON.stringify(realDirs),
   );
 
-  fs.rmSync(fx.root, { recursive: true, force: true });
+  fs.rmSync(fx.root, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
 }
 
 // ---------------------------------------------------------------------
@@ -491,8 +491,8 @@ function testConcurrentDifferentBuildLaunches() {
       'private launch directory was not cleaned after both children exited',
     );
   } finally {
-    fs.rmSync(fxA.root, { recursive: true, force: true });
-    fs.rmSync(fxB.root, { recursive: true, force: true });
+    fs.rmSync(fxA.root, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
+    fs.rmSync(fxB.root, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
   }
 }
 
@@ -510,7 +510,7 @@ function testHardlinkFallback() {
       'private copy directory was not cleaned after launch',
     );
   } finally {
-    fs.rmSync(fx.root, { recursive: true, force: true });
+    fs.rmSync(fx.root, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
   }
 }
 
@@ -544,8 +544,8 @@ function testHardlinkPinSurvivesEviction() {
       'private launch directory was not cleaned after both children exited',
     );
   } finally {
-    fs.rmSync(fxA.root, { recursive: true, force: true });
-    fs.rmSync(fxB.root, { recursive: true, force: true });
+    fs.rmSync(fxA.root, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
+    fs.rmSync(fxB.root, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
   }
 }
 
@@ -597,7 +597,7 @@ function testCacheUnavailableFallback() {
         fx.binPath + ', got stderr:\n' + (result.stderr || '(empty)') + '\nstdout:\n' + (result.stdout || '(empty)'),
     );
   } finally {
-    fs.rmSync(fx.root, { recursive: true, force: true });
+    fs.rmSync(fx.root, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
   }
 }
 

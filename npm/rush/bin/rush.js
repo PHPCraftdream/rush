@@ -226,7 +226,10 @@ function resolveCacheRoot() {
 function releasePrivateLaunchDir(privateDir) {
   if (!privateDir) return;
   try {
-    fs.rmSync(privateDir, { recursive: true, force: true });
+    // Windows keeps the just-exited child's image locked briefly after
+    // spawnSync returns (EBUSY/EPERM); retry, since the sweep above skips
+    // .tmp-* and a lost race here would leak the directory for good.
+    fs.rmSync(privateDir, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
   } catch (_) {
     // Best-effort cleanup only.
   }
