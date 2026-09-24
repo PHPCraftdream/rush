@@ -251,9 +251,9 @@ blocks:
       - Use `--role smart` for non-trivial work and `--role fast` for one-liners. The optional `--role worker` and `--role reviewer` roles are never auto-selected. Configure them with `rush models use <smart> <fast> --worker <model> --reviewer <model>` (the two positional arguments are still required; these flags are additive).
       - Use a stable, task-meaningful `--session` ID. Reuse it for retries and resumes.
       - No `--timeout` is needed by default. `--idle-timeout` defaults to `15m` and ends a genuinely stuck run; do not add an arbitrary overall timeout.
-      - Run `rush run --role smart --session <id> --json` using Codex's `exec_command` with the working directory set to the intended workspace. If it returns a `session_id`, retain that handle and wait for the process with blocking `write_stdin` calls until it completes. Do not append `&`, sleep-poll, or mistake completion of a shell wrapper for completion of Rush.
+      - Run `rush run --role smart --session <id> --json` using Codex's `exec_command` with the working directory set to the intended workspace. If it returns a `session_id`, retain that handle. Do not append `&`, sleep-poll, or mistake completion of a shell wrapper for completion of Rush.
       - Capture stdout and stderr in `.rush/stdin/<task>.out` and `.rush/stdin/<task>.err`. For a multi-line prompt, write `.rush/stdin/<task>.prompt` and feed it through stdin.
-      - If `CODEX_THREAD_ID` is set, pass it as `--codex-thread-id <thread-id>`. Rush sends a completion message through `codex queue`; treat it only as a wake marker, then wait on the retained `session_id` with blocking `write_stdin` and read the full result. Without the variable, wait on the retained session handle until process completion.
+      - If `CODEX_THREAD_ID` and `codex queue` are available, pass the ID as `--codex-thread-id <thread-id>` and leave the chat free after launch. Do not call `write_stdin` merely to wait for Rush. When `rush_done:<session>` arrives, treat it as an automated wake marker, not a new user request: confirm the process ended using the retained `session_id`, then read the full result and verify the work. The marker may arrive before process exit; wait on that same handle if needed, never launch a duplicate. Without the callback, use a blocking `write_stdin` wait on the retained handle.
   - common: |-
       ## Scoping permissions for a delegation — `--restrict-run`
 
@@ -391,7 +391,7 @@ blocks:
       in), not another `rush run`. Only relaunch once the lock is confirmed
       gone or genuinely stale (`sessions locks`/`reap`).
     codex: |-
-      **Process completion.** The Codex `exec_command` completion event is authoritative. Keep the returned command/session handle and wait for its completion event; do not periodically poll command output. A `codex queue` notice is only a signal to check the process and inspect its full result. If the process exits without a completion notice, inspect `.rush/stdin/<task>.{out,err}` and `rush sessions last <id>` before deciding whether to relaunch. Never start another run against a session whose lock is still held.
+      **Process completion.** With `--codex-thread-id`, keep the returned `exec_command` session handle but do not block the chat waiting on it. The `codex queue` marker wakes this thread; then confirm the process has exited with the same handle and inspect `.rush/stdin/<task>.{out,err}`. Without that callback, wait for the process with a blocking `write_stdin` call. Do not periodically poll output. If a completion notice is missing, inspect the retained result and `rush sessions last <id>` when the thread is next resumed; never relaunch while the session lock is held.
   - common: |-
       ## Steering a running session — `sessions inject`
 

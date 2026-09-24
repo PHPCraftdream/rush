@@ -74,7 +74,10 @@ func TestCodexInit_CreatesSlashCommand(t *testing.T) {
 	assert.NotContains(t, got, "run_in_background")
 	assert.Contains(t, got, "codex queue")
 	assert.Contains(t, got, "session_id")
-	assert.Contains(t, got, "blocking `write_stdin`")
+	assert.Contains(t, got, "leave the chat free after launch")
+	assert.Contains(t, got, "Do not call `write_stdin` merely to wait for Rush")
+	assert.Contains(t, got, "Without the callback, use a blocking `write_stdin` wait")
+	assert.NotContains(t, got, "retain that handle and wait for the process with blocking")
 	assert.NotContains(t, got, "background execution option")
 	assert.Contains(t, got, "## Scoping permissions for a delegation")
 	assert.Contains(t, got, "## When the lock is stuck")
@@ -142,7 +145,8 @@ func TestCodexInit_CreatesWrushSkillFromCanonicalTemplate(t *testing.T) {
 	assert.NotContains(t, got, "Bash")
 	assert.Contains(t, got, "exec_command")
 	assert.Contains(t, got, "session_id")
-	assert.Contains(t, got, "blocking `write_stdin`")
+	assert.Contains(t, got, "use the `codex queue` wake marker when available")
+	assert.Contains(t, got, "on `write_stdin` when that callback is unavailable")
 }
 
 func TestCodexInit_CreatesWcrushSkillFromCanonicalTemplate(t *testing.T) {
@@ -167,8 +171,10 @@ func TestCodexInit_CreatesWcrushSkillFromCanonicalTemplate(t *testing.T) {
 	assert.NotContains(t, got, "run_in_background")
 	assert.Contains(t, got, "exec_command")
 	assert.Contains(t, got, "session_id")
-	assert.Contains(t, got, "blocking `write_stdin`")
-	assert.Contains(t, got, "codex queue")
+	assert.Contains(t, got, "long phase-2 tests")
+	assert.Contains(t, got, "blocking")
+	assert.Contains(t, got, "`--codex-thread-id` applies to `rush run`, not these test commands")
+	assert.NotContains(t, got, "codex queue")
 }
 
 func TestCodexInit_SlashCommandOverwritesWithSentinel(t *testing.T) {

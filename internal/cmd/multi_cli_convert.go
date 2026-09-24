@@ -253,8 +253,10 @@ const (
 	codexWrushLaunchGuidance = "Launch `rush run` with Codex's `exec_command`, setting its workdir\n" +
 		"   to the worktree — every edit, git op, and test the sub-agent runs\n" +
 		"   stays inside that tree. If `exec_command` returns a `session_id`,\n" +
-		"   retain it and wait with blocking `write_stdin` calls until the\n" +
-		"   process completes. Redirect `.rush/stdin/<task>.{out,err}` to the\n" +
+		"   retain it and follow the sibling rush skill's completion guidance:\n" +
+		"   use the `codex queue` wake marker when available, and only block\n" +
+		"   on `write_stdin` when that callback is unavailable. Redirect\n" +
+		"   `.rush/stdin/<task>.{out,err}` to the\n" +
 		"   PRIMARY checkout so results survive the eventual worktree removal."
 	claudeWcrushBackgroundGuidance = "**OOM discipline belongs to phase 2** — the other half of the same\n" +
 		"  bargain: `-parallel 2` for heavy packages, never two heavy runs at\n" +
@@ -262,11 +264,10 @@ const (
 		"  `run_in_background: true` parameter and never with a trailing `&`."
 	codexWcrushBackgroundGuidance = "**OOM discipline belongs to phase 2** — the other half of the same\n" +
 		"  bargain: `-parallel 2` for heavy packages, never two heavy runs at\n" +
-		"  once. Run long commands with Codex's `exec_command`. If it returns a\n" +
-		"  `session_id`, retain it and wait with blocking `write_stdin` calls\n" +
-		"  until the process completes. If `CODEX_THREAD_ID` is available,\n" +
-		"  pass it with `--codex-thread-id`; treat the `codex queue` message\n" +
-		"  as a wake marker, then continue waiting for process completion."
+		"  once. Run long phase-2 tests with Codex's `exec_command`. If it\n" +
+		"  returns a `session_id`, retain it and wait with blocking\n" +
+		"  `write_stdin` until the test process completes.\n" +
+		"  `--codex-thread-id` applies to `rush run`, not these test commands."
 )
 
 // toCodexWrushSkillMD converts the canonical Claude /wrush body to Codex's
