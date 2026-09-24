@@ -110,3 +110,19 @@ test("assistant message shows its timestamp badge without hovering", async ({ pa
   await expect(badge).toHaveText(expectedBadgeText(ASSISTANT_TS));
   await expect(badge).toHaveAttribute("title", expectedBadgeTitle(ASSISTANT_TS));
 });
+
+test("message actions leave space after the timestamp on hover", async ({ page }) => {
+  await openSessionWithMessages(page);
+
+  for (const id of ["ts-user", "ts-assistant"]) {
+    const row = page.locator(`#msg-${id}`);
+    await row.hover();
+    const actions = row.locator(".msg-actions");
+    await expect(actions.locator("button").first()).toBeVisible();
+    const timestamp = await actions.locator("span.tabular-nums").boundingBox();
+    const firstButton = await actions.locator("button").first().boundingBox();
+    expect(timestamp).not.toBeNull();
+    expect(firstButton).not.toBeNull();
+    expect(firstButton!.x - (timestamp!.x + timestamp!.width)).toBeGreaterThanOrEqual(7);
+  }
+});
