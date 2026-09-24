@@ -15,6 +15,25 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestWebReadyBannerUsesReadableSeparator(t *testing.T) {
+	for _, copied := range []bool{false, true} {
+		banner := webReadyBanner("http://localhost:8080", "test-token", copied)
+		require.Contains(t, banner, "rush web UI  ->  http://localhost:8080")
+		require.Contains(t, banner, "Access token  ->  test-token")
+		require.True(t, isASCII(banner))
+		require.Equal(t, copied, strings.Contains(banner, "(copied to clipboard)"))
+	}
+}
+
+func isASCII(value string) bool {
+	for _, char := range value {
+		if char > 127 {
+			return false
+		}
+	}
+	return true
+}
+
 // TestRecoverAndLogPanic_LogsBeforeRePanicking is the regression test for
 // task #178: Go's default panic handler writes only to os.Stderr, never
 // through slog, so an unrecovered panic anywhere in the command tree

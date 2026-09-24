@@ -181,14 +181,7 @@ func runWebMode(cmd *cobra.Command) error {
 
 	onReady := func(boundAddr string) {
 		url := fmt.Sprintf("http://%s", boundAddr)
-		fmt.Println()
-		fmt.Printf("  rush web UI  ΓåÆ  %s\n", url)
-		if err := clipboard.WriteAll(token); err == nil {
-			fmt.Printf("  Access token  ΓåÆ  %s (copied to clipboard)\n", token)
-		} else {
-			fmt.Printf("  Access token  ΓåÆ  %s\n", token)
-		}
-		fmt.Println()
+		fmt.Print(webReadyBanner(url, token, clipboard.WriteAll(token) == nil))
 
 		if !noOpen {
 			go func() {
@@ -201,6 +194,14 @@ func runWebMode(cmd *cobra.Command) error {
 	}
 
 	return srv.Start(cmd.Context(), onReady)
+}
+
+func webReadyBanner(url, token string, copied bool) string {
+	suffix := ""
+	if copied {
+		suffix = " (copied to clipboard)"
+	}
+	return fmt.Sprintf("\n  rush web UI  ->  %s\n  Access token  ->  %s%s\n\n", url, token, suffix)
 }
 
 // crashLogMarker is the fixed message text logged by Execute's top-level

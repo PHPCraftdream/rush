@@ -122,6 +122,9 @@ func TestWebAsyncCommandCompletionCreatesModelVisibleNotice(t *testing.T) {
 			http.Error(w, "unexpected model call", http.StatusBadRequest)
 		}
 	})
+	noticeCtx, stopNotices := context.WithCancel(t.Context())
+	defer stopNotices()
+	notices := application.Messages.Subscribe(noticeCtx)
 	result, err := application.ExecuteRun(t.Context(), RunRequest{
 		Prompt: "start web command", Mode: RunModeJSON, ContinueSessionID: sessionID,
 		Origin: message.OriginWeb, Stdout: io.Discard, Stderr: io.Discard, HideSpinner: true,
@@ -134,16 +137,23 @@ func TestWebAsyncCommandCompletionCreatesModelVisibleNotice(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("web agent did not resume after command completion")
 	}
-	messages, err := application.Messages.List(t.Context(), sessionID)
-	require.NoError(t, err)
-	var notices int
-	for _, item := range messages {
-		if item.BackgroundJobNotice {
-			notices++
-			require.True(t, item.AutoResumed)
+	timer := time.NewTimer(10 * time.Second)
+	defer timer.Stop()
+	for {
+		select {
+		case event := <-notices:
+			if event.Payload.SessionID != sessionID || !event.Payload.BackgroundJobNotice {
+				continue
+			}
+			require.True(t, event.Payload.AutoResumed)
+			persisted, getErr := application.Messages.Get(t.Context(), event.Payload.ID)
+			require.NoError(t, getErr)
+			require.True(t, persisted.BackgroundJobNotice)
+			return
+		case <-timer.C:
+			t.Fatal("web completion notice was not persisted")
 		}
 	}
-	require.Equal(t, 1, notices)
 }
 
 func TestRunNonInteractiveWaitsForAsyncSubAgentResult(t *testing.T) {
