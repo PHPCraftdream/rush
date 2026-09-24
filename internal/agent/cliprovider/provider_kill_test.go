@@ -21,6 +21,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/platform"
+	"github.com/PHPCraftdream/rush/internal/session"
 )
 
 // ── Bug 1 regression: bounded wait() must not hang when a grandchild holds stderr ──
@@ -305,13 +306,20 @@ func TestStreamKillUsesTreeKillStillTerminatesChild(t *testing.T) {
 	// still using.
 	const orphanSleepDuration = "58.37"
 	pidFile := filepath.Join(t.TempDir(), "child.pid")
+	pidCommand := "echo $$"
+	if runtime.GOOS == "windows" {
+		// MSYS PIDs are not native Windows PIDs. Record the WINPID column
+		// so the liveness check cannot mistake an unrelated reused PID for
+		// the Bash child.
+		pidCommand = `ps -a 2>/dev/null | awk -v p=$$ '$1==p{print $4}'`
+	}
 	spec := CLISpec{
 		ModelID:    "test-kill-tree",
 		ModelName:  "Test Kill Tree",
 		Binary:     shell,
 		PromptFlag: "-p",
 		BuildArgs: func(bool) []string {
-			return []string{flag, "echo $$ > '" + pidFile + "'; sleep " + orphanSleepDuration}
+			return []string{flag, pidCommand + " > '" + pidFile + "'; sleep " + orphanSleepDuration}
 		},
 	}
 	workingDir := t.TempDir()
@@ -421,19 +429,5 @@ func TestStreamKillUsesTreeKillStillTerminatesChild(t *testing.T) {
 // processAlive reports whether a process with the given pid is still running.
 // Best-effort, portable.
 func processAlive(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-	if runtime.GOOS == "windows" {
-		// taskkill /? exit code logic: we probe via tasklist.
-		out, err := platform.Command(context.Background(), "tasklist", "/FI", fmt.Sprintf("PID eq %d", pid), "/NH").Output()
-		if err != nil {
-			return false
-		}
-		return strings.Contains(string(out), fmt.Sprintf("%d", pid))
-	}
-	// POSIX: signal 0 probes existence.
-	_ = platform.Command(context.Background(), "kill", "-0", fmt.Sprintf("%d", pid)).Run()
-	// kill -0 returns 0 if alive, non-zero otherwise; Run returns nil on 0 exit.
-	return platform.Command(context.Background(), "kill", "-0", fmt.Sprintf("%d", pid)).Run() == nil
+	return session.IsProcessAlive(pid)
 }
