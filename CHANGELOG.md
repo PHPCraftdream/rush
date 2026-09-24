@@ -8,6 +8,28 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.2.0-alpha.7] - 2026-09-24
+
+### Changed
+
+- **Installed delegation skills now give Claude and Codex distinct guidance.**
+  Every Codex variant explicitly passes `--codex-thread-id` when launching
+  or resuming Rush, so completion returns to the originating Codex thread.
+  The `wcrush` workflow also requires the orchestrator to commit verified
+  changes after transferring them into the primary branch; the sub-agent
+  still never commits or pushes.
+
+### Fixed
+
+- **Message timestamps stay clear of hover actions in the web UI.** A fixed
+  16 px gap separates the time from copy/edit controls on user and assistant
+  messages, with a small optical vertical alignment adjustment.
+- **Go tests no longer open visible command windows on Windows.** Test
+  subprocesses use the existing hidden-window launcher, and a guard now
+  checks test files as well as production code against regressions.
+- Stabilized the background-shell buffer-retention test when the Windows
+  scheduler is busy.
+
 ## [0.2.0-alpha.6] - 2026-09-24
 
 ### Added
