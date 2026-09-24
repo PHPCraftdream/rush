@@ -119,7 +119,7 @@ test("message actions leave space after the timestamp on hover", async ({ page }
     await row.hover();
     const actions = row.locator(".msg-actions");
     await expect(actions.locator("button").first()).toBeVisible();
-    const timestamp = await actions.locator("span.tabular-nums").boundingBox();
+    const timestamp = await actions.locator(":scope > span.tabular-nums").boundingBox();
     const firstButton = await actions.locator("button").first().boundingBox();
     expect(timestamp).not.toBeNull();
     expect(firstButton).not.toBeNull();
