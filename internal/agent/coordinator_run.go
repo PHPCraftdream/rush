@@ -107,6 +107,7 @@ func (c *coordinator) buildCall(ctx context.Context, sessionID, prompt string, p
 	// queued replacement (InterruptAndSend) keeps its own policy when it
 	// eventually starts, however long the queue delay is.
 	callOpts := callOptionsFrom(ctx)
+	autoResumed, backgroundJobNotice := noticeFlagsFrom(ctx)
 	call := SessionAgentCall{
 		SessionID:            sessionID,
 		Prompt:               prompt,
@@ -122,11 +123,13 @@ func (c *coordinator) buildCall(ctx context.Context, sessionID, prompt string, p
 		CallOptions:          callOpts,
 		// R3-4: this call's restricted-run policy, armed at turn start; the
 		// uncompiled spec travels too so the durable queue can persist it.
-		RunAllowlist:     runAllowlistFrom(ctx),
-		RunAllowlistSpec: runAllowlistSpecFrom(ctx),
-		FolderScopeSpec:  folderScopeSpecFrom(ctx),
-		SmartModel:       &pinnedSmart,
-		LogicalCallID:    uuid.New().String(), // P2-1: generate stable ID once
+		RunAllowlist:        runAllowlistFrom(ctx),
+		RunAllowlistSpec:    runAllowlistSpecFrom(ctx),
+		FolderScopeSpec:     folderScopeSpecFrom(ctx),
+		SmartModel:          &pinnedSmart,
+		LogicalCallID:       uuid.New().String(), // P2-1: generate stable ID once
+		AutoResumed:         autoResumed,
+		BackgroundJobNotice: backgroundJobNotice,
 	}
 	// Stamp the entry-channel origin at BUILD time, not message-creation
 	// time: the call may be queued as an InterruptAndSend replacement and
@@ -283,6 +286,7 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 	// queued copy's callback recorded before this sender's resolve()
 	// sealed the capture.
 	attemptAdmission := newTurnAdmission()
+	autoResumed, backgroundJobNotice := noticeFlagsFrom(ctx)
 	agentCall := SessionAgentCall{
 		SessionID:            sessionID,
 		Prompt:               prompt,
@@ -310,6 +314,8 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 		SmartModel:           &pinnedSmart,
 		Credentials:          creds,
 		LogicalCallID:        uuid.New().String(), // P2-1: generate stable ID once
+		AutoResumed:          autoResumed,
+		BackgroundJobNotice:  backgroundJobNotice,
 		OnUserMessageCreated: func(id string) { createdUserMessageID = id },
 		// R3-1: the CURRENT attempt's sink (for multi-step or
 		// 401-retried runs the LAST prepared step wins). armAttempt
@@ -456,6 +462,8 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 			InjectID:                  trackCall.InjectID,
 			FromDurableQueue:          trackCall.FromDurableQueue,
 			Origin:                    trackCall.Origin,
+			AutoResumed:               trackCall.AutoResumed,
+			BackgroundJobNotice:       trackCall.BackgroundJobNotice,
 		}
 		pinned.pin(&newCall)
 		*trackCall = newCall

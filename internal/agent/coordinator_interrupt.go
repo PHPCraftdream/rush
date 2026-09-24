@@ -843,7 +843,9 @@ func (c *coordinator) RebuildSessionAgentCall(ctx context.Context, data session.
 		// message.OriginUnspecified despite the durable row carrying the
 		// real value — disagreeing with the audit/transport metadata of
 		// the request that actually entered the queue.
-		Origin: data.Origin,
+		Origin:              data.Origin,
+		AutoResumed:         data.AutoResumed,
+		BackgroundJobNotice: data.BackgroundJobNotice,
 		// Mark as originating from the durable queue so mailbox.submit can
 		// skip mb.submitted for this call (P0-1: avoid double-execution).
 		// See agent.SessionAgentCall.FromDurableQueue documentation.

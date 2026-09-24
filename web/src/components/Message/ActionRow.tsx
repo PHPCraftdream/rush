@@ -4,7 +4,7 @@
 import { useState, useCallback, memo } from "react";
 import { BrainCircuit, Pencil, Trash2, ChevronDown, ChevronUp } from "lucide-react";
 import type { ContentPart } from "../../types";
-import type { AsyncJobStatus } from "../../store";
+import type { AsyncJobCompletion } from "../../asyncJobCompletion";
 import { updateMessagePart, deleteMessagePart } from "../../store";
 import { formatActionArgs } from "../../toolFormat";
 import { ConfirmDialog } from "../ConfirmDialog";
@@ -45,20 +45,20 @@ interface ActionRowProps {
   suppressAutoCurrent: boolean;
   model?: string;
   effort?: string;
-  asyncStatuses: Map<string, AsyncJobStatus>;
+  jobCompletions: Map<string, AsyncJobCompletion>;
 }
 
-function asyncJobID(metadata?: string): string | undefined {
-  if (!metadata) return undefined;
+function isPendingJob(metadata?: string): boolean {
+  if (!metadata) return false;
   try {
-    const parsed = JSON.parse(metadata) as { async?: boolean; job_id?: string };
-    return parsed.async === true && typeof parsed.job_id === "string" ? parsed.job_id : undefined;
+    const parsed = JSON.parse(metadata) as { async?: boolean; job_id?: string; background?: boolean; shell_id?: string };
+    return (parsed.async === true && !!parsed.job_id) || (parsed.background === true && !!parsed.shell_id);
   } catch {
-    return undefined;
+    return false;
   }
 }
 
-export const ActionRow = memo(function ActionRow({ item, isCurrent, suppressAutoCurrent, model, effort, asyncStatuses }: ActionRowProps) {
+export const ActionRow = memo(function ActionRow({ item, isCurrent, suppressAutoCurrent, model, effort, jobCompletions }: ActionRowProps) {
   // override:
   //   undefined → follow auto-rule (open iff isCurrent, AND auto isn't suppressed)
   //   true / false → user pinned, ignore auto-rule from now on
@@ -177,11 +177,11 @@ export const ActionRow = memo(function ActionRow({ item, isCurrent, suppressAuto
   // (internal/agent/agent_turn.go OnToolInputEnd/OnToolCall), so keying
   // on it flashed the badge for a blink while args streamed and hid it
   // for the whole execution window.
-  const jobID = asyncJobID(result?.Metadata);
-  const asyncStatus = jobID ? asyncStatuses.get(jobID) : undefined;
-  const running = !!call && (!result || (!!jobID && !asyncStatus));
-  const errored = !!result?.IsError || asyncStatus === "failed";
-  const completed = !!jobID && asyncStatus === "finished";
+  const completion = jobCompletions.get(call?.ID ?? result?.ToolCallID ?? "");
+  const pendingJob = isPendingJob(result?.Metadata);
+  const running = !!call && (!result || (pendingJob && !completion));
+  const errored = !!result?.IsError || completion?.status === "failed";
+  const completed = pendingJob && completion?.status === "finished";
   return (
     <div data-test-id="action-row" className="action-row">
       <button
@@ -213,7 +213,7 @@ export const ActionRow = memo(function ActionRow({ item, isCurrent, suppressAuto
       {open && (
         <div className="action-row-body">
           {call && <ToolCallBlock name={call.Name} input={call.Input} running={running} />}
-          {result && <ToolResultBlock name={result.Name} content={result.Content} isError={result.IsError} metadata={result.Metadata} />}
+          {result && <ToolResultBlock name={result.Name} content={completion?.content ?? result.Content} isError={errored} metadata={result.Metadata} />}
         </div>
       )}
     </div>

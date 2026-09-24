@@ -202,14 +202,16 @@ type SessionAgentCall struct {
 	// handoff; SessionAgentCall literals built outside buildCall (sub-agent
 	// dispatch) leave it unspecified. Persisted on the created user
 	// message by createUserMessage.
-	Origin           message.Origin
-	MaxOutputTokens  int64
-	Temperature      *float64
-	TopP             *float64
-	TopK             *int64
-	FrequencyPenalty *float64
-	PresencePenalty  *float64
-	NonInteractive   bool
+	Origin              message.Origin
+	AutoResumed         bool
+	BackgroundJobNotice bool
+	MaxOutputTokens     int64
+	Temperature         *float64
+	TopP                *float64
+	TopK                *int64
+	FrequencyPenalty    *float64
+	PresencePenalty     *float64
+	NonInteractive      bool
 	// SystemPromptOverride, if non-empty, replaces the agent's global system prompt
 	// for this single call. Used to apply per-session system prompts from the DB.
 	SystemPromptOverride string

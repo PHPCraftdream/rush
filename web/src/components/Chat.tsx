@@ -7,6 +7,7 @@ import {
   $busySessions,
   $agentError,
   $selectedMessageIDs,
+  $asyncJobCompletions,
   $messageQueue,
   clearSelection,
   toggleMessageSelection,
@@ -176,7 +177,7 @@ type RenderItem =
 //   - assistant w/o tool_call     → flush + standalone <Message> (this is
 //                                    the model's final prose answer, or
 //                                    a pure-thinking turn)
-function buildRenderItems(messages: Msg[]): RenderItem[] {
+function buildRenderItems(messages: Msg[], attachedNoticeIDs: Set<string>): RenderItem[] {
   const out: RenderItem[] = [];
   let burstParts: BurstPart[] = [];
   let burstFirstID = "";
@@ -189,7 +190,7 @@ function buildRenderItems(messages: Msg[]): RenderItem[] {
   };
 
   messages.forEach((m, i) => {
-    if (m.Hidden) return; // hidden messages do not break the run
+    if (m.Hidden || attachedNoticeIDs.has(m.ID)) return; // attached results live in their tool block
     if (m.Role === "user" || m.IsSummaryMessage) {
       flushBurst();
       out.push({ kind: "message", message: m, index: i });
@@ -289,6 +290,7 @@ function ToolRun({ parts, firstMsgID, isLive, isCurrent }: { parts: BurstPart[];
 
 export function Chat() {
   const messages      = useStore($messages);
+  const jobCompletions = useStore($asyncJobCompletions);
   const activeSessionID = useStore($activeSessionID);
   const busySessions  = useStore($busySessions);
   const agentError    = useStore($agentError);
@@ -312,7 +314,7 @@ export function Chat() {
   // Group consecutive tool-only assistant messages into a single ToolRun so
   // a long burst of N steps renders as one container with N actions instead
   // of N near-empty per-message containers.
-  const renderItems = useMemo(() => buildRenderItems(messages), [messages]);
+  const renderItems = useMemo(() => buildRenderItems(messages, jobCompletions.attachedNoticeIDs), [messages, jobCompletions]);
 
   const forkDefaultTitle = useMemo(
     () => (activeSession?.Title || "Session") + " fork",

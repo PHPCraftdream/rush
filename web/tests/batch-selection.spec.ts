@@ -87,6 +87,17 @@ test("checkbox appears on message hover", async ({ page }) => {
   await expect(checkboxWrap).toHaveClass(/opacity-100/);
 });
 
+test("checkbox has breathing room below the top of a message bubble", async ({ page }) => {
+  await setupWithMessages(page, "batch-checkbox-offset", twoMessages);
+  const row = page.getByText("First batch msg").locator("xpath=ancestor::div[contains(@class,'msg-row')]");
+  await row.hover();
+  const checkbox = await row.locator(".msg-checkbox").boundingBox();
+  const bubble = await row.locator(".msg-bubble-user").boundingBox();
+  expect(checkbox).not.toBeNull();
+  expect(bubble).not.toBeNull();
+  expect(checkbox!.y - bubble!.y).toBeGreaterThanOrEqual(10);
+});
+
 test("checkbox sits at a fixed left edge, same x for user and assistant rows", async ({ page }) => {
   // The checkbox used to live inside the same flex row as the content
   // bubble, so a user row's justify-end packed [checkbox][bubble] together
@@ -179,6 +190,18 @@ test("confirming batch delete sends delete_messages with all IDs", async ({ page
   const ids = (cmd.payload as { messageIDs: string[] }).messageIDs;
   expect(ids).toContain("b-m1");
   expect(ids).toContain("b-m2");
+});
+
+test("a finished assistant answer can be selected and deleted on its own", async ({ page }) => {
+  await setupWithMessages(page, "batch-assistant-only", twoMessages);
+  const assistantRow = page.getByText("Second batch msg").locator("xpath=ancestor::div[contains(@class,'msg-row')]");
+  await assistantRow.hover();
+  await assistantRow.locator(".msg-checkbox-wrap").click();
+  await expect(page.getByText("1 selected")).toBeVisible();
+  await page.getByText("Delete selected").click();
+  await page.getByRole("button", { name: "Delete", exact: true }).click();
+  const command = await waitForWSSend(page, "delete_messages");
+  expect((command.payload as { messageIDs: string[] }).messageIDs).toEqual(["b-m2"]);
 });
 
 // ── Cancel selection ────────────────────────────────────────────────────

@@ -263,7 +263,7 @@
   .msg-actions > span.tabular-nums { @apply shrink-0 mr-4 relative top-0.5; }
 
   /* Wrapper for the always-DOM checkbox (opacity toggled externally) */
-  .msg-checkbox-wrap { @apply flex items-start pt-1 shrink-0 transition-opacity select-none; }
+  .msg-checkbox-wrap { @apply flex items-start pt-2 shrink-0 transition-opacity select-none; }
 
   /* Visual checkbox box */
   .msg-checkbox {

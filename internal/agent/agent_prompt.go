@@ -54,22 +54,24 @@ func sessionHeaders(sessionID string) map[string]string {
 	}
 }
 
-// autoResumedCtxKey tags a context so that createUserMessage marks the
-// resulting user message as AutoResumed. Set only on the Phase 4 idle-resume
-// path in coordinator.notifyBackgroundJobDone; human and InjectMessage paths
-// leave it unset (false).
+// autoResumedCtxKey tags a completion turn so its call retains the flag
+// across mailbox and durable-queue handoffs.
 type autoResumedCtxKey struct{}
 
-// backgroundJobNoticeCtxKey tags a context so that createUserMessage marks
-// the resulting user message as a BackgroundJobNotice. Set on both delivery
-// paths in coordinator.notifyBackgroundJobDone so the web can render the
-// injected completion summary as a notice rather than a human message.
+// backgroundJobNoticeCtxKey tags a completion turn so its call retains
+// the notice flag across mailbox and durable-queue handoffs.
 type backgroundJobNoticeCtxKey struct{}
 
 // WithBackgroundJobNotice marks a completion turn as an agent-visible notice.
 func WithBackgroundJobNotice(ctx context.Context) context.Context {
 	ctx = context.WithValue(ctx, autoResumedCtxKey{}, true)
 	return context.WithValue(ctx, backgroundJobNoticeCtxKey{}, true)
+}
+
+func noticeFlagsFrom(ctx context.Context) (autoResumed, backgroundJobNotice bool) {
+	autoResumed, _ = ctx.Value(autoResumedCtxKey{}).(bool)
+	backgroundJobNotice, _ = ctx.Value(backgroundJobNoticeCtxKey{}).(bool)
+	return
 }
 
 // callOriginCtxKey tags a context with the entry-channel origin
@@ -103,13 +105,11 @@ func (a *sessionAgent) createUserMessage(ctx context.Context, call SessionAgentC
 		attachmentParts = append(attachmentParts, message.BinaryContent{Path: attachment.FilePath, MIMEType: attachment.MimeType, Data: attachment.Content})
 	}
 	parts = append(parts, attachmentParts...)
-	autoResumed, _ := ctx.Value(autoResumedCtxKey{}).(bool)
-	backgroundJobNotice, _ := ctx.Value(backgroundJobNoticeCtxKey{}).(bool)
 	msg, err := a.messages.Create(ctx, call.SessionID, message.CreateMessageParams{
 		Role:                message.User,
 		Parts:               parts,
-		AutoResumed:         autoResumed,
-		BackgroundJobNotice: backgroundJobNotice,
+		AutoResumed:         call.AutoResumed,
+		BackgroundJobNotice: call.BackgroundJobNotice,
 		Origin:              call.Origin,
 	})
 	if err != nil {

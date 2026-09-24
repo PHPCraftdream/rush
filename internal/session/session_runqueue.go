@@ -259,7 +259,9 @@ type SessionAgentCallData struct {
 	// through; preserved across the durable run queue so a call queued
 	// by one process (e.g. the CLI) still stamps its origin when
 	// drained by another.
-	Origin message.Origin
+	Origin              message.Origin
+	AutoResumed         bool
+	BackgroundJobNotice bool
 	// InjectID, when non-empty, is the ID of a pending_injects row that
 	// must be deleted AFTER successful OS lock acquisition (P0-2 fix)
 	InjectID string

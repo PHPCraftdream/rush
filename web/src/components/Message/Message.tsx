@@ -16,6 +16,7 @@ import { TimeBadge } from "./TimeBadge";
 import { UserContent } from "./UserContent";
 import { UserHoverActions } from "./UserHoverActions";
 import { extractText, isTerminallyFinished } from "./textParts";
+import { isAsyncCompletionNotice } from "../../asyncJobCompletion";
 
 // ── Message ───────────────────────────────────────────────────────────────────
 
@@ -38,7 +39,7 @@ export const Message = memo(function Message({
 }: MessageProps) {
   if (message.Hidden) return null;
   if (message.IsSummaryMessage) return <SummaryMessage message={message} />;
-  if (message.BackgroundJobNotice) return <BackgroundJobNotice message={message} />;
+  if (message.BackgroundJobNotice || isAsyncCompletionNotice(message)) return <BackgroundJobNotice message={message} />;
 
   const isUser = message.Role === "user";
 

@@ -33,12 +33,46 @@ test("async command remains running until its completion notice arrives", async 
 
   await sendMockWSMessage(page, { type: "messages_list", payload: { SessionID: sessionID, Messages: [
     ...messages,
-    makeMessage({ ID: "notice-async", SessionID: sessionID, Role: "user", BackgroundJobNotice: true, Parts: [
+    makeMessage({ ID: "notice-async", SessionID: sessionID, Role: "user", BackgroundJobNotice: false, Parts: [
       { type: "text", Text: "Async job call-async (run_command) finished.\n\ngo version go1.25" },
     ] }),
   ] } });
   await expect(toggle.getByText("done")).toBeVisible();
   await expect(toggle.getByText("running…")).toHaveCount(0);
+  await expect(row.getByTestId("tool-result")).toContainText("go version go1.25");
+  await expect(page.locator("#msg-notice-async")).toHaveCount(0);
+});
+
+test("legacy background shell output attaches to its original command", async ({ page }) => {
+  await page.goto("/");
+  await sendMockWSMessage(page, {
+    type: "sessions_list",
+    payload: [makeSession({ ID: sessionID, Title: "Legacy Background Status" })],
+  });
+  await page.getByText("Legacy Background Status").first().click();
+
+  const messages = [
+    makeMessage({ ID: "user-legacy", SessionID: sessionID, Role: "user", Parts: [{ type: "text", Text: "run npm test" }] }),
+    makeMessage({ ID: "assistant-legacy", SessionID: sessionID, Role: "assistant", Parts: [
+      { type: "tool_call", ID: "call-legacy", Name: "bash", Input: '{"command":"npm test"}', Finished: true },
+    ] }),
+    makeMessage({ ID: "result-legacy", SessionID: sessionID, Role: "tool", Parts: [
+      { type: "tool_result", ToolCallID: "call-legacy", Name: "bash", Content: "Background shell ID: 00A", IsError: false, Metadata: '{"background":true,"shell_id":"00A"}' },
+    ] }),
+  ];
+  await sendMockWSMessage(page, { type: "messages_list", payload: { SessionID: sessionID, Messages: messages } });
+  const row = page.locator('[data-test-id="action-row"]').filter({ hasText: "npm test" });
+  await expect(row.getByTestId("action-row-toggle").getByText("running…")).toBeVisible();
+
+  await sendMockWSMessage(page, { type: "messages_list", payload: { SessionID: sessionID, Messages: [
+    ...messages,
+    makeMessage({ ID: "notice-legacy", SessionID: sessionID, Role: "user", BackgroundJobNotice: true, Parts: [
+      { type: "text", Text: "Background job 00A (`npm test`) finished: exit 1, ran 3s.\n\nfailed output" },
+    ] }),
+  ] } });
+  await expect(row.getByTestId("action-row-toggle").getByText("error")).toBeVisible();
+  await expect(row.getByTestId("tool-result")).toContainText("failed output");
+  await expect(page.locator("#msg-notice-legacy")).toHaveCount(0);
 });
 
 test("async sub-agent remains running until its completion notice arrives", async ({ page }) => {

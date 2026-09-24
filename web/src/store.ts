@@ -1,5 +1,6 @@
 import { atom, computed } from "nanostores";
 import type { Session, Message, ContentPart, ConfigPayload, MCPState, Todo, SkillInfo } from "./types";
+import { indexAsyncJobCompletions, type AsyncJobStatus } from "./asyncJobCompletion";
 
 // ── Connection state ─────────────────────────────────────────────────────────
 export const $connected = atom(false);
@@ -16,14 +17,11 @@ export const $skills = atom<SkillInfo[]>([]);
 export const $sessions = atom<Session[]>([]);
 export const $activeSessionID = atom<string | null>(null);
 export const $messages = atom<Message[]>([]);
-export type AsyncJobStatus = "finished" | "failed";
-export const $asyncJobStatuses = computed($messages, (messages): Map<string, AsyncJobStatus> => {
+export const $asyncJobCompletions = computed($messages, indexAsyncJobCompletions);
+export const $asyncJobStatuses = computed($asyncJobCompletions, (index): Map<string, AsyncJobStatus> => {
   const statuses = new Map<string, AsyncJobStatus>();
-  for (const message of messages) {
-    if (!message.BackgroundJobNotice) continue;
-    const text = message.Parts.filter((part) => part.type === "text").map((part) => part.Text).join("\n");
-    const match = /^Async job (\S+) \([^)]*\) (finished|failed)\./.exec(text);
-    if (match) statuses.set(match[1], match[2] as AsyncJobStatus);
+  for (const [toolCallID, completion] of index.byToolCallID) {
+    statuses.set(toolCallID, completion.status);
   }
   return statuses;
 });

@@ -11,7 +11,7 @@ import { ActionRow } from "./ActionRow";
 import type { ActionItem } from "./ActionRow";
 import { TimeBadge } from "./TimeBadge";
 import { useCollapseAllSignal } from "./useCollapseAllSignal";
-import { $asyncJobStatuses } from "../../store";
+import { $asyncJobCompletions } from "../../store";
 
 // ── Tool activity group ───────────────────────────────────────────────────────
 //
@@ -45,7 +45,7 @@ interface ToolActivityGroupProps {
 }
 
 export const ToolActivityGroup = memo(function ToolActivityGroup({ items, live, isCurrent, startedAt, model, effort }: ToolActivityGroupProps) {
-  const asyncStatuses = useStore($asyncJobStatuses);
+  const jobCompletions = useStore($asyncJobCompletions);
   // Group open/close state machine.
   //
   // The default collapsed state follows `isCurrent`: the most recent group
@@ -227,7 +227,7 @@ export const ToolActivityGroup = memo(function ToolActivityGroup({ items, live, 
         item={actions[0]}
         isCurrent={effectiveCurrent}
         suppressAutoCurrent={false}
-        asyncStatuses={asyncStatuses}
+        jobCompletions={jobCompletions.byToolCallID}
         // Per-row model/effort from the part's own source message (burst path);
         // falls back to group-level props (single-message path via AssistantContent).
         model={actions[0].model || model}
@@ -265,7 +265,7 @@ export const ToolActivityGroup = memo(function ToolActivityGroup({ items, live, 
               item={a}
               isCurrent={i === actions.length - 1}
               suppressAutoCurrent={suppressAuto}
-              asyncStatuses={asyncStatuses}
+              jobCompletions={jobCompletions.byToolCallID}
               // Per-row model/effort from the part's own source message (burst path);
               // falls back to group-level props (single-message path via AssistantContent).
               model={a.model || model}
