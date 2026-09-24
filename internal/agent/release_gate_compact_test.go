@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -41,8 +42,15 @@ func TestReleaseGate_4_SecondCompactCoalesced(t *testing.T) {
 	t.Parallel()
 
 	var totalCalls atomic.Int64
+	compactEntered := make(chan struct{})
+	releaseCompact := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseCompact) }) }
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		totalCalls.Add(1)
+		if totalCalls.Add(1) == 2 {
+			close(compactEntered)
+			<-releaseCompact
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		fl, _ := w.(http.Flusher)
 		chunks := []string{
@@ -62,6 +70,7 @@ func TestReleaseGate_4_SecondCompactCoalesced(t *testing.T) {
 		}
 	}))
 	t.Cleanup(srv.Close)
+	t.Cleanup(release)
 
 	provider, err := openaicompat.New(
 		openaicompat.WithBaseURL(srv.URL),
@@ -120,17 +129,17 @@ func TestReleaseGate_4_SecondCompactCoalesced(t *testing.T) {
 
 	// PHASE 1: Start first /compact - it should acquire ownership immediately.
 	summarizeErr := make(chan error, 1)
-	summarizeStarted := make(chan struct{}, 1)
 	go func() {
-		summarizeStarted <- struct{}{}
 		summarizeErr <- sa.Summarize(ctx, sess.ID, sessionAgent.testBuildSummarizeSnapshot())
 	}()
 
-	// Wait for the first /compact to actually start and acquire ownership.
-	<-summarizeStarted
-	require.Eventually(t, func() bool {
-		return sessionAgent.IsSessionBusy(sess.ID)
-	}, 2*time.Second, 50*time.Millisecond, "session must become busy during first /compact")
+	// The provider request proves ownership was acquired; hold its response
+	// until the second /compact has queued.
+	select {
+	case <-compactEntered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("first /compact did not reach the provider")
+	}
 
 	// Verify session is busy.
 	require.True(t, sessionAgent.IsSessionBusy(sess.ID), "session must be busy during first /compact")
@@ -142,6 +151,7 @@ func TestReleaseGate_4_SecondCompactCoalesced(t *testing.T) {
 
 	// Verify the second /compact is in the queue.
 	require.True(t, sessionAgent.SummarizeQueued(sess.ID), "summarizeQueue must hold the pending second /compact")
+	release()
 
 	// Wait for first /compact to complete autonomously - NO manual intervention.
 	require.Eventually(t, func() bool {
