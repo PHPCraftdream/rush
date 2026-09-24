@@ -260,6 +260,7 @@
 
   /* Fixed-height strip below each message that holds action buttons */
   .msg-actions { @apply flex items-center h-7 mt-1; }
+  .msg-actions > span.tabular-nums { @apply shrink-0 mr-4 relative top-0.5; }
 
   /* Wrapper for the always-DOM checkbox (opacity toggled externally) */
   .msg-checkbox-wrap { @apply flex items-start pt-1 shrink-0 transition-opacity select-none; }

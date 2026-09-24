@@ -19,7 +19,7 @@ export const AssistantHoverActions = memo(function AssistantHoverActions({
 }) {
   const handlePin = useCallback(() => togglePinMessage(message.ID, !message.Pinned), [message.ID, message.Pinned]);
   return (
-    <div className="flex items-center gap-1 w-full ml-2">
+    <div className="flex items-center gap-1 w-full">
       <div className="flex items-center gap-1.5">
         {copyText && <CopyButton text={copyText} />}
         <CopyTurnButton messageID={message.ID} />

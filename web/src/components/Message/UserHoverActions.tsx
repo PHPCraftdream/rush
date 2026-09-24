@@ -17,7 +17,7 @@ export const UserHoverActions = memo(function UserHoverActions({
 }) {
   const handlePin = useCallback(() => togglePinMessage(messageID, !isPinned), [messageID, isPinned]);
   return (
-    <div className="flex items-center gap-1.5 ml-2">
+    <div className="flex items-center gap-1.5">
       {copyText && <CopyButton text={copyText} />}
       <CopyTurnButton messageID={messageID} />
       <button onClick={onRerun}     title="Retry"                              className="btn-icon"><RotateCcw size={13} /></button>

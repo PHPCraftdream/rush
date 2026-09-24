@@ -120,7 +120,10 @@ async function expectActionSpacing(page: Page, id: string) {
   const firstButton = await actions.locator("button").first().boundingBox();
   expect(timestamp).not.toBeNull();
   expect(firstButton).not.toBeNull();
-  expect(firstButton!.x - (timestamp!.x + timestamp!.width)).toBeGreaterThanOrEqual(7);
+  expect(firstButton!.x - (timestamp!.x + timestamp!.width)).toBeGreaterThanOrEqual(15);
+  const centerDelta = timestamp!.y + timestamp!.height / 2 - firstButton!.y - firstButton!.height / 2;
+  expect(centerDelta).toBeGreaterThanOrEqual(0);
+  expect(centerDelta).toBeLessThanOrEqual(3);
 }
 
 test("message actions leave space after the timestamp on hover", async ({ page }) => {
