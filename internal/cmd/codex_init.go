@@ -2,11 +2,8 @@
 // commands as Codex CLI Skills (`.agents/skills/<name>/SKILL.md`). First of
 // the `<tool>-init`/`<tool>-del` family alongside claude-init/claude-del;
 // gemini-init/gemini-del, grok-init/grok-del and qwen-init/qwen-del follow
-// the same pattern, converting from the same canonical source templates
-// (claudeSlashCommandTemplate / claudeFallbackCommandTemplate /
-// claudeWrushCommandTemplate / claudeWcrushCommandTemplate, embedded in
-// claude_init.go) via the helpers in
-// multi_cli_convert.go.
+// the same pattern, converting from embedded command sources via the
+// helpers in multi_cli_convert.go.
 package cmd
 
 import (
@@ -19,6 +16,8 @@ import (
 )
 
 const codexSkillsDir = ".agents/skills" // relative to cwd (local) or $HOME (global)
+
+const codexFallbackSkillDescription = "Fallback guidance when Rush is unavailable; requires operator direction"
 
 // resolveCodexSkillsDir returns the directory Codex CLI Skills should be
 // written to. When global is true it returns ~/.agents/skills; otherwise
@@ -49,6 +48,8 @@ scope them to the current project's ` + "`.agents/skills/`" + ` instead.
 
 Content is converted from the same canonical source used by
 ` + "`claude-init`" + ` — the two stay in sync automatically.
+The installed Skill is Markdown; its embedded source may be Markdown or
+structured YAML with target-specific blocks.
 
 Skipped (with a warning) if a target SKILL.md exists without our sentinel
 — we never overwrite a file we don't own.`,
@@ -97,23 +98,16 @@ rush codex-init --cwd /path/to/project
 // installCodexSkills writes the rush, rush-fallback, wrush and wcrush Skills
 // into skillsDir. Extracted so codex_init_test.go can drive it directly.
 func installCodexSkills(skillsDir string) error {
-	desc1, body1, err := parseSlashCommandSource(claudeSlashCommandTemplate)
+	desc1, body1, err := loadSkillSource("claude_slash_command", skillTargetCodex)
 	if err != nil {
 		return fmt.Errorf("rush skill: %w", err)
 	}
 	content1 := toSkillMD("rush", desc1, body1)
-	if err := writeCodexSkill(skillsDir, "rush", content1); err != nil {
-		return fmt.Errorf("rush skill: %w", err)
-	}
-
-	desc2, body2, err := parseSlashCommandSource(claudeFallbackCommandTemplate)
+	_, body2, err := loadSkillSource("claude_crush_fallback_command", skillTargetCodex)
 	if err != nil {
 		return fmt.Errorf("rush-fallback skill: %w", err)
 	}
-	content2 := toSkillMD("rush-fallback", desc2, body2)
-	if err := writeCodexSkill(skillsDir, "rush-fallback", content2); err != nil {
-		return fmt.Errorf("rush-fallback skill: %w", err)
-	}
+	content2 := toSkillMD("rush-fallback", codexFallbackSkillDescription, body2)
 
 	desc3, body3, err := parseSlashCommandSource(claudeWrushCommandTemplate)
 	if err != nil {
@@ -123,10 +117,6 @@ func installCodexSkills(skillsDir string) error {
 	if err != nil {
 		return fmt.Errorf("wrush skill: %w", err)
 	}
-	if err := writeCodexSkill(skillsDir, "wrush", content3); err != nil {
-		return fmt.Errorf("wrush skill: %w", err)
-	}
-
 	desc4, body4, err := parseSlashCommandSource(claudeWcrushCommandTemplate)
 	if err != nil {
 		return fmt.Errorf("wcrush skill: %w", err)
@@ -135,8 +125,19 @@ func installCodexSkills(skillsDir string) error {
 	if err != nil {
 		return fmt.Errorf("wcrush skill: %w", err)
 	}
-	if err := writeCodexSkill(skillsDir, "wcrush", content4); err != nil {
-		return fmt.Errorf("wcrush skill: %w", err)
+	contents := []struct {
+		name    string
+		content string
+	}{
+		{name: "rush", content: content1},
+		{name: "rush-fallback", content: content2},
+		{name: "wrush", content: content3},
+		{name: "wcrush", content: content4},
+	}
+	for _, item := range contents {
+		if err := writeCodexSkill(skillsDir, item.name, item.content); err != nil {
+			return fmt.Errorf("%s skill: %w", item.name, err)
+		}
 	}
 	return nil
 }

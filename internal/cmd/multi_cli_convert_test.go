@@ -1,8 +1,10 @@
 package cmd
 
 import (
+	"os"
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -52,12 +54,12 @@ func TestParseSlashCommandSource_TrimsLeadingBlankLines(t *testing.T) {
 }
 
 func TestParseSlashCommandSource_RealTemplates(t *testing.T) {
-	desc1, body1, err := parseSlashCommandSource(claudeSlashCommandTemplate)
+	desc1, body1, err := loadSkillSource("claude_slash_command", skillTargetClaude)
 	require.NoError(t, err)
 	assert.NotEmpty(t, desc1)
 	assert.Contains(t, body1, "$ARGUMENTS")
 
-	desc2, body2, err := parseSlashCommandSource(claudeFallbackCommandTemplate)
+	desc2, body2, err := loadSkillSource("claude_crush_fallback_command", skillTargetClaude)
 	require.NoError(t, err)
 	assert.NotEmpty(t, desc2)
 	assert.Contains(t, body2, "$ARGUMENTS")
@@ -93,6 +95,121 @@ func TestParseSlashCommandSource_MissingClosingDelimiter(t *testing.T) {
 		"Body without closing delimiter\n"
 	_, _, err := parseSlashCommandSource(src)
 	assert.Error(t, err)
+}
+
+func TestParseStructuredSkillSource_AssemblesTargetBlocksInOrder(t *testing.T) {
+	const src = `description: "Do it: carefully"
+blocks:
+  - common: |-
+      Shared 🕎 paragraph with "quotes".
+      ~~~go
+      fmt.Println("hello")
+      ~~~
+  - common: ""
+    claude: |-
+      Claude launch guidance.
+    codex: |-
+      Codex --codex-thread-id guidance.
+  - common: Final shared paragraph.
+    claude: ""
+`
+	desc, body, err := parseStructuredSkillSource(src, skillTargetCodex)
+	require.NoError(t, err)
+	assert.Equal(t, "Do it: carefully", desc)
+	assert.Equal(t, "Shared 🕎 paragraph with \"quotes\".\n~~~go\nfmt.Println(\"hello\")\n~~~\n\nCodex --codex-thread-id guidance.\n\nFinal shared paragraph.", body)
+
+	_, claude, err := parseStructuredSkillSource(src, skillTargetClaude)
+	require.NoError(t, err)
+	assert.Contains(t, claude, "Claude launch guidance.")
+	assert.NotContains(t, claude, "Codex --codex-thread-id")
+	assert.NotContains(t, body, "Claude launch guidance")
+}
+
+func TestParseSkillSource_LegacyAndErrors(t *testing.T) {
+	const legacy = "---\ndescription: Legacy source\n---\n\nBody stays unchanged.\n"
+	desc, body, err := parseSkillSource("legacy", legacy, true, "", false, skillTargetCodex)
+	require.NoError(t, err)
+	wantDesc, wantBody, err := parseSlashCommandSource(legacy)
+	require.NoError(t, err)
+	assert.Equal(t, wantDesc, desc)
+	assert.Equal(t, wantBody, body)
+
+	_, _, err = parseSkillSource("both", legacy, true, "description: x\nblocks: []\n", true, skillTargetClaude)
+	assert.ErrorContains(t, err, "both .md and .yaml")
+	_, _, err = parseSkillSource("missing", "", false, "", false, skillTargetClaude)
+	assert.ErrorContains(t, err, "no embedded")
+
+	for _, tc := range []struct {
+		name string
+		src  string
+		want string
+	}{
+		{name: "unknown key", src: "description: x\nunknown: y\nblocks:\n  - common: body\n", want: "field unknown not found"},
+		{name: "empty object", src: "description: x\nblocks:\n  - {}\n", want: "block 1 is empty"},
+		{name: "empty output", src: "description: x\nblocks:\n  - codex: only codex\n", want: "empty output"},
+		{name: "unresolved marker", src: "description: x\nblocks:\n  - common: '{{RUSH_BUILD_MARKER}}'\n", want: "unresolved build marker"},
+		{name: "multiple documents", src: "description: x\nblocks:\n  - common: body\n---\ndescription: y\n", want: "multiple YAML documents"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, err := parseStructuredSkillSource(tc.src, skillTargetClaude)
+			assert.ErrorContains(t, err, tc.want)
+		})
+	}
+}
+
+func TestValidateClaudeInitSourcesReturnsContextualYAMLErrors(t *testing.T) {
+	valid := []byte("description: x\nblocks:\n  - common: body\n")
+	tests := []struct {
+		name     string
+		files    fstest.MapFS
+		contains string
+	}{
+		{
+			name: "rush source",
+			files: fstest.MapFS{
+				"claude_slash_command.yaml":          {Data: []byte("description: x\nunknown: y\nblocks:\n  - common: body\n")},
+				"claude_crush_fallback_command.yaml": {Data: valid},
+			},
+			contains: "rush slash-command source",
+		},
+		{
+			name: "fallback source",
+			files: fstest.MapFS{
+				"claude_slash_command.yaml":          {Data: valid},
+				"claude_crush_fallback_command.yaml": {Data: []byte("description: x\nunknown: y\nblocks:\n  - common: body\n")},
+			},
+			contains: "rush-fallback slash-command source",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateClaudeInitSources(test.files)
+			assert.ErrorContains(t, err, test.contains)
+			assert.ErrorContains(t, err, "unknown")
+		})
+	}
+}
+
+func TestRushClaudeSourcePreservesOriginalBodyVerbatim(t *testing.T) {
+	original, err := os.ReadFile("testdata/claude_slash_command.original.md")
+	require.NoError(t, err)
+	wantDescription, wantBody, err := parseSlashCommandSource(string(original))
+	require.NoError(t, err)
+	gotDescription, gotBody, err := loadSkillSource("claude_slash_command", skillTargetClaude)
+	require.NoError(t, err)
+	assert.Equal(t, wantDescription, gotDescription)
+	assert.Equal(t, strings.TrimSpace(wantBody), gotBody)
+	for _, distinctive := range []string{
+		"## Fallback when `rush` hits rate limits",
+		"## Never self-add `--allow-peak-hours`",
+		"## Resuming after `exit_reason: \"awaiting_answer\"`",
+		"## Orchestrator mode — and why a worker's question is NOT your problem",
+		"## Scoping permissions for a delegation — `--restrict-run`",
+		"## After the run finishes — you are responsible for verifying everything",
+		"--idle-timeout` (default `15m`",
+	} {
+		assert.Contains(t, gotBody, distinctive)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -152,7 +269,8 @@ func TestToCodexWrushSkillMD_RewritesAllRushSkillReferences(t *testing.T) {
 }
 
 func TestToCodexWrushSkillMD_DoesNotRewriteWrushFilename(t *testing.T) {
-	const body = "Read the `rush.md` file in this same directory. Keep wrush.md unchanged."
+	const body = "Read the `rush.md` file in this same directory. Keep wrush.md unchanged.\n" +
+		claudeWrushLaunchGuidance
 
 	got, err := toCodexWrushSkillMD("description", body)
 	require.NoError(t, err)
@@ -182,7 +300,8 @@ func TestToCodexWcrushSkillMD_RewritesAllWrushSkillReferences(t *testing.T) {
 }
 
 func TestToCodexWcrushSkillMD_AcceptsLineWrappedCanonicalReference(t *testing.T) {
-	const body = "Read the `wrush.md` file in this\nsame directory in full before starting."
+	const body = "Read the `wrush.md` file in this\nsame directory in full before starting.\n" +
+		claudeWcrushBackgroundGuidance
 
 	got, err := toCodexWcrushSkillMD("description", body)
 	require.NoError(t, err)
@@ -195,6 +314,17 @@ func TestToCodexWcrushSkillMD_RejectsMissingCanonicalReference(t *testing.T) {
 	assert.ErrorContains(t, err, "expected canonical same-directory wrush.md reference")
 }
 
+func TestCodexGuidanceRewritesFailClosedOnTemplateDrift(t *testing.T) {
+	_, err := replaceCodexGuidance("source without the expected fragment", "MISSING_CLAUDE_FRAGMENT", "Codex guidance")
+	assert.ErrorContains(t, err, "MISSING_CLAUDE_FRAGMENT")
+
+	_, err = toCodexWrushSkillMD("description", "Read the `rush.md` file in this same directory.")
+	assert.ErrorContains(t, err, "Bash call")
+
+	_, err = toCodexWcrushSkillMD("description", "Read the `wrush.md` file in this same directory.")
+	assert.ErrorContains(t, err, "run_in_background: true")
+}
+
 // ---------------------------------------------------------------------------
 // Regression guard: source templates must never contain literal triple
 // quotes, since toGeminiTOML embeds bodies into a TOML triple-quoted
@@ -202,8 +332,12 @@ func TestToCodexWcrushSkillMD_RejectsMissingCanonicalReference(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestNoTripleQuotesInSource(t *testing.T) {
-	assert.NotContains(t, claudeSlashCommandTemplate, `"""`)
-	assert.NotContains(t, claudeFallbackCommandTemplate, `"""`)
+	_, rush, err := loadSkillSource("claude_slash_command", skillTargetClaude)
+	require.NoError(t, err)
+	_, fallback, err := loadSkillSource("claude_crush_fallback_command", skillTargetClaude)
+	require.NoError(t, err)
+	assert.NotContains(t, rush, `"""`)
+	assert.NotContains(t, fallback, `"""`)
 	assert.NotContains(t, claudeWrushCommandTemplate, `"""`)
 	assert.NotContains(t, claudeWcrushCommandTemplate, `"""`)
 }

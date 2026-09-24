@@ -83,6 +83,9 @@ func TestClaudeInit_NoCLAUDEMd_StillInstallsSlashCommand(t *testing.T) {
 	assert.Contains(t, got, "$ARGUMENTS")
 	assert.Contains(t, got, "rush run")
 	assert.Contains(t, got, "--role smart")
+	assert.Contains(t, got, "run_in_background: true")
+	assert.NotContains(t, got, "--codex-thread-id")
+	assert.NotContains(t, got, "codex queue")
 }
 
 func TestClaudeInit_StripsLegacyBlock_KeepsRestOfFile(t *testing.T) {
@@ -270,12 +273,15 @@ func TestClaudeDel_RemovesEmptyFile(t *testing.T) {
 
 func TestClaudeInit_CreatesFallbackCommand(t *testing.T) {
 	dir := t.TempDir()
+	original, err := os.ReadFile("testdata/claude_crush_fallback_command.original.md")
+	require.NoError(t, err)
 	runClaudeInitInDir(t, dir)
 
 	fallbackPath := filepath.Join(dir, ".claude", "commands", "rush-fallback.md")
 	bts, err := os.ReadFile(fallbackPath)
 	require.NoError(t, err)
 	got := string(bts)
+	assert.Equal(t, claudeSlashCommandSentinel+"\n"+string(original), got)
 	assert.Contains(t, got, claudeSlashCommandSentinel)
 	assert.Contains(t, got, "$ARGUMENTS")
 	assert.Contains(t, got, "CronCreate")

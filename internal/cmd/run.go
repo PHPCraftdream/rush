@@ -16,6 +16,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 )
 
@@ -403,13 +404,14 @@ rush run --restrict-run --role fast \
 # hard external deadline, e.g. a CI job slot.
 rush run --role smart --timeout 5m --session "long-task" "refactor the storage layer"
   `,
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(cmd *cobra.Command, args []string) (runErr error) {
 		// FIRST, before any slow boot work (config load, MCP init): if all
 		// three std streams are redirected (detached orchestrator launch),
 		// drop the console so the parent shell's exit can't hard-kill us
 		// via CTRL_CLOSE_EVENT. See console_detach_windows.go — this kill
 		// is unavoidable from a ctrl handler and has hit runs mid-boot.
 		maybeDetachConsole()
+		var runResult *app.RunResult
 		var (
 			quiet, _            = cmd.Flags().GetBool("quiet")
 			verbose, _          = cmd.Flags().GetBool("verbose")
@@ -437,7 +439,8 @@ rush run --role smart --timeout 5m --session "long-task" "refactor the storage l
 			timeoutExtendsOnProgress, _ = cmd.Flags().GetBool("timeout-extends-on-progress")
 			timeoutHardCap, _           = cmd.Flags().GetString("timeout-hard-cap")
 			// Fork patch: batch 24 — on-finish hook.
-			onFinishHook, _ = cmd.Flags().GetString("on-finish")
+			onFinishHook, _  = cmd.Flags().GetString("on-finish")
+			codexThreadID, _ = cmd.Flags().GetString("codex-thread-id")
 			// Fork patch: batch 30 — runaway protection.
 			maxCostStr, _   = cmd.Flags().GetString("max-cost")
 			maxTokensStr, _ = cmd.Flags().GetString("max-tokens")
@@ -458,6 +461,21 @@ rush run --role smart --timeout 5m --session "long-task" "refactor the storage l
 			// operator's intent.
 			allowPeakHours, _ = cmd.Flags().GetBool("allow-peak-hours")
 		)
+		if codexThreadID != "" {
+			parsedID, parseErr := uuid.Parse(codexThreadID)
+			if parseErr != nil || !strings.EqualFold(parsedID.String(), codexThreadID) {
+				return fmt.Errorf("--codex-thread-id: expected a UUID")
+			}
+			defer func() {
+				panicValue := recover()
+				if notifyErr := notifyCodexRunCompletion(codexThreadID, sessionID, runResult, runErr, panicValue); notifyErr != nil {
+					fmt.Fprintf(os.Stderr, "codex completion notification failed: %v\n", notifyErr)
+				}
+				if panicValue != nil {
+					panic(panicValue)
+				}
+			}()
+		}
 
 		if effort != "" {
 			switch effort {
@@ -815,7 +833,8 @@ rush run --role smart --timeout 5m --session "long-task" "refactor the storage l
 		// facade no longer re-exports an internal *app.App wrapper in
 		// its public API (sdk.Wrap and sdk.Client.RunNonInteractive
 		// were removed as internal-only seams).
-		return a.RunNonInteractive(ctx, os.Stdout, prompt, overrides, hideSpinner, mode, sessionID, useLast)
+		runResult, runErr = a.RunNonInteractiveWithResult(ctx, os.Stdout, prompt, overrides, hideSpinner, mode, sessionID, useLast)
+		return runErr
 	},
 }
 
@@ -849,6 +868,7 @@ func init() {
 	runCmd.Flags().String("timeout-hard-cap", "0", "Maximum wall-clock time the watchdog allows even with --timeout-extends-on-progress (e.g. 30s, 5m, 900 — plain number = seconds). Default: 0 (no cap).")
 	// Fork patch: batch 24 — on-finish hook.
 	runCmd.Flags().String("on-finish", "", "Shell command to execute after the run completes. Environment variables: RUSH_SESSION_ID, RUSH_EXIT_REASON, RUSH_COST_USD, RUSH_TOKENS, RUSH_DURATION_SEC. Hook errors are printed to stderr but don't affect exit code.")
+	runCmd.Flags().String("codex-thread-id", "", "Codex thread UUID to notify after this run completes. Notification failures are printed to stderr and do not affect run status.")
 	// Fork patch: batch 30 — runaway protection.
 	runCmd.Flags().String("max-cost", "", "Abort the run if total cost (USD) exceeds this value. e.g. 0.50, 2.00")
 	runCmd.Flags().String("max-tokens", "", "Abort the run if total prompt+completion tokens exceed this value. e.g. 100k, 1M, 500000")

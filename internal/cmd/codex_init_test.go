@@ -36,11 +36,8 @@ func runCodexDelInDir(t *testing.T, dir string) {
 	require.NoError(t, runCodexDel(dir))
 }
 
-func assertCodexSkillFrontmatter(t *testing.T, content []byte, name, canonicalTemplate string) {
+func assertCodexSkillFrontmatter(t *testing.T, content []byte, name, description string) {
 	t.Helper()
-	description, _, err := parseSlashCommandSource(canonicalTemplate)
-	require.NoError(t, err)
-
 	wantPrefix := "---\nname: " + name + "\ndescription: " + description + "\n---\n" +
 		claudeSlashCommandSentinel + "\n\n"
 	require.True(t, strings.HasPrefix(string(content), wantPrefix), "generated %s SKILL.md must begin with YAML frontmatter followed by the ownership sentinel", name)
@@ -63,13 +60,25 @@ func TestCodexInit_CreatesSlashCommand(t *testing.T) {
 	skillPath := filepath.Join(dir, ".agents", "skills", "rush", "SKILL.md")
 	bts, err := os.ReadFile(skillPath)
 	require.NoError(t, err)
-	assertCodexSkillFrontmatter(t, bts, "rush", claudeSlashCommandTemplate)
+	description, _, err := loadSkillSource("claude_slash_command", skillTargetCodex)
+	require.NoError(t, err)
+	assertCodexSkillFrontmatter(t, bts, "rush", description)
 	got := string(bts)
 	assert.Contains(t, got, claudeSlashCommandSentinel)
 	assert.Contains(t, got, "$ARGUMENTS")
 	assert.Contains(t, got, "rush run")
 	assert.Contains(t, got, "--role smart")
 	assert.Contains(t, got, "name: rush")
+	assert.Contains(t, got, "--codex-thread-id")
+	assert.NotContains(t, got, "Bash({")
+	assert.NotContains(t, got, "run_in_background")
+	assert.Contains(t, got, "codex queue")
+	assert.Contains(t, got, "session_id")
+	assert.Contains(t, got, "blocking `write_stdin`")
+	assert.NotContains(t, got, "background execution option")
+	assert.Contains(t, got, "## Scoping permissions for a delegation")
+	assert.Contains(t, got, "## When the lock is stuck")
+	assert.Contains(t, got, "## After the run finishes — you are responsible for verifying everything")
 }
 
 func TestCodexInit_GlobalScopeCreatesAllDelegationSkills(t *testing.T) {
@@ -97,13 +106,19 @@ func TestCodexInit_CreatesFallbackSkill(t *testing.T) {
 	skillPath := filepath.Join(dir, ".agents", "skills", "rush-fallback", "SKILL.md")
 	bts, err := os.ReadFile(skillPath)
 	require.NoError(t, err)
-	assertCodexSkillFrontmatter(t, bts, "rush-fallback", claudeFallbackCommandTemplate)
+	parsed, err := skills.ParseContent(bts)
+	require.NoError(t, err)
+	assert.Equal(t, "rush-fallback", parsed.Name)
+	assert.Equal(t, codexFallbackSkillDescription, parsed.Description)
 	got := string(bts)
 	assert.Contains(t, got, claudeSlashCommandSentinel)
 	assert.Contains(t, got, "$ARGUMENTS")
-	assert.Contains(t, got, "CronCreate")
-	assert.Contains(t, got, "TaskCreate")
 	assert.Contains(t, got, "name: rush-fallback")
+	assert.Contains(t, got, "cannot persist an armed fallback")
+	assert.Contains(t, got, "ask the operator")
+	for _, claudeOnly := range []string{"CronCreate", "CronDelete", "TaskCreate", "TaskUpdate", "TaskList", "Agent({", "Bash"} {
+		assert.NotContains(t, got, claudeOnly)
+	}
 }
 
 func TestCodexInit_CreatesWrushSkillFromCanonicalTemplate(t *testing.T) {
@@ -113,7 +128,9 @@ func TestCodexInit_CreatesWrushSkillFromCanonicalTemplate(t *testing.T) {
 	skillPath := filepath.Join(dir, ".agents", "skills", "wrush", "SKILL.md")
 	bts, err := os.ReadFile(skillPath)
 	require.NoError(t, err)
-	assertCodexSkillFrontmatter(t, bts, "wrush", claudeWrushCommandTemplate)
+	description, _, err := parseSlashCommandSource(claudeWrushCommandTemplate)
+	require.NoError(t, err)
+	assertCodexSkillFrontmatter(t, bts, "wrush", description)
 	got := string(bts)
 	assert.Contains(t, got, claudeSlashCommandSentinel)
 	assert.Contains(t, got, "$ARGUMENTS")
@@ -122,6 +139,10 @@ func TestCodexInit_CreatesWrushSkillFromCanonicalTemplate(t *testing.T) {
 	assert.NotContains(t, got, "`rush.md` file in this same directory")
 	assert.NotContains(t, got, "rush.md")
 	assert.Contains(t, got, "sibling `../rush/SKILL.md` file")
+	assert.NotContains(t, got, "Bash")
+	assert.Contains(t, got, "exec_command")
+	assert.Contains(t, got, "session_id")
+	assert.Contains(t, got, "blocking `write_stdin`")
 }
 
 func TestCodexInit_CreatesWcrushSkillFromCanonicalTemplate(t *testing.T) {
@@ -131,7 +152,9 @@ func TestCodexInit_CreatesWcrushSkillFromCanonicalTemplate(t *testing.T) {
 	skillPath := filepath.Join(dir, ".agents", "skills", "wcrush", "SKILL.md")
 	bts, err := os.ReadFile(skillPath)
 	require.NoError(t, err)
-	assertCodexSkillFrontmatter(t, bts, "wcrush", claudeWcrushCommandTemplate)
+	description, _, err := parseSlashCommandSource(claudeWcrushCommandTemplate)
+	require.NoError(t, err)
+	assertCodexSkillFrontmatter(t, bts, "wcrush", description)
 	got := string(bts)
 	assert.Contains(t, got, claudeSlashCommandSentinel)
 	assert.Contains(t, got, "$ARGUMENTS")
@@ -140,6 +163,12 @@ func TestCodexInit_CreatesWcrushSkillFromCanonicalTemplate(t *testing.T) {
 	assert.NotContains(t, got, "`wrush.md` file in this")
 	assert.NotContains(t, got, "rush.md")
 	assert.Contains(t, got, "sibling `../wrush/SKILL.md` file")
+	assert.NotContains(t, got, "Bash")
+	assert.NotContains(t, got, "run_in_background")
+	assert.Contains(t, got, "exec_command")
+	assert.Contains(t, got, "session_id")
+	assert.Contains(t, got, "blocking `write_stdin`")
+	assert.Contains(t, got, "codex queue")
 }
 
 func TestCodexInit_SlashCommandOverwritesWithSentinel(t *testing.T) {
@@ -185,14 +214,20 @@ func TestCodexInit_WcrushOverwritesWithSentinel(t *testing.T) {
 func TestCodexInit_MigratesSentinelFirstOwnedSkills(t *testing.T) {
 	dir := t.TempDir()
 	skillsDir := filepath.Join(dir, ".agents", "skills")
+	rushDescription, _, err := loadSkillSource("claude_slash_command", skillTargetCodex)
+	require.NoError(t, err)
+	wrushDescription, _, err := parseSlashCommandSource(claudeWrushCommandTemplate)
+	require.NoError(t, err)
+	wcrushDescription, _, err := parseSlashCommandSource(claudeWcrushCommandTemplate)
+	require.NoError(t, err)
 	tests := []struct {
-		name     string
-		template string
+		name        string
+		description string
 	}{
-		{name: "rush", template: claudeSlashCommandTemplate},
-		{name: "rush-fallback", template: claudeFallbackCommandTemplate},
-		{name: "wrush", template: claudeWrushCommandTemplate},
-		{name: "wcrush", template: claudeWcrushCommandTemplate},
+		{name: "rush", description: rushDescription},
+		{name: "rush-fallback", description: codexFallbackSkillDescription},
+		{name: "wrush", description: wrushDescription},
+		{name: "wcrush", description: wcrushDescription},
 	}
 	for _, test := range tests {
 		path := filepath.Join(skillsDir, test.name, "SKILL.md")
@@ -204,7 +239,14 @@ func TestCodexInit_MigratesSentinelFirstOwnedSkills(t *testing.T) {
 	for _, test := range tests {
 		content, err := os.ReadFile(filepath.Join(skillsDir, test.name, "SKILL.md"))
 		require.NoError(t, err)
-		assertCodexSkillFrontmatter(t, content, test.name, test.template)
+		if test.name == "rush-fallback" {
+			parsed, err := skills.ParseContent(content)
+			require.NoError(t, err)
+			assert.Equal(t, test.name, parsed.Name)
+			assert.Equal(t, test.description, parsed.Description)
+		} else {
+			assertCodexSkillFrontmatter(t, content, test.name, test.description)
+		}
 		assert.NotContains(t, string(content), "legacy content")
 	}
 }

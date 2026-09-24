@@ -52,6 +52,8 @@ func TestQwenInit_CreatesSlashCommand(t *testing.T) {
 	assert.Contains(t, got, "description:")
 	assert.Contains(t, got, "rush run")
 	assert.Contains(t, got, "--role smart")
+	assert.NotContains(t, got, "--codex-thread-id")
+	assert.NotContains(t, got, "run_in_background")
 }
 
 func TestQwenInit_CreatesFallbackCommand(t *testing.T) {
@@ -66,8 +68,9 @@ func TestQwenInit_CreatesFallbackCommand(t *testing.T) {
 	assert.Contains(t, got, "{{args}}")
 	assert.NotContains(t, got, "$ARGUMENTS")
 	assert.Contains(t, got, "description:")
-	assert.Contains(t, got, "CronCreate")
-	assert.Contains(t, got, "TaskCreate")
+	assert.Contains(t, got, "ask the operator")
+	assert.NotContains(t, got, "CronCreate")
+	assert.NotContains(t, got, "TaskCreate")
 }
 
 func TestQwenInit_SlashCommandOverwritesWithSentinel(t *testing.T) {

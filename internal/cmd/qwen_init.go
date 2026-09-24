@@ -2,9 +2,8 @@
 // commands for Qwen Code CLI (`.qwen/commands/*.md`). Part of the
 // `<tool>-init`/`<tool>-del` family alongside claude-init/claude-del and
 // codex-init/codex-del; gemini-init/gemini-del and grok-init/grok-del
-// follow the same pattern, converting from the same canonical source
-// templates (claudeSlashCommandTemplate / claudeFallbackCommandTemplate,
-// embedded in claude_init.go) via the helpers in multi_cli_convert.go.
+// follow the same pattern, converting from embedded command sources via
+// the helpers in multi_cli_convert.go.
 //
 // Qwen Code CLI's custom-command convention is structurally almost
 // identical to Claude Code's: a flat Markdown file with `description:`
@@ -103,7 +102,7 @@ rush qwen-init --cwd /path/to/project
 // installQwenCommands writes both the rush and rush-fallback commands
 // into commandsDir. Extracted so qwen_init_test.go can drive it directly.
 func installQwenCommands(commandsDir string) error {
-	desc1, body1, err := parseSlashCommandSource(claudeSlashCommandTemplate)
+	desc1, body1, err := loadSkillSource("claude_slash_command", skillTargetQwen)
 	if err != nil {
 		return fmt.Errorf("rush command: %w", err)
 	}
@@ -112,7 +111,7 @@ func installQwenCommands(commandsDir string) error {
 		return fmt.Errorf("rush command: %w", err)
 	}
 
-	desc2, body2, err := parseSlashCommandSource(claudeFallbackCommandTemplate)
+	desc2, body2, err := loadSkillSource("claude_crush_fallback_command", skillTargetQwen)
 	if err != nil {
 		return fmt.Errorf("rush-fallback command: %w", err)
 	}

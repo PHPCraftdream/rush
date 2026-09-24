@@ -2,9 +2,8 @@
 // commands as Gemini CLI custom commands (`.gemini/commands/*.toml`). Part
 // of the `<tool>-init`/`<tool>-del` family alongside claude-init/claude-del
 // and codex-init/codex-del; grok-init/grok-del and qwen-init/qwen-del follow
-// the same pattern, converting from the same canonical source templates
-// (claudeSlashCommandTemplate / claudeFallbackCommandTemplate, embedded in
-// claude_init.go) via the helpers in multi_cli_convert.go.
+// the same pattern, converting from embedded command sources via the
+// helpers in multi_cli_convert.go.
 package cmd
 
 import (
@@ -104,7 +103,7 @@ rush gemini-init --cwd /path/to/project
 // commands into commandsDir. Extracted so gemini_init_test.go can drive it
 // directly.
 func installGeminiCommands(commandsDir string) error {
-	desc1, body1, err := parseSlashCommandSource(claudeSlashCommandTemplate)
+	desc1, body1, err := loadSkillSource("claude_slash_command", skillTargetGemini)
 	if err != nil {
 		return fmt.Errorf("rush command: %w", err)
 	}
@@ -116,7 +115,7 @@ func installGeminiCommands(commandsDir string) error {
 		return fmt.Errorf("rush command: %w", err)
 	}
 
-	desc2, body2, err := parseSlashCommandSource(claudeFallbackCommandTemplate)
+	desc2, body2, err := loadSkillSource("claude_crush_fallback_command", skillTargetGemini)
 	if err != nil {
 		return fmt.Errorf("rush-fallback command: %w", err)
 	}

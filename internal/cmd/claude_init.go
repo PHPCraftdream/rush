@@ -21,24 +21,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// claudeSlashCommandTemplate is the canonical /rush slash-command body
-// minus the sentinel marker (which is prepended at write time so
-// `claude-del` can recognise files we own without depending on file
-// content semantics). Kept in a sibling .md file rather than a Go raw
-// string so future edits don't need backtick / dollar-sign escaping.
-//
-//go:embed claude_slash_command.md
-var claudeSlashCommandTemplate string
-
-// claudeFallbackCommandTemplate is the canonical /rush-fallback slash-command
-// body minus the sentinel marker. Same rationale as claudeSlashCommandTemplate
-// above: kept in a sibling .md file so edits don't need Go string escaping,
-// and reuses the shared claudeSlashCommandSentinel since ownership checks are
-// already scoped per specific filename (crush-fallback.md here).
-//
-//go:embed claude_crush_fallback_command.md
-var claudeFallbackCommandTemplate string
-
 // claudeWrushCommandTemplate is the canonical /wrush slash-command body minus
 // the sentinel marker. /wrush is /rush with one added hard rule: every
 // delegation runs inside a dedicated git worktree, never the primary
@@ -125,6 +107,8 @@ Concretely:
 
 ` + "`claude-init`" + ` no longer writes anything into ` + "`CLAUDE.md`" + `. Delegation is
 explicit-only — invoke ` + "`/rush <task>`" + `, ` + "`/wrush <task>`" + ` or ` + "`/wcrush <task>`" + ` when you want it.
+The installed slash command is Markdown; its embedded source may be Markdown
+or structured YAML with Claude-specific blocks.
 
 For per-model commands, agents and skills, use ` + "`cah install`" + ` from the
 cc-arch-hands repo.`,
@@ -139,6 +123,9 @@ rush claude-init --local
 rush claude-init --cwd /path/to/project
 `,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := validateClaudeInitSources(skillSourceFiles); err != nil {
+			return err
+		}
 		global, _ := cmd.Flags().GetBool("global")
 		local, _ := cmd.Flags().GetBool("local")
 		hasCwd := cmd.Flags().Changed("cwd")
@@ -234,10 +221,14 @@ func writeSlashCommandToDir(dir string) error {
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("read %s: %w", path, err)
 	}
+	content, err := claudeSlashCommandContent()
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("mkdir %s: %w", dir, err)
 	}
-	if err := os.WriteFile(path, []byte(claudeSlashCommandContent()), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
 	}
 	fmt.Fprintf(os.Stderr, "wrote %s\n", path)
@@ -250,8 +241,12 @@ func writeSlashCommandToDir(dir string) error {
 // guidance inline, because there is no longer a long block in CLAUDE.md
 // to refer the operator to. Triggered ONLY by an explicit `/rush <task>`
 // from the operator.
-func claudeSlashCommandContent() string {
-	return claudeSlashCommandSentinel + "\n" + claudeSlashCommandTemplate
+func claudeSlashCommandContent() (string, error) {
+	description, body, err := loadSkillSource("claude_slash_command", skillTargetClaude)
+	if err != nil {
+		return "", fmt.Errorf("load /rush source: %w", err)
+	}
+	return renderFrontMatterMD(claudeSlashCommandSentinel, description, body, "$ARGUMENTS") + "\n", nil
 }
 
 func writeFallbackCommandToDir(dir string) error {
@@ -264,10 +259,14 @@ func writeFallbackCommandToDir(dir string) error {
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("read %s: %w", path, err)
 	}
+	content, err := claudeFallbackCommandContent()
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("mkdir %s: %w", dir, err)
 	}
-	if err := os.WriteFile(path, []byte(claudeFallbackCommandContent()), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
 	}
 	fmt.Fprintf(os.Stderr, "wrote %s\n", path)
@@ -279,8 +278,12 @@ func writeFallbackCommandToDir(dir string) error {
 // claude-del can recognise files we own without parsing content. Triggered
 // ONLY by an explicit `/rush-fallback <agent>` from the operator, right
 // after a peak-hours refusal.
-func claudeFallbackCommandContent() string {
-	return claudeSlashCommandSentinel + "\n" + claudeFallbackCommandTemplate
+func claudeFallbackCommandContent() (string, error) {
+	description, body, err := loadSkillSource("claude_crush_fallback_command", skillTargetClaude)
+	if err != nil {
+		return "", fmt.Errorf("load /rush-fallback source: %w", err)
+	}
+	return renderFrontMatterMD(claudeSlashCommandSentinel, description, body, "$ARGUMENTS") + "\n", nil
 }
 
 func writeWrushCommandToDir(dir string) error {

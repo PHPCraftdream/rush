@@ -546,6 +546,13 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 // wrapper over ExecuteRun: it supplies the process streams as defaults
 // and renders the JSON envelope for RunModeJSON.
 func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt string, overrides RunOverrides, hideSpinner bool, mode RunMode, continueSessionID string, useLast bool) error {
+	_, err := app.RunNonInteractiveWithResult(ctx, output, prompt, overrides, hideSpinner, mode, continueSessionID, useLast)
+	return err
+}
+
+// RunNonInteractiveWithResult runs one agent turn, writes its output, and
+// returns the structured result when one is available.
+func (app *App) RunNonInteractiveWithResult(ctx context.Context, output io.Writer, prompt string, overrides RunOverrides, hideSpinner bool, mode RunMode, continueSessionID string, useLast bool) (*RunResult, error) {
 	summary, err := app.ExecuteRun(ctx, RunRequest{
 		Prompt:            prompt,
 		Overrides:         overrides,
@@ -560,8 +567,8 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt 
 	if mode == RunModeJSON && summary != nil {
 		enc := json.NewEncoder(output)
 		if encErr := enc.Encode(summary); encErr != nil {
-			return fmt.Errorf("failed to encode JSON result: %w", encErr)
+			return summary, fmt.Errorf("failed to encode JSON result: %w", encErr)
 		}
 	}
-	return err
+	return summary, err
 }

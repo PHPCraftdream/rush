@@ -1,0 +1,213 @@
+description: Register a local sub-agent to fall back to when `rush` becomes unusable — peak-hours refusal or hard quota limit — switch to it automatically the moment either fires, and switch back on user request or once the peak-hours window closes
+blocks:
+  - claude: |-
+      `/rush-fallback <agent>` **arms** a fallback: it names the local `Agent` sub-agent type (e.g. `sh`, `oh`, `fm`) to use *if and when* `rush` becomes unusable. It does **NOT** switch anything right now.
+
+      **Keep using `/rush` (`rush run`) as normal.** Switch to `<agent>` only when one of exactly two things happens:
+
+      1. **Peak hours** — a `rush run` refused because the provider is inside its configured peak-hours window.
+      2. **Hard limit** — weekly/monthly quota exhausted, account suspended, or "context window exceeded"/"quota exceeded" with no retry-after landing inside this session.
+    codex: &limited_opening |-
+      This installed CLI variant cannot persist an armed fallback or switch automatically to another local agent. Invoking /rush-fallback <agent> does not arm it. Explain this limitation and ask the operator how to proceed; continue using /rush until the operator directs otherwise.
+    gemini: *limited_opening
+    grok: *limited_opening
+    qwen: *limited_opening
+  - common: |-
+      Nothing else counts. A slow run, a transient 5xx, a `Process restarted`, your own `--timeout`/`--idle-timeout` firing, a confusing error — all of those mean **re-run `rush run` against the same `--session`**, not switch.
+  - claude: |-
+      When one of the two does fire: **switch immediately and silently.** Don't ask the operator for permission, don't ask them for the refusal text, don't confirm — arming this command already was their instruction. Just route the work through `Agent({subagent_type: "<agent>"})` and say one line about it.
+
+      And once you have switched, **stay switched until something else tells
+      you the window is over** — the cron for peak-hours, `/rush-fallback
+      clear` for a hard limit. Re-attempting `rush run` in the meantime is
+      the single most common way this command gets misused; see "Once armed,
+      stop checking" below for what that costs and what to do instead.
+    codex: &limited_switch |-
+      When a peak-hours refusal or hard quota limit occurs, stop launching delegated work, report the exact error, provider, and any reopen/retry time, then ask the operator for direction. Do not switch tools or agents automatically.
+    gemini: *limited_switch
+    grok: *limited_switch
+    qwen: *limited_switch
+  - common: |-
+      If `<agent>` is missing on invocation, **stop and ask** which agent type to use — that's the only thing you may never pick yourself.
+  - claude: |-
+      ## The eternal marker task
+
+      All fallback state lives in ONE TaskList task per session. Find it by
+      subject **prefix** (never exact-match — the suffix is a live status
+      summary, see below):
+
+      ```
+      rush-fallback state (persistent — do not complete)
+      ```
+
+      `TaskCreate` it (`status: pending`) the first time this command runs;
+      afterwards `TaskUpdate` both its subject and description in place —
+      never create a second one, never complete or delete it, it's a
+      sentinel, not work. Keep the subject one line, always starting with
+      the exact prefix above followed by `: ` and a short summary a human
+      skimming `TaskList` can read without opening the task, e.g.:
+
+      ```
+      rush-fallback state (persistent — do not complete): sh — armed, switches on peak-hours or hard-limit
+      rush-fallback state (persistent — do not complete): sh — ACTIVE (hard-limit), switch back with /rush-fallback clear
+      rush-fallback state (persistent — do not complete): dormant
+      ```
+
+      It survives `/checkpoint` + `/resume` and context compaction, so a
+      fresh session sees the fallback state on `TaskList` without depending
+      on conversation context.
+
+      The description is the state:
+
+      ```
+      STATUS: armed          # agent registered, /rush still in use — the normal resting state
+      AGENT: <agent>
+      ```
+
+      ```
+      STATUS: active         # a trigger fired; delegated work now goes through <agent>
+      AGENT: <agent>
+      TRIGGER: peak-hours | hard-limit
+      PROVIDER: <id>
+      UNTIL: <RFC3339>       # peak-hours only; "none" for hard-limit
+      CRON_JOB_ID: <id>      # peak-hours only; "none" for hard-limit
+      ```
+
+      ```
+      STATUS: dormant        # cleared
+      ```
+
+      This is instruction-level, not a code hook — `/rush` does not read the marker automatically. Honoring it is on the operating agent.
+
+      ## On invocation — arm it, then carry on
+
+      Upsert the marker to `STATUS: armed` with `<agent>`. Report one line: `fallback armed: <agent> (engages on peak-hours refusal or hard limit; /rush in use until then)`. **Then continue with `/rush` exactly as before** — nothing else changes yet.
+
+      Re-invoking with a different agent (armed or active) just replaces `AGENT` in the marker; the trigger state and any existing cron stay as they are.
+    codex: &limited_marker |-
+      This CLI has no persistent fallback-state mechanism. Do not represent an armed state or claim a timer is scheduled. Ask the operator to arrange the fallback and return manually.
+    gemini: *limited_marker
+    grok: *limited_marker
+    qwen: *limited_marker
+  - common: |-
+      ## Trigger 1 — peak-hours refusal
+
+      The one string that always appears is `is in peak hours (` in the failed
+      run's stderr / `--json` `.error`. Match on that. Don't infer the refusal
+      from `exit_reason` alone — `cancelled`/`error` are shared with timeouts,
+      max-cost and generic failures.
+
+      There are **two** shapes, and you must handle both:
+
+      - **Full guidance block** — `is in peak hours (` plus `RESUME AT:`
+        (a local date-time and an RFC3339 stamp) plus `peak-hours window`.
+        This is `internal/agent/peak_hours_stop.go`'s `PeakHoursGuidance`,
+        emitted when the top-level run is refused.
+      - **Short form** — only `is in peak hours (HH:MM–HH:MM), refusing until
+        HH:MM`, with no `RESUME AT:` and no `peak-hours window`. This comes
+        from a different path: the refusal surfacing as `failed to start agent
+        processing stream: …` when a **sub-agent's** stream is what hit the
+        window. Observed in practice; a run can do 800+ seconds of real work
+        and only then be refused this way.
+
+      Requiring all three markers would make you miss the short form entirely
+      and keep hammering a provider that has already said no.
+  - claude: |-
+      Then:
+
+      1. Get the reopen moment.
+         - Full block: take the RFC3339 stamp from `RESUME AT:` verbatim —
+           it is already exact, day-wrap handled.
+         - Short form: build it from `refusing until HH:MM`, interpreted in
+           **local** time. If that time-of-day is not later than now, it means
+           tomorrow.
+         If the resulting moment is already in the past, the window closed
+         while you were reading: stay on `/rush`, don't switch.
+      2. Marker → `STATUS: active`, `TRIGGER: peak-hours`, provider id, `UNTIL`.
+      3. Arm the one-shot auto-revert cron below, record its id into `CRON_JOB_ID`.
+      4. Route subsequent delegated work through `<agent>`.
+
+      ```
+      CronCreate({
+        cron: "<MM> <HH> * * *",     // minute+hour of ReopensAt, local time
+        recurring: false,
+        durable: true,
+        prompt: "# rush-fallback resume\n\nThe peak-hours window for provider <id> has closed (was due <RFC3339>).\n\n1. Do NOT interrupt any <agent> run still in flight — let it finish.\n2. Stop launching NEW work through <agent>.\n3. Route subsequent delegated work back through `/rush` (rush run).\n4. TaskUpdate the `rush-fallback state (persistent — do not complete)` task's description back to `STATUS: armed` + `AGENT: <agent>` — do NOT complete or delete the task.\n5. Tell the user fallback has ended and `/rush` is back in use."
+      })
+      ```
+
+      `durable: true` deliberately deviates from `CronCreate`'s default guidance: a multi-hour wait that died with the process would strand the session in fallback with no way back.
+    codex: &limited_peak |-
+      Use the stated reopen time when available. This CLI cannot schedule an automatic return, so report the time and ask the operator to decide whether to wait or select another route.
+    gemini: *limited_peak
+    grok: *limited_peak
+    qwen: *limited_peak
+  - claude: |-
+      ## Trigger 2 — hard limit
+
+      Weekly/monthly budget exhausted, account suspended, or "context window exceeded"/"quota exceeded" with no retry-after inside this session. No reopen time exists, so: marker → `STATUS: active`, `TRIGGER: hard-limit`, `UNTIL: none`, `CRON_JOB_ID: none`, no cron armed. Route work through `<agent>`. Only `/rush-fallback clear` ends it.
+    codex: &limited_hard |-
+      For a hard limit, report that Rush is unavailable, include the exact reason, and wait for the operator to choose the next tool or agent.
+    gemini: *limited_hard
+    grok: *limited_hard
+    qwen: *limited_hard
+  - claude: |-
+      ## While active
+
+      Hand anything you'd have given `rush run` to `Agent({subagent_type: "<agent>", ...})`, briefed the same way — goal, file-set, definition of done. All of `/rush`'s delegation hygiene still applies: scope call-outs for concurrent work, no parallel git-writing sub-agents over one tree, tests scoped to what changed, zero-trust verification of the diff afterward. This changes the **transport**, not the verification bar.
+
+      One agent type for everything — the reason is "rush is unavailable", not task complexity.
+
+      ### Once armed, stop checking — the cron IS the resume signal
+
+      While `STATUS: active`, **`/rush` does not exist for you.** Not as a
+      first choice, not as a fallback-from-the-fallback, not "just to see".
+
+      Concretely, until the cron's `# rush-fallback resume` prompt actually
+      fires, do NOT:
+
+      - launch `rush run` for any reason, including a task that feels
+        different, smaller, or more urgent than the one that got refused;
+      - compare the current time against `UNTIL` and conclude the window has
+        reopened — the cron owns that decision, and it fires on its own;
+      - re-attempt a refused run "to check" whether the provider is back;
+      - poll `rush sessions why` / `sessions locks` / `sessions list` hoping
+        for a different answer;
+      - rewrite `UNTIL` or `CRON_JOB_ID`, or arm a second cron.
+
+      A manual retry before the real reopen does not get you an early start.
+      It gets you the same refusal, minus the tokens and minutes the run burnt
+      before hitting it — and, on the sub-agent path, that can be a *lot*: the
+      refusal may arrive only after the run has already done substantial work,
+      leaving partial edits in the tree that you then have to triage.
+
+      Between arming and the cron firing there is exactly one correct
+      behaviour: **keep routing new delegated work through `<agent>`, and
+      otherwise leave the marker alone.**
+
+      The same applies with `TRIGGER: hard-limit`, where there is no cron at
+      all: nothing you can observe will end that state. Only
+      `/rush-fallback clear` does.
+
+      The liveness watchdog `/rush` prescribes (`rush sessions locks` every
+      ~10 min) is for **`rush run` processes you launched**. It does not
+      apply to `<agent>` runs and must not be repurposed into peak-hours
+      polling — the harness notifies you when a sub-agent finishes.
+    codex: &limited_active |-
+      This CLI cannot keep or monitor an active fallback state. Stop starting delegated work and ask the operator how to route it. For any work the operator authorizes, retain the usual scope, concurrency, test, and diff-verification precautions.
+    gemini: *limited_active
+    grok: *limited_active
+    qwen: *limited_active
+  - claude: |-
+      ## `/rush-fallback clear`
+
+      Ends fallback now. If the marker already reads `dormant`, say so and stop. Otherwise: `CronDelete` the `CRON_JOB_ID` if one is recorded, set the marker to `STATUS: dormant`, report back. Any `<agent>` run already in flight finishes on its own — `clear` only stops NEW delegation through it.
+    codex: &limited_clear |-
+      This CLI did not create persistent fallback state. Report that there is nothing to clear.
+    gemini: *limited_clear
+    grok: *limited_clear
+    qwen: *limited_clear
+  - common: |-
+      ## Task
+
+      $ARGUMENTS

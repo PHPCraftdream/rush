@@ -2,9 +2,8 @@
 // commands as xAI Grok Build CLI Skills (`.grok/skills/<name>/SKILL.md`).
 // Part of the `<tool>-init`/`<tool>-del` family alongside claude-init/
 // claude-del, codex-init/codex-del and gemini-init/gemini-del/
-// qwen-init/qwen-del, converting from the same canonical source templates
-// (claudeSlashCommandTemplate / claudeFallbackCommandTemplate, embedded in
-// claude_init.go) via the helpers in multi_cli_convert.go.
+// qwen-init/qwen-del, converting from embedded command sources via the
+// helpers in multi_cli_convert.go.
 package cmd
 
 import (
@@ -92,7 +91,7 @@ rush grok-init --cwd /path/to/project
 // installGrokSkills writes both the rush and rush-fallback Skills into
 // skillsDir. Extracted so grok_init_test.go can drive it directly.
 func installGrokSkills(skillsDir string) error {
-	desc1, body1, err := parseSlashCommandSource(claudeSlashCommandTemplate)
+	desc1, body1, err := loadSkillSource("claude_slash_command", skillTargetGrok)
 	if err != nil {
 		return fmt.Errorf("rush skill: %w", err)
 	}
@@ -101,7 +100,7 @@ func installGrokSkills(skillsDir string) error {
 		return fmt.Errorf("rush skill: %w", err)
 	}
 
-	desc2, body2, err := parseSlashCommandSource(claudeFallbackCommandTemplate)
+	desc2, body2, err := loadSkillSource("claude_crush_fallback_command", skillTargetGrok)
 	if err != nil {
 		return fmt.Errorf("rush-fallback skill: %w", err)
 	}

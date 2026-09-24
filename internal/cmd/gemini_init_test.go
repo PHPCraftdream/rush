@@ -53,6 +53,8 @@ func TestGeminiInit_CreatesSlashCommand(t *testing.T) {
 	assert.Contains(t, got, "{{args}}")
 	assert.Contains(t, got, "rush run")
 	assert.Contains(t, got, "--role smart")
+	assert.NotContains(t, got, "--codex-thread-id")
+	assert.NotContains(t, got, "run_in_background")
 }
 
 func TestGeminiInit_CreatesFallbackCommand(t *testing.T) {
@@ -68,8 +70,9 @@ func TestGeminiInit_CreatesFallbackCommand(t *testing.T) {
 	assert.Contains(t, got, `description = "`)
 	assert.NotContains(t, got, "$ARGUMENTS")
 	assert.Contains(t, got, "{{args}}")
-	assert.Contains(t, got, "CronCreate")
-	assert.Contains(t, got, "TaskCreate")
+	assert.Contains(t, got, "ask the operator")
+	assert.NotContains(t, got, "CronCreate")
+	assert.NotContains(t, got, "TaskCreate")
 }
 
 func TestGeminiInit_SlashCommandOverwritesWithSentinel(t *testing.T) {

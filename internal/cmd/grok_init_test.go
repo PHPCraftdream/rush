@@ -51,6 +51,8 @@ func TestGrokInit_CreatesSlashCommand(t *testing.T) {
 	assert.Contains(t, got, "rush run")
 	assert.Contains(t, got, "--role smart")
 	assert.Contains(t, got, "name: rush")
+	assert.NotContains(t, got, "--codex-thread-id")
+	assert.NotContains(t, got, "run_in_background")
 }
 
 func TestGrokInit_CreatesFallbackSkill(t *testing.T) {
@@ -63,8 +65,9 @@ func TestGrokInit_CreatesFallbackSkill(t *testing.T) {
 	got := string(bts)
 	assert.Contains(t, got, claudeSlashCommandSentinel)
 	assert.Contains(t, got, "$ARGUMENTS")
-	assert.Contains(t, got, "CronCreate")
-	assert.Contains(t, got, "TaskCreate")
+	assert.Contains(t, got, "ask the operator")
+	assert.NotContains(t, got, "CronCreate")
+	assert.NotContains(t, got, "TaskCreate")
 	assert.Contains(t, got, "name: rush-fallback")
 }
 
