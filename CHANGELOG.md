@@ -8,6 +8,26 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.2.0-alpha.6] - 2026-09-24
+
+### Added
+
+- **Commands and sub-agents run asynchronously in CLI and web sessions.**
+  `bash`, `run_command`, `agent`, and `agentic_fetch` return a job ID promptly.
+  Rush adds their final output or error as a new session message and resumes
+  the agent, so the model can continue independent work without polling.
+- **`rush run` stays alive while asynchronous work is pending.** Completion
+  messages continue the same session, including beyond five consecutive
+  completions, and JSON mode emits one final result after all work ends.
+  The web UI keeps command and sub-agent blocks running until their completion
+  notice arrives, then marks them done or failed.
+
+### Fixed
+
+- **The default text-mode CLI could lose its final answer after an async job.**
+  It now captures the selected final turn, prints only that answer, and runs
+  the finish hook once after the whole session completes.
+
 ## [0.2.0-alpha.5] - 2026-09-24
 
 ### Added
