@@ -15,7 +15,8 @@ Because there is no shell, shell builtins CANNOT run: echo, cd, test, set, expor
 </no_builtins>
 
 <behavior_notes>
-- Foreground only. Bounded timeout: default {{ .DefaultTimeout }}s, maximum {{ .MaxTimeout }}s (larger values are clamped). No background jobs — use the bash tool for those.
+- In web and CLI sessions, the program starts asynchronously and returns a job ID; its output and exit status arrive as a new session message. Continue independent work instead of waiting or polling. SDK calls retain foreground behavior.
+- Bounded program timeout: default {{ .DefaultTimeout }}s, maximum {{ .MaxTimeout }}s (larger values are clamped).
 - Programs on the shared block list cannot run: {{ .BannedCommands }} — plus package-manager install patterns like `go install`, `npm install --global`, `go test -exec`.
 - `working_dir` must stay inside the current working directory.
 - Output is truncated at {{ .MaxOutputLength }} characters.

@@ -3,6 +3,7 @@
 // Pure code move from the former components/Message.tsx.
 
 import { useState, useRef, useEffect, useMemo, useCallback, memo } from "react";
+import { useStore } from "@nanostores/react";
 import { ChevronDown, ChevronUp } from "lucide-react";
 import type { ContentPart } from "../../types";
 import { SubAgentBlock } from "../SubAgentBlock";
@@ -10,6 +11,7 @@ import { ActionRow } from "./ActionRow";
 import type { ActionItem } from "./ActionRow";
 import { TimeBadge } from "./TimeBadge";
 import { useCollapseAllSignal } from "./useCollapseAllSignal";
+import { $asyncJobStatuses } from "../../store";
 
 // ── Tool activity group ───────────────────────────────────────────────────────
 //
@@ -43,6 +45,7 @@ interface ToolActivityGroupProps {
 }
 
 export const ToolActivityGroup = memo(function ToolActivityGroup({ items, live, isCurrent, startedAt, model, effort }: ToolActivityGroupProps) {
+  const asyncStatuses = useStore($asyncJobStatuses);
   // Group open/close state machine.
   //
   // The default collapsed state follows `isCurrent`: the most recent group
@@ -224,6 +227,7 @@ export const ToolActivityGroup = memo(function ToolActivityGroup({ items, live, 
         item={actions[0]}
         isCurrent={effectiveCurrent}
         suppressAutoCurrent={false}
+        asyncStatuses={asyncStatuses}
         // Per-row model/effort from the part's own source message (burst path);
         // falls back to group-level props (single-message path via AssistantContent).
         model={actions[0].model || model}
@@ -261,6 +265,7 @@ export const ToolActivityGroup = memo(function ToolActivityGroup({ items, live, 
               item={a}
               isCurrent={i === actions.length - 1}
               suppressAutoCurrent={suppressAuto}
+              asyncStatuses={asyncStatuses}
               // Per-row model/effort from the part's own source message (burst path);
               // falls back to group-level props (single-message path via AssistantContent).
               model={a.model || model}

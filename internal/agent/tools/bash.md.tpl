@@ -1,4 +1,4 @@
-Execute shell commands; long-running commands automatically move to background and return a shell ID.
+Execute shell commands. In web and CLI sessions every command starts asynchronously and its result arrives as a new session message.
 
 <cross_platform>
 Uses mvdan/sh interpreter (Bash-compatible on all platforms including Windows).
@@ -10,9 +10,9 @@ Common shell builtins and core utils available on Windows.
 1. Directory Verification: If creating directories/files, use LS tool to verify parent exists
 2. Security Check: Banned commands ({{ .BannedCommands }}) return error - explain to user. Safe read-only commands execute without prompts
 3. Command Execution: Execute with proper quoting, capture output
-4. Auto-Background: Commands exceeding 1 minute (default, configurable via `auto_background_after`) automatically move to background and return shell ID
+4. Web/CLI execution returns a job ID immediately; keep working while Rush delivers completion
 5. Output Processing: Truncate if exceeds {{ .MaxOutputLength }} characters
-6. Return Result: Include errors, metadata with <cwd></cwd> tags
+6. Read the later completion message for output and exit status
 </execution_steps>
 
 <usage_notes>
@@ -27,22 +27,10 @@ Common shell builtins and core utils available on Windows.
 </usage_notes>
 
 <background_execution>
-- Set run_in_background=true to run commands in a separate background shell
-- Returns a shell ID for managing the background process
-- Use job_output tool to view current output from background shell
-- Use job_kill tool to terminate a background shell
-- IMPORTANT: NEVER use `&` at the end of commands to run in background - use run_in_background parameter instead
-- Commands that should run in background:
-  * Long-running servers (e.g., `npm start`, `python -m http.server`, `node server.js`)
-  * Watch/monitoring tasks (e.g., `npm run watch`, `tail -f logfile`)
-  * Continuous processes that don't exit on their own
-  * Any command expected to run indefinitely
-- Commands that should NOT run in background:
-  * Build commands (e.g., `npm run build`, `go build`)
-  * Test suites (e.g., `npm test`, `pytest`)
-  * Git operations
-  * File operations
-  * Short-lived scripts
+- Web/CLI commands return an async job ID whether or not run_in_background was requested.
+- Do not use `&` to create a second background process.
+- The completion notice includes output and exit status. Do not poll job_output or call it with wait=true merely to learn whether the job finished.
+- Use job_kill only when the operator asks to stop a running command or the current task requires cancellation.
 </background_execution>
 
 <git_commits>

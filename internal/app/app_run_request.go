@@ -194,6 +194,10 @@ type RunRequest struct {
 	Stdout            io.Writer // nil → io.Discard
 	Stderr            io.Writer // nil → io.Discard
 	HideSpinner       bool
+	// onSessionResolved lets the CLI wait for jobs even if this turn later fails.
+	onSessionResolved func(string)
+	// captureResult returns a structured outcome even in terse or stream mode.
+	captureResult bool
 
 	// Credentials, when non-nil, runs THIS invocation on the given
 	// provider credentials instead of whatever rush.json/env would

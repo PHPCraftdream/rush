@@ -60,6 +60,7 @@ type executeRunLoop struct {
 	sess           session.Session
 	ctx            context.Context
 	mode           RunMode
+	captureResult  bool
 	overrides      RunOverrides
 	stdout, stderr io.Writer
 	stderrTTY      bool
@@ -606,7 +607,7 @@ func (s *executeRunLoop) finish(runErr error) (*RunResult, error) {
 		}
 	}
 
-	if s.mode == RunModeJSON {
+	if s.mode == RunModeJSON || s.captureResult {
 		// Re-fetch the session row so the usage delta reflects
 		// the writes the agent made during the run.
 		freshSess, usageErr := s.app.Sessions.Get(finalCtx, s.sess.ID)

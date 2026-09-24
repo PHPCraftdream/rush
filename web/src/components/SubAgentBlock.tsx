@@ -5,7 +5,7 @@ import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
 import rehypeHighlight from "rehype-highlight";
 import { Bot } from "lucide-react";
-import { $subAgentMessages, $messages, $activeSessionID, registerSubAgentSession } from "../store";
+import { $subAgentMessages, $messages, $asyncJobStatuses, $activeSessionID, registerSubAgentSession } from "../store";
 import { sendLoadMessages } from "../ws";
 import type { Message, ContentPart, FinishPart } from "../types";
 import { formatActionArgs } from "../toolFormat";
@@ -85,6 +85,7 @@ export const SubAgentBlock = memo(function SubAgentBlock({
   // the lazy load below, and its finish state is the hard-kill fallback
   // for `done`.
   const parentMessages = useStore($messages);
+  const asyncStatuses = useStore($asyncJobStatuses);
   const parent = useMemo(
     () => parentMessages.find((m) => m.ID === messageID),
     [parentMessages, messageID],
@@ -153,17 +154,22 @@ export const SubAgentBlock = memo(function SubAgentBlock({
   // list_sessions correction loop, whose SQL (internal/db/sql/
   // sessions.sql, ListSessions) filters `parent_session_id is NULL`, so
   // sub-sessions are invisible to it.
-  const toolResultArrived = useMemo(
+  const parentToolResult = useMemo(
     () =>
-      parentMessages.some((m) =>
-        (m.Parts ?? []).some(
-          (p) => p.type === "tool_result" && p.ToolCallID === toolCallID,
-        ),
+      parentMessages.flatMap((m) => m.Parts ?? []).find(
+        (p) => p.type === "tool_result" && p.ToolCallID === toolCallID,
       ),
     [parentMessages, toolCallID],
   );
+  const toolResultArrived = !!parentToolResult;
+  let asyncStarted = false;
+  if (parentToolResult?.type === "tool_result" && parentToolResult.Metadata) {
+    try { asyncStarted = (JSON.parse(parentToolResult.Metadata) as { async?: boolean }).async === true; } catch { /* legacy metadata */ }
+  }
   const parentDone = parent ? isTerminallyFinished(parent.Parts ?? []) : false;
-  const done = toolResultArrived || parentDone;
+  const asyncStatus = asyncStatuses.get(toolCallID);
+  const parentError = !!parent?.Parts.some((p) => p.type === "finish" && !p.Partial && (p.Reason === "error" || p.Reason === "canceled"));
+  const done = asyncStarted ? !!asyncStatus || parentError : toolResultArrived || parentDone;
   const isRunning = !done;
 
   // A run that ended badly must not wear the green "done" badge: read
@@ -247,7 +253,7 @@ export const SubAgentBlock = memo(function SubAgentBlock({
         {model && <span className="text-xs text-text-subtle font-mono shrink-0">{model}</span>}
         <EffortBadge effort={effort} />
         {isRunning && <span className="text-xs text-text-subtle animate-pulse">running...</span>}
-        {done && (errorFinish ? (
+        {done && (errorFinish || asyncStatus === "failed" ? (
           <span className="text-xs text-red font-medium">error</span>
         ) : (
           <span className="text-xs text-green font-medium">done</span>

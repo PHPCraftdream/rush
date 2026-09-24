@@ -171,56 +171,58 @@ loop:
 // the watchdog must still fire at the hard cap.
 func TestStreamWatchdog_HardCapRespectedWithoutExtendsOnProgress(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithCancel(t.Context())
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
 
-	const idle = 200 * time.Millisecond
-	const tick = 10 * time.Millisecond
-	const hardCap = 400 * time.Millisecond
+		const idle = 200 * time.Millisecond
+		const tick = 10 * time.Millisecond
+		const hardCap = 400 * time.Millisecond
 
-	var fired atomic.Int32
-	var firedCause atomic.Int32
-	var firedElapsed atomic.Int64
-	wd := startStreamWatchdog(ctx, cancel, idle, tick, func(elapsed time.Duration, cause watchdogCause) {
-		fired.Add(1)
-		firedCause.Store(int32(cause))
-		firedElapsed.Store(int64(elapsed))
-	}, false, hardCap, 0, 0, nil)
+		var fired atomic.Int32
+		var firedCause atomic.Int32
+		var firedElapsed atomic.Int64
+		wd := startStreamWatchdog(ctx, cancel, idle, tick, func(elapsed time.Duration, cause watchdogCause) {
+			fired.Add(1)
+			firedCause.Store(int32(cause))
+			firedElapsed.Store(int64(elapsed))
+		}, false, hardCap, 0, 0, nil)
 
-	start := time.Now()
+		start := time.Now()
 
-	// Bump rapidly — more often than idleTimeout — so the idle-only check
-	// would NEVER fire on its own. The hard cap must still kill it.
-	stop := time.After(2 * time.Second)
-loop:
-	for {
-		select {
-		case <-wd.done:
-			break loop
-		case <-stop:
-			t.Fatal("watchdog should have fired at hard cap despite continuous activity")
-		case <-time.After(10 * time.Millisecond):
-			wd.bump()
+		// Bump rapidly — more often than idleTimeout — so the idle-only check
+		// would NEVER fire on its own. The hard cap must still kill it.
+		stop := time.After(2 * time.Second)
+	loop:
+		for {
+			select {
+			case <-wd.done:
+				break loop
+			case <-stop:
+				t.Fatal("watchdog should have fired at hard cap despite continuous activity")
+			case <-time.After(10 * time.Millisecond):
+				wd.bump()
+			}
 		}
-	}
 
-	elapsed := time.Since(start)
-	assert.Equal(t, int32(1), fired.Load(), "watchdog must fire at hard cap")
-	assert.True(t, wd.stalled.Load())
-	assert.Equal(t, causeHardCap, watchdogCause(firedCause.Load()),
-		"the hard-cap fire outside tool-in-flight must report causeHardCap, not causeIdleStall or causeToolTimeout")
-	// The hard cap is 400ms; widened from an earlier 200ms-cap/350ms-ceiling
-	// version (task #320) for the same reason as TestStreamWatchdog_HardCapRespected:
-	// 150ms of upper-bound slack was tight enough to flake on a loaded CI
-	// runner under -race in a full-package parallel run.
-	assert.LessOrEqual(t, elapsed, hardCap+800*time.Millisecond,
-		"watchdog must fire near the hard cap")
-	// Regression for task #276: this is exactly the branch that used to
-	// pass idle instead of the wall-clock elapsed to onFire. The bump loop
-	// keeps idle near-zero for the whole run, so a misdiagnosed fire would
-	// report an elapsed close to 0 instead of close to hardCap.
-	gotElapsed := time.Duration(firedElapsed.Load())
-	assert.GreaterOrEqual(t, gotElapsed, hardCap,
-		"elapsed passed to onFire must reflect wall-clock turn length, not near-zero idle time")
+		elapsed := time.Since(start)
+		assert.Equal(t, int32(1), fired.Load(), "watchdog must fire at hard cap")
+		assert.True(t, wd.stalled.Load())
+		assert.Equal(t, causeHardCap, watchdogCause(firedCause.Load()),
+			"the hard-cap fire outside tool-in-flight must report causeHardCap, not causeIdleStall or causeToolTimeout")
+		// The hard cap is 400ms; widened from an earlier 200ms-cap/350ms-ceiling
+		// version (task #320) for the same reason as TestStreamWatchdog_HardCapRespected:
+		// 150ms of upper-bound slack was tight enough to flake on a loaded CI
+		// runner under -race in a full-package parallel run.
+		assert.LessOrEqual(t, elapsed, hardCap+800*time.Millisecond,
+			"watchdog must fire near the hard cap")
+		// Regression for task #276: this is exactly the branch that used to
+		// pass idle instead of the wall-clock elapsed to onFire. The bump loop
+		// keeps idle near-zero for the whole run, so a misdiagnosed fire would
+		// report an elapsed close to 0 instead of close to hardCap.
+		gotElapsed := time.Duration(firedElapsed.Load())
+		assert.GreaterOrEqual(t, gotElapsed, hardCap,
+			"elapsed passed to onFire must reflect wall-clock turn length, not near-zero idle time")
+	})
 }
 
 // TestStreamWatchdog_HardCapRespectedWithToolInFlight is the regression test

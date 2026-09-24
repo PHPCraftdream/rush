@@ -20,35 +20,37 @@ import (
 // provider stall and must not be force-cancelled.
 func TestStreamWatchdog_PausedDuringToolExecution(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
 
-	const idle = 60 * time.Millisecond
-	const tick = 10 * time.Millisecond
+		const idle = 60 * time.Millisecond
+		const tick = 10 * time.Millisecond
 
-	var fired atomic.Int32
-	wd := startStreamWatchdog(ctx, cancel, idle, tick, func(time.Duration, watchdogCause) {
-		fired.Add(1)
-	}, false, 0, 0, 0, nil)
-	// A tool starts and runs WAY past idleTimeout with zero provider
-	// activity — the watchdog must NOT fire.
-	wd.toolStarted()
-	time.Sleep(idle * 4)
-	assert.Equal(t, int32(0), fired.Load(),
-		"watchdog must not fire while a tool is executing, even past idleTimeout")
-	assert.False(t, wd.stalled.Load())
-	assert.NoError(t, ctx.Err())
+		var fired atomic.Int32
+		wd := startStreamWatchdog(ctx, cancel, idle, tick, func(time.Duration, watchdogCause) {
+			fired.Add(1)
+		}, false, 0, 0, 0, nil)
+		// A tool starts and runs WAY past idleTimeout with zero provider
+		// activity — the watchdog must NOT fire.
+		wd.toolStarted()
+		time.Sleep(idle * 4)
+		assert.Equal(t, int32(0), fired.Load(),
+			"watchdog must not fire while a tool is executing, even past idleTimeout")
+		assert.False(t, wd.stalled.Load())
+		assert.NoError(t, ctx.Err())
 
-	// Tool finishes; with no further activity the watchdog resumes and must
-	// fire after the idle window.
-	wd.toolFinished()
-	select {
-	case <-wd.done:
-	case <-time.After(idle + 300*time.Millisecond):
-		t.Fatal("watchdog must fire after the tool finished and the stream went idle")
-	}
-	assert.Equal(t, int32(1), fired.Load())
-	assert.True(t, wd.stalled.Load())
+		// Tool finishes; with no further activity the watchdog resumes and must
+		// fire after the idle window.
+		wd.toolFinished()
+		select {
+		case <-wd.done:
+		case <-time.After(idle + 300*time.Millisecond):
+			t.Fatal("watchdog must fire after the tool finished and the stream went idle")
+		}
+		assert.Equal(t, int32(1), fired.Load())
+		assert.True(t, wd.stalled.Load())
+	})
 }
 
 // TestStreamWatchdog_PauseCountsParallelTools verifies the pause is

@@ -245,6 +245,7 @@ type coordinator struct {
 	prompt      *prompt.Prompt
 	notify      pubsub.Publisher[notify.Notification]
 	background  *shell.BackgroundShellManager
+	asyncJobs   *asyncJobRegistry
 
 	// mcpOwner is this config's MCP lifecycle owner (task #923). Nil keeps
 	// the legacy process-current-owner resolution via the package functions.
@@ -380,6 +381,7 @@ func NewCoordinator(
 		consecutiveAutoResumes: make(map[string]int),
 		modelCache:             newBoundedModelPairCache(modelCacheMaxEntries),
 	}
+	c.asyncJobs = newAsyncJobRegistry(c.notifyAsyncCompletion)
 
 	agentCfg, ok := cfg.Config().Agents[config.AgentCoder]
 	if !ok || agentCfg.ID == "" {

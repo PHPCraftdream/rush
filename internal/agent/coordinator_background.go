@@ -14,6 +14,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
+	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/shell"
 )
 
@@ -27,6 +28,40 @@ func filterNonEmpty(parts ...string) []string {
 		}
 	}
 	return out
+}
+
+// FormatAsyncCompletion makes a completed job visible to the model and UI.
+func FormatAsyncCompletion(completion AsyncCompletion) string {
+	status := "finished"
+	if completion.IsError {
+		status = "failed"
+	}
+	content := tools.TruncateOutput(strings.TrimSpace(completion.Content))
+	if content == "" {
+		content = "(no output)"
+	}
+	return fmt.Sprintf("Async job %s (%s) %s.\n\n%s",
+		completion.ToolCallID, completion.ToolName, status, content)
+}
+
+func (c *coordinator) notifyAsyncCompletion(completion AsyncCompletion) {
+	ctx := context.WithValue(context.Background(), autoResumedCtxKey{}, true)
+	ctx = context.WithValue(ctx, backgroundJobNoticeCtxKey{}, true)
+	ctx = WithCallOrigin(ctx, message.OriginWeb)
+	go runAutoResumeRecovered(ctx, completion.SessionID, completion.ToolCallID, func(ctx context.Context) (*fantasy.AgentResult, error) {
+		return c.Run(ctx, completion.SessionID, FormatAsyncCompletion(completion))
+	})
+}
+
+func (c *coordinator) NextAsyncCompletion(ctx context.Context, sessionID string) (AsyncCompletion, bool, error) {
+	if c.asyncJobs == nil {
+		return AsyncCompletion{}, false, nil
+	}
+	return c.asyncJobs.next(ctx, sessionID)
+}
+
+func (c *coordinator) HasPendingAsyncJobs(sessionID string) bool {
+	return c.asyncJobs != nil && c.asyncJobs.pending(sessionID)
 }
 
 // backgroundJobSummary formats a finished background command for injection

@@ -7,11 +7,9 @@ package app
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
-	"os"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -85,6 +83,9 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 	sess, err := app.resolveSession(ctx, continueSessionID, useLast)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create session for non-interactive mode: %w", err)
+	}
+	if req.onSessionResolved != nil {
+		req.onSessionResolved(sess.ID)
 	}
 
 	// Durable work accepted earlier for this session runs FIRST (FIFO), in
@@ -480,6 +481,7 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 		sess:           sess,
 		ctx:            ctx,
 		mode:           mode,
+		captureResult:  req.captureResult,
 		overrides:      overrides,
 		stdout:         stdout,
 		stderr:         stderr,
@@ -528,7 +530,11 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 	// landed in the window between finish() returning and this check.
 	// In both cases the committed primary result is the run's final
 	// answer; a review turn would run a new phase under a dead context.
-	if resultErr == nil && req.Credentials == nil &&
+	asyncPending := false
+	if source, ok := app.AgentCoordinator.(agent.AsyncCompletionSource); ok {
+		asyncPending = source.HasPendingAsyncJobs(sess.ID)
+	}
+	if resultErr == nil && req.Credentials == nil && !asyncPending &&
 		!loop.canceledAfterCommit && loop.ctx.Err() == nil &&
 		shouldRunReviewerPass(overrides.ModelRole, app.config.Config()) {
 		reviewRunFn, reviewCtx := app.buildReviewerPassTurn(ctx, setup.callOpts)
@@ -553,22 +559,5 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt 
 // RunNonInteractiveWithResult runs one agent turn, writes its output, and
 // returns the structured result when one is available.
 func (app *App) RunNonInteractiveWithResult(ctx context.Context, output io.Writer, prompt string, overrides RunOverrides, hideSpinner bool, mode RunMode, continueSessionID string, useLast bool) (*RunResult, error) {
-	summary, err := app.ExecuteRun(ctx, RunRequest{
-		Prompt:            prompt,
-		Overrides:         overrides,
-		Mode:              mode,
-		ContinueSessionID: continueSessionID,
-		UseLast:           useLast,
-		Origin:            overrides.Origin,
-		Stdout:            output,
-		Stderr:            os.Stderr,
-		HideSpinner:       hideSpinner,
-	})
-	if mode == RunModeJSON && summary != nil {
-		enc := json.NewEncoder(output)
-		if encErr := enc.Encode(summary); encErr != nil {
-			return summary, fmt.Errorf("failed to encode JSON result: %w", encErr)
-		}
-	}
-	return summary, err
+	return app.runNonInteractiveWithAsyncResults(ctx, output, prompt, overrides, hideSpinner, mode, continueSessionID, useLast)
 }

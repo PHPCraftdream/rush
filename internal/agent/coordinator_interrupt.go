@@ -43,10 +43,16 @@ const interruptInjectTick = 3 * time.Second
 const interruptTickOperationTimeout = 10 * time.Second
 
 func (c *coordinator) Cancel(sessionID string) {
+	if c.asyncJobs != nil {
+		c.asyncJobs.cancelSession(sessionID)
+	}
 	c.currentAgent.Cancel(sessionID)
 }
 
 func (c *coordinator) CancelAll() (stillBusy bool) {
+	if c.asyncJobs != nil {
+		c.asyncJobs.close()
+	}
 	return c.currentAgent.CancelAll()
 }
 

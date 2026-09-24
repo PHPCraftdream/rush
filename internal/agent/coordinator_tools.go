@@ -111,6 +111,7 @@ func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, age
 		ToolMaxDuration:    toolMaxDuration,
 		DataDirectory:      dataDirectory,
 		RunAllowlists:      runAllowlists,
+		AsyncJobs:          c.asyncJobs,
 		RestrictedRuns:     restrictedRunAuthorizer(c.permissions),
 		CheckpointInterval: checkpointInterval, // Fork patch: batch 8
 		// Fork patch: peak-hours mid-turn re-check. Deliberately LIVE, not
@@ -757,6 +758,7 @@ func (c *coordinator) buildTools(ctx context.Context, cfg *config.Config, agent 
 	slices.SortFunc(filteredTools, func(a, b fantasy.AgentTool) int {
 		return strings.Compare(a.Info().Name, b.Info().Name)
 	})
+	filteredTools = c.wrapAsyncTools(filteredTools)
 
 	// Per-call pinned tool slices bypass sessionAgent.SetTools, so apply the
 	// restricted-run gate at this assembly boundary as well as at the agent

@@ -230,7 +230,7 @@ func NewBashTool(permissions permission.Service, workingDir string, attribution 
 				}
 
 				// Still running after fast-failure check - return as background job
-				if onBackgroundComplete != nil {
+				if onBackgroundComplete != nil && !suppressBackgroundCallback(ctx) {
 					sh := bgShell
 					sid := sessionID
 					sh.OnDone(func() { onBackgroundComplete(sid, sh) })
@@ -354,7 +354,7 @@ func NewBashTool(permissions permission.Service, workingDir string, attribution 
 			}
 
 			// Still running - keep as background job
-			if onBackgroundComplete != nil {
+			if onBackgroundComplete != nil && !suppressBackgroundCallback(ctx) {
 				sh := bgShell
 				sid := sessionID
 				sh.OnDone(func() { onBackgroundComplete(sid, sh) })

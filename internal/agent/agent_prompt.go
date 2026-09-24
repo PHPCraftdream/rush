@@ -66,6 +66,12 @@ type autoResumedCtxKey struct{}
 // injected completion summary as a notice rather than a human message.
 type backgroundJobNoticeCtxKey struct{}
 
+// WithBackgroundJobNotice marks a completion turn as an agent-visible notice.
+func WithBackgroundJobNotice(ctx context.Context) context.Context {
+	ctx = context.WithValue(ctx, autoResumedCtxKey{}, true)
+	return context.WithValue(ctx, backgroundJobNoticeCtxKey{}, true)
+}
+
 // callOriginCtxKey tags a context with the entry-channel origin
 // (message.OriginCLI/Web/SDK) of the request that started the turn.
 // Set by ExecuteRun (internal/app) and the web server's turn handlers;

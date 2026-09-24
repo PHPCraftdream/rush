@@ -386,5 +386,12 @@ func (ts *turnStream) onToolResult(result fantasy.ToolResultContent) error {
 			toolResult,
 		},
 	})
+	if ts.a.asyncJobs != nil {
+		if createMsgErr != nil {
+			ts.a.asyncJobs.abort(sessionID, result.ToolCallID)
+		} else {
+			ts.a.asyncJobs.acknowledged(sessionID, result.ToolCallID)
+		}
+	}
 	return createMsgErr
 }

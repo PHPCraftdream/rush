@@ -4,6 +4,7 @@
 import { useState, useCallback, memo } from "react";
 import { BrainCircuit, Pencil, Trash2, ChevronDown, ChevronUp } from "lucide-react";
 import type { ContentPart } from "../../types";
+import type { AsyncJobStatus } from "../../store";
 import { updateMessagePart, deleteMessagePart } from "../../store";
 import { formatActionArgs } from "../../toolFormat";
 import { ConfirmDialog } from "../ConfirmDialog";
@@ -44,9 +45,20 @@ interface ActionRowProps {
   suppressAutoCurrent: boolean;
   model?: string;
   effort?: string;
+  asyncStatuses: Map<string, AsyncJobStatus>;
 }
 
-export const ActionRow = memo(function ActionRow({ item, isCurrent, suppressAutoCurrent, model, effort }: ActionRowProps) {
+function asyncJobID(metadata?: string): string | undefined {
+  if (!metadata) return undefined;
+  try {
+    const parsed = JSON.parse(metadata) as { async?: boolean; job_id?: string };
+    return parsed.async === true && typeof parsed.job_id === "string" ? parsed.job_id : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export const ActionRow = memo(function ActionRow({ item, isCurrent, suppressAutoCurrent, model, effort, asyncStatuses }: ActionRowProps) {
   // override:
   //   undefined → follow auto-rule (open iff isCurrent, AND auto isn't suppressed)
   //   true / false → user pinned, ignore auto-rule from now on
@@ -165,8 +177,11 @@ export const ActionRow = memo(function ActionRow({ item, isCurrent, suppressAuto
   // (internal/agent/agent_turn.go OnToolInputEnd/OnToolCall), so keying
   // on it flashed the badge for a blink while args streamed and hid it
   // for the whole execution window.
-  const running = !!call && !result;
-  const errored = !!result?.IsError;
+  const jobID = asyncJobID(result?.Metadata);
+  const asyncStatus = jobID ? asyncStatuses.get(jobID) : undefined;
+  const running = !!call && (!result || (!!jobID && !asyncStatus));
+  const errored = !!result?.IsError || asyncStatus === "failed";
+  const completed = !!jobID && asyncStatus === "finished";
   return (
     <div data-test-id="action-row" className="action-row">
       <button
@@ -189,6 +204,7 @@ export const ActionRow = memo(function ActionRow({ item, isCurrent, suppressAuto
         {item.repeatCount && item.repeatCount > 1 && <span className="px-1 py-0.5 rounded bg-base-subtle text-text-muted font-mono text-[10px] shrink-0">×{item.repeatCount}</span>}
         {running && <span className="text-text-subtle text-xs animate-pulse shrink-0">running…</span>}
         {errored && <span className="badge-error shrink-0">error</span>}
+        {completed && <span className="text-xs text-green font-medium shrink-0">done</span>}
         <TimeBadge epochSec={item.createdAt} />
         <span className="text-text-subtle shrink-0">
           {open ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
