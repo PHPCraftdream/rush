@@ -8,6 +8,38 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.2.0-alpha.5] - 2026-09-24
+
+### Added
+
+- **`rush run --codex-thread-id` notifies the originating Codex thread when
+  a CLI attempt ends.** The message distinguishes completion, failure,
+  cancellation, queued work, and a question awaiting an answer. It includes
+  a short result or error summary, preserves quotes by passing the message
+  as one process argument, and does not change Rush's exit status if delivery
+  fails. The notification runs after the JSON result is written.
+- **Delegation skills can have shared and CLI-specific instructions.** Skill
+  sources may remain Markdown or use ordered YAML blocks with common and
+  per-target text. Claude and Codex now receive their own launch and
+  completion guidance; Codex's fallback skill no longer refers to
+  Claude-only scheduling tools.
+
+### Fixed
+
+- **A fresh `rush run` could overtake pending durable work.** Queue draining
+  now rechecks after a local owner releases the session and returns an error
+  if pending work cannot be drained, instead of silently starting the new
+  turn. Cancellation during that wait is reported to the caller.
+- **Config reload could publish a stale candidate after a concurrent
+  write.** Final disk checks no longer hold publication locks, and a disk
+  write generation fences candidates verified before the write.
+- **Canceled JSON runs could report a provisional `end_turn`.** An
+  unconfirmed canceled turn now reports `canceled` with its error and does
+  not extract JSON from partial text.
+- **OAuth refresh could reuse a removed provider's stale credentials.** If
+  the provider disappeared from the current config snapshot, Rush now
+  refuses the refresh before making a network request.
+
 ## [0.2.0-alpha.4] - 2026-09-23
 
 ### Fixed
