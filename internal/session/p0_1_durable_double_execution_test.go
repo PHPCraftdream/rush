@@ -157,9 +157,12 @@ func TestReleaseGate_P0_1_DurableCallExecutesExactlyOnce(t *testing.T) {
 	// Wait for the coordinator to be called at least busyCycles+1 times
 	// (the busy attempts plus the final successful execution). This proves
 	// the pump kept retrying despite the ErrCallQueuedNotExecuted responses.
+	// Match the sibling P350 test's 20s bound: on Windows CI the session
+	// package can contend with server tests for SQLite and delay pump retries
+	// beyond a 5s wall-clock window without losing the durable row.
 	require.Eventually(t, func() bool {
 		return counter.callCount.Load() > busyCycles
-	}, 5*time.Second, 20*time.Millisecond,
+	}, 20*time.Second, 20*time.Millisecond,
 		"coordinator must eventually be called past busyCycles — if this times out, "+
 			"the pump stopped retrying early (possible regression in no-attempt-penalty handling)")
 
