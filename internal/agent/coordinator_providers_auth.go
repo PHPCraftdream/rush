@@ -156,16 +156,17 @@ func (c *coordinator) refreshOAuth2Token(ctx context.Context, providerCfg config
 		// explicitly meant to require (R5-2 residual, 2026-09-22 round-8
 		// audit — the earlier "log and fall back" version of this code
 		// did exactly that). Refuse instead of downgrading silently.
-		// F6 round-11: pair a fresh same-generation provider entry with cfg
-		// instead of the callers stale one -- same cross-generation bug
-		// rebuildInputs closed for the pinned-rebuild paths. Falls back to
-		// the callers copy if the provider is gone from the fresh snapshot.
+		// Pair a fresh same-generation provider entry with cfg. A removed
+		// provider has no valid network/token pair to refresh.
 		cfg, _ := c.cfg.Snapshot()
-		if cfg.Providers != nil {
-			if freshProviderCfg, ok := cfg.Providers.Get(providerCfg.ID); ok {
-				providerCfg = freshProviderCfg
-			}
+		if cfg == nil || cfg.Providers == nil {
+			return fmt.Errorf("resolve provider network client for OAuth refresh: provider %s is no longer configured; refusing refresh", providerCfg.ID)
 		}
+		freshProviderCfg, ok := cfg.Providers.Get(providerCfg.ID)
+		if !ok {
+			return fmt.Errorf("resolve provider network client for OAuth refresh: provider %s is no longer configured; refusing refresh", providerCfg.ID)
+		}
+		providerCfg = freshProviderCfg
 		httpClient, clientErr := c.resolveProviderHTTPClient(cfg, providerCfg)
 		if clientErr != nil {
 			return fmt.Errorf("resolve provider network client for OAuth refresh: %w", clientErr)

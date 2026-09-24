@@ -94,7 +94,9 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 	// (2026-09-23, five sessions after a --timeout). Fail-fast callers keep
 	// their immediate-busy contract.
 	if !failIfSessionBusy {
-		app.drainPendingBeforeRun(ctx, sess.ID)
+		if err := app.drainPendingBeforeRun(ctx, sess.ID); err != nil {
+			return nil, err
+		}
 	}
 
 	// FailIfSessionBusy (sdk.Client.Run/RunWithCredentials): reject the

@@ -194,8 +194,12 @@ func buildSessionUsageInfo(report message.UsageReport) *SessionUsageInfo {
 // the model's optimistic "stop"/"end_turn".
 func buildRunResult(sessionID, finalText, assistantNotes, finalReason string, err error, canceled bool, toolCounts map[string]int, deltaTokens int64, deltaCost float64, duration time.Duration, finalErrTitle, finalErrDetails string, strippedBytes int, stripErrMsg, stripErrReason string, subAgentOutputs []SubAgentOutput, reductionWarning string) RunResult {
 	reason := finalReason
+	unconfirmedCanceledTerminal := canceled && err != nil && reason == string(message.FinishReasonEndTurn)
 	if errors.Is(err, ErrRunQueued) {
 		reason = "queued"
+	} else if unconfirmedCanceledTerminal {
+		// A live end_turn is provisional until the durable drain completes.
+		reason = "canceled"
 	} else if reason == "" {
 		switch {
 		case canceled:
@@ -288,6 +292,8 @@ func buildRunResult(sessionID, finalText, assistantNotes, finalReason string, er
 			errMsg = err.Error()
 		}
 	case err != nil && !canceled:
+		errMsg = err.Error()
+	case unconfirmedCanceledTerminal:
 		errMsg = err.Error()
 	case reason == "error":
 		// In-band error: the agent finished its turn but the model's

@@ -320,6 +320,11 @@ func (s *ConfigStore) writeMCPFileChanges(files *mcpLockedFiles) error {
 		}
 		committed, commitErr := commitConfigFile(record.selectedPath, record.commitPath, record.data, 0o600, record.expectation, owner, enforce)
 		commitReturnedNil := commitErr == nil
+		if commitReturnedNil {
+			s.diskWriteGeneration++
+		} else if outcome, ok := CommitOutcomeFromError(commitErr); ok && (outcome.Committed || outcome.MaybeCommitted) {
+			s.diskWriteGeneration++
+		}
 		if commitErr != nil {
 			if errors.Is(commitErr, errConfigCommitDurabilityUncertain) {
 				// Directory fsync failure is never converted to success. The

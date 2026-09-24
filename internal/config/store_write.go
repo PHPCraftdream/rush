@@ -264,7 +264,11 @@ func (s *ConfigStore) withConfigWriteLockCtx(ctx context.Context, path string, f
 	// lock exists to prevent. Leaving a handful of empty *.lock sidecars
 	// next to rush.json is a one-time, bounded cost; deleting them is not.
 	defer releaseConfigFileLock(target.lockPath, lock)
-	return fn(target)
+	if err := fn(target); err != nil {
+		return err
+	}
+	s.diskWriteGeneration++
+	return nil
 }
 
 // noteInitialLoadWriteLocked advances Load's expected fingerprint after one

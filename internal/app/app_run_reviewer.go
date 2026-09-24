@@ -645,7 +645,7 @@ func (s *executeRunLoop) finish(runErr error) (*RunResult, error) {
 		strippedBytes := 0
 		stripErr := ""
 		stripErrReason := ""
-		if s.overrides.StripJSONFences && s.finalReason != "error" && s.finalReason != "canceled" {
+		if !isCanceled && s.overrides.StripJSONFences && s.finalReason != "error" && s.finalReason != "canceled" {
 			cleaned, notes, vErr := stripAndExtractJSON(s.finalText)
 			finalTextOut = cleaned
 			assistantNotes = notes

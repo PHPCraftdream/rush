@@ -314,9 +314,9 @@ func (s *ConfigStore) ReloadFromDisk(ctx context.Context) error {
 // variables only — no store field is touched until the very end — then
 // publishes it under a short publishMu critical section.
 //
-// Candidate construction uses reloadMu alone. Publication briefly nests
-// publishMu and diskWriteMu while it verifies that the files read for the
-// candidate have not changed:
+// Candidate construction and final input verification run without publishMu.
+// Publication briefly nests publishMu and diskWriteMu to validate the
+// snapshot and disk-write generations:
 //
 //   - reloadMu serialises the candidate-build phase against other
 //     concurrent reload attempts (autoReload's TryLock on reloadMu skips a
@@ -324,27 +324,12 @@ func (s *ConfigStore) ReloadFromDisk(ctx context.Context) error {
 //     is purely about not wasting work building N candidates in parallel
 //     when one would do — it is NOT required for correctness, since the
 //     publish step below is itself safe against concurrent publishers.
-//   - publishMu guards the final verification + swap. diskWriteMu is nested
-//     only for that short verification and snapshot capture, never during
-//     config parsing or shell subprocess execution.
+//   - publishMu guards final generation validation + swap. diskWriteMu is
+//     nested only for generation validation, never during filesystem I/O.
 //
-// Base generation vs CAS semantics: the candidate is built starting from
-// `prev`, the snapshot published at the time the build started. If some
-// other writer (a copy-on-write mutator, e.g. SetSkipPermissionRequests)
-// publishes a newer generation while the build is still in flight, this
-// reload's candidate is stale only with respect to runtime overrides carried
-// FORWARD from prev. Config, resolver, providers, loaded paths, workspace
-// path, and staleness fingerprints are freshly built from disk regardless of
-// what changed concurrently in memory, so they can never regress. Rather
-// than discarding a fully-built candidate (expensive: it already paid the
-// shell-resolution cost) or
-// silently overwriting the concurrent writer's change, the publish step
-// re-reads the CURRENT snapshot under publishMu and rebases just those
-// forwarded fields onto it before storing — the writer's change survives,
-// and the reload's fresh disk state still wins for everything reload
-// itself is authoritative over. This mirrors the reasoning already
-// applied to runtime overrides for the same class of "small piece of
-// forwarded state, rebase onto latest" problem.
+// A candidate is based on the snapshot loaded before its build. If either
+// that snapshot or the disk-write generation changes before publication,
+// the candidate is rejected and rebuilt from the current state.
 func (s *ConfigStore) reloadFromDiskUnlocked(ctx context.Context) error {
 	if err := s.reloadMu.LockContext(ctx); err != nil {
 		return err
@@ -554,40 +539,46 @@ func (s *ConfigStore) buildAndPublishReload(ctx context.Context, expectedUncerta
 		workspacePath:       workspacePath,
 		overrides:           prev.overrides,
 	}
-
-	s.publishMu.Lock()
-	defer s.publishMu.Unlock()
-	s.diskWriteMu.Lock()
-	defer s.diskWriteMu.Unlock()
-
-	if candidateInputsChanged(s.workingDir, configPaths, externalPaths, fingerprints) {
-		return errReloadDiskChanged
-	}
-
-	// Rebase: if the currently-published snapshot is no longer `prev`
-	// (some copy-on-write mutator published in the meantime), carry its
-	// runtime overrides onto the candidate instead of the ones captured
-	// before the unlocked build — otherwise this publish would silently
-	// revert that concurrent change. cfg/resolver/
-	// knownProviders/loadedPaths/workspacePath are NOT rebased: they are
-	// reload's own authoritative fresh-from-disk output regardless of
-	// what changed concurrently in memory.
-	cur := s.loadSnapshot()
-	if cur.generation != prev.generation {
-		candidate.overrides = cur.overrides
-	}
-	candidate.mcpRevisions = mcpRevisionDiff(cur.mcpRevisions, cur.config, candidate.config, cur.mcpInputs, candidate.mcpInputs)
-	// Command substitutions can change without environment changes.
-	if candidate.resolverFingerprint != cur.resolverFingerprint || candidate.resolverDynamic || cur.resolverDynamic {
-		candidate.resolverRevision = cur.resolverRevision + 1
-	} else {
-		candidate.resolverRevision = cur.resolverRevision
-	}
 	stalenessPaths := configAndMCPStalenessPaths(lookupConfigCandidates(s.workingDir), s.workingDir)
 	stalenessPaths = append(stalenessPaths, workspacePath, s.globalDataPath)
 	candidate.trackedConfigPaths, candidate.snapshots = reloadStalenessState(stalenessPaths, fingerprints)
 
-	s.publishLocked(candidate)
+	s.diskWriteMu.Lock()
+	diskWriteGeneration := s.diskWriteGeneration
+	s.diskWriteMu.Unlock()
+
+	if hook := s.reloadBeforeFinalInputCheck; hook != nil {
+		hook()
+	}
+	if candidateInputsChanged(s.workingDir, configPaths, externalPaths, fingerprints) {
+		return errReloadDiskChanged
+	}
+	if hook := s.reloadBeforePublish; hook != nil {
+		hook()
+	}
+
+	if publishErr := func() error {
+		s.publishMu.Lock()
+		defer s.publishMu.Unlock()
+		s.diskWriteMu.Lock()
+		defer s.diskWriteMu.Unlock()
+
+		cur := s.loadSnapshot()
+		if s.diskWriteGeneration != diskWriteGeneration || cur.generation != prev.generation {
+			return errReloadDiskChanged
+		}
+		candidate.mcpRevisions = mcpRevisionDiff(cur.mcpRevisions, cur.config, candidate.config, cur.mcpInputs, candidate.mcpInputs)
+		// Command substitutions can change without environment changes.
+		if candidate.resolverFingerprint != cur.resolverFingerprint || candidate.resolverDynamic || cur.resolverDynamic {
+			candidate.resolverRevision = cur.resolverRevision + 1
+		} else {
+			candidate.resolverRevision = cur.resolverRevision
+		}
+		s.publishLocked(candidate)
+		return nil
+	}(); publishErr != nil {
+		return publishErr
+	}
 	s.clearMCPUncertainty(expectedUncertainty)
 
 	return nil

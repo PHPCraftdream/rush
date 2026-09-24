@@ -139,6 +139,9 @@ type ConfigStore struct {
 	// always publishMu → diskWriteMu (when both are held), and
 	// diskWriteMu is always released before autoReload is called.
 	diskWriteMu sync.Mutex
+	// diskWriteGeneration changes under diskWriteMu after each committed
+	// config write, fencing reloads that verified disk before that write.
+	diskWriteGeneration uint64
 
 	// reloadMu serialises the CANDIDATE-BUILD phase of a disk reload
 	// (loadFromConfigPaths, workspace merge, configureProviders — which
@@ -152,9 +155,9 @@ type ConfigStore struct {
 	// ran (up to resolveTimeout).
 	//
 	// reloadFromDiskUnlocked takes reloadMu, builds a full candidate snapshot
-	// from local variables ONLY (no store mutation), then — still holding
-	// reloadMu — takes publishMu and diskWriteMu just long enough to verify
-	// fingerprints, capture staleness, and publish. autoReload uses TryLock on reloadMu (not publishMu) to
+	// from local variables ONLY (no store mutation), verifies fingerprints
+	// without publication locks, then briefly takes publishMu and diskWriteMu
+	// to validate generations and publish. autoReload uses TryLock on reloadMu (not publishMu) to
 	// preserve the original "skip a redundant reload when one is already
 	// in progress" behaviour without reintroducing the publishMu hold
 	// during the expensive candidate-build phase.
@@ -198,6 +201,13 @@ type ConfigStore struct {
 	// reloadResolverExpander is a white-box test seam for cancellation during
 	// candidate construction. It is nil on production stores.
 	reloadResolverExpander Expander
+
+	// reloadBeforePublish is a white-box seam between final input verification
+	// and publication.
+	reloadBeforePublish func()
+
+	// reloadBeforeFinalInputCheck is a white-box seam before final disk I/O.
+	reloadBeforeFinalInputCheck func()
 }
 
 // loadSnapshot returns the current published snapshot. It never returns
