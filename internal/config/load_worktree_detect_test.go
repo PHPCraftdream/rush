@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/platform"
 	"github.com/stretchr/testify/require"
 )
 
@@ -52,7 +53,7 @@ func TestLoad_WalkLimitsKeyedOnWorkingDirNotProcessCWD(t *testing.T) {
 	// isolated from the test process's own location (mirrors the
 	// git-init pattern used by load_discovery_test.go).
 	gitRepo := t.TempDir()
-	gitInit := exec.CommandContext(t.Context(), "git", "init", "-q")
+	gitInit := platform.Command(t.Context(), "git", "init", "-q")
 	gitInit.Dir = gitRepo
 	require.NoError(t, gitInit.Run())
 

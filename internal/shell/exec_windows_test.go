@@ -7,12 +7,12 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/platform"
 	"github.com/stretchr/testify/require"
 	"mvdan.cc/sh/v3/interp"
 )
@@ -48,7 +48,7 @@ func runLevel1Helper() {
 	if err != nil {
 		os.Exit(1)
 	}
-	cmd := exec.CommandContext(context.Background(), self)
+	cmd := platform.Command(context.Background(), self)
 	cmd.Env = append(os.Environ(), helperEnvVar+"=level2")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

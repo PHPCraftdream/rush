@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/PHPCraftdream/rush/internal/platform"
 )
 
 // This file implements a real second-process test harness for
@@ -121,7 +123,7 @@ func spawnLockHolder(t *testing.T, dataDir, sessionID string, holdSeconds int) *
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	cmd := exec.CommandContext(ctx, exe, "-test.run=^TestHelperLockHold$")
+	cmd := platform.Command(ctx, exe, "-test.run=^TestHelperLockHold$")
 	cmd.Env = append(os.Environ(),
 		helperProcessEnv+"=1",
 		"RUSH_LOCK_HELPER_DATADIR="+dataDir,

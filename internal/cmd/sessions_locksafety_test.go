@@ -32,6 +32,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/platform"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
@@ -206,9 +207,9 @@ func TestProbeThenKillHolder_UnknownProbeError_FailsClosed(t *testing.T) {
 	var child *exec.Cmd
 	switch runtime.GOOS {
 	case "windows":
-		child = exec.CommandContext(context.Background(), "cmd.exe", "/c", "ping", "-n", "30", "127.0.0.1")
+		child = platform.Command(context.Background(), "ping", "-n", "30", "127.0.0.1")
 	default:
-		child = exec.CommandContext(context.Background(), "sleep", "30")
+		child = platform.Command(context.Background(), "sleep", "30")
 	}
 	require.NoError(t, child.Start())
 	t.Cleanup(func() {

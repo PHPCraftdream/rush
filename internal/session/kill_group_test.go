@@ -12,6 +12,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/PHPCraftdream/rush/internal/platform"
 )
 
 // spawnTreeChild starts `sh -c "sleep 60 & echo $! > pidFile; wait"`
@@ -22,7 +24,7 @@ import (
 func spawnTreeChild(t *testing.T, setpgid bool) (*exec.Cmd, string) {
 	t.Helper()
 	pidFile := filepath.Join(t.TempDir(), "grandchild.pid")
-	cmd := exec.CommandContext(context.Background(), "sh", "-c",
+	cmd := platform.Command(context.Background(), "sh", "-c",
 		"sleep 60 & echo $! > '"+pidFile+"'; wait")
 	if setpgid {
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}

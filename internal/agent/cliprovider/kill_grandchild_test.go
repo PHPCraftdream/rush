@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/platform"
 )
 
 // grandchildSleepDuration is deliberately non-round and grep-unique:
@@ -112,9 +113,9 @@ func TestStreamKillTerminatesGrandchild(t *testing.T) {
 			t.Cleanup(func() {
 				if grandpid > 0 {
 					if runtime.GOOS == "windows" {
-						_ = exec.CommandContext(context.Background(), "taskkill", "/F", "/PID", fmt.Sprintf("%d", grandpid)).Run()
+						_ = platform.Command(context.Background(), "taskkill", "/F", "/PID", fmt.Sprintf("%d", grandpid)).Run()
 					} else {
-						_ = exec.CommandContext(context.Background(), shell, flag, fmt.Sprintf("kill -9 %d 2>/dev/null || true", grandpid)).Run()
+						_ = platform.Command(context.Background(), shell, flag, fmt.Sprintf("kill -9 %d 2>/dev/null || true", grandpid)).Run()
 					}
 				}
 				if runtime.GOOS == "windows" {
@@ -123,7 +124,7 @@ func TestStreamKillTerminatesGrandchild(t *testing.T) {
 					// read, winpid mismatch). Matched by the unique
 					// duration literal, NEVER by bare name — see the
 					// comment on grandchildSleepDuration.
-					_ = exec.CommandContext(context.Background(), "powershell", "-NoProfile", "-Command",
+					_ = platform.Command(context.Background(), "powershell", "-NoProfile", "-Command",
 						`Get-CimInstance Win32_Process -Filter "Name='sleep.exe'" | Where-Object { $_.CommandLine -like '*`+grandchildSleepDuration+`*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`).Run()
 				}
 				waitForRemovable(t, workingDir, 5*time.Second)

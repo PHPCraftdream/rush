@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/platform"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -108,9 +109,9 @@ func TestForceKillHolder_AlreadyDead(t *testing.T) {
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "windows":
-		cmd = exec.CommandContext(context.Background(), "cmd.exe", "/c", "exit", "0")
+		cmd = platform.Command(context.Background(), "cmd.exe", "/c", "exit", "0")
 	default:
-		cmd = exec.CommandContext(context.Background(), "true")
+		cmd = platform.Command(context.Background(), "true")
 	}
 	require.NoError(t, cmd.Run())
 	kr := forceKillHolder("", "", cmd.Process.Pid, time.Second)
@@ -203,9 +204,9 @@ func TestForceKillHolder_LiveProcess(t *testing.T) {
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "windows":
-		cmd = exec.CommandContext(context.Background(), "cmd.exe", "/c", "ping", "-n", "30", "127.0.0.1")
+		cmd = platform.Command(context.Background(), "ping", "-n", "30", "127.0.0.1")
 	default:
-		cmd = exec.CommandContext(context.Background(), "sleep", "30")
+		cmd = platform.Command(context.Background(), "sleep", "30")
 	}
 	if err := cmd.Start(); err != nil {
 		t.Skipf("cannot spawn child: %v", err)
@@ -337,7 +338,7 @@ func spawnKillTestLockHolder(t *testing.T, dataDir, sessionID string, reapInBack
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	c := exec.CommandContext(ctx, exe, "-test.run=^TestHelperKillTestLockHold$")
+	c := platform.Command(ctx, exe, "-test.run=^TestHelperKillTestLockHold$")
 	c.Env = append(os.Environ(),
 		killTestHelperProcessEnv+"=1",
 		"RUSH_SESSIONS_KILL_LOCK_HELPER_DATADIR="+dataDir,

@@ -7,11 +7,11 @@ import (
 	"context"
 	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/platform"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -380,11 +380,11 @@ func denyCurrentUserWrite(t *testing.T, dir string) {
 	user := os.Getenv("USERNAME")
 	require.NotEmpty(t, user, "USERNAME must be set to build the icacls deny rule")
 
-	out, err := exec.CommandContext(t.Context(), "icacls", dir, "/deny", user+":(WD,AD)").CombinedOutput()
+	out, err := platform.Command(t.Context(), "icacls", dir, "/deny", user+":(WD,AD)").CombinedOutput()
 	require.NoErrorf(t, err, "icacls deny failed: %s", out)
 
 	t.Cleanup(func() {
-		out, err := exec.CommandContext(context.Background(), "icacls", dir, "/remove:d", user).CombinedOutput()
+		out, err := platform.Command(context.Background(), "icacls", dir, "/remove:d", user).CombinedOutput()
 		if err != nil {
 			t.Logf("icacls restore failed (dir may already be gone): %s: %v", out, err)
 		}

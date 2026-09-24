@@ -6,13 +6,13 @@ import (
 	"context"
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"charm.land/fantasy"
 
+	"github.com/PHPCraftdream/rush/internal/platform"
 	"github.com/PHPCraftdream/rush/internal/shell"
 )
 
@@ -100,7 +100,7 @@ func requireRealBash(t *testing.T) string {
 	if err != nil {
 		t.Skipf("no non-WSL bash on PATH; skipping WSL-first regression test: %v", err)
 	}
-	if err := exec.CommandContext(t.Context(), path, "-c", "exit 0").Run(); err != nil {
+	if err := platform.Command(t.Context(), path, "-c", "exit 0").Run(); err != nil {
 		t.Skipf("bash %q is not runnable; skipping WSL-first regression test: %v", path, err)
 	}
 	return path

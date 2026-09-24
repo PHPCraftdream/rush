@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/platform"
 	"github.com/stretchr/testify/require"
 )
 
@@ -111,7 +112,7 @@ func TestLookupConfigs_BoundedByProject(t *testing.T) {
 
 		worktree := filepath.Join(parent, "worktree")
 		require.NoError(t, os.Mkdir(worktree, 0o755))
-		gitInit := exec.CommandContext(t.Context(), "git", "init", "-q")
+		gitInit := platform.Command(t.Context(), "git", "init", "-q")
 		gitInit.Dir = worktree
 		require.NoError(t, gitInit.Run())
 
@@ -249,7 +250,7 @@ func TestProjectSkillsDir_MonorepoGitRoot(t *testing.T) {
 		}
 
 		root := t.TempDir()
-		gitInit := exec.CommandContext(t.Context(), "git", "init", "-q")
+		gitInit := platform.Command(t.Context(), "git", "init", "-q")
 		gitInit.Dir = root
 		require.NoError(t, gitInit.Run())
 
@@ -299,7 +300,7 @@ func TestProjectSkillsDir_MonorepoGitRoot(t *testing.T) {
 		}
 
 		root := t.TempDir()
-		gitInit := exec.CommandContext(t.Context(), "git", "init", "-q")
+		gitInit := platform.Command(t.Context(), "git", "init", "-q")
 		gitInit.Dir = root
 		require.NoError(t, gitInit.Run())
 

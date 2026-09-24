@@ -14,19 +14,20 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// spawnGuardExemptions lists the only non-test files under internal/ that
+// spawnGuardExemptions lists the only files under internal/ that
 // may reach for os/exec's process-spawning API directly. Every entry needs
 // a reason: an unexplained exemption is how the Windows console-window fix
 // silently rotted the first time.
 //
 // Paths are slash-separated and relative to the repository root.
 var spawnGuardExemptions = map[string]string{
-	"internal/platform/command.go":   "the sanctioned constructor itself — it IS the wrapper every other call site must use",
-	"internal/shell/exec_unix.go":    "mirrors interp.DefaultExecHandler with an exec.Cmd literal (needs Path, not LookPath semantics); sets SysProcAttr explicitly via isolateProcess",
-	"internal/shell/exec_windows.go": "mirrors interp.DefaultExecHandler with an exec.Cmd literal (needs Path, not LookPath semantics); hardens it by calling HideConsoleWindow on the literal",
+	"internal/platform/command.go":                  "the sanctioned constructor itself — it IS the wrapper every other call site must use",
+	"internal/platform/hide_window_windows_test.go": "tests HideConsoleWindow directly on an exec.Cmd before any spawn",
+	"internal/shell/exec_unix.go":                   "mirrors interp.DefaultExecHandler with an exec.Cmd literal (needs Path, not LookPath semantics); sets SysProcAttr explicitly via isolateProcess",
+	"internal/shell/exec_windows.go":                "mirrors interp.DefaultExecHandler with an exec.Cmd literal (needs Path, not LookPath semantics); hardens it by calling HideConsoleWindow on the literal",
 }
 
-// TestNoUnhardenedProcessSpawns fails when any non-test file under
+// TestNoUnhardenedProcessSpawns fails when any file under
 // internal/ spawns a child process without going through
 // [Command].
 //
@@ -37,7 +38,8 @@ var spawnGuardExemptions = map[string]string{
 // focus. The fix is one process-creation flag, and it was originally
 // applied by convention: "remember to call platform.HideConsoleWindow at
 // every new call site". Conventions do not survive refactors, and nothing
-// in the test suite could tell whether the convention still held.
+// in the test suite could tell whether the convention still held. Test
+// helpers need the same guard when go test runs without a console.
 //
 // The guarded surface is deliberately narrow — exec.Command,
 // exec.CommandContext and exec.Cmd composite literals. exec.LookPath and
@@ -55,7 +57,7 @@ func TestNoUnhardenedProcessSpawns(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+		if d.IsDir() || !strings.HasSuffix(path, ".go") {
 			return nil
 		}
 

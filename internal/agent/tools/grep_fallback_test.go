@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/platform"
 	"github.com/stretchr/testify/require"
 )
 
@@ -126,7 +127,7 @@ func TestScanThenWaitPattern_DrainsOnScanErrorInsteadOfHanging(t *testing.T) {
 	require.NoError(t, os.WriteFile(path, []byte(b.String()), 0o644))
 
 	runOnce := func(drainOnScanError bool) error {
-		cmd := exec.CommandContext(t.Context(), rgPath, "--json", "NEEDLE_OVERSIZED_LINE", path)
+		cmd := platform.Command(t.Context(), rgPath, "--json", "NEEDLE_OVERSIZED_LINE", path)
 		stdout, err := cmd.StdoutPipe()
 		require.NoError(t, err)
 		require.NoError(t, cmd.Start())

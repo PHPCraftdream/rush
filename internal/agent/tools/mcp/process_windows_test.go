@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/platform"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
@@ -52,7 +53,7 @@ func runLevel1Helper() {
 	if err != nil {
 		os.Exit(1)
 	}
-	cmd := exec.CommandContext(context.Background(), self)
+	cmd := platform.Command(context.Background(), self)
 	cmd.Env = append(os.Environ(), helperEnvVar+"=level2")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -104,7 +105,7 @@ func TestConfigureStdioProcess_CancelTreeKillsOrphanedGrandchild_Windows(t *test
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	cmd := exec.CommandContext(ctx, self)
+	cmd := platform.Command(ctx, self)
 	cmd.Env = append(os.Environ(), helperEnvVar+"=level1")
 	configureStdioProcess(cmd)
 

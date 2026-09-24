@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/platform"
 	"github.com/stretchr/testify/require"
 )
 
@@ -119,7 +120,7 @@ func TestConfig_setDefaults(t *testing.T) {
 		// Make worktree a real git repo so the boundary detection
 		// resolves to it, mirroring what happens with linked worktrees
 		// in real usage.
-		gitInit := exec.CommandContext(t.Context(), "git", "init", "-q")
+		gitInit := platform.Command(t.Context(), "git", "init", "-q")
 		gitInit.Dir = worktree
 		require.NoError(t, gitInit.Run())
 

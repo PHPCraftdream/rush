@@ -4,10 +4,10 @@ package session
 
 import (
 	"context"
-	"os/exec"
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/platform"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/windows"
 )
@@ -18,7 +18,7 @@ import (
 // the cleanup kill.
 func spawnLiveVictim(t *testing.T) int {
 	t.Helper()
-	cmd := exec.CommandContext(context.Background(), "cmd.exe", "/c", "ping", "-n", "30", "127.0.0.1")
+	cmd := platform.Command(context.Background(), "ping", "-n", "30", "127.0.0.1")
 	if err := cmd.Start(); err != nil {
 		t.Skipf("cannot spawn victim process: %v", err)
 	}

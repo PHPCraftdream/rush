@@ -6,11 +6,12 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"testing"
 	"time"
+
+	"github.com/PHPCraftdream/rush/internal/platform"
 )
 
 // TestReplaceFile_LiveWindowsProcess is the integration test called for in
@@ -48,7 +49,7 @@ func TestReplaceFile_LiveWindowsProcess(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, dst, stopFile)
+	cmd := platform.Command(ctx, dst, stopFile)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		t.Fatalf("stdout pipe: %v", err)
@@ -147,7 +148,7 @@ func buildSleeper(t *testing.T, outPath string) {
 	}
 	pkgDir := filepath.Join(filepath.Dir(thisFile), "testdata", "sleeper")
 
-	cmd := exec.CommandContext(t.Context(), "go", "build", "-o", outPath, ".")
+	cmd := platform.Command(t.Context(), "go", "build", "-o", outPath, ".")
 	cmd.Dir = pkgDir
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("building testdata/sleeper failed: %v\n%s", err, out)

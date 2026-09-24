@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/platform"
 	"github.com/stretchr/testify/require"
 )
 
@@ -30,7 +31,7 @@ func spawnGroupChild(t *testing.T, ownGroup bool) (*exec.Cmd, <-chan error) {
 	// CommandContext, not Command: the linter forbids the context-less form,
 	// and the test context is the right one — if the test ends early the
 	// child dies with it instead of outliving the run for 43 seconds.
-	cmd := exec.CommandContext(t.Context(), "sleep", "43.17")
+	cmd := platform.Command(t.Context(), "sleep", "43.17")
 	if ownGroup {
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	}

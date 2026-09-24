@@ -5,6 +5,8 @@ import (
 	"os/exec"
 	"runtime"
 	"testing"
+
+	"github.com/PHPCraftdream/rush/internal/platform"
 )
 
 // TestKillProcess_Live spawns a real long-running child, asks KillProcess
@@ -14,9 +16,9 @@ func TestKillProcess_Live(t *testing.T) {
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "windows":
-		cmd = exec.CommandContext(context.Background(), "cmd.exe", "/c", "ping", "-n", "30", "127.0.0.1")
+		cmd = platform.Command(context.Background(), "ping", "-n", "30", "127.0.0.1")
 	default:
-		cmd = exec.CommandContext(context.Background(), "sleep", "30")
+		cmd = platform.Command(context.Background(), "sleep", "30")
 	}
 	if err := cmd.Start(); err != nil {
 		t.Skipf("cannot spawn child process for kill test: %v", err)
@@ -45,9 +47,9 @@ func TestKillProcess_AlreadyDead(t *testing.T) {
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "windows":
-		cmd = exec.CommandContext(context.Background(), "cmd.exe", "/c", "exit", "0")
+		cmd = platform.Command(context.Background(), "cmd.exe", "/c", "exit", "0")
 	default:
-		cmd = exec.CommandContext(context.Background(), "true")
+		cmd = platform.Command(context.Background(), "true")
 	}
 	if err := cmd.Run(); err != nil {
 		t.Skipf("cannot run trivial child: %v", err)

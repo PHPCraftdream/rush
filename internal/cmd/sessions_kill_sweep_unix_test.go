@@ -49,6 +49,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/platform"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
@@ -111,7 +112,7 @@ func spawnSweepTestNewOwner(t *testing.T, dataDir, sessionID string) *killTestLo
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	c := exec.CommandContext(ctx, exe, "-test.run=^TestHelperSweepTestNewOwner$")
+	c := platform.Command(ctx, exe, "-test.run=^TestHelperSweepTestNewOwner$")
 	c.Env = append(os.Environ(),
 		sweepTestNewOwnerHelperEnv+"=1",
 		"RUSH_SESSIONS_SWEEP_NEWOWNER_DATADIR="+dataDir,
@@ -138,7 +139,7 @@ func spawnSweepGroupLeader(t *testing.T) *exec.Cmd {
 	t.Helper()
 	// Not a round duration: matches on command line must not catch other
 	// packages' concurrently running sleep children.
-	cmd := exec.CommandContext(t.Context(), "sleep", "43.17")
+	cmd := platform.Command(t.Context(), "sleep", "43.17")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	require.NoError(t, cmd.Start())
 
@@ -213,7 +214,7 @@ func spawnCrashTestLockHolder(t *testing.T, dataDir, sessionID string) *killTest
 	exe, err := os.Executable()
 	require.NoError(t, err)
 
-	c := exec.CommandContext(t.Context(), exe, "-test.run=^TestHelperCrashTestLockHold$")
+	c := platform.Command(t.Context(), exe, "-test.run=^TestHelperCrashTestLockHold$")
 	c.Env = append(os.Environ(),
 		crashTestHelperProcessEnv+"=1",
 		"RUSH_SESSIONS_CRASH_LOCK_HELPER_DATADIR="+dataDir,

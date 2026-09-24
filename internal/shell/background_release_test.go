@@ -148,7 +148,9 @@ func TestBackgroundShell_BufferReleaseTimer_FiresWithoutCleanup(t *testing.T) {
 	ctx := t.Context()
 	workingDir := t.TempDir()
 	manager := newBackgroundShellManager()
-	manager.bufferRetention = 100 * time.Millisecond
+	// Leave room for the assertion after completion on a busy Windows host;
+	// the timer must still release buffers without another shell command.
+	manager.bufferRetention = time.Second
 
 	bgShell, err := manager.Start(ctx, workingDir, nil, "echo hi", "")
 	require.NoError(t, err)
@@ -162,12 +164,12 @@ func TestBackgroundShell_BufferReleaseTimer_FiresWithoutCleanup(t *testing.T) {
 	require.False(t, bgShell.bufReleased.Load(),
 		"buffers must not be released immediately after completion")
 
-	// Now wait for the timer to fire — well past the 100ms retention but far
+	// Now wait for the timer to fire — past the shortened retention but far
 	// less than the default 15 minutes. Crucially, we do NOT call Cleanup
 	// or start any new bash task: the timer is the sole release trigger.
 	require.Eventually(t, func() bool {
 		return bgShell.bufReleased.Load()
-	}, 3*time.Second, 20*time.Millisecond,
+	}, 5*time.Second, 20*time.Millisecond,
 		"buffer-release timer must fire without a Cleanup call or new bash task")
 
 	// TotalWrittenBytes must still report the real total after release

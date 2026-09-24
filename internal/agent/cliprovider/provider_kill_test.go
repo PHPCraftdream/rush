@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/platform"
 )
 
 // ── Bug 1 regression: bounded wait() must not hang when a grandchild holds stderr ──
@@ -167,15 +168,15 @@ func TestStreamWaitBoundedOnGrandchildHoldsStderr(t *testing.T) {
 				// (e.g. the process already exited, or a platform where
 				// `ps -a` has no WINPID column).
 				winPid := pid
-				if out, perr := exec.CommandContext(context.Background(), shell, flag,
+				if out, perr := platform.Command(context.Background(), shell, flag,
 					fmt.Sprintf(`ps -a 2>/dev/null | awk -v p=%d '$1==p{print $4}'`, pid)).Output(); perr == nil {
 					if resolved, serr := strconv.Atoi(strings.TrimSpace(string(out))); serr == nil && resolved > 0 {
 						winPid = resolved
 					}
 				}
-				_ = exec.CommandContext(context.Background(), kill, "/F", "/T", "/PID", fmt.Sprintf("%d", winPid)).Run()
+				_ = platform.Command(context.Background(), kill, "/F", "/T", "/PID", fmt.Sprintf("%d", winPid)).Run()
 			} else {
-				_ = exec.CommandContext(context.Background(), shell, flag, fmt.Sprintf("kill %d 2>/dev/null || true", pid)).Run()
+				_ = platform.Command(context.Background(), shell, flag, fmt.Sprintf("kill %d 2>/dev/null || true", pid)).Run()
 			}
 		}
 	}
@@ -374,7 +375,7 @@ func TestStreamKillUsesTreeKillStillTerminatesChild(t *testing.T) {
 	if alive.Load() {
 		t.Errorf("child pid %d still alive after kill() — tree-kill regressed", pid)
 		// best-effort cleanup
-		_ = exec.CommandContext(context.Background(), shell, flag, fmt.Sprintf("kill -9 %d 2>/dev/null || true", pid)).Run()
+		_ = platform.Command(context.Background(), shell, flag, fmt.Sprintf("kill -9 %d 2>/dev/null || true", pid)).Run()
 	}
 
 	// Root-caused (confirmed via `wmic process where "name='sleep.exe'" get
@@ -411,7 +412,7 @@ func TestStreamKillUsesTreeKillStillTerminatesChild(t *testing.T) {
 	// so matching on command line requires this test's own duration to stay
 	// the unusual, grep-unique value declared above — do not "clean up" it
 	// back to a round number.
-	_ = exec.CommandContext(context.Background(), "powershell", "-NoProfile", "-Command",
+	_ = platform.Command(context.Background(), "powershell", "-NoProfile", "-Command",
 		`Get-CimInstance Win32_Process -Filter "Name='sleep.exe'" | Where-Object { $_.CommandLine -like '*`+orphanSleepDuration+`*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`).Run()
 
 	waitForRemovable(t, workingDir, 5*time.Second)
@@ -425,14 +426,14 @@ func processAlive(pid int) bool {
 	}
 	if runtime.GOOS == "windows" {
 		// taskkill /? exit code logic: we probe via tasklist.
-		out, err := exec.CommandContext(context.Background(), "tasklist", "/FI", fmt.Sprintf("PID eq %d", pid), "/NH").Output()
+		out, err := platform.Command(context.Background(), "tasklist", "/FI", fmt.Sprintf("PID eq %d", pid), "/NH").Output()
 		if err != nil {
 			return false
 		}
 		return strings.Contains(string(out), fmt.Sprintf("%d", pid))
 	}
 	// POSIX: signal 0 probes existence.
-	_ = exec.CommandContext(context.Background(), "kill", "-0", fmt.Sprintf("%d", pid)).Run()
+	_ = platform.Command(context.Background(), "kill", "-0", fmt.Sprintf("%d", pid)).Run()
 	// kill -0 returns 0 if alive, non-zero otherwise; Run returns nil on 0 exit.
-	return exec.CommandContext(context.Background(), "kill", "-0", fmt.Sprintf("%d", pid)).Run() == nil
+	return platform.Command(context.Background(), "kill", "-0", fmt.Sprintf("%d", pid)).Run() == nil
 }
