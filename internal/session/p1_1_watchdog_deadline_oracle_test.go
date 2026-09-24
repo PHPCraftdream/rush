@@ -64,8 +64,6 @@ import (
 // a case that occurs in practice; the gap assertion below states the
 // invariant rather than assuming it.
 func TestP1_1_WatchdogDeadlineStoredIsTruePreRoundingValue(t *testing.T) {
-	t.Parallel()
-	limitParallel(t)
 	sess, svc, _ := setupTestSessionWithDB(t, "test-session-p1-1-deadline-oracle")
 	ctx := t.Context()
 
@@ -84,21 +82,19 @@ func TestP1_1_WatchdogDeadlineStoredIsTruePreRoundingValue(t *testing.T) {
 	type observation struct {
 		stored, trueDeadline, roundedDeadline time.Time
 	}
-	obsCh := make(chan observation, 8)
+	obsCh := make(chan observation, 1)
 
-	// TTL chosen large enough that a renewal tick has time to land, short
-	// enough the test stays fast. The rounding gap (roundedDeadline minus
-	// trueDeadline) depends only on the sub-second wall-clock phase the
-	// renewal happens to land on, not on TTL size, so no particular TTL is
-	// required to observe it — but a TTL of a few seconds makes it very
-	// likely at least one of several renewal ticks lands with a non-trivial
-	// fractional second, and the test only needs ONE observation.
+	// This value oracle needs one successful renewal. A 3s TTL gave the
+	// first DB call only about 0.5s before the watchdog on a loaded Windows
+	// runner. Keep the test serial and give the DB call a real safety window;
+	// the rounding assertion does not depend on TTL or margin.
 	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
-		Sessions:       svc,
-		Coordinator:    coord,
-		PumpInstanceID: "p1-1-deadline-oracle-pump",
-		TestTick:       func() time.Duration { return 10 * time.Millisecond },
-		TestLeaseTTL:   3 * time.Second,
+		Sessions:                      svc,
+		Coordinator:                   coord,
+		PumpInstanceID:                "p1-1-deadline-oracle-pump",
+		TestTick:                      func() time.Duration { return 10 * time.Millisecond },
+		TestLeaseTTL:                  15 * time.Second,
+		TestLeaseWatchdogSafetyMargin: time.Second,
 		TestOnWatchdogDeadlineStored: func(stored, trueDeadline, roundedDeadline time.Time) {
 			select {
 			case obsCh <- observation{stored: stored, trueDeadline: trueDeadline, roundedDeadline: roundedDeadline}:
@@ -113,20 +109,13 @@ func TestP1_1_WatchdogDeadlineStoredIsTruePreRoundingValue(t *testing.T) {
 		return coord.entryCount.Load() > 0
 	}, 5*time.Second, 20*time.Millisecond)
 
-	// Collect a handful of observations across several renewal ticks (TTL/3
-	// interval => renewals roughly every second) so the assertion below is
-	// not betting everything on the very first tick happening to land on a
-	// wall-clock instant with a large fractional second.
+	// One observation is enough: time.Now carries sub-second precision, and
+	// the assertion compares values captured from the same renewal tick.
 	var observations []observation
-	deadline := time.After(6 * time.Second)
-collect:
-	for len(observations) < 3 {
-		select {
-		case obs := <-obsCh:
-			observations = append(observations, obs)
-		case <-deadline:
-			break collect
-		}
+	select {
+	case obs := <-obsCh:
+		observations = append(observations, obs)
+	case <-time.After(16 * time.Second):
 	}
 	close(blockCh)
 
