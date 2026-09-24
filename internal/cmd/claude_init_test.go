@@ -330,6 +330,7 @@ func TestClaudeInit_CreatesWrushCommand(t *testing.T) {
 	assert.Contains(t, got, "/wrush")
 	assert.Contains(t, got, "git worktree add")
 	assert.Contains(t, got, "Mandatory: an isolated worktree, every time")
+	assert.Contains(t, got, "Commit the transferred changes in the primary branch")
 }
 
 func TestClaudeInit_WrushCommandOverwritesWithSentinel(t *testing.T) {
@@ -374,6 +375,7 @@ func TestClaudeInit_CreatesWcrushCommand(t *testing.T) {
 	assert.Contains(t, got, "/wcrush")
 	assert.Contains(t, got, "opt-in only")
 	assert.Contains(t, got, "## Mandatory: two phases")
+	assert.Contains(t, got, "commits only those changes before removing the worktree")
 	assert.Contains(t, got, "read the `wrush.md` file in this")
 	assert.NotContains(t, got, "NAME PROVISIONAL")
 }

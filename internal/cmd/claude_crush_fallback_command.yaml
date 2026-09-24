@@ -12,6 +12,8 @@ blocks:
     gemini: *limited_opening
     grok: *limited_opening
     qwen: *limited_opening
+  - codex: |-
+      If the operator directs another `rush run`, including a retry or resumed session, pass `--codex-thread-id <thread-id>` when `CODEX_THREAD_ID` and `codex queue` are available so Rush returns completion to this Codex thread. Read the ID from the environment; do not invent one. Without the callback, omit the flag and wait for the run through the normal fallback described by the rush Skill.
   - common: |-
       Nothing else counts. A slow run, a transient 5xx, a `Process restarted`, your own `--timeout`/`--idle-timeout` firing, a confusing error — all of those mean **re-run `rush run` against the same `--session`**, not switch.
   - claude: |-

@@ -252,7 +252,10 @@ const (
 		"   PRIMARY checkout so results survive the eventual worktree removal."
 	codexWrushLaunchGuidance = "Launch `rush run` with Codex's `exec_command`, setting its workdir\n" +
 		"   to the worktree — every edit, git op, and test the sub-agent runs\n" +
-		"   stays inside that tree. If `exec_command` returns a `session_id`,\n" +
+		"   stays inside that tree. When `CODEX_THREAD_ID` and `codex queue`\n" +
+		"   are available, pass `--codex-thread-id <thread-id>` on this run\n" +
+		"   and every retry; read the ID from the environment, never invent\n" +
+		"   it. If `exec_command` returns a `session_id`,\n" +
 		"   retain it and follow the sibling rush skill's completion guidance:\n" +
 		"   use the `codex queue` wake marker when available, and only block\n" +
 		"   on `write_stdin` when that callback is unavailable. Redirect\n" +
@@ -268,6 +271,14 @@ const (
 		"  returns a `session_id`, retain it and wait with blocking\n" +
 		"  `write_stdin` until the test process completes.\n" +
 		"  `--codex-thread-id` applies to `rush run`, not these test commands."
+	claudeWcrushResumeBlock = "```\n" +
+		"rush run --role smart --session <same id> \"<permission and what to run>\"\n" +
+		"```"
+	codexWcrushResumeBlock = "When `CODEX_THREAD_ID` and `codex queue` are available, read the thread ID from the environment and resume with:\n\n" +
+		"```\n" +
+		"rush run --role smart --session <same id> --codex-thread-id <thread-id> \"<permission and what to run>\"\n" +
+		"```\n\n" +
+		"Pass this flag on the initial phase-1 run and every phase-2 resume so Rush returns completion to this Codex thread. Without the callback, omit the flag and wait on the retained process handle."
 )
 
 // toCodexWrushSkillMD converts the canonical Claude /wrush body to Codex's
@@ -314,6 +325,10 @@ func toCodexWcrushSkillMD(description, body string) (string, error) {
 	}
 	var err error
 	body, err = replaceCodexGuidance(body, claudeWcrushBackgroundGuidance, codexWcrushBackgroundGuidance)
+	if err != nil {
+		return "", err
+	}
+	body, err = replaceCodexGuidance(body, claudeWcrushResumeBlock, codexWcrushResumeBlock)
 	if err != nil {
 		return "", err
 	}

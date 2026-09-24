@@ -72,16 +72,21 @@ primary checkout.
    `cp`/`Edit` for non-overlapping files, hand-reconcile when a
    concurrent `/wrush` task touched the same file. Prefer this over
    `git merge`/`git pull` unless the user explicitly asks for that.
-6. **Remove the worktree and branch** (`git worktree remove`, `git
+6. **Commit the transferred changes in the primary branch** after
+   reviewing the staged diff. Stage only this task's files; leave
+   unrelated user changes alone. The sub-agent never commits, and
+   this step does not authorize a push. Skip an empty commit when
+   nothing was transferred.
+7. **Remove the worktree and branch** (`git worktree remove`, `git
    branch -D`) once the merge is committed, unless told to keep it.
    Since the worktree lives under `<repo-root>/worktrees/`, this is
    always a same-repo, ignored-directory cleanup — never a path outside
    the repo.
-7. Parallel `/wrush` tasks follow rush.md's parallel-run rules
+8. Parallel `/wrush` tasks follow rush.md's parallel-run rules
    unchanged (disjoint scope, sibling names, no git writes, scoped
    tests) — isolation is just compulsory instead of conditional now.
 
-**Not finished until steps 5 and 6 both happened.** An unmerged or
+**Not finished until steps 5–7 happened.** An unmerged or
 un-removed worktree is unfinished work, not a deliverable — it won't
 show up in the branch the user is looking at, and it litters `git
 worktree list` for the next session. Don't report done, and don't

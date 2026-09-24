@@ -297,11 +297,12 @@ func TestToCodexWcrushSkillMD_RewritesAllWrushSkillReferences(t *testing.T) {
 	assert.Equal(t, strings.Count(body, "wrush.md"), strings.Count(got, "../wrush/SKILL.md"))
 	assert.Contains(t, got, "../wrush/SKILL.md's checklist")
 	assert.Contains(t, got, "name: wcrush")
+	assert.Contains(t, got, "--codex-thread-id <thread-id>")
 }
 
 func TestToCodexWcrushSkillMD_AcceptsLineWrappedCanonicalReference(t *testing.T) {
 	const body = "Read the `wrush.md` file in this\nsame directory in full before starting.\n" +
-		claudeWcrushBackgroundGuidance
+		claudeWcrushBackgroundGuidance + "\n" + claudeWcrushResumeBlock
 
 	got, err := toCodexWcrushSkillMD("description", body)
 	require.NoError(t, err)

@@ -100,8 +100,10 @@ here so neither side of the split can claim it didn't know:
 - **The worktree mandate stands**: a dedicated worktree under
   `<repo-root>/worktrees/`, in-tree and gitignored, every invocation,
   solo or parallel. Never the primary checkout.
-- **Never commit or push**; the orchestrator reviews the diff and
-  merges.
+- **The sub-agent never commits or pushes**; the orchestrator reviews
+  the diff, transfers verified changes to the primary branch, and
+  commits only those changes before removing the worktree. Pushing
+  still requires a separate operator request.
 - **OOM discipline belongs to phase 2** — the other half of the same
   bargain: `-parallel 2` for heavy packages, never two heavy runs at
   once, long runs backgrounded via the Bash tool's
@@ -114,8 +116,8 @@ here so neither side of the split can claim it didn't know:
   `web/dist/.gitkeep`; no `ReportFindings` tool; no `code-review`
   skill.
 
-**Not finished until the worktree is merged and removed** — wrush.md
-steps 5 and 6, verbatim. An unmerged or un-removed worktree is
+**Not finished until changes are merged, committed, and the worktree
+removed** — wrush.md steps 5–7. An unmerged or un-removed worktree is
 unfinished work, not a deliverable.
 
 ## Task

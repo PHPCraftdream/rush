@@ -122,6 +122,7 @@ func TestCodexInit_CreatesFallbackSkill(t *testing.T) {
 	assert.Contains(t, got, "name: rush-fallback")
 	assert.Contains(t, got, "cannot persist an armed fallback")
 	assert.Contains(t, got, "ask the operator")
+	assert.Contains(t, got, "--codex-thread-id <thread-id>")
 	for _, claudeOnly := range []string{"CronCreate", "CronDelete", "TaskCreate", "TaskUpdate", "TaskList", "Agent({", "Bash"} {
 		assert.NotContains(t, got, claudeOnly)
 	}
@@ -150,6 +151,8 @@ func TestCodexInit_CreatesWrushSkillFromCanonicalTemplate(t *testing.T) {
 	assert.Contains(t, got, "session_id")
 	assert.Contains(t, got, "use the `codex queue` wake marker when available")
 	assert.Contains(t, got, "on `write_stdin` when that callback is unavailable")
+	assert.Contains(t, got, "--codex-thread-id <thread-id>")
+	assert.Contains(t, got, "Commit the transferred changes in the primary branch")
 }
 
 func TestCodexInit_CreatesWcrushSkillFromCanonicalTemplate(t *testing.T) {
@@ -177,7 +180,32 @@ func TestCodexInit_CreatesWcrushSkillFromCanonicalTemplate(t *testing.T) {
 	assert.Contains(t, got, "long phase-2 tests")
 	assert.Contains(t, got, "blocking")
 	assert.Contains(t, got, "`--codex-thread-id` applies to `rush run`, not these test commands")
-	assert.NotContains(t, got, "codex queue")
+	assert.Contains(t, got, "--codex-thread-id <thread-id>")
+	assert.Contains(t, got, "commits only those changes before removing the worktree")
+	assert.Contains(t, got, "codex queue")
+}
+
+func TestInstalledCodexSkillsDifferFromClaudeAndReturnCompletion(t *testing.T) {
+	skillsDir := t.TempDir()
+	require.NoError(t, installCodexSkills(skillsDir))
+
+	rushClaude, err := claudeSlashCommandContent()
+	require.NoError(t, err)
+	fallbackClaude, err := claudeFallbackCommandContent()
+	require.NoError(t, err)
+	claudeContent := map[string]string{
+		"rush":          rushClaude,
+		"rush-fallback": fallbackClaude,
+		"wrush":         claudeWrushCommandContent(),
+		"wcrush":        claudeWcrushCommandContent(),
+	}
+	for name, claude := range claudeContent {
+		codex, readErr := os.ReadFile(filepath.Join(skillsDir, name, "SKILL.md"))
+		require.NoError(t, readErr)
+		assert.NotEqual(t, claude, string(codex), "%s must have target-specific instructions", name)
+		assert.Contains(t, string(codex), "--codex-thread-id <thread-id>", "%s must return Rush completion to Codex", name)
+		assert.NotContains(t, claude, "--codex-thread-id", "%s Claude variant must not mention Codex callbacks", name)
+	}
 }
 
 func TestCodexInit_SlashCommandOverwritesWithSentinel(t *testing.T) {
