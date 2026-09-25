@@ -5,9 +5,15 @@ package session
 import (
 	"errors"
 	"os"
+	"time"
 
 	"golang.org/x/sys/windows"
 )
+
+func touchLockFile(f *os.File, now time.Time) error {
+	fileTime := windows.NsecToFiletime(now.UnixNano())
+	return windows.SetFileTime(windows.Handle(f.Fd()), nil, &fileTime, &fileTime)
+}
 
 // tryLockFile takes an exclusive non-blocking lock on the entire file
 // using Windows LockFileEx. Returns an error (non-nil) if another

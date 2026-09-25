@@ -43,6 +43,19 @@ func TestTryAcquireSessionLock_HappyPath(t *testing.T) {
 		"after release, the lock file/sidecar must not carry the old holder's PID")
 }
 
+func TestTouchLockFileWhileHeld(t *testing.T) {
+	dir := t.TempDir()
+	lk, err := TryAcquireSessionLock(dir, "touch")
+	require.NoError(t, err)
+	defer func() { require.NoError(t, lk.Release()) }()
+
+	want := time.Now().Add(time.Second).Truncate(time.Millisecond)
+	require.NoError(t, touchLockFile(lk.f, want))
+	info, err := os.Stat(lk.Path)
+	require.NoError(t, err)
+	assert.WithinDuration(t, want, info.ModTime(), time.Millisecond)
+}
+
 func TestTryAcquireSessionLock_ReleaseAllowsReacquire(t *testing.T) {
 	dir := t.TempDir()
 	lk1, err := TryAcquireSessionLock(dir, "audit-A")
@@ -143,6 +156,36 @@ func TestSessionLockBusyError_Format(t *testing.T) {
 	wrapped := wrap(e)
 	assert.True(t, errors.As(wrapped, &target))
 	assert.Equal(t, 1234, target.HolderPID)
+}
+
+func TestPermissionDeniedOpenReportsBusyOnlyForAnActiveLock(t *testing.T) {
+	t.Run("active lock", func(t *testing.T) {
+		dataDir := t.TempDir()
+		lk, err := TryAcquireSessionLock(dataDir, "permission-denied")
+		require.NoError(t, err)
+		defer func() { require.NoError(t, lk.Release()) }()
+
+		busyErr, ok := busyIfPermissionDeniedOpenHasActiveLock(lk.Path, os.ErrPermission)
+		require.True(t, ok)
+		require.Equal(t, os.Getpid(), busyErr.HolderPID)
+	})
+
+	t.Run("stale live pid without lock", func(t *testing.T) {
+		dataDir := t.TempDir()
+		path := SessionLockPath(dataDir, "permission-denied")
+		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+		require.NoError(t, os.WriteFile(path, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0o644))
+
+		busyErr, ok := busyIfPermissionDeniedOpenHasActiveLock(path, os.ErrPermission)
+		require.False(t, ok)
+		require.Nil(t, busyErr)
+	})
+
+	t.Run("non-permission error", func(t *testing.T) {
+		busyErr, ok := busyIfPermissionDeniedOpenHasActiveLock(filepath.Join(t.TempDir(), "missing.lock"), errors.New("io failure"))
+		require.False(t, ok)
+		require.Nil(t, busyErr)
+	})
 }
 
 // wrap helper: simulates a caller fmt.Errorf'ing around the busy error.
@@ -808,4 +851,127 @@ func TestInspectSessionLock_StatErrorDistinctFromAbsent(t *testing.T) {
 	require.Nil(t, absent.StatErr, "StatErr must be nil for verifiably absent lock (os.IsNotExist)")
 	require.False(t, absent.Exists, "Exists must be false for absent lock")
 	require.False(t, absent.Live, "Live must be false for absent lock")
+}
+
+func TestReleaseHandsCloseToHeartbeatWhenTouchHangs(t *testing.T) {
+	dir := t.TempDir()
+
+	entered := make(chan struct{}, 1)
+	unblock := make(chan struct{})
+	touchErr := make(chan error, 1)
+	original := touchLockFileFn
+	touchLockFileFn = func(f *os.File, now time.Time) error {
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+		<-unblock
+		err := original(f, now)
+		touchErr <- err
+		return err
+	}
+	defer func() { touchLockFileFn = original }()
+
+	lk, err := TryAcquireSessionLockWithOptions(dir, "handoff", WithHeartbeatInterval(1*time.Millisecond))
+	require.NoError(t, err)
+
+	lk.RecordActivity()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("heartbeat never entered the blocked touch")
+	}
+
+	released := make(chan error, 1)
+	go func() { released <- lk.Release() }()
+	select {
+	case err := <-released:
+		require.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("Release blocked on the hung touch; bounded handoff not taken")
+	}
+	require.True(t, lk.heartbeatHandoff.Load(), "Release must hand unlock+close to the heartbeat finalizer when the touch is stuck")
+
+	close(unblock)
+	select {
+	case err := <-touchErr:
+		require.NoError(t, err, "the in-flight touch must complete against the still-open handle (no stale-handle close)")
+	case <-time.After(5 * time.Second):
+		t.Fatal("blocked touch never completed after unblock")
+	}
+
+	require.Eventually(t, func() bool {
+		lk2, err := TryAcquireSessionLock(dir, "handoff")
+		if err != nil {
+			return false
+		}
+		return lk2.Release() == nil
+	}, 5*time.Second, 20*time.Millisecond, "OS lock must become reacquirable after the heartbeat-finalizer handoff unlock+close")
+}
+
+func TestPermissionDeniedOpenEndToEnd_BusyWhileHolderActive(t *testing.T) {
+	dataDir := t.TempDir()
+	lk, err := TryAcquireSessionLock(dataDir, "perm-e2e")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.Chmod(lk.Path, 0o644) })
+	defer func() { require.NoError(t, lk.Release()) }()
+
+	require.NoError(t, os.Chmod(lk.Path, 0o444))
+	probe, probeErr := os.OpenFile(lk.Path, os.O_RDWR, 0)
+	if probeErr == nil {
+		_ = probe.Close()
+		t.Skip("writable open unexpectedly succeeded; cannot simulate permission-denied open (root or capability user)")
+	}
+	if !os.IsPermission(probeErr) {
+		t.Skipf("writable open failed with %v, not a permission error; cannot simulate the ACL path", probeErr)
+	}
+
+	_, err = TryAcquireSessionLock(dataDir, "perm-e2e")
+	var busyErr *SessionLockBusyError
+	require.Error(t, err)
+	require.True(t, errors.As(err, &busyErr), "permission-denied open with an active holder must report busy, got %v", err)
+	require.Equal(t, os.Getpid(), busyErr.HolderPID)
+}
+
+func TestPermissionDeniedOpenEndToEnd_NotBusyWithoutHolder(t *testing.T) {
+	dataDir := t.TempDir()
+	path := SessionLockPath(dataDir, "perm-e2e-2")
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+	require.NoError(t, os.WriteFile(path, []byte("1234\n"), 0o644))
+	t.Cleanup(func() { _ = os.Chmod(path, 0o644) })
+
+	require.NoError(t, os.Chmod(path, 0o444))
+	probe, probeErr := os.OpenFile(path, os.O_RDWR, 0)
+	if probeErr == nil {
+		_ = probe.Close()
+		t.Skip("writable open unexpectedly succeeded; cannot simulate permission-denied open (root or capability user)")
+	}
+	if !os.IsPermission(probeErr) {
+		t.Skipf("writable open failed with %v, not a permission error; cannot simulate the ACL path", probeErr)
+	}
+
+	_, err := TryAcquireSessionLock(dataDir, "perm-e2e-2")
+	require.Error(t, err)
+	var busyErr *SessionLockBusyError
+	require.False(t, errors.As(err, &busyErr), "a read-only lock file with no active holder is an ACL/attribute problem, not busy: %v", err)
+	require.True(t, errors.Is(err, os.ErrPermission), "error must stay a permission error via %w, got %v", err)
+}
+
+func TestReleaseConcurrentWithHeartbeatStress(t *testing.T) {
+	dir := t.TempDir()
+	for i := 0; i < 30; i++ {
+		lk, err := TryAcquireSessionLockWithOptions(dir, fmt.Sprintf("stress-%d", i), WithHeartbeatInterval(1*time.Millisecond))
+		require.NoError(t, err)
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 100; j++ {
+				lk.RecordActivity()
+			}
+		}()
+		lk.RecordActivity()
+		wg.Wait()
+		require.NoError(t, lk.Release())
+	}
 }

@@ -6,7 +6,12 @@ import (
 	"errors"
 	"os"
 	"syscall"
+	"time"
 )
+
+func touchLockFile(f *os.File, now time.Time) error {
+	return os.Chtimes(f.Name(), now, now)
+}
 
 // tryLockFile takes an exclusive non-blocking advisory lock using
 // flock(2). Returns an error (non-nil, typically EWOULDBLOCK) if

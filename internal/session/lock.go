@@ -63,6 +63,18 @@ const (
 	// so a genuinely stuck cleanup still doesn't meaningfully regress that
 	// guarantee.
 	releaseMetadataCleanupBound = 50 * time.Millisecond
+
+	// heartbeatHandoffBound bounds how long Release() waits for the
+	// heartbeat goroutine to exit after close(stop) before it hands the
+	// in-flight touch's handle (unlockFile + Close) to the heartbeat's
+	// own finalizer instead of closing it itself. It must stay well under
+	// TestReleaseGate_1's 500ms margin together with
+	// releaseMetadataCleanupBound: on the normal path Release waits up to
+	// this bound for the heartbeat to exit and then up to
+	// releaseMetadataCleanupBound for metadata cleanup, so their sum is
+	// the worst-case synchronous tail Release can add and must remain a
+	// comfortable fraction of that 500ms guarantee.
+	heartbeatHandoffBound = 50 * time.Millisecond
 )
 
 // LockStaleDuration is the exported view of lockStaleDuration, for callers
@@ -196,6 +208,20 @@ type SessionLock struct {
 	// heartbeat goroutine. Zero means "use the production interval" — see
 	// WithHeartbeatInterval.
 	heartbeatInterval time.Duration
+	// heartbeatExited is closed by the heartbeat goroutine's finalizer
+	// once the heartbeat loop has returned — i.e. after any in-flight
+	// touchLockFile completed — signalling it is safe to touch the file
+	// handle. Release waits on it (bounded by heartbeatHandoffBound)
+	// before unlocking/closing the handle itself; see Release.
+	heartbeatExited chan struct{}
+	// heartbeatHandoff is set by Release only when that bounded wait
+	// times out, meaning the heartbeat is still blocked inside a touch
+	// syscall on the handle. Once set, the heartbeat's finalizer — not
+	// Release — performs unlockFile + Close, so the handle is never
+	// closed out from under an in-flight touch. The heartbeat reads it
+	// strictly before closing heartbeatExited; see Release's
+	// exactly-one-closer argument.
+	heartbeatHandoff atomic.Bool
 }
 
 // SessionLockBusyError is returned by TryAcquireSessionLock when the
@@ -397,6 +423,19 @@ var acquireMidStampSeam func(path string)
 func acquireSessionLockFileWithOptions(path string, opts []LockOption) (*SessionLock, error) {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
+		if busyErr, ok := busyIfPermissionDeniedOpenHasActiveLock(path, err); ok {
+			return nil, busyErr
+		}
+		// Not a live exclusive holder (busyIfPermissionDeniedOpenHasActive
+		// found no lock contention on the read-only probe). For a permission
+		// failure specifically that is usually mundane — a stale read-only
+		// attribute or an ACL denying write, with NO active holder — and is
+		// emphatically not "busy". Say so while keeping the ErrPermission
+		// chain intact via %w, so callers can still tell it apart from a
+		// live holder without an errors.As busy match.
+		if os.IsPermission(err) {
+			return nil, fmt.Errorf("TryAcquireSessionLock: open lock file %s: lock file not writable (check ACL/read-only attribute); no active holder: %w", path, err)
+		}
 		return nil, fmt.Errorf("TryAcquireSessionLock: open lock file: %w", err)
 	}
 	if err := tryLockFile(f); err != nil {
@@ -458,18 +497,20 @@ func acquireSessionLockFileWithOptions(path string, opts []LockOption) (*Session
 	// locks`) — see the package doc on SessionLock. It is never used to
 	// decide whether a lock may be reclaimed.
 	now := time.Now()
-	if err := os.Chtimes(path, now, now); err != nil {
+	if err := touchLockFile(f, now); err != nil {
 		slog.Warn("session lock: failed to set initial heartbeat mtime",
 			"path", path, "err", err)
 	}
 
 	stop := make(chan struct{})
+	heartbeatExited := make(chan struct{})
 	lk := &SessionLock{
 		Path:                  path,
 		HolderPID:             myPID,
 		generation:            generation,
 		f:                     f,
 		stop:                  stop,
+		heartbeatExited:       heartbeatExited,
 		clearHolderMetadataFn: clearHolderMetadata, // Default implementation
 	}
 	// Apply any lock options (e.g., test injection of blocking cleanup)
@@ -479,7 +520,7 @@ func acquireSessionLockFileWithOptions(path string, opts []LockOption) (*Session
 	if lk.heartbeatInterval <= 0 {
 		lk.heartbeatInterval = lockHeartbeatInterval
 	}
-	go heartbeat(path, stop, &lk.active, lk.heartbeatInterval)
+	go heartbeat(f, path, stop, &lk.active, lk.heartbeatInterval, heartbeatExited, &lk.heartbeatHandoff)
 
 	return lk, nil
 }
@@ -489,9 +530,17 @@ func acquireSessionLockFileWithOptions(path string, opts []LockOption) (*Session
 //
 // P0 fix (2026-08-09): The order of operations is now:
 //  1. Stop the heartbeat goroutine (close(l.stop)).
-//  2. Unlock the OS-level lock (unlockFile) - this is the critical correctness-critical step.
-//  3. Close the file descriptor (f.Close).
-//  4. Clear diagnostic metadata (clearHolderMetadata) - best-effort cleanup that can hang.
+//  2. Wait, bounded by heartbeatHandoffBound, for the heartbeat goroutine to
+//     exit. In the overwhelmingly common case it exits promptly (a healthy
+//     local disk completes a touch in microseconds) and Release proceeds to
+//     unlock/close itself. If it is still blocked inside a heartbeat touch
+//     syscall on the file handle (slow/hung SetFileTime or Chtimes on
+//     AV/SMB) at the bound, Release hands unlock+close to the heartbeat's
+//     finalizer and returns — "unlock in progress", never lost (see the
+//     exactly-one-closer argument in the function body).
+//  3. Unlock the OS-level lock (unlockFile) - this is the critical correctness-critical step.
+//  4. Close the file descriptor (f.Close).
+//  5. Clear diagnostic metadata (clearHolderMetadata) - best-effort cleanup that can hang.
 //     IMPORTANT: This now runs in a BACKGROUND goroutine. The function returns
 //     immediately after unlock/close, ensuring that callers (mailbox state machine)
 //     are not blocked by potentially-infinite filesystem I/O.
@@ -538,6 +587,78 @@ func (l *SessionLock) Release() error {
 			close(l.stop)
 		}
 		if l.f != nil {
+			// Step 2: give the heartbeat goroutine a bounded window to exit
+			// now that stop is closed. It closes heartbeatExited only after
+			// its loop returned — hence after any in-flight touch on the
+			// handle completed — so observing heartbeatExited closed is
+			// proof the handle is now safe to unlock/close here. If that
+			// window elapses while the heartbeat is still blocked inside a
+			// touch syscall (slow/hung SetFileTime/Chtimes on AV/SMB),
+			// closing the handle here would race a live syscall — a stale
+			// handle / handle-reuse hazard on Windows. In that case hand
+			// unlock+close to the heartbeat's finalizer and return; the OS
+			// unlock still happens, just a few syscalls later.
+			if l.heartbeatExited != nil {
+				select {
+				case <-l.heartbeatExited:
+					// Fast path: the heartbeat already exited; safe to
+					// unlock + close below.
+				case <-time.After(heartbeatHandoffBound):
+					select {
+					case <-l.heartbeatExited:
+						// Exited within the re-check window; fall through.
+					default:
+						// Hand off: the heartbeat is still inside a touch
+						// syscall on the handle; closing it here would race.
+						// The heartbeat's finalizer now owns unlock+close.
+						//
+						// Exactly-one-closer argument (Release vs. the
+						// heartbeat finalizer): the heartbeat reads handoff
+						// STRICTLY BEFORE it closes heartbeatExited, so if
+						// Release's re-check still observes heartbeatExited
+						// open, the heartbeat's later read of handoff happens
+						// after Release's Store(true) below and must observe
+						// true — the heartbeat then unlocks+closes in its
+						// finalizer. If instead the heartbeat already read
+						// handoff as false, that read strictly precedes its
+						// close(exited), so Release's re-check observes the
+						// channel closed and Release itself closes the file.
+						// Either way exactly one of the two ever closes the
+						// file, and — because the heartbeat only reaches its
+						// finalizer after the loop returned, i.e. after any
+						// in-flight touch completed — never while a touch is
+						// in flight.
+						//
+						// The handoff can only DELAY, never lose, the OS
+						// unlock: the heartbeat finalizer runs unlockFile +
+						// Close as soon as the blocked touch drains, and even
+						// if the whole process is killed first the kernel
+						// releases flock/LockFileEx on process death, so a
+						// new owner's real OS-lock attempt still succeeds.
+						// Release returning here therefore means "unlock in
+						// progress by the heartbeat goroutine", which fast
+						// re-acquirers observe as a transient busy error for
+						// the handful of syscalls the stuck touch needs to
+						// drain — matching the retry-loop tolerance documented
+						// on clearHolderMetadata.
+						l.heartbeatHandoff.Store(true)
+						path := l.Path
+						generation := l.generation
+						cleanupFn := l.clearHolderMetadataFn
+						cleanupDoneSignal := l.cleanupDone
+						go func() {
+							<-l.heartbeatExited
+							if cleanupFn != nil {
+								cleanupFn(path, generation)
+							}
+							if cleanupDoneSignal != nil {
+								close(cleanupDoneSignal)
+							}
+						}()
+						return
+					}
+				}
+			}
 			// P0 fix: unlock and close FIRST, before any diagnostic cleanup that can hang.
 			// The OS lock and file descriptor are the correctness-critical resources -
 			// releasing/closing them is the priority. Metadata cleanup is best-effort.
@@ -759,63 +880,6 @@ func clearHolderMetadata(path string, expectedGeneration string) {
 	}
 	if err := os.Remove(generationSidecarPath(path)); err != nil && !os.IsNotExist(err) {
 		slog.Warn("session lock: failed to remove generation sidecar on release", "path", path, "err", err)
-	}
-}
-
-// heartbeat touches the lock file every lockHeartbeatInterval, but ONLY
-// if RecordActivity was called on the owning SessionLock at least once
-// since the previous tick. Stops when done is closed.
-//
-// This is diagnostics only ("something might be wrong if this goes
-// stale") — see the package doc on SessionLock and acquireSessionLockFile.
-// It must never be treated as the source of truth for whether the lock
-// may be reclaimed; only actually winning the OS lock decides that.
-//
-// Gating on activity is itself a deliberate design requirement, not an
-// optimization: a session that is fully wedged (stuck goroutine, no
-// forward progress) must NOT keep presenting a live-looking mtime
-// forever — that was a diagnostic false positive. See RecordActivity.
-// Skipping a tick because there was no activity is a normal, expected
-// outcome, not an error condition, so it does not touch failCount or log
-// anything.
-//
-// Chtimes errors (when a touch IS attempted) are logged (not silently
-// dropped) but do not stop the heartbeat loop and do not mark us as dead
-// — a transient/read-only-FS Chtimes failure while we are alive and
-// still hold the OS lock must never cause another process to conclude it
-// can steal the session. Logging is throttled so a persistently-failing
-// filesystem doesn't spam the log once every tick for the lifetime of a
-// long session.
-func heartbeat(path string, done <-chan struct{}, active *atomic.Bool, interval time.Duration) {
-	t := time.NewTicker(interval)
-	defer t.Stop()
-	var failCount atomic.Int64
-	for {
-		select {
-		case <-done:
-			return
-		case <-t.C:
-			// Consume ("swap to false") the activity recorded since the
-			// last tick. This is the sole gate: no activity this window
-			// means no Chtimes this tick, and the window resets either
-			// way for the next tick.
-			if !active.Swap(false) {
-				continue
-			}
-			now := time.Now()
-			if err := os.Chtimes(path, now, now); err != nil {
-				n := failCount.Add(1)
-				// Log the 1st, 2nd, 4th, 8th, 16th... failure so a
-				// persistent failure doesn't flood the log but is still
-				// visible quickly and periodically.
-				if n == 1 || n&(n-1) == 0 {
-					slog.Warn("session lock: heartbeat failed to touch lock file mtime",
-						"path", path, "err", err, "consecutive_failures", n)
-				}
-			} else {
-				failCount.Store(0)
-			}
-		}
 	}
 }
 
