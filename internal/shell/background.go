@@ -608,6 +608,33 @@ func (m *BackgroundShellManager) ListOwned(sessionID string) []string {
 	return ids
 }
 
+// ActiveOwned counts the jobs owned by sessionID that are STILL RUNNING,
+// i.e. started but not yet completed. It is the per-owner counterpart of
+// ActiveJobs, and it exists so a caller can ask "does this session still own
+// live background work?" without walking ListOwned and re-reading each job's
+// completedAt itself.
+//
+// A completedAt of 0 means the job's goroutine has not finished yet (see the
+// completion path in start, where completedAt is set right before close(done)),
+// so those are exactly the jobs that must still be waited on. Jobs already
+// completed but retained for result querying do NOT count — they are terminal
+// by definition and hold no concurrency slot.
+func (m *BackgroundShellManager) ActiveOwned(sessionID string) int {
+	if sessionID == "" {
+		return 0
+	}
+	active := 0
+	for _, shell := range m.shells.Seq2() {
+		if shell.SessionID != sessionID {
+			continue
+		}
+		if shell.completedAt.Load() <= 0 {
+			active++
+		}
+	}
+	return active
+}
+
 // Cleanup removes completed jobs that have been finished for more than the
 // retention period, and — for completed jobs past the shorter
 // BufferRetentionMinutes but not yet past full retention — releases their

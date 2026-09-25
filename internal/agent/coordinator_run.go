@@ -157,6 +157,18 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 		return nil, errors.New("runInternal: pinned is required; caller must resolve session models first")
 	}
 
+	// Re-check trigger (iv): a run on this session has now returned. A
+	// delegated sub-agent's completion is parked while its session is
+	// mid-turn (see subAgentWorkTerminal's negative busy gate), so this is
+	// where a deferred release is guaranteed to be re-evaluated. It covers
+	// child auto-resume turns started by notifyAsyncCompletion /
+	// notifyBackgroundJobDone, which no other trigger observes.
+	//
+	// MUST NOT hold anything: it only re-evaluates a release gate, and the
+	// child's mailbox and OS lock are already released by this point (see
+	// runOwned's deferred abandonOwnershipWithHandoff).
+	defer c.noteSubAgentChildRunEnded(sessionID)
+
 	// R8-3: capture the DIRECT caller's call-result recorder, then detach
 	// it for everything downstream -- a nested runInternal reached through
 	// this turn's tools (a sub-agent's child session shares ctx) must never

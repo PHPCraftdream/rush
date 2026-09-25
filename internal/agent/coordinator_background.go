@@ -49,6 +49,12 @@ func (c *coordinator) notifyAsyncCompletion(completion AsyncCompletion) {
 	ctx = context.WithValue(ctx, backgroundJobNoticeCtxKey{}, true)
 	ctx = WithCallOrigin(ctx, message.OriginWeb)
 	go runAutoResumeRecovered(ctx, completion.SessionID, completion.ToolCallID, func(ctx context.Context) (*fantasy.AgentResult, error) {
+		// Re-check trigger (ii), web flavor: this closure IS the turn that
+		// the completed job woke. Re-evaluate any delegation parked for
+		// this session only once this run has returned, so a release can
+		// never land in the window between "job done" and "this claim on
+		// the session's mailbox". Runs even when Run fails or queues.
+		defer c.noteSubAgentChildRunEnded(completion.SessionID)
 		return c.Run(ctx, completion.SessionID, FormatAsyncCompletion(completion))
 	})
 }
@@ -108,6 +114,12 @@ func (c *coordinator) notifyBackgroundJobDone(sessionID string, sh *shell.Backgr
 		ctx := context.WithValue(context.Background(), autoResumedCtxKey{}, true)
 		ctx = context.WithValue(ctx, backgroundJobNoticeCtxKey{}, true)
 		go runAutoResumeRecovered(ctx, sessionID, sh.ID, func(ctx context.Context) (*fantasy.AgentResult, error) {
+			// Re-check trigger (iii): a job owned by this session just
+			// became terminal and this closure is the turn it woke.
+			// Re-evaluate any delegation parked for this session once this
+			// run has returned, so the release cannot fire in the window
+			// between "job done" and "child claimed its next turn".
+			defer c.noteSubAgentChildRunEnded(sessionID)
 			return c.Run(ctx, sessionID, summary)
 		})
 		return
@@ -125,6 +137,8 @@ func (c *coordinator) notifyBackgroundJobDone(sessionID string, sh *shell.Backgr
 			"shell_id", sh.ID,
 			"err", err)
 	}
+	// Re-check trigger (iii), Phase 3 branch: same reasoning as above.
+	c.noteSubAgentChildRunEnded(sessionID)
 }
 
 // runAutoResumeRecovered runs runFn (normally a closure over c.Run for the

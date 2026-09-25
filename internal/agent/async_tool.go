@@ -107,7 +107,7 @@ func (t *asyncTool) run(ctx context.Context, cancel context.CancelFunc, sessionI
 			completion.IsError = true
 			completion.Content = fmt.Sprintf("async %s panicked: %v", t.name, recovered)
 		}
-		t.coordinator.asyncJobs.finish(completion)
+		t.finalize(ctx, sessionID, childSessionID, completion)
 	}()
 	if t.name == tools.BashToolName {
 		ctx = tools.WithoutBackgroundCallback(ctx)
@@ -131,6 +131,34 @@ func (t *asyncTool) run(ctx context.Context, cancel context.CancelFunc, sessionI
 		t.awaitShell(ctx, sessionID, response, &completion)
 	}
 	completion.Content = tools.TruncateOutput(strings.TrimSpace(completion.Content))
+}
+
+// finalize delivers one async tool's completion. For the delegation tools
+// with a child session id (`agent`, `agentic_fetch`) the child's Run()
+// returning is only the end of a model TURN: the child may have started its
+// own async tools or background shells and merely yielded. Those are
+// parked (see subagent_outcome.go) and released exactly once when the
+// child's own work is terminal, so the parent is never told "finished"
+// over content that says the child is still waiting.
+//
+// Every other tool — bash, run_command — has no child session and no
+// self-directed follow-on work, so its completion is finished immediately,
+// exactly as before.
+//
+// ctx is this tool's own job context, which preserves the caller's origin
+// value; CallOriginFrom(ctx) is exactly what asyncJobs.start was told.
+func (t *asyncTool) finalize(ctx context.Context, sessionID, childSessionID string, completion AsyncCompletion) {
+	if t.coordinator == nil || t.coordinator.asyncJobs == nil {
+		return
+	}
+	if childSessionID != "" && (t.name == AgentToolName || t.name == tools.AgenticFetchToolName) {
+		t.coordinator.parkSubAgentOutcome(
+			childSessionID, sessionID, completion.ToolCallID, t.name,
+			CallOriginFrom(ctx) == message.OriginCLI, completion,
+		)
+		return
+	}
+	t.coordinator.asyncJobs.finish(completion)
 }
 
 func (t *asyncTool) awaitShell(ctx context.Context, sessionID string, response fantasy.ToolResponse, completion *AsyncCompletion) {

@@ -246,6 +246,10 @@ type coordinator struct {
 	notify      pubsub.Publisher[notify.Notification]
 	background  *shell.BackgroundShellManager
 	asyncJobs   *asyncJobRegistry
+	// subAgentOutcomes holds delegated sub-agent completions that must wait
+	// for the child's own async work to drain before the parent is told the
+	// delegation is done. See subagent_outcome.go.
+	subAgentOutcomes *subAgentOutcomeRegistry
 
 	// mcpOwner is this config's MCP lifecycle owner (task #923). Nil keeps
 	// the legacy process-current-owner resolution via the package functions.
@@ -381,7 +385,12 @@ func NewCoordinator(
 		consecutiveAutoResumes: make(map[string]int),
 		modelCache:             newBoundedModelPairCache(modelCacheMaxEntries),
 	}
+	// The web-done callback is notifyAsyncCompletion verbatim, exactly as
+	// before. The parked sub-agent outcome re-check triggers are wired
+	// separately, in installSubAgentOutcomeHooks below.
 	c.asyncJobs = newAsyncJobRegistry(c.notifyAsyncCompletion)
+	c.subAgentOutcomes = newSubAgentOutcomeRegistry(c)
+	c.installSubAgentOutcomeHooks()
 
 	agentCfg, ok := cfg.Config().Agents[config.AgentCoder]
 	if !ok || agentCfg.ID == "" {

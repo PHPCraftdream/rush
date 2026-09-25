@@ -43,6 +43,13 @@ const interruptInjectTick = 3 * time.Second
 const interruptTickOperationTimeout = 10 * time.Second
 
 func (c *coordinator) Cancel(sessionID string) {
+	// Release delegations this session spawned AS CANCELED before
+	// asyncJobs.cancelSession drops their job rows, or the single final
+	// notice would have nowhere to land. Both directions are needed:
+	// sessionID is usually the PARENT whose tool call parked the entry, but
+	// Cancel is also called on a child session id directly.
+	c.releaseSubAgentOutcomesForParentCancel(sessionID)
+	c.releaseSubAgentOutcomesForChildCancel(sessionID)
 	if c.asyncJobs != nil {
 		c.asyncJobs.cancelSession(sessionID)
 	}
@@ -50,6 +57,10 @@ func (c *coordinator) Cancel(sessionID string) {
 }
 
 func (c *coordinator) CancelAll() (stillBusy bool) {
+	// Same ordering as Cancel: drain parked delegations first, then drop the
+	// job rows, then close the park registry (which also stops its fallback
+	// ticker).
+	c.releaseAllSubAgentOutcomesCanceled()
 	if c.asyncJobs != nil {
 		c.asyncJobs.close()
 	}

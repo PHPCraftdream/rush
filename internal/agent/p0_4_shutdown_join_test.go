@@ -50,14 +50,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// testTitleJoinGrace/testCancelAllGrace override the production 5s
+// testTitleJoinGrace/testCancelAllGrace override the production
 // titleJoinGrace/CancelAll-grace constants for this file's and
 // p343_cancelall_join_test.go's tests via SessionAgentOptions
 // (task #454, following up on task #450's test-speed investigation).
-// 1s is a genuine 5x speedup, not a "smallest value that still barely
-// passes" one — see task #445/M7's history in this codebase for why a
-// wide margin is deliberately preferred over the tightest one that
-// happens to pass locally.
+// 1s is a genuine speedup over both production bounds (10s title, 5s
+// cancel-all), not a "smallest value that still barely passes" one — see
+// task #445/M7's history in this codebase for why a wide margin is
+// deliberately preferred over the tightest one that happens to pass
+// locally.
 //
 // testCancelAllGraceLowerBound is the proportional equivalent of the
 // original "4 of 5 real seconds" lower-bound assertion (80% of grace),
