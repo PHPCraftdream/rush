@@ -69,16 +69,12 @@ func TestCodexInit_CreatesSlashCommand(t *testing.T) {
 	assert.Contains(t, got, "rush run")
 	assert.Contains(t, got, "--role smart")
 	assert.Contains(t, got, "name: rush")
-	assert.Contains(t, got, "--codex-thread-id")
-	assert.NotContains(t, got, "Bash({")
-	assert.NotContains(t, got, "run_in_background")
-	assert.Contains(t, got, "codex queue")
+	assert.NotContains(t, got, "--codex-thread-id")
 	assert.Contains(t, got, "session_id")
 	assert.Contains(t, got, "leave the chat free after launch")
 	assert.Contains(t, got, "Do not call `write_stdin` merely to wait for Rush")
 	assert.Contains(t, got, "For a run-only or read-only task, the result and worktree cleanup suffice")
 	assert.Contains(t, got, "after an ordinary complete result")
-	assert.Contains(t, got, "Without the callback, use a blocking `write_stdin` wait")
 	assert.NotContains(t, got, "retain that handle and wait for the process with blocking")
 	assert.NotContains(t, got, "confirm the process ended using the retained `session_id`")
 	assert.NotContains(t, got, "background execution option")
@@ -122,7 +118,7 @@ func TestCodexInit_CreatesFallbackSkill(t *testing.T) {
 	assert.Contains(t, got, "name: rush-fallback")
 	assert.Contains(t, got, "cannot persist an armed fallback")
 	assert.Contains(t, got, "ask the operator")
-	assert.Contains(t, got, "--codex-thread-id <thread-id>")
+	assert.NotContains(t, got, "--codex-thread-id")
 	for _, claudeOnly := range []string{"CronCreate", "CronDelete", "TaskCreate", "TaskUpdate", "TaskList", "Agent({", "Bash"} {
 		assert.NotContains(t, got, claudeOnly)
 	}
@@ -149,9 +145,8 @@ func TestCodexInit_CreatesWrushSkillFromCanonicalTemplate(t *testing.T) {
 	assert.NotContains(t, got, "Bash")
 	assert.Contains(t, got, "exec_command")
 	assert.Contains(t, got, "session_id")
-	assert.Contains(t, got, "use the `codex queue` wake marker when available")
-	assert.Contains(t, got, "on `write_stdin` when that callback is unavailable")
-	assert.Contains(t, got, "--codex-thread-id <thread-id>")
+	assert.Contains(t, got, "retain it and block on `write_stdin` until the run finishes")
+	assert.NotContains(t, got, "--codex-thread-id <thread-id>")
 	assert.Contains(t, got, "Commit the transferred changes in the primary branch")
 }
 
@@ -179,10 +174,9 @@ func TestCodexInit_CreatesWcrushSkillFromCanonicalTemplate(t *testing.T) {
 	assert.Contains(t, got, "session_id")
 	assert.Contains(t, got, "long phase-2 tests")
 	assert.Contains(t, got, "blocking")
-	assert.Contains(t, got, "`--codex-thread-id` applies to `rush run`, not these test commands")
-	assert.Contains(t, got, "--codex-thread-id <thread-id>")
+	assert.NotContains(t, got, "--codex-thread-id")
 	assert.Contains(t, got, "commits only those changes before removing the worktree")
-	assert.Contains(t, got, "codex queue")
+	assert.NotContains(t, got, "codex queue")
 }
 
 func TestInstalledCodexSkillsDifferFromClaudeAndReturnCompletion(t *testing.T) {
@@ -203,7 +197,7 @@ func TestInstalledCodexSkillsDifferFromClaudeAndReturnCompletion(t *testing.T) {
 		codex, readErr := os.ReadFile(filepath.Join(skillsDir, name, "SKILL.md"))
 		require.NoError(t, readErr)
 		assert.NotEqual(t, claude, string(codex), "%s must have target-specific instructions", name)
-		assert.Contains(t, string(codex), "--codex-thread-id <thread-id>", "%s must return Rush completion to Codex", name)
+		assert.NotContains(t, string(codex), "--codex-thread-id", "%s Codex variant must not mention Codex thread callbacks", name)
 		assert.NotContains(t, claude, "--codex-thread-id", "%s Claude variant must not mention Codex callbacks", name)
 	}
 }

@@ -109,19 +109,19 @@ blocks:
     claude: |-
       Claude launch guidance.
     codex: |-
-      Codex --codex-thread-id guidance.
+      Codex launch guidance.
   - common: Final shared paragraph.
     claude: ""
 `
 	desc, body, err := parseStructuredSkillSource(src, skillTargetCodex)
 	require.NoError(t, err)
 	assert.Equal(t, "Do it: carefully", desc)
-	assert.Equal(t, "Shared 🕎 paragraph with \"quotes\".\n~~~go\nfmt.Println(\"hello\")\n~~~\n\nCodex --codex-thread-id guidance.\n\nFinal shared paragraph.", body)
+	assert.Equal(t, "Shared 🕎 paragraph with \"quotes\".\n~~~go\nfmt.Println(\"hello\")\n~~~\n\nCodex launch guidance.\n\nFinal shared paragraph.", body)
 
 	_, claude, err := parseStructuredSkillSource(src, skillTargetClaude)
 	require.NoError(t, err)
 	assert.Contains(t, claude, "Claude launch guidance.")
-	assert.NotContains(t, claude, "Codex --codex-thread-id")
+	assert.NotContains(t, claude, "Codex launch guidance")
 	assert.NotContains(t, body, "Claude launch guidance")
 }
 
@@ -297,7 +297,7 @@ func TestToCodexWcrushSkillMD_RewritesAllWrushSkillReferences(t *testing.T) {
 	assert.Equal(t, strings.Count(body, "wrush.md"), strings.Count(got, "../wrush/SKILL.md"))
 	assert.Contains(t, got, "../wrush/SKILL.md's checklist")
 	assert.Contains(t, got, "name: wcrush")
-	assert.Contains(t, got, "--codex-thread-id <thread-id>")
+	assert.NotContains(t, got, "--codex-thread-id")
 }
 
 func TestToCodexWcrushSkillMD_AcceptsLineWrappedCanonicalReference(t *testing.T) {
