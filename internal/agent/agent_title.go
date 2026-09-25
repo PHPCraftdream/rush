@@ -32,9 +32,9 @@ import (
 // via effectiveTitleGenerationMaxDuration below.
 const titleGenerationMaxDurationDefault = 2 * time.Minute
 
-// titleJoinGrace bounds how long runTurn's deferred join waits for the
-// title goroutine AFTER that goroutine's own deadline should already have
-// fired (P1-B).
+// titleJoinGrace bounds how long runTurn's join waits for the title
+// goroutine AFTER that goroutine's own deadline should already have fired
+// (P1-B).
 //
 // The timer above only bounds a provider that honours context
 // cancellation. One that does not — a hung connection, a transport stuck
@@ -44,22 +44,7 @@ const titleGenerationMaxDurationDefault = 2 * time.Minute
 // turn whose real work had already completed.
 //
 // Abandoning the goroutine does not leak it: it exits whenever its provider
-// finally unblocks.
-//
-// It DOES, however, lose the title. An earlier version of this comment
-// claimed a late completion still persists its result because
-// generateTitle's deferred rename runs on a context.WithoutCancel. That is
-// wrong, and the mistake matters because it makes shortening this constant
-// look free: the WithoutCancel path is the FALLBACK, which stamps the
-// default "Untitled Session" name. The real generated title is saved by
-// a.sessions.Rename(ctx, ...) on the title's own (cancellable) context, so
-// once runTurn's cancel() fires, a title that completes afterwards fails to
-// save and the fallback stamps the default instead.
-//
-// So the wait is a real trade, not a formality: every second here is
-// latency the operator pays on the first turn of a session whose title
-// provider is slow, and every second cut is a session more likely to end up
-// named "Untitled Session".
+// finally unblocks, or when effectiveTitleGenerationMaxDuration expires.
 //
 // MEASURED (2026-08-19, task #546): with a wedged title provider, a turn
 // whose MAIN provider returns HTTP 500 takes 6.26s, of which this grace is
@@ -69,12 +54,24 @@ const titleGenerationMaxDurationDefault = 2 * time.Minute
 // splitting the budget by return path was tried and discarded: it would
 // have bounded the rare paths and left the common one untouched.
 //
-// Kept at 5s deliberately. Shortening it globally trades a real title for
-// latency on every slow-title turn, and conditioning it on the turn's
-// outcome (runTurn's resErr is a named return, so a deferred join can read
-// it) is possible but decides that a failed turn deserves no title -- a
-// product call, not a cleanup.
-const titleJoinGrace = 5 * time.Second
+// RE-EVALUATED (2026-09-25, session-title bug): the measurement above
+// treated the grace as the whole cost, because back then hitting it LOST
+// the title — the title's context was derived from the turn's genCtx, so
+// the cancel() that follows a timed-out join killed the in-flight request
+// and the session stayed untitled. That is what made shortening this
+// constant look dangerous and kept it at 5s.
+//
+// startTitleGeneration now derives the title's context with
+// context.WithoutCancel, so the grace no longer decides whether the title
+// lands — only how long runTurn is held open past its own work, and how
+// promptly the tab updates. 5s was still demonstrably too short for the
+// common case: connection setup + time-to-first-token + a ~96-token title
+// on a busy provider routinely exceeds it, and every one of those turns
+// paid the grace in full for a title it then threw away. Raised to 10s,
+// which covers the ordinary round-trip twice over while keeping the
+// pathological wait bounded. If this needs to move again, move it here —
+// SessionAgentOptions.TitleJoinGrace is the per-agent override.
+const titleJoinGrace = 10 * time.Second
 
 //go:embed templates/title.md
 var titlePrompt []byte
@@ -95,7 +92,15 @@ func cleanTitle(raw string) string {
 	return strings.TrimSpace(t)
 }
 
-// generateTitle generates a session titled based on the initial prompt.
+// generateTitle generates a session title based on the initial prompt.
+//
+// It runs detached from the turn that launched it: ctx is the title
+// goroutine's own context (see startTitleGeneration — immune to the turn's
+// cancel(), bounded by effectiveTitleGenerationMaxDuration), so this
+// function may outlive runTurn and still persist its result. Every write it
+// performs is a plain session-service call (Rename/IncrementCost/Get) — no
+// mailbox, no OS lock, no turn state — which is what makes that safe and is
+// why a title failure can never fail or delay the user's turn.
 func (a *sessionAgent) generateTitle(ctx context.Context, sessionID string, userPrompt string, cfg turnConfig) {
 	if userPrompt == "" {
 		return

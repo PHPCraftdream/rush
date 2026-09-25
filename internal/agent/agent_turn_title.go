@@ -7,6 +7,66 @@ import (
 	"time"
 )
 
+// titleGenRegistry tracks the cancel funcs of in-flight title-generation
+// goroutines.
+//
+// It exists because those goroutines' contexts are deliberately detached
+// from the turn that spawned them (see startTitleGeneration) — nothing in
+// the turn's own cancellation reaches them any more. CancelAll therefore
+// needs its own hook, or a title provider that ignores cancellation would
+// hold runWg (and with it App.Shutdown) for CancelAll's entire grace on
+// every shutdown. register returns the id the goroutine must unregister on
+// exit; cancelAll fires every live cancel and is safe to call on a nil
+// registry (bare test fixtures that never construct one).
+type titleGenRegistry struct {
+	mu      sync.Mutex
+	next    int64
+	cancels map[int64]context.CancelFunc
+}
+
+func newTitleGenRegistry() *titleGenRegistry {
+	return &titleGenRegistry{cancels: make(map[int64]context.CancelFunc)}
+}
+
+func (r *titleGenRegistry) register(cancel context.CancelFunc) int64 {
+	if r == nil {
+		return 0
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.next++
+	id := r.next
+	r.cancels[id] = cancel
+	return id
+}
+
+func (r *titleGenRegistry) unregister(id int64) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.cancels, id)
+}
+
+// cancelAll fires every registered cancel. Invoked once by CancelAll, which
+// is terminal for the agent, so the map is simply drained.
+func (r *titleGenRegistry) cancelAll() {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	cancels := make([]context.CancelFunc, 0, len(r.cancels))
+	for _, c := range r.cancels {
+		cancels = append(cancels, c)
+	}
+	clear(r.cancels)
+	r.mu.Unlock()
+	for _, c := range cancels {
+		c()
+	}
+}
+
 // startTitleGeneration launches runTurn's title-generation goroutine when
 // needsTitle is true and returns the channel it closes on exit (nil when no
 // title was requested, matching the zero value of the local runTurn used to
@@ -22,20 +82,49 @@ import (
 // that this file's own history says not to move without a specific reason
 // -- see turnTitleJoiner's doc.
 //
-// titleCtx is derived from genCtx (not runTurn's outer ctx) so the stream
-// watchdog cancelling genCtx -- idle timeout, tool timeout, hard cap --
-// also cuts off an in-flight title generation instead of leaving it to run
-// on an unbounded parent context. It is additionally, independently capped
-// by effectiveTitleGenerationMaxDuration as a backstop: generateTitle's two
-// model attempts are each a blocking agent.Stream with no timeout of their
-// own, so a provider that never returns must not be able to keep the join
-// from returning even if genCtx's own cancellation somehow doesn't unblock
-// it.
+// The title's context is deliberately detached from the turn's own
+// cancellation: context.WithoutCancel(genCtx) keeps every value genCtx
+// carries while making the context immune to the cancel() runTurn fires the
+// instant it stops waiting for the title.
+//
+// Note WHY WithoutCancel and not "the turn's parent context": every context
+// in this chain is turn-scoped. runTurn receives turnCtx, which runOwned's
+// loop cancels the moment runTurn returns (agent_run.go's `turnCancel()`),
+// and runCtx above it is cancelled by runOwned's own deferred runCancel.
+// Deriving from either reproduces the bug on a shorter fuse — the title
+// request is killed by the turn unwinding rather than by anything the user
+// did.
+//
+// What detachment costs, and how it is paid for: a per-session interrupt
+// (Ctrl-C, the web stop button, `sessions kill`) no longer aborts an
+// in-flight title request either — it now stops on its own budget
+// (effectiveTitleGenerationMaxDuration) instead. Agent SHUTDOWN still stops
+// it, via titleGenRegistry below: CancelAll fires every registered cancel,
+// so a title provider that ignores cancellation cannot hold App.Shutdown
+// open for CancelAll's whole grace. The goroutine is also registered in
+// runWg, which is what lets CancelAll join it at all (P0-4).
+//
+// This is the root-cause fix for "the session title never appears". The old
+// code derived titleCtx from genCtx, so the moment runTurn's bounded join
+// gave up (titleJoinGrace) and fell through to its explicit cancel(), the
+// still-in-flight title request was killed mid-flight. generateTitle then
+// logged "Error generating title with fast model; trying next
+// err=context canceled", tried the smart model, got the same error, and gave
+// up — and for a web session (born titled "New Session", see
+// internal/server/handlers_sessions.go) the deferred "Untitled Session"
+// fallback then declined to write, because it only stamps a slot it can
+// VERIFY is still empty. Net result: no generated title at all, ever, on
+// every session whose title provider took longer than the grace.
+//
+// Detaching the context turns that cliff into a delay: the title goroutine
+// keeps its own budget (effectiveTitleGenerationMaxDuration) and its own
+// result, and survives the turn that spawned it. The join below bounds only
+// how long runTurn WAITS, never whether the title eventually lands.
 func startTitleGeneration(a *sessionAgent, genCtx context.Context, needsTitle bool, sessionID, prompt string, cfg turnConfig) chan struct{} {
 	if !needsTitle {
 		return nil
 	}
-	titleCtx, titleCancel := context.WithTimeout(genCtx, a.effectiveTitleGenerationMaxDuration())
+	titleCtx, titleCancel := context.WithTimeout(context.WithoutCancel(genCtx), a.effectiveTitleGenerationMaxDuration())
 	done := make(chan struct{})
 	// Safe without admission gate: runWg.Add(1) here is always called from
 	// inside an already-admitted Run() call, so runWg counter is guaranteed
@@ -43,10 +132,12 @@ func startTitleGeneration(a *sessionAgent, genCtx context.Context, needsTitle bo
 	// is > 0 may happen at any time, including concurrently with Wait. The
 	// real race P1-1 closes is Add starting when counter is zero and Wait
 	// starting between the check and the Add.
+	titleGenID := a.titleGens.register(titleCancel)
 	a.runWg.Add(1)
 	go func() {
 		defer close(done)
 		defer a.runWg.Done()
+		defer a.titleGens.unregister(titleGenID)
 		defer titleCancel()
 		a.generateTitle(titleCtx, sessionID, prompt, cfg)
 	}()
@@ -81,15 +172,17 @@ func startTitleGeneration(a *sessionAgent, genCtx context.Context, needsTitle bo
 // of their own, so a provider that ignores context cancellation never
 // returns, and waiting unconditionally once held runTurn -- and with it
 // Run, the session's mailbox ownership and its OS lock -- open forever on a
-// turn whose work had finished. We wait up to a grace period and otherwise
-// abandon it: the goroutine exits whenever its provider unblocks, but
-// abandoning it DOES lose the real title. generateTitle's actual
-// a.sessions.Rename call runs on titleCtx itself (cancellable, derived from
-// genCtx), not a detached context -- only its FALLBACK path (stamping the
-// default "Untitled Session" name) uses context.WithoutCancel, precisely so
-// that fallback can still land after the caller gives up. So once runTurn's
-// cancel() fires, a late-finishing title attempt fails to save and the
-// fallback stamps the default instead.
+// turn whose work had finished.
+//
+// Abandoning the goroutine no longer loses the title. That used to be the
+// trade (and why shortening this constant looked expensive): the title's
+// context was derived from genCtx, so runTurn's cancel() -- which fires the
+// instant the join gives up -- killed the in-flight request and the title
+// with it. startTitleGeneration now derives the title's context with
+// context.WithoutCancel, so the goroutine keeps running after the join
+// gives up, finishes on its own budget, and still persists (and publishes)
+// its result. What the grace now costs is only how long runTurn is held
+// open past its own work, never whether the session ends up titled.
 //
 // disarm() is called FIRST inside the Once body, on every path that reaches
 // it -- not just the success path -- because join() is called both
@@ -134,8 +227,11 @@ func (j *turnTitleJoiner) join() {
 		select {
 		case <-j.done:
 		case <-time.After(grace):
+			// Not an error and not a loss: the goroutine keeps running on
+			// its own budget and still persists/publishes the title when it
+			// lands. Only THIS turn stops waiting for it.
 			slog.Warn(
-				"agent: abandoning title generation that outlived its deadline — the turn is not held open for it",
+				"agent: title generation outlived the turn's grace — the turn is not held open for it, the title still lands on its own",
 				"session_id", j.sessionID,
 				"grace", grace,
 			)

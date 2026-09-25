@@ -220,6 +220,14 @@ func (a *sessionAgent) CancelAll() (stillBusy bool) {
 	}
 	a.cacheKeepAliveMu.Unlock()
 
+	// Stop every in-flight title-generation goroutine too. Their contexts
+	// are deliberately detached from each turn's own cancel (see
+	// startTitleGeneration), so without this a title provider that ignores
+	// cancellation would hold runWg — and with it the wait below, and
+	// App.Shutdown — for the whole grace. Fired after the mailbox sweep so
+	// the turn's own unwind has already been triggered.
+	a.titleGens.cancelAll()
+
 	// Wait for all active Run() goroutines to finish. This provides a true
 	// join primitive instead of the old IsBusy() polling, which could report
 	// "not busy" before the actual Run() goroutines had unwound (defer

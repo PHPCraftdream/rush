@@ -628,11 +628,11 @@ type sessionAgent struct {
 	// titleJoinGrace, when > 0, overrides the package-level titleJoinGrace
 	// const for every Run() on this agent. Set from
 	// SessionAgentOptions.TitleJoinGrace at construction. 0 = use the
-	// default (5s). Test-only seam (task #454, following up on task
+	// default (10s). Test-only seam (task #454, following up on task
 	// #450/#453's test-speed investigation): several tests assert on the
-	// grace period actually firing (a hung title provider must be
-	// abandoned, not joined forever) and had no way to observe that faster
-	// than the real 5s bound.
+	// grace period actually firing (a slow title provider must be
+	// abandoned by the turn, not joined forever) and had no way to observe
+	// that faster than the real bound.
 	titleJoinGrace time.Duration
 	// cancelAllGrace, when > 0, overrides CancelAll's own 5s runWg.Wait
 	// grace period (a separate constant from titleJoinGrace, even though
@@ -641,6 +641,14 @@ type sessionAgent struct {
 	// default (5s). Test-only seam (task #454), same rationale as
 	// titleJoinGrace.
 	cancelAllGrace time.Duration
+	// titleGens holds the cancel funcs of the in-flight title-generation
+	// goroutines so CancelAll can stop them. Their contexts are deliberately
+	// detached from every turn's own cancel (agent_turn_title.go), which
+	// makes this registry the only hook that reaches them — see
+	// titleGenRegistry. Nil on a bare &sessionAgent{} (unit-test fixtures
+	// that never launch a title goroutine); every production agent gets one
+	// from NewSessionAgent.
+	titleGens *titleGenRegistry
 	// dataDir is the absolute path to .rush/, used for the per-session
 	// inter-process file lock. Empty means locking is disabled (legacy
 	// callers / tests). Plumbed from SessionAgentOptions.DataDirectory.
@@ -786,9 +794,9 @@ type SessionAgentOptions struct {
 	// StreamIdleTimeout overrides streamIdleTimeoutDefault when > 0.
 	// Plumbed from Options.StreamIdleTimeoutSeconds in the coordinator.
 	StreamIdleTimeout time.Duration
-	// TitleJoinGrace overrides the package-level titleJoinGrace const (5s)
-	// when > 0. Test-only seam (task #454) — production callers leave this
-	// unset.
+	// TitleJoinGrace overrides the package-level titleJoinGrace const
+	// (10s) when > 0. Test-only seam (task #454) — production callers leave
+	// this unset.
 	TitleJoinGrace time.Duration
 	// CancelAllGrace overrides CancelAll's own 5s runWg.Wait grace period
 	// when > 0. Test-only seam (task #454) — production callers leave this
@@ -914,6 +922,7 @@ func NewSessionAgent(
 		restrictedRuns:             opts.RestrictedRuns,
 		sessionPreambleMaxDuration: opts.SessionPreambleMaxDuration,
 		titleGenerationMaxDuration: opts.TitleGenerationMaxDuration,
+		titleGens:                  newTitleGenRegistry(),
 	}
 }
 

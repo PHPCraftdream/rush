@@ -370,18 +370,37 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 		return nil, SessionAgentCall{}, false, fmt.Errorf("failed to get session messages: %w", err)
 	}
 
-	// Generate the title on the first message — OR self-heal on a later turn
-	// when the session is still nameless. Title generation is best-effort and
-	// a transient provider blip (z.ai overload, a token-limit truncation) on
-	// turn 1 used to doom the session to "Untitled Session" forever, since it
-	// only ever fired at len(msgs)==0. Retrying while the title is still
-	// empty/default lets the next message recover it; it stops the moment a
-	// real title lands. needsTitle is decided here (before the preamble ctx
-	// is cancelled below) but the goroutine itself is launched further down,
-	// after genCtx exists — see the wg.Go call site near genCtx's creation.
-	needsTitle := len(msgs) == 0 ||
+	// Decide whether this turn owes the session a title. Exactly once per
+	// session: the persisted title IS the guard, so a session that already
+	// carries a real one never generates again (that is what makes the
+	// second, third, … user message a no-op here, and what stops a resumed
+	// or continued session from re-titling itself).
+	//
+	// len(msgs) == 0 is the "first user message of a NEW session" signal,
+	// and it is OR'd rather than AND'd with the title test on purpose: a
+	// brand-new session is born with a PLACEHOLDER name, not an empty one
+	// (the web's "New Session", `rush run`'s prompt truncation, the session
+	// id). Those are exactly the sessions that still need a generated
+	// title, so the first message must fire even though the column is
+	// non-empty.
+	//
+	// The two remaining clauses are the documented self-heal: title
+	// generation is best-effort, and a transient provider blip (z.ai
+	// overload, a token-limit truncation) on turn 1 used to doom the
+	// session to "Untitled Session" forever when it only ever fired at
+	// len(msgs)==0. Retrying while the title is still empty/default lets
+	// the next message recover it; it stops the moment a real title lands.
+	//
+	// Notice and auto-resume turns never owe a title: their prompt is a
+	// system-authored completion notice, not the user's first message, and
+	// titling a session off a notice would name it after the background
+	// job rather than the conversation. Both flags travel on the call (not
+	// the context) so they survive the mailbox and durable-queue handoffs.
+	autoResumed, backgroundJobNotice := call.AutoResumed, call.BackgroundJobNotice
+	needsTitle := (len(msgs) == 0 ||
 		currentSession.Title == "" ||
-		currentSession.Title == DefaultSessionName
+		currentSession.Title == DefaultSessionName) &&
+		!autoResumed && !backgroundJobNotice
 
 	// Add the user message to the session. Skip creation when the call
 	// references a message that already exists in the DB (interrupt-inject
@@ -446,7 +465,8 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	// Launches the title-generation goroutine; joined later via
 	// turnTitleJoiner once the stream watchdog exists. See
 	// startTitleGeneration's doc in agent_turn_title.go for why launch and
-	// join are deliberately NOT the same constructor.
+	// join are deliberately NOT the same constructor, and why the title's
+	// context is detached from genCtx's cancellation.
 	titleDone := startTitleGeneration(a, genCtx, needsTitle, call.SessionID, call.Prompt, cfg)
 	// The bounded join for this goroutine is declared AFTER `defer cancel()`
 	// below, which by LIFO makes it run BEFORE it. That ordering is the
@@ -700,10 +720,13 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 		}
 	}
 
-	// Wait for the title BEFORE cancelling: titleCtx is derived from genCtx,
-	// so cancelling first would kill a title that is merely slower than the
-	// turn — which is exactly what #525 was. Bounded, and a no-op when the
-	// title already landed or none was requested.
+	// Wait for the title BEFORE cancelling, so a title that is merely slower
+	// than the turn still lands while the turn is still on the stack — that
+	// is what #525 was about. Bounded by titleJoinGrace, and a no-op when
+	// the title already landed or none was requested. Even when the grace
+	// expires, the title is no longer lost: its context is detached from
+	// genCtx (startTitleGeneration), so it finishes on its own budget and
+	// persists + publishes then. The grace bounds the WAIT, not the result.
 	joinTitle()
 
 	cancel()

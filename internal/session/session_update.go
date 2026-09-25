@@ -318,11 +318,28 @@ func (s *service) UpdateReasoningEffort(ctx context.Context, sessionID, smartEff
 
 // Rename updates only the title of a session without touching updated_at or
 // usage fields.
+//
+// It publishes an UpdatedEvent like every other column-scoped update here.
+// That publish is what carries a generated session title to the browser:
+// the agent's background title generation (internal/agent's generateTitle)
+// has no access to the web server's Hub, so the pubsub bridge in
+// internal/server/events.go — which forwards every UpdatedEvent as
+// session_updated — is the ONLY path a title save has to the tabs. Rename
+// used to be the one session mutation that published nothing, which is why
+// a session's tab and sidebar row kept showing the pre-generation name
+// until the next 5s sessions_list poll while a hand-rename (whose handler
+// broadcasts explicitly) updated instantly.
 func (s *service) Rename(ctx context.Context, id string, title string) error {
-	return s.q.RenameSession(ctx, db.RenameSessionParams{
+	if err := s.q.RenameSession(ctx, db.RenameSessionParams{
 		ID:    id,
 		Title: title,
-	})
+	}); err != nil {
+		return err
+	}
+	if sess, err := s.Get(ctx, id); err == nil {
+		s.Publish(pubsub.UpdatedEvent, sess)
+	}
+	return nil
 }
 
 // RequestCancel sets the cancel_requested flag for a session so a
