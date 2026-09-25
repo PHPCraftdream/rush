@@ -100,7 +100,16 @@ type MessageWire struct {
 	Hidden              bool       `json:"Hidden"`
 	AutoResumed         bool       `json:"AutoResumed"`
 	BackgroundJobNotice bool       `json:"BackgroundJobNotice"`
-	Usage               *UsageWire `json:"Usage,omitempty"`
+	// Origin is the entry channel the message arrived through
+	// ("cli"/"web"/"sdk"; empty = unspecified), mirroring
+	// message.Origin. The web composer's recall history is derived
+	// client-side from these rows ($myPrompts in web/src/store.ts): it
+	// must contain ONLY prompts a human typed in the web composer, so the
+	// client needs the authorship metadata to exclude CLI-originated
+	// prompts and other channels. It cannot live on the transcript
+	// itself, which must keep rendering every channel's messages.
+	Origin string     `json:"Origin,omitempty"`
+	Usage  *UsageWire `json:"Usage,omitempty"`
 	// DeleteGeneration is the delete-generation watermark (task #737,
 	// replacing task #731's RowID field -- message.Message.DeleteGeneration's
 	// doc comment has the full mechanism). Only ever non-zero on the
@@ -149,6 +158,7 @@ func toMessageWire(m message.Message) MessageWire {
 		Hidden:              m.Hidden,
 		AutoResumed:         m.AutoResumed,
 		BackgroundJobNotice: m.BackgroundJobNotice,
+		Origin:              string(m.Origin),
 		Usage:               toUsageWire(m.Usage),
 		DeleteGeneration:    m.DeleteGeneration,
 	}

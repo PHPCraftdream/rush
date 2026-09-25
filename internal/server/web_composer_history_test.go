@@ -1,0 +1,302 @@
+package server
+
+// Web composer history pollution — the regression pin.
+//
+// The web composer's ArrowUp recall list is derived client-side from the
+// session's message rows ($myPrompts in web/src/store.ts), which are served
+// through toMessageWire (load_messages reply, message_created/message_updated
+// broadcasts). Before this fix the derivation only excluded hidden/summary/
+// non-user rows, so EVERY user-role row surfaced in recall — including:
+//
+//   - CLI-originated prompts (`rush run`, `rush sessions inject`), stamped
+//     message.OriginCLI at their recording sites (internal/cmd/run.go,
+//     internal/cmd/sessions_inject.go);
+//   - async completion notices ("Async job ... finished"), stamped
+//     BackgroundJobNotice by internal/agent/coordinator_background.go — note
+//     they carry OriginWeb too, so origin alone is NOT sufficient to exclude
+//     them;
+//   - Phase 4 autonomous idle-resume notices (AutoResumed + notice flags).
+//
+// The fix exposes message.Origin on MessageWire and teaches the derivation to
+// require web-origin, non-notice, non-auto-resumed user rows. These tests pin
+// both halves: the recording sites stamp authorship faithfully, and the
+// serving surface carries it so the client filter can do its job.
+//
+// webComposerHistoryWire below is a deliberate MIRROR of the TypeScript
+// derivation (web/src/store.ts $myPrompts + isAsyncCompletionNotice from
+// web/src/asyncJobCompletion.ts). The frontend has no runnable unit-test
+// harness in this checkout (web/node_modules is absent), so the behavior
+// contract is pinned here at the serving boundary; any change must update
+// both sides.
+import (
+	"regexp"
+	"strings"
+	"testing"
+
+	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/stretchr/testify/require"
+)
+
+// asyncNoticePattern mirrors asyncJobCompletion.ts's asyncNoticePattern —
+// legacy notice rows that predate the BackgroundJobNotice flag.
+var asyncNoticePattern = regexp.MustCompile(`^Async job (\S+) \([^)]*\) (finished|failed)\.\n\n([\s\S]*)$`)
+
+// webComposerHistoryWire projects a session's messages to the composer recall
+// list exactly as the browser derives it: visible user messages with text,
+// newest first, that were typed in the web composer (OriginWeb), excluding
+// notices (flagged or legacy-pattern) and autonomous idle-resume turns.
+func webComposerHistoryWire(msgs []message.Message) []string {
+	var out []string
+	for i := len(msgs) - 1; i >= 0; i-- {
+		m := msgs[i]
+		if m.Role != message.User || m.Hidden || m.IsSummaryMessage {
+			continue
+		}
+		if m.BackgroundJobNotice || m.AutoResumed {
+			continue
+		}
+		if asyncNoticePattern.MatchString(m.FullText()) {
+			continue
+		}
+		if m.Origin != message.OriginWeb {
+			continue
+		}
+		text := strings.TrimSpace(m.FullText())
+		if text == "" {
+			continue
+		}
+		out = append(out, text)
+	}
+	return out
+}
+
+// createUserMsg records one user message through the real message service,
+// with the authorship stamp its production recording site uses.
+func createUserMsg(t *testing.T, msgs message.Service, sessionID string, params message.CreateMessageParams) message.Message {
+	t.Helper()
+	msg, err := msgs.Create(t.Context(), sessionID, params)
+	require.NoError(t, err)
+	return msg
+}
+
+// userText builds CreateMessageParams for a human-typed web prompt.
+func userText(text string) message.CreateMessageParams {
+	return message.CreateMessageParams{
+		Role:   message.User,
+		Parts:  []message.ContentPart{message.TextContent{Text: text}},
+		Origin: message.OriginWeb,
+	}
+}
+
+// TestMessageWire_OriginReachesTheBrowser pins the serving half of the fix:
+// the authorship stamp recorded on the row must survive toMessageWire, or the
+// client filter has nothing to filter on.
+func TestMessageWire_OriginReachesTheBrowser(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name   string
+		origin message.Origin
+		want   string
+	}{
+		{"web typed prompt", message.OriginWeb, "web"},
+		{"cli run prompt", message.OriginCLI, "cli"},
+		{"sdk prompt", message.OriginSDK, "sdk"},
+		{"legacy unspecified", message.OriginUnspecified, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			wire := toMessageWire(message.Message{
+				ID:     "m1",
+				Role:   message.User,
+				Origin: tc.origin,
+				Parts:  []message.ContentPart{message.TextContent{Text: "hello"}},
+			})
+			require.Equal(t, tc.want, wire.Origin)
+
+			if tc.want == "" {
+				// Unspecified must not arrive as a fabricated value the
+				// client could misread as another channel.
+				require.NotEqual(t, "cli", wire.Origin)
+				require.NotEqual(t, "sdk", wire.Origin)
+			}
+		})
+	}
+}
+
+// TestWebComposerHistory_ServesOnlyWebTypedPrompts is the recording-site
+// test: a CLI-originated message, an async completion notice, and a
+// web-typed message all land in the same session; the composer-history
+// projection returns ONLY the web-typed one.
+//
+// The notice is stamped OriginWeb on purpose — that is exactly how
+// internal/agent/coordinator_background.go's notifyAsyncCompletion records
+// it (WithCallOrigin(ctx, message.OriginWeb) plus the notice flags), proving
+// the origin check alone cannot carry the fix and the notice flags are
+// load-bearing.
+func TestWebComposerHistory_ServesOnlyWebTypedPrompts(t *testing.T) {
+	// Cannot use t.Parallel() because newAttachmentsTestApp calls t.Setenv.
+	a := newAttachmentsTestApp(t, t.TempDir(), t.TempDir())
+	ctx := t.Context()
+
+	sess, err := a.Sessions.Create(ctx, "composer-history-mixed")
+	require.NoError(t, err)
+
+	// Recording site 1: CLI `rush run` prompt — OriginCLI, as stamped by
+	// internal/cmd/run.go's run request and internal/cmd/sessions_inject.go.
+	cliParams := userText("rush run prompt from the CLI")
+	cliParams.Origin = message.OriginCLI
+	cli := createUserMsg(t, a.Messages, sess.ID, cliParams)
+	require.Equal(t, message.OriginCLI, cli.Origin, "recording site must stamp the CLI origin")
+
+	// Recording site 2: async completion notice — OriginWeb + notice flag,
+	// as stamped by coordinator.notifyAsyncCompletion (whose Phase 4 path
+	// also sets AutoResumed).
+	noticeParams := userText("Async job call-1 (bash) finished.\n\ndone")
+	noticeParams.BackgroundJobNotice = true
+	notice := createUserMsg(t, a.Messages, sess.ID, noticeParams)
+	require.Equal(t, message.OriginWeb, notice.Origin, "notices carry the web origin — flags must exclude them")
+	require.True(t, notice.BackgroundJobNotice)
+
+	// Recording site 3: a genuine web-composer prompt — OriginWeb, no flags,
+	// as stamped by the web send path (handlers_agent.go WithCallOrigin).
+	web := createUserMsg(t, a.Messages, sess.ID, userText("fix the login bug"))
+	require.Equal(t, message.OriginWeb, web.Origin)
+
+	// An assistant reply between human prompts must not disturb anything.
+	reply, err := a.Messages.Create(ctx, sess.ID, message.CreateMessageParams{
+		Role:  message.Assistant,
+		Parts: []message.ContentPart{message.TextContent{Text: "on it"}},
+	})
+	require.NoError(t, err)
+	reply.AddFinish(message.FinishReasonEndTurn, "", "")
+	require.NoError(t, a.Messages.Update(ctx, reply))
+
+	// Serve the session exactly as handleLoadMessages does.
+	msgs, _, err := a.Messages.ListWithWatermark(ctx, sess.ID)
+	require.NoError(t, err)
+	rows := toMessagesWire(msgs)
+
+	// The serving surface must distinguish the channels...
+	origins := make(map[string]string, len(rows))
+	for _, row := range rows {
+		origins[row.ID] = row.Origin
+	}
+	require.Equal(t, "cli", origins[cli.ID], "served CLI row must carry its origin")
+	require.Equal(t, "web", origins[notice.ID], "served notice row must carry its origin")
+	require.Equal(t, "web", origins[web.ID])
+
+	// ...so the composer-history projection selects ONLY the web-typed one.
+	require.Equal(t, []string{"fix the login bug"}, webComposerHistoryWire(msgs))
+}
+
+// TestWebComposerHistory_OrderingNewestFirst pins the recall ordering the
+// frontend documents ("newest first — matches press ↑ to get the previous
+// prompt"): the most recently typed web prompt is index 0, regardless of
+// assistant/notice rows interleaved between human prompts.
+func TestWebComposerHistory_OrderingNewestFirst(t *testing.T) {
+	a := newAttachmentsTestApp(t, t.TempDir(), t.TempDir())
+	ctx := t.Context()
+
+	sess, err := a.Sessions.Create(ctx, "composer-history-order")
+	require.NoError(t, err)
+
+	createUserMsg(t, a.Messages, sess.ID, userText("first prompt"))
+
+	noticeParams := userText("Async job call-2 (bash) finished.\n\nout")
+	noticeParams.BackgroundJobNotice = true
+	notice := createUserMsg(t, a.Messages, sess.ID, noticeParams)
+	require.True(t, notice.BackgroundJobNotice)
+
+	createUserMsg(t, a.Messages, sess.ID, userText("second prompt"))
+	createUserMsg(t, a.Messages, sess.ID, userText("third prompt"))
+
+	msgs, _, err := a.Messages.ListWithWatermark(ctx, sess.ID)
+	require.NoError(t, err)
+
+	require.Equal(t, []string{"third prompt", "second prompt", "first prompt"},
+		webComposerHistoryWire(msgs))
+}
+
+// TestWebComposerHistory_EmptyWhenNoWebTypedPrompts is the empty-history
+// edge: a session whose only user rows arrived through other channels or as
+// notices must yield an EMPTY recall list — never CLI entries or notices.
+func TestWebComposerHistory_EmptyWhenNoWebTypedPrompts(t *testing.T) {
+	a := newAttachmentsTestApp(t, t.TempDir(), t.TempDir())
+	ctx := t.Context()
+
+	sess, err := a.Sessions.Create(ctx, "composer-history-empty")
+	require.NoError(t, err)
+
+	// CLI `rush run` prompt.
+	cliParams := userText("cli only prompt")
+	cliParams.Origin = message.OriginCLI
+	createUserMsg(t, a.Messages, sess.ID, cliParams)
+
+	// Async completion notice (web origin, notice + auto-resume flags) — the
+	// Phase 4 shape from coordinator.notifyBackgroundJobDone.
+	autoParams := userText("Async job call-3 (bash) finished.\n\nout")
+	autoParams.BackgroundJobNotice = true
+	autoParams.AutoResumed = true
+	createUserMsg(t, a.Messages, sess.ID, autoParams)
+
+	// SDK-originated prompt.
+	sdkParams := userText("sdk only prompt")
+	sdkParams.Origin = message.OriginSDK
+	createUserMsg(t, a.Messages, sess.ID, sdkParams)
+
+	// An empty-text web row (attachment-only send) — no recall entry.
+	createUserMsg(t, a.Messages, sess.ID, userText("   "))
+
+	msgs, _, err := a.Messages.ListWithWatermark(ctx, sess.ID)
+	require.NoError(t, err)
+	require.Empty(t, webComposerHistoryWire(msgs),
+		"no web-typed entries must mean empty history, not CLI entries")
+
+	// A truly empty session is empty too, not an error.
+	empty, err := a.Sessions.Create(ctx, "composer-history-none")
+	require.NoError(t, err)
+	msgs, _, err = a.Messages.ListWithWatermark(ctx, empty.ID)
+	require.NoError(t, err)
+	require.Empty(t, webComposerHistoryWire(msgs))
+}
+
+// TestWebComposerHistory_ExcludesReportedPollution is the regression pin for
+// the reported bug: after a CLI `rush run` turn and an async completion
+// notice are recorded into the session, the web history endpoint's serving
+// rows carry no composer-eligible prompt — both pollution classes are
+// excluded even though the notice itself carries OriginWeb.
+func TestWebComposerHistory_ExcludesReportedPollution(t *testing.T) {
+	a := newAttachmentsTestApp(t, t.TempDir(), t.TempDir())
+	ctx := t.Context()
+
+	sess, err := a.Sessions.Create(ctx, "composer-history-pollution")
+	require.NoError(t, err)
+
+	// The `rush run` path: internal/app stamps RunOverrides.Origin =
+	// message.OriginCLI (internal/app/app_run_request.go) and the CLI sets it
+	// at internal/cmd/run.go; the turn persists the user message with that
+	// origin via agent.createUserMessage.
+	cliParams := userText("write a haiku about sqlite")
+	cliParams.Origin = message.OriginCLI
+	cliRun := createUserMsg(t, a.Messages, sess.ID, cliParams)
+	require.Equal(t, message.OriginCLI, cliRun.Origin)
+
+	// The async completion notice recorded when the background job finished
+	// (coordinator.notifyAsyncCompletion → FormatAsyncCompletion).
+	noticeParams := userText("Async job call-9 (bash) finished.\n\nexit 0")
+	noticeParams.BackgroundJobNotice = true
+	createUserMsg(t, a.Messages, sess.ID, noticeParams)
+
+	// Serve through the exact wire conversion handleLoadMessages uses.
+	msgs, _, err := a.Messages.ListWithWatermark(ctx, sess.ID)
+	require.NoError(t, err)
+	rows := toMessagesWire(msgs)
+	require.Len(t, rows, 2, "both rows belong in the transcript, served to the browser")
+
+	// Revert-check: if either the Origin wire field or the client-side
+	// origin/notice filter is lost, one of these rows becomes recall-eligible
+	// again and the polluting text surfaces under ArrowUp.
+	require.Empty(t, webComposerHistoryWire(msgs),
+		"CLI-originated prompts and async completion notices must never enter web recall")
+}

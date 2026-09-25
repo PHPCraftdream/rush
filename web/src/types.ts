@@ -47,6 +47,11 @@ export interface Session {
   // hidden, banner shown, polling drives live updates instead of pubsub.
   OwnedExternal?: boolean;
   OwnedByPID?: number;
+  // True when at least one descendant sub-agent session still holds a live
+  // lock (session is delegating, not done).
+  HasLiveDescendantWork?: boolean;
+  // Descendant session IDs still holding live locks.
+  LiveDescendantIDs?: string[];
 }
 
 export type MessageRole = "user" | "assistant" | "tool" | "system";
@@ -114,6 +119,14 @@ export interface Message {
   Hidden: boolean;
   AutoResumed: boolean;
   BackgroundJobNotice: boolean;
+  // Entry channel the message arrived through ("cli" / "web" / "sdk").
+  // Mirrors internal/server/wire.go's MessageWire.Origin (message.Origin:
+  // CLI `rush run` prompts, `rush sessions inject`, SDK runs). Absent from
+  // rows written before the origin column existed and from older servers —
+  // both mean "unspecified", which is NOT composer-typed input, so the
+  // composer recall history ($myPrompts in web/src/store.ts) requires
+  // exactly "web".
+  Origin?: string;
   // Per-message token accounting. Absent on messages written before
   // per-message tracking existed, and on non-assistant messages.
   Usage?: MessageUsage;

@@ -1,6 +1,6 @@
 import { atom, computed } from "nanostores";
 import type { Session, Message, ContentPart, ConfigPayload, MCPState, Todo, SkillInfo } from "./types";
-import { indexAsyncJobCompletions, type AsyncJobStatus } from "./asyncJobCompletion";
+import { indexAsyncJobCompletions, isAsyncCompletionNotice, type AsyncJobStatus } from "./asyncJobCompletion";
 
 // ── Connection state ─────────────────────────────────────────────────────────
 export const $connected = atom(false);
@@ -893,6 +893,23 @@ export function setProviderPeakHours(payload: {
 //   • shell-style recall in the chat input (ArrowUp/Down on caret edge),
 //   • the history dropdown (clickable list + jump-to button).
 //
+// ONLY prompts a human typed in the web composer belong here. The session's
+// user rows also carry messages no human typed in the composer, and each is
+// excluded below:
+//   • system-injected notices (async/background job completions) — the
+//     BackgroundJobNotice flag, set server-side per message (message.
+//     BackgroundJobNotice / MessageWire.BackgroundJobNotice), plus
+//     isAsyncCompletionNotice's content marker for legacy un-flagged rows;
+//   • Phase 4 autonomous idle-resume turns (AutoResumed badge);
+//   • prompts that arrived through another channel — the CLI (`rush run`,
+//     `rush sessions inject`) and the SDK — distinguished by the message's
+//     Origin stamp (message.OriginCLI/Web/SDK, served as MessageWire.Origin;
+//     empty = unspecified, which is NOT composer input either, so recall
+//     requires exactly "web").
+//
+// The transcript itself ($messages) is untouched by this filter — every
+// channel's messages must still render in the conversation.
+//
 // Hidden / IsSummary / non-user messages are excluded. Empty texts are
 // dropped so the recall stack only holds prompts the user could actually
 // re-send.
@@ -916,6 +933,11 @@ export const $myPrompts = computed($messages, (msgs): MyPromptItem[] => {
     if (m.Hidden) continue;
     if (m.IsSummaryMessage) continue;
     if (m.Role !== "user") continue;
+    // Recalled prompts must be composer-typed: no notices, no autonomous
+    // turns, no other channel's prompts.
+    if (m.BackgroundJobNotice || isAsyncCompletionNotice(m)) continue;
+    if (m.AutoResumed) continue;
+    if (m.Origin !== "web") continue;
     const text = partsToText(m.Parts as unknown as Array<{ type: string; Text?: string }>).trim();
     if (!text) continue;
     out.push({ id: m.ID, text });
