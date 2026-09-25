@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/app"
@@ -27,21 +28,30 @@ actually finished cleanly and left a stale lock behind. It does NOT read
 external log files or orchestrator redirect output — only the DB and the
 .rush/locks directory.
 
-The four possible verdicts:
+The five possible verdicts:
 
-  done     — last assistant message finished with end_turn.
+  done     — last assistant message finished with end_turn, no descendant
+             session is still working.
   crashed  — lock file exists, holder is dead (PID dead AND heartbeat
              stale), and no assistant message with a clean finish.
              Likely died mid-turn.
   running  — lock file exists, holder PID is alive OR the heartbeat is
              still fresh (PID alone is not trusted — on Windows it reads
              as unreadable for the entire lifetime of a live session).
-  at rest  — no lock file. Not running, not crashed.
+  delegating — this session's own lock is gone (or stale) but at least one
+             DESCENDANT session still holds a live lock: delegated
+             sub-agent work is still in progress, so the session is NOT
+             done even though its own turn yielded.
+  at rest  — no lock file. Not running, not crashed, and no descendant
+             session is still working.
 
 When the raw lock signal says "crashed" but the last assistant message
 finished cleanly (end_turn), the verdict says so explicitly and treats
 the session as done — this is the same reclassification "sessions list"
-applies via reclassifyCrashedAsDone, surfaced here in plain language.`,
+applies via reclassifyCrashedAsDone, surfaced here in plain language.
+That reclassification is suppressed when a descendant session still holds a
+live lock: the parent's end_turn is its own yield before the delegation,
+not completion.`,
 	Args: cobra.ExactArgs(1),
 	Example: `
 # Why does sessions list show this one as crashed?
@@ -95,6 +105,12 @@ func sessionsWhyCmdRun(cmd *cobra.Command, args []string) error {
 // `sessions list` uses (computeSessionStatuses → reclassifyCrashedAsDone)
 // but for a single session, and adds the "at rest" case those helpers
 // don't represent (they only return entries for sessions that HAVE a lock).
+//
+// The descendant check (session.LiveDescendants) is the cross-process
+// layer `sessions list` applies through markDelegatingLiveDescendants: a
+// session whose own per-turn lock was released is NOT done while any
+// descendant session still holds a live lock. It is computed before the
+// verdict switch so every branch can consult it.
 func explainSessionStatus(ctx context.Context, a *app.App, dataDir, sessionID string, out io.Writer) error {
 	msgs, err := a.Messages.List(ctx, sessionID)
 	if err != nil {
@@ -181,21 +197,56 @@ func explainSessionStatus(ctx context.Context, a *app.App, dataDir, sessionID st
 		finish = lastAssistant.FinishPart()
 	}
 
-	// Verdict + reason text. Four cases, matching the Long help above.
-	// "at rest" (no lock) is the one computeSessionStatuses can't express.
+	// Descendant work: this session's own lock says nothing about work
+	// still running in a DESCENDANT session. A parent that delegated to a
+	// sub-agent releases its per-turn lock the moment it yields, so the
+	// signal that the workflow is still alive lives on the child rows
+	// (parent_session_id linkage) and the children's own locks — both
+	// visible to any process. Same walk `sessions list` applies through
+	// markDelegatingLiveDescendants; see session.LiveDescendants.
+	liveDescendants, walkIncomplete := session.LiveDescendants(ctx, a.Sessions, dataDir, sessionID)
+	descendantCaveat := ""
+	if walkIncomplete && len(liveDescendants) == 0 {
+		// A failed child listing means the tree could not be fully
+		// enumerated, so a terminal verdict below is only as trustworthy
+		// as that enumeration. Say so instead of asserting done flatly.
+		descendantCaveat = "WARNING: could not enumerate this session's descendant sessions; a live sub-agent lock may exist that this check could not see.\n"
+	}
+
+	// Verdict + reason text. The cases match the Long help above; "at
+	// rest" (no lock) is the one computeSessionStatuses can't express.
 	switch {
 	case statFailed:
 		fmt.Fprintf(out, "status: unknown (could not verify)\n")
 		fmt.Fprintf(out, "reason: could not inspect lock file (%s): %v — cannot confirm running, crashed, or at rest.\n", lockPath, statFailure)
 	case !hasLock:
-		fmt.Fprintf(out, "status: at rest\n")
-		fmt.Fprintf(out, "reason: no lock file present — not running, not crashed.\n")
-		if finish != nil && finish.Reason == message.FinishReasonEndTurn {
-			fmt.Fprintf(out, "last assistant message finished cleanly (end_turn); session is idle.\n")
-		} else if lastAssistant == nil {
-			fmt.Fprintf(out, "no assistant message recorded yet.\n")
+		if len(liveDescendants) > 0 {
+			// The session itself is at rest, but delegated sub-agent work
+			// is still in progress — NOT done. Same promotion
+			// markDelegatingLiveDescendants applies to `sessions list`.
+			fmt.Fprintf(out, "status: delegating\n")
+			fmt.Fprintf(out, "reason: no lock file present for this session, but %s — delegated sub-agent work is still in progress, so this session is NOT done.\n",
+				describeLiveDescendants(liveDescendants))
+			if finish != nil && finish.Reason == message.FinishReasonEndTurn {
+				fmt.Fprintf(out, "the last assistant message's end_turn is this session's own yield before the delegation, not completion.\n")
+			} else if lastAssistant == nil {
+				fmt.Fprintf(out, "no assistant message recorded yet.\n")
+			} else {
+				fmt.Fprintf(out, "last assistant message did not finish cleanly (%s).\n", finishReasonOrUnknown(finish))
+			}
 		} else {
-			fmt.Fprintf(out, "last assistant message did not finish cleanly (%s).\n", finishReasonOrUnknown(finish))
+			fmt.Fprintf(out, "status: at rest\n")
+			fmt.Fprintf(out, "reason: no lock file present — not running, not crashed.\n")
+			if finish != nil && finish.Reason == message.FinishReasonEndTurn {
+				fmt.Fprintf(out, "last assistant message finished cleanly (end_turn); session is idle.\n")
+			} else if lastAssistant == nil {
+				fmt.Fprintf(out, "no assistant message recorded yet.\n")
+			} else {
+				fmt.Fprintf(out, "last assistant message did not finish cleanly (%s).\n", finishReasonOrUnknown(finish))
+			}
+			if descendantCaveat != "" {
+				fmt.Fprint(out, descendantCaveat)
+			}
 		}
 	case hasLock && pidAlive:
 		fmt.Fprintf(out, "status: running\n")
@@ -233,6 +284,14 @@ func explainSessionStatus(ctx context.Context, a *app.App, dataDir, sessionID st
 		// any orchestrator parsing the first line gets the OPPOSITE verdict
 		// from `sessions list` for the same session. The genuinely-crashed
 		// case (no clean finish) stays "status: crashed".
+		//
+		// One exception to the list-parity rule, in the same direction list
+		// itself takes it: when a DESCENDANT session still holds a live
+		// lock, neither command reports done — the end_turn is the
+		// parent's own yield before the delegation, not completion (see
+		// markDelegatingLiveDescendants). A crashed parent with a live
+		// child still reports "crashed": that is the parent's own dead
+		// holder, and the two statuses must stay distinct.
 		// Pick the "why dead" phrasing by cause:
 		//
 		//   - pid <= 0 (unreadable, e.g. normal on Windows while the
@@ -263,13 +322,28 @@ func explainSessionStatus(ctx context.Context, a *app.App, dataDir, sessionID st
 			holderDeadReason = fmt.Sprintf("lock file exists but holder PID %d is not alive", pid)
 		}
 		if finish != nil && finish.Reason == message.FinishReasonEndTurn {
-			fmt.Fprintf(out, "status: done (stale lock)\n")
-			fmt.Fprintf(out, "reason: %s; last assistant message finished cleanly (end_turn).\n", holderDeadReason)
-			fmt.Fprintf(out, "\n")
-			fmt.Fprintf(out, "NOTE: this matches the reclassification \"sessions list\" applies via\n")
-			fmt.Fprintf(out, "reclassifyCrashedAsDone — likely a stale lock from a process that exited\n")
-			fmt.Fprintf(out, "without cleanup, or another process finished this session concurrently.\n")
-			fmt.Fprintf(out, "Treat as done.\n")
+			if len(liveDescendants) > 0 {
+				// The reclassification to "done" is suppressed: the
+				// session's own turn yielded (end_turn) but delegated
+				// sub-agent work is still live, so the session is NOT
+				// done. This is the observed production bug — a stale or
+				// released per-turn lock being read as completion while
+				// an implementation sub-agent was still working.
+				fmt.Fprintf(out, "status: delegating (stale lock)\n")
+				fmt.Fprintf(out, "reason: %s; %s — the end_turn above is this session's own yield before the delegation, so the session is NOT done.\n",
+					holderDeadReason, describeLiveDescendants(liveDescendants))
+			} else {
+				fmt.Fprintf(out, "status: done (stale lock)\n")
+				fmt.Fprintf(out, "reason: %s; last assistant message finished cleanly (end_turn).\n", holderDeadReason)
+				fmt.Fprintf(out, "\n")
+				fmt.Fprintf(out, "NOTE: this matches the reclassification \"sessions list\" applies via\n")
+				fmt.Fprintf(out, "reclassifyCrashedAsDone — likely a stale lock from a process that exited\n")
+				fmt.Fprintf(out, "without cleanup, or another process finished this session concurrently.\n")
+				fmt.Fprintf(out, "Treat as done.\n")
+				if descendantCaveat != "" {
+					fmt.Fprint(out, descendantCaveat)
+				}
+			}
 		} else {
 			fmt.Fprintf(out, "status: crashed\n")
 			fmt.Fprintf(out, "reason: %s.\n", holderDeadReason)
@@ -303,6 +377,31 @@ func explainSessionStatus(ctx context.Context, a *app.App, dataDir, sessionID st
 	}
 
 	return nil
+}
+
+// describeLiveDescendants renders the "why" clause naming every descendant
+// session that still holds a live lock, e.g.
+//
+//	"descendant session 8a3f0c2b holds a live lock (PID 4242, heartbeat 2s old, depth 1)"
+//
+// so the operator can see WHICH sub-agent is keeping the session alive and
+// how fresh its heartbeat is. Multiple live descendants are listed
+// together rather than collapsing to a count — the whole point of the
+// command is to name the evidence.
+func describeLiveDescendants(live []session.LiveDescendant) string {
+	items := make([]string, 0, len(live))
+	for _, d := range live {
+		holder := "holder PID unreadable"
+		if d.Lock.PID > 0 {
+			holder = fmt.Sprintf("holder PID %d", d.Lock.PID)
+		}
+		items = append(items, fmt.Sprintf("%s (%s, heartbeat %s old, depth %d)",
+			short(session.HashID(d.ID)), holder, formatDurationShort(d.Lock.Age), d.Depth))
+	}
+	if len(items) == 1 {
+		return "descendant session " + items[0] + " holds a live lock"
+	}
+	return "descendant sessions " + strings.Join(items, ", ") + " still hold live locks"
 }
 
 // finishReasonOrUnknown returns the finish reason string, or "(unknown)"

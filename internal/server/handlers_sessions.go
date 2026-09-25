@@ -229,6 +229,43 @@ func externalOwnershipDataDir(a *appPkg.App) string {
 	return cfg.Options.DataDirectory
 }
 
+// annotateLiveDescendantWork fills HasLiveDescendantWork / LiveDescendantIDs
+// for every session in the slice: the cross-process, durable-state
+// companion of the coordinator's in-process parked-delegation registry
+// (which this process cannot see for sessions owned by other processes). A
+// top-level session whose own lock is gone while a sub-agent session below
+// it still holds a live lock is NOT finished, and the UI must be able to
+// tell that apart from idle — otherwise a tab shows a session as done while
+// `rush run` is still waiting on its delegation.
+//
+// Deliberately unconditional (not gated on the session otherwise looking
+// idle): this layer has no status map to gate on — re-deriving one here
+// would fork `sessions list`'s classifier — so it reports the raw durable
+// signal ("a descendant lock is live") and lets the client compose it with
+// the agent_busy / ownership state it already has.
+//
+// Cost is one indexed child listing per session (session.LiveDescendants),
+// paid only on the sessions_list reply and its periodic re-poll, never on
+// the per-event broadcast path.
+func annotateLiveDescendantWork(ctx context.Context, a *appPkg.App, sessions []session.Session) {
+	dataDir := externalOwnershipDataDir(a)
+	if dataDir == "" || a.Sessions == nil {
+		return
+	}
+	for i := range sessions {
+		live, _ := session.LiveDescendants(ctx, a.Sessions, dataDir, sessions[i].ID)
+		if len(live) == 0 {
+			continue
+		}
+		sessions[i].HasLiveDescendantWork = true
+		ids := make([]string, 0, len(live))
+		for _, d := range live {
+			ids = append(ids, d.ID)
+		}
+		sessions[i].LiveDescendantIDs = ids
+	}
+}
+
 func handleListSessions(ctx context.Context, a *appPkg.App, c *Client, msg WSMessage) {
 	sessions, err := a.Sessions.List(ctx)
 	if err != nil {
@@ -239,6 +276,7 @@ func handleListSessions(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 		sessions = []session.Session{}
 	}
 	annotateExternalOwnership(a, sessions)
+	annotateLiveDescendantWork(ctx, a, sessions)
 	c.reply(msg.ID, EventSessionsList, sessions, "")
 
 	// Correct any stale agent_busy and summarize_queued state in the replay
@@ -270,9 +308,11 @@ func handleRenameSession(ctx context.Context, a *appPkg.App, c *Client, msg WSMe
 		c.reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
-	// The rename broadcast is the only notification a rename produces (Rename
-	// publishes no pubsub event), so it must carry the ownership annotation
-	// like every other Session broadcast — see AnnotateSessionExternalOwnership.
+	// Rename publishes an UpdatedEvent of its own now (see
+	// session_update.go), which the events.go bridge already forwards as
+	// session_updated — but this handler's broadcast is what carries the
+	// ownership annotation, so it stays. The two are idempotent for the
+	// client (upsertSession replaces by ID).
 	AnnotateSessionExternalOwnership(a, &sess)
 	c.hub.Broadcast(EventSessionUpdated, sess)
 }

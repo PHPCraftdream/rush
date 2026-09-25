@@ -2,8 +2,9 @@ package cmd
 
 // The `sessions list` subcommand: table / NDJSON listing of top-level
 // sessions, plus the STATUS-column machinery that classifies each session
-// as running / crashed / done / delegating from the locks directory and
-// the shared call-tree activity signal.
+// as running / crashed / done / delegating from the locks directory, the
+// shared call-tree activity signal, and the cross-process descendant-lock
+// walk (session.LiveDescendants).
 
 import (
 	"context"
@@ -15,6 +16,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -83,6 +85,22 @@ rush sessions list --json | jq 'select(.message_count > 0)'
 		// from the shared call-tree walk (sessions_activity.go), NOT from the
 		// lock mtime, so it reflects the sub-agent actually making progress.
 		statusByID = markDelegatingSessions(cmd.Context(), a, sessions, statusByID)
+
+		// Sub-agent awareness, at-rest half: a session with no lock (blank
+		// status above) that still owns an unreleased delegation is
+		// mid-workflow, not done. Sourced from the coordinator's
+		// parked-delegation registry, and a no-op for every session with
+		// nothing parked.
+		if reporter, ok := a.AgentCoordinator.(agent.ParkedSubAgentWorkReporter); ok {
+			statusByID = markParkedDelegationSessions(sessions, statusByID, reporter.ParkedSubAgentParents())
+		}
+
+		// Sub-agent awareness, cross-process half: the durable-state layer
+		// beneath markParkedDelegationSessions. The coordinator registry
+		// above only this process can see; here the session's own lock is
+		// gone (or stale) but a DESCENDANT session still holds a live one,
+		// which the DB linkage + the locks directory prove to any process.
+		statusByID = markDelegatingLiveDescendants(cmd.Context(), a, sessions, statusByID)
 
 		if asJSON {
 			enc := json.NewEncoder(os.Stdout)
@@ -282,6 +300,126 @@ func markDelegatingSessions(
 		if act.LatestUnix > s.UpdatedAt && act.SubAgentActive {
 			statusByID[s.ID] = "delegating"
 		}
+	}
+	return statusByID
+}
+
+// markParkedDelegationSessions promotes AT-REST sessions that still own an
+// unreleased sub-agent delegation to "delegating".
+//
+// This is the second half of the "delegating" classification, and it exists
+// because an async (`agent` / `agentic_fetch`) delegation outlives the
+// parent's turn: the parent's mailbox and OS lock are released the moment
+// the parent yields, so computeSessionStatuses leaves it blank ("at rest")
+// for the entire duration of the delegation — which, now that a delegation
+// is only released once the child's own async work is terminal, can be
+// minutes. markDelegatingSessions cannot cover this case because it only
+// probes sessions already flagged "running", and the activity comparison it
+// does (a descendant message newer than the session's own updated_at) is
+// false for a parent whose only output was the tool call.
+//
+// The signal is authoritative rather than heuristic: it comes straight from
+// the coordinator's parked-delegation registry, so "delegating" here means
+// precisely "a delegated sub-agent outcome is still parked for this
+// session" — not "some descendant touched a file recently". A session with
+// nothing parked is left exactly as computeSessionStatuses classified it.
+//
+// A session already classified "running" (a live lock) or "crashed" (a dead
+// holder that never finished cleanly) keeps that stronger, independent
+// signal: "delegating" is a refinement of "running" and must never mask a
+// genuine crash. "done" is deliberately NOT protected — a session promoted
+// to "done" by reclassifyCrashedAsDone is precisely the shape this step
+// corrects, since its last end_turn turn can be nothing more than the
+// parent's own yield before the delegation.
+func markParkedDelegationSessions(
+	sessions []session.Session,
+	statusByID map[string]string,
+	parkedParents []string,
+) map[string]string {
+	if len(parkedParents) == 0 {
+		return statusByID
+	}
+	if statusByID == nil {
+		// computeSessionStatuses returns nil when the locks directory
+		// cannot be read at all — the common case on a machine where no
+		// session has ever held a lock, and every session then reads as at
+		// rest. That is exactly the shape this promotion exists to correct,
+		// so allocate rather than bail out.
+		statusByID = make(map[string]string, len(sessions))
+	}
+	parked := make(map[string]struct{}, len(parkedParents))
+	for _, id := range parkedParents {
+		parked[id] = struct{}{}
+	}
+	for _, s := range sessions {
+		if _, ok := parked[s.ID]; !ok {
+			continue
+		}
+		// Never downgrade a stronger signal: a session that is genuinely
+		// running (lock held, holder alive) or crashed keeps that status.
+		if st := statusByID[s.ID]; st == "running" || st == "crashed" {
+			continue
+		}
+		statusByID[s.ID] = "delegating"
+	}
+	return statusByID
+}
+
+// markDelegatingLiveDescendants is the cross-process layer beneath
+// markParkedDelegationSessions: it promotes a session that would otherwise
+// read as finished ("done", via reclassifyCrashedAsDone) or at rest (blank
+// — no lock of its own) to "delegating" when at least one DESCENDANT
+// session still holds a live lock.
+//
+// Why a second layer: markParkedDelegationSessions reads the coordinator's
+// in-process parked-delegation registry, which only the process that OWNS
+// the delegation can see. `sessions list` runs in whatever process the
+// operator typed it in — usually a different one — so the registry is empty
+// there and the parked-delegation shape reads as done/at rest. The durable
+// state is visible everywhere though: the child session rows (linked
+// through parent_session_id) and the children's own session locks.
+// session.LiveDescendants walks exactly that, so a parent waiting on a
+// sub-agent that lives in another process still shows "delegating" here.
+//
+// Only terminal / at-rest verdicts are promoted. A session that is
+// genuinely "running" (its own live lock), "crashed" (dead holder, no
+// clean finish) or already "delegating" keeps that stronger, independent
+// signal — the same never-downgrade rule markParkedDelegationSessions
+// follows. Stale-lock and crashed therefore stay distinct from done: a
+// crashed parent is reported crashed, not done, and never as done merely
+// because a descendant is live.
+func markDelegatingLiveDescendants(
+	ctx context.Context,
+	a *app.App,
+	sessions []session.Session,
+	statusByID map[string]string,
+) map[string]string {
+	if a == nil || a.Sessions == nil {
+		return statusByID
+	}
+	dataDir := a.Config().Options.DataDirectory
+	if dataDir == "" {
+		return statusByID
+	}
+	for _, s := range sessions {
+		switch statusByID[s.ID] {
+		case "done", "":
+			// Terminal or at rest — a candidate for promotion.
+		default:
+			// running / crashed / delegating keep their own signal.
+			continue
+		}
+		live, _ := session.LiveDescendants(ctx, a.Sessions, dataDir, s.ID)
+		if len(live) == 0 {
+			continue
+		}
+		if statusByID == nil {
+			// computeSessionStatuses returns nil when the locks directory
+			// cannot be read at all, leaving every session blank — exactly
+			// the shape this promotion corrects.
+			statusByID = make(map[string]string, len(sessions))
+		}
+		statusByID[s.ID] = "delegating"
 	}
 	return statusByID
 }

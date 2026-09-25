@@ -102,6 +102,19 @@ type Session struct {
 	// foreign sessions read-only with a "Followed: PID N" banner.
 	OwnedExternal bool `json:",omitempty"` // a different live process holds the lock
 	OwnedByPID    int  `json:",omitempty"` // PID of the lock holder, 0 if free / stale
+
+	// HasLiveDescendantWork reports that at least one DESCENDANT session
+	// (a sub-agent this session delegated to) still holds a live lock, so
+	// this session is NOT finished even though its own lock is gone —
+	// cross-process "delegating", the same derivation `sessions list`
+	// applies through markDelegatingLiveDescendants (session.LiveDescendants).
+	// Wire-only, filled by the web server's session list. Complements
+	// OwnedExternal: that one is about THIS session's lock, this one about
+	// work happening below it.
+	HasLiveDescendantWork bool `json:",omitempty"`
+	// LiveDescendantIDs lists the descendant sessions that still hold live
+	// locks, so the UI can name the sub-agent it is waiting on. Wire-only.
+	LiveDescendantIDs []string `json:",omitempty"`
 }
 
 // ModelSlotUpdate is an explicit provider/model pair for one session model

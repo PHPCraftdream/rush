@@ -11,6 +11,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -204,4 +205,126 @@ func TestComputeSessionStatuses_PidAliveWithinMaxFallbackAgeIsRunning(t *testing
 	require.NotNil(t, statuses)
 	assert.Equal(t, "running", statuses[sess.ID],
 		"a live PID just under MaxPidFallbackAge must still be trusted as running")
+}
+
+// TestSessionsListCmdRun_LiveDescendantIsDelegatingNotDone is the regression
+// test for the observed production bug: `rush sessions list` classified the
+// parent/root session as done merely because its per-turn session lock was
+// released (stale lock) — while an implementation sub-agent session held a
+// LIVE lock and the outer `rush run` process was still alive waiting on
+// that sub-agent.
+//
+// The fixture mirrors that sequence exactly:
+//   - a parent session whose lock file is stale (names a dead PID, aged
+//     past LockStaleDuration) and whose last assistant message finished
+//     with end_turn — the shape reclassifyCrashedAsDone turns into "done";
+//   - a child session (real parent_session_id linkage) holding a REAL
+//     exclusive lock, acquired in-process via TryAcquireSessionLock and
+//     released explicitly as soon as phase 1's output is captured (with a
+//     deferred Release as a safety net).
+//
+// Pre-fix the parent's STATUS column read "done". With the cross-process
+// descendant walk (markDelegatingLiveDescendants → session.LiveDescendants)
+// it must read "delegating" instead — and fall back to "done" once the
+// child's lock is gone.
+func TestSessionsListCmdRun_LiveDescendantIsDelegatingNotDone(t *testing.T) {
+	a, _, dataDir := isolatedListEnvWithConfiguredDataDir(t)
+
+	ctx := context.Background()
+	parent, err := a.Sessions.CreateWithID(ctx, "list-desc-parent", "parent waiting on sub-agent")
+	require.NoError(t, err)
+	child, err := a.Sessions.CreateTaskSession(ctx, "list-desc-child", parent.ID, "implementation sub-agent")
+	require.NoError(t, err)
+
+	// The parent's per-turn lock: stale (dead PID, aged heartbeat) with a
+	// clean end_turn finish — the reclassifyCrashedAsDone "done" shape.
+	lockDir := filepath.Join(dataDir, "locks")
+	require.NoError(t, os.MkdirAll(lockDir, 0o755))
+	parentLock := filepath.Join(lockDir, "session-"+sanitiseSessionIDForFilename(parent.ID)+".lock")
+	require.NoError(t, os.WriteFile(parentLock, []byte("999999\n"), 0o644))
+	stale := time.Now().Add(-(session.LockStaleDuration + 5*time.Second))
+	require.NoError(t, os.Chtimes(parentLock, stale, stale))
+
+	assistant, err := a.Messages.Create(ctx, parent.ID, message.CreateMessageParams{
+		Role:  message.Assistant,
+		Parts: []message.ContentPart{message.TextContent{Text: "delegating to a sub-agent"}},
+	})
+	require.NoError(t, err)
+	assistant.AddFinish(message.FinishReasonEndTurn, "", "")
+	require.NoError(t, a.Messages.Update(ctx, assistant))
+
+	// The child's lock is genuinely held (in-process) for the whole first
+	// phase, exactly like a sub-agent still working in another process.
+	childLock, err := session.TryAcquireSessionLock(dataDir, child.ID)
+	require.NoError(t, err)
+	// Safety net only: the explicit Release() right after phase 1's output is
+	// captured below is what normally frees the lock, well before t.Cleanup's
+	// waitForSQLiteHandleRelease runs. This defer covers the window between
+	// acquisition and that explicit release — an assertion aborting the test
+	// in between would otherwise strand the lock handle into cleanup, which
+	// would then burn waitForSQLiteHandleRelease's full 30s budget on Windows.
+	// SessionLock.Release is idempotent (sync.Once), so once the explicit call
+	// has run this deferred one is a no-op.
+	defer func() { _ = childLock.Release() }()
+
+	// SessionsListCmd.RunE creates its own full App. Release the seed App's
+	// process-wide MCP owner before invoking the command so the lifetimes
+	// do not overlap.
+	a.Shutdown()
+
+	runList := func() string {
+		stdout := captureStdout(t, func() {
+			runErr := sessionsListCmd.RunE(sessionsListCmd, nil)
+			require.NoError(t, runErr)
+		})
+		return stdout
+	}
+	// statusRowFor returns the table row for the given session ID prefix.
+	statusRowFor := func(stdout, idPrefix string) string {
+		for _, line := range strings.Split(stdout, "\n") {
+			if strings.Contains(line, idPrefix) {
+				return line
+			}
+		}
+		return ""
+	}
+
+	// Phase 1: child lock live → parent must NOT read done.
+	phase1 := runList()
+	t.Logf("sessions list (child lock live):\n%s", phase1)
+
+	// Release the child lock the moment phase 1's output exists: every
+	// assertion below only inspects the captured string, so the OS lock is
+	// no longer needed. Releasing here — not at function end — guarantees
+	// the handle is closed before t.Cleanup's waitForSQLiteHandleRelease
+	// runs, so cleanup never waits on the still-held lock file.
+	require.NoError(t, childLock.Release())
+
+	parentRow := statusRowFor(phase1, parent.ID[:8])
+	require.NotEmpty(t, parentRow, "the parent session must be listed")
+	require.Contains(t, parentRow, "delegating",
+		"a parent with a live descendant lock must show delegating, never done — the observed bug")
+	require.NotContains(t, parentRow, "done",
+		"nothing may report done while a descendant session holds a live lock")
+	require.NotContains(t, parentRow, "crashed",
+		"the stale-lock + clean-finish parent is not a crash; it is waiting on its sub-agent")
+	// The sub-agent session itself is not a top-level row. Assert the CHILD's
+	// full id: its 8-char prefix ("list-desc") is also a prefix of the
+	// PARENT's id ("list-desc-parent"), so the parent row would trip a
+	// prefix-scoped NotContains even though no child row leaked.
+	require.NotContains(t, phase1, child.ID,
+		"child sessions are filtered out of sessions list")
+
+	// Phase 2: child lock released (above) and aged out → back to done.
+	releasedAgo := time.Now().Add(-(session.LockStaleDuration + 5*time.Second))
+	require.NoError(t, os.Chtimes(session.SessionLockPath(dataDir, child.ID), releasedAgo, releasedAgo))
+
+	phase2 := runList()
+	t.Logf("sessions list (child lock released):\n%s", phase2)
+	parentRow = statusRowFor(phase2, parent.ID[:8])
+	require.NotEmpty(t, parentRow)
+	require.Contains(t, parentRow, "done",
+		"with no live descendant the clean-exit reclassification must apply again")
+	require.NotContains(t, parentRow, "delegating",
+		"delegating must be driven by live descendant work, not by the mere existence of a child row")
 }

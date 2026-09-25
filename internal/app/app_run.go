@@ -534,6 +534,12 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 	if source, ok := app.AgentCoordinator.(agent.AsyncCompletionSource); ok {
 		asyncPending = source.HasPendingAsyncJobs(sess.ID)
 	}
+	// Root terminality is transitive here too: a reviewer pass is a NEW
+	// phase on the root session, which must not open while any descendant
+	// sub-agent or async command it owns is still live at any depth.
+	if !asyncPending && app.descendantWorkPending(ctx, sess.ID) {
+		asyncPending = true
+	}
 	if resultErr == nil && req.Credentials == nil && !asyncPending &&
 		!loop.canceledAfterCommit && loop.ctx.Err() == nil &&
 		shouldRunReviewerPass(overrides.ModelRole, app.config.Config()) {
