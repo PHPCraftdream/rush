@@ -47,6 +47,36 @@ type EditResponseMetadata struct {
 
 const EditToolName = "edit"
 
+// editMaxFileSizeBytes bounds the size of a file the edit tool will read
+// into memory. Reading a file means os.ReadFile, which allocates the whole
+// file size up front; a single Edit call pointed at a multi-gigabyte file
+// (a generated data dump, a log, a scratch file in the working tree) can
+// therefore VirtualAlloc its way into a fatal Go out-of-memory error that
+// kills the whole Rush process — session, lock lifecycle and pending
+// completion reporting included. 256 MiB is far above any source file
+// (this repository's largest .go file is ~90 KB), and even with ~2x
+// transient overhead during the string replacement that lands well below
+// operator memory ceilings.
+const editMaxFileSizeBytes = 256 * 1024 * 1024
+
+// editMaxFileSize is the mutable form of editMaxFileSizeBytes so tests can
+// shrink the bound instead of allocating hundreds of megabytes. Production
+// code only ever reads it; it is assigned exactly once, at initialization.
+var editMaxFileSize int64 = editMaxFileSizeBytes
+
+// checkEditFileSize fails fast, before any read or allocation, when an
+// existing file is larger than the edit tool's read bound. It returns a
+// text-error response (the tool's standard shape for correctable input)
+// naming the file, its exact byte size, the limit, and how to proceed.
+func checkEditFileSize(filePath string, size int64) (fantasy.ToolResponse, bool) {
+	if size <= editMaxFileSize {
+		return fantasy.ToolResponse{}, false
+	}
+	return fantasy.NewTextErrorResponse(fmt.Sprintf(
+		"file is too large to edit: %s is %d bytes, which exceeds the %d byte limit. Nothing was read or modified. Use a narrower tool (bash with sed or scripted processing) or trim the file before editing.",
+		filePath, size, editMaxFileSize)), true
+}
+
 //go:embed edit.md
 var editDescription string
 
@@ -304,6 +334,14 @@ func loadExistingFile(edit editContext, filePath, sessionError string) (sessionI
 
 	if fileInfo.IsDir() {
 		return "", "", false, fantasy.NewTextErrorResponse(fmt.Sprintf("path is a directory, not a file: %s", filePath)), nil
+	}
+
+	// Size guard first: os.ReadFile allocates the entire file size up
+	// front, so the stat's size is the only thing standing between an
+	// oversized file and a process-wide fatal OOM. The stat is already in
+	// hand, so this costs one comparison.
+	if resp, tooLarge := checkEditFileSize(filePath, fileInfo.Size()); tooLarge {
+		return "", "", false, resp, nil
 	}
 
 	sessionID = GetSessionFromContext(edit.ctx)
