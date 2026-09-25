@@ -8,13 +8,45 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Removed
+
+- **`rush run --codex-thread-id` and the Codex completion callback are
+  removed.** Codex delegations wait on the retained `exec_command` process
+  handle again; the installed Codex skills no longer mention `codex queue`
+  or `CODEX_THREAD_ID`.
+
+### Fixed
+
+- **A root `rush run` no longer ends while a descendant sub-agent or async
+  command it owns is still live at any depth.** The non-interactive loop
+  holds the run open and feeds each descendant's terminal result back as the
+  next root turn; the reviewer pass also waits for descendant work.
+- **`sessions list` and `sessions why` no longer report a root as done
+  while a descendant session still holds a live lock**, cross-process.
+  `sessions why` names the live descendant, and the session-list API now
+  carries `HasLiveDescendantWork` / `LiveDescendantIDs` for the web UI
+  (rendering pending).
+- **Parked sub-agent outcomes are delivered exactly once and cancellations
+  stay cancellations.** A canceled child can no longer be reported to its
+  parent as a success carrying the child's last text.
+- **Generated session titles now persist and reach the web UI
+  immediately.** Title generation no longer races turn teardown, and
+  `Rename` publishes the session-updated event so tabs stop waiting for the
+  5s poll.
+- **The web composer history no longer recalls messages that did not
+  originate from the user** (notice/system-origin messages were polluting
+  `$myPrompts`).
+
+### Changed
+
+- **Title generation grace rose from 5s to 10s**, so more generated titles
+  finish before a turn yields.
+
 ## [0.2.0-alpha.7] - 2026-09-24
 
 ### Changed
 
 - **Installed delegation skills now give Claude and Codex distinct guidance.**
-  Every Codex variant explicitly passes `--codex-thread-id` when launching
-  or resuming Rush, so completion returns to the originating Codex thread.
   The `wcrush` workflow also requires the orchestrator to commit verified
   changes after transferring them into the primary branch; the sub-agent
   still never commits or pushes.
@@ -54,12 +86,6 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
-- **`rush run --codex-thread-id` notifies the originating Codex thread when
-  a CLI attempt ends.** The message distinguishes completion, failure,
-  cancellation, queued work, and a question awaiting an answer. It includes
-  a short result or error summary, preserves quotes by passing the message
-  as one process argument, and does not change Rush's exit status if delivery
-  fails. The notification runs after the JSON result is written.
 - **Delegation skills can have shared and CLI-specific instructions.** Skill
   sources may remain Markdown or use ordered YAML blocks with common and
   per-target text. Claude and Codex now receive their own launch and
