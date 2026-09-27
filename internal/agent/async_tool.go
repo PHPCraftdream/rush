@@ -180,6 +180,11 @@ func (t *asyncTool) awaitShell(ctx context.Context, sessionID string, response f
 	if json.Unmarshal([]byte(response.Metadata), &metadata) != nil || metadata.ShellID == "" {
 		return
 	}
+	// Task #1053: record the shell id now, while the job is still running,
+	// so job_kill/job_output can resolve the job id the model saw to it.
+	// Before this the shell id stayed inside this goroutine until the job
+	// was already terminal, making both tools unusable for a live job.
+	t.coordinator.asyncJobs.setShellID(sessionID, completion.ToolCallID, metadata.ShellID)
 	manager := t.coordinator.background
 	if manager == nil {
 		completion.IsError = true

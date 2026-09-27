@@ -1,7 +1,7 @@
 Terminate a background shell process.
 
 <usage>
-- Provide the shell ID returned from a background bash execution
+- Accepts job_id (preferred -- the id returned when the command started, e.g. "Async bash job <id> started") or shell_id (a raw background shell id). Provide exactly one.
 - Cancels the running process and cleans up resources
 </usage>
 

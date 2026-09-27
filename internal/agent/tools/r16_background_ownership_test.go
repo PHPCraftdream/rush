@@ -16,8 +16,8 @@ func TestBackgroundJobTools_EnforceSessionOwnership(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { manager.Close(context.Background()) })
 
-	outputTool := NewJobOutputTool(manager)
-	killTool := NewJobKillTool(manager)
+	outputTool := NewJobOutputTool(nil, manager)
+	killTool := NewJobKillTool(nil, manager)
 
 	input, err := json.Marshal(JobOutputParams{ShellID: job.ID})
 	require.NoError(t, err)

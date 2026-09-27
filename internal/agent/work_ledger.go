@@ -15,6 +15,8 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+
+	"github.com/PHPCraftdream/rush/internal/agent/tools"
 )
 
 const maxAsyncJobsPerSession = 50
@@ -233,6 +235,63 @@ func (l *workLedger) abort(sessionID, toolCallID string) {
 	if job != nil && job.cancel != nil {
 		job.cancel()
 	}
+}
+
+// setShellID records the background shell id backing a running command job,
+// as soon as asyncTool.awaitShell learns it from the inner tool's response
+// metadata. No-op if the job already finished/was removed (e.g. a fast
+// command whose completion raced this call) -- there is nothing left to
+// annotate. Task #1053: this is what makes ResolveJobShellID possible while
+// the job is still running.
+func (l *workLedger) setShellID(owner, toolCallID, shellID string) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	s := l.bySession[owner]
+	if s == nil {
+		return
+	}
+	if job := s.jobs[toolCallID]; job != nil {
+		job.shellID = shellID
+	}
+}
+
+// ResolveJobShellID resolves a model-visible job id (the async job id
+// returned in "Async <tool> job <id> started", asyncToolMetadata.JobID) to
+// the background shell id backing it, scoped to owner: a job from another
+// session never resolves, the same ownership boundary
+// BackgroundShellManager.GetOwned/KillOwned already enforce for shell_id.
+// Implements tools.JobShellResolver -- see coordinator_tools.go's wiring.
+// Task #1053: before this, job_kill/job_output could never be called on a
+// still-running CLI/web command, because the model only ever learns the
+// job id, never the shell id (that stays inside asyncTool.awaitShell until
+// the job is already finished).
+func (l *workLedger) ResolveJobShellID(owner, jobID string) (string, error) {
+	if l == nil {
+		return "", fmt.Errorf("job %s not found (async job tracking is unavailable)", jobID)
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var job *asyncJob
+	if s := l.bySession[owner]; s != nil {
+		job = s.jobs[jobID]
+	}
+	if job == nil {
+		return "", fmt.Errorf("job %s not found (not owned by this session, or already delivered)", jobID)
+	}
+	if job.toolName == tools.RunCommandToolName {
+		// run_command has no background shell; stopping it is wakes stage 2 (#1023).
+		return "", fmt.Errorf("job %s is a run_command job, which job_kill/job_output cannot control yet -- wait for its completion message", jobID)
+	}
+	if job.toolName != tools.BashToolName {
+		return "", fmt.Errorf("job %s is a %s job, not a command -- job_output/job_kill only resolve bash jobs", jobID, job.toolName)
+	}
+	if job.shellID == "" {
+		return "", fmt.Errorf("job %s is still starting; try again in a moment", jobID)
+	}
+	return job.shellID, nil
 }
 
 // finish is the terminal transition for a PLAIN job (bash/run_command). Not

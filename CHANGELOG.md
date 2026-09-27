@@ -50,6 +50,11 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   instead of failing with "session is already in use".
 - **The task agent is never given the `agent` tool**, which would make tool
   construction recurse forever and hang every run.
+- **`job_kill` and `job_output` accept the job id the model was given**
+  (`job_id`), so a running async `bash` command can be stopped or inspected
+  before it finishes. Previously they needed an internal shell id the model
+  only learned once the job was over. `run_command` jobs are refused with a
+  clear message instead of "still starting" forever.
 
 ### Changed
 

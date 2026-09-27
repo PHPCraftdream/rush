@@ -34,7 +34,7 @@ func TestJobOutputTool_BoundedWaitReturnsWhileRunning(t *testing.T) {
 	jobOutputMaxWait = 100 * time.Millisecond
 	t.Cleanup(func() { jobOutputMaxWait = originalMaxWait })
 
-	tool := NewJobOutputTool(bgManager)
+	tool := NewJobOutputTool(nil, bgManager)
 
 	input, err := json.Marshal(JobOutputParams{ShellID: bgShell.ID, Wait: true})
 	require.NoError(t, err)
@@ -84,7 +84,7 @@ func TestJobOutputTool_BoundedWaitReturnsCompletedWhenJobFinishes(t *testing.T) 
 	jobOutputMaxWait = 100 * time.Millisecond
 	t.Cleanup(func() { jobOutputMaxWait = originalMaxWait })
 
-	tool := NewJobOutputTool(bgManager)
+	tool := NewJobOutputTool(nil, bgManager)
 
 	input, err := json.Marshal(JobOutputParams{ShellID: bgShell.ID, Wait: true})
 	require.NoError(t, err)

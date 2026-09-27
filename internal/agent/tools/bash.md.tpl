@@ -31,6 +31,7 @@ Common shell builtins and core utils available on Windows.
 - Do not use `&` to create a second background process.
 - The completion notice includes output and exit status. Do not poll job_output or call it with wait=true merely to learn whether the job finished.
 - Use job_kill only when the operator asks to stop a running command or the current task requires cancellation.
+- Pass that job ID as job_id to job_kill/job_output to control or inspect the command before it finishes -- shell_id is only for callers that never see a job ID.
 </background_execution>
 
 <git_commits>

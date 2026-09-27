@@ -58,6 +58,13 @@ type asyncJob struct {
 	// workLedger.armDelegation's doc for why that is the end of a model
 	// TURN, not the end of the child's work.
 	result jobResult
+	// shellID is the background shell id backing a bash job, set by
+	// workLedger.setShellID once asyncTool.awaitShell learns it from the
+	// inner tool's response metadata (empty until then, and always empty for
+	// run_command/agent/agentic_fetch jobs). Lets job_kill/job_output resolve
+	// the job id the model saw (toolCallID) to the shell id they need -- see
+	// workLedger.ResolveJobShellID (task #1053).
+	shellID string
 }
 
 // transitionToTerminal is the ONLY writer of state past phaseRunning. Called
