@@ -53,9 +53,20 @@ func (t *asyncTool) Run(ctx context.Context, call fantasy.ToolCall) (fantasy.Too
 		return fantasy.NewTextErrorResponse(err.Error()), nil
 	}
 	jobCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
-	if err := t.coordinator.asyncJobs.start(sessionID, call.ID, origin == message.OriginCLI, cancel); err != nil {
+	job, existing, err := t.coordinator.asyncJobs.Start(sessionID, call.ID, call.Input, t.name, childSessionID, origin == message.OriginCLI, cancel)
+	if err != nil {
 		cancel()
 		return fantasy.NewTextErrorResponse(err.Error()), nil
+	}
+	if existing {
+		// Idempotent retry of the same (owner, toolCallID): #1038. The
+		// executor already runs (or ran) for this call; do not start a
+		// second one -- a provider retrying the same tool call must not
+		// repeat the underlying side effect. This call's own jobCtx/cancel
+		// were never handed to an executor, so cancel it here instead of
+		// leaking it.
+		cancel()
+		return t.startedResponse(call.ID, job.childSession), nil
 	}
 	if childSessionID != "" && t.coordinator.permissions != nil {
 		t.coordinator.permissions.InheritSessionAutoApprove(sessionID, childSessionID)
@@ -64,10 +75,18 @@ func (t *asyncTool) Run(ctx context.Context, call fantasy.ToolCall) (fantasy.Too
 		}
 	}
 	go t.run(jobCtx, cancel, sessionID, childSessionID, call)
-	content := fmt.Sprintf("Async %s job %s started. Its result will arrive as a new session message; continue independent work.", t.name, call.ID)
+	return t.startedResponse(call.ID, childSessionID), nil
+}
+
+// startedResponse builds the "started" tool response for jobID/childSession.
+// Shared by the fresh-start and idempotent-retry (existing job) paths, so a
+// retried tool call reports the SAME child session id the first Start call
+// registered.
+func (t *asyncTool) startedResponse(jobID, childSessionID string) fantasy.ToolResponse {
+	content := fmt.Sprintf("Async %s job %s started. Its result will arrive as a new session message; continue independent work.", t.name, jobID)
 	return fantasy.WithResponseMetadata(fantasy.NewTextResponse(content), asyncToolMetadata{
-		Async: true, JobID: call.ID, ChildSessionID: childSessionID, Status: "running",
-	}), nil
+		Async: true, JobID: jobID, ChildSessionID: childSessionID, Status: "running",
+	})
 }
 
 func (t *asyncTool) childSessionID(ctx context.Context, parentID string, call fantasy.ToolCall) (string, error) {
@@ -136,29 +155,24 @@ func (t *asyncTool) run(ctx context.Context, cancel context.CancelFunc, sessionI
 // finalize delivers one async tool's completion. For the delegation tools
 // with a child session id (`agent`, `agentic_fetch`) the child's Run()
 // returning is only the end of a model TURN: the child may have started its
-// own async tools or background shells and merely yielded. Those are
-// parked (see subagent_outcome.go) and released exactly once when the
+// own async tools or background shells and merely yielded. Those are armed
+// (see work_ledger_delegation.go) and released exactly once when the
 // child's own work is terminal, so the parent is never told "finished"
 // over content that says the child is still waiting.
 //
 // Every other tool — bash, run_command — has no child session and no
 // self-directed follow-on work, so its completion is finished immediately,
 // exactly as before.
-//
-// ctx is this tool's own job context, which preserves the caller's origin
-// value; CallOriginFrom(ctx) is exactly what asyncJobs.start was told.
-func (t *asyncTool) finalize(ctx context.Context, sessionID, childSessionID string, completion AsyncCompletion) {
+func (t *asyncTool) finalize(_ context.Context, _, childSessionID string, completion AsyncCompletion) {
 	if t.coordinator == nil || t.coordinator.asyncJobs == nil {
 		return
 	}
+	result := jobResult{content: completion.Content, isError: completion.IsError}
 	if childSessionID != "" && (t.name == AgentToolName || t.name == tools.AgenticFetchToolName) {
-		t.coordinator.parkSubAgentOutcome(
-			childSessionID, sessionID, completion.ToolCallID, t.name,
-			CallOriginFrom(ctx) == message.OriginCLI, completion,
-		)
+		t.coordinator.asyncJobs.armDelegation(completion.SessionID, completion.ToolCallID, result)
 		return
 	}
-	t.coordinator.asyncJobs.finish(completion)
+	t.coordinator.asyncJobs.finish(completion.SessionID, completion.ToolCallID, result)
 }
 
 func (t *asyncTool) awaitShell(ctx context.Context, sessionID string, response fantasy.ToolResponse, completion *AsyncCompletion) {

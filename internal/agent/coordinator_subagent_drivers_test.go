@@ -17,8 +17,8 @@ import (
 func TestSubAgentWorkTerminal_DriverBusyIsNotTerminal(t *testing.T) {
 	t.Parallel()
 	coord := &coordinator{}
-	coord.asyncJobs = newAsyncJobRegistry(nil)
-	coord.subAgentOutcomes = newSubAgentOutcomeRegistry(coord)
+	coord.asyncJobs = newWorkLedger(nil)
+	coord.asyncJobs.coord = coord
 	coord.subAgentDrivers = newSubAgentDriverRegistry()
 
 	// c.currentAgent, if wrongly consulted for a driven child, would report
@@ -30,15 +30,15 @@ func TestSubAgentWorkTerminal_DriverBusyIsNotTerminal(t *testing.T) {
 	driverStub.setBusy(true)
 	coord.subAgentDrivers.register("child-1", subAgentDriver{agent: driverStub})
 
-	require.False(t, coord.subAgentWorkTerminal("child-1"),
+	require.False(t, coord.asyncJobs.childScopeDrained("child-1"),
 		"a busy driver must hold the child non-terminal even when c.currentAgent reports idle")
 
 	driverStub.setBusy(false)
-	require.True(t, coord.subAgentWorkTerminal("child-1"),
+	require.True(t, coord.asyncJobs.childScopeDrained("child-1"),
 		"once the driver is idle (and no async/background work is pending) the child is terminal")
 
 	// A session with no registered driver falls back to c.currentAgent,
 	// preserving behavior for non-delegated sessions and bare test fixtures.
-	require.True(t, coord.subAgentWorkTerminal("no-driver-session"),
+	require.True(t, coord.asyncJobs.childScopeDrained("no-driver-session"),
 		"a session with no registered driver must fall back to c.currentAgent's busy state")
 }

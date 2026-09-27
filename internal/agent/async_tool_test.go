@@ -24,7 +24,7 @@ func TestAsyncToolReturnsBeforeCommandFinishes(t *testing.T) {
 		<-release
 		return fantasy.NewTextResponse("program output"), nil
 	})
-	registry := newAsyncJobRegistry(nil)
+	registry := newWorkLedger(nil)
 	wrapped := &asyncTool{inner: inner, coordinator: &coordinator{asyncJobs: registry}, name: "run_command"}
 	ctx := context.WithValue(t.Context(), tools.SessionIDContextKey, "session")
 	ctx = WithCallOrigin(ctx, message.OriginCLI)
@@ -58,7 +58,7 @@ func TestAsyncToolWebCompletionWaitsForToolResult(t *testing.T) {
 		return fantasy.NewTextErrorResponse("exit 2"), nil
 	})
 	completed := make(chan AsyncCompletion, 1)
-	registry := newAsyncJobRegistry(func(result AsyncCompletion) { completed <- result })
+	registry := newWorkLedger(func(result AsyncCompletion) { completed <- result })
 	wrapped := &asyncTool{inner: inner, coordinator: &coordinator{asyncJobs: registry}, name: "run_command"}
 	ctx := context.WithValue(t.Context(), tools.SessionIDContextKey, "session")
 	ctx = WithCallOrigin(ctx, message.OriginWeb)
@@ -66,7 +66,7 @@ func TestAsyncToolWebCompletionWaitsForToolResult(t *testing.T) {
 	require.NoError(t, err)
 	releaseOnce.Do(func() { close(release) })
 	registry.mu.Lock()
-	ready := len(registry.sessions["session"].ready)
+	ready := len(registry.bySession["session"].ready)
 	registry.mu.Unlock()
 	require.Zero(t, ready)
 	registry.acknowledged("session", "call")

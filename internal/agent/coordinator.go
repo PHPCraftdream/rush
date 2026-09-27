@@ -245,11 +245,10 @@ type coordinator struct {
 	prompt      *prompt.Prompt
 	notify      pubsub.Publisher[notify.Notification]
 	background  *shell.BackgroundShellManager
-	asyncJobs   *asyncJobRegistry
-	// subAgentOutcomes holds delegated sub-agent completions that must wait
-	// for the child's own async work to drain before the parent is told the
-	// delegation is done. See subagent_outcome.go.
-	subAgentOutcomes *subAgentOutcomeRegistry
+	// asyncJobs is the single in-memory work ledger: plain async jobs
+	// (bash/run_command) and delegation jobs (agent/agentic_fetch) share one
+	// state machine and one mutex. See work_ledger.go/work_ledger_delegation.go.
+	asyncJobs *workLedger
 	// subAgentDrivers maps a delegated child session id to the SessionAgent
 	// driving it, so a wake for that child's own async work never races a
 	// second SessionAgent for its OS session lock. See
@@ -391,12 +390,10 @@ func NewCoordinator(
 		modelCache:             newBoundedModelPairCache(modelCacheMaxEntries),
 	}
 	// The web-done callback is notifyAsyncCompletion verbatim, exactly as
-	// before. The parked sub-agent outcome re-check triggers are wired
-	// separately, in installSubAgentOutcomeHooks below.
-	c.asyncJobs = newAsyncJobRegistry(c.notifyAsyncCompletion)
-	c.subAgentOutcomes = newSubAgentOutcomeRegistry(c)
+	// before.
+	c.asyncJobs = newWorkLedger(c.notifyAsyncCompletion)
+	c.asyncJobs.coord = c
 	c.subAgentDrivers = newSubAgentDriverRegistry()
-	c.installSubAgentOutcomeHooks()
 
 	agentCfg, ok := cfg.Config().Agents[config.AgentCoder]
 	if !ok || agentCfg.ID == "" {

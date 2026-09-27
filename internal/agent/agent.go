@@ -555,7 +555,7 @@ type sessionAgent struct {
 	systemPromptPrefix *csync.Value[string]
 	systemPrompt       *csync.Value[string]
 	tools              *csync.Slice[fantasy.AgentTool]
-	asyncJobs          *asyncJobRegistry
+	asyncJobs          *workLedger
 	config             *config.ConfigStore
 
 	// runWg tracks all active Run() calls across this agent. CancelAll waits
@@ -785,7 +785,7 @@ type SessionAgentOptions struct {
 	Sessions             session.Service
 	Messages             message.Service
 	Tools                []fantasy.AgentTool
-	AsyncJobs            *asyncJobRegistry
+	AsyncJobs            *workLedger
 	// Config is the MCP ownership scope for this agent. MCP runtime state is
 	// process-wide, so every turn filters registry-derived instructions by
 	// this consuming ConfigStore.

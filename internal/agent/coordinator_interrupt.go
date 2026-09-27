@@ -39,13 +39,12 @@ const interruptInjectTick = 3 * time.Second
 const interruptTickOperationTimeout = 10 * time.Second
 
 func (c *coordinator) Cancel(sessionID string) {
-	// Release delegations this session spawned AS CANCELED before
-	// asyncJobs.cancelSession drops their job rows, or the single final
-	// notice would have nowhere to land. Both directions are needed:
-	// sessionID is usually the PARENT whose tool call parked the entry, but
-	// Cancel is also called on a child session id directly.
-	c.releaseSubAgentOutcomesForParentCancel(sessionID)
-	c.releaseSubAgentOutcomesForChildCancel(sessionID)
+	// cancelSession handles both directions in one pass under one mutex:
+	// jobs sessionID owns, AND delegations armed on it as a CHILD -- so a
+	// delegation notice can never have nowhere to land (see
+	// workLedger.cancelSession's doc). sessionID is usually the PARENT whose
+	// tool call started the delegation, but Cancel is also called on a
+	// child session id directly.
 	if c.asyncJobs != nil {
 		c.asyncJobs.cancelSession(sessionID)
 	}
@@ -53,10 +52,8 @@ func (c *coordinator) Cancel(sessionID string) {
 }
 
 func (c *coordinator) CancelAll() (stillBusy bool) {
-	// Same ordering as Cancel: drain parked delegations first, then drop the
-	// job rows, then close the park registry (which also stops its fallback
-	// ticker).
-	c.releaseAllSubAgentOutcomesCanceled()
+	// close() cancels every session's jobs (both directions, per session)
+	// and stops the safety-net ticker.
 	if c.asyncJobs != nil {
 		c.asyncJobs.close()
 	}
