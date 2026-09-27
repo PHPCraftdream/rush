@@ -67,9 +67,12 @@ func (app *App) runNonInteractiveWithAsyncResults(ctx context.Context, output io
 			Prompt: prompt, Overrides: turnOverrides, Mode: mode,
 			ContinueSessionID: continueSessionID, UseLast: useLast,
 			Origin: overrides.Origin, Stdout: turnOutput, Stderr: os.Stderr,
-			HideSpinner:       hideSpinner,
-			captureResult:     true,
-			onSessionResolved: func(resolved string) { sessionID = resolved },
+			HideSpinner:   hideSpinner,
+			captureResult: true,
+			onSessionResolved: func(resolved string) {
+				sessionID = resolved
+				source.ClaimAsyncCompletions(resolved)
+			},
 		})
 		if result != nil {
 			final = result

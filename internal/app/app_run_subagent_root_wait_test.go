@@ -103,6 +103,14 @@ func TestRunNonInteractiveRootWaitsForChildOwnedBackgroundJob(t *testing.T) {
 			admissionWriteSSE(w, []string{
 				admissionSSEText("root-final", "root final answer"), admissionSSEStop("root-final", "stop"),
 			})
+		case "child:result":
+			// Child turn 4: the child's own killed job reports back to the
+			// CHILD (not to a queue nobody reads), and the child answers.
+			childTurns.Add(1)
+			requestOrder.add("child:result")
+			admissionWriteSSE(w, []string{
+				admissionSSEText("child-result", "child final: gate job reported"), admissionSSEStop("child-result", "stop"),
+			})
 		case "child:yield":
 			// Child turn 3: the child's own job_kill has already made its
 			// OWN owned background job terminal, so the child now yields.
@@ -195,9 +203,11 @@ func TestRunNonInteractiveRootWaitsForChildOwnedBackgroundJob(t *testing.T) {
 		"the child must start its background job before killing it: %v", order)
 	require.Less(t, indexOf(order, "child:kill"), indexOf(order, "child:yield"),
 		"the child must kill its job before yielding: %v", order)
-	require.Less(t, indexOf(order, "child:yield"), indexOf(order, "root:final"),
-		"the child's yield — and therefore its job's terminal state — must "+
-			"reach the parent before the root's final turn: %v", order)
+	require.Less(t, indexOf(order, "child:yield"), indexOf(order, "child:result"),
+		"the child's own job result must wake the child after it yielded: %v", order)
+	require.Less(t, indexOf(order, "child:result"), indexOf(order, "root:final"),
+		"the child's answer to its own job result must reach the parent "+
+			"before the root's final turn: %v", order)
 
 	require.EqualValues(t, 1, rootFinalTurn.Load(),
 		"the root must be resumed exactly once by the delegation result")
@@ -226,8 +236,8 @@ func TestRunNonInteractiveRootWaitsForChildOwnedBackgroundJob(t *testing.T) {
 			continue
 		}
 		notices++
-		require.Contains(t, item.FullText(), "child yielded",
-			"the parent's only delegation notice must carry the child's own text")
+		require.Contains(t, item.FullText(), "child final",
+			"the parent's only delegation notice must carry the child's final answer")
 	}
 	require.Equal(t, 1, notices, "exactly one delegation notice may reach the parent session")
 }
@@ -341,6 +351,8 @@ func routeModelRequest(body []byte) string {
 		return "title"
 	case strings.Contains(lastUser, "Async job call-agent (agent) finished"):
 		return "root:final"
+	case strings.Contains(lastUser, "Async job call-bash (bash)"):
+		return "child:result"
 	case strings.Contains(lastTool, "terminated successfully"):
 		return "child:yield"
 	case strings.Contains(lastTool, "Async bash job"):

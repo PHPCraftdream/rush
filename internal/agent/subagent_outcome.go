@@ -194,30 +194,28 @@ func (r *subAgentOutcomeRegistry) emit(entry *subAgentOutcomeEntry) {
 // completion hook (re-check trigger (ii)). Called by NewCoordinator once
 // both registries exist, and by tests that build a coordinator by hand.
 //
-// onWebDone is deliberately NOT wrapped: it only fires for web-origin jobs,
-// while a CLI-origin job merely lands on the session's ready queue — which
-// nobody drains for a child session. The hook below is what makes a CLI
-// child's job completion able to release a parked delegation at all.
+// onWebDone is deliberately NOT wrapped: it wakes the job's session.
 //
-// The cli flag matters for ordering. A CLI-origin job wakes nobody, so
-// re-checking immediately is safe. A web-origin job DOES wake the session
-// through notifyAsyncCompletion's own auto-resume run, and re-checking
-// immediately would race that run's claim on the session's mailbox — the
-// re-check could see the session idle and release the notice in the window
-// between "job done" and "child claimed its next turn". So for web-origin
-// jobs the re-check is deliberately deferred to the end of that run (see
-// the defer inside notifyAsyncCompletion's run closure).
+// The queued flag matters for ordering. A completion that lands on a drained
+// session's ready queue wakes nobody, so re-checking immediately is safe. A
+// completion that wakes its session (web origin, or any non-drained session
+// such as a CLI child) runs notifyAsyncCompletion's auto-resume turn, and
+// re-checking immediately would race that run's claim on the session's
+// mailbox — the re-check could see the session idle and release the notice
+// in the window between "job done" and "child claimed its next turn". So
+// those re-checks are deferred to the end of that run (see the defer inside
+// notifyAsyncCompletion's run closure).
 func (c *coordinator) installSubAgentOutcomeHooks() {
 	if c.asyncJobs == nil || c.subAgentOutcomes == nil {
 		return
 	}
-	c.asyncJobs.setJobCompletedHook(func(completion AsyncCompletion, cli bool) {
-		if cli {
+	c.asyncJobs.setJobCompletedHook(func(completion AsyncCompletion, queued bool) {
+		if queued {
 			c.subAgentOutcomes.noteChildRunEnded(completion.SessionID)
 			return
 		}
-		// Web origin: notifyAsyncCompletion already re-checks after its
-		// auto-resume run returns. Nothing to do here.
+		// Woken: notifyAsyncCompletion re-checks after its auto-resume run
+		// returns. Nothing to do here.
 	})
 }
 
@@ -673,6 +671,17 @@ func (r *subAgentOutcomeRegistry) gcLocked(childSessionID string) {
 // already reached a terminal state but is still queued for delivery (the
 // CLI ready queue, which nothing drains for a child session) is finished
 // work, not outstanding work, and must not hold a delegation parked.
+//
+// The busy check queries whichever SessionAgent actually drives childID's
+// turns: its registered driver (runSubAgent always registers one before
+// starting a delegated child, coordinator_subagent_drivers.go), falling back
+// to c.currentAgent for a childID with no driver (bare test fixtures; a
+// session that was never a delegation target). Querying c.currentAgent
+// unconditionally would ask the WRONG SessionAgent for any real delegated
+// child -- the coder agent never runs a child's turns, so it always reports
+// "not busy" for one, which used to let a release fire while the child's own
+// driver was still mid-stream, delivering the child's PRE-result text
+// instead of its final answer (task #1049).
 func (c *coordinator) subAgentWorkTerminal(childSessionID string) bool {
 	if childSessionID == "" {
 		return false
@@ -683,7 +692,11 @@ func (c *coordinator) subAgentWorkTerminal(childSessionID string) bool {
 	if c.background != nil && c.background.ActiveOwned(childSessionID) > 0 {
 		return false
 	}
-	if c.currentAgent != nil && c.currentAgent.IsSessionBusy(childSessionID) {
+	if driver, ok := c.subAgentDrivers.get(childSessionID); ok {
+		if driver.agent.IsSessionBusy(childSessionID) {
+			return false
+		}
+	} else if c.currentAgent != nil && c.currentAgent.IsSessionBusy(childSessionID) {
 		return false
 	}
 	return true

@@ -231,6 +231,32 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 		}
 	}
 
+	// Snapshot the call shape BEFORE starting the child's turn and register it
+	// as this child session's driver: a later wake for the child's own
+	// async/background work (notifyAsyncCompletion) must resume it on this
+	// SAME SessionAgent instead of racing a second one for the child's OS
+	// session lock (task #1049; design doc
+	// docs/plans/2026-09-27-async-structured-concurrency.md §3, "one driver
+	// per session"). Copies pinnedModel's CURRENT value rather than sharing
+	// its pointer: rebuildCall reassigns that local on a 401 retry, and the
+	// driver must keep the model the delegation actually started with, not
+	// whatever a later retry rebuilds it to.
+	driverModel := *pinnedModel
+	callTemplate := SessionAgentCall{
+		SessionID:        session.ID,
+		MaxOutputTokens:  maxTokens,
+		ProviderOptions:  getProviderOptions(session.ID, model, providerCfg),
+		Temperature:      model.ModelCfg.Temperature,
+		TopP:             model.ModelCfg.TopP,
+		TopK:             model.ModelCfg.TopK,
+		FrequencyPenalty: model.ModelCfg.FrequencyPenalty,
+		PresencePenalty:  model.ModelCfg.PresencePenalty,
+		NonInteractive:   true,
+		SmartModel:       &driverModel,
+		Credentials:      callCreds,
+	}
+	c.subAgentDrivers.register(session.ID, subAgentDriver{agent: params.Agent, call: callTemplate})
+
 	run := func() (*fantasy.AgentResult, error) {
 		return params.Agent.Run(ctx, SessionAgentCall{
 			SessionID:        session.ID,

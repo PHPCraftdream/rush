@@ -250,6 +250,11 @@ type coordinator struct {
 	// for the child's own async work to drain before the parent is told the
 	// delegation is done. See subagent_outcome.go.
 	subAgentOutcomes *subAgentOutcomeRegistry
+	// subAgentDrivers maps a delegated child session id to the SessionAgent
+	// driving it, so a wake for that child's own async work never races a
+	// second SessionAgent for its OS session lock. See
+	// coordinator_subagent_drivers.go.
+	subAgentDrivers *subAgentDriverRegistry
 
 	// mcpOwner is this config's MCP lifecycle owner (task #923). Nil keeps
 	// the legacy process-current-owner resolution via the package functions.
@@ -390,6 +395,7 @@ func NewCoordinator(
 	// separately, in installSubAgentOutcomeHooks below.
 	c.asyncJobs = newAsyncJobRegistry(c.notifyAsyncCompletion)
 	c.subAgentOutcomes = newSubAgentOutcomeRegistry(c)
+	c.subAgentDrivers = newSubAgentDriverRegistry()
 	c.installSubAgentOutcomeHooks()
 
 	agentCfg, ok := cfg.Config().Agents[config.AgentCoder]

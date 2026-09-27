@@ -101,6 +101,23 @@ func startChildOwnedJob(t *testing.T, registry *asyncJobRegistry, sessionID, too
 	registry.acknowledged(sessionID, toolCallID)
 }
 
+// finishChildJob completes a job the child owns and plays out the turn that
+// completion wakes: the child itself must receive its own result, and only
+// that woken run's end (notifyAsyncCompletion's deferred re-check) may
+// release the parked delegation.
+func finishChildJob(t *testing.T, coord *coordinator, delivered chan AsyncCompletion, completion AsyncCompletion) {
+	t.Helper()
+	coord.asyncJobs.finish(completion)
+	select {
+	case got := <-delivered:
+		require.Equal(t, completion.SessionID, got.SessionID, "the child's own job result must wake the child")
+		require.Equal(t, completion.ToolCallID, got.ToolCallID)
+	default:
+		t.Fatal("the child's own job result must wake the child")
+	}
+	coord.noteSubAgentChildRunEnded(completion.SessionID)
+}
+
 // drainDelegationNotices collects every completion delivered to the parent
 // session, non-blockingly.
 func drainDelegationNotices(delivered chan AsyncCompletion) []AsyncCompletion {
@@ -142,11 +159,10 @@ func TestAsyncAgentTool_NoFinishedNoticeWhileChildOwnedJobsPending(t *testing.T)
 // exactly one notice, delivered only once the child's owned async work is
 // terminal, carrying the child's own final text.
 //
-// The child's job is registered CLI-origin on purpose: a CLI-origin
-// completion only ever lands on the session's ready queue (async_job_registry
-// .go's releaseLocked), which nothing drains for a child session, so this
-// also proves the origin-independent onJobCompleted hook — the only way a
-// CLI child's job can release a parked delegation at all.
+// The child's job is registered CLI-origin on purpose: nothing drains a
+// child session's ready queue, so its CLI completion must wake the child
+// (the notice then waits for that woken turn) instead of being queued where
+// the child never sees its own result.
 func TestAsyncAgentTool_SingleFinalNoticeAfterChildJobsDrain(t *testing.T) {
 	t.Parallel()
 	delivered := make(chan AsyncCompletion, 4)
@@ -157,10 +173,9 @@ func TestAsyncAgentTool_SingleFinalNoticeAfterChildJobsDrain(t *testing.T) {
 	require.True(t, coord.subAgentOutcomes.hasParked())
 	require.Empty(t, drainDelegationNotices(delivered))
 
-	// Re-check trigger (ii): the child's own async job reaches a terminal
-	// state. The CLI flavor re-checks immediately, because nothing wakes
-	// the child session in that flavor.
-	coord.asyncJobs.finish(AsyncCompletion{
+	// The child's own async job reaches a terminal state, wakes the child,
+	// and the woken turn's end releases the delegation.
+	finishChildJob(t, coord, delivered, AsyncCompletion{
 		SessionID:  parkedChildSession,
 		ToolCallID: parkedChildJob,
 		ToolName:   "bash",
@@ -208,7 +223,7 @@ func TestSubAgentOutcome_FailedChildJobDeliveredOnceAsFailure(t *testing.T) {
 	parkDelegation(t, coord, child.ID, "child yielded: gate still running")
 	require.True(t, coord.subAgentOutcomes.hasParked())
 
-	coord.asyncJobs.finish(AsyncCompletion{
+	finishChildJob(t, coord, delivered, AsyncCompletion{
 		SessionID:  child.ID,
 		ToolCallID: parkedChildJob,
 		ToolName:   "bash",
@@ -396,7 +411,7 @@ func TestSubAgentOutcome_ResumeAfterNoticeDoesNotReemit(t *testing.T) {
 
 	// The child's owned job drains, which releases delegation A exactly
 	// once.
-	coord.asyncJobs.finish(AsyncCompletion{
+	finishChildJob(t, coord, delivered, AsyncCompletion{
 		SessionID: child.ID, ToolCallID: parkedChildJob, ToolName: "bash", Content: "gate ok",
 	})
 	first := drainDelegationNotices(delivered)
@@ -457,7 +472,7 @@ func TestSubAgentOutcome_BusyChildDefersReleaseUntilTurnEnds(t *testing.T) {
 	stub := newBusyStubAgent()
 	stub.setBusy(true)
 	coord.currentAgent = stub
-	coord.asyncJobs.finish(AsyncCompletion{
+	finishChildJob(t, coord, delivered, AsyncCompletion{
 		SessionID: child.ID, ToolCallID: parkedChildJob, ToolName: "bash", Content: "gate ok",
 	})
 	require.Empty(t, drainDelegationNotices(delivered),

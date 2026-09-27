@@ -16,10 +16,16 @@ type AsyncCompletion struct {
 	ToolName   string
 	Content    string
 	IsError    bool
+	// cli is the origin of the job that produced this completion. Set only
+	// on the wake-callback path, so the woken turn keeps the job's origin.
+	cli bool
 }
 
 // AsyncCompletionSource exposes session completion events to the CLI runner.
+// The runner claims its root session first; completions of every other
+// session wake that session instead of queueing where nobody reads them.
 type AsyncCompletionSource interface {
+	ClaimAsyncCompletions(string)
 	NextAsyncCompletion(context.Context, string) (AsyncCompletion, bool, error)
 	HasPendingAsyncJobs(string) bool
 }
@@ -35,6 +41,10 @@ type asyncJobSession struct {
 	jobs    map[string]*asyncJobState
 	ready   []AsyncCompletion
 	changed chan struct{}
+	// drained marks a session whose ready queue a CLI loop consumes (the
+	// root of a `rush run`). Sticky: completions arriving after that loop
+	// returned still queue instead of starting a turn in a finished run.
+	drained bool
 }
 
 type asyncJobRegistry struct {
@@ -45,12 +55,11 @@ type asyncJobRegistry struct {
 	// state, in both origin flavors. It is the origin-independent
 	// re-check trigger for parked sub-agent outcomes (see
 	// subagent_outcome.go): onWebDone only ever fires for web-origin
-	// jobs, while a CLI-origin job merely lands on the session's ready
-	// queue — which nobody drains for a child session, so a hook here
-	// is the only way a CLI child's job completion can release a parked
-	// delegation. The bool is the job's cli flag (true when only the
-	// ready queue will ever see it). Fired AFTER the row's own release,
-	// never from finishParked (which is the release path itself).
+	// jobs and non-drained sessions, while a completion for a drained
+	// session merely lands on its ready queue. The bool is true when the
+	// completion was queued and therefore woke nobody. Fired AFTER the
+	// row's own release, never from finishParked (which is the release
+	// path itself).
 	onJobCompleted func(AsyncCompletion, bool)
 	closed         bool
 }
@@ -99,6 +108,24 @@ func (r *asyncJobRegistry) start(sessionID, toolCallID string, cli bool, cancel 
 	return nil
 }
 
+// markDrained records that a CLI loop consumes sessionID's ready queue.
+// CLI completions of any other session wake that session through the
+// callback instead, like web-origin ones: nobody drains its queue.
+func (r *asyncJobRegistry) markDrained(sessionID string) {
+	if sessionID == "" {
+		return
+	}
+	r.mu.Lock()
+	r.sessionLocked(sessionID).drained = true
+	r.mu.Unlock()
+}
+
+// queuesLocked reports whether job's completion lands on the session's ready
+// queue (consumed by a CLI loop) rather than waking the session.
+func (r *asyncJobRegistry) queuesLocked(s *asyncJobSession, job *asyncJobState) bool {
+	return job.cli && (s.drained || r.onWebDone == nil)
+}
+
 func (r *asyncJobRegistry) acknowledged(sessionID, toolCallID string) {
 	r.mu.Lock()
 	s := r.sessions[sessionID]
@@ -132,15 +159,15 @@ func (r *asyncJobRegistry) finish(completion AsyncCompletion) {
 		return
 	}
 	job.completion = &completion
+	queued := r.queuesLocked(s, job)
 	ready, callback := r.releaseLocked(s, completion.ToolCallID)
 	hook := r.onJobCompleted
-	jobCLI := job.cli
 	r.mu.Unlock()
 	if callback {
 		r.onWebDone(ready)
 	}
 	if hook != nil {
-		hook(completion, jobCLI)
+		hook(completion, queued)
 	}
 }
 
@@ -193,11 +220,13 @@ func (r *asyncJobRegistry) releaseLocked(s *asyncJobSession, toolCallID string) 
 	}
 	completion := *job.completion
 	delete(s.jobs, toolCallID)
-	if job.cli {
+	queued := r.queuesLocked(s, job)
+	if queued {
 		s.ready = append(s.ready, completion)
 	}
 	signalAsyncSession(s)
-	return completion, !job.cli && r.onWebDone != nil
+	completion.cli = job.cli
+	return completion, !queued && r.onWebDone != nil
 }
 
 // setJobCompletedHook installs (or, with nil, removes) the

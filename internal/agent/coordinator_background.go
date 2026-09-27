@@ -47,16 +47,59 @@ func FormatAsyncCompletion(completion AsyncCompletion) string {
 func (c *coordinator) notifyAsyncCompletion(completion AsyncCompletion) {
 	ctx := context.WithValue(context.Background(), autoResumedCtxKey{}, true)
 	ctx = context.WithValue(ctx, backgroundJobNoticeCtxKey{}, true)
-	ctx = WithCallOrigin(ctx, message.OriginWeb)
-	go runAutoResumeRecovered(ctx, completion.SessionID, completion.ToolCallID, func(ctx context.Context) (*fantasy.AgentResult, error) {
-		// Re-check trigger (ii), web flavor: this closure IS the turn that
-		// the completed job woke. Re-evaluate any delegation parked for
-		// this session only once this run has returned, so a release can
-		// never land in the window between "job done" and "this claim on
-		// the session's mailbox". Runs even when Run fails or queues.
-		defer c.noteSubAgentChildRunEnded(completion.SessionID)
+	origin := message.OriginWeb
+	if completion.cli {
+		origin = message.OriginCLI
+	}
+	ctx = WithCallOrigin(ctx, origin)
+
+	// One driver per session (task #1049; design doc
+	// docs/plans/2026-09-27-async-structured-concurrency.md §3): a delegated
+	// child session's own async/background completion must wake the SAME
+	// SessionAgent that is driving its turns, never c.currentAgent's coder
+	// agent -- a different SessionAgent has no mailbox record of this child
+	// session, treats it as idle, and races the driver's own in-flight Run
+	// for the same session on the shared OS-level session lock instead of
+	// queuing behind it. c.Run (-> c.currentAgent.Run) remains correct for
+	// every session that IS driven by the coder agent (the root, and any
+	// non-delegated session), since no driver is ever registered for those.
+	notify := func(ctx context.Context) (*fantasy.AgentResult, error) {
 		return c.Run(ctx, completion.SessionID, FormatAsyncCompletion(completion))
+	}
+	if driver, ok := c.subAgentDrivers.get(completion.SessionID); ok {
+		call := driver.callFor(FormatAsyncCompletion(completion))
+		// c.Run's buildCall stamps these three fields from ctx
+		// (noticeFlagsFrom/CallOriginFrom); driver.agent.Run bypasses
+		// buildCall entirely, so they must be set explicitly here to keep the
+		// persisted notice's badges/origin identical to the c.Run path.
+		call.AutoResumed = true
+		call.BackgroundJobNotice = true
+		call.Origin = origin
+		notify = func(ctx context.Context) (*fantasy.AgentResult, error) {
+			return driver.agent.Run(ctx, call)
+		}
+	}
+	go runAutoResumeRecovered(ctx, completion.SessionID, completion.ToolCallID, func(ctx context.Context) (*fantasy.AgentResult, error) {
+		// Re-check trigger (ii)/(iv): this closure IS the turn that the
+		// completed job woke -- either directly (mailbox was idle) or as the
+		// eventual return of a Run() call that only queued the wake behind an
+		// already-live turn on the SAME driver (mailbox was busy; the queued
+		// call is drained by that live turn's own end-of-turn loop, see
+		// agent_run.go's runOwned). Either way, re-evaluate any delegation
+		// parked for this session only once this call returns, so a release
+		// can never land in the window before the wake's effect (queued or
+		// direct) is visible.
+		defer c.noteSubAgentChildRunEnded(completion.SessionID)
+		return notify(ctx)
 	})
+}
+
+// ClaimAsyncCompletions makes sessionID's CLI completions queue for
+// NextAsyncCompletion instead of waking the session.
+func (c *coordinator) ClaimAsyncCompletions(sessionID string) {
+	if c.asyncJobs != nil {
+		c.asyncJobs.markDrained(sessionID)
+	}
 }
 
 func (c *coordinator) NextAsyncCompletion(ctx context.Context, sessionID string) (AsyncCompletion, bool, error) {
