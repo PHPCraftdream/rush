@@ -890,7 +890,7 @@ func TestReleaseHandsCloseToHeartbeatWhenTouchHangs(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("Release blocked on the hung touch; bounded handoff not taken")
 	}
-	require.True(t, lk.heartbeatHandoff.Load(), "Release must hand unlock+close to the heartbeat finalizer when the touch is stuck")
+	require.Equal(t, closeStateHeartbeatCloses, lk.closeState.Load(), "Release must hand unlock+close to the heartbeat finalizer when the touch is stuck")
 
 	close(unblock)
 	select {

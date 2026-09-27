@@ -57,16 +57,24 @@ var touchLockFileFn = touchLockFile
 // loop or mark us as dead. A transient failure while we hold the OS lock
 // must never let another process conclude it can steal the session. Logging
 // is throttled so a persistently failing filesystem does not spam each tick.
-func heartbeat(f *os.File, path string, done <-chan struct{}, active *atomic.Bool, interval time.Duration, exited chan<- struct{}, handoff *atomic.Bool) {
+func heartbeat(f *os.File, path string, done <-chan struct{}, active *atomic.Bool, interval time.Duration, exited chan<- struct{}, closeState *atomic.Int32, handoffDone chan struct{}, exitSeam func()) {
 	// Registered as the FIRST statement so it runs LAST (defers are LIFO):
 	// it executes only after the loop below returns — hence after any
 	// in-flight touchLockFile completed — so the handle is never closed
-	// mid-use. If Release timed out waiting for us and set handoff (it
-	// cannot close the handle itself without racing our touch), WE own the
-	// unlock + close. Reading handoff strictly before close(exited) is
-	// what makes the handoff exactly-once; see Release's argument.
+	// mid-use.
+	//
+	// The CAS races the identical one in Release's handoff branch: we try
+	// to claim closeStateReleaseCloses (i.e. "Release closes"). If that
+	// succeeds, Release either already took, or will take, the normal
+	// unlock+close path itself. If it fails, Release already claimed
+	// closeStateHeartbeatCloses first (its bounded wait timed out before we
+	// got here) — WE are the sole closer, and it is always safe: we only
+	// reach this point after the loop below returned, i.e. after any
+	// in-flight touch completed. Exactly one CAS on one variable — not an
+	// independent Load/Store pair — makes this decision exactly-once; see
+	// the closeState field doc and Release's handoff branch.
 	defer func() {
-		if handoff.Load() {
+		if !closeState.CompareAndSwap(closeStateUndecided, closeStateReleaseCloses) {
 			if err := unlockFile(f); err != nil {
 				slog.Warn("session lock: heartbeat handoff unlock failed",
 					"path", path, "err", err)
@@ -75,6 +83,13 @@ func heartbeat(f *os.File, path string, done <-chan struct{}, active *atomic.Boo
 				slog.Warn("session lock: heartbeat handoff close failed",
 					"path", path, "err", err)
 			}
+			// Release registered handoffDone before winning its CAS; we
+			// are the loser, so we close it — only this lock's own channel
+			// (task #1031).
+			finishPendingHandoff(path, handoffDone)
+		}
+		if exitSeam != nil {
+			exitSeam()
 		}
 		close(exited)
 	}()

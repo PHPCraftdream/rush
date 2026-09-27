@@ -214,14 +214,38 @@ type SessionLock struct {
 	// handle. Release waits on it (bounded by heartbeatHandoffBound)
 	// before unlocking/closing the handle itself; see Release.
 	heartbeatExited chan struct{}
-	// heartbeatHandoff is set by Release only when that bounded wait
-	// times out, meaning the heartbeat is still blocked inside a touch
-	// syscall on the handle. Once set, the heartbeat's finalizer — not
-	// Release — performs unlockFile + Close, so the handle is never
-	// closed out from under an in-flight touch. The heartbeat reads it
-	// strictly before closing heartbeatExited; see Release's
-	// exactly-one-closer argument.
-	heartbeatHandoff atomic.Bool
+	// closeState coordinates, via exactly one atomic CompareAndSwap,
+	// which of Release or the heartbeat finalizer performs the final
+	// unlockFile+Close when a heartbeat touch is still in flight at
+	// Release's bounded handoff wait (heartbeatHandoffBound expiring).
+	// Both sides race a CAS away from closeStateUndecided toward their
+	// own preferred outcome (see the constants' doc comment in
+	// lock_handoff.go); whichever CAS wins is authoritative and the
+	// loser follows it, so exactly one side ever closes the handle.
+	//
+	// This replaces an earlier Load/Store *atomic.Bool pair (task
+	// #1017) that admitted an interleaving where BOTH sides skipped
+	// closing: the heartbeat's finalizer read the flag as false (not
+	// yet set), then Release's bound elapsed and it set the flag and
+	// returned without closing (deferring to the heartbeat), then the
+	// heartbeat — having already read false — also never closed. A
+	// single CAS cannot admit that outcome: exactly one of the two CAS
+	// attempts must succeed.
+	closeState atomic.Int32
+	// heartbeatExitSeam, if non-nil, is called by the heartbeat's
+	// finalizer after the closeState decision (and any resulting
+	// unlock+close) but strictly before close(heartbeatExited).
+	// Test-only seam (task #1017): lets a test pause the heartbeat right
+	// after it has decided the closer, without needing a real hung
+	// touch, to deterministically exercise the decision's outcome. Nil
+	// in every production path (no-op). Set via the unexported
+	// withHeartbeatExitSeam LockOption.
+	heartbeatExitSeam func()
+	// handoffDone is this lock's own pending-handoff channel, registered in
+	// pendingHandoffUnlocks by Release's timeout branch. It is closed exactly
+	// once, by whichever side LOST the closeState CAS (that side is the one
+	// that unlocks+closes), and only after that unlock.
+	handoffDone chan struct{}
 }
 
 // SessionLockBusyError is returned by TryAcquireSessionLock when the
@@ -421,6 +445,19 @@ var acquireMidStampSeam func(path string)
 // threshold, no PID liveness probe, nothing overrides that — we return
 // SessionLockBusyError unconditionally.
 func acquireSessionLockFileWithOptions(path string, opts []LockOption) (*SessionLock, error) {
+	// If our own process's most recent Release() of this exact path
+	// handed the OS unlock off to its heartbeat finalizer and hasn't
+	// completed it yet, wait for it here — bounded — before attempting
+	// the real OS lock. Otherwise a same-process re-acquire arriving in
+	// that window sees our own outgoing lock as a foreign busy holder
+	// and fails outright (task #1031: agent.Run resuming a sub-agent
+	// gets "session already in use" with no retry). Waiting is the only
+	// way this acquire can succeed at all — our own handle still holds
+	// the OS lock until the handoff's unlock actually runs. If the bound
+	// elapses, fall through to the normal attempt and its normal busy
+	// error; never block indefinitely on our own past release.
+	waitForPendingHandoff(path)
+
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
 		if busyErr, ok := busyIfPermissionDeniedOpenHasActiveLock(path, err); ok {
@@ -511,6 +548,7 @@ func acquireSessionLockFileWithOptions(path string, opts []LockOption) (*Session
 		f:                     f,
 		stop:                  stop,
 		heartbeatExited:       heartbeatExited,
+		handoffDone:           make(chan struct{}),
 		clearHolderMetadataFn: clearHolderMetadata, // Default implementation
 	}
 	// Apply any lock options (e.g., test injection of blocking cleanup)
@@ -520,7 +558,7 @@ func acquireSessionLockFileWithOptions(path string, opts []LockOption) (*Session
 	if lk.heartbeatInterval <= 0 {
 		lk.heartbeatInterval = lockHeartbeatInterval
 	}
-	go heartbeat(f, path, stop, &lk.active, lk.heartbeatInterval, heartbeatExited, &lk.heartbeatHandoff)
+	go heartbeat(f, path, stop, &lk.active, lk.heartbeatInterval, heartbeatExited, &lk.closeState, lk.handoffDone, lk.heartbeatExitSeam)
 
 	return lk, nil
 }
@@ -536,8 +574,13 @@ func acquireSessionLockFileWithOptions(path string, opts []LockOption) (*Session
 //     unlock/close itself. If it is still blocked inside a heartbeat touch
 //     syscall on the file handle (slow/hung SetFileTime or Chtimes on
 //     AV/SMB) at the bound, Release hands unlock+close to the heartbeat's
-//     finalizer and returns — "unlock in progress", never lost (see the
-//     exactly-one-closer argument in the function body).
+//     finalizer and returns — "unlock in progress", never lost, and never
+//     ownerless: a single atomic CompareAndSwap (closeState), raced against
+//     the identical CAS in the heartbeat finalizer's defer, decides exactly
+//     once who closes (see the CAS argument in the function body and on
+//     the closeState field). A same-process re-acquire of this same path
+//     that arrives before that pending close finishes waits for it instead
+//     of bouncing off the still-held OS lock (see waitForPendingHandoff).
 //  3. Unlock the OS-level lock (unlockFile) - this is the critical correctness-critical step.
 //  4. Close the file descriptor (f.Close).
 //  5. Clear diagnostic metadata (clearHolderMetadata) - best-effort cleanup that can hang.
@@ -598,50 +641,57 @@ func (l *SessionLock) Release() error {
 			// handle / handle-reuse hazard on Windows. In that case hand
 			// unlock+close to the heartbeat's finalizer and return; the OS
 			// unlock still happens, just a few syscalls later.
+			// Set when our CAS lost after registering l.handoffDone: we
+			// close it ourselves, after our own unlock+close below.
+			var lostHandoff chan struct{}
 			if l.heartbeatExited != nil {
 				select {
 				case <-l.heartbeatExited:
-					// Fast path: the heartbeat already exited; safe to
-					// unlock + close below.
+					// Fast path: the heartbeat already exited. By the
+					// exactly-one-closer argument below, its finalizer's CAS
+					// has already run and — since we never reached our own
+					// CAS on this path — it must have claimed
+					// closeStateReleaseCloses. Safe to unlock + close below.
 				case <-time.After(heartbeatHandoffBound):
-					select {
-					case <-l.heartbeatExited:
-						// Exited within the re-check window; fall through.
-					default:
-						// Hand off: the heartbeat is still inside a touch
-						// syscall on the handle; closing it here would race.
-						// The heartbeat's finalizer now owns unlock+close.
+					// The bound elapsed without confirmation the heartbeat
+					// exited. Decide who closes with a single atomic
+					// CompareAndSwap, raced against the identical CAS in the
+					// heartbeat finalizer's defer (see heartbeat): whichever
+					// side's CAS succeeds first is authoritative, and — because
+					// it is one CAS on one variable, not an independent Load
+					// and Store — the two sides can never both conclude "the
+					// other one closes", which is exactly the interleaving that
+					// used to leak the handle (task #1017): the heartbeat read
+					// handoff as false, then Release set it and returned
+					// without closing, then the heartbeat — having already
+					// read false — also never closed.
+					//
+					// This lock's own pending-handoff channel is registered
+					// BEFORE the CAS so that, the instant the CAS can succeed,
+					// a same-process re-acquire of this exact path can already
+					// wait on it instead of seeing our own outgoing lock as a
+					// foreign busy holder (task #1031; see
+					// waitForPendingHandoff). The CAS loser closes it, after
+					// its own unlock+close.
+					pendingHandoffUnlocks.Store(l.Path, l.handoffDone)
+					if l.closeState.CompareAndSwap(closeStateUndecided, closeStateHeartbeatCloses) {
+						// We won: the heartbeat had not yet reached its
+						// finalizer's CAS, so it is either still inside
+						// touchLockFileFn or about to run the finalizer —
+						// either way its own CAS will now fail and it unlocks
+						// + closes the handle itself once any in-flight touch
+						// drains, which the finalizer only reaches after its
+						// loop returns, i.e. never while a touch is in flight.
 						//
-						// Exactly-one-closer argument (Release vs. the
-						// heartbeat finalizer): the heartbeat reads handoff
-						// STRICTLY BEFORE it closes heartbeatExited, so if
-						// Release's re-check still observes heartbeatExited
-						// open, the heartbeat's later read of handoff happens
-						// after Release's Store(true) below and must observe
-						// true — the heartbeat then unlocks+closes in its
-						// finalizer. If instead the heartbeat already read
-						// handoff as false, that read strictly precedes its
-						// close(exited), so Release's re-check observes the
-						// channel closed and Release itself closes the file.
-						// Either way exactly one of the two ever closes the
-						// file, and — because the heartbeat only reaches its
-						// finalizer after the loop returned, i.e. after any
-						// in-flight touch completed — never while a touch is
-						// in flight.
-						//
-						// The handoff can only DELAY, never lose, the OS
-						// unlock: the heartbeat finalizer runs unlockFile +
-						// Close as soon as the blocked touch drains, and even
-						// if the whole process is killed first the kernel
-						// releases flock/LockFileEx on process death, so a
-						// new owner's real OS-lock attempt still succeeds.
-						// Release returning here therefore means "unlock in
-						// progress by the heartbeat goroutine", which fast
-						// re-acquirers observe as a transient busy error for
-						// the handful of syscalls the stuck touch needs to
-						// drain — matching the retry-loop tolerance documented
-						// on clearHolderMetadata.
-						l.heartbeatHandoff.Store(true)
+						// This can only DELAY, never lose, the OS unlock: the
+						// heartbeat finalizer runs it as soon as the blocked
+						// touch drains, and even if the whole process is
+						// killed first the kernel releases flock/LockFileEx on
+						// process death, so a new owner's real OS-lock attempt
+						// still succeeds. Release returning here means "unlock
+						// in progress by the heartbeat goroutine", and a
+						// same-process re-acquire of this path will wait for it
+						// rather than bounce off it as a foreign holder.
 						path := l.Path
 						generation := l.generation
 						cleanupFn := l.clearHolderMetadataFn
@@ -657,6 +707,12 @@ func (l *SessionLock) Release() error {
 						}()
 						return
 					}
+					// We lost: the heartbeat finalizer's CAS already claimed
+					// closeStateReleaseCloses, which it only does after its
+					// loop returned — no touch is in flight. Close the handle
+					// ourselves below, then release any waiter that saw the
+					// registry entry.
+					lostHandoff = l.handoffDone
 				}
 			}
 			// P0 fix: unlock and close FIRST, before any diagnostic cleanup that can hang.
@@ -668,6 +724,9 @@ func (l *SessionLock) Release() error {
 				releaseErr = unlockErr
 			} else if closeErr != nil {
 				releaseErr = closeErr
+			}
+			if lostHandoff != nil {
+				finishPendingHandoff(l.Path, lostHandoff)
 			}
 
 			// Capture path, generation, and cleanup function by value for the background goroutine.
