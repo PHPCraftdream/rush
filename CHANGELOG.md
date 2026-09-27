@@ -36,6 +36,20 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 - **The web composer history no longer recalls messages that did not
   originate from the user** (notice/system-origin messages were polluting
   `$myPrompts`).
+- **A delegated sub-agent in `rush run` now receives the results of its own
+  async commands.** They used to land on a queue only the root read, so the
+  sub-agent never saw its command output and the parent got the sub-agent's
+  pre-result text. The result is also delivered when the command finishes
+  while the sub-agent's turn is still running: the wake now goes to the same
+  agent that drives the sub-agent (previously a second agent collided with
+  its own session lock and the result was dropped).
+- **A released session lock is always closed and unlocked.** A race between
+  `Release` and a slow heartbeat touch could leave nobody closing the lock
+  file, keeping the session "busy" until the process exited; a re-acquire of
+  the same session in the same process now waits for its own pending unlock
+  instead of failing with "session is already in use".
+- **The task agent is never given the `agent` tool**, which would make tool
+  construction recurse forever and hang every run.
 
 ### Changed
 
@@ -47,6 +61,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 ### Changed
 
 - **Installed delegation skills now give Claude and Codex distinct guidance.**
+  Every Codex variant explicitly passes `--codex-thread-id` when launching
+  or resuming Rush, so completion returns to the originating Codex thread.
   The `wcrush` workflow also requires the orchestrator to commit verified
   changes after transferring them into the primary branch; the sub-agent
   still never commits or pushes.
@@ -86,6 +102,12 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **`rush run --codex-thread-id` notifies the originating Codex thread when
+  a CLI attempt ends.** The message distinguishes completion, failure,
+  cancellation, queued work, and a question awaiting an answer. It includes
+  a short result or error summary, preserves quotes by passing the message
+  as one process argument, and does not change Rush's exit status if delivery
+  fails. The notification runs after the JSON result is written.
 - **Delegation skills can have shared and CLI-specific instructions.** Skill
   sources may remain Markdown or use ordered YAML blocks with common and
   per-target text. Claude and Codex now receive their own launch and
