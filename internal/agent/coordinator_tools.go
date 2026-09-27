@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"charm.land/fantasy"
@@ -518,6 +519,11 @@ func (c *coordinator) rejectScopedCallOnCLIProvider(ctx context.Context, role st
 		role, providerCfg.ID, cliprovider.ProviderType)
 }
 
+// nestedAgentToolWarnOnce rate-limits the task #1050 nested-delegation
+// warning below to once per process, since a misconfigured task agent
+// would otherwise log on every buildTools call for every sub-agent turn.
+var nestedAgentToolWarnOnce sync.Once
+
 // buildTools builds the tool slice for agent. cfg is the pinned
 // *config.Config the caller captured for this whole buildAgent call (task
 // #576/P1-3) -- every config-derived choice below (worker tool layering,
@@ -610,11 +616,26 @@ func (c *coordinator) buildTools(ctx context.Context, cfg *config.Config, agent 
 
 	var allTools []fantasy.AgentTool
 	if slices.Contains(agent.AllowedTools, AgentToolName) {
-		agentTool, err := c.agentTool(ctx)
-		if err != nil {
-			return nil, err
+		if isSubAgent {
+			// Recursion guard (task #1050): this build is for the task
+			// agent itself -- the only isSubAgent=true build in production
+			// (see agent_tool.go's c.buildAgent call). Handing it the
+			// "agent" tool would let c.agentTool build a fresh copy of the
+			// same task agent, whose buildTools would see AgentToolName
+			// again and recurse forever, each level registering two more
+			// goroutines on the shared c.readyWg that every run entry point
+			// blocks on via readyWg.Wait(). Deny unconditionally, no matter
+			// what AllowedTools says.
+			nestedAgentToolWarnOnce.Do(func() {
+				slog.Warn("task agent AllowedTools includes the agent tool; denying it to prevent nested delegation recursion", "agent", agent.Name)
+			})
+		} else {
+			agentTool, err := c.agentTool(ctx)
+			if err != nil {
+				return nil, err
+			}
+			allTools = append(allTools, agentTool)
 		}
-		allTools = append(allTools, agentTool)
 	}
 
 	if slices.Contains(agent.AllowedTools, tools.AgenticFetchToolName) {
