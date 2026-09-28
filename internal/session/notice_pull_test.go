@@ -315,3 +315,34 @@ func TestPullJobNotices_InsertsMessageWithNoticeInvariant(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, pulled2)
 }
+
+// TestPullJobNotices_JobKillDeliveryDoneNeverPulled pins doc sec.3.2: for
+// job_kill, the outcome is the job_kill TOOL CALL's own synchronous
+// response, so its transition commits delivery='done' directly (not
+// 'pending') -- the row must never surface as a second, duplicate notice via
+// the pull, and no message may ever be created for it.
+func TestPullJobNotices_JobKillDeliveryDoneNeverPulled(t *testing.T) {
+	store, q, ctx := newTestStore(t)
+	require.NoError(t, seedSession(ctx, q, "owner-1"))
+
+	_, err := store.Claim(ctx, ClaimParams{Owner: "owner-1", ToolCallID: "call-1", Kind: JobKindCommand, Input: "x", ToolName: "bash"})
+	require.NoError(t, err)
+	require.NoError(t, store.MarkAnnounced(ctx, "owner-1", "call-1"))
+
+	// Mirrors work_ledger_transition.go's causeStateNoticeKindWake for
+	// causeJobKill: state=cancelled, notice_kind=job_kill, wake=false,
+	// delivery=done.
+	res, err := store.Transition(ctx, TransitionParams{
+		Owner: "owner-1", ToolCallID: "call-1", State: "cancelled", NoticeKind: "job_kill",
+		ResultSummary: "killed on request", Wake: false, Delivery: "done",
+	})
+	require.NoError(t, err)
+	require.Equal(t, TransitionWon, res.Outcome)
+	require.Equal(t, "done", res.Row.Delivery, "job_kill must commit straight to done, never pending")
+
+	messages := message.NewService(store.q)
+	pulled, err := store.PullJobNotices(ctx, messages, "owner-1", jobNoticeParams)
+	require.NoError(t, err)
+	require.Empty(t, pulled, "a job_kill row must never be pulled as a notice -- its outcome is already the tool's own response")
+	require.EqualValues(t, 0, countMessages(t, store.q, ctx, "owner-1"))
+}
