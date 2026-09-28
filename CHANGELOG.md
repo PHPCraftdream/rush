@@ -145,6 +145,17 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   session that goes idle while a restored message is still queued shows a
   plain "Send" instead, so it isn't stranded until an unrelated future turn
   happens to flush it.
+- **`rush run --role worker`/`--role reviewer` now honor a per-session
+  worker/reviewer model override** (set via the web UI's model selector,
+  same `set_session_models` path as the existing smart/fast per-session
+  pin), instead of only ever reading the config-wide default for that
+  role. `sessions show` also now prints the fast/worker/reviewer slots
+  (previously only smart was shown).
+- **The web model selector now covers all four role slots** (smart, fast,
+  worker, reviewer), not just smart/fast: each has its own icon, recent
+  models, reasoning effort, and a reset-to-default action; worker/reviewer
+  live in a compact expandable panel next to the always-visible smart/fast
+  pickers.
 
 ### Changed
 

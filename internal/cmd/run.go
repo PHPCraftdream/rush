@@ -78,7 +78,9 @@ worker/reviewer are configured with "rush models use <smart> <fast>
 --worker <model> --reviewer <model>" (or the web UI / rush.json's
 models.worker / models.reviewer directly). The actual model id behind
 each role comes from "rush models show"; --model overrides it for one
-invocation.
+invocation. If the session already has a per-session worker/reviewer
+override (set via the web UI's model selector), that override wins over
+the config default — same precedence as the smart/fast per-session pin.
 
 Prompt sources (combined as "<stdin>\n\n<args>"):
   - positional args:   rush run "your prompt"
@@ -747,18 +749,22 @@ rush run --role smart --timeout 5m --session "long-task" "refactor the storage l
 			return fmt.Errorf("no providers configured - please run 'rush' to set up a provider interactively")
 		}
 
-		// Fold --role into smartModel. When the user picked a role other than
-		// "smart" without also passing an explicit --model, we point the
-		// agent at whatever the config has saved for that role's slot
-		// (fast/worker/reviewer) — that's the user's pre-declared choice for
-		// that role. The agent always uses its `smart` slot for the turn;
-		// --role just decides which catalog entry fills it.
+		// Fold --role into smartModel: without an explicit --model, prefer a
+		// worker/reviewer override pinned on THIS session (task #1060,
+		// sessionRoleModelOverride — same set_session_models path as
+		// smart/fast), else the config's default for that role's slot. The
+		// agent always uses its `smart` slot for the turn; --role decides
+		// which catalog entry fills it.
 		if modelType != config.SelectedModelTypeSmart && smartModel == "" {
-			roleModel, ok := a.Config().Models[modelType]
-			if !ok || roleModel.Model == "" {
-				return fmt.Errorf("--role %s: no %s model configured (run \"rush models use --%s <model>\" first)", role, modelType, modelType)
+			if override := sessionRoleModelOverride(ctx, a, sessionID, modelType); override != "" {
+				smartModel = override
+			} else {
+				roleModel, ok := a.Config().Models[modelType]
+				if !ok || roleModel.Model == "" {
+					return fmt.Errorf("--role %s: no %s model configured (run \"rush models use --%s <model>\" first)", role, modelType, modelType)
+				}
+				smartModel = roleModel.Provider + "/" + roleModel.Model
 			}
-			smartModel = roleModel.Provider + "/" + roleModel.Model
 		}
 
 		if verbose {
