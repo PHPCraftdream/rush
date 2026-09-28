@@ -473,13 +473,13 @@ type UpdateLSPServerPayload struct {
 }
 
 type RemoveRecentModelPayload struct {
-	ModelType string `json:"modelType"` // "smart" or "fast"
+	ModelType string `json:"modelType"` // "smart", "fast", "worker", or "reviewer"
 	Provider  string `json:"provider"`
 	Model     string `json:"model"`
 }
 
 type TrackModelUsagePayload struct {
-	ModelType string `json:"modelType"` // "smart" or "fast"
+	ModelType string `json:"modelType"` // "smart", "fast", "worker", or "reviewer"
 	Provider  string `json:"provider"`
 	Model     string `json:"model"`
 }
@@ -521,11 +521,18 @@ type ConfigWire struct {
 	Theme             string                    `json:"theme"`
 	RecentSmartModels []ModelEntryWire          `json:"recentSmartModels,omitempty"`
 	RecentFastModels  []ModelEntryWire          `json:"recentFastModels,omitempty"`
-	ContextPaths      []string                  `json:"contextPaths,omitempty"`
-	SkillsPaths       []string                  `json:"skillsPaths,omitempty"`
-	InitializeAs      string                    `json:"initializeAs,omitempty"`
-	Version           string                    `json:"version,omitempty"`
-	CWD               string                    `json:"cwd,omitempty"`
+	// RecentWorkerModels/RecentReviewerModels are worker/reviewer's
+	// equivalent of RecentSmartModels/RecentFastModels above (task #1061).
+	// RecordRecentModel/track_model_usage already accepted any
+	// config.SelectedModelType including worker/reviewer before this — only
+	// the wire struct never surfaced those two lists back to the client.
+	RecentWorkerModels   []ModelEntryWire `json:"recentWorkerModels,omitempty"`
+	RecentReviewerModels []ModelEntryWire `json:"recentReviewerModels,omitempty"`
+	ContextPaths         []string         `json:"contextPaths,omitempty"`
+	SkillsPaths          []string         `json:"skillsPaths,omitempty"`
+	InitializeAs         string           `json:"initializeAs,omitempty"`
+	Version              string           `json:"version,omitempty"`
+	CWD                  string           `json:"cwd,omitempty"`
 	// KeepAliveEnabled mirrors Options.KeepAliveEnabled with the default
 	// resolved server-side (nil → true), so the frontend never sees an
 	// ambiguous undefined.

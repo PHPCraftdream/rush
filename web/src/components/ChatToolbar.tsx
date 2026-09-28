@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useStore } from "@nanostores/react";
-import { Minimize2, X, CheckCheck, ScrollText, Plug, Sun, Moon, Settings, ServerCog, FileText, Headphones, Eye, ChevronsDownUp, SlidersHorizontal, ArrowUpCircle, MoreHorizontal, PowerOff } from "lucide-react";
+import { Minimize2, X, CheckCheck, ScrollText, Plug, Sun, Moon, Settings, ServerCog, FileText, Headphones, Eye, ChevronsDownUp, ChevronDown, SlidersHorizontal, ArrowUpCircle, MoreHorizontal, PowerOff } from "lucide-react";
 import { $sitter, stopSitter } from "../sitter";
 import {
   $sessions,
@@ -232,6 +232,10 @@ export function ChatToolbar() {
   const closeProviders = useCallback(() => setShowProviders(false), []);
   const [showScopedModels, setShowScopedModels] = useState(false);
   const closeScopedModels = useCallback(() => setShowScopedModels(false), []);
+  // Worker/reviewer selectors are collapsed by default (task #1061): most
+  // sessions never set them, so always rendering both next to smart/fast
+  // would overload the toolbar for the common case that has nothing to show.
+  const [showRoleModels, setShowRoleModels] = useState(false);
   const [showLogs, setShowLogs] = useState(false);
   const closeLogs = useCallback(() => setShowLogs(false), []);
 
@@ -604,8 +608,24 @@ export function ChatToolbar() {
         <div className="flex-1" />
 
         {/* RIGHT cluster */}
+        {showRoleModels && activeSession && (
+          <>
+            <ModelSelector session={activeSession} modelType="worker" />
+            <ModelSelector session={activeSession} modelType="reviewer" />
+          </>
+        )}
         <ModelSelector session={activeSession} modelType="smart" />
         <ModelSelector session={activeSession} modelType="fast" />
+        {activeSession && (
+          <button
+            onClick={() => setShowRoleModels(v => !v)}
+            data-test-id="toggle-role-models"
+            title={showRoleModels ? "Hide worker/reviewer model selectors" : "Show worker/reviewer model selectors"}
+            className="p-1.5 rounded-lg text-text-subtle hover:text-text hover:bg-base-overlay transition-colors"
+          >
+            <ChevronDown size={13} className={`transition-transform ${showRoleModels ? "rotate-180" : ""}`} />
+          </button>
+        )}
       </div>
 
       {/* Modal hosts */}

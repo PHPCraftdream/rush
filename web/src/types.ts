@@ -197,6 +197,8 @@ export interface ConfigPayload {
   theme?: string;
   recentSmartModels?: Array<{ Provider: string; Model: string }>;
   recentFastModels?: Array<{ Provider: string; Model: string }>;
+  recentWorkerModels?: Array<{ Provider: string; Model: string }>;
+  recentReviewerModels?: Array<{ Provider: string; Model: string }>;
   contextPaths?: string[];
   skillsPaths?: string[];
   initializeAs?: string;

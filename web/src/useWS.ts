@@ -25,6 +25,8 @@ import {
   setActiveSession,
   $recentSmartModels,
   $recentFastModels,
+  $recentWorkerModels,
+  $recentReviewerModels,
   trackModelUsage,
   dequeueAllMessages,
   enqueueMessage,
@@ -380,6 +382,18 @@ export function useWS() {
           $recentFastModels.set(keys);
         } else {
           $recentFastModels.set([]);
+        }
+        if (cfg.recentWorkerModels?.length) {
+          const keys = cfg.recentWorkerModels.map(m => `${m.Provider}:::${m.Model}`);
+          $recentWorkerModels.set(keys);
+        } else {
+          $recentWorkerModels.set([]);
+        }
+        if (cfg.recentReviewerModels?.length) {
+          const keys = cfg.recentReviewerModels.map(m => `${m.Provider}:::${m.Model}`);
+          $recentReviewerModels.set(keys);
+        } else {
+          $recentReviewerModels.set([]);
         }
       }),
 

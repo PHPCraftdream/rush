@@ -104,11 +104,26 @@ export function applySessionsSnapshot(sessions: Session[], live: SessionsLiveDel
 // ── Model History ────────────────────────────────────────────────────────────
 // Recent models are stored on the backend and synced via WebSocket config.
 // Local state is initialized empty and populated when config arrives.
+//
+// ModelRole covers all four session model slots (task #1061 generalized
+// ModelSelector from smart/fast-only to all four; worker/reviewer already
+// had session DB + set_session_models wire support from task #466/#1060).
+export type ModelRole = "smart" | "fast" | "worker" | "reviewer";
+
 export const $recentSmartModels = atom<string[]>([]);
 export const $recentFastModels = atom<string[]>([]);
+export const $recentWorkerModels = atom<string[]>([]);
+export const $recentReviewerModels = atom<string[]>([]);
 
-export function trackModelUsage(role: "smart" | "fast", modelKey: string) {
-  const store = role === "smart" ? $recentSmartModels : $recentFastModels;
+const RECENT_MODEL_STORES: Record<ModelRole, typeof $recentSmartModels> = {
+  smart: $recentSmartModels,
+  fast: $recentFastModels,
+  worker: $recentWorkerModels,
+  reviewer: $recentReviewerModels,
+};
+
+export function trackModelUsage(role: ModelRole, modelKey: string) {
+  const store = RECENT_MODEL_STORES[role];
 
   const current = store.get();
   const next = [modelKey, ...current.filter((k) => k !== modelKey)].slice(0, 5);
@@ -126,8 +141,8 @@ export function trackModelUsage(role: "smart" | "fast", modelKey: string) {
   }
 }
 
-export function removeRecentModel(role: "smart" | "fast", modelKey: string) {
-  const store = role === "smart" ? $recentSmartModels : $recentFastModels;
+export function removeRecentModel(role: ModelRole, modelKey: string) {
+  const store = RECENT_MODEL_STORES[role];
 
   const next = store.get().filter((k) => k !== modelKey);
   store.set(next);
@@ -511,10 +526,18 @@ export function setSessionBusy(sessionID: string, busy: boolean) {
 // Per-session model overrides: removed in favor of global selection
 // Now using the session object from DB as source of truth.
 
-export function getDefaultModelKey(role: "smart" | "fast", config: ConfigPayload | null): string {
+export function getDefaultModelKey(role: ModelRole, config: ConfigPayload | null): string {
   const entry = config?.models?.[role];
   if (entry) return `${entry.Provider}:::${entry.Model}`;
   return "";
+}
+
+// roleFieldPrefix maps a ModelRole to its Session field prefix
+// (Smart/Fast/Worker/Reviewer), so the generic per-role setters below can
+// read/write `${prefix}ModelProvider` etc. without a role-keyed literal
+// object at every call site.
+function roleFieldPrefix(role: ModelRole): string {
+  return `${role[0].toUpperCase()}${role.slice(1)}`;
 }
 
 import { ws, forgetSessionRequestState, bumpDeleteHighWaterMark } from "./ws";
@@ -551,35 +574,29 @@ export function updateTodos(sessionID: string, todos: Todo[]) {
   ws.send("update_todos", { sessionID, todos });
 }
 
-export function setSessionModels(sessionID: string, smartKey: string | null, fastKey: string | null) {
-  const parse = (key: string | null) => {
-    if (!key) return null;
-    const idx = key.indexOf(":::");
-    if (idx === -1) return null;
-    return { provider: key.slice(0, idx), model: key.slice(idx + 3) };
-  };
+// setSessionModel sets exactly ONE role's session override, leaving the
+// other three roles untouched — the set_session_models wire convention
+// (task #461/#466): an omitted `<role>Model` key means "don't touch this
+// slot", so the other three are simply never included in the payload.
+// Generalizes the old two-arg (smart, fast) setSessionModels to all four
+// roles (task #1061) now that ModelSelector renders worker/reviewer too.
+export function setSessionModel(sessionID: string, role: ModelRole, key: string) {
+  const idx = key.indexOf(":::");
+  if (idx === -1) return;
+  const provider = key.slice(0, idx);
+  const model = key.slice(idx + 3);
+  const prefix = roleFieldPrefix(role);
 
-  const large = parse(smartKey);
-  const small = parse(fastKey);
-
-  // Optimistic local update so the UI reflects the change immediately
+  // Optimistic local update so the UI reflects the change immediately.
   const sessions = $sessions.get();
-  const idx = sessions.findIndex((s) => s.ID === sessionID);
-  if (idx !== -1) {
+  const sIdx = sessions.findIndex((s) => s.ID === sessionID);
+  if (sIdx !== -1) {
     const next = [...sessions];
-    next[idx] = {
-      ...next[idx],
-      ...(large ? { SmartModelProvider: large.provider, SmartModelID: large.model } : {}),
-      ...(small ? { FastModelProvider: small.provider, FastModelID: small.model } : {}),
-    };
+    next[sIdx] = { ...next[sIdx], [`${prefix}ModelProvider`]: provider, [`${prefix}ModelID`]: model };
     $sessions.set(next);
   }
 
-  ws.send("set_session_models", {
-    sessionID,
-    smartModel: large,
-    fastModel: small,
-  });
+  ws.send("set_session_models", { sessionID, [`${role}Model`]: { provider, model } });
 }
 
 // clearSessionModelSlot removes the session's explicit override for ONE
@@ -616,42 +633,31 @@ export function clearSessionModelSlot(sessionID: string, modelType: "smart" | "f
   });
 }
 
-export function setSessionReasoningEffort(
-  sessionID: string,
-  smartEffort: string | null,
-  fastEffort: string | null,
-) {
+// setSessionRoleEffort sets ONE role's reasoning effort, re-sending that
+// role's currently-stored provider/model alongside it (the backend backfills
+// an omitted provider/model within the SAME slot, but the slot's own effort
+// write needs its own provider/model present — see handleSetSessionModels's
+// resolveEffortPair). Generalizes the old two-arg (smart, fast)
+// setSessionReasoningEffort to all four roles (task #1061).
+export function setSessionRoleEffort(sessionID: string, role: ModelRole, effort: string) {
+  const prefix = roleFieldPrefix(role);
   const sessions = $sessions.get();
   const idx = sessions.findIndex((s) => s.ID === sessionID);
-  if (idx !== -1) {
-    const next = [...sessions];
-    next[idx] = {
-      ...next[idx],
-      ...(smartEffort ? { SmartModelReasoningEffort: smartEffort } : {}),
-      ...(fastEffort ? { FastModelReasoningEffort: fastEffort } : {}),
-    };
-    $sessions.set(next);
-  }
+  if (idx === -1) return;
 
-  // Get current models to send with reasoning effort update
-  if (idx !== -1) {
-    const session = sessions[idx];
-    if (session) {
-      ws.send("set_session_models", {
-        sessionID,
-        smartModel: {
-          provider: session.SmartModelProvider,
-          model: session.SmartModelID,
-          reasoning_effort: smartEffort || undefined,
-        },
-        fastModel: {
-          provider: session.FastModelProvider,
-          model: session.FastModelID,
-          reasoning_effort: fastEffort || undefined,
-        },
-      });
-    }
-  }
+  const next = [...sessions];
+  next[idx] = { ...next[idx], [`${prefix}ModelReasoningEffort`]: effort };
+  $sessions.set(next);
+
+  const session = sessions[idx] as unknown as Record<string, string>;
+  ws.send("set_session_models", {
+    sessionID,
+    [`${role}Model`]: {
+      provider: session[`${prefix}ModelProvider`],
+      model: session[`${prefix}ModelID`],
+      reasoning_effort: effort || undefined,
+    },
+  });
 }
 
 // ── Theme ─────────────────────────────────────────────────────────────────────
