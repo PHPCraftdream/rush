@@ -62,6 +62,13 @@ type autoResumedCtxKey struct{}
 // the notice flag across mailbox and durable-queue handoffs.
 type backgroundJobNoticeCtxKey struct{}
 
+// capAlreadyCountedCtxKey marks a wakeSession call whose caller already
+// incremented the consecutive-auto-turn cap itself (coordinator_background.go's
+// notifyBackgroundJobDone, which must bump synchronously BEFORE spawning
+// wakeSession's goroutine for its race-bounding to hold) -- wakeSession's own
+// generic on-success increment must not double-count that same wake.
+type capAlreadyCountedCtxKey struct{}
+
 // WithBackgroundJobNotice marks a completion turn as an agent-visible notice.
 func WithBackgroundJobNotice(ctx context.Context) context.Context {
 	ctx = context.WithValue(ctx, autoResumedCtxKey{}, true)

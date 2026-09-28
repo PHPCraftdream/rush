@@ -39,7 +39,31 @@ import (
 // A DB failure keeps the captured completion rather than dropping the
 // notice: losing the notice is the worse outcome, and the captured value is
 // still the child's own last turn.
+//
+// Doc sec.3.4: a child session whose reaction debt was closed by failure
+// (settle-by-failure, coordinator_drain_policy.go) gets no further turn, so
+// its last finished assistant message would be stale or nonexistent. Such a
+// child finishes its delegation as FAILED, with the text of its
+// settle-closed (reacted_failed=1) notices instead of that stale message --
+// checked FIRST, before the normal last-message read.
 func (c *coordinator) refreshSubAgentCompletion(childSessionID string, completion AsyncCompletion) AsyncCompletion {
+	if c.asyncJobs != nil && c.asyncJobs.store != nil {
+		failCtx, failCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		failedTexts, err := c.asyncJobs.store.ListReactedFailedText(failCtx, childSessionID)
+		failCancel()
+		if err != nil {
+			slog.Debug("sub-agent outcome refresh: reacted-failed check failed, continuing with normal read",
+				"child_session", childSessionID, "err", err)
+		} else if len(failedTexts) > 0 {
+			lines := make([]string, 0, len(failedTexts))
+			for _, ft := range failedTexts {
+				lines = append(lines, ft.Text)
+			}
+			completion.Content = tools.TruncateOutput(strings.Join(lines, "\n\n"))
+			completion.IsError = true
+			return completion
+		}
+	}
 	if c.messages == nil || childSessionID == "" {
 		return completion
 	}

@@ -325,6 +325,56 @@ func (l *workLedger) cancelSession(sessionID string) {
 	l.clearSupervisionIfPresent(sessionID)
 }
 
+// treeSessionIDs returns root plus every descendant reachable through a
+// still-RUNNING delegation job (doc sec.3.8: "Stop is transitive: cancelling
+// a session cancels the whole tree via running delegation rows"), walked and
+// snapshotted BEFORE any cancellation runs so the walk sees the pre-Stop
+// tree shape rather than racing its own cancellations. Descendants via
+// parent_session_id are deliberately NOT walked (doc sec.3.5's same rule):
+// only a delegation row still RUNNING represents live child scope.
+func (l *workLedger) treeSessionIDs(root string) []string {
+	if root == "" {
+		return nil
+	}
+	seen := map[string]bool{root: true}
+	order := []string{root}
+	frontier := []string{root}
+	for len(frontier) > 0 {
+		var next []string
+		l.mu.Lock()
+		for _, id := range frontier {
+			s := l.bySession[id]
+			if s == nil {
+				continue
+			}
+			for _, job := range s.jobs {
+				if job.childSession != "" && job.state == phaseRunning && !seen[job.childSession] {
+					seen[job.childSession] = true
+					next = append(next, job.childSession)
+				}
+			}
+		}
+		l.mu.Unlock()
+		order = append(order, next...)
+		frontier = next
+	}
+	return order
+}
+
+// cancelTree cancels root and every descendant session in its current
+// delegation tree (treeSessionIDs), returning every id it acted on so the
+// caller (coordinator.Cancel) can also hard-stop each session's mailbox and
+// zero the wake bit on every already-terminal debt row across the whole set
+// (doc sec.3.4/3.8: a race between a natural completion and Stop must never
+// grant a stopped delegation's child a turn).
+func (l *workLedger) cancelTree(root string) []string {
+	ids := l.treeSessionIDs(root)
+	for _, id := range ids {
+		l.cancelSession(id)
+	}
+	return ids
+}
+
 // gcChildLocked drops fully-resolved (terminal) entries from childID's
 // byChild bucket so the map cannot grow without bound over a long-lived
 // coordinator. Caller must hold l.mu.

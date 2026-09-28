@@ -436,15 +436,60 @@ func lastNonEmptyLine(s string) string {
 }
 
 // onSessionIdleHook is wired as every SessionAgent's OnSessionIdle
-// (coordinator_tools.go), replacing the bare c.noteSubAgentChildRunEnded
-// reference: it still fires that phase-3 trigger, and additionally pushes
-// back the caller's supervision deadline (pushDeadlineOnTurnEnd) -- a no-op
-// for a session with no active supervision state. Both are safe, cheap,
-// idempotent no-ops for the overwhelming majority of sessions that are
-// neither a delegation parent/child nor under active supervision.
+// (coordinator_tools.go): the universal "a turn on this session just ended"
+// trigger. It fires the phase-3 delegation re-check (noteSubAgentChildRunEnded),
+// pushes back the caller's supervision deadline UNLESS this release is a
+// Drain that ended without ever reaching the provider (doc sec.3.4 last
+// paragraph: "opening a tab must not reset the root's silence timer"), and
+// implements doc sec.3.4 item 3 -- EVERY mailbox release checks the
+// session's reaction debt in the DB and submits a Drain if there is one, in
+// a SEPARATE goroutine, never from this (or any) defer. Rule (a)'s
+// anti-idle-loop exception: a no-turn Drain's OWN release skips this
+// re-launch check, but only if the hint counter is unchanged since that
+// Drain's own check -- every other side effect here (noteSubAgentChildRunEnded,
+// pushDeadlineOnTurnEnd) is unaffected and always runs.
 func (c *coordinator) onSessionIdleHook(sessionID string) {
 	c.noteSubAgentChildRunEnded(sessionID)
+	wasNoTurnDrain, hintUnchanged := false, false
 	if c.asyncJobs != nil {
-		c.asyncJobs.pushDeadlineOnTurnEnd(sessionID)
+		wasNoTurnDrain, hintUnchanged = c.asyncJobs.consumeNoTurnDrainRelease(sessionID)
+		if !wasNoTurnDrain {
+			c.asyncJobs.pushDeadlineOnTurnEnd(sessionID)
+		}
+	}
+	if wasNoTurnDrain && hintUnchanged {
+		return
+	}
+	go c.recheckDebtOnRelease(sessionID)
+}
+
+// recheckDebtOnRelease is onSessionIdleHook's separate-goroutine debt check
+// (doc sec.3.4 item 3): reads sessionID's CURRENT reaction debt from the DB
+// and, if any, either hints an external-driver session (its own loop
+// re-checks) or submits a Drain the same way wakeSession would for a
+// completion's own hint -- this is what catches an "orphaned" Drain (a row
+// that arrived inside the release window) and a debt row left by a prior
+// pass that skipped its own re-launch under rule (a).
+func (c *coordinator) recheckDebtOnRelease(sessionID string) {
+	if c.asyncJobs == nil || sessionID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	debt, err := c.asyncJobs.reactionDebtExists(ctx, sessionID)
+	if err != nil {
+		slog.Warn("onSessionIdle: reaction debt check failed", "session_id", sessionID, "err", err)
+		return
+	}
+	if !debt {
+		return
+	}
+	if c.asyncJobs.isExternalDriver(sessionID) {
+		c.asyncJobs.bumpHint(sessionID)
+		return
+	}
+	id := jobIdentity{owner: sessionID, toolCallID: "release-recheck"}
+	if err := c.wakeSession(ctx, id, true); err != nil {
+		slog.Debug("onSessionIdle: release-triggered drain attempt did not complete", "session_id", sessionID, "err", err)
 	}
 }

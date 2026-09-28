@@ -56,8 +56,8 @@ func FormatAsyncCompletion(completion AsyncCompletion) string {
 		completion.ToolCallID, completion.ToolName, status, content)
 }
 
-// notifyAsyncCompletion is the AsyncCompletionSource callback wired into
-// workLedger.onWebDone: the job's terminal transition already committed its
+// notifyAsyncCompletion is the workLedger.onWebDone callback: the job's
+// terminal transition already committed its
 // async_jobs row with delivery='pending' (work_ledger_transition.go) --
 // there is no text/NoticeKind left to build here (doc sec.3.3: the driver's
 // pull reconstructs both from the row at pull time, agent_notice_pull.go).
@@ -88,24 +88,13 @@ func (c *coordinator) notifyAsyncCompletion(completion AsyncCompletion) {
 	}()
 }
 
-// ClaimAsyncCompletions makes sessionID's CLI completions queue for
-// NextAsyncCompletion instead of waking the session.
-func (c *coordinator) ClaimAsyncCompletions(sessionID string) {
-	if c.asyncJobs != nil {
-		c.asyncJobs.markDrained(sessionID)
-	}
-}
-
-func (c *coordinator) NextAsyncCompletion(ctx context.Context, sessionID string) (AsyncCompletion, bool, error) {
-	if c.asyncJobs == nil {
-		return AsyncCompletion{}, false, nil
-	}
-	return c.asyncJobs.next(ctx, sessionID)
-}
-
-func (c *coordinator) HasPendingAsyncJobs(sessionID string) bool {
-	return c.asyncJobs != nil && c.asyncJobs.pending(sessionID)
-}
+// Phase-4 step 4 (doc sec.3.5): ClaimAsyncCompletions/NextAsyncCompletion/
+// HasPendingAsyncJobs and the in-memory ready queue they read are gone.
+// `rush run`'s loop (internal/app/app_run_async.go) now claims/releases the
+// external-driver marker directly via ClaimExternalDriver/ReleaseExternalDriver
+// (coordinator_reaction_source.go) and re-derives its next turn from
+// ReactionDebtExists/ScopeOpen against the DB, waiting on WaitForHint plus
+// its own 60s fallback tick instead of draining a memory queue.
 
 // backgroundJobSummary formats a finished background command for injection
 // into the owning session. Pure and deterministic so it can be unit-tested
@@ -156,6 +145,15 @@ func (c *coordinator) notifyBackgroundJobDone(sessionID string, sh *shell.Backgr
 			"consecutive", c.consecutiveResume(sessionID))
 		ctx := context.WithValue(context.Background(), autoResumedCtxKey{}, true)
 		ctx = context.WithValue(ctx, backgroundJobNoticeCtxKey{}, true)
+		// This call site already bumped the cap counter synchronously,
+		// BEFORE spawning wakeSession's goroutine, so a burst of
+		// near-simultaneous completions is bounded deterministically (doc
+		// sec.3.4's session-policy table: "only with AutoResumeOnJobDone,
+		// as today" -- unchanged by step 4). wakeSession's own generic
+		// on-success increment (doc: "failed Drains do not consume the web
+		// auto-turn cap", the NEW rule for the plain async/delegation
+		// category) would double-count this SAME wake if not suppressed.
+		ctx = context.WithValue(ctx, capAlreadyCountedCtxKey{}, true)
 		go func() {
 			// Re-check trigger (iii): a job owned by this session just
 			// became terminal and this goroutine is the delivery it woke.

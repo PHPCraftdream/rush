@@ -19,9 +19,6 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime/debug"
-	"time"
-
-	"github.com/PHPCraftdream/rush/internal/session"
 )
 
 // jobIdentity is the (owner, toolCallID) pair a completion's wake hint is
@@ -35,9 +32,15 @@ type jobIdentity struct {
 	toolCallID string
 }
 
-// wakeSession submits sessionID's Drain call when wake is true. A no-op when
-// wake is false (doc sec.3.4's wake-policy table: Stop/job_kill/a failed
-// wake-up marker never wake). Errors are visible (ASYNC-09): a Drain
+// wakeSession implements doc sec.3.4's "who triggers a Drain": on wake=true
+// it ALWAYS bumps the session's non-blocking hint (a committed transition/
+// notice with wake=1 must be visible to every hint-driven waiter regardless
+// of what happens next), then either lets an external driver's own hint
+// suffice (a live `rush run` loop, doc sec.3.4's session-with-an-external-
+// driver row) or submits a Drain call after the session policy check --
+// checked BEFORE submission, so a forbidden session never gets one. A no-op
+// when wake is false (doc sec.3.4's wake-policy table: Stop/job_kill/a
+// failed wake-up marker never wake). Errors are visible (ASYNC-09): a Drain
 // failure after the fact was already committed cannot lose the fact -- it
 // stays pending/pending-debt for the NEXT pull -- so this persists a durable
 // wake-failed marker (session_notices, wake=0) instead of just logging.
@@ -56,6 +59,29 @@ func (c *coordinator) wakeSession(ctx context.Context, job jobIdentity, wake boo
 		}
 	}()
 
+	c.asyncJobs.bumpHint(job.owner)
+	if c.asyncJobs.isExternalDriver(job.owner) {
+		// Doc sec.3.4: "sessions with an external driver get NO Drain turn,
+		// only a hint to the loop" -- the hint above already delivered that;
+		// the loop re-evaluates its own scope/debt from the DB.
+		return nil
+	}
+
+	allowed, counted, polErr := c.sessionDrainPolicy(ctx, job.owner)
+	if polErr != nil {
+		// A policy-check error is not authoritative either way -- the
+		// Drain call's OWN turn-start debt+policy re-check (agent_turn.go)
+		// is what actually decides whether a provider turn runs, so failing
+		// open here costs at most one redundant queued Drain, never a
+		// correctness gap.
+		slog.Warn("wakeSession: session drain policy check failed; submitting anyway",
+			"session_id", job.owner, "err", polErr)
+		allowed, counted = true, true
+	}
+	if !allowed {
+		return nil
+	}
+
 	call, buildErr := c.drainCallFor(ctx, job.owner)
 	if buildErr != nil {
 		return fmt.Errorf("wakeSession: build drain call: %w", buildErr)
@@ -63,6 +89,11 @@ func (c *coordinator) wakeSession(ctx context.Context, job jobIdentity, wake boo
 
 	agent := c.agentFor(job.owner)
 	admission := newTurnAdmission()
+	snapshot, snapErr := c.asyncJobs.captureDebtSnapshot(ctx, job.owner)
+	if snapErr != nil {
+		slog.Warn("wakeSession: capture debt snapshot failed; settle-by-failure will see an empty set",
+			"session_id", job.owner, "err", snapErr)
+	}
 	_, runErr := agent.Run(withTurnAdmission(ctx, admission), call)
 	if runErr != nil {
 		// The task is already terminal and its fact already durably
@@ -72,29 +103,24 @@ func (c *coordinator) wakeSession(ctx context.Context, job jobIdentity, wake boo
 		// failure to even queue/start (e.g. shutdown, session lock busy).
 		slog.Warn("drain call failed after its underlying notice was committed",
 			"session_id", job.owner, "job_id", job.toolCallID, "err", runErr)
-		c.persistWakeFailedMarker(ctx, job, runErr)
+	}
+	// admission.wasQueued(): this specific call merely joined another
+	// owner's queue rather than running just now -- that later turn's own
+	// in-turn debt+policy re-check governs it; nothing to account for here
+	// yet (see recordDrainOutcome's doc).
+	c.recordDrainOutcome(ctx, job, snapshot, !admission.wasQueued(), runErr)
+	if runErr != nil {
 		return runErr
 	}
+	if counted {
+		if already, _ := ctx.Value(capAlreadyCountedCtxKey{}).(bool); !already {
+			// Doc sec.3.4: "failed Drains do not consume the web auto-turn
+			// cap" -- only reached on runErr == nil, i.e. a genuinely
+			// accepted (started or queued) turn. Skipped when the caller
+			// (notifyBackgroundJobDone) already bumped this same wake
+			// itself -- see capAlreadyCountedCtxKey's doc.
+			c.bumpConsecutiveResume(job.owner)
+		}
+	}
 	return nil
-}
-
-// persistWakeFailedMarker persists a durable session_notices row (kind
-// NoticeKindWakeFailed, wake=0 per doc sec.3.4's wake-policy table) recording
-// that a Drain call failed after its underlying fact was already committed.
-// The next successful pull surfaces it as an ordinary pending notice --
-// visible exactly once, without forcing another immediate turn (wake=0).
-func (c *coordinator) persistWakeFailedMarker(ctx context.Context, job jobIdentity, cause error) {
-	if c.asyncJobs == nil || c.asyncJobs.store == nil {
-		return
-	}
-	markerCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
-	defer cancel()
-	text := fmt.Sprintf(
-		"Не удалось продолжить работу после события %s: %s. Событие сохранено; продолжение — при следующем ходе.",
-		job.toolCallID, cause,
-	)
-	if err := c.asyncJobs.store.InsertSessionNotice(markerCtx, job.owner, session.NoticeKindWakeFailed, text, false, ""); err != nil {
-		slog.Error("wakeSession: failed to persist wake-failed marker",
-			"session_id", job.owner, "job_id", job.toolCallID, "err", err)
-	}
 }

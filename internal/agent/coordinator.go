@@ -310,6 +310,16 @@ type coordinator struct {
 	autoResumeMu           sync.Mutex     // guards consecutiveAutoResumes.
 	consecutiveAutoResumes map[string]int // sessionID -> consecutive auto-resumes since last human message.
 
+	// recheckMu/recheckSet back doc sec.3.4 rule (b)/sec.3.5's 60s pass: a
+	// session whose Drain submission was refused by an admission gate (the
+	// session-lock held by another process, or shutdown) is never forgotten
+	// -- it goes here instead, and RecheckPass (coordinator_recheck.go)
+	// retries it on the next tick rather than losing the wake.
+	recheckMu   sync.Mutex
+	recheckSet  map[string]struct{}
+	recheckOnce sync.Once
+	recheckStop context.CancelFunc
+
 	// modelCache caches resolved (smart, fast) Model pairs keyed by their
 	// combined provider+model+reasoning_effort tuple. Used by
 	// resolveSessionModels to avoid rebuilding the same pair repeatedly.
@@ -491,6 +501,13 @@ func (c *coordinator) SetAllowPeakHours(allow bool) {
 // false.
 func (c *coordinator) SetPersistentMode(persistent bool) {
 	c.persistentMode.Store(persistent)
+	if persistent {
+		// Doc sec.3.5: the 60s host-level pass is the only inter-process
+		// fallback: hints live only inside this process. Only the
+		// long-lived web/interactive process runs it -- `rush run`'s own
+		// loop has its own independent tick and never calls this.
+		c.StartRecheckTicker()
+	}
 }
 
 // autonomyEnabled reports whether Phase 4 auto-resume is opted in via config.
@@ -511,6 +528,9 @@ func (c *coordinator) consecutiveResume(sessionID string) int {
 func (c *coordinator) bumpConsecutiveResume(sessionID string) {
 	c.autoResumeMu.Lock()
 	defer c.autoResumeMu.Unlock()
+	if c.consecutiveAutoResumes == nil {
+		c.consecutiveAutoResumes = make(map[string]int)
+	}
 	c.consecutiveAutoResumes[sessionID]++
 }
 
@@ -526,6 +546,22 @@ func (c *coordinator) resetConsecutiveResume(sessionID string) {
 // for the server package's human send path.
 func (c *coordinator) ResetAutoResumeCounter(sessionID string) {
 	c.resetConsecutiveResume(sessionID)
+}
+
+// suspendAutoResume implements doc sec.3.4's "after Stop, automatic turns
+// are suspended until the next human message": forces sessionID's
+// consecutive-auto-resume counter to the cap so both autoResumeEligible and
+// sessionDrainPolicy's generic web-session branch refuse a further
+// automatic turn until a human message resets it (ResetAutoResumeCounter) --
+// reusing the existing cap/reset machinery instead of a second flag that
+// could drift out of sync with it.
+func (c *coordinator) suspendAutoResume(sessionID string) {
+	c.autoResumeMu.Lock()
+	defer c.autoResumeMu.Unlock()
+	if c.consecutiveAutoResumes == nil {
+		c.consecutiveAutoResumes = make(map[string]int)
+	}
+	c.consecutiveAutoResumes[sessionID] = maxConsecutiveAutoResumes
 }
 
 // autoResumeEligible reports whether a finished background job should

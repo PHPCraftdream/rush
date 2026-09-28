@@ -39,26 +39,53 @@ const interruptInjectTick = 3 * time.Second
 const interruptTickOperationTimeout = 10 * time.Second
 
 func (c *coordinator) Cancel(sessionID string) {
-	// cancelSession handles both directions in one pass under one mutex:
-	// jobs sessionID owns, AND delegations armed on it as a CHILD -- so a
-	// delegation notice can never have nowhere to land (see
-	// workLedger.cancelSession's doc). sessionID is usually the PARENT whose
-	// tool call started the delegation, but Cancel is also called on a
-	// child session id directly.
+	// Phase-4 step 4 (doc sec.3.8): Stop is transitive -- cancelTree walks
+	// sessionID's current delegation tree (via still-RUNNING delegation
+	// rows) and, for EACH id, runs the same "jobs it owns AND delegations
+	// armed on it as a child" cancellation cancelSession always did
+	// (sessionID is usually the PARENT whose tool call started a
+	// delegation, but Cancel is also called on a child session id
+	// directly). A session with no running delegation children degenerates
+	// to the pre-existing single-id behavior.
+	var ids []string
 	if c.asyncJobs != nil {
-		c.asyncJobs.cancelSession(sessionID)
+		ids = c.asyncJobs.cancelTree(sessionID)
+	} else {
+		ids = []string{sessionID}
 	}
-	// Task #1054: a delegated child session's live generation runs on its
-	// registered driver, never c.currentAgent (task #1049) -- routing
-	// through agentFor is the same choke point wakeSession uses, so Cancel
-	// on a child id actually reaches the SessionAgent that owns its
-	// mailbox instead of silently finding an untouched one on
-	// c.currentAgent (agent_control.go's genCancel == nil branch: no error,
-	// no log, just nothing happens).
-	c.agentFor(sessionID).Cancel(sessionID)
+	for _, id := range ids {
+		// Task #1054: a delegated child session's live generation runs on
+		// its registered driver, never c.currentAgent (task #1049) --
+		// routing through agentFor is the same choke point wakeSession
+		// uses, so Cancel on a child id actually reaches the SessionAgent
+		// that owns its mailbox instead of silently finding an untouched
+		// one on c.currentAgent (agent_control.go's genCancel == nil
+		// branch: no error, no log, just nothing happens).
+		c.agentFor(id).Cancel(id)
+		// Doc sec.3.4's web session policy: after a Stop, automatic turns
+		// are suspended until the next human message. Reusing the
+		// consecutive-auto-resume counter's own cap value as the
+		// "suspended" state means the existing human-message reset path
+		// (ResetAutoResumeCounter) is also what lifts the suspension --
+		// no separate flag to keep in sync.
+		c.suspendAutoResume(id)
+	}
+	// Doc sec.3.4/3.8: zero the wake bit on every already-terminal
+	// (pending/done) debt row across the whole stopped tree, closing the
+	// race where a job finished with wake=1 a moment before Stop but its
+	// notice was not yet reacted to -- a stopped delegation's child must
+	// never get a turn out of that race.
+	if c.asyncJobs != nil && c.asyncJobs.store != nil {
+		zeroCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := c.asyncJobs.store.SetWakeZeroForOwners(zeroCtx, ids); err != nil {
+			slog.Error("coordinator.Cancel: failed to zero wake for stopped tree", "session_id", sessionID, "err", err)
+		}
+	}
 }
 
 func (c *coordinator) CancelAll() (stillBusy bool) {
+	c.StopRecheckTicker()
 	// close() cancels every session's jobs (both directions, per session)
 	// and stops the safety-net ticker.
 	if c.asyncJobs != nil {
