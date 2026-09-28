@@ -1,10 +1,10 @@
 // Delegation half of workLedger: parking a delegated sub-agent's (`agent`/
 // `agentic_fetch`) completion until the child session's own async work
-// drains, plus cancellation (both directions: owner and delegated-child) and
-// the safety-net ticker. Absorbs subagent_outcome.go's byChild index into the
-// same job records the plain half (work_ledger.go) already tracks, so the
-// "two records for one call" class of bug (finishParked's re-insert branch,
-// BL-2/#1032) has no seam left to hide in.
+// drains, plus cancellation (both directions: owner and delegated-child).
+// Absorbs subagent_outcome.go's byChild index into the same job records the
+// plain half (work_ledger.go) already tracks, so the "two records for one
+// call" class of bug (finishParked's re-insert branch, BL-2/#1032) has no
+// seam left to hide in.
 //
 // The `agent` and `agentic_fetch` tools are dispatched asynchronously for CLI
 // and web origins. The completion delivered to the PARENT session used to be
@@ -13,19 +13,17 @@
 // shells has yielded, not finished. armDelegation captures that turn's result
 // without transitioning the job to terminal; recheckChild transitions and
 // delivers it once the child's OWN work (childScopeDrained) is terminal too.
+//
+// Phase 3 (docs/plans/2026-09-28-async-phase3-spec.md §4) deletes the
+// safety-net ticker this file used to run (subAgentOutcomeTickInterval,
+// startTickerLocked, tick): its own re-check triggers -- (i) the arm site
+// itself, (ii) a child async-job completion, (iii) a child background-job
+// completion, and (iv) the end of a child run, now including
+// sessionAgent.onSessionIdle's by-construction release (agent_ownership.go)
+// -- are exhaustive for today's depth-1 delegation tree (see the spec's §1.4
+// trace and the phase-3 step-0 tests), and the ticker's own start/stop had a
+// real race (BL-2026-09-25-1, closed here by deletion rather than a fix).
 package agent
-
-import "time"
-
-// subAgentOutcomeTickInterval is the fallback re-check period. It only ever
-// runs while at least one delegation is armed, and it is a SAFETY NET: the
-// ordinary re-check triggers are (i) the arm site itself, (ii) a child
-// async-job completion, (iii) a child background-job completion, and (iv) the
-// end of a child run. A var, not a const, so a test can shrink it instead of
-// sleeping through the real delay. Kept in phase 1 (design doc assigns its
-// removal, alongside these triggers, to phase 3's event-driven scope
-// accounting).
-var subAgentOutcomeTickInterval = 2 * time.Second
 
 // subAgentOutcomeCancelledText is the body delivered to the parent when a
 // delegation is released by Cancel/CancelAll rather than by the child
@@ -56,7 +54,6 @@ func (l *workLedger) armDelegation(owner, toolCallID string, captured jobResult)
 	}
 	job.result = captured
 	l.byChild[job.childSession] = append(l.byChild[job.childSession], job)
-	l.startTickerLocked()
 	childSession := job.childSession
 	l.mu.Unlock()
 
@@ -91,6 +88,15 @@ func (l *workLedger) recheckChild(childSessionID string) {
 		job := oldestArmedLocked(l.byChild[childSessionID])
 		if job == nil {
 			l.mu.Unlock()
+			// §6.2: nothing left armed for childSessionID -- its scope is
+			// confirmed closed (childScopeDrained already returned true
+			// above). Release its driver/allowlist entry now, at the one
+			// point that already knows this precisely; a no-op for a
+			// childSessionID that was never a delegated child (get()
+			// returns ok=false) or was never armed to begin with.
+			if l.coord != nil {
+				l.coord.releaseDriverIfScopeClosed(childSessionID)
+			}
 			return
 		}
 		owner, toolCallID := job.owner, job.toolCallID
@@ -245,40 +251,14 @@ func (l *workLedger) gcChildLocked(childID string) {
 }
 
 // hasParked reports whether any delegation is still armed (not yet
-// terminal). Used by tests and by the fallback ticker's own bookkeeping.
+// terminal). Test-only observability now that the safety-net ticker
+// (phase 3's former consumer of this) is gone.
 func (l *workLedger) hasParked() bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	for _, entries := range l.byChild {
 		for _, job := range entries {
 			if job.state == phaseRunning {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// hasParkedFor reports whether sessionID still owns an armed delegation --
-// either as the PARENT not yet told, or as the CHILD whose run has not yet
-// come back to release it. Single-session input to DescendantWorkPending.
-func (l *workLedger) hasParkedFor(sessionID string) bool {
-	if sessionID == "" {
-		return false
-	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	for childID, entries := range l.byChild {
-		if childID == sessionID {
-			for _, job := range entries {
-				if job.state == phaseRunning {
-					return true
-				}
-			}
-			continue
-		}
-		for _, job := range entries {
-			if job.owner == sessionID && job.state == phaseRunning {
 				return true
 			}
 		}
@@ -307,56 +287,4 @@ func (l *workLedger) parkedParentSessions() []string {
 		}
 	}
 	return parents
-}
-
-// startTickerLocked arms the safety-net ticker unless it is already running.
-// Caller must hold l.mu.
-func (l *workLedger) startTickerLocked() {
-	if l.closed || l.tickStop != nil {
-		return
-	}
-	stop := make(chan struct{})
-	l.tickStop = stop
-	interval := subAgentOutcomeTickInterval
-	if interval <= 0 {
-		interval = 2 * time.Second
-	}
-	go func() {
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-stop:
-				return
-			case <-ticker.C:
-				l.tick()
-			}
-		}
-	}()
-}
-
-// tick is the fallback re-check. It never blocks a trigger: it only
-// re-evaluates gates, and it stops itself once nothing is armed.
-func (l *workLedger) tick() {
-	l.mu.Lock()
-	children := make([]string, 0, len(l.byChild))
-	for childID := range l.byChild {
-		children = append(children, childID)
-	}
-	l.mu.Unlock()
-
-	for _, childID := range children {
-		l.recheckChild(childID)
-	}
-
-	if l.hasParked() {
-		return
-	}
-	l.mu.Lock()
-	stop := l.tickStop
-	l.tickStop = nil
-	l.mu.Unlock()
-	if stop != nil {
-		close(stop)
-	}
 }

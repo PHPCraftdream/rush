@@ -583,6 +583,21 @@ type sessionAgent struct {
 	asyncJobs          *workLedger
 	config             *config.ConfigStore
 
+	// onSessionIdle, when non-nil, fires with a session id every time THIS
+	// agent's mailbox genuinely releases that session -- called from
+	// abandonOwnershipWithHandoff (agent_ownership.go), the one function
+	// every Run()/RunWithReservedOwnership/ReleaseExclusive exit funnels
+	// through. Phase 3's by-construction "session became idle" trigger
+	// (docs/plans/2026-09-28-async-phase3-spec.md, orchestrator decision
+	// item 1): unlike the scattered per-caller re-check calls it fires for
+	// EVERY exit on EVERY SessionAgent this coordinator builds, including a
+	// delegated child's driver (whose turns never pass through
+	// coordinator.runInternal at all) -- a future Run() caller that forgets
+	// its own manual trigger cannot silently strand a delegation. A stale
+	// firing (a new owner already re-claimed the mailbox) is a harmless
+	// no-op: the callback re-reads current mailbox state, not a snapshot.
+	onSessionIdle func(sessionID string)
+
 	// runWg tracks all active Run() calls across this agent. CancelAll waits
 	// on this WaitGroup to ensure all dispatcher goroutines have fully
 	// unwound before proceeding with shutdown. This provides a true join
@@ -811,6 +826,10 @@ type SessionAgentOptions struct {
 	Messages             message.Service
 	Tools                []fantasy.AgentTool
 	AsyncJobs            *workLedger
+	// OnSessionIdle -- see sessionAgent.onSessionIdle's doc. Nil in every
+	// test that builds a bare sessionAgent directly (no coordinator to
+	// notify).
+	OnSessionIdle func(sessionID string)
 	// Config is the MCP ownership scope for this agent. MCP runtime state is
 	// process-wide, so every turn filters registry-derived instructions by
 	// this consuming ConfigStore.
@@ -924,6 +943,7 @@ func NewSessionAgent(
 		disableAutoSummarize:       opts.DisableAutoSummarize,
 		tools:                      csync.NewSliceFrom(wrapToolsWithErrorLogging(wrapToolsWithRestrictedRun(opts.Tools, opts.RestrictedRuns))),
 		asyncJobs:                  opts.AsyncJobs,
+		onSessionIdle:              opts.OnSessionIdle,
 		isYolo:                     opts.IsYolo,
 		notify:                     opts.Notify,
 		activeRequests:             csync.NewMap[string, context.CancelFunc](),

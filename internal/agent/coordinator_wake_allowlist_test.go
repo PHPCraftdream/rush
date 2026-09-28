@@ -70,6 +70,26 @@ func (s *allowlistSpy) ClearSessionRunAllowlistForCall(sessionID string, ownerCa
 	s.mgr.ClearSessionRunAllowlistForCall(sessionID, ownerCallID)
 }
 
+// InheritSessionRunAllowlistForGeneration/ClearSessionRunAllowlistForGeneration
+// record into the SAME inherits/clears slices as the bare (ungoverned)
+// methods above: phase 3's three production call sites (runSubAgent,
+// asyncTool.Run, wakeNoticeCall) all switched to the generation-guarded pair,
+// so a spy that only recorded the bare methods would never see a call again
+// and every test below would silently stop observing anything.
+func (s *allowlistSpy) InheritSessionRunAllowlistForGeneration(parentID, childID string, generation uint64) {
+	s.mu.Lock()
+	s.inherits = append(s.inherits, [2]string{parentID, childID})
+	s.mu.Unlock()
+	s.mgr.InheritSessionRunAllowlistForGeneration(parentID, childID, generation)
+}
+
+func (s *allowlistSpy) ClearSessionRunAllowlistForGeneration(childID string, generation uint64) {
+	s.mu.Lock()
+	s.clears = append(s.clears, childID)
+	s.mu.Unlock()
+	s.mgr.ClearSessionRunAllowlistForGeneration(childID, generation)
+}
+
 // TestWakeSession_ReArmsChildRunAllowlistBeforeWaking pins §6.2: wakeSession
 // must re-inherit the driver's parentSessionID's allowlist baseline onto the
 // child BEFORE waking it, even if the child's entry was cleared earlier (the

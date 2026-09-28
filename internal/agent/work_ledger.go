@@ -100,11 +100,7 @@ type workLedger struct {
 	// subAgentOutcomeRegistry.coord before it.
 	coord *coordinator
 
-	// tickStop is the safety-net ticker (subAgentOutcomeTickInterval).
-	// Phase 1 keeps it -- the design doc assigns its removal to phase 3,
-	// alongside the event-driven scope accounting that replaces it.
-	tickStop chan struct{}
-	closed   bool
+	closed bool
 
 	// noticedBefore maps "owner\x00toolCallID" -> the persisted notice
 	// message id, so a repeated wakeSession call for a job already
@@ -651,22 +647,8 @@ func (l *workLedger) running(sessionID string) bool {
 	return s != nil && len(s.jobs) > 0
 }
 
-// anyRunning is the process-wide form of running: the cheap in-memory
-// pre-check DescendantWorkPending uses so the common "nothing pending" case
-// costs no DB access.
-func (l *workLedger) anyRunning() bool {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	for _, s := range l.bySession {
-		if len(s.jobs) > 0 {
-			return true
-		}
-	}
-	return false
-}
-
 // close cancels every job in every session (as cancelSession does per
-// session) and refuses further Start calls. Also stops the safety-net ticker.
+// session) and refuses further Start calls.
 func (l *workLedger) close() {
 	l.mu.Lock()
 	l.closed = true
@@ -675,12 +657,7 @@ func (l *workLedger) close() {
 		owners = append(owners, owner)
 		signalWorkSession(s)
 	}
-	stop := l.tickStop
-	l.tickStop = nil
 	l.mu.Unlock()
-	if stop != nil {
-		close(stop)
-	}
 	l.timeouts.close()
 	for _, owner := range owners {
 		l.cancelSession(owner)

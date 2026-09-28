@@ -141,7 +141,11 @@ func (c *coordinator) wakeSession(ctx context.Context, job jobIdentity, notice, 
 func (c *coordinator) wakeNoticeCall(ctx context.Context, owner, notice, noticeKind string) (SessionAgentCall, error) {
 	if driver, ok := c.subAgentDrivers.get(owner); ok {
 		if mgr, ok := c.permissions.(permission.SessionRunAllowlistManager); ok && driver.parentSessionID != "" {
-			mgr.InheritSessionRunAllowlist(driver.parentSessionID, owner)
+			// §6.2: bound to THIS driver's own generation, so
+			// releaseDriverIfScopeClosed's later clear (or a stale one from
+			// an already-superseded registration) can never remove a copy a
+			// NEWER driver re-armed.
+			mgr.InheritSessionRunAllowlistForGeneration(driver.parentSessionID, owner, driver.generation)
 		}
 		call := driver.callFor(notice)
 		// driver.callFor copies a frozen template; unlike buildCall below it

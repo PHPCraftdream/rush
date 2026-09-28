@@ -106,24 +106,10 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 	// override (agentic_fetch_tool.go auto-approves unconditionally).
 	if c.permissions != nil {
 		c.permissions.InheritSessionAutoApprove(params.SessionID, session.ID)
-		// R1-1: inherit the parent run's per-session restricted-run gate
-		// too, so a delegated sub-agent's tool calls are judged by its
-		// own run's policy rather than by whatever a concurrent run last
-		// armed on the process-wide gate. Optional-interface assertion on
-		// purpose (mirrors credentialRunner): test fakes of
-		// permission.Service must keep compiling unchanged; the real
-		// service always implements it.
-		if mgr, ok := c.permissions.(permission.SessionRunAllowlistManager); ok {
-			mgr.InheritSessionRunAllowlist(params.SessionID, session.ID)
-			// No `defer ClearSessionRunAllowlist` here (phase 2, §6.2): the
-			// child may still own async jobs/background shells after THIS
-			// turn returns (structural concurrency, #1049) and a woken turn
-			// re-inherits from subAgentDriver.parentSessionID on every wake
-			// instead -- clearing on return would strand a woken turn under
-			// the process-wide gate. The entry lives as long as the driver
-			// (§6.3: same unbounded-until-phase-3 growth as
-			// subAgentDriverRegistry itself).
-		}
+		// R1-1's restricted-run gate inheritance moved below (§6.2), right
+		// after the driver registers: it needs the driver's generation to
+		// bind the allowlist entry to, so releaseDriverIfScopeClosed can
+		// clear it without the §6.3 resume_session_id race.
 	}
 
 	// Call session setup function if provided
@@ -256,7 +242,28 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 		SmartModel:       &driverModel,
 		Credentials:      callCreds,
 	}
-	c.subAgentDrivers.register(session.ID, subAgentDriver{agent: params.Agent, call: callTemplate, parentSessionID: params.SessionID})
+	generation := c.subAgentDrivers.register(session.ID, subAgentDriver{agent: params.Agent, call: callTemplate, parentSessionID: params.SessionID})
+	// R1-1: inherit the parent run's per-session restricted-run gate too, so
+	// a delegated sub-agent's tool calls are judged by its own run's policy
+	// rather than by whatever a concurrent run last armed on the
+	// process-wide gate. Bound to THIS registration's generation (§6.2) so
+	// releaseDriverIfScopeClosed can later clear exactly this entry, never a
+	// newer resume_session_id's. Optional-interface assertion on purpose
+	// (mirrors credentialRunner): test fakes of permission.Service must keep
+	// compiling unchanged; the real service always implements it.
+	if c.permissions != nil {
+		if mgr, ok := c.permissions.(permission.SessionRunAllowlistManager); ok {
+			mgr.InheritSessionRunAllowlistForGeneration(params.SessionID, session.ID, generation)
+			// No `defer Clear...` here (phase 2 §6.2, unchanged by phase 3):
+			// the child may still own async jobs/background shells after
+			// THIS turn returns (structural concurrency, #1049) and a woken
+			// turn re-inherits from subAgentDriver.parentSessionID on every
+			// wake instead. The entry is now cleared by
+			// releaseDriverIfScopeClosed once the child's scope actually
+			// closes (§6.2), not left to grow unbounded (§6.3's diagnosis,
+			// closed this phase).
+		}
+	}
 
 	// runAwaitingAdmission (#1036): if the child's mailbox is busy when this
 	// call is attempted (e.g. notifyAsyncCompletion just woke it for the

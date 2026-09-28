@@ -196,6 +196,28 @@ type SessionRunAllowlistManager interface {
 	// only by their own LogicalCallID. A stale clear (a later owner, a
 	// newer turn's policy) therefore never deletes another turn's entry.
 	ClearSessionRunAllowlistForCall(sessionID string, ownerCallID string)
+
+	// InheritSessionRunAllowlistForGeneration propagates parentID's
+	// per-session gate to childID exactly like InheritSessionRunAllowlist,
+	// but binds the copy to generation (a delegation driver's registration
+	// id, internal/agent's subAgentDriverRegistry -- async phase 3 §6.2) so
+	// ClearSessionRunAllowlistForGeneration can later remove ONLY that
+	// specific copy. Used at the three call sites that re-inherit a
+	// delegated child's allowlist on every delegation/wake
+	// (coordinator_subagents.go's runSubAgent, async_tool.go's Run,
+	// coordinator_wake.go's wakeNoticeCall) instead of the ungoverned
+	// InheritSessionRunAllowlist, so their entry can finally be cleared once
+	// the child's scope closes without risking the §6.3 race a plain
+	// Set/ClearSessionRunAllowlist pair would reopen.
+	InheritSessionRunAllowlistForGeneration(parentID, childID string, generation uint64)
+	// ClearSessionRunAllowlistForGeneration drops childID's entry ONLY if it
+	// still carries generation -- the same compare-and-delete idiom as
+	// ClearSessionRunAllowlistForEpoch, keyed by the delegation driver's
+	// registration generation instead of a mailbox ownership epoch. A stale
+	// clear from an OLD generation (the delegation's scope closing after a
+	// resume_session_id has already re-armed a NEWER generation) therefore
+	// never deletes the newer copy.
+	ClearSessionRunAllowlistForGeneration(childID string, generation uint64)
 }
 
 // SessionRunAllowlistBaselineManager is the per-session DEMOTED
@@ -242,15 +264,20 @@ type SessionRunAllowlistBaselineManager interface {
 // never grants epoch 0 — beginCompact bumps an idle mailbox to 1 — so a
 // reserved run's epoch-aware clear can never match a legacy entry by
 // accident). ownerCallID "" marks an entry not bound to a logical call.
-// The two bindings are independent: the epoch-scoped pair
-// (Set/ClearSessionRunAllowlistForEpoch) matches only ownerEpoch, the
-// call-scoped pair (Set/ClearSessionRunAllowlistForCall) matches only
-// ownerCallID, so a stale clear from one mechanism can never delete the
-// other mechanism's entry.
+// ownerDriverGen 0 marks an entry not bound to a delegation driver's
+// registration generation (subAgentDriverRegistry never issues generation
+// 0 either — async phase 3 §6.2). The three bindings are independent: the
+// epoch-scoped pair (Set/ClearSessionRunAllowlistForEpoch) matches only
+// ownerEpoch, the call-scoped pair (Set/ClearSessionRunAllowlistForCall)
+// matches only ownerCallID, the generation-scoped pair
+// (InheritSessionRunAllowlistForGeneration/ClearSessionRunAllowlistForGeneration)
+// matches only ownerDriverGen, so a stale clear from one mechanism can never
+// delete another mechanism's entry.
 type sessionRunAllowlistEntry struct {
-	allowlist   RunAllowlist
-	ownerEpoch  uint64
-	ownerCallID string
+	allowlist      RunAllowlist
+	ownerEpoch     uint64
+	ownerCallID    string
+	ownerDriverGen uint64
 }
 
 type permissionService struct {
@@ -819,6 +846,49 @@ func (s *permissionService) InheritSessionRunAllowlist(parentID, childID string)
 		s.runAllowlistBySession[childID] = sessionRunAllowlistEntry{allowlist: baseline}
 	}
 	s.runAllowlistBySessionMu.Unlock()
+}
+
+// InheritSessionRunAllowlistForGeneration is InheritSessionRunAllowlist
+// (same "inherit nothing when the parent has nothing" rule), except the
+// copy it writes for childID is bound to generation instead of being
+// ungoverned (async phase 3 §6.2) -- only ClearSessionRunAllowlistForGeneration
+// with the SAME generation can later remove it. Builds a fresh entry
+// (allowlist body only) rather than copying the parent's own
+// epoch/call-scoped binding forward: those bindings belong to the PARENT's
+// turn, not the child's driver registration, and carrying them into childID
+// would let an unrelated epoch/call-scoped clear on the parent's session id
+// accidentally match childID's entry if the two ever collided by value.
+func (s *permissionService) InheritSessionRunAllowlistForGeneration(parentID, childID string, generation uint64) {
+	if parentID == "" || childID == "" || parentID == childID {
+		return
+	}
+	s.runAllowlistBySessionMu.Lock()
+	defer s.runAllowlistBySessionMu.Unlock()
+	if entry, ok := s.runAllowlistBySession[parentID]; ok {
+		s.runAllowlistBySession[childID] = sessionRunAllowlistEntry{allowlist: entry.allowlist, ownerDriverGen: generation}
+		return
+	}
+	if baseline, ok := s.runAllowlistBaselineBySession[parentID]; ok {
+		// R4-2's legacy-window half, same as InheritSessionRunAllowlist.
+		s.runAllowlistBySession[childID] = sessionRunAllowlistEntry{allowlist: baseline, ownerDriverGen: generation}
+	}
+}
+
+// ClearSessionRunAllowlistForGeneration drops childID's entry only if it
+// still carries generation (async phase 3 §6.2) -- the same
+// compare-and-delete idiom as ClearSessionRunAllowlistForEpoch, closing the
+// residual race §6.3 identified: a delegation's scope-close release firing
+// AFTER a resume_session_id has already re-armed a NEWER generation must
+// never delete that newer entry.
+func (s *permissionService) ClearSessionRunAllowlistForGeneration(childID string, generation uint64) {
+	if childID == "" {
+		return
+	}
+	s.runAllowlistBySessionMu.Lock()
+	defer s.runAllowlistBySessionMu.Unlock()
+	if entry, ok := s.runAllowlistBySession[childID]; ok && entry.ownerDriverGen == generation {
+		delete(s.runAllowlistBySession, childID)
+	}
 }
 
 func NewPermissionService(ctx context.Context, workingDir string, skip bool, allowedTools []string, q *db.Queries) Service {

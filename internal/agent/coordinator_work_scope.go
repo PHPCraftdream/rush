@@ -1,10 +1,16 @@
-// Coordinator-side helpers for the work ledger: transitive "is this session
-// (or anything below it) still owning work" queries, the delegation
-// completion refresh, and the parked-delegation status reporter. Moved out of
-// subagent_outcome.go (deleted by phase 1, docs/plans/2026-09-27-async-
-// phase1-spec.md) unchanged in behavior -- these stay coordinator methods
-// (refreshSubAgentCompletion needs c.messages) rather than moving onto
-// workLedger itself.
+// Coordinator-side helpers for the work ledger: the delegation completion
+// refresh, the child-run-ended re-check trigger, and the parked-delegation
+// status reporter. Moved out of subagent_outcome.go (deleted by phase 1,
+// docs/plans/2026-09-27-async-phase1-spec.md) unchanged in behavior -- these
+// stay coordinator methods (refreshSubAgentCompletion needs c.messages)
+// rather than moving onto workLedger itself.
+//
+// Phase 3 (docs/plans/2026-09-28-async-phase3-spec.md §3) deleted
+// DescendantWorkPending/anyPendingWorkInMemory/sessionOwnsPendingWork: the
+// transitive "does the root's scope still own work" question they polled for
+// is already answered, event-driven, by workLedger.next() -- see
+// app_run_async.go's runNonInteractiveWithAsyncResults and
+// docs/async-invariants.md's ASYNC-02 row.
 package agent
 
 import (
@@ -57,114 +63,6 @@ func (c *coordinator) refreshSubAgentCompletion(childSessionID string, completio
 		return completion
 	}
 	return completion
-}
-
-// DescendantWorkPending reports whether sessionID, or ANY session below it in
-// the parent->child session tree, still owns work that has not reached a
-// terminal state. This is the transitive form root-terminality needs: an
-// intermediate end_turn/yield after delegation is NOT completion, so the
-// root session must be held running/waiting until every depth of its
-// delegation tree is terminal.
-//
-// "Still owns work" means any of:
-//
-//   - an async job registered to that session that has not been delivered
-//     (workLedger.running), or
-//   - a background shell owned by that session that is still running
-//     (BackgroundShellManager.ActiveOwned), or
-//   - a delegation armed for that session that has not been released yet
-//     (workLedger's byChild index), either as the parent that has not been
-//     told, or as the child whose run has not come back.
-//
-// The walk is deliberately guarded by a fast in-memory pre-check: when
-// nothing is pending anywhere, there is no DB access at all, so the common
-// "everything finished" case stays free. Only when the pre-check says
-// something IS pending does this touch the sessions table, and then it
-// walks breadth-first from the root with a visited set so a corrupt or
-// cyclic linkage cannot loop.
-//
-// Deliberately NOT consulted: the child's mailbox ownership (IsSessionBusy).
-// That is the resume path's state, not work; gating on it would wedge
-// `rush run --session <id>`.
-func (c *coordinator) DescendantWorkPending(sessionID string) bool {
-	if sessionID == "" {
-		return false
-	}
-	// Fast path: nothing pending process-wide, so nothing can be pending
-	// below this session either. No DB read.
-	if !c.anyPendingWorkInMemory() {
-		return false
-	}
-	if c.sessions == nil {
-		// Without the session table we cannot walk the tree, so the safest
-		// answer is the one that does not strand a running workflow: report
-		// pending only for the session we were asked about.
-		return c.sessionOwnsPendingWork(sessionID)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	visited := make(map[string]struct{})
-	queue := []string{sessionID}
-	for len(queue) > 0 {
-		current := queue[0]
-		queue = queue[1:]
-		if _, seen := visited[current]; seen || current == "" {
-			continue
-		}
-		visited[current] = struct{}{}
-
-		if c.sessionOwnsPendingWork(current) {
-			return true
-		}
-		children, err := c.sessions.ListSubSessions(ctx, current)
-		if err != nil {
-			// A failed read must not silently clear the gate. Fall back to
-			// the conservative answer for the sessions already visited.
-			slog.Debug("DescendantWorkPending: child listing failed", "session", current, "err", err)
-			return true
-		}
-		for _, child := range children {
-			if _, seen := visited[child.ID]; !seen {
-				queue = append(queue, child.ID)
-			}
-		}
-	}
-	return false
-}
-
-// anyPendingWorkInMemory is the cheap pre-check: is there ANY pending async
-// job, live background shell, or unreleased armed delegation anywhere in
-// this process? Touches only in-memory registries.
-func (c *coordinator) anyPendingWorkInMemory() bool {
-	if c.asyncJobs != nil && c.asyncJobs.anyRunning() {
-		return true
-	}
-	if c.background != nil && c.background.ActiveJobs() > 0 {
-		return true
-	}
-	if c.asyncJobs != nil && c.asyncJobs.hasParked() {
-		return true
-	}
-	return false
-}
-
-// sessionOwnsPendingWork is the single-session form of
-// DescendantWorkPending: does THIS session own pending work?
-func (c *coordinator) sessionOwnsPendingWork(sessionID string) bool {
-	if sessionID == "" {
-		return false
-	}
-	if c.asyncJobs != nil && c.asyncJobs.running(sessionID) {
-		return true
-	}
-	if c.background != nil && c.background.ActiveOwned(sessionID) > 0 {
-		return true
-	}
-	if c.asyncJobs != nil && c.asyncJobs.hasParkedFor(sessionID) {
-		return true
-	}
-	return false
 }
 
 // noteSubAgentChildRunEnded is re-check trigger (iv): a run on sessionID has

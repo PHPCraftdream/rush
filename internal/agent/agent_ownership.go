@@ -293,7 +293,23 @@ func (a *sessionAgent) drainOrReleaseMerged(sessionID string, epoch uint64, lk *
 // while the lock is still held.
 func (a *sessionAgent) abandonOwnershipWithHandoff(sessionID string, epoch uint64) {
 	mb := a.getMailbox(sessionID)
-	if popped := mb.abandonOwnershipAndPopSubmitted(epoch); popped != nil {
+	popped := mb.abandonOwnershipAndPopSubmitted(epoch)
+	// Phase 3's by-construction release trigger (sessionAgent.onSessionIdle's
+	// doc): this is the single point every Run()/RunWithReservedOwnership/
+	// ReleaseExclusive exit funnels through, so it fires regardless of which
+	// higher-level caller (coordinator.runInternal, wakeSession's direct
+	// agent.Run, manual compaction) reached it. Fired AFTER
+	// abandonOwnershipAndPopSubmitted, not before: the callback's own gate
+	// (childScopeDrained -> IsSessionBusy) reads the mailbox's CURRENT
+	// state, which must already show mbIdle by the time it runs, or a
+	// perfectly real release would be misread as "still busy" and deferred.
+	// Called unconditionally regardless of epoch match: even a stale call (a
+	// later owner already re-claimed the mailbox) is a safe, cheap no-op for
+	// the callback -- see its own doc.
+	if a.onSessionIdle != nil {
+		a.onSessionIdle(sessionID)
+	}
+	if popped != nil {
 		slog.Error(
 			"agent.Run: calls were pending when ownership had to be abandoned — starting detached runs to ensure they execute",
 			"session_id", sessionID,

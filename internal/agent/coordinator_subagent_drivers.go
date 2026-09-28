@@ -24,7 +24,11 @@
 // ever one claimant for the child's OS lock.
 package agent
 
-import "sync"
+import (
+	"sync"
+
+	"github.com/PHPCraftdream/rush/internal/permission"
+)
 
 // subAgentDriver is a frozen snapshot of the SessionAgentCall shape
 // runSubAgent used to start a delegated child's turn, plus the SessionAgent
@@ -37,14 +41,25 @@ type subAgentDriver struct {
 	call  SessionAgentCall
 	// parentSessionID is the delegating session that originally armed this
 	// child's restricted-run allowlist baseline (runSubAgent's
-	// InheritSessionRunAllowlist). wakeSession re-inherits from it on EVERY
-	// wake (§6.2), not just the first turn: the child's own turn no longer
-	// clears its allowlist entry on return (coordinator_subagents.go/
+	// InheritSessionRunAllowlistForGeneration). wakeSession re-inherits from
+	// it on EVERY wake (§6.2), not just the first turn: the child's own turn
+	// no longer clears its allowlist entry on return (coordinator_subagents.go/
 	// async_tool.go dropped their `defer Clear`), so re-arming here keeps a
 	// woken turn judged by the delegation's policy instead of falling back
 	// to the process-wide gate. Empty for a driver registered without a
 	// known parent (should not happen in production; a nil-safe no-op).
 	parentSessionID string
+	// generation is THIS record's own monotonic registration id, assigned by
+	// register -- not the mailbox ownership epoch, not a turn's
+	// LogicalCallID. Phase 3 (§6.2) uses it to compare-and-delete this
+	// record (releaseIfCurrent) and to bind the allowlist entry inherited
+	// under it (InheritSessionRunAllowlistForGeneration/
+	// ClearSessionRunAllowlistForGeneration, permission.go), the same idiom
+	// SetSessionRunAllowlistForEpoch/ClearSessionRunAllowlistForEpoch
+	// already use for the mailbox epoch: a stale release from an OLD
+	// generation can never delete a NEWER resume_session_id's registration
+	// or its allowlist entry.
+	generation uint64
 }
 
 // callFor returns a copy of the driver's call template with prompt as its
@@ -57,21 +72,28 @@ func (d subAgentDriver) callFor(prompt string) SessionAgentCall {
 
 // subAgentDriverRegistry maps a delegated child session id to the driver
 // that owns its turns. Entries are written by runSubAgent right before it
-// starts (or resumes) the child's turn, and are kept for the coordinator's
-// lifetime rather than removed once the child goes idle: the `agent` tool's
-// resume_session_id path can re-drive the SAME child session arbitrarily far
-// in the future, long after any parked outcome for it was released, and
-// dropping the entry early would silently fall back to c.currentAgent for
-// that later resume -- reproducing this exact bug for old sessions. Each
-// entry is one interface value plus one SessionAgentCall snapshot -- the
-// same order of growth as coordinator.agents and the session/message tables
-// themselves, neither of which is pruned in-memory either -- and the
-// SessionAgent value it points to is itself one of a small number of
-// long-lived, process-wide objects (buildAgent's task-agent build), not one
-// object per delegation.
+// starts (or resumes) the child's turn.
+//
+// Phase 1/2 kept every entry for the coordinator's whole lifetime, on the
+// theory that the `agent` tool's resume_session_id path can re-drive the
+// SAME child session arbitrarily far in the future and dropping the entry
+// early would silently fall back to c.currentAgent for that later resume --
+// reproducing task #1049 for old sessions. Phase 3 (§6.2) removes an entry
+// once its child's scope is CONFIRMED closed (releaseDriverIfScopeClosed,
+// called from recheckChild), which does not reopen that risk: a later
+// resume_session_id always goes through runSubAgent's own register() call
+// again BEFORE the child's next turn runs (proven by
+// TestRunSubAgent_ResumeAfterScopeClosedReArmsAllowlist), so a resumed
+// session is never left driverless -- it just no longer holds the entry
+// during the (possibly very long) idle window in between.
 type subAgentDriverRegistry struct {
 	mu      sync.Mutex
 	byChild map[string]subAgentDriver
+	// nextGen is the monotonic source for subAgentDriver.generation, mirroring
+	// mailbox.epoch's own "never issue 0" convention (beginCompact bumps an
+	// idle mailbox to 1) so a zero-value subAgentDriver (never registered)
+	// can never be mistaken for a real generation.
+	nextGen uint64
 }
 
 func newSubAgentDriverRegistry() *subAgentDriverRegistry {
@@ -79,15 +101,23 @@ func newSubAgentDriverRegistry() *subAgentDriverRegistry {
 }
 
 // register records (or, on a resume_session_id re-delegation, replaces) the
-// driver for childSessionID. Nil-receiver safe so bare test fixtures that
-// never build one keep working.
-func (r *subAgentDriverRegistry) register(childSessionID string, driver subAgentDriver) {
+// driver for childSessionID, and returns the generation this record was just
+// assigned. Callers that need to bind a LATER release/clear to exactly THIS
+// registration (§6.2) capture the return value here rather than re-reading
+// get() a moment later, which could already observe a concurrent
+// re-registration. Nil-receiver safe so bare test fixtures that never build
+// one keep working (returns 0, a generation releaseIfCurrent can never match
+// since register always assigns >= 1).
+func (r *subAgentDriverRegistry) register(childSessionID string, driver subAgentDriver) uint64 {
 	if r == nil || childSessionID == "" {
-		return
+		return 0
 	}
 	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.nextGen++
+	driver.generation = r.nextGen
 	r.byChild[childSessionID] = driver
-	r.mu.Unlock()
+	return driver.generation
 }
 
 // get returns the registered driver for childSessionID, if any.
@@ -99,6 +129,25 @@ func (r *subAgentDriverRegistry) get(childSessionID string) (subAgentDriver, boo
 	defer r.mu.Unlock()
 	d, ok := r.byChild[childSessionID]
 	return d, ok
+}
+
+// releaseIfCurrent removes childSessionID's driver record ONLY if it is
+// still on generation g -- the same compare-and-delete idiom
+// permission.go's ClearSessionRunAllowlistForEpoch already applies to a
+// different map. A concurrent resume_session_id that re-registered
+// childSessionID (bumping its generation) always wins: this returns false
+// and touches nothing, leaving the newer record exactly as it was.
+func (r *subAgentDriverRegistry) releaseIfCurrent(childSessionID string, g uint64) bool {
+	if r == nil || childSessionID == "" {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if current, ok := r.byChild[childSessionID]; ok && current.generation == g {
+		delete(r.byChild, childSessionID)
+		return true
+	}
+	return false
 }
 
 // agentFor resolves the SessionAgent that actually owns sessionID's mailbox:
@@ -114,4 +163,35 @@ func (c *coordinator) agentFor(sessionID string) SessionAgent {
 		return driver.agent
 	}
 	return c.currentAgent
+}
+
+// releaseDriverIfScopeClosed removes childSessionID's driver record and its
+// restricted-run allowlist entry once the child's scope is confirmed closed
+// (§6.1's diagnosis: neither was ever cleared before phase 3, growing
+// without bound for the coordinator's whole lifetime -- phase 2 explicitly
+// deferred this cleanup here). Called from recheckChild's tail (work_ledger_
+// delegation.go, §5) at the exact moment it confirms nothing more is armed
+// for childSessionID -- including every session that was NEVER a delegated
+// child at all (trigger (iv)/the by-construction onSessionIdle hook call
+// this for every session's run-end, not just delegated ones): get() returns
+// ok=false for those and this returns immediately, no side effects.
+//
+// Safe against the resume_session_id race (§6.3): releaseIfCurrent compares
+// against the CURRENT map entry under its own lock, not a snapshot taken
+// earlier in this call -- a concurrent re-registration (a resume landing in
+// the same window) always wins and this becomes a no-op. Clearing the
+// allowlist entry under the SAME generation closes the matching window
+// there too (orchestrator decision 2026-09-28 item 2: closed by
+// construction, not accepted as residual risk).
+func (c *coordinator) releaseDriverIfScopeClosed(childSessionID string) {
+	driver, ok := c.subAgentDrivers.get(childSessionID)
+	if !ok {
+		return
+	}
+	if !c.subAgentDrivers.releaseIfCurrent(childSessionID, driver.generation) {
+		return // a concurrent resume_session_id already re-registered -- not ours to release
+	}
+	if mgr, ok := c.permissions.(permission.SessionRunAllowlistManager); ok {
+		mgr.ClearSessionRunAllowlistForGeneration(childSessionID, driver.generation)
+	}
 }

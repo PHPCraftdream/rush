@@ -530,15 +530,18 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 	// landed in the window between finish() returning and this check.
 	// In both cases the committed primary result is the run's final
 	// answer; a review turn would run a new phase under a dead context.
+	// Root terminality is transitive here too: a reviewer pass is a NEW
+	// phase on the root session, which must not open while any descendant
+	// sub-agent or async command it owns is still live at any depth. A
+	// delegation armed for sess.ID as its parent stays IN
+	// HasPendingAsyncJobs's own bySession[sess.ID].jobs entry until the
+	// child's scope drains and it is delivered (docs/plans/2026-09-28-
+	// async-phase3-spec.md §1.1) -- so this one check already covers both
+	// "root owns an undelivered async job" and "root's own delegation is
+	// still open", with no separate descendant walk needed.
 	asyncPending := false
 	if source, ok := app.AgentCoordinator.(agent.AsyncCompletionSource); ok {
 		asyncPending = source.HasPendingAsyncJobs(sess.ID)
-	}
-	// Root terminality is transitive here too: a reviewer pass is a NEW
-	// phase on the root session, which must not open while any descendant
-	// sub-agent or async command it owns is still live at any depth.
-	if !asyncPending && app.descendantWorkPending(ctx, sess.ID) {
-		asyncPending = true
 	}
 	if resultErr == nil && req.Credentials == nil && !asyncPending &&
 		!loop.canceledAfterCommit && loop.ctx.Err() == nil &&

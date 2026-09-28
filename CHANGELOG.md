@@ -58,6 +58,11 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   of describing the killed process's own exit.** The ledger records the
   stop request before the kill, so the model can tell it cancelled the job
   on purpose instead of it failing on its own.
+- **A delegated sub-agent's driver and restricted-run allowlist entry are
+  released once its scope actually closes**, instead of living for the
+  rest of the process. A long-lived web server no longer accumulates one
+  entry per delegation forever; a later `resume_session_id` on the same
+  child still re-establishes both before the child's next turn runs.
 - **`run_command` jobs are now controllable.** `job_kill` stops one by
   killing its whole process tree (not just the direct process, on Windows
   included); `job_output` returns accumulated output while it is still

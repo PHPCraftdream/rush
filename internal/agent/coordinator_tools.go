@@ -102,17 +102,23 @@ func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, age
 		DisableAutoSummarize: disableAutoSummarize,
 		// permissions can be nil on bare test-fixture coordinators; treat
 		// that as fail-closed (not YOLO) rather than panicking.
-		IsYolo:             c.permissions != nil && c.permissions.SkipRequests(),
-		Sessions:           c.sessions,
-		Messages:           c.messages,
-		Tools:              nil,
-		Config:             c.cfg,
-		Notify:             c.notify,
-		StreamIdleTimeout:  streamIdleTimeout,
-		ToolMaxDuration:    toolMaxDuration,
-		DataDirectory:      dataDirectory,
-		RunAllowlists:      runAllowlists,
-		AsyncJobs:          c.asyncJobs,
+		IsYolo:            c.permissions != nil && c.permissions.SkipRequests(),
+		Sessions:          c.sessions,
+		Messages:          c.messages,
+		Tools:             nil,
+		Config:            c.cfg,
+		Notify:            c.notify,
+		StreamIdleTimeout: streamIdleTimeout,
+		ToolMaxDuration:   toolMaxDuration,
+		DataDirectory:     dataDirectory,
+		RunAllowlists:     runAllowlists,
+		AsyncJobs:         c.asyncJobs,
+		// Phase 3's by-construction release trigger (sessionAgent.
+		// onSessionIdle's doc, docs/plans/2026-09-28-async-phase3-spec.md
+		// orchestrator decision item 1): wired identically for the root
+		// agent and every delegated child driver, since buildAgent builds
+		// both.
+		OnSessionIdle:      c.noteSubAgentChildRunEnded,
 		RestrictedRuns:     restrictedRunAuthorizer(c.permissions),
 		CheckpointInterval: checkpointInterval, // Fork patch: batch 8
 		// Fork patch: peak-hours mid-turn re-check. Deliberately LIVE, not

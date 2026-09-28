@@ -95,7 +95,17 @@ func (t *asyncTool) Run(ctx context.Context, call fantasy.ToolCall) (fantasy.Too
 	if childSessionID != "" && t.coordinator.permissions != nil {
 		t.coordinator.permissions.InheritSessionAutoApprove(sessionID, childSessionID)
 		if mgr, ok := t.coordinator.permissions.(permission.SessionRunAllowlistManager); ok {
-			mgr.InheritSessionRunAllowlist(sessionID, childSessionID)
+			// §6.2: bind to whatever driver generation is CURRENTLY
+			// registered for childSessionID, if any -- 0 (subAgentDriverRegistry
+			// never issues 0) for a fresh delegation with no driver yet. This
+			// call always runs BEFORE t.run reaches runSubAgent (the
+			// underlying agent/agentic_fetch tool), whose own
+			// InheritSessionRunAllowlistForGeneration call moments later
+			// overwrites this entry under the driver's real, freshly
+			// assigned generation -- this early call only needs to be inert
+			// against a stale clear, not durable itself.
+			driver, _ := t.coordinator.subAgentDrivers.get(childSessionID)
+			mgr.InheritSessionRunAllowlistForGeneration(sessionID, childSessionID, driver.generation)
 		}
 	}
 	go t.run(jobCtx, cancel, sessionID, childSessionID, call, sync)

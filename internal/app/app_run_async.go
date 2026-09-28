@@ -98,26 +98,16 @@ func (app *App) runNonInteractiveWithAsyncResults(ctx context.Context, output io
 			return final, waitErr
 		}
 		if !hasCompletion {
-			// Root terminality is TRANSITIVE. The root session's own queue
-			// being empty is not completion: a descendant sub-agent or an
-			// async command it owns may still be live at any depth. An
-			// intermediate end_turn/yield after delegation is precisely
-			// what must not end the run. Hold the loop open until that
-			// descendant work is terminal; the existing drain path feeds
-			// each descendant's terminal result back as the next root turn.
-			//
-			// descendantWorkPending itself returns false once ctx is done,
-			// so a cancelled run falls through to the normal return below
-			// rather than being held open here.
-			if app.descendantWorkPending(ctx, sessionID) {
-				select {
-				case <-ctx.Done():
-					// Next iteration's NextAsyncCompletion surfaces the
-					// context error on the canceled path.
-				case <-time.After(descendantWorkPollInterval):
-				}
-				continue
-			}
+			// next() (workLedger.next(), internal/agent/work_ledger.go)
+			// returns false ONLY when sessionID has neither a ready
+			// completion nor an outstanding/undelivered job -- which
+			// already includes a delegation armed for sessionID as its
+			// parent (work_ledger_delegation.go's byChild-backed record
+			// stays in bySession[owner].jobs until the child's own scope
+			// drains, docs/plans/2026-09-28-async-phase3-spec.md §1.1-1.3).
+			// That is exactly "the root's scope is closed" -- next() itself
+			// already blocked, event-driven, for the whole time the scope
+			// was open (§1.2), so there is nothing left to poll for here.
 			if final == nil {
 				return nil, runErr
 			}
@@ -148,40 +138,6 @@ func (app *App) runNonInteractiveWithAsyncResults(ctx context.Context, output io
 		useLast = false
 		firstTurn = false
 	}
-}
-
-// descendantWorkPollInterval is how often the root loop re-checks
-// DescendantWorkPending while holding the run open. It is only reached when
-// the root's own async queue is empty but a descendant still owns live
-// work, so it is a bounded wait rather than a spin: the coordinator's own
-// release triggers are what actually unblock things, and this interval only
-// bounds how quickly the root notices.
-var descendantWorkPollInterval = 100 * time.Millisecond
-
-// descendantWorkSource is the consumer-side seam for the coordinator's
-// transitive root-terminality query. Defined here in the consuming package
-// (rather than in internal/agent) to mirror the existing app→agent seams:
-// a coordinator that does not implement it simply means "no descendant
-// signal available", which degrades to the old behavior rather than
-// failing.
-type descendantWorkSource interface {
-	// DescendantWorkPending reports whether sessionID, or any session
-	// below it in the parent→child session tree, still owns pending work.
-	DescendantWorkPending(sessionID string) bool
-}
-
-// descendantWorkPending consults the coordinator's transitive
-// root-terminality query, if it exposes one.
-func (app *App) descendantWorkPending(ctx context.Context, sessionID string) bool {
-	if ctx != nil && ctx.Err() != nil {
-		// A cancelled run must never be held open by a descendant check.
-		return false
-	}
-	source, ok := app.AgentCoordinator.(descendantWorkSource)
-	if !ok || sessionID == "" {
-		return false
-	}
-	return source.DescendantWorkPending(sessionID)
 }
 
 func cmpName(a, b string) int {

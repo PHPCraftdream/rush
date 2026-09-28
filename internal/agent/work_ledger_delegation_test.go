@@ -22,6 +22,7 @@ package agent
 
 import (
 	"context"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -533,6 +534,80 @@ func TestWorkLedger_ConcurrentRecheckAndCancelDeliversOnce(t *testing.T) {
 		}
 		require.False(t, coord.asyncJobs.hasParked(), "iteration %d", i)
 	}
+}
+
+// TestWorkLedger_ChildScopeClosesWithoutTicker is phase 3 step 0 (spec §3.3,
+// §9). It was written and passed BEFORE the safety-net ticker was deleted
+// (with subAgentOutcomeTickInterval forced to an hour, so a pass could not be
+// attributed to it): the exact TestWorkLedger_SingleFinalNoticeAfterChildJobsDrain
+// scenario delivers SYNCHRONOUSLY through the ordinary triggers alone. That
+// was the empirical evidence the ticker's later removal (this same package,
+// same phase) was safe. The ticker is gone now, so there is nothing left to
+// disable -- this test keeps the scenario as a permanent regression guard.
+func TestWorkLedger_ChildScopeClosesWithoutTicker(t *testing.T) {
+	delivered := make(chan AsyncCompletion, 4)
+	coord := newParkedOutcomeCoordinator(func(completion AsyncCompletion) { delivered <- completion })
+
+	startChildOwnedJob(t, coord.asyncJobs, parkedChildSession, parkedChildJob, true)
+	parkDelegation(t, coord, parkedChildSession, "child yielded: async checks still running")
+	require.True(t, coord.asyncJobs.hasParked())
+	require.Empty(t, drainCompletions(delivered))
+
+	finishChildJob(t, coord, delivered, AsyncCompletion{
+		SessionID:  parkedChildSession,
+		ToolCallID: parkedChildJob,
+		ToolName:   "bash",
+		Content:    "gate ok",
+	})
+
+	got := drainCompletions(delivered)
+	require.Len(t, got, 1,
+		"delivery must happen synchronously through the ordinary triggers, "+
+			"not the (deliberately disabled) safety-net ticker")
+	require.Equal(t, parkedParentCall, got[0].ToolCallID)
+	require.False(t, coord.asyncJobs.hasParked())
+}
+
+// TestWorkLedger_NoLingeringTickerGoroutineAfterArmDelegation pins phase 3
+// step 2's deletion (spec §4.4): arming a delegation must not spawn any
+// additional long-lived goroutine (a ticker, if one still existed, would be
+// exactly that). settle() re-reads NumGoroutine() until it stabilizes
+// (Gosched between reads) rather than tolerating a fixed slack, since a
+// tolerant "+1" margin would silently mask exactly the one-goroutine leak
+// this test exists to catch.
+//
+// Revert-check performed: temporarily reintroduced a ticker-shaped leak --
+// `go func() { t := time.NewTicker(time.Hour); <-t.C }()` right after
+// `l.byChild[job.childSession] = append(...)` in armDelegation (mirroring
+// where the real startTickerLocked() call used to sit) -- this test FAILED
+// consistently (5/5 repeats, goroutine count growing by 1 each run and never
+// settling back down). Removed the reintroduced line; re-ran 5/5, passed.
+func TestWorkLedger_NoLingeringTickerGoroutineAfterArmDelegation(t *testing.T) {
+	coord := newParkedOutcomeCoordinator(func(AsyncCompletion) {})
+	coord.currentAgent = &mockSessionAgent{}
+
+	settle := func() int {
+		var n int
+		for i := 0; i < 5; i++ {
+			runtime.Gosched()
+			n = runtime.NumGoroutine()
+		}
+		return n
+	}
+	before := settle()
+
+	startChildOwnedJob(t, coord.asyncJobs, parkedChildSession, parkedChildJob, true)
+	parkDelegation(t, coord, parkedChildSession, "child yielded: still running")
+	require.True(t, coord.asyncJobs.hasParked())
+
+	after := settle()
+	require.LessOrEqual(t, after, before,
+		"armDelegation must not leave behind a long-lived goroutine (before=%d after=%d)", before, after)
+
+	// Release the child's own job so the ledger doesn't leak the armed entry
+	// past this test.
+	coord.asyncJobs.finish(parkedChildSession, parkedChildJob, jobResult{content: "done"})
+	coord.noteSubAgentChildRunEnded(parkedChildSession)
 }
 
 // writeParkedChildTurn records a finished assistant turn on a child session,
