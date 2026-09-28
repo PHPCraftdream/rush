@@ -128,7 +128,9 @@ func renameConfigTempHandle(source *os.File, sourcePath string, parent *os.File,
 		if err == nil {
 			return nil
 		}
-		if !errors.Is(err, windows.ERROR_ACCESS_DENIED) || attempt+1 >= windowsRenameRetryAttempts {
+		// NtSetInformationFile reports NTSTATUS, not a Win32 errno: a reader
+		// holding the destination open yields STATUS_ACCESS_DENIED here.
+		if (!errors.Is(err, windows.ERROR_ACCESS_DENIED) && !errors.Is(err, windows.STATUS_ACCESS_DENIED)) || attempt+1 >= windowsRenameRetryAttempts {
 			return err
 		}
 		if retryErr := waitAndVerifyWindowsRenameRetry(source, sourcePath, parent, destination, replace, expected, expectedOwner, enforceOwner, discoveryPath, attempt); retryErr != nil {

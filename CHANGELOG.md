@@ -50,6 +50,9 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   instead of failing with "session is already in use".
 - **The task agent is never given the `agent` tool**, which would make tool
   construction recurse forever and hang every run.
+- **A config write on Windows retries when another reader holds the file
+  open**, instead of failing with "Access Denied". The NT rename fallback
+  reported the conflict as an NTSTATUS the retry check did not recognise.
 - **`job_kill` and `job_output` accept the job id the model was given**
   (`job_id`), so a running async `bash` or `run_command` command can be
   stopped or inspected before it finishes. Previously they needed an
