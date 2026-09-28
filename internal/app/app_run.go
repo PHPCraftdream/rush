@@ -532,16 +532,21 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 	// answer; a review turn would run a new phase under a dead context.
 	// Root terminality is transitive here too: a reviewer pass is a NEW
 	// phase on the root session, which must not open while any descendant
-	// sub-agent or async command it owns is still live at any depth. A
-	// delegation armed for sess.ID as its parent stays IN
-	// HasPendingAsyncJobs's own bySession[sess.ID].jobs entry until the
-	// child's scope drains and it is delivered (docs/plans/2026-09-28-
-	// async-phase3-spec.md §1.1) -- so this one check already covers both
-	// "root owns an undelivered async job" and "root's own delegation is
-	// still open", with no separate descendant walk needed.
+	// sub-agent or async command it owns is still live at any depth, or
+	// while the root itself still has a reaction debt. Phase-4 step 4 (doc
+	// sec.3.5/6): this now reads the SAME DB scope predicate the CLI loop's
+	// own exit condition uses (ScopeOpen), not the deleted in-memory
+	// HasPendingAsyncJobs -- a delegation armed for sess.ID as its parent
+	// still shows up here because its async_jobs row stays 'running' until
+	// the child's scope drains (docs/plans/2026-09-28-async-phase3-spec.md
+	// §1.1), so this one check still covers both "root owns an undelivered
+	// async job" and "root's own delegation is still open", with no
+	// separate descendant walk needed. A DB read error is treated as "scope
+	// still open" (skip the reviewer pass) rather than silently proceeding.
 	asyncPending := false
-	if source, ok := app.AgentCoordinator.(agent.AsyncCompletionSource); ok {
-		asyncPending = source.HasPendingAsyncJobs(sess.ID)
+	if source, ok := app.AgentCoordinator.(agent.ReactionDebtSource); ok {
+		open, scopeErr := source.ScopeOpen(ctx, sess.ID)
+		asyncPending = scopeErr != nil || open
 	}
 	if resultErr == nil && req.Credentials == nil && !asyncPending &&
 		!loop.canceledAfterCommit && loop.ctx.Err() == nil &&
