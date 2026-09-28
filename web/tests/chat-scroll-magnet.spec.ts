@@ -96,7 +96,18 @@ test("scrolling back down to the bottom re-engages the magnet", async ({ page })
   const container = page.locator('[data-test-id="chat-scroll-container"]');
   await container.hover();
   await page.mouse.wheel(0, -600);
-  expect(await isAtBottom(page)).toBe(false);
+  // A real OS-level wheel scroll (unlike test 1's synthetic dispatchEvent,
+  // which the app's own handleWheel applies synchronously) is applied by the
+  // browser compositor and can land in `scrollTop` a frame or two after
+  // page.mouse.wheel() resolves -- confirmed by instrumenting this exact
+  // assertion: scrollTop was still unchanged immediately after the wheel
+  // call and had settled to the expected value within 50ms. The magnet
+  // itself disengages synchronously (handleWheel's deltaY<0 check runs
+  // inside the real wheel event, before any compositor scroll lands), so
+  // this is a test-side race, not a production one -- poll like the
+  // symmetric scroll-back-down assertion a few lines below already does,
+  // instead of reading scrollTop the instant the wheel call resolves.
+  await expect.poll(() => isAtBottom(page)).toBe(false);
 
   // Scroll back down to the bottom -- handleScroll's position check must
   // flip isAtBottomRef back to true.

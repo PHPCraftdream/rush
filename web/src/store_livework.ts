@@ -15,12 +15,25 @@ export interface SessionLiveWork {
 const EMPTY_LIVE_WORK: SessionLiveWork = { commands: [], agents: [] };
 
 // Keyed by sessionID. Sessions with no snapshot yet (or never requested)
-// read as EMPTY_LIVE_WORK via getLiveWork, not absent/undefined.
+// read as EMPTY_LIVE_WORK via pickLiveWork, not absent/undefined.
 export const $liveWorkBySession = atom<Map<string, SessionLiveWork>>(new Map());
 
-export function getLiveWork(sessionID: string | null): SessionLiveWork {
+// pickLiveWork takes the MAP as an explicit argument rather than reading
+// $liveWorkBySession.get() itself. This is required, not stylistic: the
+// project's React Compiler babel plugin (rsbuild.config.ts) memoizes a
+// component's derived values based on its recognized reactive inputs
+// (props/state/hook return values) only. A plain function that reaches
+// into a nanostore atom via .get() outside of useStore's tracked return
+// value is invisible to that analysis -- the compiler treated
+// `pickLiveWork(sessionID)` (its previous, atom-reading-internally shape)
+// as a pure function of `sessionID` alone and memoized the JSX consuming
+// its result across unrelated atom updates, so a fresh session_live_work
+// snapshot landed in the atom (confirmed via the atom's own contents) but
+// never reached the rendered tab bar. Callers MUST pass the value returned
+// by `useStore($liveWorkBySession)` here, never call `.get()` themselves.
+export function pickLiveWork(map: Map<string, SessionLiveWork>, sessionID: string | null): SessionLiveWork {
   if (!sessionID) return EMPTY_LIVE_WORK;
-  return $liveWorkBySession.get().get(sessionID) ?? EMPTY_LIVE_WORK;
+  return map.get(sessionID) ?? EMPTY_LIVE_WORK;
 }
 
 /** Applies a full session_live_work snapshot (push or get_session_live_work
