@@ -13,6 +13,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -271,12 +272,19 @@ func TestWakeSession_RunPanicIsRecovered(t *testing.T) {
 // produce a visible marker, not just a Debug log line nobody sees. Step 3
 // changed WHERE that marker lands: wakeSession no longer persists anything
 // itself, so the marker is a durable session_notices row (kind
-// NoticeKindWakeFailed, wake=0), not a second InjectMessage call.
+// NoticeKindWakeFailed, wake=0), not a second InjectMessage call. Step 4
+// (doc sec.3.4 "closing debt by failure") gates the marker on the debt
+// snapshot captured before the turn ran being non-empty -- this test seeds
+// one wake=1 session_notices row so settle-by-failure (assert.AnError
+// classifies as an unrecoverable/classTerminal cause via classifyProviderError's
+// default case, so it settles on the FIRST failure, K doesn't matter) has a
+// real row to close.
 //
 // Revert-check performed: removed the persistWakeFailedMarker call from
-// wakeSession's error branch -- this test FAILED (ListSessionNotices
-// returned zero rows) -- restored the call, re-ran, passed (one row, kind
-// "wake_failed", text containing "call-2").
+// settleAndMark -- this test FAILED (ListSessionNotices returned only the
+// seeded row, no marker) -- restored the call, re-ran, passed (two rows: the
+// seeded one now reacted_failed=1, plus a "wake_failed" one containing
+// "call-2").
 func TestWakeSession_RunErrorIsVisibleNotDebug(t *testing.T) {
 	agent := &mockSessionAgent{
 		runFunc: func(ctx context.Context, call SessionAgentCall) (*fantasy.AgentResult, error) {
@@ -288,15 +296,25 @@ func TestWakeSession_RunErrorIsVisibleNotDebug(t *testing.T) {
 	coord.asyncJobs = newWorkLedger(nil)
 	coord.asyncJobs.store = newTestAsyncJobStore(t)
 	coord.asyncJobs.coord = coord
+	require.NoError(t, coord.asyncJobs.store.InsertSessionNotice(t.Context(), "sess-2", "supervision", "seeded debt", true, ""))
 
 	err := coord.wakeSession(t.Context(), jobIdentity{owner: "sess-2", toolCallID: "call-2"}, true)
 	require.Error(t, err)
 
 	notices, listErr := coord.asyncJobs.store.ListSessionNotices(t.Context(), "sess-2")
 	require.NoError(t, listErr)
-	require.Len(t, notices, 1, "expected exactly one durable wake-failed marker")
-	require.Equal(t, "wake_failed", notices[0].Kind)
-	require.Contains(t, notices[0].Text, "call-2")
+	require.Len(t, notices, 2, "the seeded debt row plus one durable wake-failed marker")
+	var marker, seeded session.SessionNoticeRow
+	for _, n := range notices {
+		if n.Kind == "wake_failed" {
+			marker = n
+		} else {
+			seeded = n
+		}
+	}
+	require.Equal(t, "wake_failed", marker.Kind)
+	require.Contains(t, marker.Text, "call-2")
+	require.Equal(t, "seeded debt", seeded.Text)
 }
 
 // TestWakeSession_AlwaysAttemptsRunEvenWhenSessionLooksBusy pins the fix for

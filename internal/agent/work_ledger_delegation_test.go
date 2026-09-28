@@ -136,7 +136,7 @@ func TestWorkLedger_NoFinishedNoticeWhileChildOwnedJobsPending(t *testing.T) {
 
 	require.True(t, coord.asyncJobs.hasParked(),
 		"the delegation must be armed while the child still owns async work")
-	require.True(t, coord.asyncJobs.pending(parkedChildSession),
+	require.True(t, coord.asyncJobs.running(parkedChildSession),
 		"precondition: the child's own async job must still be running")
 	require.Empty(t, drainCompletions(delivered),
 		"no completion notice may reach the parent while the child's own async work is outstanding")

@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -29,34 +30,44 @@ func drainCompletions(ch chan AsyncCompletion) []AsyncCompletion {
 
 // TestWorkLedger_WaitsForPersistedToolResult ports
 // TestAsyncJobRegistryWaitsForPersistedToolResult: delivery waits for
-// acknowledged, and the ready queue is FIFO.
+// acknowledged. Phase-4 step 4 deleted the in-memory ready queue (doc
+// sec.3.5) -- every non-sync completion now routes through onWebDone
+// (work_ledger.go's deliverLocked), CLI-origin or not, so this observes
+// delivery via a callback channel instead of workLedger.next().
 func TestWorkLedger_WaitsForPersistedToolResult(t *testing.T) {
 	t.Parallel()
-	l := newWorkLedger(nil)
+	completed := make(chan AsyncCompletion, 1)
+	l := newWorkLedger(func(c AsyncCompletion) { completed <- c })
 	l.store = newTestAsyncJobStore(t)
 	_, existing, err := l.Start("session", "call", "", "bash", "", true, false, nil, nil)
 	require.NoError(t, err)
 	require.False(t, existing)
-	// Wake: true -- a natural finish's committed row always sets wake=1
-	// (doc sec.3.4's wake-policy table; causeStateNoticeKindWake's
-	// causeNaturalFinish case), phase-4 step 3.
-	want := AsyncCompletion{SessionID: "session", ToolCallID: "call", ToolName: "bash", Content: "done", Wake: true}
 	l.finish("session", "call", jobResult{content: "done"})
 
 	l.mu.Lock()
-	ready, pending := len(l.bySession["session"].ready), len(l.bySession["session"].jobs)
+	pending := len(l.bySession["session"].jobs)
 	l.mu.Unlock()
-	require.Zero(t, ready)
 	require.Equal(t, 1, pending)
+	select {
+	case got := <-completed:
+		t.Fatalf("must not deliver before acknowledged: %+v", got)
+	default:
+	}
 
 	l.acknowledged("session", "call")
-	got, ok, err := l.next(t.Context(), "session")
-	require.NoError(t, err)
-	require.True(t, ok)
-	require.Equal(t, want, got)
-	_, ok, err = l.next(t.Context(), "session")
-	require.NoError(t, err)
-	require.False(t, ok)
+	select {
+	case got := <-completed:
+		require.Equal(t, "session", got.SessionID)
+		require.Equal(t, "call", got.ToolCallID)
+		require.Equal(t, "bash", got.ToolName)
+		require.Equal(t, "done", got.Content)
+		// Wake: true -- a natural finish's committed row always sets
+		// wake=1 (doc sec.3.4's wake-policy table; causeStateNoticeKindWake's
+		// causeNaturalFinish case), phase-4 step 3.
+		require.True(t, got.Wake)
+	case <-time.After(2 * time.Second):
+		t.Fatal("completion not delivered")
+	}
 }
 
 // TestWorkLedger_WebCallbackExactlyOnce ports
@@ -76,9 +87,7 @@ func TestWorkLedger_WebCallbackExactlyOnce(t *testing.T) {
 	l.finish("session", "call", jobResult{})
 	l.finish("session", "call", jobResult{})
 	require.EqualValues(t, 1, calls.Load())
-	_, ok, err := l.next(t.Context(), "session")
-	require.NoError(t, err)
-	require.False(t, ok)
+	require.False(t, l.running("session"))
 }
 
 // TestWorkLedger_ConcurrentFinishAndAcknowledge ports
@@ -86,7 +95,8 @@ func TestWorkLedger_WebCallbackExactlyOnce(t *testing.T) {
 // finish/acknowledged runs last is what delivers, exactly once.
 func TestWorkLedger_ConcurrentFinishAndAcknowledge(t *testing.T) {
 	t.Parallel()
-	l := newWorkLedger(nil)
+	completed := make(chan AsyncCompletion, 1)
+	l := newWorkLedger(func(c AsyncCompletion) { completed <- c })
 	l.store = newTestAsyncJobStore(t)
 	_, _, err := l.Start("session", "call", "", "bash", "", true, false, nil, nil)
 	require.NoError(t, err)
@@ -94,12 +104,12 @@ func TestWorkLedger_ConcurrentFinishAndAcknowledge(t *testing.T) {
 	wg.Go(func() { l.finish("session", "call", jobResult{}) })
 	wg.Go(func() { l.acknowledged("session", "call") })
 	wg.Wait()
-	_, ok, err := l.next(t.Context(), "session")
-	require.NoError(t, err)
-	require.True(t, ok)
-	_, ok, err = l.next(t.Context(), "session")
-	require.NoError(t, err)
-	require.False(t, ok)
+	select {
+	case <-completed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("completion not delivered")
+	}
+	require.False(t, l.running("session"))
 }
 
 // TestWorkLedger_CancelAndClose ports TestAsyncJobRegistryCancelAndClose:
@@ -108,14 +118,13 @@ func TestWorkLedger_ConcurrentFinishAndAcknowledge(t *testing.T) {
 // Phase-4 step 2 deliberately changes one part of this test's old
 // assertion: close() no longer removes the job from memory or transitions
 // it (doc sec.3.1/3.7, "graceful exit = crash") -- the row stays 'running'
-// for the next host to recover, so l.next() must NOT be called after
-// close() expecting a not-ok/empty result (it would block forever waiting
-// for a delivery that will never come). This test now asserts the executor
-// IS cancelled and the job REMAINS tracked (l.running still true).
+// for the next host to recover, so nothing must block forever waiting for a
+// delivery that will never come. This test now asserts the executor IS
+// cancelled and the job REMAINS tracked (l.running still true).
 //
 // Revert-check performed: reverted close() to its pre-step-2 form (call
-// cancelSession per owner) -- this test's OLD assertion block (l.next
-// returning not-ok) passed again, but TestWorkLedger_
+// cancelSession per owner) -- this test's OLD assertion block (the old
+// l.next call returning not-ok) passed again, but TestWorkLedger_
 // ShutdownCausedCancellationLeavesRowRunningWritesNoNotice (work_ledger_
 // durable_test.go) FAILED (the row committed to a terminal state instead of
 // staying 'running'), proving the two tests pin opposite, mutually
@@ -128,10 +137,12 @@ func TestWorkLedger_CancelAndClose(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	_, _, err := l.Start("session", "call", "", "bash", "", true, false, nil, cancel)
 	require.NoError(t, err)
+	// Phase-4 step 4: waitForHint (next()'s replacement blocking primitive)
+	// must respect ctx cancellation instead of blocking forever.
 	waitCtx, stopWaiting := context.WithCancel(t.Context())
 	stopWaiting()
-	_, _, err = l.next(waitCtx, "session")
-	require.ErrorIs(t, err, context.Canceled)
+	require.False(t, l.waitForHint(waitCtx, "session", l.hintSeqOf("session")),
+		"an already-canceled ctx must not block")
 	l.close()
 	require.ErrorIs(t, ctx.Err(), context.Canceled, "close must cancel every job's executor context")
 	require.True(t, l.running("session"), "the job must stay tracked (DB row stays 'running' for recovery), not be dropped")
@@ -292,11 +303,14 @@ func TestWorkLedger_ConcurrentTerminalRaceYieldsExactlyOneOutcome(t *testing.T) 
 
 // TestWorkLedger_SyncJobBypassesReadyQueueAndWebDone pins phase 2 §4.4: a
 // sync job's outcome is delivered ONLY through awaitSync/job.done, never
-// through the CLI ready queue or the web onWebDone callback.
+// through the web onWebDone callback (phase-4 step 4 deleted the separate
+// CLI ready queue entirely -- every non-sync completion now routes through
+// onWebDone too, so "never queued for CLI drain" and "never invokes
+// onWebDone" collapse into the one webDoneCalls assertion below).
 // Revert-check performed: removed the `if job.sync {...}` short-circuit at
 // the top of deliverLocked's body -- this test FAILED (onWebDone was
-// invoked, len(s.ready) became 1 for a cli=true job). Restored the
-// short-circuit; re-ran, passed.
+// invoked for a job with job.done still open). Restored the short-circuit;
+// re-ran, passed.
 func TestWorkLedger_SyncJobBypassesReadyQueueAndWebDone(t *testing.T) {
 	t.Parallel()
 	var webDoneCalls int
@@ -314,10 +328,6 @@ func TestWorkLedger_SyncJobBypassesReadyQueueAndWebDone(t *testing.T) {
 	default:
 		t.Fatal("job.done must be closed once the sync job is delivered")
 	}
-	l.mu.Lock()
-	ready := len(l.bySession["session"].ready)
-	l.mu.Unlock()
-	require.Zero(t, ready, "a sync job must never be queued for CLI drain")
 	require.Zero(t, webDoneCalls, "a sync job must never invoke onWebDone")
 
 	result, err := l.awaitSync(t.Context(), job)

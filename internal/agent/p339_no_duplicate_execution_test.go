@@ -87,6 +87,14 @@ func (m *mockMessageService) Update(ctx context.Context, msg message.Message) er
 	return m.inner.Update(ctx, msg)
 }
 
+func (m *mockMessageService) UpdateTx(ctx context.Context, tx *sql.Tx, msg message.Message) (func(), error) {
+	count := m.callCount.Add(1)
+	if m.shouldFail(count) {
+		return nil, m.failWith
+	}
+	return m.inner.UpdateTx(ctx, tx, msg)
+}
+
 func (m *mockMessageService) List(ctx context.Context, sessionID string) ([]message.Message, error) {
 	count := m.callCount.Add(1)
 	if m.shouldFail(count) {

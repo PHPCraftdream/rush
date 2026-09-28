@@ -24,7 +24,12 @@ func TestAsyncToolReturnsBeforeCommandFinishes(t *testing.T) {
 		<-release
 		return fantasy.NewTextResponse("program output"), nil
 	})
-	registry := newWorkLedger(nil)
+	// Phase-4 step 4: the in-memory ready queue is gone -- a CLI-origin
+	// job's completion now routes through onWebDone exactly like a web
+	// one (work_ledger.go's deliverLocked), so this test observes it the
+	// same way TestAsyncToolWebCompletionWaitsForToolResult does.
+	completed := make(chan AsyncCompletion, 1)
+	registry := newWorkLedger(func(c AsyncCompletion) { completed <- c })
 	registry.store = newTestAsyncJobStore(t)
 	wrapped := &asyncTool{inner: inner, coordinator: &coordinator{asyncJobs: registry}, name: "run_command"}
 	ctx := context.WithValue(t.Context(), tools.SessionIDContextKey, "session")
@@ -37,16 +42,18 @@ func TestAsyncToolReturnsBeforeCommandFinishes(t *testing.T) {
 	require.True(t, metadata.Async)
 	require.Equal(t, "call", metadata.JobID)
 	<-started
-	require.True(t, registry.pending("session"))
+	require.True(t, registry.running("session"))
 	registry.acknowledged("session", "call")
 	releaseOnce.Do(func() { close(release) })
 	waitCtx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
-	completion, ok, err := registry.next(waitCtx, "session")
-	require.NoError(t, err)
-	require.True(t, ok)
-	require.Equal(t, "program output", completion.Content)
-	require.False(t, registry.pending("session"))
+	select {
+	case completion := <-completed:
+		require.Equal(t, "program output", completion.Content)
+	case <-waitCtx.Done():
+		t.Fatal("completion not delivered")
+	}
+	require.False(t, registry.running("session"))
 }
 
 func TestAsyncToolWebCompletionWaitsForToolResult(t *testing.T) {
@@ -67,10 +74,15 @@ func TestAsyncToolWebCompletionWaitsForToolResult(t *testing.T) {
 	_, err := wrapped.Run(ctx, fantasy.ToolCall{ID: "call", Name: "run_command", Input: `{}`})
 	require.NoError(t, err)
 	releaseOnce.Do(func() { close(release) })
-	registry.mu.Lock()
-	ready := len(registry.bySession["session"].ready)
-	registry.mu.Unlock()
-	require.Zero(t, ready)
+	// Phase-4 step 4: no in-memory ready queue to inspect any more -- "not
+	// delivered before ack" is enforced structurally by deliverLocked's own
+	// !job.announced guard, proven below by the completed channel staying
+	// empty until acknowledged fires.
+	select {
+	case got := <-completed:
+		t.Fatalf("must not deliver before acknowledged: %+v", got)
+	default:
+	}
 	registry.acknowledged("session", "call")
 	waitCtx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()

@@ -469,8 +469,9 @@ func TestSupervision_BackoffGrowsThenPausesThenResetsOnProgress(t *testing.T) {
 // TestSupervision_StateRemovedOnScopeClose: once a session's last open job
 // is delivered, deliverLocked drops its supervision state in the SAME
 // critical section that empties bySession[x].jobs -- the exact primitive
-// rush run's exit depends on (workLedger.next()) -- so a supervision timer
-// can never outlive, or delay noticing, the scope it was armed for.
+// rush run's own scope predicate (doc sec.3.5, coordinator.ScopeOpen) reads
+// via l.running -- so a supervision timer can never outlive, or delay
+// noticing, the scope it was armed for.
 //
 // Revert-check performed: removed both
 // `if len(s.jobs) == 0 { l.clearSupervisionIfPresent(owner) }` calls from
@@ -480,6 +481,7 @@ func TestSupervision_StateRemovedOnScopeClose(t *testing.T) {
 	l, _ := newSupervisionTestLedger(t)
 	startOpenJob(t, l, "closing-root", "call-1")
 	l.supervision.byRoot["closing-root"] = &supervisionState{rootSessionID: "closing-root", cfg: DefaultSupervisionConfig(), generation: 1}
+	require.True(t, l.running("closing-root"), "the job must still be open before it finishes")
 
 	l.finish("closing-root", "call-1", jobResult{content: "done"})
 
@@ -488,21 +490,10 @@ func TestSupervision_StateRemovedOnScopeClose(t *testing.T) {
 	l.supervision.mu.Unlock()
 	require.False(t, present, "supervision state must be dropped the instant the scope's last job is delivered")
 
-	// The same event is what unblocks workLedger.next() -- rush run's own
-	// exit primitive -- proving supervision cannot hold it open. startOpenJob
-	// registers a `cli` job, so its single completion is queued on `ready`
-	// (byte-for-byte today's CLI routing, deliverLocked) -- drain that one
-	// real completion first, then a second call must report no more work at
-	// all, unblocked by any supervision timer.
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	_, hasCompletion, err := l.next(ctx, "closing-root")
-	require.NoError(t, err)
-	require.True(t, hasCompletion, "the job's own completion must still be delivered normally")
-
-	_, hasCompletion, err = l.next(ctx, "closing-root")
-	require.NoError(t, err)
-	require.False(t, hasCompletion, "next() must report no more work once drained, unblocked by any supervision timer")
+	// The same critical section is what l.running (and, through it, the
+	// scope predicate rush run's own exit condition reads, doc sec.3.5)
+	// observes -- proving supervision cannot hold the scope open.
+	require.False(t, l.running("closing-root"), "the scope must be closed, unblocked by any supervision timer")
 }
 
 // TestSupervision_CancelSessionAlsoClearsState covers cancelSession's path
