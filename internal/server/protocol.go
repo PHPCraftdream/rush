@@ -41,6 +41,13 @@ const (
 	// or dequeued/completed (busy=false) for a session.
 	EventSummarizeQueued = "summarize_queued"
 	EventScopedModels    = "scoped_models"
+	// EventSessionLiveWork carries a live-work snapshot (running async
+	// commands + sub-agent delegations) for one session -- pushed on change
+	// and replied to CmdGetSessionLiveWork, always as a full snapshot, never
+	// a delta. The emitter that actually populates it from live jobs/
+	// sessions lands in #1058 (needs the DB-backed readers); #1059 only
+	// wires this shared shape plus the client-side tabbed panel.
+	EventSessionLiveWork = "session_live_work"
 )
 
 // Inbound command types (client → server).
@@ -78,6 +85,13 @@ const (
 	CmdGetScopedModels       = "get_scoped_models"
 	CmdSetScopedModel        = "set_scoped_model"
 	CmdClearScopedModel      = "clear_scoped_model"
+	// CmdGetSessionLiveWork asks for a fresh EventSessionLiveWork snapshot
+	// for one session -- sent when a session becomes active and after a
+	// reconnect. No handler is registered yet (#1058): until then this
+	// reliably gets handleIncoming's "unknown command" EventError reply (or
+	// no reply at all against an even older server), and the client must
+	// treat both the same as an empty snapshot -- see web/src/store_livework.ts.
+	CmdGetSessionLiveWork = "get_session_live_work"
 	// CmdShutdownServer asks the server process to gracefully shut itself down
 	// (task #714). The handler acks first, then triggers the same shutdown path
 	// a SIGINT takes.
@@ -674,4 +688,38 @@ type TodoWire struct {
 type UpdateAvailableWire struct {
 	Current string `json:"current"`
 	Latest  string `json:"latest"`
+}
+
+// ── Live work panel (task #1059) ─────────────────────────────────────────────
+//
+// Wire contract only: no handler populates these yet. #1058 (after the
+// DB-backed readers land) adds the emitter that reads real running jobs/
+// sub-agent sessions and pushes EventSessionLiveWork; until then
+// CmdGetSessionLiveWork falls through handleIncoming's default case.
+
+// GetSessionLiveWorkPayload requests a live-work snapshot for one session.
+type GetSessionLiveWorkPayload struct {
+	SessionID string `json:"sessionID"`
+}
+
+// LiveWorkItemWire is one in-flight async command (bash/run_command) or
+// sub-agent delegation (agent/agentic_fetch) for the live-work panel.
+// ChildSessionID is set only for a delegation -- the sub-agent's own session
+// ID. StartedAt is unix milliseconds. Mirrors web/src/types.ts's LiveWorkItem.
+type LiveWorkItemWire struct {
+	ToolCallID     string `json:"toolCallID"`
+	ToolName       string `json:"toolName"`
+	Title          string `json:"title"`
+	ChildSessionID string `json:"childSessionID,omitempty"`
+	StartedAt      int64  `json:"startedAt"`
+}
+
+// SessionLiveWorkPayload is both the session_live_work push and the
+// get_session_live_work reply: a full snapshot of one session's live async
+// commands and sub-agent delegations, replacing any prior snapshot for this
+// SessionID client-side. Never a delta.
+type SessionLiveWorkPayload struct {
+	SessionID string             `json:"sessionID"`
+	Commands  []LiveWorkItemWire `json:"commands"`
+	Agents    []LiveWorkItemWire `json:"agents"`
 }

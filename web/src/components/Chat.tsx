@@ -27,7 +27,7 @@ import { Message, ToolActivityGroup, IntermediateAssistantMessage } from "./Mess
 import { ChatInput } from "./ChatInput";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { ChatToolbar } from "./ChatToolbar";
-import { TodoList } from "./TodoList";
+import { LiveWorkPanel } from "./LiveWorkPanel";
 import { MessageSquare, Pencil, PlusCircle, Send, Sparkles, Square, Trash2, X, Zap } from "lucide-react";
 import type { Message as Msg, ContentPart } from "../types";
 
@@ -618,7 +618,7 @@ export function Chat() {
         </div>
       )}
 
-      {activeSessionID && <TodoList sessionID={activeSessionID} todos={todos} />}
+      {activeSessionID && <LiveWorkPanel sessionID={activeSessionID} todos={todos} />}
 
       <ChatToolbar />
       <ChatInput />

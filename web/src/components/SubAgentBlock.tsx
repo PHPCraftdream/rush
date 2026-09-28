@@ -14,6 +14,7 @@ import { FinishErrorBlock } from "./Message/FinishErrorBlock";
 import { TimeBadge } from "./Message/TimeBadge";
 import { EffortBadge } from "./Message/EffortBadge";
 import { isTerminallyFinished } from "./Message/textParts";
+import { useExpandToolCallSignal } from "./Message/useExpandToolCallSignal";
 
 const MD_REMARK = [remarkGfm, remarkBreaks];
 const MD_REHYPE = [rehypeHighlight];
@@ -239,9 +240,12 @@ export const SubAgentBlock = memo(function SubAgentBlock({
     prevDone.current = done;
   }, [done]);
   const toggle = () => setOverride(!open);
+  // Jump-to-tool-call anchor (task #1059): forces this block open when the
+  // live-work panel's Agents tab targets this delegation's tool call.
+  useExpandToolCallSignal(toolCallID, () => setOverride(true));
 
   return (
-    <div className="sub-agent-block my-2">
+    <div className="sub-agent-block my-2" data-tool-call-id={toolCallID}>
       <button
         type="button"
         onClick={toggle}

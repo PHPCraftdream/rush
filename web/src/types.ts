@@ -254,6 +254,30 @@ export interface MCPState {
   servers: MCPServerInfo[];
 }
 
+// ─── Live work panel (task #1059) ───────────────────────────────────────────
+//
+// One in-flight async command (bash/run_command) or sub-agent delegation
+// (agent/agentic_fetch), sourced from internal/server/protocol.go's
+// LiveWorkItemWire. The server-side emitter lands in #1058 (needs the
+// DB-backed readers); this task only wires the shared shape + client render.
+export interface LiveWorkItem {
+  toolCallID: string;
+  toolName: string;
+  title: string;
+  // Set only for a sub-agent delegation -- the child session's own ID.
+  childSessionID?: string;
+  startedAt: number; // unix ms
+}
+
+// SessionLiveWorkPayload mirrors the server's SessionLiveWorkPayload: the
+// `session_live_work` push and the `get_session_live_work` reply both carry
+// this shape, always as a FULL snapshot -- never a delta.
+export interface SessionLiveWorkPayload {
+  sessionID: string;
+  commands: LiveWorkItem[];
+  agents: LiveWorkItem[];
+}
+
 export interface AgentBusyPayload {
   SessionID: string;
   Busy: boolean;

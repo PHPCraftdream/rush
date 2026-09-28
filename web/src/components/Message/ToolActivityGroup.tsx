@@ -12,6 +12,7 @@ import type { ActionItem } from "./ActionRow";
 import { TimeBadge } from "./TimeBadge";
 import { useCollapseAllSignal } from "./useCollapseAllSignal";
 import { $asyncJobCompletions } from "../../store";
+import { $expandToolCallRequest } from "../../store_livework";
 
 // ── Tool activity group ───────────────────────────────────────────────────────
 //
@@ -87,8 +88,29 @@ export const ToolActivityGroup = memo(function ToolActivityGroup({ items, live, 
   const collapsed = collapsedOverride ?? autoCollapsed;
   useCollapseAllSignal(() => setCollapsedOverride(true));
 
+  // Jump-to-tool-call (task #1059): does this burst contain the tool call
+  // the LiveWorkPanel just asked to expand? Opening the group here only
+  // ensures its body (and every ActionRow/SubAgentBlock in it) actually
+  // MOUNTS -- each of those self-opens via its own useExpandToolCallSignal
+  // once it exists, since the whole body unmounts while collapsed. Computed
+  // from the raw `items` prop rather than the post-processed
+  // `actions`/`rawAgentParts` below so it's available up here -- folded
+  // into the grew/becameCurrent effect right below instead of a separate
+  // effect, so opening the group doesn't add a second synchronization point.
+  const expandReq = useStore($expandToolCallRequest);
+  const containsRequestedID = useMemo(() => {
+    if (!expandReq) return false;
+    const id = expandReq.toolCallID;
+    for (const { part } of items) {
+      if (part.type === "tool_call" && part.ID === id) return true;
+      if (part.type === "tool_result" && part.ToolCallID === id) return true;
+    }
+    return false;
+  }, [expandReq, items]);
+
   const prevItemsLen = useRef(items.length);
   const prevIsCurrent = useRef(isCurrent);
+  const prevExpandNonce = useRef(expandReq?.nonce);
   useEffect(() => {
     const grew = items.length > prevItemsLen.current;
     const becameCurrent = isCurrent && !prevIsCurrent.current;
@@ -100,9 +122,18 @@ export const ToolActivityGroup = memo(function ToolActivityGroup({ items, live, 
       setCollapsedOverride(undefined);
       setSuppressAuto(false);
     }
+    // A NEW jump request (nonce changed) targeting this group forces it
+    // open regardless of the auto-current rule -- unlike grew/becameCurrent
+    // above, `undefined` isn't enough here: an older, non-current group's
+    // autoCollapsed would still resolve to true.
+    if (containsRequestedID && expandReq?.nonce !== prevExpandNonce.current) {
+      setCollapsedOverride(false);
+      setSuppressAuto(false);
+    }
     prevItemsLen.current = items.length;
     prevIsCurrent.current = isCurrent;
-  }, [items.length, isCurrent]);
+    prevExpandNonce.current = expandReq?.nonce;
+  }, [items.length, isCurrent, containsRequestedID, expandReq]);
 
   // Any collapse (manual OR automatic via isCurrent → false) latches
   // suppressAuto. The body unmounts, which already discards each ActionRow's

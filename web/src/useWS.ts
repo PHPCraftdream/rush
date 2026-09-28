@@ -40,7 +40,8 @@ import {
   removeSubAgentMessage,
   trackMessageParts,
 } from "./store";
-import type { WSMessage, Session, Message, ConfigPayload, MCPState, AgentBusyPayload, SkillsSnapshot, SummarizeQueuedPayload } from "./types";
+import { applyLiveWorkSnapshot, sendGetSessionLiveWork, isLiveWorkRequestID } from "./store_livework";
+import type { WSMessage, Session, Message, ConfigPayload, MCPState, AgentBusyPayload, SkillsSnapshot, SummarizeQueuedPayload, SessionLiveWorkPayload } from "./types";
 import { isKeepAliveRunning, startKeepAlive, stopKeepAlive, installKeepAliveAutoResume } from "./keepAlive";
 import { installSitterAutoRestore } from "./sitter";
 
@@ -129,6 +130,11 @@ export function useWS() {
         if (localTheme) {
           sendReconnectHousekeeping("set_theme", { theme: localTheme });
         }
+        // Live-work snapshot (task #1059): a reconnect can have missed
+        // pushes for whatever session is active, so re-request it fresh --
+        // mirrors the OwnedExternal messages_list refresh below.
+        const activeForLiveWork = $activeSessionID.get();
+        if (activeForLiveWork) sendGetSessionLiveWork(activeForLiveWork);
       }),
 
       ws.on("_disconnected", () => {
@@ -444,9 +450,30 @@ export function useWS() {
         setSkills((msg.payload as SkillsSnapshot).skills ?? []);
       }),
 
+      // Live-work panel (task #1059): full snapshot every time, whether
+      // pushed unsolicited or replying to get_session_live_work -- keyed by
+      // its own sessionID field, so no request-correlation is needed here.
+      ws.on("session_live_work", (msg: WSMessage) => {
+        applyLiveWorkSnapshot(msg.payload as SessionLiveWorkPayload);
+      }),
+
       ws.on("error", (msg: WSMessage) => {
+        // get_session_live_work has no server handler until #1058 lands
+        // (see store_livework.ts) -- its "unknown command" reply must be
+        // swallowed silently, not shown as a user-facing failure.
+        if (isLiveWorkRequestID(msg.id)) return;
         $agentError.set((msg.error as string) || "Unknown error");
         setTimeout(() => $agentError.set(null), 8000);
+      }),
+
+      // Live-work snapshot on activation (task #1059): $activeSessionID is
+      // still null when this effect runs, so .listen() (change-only, no
+      // immediate call) catches every activation from here on --
+      // setActiveSession is the single choke point every activation path
+      // (hashchange, session_created, sessions_list routing, Sidebar)
+      // funnels through.
+      $activeSessionID.listen((id) => {
+        if (id) sendGetSessionLiveWork(id);
       }),
     ];
 

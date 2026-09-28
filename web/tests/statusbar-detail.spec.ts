@@ -23,11 +23,12 @@ test.beforeEach(async ({ page }) => {
 
 // StatusBar.tsx (data-test-id="status-bar", holding status-connection and
 // status-mcp-*) is only ever mounted from inside ChatToolbar.tsx (inline,
-// in the `foreignOwned` early-return branch only) or TodoList.tsx — and
-// TodoList itself is only rendered when `{activeSessionID && <TodoList
-// .../>}` in Chat.tsx. There is no standalone always-mounted status footer,
-// so every test here must select a session first (mirrors the identical
-// fix already applied in ui.spec.ts's "Status bar" section).
+// in the `foreignOwned` early-return branch only) or LiveWorkTabBar.tsx
+// (task #1059, formerly TodoList.tsx) — and LiveWorkPanel itself is only
+// rendered when `{activeSessionID && <LiveWorkPanel .../>}` in Chat.tsx.
+// There is no standalone always-mounted status footer, so every test here
+// must select a session first (mirrors the identical fix already applied
+// in ui.spec.ts's "Status bar" section).
 async function selectASession(page: import("@playwright/test").Page, id: string, title: string) {
   await sendMockWSMessage(page, {
     type: "sessions_list",

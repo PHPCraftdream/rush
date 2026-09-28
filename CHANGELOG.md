@@ -163,6 +163,18 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   models, reasoning effort, and a reset-to-default action; worker/reviewer
   live in a compact expandable panel next to the always-visible smart/fast
   pickers.
+- **The chat's bottom panel is now a Tasks / Commands / Agents tabbed
+  view**, replacing the bare todo list in that spot. Tasks (the existing
+  todo list) is always shown; Commands (running bash/run_command async
+  jobs) and Agents (running agent/agentic_fetch delegations) appear only
+  while non-empty, with the live count in the tab title, and fall back to
+  Tasks the instant the selected tab's list empties. Clicking an item
+  scrolls the chat to its tool call and expands that tool call's block,
+  showing a short hint instead if the call isn't in the loaded transcript.
+  The wire contract (`session_live_work` event, `get_session_live_work`
+  request) is wired end-to-end on the client; the server-side emitter that
+  actually populates the lists from live jobs/sessions lands in a follow-up
+  once the DB-backed readers exist, so the panel shows Tasks only for now.
 
 ### Changed
 
