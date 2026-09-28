@@ -148,11 +148,21 @@ WHERE owner_session_id = ? AND tool_call_id = ? AND delivery = 'pending';
 -- name: AsyncReactionDebtExists :one
 -- Doc sec.3.4: one indexed EXISTS, backed by the partial indexes
 -- idx_async_jobs_debt and idx_session_notices_debt "(owner) WHERE wake=1
--- AND reacted=0 AND delivery<>'void'" on both tables.
+-- AND reacted=0 AND delivery<>'void'" on both tables. The async_jobs branch
+-- additionally requires announced=1 (doc: "task rows with announced=1" --
+-- review fix): a job that reaches terminal before its own "started"
+-- tool-result commits is wake=1/delivery=pending/reacted=0/announced=0; an
+-- unannounced row can never produce a notice (DUR-7) and the drain pull
+-- (ListPendingAsyncJobNoticesForOwner/PullPendingAsyncJobNotice) already
+-- skips it, so without this guard the debt check falsely reports debt,
+-- driving a wasted provider turn with nothing to react to -- and if the ack
+-- then aborts, the row is deleted (DeleteUnannouncedAsyncJob) and the turn
+-- was wasted for nothing. session_notices carries no announced concept
+-- (doc sec.3.2: it has no ack gate), so its branch is unchanged.
 SELECT
     EXISTS (
         SELECT 1 FROM async_jobs
-        WHERE owner_session_id = @owner AND wake = 1 AND reacted = 0 AND delivery != 'void'
+        WHERE owner_session_id = @owner AND wake = 1 AND reacted = 0 AND delivery != 'void' AND announced = 1
     )
     OR EXISTS (
         SELECT 1 FROM session_notices
@@ -168,6 +178,37 @@ SELECT
 UPDATE async_jobs SET reacted = 1, updated_at = ?
 WHERE owner_session_id = ? AND wake = 1 AND reacted = 0 AND delivery = 'done';
 
+-- name: IncrementAsyncJobWakeAttempts :execrows
+-- Settle-by-failure step 1 (doc sec.3.4: "a temporary failure ... increments
+-- the attempt counter in the row"): a temporary provider failure after a
+-- wake-up call increments wake_attempts on the SPECIFIC rows the failed
+-- turn was meant to react to, not every debt row of the owner (the doc is
+-- explicit the closing/counting scope is fixed at the start of that turn,
+-- not re-evaluated against whatever is pending now). Guarded by
+-- wake=1 AND reacted=0 so a row that settled (by a real step, or by an
+-- earlier failure closure) in the meantime is left alone.
+UPDATE async_jobs SET wake_attempts = wake_attempts + 1, updated_at = ?
+WHERE owner_session_id = ? AND tool_call_id IN (sqlc.slice('tool_call_ids')) AND wake = 1 AND reacted = 0;
+
+-- name: SettleAsyncJobsReactedFailed :execrows
+-- Settle-by-failure step 2, after K=3 (doc sec.3.4): closes debt on exactly
+-- the id set captured at the start of the failed turn -- doc: "only for the
+-- rows that were done at the moment it started" -- not every currently-pending
+-- row of the owner (a notice that arrived mid-retry must get its own future
+-- wake-up call, not be silently absorbed into this closure). reacted_failed
+-- distinguishes this from an ordinary step-persisted reaction
+-- (MarkAsyncJobsReactedForOwner): it is set ONLY here, never by a real
+-- step, so a child session can tell its parent the delegation failed
+-- instead of succeeded-with-no-output.
+UPDATE async_jobs SET reacted = 1, reacted_failed = 1, updated_at = ?
+WHERE owner_session_id = ? AND tool_call_id IN (sqlc.slice('tool_call_ids')) AND wake = 1 AND reacted = 0;
+
+-- name: ListReactedFailedAsyncJobsForOwner :many
+-- Reader for the parent-notification path (doc sec.3.4: "passes the parent
+-- the text of the unreacted notices") -- the rows settle-by-failure closed
+-- for this owner, whose text a failed delegation's parent must still see.
+SELECT * FROM async_jobs WHERE owner_session_id = ? AND reacted_failed = 1 ORDER BY created_at ASC;
+
 -- name: SetAsyncJobsWakeZeroPendingForOwners :execrows
 -- Stop transitivity (DUR-9, doc sec.3.8): every pending row of the stopped
 -- tree loses its wake bit in the same pass, so a race between natural
@@ -182,10 +223,12 @@ WHERE owner_session_id IN (sqlc.slice('owner_ids')) AND delivery IN ('pending', 
 SELECT * FROM async_jobs WHERE host_id = ? AND state = 'running' ORDER BY created_at ASC;
 
 -- name: ListRunningAsyncJobsForOwners :many
--- Own-area recovery/scope evaluation (doc sec.3.5/3.7): the leader's set of
--- owner ids (its own descendant walk, computed in Go) restricted to
--- currently-running rows. No lease/heartbeat filter -- liveness is decided
--- per-host by the caller via the host lock module, not by this query.
+-- Own-area recovery/scope evaluation (doc sec.3.5/3.7): the leader's owner
+-- id set restricted to currently-running rows. That set comes from walking
+-- delegation rows (child_session_id), NOT parent_session_id -- doc sec.3.5
+-- is explicit: "descendants via parent_session_id are not walked". No
+-- lease/heartbeat filter -- liveness is decided per-host by the caller via
+-- the host lock module, not by this query.
 SELECT * FROM async_jobs
 WHERE owner_session_id IN (sqlc.slice('owner_ids')) AND state = 'running'
 ORDER BY created_at ASC;

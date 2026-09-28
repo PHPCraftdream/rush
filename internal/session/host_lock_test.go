@@ -27,7 +27,7 @@ func setupHostLockDB(t *testing.T) (context.Context, *db.Queries) {
 }
 
 // failingStore's RegisterAsyncHost always fails -- used to prove
-// EnsureHostRegistered releases the lock it already won before returning
+// RegisterHost releases the lock it already won before returning
 // the DB error (doc sec.3.6: a failed registration must never leak a held
 // lock).
 type failingStore struct{}
@@ -47,11 +47,11 @@ func (s *spyStore) RegisterAsyncHost(context.Context, db.RegisterAsyncHostParams
 }
 func (s *spyStore) DeleteAsyncHostIfNoJobs(context.Context, string) (int64, error) { return 0, nil }
 
-func TestEnsureHostRegistered_LazyRegistration(t *testing.T) {
+func TestRegisterHost_LazyRegistration(t *testing.T) {
 	ctx, q := setupHostLockDB(t)
 	dataDir := t.TempDir()
 
-	h, err := EnsureHostRegistered(ctx, dataDir, 4242, "cli", q)
+	h, err := RegisterHost(ctx, dataDir, 4242, "cli", q)
 	require.NoError(t, err)
 	require.NotNil(t, h)
 	assert.NotEmpty(t, h.ID)
@@ -74,10 +74,10 @@ func TestEnsureHostRegistered_LazyRegistration(t *testing.T) {
 	unmarkOwnHostID(h.ID) // test cleanup; Close already does this in production
 }
 
-func TestEnsureHostRegistered_DBFailureReleasesLock(t *testing.T) {
+func TestRegisterHost_DBFailureReleasesLock(t *testing.T) {
 	dataDir := t.TempDir()
 
-	_, err := EnsureHostRegistered(context.Background(), dataDir, 1, "cli", failingStore{})
+	_, err := RegisterHost(context.Background(), dataDir, 1, "cli", failingStore{})
 	require.Error(t, err)
 
 	entries, err := os.ReadDir(HostsDir(dataDir))
@@ -90,7 +90,7 @@ func TestEnsureHostRegistered_DBFailureReleasesLock(t *testing.T) {
 	require.NoError(t, lock.Release())
 }
 
-func TestEnsureHostRegistered_FailsWhenLockCannotBeAcquired(t *testing.T) {
+func TestRegisterHost_FailsWhenLockCannotBeAcquired(t *testing.T) {
 	base := t.TempDir()
 	// dataDir names a PLAIN FILE, not a directory: HostLockPath's parent
 	// (dataDir/hosts) can never be created under it, so
@@ -104,7 +104,7 @@ func TestEnsureHostRegistered_FailsWhenLockCannotBeAcquired(t *testing.T) {
 	require.NoError(t, os.WriteFile(dataDir, []byte("x"), 0o644))
 
 	spy := &spyStore{}
-	_, err := EnsureHostRegistered(context.Background(), dataDir, 1, "cli", spy)
+	_, err := RegisterHost(context.Background(), dataDir, 1, "cli", spy)
 	require.Error(t, err)
 	assert.False(t, spy.called, "the DB row must never be inserted when the lock could not be acquired")
 }
@@ -167,7 +167,7 @@ func TestProbeHost_RefusesOwnHostID(t *testing.T) {
 	ctx, q := setupHostLockDB(t)
 	dataDir := t.TempDir()
 
-	h, err := EnsureHostRegistered(ctx, dataDir, 1, "cli", q)
+	h, err := RegisterHost(ctx, dataDir, 1, "cli", q)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = h.Close(ctx, q) })
 
@@ -181,7 +181,7 @@ func TestHostIdentity_CloseDeletesFileWhenNoRows(t *testing.T) {
 	ctx, q := setupHostLockDB(t)
 	dataDir := t.TempDir()
 
-	h, err := EnsureHostRegistered(ctx, dataDir, 1, "cli", q)
+	h, err := RegisterHost(ctx, dataDir, 1, "cli", q)
 	require.NoError(t, err)
 	lockPath := HostLockPath(dataDir, h.ID)
 
@@ -202,7 +202,7 @@ func TestHostIdentity_CloseKeepsFileWhenRowsExist(t *testing.T) {
 	ctx, q := setupHostLockDB(t)
 	dataDir := t.TempDir()
 
-	h, err := EnsureHostRegistered(ctx, dataDir, 1, "cli", q)
+	h, err := RegisterHost(ctx, dataDir, 1, "cli", q)
 	require.NoError(t, err)
 	lockPath := HostLockPath(dataDir, h.ID)
 

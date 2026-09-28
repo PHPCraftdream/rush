@@ -23,7 +23,7 @@ func (q *Queries) CountSessionNoticesOlderThan(ctx context.Context, updatedAt in
 }
 
 const getSessionNotice = `-- name: GetSessionNotice :one
-SELECT id, owner, kind, text, wake, delivery, notice_message_id, reacted, job_tool_call_id, created_at, updated_at FROM session_notices WHERE id = ?
+SELECT id, owner, kind, text, wake, delivery, notice_message_id, reacted, wake_attempts, reacted_failed, job_tool_call_id, created_at, updated_at FROM session_notices WHERE id = ?
 `
 
 func (q *Queries) GetSessionNotice(ctx context.Context, id int64) (SessionNotice, error) {
@@ -38,11 +38,46 @@ func (q *Queries) GetSessionNotice(ctx context.Context, id int64) (SessionNotice
 		&i.Delivery,
 		&i.NoticeMessageID,
 		&i.Reacted,
+		&i.WakeAttempts,
+		&i.ReactedFailed,
 		&i.JobToolCallID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const incrementSessionNoticeWakeAttempts = `-- name: IncrementSessionNoticeWakeAttempts :execrows
+UPDATE session_notices SET wake_attempts = wake_attempts + 1, updated_at = ?
+WHERE id IN (/*SLICE:ids*/?) AND wake = 1 AND reacted = 0
+`
+
+type IncrementSessionNoticeWakeAttemptsParams struct {
+	UpdatedAt int64   `json:"updated_at"`
+	Ids       []int64 `json:"ids"`
+}
+
+// Notices half of IncrementAsyncJobWakeAttempts (doc sec.3.4): keyed by id
+// (session_notices' own PK, unlike async_jobs' owner+tool_call_id pair)
+// because the settle-by-failure scope is the exact id set captured at the
+// start of the failed turn, not "every debt row of the owner now".
+func (q *Queries) IncrementSessionNoticeWakeAttempts(ctx context.Context, arg IncrementSessionNoticeWakeAttemptsParams) (int64, error) {
+	query := incrementSessionNoticeWakeAttempts
+	var queryParams []interface{}
+	queryParams = append(queryParams, arg.UpdatedAt)
+	if len(arg.Ids) > 0 {
+		for _, v := range arg.Ids {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:ids*/?", strings.Repeat(",?", len(arg.Ids))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:ids*/?", "NULL", 1)
+	}
+	result, err := q.exec(ctx, nil, query, queryParams...)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const insertSessionNotice = `-- name: InsertSessionNotice :one
@@ -51,7 +86,7 @@ INSERT INTO session_notices (
 ) VALUES (
     ?, ?, ?, ?, 'pending', ?, ?, ?
 )
-RETURNING id, owner, kind, text, wake, delivery, notice_message_id, reacted, job_tool_call_id, created_at, updated_at
+RETURNING id, owner, kind, text, wake, delivery, notice_message_id, reacted, wake_attempts, reacted_failed, job_tool_call_id, created_at, updated_at
 `
 
 type InsertSessionNoticeParams struct {
@@ -88,6 +123,8 @@ func (q *Queries) InsertSessionNotice(ctx context.Context, arg InsertSessionNoti
 		&i.Delivery,
 		&i.NoticeMessageID,
 		&i.Reacted,
+		&i.WakeAttempts,
+		&i.ReactedFailed,
 		&i.JobToolCallID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
@@ -96,7 +133,7 @@ func (q *Queries) InsertSessionNotice(ctx context.Context, arg InsertSessionNoti
 }
 
 const listPendingSessionNoticesForOwner = `-- name: ListPendingSessionNoticesForOwner :many
-SELECT id, owner, kind, text, wake, delivery, notice_message_id, reacted, job_tool_call_id, created_at, updated_at FROM session_notices WHERE owner = ? AND delivery = 'pending' ORDER BY id ASC
+SELECT id, owner, kind, text, wake, delivery, notice_message_id, reacted, wake_attempts, reacted_failed, job_tool_call_id, created_at, updated_at FROM session_notices WHERE owner = ? AND delivery = 'pending' ORDER BY id ASC
 `
 
 // Drain candidates (doc sec.3.3), oldest first so history order matches
@@ -119,6 +156,51 @@ func (q *Queries) ListPendingSessionNoticesForOwner(ctx context.Context, owner s
 			&i.Delivery,
 			&i.NoticeMessageID,
 			&i.Reacted,
+			&i.WakeAttempts,
+			&i.ReactedFailed,
+			&i.JobToolCallID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listReactedFailedSessionNoticesForOwner = `-- name: ListReactedFailedSessionNoticesForOwner :many
+SELECT id, owner, kind, text, wake, delivery, notice_message_id, reacted, wake_attempts, reacted_failed, job_tool_call_id, created_at, updated_at FROM session_notices WHERE owner = ? AND reacted_failed = 1 ORDER BY id ASC
+`
+
+// Notices half of ListReactedFailedAsyncJobsForOwner: the parent-
+// notification reader for settle-by-failure closures on this table.
+func (q *Queries) ListReactedFailedSessionNoticesForOwner(ctx context.Context, owner string) ([]SessionNotice, error) {
+	rows, err := q.query(ctx, q.listReactedFailedSessionNoticesForOwnerStmt, listReactedFailedSessionNoticesForOwner, owner)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SessionNotice{}
+	for rows.Next() {
+		var i SessionNotice
+		if err := rows.Scan(
+			&i.ID,
+			&i.Owner,
+			&i.Kind,
+			&i.Text,
+			&i.Wake,
+			&i.Delivery,
+			&i.NoticeMessageID,
+			&i.Reacted,
+			&i.WakeAttempts,
+			&i.ReactedFailed,
 			&i.JobToolCallID,
 			&i.CreatedAt,
 			&i.UpdatedAt,
@@ -137,7 +219,7 @@ func (q *Queries) ListPendingSessionNoticesForOwner(ctx context.Context, owner s
 }
 
 const listSessionNoticesForOwner = `-- name: ListSessionNoticesForOwner :many
-SELECT id, owner, kind, text, wake, delivery, notice_message_id, reacted, job_tool_call_id, created_at, updated_at FROM session_notices WHERE owner = ? ORDER BY id ASC
+SELECT id, owner, kind, text, wake, delivery, notice_message_id, reacted, wake_attempts, reacted_failed, job_tool_call_id, created_at, updated_at FROM session_notices WHERE owner = ? ORDER BY id ASC
 `
 
 // Reader for `sessions jobs`/`sessions why`.
@@ -159,6 +241,8 @@ func (q *Queries) ListSessionNoticesForOwner(ctx context.Context, owner string) 
 			&i.Delivery,
 			&i.NoticeMessageID,
 			&i.Reacted,
+			&i.WakeAttempts,
+			&i.ReactedFailed,
 			&i.JobToolCallID,
 			&i.CreatedAt,
 			&i.UpdatedAt,
@@ -199,7 +283,7 @@ const pullPendingSessionNotice = `-- name: PullPendingSessionNotice :one
 UPDATE session_notices
 SET delivery = 'done', updated_at = ?
 WHERE id = ? AND delivery = 'pending'
-RETURNING id, owner, kind, text, wake, delivery, notice_message_id, reacted, job_tool_call_id, created_at, updated_at
+RETURNING id, owner, kind, text, wake, delivery, notice_message_id, reacted, wake_attempts, reacted_failed, job_tool_call_id, created_at, updated_at
 `
 
 type PullPendingSessionNoticeParams struct {
@@ -223,6 +307,8 @@ func (q *Queries) PullPendingSessionNotice(ctx context.Context, arg PullPendingS
 		&i.Delivery,
 		&i.NoticeMessageID,
 		&i.Reacted,
+		&i.WakeAttempts,
+		&i.ReactedFailed,
 		&i.JobToolCallID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
@@ -285,6 +371,39 @@ func (q *Queries) SetSessionNoticesWakeZeroPendingForOwners(ctx context.Context,
 		query = strings.Replace(query, "/*SLICE:owner_ids*/?", strings.Repeat(",?", len(arg.OwnerIds))[1:], 1)
 	} else {
 		query = strings.Replace(query, "/*SLICE:owner_ids*/?", "NULL", 1)
+	}
+	result, err := q.exec(ctx, nil, query, queryParams...)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const settleSessionNoticesReactedFailed = `-- name: SettleSessionNoticesReactedFailed :execrows
+UPDATE session_notices SET reacted = 1, reacted_failed = 1, updated_at = ?
+WHERE id IN (/*SLICE:ids*/?) AND wake = 1 AND reacted = 0
+`
+
+type SettleSessionNoticesReactedFailedParams struct {
+	UpdatedAt int64   `json:"updated_at"`
+	Ids       []int64 `json:"ids"`
+}
+
+// Notices half of SettleAsyncJobsReactedFailed (doc sec.3.4): closes debt
+// on exactly the captured id set after K=3 failed passes. reacted_failed
+// distinguishes this from MarkSessionNoticesReactedForOwner's ordinary,
+// real-step reaction.
+func (q *Queries) SettleSessionNoticesReactedFailed(ctx context.Context, arg SettleSessionNoticesReactedFailedParams) (int64, error) {
+	query := settleSessionNoticesReactedFailed
+	var queryParams []interface{}
+	queryParams = append(queryParams, arg.UpdatedAt)
+	if len(arg.Ids) > 0 {
+		for _, v := range arg.Ids {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:ids*/?", strings.Repeat(",?", len(arg.Ids))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:ids*/?", "NULL", 1)
 	}
 	result, err := q.exec(ctx, nil, query, queryParams...)
 	if err != nil {

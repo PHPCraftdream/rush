@@ -55,6 +55,21 @@ CREATE TABLE IF NOT EXISTS async_jobs (
     notice_message_id TEXT,    -- session_notices/messages id the notice landed at, once delivery='done'
     wake              INTEGER NOT NULL DEFAULT 0, -- doc sec.3.4 "wake policy" table
     reacted           INTEGER NOT NULL DEFAULT 0, -- durable reaction debt marker (DUR-4); NOT derived from created_at/clock order
+    -- wake_attempts/reacted_failed back doc sec.3.4's "settle by failure":
+    -- a temporary provider failure after a wake-up call increments
+    -- wake_attempts (counted in the row, not in memory, so it survives a
+    -- process restart); at K=3, settle-by-failure sets reacted=1 AND
+    -- reacted_failed=1 on the rows captured at the start of the failed turn
+    -- (this table's columns only -- the separate "failed wake-up marker"
+    -- notice the doc also describes, wake=0, is its own session_notices
+    -- row, not a mutation of these rows' own wake field). reacted_failed
+    -- distinguishes THIS closure from an ordinary step-persisted reaction --
+    -- it is 1 ONLY when settle-by-failure wrote reacted=1, never for a real
+    -- step's reaction -- so a child session whose debt closed this way can
+    -- tell its parent "delegation failed" instead of "delegation succeeded
+    -- with no output".
+    wake_attempts     INTEGER NOT NULL DEFAULT 0,
+    reacted_failed    INTEGER NOT NULL DEFAULT 0,
     deadline_at       INTEGER, -- explicit per-call timeout deadline, NULL if none
     timeout_kind      TEXT,    -- 'wake_only'|'terminate_and_wake', NULL if none
     result_summary    TEXT,    -- truncated tool output; NULL while running
@@ -73,10 +88,15 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_async_jobs_child_running
     ON async_jobs (child_session_id)
     WHERE state = 'running' AND child_session_id IS NOT NULL;
 -- Doc sec.3.4's reaction-debt EXISTS check: "(owner) WHERE wake=1 AND
--- reacted=0 AND delivery<>'void'" on both tables.
+-- reacted=0 AND delivery<>'void'" on both tables, PLUS announced=1 for
+-- async_jobs specifically (doc sec.3.4: "task rows with announced=1" --
+-- review fix): an unannounced row can never produce a notice (DUR-7) and
+-- must never count as debt, or the drain pull (which already requires
+-- announced=1) skips it while the debt check still says "debt", producing
+-- a wasted provider turn with an empty prompt and nothing to react to.
 CREATE INDEX IF NOT EXISTS idx_async_jobs_debt
     ON async_jobs (owner_session_id)
-    WHERE wake = 1 AND reacted = 0 AND delivery != 'void';
+    WHERE wake = 1 AND reacted = 0 AND delivery != 'void' AND announced = 1;
 -- Retention scan (doc sec.3.7): terminal rows past a delivery outcome, old
 -- enough to purge. Not in the doc's explicit index list but needed for the
 -- same query shape as the removed idx_async_jobs_retention; harmless to add.
@@ -96,6 +116,10 @@ CREATE TABLE IF NOT EXISTS session_notices (
     delivery          TEXT NOT NULL DEFAULT 'pending' CHECK (delivery IN ('none', 'pending', 'done', 'void')),
     notice_message_id TEXT,
     reacted           INTEGER NOT NULL DEFAULT 0,
+    -- Same settle-by-failure pair as async_jobs (doc sec.3.4) -- see the
+    -- comment there.
+    wake_attempts     INTEGER NOT NULL DEFAULT 0,
+    reacted_failed    INTEGER NOT NULL DEFAULT 0,
     -- job_tool_call_id pairs with `owner` (== async_jobs.owner_session_id)
     -- to name the async_jobs row this notice's "task still running?" void
     -- condition is checked against (doc sec.3.2); NULL for notices with no

@@ -213,6 +213,12 @@ func TestAsyncReactionDebtExists(t *testing.T) {
 		InputHash: "h", HostID: "host-1", CreatedAt: 1700000000, UpdatedAt: 1700000000,
 	})
 	require.NoError(t, err)
+	// Realistic ack-gate ordering: "started" commits (MarkAsyncJobAnnounced)
+	// before the job can possibly reach terminal.
+	_, err = q.MarkAsyncJobAnnounced(ctx, MarkAsyncJobAnnouncedParams{
+		UpdatedAt: 1700000000, OwnerSessionID: "sess-1", ToolCallID: "call-1",
+	})
+	require.NoError(t, err)
 	_, err = q.TransitionAsyncJobTerminal(ctx, TransitionAsyncJobTerminalParams{
 		State: "completed", NoticeKind: "", ResultSummary: sql.NullString{String: "ok", Valid: true},
 		ResultIsError: sql.NullInt64{Int64: 0, Valid: true}, Wake: 1, UpdatedAt: 1700000001,
@@ -222,7 +228,7 @@ func TestAsyncReactionDebtExists(t *testing.T) {
 
 	debt, err = q.AsyncReactionDebtExists(ctx, "sess-1")
 	require.NoError(t, err)
-	assert.True(t, debt.Bool, "wake=1, delivery=pending, reacted=0 must report debt")
+	assert.True(t, debt.Bool, "announced=1, wake=1, delivery=pending, reacted=0 must report debt")
 
 	rows, err := q.MarkAsyncJobsReactedForOwner(ctx, MarkAsyncJobsReactedForOwnerParams{
 		UpdatedAt: 1700000002, OwnerSessionID: "sess-1",
@@ -252,6 +258,50 @@ func TestAsyncReactionDebtExists(t *testing.T) {
 	debt, err = q.AsyncReactionDebtExists(ctx, "sess-1")
 	require.NoError(t, err)
 	assert.True(t, debt.Bool)
+}
+
+// TestAsyncReactionDebtExists_RequiresAnnounced is a regression test for the
+// Ф4-1 review's P1 finding: a job that reaches terminal before its own
+// "started" tool-result commits is wake=1/delivery=pending/reacted=0 but
+// announced=0. Doc sec.3.4 is explicit the debt check is scoped to "task
+// rows with announced=1" -- an unannounced row can never produce a notice
+// (DUR-7) and the drain pull already skips it (ListPendingAsyncJobNoticesForOwner/
+// PullPendingAsyncJobNotice both require announced=1), so without this
+// guard the debt check would falsely report debt, driving a wasted
+// provider turn with an empty prompt and nothing to react to.
+func TestAsyncReactionDebtExists_RequiresAnnounced(t *testing.T) {
+	ctx, conn := setupPhase4DB(t)
+	q := New(conn)
+	_, err := q.RegisterAsyncHost(ctx, RegisterAsyncHostParams{ID: "host-1", Pid: 1, StartedAt: 1700000000})
+	require.NoError(t, err)
+
+	_, err = q.ClaimAsyncJob(ctx, ClaimAsyncJobParams{
+		OwnerSessionID: "sess-1", ToolCallID: "call-1", Kind: "command",
+		InputHash: "h", HostID: "host-1", CreatedAt: 1700000000, UpdatedAt: 1700000000,
+	})
+	require.NoError(t, err)
+
+	// Terminal transition races ahead of the ack gate: the row is
+	// wake=1/delivery=pending/reacted=0 but still announced=0.
+	_, err = q.TransitionAsyncJobTerminal(ctx, TransitionAsyncJobTerminalParams{
+		State: "completed", NoticeKind: "", ResultSummary: sql.NullString{String: "ok", Valid: true},
+		ResultIsError: sql.NullInt64{Int64: 0, Valid: true}, Wake: 1, UpdatedAt: 1700000001,
+		OwnerSessionID: "sess-1", ToolCallID: "call-1",
+	})
+	require.NoError(t, err)
+
+	debt, err := q.AsyncReactionDebtExists(ctx, "sess-1")
+	require.NoError(t, err)
+	assert.False(t, debt.Bool, "an unannounced terminal row must NOT count as debt")
+
+	_, err = q.MarkAsyncJobAnnounced(ctx, MarkAsyncJobAnnouncedParams{
+		UpdatedAt: 1700000002, OwnerSessionID: "sess-1", ToolCallID: "call-1",
+	})
+	require.NoError(t, err)
+
+	debt, err = q.AsyncReactionDebtExists(ctx, "sess-1")
+	require.NoError(t, err)
+	assert.True(t, debt.Bool, "once announced=1, the same row must count as debt")
 }
 
 // TestDeleteAsyncHostIfNoJobs_CorrelatedSubquery is a regression test for a

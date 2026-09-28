@@ -183,11 +183,17 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.hasOutstandingRunQueueEntryForSessionStmt, err = db.PrepareContext(ctx, hasOutstandingRunQueueEntryForSession); err != nil {
 		return nil, fmt.Errorf("error preparing query HasOutstandingRunQueueEntryForSession: %w", err)
 	}
+	if q.incrementAsyncJobWakeAttemptsStmt, err = db.PrepareContext(ctx, incrementAsyncJobWakeAttempts); err != nil {
+		return nil, fmt.Errorf("error preparing query IncrementAsyncJobWakeAttempts: %w", err)
+	}
 	if q.incrementSessionCostStmt, err = db.PrepareContext(ctx, incrementSessionCost); err != nil {
 		return nil, fmt.Errorf("error preparing query IncrementSessionCost: %w", err)
 	}
 	if q.incrementSessionCostIfUnderMaxStmt, err = db.PrepareContext(ctx, incrementSessionCostIfUnderMax); err != nil {
 		return nil, fmt.Errorf("error preparing query IncrementSessionCostIfUnderMax: %w", err)
+	}
+	if q.incrementSessionNoticeWakeAttemptsStmt, err = db.PrepareContext(ctx, incrementSessionNoticeWakeAttempts); err != nil {
+		return nil, fmt.Errorf("error preparing query IncrementSessionNoticeWakeAttempts: %w", err)
 	}
 	if q.insertSessionNoticeStmt, err = db.PrepareContext(ctx, insertSessionNotice); err != nil {
 		return nil, fmt.Errorf("error preparing query InsertSessionNotice: %w", err)
@@ -257,6 +263,12 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	}
 	if q.listPendingSessionNoticesForOwnerStmt, err = db.PrepareContext(ctx, listPendingSessionNoticesForOwner); err != nil {
 		return nil, fmt.Errorf("error preparing query ListPendingSessionNoticesForOwner: %w", err)
+	}
+	if q.listReactedFailedAsyncJobsForOwnerStmt, err = db.PrepareContext(ctx, listReactedFailedAsyncJobsForOwner); err != nil {
+		return nil, fmt.Errorf("error preparing query ListReactedFailedAsyncJobsForOwner: %w", err)
+	}
+	if q.listReactedFailedSessionNoticesForOwnerStmt, err = db.PrepareContext(ctx, listReactedFailedSessionNoticesForOwner); err != nil {
+		return nil, fmt.Errorf("error preparing query ListReactedFailedSessionNoticesForOwner: %w", err)
 	}
 	if q.listRunningAsyncJobsForHostStmt, err = db.PrepareContext(ctx, listRunningAsyncJobsForHost); err != nil {
 		return nil, fmt.Errorf("error preparing query ListRunningAsyncJobsForHost: %w", err)
@@ -344,6 +356,12 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	}
 	if q.setSessionNoticesWakeZeroPendingForOwnersStmt, err = db.PrepareContext(ctx, setSessionNoticesWakeZeroPendingForOwners); err != nil {
 		return nil, fmt.Errorf("error preparing query SetSessionNoticesWakeZeroPendingForOwners: %w", err)
+	}
+	if q.settleAsyncJobsReactedFailedStmt, err = db.PrepareContext(ctx, settleAsyncJobsReactedFailed); err != nil {
+		return nil, fmt.Errorf("error preparing query SettleAsyncJobsReactedFailed: %w", err)
+	}
+	if q.settleSessionNoticesReactedFailedStmt, err = db.PrepareContext(ctx, settleSessionNoticesReactedFailed); err != nil {
+		return nil, fmt.Errorf("error preparing query SettleSessionNoticesReactedFailed: %w", err)
 	}
 	if q.stampInterruptedAssistantIfStillLastStmt, err = db.PrepareContext(ctx, stampInterruptedAssistantIfStillLast); err != nil {
 		return nil, fmt.Errorf("error preparing query StampInterruptedAssistantIfStillLast: %w", err)
@@ -675,6 +693,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing hasOutstandingRunQueueEntryForSessionStmt: %w", cerr)
 		}
 	}
+	if q.incrementAsyncJobWakeAttemptsStmt != nil {
+		if cerr := q.incrementAsyncJobWakeAttemptsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing incrementAsyncJobWakeAttemptsStmt: %w", cerr)
+		}
+	}
 	if q.incrementSessionCostStmt != nil {
 		if cerr := q.incrementSessionCostStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing incrementSessionCostStmt: %w", cerr)
@@ -683,6 +706,11 @@ func (q *Queries) Close() error {
 	if q.incrementSessionCostIfUnderMaxStmt != nil {
 		if cerr := q.incrementSessionCostIfUnderMaxStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing incrementSessionCostIfUnderMaxStmt: %w", cerr)
+		}
+	}
+	if q.incrementSessionNoticeWakeAttemptsStmt != nil {
+		if cerr := q.incrementSessionNoticeWakeAttemptsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing incrementSessionNoticeWakeAttemptsStmt: %w", cerr)
 		}
 	}
 	if q.insertSessionNoticeStmt != nil {
@@ -798,6 +826,16 @@ func (q *Queries) Close() error {
 	if q.listPendingSessionNoticesForOwnerStmt != nil {
 		if cerr := q.listPendingSessionNoticesForOwnerStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing listPendingSessionNoticesForOwnerStmt: %w", cerr)
+		}
+	}
+	if q.listReactedFailedAsyncJobsForOwnerStmt != nil {
+		if cerr := q.listReactedFailedAsyncJobsForOwnerStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing listReactedFailedAsyncJobsForOwnerStmt: %w", cerr)
+		}
+	}
+	if q.listReactedFailedSessionNoticesForOwnerStmt != nil {
+		if cerr := q.listReactedFailedSessionNoticesForOwnerStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing listReactedFailedSessionNoticesForOwnerStmt: %w", cerr)
 		}
 	}
 	if q.listRunningAsyncJobsForHostStmt != nil {
@@ -943,6 +981,16 @@ func (q *Queries) Close() error {
 	if q.setSessionNoticesWakeZeroPendingForOwnersStmt != nil {
 		if cerr := q.setSessionNoticesWakeZeroPendingForOwnersStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing setSessionNoticesWakeZeroPendingForOwnersStmt: %w", cerr)
+		}
+	}
+	if q.settleAsyncJobsReactedFailedStmt != nil {
+		if cerr := q.settleAsyncJobsReactedFailedStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing settleAsyncJobsReactedFailedStmt: %w", cerr)
+		}
+	}
+	if q.settleSessionNoticesReactedFailedStmt != nil {
+		if cerr := q.settleSessionNoticesReactedFailedStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing settleSessionNoticesReactedFailedStmt: %w", cerr)
 		}
 	}
 	if q.stampInterruptedAssistantIfStillLastStmt != nil {
@@ -1137,8 +1185,10 @@ type Queries struct {
 	getUsageByHourStmt                             *sql.Stmt
 	getUsageByModelStmt                            *sql.Stmt
 	hasOutstandingRunQueueEntryForSessionStmt      *sql.Stmt
+	incrementAsyncJobWakeAttemptsStmt              *sql.Stmt
 	incrementSessionCostStmt                       *sql.Stmt
 	incrementSessionCostIfUnderMaxStmt             *sql.Stmt
+	incrementSessionNoticeWakeAttemptsStmt         *sql.Stmt
 	insertSessionNoticeStmt                        *sql.Stmt
 	leaseRunQueueEntryByIDStmt                     *sql.Stmt
 	listAllSessionPermissionsStmt                  *sql.Stmt
@@ -1162,6 +1212,8 @@ type Queries struct {
 	listPendingOrphanOutboxEntriesStmt             *sql.Stmt
 	listPendingRunQueueEntriesStmt                 *sql.Stmt
 	listPendingSessionNoticesForOwnerStmt          *sql.Stmt
+	listReactedFailedAsyncJobsForOwnerStmt         *sql.Stmt
+	listReactedFailedSessionNoticesForOwnerStmt    *sql.Stmt
 	listRunningAsyncJobsForHostStmt                *sql.Stmt
 	listRunningAsyncJobsForOwnersStmt              *sql.Stmt
 	listSessionNoticesForOwnerStmt                 *sql.Stmt
@@ -1191,6 +1243,8 @@ type Queries struct {
 	setParentCostAccountedStmt                     *sql.Stmt
 	setSessionNoticeMessageIDStmt                  *sql.Stmt
 	setSessionNoticesWakeZeroPendingForOwnersStmt  *sql.Stmt
+	settleAsyncJobsReactedFailedStmt               *sql.Stmt
+	settleSessionNoticesReactedFailedStmt          *sql.Stmt
 	stampInterruptedAssistantIfStillLastStmt       *sql.Stmt
 	sumMessageUsageByDayInRangeStmt                *sql.Stmt
 	sumMessageUsageByModelInRangeStmt              *sql.Stmt
@@ -1270,8 +1324,10 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		getUsageByHourStmt:                             q.getUsageByHourStmt,
 		getUsageByModelStmt:                            q.getUsageByModelStmt,
 		hasOutstandingRunQueueEntryForSessionStmt:      q.hasOutstandingRunQueueEntryForSessionStmt,
+		incrementAsyncJobWakeAttemptsStmt:              q.incrementAsyncJobWakeAttemptsStmt,
 		incrementSessionCostStmt:                       q.incrementSessionCostStmt,
 		incrementSessionCostIfUnderMaxStmt:             q.incrementSessionCostIfUnderMaxStmt,
+		incrementSessionNoticeWakeAttemptsStmt:         q.incrementSessionNoticeWakeAttemptsStmt,
 		insertSessionNoticeStmt:                        q.insertSessionNoticeStmt,
 		leaseRunQueueEntryByIDStmt:                     q.leaseRunQueueEntryByIDStmt,
 		listAllSessionPermissionsStmt:                  q.listAllSessionPermissionsStmt,
@@ -1295,6 +1351,8 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		listPendingOrphanOutboxEntriesStmt:             q.listPendingOrphanOutboxEntriesStmt,
 		listPendingRunQueueEntriesStmt:                 q.listPendingRunQueueEntriesStmt,
 		listPendingSessionNoticesForOwnerStmt:          q.listPendingSessionNoticesForOwnerStmt,
+		listReactedFailedAsyncJobsForOwnerStmt:         q.listReactedFailedAsyncJobsForOwnerStmt,
+		listReactedFailedSessionNoticesForOwnerStmt:    q.listReactedFailedSessionNoticesForOwnerStmt,
 		listRunningAsyncJobsForHostStmt:                q.listRunningAsyncJobsForHostStmt,
 		listRunningAsyncJobsForOwnersStmt:              q.listRunningAsyncJobsForOwnersStmt,
 		listSessionNoticesForOwnerStmt:                 q.listSessionNoticesForOwnerStmt,
@@ -1324,6 +1382,8 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		setParentCostAccountedStmt:                     q.setParentCostAccountedStmt,
 		setSessionNoticeMessageIDStmt:                  q.setSessionNoticeMessageIDStmt,
 		setSessionNoticesWakeZeroPendingForOwnersStmt:  q.setSessionNoticesWakeZeroPendingForOwnersStmt,
+		settleAsyncJobsReactedFailedStmt:               q.settleAsyncJobsReactedFailedStmt,
+		settleSessionNoticesReactedFailedStmt:          q.settleSessionNoticesReactedFailedStmt,
 		stampInterruptedAssistantIfStillLastStmt:       q.stampInterruptedAssistantIfStillLastStmt,
 		sumMessageUsageByDayInRangeStmt:                q.sumMessageUsageByDayInRangeStmt,
 		sumMessageUsageByModelInRangeStmt:              q.sumMessageUsageByModelInRangeStmt,

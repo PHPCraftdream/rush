@@ -15,7 +15,7 @@ const asyncReactionDebtExists = `-- name: AsyncReactionDebtExists :one
 SELECT
     EXISTS (
         SELECT 1 FROM async_jobs
-        WHERE owner_session_id = ?1 AND wake = 1 AND reacted = 0 AND delivery != 'void'
+        WHERE owner_session_id = ?1 AND wake = 1 AND reacted = 0 AND delivery != 'void' AND announced = 1
     )
     OR EXISTS (
         SELECT 1 FROM session_notices
@@ -25,7 +25,17 @@ SELECT
 
 // Doc sec.3.4: one indexed EXISTS, backed by the partial indexes
 // idx_async_jobs_debt and idx_session_notices_debt "(owner) WHERE wake=1
-// AND reacted=0 AND delivery<>'void'" on both tables.
+// AND reacted=0 AND delivery<>'void'" on both tables. The async_jobs branch
+// additionally requires announced=1 (doc: "task rows with announced=1" --
+// review fix): a job that reaches terminal before its own "started"
+// tool-result commits is wake=1/delivery=pending/reacted=0/announced=0; an
+// unannounced row can never produce a notice (DUR-7) and the drain pull
+// (ListPendingAsyncJobNoticesForOwner/PullPendingAsyncJobNotice) already
+// skips it, so without this guard the debt check falsely reports debt,
+// driving a wasted provider turn with nothing to react to -- and if the ack
+// then aborts, the row is deleted (DeleteUnannouncedAsyncJob) and the turn
+// was wasted for nothing. session_notices carries no announced concept
+// (doc sec.3.2: it has no ack gate), so its branch is unchanged.
 func (q *Queries) AsyncReactionDebtExists(ctx context.Context, owner string) (sql.NullBool, error) {
 	row := q.queryRow(ctx, q.asyncReactionDebtExistsStmt, asyncReactionDebtExists, owner)
 	var has_debt sql.NullBool
@@ -42,7 +52,7 @@ INSERT INTO async_jobs (
     ?, ?, ?, ?, ?, ?, 'running', ?, 0, 'none', 0, 0, ?, ?, ?, ?
 )
 ON CONFLICT (owner_session_id, tool_call_id) DO NOTHING
-RETURNING owner_session_id, tool_call_id, kind, input_hash, child_session_id, origin_cli, state, notice_kind, host_id, announced, delivery, notice_message_id, wake, reacted, deadline_at, timeout_kind, result_summary, result_is_error, created_at, updated_at
+RETURNING owner_session_id, tool_call_id, kind, input_hash, child_session_id, origin_cli, state, notice_kind, host_id, announced, delivery, notice_message_id, wake, reacted, wake_attempts, reacted_failed, deadline_at, timeout_kind, result_summary, result_is_error, created_at, updated_at
 `
 
 type ClaimAsyncJobParams struct {
@@ -100,6 +110,8 @@ func (q *Queries) ClaimAsyncJob(ctx context.Context, arg ClaimAsyncJobParams) (A
 		&i.NoticeMessageID,
 		&i.Wake,
 		&i.Reacted,
+		&i.WakeAttempts,
+		&i.ReactedFailed,
 		&i.DeadlineAt,
 		&i.TimeoutKind,
 		&i.ResultSummary,
@@ -186,7 +198,7 @@ func (q *Queries) GetAsyncHost(ctx context.Context, id string) (AsyncHost, error
 }
 
 const getAsyncJob = `-- name: GetAsyncJob :one
-SELECT owner_session_id, tool_call_id, kind, input_hash, child_session_id, origin_cli, state, notice_kind, host_id, announced, delivery, notice_message_id, wake, reacted, deadline_at, timeout_kind, result_summary, result_is_error, created_at, updated_at FROM async_jobs WHERE owner_session_id = ? AND tool_call_id = ?
+SELECT owner_session_id, tool_call_id, kind, input_hash, child_session_id, origin_cli, state, notice_kind, host_id, announced, delivery, notice_message_id, wake, reacted, wake_attempts, reacted_failed, deadline_at, timeout_kind, result_summary, result_is_error, created_at, updated_at FROM async_jobs WHERE owner_session_id = ? AND tool_call_id = ?
 `
 
 type GetAsyncJobParams struct {
@@ -212,6 +224,8 @@ func (q *Queries) GetAsyncJob(ctx context.Context, arg GetAsyncJobParams) (Async
 		&i.NoticeMessageID,
 		&i.Wake,
 		&i.Reacted,
+		&i.WakeAttempts,
+		&i.ReactedFailed,
 		&i.DeadlineAt,
 		&i.TimeoutKind,
 		&i.ResultSummary,
@@ -223,7 +237,7 @@ func (q *Queries) GetAsyncJob(ctx context.Context, arg GetAsyncJobParams) (Async
 }
 
 const getRunningAsyncJobByChildSession = `-- name: GetRunningAsyncJobByChildSession :one
-SELECT owner_session_id, tool_call_id, kind, input_hash, child_session_id, origin_cli, state, notice_kind, host_id, announced, delivery, notice_message_id, wake, reacted, deadline_at, timeout_kind, result_summary, result_is_error, created_at, updated_at FROM async_jobs WHERE child_session_id = ? AND state = 'running'
+SELECT owner_session_id, tool_call_id, kind, input_hash, child_session_id, origin_cli, state, notice_kind, host_id, announced, delivery, notice_message_id, wake, reacted, wake_attempts, reacted_failed, deadline_at, timeout_kind, result_summary, result_is_error, created_at, updated_at FROM async_jobs WHERE child_session_id = ? AND state = 'running'
 `
 
 // ASYNC-01 conflict check inside the claim transaction (doc sec.3.8): a
@@ -248,6 +262,8 @@ func (q *Queries) GetRunningAsyncJobByChildSession(ctx context.Context, childSes
 		&i.NoticeMessageID,
 		&i.Wake,
 		&i.Reacted,
+		&i.WakeAttempts,
+		&i.ReactedFailed,
 		&i.DeadlineAt,
 		&i.TimeoutKind,
 		&i.ResultSummary,
@@ -256,6 +272,45 @@ func (q *Queries) GetRunningAsyncJobByChildSession(ctx context.Context, childSes
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const incrementAsyncJobWakeAttempts = `-- name: IncrementAsyncJobWakeAttempts :execrows
+UPDATE async_jobs SET wake_attempts = wake_attempts + 1, updated_at = ?
+WHERE owner_session_id = ? AND tool_call_id IN (/*SLICE:tool_call_ids*/?) AND wake = 1 AND reacted = 0
+`
+
+type IncrementAsyncJobWakeAttemptsParams struct {
+	UpdatedAt      int64    `json:"updated_at"`
+	OwnerSessionID string   `json:"owner_session_id"`
+	ToolCallIds    []string `json:"tool_call_ids"`
+}
+
+// Settle-by-failure step 1 (doc sec.3.4: "a temporary failure ... increments
+// the attempt counter in the row"): a temporary provider failure after a
+// wake-up call increments wake_attempts on the SPECIFIC rows the failed
+// turn was meant to react to, not every debt row of the owner (the doc is
+// explicit the closing/counting scope is fixed at the start of that turn,
+// not re-evaluated against whatever is pending now). Guarded by
+// wake=1 AND reacted=0 so a row that settled (by a real step, or by an
+// earlier failure closure) in the meantime is left alone.
+func (q *Queries) IncrementAsyncJobWakeAttempts(ctx context.Context, arg IncrementAsyncJobWakeAttemptsParams) (int64, error) {
+	query := incrementAsyncJobWakeAttempts
+	var queryParams []interface{}
+	queryParams = append(queryParams, arg.UpdatedAt)
+	queryParams = append(queryParams, arg.OwnerSessionID)
+	if len(arg.ToolCallIds) > 0 {
+		for _, v := range arg.ToolCallIds {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:tool_call_ids*/?", strings.Repeat(",?", len(arg.ToolCallIds))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:tool_call_ids*/?", "NULL", 1)
+	}
+	result, err := q.exec(ctx, nil, query, queryParams...)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const listAsyncHosts = `-- name: ListAsyncHosts :many
@@ -328,7 +383,7 @@ func (q *Queries) ListAsyncHostsWithNoJobs(ctx context.Context) ([]AsyncHost, er
 }
 
 const listAsyncJobsForOwner = `-- name: ListAsyncJobsForOwner :many
-SELECT owner_session_id, tool_call_id, kind, input_hash, child_session_id, origin_cli, state, notice_kind, host_id, announced, delivery, notice_message_id, wake, reacted, deadline_at, timeout_kind, result_summary, result_is_error, created_at, updated_at FROM async_jobs WHERE owner_session_id = ? ORDER BY created_at ASC
+SELECT owner_session_id, tool_call_id, kind, input_hash, child_session_id, origin_cli, state, notice_kind, host_id, announced, delivery, notice_message_id, wake, reacted, wake_attempts, reacted_failed, deadline_at, timeout_kind, result_summary, result_is_error, created_at, updated_at FROM async_jobs WHERE owner_session_id = ? ORDER BY created_at ASC
 `
 
 // Reader for `sessions jobs`/`sessions why`.
@@ -356,6 +411,8 @@ func (q *Queries) ListAsyncJobsForOwner(ctx context.Context, ownerSessionID stri
 			&i.NoticeMessageID,
 			&i.Wake,
 			&i.Reacted,
+			&i.WakeAttempts,
+			&i.ReactedFailed,
 			&i.DeadlineAt,
 			&i.TimeoutKind,
 			&i.ResultSummary,
@@ -407,7 +464,7 @@ func (q *Queries) ListDistinctRunningHostIDs(ctx context.Context) ([]string, err
 }
 
 const listPendingAsyncJobNoticesForOwner = `-- name: ListPendingAsyncJobNoticesForOwner :many
-SELECT owner_session_id, tool_call_id, kind, input_hash, child_session_id, origin_cli, state, notice_kind, host_id, announced, delivery, notice_message_id, wake, reacted, deadline_at, timeout_kind, result_summary, result_is_error, created_at, updated_at FROM async_jobs
+SELECT owner_session_id, tool_call_id, kind, input_hash, child_session_id, origin_cli, state, notice_kind, host_id, announced, delivery, notice_message_id, wake, reacted, wake_attempts, reacted_failed, deadline_at, timeout_kind, result_summary, result_is_error, created_at, updated_at FROM async_jobs
 WHERE owner_session_id = ? AND delivery = 'pending' AND announced = 1
 ORDER BY created_at ASC
 `
@@ -438,6 +495,61 @@ func (q *Queries) ListPendingAsyncJobNoticesForOwner(ctx context.Context, ownerS
 			&i.NoticeMessageID,
 			&i.Wake,
 			&i.Reacted,
+			&i.WakeAttempts,
+			&i.ReactedFailed,
+			&i.DeadlineAt,
+			&i.TimeoutKind,
+			&i.ResultSummary,
+			&i.ResultIsError,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listReactedFailedAsyncJobsForOwner = `-- name: ListReactedFailedAsyncJobsForOwner :many
+SELECT owner_session_id, tool_call_id, kind, input_hash, child_session_id, origin_cli, state, notice_kind, host_id, announced, delivery, notice_message_id, wake, reacted, wake_attempts, reacted_failed, deadline_at, timeout_kind, result_summary, result_is_error, created_at, updated_at FROM async_jobs WHERE owner_session_id = ? AND reacted_failed = 1 ORDER BY created_at ASC
+`
+
+// Reader for the parent-notification path (doc sec.3.4: "passes the parent
+// the text of the unreacted notices") -- the rows settle-by-failure closed
+// for this owner, whose text a failed delegation's parent must still see.
+func (q *Queries) ListReactedFailedAsyncJobsForOwner(ctx context.Context, ownerSessionID string) ([]AsyncJob, error) {
+	rows, err := q.query(ctx, q.listReactedFailedAsyncJobsForOwnerStmt, listReactedFailedAsyncJobsForOwner, ownerSessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AsyncJob{}
+	for rows.Next() {
+		var i AsyncJob
+		if err := rows.Scan(
+			&i.OwnerSessionID,
+			&i.ToolCallID,
+			&i.Kind,
+			&i.InputHash,
+			&i.ChildSessionID,
+			&i.OriginCli,
+			&i.State,
+			&i.NoticeKind,
+			&i.HostID,
+			&i.Announced,
+			&i.Delivery,
+			&i.NoticeMessageID,
+			&i.Wake,
+			&i.Reacted,
+			&i.WakeAttempts,
+			&i.ReactedFailed,
 			&i.DeadlineAt,
 			&i.TimeoutKind,
 			&i.ResultSummary,
@@ -459,7 +571,7 @@ func (q *Queries) ListPendingAsyncJobNoticesForOwner(ctx context.Context, ownerS
 }
 
 const listRunningAsyncJobsForHost = `-- name: ListRunningAsyncJobsForHost :many
-SELECT owner_session_id, tool_call_id, kind, input_hash, child_session_id, origin_cli, state, notice_kind, host_id, announced, delivery, notice_message_id, wake, reacted, deadline_at, timeout_kind, result_summary, result_is_error, created_at, updated_at FROM async_jobs WHERE host_id = ? AND state = 'running' ORDER BY created_at ASC
+SELECT owner_session_id, tool_call_id, kind, input_hash, child_session_id, origin_cli, state, notice_kind, host_id, announced, delivery, notice_message_id, wake, reacted, wake_attempts, reacted_failed, deadline_at, timeout_kind, result_summary, result_is_error, created_at, updated_at FROM async_jobs WHERE host_id = ? AND state = 'running' ORDER BY created_at ASC
 `
 
 // Recovery sweep input (doc sec.3.7): every RUNNING row owned by a
@@ -489,6 +601,8 @@ func (q *Queries) ListRunningAsyncJobsForHost(ctx context.Context, hostID string
 			&i.NoticeMessageID,
 			&i.Wake,
 			&i.Reacted,
+			&i.WakeAttempts,
+			&i.ReactedFailed,
 			&i.DeadlineAt,
 			&i.TimeoutKind,
 			&i.ResultSummary,
@@ -510,15 +624,17 @@ func (q *Queries) ListRunningAsyncJobsForHost(ctx context.Context, hostID string
 }
 
 const listRunningAsyncJobsForOwners = `-- name: ListRunningAsyncJobsForOwners :many
-SELECT owner_session_id, tool_call_id, kind, input_hash, child_session_id, origin_cli, state, notice_kind, host_id, announced, delivery, notice_message_id, wake, reacted, deadline_at, timeout_kind, result_summary, result_is_error, created_at, updated_at FROM async_jobs
+SELECT owner_session_id, tool_call_id, kind, input_hash, child_session_id, origin_cli, state, notice_kind, host_id, announced, delivery, notice_message_id, wake, reacted, wake_attempts, reacted_failed, deadline_at, timeout_kind, result_summary, result_is_error, created_at, updated_at FROM async_jobs
 WHERE owner_session_id IN (/*SLICE:owner_ids*/?) AND state = 'running'
 ORDER BY created_at ASC
 `
 
-// Own-area recovery/scope evaluation (doc sec.3.5/3.7): the leader's set of
-// owner ids (its own descendant walk, computed in Go) restricted to
-// currently-running rows. No lease/heartbeat filter -- liveness is decided
-// per-host by the caller via the host lock module, not by this query.
+// Own-area recovery/scope evaluation (doc sec.3.5/3.7): the leader's owner
+// id set restricted to currently-running rows. That set comes from walking
+// delegation rows (child_session_id), NOT parent_session_id -- doc sec.3.5
+// is explicit: "descendants via parent_session_id are not walked". No
+// lease/heartbeat filter -- liveness is decided per-host by the caller via
+// the host lock module, not by this query.
 func (q *Queries) ListRunningAsyncJobsForOwners(ctx context.Context, ownerIds []string) ([]AsyncJob, error) {
 	query := listRunningAsyncJobsForOwners
 	var queryParams []interface{}
@@ -553,6 +669,8 @@ func (q *Queries) ListRunningAsyncJobsForOwners(ctx context.Context, ownerIds []
 			&i.NoticeMessageID,
 			&i.Wake,
 			&i.Reacted,
+			&i.WakeAttempts,
+			&i.ReactedFailed,
 			&i.DeadlineAt,
 			&i.TimeoutKind,
 			&i.ResultSummary,
@@ -624,7 +742,7 @@ const pullPendingAsyncJobNotice = `-- name: PullPendingAsyncJobNotice :one
 UPDATE async_jobs
 SET delivery = 'done', updated_at = ?
 WHERE owner_session_id = ? AND tool_call_id = ? AND delivery = 'pending' AND announced = 1
-RETURNING owner_session_id, tool_call_id, kind, input_hash, child_session_id, origin_cli, state, notice_kind, host_id, announced, delivery, notice_message_id, wake, reacted, deadline_at, timeout_kind, result_summary, result_is_error, created_at, updated_at
+RETURNING owner_session_id, tool_call_id, kind, input_hash, child_session_id, origin_cli, state, notice_kind, host_id, announced, delivery, notice_message_id, wake, reacted, wake_attempts, reacted_failed, deadline_at, timeout_kind, result_summary, result_is_error, created_at, updated_at
 `
 
 type PullPendingAsyncJobNoticeParams struct {
@@ -657,6 +775,8 @@ func (q *Queries) PullPendingAsyncJobNotice(ctx context.Context, arg PullPending
 		&i.NoticeMessageID,
 		&i.Wake,
 		&i.Reacted,
+		&i.WakeAttempts,
+		&i.ReactedFailed,
 		&i.DeadlineAt,
 		&i.TimeoutKind,
 		&i.ResultSummary,
@@ -774,12 +894,52 @@ func (q *Queries) SetAsyncJobsWakeZeroPendingForOwners(ctx context.Context, arg 
 	return result.RowsAffected()
 }
 
+const settleAsyncJobsReactedFailed = `-- name: SettleAsyncJobsReactedFailed :execrows
+UPDATE async_jobs SET reacted = 1, reacted_failed = 1, updated_at = ?
+WHERE owner_session_id = ? AND tool_call_id IN (/*SLICE:tool_call_ids*/?) AND wake = 1 AND reacted = 0
+`
+
+type SettleAsyncJobsReactedFailedParams struct {
+	UpdatedAt      int64    `json:"updated_at"`
+	OwnerSessionID string   `json:"owner_session_id"`
+	ToolCallIds    []string `json:"tool_call_ids"`
+}
+
+// Settle-by-failure step 2, after K=3 (doc sec.3.4): closes debt on exactly
+// the id set captured at the start of the failed turn -- doc: "only for the
+// rows that were done at the moment it started" -- not every currently-pending
+// row of the owner (a notice that arrived mid-retry must get its own future
+// wake-up call, not be silently absorbed into this closure). reacted_failed
+// distinguishes this from an ordinary step-persisted reaction
+// (MarkAsyncJobsReactedForOwner): it is set ONLY here, never by a real
+// step, so a child session can tell its parent the delegation failed
+// instead of succeeded-with-no-output.
+func (q *Queries) SettleAsyncJobsReactedFailed(ctx context.Context, arg SettleAsyncJobsReactedFailedParams) (int64, error) {
+	query := settleAsyncJobsReactedFailed
+	var queryParams []interface{}
+	queryParams = append(queryParams, arg.UpdatedAt)
+	queryParams = append(queryParams, arg.OwnerSessionID)
+	if len(arg.ToolCallIds) > 0 {
+		for _, v := range arg.ToolCallIds {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:tool_call_ids*/?", strings.Repeat(",?", len(arg.ToolCallIds))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:tool_call_ids*/?", "NULL", 1)
+	}
+	result, err := q.exec(ctx, nil, query, queryParams...)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const transitionAsyncJobTerminal = `-- name: TransitionAsyncJobTerminal :one
 UPDATE async_jobs
 SET state = ?, notice_kind = ?, result_summary = ?, result_is_error = ?,
     delivery = 'pending', wake = ?, updated_at = ?
 WHERE owner_session_id = ? AND tool_call_id = ? AND state = 'running'
-RETURNING owner_session_id, tool_call_id, kind, input_hash, child_session_id, origin_cli, state, notice_kind, host_id, announced, delivery, notice_message_id, wake, reacted, deadline_at, timeout_kind, result_summary, result_is_error, created_at, updated_at
+RETURNING owner_session_id, tool_call_id, kind, input_hash, child_session_id, origin_cli, state, notice_kind, host_id, announced, delivery, notice_message_id, wake, reacted, wake_attempts, reacted_failed, deadline_at, timeout_kind, result_summary, result_is_error, created_at, updated_at
 `
 
 type TransitionAsyncJobTerminalParams struct {
@@ -826,6 +986,8 @@ func (q *Queries) TransitionAsyncJobTerminal(ctx context.Context, arg Transition
 		&i.NoticeMessageID,
 		&i.Wake,
 		&i.Reacted,
+		&i.WakeAttempts,
+		&i.ReactedFailed,
 		&i.DeadlineAt,
 		&i.TimeoutKind,
 		&i.ResultSummary,
@@ -842,7 +1004,7 @@ SET state = ?, notice_kind = ?, result_summary = ?, result_is_error = ?,
     delivery = CASE delivery WHEN 'void' THEN 'void' ELSE 'pending' END,
     wake = ?, updated_at = ?
 WHERE owner_session_id = ? AND tool_call_id = ? AND state = 'running'
-RETURNING owner_session_id, tool_call_id, kind, input_hash, child_session_id, origin_cli, state, notice_kind, host_id, announced, delivery, notice_message_id, wake, reacted, deadline_at, timeout_kind, result_summary, result_is_error, created_at, updated_at
+RETURNING owner_session_id, tool_call_id, kind, input_hash, child_session_id, origin_cli, state, notice_kind, host_id, announced, delivery, notice_message_id, wake, reacted, wake_attempts, reacted_failed, deadline_at, timeout_kind, result_summary, result_is_error, created_at, updated_at
 `
 
 type TransitionAsyncJobTerminalPreserveVoidParams struct {
@@ -888,6 +1050,8 @@ func (q *Queries) TransitionAsyncJobTerminalPreserveVoid(ctx context.Context, ar
 		&i.NoticeMessageID,
 		&i.Wake,
 		&i.Reacted,
+		&i.WakeAttempts,
+		&i.ReactedFailed,
 		&i.DeadlineAt,
 		&i.TimeoutKind,
 		&i.ResultSummary,

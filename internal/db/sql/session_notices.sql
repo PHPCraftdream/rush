@@ -45,6 +45,27 @@ WHERE id = ? AND delivery = 'pending';
 UPDATE session_notices SET reacted = 1, updated_at = ?
 WHERE owner = ? AND wake = 1 AND reacted = 0 AND delivery = 'done';
 
+-- name: IncrementSessionNoticeWakeAttempts :execrows
+-- Notices half of IncrementAsyncJobWakeAttempts (doc sec.3.4): keyed by id
+-- (session_notices' own PK, unlike async_jobs' owner+tool_call_id pair)
+-- because the settle-by-failure scope is the exact id set captured at the
+-- start of the failed turn, not "every debt row of the owner now".
+UPDATE session_notices SET wake_attempts = wake_attempts + 1, updated_at = ?
+WHERE id IN (sqlc.slice('ids')) AND wake = 1 AND reacted = 0;
+
+-- name: SettleSessionNoticesReactedFailed :execrows
+-- Notices half of SettleAsyncJobsReactedFailed (doc sec.3.4): closes debt
+-- on exactly the captured id set after K=3 failed passes. reacted_failed
+-- distinguishes this from MarkSessionNoticesReactedForOwner's ordinary,
+-- real-step reaction.
+UPDATE session_notices SET reacted = 1, reacted_failed = 1, updated_at = ?
+WHERE id IN (sqlc.slice('ids')) AND wake = 1 AND reacted = 0;
+
+-- name: ListReactedFailedSessionNoticesForOwner :many
+-- Notices half of ListReactedFailedAsyncJobsForOwner: the parent-
+-- notification reader for settle-by-failure closures on this table.
+SELECT * FROM session_notices WHERE owner = ? AND reacted_failed = 1 ORDER BY id ASC;
+
 -- name: SetSessionNoticesWakeZeroPendingForOwners :execrows
 -- Stop transitivity (DUR-9, doc sec.3.8), notices half of
 -- SetAsyncJobsWakeZeroPendingForOwners.

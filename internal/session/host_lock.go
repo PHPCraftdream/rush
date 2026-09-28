@@ -72,10 +72,17 @@ func HostLockPath(dataDir, hostID string) string {
 // ownHostMu/ownHostIDs remembers every host id THIS OS PROCESS has ever
 // registered, across every App instance created in it (tests routinely
 // instantiate more than one App in-process against the same or different
-// data dirs -- doc sec.3.6: "свой host_id и host_id других App этого
-// процесса не пробуются"). A process trivially "wins" the lock on its own
-// host id (it already holds it), so probing it would misreport a live host
-// as dead; ProbeHost refuses on any id in this set.
+// data dirs). Doc sec.3.6 requires never probing this process's own host id
+// or a sibling App's in the same process, as a flat rule -- not because the
+// OS lock primitives get the answer wrong here: flock is scoped per open
+// file description and LockFileEx per handle, so a second open+lock from
+// this same process on its own already-held lock file correctly contends
+// (reports "alive"), the same as a genuinely different process would see.
+// The guard exists so that if a caller ever DOES pass its own id (a bug --
+// e.g. an id slipping into a recovery candidate set it should have been
+// filtered out of), that is a loud, explicit ErrProbeOwnHost instead of a
+// silent extra lock/contention cycle against a file this process already
+// owns.
 var (
 	ownHostMu  sync.Mutex
 	ownHostIDs = map[string]struct{}{}
@@ -103,11 +110,13 @@ func IsOwnHostID(hostID string) bool {
 }
 
 // ErrProbeOwnHost is returned by ProbeHost when asked to probe a host id
-// this process itself owns. Probing it would trivially "succeed" (this
-// process already holds that exact lock) and misreport a live host as
-// dead. Callers building a recovery/liveness candidate set are expected to
-// exclude their own ids themselves (doc sec.3.6); this guard exists so a
-// bug that fails to do so cannot corrupt a liveness decision.
+// this process itself owns. Doc sec.3.6 forbids self-probes outright;
+// callers building a recovery/liveness candidate set are expected to
+// exclude their own ids themselves. This guard turns a caller bug that
+// fails to do so into an explicit, loud error instead of letting it
+// silently reach the OS lock (which would correctly report "alive" here,
+// not "dead" -- see the ownHostIDs comment above -- but doc sec.3.6 still
+// wants the attempt itself refused, not merely harmless).
 var ErrProbeOwnHost = errors.New("host lock: refusing to probe this process's own host id")
 
 // ProbeHostLock answers "is the process behind lockPath alive?" without
@@ -176,20 +185,26 @@ type HostIdentity struct {
 	lock *FileLock
 }
 
-// EnsureHostRegistered performs the lazy registration doc sec.3.6
-// describes: a fresh random uuid, an exclusive OS lock acquired on its
-// lock file (created fresh -- never pre-existing, so contention here would
-// mean an astronomically unlikely uuid collision, not a real host), and a
-// display-only async_hosts row. Wiring this into "at first claim" is a
-// later step; this function is the primitive later steps call.
+// RegisterHost is the registration primitive doc sec.3.6 describes: a fresh
+// random uuid, an exclusive OS lock acquired on its lock file (created
+// fresh -- never pre-existing, so contention here would mean an
+// astronomically unlikely uuid collision, not a real host), and a
+// display-only async_hosts row.
+//
+// RegisterHost is NOT idempotent -- every call registers a brand-new host
+// id and lock file, even if this process already holds one. Doc sec.3.6's
+// "lazy at first claim" means calling this ONCE, the first time a process
+// needs a host identity, and reusing the result -- that lazy-once wrapper
+// (memoizing per process/App instance) arrives with the claim wiring in a
+// later step; this function is the unconditional primitive it will call.
 //
 // Registration FAILS outright if the lock cannot be acquired (doc sec.3.6:
-// "файловая система без блокировок — отказ при регистрации") or if the DB
+// a filesystem without lock support must fail registration) or if the DB
 // insert fails (in which case the just-acquired lock is released before
 // returning, so a failed registration never leaks a held lock).
-func EnsureHostRegistered(ctx context.Context, dataDir string, pid int, label string, store AsyncHostStore) (*HostIdentity, error) {
+func RegisterHost(ctx context.Context, dataDir string, pid int, label string, store AsyncHostStore) (*HostIdentity, error) {
 	if dataDir == "" {
-		return nil, fmt.Errorf("host lock: EnsureHostRegistered: empty dataDir")
+		return nil, fmt.Errorf("host lock: RegisterHost: empty dataDir")
 	}
 	id := uuid.NewString()
 	lockPath := HostLockPath(dataDir, id)
@@ -298,7 +313,7 @@ func RemoveDeadHostFile(lockPath string, held *FileLock) error {
 // AsyncHostStoreFromConn adapts any db.DBTX (a *sql.DB, a *sql.Tx, ...)
 // into an AsyncHostStore, so callers holding a raw connection/transaction
 // rather than an already-built *db.Queries can pass it directly to
-// EnsureHostRegistered/Close.
+// RegisterHost/Close.
 func AsyncHostStoreFromConn(dbtx db.DBTX) AsyncHostStore {
 	return db.New(dbtx)
 }

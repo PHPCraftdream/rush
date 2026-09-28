@@ -21,7 +21,17 @@ type Querier interface {
 	AckRunQueueEntry(ctx context.Context, arg AckRunQueueEntryParams) (string, error)
 	// Doc sec.3.4: one indexed EXISTS, backed by the partial indexes
 	// idx_async_jobs_debt and idx_session_notices_debt "(owner) WHERE wake=1
-	// AND reacted=0 AND delivery<>'void'" on both tables.
+	// AND reacted=0 AND delivery<>'void'" on both tables. The async_jobs branch
+	// additionally requires announced=1 (doc: "task rows with announced=1" --
+	// review fix): a job that reaches terminal before its own "started"
+	// tool-result commits is wake=1/delivery=pending/reacted=0/announced=0; an
+	// unannounced row can never produce a notice (DUR-7) and the drain pull
+	// (ListPendingAsyncJobNoticesForOwner/PullPendingAsyncJobNotice) already
+	// skips it, so without this guard the debt check falsely reports debt,
+	// driving a wasted provider turn with nothing to react to -- and if the ack
+	// then aborts, the row is deleted (DeleteUnannouncedAsyncJob) and the turn
+	// was wasted for nothing. session_notices carries no announced concept
+	// (doc sec.3.2: it has no ack gate), so its branch is unchanged.
 	AsyncReactionDebtExists(ctx context.Context, owner string) (sql.NullBool, error)
 	// Durable idempotent start. ON CONFLICT DO NOTHING mirrors
 	// EnqueueRunQueueEntry: a caller retrying the same (owner_session_id,
@@ -261,6 +271,15 @@ type Querier interface {
 	// both statuses explicitly rather than inferring queue state from a failed
 	// pending-only lease attempt.
 	HasOutstandingRunQueueEntryForSession(ctx context.Context, sessionID string) (int64, error)
+	// Settle-by-failure step 1 (doc sec.3.4: "a temporary failure ... increments
+	// the attempt counter in the row"): a temporary provider failure after a
+	// wake-up call increments wake_attempts on the SPECIFIC rows the failed
+	// turn was meant to react to, not every debt row of the owner (the doc is
+	// explicit the closing/counting scope is fixed at the start of that turn,
+	// not re-evaluated against whatever is pending now). Guarded by
+	// wake=1 AND reacted=0 so a row that settled (by a real step, or by an
+	// earlier failure closure) in the meantime is left alone.
+	IncrementAsyncJobWakeAttempts(ctx context.Context, arg IncrementAsyncJobWakeAttemptsParams) (int64, error)
 	// Atomic additive update for session cost. Safe under fan-out (multiple
 	// sub-agent goroutines finishing concurrently and each charging the
 	// parent) and across processes (orchestrator with parallel rush runs).
@@ -286,6 +305,11 @@ type Querier interface {
 	// cost + delta would meet or exceed max_cost -- the caller must treat that
 	// the same as an up-front max-cost skip (no charge landed).
 	IncrementSessionCostIfUnderMax(ctx context.Context, arg IncrementSessionCostIfUnderMaxParams) (int64, error)
+	// Notices half of IncrementAsyncJobWakeAttempts (doc sec.3.4): keyed by id
+	// (session_notices' own PK, unlike async_jobs' owner+tool_call_id pair)
+	// because the settle-by-failure scope is the exact id set captured at the
+	// start of the failed turn, not "every debt row of the owner now".
+	IncrementSessionNoticeWakeAttempts(ctx context.Context, arg IncrementSessionNoticeWakeAttemptsParams) (int64, error)
 	// session_notices carries notices with no async_jobs row (supervision,
 	// wake_failed marker, background SDK shell completion, wake_only timeout --
 	// doc sec.2/3.2). Created with delivery='pending' so it is a drain
@@ -418,14 +442,23 @@ type Querier interface {
 	// Drain candidates (doc sec.3.3), oldest first so history order matches
 	// occurrence order.
 	ListPendingSessionNoticesForOwner(ctx context.Context, owner string) ([]SessionNotice, error)
+	// Reader for the parent-notification path (doc sec.3.4: "passes the parent
+	// the text of the unreacted notices") -- the rows settle-by-failure closed
+	// for this owner, whose text a failed delegation's parent must still see.
+	ListReactedFailedAsyncJobsForOwner(ctx context.Context, ownerSessionID string) ([]AsyncJob, error)
+	// Notices half of ListReactedFailedAsyncJobsForOwner: the parent-
+	// notification reader for settle-by-failure closures on this table.
+	ListReactedFailedSessionNoticesForOwner(ctx context.Context, owner string) ([]SessionNotice, error)
 	// Recovery sweep input (doc sec.3.7): every RUNNING row owned by a
 	// particular host_id, for a leader/recoverer that has independently
 	// confirmed (via the host lock module) that host_id is dead.
 	ListRunningAsyncJobsForHost(ctx context.Context, hostID string) ([]AsyncJob, error)
-	// Own-area recovery/scope evaluation (doc sec.3.5/3.7): the leader's set of
-	// owner ids (its own descendant walk, computed in Go) restricted to
-	// currently-running rows. No lease/heartbeat filter -- liveness is decided
-	// per-host by the caller via the host lock module, not by this query.
+	// Own-area recovery/scope evaluation (doc sec.3.5/3.7): the leader's owner
+	// id set restricted to currently-running rows. That set comes from walking
+	// delegation rows (child_session_id), NOT parent_session_id -- doc sec.3.5
+	// is explicit: "descendants via parent_session_id are not walked". No
+	// lease/heartbeat filter -- liveness is decided per-host by the caller via
+	// the host lock module, not by this query.
 	ListRunningAsyncJobsForOwners(ctx context.Context, ownerIds []string) ([]AsyncJob, error)
 	// Reader for `sessions jobs`/`sessions why`.
 	ListSessionNoticesForOwner(ctx context.Context, owner string) ([]SessionNotice, error)
@@ -531,6 +564,21 @@ type Querier interface {
 	// Stop transitivity (DUR-9, doc sec.3.8), notices half of
 	// SetAsyncJobsWakeZeroPendingForOwners.
 	SetSessionNoticesWakeZeroPendingForOwners(ctx context.Context, arg SetSessionNoticesWakeZeroPendingForOwnersParams) (int64, error)
+	// Settle-by-failure step 2, after K=3 (doc sec.3.4): closes debt on exactly
+	// the id set captured at the start of the failed turn -- doc: "only for the
+	// rows that were done at the moment it started" -- not every currently-pending
+	// row of the owner (a notice that arrived mid-retry must get its own future
+	// wake-up call, not be silently absorbed into this closure). reacted_failed
+	// distinguishes this from an ordinary step-persisted reaction
+	// (MarkAsyncJobsReactedForOwner): it is set ONLY here, never by a real
+	// step, so a child session can tell its parent the delegation failed
+	// instead of succeeded-with-no-output.
+	SettleAsyncJobsReactedFailed(ctx context.Context, arg SettleAsyncJobsReactedFailedParams) (int64, error)
+	// Notices half of SettleAsyncJobsReactedFailed (doc sec.3.4): closes debt
+	// on exactly the captured id set after K=3 failed passes. reacted_failed
+	// distinguishes this from MarkSessionNoticesReactedForOwner's ordinary,
+	// real-step reaction.
+	SettleSessionNoticesReactedFailed(ctx context.Context, arg SettleSessionNoticesReactedFailedParams) (int64, error)
 	// task #777 (P1 release blocker): recoverSessionInterruptedTurn used to
 	// read the candidate message (Get), re-check IsFinished() in Go, check the
 	// liveness lock, then call the plain message.Update, which rewrites the

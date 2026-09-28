@@ -30,6 +30,8 @@ type AsyncJob struct {
 	NoticeMessageID sql.NullString `json:"notice_message_id"`
 	Wake            int64          `json:"wake"`
 	Reacted         int64          `json:"reacted"`
+	WakeAttempts    int64          `json:"wake_attempts"`
+	ReactedFailed   int64          `json:"reacted_failed"`
 	DeadlineAt      sql.NullInt64  `json:"deadline_at"`
 	TimeoutKind     sql.NullString `json:"timeout_kind"`
 	ResultSummary   sql.NullString `json:"result_summary"`
@@ -169,6 +171,8 @@ type SessionNotice struct {
 	Delivery        string         `json:"delivery"`
 	NoticeMessageID sql.NullString `json:"notice_message_id"`
 	Reacted         int64          `json:"reacted"`
+	WakeAttempts    int64          `json:"wake_attempts"`
+	ReactedFailed   int64          `json:"reacted_failed"`
 	JobToolCallID   sql.NullString `json:"job_tool_call_id"`
 	CreatedAt       int64          `json:"created_at"`
 	UpdatedAt       int64          `json:"updated_at"`
