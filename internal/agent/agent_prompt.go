@@ -329,8 +329,38 @@ func (a *sessionAgent) getSessionMessages(ctx context.Context, session session.S
 			}
 		}
 	}
-	return msgs, nil
+	return dropSupersededSupervisionNotices(msgs), nil
 }
+
+// dropSupersededSupervisionNotices keeps only the newest
+// NoticeKind==noticeKindSupervision message in full (design doc §7: only the
+// latest summary matters). Older ones stay in place with their text replaced
+// by a short marker instead of being removed: removing a user-role message
+// can leave two assistant messages adjacent, which some providers reject.
+func dropSupersededSupervisionNotices(msgs []message.Message) []message.Message {
+	lastIdx := -1
+	for i, m := range msgs {
+		if m.NoticeKind == noticeKindSupervision {
+			lastIdx = i
+		}
+	}
+	if lastIdx == -1 {
+		return msgs
+	}
+	out := make([]message.Message, len(msgs))
+	copy(out, msgs)
+	for i, m := range out {
+		if m.NoticeKind == noticeKindSupervision && i != lastIdx {
+			m.Parts = []message.ContentPart{message.TextContent{Text: supersededSupervisionText}}
+			out[i] = m
+		}
+	}
+	return out
+}
+
+// supersededSupervisionText replaces an older supervision summary in the
+// model's context.
+const supersededSupervisionText = "[Earlier supervision check-in; superseded by a newer one.]"
 
 // convertToToolResult converts a fantasy tool result to a message tool result.
 func (a *sessionAgent) convertToToolResult(result fantasy.ToolResultContent) message.ToolResult {

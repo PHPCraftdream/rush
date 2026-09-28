@@ -806,7 +806,7 @@ func (c *coordinator) Cancel(sessionID string) {
 | `wakein`/`wakeon` срабатывание | `Wake {schedule_id} fired (scheduled for {fires_at}): {message}` |
 | `loop` срабатывание | `Loop {schedule_id} occurrence {occurrence} of {max_runs_or_infinity} fired: {message}\n\nNext occurrence: {next_fire_at_or_none}.` |
 | Прерывание (`interrupted`, фаза 4) | `Async job {job_id} ({tool}) was interrupted — the process running it stopped unexpectedly before it finished. No output is available for the time after the interruption.` |
-| Надзор (супервижн-тик, design doc §7) | `Supervision check-in (tick {n}, interval {interval}m): {k} background job(s) running, {j} sub-agent delegation(s) in progress.\n\n{по одной строке на каждого потомка: id, elapsed, последняя строка вывода/активности}\n\nNo action needed unless something looks stuck.` |
+| Надзор (супервижн-тик, design doc §7) | **Реализовано (2026-09-28, задача #1043) с ИЗМЕНЁННЫМ хвостом** относительно черновика этой строки: `Supervision check-in (tick {n}, interval {interval}m): {k} background job(s) running, {j} sub-agent delegation(s) in progress.\n\n{по одной строке на каждого потомка: id, elapsed, последняя строка вывода/активности}\n\nKeep waiting, inspect with job_output, or stop with job_kill (commands only; sub-agent control tools are not available yet).` — явное указание `job_output`/`job_kill` вместо «no action needed» (задание #1043 прямо этого требует) и явный отказ называть ещё не существующие `inspect_agent`/`stop_agent`, тем же приёмом, что уже применяет `stopGuidanceFor` (§3, `work_ledger_timeout.go`) для `timeout_wake_only`. После N-го (по умолчанию 6) тика без прогресса тот же шаблон получает хвост «Supervision is now paused after N consecutive check-ins with no progress; it resumes automatically once something changes…» вместо обычной подсказки. |
 
 `wake_only`-уведомление одноразовое: сработавший дедлайн не перевзводится на
 тот же интервал автоматически. **[Решение RFC]**: альтернатива (повторять
@@ -865,10 +865,16 @@ supervision-тик), но НЕ для `wake_only`-уведомления (оно
 оператора» п.5). Он использует ТОТ ЖЕ сервис сроков, что `wakein`/`wakeon`/
 `loop`, но НЕ является инструментом, который модель создаёт/видит через
 `wake_list`/`wake_cancel` — это отдельный, системный, per-root-session
-таймер, управляемый конфигом (`disable_supervision`,
-`supervision_interval_minutes` — имена условны, заводятся той фазой, что его
-реализует; в конфиге сегодня ничего подобного нет, не проверено иное
-именование).
+таймер, управляемый конфигом. **Реализовано (2026-09-28, задача #1043)**:
+имена оказались `Options.SupervisionEnabled *bool` (json
+`supervision_enabled`, по умолчанию `true`) и
+`Options.SupervisionIntervalMinutes int` (json
+`supervision_interval_minutes`, `0` = встроенные 5 минут) в
+`internal/config/config_mcp.go`; `rush run --no-supervision`/
+`--supervision-interval` переопределяют их для одного запуска через
+`agent.CallOptions.SupervisionDisabled`/`SupervisionInterval`
+(`internal/agent/call_options.go`), тем же путём, что уже несёт
+`--allow-peak-hours`/`--agents single`.
 
 Сосуществование с агентскими `loop`:
 - Оба используют один сервис сроков (design doc: «дедлайны задач и сроки
@@ -939,7 +945,7 @@ supervision-тик), но НЕ для `wake_only`-уведомления (оно
 | §4.1–4.3 (`inspect_agent`/`inject_agent`/`stop_agent`) | Использует существующий `subAgentDriverRegistry` (уже фаза, слитая до фазы 1) | Этап 3 «Контроль под-агентов» | Частично — `cancelSession`-часть готова; driver-aware `Cancel`/`InjectMessage` (§4.4) — готово (phase 2, ниже); сами инструменты `inspect_agent`/`inject_agent`/`stop_agent` — нет, вне объёма фазы 2 |
 | §4.4 (фикс `Cancel`/`InjectMessage`) | Не отдельная design-фаза — точечное расширение уже реализованного #1049 | Предусловие этапа 3 | **Да** (2026-09-28, phase 2, задача #1054) — оба маршрутизируются через `coordinator.agentFor` |
 | §1 (`wakein`/`wakeon`/`loop`/`wake_list`/`wake_cancel`, сервис сроков, долговечность) | Фаза 5 («план пробуждений поверх ядра») | Этап 4 «Долговечные расписания» | Нет |
-| §7 (надзор) | Фаза 5, «первый потребитель сервиса сроков», можно сразу после фазы 3 | Не отдельный этап плана — часть design doc, этап 5 плана («CLI/web интеграция») зависит от его текстов/маркировки | Нет |
+| §7 (надзор) | Фаза 5, «первый потребитель сервиса сроков», можно сразу после фазы 3 | Не отдельный этап плана — часть design doc, этап 5 плана («CLI/web интеграция») зависит от его текстов/маркировки | **Да** (2026-09-28, задача #1043) — `internal/agent/supervision.go`: тик через `coordinator.wakeSession` (`NoticeKind="supervision"`), собственный сервис сроков переиспользован (`timeoutService.armFunc`, обобщённый heap вместо только-`*asyncJob`), не `workLedger`-задача (никогда не в `bySession[x].jobs`, не удерживает область — п.3 решений оператора); рост интервала 5→10→20→…→60 мин и пауза после 6 тиков без прогресса реализованы; конфиг `supervision_enabled`/`supervision_interval_minutes` + `rush run --no-supervision`/`--supervision-interval`; устаревшие сводки надзора исключены из истории провайдера (`agent_prompt.go`'s `dropSupersededSupervisionNotices`). `wakein`/`wakeon`/`loop`/`wake_list`/`wake_cancel` (§1) и `inspect_agent`/`inject_agent`/`stop_agent` (§4) остаются вне объёма — текст надзора явно избегает называть их (см. §5.1's пересмотренный текст ниже). |
 | §5.2 `NoticeKind` (опционально) | Фаза 5 или позже, необязательно | Этап 5 «CLI/web интеграция» | Частично (2026-09-28, phase 2) — поле введено на `message.Message`/`CreateMessageParams`/`SessionAgentCall` с миграцией; заполняется только значениями этой фазы (`timeout_wake_only`, `timeout_terminated`, `wake_failed`); остальные значения словаря (`wake`, `loop`, ...) зарезервированы, не производятся; веб-рендер по значению — не в объёме |
 
 ## 10. Приёмочные тесты по инструментам

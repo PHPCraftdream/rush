@@ -101,6 +101,18 @@ type CallOptions struct {
 	// to race a concurrent run's toolset build.
 	DisableSubAgents bool
 
+	// SupervisionDisabled turns off the periodic root-session supervision
+	// check-in (design doc §7) for this run only (`rush run
+	// --no-supervision`). false (the default) defers to config's
+	// SupervisionEnabled.
+	SupervisionDisabled bool
+
+	// SupervisionInterval overrides the initial/reset silence interval
+	// before a supervision check-in (`rush run --supervision-interval`).
+	// Zero means "no override -- use config's SupervisionIntervalMinutes or
+	// the built-in 5-minute default".
+	SupervisionInterval time.Duration
+
 	// FailIfSessionBusy rejects this run instead of queueing it when the
 	// session's mailbox is already owned by another turn (sdk.Client's
 	// fail-fast contract, #818). Enforced AT the atomic mailbox

@@ -344,6 +344,12 @@ func (app *App) prepareExecuteRun(ctx context.Context, req RunRequest) (_ contex
 		MaxTokens:         overrides.MaxTokens,
 		AllowPeakHours:    overrides.AllowPeakHours,
 		DisableSubAgents:  overrides.DisableSubAgents,
+		// Supervision (design doc §7): per-run opt-out/retune, `rush run
+		// --no-supervision`/`--supervision-interval`. Zero-value overrides
+		// (false/0) mean "no override", identically to every other field
+		// here.
+		SupervisionDisabled: overrides.NoSupervision,
+		SupervisionInterval: overrides.SupervisionInterval,
 		// T10: the compiled folder scope for THIS call (nil = unscoped).
 		// The coordinator's applyCallFolderScope rebuilds the toolset
 		// from it per call; rejectScopedCallOnCLIProvider (T9) refuses

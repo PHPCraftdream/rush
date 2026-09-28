@@ -108,6 +108,13 @@ func (t *asyncTool) Run(ctx context.Context, call fantasy.ToolCall) (fantasy.Too
 			mgr.InheritSessionRunAllowlistForGeneration(sessionID, childSessionID, driver.generation)
 		}
 	}
+	if !sync {
+		// Supervision (design doc §7): new open work for a CLI/web owner
+		// arms (or resumes) its root-session check-in timer. A no-op for a
+		// delegated child session (never supervised directly) or when
+		// supervision is disabled -- see noteWorkStarted's own doc.
+		t.coordinator.asyncJobs.noteWorkStarted(ctx, sessionID)
+	}
 	go t.run(jobCtx, cancel, sessionID, childSessionID, call, sync)
 	if sync {
 		return t.awaitAndFinish(ctx, job)

@@ -81,6 +81,14 @@ func (c *coordinator) wakeSession(ctx context.Context, job jobIdentity, notice, 
 		msgID = msg.ID
 		c.asyncJobs.recordNotice(job, msgID)
 	}
+	// Supervision's own notice must NOT reset the backoff it just grew --
+	// every other notice (job/sub-agent finish, timeout, stop) is "progress"
+	// and resets it (supervision.go's recordProgress). See recordProgress's
+	// own doc for why the tick's resulting turn is excluded here instead of
+	// relying on pushDeadlineOnTurnEnd to distinguish it.
+	if noticeKind != noticeKindSupervision {
+		c.asyncJobs.recordProgress(job.owner)
+	}
 	if !wake {
 		return nil
 	}

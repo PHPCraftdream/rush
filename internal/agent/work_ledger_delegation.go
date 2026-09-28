@@ -227,6 +227,14 @@ func (l *workLedger) cancelSession(sessionID string) {
 		}
 	}
 	l.mu.Unlock()
+	// A cancelled session's own supervision timer (if any) is dropped here
+	// unconditionally: the plain-job branch above deletes directly rather
+	// than through deliverLocked (whose own drop-on-empty hook this
+	// therefore cannot rely on alone), and cancelling is this codebase's
+	// closest existing proxy for "give up on this session's work" -- see
+	// clearSupervisionIfPresent's own doc for the known gap around a bare
+	// session delete with no prior cancel.
+	l.clearSupervisionIfPresent(sessionID)
 	for _, completion := range pending {
 		l.onWebDone(completion)
 	}

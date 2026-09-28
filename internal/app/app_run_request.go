@@ -62,6 +62,13 @@ type RunOverrides struct {
 	// original is preserved in RunResult.AssistantNotes.
 	DisableSubAgents bool
 	StripJSONFences  bool
+	// NoSupervision disables the periodic root-session supervision check-in
+	// (design doc §7) for this run (`rush run --no-supervision`). false
+	// (default) defers to config's supervision_enabled (on by default).
+	NoSupervision bool
+	// SupervisionInterval overrides the check-in's silence interval
+	// (`rush run --supervision-interval`). Zero = no override.
+	SupervisionInterval time.Duration
 	// AggregationMode controls how sub-agent fan-out output reaches
 	// the orchestrator. "" / "summary" = upstream default (parent
 	// composes a wrap-up, sub-agent details live in the DB only).

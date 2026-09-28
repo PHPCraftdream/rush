@@ -115,10 +115,12 @@ func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, age
 		AsyncJobs:         c.asyncJobs,
 		// Phase 3's by-construction release trigger (sessionAgent.
 		// onSessionIdle's doc, docs/plans/2026-09-28-async-phase3-spec.md
-		// orchestrator decision item 1): wired identically for the root
-		// agent and every delegated child driver, since buildAgent builds
-		// both.
-		OnSessionIdle:      c.noteSubAgentChildRunEnded,
+		// orchestrator decision item 1) PLUS supervision's turn-end deadline
+		// push (supervision.go's onSessionIdleHook) -- wired identically for
+		// the root agent and every delegated child driver, since buildAgent
+		// builds both; both callees are no-ops for a session with nothing to
+		// react to.
+		OnSessionIdle:      c.onSessionIdleHook,
 		RestrictedRuns:     restrictedRunAuthorizer(c.permissions),
 		CheckpointInterval: checkpointInterval, // Fork patch: batch 8
 		// Fork patch: peak-hours mid-turn re-check. Deliberately LIVE, not

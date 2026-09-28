@@ -344,6 +344,19 @@ type Options struct {
 	// because autonomy must be deliberately enabled. Web/interactive only —
 	// never fires for rush run.
 	AutoResumeOnJobDone *bool `json:"auto_resume_on_job_done,omitempty" jsonschema:"description=Autonomously resume an idle session when a background job finishes (web/interactive). Default false (opt-in). Bounded by an internal consecutive-resume cap, reset by any human message.,default=false"`
+	// SupervisionEnabled toggles the periodic root-session supervision
+	// check-in (design doc docs/plans/2026-09-27-async-structured-
+	// concurrency.md §7): after SupervisionIntervalMinutes of silence in the
+	// ROOT session's chat, while its scope still has open work (running
+	// commands or sub-agent delegations) and it is not mid-turn, the root is
+	// woken with a work summary. Never holds the run open by itself and never
+	// fires for a session with no open work. Default (nil) = enabled.
+	SupervisionEnabled *bool `json:"supervision_enabled,omitempty" jsonschema:"description=Periodically wake the root session with a work summary after chat silence while background jobs/delegations are still open. Default true. Set false to disable.,default=true"`
+	// SupervisionIntervalMinutes is the initial (and post-progress-reset)
+	// silence interval before a supervision check-in. Grows on consecutive
+	// no-progress ticks (doubling, capped at 60 minutes) and resets to this
+	// value once a real completion happens. 0 (default) = 5 minutes.
+	SupervisionIntervalMinutes int `json:"supervision_interval_minutes,omitempty" jsonschema:"description=Minutes of chat silence before a supervision check-in while work is open. Default 5. 0 = use default.,default=0,example=10"`
 	// NoRealWorkspace marks a config whose session has no real host
 	// working directory (sdk.ModeLibrary with an empty Options.WorkingDir:
 	// an ephemeral, in-memory session). It is the single authoritative

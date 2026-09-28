@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 )
@@ -120,6 +121,17 @@ type workLedger struct {
 	// methods all check for a nil receiver): isolated ledger tests that
 	// never call newTimeoutService simply never arm/fire a timeout.
 	timeouts *timeoutService
+
+	// supervision is the per-root-session supervision registry (see
+	// supervision.go). Nil-safe throughout: isolated ledger tests that never
+	// call newSupervisionRegistry simply never arm a check-in. Deliberately
+	// NOT a workLedger job/asyncJob -- it never appears in bySession[x].jobs,
+	// so it can never itself keep a session's scope "open" (l.running/
+	// next() are computed purely from the jobs map, unaffected by this
+	// field) -- see supervision.go's file doc for why that sidesteps the
+	// jobKind/HoldsScope question docs/plans/2026-09-28-async-phase3-spec.md
+	// §0.2 left for phase 5.
+	supervision *supervisionRegistry
 }
 
 func newWorkLedger(onWebDone func(AsyncCompletion)) *workLedger {
@@ -187,7 +199,7 @@ func (l *workLedger) Start(owner, toolCallID, input, toolName, childSession stri
 	job := &asyncJob{
 		owner: owner, toolCallID: toolCallID, input: input, toolName: toolName,
 		childSession: childSession, cli: cli, cancel: cancel,
-		sync: sync, announced: sync,
+		sync: sync, announced: sync, startedAt: time.Now(),
 	}
 	if sync {
 		job.done = make(chan struct{})
@@ -305,6 +317,11 @@ func (l *workLedger) deliverLocked(owner string, job *asyncJob) (AsyncCompletion
 		if job.childSession != "" {
 			l.gcChildLocked(job.childSession)
 		}
+		if len(s.jobs) == 0 {
+			// Scope closed (§2.3): no open work left for owner, so its
+			// supervision timer (if any) is dropped -- see supervision.go.
+			l.clearSupervisionIfPresent(owner)
+		}
 		close(job.done)
 		return AsyncCompletion{}, false
 	}
@@ -321,6 +338,11 @@ func (l *workLedger) deliverLocked(owner string, job *asyncJob) (AsyncCompletion
 	delete(s.jobs, job.toolCallID)
 	if job.childSession != "" {
 		l.gcChildLocked(job.childSession)
+	}
+	if len(s.jobs) == 0 {
+		// Scope closed (§2.3): no open work left for owner, so its
+		// supervision timer (if any) is dropped -- see supervision.go.
+		l.clearSupervisionIfPresent(owner)
 	}
 	queued := job.cli && (s.drained || l.onWebDone == nil)
 	if queued {

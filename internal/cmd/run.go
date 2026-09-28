@@ -457,6 +457,10 @@ rush run --role smart --timeout 5m --session "long-task" "refactor the storage l
 			// without an explicit human instruction is violating the
 			// operator's intent.
 			allowPeakHours, _ = cmd.Flags().GetBool("allow-peak-hours")
+			// Fork patch (supervision): opt out of, or retune, the periodic
+			// root-session check-in for this invocation.
+			noSupervision, _           = cmd.Flags().GetBool("no-supervision")
+			supervisionIntervalFlag, _ = cmd.Flags().GetString("supervision-interval")
 		)
 
 		if effort != "" {
@@ -578,6 +582,10 @@ rush run --role smart --timeout 5m --session "long-task" "refactor the storage l
 		idleTimeoutDur, err := parseDurationFlexible(idleTimeout)
 		if err != nil {
 			return fmt.Errorf("--idle-timeout: %w", err)
+		}
+		supervisionIntervalDur, err := parseDurationFlexible(supervisionIntervalFlag)
+		if err != nil {
+			return fmt.Errorf("--supervision-interval: %w", err)
 		}
 		if idleTimeoutDur <= 0 {
 			// "0" (or the flag's own zero value) means "disable this
@@ -809,6 +817,8 @@ rush run --role smart --timeout 5m --session "long-task" "refactor the storage l
 			AllowBash:                allowBash,                // Fork patch: run allowlist
 			AllowTools:               allowTool,                // Fork patch: run allowlist
 			AllowPeakHours:           allowPeakHours,           // Fork patch: peak-hours bypass
+			NoSupervision:            noSupervision,            // Fork patch: supervision opt-out
+			SupervisionInterval:      supervisionIntervalDur,   // Fork patch: supervision interval override
 			Origin:                   message.OriginCLI,        // Fork patch: entry-channel origin
 		}
 		// The CLI calls the App's RunNonInteractive directly: the sdk
@@ -872,6 +882,8 @@ func init() {
 	// agent that adds this flag without an explicit human instruction is
 	// violating the operator's intent.
 	runCmd.Flags().Bool("allow-peak-hours", false, `Bypass the per-provider peak_hours refusal for this single invocation only. WARNING: this flag must NEVER be added by an orchestrating agent on its own initiative — only pass it when a human operator has explicitly asked, in this specific request, to override peak hours. An agent that adds this flag without an explicit human instruction is violating the operator's intent. There is no persistent config-level equivalent; the override is conscious and one-off by design.`)
+	runCmd.Flags().Bool("no-supervision", false, "Disable the periodic root-session supervision check-in for this run (default on, fires after 5m of chat silence while background jobs/delegations are still open; never fires with no open work or mid-turn).")
+	runCmd.Flags().String("supervision-interval", "", "Override the supervision check-in's initial/reset silence interval (e.g. 10m, 600 — plain number = seconds). Empty = config's supervision_interval_minutes or the built-in 5m default.")
 	runCmd.MarkFlagsMutuallyExclusive("session", "continue")
 	runCmd.MarkFlagsMutuallyExclusive("system-prompt", "system-prompt-file")
 	runCmd.MarkFlagsMutuallyExclusive("stream", "json")

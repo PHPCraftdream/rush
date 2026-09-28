@@ -15,19 +15,31 @@ import (
 	"github.com/PHPCraftdream/rush/internal/message"
 )
 
-// jobDeadlineHeap is a container/heap over jobs with a non-zero deadline,
-// ordered soonest-first.
-type jobDeadlineHeap []*asyncJob
+// timeoutEntry is one heap item: a deadline plus the action to run when it
+// elapses. Generalizes the heap beyond asyncJob (phase 2) so a later
+// consumer of the same single per-process timer -- supervision.go's
+// root-session check-in -- shares it instead of starting a second worker
+// goroutine (design doc §7's "one service, not a second timer"); arm keeps
+// wrapping this for the asyncJob case so every existing call site is
+// unchanged.
+type timeoutEntry struct {
+	deadline time.Time
+	fire     func()
+}
+
+// jobDeadlineHeap is a container/heap over armed deadlines, ordered
+// soonest-first.
+type jobDeadlineHeap []timeoutEntry
 
 func (h jobDeadlineHeap) Len() int           { return len(h) }
 func (h jobDeadlineHeap) Less(i, j int) bool { return h[i].deadline.Before(h[j].deadline) }
 func (h jobDeadlineHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
-func (h *jobDeadlineHeap) Push(x any)        { *h = append(*h, x.(*asyncJob)) }
+func (h *jobDeadlineHeap) Push(x any)        { *h = append(*h, x.(timeoutEntry)) }
 func (h *jobDeadlineHeap) Pop() any {
 	old := *h
 	n := len(old)
 	item := old[n-1]
-	old[n-1] = nil
+	old[n-1] = timeoutEntry{}
 	*h = old[:n-1]
 	return item
 }
@@ -64,8 +76,22 @@ func (s *timeoutService) arm(job *asyncJob) {
 	if s == nil || job == nil {
 		return
 	}
+	s.armFunc(job.deadline, func() { s.ledger.handleTimeout(job) })
+}
+
+// armFunc adds an arbitrary (deadline, fire) pair to the single per-process
+// heap -- arm above is the asyncJob-specific wrapper every existing call
+// site uses; supervision.go's root-session check-in is the second, more
+// general caller this generalization exists for (see timeoutEntry's doc).
+// Same locking contract as arm: s.mu is a DIFFERENT lock than l.mu, taken
+// and released here without ever calling into the ledger, so this cannot
+// nest under or deadlock against anything holding l.mu.
+func (s *timeoutService) armFunc(deadline time.Time, fire func()) {
+	if s == nil || fire == nil {
+		return
+	}
 	s.mu.Lock()
-	heap.Push(&s.heap, job)
+	heap.Push(&s.heap, timeoutEntry{deadline: deadline, fire: fire})
 	s.mu.Unlock()
 	select {
 	case s.wake <- struct{}{}:
@@ -112,9 +138,9 @@ func (s *timeoutService) fireDue() {
 			s.mu.Unlock()
 			return
 		}
-		job := heap.Pop(&s.heap).(*asyncJob)
+		entry := heap.Pop(&s.heap).(timeoutEntry)
 		s.mu.Unlock()
-		s.ledger.handleTimeout(job)
+		entry.fire()
 	}
 }
 

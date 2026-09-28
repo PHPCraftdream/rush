@@ -85,6 +85,10 @@ type asyncJob struct {
 	toolName     string // "bash"/"run_command"/"agent"/"agentic_fetch" -- AsyncCompletion.ToolName
 	childSession string // non-empty only for a delegation (agent/agentic_fetch); see Start
 	cli          bool   // origin, verbatim today's asyncJobState.cli -- delivery routing unchanged (see deliverLocked)
+	// startedAt is when Start registered this job. Used only by supervision's
+	// summary (supervision.go) to report how long each open job has run --
+	// no other reader needs it, so it is not threaded into AsyncCompletion.
+	startedAt time.Time
 
 	state     jobPhase
 	announced bool               // ack-gate: the "started" tool result is persisted (onToolResult)

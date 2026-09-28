@@ -119,6 +119,18 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 - **Messages can carry a `NoticeKind`** (e.g. `timeout_wake_only`,
   `timeout_terminated`, `wake_failed`, `job_stopped`) distinguishing the
   kind of system-generated notice, for future web rendering.
+- **The root session is now periodically supervised while it has open
+  background work.** After 5 minutes (configurable, `supervision_enabled`/
+  `supervision_interval_minutes` in config, `--no-supervision`/
+  `--supervision-interval` on `rush run`) of silence in the root's own chat
+  with a running command or sub-agent delegation still open and no turn in
+  progress, the root is woken with a summary of what is running, for how
+  long, and its last output line — ending with guidance to keep waiting,
+  inspect with `job_output`, or stop with `job_kill`. Never holds the run
+  open by itself: `rush run` still exits normally the instant its other
+  work drains. The check-in interval doubles on consecutive ticks with no
+  progress (capped at 60 minutes) and pauses after 6 such ticks until real
+  progress happens; older check-ins reach the model as a one-line marker.
 
 ### Changed
 
