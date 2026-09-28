@@ -1,0 +1,335 @@
+// Reaction debt (DUR-4, docs/plans/2026-09-28-async-phase4-durable-core.md
+// sec.3.4, step 4): the durable `reacted` marker, the debt predicate, the
+// settle-by-failure counters, the Stop-tree wake=0 pass, and the host-
+// liveness/running-work readers the CLI loop's scope predicate (sec.3.5)
+// needs. All of it wraps queries that already exist from step 0's schema
+// (async_jobs.sql/session_notices.sql) -- this file adds no new SQL, only
+// the Go orchestration around it.
+package session
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"time"
+
+	"github.com/PHPCraftdream/rush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/message"
+)
+
+// ReactionDebtExists is doc sec.3.4's one indexed EXISTS check across both
+// tables (async_jobs requires announced=1 too -- see the query's own doc).
+func (s *AsyncJobStore) ReactionDebtExists(ctx context.Context, owner string) (bool, error) {
+	has, err := s.q.AsyncReactionDebtExists(ctx, owner)
+	if err != nil {
+		return false, fmt.Errorf("async job store: reaction debt check: %w", err)
+	}
+	return has.Bool, nil
+}
+
+// HasRunningDelegationFor reports whether a RUNNING async_jobs row currently
+// claims childSessionID as its delegation target (doc sec.3.4's session-
+// policy table: "child session: a turn on debt only while its delegation
+// row is running").
+func (s *AsyncJobStore) HasRunningDelegationFor(ctx context.Context, childSessionID string) (bool, error) {
+	_, err := s.q.GetRunningAsyncJobByChildSession(ctx, sql.NullString{String: childSessionID, Valid: true})
+	if err == nil {
+		return true, nil
+	}
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	return false, fmt.Errorf("async job store: running delegation check: %w", err)
+}
+
+// MarkReactedWithMessageUpdate is doc sec.3.4's reaction marker: ONE
+// transaction that writes the turn step's final message (persistStepFinish's
+// job) AND marks reacted=1 on every wake=1/reacted=0/delivery='done' row of
+// owner, on BOTH tables. Pulls only ever move a row into delivery='done'
+// during PrepareStep/turn-start (before the step's own provider call), so
+// every row this statement can see was already visible in the model's
+// prompt by the time this step's content was produced -- no separate
+// "pulled before this step began" id set needs to be threaded through (see
+// the file doc for the argument in full).
+//
+// Callers MUST only invoke this for a step whose finish is real content
+// (text/tool-calls/reasoning) and not error/canceled/empty -- see
+// agent_turn_step.go's stepIsReaction gate.
+func (s *AsyncJobStore) MarkReactedWithMessageUpdate(ctx context.Context, messages message.Service, owner string, msg message.Message) error {
+	tx, err := s.sqlDB.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("async job store: mark reacted: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // no-op once committed
+
+	publish, err := messages.UpdateTx(ctx, tx, msg)
+	if err != nil {
+		return fmt.Errorf("async job store: mark reacted: message update: %w", err)
+	}
+	q := db.New(tx)
+	now := time.Now().Unix()
+	if _, err := q.MarkAsyncJobsReactedForOwner(ctx, db.MarkAsyncJobsReactedForOwnerParams{
+		UpdatedAt: now, OwnerSessionID: owner,
+	}); err != nil {
+		return fmt.Errorf("async job store: mark reacted: async_jobs: %w", err)
+	}
+	if _, err := q.MarkSessionNoticesReactedForOwner(ctx, db.MarkSessionNoticesReactedForOwnerParams{
+		UpdatedAt: now, Owner: owner,
+	}); err != nil {
+		return fmt.Errorf("async job store: mark reacted: session_notices: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("async job store: mark reacted: commit: %w", err)
+	}
+	if publish != nil {
+		publish()
+	}
+	return nil
+}
+
+// DebtSnapshot is the id set a Drain turn's failure handling (settle-by-
+// failure, doc sec.3.4) acts on: "captured at the START of the turn", never
+// re-evaluated against whatever is pending by the time a failure is
+// classified.
+type DebtSnapshot struct {
+	JobIDs    []string // async_jobs.tool_call_id
+	NoticeIDs []int64  // session_notices.id
+}
+
+// Empty reports whether the snapshot captured nothing (no debt existed at
+// capture time, or the store is unavailable).
+func (d DebtSnapshot) Empty() bool {
+	return len(d.JobIDs) == 0 && len(d.NoticeIDs) == 0
+}
+
+// CaptureDebtSnapshot reads owner's current debt row ids from both tables --
+// the id set a Drain turn's eventual failure handling must act on, captured
+// BEFORE the turn runs (doc: "the id set is captured at the start of the
+// turn", so a notice arriving mid-retry is never silently absorbed by a
+// later settle).
+// Doc sec.3.4: debt is wake=1/reacted=0/delivery IN (pending, done) --
+// deliberately NOT ListPendingAsyncJobNoticesForOwner/
+// ListPendingSessionNoticesForOwner (those scope to delivery='pending' only,
+// the driver's PULL candidates; the far more common debt shape is
+// delivery='done', already pulled into history, just not yet reacted to).
+// async_jobs also requires announced=1, matching AsyncReactionDebtExists'
+// own guard (DUR-7: an unannounced row can never produce a notice).
+func (s *AsyncJobStore) CaptureDebtSnapshot(ctx context.Context, owner string) (DebtSnapshot, error) {
+	jobs, err := s.q.ListAsyncJobsForOwner(ctx, owner)
+	if err != nil {
+		return DebtSnapshot{}, fmt.Errorf("async job store: capture debt: async_jobs: %w", err)
+	}
+	notices, err := s.q.ListSessionNoticesForOwner(ctx, owner)
+	if err != nil {
+		return DebtSnapshot{}, fmt.Errorf("async job store: capture debt: session_notices: %w", err)
+	}
+	var snap DebtSnapshot
+	for _, j := range jobs {
+		if j.Wake != 0 && j.Reacted == 0 && j.Delivery != "void" && j.Announced != 0 {
+			snap.JobIDs = append(snap.JobIDs, j.ToolCallID)
+		}
+	}
+	for _, n := range notices {
+		if n.Wake != 0 && n.Reacted == 0 && n.Delivery != "void" {
+			snap.NoticeIDs = append(snap.NoticeIDs, n.ID)
+		}
+	}
+	return snap, nil
+}
+
+// IncrementWakeAttempts bumps wake_attempts on exactly snap's captured rows
+// (doc sec.3.4's settle-by-failure step 1), guarded server-side to rows
+// still wake=1/reacted=0 so a row that settled in the meantime (a real turn,
+// or an earlier settle) is left alone.
+func (s *AsyncJobStore) IncrementWakeAttempts(ctx context.Context, owner string, snap DebtSnapshot) error {
+	if snap.Empty() {
+		return nil
+	}
+	now := time.Now().Unix()
+	if len(snap.JobIDs) > 0 {
+		if _, err := s.q.IncrementAsyncJobWakeAttempts(ctx, db.IncrementAsyncJobWakeAttemptsParams{
+			UpdatedAt: now, OwnerSessionID: owner, ToolCallIds: snap.JobIDs,
+		}); err != nil {
+			return fmt.Errorf("async job store: increment wake attempts: async_jobs: %w", err)
+		}
+	}
+	if len(snap.NoticeIDs) > 0 {
+		if _, err := s.q.IncrementSessionNoticeWakeAttempts(ctx, db.IncrementSessionNoticeWakeAttemptsParams{
+			UpdatedAt: now, Ids: snap.NoticeIDs,
+		}); err != nil {
+			return fmt.Errorf("async job store: increment wake attempts: session_notices: %w", err)
+		}
+	}
+	return nil
+}
+
+// MaxWakeAttempts reads the highest wake_attempts currently on snap's rows
+// that are STILL debt (wake=1/reacted=0) -- rows that settled independently
+// in the meantime (a real turn reacted, or an earlier pass already settled
+// them) are excluded, matching doc sec.3.4's "only for rows that were done
+// at the moment [the failed turn] started" scoping. Returns 0 if none of
+// snap's rows are still debt (nothing left to settle).
+func (s *AsyncJobStore) MaxWakeAttempts(ctx context.Context, owner string, snap DebtSnapshot) (int, error) {
+	max := 0
+	for _, id := range snap.JobIDs {
+		row, err := s.q.GetAsyncJob(ctx, db.GetAsyncJobParams{OwnerSessionID: owner, ToolCallID: id})
+		if err == sql.ErrNoRows {
+			continue
+		}
+		if err != nil {
+			return 0, fmt.Errorf("async job store: max wake attempts: async_jobs: %w", err)
+		}
+		if row.Wake == 0 || row.Reacted != 0 {
+			continue
+		}
+		if int(row.WakeAttempts) > max {
+			max = int(row.WakeAttempts)
+		}
+	}
+	for _, id := range snap.NoticeIDs {
+		row, err := s.q.GetSessionNotice(ctx, id)
+		if err == sql.ErrNoRows {
+			continue
+		}
+		if err != nil {
+			return 0, fmt.Errorf("async job store: max wake attempts: session_notices: %w", err)
+		}
+		if row.Wake == 0 || row.Reacted != 0 {
+			continue
+		}
+		if int(row.WakeAttempts) > max {
+			max = int(row.WakeAttempts)
+		}
+	}
+	return max, nil
+}
+
+// SettleReactedFailed closes debt by failure (doc sec.3.4) on exactly snap's
+// captured rows: reacted=1 AND reacted_failed=1, scoped server-side to
+// wake=1/reacted=0 so nothing outside the captured set is ever touched.
+func (s *AsyncJobStore) SettleReactedFailed(ctx context.Context, owner string, snap DebtSnapshot) error {
+	if snap.Empty() {
+		return nil
+	}
+	now := time.Now().Unix()
+	if len(snap.JobIDs) > 0 {
+		if _, err := s.q.SettleAsyncJobsReactedFailed(ctx, db.SettleAsyncJobsReactedFailedParams{
+			UpdatedAt: now, OwnerSessionID: owner, ToolCallIds: snap.JobIDs,
+		}); err != nil {
+			return fmt.Errorf("async job store: settle reacted failed: async_jobs: %w", err)
+		}
+	}
+	if len(snap.NoticeIDs) > 0 {
+		if _, err := s.q.SettleSessionNoticesReactedFailed(ctx, db.SettleSessionNoticesReactedFailedParams{
+			UpdatedAt: now, Ids: snap.NoticeIDs,
+		}); err != nil {
+			return fmt.Errorf("async job store: settle reacted failed: session_notices: %w", err)
+		}
+	}
+	return nil
+}
+
+// ReactedFailedText is one settle-by-failure-closed row's text, for the
+// parent-notification path (doc sec.3.4: "a child session with a failure-
+// closed debt ... hands the parent the text of the unreacted notices").
+type ReactedFailedText struct {
+	ToolCallID string // "" for a session_notices-origin row
+	Text       string
+}
+
+// ListReactedFailedText returns the text of every row settle-by-failure
+// closed for owner (async_jobs.result_summary / session_notices.text),
+// oldest first within each table.
+func (s *AsyncJobStore) ListReactedFailedText(ctx context.Context, owner string) ([]ReactedFailedText, error) {
+	jobs, err := s.q.ListReactedFailedAsyncJobsForOwner(ctx, owner)
+	if err != nil {
+		return nil, fmt.Errorf("async job store: list reacted-failed: async_jobs: %w", err)
+	}
+	notices, err := s.q.ListReactedFailedSessionNoticesForOwner(ctx, owner)
+	if err != nil {
+		return nil, fmt.Errorf("async job store: list reacted-failed: session_notices: %w", err)
+	}
+	out := make([]ReactedFailedText, 0, len(jobs)+len(notices))
+	for _, j := range jobs {
+		out = append(out, ReactedFailedText{ToolCallID: j.ToolCallID, Text: j.ResultSummary.String})
+	}
+	for _, n := range notices {
+		out = append(out, ReactedFailedText{Text: n.Text})
+	}
+	return out, nil
+}
+
+// SetWakeZeroForOwners is Stop-tree transitivity's wake=0 pass (doc
+// sec.3.4/3.8, DUR-9): every pending/done row of owners loses its wake bit
+// in the same pass, closing the race between a natural completion and Stop.
+// Scoped separately per table (no combined transaction required -- neither
+// side depends on the other's commit for correctness, and a partial
+// failure just leaves that table's rows to a later retry of the same
+// idempotent pass).
+func (s *AsyncJobStore) SetWakeZeroForOwners(ctx context.Context, owners []string) error {
+	if len(owners) == 0 {
+		return nil
+	}
+	now := time.Now().Unix()
+	if _, err := s.q.SetAsyncJobsWakeZeroPendingForOwners(ctx, db.SetAsyncJobsWakeZeroPendingForOwnersParams{
+		UpdatedAt: now, OwnerIds: owners,
+	}); err != nil {
+		return fmt.Errorf("async job store: set wake zero: async_jobs: %w", err)
+	}
+	if _, err := s.q.SetSessionNoticesWakeZeroPendingForOwners(ctx, db.SetSessionNoticesWakeZeroPendingForOwnersParams{
+		UpdatedAt: now, OwnerIds: owners,
+	}); err != nil {
+		return fmt.Errorf("async job store: set wake zero: session_notices: %w", err)
+	}
+	return nil
+}
+
+// RunningJobRow is a minimal snapshot of a running async_jobs row for scope
+// evaluation (doc sec.3.5): just enough to probe the owning host's liveness.
+type RunningJobRow struct {
+	Owner      string
+	ToolCallID string
+	HostID     string
+}
+
+// ListRunningForOwners lists every currently-running async_jobs row for
+// owners (doc sec.3.5's scope predicate: "a running task row on a LIVE
+// host"; liveness itself is decided by HostNotDead, not by this query).
+func (s *AsyncJobStore) ListRunningForOwners(ctx context.Context, owners []string) ([]RunningJobRow, error) {
+	if len(owners) == 0 {
+		return nil, nil
+	}
+	rows, err := s.q.ListRunningAsyncJobsForOwners(ctx, owners)
+	if err != nil {
+		return nil, fmt.Errorf("async job store: list running for owners: %w", err)
+	}
+	out := make([]RunningJobRow, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, RunningJobRow{Owner: r.OwnerSessionID, ToolCallID: r.ToolCallID, HostID: r.HostID})
+	}
+	return out, nil
+}
+
+// HostNotDead reports whether hostID is not PROVABLY dead (doc sec.3.5/3.6:
+// "treat unknown as not-dead"; the actual recovery of a dead host's rows is
+// step 5, deferred -- this is read-only liveness classification). Never
+// probes this store's own host id (ProbeHost's guard). A probe that WINS the
+// lock (status dead, lock non-nil) releases it immediately without deleting
+// the file -- this function only answers a liveness question, it never
+// performs recovery.
+func (s *AsyncJobStore) HostNotDead(hostID string) bool {
+	if hostID == "" {
+		return false
+	}
+	if hostID == s.HostID() {
+		return true
+	}
+	status, lock, err := ProbeHost(s.dataDir, hostID)
+	if lock != nil {
+		_ = lock.Release()
+	}
+	if err != nil {
+		return true // unknown -> not dead (doc sec.3.6)
+	}
+	return status != HostStatusDead
+}
