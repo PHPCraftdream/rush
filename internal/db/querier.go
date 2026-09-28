@@ -664,6 +664,14 @@ type Querier interface {
 	// parallel path): a row already voided by Rerun truncation must not be
 	// resurrected to 'pending' by a late-arriving terminal transition (e.g.
 	// job_kill racing the history truncation).
+	//
+	// delivery is now a PARAMETER, not the hardcoded 'pending' literal (step 3):
+	// every cause except job_kill still passes 'pending' (a real drain
+	// candidate), but job_kill passes 'done' directly -- its outcome is already
+	// the job_kill TOOL CALL's own synchronous response (doc sec.3.2: "for
+	// job_kill the outcome is the tool's own response, the row goes straight
+	// to done"), so the row must never ALSO surface as a second, duplicate
+	// history notice via the pull path.
 	TransitionAsyncJobTerminalPreserveVoid(ctx context.Context, arg TransitionAsyncJobTerminalPreserveVoidParams) (AsyncJob, error)
 	// task #595: was :exec (rows-affected discarded). The terminal write path in
 	// message.Service.Update used to hardcode rowsAffected = 1 for this branch,
@@ -729,7 +737,13 @@ type Querier interface {
 	// A pulled notice whose "task still running" condition failed (doc sec.3.4:
 	// supervision notice is debt only while the scope still has a running row;
 	// wake_only timeout notice voids if the task is no longer running) becomes
-	// void instead of done.
+	// void instead of done. Called from WITHIN the same transaction as
+	// PullPendingSessionNotice's own pending->done CAS (session package's
+	// pullOneSessionNotice), which has ALREADY won the race for this row and
+	// moved it to delivery='done' inside this uncommitted transaction -- so the
+	// guard here is delivery='done', not 'pending' (a 'pending'-scoped WHERE
+	// would never match here and silently fail to downgrade 'done' to 'void',
+	// leaving a suppressed notice mis-recorded as delivered).
 	VoidPendingSessionNotice(ctx context.Context, arg VoidPendingSessionNoticeParams) (int64, error)
 	// Task #340's original claim/mark-done/mark-failed/release-for-retry model
 	// (ClaimOrphanOutboxEntry, MarkOrphanOutboxEntryDone, MarkOrphanOutboxEntryFailed,

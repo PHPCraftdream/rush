@@ -222,6 +222,7 @@ func TestAsyncReactionDebtExists(t *testing.T) {
 	_, err = q.TransitionAsyncJobTerminalPreserveVoid(ctx, TransitionAsyncJobTerminalPreserveVoidParams{
 		State: "completed", NoticeKind: "", ResultSummary: sql.NullString{String: "ok", Valid: true},
 		ResultIsError: sql.NullInt64{Int64: 0, Valid: true}, Wake: 1, UpdatedAt: 1700000001,
+		Delivery:       "pending",
 		OwnerSessionID: "sess-1", ToolCallID: "call-1",
 	})
 	require.NoError(t, err)
@@ -286,6 +287,7 @@ func TestAsyncReactionDebtExists_RequiresAnnounced(t *testing.T) {
 	_, err = q.TransitionAsyncJobTerminalPreserveVoid(ctx, TransitionAsyncJobTerminalPreserveVoidParams{
 		State: "completed", NoticeKind: "", ResultSummary: sql.NullString{String: "ok", Valid: true},
 		ResultIsError: sql.NullInt64{Int64: 0, Valid: true}, Wake: 1, UpdatedAt: 1700000001,
+		Delivery:       "pending",
 		OwnerSessionID: "sess-1", ToolCallID: "call-1",
 	})
 	require.NoError(t, err)

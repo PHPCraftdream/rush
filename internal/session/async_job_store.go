@@ -76,6 +76,17 @@ type ClaimParams struct {
 	OriginCLI      bool
 	Deadline       *time.Time
 	TimeoutKind    string // "wake_only"|"terminate_and_wake"; ignored if Deadline is nil
+	// ToolName is the exact tool name ("bash"/"run_command"/"agent"/
+	// "agentic_fetch"), finer-grained than Kind's three-way bucket. Stored so
+	// the driver's pull (doc sec.3.3, step 3) can render the same notice text
+	// FormatAsyncCompletion produces today without a second formatter or a
+	// second source of truth for the tool name.
+	ToolName string
+	// TimeoutSeconds is the originally-requested timeout duration in
+	// seconds (0 if Deadline is nil), quoted verbatim in the eventual
+	// timeout notice text -- see ToolName's doc for why this is stored
+	// rather than recomputed at pull time.
+	TimeoutSeconds int
 }
 
 // ClaimResult is Claim's output.
@@ -106,6 +117,14 @@ type TransitionParams struct {
 	ResultSummary string
 	ResultIsError bool
 	Wake          bool
+	// Delivery is the outbox state this transition sets (preserving 'void'
+	// per the CAS's own CASE, doc sec.3.8): "pending" for every ordinary
+	// cause (a real drain candidate) or "done" for job_kill, whose outcome
+	// is already the job_kill tool call's own synchronous response and must
+	// never ALSO surface as a second, duplicate history notice via the pull
+	// path (doc sec.3.2). Callers that pass "" get "pending" (the pre-step-3
+	// default), so every existing caller keeps its old behavior unchanged.
+	Delivery string
 }
 
 // TransitionResult is Transition's output.
@@ -217,6 +236,8 @@ func (s *AsyncJobStore) Claim(ctx context.Context, p ClaimParams) (ClaimResult, 
 		OwnerSessionID: p.Owner,
 		ToolCallID:     p.ToolCallID,
 		Kind:           string(p.Kind),
+		ToolName:       p.ToolName,
+		TimeoutSeconds: int64(p.TimeoutSeconds),
 		InputHash:      inputHash,
 		HostID:         hostID,
 		CreatedAt:      now,
@@ -265,8 +286,13 @@ func (s *AsyncJobStore) Transition(ctx context.Context, p TransitionParams) (Tra
 	if p.ResultIsError {
 		resultIsError = 1
 	}
+	delivery := p.Delivery
+	if delivery == "" {
+		delivery = "pending"
+	}
 	row, err := q.TransitionAsyncJobTerminalPreserveVoid(ctx, db.TransitionAsyncJobTerminalPreserveVoidParams{
 		State:          p.State,
+		Delivery:       delivery,
 		NoticeKind:     p.NoticeKind,
 		ResultSummary:  sql.NullString{String: p.ResultSummary, Valid: true},
 		ResultIsError:  sql.NullInt64{Int64: resultIsError, Valid: true},

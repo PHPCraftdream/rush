@@ -55,11 +55,11 @@ WHERE id NOT IN (SELECT DISTINCT host_id FROM async_jobs);
 -- so there is nothing blocking writing it at claim time. Callers pass NULL
 -- for plain (kind='command') jobs.
 INSERT INTO async_jobs (
-    owner_session_id, tool_call_id, kind, input_hash, child_session_id,
+    owner_session_id, tool_call_id, kind, tool_name, timeout_seconds, input_hash, child_session_id,
     origin_cli, state, host_id, announced, delivery, wake, reacted,
     deadline_at, timeout_kind, created_at, updated_at
 ) VALUES (
-    ?, ?, ?, ?, ?, ?, 'running', ?, 0, 'none', 0, 0, ?, ?, ?, ?
+    ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, 0, 'none', 0, 0, ?, ?, ?, ?
 )
 ON CONFLICT (owner_session_id, tool_call_id) DO NOTHING
 RETURNING *;
@@ -102,9 +102,17 @@ DELETE FROM async_jobs WHERE owner_session_id = ? AND tool_call_id = ? AND annou
 -- parallel path): a row already voided by Rerun truncation must not be
 -- resurrected to 'pending' by a late-arriving terminal transition (e.g.
 -- job_kill racing the history truncation).
+--
+-- delivery is now a PARAMETER, not the hardcoded 'pending' literal (step 3):
+-- every cause except job_kill still passes 'pending' (a real drain
+-- candidate), but job_kill passes 'done' directly -- its outcome is already
+-- the job_kill TOOL CALL's own synchronous response (doc sec.3.2: "for
+-- job_kill the outcome is the tool's own response, the row goes straight
+-- to done"), so the row must never ALSO surface as a second, duplicate
+-- history notice via the pull path.
 UPDATE async_jobs
 SET state = ?, notice_kind = ?, result_summary = ?, result_is_error = ?,
-    delivery = CASE delivery WHEN 'void' THEN 'void' ELSE 'pending' END,
+    delivery = CASE delivery WHEN 'void' THEN 'void' ELSE ? END,
     wake = ?, updated_at = ?
 WHERE owner_session_id = ? AND tool_call_id = ? AND state = 'running'
 RETURNING *;

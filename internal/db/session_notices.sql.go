@@ -414,7 +414,7 @@ func (q *Queries) SettleSessionNoticesReactedFailed(ctx context.Context, arg Set
 
 const voidPendingSessionNotice = `-- name: VoidPendingSessionNotice :execrows
 UPDATE session_notices SET delivery = 'void', updated_at = ?
-WHERE id = ? AND delivery = 'pending'
+WHERE id = ? AND delivery = 'done'
 `
 
 type VoidPendingSessionNoticeParams struct {
@@ -425,7 +425,13 @@ type VoidPendingSessionNoticeParams struct {
 // A pulled notice whose "task still running" condition failed (doc sec.3.4:
 // supervision notice is debt only while the scope still has a running row;
 // wake_only timeout notice voids if the task is no longer running) becomes
-// void instead of done.
+// void instead of done. Called from WITHIN the same transaction as
+// PullPendingSessionNotice's own pending->done CAS (session package's
+// pullOneSessionNotice), which has ALREADY won the race for this row and
+// moved it to delivery='done' inside this uncommitted transaction -- so the
+// guard here is delivery='done', not 'pending' (a 'pending'-scoped WHERE
+// would never match here and silently fail to downgrade 'done' to 'void',
+// leaving a suppressed notice mis-recorded as delivered).
 func (q *Queries) VoidPendingSessionNotice(ctx context.Context, arg VoidPendingSessionNoticeParams) (int64, error) {
 	result, err := q.exec(ctx, q.voidPendingSessionNoticeStmt, voidPendingSessionNotice, arg.UpdatedAt, arg.ID)
 	if err != nil {

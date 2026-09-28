@@ -36,6 +36,16 @@ CREATE TABLE IF NOT EXISTS async_jobs (
     owner_session_id TEXT NOT NULL REFERENCES sessions (id) ON DELETE CASCADE,
     tool_call_id     TEXT NOT NULL,
     kind             TEXT NOT NULL CHECK (kind IN ('command', 'agent', 'fetch')),
+    -- tool_name/timeout_seconds (step 3, docs/plans/2026-09-28-async-phase4-
+    -- durable-core.md sec.5 step 3): the exact tool name ("bash"/
+    -- "run_command"/"agent"/"agentic_fetch", finer-grained than `kind`'s
+    -- three-way bucket) and the originally-requested timeout duration,
+    -- filled once at Claim and never updated -- so the driver's pull
+    -- (sec.3.3) can render the SAME notice text FormatAsyncCompletion
+    -- already produces without adding a second formatter or re-deriving
+    -- ToolName/TimeoutSeconds from anywhere else at pull time.
+    tool_name        TEXT NOT NULL DEFAULT '',
+    timeout_seconds  INTEGER NOT NULL DEFAULT 0,
     input_hash       TEXT NOT NULL, -- reusing an id with a DIFFERENT input is a distinct call, not an idempotent retry
     child_session_id TEXT,          -- set at claim for delegations (kind IN ('agent','fetch')); NULL for plain jobs
     origin_cli       INTEGER NOT NULL DEFAULT 0, -- recovery routing (CLI-owned vs web-owned)
@@ -110,8 +120,16 @@ CREATE INDEX IF NOT EXISTS idx_async_jobs_retention
 CREATE TABLE IF NOT EXISTS session_notices (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     owner             TEXT NOT NULL REFERENCES sessions (id) ON DELETE CASCADE,
-    kind              TEXT NOT NULL, -- e.g. 'supervision', 'wake_failed', 'bg_shell_done', 'wake_only_timeout'
+    kind              TEXT NOT NULL, -- 'supervision', 'wake_failed', 'bg_shell_done', 'timeout_wake_only' (session.NoticeKind*)
     text              TEXT NOT NULL,
+    -- No origin column: every session_notices call site (supervision,
+    -- wake_failed, SDK background-shell completion, wake_only timeout)
+    -- already built its notice via a plain context.Background()/
+    -- WithTimeout ctx with no WithCallOrigin stamp before step 3, so the
+    -- resulting message.Origin was always OriginUnspecified ("") -- adding
+    -- a column to carry a value nothing ever produces would be unused
+    -- schema. Job-row notices keep origin_cli on async_jobs (async_jobs.sql),
+    -- unaffected by this.
     wake              INTEGER NOT NULL DEFAULT 0,
     delivery          TEXT NOT NULL DEFAULT 'pending' CHECK (delivery IN ('none', 'pending', 'done', 'void')),
     notice_message_id TEXT,

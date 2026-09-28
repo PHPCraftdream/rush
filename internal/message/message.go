@@ -57,6 +57,20 @@ type Service interface {
 	pubsub.Subscriber[Message]
 	pubsub.Shutdowner
 	Create(ctx context.Context, sessionID string, params CreateMessageParams) (Message, error)
+	// CreateTx is Create's transaction-aware counterpart (phase-4 step 3,
+	// docs/plans/2026-09-28-async-phase4-durable-core.md sec.3.3): the INSERT
+	// runs on tx instead of this service's own connection, so a caller that
+	// also needs to UPDATE another table (async_jobs/session_notices'
+	// delivery outbox) in the SAME transaction can do so atomically -- "one
+	// transaction per notice: UPDATE ... RETURNING -> INSERT the history
+	// message -> id in the row". Deliberately does NOT publish CreatedEvent
+	// (tx may still roll back) -- the caller commits tx first, then calls
+	// PublishCreated with the returned Message.
+	CreateTx(ctx context.Context, tx *sql.Tx, sessionID string, params CreateMessageParams) (Message, error)
+	// PublishCreated publishes msg's CreatedEvent exactly as Create does,
+	// for a caller that created the row itself via CreateTx after its own
+	// transaction committed (see CreateTx's doc).
+	PublishCreated(msg Message)
 	Update(ctx context.Context, message Message) error
 	// Notify publishes a message update to the UI without writing to the database.
 	// Use this for high-frequency streaming updates where DB durability is not
@@ -360,6 +374,44 @@ func (s *service) ForceDelete(ctx context.Context, id string) error {
 }
 
 func (s *service) Create(ctx context.Context, sessionID string, params CreateMessageParams) (Message, error) {
+	message, err := s.createWith(ctx, s.q, sessionID, params)
+	if err != nil {
+		return Message{}, err
+	}
+	// Clone the message before publishing to avoid race conditions with
+	// concurrent modifications to the Parts slice.
+	//
+	// Create is deliberately left on best-effort Publish: a brand-new
+	// message is (outside of Hidden/summary rows) about to be updated
+	// repeatedly as the assistant streams, via Notify/Update below,
+	// which already use must-deliver where it matters. If this
+	// CreatedEvent is dropped under contention, the next Update quickly
+	// re-establishes the message for subscribers; there's no terminal
+	// state here worth blocking the caller for.
+	s.Publish(pubsub.CreatedEvent, message.Clone())
+	return message, nil
+}
+
+// CreateTx is Create's transaction-aware counterpart -- see the Service
+// interface doc comment for the full contract. It shares createWith with
+// Create, differing only in which db.Querier the INSERT runs against and in
+// NOT publishing (the caller commits tx first, then calls PublishCreated).
+func (s *service) CreateTx(ctx context.Context, tx *sql.Tx, sessionID string, params CreateMessageParams) (Message, error) {
+	return s.createWith(ctx, db.New(tx), sessionID, params)
+}
+
+// PublishCreated publishes msg's CreatedEvent -- see the Service interface
+// doc comment on CreateTx for why this is a separate call.
+func (s *service) PublishCreated(msg Message) {
+	s.Publish(pubsub.CreatedEvent, msg.Clone())
+}
+
+// createWith is Create/CreateTx's shared body, parameterized on the
+// db.Querier the INSERT runs against (the service's own connection, or a
+// caller-owned *sql.Tx via db.New(tx)) so a phase-4 notice pull can insert
+// the history message in the SAME transaction as its delivery-outbox UPDATE
+// (docs/plans/2026-09-28-async-phase4-durable-core.md sec.3.3).
+func (s *service) createWith(ctx context.Context, q db.Querier, sessionID string, params CreateMessageParams) (Message, error) {
 	if params.Role != Assistant {
 		params.Parts = append(params.Parts, Finish{
 			Reason: "stop",
@@ -385,7 +437,7 @@ func (s *service) Create(ctx context.Context, sessionID string, params CreateMes
 	if params.BackgroundJobNotice {
 		backgroundJobNotice = 1
 	}
-	dbMessage, err := s.q.CreateMessage(ctx, db.CreateMessageParams{
+	dbMessage, err := q.CreateMessage(ctx, db.CreateMessageParams{
 		ID:                  uuid.New().String(),
 		SessionID:           sessionID,
 		Role:                string(params.Role),
@@ -403,22 +455,7 @@ func (s *service) Create(ctx context.Context, sessionID string, params CreateMes
 	if err != nil {
 		return Message{}, err
 	}
-	message, err := s.fromDBItem(dbMessage)
-	if err != nil {
-		return Message{}, err
-	}
-	// Clone the message before publishing to avoid race conditions with
-	// concurrent modifications to the Parts slice.
-	//
-	// Create is deliberately left on best-effort Publish: a brand-new
-	// message is (outside of Hidden/summary rows) about to be updated
-	// repeatedly as the assistant streams, via Notify/Update below,
-	// which already use must-deliver where it matters. If this
-	// CreatedEvent is dropped under contention, the next Update quickly
-	// re-establishes the message for subscribers; there's no terminal
-	// state here worth blocking the caller for.
-	s.Publish(pubsub.CreatedEvent, message.Clone())
-	return message, nil
+	return s.fromDBItem(dbMessage)
 }
 
 // DeleteSessionMessages deletes all messages for a session in a single DB

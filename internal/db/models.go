@@ -19,6 +19,8 @@ type AsyncJob struct {
 	OwnerSessionID  string         `json:"owner_session_id"`
 	ToolCallID      string         `json:"tool_call_id"`
 	Kind            string         `json:"kind"`
+	ToolName        string         `json:"tool_name"`
+	TimeoutSeconds  int64          `json:"timeout_seconds"`
 	InputHash       string         `json:"input_hash"`
 	ChildSessionID  sql.NullString `json:"child_session_id"`
 	OriginCli       int64          `json:"origin_cli"`
