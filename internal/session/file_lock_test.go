@@ -64,6 +64,40 @@ func TestErrLockContendedMessageChangeDoesNotBreakClassification(t *testing.T) {
 		"classification must survive an arbitrary error message as long as the type is *ErrLockContended")
 }
 
+// TestTryAcquireFileLockDoesNotWrapNonContentionErrorAsContended is a
+// regression test for the classification fix in TryAcquireFileLock (doc
+// docs/plans/2026-09-28-async-phase4-durable-core.md sec.3.6, host-lock
+// module prerequisite): before the fix, EVERY tryLockFile failure -- not
+// just genuine contention (EWOULDBLOCK/ERROR_LOCK_VIOLATION) -- was
+// blanket-wrapped in *ErrLockContended, so a real, non-retryable failure
+// (permission denied, a filesystem without lock support, a bad fd) was
+// indistinguishable from ordinary contention and would be retried by
+// AcquireFileLockContext all the way to the caller's timeout instead of
+// surfacing immediately.
+//
+// Reproduces a genuine non-contention flock/LockFileEx failure (EBADF /
+// ERROR_INVALID_HANDLE from locking an already-closed fd) deterministically
+// cross-platform via classifyAndLock, the internal helper TryAcquireFileLock
+// itself calls -- exercising the real production code path, not a
+// reimplementation of it.
+func TestTryAcquireFileLockDoesNotWrapNonContentionErrorAsContended(t *testing.T) {
+	dir := t.TempDir()
+	lockPath := filepath.Join(dir, "test.lock")
+
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
+	require.NoError(t, err)
+	require.NoError(t, f.Close()) // fd now invalid: flock/LockFileEx on it must fail with EBADF / ERROR_INVALID_HANDLE, not contention
+
+	_, err = classifyAndLock(f, lockPath)
+	require.Error(t, err)
+
+	var contended *ErrLockContended
+	assert.False(t, errors.As(err, &contended),
+		"a non-contention lock failure (bad fd) must NOT be classified as *ErrLockContended, got: %v", err)
+	assert.False(t, isContentionError(err),
+		"isContentionError must not treat a genuine non-contention failure as retryable")
+}
+
 // errAs wraps err in a differently-worded error using the standard %w verb,
 // simulating a future TryAcquireFileLock whose message text no longer
 // contains any particular substring.
