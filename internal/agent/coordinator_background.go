@@ -40,6 +40,10 @@ func FormatAsyncCompletion(completion AsyncCompletion) string {
 		return fmt.Sprintf("Async job %s (%s) timed out after %ds and was stopped. Partial output:\n\n%s",
 			completion.ToolCallID, completion.ToolName, completion.TimeoutSeconds, content)
 	}
+	if completion.Stopped {
+		return fmt.Sprintf("Async job %s (%s) was stopped (job_kill). Partial output before the stop:\n\n%s",
+			completion.ToolCallID, completion.ToolName, content)
+	}
 	status := "finished"
 	if completion.IsError {
 		status = "failed"
@@ -63,8 +67,11 @@ func (c *coordinator) notifyAsyncCompletion(completion AsyncCompletion) {
 	ctx = WithCallOrigin(ctx, origin)
 
 	noticeKind := ""
-	if completion.TimedOut {
+	switch {
+	case completion.TimedOut:
 		noticeKind = "timeout_terminated"
+	case completion.Stopped:
+		noticeKind = "job_stopped"
 	}
 	id := jobIdentity{owner: completion.SessionID, toolCallID: completion.ToolCallID}
 	text := FormatAsyncCompletion(completion)

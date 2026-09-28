@@ -412,6 +412,19 @@ async-обёртка вообще существует) модель узнаё�
 явно документировать, что `job_output` для `run_command`-задач возвращает
 только «running, no partial output available» до завершения).
 
+**Решено в стадии 2 (2026-09-28, задача #1023):** заведён `tools.
+LiveOutputBuffer` — конкурентно-безопасный, ограниченный по размеру (1 МиБ,
+`runCommandLiveBufferMax`) буфер, который `run_command.go` использует как
+`cmd.Stdout`/`cmd.Stderr` вместо простого `bytes.Buffer`, и регистрирует в
+реестре сразу после `cmd.Start()` через контекстный колбэк
+(`tools.WithLiveOutputSink`/`LiveOutputSinkFromContext`, `async_tool.go`'s
+`t.run` подключает его к `workLedger.setRunCommandBuffer` для CLI/web-задач).
+`job_output` читает его через `workLedger.RunCommandOutput`, `job_kill` —
+через `StopRunCommandJob` (останавливает через `job.cancel()`, что запускает
+`cmd.Cancel`-хук `configureRunCommandProcess`, см. §2.2 ниже про tree-kill).
+Тот же буфер отдаёт частичный вывод для `capturePartial` (таймауты, §3) —
+раньше деградировавший до плейсхолдера для `run_command`.
+
 ### 2.2 `job_kill` — различить «остановлено» от «упало само»
 
 Подтверждено чтением (§0): сегодня `job_kill` работает напрямую с
@@ -430,6 +443,26 @@ async-обёртка вообще существует) модель узнаё�
 процесс (exit-код прерванного процесса недостоверен и не несёт полезной
 информации). Событие для владельца — см. §5, «Ручная остановка».
 
+**Решено в стадии 2 (2026-09-28, задача #1023):** реализовано ровно так, как
+описано выше, плюс `run_command` (у которого нет `BackgroundShellManager`):
+`job_kill` для `run_command`-задачи вызывает `workLedger.StopRunCommandJob`
+(помечает `stopRequested`, вызывает `job.cancel()`), что запускает НОВЫЙ
+`cmd.Cancel`-хук `configureRunCommandProcess` — на Unix `Setpgid`+`killpg`
+(тот же приём, что уже использует `internal/agent/tools/mcp`'s
+`configureStdioProcess`), на Windows `session.KillProcess`
+(`taskkill /F /T`) — так что убивается ВЕСЬ процесс-поддерево, а не только
+прямой процесс (без этого grandchild-процесс держал бы открытым pipe
+stdout/stderr и `cmd.Wait()` не возвращался бы вовсе, см. тест
+`TestRunCommand_CtxCancelTreeKillsGrandchild`). `finish()` теперь везде
+проверяет `job.stopRequested` (единый писатель `state`, не новый гонщик за
+CAS — см. `docs/async-invariants.md`'s ASYNC-03) и подставляет частичный
+вывод из `tools.LiveOutputBuffer` (§2.1) для `run_command`, либо
+`result.content` как есть для `bash` (уже содержит `backgroundJobSummary`
+убитого процесса). Текст события — RAW partial, отформатирован ТОЛЬКО в
+`FormatAsyncCompletion` (новая ветка `completion.Stopped`, отдельная от
+`TimedOut`), чтобы не задваивать обёртку «finished»/«failed» вокруг уже
+готового текста.
+
 ```json
 // input
 { "job_id": "call_abc123" }
@@ -445,6 +478,18 @@ async-обёртка вообще существует) модель узнаё�
 `job_kill` отказывает: `"job call_abc123 is a sub-agent delegation, not a command — use stop_agent instead"`
 (не молча падает на отсутствии `shellID` — делегации никогда его не имеют,
 это осмысленная, не случайная граница между инструментами).
+
+**Примечание к реализации стадии 2 (2026-09-28, задача #1023):** текст выше
+из этого RFC ссылается на `stop_agent`, которого ещё не существует
+(появляется только в стадии 3, задача #1024). Реализация стадии 2 (см. §9)
+использует другой текст: `"job %s is a sub-agent delegation (child session
+%s), not a command -- it cannot be stopped or inspected with
+job_kill/job_output; its result will arrive as a session message when the
+sub-agent finishes"` (`tools.DelegationJobError`) — не отправляет модель на
+несуществующий инструмент. Когда стадия 3 введёт `stop_agent`/
+`inspect_agent`, этот текст ОБЯЗАН смениться на текст, указанный в этом
+разделе (с точным указанием инструмента), а `DelegationJobError`'s
+формулировку — обновить в том же коммите, что вводит `stop_agent`.
 
 ## 3. Явный per-call таймаут: `bash`, `run_command`, `agent`
 
@@ -889,7 +934,7 @@ supervision-тик), но НЕ для `wake_only`-уведомления (оно
 
 | Раздел контракта | Design-фаза (`2026-09-27-async-structured-concurrency.md`) | Этап плана (`2026-09-24-...`) | Готово в коде сегодня? |
 |---|---|---|---|
-| §2 (job_id/`job_output`/`job_kill` унификация, различимый `cancelled`) | Фаза 2 (единая доставка) — новые поля `asyncJob.shellID`/причина остановки естественно ложатся туда же, куда `deadline`/`timeoutKind` | Этап 2 «Единый контроль async-командами» | Нет |
+| §2 (job_id/`job_output`/`job_kill` унификация, различимый `cancelled`) | Фаза 2 (единая доставка) — новые поля `asyncJob.shellID`/причина остановки естественно ложатся туда же, куда `deadline`/`timeoutKind` | Этап 2 «Единый контроль async-командами» | **Да** (2026-09-28, стадия 2 плана, задача #1023) — `job_kill` помечает запись `stopRequested` до убийства, `finish` даёт различимый `phaseCancelled`/`AsyncCompletion.Stopped`, текст «was stopped (job_kill)» без двойной обёртки; `job_output` несёт `cursor`/`next_cursor`; `run_command`-задачи управляемы (tree-kill через `cmd.Cancel`, `job_output` читает `LiveOutputBuffer` на бегу); отказ для делегации — теперь `tools.DelegationJobError`, текст адаптирован под то, что `stop_agent`/`inspect_agent` ещё не существуют (см. §4's примечание к этой фазе) |
 | §3 (`timeout` на bash/run_command/agent, `timed_out`) | Фаза 2 (доставка события «время истекло») + сервис сроков из фазы 5 для фактического срабатывания | Этап 2 (различимый статус) + этап 4 (сам сервис сроков для дедлайнов, если считать дедлайн частным случаем «срока») | **Да** (2026-09-28, phase 2) — `timeout{seconds,kind}` на всех трёх, единый `timeoutService`, `AsyncCompletion.TimedOut`/`FormatAsyncCompletion`'s контрактный текст; легаси `run_command.timeout_seconds` — алиас `terminate_and_wake` |
 | §4.1–4.3 (`inspect_agent`/`inject_agent`/`stop_agent`) | Использует существующий `subAgentDriverRegistry` (уже фаза, слитая до фазы 1) | Этап 3 «Контроль под-агентов» | Частично — `cancelSession`-часть готова; driver-aware `Cancel`/`InjectMessage` (§4.4) — готово (phase 2, ниже); сами инструменты `inspect_agent`/`inject_agent`/`stop_agent` — нет, вне объёма фазы 2 |
 | §4.4 (фикс `Cancel`/`InjectMessage`) | Не отдельная design-фаза — точечное расширение уже реализованного #1049 | Предусловие этапа 3 | **Да** (2026-09-28, phase 2, задача #1054) — оба маршрутизируются через `coordinator.agentFor` |

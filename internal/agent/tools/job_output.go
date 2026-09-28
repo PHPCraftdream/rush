@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	_ "embed"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -28,6 +29,7 @@ type JobOutputParams struct {
 	JobID   string `json:"job_id,omitempty" description:"The async job id returned when the command started (e.g. from \"Async bash job <id> started\"). Preferred over shell_id. Exactly one of job_id/shell_id is required."`
 	ShellID string `json:"shell_id,omitempty" description:"The ID of the background shell to retrieve output from, when you have a raw shell id instead of a job id. Exactly one of job_id/shell_id is required."`
 	Wait    bool   `json:"wait" description:"If true, wait up to ~90s for the background shell to complete before returning; if it's still running, returns the current output with Status: running so you can poll again (the wait never blocks the turn indefinitely)."`
+	Cursor  int64  `json:"cursor,omitempty" description:"Byte offset from a previous call's next_cursor, to fetch only output written since then. Omit to get the whole buffer from the start. A stale or out-of-range cursor is treated as 0, not an error."`
 }
 
 type JobOutputResponseMetadata struct {
@@ -38,13 +40,16 @@ type JobOutputResponseMetadata struct {
 	Done             bool          `json:"done"`
 	WorkingDirectory string        `json:"working_directory"`
 	Elapsed          time.Duration `json:"elapsed"`
+	NextCursor       int64         `json:"next_cursor"`
 }
 
 // NewJobOutputTool builds the job_output tool. resolver resolves a job_id
 // (the async job id the model saw) to a shell id -- nil disables job_id
 // support, leaving shell_id as the only way to address a job (see
-// resolveShellID).
-func NewJobOutputTool(resolver JobShellResolver, managers ...*shell.BackgroundShellManager) fantasy.AgentTool {
+// resolveShellID). runCtl controls a run_command job_id (task #1023 §3) --
+// nil disables run_command job control, leaving RunCommandJobError's text as
+// the final answer for one.
+func NewJobOutputTool(resolver JobShellResolver, runCtl RunCommandController, managers ...*shell.BackgroundShellManager) fantasy.AgentTool {
 	owned := false
 	var bgManager *shell.BackgroundShellManager
 	if len(managers) > 0 && managers[0] != nil {
@@ -64,6 +69,10 @@ func NewJobOutputTool(resolver JobShellResolver, managers ...*shell.BackgroundSh
 
 			shellID, err := resolveShellID(resolver, sessionID, params.JobID, params.ShellID)
 			if err != nil {
+				var rcErr *RunCommandJobError
+				if errors.As(err, &rcErr) && runCtl != nil {
+					return runCommandOutputResponse(runCtl, sessionID, params)
+				}
 				return fantasy.NewTextErrorResponse(err.Error()), nil
 			}
 
@@ -111,8 +120,16 @@ func NewJobOutputTool(resolver JobShellResolver, managers ...*shell.BackgroundSh
 				}
 			}
 
-			output := strings.Join(outputParts, "\n")
-			output = TruncateOutput(output)
+			raw := strings.Join(outputParts, "\n")
+			rawLen := int64(len(raw))
+			cursor := params.Cursor
+			if cursor < 0 || cursor > rawLen {
+				// Stale/negative cursor (e.g. the underlying bounded buffer
+				// truncated since the caller's last call): treated as 0, not
+				// an error (contract §2.1).
+				cursor = 0
+			}
+			output := TruncateOutput(raw[cursor:])
 			if params.Wait && !done {
 				output = strings.TrimSpace(output)
 				if output == "" {
@@ -129,6 +146,7 @@ func NewJobOutputTool(resolver JobShellResolver, managers ...*shell.BackgroundSh
 				Done:             done,
 				WorkingDirectory: bgShell.WorkingDir,
 				Elapsed:          elapsed,
+				NextCursor:       rawLen,
 			}
 
 			if output == "" {
@@ -146,4 +164,30 @@ func NewJobOutputTool(resolver JobShellResolver, managers ...*shell.BackgroundSh
 			return fantasy.WithResponseMetadata(fantasy.NewTextResponse(result), metadata), nil
 		},
 	)
+}
+
+// runCommandOutputResponse serves job_output for a run_command job_id (task
+// #1023 §3): run_command has no background shell, so it reads runCtl's live
+// output buffer instead of BackgroundShellManager. Cursor semantics mirror
+// the bash path above (stale/negative treated as 0, contract §2.1).
+func runCommandOutputResponse(runCtl RunCommandController, sessionID string, params JobOutputParams) (fantasy.ToolResponse, error) {
+	data, done, next, err := runCtl.RunCommandOutput(sessionID, params.JobID, params.Cursor)
+	if err != nil {
+		return fantasy.NewTextErrorResponse(err.Error()), nil
+	}
+	output := TruncateOutput(data)
+	if output == "" {
+		output = BashNoOutput
+	}
+	status := "running"
+	if done {
+		status = "completed"
+	}
+	metadata := JobOutputResponseMetadata{
+		JobID:      params.JobID,
+		Done:       done,
+		NextCursor: next,
+	}
+	result := fmt.Sprintf("Status: %s\n\n%s", status, output)
+	return fantasy.WithResponseMetadata(fantasy.NewTextResponse(result), metadata), nil
 }

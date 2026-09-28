@@ -51,10 +51,27 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 - **The task agent is never given the `agent` tool**, which would make tool
   construction recurse forever and hang every run.
 - **`job_kill` and `job_output` accept the job id the model was given**
-  (`job_id`), so a running async `bash` command can be stopped or inspected
-  before it finishes. Previously they needed an internal shell id the model
-  only learned once the job was over. `run_command` jobs are refused with a
-  clear message instead of "still starting" forever.
+  (`job_id`), so a running async `bash` or `run_command` command can be
+  stopped or inspected before it finishes. Previously they needed an
+  internal shell id the model only learned once the job was over.
+- **`job_kill` now produces a distinct "stopped (job_kill)" notice instead
+  of describing the killed process's own exit.** The ledger records the
+  stop request before the kill, so the model can tell it cancelled the job
+  on purpose instead of it failing on its own.
+- **`run_command` jobs are now controllable.** `job_kill` stops one by
+  killing its whole process tree (not just the direct process, on Windows
+  included); `job_output` returns accumulated output while it is still
+  running via a new bounded live-output buffer. Previously both were
+  refused with "cannot control yet".
+- **`job_output` accepts a `cursor`** (and returns `next_cursor`) so a
+  repeated call can fetch only output written since the last one instead of
+  the whole buffer every time. A stale or out-of-range cursor is treated as
+  0, not an error.
+- **`job_kill`/`job_output` on a sub-agent delegation's job id now say
+  plainly that it cannot be stopped/inspected this way and its result will
+  arrive as a session message**, instead of a generic "not a command"
+  message. (`stop_agent`/`inspect_agent` land in a later stage and will
+  replace this text once they exist.)
 - **A background job's completion notice is always persisted before Rush
   tries to resume the session on it.** Previously, if the mailbox was busy
   or the resume attempt failed for any other reason, the notice could be
@@ -92,8 +109,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 ### Added
 
 - **Messages can carry a `NoticeKind`** (e.g. `timeout_wake_only`,
-  `timeout_terminated`, `wake_failed`) distinguishing the kind of
-  system-generated notice, for future web rendering.
+  `timeout_terminated`, `wake_failed`, `job_stopped`) distinguishing the
+  kind of system-generated notice, for future web rendering.
 
 ### Changed
 

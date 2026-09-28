@@ -49,6 +49,12 @@ type AsyncCompletion struct {
 	// TimeoutSeconds is job.timeoutSeconds, quoted verbatim in the timeout
 	// text; meaningless when !TimedOut.
 	TimeoutSeconds int
+	// Stopped is true when the job's terminal state was phaseCancelled via a
+	// PLAIN job (bash/run_command) job_kill call (task #1023 §2.2) -- never
+	// true for a delegation's cancelSession-triggered phaseCancelled, which
+	// keeps its own pre-existing "sub-agent canceled" wording. Selects the
+	// contract's "stopped (job_kill)" wording and NoticeKind.
+	Stopped bool
 	// Metadata carries the inner tool's raw ToolResponse.Metadata through to
 	// a SYNC job's jobResult (§4.4) so awaitAndFinish can reconstruct a
 	// byte-for-byte response. Unused by every async (CLI/web) delivery,
@@ -314,6 +320,7 @@ func (l *workLedger) deliverLocked(owner string, job *asyncJob) (AsyncCompletion
 		IsError:        job.result.isError,
 		TimedOut:       job.state == phaseTimedOut,
 		TimeoutSeconds: job.timeoutSeconds,
+		Stopped:        job.state == phaseCancelled && job.childSession == "",
 	}
 	delete(s.jobs, job.toolCallID)
 	if job.childSession != "" {
@@ -440,11 +447,13 @@ func (l *workLedger) ResolveJobShellID(owner, jobID string) (string, error) {
 		return "", fmt.Errorf("job %s not found (not owned by this session, or already delivered)", jobID)
 	}
 	if job.toolName == tools.RunCommandToolName {
-		// run_command has no background shell; stopping it is wakes stage 2 (#1023).
-		return "", fmt.Errorf("job %s is a run_command job, which job_kill/job_output cannot control yet -- wait for its completion message", jobID)
+		// No background shell to resolve to; callers route this to
+		// RunCommandController instead (task #1023 §3).
+		return "", &tools.RunCommandJobError{JobID: jobID}
 	}
 	if job.toolName != tools.BashToolName {
-		return "", fmt.Errorf("job %s is a %s job, not a command -- job_output/job_kill only resolve bash jobs", jobID, job.toolName)
+		// agent/agentic_fetch: a delegation, not a command.
+		return "", &tools.DelegationJobError{JobID: jobID, ChildSessionID: job.childSession}
 	}
 	if job.shellID == "" {
 		return "", fmt.Errorf("job %s is still starting; try again in a moment", jobID)
@@ -452,8 +461,108 @@ func (l *workLedger) ResolveJobShellID(owner, jobID string) (string, error) {
 	return job.shellID, nil
 }
 
+// MarkJobStopped implements tools.JobShellResolver. See that interface's doc.
+func (l *workLedger) MarkJobStopped(owner, toolCallID string) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	s := l.bySession[owner]
+	if s == nil {
+		return
+	}
+	if job := s.jobs[toolCallID]; job != nil {
+		job.stopRequested = true
+	}
+}
+
+// setRunCommandBuffer records a run_command job's live output sink, as soon
+// as run_command.go's process starts (async_tool.go's context sink, task
+// #1023 §3). No-op if the job already finished/was removed -- mirrors
+// setShellID's own doc.
+func (l *workLedger) setRunCommandBuffer(owner, toolCallID string, buf tools.LiveOutputBuffer) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	s := l.bySession[owner]
+	if s == nil {
+		return
+	}
+	if job := s.jobs[toolCallID]; job != nil {
+		job.outputBuf = buf
+	}
+}
+
+// RunCommandOutput implements tools.RunCommandController. See that
+// interface's doc.
+func (l *workLedger) RunCommandOutput(owner, jobID string, cursor int64) (string, bool, int64, error) {
+	if l == nil {
+		return "", false, 0, fmt.Errorf("job %s not found (async job tracking is unavailable)", jobID)
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var job *asyncJob
+	if s := l.bySession[owner]; s != nil {
+		job = s.jobs[jobID]
+	}
+	if job == nil || job.toolName != tools.RunCommandToolName {
+		return "", false, 0, fmt.Errorf("job %s not found (not owned by this session, already delivered, or not a run_command job)", jobID)
+	}
+	if job.outputBuf == nil {
+		// Narrow start-up race: Start() registered the job but run_command's
+		// process has not called back through the context sink yet.
+		return "", false, cursor, nil
+	}
+	data, next := job.outputBuf.Read(cursor)
+	return data, job.state.terminal(), next, nil
+}
+
+// StopRunCommandJob implements tools.RunCommandController. See that
+// interface's doc.
+func (l *workLedger) StopRunCommandJob(owner, jobID string) error {
+	if l == nil {
+		return fmt.Errorf("job %s not found (async job tracking is unavailable)", jobID)
+	}
+	l.mu.Lock()
+	var job *asyncJob
+	if s := l.bySession[owner]; s != nil {
+		job = s.jobs[jobID]
+	}
+	if job == nil || job.toolName != tools.RunCommandToolName {
+		l.mu.Unlock()
+		return fmt.Errorf("job %s not found (not owned by this session, already delivered, or not a run_command job)", jobID)
+	}
+	if job.stopRequested {
+		l.mu.Unlock()
+		// Idempotency rule (contract §1.5): a repeat stop on an already-
+		// stopping target is safe but reports the same "not found" shape,
+		// not a disguised second success.
+		return fmt.Errorf("job %s not found (not owned by this session, already delivered, or already stopped)", jobID)
+	}
+	job.stopRequested = true
+	cancel := job.cancel
+	l.mu.Unlock()
+	if cancel != nil {
+		cancel() // triggers run_command's cmd.Cancel tree-kill (configureRunCommandProcess)
+	}
+	return nil
+}
+
 // finish is the terminal transition for a PLAIN job (bash/run_command). Not
 // used for a delegation (agent/agentic_fetch) -- see armDelegation.
+//
+// stopRequested (set by MarkJobStopped/StopRunCommandJob BEFORE the caller
+// killed the process, task #1023 §2.2) makes this build the distinct
+// "stopped (job_kill)" result instead of whatever the killed process's own
+// exit looked like (a bash job killed mid-command usually still reports a
+// non-zero exit/error here; a run_command job killed via ctx cancellation
+// reports "context canceled" -- neither is the notice contract §5.1 wants).
+// This does not add a new competitor to transitionToTerminal's CAS
+// (ASYNC-03): stopRequested only changes what THIS SAME finish call records,
+// it does not create a second terminal-transition path.
 func (l *workLedger) finish(owner, toolCallID string, result jobResult) {
 	l.mu.Lock()
 	s := l.bySession[owner]
@@ -469,6 +578,21 @@ func (l *workLedger) finish(owner, toolCallID string, result jobResult) {
 	state := phaseCompleted
 	if result.isError {
 		state = phaseFailed
+	}
+	if job.stopRequested {
+		// Raw partial content only -- FormatAsyncCompletion's Stopped branch
+		// (deliverLocked sets it from this state) supplies the "was stopped
+		// (job_kill)..." wording, exactly like TimedOut's capturePartial
+		// already does for the timeout wording. Formatting it here too would
+		// double-wrap the notice.
+		partial := result.content
+		if job.outputBuf != nil {
+			if snap := job.outputBuf.String(); snap != "" {
+				partial = snap
+			}
+		}
+		state = phaseCancelled
+		result = jobResult{content: partial}
 	}
 	job.transitionToTerminal(state, result)
 	completion, callback := l.deliverLocked(owner, job)

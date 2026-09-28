@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -34,7 +35,7 @@ func TestJobOutputTool_BoundedWaitReturnsWhileRunning(t *testing.T) {
 	jobOutputMaxWait = 100 * time.Millisecond
 	t.Cleanup(func() { jobOutputMaxWait = originalMaxWait })
 
-	tool := NewJobOutputTool(nil, bgManager)
+	tool := NewJobOutputTool(nil, nil, bgManager)
 
 	input, err := json.Marshal(JobOutputParams{ShellID: bgShell.ID, Wait: true})
 	require.NoError(t, err)
@@ -84,7 +85,7 @@ func TestJobOutputTool_BoundedWaitReturnsCompletedWhenJobFinishes(t *testing.T) 
 	jobOutputMaxWait = 100 * time.Millisecond
 	t.Cleanup(func() { jobOutputMaxWait = originalMaxWait })
 
-	tool := NewJobOutputTool(nil, bgManager)
+	tool := NewJobOutputTool(nil, nil, bgManager)
 
 	input, err := json.Marshal(JobOutputParams{ShellID: bgShell.ID, Wait: true})
 	require.NoError(t, err)
@@ -104,4 +105,53 @@ func TestJobOutputTool_BoundedWaitReturnsCompletedWhenJobFinishes(t *testing.T) 
 	require.Contains(t, resp.Content, "exit 0")
 	require.Contains(t, resp.Content, "all done")
 	require.NotContains(t, resp.Content, "still running after the wait window")
+}
+
+// TestJobOutputTool_CursorReturnsOnlyNewBytesSinceLastCall pins wake-tools-
+// contract.md §2.1's cursor behavior end to end against a real background
+// shell: a second call with the first call's next_cursor returns only the
+// output written since, not a repeat of what was already returned.
+//
+// Revert-check performed: reverted the cursor slice to always start at 0
+// (ignoring params.Cursor) -- this test FAILED (the second call's content
+// contained "AAA" again instead of only "BBB"). Restored the fix; re-ran,
+// passed.
+func TestJobOutputTool_CursorReturnsOnlyNewBytesSinceLastCall(t *testing.T) {
+	t.Parallel()
+	workingDir := t.TempDir()
+	ctx := context.WithValue(context.Background(), SessionIDContextKey, "job-output-cursor-session")
+
+	bgManager := shell.NewBackgroundShellManager()
+	t.Cleanup(func() { bgManager.Close(context.Background()) })
+	bgShell, err := bgManager.StartOwned(ctx, "job-output-cursor-session", workingDir, nil,
+		"printf AAA; sleep 2; printf BBB", "")
+	require.NoError(t, err)
+
+	// Wait until AAA has been written but well before BBB (2s later).
+	require.Eventually(t, func() bool {
+		stdout, _, _, _ := bgShell.GetOutput()
+		return strings.Contains(stdout, "AAA")
+	}, 5*time.Second, 25*time.Millisecond)
+
+	tool := NewJobOutputTool(nil, nil, bgManager)
+
+	firstInput, err := json.Marshal(JobOutputParams{ShellID: bgShell.ID})
+	require.NoError(t, err)
+	firstResp, err := tool.Run(ctx, fantasy.ToolCall{ID: "c1", Name: JobOutputToolName, Input: string(firstInput)})
+	require.NoError(t, err)
+	require.Contains(t, firstResp.Content, "AAA")
+	require.NotContains(t, firstResp.Content, "BBB", "BBB should not have printed yet")
+
+	var firstMeta JobOutputResponseMetadata
+	require.NoError(t, json.Unmarshal([]byte(firstResp.Metadata), &firstMeta))
+	require.Positive(t, firstMeta.NextCursor)
+
+	require.Eventually(t, bgShell.IsDone, 5*time.Second, 25*time.Millisecond)
+
+	secondInput, err := json.Marshal(JobOutputParams{ShellID: bgShell.ID, Cursor: firstMeta.NextCursor})
+	require.NoError(t, err)
+	secondResp, err := tool.Run(ctx, fantasy.ToolCall{ID: "c2", Name: JobOutputToolName, Input: string(secondInput)})
+	require.NoError(t, err)
+	require.Contains(t, secondResp.Content, "BBB")
+	require.NotContains(t, secondResp.Content, "AAA", "must not repeat output already returned by the first call")
 }

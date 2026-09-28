@@ -16,9 +16,10 @@ import (
 // job_output's job_id wiring without a real work ledger (internal/agent,
 // which this package must not import).
 type fakeJobShellResolver struct {
-	shellID                  string
-	err                      error
-	calledSession, calledJob string
+	shellID                    string
+	err                        error
+	calledSession, calledJob   string
+	stoppedSession, stoppedJob string
 }
 
 func (f *fakeJobShellResolver) ResolveJobShellID(sessionID, jobID string) (string, error) {
@@ -27,6 +28,10 @@ func (f *fakeJobShellResolver) ResolveJobShellID(sessionID, jobID string) (strin
 		return "", f.err
 	}
 	return f.shellID, nil
+}
+
+func (f *fakeJobShellResolver) MarkJobStopped(sessionID, jobID string) {
+	f.stoppedSession, f.stoppedJob = sessionID, jobID
 }
 
 func TestResolveShellID_NeitherGivenIsRejected(t *testing.T) {
@@ -81,7 +86,7 @@ func TestJobKillTool_ResolvesJobIDToShellID(t *testing.T) {
 	require.NoError(t, err)
 
 	resolver := &fakeJobShellResolver{shellID: bgShell.ID}
-	tool := NewJobKillTool(resolver, bgManager)
+	tool := NewJobKillTool(resolver, nil, bgManager)
 
 	input, err := json.Marshal(JobKillParams{JobID: "call-1"})
 	require.NoError(t, err)
@@ -104,7 +109,7 @@ func TestJobKillTool_JobIDResolverErrorSurfacesAsRecoverableResponse(t *testing.
 	t.Cleanup(func() { bgManager.Close(context.Background()) })
 
 	resolver := &fakeJobShellResolver{err: errors.New("job call-1 not found (not owned by this session, or already delivered)")}
-	tool := NewJobKillTool(resolver, bgManager)
+	tool := NewJobKillTool(resolver, nil, bgManager)
 
 	input, err := json.Marshal(JobKillParams{JobID: "call-1"})
 	require.NoError(t, err)
@@ -116,7 +121,7 @@ func TestJobKillTool_JobIDResolverErrorSurfacesAsRecoverableResponse(t *testing.
 
 func TestJobKillTool_BothJobIDAndShellIDRejected(t *testing.T) {
 	ctx := context.WithValue(context.Background(), SessionIDContextKey, "session-a")
-	tool := NewJobKillTool(nil, shell.NewBackgroundShellManager())
+	tool := NewJobKillTool(nil, nil, shell.NewBackgroundShellManager())
 	input, err := json.Marshal(JobKillParams{JobID: "call-1", ShellID: "003"})
 	require.NoError(t, err)
 	resp, err := tool.Run(ctx, fantasy.ToolCall{ID: "kill-call", Name: JobKillToolName, Input: string(input)})
@@ -127,7 +132,7 @@ func TestJobKillTool_BothJobIDAndShellIDRejected(t *testing.T) {
 
 func TestJobKillTool_NeitherJobIDNorShellIDRejected(t *testing.T) {
 	ctx := context.WithValue(context.Background(), SessionIDContextKey, "session-a")
-	tool := NewJobKillTool(nil, shell.NewBackgroundShellManager())
+	tool := NewJobKillTool(nil, nil, shell.NewBackgroundShellManager())
 	input, err := json.Marshal(JobKillParams{})
 	require.NoError(t, err)
 	resp, err := tool.Run(ctx, fantasy.ToolCall{ID: "kill-call", Name: JobKillToolName, Input: string(input)})
@@ -148,7 +153,7 @@ func TestJobOutputTool_ResolvesJobIDToShellID(t *testing.T) {
 	require.Eventually(t, bgShell.IsDone, 5*time.Second, 25*time.Millisecond)
 
 	resolver := &fakeJobShellResolver{shellID: bgShell.ID}
-	tool := NewJobOutputTool(resolver, bgManager)
+	tool := NewJobOutputTool(resolver, nil, bgManager)
 
 	input, err := json.Marshal(JobOutputParams{JobID: "call-2"})
 	require.NoError(t, err)
@@ -161,7 +166,7 @@ func TestJobOutputTool_ResolvesJobIDToShellID(t *testing.T) {
 
 func TestJobOutputTool_BothJobIDAndShellIDRejected(t *testing.T) {
 	ctx := context.WithValue(context.Background(), SessionIDContextKey, "session-a")
-	tool := NewJobOutputTool(nil, shell.NewBackgroundShellManager())
+	tool := NewJobOutputTool(nil, nil, shell.NewBackgroundShellManager())
 	input, err := json.Marshal(JobOutputParams{JobID: "call-1", ShellID: "003"})
 	require.NoError(t, err)
 	resp, err := tool.Run(ctx, fantasy.ToolCall{ID: "out-call", Name: JobOutputToolName, Input: string(input)})

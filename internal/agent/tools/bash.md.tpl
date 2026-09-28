@@ -30,8 +30,9 @@ Common shell builtins and core utils available on Windows.
 - Web/CLI commands return an async job ID whether or not run_in_background was requested.
 - Do not use `&` to create a second background process.
 - The completion notice includes output and exit status. Do not poll job_output or call it with wait=true merely to learn whether the job finished.
-- Use job_kill only when the operator asks to stop a running command or the current task requires cancellation.
+- Use job_kill only when the operator asks to stop a running command or the current task requires cancellation. Stopping it this way produces a distinct "stopped" notice, not a generic failure.
 - Pass that job ID as job_id to job_kill/job_output to control or inspect the command before it finishes -- shell_id is only for callers that never see a job ID.
+- job_output accepts a cursor from a previous call's next_cursor to fetch only output written since then.
 </background_execution>
 
 <git_commits>

@@ -143,14 +143,14 @@ func (l *workLedger) handleTimeout(job *asyncJob) {
 		if job.cancel != nil {
 			job.cancel() // best-effort: ask the executor to stop; partial output captured below regardless of whether it stops in time
 		}
-		owner, toolCallID, toolName, childSession, shellID := job.owner, job.toolCallID, job.toolName, job.childSession, job.shellID
+		owner, toolCallID, toolName, childSession, shellID, outputBuf := job.owner, job.toolCallID, job.toolName, job.childSession, job.shellID, job.outputBuf
 		l.mu.Unlock()
 
 		// capturePartial does its own (possibly DB-backed, for a delegation)
 		// I/O OUTSIDE l.mu, mirroring recheckChild's own established
 		// snapshot-then-refresh-then-relock pattern (work_ledger_delegation.go)
 		// rather than holding the ledger lock across a round trip.
-		partial := l.capturePartial(owner, toolCallID, toolName, childSession, shellID)
+		partial := l.capturePartial(owner, toolCallID, toolName, childSession, shellID, outputBuf)
 
 		l.mu.Lock()
 		job.transitionToTerminal(phaseTimedOut, partial) // CAS: a concurrent finish/cancel may already have won; deliverLocked below is safe to call unconditionally either way
@@ -170,11 +170,11 @@ func (l *workLedger) handleTimeout(job *asyncJob) {
 			return
 		}
 		job.timeoutNotified = true
-		owner, toolCallID, toolName, childSession, shellID := job.owner, job.toolCallID, job.toolName, job.childSession, job.shellID
+		owner, toolCallID, toolName, childSession, shellID, outputBuf := job.owner, job.toolCallID, job.toolName, job.childSession, job.shellID, job.outputBuf
 		deadline := job.deadline
 		l.mu.Unlock()
 
-		summary := l.capturePartial(owner, toolCallID, toolName, childSession, shellID)
+		summary := l.capturePartial(owner, toolCallID, toolName, childSession, shellID, outputBuf)
 		if l.coord != nil {
 			text := fmt.Sprintf(
 				"Timeout reached for async job %s (%s) — it is still running (elapsed %s). Latest output:\n\n%s\n\nThis was a one-time check-in; it will not repeat automatically. %s",
@@ -191,27 +191,29 @@ func (l *workLedger) handleTimeout(job *asyncJob) {
 }
 
 // stopGuidanceFor returns the accurate, tool-specific closing sentence for
-// the wake_only check-in text. Orchestrator review finding: the original
-// text unconditionally offered both job_kill (bash/run_command) and
-// stop_agent (agent) regardless of toolName -- job_kill only actually
-// controls a running bash job (ResolveJobShellID explicitly refuses
-// run_command, see capturePartial's own comment below), run_command has no
-// live control at all, and stop_agent does not exist as a tool yet
-// (wake-tools-contract plan, later phase). Telling the model to use a tool
-// that will refuse, or does not exist, is worse than saying nothing.
+// the wake_only check-in text. Orchestrator review finding (pre-#1023): the
+// original text unconditionally offered both job_kill (bash/run_command) and
+// stop_agent (agent) regardless of toolName, but job_kill only controlled a
+// running bash job then (ResolveJobShellID refused run_command) and
+// stop_agent does not exist as a tool yet (wake-tools-contract plan, stage
+// 3). Telling the model to use a tool that will refuse, or does not exist,
+// is worse than saying nothing. Task #1023 §3 made run_command controllable
+// too (job_kill now tree-kills it via its live output buffer/ctx
+// cancellation), so it joins bash below; agent/stop_agent is unchanged.
 func stopGuidanceFor(toolName string) string {
-	if toolName == tools.BashToolName {
+	if toolName == tools.BashToolName || toolName == tools.RunCommandToolName {
 		return "Decide whether to keep waiting, check again later, or stop it with job_kill."
 	}
-	// run_command (job_kill refuses it) and agent (no stop tool exists yet)
-	// both reduce to the same honest answer: nothing here can stop it yet.
+	// agent: no stop tool exists yet (stage 3, stop_agent).
 	return "Decide whether to keep waiting or check again later -- it cannot be stopped from here yet."
 }
 
 // capturePartial produces a best-effort snapshot of a still-running (or
 // just-cancelled) job's output for a timeout event (§5.6). Called WITHOUT
-// l.mu held.
-func (l *workLedger) capturePartial(owner, toolCallID, toolName, childSession, shellID string) jobResult {
+// l.mu held. outputBuf is job.outputBuf's snapshot taken under l.mu by the
+// caller (task #1023 §3): run_command has no BackgroundShellManager entry,
+// so this is its only source of partial output.
+func (l *workLedger) capturePartial(owner, toolCallID, toolName, childSession, shellID string, outputBuf tools.LiveOutputBuffer) jobResult {
 	if childSession != "" {
 		return l.capturePartialDelegation(childSession)
 	}
@@ -230,11 +232,17 @@ func (l *workLedger) capturePartial(owner, toolCallID, toolName, childSession, s
 			return jobResult{content: out, isError: runErr != nil}
 		}
 	}
-	// run_command has no background-process handle to read from (unlike
-	// bash's BackgroundShellManager -- ResolveJobShellID refuses run_command
-	// jobs for the same reason), and a bash job whose shell id has not been
-	// recorded yet (the narrow start-up race before setShellID runs) falls
-	// back to the same placeholder.
+	if toolName == tools.RunCommandToolName && outputBuf != nil {
+		out := tools.TruncateOutput(strings.TrimSpace(outputBuf.String()))
+		if out == "" {
+			out = "(no output yet)"
+		}
+		return jobResult{content: out}
+	}
+	// A bash job whose shell id has not been recorded yet (the narrow
+	// start-up race before setShellID runs), or a run_command job whose
+	// output sink has not registered yet (same race, setRunCommandBuffer),
+	// falls back to the same placeholder.
 	return jobResult{content: fmt.Sprintf("job %s (%s) is still running; no partial output is available yet", toolCallID, toolName)}
 }
 

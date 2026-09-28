@@ -317,28 +317,24 @@ func TestParseTimeoutParam_ValidationTable(t *testing.T) {
 }
 
 // TestStopGuidanceFor_ToolSpecificAccuracy pins the orchestrator review's
-// finding: the wake_only check-in text used to unconditionally offer both
-// job_kill (bash/run_command) and stop_agent (agent) regardless of toolName.
-// job_kill only actually controls a running bash job (run_command is
-// explicitly refused by ResolveJobShellID), and stop_agent does not exist as
-// a tool yet -- naming either for the wrong tool tells the model to do
-// something that will fail or does not exist.
+// finding: the wake_only check-in text must not name a tool for the wrong
+// toolName. As of task #1023 §3, job_kill controls BOTH bash and
+// run_command jobs (run_command's live output buffer + ctx-cancellation
+// tree-kill); stop_agent still does not exist as a tool yet (stage 3).
 //
-// Revert-check performed: reverted stopGuidanceFor to unconditionally return
-// the old text naming both job_kill and stop_agent -- this test FAILED (the
-// run_command and agent cases both wrongly contained "job_kill"/"stop_agent").
-// Restored the fix; re-ran, passed.
+// Revert-check performed: reverted stopGuidanceFor to its pre-#1023 form
+// (bash only) -- this test FAILED (the run_command case no longer contained
+// "job_kill"). Restored the fix; re-ran, passed.
 func TestStopGuidanceFor_ToolSpecificAccuracy(t *testing.T) {
 	t.Parallel()
 
 	bashText := stopGuidanceFor(tools.BashToolName)
-	require.Contains(t, bashText, "job_kill", "bash is the one tool job_kill actually controls")
+	require.Contains(t, bashText, "job_kill", "bash is one of the two tools job_kill controls")
 	require.NotContains(t, bashText, "stop_agent")
 
 	runCommandText := stopGuidanceFor(tools.RunCommandToolName)
-	require.NotContains(t, runCommandText, "job_kill", "ResolveJobShellID explicitly refuses run_command jobs")
+	require.Contains(t, runCommandText, "job_kill", "task #1023 §3 made run_command controllable via job_kill")
 	require.NotContains(t, runCommandText, "stop_agent")
-	require.Contains(t, runCommandText, "cannot be stopped")
 
 	agentText := stopGuidanceFor(AgentToolName)
 	require.NotContains(t, agentText, "stop_agent", "stop_agent does not exist as a tool yet")

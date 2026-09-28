@@ -1,7 +1,6 @@
 package tools
 
 import (
-	"bytes"
 	"cmp"
 	"context"
 	_ "embed"
@@ -195,10 +194,23 @@ func NewRunCommandTool(permissions permission.Service, workingDir string) fantas
 			startTime := time.Now()
 			cmd := platform.Command(runCtx, params.Program, params.Args...)
 			cmd.Dir = execDir
-			var buf bytes.Buffer
-			cmd.Stdout = &buf
-			cmd.Stderr = &buf
-			execErr := cmd.Run()
+			buf := newRunCommandOutputBuffer(0)
+			cmd.Stdout = buf
+			cmd.Stderr = buf
+			// Tree-kill on ctx cancellation (job_kill, terminate_and_wake
+			// timeout -- task #1023 §3), not just the direct process.
+			configureRunCommandProcess(cmd)
+			execErr := cmd.Start()
+			if execErr == nil {
+				// Registers buf with the work ledger (via async_tool.go's
+				// context sink) WHILE the process is still running, so
+				// job_output can read progressive output and job_kill's
+				// stopped notice can quote it -- see LiveOutputBuffer's doc.
+				if sink := LiveOutputSinkFromContext(ctx); sink != nil {
+					sink(buf)
+				}
+				execErr = cmd.Wait()
+			}
 			endTime := time.Now()
 
 			metadata := RunCommandResponseMetadata{

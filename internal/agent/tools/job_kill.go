@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	_ "embed"
+	"errors"
 	"fmt"
 
 	"charm.land/fantasy"
@@ -31,7 +32,10 @@ type JobKillResponseMetadata struct {
 // NewJobKillTool builds the job_kill tool. resolver resolves a job_id (the
 // async job id the model saw) to a shell id -- nil disables job_id support,
 // leaving shell_id as the only way to address a job (see resolveShellID).
-func NewJobKillTool(resolver JobShellResolver, managers ...*shell.BackgroundShellManager) fantasy.AgentTool {
+// runCtl controls a run_command job_id (task #1023 §3) -- nil disables
+// run_command job control, leaving RunCommandJobError's text as the final
+// answer for one.
+func NewJobKillTool(resolver JobShellResolver, runCtl RunCommandController, managers ...*shell.BackgroundShellManager) fantasy.AgentTool {
 	owned := false
 	var bgManager *shell.BackgroundShellManager
 	if len(managers) > 0 && managers[0] != nil {
@@ -51,6 +55,15 @@ func NewJobKillTool(resolver JobShellResolver, managers ...*shell.BackgroundShel
 
 			shellID, err := resolveShellID(resolver, sessionID, params.JobID, params.ShellID)
 			if err != nil {
+				var rcErr *RunCommandJobError
+				if errors.As(err, &rcErr) && runCtl != nil {
+					if stopErr := runCtl.StopRunCommandJob(sessionID, params.JobID); stopErr != nil {
+						return fantasy.NewTextErrorResponse(stopErr.Error()), nil
+					}
+					result := fmt.Sprintf("Async job %s (run_command) kill requested; it will stop shortly and its result will arrive as a message.", params.JobID)
+					metadata := JobKillResponseMetadata{JobID: params.JobID}
+					return fantasy.WithResponseMetadata(fantasy.NewTextResponse(result), metadata), nil
+				}
 				return fantasy.NewTextErrorResponse(err.Error()), nil
 			}
 
@@ -70,6 +83,14 @@ func NewJobKillTool(resolver JobShellResolver, managers ...*shell.BackgroundShel
 				ShellID:     shellID,
 				Command:     bgShell.Command,
 				Description: bgShell.Description,
+			}
+
+			if resolver != nil && params.JobID != "" {
+				// Records the ledger's stop-on-request marker BEFORE the
+				// kill below, so the job's own finish() call (task #1023
+				// §2.2) produces a distinct "stopped (job_kill)" notice
+				// instead of describing the killed process's own exit.
+				resolver.MarkJobStopped(sessionID, params.JobID)
 			}
 
 			if owned {

@@ -190,6 +190,15 @@ func (t *asyncTool) run(ctx context.Context, cancel context.CancelFunc, sessionI
 			}
 		}
 	}
+	if t.name == tools.RunCommandToolName && !sync {
+		// Task #1023 §3: registers the job's live output buffer with the
+		// ledger as soon as run_command.go's process starts, so job_output
+		// can read progressive output and job_kill's stopped notice can
+		// quote it while the job is still running.
+		ctx = tools.WithLiveOutputSink(ctx, func(buf tools.LiveOutputBuffer) {
+			t.coordinator.asyncJobs.setRunCommandBuffer(sessionID, call.ID, buf)
+		})
+	}
 	response, err := t.inner.Run(ctx, call)
 	if err != nil {
 		completion.IsError = true

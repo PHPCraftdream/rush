@@ -14,6 +14,8 @@ package agent
 import (
 	"context"
 	"time"
+
+	"github.com/PHPCraftdream/rush/internal/agent/tools"
 )
 
 // jobPhase is a job's position in the ASYNC-03 state machine: exactly one
@@ -117,6 +119,21 @@ type asyncJob struct {
 	timeoutKind     timeoutKind
 	timeoutSeconds  int
 	timeoutNotified bool
+
+	// stopRequested is set by workLedger.MarkJobStopped/StopRunCommandJob
+	// BEFORE the caller actually kills the underlying shell/process (task
+	// #1023 §2.2). It does not itself transition state -- finish is still
+	// the only writer of state past phaseRunning (transitionToTerminal) --
+	// it only makes finish() build the distinct "stopped (job_kill)" result
+	// instead of whatever the killed process's own exit looked like.
+	stopRequested bool
+	// outputBuf is set by workLedger.setRunCommandBuffer once a run_command
+	// job's live output sink registers (async_tool.go, task #1023 §3):
+	// run_command has no BackgroundShellManager entry, so this is the only
+	// way to read its output, or quote partial output in a stopped/timeout
+	// notice, while it is still running. Always nil for bash/agent/
+	// agentic_fetch jobs.
+	outputBuf tools.LiveOutputBuffer
 }
 
 // transitionToTerminal is the ONLY writer of state past phaseRunning. Called
