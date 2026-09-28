@@ -179,6 +179,22 @@ export interface WSRequestOptions {
 // round-trip; anything slower than this is treated as lost.
 const WS_REQUEST_TIMEOUT_MS = 10_000;
 
+// WSRequestError distinguishes a DEFINITE failure (the request is known to
+// have never reached/executed on the server: an explicit error reply, or a
+// send that never left the browser) from an AMBIGUOUS one (a timeout, or a
+// disconnect after the frame was written) where the server may have already
+// acted on the request and the client just never heard back (task #1057).
+// Callers that must not assume "nothing happened" -- e.g. a queued message
+// that would otherwise be resent -- branch on `ambiguous`.
+export class WSRequestError extends Error {
+  ambiguous: boolean;
+  constructor(message: string, ambiguous: boolean) {
+    super(message);
+    this.name = "WSRequestError";
+    this.ambiguous = ambiguous;
+  }
+}
+
 export function wsRequest<T = unknown>(
   type: string,
   payload?: unknown,
@@ -196,33 +212,39 @@ export function wsRequest<T = unknown>(
       unsubDisc();
     }
 
+    // Ambiguous: the frame was written, so the server may be mid-processing
+    // (or already done) when the wait gives up.
     timer = setTimeout(() => {
       cleanup();
-      reject(new Error(`Timed out waiting for the ${type} reply`));
+      reject(new WSRequestError(`Timed out waiting for the ${type} reply`, true));
     }, opts.timeoutMs ?? WS_REQUEST_TIMEOUT_MS);
 
     unsubReply = ws.on("*", (msg) => {
       if (msg.id !== msgID) return;
       cleanup();
-      if (msg.error) reject(new Error(msg.error));
+      // A definite error reply means the server rejected the request
+      // outright (e.g. "agent not configured") without acting on it.
+      if (msg.error) reject(new WSRequestError(msg.error, false));
       else resolve(msg as WSMessage<T>);
     });
 
     // A dropped connection dooms the in-flight request — its reply can
     // never arrive on this socket. Fail fast instead of burning the
     // timeout (mirrors the _disconnected handling of the system-prompt
-    // fetch path).
+    // fetch path). Ambiguous for the same reason as the timeout: the frame
+    // may have reached the server before the socket died.
     unsubDisc = ws.on("_disconnected", () => {
       cleanup();
-      reject(new Error(`Connection lost while waiting for the ${type} reply`));
+      reject(new WSRequestError(`Connection lost while waiting for the ${type} reply`, true));
     });
 
     // send() reports false when the socket is already down/closed — the
     // same doom as a drop, known before the frame even left. Nothing
     // will ever call the listeners above, so reject now and detach them.
+    // Definite: the frame never left the browser.
     if (!ws.send(type, payload, msgID)) {
       cleanup();
-      reject(new Error(`Not connected to the server — ${type} request was not sent`));
+      reject(new WSRequestError(`Not connected to the server — ${type} request was not sent`, false));
     }
   });
 }

@@ -3,8 +3,9 @@ import { setupMockWS, sendMockWSMessage, waitForWSSend } from "./helpers/mock-ws
 import { makeSession } from "./helpers/fixtures";
 
 // Coverage for task #1057: per-queued-message "Send now" (inject_message,
-// merges into the running turn) and "Interrupt & send" (interrupt_and_send,
-// cancels the turn and starts a new one) buttons.
+// merges into the running turn), "Interrupt & send" (interrupt_and_send,
+// cancels the turn and starts a new one), and -- once the session is idle --
+// a plain "Send" (send_message).
 //
 // The core contract under test: takeQueuedMessage (store_commands.ts) removes
 // the item from $messageQueue SYNCHRONOUSLY, before the wsRequest round-trip
@@ -12,6 +13,15 @@ import { makeSession } from "./helpers/fixtures";
 // agent_busy=false flush (dequeueAllMessages in useWS.ts), no matter how the
 // two race. A failed send restores the item to its original queue position
 // with a visible error.
+//
+// Review follow-up (same task): a DEFINITE failure (server error reply, or
+// the frame never leaving the browser) restores the item with that error, as
+// above. An AMBIGUOUS one -- a client-side timeout, or a disconnect after
+// the frame was written -- means the server may have already acted on it,
+// so the restored error says so instead of "failed" (WSRequestError in
+// ws.ts). interrupt_and_send's client timeout (40s) is kept above the
+// server's own 30s bound so a merely-slow success is never misread as a
+// timeout.
 
 test.beforeEach(async ({ page }) => {
   await setupMockWS(page);
@@ -77,9 +87,11 @@ test("send-now / interrupt-and-send buttons only show while the session is busy"
 
 // A message restored by a FAILED send-now can land back in the queue after
 // the session already went idle -- e.g. the turn legitimately ended right
-// before the error reply arrived. The actions must stay hidden for it: they
-// only make sense against a running turn.
-test("a message restored after the session already went idle has its actions hidden", async ({ page }) => {
+// before the error reply arrived. Inject/interrupt must stay hidden for it
+// (they only make sense against a running turn), but it must NOT be
+// stranded: a plain "Send" (send_message) takes over so it isn't stuck
+// until some unrelated future turn happens to flush it (task #1057 review).
+test("a message restored after the session already went idle gets a plain Send instead of being stranded", async ({ page }) => {
   await openSession(page, "vis-2", "Race Visibility Session");
   await setBusy(page, "vis-2", true);
   await queueMessage(page, "a");
@@ -100,6 +112,16 @@ test("a message restored after the session already went idle has its actions hid
   await expect(page.getByTestId("queued-message-error")).toBeVisible();
   await expect(page.getByTestId("queued-message-send-now")).toBeHidden();
   await expect(page.getByTestId("queued-message-interrupt-send")).toBeHidden();
+  await expect(page.getByTestId("queued-message-send")).toBeVisible();
+
+  // The idle Send button fires send_message once and removes the item --
+  // it is not auto-resent, and inject/interrupt are never used for it.
+  await page.getByTestId("queued-message-send").click();
+  const flushed = await waitForWSSend(page, "send_message");
+  expect(payloadOf(flushed).content).toBe("a");
+  await expect(page.getByText("Queue ·")).toBeHidden();
+  expect(await framesOfType(page, "send_message")).toHaveLength(2); // "b"'s flush + this one
+  expect(await framesOfType(page, "interrupt_and_send")).toHaveLength(0);
 });
 
 // ── Send now: inject_message, atomic removal, no double-send on flush ──────
@@ -219,4 +241,61 @@ test("send now with an already-dead socket fails fast and restores the message",
   await expect(page.getByTestId("queued-message-error")).toContainText("Not connected", { timeout: 3000 });
   await expect(page.getByText("Queue · 1")).toBeVisible();
   expect(await framesOfType(page, "inject_message")).toHaveLength(0);
+});
+
+// ── Ambiguous timeout: the server may have delivered it anyway ─────────────
+//
+// interrupt_and_send's own server-side work is bounded at 30s
+// (handleInterruptAndSend's context.WithTimeout, review task #1057): a slow
+// but successful interrupt (e.g. cancelling a turn stuck in a tool) can take
+// up to that long. The client's wait must sit ABOVE 30s -- and when it DOES
+// give up, that must read as "unclear, don't just resend" rather than
+// "failed", because the server may deliver the message anyway right after
+// the client stops waiting. page.clock lets the test jump the wait forward
+// instantly instead of sleeping 40 real seconds.
+
+test("interrupt & send timeout restores the message as ambiguous, not a definite failure", async ({ page }) => {
+  await setupMockWS(page);
+  await page.route("/auth/check", (route) => route.fulfill({ status: 200, body: "OK" }));
+  // Installed before navigation so the mock socket's own connect timer still
+  // fires on schedule; time only jumps when fastForward is called below.
+  await page.clock.install();
+  await openSession(page, "timeout-1", "Timeout Session");
+  await setBusy(page, "timeout-1", true);
+  await queueMessage(page, "slow interrupt");
+
+  await page.getByTestId("queued-message-interrupt-send").click();
+  await waitForWSSend(page, "interrupt_and_send");
+
+  // Past the client's timeout (above the server's own 30s bound) with no
+  // reply -- wsRequest's timer fires.
+  await page.clock.fastForward(41_000);
+
+  await expect(page.getByTestId("queued-message-error")).toBeVisible({ timeout: 3000 });
+  await expect(page.getByTestId("queued-message-error")).toContainText("already be sent");
+  await expect(page.getByTestId("queued-message-error")).not.toContainText("Timed out");
+  await expect(page.getByText("Queue · 1")).toBeVisible();
+
+  // Not auto-resent: exactly one interrupt_and_send frame went out.
+  expect(await framesOfType(page, "interrupt_and_send")).toHaveLength(1);
+});
+
+test("send now timeout restores the message as ambiguous, not a definite failure", async ({ page }) => {
+  await setupMockWS(page);
+  await page.route("/auth/check", (route) => route.fulfill({ status: 200, body: "OK" }));
+  await page.clock.install();
+  await openSession(page, "timeout-2", "Inject Timeout Session");
+  await setBusy(page, "timeout-2", true);
+  await queueMessage(page, "slow inject");
+
+  await page.getByTestId("queued-message-send-now").click();
+  await waitForWSSend(page, "inject_message");
+
+  // Past inject_message's own (shorter, no server-side bound) client timeout.
+  await page.clock.fastForward(16_000);
+
+  await expect(page.getByTestId("queued-message-error")).toBeVisible({ timeout: 3000 });
+  await expect(page.getByTestId("queued-message-error")).toContainText("already be sent");
+  await expect(page.getByText("Queue · 1")).toBeVisible();
+  expect(await framesOfType(page, "inject_message")).toHaveLength(1);
 });

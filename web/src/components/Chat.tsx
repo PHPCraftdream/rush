@@ -18,6 +18,7 @@ import {
   updateQueuedMessage,
   sendQueuedMessageNow,
   interruptAndSendQueuedMessage,
+  sendQueuedMessageDirect,
   rerunFromMessage,
   type QueuedMessage,
 } from "../store";
@@ -27,7 +28,7 @@ import { ChatInput } from "./ChatInput";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { ChatToolbar } from "./ChatToolbar";
 import { TodoList } from "./TodoList";
-import { MessageSquare, Pencil, PlusCircle, Sparkles, Square, Trash2, X, Zap } from "lucide-react";
+import { MessageSquare, Pencil, PlusCircle, Send, Sparkles, Square, Trash2, X, Zap } from "lucide-react";
 import type { Message as Msg, ContentPart } from "../types";
 
 // ── Queued message item ───────────────────────────────────────────────────────
@@ -44,7 +45,10 @@ function QueuedMessageItem({
   position: number;
   total: number;
   // Send-now / interrupt-and-send only make sense while a turn is running
-  // (task #1057) -- hidden otherwise, mirroring ChatInput's Inject/Interrupt.
+  // (task #1057), mirroring ChatInput's Inject/Interrupt. While idle a
+  // plain Send (send_message) is offered instead, so a message restored
+  // after the turn already ended doesn't get stranded until some future
+  // turn happens to flush it.
   sessionBusy: boolean;
 }) {
   const [editing, setEditing] = useState(false);
@@ -87,6 +91,8 @@ function QueuedMessageItem({
   // with `error` set, which re-mounts this component with the error visible.
   const handleSendNow = useCallback(() => { void sendQueuedMessageNow(sessionID, item.id); }, [sessionID, item.id]);
   const handleInterruptSend = useCallback(() => { void interruptAndSendQueuedMessage(sessionID, item.id); }, [sessionID, item.id]);
+  // Idle-only path (task #1057): fire-and-forget, see sendQueuedMessageDirect.
+  const handleSendDirect = useCallback(() => { sendQueuedMessageDirect(sessionID, item.id); }, [sessionID, item.id]);
 
   return (
     <div className="group/qi flex justify-end px-8 py-2">
@@ -119,11 +125,11 @@ function QueuedMessageItem({
             </div>
             {item.error && (
               <div data-test-id="queued-message-error" className="text-[11px] text-red text-right mt-1">
-                Send failed: {item.error}
+                {item.error}
               </div>
             )}
             <div className="flex items-center justify-end gap-1 mt-1.5 opacity-0 group-hover/qi:opacity-100 transition-opacity">
-              {sessionBusy && (
+              {sessionBusy ? (
                 <>
                   <button
                     onClick={handleSendNow}
@@ -142,6 +148,18 @@ function QueuedMessageItem({
                     <Zap size={13} />
                   </button>
                 </>
+              ) : (
+                // Idle: inject/interrupt don't apply (task #1057) -- a
+                // plain Send starts a fresh turn via the normal send_message
+                // path, same as the composer's own Send button when idle.
+                <button
+                  onClick={handleSendDirect}
+                  title="Send now"
+                  data-test-id="queued-message-send"
+                  className="p-1.5 text-text-subtle hover:text-accent transition-colors rounded"
+                >
+                  <Send size={13} />
+                </button>
               )}
               <button onClick={startEdit}    title="Edit queued message"  className="btn-icon"><Pencil size={13} /></button>
               <button onClick={handleRemove} title="Remove from queue"    className="btn-icon-danger"><Trash2 size={13} /></button>

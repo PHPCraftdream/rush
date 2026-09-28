@@ -138,7 +138,13 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   `interrupt_and_send`. The message is removed from the local queue the
   instant one of these is clicked, so the later agent_busy=false flush can
   never send it a second time; a failed request restores it to its original
-  queue position with a visible error.
+  queue position with a visible error. A request that times out or loses the
+  connection (rather than getting an explicit error back) is ambiguous — the
+  server may have already acted on it — so the restored error says to check
+  the chat before resending instead of implying it definitely failed; a
+  session that goes idle while a restored message is still queued shows a
+  plain "Send" instead, so it isn't stranded until an unrelated future turn
+  happens to flush it.
 
 ### Changed
 
