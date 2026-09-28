@@ -5,15 +5,16 @@
 // `agentic_fetch`) used to have TWO records across two registries for one
 // call's whole lifecycle; here there is one, from Start to delivery.
 //
-// Deliberately NOT in this type (docs/plans/2026-09-27-async-phase1-spec.md
-// §0.1.4/§5, orchestrator decision 2026-09-27 item 3): deadline, timeoutKind,
-// a `phaseTimedOut`/`phaseInterrupted` phase, and a `jobKind` field. None has
-// a production caller in phase 1 -- they belong to the phase that delivers
-// them (timeouts: phase 2/5; host-lease interrupt: phase 4) rather than
-// sitting unused ahead of that work.
+// Phase 2 (docs/plans/2026-09-27-async-phase2-spec.md §5.1) adds the explicit
+// per-call timeout fields phase 1 deliberately left out (deadline,
+// timeoutKind, timeoutSeconds, timeoutNotified, phaseTimedOut) and the
+// sync/done pair for the unified asyncTool execution path (§4.4).
 package agent
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // jobPhase is a job's position in the ASYNC-03 state machine: exactly one
 // terminal outcome, reached at most once, followed by at most one delivery.
@@ -28,9 +29,37 @@ const (
 	phaseCompleted
 	phaseFailed
 	phaseCancelled
+	phaseTimedOut // terminal: reached only via handleTimeout's timeoutTerminateAndWake branch (§5.5)
 )
 
 func (p jobPhase) terminal() bool { return p != phaseRunning }
+
+// timeoutKind is the explicit, no-default kind chosen PER CALL (operator
+// decision, docs/plans/2026-09-24-agent-wakes-and-async-job-control.md,
+// "Решено 2026-09-27" item 4; wire values fixed by
+// docs/plans/2026-09-27-wake-tools-contract.md §3). timeoutNone is the zero
+// value: "no timeout" requires no special-casing at any call site.
+type timeoutKind uint8
+
+const (
+	timeoutNone             timeoutKind = iota
+	timeoutWakeOnly                     // "wake_only": deadline passed -> job keeps running; owner gets a NON-terminal "time's up, still running" event with a summary
+	timeoutTerminateAndWake             // "terminate_and_wake": deadline passed -> job -> phaseTimedOut (terminal), partial output kept, owner gets the normal terminal notice
+)
+
+// TimeoutSpec is an optional, always-explicit per-call deadline. nil means
+// "no ledger-level timeout" -- the existing 45-minute tool watchdog
+// (agent.go's toolExecutionMaxDefault/toolMaxDuration) is a SEPARATE,
+// unrelated mechanism and is not touched by this type. Seconds is kept
+// alongside Deadline (redundant with it, Deadline == now+Seconds at
+// construction) purely so the eventual notice text (contract §5.1: "timed
+// out after {seconds}s") can quote the ORIGINALLY REQUESTED duration instead
+// of a recomputed, possibly-off-by-scheduling-jitter value.
+type TimeoutSpec struct {
+	Deadline time.Time
+	Kind     timeoutKind
+	Seconds  int
+}
 
 // jobResult is a job's outcome, without owner/toolName -- both already live
 // on the asyncJob itself and are not duplicated here. Assembled into an
@@ -38,6 +67,12 @@ func (p jobPhase) terminal() bool { return p != phaseRunning }
 type jobResult struct {
 	content string
 	isError bool
+	// metadata is the inner tool's raw ToolResponse.Metadata (JSON string),
+	// preserved so a sync job's awaitAndFinish (§4.4) can reconstruct a
+	// byte-for-byte equivalent response instead of a bare text one. Empty
+	// (and unused) for every async delivery, which only ever formats
+	// content/isError into a human notice.
+	metadata string
 }
 
 // asyncJob is one work-ledger entry, keyed by (owner, toolCallID).
@@ -65,6 +100,23 @@ type asyncJob struct {
 	// the job id the model saw (toolCallID) to the shell id they need -- see
 	// workLedger.ResolveJobShellID (task #1053).
 	shellID string
+
+	// sync is true for a job started for a non-CLI/non-Web origin (SDK,
+	// unspecified): its only consumer is the goroutine blocked in awaitSync
+	// (§4.4), so it is never routed to the ready queue or onWebDone.
+	sync bool
+	// done is non-nil only when sync; closed exactly once, by deliverLocked,
+	// when this job's outcome is ready for awaitSync to read.
+	done chan struct{}
+
+	// deadline is this job's explicit timeout deadline (§5.1); zero means no
+	// timeout. timeoutKind/timeoutSeconds are meaningless when deadline is
+	// zero. timeoutNotified is a one-shot guard so a timeoutWakeOnly event
+	// fires at most once per deadline, never repeats.
+	deadline        time.Time
+	timeoutKind     timeoutKind
+	timeoutSeconds  int
+	timeoutNotified bool
 }
 
 // transitionToTerminal is the ONLY writer of state past phaseRunning. Called

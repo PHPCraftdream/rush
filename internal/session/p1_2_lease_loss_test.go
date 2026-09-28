@@ -136,6 +136,7 @@ func setupTestSessionWithDB(t *testing.T, title string) (*session.Session, sessi
 			usage_estimated INTEGER,
 			origin TEXT DEFAULT '' NOT NULL,
 			checkpoint_generation INTEGER NOT NULL DEFAULT 0,
+			notice_kind TEXT NOT NULL DEFAULT '',
 
 			FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
 		);

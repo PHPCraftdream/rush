@@ -8,11 +8,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"runtime/debug"
 	"strings"
 	"time"
 
-	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/shell"
@@ -31,19 +29,30 @@ func filterNonEmpty(parts ...string) []string {
 }
 
 // FormatAsyncCompletion makes a completed job visible to the model and UI.
+// The TimedOut branch's wording matches
+// docs/plans/2026-09-27-wake-tools-contract.md §5.1 verbatim.
 func FormatAsyncCompletion(completion AsyncCompletion) string {
-	status := "finished"
-	if completion.IsError {
-		status = "failed"
-	}
 	content := tools.TruncateOutput(strings.TrimSpace(completion.Content))
 	if content == "" {
 		content = "(no output)"
+	}
+	if completion.TimedOut {
+		return fmt.Sprintf("Async job %s (%s) timed out after %ds and was stopped. Partial output:\n\n%s",
+			completion.ToolCallID, completion.ToolName, completion.TimeoutSeconds, content)
+	}
+	status := "finished"
+	if completion.IsError {
+		status = "failed"
 	}
 	return fmt.Sprintf("Async job %s (%s) %s.\n\n%s",
 		completion.ToolCallID, completion.ToolName, status, content)
 }
 
+// notifyAsyncCompletion is the AsyncCompletionSource callback wired into
+// workLedger.onWebDone: it builds the notice text/kind and delegates the
+// entire delivery (persist-then-wake, driver selection) to wakeSession --
+// see wakeSession's own doc for why a driver-owned child session's wake must
+// never run on c.currentAgent (task #1049).
 func (c *coordinator) notifyAsyncCompletion(completion AsyncCompletion) {
 	ctx := context.WithValue(context.Background(), autoResumedCtxKey{}, true)
 	ctx = context.WithValue(ctx, backgroundJobNoticeCtxKey{}, true)
@@ -53,45 +62,24 @@ func (c *coordinator) notifyAsyncCompletion(completion AsyncCompletion) {
 	}
 	ctx = WithCallOrigin(ctx, origin)
 
-	// One driver per session (task #1049; design doc
-	// docs/plans/2026-09-27-async-structured-concurrency.md §3): a delegated
-	// child session's own async/background completion must wake the SAME
-	// SessionAgent that is driving its turns, never c.currentAgent's coder
-	// agent -- a different SessionAgent has no mailbox record of this child
-	// session, treats it as idle, and races the driver's own in-flight Run
-	// for the same session on the shared OS-level session lock instead of
-	// queuing behind it. c.Run (-> c.currentAgent.Run) remains correct for
-	// every session that IS driven by the coder agent (the root, and any
-	// non-delegated session), since no driver is ever registered for those.
-	notify := func(ctx context.Context) (*fantasy.AgentResult, error) {
-		return c.Run(ctx, completion.SessionID, FormatAsyncCompletion(completion))
+	noticeKind := ""
+	if completion.TimedOut {
+		noticeKind = "timeout_terminated"
 	}
-	if driver, ok := c.subAgentDrivers.get(completion.SessionID); ok {
-		call := driver.callFor(FormatAsyncCompletion(completion))
-		// c.Run's buildCall stamps these three fields from ctx
-		// (noticeFlagsFrom/CallOriginFrom); driver.agent.Run bypasses
-		// buildCall entirely, so they must be set explicitly here to keep the
-		// persisted notice's badges/origin identical to the c.Run path.
-		call.AutoResumed = true
-		call.BackgroundJobNotice = true
-		call.Origin = origin
-		notify = func(ctx context.Context) (*fantasy.AgentResult, error) {
-			return driver.agent.Run(ctx, call)
-		}
-	}
-	go runAutoResumeRecovered(ctx, completion.SessionID, completion.ToolCallID, func(ctx context.Context) (*fantasy.AgentResult, error) {
-		// Re-check trigger (ii)/(iv): this closure IS the turn that the
-		// completed job woke -- either directly (mailbox was idle) or as the
-		// eventual return of a Run() call that only queued the wake behind an
-		// already-live turn on the SAME driver (mailbox was busy; the queued
-		// call is drained by that live turn's own end-of-turn loop, see
-		// agent_run.go's runOwned). Either way, re-evaluate any delegation
-		// parked for this session only once this call returns, so a release
-		// can never land in the window before the wake's effect (queued or
-		// direct) is visible.
+	id := jobIdentity{owner: completion.SessionID, toolCallID: completion.ToolCallID}
+	text := FormatAsyncCompletion(completion)
+	go func() {
+		// Re-check trigger (ii)/(iv): this goroutine IS the delivery that
+		// the completed job woke -- either directly (mailbox was idle) or
+		// merged into an already-live/queued generation (mailbox was busy).
+		// Re-evaluate any delegation parked for this session once wakeSession
+		// returns, so a release can never land in the window before the
+		// wake's effect is visible. wakeSession itself already logs+persists
+		// a visible marker on failure (§1.4); there is nothing else to do
+		// with its error here.
 		defer c.noteSubAgentChildRunEnded(completion.SessionID)
-		return notify(ctx)
-	})
+		_ = c.wakeSession(ctx, id, text, noticeKind, true)
+	}()
 }
 
 // ClaimAsyncCompletions makes sessionID's CLI completions queue for
@@ -156,15 +144,19 @@ func (c *coordinator) notifyBackgroundJobDone(sessionID string, sh *shell.Backgr
 		// auto-resume is also a job-completion notice).
 		ctx := context.WithValue(context.Background(), autoResumedCtxKey{}, true)
 		ctx = context.WithValue(ctx, backgroundJobNoticeCtxKey{}, true)
-		go runAutoResumeRecovered(ctx, sessionID, sh.ID, func(ctx context.Context) (*fantasy.AgentResult, error) {
+		id := jobIdentity{owner: sessionID, toolCallID: sh.ID}
+		go func() {
 			// Re-check trigger (iii): a job owned by this session just
-			// became terminal and this closure is the turn it woke.
-			// Re-evaluate any delegation parked for this session once this
-			// run has returned, so the release cannot fire in the window
+			// became terminal and this goroutine is the delivery it woke.
+			// Re-evaluate any delegation parked for this session once
+			// wakeSession returns, so the release cannot fire in the window
 			// between "job done" and "child claimed its next turn".
+			// wakeSession's own defer recover() covers a panic in the run it
+			// starts; nothing else to do with its error here (already
+			// logged+persisted, §1.4).
 			defer c.noteSubAgentChildRunEnded(sessionID)
-			return c.Run(ctx, sessionID, summary)
-		})
+			_ = c.wakeSession(ctx, id, summary, "", true)
+		}()
 		return
 	}
 
@@ -174,43 +166,15 @@ func (c *coordinator) notifyBackgroundJobDone(sessionID string, sh *shell.Backgr
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	ctx = context.WithValue(ctx, backgroundJobNoticeCtxKey{}, true)
 	defer cancel()
-	if _, err := c.InjectMessage(ctx, sessionID, summary); err != nil {
-		slog.Debug("background job completion not delivered (session likely closed)",
+	id := jobIdentity{owner: sessionID, toolCallID: sh.ID}
+	if err := c.wakeSession(ctx, id, summary, "", false); err != nil {
+		slog.Warn("background job completion not delivered (session likely closed)",
 			"session_id", sessionID,
 			"shell_id", sh.ID,
 			"err", err)
 	}
 	// Re-check trigger (iii), Phase 3 branch: same reasoning as above.
 	c.noteSubAgentChildRunEnded(sessionID)
-}
-
-// runAutoResumeRecovered runs runFn (normally a closure over c.Run for the
-// Phase 4 auto-resume turn) with panic isolation, on the calling goroutine.
-// Callers spawn this in its own goroutine (see notifyBackgroundJobDone)
-// because it is independent of the BackgroundShell.OnDone goroutine that
-// triggers it — OnDone's own recover() does not cover a panic raised in
-// here, since by the time this runs it is a sibling goroutine, not a child
-// call of OnDone's callback.
-//
-// runFn re-enters the full synchronous tool-dispatch chain (same call shape
-// as app.go's RunNonInteractive goroutine, see runAgentTurnRecovered there),
-// so any tool call made during this auto-resumed turn could panic exactly
-// like it could during a human-initiated turn. Without this recover, such a
-// panic would crash the whole rush process with no log output, at an
-// arbitrary time long after the triggering background job completed.
-func runAutoResumeRecovered(ctx context.Context, sessionID, shellID string, runFn func(ctx context.Context) (*fantasy.AgentResult, error)) {
-	defer func() {
-		if r := recover(); r != nil {
-			slog.Error("Phase 4 auto-resume run panic",
-				"session_id", sessionID, "shell_id", shellID,
-				"panic", r, "stack", string(debug.Stack()))
-		}
-	}()
-
-	if _, err := runFn(ctx); err != nil {
-		slog.Debug("Phase 4 auto-resume run failed (session likely closed)",
-			"session_id", sessionID, "shell_id", shellID, "err", err)
-	}
 }
 
 func (c *coordinator) IsBusy() bool {

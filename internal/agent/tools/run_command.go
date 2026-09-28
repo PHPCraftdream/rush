@@ -42,14 +42,21 @@ type RunCommandParams struct {
 	WorkingDir     string   `json:"working_dir,omitempty" description:"Working directory for the program, relative to the current working directory. Defaults to the current working directory. Must stay inside the current working directory"`
 	Description    string   `json:"description,omitempty" description:"A brief description of what the command does, try to keep it under 30 characters or so"`
 	TimeoutSeconds int      `json:"timeout_seconds,omitempty" description:"Maximum seconds to wait for the program to finish before killing it (default 120, maximum 600)"`
+	// Timeout is an optional explicit ledger-level deadline (#1037), a
+	// SEPARATE axis from TimeoutSeconds above's own process-kill clamp --
+	// see parseTimeoutParam's doc for the exact relationship (TimeoutSeconds
+	// alone is treated as an alias for Timeout{Kind: "terminate_and_wake"};
+	// setting both is a validation error).
+	Timeout *TimeoutParams `json:"timeout,omitempty" description:"Optional explicit deadline: {\"seconds\": N, \"kind\": \"wake_only\"|\"terminate_and_wake\"}. \"wake_only\" lets the work keep running and just notifies you it's taking a while; \"terminate_and_wake\" stops it and reports partial output. No default -- set it only when you actually want a deadline. Mutually exclusive with the legacy timeout_seconds above."`
 }
 
 type RunCommandPermissionsParams struct {
-	Program        string   `json:"program"`
-	Args           []string `json:"args"`
-	WorkingDir     string   `json:"working_dir"`
-	Description    string   `json:"description"`
-	TimeoutSeconds int      `json:"timeout_seconds"`
+	Program        string         `json:"program"`
+	Args           []string       `json:"args"`
+	WorkingDir     string         `json:"working_dir"`
+	Description    string         `json:"description"`
+	TimeoutSeconds int            `json:"timeout_seconds"`
+	Timeout        *TimeoutParams `json:"timeout"`
 }
 
 // RunAllowlistCommand synthesizes a single shell-like command string from

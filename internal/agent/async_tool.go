@@ -41,9 +41,12 @@ func (t *asyncTool) SetProviderOptions(opts fantasy.ProviderOptions) {
 
 func (t *asyncTool) Run(ctx context.Context, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
 	origin := CallOriginFrom(ctx)
-	if origin != message.OriginCLI && origin != message.OriginWeb {
-		return t.inner.Run(ctx, call)
-	}
+	// sync is true for every origin that used to bypass the registry
+	// entirely (SDK, unspecified): one execution path now, not a separate
+	// branch (§4.2, closes #1037's "45-minute limit only applies on the
+	// synchronous branch" -- after phase 2 "synchronous" means "same
+	// registry, same explicit-timeout support, delivery within the call".
+	sync := origin != message.OriginCLI && origin != message.OriginWeb
 	sessionID := tools.GetSessionFromContext(ctx)
 	if sessionID == "" || call.ID == "" {
 		return fantasy.ToolResponse{}, fmt.Errorf("async %s requires session and tool call IDs", t.name)
@@ -52,8 +55,26 @@ func (t *asyncTool) Run(ctx context.Context, call fantasy.ToolCall) (fantasy.Too
 	if err != nil {
 		return fantasy.NewTextErrorResponse(err.Error()), nil
 	}
-	jobCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
-	job, existing, err := t.coordinator.asyncJobs.Start(sessionID, call.ID, call.Input, t.name, childSessionID, origin == message.OriginCLI, cancel)
+	timeoutSpec, err := parseTimeoutParam(t.name, call.Input)
+	if err != nil {
+		return fantasy.NewTextErrorResponse(err.Error()), nil
+	}
+	// Only CLI/web jobs are detached from the triggering turn's ctx: they
+	// must survive the turn that started them ending (their result is
+	// delivered LATER, as a notice). A sync job has no "deliver later" path
+	// at all (its only consumer is this same call, blocked below in
+	// awaitAndFinish) -- cancelling the caller's ctx must cancel it too,
+	// exactly like the pre-async-wrapper t.inner.Run(ctx, call) did.
+	// Detaching it anyway would leak a goroutine and a ledger entry nobody
+	// ever collects once the caller gives up.
+	var jobCtx context.Context
+	var cancel context.CancelFunc
+	if sync {
+		jobCtx, cancel = context.WithCancel(ctx)
+	} else {
+		jobCtx, cancel = context.WithCancel(context.WithoutCancel(ctx))
+	}
+	job, existing, err := t.coordinator.asyncJobs.Start(sessionID, call.ID, call.Input, t.name, childSessionID, origin == message.OriginCLI, sync, timeoutSpec, cancel)
 	if err != nil {
 		cancel()
 		return fantasy.NewTextErrorResponse(err.Error()), nil
@@ -66,6 +87,9 @@ func (t *asyncTool) Run(ctx context.Context, call fantasy.ToolCall) (fantasy.Too
 		// were never handed to an executor, so cancel it here instead of
 		// leaking it.
 		cancel()
+		if sync {
+			return t.awaitAndFinish(ctx, job)
+		}
 		return t.startedResponse(call.ID, job.childSession), nil
 	}
 	if childSessionID != "" && t.coordinator.permissions != nil {
@@ -74,8 +98,24 @@ func (t *asyncTool) Run(ctx context.Context, call fantasy.ToolCall) (fantasy.Too
 			mgr.InheritSessionRunAllowlist(sessionID, childSessionID)
 		}
 	}
-	go t.run(jobCtx, cancel, sessionID, childSessionID, call)
+	go t.run(jobCtx, cancel, sessionID, childSessionID, call, sync)
+	if sync {
+		return t.awaitAndFinish(ctx, job)
+	}
 	return t.startedResponse(call.ID, childSessionID), nil
+}
+
+// awaitAndFinish blocks until job's sync outcome is ready (workLedger.
+// awaitSync) and returns it as this call's own ToolResponse -- byte-for-byte
+// the same content/error/metadata shape a direct t.inner.Run(ctx, call)
+// would have returned before phase 2 (§4.3), just delivered through the
+// registry instead of directly.
+func (t *asyncTool) awaitAndFinish(ctx context.Context, job *asyncJob) (fantasy.ToolResponse, error) {
+	result, err := t.coordinator.asyncJobs.awaitSync(ctx, job)
+	if err != nil {
+		return fantasy.ToolResponse{}, err
+	}
+	return fantasy.ToolResponse{Type: "text", Content: result.content, Metadata: result.metadata, IsError: result.isError}, nil
 }
 
 // startedResponse builds the "started" tool response for jobID/childSession.
@@ -113,13 +153,14 @@ func (t *asyncTool) childSessionID(ctx context.Context, parentID string, call fa
 	return t.coordinator.sessions.CreateAgentToolSessionID(messageID, call.ID), nil
 }
 
-func (t *asyncTool) run(ctx context.Context, cancel context.CancelFunc, sessionID, childSessionID string, call fantasy.ToolCall) {
+func (t *asyncTool) run(ctx context.Context, cancel context.CancelFunc, sessionID, childSessionID string, call fantasy.ToolCall, sync bool) {
 	defer cancel()
-	if childSessionID != "" && t.coordinator.permissions != nil {
-		if mgr, ok := t.coordinator.permissions.(permission.SessionRunAllowlistManager); ok {
-			defer mgr.ClearSessionRunAllowlist(childSessionID)
-		}
-	}
+	// No `defer ClearSessionRunAllowlist` here (phase 2, §6.2): the child
+	// may still own async jobs/background shells after this turn returns
+	// (structural concurrency, #1049), and a woken turn re-inherits from
+	// subAgentDriver.parentSessionID on every wake (wakeSession's
+	// wakeNoticeCall) instead -- clearing on return would strand a woken
+	// turn under the process-wide gate.
 	completion := AsyncCompletion{SessionID: sessionID, ToolCallID: call.ID, ToolName: t.name}
 	defer func() {
 		if recovered := recover(); recovered != nil {
@@ -128,7 +169,18 @@ func (t *asyncTool) run(ctx context.Context, cancel context.CancelFunc, sessionI
 		}
 		t.finalize(ctx, sessionID, childSessionID, completion)
 	}()
-	if t.name == tools.BashToolName {
+	if t.name == tools.BashToolName && !sync {
+		// Unchanged for CLI/web: forcing run_in_background is what lets
+		// awaitShell below watch it through BackgroundShellManager, so a
+		// CLI/web bash job survives the triggering turn ending. A sync
+		// caller's ctx already spans the whole wait (§4.2's jobCtx
+		// attachment), so there is nothing to survive past -- the inner
+		// bash tool's own synchronous exec path already blocks correctly,
+		// and forcing background here would silently change a sync bash
+		// call's response format (asyncToolMetadata/backgroundJobSummary
+		// instead of the tool's own BashResponseMetadata) for an origin
+		// (SDK) that must see byte-for-byte the same response as before
+		// phase 2.
 		ctx = tools.WithoutBackgroundCallback(ctx)
 		var params map[string]json.RawMessage
 		if json.Unmarshal([]byte(call.Input), &params) == nil && params != nil {
@@ -146,7 +198,8 @@ func (t *asyncTool) run(ctx context.Context, cancel context.CancelFunc, sessionI
 	}
 	completion.IsError = response.IsError
 	completion.Content = response.Content
-	if t.name == tools.BashToolName {
+	completion.Metadata = response.Metadata
+	if t.name == tools.BashToolName && !sync {
 		t.awaitShell(ctx, sessionID, response, &completion)
 	}
 	completion.Content = tools.TruncateOutput(strings.TrimSpace(completion.Content))
@@ -167,7 +220,7 @@ func (t *asyncTool) finalize(_ context.Context, _, childSessionID string, comple
 	if t.coordinator == nil || t.coordinator.asyncJobs == nil {
 		return
 	}
-	result := jobResult{content: completion.Content, isError: completion.IsError}
+	result := jobResult{content: completion.Content, isError: completion.IsError, metadata: completion.Metadata}
 	if childSessionID != "" && (t.name == AgentToolName || t.name == tools.AgenticFetchToolName) {
 		t.coordinator.asyncJobs.armDelegation(completion.SessionID, completion.ToolCallID, result)
 		return
@@ -205,6 +258,86 @@ func (t *asyncTool) awaitShell(ctx context.Context, sessionID string, response f
 	stdout, stderr, _, runErr := sh.GetOutput()
 	completion.IsError = runErr != nil || shell.ExitCode(runErr) != 0
 	completion.Content = backgroundJobSummary(sh.ID, sh.Command, stdout, stderr, shell.ExitCode(runErr), sh.Elapsed())
+}
+
+// timeoutSecondsFloor/timeoutSecondsCeil bound timeout.seconds (contract
+// §3/§6). The ceiling is a typo/footgun guard, not a product limit --
+// changed by editing this constant, not by product policy.
+const (
+	timeoutSecondsFloor = 5
+	timeoutSecondsCeil  = 604800 // 7 days
+)
+
+// timeoutParamInput is the generic, tool-agnostic shape parseTimeoutParam
+// reads from raw call.Input -- the same pattern childSessionID already uses
+// for AgentParams and t.run uses for run_in_background.
+type timeoutParamInput struct {
+	Timeout *struct {
+		Seconds int    `json:"seconds"`
+		Kind    string `json:"kind"`
+	} `json:"timeout,omitempty"`
+	// TimeoutSeconds mirrors run_command.RunCommandParams.TimeoutSeconds --
+	// read generically here (like Timeout above) rather than importing the
+	// typed struct, so this function stays tool-agnostic. Zero for
+	// bash/agent (they have no such field; a stray value would mean the
+	// model sent an unknown field, silently ignored like any other
+	// unexpected JSON key).
+	TimeoutSeconds int `json:"timeout_seconds,omitempty"`
+}
+
+// parseTimeoutParam extracts and validates the optional explicit timeout for
+// bash/run_command/agent (NOT agentic_fetch -- its own HTTP client already
+// carries a fixed timeout, and it does not describe this field in its JSON
+// schema). Both new timeout{} and legacy run_command.timeout_seconds set on
+// the SAME call is a validation error (wake-tools-contract.md §3): the
+// legacy field is a "terminate_and_wake" ALIAS, not an independent axis, so
+// both present is an unresolvable ambiguity, not a silent precedence rule.
+func parseTimeoutParam(toolName, input string) (*TimeoutSpec, error) {
+	if toolName != tools.BashToolName && toolName != tools.RunCommandToolName && toolName != AgentToolName {
+		return nil, nil
+	}
+	var parsed timeoutParamInput
+	if err := json.Unmarshal([]byte(input), &parsed); err != nil {
+		return nil, nil
+	}
+	if parsed.Timeout != nil && parsed.TimeoutSeconds != 0 {
+		return nil, fmt.Errorf("provide at most one of timeout or the legacy timeout_seconds, not both")
+	}
+	if parsed.Timeout == nil {
+		if parsed.TimeoutSeconds == 0 {
+			return nil, nil
+		}
+		// Legacy alias: run_command.timeout_seconds's OWN validation
+		// (runCommandDefaultTimeoutSeconds/runCommandMaxTimeoutSeconds
+		// clamp, tools/run_command.go) is untouched and runs separately, as
+		// it does today, for the process-kill mechanism itself -- this only
+		// additionally records the SAME deadline in the ledger so the owner
+		// gets a distinguishable timed_out outcome instead of today's
+		// generic failed.
+		return &TimeoutSpec{
+			Deadline: time.Now().Add(time.Duration(parsed.TimeoutSeconds) * time.Second),
+			Kind:     timeoutTerminateAndWake,
+			Seconds:  parsed.TimeoutSeconds,
+		}, nil
+	}
+	t := parsed.Timeout
+	if t.Seconds < timeoutSecondsFloor || t.Seconds > timeoutSecondsCeil {
+		return nil, fmt.Errorf("timeout.seconds must be between %d and %d (7 days), got %d", timeoutSecondsFloor, timeoutSecondsCeil, t.Seconds)
+	}
+	var kind timeoutKind
+	switch t.Kind {
+	case "wake_only":
+		kind = timeoutWakeOnly
+	case "terminate_and_wake":
+		kind = timeoutTerminateAndWake
+	default:
+		return nil, fmt.Errorf("timeout.kind must be %q or %q, got %q", "wake_only", "terminate_and_wake", t.Kind)
+	}
+	return &TimeoutSpec{
+		Deadline: time.Now().Add(time.Duration(t.Seconds) * time.Second),
+		Kind:     kind,
+		Seconds:  t.Seconds,
+	}, nil
 }
 
 func (c *coordinator) wrapAsyncTools(list []fantasy.AgentTool) []fantasy.AgentTool {

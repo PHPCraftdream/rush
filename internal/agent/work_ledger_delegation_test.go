@@ -73,7 +73,7 @@ func newYieldedInnerTool(name, text string) fantasy.AgentTool {
 // "Async agent job ... started" tool result is persisted.
 func parkDelegation(t *testing.T, coord *coordinator, childSession, childYields string) {
 	t.Helper()
-	_, _, err := coord.asyncJobs.Start(parkedParentSession, parkedParentCall, "", AgentToolName, childSession, false, func() {})
+	_, _, err := coord.asyncJobs.Start(parkedParentSession, parkedParentCall, "", AgentToolName, childSession, false, false, nil, func() {})
 	require.NoError(t, err)
 	coord.asyncJobs.acknowledged(parkedParentSession, parkedParentCall)
 
@@ -85,7 +85,7 @@ func parkDelegation(t *testing.T, coord *coordinator, childSession, childYields 
 	ctx := WithCallOrigin(t.Context(), message.OriginWeb)
 	wrapped.run(ctx, func() {}, parkedParentSession, childSession, fantasy.ToolCall{
 		ID: parkedParentCall, Name: AgentToolName, Input: `{}`,
-	})
+	}, false)
 }
 
 // startChildOwnedJob registers an async job the CHILD session owns, and
@@ -97,7 +97,7 @@ func parkDelegation(t *testing.T, coord *coordinator, childSession, childYields 
 // wants the child's owned job to reach a terminal state.
 func startChildOwnedJob(t *testing.T, l *workLedger, sessionID, toolCallID string, cli bool) {
 	t.Helper()
-	_, _, err := l.Start(sessionID, toolCallID, "", "bash", "", cli, func() {})
+	_, _, err := l.Start(sessionID, toolCallID, "", "bash", "", cli, false, nil, func() {})
 	require.NoError(t, err)
 	l.acknowledged(sessionID, toolCallID)
 }
@@ -403,7 +403,7 @@ func TestWorkLedger_ResumeAfterNoticeDoesNotReemit(t *testing.T) {
 	// idle, so this arms and releases at once -- exactly one NEW notice for
 	// the new tool call, and nothing replayed for the old one.
 	const secondParentCall = "parent-call-2"
-	_, _, err = coord.asyncJobs.Start(parkedParentSession, secondParentCall, "", AgentToolName, child.ID, false, func() {})
+	_, _, err = coord.asyncJobs.Start(parkedParentSession, secondParentCall, "", AgentToolName, child.ID, false, false, nil, func() {})
 	require.NoError(t, err)
 	coord.asyncJobs.acknowledged(parkedParentSession, secondParentCall)
 	wrapped := &asyncTool{
@@ -414,7 +414,7 @@ func TestWorkLedger_ResumeAfterNoticeDoesNotReemit(t *testing.T) {
 	ctx := WithCallOrigin(t.Context(), message.OriginWeb)
 	wrapped.run(ctx, func() {}, parkedParentSession, child.ID, fantasy.ToolCall{
 		ID: secondParentCall, Name: AgentToolName, Input: `{}`,
-	})
+	}, false)
 
 	second := drainCompletions(delivered)
 	require.Len(t, second, 1, "a resumed child must produce exactly one NEW notice")
@@ -493,7 +493,7 @@ func TestWorkLedger_ConcurrentRecheckAndCancelDeliversOnce(t *testing.T) {
 		// arming does not resolve synchronously.
 		startChildOwnedJob(t, coord.asyncJobs, "child-race", "child-job", false)
 
-		_, _, err := coord.asyncJobs.Start("parent-race", "call-race", "", AgentToolName, "child-race", false, nil)
+		_, _, err := coord.asyncJobs.Start("parent-race", "call-race", "", AgentToolName, "child-race", false, false, nil, nil)
 		require.NoError(t, err)
 		coord.asyncJobs.acknowledged("parent-race", "call-race")
 		coord.asyncJobs.armDelegation("parent-race", "call-race", jobResult{content: "child final answer"})

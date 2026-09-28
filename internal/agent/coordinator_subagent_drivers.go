@@ -35,6 +35,16 @@ import "sync"
 type subAgentDriver struct {
 	agent SessionAgent
 	call  SessionAgentCall
+	// parentSessionID is the delegating session that originally armed this
+	// child's restricted-run allowlist baseline (runSubAgent's
+	// InheritSessionRunAllowlist). wakeSession re-inherits from it on EVERY
+	// wake (§6.2), not just the first turn: the child's own turn no longer
+	// clears its allowlist entry on return (coordinator_subagents.go/
+	// async_tool.go dropped their `defer Clear`), so re-arming here keeps a
+	// woken turn judged by the delegation's policy instead of falling back
+	// to the process-wide gate. Empty for a driver registered without a
+	// known parent (should not happen in production; a nil-safe no-op).
+	parentSessionID string
 }
 
 // callFor returns a copy of the driver's call template with prompt as its
@@ -89,4 +99,19 @@ func (r *subAgentDriverRegistry) get(childSessionID string) (subAgentDriver, boo
 	defer r.mu.Unlock()
 	d, ok := r.byChild[childSessionID]
 	return d, ok
+}
+
+// agentFor resolves the SessionAgent that actually owns sessionID's mailbox:
+// the registered delegation driver, if any (a delegated child session runs
+// on its own task SessionAgent, never on c.currentAgent -- task #1049), else
+// c.currentAgent for every non-delegated session. Single choke point for
+// every coordinator method that dispatches a call/cancel/inject onto
+// "whichever SessionAgent owns this session id" -- wakeSession, Cancel,
+// InjectMessage (task #1054) all call this instead of each re-implementing
+// the same fallback.
+func (c *coordinator) agentFor(sessionID string) SessionAgent {
+	if driver, ok := c.subAgentDrivers.get(sessionID); ok {
+		return driver.agent
+	}
+	return c.currentAgent
 }

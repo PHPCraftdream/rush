@@ -115,13 +115,14 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 		// service always implements it.
 		if mgr, ok := c.permissions.(permission.SessionRunAllowlistManager); ok {
 			mgr.InheritSessionRunAllowlist(params.SessionID, session.ID)
-			// Drop the child's gate entry when this delegation ends:
-			// runSubAgent owns the child's whole work synchronously, so no
-			// permission request for this child id can arrive after the
-			// defer fires. Without this, every sub-agent delegation of a
-			// per-session-gated run would leave one inherited entry in the
-			// permission service forever (a long-lived host leak).
-			defer mgr.ClearSessionRunAllowlist(session.ID)
+			// No `defer ClearSessionRunAllowlist` here (phase 2, §6.2): the
+			// child may still own async jobs/background shells after THIS
+			// turn returns (structural concurrency, #1049) and a woken turn
+			// re-inherits from subAgentDriver.parentSessionID on every wake
+			// instead -- clearing on return would strand a woken turn under
+			// the process-wide gate. The entry lives as long as the driver
+			// (§6.3: same unbounded-until-phase-3 growth as
+			// subAgentDriverRegistry itself).
 		}
 	}
 
@@ -255,10 +256,19 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 		SmartModel:       &driverModel,
 		Credentials:      callCreds,
 	}
-	c.subAgentDrivers.register(session.ID, subAgentDriver{agent: params.Agent, call: callTemplate})
+	c.subAgentDrivers.register(session.ID, subAgentDriver{agent: params.Agent, call: callTemplate, parentSessionID: params.SessionID})
 
+	// runAwaitingAdmission (#1036): if the child's mailbox is busy when this
+	// call is attempted (e.g. notifyAsyncCompletion just woke it for the
+	// child's OWN async-job completion a moment earlier), a bare
+	// params.Agent.Run would return (nil, nil) here -- not because the
+	// child produced no output, but because its turn had not started yet.
+	// subAgentOutput(nil) then reads as "" and the caller below reports
+	// "Sub-agent completed but produced no text output" about a turn that
+	// never ran. Blocking for the queued turn's real result instead closes
+	// that gap; every remaining line of this function is unchanged.
 	run := func() (*fantasy.AgentResult, error) {
-		return params.Agent.Run(ctx, SessionAgentCall{
+		result, runErr, _ := c.runAwaitingAdmission(ctx, params.Agent, SessionAgentCall{
 			SessionID:        session.ID,
 			Prompt:           params.Prompt,
 			MaxOutputTokens:  maxTokens,
@@ -272,6 +282,7 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 			SmartModel:       pinnedModel,
 			Credentials:      callCreds,
 		})
+		return result, runErr
 	}
 	var result *fantasy.AgentResult
 	err := c.runWithUnauthorizedRetry(ctx, providerCfg, func() error {

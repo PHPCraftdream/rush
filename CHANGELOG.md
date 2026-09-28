@@ -55,6 +55,45 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   before it finishes. Previously they needed an internal shell id the model
   only learned once the job was over. `run_command` jobs are refused with a
   clear message instead of "still starting" forever.
+- **A background job's completion notice is always persisted before Rush
+  tries to resume the session on it.** Previously, if the mailbox was busy
+  or the resume attempt failed for any other reason, the notice could be
+  lost entirely with only a Debug log line. Now the notice is written to
+  the transcript first (idempotently, so a retry never duplicates it), and
+  if the resume attempt itself fails, a second, visible message is added
+  to the session explaining that the event was saved and will be picked up
+  on the next turn.
+- **A sub-agent resumed while its mailbox is busy (e.g. right after its own
+  async job just woke it) no longer reports "Sub-agent completed but
+  produced no text output."** The parent now waits for that queued turn's
+  real result instead of misreading a `(nil, nil)` "not started yet" as an
+  empty response.
+- **`Cancel` and `InjectMessage` on a delegated sub-agent's session id now
+  reach the sub-agent's own driver**, not the root coder agent's (idle,
+  untouched) mailbox. This had no live caller before this change but was a
+  precondition for future `stop_agent`/`inject_agent` tools.
+- **`bash`, `run_command`, and `agent` accept an explicit `timeout` (`{seconds,
+  kind}`, 5s–7d)** for `wake_only` (a one-time check-in while the work keeps
+  running) or `terminate_and_wake` (stop it and report partial output). A
+  single per-process timer services every armed deadline. `run_command`'s
+  legacy `timeout_seconds` is now an alias for `terminate_and_wake`; setting
+  both `timeout` and `timeout_seconds` on the same call is a validation
+  error.
+- **A restricted-run sub-agent delegation's allowlist no longer expires
+  after its first turn.** A woken continuation used to fall back to the
+  process-wide policy instead of the delegation's own; the allowlist now
+  lives as long as the delegation and is re-inherited on every wake.
+- **`bash`/`run_command`/`agent` calls from a non-CLI/non-web origin (SDK)
+  now go through the same job registry, CAS, and explicit-timeout support
+  as CLI/web calls**, instead of a separate synchronous branch with no
+  registry and no timeout support. The response returned to the caller is
+  unchanged.
+
+### Added
+
+- **Messages can carry a `NoticeKind`** (e.g. `timeout_wake_only`,
+  `timeout_terminated`, `wake_failed`) distinguishing the kind of
+  system-generated notice, for future web rendering.
 
 ### Changed
 

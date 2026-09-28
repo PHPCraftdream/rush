@@ -205,13 +205,17 @@ type SessionAgentCall struct {
 	Origin              message.Origin
 	AutoResumed         bool
 	BackgroundJobNotice bool
-	MaxOutputTokens     int64
-	Temperature         *float64
-	TopP                *float64
-	TopK                *int64
-	FrequencyPenalty    *float64
-	PresencePenalty     *float64
-	NonInteractive      bool
+	// NoticeKind distinguishes the kind of notice this call's persisted
+	// message carries -- see message.Message.NoticeKind's doc for the value
+	// set (§5.3bis). "" for every ordinary call (legacy default).
+	NoticeKind       string
+	MaxOutputTokens  int64
+	Temperature      *float64
+	TopP             *float64
+	TopK             *int64
+	FrequencyPenalty *float64
+	PresencePenalty  *float64
+	NonInteractive   bool
 	// SystemPromptOverride, if non-empty, replaces the agent's global system prompt
 	// for this single call. Used to apply per-session system prompts from the DB.
 	SystemPromptOverride string
@@ -400,6 +404,27 @@ type SessionAgentCall struct {
 	// does not copy it, so pump-driven rebuilds fall back to the shared
 	// path exactly like any other legacy caller.
 	CallOptions *CallOptions `json:"-"`
+
+	// onQueueResolved, if non-nil, is invoked exactly once with the outcome
+	// of THIS specific call's own turn -- whether it ran immediately or was
+	// queued behind a busy mailbox and executed later by runOwned's own
+	// dispatch loop (agent_run.go's `for` loop, one call per iteration).
+	// Unlike OnAssistantMessageCreated (fires per assistant row, mid-turn),
+	// this fires once, after the turn this exact call became has fully
+	// returned. nil for every existing caller -- added for
+	// coordinator.runAwaitingAdmission (#1036).
+	// json:"-": in-process only, never durable-queue-persisted (same
+	// rationale as OnUserMessageCreated/OnAssistantMessageCreated above).
+	//
+	// CONTRACT: a call carrying this hook has a live in-process waiter with
+	// no implicit timeout anywhere in the chain -- every path that removes a
+	// call from a mailbox queue WITHOUT running it as a turn (durable
+	// orphan/restart enqueue, ClearQueue, a replacement overwritten by a
+	// newer interrupt-and-replace) MUST resolve this hook with an error
+	// (see queued_call_resolution.go's resolveCallWithError/
+	// splitCallsWithoutWaiters) instead of silently dropping the call, or
+	// the waiter blocks forever.
+	onQueueResolved func(*fantasy.AgentResult, error) `json:"-"`
 
 	// FailIfSessionBusy rejects this call instead of queueing it when the
 	// session's mailbox is already owned (submit returns false): Run fails

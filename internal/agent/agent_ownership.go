@@ -391,7 +391,17 @@ func (a *sessionAgent) restartOrphaned(calls []SessionAgentCall) error {
 // error if any enqueue fails, allowing the caller to log this as a critical
 // failure. For marshal failures, the call is truly lost — there is no
 // recovery path possible.
+//
+// A call carrying onQueueResolved (coordinator.runAwaitingAdmission, #1036)
+// has a live in-process waiter blocked on that hook — durably enqueuing it
+// would serialize it via ToSessionAgentCallData, which has no field for the
+// hook (json:"-"), silently stranding the waiter forever (no implicit
+// timeout exists anywhere in this chain). splitCallsWithoutWaiters resolves
+// every such call with errQueuedTurnNotRun BEFORE anything below durably
+// enqueues the rest, so the waiter's own caller decides whether to retry
+// instead of blocking indefinitely.
 func (a *sessionAgent) restartOrphanedWithRetry(calls []SessionAgentCall) error {
+	calls = splitCallsWithoutWaiters(calls, "the sub-agent session's previous turn ended with an error before this queued turn could run; resume it again")
 	if len(calls) == 0 {
 		return nil
 	}

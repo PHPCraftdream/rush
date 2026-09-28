@@ -7,6 +7,7 @@ package agent
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -233,56 +234,102 @@ func TestResetAutoResumeCounter(t *testing.T) {
 	assert.Equal(t, 0, coord.consecutiveResume(sid))
 }
 
-// TestRunAutoResumeRecovered_Panic proves that a panic raised anywhere
-// inside runFn (standing in for the Phase 4 auto-resume closure over c.Run
-// in notifyBackgroundJobDone, which re-enters the full synchronous
-// tool-dispatch chain) is recovered rather than crashing the process. This
-// goroutine is spawned independently of BackgroundShell.OnDone's own
-// recover(), so it needs its own — without it, a panic here (e.g. from a
-// tool call made during the auto-resumed turn) would kill the whole rush
-// process with no log output, at an arbitrary time after the triggering
-// background job finished.
-func TestRunAutoResumeRecovered_Panic(t *testing.T) {
-	done := make(chan struct{})
-	panicking := func(ctx context.Context) (*fantasy.AgentResult, error) {
-		defer close(done)
-		panic("boom: simulated panic inside Phase 4 auto-resume Run")
+// TestWakeSession_RunPanicIsRecovered proves that a panic raised anywhere
+// inside the SessionAgent.Run call wakeSession makes (standing in for the
+// Phase 4 auto-resume turn, which re-enters the full synchronous
+// tool-dispatch chain) is recovered rather than crashing the process --
+// phase 2 moved this protection from the now-removed runAutoResumeRecovered
+// into wakeSession's own defer recover() (docs/plans/2026-09-27-async-
+// phase2-spec.md §1.7). Without it, a panic here (e.g. from a tool call made
+// during the auto-resumed turn) would kill the whole rush process with no
+// log output, at an arbitrary time after the triggering job finished.
+func TestWakeSession_RunPanicIsRecovered(t *testing.T) {
+	agent := &mockSessionAgent{
+		runFunc: func(ctx context.Context, call SessionAgentCall) (*fantasy.AgentResult, error) {
+			panic("boom: simulated panic inside a woken Run")
+		},
 	}
+	coord := &coordinator{subAgentDrivers: newSubAgentDriverRegistry()}
+	// Registering a driver (rather than routing through c.currentAgent)
+	// keeps wakeNoticeCall on its driver.callFor branch, which needs no
+	// cfg/sessions wiring -- this test is about wakeSession's own recover(),
+	// not about model resolution.
+	coord.subAgentDrivers.register("sess-1", subAgentDriver{agent: agent})
+	coord.asyncJobs = newWorkLedger(nil)
+	coord.asyncJobs.coord = coord
 
-	// Run on its own goroutine, same as production, so an unrecovered panic
-	// would take down the test binary rather than just this function.
-	go runAutoResumeRecovered(t.Context(), "sess-1", "shell-1", panicking)
-
-	select {
-	case <-done:
-		// Expected: runFn ran (and panicked) without crashing the test
-		// process — reaching this line at all is the core assertion.
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for panicking runFn to run — goroutine likely died silently")
-	}
+	var err error
+	require.NotPanics(t, func() {
+		err = coord.wakeSession(t.Context(), jobIdentity{owner: "sess-1", toolCallID: "call-1"}, "notice text", "", true)
+	})
+	require.Error(t, err, "a recovered panic must still be reported as a real error, not silently swallowed")
 }
 
-// TestRunAutoResumeRecovered_NormalErrorUnaffected verifies the existing,
-// expected error-handling path (a normal Go error returned by runFn, e.g.
-// because the session was already closed) is completely untouched by the
-// new recover() — it must not be misclassified as a panic or swallowed
-// differently than before.
-func TestRunAutoResumeRecovered_NormalErrorUnaffected(t *testing.T) {
-	called := make(chan struct{})
-	erroring := func(ctx context.Context) (*fantasy.AgentResult, error) {
-		defer close(called)
-		return nil, assert.AnError
+// TestWakeSession_RunErrorIsVisibleNotDebug pins ASYNC-09/§1.4: a wake whose
+// Run attempt fails after the notice was already persisted must produce a
+// visible marker (a second InjectMessage call, tagged NoticeKind
+// "wake_failed" -- orchestrator decision 2026-09-28), not just a Debug log
+// line nobody sees. Revert-check performed: removed the
+// persistWakeFailedMarker call from wakeSession's error branch -- this test
+// FAILED (queuedCalls had length 1, only the original notice) -- restored
+// the call, re-ran, passed (length 2, second call's NoticeKind
+// "wake_failed").
+func TestWakeSession_RunErrorIsVisibleNotDebug(t *testing.T) {
+	agent := &mockSessionAgent{
+		runFunc: func(ctx context.Context, call SessionAgentCall) (*fantasy.AgentResult, error) {
+			return nil, assert.AnError
+		},
 	}
+	coord := &coordinator{subAgentDrivers: newSubAgentDriverRegistry()}
+	coord.subAgentDrivers.register("sess-2", subAgentDriver{agent: agent})
+	coord.asyncJobs = newWorkLedger(nil)
+	coord.asyncJobs.coord = coord
 
-	// Must return promptly (no panic, no goroutine involved needed here
-	// since erroring doesn't panic) and must not itself panic.
-	require.NotPanics(t, func() {
-		runAutoResumeRecovered(t.Context(), "sess-2", "shell-2", erroring)
-	})
+	err := coord.wakeSession(t.Context(), jobIdentity{owner: "sess-2", toolCallID: "call-2"}, "notice text", "", true)
+	require.Error(t, err)
 
-	select {
-	case <-called:
-	default:
-		t.Fatal("runFn was not invoked")
+	agent.mu.Lock()
+	calls := append([]SessionAgentCall(nil), agent.queuedCalls...)
+	agent.mu.Unlock()
+	require.Len(t, calls, 2, "expected the original notice persist plus a wake-failed marker")
+	require.Equal(t, "wake_failed", calls[1].NoticeKind)
+	require.Contains(t, calls[1].Prompt, "call-2")
+}
+
+// TestWakeSession_AlwaysAttemptsRunEvenWhenSessionLooksBusy pins the fix for
+// a regression found while running internal/app's black-box suite
+// (TestRunNonInteractiveChildReceivesAsyncBashResultFinishedMidTurn): an
+// earlier draft of wakeSession skipped step 2 (Run) whenever
+// agent.IsSessionBusy(owner) reported true, relying solely on step 1's
+// InjectMessage to merge the notice into the CURRENT generation via
+// injectIfBusy. That merge is a best-effort splice that only lands if the
+// current generation calls PrepareStep again after the splice -- a
+// generation whose last PrepareStep already ran before the notice was
+// persisted never drains it, so the child never got a fresh turn and its
+// parent was told "finished" over the child's pre-result text. wakeSession
+// must ALWAYS attempt Run when wake=true; Run's own tryReserveSession
+// queues it (guaranteed to run as the mailbox's own next turn) instead of
+// silently doing nothing.
+// Revert-check performed: reinstated `if agent.IsSessionBusy(job.owner) {
+// return nil }` before the Run call -- this test FAILED (calls.Load() was 0
+// instead of 1). Removed it again; re-ran, passed.
+func TestWakeSession_AlwaysAttemptsRunEvenWhenSessionLooksBusy(t *testing.T) {
+	var calls atomic.Int32
+	agent := &busyStubAgent{}
+	agent.setBusy(true)
+	agent.runFunc = func(ctx context.Context, call SessionAgentCall) (*fantasy.AgentResult, error) {
+		calls.Add(1)
+		if adm := turnAdmissionFrom(ctx); adm != nil {
+			adm.markQueued()
+		}
+		return nil, nil
 	}
+	coord := &coordinator{subAgentDrivers: newSubAgentDriverRegistry()}
+	coord.subAgentDrivers.register("child-1", subAgentDriver{agent: agent})
+	coord.asyncJobs = newWorkLedger(nil)
+	coord.asyncJobs.coord = coord
+
+	err := coord.wakeSession(t.Context(), jobIdentity{owner: "child-1", toolCallID: "call-1"}, "notice text", "", true)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, calls.Load(), "wakeSession must still call Run even when the session looks busy")
 }

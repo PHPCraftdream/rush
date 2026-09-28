@@ -172,6 +172,15 @@ type Message struct {
 	// BackgroundJobNotice marks a system-injected background-job-completion
 	// notice so the web renders it as a notice, not a human message.
 	BackgroundJobNotice bool
+	// NoticeKind distinguishes the KIND of notice for messages the wake/async
+	// job machinery persists (docs/plans/2026-09-27-wake-tools-contract.md
+	// §5.2): "" for an ordinary finish/fail/cancel notice (today's
+	// contract-undefined value, unchanged), "timeout_wake_only"/
+	// "timeout_terminated" for the two timeout events phase 2 introduces,
+	// "wake_failed" for the marker persisted when wakeSession's own Run
+	// attempt fails after the notice was already saved (orchestrator
+	// decision 2026-09-28). Other values are reserved for later phases.
+	NoticeKind string
 	// Origin marks the entry channel this message arrived through (see
 	// the Origin type's doc). Zero value = unspecified.
 	Origin Origin

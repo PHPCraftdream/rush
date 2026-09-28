@@ -74,13 +74,14 @@ INSERT INTO messages (
     hidden,
     auto_resumed,
     background_job_notice,
+    notice_kind,
     origin,
     created_at,
     updated_at
 ) VALUES (
-    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'), strftime('%s', 'now')
+    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'), strftime('%s', 'now')
 )
-RETURNING id, session_id, role, parts, model, created_at, updated_at, finished_at, provider, is_summary_message, pinned, hidden, reasoning_effort, auto_resumed, background_job_notice, input_tokens, output_tokens, reasoning_tokens, cache_creation_tokens, cache_read_tokens, total_tokens, cost_usd, usage_provider, usage_model, cache_support, usage_estimated, checkpoint_generation, origin
+RETURNING id, session_id, role, parts, model, created_at, updated_at, finished_at, provider, is_summary_message, pinned, hidden, reasoning_effort, auto_resumed, background_job_notice, input_tokens, output_tokens, reasoning_tokens, cache_creation_tokens, cache_read_tokens, total_tokens, cost_usd, usage_provider, usage_model, cache_support, usage_estimated, checkpoint_generation, origin, notice_kind
 `
 
 type CreateMessageParams struct {
@@ -95,6 +96,7 @@ type CreateMessageParams struct {
 	Hidden              int64          `json:"hidden"`
 	AutoResumed         int64          `json:"auto_resumed"`
 	BackgroundJobNotice int64          `json:"background_job_notice"`
+	NoticeKind          string         `json:"notice_kind"`
 	Origin              string         `json:"origin"`
 }
 
@@ -111,6 +113,7 @@ func (q *Queries) CreateMessage(ctx context.Context, arg CreateMessageParams) (M
 		arg.Hidden,
 		arg.AutoResumed,
 		arg.BackgroundJobNotice,
+		arg.NoticeKind,
 		arg.Origin,
 	)
 	var i Message
@@ -143,6 +146,7 @@ func (q *Queries) CreateMessage(ctx context.Context, arg CreateMessageParams) (M
 		&i.UsageEstimated,
 		&i.CheckpointGeneration,
 		&i.Origin,
+		&i.NoticeKind,
 	)
 	return i, err
 }
@@ -224,7 +228,7 @@ func (q *Queries) DeleteSessionMessages(ctx context.Context, sessionID string) e
 }
 
 const getMessage = `-- name: GetMessage :one
-SELECT id, session_id, role, parts, model, created_at, updated_at, finished_at, provider, is_summary_message, pinned, hidden, reasoning_effort, auto_resumed, background_job_notice, input_tokens, output_tokens, reasoning_tokens, cache_creation_tokens, cache_read_tokens, total_tokens, cost_usd, usage_provider, usage_model, cache_support, usage_estimated, checkpoint_generation, origin
+SELECT id, session_id, role, parts, model, created_at, updated_at, finished_at, provider, is_summary_message, pinned, hidden, reasoning_effort, auto_resumed, background_job_notice, input_tokens, output_tokens, reasoning_tokens, cache_creation_tokens, cache_read_tokens, total_tokens, cost_usd, usage_provider, usage_model, cache_support, usage_estimated, checkpoint_generation, origin, notice_kind
 FROM messages
 WHERE id = ? LIMIT 1
 `
@@ -261,6 +265,7 @@ func (q *Queries) GetMessage(ctx context.Context, id string) (Message, error) {
 		&i.UsageEstimated,
 		&i.CheckpointGeneration,
 		&i.Origin,
+		&i.NoticeKind,
 	)
 	return i, err
 }
@@ -328,7 +333,7 @@ func (q *Queries) GetTranscriptWindowCursor(ctx context.Context, arg GetTranscri
 }
 
 const listAllUserMessages = `-- name: ListAllUserMessages :many
-SELECT id, session_id, role, parts, model, created_at, updated_at, finished_at, provider, is_summary_message, pinned, hidden, reasoning_effort, auto_resumed, background_job_notice, input_tokens, output_tokens, reasoning_tokens, cache_creation_tokens, cache_read_tokens, total_tokens, cost_usd, usage_provider, usage_model, cache_support, usage_estimated, checkpoint_generation, origin
+SELECT id, session_id, role, parts, model, created_at, updated_at, finished_at, provider, is_summary_message, pinned, hidden, reasoning_effort, auto_resumed, background_job_notice, input_tokens, output_tokens, reasoning_tokens, cache_creation_tokens, cache_read_tokens, total_tokens, cost_usd, usage_provider, usage_model, cache_support, usage_estimated, checkpoint_generation, origin, notice_kind
 FROM messages
 WHERE role = 'user'
 ORDER BY created_at DESC, rowid DESC
@@ -374,6 +379,7 @@ func (q *Queries) ListAllUserMessages(ctx context.Context) ([]Message, error) {
 			&i.UsageEstimated,
 			&i.CheckpointGeneration,
 			&i.Origin,
+			&i.NoticeKind,
 		); err != nil {
 			return nil, err
 		}
@@ -491,7 +497,7 @@ func (q *Queries) ListCandidateInterruptedAssistantSessions(ctx context.Context)
 }
 
 const listMessagesBySession = `-- name: ListMessagesBySession :many
-SELECT id, session_id, role, parts, model, created_at, updated_at, finished_at, provider, is_summary_message, pinned, hidden, reasoning_effort, auto_resumed, background_job_notice, input_tokens, output_tokens, reasoning_tokens, cache_creation_tokens, cache_read_tokens, total_tokens, cost_usd, usage_provider, usage_model, cache_support, usage_estimated, checkpoint_generation, origin
+SELECT id, session_id, role, parts, model, created_at, updated_at, finished_at, provider, is_summary_message, pinned, hidden, reasoning_effort, auto_resumed, background_job_notice, input_tokens, output_tokens, reasoning_tokens, cache_creation_tokens, cache_read_tokens, total_tokens, cost_usd, usage_provider, usage_model, cache_support, usage_estimated, checkpoint_generation, origin, notice_kind
 FROM messages
 WHERE session_id = ?
 ORDER BY created_at ASC, rowid ASC
@@ -543,6 +549,7 @@ func (q *Queries) ListMessagesBySession(ctx context.Context, sessionID string) (
 			&i.UsageEstimated,
 			&i.CheckpointGeneration,
 			&i.Origin,
+			&i.NoticeKind,
 		); err != nil {
 			return nil, err
 		}
@@ -559,7 +566,7 @@ func (q *Queries) ListMessagesBySession(ctx context.Context, sessionID string) (
 
 const listMessagesBySessionAtCreatedAt = `-- name: ListMessagesBySessionAtCreatedAt :many
 SELECT
-    messages.id, messages.session_id, messages.role, messages.parts, messages.model, messages.created_at, messages.updated_at, messages.finished_at, messages.provider, messages.is_summary_message, messages.pinned, messages.hidden, messages.reasoning_effort, messages.auto_resumed, messages.background_job_notice, messages.input_tokens, messages.output_tokens, messages.reasoning_tokens, messages.cache_creation_tokens, messages.cache_read_tokens, messages.total_tokens, messages.cost_usd, messages.usage_provider, messages.usage_model, messages.cache_support, messages.usage_estimated, messages.checkpoint_generation, messages.origin,
+    messages.id, messages.session_id, messages.role, messages.parts, messages.model, messages.created_at, messages.updated_at, messages.finished_at, messages.provider, messages.is_summary_message, messages.pinned, messages.hidden, messages.reasoning_effort, messages.auto_resumed, messages.background_job_notice, messages.input_tokens, messages.output_tokens, messages.reasoning_tokens, messages.cache_creation_tokens, messages.cache_read_tokens, messages.total_tokens, messages.cost_usd, messages.usage_provider, messages.usage_model, messages.cache_support, messages.usage_estimated, messages.checkpoint_generation, messages.origin, messages.notice_kind,
     CAST(rowid AS INTEGER) AS row_id
 FROM messages
 WHERE session_id = ?
@@ -623,6 +630,7 @@ func (q *Queries) ListMessagesBySessionAtCreatedAt(ctx context.Context, arg List
 			&i.Message.UsageEstimated,
 			&i.Message.CheckpointGeneration,
 			&i.Message.Origin,
+			&i.Message.NoticeKind,
 			&i.RowID,
 		); err != nil {
 			return nil, err
@@ -639,7 +647,7 @@ func (q *Queries) ListMessagesBySessionAtCreatedAt(ctx context.Context, arg List
 }
 
 const listMessagesBySessionOlderThanCreatedAt = `-- name: ListMessagesBySessionOlderThanCreatedAt :many
-SELECT id, session_id, role, parts, model, created_at, updated_at, finished_at, provider, is_summary_message, pinned, hidden, reasoning_effort, auto_resumed, background_job_notice, input_tokens, output_tokens, reasoning_tokens, cache_creation_tokens, cache_read_tokens, total_tokens, cost_usd, usage_provider, usage_model, cache_support, usage_estimated, checkpoint_generation, origin
+SELECT id, session_id, role, parts, model, created_at, updated_at, finished_at, provider, is_summary_message, pinned, hidden, reasoning_effort, auto_resumed, background_job_notice, input_tokens, output_tokens, reasoning_tokens, cache_creation_tokens, cache_read_tokens, total_tokens, cost_usd, usage_provider, usage_model, cache_support, usage_estimated, checkpoint_generation, origin, notice_kind
 FROM messages
 WHERE session_id = ?
   AND created_at < ?
@@ -703,6 +711,7 @@ func (q *Queries) ListMessagesBySessionOlderThanCreatedAt(ctx context.Context, a
 			&i.UsageEstimated,
 			&i.CheckpointGeneration,
 			&i.Origin,
+			&i.NoticeKind,
 		); err != nil {
 			return nil, err
 		}
@@ -718,7 +727,7 @@ func (q *Queries) ListMessagesBySessionOlderThanCreatedAt(ctx context.Context, a
 }
 
 const listMessagesBySessionPaginated = `-- name: ListMessagesBySessionPaginated :many
-SELECT id, session_id, role, parts, model, created_at, updated_at, finished_at, provider, is_summary_message, pinned, hidden, reasoning_effort, auto_resumed, background_job_notice, input_tokens, output_tokens, reasoning_tokens, cache_creation_tokens, cache_read_tokens, total_tokens, cost_usd, usage_provider, usage_model, cache_support, usage_estimated, checkpoint_generation, origin
+SELECT id, session_id, role, parts, model, created_at, updated_at, finished_at, provider, is_summary_message, pinned, hidden, reasoning_effort, auto_resumed, background_job_notice, input_tokens, output_tokens, reasoning_tokens, cache_creation_tokens, cache_read_tokens, total_tokens, cost_usd, usage_provider, usage_model, cache_support, usage_estimated, checkpoint_generation, origin, notice_kind
 FROM messages
 WHERE session_id = ?
 ORDER BY created_at DESC, rowid DESC
@@ -786,6 +795,7 @@ func (q *Queries) ListMessagesBySessionPaginated(ctx context.Context, arg ListMe
 			&i.UsageEstimated,
 			&i.CheckpointGeneration,
 			&i.Origin,
+			&i.NoticeKind,
 		); err != nil {
 			return nil, err
 		}
@@ -801,7 +811,7 @@ func (q *Queries) ListMessagesBySessionPaginated(ctx context.Context, arg ListMe
 }
 
 const listUserMessagesBySession = `-- name: ListUserMessagesBySession :many
-SELECT id, session_id, role, parts, model, created_at, updated_at, finished_at, provider, is_summary_message, pinned, hidden, reasoning_effort, auto_resumed, background_job_notice, input_tokens, output_tokens, reasoning_tokens, cache_creation_tokens, cache_read_tokens, total_tokens, cost_usd, usage_provider, usage_model, cache_support, usage_estimated, checkpoint_generation, origin
+SELECT id, session_id, role, parts, model, created_at, updated_at, finished_at, provider, is_summary_message, pinned, hidden, reasoning_effort, auto_resumed, background_job_notice, input_tokens, output_tokens, reasoning_tokens, cache_creation_tokens, cache_read_tokens, total_tokens, cost_usd, usage_provider, usage_model, cache_support, usage_estimated, checkpoint_generation, origin, notice_kind
 FROM messages
 WHERE session_id = ? AND role = 'user'
 ORDER BY created_at DESC, rowid DESC
@@ -852,6 +862,7 @@ func (q *Queries) ListUserMessagesBySession(ctx context.Context, sessionID strin
 			&i.UsageEstimated,
 			&i.CheckpointGeneration,
 			&i.Origin,
+			&i.NoticeKind,
 		); err != nil {
 			return nil, err
 		}

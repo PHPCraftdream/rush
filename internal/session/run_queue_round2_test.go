@@ -489,7 +489,8 @@ func setupTestSession(t *testing.T, title string) (*session.Session, session.Ser
 			cache_support TEXT,
 			usage_estimated INTEGER,
 			origin TEXT DEFAULT '' NOT NULL,
-			checkpoint_generation INTEGER NOT NULL DEFAULT 0
+			checkpoint_generation INTEGER NOT NULL DEFAULT 0,
+			notice_kind TEXT NOT NULL DEFAULT ''
 		);
 
 		CREATE TABLE files (

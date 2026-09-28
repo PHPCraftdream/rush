@@ -48,7 +48,14 @@ func (c *coordinator) Cancel(sessionID string) {
 	if c.asyncJobs != nil {
 		c.asyncJobs.cancelSession(sessionID)
 	}
-	c.currentAgent.Cancel(sessionID)
+	// Task #1054: a delegated child session's live generation runs on its
+	// registered driver, never c.currentAgent (task #1049) -- routing
+	// through agentFor is the same choke point wakeSession uses, so Cancel
+	// on a child id actually reaches the SessionAgent that owns its
+	// mailbox instead of silently finding an untouched one on
+	// c.currentAgent (agent_control.go's genCancel == nil branch: no error,
+	// no log, just nothing happens).
+	c.agentFor(sessionID).Cancel(sessionID)
 }
 
 func (c *coordinator) CancelAll() (stillBusy bool) {
@@ -637,5 +644,8 @@ func (c *coordinator) InjectMessage(ctx context.Context, sessionID, prompt strin
 	if err != nil {
 		return message.Message{}, err
 	}
-	return c.currentAgent.InjectMessage(ctx, call)
+	// Task #1054: see Cancel's identical reasoning above -- a delegated
+	// child session's injectIfBusy merge must land on the mailbox its own
+	// driver actually owns.
+	return c.agentFor(sessionID).InjectMessage(ctx, call)
 }

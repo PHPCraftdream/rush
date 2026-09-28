@@ -47,6 +47,7 @@ type Message struct {
 	UsageEstimated       sql.NullInt64   `json:"usage_estimated"`
 	CheckpointGeneration int64           `json:"checkpoint_generation"`
 	Origin               string          `json:"origin"`
+	NoticeKind           string          `json:"notice_kind"`
 }
 
 type OrphanCallOutbox struct {

@@ -27,14 +27,20 @@ type BashParams struct {
 	WorkingDir          string `json:"working_dir,omitempty" description:"The working directory to execute the command in (defaults to current directory)"`
 	RunInBackground     bool   `json:"run_in_background,omitempty" description:"Set to true (boolean) to run this command in the background. Use job_output to read the output later."`
 	AutoBackgroundAfter int    `json:"auto_background_after,omitempty" description:"Seconds to wait before automatically moving the command to a background job (default: 60)"`
+	// Timeout is an optional explicit deadline for this call (#1037). See
+	// TimeoutParams's doc for the shape; parsed generically by
+	// internal/agent's parseTimeoutParam, not read from this struct at
+	// runtime.
+	Timeout *TimeoutParams `json:"timeout,omitempty" description:"Optional explicit deadline: {\"seconds\": N, \"kind\": \"wake_only\"|\"terminate_and_wake\"}. \"wake_only\" lets the work keep running and just notifies you it's taking a while; \"terminate_and_wake\" stops it and reports partial output. No default -- set it only when you actually want a deadline."`
 }
 
 type BashPermissionsParams struct {
-	Description         string `json:"description"`
-	Command             string `json:"command"`
-	WorkingDir          string `json:"working_dir"`
-	RunInBackground     bool   `json:"run_in_background"`
-	AutoBackgroundAfter int    `json:"auto_background_after"`
+	Description         string         `json:"description"`
+	Command             string         `json:"command"`
+	WorkingDir          string         `json:"working_dir"`
+	RunInBackground     bool           `json:"run_in_background"`
+	AutoBackgroundAfter int            `json:"auto_background_after"`
+	Timeout             *TimeoutParams `json:"timeout"`
 }
 
 func (p BashPermissionsParams) RunAllowlistCommand() string {

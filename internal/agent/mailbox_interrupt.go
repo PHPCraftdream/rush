@@ -158,6 +158,18 @@ func (mb *mailbox) interruptAndReplaceLocked(call SessionAgentCall) (context.Can
 	// correct and unchanged — it only decides mailbox ownership, not who
 	// eventually runs the durable row.
 	if !call.FromDurableQueue {
+		// A prior replacement being overwritten here never gets a turn --
+		// interruptAndReplace's whole point is "run THIS instead". If it
+		// carried onQueueResolved (#1036's live in-process waiter), resolve
+		// it now with errQueuedTurnNotRun instead of silently discarding the
+		// pointer, or that waiter blocks forever (no implicit timeout exists
+		// in this chain). Called while still holding mb.mu: the hook
+		// (runAwaitingAdmission's non-blocking channel send) never touches
+		// the mailbox back, so there is no reentrancy risk, and every other
+		// mutation in this function already happens under the same lock.
+		if mb.replacement != nil {
+			resolveCallWithError(*mb.replacement, "this queued turn was superseded by a newer interrupt-and-replace before it could run")
+		}
 		mb.replacement = &call
 	}
 	// #307 (P1-2 follow-up): mb.current.cancel == nil while mb.state ==

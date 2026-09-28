@@ -393,6 +393,7 @@ func NewCoordinator(
 	// before.
 	c.asyncJobs = newWorkLedger(c.notifyAsyncCompletion)
 	c.asyncJobs.coord = c
+	c.asyncJobs.timeouts = newTimeoutService(c.asyncJobs)
 	c.subAgentDrivers = newSubAgentDriverRegistry()
 
 	agentCfg, ok := cfg.Config().Agents[config.AgentCoder]

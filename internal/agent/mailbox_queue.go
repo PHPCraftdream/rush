@@ -9,12 +9,28 @@ package agent
 // together under mu. It does NOT release ownership (state/current/
 // dispatcherCancel are untouched) — the owner is still running and merely
 // wants its pending queues discarded, not its reservation yanked.
+//
+// Any dropped call carrying onQueueResolved (#1036's live in-process waiter)
+// is resolved with errQueuedTurnNotRun before this returns — ClearQueue
+// discards the call outright (unlike the orphan/restart path, there is no
+// durable row to fall back on), so silently dropping it would leave its
+// waiter blocked forever. Resolution runs AFTER mb.mu is released: the hook
+// itself never touches the mailbox, but there is no reason to hold the lock
+// across an arbitrary caller-supplied callback.
 func (mb *mailbox) clearAll() {
 	mb.mu.Lock()
-	defer mb.mu.Unlock()
+	dropped := mb.submitted
+	replacement := mb.replacement
 	mb.submitted = nil
 	mb.replacement = nil
 	mb.injects = nil
+	mb.mu.Unlock()
+
+	const reason = "the session's queue was explicitly cleared"
+	resolveCallsWithError(dropped, reason)
+	if replacement != nil {
+		resolveCallWithError(*replacement, reason)
+	}
 }
 
 // queue appends call to the submitted queue regardless of ownership state.

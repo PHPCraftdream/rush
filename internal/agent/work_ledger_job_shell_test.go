@@ -18,7 +18,7 @@ import (
 func TestWorkLedger_ResolveJobShellID_OwnedJobResolves(t *testing.T) {
 	t.Parallel()
 	l := newWorkLedger(nil)
-	_, _, err := l.Start("session-a", "call-1", "", tools.BashToolName, "", true, nil)
+	_, _, err := l.Start("session-a", "call-1", "", tools.BashToolName, "", true, false, nil, nil)
 	require.NoError(t, err)
 
 	_, err = l.ResolveJobShellID("session-a", "call-1")
@@ -37,7 +37,7 @@ func TestWorkLedger_ResolveJobShellID_OwnedJobResolves(t *testing.T) {
 func TestWorkLedger_ResolveJobShellID_ForeignSessionNotFound(t *testing.T) {
 	t.Parallel()
 	l := newWorkLedger(nil)
-	_, _, err := l.Start("session-a", "call-1", "", tools.BashToolName, "", true, nil)
+	_, _, err := l.Start("session-a", "call-1", "", tools.BashToolName, "", true, false, nil, nil)
 	require.NoError(t, err)
 	l.setShellID("session-a", "call-1", "003")
 
@@ -63,7 +63,7 @@ func TestWorkLedger_ResolveJobShellID_UnknownJobNotFound(t *testing.T) {
 func TestWorkLedger_ResolveJobShellID_NotACommandJob(t *testing.T) {
 	t.Parallel()
 	l := newWorkLedger(nil)
-	_, _, err := l.Start("session-a", "call-1", "", AgentToolName, "child-session", false, nil)
+	_, _, err := l.Start("session-a", "call-1", "", AgentToolName, "child-session", false, false, nil, nil)
 	require.NoError(t, err)
 
 	_, err = l.ResolveJobShellID("session-a", "call-1")
@@ -77,7 +77,7 @@ func TestWorkLedger_ResolveJobShellID_NotACommandJob(t *testing.T) {
 func TestWorkLedger_ResolveJobShellID_RunCommandRefusedClearly(t *testing.T) {
 	t.Parallel()
 	l := newWorkLedger(nil)
-	_, _, err := l.Start("session-a", "call-1", "", tools.RunCommandToolName, "", true, nil)
+	_, _, err := l.Start("session-a", "call-1", "", tools.RunCommandToolName, "", true, false, nil, nil)
 	require.NoError(t, err)
 
 	_, err = l.ResolveJobShellID("session-a", "call-1")

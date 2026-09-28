@@ -570,6 +570,9 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 		// from the durable dispatcher cancel.
 		mb.beginGeneration(turnCancel)
 		result, next, hasNext, err := a.runTurn(turnCtx, call, lk, epoch, runCancel)
+		if call.onQueueResolved != nil {
+			call.onQueueResolved(result, err)
+		}
 		mb.clearCurrentCall(epoch)
 		turnCancel()
 		if !hasNext {

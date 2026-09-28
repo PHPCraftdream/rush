@@ -110,6 +110,7 @@ func (a *sessionAgent) createUserMessage(ctx context.Context, call SessionAgentC
 		Parts:               parts,
 		AutoResumed:         call.AutoResumed,
 		BackgroundJobNotice: call.BackgroundJobNotice,
+		NoticeKind:          call.NoticeKind,
 		Origin:              call.Origin,
 	})
 	if err != nil {

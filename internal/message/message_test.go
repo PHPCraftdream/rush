@@ -89,7 +89,8 @@ func newTestMessageDB(t *testing.T) (*sql.DB, *db.Queries) {
 			cache_support TEXT,
 			usage_estimated INTEGER,
 			origin TEXT DEFAULT '' NOT NULL,
-			checkpoint_generation INTEGER NOT NULL DEFAULT 0
+			checkpoint_generation INTEGER NOT NULL DEFAULT 0,
+			notice_kind TEXT NOT NULL DEFAULT ''
 		);
 	`)
 	require.NoError(t, err)

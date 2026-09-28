@@ -21,6 +21,17 @@ import (
 
 const maxAsyncJobsPerSession = 50
 
+// maxNoticedBefore bounds workLedger.noticedBefore (§2.4): one entry per
+// wake notice persisted, evicted oldest-first once the bound is hit. Sized
+// generously for a long-lived web process without letting it grow
+// unbounded (orchestrator decision 2026-09-28 item 2).
+const maxNoticedBefore = 1000
+
+// noticedBeforeKey is the noticedBefore map key for (owner, toolCallID).
+func noticedBeforeKey(owner, toolCallID string) string {
+	return owner + "\x00" + toolCallID
+}
+
 // AsyncCompletion is the result of a tool that returned before its work ended.
 type AsyncCompletion struct {
 	SessionID  string
@@ -31,6 +42,18 @@ type AsyncCompletion struct {
 	// cli is the origin of the job that produced this completion. Set only
 	// on the wake-callback path, so the woken turn keeps the job's origin.
 	cli bool
+	// TimedOut is true when the job's terminal state was phaseTimedOut (set
+	// by deliverLocked). Selects the contract's timeout wording and
+	// NoticeKind instead of the generic finished/failed one.
+	TimedOut bool
+	// TimeoutSeconds is job.timeoutSeconds, quoted verbatim in the timeout
+	// text; meaningless when !TimedOut.
+	TimeoutSeconds int
+	// Metadata carries the inner tool's raw ToolResponse.Metadata through to
+	// a SYNC job's jobResult (§4.4) so awaitAndFinish can reconstruct a
+	// byte-for-byte response. Unused by every async (CLI/web) delivery,
+	// which only ever formats Content/IsError into a human notice.
+	Metadata string
 }
 
 // AsyncCompletionSource exposes session completion events to the CLI runner.
@@ -76,6 +99,25 @@ type workLedger struct {
 	// alongside the event-driven scope accounting that replaces it.
 	tickStop chan struct{}
 	closed   bool
+
+	// noticedBefore maps "owner\x00toolCallID" -> the persisted notice
+	// message id, so a repeated wakeSession call for a job already
+	// delivered (§1.3) skips re-persisting and goes straight to step 2.
+	// Written when wakeSession's step 1 succeeds; removed once the notice
+	// has been consumed by the owner's turn (wakeSession's own Run call
+	// returning without error, including a queued admission -- either way
+	// the owner's mailbox now owns delivering it). A failed Run's entry is
+	// kept (so a hypothetical retry still finds ExistingMessageID) until
+	// evicted by size (maxNoticedBefore, FIFO via noticedBeforeKeys) --
+	// orchestrator decision 2026-09-28 item 2: no unbounded growth.
+	noticedBefore     map[string]string
+	noticedBeforeKeys []string
+
+	// timeouts is the single per-process timer service for every asyncJob
+	// with a non-zero deadline (§5.4). Nil-safe throughout (timeoutService's
+	// methods all check for a nil receiver): isolated ledger tests that
+	// never call newTimeoutService simply never arm/fire a timeout.
+	timeouts *timeoutService
 }
 
 func newWorkLedger(onWebDone func(AsyncCompletion)) *workLedger {
@@ -110,7 +152,18 @@ func signalWorkSession(s *sessionJobs) {
 // effect (e.g. a second `rm -rf`). A reused id with a DIFFERENT tool or input
 // is a distinct call colliding on the id and is refused, so it is never
 // silently reported as started without running.
-func (l *workLedger) Start(owner, toolCallID, input, toolName, childSession string, cli bool, cancel context.CancelFunc) (*asyncJob, bool, error) {
+//
+// sync is true for a non-CLI/non-Web origin (§4.2): its only consumer is the
+// goroutine blocked in awaitSync, so it is never routed to the ready queue
+// or onWebDone (see deliverLocked's sync short-circuit). announced=sync
+// closes the ack-gate immediately for a sync job, since there is no separate
+// "started" tool result to wait for -- the FINAL response IS this call's
+// only tool result, exactly like any ordinary synchronous tool.
+//
+// timeout, when non-nil, arms this job with an explicit per-call deadline
+// (§5.4) via l.timeouts (nil-safe: an isolated ledger test with no timer
+// service simply never arms).
+func (l *workLedger) Start(owner, toolCallID, input, toolName, childSession string, cli, sync bool, timeout *TimeoutSpec, cancel context.CancelFunc) (*asyncJob, bool, error) {
 	if owner == "" || toolCallID == "" {
 		return nil, false, errors.New("async job requires a session and tool call ID")
 	}
@@ -129,10 +182,82 @@ func (l *workLedger) Start(owner, toolCallID, input, toolName, childSession stri
 	if len(s.jobs) >= maxAsyncJobsPerSession {
 		return nil, false, fmt.Errorf("maximum number of async jobs (%d) reached", maxAsyncJobsPerSession)
 	}
-	job := &asyncJob{owner: owner, toolCallID: toolCallID, input: input, toolName: toolName, childSession: childSession, cli: cli, cancel: cancel}
+	job := &asyncJob{
+		owner: owner, toolCallID: toolCallID, input: input, toolName: toolName,
+		childSession: childSession, cli: cli, cancel: cancel,
+		sync: sync, announced: sync,
+	}
+	if sync {
+		job.done = make(chan struct{})
+	}
+	if timeout != nil {
+		job.deadline = timeout.Deadline
+		job.timeoutKind = timeout.Kind
+		job.timeoutSeconds = timeout.Seconds
+		l.timeouts.arm(job) // nil-safe: isolated ledger tests never wire a timeoutService
+	}
 	s.jobs[toolCallID] = job
 	signalWorkSession(s)
 	return job, false, nil
+}
+
+// noticeFor returns the persisted notice message id previously recorded for
+// job (§1.3's idempotency key), if any.
+func (l *workLedger) noticeFor(job jobIdentity) (string, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	id, ok := l.noticedBefore[noticedBeforeKey(job.owner, job.toolCallID)]
+	return id, ok
+}
+
+// recordNotice records msgID as job's persisted notice message id, evicting
+// the oldest entry first once maxNoticedBefore is exceeded (orchestrator
+// decision 2026-09-28 item 2: bounded, not unbounded, growth).
+func (l *workLedger) recordNotice(job jobIdentity, msgID string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	key := noticedBeforeKey(job.owner, job.toolCallID)
+	if l.noticedBefore == nil {
+		l.noticedBefore = make(map[string]string)
+	}
+	if _, exists := l.noticedBefore[key]; !exists {
+		l.noticedBeforeKeys = append(l.noticedBeforeKeys, key)
+	}
+	l.noticedBefore[key] = msgID
+	for len(l.noticedBefore) > maxNoticedBefore && len(l.noticedBeforeKeys) > 0 {
+		oldest := l.noticedBeforeKeys[0]
+		l.noticedBeforeKeys = l.noticedBeforeKeys[1:]
+		delete(l.noticedBefore, oldest)
+	}
+}
+
+// consumeNotice removes job's noticedBefore entry -- from BOTH the map and
+// noticedBeforeKeys -- once its notice has been consumed by the owner's turn
+// (wakeSession's own Run call returning without error, including a queued
+// admission). Orchestrator decision 2026-09-28 item 2: cleared on
+// consumption, not left to accumulate until eviction. Removing only from the
+// map (an earlier version of this function) left two bugs: noticedBeforeKeys
+// grew forever in a long-lived web process (eviction in recordNotice only
+// runs once the MAP exceeds maxNoticedBefore, never observing the orphaned
+// slice entries), and a key consumed then re-recorded got a SECOND entry in
+// the slice (recordNotice's `!exists` check passes again once the map entry
+// is gone), so an eviction could pop the stale occurrence and delete the
+// fresh map entry it now collides with by key -- deleting a notice that had
+// just been re-recorded.
+func (l *workLedger) consumeNotice(job jobIdentity) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	key := noticedBeforeKey(job.owner, job.toolCallID)
+	if _, ok := l.noticedBefore[key]; !ok {
+		return
+	}
+	delete(l.noticedBefore, key)
+	for i, k := range l.noticedBeforeKeys {
+		if k == key {
+			l.noticedBeforeKeys = append(l.noticedBeforeKeys[:i], l.noticedBeforeKeys[i+1:]...)
+			break
+		}
+	}
 }
 
 // markDrained records that a CLI loop consumes owner's ready queue. CLI
@@ -171,12 +296,24 @@ func (l *workLedger) deliverLocked(owner string, job *asyncJob) (AsyncCompletion
 	if !present || current != job || !job.state.terminal() || !job.announced {
 		return AsyncCompletion{}, false
 	}
+	if job.sync {
+		// A sync job's only consumer is the goroutine blocked in awaitSync
+		// (§4.4): never routed to the ready queue or onWebDone.
+		delete(s.jobs, job.toolCallID)
+		if job.childSession != "" {
+			l.gcChildLocked(job.childSession)
+		}
+		close(job.done)
+		return AsyncCompletion{}, false
+	}
 	completion := AsyncCompletion{
-		SessionID:  owner,
-		ToolCallID: job.toolCallID,
-		ToolName:   job.toolName,
-		Content:    job.result.content,
-		IsError:    job.result.isError,
+		SessionID:      owner,
+		ToolCallID:     job.toolCallID,
+		ToolName:       job.toolName,
+		Content:        job.result.content,
+		IsError:        job.result.isError,
+		TimedOut:       job.state == phaseTimedOut,
+		TimeoutSeconds: job.timeoutSeconds,
 	}
 	delete(s.jobs, job.toolCallID)
 	if job.childSession != "" {
@@ -234,6 +371,27 @@ func (l *workLedger) abort(sessionID, toolCallID string) {
 	l.mu.Unlock()
 	if job != nil && job.cancel != nil {
 		job.cancel()
+	}
+}
+
+// awaitSync blocks until job's outcome is ready (deliverLocked closed
+// job.done) or ctx is done. job.sync must be true. Reads job.result under
+// l.mu -- deliverLocked writes it (via transitionToTerminal) under the same
+// lock before closing done, so there is no torn read.
+func (l *workLedger) awaitSync(ctx context.Context, job *asyncJob) (jobResult, error) {
+	select {
+	case <-job.done:
+		l.mu.Lock()
+		res := job.result
+		l.mu.Unlock()
+		return res, nil
+	case <-ctx.Done():
+		// The job's own executor context is EITHER ctx itself (sync path,
+		// §4.2) or derived from it -- cancelling ctx already cancels the
+		// executor, which will reach finalize/deliverLocked on its own and
+		// eventually close job.done. This branch does not need to cancel
+		// anything itself; it only stops THIS caller from waiting further.
+		return jobResult{}, ctx.Err()
 	}
 }
 
@@ -399,6 +557,7 @@ func (l *workLedger) close() {
 	if stop != nil {
 		close(stop)
 	}
+	l.timeouts.close()
 	for _, owner := range owners {
 		l.cancelSession(owner)
 	}
