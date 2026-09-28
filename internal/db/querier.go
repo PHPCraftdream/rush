@@ -82,6 +82,15 @@ type Querier interface {
 	// Owner deletes its own row at exit if it has no rows (doc sec.3.6); a
 	// recoverer holding a dead host's lock calls this too, after deleting the
 	// lock file itself. No FK enforces this -- the guard is explicit here.
+	// The subquery is correlated against async_hosts.id (not a second bound
+	// parameter): sqlc's SQLite plugin does not reliably rewrite a repeated
+	// same-named placeholder once one occurrence sits in the outer WHERE and
+	// the other inside a subquery's WHERE (confirmed against sqlc v1.30.0 --
+	// bare `?`, repeated @id, and two distinctly-named args all either
+	// under-counted the bind values or left an occurrence unrewritten,
+	// producing a query that fails at runtime). Correlating on the outer
+	// table's own column needs only ONE real parameter and sidesteps the bug
+	// entirely.
 	DeleteAsyncHostIfNoJobs(ctx context.Context, id string) (int64, error)
 	DeleteFile(ctx context.Context, id string) error
 	DeleteMessage(ctx context.Context, id string) error

@@ -253,3 +253,41 @@ func TestAsyncReactionDebtExists(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, debt.Bool)
 }
+
+// TestDeleteAsyncHostIfNoJobs_CorrelatedSubquery is a regression test for a
+// real sqlc v1.30.0 code-generation defect found while writing this query:
+// passing the same id value to a bare `?`, a repeated @id, or two
+// distinctly-named args all produced a query that either bound the wrong
+// number of values or left one placeholder as invalid literal text (see the
+// comment on DeleteAsyncHostIfNoJobs in sql/async_jobs.sql). The fix
+// correlates the subquery against async_hosts.id instead of re-binding a
+// second parameter. This test proves the ACTUAL runtime behavior: a host
+// with a referencing row survives, one with none is deleted.
+func TestDeleteAsyncHostIfNoJobs_CorrelatedSubquery(t *testing.T) {
+	ctx, conn := setupPhase4DB(t)
+	q := New(conn)
+
+	_, err := q.RegisterAsyncHost(ctx, RegisterAsyncHostParams{ID: "host-busy", Pid: 1, StartedAt: 1700000000})
+	require.NoError(t, err)
+	_, err = q.RegisterAsyncHost(ctx, RegisterAsyncHostParams{ID: "host-idle", Pid: 2, StartedAt: 1700000000})
+	require.NoError(t, err)
+
+	require.NoError(t, insertRunningAsyncJob(t, ctx, conn, q, "call-1", "", "host-busy"))
+
+	rows, err := q.DeleteAsyncHostIfNoJobs(ctx, "host-busy")
+	require.NoError(t, err)
+	assert.EqualValues(t, 0, rows, "a host with a referencing async_jobs row must NOT be deleted")
+
+	rows, err = q.DeleteAsyncHostIfNoJobs(ctx, "host-idle")
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, rows, "a host with zero referencing rows must be deleted")
+
+	remaining, err := q.ListAsyncHosts(ctx)
+	require.NoError(t, err)
+	ids := make([]string, len(remaining))
+	for i, h := range remaining {
+		ids[i] = h.ID
+	}
+	assert.Contains(t, ids, "host-busy")
+	assert.NotContains(t, ids, "host-idle")
+}
