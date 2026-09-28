@@ -16,6 +16,8 @@ import {
   selectMessageIDs,
   removeQueuedMessage,
   updateQueuedMessage,
+  sendQueuedMessageNow,
+  interruptAndSendQueuedMessage,
   rerunFromMessage,
   type QueuedMessage,
 } from "../store";
@@ -25,7 +27,7 @@ import { ChatInput } from "./ChatInput";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { ChatToolbar } from "./ChatToolbar";
 import { TodoList } from "./TodoList";
-import { MessageSquare, Pencil, Sparkles, Square, Trash2, X } from "lucide-react";
+import { MessageSquare, Pencil, PlusCircle, Sparkles, Square, Trash2, X, Zap } from "lucide-react";
 import type { Message as Msg, ContentPart } from "../types";
 
 // ── Queued message item ───────────────────────────────────────────────────────
@@ -35,11 +37,15 @@ function QueuedMessageItem({
   sessionID,
   position,
   total,
+  sessionBusy,
 }: {
   item: QueuedMessage;
   sessionID: string;
   position: number;
   total: number;
+  // Send-now / interrupt-and-send only make sense while a turn is running
+  // (task #1057) -- hidden otherwise, mirroring ChatInput's Inject/Interrupt.
+  sessionBusy: boolean;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
@@ -75,6 +81,13 @@ function QueuedMessageItem({
 
   const handleRemove = useCallback(() => removeQueuedMessage(sessionID, item.id), [sessionID, item.id]);
 
+  // Both fire-and-forget: the item vanishes from the queue the instant one
+  // of these is clicked (takeQueuedMessage runs synchronously inside them),
+  // so there is nothing local to await here. A failed send re-adds the item
+  // with `error` set, which re-mounts this component with the error visible.
+  const handleSendNow = useCallback(() => { void sendQueuedMessageNow(sessionID, item.id); }, [sessionID, item.id]);
+  const handleInterruptSend = useCallback(() => { void interruptAndSendQueuedMessage(sessionID, item.id); }, [sessionID, item.id]);
+
   return (
     <div className="group/qi flex justify-end px-8 py-2">
       <div className="max-w-[80%]">
@@ -100,11 +113,36 @@ function QueuedMessageItem({
               <span className="absolute -top-2.5 right-3 text-[10px] font-semibold text-text-subtle bg-canvas border border-surface rounded-full px-1.5 py-0.5 leading-none">
                 #{position}/{total}
               </span>
-              <div className="bg-surface/60 border border-surface text-text-subtle rounded-2xl rounded-tr-sm px-5 py-3.5 text-[16px] leading-relaxed whitespace-pre-wrap">
+              <div className={`bg-surface/60 border text-text-subtle rounded-2xl rounded-tr-sm px-5 py-3.5 text-[16px] leading-relaxed whitespace-pre-wrap ${item.error ? "border-red/50" : "border-surface"}`}>
                 {item.content}
               </div>
             </div>
+            {item.error && (
+              <div data-test-id="queued-message-error" className="text-[11px] text-red text-right mt-1">
+                Send failed: {item.error}
+              </div>
+            )}
             <div className="flex items-center justify-end gap-1 mt-1.5 opacity-0 group-hover/qi:opacity-100 transition-opacity">
+              {sessionBusy && (
+                <>
+                  <button
+                    onClick={handleSendNow}
+                    title="Send now — merge into the running turn without interrupting it"
+                    data-test-id="queued-message-send-now"
+                    className="p-1.5 text-text-subtle hover:text-green transition-colors rounded"
+                  >
+                    <PlusCircle size={13} />
+                  </button>
+                  <button
+                    onClick={handleInterruptSend}
+                    title="Interrupt current turn and send this immediately"
+                    data-test-id="queued-message-interrupt-send"
+                    className="p-1.5 text-text-subtle hover:text-yellow transition-colors rounded"
+                  >
+                    <Zap size={13} />
+                  </button>
+                </>
+              )}
               <button onClick={startEdit}    title="Edit queued message"  className="btn-icon"><Pencil size={13} /></button>
               <button onClick={handleRemove} title="Remove from queue"    className="btn-icon-danger"><Trash2 size={13} /></button>
             </div>
@@ -543,7 +581,7 @@ export function Chat() {
             <div className="divider-line" />
           </div>
           {queuedItems.map((item, idx) => (
-            <QueuedMessageItem key={item.id} item={item} sessionID={activeSessionID} position={idx + 1} total={queuedItems.length} />
+            <QueuedMessageItem key={item.id} item={item} sessionID={activeSessionID} position={idx + 1} total={queuedItems.length} sessionBusy={isBusy} />
           ))}
         </div>
       )}

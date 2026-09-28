@@ -1,5 +1,5 @@
-import { ws } from "./ws";
-import { $messages, $summarizeQueued, $activeSessionID, $config, $sessions, type WireAttachment } from "./store";
+import { ws, wsRequest } from "./ws";
+import { $messages, $summarizeQueued, $activeSessionID, $config, $sessions, $messageQueue, type WireAttachment, type QueuedMessage } from "./store";
 import { logClientEvent } from "./telemetry";
 
 // Outbound commands: thin wrappers over the WebSocket protocol. Each one is
@@ -139,4 +139,76 @@ export function sendWithFastModel(
     payload.attachments = attachments;
   }
   ws.send("send_message", payload);
+}
+
+// ── Per-item queued-message actions (task #1057) ────────────────────────────
+//
+// "Send now" / "Interrupt & send" act on ONE queued message without waiting
+// for the turn to end. Both share one atomicity contract: the message is
+// removed from $messageQueue SYNCHRONOUSLY, before the wsRequest round-trip
+// even starts. Store updates and WS event handling both run on the main
+// thread, so by the time any later event (in particular the agent_busy=false
+// handler in useWS.ts, which drains the whole queue via dequeueAllMessages)
+// gets to run, the item is already gone -- it can never be flushed a second
+// time, no matter how the send and a busy-flip interleave. A failed request
+// restores the item to its original index via restoreQueuedMessage below.
+
+/** Removes one message from a session's queue and returns it together with
+ * its original index, or undefined if it's no longer there (already sent/
+ * removed by something else). */
+function takeQueuedMessage(sessionID: string, id: string): { item: QueuedMessage; index: number } | undefined {
+  const q = new Map($messageQueue.get());
+  const msgs = q.get(sessionID) ?? [];
+  const index = msgs.findIndex((m) => m.id === id);
+  if (index === -1) return undefined;
+  const next = msgs.filter((m) => m.id !== id);
+  if (next.length) q.set(sessionID, next); else q.delete(sessionID);
+  $messageQueue.set(q);
+  return { item: msgs[index], index };
+}
+
+/** Restores a message taken by takeQueuedMessage to its original position
+ * (clamped to the current length, in case the queue changed size while the
+ * send was in flight) after a failed send, attaching the error so the
+ * QueuedMessageItem UI can show it. */
+function restoreQueuedMessage(sessionID: string, item: QueuedMessage, index: number, error: string) {
+  const q = new Map($messageQueue.get());
+  const msgs = [...(q.get(sessionID) ?? [])];
+  msgs.splice(Math.min(index, msgs.length), 0, { ...item, error });
+  q.set(sessionID, msgs);
+  $messageQueue.set(q);
+}
+
+function queuedMessagePayload(sessionID: string, item: QueuedMessage): Record<string, unknown> {
+  const payload: Record<string, unknown> = { sessionID, content: item.content };
+  if (item.attachments && item.attachments.length > 0) {
+    payload.attachments = item.attachments;
+  }
+  return payload;
+}
+
+/** Sends one queued message right now via inject_message: it merges into
+ * the next step of the CURRENT turn without interrupting it. See the
+ * atomicity contract above. */
+export async function sendQueuedMessageNow(sessionID: string, id: string): Promise<void> {
+  const taken = takeQueuedMessage(sessionID, id);
+  if (!taken) return;
+  try {
+    await wsRequest("inject_message", queuedMessagePayload(sessionID, taken.item));
+  } catch (err) {
+    restoreQueuedMessage(sessionID, taken.item, taken.index, err instanceof Error ? err.message : String(err));
+  }
+}
+
+/** Sends one queued message via interrupt_and_send: cancels the running
+ * turn and immediately starts a new one with this message. Same atomicity
+ * contract as sendQueuedMessageNow. */
+export async function interruptAndSendQueuedMessage(sessionID: string, id: string): Promise<void> {
+  const taken = takeQueuedMessage(sessionID, id);
+  if (!taken) return;
+  try {
+    await wsRequest("interrupt_and_send", queuedMessagePayload(sessionID, taken.item));
+  } catch (err) {
+    restoreQueuedMessage(sessionID, taken.item, taken.index, err instanceof Error ? err.message : String(err));
+  }
 }

@@ -715,6 +715,9 @@ export interface QueuedMessage {
   // Attachments captured from the composer when this message was queued;
   // they ride on the single flushed send when the turn ends.
   attachments?: WireAttachment[];
+  // Set when a "send now" / "interrupt & send" attempt for this item
+  // (task #1057) failed and it was restored to the queue. Cleared on edit.
+  error?: string;
 }
 
 export const $messageQueue = atom<Map<string, QueuedMessage[]>>(new Map());
@@ -822,7 +825,8 @@ export function removeQueuedMessage(sessionID: string, id: string) {
 
 export function updateQueuedMessage(sessionID: string, id: string, content: string) {
   const q = new Map($messageQueue.get());
-  const msgs = (q.get(sessionID) ?? []).map((m) => m.id === id ? { ...m, content } : m);
+  // Editing supersedes a previous failed-send error.
+  const msgs = (q.get(sessionID) ?? []).map((m) => m.id === id ? { ...m, content, error: undefined } : m);
   q.set(sessionID, msgs);
   $messageQueue.set(q);
 }

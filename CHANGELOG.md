@@ -131,6 +131,14 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   work drains. The check-in interval doubles on consecutive ticks with no
   progress (capped at 60 minutes) and pauses after 6 such ticks until real
   progress happens; older check-ins reach the model as a one-line marker.
+- **Each queued web message now has its own "Send now" / "Interrupt & send"
+  buttons**, shown only while the session is busy. "Send now" merges the
+  message into the running turn via `inject_message` without cancelling it;
+  "Interrupt & send" cancels the turn and starts a new one with it via
+  `interrupt_and_send`. The message is removed from the local queue the
+  instant one of these is clicked, so the later agent_busy=false flush can
+  never send it a second time; a failed request restores it to its original
+  queue position with a visible error.
 
 ### Changed
 
