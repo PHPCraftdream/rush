@@ -19,6 +19,22 @@ type Querier interface {
 	// under a pathological scheduling stall) could Ack a row a DIFFERENT,
 	// currently-live executor now owns, deleting work out from under it.
 	AckRunQueueEntry(ctx context.Context, arg AckRunQueueEntryParams) (string, error)
+	// Doc sec.3.4: one indexed EXISTS, backed by the partial indexes
+	// idx_async_jobs_debt and idx_session_notices_debt "(owner) WHERE wake=1
+	// AND reacted=0 AND delivery<>'void'" on both tables.
+	AsyncReactionDebtExists(ctx context.Context, owner string) (sql.NullBool, error)
+	// Durable idempotent start. ON CONFLICT DO NOTHING mirrors
+	// EnqueueRunQueueEntry: a caller retrying the same (owner_session_id,
+	// tool_call_id) after a crash must not error just because an earlier
+	// attempt already committed the row -- it reads the existing row instead
+	// (GetAsyncJob), same as before.
+	//
+	// child_session_id is claimed here directly for delegations (doc sec.3.8,
+	// reversing the rejected branch's FK-driven "claim empty, fill in later"
+	// two-step): the id is deterministic and child_session_id carries no FK,
+	// so there is nothing blocking writing it at claim time. Callers pass NULL
+	// for plain (kind='command') jobs.
+	ClaimAsyncJob(ctx context.Context, arg ClaimAsyncJobParams) (AsyncJob, error)
 	// Reset stale leased entries back to pending (lease expiry recovery).
 	// Run periodically to recover from crashed pump instances.
 	// Increments attempts: a lease that expired without a matching Ack/Nack
@@ -29,6 +45,9 @@ type Querier interface {
 	// forever and never reach RunQueueMaxAttempts, looping indefinitely
 	// instead of eventually being dead-lettered.
 	CleanupExpiredLeases(ctx context.Context, arg CleanupExpiredLeasesParams) error
+	// Same predicate as PurgeAsyncJobsOlderThan, read-only, for
+	// `sessions gc --dry-run`.
+	CountAsyncJobsOlderThan(ctx context.Context, updatedAt int64) (int64, error)
 	CountMessagesBySession(ctx context.Context, sessionID string) (int64, error)
 	// Assistant rows in a session that carry no usage at all. Reported alongside
 	// any aggregate so "12% cache hit" is never presented without saying how many
@@ -38,6 +57,7 @@ type Querier interface {
 	// any aggregate so a ratio is never presented as the period's when it was
 	// computed over a fraction of it.
 	CountMessagesMissingUsageInRange(ctx context.Context, arg CountMessagesMissingUsageInRangeParams) (int64, error)
+	CountSessionNoticesOlderThan(ctx context.Context, updatedAt int64) (int64, error)
 	CreateFile(ctx context.Context, arg CreateFileParams) (File, error)
 	CreateMessage(ctx context.Context, arg CreateMessageParams) (Message, error)
 	// pending_injects is the cross-process inject queue for `rush sessions
@@ -59,6 +79,10 @@ type Querier interface {
 	// row instead of being a no-op. Re-enabling a disabled-then-regranted
 	// rule is handled explicitly via UpdatePermissionEnabled, not here.
 	CreateSessionPermission(ctx context.Context, arg CreateSessionPermissionParams) error
+	// Owner deletes its own row at exit if it has no rows (doc sec.3.6); a
+	// recoverer holding a dead host's lock calls this too, after deleting the
+	// lock file itself. No FK enforces this -- the guard is explicit here.
+	DeleteAsyncHostIfNoJobs(ctx context.Context, id string) (int64, error)
 	DeleteFile(ctx context.Context, id string) error
 	DeleteMessage(ctx context.Context, id string) error
 	// task #595 (P1-1 of the 2026-08-19 static follow-up review): plain
@@ -113,6 +137,10 @@ type Querier interface {
 	DeleteSession(ctx context.Context, id string) error
 	DeleteSessionFiles(ctx context.Context, sessionID string) error
 	DeleteSessionMessages(ctx context.Context, sessionID string) error
+	// Abort: the "started" tool-result write itself failed, so nothing durable
+	// should remain (ASYNC-05). Scoped to announced=0 so a row that won the
+	// ack-gate race concurrently is never deleted out from under it.
+	DeleteUnannouncedAsyncJob(ctx context.Context, arg DeleteUnannouncedAsyncJobParams) (int64, error)
 	// ON CONFLICT DO NOTHING makes this idempotent on id (P2-1): a caller that
 	// retries with the same, stable idempotency key must not error just because
 	// its own earlier attempt already committed the row. Returns zero rows on
@@ -120,6 +148,8 @@ type Querier interface {
 	// row's contents; the caller (session.EnqueueRunQueueEntry) treats that
 	// specifically as "already enqueued", not as a failure.
 	EnqueueRunQueueEntry(ctx context.Context, arg EnqueueRunQueueEntryParams) (SessionRunQueue, error)
+	GetAsyncHost(ctx context.Context, id string) (AsyncHost, error)
+	GetAsyncJob(ctx context.Context, arg GetAsyncJobParams) (AsyncJob, error)
 	GetAverageResponseTime(ctx context.Context) (int64, error)
 	// call_tree_activity.sql: freshest message activity across a session's whole
 	// descendant call tree (root + every sub-agent session reachable via
@@ -159,12 +189,18 @@ type Querier interface {
 	GetRecentActivity(ctx context.Context) ([]GetRecentActivityRow, error)
 	// Get a single entry by ID.
 	GetRunQueueEntry(ctx context.Context, id string) (SessionRunQueue, error)
+	// ASYNC-01 conflict check inside the claim transaction (doc sec.3.8): a
+	// second delegation naming the same child session while a RUNNING row
+	// already claims it must fail (dead-host row: recover it in the same
+	// attempt instead) rather than silently queuing behind it.
+	GetRunningAsyncJobByChildSession(ctx context.Context, childSessionID sql.NullString) (AsyncJob, error)
 	GetSessionByID(ctx context.Context, id string) (Session, error)
 	// Returns the child's current cost and the amount already charged to the
 	// parent (parent_cost_accounted). Used by TransferChildCostToParent inside
 	// a transaction so delta = cost - accounted is computed from a single
 	// consistent read within that transaction.
 	GetSessionCostAccounting(ctx context.Context, id string) (GetSessionCostAccountingRow, error)
+	GetSessionNotice(ctx context.Context, id int64) (SessionNotice, error)
 	GetToolUsage(ctx context.Context) ([]GetToolUsageRow, error)
 	GetTotalStats(ctx context.Context) (GetTotalStatsRow, error)
 	// Returns, in a SINGLE round trip, the (created_at, rowid) of the row at
@@ -241,6 +277,11 @@ type Querier interface {
 	// cost + delta would meet or exceed max_cost -- the caller must treat that
 	// the same as an up-front max-cost skip (no charge landed).
 	IncrementSessionCostIfUnderMax(ctx context.Context, arg IncrementSessionCostIfUnderMaxParams) (int64, error)
+	// session_notices carries notices with no async_jobs row (supervision,
+	// wake_failed marker, background SDK shell completion, wake_only timeout --
+	// doc sec.2/3.2). Created with delivery='pending' so it is a drain
+	// candidate immediately.
+	InsertSessionNotice(ctx context.Context, arg InsertSessionNoticeParams) (SessionNotice, error)
 	// Claim a specific entry by ID (call after GetOldestPendingRunQueueEntryForSession in a transaction).
 	// Does not increment attempts: leasing only claims the row for execution.
 	// NackRunQueueEntry and CleanupExpiredLeases are the only sites that count
@@ -256,6 +297,14 @@ type Querier interface {
 	// rowid is the tie-breaker: see ListUserMessagesBySession above - identical
 	// reasoning applies across all sessions, not just one.
 	ListAllUserMessages(ctx context.Context) ([]Message, error)
+	// Reader for `sessions jobs`/`sessions hosts` display.
+	ListAsyncHosts(ctx context.Context) ([]AsyncHost, error)
+	// Retention candidates (doc sec.3.7): host rows with zero referencing
+	// async_jobs rows of ANY state. Caller still must verify the lock file
+	// itself is gone/dead before treating a host as reapable.
+	ListAsyncHostsWithNoJobs(ctx context.Context) ([]AsyncHost, error)
+	// Reader for `sessions jobs`/`sessions why`.
+	ListAsyncJobsForOwner(ctx context.Context, ownerSessionID string) ([]AsyncJob, error)
 	// task #774: startup recovery (app.recoverInterruptedTurns) used to call
 	// Sessions.ListAll then, for EVERY session, Messages.List (the full message
 	// history) just to find the last assistant message. Measured on a real dev
@@ -292,6 +341,10 @@ type Querier interface {
 	// top-level vs child sessions without a second per-candidate session
 	// lookup.
 	ListCandidateInterruptedAssistantSessions(ctx context.Context) ([]ListCandidateInterruptedAssistantSessionsRow, error)
+	// Every host_id that currently owns a 'running' row -- the candidate set a
+	// recovery sweep probes (doc sec.3.6/3.7). Liveness itself is decided by
+	// the host lock module (OS lock probe), not by this query.
+	ListDistinctRunningHostIDs(ctx context.Context) ([]string, error)
 	ListFilesByPath(ctx context.Context, path string) ([]File, error)
 	ListFilesBySession(ctx context.Context, sessionID string) ([]File, error)
 	ListLatestSessionFiles(ctx context.Context, sessionID string) ([]File, error)
@@ -345,11 +398,28 @@ type Querier interface {
 	// at-or-before that boundary, immune to head insertions by construction).
 	ListMessagesBySessionPaginated(ctx context.Context, arg ListMessagesBySessionPaginatedParams) ([]Message, error)
 	ListNewFiles(ctx context.Context) ([]File, error)
+	// Candidates for the drain's pull (doc sec.3.3): announced=1 is required --
+	// an unannounced job never produces a notice (DUR-7).
+	ListPendingAsyncJobNoticesForOwner(ctx context.Context, ownerSessionID string) ([]AsyncJob, error)
 	ListPendingInjectsBySession(ctx context.Context, sessionID string) ([]PendingInject, error)
 	// Get all pending outbox entries for recovery (scanned by pump).
 	ListPendingOrphanOutboxEntries(ctx context.Context) ([]OrphanCallOutbox, error)
 	// Get all pending entries (for pump scanning across all sessions).
 	ListPendingRunQueueEntries(ctx context.Context) ([]SessionRunQueue, error)
+	// Drain candidates (doc sec.3.3), oldest first so history order matches
+	// occurrence order.
+	ListPendingSessionNoticesForOwner(ctx context.Context, owner string) ([]SessionNotice, error)
+	// Recovery sweep input (doc sec.3.7): every RUNNING row owned by a
+	// particular host_id, for a leader/recoverer that has independently
+	// confirmed (via the host lock module) that host_id is dead.
+	ListRunningAsyncJobsForHost(ctx context.Context, hostID string) ([]AsyncJob, error)
+	// Own-area recovery/scope evaluation (doc sec.3.5/3.7): the leader's set of
+	// owner ids (its own descendant walk, computed in Go) restricted to
+	// currently-running rows. No lease/heartbeat filter -- liveness is decided
+	// per-host by the caller via the host lock module, not by this query.
+	ListRunningAsyncJobsForOwners(ctx context.Context, ownerIds []string) ([]AsyncJob, error)
+	// Reader for `sessions jobs`/`sessions why`.
+	ListSessionNoticesForOwner(ctx context.Context, owner string) ([]SessionNotice, error)
 	ListSessionPermissions(ctx context.Context, sessionID string) ([]SessionPermission, error)
 	ListSessionReadFiles(ctx context.Context, sessionID string) ([]ReadFile, error)
 	ListSessions(ctx context.Context) ([]Session, error)
@@ -367,6 +437,20 @@ type Querier interface {
 	// unsuitable as a tiebreaker), so (created_at DESC, rowid DESC) is a
 	// deterministic newest-first total order.
 	ListUserMessagesBySession(ctx context.Context, sessionID string) ([]Message, error)
+	// Ack gate (DUR-7): "started" and announced=1 are one transaction with NO
+	// condition on state -- a job that raced to terminal before its own
+	// "started" tool-result committed must still be marked announced (the
+	// caller checks rows-affected==0 only to detect a since-deleted row, e.g.
+	// a Rerun that removed it out from under this transaction).
+	MarkAsyncJobAnnounced(ctx context.Context, arg MarkAsyncJobAnnouncedParams) (int64, error)
+	// Reaction is recorded where it happens (doc sec.3.4): the same transaction
+	// that persists a model step's real-content finish marks every wake=1,
+	// reacted=0, delivery='done' row of this owner reacted=1. Not derived from
+	// created_at/clock order -- every currently-done row qualifies, including
+	// ones a compaction later strips from context.
+	MarkAsyncJobsReactedForOwner(ctx context.Context, arg MarkAsyncJobsReactedForOwnerParams) (int64, error)
+	// Same reaction rule as MarkAsyncJobsReactedForOwner, for the notices table.
+	MarkSessionNoticesReactedForOwner(ctx context.Context, arg MarkSessionNoticesReactedForOwnerParams) (int64, error)
 	// Returns the row id of an enabled "always allow" rule that matches the
 	// given (sessionID, toolName, action, path) tuple, or sql.ErrNoRows.
 	// session_id is empty for global rules; we accept either empty or the
@@ -386,11 +470,33 @@ type Querier interface {
 	// for releasing a mismatched attempts-exhausted lease unharmed.
 	// Scoped to the current lease owner, same as AckRunQueueEntry.
 	NackRunQueueEntryNoAttemptPenalty(ctx context.Context, arg NackRunQueueEntryNoAttemptPenaltyParams) (SessionRunQueue, error)
+	// The pull UPDATE...RETURNING (doc sec.3.3): one transaction per notice --
+	// caller does this, then INSERTs the history message, then stores
+	// notice_message_id via SetAsyncJobNoticeMessageID, all in the SAME tx. 0
+	// rows affected (checked by the caller via RETURNING yielding sql.ErrNoRows)
+	// means another leader already won this row; the caller must roll back
+	// rather than proceed to insert a duplicate message.
+	PullPendingAsyncJobNotice(ctx context.Context, arg PullPendingAsyncJobNoticeParams) (AsyncJob, error)
+	// The pull UPDATE...RETURNING (doc sec.3.3), same shape as
+	// PullPendingAsyncJobNotice: one transaction per notice, caller INSERTs the
+	// history message and stores notice_message_id in the same tx. 0 rows
+	// affected means another leader already won this row.
+	PullPendingSessionNotice(ctx context.Context, arg PullPendingSessionNoticeParams) (SessionNotice, error)
+	// Bounded retention (doc sec.3.7): a terminal, delivered-or-voided row past
+	// the cutoff is deleted outright -- no soft delete, same precedent as
+	// `sessions gc`'s own row deletion.
+	PurgeAsyncJobsOlderThan(ctx context.Context, updatedAt int64) (int64, error)
+	// Same retention pass as PurgeAsyncJobsOlderThan (doc sec.3.7).
+	PurgeSessionNoticesOlderThan(ctx context.Context, updatedAt int64) (int64, error)
 	RecordFileRead(ctx context.Context, arg RecordFileReadParams) error
 	// Count one failed drain attempt and quarantine the row at max_attempts.
 	// See this file's header for why this is a separate write, why a double
 	// count across pump instances is acceptable, and why RETURNING is `*`.
 	RecordOrphanOutboxFailure(ctx context.Context, arg RecordOrphanOutboxFailureParams) (OrphanCallOutbox, error)
+	// Lazy registration at first claim (doc sec.3.6): the host row is
+	// display-only bookkeeping, created once per process lifetime alongside the
+	// OS lock file. Never consulted to decide liveness.
+	RegisterAsyncHost(ctx context.Context, arg RegisterAsyncHostParams) (AsyncHost, error)
 	RenameSession(ctx context.Context, arg RenameSessionParams) error
 	// Extend a lease expiry while its owner is still genuinely working on it,
 	// or to back off a lease without counting a failed attempt. Scoped to
@@ -400,12 +506,22 @@ type Querier interface {
 	// execrows reports 0 rows in that case, which the caller must treat as
 	// meaning it is no longer this executor's lease to keep alive.
 	RenewRunQueueLease(ctx context.Context, arg RenewRunQueueLeaseParams) (int64, error)
+	// Second half of the pull transaction: records where the notice landed.
+	SetAsyncJobNoticeMessageID(ctx context.Context, arg SetAsyncJobNoticeMessageIDParams) (int64, error)
+	// Stop transitivity (DUR-9, doc sec.3.8): every pending row of the stopped
+	// tree loses its wake bit in the same pass, so a race between natural
+	// completion and Stop can never grant a stopped delegation a turn.
+	SetAsyncJobsWakeZeroPendingForOwners(ctx context.Context, arg SetAsyncJobsWakeZeroPendingForOwnersParams) (int64, error)
 	// Marks the child's full current cost as charged to the parent, so the
 	// next TransferChildCostToParent call charges only new cost accrued above
 	// this point. Run inside the same transaction as the parent's
 	// IncrementSessionCost so a crash between the two cannot leave the parent
 	// charged but the child's accounting lagging (or vice versa).
 	SetParentCostAccounted(ctx context.Context, arg SetParentCostAccountedParams) error
+	SetSessionNoticeMessageID(ctx context.Context, arg SetSessionNoticeMessageIDParams) (int64, error)
+	// Stop transitivity (DUR-9, doc sec.3.8), notices half of
+	// SetAsyncJobsWakeZeroPendingForOwners.
+	SetSessionNoticesWakeZeroPendingForOwners(ctx context.Context, arg SetSessionNoticesWakeZeroPendingForOwnersParams) (int64, error)
 	// task #777 (P1 release blocker): recoverSessionInterruptedTurn used to
 	// read the candidate message (Get), re-check IsFinished() in Go, check the
 	// liveness lock, then call the plain message.Update, which rewrites the
@@ -479,6 +595,19 @@ type Querier interface {
 	// Used for ErrCallAlreadyAttempted-type errors where retry would cause duplicates.
 	// Scoped to the current lease owner, same as AckRunQueueEntry.
 	TerminalFailRunQueueEntry(ctx context.Context, arg TerminalFailRunQueueEntryParams) (string, error)
+	// The ONE transition CAS (DUR-1/DUR-2): a terminal state, its cause
+	// (notice_kind), the result payload, delivery='pending', and wake are all
+	// set by this single statement, scoped to state='running' so only the
+	// first committer wins -- every other concurrent caller sees 0 rows
+	// affected and must re-read the row (GetAsyncJob) and accept whatever
+	// state is there instead of retrying the same transition.
+	TransitionAsyncJobTerminal(ctx context.Context, arg TransitionAsyncJobTerminalParams) (AsyncJob, error)
+	// Rerun variant (doc sec.3.8): a terminal transition preserves an existing
+	// void delivery instead of resetting it to pending -- a row already voided
+	// by Rerun truncation must not be resurrected to 'pending' by a
+	// late-arriving terminal transition (e.g. job_kill racing the history
+	// truncation).
+	TransitionAsyncJobTerminalPreserveVoid(ctx context.Context, arg TransitionAsyncJobTerminalPreserveVoidParams) (AsyncJob, error)
 	// task #595: was :exec (rows-affected discarded). The terminal write path in
 	// message.Service.Update used to hardcode rowsAffected = 1 for this branch,
 	// which was true for the normal case (the row exists, one row updates) but
@@ -537,6 +666,14 @@ type Querier interface {
 	// overwrites it.
 	UpdateSessionWorkerReviewerModels(ctx context.Context, arg UpdateSessionWorkerReviewerModelsParams) error
 	UpdateSessionWorkerReviewerReasoningEffort(ctx context.Context, arg UpdateSessionWorkerReviewerReasoningEffortParams) error
+	// A pulled notice whose task-still-running condition failed (doc sec.3.4,
+	// supervision/wake_only void-at-drain rule) becomes void instead of done.
+	VoidPendingAsyncJobNotice(ctx context.Context, arg VoidPendingAsyncJobNoticeParams) (int64, error)
+	// A pulled notice whose "task still running" condition failed (doc sec.3.4:
+	// supervision notice is debt only while the scope still has a running row;
+	// wake_only timeout notice voids if the task is no longer running) becomes
+	// void instead of done.
+	VoidPendingSessionNotice(ctx context.Context, arg VoidPendingSessionNoticeParams) (int64, error)
 	// Task #340's original claim/mark-done/mark-failed/release-for-retry model
 	// (ClaimOrphanOutboxEntry, MarkOrphanOutboxEntryDone, MarkOrphanOutboxEntryFailed,
 	// ReleaseOrphanOutboxEntryForRetry, CleanupOldDoneOrphanOutboxEntries) was
