@@ -111,6 +111,16 @@ type workLedger struct {
 	coord *coordinator
 
 	closed bool
+	// closedCh is closed exactly once, by close(), so every store-retry
+	// backoff wait (commitTransition, retryAsyncStoreOp) can select on it
+	// instead of blocking in a plain time.Sleep -- a retry loop must return
+	// promptly once the ledger is closed (review finding P1), not leak a
+	// goroutine sleeping out a full backoff schedule against a DB the
+	// process may already be tearing down. closeOnce guards the close(
+	// closedCh) call itself: workLedger.close() is not guaranteed single-
+	// call (see closeOnce's twin on timeoutService).
+	closedCh  chan struct{}
+	closeOnce sync.Once
 
 	// noticedBefore maps "owner\x00toolCallID" -> the persisted notice
 	// message id, so a repeated wakeSession call for a job already
@@ -148,6 +158,7 @@ func newWorkLedger(onWebDone func(AsyncCompletion)) *workLedger {
 		bySession: make(map[string]*sessionJobs),
 		byChild:   make(map[string][]*asyncJob),
 		onWebDone: onWebDone,
+		closedCh:  make(chan struct{}),
 	}
 }
 
@@ -247,12 +258,14 @@ func (l *workLedger) Start(owner, toolCallID, input, toolName, childSession stri
 		return existing, true, nil
 	}
 	if claimExisting {
-		// A durable row exists for this key with no matching in-memory job
-		// -- e.g. a previous process's job this one never started an
-		// executor for. Refuse rather than silently starting a second
-		// executor for a row another host may still own; recovery/adoption
-		// of such a row is a later step (doc sec.5 step 5/6).
-		return nil, false, fmt.Errorf("async job %s already started (tracked by a previous process)", toolCallID)
+		// A durable row exists for this key with no matching in-memory job.
+		// The common case is mundane: THIS process already ran and delivered
+		// this exact tool call, and the provider is repeating it -- not
+		// necessarily "a previous process" (review finding P3). Refuse
+		// rather than silently starting a second executor for a row that
+		// may still be owned by a live host; recovery/adoption of a row a
+		// dead host owns is a later step (doc sec.5 step 5/6).
+		return nil, false, fmt.Errorf("async job %s was already started earlier; not starting it again", toolCallID)
 	}
 	job := &asyncJob{
 		owner: owner, toolCallID: toolCallID, input: input, toolName: toolName,
@@ -439,7 +452,7 @@ func (l *workLedger) acknowledged(sessionID, toolCallID string) {
 	l.mu.Unlock()
 
 	if !sync && store != nil {
-		_ = retryAsyncStoreOp(context.Background(), func() error {
+		_ = l.retryAsyncStoreOp(context.Background(), func() error {
 			if err := store.MarkAnnounced(context.Background(), sessionID, toolCallID); err != nil {
 				if errors.Is(err, session.ErrAsyncJobGone) {
 					return nil
@@ -490,7 +503,7 @@ func (l *workLedger) abort(sessionID, toolCallID string) {
 	l.mu.Unlock()
 
 	if !sync && store != nil {
-		_ = retryAsyncStoreOp(context.Background(), func() error {
+		_ = l.retryAsyncStoreOp(context.Background(), func() error {
 			return store.DeleteUnannounced(context.Background(), sessionID, toolCallID)
 		})
 	}
@@ -615,10 +628,19 @@ func (l *workLedger) MarkJobStopped(owner, toolCallID string) {
 		l.mu.Unlock()
 		return
 	}
+	sync := job.sync
 	toolName, shellID := job.toolName, job.shellID
 	l.mu.Unlock()
 
 	partial := l.capturePartial(owner, toolCallID, toolName, "", shellID, nil)
+	if sync {
+		// Review finding P2 (regression of #1023 for library/SDK mode): a
+		// sync job never touches the store, so it must reach its "stopped
+		// (job_kill)" outcome via the OLD memory-only path -- otherwise a
+		// blocked awaitSync caller silently loses that outcome.
+		l.transitionSyncStopped(owner, toolCallID, partial)
+		return
+	}
 	l.transition(owner, toolCallID, causeJobKill, partial)
 }
 
@@ -694,6 +716,7 @@ func (l *workLedger) StopRunCommandJob(owner, jobID string) error {
 		// shape, not a disguised second success.
 		return fmt.Errorf("job %s not found (not owned by this session, already delivered, or already stopped)", jobID)
 	}
+	sync := job.sync
 	var partial string
 	if job.outputBuf != nil {
 		partial = job.outputBuf.String()
@@ -701,7 +724,12 @@ func (l *workLedger) StopRunCommandJob(owner, jobID string) error {
 	cancel := job.cancel
 	l.mu.Unlock()
 
-	l.transition(owner, jobID, causeJobKill, jobResult{content: partial})
+	if sync {
+		// Review finding P2: same sync/memory-only path as MarkJobStopped.
+		l.transitionSyncStopped(owner, jobID, jobResult{content: partial})
+	} else {
+		l.transition(owner, jobID, causeJobKill, jobResult{content: partial})
+	}
 	if cancel != nil {
 		cancel() // triggers run_command's cmd.Cancel tree-kill (configureRunCommandProcess)
 	}
@@ -826,6 +854,7 @@ func (l *workLedger) close() {
 		job.shutdownCancelled = true
 	}
 	l.mu.Unlock()
+	l.closeOnce.Do(func() { close(l.closedCh) })
 	l.timeouts.close()
 	for _, job := range jobs {
 		if job.cancel != nil {

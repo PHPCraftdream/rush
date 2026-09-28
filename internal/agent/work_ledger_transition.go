@@ -49,12 +49,19 @@ func asyncStoreRetryBackoff(attempt int) time.Duration {
 	return d
 }
 
-// retryAsyncStoreOp retries op with growing backoff until it succeeds or ctx
-// is done. Shared by the ack gate (acknowledged/store.MarkAnnounced) and
-// abort (store.DeleteUnannounced) -- doc sec.5 step 2: "with the same retry
-// rule" as transition, minus transition's own shutdown-latch check (neither
-// of those two is tied to an executor cancelled by close()).
-func retryAsyncStoreOp(ctx context.Context, op func() error) error {
+// retryAsyncStoreOp retries op with growing backoff until it succeeds, ctx is
+// done, or the ledger is closed. Shared by the ack gate (acknowledged/
+// store.MarkAnnounced) and abort (store.DeleteUnannounced) -- doc sec.5 step
+// 2: "with the same retry rule" as transition, minus transition's own
+// shutdown-latch check (neither of those two is tied to an executor
+// cancelled by close()).
+//
+// P1 fix: acknowledged runs on the turn's tool-result path -- a DB that
+// fails permanently must not hang that turn forever, and close() must still
+// be able to release it (it used to keep retrying with ctx=
+// context.Background(), which close() could never interrupt). The wait is
+// now interruptible by l.closedCh, exactly like commitTransition's.
+func (l *workLedger) retryAsyncStoreOp(ctx context.Context, op func() error) error {
 	for attempt := 0; ; attempt++ {
 		err := op()
 		if err == nil {
@@ -65,6 +72,8 @@ func retryAsyncStoreOp(ctx context.Context, op func() error) error {
 		}
 		select {
 		case <-ctx.Done():
+			return err
+		case <-l.closedCh:
 			return err
 		case <-time.After(asyncStoreRetryBackoff(attempt)):
 		}
@@ -165,10 +174,17 @@ const (
 // Stop produces no in-memory notice, the DB row records the fact").
 //
 // Caller must NOT hold l.mu. Blocks (with growing backoff) until the store
-// commits, the row is found terminal/gone, or the ledger is closed AND this
+// commits, the row is found terminal/gone, the ledger is closed AND this
 // job's executor was cancelled by close() itself (the shutdown latch, doc
-// sec.3.1/3.7) -- in which case nothing is written and the row stays
-// 'running' for the next host to recover (commitSkipped).
+// sec.3.1/3.7 -- nothing is written, row stays 'running'), or a RETRY wait
+// is interrupted by the ledger closing for any other reason (review finding
+// P1): a job whose own shutdownCancelled flag was never set (e.g. a natural
+// finish already past its own executor's completion when close() ran) must
+// still stop retrying once the ledger is closed, rather than leak a
+// goroutine sleeping out backoff cycles against a DB the process may
+// already be tearing down. Either way commitSkipped leaves the row exactly
+// as the last successful commit (or lack thereof) left it -- a FIRST
+// attempt that succeeds is always written, even if it races close().
 func (l *workLedger) commitTransition(owner, toolCallID string, cause transitionCause, result jobResult) commitOutcome {
 	l.mu.Lock()
 	s := l.bySession[owner]
@@ -219,7 +235,18 @@ func (l *workLedger) commitTransition(owner, toolCallID string, cause transition
 		if err == nil {
 			break
 		}
-		time.Sleep(asyncStoreRetryBackoff(attempt))
+		// P1 fix: the backoff wait is interruptible by the ledger closing --
+		// select, not a plain time.Sleep -- so a retry loop returns promptly
+		// once close() runs, instead of sleeping out the full remaining
+		// backoff schedule against a DB the process may be tearing down.
+		select {
+		case <-l.closedCh:
+			l.mu.Lock()
+			job.transitioning = false
+			l.mu.Unlock()
+			return commitSkipped
+		case <-time.After(asyncStoreRetryBackoff(attempt)):
+		}
 	}
 
 	l.mu.Lock()
@@ -249,21 +276,40 @@ func (l *workLedger) commitTransition(owner, toolCallID string, cause transition
 	return commitLost
 }
 
-// transition is the single writer of a non-sync async job's terminal state
-// used by every caller that DOES want the existing in-memory delivery to
-// run afterward (finish, handleTimeout, job_kill/StopRunCommandJob,
-// recheckChild -- everything except cancelSession's plain-job path, which
-// calls commitTransition directly to suppress delivery). Sync jobs never
-// reach here (commitTransition skips them; finish handles sync directly).
+// transition is the single writer of a non-sync async job's terminal state,
+// used by every non-sync terminal-transition call site (finish,
+// handleTimeout, job_kill/StopRunCommandJob, cancelSession, recheckChild).
+// Sync jobs never reach here (commitTransition skips them).
+//
+// Delivery step (review finding P2): a PLAIN job (childSession == "") that
+// cancelSession marked stoppedBySession -- set synchronously under l.mu,
+// before ANY racing cause's DB write even begins -- is dropped from memory
+// silently instead of going through deliverLocked, regardless of which
+// cause actually won the CAS. This closes the race where a natural finish's
+// OWN transition call wins ahead of cancelSession's (cancelSession's DB I/O
+// runs outside l.mu, so either side can commit first): without the flag,
+// that finish would reach deliverLocked and wake the session right after
+// the user pressed Stop. Delegations ignore the flag and keep delivering
+// their cancelled notice exactly as before.
 func (l *workLedger) transition(owner, toolCallID string, cause transitionCause, result jobResult) {
 	switch l.commitTransition(owner, toolCallID, cause, result) {
 	case commitWon, commitLost:
 		l.mu.Lock()
+		s := l.bySession[owner]
 		var job *asyncJob
-		if s := l.bySession[owner]; s != nil {
+		if s != nil {
 			job = s.jobs[toolCallID]
 		}
 		if job == nil {
+			l.mu.Unlock()
+			return
+		}
+		if job.stoppedBySession && job.childSession == "" {
+			delete(s.jobs, toolCallID)
+			if len(s.jobs) == 0 {
+				l.clearSupervisionIfPresent(owner)
+			}
+			signalWorkSession(s)
 			l.mu.Unlock()
 			return
 		}
@@ -272,5 +318,31 @@ func (l *workLedger) transition(owner, toolCallID string, cause transitionCause,
 		if callback {
 			l.onWebDone(completion)
 		}
+	}
+}
+
+// transitionSyncStopped is the sync-job counterpart of the job_kill/
+// StopRunCommandJob cause (review finding P2, regression of #1023 for
+// library/SDK mode): a sync job never touches the store (doc sec.3.1), so
+// MarkJobStopped/StopRunCommandJob call this instead of transition to reach
+// a well-formed "stopped (job_kill)" outcome entirely in memory --
+// transitionToTerminal + deliverLocked, the same pair cancelSession's own
+// sync-delegation branch uses -- so a caller blocked in awaitSync gets the
+// contract's Stopped/partial-content wording instead of silently losing it.
+func (l *workLedger) transitionSyncStopped(owner, toolCallID string, partial jobResult) {
+	l.mu.Lock()
+	var job *asyncJob
+	if s := l.bySession[owner]; s != nil {
+		job = s.jobs[toolCallID]
+	}
+	if job == nil || job.state.terminal() {
+		l.mu.Unlock()
+		return
+	}
+	job.transitionToTerminal(phaseCancelled, partial)
+	completion, callback := l.deliverLocked(owner, job)
+	l.mu.Unlock()
+	if callback {
+		l.onWebDone(completion)
 	}
 }

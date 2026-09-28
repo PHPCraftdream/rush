@@ -257,6 +257,12 @@ func (l *workLedger) cancelSession(sessionID string) {
 	var targets []cancelSessionTarget
 	if s := l.bySession[sessionID]; s != nil {
 		for _, job := range s.jobs {
+			// Review finding P2: mark BEFORE releasing l.mu, synchronously
+			// with every other job this call targets -- this is what makes
+			// the later race-safe regardless of which cause's DB write (this
+			// call's, or a concurrent natural finish's) actually commits
+			// first; see transition's delivery-step doc.
+			job.stoppedBySession = true
 			targets = append(targets, cancelSessionTarget{
 				job: job, owner: job.owner, toolCallID: job.toolCallID, toolName: job.toolName,
 				shellID: job.shellID, outputBuf: job.outputBuf, isDelegation: job.childSession != "",
@@ -266,6 +272,7 @@ func (l *workLedger) cancelSession(sessionID string) {
 		signalWorkSession(s)
 	}
 	for _, job := range l.byChild[sessionID] {
+		job.stoppedBySession = true
 		targets = append(targets, cancelSessionTarget{
 			job: job, owner: job.owner, toolCallID: job.toolCallID, toolName: job.toolName,
 			shellID: job.shellID, outputBuf: job.outputBuf, isDelegation: true,
@@ -294,19 +301,17 @@ func (l *workLedger) cancelSession(sessionID string) {
 				signalWorkSession(s)
 			}
 			l.mu.Unlock()
-		case tgt.isDelegation:
-			l.transition(tgt.owner, tgt.toolCallID, causeSessionCancel, jobResult{content: subAgentOutcomeCancelledText, isError: true})
 		default:
-			partial := l.capturePartial(tgt.owner, tgt.toolCallID, tgt.toolName, "", tgt.shellID, tgt.outputBuf)
-			switch l.commitTransition(tgt.owner, tgt.toolCallID, causeSessionCancel, partial) {
-			case commitWon, commitLost:
-				l.mu.Lock()
-				if s := l.bySession[tgt.owner]; s != nil {
-					delete(s.jobs, tgt.toolCallID)
-					signalWorkSession(s)
-				}
-				l.mu.Unlock()
+			// Non-sync (plain OR delegation): ONE durable path (review
+			// finding P2 -- "one path is preferred"). transition's own
+			// delivery step drops a stoppedBySession-marked PLAIN job
+			// silently no matter which cause wins the CAS race, and still
+			// delivers a delegation's cancelled notice exactly as before.
+			content := jobResult{content: subAgentOutcomeCancelledText, isError: true}
+			if !tgt.isDelegation {
+				content = l.capturePartial(tgt.owner, tgt.toolCallID, tgt.toolName, "", tgt.shellID, tgt.outputBuf)
 			}
+			l.transition(tgt.owner, tgt.toolCallID, causeSessionCancel, content)
 		}
 		if tgt.cancel != nil {
 			tgt.cancel()

@@ -241,6 +241,31 @@ func (app *App) releaseResources(stillBusy bool) ShutdownResult {
 		errMu.Unlock()
 	}
 
+	// Release this App's phase-4 host identity (docs/plans/2026-09-28-async-
+	// phase4-durable-core.md sec.3.6) AFTER agent work has been cancelled
+	// (cancelAgentsBeforeRelease already ran, above, on every path into
+	// releaseResources) -- graceful exit is deliberately NOT a clean
+	// transition of any still-running row (sec.3.7: "graceful exit = crash"),
+	// this only releases the OS lock / deletes the host's own row if it has
+	// no jobs left.
+	//
+	// Run SEQUENTIALLY, before the parallel cleanup batch below, and bounded
+	// by the same shutdownCtx -- not inside the parallel wg. DeleteAsyncHost
+	// IfNoJobs is a DB write that must complete (or be abandoned on its own
+	// bounded budget) before anything else in this function assumes the DB
+	// is free to close; racing it against an arbitrary set of cleanupFuncs
+	// under one best-effort timeout (which can abandon a goroutine still
+	// mid-write) is exactly the ordering this sequencing avoids. Runs on
+	// BOTH the graceful and forced-shutdown paths -- the DB is only ever
+	// closed later, in the stillBusy-gated block at the end of this
+	// function, so it is still open here either way.
+	if app.asyncJobStore != nil {
+		if err := app.asyncJobStore.Close(shutdownCtx); err != nil {
+			slog.Warn("Failed to release async job store host identity on shutdown", "error", err)
+			recordCleanupError(err)
+		}
+	}
+
 	// Now run remaining cleanup tasks in parallel with an overall bounded timeout.
 	var wg sync.WaitGroup
 
@@ -249,22 +274,6 @@ func (app *App) releaseResources(stillBusy bool) ShutdownResult {
 	wg.Go(func() {
 		if app.BackgroundShellManager != nil {
 			app.BackgroundShellManager.Close(shutdownCtx)
-		}
-	})
-
-	// Release this App's phase-4 host identity (docs/plans/2026-09-28-async-
-	// phase4-durable-core.md sec.3.6) AFTER agent work has been cancelled
-	// (cancelAgentsBeforeRelease already ran, above, on every path into
-	// releaseResources) -- graceful exit is deliberately NOT a clean
-	// transition of any still-running row (sec.3.7: "graceful exit = crash"),
-	// this only releases the OS lock / deletes the host's own row if it has
-	// no jobs left.
-	wg.Go(func() {
-		if app.asyncJobStore != nil {
-			if err := app.asyncJobStore.Close(shutdownCtx); err != nil {
-				slog.Warn("Failed to release async job store host identity on shutdown", "error", err)
-				recordCleanupError(err)
-			}
 		}
 	})
 

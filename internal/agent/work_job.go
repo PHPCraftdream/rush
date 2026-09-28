@@ -137,6 +137,18 @@ type asyncJob struct {
 	// nothing to the DB -- the row stays 'running' for the next host to
 	// recover.
 	shutdownCancelled bool
+	// stoppedBySession is set by cancelSession, under l.mu, for every job it
+	// targets, BEFORE releasing the lock to do its (now durable) DB I/O
+	// (review finding P2). This closes a race a plain, non-delegation job
+	// would otherwise lose: a concurrent natural finish() whose OWN
+	// transition call happens to win the DB CAS ahead of cancelSession's
+	// would otherwise still reach deliverLocked and wake the session right
+	// after the user pressed Stop. Because the flag is set synchronously,
+	// before either side's DB write even begins, transition's delivery step
+	// can drop a marked PLAIN job silently regardless of which cause
+	// actually won. Delegations ignore this flag -- they keep delivering
+	// their cancelled notice exactly as before.
+	stoppedBySession bool
 	// outputBuf is set by workLedger.setRunCommandBuffer once a run_command
 	// job's live output sink registers (async_tool.go, task #1023 §3):
 	// run_command has no BackgroundShellManager entry, so this is the only
