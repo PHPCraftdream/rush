@@ -51,6 +51,8 @@ export function ConfirmDialog({
       }}
     >
       <div
+        role="dialog"
+        aria-modal="true"
         className="modal-panel w-full max-w-sm overflow-hidden chat-font"
         onClick={(e) => e.stopPropagation()}
       >

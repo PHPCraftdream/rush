@@ -118,8 +118,8 @@ test("retrying an earlier user message shows a confirm dialog warning about dele
 
   await expect(page.getByText("Retry message")).toBeVisible({ timeout: 2000 });
   await expect(page.getByText(/deleted, then resent/)).toBeVisible();
-  await expect(page.getByRole("button", { name: "Retry", exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Cancel", exact: true })).toBeVisible();
+  await expect(page.getByRole("dialog").getByRole("button", { name: "Retry", exact: true })).toBeVisible();
+  await expect(page.getByRole("dialog").getByRole("button", { name: "Cancel", exact: true })).toBeVisible();
 
   // Nothing sent yet -- confirmation is pending.
   const sentBeforeConfirm = await page.evaluate(() => {
@@ -202,7 +202,7 @@ test("confirming retry sends rerun_message with the target messageID", async ({ 
   await msgRow.getByTitle("Retry").click();
 
   await expect(page.getByText("Retry message")).toBeVisible({ timeout: 2000 });
-  await page.getByRole("button", { name: "Retry", exact: true }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Retry", exact: true }).click();
 
   const cmd = await waitForWSSend(page, "rerun_message");
   expect((cmd.payload as { messageID: string }).messageID).toBe("r-confirm1");
