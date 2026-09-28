@@ -141,6 +141,17 @@ type turnStream struct {
 	silentCompactNeeded bool
 	currentSession      session.Session
 
+	// carriedSplices is every mid-turn insertion (notice pulls AND mailbox
+	// injects) this turn's PrepareStep has spliced into a step's prompt,
+	// each with the position it landed at (phase-4 step 3, doc sec.3.4's
+	// second bullet). fantasy builds each step's input as initialPrompt +
+	// step responses, so a splice made at one step's boundary is otherwise
+	// visible to that ONE step only; spliceCarried re-inserts every one at
+	// its original position at every later step's boundary (BEFORE window
+	// trimming and cache marking). Callback-sequence-only state, like
+	// stepHistory above.
+	carriedSplices []carriedSplice
+
 	// currentAssistant is shared with the ticker goroutines; every touch,
 	// from ANY goroutine including these callbacks, holds mu.
 	mu               sync.Mutex

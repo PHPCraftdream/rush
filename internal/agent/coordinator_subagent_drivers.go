@@ -63,9 +63,9 @@ type subAgentDriver struct {
 }
 
 // callFor returns a copy of the driver's call template with prompt as its
-// new Prompt.
+// new Prompt; call kind and notice flags are reset (callFromActive).
 func (d subAgentDriver) callFor(prompt string) SessionAgentCall {
-	call := d.call
+	call := callFromActive(d.call)
 	call.Prompt = prompt
 	return call
 }

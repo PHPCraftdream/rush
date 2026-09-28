@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
-	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/shell"
 )
 
@@ -44,6 +44,10 @@ func FormatAsyncCompletion(completion AsyncCompletion) string {
 		return fmt.Sprintf("Async job %s (%s) was stopped (job_kill). Partial output before the stop:\n\n%s",
 			completion.ToolCallID, completion.ToolName, content)
 	}
+	if completion.Cancelled {
+		return fmt.Sprintf("Async job %s (%s) was cancelled (session stopped). Partial output:\n\n%s",
+			completion.ToolCallID, completion.ToolName, content)
+	}
 	status := "finished"
 	if completion.IsError {
 		status = "failed"
@@ -53,28 +57,23 @@ func FormatAsyncCompletion(completion AsyncCompletion) string {
 }
 
 // notifyAsyncCompletion is the AsyncCompletionSource callback wired into
-// workLedger.onWebDone: it builds the notice text/kind and delegates the
-// entire delivery (persist-then-wake, driver selection) to wakeSession --
-// see wakeSession's own doc for why a driver-owned child session's wake must
+// workLedger.onWebDone: the job's terminal transition already committed its
+// async_jobs row with delivery='pending' (work_ledger_transition.go) --
+// there is no text/NoticeKind left to build here (doc sec.3.3: the driver's
+// pull reconstructs both from the row at pull time, agent_notice_pull.go).
+// This is now just the non-blocking wake HINT (doc sec.3.4): submit a Drain
+// call to the session's owning driver iff the committed row wants a wake.
+// See wakeSession's own doc for why a driver-owned child session's wake must
 // never run on c.currentAgent (task #1049).
 func (c *coordinator) notifyAsyncCompletion(completion AsyncCompletion) {
-	ctx := context.WithValue(context.Background(), autoResumedCtxKey{}, true)
-	ctx = context.WithValue(ctx, backgroundJobNoticeCtxKey{}, true)
-	origin := message.OriginWeb
-	if completion.cli {
-		origin = message.OriginCLI
-	}
-	ctx = WithCallOrigin(ctx, origin)
-
-	noticeKind := ""
-	switch {
-	case completion.TimedOut:
-		noticeKind = "timeout_terminated"
-	case completion.Stopped:
-		noticeKind = "job_stopped"
-	}
+	// No ctx tagging needed anymore: a Drain call's own constructor
+	// (newDrainCall) unconditionally stamps AutoResumed/BackgroundJobNotice/
+	// NoticeKind itself, and a Drain never creates a user message (empty
+	// Prompt), so there is no Origin left for a caller-supplied ctx to
+	// influence either.
 	id := jobIdentity{owner: completion.SessionID, toolCallID: completion.ToolCallID}
-	text := FormatAsyncCompletion(completion)
+	// Supervision progress is recorded when the notice moves into history
+	// (agent_notice_pull.go), not here.
 	go func() {
 		// Re-check trigger (ii)/(iv): this goroutine IS the delivery that
 		// the completed job woke -- either directly (mailbox was idle) or
@@ -82,10 +81,10 @@ func (c *coordinator) notifyAsyncCompletion(completion AsyncCompletion) {
 		// Re-evaluate any delegation parked for this session once wakeSession
 		// returns, so a release can never land in the window before the
 		// wake's effect is visible. wakeSession itself already logs+persists
-		// a visible marker on failure (§1.4); there is nothing else to do
-		// with its error here.
+		// a visible marker on failure; there is nothing else to do with its
+		// error here.
 		defer c.noteSubAgentChildRunEnded(completion.SessionID)
-		_ = c.wakeSession(ctx, id, text, noticeKind, true)
+		_ = c.wakeSession(context.Background(), id, completion.Wake)
 	}()
 }
 
@@ -121,66 +120,57 @@ func backgroundJobSummary(id, command string, stdout, stderr string, exitCode in
 		id, command, exitCode, elapsed.Round(time.Second), out)
 }
 
-// notifyBackgroundJobDone is invoked from a BackgroundShell.OnDone goroutine
-// once a backgrounded bash command reaches a terminal state. It builds a
-// concise summary and either (Phase 4, when autonomy is eligible) starts a
-// fresh turn over it, or (Phase 3 fallback) pushes it into the owning session
-// via InjectMessage. Detached: the OnDone goroutine outlives the turn that
-// started it, so we never block or cancel the agent. Delivery failures (e.g.
-// session closed) are logged at debug level.
+// notifyBackgroundJobDone handles an SDK background shell's completion
+// (doc sec.2: a notice with no async_jobs row). Step 3: the fact is
+// persisted FIRST, durably, as a session_notices row (kind
+// NoticeKindBGShellDone, wake=1 per the wake-policy table -- the row's own
+// wake bit does not depend on session policy, only whether a TURN is forced
+// right now does). AutoResumeOnJobDone decides ONLY that immediate-turn
+// question, exactly as today: on, a Drain call is submitted right away; off,
+// the notice simply waits for the next natural turn/Drain to pull it (its
+// wake=1 still counts then).
 func (c *coordinator) notifyBackgroundJobDone(sessionID string, sh *shell.BackgroundShell) {
 	stdout, stderr, _, runErr := sh.GetOutput()
 	summary := backgroundJobSummary(sh.ID, sh.Command, stdout, stderr, shell.ExitCode(runErr), sh.Elapsed())
 
+	if c.asyncJobs != nil && c.asyncJobs.store != nil {
+		insertCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		err := c.asyncJobs.store.InsertSessionNotice(insertCtx, sessionID, session.NoticeKindBGShellDone, summary, true, "")
+		cancel()
+		if err != nil {
+			slog.Error("failed to persist background-shell-done notice",
+				"session_id", sessionID, "shell_id", sh.ID, "err", err)
+		}
+	}
+
+	id := jobIdentity{owner: sessionID, toolCallID: sh.ID}
 	if c.autoResumeEligible(sessionID) {
-		// Autonomous idle-resume: start (or, if busy, queue — single-flight via
-		// sessionAgent.Run) a fresh turn over the completion summary. The bound
-		// is incremented per completion (conservative: a coalesced queued
-		// completion still counts toward the cap, which only makes runaway
-		// protection stricter). Reset by any human message.
+		// Autonomous idle-resume: start (or, if busy, queue) a Drain call
+		// over the just-persisted notice. The bound is incremented per
+		// completion (conservative: a coalesced queued completion still
+		// counts toward the cap, which only makes runaway protection
+		// stricter). Reset by any human message.
 		c.bumpConsecutiveResume(sessionID)
 		slog.Info("Phase 4: auto-resuming session on background job completion",
 			"session_id", sessionID, "shell_id", sh.ID,
 			"consecutive", c.consecutiveResume(sessionID))
-		// Detached + cancelable: outlives the OnDone goroutine; the turn's
-		// own watchdog/Cancel(sessionID) governs its lifetime, so NO short
-		// timeout here (unlike the InjectMessage path — a turn can be long).
-		// Tag the context so the persisted user message is marked
-		// AutoResumed and rendered with a badge in the web UI. Also tag it
-		// as a BackgroundJobNotice so the web shows the notice badge (an
-		// auto-resume is also a job-completion notice).
 		ctx := context.WithValue(context.Background(), autoResumedCtxKey{}, true)
 		ctx = context.WithValue(ctx, backgroundJobNoticeCtxKey{}, true)
-		id := jobIdentity{owner: sessionID, toolCallID: sh.ID}
 		go func() {
 			// Re-check trigger (iii): a job owned by this session just
 			// became terminal and this goroutine is the delivery it woke.
 			// Re-evaluate any delegation parked for this session once
 			// wakeSession returns, so the release cannot fire in the window
 			// between "job done" and "child claimed its next turn".
-			// wakeSession's own defer recover() covers a panic in the run it
-			// starts; nothing else to do with its error here (already
-			// logged+persisted, §1.4).
 			defer c.noteSubAgentChildRunEnded(sessionID)
-			_ = c.wakeSession(ctx, id, summary, "", true)
+			_ = c.wakeSession(ctx, id, true)
 		}()
 		return
 	}
 
-	// Phase 3 behavior (unchanged): persist + (if busy) merge into the running
-	// turn; if idle, just persisted + web-visible, no auto-turn. Tag the context
-	// so the injected user message is flagged as a BackgroundJobNotice.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	ctx = context.WithValue(ctx, backgroundJobNoticeCtxKey{}, true)
-	defer cancel()
-	id := jobIdentity{owner: sessionID, toolCallID: sh.ID}
-	if err := c.wakeSession(ctx, id, summary, "", false); err != nil {
-		slog.Warn("background job completion not delivered (session likely closed)",
-			"session_id", sessionID,
-			"shell_id", sh.ID,
-			"err", err)
-	}
-	// Re-check trigger (iii), Phase 3 branch: same reasoning as above.
+	// AutoResumeOnJobDone off (doc sec.3.4's session-policy table): the
+	// notice is already durable and web-visible on the next pull; no turn
+	// is forced here, matching today's behavior.
 	c.noteSubAgentChildRunEnded(sessionID)
 }
 

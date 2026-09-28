@@ -130,6 +130,7 @@ func (c *coordinator) buildCall(ctx context.Context, sessionID, prompt string, p
 		LogicalCallID:       uuid.New().String(), // P2-1: generate stable ID once
 		AutoResumed:         autoResumed,
 		BackgroundJobNotice: backgroundJobNotice,
+		IsDrain:             isDrainCallFrom(ctx),
 	}
 	// Stamp the entry-channel origin at BUILD time, not message-creation
 	// time: the call may be queued as an InterruptAndSend replacement and
@@ -328,6 +329,7 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 		LogicalCallID:        uuid.New().String(), // P2-1: generate stable ID once
 		AutoResumed:          autoResumed,
 		BackgroundJobNotice:  backgroundJobNotice,
+		IsDrain:              isDrainCallFrom(ctx),
 		OnUserMessageCreated: func(id string) { createdUserMessageID = id },
 		// R3-1: the CURRENT attempt's sink (for multi-step or
 		// 401-retried runs the LAST prepared step wins). armAttempt
@@ -476,6 +478,15 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 			Origin:                    trackCall.Origin,
 			AutoResumed:               trackCall.AutoResumed,
 			BackgroundJobNotice:       trackCall.BackgroundJobNotice,
+			// A 401-credential-refresh rebuild is the SAME logical call
+			// retrying, not a new call built from an active one -- unlike
+			// InterruptAndReplace/driver.callFor (doc sec.3.4's "never
+			// inherited" rule), IsDrain must survive this rebuild or a
+			// Drain call that hits a 401 would retry as an ordinary turn.
+			IsDrain: trackCall.IsDrain,
+			// The 401 came from the provider, so this Drain already
+			// committed to a turn; its retry must not re-gate on the pull.
+			drainTurnCommitted: trackCall.IsDrain,
 		}
 		pinned.pin(&newCall)
 		*trackCall = newCall
@@ -645,6 +656,9 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 		// Fresh capture target for the next attempt (R3-1, round 6);
 		// this attempt's instance is sealed by the resolve() below.
 		armAttempt()
+		// A retried Drain already reached the provider and pulled its
+		// notice on the first attempt; skip the turn-start gate now.
+		trackCall.drainTurnCommitted = trackCall.IsDrain
 		result, originalErr = run()
 		attemptAssistantMsgID = curAttempt.resolve()
 	}

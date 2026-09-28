@@ -322,7 +322,9 @@ func (a *sessionAgent) QueuedPrompts(sessionID string) int {
 	return len(mb.submitted)
 }
 
-// QueuedPromptsList is QueuedPrompts' list counterpart — see its doc.
+// QueuedPromptsList is QueuedPrompts' list counterpart — see its doc. A
+// queued Drain call (phase-4 step 3) is never listed: it carries no prompt
+// text of its own and is not user-facing queued work.
 func (a *sessionAgent) QueuedPromptsList(sessionID string) []string {
 	mb := a.getMailbox(sessionID)
 	mb.mu.Lock()
@@ -332,8 +334,11 @@ func (a *sessionAgent) QueuedPromptsList(sessionID string) []string {
 	if len(mailboxCalls) == 0 {
 		return nil
 	}
-	prompts := make([]string, 0, len(mailboxCalls))
+	var prompts []string
 	for _, call := range mailboxCalls {
+		if call.IsDrain {
+			continue
+		}
 		prompts = append(prompts, call.Prompt)
 	}
 	return prompts

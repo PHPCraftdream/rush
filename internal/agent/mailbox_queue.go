@@ -42,7 +42,49 @@ func (mb *mailbox) clearAll() {
 func (mb *mailbox) queue(call SessionAgentCall) {
 	mb.mu.Lock()
 	defer mb.mu.Unlock()
-	mb.submitted = append(mb.submitted, call)
+	mb.submitted = mergeQueuedCall(mb.submitted, call)
+}
+
+// mergeQueuedCall appends call to queued, applying phase-4 step 3's Drain
+// merge rule (doc sec.3.4): "at most one Drain call in a session's queue;
+// when it merges with a regular user call, the user call runs and the
+// Drain disappears — every turn pulls anyway." A no-op pass-through
+// (plain append) for every non-Drain call arriving with no Drain already
+// queued, which is every call before step 3 ever produced.
+//
+//   - An incoming Drain is dropped outright if the queue is already
+//     non-empty: whatever runs next (Drain or not) already pulls at its own
+//     turn start, so a second Drain call would only buy a redundant turn.
+//   - An incoming non-Drain call drops any Drain already sitting in the
+//     queue: the stronger policy (a real turn) wins, and the real turn's
+//     own turn-start pull makes the dropped Drain's job redundant.
+func mergeQueuedCall(queued []SessionAgentCall, call SessionAgentCall) []SessionAgentCall {
+	if call.IsDrain {
+		if len(queued) > 0 {
+			return queued
+		}
+		return append(queued, call)
+	}
+	if !hasQueuedDrain(queued) {
+		return append(queued, call)
+	}
+	filtered := make([]SessionAgentCall, 0, len(queued))
+	for _, q := range queued {
+		if !q.IsDrain {
+			filtered = append(filtered, q)
+		}
+	}
+	return append(filtered, call)
+}
+
+// hasQueuedDrain reports whether queued already holds a Drain call.
+func hasQueuedDrain(queued []SessionAgentCall) bool {
+	for _, q := range queued {
+		if q.IsDrain {
+			return true
+		}
+	}
+	return false
 }
 
 // popFirstSubmitted removes and returns the first entry from the submitted

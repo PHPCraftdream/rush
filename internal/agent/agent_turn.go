@@ -359,6 +359,28 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 		return nil, SessionAgentCall{}, false, fmt.Errorf("failed to get session: %w", err)
 	}
 
+	// Phase-4 step 3 (DUR-3, doc sec.3.3): the driver pulls pending
+	// async_jobs/session_notices rows into history BEFORE history loads for
+	// the prompt, so a notice lands in msgs below exactly like any other
+	// persisted message -- no separate splice path for it. Runs for EVERY
+	// turn (not just Drain): a plain user turn that happens to start right
+	// after a background job finished picks the notice up here too. Never
+	// fails the turn (pullPendingNotices logs and skips per-row).
+	_, anyWake := a.pullPendingNotices(preambleCtx, call.SessionID)
+	if call.IsDrain && !anyWake && !call.drainTurnCommitted {
+		// No reaction-worthy notice moved into history: finish through the
+		// normal turn end WITHOUT ever reaching the provider (doc sec.3.4) --
+		// no empty assistant message, no Stream call. drainOrReleaseMerged
+		// still runs so a call queued behind this Drain executes as the
+		// loop's next turn instead of being orphaned.
+		preambleCancel()
+		next, ok := a.drainOrReleaseMerged(call.SessionID, epoch, lk, runCancel)
+		if !ok {
+			return nil, SessionAgentCall{}, false, nil
+		}
+		return nil, next, true, nil
+	}
+
 	msgs, err := a.getSessionMessages(preambleCtx, currentSession)
 	if err != nil {
 		preambleCancel()
@@ -413,8 +435,15 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	// ErrCallAlreadyAttempted to prevent duplicate execution on retry.
 	// If call.ExistingMessageID is set, the user message already exists,
 	// so we're already in the "attempted" state.
+	// Phase-4 step 3 (doc sec.3.4's "empty prompt" rule): a Drain call that
+	// reaches here (call.IsDrain && anyWake, checked above) has an empty
+	// Prompt by construction (newDrainCall) -- it must NEVER get a
+	// createUserMessage call, which would persist an empty user-role row.
+	// Its reaction is purely to the notice(s) the turn-start pull already
+	// spliced into msgs/history above.
 	userMessageCreated := call.ExistingMessageID != ""
-	if call.ExistingMessageID == "" {
+	skipUserMessage := call.IsDrain && call.Prompt == "" && call.ExistingMessageID == ""
+	if call.ExistingMessageID == "" && !skipUserMessage {
 		createdMsg, err := a.createUserMessage(preambleCtx, call)
 		if err != nil {
 			preambleCancel()
@@ -586,6 +615,19 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	// writes synchronously, so there is nothing to flush here.
 
 	history, files := a.preparePrompt(msgs, currentSession.Todos, call.Attachments...)
+
+	// Phase-4 step 3 (doc sec.3.4): a Drain call's empty prompt relies on
+	// history already ending in a fresh user-role notice (the turn-start
+	// pull above). If it does not -- e.g. the last message is a dangling
+	// assistant turn interrupted mid-stream -- append a NON-PERSISTED nudge
+	// so the provider still has a well-formed prompt to react to. Never
+	// creates a DB row; history/msgs above are untouched.
+	if call.IsDrain && call.Prompt == "" {
+		last := len(history) - 1
+		if last < 0 || (history[last].Role != fantasy.MessageRoleUser && history[last].Role != fantasy.MessageRoleTool) {
+			history = append(history, fantasy.NewUserMessage("Continue based on the notice(s) above."))
+		}
+	}
 
 	// historyIDs is the dedup set for mailbox-injected messages (design §5):
 	// an inject whose DB row was already loaded into msgs by this turn's

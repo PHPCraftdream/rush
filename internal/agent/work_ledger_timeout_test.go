@@ -117,9 +117,13 @@ func TestWorkLedger_TerminateAndWakeTransitionsToTimedOut(t *testing.T) {
 }
 
 // TestNotifyAsyncCompletion_TimedOutUsesContractTextAndNoticeKind:
-// FormatAsyncCompletion's timeout wording matches the contract verbatim, and
-// notifyAsyncCompletion's wake carries noticeKind="timeout_terminated" for a
-// TimedOut completion.
+// FormatAsyncCompletion's timeout wording matches the contract verbatim
+// (unchanged by step 3 -- it is now called from the PULL path,
+// agent_notice_pull.go's buildJobNoticeMessageParams, instead of here), and
+// notifyAsyncCompletion submits the Drain wake hint iff the completion's own
+// Wake bit (the committed row's wake, phase-4 step 3) is set -- text/
+// NoticeKind are no longer this callback's job at all; the pull reconstructs
+// both from the row at pull time.
 // Revert-check performed: reverted FormatAsyncCompletion to the
 // unconditional "finished/failed" text -- the text assertion below FAILED
 // (got the generic "finished" wording instead of "timed out after...").
@@ -145,24 +149,29 @@ func TestNotifyAsyncCompletion_TimedOutUsesContractTextAndNoticeKind(t *testing.
 	coord.asyncJobs.store = newTestAsyncJobStore(t)
 	coord.asyncJobs.coord = coord
 
+	// Wake: true -- a timed-out job's committed row always wakes (doc
+	// sec.3.4's wake-policy table); this is what deliverLocked now threads
+	// through as AsyncCompletion.Wake (work_ledger.go).
 	coord.notifyAsyncCompletion(AsyncCompletion{
 		SessionID: "child-1", ToolCallID: "call-1", ToolName: "bash",
-		Content: "partial output", TimedOut: true, TimeoutSeconds: 900,
+		Content: "partial output", TimedOut: true, TimeoutSeconds: 900, Wake: true,
 	})
 
 	select {
 	case call := <-received:
-		require.Equal(t, "timeout_terminated", call.NoticeKind)
-		require.Contains(t, call.Prompt, "timed out after 900s")
+		require.True(t, call.IsDrain, "a wake hint submits a Drain call, not a text-carrying one")
+		require.Empty(t, call.NoticeKind, "a Drain call itself carries no NoticeKind -- the pull reconstructs it from the row")
 	case <-time.After(2 * time.Second):
 		t.Fatal("notifyAsyncCompletion's wake never reached agent.Run")
 	}
 }
 
 // TestWorkLedger_WakeOnlyUsesTimeoutWakeOnlyNoticeKind: handleTimeout's
-// wake_only branch calls wakeSession directly with
-// noticeKind="timeout_wake_only", and does NOT transition the job to
-// terminal (it stays phaseRunning).
+// wake_only branch persists a durable session_notices row (kind
+// NoticeKindWakeOnly == "timeout_wake_only") BEFORE submitting the wake --
+// step 3 moved the notice off the in-process call entirely (a Drain call
+// carries no notice text/NoticeKind of its own, doc sec.3.4) -- and does NOT
+// transition the job to terminal (it stays phaseRunning).
 func TestWorkLedger_WakeOnlyUsesTimeoutWakeOnlyNoticeKind(t *testing.T) {
 	t.Parallel()
 	received := make(chan SessionAgentCall, 1)
@@ -191,12 +200,18 @@ func TestWorkLedger_WakeOnlyUsesTimeoutWakeOnlyNoticeKind(t *testing.T) {
 
 	select {
 	case call := <-received:
-		require.Equal(t, "timeout_wake_only", call.NoticeKind)
-		require.Contains(t, call.Prompt, "still running")
+		require.True(t, call.IsDrain, "wake_only's wake must submit a Drain call, not a text-carrying one")
+		require.Empty(t, call.NoticeKind, "a Drain call itself carries no NoticeKind -- the pull reconstructs it from the row")
 	case <-time.After(2 * time.Second):
 		t.Fatal("handleTimeout's wake_only branch never reached agent.Run")
 	}
 	require.Equal(t, phaseRunning, job.state, "wake_only must not transition the job to terminal")
+
+	notices, err := l.store.ListSessionNotices(t.Context(), "owner")
+	require.NoError(t, err)
+	require.Len(t, notices, 1)
+	require.Equal(t, "timeout_wake_only", notices[0].Kind)
+	require.Contains(t, notices[0].Text, "still running")
 }
 
 // TestWorkLedger_WakeOnlyFiresExactlyOnceThenStaysRunning: calling

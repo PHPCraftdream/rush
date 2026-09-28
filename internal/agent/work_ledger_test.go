@@ -7,7 +7,6 @@ package agent
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -38,7 +37,10 @@ func TestWorkLedger_WaitsForPersistedToolResult(t *testing.T) {
 	_, existing, err := l.Start("session", "call", "", "bash", "", true, false, nil, nil)
 	require.NoError(t, err)
 	require.False(t, existing)
-	want := AsyncCompletion{SessionID: "session", ToolCallID: "call", ToolName: "bash", Content: "done"}
+	// Wake: true -- a natural finish's committed row always sets wake=1
+	// (doc sec.3.4's wake-policy table; causeStateNoticeKindWake's
+	// causeNaturalFinish case), phase-4 step 3.
+	want := AsyncCompletion{SessionID: "session", ToolCallID: "call", ToolName: "bash", Content: "done", Wake: true}
 	l.finish("session", "call", jobResult{content: "done"})
 
 	l.mu.Lock()
@@ -323,56 +325,12 @@ func TestWorkLedger_SyncJobBypassesReadyQueueAndWebDone(t *testing.T) {
 	require.Equal(t, "sync result", result.content)
 }
 
-// TestWorkLedger_ConsumeNoticeKeepsMapAndKeysInLockstep pins the orchestrator
-// review's P2 finding: consumeNotice used to delete only from l.noticedBefore,
-// leaving the key in l.noticedBeforeKeys forever -- N record+consume cycles
-// in a long-lived web process grew the slice unboundedly even though the map
-// itself never exceeded maxNoticedBefore (eviction there only fires once the
-// MAP is over the bound, so it never observed the orphaned slice growth).
-//
-// Revert-check performed: reverted consumeNotice to
-// `delete(l.noticedBefore, key)` only (no slice removal) -- this test FAILED
-// (noticedBeforeKeys had length 50 instead of 0). Restored the fix; re-ran,
-// passed.
-func TestWorkLedger_ConsumeNoticeKeepsMapAndKeysInLockstep(t *testing.T) {
-	t.Parallel()
-	l := newWorkLedger(nil)
-	l.store = newTestAsyncJobStore(t)
-	const n = 50
-	for i := 0; i < n; i++ {
-		job := jobIdentity{owner: "owner", toolCallID: fmt.Sprintf("call-%d", i)}
-		l.recordNotice(job, fmt.Sprintf("msg-%d", i))
-		l.consumeNotice(job)
-	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	require.Empty(t, l.noticedBefore, "every recorded notice was consumed; the map must end up empty")
-	require.Empty(t, l.noticedBeforeKeys, "every recorded notice was consumed; the key-order slice must end up empty too")
-}
-
-// TestWorkLedger_NoticeReRecordedAfterConsumeDoesNotDuplicateKey pins the
-// second half of the same finding: recording the SAME job identity again
-// after it was consumed must not leave a duplicate entry in
-// noticedBeforeKeys -- a duplicate let eviction pop a stale occurrence of the
-// key and delete the FRESH map entry that key now collides with, silently
-// losing a just-recorded notice's idempotency guard.
-//
-// Revert-check performed: same revert as above (consumeNotice not touching
-// noticedBeforeKeys) -- this test FAILED (len(noticedBeforeKeys) == 2:
-// "call-1" appeared once from the first recordNotice, and again from the
-// second, since consumeNotice never removed the first occurrence). Restored
-// the fix; re-ran, passed.
-func TestWorkLedger_NoticeReRecordedAfterConsumeDoesNotDuplicateKey(t *testing.T) {
-	t.Parallel()
-	l := newWorkLedger(nil)
-	l.store = newTestAsyncJobStore(t)
-	job := jobIdentity{owner: "owner", toolCallID: "call-1"}
-	l.recordNotice(job, "msg-1")
-	l.consumeNotice(job)
-	l.recordNotice(job, "msg-2")
-
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	require.Len(t, l.noticedBeforeKeys, 1, "re-recording after consume must not leave a duplicate key")
-	require.Equal(t, "msg-2", l.noticedBefore[noticedBeforeKey(job.owner, job.toolCallID)])
-}
+// TestWorkLedger_ConsumeNoticeKeepsMapAndKeysInLockstep and
+// TestWorkLedger_NoticeReRecordedAfterConsumeDoesNotDuplicateKey (both pinning
+// the orchestrator review's earlier P2 finding about consumeNotice/
+// recordNotice/noticedBefore) were removed in phase-4 step 3: wakeSession no
+// longer persists a notice message itself (docs/plans/2026-09-28-async-
+// phase4-durable-core.md sec.3.4) -- the durable async_jobs/session_notices
+// delivery outbox is the sole idempotency mechanism now (DUR-3's pull CAS),
+// so noticedBefore/recordNotice/noticeFor/consumeNotice and their whole
+// class of bug are gone, not merely made to pass differently.

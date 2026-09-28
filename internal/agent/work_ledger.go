@@ -23,17 +23,6 @@ import (
 
 const maxAsyncJobsPerSession = 50
 
-// maxNoticedBefore bounds workLedger.noticedBefore (§2.4): one entry per
-// wake notice persisted, evicted oldest-first once the bound is hit. Sized
-// generously for a long-lived web process without letting it grow
-// unbounded (orchestrator decision 2026-09-28 item 2).
-const maxNoticedBefore = 1000
-
-// noticedBeforeKey is the noticedBefore map key for (owner, toolCallID).
-func noticedBeforeKey(owner, toolCallID string) string {
-	return owner + "\x00" + toolCallID
-}
-
 // AsyncCompletion is the result of a tool that returned before its work ended.
 type AsyncCompletion struct {
 	SessionID  string
@@ -57,11 +46,28 @@ type AsyncCompletion struct {
 	// keeps its own pre-existing "sub-agent canceled" wording. Selects the
 	// contract's "stopped (job_kill)" wording and NoticeKind.
 	Stopped bool
+	// Cancelled is true when the job's terminal state is 'cancelled' via
+	// Stop (causeSessionCancel), NOT job_kill (Stopped above). Step 3: a
+	// plain job cancelled by Stop used to never reach FormatAsyncCompletion
+	// at all (the old memory path silently dropped it, doc sec.3.2's
+	// "stoppedBySession" branch) -- now the durable pull (sec.3.3) surfaces
+	// its 'pending' row regardless, so it needs its own wording instead of
+	// falling into the generic finished/failed branch.
+	Cancelled bool
 	// Metadata carries the inner tool's raw ToolResponse.Metadata through to
 	// a SYNC job's jobResult (§4.4) so awaitAndFinish can reconstruct a
 	// byte-for-byte response. Unused by every async (CLI/web) delivery,
 	// which only ever formats Content/IsError into a human notice.
 	Metadata string
+	// Wake is the DB row's own committed wake bit (phase-4 step 3, doc
+	// sec.3.4's wake-policy table) for a non-sync job: true for a natural
+	// finish/timeout-terminated/delegation-release, false for Stop/job_kill/
+	// a failed wake-up marker. notifyAsyncCompletion reads this to decide
+	// whether the completion's non-blocking Drain HINT is worth submitting
+	// at all -- the pull itself (driver-owned, turn start/PrepareStep)
+	// always happens regardless of Wake, this field only gates the HINT.
+	// Always false for a sync job (no DB row, no wake concept).
+	Wake bool
 }
 
 // AsyncCompletionSource exposes session completion events to the CLI runner.
@@ -121,19 +127,6 @@ type workLedger struct {
 	// call (see closeOnce's twin on timeoutService).
 	closedCh  chan struct{}
 	closeOnce sync.Once
-
-	// noticedBefore maps "owner\x00toolCallID" -> the persisted notice
-	// message id, so a repeated wakeSession call for a job already
-	// delivered (§1.3) skips re-persisting and goes straight to step 2.
-	// Written when wakeSession's step 1 succeeds; removed once the notice
-	// has been consumed by the owner's turn (wakeSession's own Run call
-	// returning without error, including a queued admission -- either way
-	// the owner's mailbox now owns delivering it). A failed Run's entry is
-	// kept (so a hypothetical retry still finds ExistingMessageID) until
-	// evicted by size (maxNoticedBefore, FIFO via noticedBeforeKeys) --
-	// orchestrator decision 2026-09-28 item 2: no unbounded growth.
-	noticedBefore     map[string]string
-	noticedBeforeKeys []string
 
 	// timeouts is the single per-process timer service for every asyncJob
 	// with a non-zero deadline (§5.4). Nil-safe throughout (timeoutService's
@@ -234,10 +227,15 @@ func (l *workLedger) Start(owner, toolCallID, input, toolName, childSession stri
 		if store == nil {
 			return nil, false, errors.New("async job store is unavailable; cannot start an async job")
 		}
+		timeoutSeconds := 0
+		if timeout != nil {
+			timeoutSeconds = timeout.Seconds
+		}
 		claim, err := store.Claim(context.Background(), session.ClaimParams{
 			Owner: owner, ToolCallID: toolCallID, Kind: asyncJobKindFor(toolName),
 			Input: input, ChildSessionID: childSession, OriginCLI: cli,
 			Deadline: timeoutDeadlinePtr(timeout), TimeoutKind: timeoutKindString(timeout),
+			ToolName: toolName, TimeoutSeconds: timeoutSeconds,
 		})
 		if err != nil {
 			return nil, false, err // fail-closed (DUR-8)
@@ -284,65 +282,6 @@ func (l *workLedger) Start(owner, toolCallID, input, toolName, childSession stri
 	s.jobs[toolCallID] = job
 	signalWorkSession(s)
 	return job, false, nil
-}
-
-// noticeFor returns the persisted notice message id previously recorded for
-// job (§1.3's idempotency key), if any.
-func (l *workLedger) noticeFor(job jobIdentity) (string, bool) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	id, ok := l.noticedBefore[noticedBeforeKey(job.owner, job.toolCallID)]
-	return id, ok
-}
-
-// recordNotice records msgID as job's persisted notice message id, evicting
-// the oldest entry first once maxNoticedBefore is exceeded (orchestrator
-// decision 2026-09-28 item 2: bounded, not unbounded, growth).
-func (l *workLedger) recordNotice(job jobIdentity, msgID string) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	key := noticedBeforeKey(job.owner, job.toolCallID)
-	if l.noticedBefore == nil {
-		l.noticedBefore = make(map[string]string)
-	}
-	if _, exists := l.noticedBefore[key]; !exists {
-		l.noticedBeforeKeys = append(l.noticedBeforeKeys, key)
-	}
-	l.noticedBefore[key] = msgID
-	for len(l.noticedBefore) > maxNoticedBefore && len(l.noticedBeforeKeys) > 0 {
-		oldest := l.noticedBeforeKeys[0]
-		l.noticedBeforeKeys = l.noticedBeforeKeys[1:]
-		delete(l.noticedBefore, oldest)
-	}
-}
-
-// consumeNotice removes job's noticedBefore entry -- from BOTH the map and
-// noticedBeforeKeys -- once its notice has been consumed by the owner's turn
-// (wakeSession's own Run call returning without error, including a queued
-// admission). Orchestrator decision 2026-09-28 item 2: cleared on
-// consumption, not left to accumulate until eviction. Removing only from the
-// map (an earlier version of this function) left two bugs: noticedBeforeKeys
-// grew forever in a long-lived web process (eviction in recordNotice only
-// runs once the MAP exceeds maxNoticedBefore, never observing the orphaned
-// slice entries), and a key consumed then re-recorded got a SECOND entry in
-// the slice (recordNotice's `!exists` check passes again once the map entry
-// is gone), so an eviction could pop the stale occurrence and delete the
-// fresh map entry it now collides with by key -- deleting a notice that had
-// just been re-recorded.
-func (l *workLedger) consumeNotice(job jobIdentity) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	key := noticedBeforeKey(job.owner, job.toolCallID)
-	if _, ok := l.noticedBefore[key]; !ok {
-		return
-	}
-	delete(l.noticedBefore, key)
-	for i, k := range l.noticedBeforeKeys {
-		if k == key {
-			l.noticedBeforeKeys = append(l.noticedBeforeKeys[:i], l.noticedBeforeKeys[i+1:]...)
-			break
-		}
-	}
 }
 
 // markDrained records that a CLI loop consumes owner's ready queue. CLI
@@ -405,6 +344,7 @@ func (l *workLedger) deliverLocked(owner string, job *asyncJob) (AsyncCompletion
 		TimedOut:       job.state == phaseTimedOut,
 		TimeoutSeconds: job.timeoutSeconds,
 		Stopped:        job.state == phaseCancelled && job.childSession == "",
+		Wake:           job.wake,
 	}
 	delete(s.jobs, job.toolCallID)
 	if job.childSession != "" {

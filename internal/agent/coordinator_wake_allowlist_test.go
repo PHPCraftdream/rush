@@ -73,7 +73,7 @@ func (s *allowlistSpy) ClearSessionRunAllowlistForCall(sessionID string, ownerCa
 // InheritSessionRunAllowlistForGeneration/ClearSessionRunAllowlistForGeneration
 // record into the SAME inherits/clears slices as the bare (ungoverned)
 // methods above: phase 3's three production call sites (runSubAgent,
-// asyncTool.Run, wakeNoticeCall) all switched to the generation-guarded pair,
+// asyncTool.Run, drainCallFor) all switched to the generation-guarded pair,
 // so a spy that only recorded the bare methods would never see a call again
 // and every test below would silently stop observing anything.
 func (s *allowlistSpy) InheritSessionRunAllowlistForGeneration(parentID, childID string, generation uint64) {
@@ -95,7 +95,7 @@ func (s *allowlistSpy) ClearSessionRunAllowlistForGeneration(childID string, gen
 // child BEFORE waking it, even if the child's entry was cleared earlier (the
 // pre-phase-2 `defer Clear` this phase removed used to do exactly that).
 // Revert-check performed: removed the InheritSessionRunAllowlist call from
-// wakeNoticeCall's driver branch -- this test FAILED (spy.inherits was
+// drainCallFor's driver branch (agent_drain.go) -- this test FAILED (spy.inherits was
 // empty). Restored the call; re-ran, passed.
 func TestWakeSession_ReArmsChildRunAllowlistBeforeWaking(t *testing.T) {
 	spy := newAllowlistSpy(t)
@@ -114,7 +114,7 @@ func TestWakeSession_ReArmsChildRunAllowlistBeforeWaking(t *testing.T) {
 	// (what the removed `defer Clear` used to do at the end of the first turn).
 	spy.ClearSessionRunAllowlist("child-1")
 
-	err := coord.wakeSession(t.Context(), jobIdentity{owner: "child-1", toolCallID: "call-1"}, "notice", "", true)
+	err := coord.wakeSession(t.Context(), jobIdentity{owner: "child-1", toolCallID: "call-1"}, true)
 	require.NoError(t, err)
 
 	spy.mu.Lock()

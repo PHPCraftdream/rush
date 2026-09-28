@@ -176,7 +176,7 @@ func (t *asyncTool) run(ctx context.Context, cancel context.CancelFunc, sessionI
 	// may still own async jobs/background shells after this turn returns
 	// (structural concurrency, #1049), and a woken turn re-inherits from
 	// subAgentDriver.parentSessionID on every wake (wakeSession's
-	// wakeNoticeCall) instead -- clearing on return would strand a woken
+	// drainCallFor) instead -- clearing on return would strand a woken
 	// turn under the process-wide gate.
 	completion := AsyncCompletion{SessionID: sessionID, ToolCallID: call.ID, ToolName: t.name}
 	defer func() {

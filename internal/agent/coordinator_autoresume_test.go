@@ -251,7 +251,7 @@ func TestWakeSession_RunPanicIsRecovered(t *testing.T) {
 	}
 	coord := &coordinator{subAgentDrivers: newSubAgentDriverRegistry()}
 	// Registering a driver (rather than routing through c.currentAgent)
-	// keeps wakeNoticeCall on its driver.callFor branch, which needs no
+	// keeps drainCallFor on its driver.callFor branch, which needs no
 	// cfg/sessions wiring -- this test is about wakeSession's own recover(),
 	// not about model resolution.
 	coord.subAgentDrivers.register("sess-1", subAgentDriver{agent: agent})
@@ -261,20 +261,22 @@ func TestWakeSession_RunPanicIsRecovered(t *testing.T) {
 
 	var err error
 	require.NotPanics(t, func() {
-		err = coord.wakeSession(t.Context(), jobIdentity{owner: "sess-1", toolCallID: "call-1"}, "notice text", "", true)
+		err = coord.wakeSession(t.Context(), jobIdentity{owner: "sess-1", toolCallID: "call-1"}, true)
 	})
 	require.Error(t, err, "a recovered panic must still be reported as a real error, not silently swallowed")
 }
 
-// TestWakeSession_RunErrorIsVisibleNotDebug pins ASYNC-09/§1.4: a wake whose
-// Run attempt fails after the notice was already persisted must produce a
-// visible marker (a second InjectMessage call, tagged NoticeKind
-// "wake_failed" -- orchestrator decision 2026-09-28), not just a Debug log
-// line nobody sees. Revert-check performed: removed the
-// persistWakeFailedMarker call from wakeSession's error branch -- this test
-// FAILED (queuedCalls had length 1, only the original notice) -- restored
-// the call, re-ran, passed (length 2, second call's NoticeKind
-// "wake_failed").
+// TestWakeSession_RunErrorIsVisibleNotDebug pins ASYNC-09: a wake whose Run
+// attempt fails after the underlying fact was already committed must
+// produce a visible marker, not just a Debug log line nobody sees. Step 3
+// changed WHERE that marker lands: wakeSession no longer persists anything
+// itself, so the marker is a durable session_notices row (kind
+// NoticeKindWakeFailed, wake=0), not a second InjectMessage call.
+//
+// Revert-check performed: removed the persistWakeFailedMarker call from
+// wakeSession's error branch -- this test FAILED (ListSessionNotices
+// returned zero rows) -- restored the call, re-ran, passed (one row, kind
+// "wake_failed", text containing "call-2").
 func TestWakeSession_RunErrorIsVisibleNotDebug(t *testing.T) {
 	agent := &mockSessionAgent{
 		runFunc: func(ctx context.Context, call SessionAgentCall) (*fantasy.AgentResult, error) {
@@ -287,15 +289,14 @@ func TestWakeSession_RunErrorIsVisibleNotDebug(t *testing.T) {
 	coord.asyncJobs.store = newTestAsyncJobStore(t)
 	coord.asyncJobs.coord = coord
 
-	err := coord.wakeSession(t.Context(), jobIdentity{owner: "sess-2", toolCallID: "call-2"}, "notice text", "", true)
+	err := coord.wakeSession(t.Context(), jobIdentity{owner: "sess-2", toolCallID: "call-2"}, true)
 	require.Error(t, err)
 
-	agent.mu.Lock()
-	calls := append([]SessionAgentCall(nil), agent.queuedCalls...)
-	agent.mu.Unlock()
-	require.Len(t, calls, 2, "expected the original notice persist plus a wake-failed marker")
-	require.Equal(t, "wake_failed", calls[1].NoticeKind)
-	require.Contains(t, calls[1].Prompt, "call-2")
+	notices, listErr := coord.asyncJobs.store.ListSessionNotices(t.Context(), "sess-2")
+	require.NoError(t, listErr)
+	require.Len(t, notices, 1, "expected exactly one durable wake-failed marker")
+	require.Equal(t, "wake_failed", notices[0].Kind)
+	require.Contains(t, notices[0].Text, "call-2")
 }
 
 // TestWakeSession_AlwaysAttemptsRunEvenWhenSessionLooksBusy pins the fix for
@@ -332,7 +333,7 @@ func TestWakeSession_AlwaysAttemptsRunEvenWhenSessionLooksBusy(t *testing.T) {
 	coord.asyncJobs.store = newTestAsyncJobStore(t)
 	coord.asyncJobs.coord = coord
 
-	err := coord.wakeSession(t.Context(), jobIdentity{owner: "child-1", toolCallID: "call-1"}, "notice text", "", true)
+	err := coord.wakeSession(t.Context(), jobIdentity{owner: "child-1", toolCallID: "call-1"}, true)
 	require.NoError(t, err)
 	require.EqualValues(t, 1, calls.Load(), "wakeSession must still call Run even when the session looks busy")
 }

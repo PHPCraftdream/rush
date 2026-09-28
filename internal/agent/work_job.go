@@ -156,6 +156,14 @@ type asyncJob struct {
 	// notice, while it is still running. Always nil for bash/agent/
 	// agentic_fetch jobs.
 	outputBuf tools.LiveOutputBuffer
+
+	// wake is the COMMITTED row's own wake bit (phase-4 step 3, doc
+	// sec.3.4's wake-policy table), set by commitTransition from
+	// outcome.Row.Wake right after transitionToTerminal. Meaningless (zero
+	// value) until state.terminal(); a sync job never sets it (no DB row) --
+	// see AsyncCompletion.Wake's doc for why callers only ever read this for
+	// a non-sync completion.
+	wake bool
 }
 
 // transitionToTerminal is the in-memory half of a terminal transition,

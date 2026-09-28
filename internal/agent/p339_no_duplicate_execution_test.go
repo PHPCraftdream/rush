@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -68,6 +69,14 @@ func (m *mockMessageService) Create(ctx context.Context, sessionID string, param
 		return message.Message{}, m.failWith
 	}
 	return m.inner.Create(ctx, sessionID, params)
+}
+
+func (m *mockMessageService) CreateTx(ctx context.Context, tx *sql.Tx, sessionID string, params message.CreateMessageParams) (message.Message, error) {
+	return m.inner.CreateTx(ctx, tx, sessionID, params)
+}
+
+func (m *mockMessageService) PublishCreated(msg message.Message) {
+	m.inner.PublishCreated(msg)
 }
 
 func (m *mockMessageService) Update(ctx context.Context, msg message.Message) error {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -49,19 +50,26 @@ func (app *App) runNonInteractiveWithAsyncResults(ctx context.Context, output io
 	var totalTokens int64
 	var totalCost float64
 	firstTurn := true
+	// lastBuffered is the terse output of the last REAL turn (a no-turn Drain
+	// iteration prints nothing and must not blank it).
+	lastBuffered := &bytes.Buffer{}
 	sessionID := continueSessionID
 	for {
-		var buffered bytes.Buffer
+		buffered := &bytes.Buffer{}
 		turnOutput := output
 		switch mode {
 		case RunModeTerse:
-			turnOutput = &buffered
+			turnOutput = buffered
 		case RunModeJSON:
 			turnOutput = io.Discard
 		}
 		turnCtx := ctx
 		if !firstTurn {
-			turnCtx = agent.WithBackgroundJobNotice(ctx)
+			// Phase-4 step 3 (doc sec.3.4): this turn carries an empty
+			// prompt (below) and must be built as a Drain call -- lifts
+			// ErrEmptyPrompt, skips createUserMessage, and reacts only to
+			// whatever this turn's own turn-start pull moves into history.
+			turnCtx = agent.WithDrainCall(agent.WithBackgroundJobNotice(ctx))
 		}
 		result, err := app.ExecuteRun(turnCtx, RunRequest{
 			Prompt: prompt, Overrides: turnOverrides, Mode: mode,
@@ -74,7 +82,14 @@ func (app *App) runNonInteractiveWithAsyncResults(ctx context.Context, output io
 				source.ClaimAsyncCompletions(resolved)
 			},
 		})
-		if result != nil {
+		// A Drain iteration that ran no provider turn -- nothing wake-worthy
+		// was pending (typically the notice was already pulled at a step
+		// boundary of the previous turn), or it queued behind another owner
+		// that pulls it itself -- surfaces as ErrRunQueued with an empty
+		// envelope. Not a turn: it must neither replace the last turn's
+		// result nor become the run's error.
+		drainNoTurn := !firstTurn && errors.Is(err, ErrRunQueued)
+		if result != nil && !drainNoTurn {
 			final = result
 			sessionID = result.SessionID
 			totalTokens += result.Usage.DeltaTokens
@@ -85,11 +100,21 @@ func (app *App) runNonInteractiveWithAsyncResults(ctx context.Context, output io
 				counts[stat.Name] += stat.Count
 			}
 		}
-		runErr = err
+		if !drainNoTurn {
+			runErr = err
+			lastBuffered = buffered
+		}
 		if sessionID == "" || ctx.Err() != nil {
 			return final, runErr
 		}
-		completion, hasCompletion, waitErr := source.NextAsyncCompletion(ctx, sessionID)
+		// Phase-4 step 3: the in-memory ready queue is now used purely as a
+		// wake SIGNAL (doc sec.5 step 3) -- the completion's own text is
+		// NEVER used as the next turn's prompt anymore (that would duplicate
+		// the notice the driver's own turn-start pull is about to insert
+		// into history from the durable async_jobs/session_notices row).
+		// s.ready/markDrained/ClaimAsyncCompletions/NextAsyncCompletion
+		// removal is deferred to step 4's DB-driven CLI loop rewrite.
+		_, hasCompletion, waitErr := source.NextAsyncCompletion(ctx, sessionID)
 		if waitErr != nil {
 			if final != nil {
 				final.ExitReason = "canceled"
@@ -122,7 +147,7 @@ func (app *App) runNonInteractiveWithAsyncResults(ctx context.Context, output io
 			}
 			slices.SortFunc(final.ToolCalls, func(a, b ToolCallStat) int { return cmpName(a.Name, b.Name) })
 			if mode == RunModeTerse {
-				if _, writeErr := io.Copy(output, &buffered); writeErr != nil {
+				if _, writeErr := io.Copy(output, lastBuffered); writeErr != nil {
 					return final, writeErr
 				}
 			}
@@ -133,7 +158,11 @@ func (app *App) runNonInteractiveWithAsyncResults(ctx context.Context, output io
 			}
 			return final, runErr
 		}
-		prompt = agent.FormatAsyncCompletion(completion)
+		// Empty prompt: a Drain-kind turn (doc sec.3.4). Its own turn-start
+		// pull moves whatever pending notice(s) woke this signal into
+		// history and decides, from there, whether to react at all --
+		// never from this completion's own (unused) text.
+		prompt = ""
 		continueSessionID = sessionID
 		useLast = false
 		firstTurn = false

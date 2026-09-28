@@ -37,7 +37,10 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 	// admission status travels beside the contract, not inside the error.
 	adm := turnAdmissionFrom(ctx)
 	ctx = withoutTurnAdmission(ctx)
-	if call.Prompt == "" && !message.ContainsTextAttachment(call.Attachments) {
+	// A Drain call's whole point is an empty prompt (doc sec.3.4): it reacts
+	// (if at all) purely to history the turn-start pull just inserted, never
+	// to typed text. ErrEmptyPrompt is lifted ONLY for IsDrain.
+	if call.Prompt == "" && !call.IsDrain && !message.ContainsTextAttachment(call.Attachments) {
 		return nil, ErrEmptyPrompt
 	}
 	if call.SessionID == "" {
@@ -230,7 +233,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 // actually releases and durably enqueues the queued work (proven by
 // p641_mbstopped_rebind_test.go).
 func (a *sessionAgent) RunWithReservedOwnership(ctx context.Context, call SessionAgentCall, epoch uint64, reserveCancel context.CancelFunc, onHandoff func()) (*fantasy.AgentResult, error) {
-	if call.Prompt == "" && !message.ContainsTextAttachment(call.Attachments) {
+	if call.Prompt == "" && !call.IsDrain && !message.ContainsTextAttachment(call.Attachments) {
 		// Before the handoff line: this function must release what
 		// ReserveExclusive claimed. reserveCancel's placeholder context was
 		// never superseded (rebindDispatcher hasn't run yet), so cancel it

@@ -20,11 +20,13 @@ package agent
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
+	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/google/uuid"
 )
 
@@ -341,7 +343,20 @@ func (l *workLedger) handleSupervisionDeadline(rootSessionID string, generation 
 	coord := l.coord
 	id := jobIdentity{owner: rootSessionID, toolCallID: "supervision-" + uuid.NewString()}
 	go func() {
-		_ = coord.wakeSession(context.Background(), id, text, noticeKindSupervision, true)
+		// Phase-4 step 3 (doc sec.3.2/3.3): persist the check-in as a
+		// session_notices row FIRST (no job_tool_call_id -- the void
+		// condition for kind=supervision checks "any running row for
+		// owner", not one specific job), then submit the wake hint. wake=1
+		// per the wake-policy table; the pull (agent_notice_pull.go) voids
+		// it instead of delivering it if the scope has since closed.
+		if l.store == nil {
+			return
+		}
+		if err := l.store.InsertSessionNotice(context.Background(), rootSessionID, session.NoticeKindSupervision, text, true, ""); err != nil {
+			slog.Error("supervision: failed to persist check-in notice", "session_id", rootSessionID, "err", err)
+			return
+		}
+		_ = coord.wakeSession(context.Background(), id, true)
 	}()
 }
 

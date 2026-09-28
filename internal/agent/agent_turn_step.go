@@ -44,8 +44,18 @@ func (ts *turnStream) prepareStep(callContext context.Context, options fantasy.P
 	}
 	prepared.Tools = withProviderOptionsOnLast(pinnedStepTools, ts.a.getCacheControlOptions())
 
+	// stepSplices collects every message THIS step's boundary inserts mid-
+	// turn (mailbox injects, cross-process injects, phase-4 notice pulls) --
+	// not appended to prepared.Messages directly. They land there together
+	// with every earlier step's own splices (ts.carriedSplices) below, so
+	// a step-3 splice is still visible verbatim at step 4, 5, … of this SAME
+	// turn (doc sec.3.4's second bullet): fantasy's own options.Messages for
+	// step N is initialPrompt + step responses, which does NOT carry
+	// forward whatever a PREVIOUS step's PrepareStep spliced in.
+	var stepSplices []fantasy.Message
+
 	for _, inj := range ts.a.drainDueInjects(ts.call.SessionID, ts.genID, ts.historyIDs) {
-		prepared.Messages = append(prepared.Messages, inj.ToAIMessage()...)
+		stepSplices = append(stepSplices, inj.ToAIMessage()...)
 	}
 
 	// Cross-process inject drain: rows written by another process
@@ -75,7 +85,7 @@ func (ts *turnStream) prepareStep(callContext context.Context, options fantasy.P
 				"session_id", ts.call.SessionID, "message_id", inj.MessageID, "error", getErr)
 			continue
 		}
-		prepared.Messages = append(prepared.Messages, injMsg.ToAIMessage()...)
+		stepSplices = append(stepSplices, injMsg.ToAIMessage()...)
 		// The row was written by a foreign process (`rush sessions
 		// inject`), so its Create() never published through THIS
 		// process's message broker. If a web UI happens to be
@@ -83,6 +93,22 @@ func (ts *turnStream) prepareStep(callContext context.Context, options fantasy.P
 		// the already-persisted message so it renders live instead
 		// of waiting for a page reload.
 		ts.a.messages.Notify(injMsg)
+	}
+
+	// Phase-4 step 3 (DUR-3, doc sec.3.3): the step-boundary half of the
+	// driver's pull, alongside the inject drains above. Compaction steps
+	// use their own separate PrepareStep closures (agent_compaction.go) and
+	// never reach this method at all, so they never pull.
+	for _, msg := range ts.a.pullPendingNoticesForStep(callContext, ts.call.SessionID) {
+		stepSplices = append(stepSplices, msg.ToAIMessage()...)
+	}
+
+	// Re-insert every earlier step's mid-turn splice at the SAME position it
+	// first landed, then this step's own new ones at the end, BEFORE window
+	// trimming/cache marking below (doc sec.3.4).
+	prepared.Messages = spliceCarried(prepared.Messages, ts.carriedSplices, stepSplices)
+	if len(stepSplices) > 0 {
+		ts.carriedSplices = append(ts.carriedSplices, carriedSplice{pos: len(options.Messages), msgs: stepSplices})
 	}
 
 	// Sliding-window context management: when the context is nearly
@@ -505,4 +531,38 @@ func (ts *turnStream) stopConditions() []fantasy.StopCondition {
 			return detected
 		},
 	}
+}
+
+// carriedSplice is one step boundary's mid-turn insertion: msgs landed at
+// index pos of that step's options.Messages (initialPrompt + the step
+// responses so far).
+type carriedSplice struct {
+	pos  int
+	msgs []fantasy.Message
+}
+
+// spliceCarried builds a step's messages: base (fantasy's own
+// initialPrompt + step responses) with every earlier carried splice
+// re-inserted at its original position, then this step's own new splices
+// at the end. base grows only by appending between steps, so an earlier
+// pos still names the same boundary in a later step's base. Returns a
+// fresh slice; base is never appended to in place.
+func spliceCarried(base []fantasy.Message, carried []carriedSplice, stepSplices []fantasy.Message) []fantasy.Message {
+	if len(carried) == 0 && len(stepSplices) == 0 {
+		return base
+	}
+	n := len(base) + len(stepSplices)
+	for _, cs := range carried {
+		n += len(cs.msgs)
+	}
+	out := make([]fantasy.Message, 0, n)
+	prev := 0
+	for _, cs := range carried {
+		pos := min(max(cs.pos, prev), len(base))
+		out = append(out, base[prev:pos]...)
+		out = append(out, cs.msgs...)
+		prev = pos
+	}
+	out = append(out, base[prev:]...)
+	return append(out, stepSplices...)
 }

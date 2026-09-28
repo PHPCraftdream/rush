@@ -22,6 +22,29 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// latestSessionNoticeText returns the text of owner's most recently
+// inserted session_notices row (phase-4 step 3: supervision now persists
+// its check-in there instead of putting it directly on the woken call's
+// Prompt -- a Drain call carries neither text nor NoticeKind of its own,
+// see agent_drain.go). Fails the test if there are no rows.
+func latestSessionNoticeText(t *testing.T, l *workLedger, owner string) string {
+	t.Helper()
+	notices, err := l.store.ListSessionNotices(t.Context(), owner)
+	require.NoError(t, err)
+	require.NotEmpty(t, notices, "expected at least one session_notices row for %s", owner)
+	return notices[len(notices)-1].Text
+}
+
+// sessionNoticeTextAt returns the i-th (0-indexed, insertion order)
+// session_notices row's text for owner.
+func sessionNoticeTextAt(t *testing.T, l *workLedger, owner string, i int) string {
+	t.Helper()
+	notices, err := l.store.ListSessionNotices(t.Context(), owner)
+	require.NoError(t, err)
+	require.Greater(t, len(notices), i, "expected at least %d session_notices row(s) for %s", i+1, owner)
+	return notices[i].Text
+}
+
 // newSupervisionTestLedger builds a bare workLedger+coordinator pair wired
 // for supervision, with no timer service (tests that drive
 // handleSupervisionDeadline directly do not need the real timer; armFunc is
@@ -171,17 +194,20 @@ func TestSupervision_TicksAfterSilenceWithOpenWork(t *testing.T) {
 
 	select {
 	case call := <-received:
-		require.Equal(t, "supervision", call.NoticeKind)
-		require.Contains(t, call.Prompt, "Supervision check-in (tick 1")
-		require.Contains(t, call.Prompt, "1 background job(s) running")
-		require.Contains(t, call.Prompt, "call-abc")
-		require.Contains(t, call.Prompt, "job_output")
-		require.Contains(t, call.Prompt, "job_kill")
-		require.NotContains(t, call.Prompt, "inspect_agent")
-		require.NotContains(t, call.Prompt, "stop_agent")
+		require.True(t, call.IsDrain, "a supervision tick wakes via a Drain call, not a text-carrying one")
+		require.Empty(t, call.NoticeKind, "a Drain call itself carries no NoticeKind -- the pull reconstructs it from the row")
 	case <-time.After(2 * time.Second):
 		t.Fatal("supervision tick never reached agent.Run")
 	}
+
+	text := latestSessionNoticeText(t, l, "tick-root")
+	require.Contains(t, text, "Supervision check-in (tick 1")
+	require.Contains(t, text, "1 background job(s) running")
+	require.Contains(t, text, "call-abc")
+	require.Contains(t, text, "job_output")
+	require.Contains(t, text, "job_kill")
+	require.NotContains(t, text, "inspect_agent")
+	require.NotContains(t, text, "stop_agent")
 }
 
 // TestSupervision_RecordProgressPushesDeadlineForward: recordProgress
@@ -308,7 +334,8 @@ func TestSupervision_PushDeadlineOnTurnEndKeepsBackoffButReschedules(t *testing.
 		t.Fatal("the rescheduled deadline never fired")
 	}
 	require.Len(t, prompts, 1)
-	require.Contains(t, prompts[0], "tick 3", "backoff continues from where it left off (3rd tick), not reset to 1")
+	text := latestSessionNoticeText(t, l, "turnend-root")
+	require.Contains(t, text, "tick 3", "backoff continues from where it left off (3rd tick), not reset to 1")
 }
 
 // TestSupervision_PushDeadlineOnTurnEndSkipsPausedSession: a mere turn end
@@ -372,11 +399,6 @@ func TestSupervision_BackoffGrowsThenPausesThenResetsOnProgress(t *testing.T) {
 		prompts = append(prompts, p)
 		mu.Unlock()
 	}
-	promptAt := func(i int) string {
-		mu.Lock()
-		defer mu.Unlock()
-		return prompts[i]
-	}
 	promptCount := func() int {
 		mu.Lock()
 		defer mu.Unlock()
@@ -405,7 +427,7 @@ func TestSupervision_BackoffGrowsThenPausesThenResetsOnProgress(t *testing.T) {
 	require.False(t, st.paused)
 	gen2 := st.generation
 	l.supervision.mu.Unlock()
-	require.Contains(t, promptAt(0), "tick 1")
+	require.Contains(t, sessionNoticeTextAt(t, l, "backoff-root", 0), "tick 1")
 
 	fireAndWait(gen2, 2) // tick 2: 20ms -> 40ms (== cap)
 	l.supervision.mu.Lock()
@@ -422,7 +444,7 @@ func TestSupervision_BackoffGrowsThenPausesThenResetsOnProgress(t *testing.T) {
 	require.True(t, st.paused)
 	staleGenAfterPause := st.generation
 	l.supervision.mu.Unlock()
-	require.Contains(t, promptAt(2), "paused after 3 consecutive check-ins")
+	require.Contains(t, sessionNoticeTextAt(t, l, "backoff-root", 2), "paused after 3 consecutive check-ins")
 
 	// A stale fire against the paused generation must not produce a 4th call.
 	l.handleSupervisionDeadline("backoff-root", staleGenAfterPause)
@@ -441,7 +463,7 @@ func TestSupervision_BackoffGrowsThenPausesThenResetsOnProgress(t *testing.T) {
 	require.NotEqual(t, staleGenAfterPause, resumedGen)
 
 	fireAndWait(resumedGen, 4)
-	require.Contains(t, promptAt(3), "tick 1", "a resumed session's next tick starts counting from 1 again")
+	require.Contains(t, sessionNoticeTextAt(t, l, "backoff-root", 3), "tick 1", "a resumed session's next tick starts counting from 1 again")
 }
 
 // TestSupervision_StateRemovedOnScopeClose: once a session's last open job

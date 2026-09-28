@@ -214,7 +214,9 @@ func (c *coordinator) handleInterruptTick(ctx context.Context, sessionID string)
 		// turn. It is not the policy context of that turn, and may already be
 		// stale after the dispatcher has moved to another queued call. Copy the
 		// published call so every policy and pinned value comes from that turn.
-		call = activeCall
+		// callFromActive: the operator's message never inherits the active
+		// call's kind or notice flags (a Drain, a wake turn).
+		call = callFromActive(activeCall)
 		call.Prompt = injMsg.FullText()
 		call.Attachments = nil
 	} else {
@@ -363,7 +365,7 @@ func (c *coordinator) handleActiveNonDurableInterrupt(
 	token activeCallToken,
 	tokenAvailable bool,
 ) (bool, error) {
-	call := active
+	call := callFromActive(active)
 	call.Prompt = msg.FullText()
 	call.ExistingMessageID = pi.MessageID
 	call.InjectID = ""
@@ -468,6 +470,14 @@ func (c *coordinator) InterruptAndSend(ctx context.Context, sessionID, prompt st
 // pump picks up the same call before we return. If durable enqueue fails, we
 // recreate the row so a future tick can retry (P0-2).
 func (c *coordinator) startDetachedRun(ctx context.Context, call SessionAgentCall) error {
+	// Phase-4 step 3 (doc sec.3.4): a Drain call is NEVER durably enqueued.
+	// Unreachable in practice today (a Drain never goes through
+	// InterruptAndReplace/QueueExistingMessage), but this guard documents
+	// the invariant at every EnqueueRunQueueEntry call site, not just the
+	// one on the ordinary orphan-restart path.
+	if call.IsDrain {
+		return nil
+	}
 	// Layer 1 (T9 shape, design doc §7.3): refuse outright, before
 	// touching anything (including the pending_injects row below), a
 	// call carrying a caller-supplied DiskProvider. It has no

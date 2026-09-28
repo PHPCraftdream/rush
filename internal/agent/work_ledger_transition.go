@@ -81,8 +81,14 @@ func (l *workLedger) retryAsyncStoreOp(ctx context.Context, op func() error) err
 }
 
 // causeStateNoticeKindWake maps a transitionCause to the DB state/
-// notice_kind/wake triple (doc sec.5 step 2's table).
-func causeStateNoticeKindWake(cause transitionCause, result jobResult) (state, noticeKind string, wake bool) {
+// notice_kind/wake/delivery quadruple (doc sec.5 step 2's table, plus step
+// 3's delivery override for job_kill). delivery is "pending" -- a real
+// drain candidate -- for every cause except causeJobKill, whose outcome is
+// already the job_kill tool call's own synchronous response (doc sec.3.2)
+// and must go straight to "done" so the pull (sec.3.3) never surfaces it a
+// second time as a duplicate history notice.
+func causeStateNoticeKindWake(cause transitionCause, result jobResult) (state, noticeKind, delivery string, wake bool) {
+	delivery = "pending"
 	switch cause {
 	case causeNaturalFinish, causeDelegationRelease:
 		wake = true
@@ -97,8 +103,9 @@ func causeStateNoticeKindWake(cause transitionCause, result jobResult) (state, n
 		state, noticeKind, wake = "cancelled", "session_cancel", false
 	case causeJobKill:
 		state, noticeKind, wake = "cancelled", "job_kill", false
+		delivery = "done"
 	}
-	return state, noticeKind, wake
+	return state, noticeKind, delivery, wake
 }
 
 // phaseForState maps a committed DB state string to its in-memory jobPhase.
@@ -215,7 +222,7 @@ func (l *workLedger) commitTransition(owner, toolCallID string, cause transition
 		return commitSkipped
 	}
 
-	state, noticeKind, wake := causeStateNoticeKindWake(cause, result)
+	state, noticeKind, delivery, wake := causeStateNoticeKindWake(cause, result)
 	var outcome session.TransitionResult
 	for attempt := 0; ; attempt++ {
 		l.mu.Lock()
@@ -231,6 +238,7 @@ func (l *workLedger) commitTransition(owner, toolCallID string, cause transition
 		outcome, err = store.Transition(context.Background(), session.TransitionParams{
 			Owner: owner, ToolCallID: toolCallID, State: state, NoticeKind: noticeKind,
 			ResultSummary: result.content, ResultIsError: result.isError, Wake: wake,
+			Delivery: delivery,
 		})
 		if err == nil {
 			break
@@ -268,6 +276,12 @@ func (l *workLedger) commitTransition(owner, toolCallID string, cause transition
 			content: outcome.Row.ResultSummary.String,
 			isError: outcome.Row.ResultIsError.Int64 != 0,
 		})
+		// The COMMITTED row's own wake bit, not the cause's request: a
+		// losing caller must adopt whatever the winner actually wrote (step
+		// 3: AsyncCompletion.Wake below drives notifyAsyncCompletion's hint,
+		// which must reflect the committed outcome, never the loser's own
+		// (possibly different) cause).
+		job.wake = outcome.Row.Wake != 0
 	}
 	l.mu.Unlock()
 	if outcome.Outcome == session.TransitionWon {

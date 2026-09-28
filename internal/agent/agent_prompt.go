@@ -74,6 +74,30 @@ func noticeFlagsFrom(ctx context.Context) (autoResumed, backgroundJobNotice bool
 	return
 }
 
+// drainCallCtxKey tags a turn built through the prompt-string entry points
+// (coordinator.Run/buildCall) as a Drain call (phase-4 step 3, doc
+// sec.3.4), for callers that cannot build a SessionAgentCall{IsDrain: true}
+// literal directly -- today, only the CLI root loop's wake iteration
+// (internal/app/app_run_async.go), which drives AgentCoordinator.Run with a
+// prompt string through ExecuteRun rather than calling a SessionAgent
+// directly the way wakeSession/drainCallFor do. Mirrors WithBackgroundJobNotice's
+// pattern exactly: set here, read by buildCall/runInternal, carried on the
+// resulting SessionAgentCall from then on like any other field.
+type drainCallCtxKey struct{}
+
+// WithDrainCall marks the next prompt-string-driven turn as a Drain call: an
+// empty prompt (the caller MUST pass "" -- this alone does not blank an
+// existing prompt), no user message persisted, reacting only to whatever
+// the turn-start pull moves into history.
+func WithDrainCall(ctx context.Context) context.Context {
+	return context.WithValue(ctx, drainCallCtxKey{}, true)
+}
+
+func isDrainCallFrom(ctx context.Context) bool {
+	v, _ := ctx.Value(drainCallCtxKey{}).(bool)
+	return v
+}
+
 // callOriginCtxKey tags a context with the entry-channel origin
 // (message.OriginCLI/Web/SDK) of the request that started the turn.
 // Set by ExecuteRun (internal/app) and the web server's turn handlers;

@@ -70,7 +70,7 @@ func (mb *mailbox) submit(call SessionAgentCall, dispatcherCancel context.Cancel
 		return false, 0 // caller reports ErrSessionBusy instead of queueing
 	}
 	if !call.FromDurableQueue {
-		mb.submitted = append(mb.submitted, call)
+		mb.submitted = mergeQueuedCall(mb.submitted, call)
 	}
 	return false, 0 // caller queues and returns nil, exactly like today
 }

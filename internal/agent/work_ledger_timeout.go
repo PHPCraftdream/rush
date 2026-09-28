@@ -7,12 +7,14 @@ import (
 	"container/heap"
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/session"
 )
 
 // timeoutEntry is one heap item: a deadline plus the action to run when it
@@ -201,14 +203,25 @@ func (l *workLedger) handleTimeout(job *asyncJob) {
 		l.mu.Unlock()
 
 		summary := l.capturePartial(owner, toolCallID, toolName, childSession, shellID, outputBuf)
-		if l.coord != nil {
+		if l.coord != nil && l.store != nil {
 			text := fmt.Sprintf(
 				"Timeout reached for async job %s (%s) — it is still running (elapsed %s). Latest output:\n\n%s\n\nThis was a one-time check-in; it will not repeat automatically. %s",
 				toolCallID, toolName, time.Since(deadline).Round(time.Second), summary.content, stopGuidanceFor(toolName),
 			)
 			id := jobIdentity{owner: owner, toolCallID: toolCallID}
+			store, coord := l.store, l.coord
 			go func() {
-				_ = l.coord.wakeSession(context.Background(), id, text, "timeout_wake_only", true)
+				// Phase-4 step 3 (doc sec.3.2/3.4): a session_notices row,
+				// keyed to THIS job (job_tool_call_id) so the pull's void
+				// condition (agent_notice_pull.go/sessionNoticeVoidCondition)
+				// can drop it if the job is no longer running by the time it
+				// is pulled. wake=1 per the wake-policy table.
+				if err := store.InsertSessionNotice(context.Background(), owner, session.NoticeKindWakeOnly, text, true, toolCallID); err != nil {
+					slog.Error("timeout: failed to persist wake_only check-in notice",
+						"session_id", owner, "tool_call_id", toolCallID, "err", err)
+					return
+				}
+				_ = coord.wakeSession(context.Background(), id, true)
 			}()
 		}
 	default:

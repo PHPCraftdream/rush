@@ -450,6 +450,15 @@ func (a *sessionAgent) restartOrphanedWithRetry(calls []SessionAgentCall) error 
 				return
 			}
 
+			// Phase-4 step 3 (doc sec.3.4): a Drain call is NEVER persisted
+			// to a durable/run queue. It carries no user intent worth
+			// surviving a crash -- the next driver's turn-start pull
+			// re-derives whatever it would have reacted to, so dropping an
+			// orphaned Drain here is always safe.
+			if call.IsDrain {
+				return
+			}
+
 			// Layer 1 (T9 shape, design doc §7.3): refuse outright, BEFORE
 			// ToSessionAgentCallData, a call carrying a caller-supplied
 			// DiskProvider. It has no serializable form at all, so a
