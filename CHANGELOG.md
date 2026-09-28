@@ -36,6 +36,13 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 - **The web composer history no longer recalls messages that did not
   originate from the user** (notice/system-origin messages were polluting
   `$myPrompts`).
+- **The composer's ArrowUp recall and history dropdown no longer leak
+  supervision check-ins, one-time timeout check-ins, or wake-failure
+  markers.** These notices carry no `AutoResumed`/`BackgroundJobNotice` flag
+  and no web origin (they are persisted off a bare context), so the prior
+  filter missed them. A new server-computed `HumanTyped` field (`NoticeKind
+  != ""` is now also checked) and a single shared client-side filter close
+  the gap for every current and future notice kind.
 - **A delegated sub-agent in `rush run` now receives the results of its own
   async commands.** They used to land on a queue only the root read, so the
   sub-agent never saw its command output and the parent got the sub-agent's

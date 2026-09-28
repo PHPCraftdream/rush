@@ -903,26 +903,30 @@ export function setProviderPeakHours(payload: {
 //   • shell-style recall in the chat input (ArrowUp/Down on caret edge),
 //   • the history dropdown (clickable list + jump-to button).
 //
-// ONLY prompts a human typed in the web composer belong here. The session's
-// user rows also carry messages no human typed in the composer, and each is
-// excluded below:
-//   • system-injected notices (async/background job completions) — the
-//     BackgroundJobNotice flag, set server-side per message (message.
-//     BackgroundJobNotice / MessageWire.BackgroundJobNotice), plus
-//     isAsyncCompletionNotice's content marker for legacy un-flagged rows;
-//   • Phase 4 autonomous idle-resume turns (AutoResumed badge);
-//   • prompts that arrived through another channel — the CLI (`rush run`,
-//     `rush sessions inject`) and the SDK — distinguished by the message's
-//     Origin stamp (message.OriginCLI/Web/SDK, served as MessageWire.Origin;
-//     empty = unspecified, which is NOT composer input either, so recall
-//     requires exactly "web").
+// ONLY prompts a human typed in the web composer belong here. Eligibility is
+// gated by ONE shared predicate, isComposerTypedMessage below, so the arrow
+// history and the dropdown (both fed by $myPrompts — see ChatInput.tsx) can
+// never disagree on what counts as "typed by a human in this composer":
+//   • m.HumanTyped, computed server-side (internal/server/wire.go's
+//     isHumanTyped) from structured fields ONLY — role, Hidden,
+//     IsSummaryMessage, NoticeKind, AutoResumed, BackgroundJobNotice,
+//     Origin — never message text. This excludes every system-injected
+//     notice (async/background job completions, Phase 4 autonomous
+//     idle-resume, supervision check-ins, timeout/wake-failed markers, and
+//     any future notice kind the NoticeKind != "" check catches without
+//     needing a new field) and every other entry channel (CLI `rush run`/
+//     `rush sessions inject`, SDK; empty Origin = unspecified, also not
+//     composer input);
+//   • isAsyncCompletionNotice's content-pattern match, kept ONLY as a
+//     fallback for notice rows persisted before the BackgroundJobNotice
+//     column existed (so HumanTyped naively reads true on that old data —
+//     it has none of the structured flags set).
 //
 // The transcript itself ($messages) is untouched by this filter — every
 // channel's messages must still render in the conversation.
 //
-// Hidden / IsSummary / non-user messages are excluded. Empty texts are
-// dropped so the recall stack only holds prompts the user could actually
-// re-send.
+// Empty texts are dropped so the recall stack only holds prompts the user
+// could actually re-send.
 
 export interface MyPromptItem {
   id: string;
@@ -937,17 +941,20 @@ function partsToText(parts: Array<{ type: string; Text?: string }>): string {
   return out;
 }
 
+// isComposerTypedMessage is THE web-side authorship filter — the single
+// predicate shared by the arrow-history recall and the history dropdown,
+// both derived from $myPrompts below. See the doc block above for what each
+// half excludes and why.
+function isComposerTypedMessage(m: Message): boolean {
+  if (!m.HumanTyped) return false;
+  if (isAsyncCompletionNotice(m)) return false;
+  return true;
+}
+
 export const $myPrompts = computed($messages, (msgs): MyPromptItem[] => {
   const out: MyPromptItem[] = [];
   for (const m of msgs) {
-    if (m.Hidden) continue;
-    if (m.IsSummaryMessage) continue;
-    if (m.Role !== "user") continue;
-    // Recalled prompts must be composer-typed: no notices, no autonomous
-    // turns, no other channel's prompts.
-    if (m.BackgroundJobNotice || isAsyncCompletionNotice(m)) continue;
-    if (m.AutoResumed) continue;
-    if (m.Origin !== "web") continue;
+    if (!isComposerTypedMessage(m)) continue;
     const text = partsToText(m.Parts as unknown as Array<{ type: string; Text?: string }>).trim();
     if (!text) continue;
     out.push({ id: m.ID, text });

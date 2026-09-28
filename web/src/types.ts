@@ -127,6 +127,17 @@ export interface Message {
   // composer recall history ($myPrompts in web/src/store.ts) requires
   // exactly "web".
   Origin?: string;
+  // Mirrors message.Message.NoticeKind / MessageWire.NoticeKind: "" (or
+  // absent, from an older server) for an ordinary message, otherwise the
+  // kind of system notice (e.g. "supervision", "timeout_wake_only").
+  NoticeKind?: string;
+  // HumanTyped is computed server-side (internal/server/wire.go's
+  // isHumanTyped) from structured fields ONLY -- never message text. True
+  // only when a human typed this directly into the web composer. This is
+  // the SOLE field the composer recall history and history dropdown
+  // ($myPrompts below) filter on; absent from an older server means false
+  // (unspecified is not composer-typed input either).
+  HumanTyped?: boolean;
   // Per-message token accounting. Absent on messages written before
   // per-message tracking existed, and on non-assistant messages.
   Usage?: MessageUsage;
