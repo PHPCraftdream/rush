@@ -408,3 +408,32 @@ func TestWebAsyncJob_EndToEnd_OneNoticeOneTurn(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "done", row.Delivery)
 }
+
+// TestReminderBeforeTail keeps a Drain turn's pulled notices as the final
+// user messages: preparePrompt's trailing todo reminder moves in front of
+// them. Non-reminder tails and k=0 are left alone.
+//
+// Revert-check performed: made reminderBeforeTail return history unchanged
+// -- this test FAILED, and so did internal/app's
+// TestRunNonInteractiveChildReceivesItsOwnAsyncBashResult (the root's Drain
+// request ended with the reminder, not the delegation's notice). Restored;
+// re-ran, both passed.
+func TestReminderBeforeTail(t *testing.T) {
+	u := fantasy.NewUserMessage
+	reminder := u("<system_reminder>todo list</system_reminder>")
+	text := func(m fantasy.Message) string {
+		part, ok := fantasy.AsMessagePart[fantasy.TextPart](m.Content[0])
+		require.True(t, ok)
+		return part.Text
+	}
+
+	got := reminderBeforeTail([]fantasy.Message{u("old"), u("notice-1"), u("notice-2"), reminder}, 2)
+	require.Len(t, got, 4)
+	require.Equal(t, []string{"old", reminder.Content[0].(fantasy.TextPart).Text, "notice-1", "notice-2"},
+		[]string{text(got[0]), text(got[1]), text(got[2]), text(got[3])})
+
+	plain := []fantasy.Message{u("old"), u("notice")}
+	require.Equal(t, plain, reminderBeforeTail(plain, 1), "no trailing reminder: untouched")
+	withReminder := []fantasy.Message{u("old"), reminder}
+	require.Equal(t, withReminder, reminderBeforeTail(withReminder, 0), "k=0: untouched")
+}

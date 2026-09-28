@@ -11,6 +11,9 @@ package agent
 
 import (
 	"context"
+	"strings"
+
+	"charm.land/fantasy"
 
 	"github.com/PHPCraftdream/rush/internal/permission"
 )
@@ -84,4 +87,35 @@ func (c *coordinator) drainCallFor(ctx context.Context, sessionID string) (Sessi
 		return SessionAgentCall{}, err
 	}
 	return newDrainCall(call), nil
+}
+
+// reminderBeforeTail moves preparePrompt's trailing todo reminder in front
+// of the last k messages -- the notices a Drain turn's own turn-start pull
+// appended -- so they stay the final user messages the provider sees (a
+// Drain has no prompt of its own to follow the reminder). No-op unless the
+// last message is that reminder and the k before it are user-role.
+func reminderBeforeTail(history []fantasy.Message, k int) []fantasy.Message {
+	n := len(history)
+	if k <= 0 || n < k+1 || !isTodoReminder(history[n-1]) {
+		return history
+	}
+	for _, m := range history[n-1-k : n-1] {
+		if m.Role != fantasy.MessageRoleUser {
+			return history
+		}
+	}
+	out := make([]fantasy.Message, 0, n)
+	out = append(out, history[:n-1-k]...)
+	out = append(out, history[n-1])
+	return append(out, history[n-1-k:n-1]...)
+}
+
+// isTodoReminder reports whether m is preparePrompt's <system_reminder>
+// todo message.
+func isTodoReminder(m fantasy.Message) bool {
+	if m.Role != fantasy.MessageRoleUser || len(m.Content) != 1 {
+		return false
+	}
+	part, ok := fantasy.AsMessagePart[fantasy.TextPart](m.Content[0])
+	return ok && strings.HasPrefix(part.Text, "<system_reminder>")
 }

@@ -316,11 +316,10 @@ func TestPullJobNotices_InsertsMessageWithNoticeInvariant(t *testing.T) {
 	require.Empty(t, pulled2)
 }
 
-// TestPullJobNotices_JobKillDeliveryDoneNeverPulled pins doc sec.3.2: for
-// job_kill, the outcome is the job_kill TOOL CALL's own synchronous
-// response, so its transition commits delivery='done' directly (not
-// 'pending') -- the row must never surface as a second, duplicate notice via
-// the pull, and no message may ever be created for it.
+// TestPullJobNotices_JobKillDeliveryDoneNeverPulled pins the Transition
+// Delivery parameter's 'done' path (doc sec.3.2, used by step 6's job_kill):
+// a row committed straight to 'done' is never pulled and never produces a
+// message. In step 3 every cause, job_kill included, still passes 'pending'.
 func TestPullJobNotices_JobKillDeliveryDoneNeverPulled(t *testing.T) {
 	store, q, ctx := newTestStore(t)
 	require.NoError(t, seedSession(ctx, q, "owner-1"))
@@ -329,20 +328,57 @@ func TestPullJobNotices_JobKillDeliveryDoneNeverPulled(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, store.MarkAnnounced(ctx, "owner-1", "call-1"))
 
-	// Mirrors work_ledger_transition.go's causeStateNoticeKindWake for
-	// causeJobKill: state=cancelled, notice_kind=job_kill, wake=false,
-	// delivery=done.
 	res, err := store.Transition(ctx, TransitionParams{
 		Owner: "owner-1", ToolCallID: "call-1", State: "cancelled", NoticeKind: "job_kill",
 		ResultSummary: "killed on request", Wake: false, Delivery: "done",
 	})
 	require.NoError(t, err)
 	require.Equal(t, TransitionWon, res.Outcome)
-	require.Equal(t, "done", res.Row.Delivery, "job_kill must commit straight to done, never pending")
+	require.Equal(t, "done", res.Row.Delivery, "Delivery 'done' must be committed as given, never rewritten to pending")
 
 	messages := message.NewService(store.q)
 	pulled, err := store.PullJobNotices(ctx, messages, "owner-1", jobNoticeParams)
 	require.NoError(t, err)
-	require.Empty(t, pulled, "a job_kill row must never be pulled as a notice -- its outcome is already the tool's own response")
+	require.Empty(t, pulled, "a row committed straight to done must never be pulled as a notice")
 	require.EqualValues(t, 0, countMessages(t, store.q, ctx, "owner-1"))
+}
+
+// TestPullJobNotices_JobKillProducesExactlyOneStoppedNotice pins step 3's
+// CURRENT job_kill behavior (revised from an earlier draft of this step,
+// which special-cased job_kill to delivery='done'): a job_kill'd row's
+// "stopped (job_kill)" wording is still promised as a SEPARATE notice
+// message, not folded into job_kill's own synchronous tool response --
+// run_command's job_kill response literally says "its result will arrive
+// as a message" (tools/job_kill.go), and bash's own MarkJobStopped path
+// documents the same expectation ("produces a distinct 'stopped (job_kill)'
+// notice"). So causeJobKill keeps the default delivery='pending' like every
+// other cause, and the pull delivers it exactly once, with no void
+// condition of its own.
+func TestPullJobNotices_JobKillProducesExactlyOneStoppedNotice(t *testing.T) {
+	store, q, ctx := newTestStore(t)
+	require.NoError(t, seedSession(ctx, q, "owner-1"))
+
+	_, err := store.Claim(ctx, ClaimParams{Owner: "owner-1", ToolCallID: "call-1", Kind: JobKindCommand, Input: "x", ToolName: "bash"})
+	require.NoError(t, err)
+	require.NoError(t, store.MarkAnnounced(ctx, "owner-1", "call-1"))
+
+	res, err := store.Transition(ctx, TransitionParams{
+		Owner: "owner-1", ToolCallID: "call-1", State: "cancelled", NoticeKind: "job_kill",
+		ResultSummary: "partial output before the stop", Wake: false,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "pending", res.Row.Delivery, "job_kill still commits pending, like every other cause")
+
+	messages := message.NewService(store.q)
+	pulled, err := store.PullJobNotices(ctx, messages, "owner-1", jobNoticeParams)
+	require.NoError(t, err)
+	require.Len(t, pulled, 1, "job_kill's stopped notice must still be delivered, exactly once")
+	require.False(t, pulled[0].Wake, "job_kill never wakes a turn (doc sec.3.4's wake-policy table)")
+	require.EqualValues(t, 1, countMessages(t, store.q, ctx, "owner-1"))
+
+	// A second pull finds nothing left: idempotent, no duplicate.
+	pulled2, err := store.PullJobNotices(ctx, messages, "owner-1", jobNoticeParams)
+	require.NoError(t, err)
+	require.Empty(t, pulled2)
+	require.EqualValues(t, 1, countMessages(t, store.q, ctx, "owner-1"), "no duplicate notice from a second pull")
 }

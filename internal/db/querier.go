@@ -665,13 +665,10 @@ type Querier interface {
 	// resurrected to 'pending' by a late-arriving terminal transition (e.g.
 	// job_kill racing the history truncation).
 	//
-	// delivery is now a PARAMETER, not the hardcoded 'pending' literal (step 3):
-	// every cause except job_kill still passes 'pending' (a real drain
-	// candidate), but job_kill passes 'done' directly -- its outcome is already
-	// the job_kill TOOL CALL's own synchronous response (doc sec.3.2: "for
-	// job_kill the outcome is the tool's own response, the row goes straight
-	// to done"), so the row must never ALSO surface as a second, duplicate
-	// history notice via the pull path.
+	// delivery is a PARAMETER, not a hardcoded 'pending' literal (step 3): every
+	// cause passes 'pending' today; step 6 passes 'done' for job_kill once its
+	// own tool response carries the real output (doc sec.3.2), so that row never
+	// also surfaces as a history notice via the pull.
 	TransitionAsyncJobTerminalPreserveVoid(ctx context.Context, arg TransitionAsyncJobTerminalPreserveVoidParams) (AsyncJob, error)
 	// task #595: was :exec (rows-affected discarded). The terminal write path in
 	// message.Service.Update used to hardcode rowsAffected = 1 for this branch,

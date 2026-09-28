@@ -81,12 +81,13 @@ func (l *workLedger) retryAsyncStoreOp(ctx context.Context, op func() error) err
 }
 
 // causeStateNoticeKindWake maps a transitionCause to the DB state/
-// notice_kind/wake/delivery quadruple (doc sec.5 step 2's table, plus step
-// 3's delivery override for job_kill). delivery is "pending" -- a real
-// drain candidate -- for every cause except causeJobKill, whose outcome is
-// already the job_kill tool call's own synchronous response (doc sec.3.2)
-// and must go straight to "done" so the pull (sec.3.3) never surfaces it a
-// second time as a duplicate history notice.
+// notice_kind/wake/delivery quadruple (doc sec.5 step 2's table). delivery
+// is "pending" -- a pull candidate -- for every cause in step 3, job_kill
+// included: its "stopped (job_kill)" notice still carries the partial
+// output the job_kill response does not, and run_command's job_kill
+// response promises the result "will arrive as a message". Doc sec.3.2's
+// "job_kill row goes straight to done" lands with step 6, together with
+// the real output in job_kill's own response.
 func causeStateNoticeKindWake(cause transitionCause, result jobResult) (state, noticeKind, delivery string, wake bool) {
 	delivery = "pending"
 	switch cause {
@@ -103,7 +104,6 @@ func causeStateNoticeKindWake(cause transitionCause, result jobResult) (state, n
 		state, noticeKind, wake = "cancelled", "session_cancel", false
 	case causeJobKill:
 		state, noticeKind, wake = "cancelled", "job_kill", false
-		delivery = "done"
 	}
 	return state, noticeKind, delivery, wake
 }

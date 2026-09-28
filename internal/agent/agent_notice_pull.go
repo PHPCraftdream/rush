@@ -69,10 +69,7 @@ func (a *sessionAgent) pullPendingNoticesForStep(ctx context.Context, sessionID 
 // buildJobNoticeMessageParams converts a pulled async_jobs row into the
 // history message's params, reusing FormatAsyncCompletion -- the ONE
 // formatter -- fed entirely from the row's own columns (tool_name/
-// timeout_seconds, step 3) instead of a second source of truth. job_kill's
-// NoticeKind ("job_kill") is handled for symmetry only: a job_kill row is
-// never pulled (its transition sets delivery='done' directly, doc sec.3.2),
-// so the Stopped branch below is unreachable in production.
+// timeout_seconds, step 3) instead of a second source of truth.
 func buildJobNoticeMessageParams(row session.JobNoticeRow) message.CreateMessageParams {
 	completion := AsyncCompletion{
 		ToolCallID:     row.ToolCallID,

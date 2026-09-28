@@ -366,7 +366,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	// turn (not just Drain): a plain user turn that happens to start right
 	// after a background job finished picks the notice up here too. Never
 	// fails the turn (pullPendingNotices logs and skips per-row).
-	_, anyWake := a.pullPendingNotices(preambleCtx, call.SessionID)
+	pulledAtStart, anyWake := a.pullPendingNotices(preambleCtx, call.SessionID)
 	if call.IsDrain && !anyWake && !call.drainTurnCommitted {
 		// No reaction-worthy notice moved into history: finish through the
 		// normal turn end WITHOUT ever reaching the provider (doc sec.3.4) --
@@ -623,6 +623,10 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	// so the provider still has a well-formed prompt to react to. Never
 	// creates a DB row; history/msgs above are untouched.
 	if call.IsDrain && call.Prompt == "" {
+		// With no prompt of its own, the Drain reacts to the notices its
+		// turn-start pull just appended; keep them as the final user
+		// message(s) instead of preparePrompt's trailing todo reminder.
+		history = reminderBeforeTail(history, len(pulledAtStart))
 		last := len(history) - 1
 		if last < 0 || (history[last].Role != fantasy.MessageRoleUser && history[last].Role != fantasy.MessageRoleTool) {
 			history = append(history, fantasy.NewUserMessage("Continue based on the notice(s) above."))

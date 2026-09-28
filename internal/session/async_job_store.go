@@ -118,12 +118,9 @@ type TransitionParams struct {
 	ResultIsError bool
 	Wake          bool
 	// Delivery is the outbox state this transition sets (preserving 'void'
-	// per the CAS's own CASE, doc sec.3.8): "pending" for every ordinary
-	// cause (a real drain candidate) or "done" for job_kill, whose outcome
-	// is already the job_kill tool call's own synchronous response and must
-	// never ALSO surface as a second, duplicate history notice via the pull
-	// path (doc sec.3.2). Callers that pass "" get "pending" (the pre-step-3
-	// default), so every existing caller keeps its old behavior unchanged.
+	// per the CAS's own CASE, doc sec.3.8). "" means "pending" (a pull
+	// candidate), which every cause uses in step 3; "done" skips the pull
+	// entirely (step 6's job_kill, doc sec.3.2).
 	Delivery string
 }
 
