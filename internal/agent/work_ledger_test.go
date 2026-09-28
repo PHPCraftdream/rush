@@ -34,6 +34,7 @@ func drainCompletions(ch chan AsyncCompletion) []AsyncCompletion {
 func TestWorkLedger_WaitsForPersistedToolResult(t *testing.T) {
 	t.Parallel()
 	l := newWorkLedger(nil)
+	l.store = newTestAsyncJobStore(t)
 	_, existing, err := l.Start("session", "call", "", "bash", "", true, false, nil, nil)
 	require.NoError(t, err)
 	require.False(t, existing)
@@ -66,6 +67,7 @@ func TestWorkLedger_WebCallbackExactlyOnce(t *testing.T) {
 		require.Equal(t, "call", got.ToolCallID)
 		calls.Add(1)
 	})
+	l.store = newTestAsyncJobStore(t)
 	_, _, err := l.Start("session", "call", "", "bash", "", false, false, nil, nil)
 	require.NoError(t, err)
 	l.acknowledged("session", "call")
@@ -83,6 +85,7 @@ func TestWorkLedger_WebCallbackExactlyOnce(t *testing.T) {
 func TestWorkLedger_ConcurrentFinishAndAcknowledge(t *testing.T) {
 	t.Parallel()
 	l := newWorkLedger(nil)
+	l.store = newTestAsyncJobStore(t)
 	_, _, err := l.Start("session", "call", "", "bash", "", true, false, nil, nil)
 	require.NoError(t, err)
 	var wg sync.WaitGroup
@@ -99,9 +102,27 @@ func TestWorkLedger_ConcurrentFinishAndAcknowledge(t *testing.T) {
 
 // TestWorkLedger_CancelAndClose ports TestAsyncJobRegistryCancelAndClose:
 // close cancels every job's executor context and refuses further Start.
+//
+// Phase-4 step 2 deliberately changes one part of this test's old
+// assertion: close() no longer removes the job from memory or transitions
+// it (doc sec.3.1/3.7, "graceful exit = crash") -- the row stays 'running'
+// for the next host to recover, so l.next() must NOT be called after
+// close() expecting a not-ok/empty result (it would block forever waiting
+// for a delivery that will never come). This test now asserts the executor
+// IS cancelled and the job REMAINS tracked (l.running still true).
+//
+// Revert-check performed: reverted close() to its pre-step-2 form (call
+// cancelSession per owner) -- this test's OLD assertion block (l.next
+// returning not-ok) passed again, but TestWorkLedger_
+// ShutdownCausedCancellationLeavesRowRunningWritesNoNotice (work_ledger_
+// durable_test.go) FAILED (the row committed to a terminal state instead of
+// staying 'running'), proving the two tests pin opposite, mutually
+// exclusive behaviors and confirming THIS test's assertion is the one that
+// had to change. Restored close(); re-ran both, passed.
 func TestWorkLedger_CancelAndClose(t *testing.T) {
 	t.Parallel()
 	l := newWorkLedger(nil)
+	l.store = newTestAsyncJobStore(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	_, _, err := l.Start("session", "call", "", "bash", "", true, false, nil, cancel)
 	require.NoError(t, err)
@@ -110,10 +131,8 @@ func TestWorkLedger_CancelAndClose(t *testing.T) {
 	_, _, err = l.next(waitCtx, "session")
 	require.ErrorIs(t, err, context.Canceled)
 	l.close()
-	require.ErrorIs(t, ctx.Err(), context.Canceled)
-	_, ok, err := l.next(t.Context(), "session")
-	require.NoError(t, err)
-	require.False(t, ok)
+	require.ErrorIs(t, ctx.Err(), context.Canceled, "close must cancel every job's executor context")
+	require.True(t, l.running("session"), "the job must stay tracked (DB row stays 'running' for recovery), not be dropped")
 	_, _, err = l.Start("session", "new-call", "", "bash", "", true, false, nil, nil)
 	require.ErrorContains(t, err, "closed")
 }
@@ -135,6 +154,7 @@ func TestWorkLedger_CancelAndClose(t *testing.T) {
 func TestWorkLedger_StartIsIdempotentPerToolCallID(t *testing.T) {
 	t.Parallel()
 	l := newWorkLedger(nil)
+	l.store = newTestAsyncJobStore(t)
 	job1, existing1, err := l.Start("owner", "call", "", "bash", "", true, false, nil, nil)
 	require.NoError(t, err)
 	require.False(t, existing1)
@@ -152,6 +172,7 @@ func TestWorkLedger_StartIsIdempotentPerToolCallID(t *testing.T) {
 func TestWorkLedger_ReusedCallIDWithDifferentInputIsRefused(t *testing.T) {
 	t.Parallel()
 	l := newWorkLedger(nil)
+	l.store = newTestAsyncJobStore(t)
 	_, _, err := l.Start("owner", "call_0", `{"command":"go test"}`, "bash", "", true, false, nil, nil)
 	require.NoError(t, err)
 	_, existing, err := l.Start("owner", "call_0", `{"command":"rm -rf build"}`, "bash", "", true, false, nil, nil)
@@ -175,6 +196,7 @@ func TestWorkLedger_DelegationNeverDeliveredBeforeAnnounce(t *testing.T) {
 	t.Parallel()
 	delivered := make(chan AsyncCompletion, 1)
 	l := newWorkLedger(func(c AsyncCompletion) { delivered <- c })
+	l.store = newTestAsyncJobStore(t)
 	_, _, err := l.Start("parent", "call", "", AgentToolName, "child", false, false, nil, nil)
 	require.NoError(t, err)
 
@@ -234,6 +256,7 @@ func TestWorkLedger_ConcurrentTerminalRaceYieldsExactlyOneOutcome(t *testing.T) 
 	for i := 0; i < 30; i++ {
 		delivered := make(chan AsyncCompletion, 8)
 		l := newWorkLedger(func(c AsyncCompletion) { delivered <- c })
+		l.store = newTestAsyncJobStore(t)
 		_, _, err := l.Start("owner", "call", "", AgentToolName, "child", false, false, nil, nil)
 		require.NoError(t, err)
 		l.acknowledged("owner", "call")
@@ -276,6 +299,7 @@ func TestWorkLedger_SyncJobBypassesReadyQueueAndWebDone(t *testing.T) {
 	t.Parallel()
 	var webDoneCalls int
 	l := newWorkLedger(func(AsyncCompletion) { webDoneCalls++ })
+	l.store = newTestAsyncJobStore(t)
 	job, existing, err := l.Start("session", "call", "", "bash", "", true, true, nil, nil)
 	require.NoError(t, err)
 	require.False(t, existing)
@@ -313,6 +337,7 @@ func TestWorkLedger_SyncJobBypassesReadyQueueAndWebDone(t *testing.T) {
 func TestWorkLedger_ConsumeNoticeKeepsMapAndKeysInLockstep(t *testing.T) {
 	t.Parallel()
 	l := newWorkLedger(nil)
+	l.store = newTestAsyncJobStore(t)
 	const n = 50
 	for i := 0; i < n; i++ {
 		job := jobIdentity{owner: "owner", toolCallID: fmt.Sprintf("call-%d", i)}
@@ -340,6 +365,7 @@ func TestWorkLedger_ConsumeNoticeKeepsMapAndKeysInLockstep(t *testing.T) {
 func TestWorkLedger_NoticeReRecordedAfterConsumeDoesNotDuplicateKey(t *testing.T) {
 	t.Parallel()
 	l := newWorkLedger(nil)
+	l.store = newTestAsyncJobStore(t)
 	job := jobIdentity{owner: "owner", toolCallID: "call-1"}
 	l.recordNotice(job, "msg-1")
 	l.consumeNotice(job)

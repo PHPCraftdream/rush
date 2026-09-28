@@ -43,29 +43,44 @@ func (f *fakeLiveOutputBuffer) write(s string) {
 var _ tools.LiveOutputBuffer = (*fakeLiveOutputBuffer)(nil)
 
 // TestWorkLedger_MarkJobStopped_BashProducesDistinctCancelledOutcome pins
-// §2.2: a job marked stopped BEFORE finish() reaches a distinct phaseCancelled
-// outcome (Stopped=true), not phaseFailed/phaseCompleted from whatever the
-// killed process's own exit looked like -- and FormatAsyncCompletion renders
-// the contract's exact "stopped (job_kill)" wording, not a double-wrapped
+// §2.2: a job marked stopped reaches a distinct phaseCancelled outcome
+// (Stopped=true), not phaseFailed/phaseCompleted from whatever the killed
+// process's own exit looked like -- and FormatAsyncCompletion renders the
+// contract's exact "stopped (job_kill)" wording, not a double-wrapped
 // "finished"/"failed" text around it.
 //
-// Revert-check performed: removed finish()'s `if job.stopRequested` branch
-// (state always derived from result.isError) -- this test FAILED (state was
-// phaseFailed, Stopped was false, and the rendered text was the generic
-// "failed" wording instead of "was stopped (job_kill)"). Restored the fix;
-// re-ran, passed.
+// Phase-4 step 2 changed WHERE the content comes from: MarkJobStopped now
+// snapshots (via capturePartial) and durably transitions the job to
+// cancelled BEFORE the caller kills the process (doc sec.3.1's "snapshot ->
+// transition -> stop executor"), instead of finish()'s OLD stopRequested
+// special-case reusing whatever content the killed process's own exit
+// carried. This isolated test wires no l.coord/background manager, so
+// capturePartial's bash branch falls through to its generic "still running"
+// placeholder -- a real background shell would be reflected here instead
+// (see work_ledger_timeout.go's capturePartial for the read path). The
+// executor's later finish() call is now a no-op (the job is already
+// terminal), not a second content-bearing write.
+//
+// Revert-check performed: reverted MarkJobStopped to the old body (set
+// stopRequested=true only) plus finish()'s old stopRequested branch -- this
+// test FAILED (0 completions delivered before finish() ran; content came
+// from finish()'s literal argument instead of the pre-kill snapshot).
+// Restored the step-2 versions; re-ran, passed. Diffed work_ledger.go
+// against git HEAD after restoring: matches the committed step-2 code.
 func TestWorkLedger_MarkJobStopped_BashProducesDistinctCancelledOutcome(t *testing.T) {
 	t.Parallel()
 	delivered := make(chan AsyncCompletion, 1)
 	l := newWorkLedger(func(c AsyncCompletion) { delivered <- c })
+	l.store = newTestAsyncJobStore(t)
 	_, _, err := l.Start("owner", "call", "", "bash", "", false, false, nil, func() {})
 	require.NoError(t, err)
 	l.acknowledged("owner", "call")
 
 	l.MarkJobStopped("owner", "call")
-	// The executor's own finish() call still happens exactly once, exactly
-	// as if the killed process had reported a plain error -- MarkJobStopped
-	// only changes what THIS call records, not whether it is called.
+	// The executor's own finish() call still happens exactly once (the
+	// caller always calls it after killing the process), but it is now a
+	// no-op: the job is already terminal from MarkJobStopped's own
+	// transition, so this must NOT change the recorded outcome.
 	l.finish("owner", "call", jobResult{content: "killed: exit status 1", isError: true})
 
 	got := drainCompletions(delivered)
@@ -73,11 +88,12 @@ func TestWorkLedger_MarkJobStopped_BashProducesDistinctCancelledOutcome(t *testi
 	require.True(t, got[0].Stopped, "stopped-on-request outcome must be marked Stopped")
 	require.False(t, got[0].IsError, "a job_kill stop is not a failure")
 	require.False(t, got[0].TimedOut)
-	require.Equal(t, "killed: exit status 1", got[0].Content, "raw partial content, unformatted -- FormatAsyncCompletion formats it")
+	require.Equal(t, "job call (bash) is still running; no partial output is available yet", got[0].Content,
+		"capturePartial's fallback placeholder (no l.coord/background wired in this isolated test) -- the SNAPSHOT taken before the kill, not finish()'s later argument")
 
 	text := FormatAsyncCompletion(got[0])
 	require.Contains(t, text, "was stopped (job_kill)")
-	require.Contains(t, text, "killed: exit status 1")
+	require.NotContains(t, text, "killed: exit status 1", "finish()'s later content must never surface -- the job was already terminal")
 	require.NotContains(t, text, "finished", "must not double-wrap with the generic finished/failed wording")
 	require.NotContains(t, text, "failed")
 
@@ -96,6 +112,7 @@ func TestWorkLedger_MarkJobStopped_RunCommandUsesLiveBufferForPartialOutput(t *t
 	t.Parallel()
 	delivered := make(chan AsyncCompletion, 1)
 	l := newWorkLedger(func(c AsyncCompletion) { delivered <- c })
+	l.store = newTestAsyncJobStore(t)
 	_, _, err := l.Start("owner", "call", "", "run_command", "", false, false, nil, func() {})
 	require.NoError(t, err)
 	l.acknowledged("owner", "call")
@@ -125,6 +142,7 @@ func TestWorkLedger_JobKillRaceAgainstFinishYieldsOneOutcome(t *testing.T) {
 	for i := 0; i < 30; i++ {
 		delivered := make(chan AsyncCompletion, 8)
 		l := newWorkLedger(func(c AsyncCompletion) { delivered <- c })
+		l.store = newTestAsyncJobStore(t)
 		_, _, err := l.Start("owner", "call", "", "bash", "", false, false, nil, func() {})
 		require.NoError(t, err)
 		l.acknowledged("owner", "call")
@@ -157,6 +175,7 @@ func TestWorkLedger_JobKillRaceAgainstFinishYieldsOneOutcome(t *testing.T) {
 func TestWorkLedger_StopRunCommandJob_CancelsAndIsIdempotent(t *testing.T) {
 	t.Parallel()
 	l := newWorkLedger(nil)
+	l.store = newTestAsyncJobStore(t)
 	var cancelCalls int
 	_, _, err := l.Start("owner", "call", "", "run_command", "", false, false, nil, func() { cancelCalls++ })
 	require.NoError(t, err)
@@ -176,6 +195,7 @@ func TestWorkLedger_StopRunCommandJob_CancelsAndIsIdempotent(t *testing.T) {
 func TestWorkLedger_StopRunCommandJob_RejectsNonRunCommandJob(t *testing.T) {
 	t.Parallel()
 	l := newWorkLedger(nil)
+	l.store = newTestAsyncJobStore(t)
 	_, _, err := l.Start("owner", "call", "", "bash", "", false, false, nil, func() {})
 	require.NoError(t, err)
 
@@ -191,6 +211,7 @@ func TestWorkLedger_StopRunCommandJob_RejectsNonRunCommandJob(t *testing.T) {
 func TestWorkLedger_RunCommandOutput_CursorSemantics(t *testing.T) {
 	t.Parallel()
 	l := newWorkLedger(nil)
+	l.store = newTestAsyncJobStore(t)
 	_, _, err := l.Start("owner", "call", "", "run_command", "", false, false, nil, func() {})
 	require.NoError(t, err)
 	l.acknowledged("owner", "call")
@@ -236,6 +257,7 @@ func TestWorkLedger_RunCommandOutput_CursorSemantics(t *testing.T) {
 func TestWorkLedger_RunCommandOutput_StillStartingRaceIsNotAnError(t *testing.T) {
 	t.Parallel()
 	l := newWorkLedger(nil)
+	l.store = newTestAsyncJobStore(t)
 	_, _, err := l.Start("owner", "call", "", "run_command", "", false, false, nil, func() {})
 	require.NoError(t, err)
 
@@ -252,6 +274,7 @@ func TestWorkLedger_RunCommandOutput_StillStartingRaceIsNotAnError(t *testing.T)
 func TestWorkLedger_ResolveJobShellID_TypedErrors(t *testing.T) {
 	t.Parallel()
 	l := newWorkLedger(nil)
+	l.store = newTestAsyncJobStore(t)
 	_, _, err := l.Start("owner", "rc-call", "", "run_command", "", false, false, nil, nil)
 	require.NoError(t, err)
 	_, err = l.ResolveJobShellID("owner", "rc-call")

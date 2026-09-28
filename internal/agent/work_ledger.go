@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
+	"github.com/PHPCraftdream/rush/internal/session"
 )
 
 const maxAsyncJobsPerSession = 50
@@ -94,6 +95,14 @@ type workLedger struct {
 	// session they ran in, FIFO per child. See work_ledger_delegation.go.
 	byChild   map[string][]*asyncJob
 	onWebDone func(AsyncCompletion)
+
+	// store is the durable job store (phase-4 step 2, DUR-1/DUR-8): the DB
+	// row decides a non-sync async job's terminal state, not memory.
+	// Production always wires one (see coordinator.go); nil ONLY in an
+	// isolated ledger test that constructs a workLedger by hand without
+	// also calling newTestAsyncJobStore, which must not start a non-sync
+	// job either (Start fails closed -- see Start's doc).
+	store *session.AsyncJobStore
 
 	// coord backs childScopeDrained's background/mailbox-busy checks (see
 	// work_ledger_delegation.go) and recheckChild's DB refresh. Nil-safe:
@@ -177,24 +186,73 @@ func signalWorkSession(s *sessionJobs) {
 // timeout, when non-nil, arms this job with an explicit per-call deadline
 // (§5.4) via l.timeouts (nil-safe: an isolated ledger test with no timer
 // service simply never arms).
+//
+// Phase-4 step 2 (DUR-8): a non-sync job's Start calls store.Claim FIRST --
+// if the DB is unavailable or Claim fails, Start returns an error and the
+// executor is never started (fail-closed). A DB row that exists for this
+// key with NO matching in-memory job (e.g. a previous process's job this
+// one never adopted -- recovery/adoption is a later step) is also refused,
+// never silently given a second executor. Sync jobs never touch the store
+// at all -- they stay on the old memory-only path.
 func (l *workLedger) Start(owner, toolCallID, input, toolName, childSession string, cli, sync bool, timeout *TimeoutSpec, cancel context.CancelFunc) (*asyncJob, bool, error) {
 	if owner == "" || toolCallID == "" {
 		return nil, false, errors.New("async job requires a session and tool call ID")
 	}
 	l.mu.Lock()
-	defer l.mu.Unlock()
 	if l.closed {
+		l.mu.Unlock()
 		return nil, false, errors.New("async job registry is closed")
 	}
 	s := l.sessionLocked(owner)
 	if existing, ok := s.jobs[toolCallID]; ok {
+		l.mu.Unlock()
 		if existing.toolName != toolName || existing.input != input {
 			return nil, false, fmt.Errorf("async job %s is already running", toolCallID)
 		}
 		return existing, true, nil
 	}
 	if len(s.jobs) >= maxAsyncJobsPerSession {
+		l.mu.Unlock()
 		return nil, false, fmt.Errorf("maximum number of async jobs (%d) reached", maxAsyncJobsPerSession)
+	}
+	store := l.store
+	l.mu.Unlock()
+
+	var claimExisting bool
+	if !sync {
+		if store == nil {
+			return nil, false, errors.New("async job store is unavailable; cannot start an async job")
+		}
+		claim, err := store.Claim(context.Background(), session.ClaimParams{
+			Owner: owner, ToolCallID: toolCallID, Kind: asyncJobKindFor(toolName),
+			Input: input, ChildSessionID: childSession, OriginCLI: cli,
+			Deadline: timeoutDeadlinePtr(timeout), TimeoutKind: timeoutKindString(timeout),
+		})
+		if err != nil {
+			return nil, false, err // fail-closed (DUR-8)
+		}
+		claimExisting = claim.Existing
+	}
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.closed {
+		return nil, false, errors.New("async job registry is closed")
+	}
+	s = l.sessionLocked(owner)
+	if existing, ok := s.jobs[toolCallID]; ok {
+		if existing.toolName != toolName || existing.input != input {
+			return nil, false, fmt.Errorf("async job %s is already running", toolCallID)
+		}
+		return existing, true, nil
+	}
+	if claimExisting {
+		// A durable row exists for this key with no matching in-memory job
+		// -- e.g. a previous process's job this one never started an
+		// executor for. Refuse rather than silently starting a second
+		// executor for a row another host may still own; recovery/adoption
+		// of such a row is a later step (doc sec.5 step 5/6).
+		return nil, false, fmt.Errorf("async job %s already started (tracked by a previous process)", toolCallID)
 	}
 	job := &asyncJob{
 		owner: owner, toolCallID: toolCallID, input: input, toolName: toolName,
@@ -358,6 +416,13 @@ func (l *workLedger) deliverLocked(owner string, job *asyncJob) (AsyncCompletion
 // called after a successful messages.Create), then attempts delivery. Name
 // unchanged from today (async_job_registry.go's acknowledged) -- the caller
 // is not touched by phase 1.
+//
+// Phase-4 step 2 (DUR-7): a non-sync job's "started" tool result is durably
+// marked via store.MarkAnnounced BEFORE the in-memory announced flag flips,
+// with the same growing-backoff retry rule as transition (no shutdown-latch
+// check here -- unlike transition, this is not tied to an executor
+// cancelled by close()). A gone row (e.g. a Rerun truncation raced it) is a
+// benign no-op, not a retry target.
 func (l *workLedger) acknowledged(sessionID, toolCallID string) {
 	l.mu.Lock()
 	s := l.bySession[sessionID]
@@ -366,6 +431,32 @@ func (l *workLedger) acknowledged(sessionID, toolCallID string) {
 		return
 	}
 	job := s.jobs[toolCallID]
+	if job == nil {
+		l.mu.Unlock()
+		return
+	}
+	store, sync := l.store, job.sync
+	l.mu.Unlock()
+
+	if !sync && store != nil {
+		_ = retryAsyncStoreOp(context.Background(), func() error {
+			if err := store.MarkAnnounced(context.Background(), sessionID, toolCallID); err != nil {
+				if errors.Is(err, session.ErrAsyncJobGone) {
+					return nil
+				}
+				return err
+			}
+			return nil
+		})
+	}
+
+	l.mu.Lock()
+	s = l.bySession[sessionID]
+	if s == nil {
+		l.mu.Unlock()
+		return
+	}
+	job = s.jobs[toolCallID]
 	if job == nil {
 		l.mu.Unlock()
 		return
@@ -382,15 +473,35 @@ func (l *workLedger) acknowledged(sessionID, toolCallID string) {
 // Called ONLY when the "started" tool result write itself failed -- strictly
 // before Announce could ever be called for this id, so there is nothing to
 // preserve (ASYNC-05). Name unchanged from today (async_job_registry.go's
-// abort).
+// abort). Phase-4 step 2: a non-sync job's durable row is deleted via
+// store.DeleteUnannounced (same growing-backoff retry rule) before the
+// in-memory drop.
 func (l *workLedger) abort(sessionID, toolCallID string) {
 	l.mu.Lock()
 	s := l.bySession[sessionID]
+	var job *asyncJob
+	if s != nil {
+		job = s.jobs[toolCallID]
+	}
+	store, sync := l.store, false
+	if job != nil {
+		sync = job.sync
+	}
+	l.mu.Unlock()
+
+	if !sync && store != nil {
+		_ = retryAsyncStoreOp(context.Background(), func() error {
+			return store.DeleteUnannounced(context.Background(), sessionID, toolCallID)
+		})
+	}
+
+	l.mu.Lock()
+	s = l.bySession[sessionID]
 	if s == nil {
 		l.mu.Unlock()
 		return
 	}
-	job := s.jobs[toolCallID]
+	job = s.jobs[toolCallID]
 	delete(s.jobs, toolCallID)
 	signalWorkSession(s)
 	l.mu.Unlock()
@@ -480,19 +591,35 @@ func (l *workLedger) ResolveJobShellID(owner, jobID string) (string, error) {
 }
 
 // MarkJobStopped implements tools.JobShellResolver. See that interface's doc.
+//
+// Phase-4 step 2 (doc sec.3.1's external-cause order, "snapshot output ->
+// transition with the cause -> stop the executor"): this call itself
+// snapshots the job's current partial output and runs the causeJobKill
+// transition BEFORE the caller (job_kill's tool wrapper) actually kills the
+// background shell. There is no more stopRequested flag for finish() to
+// read -- finish's own later call is a no-op once transition has already
+// made the job terminal (its CAS loses/skips). Best-effort, matching the
+// interface's doc: a jobID that does not resolve, or is already terminal,
+// is silently ignored.
 func (l *workLedger) MarkJobStopped(owner, toolCallID string) {
 	if l == nil {
 		return
 	}
 	l.mu.Lock()
-	defer l.mu.Unlock()
 	s := l.bySession[owner]
-	if s == nil {
+	var job *asyncJob
+	if s != nil {
+		job = s.jobs[toolCallID]
+	}
+	if job == nil || job.state.terminal() || job.transitioning {
+		l.mu.Unlock()
 		return
 	}
-	if job := s.jobs[toolCallID]; job != nil {
-		job.stopRequested = true
-	}
+	toolName, shellID := job.toolName, job.shellID
+	l.mu.Unlock()
+
+	partial := l.capturePartial(owner, toolCallID, toolName, "", shellID, nil)
+	l.transition(owner, toolCallID, causeJobKill, partial)
 }
 
 // setRunCommandBuffer records a run_command job's live output sink, as soon
@@ -540,6 +667,13 @@ func (l *workLedger) RunCommandOutput(owner, jobID string, cursor int64) (string
 
 // StopRunCommandJob implements tools.RunCommandController. See that
 // interface's doc.
+//
+// Phase-4 step 2 (doc sec.3.1's external-cause order): snapshot -> transition
+// -> kill. The live output buffer is snapshotted and the causeJobKill
+// transition committed BEFORE ctx is cancelled, so a killed run_command's
+// own "context canceled" return (its ctx-cancellation branch discards its
+// real partial content) can never race ahead of and overwrite the intended
+// cause -- finish's later call simply finds the job already terminal.
 func (l *workLedger) StopRunCommandJob(owner, jobID string) error {
 	if l == nil {
 		return fmt.Errorf("job %s not found (async job tracking is unavailable)", jobID)
@@ -553,34 +687,40 @@ func (l *workLedger) StopRunCommandJob(owner, jobID string) error {
 		l.mu.Unlock()
 		return fmt.Errorf("job %s not found (not owned by this session, already delivered, or not a run_command job)", jobID)
 	}
-	if job.stopRequested {
+	if job.state.terminal() || job.transitioning {
 		l.mu.Unlock()
 		// Idempotency rule (contract §1.5): a repeat stop on an already-
-		// stopping target is safe but reports the same "not found" shape,
-		// not a disguised second success.
+		// stopping/stopped target is safe but reports the same "not found"
+		// shape, not a disguised second success.
 		return fmt.Errorf("job %s not found (not owned by this session, already delivered, or already stopped)", jobID)
 	}
-	job.stopRequested = true
+	var partial string
+	if job.outputBuf != nil {
+		partial = job.outputBuf.String()
+	}
 	cancel := job.cancel
 	l.mu.Unlock()
+
+	l.transition(owner, jobID, causeJobKill, jobResult{content: partial})
 	if cancel != nil {
 		cancel() // triggers run_command's cmd.Cancel tree-kill (configureRunCommandProcess)
 	}
 	return nil
 }
 
-// finish is the terminal transition for a PLAIN job (bash/run_command). Not
-// used for a delegation (agent/agentic_fetch) -- see armDelegation.
+// finish is the terminal transition for a PLAIN job's (bash/run_command)
+// NATURAL completion (causeNaturalFinish). Not used for a delegation (agent/
+// agentic_fetch) -- see armDelegation. For a sync job it still writes
+// directly via transitionToTerminal (sync jobs never touch the store, doc
+// sec.3.1) -- see the sync branch below.
 //
-// stopRequested (set by MarkJobStopped/StopRunCommandJob BEFORE the caller
-// killed the process, task #1023 §2.2) makes this build the distinct
-// "stopped (job_kill)" result instead of whatever the killed process's own
-// exit looked like (a bash job killed mid-command usually still reports a
-// non-zero exit/error here; a run_command job killed via ctx cancellation
-// reports "context canceled" -- neither is the notice contract §5.1 wants).
-// This does not add a new competitor to transitionToTerminal's CAS
-// (ASYNC-03): stopRequested only changes what THIS SAME finish call records,
-// it does not create a second terminal-transition path.
+// Phase-4 step 2: this used to special-case job.stopRequested to build the
+// "stopped (job_kill)" result itself. That is gone -- MarkJobStopped/
+// StopRunCommandJob now transition the job to cancelled BEFORE the caller
+// kills the process (snapshot -> transition -> kill), so by the time THIS
+// call arrives for a job_kill'd job, the job is already terminal and
+// l.transition below is a no-op (ASYNC-03's CAS skip), never overwriting
+// the recorded cause with the killed process's own exit content.
 func (l *workLedger) finish(owner, toolCallID string, result jobResult) {
 	l.mu.Lock()
 	s := l.bySession[owner]
@@ -593,31 +733,26 @@ func (l *workLedger) finish(owner, toolCallID string, result jobResult) {
 		l.mu.Unlock()
 		return
 	}
-	state := phaseCompleted
-	if result.isError {
-		state = phaseFailed
-	}
-	if job.stopRequested {
-		// Raw partial content only -- FormatAsyncCompletion's Stopped branch
-		// (deliverLocked sets it from this state) supplies the "was stopped
-		// (job_kill)..." wording, exactly like TimedOut's capturePartial
-		// already does for the timeout wording. Formatting it here too would
-		// double-wrap the notice.
-		partial := result.content
-		if job.outputBuf != nil {
-			if snap := job.outputBuf.String(); snap != "" {
-				partial = snap
-			}
+	if job.sync {
+		job.transitionToTerminal(phaseFor(result), result)
+		completion, callback := l.deliverLocked(owner, job)
+		l.mu.Unlock()
+		if callback {
+			l.onWebDone(completion)
 		}
-		state = phaseCancelled
-		result = jobResult{content: partial}
+		return
 	}
-	job.transitionToTerminal(state, result)
-	completion, callback := l.deliverLocked(owner, job)
 	l.mu.Unlock()
-	if callback {
-		l.onWebDone(completion)
+	l.transition(owner, toolCallID, causeNaturalFinish, result)
+}
+
+// phaseFor maps a sync job's raw result to its terminal jobPhase. Sync jobs
+// never go through causeStateNoticeKindWake (no DB row at all).
+func phaseFor(result jobResult) jobPhase {
+	if result.isError {
+		return phaseFailed
 	}
+	return phaseCompleted
 }
 
 func (l *workLedger) next(ctx context.Context, sessionID string) (AsyncCompletion, bool, error) {
@@ -669,19 +804,32 @@ func (l *workLedger) running(sessionID string) bool {
 	return s != nil && len(s.jobs) > 0
 }
 
-// close cancels every job in every session (as cancelSession does per
-// session) and refuses further Start calls.
+// close is the graceful-exit path (doc sec.3.1/3.7: "graceful exit =
+// crash"). It no longer transitions anything -- a natural, non-shutdown-
+// caused transition already in flight still commits; every OTHER job's
+// executor is cancelled with shutdownCancelled set first, so the shutdown
+// latch inside transition (see work_ledger_transition.go) suppresses its
+// write and leaves the row 'running' for the next host to recover. Only
+// cancels executors and stops the timeout service -- it does NOT call
+// cancelSession or otherwise write a terminal state.
 func (l *workLedger) close() {
 	l.mu.Lock()
 	l.closed = true
-	owners := make([]string, 0, len(l.bySession))
-	for owner, s := range l.bySession {
-		owners = append(owners, owner)
+	var jobs []*asyncJob
+	for _, s := range l.bySession {
+		for _, job := range s.jobs {
+			jobs = append(jobs, job)
+		}
 		signalWorkSession(s)
+	}
+	for _, job := range jobs {
+		job.shutdownCancelled = true
 	}
 	l.mu.Unlock()
 	l.timeouts.close()
-	for _, owner := range owners {
-		l.cancelSession(owner)
+	for _, job := range jobs {
+		if job.cancel != nil {
+			job.cancel()
+		}
 	}
 }

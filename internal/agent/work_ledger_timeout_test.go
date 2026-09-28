@@ -28,6 +28,7 @@ func TestTimeoutService_SingleGoroutineForManyJobs(t *testing.T) {
 	runtime.GC()
 	before := runtime.NumGoroutine()
 	l := newWorkLedger(nil)
+	l.store = newTestAsyncJobStore(t)
 	l.timeouts = newTimeoutService(l)
 	defer l.timeouts.close()
 
@@ -58,6 +59,7 @@ func TestTimeoutService_FiresNearestFirst(t *testing.T) {
 		order = append(order, c.ToolCallID)
 		mu.Unlock()
 	})
+	l.store = newTestAsyncJobStore(t)
 	l.timeouts = newTimeoutService(l)
 	defer l.timeouts.close()
 
@@ -92,6 +94,7 @@ func TestWorkLedger_TerminateAndWakeTransitionsToTimedOut(t *testing.T) {
 	t.Parallel()
 	var delivered []AsyncCompletion
 	l := newWorkLedger(func(c AsyncCompletion) { delivered = append(delivered, c) })
+	l.store = newTestAsyncJobStore(t)
 	var cancelled bool
 	_, _, err := l.Start("owner", "call", "", "bash", "", false, false, &TimeoutSpec{
 		Deadline: time.Now().Add(-time.Hour), Kind: timeoutTerminateAndWake, Seconds: 30,
@@ -139,6 +142,7 @@ func TestNotifyAsyncCompletion_TimedOutUsesContractTextAndNoticeKind(t *testing.
 	coord := &coordinator{subAgentDrivers: newSubAgentDriverRegistry()}
 	coord.subAgentDrivers.register("child-1", subAgentDriver{agent: agent})
 	coord.asyncJobs = newWorkLedger(nil)
+	coord.asyncJobs.store = newTestAsyncJobStore(t)
 	coord.asyncJobs.coord = coord
 
 	coord.notifyAsyncCompletion(AsyncCompletion{
@@ -169,6 +173,7 @@ func TestWorkLedger_WakeOnlyUsesTimeoutWakeOnlyNoticeKind(t *testing.T) {
 	coord := &coordinator{subAgentDrivers: newSubAgentDriverRegistry()}
 	coord.subAgentDrivers.register("owner", subAgentDriver{agent: agent})
 	l := newWorkLedger(nil)
+	l.store = newTestAsyncJobStore(t)
 	l.coord = coord
 	coord.asyncJobs = l
 
@@ -210,6 +215,7 @@ func TestWorkLedger_WakeOnlyFiresExactlyOnceThenStaysRunning(t *testing.T) {
 	coord := &coordinator{subAgentDrivers: newSubAgentDriverRegistry()}
 	coord.subAgentDrivers.register("owner", subAgentDriver{agent: agent})
 	l := newWorkLedger(nil)
+	l.store = newTestAsyncJobStore(t)
 	l.coord = coord
 	coord.asyncJobs = l
 
@@ -240,6 +246,7 @@ func TestWorkLedger_TimeoutRaceAgainstFinishYieldsOneOutcome(t *testing.T) {
 	for i := 0; i < 30; i++ {
 		delivered := make(chan AsyncCompletion, 8)
 		l := newWorkLedger(func(c AsyncCompletion) { delivered <- c })
+		l.store = newTestAsyncJobStore(t)
 		_, _, err := l.Start("owner", "call", "", "bash", "", false, false, &TimeoutSpec{
 			Deadline: time.Now().Add(-time.Hour), Kind: timeoutTerminateAndWake, Seconds: 30,
 		}, func() {})

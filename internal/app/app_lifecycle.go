@@ -252,6 +252,22 @@ func (app *App) releaseResources(stillBusy bool) ShutdownResult {
 		}
 	})
 
+	// Release this App's phase-4 host identity (docs/plans/2026-09-28-async-
+	// phase4-durable-core.md sec.3.6) AFTER agent work has been cancelled
+	// (cancelAgentsBeforeRelease already ran, above, on every path into
+	// releaseResources) -- graceful exit is deliberately NOT a clean
+	// transition of any still-running row (sec.3.7: "graceful exit = crash"),
+	// this only releases the OS lock / deletes the host's own row if it has
+	// no jobs left.
+	wg.Go(func() {
+		if app.asyncJobStore != nil {
+			if err := app.asyncJobStore.Close(shutdownCtx); err != nil {
+				slog.Warn("Failed to release async job store host identity on shutdown", "error", err)
+				recordCleanupError(err)
+			}
+		}
+	})
+
 	// Call all cleanup functions.
 	for _, cleanup := range app.cleanupFuncs {
 		if cleanup != nil {

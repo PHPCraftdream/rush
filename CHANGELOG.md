@@ -8,6 +8,24 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed
+
+- **`agent`/`agentic_fetch` with `resume_session_id` now refuses immediately
+  (before reporting "started") if that child session still has a delegation
+  running from a previous call, instead of queuing behind it.** The async
+  job ledger's durable core (phase 4) enforces at most one running
+  delegation per child session; a second one arrives as a tool error asking
+  the caller to wait for the first result. Dead-host recovery of a stale
+  conflicting row is a later phase.
+- **Async job state (bash/run_command/agent/agentic_fetch outcomes) is now
+  durably recorded in SQLite as it happens**, not decided from in-memory
+  state alone. Observable behavior is unchanged for every existing
+  notice/text/timing except the `resume_session_id` case above and one new
+  fail-closed refusal: if the database becomes unavailable, starting a new
+  async job now errors instead of silently running untracked (recovering an
+  in-flight job across a process restart is a later phase, not yet wired to
+  any reader).
+
 ### Removed
 
 - **`rush run --codex-thread-id` and the Codex completion callback are

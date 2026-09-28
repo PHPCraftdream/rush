@@ -24,7 +24,7 @@ func makeDoneAsyncJob(t *testing.T, ctx context.Context, q *Queries, owner, tool
 		UpdatedAt: 1700000000, OwnerSessionID: owner, ToolCallID: toolCallID,
 	})
 	require.NoError(t, err)
-	_, err = q.TransitionAsyncJobTerminal(ctx, TransitionAsyncJobTerminalParams{
+	_, err = q.TransitionAsyncJobTerminalPreserveVoid(ctx, TransitionAsyncJobTerminalPreserveVoidParams{
 		State: "completed", NoticeKind: "", ResultSummary: sql.NullString{String: "ok", Valid: true},
 		ResultIsError: sql.NullInt64{Int64: 0, Valid: true}, Wake: 1, UpdatedAt: 1700000001,
 		OwnerSessionID: owner, ToolCallID: toolCallID,

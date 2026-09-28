@@ -89,25 +89,19 @@ WHERE owner_session_id = ? AND tool_call_id = ?;
 -- ack-gate race concurrently is never deleted out from under it.
 DELETE FROM async_jobs WHERE owner_session_id = ? AND tool_call_id = ? AND announced = 0;
 
--- name: TransitionAsyncJobTerminal :one
--- The ONE transition CAS (DUR-1/DUR-2): a terminal state, its cause
--- (notice_kind), the result payload, delivery='pending', and wake are all
--- set by this single statement, scoped to state='running' so only the
--- first committer wins -- every other concurrent caller sees 0 rows
--- affected and must re-read the row (GetAsyncJob) and accept whatever
--- state is there instead of retrying the same transition.
-UPDATE async_jobs
-SET state = ?, notice_kind = ?, result_summary = ?, result_is_error = ?,
-    delivery = 'pending', wake = ?, updated_at = ?
-WHERE owner_session_id = ? AND tool_call_id = ? AND state = 'running'
-RETURNING *;
-
 -- name: TransitionAsyncJobTerminalPreserveVoid :one
--- Rerun variant (doc sec.3.8): a terminal transition preserves an existing
--- void delivery instead of resetting it to pending -- a row already voided
--- by Rerun truncation must not be resurrected to 'pending' by a
--- late-arriving terminal transition (e.g. job_kill racing the history
--- truncation).
+-- The ONE terminal-transition CAS (DUR-1/DUR-2/step-2 review): a terminal
+-- state, its cause (notice_kind), the result payload, delivery, and wake
+-- are all set by this single statement, scoped to state='running' so only
+-- the first committer wins -- every other concurrent caller sees 0 rows
+-- affected and must re-read the row (GetAsyncJob) and accept whatever
+-- state is there instead of retrying the same transition. This is the
+-- ONLY terminal-transition query (doc sec.3.8 is explicit the terminal
+-- transition always preserves void, so the earlier non-preserving sibling
+-- this replaced -- TransitionAsyncJobTerminal -- is gone, not a second,
+-- parallel path): a row already voided by Rerun truncation must not be
+-- resurrected to 'pending' by a late-arriving terminal transition (e.g.
+-- job_kill racing the history truncation).
 UPDATE async_jobs
 SET state = ?, notice_kind = ?, result_summary = ?, result_is_error = ?,
     delivery = CASE delivery WHEN 'void' THEN 'void' ELSE 'pending' END,

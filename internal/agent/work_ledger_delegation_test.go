@@ -53,9 +53,10 @@ const (
 // reads false) and no messages service (so a release keeps the completion
 // captured at arm time). Tests that need a refreshed completion or a busy
 // gate set those fields afterwards.
-func newParkedOutcomeCoordinator(onWebDone func(AsyncCompletion)) *coordinator {
+func newParkedOutcomeCoordinator(t *testing.T, onWebDone func(AsyncCompletion)) *coordinator {
 	coord := &coordinator{}
 	coord.asyncJobs = newWorkLedger(onWebDone)
+	coord.asyncJobs.store = newTestAsyncJobStore(t)
 	coord.asyncJobs.coord = coord
 	return coord
 }
@@ -126,7 +127,7 @@ func finishChildJob(t *testing.T, coord *coordinator, delivered chan AsyncComple
 func TestWorkLedger_NoFinishedNoticeWhileChildOwnedJobsPending(t *testing.T) {
 	t.Parallel()
 	delivered := make(chan AsyncCompletion, 4)
-	coord := newParkedOutcomeCoordinator(func(completion AsyncCompletion) { delivered <- completion })
+	coord := newParkedOutcomeCoordinator(t, func(completion AsyncCompletion) { delivered <- completion })
 
 	// The child's own async tool work is still in flight.
 	startChildOwnedJob(t, coord.asyncJobs, parkedChildSession, parkedChildJob, false)
@@ -147,7 +148,7 @@ func TestWorkLedger_NoFinishedNoticeWhileChildOwnedJobsPending(t *testing.T) {
 func TestWorkLedger_SingleFinalNoticeAfterChildJobsDrain(t *testing.T) {
 	t.Parallel()
 	delivered := make(chan AsyncCompletion, 4)
-	coord := newParkedOutcomeCoordinator(func(completion AsyncCompletion) { delivered <- completion })
+	coord := newParkedOutcomeCoordinator(t, func(completion AsyncCompletion) { delivered <- completion })
 
 	startChildOwnedJob(t, coord.asyncJobs, parkedChildSession, parkedChildJob, true)
 	parkDelegation(t, coord, parkedChildSession, "child yielded: async checks still running")
@@ -183,7 +184,7 @@ func TestWorkLedger_FailedChildJobDeliveredOnceAsFailure(t *testing.T) {
 	require.NoError(t, err)
 
 	delivered := make(chan AsyncCompletion, 4)
-	coord := newParkedOutcomeCoordinator(func(completion AsyncCompletion) { delivered <- completion })
+	coord := newParkedOutcomeCoordinator(t, func(completion AsyncCompletion) { delivered <- completion })
 	coord.messages = env.messages
 
 	row, err := env.messages.Create(t.Context(), child.ID, message.CreateMessageParams{
@@ -243,7 +244,7 @@ func TestWorkLedger_ConcurrentRecheckDeliversOnce(t *testing.T) {
 	writeParkedChildTurn(t, env, child.ID, "child final answer", message.FinishReasonEndTurn)
 
 	delivered := make(chan AsyncCompletion, concurrentRecheckers)
-	coord := newParkedOutcomeCoordinator(func(completion AsyncCompletion) { delivered <- completion })
+	coord := newParkedOutcomeCoordinator(t, func(completion AsyncCompletion) { delivered <- completion })
 	coord.messages = &barrieredMessages{
 		Service: env.messages,
 		barrier: newRefreshBarrier(concurrentRecheckers, refreshBarrierWindow),
@@ -290,7 +291,7 @@ func TestWorkLedger_ConcurrentRecheckDeliversOnce(t *testing.T) {
 func TestWorkLedger_CancelReleasesArmedDelegation(t *testing.T) {
 	t.Parallel()
 	delivered := make(chan AsyncCompletion, 4)
-	coord := newParkedOutcomeCoordinator(func(completion AsyncCompletion) { delivered <- completion })
+	coord := newParkedOutcomeCoordinator(t, func(completion AsyncCompletion) { delivered <- completion })
 	coord.currentAgent = &mockSessionAgent{}
 
 	startChildOwnedJob(t, coord.asyncJobs, parkedChildSession, parkedChildJob, true)
@@ -331,7 +332,7 @@ func TestWorkLedger_CancelSurvivesFinishedChildTurn(t *testing.T) {
 	require.NoError(t, err)
 
 	delivered := make(chan AsyncCompletion, 4)
-	coord := newParkedOutcomeCoordinator(func(completion AsyncCompletion) { delivered <- completion })
+	coord := newParkedOutcomeCoordinator(t, func(completion AsyncCompletion) { delivered <- completion })
 	coord.messages = env.messages
 	coord.currentAgent = &mockSessionAgent{}
 
@@ -375,7 +376,7 @@ func TestWorkLedger_ResumeAfterNoticeDoesNotReemit(t *testing.T) {
 	require.NoError(t, err)
 
 	delivered := make(chan AsyncCompletion, 4)
-	coord := newParkedOutcomeCoordinator(func(completion AsyncCompletion) { delivered <- completion })
+	coord := newParkedOutcomeCoordinator(t, func(completion AsyncCompletion) { delivered <- completion })
 	coord.messages = env.messages
 
 	writeParkedChildTurn(t, env, child.ID, "first delegation done", message.FinishReasonEndTurn)
@@ -435,7 +436,7 @@ func TestWorkLedger_BusyChildDefersReleaseUntilTurnEnds(t *testing.T) {
 	require.NoError(t, err)
 
 	delivered := make(chan AsyncCompletion, 4)
-	coord := newParkedOutcomeCoordinator(func(completion AsyncCompletion) { delivered <- completion })
+	coord := newParkedOutcomeCoordinator(t, func(completion AsyncCompletion) { delivered <- completion })
 	coord.messages = env.messages
 	writeParkedChildTurn(t, env, child.ID, "child final answer", message.FinishReasonEndTurn)
 
@@ -488,7 +489,7 @@ func TestWorkLedger_ConcurrentRecheckAndCancelDeliversOnce(t *testing.T) {
 	t.Parallel()
 	for i := 0; i < 30; i++ {
 		delivered := make(chan AsyncCompletion, 8)
-		coord := newParkedOutcomeCoordinator(func(c AsyncCompletion) { delivered <- c })
+		coord := newParkedOutcomeCoordinator(t, func(c AsyncCompletion) { delivered <- c })
 
 		// Keep the child's scope open until the delegation is armed, so
 		// arming does not resolve synchronously.
@@ -546,7 +547,7 @@ func TestWorkLedger_ConcurrentRecheckAndCancelDeliversOnce(t *testing.T) {
 // disable -- this test keeps the scenario as a permanent regression guard.
 func TestWorkLedger_ChildScopeClosesWithoutTicker(t *testing.T) {
 	delivered := make(chan AsyncCompletion, 4)
-	coord := newParkedOutcomeCoordinator(func(completion AsyncCompletion) { delivered <- completion })
+	coord := newParkedOutcomeCoordinator(t, func(completion AsyncCompletion) { delivered <- completion })
 
 	startChildOwnedJob(t, coord.asyncJobs, parkedChildSession, parkedChildJob, true)
 	parkDelegation(t, coord, parkedChildSession, "child yielded: async checks still running")
@@ -583,7 +584,7 @@ func TestWorkLedger_ChildScopeClosesWithoutTicker(t *testing.T) {
 // consistently (5/5 repeats, goroutine count growing by 1 each run and never
 // settling back down). Removed the reintroduced line; re-ran 5/5, passed.
 func TestWorkLedger_NoLingeringTickerGoroutineAfterArmDelegation(t *testing.T) {
-	coord := newParkedOutcomeCoordinator(func(AsyncCompletion) {})
+	coord := newParkedOutcomeCoordinator(t, func(AsyncCompletion) {})
 	coord.currentAgent = &mockSessionAgent{}
 
 	settle := func() int {

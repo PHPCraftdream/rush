@@ -256,6 +256,7 @@ func TestWakeSession_RunPanicIsRecovered(t *testing.T) {
 	// not about model resolution.
 	coord.subAgentDrivers.register("sess-1", subAgentDriver{agent: agent})
 	coord.asyncJobs = newWorkLedger(nil)
+	coord.asyncJobs.store = newTestAsyncJobStore(t)
 	coord.asyncJobs.coord = coord
 
 	var err error
@@ -283,6 +284,7 @@ func TestWakeSession_RunErrorIsVisibleNotDebug(t *testing.T) {
 	coord := &coordinator{subAgentDrivers: newSubAgentDriverRegistry()}
 	coord.subAgentDrivers.register("sess-2", subAgentDriver{agent: agent})
 	coord.asyncJobs = newWorkLedger(nil)
+	coord.asyncJobs.store = newTestAsyncJobStore(t)
 	coord.asyncJobs.coord = coord
 
 	err := coord.wakeSession(t.Context(), jobIdentity{owner: "sess-2", toolCallID: "call-2"}, "notice text", "", true)
@@ -327,6 +329,7 @@ func TestWakeSession_AlwaysAttemptsRunEvenWhenSessionLooksBusy(t *testing.T) {
 	coord := &coordinator{subAgentDrivers: newSubAgentDriverRegistry()}
 	coord.subAgentDrivers.register("child-1", subAgentDriver{agent: agent})
 	coord.asyncJobs = newWorkLedger(nil)
+	coord.asyncJobs.store = newTestAsyncJobStore(t)
 	coord.asyncJobs.coord = coord
 
 	err := coord.wakeSession(t.Context(), jobIdentity{owner: "child-1", toolCallID: "call-1"}, "notice text", "", true)

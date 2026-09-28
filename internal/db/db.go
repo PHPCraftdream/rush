@@ -378,9 +378,6 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.terminalFailRunQueueEntryStmt, err = db.PrepareContext(ctx, terminalFailRunQueueEntry); err != nil {
 		return nil, fmt.Errorf("error preparing query TerminalFailRunQueueEntry: %w", err)
 	}
-	if q.transitionAsyncJobTerminalStmt, err = db.PrepareContext(ctx, transitionAsyncJobTerminal); err != nil {
-		return nil, fmt.Errorf("error preparing query TransitionAsyncJobTerminal: %w", err)
-	}
 	if q.transitionAsyncJobTerminalPreserveVoidStmt, err = db.PrepareContext(ctx, transitionAsyncJobTerminalPreserveVoid); err != nil {
 		return nil, fmt.Errorf("error preparing query TransitionAsyncJobTerminalPreserveVoid: %w", err)
 	}
@@ -1018,11 +1015,6 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing terminalFailRunQueueEntryStmt: %w", cerr)
 		}
 	}
-	if q.transitionAsyncJobTerminalStmt != nil {
-		if cerr := q.transitionAsyncJobTerminalStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing transitionAsyncJobTerminalStmt: %w", cerr)
-		}
-	}
 	if q.transitionAsyncJobTerminalPreserveVoidStmt != nil {
 		if cerr := q.transitionAsyncJobTerminalPreserveVoidStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing transitionAsyncJobTerminalPreserveVoidStmt: %w", cerr)
@@ -1250,7 +1242,6 @@ type Queries struct {
 	sumMessageUsageByModelInRangeStmt              *sql.Stmt
 	sumMessageUsageBySessionStmt                   *sql.Stmt
 	terminalFailRunQueueEntryStmt                  *sql.Stmt
-	transitionAsyncJobTerminalStmt                 *sql.Stmt
 	transitionAsyncJobTerminalPreserveVoidStmt     *sql.Stmt
 	updateMessageStmt                              *sql.Stmt
 	updateMessageIfNotTerminalStmt                 *sql.Stmt
@@ -1389,7 +1380,6 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		sumMessageUsageByModelInRangeStmt:              q.sumMessageUsageByModelInRangeStmt,
 		sumMessageUsageBySessionStmt:                   q.sumMessageUsageBySessionStmt,
 		terminalFailRunQueueEntryStmt:                  q.terminalFailRunQueueEntryStmt,
-		transitionAsyncJobTerminalStmt:                 q.transitionAsyncJobTerminalStmt,
 		transitionAsyncJobTerminalPreserveVoidStmt:     q.transitionAsyncJobTerminalPreserveVoidStmt,
 		updateMessageStmt:                              q.updateMessageStmt,
 		updateMessageIfNotTerminalStmt:                 q.updateMessageIfNotTerminalStmt,

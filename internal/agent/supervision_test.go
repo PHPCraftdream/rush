@@ -27,9 +27,10 @@ import (
 // handleSupervisionDeadline directly do not need the real timer; armFunc is
 // nil-receiver-safe, so a stray re-arm call from within it is a silent
 // no-op).
-func newSupervisionTestLedger() (*workLedger, *coordinator) {
+func newSupervisionTestLedger(t *testing.T) (*workLedger, *coordinator) {
 	coord := &coordinator{subAgentDrivers: newSubAgentDriverRegistry()}
 	l := newWorkLedger(nil)
+	l.store = newTestAsyncJobStore(t)
 	l.coord = coord
 	l.supervision = newSupervisionRegistry()
 	coord.asyncJobs = l
@@ -56,7 +57,7 @@ func startOpenJob(t *testing.T, l *workLedger, sessionID, toolCallID string) {
 // noteWorkStarted -- this test's child assertion FAILED (state was armed
 // for the delegated child too). Restored the guard; re-ran, passed.
 func TestSupervision_NoteWorkStartedSkipsDelegatedChildArmsRoot(t *testing.T) {
-	l, coord := newSupervisionTestLedger()
+	l, coord := newSupervisionTestLedger(t)
 	coord.subAgentDrivers.register("delegated-child", subAgentDriver{agent: &mockSessionAgent{}})
 
 	l.noteWorkStarted(context.Background(), "delegated-child")
@@ -80,7 +81,7 @@ func TestSupervision_NoteWorkStartedSkipsDelegatedChildArmsRoot(t *testing.T) {
 // return }` block -- this test FAILED (the spy agent's Run was invoked with
 // no open work at all). Restored the block; re-ran, passed.
 func TestSupervision_NoTickWithoutOpenWork(t *testing.T) {
-	l, coord := newSupervisionTestLedger()
+	l, coord := newSupervisionTestLedger(t)
 	spy := &mockSessionAgent{runFunc: func(context.Context, SessionAgentCall) (*fantasy.AgentResult, error) {
 		t.Fatal("must not wake a session with no open work")
 		return nil, nil
@@ -113,7 +114,7 @@ func TestSupervision_NoTickWithoutOpenWork(t *testing.T) {
 // test FAILED (the busy spy's Run was invoked). Restored the check; re-ran,
 // passed.
 func TestSupervision_NoTickWhileTurnRunning(t *testing.T) {
-	l, coord := newSupervisionTestLedger()
+	l, coord := newSupervisionTestLedger(t)
 	startOpenJob(t, l, "busy-root", "job-1")
 
 	busy := &busyStubAgent{}
@@ -147,7 +148,7 @@ func TestSupervision_NoTickWhileTurnRunning(t *testing.T) {
 // passed.
 func TestSupervision_TicksAfterSilenceWithOpenWork(t *testing.T) {
 	t.Parallel()
-	l, coord := newSupervisionTestLedger()
+	l, coord := newSupervisionTestLedger(t)
 	l.timeouts = newTimeoutService(l)
 	defer l.timeouts.close()
 
@@ -198,7 +199,7 @@ func TestSupervision_TicksAfterSilenceWithOpenWork(t *testing.T) {
 // recordProgress). Restored recordProgress; re-ran, passed.
 func TestSupervision_RecordProgressPushesDeadlineForward(t *testing.T) {
 	t.Parallel()
-	l, coord := newSupervisionTestLedger()
+	l, coord := newSupervisionTestLedger(t)
 	l.timeouts = newTimeoutService(l)
 	defer l.timeouts.close()
 
@@ -270,7 +271,7 @@ func TestSupervision_RecordProgressPushesDeadlineForward(t *testing.T) {
 // deadline-only push; re-ran, passed.
 func TestSupervision_PushDeadlineOnTurnEndKeepsBackoffButReschedules(t *testing.T) {
 	t.Parallel()
-	l, coord := newSupervisionTestLedger()
+	l, coord := newSupervisionTestLedger(t)
 	l.timeouts = newTimeoutService(l)
 	defer l.timeouts.close()
 
@@ -317,7 +318,7 @@ func TestSupervision_PushDeadlineOnTurnEndKeepsBackoffButReschedules(t *testing.
 // pushDeadlineOnTurnEnd's stale-check -- this test FAILED (generation
 // changed for a paused session). Restored the clause; re-ran, passed.
 func TestSupervision_PushDeadlineOnTurnEndSkipsPausedSession(t *testing.T) {
-	l, _ := newSupervisionTestLedger()
+	l, _ := newSupervisionTestLedger(t)
 	l.supervision.byRoot["paused-root"] = &supervisionState{rootSessionID: "paused-root", cfg: DefaultSupervisionConfig(), paused: true, generation: 5}
 
 	l.pushDeadlineOnTurnEnd("paused-root")
@@ -333,7 +334,7 @@ func TestSupervision_PushDeadlineOnTurnEndSkipsPausedSession(t *testing.T) {
 // SessionAgent's OnSessionIdle (coordinator_tools.go) must still push the
 // supervision deadline, not just retain the pre-existing phase-3 trigger.
 func TestSupervision_OnSessionIdleHookPushesDeadline(t *testing.T) {
-	l, coord := newSupervisionTestLedger()
+	l, coord := newSupervisionTestLedger(t)
 	l.supervision.nextGen = 1
 	l.supervision.byRoot["hook-root"] = &supervisionState{
 		rootSessionID: "hook-root", cfg: DefaultSupervisionConfig(), interval: 5 * time.Millisecond, generation: 1,
@@ -361,7 +362,7 @@ func TestSupervision_OnSessionIdleHookPushesDeadline(t *testing.T) {
 // of being blocked, and the "exactly 3 calls, then none" assertion FAILED.
 // Both restored; re-ran, passed.
 func TestSupervision_BackoffGrowsThenPausesThenResetsOnProgress(t *testing.T) {
-	l, coord := newSupervisionTestLedger()
+	l, coord := newSupervisionTestLedger(t)
 	startOpenJob(t, l, "backoff-root", "call-1")
 
 	var mu sync.Mutex
@@ -454,7 +455,7 @@ func TestSupervision_BackoffGrowsThenPausesThenResetsOnProgress(t *testing.T) {
 // deliverLocked -- this test FAILED (supervision state was still present
 // after the job finished). Restored both; re-ran, passed.
 func TestSupervision_StateRemovedOnScopeClose(t *testing.T) {
-	l, _ := newSupervisionTestLedger()
+	l, _ := newSupervisionTestLedger(t)
 	startOpenJob(t, l, "closing-root", "call-1")
 	l.supervision.byRoot["closing-root"] = &supervisionState{rootSessionID: "closing-root", cfg: DefaultSupervisionConfig(), generation: 1}
 
@@ -487,7 +488,7 @@ func TestSupervision_StateRemovedOnScopeClose(t *testing.T) {
 // through deliverLocked -- clearSupervisionIfPresent's own call site inside
 // cancelSession is what covers this, not deliverLocked's hook.
 func TestSupervision_CancelSessionAlsoClearsState(t *testing.T) {
-	l, _ := newSupervisionTestLedger()
+	l, _ := newSupervisionTestLedger(t)
 	startOpenJob(t, l, "cancel-root", "call-1")
 	l.supervision.byRoot["cancel-root"] = &supervisionState{rootSessionID: "cancel-root", cfg: DefaultSupervisionConfig(), generation: 1}
 
@@ -506,7 +507,7 @@ func TestSupervision_CancelSessionAlsoClearsState(t *testing.T) {
 func TestSupervision_SingleGoroutineRegardlessOfSessionCount(t *testing.T) {
 	runtime.GC()
 	before := runtime.NumGoroutine()
-	l, _ := newSupervisionTestLedger()
+	l, _ := newSupervisionTestLedger(t)
 	l.timeouts = newTimeoutService(l)
 	defer l.timeouts.close()
 

@@ -37,6 +37,7 @@ import (
 func TestWorkLedger_NextUnblocksOnSignalNotPoll(t *testing.T) {
 	t.Parallel()
 	l := newWorkLedger(nil)
+	l.store = newTestAsyncJobStore(t)
 	const owner = "root"
 	_, existing, err := l.Start(owner, "call-1", "", "bash", "", true, false, nil, func() {})
 	require.NoError(t, err)

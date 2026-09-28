@@ -166,24 +166,24 @@ func (l *workLedger) handleTimeout(job *asyncJob) {
 	}
 	switch job.timeoutKind {
 	case timeoutTerminateAndWake:
-		if job.cancel != nil {
-			job.cancel() // best-effort: ask the executor to stop; partial output captured below regardless of whether it stops in time
-		}
 		owner, toolCallID, toolName, childSession, shellID, outputBuf := job.owner, job.toolCallID, job.toolName, job.childSession, job.shellID, job.outputBuf
+		cancel := job.cancel
 		l.mu.Unlock()
 
-		// capturePartial does its own (possibly DB-backed, for a delegation)
-		// I/O OUTSIDE l.mu, mirroring recheckChild's own established
-		// snapshot-then-refresh-then-relock pattern (work_ledger_delegation.go)
-		// rather than holding the ledger lock across a round trip.
+		// Phase-4 step 2 (doc sec.3.1's external-cause order): snapshot ->
+		// transition -> stop executor. Capturing partial output BEFORE
+		// cancelling (this used to cancel first) matters once transition is
+		// DB-durable: cancelling first risks the executor's own
+		// ctx-cancellation return racing ahead of and being captured as
+		// THIS transition's own result, instead of the intended timeout
+		// summary. capturePartial does its own (possibly DB-backed, for a
+		// delegation) I/O OUTSIDE l.mu, mirroring recheckChild's own
+		// established snapshot-then-refresh-then-relock pattern.
 		partial := l.capturePartial(owner, toolCallID, toolName, childSession, shellID, outputBuf)
 
-		l.mu.Lock()
-		job.transitionToTerminal(phaseTimedOut, partial) // CAS: a concurrent finish/cancel may already have won; deliverLocked below is safe to call unconditionally either way
-		completion, callback := l.deliverLocked(owner, job)
-		l.mu.Unlock()
-		if callback {
-			l.onWebDone(completion)
+		l.transition(owner, toolCallID, causeTimeoutTerminated, partial)
+		if cancel != nil {
+			cancel() // best-effort: ask the executor to stop, now that the cause is durably recorded
 		}
 		// Delivery reaches wakeSession through the ORDINARY path
 		// (deliverLocked -> notifyAsyncCompletion), exactly like finish/

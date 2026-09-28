@@ -345,6 +345,14 @@ type modelPairCache interface {
 // generations and arbitrary per-session overrides cannot grow without bound.
 const modelCacheMaxEntries = 16
 
+// NewCoordinator wires the agent coordinator. asyncStore is the phase-4
+// durable job store (docs/plans/2026-09-28-async-phase4-durable-core.md
+// sec.5 step 2): the DB row, not memory, now decides a non-sync async job's
+// outcome (DUR-1/DUR-8). nil disables async bash/run_command/agent/
+// agentic_fetch tool calls entirely (Start fails closed) -- callers that
+// never exercise those tools (a handful of narrow regression fixtures) may
+// pass nil; every real caller (internal/app) must build one via
+// session.NewAsyncJobStore over its own writer *sql.DB and data dir.
 func NewCoordinator(
 	ctx context.Context,
 	cfg *config.ConfigStore,
@@ -355,6 +363,7 @@ func NewCoordinator(
 	filetracker filetracker.Service,
 	notify pubsub.Publisher[notify.Notification],
 	mcpOwner *mcp.Owner,
+	asyncStore *session.AsyncJobStore,
 	backgroundManagers ...*shell.BackgroundShellManager,
 ) (Coordinator, error) {
 	p, err := coderPrompt(prompt.WithWorkingDir(cfg.WorkingDir()))
@@ -392,6 +401,7 @@ func NewCoordinator(
 	// The web-done callback is notifyAsyncCompletion verbatim, exactly as
 	// before.
 	c.asyncJobs = newWorkLedger(c.notifyAsyncCompletion)
+	c.asyncJobs.store = asyncStore
 	c.asyncJobs.coord = c
 	c.asyncJobs.timeouts = newTimeoutService(c.asyncJobs)
 	c.asyncJobs.supervision = newSupervisionRegistry()

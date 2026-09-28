@@ -219,7 +219,7 @@ func TestAsyncReactionDebtExists(t *testing.T) {
 		UpdatedAt: 1700000000, OwnerSessionID: "sess-1", ToolCallID: "call-1",
 	})
 	require.NoError(t, err)
-	_, err = q.TransitionAsyncJobTerminal(ctx, TransitionAsyncJobTerminalParams{
+	_, err = q.TransitionAsyncJobTerminalPreserveVoid(ctx, TransitionAsyncJobTerminalPreserveVoidParams{
 		State: "completed", NoticeKind: "", ResultSummary: sql.NullString{String: "ok", Valid: true},
 		ResultIsError: sql.NullInt64{Int64: 0, Valid: true}, Wake: 1, UpdatedAt: 1700000001,
 		OwnerSessionID: "sess-1", ToolCallID: "call-1",
@@ -283,7 +283,7 @@ func TestAsyncReactionDebtExists_RequiresAnnounced(t *testing.T) {
 
 	// Terminal transition races ahead of the ack gate: the row is
 	// wake=1/delivery=pending/reacted=0 but still announced=0.
-	_, err = q.TransitionAsyncJobTerminal(ctx, TransitionAsyncJobTerminalParams{
+	_, err = q.TransitionAsyncJobTerminalPreserveVoid(ctx, TransitionAsyncJobTerminalPreserveVoidParams{
 		State: "completed", NoticeKind: "", ResultSummary: sql.NullString{String: "ok", Valid: true},
 		ResultIsError: sql.NullInt64{Int64: 0, Valid: true}, Wake: 1, UpdatedAt: 1700000001,
 		OwnerSessionID: "sess-1", ToolCallID: "call-1",

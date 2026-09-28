@@ -25,6 +25,7 @@ func TestAsyncToolReturnsBeforeCommandFinishes(t *testing.T) {
 		return fantasy.NewTextResponse("program output"), nil
 	})
 	registry := newWorkLedger(nil)
+	registry.store = newTestAsyncJobStore(t)
 	wrapped := &asyncTool{inner: inner, coordinator: &coordinator{asyncJobs: registry}, name: "run_command"}
 	ctx := context.WithValue(t.Context(), tools.SessionIDContextKey, "session")
 	ctx = WithCallOrigin(ctx, message.OriginCLI)
@@ -59,6 +60,7 @@ func TestAsyncToolWebCompletionWaitsForToolResult(t *testing.T) {
 	})
 	completed := make(chan AsyncCompletion, 1)
 	registry := newWorkLedger(func(result AsyncCompletion) { completed <- result })
+	registry.store = newTestAsyncJobStore(t)
 	wrapped := &asyncTool{inner: inner, coordinator: &coordinator{asyncJobs: registry}, name: "run_command"}
 	ctx := context.WithValue(t.Context(), tools.SessionIDContextKey, "session")
 	ctx = WithCallOrigin(ctx, message.OriginWeb)

@@ -109,6 +109,7 @@ func TestRecheckChild_FiresOnRealDriverRunEndWithoutManualTrigger(t *testing.T) 
 	delivered := make(chan AsyncCompletion, 4)
 	coord := &coordinator{}
 	coord.asyncJobs = newWorkLedger(func(c AsyncCompletion) { delivered <- c })
+	coord.asyncJobs.store = newTestAsyncJobStore(t)
 	coord.asyncJobs.coord = coord
 	coord.subAgentDrivers = newSubAgentDriverRegistry()
 

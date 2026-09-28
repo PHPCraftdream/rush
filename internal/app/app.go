@@ -96,6 +96,12 @@ type App struct {
 
 	AgentCoordinator agent.Coordinator
 
+	// asyncJobStore is the phase-4 durable job store (docs/plans/2026-09-28-
+	// async-phase4-durable-core.md sec.5 step 2), built once in
+	// InitCoderAgent and handed to agent.NewCoordinator. Its host identity
+	// is released in releaseResources, after agent work is cancelled.
+	asyncJobStore *session.AsyncJobStore
+
 	// RunQueuePump is the background pump for durable orphaned/detached calls (task #340).
 	// It scans session_run_queue periodically and executes pending work.
 	RunQueuePump *session.RunQueuePump

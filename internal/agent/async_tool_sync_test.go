@@ -31,6 +31,7 @@ func TestAsyncTool_SDKOriginBlocksAndReturnsInnerResponse(t *testing.T) {
 		return fantasy.WithResponseMetadata(fantasy.NewTextResponse("inner output"), map[string]string{"k": "v"}), nil
 	})
 	registry := newWorkLedger(nil)
+	registry.store = newTestAsyncJobStore(t)
 	wrapped := &asyncTool{inner: inner, coordinator: &coordinator{asyncJobs: registry}, name: "run_command"}
 	ctx := context.WithValue(t.Context(), tools.SessionIDContextKey, "session")
 	ctx = WithCallOrigin(ctx, message.OriginSDK)
@@ -84,6 +85,7 @@ func TestAsyncTool_SDKOriginBashDoesNotForceBackground(t *testing.T) {
 		return fantasy.NewTextResponse("ok"), nil
 	})
 	registry := newWorkLedger(nil)
+	registry.store = newTestAsyncJobStore(t)
 	wrapped := &asyncTool{inner: inner, coordinator: &coordinator{asyncJobs: registry}, name: tools.BashToolName}
 	ctx := context.WithValue(t.Context(), tools.SessionIDContextKey, "session")
 	ctx = WithCallOrigin(ctx, message.OriginSDK)
@@ -113,6 +115,7 @@ func TestAsyncTool_SyncJobRegisteredInLedgerWithCASAndTimeout(t *testing.T) {
 	})
 	var webDoneCalls int
 	registry := newWorkLedger(func(AsyncCompletion) { webDoneCalls++ })
+	registry.store = newTestAsyncJobStore(t)
 	wrapped := &asyncTool{inner: inner, coordinator: &coordinator{asyncJobs: registry}, name: "run_command"}
 	ctx := context.WithValue(t.Context(), tools.SessionIDContextKey, "session")
 	ctx = WithCallOrigin(ctx, message.OriginSDK)
@@ -169,6 +172,7 @@ func TestAsyncTool_SyncCallerCtxCancelUnblocksAwait(t *testing.T) {
 		return fantasy.ToolResponse{}, ctx.Err()
 	})
 	registry := newWorkLedger(nil)
+	registry.store = newTestAsyncJobStore(t)
 	wrapped := &asyncTool{inner: inner, coordinator: &coordinator{asyncJobs: registry}, name: "run_command"}
 	baseCtx, cancel := context.WithCancel(t.Context())
 	ctx := context.WithValue(baseCtx, tools.SessionIDContextKey, "session")

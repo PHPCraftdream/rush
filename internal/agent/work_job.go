@@ -124,13 +124,19 @@ type asyncJob struct {
 	timeoutSeconds  int
 	timeoutNotified bool
 
-	// stopRequested is set by workLedger.MarkJobStopped/StopRunCommandJob
-	// BEFORE the caller actually kills the underlying shell/process (task
-	// #1023 §2.2). It does not itself transition state -- finish is still
-	// the only writer of state past phaseRunning (transitionToTerminal) --
-	// it only makes finish() build the distinct "stopped (job_kill)" result
-	// instead of whatever the killed process's own exit looked like.
-	stopRequested bool
+	// transitioning is the phase-4 step-2 "переход идёт" in-flight latch
+	// (doc sec.3.1/DUR-1): set by workLedger.transition while its retry loop
+	// is running store.Transition for THIS job, outside l.mu. A concurrent
+	// second cause for the same job SKIPS instead of waiting -- see
+	// workLedger.transition's doc.
+	transitioning bool
+	// shutdownCancelled is set by workLedger.close() right before it cancels
+	// this job's executor context (doc sec.3.1/3.7's shutdown latch): "caused
+	// by process shutdown" is workLedger.closed AND this flag, checked inside
+	// transition's retry loop. A transition suppressed this way writes
+	// nothing to the DB -- the row stays 'running' for the next host to
+	// recover.
+	shutdownCancelled bool
 	// outputBuf is set by workLedger.setRunCommandBuffer once a run_command
 	// job's live output sink registers (async_tool.go, task #1023 §3):
 	// run_command has no BackgroundShellManager entry, so this is the only
@@ -140,9 +146,11 @@ type asyncJob struct {
 	outputBuf tools.LiveOutputBuffer
 }
 
-// transitionToTerminal is the ONLY writer of state past phaseRunning. Called
-// under workLedger.mu from finish/cancelSession/close/recheckChild. Returns
-// false (no-op) once the job is already terminal -- that is the CAS:
+// transitionToTerminal is the in-memory half of a terminal transition,
+// called under workLedger.mu ONLY from workLedger.transition (work_ledger_
+// transition.go) -- the single async-job writer (DUR-1) that first commits
+// the DB CAS, then adopts its committed row into memory here. Returns false
+// (no-op) once the job is already terminal -- that is the in-memory CAS:
 // whichever caller holds workLedger.mu first for this job wins; every later
 // caller for the SAME job is a no-op. Closes BL-2/#1032
 // (docs/async-invariants.md, ASYNC-03): today's cancelSession swaps the

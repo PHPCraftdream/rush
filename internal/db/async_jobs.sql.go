@@ -934,70 +934,6 @@ func (q *Queries) SettleAsyncJobsReactedFailed(ctx context.Context, arg SettleAs
 	return result.RowsAffected()
 }
 
-const transitionAsyncJobTerminal = `-- name: TransitionAsyncJobTerminal :one
-UPDATE async_jobs
-SET state = ?, notice_kind = ?, result_summary = ?, result_is_error = ?,
-    delivery = 'pending', wake = ?, updated_at = ?
-WHERE owner_session_id = ? AND tool_call_id = ? AND state = 'running'
-RETURNING owner_session_id, tool_call_id, kind, input_hash, child_session_id, origin_cli, state, notice_kind, host_id, announced, delivery, notice_message_id, wake, reacted, wake_attempts, reacted_failed, deadline_at, timeout_kind, result_summary, result_is_error, created_at, updated_at
-`
-
-type TransitionAsyncJobTerminalParams struct {
-	State          string         `json:"state"`
-	NoticeKind     string         `json:"notice_kind"`
-	ResultSummary  sql.NullString `json:"result_summary"`
-	ResultIsError  sql.NullInt64  `json:"result_is_error"`
-	Wake           int64          `json:"wake"`
-	UpdatedAt      int64          `json:"updated_at"`
-	OwnerSessionID string         `json:"owner_session_id"`
-	ToolCallID     string         `json:"tool_call_id"`
-}
-
-// The ONE transition CAS (DUR-1/DUR-2): a terminal state, its cause
-// (notice_kind), the result payload, delivery='pending', and wake are all
-// set by this single statement, scoped to state='running' so only the
-// first committer wins -- every other concurrent caller sees 0 rows
-// affected and must re-read the row (GetAsyncJob) and accept whatever
-// state is there instead of retrying the same transition.
-func (q *Queries) TransitionAsyncJobTerminal(ctx context.Context, arg TransitionAsyncJobTerminalParams) (AsyncJob, error) {
-	row := q.queryRow(ctx, q.transitionAsyncJobTerminalStmt, transitionAsyncJobTerminal,
-		arg.State,
-		arg.NoticeKind,
-		arg.ResultSummary,
-		arg.ResultIsError,
-		arg.Wake,
-		arg.UpdatedAt,
-		arg.OwnerSessionID,
-		arg.ToolCallID,
-	)
-	var i AsyncJob
-	err := row.Scan(
-		&i.OwnerSessionID,
-		&i.ToolCallID,
-		&i.Kind,
-		&i.InputHash,
-		&i.ChildSessionID,
-		&i.OriginCli,
-		&i.State,
-		&i.NoticeKind,
-		&i.HostID,
-		&i.Announced,
-		&i.Delivery,
-		&i.NoticeMessageID,
-		&i.Wake,
-		&i.Reacted,
-		&i.WakeAttempts,
-		&i.ReactedFailed,
-		&i.DeadlineAt,
-		&i.TimeoutKind,
-		&i.ResultSummary,
-		&i.ResultIsError,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-	)
-	return i, err
-}
-
 const transitionAsyncJobTerminalPreserveVoid = `-- name: TransitionAsyncJobTerminalPreserveVoid :one
 UPDATE async_jobs
 SET state = ?, notice_kind = ?, result_summary = ?, result_is_error = ?,
@@ -1018,11 +954,18 @@ type TransitionAsyncJobTerminalPreserveVoidParams struct {
 	ToolCallID     string         `json:"tool_call_id"`
 }
 
-// Rerun variant (doc sec.3.8): a terminal transition preserves an existing
-// void delivery instead of resetting it to pending -- a row already voided
-// by Rerun truncation must not be resurrected to 'pending' by a
-// late-arriving terminal transition (e.g. job_kill racing the history
-// truncation).
+// The ONE terminal-transition CAS (DUR-1/DUR-2/step-2 review): a terminal
+// state, its cause (notice_kind), the result payload, delivery, and wake
+// are all set by this single statement, scoped to state='running' so only
+// the first committer wins -- every other concurrent caller sees 0 rows
+// affected and must re-read the row (GetAsyncJob) and accept whatever
+// state is there instead of retrying the same transition. This is the
+// ONLY terminal-transition query (doc sec.3.8 is explicit the terminal
+// transition always preserves void, so the earlier non-preserving sibling
+// this replaced -- TransitionAsyncJobTerminal -- is gone, not a second,
+// parallel path): a row already voided by Rerun truncation must not be
+// resurrected to 'pending' by a late-arriving terminal transition (e.g.
+// job_kill racing the history truncation).
 func (q *Queries) TransitionAsyncJobTerminalPreserveVoid(ctx context.Context, arg TransitionAsyncJobTerminalPreserveVoidParams) (AsyncJob, error) {
 	row := q.queryRow(ctx, q.transitionAsyncJobTerminalPreserveVoidStmt, transitionAsyncJobTerminalPreserveVoid,
 		arg.State,

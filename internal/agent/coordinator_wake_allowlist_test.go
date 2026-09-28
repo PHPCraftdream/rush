@@ -106,6 +106,7 @@ func TestWakeSession_ReArmsChildRunAllowlistBeforeWaking(t *testing.T) {
 	}
 	coord := &coordinator{permissions: spy, subAgentDrivers: newSubAgentDriverRegistry()}
 	coord.asyncJobs = newWorkLedger(nil)
+	coord.asyncJobs.store = newTestAsyncJobStore(t)
 	coord.asyncJobs.coord = coord
 	coord.subAgentDrivers.register("child-1", subAgentDriver{agent: agent, parentSessionID: "parent-1"})
 
@@ -165,6 +166,7 @@ func TestAsyncTool_DoesNotClearChildAllowlistOnDelegationReturn(t *testing.T) {
 	spy := newAllowlistSpy(t)
 	coord := &coordinator{permissions: spy}
 	coord.asyncJobs = newWorkLedger(nil)
+	coord.asyncJobs.store = newTestAsyncJobStore(t)
 	coord.asyncJobs.coord = coord
 
 	const owner, childSession, callID = "owner-session", "child-session", "call-1"
