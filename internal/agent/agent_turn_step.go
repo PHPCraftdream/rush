@@ -488,12 +488,39 @@ func (ts *turnStream) recheckPeakHours() error {
 	return pErr
 }
 
-// persistStepFinish is OnStepFinish's normal-path final write.
+// persistStepFinish is OnStepFinish's normal-path final write. Doc sec.3.4
+// (DUR-4): when this step's finish carries real content (stepIsReaction),
+// the write and the reaction-debt marker (reacted=1 on every currently
+// wake=1/reacted=0/delivery='done' row of this session, across async_jobs
+// AND session_notices) happen in ONE transaction via the store -- not two
+// separate commits, and not derived from clock/created_at order. A pull
+// only ever moves a row to delivery='done' during PrepareStep, before this
+// step's own provider call, so every such row was already visible in the
+// prompt that produced THIS step's content (see async_job_reaction.go's
+// MarkReactedWithMessageUpdate doc for the argument in full) -- no separate
+// "pulled before this step began" id set needs to be captured here.
 func (ts *turnStream) persistStepFinish() error {
 	ts.mu.Lock()
 	snap := ts.currentAssistant.Clone()
 	ts.mu.Unlock()
+	if stepIsReaction(snap) && ts.a.asyncJobs != nil && ts.a.asyncJobs.store != nil {
+		return ts.a.asyncJobs.store.MarkReactedWithMessageUpdate(ts.genCtx, ts.a.messages, ts.call.SessionID, snap)
+	}
 	return ts.a.messages.Update(ts.genCtx, snap)
+}
+
+// stepIsReaction reports whether a step's persisted finish counts as a
+// reaction to any notice visible in its own prompt (doc sec.3.4): real
+// content (text, a tool call, or reasoning) with a finish that is not
+// error/canceled. An empty assistant stub, a failed step, or (by
+// construction -- compaction never reaches persistStepFinish at all, see
+// this file's own doc) a compaction summary never qualify.
+func stepIsReaction(m message.Message) bool {
+	reason := m.FinishReason()
+	if reason == message.FinishReasonError || reason == message.FinishReasonCanceled {
+		return false
+	}
+	return m.FullText() != "" || len(m.ToolCalls()) > 0 || m.ReasoningContent().Thinking != ""
 }
 
 func (ts *turnStream) stopConditions() []fantasy.StopCondition {

@@ -70,25 +70,40 @@ type AsyncCompletion struct {
 	Wake bool
 }
 
-// AsyncCompletionSource exposes session completion events to the CLI runner.
-// The runner claims its root session first; completions of every other
-// session wake that session instead of queueing where nobody reads them.
-type AsyncCompletionSource interface {
-	ClaimAsyncCompletions(string)
-	NextAsyncCompletion(context.Context, string) (AsyncCompletion, bool, error)
-	HasPendingAsyncJobs(string) bool
-}
-
 // sessionJobs is one owner's view of the ledger: jobs it still owns (present
-// == "not yet delivered"), plus its drained ready queue.
+// == "not yet delivered"), plus the phase-4 step 4 hint/policy bookkeeping
+// the in-memory ready queue used to carry (doc sec.3.4/3.5): the queue
+// itself is gone -- every non-sync completion goes through onWebDone now,
+// and a `rush run` loop re-derives its next turn from the DB debt/scope
+// predicate instead of draining a memory queue.
 type sessionJobs struct {
 	jobs    map[string]*asyncJob
-	ready   []AsyncCompletion
 	changed chan struct{}
-	// drained marks a session whose ready queue a CLI loop consumes (the
-	// root of a `rush run`). Sticky: completions arriving after that loop
-	// returned still queue instead of starting a turn in a finished run.
-	drained bool
+	// hintSeq is a monotonic counter bumped every time something about
+	// owner's reaction debt may have changed (doc sec.3.4 "у сессии --
+	// счётчик подсказок"): a committed transition/notice with wake=1, and
+	// every wakeSession call regardless of outcome. Compared, not waited on
+	// directly -- see hintSeqLocked/waitForHint.
+	hintSeq uint64
+	// noTurnDrainRelease is set the instant a Drain call ends WITHOUT a
+	// provider turn (no debt, or policy forbade one) and this mailbox
+	// release is that Drain's own -- doc sec.3.4's anti-idle-loop rule (a):
+	// the NEXT release-triggered debt re-check is skipped when the hint
+	// counter is unchanged since the Drain's own check, but every other
+	// onSessionIdle side effect (recheckChild, supervision) still runs.
+	// Consumed (read-and-cleared) by consumeNoTurnDrainRelease.
+	noTurnDrainRelease bool
+	// noTurnDrainHintSeq is hintSeq's value at the moment the no-turn Drain
+	// made its OWN debt check, so the release-time re-check can tell "hint
+	// counter unchanged since then" apart from "something hinted again in
+	// between" (doc sec.3.4 rule (a)).
+	noTurnDrainHintSeq uint64
+	// externalDriver marks a session whose turns are driven by an external
+	// loop (the CLI root of a live `rush run` process, doc sec.3.4 "session
+	// with an external driver"): wakeSession must send it only a hint, never
+	// submit a Drain turn -- the loop re-evaluates its own scope/debt from
+	// the DB. Claimed/released by the loop itself (app_run_async.go).
+	externalDriver bool
 }
 
 // workLedger is the single owner of in-memory work state: plain async jobs
@@ -284,18 +299,6 @@ func (l *workLedger) Start(owner, toolCallID, input, toolName, childSession stri
 	return job, false, nil
 }
 
-// markDrained records that a CLI loop consumes owner's ready queue. CLI
-// completions of any other session wake that session through the callback
-// instead, like web-origin ones: nobody drains its queue.
-func (l *workLedger) markDrained(owner string) {
-	if owner == "" {
-		return
-	}
-	l.mu.Lock()
-	l.sessionLocked(owner).drained = true
-	l.mu.Unlock()
-}
-
 // deliverLocked delivers job if it is still present in bySession[owner].jobs
 // (i.e. not already delivered by a concurrent winner of the state race),
 // terminal, and announced. It is safe to call unconditionally after ANY
@@ -305,9 +308,13 @@ func (l *workLedger) markDrained(owner string) {
 // both under the same lock hold, so a reader here never sees a torn mix of
 // two different outcomes' fields).
 //
-// Routing (ready queue vs onWebDone) is byte-for-byte the same condition as
-// today's queuesLocked (async_job_registry.go): job.cli && (s.drained ||
-// onWebDone == nil).
+// Phase-4 step 4 (doc sec.3.4/3.5): the in-memory ready queue is gone --
+// every non-sync completion, CLI-origin or web, now routes through
+// onWebDone (notifyAsyncCompletion), which persists the wake hint and lets
+// wakeSession decide turn vs. hint-only by session policy (an external-
+// driver session, i.e. a live `rush run` loop's own root, gets a hint only).
+// A ledger with no onWebDone wired (isolated tests) simply drops the
+// completion, same as before for that degenerate case.
 //
 // Caller must hold l.mu, and must invoke the returned callback (if any)
 // AFTER releasing it.
@@ -355,13 +362,9 @@ func (l *workLedger) deliverLocked(owner string, job *asyncJob) (AsyncCompletion
 		// supervision timer (if any) is dropped -- see supervision.go.
 		l.clearSupervisionIfPresent(owner)
 	}
-	queued := job.cli && (s.drained || l.onWebDone == nil)
-	if queued {
-		s.ready = append(s.ready, completion)
-	}
 	signalWorkSession(s)
 	completion.cli = job.cli
-	return completion, !queued && l.onWebDone != nil
+	return completion, l.onWebDone != nil
 }
 
 // acknowledged is the ack-gate: marks that the "started" tool result for
@@ -723,48 +726,12 @@ func phaseFor(result jobResult) jobPhase {
 	return phaseCompleted
 }
 
-func (l *workLedger) next(ctx context.Context, sessionID string) (AsyncCompletion, bool, error) {
-	for {
-		l.mu.Lock()
-		s := l.bySession[sessionID]
-		if s == nil {
-			l.mu.Unlock()
-			return AsyncCompletion{}, false, nil
-		}
-		if len(s.ready) > 0 {
-			completion := s.ready[0]
-			s.ready[0] = AsyncCompletion{}
-			s.ready = s.ready[1:]
-			l.mu.Unlock()
-			return completion, true, nil
-		}
-		if len(s.jobs) == 0 {
-			l.mu.Unlock()
-			return AsyncCompletion{}, false, nil
-		}
-		changed := s.changed
-		l.mu.Unlock()
-		select {
-		case <-ctx.Done():
-			return AsyncCompletion{}, false, ctx.Err()
-		case <-changed:
-		}
-	}
-}
-
-func (l *workLedger) pending(sessionID string) bool {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	s := l.bySession[sessionID]
-	return s != nil && (len(s.jobs) > 0 || len(s.ready) > 0)
-}
-
 // running reports whether sessionID still has a job that has NOT reached
 // delivery, i.e. one still present in the jobs map (running OR terminal but
-// not yet announced/delivered). Deliberately NOT pending(): a ready-queue
-// entry is already-delivered work waiting to be drained by the CLI root
-// loop, and nobody drains a child session's queue, so counting it would make
-// a child look like it owns live work forever.
+// not yet announced/delivered). Phase-4 step 4 deleted the separate
+// ready-queue/pending() concept entirely (doc sec.3.5) -- every non-sync
+// completion routes through onWebDone now, so this in-memory map is the
+// only "does owner still own live work" signal left at this layer.
 func (l *workLedger) running(sessionID string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
