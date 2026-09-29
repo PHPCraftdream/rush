@@ -194,15 +194,19 @@ const (
 // already be tearing down. Either way commitSkipped leaves the row exactly
 // as the last successful commit (or lack thereof) left it -- a FIRST
 // attempt that succeeds is always written, even if it races close().
-func (l *workLedger) commitTransition(owner, toolCallID string, cause transitionCause, result jobResult) commitOutcome {
-	l.mu.Lock()
-	s := l.bySession[owner]
-	if s == nil {
-		l.mu.Unlock()
+//
+// job is the caller's own *asyncJob, not a key (A11's in-process half): a
+// job that is no longer the ledger's entry for its key -- dropped by an
+// ack-abort, possibly replaced by a fresh claim of the same id -- is skipped
+// here, so a stale executor can never commit onto its successor.
+func (l *workLedger) commitTransition(job *asyncJob, cause transitionCause, result jobResult) commitOutcome {
+	if job == nil {
 		return commitSkipped
 	}
-	job := s.jobs[toolCallID]
-	if job == nil || job.sync || job.state.terminal() || job.transitioning {
+	owner, toolCallID := job.owner, job.toolCallID
+	l.mu.Lock()
+	s := l.bySession[owner]
+	if s == nil || s.jobs[toolCallID] != job || job.sync || job.state.terminal() || job.transitioning {
 		// Already terminal, a sync job (never DB-backed), or another
 		// goroutine's transition is already in flight for this SAME job
 		// (doc sec.3.1's "защёлка «переход идёт» ... пропускают, не ждут"):
@@ -280,27 +284,13 @@ func (l *workLedger) commitTransition(owner, toolCallID string, cause transition
 		// the owner for a job that is actually still legitimately running
 		// under the fresh claim. Drop from OUR map exactly like a gone row;
 		// the fresh claim's own executor owns whatever happens to it next.
-		delete(s.jobs, toolCallID)
-		if job.childSession != "" {
-			l.gcChildLocked(job.childSession)
-		}
-		if len(s.jobs) == 0 {
-			l.clearSupervisionIfPresent(owner)
-		}
-		signalWorkSession(s)
+		l.dropLocked(job)
 		l.mu.Unlock()
 		return commitGone
 	}
 	switch outcome.Outcome {
 	case session.TransitionGone:
-		delete(s.jobs, toolCallID)
-		if job.childSession != "" {
-			l.gcChildLocked(job.childSession)
-		}
-		if len(s.jobs) == 0 {
-			l.clearSupervisionIfPresent(owner)
-		}
-		signalWorkSession(s)
+		l.dropLocked(job)
 		l.mu.Unlock()
 		return commitGone
 	case session.TransitionWon, session.TransitionLost:
@@ -343,23 +333,18 @@ type jobOutcomeSnapshot struct {
 // job's post-commit state/result so a caller that needs the COMMITTED
 // outcome to build its own answer (B11) doesn't have to duplicate this
 // delivery logic or assume its own cause was the one that actually won.
-func (l *workLedger) commitAndDeliver(owner, toolCallID string, cause transitionCause, result jobResult) (commitOutcome, jobOutcomeSnapshot) {
-	outcome := l.commitTransition(owner, toolCallID, cause, result)
+func (l *workLedger) commitAndDeliver(job *asyncJob, cause transitionCause, result jobResult) (commitOutcome, jobOutcomeSnapshot) {
+	outcome := l.commitTransition(job, cause, result)
 	var snap jobOutcomeSnapshot
 	switch outcome {
 	case commitWon, commitLost:
 		l.mu.Lock()
-		s := l.bySession[owner]
-		var job *asyncJob
-		if s != nil {
-			job = s.jobs[toolCallID]
-		}
-		if job == nil {
+		if !l.currentLocked(job) {
 			l.mu.Unlock()
 			return outcome, snap
 		}
 		snap = jobOutcomeSnapshot{found: true, state: job.state, result: job.result}
-		completion, callback := l.deliverLocked(owner, job)
+		completion, callback := l.deliverLocked(job.owner, job)
 		l.mu.Unlock()
 		if callback {
 			l.onWebDone(completion)
@@ -375,8 +360,8 @@ func (l *workLedger) commitAndDeliver(owner, toolCallID string, cause transition
 // call commitAndDeliver directly instead, since B11 requires their tool
 // answer to reflect the COMMITTED outcome rather than assume causeJobKill
 // won.
-func (l *workLedger) transition(owner, toolCallID string, cause transitionCause, result jobResult) {
-	l.commitAndDeliver(owner, toolCallID, cause, result)
+func (l *workLedger) transition(job *asyncJob, cause transitionCause, result jobResult) {
+	l.commitAndDeliver(job, cause, result)
 }
 
 // transitionSyncStopped is the sync-job counterpart of the job_kill/
@@ -387,18 +372,14 @@ func (l *workLedger) transition(owner, toolCallID string, cause transitionCause,
 // transitionToTerminal + deliverLocked, the same pair cancelSession's own
 // sync-delegation branch uses -- so a caller blocked in awaitSync gets the
 // contract's Stopped/partial-content wording instead of silently losing it.
-func (l *workLedger) transitionSyncStopped(owner, toolCallID string, partial jobResult) {
+func (l *workLedger) transitionSyncStopped(job *asyncJob, partial jobResult) {
 	l.mu.Lock()
-	var job *asyncJob
-	if s := l.bySession[owner]; s != nil {
-		job = s.jobs[toolCallID]
-	}
-	if job == nil || job.state.terminal() {
+	if !l.currentLocked(job) || job.state.terminal() {
 		l.mu.Unlock()
 		return
 	}
 	job.transitionToTerminal(phaseCancelled, partial)
-	completion, callback := l.deliverLocked(owner, job)
+	completion, callback := l.deliverLocked(job.owner, job)
 	l.mu.Unlock()
 	if callback {
 		l.onWebDone(completion)

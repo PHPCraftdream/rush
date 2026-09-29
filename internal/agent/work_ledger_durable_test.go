@@ -118,7 +118,7 @@ func TestWorkLedger_TransitionRetriesUnderBusyDBThenCommits(t *testing.T) {
 	time.Sleep(30 * time.Millisecond) // let the holder actually acquire the write lock first
 
 	start := time.Now()
-	l.finish("owner-1", "call-1", jobResult{content: "ok"})
+	l.finish(jobOf(l, "owner-1", "call-1"), jobResult{content: "ok"})
 	elapsed := time.Since(start)
 	<-busyDone
 
@@ -168,12 +168,12 @@ func TestWorkLedger_InFlightLatchSkipsSecondTriggerWithoutBlocking(t *testing.T)
 	firstDone := make(chan struct{})
 	go func() {
 		defer close(firstDone)
-		l.finish("owner-1", "call-1", jobResult{content: "first"})
+		l.finish(jobOf(l, "owner-1", "call-1"), jobResult{content: "first"})
 	}()
 	time.Sleep(30 * time.Millisecond) // let the first call actually start retrying
 
 	secondStart := time.Now()
-	l.transition("owner-1", "call-1", causeJobKill, jobResult{content: "second"})
+	l.transition(jobOf(l, "owner-1", "call-1"), causeJobKill, jobResult{content: "second"})
 	secondElapsed := time.Since(secondStart)
 
 	<-firstDone
@@ -248,7 +248,7 @@ func TestWorkLedger_TerminalCausesRecordOwnStateNoticeKindAndWake(t *testing.T) 
 			// The executor's later, ordinary finish() call must be a no-op:
 			// the job is already terminal, so it must not overwrite the
 			// recorded cause (state/notice_kind/updated_at unchanged).
-			l.finish("owner-1", "call-1", jobResult{content: "whatever the killed process returned", isError: true})
+			l.finish(jobOf(l, "owner-1", "call-1"), jobResult{content: "whatever the killed process returned", isError: true})
 			row2, err := store.Get(context.Background(), "owner-1", "call-1")
 			require.NoError(t, err)
 			require.Equal(t, tc.wantState, row2.State)
@@ -286,7 +286,7 @@ func TestWorkLedger_ShutdownCausedCancellationLeavesRowRunningWritesNoNotice(t *
 	// Simulate the executor's own delayed completion arriving AFTER
 	// shutdown flagged this job (asyncTool.run's finalize, running on its
 	// own goroutine, calling finish once ctx.Done() unwinds it).
-	l.finish("owner-1", "call-1", jobResult{content: "context canceled", isError: true})
+	l.finish(jobOf(l, "owner-1", "call-1"), jobResult{content: "context canceled", isError: true})
 
 	select {
 	case c := <-delivered:
@@ -313,7 +313,7 @@ func TestWorkLedger_NaturalCompletionBeforeCloseIsNotSuppressed(t *testing.T) {
 	require.NoError(t, err)
 	l.acknowledged("owner-1", "call-1")
 
-	l.finish("owner-1", "call-1", jobResult{content: "done"})
+	l.finish(jobOf(l, "owner-1", "call-1"), jobResult{content: "done"})
 	got := drainCompletions(delivered)
 	require.Len(t, got, 1)
 	require.Equal(t, "done", got[0].Content)
@@ -379,7 +379,7 @@ func TestWorkLedger_StartSyncJobWorksWithoutStore(t *testing.T) {
 	require.False(t, existing)
 	require.NotNil(t, job)
 
-	l.finish("owner-1", "call-1", jobResult{content: "ok"})
+	l.finish(jobOf(l, "owner-1", "call-1"), jobResult{content: "ok"})
 	res, err := l.awaitSync(context.Background(), job)
 	require.NoError(t, err)
 	require.Equal(t, "ok", res.content)

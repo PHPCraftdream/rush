@@ -180,7 +180,7 @@ func TestAsyncTool_DoesNotClearChildAllowlistOnDelegationReturn(t *testing.T) {
 		name:        AgentToolName,
 	}
 	ctx := WithCallOrigin(t.Context(), message.OriginWeb)
-	wrapped.run(ctx, func() {}, owner, childSession, fantasy.ToolCall{
+	wrapped.run(ctx, func() {}, jobOf(coord.asyncJobs, owner, callID), owner, childSession, fantasy.ToolCall{
 		ID: callID, Name: AgentToolName, Input: `{}`,
 	}, false)
 

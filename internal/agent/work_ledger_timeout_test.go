@@ -330,7 +330,7 @@ func TestWorkLedger_TimeoutRaceAgainstFinishYieldsOneOutcome(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			l.finish("owner", "call", jobResult{content: "ok"})
+			l.finish(jobOf(l, "owner", "call"), jobResult{content: "ok"})
 		}()
 		go func() {
 			defer wg.Done()

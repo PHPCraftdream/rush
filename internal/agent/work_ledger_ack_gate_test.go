@@ -194,7 +194,7 @@ func TestWorkLedger_AckGate_FastJobFinishingBeforeAckDeliversExactlyOnceAtAck(t 
 	// The job finishes naturally BEFORE its own "started" result is ever
 	// announced -- deliverLocked's `!job.announced` guard must withhold
 	// delivery here.
-	l.finish("owner-1", "call-1", jobResult{content: "done"})
+	l.finish(jobOf(l, "owner-1", "call-1"), jobResult{content: "done"})
 	require.Empty(t, drainCompletions(delivered), "must not deliver before the started result is announced")
 	require.True(t, l.running("owner-1"), "the terminal-but-unannounced job must still be present")
 

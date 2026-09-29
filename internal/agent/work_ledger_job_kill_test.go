@@ -82,7 +82,7 @@ func TestWorkLedger_MarkJobStopped_BashProducesDistinctCancelledOutcome(t *testi
 	// caller always calls it after killing the process), but it is now a
 	// no-op: the job is already terminal from MarkJobStopped's own
 	// transition, so this must NOT change the recorded outcome.
-	l.finish("owner", "call", jobResult{content: "killed: exit status 1", isError: true})
+	l.finish(jobOf(l, "owner", "call"), jobResult{content: "killed: exit status 1", isError: true})
 
 	got := drainCompletions(delivered)
 	require.Len(t, got, 1)
@@ -120,14 +120,14 @@ func TestWorkLedger_MarkJobStopped_RunCommandUsesLiveBufferForPartialOutput(t *t
 
 	buf := &fakeLiveOutputBuffer{}
 	buf.write("line 1\nline 2\n")
-	l.setRunCommandBuffer("owner", "call", buf)
+	l.setRunCommandBuffer(jobOf(l, "owner", "call"), buf)
 
 	_, stopErr := l.StopRunCommandJob("owner", "call")
 	require.NoError(t, stopErr)
 	// Simulates run_command.go's own ctx-cancellation branch, which discards
 	// its own partial buffer content and returns a bare error (see
 	// run_command.go's `case ctx.Err() == context.Canceled`).
-	l.finish("owner", "call", jobResult{content: "context canceled", isError: true})
+	l.finish(jobOf(l, "owner", "call"), jobResult{content: "context canceled", isError: true})
 
 	got := drainCompletions(delivered)
 	require.Len(t, got, 1)
@@ -179,7 +179,7 @@ func TestWorkLedger_JobKillRaceAgainstFinishYieldsOneOutcome(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			l.finish("owner", "call", jobResult{content: "ok"})
+			l.finish(jobOf(l, "owner", "call"), jobResult{content: "ok"})
 		}()
 		close(start)
 		wg.Wait()
@@ -252,7 +252,7 @@ func TestWorkLedger_RunCommandOutput_CursorSemantics(t *testing.T) {
 
 	buf := &fakeLiveOutputBuffer{}
 	buf.write("hello ")
-	l.setRunCommandBuffer("owner", "call", buf)
+	l.setRunCommandBuffer(jobOf(l, "owner", "call"), buf)
 
 	data, done, next, err := l.RunCommandOutput("owner", "call", 0)
 	require.NoError(t, err)
@@ -275,7 +275,7 @@ func TestWorkLedger_RunCommandOutput_CursorSemantics(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "hello world", data)
 
-	l.finish("owner", "call", jobResult{content: "hello world"})
+	l.finish(jobOf(l, "owner", "call"), jobResult{content: "hello world"})
 	// Terminal but not yet delivered would show done=true; here finish's own
 	// deliverLocked already removed the job (task #1023 item 5's retention
 	// bound), so a subsequent call correctly reports not-found.

@@ -30,7 +30,7 @@ func TestWorkLedger_MarkJobStopped_AlreadyTerminalAnswersFromCommittedRow(t *tes
 	_, _, err := l.Start("owner", "call", "", "bash", "", false, false, nil, func() { cancelled = true })
 	require.NoError(t, err)
 	// No l.acknowledged: the terminal job stays in the map, undelivered.
-	l.finish("owner", "call", jobResult{content: "real committed output"})
+	l.finish(jobOf(l, "owner", "call"), jobResult{content: "real committed output"})
 
 	text, verdict := l.MarkJobStopped("owner", "call")
 	require.Equal(t, tools.JobStopAlreadyTerminal, verdict)
@@ -68,8 +68,8 @@ func TestJobKillTool_RealLedger_LostRaceNeverKillsTheShell(t *testing.T) {
 	l.store = newTestAsyncJobStore(t)
 	_, _, err = l.Start("owner", "call", "", "bash", "", false, false, nil, func() {})
 	require.NoError(t, err)
-	l.setShellID("owner", "call", bgShell.ID)
-	l.finish("owner", "call", jobResult{content: "finished on its own"}) // terminal, still in the map (unannounced)
+	l.setShellID(jobOf(l, "owner", "call"), bgShell.ID)
+	l.finish(jobOf(l, "owner", "call"), jobResult{content: "finished on its own"}) // terminal, still in the map (unannounced)
 
 	tool := tools.NewJobKillTool(l, l, bgManager)
 	input, err := json.Marshal(tools.JobKillParams{JobID: "call"})

@@ -58,7 +58,7 @@ func TestWorkLedger_RetryLoopStopsAfterClose(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		l.finish("owner-1", "call-1", jobResult{content: "ok"})
+		l.finish(jobOf(l, "owner-1", "call-1"), jobResult{content: "ok"})
 	}()
 
 	// Let several failed attempts accumulate (10+20+40+80ms ~= 150ms) so the
@@ -122,7 +122,7 @@ func TestWorkLedger_CancelSessionRaceAgainstNaturalFinishNeverWakes(t *testing.T
 		go func() {
 			defer wg.Done()
 			<-start
-			l.finish("owner", "call", jobResult{content: "ok"})
+			l.finish(jobOf(l, "owner", "call"), jobResult{content: "ok"})
 		}()
 		go func() {
 			defer wg.Done()
@@ -190,7 +190,7 @@ func TestWorkLedger_StopRunCommandJob_SyncJobPreservesStoppedOutcome(t *testing.
 	job, existing, err := l.Start("owner", "call", "", "run_command", "", false, true, nil, func() {})
 	require.NoError(t, err)
 	require.False(t, existing)
-	l.setRunCommandBuffer("owner", "call", buf)
+	l.setRunCommandBuffer(jobOf(l, "owner", "call"), buf)
 
 	_, stopErr := l.StopRunCommandJob("owner", "call")
 	require.NoError(t, stopErr)
@@ -303,7 +303,7 @@ func TestWorkLedger_CloseDoesNotLatchOntoExecutorReturnedJob(t *testing.T) {
 
 	// The natural finish's own (unrelated-to-shutdown) transition call now
 	// proceeds -- must still commit the real result.
-	l.transition("owner", "call", causeNaturalFinish, jobResult{content: "real output"})
+	l.transition(jobOf(l, "owner", "call"), causeNaturalFinish, jobResult{content: "real output"})
 
 	got := drainCompletions(delivered)
 	require.Len(t, got, 1, "a natural completion racing close() must still be delivered, not silently dropped")

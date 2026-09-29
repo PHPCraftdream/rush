@@ -183,7 +183,7 @@ func (l *workLedger) handleTimeout(job *asyncJob) {
 		// established snapshot-then-refresh-then-relock pattern.
 		partial := l.capturePartial(owner, toolCallID, toolName, childSession, shellID, outputBuf)
 
-		l.transition(owner, toolCallID, causeTimeoutTerminated, partial)
+		l.transition(job, causeTimeoutTerminated, partial)
 		if cancel != nil {
 			cancel() // best-effort: ask the executor to stop, now that the cause is durably recorded
 		}

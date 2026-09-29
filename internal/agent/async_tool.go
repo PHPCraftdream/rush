@@ -112,7 +112,7 @@ func (t *asyncTool) Run(ctx context.Context, call fantasy.ToolCall) (fantasy.Too
 func (t *asyncTool) launchExecutor(ctx, jobCtx context.Context, cancel context.CancelFunc, sessionID, childSessionID string, call fantasy.ToolCall, sync bool, job *asyncJob) (resp fantasy.ToolResponse, err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			t.finalize(ctx, sessionID, childSessionID, AsyncCompletion{
+			t.finalize(job, childSessionID, AsyncCompletion{
 				SessionID: sessionID, ToolCallID: call.ID, ToolName: t.name,
 				IsError: true, Content: fmt.Sprintf("async %s failed to start: %v", t.name, recovered),
 			})
@@ -144,7 +144,7 @@ func (t *asyncTool) launchExecutor(ctx, jobCtx context.Context, cancel context.C
 		// supervision is disabled -- see noteWorkStarted's own doc.
 		t.coordinator.asyncJobs.noteWorkStarted(ctx, sessionID)
 	}
-	go t.run(jobCtx, cancel, sessionID, childSessionID, call, sync)
+	go t.run(jobCtx, cancel, job, sessionID, childSessionID, call, sync)
 	if sync {
 		return t.awaitAndFinish(ctx, job)
 	}
@@ -199,7 +199,7 @@ func (t *asyncTool) childSessionID(ctx context.Context, parentID string, call fa
 	return t.coordinator.sessions.CreateAgentToolSessionID(messageID, call.ID), nil
 }
 
-func (t *asyncTool) run(ctx context.Context, cancel context.CancelFunc, sessionID, childSessionID string, call fantasy.ToolCall, sync bool) {
+func (t *asyncTool) run(ctx context.Context, cancel context.CancelFunc, job *asyncJob, sessionID, childSessionID string, call fantasy.ToolCall, sync bool) {
 	defer cancel()
 	// No `defer ClearSessionRunAllowlist` here (phase 2, §6.2): the child
 	// may still own async jobs/background shells after this turn returns
@@ -213,7 +213,7 @@ func (t *asyncTool) run(ctx context.Context, cancel context.CancelFunc, sessionI
 			completion.IsError = true
 			completion.Content = fmt.Sprintf("async %s panicked: %v", t.name, recovered)
 		}
-		t.finalize(ctx, sessionID, childSessionID, completion)
+		t.finalize(job, childSessionID, completion)
 	}()
 	if t.name == tools.BashToolName && !sync {
 		// Unchanged for CLI/web: forcing run_in_background is what lets
@@ -242,7 +242,7 @@ func (t *asyncTool) run(ctx context.Context, cancel context.CancelFunc, sessionI
 		// can read progressive output and job_kill's stopped notice can
 		// quote it while the job is still running.
 		ctx = tools.WithLiveOutputSink(ctx, func(buf tools.LiveOutputBuffer) {
-			t.coordinator.asyncJobs.setRunCommandBuffer(sessionID, call.ID, buf)
+			t.coordinator.asyncJobs.setRunCommandBuffer(job, buf)
 		})
 	}
 	response, err := t.inner.Run(ctx, call)
@@ -255,7 +255,7 @@ func (t *asyncTool) run(ctx context.Context, cancel context.CancelFunc, sessionI
 	completion.Content = response.Content
 	completion.Metadata = response.Metadata
 	if t.name == tools.BashToolName && !sync {
-		t.awaitShell(ctx, sessionID, response, &completion)
+		t.awaitShell(ctx, job, sessionID, response, &completion)
 	}
 	completion.Content = tools.TruncateOutput(strings.TrimSpace(completion.Content))
 }
@@ -271,19 +271,23 @@ func (t *asyncTool) run(ctx context.Context, cancel context.CancelFunc, sessionI
 // Every other tool — bash, run_command — has no child session and no
 // self-directed follow-on work, so its completion is finished immediately,
 // exactly as before.
-func (t *asyncTool) finalize(_ context.Context, _, childSessionID string, completion AsyncCompletion) {
+//
+// job is the executor's own ledger entry (A11): the completion is reported
+// for THAT job only, never for whatever job the key names by the time the
+// executor returns.
+func (t *asyncTool) finalize(job *asyncJob, childSessionID string, completion AsyncCompletion) {
 	if t.coordinator == nil || t.coordinator.asyncJobs == nil {
 		return
 	}
 	result := jobResult{content: completion.Content, isError: completion.IsError, metadata: completion.Metadata}
 	if childSessionID != "" && (t.name == AgentToolName || t.name == tools.AgenticFetchToolName) {
-		t.coordinator.asyncJobs.armDelegation(completion.SessionID, completion.ToolCallID, result)
+		t.coordinator.asyncJobs.armDelegation(job, result)
 		return
 	}
-	t.coordinator.asyncJobs.finish(completion.SessionID, completion.ToolCallID, result)
+	t.coordinator.asyncJobs.finish(job, result)
 }
 
-func (t *asyncTool) awaitShell(ctx context.Context, sessionID string, response fantasy.ToolResponse, completion *AsyncCompletion) {
+func (t *asyncTool) awaitShell(ctx context.Context, job *asyncJob, sessionID string, response fantasy.ToolResponse, completion *AsyncCompletion) {
 	var metadata tools.BashResponseMetadata
 	if json.Unmarshal([]byte(response.Metadata), &metadata) != nil || metadata.ShellID == "" {
 		return
@@ -292,7 +296,7 @@ func (t *asyncTool) awaitShell(ctx context.Context, sessionID string, response f
 	// so job_kill/job_output can resolve the job id the model saw to it.
 	// Before this the shell id stayed inside this goroutine until the job
 	// was already terminal, making both tools unusable for a live job.
-	t.coordinator.asyncJobs.setShellID(sessionID, completion.ToolCallID, metadata.ShellID)
+	t.coordinator.asyncJobs.setShellID(job, metadata.ShellID)
 	manager := t.coordinator.background
 	if manager == nil {
 		completion.IsError = true

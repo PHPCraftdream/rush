@@ -26,7 +26,7 @@ func TestWorkLedger_ResolveJobShellID_OwnedJobResolves(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "still starting")
 
-	l.setShellID("session-a", "call-1", "003")
+	l.setShellID(jobOf(l, "session-a", "call-1"), "003")
 	got, err := l.ResolveJobShellID("session-a", "call-1")
 	require.NoError(t, err)
 	require.Equal(t, "003", got)
@@ -41,7 +41,7 @@ func TestWorkLedger_ResolveJobShellID_ForeignSessionNotFound(t *testing.T) {
 	l.store = newTestAsyncJobStore(t)
 	_, _, err := l.Start("session-a", "call-1", "", tools.BashToolName, "", true, false, nil, nil)
 	require.NoError(t, err)
-	l.setShellID("session-a", "call-1", "003")
+	l.setShellID(jobOf(l, "session-a", "call-1"), "003")
 
 	_, err = l.ResolveJobShellID("session-b", "call-1")
 	require.Error(t, err)
@@ -99,7 +99,7 @@ func TestWorkLedger_ResolveJobShellID_NilLedgerIsSafe(t *testing.T) {
 	var l *workLedger
 	_, err := l.ResolveJobShellID("session-a", "call-1")
 	require.Error(t, err)
-	l.setShellID("session-a", "call-1", "003") // must not panic
+	l.setShellID(jobOf(l, "session-a", "call-1"), "003") // must not panic
 }
 
 // TestWorkLedger_SetShellID_UnknownJobIsNoOp: recording a shell id for a job
@@ -108,7 +108,7 @@ func TestWorkLedger_SetShellID_UnknownJobIsNoOp(t *testing.T) {
 	t.Parallel()
 	l := newWorkLedger(nil)
 	l.store = newTestAsyncJobStore(t)
-	l.setShellID("session-a", "does-not-exist", "003")
+	l.setShellID(jobOf(l, "session-a", "does-not-exist"), "003")
 	_, err := l.ResolveJobShellID("session-a", "does-not-exist")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "not found")

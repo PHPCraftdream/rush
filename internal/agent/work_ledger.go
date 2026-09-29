@@ -196,6 +196,35 @@ func (l *workLedger) sessionLocked(owner string) *sessionJobs {
 	return s
 }
 
+// currentLocked reports whether job is still the ledger's entry for its
+// (owner, toolCallID) key. An executor holds its own *asyncJob for life; the
+// key may since have been dropped and re-claimed by a repeated call (A11's
+// in-process half), so every executor-side write goes through this identity
+// check instead of resolving the job by key. Caller must hold l.mu.
+func (l *workLedger) currentLocked(job *asyncJob) bool {
+	s := l.bySession[job.owner]
+	return s != nil && s.jobs[job.toolCallID] == job
+}
+
+// dropLocked retires job and removes it from its owner's map, but only while
+// job is still the entry for its key. A dropped job left phaseRunning would
+// keep its byChild slot forever (gcChildLocked keeps running entries), so a
+// delegation whose row is gone would be re-checked every pass and keep
+// reporting its parent as parked. Caller must hold l.mu.
+func (l *workLedger) dropLocked(job *asyncJob) {
+	job.transitionToTerminal(phaseCancelled, jobResult{})
+	if s := l.bySession[job.owner]; s != nil && s.jobs[job.toolCallID] == job {
+		delete(s.jobs, job.toolCallID)
+		if len(s.jobs) == 0 {
+			l.clearSupervisionIfPresent(job.owner)
+		}
+		signalWorkSession(s)
+	}
+	if job.childSession != "" {
+		l.gcChildLocked(job.childSession)
+	}
+}
+
 func signalWorkSession(s *sessionJobs) {
 	select {
 	case s.changed <- struct{}{}:
@@ -552,17 +581,13 @@ func (l *workLedger) awaitSync(ctx context.Context, job *asyncJob) (jobResult, e
 // command whose completion raced this call) -- there is nothing left to
 // annotate. Task #1053: this is what makes ResolveJobShellID possible while
 // the job is still running.
-func (l *workLedger) setShellID(owner, toolCallID, shellID string) {
-	if l == nil {
+func (l *workLedger) setShellID(job *asyncJob, shellID string) {
+	if l == nil || job == nil {
 		return
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	s := l.bySession[owner]
-	if s == nil {
-		return
-	}
-	if job := s.jobs[toolCallID]; job != nil {
+	if l.currentLocked(job) {
 		job.shellID = shellID
 	}
 }
@@ -705,13 +730,13 @@ func (l *workLedger) MarkJobStopped(owner, toolCallID string) (text string, verd
 		// own transitionSyncStopped has no CAS to lose (in-memory only,
 		// guarded by the SAME top check above under the SAME lock it never
 		// releases in between) -- B11's race does not apply to it.
-		l.transitionSyncStopped(owner, toolCallID, partial)
+		l.transitionSyncStopped(job, partial)
 		return FormatAsyncCompletion(AsyncCompletion{
 			ToolCallID: toolCallID, ToolName: toolName,
 			Content: partial.content, IsError: partial.isError, Stopped: true,
 		}), tools.JobStopStopped
 	}
-	outcome, snap := l.commitAndDeliver(owner, toolCallID, causeJobKill, partial)
+	outcome, snap := l.commitAndDeliver(job, causeJobKill, partial)
 	if outcome != commitWon {
 		if !snap.found {
 			return "", tools.JobStopNotFound
@@ -728,17 +753,13 @@ func (l *workLedger) MarkJobStopped(owner, toolCallID string) (text string, verd
 // as run_command.go's process starts (async_tool.go's context sink, task
 // #1023 §3). No-op if the job already finished/was removed -- mirrors
 // setShellID's own doc.
-func (l *workLedger) setRunCommandBuffer(owner, toolCallID string, buf tools.LiveOutputBuffer) {
-	if l == nil {
+func (l *workLedger) setRunCommandBuffer(job *asyncJob, buf tools.LiveOutputBuffer) {
+	if l == nil || job == nil {
 		return
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	s := l.bySession[owner]
-	if s == nil {
-		return
-	}
-	if job := s.jobs[toolCallID]; job != nil {
+	if l.currentLocked(job) {
 		job.outputBuf = buf
 	}
 }
@@ -823,7 +844,7 @@ func (l *workLedger) StopRunCommandJob(owner, jobID string) (text string, err er
 	if sync {
 		// Review finding P2: same sync/memory-only path as MarkJobStopped --
 		// no CAS to lose (B11 does not apply to a sync job).
-		l.transitionSyncStopped(owner, jobID, result)
+		l.transitionSyncStopped(job, result)
 		if cancel != nil {
 			cancel()
 		}
@@ -832,7 +853,7 @@ func (l *workLedger) StopRunCommandJob(owner, jobID string) (text string, err er
 			Content: result.content, IsError: result.isError, Stopped: true,
 		}), nil
 	}
-	outcome, snap := l.commitAndDeliver(owner, jobID, causeJobKill, result)
+	outcome, snap := l.commitAndDeliver(job, causeJobKill, result)
 	if cancel != nil {
 		cancel() // triggers run_command's cmd.Cancel tree-kill (configureRunCommandProcess); harmless no-op if the process already exited via another cause
 	}
@@ -861,15 +882,19 @@ func (l *workLedger) StopRunCommandJob(owner, jobID string) (text string, err er
 // call arrives for a job_kill'd job, the job is already terminal and
 // l.transition below is a no-op (ASYNC-03's CAS skip), never overwriting
 // the recorded cause with the killed process's own exit content.
-func (l *workLedger) finish(owner, toolCallID string, result jobResult) {
-	l.mu.Lock()
-	s := l.bySession[owner]
-	if s == nil {
-		l.mu.Unlock()
+//
+// A11 (in-process half): the executor passes its OWN job, never a key. An
+// ack-abort deletes the row and drops the job, and a repeated call with the
+// same id may then start a fresh job under the same key; the first executor's
+// late result must not be committed onto it, so a job that is no longer the
+// key's entry is ignored here.
+func (l *workLedger) finish(job *asyncJob, result jobResult) {
+	if job == nil {
 		return
 	}
-	job := s.jobs[toolCallID]
-	if job == nil {
+	owner := job.owner
+	l.mu.Lock()
+	if !l.currentLocked(job) {
 		l.mu.Unlock()
 		return
 	}
@@ -890,7 +915,7 @@ func (l *workLedger) finish(owner, toolCallID string, result jobResult) {
 		return
 	}
 	l.mu.Unlock()
-	l.transition(owner, toolCallID, causeNaturalFinish, result)
+	l.transition(job, causeNaturalFinish, result)
 }
 
 // phaseFor maps a sync job's raw result to its terminal jobPhase. Sync jobs

@@ -374,7 +374,7 @@ func TestWebAsyncJob_EndToEnd_OneNoticeOneTurn(t *testing.T) {
 	_, _, err = ledger.Start(sess.ID, "call-1", "{}", "bash", "", false, false, nil, func() {})
 	require.NoError(t, err)
 	ledger.acknowledged(sess.ID, "call-1")
-	ledger.finish(sess.ID, "call-1", jobResult{content: "job output"})
+	ledger.finish(jobOf(ledger, sess.ID, "call-1"), jobResult{content: "job output"})
 
 	require.Eventually(t, func() bool {
 		mu.Lock()

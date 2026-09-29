@@ -54,15 +54,14 @@ const subAgentOutcomeCancelledText = "sub-agent canceled"
 // Synchronously tries the immediate release path (trigger (i), formerly a
 // separate tryRelease call after park): recheckChild is called once armed,
 // after releasing l.mu.
-func (l *workLedger) armDelegation(owner, toolCallID string, captured jobResult) {
-	l.mu.Lock()
-	s := l.bySession[owner]
-	if s == nil {
-		l.mu.Unlock()
+func (l *workLedger) armDelegation(job *asyncJob, captured jobResult) {
+	if job == nil || job.childSession == "" {
 		return
 	}
-	job := s.jobs[toolCallID]
-	if job == nil || job.childSession == "" {
+	l.mu.Lock()
+	if !l.currentLocked(job) {
+		// Superseded (A11): a stale executor must not arm, or re-check on
+		// behalf of, another claim's job.
 		l.mu.Unlock()
 		return
 	}
@@ -153,7 +152,7 @@ func (l *workLedger) recheckChild(childSessionID string) {
 				l.onWebDone(completion)
 			}
 		} else {
-			l.transition(owner, toolCallID, causeDelegationRelease, jobResult{content: refreshed.Content, isError: refreshed.IsError})
+			l.transition(job, causeDelegationRelease, jobResult{content: refreshed.Content, isError: refreshed.IsError})
 		}
 
 		l.mu.Lock()
@@ -355,7 +354,7 @@ func (l *workLedger) stopTargets(targets []cancelSessionTarget) {
 			}
 		case tgt.sync:
 			l.mu.Lock()
-			if s := l.bySession[tgt.owner]; s != nil {
+			if s := l.bySession[tgt.owner]; s != nil && s.jobs[tgt.toolCallID] == tgt.job {
 				delete(s.jobs, tgt.toolCallID)
 				signalWorkSession(s)
 			}
@@ -370,7 +369,7 @@ func (l *workLedger) stopTargets(targets []cancelSessionTarget) {
 			if !tgt.isDelegation {
 				content = l.capturePartial(tgt.owner, tgt.toolCallID, tgt.toolName, "", tgt.shellID, tgt.outputBuf)
 			}
-			l.transition(tgt.owner, tgt.toolCallID, causeSessionCancel, content)
+			l.transition(tgt.job, causeSessionCancel, content)
 		}
 		if tgt.cancel != nil {
 			tgt.cancel()
