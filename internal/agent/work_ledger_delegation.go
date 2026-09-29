@@ -27,9 +27,17 @@ package agent
 
 import (
 	"context"
+	"log/slog"
+	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 )
+
+// childScopeDBCheckTimeout bounds childScopeOpenAcrossProcesses's DB read
+// (B3/C6 fix): recheckChild runs synchronously on several hot paths, so this
+// stays well under a request-scoped budget rather than the 30s ceiling used
+// for fire-and-forget background writes elsewhere in this package.
+const childScopeDBCheckTimeout = 5 * time.Second
 
 // subAgentOutcomeCancelledText is the body delivered to the parent when a
 // delegation is released by Cancel/CancelAll rather than by the child
@@ -210,7 +218,39 @@ func (l *workLedger) childScopeDrained(childID string) bool {
 	} else if l.coord.currentAgent != nil && l.coord.currentAgent.IsSessionBusy(childID) {
 		return false
 	}
+	// B3/C6 fix: every check above is same-process/in-memory (this host's
+	// own workLedger job map plus IsSessionBusy). A child whose own async
+	// work moved to a DIFFERENT, still-live host, or whose pulled notice the
+	// child still owes a reaction to (DB reaction debt), has NOT actually
+	// drained -- releasing the delegation now would hand the parent a
+	// premature/truncated result. childScopeOpenAcrossProcesses reuses
+	// ScopeOpen's exact predicate (doc sec.3.5: running row on a live host,
+	// OR reaction debt), deliberately omitting ScopeOpen's mid-turn branch
+	// (already covered by the IsSessionBusy checks above).
+	if l.childScopeOpenAcrossProcesses(childID) {
+		return false
+	}
 	return true
+}
+
+// childScopeOpenAcrossProcesses is childScopeDrained's cross-process half
+// (B3/C6 fix). Fails OPEN (i.e. reports true, "not drained yet") on a DB
+// error or a nil store: prematurely releasing a delegation whose child
+// might still owe a reaction is worse than deferring the release to a later
+// recheckChild trigger -- the same asymmetry ScopeOpen's own callers rely
+// on for scope evaluation.
+func (l *workLedger) childScopeOpenAcrossProcesses(childID string) bool {
+	if l.coord == nil || l.store == nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), childScopeDBCheckTimeout)
+	defer cancel()
+	open, err := l.coord.ScopeOpen(ctx, childID)
+	if err != nil {
+		slog.Warn("childScopeDrained: cross-process scope check failed; treating scope as still open", "child_session_id", childID, "err", err)
+		return true
+	}
+	return open
 }
 
 // cancelSessionTarget is a snapshot of one job cancelSession must act on,
@@ -443,4 +483,26 @@ func (l *workLedger) parkedParentSessions() []string {
 		}
 	}
 	return parents
+}
+
+// parkedChildSessions returns the distinct CHILD session ids (byChild's own
+// keys) that still have at least one armed delegation -- i.e. exactly the
+// ids recheckChild itself expects (it indexes l.byChild by CHILD id, never
+// by parent/owner). B12/C14 fix: RecheckPass's 60s pass used to call
+// recheckChild with parkedParentSessions()' PARENT ids instead, so
+// byChild[parent] was always a miss and no child was ever actually
+// re-evaluated by the pass.
+func (l *workLedger) parkedChildSessions() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	children := make([]string, 0, len(l.byChild))
+	for childID, entries := range l.byChild {
+		for _, job := range entries {
+			if job.state == phaseRunning {
+				children = append(children, childID)
+				break
+			}
+		}
+	}
+	return children
 }

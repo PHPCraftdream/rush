@@ -69,6 +69,18 @@ type backgroundJobNoticeCtxKey struct{}
 // generic on-success increment must not double-count that same wake.
 type capAlreadyCountedCtxKey struct{}
 
+// autoTurnCapAppliesCtxKey marks a wakeSession call as belonging to the ONE
+// category the consecutive-auto-turn cap still throttles: the SDK
+// background-shell auto-resume path (B7 fix, docs/reviews/2026-09-29-async-
+// phase4-round1.md -- operator HARD RULES item 1). Deliberately a SEPARATE
+// key from capAlreadyCountedCtxKey even though today's one production
+// caller (notifyBackgroundJobDone) always sets both together: the two mean
+// different things ("this wake's cap bookkeeping is the caller's own
+// responsibility" vs. "this wake's category IS subject to the cap at all")
+// and conflating them would silently break if a future capped-category
+// caller ever needed one without the other.
+type autoTurnCapAppliesCtxKey struct{}
+
 // WithBackgroundJobNotice marks a completion turn as an agent-visible notice.
 func WithBackgroundJobNotice(ctx context.Context) context.Context {
 	ctx = context.WithValue(ctx, autoResumedCtxKey{}, true)

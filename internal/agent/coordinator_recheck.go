@@ -12,9 +12,8 @@ package agent
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"time"
-
-	"github.com/PHPCraftdream/rush/internal/session"
 )
 
 const recheckPassInterval = 60 * time.Second
@@ -55,36 +54,41 @@ func (c *coordinator) drainRecheckSet() []string {
 // immediately). Exported and independently callable so tests can drive it
 // without waiting for the real ticker.
 func (c *coordinator) RecheckPass(ctx context.Context) {
-	if c.asyncJobs != nil && c.asyncJobs.store != nil {
-		// Doc sec.3.6/3.7: the host-level sweep over every dead host with a
-		// running row -- the only cross-process fallback for a host that
-		// never gets a turn/scope-evaluation of its own to trigger own-scope
-		// recovery. Runs before recheckChild below so a delegation whose
-		// child's own dead-host rows this same pass just recovered is
-		// re-evaluated against already-fresh state.
-		if _, err := c.asyncJobs.store.SweepDeadHosts(ctx, c.messages); err != nil {
-			slog.Debug("coordinator: recheck pass dead-host sweep failed", "err", err)
-		}
-		// Retention (doc sec.3.7): old delivered/voided rows and empty dead
-		// hosts' lock files, same pass, best-effort.
-		if err := c.asyncJobs.store.PurgeExpired(ctx, session.AsyncDataRetentionAge); err != nil {
-			slog.Debug("coordinator: recheck pass retention purge failed", "err", err)
-		}
-	}
+	c.RunMaintenanceSweep(ctx)
 	if c.asyncJobs != nil {
-		for _, parent := range c.parkedParentSessions() {
-			c.asyncJobs.recheckChild(parent)
+		// B12/C14 fix: recheckChild indexes l.byChild by CHILD session id
+		// (never by parent/owner) -- parkedParentSessions() returns the
+		// PARENT ids, so calling recheckChild with those was always a
+		// byChild[parent] miss: no parked delegation was ever actually
+		// re-evaluated by this pass. parkedChildSessions() returns the ids
+		// recheckChild actually expects.
+		for _, child := range c.asyncJobs.parkedChildSessions() {
+			c.asyncJobs.recheckChild(child)
 		}
 	}
+	// B12/C14 fix: each wake runs in its OWN goroutine so a real Drain turn
+	// (which can take seconds) never serializes behind the others, or delays
+	// the NEXT tick's dead-host sweep/retention purge above (this whole
+	// RecheckPass call is one synchronous unit from StartRecheckTicker's own
+	// loop). wg bounds this call's own return to "every wake was at least
+	// SUBMITTED", matching every other fire-and-forget wakeSession call site
+	// in this package (coordinator_background.go, supervision.go) -- none of
+	// them wait for the turn to finish either.
+	var wg sync.WaitGroup
 	for _, sessionID := range c.drainRecheckSet() {
-		// wakeSession re-adds sessionID to the recheck set itself if this
-		// attempt is refused again (its own turnAttemptRefused branch) --
-		// this loop never needs to duplicate that decision.
-		id := jobIdentity{owner: sessionID, toolCallID: "recheck-pass"}
-		if err := c.wakeSession(ctx, id, true); err != nil {
-			slog.Debug("coordinator: recheck pass wake attempt did not complete", "session_id", sessionID, "err", err)
-		}
+		wg.Add(1)
+		go func(sessionID string) {
+			defer wg.Done()
+			// wakeSession re-adds sessionID to the recheck set itself if
+			// this attempt is refused again (its own turnAttemptRefused
+			// branch) -- this loop never needs to duplicate that decision.
+			id := jobIdentity{owner: sessionID, toolCallID: "recheck-pass"}
+			if err := c.wakeSession(ctx, id, true); err != nil {
+				slog.Debug("coordinator: recheck pass wake attempt did not complete", "session_id", sessionID, "err", err)
+			}
+		}(sessionID)
 	}
+	wg.Wait()
 }
 
 // StartRecheckTicker starts the 60s background pass exactly once per

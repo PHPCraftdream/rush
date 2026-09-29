@@ -49,6 +49,12 @@ const (
 	supervisionMinIntervalFloor = time.Second // guards against a pathological zero/negative override
 )
 
+// recheckDebtCheckBudget bounds ONLY the DB read in recheckDebtOnRelease
+// (B1 fix): a var, not a const, so a test can shrink it to reproduce "the
+// debt check's own budget must never bound the Drain turn it triggers" at
+// test timescale instead of a real 30s wait.
+var recheckDebtCheckBudget = 30 * time.Second
+
 // SupervisionConfig is one root session's effective supervision policy,
 // resolved once per noteWorkStarted/recordProgress call from config +
 // per-call CallOptions (coordinator.resolveSupervisionConfig).
@@ -450,6 +456,20 @@ func lastNonEmptyLine(s string) string {
 // pushDeadlineOnTurnEnd) is unaffected and always runs.
 func (c *coordinator) onSessionIdleHook(sessionID string) {
 	c.noteSubAgentChildRunEnded(sessionID)
+	// B2/C2 fix (doc sec.3.4 rule (b)): a release caused by an admission
+	// refusal (runOwned could not acquire the session's OS lock -- another
+	// process already holds it) ran no turn at all and must never trigger an
+	// immediate relaunch: the foreign holder does not release just because
+	// this process re-checks, so an unconditional recheckDebtOnRelease here
+	// would hot-loop (claim, refuse, release, re-check, claim, ...) with no
+	// pause. Route to the 60s recheck pass instead, exactly like a session-
+	// lock-busy Drain submission already does via recordDrainOutcome's own
+	// turnAttemptRefused branch -- this closes the SAME gap for every other
+	// caller of Run() that hits the same refusal, not only wakeSession's own.
+	if c.asyncJobs != nil && c.asyncJobs.consumeAdmissionRefusedRelease(sessionID) {
+		c.addToRecheckSet(sessionID)
+		return
+	}
 	wasNoTurnDrain, hintUnchanged := false, false
 	if c.asyncJobs != nil {
 		wasNoTurnDrain, hintUnchanged = c.asyncJobs.consumeNoTurnDrainRelease(sessionID)
@@ -470,13 +490,26 @@ func (c *coordinator) onSessionIdleHook(sessionID string) {
 // completion's own hint -- this is what catches an "orphaned" Drain (a row
 // that arrived inside the release window) and a debt row left by a prior
 // pass that skipped its own re-launch under rule (a).
+//
+// B1 fix: the 30s budget bounds ONLY the debt-existence read. The Drain
+// itself is submitted/run on a context detached from that deadline
+// (context.Background(), not context.WithoutCancel(checkCtx) -- checkCtx is
+// about to be cancelled by this function's own return, which would cancel
+// a still-running Drain's whole turn the instant this function returns).
+// Before this fix, wakeSession/agent.Run/runOwned's whole turn loop ran
+// under the SAME 30s-deadline ctx as the debt check: a Drain turn longer
+// than 30s hit DeadlineExceeded, classified as a terminal provider error,
+// and settled the debt by failure (wake_failed marker) even though the
+// provider may have still been working. Shutdown is observed independently
+// inside runOwned/transition via the coordinator's own admission gate and
+// shutdown latch, not via this ctx's cancellation.
 func (c *coordinator) recheckDebtOnRelease(sessionID string) {
 	if c.asyncJobs == nil || sessionID == "" {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	debt, err := c.asyncJobs.reactionDebtExists(ctx, sessionID)
+	checkCtx, cancel := context.WithTimeout(context.Background(), recheckDebtCheckBudget)
+	debt, err := c.asyncJobs.reactionDebtExists(checkCtx, sessionID)
+	cancel()
 	if err != nil {
 		slog.Warn("onSessionIdle: reaction debt check failed", "session_id", sessionID, "err", err)
 		return
@@ -489,7 +522,7 @@ func (c *coordinator) recheckDebtOnRelease(sessionID string) {
 		return
 	}
 	id := jobIdentity{owner: sessionID, toolCallID: "release-recheck"}
-	if err := c.wakeSession(ctx, id, true); err != nil {
+	if err := c.wakeSession(context.Background(), id, true); err != nil {
 		slog.Debug("onSessionIdle: release-triggered drain attempt did not complete", "session_id", sessionID, "err", err)
 	}
 }

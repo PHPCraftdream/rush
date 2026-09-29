@@ -158,6 +158,7 @@ func (c *coordinator) notifyBackgroundJobDone(sessionID string, sh *shell.Backgr
 		// auto-turn cap", the NEW rule for the plain async/delegation
 		// category) would double-count this SAME wake if not suppressed.
 		ctx = context.WithValue(ctx, capAlreadyCountedCtxKey{}, true)
+		ctx = context.WithValue(ctx, autoTurnCapAppliesCtxKey{}, true)
 		go func() {
 			// Re-check trigger (iii): a job owned by this session just
 			// became terminal and this goroutine is the delivery it woke.

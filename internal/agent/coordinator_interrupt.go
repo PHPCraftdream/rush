@@ -91,7 +91,17 @@ func (c *coordinator) CancelAll() (stillBusy bool) {
 	if c.asyncJobs != nil {
 		c.asyncJobs.close()
 	}
-	return c.currentAgent.CancelAll()
+	stillBusy = c.currentAgent.CancelAll()
+	// B18 fix: a delegated child's driver is a SEPARATE SessionAgent from
+	// c.currentAgent (task #1049) -- CancelAll must reach it too, or its own
+	// in-flight Drain turn (built on context.Background(), doc sec.3.4)
+	// survives this process's shutdown entirely.
+	for _, driver := range c.subAgentDrivers.allDriverAgents() {
+		if driver.CancelAll() {
+			stillBusy = true
+		}
+	}
+	return stillBusy
 }
 
 func (c *coordinator) ClearQueue(sessionID string) {

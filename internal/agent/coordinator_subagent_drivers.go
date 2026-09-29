@@ -150,6 +150,36 @@ func (r *subAgentDriverRegistry) releaseIfCurrent(childSessionID string, g uint6
 	return false
 }
 
+// allDriverAgents returns the distinct SessionAgent instances currently
+// registered as delegation drivers (B18 fix, docs/reviews/2026-09-29-async-
+// phase4-round1.md): coordinator.CancelAll used to call ONLY
+// c.currentAgent.CancelAll(), never these -- a delegated child's driver is a
+// SEPARATE SessionAgent (task #1049), so its own in-flight Drain turn (built
+// on context.Background(), doc sec.3.4) survived process shutdown entirely.
+// Deduped by agent identity: SessionAgent is backed by a *sessionAgent
+// pointer, so two child ids sharing the same underlying agent (should not
+// happen in production, but costs nothing to guard) are cancelled once.
+func (r *subAgentDriverRegistry) allDriverAgents() []SessionAgent {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	seen := make(map[SessionAgent]struct{}, len(r.byChild))
+	out := make([]SessionAgent, 0, len(r.byChild))
+	for _, d := range r.byChild {
+		if d.agent == nil {
+			continue
+		}
+		if _, dup := seen[d.agent]; dup {
+			continue
+		}
+		seen[d.agent] = struct{}{}
+		out = append(out, d.agent)
+	}
+	return out
+}
+
 // agentFor resolves the SessionAgent that actually owns sessionID's mailbox:
 // the registered delegation driver, if any (a delegated child session runs
 // on its own task SessionAgent, never on c.currentAgent -- task #1049), else
