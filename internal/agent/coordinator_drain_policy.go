@@ -168,21 +168,21 @@ func (c *coordinator) sessionDrainPolicy(ctx context.Context, sessionID string) 
 	// "No cap" means no THROTTLE on volume (counted=false, never
 	// incremented) -- it does NOT mean Stop's own "automatic turns paused
 	// until the next human message" stops applying: suspendAutoResume
-	// (coordinator_interrupt.go's Cancel) forces this SAME counter to the
-	// cap on every id in a cancelled tree, deliberately reusing this
-	// machinery instead of a second flag that could drift out of sync with
-	// it (see suspendAutoResume's own doc) -- so the READ below must still
-	// run for the uncapped category too, or Stop's suspension would silently
-	// stop gating async-job/delegation wakes while continuing to gate
-	// bg-shell ones.
-	if _, capped := ctx.Value(autoTurnCapAppliesCtxKey{}).(bool); !capped {
-		return c.consecutiveResume(sessionID) < maxConsecutiveAutoResumes, false, nil
+	// (coordinator_interrupt.go's Cancel) marks every id in a cancelled tree
+	// suspended, a state of its own (autoTurnsSuspended) that gates EVERY
+	// kind of automatic turn, capped or not. The bg-shell cap counter is a
+	// separate thing: filling it never pauses the uncapped category.
+	if c.autoResumeSuspended(sessionID) {
+		return false, false, nil
 	}
-	// Web/default, bg-shell auto-resume (doc sec.3.4): reset by the last
-	// human message (resetConsecutiveResume/ResetAutoResumeCounter) --
-	// also what a Stop suspension (suspendAutoResume) rides on. wakeSession
-	// increments the counter itself, ONLY on a successful turn that actually
-	// reached the provider (never a failed, queued, or no-turn one).
+	if _, capped := ctx.Value(autoTurnCapAppliesCtxKey{}).(bool); !capped {
+		return true, false, nil
+	}
+	// Web/default, bg-shell auto-resume (doc sec.3.4): the cap counter is
+	// reset by the last human message (resetConsecutiveResume/
+	// ResetAutoResumeCounter, the same event that lifts Stop's suspension).
+	// wakeSession increments it itself, ONLY on a successful turn that
+	// actually reached the provider (never a failed, queued, or no-turn one).
 	return c.consecutiveResume(sessionID) < maxConsecutiveAutoResumes, true, nil
 }
 

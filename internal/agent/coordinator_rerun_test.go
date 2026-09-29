@@ -70,10 +70,7 @@ func TestCancelTurn_LeavesJobsWakeAndAutonomy(t *testing.T) {
 	require.Equal(t, []string{"root"}, f.agent.cancelled, "the live generation must be cancelled")
 	require.Equal(t, "running", f.row(t, "root", "call-run").State, "a kept running job must not be stopped by a rerun's CancelTurn")
 	require.EqualValues(t, 1, f.row(t, "root", "call-debt").Wake, "CancelTurn must not zero wake")
-	f.coord.autoResumeMu.Lock()
-	suspended := f.coord.consecutiveAutoResumes["root"] >= maxConsecutiveAutoResumes
-	f.coord.autoResumeMu.Unlock()
-	require.False(t, suspended, "CancelTurn must not suspend autonomy")
+	require.False(t, f.coord.autoResumeSuspended("root"), "CancelTurn must not suspend autonomy")
 }
 
 // TestCancelTurn_NilAgentIsANoOp: a coordinator with no agent for the id does
@@ -108,10 +105,7 @@ func TestStopRerunJobs_StopsRunningAndChildTree(t *testing.T) {
 	require.NotEqual(t, "running", child.State, "the delegation's child tree must be stopped")
 	require.EqualValues(t, 0, child.Wake)
 	require.Contains(t, f.agent.cancelled, "child-1", "the child's live generation must be cancelled")
-	f.coord.autoResumeMu.Lock()
-	suspended := f.coord.consecutiveAutoResumes["child-1"] >= maxConsecutiveAutoResumes
-	f.coord.autoResumeMu.Unlock()
-	require.True(t, suspended, "the stopped child must not resume autonomously")
+	require.True(t, f.coord.autoResumeSuspended("child-1"), "the stopped child must not resume autonomously")
 }
 
 // TestStopRerunJobs_TerminalVoidedDelegationStillStopsChildTree: a voided

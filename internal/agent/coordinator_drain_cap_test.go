@@ -2,12 +2,13 @@
 // consecutive-auto-turn cap. Design decision (operator HARD RULES item 1):
 // async-job/delegation notice wakes do NOT count toward (or get throttled
 // by) the cap, matching pre-phase-4 behavior -- but Stop's own "automatic
-// turns paused until the next human message" (suspendAutoResume, which
-// deliberately reuses this SAME counter rather than a second flag) must
-// still gate them. Only the SDK background-shell auto-resume path keeps the
-// cap's THROTTLE behavior. Separately: whichever category IS counted must
-// count only a Drain that actually reached the provider, never one that was
-// merely queued or took the no-turn branch.
+// turns paused until the next human message" (suspendAutoResume, a
+// per-session suspension state SEPARATE from the cap counter) must still
+// gate them. Only the SDK background-shell auto-resume path keeps the cap's
+// THROTTLE behavior, and filling that cap never pauses the other wakes.
+// Separately: whichever category IS counted must count only a Drain that
+// actually reached the provider, never one that was merely queued or took
+// the no-turn branch.
 package agent
 
 import (
@@ -52,14 +53,14 @@ func TestSessionDrainPolicy_OrdinaryAsyncWake_UncountedByDefault(t *testing.T) {
 
 // TestSessionDrainPolicy_OrdinaryAsyncWake_StillRefusedAfterStopSuspension
 // proves the uncapped category does NOT escape Stop's own suspension:
-// suspendAutoResume (Cancel) forces the SAME counter to the cap, and a
-// plain-ctx (uncounted-category) check must still see that and refuse.
+// suspendAutoResume (Cancel) marks the session suspended, and a plain-ctx
+// (uncounted-category) check must still see that and refuse.
 //
-// Revert-check performed: changed the uncapped branch to `return true,
-// false, nil` unconditionally (ignoring consecutiveResume entirely) --
+// Revert-check performed: removed the autoResumeSuspended check from
+// sessionDrainPolicy (uncapped branch `return true, false, nil` only) --
 // this test's `require.False(t, allowed)` FAILED (allowed was true even
-// though the session had just been Stop-suspended). Restored the
-// consecutiveResume read; re-ran, passed.
+// though the session had just been Stop-suspended). Restored the check;
+// re-ran, passed.
 func TestSessionDrainPolicy_OrdinaryAsyncWake_StillRefusedAfterStopSuspension(t *testing.T) {
 	coord, _, _, getEnv := newChildPolicyTestCoordinator(t)
 	env := getEnv(context.Background())
@@ -136,4 +137,108 @@ func TestWakeSession_BgShellNoTurnDrain_DoesNotBumpCap(t *testing.T) {
 	err = coord.wakeSession(bgShellCtx, jobIdentity{owner: sess.ID, toolCallID: "shell-1"}, true)
 	require.NoError(t, err)
 	require.Zero(t, coord.consecutiveResume(sess.ID), "a no-turn Drain must never bump the auto-turn cap counter")
+}
+
+// TestSessionDrainPolicy_BgShellCapExhausted_DoesNotBlockAsyncWake: filling
+// the bg-shell cap counter gates ONLY the capped (bg-shell auto-resume)
+// category. An ordinary async-job/delegation/supervision wake was never capped
+// before phase 4 and must still be allowed and uncounted.
+//
+// Revert-check performed: made suspendAutoResume/the policy ride on the shared
+// counter again (uncapped branch `return consecutiveResume(...) < max, false,
+// nil`) -- the `require.True(t, allowed)` for the plain wake FAILED.
+func TestSessionDrainPolicy_BgShellCapExhausted_DoesNotBlockAsyncWake(t *testing.T) {
+	coord, _, _, getEnv := newChildPolicyTestCoordinator(t)
+	env := getEnv(context.Background())
+	sess, err := env.sessions.Create(context.Background(), "cap-vs-async")
+	require.NoError(t, err)
+	for range maxConsecutiveAutoResumes {
+		coord.bumpConsecutiveResume(sess.ID)
+	}
+
+	capped := context.WithValue(context.Background(), autoTurnCapAppliesCtxKey{}, true)
+	allowed, _, err := coord.sessionDrainPolicy(capped, sess.ID)
+	require.NoError(t, err)
+	require.False(t, allowed, "the exhausted cap must still refuse a bg-shell auto-resume")
+
+	allowed, counted, err := coord.sessionDrainPolicy(context.Background(), sess.ID)
+	require.NoError(t, err)
+	require.True(t, allowed, "an exhausted bg-shell cap must not pause an ordinary async-job wake")
+	require.False(t, counted)
+}
+
+// TestSessionDrainPolicy_Stop_BlocksBothCategoriesWithoutTouchingCap: Stop
+// pauses every automatic turn, capped or not, through its own suspension
+// state -- the bg-shell counter stays at zero.
+//
+// Revert-check performed: made suspendAutoResume a no-op -- both refusals
+// FAILED (allowed was true).
+func TestSessionDrainPolicy_Stop_BlocksBothCategoriesWithoutTouchingCap(t *testing.T) {
+	coord, _, _, getEnv := newChildPolicyTestCoordinator(t)
+	env := getEnv(context.Background())
+	sess, err := env.sessions.Create(context.Background(), "stop-both")
+	require.NoError(t, err)
+
+	coord.suspendAutoResume(sess.ID)
+
+	require.Zero(t, coord.consecutiveResume(sess.ID), "Stop must not consume the bg-shell cap counter")
+	capped := context.WithValue(context.Background(), autoTurnCapAppliesCtxKey{}, true)
+	allowed, _, err := coord.sessionDrainPolicy(capped, sess.ID)
+	require.NoError(t, err)
+	require.False(t, allowed, "Stop must pause bg-shell auto-resume")
+	allowed, _, err = coord.sessionDrainPolicy(context.Background(), sess.ID)
+	require.NoError(t, err)
+	require.False(t, allowed, "Stop must pause ordinary async wakes")
+}
+
+// TestResetAutoResumeCounter_ClearsStopAndCap: the human-message reset lifts
+// Stop's suspension AND zeroes the bg-shell counter.
+//
+// Revert-check performed: dropped the `delete(c.autoTurnsSuspended, ...)` from
+// resetConsecutiveResume -- the post-reset uncapped `require.True(allowed)`
+// FAILED; dropping the counter delete instead fails the capped assertion.
+func TestResetAutoResumeCounter_ClearsStopAndCap(t *testing.T) {
+	coord, _, _, getEnv := newChildPolicyTestCoordinator(t)
+	env := getEnv(context.Background())
+	sess, err := env.sessions.Create(context.Background(), "reset-both")
+	require.NoError(t, err)
+	for range maxConsecutiveAutoResumes {
+		coord.bumpConsecutiveResume(sess.ID)
+	}
+	coord.suspendAutoResume(sess.ID)
+
+	coord.ResetAutoResumeCounter(sess.ID)
+
+	require.Zero(t, coord.consecutiveResume(sess.ID))
+	require.False(t, coord.autoResumeSuspended(sess.ID))
+	capped := context.WithValue(context.Background(), autoTurnCapAppliesCtxKey{}, true)
+	allowed, _, err := coord.sessionDrainPolicy(capped, sess.ID)
+	require.NoError(t, err)
+	require.True(t, allowed, "a human message must re-arm bg-shell auto-resume")
+	allowed, _, err = coord.sessionDrainPolicy(context.Background(), sess.ID)
+	require.NoError(t, err)
+	require.True(t, allowed, "a human message must re-arm ordinary async wakes")
+}
+
+// TestWakeSession_BgShellCapExhausted_AsyncJobWakeStillRunsTurn is the real
+// wakeSession path: five bg-shell auto-resumes worth of counter, then an async
+// job completes -- its reaction turn must still reach the provider.
+//
+// Revert-check performed: same shared-counter revert as above -- the
+// `require.NotZero(t, f.requests.Load())` FAILED (no turn ran).
+func TestWakeSession_BgShellCapExhausted_AsyncJobWakeStillRunsTurn(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	f := newWakeDebtFixture(t, "cap-exhausted-async-wake")
+	for range maxConsecutiveAutoResumes {
+		f.coord.bumpConsecutiveResume(f.sessID)
+	}
+
+	f.claimAndFinish(t, ctx, "call-1")
+	_, err := f.store.PullJobNotices(ctx, f.messages, f.sessID, buildJobNoticeMessageParams)
+	require.NoError(t, err)
+
+	err = f.coord.wakeSession(ctx, jobIdentity{owner: f.sessID, toolCallID: "call-1"}, true)
+	require.NoError(t, err)
+	require.NotZero(t, f.requests.Load(), "an exhausted bg-shell cap must not block an async-job reaction turn")
 }

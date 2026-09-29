@@ -80,10 +80,10 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   auto-resume** (`AutoResumeOnJobDone`), as before phase 4. Wakes for async
   jobs, delegations, supervision check-ins and `wake_only` timeouts are
   uncapped again (an intermediate phase-4 build had capped them). Stop still
-  pauses automatic turns until the next human message; it does so through
-  the same per-session counter, so once Stop (or five background-shell
-  auto-resumes) has filled it, async-job wakes for that session are paused
-  too until the next human message.
+  pauses every kind of automatic turn until the next human message, through
+  a per-session suspension state of its own; five background-shell
+  auto-resumes fill only the cap counter and no longer pause async-job,
+  delegation or supervision wakes. A human message clears both.
 - **Stop is transitive over the delegation tree and leaves a "cancelled"
   notice per stopped job.** Stopping a session cancels the live turn of the
   session and of every session below it through running delegation rows,

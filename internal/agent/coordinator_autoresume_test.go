@@ -219,6 +219,17 @@ func TestAutoResumeEligible(t *testing.T) {
 		coord.bumpConsecutiveResume(sid)
 		assert.False(t, coord.autoResumeEligible(sid), "at the cap autonomy must stop")
 	})
+
+	t.Run("Stop-suspended with the cap counter at zero is not eligible; a human reset re-arms", func(t *testing.T) {
+		cfg.Config().Options = &config.Options{AutoResumeOnJobDone: boolPtr(true)}
+		coord.persistentMode.Store(true)
+		coord.resetConsecutiveResume(sid)
+		coord.suspendAutoResume(sid)
+		require.Zero(t, coord.consecutiveResume(sid))
+		assert.False(t, coord.autoResumeEligible(sid), "Stop must suspend bg-shell auto-resume")
+		coord.resetConsecutiveResume(sid)
+		assert.True(t, coord.autoResumeEligible(sid), "a human message re-arms it")
+	})
 }
 
 func TestResetAutoResumeCounter(t *testing.T) {

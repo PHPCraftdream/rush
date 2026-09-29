@@ -81,11 +81,10 @@ func (c *coordinator) stopTree(sessionID string) {
 			ag.Cancel(id)
 		}
 		// Doc sec.3.4's web session policy: after a Stop, automatic turns
-		// are suspended until the next human message. Reusing the
-		// consecutive-auto-resume counter's own cap value as the
-		// "suspended" state means the existing human-message reset path
-		// (ResetAutoResumeCounter) is also what lifts the suspension --
-		// no separate flag to keep in sync.
+		// are suspended until the next human message. The suspension is a
+		// per-session state of its own (autoTurnsSuspended), separate from
+		// the bg-shell cap counter; the human-message reset path
+		// (ResetAutoResumeCounter) clears both.
 		c.suspendAutoResume(id)
 	}
 	// Doc sec.3.4/3.8: zero the wake bit on every already-terminal
