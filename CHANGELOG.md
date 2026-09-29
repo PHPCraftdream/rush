@@ -8,6 +8,28 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- **`rush sessions jobs <id>`** lists a session's own durable async jobs
+  (bash/run_command/agent/agentic_fetch) plus its whole delegation tree
+  (following `child_session_id`, any state): tool call id, kind, state,
+  liveness (alive/dead/unknown, via the shared host-lock probe), host
+  id/pid/label, started/updated times, delivery/wake/reacted, and a short
+  result summary. Table and `--json`. A running row on a LIVE host owned by
+  a different process prints that host's PID and a
+  `rush sessions kill <session-id>` hint — there is no job-level kill yet.
+- **`sessions gc --jobs-older-than <duration>`** purges terminal,
+  delivered-or-voided `async_jobs`/`session_notices` rows older than the
+  given age (`--dry-run` counts only); a `running` row is never purged
+  regardless of age or host liveness. Opt-in — omitting the flag leaves job
+  retention entirely to the existing background 7-day pass.
+- **`sessions show`** now prints a one-line async job count summary
+  (`N total, M running`) for sessions that own any, pointing at
+  `sessions jobs <id>` for the full delegation-tree view.
+- **`sessions why`** now prints a plain-language "Async jobs:" section:
+  which jobs are running on which host, and whether a reaction debt
+  (a delivered result no model turn has reacted to yet) is pending.
+
 ### Changed
 
 - **`agent`/`agentic_fetch` with `resume_session_id` now refuses immediately
@@ -50,10 +72,13 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   holds the run open and feeds each descendant's terminal result back as the
   next root turn; the reviewer pass also waits for descendant work.
 - **`sessions list` and `sessions why` no longer report a root as done
-  while a descendant session still holds a live lock**, cross-process.
+  while a descendant session still has live work**, cross-process.
   `sessions why` names the live descendant, and the session-list API now
   carries `HasLiveDescendantWork` / `LiveDescendantIDs` for the web UI
-  (rendering pending).
+  (rendering pending). This now reads the durable `async_jobs` ledger
+  (a live delegation row, checked against its host's liveness) rather than
+  a session lock file, so it also covers a delegation whose child session
+  has not yet taken its own turn.
 - **Parked sub-agent outcomes are delivered exactly once and cancellations
   stay cancellations.** A canceled child can no longer be reported to its
   parent as a success carrying the child's last text.
