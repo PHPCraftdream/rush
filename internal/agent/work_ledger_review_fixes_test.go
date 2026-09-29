@@ -86,6 +86,18 @@ func TestWorkLedger_RetryLoopStopsAfterClose(t *testing.T) {
 // DB write begins, so transition's delivery step can drop it silently no
 // matter who commits first.
 //
+// The in-memory onWebDone callback never firing is necessary but not
+// sufficient: causeStateNoticeKindWake sets wake=true for causeNaturalFinish
+// UNCONDITIONALLY, with no knowledge of stoppedBySession at all (that gate is
+// purely in-memory, checked only by deliverLocked, after the DB write
+// already committed) -- a bug that made the DB row ITSELF carry a stray
+// wake=1/pending row despite session_cancel actually winning would slip past
+// a memory-only check. This asserts the COMMITTED row is coherent with
+// whichever cause actually won: natural finish winning legitimately leaves
+// wake=1/pending (real, future debt for the next ordinary turn -- only the
+// immediate HINT is suppressed, not the row); session_cancel winning leaves
+// wake=0/session_cancel (no debt at all).
+//
 // Revert-check performed: temporarily removed the `job.stoppedBySession &&
 // job.childSession == ""` branch from transition's delivery step (falling
 // through to the unconditional deliverLocked call) -- this test FAILED
@@ -122,6 +134,19 @@ func TestWorkLedger_CancelSessionRaceAgainstNaturalFinishNeverWakes(t *testing.T
 
 		got := drainCompletions(delivered)
 		require.Empty(t, got, "a plain job must never wake the session after Stop, regardless of which cause won the race (iteration %d)", i)
+
+		row, err := store.Get(context.Background(), "owner", "call")
+		require.NoError(t, err, "iteration %d", i)
+		switch row.State {
+		case "completed":
+			require.EqualValues(t, 1, row.Wake, "iteration %d: natural finish winning must still leave real, future debt in the row", i)
+			require.Equal(t, "ok", row.ResultSummary.String, "iteration %d", i)
+		case "cancelled":
+			require.EqualValues(t, 0, row.Wake, "iteration %d: session_cancel winning must never leave wake=1", i)
+			require.Equal(t, "session_cancel", row.NoticeKind, "iteration %d", i)
+		default:
+			t.Fatalf("iteration %d: unexpected committed state %q", i, row.State)
+		}
 	}
 }
 
@@ -176,4 +201,116 @@ func TestWorkLedger_StopRunCommandJob_SyncJobPreservesStoppedOutcome(t *testing.
 	require.NoError(t, err, "a sync StopRunCommandJob must still unblock awaitSync with a real outcome, not hang")
 	require.False(t, res.isError)
 	require.Equal(t, "partial output\n", res.content, "must use the live buffer snapshot")
+}
+
+// TestWorkLedger_StopBeforeAckDoesNotOrphanRow pins B10: Stop landing between
+// Claim and the "started" tool-result ack must not drop the in-memory job
+// before announced ever flips. The pre-fix delivery step dropped a
+// stoppedBySession-marked plain job unconditionally, the instant its cause's
+// CAS committed -- regardless of job.announced. If that happens BEFORE the
+// ack, the eventual acknowledgeWithMessageTx/acknowledged call finds no job
+// left in s.jobs, so MarkAnnounced never even gets attempted from the
+// ledger's own follow-up (finishAcknowledgeLocally no-ops on a nil job) --
+// the DB row is then stuck at announced=0/delivery=pending forever: never a
+// pull candidate (requires announced=1), never purged (retention excludes
+// 'running'... no, this row IS terminal ('cancelled') but announced=0 is not
+// checked by PurgeAsyncJobsOlderThan either), an orphan.
+//
+// Revert-check performed: reverted deliverLocked's stoppedBySession branch to
+// its pre-fix position (back in transition()/commitAndDeliver, unconditional
+// on the CAS commit rather than gated by deliverLocked's own !job.announced
+// top guard) -- this test FAILED (stillPresent was false right after
+// cancelSession, and the later acknowledged() call left row.Announced at 0).
+// Restored the fix (the drop now lives inside deliverLocked, reached only
+// once announced is actually true); re-ran, passed. Diffed work_ledger.go
+// against git HEAD after restoring: matches the committed fix.
+func TestWorkLedger_StopBeforeAckDoesNotOrphanRow(t *testing.T) {
+	t.Parallel()
+	store := newTestAsyncJobStore(t)
+	delivered := make(chan AsyncCompletion, 4)
+	l := newWorkLedger(func(c AsyncCompletion) { delivered <- c })
+	l.store = store
+
+	_, _, err := l.Start("owner", "call", "", "bash", "", false, false, nil, func() {})
+	require.NoError(t, err)
+	// Deliberately no l.acknowledged call yet -- Stop races ahead of the
+	// "started" tool-result write (B10's exact window).
+
+	l.cancelSession("owner")
+
+	l.mu.Lock()
+	_, stillPresent := l.bySession["owner"].jobs["call"]
+	l.mu.Unlock()
+	require.True(t, stillPresent, "an unannounced job must survive Stop in memory so the eventual ack can still close it out")
+
+	row, err := store.Get(context.Background(), "owner", "call")
+	require.NoError(t, err)
+	require.Equal(t, "cancelled", row.State)
+	require.EqualValues(t, 0, row.Announced, "not yet announced at this point")
+
+	// The "started" ack finally arrives.
+	l.acknowledged("owner", "call")
+
+	row, err = store.Get(context.Background(), "owner", "call")
+	require.NoError(t, err)
+	require.EqualValues(t, 1, row.Announced, "the ack must still be able to mark this row announced -- B10's fix")
+
+	l.mu.Lock()
+	jobs := l.bySession["owner"].jobs
+	l.mu.Unlock()
+	require.Empty(t, jobs, "the job must be dropped from memory once announced -- still no in-memory notice for a plain Stop")
+
+	require.Empty(t, drainCompletions(delivered), "a plain job stopped by Stop must never produce an in-memory notice, even discovered late at ack")
+}
+
+// TestWorkLedger_CloseDoesNotLatchOntoExecutorReturnedJob pins B9: close()
+// must not latch shutdownCancelled onto a job whose executor has ALREADY
+// returned with a real result and is merely waiting its turn for l.mu to
+// report it. finish() sets job.executorReturned the INSTANT it acquires
+// l.mu, before any DB work -- this reproduces the exact window that flag
+// protects: executorReturned is set (finish()'s own first action), THEN
+// close() runs (which, pre-fix, marked shutdownCancelled on every non-
+// terminal job unconditionally), THEN the natural finish's own transition
+// call finally proceeds. The real result must still commit -- not be
+// silently discarded, leaving the row 'running' for recovery to later
+// misreport as 'interrupted'.
+//
+// Revert-check performed: reverted close() to its pre-fix body (mark
+// shutdownCancelled on every job present, no state/executorReturned check)
+// -- this test FAILED (0 completions delivered, row.State stayed "running").
+// Restored the fix; re-ran, passed. Diffed work_ledger.go against git HEAD
+// after restoring: matches the committed fix.
+func TestWorkLedger_CloseDoesNotLatchOntoExecutorReturnedJob(t *testing.T) {
+	t.Parallel()
+	store := newTestAsyncJobStore(t)
+	delivered := make(chan AsyncCompletion, 1)
+	l := newWorkLedger(func(c AsyncCompletion) { delivered <- c })
+	l.store = store
+
+	_, _, err := l.Start("owner", "call", "", "bash", "", false, false, nil, func() {})
+	require.NoError(t, err)
+	l.acknowledged("owner", "call")
+
+	// Simulate finish()'s own ordering: it marks executorReturned BEFORE
+	// doing any DB work. Reproduces the window where the executor's real
+	// result is already known but not yet committed when close() runs.
+	l.mu.Lock()
+	job := l.bySession["owner"].jobs["call"]
+	job.executorReturned = true
+	l.mu.Unlock()
+
+	l.close()
+
+	// The natural finish's own (unrelated-to-shutdown) transition call now
+	// proceeds -- must still commit the real result.
+	l.transition("owner", "call", causeNaturalFinish, jobResult{content: "real output"})
+
+	got := drainCompletions(delivered)
+	require.Len(t, got, 1, "a natural completion racing close() must still be delivered, not silently dropped")
+	require.Equal(t, "real output", got[0].Content)
+	require.False(t, got[0].IsError)
+
+	row, err := store.Get(context.Background(), "owner", "call")
+	require.NoError(t, err)
+	require.Equal(t, "completed", row.State, "must not be left 'running' -- its real output was already known, not actually shutdown-caused")
 }

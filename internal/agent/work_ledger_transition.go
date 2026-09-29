@@ -242,6 +242,12 @@ func (l *workLedger) commitTransition(owner, toolCallID string, cause transition
 			Owner: owner, ToolCallID: toolCallID, State: state, NoticeKind: noticeKind,
 			ResultSummary: result.content, ResultIsError: result.isError, Wake: wake,
 			Delivery: delivery, Reacted: reacted,
+			// ClaimID (A11): the claim this job's OWN Start captured -- closes
+			// the ABA where a deleted-then-re-claimed row would otherwise let
+			// this (now stale) executor's late result commit onto a fresh
+			// claim of the same (owner, toolCallID) key just because both
+			// have state='running'.
+			ClaimID: job.claimID,
 		})
 		if err == nil {
 			break
@@ -262,6 +268,30 @@ func (l *workLedger) commitTransition(owner, toolCallID string, cause transition
 
 	l.mu.Lock()
 	job.transitioning = false
+	if outcome.Outcome == session.TransitionLost && outcome.Row.State == "running" {
+		// A11: the CAS lost NOT because some other cause already finished
+		// this row (the pre-claim_id assumption every other TransitionLost
+		// case still relies on below), but because claim_id no longer
+		// matches -- the row was deleted and re-claimed under a DIFFERENT
+		// claim while this job's OWN executor was still running (ABA). This
+		// key is no longer ours to report ANY outcome for: treating
+		// outcome.Row (still 'running', empty result) as if it were our
+		// terminal state would mislabel this job phaseFailed with empty
+		// content and deliver a false "failed with no output" completion to
+		// the owner for a job that is actually still legitimately running
+		// under the fresh claim. Drop from OUR map exactly like a gone row;
+		// the fresh claim's own executor owns whatever happens to it next.
+		delete(s.jobs, toolCallID)
+		if job.childSession != "" {
+			l.gcChildLocked(job.childSession)
+		}
+		if len(s.jobs) == 0 {
+			l.clearSupervisionIfPresent(owner)
+		}
+		signalWorkSession(s)
+		l.mu.Unlock()
+		return commitGone
+	}
 	switch outcome.Outcome {
 	case session.TransitionGone:
 		delete(s.jobs, toolCallID)
@@ -293,23 +323,31 @@ func (l *workLedger) commitTransition(owner, toolCallID string, cause transition
 	return commitLost
 }
 
-// transition is the single writer of a non-sync async job's terminal state,
-// used by every non-sync terminal-transition call site (finish,
-// handleTimeout, job_kill/StopRunCommandJob, cancelSession, recheckChild).
-// Sync jobs never reach here (commitTransition skips them).
-//
-// Delivery step (review finding P2): a PLAIN job (childSession == "") that
-// cancelSession marked stoppedBySession -- set synchronously under l.mu,
-// before ANY racing cause's DB write even begins -- is dropped from memory
-// silently instead of going through deliverLocked, regardless of which
-// cause actually won the CAS. This closes the race where a natural finish's
-// OWN transition call wins ahead of cancelSession's (cancelSession's DB I/O
-// runs outside l.mu, so either side can commit first): without the flag,
-// that finish would reach deliverLocked and wake the session right after
-// the user pressed Stop. Delegations ignore the flag and keep delivering
-// their cancelled notice exactly as before.
-func (l *workLedger) transition(owner, toolCallID string, cause transitionCause, result jobResult) {
-	switch l.commitTransition(owner, toolCallID, cause, result) {
+// jobOutcomeSnapshot is a post-commit view of a job returned by commitAndDeliver
+// for a caller that must ANSWER based on what actually got committed (B11:
+// job_kill), not assume its own cause won the race. found is false when the
+// job could not be located at all afterward -- already fully delivered and
+// removed from the map, or the row was gone (commitGone) -- meaning there is
+// no committed row left to describe; the caller falls back to its own
+// "not found" wording.
+type jobOutcomeSnapshot struct {
+	found  bool
+	state  jobPhase
+	result jobResult
+}
+
+// commitAndDeliver runs commitTransition then, for a won/lost outcome,
+// performs the delivery step every terminal-transition call site needs:
+// deliverLocked (which itself now owns the "a plain job stopped by Stop
+// produces no in-memory notice" rule, doc sec.3.4 -- see that function's own
+// doc for B10's fix). Returns the commit outcome plus a snapshot of the
+// job's post-commit state/result so a caller that needs the COMMITTED
+// outcome to build its own answer (B11) doesn't have to duplicate this
+// delivery logic or assume its own cause was the one that actually won.
+func (l *workLedger) commitAndDeliver(owner, toolCallID string, cause transitionCause, result jobResult) (commitOutcome, jobOutcomeSnapshot) {
+	outcome := l.commitTransition(owner, toolCallID, cause, result)
+	var snap jobOutcomeSnapshot
+	switch outcome {
 	case commitWon, commitLost:
 		l.mu.Lock()
 		s := l.bySession[owner]
@@ -319,23 +357,27 @@ func (l *workLedger) transition(owner, toolCallID string, cause transitionCause,
 		}
 		if job == nil {
 			l.mu.Unlock()
-			return
+			return outcome, snap
 		}
-		if job.stoppedBySession && job.childSession == "" {
-			delete(s.jobs, toolCallID)
-			if len(s.jobs) == 0 {
-				l.clearSupervisionIfPresent(owner)
-			}
-			signalWorkSession(s)
-			l.mu.Unlock()
-			return
-		}
+		snap = jobOutcomeSnapshot{found: true, state: job.state, result: job.result}
 		completion, callback := l.deliverLocked(owner, job)
 		l.mu.Unlock()
 		if callback {
 			l.onWebDone(completion)
 		}
 	}
+	return outcome, snap
+}
+
+// transition is the single writer of a non-sync async job's terminal state,
+// used by every non-sync terminal-transition call site (finish,
+// handleTimeout, cancelSession, recheckChild) that does not need
+// commitAndDeliver's return value. job_kill/StopRunCommandJob (work_ledger.go)
+// call commitAndDeliver directly instead, since B11 requires their tool
+// answer to reflect the COMMITTED outcome rather than assume causeJobKill
+// won.
+func (l *workLedger) transition(owner, toolCallID string, cause transitionCause, result jobResult) {
+	l.commitAndDeliver(owner, toolCallID, cause, result)
 }
 
 // transitionSyncStopped is the sync-job counterpart of the job_kill/

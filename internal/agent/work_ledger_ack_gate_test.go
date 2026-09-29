@@ -53,6 +53,65 @@ func TestWorkLedger_AckGate_FusesMessageAndAnnouncedInOneTransaction(t *testing.
 	require.Equal(t, "started", got.Content().Text)
 }
 
+// TestWorkLedger_AckGate_ErrAsyncJobGoneRollsBackAndFallsBackToPlainCreate
+// pins B15 two ways at once: (1) genuine atomicity of the fused write -- the
+// happy-path test above only checks the END state (message exists AND
+// announced=1), which would ALSO pass for two separate, non-transactional
+// writes; this test fails the SECOND half (MarkAsyncJobAnnounced, via a row
+// deleted out from under the in-memory job -- the real "a Rerun truncation
+// raced this call" shape) and proves the FIRST half (the message insert)
+// rolled back too, which only a single shared transaction guarantees.
+// (2) the caller-visible contract: handled must be false (not true-with-
+// swallowed-error) so onToolResult falls through to its own plain Create --
+// otherwise the tool_use this result answers gets no tool_result at all,
+// which every provider rejects on the next turn.
+//
+// Revert-check performed: reverted acknowledgeWithMessageTx's ErrAsyncJobGone
+// branch to `return message.Message{}, true, nil` -- this test FAILED
+// (handled was true, so the fallback Create below never ran and msgs stayed
+// empty). Restored the false-return version; re-ran, passed. Diffed
+// work_ledger_announce.go against git HEAD after restoring: matches the
+// committed fix.
+func TestWorkLedger_AckGate_ErrAsyncJobGoneRollsBackAndFallsBackToPlainCreate(t *testing.T) {
+	t.Parallel()
+	store, _, conn := newTestAsyncJobStoreWithDataDir(t)
+	messages := message.NewService(db.New(conn))
+	l := newWorkLedger(nil)
+	l.store = store
+
+	_, _, err := l.Start("owner-1", "call-1", "echo hi", "bash", "", false, false, nil, func() {})
+	require.NoError(t, err)
+
+	// Simulate "a Rerun truncation raced this call": the DURABLE row is gone
+	// (deleted directly at the store level, bypassing the ledger's own
+	// abort() so the IN-MEMORY job entry survives, exactly as a concurrent
+	// Rerun would leave it -- see acknowledgeWithMessageTx's own doc).
+	require.NoError(t, store.DeleteUnannounced(context.Background(), "owner-1", "call-1"))
+
+	msg, handled, err := l.acknowledgeWithMessageTx(context.Background(), "owner-1", "call-1", messages, startedParams("started"))
+	require.NoError(t, err)
+	require.False(t, handled, "ErrAsyncJobGone must fall back to the caller's own plain Create, not swallow the result")
+	require.Empty(t, msg.ID)
+
+	// Atomicity: the message the fused tx staged must NOT have survived --
+	// only a single shared transaction with MarkAsyncJobAnnounced guarantees
+	// this; two independent writes would have left it behind.
+	msgs, err := messages.List(context.Background(), "owner-1")
+	require.NoError(t, err)
+	require.Empty(t, msgs, "the fused transaction's own message insert must roll back with the failed announce write")
+
+	// The caller's own fallback (onToolResult's unchanged plain path):
+	// exactly one message must end up persisted.
+	created, err := messages.Create(context.Background(), "owner-1", startedParams("started"))
+	require.NoError(t, err)
+	l.acknowledged("owner-1", "call-1") // tolerates the still-gone row (MarkAnnounced's own ErrAsyncJobGone handling)
+
+	msgs, err = messages.List(context.Background(), "owner-1")
+	require.NoError(t, err)
+	require.Len(t, msgs, 1, "exactly one tool-result message must exist after the fallback -- never zero (orphaned tool_use), never two")
+	require.Equal(t, created.ID, msgs[0].ID)
+}
+
 // TestWorkLedger_AckGate_SyncAndUntrackedCallsAreNotHandled pins the
 // fallback contract: a sync job (announced=true already, no DB row) and an
 // ordinary tool call with no ledger entry at all must both come back

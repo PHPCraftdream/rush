@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"strings"
 	"sync"
@@ -13,6 +14,7 @@ import (
 	"charm.land/fantasy/providers/google"
 	"charm.land/fantasy/providers/openai"
 
+	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
 )
@@ -404,6 +406,22 @@ func (ts *turnStream) onToolResult(result fantasy.ToolResultContent) error {
 	if ts.a.asyncJobs != nil {
 		if _, handled, err := ts.a.asyncJobs.acknowledgeWithMessageTx(ts.ctx, sessionID, result.ToolCallID, ts.a.messages, params); handled {
 			return err
+		}
+	}
+	// A3 (doc sec.3.2's law "delivery='done' => the row names the message
+	// that carries its result"): job_kill's OWN tool-result message (keyed by
+	// job_kill's call id, not the target job's -- the ack gate above never
+	// matches it) fuses into notice_message_id for the TARGET job it acted
+	// on, in the SAME transaction as this message's insert. Only reachable
+	// for a successful job_kill call that actually resolved to a tracked
+	// job_id (JobKillResponseMetadata.JobID) -- a raw shell_id kill or the
+	// B11 refusal path carries no such metadata and falls through unchanged.
+	if ts.a.asyncJobs != nil && result.ToolName == tools.JobKillToolName && !toolResult.IsError {
+		var meta tools.JobKillResponseMetadata
+		if json.Unmarshal([]byte(toolResult.Metadata), &meta) == nil && meta.JobID != "" {
+			if _, handled, err := ts.a.asyncJobs.jobKillResultMessageTx(ts.ctx, sessionID, meta.JobID, ts.a.messages, params); handled {
+				return err
+			}
 		}
 	}
 	// Use parent ctx instead of genCtx to ensure the message is created

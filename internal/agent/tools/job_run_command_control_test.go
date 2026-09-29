@@ -218,7 +218,10 @@ func TestJobKillTool_MarksJobStoppedBeforeKilling(t *testing.T) {
 	bgShell, err := bgManager.StartOwned(ctx, "session-a", workingDir, nil, "sleep 30", "")
 	require.NoError(t, err)
 
-	resolver := &fakeJobShellResolver{shellID: bgShell.ID}
+	// markOK: true -- see job_shell_resolver_test.go's
+	// TestJobKillTool_ResolvesJobIDToShellID for why (B11: job_kill now
+	// refuses outright on ok=false instead of falling through to bgManager).
+	resolver := &fakeJobShellResolver{shellID: bgShell.ID, markOK: true}
 	tool := NewJobKillTool(resolver, nil, bgManager)
 
 	input, err := json.Marshal(JobKillParams{JobID: "call-1"})

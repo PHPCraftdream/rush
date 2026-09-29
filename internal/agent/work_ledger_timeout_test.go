@@ -214,6 +214,58 @@ func TestWorkLedger_WakeOnlyUsesTimeoutWakeOnlyNoticeKind(t *testing.T) {
 	require.Contains(t, notices[0].Text, "still running")
 }
 
+// TestWorkLedger_WakeOnly_SyncJobProducesNoNoticeOrWake pins B-dev9:
+// handleTimeout's wake_only branch had no job.sync check at all -- for a
+// sync (SDK/library, no async_jobs row, doc sec.3.1) job it would still
+// persist a session_notices row and submit a Drain wake, even though there
+// is no durable row for job_tool_call_id to name and no session-driven turn
+// to wake at all (the job's only consumer is the ONE goroutine blocked in
+// awaitSync). Only terminate_and_wake (via ordinary ctx cancellation) makes
+// sense for a sync call.
+//
+// Revert-check performed: removed the `|| job.sync` from handleTimeout's
+// wake_only guard -- this test FAILED (a session_notices row was created and
+// agent.Run received a Drain call). Restored the guard; re-ran, passed.
+// Diffed work_ledger_timeout.go against git HEAD after restoring: matches
+// the committed fix.
+func TestWorkLedger_WakeOnly_SyncJobProducesNoNoticeOrWake(t *testing.T) {
+	t.Parallel()
+	received := make(chan SessionAgentCall, 1)
+	agent := &mockSessionAgent{runFunc: func(ctx context.Context, call SessionAgentCall) (*fantasy.AgentResult, error) {
+		received <- call
+		return agentResultWithText("ok"), nil
+	}}
+	coord := &coordinator{subAgentDrivers: newSubAgentDriverRegistry()}
+	coord.subAgentDrivers.register("owner", subAgentDriver{agent: agent})
+	l := newWorkLedger(nil)
+	l.store = newTestAsyncJobStore(t)
+	l.coord = coord
+	coord.asyncJobs = l
+
+	_, _, err := l.Start("owner", "call-1", "", "bash", "", false, true, &TimeoutSpec{
+		Deadline: time.Now().Add(-time.Hour), Kind: timeoutWakeOnly, Seconds: 30,
+	}, func() {})
+	require.NoError(t, err)
+
+	l.mu.Lock()
+	job := l.bySession["owner"].jobs["call-1"]
+	l.mu.Unlock()
+	require.True(t, job.sync)
+
+	l.handleTimeout(job)
+
+	select {
+	case call := <-received:
+		t.Fatalf("a sync job's wake_only timeout must never submit a Drain call: %+v", call)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	notices, err := l.store.ListSessionNotices(context.Background(), "owner")
+	require.NoError(t, err)
+	require.Empty(t, notices, "a sync job's wake_only timeout must not persist a session_notices row")
+	require.Equal(t, phaseRunning, job.state)
+}
+
 // TestWorkLedger_WakeOnlyFiresExactlyOnceThenStaysRunning: calling
 // handleTimeout twice for the same wake_only job must fire the wake exactly
 // once (the timeoutNotified one-shot guard), not twice.

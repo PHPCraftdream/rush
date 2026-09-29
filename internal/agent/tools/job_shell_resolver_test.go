@@ -91,7 +91,12 @@ func TestJobKillTool_ResolvesJobIDToShellID(t *testing.T) {
 	bgShell, err := bgManager.StartOwned(ctx, "session-a", workingDir, nil, "sleep 30", "")
 	require.NoError(t, err)
 
-	resolver := &fakeJobShellResolver{shellID: bgShell.ID}
+	// markOK: true -- the shell is genuinely still running (StartOwned
+	// above), so a real ledger would report a fresh stop here; B11 made
+	// job_kill refuse outright (never touching bgManager) when the
+	// resolver reports ok=false, so this fixture must reflect a real
+	// fresh stop to keep exercising the kill path this test is about.
+	resolver := &fakeJobShellResolver{shellID: bgShell.ID, markOK: true}
 	tool := NewJobKillTool(resolver, nil, bgManager)
 
 	input, err := json.Marshal(JobKillParams{JobID: "call-1"})
@@ -153,6 +158,45 @@ func TestJobKillTool_UsesResolverTextAsFinalAnswer(t *testing.T) {
 	require.False(t, resp.IsError)
 	require.Equal(t, resolver.markText, resp.Content, "job_kill's own final answer must be the resolver's real-output text, not the generic wording")
 	require.True(t, bgShell.IsDone(), "the shell must still actually be killed on a fresh stop")
+}
+
+// TestJobKillTool_RefusesWithoutKillingWhenResolverReportsNotFresh pins B11:
+// when MarkJobStopped reports ok=false (the job already reached a terminal
+// state via another cause, or a concurrent job_kill already claimed it),
+// job_kill must refuse outright -- never fall through to bgManager and
+// fabricate a "terminated successfully" answer for a stop it did not
+// actually cause. The shell here is genuinely still running (StartOwned), so
+// a pre-fix job_kill would happily kill it and claim credit; the fix must
+// leave it untouched.
+//
+// Revert-check performed: reverted job_kill.go's `if !marked { return ... }`
+// branch (falling through to bgManager unconditionally, as before B11) --
+// this test FAILED (resp.IsError was false, content was "terminated
+// successfully", and bgShell.IsDone() was true). Restored the refusal;
+// re-ran, passed. Diffed job_kill.go against git HEAD after restoring:
+// matches the committed fix.
+func TestJobKillTool_RefusesWithoutKillingWhenResolverReportsNotFresh(t *testing.T) {
+	workingDir := t.TempDir()
+	ctx := context.WithValue(context.Background(), SessionIDContextKey, "session-a")
+
+	bgManager := shell.NewBackgroundShellManager()
+	t.Cleanup(func() { bgManager.Close(context.Background()) })
+	bgShell, err := bgManager.StartOwned(ctx, "session-a", workingDir, nil, "sleep 30", "")
+	require.NoError(t, err)
+
+	// markOK left at its zero value (false): the ledger says this job
+	// already reached a terminal state via another cause.
+	resolver := &fakeJobShellResolver{shellID: bgShell.ID}
+	tool := NewJobKillTool(resolver, nil, bgManager)
+
+	input, err := json.Marshal(JobKillParams{JobID: "call-1"})
+	require.NoError(t, err)
+	resp, err := tool.Run(ctx, fantasy.ToolCall{ID: "kill-call", Name: JobKillToolName, Input: string(input)})
+	require.NoError(t, err)
+	require.True(t, resp.IsError)
+	require.Contains(t, resp.Content, "not found")
+	require.Contains(t, resp.Content, "already stopped")
+	require.False(t, bgShell.IsDone(), "must not kill a shell it did not actually stop")
 }
 
 func TestJobKillTool_BothJobIDAndShellIDRejected(t *testing.T) {
