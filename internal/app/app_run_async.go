@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
@@ -39,6 +40,34 @@ var (
 	// unbounded one.
 	cliLockBusyRetryOverallLimit = 30 * time.Second
 )
+
+// flushLoopExit renders final's envelope through output exactly the way the
+// loop's normal "scope closed" exit always did (C17 fix, docs/reviews/
+// 2026-09-29-async-phase4-round1.md): every exit from runNonInteractive-
+// WithAsyncResults's loop -- lock-busy give-up, ctx cancellation, a wait
+// error, or the ordinary scope-closed end -- must flush a REAL prior turn's
+// terse text or JSON envelope through the SAME path. Before this fix only
+// the scope-closed exit did; every other early return skipped straight past
+// it, so cmd/run.go (which never re-renders anything itself) silently
+// printed nothing on stdout for those exits even when final already carried
+// a completed turn's result. final == nil is a no-op, matching the
+// non-loop single-call path's own nil guard just above this loop.
+func flushLoopExit(output io.Writer, mode RunMode, final *RunResult, lastBuffered *bytes.Buffer) error {
+	if final == nil {
+		return nil
+	}
+	switch mode {
+	case RunModeTerse:
+		if _, err := io.Copy(output, lastBuffered); err != nil {
+			return err
+		}
+	case RunModeJSON:
+		if err := json.NewEncoder(output).Encode(final); err != nil {
+			return fmt.Errorf("failed to encode JSON result: %w", err)
+		}
+	}
+	return nil
+}
 
 // sleepOrCtxDone sleeps for d, or returns false early if ctx is done first.
 func sleepOrCtxDone(ctx context.Context, d time.Duration) bool {
@@ -181,10 +210,24 @@ func (app *App) runNonInteractiveWithAsyncResults(ctx context.Context, output io
 			if elapsed := time.Since(lockBusyRetryStart); elapsed > cliLockBusyRetryOverallLimit {
 				fmt.Fprintf(os.Stderr, "rush run: session %q still locked by another process after %s; giving up\n",
 					sessionID, cliLockBusyRetryOverallLimit)
+				if final != nil {
+					final.ExitReason = "error"
+					final.Error = err.Error()
+				}
+				if flushErr := flushLoopExit(output, mode, final, lastBuffered); flushErr != nil {
+					return final, flushErr
+				}
 				return final, err
 			}
 			fmt.Fprintf(os.Stderr, "rush run: session %q is locked by another process; retrying\n", sessionID)
 			if !sleepOrCtxDone(ctx, cliLockBusyRetryPause) {
+				if final != nil {
+					final.ExitReason = "canceled"
+					final.Error = ctx.Err().Error()
+				}
+				if flushErr := flushLoopExit(output, mode, final, lastBuffered); flushErr != nil {
+					return final, flushErr
+				}
 				return final, ctx.Err()
 			}
 			continue
@@ -199,7 +242,14 @@ func (app *App) runNonInteractiveWithAsyncResults(ctx context.Context, output io
 		// result nor become the run's error.
 		drainNoTurn := !firstTurn && errors.Is(err, ErrRunQueued)
 		if !firstTurn && !drainNoTurn {
-			source.RecordDrainTurnOutcome(ctx, sessionID, drainSnapshot, err)
+			// Item 2/C5c fix: a non-empty final answer is this loop's only
+			// available signal that the turn actually produced content (it
+			// has no per-attempt assistant-message evidence the way
+			// wakeSession does) -- passed through so RecordDrainTurnOutcome
+			// can bound a "success but the reaction write silently failed"
+			// loop exactly like the web path does.
+			producedContent := result != nil && strings.TrimSpace(result.FinalText) != ""
+			source.RecordDrainTurnOutcome(ctx, sessionID, drainSnapshot, err, producedContent)
 		}
 		if result != nil && !drainNoTurn {
 			final = result
@@ -217,6 +267,13 @@ func (app *App) runNonInteractiveWithAsyncResults(ctx context.Context, output io
 			lastBuffered = buffered
 		}
 		if sessionID == "" || ctx.Err() != nil {
+			if final != nil && ctx.Err() != nil {
+				final.ExitReason = "canceled"
+				final.Error = ctx.Err().Error()
+			}
+			if flushErr := flushLoopExit(output, mode, final, lastBuffered); flushErr != nil {
+				return final, flushErr
+			}
 			return final, runErr
 		}
 
@@ -230,7 +287,16 @@ func (app *App) runNonInteractiveWithAsyncResults(ctx context.Context, output io
 		if waitErr != nil {
 			if final != nil {
 				final.ExitReason = "canceled"
+				if !errors.Is(waitErr, context.Canceled) && !errors.Is(waitErr, context.DeadlineExceeded) {
+					// A persistent DB-read failure (cliDBErrorRetryOverallLimit
+					// exceeded) is not a cancellation -- "error" describes it
+					// more accurately in the JSON envelope's vocabulary.
+					final.ExitReason = "error"
+				}
 				final.Error = waitErr.Error()
+			}
+			if flushErr := flushLoopExit(output, mode, final, lastBuffered); flushErr != nil {
+				return final, flushErr
 			}
 			return final, waitErr
 		}
@@ -248,15 +314,8 @@ func (app *App) runNonInteractiveWithAsyncResults(ctx context.Context, output io
 				final.ToolCalls = append(final.ToolCalls, ToolCallStat{Name: name, Count: count})
 			}
 			slices.SortFunc(final.ToolCalls, func(a, b ToolCallStat) int { return cmpName(a.Name, b.Name) })
-			if mode == RunModeTerse {
-				if _, writeErr := io.Copy(output, lastBuffered); writeErr != nil {
-					return final, writeErr
-				}
-			}
-			if mode == RunModeJSON {
-				if encErr := json.NewEncoder(output).Encode(final); encErr != nil {
-					return final, fmt.Errorf("failed to encode JSON result: %w", encErr)
-				}
+			if flushErr := flushLoopExit(output, mode, final, lastBuffered); flushErr != nil {
+				return final, flushErr
 			}
 			return final, runErr
 		}
@@ -289,14 +348,46 @@ func waitAfterNoTurnDrain(ctx context.Context, source agent.ReactionDebtSource, 
 	}
 }
 
+// cliOpenScopeWaitNoticeInterval bounds how often waitForNextCLITurn prints
+// its "still waiting on open scope" stderr heartbeat (C17 fix, docs/reviews/
+// 2026-09-29-async-phase4-round1.md): an `Unknown` host-liveness verdict
+// (io error probing the lock file) keeps a session's scope reported open
+// for up to `sessions gc`'s 6h horizon with NO observable signal at all --
+// an operator watching the process sees only silence. A var, not a const,
+// so a test can shrink it instead of waiting a real interval.
+var cliOpenScopeWaitNoticeInterval = 60 * time.Second
+
+// cliDBErrorRetryOverallLimit bounds waitForNextCLITurn's DB-read-error
+// retry loop (C17 fix, docs/reviews/2026-09-29-async-phase4-round1.md): a
+// persistent DB failure (disk issue, corruption) was previously retried
+// forever with only a slog.Warn line, no stderr message and no bound --
+// indistinguishable from a hang to whoever is watching the process. A var,
+// not a const, so a test can shrink it.
+var cliDBErrorRetryOverallLimit = 30 * time.Second
+
 // waitForNextCLITurn implements doc sec.3.5's CLI-loop predicate: another
 // turn is owed iff sessionID's reaction debt exists right now; otherwise the
 // loop waits (a hint, or a bounded same-process fallback tick) and
 // re-evaluates, until the scope closes (exit, hasNext=false) or a debt
 // appears (hasNext=true). A DB read error retries with a pause rather than
-// silently treating the scope as open or closed. Only ctx cancellation ends
-// the wait with an error.
+// silently treating the scope as open or closed, bounded overall by
+// cliDBErrorRetryOverallLimit and visible on stderr, mirroring the lock-busy
+// retry's own bounded-and-visible shape above. Only ctx cancellation or that
+// bound ends the wait with an error.
 func (app *App) waitForNextCLITurn(ctx context.Context, source agent.ReactionDebtSource, sessionID string) (hasNext bool, err error) {
+	var lastOpenScopeNotice time.Time
+	var dbErrorRetryStart time.Time
+	giveUpOnPersistentDBError := func(cause error) (bool, error, bool) {
+		if dbErrorRetryStart.IsZero() {
+			dbErrorRetryStart = time.Now()
+		}
+		if elapsed := time.Since(dbErrorRetryStart); elapsed > cliDBErrorRetryOverallLimit {
+			fmt.Fprintf(os.Stderr, "rush run: session %q's database has been unreadable for %s (%s); giving up\n",
+				sessionID, cliDBErrorRetryOverallLimit, cause)
+			return false, cause, true
+		}
+		return false, nil, false
+	}
 	for {
 		if ctx.Err() != nil {
 			return false, ctx.Err()
@@ -318,22 +409,30 @@ func (app *App) waitForNextCLITurn(ctx context.Context, source agent.ReactionDeb
 		debt, debtErr := source.ReactionDebtExists(ctx, sessionID)
 		if debtErr != nil {
 			slog.Warn("rush run: reaction debt check failed; retrying", "session_id", sessionID, "err", debtErr)
+			if hasNext, giveUpErr, giveUp := giveUpOnPersistentDBError(debtErr); giveUp {
+				return hasNext, giveUpErr
+			}
 			if !sleepOrCtxDone(ctx, cliDBRetryPause) {
 				return false, ctx.Err()
 			}
 			continue
 		}
+		dbErrorRetryStart = time.Time{}
 		if debt {
 			return true, nil
 		}
 		open, openErr := source.ScopeOpen(ctx, sessionID)
 		if openErr != nil {
 			slog.Warn("rush run: scope check failed; retrying", "session_id", sessionID, "err", openErr)
+			if hasNext, giveUpErr, giveUp := giveUpOnPersistentDBError(openErr); giveUp {
+				return hasNext, giveUpErr
+			}
 			if !sleepOrCtxDone(ctx, cliDBRetryPause) {
 				return false, ctx.Err()
 			}
 			continue
 		}
+		dbErrorRetryStart = time.Time{}
 		if !open {
 			return false, nil
 		}
@@ -343,6 +442,15 @@ func (app *App) waitForNextCLITurn(ctx context.Context, source agent.ReactionDeb
 		// This is a same-process wait; the cross-process fallback is the
 		// coordinator's own 60s pass re-evaluating parked delegations/
 		// recheck-set sessions independently (doc sec.3.5).
+		//
+		// C17 fix: a periodic stderr heartbeat so a session stuck open on an
+		// `Unknown` host-liveness verdict (or a genuinely long-running job)
+		// is visible to whoever is watching the process, instead of silent
+		// waiting all the way out to `sessions gc`'s retention horizon.
+		if now := time.Now(); lastOpenScopeNotice.IsZero() || now.Sub(lastOpenScopeNotice) >= cliOpenScopeWaitNoticeInterval {
+			lastOpenScopeNotice = now
+			fmt.Fprintf(os.Stderr, "rush run: session %q still has open work (a running job/delegation, or an unreachable host); waiting\n", sessionID)
+		}
 		source.WaitForHint(ctx, sessionID)
 	}
 }

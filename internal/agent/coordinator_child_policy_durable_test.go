@@ -39,9 +39,11 @@ func newChildPolicyTestCoordinator(t *testing.T) (*coordinator, *workLedger, *se
 
 // TestSessionDrainPolicy_DurableDelegationChildWithNoRunningDelegation_Refused
 // is the core B3/C6 proof: a session created via CreateTaskSession (durably
-// carrying ParentSessionID) with no currently-RUNNING delegation row must be
-// REFUSED a Drain turn outright -- never falls through to the generic
-// web/default policy that would otherwise grant it headroom.
+// carrying ParentSessionID), whose parent claimed a matching JobKindAgent
+// delegation row that has since gone terminal (no currently-RUNNING
+// delegation row), must be REFUSED a Drain turn outright -- never falls
+// through to the generic web/default policy that would otherwise grant it
+// headroom.
 //
 // Revert-check performed: removed the isDurableDelegationChild branch from
 // sessionDrainPolicy (coordinator_drain_policy.go), letting the "no running
@@ -50,7 +52,7 @@ func newChildPolicyTestCoordinator(t *testing.T) (*coordinator, *workLedger, *se
 // true: the child was granted the SAME auto-turn headroom as a plain web
 // session). Restored the branch; re-ran, passed.
 func TestSessionDrainPolicy_DurableDelegationChildWithNoRunningDelegation_Refused(t *testing.T) {
-	coord, _, _, getEnv := newChildPolicyTestCoordinator(t)
+	coord, _, store, getEnv := newChildPolicyTestCoordinator(t)
 	env := getEnv(context.Background())
 	ctx := context.Background()
 
@@ -59,13 +61,58 @@ func TestSessionDrainPolicy_DurableDelegationChildWithNoRunningDelegation_Refuse
 	child, err := env.sessions.CreateTaskSession(ctx, "task-call-1", parent.ID, "child")
 	require.NoError(t, err)
 
-	// No delegation row was ever claimed for child.ID in the async_jobs
-	// store -- hasRunningDelegationFor reports false, exactly like a
-	// released or long-finished delegation.
+	// item 8 fix: isDurableDelegationChild no longer trusts ParentSessionID
+	// alone -- it confirms a real delegation job named this session as its
+	// ChildSessionID. Claim + transition it to terminal so
+	// hasRunningDelegationFor reports false (exactly like a released or
+	// long-finished delegation) while the durable async_jobs row backing
+	// the identity check still exists.
+	_, err = store.Claim(ctx, session.ClaimParams{
+		Owner: parent.ID, ToolCallID: "agent-call-1", Kind: session.JobKindAgent,
+		Input: "x", ChildSessionID: child.ID, ToolName: "agent",
+	})
+	require.NoError(t, err)
+	require.NoError(t, store.MarkAnnounced(ctx, parent.ID, "agent-call-1"))
+	_, err = store.Transition(ctx, session.TransitionParams{
+		Owner: parent.ID, ToolCallID: "agent-call-1", State: "completed",
+		ResultSummary: "done", Wake: true,
+	})
+	require.NoError(t, err)
+
 	allowed, counted, err := coord.sessionDrainPolicy(ctx, child.ID)
 	require.NoError(t, err)
 	require.False(t, allowed, "a durable delegation child with no running delegation must be refused a Drain turn")
 	require.False(t, counted)
+}
+
+// TestSessionDrainPolicy_ForkedChildWithParentSet_UsesWebPolicy is the item
+// 8 fix's regression guard: `sessions fork --child` sets ParentSessionID for
+// a purpose entirely unrelated to delegation (session.ForkOptions.ParentID)
+// -- no async_jobs row ever names the fork as anyone's ChildSessionID. Such
+// a session must NOT be swept into the delegation-child refusal.
+//
+// Revert-check performed: reverted isDurableDelegationChild to the bare
+// `sess.ParentSessionID != ""` check (pre-item-8 behavior) -- this test's
+// `require.True(t, allowed)` FAILED (allowed was false: the forked session
+// was wrongly refused a Drain turn as if it were a released delegation
+// child). Restored the ListAsyncJobsForOwner/ChildSessionID confirmation;
+// re-ran, passed.
+func TestSessionDrainPolicy_ForkedChildWithParentSet_UsesWebPolicy(t *testing.T) {
+	coord, _, _, getEnv := newChildPolicyTestCoordinator(t)
+	env := getEnv(context.Background())
+	ctx := context.Background()
+
+	src, err := env.sessions.Create(ctx, "fork-source")
+	require.NoError(t, err)
+	fork, _, err := env.sessions.ForkSessionTx(ctx, src.ID, session.ForkOptions{
+		NewID: "forked-child", ParentID: src.ID,
+	})
+	require.NoError(t, err)
+	require.Equal(t, src.ID, fork.ParentSessionID, "fixture sanity: fork must carry ParentSessionID like sessions fork --child")
+
+	allowed, _, err := coord.sessionDrainPolicy(ctx, fork.ID)
+	require.NoError(t, err)
+	require.True(t, allowed, "a forked (non-delegation) session with ParentSessionID set must use the ordinary web/default policy, not the delegation-child refusal")
 }
 
 // TestSessionDrainPolicy_PlainSessionWithNoDelegationHistory_UsesWebPolicy is

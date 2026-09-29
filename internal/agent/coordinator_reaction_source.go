@@ -55,7 +55,13 @@ type ReactionDebtSource interface {
 	// accounting to a Drain-context loop turn that actually ran (never call
 	// this for a turn that was merely queued/never attempted -- doc
 	// sec.3.4/sec.6, mirrors wakeSession's own post-Run handling exactly).
-	RecordDrainTurnOutcome(ctx context.Context, sessionID string, snapshot session.DebtSnapshot, turnErr error)
+	// producedContent reports whether the turn's own result carried a
+	// non-empty final answer (item 2/C5c fix: a "successful" Drain turn
+	// whose reaction write silently failed must not relaunch unbounded paid
+	// turns forever -- see checkStuckDrainProgress's doc). false is always
+	// safe (a no-op for this accounting), so a caller unsure of the signal
+	// should pass false rather than guess true.
+	RecordDrainTurnOutcome(ctx context.Context, sessionID string, snapshot session.DebtSnapshot, turnErr error, producedContent bool)
 	// RunMaintenanceSweep runs the dead-host sweep and retention purge halves
 	// of the 60s host-level pass ONCE, best-effort (B12/C14 fix, part 3): a
 	// non-persistent coordinator (`rush run`) never starts the recurring
@@ -138,9 +144,23 @@ func (c *coordinator) CaptureDrainSnapshot(ctx context.Context, sessionID string
 }
 
 // RecordDrainTurnOutcome implements ReactionDebtSource.
-func (c *coordinator) RecordDrainTurnOutcome(ctx context.Context, sessionID string, snapshot session.DebtSnapshot, turnErr error) {
+func (c *coordinator) RecordDrainTurnOutcome(ctx context.Context, sessionID string, snapshot session.DebtSnapshot, turnErr error, producedContent bool) {
 	job := jobIdentity{owner: sessionID, toolCallID: "cli-loop"}
-	c.recordDrainOutcome(ctx, job, snapshot, true, turnErr)
+	// "" (no per-attempt assistant-message evidence): the CLI loop's own
+	// turns go through ExecuteRun/coordinator.Run, which does not currently
+	// thread an OnAssistantMessageCreated hook back out to this caller (item
+	// 1, docs/reviews/2026-09-29-async-phase4-round1.md W-DRAIN). settleOr-
+	// RetryDrainFailure's isProviderClassifiable fallback still refuses to
+	// settle on a non-provider-shaped error (e.g. a DB error in the loop's
+	// own turn-start preamble) even without per-attempt evidence.
+	c.recordDrainOutcome(ctx, job, snapshot, true, turnErr, "")
+	// Item 2/C5c fix: the CLI loop's OWN turns are never no-op/queued by the
+	// time they reach here (ExecuteRun already ran a real turn) -- a nil
+	// turnErr with real final text is exactly checkStuckDrainProgress's
+	// "success but did the reaction write actually land" case.
+	if turnErr == nil {
+		c.checkStuckDrainProgress(ctx, job, snapshot, producedContent)
+	}
 }
 
 // RunMaintenanceSweep implements ReactionDebtSource: the dead-host sweep and

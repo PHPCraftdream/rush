@@ -118,3 +118,91 @@ func TestFailedDrain_OwnReleaseDoesNotImmediatelyRelaunch(t *testing.T) {
 	coord.recheckMu.Unlock()
 	require.True(t, inSet, "a failed Drain's session must land in the 60s recheck set, never be forgotten")
 }
+
+// TestSettleByFailure_KThreeViaRealReleaseHookAndRecheckPass closes W-DRAIN
+// item 9's "TestSettleByFailure_* mocks never fire onSessionIdle" gap for
+// the SETTLEMENT case specifically: unlike coordinator_settle_by_failure_
+// test.go's fixture (a bare mock SessionAgent, no OnSessionIdle wired at
+// all), this drives K=3 through the REAL production chain end to end -- a
+// real HTTP provider returning 503, the real onSessionIdleHook release path
+// for the FIRST failure (rule (a): a failed Drain's own release does not
+// immediately relaunch, proven above), and the real RecheckPass/wakeSession
+// path for the two retries that follow, exactly how a genuine 60s pass
+// would deliver them.
+//
+// Revert-check performed: changed drainFailureSettleThreshold from 3 to 4
+// -- this test's post-3rd-pass assertions FAILED (debt still open, zero
+// markers, requests stuck at 3). Restored 3; re-ran, passed.
+func TestSettleByFailure_KThreeViaRealReleaseHookAndRecheckPass(t *testing.T) {
+	env := testEnv(t)
+	var requests int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&requests, 1)
+		transientErrorResponse(w)
+	}))
+	t.Cleanup(srv.Close)
+	model := newProbeModel(t, srv)
+
+	store := session.NewAsyncJobStore(env.conn, env.workingDir, os.Getpid(), "test")
+	t.Cleanup(func() { _ = store.Close(context.Background()) })
+	coord := &coordinator{subAgentDrivers: newSubAgentDriverRegistry()}
+	ledger := newWorkLedger(coord.notifyAsyncCompletion)
+	ledger.store = store
+	ledger.coord = coord
+	coord.asyncJobs = ledger
+
+	sa := NewSessionAgent(SessionAgentOptions{
+		SmartModel: model, FastModel: model, SystemPrompt: "you are a probe",
+		DataDirectory: env.workingDir, Sessions: env.sessions, Messages: env.messages,
+		Tools: []fantasy.AgentTool{}, DisableAutoSummarize: true, AsyncJobs: ledger,
+		OnSessionIdle: coord.onSessionIdleHook,
+	})
+	agent := sa.(*sessionAgent)
+	ctx := context.Background()
+	sess, err := env.sessions.Create(ctx, "k-three-real-release")
+	require.NoError(t, err)
+	coord.subAgentDrivers.register(sess.ID, subAgentDriver{agent: agent, call: SessionAgentCall{SessionID: sess.ID}})
+
+	_, existing, err := ledger.Start(sess.ID, "call-1", "call-1", "bash", "", false, false, nil, func() {})
+	require.NoError(t, err)
+	require.False(t, existing)
+	require.NoError(t, store.MarkAnnounced(ctx, sess.ID, "call-1"))
+	_, err = store.Transition(ctx, session.TransitionParams{
+		Owner: sess.ID, ToolCallID: "call-1", State: "completed", ResultSummary: "output", Wake: true,
+	})
+	require.NoError(t, err)
+	_, err = store.PullJobNotices(ctx, env.messages, sess.ID, buildJobNoticeMessageParams)
+	require.NoError(t, err)
+
+	// Attempt 1 of 3: the real release hook's own onSessionIdleHook fires
+	// (via wakeSession's own Run/runOwned/release chain), landing the
+	// session in the recheck set per rule (a) without an immediate relaunch.
+	err = coord.wakeSession(ctx, jobIdentity{owner: sess.ID, toolCallID: "call-1"}, true)
+	require.Error(t, err)
+	debt, err := store.ReactionDebtExists(ctx, sess.ID)
+	require.NoError(t, err)
+	require.True(t, debt, "attempt 1: debt must survive under K=3")
+
+	// Attempts 2 and 3: the 60s pass's own real path (RecheckPass ->
+	// wakeSession), exactly as a genuine background tick would deliver them.
+	coord.RecheckPass(ctx)
+	debt, err = store.ReactionDebtExists(ctx, sess.ID)
+	require.NoError(t, err)
+	require.True(t, debt, "attempt 2: debt must still survive under K=3")
+
+	coord.RecheckPass(ctx)
+	debt, err = store.ReactionDebtExists(ctx, sess.ID)
+	require.NoError(t, err)
+	require.False(t, debt, "attempt 3 (K=3) via the real RecheckPass path must close the debt")
+
+	notices, err := store.ListSessionNotices(ctx, sess.ID)
+	require.NoError(t, err)
+	markers := 0
+	for _, n := range notices {
+		if n.Kind == session.NoticeKindWakeFailed {
+			markers++
+		}
+	}
+	require.Equal(t, 1, markers, "exactly one marker at K=3 via the real release/recheck-pass path")
+	require.GreaterOrEqual(t, atomic.LoadInt32(&requests), int32(3), "the real provider must have been reached at least 3 times")
+}

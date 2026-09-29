@@ -12,10 +12,27 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
 )
+
+// isPseudoJobID reports whether toolCallID is one of wakeSession's own
+// internal placeholder identities (jobIdentity.toolCallID's doc: "diagnostic-
+// only now") rather than a real, model-facing async-job tool_call_id.
+// settleAndMark uses this to keep a pseudo-id out of a marker's text (item 1
+// fix, docs/reviews/2026-09-29-async-phase4-round1.md B5/C3) while still
+// naming a REAL tool_call_id, which is useful context for whoever reads the
+// marker later.
+func isPseudoJobID(toolCallID string) bool {
+	switch toolCallID {
+	case "release-recheck", "cli-loop", "recheck-pass":
+		return true
+	}
+	return strings.HasPrefix(toolCallID, "supervision-")
+}
 
 // drainFailureSettleThreshold is doc sec.3.4's K=3: after this many failed
 // wake-up passes for the SAME captured debt id set, a temporary failure is
@@ -55,12 +72,13 @@ func (c *coordinator) sessionDrainPolicy(ctx context.Context, sessionID string) 
 		// registry, which does not survive scope closing or a process
 		// restart: a session ever created as a delegation target carries
 		// ParentSessionID (session.CreateTaskSession) for its entire life.
-		// Known limitation (documented, not fixed here -- no new SQL/store
-		// query available in this wave): `sessions fork --parent X` ALSO
-		// sets ParentSessionID for a purpose unrelated to delegation, so a
-		// forked-with-parent session is (rarely, and only if it later owns
-		// its own async work) also refused further auto-turns by this
-		// check. See docs/reviews/2026-09-29-async-phase4-round1.md B3/C6.
+		// isDurableDelegationChild additionally confirms an async_jobs
+		// delegation row actually backs that ParentSessionID (item 8 fix,
+		// docs/reviews/2026-09-29-async-phase4-round1.md B3/C6): a
+		// `sessions fork --child X` session also sets ParentSessionID for an
+		// unrelated purpose but never claims a matching delegation job, so
+		// it is no longer swept into this refusal -- see that function's own
+		// doc for the exact signal and its retention-bounded caveat.
 		isChild, childErr := c.isDurableDelegationChild(ctx, sessionID)
 		if childErr != nil {
 			return false, false, childErr
@@ -76,6 +94,31 @@ func (c *coordinator) sessionDrainPolicy(ctx context.Context, sessionID string) 
 		// Not a delegation child at all (a bare test fixture, or a normal
 		// session that merely has no running delegation because it was
 		// never one) -- falls through to the generic policy below.
+	}
+	// B-dev6 fix (item 7, docs/reviews/2026-09-29-async-phase4-round1.md):
+	// the policy table's "Background shell: only with AutoResumeOnJobDone"
+	// row was enforced ONLY at notifyBackgroundJobDone's own hint-time call
+	// (coordinator_background.go) -- release-recheck (recheckDebtOnRelease)
+	// and the 60s pass call wakeSession from a plain context.Background()
+	// with no autoTurnCapAppliesCtxKey, so they fall into the UNCAPPED
+	// generic branch below with no idea the debt they are about to react to
+	// is a bg-shell notice at all. If AutoResumeOnJobDone is off and this
+	// session's ENTIRE current debt is bg-shell-done notices (no async job,
+	// no other notice kind mixed in), refuse here too -- exactly the policy
+	// the direct hint-time call already applies, just re-checked from a
+	// caller that cannot see the origin. A session with ANY other debt
+	// alongside a bg-shell notice still falls through (that other debt's own
+	// policy governs the turn; the bg-shell notice itself simply rides
+	// along, same as it would inside an ordinary allowed turn today).
+	autonomyOn := c.cfg != nil && c.autonomyEnabled()
+	if c.asyncJobs != nil && !autonomyOn {
+		bgOnly, bgErr := c.sessionDebtIsBGShellOnly(ctx, sessionID)
+		if bgErr != nil {
+			return false, false, bgErr
+		}
+		if bgOnly {
+			return false, false, nil
+		}
 	}
 	// B7 design decision (docs/reviews/2026-09-29-async-phase4-round1.md,
 	// operator HARD RULES item 1): the consecutive-auto-turn cap applies
@@ -119,9 +162,31 @@ func (c *coordinator) sessionDrainPolicy(ctx context.Context, sessionID string) 
 // isDurableDelegationChild reports whether sessionID was EVER created as a
 // delegation target (session.CreateTaskSession sets ParentSessionID at
 // creation, durably, unlike the in-memory subAgentDriverRegistry which
-// releaseDriverIfScopeClosed tears down the instant scope closes). See
-// sessionDrainPolicy's own doc for the known `sessions fork --parent`
-// ambiguity this shares the same signal with.
+// releaseDriverIfScopeClosed tears down the instant scope closes).
+//
+// B3/C6 follow-up fix (docs/reviews/2026-09-29-async-phase4-round1.md, item
+// 8): ParentSessionID alone is ambiguous -- `sessions fork --child` (the
+// review's "sessions fork --parent" is the same knob under its CLI-flag
+// name) sets the identical field on a session that was never a delegation
+// target at all, for a wholly unrelated purpose (session.ForkOptions.
+// ParentID). A forked child was, before this fix, refused Drain turns by
+// the SAME branch a real released delegation child hits.
+//
+// The real signal doesn't need a schema change: runSubAgent (coordinator_
+// subagents.go) claims the delegation's async_jobs row with
+// Owner=ParentSessionID, Kind=JobKindAgent, ChildSessionID=the exact new
+// session's id, independent of whether the job is still running -- the row
+// outlives the delegation ending, until retention purges it. A plain fork
+// never claims any async job at all, so no row naming it as ChildSessionID
+// ever exists. This reuses the pre-existing ListAsyncJobsForOwner (the same
+// query `sessions jobs`/`sessions why` already use -- no new SQL) instead
+// of the coarser ParentSessionID-only check.
+//
+// The signal is durable only as long as retention keeps the row (7 days
+// past done+reacted, doc sec.3.7/A5) -- after that window a long-finished
+// delegation's child falls back to the generic web/default policy below,
+// which the ordinary auto-turn cap still bounds; this narrows the
+// false-positive (fork) case, it is not required to hold forever.
 func (c *coordinator) isDurableDelegationChild(ctx context.Context, sessionID string) (bool, error) {
 	if c.sessions == nil {
 		return false, nil
@@ -130,7 +195,63 @@ func (c *coordinator) isDurableDelegationChild(ctx context.Context, sessionID st
 	if err != nil {
 		return false, err
 	}
-	return sess.ParentSessionID != "", nil
+	if sess.ParentSessionID == "" {
+		return false, nil
+	}
+	if c.asyncJobs == nil || c.asyncJobs.store == nil {
+		// No durable store to confirm identity against (bare test fixture)
+		// -- fall back to the coarser pre-fix signal rather than silently
+		// treating every ParentSessionID session as a non-child.
+		return true, nil
+	}
+	jobs, listErr := c.asyncJobs.store.ListAsyncJobsForOwner(ctx, sess.ParentSessionID)
+	if listErr != nil {
+		return false, listErr
+	}
+	for _, job := range jobs {
+		if job.ChildSessionID.Valid && job.ChildSessionID.String == sessionID && job.Kind == string(session.JobKindAgent) {
+			return true, nil
+		}
+	}
+	// ParentSessionID is set but no delegation job ever named sessionID as
+	// its child -- a fork with a parent set, not a delegation target.
+	return false, nil
+}
+
+// sessionDebtIsBGShellOnly reports whether sessionID's ENTIRE current
+// reaction debt (doc sec.3.4's predicate, captureDebtSnapshot's own capture)
+// consists of bg-shell-done notices (session.NoticeKindBGShellDone) and
+// nothing else -- no outstanding async-job debt, no other notice kind. Used
+// by sessionDrainPolicy's B-dev6 fix (item 7) to re-apply the "Background
+// shell: only with AutoResumeOnJobDone" policy-table row at release-recheck/
+// 60s-pass time, which (unlike the direct hint-time call) has no ctx-carried
+// signal of the debt's origin. false on an empty snapshot (nothing to gate)
+// or on any job-id debt or mixed/non-bg-shell notice kind.
+func (c *coordinator) sessionDebtIsBGShellOnly(ctx context.Context, sessionID string) (bool, error) {
+	if c.asyncJobs.store == nil {
+		return false, nil
+	}
+	snap, err := c.asyncJobs.captureDebtSnapshot(ctx, sessionID)
+	if err != nil {
+		return false, err
+	}
+	if snap.Empty() || len(snap.JobIDs) > 0 {
+		return false, nil
+	}
+	notices, err := c.asyncJobs.store.ListSessionNotices(ctx, sessionID)
+	if err != nil {
+		return false, err
+	}
+	kindByID := make(map[int64]string, len(notices))
+	for _, n := range notices {
+		kindByID[n.ID] = n.Kind
+	}
+	for _, id := range snap.NoticeIDs {
+		if kindByID[id] != session.NoticeKindBGShellDone {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // recordDrainOutcome is the shared post-turn accounting for a Drain-context
@@ -142,7 +263,11 @@ func (c *coordinator) isDurableDelegationChild(ctx context.Context, sessionID st
 // (merely queued behind another owner) -- nothing to account for yet, since
 // that later turn's own in-turn debt+policy re-check governs it and some
 // future fresh call will still observe whatever debt survives.
-func (c *coordinator) recordDrainOutcome(ctx context.Context, job jobIdentity, snapshot session.DebtSnapshot, attempted bool, turnErr error) {
+// attemptAssistantMsgID is the OnAssistantMessageCreated-reported id this
+// SPECIFIC Drain attempt wrote (wakeSession captures it; the CLI loop does
+// not currently wire per-attempt evidence through ExecuteRun, so it always
+// passes "" -- see settleOrRetryDrainFailure's fallback for that case).
+func (c *coordinator) recordDrainOutcome(ctx context.Context, job jobIdentity, snapshot session.DebtSnapshot, attempted bool, turnErr error, attemptAssistantMsgID string) {
 	if !attempted {
 		return
 	}
@@ -156,7 +281,7 @@ func (c *coordinator) recordDrainOutcome(ctx context.Context, job jobIdentity, s
 			c.addToRecheckSet(job.owner)
 			return
 		}
-		c.settleOrRetryDrainFailure(ctx, job, snapshot, turnErr)
+		c.settleOrRetryDrainFailure(ctx, job, snapshot, turnErr, attemptAssistantMsgID)
 	}
 	// A successful turn is not re-checked against its own captured snapshot
 	// here: this codebase's wakeSession tests widely register a bare mock
@@ -175,7 +300,16 @@ func (c *coordinator) recordDrainOutcome(ctx context.Context, job jobIdentity, s
 // debt id set captured BEFORE the turn ran (session.AsyncJobStore.
 // CaptureDebtSnapshot) -- the SAME set every counter/settle write below is
 // scoped to, never whatever is pending "now".
-func (c *coordinator) settleOrRetryDrainFailure(ctx context.Context, job jobIdentity, snapshot session.DebtSnapshot, runErr error) {
+//
+// W-DRAIN item 1 (B5/C3 deep fix): classification uses the Drain's OWN
+// attempt evidence when available (attemptAssistantMsgID, wakeSession's
+// capture), mirroring shouldRetryTurn's ownership gate, rather than runErr
+// alone. runErr alone cannot distinguish "this Drain's own provider call
+// failed" from "some unrelated failure surfaced through the same return
+// path" -- e.g. a queued user turn dispatched behind this Drain in the same
+// mailbox release window, or a DB error in the turn-start preamble before
+// any provider request was ever made.
+func (c *coordinator) settleOrRetryDrainFailure(ctx context.Context, job jobIdentity, snapshot session.DebtSnapshot, runErr error, attemptAssistantMsgID string) {
 	if c.asyncJobs == nil || c.asyncJobs.store == nil || snapshot.Empty() {
 		return
 	}
@@ -197,6 +331,56 @@ func (c *coordinator) settleOrRetryDrainFailure(ctx context.Context, job jobIden
 	// pass, never settled on non-attempt evidence.
 	var awaiting *AwaitingAnswerError
 	if errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded) || errors.As(runErr, &awaiting) {
+		c.addToRecheckSet(job.owner)
+		return
+	}
+	// Real per-attempt evidence (wakeSession's capture): classify from the
+	// row THIS attempt itself wrote, exactly like shouldRetryTurn/
+	// shouldContinueTurn do for an ordinary turn -- but ONLY when that row
+	// actually exists. A total request failure (e.g. every retry inside a
+	// single fantasy.RetryError hitting the same 503) commonly reports an
+	// OnAssistantMessageCreated id for a step that never persisted content
+	// at all (no row ever committed, or it was rolled back) -- attempt-
+	// EvidenceID != "" does not by itself mean the row is findable. Treat
+	// "reported an id but can't find it" the SAME as "no evidence wired"
+	// (the isProviderClassifiable fallback below), not as a reason to
+	// refuse classification outright -- that was this function's actual
+	// bug (found via TestSettleByFailure_KThreeViaRealReleaseHookAndRecheckPass,
+	// a real end-to-end run against a real failing HTTP provider): wake_
+	// attempts never incremented, K=3 was never reachable, and a genuinely
+	// permanent provider failure never settled.
+	if attemptAssistantMsgID != "" {
+		if msg, ok := c.ownAttemptAssistantMessage(ctx, job.owner, attemptAssistantMsgID); ok {
+			fp := msg.FinishPart()
+			if fp == nil || fp.Reason != message.FinishReasonError {
+				// This attempt's own row did not end in an error finish --
+				// it reacted (or otherwise made a clean finish). runErr does
+				// not describe THIS attempt's own failure; nothing to settle.
+				return
+			}
+			if turnMadeProgress(msg) {
+				// Partial content already written before the failure: a
+				// fresh Drain re-derives and re-answers from the DB at its
+				// own next pull (Drains are regenerable, doc sec.3.4's
+				// wakeSession doc) -- not settled by failure here, unlike an
+				// ordinary turn there is no risk of losing or duplicating a
+				// user prompt.
+				return
+			}
+			// An error-finish, no-progress row: fall through to classify
+			// runErr below, same as the no-evidence path would for a
+			// provider-shaped error.
+		} else if !isProviderClassifiable(runErr) {
+			c.addToRecheckSet(job.owner)
+			return
+		}
+	} else if !isProviderClassifiable(runErr) {
+		// No per-attempt evidence wired for this caller (the CLI loop's own
+		// turns -- ReactionDebtSource.RecordDrainTurnOutcome, item 1) and
+		// runErr is not even provider-shaped: nothing here proves the
+		// PROVIDER actually failed (a DB error in the preamble looks
+		// exactly like this). Route to the recheck set instead of falling
+		// into classifyProviderError's terminal default.
 		c.addToRecheckSet(job.owner)
 		return
 	}
@@ -246,34 +430,81 @@ func (c *coordinator) incrementThenSettleIfThreshold(ctx context.Context, job jo
 	c.settleAndMark(ctx, job, snapshot, cause)
 }
 
-// settleAndMark closes debt on exactly snapshot's rows and writes the
-// visible marker (doc sec.3.4/ASYNC-09).
-func (c *coordinator) settleAndMark(ctx context.Context, job jobIdentity, snapshot session.DebtSnapshot, cause error) {
-	if err := c.asyncJobs.store.SettleReactedFailed(ctx, job.owner, snapshot); err != nil {
-		slog.Error("settle-by-failure: settle reacted-failed failed", "session_id", job.owner, "err", err)
+// errDrainProgressNotRecorded is checkStuckDrainProgress's settle-by-failure
+// cause: the turn itself reported success, but the debt it was supposed to
+// react to is still open.
+var errDrainProgressNotRecorded = errors.New("the assistant responded, but its reaction to this event was not recorded")
+
+// checkStuckDrainProgress implements W-DRAIN item 2 (C5c, docs/reviews/
+// 2026-09-29-async-phase4-round1.md): a Drain attempt that reached the
+// provider, produced real content, and returned NO error from wakeSession's
+// (or the CLI loop's) point of view can still leave its captured snapshot's
+// debt rows open -- doc sec.3.4's reaction write commits in the SAME DB
+// transaction as the step's own content persist, and fantasy's OnStepFinish
+// hook has no way to surface a failure of that write back to the caller as
+// a turn error (it "swallows" it, per the finding). Left unchecked, the
+// ordinary hint mechanism relaunches a fresh, PAID provider turn every time
+// afterward, forever, since success never had ANY bound the way failure
+// does (drainFailureSettleThreshold). This reuses that SAME wake_attempts/
+// K=3 counter for the success case: hasContent must be a CONFIRMED signal
+// (wakeSession's own per-attempt finish-reason evidence, or the CLI loop's
+// non-empty FinalText) -- hasContent=false (no evidence at all, e.g. every
+// bare-mock SessionAgent test in this package, which never touches the DB)
+// is always a no-op, so this never fires on a mock's simulated "success"
+// with no real reaction machinery behind it.
+func (c *coordinator) checkStuckDrainProgress(ctx context.Context, job jobIdentity, snapshot session.DebtSnapshot, hasContent bool) {
+	if !hasContent || c.asyncJobs == nil || c.asyncJobs.store == nil || snapshot.Empty() {
 		return
 	}
-	c.persistWakeFailedMarker(ctx, job, cause)
+	settleCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+	c.incrementThenSettleIfThreshold(settleCtx, job, snapshot, errDrainProgressNotRecorded)
 }
 
-// persistWakeFailedMarker persists a durable session_notices row (kind
-// NoticeKindWakeFailed, wake=0 per doc sec.3.4's wake-policy table) recording
-// that a Drain call's provider turn failed permanently and its debt was
-// closed by failure. The next successful pull surfaces it as an ordinary
-// pending notice -- visible exactly once, without forcing another immediate
-// turn (wake=0).
-func (c *coordinator) persistWakeFailedMarker(ctx context.Context, job jobIdentity, cause error) {
-	if c.asyncJobs == nil || c.asyncJobs.store == nil {
+// settleAndMark closes debt on exactly snapshot's rows and writes the
+// visible marker (doc sec.3.4/ASYNC-09) -- A10/item 1 fix: settle and marker
+// insert happen in ONE transaction via SettleReactedFailedWithMarker
+// (internal/session, agent `store`'s fix), which inserts the marker IFF at
+// least one row was actually settled. This closes two gaps the old two-step
+// SettleReactedFailed+InsertSessionNotice sequence had: (a) a marker-insert
+// failure after the settle committed silently lost the "why" (ASYNC-09);
+// (b) settling a snapshot that turned out to already be fully resolved (a
+// queued user turn behind this Drain reacted to it first) wrote a spurious
+// marker unconditionally -- the atomic method's settled-count gate means
+// this simply becomes a no-op instead.
+//
+// Marker text names job.toolCallID only when it is a real, model-facing
+// tool_call_id (an ordinary async-job/delegation wake) -- the release-
+// recheck/CLI-loop/60s-pass/supervision paths key it on internal pseudo-ids
+// ("release-recheck", "cli-loop", "recheck-pass", "supervision-<uuid>";
+// jobIdentity is diagnostic-only, doc sec.3.4's wakeSession doc), which must
+// never leak into a notice text the model or operator reads -- see
+// isPseudoJobID.
+func (c *coordinator) settleAndMark(ctx context.Context, job jobIdentity, snapshot session.DebtSnapshot, cause error) {
+	var text string
+	if isPseudoJobID(job.toolCallID) {
+		text = fmt.Sprintf(
+			"Не удалось продолжить работу после ошибки провайдера: %s. Событие сохранено; продолжение — при следующем ходе.",
+			cause,
+		)
+	} else {
+		// A real, model-facing tool_call_id (an ordinary async-job/
+		// delegation wake) is useful context for the operator/model reading
+		// the marker later -- only wakeSession's OWN internal pseudo-ids
+		// (release-recheck, cli-loop, recheck-pass, supervision-<uuid>) must
+		// never leak into notice text (item 1 fix).
+		text = fmt.Sprintf(
+			"Не удалось продолжить работу после события %s: %s. Событие сохранено; продолжение — при следующем ходе.",
+			job.toolCallID, cause,
+		)
+	}
+	settled, err := c.asyncJobs.store.SettleReactedFailedWithMarker(ctx, job.owner, snapshot, text)
+	if err != nil {
+		slog.Error("settle-by-failure: settle reacted failed with marker failed", "session_id", job.owner, "err", err)
 		return
 	}
-	markerCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
-	defer cancel()
-	text := fmt.Sprintf(
-		"Не удалось продолжить работу после события %s: %s. Событие сохранено; продолжение — при следующем ходе.",
-		job.toolCallID, cause,
-	)
-	if err := c.asyncJobs.store.InsertSessionNotice(markerCtx, job.owner, session.NoticeKindWakeFailed, text, false, ""); err != nil {
-		slog.Error("wakeSession: failed to persist wake-failed marker",
-			"session_id", job.owner, "job_id", job.toolCallID, "err", err)
+	if settled == 0 {
+		slog.Debug("settle-by-failure: captured snapshot already fully resolved, nothing settled",
+			"session_id", job.owner)
 	}
 }

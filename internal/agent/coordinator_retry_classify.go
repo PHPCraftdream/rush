@@ -129,6 +129,32 @@ func classifyProviderError(err error) retryClass {
 	return classTerminal
 }
 
+// isProviderClassifiable reports whether err is a shape classifyProviderError
+// can reason about as an ACTUAL provider-turn outcome (a provider error, a
+// network error, or the peak-hours refusal) -- as opposed to some other
+// error a Drain's turn can return before ever reaching the provider (e.g. a
+// DB read failure in the turn-start preamble). Used by
+// settleOrRetryDrainFailure (coordinator_drain_policy.go) as its fallback
+// classifier when no per-attempt assistant-message evidence is available
+// (docs/reviews/2026-09-29-async-phase4-round1.md B5/C3, W-DRAIN item 1):
+// treating every unrecognized error as classifyProviderError's terminal
+// default would close debt and write a visible marker for a failure that
+// never touched the provider at all.
+func isProviderClassifiable(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, errProviderPeakHours) {
+		return true
+	}
+	var providerErr *fantasy.ProviderError
+	if errors.As(err, &providerErr) {
+		return true
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr)
+}
+
 // turnAttemptRefused reports whether err is an admission-shaped refusal:
 // the call never started a provider turn, so there is no attempt outcome
 // for the retry classifiers to act on. ErrSessionBusy (mailbox busy,
@@ -196,6 +222,9 @@ func shouldRetryStalledMessage(msg message.Message) bool {
 // (deleted by a concurrent compaction, or the attempt never wrote one) --
 // callers treat that as "no owned evidence, nothing to retry".
 func (c *coordinator) ownAttemptAssistantMessage(ctx context.Context, sessionID, msgID string) (message.Message, bool) {
+	if c.messages == nil {
+		return message.Message{}, false
+	}
 	msgs, err := c.messages.List(ctx, sessionID)
 	if err != nil {
 		return message.Message{}, false
