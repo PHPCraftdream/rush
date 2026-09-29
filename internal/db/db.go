@@ -27,6 +27,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.ackRunQueueEntryStmt, err = db.PrepareContext(ctx, ackRunQueueEntry); err != nil {
 		return nil, fmt.Errorf("error preparing query AckRunQueueEntry: %w", err)
 	}
+	if q.archiveAsyncJobToolCallIDStmt, err = db.PrepareContext(ctx, archiveAsyncJobToolCallID); err != nil {
+		return nil, fmt.Errorf("error preparing query ArchiveAsyncJobToolCallID: %w", err)
+	}
 	if q.asyncReactionDebtExistsStmt, err = db.PrepareContext(ctx, asyncReactionDebtExists); err != nil {
 		return nil, fmt.Errorf("error preparing query AsyncReactionDebtExists: %w", err)
 	}
@@ -35,6 +38,12 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	}
 	if q.cleanupExpiredLeasesStmt, err = db.PrepareContext(ctx, cleanupExpiredLeases); err != nil {
 		return nil, fmt.Errorf("error preparing query CleanupExpiredLeases: %w", err)
+	}
+	if q.clearReactedFailedForOwnerStmt, err = db.PrepareContext(ctx, clearReactedFailedForOwner); err != nil {
+		return nil, fmt.Errorf("error preparing query ClearReactedFailedForOwner: %w", err)
+	}
+	if q.clearSessionNoticesReactedFailedForOwnerStmt, err = db.PrepareContext(ctx, clearSessionNoticesReactedFailedForOwner); err != nil {
+		return nil, fmt.Errorf("error preparing query ClearSessionNoticesReactedFailedForOwner: %w", err)
 	}
 	if q.countAsyncJobsOlderThanStmt, err = db.PrepareContext(ctx, countAsyncJobsOlderThan); err != nil {
 		return nil, fmt.Errorf("error preparing query CountAsyncJobsOlderThan: %w", err)
@@ -442,6 +451,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing ackRunQueueEntryStmt: %w", cerr)
 		}
 	}
+	if q.archiveAsyncJobToolCallIDStmt != nil {
+		if cerr := q.archiveAsyncJobToolCallIDStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing archiveAsyncJobToolCallIDStmt: %w", cerr)
+		}
+	}
 	if q.asyncReactionDebtExistsStmt != nil {
 		if cerr := q.asyncReactionDebtExistsStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing asyncReactionDebtExistsStmt: %w", cerr)
@@ -455,6 +469,16 @@ func (q *Queries) Close() error {
 	if q.cleanupExpiredLeasesStmt != nil {
 		if cerr := q.cleanupExpiredLeasesStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing cleanupExpiredLeasesStmt: %w", cerr)
+		}
+	}
+	if q.clearReactedFailedForOwnerStmt != nil {
+		if cerr := q.clearReactedFailedForOwnerStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing clearReactedFailedForOwnerStmt: %w", cerr)
+		}
+	}
+	if q.clearSessionNoticesReactedFailedForOwnerStmt != nil {
+		if cerr := q.clearSessionNoticesReactedFailedForOwnerStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing clearSessionNoticesReactedFailedForOwnerStmt: %w", cerr)
 		}
 	}
 	if q.countAsyncJobsOlderThanStmt != nil {
@@ -1157,9 +1181,12 @@ type Queries struct {
 	db                                             DBTX
 	tx                                             *sql.Tx
 	ackRunQueueEntryStmt                           *sql.Stmt
+	archiveAsyncJobToolCallIDStmt                  *sql.Stmt
 	asyncReactionDebtExistsStmt                    *sql.Stmt
 	claimAsyncJobStmt                              *sql.Stmt
 	cleanupExpiredLeasesStmt                       *sql.Stmt
+	clearReactedFailedForOwnerStmt                 *sql.Stmt
+	clearSessionNoticesReactedFailedForOwnerStmt   *sql.Stmt
 	countAsyncJobsOlderThanStmt                    *sql.Stmt
 	countMessagesBySessionStmt                     *sql.Stmt
 	countMessagesMissingUsageStmt                  *sql.Stmt
@@ -1296,12 +1323,15 @@ type Queries struct {
 
 func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 	return &Queries{
-		db:                                             tx,
-		tx:                                             tx,
-		ackRunQueueEntryStmt:                           q.ackRunQueueEntryStmt,
-		asyncReactionDebtExistsStmt:                    q.asyncReactionDebtExistsStmt,
-		claimAsyncJobStmt:                              q.claimAsyncJobStmt,
-		cleanupExpiredLeasesStmt:                       q.cleanupExpiredLeasesStmt,
+		db:                             tx,
+		tx:                             tx,
+		ackRunQueueEntryStmt:           q.ackRunQueueEntryStmt,
+		archiveAsyncJobToolCallIDStmt:  q.archiveAsyncJobToolCallIDStmt,
+		asyncReactionDebtExistsStmt:    q.asyncReactionDebtExistsStmt,
+		claimAsyncJobStmt:              q.claimAsyncJobStmt,
+		cleanupExpiredLeasesStmt:       q.cleanupExpiredLeasesStmt,
+		clearReactedFailedForOwnerStmt: q.clearReactedFailedForOwnerStmt,
+		clearSessionNoticesReactedFailedForOwnerStmt:   q.clearSessionNoticesReactedFailedForOwnerStmt,
 		countAsyncJobsOlderThanStmt:                    q.countAsyncJobsOlderThanStmt,
 		countMessagesBySessionStmt:                     q.countMessagesBySessionStmt,
 		countMessagesMissingUsageStmt:                  q.countMessagesMissingUsageStmt,

@@ -11,8 +11,11 @@ package session
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 	"time"
 
@@ -91,7 +94,16 @@ func (s *AsyncJobStore) RecoverDeadHost(ctx context.Context, hostID string, mess
 			out.Deleted++
 			continue
 		}
-		text, isErr := recoveredResultText(ctx, messages, row)
+		text, isErr, readErr := recoveredResultText(ctx, messages, row)
+		if readErr != nil {
+			// A6: a TRANSIENT read failure (messages.List erroring, not "no
+			// messages") must never commit a false "finished with no textual
+			// response" -- skip this row, leave it 'running' for a later
+			// sweep to retry once the read can succeed.
+			slog.Warn("recover dead host: read child session messages failed; leaving row running for a later sweep",
+				"host_id", hostID, "owner", row.OwnerSessionID, "tool_call_id", row.ToolCallID, "err", readErr)
+			continue
+		}
 		result, err := s.Transition(ctx, TransitionParams{
 			Owner: row.OwnerSessionID, ToolCallID: row.ToolCallID,
 			State: "interrupted", NoticeKind: "interrupted",
@@ -138,27 +150,36 @@ func (s *AsyncJobStore) RecoverDeadHost(ctx context.Context, hostID string, mess
 
 // recoveredResultText computes a recovered row's result text/isError (doc
 // sec.3.7): the child's last assistant message for a delegation, the fixed
-// bash/run_command wording otherwise. Always isError=true -- an interruption
-// is an abnormal outcome regardless of what a quoted child said.
-func recoveredResultText(ctx context.Context, messages message.Service, row db.AsyncJob) (text string, isError bool) {
+// bash/run_command wording otherwise. Always isError=true when readErr==nil
+// -- an interruption is an abnormal outcome regardless of what a quoted
+// child said. A non-nil readErr (A6) means the caller must NOT transition
+// this row at all -- see recoveredDelegationText's own doc.
+func recoveredResultText(ctx context.Context, messages message.Service, row db.AsyncJob) (text string, isError bool, readErr error) {
 	if row.ChildSessionID.Valid && row.ChildSessionID.String != "" {
-		return recoveredDelegationText(ctx, messages, row.ChildSessionID.String), true
+		text, readErr := recoveredDelegationText(ctx, messages, row.ChildSessionID.String)
+		return text, true, readErr
 	}
-	return interruptedBashText, true
+	return interruptedBashText, true, nil
 }
 
 // recoveredDelegationText mirrors the "newest finished assistant message"
 // read package agent's refreshSubAgentCompletion/capturePartialDelegation
 // use, scoped to this package's own dependency (message.Service) so
 // recovery needs no import of package agent.
-func recoveredDelegationText(ctx context.Context, messages message.Service, childSessionID string) string {
+//
+// A6: a TRANSIENT messages.List error is distinct from "no messages at all"
+// (nil messages.Service, or an empty/no-finished-assistant-message list) --
+// the former returns a non-nil readErr so the caller skips this row entirely
+// rather than committing a false "finished with no textual response" that
+// looks identical to a genuine empty answer. Only a definite "there is
+// nothing to quote" falls back to interruptedNoChildTextText.
+func recoveredDelegationText(ctx context.Context, messages message.Service, childSessionID string) (string, error) {
 	if messages == nil {
-		return interruptedNoChildTextText
+		return interruptedNoChildTextText, nil
 	}
 	msgs, err := messages.List(ctx, childSessionID)
 	if err != nil {
-		slog.Debug("recover dead host: read child session messages failed", "child_session", childSessionID, "err", err)
-		return interruptedNoChildTextText
+		return "", fmt.Errorf("read child session messages: %w", err)
 	}
 	for i := len(msgs) - 1; i >= 0; i-- {
 		msg := msgs[i]
@@ -166,11 +187,11 @@ func recoveredDelegationText(ctx context.Context, messages message.Service, chil
 			continue
 		}
 		if text := strings.TrimSpace(msg.FullText()); text != "" {
-			return text
+			return text, nil
 		}
-		return interruptedNoChildTextText
+		return interruptedNoChildTextText, nil
 	}
-	return interruptedNoChildTextText
+	return interruptedNoChildTextText, nil
 }
 
 // SweepDeadHosts recovers every currently dead host that owns at least one
@@ -248,6 +269,9 @@ func (s *AsyncJobStore) PurgeExpired(ctx context.Context, age time.Duration) err
 	if err := s.purgeEmptyDeadHostFiles(ctx); err != nil {
 		errs = append(errs, fmt.Errorf("purge expired: host files: %w", err))
 	}
+	if err := s.purgeOrphanHostLockFiles(ctx); err != nil {
+		errs = append(errs, fmt.Errorf("purge expired: orphan host lock files: %w", err))
+	}
 	if len(errs) == 0 {
 		return nil
 	}
@@ -288,6 +312,59 @@ func (s *AsyncJobStore) purgeEmptyDeadHostFiles(ctx context.Context) error {
 			if err := RemoveDeadHostFile(HostLockPath(s.dataDir, h.ID), lock); err != nil {
 				slog.Warn("purge empty dead host files: remove lock file failed", "host_id", h.ID, "err", err)
 			}
+		}
+	}
+	return nil
+}
+
+// purgeOrphanHostLockFiles is A7/C15's fix: every deleter of a host (Close,
+// RecoverDeadHost, purgeEmptyDeadHostFiles above) removes the async_hosts
+// ROW first and the lock FILE second, and RegisterHost releases the lock
+// (without deleting the file) if the DB insert fails -- either leaves a
+// *.lock file on disk with NO async_hosts row at all, which
+// purgeEmptyDeadHostFiles can never find (it only walks rows). This scans
+// hosts/*.lock directly: a file whose id has no async_hosts row is reaped
+// once this process independently confirms (by winning the exclusive lock
+// itself) that whatever held it is gone. A live host with no row yet (the
+// brief window between RegisterHost's lock and its DB insert) is never
+// touched -- winning the probe IS the liveness proof, same guarantee every
+// other reaper in this file relies on.
+func (s *AsyncJobStore) purgeOrphanHostLockFiles(ctx context.Context) error {
+	entries, err := os.ReadDir(HostsDir(s.dataDir))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil // no hosts dir yet -- nothing to scan
+		}
+		return fmt.Errorf("read hosts dir: %w", err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		const suffix = ".lock"
+		if len(name) <= len(suffix) || name[len(name)-len(suffix):] != suffix {
+			continue
+		}
+		hostID := name[:len(name)-len(suffix)]
+		if hostID == "" || IsOwnHostID(hostID) {
+			continue
+		}
+		if _, err := s.q.GetAsyncHost(ctx, hostID); err == nil {
+			continue // has a row -- purgeEmptyDeadHostFiles/RecoverDeadHost own this one
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			slog.Warn("purge orphan host lock files: get host row failed", "host_id", hostID, "err", err)
+			continue
+		}
+		status, lock, err := ProbeHost(s.dataDir, hostID)
+		if err != nil || status != HostStatusDead {
+			if lock != nil {
+				_ = lock.Release()
+			}
+			continue
+		}
+		if err := RemoveDeadHostFile(HostLockPath(s.dataDir, hostID), lock); err != nil {
+			slog.Warn("purge orphan host lock files: remove lock file failed", "host_id", hostID, "err", err)
 		}
 	}
 	return nil

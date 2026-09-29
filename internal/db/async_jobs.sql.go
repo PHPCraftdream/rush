@@ -11,6 +11,49 @@ import (
 	"strings"
 )
 
+const archiveAsyncJobToolCallID = `-- name: ArchiveAsyncJobToolCallID :execrows
+UPDATE async_jobs SET tool_call_id = ?1, updated_at = ?2
+WHERE owner_session_id = ?3 AND tool_call_id = ?4
+  AND state != 'running' AND delivery IN ('done', 'void')
+`
+
+type ArchiveAsyncJobToolCallIDParams struct {
+	NewToolCallID  string `json:"new_tool_call_id"`
+	UpdatedAt      int64  `json:"updated_at"`
+	OwnerSessionID string `json:"owner_session_id"`
+	OldToolCallID  string `json:"old_tool_call_id"`
+}
+
+// B14/A14b fix: a (owner_session_id, tool_call_id) key whose row is already
+// HISTORY (state != 'running' AND delivery IN ('done', 'void')) is renamed
+// out of the active key namespace so a REUSED tool_call_id (a provider that
+// numbers calls per response, e.g. "call_0") can claim a brand new row
+// immediately instead of being refused for up to 7 days as "already started
+// earlier"/"different input" (before phase 4 the id was freed at delivery;
+// phase 4's durable row otherwise outlives it). The archived row keeps its
+// own primary key column but under a new, collision-free text -- it stays
+// fully addressable by notice_message_id (Rerun's repend, readers) and by
+// every owner-scoped query; only a lookup BY THE ORIGINAL tool_call_id text
+// stops seeing it, which is exactly the point: that text is free again.
+// The `state != 'running'` guard is load-bearing, not redundant with the
+// delivery check: Rerun's VoidAsyncJobsByToolCallIDs can set delivery='void'
+// on a row that is STILL running (its stop may have raced or failed) --
+// renaming such a row's tool_call_id would orphan its own eventual
+// Transition call (which targets the OLD text) and, worse, risk that CAS
+// colliding with an unrelated NEW row later claimed under the freed text.
+func (q *Queries) ArchiveAsyncJobToolCallID(ctx context.Context, arg ArchiveAsyncJobToolCallIDParams) (int64, error) {
+	result, err := q.exec(ctx, q.archiveAsyncJobToolCallIDStmt, archiveAsyncJobToolCallID,
+		arg.NewToolCallID,
+		arg.UpdatedAt,
+		arg.OwnerSessionID,
+		arg.OldToolCallID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const asyncReactionDebtExists = `-- name: AsyncReactionDebtExists :one
 SELECT
     EXISTS (
@@ -128,9 +171,40 @@ func (q *Queries) ClaimAsyncJob(ctx context.Context, arg ClaimAsyncJobParams) (A
 	return i, err
 }
 
+const clearReactedFailedForOwner = `-- name: ClearReactedFailedForOwner :execrows
+UPDATE async_jobs SET reacted_failed = 0, updated_at = ?
+WHERE owner_session_id = ? AND reacted_failed = 1
+`
+
+type ClearReactedFailedForOwnerParams struct {
+	UpdatedAt      int64  `json:"updated_at"`
+	OwnerSessionID string `json:"owner_session_id"`
+}
+
+// A1: a settle-by-failure closure ("this row's debt was closed by K=3
+// failed wake-up attempts, not a real reaction") is NOT a permanent,
+// unscoped fact about the owner -- it is superseded the moment the SAME
+// owner proves it is alive and answering again. Cleared from TWO call
+// sites: the real-reaction transaction (MarkReactedWithMessageUpdate, every
+// time a step finishes with real content) and claiming a fresh delegation
+// on a child session (Claim, before the new delegation's own rows can ever
+// be confused with the old one's). Without this, ListReactedFailedText/
+// refreshSubAgentCompletion read reacted_failed unscoped and report a
+// delegation "failed" forever after one transient closure, even once the
+// child session is back to answering normally (same delegation, a later
+// job) or has been handed a brand new delegation entirely.
+func (q *Queries) ClearReactedFailedForOwner(ctx context.Context, arg ClearReactedFailedForOwnerParams) (int64, error) {
+	result, err := q.exec(ctx, q.clearReactedFailedForOwnerStmt, clearReactedFailedForOwner, arg.UpdatedAt, arg.OwnerSessionID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const countAsyncJobsOlderThan = `-- name: CountAsyncJobsOlderThan :one
 SELECT COUNT(*) FROM async_jobs
 WHERE state != 'running' AND delivery IN ('done', 'void') AND updated_at < ?
+  AND NOT (delivery = 'done' AND wake = 1 AND reacted = 0)
 `
 
 // Same predicate as PurgeAsyncJobsOlderThan, read-only, for
@@ -812,11 +886,24 @@ func (q *Queries) PullPendingAsyncJobNotice(ctx context.Context, arg PullPending
 const purgeAsyncJobsOlderThan = `-- name: PurgeAsyncJobsOlderThan :execrows
 DELETE FROM async_jobs
 WHERE state != 'running' AND delivery IN ('done', 'void') AND updated_at < ?
+  AND NOT (delivery = 'done' AND wake = 1 AND reacted = 0)
 `
 
 // Bounded retention (doc sec.3.7): a terminal, delivered-or-voided row past
 // the cutoff is deleted outright -- no soft delete, same precedent as
-// `sessions gc`'s own row deletion.
+// `sessions gc`'s own row deletion. `NOT (delivery='done' AND wake=1 AND
+// reacted=0)` (A5): a 'done' row with wake=1/reacted=0 IS unreacted debt --
+// already surfaced in history, just not yet reacted to -- and must survive
+// retention exactly like a 'running' row does, or a stuck/slow-to-react
+// owner silently loses its own obligation instead of ever settling it (by a
+// real turn or by settle-by-failure). Scoped to delivery='done' specifically,
+// matching the system's own debt definition everywhere else (idx_async_jobs_
+// debt, AsyncReactionDebtExists): a 'void' row is NEVER debt regardless of
+// its wake/reacted bits (Rerun's VoidAsyncJobsByToolCallIDs voids a row
+// without touching wake/reacted, so a voided row can carry stale wake=1/
+// reacted=0 from before it was voided -- that must not block its purge,
+// since a void row will never produce a notice to react to in the first
+// place).
 func (q *Queries) PurgeAsyncJobsOlderThan(ctx context.Context, updatedAt int64) (int64, error) {
 	result, err := q.exec(ctx, q.purgeAsyncJobsOlderThanStmt, purgeAsyncJobsOlderThan, updatedAt)
 	if err != nil {
@@ -859,8 +946,8 @@ func (q *Queries) RegisterAsyncHost(ctx context.Context, arg RegisterAsyncHostPa
 }
 
 const rependAsyncJobsByNoticeMessageIDs = `-- name: RependAsyncJobsByNoticeMessageIDs :execrows
-UPDATE async_jobs SET delivery = 'pending', reacted = 0, updated_at = ?
-WHERE owner_session_id = ? AND notice_message_id IN (/*SLICE:message_ids*/?)
+UPDATE async_jobs SET delivery = 'pending', reacted = 0, reacted_failed = 0, wake_attempts = 0, updated_at = ?
+WHERE owner_session_id = ? AND delivery = 'done' AND notice_message_id IN (/*SLICE:message_ids*/?)
 `
 
 type RependAsyncJobsByNoticeMessageIDsParams struct {
@@ -873,10 +960,15 @@ type RependAsyncJobsByNoticeMessageIDsParams struct {
 // truncation point whose OWN notice landed in the deleted tail goes back to
 // pending/reacted=0 so the next turn on the new branch pulls it again
 // (ASYNC-04). Matched by notice_message_id, which is only ever set once a
-// row reaches delivery='done' -- scoping to that state is implied by the
-// match, not restated here. Must run BEFORE VoidAsyncJobsByToolCallIDs in
-// the same Rerun pass: a row whose OWN tool call is ALSO in the deleted
-// tail matches both queries, and void must win for it.
+// row reaches delivery='done'; the `delivery = 'done'` guard (A4) makes that
+// explicit rather than implied -- without it, a retried Rerun could turn an
+// already-'void' row (delivery is not terminal until every writer says so)
+// back into 'pending'. wake_attempts/reacted_failed are reset (A1): a row
+// re-entering the pending pool starts its settle-by-failure counters fresh,
+// not with whatever an earlier, unrelated closure left behind. Must run
+// BEFORE VoidAsyncJobsByToolCallIDs in the same Rerun pass: a row whose OWN
+// tool call is ALSO in the deleted tail matches both queries, and void must
+// win for it.
 func (q *Queries) RependAsyncJobsByNoticeMessageIDs(ctx context.Context, arg RependAsyncJobsByNoticeMessageIDsParams) (int64, error) {
 	query := rependAsyncJobsByNoticeMessageIDs
 	var queryParams []interface{}
