@@ -145,6 +145,10 @@ func (app *App) InitCoderAgent(ctx context.Context) error {
 		// server, and does not know which at construction time, so "app"
 		// is used uniformly rather than guessing "cli"/"web" wrong.
 		app.asyncJobStore = session.NewAsyncJobStore(app.DB(), app.dataDir, os.Getpid(), "app")
+		// Doc sec.3.7: the first-registration dead-host sweep (ensureHost)
+		// reads a recovered delegation's child text via this -- wired once,
+		// before the first Claim can happen.
+		app.asyncJobStore.SetMessages(app.Messages)
 	}
 	var err error
 	app.AgentCoordinator, err = agent.NewCoordinator(
