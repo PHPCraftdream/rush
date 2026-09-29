@@ -342,6 +342,12 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.renewRunQueueLeaseStmt, err = db.PrepareContext(ctx, renewRunQueueLease); err != nil {
 		return nil, fmt.Errorf("error preparing query RenewRunQueueLease: %w", err)
 	}
+	if q.rependAsyncJobsByNoticeMessageIDsStmt, err = db.PrepareContext(ctx, rependAsyncJobsByNoticeMessageIDs); err != nil {
+		return nil, fmt.Errorf("error preparing query RependAsyncJobsByNoticeMessageIDs: %w", err)
+	}
+	if q.rependSessionNoticesByMessageIDsStmt, err = db.PrepareContext(ctx, rependSessionNoticesByMessageIDs); err != nil {
+		return nil, fmt.Errorf("error preparing query RependSessionNoticesByMessageIDs: %w", err)
+	}
 	if q.setAsyncJobNoticeMessageIDStmt, err = db.PrepareContext(ctx, setAsyncJobNoticeMessageID); err != nil {
 		return nil, fmt.Errorf("error preparing query SetAsyncJobNoticeMessageID: %w", err)
 	}
@@ -413,6 +419,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	}
 	if q.visibleAsyncReactionDebtExistsStmt, err = db.PrepareContext(ctx, visibleAsyncReactionDebtExists); err != nil {
 		return nil, fmt.Errorf("error preparing query VisibleAsyncReactionDebtExists: %w", err)
+	}
+	if q.voidAsyncJobsByToolCallIDsStmt, err = db.PrepareContext(ctx, voidAsyncJobsByToolCallIDs); err != nil {
+		return nil, fmt.Errorf("error preparing query VoidAsyncJobsByToolCallIDs: %w", err)
 	}
 	if q.voidPendingAsyncJobNoticeStmt, err = db.PrepareContext(ctx, voidPendingAsyncJobNotice); err != nil {
 		return nil, fmt.Errorf("error preparing query VoidPendingAsyncJobNotice: %w", err)
@@ -958,6 +967,16 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing renewRunQueueLeaseStmt: %w", cerr)
 		}
 	}
+	if q.rependAsyncJobsByNoticeMessageIDsStmt != nil {
+		if cerr := q.rependAsyncJobsByNoticeMessageIDsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing rependAsyncJobsByNoticeMessageIDsStmt: %w", cerr)
+		}
+	}
+	if q.rependSessionNoticesByMessageIDsStmt != nil {
+		if cerr := q.rependSessionNoticesByMessageIDsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing rependSessionNoticesByMessageIDsStmt: %w", cerr)
+		}
+	}
 	if q.setAsyncJobNoticeMessageIDStmt != nil {
 		if cerr := q.setAsyncJobNoticeMessageIDStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing setAsyncJobNoticeMessageIDStmt: %w", cerr)
@@ -1076,6 +1095,11 @@ func (q *Queries) Close() error {
 	if q.visibleAsyncReactionDebtExistsStmt != nil {
 		if cerr := q.visibleAsyncReactionDebtExistsStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing visibleAsyncReactionDebtExistsStmt: %w", cerr)
+		}
+	}
+	if q.voidAsyncJobsByToolCallIDsStmt != nil {
+		if cerr := q.voidAsyncJobsByToolCallIDsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing voidAsyncJobsByToolCallIDsStmt: %w", cerr)
 		}
 	}
 	if q.voidPendingAsyncJobNoticeStmt != nil {
@@ -1238,6 +1262,8 @@ type Queries struct {
 	registerAsyncHostStmt                          *sql.Stmt
 	renameSessionStmt                              *sql.Stmt
 	renewRunQueueLeaseStmt                         *sql.Stmt
+	rependAsyncJobsByNoticeMessageIDsStmt          *sql.Stmt
+	rependSessionNoticesByMessageIDsStmt           *sql.Stmt
 	setAsyncJobNoticeMessageIDStmt                 *sql.Stmt
 	setAsyncJobsWakeZeroPendingForOwnersStmt       *sql.Stmt
 	setParentCostAccountedStmt                     *sql.Stmt
@@ -1262,6 +1288,7 @@ type Queries struct {
 	updateSessionWorkerReviewerModelsStmt          *sql.Stmt
 	updateSessionWorkerReviewerReasoningEffortStmt *sql.Stmt
 	visibleAsyncReactionDebtExistsStmt             *sql.Stmt
+	voidAsyncJobsByToolCallIDsStmt                 *sql.Stmt
 	voidPendingAsyncJobNoticeStmt                  *sql.Stmt
 	voidPendingSessionNoticeStmt                   *sql.Stmt
 	writeToOrphanOutboxStmt                        *sql.Stmt
@@ -1377,6 +1404,8 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		registerAsyncHostStmt:                          q.registerAsyncHostStmt,
 		renameSessionStmt:                              q.renameSessionStmt,
 		renewRunQueueLeaseStmt:                         q.renewRunQueueLeaseStmt,
+		rependAsyncJobsByNoticeMessageIDsStmt:          q.rependAsyncJobsByNoticeMessageIDsStmt,
+		rependSessionNoticesByMessageIDsStmt:           q.rependSessionNoticesByMessageIDsStmt,
 		setAsyncJobNoticeMessageIDStmt:                 q.setAsyncJobNoticeMessageIDStmt,
 		setAsyncJobsWakeZeroPendingForOwnersStmt:       q.setAsyncJobsWakeZeroPendingForOwnersStmt,
 		setParentCostAccountedStmt:                     q.setParentCostAccountedStmt,
@@ -1401,6 +1430,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		updateSessionWorkerReviewerModelsStmt:          q.updateSessionWorkerReviewerModelsStmt,
 		updateSessionWorkerReviewerReasoningEffortStmt: q.updateSessionWorkerReviewerReasoningEffortStmt,
 		visibleAsyncReactionDebtExistsStmt:             q.visibleAsyncReactionDebtExistsStmt,
+		voidAsyncJobsByToolCallIDsStmt:                 q.voidAsyncJobsByToolCallIDsStmt,
 		voidPendingAsyncJobNoticeStmt:                  q.voidPendingAsyncJobNoticeStmt,
 		voidPendingSessionNoticeStmt:                   q.voidPendingSessionNoticeStmt,
 		writeToOrphanOutboxStmt:                        q.writeToOrphanOutboxStmt,

@@ -91,10 +91,10 @@ DELETE FROM async_jobs WHERE owner_session_id = ? AND tool_call_id = ? AND annou
 
 -- name: TransitionAsyncJobTerminalPreserveVoid :one
 -- The ONE terminal-transition CAS (DUR-1/DUR-2/step-2 review): a terminal
--- state, its cause (notice_kind), the result payload, delivery, and wake
--- are all set by this single statement, scoped to state='running' so only
--- the first committer wins -- every other concurrent caller sees 0 rows
--- affected and must re-read the row (GetAsyncJob) and accept whatever
+-- state, its cause (notice_kind), the result payload, delivery, wake, and
+-- reacted are all set by this single statement, scoped to state='running'
+-- so only the first committer wins -- every other concurrent caller sees 0
+-- rows affected and must re-read the row (GetAsyncJob) and accept whatever
 -- state is there instead of retrying the same transition. This is the
 -- ONLY terminal-transition query (doc sec.3.8 is explicit the terminal
 -- transition always preserves void, so the earlier non-preserving sibling
@@ -104,15 +104,41 @@ DELETE FROM async_jobs WHERE owner_session_id = ? AND tool_call_id = ? AND annou
 -- job_kill racing the history truncation).
 --
 -- delivery is a PARAMETER, not a hardcoded 'pending' literal (step 3): every
--- cause passes 'pending' today; step 6 passes 'done' for job_kill once its
--- own tool response carries the real output (doc sec.3.2), so that row never
--- also surfaces as a history notice via the pull.
+-- cause passes 'pending' except step 6's job_kill, which passes 'done' once
+-- its own tool response carries the real output (doc sec.3.2), so that row
+-- never also surfaces as a history notice via the pull. reacted is also a
+-- PARAMETER (step 6): every cause passes 0 (a row cannot have reacted
+-- anything while still running) except job_kill, which passes 1 in the SAME
+-- statement -- so a job_kill row is neither debt nor a future notice the
+-- instant it commits, with no separate write.
 UPDATE async_jobs
 SET state = ?, notice_kind = ?, result_summary = ?, result_is_error = ?,
     delivery = CASE delivery WHEN 'void' THEN 'void' ELSE ? END,
-    wake = ?, updated_at = ?
+    wake = ?, reacted = ?, updated_at = ?
 WHERE owner_session_id = ? AND tool_call_id = ? AND state = 'running'
 RETURNING *;
+
+-- name: RependAsyncJobsByNoticeMessageIDs :execrows
+-- Rerun undo-truncation (doc sec.3.8): a row announced BEFORE the
+-- truncation point whose OWN notice landed in the deleted tail goes back to
+-- pending/reacted=0 so the next turn on the new branch pulls it again
+-- (ASYNC-04). Matched by notice_message_id, which is only ever set once a
+-- row reaches delivery='done' -- scoping to that state is implied by the
+-- match, not restated here. Must run BEFORE VoidAsyncJobsByToolCallIDs in
+-- the same Rerun pass: a row whose OWN tool call is ALSO in the deleted
+-- tail matches both queries, and void must win for it.
+UPDATE async_jobs SET delivery = 'pending', reacted = 0, updated_at = ?
+WHERE owner_session_id = ? AND notice_message_id IN (sqlc.slice('message_ids'));
+
+-- name: VoidAsyncJobsByToolCallIDs :execrows
+-- Rerun truncation (doc sec.3.8): every row whose OWNING tool call is in the
+-- deleted tail must never surface a notice, regardless of its current
+-- delivery/state -- including a still-'running' row (its stop may have
+-- raced or failed): the terminal-transition CAS always preserves an
+-- existing 'void' (TransitionAsyncJobTerminalPreserveVoid), so writing void
+-- here first closes that race for a late-arriving terminal transition too.
+UPDATE async_jobs SET delivery = 'void', updated_at = ?
+WHERE owner_session_id = ? AND tool_call_id IN (sqlc.slice('tool_call_ids'));
 
 -- name: ListPendingAsyncJobNoticesForOwner :many
 -- Candidates for the drain's pull (doc sec.3.3): announced=1 is required --

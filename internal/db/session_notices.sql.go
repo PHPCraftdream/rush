@@ -329,6 +329,41 @@ func (q *Queries) PurgeSessionNoticesOlderThan(ctx context.Context, updatedAt in
 	return result.RowsAffected()
 }
 
+const rependSessionNoticesByMessageIDs = `-- name: RependSessionNoticesByMessageIDs :execrows
+UPDATE session_notices SET delivery = 'pending', reacted = 0, updated_at = ?
+WHERE owner = ? AND notice_message_id IN (/*SLICE:message_ids*/?)
+`
+
+type RependSessionNoticesByMessageIDsParams struct {
+	UpdatedAt  int64            `json:"updated_at"`
+	Owner      string           `json:"owner"`
+	MessageIds []sql.NullString `json:"message_ids"`
+}
+
+// Rerun undo-truncation, session_notices' counterpart to
+// RependAsyncJobsByNoticeMessageIDs (doc sec.3.8's "same for session_notices
+// rows whose messages were deleted"): a notice already delivered whose
+// message landed in the deleted tail is re-queued for the new branch.
+func (q *Queries) RependSessionNoticesByMessageIDs(ctx context.Context, arg RependSessionNoticesByMessageIDsParams) (int64, error) {
+	query := rependSessionNoticesByMessageIDs
+	var queryParams []interface{}
+	queryParams = append(queryParams, arg.UpdatedAt)
+	queryParams = append(queryParams, arg.Owner)
+	if len(arg.MessageIds) > 0 {
+		for _, v := range arg.MessageIds {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:message_ids*/?", strings.Repeat(",?", len(arg.MessageIds))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:message_ids*/?", "NULL", 1)
+	}
+	result, err := q.exec(ctx, nil, query, queryParams...)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const setSessionNoticeMessageID = `-- name: SetSessionNoticeMessageID :execrows
 UPDATE session_notices SET notice_message_id = ?, updated_at = ?
 WHERE id = ?

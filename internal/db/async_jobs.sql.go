@@ -858,6 +858,45 @@ func (q *Queries) RegisterAsyncHost(ctx context.Context, arg RegisterAsyncHostPa
 	return i, err
 }
 
+const rependAsyncJobsByNoticeMessageIDs = `-- name: RependAsyncJobsByNoticeMessageIDs :execrows
+UPDATE async_jobs SET delivery = 'pending', reacted = 0, updated_at = ?
+WHERE owner_session_id = ? AND notice_message_id IN (/*SLICE:message_ids*/?)
+`
+
+type RependAsyncJobsByNoticeMessageIDsParams struct {
+	UpdatedAt      int64            `json:"updated_at"`
+	OwnerSessionID string           `json:"owner_session_id"`
+	MessageIds     []sql.NullString `json:"message_ids"`
+}
+
+// Rerun undo-truncation (doc sec.3.8): a row announced BEFORE the
+// truncation point whose OWN notice landed in the deleted tail goes back to
+// pending/reacted=0 so the next turn on the new branch pulls it again
+// (ASYNC-04). Matched by notice_message_id, which is only ever set once a
+// row reaches delivery='done' -- scoping to that state is implied by the
+// match, not restated here. Must run BEFORE VoidAsyncJobsByToolCallIDs in
+// the same Rerun pass: a row whose OWN tool call is ALSO in the deleted
+// tail matches both queries, and void must win for it.
+func (q *Queries) RependAsyncJobsByNoticeMessageIDs(ctx context.Context, arg RependAsyncJobsByNoticeMessageIDsParams) (int64, error) {
+	query := rependAsyncJobsByNoticeMessageIDs
+	var queryParams []interface{}
+	queryParams = append(queryParams, arg.UpdatedAt)
+	queryParams = append(queryParams, arg.OwnerSessionID)
+	if len(arg.MessageIds) > 0 {
+		for _, v := range arg.MessageIds {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:message_ids*/?", strings.Repeat(",?", len(arg.MessageIds))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:message_ids*/?", "NULL", 1)
+	}
+	result, err := q.exec(ctx, nil, query, queryParams...)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const setAsyncJobNoticeMessageID = `-- name: SetAsyncJobNoticeMessageID :execrows
 UPDATE async_jobs SET notice_message_id = ?, updated_at = ?
 WHERE owner_session_id = ? AND tool_call_id = ?
@@ -960,7 +999,7 @@ const transitionAsyncJobTerminalPreserveVoid = `-- name: TransitionAsyncJobTermi
 UPDATE async_jobs
 SET state = ?, notice_kind = ?, result_summary = ?, result_is_error = ?,
     delivery = CASE delivery WHEN 'void' THEN 'void' ELSE ? END,
-    wake = ?, updated_at = ?
+    wake = ?, reacted = ?, updated_at = ?
 WHERE owner_session_id = ? AND tool_call_id = ? AND state = 'running'
 RETURNING owner_session_id, tool_call_id, kind, tool_name, timeout_seconds, input_hash, child_session_id, origin_cli, state, notice_kind, host_id, announced, delivery, notice_message_id, wake, reacted, wake_attempts, reacted_failed, deadline_at, timeout_kind, result_summary, result_is_error, created_at, updated_at
 `
@@ -972,16 +1011,17 @@ type TransitionAsyncJobTerminalPreserveVoidParams struct {
 	ResultIsError  sql.NullInt64  `json:"result_is_error"`
 	Delivery       string         `json:"delivery"`
 	Wake           int64          `json:"wake"`
+	Reacted        int64          `json:"reacted"`
 	UpdatedAt      int64          `json:"updated_at"`
 	OwnerSessionID string         `json:"owner_session_id"`
 	ToolCallID     string         `json:"tool_call_id"`
 }
 
 // The ONE terminal-transition CAS (DUR-1/DUR-2/step-2 review): a terminal
-// state, its cause (notice_kind), the result payload, delivery, and wake
-// are all set by this single statement, scoped to state='running' so only
-// the first committer wins -- every other concurrent caller sees 0 rows
-// affected and must re-read the row (GetAsyncJob) and accept whatever
+// state, its cause (notice_kind), the result payload, delivery, wake, and
+// reacted are all set by this single statement, scoped to state='running'
+// so only the first committer wins -- every other concurrent caller sees 0
+// rows affected and must re-read the row (GetAsyncJob) and accept whatever
 // state is there instead of retrying the same transition. This is the
 // ONLY terminal-transition query (doc sec.3.8 is explicit the terminal
 // transition always preserves void, so the earlier non-preserving sibling
@@ -991,9 +1031,13 @@ type TransitionAsyncJobTerminalPreserveVoidParams struct {
 // job_kill racing the history truncation).
 //
 // delivery is a PARAMETER, not a hardcoded 'pending' literal (step 3): every
-// cause passes 'pending' today; step 6 passes 'done' for job_kill once its
-// own tool response carries the real output (doc sec.3.2), so that row never
-// also surfaces as a history notice via the pull.
+// cause passes 'pending' except step 6's job_kill, which passes 'done' once
+// its own tool response carries the real output (doc sec.3.2), so that row
+// never also surfaces as a history notice via the pull. reacted is also a
+// PARAMETER (step 6): every cause passes 0 (a row cannot have reacted
+// anything while still running) except job_kill, which passes 1 in the SAME
+// statement -- so a job_kill row is neither debt nor a future notice the
+// instant it commits, with no separate write.
 func (q *Queries) TransitionAsyncJobTerminalPreserveVoid(ctx context.Context, arg TransitionAsyncJobTerminalPreserveVoidParams) (AsyncJob, error) {
 	row := q.queryRow(ctx, q.transitionAsyncJobTerminalPreserveVoidStmt, transitionAsyncJobTerminalPreserveVoid,
 		arg.State,
@@ -1002,6 +1046,7 @@ func (q *Queries) TransitionAsyncJobTerminalPreserveVoid(ctx context.Context, ar
 		arg.ResultIsError,
 		arg.Delivery,
 		arg.Wake,
+		arg.Reacted,
 		arg.UpdatedAt,
 		arg.OwnerSessionID,
 		arg.ToolCallID,
@@ -1064,6 +1109,43 @@ func (q *Queries) VisibleAsyncReactionDebtExists(ctx context.Context, owner stri
 	var has_debt sql.NullBool
 	err := row.Scan(&has_debt)
 	return has_debt, err
+}
+
+const voidAsyncJobsByToolCallIDs = `-- name: VoidAsyncJobsByToolCallIDs :execrows
+UPDATE async_jobs SET delivery = 'void', updated_at = ?
+WHERE owner_session_id = ? AND tool_call_id IN (/*SLICE:tool_call_ids*/?)
+`
+
+type VoidAsyncJobsByToolCallIDsParams struct {
+	UpdatedAt      int64    `json:"updated_at"`
+	OwnerSessionID string   `json:"owner_session_id"`
+	ToolCallIds    []string `json:"tool_call_ids"`
+}
+
+// Rerun truncation (doc sec.3.8): every row whose OWNING tool call is in the
+// deleted tail must never surface a notice, regardless of its current
+// delivery/state -- including a still-'running' row (its stop may have
+// raced or failed): the terminal-transition CAS always preserves an
+// existing 'void' (TransitionAsyncJobTerminalPreserveVoid), so writing void
+// here first closes that race for a late-arriving terminal transition too.
+func (q *Queries) VoidAsyncJobsByToolCallIDs(ctx context.Context, arg VoidAsyncJobsByToolCallIDsParams) (int64, error) {
+	query := voidAsyncJobsByToolCallIDs
+	var queryParams []interface{}
+	queryParams = append(queryParams, arg.UpdatedAt)
+	queryParams = append(queryParams, arg.OwnerSessionID)
+	if len(arg.ToolCallIds) > 0 {
+		for _, v := range arg.ToolCallIds {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:tool_call_ids*/?", strings.Repeat(",?", len(arg.ToolCallIds))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:tool_call_ids*/?", "NULL", 1)
+	}
+	result, err := q.exec(ctx, nil, query, queryParams...)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const voidPendingAsyncJobNotice = `-- name: VoidPendingAsyncJobNotice :execrows

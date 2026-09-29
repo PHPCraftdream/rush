@@ -82,6 +82,14 @@ WHERE owner IN (sqlc.slice('owner_ids')) AND delivery IN ('pending', 'done') AND
 -- Reader for `sessions jobs`/`sessions why`.
 SELECT * FROM session_notices WHERE owner = ? ORDER BY id ASC;
 
+-- name: RependSessionNoticesByMessageIDs :execrows
+-- Rerun undo-truncation, session_notices' counterpart to
+-- RependAsyncJobsByNoticeMessageIDs (doc sec.3.8's "same for session_notices
+-- rows whose messages were deleted"): a notice already delivered whose
+-- message landed in the deleted tail is re-queued for the new branch.
+UPDATE session_notices SET delivery = 'pending', reacted = 0, updated_at = ?
+WHERE owner = ? AND notice_message_id IN (sqlc.slice('message_ids'));
+
 -- name: PurgeSessionNoticesOlderThan :execrows
 -- Same retention pass as PurgeAsyncJobsOlderThan (doc sec.3.7).
 DELETE FROM session_notices WHERE delivery IN ('done', 'void') AND updated_at < ?;

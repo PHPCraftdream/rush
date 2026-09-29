@@ -548,6 +548,20 @@ type Querier interface {
 	// execrows reports 0 rows in that case, which the caller must treat as
 	// meaning it is no longer this executor's lease to keep alive.
 	RenewRunQueueLease(ctx context.Context, arg RenewRunQueueLeaseParams) (int64, error)
+	// Rerun undo-truncation (doc sec.3.8): a row announced BEFORE the
+	// truncation point whose OWN notice landed in the deleted tail goes back to
+	// pending/reacted=0 so the next turn on the new branch pulls it again
+	// (ASYNC-04). Matched by notice_message_id, which is only ever set once a
+	// row reaches delivery='done' -- scoping to that state is implied by the
+	// match, not restated here. Must run BEFORE VoidAsyncJobsByToolCallIDs in
+	// the same Rerun pass: a row whose OWN tool call is ALSO in the deleted
+	// tail matches both queries, and void must win for it.
+	RependAsyncJobsByNoticeMessageIDs(ctx context.Context, arg RependAsyncJobsByNoticeMessageIDsParams) (int64, error)
+	// Rerun undo-truncation, session_notices' counterpart to
+	// RependAsyncJobsByNoticeMessageIDs (doc sec.3.8's "same for session_notices
+	// rows whose messages were deleted"): a notice already delivered whose
+	// message landed in the deleted tail is re-queued for the new branch.
+	RependSessionNoticesByMessageIDs(ctx context.Context, arg RependSessionNoticesByMessageIDsParams) (int64, error)
 	// Second half of the pull transaction: records where the notice landed.
 	SetAsyncJobNoticeMessageID(ctx context.Context, arg SetAsyncJobNoticeMessageIDParams) (int64, error)
 	// Stop transitivity (DUR-9, doc sec.3.8): every pending row of the stopped
@@ -653,10 +667,10 @@ type Querier interface {
 	// Scoped to the current lease owner, same as AckRunQueueEntry.
 	TerminalFailRunQueueEntry(ctx context.Context, arg TerminalFailRunQueueEntryParams) (string, error)
 	// The ONE terminal-transition CAS (DUR-1/DUR-2/step-2 review): a terminal
-	// state, its cause (notice_kind), the result payload, delivery, and wake
-	// are all set by this single statement, scoped to state='running' so only
-	// the first committer wins -- every other concurrent caller sees 0 rows
-	// affected and must re-read the row (GetAsyncJob) and accept whatever
+	// state, its cause (notice_kind), the result payload, delivery, wake, and
+	// reacted are all set by this single statement, scoped to state='running'
+	// so only the first committer wins -- every other concurrent caller sees 0
+	// rows affected and must re-read the row (GetAsyncJob) and accept whatever
 	// state is there instead of retrying the same transition. This is the
 	// ONLY terminal-transition query (doc sec.3.8 is explicit the terminal
 	// transition always preserves void, so the earlier non-preserving sibling
@@ -666,9 +680,13 @@ type Querier interface {
 	// job_kill racing the history truncation).
 	//
 	// delivery is a PARAMETER, not a hardcoded 'pending' literal (step 3): every
-	// cause passes 'pending' today; step 6 passes 'done' for job_kill once its
-	// own tool response carries the real output (doc sec.3.2), so that row never
-	// also surfaces as a history notice via the pull.
+	// cause passes 'pending' except step 6's job_kill, which passes 'done' once
+	// its own tool response carries the real output (doc sec.3.2), so that row
+	// never also surfaces as a history notice via the pull. reacted is also a
+	// PARAMETER (step 6): every cause passes 0 (a row cannot have reacted
+	// anything while still running) except job_kill, which passes 1 in the SAME
+	// statement -- so a job_kill row is neither debt nor a future notice the
+	// instant it commits, with no separate write.
 	TransitionAsyncJobTerminalPreserveVoid(ctx context.Context, arg TransitionAsyncJobTerminalPreserveVoidParams) (AsyncJob, error)
 	// task #595: was :exec (rows-affected discarded). The terminal write path in
 	// message.Service.Update used to hardcode rowsAffected = 1 for this branch,
@@ -740,6 +758,13 @@ type Querier interface {
 	// "WHERE wake=1 AND reacted=0 AND delivery != 'void'") still narrow this
 	// query correctly -- delivery='done' is a subset of != 'void'.
 	VisibleAsyncReactionDebtExists(ctx context.Context, owner string) (sql.NullBool, error)
+	// Rerun truncation (doc sec.3.8): every row whose OWNING tool call is in the
+	// deleted tail must never surface a notice, regardless of its current
+	// delivery/state -- including a still-'running' row (its stop may have
+	// raced or failed): the terminal-transition CAS always preserves an
+	// existing 'void' (TransitionAsyncJobTerminalPreserveVoid), so writing void
+	// here first closes that race for a late-arriving terminal transition too.
+	VoidAsyncJobsByToolCallIDs(ctx context.Context, arg VoidAsyncJobsByToolCallIDsParams) (int64, error)
 	// A pulled notice whose task-still-running condition failed (doc sec.3.4,
 	// supervision/wake_only void-at-drain rule) becomes void instead of done.
 	VoidPendingAsyncJobNotice(ctx context.Context, arg VoidPendingAsyncJobNoticeParams) (int64, error)
