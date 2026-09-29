@@ -6,6 +6,7 @@ package agent
 
 import (
 	"context"
+	"net/http"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -275,10 +276,22 @@ func TestWakeSession_RunPanicIsRecovered(t *testing.T) {
 // NoticeKindWakeFailed, wake=0), not a second InjectMessage call. Step 4
 // (doc sec.3.4 "closing debt by failure") gates the marker on the debt
 // snapshot captured before the turn ran being non-empty -- this test seeds
-// one wake=1 session_notices row so settle-by-failure (assert.AnError
-// classifies as an unrecoverable/classTerminal cause via classifyProviderError's
-// default case, so it settles on the FIRST failure, K doesn't matter) has a
-// real row to close.
+// one wake=1 session_notices row so settle-by-failure has a real row to
+// close.
+//
+// W-DRAIN item 1 fix (docs/reviews/2026-09-29-async-phase4-round1.md B5/C3):
+// the runFunc error used to be assert.AnError, a generic non-provider-shaped
+// error -- classifyProviderError's OLD default case treated any such
+// unrecognized error as classTerminal, settling immediately. That default
+// was ITSELF the bug item 1 fixes: a DB error in a Drain's turn-start
+// preamble is equally "a generic unrecognized error" and must NOT settle
+// debt (docs/reviews' explicit "DB error in the preamble ... must not
+// settle debt or write a marker"). settleOrRetryDrainFailure now only
+// terminal-classifies a REAL provider-shaped error (isProviderClassifiable)
+// when no per-attempt evidence is available (this mock never wires
+// OnAssistantMessageCreated) -- a bare *fantasy.ProviderError with a 400
+// status is the correct fixture for "ASYNC-09: an unrecoverable failure
+// produces a visible marker", not a generic error.
 //
 // Revert-check performed: removed the persistWakeFailedMarker call from
 // settleAndMark -- this test FAILED (ListSessionNotices returned only the
@@ -288,7 +301,7 @@ func TestWakeSession_RunPanicIsRecovered(t *testing.T) {
 func TestWakeSession_RunErrorIsVisibleNotDebug(t *testing.T) {
 	agent := &mockSessionAgent{
 		runFunc: func(ctx context.Context, call SessionAgentCall) (*fantasy.AgentResult, error) {
-			return nil, assert.AnError
+			return nil, &fantasy.ProviderError{StatusCode: http.StatusBadRequest, Message: "boom"}
 		},
 	}
 	coord := &coordinator{subAgentDrivers: newSubAgentDriverRegistry()}

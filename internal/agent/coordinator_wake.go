@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"runtime/debug"
 
+	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
 )
 
@@ -132,12 +133,20 @@ func (c *coordinator) wakeSession(ctx context.Context, job jobIdentity, wake boo
 	// recorder, never an ancestor's (mirrors turnAdmission's existing
 	// queued-flag isolation).
 	call.onDrainTurnStarting = admission.markReachedProvider
+	// W-DRAIN item 1 (B5/C3 deep fix): capture THIS attempt's own assistant
+	// row id so settleOrRetryDrainFailure can classify from the Drain's own
+	// finish reason instead of runErr alone -- see that function's doc.
+	// newDrainCall already reset OnAssistantMessageCreated to nil, so this
+	// is never overwriting an inherited hook.
+	evidence := newAttemptEvidence()
+	call.OnAssistantMessageCreated = evidence.record
 	snapshot, snapErr := c.asyncJobs.captureDebtSnapshot(ctx, job.owner)
 	if snapErr != nil {
 		slog.Warn("wakeSession: capture debt snapshot failed; settle-by-failure will see an empty set",
 			"session_id", job.owner, "err", snapErr)
 	}
 	_, runErr := agent.Run(withTurnAdmission(ctx, admission), call)
+	attemptAssistantMsgID := evidence.resolve()
 	if runErr != nil {
 		// The task is already terminal and its fact already durably
 		// committed -- this failure is about the DELIVERY turn, not the
@@ -151,9 +160,28 @@ func (c *coordinator) wakeSession(ctx context.Context, job jobIdentity, wake boo
 	// owner's queue rather than running just now -- that later turn's own
 	// in-turn debt+policy re-check governs it; nothing to account for here
 	// yet (see recordDrainOutcome's doc).
-	c.recordDrainOutcome(ctx, job, snapshot, !admission.wasQueued(), runErr)
+	c.recordDrainOutcome(ctx, job, snapshot, !admission.wasQueued(), runErr, attemptAssistantMsgID)
 	if runErr != nil {
 		return runErr
+	}
+	// W-DRAIN item 2 (C5c fix): a Drain that "succeeded" (fantasy reported no
+	// error) can still have left its captured debt unreacted, if the
+	// reaction write itself silently failed -- see checkStuckDrainProgress's
+	// own doc. hasContent stays false (a no-op) unless the attempt's own
+	// evidence CONFIRMS a clean finish with real content; every bare-mock
+	// SessionAgent test that never wires OnAssistantMessageCreated is
+	// therefore unaffected. !admission.wasQueued() mirrors recordDrainOutcome's
+	// own "attempted" gate just above: a merely-queued call ran no turn of
+	// its own to check progress on.
+	if !admission.wasQueued() {
+		hasContent := false
+		if attemptAssistantMsgID != "" {
+			if msg, ok := c.ownAttemptAssistantMessage(ctx, job.owner, attemptAssistantMsgID); ok {
+				fp := msg.FinishPart()
+				hasContent = (fp == nil || fp.Reason != message.FinishReasonError) && turnMadeProgress(msg)
+			}
+		}
+		c.checkStuckDrainProgress(ctx, job, snapshot, hasContent)
 	}
 	// B7 fix: count only a Drain that ACTUALLY reached the provider -- never
 	// one that was merely admitted/queued (admission.wasQueued(), already

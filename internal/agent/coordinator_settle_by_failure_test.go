@@ -8,11 +8,14 @@ package agent
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"testing"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
@@ -21,10 +24,11 @@ import (
 // settle-by-failure tests, with a mock driver whose Run outcome the test
 // controls directly.
 type settleFixture struct {
-	coord  *coordinator
-	store  *session.AsyncJobStore
-	agent  *mockSessionAgent
-	sessID string
+	coord    *coordinator
+	store    *session.AsyncJobStore
+	messages message.Service
+	agent    *mockSessionAgent
+	sessID   string
 }
 
 func newSettleFixture(t *testing.T, title string) *settleFixture {
@@ -36,8 +40,8 @@ func newSettleFixture(t *testing.T, title string) *settleFixture {
 	store := session.NewAsyncJobStore(env.conn, env.workingDir, os.Getpid(), "test")
 	t.Cleanup(func() { _ = store.Close(context.Background()) })
 
-	f := &settleFixture{sessID: sess.ID, store: store}
-	f.coord = &coordinator{subAgentDrivers: newSubAgentDriverRegistry()}
+	f := &settleFixture{sessID: sess.ID, store: store, messages: env.messages}
+	f.coord = &coordinator{subAgentDrivers: newSubAgentDriverRegistry(), messages: env.messages}
 	ledger := newWorkLedger(f.coord.notifyAsyncCompletion)
 	ledger.store = store
 	ledger.coord = f.coord
@@ -209,4 +213,131 @@ func TestSettleByFailure_AdmissionRefusalDuringShutdown_DoesNotSettle(t *testing
 	_, inSet := f.coord.recheckSet[f.sessID]
 	f.coord.recheckMu.Unlock()
 	require.True(t, inSet, "a session-lock/shutdown refusal must go into the 60s recheck set, not be forgotten")
+}
+
+// TestSettleByFailure_SnapshotAlreadyReactedBeforeSettle_NoSpuriousMarker is
+// W-DRAIN item 1's "queued user turn behind a Drain that did react" scenario
+// (docs/reviews/2026-09-29-async-phase4-round1.md B5/C3): by the time
+// settleAndMark actually runs, every row the pre-captured snapshot named has
+// ALREADY been reacted to by something else (in production: a queued user
+// turn dispatched behind this Drain in the same release window, whose own
+// step-finish reacted before this Drain's failure was even classified).
+// SettleReactedFailedWithMarker's server-side wake=1/reacted=0 scoping means
+// settling this snapshot now touches zero rows -- so NO marker may appear.
+//
+// Revert-check performed: reverted settleAndMark (coordinator_drain_policy.go)
+// to the pre-item-1 two-step SettleReactedFailed + persistWakeFailedMarker
+// sequence -- this test's `require.Zero(t, f.markerCount(t))` FAILED (one
+// spurious wake_failed marker appeared even though SettleReactedFailed
+// itself settled zero rows). Restored the atomic
+// SettleReactedFailedWithMarker call; re-ran, passed.
+func TestSettleByFailure_SnapshotAlreadyReactedBeforeSettle_NoSpuriousMarker(t *testing.T) {
+	t.Parallel()
+	f := newSettleFixture(t, "reacted-before-settle")
+	f.agent.runFunc = func(ctx context.Context, _ SessionAgentCall) (*fantasy.AgentResult, error) {
+		// Simulate the queued user turn reacting to the SAME rows this
+		// Drain attempt's snapshot already captured, before this attempt's
+		// own failure is classified.
+		reactionMsg, err := f.messages.Create(ctx, f.sessID, message.CreateMessageParams{
+			Role: message.Assistant,
+			Parts: []message.ContentPart{
+				message.TextContent{Text: "queued turn's own reply"},
+				message.Finish{Reason: message.FinishReasonEndTurn},
+			},
+		})
+		require.NoError(t, err)
+		require.NoError(t, f.coord.asyncJobs.store.MarkReactedWithMessageUpdate(ctx, f.messages, f.sessID, reactionMsg))
+		return nil, &fantasy.ProviderError{StatusCode: http.StatusUnauthorized, Message: "invalid api key"}
+	}
+	require.True(t, f.debtExists(t), "precondition: debt must be visible before the wake")
+
+	err := f.coord.wakeSession(context.Background(), jobIdentity{owner: f.sessID, toolCallID: "call-1"}, true)
+	require.Error(t, err)
+
+	require.False(t, f.debtExists(t), "the queued turn's own reaction already cleared the debt")
+	require.Zero(t, f.markerCount(t), "nothing was actually settled by THIS attempt -- no marker may appear")
+}
+
+// TestSettleByFailure_NonProviderErrorWithNoAttemptEvidence_DoesNotSettle is
+// W-DRAIN item 1's "DB error in the preamble" scenario: a Drain's turn-start
+// pull (or any other preamble step) fails with a plain error that is
+// neither a *fantasy.ProviderError nor a net.Error nor context.Canceled/
+// DeadlineExceeded -- classifyProviderError's own fallback would call this
+// classTerminal (its default case), which, before this fix, closed the
+// debt and wrote a visible wake-failed marker for a failure that never
+// touched the provider at all.
+//
+// Revert-check performed: removed the `else if !isProviderClassifiable(runErr)`
+// branch from settleOrRetryDrainFailure (coordinator_drain_policy.go),
+// falling straight through to classifyProviderError -- this test's
+// `require.True(t, f.debtExists(t))` FAILED (debt closed, one wake_failed
+// marker written for a bare DB-shaped error). Restored the branch; re-ran,
+// passed.
+func TestSettleByFailure_NonProviderErrorWithNoAttemptEvidence_DoesNotSettle(t *testing.T) {
+	t.Parallel()
+	f := newSettleFixture(t, "db-error-preamble")
+	f.agent.runFunc = func(context.Context, SessionAgentCall) (*fantasy.AgentResult, error) {
+		return nil, fmt.Errorf("pull notices: %w", errors.New("database is locked"))
+	}
+	require.True(t, f.debtExists(t), "precondition: debt must be visible before the wake")
+
+	err := f.coord.wakeSession(context.Background(), jobIdentity{owner: f.sessID, toolCallID: "call-1"}, true)
+	require.Error(t, err)
+
+	require.True(t, f.debtExists(t), "a non-provider preamble error must not settle the debt")
+	require.Zero(t, f.markerCount(t))
+	f.coord.recheckMu.Lock()
+	_, inSet := f.coord.recheckSet[f.sessID]
+	f.coord.recheckMu.Unlock()
+	require.True(t, inSet, "a non-provider preamble error must go into the 60s recheck set, not be forgotten")
+}
+
+// TestSettleAndMark_MarkerText_RealIDIncludedPseudoIDOmitted is item 1's
+// marker-text proof: a real, model-facing tool_call_id (an ordinary async-
+// job wake) is useful context and stays in the marker text; wakeSession's
+// own internal pseudo-ids (release-recheck, cli-loop, recheck-pass,
+// supervision-<uuid> -- jobIdentity.toolCallID is diagnostic-only, never a
+// real id for those paths) must never leak into it.
+//
+// Revert-check performed: changed isPseudoJobID (coordinator_drain_policy.go)
+// to always return true -- the real-id half of this test
+// (`require.Contains(t, marker.Text, "call-1")`) FAILED. Changed it to always
+// return false -- the pseudo-id half (`require.NotContains(t, marker.Text,
+// "release-recheck")`) FAILED. Restored the real switch/prefix check; both
+// halves passed.
+func TestSettleAndMark_MarkerText_RealIDIncludedPseudoIDOmitted(t *testing.T) {
+	t.Parallel()
+	f := newSettleFixture(t, "marker-text-real-id")
+	f.agent.runFunc = func(context.Context, SessionAgentCall) (*fantasy.AgentResult, error) {
+		return nil, &fantasy.ProviderError{StatusCode: http.StatusUnauthorized, Message: "invalid api key"}
+	}
+	err := f.coord.wakeSession(context.Background(), jobIdentity{owner: f.sessID, toolCallID: "call-1"}, true)
+	require.Error(t, err)
+	require.Equal(t, 1, f.markerCount(t))
+	notices, listErr := f.store.ListSessionNotices(context.Background(), f.sessID)
+	require.NoError(t, listErr)
+	var markerText string
+	for _, n := range notices {
+		if n.Kind == "wake_failed" {
+			markerText = n.Text
+		}
+	}
+	require.Contains(t, markerText, "call-1", "a real tool_call_id is useful context and must stay in the marker")
+
+	f2 := newSettleFixture(t, "marker-text-pseudo-id")
+	f2.agent.runFunc = func(context.Context, SessionAgentCall) (*fantasy.AgentResult, error) {
+		return nil, &fantasy.ProviderError{StatusCode: http.StatusUnauthorized, Message: "invalid api key"}
+	}
+	err = f2.coord.wakeSession(context.Background(), jobIdentity{owner: f2.sessID, toolCallID: "release-recheck"}, true)
+	require.Error(t, err)
+	require.Equal(t, 1, f2.markerCount(t))
+	notices2, listErr := f2.store.ListSessionNotices(context.Background(), f2.sessID)
+	require.NoError(t, listErr)
+	var markerText2 string
+	for _, n := range notices2 {
+		if n.Kind == "wake_failed" {
+			markerText2 = n.Text
+		}
+	}
+	require.NotContains(t, markerText2, "release-recheck", "an internal pseudo-id must never leak into a notice the model/operator reads")
 }
