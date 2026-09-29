@@ -220,6 +220,8 @@ func (app *App) runNonInteractiveWithAsyncResults(ctx context.Context, output io
 			return final, runErr
 		}
 
+		waitAfterNoTurnDrain(ctx, source, sessionID, drainNoTurn)
+
 		// Doc sec.3.5: turn <=> the root's reaction debt (or the initial
 		// request, already run above); exit <=> the root's scope is
 		// closed. waitForNextCLITurn owns the DB predicate/wait/retry loop
@@ -269,6 +271,24 @@ func (app *App) runNonInteractiveWithAsyncResults(ctx context.Context, output io
 	}
 }
 
+// waitAfterNoTurnDrain implements the B8/C5b,c fix (docs/reviews/2026-09-29-
+// async-phase4-round1.md): a no-turn Drain (ErrRunQueued -- decideDrainTurn
+// found no VISIBLE debt for a row waitForNextCLITurn's own pending-inclusive
+// predicate just said WAS owed) must not loop straight back into an
+// identical immediate re-check. If the row is still 'pending' because its
+// pull keeps failing, the very next waitForNextCLITurn call would see the
+// SAME pending debt and relaunch instantly again -- a 100%-CPU tight loop
+// with no pause, never exiting. Waiting for a hint (or its own bounded
+// fallback) first paces every SUBSEQUENT no-turn iteration without slowing
+// down the common case at all: a genuinely fresh pending notice's FIRST
+// Drain attempt pulls and reacts to it successfully (drainNoTurn is false),
+// so this wait is never reached for it.
+func waitAfterNoTurnDrain(ctx context.Context, source agent.ReactionDebtSource, sessionID string, drainNoTurn bool) {
+	if drainNoTurn {
+		source.WaitForHint(ctx, sessionID)
+	}
+}
+
 // waitForNextCLITurn implements doc sec.3.5's CLI-loop predicate: another
 // turn is owed iff sessionID's reaction debt exists right now; otherwise the
 // loop waits (a hint, or a bounded same-process fallback tick) and
@@ -281,17 +301,21 @@ func (app *App) waitForNextCLITurn(ctx context.Context, source agent.ReactionDeb
 		if ctx.Err() != nil {
 			return false, ctx.Err()
 		}
-		// B8/C5b,c fix: VISIBLE debt (delivery='done'), the SAME predicate
-		// decideDrainTurn uses to decide whether a Drain call actually
-		// reaches the provider -- one predicate for "turn needed" (here) and
-		// "turn run" (decideDrainTurn), so this loop never claims a turn is
-		// owed that decideDrainTurn will just no-op. Before this fix, the
-		// pending-inclusive predicate returned true immediately from a
-		// permanently-pending row (a stuck pull) -- hasNext=true above
-		// without ever calling WaitForHint below -- while decideDrainTurn's
-		// own no-turn branch made every such "turn" produce ErrRunQueued: a
-		// 100%-CPU tight loop with no pause, never exiting.
-		debt, debtErr := source.VisibleReactionDebtExists(ctx, sessionID)
+		// Pending-inclusive: a freshly-arrived notice is normally still
+		// 'pending' here (nothing has pulled it into history yet) and MUST
+		// still be reported as a turn owed -- the next turn's own preamble
+		// pull is what moves it to 'done' and reacts to it. Using the
+		// VISIBLE-only predicate here instead (an earlier version of the B8/
+		// C5b,c fix) broke this common case: it is never visible until AFTER
+		// a turn already pulled it, so this check saw no debt, fell through
+		// to ScopeOpen, and blocked on WaitForHint's fallback for a hint that
+		// had already fired before this call started watching for it --
+		// several seconds of pure waste on every single async completion.
+		// The actual tight-loop case (a permanently-pending row whose pull
+		// keeps failing) is bounded below instead, at the one place that can
+		// tell "this specific attempt already ran and found nothing to
+		// react to" (drainNoTurn) without misclassifying a fresh notice.
+		debt, debtErr := source.ReactionDebtExists(ctx, sessionID)
 		if debtErr != nil {
 			slog.Warn("rush run: reaction debt check failed; retrying", "session_id", sessionID, "err", debtErr)
 			if !sleepOrCtxDone(ctx, cliDBRetryPause) {
