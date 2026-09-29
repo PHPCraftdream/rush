@@ -13,10 +13,12 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/message"
 )
 
 // JobKind is the async_jobs.kind vocabulary this step writes: 'bash'/
@@ -142,6 +144,23 @@ type AsyncJobStore struct {
 
 	mu   sync.Mutex
 	host *HostIdentity
+	// messages backs the first-registration dead-host sweep's delegation
+	// text read (doc sec.3.7, recoveredDelegationText) -- optional, wired
+	// once via SetMessages before the first Claim in production
+	// (internal/app/app_agent_setup.go). Left nil, the sweep still runs; a
+	// recovered delegation just falls back to interruptedNoChildTextText
+	// instead of quoting the child's last message.
+	messages message.Service
+}
+
+// SetMessages wires messages for the first-registration dead-host sweep
+// (see the messages field's own doc). Safe to call at most once, before the
+// first Claim; a later call is a no-op in production but harmless in tests
+// that call it repeatedly.
+func (s *AsyncJobStore) SetMessages(messages message.Service) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.messages = messages
 }
 
 // NewAsyncJobStore builds a store bound to sqlDB (the App's writer
@@ -155,17 +174,30 @@ func NewAsyncJobStore(sqlDB *sql.DB, dataDir string, pid int, label string) *Asy
 // ensureHost lazily registers this store's host identity exactly once (doc
 // sec.3.6), returning its id. Safe for concurrent callers; registration
 // failure is surfaced to the caller (Claim), never silently retried here.
+//
+// Doc sec.3.6/3.7: the process that actually performs registration runs ONE
+// sweep over every dead host right after, outside s.mu -- a concurrent
+// caller that only observes an already-registered host (the common case)
+// never pays for this sweep's DB/lock-probe cost.
 func (s *AsyncJobStore) ensureHost(ctx context.Context) (string, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.host != nil {
-		return s.host.ID, nil
+		id := s.host.ID
+		s.mu.Unlock()
+		return id, nil
 	}
 	h, err := RegisterHost(ctx, s.dataDir, s.pid, s.label, s.q)
 	if err != nil {
+		s.mu.Unlock()
 		return "", err
 	}
 	s.host = h
+	messages := s.messages
+	s.mu.Unlock()
+
+	if _, sweepErr := s.SweepDeadHosts(ctx, messages); sweepErr != nil {
+		slog.Warn("async job store: first-registration dead-host sweep failed", "err", sweepErr)
+	}
 	return h.ID, nil
 }
 
@@ -378,4 +410,28 @@ func (s *AsyncJobStore) Close(ctx context.Context) error {
 		return nil
 	}
 	return h.Close(ctx, s.q)
+}
+
+// SimulateCrashForTest releases this store's own OS host lock and forgets
+// its "own id" marking, WITHOUT deleting the async_hosts/async_jobs rows or
+// the lock file itself -- modeling a process that died: the OS releases its
+// file locks automatically on exit, and nothing else about on-disk state
+// changes. This is the ONLY way a same-process, multi-App test (doc sec.6's
+// "two App instances on one data dir" scenarios) can make a LATER
+// RecoverDeadHost/ProbeHost call -- even one issued by another store in the
+// SAME test process -- correctly see this host as dead, since IsOwnHostID's
+// registry is otherwise scoped to the whole OS process, not to an
+// individual App/store instance (see that registry's own doc). Test-only:
+// no production code path calls this -- Close is the real, clean exit.
+func (s *AsyncJobStore) SimulateCrashForTest() error {
+	s.mu.Lock()
+	h := s.host
+	s.host = nil
+	s.mu.Unlock()
+	if h == nil {
+		return nil
+	}
+	err := h.lock.Release()
+	unmarkOwnHostID(h.ID)
+	return err
 }
