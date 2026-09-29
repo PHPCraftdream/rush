@@ -117,13 +117,25 @@ func TestChildScopeDrained_RunningRowOnLiveOtherHost_NotDrained(t *testing.T) {
 		"a running row on a live host must keep the child's scope open even with nothing in this process's own memory")
 }
 
-// TestChildScopeDrained_ReactionDebtOutstanding_NotDrained pins the other
-// half: a pulled-but-unreacted notice (DB reaction debt) also keeps the
-// child's scope open. Claimed directly through the store (bypassing
-// ledger.Start), matching the cross-process test above, so this process's
-// own in-memory l.running(childID) check (already true-negative before the
-// B3/C6 fix existed) cannot mask the NEW cross-process debt check.
-func TestChildScopeDrained_ReactionDebtOutstanding_NotDrained(t *testing.T) {
+// TestChildScopeDrained_TerminalRowWithUnreactedDebt_StillDrained is a
+// deliberate scope-narrowing regression guard, not a gap re-opened by
+// accident: childScopeOpenAcrossProcesses checks ONLY cross-process running
+// rows, not reaction debt. An earlier version of the B3/C6 fix folded
+// ScopeOpen's full predicate (running-row OR debt) into childScopeDrained,
+// which made EVERY pre-existing bare-ledger delegation test in
+// work_ledger_delegation_test.go hang forever: those tests' synthetic jobs
+// finish with wake=1/delivery=pending and are never pulled/reacted (nothing
+// drives the child's own turn in a bare-ledger unit test), so the debt half
+// never clears and no delegation could ever release. This codebase's
+// existing delegation-delivery design deliberately treats "child owes a
+// reaction" as the CHILD's own concern (its own wakeSession/Drain schedule),
+// independent of whether its delegation to the parent may release -- see
+// work_ledger_delegation_test.go's five pinned properties and
+// finishChildJob's own doc. Known limitation carried forward from the
+// original finding: a delegation CAN still release while its child has
+// otherwise-unreacted debt sitting in the DB; closing that gap needs a
+// design decision this wave did not make (see final report).
+func TestChildScopeDrained_TerminalRowWithUnreactedDebt_StillDrained(t *testing.T) {
 	_, ledger, store, getEnv := newChildPolicyTestCoordinator(t)
 	env := getEnv(context.Background())
 	ctx := context.Background()
@@ -143,8 +155,8 @@ func TestChildScopeDrained_ReactionDebtOutstanding_NotDrained(t *testing.T) {
 	_, err = store.PullJobNotices(ctx, env.messages, child.ID, buildJobNoticeMessageParams)
 	require.NoError(t, err)
 
-	require.False(t, ledger.childScopeDrained(child.ID),
-		"outstanding reaction debt must keep the child's scope open")
+	require.True(t, ledger.childScopeDrained(child.ID),
+		"childScopeDrained checks cross-process RUNNING rows only, never reaction debt (deliberate scope, see doc)")
 }
 
 // TestChildScopeDrained_NothingPending_Drained is the baseline: a child with
