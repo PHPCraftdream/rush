@@ -9,6 +9,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -176,6 +177,27 @@ func (c *coordinator) recordDrainOutcome(ctx context.Context, job jobIdentity, s
 // scoped to, never whatever is pending "now".
 func (c *coordinator) settleOrRetryDrainFailure(ctx context.Context, job jobIdentity, snapshot session.DebtSnapshot, runErr error) {
 	if c.asyncJobs == nil || c.asyncJobs.store == nil || snapshot.Empty() {
+		return
+	}
+	// B5/C3 fix: a cancellation/deadline error, or AwaitingAnswerError, is
+	// NOT evidence that the Drain's own provider attempt failed -- there is
+	// no attempt outcome here to classify at all. classifyProviderError's
+	// "context cancellation is terminal here" is documented as safe ONLY
+	// because its ordinary caller (shouldRetryTurn) first gates on owning
+	// the attempt's own assistant row with a real error finish
+	// (turnMadeProgress/FinishReasonError) -- this function has no such
+	// gate, so it must never reach classifyProviderError for these causes.
+	// Without this, a user Stop during a Drain, CancelAll/shutdown with a
+	// Drain in flight, Ctrl-C/--timeout, a watchdog stall (surfaces as
+	// context.Canceled), or the agent legitimately asking a question all
+	// closed the debt as a permanent failure and wrote a visible
+	// wake-failed marker -- breaking "graceful exit = crash" and losing a
+	// question the model was waiting on an answer to. Route to the recheck
+	// set instead: the debt stays open, retried by a fresh hint or the 60s
+	// pass, never settled on non-attempt evidence.
+	var awaiting *AwaitingAnswerError
+	if errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded) || errors.As(runErr, &awaiting) {
+		c.addToRecheckSet(job.owner)
 		return
 	}
 	settleCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)

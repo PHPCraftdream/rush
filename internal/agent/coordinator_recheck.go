@@ -14,8 +14,6 @@ import (
 	"log/slog"
 	"sync"
 	"time"
-
-	"github.com/PHPCraftdream/rush/internal/session"
 )
 
 const recheckPassInterval = 60 * time.Second
@@ -56,22 +54,7 @@ func (c *coordinator) drainRecheckSet() []string {
 // immediately). Exported and independently callable so tests can drive it
 // without waiting for the real ticker.
 func (c *coordinator) RecheckPass(ctx context.Context) {
-	if c.asyncJobs != nil && c.asyncJobs.store != nil {
-		// Doc sec.3.6/3.7: the host-level sweep over every dead host with a
-		// running row -- the only cross-process fallback for a host that
-		// never gets a turn/scope-evaluation of its own to trigger own-scope
-		// recovery. Runs before recheckChild below so a delegation whose
-		// child's own dead-host rows this same pass just recovered is
-		// re-evaluated against already-fresh state.
-		if _, err := c.asyncJobs.store.SweepDeadHosts(ctx, c.messages); err != nil {
-			slog.Debug("coordinator: recheck pass dead-host sweep failed", "err", err)
-		}
-		// Retention (doc sec.3.7): old delivered/voided rows and empty dead
-		// hosts' lock files, same pass, best-effort.
-		if err := c.asyncJobs.store.PurgeExpired(ctx, session.AsyncDataRetentionAge); err != nil {
-			slog.Debug("coordinator: recheck pass retention purge failed", "err", err)
-		}
-	}
+	c.RunMaintenanceSweep(ctx)
 	if c.asyncJobs != nil {
 		// B12/C14 fix: recheckChild indexes l.byChild by CHILD session id
 		// (never by parent/owner) -- parkedParentSessions() returns the

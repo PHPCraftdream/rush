@@ -8,6 +8,7 @@ package agent
 
 import (
 	"context"
+	"log/slog"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -58,6 +59,16 @@ type ReactionDebtSource interface {
 	// this for a turn that was merely queued/never attempted -- doc
 	// sec.3.4/sec.6, mirrors wakeSession's own post-Run handling exactly).
 	RecordDrainTurnOutcome(ctx context.Context, sessionID string, snapshot session.DebtSnapshot, turnErr error)
+	// RunMaintenanceSweep runs the dead-host sweep and retention purge halves
+	// of the 60s host-level pass ONCE, best-effort (B12/C14 fix, part 3): a
+	// non-persistent coordinator (`rush run`) never starts the recurring
+	// ticker (StartRecheckTicker), so without this, a CLI-only install would
+	// never sweep dead hosts or purge expired rows at all -- contradicting
+	// the CHANGELOG/`--jobs-older-than` help's documented promise. Does NOT
+	// run the recheck-child/recheck-set halves: those are process-wide
+	// concerns for the long-lived ticker, out of scope for a single-session
+	// CLI invocation.
+	RunMaintenanceSweep(ctx context.Context)
 }
 
 // ClaimExternalDriver implements ReactionDebtSource.
@@ -141,6 +152,28 @@ func (c *coordinator) CaptureDrainSnapshot(ctx context.Context, sessionID string
 func (c *coordinator) RecordDrainTurnOutcome(ctx context.Context, sessionID string, snapshot session.DebtSnapshot, turnErr error) {
 	job := jobIdentity{owner: sessionID, toolCallID: "cli-loop"}
 	c.recordDrainOutcome(ctx, job, snapshot, true, turnErr)
+}
+
+// RunMaintenanceSweep implements ReactionDebtSource: the dead-host sweep and
+// retention purge halves of the 60s pass (doc sec.3.6/3.7), factored out of
+// RecheckPass so a non-persistent (CLI) coordinator can run them once per
+// invocation without also running the recheck-child/recheck-set halves,
+// which are process-wide concerns for the long-lived ticker.
+func (c *coordinator) RunMaintenanceSweep(ctx context.Context) {
+	if c.asyncJobs == nil || c.asyncJobs.store == nil {
+		return
+	}
+	// Doc sec.3.6/3.7: the host-level sweep over every dead host with a
+	// running row -- the only cross-process fallback for a host that never
+	// gets a turn/scope-evaluation of its own to trigger own-scope recovery.
+	if _, err := c.asyncJobs.store.SweepDeadHosts(ctx, c.messages); err != nil {
+		slog.Debug("coordinator: maintenance sweep: dead-host sweep failed", "err", err)
+	}
+	// Retention (doc sec.3.7): old delivered/voided rows and empty dead
+	// hosts' lock files, same pass, best-effort.
+	if err := c.asyncJobs.store.PurgeExpired(ctx, session.AsyncDataRetentionAge); err != nil {
+		slog.Debug("coordinator: maintenance sweep: retention purge failed", "err", err)
+	}
 }
 
 // ScopeOpen implements ReactionDebtSource -- doc sec.3.5: "S has a running

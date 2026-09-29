@@ -72,6 +72,15 @@ func (app *App) runNonInteractiveWithAsyncResults(ctx context.Context, output io
 		return final, runErr
 	}
 
+	// B12/C14 fix, part 3: a non-persistent coordinator (this one) never
+	// starts the recurring 60s ticker, so a CLI-only install would otherwise
+	// never sweep dead hosts or purge expired rows at all -- contradicting
+	// the CHANGELOG/`--jobs-older-than` help's documented promise. Run the
+	// sweep/purge halves once, best-effort, per invocation instead of a
+	// recurring background ticker (which would keep an otherwise-short-lived
+	// `rush run` process alive doing nothing between ticks).
+	source.RunMaintenanceSweep(ctx)
+
 	started := time.Now()
 	turnOverrides := overrides
 	turnOverrides.OnFinishHook = ""
