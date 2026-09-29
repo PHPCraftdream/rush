@@ -371,18 +371,24 @@ func TestPullJobNotices_JobKillDeliveryDoneNeverPulled(t *testing.T) {
 	require.EqualValues(t, 0, countMessages(t, store.q, ctx, "owner-1"))
 }
 
-// TestPullJobNotices_JobKillProducesExactlyOneStoppedNotice pins step 3's
-// CURRENT job_kill behavior (revised from an earlier draft of this step,
-// which special-cased job_kill to delivery='done'): a job_kill'd row's
-// "stopped (job_kill)" wording is still promised as a SEPARATE notice
-// message, not folded into job_kill's own synchronous tool response --
-// run_command's job_kill response literally says "its result will arrive
-// as a message" (tools/job_kill.go), and bash's own MarkJobStopped path
-// documents the same expectation ("produces a distinct 'stopped (job_kill)'
-// notice"). So causeJobKill keeps the default delivery='pending' like every
-// other cause, and the pull delivers it exactly once, with no void
-// condition of its own.
-func TestPullJobNotices_JobKillProducesExactlyOneStoppedNotice(t *testing.T) {
+// TestPullJobNotices_JobKillRowNeverSurfacesAsPulledNotice pins step 6's
+// ACTUAL, CURRENT job_kill contract (doc sec.3.2): job_kill's own tool
+// response IS the job's answer, so its Transition call commits
+// delivery='done'/reacted=1 directly -- never 'pending' -- so the row never
+// also surfaces as a second, pulled history notice. An earlier draft of this
+// test pinned a DIFFERENT, since-superseded step-3 contract (job_kill keeping
+// delivery='pending' like every other cause, delivered once via the ordinary
+// pull) that production's causeStateNoticeKindWake (work_ledger_transition.go)
+// has never actually implemented since step 6 landed -- this test now
+// asserts what the store really does when given the EXACT params
+// causeJobKill produces.
+//
+// Revert-check performed: changed the Transition call below back to the
+// stale contract (Delivery/Reacted left at their zero values, defaulting to
+// pending/false) -- PullJobNotices then found and delivered the row (this
+// test's own require.Empty failed). Restored Delivery:"done"/Reacted:true;
+// re-ran, passed.
+func TestPullJobNotices_JobKillRowNeverSurfacesAsPulledNotice(t *testing.T) {
 	store, q, ctx := newTestStore(t)
 	require.NoError(t, seedSession(ctx, q, "owner-1"))
 
@@ -393,20 +399,16 @@ func TestPullJobNotices_JobKillProducesExactlyOneStoppedNotice(t *testing.T) {
 	res, err := store.Transition(ctx, TransitionParams{
 		Owner: "owner-1", ToolCallID: "call-1", State: "cancelled", NoticeKind: "job_kill",
 		ResultSummary: "partial output before the stop", Wake: false,
+		Delivery: "done", Reacted: true,
 	})
 	require.NoError(t, err)
-	require.Equal(t, "pending", res.Row.Delivery, "job_kill still commits pending, like every other cause")
+	require.Equal(t, "done", res.Row.Delivery, "job_kill's Transition call commits delivery='done' directly, not 'pending'")
+	require.EqualValues(t, 1, res.Row.Reacted)
+	require.EqualValues(t, 0, res.Row.Wake)
 
 	messages := message.NewService(store.q)
 	pulled, err := store.PullJobNotices(ctx, messages, "owner-1", jobNoticeParams)
 	require.NoError(t, err)
-	require.Len(t, pulled, 1, "job_kill's stopped notice must still be delivered, exactly once")
-	require.False(t, pulled[0].Wake, "job_kill never wakes a turn (doc sec.3.4's wake-policy table)")
-	require.EqualValues(t, 1, countMessages(t, store.q, ctx, "owner-1"))
-
-	// A second pull finds nothing left: idempotent, no duplicate.
-	pulled2, err := store.PullJobNotices(ctx, messages, "owner-1", jobNoticeParams)
-	require.NoError(t, err)
-	require.Empty(t, pulled2)
-	require.EqualValues(t, 1, countMessages(t, store.q, ctx, "owner-1"), "no duplicate notice from a second pull")
+	require.Empty(t, pulled, "a job_kill'd row (delivery='done' already) must never also surface as a pulled notice")
+	require.EqualValues(t, 0, countMessages(t, store.q, ctx, "owner-1"), "job_kill's own tool response is the answer -- the pull inserts no second message for it")
 }

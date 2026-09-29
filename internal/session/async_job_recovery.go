@@ -108,6 +108,13 @@ func (s *AsyncJobStore) RecoverDeadHost(ctx context.Context, hostID string, mess
 			Owner: row.OwnerSessionID, ToolCallID: row.ToolCallID,
 			State: "interrupted", NoticeKind: "interrupted",
 			ResultSummary: text, ResultIsError: isErr, Wake: false,
+			// ClaimID (A11): assert the SAME claim this dead host's row was
+			// claimed under -- a live host racing to legitimately re-claim
+			// this exact key (recovered concurrently, or a since-restarted
+			// same process) after this read would have a DIFFERENT claim_id,
+			// and must win over a recovery sweep that is, by construction,
+			// acting on stale information about who owns it.
+			ClaimID: row.ClaimID,
 		})
 		if err != nil {
 			slog.Warn("recover dead host: transition to interrupted failed; will retry on a later sweep",

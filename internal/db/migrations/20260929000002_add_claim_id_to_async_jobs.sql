@@ -1,0 +1,32 @@
+-- +goose Up
+-- A11 (docs/reviews/2026-09-29-async-phase4-round1.md): the terminal-
+-- transition CAS keyed only on (owner_session_id, tool_call_id, state=
+-- 'running') has no claim generation, so it is vulnerable to ABA: a row is
+-- deleted (e.g. DeleteUnannouncedAsyncJob after a failed "started" write, or
+-- a dead-host recovery sweep), the SAME (owner, tool_call_id) key is claimed
+-- again by a fresh attempt, and a STALE executor from the FIRST claim --
+-- still running because context cancellation is best-effort, not
+-- instantaneous -- can then commit its late result onto the SECOND claim's
+-- row, since 'state=running' alone cannot tell the two apart.
+--
+-- claim_id is a random id minted once per Claim call (internal/session/
+-- async_job_store.go), carried by the executor for the lifetime of that one
+-- claim, and threaded into the terminal-transition CAS's WHERE clause
+-- (AsyncJobStore.Transition) whenever the caller supplies one: a stale
+-- executor's captured claim_id no longer matches the row's CURRENT claim_id
+-- once it has been deleted and re-claimed, so its CAS affects 0 rows and it
+-- correctly loses instead of silently overwriting the new claim's outcome.
+--
+-- Default '' for existing rows (pre-migration): AsyncJobStore.Transition
+-- resolves '' to the row's own current claim_id at CAS time when the caller
+-- does not supply one (recovery/tests seeding state directly), preserving
+-- their exact pre-A11 "any running row matches" semantics -- this migration
+-- adds no NOT NULL/behavior requirement on any caller that does not opt in.
+-- +goose StatementBegin
+ALTER TABLE async_jobs ADD COLUMN claim_id TEXT NOT NULL DEFAULT '';
+-- +goose StatementEnd
+
+-- +goose Down
+-- +goose StatementBegin
+ALTER TABLE async_jobs DROP COLUMN claim_id;
+-- +goose StatementEnd
