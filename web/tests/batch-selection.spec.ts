@@ -184,7 +184,7 @@ test("confirming batch delete sends delete_messages with all IDs", async ({ page
   await row2.locator(".msg-checkbox-wrap").click();
 
   await page.getByText("Delete selected").click();
-  await page.getByRole("button", { name: "Delete", exact: true }).click();
+  await page.getByTestId("confirm-dialog").getByRole("button", { name: "Delete", exact: true }).click();
 
   const cmd = await waitForWSSend(page, "delete_messages");
   const ids = (cmd.payload as { messageIDs: string[] }).messageIDs;
@@ -199,7 +199,7 @@ test("a finished assistant answer can be selected and deleted on its own", async
   await assistantRow.locator(".msg-checkbox-wrap").click();
   await expect(page.getByText("1 selected")).toBeVisible();
   await page.getByText("Delete selected").click();
-  await page.getByRole("button", { name: "Delete", exact: true }).click();
+  await page.getByTestId("confirm-dialog").getByRole("button", { name: "Delete", exact: true }).click();
   const command = await waitForWSSend(page, "delete_messages");
   expect((command.payload as { messageIDs: string[] }).messageIDs).toEqual(["b-m2"]);
 });

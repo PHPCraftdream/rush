@@ -108,8 +108,25 @@ type MessageWire struct {
 	// client needs the authorship metadata to exclude CLI-originated
 	// prompts and other channels. It cannot live on the transcript
 	// itself, which must keep rendering every channel's messages.
-	Origin string     `json:"Origin,omitempty"`
-	Usage  *UsageWire `json:"Usage,omitempty"`
+	Origin string `json:"Origin,omitempty"`
+	// NoticeKind mirrors message.Message.NoticeKind: "" for an ordinary
+	// message, otherwise the kind of system notice (e.g. "supervision",
+	// "timeout_wake_only", "wake_failed" -- see message.Message.NoticeKind's
+	// doc for the value set). Exposed so HumanTyped (below) can be recomputed
+	// client-side if ever needed, and so future notice kinds are visible on
+	// the wire without another field being added.
+	NoticeKind string `json:"NoticeKind,omitempty"`
+	// HumanTyped is true when a human typed this message directly into the
+	// web composer -- computed server-side by isHumanTyped, from structured
+	// fields ONLY (role, Hidden, IsSummaryMessage, NoticeKind, AutoResumed,
+	// BackgroundJobNotice, Origin), never from message text. It is the
+	// single source of truth the web composer's recall history and history
+	// dropdown ($myPrompts in web/src/store.ts) filter on, so a message
+	// qualifies regardless of which server-side code path persisted it
+	// (Run, InjectMessage, or any future delivery mechanism), as long as
+	// that path stamps the same markers.
+	HumanTyped bool       `json:"HumanTyped"`
+	Usage      *UsageWire `json:"Usage,omitempty"`
 	// DeleteGeneration is the delete-generation watermark (task #737,
 	// replacing task #731's RowID field -- message.Message.DeleteGeneration's
 	// doc comment has the full mechanism). Only ever non-zero on the
@@ -119,6 +136,36 @@ type MessageWire struct {
 	// Message.DeleteGeneration server-side, so this field is 0/omitted
 	// there. The web client reads it ONLY off message_deleted.
 	DeleteGeneration int64 `json:"DeleteGeneration,omitempty"`
+}
+
+// isHumanTyped reports whether m is something a human typed directly into
+// the web composer, as opposed to a system-injected notice (async job
+// completion, autonomous idle-resume, supervision check-in, timeout/
+// wake-failed marker, ...) or a prompt that arrived through another entry
+// channel (CLI `rush run`/`rush sessions inject`, SDK).
+//
+// Computed ONLY from structured fields, never message text, and ONLY from
+// fields already load-bearing before this predicate existed (Origin,
+// AutoResumed, BackgroundJobNotice) plus NoticeKind. That last one matters:
+// the supervision check-in (NoticeKind="supervision") and the one-time
+// timeout check-in (NoticeKind="timeout_wake_only") are persisted via
+// wakeSession with a plain context.Background(), so they carry neither
+// AutoResumed nor BackgroundJobNotice nor a web Origin -- NoticeKind is
+// their ONLY structured marker. Any current or future notice kind is
+// excluded by the same NoticeKind != "" check, without needing to enumerate
+// values here: the wake/async job machinery's contract is that every notice
+// it persists sets NoticeKind, AutoResumed, or BackgroundJobNotice (see
+// coordinator_wake.go's wakeNoticeCall), so this predicate stays correct
+// even if that machinery is later rewritten, as long as it keeps stamping
+// one of those markers.
+func isHumanTyped(m message.Message) bool {
+	if m.Role != message.User || m.Hidden || m.IsSummaryMessage {
+		return false
+	}
+	if m.AutoResumed || m.BackgroundJobNotice || m.NoticeKind != "" {
+		return false
+	}
+	return m.Origin == message.OriginWeb
 }
 
 func toPartWire(part message.ContentPart) PartWire {
@@ -159,6 +206,8 @@ func toMessageWire(m message.Message) MessageWire {
 		AutoResumed:         m.AutoResumed,
 		BackgroundJobNotice: m.BackgroundJobNotice,
 		Origin:              string(m.Origin),
+		NoticeKind:          m.NoticeKind,
+		HumanTyped:          isHumanTyped(m),
 		Usage:               toUsageWire(m.Usage),
 		DeleteGeneration:    m.DeleteGeneration,
 	}

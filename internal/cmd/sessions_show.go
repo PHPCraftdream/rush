@@ -88,6 +88,19 @@ func sessionsShowCmdRun(cmd *cobra.Command, args []string) error {
 		Provider         string  `json:"provider,omitempty"`
 		Model            string  `json:"model,omitempty"`
 		Effort           string  `json:"effort,omitempty"`
+		// FastProvider/FastModel/FastEffort and Worker*/Reviewer* mirror
+		// Provider/Model/Effort above for the other three role slots.
+		// Empty means "not set on this session" (inherits the config
+		// default) — same convention as the smart slot's own empty fields.
+		FastProvider     string  `json:"fast_provider,omitempty"`
+		FastModel        string  `json:"fast_model,omitempty"`
+		FastEffort       string  `json:"fast_effort,omitempty"`
+		WorkerProvider   string  `json:"worker_provider,omitempty"`
+		WorkerModel      string  `json:"worker_model,omitempty"`
+		WorkerEffort     string  `json:"worker_effort,omitempty"`
+		ReviewerProvider string  `json:"reviewer_provider,omitempty"`
+		ReviewerModel    string  `json:"reviewer_model,omitempty"`
+		ReviewerEffort   string  `json:"reviewer_effort,omitempty"`
 		CreatedAt        int64   `json:"created_at"`
 		UpdatedAt        int64   `json:"updated_at"`
 		MessageCount     int64   `json:"message_count"`
@@ -141,6 +154,15 @@ func sessionsShowCmdRun(cmd *cobra.Command, args []string) error {
 		Provider:         sess.SmartModelProvider,
 		Model:            sess.SmartModelID,
 		Effort:           sess.SmartModelReasoningEffort,
+		FastProvider:     sess.FastModelProvider,
+		FastModel:        sess.FastModelID,
+		FastEffort:       sess.FastModelReasoningEffort,
+		WorkerProvider:   sess.WorkerModelProvider,
+		WorkerModel:      sess.WorkerModelID,
+		WorkerEffort:     sess.WorkerModelReasoningEffort,
+		ReviewerProvider: sess.ReviewerModelProvider,
+		ReviewerModel:    sess.ReviewerModelID,
+		ReviewerEffort:   sess.ReviewerModelReasoningEffort,
 		CreatedAt:        sess.CreatedAt,
 		UpdatedAt:        sess.UpdatedAt,
 		MessageCount:     sess.MessageCount,
@@ -237,6 +259,22 @@ func sessionsShowCmdRun(cmd *cobra.Command, args []string) error {
 			fmt.Printf("Effort:       %s\n", output.Effort)
 		}
 	}
+	// Fast/worker/reviewer are optional per-session overrides — print a line
+	// only for slots that actually have one, so a session that only ever
+	// used the smart default doesn't grow three empty lines.
+	printRoleLine := func(label, provider, model, effort string) {
+		if provider == "" && model == "" {
+			return
+		}
+		line := fmt.Sprintf("%s%s/%s", label, provider, model)
+		if effort != "" {
+			line += fmt.Sprintf(" (%s)", effort)
+		}
+		fmt.Println(line)
+	}
+	printRoleLine("Fast:         ", output.FastProvider, output.FastModel, output.FastEffort)
+	printRoleLine("Worker:       ", output.WorkerProvider, output.WorkerModel, output.WorkerEffort)
+	printRoleLine("Reviewer:     ", output.ReviewerProvider, output.ReviewerModel, output.ReviewerEffort)
 	fmt.Printf("Created:      %s\n", time.Unix(output.CreatedAt, 0).Format(time.RFC3339))
 	fmt.Printf("Updated:      %s\n", time.Unix(output.UpdatedAt, 0).Format(time.RFC3339))
 	fmt.Printf("Messages:     %d\n", output.MessageCount)

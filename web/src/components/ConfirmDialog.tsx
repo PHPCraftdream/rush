@@ -51,6 +51,7 @@ export function ConfirmDialog({
       }}
     >
       <div
+        data-test-id="confirm-dialog"
         className="modal-panel w-full max-w-sm overflow-hidden chat-font"
         onClick={(e) => e.stopPropagation()}
       >

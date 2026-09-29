@@ -1,19 +1,44 @@
 import { useState, useRef, useEffect, useMemo } from "react";
 import { useStore } from "@nanostores/react";
-import { BrainCircuit, Zap, ChevronLeft, ChevronRight, Undo2 } from "lucide-react";
+import { BrainCircuit, Zap, Hammer, ShieldCheck, ChevronLeft, ChevronRight, Undo2 } from "lucide-react";
 import {
   $config,
   $recentSmartModels,
   $recentFastModels,
+  $recentWorkerModels,
+  $recentReviewerModels,
   trackModelUsage,
   removeRecentModel,
   getDefaultModelKey,
-  setSessionModels,
-  setSessionReasoningEffort,
+  setSessionModel,
+  setSessionRoleEffort,
   clearSessionModelSlot,
+  type ModelRole,
 } from "../store";
 import type { ConfigPayload, Session } from "../types";
 import { effortLevelsFor, defaultEffortFor, supportsEffort, clampEffort } from "../effort";
+
+// Per-role icon and toolbar title, keyed the same way as every other
+// role-indexed table in this component (task #1061 generalized this
+// selector from smart/fast-only to all four session model slots).
+const ROLE_ICON: Record<ModelRole, typeof BrainCircuit> = {
+  smart: BrainCircuit,
+  fast: Zap,
+  worker: Hammer,
+  reviewer: ShieldCheck,
+};
+const ROLE_TITLE: Record<ModelRole, string> = {
+  smart: "Smart (strong) model",
+  fast: "Fast (cheap) model",
+  worker: "Worker model (delegated sub-tasks)",
+  reviewer: "Reviewer model (explicit review pass)",
+};
+const ROLE_RECENT_STORE: Record<ModelRole, typeof $recentSmartModels> = {
+  smart: $recentSmartModels,
+  fast: $recentFastModels,
+  worker: $recentWorkerModels,
+  reviewer: $recentReviewerModels,
+};
 
 // Effort levels in cycle order: left arrow decrements, right arrow increments
 // Effort tiers and the model-capability rules now live in ../effort so the
@@ -104,10 +129,9 @@ function ModelRow({ model, isSelected, onSelect }: { model: ModelItem, isSelecte
 
 // ── ModelSelector ─────────────────────────────────────────────────────────────
 
-export function ModelSelector({ session, modelType }: { session: Session | null; modelType: "smart" | "fast" }) {
+export function ModelSelector({ session, modelType }: { session: Session | null; modelType: ModelRole }) {
   const config = useStore($config);
-  const recentSmart = useStore($recentSmartModels);
-  const recentFast = useStore($recentFastModels);
+  const recentKeys = useStore(ROLE_RECENT_STORE[modelType]);
 
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
@@ -128,11 +152,19 @@ export function ModelSelector({ session, modelType }: { session: Session | null;
   const allModels = useMemo(() => buildModelList(config), [config]);
   const providerGroups = useMemo(() => buildProviderGroups(config), [config]);
   const defaultKey = useMemo(() => getDefaultModelKey(modelType, config), [modelType, config]);
-  const recentKeys = modelType === "smart" ? recentSmart : recentFast;
+
+  // Session field names for this role, e.g. "worker" -> WorkerModelProvider/
+  // WorkerModelID/WorkerModelReasoningEffort — same computed-key convention
+  // ScopedModelsModal.tsx's SessionSlotRow already uses, so the two surfaces
+  // can't drift on how a role name maps to its Session columns.
+  const rolePrefix = `${modelType[0].toUpperCase()}${modelType.slice(1)}`;
+  const providerField = `${rolePrefix}ModelProvider` as keyof Session;
+  const idField = `${rolePrefix}ModelID` as keyof Session;
+  const effortField = `${rolePrefix}ModelReasoningEffort` as keyof Session;
 
   // Get current key from session record if available, else use global default
-  const sessionProvider = modelType === "smart" ? session?.SmartModelProvider : session?.FastModelProvider;
-  const sessionModelID = modelType === "smart" ? session?.SmartModelID : session?.FastModelID;
+  const sessionProvider = session?.[providerField] as string | undefined;
+  const sessionModelID = session?.[idField] as string | undefined;
   const hasSessionOverride = !!(sessionProvider && sessionModelID);
   let currentKey = defaultKey;
   if (hasSessionOverride) {
@@ -155,7 +187,7 @@ export function ModelSelector({ session, modelType }: { session: Session | null;
   const effortLevels: readonly string[] = effortLevelsFor(currentProvider, currentModelID) ?? [];
   let storedEffort = defaultEffortFor(currentProvider, currentModelID);
   if (session) {
-    const effort = modelType === "smart" ? session.SmartModelReasoningEffort : session.FastModelReasoningEffort;
+    const effort = session[effortField] as string | undefined;
     if (effort) storedEffort = effort;
   }
   const showEffortPicker = supportsEffort(currentProvider, currentModelID);
@@ -183,11 +215,7 @@ export function ModelSelector({ session, modelType }: { session: Session | null;
   useEffect(() => {
     if (!session || !showEffortPicker) return;
     if (effortValid) return;
-    setSessionReasoningEffort(
-      session.ID,
-      modelType === "smart" ? currentEffort : null,
-      modelType === "fast" ? currentEffort : null,
-    );
+    setSessionRoleEffort(session.ID, modelType, currentEffort);
   }, [session?.ID, modelType, showEffortPicker, effortValid, currentEffort]);
 
   function cycleEffort(direction: 1 | -1) {
@@ -196,11 +224,7 @@ export function ModelSelector({ session, modelType }: { session: Session | null;
     const safeIdx = idx === -1 ? 0 : idx;
     const newIdx = (safeIdx + direction + effortLevels.length) % effortLevels.length;
     const newEffort = effortLevels[newIdx];
-    setSessionReasoningEffort(
-      session.ID,
-      modelType === "smart" ? newEffort : null,
-      modelType === "fast" ? newEffort : null,
-    );
+    setSessionRoleEffort(session.ID, modelType, newEffort);
   }
 
   const recentModels = useMemo(() => {
@@ -239,21 +263,17 @@ export function ModelSelector({ session, modelType }: { session: Session | null;
     };
   }, [open]);
 
-  const Icon = modelType === "smart" ? BrainCircuit : Zap;
-  const title = modelType === "smart" ? "Smart (strong) model" : "Fast (cheap) model";
+  const Icon = ROLE_ICON[modelType];
+  const title = ROLE_TITLE[modelType];
 
   function onSelect(m: ModelItem) {
     if (!m.enabled) return; // CLI providers can't be selected without being enabled
     if (session) {
-      // Send ONLY the slot that was actually picked. setSessionModels treats
-      // a null key as "leave this slot alone" (task #461) — filling the
-      // other slot in from its current/default value here, like this used
-      // to do, would re-write it on every switch and freeze it against
-      // later folder/system default changes.
-      const smartKey = modelType === "smart" ? m.key : null;
-      const fastKey = modelType === "fast" ? m.key : null;
-
-      setSessionModels(session.ID, smartKey, fastKey);
+      // setSessionModel touches ONLY this role's slot (task #461/#1061) —
+      // filling other slots in from their current/default value here, like
+      // this used to do for smart/fast, would re-write them on every switch
+      // and freeze them against later folder/system default changes.
+      setSessionModel(session.ID, modelType, m.key);
       trackModelUsage(modelType, m.key);
       setOpen(false);
     }
@@ -286,7 +306,7 @@ export function ModelSelector({ session, modelType }: { session: Session | null;
         onClick={() => { setOpen(o => !o); setSearch(""); }}
         className="flex items-center gap-1.5 text-xs text-text bg-base-overlay border border-surface rounded-lg px-2.5 py-1.5 hover:border-accent/50 hover:bg-base-subtle transition-colors"
         title={title}
-        data-test-id={modelType === "smart" ? "model-selector-smart" : "model-selector-fast"}
+        data-test-id={`model-selector-${modelType}`}
       >
         <Icon size={12} className="shrink-0" />
         <span className="font-medium truncate max-w-[180px]">{displayName}</span>

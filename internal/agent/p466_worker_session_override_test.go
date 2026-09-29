@@ -7,9 +7,10 @@ package agent
 // concurrent sub-agent dispatch from a different session sharing the same
 // coordinator-wide "task" agent object.
 //
-// See resolveSubAgentModelOverride's doc comment (internal/agent/coordinator.go)
+// See resolveSubAgentModelOverride's doc comment (internal/agent/coordinator_models.go)
 // for why this is a separate, lighter path than resolveSessionModels, and why
-// reviewer has no equivalent runtime hook.
+// reviewer has no equivalent SUB-AGENT DISPATCH hook (it is read for
+// top-level `rush run --role reviewer` instead, see run_role_model_test.go).
 
 import (
 	"testing"

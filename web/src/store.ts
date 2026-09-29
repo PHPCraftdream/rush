@@ -104,11 +104,26 @@ export function applySessionsSnapshot(sessions: Session[], live: SessionsLiveDel
 // ── Model History ────────────────────────────────────────────────────────────
 // Recent models are stored on the backend and synced via WebSocket config.
 // Local state is initialized empty and populated when config arrives.
+//
+// ModelRole covers all four session model slots (task #1061 generalized
+// ModelSelector from smart/fast-only to all four; worker/reviewer already
+// had session DB + set_session_models wire support from task #466/#1060).
+export type ModelRole = "smart" | "fast" | "worker" | "reviewer";
+
 export const $recentSmartModels = atom<string[]>([]);
 export const $recentFastModels = atom<string[]>([]);
+export const $recentWorkerModels = atom<string[]>([]);
+export const $recentReviewerModels = atom<string[]>([]);
 
-export function trackModelUsage(role: "smart" | "fast", modelKey: string) {
-  const store = role === "smart" ? $recentSmartModels : $recentFastModels;
+const RECENT_MODEL_STORES: Record<ModelRole, typeof $recentSmartModels> = {
+  smart: $recentSmartModels,
+  fast: $recentFastModels,
+  worker: $recentWorkerModels,
+  reviewer: $recentReviewerModels,
+};
+
+export function trackModelUsage(role: ModelRole, modelKey: string) {
+  const store = RECENT_MODEL_STORES[role];
 
   const current = store.get();
   const next = [modelKey, ...current.filter((k) => k !== modelKey)].slice(0, 5);
@@ -126,8 +141,8 @@ export function trackModelUsage(role: "smart" | "fast", modelKey: string) {
   }
 }
 
-export function removeRecentModel(role: "smart" | "fast", modelKey: string) {
-  const store = role === "smart" ? $recentSmartModels : $recentFastModels;
+export function removeRecentModel(role: ModelRole, modelKey: string) {
+  const store = RECENT_MODEL_STORES[role];
 
   const next = store.get().filter((k) => k !== modelKey);
   store.set(next);
@@ -511,10 +526,18 @@ export function setSessionBusy(sessionID: string, busy: boolean) {
 // Per-session model overrides: removed in favor of global selection
 // Now using the session object from DB as source of truth.
 
-export function getDefaultModelKey(role: "smart" | "fast", config: ConfigPayload | null): string {
+export function getDefaultModelKey(role: ModelRole, config: ConfigPayload | null): string {
   const entry = config?.models?.[role];
   if (entry) return `${entry.Provider}:::${entry.Model}`;
   return "";
+}
+
+// roleFieldPrefix maps a ModelRole to its Session field prefix
+// (Smart/Fast/Worker/Reviewer), so the generic per-role setters below can
+// read/write `${prefix}ModelProvider` etc. without a role-keyed literal
+// object at every call site.
+function roleFieldPrefix(role: ModelRole): string {
+  return `${role[0].toUpperCase()}${role.slice(1)}`;
 }
 
 import { ws, forgetSessionRequestState, bumpDeleteHighWaterMark } from "./ws";
@@ -551,35 +574,29 @@ export function updateTodos(sessionID: string, todos: Todo[]) {
   ws.send("update_todos", { sessionID, todos });
 }
 
-export function setSessionModels(sessionID: string, smartKey: string | null, fastKey: string | null) {
-  const parse = (key: string | null) => {
-    if (!key) return null;
-    const idx = key.indexOf(":::");
-    if (idx === -1) return null;
-    return { provider: key.slice(0, idx), model: key.slice(idx + 3) };
-  };
+// setSessionModel sets exactly ONE role's session override, leaving the
+// other three roles untouched — the set_session_models wire convention
+// (task #461/#466): an omitted `<role>Model` key means "don't touch this
+// slot", so the other three are simply never included in the payload.
+// Generalizes the old two-arg (smart, fast) setSessionModels to all four
+// roles (task #1061) now that ModelSelector renders worker/reviewer too.
+export function setSessionModel(sessionID: string, role: ModelRole, key: string) {
+  const idx = key.indexOf(":::");
+  if (idx === -1) return;
+  const provider = key.slice(0, idx);
+  const model = key.slice(idx + 3);
+  const prefix = roleFieldPrefix(role);
 
-  const large = parse(smartKey);
-  const small = parse(fastKey);
-
-  // Optimistic local update so the UI reflects the change immediately
+  // Optimistic local update so the UI reflects the change immediately.
   const sessions = $sessions.get();
-  const idx = sessions.findIndex((s) => s.ID === sessionID);
-  if (idx !== -1) {
+  const sIdx = sessions.findIndex((s) => s.ID === sessionID);
+  if (sIdx !== -1) {
     const next = [...sessions];
-    next[idx] = {
-      ...next[idx],
-      ...(large ? { SmartModelProvider: large.provider, SmartModelID: large.model } : {}),
-      ...(small ? { FastModelProvider: small.provider, FastModelID: small.model } : {}),
-    };
+    next[sIdx] = { ...next[sIdx], [`${prefix}ModelProvider`]: provider, [`${prefix}ModelID`]: model };
     $sessions.set(next);
   }
 
-  ws.send("set_session_models", {
-    sessionID,
-    smartModel: large,
-    fastModel: small,
-  });
+  ws.send("set_session_models", { sessionID, [`${role}Model`]: { provider, model } });
 }
 
 // clearSessionModelSlot removes the session's explicit override for ONE
@@ -616,42 +633,31 @@ export function clearSessionModelSlot(sessionID: string, modelType: "smart" | "f
   });
 }
 
-export function setSessionReasoningEffort(
-  sessionID: string,
-  smartEffort: string | null,
-  fastEffort: string | null,
-) {
+// setSessionRoleEffort sets ONE role's reasoning effort, re-sending that
+// role's currently-stored provider/model alongside it (the backend backfills
+// an omitted provider/model within the SAME slot, but the slot's own effort
+// write needs its own provider/model present — see handleSetSessionModels's
+// resolveEffortPair). Generalizes the old two-arg (smart, fast)
+// setSessionReasoningEffort to all four roles (task #1061).
+export function setSessionRoleEffort(sessionID: string, role: ModelRole, effort: string) {
+  const prefix = roleFieldPrefix(role);
   const sessions = $sessions.get();
   const idx = sessions.findIndex((s) => s.ID === sessionID);
-  if (idx !== -1) {
-    const next = [...sessions];
-    next[idx] = {
-      ...next[idx],
-      ...(smartEffort ? { SmartModelReasoningEffort: smartEffort } : {}),
-      ...(fastEffort ? { FastModelReasoningEffort: fastEffort } : {}),
-    };
-    $sessions.set(next);
-  }
+  if (idx === -1) return;
 
-  // Get current models to send with reasoning effort update
-  if (idx !== -1) {
-    const session = sessions[idx];
-    if (session) {
-      ws.send("set_session_models", {
-        sessionID,
-        smartModel: {
-          provider: session.SmartModelProvider,
-          model: session.SmartModelID,
-          reasoning_effort: smartEffort || undefined,
-        },
-        fastModel: {
-          provider: session.FastModelProvider,
-          model: session.FastModelID,
-          reasoning_effort: fastEffort || undefined,
-        },
-      });
-    }
-  }
+  const next = [...sessions];
+  next[idx] = { ...next[idx], [`${prefix}ModelReasoningEffort`]: effort };
+  $sessions.set(next);
+
+  const session = sessions[idx] as unknown as Record<string, string>;
+  ws.send("set_session_models", {
+    sessionID,
+    [`${role}Model`]: {
+      provider: session[`${prefix}ModelProvider`],
+      model: session[`${prefix}ModelID`],
+      reasoning_effort: effort || undefined,
+    },
+  });
 }
 
 // ── Theme ─────────────────────────────────────────────────────────────────────
@@ -715,6 +721,9 @@ export interface QueuedMessage {
   // Attachments captured from the composer when this message was queued;
   // they ride on the single flushed send when the turn ends.
   attachments?: WireAttachment[];
+  // Set when a "send now" / "interrupt & send" attempt for this item
+  // (task #1057) failed and it was restored to the queue. Cleared on edit.
+  error?: string;
 }
 
 export const $messageQueue = atom<Map<string, QueuedMessage[]>>(new Map());
@@ -822,7 +831,8 @@ export function removeQueuedMessage(sessionID: string, id: string) {
 
 export function updateQueuedMessage(sessionID: string, id: string, content: string) {
   const q = new Map($messageQueue.get());
-  const msgs = (q.get(sessionID) ?? []).map((m) => m.id === id ? { ...m, content } : m);
+  // Editing supersedes a previous failed-send error.
+  const msgs = (q.get(sessionID) ?? []).map((m) => m.id === id ? { ...m, content, error: undefined } : m);
   q.set(sessionID, msgs);
   $messageQueue.set(q);
 }
@@ -893,26 +903,30 @@ export function setProviderPeakHours(payload: {
 //   • shell-style recall in the chat input (ArrowUp/Down on caret edge),
 //   • the history dropdown (clickable list + jump-to button).
 //
-// ONLY prompts a human typed in the web composer belong here. The session's
-// user rows also carry messages no human typed in the composer, and each is
-// excluded below:
-//   • system-injected notices (async/background job completions) — the
-//     BackgroundJobNotice flag, set server-side per message (message.
-//     BackgroundJobNotice / MessageWire.BackgroundJobNotice), plus
-//     isAsyncCompletionNotice's content marker for legacy un-flagged rows;
-//   • Phase 4 autonomous idle-resume turns (AutoResumed badge);
-//   • prompts that arrived through another channel — the CLI (`rush run`,
-//     `rush sessions inject`) and the SDK — distinguished by the message's
-//     Origin stamp (message.OriginCLI/Web/SDK, served as MessageWire.Origin;
-//     empty = unspecified, which is NOT composer input either, so recall
-//     requires exactly "web").
+// ONLY prompts a human typed in the web composer belong here. Eligibility is
+// gated by ONE shared predicate, isComposerTypedMessage below, so the arrow
+// history and the dropdown (both fed by $myPrompts — see ChatInput.tsx) can
+// never disagree on what counts as "typed by a human in this composer":
+//   • m.HumanTyped, computed server-side (internal/server/wire.go's
+//     isHumanTyped) from structured fields ONLY — role, Hidden,
+//     IsSummaryMessage, NoticeKind, AutoResumed, BackgroundJobNotice,
+//     Origin — never message text. This excludes every system-injected
+//     notice (async/background job completions, Phase 4 autonomous
+//     idle-resume, supervision check-ins, timeout/wake-failed markers, and
+//     any future notice kind the NoticeKind != "" check catches without
+//     needing a new field) and every other entry channel (CLI `rush run`/
+//     `rush sessions inject`, SDK; empty Origin = unspecified, also not
+//     composer input);
+//   • isAsyncCompletionNotice's content-pattern match, kept ONLY as a
+//     fallback for notice rows persisted before the BackgroundJobNotice
+//     column existed (so HumanTyped naively reads true on that old data —
+//     it has none of the structured flags set).
 //
 // The transcript itself ($messages) is untouched by this filter — every
 // channel's messages must still render in the conversation.
 //
-// Hidden / IsSummary / non-user messages are excluded. Empty texts are
-// dropped so the recall stack only holds prompts the user could actually
-// re-send.
+// Empty texts are dropped so the recall stack only holds prompts the user
+// could actually re-send.
 
 export interface MyPromptItem {
   id: string;
@@ -927,17 +941,20 @@ function partsToText(parts: Array<{ type: string; Text?: string }>): string {
   return out;
 }
 
+// isComposerTypedMessage is THE web-side authorship filter — the single
+// predicate shared by the arrow-history recall and the history dropdown,
+// both derived from $myPrompts below. See the doc block above for what each
+// half excludes and why.
+function isComposerTypedMessage(m: Message): boolean {
+  if (!m.HumanTyped) return false;
+  if (isAsyncCompletionNotice(m)) return false;
+  return true;
+}
+
 export const $myPrompts = computed($messages, (msgs): MyPromptItem[] => {
   const out: MyPromptItem[] = [];
   for (const m of msgs) {
-    if (m.Hidden) continue;
-    if (m.IsSummaryMessage) continue;
-    if (m.Role !== "user") continue;
-    // Recalled prompts must be composer-typed: no notices, no autonomous
-    // turns, no other channel's prompts.
-    if (m.BackgroundJobNotice || isAsyncCompletionNotice(m)) continue;
-    if (m.AutoResumed) continue;
-    if (m.Origin !== "web") continue;
+    if (!isComposerTypedMessage(m)) continue;
     const text = partsToText(m.Parts as unknown as Array<{ type: string; Text?: string }>).trim();
     if (!text) continue;
     out.push({ id: m.ID, text });

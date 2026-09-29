@@ -186,8 +186,9 @@ test("sidebar busy pulse disappears when agent done", async ({ page }) => {
 // ── Status bar ─────────────────────────────────────────────────────────────
 //
 // StatusBar.tsx is only ever mounted from inside ChatToolbar.tsx (inline,
-// middle of the toolbar) or TodoList.tsx — TodoList requires an active
-// session ({activeSessionID && <TodoList .../>} in Chat.tsx). These tests
+// middle of the toolbar) or LiveWorkTabBar.tsx (task #1059, formerly
+// TodoList.tsx) — LiveWorkPanel requires an active session
+// ({activeSessionID && <LiveWorkPanel .../>} in Chat.tsx). These tests
 // select a session first to ensure the status bar is tested in an active
 // session context.
 

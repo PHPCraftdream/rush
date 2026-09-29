@@ -1,7 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import type { Todo, TodoStatus } from "../types";
 import { updateTodos } from "../store";
-import { StatusBar } from "./StatusBar";
 
 // ── Status symbol ─────────────────────────────────────────────────────────────
 
@@ -257,7 +256,10 @@ export function TodoList({ sessionID, todos }: { sessionID: string; todos: Todo[
   return (
     <div
       data-test-id="todo-list"
-      className="shrink-0 border-t border-surface bg-base-subtle/40"
+      // No own border-t/shrink-0 here (task #1059): LiveWorkPanel's tab bar
+      // above already supplies the panel's top divider; this is now always
+      // mounted as one tab's body, not the panel's own outer shell.
+      className="bg-base-subtle/40"
     >
       {/* Header */}
       <div className="flex items-center">
@@ -279,11 +281,10 @@ export function TodoList({ sessionID, todos }: { sessionID: string; todos: Todo[
           )}
         </button>
 
-        {/* Connection + MCP status occupies the empty horizontal strip
-            between the "Tasks" toggle and the row's action buttons. */}
-        <div className="flex-1 flex items-center justify-center min-w-0 px-3">
-          <StatusBar inline />
-        </div>
+        {/* StatusBar now lives in LiveWorkTabBar (task #1059) -- it's
+            rendered once for the whole tabbed panel, not per-tab. This
+            spacer just keeps the action buttons pinned to the right. */}
+        <div className="flex-1" />
 
         {/* Clear completed / Add task buttons */}
         {completed > 0 && (

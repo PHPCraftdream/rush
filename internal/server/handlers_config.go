@@ -114,6 +114,12 @@ func buildConfigWire(a *appPkg.App) (ConfigWire, bool) {
 	for _, m := range cfg.RecentModels[config.SelectedModelTypeFast] {
 		wire.RecentFastModels = append(wire.RecentFastModels, ModelEntryWire{Provider: m.Provider, Model: m.Model})
 	}
+	for _, m := range cfg.RecentModels[config.SelectedModelTypeWorker] {
+		wire.RecentWorkerModels = append(wire.RecentWorkerModels, ModelEntryWire{Provider: m.Provider, Model: m.Model})
+	}
+	for _, m := range cfg.RecentModels[config.SelectedModelTypeReviewer] {
+		wire.RecentReviewerModels = append(wire.RecentReviewerModels, ModelEntryWire{Provider: m.Provider, Model: m.Model})
+	}
 
 	wire.Version = version.FullVersion()
 	wire.CWD = store.WorkingDir()

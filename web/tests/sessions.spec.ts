@@ -266,7 +266,7 @@ test("delete button sends delete_session command", async ({ page }) => {
   await sessionRow.hover();
   await page.getByTestId("session-delete-del-x").click();
   // Confirm the delete dialog
-  await page.getByRole("button", { name: "Delete", exact: true }).click();
+  await page.getByTestId("confirm-dialog").getByRole("button", { name: "Delete", exact: true }).click();
   const cmd = await waitForWSSend(page, "delete_session");
   expect((cmd.payload as { sessionID: string }).sessionID).toBe("del-x");
 });

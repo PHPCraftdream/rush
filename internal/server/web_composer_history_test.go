@@ -43,23 +43,21 @@ var asyncNoticePattern = regexp.MustCompile(`^Async job (\S+) \([^)]*\) (finishe
 
 // webComposerHistoryWire projects a session's messages to the composer recall
 // list exactly as the browser derives it: visible user messages with text,
-// newest first, that were typed in the web composer (OriginWeb), excluding
-// notices (flagged or legacy-pattern) and autonomous idle-resume turns.
+// newest first, that were typed in the web composer, excluding notices
+// (HumanTyped=false, or legacy-pattern for pre-flag rows) and autonomous
+// idle-resume turns. HumanTyped is served on the wire (toMessageWire /
+// isHumanTyped in wire.go) -- this function mirrors $myPrompts in
+// web/src/store.ts, which filters on that SAME field plus the SAME legacy
+// fallback (asyncJobCompletion.ts's isAsyncCompletionNotice).
 func webComposerHistoryWire(msgs []message.Message) []string {
 	var out []string
 	for i := len(msgs) - 1; i >= 0; i-- {
 		m := msgs[i]
-		if m.Role != message.User || m.Hidden || m.IsSummaryMessage {
-			continue
-		}
-		if m.BackgroundJobNotice || m.AutoResumed {
+		if !toMessageWire(m).HumanTyped {
 			continue
 		}
 		if asyncNoticePattern.MatchString(m.FullText()) {
-			continue
-		}
-		if m.Origin != message.OriginWeb {
-			continue
+			continue // legacy un-flagged rows, predating the BackgroundJobNotice column
 		}
 		text := strings.TrimSpace(m.FullText())
 		if text == "" {
@@ -299,4 +297,101 @@ func TestWebComposerHistory_ExcludesReportedPollution(t *testing.T) {
 	// again and the polluting text surfaces under ArrowUp.
 	require.Empty(t, webComposerHistoryWire(msgs),
 		"CLI-originated prompts and async completion notices must never enter web recall")
+}
+
+// TestIsHumanTyped is the table-driven pin for the predicate itself (#1056):
+// every known message.Message.NoticeKind value the wake/async job machinery
+// persists -- "" (ordinary finish/fail/cancel), "timeout_terminated",
+// "job_stopped", "timeout_wake_only", "wake_failed", "supervision" (see
+// coordinator_background.go, coordinator_wake.go, supervision.go,
+// work_ledger_timeout.go for where each is stamped) -- plus an unenumerated
+// future value ("session_cancel", from docs/plans/2026-09-28-async-phase4-
+// spec.md's planned Phase 4 work), to prove the predicate excludes by
+// NoticeKind != "" rather than by matching a fixed list of known values.
+//
+// Each case sets Origin=OriginWeb and leaves AutoResumed/BackgroundJobNotice
+// false UNLESS the case says otherwise, specifically to isolate what each
+// field contributes: supervision and timeout_wake_only notices are, in
+// production, persisted via a plain context.Background() (no AutoResumed, no
+// BackgroundJobNotice, no origin at all) -- NoticeKind is their ONLY
+// structured marker, so a case with Origin=web and no other flags proves
+// NoticeKind alone must be load-bearing, independent of Origin.
+//
+// Revert-check: if isHumanTyped stops checking NoticeKind (reverting to the
+// pre-#1056 AutoResumed/BackgroundJobNotice/Origin-only check), the
+// "supervision" and "timeout_wake_only" cases below flip from false to true.
+func TestIsHumanTyped(t *testing.T) {
+	t.Parallel()
+
+	base := func() message.Message {
+		return message.Message{
+			ID:     "m1",
+			Role:   message.User,
+			Origin: message.OriginWeb,
+			Parts:  []message.ContentPart{message.TextContent{Text: "hello"}},
+		}
+	}
+
+	for _, tc := range []struct {
+		name string
+		mod  func(m *message.Message)
+		want bool
+	}{
+		{"plain web-typed prompt", func(m *message.Message) {}, true},
+		{"assistant role", func(m *message.Message) { m.Role = message.Assistant }, false},
+		{"tool role", func(m *message.Message) { m.Role = message.Tool }, false},
+		{"hidden", func(m *message.Message) { m.Hidden = true }, false},
+		{"summary message", func(m *message.Message) { m.IsSummaryMessage = true }, false},
+		{"cli origin", func(m *message.Message) { m.Origin = message.OriginCLI }, false},
+		{"sdk origin", func(m *message.Message) { m.Origin = message.OriginSDK }, false},
+		{"unspecified origin", func(m *message.Message) { m.Origin = message.OriginUnspecified }, false},
+		{"auto-resumed", func(m *message.Message) { m.AutoResumed = true }, false},
+		{"background job notice flag", func(m *message.Message) { m.BackgroundJobNotice = true }, false},
+		{"both notice flags (async completion notice shape)", func(m *message.Message) {
+			m.AutoResumed = true
+			m.BackgroundJobNotice = true
+		}, false},
+		{"NoticeKind ordinary finish (empty, unaffected)", func(m *message.Message) { m.NoticeKind = "" }, true},
+		{"NoticeKind timeout_terminated", func(m *message.Message) { m.NoticeKind = "timeout_terminated" }, false},
+		{"NoticeKind job_stopped", func(m *message.Message) { m.NoticeKind = "job_stopped" }, false},
+		{"NoticeKind timeout_wake_only, no other flags", func(m *message.Message) { m.NoticeKind = "timeout_wake_only" }, false},
+		{"NoticeKind wake_failed", func(m *message.Message) { m.NoticeKind = "wake_failed" }, false},
+		{"NoticeKind supervision, no other flags", func(m *message.Message) { m.NoticeKind = noticeKindSupervisionForTest }, false},
+		{"NoticeKind unenumerated future value", func(m *message.Message) { m.NoticeKind = "session_cancel" }, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			m := base()
+			tc.mod(&m)
+			require.Equal(t, tc.want, isHumanTyped(m))
+		})
+	}
+}
+
+// noticeKindSupervisionForTest mirrors internal/agent's unexported
+// noticeKindSupervision constant ("supervision") -- duplicated here rather
+// than imported because internal/agent is not (and must not become) a
+// dependency of internal/server's wire layer.
+const noticeKindSupervisionForTest = "supervision"
+
+// TestMessageWire_NoticeKindReachesTheBrowser pins the serving half of
+// #1056: NoticeKind must survive toMessageWire, matching Origin's existing
+// contract (TestMessageWire_OriginReachesTheBrowser above), because
+// isHumanTyped's web-side TypeScript mirror (should NoticeKind ever be
+// needed client-side beyond HumanTyped) has nothing to filter on otherwise.
+func TestMessageWire_NoticeKindReachesTheBrowser(t *testing.T) {
+	t.Parallel()
+
+	for _, kind := range []string{"", "timeout_terminated", "job_stopped", "timeout_wake_only", "wake_failed", "supervision"} {
+		t.Run("kind="+kind, func(t *testing.T) {
+			t.Parallel()
+			wire := toMessageWire(message.Message{
+				ID:         "m1",
+				Role:       message.User,
+				NoticeKind: kind,
+				Parts:      []message.ContentPart{message.TextContent{Text: "hello"}},
+			})
+			require.Equal(t, kind, wire.NoticeKind)
+		})
+	}
 }

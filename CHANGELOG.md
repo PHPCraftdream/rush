@@ -99,6 +99,13 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 - **The web composer history no longer recalls messages that did not
   originate from the user** (notice/system-origin messages were polluting
   `$myPrompts`).
+- **The composer's ArrowUp recall and history dropdown no longer leak
+  supervision check-ins, one-time timeout check-ins, or wake-failure
+  markers.** These notices carry no `AutoResumed`/`BackgroundJobNotice` flag
+  and no web origin (they are persisted off a bare context), so the prior
+  filter missed them. A new server-computed `HumanTyped` field (`NoticeKind
+  != ""` is now also checked) and a single shared client-side filter close
+  the gap for every current and future notice kind.
 - **A delegated sub-agent in `rush run` now receives the results of its own
   async commands.** They used to land on a queue only the root read, so the
   sub-agent never saw its command output and the parent got the sub-agent's
@@ -194,6 +201,43 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   work drains. The check-in interval doubles on consecutive ticks with no
   progress (capped at 60 minutes) and pauses after 6 such ticks until real
   progress happens; older check-ins reach the model as a one-line marker.
+- **Each queued web message now has its own "Send now" / "Interrupt & send"
+  buttons**, shown only while the session is busy. "Send now" merges the
+  message into the running turn via `inject_message` without cancelling it;
+  "Interrupt & send" cancels the turn and starts a new one with it via
+  `interrupt_and_send`. The message is removed from the local queue the
+  instant one of these is clicked, so the later agent_busy=false flush can
+  never send it a second time; a failed request restores it to its original
+  queue position with a visible error. A request that times out or loses the
+  connection (rather than getting an explicit error back) is ambiguous — the
+  server may have already acted on it — so the restored error says to check
+  the chat before resending instead of implying it definitely failed; a
+  session that goes idle while a restored message is still queued shows a
+  plain "Send" instead, so it isn't stranded until an unrelated future turn
+  happens to flush it.
+- **`rush run --role worker`/`--role reviewer` now honor a per-session
+  worker/reviewer model override** (set via the web UI's model selector,
+  same `set_session_models` path as the existing smart/fast per-session
+  pin), instead of only ever reading the config-wide default for that
+  role. `sessions show` also now prints the fast/worker/reviewer slots
+  (previously only smart was shown).
+- **The web model selector now covers all four role slots** (smart, fast,
+  worker, reviewer), not just smart/fast: each has its own icon, recent
+  models, reasoning effort, and a reset-to-default action; worker/reviewer
+  live in a compact expandable panel next to the always-visible smart/fast
+  pickers.
+- **The chat's bottom panel is now a Tasks / Commands / Agents tabbed
+  view**, replacing the bare todo list in that spot. Tasks (the existing
+  todo list) is always shown; Commands (running bash/run_command async
+  jobs) and Agents (running agent/agentic_fetch delegations) appear only
+  while non-empty, with the live count in the tab title, and fall back to
+  Tasks the instant the selected tab's list empties. Clicking an item
+  scrolls the chat to its tool call and expands that tool call's block,
+  showing a short hint instead if the call isn't in the loaded transcript.
+  The wire contract (`session_live_work` event, `get_session_live_work`
+  request) is wired end-to-end on the client; the server-side emitter that
+  actually populates the lists from live jobs/sessions lands in a follow-up
+  once the DB-backed readers exist, so the panel shows Tasks only for now.
 
 ### Changed
 

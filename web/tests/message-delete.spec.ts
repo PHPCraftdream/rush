@@ -72,8 +72,8 @@ test("clicking delete shows confirmation dialog", async ({ page }) => {
   await msgRow.getByTitle("Delete").click();
 
   await expect(page.getByText("Delete this message?")).toBeVisible({ timeout: 2000 });
-  await expect(page.getByRole("button", { name: "Delete", exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Cancel", exact: true })).toBeVisible();
+  await expect(page.getByTestId("confirm-dialog").getByRole("button", { name: "Delete", exact: true })).toBeVisible();
+  await expect(page.getByTestId("confirm-dialog").getByRole("button", { name: "Cancel", exact: true })).toBeVisible();
 });
 
 test("clicking Cancel in confirm dialog dismisses without deleting", async ({ page }) => {
@@ -124,7 +124,7 @@ test("clicking Delete in confirm dialog sends delete_message", async ({ page }) 
   await msgRow.getByTitle("Delete").click();
 
   await expect(page.getByText("Delete this message?")).toBeVisible({ timeout: 2000 });
-  await page.getByRole("button", { name: "Delete", exact: true }).click();
+  await page.getByTestId("confirm-dialog").getByRole("button", { name: "Delete", exact: true }).click();
 
   const cmd = await waitForWSSend(page, "delete_message");
   expect((cmd.payload as { messageID: string }).messageID).toBe("d-del1");
@@ -296,7 +296,7 @@ test("clicking Delete on orphan sends delete_message", async ({ page }) => {
   await msgRow.getByTitle("Delete").click();
 
   await expect(page.getByText("Delete this message?")).toBeVisible({ timeout: 2000 });
-  await page.getByRole("button", { name: "Delete", exact: true }).click();
+  await page.getByTestId("confirm-dialog").getByRole("button", { name: "Delete", exact: true }).click();
 
   const cmd = await waitForWSSend(page, "delete_message");
   expect((cmd.payload as { messageID: string }).messageID).toBe("d-orphan-del");

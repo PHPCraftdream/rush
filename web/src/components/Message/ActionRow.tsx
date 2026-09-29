@@ -14,6 +14,7 @@ import { EffortBadge } from "./EffortBadge";
 import { TimeBadge } from "./TimeBadge";
 import { ToolCallBlock } from "./ToolCallBlock";
 import { ToolResultBlock } from "./ToolResultBlock";
+import { useExpandToolCallSignal } from "./useExpandToolCallSignal";
 
 export type ActionItem =
   | {
@@ -68,6 +69,12 @@ export const ActionRow = memo(function ActionRow({ item, isCurrent, suppressAuto
   // Used only by the thinking branch; useState must be called unconditionally.
   const [editingThinking, setEditingThinking] = useState(false);
   const [confirmDeleteThinking, setConfirmDeleteThinking] = useState(false);
+
+  // Jump-to-tool-call anchor (task #1059): undefined for thinking rows --
+  // they aren't addressable from the live-work panel. Forces the row open
+  // when the LiveWorkPanel requests this exact tool call.
+  const toolCallID = item.kind === "tool" ? (item.callPart?.ID ?? item.resultPart?.ToolCallID) : undefined;
+  useExpandToolCallSignal(toolCallID, () => setOverride(true));
 
   // Collapsing the row via its own toggle also exits edit mode — a stashed
   // edit form that silently reappears on the next expand is the same ambush
@@ -183,7 +190,7 @@ export const ActionRow = memo(function ActionRow({ item, isCurrent, suppressAuto
   const errored = !!result?.IsError || completion?.status === "failed";
   const completed = pendingJob && completion?.status === "finished";
   return (
-    <div data-test-id="action-row" className="action-row">
+    <div data-test-id="action-row" data-tool-call-id={toolCallID} className="action-row">
       <button
         type="button"
         onClick={toggle}

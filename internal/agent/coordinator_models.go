@@ -287,13 +287,13 @@ func (c *coordinator) resolveSessionModelsInternal(ctx context.Context, sessionI
 // needed when actually dispatching a sub-agent, not on every top-level turn,
 // so it isn't folded into the hot resolveSessionModels call.
 //
-// reviewer has no equivalent runtime hook: unlike smart/fast/worker, it is
-// consumed only as a `rush run --role reviewer` CLI selection (an entire
-// top-level run's model choice), never read at sub-agent dispatch time —
-// see internal/cmd/run.go's --role docs. A session-level ReviewerModelID is
-// stored (task #466's DB/API layer) for forward compatibility but currently
-// has no live runtime effect; this is a deliberate, documented scoping
-// decision, not an oversight.
+// reviewer has no equivalent SUB-AGENT DISPATCH hook: unlike worker, it is
+// never read when the "agent" tool spawns a sub-agent, because reviewer is
+// never a delegation target. It IS read, like worker, as a top-level
+// `rush run --role reviewer` CLI selection — sessionRoleModelOverride
+// (internal/cmd/run_role_model.go) applies the same session-DB-first
+// cascade this function documents, just for the top-level run's own model
+// instead of a dispatched sub-agent's (task #1060).
 func (c *coordinator) resolveSubAgentModelOverride(ctx context.Context, sessionID string) (*Model, error) {
 	sess, err := c.sessions.Get(ctx, sessionID)
 	if err != nil {
