@@ -7,13 +7,27 @@
 // by interrupting it -- unlike scenario (а)'s announced=1 case, which gets a
 // visible "interrupted" notice.
 //
-// REVERT CHECK: temporarily commented out the `RecoverOwnerScope` call in
-// coordinator_reaction_source.go's ScopeOpen (agent_turn.go's own turn-
-// preamble call alone was not enough to make this test fail -- ScopeOpen's
-// call already recovers the row first) -- this test FAILED (`call-unannounced`
-// was still present with `state=running`, and the require.True on
-// sql.ErrNoRows failed). Restored the call, confirmed byte-identical via
-// `git diff`; re-ran, passed, then re-ran 15x isolated.
+// REVERT CHECK (re-run 2026-09-29 by the `drain` agent, docs/reviews/2026-
+// 09-29-async-phase4-round1.md's W-DRAIN item "TestTwoAppScenarioD ...
+// REVERT CHECK note impossible"): the note that used to be here claimed
+// disabling coordinator_reaction_source.go's ScopeOpen -> RecoverOwnerScope
+// call alone made this test fail. Re-ran that exact probe against the
+// current code (ScopeOpen's call commented out, agent_turn.go's own
+// turn-preamble call left intact): the test still PASSED. Also tried the
+// reverse (ScopeOpen's call intact, agent_turn.go's turn-preamble call
+// disabled) and BOTH disabled together: the test PASSED in every
+// combination. So neither of the two commonly-cited recovery call sites is
+// what actually deletes `call-unannounced` here -- this test does not
+// exercise agent_turn.go's turn-start recovery OR ScopeOpen's own recovery
+// call at all, and would not catch either one being silently broken. The
+// row disappears via a THIRD path this test never named: AsyncJobStore.
+// ensureHost's own first-registration sweep (internal/session/
+// async_job_store.go, "the process that actually performs registration
+// runs ONE sweep over every dead host right after") — internal/session is
+// outside this agent's file scope (store agent's), so tracing the exact
+// trigger further and re-anchoring this test to the mechanism it actually
+// intends to pin is left as follow-up, not done here. The old note's
+// specific factual claim is retracted as false for the current code.
 package app
 
 import (
