@@ -50,13 +50,23 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   parent**, instead of resurfacing the stale text captured when the
   delegation was parked mid-flight.
 - **Async job state (bash/run_command/agent/agentic_fetch outcomes) is now
-  durably recorded in SQLite as it happens**, not decided from in-memory
-  state alone. Observable behavior is unchanged for every existing
+  durably recorded in SQLite as it happens, and survives a host restart.**
+  A single transactional CAS is the only writer of a job's terminal state;
+  in-memory state is a cache that converges to the row, not a second source
+  of truth. Observable behavior is unchanged for every existing
   notice/text/timing except the `resume_session_id` case above and one new
   fail-closed refusal: if the database becomes unavailable, starting a new
-  async job now errors instead of silently running untracked (recovering an
-  in-flight job across a process restart is a later phase, not yet wired to
-  any reader).
+  async job now errors instead of silently running untracked. If the host
+  process that owned a running job dies (crash, kill, power loss), the next
+  process to touch that session's scope recovers it: an announced job is
+  marked `interrupted` and delivered as a notice exactly like any other
+  outcome; a job whose "started" result never made it to the model is
+  deleted without a trace. Recovery only ever records what happened — it
+  never writes a turn's own history and never wakes a session by itself; the
+  next real turn still delivers the notice through the ordinary pull. The
+  old in-memory ready queue, the CLI loop's poll/BFS over descendant work,
+  and `internal/session/descendant_liveness.go`'s lock-file heartbeat
+  heuristic are all gone, replaced by the durable ledger this describes.
 
 ### Removed
 
