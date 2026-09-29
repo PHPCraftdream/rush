@@ -41,7 +41,7 @@ func (f *rerunCoordFx) start(t *testing.T, owner, callID, tool, child string) {
 	t.Helper()
 	_, _, err := f.coord.asyncJobs.Start(owner, callID, "", tool, child, false, false, nil, func() {})
 	require.NoError(t, err)
-	f.coord.asyncJobs.acknowledged(owner, callID)
+	f.coord.asyncJobs.acknowledged(jobOf(f.coord.asyncJobs, owner, callID))
 }
 
 func (f *rerunCoordFx) row(t *testing.T, owner, callID string) db.AsyncJob {
@@ -173,7 +173,7 @@ func TestRerun_TruncateThenStop_TailJobVoidedAndStoppedKeptJobSurvives(t *testin
 	announce := func(callID string) message.Message {
 		_, _, err := f.coord.asyncJobs.Start("root", callID, "", "bash", "", false, false, nil, func() {})
 		require.NoError(t, err)
-		msg, handled, err := f.coord.asyncJobs.acknowledgeWithMessageTx(ctx, "root", callID, f.messages, message.CreateMessageParams{
+		msg, handled, err := f.coord.asyncJobs.acknowledgeWithMessageTx(ctx, jobOf(f.coord.asyncJobs, "root", callID), f.messages, message.CreateMessageParams{
 			Role: message.Tool, Parts: []message.ContentPart{message.ToolResult{ToolCallID: callID, Name: "bash", Content: "started"}},
 		})
 		require.NoError(t, err)

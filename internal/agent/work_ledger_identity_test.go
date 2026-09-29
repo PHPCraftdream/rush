@@ -65,7 +65,7 @@ func TestAsyncTool_StaleExecutorAfterAckAbortCannotCommitOntoReclaimedKey(t *tes
 	job1 := jobOf(l, "session", "call_0")
 	require.NotNil(t, job1)
 
-	l.abort("session", "call_0") // the started result's write failed
+	l.abort(job1) // the started result's write failed
 
 	_, err = wrapped.Run(ctx, call)
 	require.NoError(t, err)
@@ -83,7 +83,7 @@ func TestAsyncTool_StaleExecutorAfterAckAbortCannotCommitOntoReclaimedKey(t *tes
 		return err != nil || row.State != "running" || job2.state != phaseRunning || job2.executorReturned
 	}, 300*time.Millisecond, 10*time.Millisecond, "a superseded executor's result must never reach the reclaimed key's job or row")
 
-	l.acknowledged("session", "call_0")
+	l.acknowledged(jobOf(l, "session", "call_0"))
 	close(release[1])
 	select {
 	case c := <-completed:
@@ -104,7 +104,7 @@ func TestWorkLedger_SupersededExecutorWritesNothingByKey(t *testing.T) {
 
 	job1, _, err := l.Start("owner", "call_0", "x", "bash", "", false, false, nil, func() {})
 	require.NoError(t, err)
-	l.abort("owner", "call_0")
+	l.abort(job1)
 	job2, _, err := l.Start("owner", "call_0", "x", "bash", "", false, false, nil, func() {})
 	require.NoError(t, err)
 	require.NotSame(t, job1, job2)

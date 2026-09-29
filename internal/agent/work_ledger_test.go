@@ -54,7 +54,7 @@ func TestWorkLedger_WaitsForPersistedToolResult(t *testing.T) {
 	default:
 	}
 
-	l.acknowledged("session", "call")
+	l.acknowledged(jobOf(l, "session", "call"))
 	select {
 	case got := <-completed:
 		require.Equal(t, "session", got.SessionID)
@@ -83,7 +83,7 @@ func TestWorkLedger_WebCallbackExactlyOnce(t *testing.T) {
 	l.store = newTestAsyncJobStore(t)
 	_, _, err := l.Start("session", "call", "", "bash", "", false, false, nil, nil)
 	require.NoError(t, err)
-	l.acknowledged("session", "call")
+	l.acknowledged(jobOf(l, "session", "call"))
 	l.finish(jobOf(l, "session", "call"), jobResult{})
 	l.finish(jobOf(l, "session", "call"), jobResult{})
 	require.EqualValues(t, 1, calls.Load())
@@ -102,7 +102,7 @@ func TestWorkLedger_ConcurrentFinishAndAcknowledge(t *testing.T) {
 	require.NoError(t, err)
 	var wg sync.WaitGroup
 	wg.Go(func() { l.finish(jobOf(l, "session", "call"), jobResult{}) })
-	wg.Go(func() { l.acknowledged("session", "call") })
+	wg.Go(func() { l.acknowledged(jobOf(l, "session", "call")) })
 	wg.Wait()
 	select {
 	case <-completed:
@@ -225,7 +225,7 @@ func TestWorkLedger_DelegationNeverDeliveredBeforeAnnounce(t *testing.T) {
 	}
 	require.True(t, l.running("parent"), "the job must still be present, waiting for announce")
 
-	l.acknowledged("parent", "call")
+	l.acknowledged(jobOf(l, "parent", "call"))
 	select {
 	case got := <-delivered:
 		require.Equal(t, "child yielded: done", got.Content)
@@ -272,7 +272,7 @@ func TestWorkLedger_ConcurrentTerminalRaceYieldsExactlyOneOutcome(t *testing.T) 
 		l.store = newTestAsyncJobStore(t)
 		_, _, err := l.Start("owner", "call", "", AgentToolName, "child", false, false, nil, nil)
 		require.NoError(t, err)
-		l.acknowledged("owner", "call")
+		l.acknowledged(jobOf(l, "owner", "call"))
 
 		start := make(chan struct{})
 		var wg sync.WaitGroup

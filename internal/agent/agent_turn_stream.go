@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 	"strings"
 	"sync"
@@ -14,7 +13,6 @@ import (
 	"charm.land/fantasy/providers/google"
 	"charm.land/fantasy/providers/openai"
 
-	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
 )
@@ -397,42 +395,15 @@ func (ts *turnStream) onToolResult(result fantasy.ToolResultContent) error {
 			toolResult,
 		},
 	}
-	// Ack gate (DUR-7, doc sec.3.8): for a durable async job's own "started"
-	// result, the message insert and announced=1 commit in ONE transaction
-	// (acknowledgeWithMessageTx) instead of two separate writes. handled is
-	// false for an ordinary (non-async, or sync) tool result -- unchanged
-	// plain Create + acknowledged/abort below, exactly as before this gate
-	// existed.
+	// Ack gate (DUR-7, doc sec.3.8) and job_kill result fusion (A3): the
+	// ledger decides which results are a tracked job's own -- by claim tag,
+	// never by tool_call_id alone -- and writes them in one transaction with
+	// the job's row. Every other result is a plain Create. The outer ctx is
+	// used so the message is created even if the request is canceled
+	// mid-stream.
 	if ts.a.asyncJobs != nil {
-		if _, handled, err := ts.a.asyncJobs.acknowledgeWithMessageTx(ts.ctx, sessionID, result.ToolCallID, ts.a.messages, params); handled {
-			return err
-		}
+		return ts.a.asyncJobs.persistToolResult(ts.ctx, sessionID, toolResult, ts.a.messages, params)
 	}
-	// A3 (doc sec.3.2's law "delivery='done' => the row names the message
-	// that carries its result"): job_kill's OWN tool-result message (keyed by
-	// job_kill's call id, not the target job's -- the ack gate above never
-	// matches it) fuses into notice_message_id for the TARGET job it acted
-	// on, in the SAME transaction as this message's insert. Only reachable
-	// for a successful job_kill call that actually resolved to a tracked
-	// job_id (JobKillResponseMetadata.JobID) -- a raw shell_id kill or the
-	// B11 refusal path carries no such metadata and falls through unchanged.
-	if ts.a.asyncJobs != nil && result.ToolName == tools.JobKillToolName && !toolResult.IsError {
-		var meta tools.JobKillResponseMetadata
-		if json.Unmarshal([]byte(toolResult.Metadata), &meta) == nil && meta.JobID != "" {
-			if _, handled, err := ts.a.asyncJobs.jobKillResultMessageTx(ts.ctx, sessionID, meta.JobID, ts.a.messages, params); handled {
-				return err
-			}
-		}
-	}
-	// Use parent ctx instead of genCtx to ensure the message is created
-	// even if the request is canceled mid-stream
 	_, createMsgErr := ts.a.messages.Create(ts.ctx, sessionID, params)
-	if ts.a.asyncJobs != nil {
-		if createMsgErr != nil {
-			ts.a.asyncJobs.abort(sessionID, result.ToolCallID)
-		} else {
-			ts.a.asyncJobs.acknowledged(sessionID, result.ToolCallID)
-		}
-	}
 	return createMsgErr
 }

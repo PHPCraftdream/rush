@@ -21,7 +21,7 @@ func TestStopToolCallsForRerun_StopsPlainJobWithWakeZero(t *testing.T) {
 	l.store = store
 	_, _, err := l.Start("owner-1", "call-1", "", "bash", "", false, false, nil, func() {})
 	require.NoError(t, err)
-	l.acknowledged("owner-1", "call-1")
+	l.acknowledged(jobOf(l, "owner-1", "call-1"))
 
 	l.stopToolCallsForRerun("owner-1", []string{"call-1"})
 
@@ -43,10 +43,10 @@ func TestStopToolCallsForRerun_DelegationStoppedChildTreeIsCallersJob(t *testing
 
 	_, _, err := l.Start("owner-1", "deleg-call", "", AgentToolName, "child-1", false, false, nil, func() {})
 	require.NoError(t, err)
-	l.acknowledged("owner-1", "deleg-call")
+	l.acknowledged(jobOf(l, "owner-1", "deleg-call"))
 	_, _, err = l.Start("child-1", "child-call", "", "bash", "", false, false, nil, func() {})
 	require.NoError(t, err)
-	l.acknowledged("child-1", "child-call")
+	l.acknowledged(jobOf(l, "child-1", "child-call"))
 
 	l.stopToolCallsForRerun("owner-1", []string{"deleg-call"})
 

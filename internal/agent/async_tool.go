@@ -25,6 +25,10 @@ type asyncToolMetadata struct {
 	JobID          string `json:"job_id"`
 	ChildSessionID string `json:"child_session_id,omitempty"`
 	Status         string `json:"status"`
+	// ClaimID tags this as the job's OWN "started" result (ackTag): the ack
+	// gate fuses only a result carrying the job's claim, never one that
+	// merely shares its tool_call_id.
+	ClaimID string `json:"claim_id,omitempty"`
 }
 
 func (t *asyncTool) Info() fantasy.ToolInfo {
@@ -90,7 +94,7 @@ func (t *asyncTool) Run(ctx context.Context, call fantasy.ToolCall) (fantasy.Too
 		if sync {
 			return t.awaitAndFinish(ctx, job)
 		}
-		return t.startedResponse(call.ID, job.childSession), nil
+		return t.startedResponse(call.ID, job.childSession, job.claimID), nil
 	}
 	return t.launchExecutor(ctx, jobCtx, cancel, sessionID, childSessionID, call, sync, job)
 }
@@ -148,7 +152,7 @@ func (t *asyncTool) launchExecutor(ctx, jobCtx context.Context, cancel context.C
 	if sync {
 		return t.awaitAndFinish(ctx, job)
 	}
-	return t.startedResponse(call.ID, childSessionID), nil
+	return t.startedResponse(call.ID, childSessionID, job.claimID), nil
 }
 
 // awaitAndFinish blocks until job's sync outcome is ready (workLedger.
@@ -168,10 +172,10 @@ func (t *asyncTool) awaitAndFinish(ctx context.Context, job *asyncJob) (fantasy.
 // Shared by the fresh-start and idempotent-retry (existing job) paths, so a
 // retried tool call reports the SAME child session id the first Start call
 // registered.
-func (t *asyncTool) startedResponse(jobID, childSessionID string) fantasy.ToolResponse {
+func (t *asyncTool) startedResponse(jobID, childSessionID, claimID string) fantasy.ToolResponse {
 	content := fmt.Sprintf("Async %s job %s started. Its result will arrive as a new session message; continue independent work.", t.name, jobID)
 	return fantasy.WithResponseMetadata(fantasy.NewTextResponse(content), asyncToolMetadata{
-		Async: true, JobID: jobID, ChildSessionID: childSessionID, Status: "running",
+		Async: true, JobID: jobID, ChildSessionID: childSessionID, Status: "running", ClaimID: claimID,
 	})
 }
 

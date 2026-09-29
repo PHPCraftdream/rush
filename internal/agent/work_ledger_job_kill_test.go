@@ -75,7 +75,7 @@ func TestWorkLedger_MarkJobStopped_BashProducesDistinctCancelledOutcome(t *testi
 	l.store = newTestAsyncJobStore(t)
 	_, _, err := l.Start("owner", "call", "", "bash", "", false, false, nil, func() {})
 	require.NoError(t, err)
-	l.acknowledged("owner", "call")
+	l.acknowledged(jobOf(l, "owner", "call"))
 
 	l.MarkJobStopped("owner", "call")
 	// The executor's own finish() call still happens exactly once (the
@@ -116,7 +116,7 @@ func TestWorkLedger_MarkJobStopped_RunCommandUsesLiveBufferForPartialOutput(t *t
 	l.store = newTestAsyncJobStore(t)
 	_, _, err := l.Start("owner", "call", "", "run_command", "", false, false, nil, func() {})
 	require.NoError(t, err)
-	l.acknowledged("owner", "call")
+	l.acknowledged(jobOf(l, "owner", "call"))
 
 	buf := &fakeLiveOutputBuffer{}
 	buf.write("line 1\nline 2\n")
@@ -164,7 +164,7 @@ func TestWorkLedger_JobKillRaceAgainstFinishYieldsOneOutcome(t *testing.T) {
 		l.store = newTestAsyncJobStore(t)
 		_, _, err := l.Start("owner", "call", "", "bash", "", false, false, nil, func() {})
 		require.NoError(t, err)
-		l.acknowledged("owner", "call")
+		l.acknowledged(jobOf(l, "owner", "call"))
 
 		var markText string
 		var markVerdict tools.JobStopVerdict
@@ -248,7 +248,7 @@ func TestWorkLedger_RunCommandOutput_CursorSemantics(t *testing.T) {
 	l.store = newTestAsyncJobStore(t)
 	_, _, err := l.Start("owner", "call", "", "run_command", "", false, false, nil, func() {})
 	require.NoError(t, err)
-	l.acknowledged("owner", "call")
+	l.acknowledged(jobOf(l, "owner", "call"))
 
 	buf := &fakeLiveOutputBuffer{}
 	buf.write("hello ")
@@ -346,7 +346,7 @@ func TestWorkLedger_MarkJobStopped_RowGoesStraightToDoneNeitherDebtNorNotice(t *
 	l.store = store
 	_, _, err := l.Start("owner", "call", "", "bash", "", false, false, nil, func() {})
 	require.NoError(t, err)
-	l.acknowledged("owner", "call")
+	l.acknowledged(jobOf(l, "owner", "call"))
 
 	text, verdict := l.MarkJobStopped("owner", "call")
 	require.Equal(t, tools.JobStopStopped, verdict)
@@ -373,7 +373,7 @@ func TestWorkLedger_StopRunCommandJob_RowGoesStraightToDone(t *testing.T) {
 	l.store = store
 	_, _, err := l.Start("owner", "call", "", "run_command", "", false, false, nil, func() {})
 	require.NoError(t, err)
-	l.acknowledged("owner", "call")
+	l.acknowledged(jobOf(l, "owner", "call"))
 
 	text, err := l.StopRunCommandJob("owner", "call")
 	require.NoError(t, err)
@@ -398,7 +398,7 @@ func TestWorkLedger_MarkJobStopped_ConcurrentCallsYieldExactlyOneFreshStop(t *te
 		l.store = newTestAsyncJobStore(t)
 		_, _, err := l.Start("owner", "call", "", "bash", "", false, false, nil, func() {})
 		require.NoError(t, err)
-		l.acknowledged("owner", "call")
+		l.acknowledged(jobOf(l, "owner", "call"))
 
 		start := make(chan struct{})
 		var wg sync.WaitGroup
@@ -442,7 +442,7 @@ func TestWorkLedger_StopRunCommandJob_ConcurrentCallsYieldExactlyOneFreshStop(t 
 			mu.Unlock()
 		})
 		require.NoError(t, err)
-		l.acknowledged("owner", "call")
+		l.acknowledged(jobOf(l, "owner", "call"))
 
 		start := make(chan struct{})
 		var wg sync.WaitGroup

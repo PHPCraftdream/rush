@@ -157,7 +157,7 @@ func TestRecheckChild_FiresOnRealDriverRunEndWithoutManualTrigger(t *testing.T) 
 	// reads the driver's real (busy) IsSessionBusy.
 	_, _, err = coord.asyncJobs.Start(parentSession, parentCall, "", AgentToolName, childSession, false, false, nil, func() {})
 	require.NoError(t, err)
-	coord.asyncJobs.acknowledged(parentSession, parentCall)
+	coord.asyncJobs.acknowledged(jobOf(coord.asyncJobs, parentSession, parentCall))
 	coord.asyncJobs.armDelegation(jobOf(coord.asyncJobs, parentSession, parentCall), jobResult{content: "child yielded: still working"})
 	require.True(t, coord.asyncJobs.hasParked())
 	require.Empty(t, drainCompletions(delivered),

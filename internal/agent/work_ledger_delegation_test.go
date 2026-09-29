@@ -132,7 +132,7 @@ func parkDelegation(t *testing.T, coord *coordinator, childSession, childYields 
 	t.Helper()
 	_, _, err := coord.asyncJobs.Start(parkedParentSession, parkedParentCall, "", AgentToolName, childSession, false, false, nil, func() {})
 	require.NoError(t, err)
-	coord.asyncJobs.acknowledged(parkedParentSession, parkedParentCall)
+	coord.asyncJobs.acknowledged(jobOf(coord.asyncJobs, parkedParentSession, parkedParentCall))
 
 	wrapped := &asyncTool{
 		inner:       newYieldedInnerTool(AgentToolName, childYields),
@@ -156,7 +156,7 @@ func startChildOwnedJob(t *testing.T, l *workLedger, sessionID, toolCallID strin
 	t.Helper()
 	_, _, err := l.Start(sessionID, toolCallID, "", "bash", "", cli, false, nil, func() {})
 	require.NoError(t, err)
-	l.acknowledged(sessionID, toolCallID)
+	l.acknowledged(jobOf(l, sessionID, toolCallID))
 }
 
 // finishChildJob completes a job the child owns and plays out the turn that
@@ -464,7 +464,7 @@ func TestWorkLedger_ResumeAfterNoticeDoesNotReemit(t *testing.T) {
 	const secondParentCall = "parent-call-2"
 	_, _, err = coord.asyncJobs.Start(parkedParentSession, secondParentCall, "", AgentToolName, child.ID, false, false, nil, func() {})
 	require.NoError(t, err)
-	coord.asyncJobs.acknowledged(parkedParentSession, secondParentCall)
+	coord.asyncJobs.acknowledged(jobOf(coord.asyncJobs, parkedParentSession, secondParentCall))
 	wrapped := &asyncTool{
 		inner:       newYieldedInnerTool(AgentToolName, "yield B"),
 		coordinator: coord,
@@ -557,7 +557,7 @@ func TestWorkLedger_ConcurrentRecheckAndCancelDeliversOnce(t *testing.T) {
 
 		_, _, err := coord.asyncJobs.Start("parent-race", "call-race", "", AgentToolName, "child-race", false, false, nil, nil)
 		require.NoError(t, err)
-		coord.asyncJobs.acknowledged("parent-race", "call-race")
+		coord.asyncJobs.acknowledged(jobOf(coord.asyncJobs, "parent-race", "call-race"))
 		coord.asyncJobs.armDelegation(jobOf(coord.asyncJobs, "parent-race", "call-race"), jobResult{content: "child final answer"})
 		require.True(t, coord.asyncJobs.hasParked())
 

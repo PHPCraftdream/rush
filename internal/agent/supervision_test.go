@@ -67,7 +67,7 @@ func startOpenJob(t *testing.T, l *workLedger, sessionID, toolCallID string) {
 	t.Helper()
 	_, _, err := l.Start(sessionID, toolCallID, "", "bash", "", true, false, nil, func() {})
 	require.NoError(t, err)
-	l.acknowledged(sessionID, toolCallID)
+	l.acknowledged(jobOf(l, sessionID, toolCallID))
 }
 
 // TestSupervision_NoteWorkStartedSkipsDelegatedChildArmsRoot: a session

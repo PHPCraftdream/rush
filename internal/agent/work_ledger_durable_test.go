@@ -108,7 +108,7 @@ func TestWorkLedger_TransitionRetriesUnderBusyDBThenCommits(t *testing.T) {
 	_, existing, err := l.Start("owner-1", "call-1", "echo hi", "bash", "", false, false, nil, func() {})
 	require.NoError(t, err)
 	require.False(t, existing)
-	l.acknowledged("owner-1", "call-1")
+	l.acknowledged(jobOf(l, "owner-1", "call-1"))
 
 	busyDone := make(chan struct{})
 	go func() {
@@ -156,7 +156,7 @@ func TestWorkLedger_InFlightLatchSkipsSecondTriggerWithoutBlocking(t *testing.T)
 
 	_, _, err = l.Start("owner-1", "call-1", "echo hi", "bash", "", false, false, nil, func() {})
 	require.NoError(t, err)
-	l.acknowledged("owner-1", "call-1")
+	l.acknowledged(jobOf(l, "owner-1", "call-1"))
 
 	busyDone := make(chan struct{})
 	go func() {
@@ -234,7 +234,7 @@ func TestWorkLedger_TerminalCausesRecordOwnStateNoticeKindAndWake(t *testing.T) 
 			l.store = store
 			_, _, err := l.Start("owner-1", "call-1", "sleep 100", "run_command", "", false, false, nil, func() {})
 			require.NoError(t, err)
-			l.acknowledged("owner-1", "call-1")
+			l.acknowledged(jobOf(l, "owner-1", "call-1"))
 
 			tc.act(l)
 
@@ -278,7 +278,7 @@ func TestWorkLedger_ShutdownCausedCancellationLeavesRowRunningWritesNoNotice(t *
 	cancelled := false
 	_, _, err := l.Start("owner-1", "call-1", "sleep 100", "bash", "", false, false, nil, func() { cancelled = true })
 	require.NoError(t, err)
-	l.acknowledged("owner-1", "call-1")
+	l.acknowledged(jobOf(l, "owner-1", "call-1"))
 
 	l.close() // sets closed + job.shutdownCancelled, cancels the executor
 	require.True(t, cancelled)
@@ -311,7 +311,7 @@ func TestWorkLedger_NaturalCompletionBeforeCloseIsNotSuppressed(t *testing.T) {
 
 	_, _, err := l.Start("owner-1", "call-1", "echo hi", "bash", "", false, false, nil, func() {})
 	require.NoError(t, err)
-	l.acknowledged("owner-1", "call-1")
+	l.acknowledged(jobOf(l, "owner-1", "call-1"))
 
 	l.finish(jobOf(l, "owner-1", "call-1"), jobResult{content: "done"})
 	got := drainCompletions(delivered)

@@ -98,8 +98,13 @@ type asyncJob struct {
 	startedAt time.Time
 
 	state     jobPhase
-	announced bool               // ack-gate: the "started" tool result is persisted (onToolResult)
-	cancel    context.CancelFunc // this job's executor context
+	announced bool // ack-gate: the "started" tool result is persisted (onToolResult)
+	// acking is set by claimAck under l.mu for the one tool result that has
+	// the right to acknowledge or abort this job (R2B-3), so a concurrent or
+	// repeated tagged result cannot start a second announce while the first
+	// is still writing.
+	acking bool
+	cancel context.CancelFunc // this job's executor context
 	// result is valid once state.terminal(). For an armed-but-still-running
 	// delegation (state still phaseRunning, indexed in workLedger.byChild),
 	// it holds the result captured at the child's first turn -- see

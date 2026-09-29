@@ -47,7 +47,7 @@ func TestWorkLedger_RetryLoopStopsAfterClose(t *testing.T) {
 
 	_, _, err = l.Start("owner-1", "call-1", "echo hi", "bash", "", false, false, nil, func() {})
 	require.NoError(t, err)
-	l.acknowledged("owner-1", "call-1")
+	l.acknowledged(jobOf(l, "owner-1", "call-1"))
 
 	// Simulate "App shutdown closes the DB" (review Scenario A): every
 	// subsequent store call now fails immediately (sql: database is
@@ -114,7 +114,7 @@ func TestWorkLedger_CancelSessionRaceAgainstNaturalFinishNeverWakes(t *testing.T
 
 		_, _, err := l.Start("owner", "call", "", "bash", "", false, false, nil, func() {})
 		require.NoError(t, err)
-		l.acknowledged("owner", "call")
+		l.acknowledged(jobOf(l, "owner", "call"))
 
 		start := make(chan struct{})
 		var wg sync.WaitGroup
@@ -249,7 +249,7 @@ func TestWorkLedger_StopBeforeAckDoesNotOrphanRow(t *testing.T) {
 	require.EqualValues(t, 0, row.Announced, "not yet announced at this point")
 
 	// The "started" ack finally arrives.
-	l.acknowledged("owner", "call")
+	l.acknowledged(jobOf(l, "owner", "call"))
 
 	row, err = store.Get(context.Background(), "owner", "call")
 	require.NoError(t, err)
@@ -289,7 +289,7 @@ func TestWorkLedger_CloseDoesNotLatchOntoExecutorReturnedJob(t *testing.T) {
 
 	_, _, err := l.Start("owner", "call", "", "bash", "", false, false, nil, func() {})
 	require.NoError(t, err)
-	l.acknowledged("owner", "call")
+	l.acknowledged(jobOf(l, "owner", "call"))
 
 	// Simulate finish()'s own ordering: it marks executorReturned BEFORE
 	// doing any DB work. Reproduces the window where the executor's real

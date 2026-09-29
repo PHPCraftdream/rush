@@ -441,27 +441,24 @@ func (l *workLedger) deliverLocked(owner string, job *asyncJob) (AsyncCompletion
 	return completion, l.onWebDone != nil
 }
 
-// acknowledged is the ack-gate: marks that the "started" tool result for
-// (sessionID, toolCallID) is persisted (agent_turn_stream.go's onToolResult,
-// called after a successful messages.Create), then attempts delivery. Name
-// unchanged from today (async_job_registry.go's acknowledged) -- the caller
-// is not touched by phase 1.
+// acknowledged is the ack-gate: marks that job's "started" tool result is
+// persisted (persistToolResult, called after a successful messages.Create),
+// then attempts delivery. The caller holds the right to acknowledge (claimAck,
+// work_ledger_announce.go): only the job's own tagged started result ever
+// gets here, never an ordinary result that merely shares its tool_call_id.
 //
 // Phase-4 step 2 (DUR-7): a non-sync job's "started" tool result is durably
 // marked via store.MarkAnnounced BEFORE the in-memory announced flag flips,
 // with the same growing-backoff retry rule as transition (no shutdown-latch
 // check here -- unlike transition, this is not tied to an executor
-// cancelled by close()). A gone row (e.g. a Rerun truncation raced it) is a
+// cancelled by close()). A gone row (e.g. the owner session was deleted) is a
 // benign no-op, not a retry target.
-func (l *workLedger) acknowledged(sessionID, toolCallID string) {
-	l.mu.Lock()
-	s := l.bySession[sessionID]
-	if s == nil {
-		l.mu.Unlock()
+func (l *workLedger) acknowledged(job *asyncJob) {
+	if job == nil {
 		return
 	}
-	job := s.jobs[toolCallID]
-	if job == nil {
+	l.mu.Lock()
+	if !l.currentLocked(job) {
 		l.mu.Unlock()
 		return
 	}
@@ -470,7 +467,7 @@ func (l *workLedger) acknowledged(sessionID, toolCallID string) {
 
 	if !sync && store != nil {
 		_ = l.retryAsyncStoreOp(context.Background(), func() error {
-			if err := store.MarkAnnounced(context.Background(), sessionID, toolCallID); err != nil {
+			if err := store.MarkAnnounced(context.Background(), job.owner, job.toolCallID); err != nil {
 				if errors.Is(err, session.ErrAsyncJobGone) {
 					return nil
 				}
@@ -480,7 +477,7 @@ func (l *workLedger) acknowledged(sessionID, toolCallID string) {
 		})
 	}
 
-	l.finishAcknowledgeLocally(sessionID, toolCallID)
+	l.finishAcknowledgeLocally(job)
 }
 
 // finishAcknowledgeLocally is the ack gate's in-memory tail (job.announced
@@ -493,63 +490,59 @@ func (l *workLedger) acknowledged(sessionID, toolCallID string) {
 // `!job.announced` guard is what withheld it until now) -- this is the
 // "fast job that finishes before the ack" case's existing wake-hint path
 // (doc sec.3.8's Ack gate paragraph), not a new mechanism.
-func (l *workLedger) finishAcknowledgeLocally(sessionID, toolCallID string) {
+func (l *workLedger) finishAcknowledgeLocally(job *asyncJob) {
 	l.mu.Lock()
-	s := l.bySession[sessionID]
-	if s == nil {
-		l.mu.Unlock()
-		return
-	}
-	job := s.jobs[toolCallID]
-	if job == nil {
+	if !l.currentLocked(job) {
 		l.mu.Unlock()
 		return
 	}
 	job.announced = true
-	completion, callback := l.deliverLocked(sessionID, job)
+	completion, callback := l.deliverLocked(job.owner, job)
 	l.mu.Unlock()
 	if callback {
 		l.onWebDone(completion)
 	}
 }
 
-// abort drops (sessionID, toolCallID) and cancels its executor context.
-// Called ONLY when the "started" tool result write itself failed -- strictly
-// before Announce could ever be called for this id, so there is nothing to
-// preserve (ASYNC-05). Name unchanged from today (async_job_registry.go's
-// abort). Phase-4 step 2: a non-sync job's durable row is deleted via
-// store.DeleteUnannounced (same growing-backoff retry rule) before the
-// in-memory drop.
-func (l *workLedger) abort(sessionID, toolCallID string) {
+// abort drops job and cancels its executor context. Called ONLY when the
+// "started" tool result write itself failed -- strictly before the job was
+// announced, so there is nothing to preserve (ASYNC-05). A job that is
+// announced by the time this runs, in memory or in its durable row, is left
+// completely alone: dropping it would close its scope while the row stays
+// announced/running forever. Phase-4 step 2: a non-sync job's durable row is
+// deleted via store.DeleteUnannounced (same growing-backoff retry rule)
+// before the in-memory drop.
+func (l *workLedger) abort(job *asyncJob) {
+	if job == nil {
+		return
+	}
 	l.mu.Lock()
-	s := l.bySession[sessionID]
-	var job *asyncJob
-	if s != nil {
-		job = s.jobs[toolCallID]
+	if !l.currentLocked(job) || job.announced {
+		l.mu.Unlock()
+		return
 	}
-	store, sync := l.store, false
-	if job != nil {
-		sync = job.sync
-	}
+	store, sync := l.store, job.sync
 	l.mu.Unlock()
 
 	if !sync && store != nil {
 		_ = l.retryAsyncStoreOp(context.Background(), func() error {
-			return store.DeleteUnannounced(context.Background(), sessionID, toolCallID)
+			return store.DeleteUnannounced(context.Background(), job.owner, job.toolCallID)
 		})
+		// DeleteUnannounced is scoped to announced=0, so a row that survives
+		// it is announced: it is not this abort's to drop.
+		if _, err := store.Get(context.Background(), job.owner, job.toolCallID); err == nil {
+			return
+		}
 	}
 
 	l.mu.Lock()
-	s = l.bySession[sessionID]
-	if s == nil {
+	if !l.currentLocked(job) || job.announced {
 		l.mu.Unlock()
 		return
 	}
-	job = s.jobs[toolCallID]
-	delete(s.jobs, toolCallID)
-	signalWorkSession(s)
+	l.dropLocked(job)
 	l.mu.Unlock()
-	if job != nil && job.cancel != nil {
+	if job.cancel != nil {
 		job.cancel()
 	}
 }
