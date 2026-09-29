@@ -255,12 +255,20 @@ func (app *App) releaseResources(stillBusy bool) ShutdownResult {
 	// bounded budget) before anything else in this function assumes the DB
 	// is free to close; racing it against an arbitrary set of cleanupFuncs
 	// under one best-effort timeout (which can abandon a goroutine still
-	// mid-write) is exactly the ordering this sequencing avoids. Runs on
-	// BOTH the graceful and forced-shutdown paths -- the DB is only ever
-	// closed later, in the stillBusy-gated block at the end of this
-	// function, so it is still open here either way.
+	// mid-write) is exactly the ordering this sequencing avoids.
+	//
+	// A12 (docs/reviews/2026-09-29-async-phase4-round1.md): on the FORCED
+	// path, live Run goroutines did not finish within the grace period and
+	// may still be writing through this store -- releasing the host lock
+	// here would let another process recover this host's still-in-flight
+	// rows while they are still being written (DUR-5 only holds for a
+	// process that has actually exited). Keep the lock held until the
+	// process itself exits, exactly like DB close is already skipped on this
+	// same path below -- CloseKeepLock only forgets the in-memory handle.
 	if app.asyncJobStore != nil {
-		if err := app.asyncJobStore.Close(shutdownCtx); err != nil {
+		if stillBusy {
+			app.asyncJobStore.CloseKeepLock()
+		} else if err := app.asyncJobStore.Close(shutdownCtx); err != nil {
 			slog.Warn("Failed to release async job store host identity on shutdown", "error", err)
 			recordCleanupError(err)
 		}

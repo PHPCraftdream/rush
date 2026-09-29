@@ -302,6 +302,15 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, opts ...O
 	if !o.skipAgentSetup && dataDir != "" {
 		app.asyncJobStore = session.NewAsyncJobStore(conn, dataDir, os.Getpid(), "app")
 		app.asyncJobStore.SetMessages(messages)
+		// A8/C9 (docs/reviews/2026-09-29-async-phase4-round1.md): reuse the
+		// SAME read-only pool session/message already share above, so
+		// LiveJobs/JobsInTree/ReactionDebtExists/ListAsyncJobsForOwner (the
+		// `sessions jobs`/`sessions why`/web session-list readers) run
+		// concurrently with the single writer connection instead of
+		// stalling behind a write transaction. readConn is nil if the pool
+		// failed to open (logged above) -- SetReadConn no-ops and readers
+		// keep using the writer, exactly like before this fix.
+		app.asyncJobStore.SetReadConn(readConn)
 	}
 
 	// NOTE: the restricted-run allowlist is deliberately NOT armed here.
