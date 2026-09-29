@@ -30,28 +30,30 @@ external log files or orchestrator redirect output — only the DB and the
 
 The five possible verdicts:
 
-  done     — last assistant message finished with end_turn, no descendant
-             session is still working.
+  done     — last assistant message finished with end_turn, no delegation
+             is live.
   crashed  — lock file exists, holder is dead (PID dead AND heartbeat
              stale), and no assistant message with a clean finish.
              Likely died mid-turn.
   running  — lock file exists, holder PID is alive OR the heartbeat is
              still fresh (PID alone is not trusted — on Windows it reads
              as unreadable for the entire lifetime of a live session).
-  delegating — this session's own lock is gone (or stale) but at least one
-             DESCENDANT session still holds a live lock: delegated
-             sub-agent work is still in progress, so the session is NOT
-             done even though its own turn yielded.
-  at rest  — no lock file. Not running, not crashed, and no descendant
-             session is still working.
+  delegating — this session's own session lock is gone (or stale) but a
+             delegation is still live: a running async_jobs row names a
+             DESCENDANT session and its host (the process running it, which
+             holds a per-process host lock) is alive or cannot be probed.
+             Delegated sub-agent work is still in progress, so the session
+             is NOT done even though its own turn yielded.
+  at rest  — no session lock file. Not running, not crashed, and no live
+             delegation.
 
 When the raw lock signal says "crashed" but the last assistant message
 finished cleanly (end_turn), the verdict says so explicitly and treats
 the session as done — this is the same reclassification "sessions list"
 applies via reclassifyCrashedAsDone, surfaced here in plain language.
-That reclassification is suppressed when a descendant session still holds a
-live lock: the parent's end_turn is its own yield before the delegation,
-not completion.`,
+That reclassification is suppressed while a delegation is live (a running
+delegation row on a host that is not provably dead): the parent's end_turn is
+its own yield before the delegation, not completion.`,
 	Args: cobra.ExactArgs(1),
 	Example: `
 # Why does sessions list show this one as crashed?
@@ -219,7 +221,7 @@ func explainSessionStatus(ctx context.Context, a *app.App, dataDir, sessionID st
 		// A failed child listing means the tree could not be fully
 		// enumerated, so a terminal verdict below is only as trustworthy
 		// as that enumeration. Say so instead of asserting done flatly.
-		descendantCaveat = "WARNING: could not enumerate this session's descendant sessions; a live sub-agent lock may exist that this check could not see.\n"
+		descendantCaveat = "WARNING: could not enumerate this session's descendant sessions; a live delegation may exist that this check could not see.\n"
 	}
 
 	// Verdict + reason text. The cases match the Long help above; "at
