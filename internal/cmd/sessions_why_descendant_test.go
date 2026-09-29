@@ -309,3 +309,70 @@ func TestExplainSessionStatus_CrashedStaysCrashedWithLiveChild(t *testing.T) {
 	require.Equal(t, "status: running", childFirstLine,
 		"the descendant holding the live lock must itself report running")
 }
+
+// TestExplainSessionStatus_AsyncJobsAndDebtSection covers the plain-language
+// "Async jobs:" section (doc sec.5 step 7): which jobs are running, and
+// whether a reaction debt is pending -- a completed job's result already
+// sitting in delivery='done' with no model turn having reacted to it yet.
+func TestExplainSessionStatus_AsyncJobsAndDebtSection(t *testing.T) {
+	t.Parallel()
+	a, s, _, store, dataDir := newWhyDescendantTestApp(t)
+	ctx := context.Background()
+
+	sess, err := s.Create(ctx, "session with jobs and debt")
+	require.NoError(t, err)
+
+	_, err = store.Claim(ctx, session.ClaimParams{
+		Owner: sess.ID, ToolCallID: "running-1", Kind: session.JobKindCommand, Input: "sleep 100", ToolName: "bash",
+	})
+	require.NoError(t, err)
+
+	_, err = store.Claim(ctx, session.ClaimParams{
+		Owner: sess.ID, ToolCallID: "done-1", Kind: session.JobKindCommand, Input: "echo hi", ToolName: "bash",
+	})
+	require.NoError(t, err)
+	require.NoError(t, store.MarkAnnounced(ctx, sess.ID, "done-1"))
+	_, err = store.Transition(ctx, session.TransitionParams{
+		Owner: sess.ID, ToolCallID: "done-1", State: "completed", NoticeKind: "completed", Wake: true, Delivery: "done",
+	})
+	require.NoError(t, err)
+
+	var buf bytes.Buffer
+	require.NoError(t, explainSessionStatus(ctx, a, dataDir, sess.ID, &buf))
+	out := buf.String()
+
+	require.Contains(t, out, "Async jobs:")
+	require.Contains(t, out, "2 total, 1 running")
+	require.Contains(t, out, "running: tool call running-1")
+	require.Contains(t, out, "reaction debt: pending",
+		"done-1's result is delivered (delivery='done') but no model turn has reacted to it yet")
+}
+
+// TestExplainSessionStatus_AsyncJobsSection_NoDebtOnceReacted proves the
+// debt line flips to "none" once MarkAsyncJobsReactedForOwner-equivalent
+// state is reached (Reacted=true at transition time).
+func TestExplainSessionStatus_AsyncJobsSection_NoDebtOnceReacted(t *testing.T) {
+	t.Parallel()
+	a, s, _, store, dataDir := newWhyDescendantTestApp(t)
+	ctx := context.Background()
+
+	sess, err := s.Create(ctx, "session with reacted job")
+	require.NoError(t, err)
+
+	_, err = store.Claim(ctx, session.ClaimParams{
+		Owner: sess.ID, ToolCallID: "done-1", Kind: session.JobKindCommand, Input: "echo hi", ToolName: "bash",
+	})
+	require.NoError(t, err)
+	require.NoError(t, store.MarkAnnounced(ctx, sess.ID, "done-1"))
+	_, err = store.Transition(ctx, session.TransitionParams{
+		Owner: sess.ID, ToolCallID: "done-1", State: "completed", NoticeKind: "completed",
+		Wake: true, Delivery: "done", Reacted: true,
+	})
+	require.NoError(t, err)
+
+	var buf bytes.Buffer
+	require.NoError(t, explainSessionStatus(ctx, a, dataDir, sess.ID, &buf))
+	out := buf.String()
+
+	require.Contains(t, out, "reaction debt: none")
+}
