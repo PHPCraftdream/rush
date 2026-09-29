@@ -168,6 +168,28 @@ SELECT
         WHERE owner = @owner AND wake = 1 AND reacted = 0 AND delivery != 'void'
     ) AS has_debt;
 
+-- name: VisibleAsyncReactionDebtExists :one
+-- Phase 4 step 4 review fix (P1): same shape as AsyncReactionDebtExists, scoped to
+-- delivery='done' specifically instead of "!= 'void'" -- debt already
+-- VISIBLE in history right now (the pull already succeeded for it), not
+-- merely 'pending' (a pull that has not succeeded yet, or is permanently
+-- failing). The Drain turn-start decision uses THIS query, not the plain
+-- one: a permanently failing pull leaves rows stuck at 'pending' forever,
+-- and reacting to 'pending' debt would force an endless chain of empty-
+-- prompt provider turns with nothing new in history to react to. Both
+-- partial debt indexes (idx_async_jobs_debt/idx_session_notices_debt,
+-- "WHERE wake=1 AND reacted=0 AND delivery != 'void'") still narrow this
+-- query correctly -- delivery='done' is a subset of != 'void'.
+SELECT
+    EXISTS (
+        SELECT 1 FROM async_jobs
+        WHERE owner_session_id = @owner AND wake = 1 AND reacted = 0 AND delivery = 'done' AND announced = 1
+    )
+    OR EXISTS (
+        SELECT 1 FROM session_notices
+        WHERE owner = @owner AND wake = 1 AND reacted = 0 AND delivery = 'done'
+    ) AS has_debt;
+
 -- name: MarkAsyncJobsReactedForOwner :execrows
 -- Reaction is recorded where it happens (doc sec.3.4): the same transaction
 -- that persists a model step's real-content finish marks every wake=1,

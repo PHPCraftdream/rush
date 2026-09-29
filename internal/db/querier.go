@@ -728,6 +728,18 @@ type Querier interface {
 	// overwrites it.
 	UpdateSessionWorkerReviewerModels(ctx context.Context, arg UpdateSessionWorkerReviewerModelsParams) error
 	UpdateSessionWorkerReviewerReasoningEffort(ctx context.Context, arg UpdateSessionWorkerReviewerReasoningEffortParams) error
+	// Phase 4 step 4 review fix (P1): same shape as AsyncReactionDebtExists, scoped to
+	// delivery='done' specifically instead of "!= 'void'" -- debt already
+	// VISIBLE in history right now (the pull already succeeded for it), not
+	// merely 'pending' (a pull that has not succeeded yet, or is permanently
+	// failing). The Drain turn-start decision uses THIS query, not the plain
+	// one: a permanently failing pull leaves rows stuck at 'pending' forever,
+	// and reacting to 'pending' debt would force an endless chain of empty-
+	// prompt provider turns with nothing new in history to react to. Both
+	// partial debt indexes (idx_async_jobs_debt/idx_session_notices_debt,
+	// "WHERE wake=1 AND reacted=0 AND delivery != 'void'") still narrow this
+	// query correctly -- delivery='done' is a subset of != 'void'.
+	VisibleAsyncReactionDebtExists(ctx context.Context, owner string) (sql.NullBool, error)
 	// A pulled notice whose task-still-running condition failed (doc sec.3.4,
 	// supervision/wake_only void-at-drain rule) becomes void instead of done.
 	VoidPendingAsyncJobNotice(ctx context.Context, arg VoidPendingAsyncJobNoticeParams) (int64, error)

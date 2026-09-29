@@ -143,6 +143,17 @@ func (l *workLedger) reactionDebtExists(ctx context.Context, owner string) (bool
 	return l.store.ReactionDebtExists(ctx, owner)
 }
 
+// visibleReactionDebtExists wraps the store's delivery='done'-scoped debt
+// predicate (doc sec.6 review fix, P1): what a Drain's turn-start decision
+// must use to decide whether to run the provider -- see reactionDebtExists'
+// own doc for why the plain (pending-inclusive) predicate is wrong there.
+func (l *workLedger) visibleReactionDebtExists(ctx context.Context, owner string) (bool, error) {
+	if l.store == nil {
+		return false, nil
+	}
+	return l.store.VisibleReactionDebtExists(ctx, owner)
+}
+
 // hasRunningDelegationFor wraps the store's child-delegation-running check
 // (doc sec.3.4's session-policy table).
 func (l *workLedger) hasRunningDelegationFor(ctx context.Context, childSessionID string) (bool, error) {

@@ -319,6 +319,12 @@ type coordinator struct {
 	recheckSet  map[string]struct{}
 	recheckOnce sync.Once
 	recheckStop context.CancelFunc
+	// recheckDone is closed when the ticker goroutine actually returns
+	// (mirrors startInterruptTicker's identical done-channel pattern,
+	// coordinator_interrupt.go) -- lets a test (or a future graceful-
+	// shutdown path) observe the goroutine's real exit instead of the
+	// runtime's noisy, non-deterministic NumGoroutine() count.
+	recheckDone chan struct{}
 
 	// modelCache caches resolved (smart, fast) Model pairs keyed by their
 	// combined provider+model+reasoning_effort tuple. Used by

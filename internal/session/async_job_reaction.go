@@ -19,10 +19,28 @@ import (
 
 // ReactionDebtExists is doc sec.3.4's one indexed EXISTS check across both
 // tables (async_jobs requires announced=1 too -- see the query's own doc).
+// Includes 'pending' rows -- a pull that has not succeeded yet (or is
+// permanently failing) still counts as debt here. Callers deciding whether
+// to run a PROVIDER TURN must use VisibleReactionDebtExists instead (review
+// fix, doc sec.6): this predicate alone would let a permanently failing
+// pull force an endless chain of empty-prompt turns, since 'pending' rows
+// never appear in the history the turn could actually react to.
 func (s *AsyncJobStore) ReactionDebtExists(ctx context.Context, owner string) (bool, error) {
 	has, err := s.q.AsyncReactionDebtExists(ctx, owner)
 	if err != nil {
 		return false, fmt.Errorf("async job store: reaction debt check: %w", err)
+	}
+	return has.Bool, nil
+}
+
+// VisibleReactionDebtExists is ReactionDebtExists scoped to delivery='done'
+// (doc sec.6 review fix, P1): debt already visible in history right now,
+// not merely 'pending'. This is what a Drain's turn-start decision must use
+// to decide whether to run the provider -- see agent_turn.go.
+func (s *AsyncJobStore) VisibleReactionDebtExists(ctx context.Context, owner string) (bool, error) {
+	has, err := s.q.VisibleAsyncReactionDebtExists(ctx, owner)
+	if err != nil {
+		return false, fmt.Errorf("async job store: visible reaction debt check: %w", err)
 	}
 	return has.Bool, nil
 }

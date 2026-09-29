@@ -367,52 +367,29 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	// after a background job finished picks the notice up here too. Never
 	// fails the turn (pullPendingNotices logs and skips per-row).
 	pulledAtStart, anyWake := a.pullPendingNotices(preambleCtx, call.SessionID)
-	if call.IsDrain && !call.drainTurnCommitted {
-		// Phase-4 step 4 (doc sec.3.4): the Drain call decides by the
-		// DURABLE reaction-debt predicate, not by what its own pull just
-		// moved (anyWake, step 3's interim rule) -- a notice pulled at a
-		// PRIOR step boundary of some earlier turn, still unreacted, is
-		// exactly as much debt as one this pull just moved. debtErr falls
-		// back to anyWake (never silently drops a real wake, at worst
-		// re-derives the interim signal for this one turn).
-		debt, debtErr := a.asyncJobs.reactionDebtExists(preambleCtx, call.SessionID)
-		if debtErr != nil {
-			slog.Warn("drain turn: reaction debt check failed; falling back to this pull's own wake bit",
-				"session_id", call.SessionID, "err", debtErr)
-			debt = anyWake
+	if call.IsDrain && !call.drainTurnCommitted && !a.decideDrainTurn(preambleCtx, call.SessionID, anyWake) {
+		// No VISIBLE debt, or policy forbids a turn: finish through the
+		// normal turn end WITHOUT ever reaching the provider (doc sec.3.4) --
+		// no empty assistant message, no Stream call. drainOrReleaseMerged
+		// still runs so a call queued behind this Drain executes as the
+		// loop's next turn instead of being orphaned. Doc sec.3.4 rule (a):
+		// record the hint counter this check observed, so the very next
+		// release of THIS session skips a redundant re-launch unless
+		// something hinted again since -- this is also what bounds a
+		// permanently failing pull to at most one no-turn Drain per hint or
+		// per 60s tick (review fix, doc sec.6): decideDrainTurn's debt check
+		// is VISIBLE-only (delivery='done'), so a pull that never succeeds
+		// leaves rows stuck at 'pending' and this branch is taken every
+		// time, never the provider-turn one.
+		if a.asyncJobs != nil {
+			a.asyncJobs.markNoTurnDrainRelease(call.SessionID, a.asyncJobs.hintSeqOf(call.SessionID))
 		}
-		allowed := true
-		if debt && a.asyncJobs != nil && a.asyncJobs.coord != nil {
-			var polErr error
-			allowed, _, polErr = a.asyncJobs.coord.sessionDrainPolicy(preambleCtx, call.SessionID)
-			if polErr != nil {
-				// Fail open: the worst case is one turn the session policy
-				// would have refused, not a lost reaction (the debt stays
-				// durable either way).
-				slog.Warn("drain turn: session policy check failed; allowing the turn",
-					"session_id", call.SessionID, "err", polErr)
-				allowed = true
-			}
+		preambleCancel()
+		next, ok := a.drainOrReleaseMerged(call.SessionID, epoch, lk, runCancel)
+		if !ok {
+			return nil, SessionAgentCall{}, false, nil
 		}
-		if !debt || !allowed {
-			// No debt, or policy forbids a turn: finish through the normal
-			// turn end WITHOUT ever reaching the provider (doc sec.3.4) --
-			// no empty assistant message, no Stream call. drainOrReleaseMerged
-			// still runs so a call queued behind this Drain executes as the
-			// loop's next turn instead of being orphaned. Doc sec.3.4 rule
-			// (a): record the hint counter this check observed, so the very
-			// next release of THIS session skips a redundant re-launch
-			// unless something hinted again since.
-			if a.asyncJobs != nil {
-				a.asyncJobs.markNoTurnDrainRelease(call.SessionID, a.asyncJobs.hintSeqOf(call.SessionID))
-			}
-			preambleCancel()
-			next, ok := a.drainOrReleaseMerged(call.SessionID, epoch, lk, runCancel)
-			if !ok {
-				return nil, SessionAgentCall{}, false, nil
-			}
-			return nil, next, true, nil
-		}
+		return nil, next, true, nil
 	}
 
 	msgs, err := a.getSessionMessages(preambleCtx, currentSession)

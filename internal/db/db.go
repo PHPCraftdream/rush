@@ -411,6 +411,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.updateSessionWorkerReviewerReasoningEffortStmt, err = db.PrepareContext(ctx, updateSessionWorkerReviewerReasoningEffort); err != nil {
 		return nil, fmt.Errorf("error preparing query UpdateSessionWorkerReviewerReasoningEffort: %w", err)
 	}
+	if q.visibleAsyncReactionDebtExistsStmt, err = db.PrepareContext(ctx, visibleAsyncReactionDebtExists); err != nil {
+		return nil, fmt.Errorf("error preparing query VisibleAsyncReactionDebtExists: %w", err)
+	}
 	if q.voidPendingAsyncJobNoticeStmt, err = db.PrepareContext(ctx, voidPendingAsyncJobNotice); err != nil {
 		return nil, fmt.Errorf("error preparing query VoidPendingAsyncJobNotice: %w", err)
 	}
@@ -1070,6 +1073,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing updateSessionWorkerReviewerReasoningEffortStmt: %w", cerr)
 		}
 	}
+	if q.visibleAsyncReactionDebtExistsStmt != nil {
+		if cerr := q.visibleAsyncReactionDebtExistsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing visibleAsyncReactionDebtExistsStmt: %w", cerr)
+		}
+	}
 	if q.voidPendingAsyncJobNoticeStmt != nil {
 		if cerr := q.voidPendingAsyncJobNoticeStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing voidPendingAsyncJobNoticeStmt: %w", cerr)
@@ -1253,6 +1261,7 @@ type Queries struct {
 	updateSessionSystemPromptStmt                  *sql.Stmt
 	updateSessionWorkerReviewerModelsStmt          *sql.Stmt
 	updateSessionWorkerReviewerReasoningEffortStmt *sql.Stmt
+	visibleAsyncReactionDebtExistsStmt             *sql.Stmt
 	voidPendingAsyncJobNoticeStmt                  *sql.Stmt
 	voidPendingSessionNoticeStmt                   *sql.Stmt
 	writeToOrphanOutboxStmt                        *sql.Stmt
@@ -1391,6 +1400,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		updateSessionSystemPromptStmt:                  q.updateSessionSystemPromptStmt,
 		updateSessionWorkerReviewerModelsStmt:          q.updateSessionWorkerReviewerModelsStmt,
 		updateSessionWorkerReviewerReasoningEffortStmt: q.updateSessionWorkerReviewerReasoningEffortStmt,
+		visibleAsyncReactionDebtExistsStmt:             q.visibleAsyncReactionDebtExistsStmt,
 		voidPendingAsyncJobNoticeStmt:                  q.voidPendingAsyncJobNoticeStmt,
 		voidPendingSessionNoticeStmt:                   q.voidPendingSessionNoticeStmt,
 		writeToOrphanOutboxStmt:                        q.writeToOrphanOutboxStmt,

@@ -78,7 +78,10 @@ func (c *coordinator) StartRecheckTicker() {
 	c.recheckOnce.Do(func() {
 		ctx, cancel := context.WithCancel(context.Background())
 		c.recheckStop = cancel
+		done := make(chan struct{})
+		c.recheckDone = done
 		go func() {
+			defer close(done)
 			ticker := time.NewTicker(recheckPassInterval)
 			defer ticker.Stop()
 			for {

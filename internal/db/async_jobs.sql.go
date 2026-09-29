@@ -1036,6 +1036,36 @@ func (q *Queries) TransitionAsyncJobTerminalPreserveVoid(ctx context.Context, ar
 	return i, err
 }
 
+const visibleAsyncReactionDebtExists = `-- name: VisibleAsyncReactionDebtExists :one
+SELECT
+    EXISTS (
+        SELECT 1 FROM async_jobs
+        WHERE owner_session_id = ?1 AND wake = 1 AND reacted = 0 AND delivery = 'done' AND announced = 1
+    )
+    OR EXISTS (
+        SELECT 1 FROM session_notices
+        WHERE owner = ?1 AND wake = 1 AND reacted = 0 AND delivery = 'done'
+    ) AS has_debt
+`
+
+// Phase 4 step 4 review fix (P1): same shape as AsyncReactionDebtExists, scoped to
+// delivery='done' specifically instead of "!= 'void'" -- debt already
+// VISIBLE in history right now (the pull already succeeded for it), not
+// merely 'pending' (a pull that has not succeeded yet, or is permanently
+// failing). The Drain turn-start decision uses THIS query, not the plain
+// one: a permanently failing pull leaves rows stuck at 'pending' forever,
+// and reacting to 'pending' debt would force an endless chain of empty-
+// prompt provider turns with nothing new in history to react to. Both
+// partial debt indexes (idx_async_jobs_debt/idx_session_notices_debt,
+// "WHERE wake=1 AND reacted=0 AND delivery != 'void'") still narrow this
+// query correctly -- delivery='done' is a subset of != 'void'.
+func (q *Queries) VisibleAsyncReactionDebtExists(ctx context.Context, owner string) (sql.NullBool, error) {
+	row := q.queryRow(ctx, q.visibleAsyncReactionDebtExistsStmt, visibleAsyncReactionDebtExists, owner)
+	var has_debt sql.NullBool
+	err := row.Scan(&has_debt)
+	return has_debt, err
+}
+
 const voidPendingAsyncJobNotice = `-- name: VoidPendingAsyncJobNotice :execrows
 UPDATE async_jobs SET delivery = 'void', updated_at = ?
 WHERE owner_session_id = ? AND tool_call_id = ? AND delivery = 'pending'
