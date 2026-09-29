@@ -56,7 +56,10 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   is flushed on every exit path (lock-busy give-up, cancellation, a wait
   error, scope closed). While the loop waits on running work it prints a
   stderr heartbeat every 60s, and a persistently unreadable database ends
-  the wait after 30s instead of retrying forever.
+  the wait after 30s instead of retrying forever. A Ctrl-C or `--timeout`
+  that lands right after a turn finished cleanly ends the run with the
+  cancellation error and `exit_reason: "canceled"` (it used to exit 0 with a
+  canceled envelope).
 - **A second `rush run` on a session another live `rush run` loop already
   drives fails fast, before it changes anything, naming the pid** ("session
   X is already driven by another `rush run` (host H, pid P, alive); wait

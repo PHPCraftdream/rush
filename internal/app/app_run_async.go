@@ -41,6 +41,12 @@ var (
 	cliLockBusyRetryOverallLimit = 30 * time.Second
 )
 
+// cliLoopTurnDoneSeam is a test-only hook called right after each loop turn's
+// ExecuteRun returns, before its result is classified. Lets a test land a
+// cancellation exactly between a finished turn and the loop's next decision.
+// nil in every production path.
+var cliLoopTurnDoneSeam func()
+
 // flushLoopExit renders final's envelope through output exactly the way the
 // loop's normal "scope closed" exit always did (C17 fix, docs/reviews/
 // 2026-09-29-async-phase4-round1.md): every exit from runNonInteractive-
@@ -190,6 +196,9 @@ func (app *App) runNonInteractiveWithAsyncResults(ctx context.Context, output io
 				return nil
 			},
 		})
+		if cliLoopTurnDoneSeam != nil {
+			cliLoopTurnDoneSeam()
+		}
 		// The session never resolved or its driver claim was refused (another
 		// live loop drives it): the first turn never ran, so there is no scope
 		// of ours to wait on -- fail now, having changed nothing.
@@ -292,6 +301,13 @@ func (app *App) runNonInteractiveWithAsyncResults(ctx context.Context, output io
 			}
 			if flushErr := flushLoopExit(output, mode, final, lastBuffered); flushErr != nil {
 				return final, flushErr
+			}
+			// A cancellation that lands after the last turn finished cleanly
+			// (runErr == nil) still ends the run as a cancellation: the
+			// envelope says "canceled", so the error must not be nil (exit 0).
+			// A non-nil runErr (the turn's own failure) is kept as is.
+			if runErr == nil && ctx.Err() != nil {
+				runErr = ctx.Err()
 			}
 			return final, runErr
 		}
