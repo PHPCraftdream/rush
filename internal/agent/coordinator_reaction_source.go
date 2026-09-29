@@ -8,6 +8,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 
@@ -18,11 +19,17 @@ import (
 // asserts for it exactly like it used to for AsyncCompletionSource.
 type ReactionDebtSource interface {
 	// ClaimExternalDriver marks sessionID as externally driven for the
-	// lifetime of one `rush run` loop -- see wakeSession's external-driver
-	// branch.
-	ClaimExternalDriver(sessionID string)
-	// ReleaseExternalDriver clears the marker once the loop exits.
-	ReleaseExternalDriver(sessionID string)
+	// lifetime of one `rush run` loop: the durable session_drivers marker
+	// first (so no OTHER process starts a reaction turn for it -- see
+	// sessionDrainPolicy), then the in-memory one wakeSession hints against.
+	// A session already driven by another live loop is refused with
+	// *session.ErrSessionDrivenElsewhere and nothing is set. A data dir that
+	// cannot host the host lock (session.ErrDriverMarkerUnavailable) is not
+	// an error: the in-memory marker alone is set.
+	ClaimExternalDriver(ctx context.Context, sessionID string) error
+	// ReleaseExternalDriver releases the durable marker once the loop exits
+	// (always), and the in-memory one for a persistent coordinator (C4).
+	ReleaseExternalDriver(ctx context.Context, sessionID string)
 	// ReactionDebtExists reads doc sec.3.4's debt predicate for sessionID
 	// (pending-inclusive: delivery IN {pending, done}) -- the correct
 	// predicate for "is another turn owed", including a freshly-arrived
@@ -74,11 +81,25 @@ type ReactionDebtSource interface {
 	RunMaintenanceSweep(ctx context.Context)
 }
 
-// ClaimExternalDriver implements ReactionDebtSource.
-func (c *coordinator) ClaimExternalDriver(sessionID string) {
-	if c.asyncJobs != nil {
-		c.asyncJobs.claimExternalDriver(sessionID)
+// ClaimExternalDriver implements ReactionDebtSource: the durable claim first (a
+// refusal or a real error returns before anything is set), then the in-memory
+// marker. An unavailable durable marker (no OS-lock-capable data dir) is
+// logged and the in-memory marker alone is kept -- the pre-durable behaviour.
+func (c *coordinator) ClaimExternalDriver(ctx context.Context, sessionID string) error {
+	if c.asyncJobs == nil {
+		return nil
 	}
+	if store := c.asyncJobs.store; store != nil {
+		if err := store.ClaimSessionDriver(ctx, sessionID); err != nil {
+			if !errors.Is(err, session.ErrDriverMarkerUnavailable) {
+				return err
+			}
+			slog.Warn("external driver: durable marker unavailable; other processes cannot see this loop",
+				"session_id", sessionID, "err", err)
+		}
+	}
+	c.asyncJobs.claimExternalDriver(sessionID)
+	return nil
 }
 
 // ReleaseExternalDriver implements ReactionDebtSource.
@@ -97,13 +118,23 @@ func (c *coordinator) ClaimExternalDriver(sessionID string) {
 // routing FOR (a different process's coordinator has its own, separate
 // in-memory marker) -- so simply never releasing it here is both safe and
 // sufficient; the marker dies with the process either way.
-func (c *coordinator) ReleaseExternalDriver(sessionID string) {
-	if !c.persistentMode.Load() {
+func (c *coordinator) ReleaseExternalDriver(ctx context.Context, sessionID string) {
+	if c.asyncJobs == nil {
 		return
 	}
-	if c.asyncJobs != nil {
-		c.asyncJobs.releaseExternalDriver(sessionID)
+	// The DURABLE marker is released unconditionally: it is what other
+	// processes consult, and it must not keep naming a host that stays alive
+	// until this process really exits (shutdown can take a while).
+	if store := c.asyncJobs.store; store != nil {
+		if err := store.ReleaseSessionDriver(ctx, sessionID); err != nil {
+			slog.Warn("external driver: releasing the durable marker failed; Close is the backstop",
+				"session_id", sessionID, "err", err)
+		}
 	}
+	if !c.persistentMode.Load() {
+		return // C4: the in-memory marker of a one-shot CLI process dies with it
+	}
+	c.asyncJobs.releaseExternalDriver(sessionID)
 }
 
 // ReactionDebtExists implements ReactionDebtSource.

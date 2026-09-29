@@ -44,9 +44,11 @@ type fakeStuckPendingReactionSource struct {
 	waitForHintCalls int32
 }
 
-func (f *fakeStuckPendingReactionSource) ClaimExternalDriver(string)          {}
-func (f *fakeStuckPendingReactionSource) ReleaseExternalDriver(string)        {}
-func (f *fakeStuckPendingReactionSource) RunMaintenanceSweep(context.Context) {}
+func (f *fakeStuckPendingReactionSource) ClaimExternalDriver(context.Context, string) error {
+	return nil
+}
+func (f *fakeStuckPendingReactionSource) ReleaseExternalDriver(context.Context, string) {}
+func (f *fakeStuckPendingReactionSource) RunMaintenanceSweep(context.Context)           {}
 
 func (f *fakeStuckPendingReactionSource) ReactionDebtExists(context.Context, string) (bool, error) {
 	atomic.AddInt32(&f.plainDebtCalls, 1)

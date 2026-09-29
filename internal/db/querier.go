@@ -195,6 +195,11 @@ type Querier interface {
 	DeletePendingInject(ctx context.Context, id string) error
 	DeletePermission(ctx context.Context, id string) error
 	DeleteSession(ctx context.Context, id string) error
+	// A driver releases only its OWN claim (scoped to its host id).
+	DeleteSessionDriver(ctx context.Context, arg DeleteSessionDriverParams) (int64, error)
+	// Host exit (AsyncJobStore.Close) or dead-host purge: every marker naming
+	// the host goes with it.
+	DeleteSessionDriversForHost(ctx context.Context, hostID string) (int64, error)
 	DeleteSessionFiles(ctx context.Context, sessionID string) error
 	DeleteSessionMessages(ctx context.Context, sessionID string) error
 	// Rerun truncation (message.Service.DeleteTx): unconditional delete of an
@@ -265,6 +270,9 @@ type Querier interface {
 	// a transaction so delta = cost - accounted is computed from a single
 	// consistent read within that transaction.
 	GetSessionCostAccounting(ctx context.Context, id string) (GetSessionCostAccountingRow, error)
+	// The durable external-driver marker for a session (migration
+	// 20260929000004): which host's `rush run` loop drives it.
+	GetSessionDriver(ctx context.Context, sessionID string) (SessionDriver, error)
 	GetSessionNotice(ctx context.Context, id int64) (SessionNotice, error)
 	GetToolUsage(ctx context.Context) ([]GetToolUsageRow, error)
 	GetTotalStats(ctx context.Context) (GetTotalStatsRow, error)
@@ -356,6 +364,9 @@ type Querier interface {
 	// because the settle-by-failure scope is the exact id set captured at the
 	// start of the failed turn, not "every debt row of the owner now".
 	IncrementSessionNoticeWakeAttempts(ctx context.Context, arg IncrementSessionNoticeWakeAttemptsParams) (int64, error)
+	// First claim of a session's driver marker. DO NOTHING on conflict: the
+	// caller reads rows-affected and, on 0, re-observes who holds the row.
+	InsertSessionDriver(ctx context.Context, arg InsertSessionDriverParams) (int64, error)
 	// session_notices carries notices with no async_jobs row (supervision,
 	// wake_failed marker, background SDK shell completion, wake_only timeout --
 	// doc sec.2/3.2). Created with delivery='pending' so it is a drain
@@ -506,6 +517,9 @@ type Querier interface {
 	// lease/heartbeat filter -- liveness is decided per-host by the caller via
 	// the host lock module, not by this query.
 	ListRunningAsyncJobsForOwners(ctx context.Context, ownerIds []string) ([]AsyncJob, error)
+	// Candidate set for the dead-driver purge; liveness itself is decided by the
+	// host lock module, not by this query.
+	ListSessionDriverHostIDs(ctx context.Context) ([]string, error)
 	// Reader for `sessions jobs`/`sessions why`.
 	ListSessionNoticesForOwner(ctx context.Context, owner string) ([]SessionNotice, error)
 	ListSessionPermissions(ctx context.Context, sessionID string) ([]SessionPermission, error)
@@ -752,6 +766,10 @@ type Querier interface {
 	// Every SUM is wrapped in CAST: without it sqlc infers interface{} for an
 	// aggregate over a nullable column and the generated struct is unusable.
 	SumMessageUsageBySession(ctx context.Context, sessionID string) ([]SumMessageUsageBySessionRow, error)
+	// CAS takeover of a marker whose host the caller proved dead: succeeds only
+	// while the row still names exactly that dead host, so of N concurrent
+	// takers exactly one wins (rows-affected 1).
+	TakeOverSessionDriver(ctx context.Context, arg TakeOverSessionDriverParams) (int64, error)
 	// Mark a leased entry as terminal failure (no retry, even if attempts < max).
 	// Used for ErrCallAlreadyAttempted-type errors where retry would cause duplicates.
 	// Scoped to the current lease owner, same as AckRunQueueEntry.

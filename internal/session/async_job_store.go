@@ -571,6 +571,11 @@ func (s *AsyncJobStore) Close(ctx context.Context) error {
 	if h == nil {
 		return nil
 	}
+	// A clean exit takes this host's session-driver markers with it (the host
+	// lock is still held here, so no row ever outlives its host's liveness).
+	if _, err := s.q.DeleteSessionDriversForHost(ctx, h.ID); err != nil {
+		slog.Warn("async job store: close: delete session driver markers failed", "host_id", h.ID, "err", err)
+	}
 	return h.Close(ctx, s.q)
 }
 

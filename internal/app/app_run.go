@@ -85,7 +85,9 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 		return nil, fmt.Errorf("failed to create session for non-interactive mode: %w", err)
 	}
 	if req.onSessionResolved != nil {
-		req.onSessionResolved(sess.ID)
+		if err := req.onSessionResolved(sess.ID); err != nil {
+			return nil, err
+		}
 	}
 
 	// Durable work accepted earlier for this session runs FIRST (FIFO), in

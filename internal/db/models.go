@@ -166,6 +166,13 @@ type Session struct {
 	Origin                       string         `json:"origin"`
 }
 
+type SessionDriver struct {
+	SessionID string `json:"session_id"`
+	HostID    string `json:"host_id"`
+	Pid       int64  `json:"pid"`
+	ClaimedAt int64  `json:"claimed_at"`
+}
+
 type SessionNotice struct {
 	ID              int64          `json:"id"`
 	Owner           string         `json:"owner"`

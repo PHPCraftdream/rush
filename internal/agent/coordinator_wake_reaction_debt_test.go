@@ -295,7 +295,7 @@ func TestWakeSession_ExternalDriver_HintOnlyNeverBuildsDrainCall(t *testing.T) {
 	_, err := f.store.PullJobNotices(ctx, f.messages, f.sessID, buildJobNoticeMessageParams)
 	require.NoError(t, err)
 
-	f.coord.ClaimExternalDriver(f.sessID)
+	require.NoError(t, f.coord.ClaimExternalDriver(ctx, f.sessID))
 	before := f.ledger.hintSeqOf(f.sessID)
 
 	err = f.coord.wakeSession(ctx, jobIdentity{owner: f.sessID, toolCallID: "call-1"}, true)
@@ -303,7 +303,7 @@ func TestWakeSession_ExternalDriver_HintOnlyNeverBuildsDrainCall(t *testing.T) {
 	require.Zero(t, f.requests.Load(), "an external-driver session must never get a Drain turn, only a hint")
 	require.NotEqual(t, before, f.ledger.hintSeqOf(f.sessID), "the hint must still be delivered so the loop can react")
 
-	f.coord.ReleaseExternalDriver(f.sessID)
+	f.coord.ReleaseExternalDriver(ctx, f.sessID)
 	err = f.coord.wakeSession(ctx, jobIdentity{owner: f.sessID, toolCallID: "call-1"}, true)
 	require.NoError(t, err)
 	require.Zero(t, f.requests.Load(),

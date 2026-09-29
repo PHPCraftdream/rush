@@ -6,6 +6,7 @@
 package agent
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -28,10 +29,10 @@ func TestReleaseExternalDriver_NonPersistentCoordinator_NeverReleases(t *testing
 	// which never calls SetPersistentMode(true).
 
 	const sessID = "cli-root-session"
-	coord.ClaimExternalDriver(sessID)
+	require.NoError(t, coord.ClaimExternalDriver(context.Background(), sessID))
 	require.True(t, ledger.isExternalDriver(sessID))
 
-	coord.ReleaseExternalDriver(sessID)
+	coord.ReleaseExternalDriver(context.Background(), sessID)
 	require.True(t, ledger.isExternalDriver(sessID),
 		"a non-persistent (CLI) coordinator must never release its external-driver marker")
 }
@@ -48,10 +49,10 @@ func TestReleaseExternalDriver_PersistentCoordinator_StillReleases(t *testing.T)
 	t.Cleanup(coord.StopRecheckTicker)
 
 	const sessID = "web-tab-session"
-	coord.ClaimExternalDriver(sessID)
+	require.NoError(t, coord.ClaimExternalDriver(context.Background(), sessID))
 	require.True(t, ledger.isExternalDriver(sessID))
 
-	coord.ReleaseExternalDriver(sessID)
+	coord.ReleaseExternalDriver(context.Background(), sessID)
 	require.False(t, ledger.isExternalDriver(sessID),
 		"a persistent (web) coordinator must still release its external-driver marker normally")
 }

@@ -27,9 +27,9 @@ type flakyScopeSource struct {
 	calls int32
 }
 
-func (f *flakyScopeSource) ClaimExternalDriver(string)          {}
-func (f *flakyScopeSource) ReleaseExternalDriver(string)        {}
-func (f *flakyScopeSource) RunMaintenanceSweep(context.Context) {}
+func (f *flakyScopeSource) ClaimExternalDriver(context.Context, string) error { return nil }
+func (f *flakyScopeSource) ReleaseExternalDriver(context.Context, string)     {}
+func (f *flakyScopeSource) RunMaintenanceSweep(context.Context)               {}
 func (f *flakyScopeSource) ReactionDebtExists(context.Context, string) (bool, error) {
 	return false, nil
 }

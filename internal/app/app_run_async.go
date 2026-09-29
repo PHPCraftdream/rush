@@ -136,12 +136,18 @@ func (app *App) runNonInteractiveWithAsyncResults(ctx context.Context, output io
 	lastBuffered := &bytes.Buffer{}
 	sessionID := continueSessionID
 	// Doc sec.3.4: this loop IS the external driver for sessionID -- claimed
-	// as soon as the session id resolves (onSessionResolved below), released
-	// unconditionally on every exit so a later web-driven wake for the same
-	// session id goes back to ordinary Drain-turn routing.
+	// (durably, so no other process starts a reaction turn for it) as soon as
+	// the session id resolves (onSessionResolved below), released on every exit
+	// that claimed it so a later web-driven wake for the same session id goes
+	// back to ordinary Drain-turn routing. The release runs on a context
+	// detached from ctx: Ctrl-C must still delete the marker.
+	driverClaimed := false
+	claimedSessionID := ""
 	defer func() {
-		if sessionID != "" {
-			source.ReleaseExternalDriver(sessionID)
+		if driverClaimed {
+			relCtx, relCancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
+			defer relCancel()
+			source.ReleaseExternalDriver(relCtx, claimedSessionID)
 		}
 	}()
 	for {
@@ -172,11 +178,24 @@ func (app *App) runNonInteractiveWithAsyncResults(ctx context.Context, output io
 			Origin: overrides.Origin, Stdout: turnOutput, Stderr: os.Stderr,
 			HideSpinner:   hideSpinner,
 			captureResult: true,
-			onSessionResolved: func(resolved string) {
+			onSessionResolved: func(resolved string) error {
+				if !driverClaimed {
+					if err := source.ClaimExternalDriver(ctx, resolved); err != nil {
+						return err
+					}
+					driverClaimed = true
+					claimedSessionID = resolved
+				}
 				sessionID = resolved
-				source.ClaimExternalDriver(resolved)
+				return nil
 			},
 		})
+		// The session never resolved or its driver claim was refused (another
+		// live loop drives it): the first turn never ran, so there is no scope
+		// of ours to wait on -- fail now, having changed nothing.
+		if err != nil && !driverClaimed {
+			return final, err
+		}
 
 		// Doc sec.3.8: a "session lock busy" refusal on OUR OWN session
 		// (another live process -- typically a web tab pulling notices --
