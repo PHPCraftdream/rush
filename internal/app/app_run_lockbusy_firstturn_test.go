@@ -79,14 +79,19 @@ func newLockBusyCLITestApp(t *testing.T, handler http.HandlerFunc) (application 
 // branch from app_run_async.go's lock-busy handling (leaving the general
 // bounded-retry path to run for the first turn too) -- this test's
 // `require.Less(t, elapsed, ...)` FAILED: the call took the full shrunk
-// cliLockBusyRetryOverallLimit (~150ms in the shrunk-const test run) instead
-// of returning immediately, and a real (non-shrunk) build would have taken
-// the full 30s instead of the pre-phase-4 fast error. Restored the
-// firstTurn guard; re-ran, passed (elapsed back under 50ms).
+// cliLockBusyRetryOverallLimit instead of returning immediately, and a real
+// (non-shrunk) build would have taken the full 30s instead of the pre-phase-4
+// fast error. Restored the firstTurn guard; re-ran, passed.
+//
+// The shrunk limit is deliberately generous (4s) and the assertion is against
+// HALF of it: a fast failure still takes a few hundred ms of setup on a loaded
+// machine (it flaked against a 150ms limit in a full-package run), while the
+// retry regression this pins takes the whole limit -- the two stay far apart
+// at any load.
 func TestRunNonInteractive_FirstTurnSessionLockBusy_FailsFast(t *testing.T) {
 	origPause, origLimit := cliLockBusyRetryPause, cliLockBusyRetryOverallLimit
 	cliLockBusyRetryPause = 20 * time.Millisecond
-	cliLockBusyRetryOverallLimit = 150 * time.Millisecond
+	cliLockBusyRetryOverallLimit = 4 * time.Second
 	t.Cleanup(func() { cliLockBusyRetryPause, cliLockBusyRetryOverallLimit = origPause, origLimit })
 
 	application, sessionID, dataDir := newLockBusyCLITestApp(t, func(w http.ResponseWriter, _ *http.Request) {
@@ -105,6 +110,6 @@ func TestRunNonInteractive_FirstTurnSessionLockBusy_FailsFast(t *testing.T) {
 	require.Error(t, err, "a busy session must surface as an error, not succeed silently")
 	var lockBusy *session.SessionLockBusyError
 	require.ErrorAs(t, err, &lockBusy, "the error must be (wrap) the real SessionLockBusyError")
-	require.Less(t, elapsed, cliLockBusyRetryOverallLimit,
+	require.Less(t, elapsed, cliLockBusyRetryOverallLimit/2,
 		"the FIRST turn must fail fast, never retry for the Drain-context overall budget")
 }
