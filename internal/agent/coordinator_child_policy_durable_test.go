@@ -117,25 +117,32 @@ func TestChildScopeDrained_RunningRowOnLiveOtherHost_NotDrained(t *testing.T) {
 		"a running row on a live host must keep the child's scope open even with nothing in this process's own memory")
 }
 
-// TestChildScopeDrained_TerminalRowWithUnreactedDebt_StillDrained is a
-// deliberate scope-narrowing regression guard, not a gap re-opened by
-// accident: childScopeOpenAcrossProcesses checks ONLY cross-process running
-// rows, not reaction debt. An earlier version of the B3/C6 fix folded
-// ScopeOpen's full predicate (running-row OR debt) into childScopeDrained,
-// which made EVERY pre-existing bare-ledger delegation test in
-// work_ledger_delegation_test.go hang forever: those tests' synthetic jobs
-// finish with wake=1/delivery=pending and are never pulled/reacted (nothing
-// drives the child's own turn in a bare-ledger unit test), so the debt half
-// never clears and no delegation could ever release. This codebase's
-// existing delegation-delivery design deliberately treats "child owes a
-// reaction" as the CHILD's own concern (its own wakeSession/Drain schedule),
-// independent of whether its delegation to the parent may release -- see
-// work_ledger_delegation_test.go's five pinned properties and
-// finishChildJob's own doc. Known limitation carried forward from the
-// original finding: a delegation CAN still release while its child has
-// otherwise-unreacted debt sitting in the DB; closing that gap needs a
-// design decision this wave did not make (see final report).
-func TestChildScopeDrained_TerminalRowWithUnreactedDebt_StillDrained(t *testing.T) {
+// TestChildScopeDrained_TerminalRowWithUnreactedDebt_NotDrained pins the
+// CORRECTED B3/C6 design: childScopeOpenAcrossProcesses uses coordinator.
+// ScopeOpen's FULL predicate (a cross-process running row, OR outstanding
+// reaction debt), not running-rows alone.
+//
+// History: an earlier pass narrowed this check to running-rows-only,
+// because folding in the debt half made every pre-existing bare-ledger
+// delegation test in work_ledger_delegation_test.go fail -- those tests'
+// synthetic jobs finish with wake=1/delivery=pending/done and nothing in a
+// bare-ledger unit test ever drives a real reacting turn, so the debt never
+// cleared and no delegation could release. That narrowing was ITSELF the
+// bug, not a deliberate scope choice: it reopened exactly the race B3/C6 set
+// out to close, provably so via
+// TestRunNonInteractiveChildReceivesAsyncBashResultFinishedMidTurn
+// (internal/app) -- an end-to-end test that needs the delegation to stay
+// parked until the child's OWN async job result has actually been reacted
+// to, not merely finished. The fix restores the full ScopeOpen predicate in
+// production code and instead corrects the bare-ledger tests to simulate
+// the child's reaction explicitly (work_ledger_delegation_test.go's
+// simulateChildReaction helper) before asserting a release.
+//
+// Revert-check performed: reverted childScopeOpenAcrossProcesses
+// (work_ledger_delegation.go) to the running-rows-only check -- this test's
+// `require.False(t, ledger.childScopeDrained(...))` FAILED (returned true).
+// Restored the full ScopeOpen call; re-ran, passed.
+func TestChildScopeDrained_TerminalRowWithUnreactedDebt_NotDrained(t *testing.T) {
 	_, ledger, store, getEnv := newChildPolicyTestCoordinator(t)
 	env := getEnv(context.Background())
 	ctx := context.Background()
@@ -155,8 +162,8 @@ func TestChildScopeDrained_TerminalRowWithUnreactedDebt_StillDrained(t *testing.
 	_, err = store.PullJobNotices(ctx, env.messages, child.ID, buildJobNoticeMessageParams)
 	require.NoError(t, err)
 
-	require.True(t, ledger.childScopeDrained(child.ID),
-		"childScopeDrained checks cross-process RUNNING rows only, never reaction debt (deliberate scope, see doc)")
+	require.False(t, ledger.childScopeDrained(child.ID),
+		"a pulled-but-unreacted notice is still outstanding reaction debt -- ScopeOpen must report the child's scope as still open")
 }
 
 // TestChildScopeDrained_NothingPending_Drained is the baseline: a child with

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/stretchr/testify/require"
 )
 
@@ -43,7 +44,7 @@ func TestParkedChildSessions_ReturnsChildIdsNotParentIds(t *testing.T) {
 func TestRecheckPass_DeliversParkedDelegationViaChildRecheck(t *testing.T) {
 	t.Parallel()
 	delivered := make(chan AsyncCompletion, 4)
-	coord := newParkedOutcomeCoordinator(t, func(completion AsyncCompletion) { delivered <- completion })
+	coord, messages := newParkedOutcomeCoordinatorWithMessages(t, func(completion AsyncCompletion) { delivered <- completion })
 
 	startChildOwnedJob(t, coord.asyncJobs, parkedChildSession, parkedChildJob, false)
 	parkDelegation(t, coord, parkedChildSession, "still working")
@@ -62,6 +63,13 @@ func TestRecheckPass_DeliversParkedDelegationViaChildRecheck(t *testing.T) {
 		t.Fatal("the child's own job result must still wake the child in-memory")
 	}
 	require.True(t, coord.asyncJobs.hasParked(), "precondition: the delegation itself must still be parked (no run-ended trigger fired)")
+
+	// B3/C6 fix follow-up: childScopeDrained now also waits for the child's
+	// OWN cross-process reaction debt to clear. Write that reaction directly
+	// (simulateChildReactionWithoutTrigger, NOT simulateChildReaction) so the
+	// only thing that re-evaluates the delegation is RecheckPass itself, not
+	// an in-process run-ended trigger this test deliberately never fires.
+	simulateChildReactionWithoutTrigger(t, coord, messages, parkedChildSession, "child reacted", message.FinishReasonEndTurn)
 
 	coord.RecheckPass(context.Background())
 

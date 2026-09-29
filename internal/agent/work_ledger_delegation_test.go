@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/stretchr/testify/require"
 )
@@ -59,6 +60,60 @@ func newParkedOutcomeCoordinator(t *testing.T, onWebDone func(AsyncCompletion)) 
 	coord.asyncJobs.store = newTestAsyncJobStore(t)
 	coord.asyncJobs.coord = coord
 	return coord
+}
+
+// newParkedOutcomeCoordinatorWithMessages is newParkedOutcomeCoordinator plus
+// a real message.Service on the SAME connection, needed by
+// simulateChildReaction (B3/C6 fix follow-up, docs/reviews/2026-09-29-async-
+// phase4-round1.md): childScopeDrained now also checks cross-process
+// reaction debt (childScopeOpenAcrossProcesses -> ScopeOpen), which requires
+// an actual pull + a real reacted=1 write to ever clear -- tests that need
+// the delegation to release past a child's OWN owned-job completion must
+// simulate that reaction explicitly, not just the completion.
+func newParkedOutcomeCoordinatorWithMessages(t *testing.T, onWebDone func(AsyncCompletion)) (*coordinator, message.Service) {
+	t.Helper()
+	coord := &coordinator{}
+	coord.asyncJobs = newWorkLedger(onWebDone)
+	store, _, conn := newTestAsyncJobStoreWithDataDir(t)
+	coord.asyncJobs.store = store
+	coord.asyncJobs.coord = coord
+	messages := message.NewService(db.New(conn))
+	coord.messages = messages
+	return coord, messages
+}
+
+// simulateChildReactionWithoutTrigger plays out, directly against the
+// store, the DB-write half of what a real child turn does once it wakes
+// over a pulled notice: pull the job's notice into history (delivery
+// pending -> done) and mark it reacted=1 together with a synthesized final
+// assistant message of the given text/reason (persistStepFinish's own
+// atomic write, doc sec.3.4). It deliberately does NOT re-drive
+// recheckChild -- callers that want to test a release trigger OTHER than
+// the in-process "child run ended" one (e.g. the 60s RecheckPass fallback,
+// coordinator_recheck_child_test.go) call this instead of
+// simulateChildReaction. Callers pass the SAME text their own assertions
+// expect refreshSubAgentCompletion to read back, since this message becomes
+// the child's new latest finished assistant message.
+func simulateChildReactionWithoutTrigger(t *testing.T, coord *coordinator, messages message.Service, childSessionID, text string, reason message.FinishReason) {
+	t.Helper()
+	ctx := context.Background()
+	_, err := coord.asyncJobs.store.PullJobNotices(ctx, messages, childSessionID, buildJobNoticeMessageParams)
+	require.NoError(t, err)
+	reactionMsg, err := messages.Create(ctx, childSessionID, message.CreateMessageParams{
+		Role:  message.Assistant,
+		Parts: []message.ContentPart{message.TextContent{Text: text}, message.Finish{Reason: reason}},
+	})
+	require.NoError(t, err)
+	require.NoError(t, coord.asyncJobs.store.MarkReactedWithMessageUpdate(ctx, messages, childSessionID, reactionMsg))
+}
+
+// simulateChildReaction is simulateChildReactionWithoutTrigger plus the
+// SECOND onSessionIdleHook release a real reacting turn's own end would
+// trigger (noteSubAgentChildRunEnded) -- the common case.
+func simulateChildReaction(t *testing.T, coord *coordinator, messages message.Service, childSessionID, text string, reason message.FinishReason) {
+	t.Helper()
+	simulateChildReactionWithoutTrigger(t, coord, messages, childSessionID, text, reason)
+	coord.noteSubAgentChildRunEnded(childSessionID)
 }
 
 // newYieldedInnerTool is the inner tool asyncTool wraps for the `agent`
@@ -148,7 +203,7 @@ func TestWorkLedger_NoFinishedNoticeWhileChildOwnedJobsPending(t *testing.T) {
 func TestWorkLedger_SingleFinalNoticeAfterChildJobsDrain(t *testing.T) {
 	t.Parallel()
 	delivered := make(chan AsyncCompletion, 4)
-	coord := newParkedOutcomeCoordinator(t, func(completion AsyncCompletion) { delivered <- completion })
+	coord, messages := newParkedOutcomeCoordinatorWithMessages(t, func(completion AsyncCompletion) { delivered <- completion })
 
 	startChildOwnedJob(t, coord.asyncJobs, parkedChildSession, parkedChildJob, true)
 	parkDelegation(t, coord, parkedChildSession, "child yielded: async checks still running")
@@ -161,6 +216,11 @@ func TestWorkLedger_SingleFinalNoticeAfterChildJobsDrain(t *testing.T) {
 		ToolName:   "bash",
 		Content:    "gate ok",
 	})
+	// B3/C6 fix follow-up: childScopeDrained now also waits for the child's
+	// OWN cross-process reaction debt to clear -- simulate the child's own
+	// subsequent turn reacting to its just-finished job before the
+	// delegation can actually release.
+	simulateChildReaction(t, coord, messages, parkedChildSession, "child reacted", message.FinishReasonEndTurn)
 
 	got := drainCompletions(delivered)
 	require.Len(t, got, 1, "exactly one final notice must reach the parent")
@@ -168,8 +228,9 @@ func TestWorkLedger_SingleFinalNoticeAfterChildJobsDrain(t *testing.T) {
 	require.Equal(t, parkedParentSession, got[0].SessionID)
 	require.Equal(t, AgentToolName, got[0].ToolName)
 	require.False(t, got[0].IsError)
-	require.Contains(t, got[0].Content, "child yielded",
-		"the notice must carry the child's own text, not the job's")
+	require.Contains(t, got[0].Content, "child reacted",
+		"the notice must carry the child's own LATEST (post-reaction) text, not its pre-reaction yield -- "+
+			"a live messages service is wired, so refreshSubAgentCompletion re-reads it instead of using the arm-time capture")
 	require.False(t, coord.asyncJobs.hasParked(),
 		"the armed entry must be consumed by the release")
 }
@@ -179,33 +240,27 @@ func TestWorkLedger_SingleFinalNoticeAfterChildJobsDrain(t *testing.T) {
 // receives is a FAILURE, not a success.
 func TestWorkLedger_FailedChildJobDeliveredOnceAsFailure(t *testing.T) {
 	t.Parallel()
-	env := testEnv(t)
-	child, err := env.sessions.Create(t.Context(), "failed-child")
-	require.NoError(t, err)
-
+	const failedChildSession = "failed-child"
 	delivered := make(chan AsyncCompletion, 4)
-	coord := newParkedOutcomeCoordinator(t, func(completion AsyncCompletion) { delivered <- completion })
-	coord.messages = env.messages
+	coord, messages := newParkedOutcomeCoordinatorWithMessages(t, func(completion AsyncCompletion) { delivered <- completion })
 
-	row, err := env.messages.Create(t.Context(), child.ID, message.CreateMessageParams{
-		Role:  message.Assistant,
-		Parts: []message.ContentPart{message.TextContent{Text: "the gate failed: exit 2"}},
-	})
-	require.NoError(t, err)
-	row.AddFinish(message.FinishReasonError, "", "")
-	require.NoError(t, env.messages.Update(t.Context(), row))
-
-	startChildOwnedJob(t, coord.asyncJobs, child.ID, parkedChildJob, true)
-	parkDelegation(t, coord, child.ID, "child yielded: gate still running")
+	startChildOwnedJob(t, coord.asyncJobs, failedChildSession, parkedChildJob, true)
+	parkDelegation(t, coord, failedChildSession, "child yielded: gate still running")
 	require.True(t, coord.asyncJobs.hasParked())
 
 	finishChildJob(t, coord, delivered, AsyncCompletion{
-		SessionID:  child.ID,
+		SessionID:  failedChildSession,
 		ToolCallID: parkedChildJob,
 		ToolName:   "bash",
 		Content:    "exit 2",
 		IsError:    true,
 	})
+	// B3/C6 fix follow-up: same cross-process reaction-debt wait as
+	// TestWorkLedger_SingleFinalNoticeAfterChildJobsDrain -- the child's own
+	// reacting turn here is the one whose final message IS the failure text
+	// (a real auto-resume turn surfacing its own job's error ends exactly
+	// this way, FinishReasonError).
+	simulateChildReaction(t, coord, messages, failedChildSession, "the gate failed: exit 2", message.FinishReasonError)
 
 	got := drainCompletions(delivered)
 	require.Len(t, got, 1, "exactly one notice, even for a failed child turn")
@@ -379,8 +434,6 @@ func TestWorkLedger_ResumeAfterNoticeDoesNotReemit(t *testing.T) {
 	coord := newParkedOutcomeCoordinator(t, func(completion AsyncCompletion) { delivered <- completion })
 	coord.messages = env.messages
 
-	writeParkedChildTurn(t, env, child.ID, "first delegation done", message.FinishReasonEndTurn)
-
 	// Delegation A: the child yields with owned async work outstanding.
 	startChildOwnedJob(t, coord.asyncJobs, child.ID, parkedChildJob, true)
 	parkDelegation(t, coord, child.ID, "yield A")
@@ -388,10 +441,14 @@ func TestWorkLedger_ResumeAfterNoticeDoesNotReemit(t *testing.T) {
 	require.Empty(t, drainCompletions(delivered))
 
 	// The child's owned job drains, which releases delegation A exactly
-	// once.
+	// once, once the child's own reacting turn clears the cross-process
+	// debt (B3/C6 fix follow-up) -- that reacting turn's own final message
+	// IS "first delegation done", the text refreshSubAgentCompletion reads
+	// back below.
 	finishChildJob(t, coord, delivered, AsyncCompletion{
 		SessionID: child.ID, ToolCallID: parkedChildJob, ToolName: "bash", Content: "gate ok",
 	})
+	simulateChildReaction(t, coord, env.messages, child.ID, "first delegation done", message.FinishReasonEndTurn)
 	first := drainCompletions(delivered)
 	require.Len(t, first, 1, "delegation A must be delivered exactly once")
 	require.Equal(t, parkedParentCall, first[0].ToolCallID)
@@ -457,9 +514,12 @@ func TestWorkLedger_BusyChildDefersReleaseUntilTurnEnds(t *testing.T) {
 	require.True(t, coord.asyncJobs.hasParked())
 
 	// Trigger (iv): the child's run ends. Now the gate opens and the notice
-	// is delivered, exactly once.
+	// is delivered, exactly once, once the child's own reacting turn also
+	// clears the cross-process debt (B3/C6 fix follow-up) -- simulateChildReaction
+	// both writes that reacting turn's final message and re-drives the
+	// child-run-ended re-check.
 	stub.setBusy(false)
-	coord.noteSubAgentChildRunEnded(child.ID)
+	simulateChildReaction(t, coord, env.messages, child.ID, "child final answer", message.FinishReasonEndTurn)
 
 	got := drainCompletions(delivered)
 	require.Len(t, got, 1)
@@ -547,7 +607,7 @@ func TestWorkLedger_ConcurrentRecheckAndCancelDeliversOnce(t *testing.T) {
 // disable -- this test keeps the scenario as a permanent regression guard.
 func TestWorkLedger_ChildScopeClosesWithoutTicker(t *testing.T) {
 	delivered := make(chan AsyncCompletion, 4)
-	coord := newParkedOutcomeCoordinator(t, func(completion AsyncCompletion) { delivered <- completion })
+	coord, messages := newParkedOutcomeCoordinatorWithMessages(t, func(completion AsyncCompletion) { delivered <- completion })
 
 	startChildOwnedJob(t, coord.asyncJobs, parkedChildSession, parkedChildJob, true)
 	parkDelegation(t, coord, parkedChildSession, "child yielded: async checks still running")
@@ -560,6 +620,9 @@ func TestWorkLedger_ChildScopeClosesWithoutTicker(t *testing.T) {
 		ToolName:   "bash",
 		Content:    "gate ok",
 	})
+	// B3/C6 fix follow-up: same cross-process reaction-debt wait as
+	// TestWorkLedger_SingleFinalNoticeAfterChildJobsDrain.
+	simulateChildReaction(t, coord, messages, parkedChildSession, "child reacted", message.FinishReasonEndTurn)
 
 	got := drainCompletions(delivered)
 	require.Len(t, got, 1,

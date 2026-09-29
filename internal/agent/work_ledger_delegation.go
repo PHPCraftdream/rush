@@ -220,22 +220,13 @@ func (l *workLedger) childScopeDrained(childID string) bool {
 	}
 	// B3/C6 fix: every check above is same-process/in-memory (this host's
 	// own workLedger job map plus IsSessionBusy). A child whose own async
-	// work moved to a DIFFERENT, still-live host has NOT actually drained --
-	// releasing the delegation now would hand the parent a premature/
-	// truncated result. childScopeOpenAcrossProcesses checks exactly that
-	// (a running row on a live host), deliberately NOT ScopeOpen's full
-	// predicate: ScopeOpen's own reaction-debt half models "does the CHILD
-	// SESSION ITSELF still owe a reaction" -- a question this codebase's
-	// existing delegation-delivery design (armDelegation/recheckChild, see
-	// work_ledger_delegation_test.go's five pinned properties) deliberately
-	// answers independently of delegation release: the child reacts to its
-	// own debt on its OWN wakeSession/Drain schedule, and a delegation
-	// releases once the child's current turn ends with no MORE owned work,
-	// not once the child has additionally marked that work reacted=1.
-	// Folding the debt check in here made EVERY existing bare-ledger
-	// delegation test hang (a job's natural wake=1/delivery=pending row is
-	// never pulled/reacted in those tests, since nothing drives the child's
-	// own turn) -- reverted to the narrower, unambiguous half.
+	// work moved to a DIFFERENT, still-live host, or whose pulled notice the
+	// child still owes a reaction to (DB reaction debt), has NOT actually
+	// drained -- releasing the delegation now would hand the parent a
+	// premature/truncated result. childScopeOpenAcrossProcesses reuses
+	// ScopeOpen's exact predicate (doc sec.3.5: running row on a live host,
+	// OR reaction debt), deliberately omitting ScopeOpen's mid-turn branch
+	// (already covered by the IsSessionBusy checks above).
 	if l.childScopeOpenAcrossProcesses(childID) {
 		return false
 	}
@@ -243,29 +234,23 @@ func (l *workLedger) childScopeDrained(childID string) bool {
 }
 
 // childScopeOpenAcrossProcesses is childScopeDrained's cross-process half
-// (B3/C6 fix): a running async_jobs row for childID on a host OTHER than
-// (or in addition to) whatever this process's own in-memory bookkeeping
-// knows about, still alive. Fails OPEN (i.e. reports true, "not drained
-// yet") on a DB error or a nil store: prematurely releasing a delegation
-// whose child might still be running work elsewhere is worse than deferring
-// the release to a later recheckChild trigger.
+// (B3/C6 fix). Fails OPEN (i.e. reports true, "not drained yet") on a DB
+// error or a nil store: prematurely releasing a delegation whose child
+// might still owe a reaction is worse than deferring the release to a later
+// recheckChild trigger -- the same asymmetry ScopeOpen's own callers rely
+// on for scope evaluation.
 func (l *workLedger) childScopeOpenAcrossProcesses(childID string) bool {
-	if l.store == nil {
+	if l.coord == nil || l.store == nil {
 		return false
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), childScopeDBCheckTimeout)
 	defer cancel()
-	rows, err := l.store.ListRunningForOwners(ctx, []string{childID})
+	open, err := l.coord.ScopeOpen(ctx, childID)
 	if err != nil {
-		slog.Warn("childScopeDrained: cross-process running-row check failed; treating scope as still open", "child_session_id", childID, "err", err)
+		slog.Warn("childScopeDrained: cross-process scope check failed; treating scope as still open", "child_session_id", childID, "err", err)
 		return true
 	}
-	for _, row := range rows {
-		if l.store.HostNotDead(row.HostID) {
-			return true
-		}
-	}
-	return false
+	return open
 }
 
 // cancelSessionTarget is a snapshot of one job cancelSession must act on,
