@@ -173,6 +173,52 @@ type AsyncHostStore interface {
 	DeleteAsyncHostIfNoJobs(ctx context.Context, id string) (int64, error)
 }
 
+// ProbeHostLockShared answers "is the process behind lockPath alive?" via
+// the SHARED, non-acquiring probe (doc sec.5 step 7 / sec.3.8's "readers
+// between processes"): unlike ProbeHostLock, it never takes the EXCLUSIVE
+// lock itself, so a reader can never win the lock a live recoverer is
+// legitimately about to hold, nor make a live host look dead to itself or
+// anyone else. Winning the SHARED lock is kernel-attested proof no
+// exclusive holder exists right now (dead); contention
+// (EWOULDBLOCK/EAGAIN on POSIX, ERROR_LOCK_VIOLATION/ERROR_SHARING_VIOLATION
+// on Windows -- isLockContentionError) means alive; anything else is
+// unknown. The probe does not create the file, and releases its own shared
+// lock before returning in every case -- callers never receive a lock to
+// manage, and a genuine holder is never disturbed.
+func ProbeHostLockShared(lockPath string) (HostLockStatus, error) {
+	f, err := os.OpenFile(lockPath, os.O_RDWR, 0o644)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return HostStatusDead, nil
+		}
+		return HostStatusUnknown, fmt.Errorf("host lock probe (shared): open %s: %w", lockPath, err)
+	}
+	defer f.Close()
+	if err := tryLockFileShared(f); err != nil {
+		if isLockContentionError(err) {
+			return HostStatusAlive, nil
+		}
+		return HostStatusUnknown, fmt.Errorf("host lock probe (shared): lock %s: %w", lockPath, err)
+	}
+	// Won the shared lock: no exclusive holder exists right now. Release
+	// immediately (doc: "release the shared lock right after the probe") --
+	// this probe never holds anything past its own return.
+	if err := unlockFile(f); err != nil {
+		return HostStatusUnknown, fmt.Errorf("host lock probe (shared): unlock %s: %w", lockPath, err)
+	}
+	return HostStatusDead, nil
+}
+
+// ProbeHostShared is ProbeHostLockShared scoped to dataDir/hostID, with the
+// same doc sec.3.6 self-probe guard as ProbeHost: this process's own host
+// ids are alive by definition and are never probed.
+func ProbeHostShared(dataDir, hostID string) (HostLockStatus, error) {
+	if IsOwnHostID(hostID) {
+		return HostStatusUnknown, ErrProbeOwnHost
+	}
+	return ProbeHostLockShared(HostLockPath(dataDir, hostID))
+}
+
 // HostIdentity is this process's (or, in-process, this App instance's)
 // lazily-registered async host: a random id, a display-only async_hosts
 // row, and a live OS lock on <dataDir>/hosts/<id>.lock held for as long as

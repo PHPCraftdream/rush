@@ -280,6 +280,79 @@ func TestRemoveDeadHostFile_LosesIdentityRaceSafely(t *testing.T) {
 	assert.Equal(t, "new owner", string(content))
 }
 
+func TestProbeHostLockShared_AliveDoesNotDisturbHolder(t *testing.T) {
+	dataDir := t.TempDir()
+	lockPath := HostLockPath(dataDir, "host-shared-alive")
+
+	holder, err := TryAcquireFileLock(lockPath)
+	require.NoError(t, err)
+
+	status, err := ProbeHostLockShared(lockPath)
+	require.NoError(t, err)
+	assert.Equal(t, HostStatusAlive, status)
+
+	// The probe must not have disturbed the holder: a fresh exclusive
+	// attempt while the holder is still live must still contend exactly as
+	// it would have before the probe ran.
+	_, err = TryAcquireFileLock(lockPath)
+	require.Error(t, err)
+	var contended *ErrLockContended
+	assert.True(t, errors.As(err, &contended))
+
+	// And the holder itself can still release cleanly afterwards.
+	require.NoError(t, holder.Release())
+}
+
+func TestProbeHostLockShared_DeadReleasedLockIsReusable(t *testing.T) {
+	dataDir := t.TempDir()
+	lockPath := HostLockPath(dataDir, "host-shared-dead")
+
+	seed, err := TryAcquireFileLock(lockPath)
+	require.NoError(t, err)
+	require.NoError(t, seed.Release())
+
+	status, err := ProbeHostLockShared(lockPath)
+	require.NoError(t, err)
+	assert.Equal(t, HostStatusDead, status)
+
+	// The shared probe must have released its own lock before returning --
+	// an exclusive acquire must succeed immediately, with no lock handed
+	// back from the probe to get in the way.
+	lock, err := TryAcquireFileLock(lockPath)
+	require.NoError(t, err, "ProbeHostLockShared must release the shared lock it won before returning")
+	require.NoError(t, lock.Release())
+}
+
+func TestProbeHostLockShared_DeadViaENOENT(t *testing.T) {
+	dataDir := t.TempDir()
+	status, err := ProbeHostLockShared(HostLockPath(dataDir, "never-existed"))
+	require.NoError(t, err)
+	assert.Equal(t, HostStatusDead, status)
+}
+
+func TestProbeHostLockShared_Unknown(t *testing.T) {
+	dataDir := t.TempDir()
+	lockPath := HostLockPath(dataDir, "host-shared-c")
+	require.NoError(t, os.MkdirAll(lockPath, 0o755))
+
+	status, err := ProbeHostLockShared(lockPath)
+	require.Error(t, err)
+	assert.Equal(t, HostStatusUnknown, status)
+}
+
+func TestProbeHostShared_RefusesOwnHostID(t *testing.T) {
+	ctx, q := setupHostLockDB(t)
+	dataDir := t.TempDir()
+
+	h, err := RegisterHost(ctx, dataDir, 1, "cli", q)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = h.Close(ctx, q) })
+
+	status, err := ProbeHostShared(dataDir, h.ID)
+	assert.Equal(t, HostStatusUnknown, status)
+	assert.ErrorIs(t, err, ErrProbeOwnHost)
+}
+
 // seedSession inserts a minimal sessions row so async_jobs.owner_session_id
 // (FK, ON DELETE CASCADE) has a valid target.
 func seedSession(ctx context.Context, q *db.Queries, id string) error {
