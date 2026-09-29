@@ -331,9 +331,19 @@ func TestWorkLedger_NaturalCompletionBeforeCloseIsNotSuppressed(t *testing.T) {
 }
 
 // TestWorkLedger_StartFailsClosedWhenStoreUnavailable is DUR-8: an
-// unavailable/erroring store makes a non-sync Start fail, and no executor
-// is ever started (the caller's cancel func, standing in for "start the
-// executor", must never fire).
+// unavailable/erroring store makes a non-sync Start fail, and no in-memory
+// job is registered for it.
+//
+// Review finding: this test's own local var used to be named
+// "executorStarted", but Start itself never calls the cancel func on ANY
+// path -- cancel is only ever stored on the job struct for a LATER caller
+// (close()/MarkJobStopped/etc.) to invoke, so that assertion could never
+// fail regardless of whether fail-closed actually worked (vacuous). Renamed
+// to cancelCalled to stop it from misrepresenting what it proves. The REAL
+// "the executor (asyncTool's `go t.run`) never runs when Start fails closed"
+// property is proven at the layer that owns it:
+// TestAsyncTool_InnerNeverRunsWhenStartFailsClosed (async_tool_test.go),
+// which observes the INNER tool never running.
 func TestWorkLedger_StartFailsClosedWhenStoreUnavailable(t *testing.T) {
 	t.Parallel()
 	// nil store is DUR-8's literal "no store wired" fail-closed case; a
@@ -343,10 +353,10 @@ func TestWorkLedger_StartFailsClosedWhenStoreUnavailable(t *testing.T) {
 	l := newWorkLedger(nil)
 	l.store = nil
 
-	executorStarted := false
-	_, _, err := l.Start("owner-1", "call-1", "echo hi", "bash", "", false, false, nil, func() { executorStarted = true })
+	cancelCalled := false
+	_, _, err := l.Start("owner-1", "call-1", "echo hi", "bash", "", false, false, nil, func() { cancelCalled = true })
 	require.Error(t, err)
-	require.False(t, executorStarted, "the executor must never be started when Claim fails closed")
+	require.False(t, cancelCalled, "Start itself never invokes the cancel func on any path; a failed-closed Start must not either")
 
 	l.mu.Lock()
 	_, present := l.bySession["owner-1"]
