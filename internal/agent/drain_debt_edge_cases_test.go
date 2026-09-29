@@ -129,10 +129,34 @@ func (f *failingThenOKUpdateTxMessages) UpdateTx(ctx context.Context, tx *sql.Tx
 // gone: the reacted-marking half committed independently even though the
 // message write it was supposed to be atomic with had failed). Restored the
 // single shared transaction; re-ran, passed.
+//
+// Uses newWakeDebtFixtureNoIdleHook, not newWakeDebtFixture: this test
+// drives BOTH Drain attempts itself, explicitly and sequentially, and needs
+// each to be the only thing touching the mailbox. With OnSessionIdle wired,
+// the FIRST call's own release (a real turn ran, so onSessionIdleHook always
+// spawns `go c.recheckDebtOnRelease`, doc sec.3.4 item 3) races this test's
+// own second wakeSession call for mailbox ownership. If that background
+// goroutine wins, the test's call is queued behind it; the SAME goroutine's
+// own turn-end can then find it still queued at release and hand it to
+// abandonOwnershipWithHandoff, whose orphan path DROPS an orphaned Drain
+// outright (agent_ownership.go: "dropping an orphaned Drain here is always
+// safe" since a later wake re-derives it -- true in production, where
+// something always wakes the session again, but this test's own second call
+// WAS that later wake, and it just got silently dropped instead of run) --
+// observed as ~25% flake (`capm 2g go test -count=15
+// -run TestStepFinishWriteFailure_DebtStaysThenOneMoreDrainClearsIt
+// ./internal/agent/`), plus a stray "settle reacted-failed failed ...
+// database is closed" from the background goroutine's OWN detached retry
+// still running after the test (and its DB) had already finished. Not a
+// production bug -- the orphan-drop is intentional and production always
+// has a later wake to re-derive from -- but a real bug for a test that
+// wants ITS OWN two calls to be the deterministic story. No idle hook means
+// no competing background wakeSession call, so the mailbox is only ever
+// touched by this test's own two sequential, sequenced calls.
 func TestStepFinishWriteFailure_DebtStaysThenOneMoreDrainClearsIt(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	f := newWakeDebtFixture(t, "step-finish-write-failure")
+	f := newWakeDebtFixtureNoIdleHook(t, "step-finish-write-failure")
 	failing := &failingThenOKUpdateTxMessages{Service: f.messages.Service}
 	failing.remaining.Store(1) // fail exactly the first UpdateTx call
 	f.messages.Service = failing

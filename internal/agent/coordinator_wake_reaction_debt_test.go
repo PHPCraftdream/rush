@@ -69,7 +69,7 @@ func (f *wakeDebtFixture) debtVisible(t *testing.T, ctx context.Context) bool {
 
 func newWakeDebtFixture(t *testing.T, title string) *wakeDebtFixture {
 	t.Helper()
-	return newWakeDebtFixtureWithHandler(t, title, nil)
+	return newWakeDebtFixtureOpts(t, title, nil, true)
 }
 
 // newWakeDebtFixtureWithHandler is newWakeDebtFixture plus an optional
@@ -77,6 +77,31 @@ func newWakeDebtFixture(t *testing.T, title string) *wakeDebtFixture {
 // need to inspect what the provider actually received (not just how many
 // times it was called).
 func newWakeDebtFixtureWithHandler(t *testing.T, title string, onRequestBody func([]byte)) *wakeDebtFixture {
+	t.Helper()
+	return newWakeDebtFixtureOpts(t, title, onRequestBody, true)
+}
+
+// newWakeDebtFixtureNoIdleHook is newWakeDebtFixture without OnSessionIdle
+// wired. A handful of tests fire two or more EXPLICIT, sequential
+// wakeSession calls on the SAME session and need each to complete
+// deterministically; with OnSessionIdle wired, the first call's own release
+// spawns a background recheckDebtOnRelease goroutine (production's own
+// automatic convergence path) that races the test's own next explicit call
+// for the mailbox -- if that goroutine wins, the test's call can be queued
+// and then orphaned by agent_ownership.go's abandonOwnershipWithHandoff
+// (which drops an orphaned DRAIN call outright, by design: doc sec.3.4,
+// "dropping an orphaned Drain here is always safe" since a later wake
+// re-derives it) -- observed as the test's own explicit call silently doing
+// nothing, ~25% of runs. Tests that want ONLY their own explicit calls to
+// drive the outcome (not the automatic release-recheck too) use this
+// variant; tests that specifically exercise the release-recheck path keep
+// using the hook (newWakeDebtFixture/WithHandler).
+func newWakeDebtFixtureNoIdleHook(t *testing.T, title string) *wakeDebtFixture {
+	t.Helper()
+	return newWakeDebtFixtureOpts(t, title, nil, false)
+}
+
+func newWakeDebtFixtureOpts(t *testing.T, title string, onRequestBody func([]byte), wireOnSessionIdle bool) *wakeDebtFixture {
 	t.Helper()
 	f := &wakeDebtFixture{}
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -104,12 +129,15 @@ func newWakeDebtFixtureWithHandler(t *testing.T, title string, onRequestBody fun
 	f.coord.asyncJobs = f.ledger
 
 	f.messages = &failingCreateTxMessages{Service: env.messages}
-	sa := NewSessionAgent(SessionAgentOptions{
+	opts := SessionAgentOptions{
 		SmartModel: model, FastModel: model, SystemPrompt: "you are a probe",
 		Sessions: env.sessions, Messages: f.messages,
 		Tools: []fantasy.AgentTool{}, DisableAutoSummarize: true, AsyncJobs: f.ledger,
-		OnSessionIdle: f.coord.onSessionIdleHook,
-	})
+	}
+	if wireOnSessionIdle {
+		opts.OnSessionIdle = f.coord.onSessionIdleHook
+	}
+	sa := NewSessionAgent(opts)
 	f.sa = sa.(*sessionAgent)
 	f.coord.subAgentDrivers.register(f.sessID, subAgentDriver{agent: f.sa, call: SessionAgentCall{SessionID: f.sessID}})
 	return f
