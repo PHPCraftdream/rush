@@ -20,6 +20,7 @@ import (
 	"os"
 	"testing"
 
+	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
@@ -113,6 +114,81 @@ func TestSessionDrainPolicy_ForkedChildWithParentSet_UsesWebPolicy(t *testing.T)
 	allowed, _, err := coord.sessionDrainPolicy(ctx, fork.ID)
 	require.NoError(t, err)
 	require.True(t, allowed, "a forked (non-delegation) session with ParentSessionID set must use the ordinary web/default policy, not the delegation-child refusal")
+}
+
+// panicIfCalledAgent is a SessionAgent whose Run panics -- used to prove a
+// caller NEVER reaches it at all, stronger than a counter a test might
+// forget to assert on.
+type panicIfCalledAgent struct{ *mockSessionAgent }
+
+func (a *panicIfCalledAgent) Run(context.Context, SessionAgentCall) (*fantasy.AgentResult, error) {
+	panic("released delegation child must never route a Drain turn to the root coder agent")
+}
+
+// TestWakeSession_ReleasedDelegationChild_EndToEnd_NeverReachesRootAgent is
+// W-DRAIN item C's end-to-end version of TestSessionDrainPolicy_
+// DurableDelegationChildWithNoRunningDelegation_Refused above: that test
+// calls sessionDrainPolicy directly; this drives the exact same scenario
+// through the REAL wakeSession entry point (coordinator_wake.go) -- the
+// thing an actual completion/hint calls -- with NO driver registered for the
+// child (releaseDriverIfScopeClosed's real effect once scope closes) and
+// c.currentAgent set to an agent that PANICS if Run is ever called, proving
+// the security-relevant danger the review names directly: a released child
+// falling through to agentFor's currentAgent fallback (the ROOT coder agent:
+// full tool set, no RunAllowlist, no child system prompt) never happens --
+// sessionDrainPolicy's refusal short-circuits wakeSession before agentFor is
+// ever consulted at all.
+//
+// Revert-check performed: removed the isDurableDelegationChild branch from
+// sessionDrainPolicy (coordinator_drain_policy.go), same as the unit-level
+// test's own revert-check -- this test PANICKED (panicIfCalledAgent.Run was
+// actually invoked: wakeSession fell through to the generic web/default
+// policy, which allowed the turn, which then reached agentFor's currentAgent
+// fallback exactly as the finding describes). Restored the branch; re-ran,
+// passed (no panic, err == nil).
+func TestWakeSession_ReleasedDelegationChild_EndToEnd_NeverReachesRootAgent(t *testing.T) {
+	coord, _, store, getEnv := newChildPolicyTestCoordinator(t)
+	env := getEnv(context.Background())
+	ctx := context.Background()
+	coord.currentAgent = &panicIfCalledAgent{mockSessionAgent: &mockSessionAgent{}}
+
+	parent, err := env.sessions.Create(ctx, "parent-e2e")
+	require.NoError(t, err)
+	child, err := env.sessions.CreateTaskSession(ctx, "task-call-1", parent.ID, "child-e2e")
+	require.NoError(t, err)
+
+	_, err = store.Claim(ctx, session.ClaimParams{
+		Owner: parent.ID, ToolCallID: "agent-call-1", Kind: session.JobKindAgent,
+		Input: "x", ChildSessionID: child.ID, ToolName: "agent",
+	})
+	require.NoError(t, err)
+	require.NoError(t, store.MarkAnnounced(ctx, parent.ID, "agent-call-1"))
+	_, err = store.Transition(ctx, session.TransitionParams{
+		Owner: parent.ID, ToolCallID: "agent-call-1", State: "completed",
+		ResultSummary: "done", Wake: true,
+	})
+	require.NoError(t, err)
+
+	// The child's OWN debt (e.g. a stray notice/timeout that fired after its
+	// delegation released) -- exactly what would otherwise force a Drain
+	// turn if the policy refusal did not short-circuit first. No driver is
+	// registered for child.ID at all (releaseDriverIfScopeClosed's real
+	// post-release state), so agentFor(child.ID) would return
+	// c.currentAgent if wakeSession ever reached that far.
+	_, err = store.Claim(ctx, session.ClaimParams{
+		Owner: child.ID, ToolCallID: "call-x", Kind: session.JobKindCommand, Input: "x", ToolName: "bash",
+	})
+	require.NoError(t, err)
+	require.NoError(t, store.MarkAnnounced(ctx, child.ID, "call-x"))
+	_, err = store.Transition(ctx, session.TransitionParams{
+		Owner: child.ID, ToolCallID: "call-x", State: "completed", ResultSummary: "output", Wake: true,
+	})
+	require.NoError(t, err)
+	_, err = store.PullJobNotices(ctx, env.messages, child.ID, buildJobNoticeMessageParams)
+	require.NoError(t, err)
+
+	err = coord.wakeSession(ctx, jobIdentity{owner: child.ID, toolCallID: "call-x"}, true)
+	require.NoError(t, err, "a policy-refused Drain is a silent no-op, never an error")
 }
 
 // TestSessionDrainPolicy_PlainSessionWithNoDelegationHistory_UsesWebPolicy is

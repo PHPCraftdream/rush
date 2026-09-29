@@ -11,8 +11,11 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"os"
+	"sync"
 	"testing"
+	"time"
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/message"
@@ -340,4 +343,141 @@ func TestSettleAndMark_MarkerText_RealIDIncludedPseudoIDOmitted(t *testing.T) {
 		}
 	}
 	require.NotContains(t, markerText2, "release-recheck", "an internal pseudo-id must never leak into a notice the model/operator reads")
+}
+
+// TestSettleByFailure_CancelAllMidFlight_DoesNotSettle is W-DRAIN B2's
+// requirement (docs/reviews/2026-09-29-async-phase4-round1.md, "Tests
+// (B-b, C-b)"): TestSettleByFailure_AdmissionRefusalDuringShutdown_
+// DoesNotSettle above proves the ADMISSION-refusal branch (ErrAgentShutting
+// Down, injected directly by a mock) never settles -- this test proves the
+// SEPARATE branch right at the top of settleOrRetryDrainFailure
+// (coordinator_drain_policy.go): a Drain that DID start a real provider
+// turn, then got cancelled mid-flight by the REAL coordinator.CancelAll()
+// (production shutdown), must also never settle. This exercises the actual
+// mailbox generation-cancel path (agent_control.go's CancelAll ->
+// mb.hardStop -> genCancel -> the real HTTP request's own context) rather
+// than a mock directly returning context.Canceled.
+//
+// The coordinator MUST have `messages` wired (env.messages) for this test to
+// mean anything: found the hard way -- an earlier version of this test built
+// coord without it, so ownAttemptAssistantMessage's `c.messages == nil`
+// early-return silently sent every scenario through a DIFFERENT fallback
+// branch (`!isProviderClassifiable(runErr) -> addToRecheckSet`, the one for
+// callers with NO attempt evidence at all) which also happens to protect a
+// bare context.Canceled -- the test passed, but for the wrong reason, and
+// could not have failed no matter which branch was actually broken. Fixed by
+// wiring `messages: env.messages` into the coordinator literal below;
+// verified via the SAME experiment this comment describes (temporarily
+// disabling all three of settleOrRetryDrainFailure's guards at once first
+// reproduced a genuine settle+marker with `messages` wired, isolating which
+// single guard is load-bearing before writing the final revert check).
+//
+// REVERT CHECK: commented out (via `if false &&`) the `errors.Is(runErr,
+// context.Canceled) || errors.Is(runErr, context.DeadlineExceeded) ||
+// errors.As(runErr, &awaiting)` guard at the top of settleOrRetryDrainFailure
+// -- with the OTHER two guards below it (the FinishPart==nil/non-error check
+// and turnMadeProgress) left INTACT, this test's `require.True(t, debt,
+// ...)` still FAILED (debt was closed) and a wake_failed marker appeared:
+// classifyProviderError's own `errors.Is(err, context.Canceled) ->
+// classTerminal` line classified the cancelled attempt as an unrecoverable
+// provider failure. Restored the guard; re-ran, passed.
+func TestSettleByFailure_CancelAllMidFlight_DoesNotSettle(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	env := testEnv(t)
+	sess, err := env.sessions.Create(ctx, "cancelall-mid-flight")
+	require.NoError(t, err)
+	sessID := sess.ID
+
+	store := session.NewAsyncJobStore(env.conn, env.workingDir, os.Getpid(), "test")
+	t.Cleanup(func() { _ = store.Close(context.Background()) })
+
+	_, err = store.Claim(ctx, session.ClaimParams{
+		Owner: sessID, ToolCallID: "call-1", Kind: session.JobKindCommand, Input: "x", ToolName: "bash",
+	})
+	require.NoError(t, err)
+	require.NoError(t, store.MarkAnnounced(ctx, sessID, "call-1"))
+	_, err = store.Transition(ctx, session.TransitionParams{
+		Owner: sessID, ToolCallID: "call-1", State: "completed", ResultSummary: "boom", Wake: true,
+	})
+	require.NoError(t, err)
+	// A real pull (delivery='done') -- VISIBLE debt, matching what a Drain's
+	// own turn-start decision requires before it ever reaches the provider.
+	_, err = store.PullJobNotices(ctx, env.messages, sessID, buildJobNoticeMessageParams)
+	require.NoError(t, err)
+
+	reqStarted := make(chan struct{})
+	var closeOnce sync.Once
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fl, _ := w.(http.Flusher)
+		fmt.Fprintf(w, "data: %s\n\n",
+			`{"id":"c1","object":"chat.completion.chunk","created":1,"model":"probe","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}`)
+		if fl != nil {
+			fl.Flush()
+		}
+		closeOnce.Do(func() { close(reqStarted) })
+		// Bounded regardless of the client: this handler always returns, so
+		// srv.Close (t.Cleanup) never hangs. What this test actually measures
+		// is how fast agent.Run/wakeSession return after CancelAll below --
+		// never this goroutine's own completion.
+		select {
+		case <-r.Context().Done():
+		case <-time.After(5 * time.Second):
+		}
+	}))
+	t.Cleanup(srv.Close)
+	model := newProbeModel(t, srv)
+
+	coord := &coordinator{subAgentDrivers: newSubAgentDriverRegistry(), currentAgent: &mockSessionAgent{}, messages: env.messages}
+	ledger := newWorkLedger(coord.notifyAsyncCompletion)
+	ledger.store = store
+	ledger.coord = coord
+	coord.asyncJobs = ledger
+
+	sa, ok := NewSessionAgent(SessionAgentOptions{
+		SmartModel: model, FastModel: model, SystemPrompt: "you are a probe",
+		Sessions: env.sessions, Messages: env.messages,
+		Tools: []fantasy.AgentTool{}, DisableAutoSummarize: true, AsyncJobs: ledger,
+	}).(*sessionAgent)
+	require.True(t, ok)
+	coord.subAgentDrivers.register(sessID, subAgentDriver{agent: sa, call: SessionAgentCall{SessionID: sessID}})
+
+	var wakeErr error
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		wakeErr = coord.wakeSession(ctx, jobIdentity{owner: sessID, toolCallID: "call-1"}, true)
+	}()
+
+	select {
+	case <-reqStarted:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the provider request never started streaming")
+	}
+	coord.CancelAll()
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("wakeSession never returned after CancelAll")
+	}
+
+	require.Error(t, wakeErr, "a real mid-flight cancellation must surface as an error")
+	require.True(t, errors.Is(wakeErr, context.Canceled),
+		"wakeSession's error must trace back to the real cancelled generation context, got: %v", wakeErr)
+
+	debt, err := store.ReactionDebtExists(ctx, sessID)
+	require.NoError(t, err)
+	require.True(t, debt, "a real CancelAll mid-flight must never settle the debt")
+
+	notices, err := store.ListSessionNotices(ctx, sessID)
+	require.NoError(t, err)
+	for _, n := range notices {
+		require.NotEqual(t, "wake_failed", n.Kind, "a real CancelAll mid-flight must never write a settle marker")
+	}
+
+	job, err := store.Get(ctx, sessID, "call-1")
+	require.NoError(t, err)
+	require.EqualValues(t, 0, job.WakeAttempts, "a real cancellation must not count as a failed pass")
 }
