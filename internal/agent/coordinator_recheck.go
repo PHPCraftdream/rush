@@ -4,9 +4,10 @@
 // may need to fire again if the child's own work was recovered by another
 // process), and every session a Drain submission was refused for (session-
 // lock held elsewhere, shutdown) -- see coordinator_wake.go's
-// turnAttemptRefused branch. This is the ONLY poll in the whole design; the
-// CLI loop runs its own equivalent tick independently (internal/app's run
-// loop), not this one.
+// turnAttemptRefused branch. Only the web process (SetPersistentMode) runs
+// it. A `rush run` has no ticker: it runs RunMaintenanceSweep once at loop
+// start and re-reads the DB itself (WaitForHint, at most every 5s) while its
+// scope is open; its recheck set is never drained.
 package agent
 
 import (
@@ -67,13 +68,11 @@ func (c *coordinator) RecheckPass(ctx context.Context) {
 		}
 	}
 	// B12/C14 fix: each wake runs in its OWN goroutine so a real Drain turn
-	// (which can take seconds) never serializes behind the others, or delays
-	// the NEXT tick's dead-host sweep/retention purge above (this whole
-	// RecheckPass call is one synchronous unit from StartRecheckTicker's own
-	// loop). wg bounds this call's own return to "every wake was at least
-	// SUBMITTED", matching every other fire-and-forget wakeSession call site
-	// in this package (coordinator_background.go, supervision.go) -- none of
-	// them wait for the turn to finish either.
+	// (which can take seconds) never serializes behind the others. wakeSession
+	// returns only when its turn has finished, so wg.Wait() below still holds
+	// this whole RecheckPass -- and with it StartRecheckTicker's loop, and the
+	// next tick's dead-host sweep/retention purge -- until the slowest wake
+	// is done.
 	var wg sync.WaitGroup
 	for _, sessionID := range c.drainRecheckSet() {
 		wg.Add(1)
@@ -94,8 +93,7 @@ func (c *coordinator) RecheckPass(ctx context.Context) {
 // StartRecheckTicker starts the 60s background pass exactly once per
 // coordinator (idempotent), stopped by StopRecheckTicker (wired into
 // CancelAll). Intended for the long-lived web/interactive process --
-// `rush run` never calls this (its loop has its own independent tick, doc
-// sec.3.5).
+// `rush run` never calls this (no ticker; see the file header).
 func (c *coordinator) StartRecheckTicker() {
 	c.recheckOnce.Do(func() {
 		ctx, cancel := context.WithCancel(context.Background())

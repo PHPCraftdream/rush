@@ -40,11 +40,11 @@ type ReactionDebtSource interface {
 	// bounds the actually-stuck-pull case a different way (drainNoTurn ->
 	// WaitForHint), without needing a different predicate here.
 	ReactionDebtExists(ctx context.Context, sessionID string) (bool, error)
-	// ScopeOpen evaluates doc sec.3.5's scope predicate for sessionID: a
-	// running task row on a live host, OR (since this is always called
-	// BETWEEN turns, never mid-turn) a reaction debt this session's own
-	// policy allows a turn on. For the CLI root calling this on its OWN
-	// session id, policy is trivially "yes" (doc: "the loop decides").
+	// ScopeOpen evaluates doc sec.3.5's scope predicate for sessionID, always
+	// BETWEEN turns: true iff the session has a running task row on a host
+	// not provably dead, or a reaction debt (pending-inclusive). It checks
+	// neither "mid-turn" nor the session's policy: debt a policy would refuse
+	// a turn on still keeps the scope open.
 	ScopeOpen(ctx context.Context, sessionID string) (bool, error)
 	// WaitForHint blocks until sessionID's hint counter advances, ctx is
 	// done, or a bounded same-process fallback elapses. The caller must
@@ -145,10 +145,11 @@ func (c *coordinator) ReactionDebtExists(ctx context.Context, sessionID string) 
 	return c.asyncJobs.reactionDebtExists(ctx, sessionID)
 }
 
-// reactionDebtSourceHintFallback bounds WaitForHint's own wait even without
-// a hint or ctx cancellation -- belt-and-braces against a missed signal
-// inside this one process; the CLI loop's own 60s tick (app_run_async.go)
-// is the actual cross-process fallback doc sec.3.5 describes.
+// reactionDebtSourceHintFallback bounds WaitForHint's wait even without a
+// hint or ctx cancellation. Hints live inside one process, so this is also
+// the CLI loop's only cross-process fallback: a `rush run` has no 60s ticker
+// (only the web process runs RecheckPass) and re-reads the DB at least this
+// often while its scope is open.
 const reactionDebtSourceHintFallback = 5 * time.Second
 
 // WaitForHint implements ReactionDebtSource.
@@ -216,10 +217,11 @@ func (c *coordinator) RunMaintenanceSweep(ctx context.Context) {
 	}
 }
 
-// ScopeOpen implements ReactionDebtSource -- doc sec.3.5: "S has a running
-// task row on a LIVE host, OR S is mid-turn, OR S has a reaction debt and
-// its policy allows a turn". The "mid-turn" branch never applies here: every
-// caller evaluates this strictly BETWEEN its own turns.
+// ScopeOpen implements ReactionDebtSource. Doc sec.3.5's predicate also lists
+// "mid-turn" and "policy allows a turn"; neither is evaluated here: every
+// caller runs strictly BETWEEN its own turns (a child's in-process turn is
+// covered by childScopeDrained's IsSessionBusy check) and any reaction debt
+// counts, whatever the session policy would allow.
 func (c *coordinator) ScopeOpen(ctx context.Context, sessionID string) (bool, error) {
 	if c.asyncJobs == nil || c.asyncJobs.store == nil {
 		return false, nil

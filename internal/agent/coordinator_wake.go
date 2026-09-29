@@ -43,10 +43,10 @@ type jobIdentity struct {
 // driver row) or submits a Drain call after the session policy check --
 // checked BEFORE submission, so a forbidden session never gets one. A no-op
 // when wake is false (doc sec.3.4's wake-policy table: Stop/job_kill/a
-// failed wake-up marker never wake). Errors are visible (ASYNC-09): a Drain
-// failure after the fact was already committed cannot lose the fact -- it
-// stays pending/pending-debt for the NEXT pull -- so this persists a durable
-// wake-failed marker (session_notices, wake=0) instead of just logging.
+// failed wake-up marker never wake). A Drain failure cannot lose the fact --
+// it stays debt for the next pull -- and recordDrainOutcome accounts for it:
+// a visible wake-failed marker (session_notices, wake=0) is written once the
+// debt is closed by failure (ASYNC-09), not on every failed attempt.
 // wakeSessionAttemptSeam is a test-only hook, called once per wakeSession
 // invocation (after the wake==false short-circuit). Lets a test count/bound
 // how many times a self-perpetuating release->recheck chain re-enters this

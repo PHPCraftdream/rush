@@ -35,7 +35,8 @@ const interruptedNoChildTextText = "the sub-agent session finished with no textu
 
 // AsyncDataRetentionAge bounds how long a terminal, delivered-or-voided
 // async_jobs/session_notices row (and an empty dead host's lock file)
-// survives before the 60s pass reaps it (doc sec.3.7). Fixed, not a config
+// survives before the purge reaps it (doc sec.3.7): the web process's 60s
+// pass, or once at the start of a `rush run` loop. Fixed, not a config
 // option -- the doc's own tests only require "old rows are purged, recent
 // ones are kept", not a tunable knob.
 const AsyncDataRetentionAge = 7 * 24 * time.Hour
@@ -258,9 +259,11 @@ func (s *AsyncJobStore) RecoverOwnerScope(ctx context.Context, owner string, mes
 	}
 }
 
-// PurgeExpired is the 60s pass's retention half (doc sec.3.7): terminal,
-// delivered-or-voided async_jobs/session_notices rows past age, and dead
-// hosts' lock files/rows once they reference no rows of any state at all.
+// PurgeExpired is the retention half of the maintenance sweep (doc sec.3.7;
+// web: every 60s, `rush run`: once at loop start): terminal, delivered-or-
+// voided async_jobs/session_notices rows past age (never unreacted debt),
+// dead drivers' markers, and dead hosts' lock files/rows once they reference
+// no rows of any state at all.
 // Best-effort throughout -- a failure on one sub-step is logged and the next
 // one still runs; a transient DB error here is retried by the next 60s tick,
 // never treated as fatal to the pass that called this.

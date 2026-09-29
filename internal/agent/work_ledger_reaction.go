@@ -41,8 +41,9 @@ func (l *workLedger) hintSeqOf(owner string) uint64 {
 
 // waitForHint blocks until owner's hint counter advances past since, ctx is
 // done, or the ledger closes. Returns true only on a genuine hint (not on
-// ctx/close). Used by the CLI loop's wait step (doc sec.3.5): "the loop
-// waits for a hint channel plus the 60s pass, not the memory queue".
+// ctx/close). Used by the CLI loop's wait step (doc sec.3.5); the caller
+// bounds the wait (WaitForHint's 5s fallback) and re-reads the DB, since a
+// hint only exists inside this process.
 func (l *workLedger) waitForHint(ctx context.Context, owner string, since uint64) bool {
 	for {
 		l.mu.Lock()

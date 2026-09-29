@@ -112,10 +112,9 @@ func causeStateNoticeKindWake(cause transitionCause, result jobResult) (state, n
 }
 
 // phaseForState maps a committed DB state string to its in-memory jobPhase.
-// "interrupted" (recovery sweep, step 5 -- not yet written by anything in
-// this step) has no dedicated phase yet; it degrades to phaseFailed so a
-// row already in that state is still treated as terminal-with-error rather
-// than silently mishandled.
+// "interrupted" (written by dead-host recovery, DUR-6) has no dedicated
+// phase; it degrades to phaseFailed so a row in that state is still treated
+// as terminal-with-error rather than silently mishandled.
 func phaseForState(state string) jobPhase {
 	switch state {
 	case "completed":

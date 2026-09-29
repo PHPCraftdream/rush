@@ -99,8 +99,9 @@ rush sessions list --json | jq 'select(.message_count > 0)'
 		// Sub-agent awareness, cross-process half: the durable-state layer
 		// beneath markParkedDelegationSessions. The coordinator registry
 		// above only this process can see; here the session's own lock is
-		// gone (or stale) but a DESCENDANT session still holds a live one,
-		// which the DB linkage + the locks directory prove to any process.
+		// gone (or stale) but a live async_jobs delegation row, on a host
+		// that is not provably dead, points at a DESCENDANT session -- any
+		// process can read that from the DB.
 		statusByID = markDelegatingLiveDescendants(cmd.Context(), a, sessions, statusByID)
 
 		if asJSON {

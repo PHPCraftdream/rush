@@ -110,10 +110,12 @@ func (c *coordinator) sessionDrainPolicy(ctx context.Context, sessionID string) 
 		}
 		if isChild {
 			// A durable delegation child with no running delegation row:
-			// its delegation ended (or was stopped) and it gets no further
-			// Drain turn, by construction (doc sec.3.4's policy table) --
-			// never re-routed to whatever session currently answers
-			// agentFor(sessionID) once its driver is torn down.
+			// its delegation ended (or was stopped), so it gets no further
+			// Drain turn. The refusal is explicit, keyed on the parent's
+			// delegation row (isDurableDelegationChild), not implied by the
+			// driver registry -- never re-routed to whatever session
+			// currently answers agentFor(sessionID) once its driver is torn
+			// down.
 			return false, false, nil
 		}
 		// Not a delegation child at all (a bare test fixture, or a normal
@@ -161,7 +163,7 @@ func (c *coordinator) sessionDrainPolicy(ctx context.Context, sessionID string) 
 	// specific wake is a capped bg-shell auto-resume, since a Drain call's
 	// own AutoResumed/BackgroundJobNotice FIELDS are unconditionally true
 	// for every Drain regardless of origin (newDrainCall) and cannot be used
-	// to discriminate; CHANGELOG-visible consequence documented in W-DOCS.
+	// to discriminate (see the CHANGELOG entry on the auto-turn cap).
 	//
 	// "No cap" means no THROTTLE on volume (counted=false, never
 	// incremented) -- it does NOT mean Stop's own "automatic turns paused

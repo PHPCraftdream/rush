@@ -325,7 +325,8 @@ type coordinator struct {
 	autoResumeMu           sync.Mutex     // guards consecutiveAutoResumes.
 	consecutiveAutoResumes map[string]int // sessionID -> consecutive auto-resumes since last human message.
 
-	// recheckMu/recheckSet back doc sec.3.4 rule (b)/sec.3.5's 60s pass: a
+	// recheckMu/recheckSet back doc sec.3.4 rule (b)/sec.3.5's 60s pass (web
+	// process only; a CLI coordinator never drains the set): a
 	// session whose Drain submission was refused by an admission gate (the
 	// session-lock held by another process, or shutdown) is never forgotten
 	// -- it goes here instead, and RecheckPass (coordinator_recheck.go)
@@ -523,10 +524,10 @@ func (c *coordinator) SetAllowPeakHours(allow bool) {
 func (c *coordinator) SetPersistentMode(persistent bool) {
 	c.persistentMode.Store(persistent)
 	if persistent {
-		// Doc sec.3.5: the 60s host-level pass is the only inter-process
-		// fallback: hints live only inside this process. Only the
-		// long-lived web/interactive process runs it -- `rush run`'s own
-		// loop has its own independent tick and never calls this.
+		// Doc sec.3.5: hints live only inside this process, so the web
+		// process runs the 60s host-level pass (RecheckPass). `rush run`
+		// never calls this: it has no ticker, runs RunMaintenanceSweep once
+		// at loop start and re-reads the DB itself while it waits.
 		c.StartRecheckTicker()
 	}
 }

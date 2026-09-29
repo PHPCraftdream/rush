@@ -553,9 +553,9 @@ func (s *AsyncJobStore) DeleteUnannounced(ctx context.Context, owner, toolCallID
 }
 
 // Get reads the current row for (owner, toolCallID), or sql.ErrNoRows if
-// none exists. A thin read-only wrapper -- production readers move to the
-// DB in a later step (doc sec.5 step 7); this exists now for tests and any
-// caller that already needs a direct row read (e.g. diagnostics).
+// none exists. A thin read-only wrapper for tests and any caller that
+// needs a direct row read (e.g. diagnostics); the cross-process readers are
+// in async_job_reader.go.
 func (s *AsyncJobStore) Get(ctx context.Context, owner, toolCallID string) (db.AsyncJob, error) {
 	return s.q.GetAsyncJob(ctx, db.GetAsyncJobParams{OwnerSessionID: owner, ToolCallID: toolCallID})
 }

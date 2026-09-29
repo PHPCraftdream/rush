@@ -157,11 +157,12 @@ func (d DebtSnapshot) Empty() bool {
 // `Delivery != "void"` (pending+done), which is right for
 // VisibleReactionDebtExists' SIBLING predicates (deciding whether a turn is
 // NEEDED at all can and should count pending) but wrong for THIS capture,
-// whose whole contract is "what did the turn actually see". A permanently-
-// failing pull is instead bounded by checkStuckDrainProgress/
-// incrementThenSettleIfThreshold observing an EMPTY snapshot forever (no
-// done rows ever materialize) -- doc sec.6's "does not loop" is satisfied by
-// the turn making no progress at all, not by settling debt it never saw.
+// whose whole contract is "what did the turn actually see". A permanently
+// failing pull is bounded elsewhere: a Drain decides by VISIBLE debt
+// (decideDrainTurn), so with only 'pending' rows it ends without a provider
+// turn, and the no-turn release rule plus the 60s pass allow at most one such
+// Drain per hint or pass. An empty snapshot makes settle-by-failure and
+// checkStuckDrainProgress no-ops -- debt it never saw is never settled.
 // async_jobs also requires announced=1, matching AsyncReactionDebtExists'
 // own guard (DUR-7: an unannounced row can never produce a notice).
 func (s *AsyncJobStore) CaptureDebtSnapshot(ctx context.Context, owner string) (DebtSnapshot, error) {
@@ -455,8 +456,8 @@ func (s *AsyncJobStore) ListRunningForOwners(ctx context.Context, owners []strin
 }
 
 // HostNotDead reports whether hostID is not PROVABLY dead (doc sec.3.5/3.6:
-// "treat unknown as not-dead"; the actual recovery of a dead host's rows is
-// step 5, deferred -- this is read-only liveness classification). Never
+// "treat unknown as not-dead"; recovery of a dead host's rows is
+// RecoverDeadHost's job -- this is read-only liveness classification). Never
 // probes this store's own host id (ProbeHost's guard). A probe that WINS the
 // lock (status dead, lock non-nil) releases it immediately without deleting
 // the file -- this function only answers a liveness question, it never

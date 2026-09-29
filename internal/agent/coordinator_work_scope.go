@@ -6,11 +6,11 @@
 // rather than moving onto workLedger itself.
 //
 // Phase 3 (docs/plans/2026-09-28-async-phase3-spec.md §3) deleted
-// DescendantWorkPending/anyPendingWorkInMemory/sessionOwnsPendingWork: the
-// transitive "does the root's scope still own work" question they polled for
-// is already answered, event-driven, by workLedger.next() -- see
-// app_run_async.go's runNonInteractiveWithAsyncResults and
-// docs/async-invariants.md's ASYNC-02 row.
+// DescendantWorkPending/anyPendingWorkInMemory/sessionOwnsPendingWork. Phase 4
+// replaced their successor workLedger.next() with the DB scope predicate
+// (coordinator.ScopeOpen) -- see app_run_async.go's
+// runNonInteractiveWithAsyncResults and docs/async-invariants.md's ASYNC-02
+// row.
 package agent
 
 import (
