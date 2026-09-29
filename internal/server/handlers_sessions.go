@@ -272,6 +272,24 @@ func annotateLiveDescendantWork(ctx context.Context, a *appPkg.App, sessions []s
 	}
 }
 
+// annotateLiveOwnWork fills HasLiveOwnWork for every session in the slice: a
+// session whose scope is open only because of its OWN running plain job (no
+// descendant, no lock between turns) must not read as idle/finished. Same
+// durable-state derivation as `sessions list`'s "running" promotion
+// (session.AsyncJobStore.LiveOwnJobs); one indexed query per session, paid
+// only on the sessions_list reply and its re-poll.
+func annotateLiveOwnWork(ctx context.Context, a *appPkg.App, sessions []session.Session) {
+	store := a.AsyncJobStore()
+	if store == nil {
+		return
+	}
+	for i := range sessions {
+		if live, _ := store.LiveOwnJobs(ctx, sessions[i].ID); len(live) > 0 {
+			sessions[i].HasLiveOwnWork = true
+		}
+	}
+}
+
 func handleListSessions(ctx context.Context, a *appPkg.App, c *Client, msg WSMessage) {
 	sessions, err := a.Sessions.List(ctx)
 	if err != nil {
@@ -283,6 +301,7 @@ func handleListSessions(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 	}
 	annotateExternalOwnership(a, sessions)
 	annotateLiveDescendantWork(ctx, a, sessions)
+	annotateLiveOwnWork(ctx, a, sessions)
 	c.reply(msg.ID, EventSessionsList, sessions, "")
 
 	// Correct any stale agent_busy and summarize_queued state in the replay

@@ -39,11 +39,11 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   completed job whose result no model turn has reacted to yet is reported
   as pending debt both when the result is already in history and when it
   has not been pulled into history yet (the latter used to print "none").
-  The section reads the session's own rows; the status headline above it
-  does not account for them, so a root that only waits on its own plain
-  background job can still be headlined "done" there and in `sessions
-  list` (which promotes a session to "delegating" only for live
-  delegation rows).
+  The section reads the session's own rows. A root that only waits on its
+  own live plain background job (bash/run_command, no delegation) is
+  reported "running", not "done"/"at rest", by `sessions why` (naming the
+  job), `sessions list`, and the web list (new optional `HasLiveOwnWork`
+  field on the session; a crashed root stays crashed).
 
 ### Changed
 

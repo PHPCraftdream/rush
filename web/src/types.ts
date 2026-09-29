@@ -52,6 +52,9 @@ export interface Session {
   HasLiveDescendantWork?: boolean;
   // Descendant session IDs still holding live locks.
   LiveDescendantIDs?: string[];
+  // True when the session itself still owns a running background job
+  // (bash/run_command) on a live host: not finished even with no lock.
+  HasLiveOwnWork?: boolean;
 }
 
 export type MessageRole = "user" | "assistant" | "tool" | "system";
