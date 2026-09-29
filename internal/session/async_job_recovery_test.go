@@ -14,6 +14,7 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -319,17 +320,20 @@ func TestAsyncJobStore_CloseKeepLock_LeavesLockHeld(t *testing.T) {
 	hostID := store.HostID()
 	require.NotEmpty(t, hostID)
 
-	// Keep our OWN reference to the OS lock purely for this test's cleanup --
-	// CloseKeepLock's whole point is that production code does NOT do this
-	// (process exit releases it instead).
-	heldLock := store.host.lock
-	require.NotNil(t, heldLock)
+	require.NotNil(t, store.host.lock)
 
 	store.CloseKeepLock()
 	t.Cleanup(func() {
-		_ = heldLock.Release()
+		releaseRetainedHostLocksForTest()
 		unmarkOwnHostID(hostID)
 	})
+	// No test-side reference to the lock is kept: without the package-level
+	// pin the *os.File finalizer releases it at GC. REVERT CHECK: drop
+	// retainHostLockUntilExit from CloseKeepLock -> the probe reads Dead.
+	for range 3 {
+		runtime.GC()
+		time.Sleep(30 * time.Millisecond)
+	}
 
 	status, lock, err := ProbeHostLock(HostLockPath(store.dataDir, hostID))
 	if lock != nil {

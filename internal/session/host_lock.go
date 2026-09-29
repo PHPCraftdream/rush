@@ -88,6 +88,34 @@ var (
 	ownHostIDs = map[string]struct{}{}
 )
 
+// retainedHostLocks pins OS host locks whose owner store was closed on the
+// forced-shutdown path (AsyncJobStore.CloseKeepLock). An *os.File is closed by
+// its finalizer once unreachable, which would silently release the lock at the
+// next GC; the lock must live until the process exits.
+var (
+	retainedHostMu    sync.Mutex
+	retainedHostLocks []*FileLock
+)
+
+func retainHostLockUntilExit(l *FileLock) {
+	if l == nil {
+		return
+	}
+	retainedHostMu.Lock()
+	defer retainedHostMu.Unlock()
+	retainedHostLocks = append(retainedHostLocks, l)
+}
+
+// releaseRetainedHostLocksForTest releases every pinned lock (tests only).
+func releaseRetainedHostLocksForTest() {
+	retainedHostMu.Lock()
+	defer retainedHostMu.Unlock()
+	for _, l := range retainedHostLocks {
+		_ = l.Release()
+	}
+	retainedHostLocks = nil
+}
+
 func markOwnHostID(id string) {
 	ownHostMu.Lock()
 	defer ownHostMu.Unlock()

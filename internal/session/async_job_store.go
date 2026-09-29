@@ -557,8 +557,13 @@ func (s *AsyncJobStore) Close(ctx context.Context) error {
 // store that never claimed anything (no-op).
 func (s *AsyncJobStore) CloseKeepLock() {
 	s.mu.Lock()
+	h := s.host
 	s.host = nil
 	s.mu.Unlock()
+	// Pin the OS lock: the *os.File finalizer would release it at next GC.
+	if h != nil {
+		retainHostLockUntilExit(h.lock)
+	}
 }
 
 // SimulateCrashForTest releases this store's own OS host lock and forgets
