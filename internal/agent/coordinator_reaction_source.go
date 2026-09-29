@@ -114,6 +114,13 @@ func (c *coordinator) ScopeOpen(ctx context.Context, sessionID string) (bool, er
 	if c.asyncJobs == nil || c.asyncJobs.store == nil {
 		return false, nil
 	}
+	// Phase-4 step 5 (doc sec.3.5/3.7): a scope check is also a "scope
+	// evaluation" point -- recover this owner's own dead-host rows to
+	// 'interrupted' before answering, so a row whose host just died is
+	// treated as recoverable-and-gone rather than kept "open" forever (or,
+	// once recovered, correctly reported closed if nothing else is
+	// outstanding). Best-effort: RecoverOwnerScope never fails this call.
+	c.asyncJobs.store.RecoverOwnerScope(ctx, sessionID, c.messages)
 	rows, err := c.asyncJobs.store.ListRunningForOwners(ctx, []string{sessionID})
 	if err != nil {
 		return false, err

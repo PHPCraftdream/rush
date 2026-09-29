@@ -48,6 +48,10 @@ func FormatAsyncCompletion(completion AsyncCompletion) string {
 		return fmt.Sprintf("Async job %s (%s) was cancelled (session stopped). Partial output:\n\n%s",
 			completion.ToolCallID, completion.ToolName, content)
 	}
+	if completion.Interrupted {
+		return fmt.Sprintf("Async job %s (%s) was interrupted: its host process ended before the job finished.\n\n%s",
+			completion.ToolCallID, completion.ToolName, content)
+	}
 	status := "finished"
 	if completion.IsError {
 		status = "failed"

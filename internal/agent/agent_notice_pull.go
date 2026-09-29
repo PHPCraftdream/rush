@@ -80,6 +80,7 @@ func buildJobNoticeMessageParams(row session.JobNoticeRow) message.CreateMessage
 		TimeoutSeconds: row.TimeoutSeconds,
 		Stopped:        row.NoticeKind == "job_kill",
 		Cancelled:      row.NoticeKind == "session_cancel",
+		Interrupted:    row.NoticeKind == "interrupted",
 	}
 	origin := message.OriginWeb
 	if row.OriginCLI {

@@ -359,6 +359,15 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 		return nil, SessionAgentCall{}, false, fmt.Errorf("failed to get session: %w", err)
 	}
 
+	// Phase-4 step 5 (DUR-5/DUR-6, doc sec.3.5/3.7): recover this session's
+	// OWN scope's dead-host rows to 'interrupted' BEFORE the pull below, so
+	// an interruption discovered right now is already delivery='pending' and
+	// gets pulled into history in THIS turn, not a later one. Recovery never
+	// writes history or wakes anyone itself -- see RecoverOwnerScope's doc.
+	if a.asyncJobs != nil && a.asyncJobs.store != nil {
+		a.asyncJobs.store.RecoverOwnerScope(preambleCtx, call.SessionID, a.messages)
+	}
+
 	// Phase-4 step 3 (DUR-3, doc sec.3.3): the driver pulls pending
 	// async_jobs/session_notices rows into history BEFORE history loads for
 	// the prompt, so a notice lands in msgs below exactly like any other

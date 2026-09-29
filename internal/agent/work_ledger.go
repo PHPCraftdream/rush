@@ -54,6 +54,13 @@ type AsyncCompletion struct {
 	// its 'pending' row regardless, so it needs its own wording instead of
 	// falling into the generic finished/failed branch.
 	Cancelled bool
+	// Interrupted is true for a row a dead-host recovery sweep transitioned
+	// to 'interrupted' (doc sec.3.7, step 5): the row's own host process
+	// ended before the job finished naturally. Never produced by the
+	// in-memory delivery path (deliverLocked) -- only by
+	// buildJobNoticeMessageParams reading a pulled row's NoticeKind, since
+	// recovery writes the DB directly and never touches workLedger's memory.
+	Interrupted bool
 	// Metadata carries the inner tool's raw ToolResponse.Metadata through to
 	// a SYNC job's jobResult (§4.4) so awaitAndFinish can reconstruct a
 	// byte-for-byte response. Unused by every async (CLI/web) delivery,
