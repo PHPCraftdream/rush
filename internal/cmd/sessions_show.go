@@ -80,14 +80,14 @@ func sessionsShowCmdRun(cmd *cobra.Command, args []string) error {
 	}
 
 	type sessionShowOutput struct {
-		ID               string  `json:"id"`
-		Hash             string  `json:"hash"`
-		Title            string  `json:"title"`
-		Purpose          string  `json:"purpose,omitempty"` // first user prompt excerpt
-		ParentID         string  `json:"parent_id,omitempty"`
-		Provider         string  `json:"provider,omitempty"`
-		Model            string  `json:"model,omitempty"`
-		Effort           string  `json:"effort,omitempty"`
+		ID       string `json:"id"`
+		Hash     string `json:"hash"`
+		Title    string `json:"title"`
+		Purpose  string `json:"purpose,omitempty"` // first user prompt excerpt
+		ParentID string `json:"parent_id,omitempty"`
+		Provider string `json:"provider,omitempty"`
+		Model    string `json:"model,omitempty"`
+		Effort   string `json:"effort,omitempty"`
 		// FastProvider/FastModel/FastEffort and Worker*/Reviewer* mirror
 		// Provider/Model/Effort above for the other three role slots.
 		// Empty means "not set on this session" (inherits the config
