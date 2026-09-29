@@ -15,8 +15,18 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   running from a previous call, instead of queuing behind it.** The async
   job ledger's durable core (phase 4) enforces at most one running
   delegation per child session; a second one arrives as a tool error asking
-  the caller to wait for the first result. Dead-host recovery of a stale
-  conflicting row is a later phase.
+  the caller to wait for the first result. If the conflicting row's host is
+  provably dead, it is now recovered in the same claim attempt and the new
+  delegation starts immediately instead of being refused.
+- **`job_kill` no longer produces a second, delayed notice.** Its result is
+  now the tool's own answer, carrying the real output captured right before
+  the stop; the underlying async job row is recorded as delivered
+  immediately, so it is never also pulled into history later. This applies
+  to both a background `bash` job and a `run_command` job.
+- **A sub-agent delegation whose last turn produced no text (only reasoning
+  or tool calls) now reports "завершено без итогового ответа" to its
+  parent**, instead of resurfacing the stale text captured when the
+  delegation was parked mid-flight.
 - **Async job state (bash/run_command/agent/agentic_fetch outcomes) is now
   durably recorded in SQLite as it happens**, not decided from in-memory
   state alone. Observable behavior is unchanged for every existing
