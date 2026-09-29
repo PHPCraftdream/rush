@@ -107,8 +107,9 @@ func (f *blockingCoordinator) RunSessionAgentCall(ctx context.Context, call agen
 	return nil, nil
 }
 
-func (f *blockingCoordinator) RerunTruncateAsyncJobs(ctx context.Context, sessionID string, deletedToolCallIDs, deletedMessageIDs []string) error {
-	return nil
+func (f *blockingCoordinator) CancelTurn(sessionID string) {}
+
+func (f *blockingCoordinator) StopRerunJobs(ctx context.Context, sessionID string, voided []session.VoidedAsyncJob) {
 }
 
 func (f *blockingCoordinator) CancelQueuedSummarize(sessionID string)                {}

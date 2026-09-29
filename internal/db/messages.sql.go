@@ -8,6 +8,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"strings"
 )
 
 const countMessagesBySession = `-- name: CountMessagesBySession :one
@@ -225,6 +226,85 @@ WHERE session_id = ?
 func (q *Queries) DeleteSessionMessages(ctx context.Context, sessionID string) error {
 	_, err := q.exec(ctx, q.deleteSessionMessagesStmt, deleteSessionMessages, sessionID)
 	return err
+}
+
+const deleteSessionMessagesByIDs = `-- name: DeleteSessionMessagesByIDs :many
+DELETE FROM messages
+WHERE session_id = ?1 AND id IN (/*SLICE:ids*/?)
+RETURNING id, session_id, role, parts, model, created_at, updated_at, finished_at, provider, is_summary_message, pinned, hidden, reasoning_effort, auto_resumed, background_job_notice, input_tokens, output_tokens, reasoning_tokens, cache_creation_tokens, cache_read_tokens, total_tokens, cost_usd, usage_provider, usage_model, cache_support, usage_estimated, checkpoint_generation, origin, notice_kind
+`
+
+type DeleteSessionMessagesByIDsParams struct {
+	SessionID string   `json:"session_id"`
+	Ids       []string `json:"ids"`
+}
+
+// Rerun truncation (message.Service.DeleteTx): unconditional delete of an
+// explicit id set inside the caller's transaction. RETURNING is the exact
+// set of rows this statement removed (an id someone else already deleted is
+// simply absent), which the caller reconciles async_jobs against.
+func (q *Queries) DeleteSessionMessagesByIDs(ctx context.Context, arg DeleteSessionMessagesByIDsParams) ([]Message, error) {
+	query := deleteSessionMessagesByIDs
+	var queryParams []interface{}
+	queryParams = append(queryParams, arg.SessionID)
+	if len(arg.Ids) > 0 {
+		for _, v := range arg.Ids {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:ids*/?", strings.Repeat(",?", len(arg.Ids))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:ids*/?", "NULL", 1)
+	}
+	rows, err := q.query(ctx, nil, query, queryParams...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Message{}
+	for rows.Next() {
+		var i Message
+		if err := rows.Scan(
+			&i.ID,
+			&i.SessionID,
+			&i.Role,
+			&i.Parts,
+			&i.Model,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.FinishedAt,
+			&i.Provider,
+			&i.IsSummaryMessage,
+			&i.Pinned,
+			&i.Hidden,
+			&i.ReasoningEffort,
+			&i.AutoResumed,
+			&i.BackgroundJobNotice,
+			&i.InputTokens,
+			&i.OutputTokens,
+			&i.ReasoningTokens,
+			&i.CacheCreationTokens,
+			&i.CacheReadTokens,
+			&i.TotalTokens,
+			&i.CostUsd,
+			&i.UsageProvider,
+			&i.UsageModel,
+			&i.CacheSupport,
+			&i.UsageEstimated,
+			&i.CheckpointGeneration,
+			&i.Origin,
+			&i.NoticeKind,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const getMessage = `-- name: GetMessage :one

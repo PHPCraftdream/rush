@@ -1,45 +1,45 @@
-// RerunTruncateAsyncJobs wires the Rerun handler (internal/server) into the
-// ledger's Rerun-scoped stop (work_ledger_rerun.go) and the store's Rerun
-// DB reconciliation (internal/session/async_job_rerun.go).
+// StopRerunJobs wires the Rerun handler (internal/server) into the ledger's
+// Rerun-scoped stop (work_ledger_rerun.go). The durable reconciliation is
+// session.TruncateForRerun's single transaction; this runs only after it
+// committed.
 package agent
 
 import (
 	"context"
-	"fmt"
+	"log/slog"
+
+	"github.com/PHPCraftdream/rush/internal/session"
 )
 
-// RerunTruncateAsyncJobs implements Coordinator.RerunTruncateAsyncJobs. See
-// that method's doc. A coordinator with no async job store wired (asyncJobs
-// nil, or its store nil -- an unusual but not-impossible construction) is a
-// no-op: there is nothing durable to reconcile.
-func (c *coordinator) RerunTruncateAsyncJobs(ctx context.Context, sessionID string, deletedToolCallIDs, deletedMessageIDs []string) error {
-	if c.asyncJobs == nil || c.asyncJobs.store == nil {
-		return nil
+// StopRerunJobs implements Coordinator.StopRerunJobs: voided is the committed
+// truncation's Voided set. A coordinator with no async job store wired is a
+// no-op (nothing durable was voided). Best effort: the rows are already void,
+// so a stop that misses (foreign host, already terminal) only means the
+// executor's completion commits void instead of being stopped early.
+func (c *coordinator) StopRerunJobs(_ context.Context, sessionID string, voided []session.VoidedAsyncJob) {
+	if c.asyncJobs == nil || len(voided) == 0 {
+		return
 	}
-	if len(deletedToolCallIDs) == 0 && len(deletedMessageIDs) == 0 {
-		return nil
+	ownHost := ""
+	if c.asyncJobs.store != nil {
+		ownHost = c.asyncJobs.store.HostID()
 	}
-	// Step 1: stop every RUNNING row the deleted tail names, recursively
-	// through a delegation's tree (like Stop) -- doc sec.3.8's "job_kill
-	// semantics". affectedTree is sessionID's own deleted tool calls PLUS
-	// every descendant session a stopped delegation's tree reached.
-	affectedTree := c.asyncJobs.stopToolCallsForRerun(sessionID, deletedToolCallIDs)
-	if len(affectedTree) > 0 {
-		// Doc sec.3.4/3.8: zero the wake bit on every already-terminal
-		// (pending/done) debt row across the whole newly-stopped subtree --
-		// the same race Stop's own Cancel closes, applied to a Rerun-scoped
-		// stop instead of a whole-session one.
-		if err := c.asyncJobs.store.SetWakeZeroForOwners(ctx, affectedTree); err != nil {
-			return fmt.Errorf("rerun truncate async jobs: zero wake for stopped subtree: %w", err)
+	var running []string
+	var children []string
+	for _, v := range voided {
+		if v.State == "running" {
+			running = append(running, v.ToolCallID)
+			if v.HostID != ownHost {
+				slog.Warn("coordinator.StopRerunJobs: voided job runs on another host; its executor is not stopped, its completion will commit void",
+					"session_id", sessionID, "tool_call_id", v.ToolCallID, "host_id", v.HostID)
+			}
+		}
+		if v.ChildSessionID != "" {
+			children = append(children, v.ChildSessionID)
 		}
 	}
-	// Step 2: the DB-level void/repend reconciliation, scoped to sessionID
-	// itself -- a delegation's OWN child session never appears directly in
-	// sessionID's message history, so only sessionID's own rows can match
-	// either the notice_message_id or tool_call_id sets built from its
-	// deleted tail.
-	if err := c.asyncJobs.store.RerunTruncate(ctx, sessionID, deletedToolCallIDs, deletedMessageIDs); err != nil {
-		return fmt.Errorf("rerun truncate async jobs: %w", err)
+	c.asyncJobs.stopToolCallsForRerun(sessionID, running)
+	for _, child := range children {
+		c.stopTree(child)
 	}
-	return nil
 }

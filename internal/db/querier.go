@@ -197,6 +197,11 @@ type Querier interface {
 	DeleteSession(ctx context.Context, id string) error
 	DeleteSessionFiles(ctx context.Context, sessionID string) error
 	DeleteSessionMessages(ctx context.Context, sessionID string) error
+	// Rerun truncation (message.Service.DeleteTx): unconditional delete of an
+	// explicit id set inside the caller's transaction. RETURNING is the exact
+	// set of rows this statement removed (an id someone else already deleted is
+	// simply absent), which the caller reconciles async_jobs against.
+	DeleteSessionMessagesByIDs(ctx context.Context, arg DeleteSessionMessagesByIDsParams) ([]Message, error)
 	// Abort: the "started" tool-result write itself failed, so nothing durable
 	// should remain (ASYNC-05). Scoped to announced=0 so a row that won the
 	// ack-gate race concurrently is never deleted out from under it.
@@ -613,7 +618,7 @@ type Querier interface {
 	// back into 'pending'. wake_attempts/reacted_failed are reset (A1): a row
 	// re-entering the pending pool starts its settle-by-failure counters fresh,
 	// not with whatever an earlier, unrelated closure left behind. Must run
-	// BEFORE VoidAsyncJobsByToolCallIDs in the same Rerun pass: a row whose OWN
+	// BEFORE the void queries in the same Rerun pass: a row whose OWN
 	// tool call is ALSO in the deleted tail matches both queries, and void must
 	// win for it.
 	RependAsyncJobsByNoticeMessageIDs(ctx context.Context, arg RependAsyncJobsByNoticeMessageIDsParams) (int64, error)
@@ -624,7 +629,15 @@ type Querier interface {
 	// `delivery = 'done'` guard and the wake_attempts/reacted_failed reset
 	// mirror RependAsyncJobsByNoticeMessageIDs's own A4/A1 fixes -- see that
 	// query's doc.
+	// wake_failed markers are excluded: they describe an outcome of the deleted
+	// branch, so they are voided instead (VoidWakeFailedNoticesByMessageIDs).
 	RependSessionNoticesByMessageIDs(ctx context.Context, arg RependSessionNoticesByMessageIDsParams) (int64, error)
+	// Second half of the ack gate's fused transaction (AnnounceStarted): records
+	// the "started" tool-result message that announced this row, so a Rerun can
+	// void the row by the message it actually deleted instead of by
+	// tool_call_id (which a provider may reuse per response). See migration
+	// 20260929000003.
+	SetAsyncJobAnnounceMessageID(ctx context.Context, arg SetAsyncJobAnnounceMessageIDParams) (int64, error)
 	// Second half of the pull transaction: records where the notice landed.
 	SetAsyncJobNoticeMessageID(ctx context.Context, arg SetAsyncJobNoticeMessageIDParams) (int64, error)
 	// A3 (docs/reviews/2026-09-29-async-phase4-round1.md): job_kill's own
@@ -843,13 +856,23 @@ type Querier interface {
 	// "WHERE wake=1 AND reacted=0 AND delivery != 'void'") still narrow this
 	// query correctly -- delivery='done' is a subset of != 'void'.
 	VisibleAsyncReactionDebtExists(ctx context.Context, owner string) (sql.NullBool, error)
-	// Rerun truncation (doc sec.3.8): every row whose OWNING tool call is in the
-	// deleted tail must never surface a notice, regardless of its current
+	// Rerun truncation (doc sec.3.8): every row whose "started" tool-result
+	// message (announce_message_id) is among the rows the truncation actually
+	// deleted must never surface a notice, regardless of its current
 	// delivery/state -- including a still-'running' row (its stop may have
 	// raced or failed): the terminal-transition CAS always preserves an
 	// existing 'void' (TransitionAsyncJobTerminalPreserveVoid), so writing void
 	// here first closes that race for a late-arriving terminal transition too.
-	VoidAsyncJobsByToolCallIDs(ctx context.Context, arg VoidAsyncJobsByToolCallIDsParams) (int64, error)
+	// Keyed by the message id, not tool_call_id: a provider that numbers calls
+	// per response reuses "call_0", so a tool_call_id match could void a KEPT
+	// row (or miss an archived one). RETURNING hands the caller the rows to
+	// stop once the transaction commits.
+	VoidAsyncJobsByAnnounceMessageIDs(ctx context.Context, arg VoidAsyncJobsByAnnounceMessageIDsParams) ([]VoidAsyncJobsByAnnounceMessageIDsRow, error)
+	// Legacy arm of the Rerun void, for rows announced before migration
+	// 20260929000003 (announce_message_id IS NULL): matched by the deleted
+	// tail's tool_call_ids. Restricted to NULL so a row that DOES name its
+	// announce message is never matched by a possibly-reused tool_call_id.
+	VoidAsyncJobsByToolCallIDs(ctx context.Context, arg VoidAsyncJobsByToolCallIDsParams) ([]VoidAsyncJobsByToolCallIDsRow, error)
 	// A pulled notice whose task-still-running condition failed (doc sec.3.4,
 	// supervision/wake_only void-at-drain rule) becomes void instead of done.
 	VoidPendingAsyncJobNotice(ctx context.Context, arg VoidPendingAsyncJobNoticeParams) (int64, error)
@@ -864,6 +887,10 @@ type Querier interface {
 	// would never match here and silently fail to downgrade 'done' to 'void',
 	// leaving a suppressed notice mis-recorded as delivered).
 	VoidPendingSessionNotice(ctx context.Context, arg VoidPendingSessionNoticeParams) (int64, error)
+	// Rerun truncation: a delivered wake_failed marker whose message is in the
+	// deleted tail is dropped, not re-pended -- it reports that the deleted
+	// branch's wake-up failed, which says nothing about the new branch.
+	VoidWakeFailedNoticesByMessageIDs(ctx context.Context, arg VoidWakeFailedNoticesByMessageIDsParams) (int64, error)
 	// Task #340's original claim/mark-done/mark-failed/release-for-retry model
 	// (ClaimOrphanOutboxEntry, MarkOrphanOutboxEntryDone, MarkOrphanOutboxEntryFailed,
 	// ReleaseOrphanOutboxEntryForRetry, CleanupOldDoneOrphanOutboxEntries) was

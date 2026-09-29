@@ -150,8 +150,12 @@ func (m *mockCoordinatorForShutdown) RunSessionAgentCall(ctx context.Context, ca
 	panic("unexpected: Shutdown does not call RunSessionAgentCall")
 }
 
-func (m *mockCoordinatorForShutdown) RerunTruncateAsyncJobs(ctx context.Context, sessionID string, deletedToolCallIDs, deletedMessageIDs []string) error {
-	panic("unexpected: Shutdown does not call RerunTruncateAsyncJobs")
+func (m *mockCoordinatorForShutdown) CancelTurn(sessionID string) {
+	panic("unexpected: Shutdown does not call CancelTurn")
+}
+
+func (m *mockCoordinatorForShutdown) StopRerunJobs(ctx context.Context, sessionID string, voided []session.VoidedAsyncJob) {
+	panic("unexpected: Shutdown does not call StopRerunJobs")
 }
 
 // TestP1_5_ShutdownBoundedTimeout_ReturnsEvenWithBlockingCleanup proves the

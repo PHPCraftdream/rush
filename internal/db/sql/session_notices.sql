@@ -90,8 +90,17 @@ SELECT * FROM session_notices WHERE owner = ? ORDER BY id ASC;
 -- `delivery = 'done'` guard and the wake_attempts/reacted_failed reset
 -- mirror RependAsyncJobsByNoticeMessageIDs's own A4/A1 fixes -- see that
 -- query's doc.
+-- wake_failed markers are excluded: they describe an outcome of the deleted
+-- branch, so they are voided instead (VoidWakeFailedNoticesByMessageIDs).
 UPDATE session_notices SET delivery = 'pending', reacted = 0, reacted_failed = 0, wake_attempts = 0, updated_at = ?
-WHERE owner = ? AND delivery = 'done' AND notice_message_id IN (sqlc.slice('message_ids'));
+WHERE owner = ? AND delivery = 'done' AND kind <> 'wake_failed' AND notice_message_id IN (sqlc.slice('message_ids'));
+
+-- name: VoidWakeFailedNoticesByMessageIDs :execrows
+-- Rerun truncation: a delivered wake_failed marker whose message is in the
+-- deleted tail is dropped, not re-pended -- it reports that the deleted
+-- branch's wake-up failed, which says nothing about the new branch.
+UPDATE session_notices SET delivery = 'void', updated_at = ?
+WHERE owner = ? AND kind = 'wake_failed' AND delivery = 'done' AND notice_message_id IN (sqlc.slice('message_ids'));
 
 -- name: PurgeSessionNoticesOlderThan :execrows
 -- Same retention pass as PurgeAsyncJobsOlderThan (doc sec.3.7), including

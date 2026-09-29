@@ -719,7 +719,7 @@ func TestHandleRerunMessage_SeedContentPinsEarlierIdenticalPromptOnFailedListPat
 //
 // The success-path mirror of #659's scenario: a FOREIGN User row with the
 // SAME text as the rerun prompt lands INSIDE the tail-delete window
-// (created at rerunTailDeleteSeam(0), i.e. after the pre-delete listing and
+// (created at rerunHoldingReservationSeam, i.e. after the pre-delete listing and
 // before the post-delete List) — exactly a concurrent handleInjectMessage
 // or `rush sessions inject` landing mid-delete. The post-delete List
 // SUCCEEDS (no decorator). The fake coordinator is handoffOnlyErrorCoordinator:
@@ -781,18 +781,15 @@ func TestHandleRerunMessage_UnionLoopPinsForeignRowInsideWindowOnSuccessPath(t *
 	a.AgentCoordinator = mockCoord
 
 	// The concurrent writer: a foreign same-text User row landing inside
-	// the tail-delete window — after the pre-delete listing (call #1),
-	// before the post-delete List (call #2). The seam fires at the top of
-	// tail iteration 0, strictly after allMsgs was captured and strictly
-	// before the tail's Delete runs. The row is therefore NOT in the tail
-	// slice the loop deletes (sliced from allMsgs) and not the target: it
-	// survives both deletes, exactly like a real handleInjectMessage /
+	// the truncation window — after the pre-delete listing (call #1),
+	// before the post-delete List (call #2). The seam fires strictly after
+	// allMsgs was captured and strictly before the truncation transaction
+	// runs. The row is therefore NOT in the tail ids the transaction deletes
+	// (taken from allMsgs) and not the target: it survives the truncation,
+	// exactly like a real handleInjectMessage /
 	// `rush sessions inject` row.
 	foreignCreated := make(chan message.Message, 1)
-	rerunTailDeleteSeam = func(i int) {
-		if i != 0 {
-			return
-		}
+	rerunHoldingReservationSeam = func() {
 		foreign, createErr := a.Messages.Create(ctx, sessionID, message.CreateMessageParams{
 			Role:  message.User,
 			Parts: []message.ContentPart{message.TextContent{Text: promptText}},
@@ -803,7 +800,7 @@ func TestHandleRerunMessage_UnionLoopPinsForeignRowInsideWindowOnSuccessPath(t *
 		}
 		foreignCreated <- foreign
 	}
-	t.Cleanup(func() { rerunTailDeleteSeam = nil })
+	t.Cleanup(func() { rerunHoldingReservationSeam = nil })
 
 	hub := newHub()
 	client := newClient(hub, nil)
@@ -833,7 +830,7 @@ func TestHandleRerunMessage_UnionLoopPinsForeignRowInsideWindowOnSuccessPath(t *
 	select {
 	case foreign = <-foreignCreated:
 	default:
-		t.Fatal("rerunTailDeleteSeam never fired at i==0; the test did not exercise the mid-delete window")
+		t.Fatal("rerunHoldingReservationSeam never fired; the test did not exercise the pre-truncation window")
 	}
 	require.NotEqual(t, userMsg.ID, foreign.ID, "precondition: the foreign row is distinct from the rerun target")
 

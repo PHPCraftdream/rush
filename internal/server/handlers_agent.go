@@ -24,21 +24,15 @@ import (
 	"github.com/google/uuid"
 )
 
-// rerunTailDeleteSeam is a test-only hook (task #630): fires at the top
-// of every tail-deletion loop iteration in handleRerunMessage, with the
-// iteration index, BEFORE that iteration's Delete call. A test can cancel
-// the reservation hold at i==1 to land a Cancel precisely BETWEEN two tail
-// deletions and assert the tail is never left half-deleted. nil (a no-op)
-// in every production path.
-var rerunTailDeleteSeam func(i int)
+// rerunTruncate is the Rerun truncation transaction (session.TruncateForRerun);
+// a package var so tests can inject a failing one. Production never reassigns.
+var rerunTruncate = session.TruncateForRerun
 
-// rerunPreTargetDeleteSeam is a test-only hook (task #630 follow-up): fires
-// immediately BEFORE step 3 deletes the target user message, i.e. strictly
-// after the last honoured cancellation check and strictly after the tail
-// loop. A test can cancel the hold here to prove the handler is already
-// committed: it must proceed to the replacement turn, never return with the
-// user's own message deleted and no rerun. nil in every production path.
-var rerunPreTargetDeleteSeam func()
+// rerunPostTruncateSeam is a test-only hook: fires right after the truncation
+// transaction committed (the commit point) and before the voided jobs are
+// stopped, so a test can cancel the hold or the request there and prove the
+// handler still proceeds to the replacement turn. nil in every production path.
+var rerunPostTruncateSeam func()
 
 // rerunPostIdlePollSeam is a test-only hook (task #614): see its call site in
 // handleRerunMessage for exactly which window it fires in. nil in every

@@ -424,6 +424,7 @@ func (a *sessionAgentCoordinatorAdapter) RunSessionAgentCall(ctx context.Context
 	return a.sessionAgent.Run(ctx, call)
 }
 
-func (a *sessionAgentCoordinatorAdapter) RerunTruncateAsyncJobs(ctx context.Context, sessionID string, deletedToolCallIDs, deletedMessageIDs []string) error {
-	return nil
+func (a *sessionAgentCoordinatorAdapter) CancelTurn(sessionID string) {}
+
+func (a *sessionAgentCoordinatorAdapter) StopRerunJobs(ctx context.Context, sessionID string, voided []session.VoidedAsyncJob) {
 }

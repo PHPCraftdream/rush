@@ -256,7 +256,9 @@ func (s *AsyncJobStore) sessionNoticeVoidCondition(ctx context.Context, q *db.Qu
 		if err != nil {
 			return false, err
 		}
-		return job.State != "running", nil
+		// A job voided by a Rerun never surfaces its check-in either, even while
+		// its (possibly unreachable) executor is still running.
+		return job.State != "running" || job.Delivery == "void", nil
 	case NoticeKindSupervision:
 		// A15: a running row on a PROVABLY DEAD host is not open scope --
 		// reuse the same liveness predicate the rest of the scope logic uses
@@ -332,6 +334,14 @@ func (s *AsyncJobStore) AnnounceStarted(ctx context.Context, messages message.Se
 	}
 	if rows == 0 {
 		return message.Message{}, ErrAsyncJobGone
+	}
+	// Record the announcing message: Rerun voids the row by the message id it
+	// deleted, not by a possibly provider-reused tool_call_id.
+	if _, err := q.SetAsyncJobAnnounceMessageID(ctx, db.SetAsyncJobAnnounceMessageIDParams{
+		AnnounceMessageID: sql.NullString{String: msg.ID, Valid: true}, UpdatedAt: time.Now().Unix(),
+		OwnerSessionID: owner, ToolCallID: toolCallID,
+	}); err != nil {
+		return message.Message{}, fmt.Errorf("async job store: announce started: set announce message id: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return message.Message{}, fmt.Errorf("async job store: announce started: commit: %w", err)
