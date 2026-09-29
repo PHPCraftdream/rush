@@ -375,6 +375,10 @@ func (m *mockAgentCoordinator) RunSessionAgentCall(ctx context.Context, call age
 	return nil, nil
 }
 
+func (m *mockAgentCoordinator) RerunTruncateAsyncJobs(ctx context.Context, sessionID string, deletedToolCallIDs, deletedMessageIDs []string) error {
+	return nil
+}
+
 func (m *mockAgentCoordinator) CancelQueuedSummarize(sessionID string) {}
 
 func (m *mockAgentCoordinator) Model() agent.Model {

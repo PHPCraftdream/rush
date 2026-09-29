@@ -122,6 +122,10 @@ func (m *mailboxLikeCoordinator) RunSessionAgentCall(ctx context.Context, call a
 	return nil, nil
 }
 
+func (m *mailboxLikeCoordinator) RerunTruncateAsyncJobs(ctx context.Context, sessionID string, deletedToolCallIDs, deletedMessageIDs []string) error {
+	return nil
+}
+
 // ReserveExclusive is the atomic check-and-claim this whole test exists to
 // exercise: it holds m.mu for the ENTIRE check-then-set, exactly mirroring
 // mailbox.beginCompact's single critical section.

@@ -423,3 +423,7 @@ func (a *sessionAgentCoordinatorAdapter) RunSessionAgentCall(ctx context.Context
 	// For this test, delegate to sessionAgent.Run - not used by App.Shutdown()
 	return a.sessionAgent.Run(ctx, call)
 }
+
+func (a *sessionAgentCoordinatorAdapter) RerunTruncateAsyncJobs(ctx context.Context, sessionID string, deletedToolCallIDs, deletedMessageIDs []string) error {
+	return nil
+}

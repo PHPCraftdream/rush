@@ -150,6 +150,10 @@ func (m *mockCoordinatorForShutdown) RunSessionAgentCall(ctx context.Context, ca
 	panic("unexpected: Shutdown does not call RunSessionAgentCall")
 }
 
+func (m *mockCoordinatorForShutdown) RerunTruncateAsyncJobs(ctx context.Context, sessionID string, deletedToolCallIDs, deletedMessageIDs []string) error {
+	panic("unexpected: Shutdown does not call RerunTruncateAsyncJobs")
+}
+
 // TestP1_5_ShutdownBoundedTimeout_ReturnsEvenWithBlockingCleanup proves the
 // bounded exit invariant: even if a cleanup goroutine blocks forever, Shutdown()
 // itself returns within a deterministic bounded time (the 10-second outer timeout

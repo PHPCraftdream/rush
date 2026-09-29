@@ -106,6 +106,11 @@ func (f *blockingCoordinator) RebuildSessionAgentCall(ctx context.Context, data 
 func (f *blockingCoordinator) RunSessionAgentCall(ctx context.Context, call agent.SessionAgentCall) (*fantasy.AgentResult, error) {
 	return nil, nil
 }
+
+func (f *blockingCoordinator) RerunTruncateAsyncJobs(ctx context.Context, sessionID string, deletedToolCallIDs, deletedMessageIDs []string) error {
+	return nil
+}
+
 func (f *blockingCoordinator) CancelQueuedSummarize(sessionID string)                {}
 func (f *blockingCoordinator) Model() agent.Model                                    { return agent.Model{} }
 func (f *blockingCoordinator) UpdateModels(ctx context.Context) error                { return nil }

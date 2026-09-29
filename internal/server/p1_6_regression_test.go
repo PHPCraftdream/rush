@@ -93,6 +93,10 @@ func (f *fakeAlwaysBusyCoordinator) RunSessionAgentCall(ctx context.Context, cal
 	return nil, nil
 }
 
+func (f *fakeAlwaysBusyCoordinator) RerunTruncateAsyncJobs(ctx context.Context, sessionID string, deletedToolCallIDs, deletedMessageIDs []string) error {
+	return nil
+}
+
 func (f *fakeAlwaysBusyCoordinator) CancelQueuedSummarize(sessionID string) {}
 
 func (f *fakeAlwaysBusyCoordinator) Model() agent.Model {

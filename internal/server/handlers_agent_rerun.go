@@ -212,6 +212,31 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 		return
 	}
 
+	// Phase-4 step 6 (doc sec.3.8): reconcile async_jobs/session_notices
+	// against the deleted tail BEFORE any of it is actually deleted below --
+	// running tool calls in the tail are stopped (job_kill semantics,
+	// recursively through a delegation's tree), and the whole affected set's
+	// delivery/reacted state is fixed up in the same pass. This runs while
+	// this handler still holds exclusive ownership (step 1a) and the
+	// external-silence probe (step 1b), so no replacement turn -- and no
+	// notice pull -- can start until after it returns; the message deletion
+	// loop itself runs after, so a deleted-tail notice can never be pulled
+	// in the window between the two.
+	if a.AgentCoordinator != nil {
+		deletedToolCallIDs := make([]string, 0)
+		deletedMessageIDs := make([]string, 0, len(allMsgs)-targetIdx-1)
+		for _, m := range allMsgs[targetIdx+1:] {
+			deletedMessageIDs = append(deletedMessageIDs, m.ID)
+			for _, tc := range m.ToolCalls() {
+				deletedToolCallIDs = append(deletedToolCallIDs, tc.ID)
+			}
+		}
+		if err := a.AgentCoordinator.RerunTruncateAsyncJobs(holdCtx, sessionID, deletedToolCallIDs, deletedMessageIDs); err != nil {
+			slog.Warn("ws: rerun: async job truncation reconciliation failed",
+				"sessionID", sessionID, "messageID", p.MessageID, "err", err)
+		}
+	}
+
 	// Test-only seam (task #614 regression test, reverse direction): fires
 	// strictly AFTER ReserveExclusive above claimed ownership and strictly
 	// BEFORE the tail-delete loop below runs. A test can pause here to prove
