@@ -373,7 +373,7 @@ func (p *RunQueuePump) executeEntrySync(ctx context.Context, leased *RunQueueEnt
 	watchdogDone := make(chan struct{})
 	go func() {
 		defer close(watchdogDone)
-		ticker := time.NewTicker(10 * time.Millisecond)
+		ticker := p.clock().NewTicker(10 * time.Millisecond)
 		defer ticker.Stop()
 
 		for {
@@ -381,7 +381,7 @@ func (p *RunQueuePump) executeEntrySync(ctx context.Context, leased *RunQueueEnt
 			case <-renewCtx.Done():
 				// Renewal loop stopped
 				return
-			case <-ticker.C:
+			case <-ticker.C():
 				// Check if watchdog should fire: compare now against the
 				// deadline tracked in watchdogDeadlineAtomic — after the
 				// first successful renewal, that is the TRUE (unrounded)
@@ -392,7 +392,7 @@ func (p *RunQueuePump) executeEntrySync(ctx context.Context, leased *RunQueueEnt
 				trueDeadline := time.Unix(0, watchdogDeadlineAtomic.Load())
 				deadline := trueDeadline.Add(-p.leaseWatchdogSafetyMargin())
 
-				if !time.Now().Before(deadline) {
+				if !p.now().Before(deadline) {
 					// Watchdog deadline passed: cancel execution
 					leaseLost.Store(true)
 					// task #611: record the watchdog as the cause, but only
@@ -423,14 +423,14 @@ func (p *RunQueuePump) executeEntrySync(ctx context.Context, leased *RunQueueEnt
 		if renewInterval <= 0 {
 			renewInterval = time.Millisecond
 		}
-		ticker := time.NewTicker(renewInterval)
+		ticker := p.clock().NewTicker(renewInterval)
 		defer ticker.Stop()
 
 		for {
 			select {
 			case <-renewCtx.Done():
 				return
-			case <-ticker.C:
+			case <-ticker.C():
 				// P0-3: derive the DB call's timeout budget, and whether a
 				// renewal attempt is even worthwhile, from the SAME absolute
 				// deadline the watchdog uses — not from a local
@@ -448,7 +448,7 @@ func (p *RunQueuePump) executeEntrySync(ctx context.Context, leased *RunQueueEnt
 				// cannot make a renewal call outlive the watchdog's own
 				// decision to fire.
 				currentTrueExpiresAt := time.Unix(0, watchdogDeadlineAtomic.Load())
-				timeUntilWatchdog := time.Until(currentTrueExpiresAt.Add(-p.leaseWatchdogSafetyMargin()))
+				timeUntilWatchdog := currentTrueExpiresAt.Add(-p.leaseWatchdogSafetyMargin()).Sub(p.now())
 				if timeUntilWatchdog <= 0 {
 					// We're already past the safe budget: watchdog is imminent.
 					// Don't even attempt renewal — let the watchdog fire.
@@ -490,7 +490,7 @@ func (p *RunQueuePump) executeEntrySync(ctx context.Context, leased *RunQueueEnt
 				// case. That same up-to-1s-later property is exactly why the
 				// DB column's value is no longer also used for the watchdog's
 				// own timing above.
-				trueNewExpiresAt := time.Now().Add(p.leaseTTL())
+				trueNewExpiresAt := p.now().Add(p.leaseTTL())
 				newExpiresAt := ceilUnixSeconds(trueNewExpiresAt)
 				renewDBCtx, renewDBCancel := context.WithTimeout(context.Background(), timeUntilWatchdog)
 				ok, err := p.cfg.Sessions.RenewRunQueueLease(renewDBCtx, leased.ID, p.cfg.PumpInstanceID, newExpiresAt)
@@ -693,7 +693,7 @@ func (p *RunQueuePump) executeEntrySync(ctx context.Context, leased *RunQueueEnt
 			slog.Error("run_queue_pump: no-penalty release after queued-not-executed failed", "id", leased.ID, "session_id", leased.SessionID, "err", nackErr, "instance_id", p.cfg.PumpInstanceID)
 		}
 		p.busyBackoffMu.Lock()
-		p.busyBackoffUntil[leased.SessionID] = time.Now().Add(p.leaseTTL())
+		p.busyBackoffUntil[leased.SessionID] = p.now().Add(p.leaseTTL())
 		p.busyBackoffMu.Unlock()
 		slog.Debug("run_queue_pump: call was queued into an externally-owned session, backed off locally without an attempt penalty", "id", leased.ID, "session_id", leased.SessionID, "instance_id", p.cfg.PumpInstanceID)
 		ids, terminalID := resultIdentity()

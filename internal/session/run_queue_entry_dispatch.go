@@ -81,7 +81,7 @@ func (p *RunQueuePump) processEntry(ctx context.Context, entry *RunQueueEntry) {
 	// duplicate call to the same busy owner's mailbox.
 	p.busyBackoffMu.Lock()
 	until, backingOff := p.busyBackoffUntil[entry.SessionID]
-	if backingOff && !time.Now().Before(until) {
+	if backingOff && !p.now().Before(until) {
 		delete(p.busyBackoffUntil, entry.SessionID)
 		backingOff = false
 	}

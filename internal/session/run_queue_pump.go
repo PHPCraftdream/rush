@@ -348,6 +348,15 @@ type RunQueuePumpConfig struct {
 	// exercise post-expiry behavior at all.
 	TestLeaseTTL time.Duration
 
+	// TestClock is a test seam replacing the real clock for every time read
+	// and ticker in the pump's lease logic (tick cadence, CleanupExpiredLeases'
+	// cutoff, renewal, watchdog, busy-backoff). nil = real clock (production
+	// default). Two real-clock dependencies remain: the session service
+	// stamps a fresh lease with time.Now(), and each renewal's DB timeout is
+	// a real timer sized from clock time (so a fake-clock test uses a TTL
+	// large enough that it can never expire in real time).
+	TestClock PumpClock
+
 	// TestMaxConcurrentExecutions is a test seam for overriding
 	// RunQueueMaxConcurrentExecutions. 0 = use the production constant.
 	// Allows regression tests to force an artificially small pool size

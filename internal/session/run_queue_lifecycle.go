@@ -109,7 +109,7 @@ func (p *RunQueuePump) run() {
 	if p.cfg.TestTick != nil {
 		interval = p.cfg.TestTick()
 	}
-	ticker := time.NewTicker(interval)
+	ticker := p.clock().NewTicker(interval)
 	defer ticker.Stop()
 
 	// Determine drain interval
@@ -149,7 +149,7 @@ func (p *RunQueuePump) run() {
 		select {
 		case <-p.ctx.Done():
 			return
-		case <-ticker.C:
+		case <-ticker.C():
 			p.tick()
 		}
 	}
@@ -166,7 +166,7 @@ func (p *RunQueuePump) tick() {
 	defer cancel()
 
 	// Step 1: Cleanup expired leases (recovery from crashed pumps)
-	expiredBefore := time.Now().Unix()
+	expiredBefore := p.now().Unix()
 	if err := p.cfg.Sessions.CleanupExpiredLeases(ctx, expiredBefore); err != nil {
 		logTickDBErr(err, "run_queue_pump: cleanup expired leases failed", p.cfg.PumpInstanceID)
 	}
@@ -181,7 +181,7 @@ func (p *RunQueuePump) tick() {
 	// bug — a stale key can only ever make this pump wait slightly longer
 	// than necessary before trying a session again, never cause incorrect
 	// behavior).
-	now := time.Now()
+	now := p.now()
 	p.busyBackoffMu.Lock()
 	for sessionID, until := range p.busyBackoffUntil {
 		if !now.Before(until) {
