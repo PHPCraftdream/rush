@@ -724,13 +724,17 @@ func TestPurgeExpired_RemovesEmptyDeadHostFiles_KeepsLiveAndNonEmpty(t *testing.
 	require.NoError(t, statErr)
 }
 
-// TestSweepDeadHosts_RestartAfterStopAddsNoExtraFacts is DUR-9's restart
-// half (doc sec.6: "Stop сессии с N под-агентами ... после перезапуска — ни
-// одного лишнего"): N sub-agent sessions each own a 'running' bash job on
-// the SAME host; a restart (this sweep) recovers EXACTLY N facts
-// (interrupted, wake=0), and a SECOND sweep -- standing in for yet another
-// restart cycle -- must add nothing further.
-func TestSweepDeadHosts_RestartAfterStopAddsNoExtraFacts(t *testing.T) {
+// TestSweepDeadHosts_UnstoppedRunningRowsYieldExactlyNFactsThenNone is the
+// session-level half of the restart story (doc sec.6: "Stop сессии с N
+// под-агентами ... после перезапуска — ни одного лишнего"): N sub-agent
+// sessions each own a 'running' bash job on the SAME dead host that nobody
+// stopped; a restart (this sweep) recovers EXACTLY N facts (interrupted,
+// wake=0), and a SECOND sweep -- standing in for yet another restart cycle --
+// must add nothing further. It performs NO Stop; the real-Stop proof (rows the
+// Stop already ended are not re-labelled) is agent.TestSweepDeadHosts_
+// RestartAfterStopAddsNoExtraFacts (coordinator_stop_restart_test.go), which
+// needs coordinator.Cancel and so cannot live in this package.
+func TestSweepDeadHosts_UnstoppedRunningRowsYieldExactlyNFactsThenNone(t *testing.T) {
 	t.Parallel()
 	store, q, ctx := newTestStore(t)
 	const n = 3

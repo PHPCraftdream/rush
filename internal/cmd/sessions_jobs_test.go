@@ -10,8 +10,10 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -160,12 +162,14 @@ func TestSessionsJobsCmdRun_TableAndForeignLiveHostHint(t *testing.T) {
 	}
 	require.GreaterOrEqual(t, hintIdx, 0)
 	require.Contains(t, lines[hintIdx+1], "4242", "the hint must name the foreign host's PID")
-	require.Contains(t, lines[hintIdx+1], "sessions kill", "the hint must point at the only available escape hatch")
+	require.Contains(t, lines[hintIdx+1], killCommandFor(4242), "the hint must name a kill command for the host process")
+	require.NotContains(t, lines[hintIdx+1], "sessions kill", "`rush sessions kill` does nothing between turns and must not be suggested")
 
 	// The dead row must NOT get a hint line.
 	for i, l := range lines {
 		if strings.Contains(l, "foreign-call-2") {
-			require.NotContains(t, lines[i+1], "sessions kill", "a dead row must never print the live-host hint")
+			require.NotContains(t, lines[i+1], killCommandFor(4242), "a dead row must never print the live-host hint")
+			require.NotContains(t, lines[i+1], "owned by a live host", "a dead row must never print the live-host hint")
 		}
 	}
 }
@@ -210,8 +214,8 @@ func TestSessionsJobsCmdRun_JSON(t *testing.T) {
 	require.Equal(t, "alive", item.Liveness)
 	require.EqualValues(t, 9911, item.HostPID)
 	require.Equal(t, "peer", item.HostLabel)
-	require.Contains(t, item.Hint, "9911")
-	require.Contains(t, item.Hint, "sessions kill")
+	require.Contains(t, item.Hint, killCommandFor(9911))
+	require.NotContains(t, item.Hint, "sessions kill")
 }
 
 // TestSessionsJobsCmdRun_NoJobs covers the empty case.
@@ -224,4 +228,14 @@ func TestSessionsJobsCmdRun_NoJobs(t *testing.T) {
 
 	stdout := runJobsCmd(t, sess.ID)
 	require.Contains(t, stdout, "no jobs")
+}
+
+// killCommandFor is the literal process-kill command the hint must carry for
+// pid on this OS -- an independent oracle, not a call into the production
+// helper.
+func killCommandFor(pid int) string {
+	if runtime.GOOS == "windows" {
+		return fmt.Sprintf("taskkill /F /T /PID %d", pid)
+	}
+	return fmt.Sprintf("kill %d", pid)
 }
