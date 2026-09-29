@@ -400,15 +400,19 @@ var cliOpenScopeWaitNoticeInterval = 60 * time.Second
 // not a const, so a test can shrink it.
 var cliDBErrorRetryOverallLimit = 30 * time.Second
 
-// waitForNextCLITurn implements doc sec.3.5's CLI-loop predicate: another
-// turn is owed iff sessionID's reaction debt exists right now; otherwise the
-// loop waits (a hint, or a bounded same-process fallback tick) and
-// re-evaluates, until the scope closes (exit, hasNext=false) or a debt
-// appears (hasNext=true). A DB read error retries with a pause rather than
-// silently treating the scope as open or closed, bounded overall by
-// cliDBErrorRetryOverallLimit and visible on stderr, mirroring the lock-busy
-// retry's own bounded-and-visible shape above. Only ctx cancellation or that
-// bound ends the wait with an error.
+// waitForNextCLITurn implements doc sec.3.5's CLI-loop predicate through the
+// coordinator's single CLIScope answer: another turn is owed iff sessionID has
+// reaction debt AND the session policy (the one wakeSession and the Drain
+// turn-start re-check apply) allows a turn for it; otherwise the loop waits
+// (a hint, or a bounded same-process fallback tick) while a running task row
+// keeps the scope open, and exits (hasNext=false) when nothing is running.
+// Debt the policy will not allow a turn for (CLIScopeState.DeferredDebt) is
+// neither waited on nor settled: it stays for the next human turn, the exit
+// reason is unaffected, and a one-line stderr note says so. A DB read error
+// retries with a pause rather than silently treating the scope as open or
+// closed, bounded overall by cliDBErrorRetryOverallLimit and visible on
+// stderr, mirroring the lock-busy retry's own bounded-and-visible shape
+// above. Only ctx cancellation or that bound ends the wait with an error.
 func (app *App) waitForNextCLITurn(ctx context.Context, source agent.ReactionDebtSource, sessionID string) (hasNext bool, err error) {
 	var lastOpenScopeNotice time.Time
 	var dbErrorRetryStart time.Time
@@ -427,24 +431,24 @@ func (app *App) waitForNextCLITurn(ctx context.Context, source agent.ReactionDeb
 		if ctx.Err() != nil {
 			return false, ctx.Err()
 		}
-		// Pending-inclusive: a freshly-arrived notice is normally still
-		// 'pending' here (nothing has pulled it into history yet) and MUST
-		// still be reported as a turn owed -- the next turn's own preamble
-		// pull is what moves it to 'done' and reacts to it. Using the
-		// VISIBLE-only predicate here instead (an earlier version of the B8/
-		// C5b,c fix) broke this common case: it is never visible until AFTER
-		// a turn already pulled it, so this check saw no debt, fell through
-		// to ScopeOpen, and blocked on WaitForHint's fallback for a hint that
-		// had already fired before this call started watching for it --
-		// several seconds of pure waste on every single async completion.
+		// CLIScope's debt read is pending-inclusive: a freshly-arrived
+		// notice is normally still 'pending' here (nothing has pulled it
+		// into history yet) and MUST still be reported as a turn owed -- the
+		// next turn's own preamble pull is what moves it to 'done' and reacts
+		// to it. Using the VISIBLE-only predicate here instead (an earlier
+		// version of the B8/C5b,c fix) broke this common case: it is never
+		// visible until AFTER a turn already pulled it, so the check saw no
+		// debt and blocked on WaitForHint's fallback for a hint that had
+		// already fired before this call started watching for it -- several
+		// seconds of pure waste on every single async completion.
 		// The actual tight-loop case (a permanently-pending row whose pull
 		// keeps failing) is bounded below instead, at the one place that can
 		// tell "this specific attempt already ran and found nothing to
 		// react to" (drainNoTurn) without misclassifying a fresh notice.
-		debt, debtErr := source.ReactionDebtExists(ctx, sessionID)
-		if debtErr != nil {
-			slog.Warn("rush run: reaction debt check failed; retrying", "session_id", sessionID, "err", debtErr)
-			if hasNext, giveUpErr, giveUp := giveUpOnPersistentDBError(debtErr); giveUp {
+		state, stateErr := source.CLIScope(ctx, sessionID)
+		if stateErr != nil {
+			slog.Warn("rush run: scope check failed; retrying", "session_id", sessionID, "err", stateErr)
+			if hasNext, giveUpErr, giveUp := giveUpOnPersistentDBError(stateErr); giveUp {
 				return hasNext, giveUpErr
 			}
 			if !sleepOrCtxDone(ctx, cliDBRetryPause) {
@@ -453,22 +457,13 @@ func (app *App) waitForNextCLITurn(ctx context.Context, source agent.ReactionDeb
 			continue
 		}
 		dbErrorRetryStart = time.Time{}
-		if debt {
+		if state.TurnOwed {
 			return true, nil
 		}
-		open, openErr := source.ScopeOpen(ctx, sessionID)
-		if openErr != nil {
-			slog.Warn("rush run: scope check failed; retrying", "session_id", sessionID, "err", openErr)
-			if hasNext, giveUpErr, giveUp := giveUpOnPersistentDBError(openErr); giveUp {
-				return hasNext, giveUpErr
+		if !state.WorkOpen {
+			if state.DeferredDebt {
+				fmt.Fprintf(os.Stderr, "rush run: session %q has a notice no automatic turn is allowed for (e.g. a background-shell completion with auto-resume off); it stays for the next turn\n", sessionID)
 			}
-			if !sleepOrCtxDone(ctx, cliDBRetryPause) {
-				return false, ctx.Err()
-			}
-			continue
-		}
-		dbErrorRetryStart = time.Time{}
-		if !open {
 			return false, nil
 		}
 		// Scope is open on running work, not debt (e.g. a delegation still

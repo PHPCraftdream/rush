@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
@@ -30,8 +31,8 @@ type flakyScopeSource struct {
 func (f *flakyScopeSource) ClaimExternalDriver(context.Context, string) error { return nil }
 func (f *flakyScopeSource) ReleaseExternalDriver(context.Context, string)     {}
 func (f *flakyScopeSource) RunMaintenanceSweep(context.Context)               {}
-func (f *flakyScopeSource) ReactionDebtExists(context.Context, string) (bool, error) {
-	return false, nil
+func (f *flakyScopeSource) CLIScope(context.Context, string) (agent.CLIScopeState, error) {
+	return agent.CLIScopeState{}, nil
 }
 func (f *flakyScopeSource) WaitForHint(context.Context, string) {}
 func (f *flakyScopeSource) CaptureDrainSnapshot(context.Context, string) session.DebtSnapshot {

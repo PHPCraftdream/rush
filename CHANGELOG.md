@@ -60,6 +60,15 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   that lands right after a turn finished cleanly ends the run with the
   cancellation error and `exit_reason: "canceled"` (it used to exit 0 with a
   canceled envelope).
+- **`rush run` no longer waits on debt it will not react to.** The loop asks
+  the same session policy the web wakes use whether a reaction turn is
+  allowed: a notice no automatic turn is allowed for (an SDK background-shell
+  completion while `auto_resume_on_job_done` is off, a released delegation
+  child, a session under a live foreign driver, a Stop-suspended session) is
+  neither waited on nor settled. The loop ends once nothing is running,
+  prints one line on stderr, and the notice stays for the next turn; the
+  exit reason is unaffected. Before, such a notice kept the loop re-checking
+  every 5s until `--timeout`/Ctrl-C.
 - **A second `rush run` on a session another live `rush run` loop already
   drives fails fast, before it changes anything, naming the pid** ("session
   X is already driven by another `rush run` (host H, pid P, alive); wait

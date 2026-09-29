@@ -15,6 +15,26 @@ import (
 	"github.com/PHPCraftdream/rush/internal/session"
 )
 
+// CLIScopeState is the CLI loop's ONE answer to "what now" between turns
+// (CLIScope). TurnOwed and DeferredDebt are the two outcomes of a pending-
+// inclusive reaction debt, split by the SAME session policy (sessionDrainPolicy)
+// that wakeSession and the Drain turn-start re-check apply, so the loop never
+// waits for a turn the policy will not allow.
+type CLIScopeState struct {
+	// TurnOwed: reaction debt exists AND the session policy allows a Drain
+	// turn for it -- run the next turn.
+	TurnOwed bool
+	// WorkOpen: the session has a running task row on a host not provably
+	// dead -- wait for it.
+	WorkOpen bool
+	// DeferredDebt: reaction debt exists but the policy will not allow a turn
+	// for it (bg-shell-only debt with AutoResumeOnJobDone off, a released
+	// delegation child, another live driver, Stop's suspension). The loop
+	// neither waits on it nor settles it: the notice stays for the next human
+	// turn and the run's exit reason is unaffected.
+	DeferredDebt bool
+}
+
 // ReactionDebtSource is implemented by *coordinator; internal/app type-
 // asserts for it exactly like it used to for AsyncCompletionSource.
 type ReactionDebtSource interface {
@@ -30,21 +50,24 @@ type ReactionDebtSource interface {
 	// ReleaseExternalDriver releases the durable marker once the loop exits
 	// (always), and the in-memory one for a persistent coordinator (C4).
 	ReleaseExternalDriver(ctx context.Context, sessionID string)
-	// ReactionDebtExists reads doc sec.3.4's debt predicate for sessionID
-	// (pending-inclusive: delivery IN {pending, done}) -- the correct
-	// predicate for "is another turn owed", including a freshly-arrived
-	// notice nothing has pulled into history yet. VISIBLE-only
-	// (delivery='done') would wrongly report no debt for that common case,
-	// since a fresh notice only becomes visible AFTER a turn's own preamble
-	// pull -- see waitForNextCLITurn's own doc for the B8/C5b,c fix that
-	// bounds the actually-stuck-pull case a different way (drainNoTurn ->
-	// WaitForHint), without needing a different predicate here.
-	ReactionDebtExists(ctx context.Context, sessionID string) (bool, error)
+	// CLIScope is the CLI loop's between-turns decision (doc sec.3.5): it
+	// reads doc sec.3.4's debt predicate PENDING-INCLUSIVE (delivery IN
+	// {pending, done} -- a freshly-arrived notice is still 'pending' until a
+	// turn's own preamble pull, so VISIBLE-only would wrongly report no debt;
+	// waitForNextCLITurn's doc has the B8/C5b,c stuck-pull bound) and splits it
+	// by the session policy into TurnOwed vs DeferredDebt. Running rows are
+	// read BEFORE debt: a job's terminal transition and its debt commit
+	// atomically, so "row not running" then implies its debt is already
+	// visible to the debt read that follows -- reversing the order could let
+	// the loop exit between the two.
+	CLIScope(ctx context.Context, sessionID string) (CLIScopeState, error)
 	// ScopeOpen evaluates doc sec.3.5's scope predicate for sessionID, always
 	// BETWEEN turns: true iff the session has a running task row on a host
 	// not provably dead, or a reaction debt (pending-inclusive). It checks
 	// neither "mid-turn" nor the session's policy: debt a policy would refuse
-	// a turn on still keeps the scope open.
+	// a turn on still keeps the scope open. Policy-blind on purpose: the
+	// reviewer-pass gate and a delegation child's release (childScopeDrained)
+	// want "anything outstanding"; the CLI loop uses CLIScope instead.
 	ScopeOpen(ctx context.Context, sessionID string) (bool, error)
 	// WaitForHint blocks until sessionID's hint counter advances, ctx is
 	// done, or a bounded same-process fallback elapses. The caller must
@@ -137,7 +160,8 @@ func (c *coordinator) ReleaseExternalDriver(ctx context.Context, sessionID strin
 	c.asyncJobs.releaseExternalDriver(sessionID)
 }
 
-// ReactionDebtExists implements ReactionDebtSource.
+// ReactionDebtExists reads doc sec.3.4's pending-inclusive debt predicate for
+// sessionID.
 func (c *coordinator) ReactionDebtExists(ctx context.Context, sessionID string) (bool, error) {
 	if c.asyncJobs == nil {
 		return false, nil
@@ -226,6 +250,54 @@ func (c *coordinator) ScopeOpen(ctx context.Context, sessionID string) (bool, er
 	if c.asyncJobs == nil || c.asyncJobs.store == nil {
 		return false, nil
 	}
+	workOpen, err := c.runningWorkOpen(ctx, sessionID)
+	if err != nil || workOpen {
+		return workOpen, err
+	}
+	debt, err := c.asyncJobs.store.ReactionDebtExists(ctx, sessionID)
+	if err != nil {
+		return false, err
+	}
+	return debt, nil
+}
+
+// CLIScope implements ReactionDebtSource (see the interface doc for the
+// read order and the meaning of each field).
+func (c *coordinator) CLIScope(ctx context.Context, sessionID string) (CLIScopeState, error) {
+	if c.asyncJobs == nil || c.asyncJobs.store == nil {
+		return CLIScopeState{}, nil
+	}
+	workOpen, err := c.runningWorkOpen(ctx, sessionID)
+	if err != nil {
+		return CLIScopeState{}, err
+	}
+	state := CLIScopeState{WorkOpen: workOpen}
+	debt, err := c.asyncJobs.store.ReactionDebtExists(ctx, sessionID)
+	if err != nil {
+		return CLIScopeState{}, err
+	}
+	if !debt {
+		return state, nil
+	}
+	allowed, _, polErr := c.sessionDrainPolicy(ctx, sessionID)
+	if polErr != nil {
+		// Same fail-open as decideDrainTurn/wakeSession: an unreadable
+		// policy input is not authoritative, the turn's own re-check is.
+		slog.Warn("cli scope: session policy check failed; treating the turn as allowed",
+			"session_id", sessionID, "err", polErr)
+		allowed = true
+	}
+	if allowed {
+		state.TurnOwed = true
+	} else {
+		state.DeferredDebt = true
+	}
+	return state, nil
+}
+
+// runningWorkOpen is the running-row half of doc sec.3.5's scope predicate:
+// true iff sessionID owns a running task row on a host not provably dead.
+func (c *coordinator) runningWorkOpen(ctx context.Context, sessionID string) (bool, error) {
 	// Phase-4 step 5 (doc sec.3.5/3.7): a scope check is also a "scope
 	// evaluation" point -- recover this owner's own dead-host rows to
 	// 'interrupted' before answering, so a row whose host just died is
@@ -242,9 +314,5 @@ func (c *coordinator) ScopeOpen(ctx context.Context, sessionID string) (bool, er
 			return true, nil
 		}
 	}
-	debt, err := c.asyncJobs.store.ReactionDebtExists(ctx, sessionID)
-	if err != nil {
-		return false, err
-	}
-	return debt, nil
+	return false, nil
 }

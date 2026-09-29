@@ -30,6 +30,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
@@ -50,9 +51,9 @@ func (f *fakeStuckPendingReactionSource) ClaimExternalDriver(context.Context, st
 func (f *fakeStuckPendingReactionSource) ReleaseExternalDriver(context.Context, string) {}
 func (f *fakeStuckPendingReactionSource) RunMaintenanceSweep(context.Context)           {}
 
-func (f *fakeStuckPendingReactionSource) ReactionDebtExists(context.Context, string) (bool, error) {
+func (f *fakeStuckPendingReactionSource) CLIScope(context.Context, string) (agent.CLIScopeState, error) {
 	atomic.AddInt32(&f.plainDebtCalls, 1)
-	return true, nil // pending-inclusive: the stuck row still counts
+	return agent.CLIScopeState{TurnOwed: true, WorkOpen: true}, nil // pending-inclusive: the stuck row still counts
 }
 
 func (f *fakeStuckPendingReactionSource) ScopeOpen(context.Context, string) (bool, error) {
@@ -60,15 +61,15 @@ func (f *fakeStuckPendingReactionSource) ScopeOpen(context.Context, string) (boo
 }
 
 // alwaysErrorsReactionSource simulates a persistently unreadable DB: every
-// ReactionDebtExists call fails.
+// CLIScope call fails.
 type alwaysErrorsReactionSource struct {
 	fakeStuckPendingReactionSource
 	calls int32
 }
 
-func (f *alwaysErrorsReactionSource) ReactionDebtExists(context.Context, string) (bool, error) {
+func (f *alwaysErrorsReactionSource) CLIScope(context.Context, string) (agent.CLIScopeState, error) {
 	atomic.AddInt32(&f.calls, 1)
-	return false, errors.New("database is locked")
+	return agent.CLIScopeState{}, errors.New("database is locked")
 }
 
 func (f *fakeStuckPendingReactionSource) WaitForHint(context.Context, string) {
@@ -126,7 +127,7 @@ func TestWaitAfterNoTurnDrain_OnlyWaitsWhenDrainWasNoTurn(t *testing.T) {
 // (C5b, docs/reviews/2026-09-29-async-phase4-round1.md) verification of
 // design doc sec.6's named test: "a Drain ... with a permanent pull error
 // does not loop" -- a row whose pull keeps failing stays 'pending' forever
-// (fakeStuckPendingReactionSource.ReactionDebtExists always true), so
+// (fakeStuckPendingReactionSource.CLIScope always reports a turn owed), so
 // waitForNextCLITurn always reports a turn owed and the loop always attempts
 // (and, per this simulation, always fails to visibly react to) it, exactly
 // the drainNoTurn=true shape app_run_async.go's loop produces for a stuck
@@ -188,4 +189,63 @@ func TestWaitForNextCLITurn_PersistentDBError_BoundedWithVisibleError(t *testing
 	require.Error(t, err, "a persistently unreadable DB must eventually surface as an error, not hang forever")
 	require.False(t, hasNext)
 	require.Greater(t, atomic.LoadInt32(&f.calls), int32(1), "must have actually retried, not failed on the first attempt")
+}
+
+// scriptedScopeSource answers CLIScope from a script (the last entry repeats),
+// counting its own WaitForHint calls through the embedded fake.
+type scriptedScopeSource struct {
+	fakeStuckPendingReactionSource
+	script []agent.CLIScopeState
+	calls  int32
+}
+
+func (f *scriptedScopeSource) CLIScope(context.Context, string) (agent.CLIScopeState, error) {
+	i := int(atomic.AddInt32(&f.calls, 1)) - 1
+	if i >= len(f.script) {
+		i = len(f.script) - 1
+	}
+	return f.script[i], nil
+}
+
+// TestWaitForNextCLITurn_DeferredDebtIsNeitherWaitedOnNorTurnOwed: debt the
+// policy will not allow a turn for must not keep the loop open. With nothing
+// running the loop exits at once without ever blocking on WaitForHint; while
+// work is still running it waits (once per re-check), then exits when the work
+// is gone, and an allowed turn wins immediately.
+//
+// Revert-check performed: made waitForNextCLITurn treat DeferredDebt like an
+// owed turn (`if state.TurnOwed || state.DeferredDebt`) -- the first subtest
+// FAILED (hasNext was true); treating it as open work instead FAILED it too
+// (WaitForHint was called and the wait never ended).
+func TestWaitForNextCLITurn_DeferredDebtIsNeitherWaitedOnNorTurnOwed(t *testing.T) {
+	application := &App{}
+
+	t.Run("deferred debt and nothing running exits at once", func(t *testing.T) {
+		f := &scriptedScopeSource{script: []agent.CLIScopeState{{DeferredDebt: true}}}
+		hasNext, err := application.waitForNextCLITurn(context.Background(), f, "sess-1")
+		require.NoError(t, err)
+		require.False(t, hasNext, "refused debt must not be reported as a turn owed")
+		require.Zero(t, atomic.LoadInt32(&f.waitForHintCalls), "refused debt must not be waited on")
+		require.EqualValues(t, 1, atomic.LoadInt32(&f.calls))
+	})
+
+	t.Run("running work is waited on, then the loop exits with the debt deferred", func(t *testing.T) {
+		f := &scriptedScopeSource{script: []agent.CLIScopeState{
+			{WorkOpen: true, DeferredDebt: true},
+			{WorkOpen: true, DeferredDebt: true},
+			{DeferredDebt: true},
+		}}
+		hasNext, err := application.waitForNextCLITurn(context.Background(), f, "sess-1")
+		require.NoError(t, err)
+		require.False(t, hasNext)
+		require.EqualValues(t, 2, atomic.LoadInt32(&f.waitForHintCalls), "one wait per re-check while work runs")
+	})
+
+	t.Run("an allowed turn beside running work wins", func(t *testing.T) {
+		f := &scriptedScopeSource{script: []agent.CLIScopeState{{WorkOpen: true, TurnOwed: true}}}
+		hasNext, err := application.waitForNextCLITurn(context.Background(), f, "sess-1")
+		require.NoError(t, err)
+		require.True(t, hasNext)
+		require.Zero(t, atomic.LoadInt32(&f.waitForHintCalls))
+	})
 }
