@@ -339,14 +339,6 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 	for _, m := range allMsgs {
 		baselineIDs[m.ID] = struct{}{}
 	}
-	if msgs, listErr := a.Messages.List(deleteCtx, sessionID); listErr == nil {
-		for _, m := range msgs {
-			baselineIDs[m.ID] = struct{}{}
-		}
-	} else {
-		slog.Warn("ws: rerun: failed to list messages after target delete; baseline ID set falls back to the pre-delete listing",
-			"sessionID", sessionID, "err", listErr)
-	}
 
 	// Task #645 (twelfth-review N-2): recreate the user prompt if it was
 	// lost, on every exit path past the commit point above that did not
@@ -382,6 +374,18 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 			recreateRerunPromptIfLost(deleteCtx, a, sessionID, baselineIDs, targetMsg.ID, text)
 		}
 	}()
+
+	// Union the post-commit listing into the baseline set (the defer above
+	// already holds the map, seeded from allMsgs, so a panic anywhere from the
+	// commit on still restores the prompt).
+	if msgs, listErr := a.Messages.List(deleteCtx, sessionID); listErr == nil {
+		for _, m := range msgs {
+			baselineIDs[m.ID] = struct{}{}
+		}
+	} else {
+		slog.Warn("ws: rerun: failed to list messages after target delete; baseline ID set falls back to the pre-delete listing",
+			"sessionID", sessionID, "err", listErr)
+	}
 
 	// Stop the jobs the committed truncation voided (running executors of this
 	// process, and every voided delegation's child tree). Synchronous and best
