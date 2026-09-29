@@ -281,6 +281,25 @@ func (l *workLedger) cancelSession(sessionID string) {
 	}
 	l.mu.Unlock()
 
+	l.stopTargets(targets)
+	// A cancelled session's own supervision timer (if any) is dropped here
+	// unconditionally -- cancelling is this codebase's closest existing
+	// proxy for "give up on this session's work" -- see
+	// clearSupervisionIfPresent's own doc for the known gap around a bare
+	// session delete with no prior cancel.
+	l.clearSupervisionIfPresent(sessionID)
+}
+
+// stopTargets runs the actual stop for every snapshotted target (cancelSession's
+// original inline loop, factored out so work_ledger_rerun.go's Rerun-scoped
+// stop can share it exactly): sync delegations unblock awaitSync in memory,
+// sync plain jobs are dropped from the map, and every non-sync job (plain or
+// delegation) takes the one durable transition path. Caller must NOT hold
+// l.mu; every target's stoppedBySession/killRequested marker (whichever the
+// caller set) must already be recorded under l.mu before calling this, so
+// the race described on cancelSession's own targets-capture loop is closed
+// regardless of which caller populated targets.
+func (l *workLedger) stopTargets(targets []cancelSessionTarget) {
 	for _, tgt := range targets {
 		switch {
 		case tgt.sync && tgt.isDelegation:
@@ -317,12 +336,6 @@ func (l *workLedger) cancelSession(sessionID string) {
 			tgt.cancel()
 		}
 	}
-	// A cancelled session's own supervision timer (if any) is dropped here
-	// unconditionally -- cancelling is this codebase's closest existing
-	// proxy for "give up on this session's work" -- see
-	// clearSupervisionIfPresent's own doc for the known gap around a bare
-	// session delete with no prior cancel.
-	l.clearSupervisionIfPresent(sessionID)
 }
 
 // treeSessionIDs returns root plus every descendant reachable through a

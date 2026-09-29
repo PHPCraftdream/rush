@@ -233,6 +233,18 @@ type Coordinator interface {
 	// (task #340, ROUND 3 migration). This bypasses the normal buildCall path since the
 	// call is already fully reconstructed with all necessary data.
 	RunSessionAgentCall(ctx context.Context, call SessionAgentCall) (*fantasy.AgentResult, error)
+	// RerunTruncateAsyncJobs reconciles sessionID's async_jobs/session_notices
+	// rows against a Rerun's deleted message tail (doc sec.3.8, step 6):
+	// every RUNNING row named by deletedToolCallIDs is stopped with job_kill
+	// semantics (recursively through a delegation's tree, like Stop), then
+	// the whole affected set's delivery/reacted state is reconciled against
+	// deletedMessageIDs -- see work_ledger_rerun.go/
+	// internal/session/async_job_rerun.go for the exact rules. The caller
+	// (handleRerunMessage) must call this AFTER computing the deleted tail
+	// but BEFORE any replacement turn can start, so a deleted-tail notice
+	// can never be pulled in the window between truncation and the new
+	// turn.
+	RerunTruncateAsyncJobs(ctx context.Context, sessionID string, deletedToolCallIDs, deletedMessageIDs []string) error
 }
 
 type coordinator struct {

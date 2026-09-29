@@ -82,12 +82,24 @@ func (c *coordinator) refreshSubAgentCompletion(childSessionID string, completio
 		}
 		if text := strings.TrimSpace(msg.FullText()); text != "" {
 			completion.Content = tools.TruncateOutput(text)
+		} else {
+			// Doc sec.3.8 ("Итог делегации"): the child's last finished
+			// message has no text at all (only reasoning and/or tool
+			// calls) -- the parent must NOT see the stale text captured
+			// when the delegation was parked (arm time); it gets this
+			// fixed notice instead.
+			completion.Content = subAgentNoFinalTextText
 		}
 		completion.IsError = msg.FinishReason() == message.FinishReasonError
 		return completion
 	}
 	return completion
 }
+
+// subAgentNoFinalTextText is doc sec.3.8's fixed wording for a delegation
+// whose child's last finished turn produced no text content (only
+// reasoning/tool calls) -- see refreshSubAgentCompletion's doc.
+const subAgentNoFinalTextText = "завершено без итогового ответа"
 
 // noteSubAgentChildRunEnded is re-check trigger (iv): a run on sessionID has
 // just returned, so a release that was deferred by childScopeDrained's busy

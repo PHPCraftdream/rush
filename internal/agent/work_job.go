@@ -149,6 +149,16 @@ type asyncJob struct {
 	// actually won. Delegations ignore this flag -- they keep delivering
 	// their cancelled notice exactly as before.
 	stoppedBySession bool
+	// killRequested is set (under workLedger.mu) the instant MarkJobStopped/
+	// StopRunCommandJob begins acting on this job (task #1063), BEFORE the
+	// snapshot/transition/kill sequence runs -- distinct from transitioning
+	// (which only covers the DB-write window inside commitTransition): this
+	// closes the true-concurrency window where a second job_kill call could
+	// otherwise race ahead of the first's own transitioning flag and attempt
+	// a second kill of an already-detached shell. A racer that observes this
+	// already true answers with the job_kill tool's "already stopped" text
+	// and performs no kill of its own.
+	killRequested bool
 	// outputBuf is set by workLedger.setRunCommandBuffer once a run_command
 	// job's live output sink registers (async_tool.go, task #1023 §3):
 	// run_command has no BackgroundShellManager entry, so this is the only

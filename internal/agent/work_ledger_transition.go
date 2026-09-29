@@ -81,14 +81,16 @@ func (l *workLedger) retryAsyncStoreOp(ctx context.Context, op func() error) err
 }
 
 // causeStateNoticeKindWake maps a transitionCause to the DB state/
-// notice_kind/wake/delivery quadruple (doc sec.5 step 2's table). delivery
-// is "pending" -- a pull candidate -- for every cause in step 3, job_kill
-// included: its "stopped (job_kill)" notice still carries the partial
-// output the job_kill response does not, and run_command's job_kill
-// response promises the result "will arrive as a message". Doc sec.3.2's
-// "job_kill row goes straight to done" lands with step 6, together with
-// the real output in job_kill's own response.
-func causeStateNoticeKindWake(cause transitionCause, result jobResult) (state, noticeKind, delivery string, wake bool) {
+// notice_kind/wake/delivery/reacted quintuple (doc sec.5 step 2's table,
+// extended by step 6's doc sec.3.2/3.4). delivery is "pending" -- a pull
+// candidate -- for every cause except job_kill: its result is the job_kill
+// TOOL's own answer (the real output snapshot, doc sec.3.2), so the row
+// goes straight to delivery='done'/reacted=1 and never also surfaces as a
+// second, pulled history notice. wake is already false for job_kill, which
+// alone excludes it from the reaction-debt predicate; reacted=1 is
+// belt-and-suspenders for any reader that checks delivery/reacted without
+// wake.
+func causeStateNoticeKindWake(cause transitionCause, result jobResult) (state, noticeKind, delivery string, wake, reacted bool) {
 	delivery = "pending"
 	switch cause {
 	case causeNaturalFinish, causeDelegationRelease:
@@ -104,8 +106,9 @@ func causeStateNoticeKindWake(cause transitionCause, result jobResult) (state, n
 		state, noticeKind, wake = "cancelled", "session_cancel", false
 	case causeJobKill:
 		state, noticeKind, wake = "cancelled", "job_kill", false
+		delivery, reacted = "done", true
 	}
-	return state, noticeKind, delivery, wake
+	return state, noticeKind, delivery, wake, reacted
 }
 
 // phaseForState maps a committed DB state string to its in-memory jobPhase.
@@ -222,7 +225,7 @@ func (l *workLedger) commitTransition(owner, toolCallID string, cause transition
 		return commitSkipped
 	}
 
-	state, noticeKind, delivery, wake := causeStateNoticeKindWake(cause, result)
+	state, noticeKind, delivery, wake, reacted := causeStateNoticeKindWake(cause, result)
 	var outcome session.TransitionResult
 	for attempt := 0; ; attempt++ {
 		l.mu.Lock()
@@ -238,7 +241,7 @@ func (l *workLedger) commitTransition(owner, toolCallID string, cause transition
 		outcome, err = store.Transition(context.Background(), session.TransitionParams{
 			Owner: owner, ToolCallID: toolCallID, State: state, NoticeKind: noticeKind,
 			ResultSummary: result.content, ResultIsError: result.isError, Wake: wake,
-			Delivery: delivery,
+			Delivery: delivery, Reacted: reacted,
 		})
 		if err == nil {
 			break

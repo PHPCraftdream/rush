@@ -413,13 +413,27 @@ func (l *workLedger) acknowledged(sessionID, toolCallID string) {
 		})
 	}
 
+	l.finishAcknowledgeLocally(sessionID, toolCallID)
+}
+
+// finishAcknowledgeLocally is the ack gate's in-memory tail (job.announced
+// flip + deliverLocked/onWebDone), shared by acknowledged (the plain
+// MarkAnnounced path) and acknowledgeWithMessageTx (step 6's fused DB
+// transaction, work_ledger_announce.go) -- the durable half differs between
+// the two callers, this half does not: a job whose terminal transition
+// already committed (job.state.terminal()) while announced was still false
+// is delivered HERE, the instant announced flips (deliverLocked's own
+// `!job.announced` guard is what withheld it until now) -- this is the
+// "fast job that finishes before the ack" case's existing wake-hint path
+// (doc sec.3.8's Ack gate paragraph), not a new mechanism.
+func (l *workLedger) finishAcknowledgeLocally(sessionID, toolCallID string) {
 	l.mu.Lock()
-	s = l.bySession[sessionID]
+	s := l.bySession[sessionID]
 	if s == nil {
 		l.mu.Unlock()
 		return
 	}
-	job = s.jobs[toolCallID]
+	job := s.jobs[toolCallID]
 	if job == nil {
 		l.mu.Unlock()
 		return
@@ -561,12 +575,26 @@ func (l *workLedger) ResolveJobShellID(owner, jobID string) (string, error) {
 // transition BEFORE the caller (job_kill's tool wrapper) actually kills the
 // background shell. There is no more stopRequested flag for finish() to
 // read -- finish's own later call is a no-op once transition has already
-// made the job terminal (its CAS loses/skips). Best-effort, matching the
-// interface's doc: a jobID that does not resolve, or is already terminal,
-// is silently ignored.
-func (l *workLedger) MarkJobStopped(owner, toolCallID string) {
+// made the job terminal (its CAS loses/skips).
+//
+// Task #1063 (step 6): the return value IS the job_kill tool's own final
+// answer -- the real output snapshot just captured, worded via
+// FormatAsyncCompletion(Stopped: true) exactly like the contract's "stopped
+// (job_kill)" notice text, so job_kill never again answers with a content-
+// free "terminated successfully" while the row's own notice (now
+// delivery='done', never pulled) carries the real output nobody sees. ok is
+// false when jobID does not resolve to a live, ledger-tracked job still
+// running: job_kill then falls back to its pre-existing bgManager-driven
+// flow/wording, which for a REPEAT call on an already-terminal job
+// naturally answers "not found"/"already delivered" -- the "already
+// stopped" outcome the doc's ASYNC-01 sibling rule (§1.5 idempotency)
+// requires, without a second bespoke wording path here. killRequested
+// (set before any of the DB/kill I/O below runs) closes the narrow window
+// where a truly concurrent second call could otherwise race ahead of the
+// first's own transitioning latch and be handed the same "proceed" verdict.
+func (l *workLedger) MarkJobStopped(owner, toolCallID string) (text string, ok bool) {
 	if l == nil {
-		return
+		return "", false
 	}
 	l.mu.Lock()
 	s := l.bySession[owner]
@@ -574,10 +602,11 @@ func (l *workLedger) MarkJobStopped(owner, toolCallID string) {
 	if s != nil {
 		job = s.jobs[toolCallID]
 	}
-	if job == nil || job.state.terminal() || job.transitioning {
+	if job == nil || job.state.terminal() || job.transitioning || job.killRequested {
 		l.mu.Unlock()
-		return
+		return "", false
 	}
+	job.killRequested = true
 	sync := job.sync
 	toolName, shellID := job.toolName, job.shellID
 	l.mu.Unlock()
@@ -589,9 +618,13 @@ func (l *workLedger) MarkJobStopped(owner, toolCallID string) {
 		// (job_kill)" outcome via the OLD memory-only path -- otherwise a
 		// blocked awaitSync caller silently loses that outcome.
 		l.transitionSyncStopped(owner, toolCallID, partial)
-		return
+	} else {
+		l.transition(owner, toolCallID, causeJobKill, partial)
 	}
-	l.transition(owner, toolCallID, causeJobKill, partial)
+	return FormatAsyncCompletion(AsyncCompletion{
+		ToolCallID: toolCallID, ToolName: toolName,
+		Content: partial.content, IsError: partial.isError, Stopped: true,
+	}), true
 }
 
 // setRunCommandBuffer records a run_command job's live output sink, as soon
@@ -646,9 +679,17 @@ func (l *workLedger) RunCommandOutput(owner, jobID string, cursor int64) (string
 // own "context canceled" return (its ctx-cancellation branch discards its
 // real partial content) can never race ahead of and overwrite the intended
 // cause -- finish's later call simply finds the job already terminal.
-func (l *workLedger) StopRunCommandJob(owner, jobID string) error {
+//
+// Task #1063 (step 6): on success, text is job_kill's own final answer --
+// the real output snapshot just captured, worded via
+// FormatAsyncCompletion(Stopped: true) -- so job_kill returns it directly
+// instead of its old "kill requested; result will arrive as a message"
+// placeholder. The error return keeps its pre-existing shape/wording
+// unchanged (idempotency rule, contract §1.5): a repeat stop answers with
+// the same "not found ... or already stopped" text as before this task.
+func (l *workLedger) StopRunCommandJob(owner, jobID string) (text string, err error) {
 	if l == nil {
-		return fmt.Errorf("job %s not found (async job tracking is unavailable)", jobID)
+		return "", fmt.Errorf("job %s not found (async job tracking is unavailable)", jobID)
 	}
 	l.mu.Lock()
 	var job *asyncJob
@@ -657,15 +698,16 @@ func (l *workLedger) StopRunCommandJob(owner, jobID string) error {
 	}
 	if job == nil || job.toolName != tools.RunCommandToolName {
 		l.mu.Unlock()
-		return fmt.Errorf("job %s not found (not owned by this session, already delivered, or not a run_command job)", jobID)
+		return "", fmt.Errorf("job %s not found (not owned by this session, already delivered, or not a run_command job)", jobID)
 	}
-	if job.state.terminal() || job.transitioning {
+	if job.state.terminal() || job.transitioning || job.killRequested {
 		l.mu.Unlock()
 		// Idempotency rule (contract §1.5): a repeat stop on an already-
 		// stopping/stopped target is safe but reports the same "not found"
 		// shape, not a disguised second success.
-		return fmt.Errorf("job %s not found (not owned by this session, already delivered, or already stopped)", jobID)
+		return "", fmt.Errorf("job %s not found (not owned by this session, already delivered, or already stopped)", jobID)
 	}
+	job.killRequested = true
 	sync := job.sync
 	var partial string
 	if job.outputBuf != nil {
@@ -674,16 +716,20 @@ func (l *workLedger) StopRunCommandJob(owner, jobID string) error {
 	cancel := job.cancel
 	l.mu.Unlock()
 
+	result := jobResult{content: partial}
 	if sync {
 		// Review finding P2: same sync/memory-only path as MarkJobStopped.
-		l.transitionSyncStopped(owner, jobID, jobResult{content: partial})
+		l.transitionSyncStopped(owner, jobID, result)
 	} else {
-		l.transition(owner, jobID, causeJobKill, jobResult{content: partial})
+		l.transition(owner, jobID, causeJobKill, result)
 	}
 	if cancel != nil {
 		cancel() // triggers run_command's cmd.Cancel tree-kill (configureRunCommandProcess)
 	}
-	return nil
+	return FormatAsyncCompletion(AsyncCompletion{
+		ToolCallID: jobID, ToolName: tools.RunCommandToolName,
+		Content: result.content, IsError: result.isError, Stopped: true,
+	}), nil
 }
 
 // finish is the terminal transition for a PLAIN job's (bash/run_command)

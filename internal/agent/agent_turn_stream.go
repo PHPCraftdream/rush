@@ -389,14 +389,26 @@ func (ts *turnStream) onToolResult(result fantasy.ToolResultContent) error {
 	ts.mu.Lock()
 	sessionID := ts.currentAssistant.SessionID
 	ts.mu.Unlock()
-	// Use parent ctx instead of genCtx to ensure the message is created
-	// even if the request is canceled mid-stream
-	_, createMsgErr := ts.a.messages.Create(ts.ctx, sessionID, message.CreateMessageParams{
+	params := message.CreateMessageParams{
 		Role: message.Tool,
 		Parts: []message.ContentPart{
 			toolResult,
 		},
-	})
+	}
+	// Ack gate (DUR-7, doc sec.3.8): for a durable async job's own "started"
+	// result, the message insert and announced=1 commit in ONE transaction
+	// (acknowledgeWithMessageTx) instead of two separate writes. handled is
+	// false for an ordinary (non-async, or sync) tool result -- unchanged
+	// plain Create + acknowledged/abort below, exactly as before this gate
+	// existed.
+	if ts.a.asyncJobs != nil {
+		if _, handled, err := ts.a.asyncJobs.acknowledgeWithMessageTx(ts.ctx, sessionID, result.ToolCallID, ts.a.messages, params); handled {
+			return err
+		}
+	}
+	// Use parent ctx instead of genCtx to ensure the message is created
+	// even if the request is canceled mid-stream
+	_, createMsgErr := ts.a.messages.Create(ts.ctx, sessionID, params)
 	if ts.a.asyncJobs != nil {
 		if createMsgErr != nil {
 			ts.a.asyncJobs.abort(sessionID, result.ToolCallID)

@@ -167,7 +167,8 @@ func TestWorkLedger_StopRunCommandJob_SyncJobPreservesStoppedOutcome(t *testing.
 	require.False(t, existing)
 	l.setRunCommandBuffer("owner", "call", buf)
 
-	require.NoError(t, l.StopRunCommandJob("owner", "call"))
+	_, stopErr := l.StopRunCommandJob("owner", "call")
+	require.NoError(t, stopErr)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
