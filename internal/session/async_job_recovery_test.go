@@ -12,6 +12,7 @@ package session
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"os"
 	"sync"
 	"testing"
@@ -572,4 +573,46 @@ func TestPurgeExpired_RemovesEmptyDeadHostFiles_KeepsLiveAndNonEmpty(t *testing.
 	require.NoError(t, err, "a LIVE host with zero current jobs must never be reaped")
 	_, statErr = os.Stat(HostLockPath(store.dataDir, "live-empty"))
 	require.NoError(t, statErr)
+}
+
+// TestSweepDeadHosts_RestartAfterStopAddsNoExtraFacts is DUR-9's restart
+// half (doc sec.6: "Stop сессии с N под-агентами ... после перезапуска — ни
+// одного лишнего"): N sub-agent sessions each own a 'running' bash job on
+// the SAME host; a restart (this sweep) recovers EXACTLY N facts
+// (interrupted, wake=0), and a SECOND sweep -- standing in for yet another
+// restart cycle -- must add nothing further.
+func TestSweepDeadHosts_RestartAfterStopAddsNoExtraFacts(t *testing.T) {
+	t.Parallel()
+	store, q, ctx := newTestStore(t)
+	const n = 3
+	hostID := "dead-host-stop-tree"
+	fabricateDeadHost(t, ctx, q, store.dataDir, hostID)
+	for i := 0; i < n; i++ {
+		childID := fmt.Sprintf("stop-tree-child-%d", i)
+		require.NoError(t, seedSession(ctx, q, childID))
+		seedRunningJob(t, ctx, q, childID, "bash-call", hostID, "", true)
+	}
+
+	outcomes, err := store.SweepDeadHosts(ctx, nil)
+	require.NoError(t, err)
+	total := 0
+	for _, o := range outcomes {
+		total += o.Interrupted
+	}
+	require.Equal(t, n, total, "exactly N facts, one per sub-agent -- no more, no fewer")
+
+	for i := 0; i < n; i++ {
+		childID := fmt.Sprintf("stop-tree-child-%d", i)
+		row, err := store.Get(ctx, childID, "bash-call")
+		require.NoError(t, err)
+		require.Equal(t, "interrupted", row.State)
+		require.EqualValues(t, 0, row.Wake, "a recovered row must never wake anyone")
+	}
+
+	// A second restart/sweep cycle must recover nothing further: the rows
+	// are already terminal, so ListDistinctRunningHostIDs no longer even
+	// names this host.
+	outcomes2, err := store.SweepDeadHosts(ctx, nil)
+	require.NoError(t, err)
+	require.Empty(t, outcomes2, "a later restart must add no extra facts over the first recovery")
 }

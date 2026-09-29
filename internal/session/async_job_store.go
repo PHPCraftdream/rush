@@ -124,6 +124,13 @@ type TransitionParams struct {
 	// candidate), which every cause uses in step 3; "done" skips the pull
 	// entirely (step 6's job_kill, doc sec.3.2).
 	Delivery string
+	// Reacted is written in the SAME statement (step 6): false (0) for every
+	// cause except job_kill, which passes true so its row is neither debt
+	// nor a future notice the instant the transition commits (doc sec.3.4's
+	// wake paragraph) -- wake=false for job_kill already excludes it from
+	// the debt predicate, this is belt-and-suspenders for any future reader
+	// that only checks reacted/delivery.
+	Reacted bool
 }
 
 // TransitionResult is Transition's output.
@@ -213,11 +220,15 @@ func (s *AsyncJobStore) HostID() string {
 }
 
 // Claim is the durable, idempotent job start (doc sec.3.1/3.8, sec.5 step
-// 2): one transaction, read-by-key first. Same input hash -> idempotent
-// "existing". Different hash -> ErrAsyncJobInputMismatch. A delegation
-// naming a child session id a RUNNING row already claims ->
-// ErrAsyncChildSessionBusy (every conflict is a refusal in this step; dead-
-// host recovery of the conflicting row is step 5/6).
+// 2/6): one transaction, read-by-key first. Same input hash -> idempotent
+// "existing" (by whatever state the row is in -- running or terminal, never
+// a second executor). Different hash -> ErrAsyncJobInputMismatch. A
+// delegation naming a child session id a RUNNING row already claims:
+// the conflicting row's host is recovered (doc sec.3.7's primitive) and the
+// claim retried ONCE if that host is provably dead; a live or unknown host,
+// or a conflict that survives the retry, is ErrAsyncChildSessionBusy --
+// always BEFORE "started" (async_tool.go never sees a job to report as
+// running).
 func (s *AsyncJobStore) Claim(ctx context.Context, p ClaimParams) (ClaimResult, error) {
 	hostID, err := s.ensureHost(ctx)
 	if err != nil {
@@ -225,9 +236,41 @@ func (s *AsyncJobStore) Claim(ctx context.Context, p ClaimParams) (ClaimResult, 
 	}
 	inputHash := HashJobInput(p.Input)
 
+	const maxAttempts = 2 // fresh attempt + one retry after a dead-host recovery
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		result, conflict, err := s.claimOnce(ctx, p, hostID, inputHash)
+		if err != nil {
+			return ClaimResult{}, err
+		}
+		if conflict == nil {
+			return result, nil
+		}
+		if attempt == maxAttempts-1 {
+			break
+		}
+		// ASYNC-01 (doc sec.3.8): recover the conflicting row IFF its host is
+		// provably dead, then retry the claim once. RecoverDeadHost itself is
+		// a no-op (RecoveryOutcome{}, nil) for a live or unknown host, so the
+		// retry below simply re-observes the same conflict and the loop falls
+		// through to the refusal after the last attempt.
+		if _, recErr := s.RecoverDeadHost(ctx, conflict.HostID, s.messages); recErr != nil {
+			slog.Warn("async job store: claim: dead-host recovery of conflicting row failed; refusing the delegation",
+				"child_session_id", p.ChildSessionID, "host_id", conflict.HostID, "err", recErr)
+			break
+		}
+	}
+	return ClaimResult{}, &ErrAsyncChildSessionBusy{ChildSessionID: p.ChildSessionID}
+}
+
+// claimOnce is one attempt of Claim's transaction: read-by-key (idempotent
+// repeat), then -- for a delegation -- the ASYNC-01 partial-unique-index
+// conflict check, then the insert. A non-nil conflict return means a RUNNING
+// row already claims p.ChildSessionID; the transaction is rolled back
+// (nothing was written) and the caller decides whether to recover+retry.
+func (s *AsyncJobStore) claimOnce(ctx context.Context, p ClaimParams, hostID, inputHash string) (ClaimResult, *db.AsyncJob, error) {
 	tx, err := s.sqlDB.BeginTx(ctx, nil)
 	if err != nil {
-		return ClaimResult{}, fmt.Errorf("async job store: claim: begin: %w", err)
+		return ClaimResult{}, nil, fmt.Errorf("async job store: claim: begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }() // no-op once committed
 
@@ -236,27 +279,27 @@ func (s *AsyncJobStore) Claim(ctx context.Context, p ClaimParams) (ClaimResult, 
 	switch {
 	case err == nil:
 		if existing.InputHash != inputHash {
-			return ClaimResult{}, &ErrAsyncJobInputMismatch{ToolCallID: p.ToolCallID}
+			return ClaimResult{}, nil, &ErrAsyncJobInputMismatch{ToolCallID: p.ToolCallID}
 		}
 		if err := tx.Commit(); err != nil {
-			return ClaimResult{}, fmt.Errorf("async job store: claim: commit idempotent read: %w", err)
+			return ClaimResult{}, nil, fmt.Errorf("async job store: claim: commit idempotent read: %w", err)
 		}
-		return ClaimResult{Row: existing, Existing: true}, nil
+		return ClaimResult{Row: existing, Existing: true}, nil, nil
 	case errors.Is(err, sql.ErrNoRows):
 		// Fresh claim -- fall through to the child-conflict check + insert.
 	default:
-		return ClaimResult{}, fmt.Errorf("async job store: claim: read existing: %w", err)
+		return ClaimResult{}, nil, fmt.Errorf("async job store: claim: read existing: %w", err)
 	}
 
 	if p.ChildSessionID != "" {
-		_, err := q.GetRunningAsyncJobByChildSession(ctx, sql.NullString{String: p.ChildSessionID, Valid: true})
+		conflict, err := q.GetRunningAsyncJobByChildSession(ctx, sql.NullString{String: p.ChildSessionID, Valid: true})
 		switch {
 		case err == nil:
-			return ClaimResult{}, &ErrAsyncChildSessionBusy{ChildSessionID: p.ChildSessionID}
+			return ClaimResult{}, &conflict, nil
 		case errors.Is(err, sql.ErrNoRows):
 			// No conflicting RUNNING delegation -- proceed.
 		default:
-			return ClaimResult{}, fmt.Errorf("async job store: claim: child conflict check: %w", err)
+			return ClaimResult{}, nil, fmt.Errorf("async job store: claim: child conflict check: %w", err)
 		}
 	}
 
@@ -284,12 +327,12 @@ func (s *AsyncJobStore) Claim(ctx context.Context, p ClaimParams) (ClaimResult, 
 	}
 	row, err := q.ClaimAsyncJob(ctx, params)
 	if err != nil {
-		return ClaimResult{}, fmt.Errorf("async job store: claim: insert: %w", err)
+		return ClaimResult{}, nil, fmt.Errorf("async job store: claim: insert: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
-		return ClaimResult{}, fmt.Errorf("async job store: claim: commit: %w", err)
+		return ClaimResult{}, nil, fmt.Errorf("async job store: claim: commit: %w", err)
 	}
-	return ClaimResult{Row: row}, nil
+	return ClaimResult{Row: row}, nil, nil
 }
 
 // Transition is the ONE terminal-state CAS (DUR-1/DUR-2): one transaction,
@@ -319,6 +362,10 @@ func (s *AsyncJobStore) Transition(ctx context.Context, p TransitionParams) (Tra
 	if delivery == "" {
 		delivery = "pending"
 	}
+	reacted := int64(0)
+	if p.Reacted {
+		reacted = 1
+	}
 	row, err := q.TransitionAsyncJobTerminalPreserveVoid(ctx, db.TransitionAsyncJobTerminalPreserveVoidParams{
 		State:          p.State,
 		Delivery:       delivery,
@@ -326,6 +373,7 @@ func (s *AsyncJobStore) Transition(ctx context.Context, p TransitionParams) (Tra
 		ResultSummary:  sql.NullString{String: p.ResultSummary, Valid: true},
 		ResultIsError:  sql.NullInt64{Int64: resultIsError, Valid: true},
 		Wake:           wake,
+		Reacted:        reacted,
 		UpdatedAt:      time.Now().Unix(),
 		OwnerSessionID: p.Owner,
 		ToolCallID:     p.ToolCallID,

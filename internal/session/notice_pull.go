@@ -293,6 +293,47 @@ func (s *AsyncJobStore) InsertSessionNotice(ctx context.Context, owner, kind, te
 	return err
 }
 
+// AnnounceStarted is the ack gate's fused transaction (DUR-7, doc sec.3.8):
+// the "started" tool-result message and announced=1 commit TOGETHER, with
+// no condition on the row's state -- a job that races to terminal before
+// its own "started" write commits must still be marked announced, so its
+// already-pending notice becomes pullable. rows==0 (ErrAsyncJobGone) means
+// the row no longer exists (e.g. a Rerun truncation raced it): a benign
+// no-op for the caller, mirroring MarkAnnounced's own doc. The caller
+// (workLedger.acknowledgeWithMessageTx) is responsible for the in-memory
+// tail (announced flag, delivery via the existing wake-hint machinery) --
+// this function only owns the durable half.
+func (s *AsyncJobStore) AnnounceStarted(ctx context.Context, messages message.Service, owner, toolCallID string, params message.CreateMessageParams) (message.Message, error) {
+	tx, err := s.sqlDB.BeginTx(ctx, nil)
+	if err != nil {
+		return message.Message{}, fmt.Errorf("async job store: announce started: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // no-op once committed
+	q := db.New(tx)
+
+	msg, err := messages.CreateTx(ctx, tx, owner, params)
+	if err != nil {
+		return message.Message{}, fmt.Errorf("async job store: announce started: create message: %w", err)
+	}
+	rows, err := q.MarkAsyncJobAnnounced(ctx, db.MarkAsyncJobAnnouncedParams{
+		UpdatedAt: time.Now().Unix(), OwnerSessionID: owner, ToolCallID: toolCallID,
+	})
+	if err != nil {
+		return message.Message{}, fmt.Errorf("async job store: announce started: mark announced: %w", err)
+	}
+	if rows == 0 {
+		return message.Message{}, ErrAsyncJobGone
+	}
+	if err := tx.Commit(); err != nil {
+		return message.Message{}, fmt.Errorf("async job store: announce started: commit: %w", err)
+	}
+	// Publish AFTER commit (doc sec.3.3's same rule applied to the ack gate):
+	// a subscriber must never observe an event for a row that could still
+	// roll back.
+	messages.PublishCreated(msg)
+	return msg, nil
+}
+
 // ListSessionNotices is a thin read-only wrapper for tests and diagnostics
 // (the full `sessions why`/`sessions jobs` reader is doc sec.5 step 7's
 // job) -- every row for owner, oldest first, regardless of delivery state.

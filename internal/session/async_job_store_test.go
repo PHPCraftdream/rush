@@ -103,6 +103,105 @@ func TestAsyncJobStore_ClaimChildSessionConflictRefusedBeforeStarted(t *testing.
 	require.ErrorIs(t, err, sql.ErrNoRows)
 }
 
+// TestAsyncJobStore_ClaimChildSessionConflictWithDeadHostIsRecoveredAndStarted
+// pins step 6's ASYNC-01 extension (doc sec.3.8): a conflicting RUNNING row
+// whose host is provably DEAD is recovered (interrupted) in the SAME claim
+// attempt and the new delegation starts immediately, instead of refusing.
+//
+// Revert-check performed: reverted Claim to always refuse on any conflict
+// (deleted the recovery-and-retry loop, restored the single-attempt body).
+// This test FAILED (ErrAsyncChildSessionBusy instead of a fresh running
+// row). Restored the step-6 version; re-ran, passed. Diffed
+// async_job_store.go against the restored version: byte-identical.
+func TestAsyncJobStore_ClaimChildSessionConflictWithDeadHostIsRecoveredAndStarted(t *testing.T) {
+	t.Parallel()
+	a, b, ctx := twoConnStores(t, "parent-0", "parent-1", "parent-2")
+
+	// Force B's host to lazily register (and run its OWN one-time
+	// first-registration dead-host sweep, async_job_store.go's ensureHost)
+	// BEFORE A ever crashes -- at this point A is alive, so that sweep finds
+	// nothing to recover. This isolates the assertion below to Claim's OWN
+	// retry-loop recovery (this step's new code), not the pre-existing
+	// first-registration sweep incidentally doing the same job first.
+	_, err := b.Claim(ctx, ClaimParams{Owner: "parent-0", ToolCallID: "warmup", Kind: JobKindCommand, Input: "echo warm"})
+	require.NoError(t, err)
+
+	first, err := a.Claim(ctx, ClaimParams{
+		Owner: "parent-1", ToolCallID: "call-1", Kind: JobKindAgent, Input: "do work", ChildSessionID: "child-1",
+	})
+	require.NoError(t, err)
+	require.NoError(t, a.MarkAnnounced(ctx, "parent-1", "call-1"))
+	deadHostID := first.Row.HostID
+	require.NoError(t, a.SimulateCrashForTest(), "host A must appear dead to host B below")
+
+	second, err := b.Claim(ctx, ClaimParams{
+		Owner: "parent-2", ToolCallID: "call-2", Kind: JobKindAgent, Input: "do work too", ChildSessionID: "child-1",
+	})
+	require.NoError(t, err, "a conflict with a PROVABLY DEAD host must be recovered and the claim retried, not refused")
+	require.False(t, second.Existing)
+	require.Equal(t, "running", second.Row.State)
+
+	oldRow, err := b.Get(ctx, "parent-1", "call-1")
+	require.NoError(t, err)
+	require.Equal(t, "interrupted", oldRow.State, "the dead host's conflicting row must be recovered in the same attempt")
+	require.Equal(t, deadHostID, oldRow.HostID)
+}
+
+// TestAsyncJobStore_ClaimChildSessionConflictWithLiveHostStaysRefused pins
+// the negative half of the same rule: a conflict whose host is LIVE (this
+// test's own store, i.e. never provably dead) is never recovered, and stays
+// refused even after Claim's one internal retry.
+func TestAsyncJobStore_ClaimChildSessionConflictWithLiveHostStaysRefused(t *testing.T) {
+	t.Parallel()
+	a, b, ctx := twoConnStores(t, "parent-1", "parent-2")
+
+	_, err := a.Claim(ctx, ClaimParams{
+		Owner: "parent-1", ToolCallID: "call-1", Kind: JobKindAgent, Input: "do work", ChildSessionID: "child-1",
+	})
+	require.NoError(t, err)
+	// Host A is never crashed -- ProbeHost from B's perspective must observe
+	// it alive (the lock is still held), so B's claim stays refused.
+	_, err = b.Claim(ctx, ClaimParams{
+		Owner: "parent-2", ToolCallID: "call-2", Kind: JobKindAgent, Input: "do work too", ChildSessionID: "child-1",
+	})
+	require.Error(t, err)
+	var busy *ErrAsyncChildSessionBusy
+	require.ErrorAs(t, err, &busy)
+	require.Equal(t, "child-1", busy.ChildSessionID)
+
+	row, err := b.Get(ctx, "parent-1", "call-1")
+	require.NoError(t, err)
+	require.Equal(t, "running", row.State, "a live host's row must never be touched by the other side's failed claim")
+}
+
+// TestAsyncJobStore_ClaimIdempotentRepeatAnswersByRowState_Terminal pins
+// ASYNC-01's third bullet: a repeat of the SAME call (same owner/tool_call/
+// input) after the row has already reached a TERMINAL state answers with
+// that terminal row (Existing=true), never a second executor and never an
+// error -- the running-state case is TestAsyncJobStore_ClaimIsIdempotent.
+func TestAsyncJobStore_ClaimIdempotentRepeatAnswersByRowState_Terminal(t *testing.T) {
+	t.Parallel()
+	store, q, ctx := newTestStore(t)
+	require.NoError(t, seedSession(ctx, q, "owner-1"))
+
+	p := ClaimParams{Owner: "owner-1", ToolCallID: "call-1", Kind: JobKindCommand, Input: "echo hi"}
+	first, err := store.Claim(ctx, p)
+	require.NoError(t, err)
+	require.False(t, first.Existing)
+
+	won, err := store.Transition(ctx, TransitionParams{
+		Owner: "owner-1", ToolCallID: "call-1", State: "completed", ResultSummary: "ok", Wake: true,
+	})
+	require.NoError(t, err)
+	require.Equal(t, TransitionWon, won.Outcome)
+
+	repeat, err := store.Claim(ctx, p)
+	require.NoError(t, err, "a repeat claim on an already-terminal row must answer by state, not error")
+	require.True(t, repeat.Existing)
+	require.Equal(t, "completed", repeat.Row.State)
+	require.Equal(t, "ok", repeat.Row.ResultSummary.String)
+}
+
 func TestAsyncJobStore_TransitionWonThenLostThenGone(t *testing.T) {
 	t.Parallel()
 	store, q, ctx := newTestStore(t)
