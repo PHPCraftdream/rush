@@ -668,13 +668,13 @@ func (c *coordinator) buildTools(ctx context.Context, cfg *config.Config, agent 
 		hookRunner = hooks.NewRunner(preToolHooks, c.cfg.WorkingDir(), c.cfg.WorkingDir())
 	}
 
-	// Background-job completion notification (web/interactive only).
-	// When a bash command auto-backgrounds and later finishes, push a
-	// one-message completion notice into the owning session via the
-	// existing InjectMessage path. Kill-switch defaults to ON; a session
-	// that is BUSY merges it into the running turn, IDLE sessions get a
-	// persisted message (no auto-resume). rush run is single-turn and
-	// never receives it.
+	// Background-job completion notification. When a bash command
+	// auto-backgrounds and later finishes, notifyBackgroundJobDone persists a
+	// bg_shell_done session_notices row (wake=1); the owning session's next
+	// turn pulls it into history (a running turn at a step boundary). A turn
+	// is started for it only in the web process with AutoResumeOnJobDone.
+	// Kill-switch defaults to ON. A `rush run` process registers this
+	// callback too, so the row can also appear while its loop waits.
 	opts := cfg.Options
 	notifyDone := opts == nil || opts.NotifyOnBackgroundJobDone == nil || *opts.NotifyOnBackgroundJobDone
 	backgroundManager := c.background

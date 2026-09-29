@@ -16,9 +16,9 @@ import (
 
 // pullPendingNotices pulls every pending notice row for sessionID into
 // history (one DB transaction per row, doc sec.3.3) and reports which
-// messages were newly inserted plus whether any of them carries wake=1 --
-// the Drain turn's interim decision for this step (doc sec.3.4's reaction
-// debt replaces this in step 4). A pull error never fails the caller's
+// messages were newly inserted plus whether any of them carries wake=1
+// (decideDrainTurn uses that only as a fallback when its own debt check
+// errors). A pull error never fails the caller's
 // turn: the affected row simply stays pending and is retried on the next
 // pull (this turn's own step boundary, or a later turn).
 func (a *sessionAgent) pullPendingNotices(ctx context.Context, sessionID string) (pulled []message.Message, anyWake bool) {

@@ -79,9 +79,9 @@ type Service interface {
 	// tx commits (the reaction-debt marker writes the step's final message
 	// and marks async_jobs/session_notices rows reacted=1 in ONE
 	// transaction; publishing before commit could let a subscriber observe
-	// a write that still rolls back). A nil returned func means nothing to
-	// publish (the update affected 0 rows, e.g. the message was concurrently
-	// deleted).
+	// a write that still rolls back). On success the returned func is never
+	// nil; it publishes nothing when the update affected 0 rows (e.g. the
+	// message was concurrently deleted). On error it is nil.
 	UpdateTx(ctx context.Context, tx *sql.Tx, message Message) (publish func(), err error)
 	// Notify publishes a message update to the UI without writing to the database.
 	// Use this for high-frequency streaming updates where DB durability is not

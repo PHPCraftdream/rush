@@ -16,57 +16,187 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   liveness (alive/dead/unknown, via the shared host-lock probe), host
   id/pid/label, started/updated times, delivery/wake/reacted, and a short
   result summary. Table and `--json`. A running row on a LIVE host owned by
-  a different process prints that host's PID and a
-  `rush sessions kill <session-id>` hint — there is no job-level kill yet.
+  another process prints that host's PID and the command that stops that
+  process (`kill <pid>`, or `taskkill /F /T /PID <pid>` on Windows): `rush
+  sessions kill` only ends a running turn and does nothing between turns,
+  so it cannot stop such a job. There is still no job-level kill from the
+  CLI.
 - **`sessions gc --jobs-older-than <duration>`** purges terminal,
   delivered-or-voided `async_jobs`/`session_notices` rows older than the
-  given age (`--dry-run` counts only); a `running` row is never purged
-  regardless of age or host liveness. Opt-in — omitting the flag leaves job
-  retention entirely to the existing background 7-day pass.
+  given age (`--dry-run` counts only). A `running` row, an undelivered
+  (`pending`) row and delivered-but-unreacted debt (`wake=1, reacted=0`)
+  are never purged, whatever their age; an age of zero or less is
+  rejected. `--json` prints one extra first line
+  `{"kind":"async_jobs","dry_run":...,"async_jobs":N,"session_notices":M}`
+  with the purged (or would-be-purged) counts; the plain output reports the
+  same counts on stderr. Opt-in: omitting the flag leaves job retention to
+  the automatic 7-day pass (see "Changed", retention).
 - **`sessions show`** now prints a one-line async job count summary
   (`N total, M running`) for sessions that own any, pointing at
   `sessions jobs <id>` for the full delegation-tree view.
-- **`sessions why`** now prints a plain-language "Async jobs:" section:
-  which jobs are running on which host, and whether a reaction debt
-  (a delivered result no model turn has reacted to yet) is pending.
+- **`sessions why`** now prints an "Async jobs:" section: totals, each
+  running job with its host and liveness, and the reaction-debt state. A
+  completed job whose result no model turn has reacted to yet is reported
+  as pending debt both when the result is already in history and when it
+  has not been pulled into history yet (the latter used to print "none").
+  The section reads the session's own rows; the status headline above it
+  does not account for them, so a root that only waits on its own plain
+  background job can still be headlined "done" there and in `sessions
+  list` (which promotes a session to "delegating" only for live
+  delegation rows).
 
 ### Changed
 
+- **`rush run` and a busy session.** The first turn of `rush run --session
+  <busy>` fails fast with the session-busy error, as before phase 4. Only
+  the loop's own later reaction turns (they can legitimately race a web tab
+  that is pulling notices) retry on a lock-busy refusal: every 0.5s, for at
+  most 30s of continuous contention, with a message on stderr, then the run
+  exits with `exit_reason: "error"`. The result of the last completed turn
+  is flushed on every exit path (lock-busy give-up, cancellation, a wait
+  error, scope closed). While the loop waits on running work it prints a
+  stderr heartbeat every 60s, and a persistently unreadable database ends
+  the wait after 30s instead of retrying forever.
+- **A second `rush run` on a session another live `rush run` loop already
+  drives fails fast, before it changes anything, naming the pid** ("session
+  X is already driven by another `rush run` (host H, pid P, alive); wait
+  for it to finish"). A host whose liveness cannot be determined counts as
+  alive; the marker of a crashed loop is taken over. The loop keeps its
+  claim until it exits (also on Ctrl-C).
+- **A web process never runs reaction turns on a CLI-driven root.** The
+  driving loop is recorded durably in the new `session_drivers` table (host
+  id, pid; the driver is alive exactly while its host lock is held, no
+  clock involved). While it is alive no other process starts a reaction turn
+  for that session, and a reaction turn that was already admitted only moves
+  notices into history without calling the provider; the loop sees the debt
+  within 5s and reacts itself, so its final answer and JSON envelope carry
+  the reaction. If the loop dies (`kill -9`) the web process takes the
+  session over on its next hint or its 60s pass. To make this possible
+  `rush run` registers a host (a `hosts/<uuid>.lock` file plus an
+  `async_hosts` row) as soon as it claims the session, even when it never
+  starts an async job, and keeps it until the process exits; a clean exit
+  removes both and a crashed one is reaped by the ordinary dead-host purge.
+- **The web auto-turn cap applies only to SDK background-shell
+  auto-resume** (`AutoResumeOnJobDone`), as before phase 4. Wakes for async
+  jobs, delegations, supervision check-ins and `wake_only` timeouts are
+  uncapped again (an intermediate phase-4 build had capped them). Stop still
+  pauses automatic turns until the next human message; it does so through
+  the same per-session counter, so once Stop (or five background-shell
+  auto-resumes) has filled it, async-job wakes for that session are paused
+  too until the next human message.
+- **Stop is transitive over the delegation tree and leaves a "cancelled"
+  notice per stopped job.** Stopping a session cancels the live turn of the
+  session and of every session below it through running delegation rows,
+  stops their jobs, pauses automatic turns for all of them and durably
+  clears `wake` on every pending or delivered notice of the tree, so a job
+  that finished a moment before Stop cannot grant a stopped delegation a
+  turn. Each stopped plain job (bash/run_command) is recorded as a
+  `cancelled` row that wakes nobody; its "cancelled" notice is delivered on
+  the session's next turn (turn start or step boundary). A released,
+  timed-out or stopped delegation's child session gets no further reaction
+  turn; it is recognised by a delegation row of its parent, so a session
+  created by `sessions fork --child` is not affected.
+- **`job_kill` answers from the committed row.** If the job finished (or
+  was stopped by Stop or a timeout) between the call and the stop, the tool
+  says so with the committed outcome and does not touch the shell; a repeat
+  call reports "not found ... or already stopped". When its own stop wins,
+  its result stays the tool's answer (the real output captured before the
+  stop) and is also recorded as delivered, so it is never pulled into
+  history a second time. Applies to a background `bash` job and a
+  `run_command` job.
+- **Rerun (web "rerun from here") is one atomic step.** The target message,
+  the tail after it and the ledger reconciliation commit in a single
+  transaction. If the transaction fails, nothing was changed and the error
+  says to retry; a cancel before the commit point also changes nothing. Only
+  the deleted tail's jobs are stopped, after the commit; jobs started before
+  the rerun point keep running and their result reaches the new branch as a
+  notice. A delivered notice whose message was in the deleted tail is
+  delivered again to the new branch; a `wake_failed` marker in the tail is
+  dropped, since it described the deleted branch. Rerun now cancels only the
+  live turn instead of a full Stop: it no longer stops kept jobs, pauses
+  automatic turns or clears `wake` for the tree.
 - **`agent`/`agentic_fetch` with `resume_session_id` now refuses immediately
   (before reporting "started") if that child session still has a delegation
   running from a previous call, instead of queuing behind it.** The async
   job ledger's durable core (phase 4) enforces at most one running
   delegation per child session; a second one arrives as a tool error asking
   the caller to wait for the first result. If the conflicting row's host is
-  provably dead, it is now recovered in the same claim attempt and the new
+  provably dead, it is recovered in the same claim attempt and the new
   delegation starts immediately instead of being refused.
-- **`job_kill` no longer produces a second, delayed notice.** Its result is
-  now the tool's own answer, carrying the real output captured right before
-  the stop; the underlying async job row is recorded as delivered
-  immediately, so it is never also pulled into history later. This applies
-  to both a background `bash` job and a `run_command` job.
+- **A tool-call id may be reused once its earlier call is history.** A
+  provider that numbers calls per response (`call_0`) starts a new job again
+  instead of being refused for up to 7 days ("already started earlier"): a
+  row that is terminal and delivered (or voided) is renamed out of the
+  active key (`<id>#reused#<uuid>`, still addressable by its message for
+  Rerun) when the id comes back. A terminal row that is not delivered yet
+  still answers the repeated call idempotently.
+- **Notices are durable rows, visible in history only when a turn pulls
+  them.** Async job outcomes, supervision check-ins, `wake_only` timeout
+  check-ins, wake-failure markers and SDK background-shell completions are
+  `async_jobs`/`session_notices` rows. A session's own turn moves them into
+  history (turn start or step boundary, one transaction per notice; nothing
+  writes them into a session that is between turns) and reacts to them where
+  the session policy allows a turn. Elsewhere (a CLI-driven root between
+  loop turns, a Stop-suspended session, causes that never wake such as Stop
+  or `job_kill`) a notice waits for the next turn. Every such message
+  carries `AutoResumed` and `BackgroundJobNotice`, plus its `NoticeKind` for
+  supervision, timeout and wake-failure notices.
+- **Async job state is durably recorded in SQLite as it happens and
+  survives a host restart.** A single transactional CAS is the only writer
+  of a job's terminal state; in-memory state is a cache that converges to
+  the row. If the database is unavailable, starting a new async job errors
+  instead of silently running untracked. If the host process of a running
+  job dies (crash, kill, power loss), the next process to touch that
+  session's scope, the next host to register, or the periodic sweep
+  recovers it: an announced job is marked `interrupted` and delivered as a
+  notice on the next turn; a job whose "started" result never made it to
+  the model is deleted without a trace; a delegation whose child messages
+  cannot be read is left `running` for a later sweep instead of reporting a
+  false empty answer. Recovery only records what happened: it never writes
+  history and never wakes a session. A natural completion that races a
+  graceful shutdown is still recorded (only jobs that shutdown itself
+  cancels stay `running` for the next host), and a Stop between a job's
+  claim and its "started" result no longer orphans the row. The old
+  in-memory ready queue, the CLI loop's poll/BFS over descendant work and
+  `internal/session/descendant_liveness.go`'s lock-file heartbeat heuristic
+  are gone.
+- **Forced shutdown keeps the host lock.** When the shutdown grace period
+  expires with turns still running, the process keeps its host lock until it
+  really exits, so another process cannot recover rows the still-running
+  goroutines are writing. Only a clean shutdown releases it.
 - **A sub-agent delegation whose last turn produced no text (only reasoning
   or tool calls) now reports "завершено без итогового ответа" to its
   parent**, instead of resurfacing the stale text captured when the
-  delegation was parked mid-flight.
-- **Async job state (bash/run_command/agent/agentic_fetch outcomes) is now
-  durably recorded in SQLite as it happens, and survives a host restart.**
-  A single transactional CAS is the only writer of a job's terminal state;
-  in-memory state is a cache that converges to the row, not a second source
-  of truth. Observable behavior is unchanged for every existing
-  notice/text/timing except the `resume_session_id` case above and one new
-  fail-closed refusal: if the database becomes unavailable, starting a new
-  async job now errors instead of silently running untracked. If the host
-  process that owned a running job dies (crash, kill, power loss), the next
-  process to touch that session's scope recovers it: an announced job is
-  marked `interrupted` and delivered as a notice exactly like any other
-  outcome; a job whose "started" result never made it to the model is
-  deleted without a trace. Recovery only ever records what happened — it
-  never writes a turn's own history and never wakes a session by itself; the
-  next real turn still delivers the notice through the ordinary pull. The
-  old in-memory ready queue, the CLI loop's poll/BFS over descendant work,
-  and `internal/session/descendant_liveness.go`'s lock-file heartbeat
-  heuristic are all gone, replaced by the durable ledger this describes.
+  delegation was parked mid-flight. A child whose reaction was closed by
+  failure finishes its delegation as failed with the text of the closed
+  notices; that failure flag is cleared by the child's next real reaction
+  and by a new delegation on the child, so one transient failure no longer
+  marks every later delegation failed.
+- **Retention (7 days) and where it runs.** Terminal, delivered-or-voided
+  `async_jobs`/`session_notices` rows older than 7 days, dead drivers'
+  markers, empty dead hosts' lock files and orphan `hosts/*.lock` files are
+  purged. `running` rows, undelivered rows and unreacted debt never are, so
+  a Rerun reaches back only as far as retention keeps a delivered row. The
+  web server runs the purge every 60s together with the dead-host sweep, the
+  re-check of parked delegations and the re-check set. A CLI-only install
+  has no ticker: `rush run` runs the dead-host sweep and the retention
+  purge once when its loop starts (never the delegation or re-check-set
+  halves), and a process that registers a host sweeps dead hosts once at
+  registration. Every turn start and scope check recovers the session's own
+  dead-host rows. Library/SDK use, and commands other than `rush run`
+  (except `sessions gc --jobs-older-than`), never purge.
+- **Schema.** New migrations `20260929000001` (plain `(owner)` index on
+  `session_notices`), `20260929000002` (`async_jobs.claim_id`, closes the
+  terminal-transition ABA), `20260929000003` (`async_jobs.announce_message_id`,
+  lets Rerun void by the message it deleted) and `20260929000004` (the
+  `session_drivers` table). The phase-4 core migration
+  `20260928000002_add_async_phase4_core.sql` was edited in place during
+  development (three commits) before it shipped: a data directory that ran
+  an intermediate dev build of it keeps the old schema and must be
+  recreated. From now on only new
+  migration files are added.
+- **Web session-list re-polls read on a separate connection**, so they no
+  longer stall behind write transactions (up to the 30s busy timeout).
 
 ### Removed
 
@@ -77,6 +207,24 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **Reaction turns (the turn a session takes after a job or delegation
+  finishes) no longer fail in the ways the first phase-4 review found.** A
+  reaction turn started from a mailbox release is no longer cut at 30s (it
+  used to close the debt as failed and write a wake-failure marker). A
+  release caused by another process holding the session lock no longer
+  hot-loops; the session is re-checked by the 60s pass instead. A transient
+  provider failure is no longer retried at once: the retry comes from the
+  next hint or 60s pass, and three failed passes (or a quota/401-class
+  error) close the debt with a visible wake-failure marker. Stop, shutdown,
+  Ctrl-C, `--timeout`, a watchdog stall and a pending question no longer
+  close debt as failed; only rows already visible in history when the turn
+  started can be closed, settle and marker are one transaction, and the
+  marker names a real tool call id, never an internal placeholder. An
+  auto-summarize inside a reaction turn keeps its continuation instead of
+  ending the run with tool results unanswered. The `rush run` loop paces
+  itself on a row whose pull keeps failing instead of spinning, and a
+  reaction write that always fails is bounded by the same three-pass
+  counter.
 - **A root `rush run` no longer ends while a descendant sub-agent or async
   command it owns is still live at any depth.** The non-interactive loop
   holds the run open and feeds each descendant's terminal result back as the
@@ -88,7 +236,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   (rendering pending). This now reads the durable `async_jobs` ledger
   (a live delegation row, checked against its host's liveness) rather than
   a session lock file, so it also covers a delegation whose child session
-  has not yet taken its own turn.
+  has not yet taken its own turn. Only delegation rows count: a session
+  whose only live work is its own plain background job is not promoted.
 - **Parked sub-agent outcomes are delivered exactly once and cancellations
   stay cancellations.** A canceled child can no longer be reported to its
   parent as a success carrying the child's last text.
@@ -101,11 +250,13 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   `$myPrompts`).
 - **The composer's ArrowUp recall and history dropdown no longer leak
   supervision check-ins, one-time timeout check-ins, or wake-failure
-  markers.** These notices carry no `AutoResumed`/`BackgroundJobNotice` flag
-  and no web origin (they are persisted off a bare context), so the prior
-  filter missed them. A new server-computed `HumanTyped` field (`NoticeKind
-  != ""` is now also checked) and a single shared client-side filter close
-  the gap for every current and future notice kind.
+  markers.** A server-computed `HumanTyped` field (role, hidden/summary
+  flags, `NoticeKind`, `AutoResumed`, `BackgroundJobNotice`, origin; never
+  the text) and a single shared client-side filter decide what the recall
+  history shows. Every notice the driver pulls into history carries
+  `AutoResumed` and `BackgroundJobNotice` (supervision, timeout and
+  wake-failure ones also a `NoticeKind`), so any of the markers excludes it,
+  for every current and future notice kind.
 - **A delegated sub-agent in `rush run` now receives the results of its own
   async commands.** They used to land on a queue only the root read, so the
   sub-agent never saw its command output and the parent got the sub-agent's

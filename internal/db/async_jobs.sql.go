@@ -1299,10 +1299,13 @@ SELECT
 // failing). The Drain turn-start decision uses THIS query, not the plain
 // one: a permanently failing pull leaves rows stuck at 'pending' forever,
 // and reacting to 'pending' debt would force an endless chain of empty-
-// prompt provider turns with nothing new in history to react to. Both
+// prompt provider turns with nothing new in history to react to. The
 // partial debt indexes (idx_async_jobs_debt/idx_session_notices_debt,
-// "WHERE wake=1 AND reacted=0 AND delivery != 'void'") still narrow this
-// query correctly -- delivery='done' is a subset of != 'void'.
+// "WHERE wake=1 AND reacted=0 AND delivery != 'void'") do NOT serve this
+// query: SQLite does not infer "delivery != 'void'" from "delivery = 'done'".
+// async_jobs is narrowed by the (owner_session_id, tool_call_id) primary key
+// prefix, session_notices by idx_session_notices_owner (migration
+// 20260929000001).
 func (q *Queries) VisibleAsyncReactionDebtExists(ctx context.Context, owner string) (sql.NullBool, error) {
 	row := q.queryRow(ctx, q.visibleAsyncReactionDebtExistsStmt, visibleAsyncReactionDebtExists, owner)
 	var has_debt sql.NullBool

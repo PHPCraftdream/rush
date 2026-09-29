@@ -104,8 +104,9 @@ func (c *coordinator) stopTree(sessionID string) {
 
 func (c *coordinator) CancelAll() (stillBusy bool) {
 	c.StopRecheckTicker()
-	// close() cancels every session's jobs (both directions, per session)
-	// and stops the safety-net ticker.
+	// close() cancels the executor of every still-running job (their rows
+	// stay 'running' for the next host to recover, DUR-1) and stops the
+	// timeout service.
 	if c.asyncJobs != nil {
 		c.asyncJobs.close()
 	}

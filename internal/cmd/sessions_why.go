@@ -106,11 +106,13 @@ func sessionsWhyCmdRun(cmd *cobra.Command, args []string) error {
 // but for a single session, and adds the "at rest" case those helpers
 // don't represent (they only return entries for sessions that HAVE a lock).
 //
-// The descendant check (session.LiveDescendants) is the cross-process
+// The descendant check (AsyncJobStore.LiveDescendantJobs) is the cross-process
 // layer `sessions list` applies through markDelegatingLiveDescendants: a
-// session whose own per-turn lock was released is NOT done while any
-// descendant session still holds a live lock. It is computed before the
-// verdict switch so every branch can consult it.
+// session whose own per-turn lock was released is NOT done while a live
+// delegation row (on a host not provably dead) names a descendant session.
+// It is computed before the verdict switch so every branch can consult it.
+// Only delegation rows count: the session's own plain background jobs are
+// reported by describeAsyncJobsAndDebt, not by this verdict.
 func explainSessionStatus(ctx context.Context, a *app.App, dataDir, sessionID string, out io.Writer) error {
 	msgs, err := a.Messages.List(ctx, sessionID)
 	if err != nil {

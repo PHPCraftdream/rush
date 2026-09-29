@@ -4,10 +4,10 @@
 // subagent_outcome.go, 740 lines) with one type: the delegation-parking half
 // lives in work_ledger_delegation.go, the plain-job half here.
 //
-// Delivery routing is unchanged from today (docs/plans/2026-09-27-async-
-// phase1-spec.md §1.6): a job's completion lands on its owner's ready queue
-// when the owner is a drained CLI loop (or there is no web callback at all),
-// otherwise it is handed to onWebDone. See deliverLocked.
+// Delivery routing (docs/plans/2026-09-27-async-phase1-spec.md §1.6, phase 4
+// step 4): the in-memory ready queue is gone; every non-sync completion is
+// handed to onWebDone, which hints the owner and lets wakeSession decide by
+// session policy whether a turn starts. See deliverLocked.
 package agent
 
 import (
@@ -227,8 +227,9 @@ func signalWorkSession(s *sessionJobs) {
 // if the DB is unavailable or Claim fails, Start returns an error and the
 // executor is never started (fail-closed). A DB row that exists for this
 // key with NO matching in-memory job (e.g. a previous process's job this
-// one never adopted -- recovery/adoption is a later step) is also refused,
-// never silently given a second executor. Sync jobs never touch the store
+// one never adopted) is also refused, never silently given a second
+// executor -- unless that row is already history, in which case Claim
+// archives its key and starts a fresh row. Sync jobs never touch the store
 // at all -- they stay on the old memory-only path.
 func (l *workLedger) Start(owner, toolCallID, input, toolName, childSession string, cli, sync bool, timeout *TimeoutSpec, cancel context.CancelFunc) (*asyncJob, bool, error) {
 	if owner == "" || toolCallID == "" {
@@ -299,8 +300,8 @@ func (l *workLedger) Start(owner, toolCallID, input, toolName, childSession stri
 		// this exact tool call, and the provider is repeating it -- not
 		// necessarily "a previous process" (review finding P3). Refuse
 		// rather than silently starting a second executor for a row that
-		// may still be owned by a live host; recovery/adoption of a row a
-		// dead host owns is a later step (doc sec.5 step 5/6).
+		// may still be owned by a live host; a row a dead host owns is
+		// recovered to 'interrupted' (DUR-6), never adopted.
 		return nil, false, fmt.Errorf("async job %s was already started earlier; not starting it again", toolCallID)
 	}
 	job := &asyncJob{

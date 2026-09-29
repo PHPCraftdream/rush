@@ -457,10 +457,9 @@ func (app *App) waitForNextCLITurn(ctx context.Context, source agent.ReactionDeb
 		}
 		// Scope is open on running work, not debt (e.g. a delegation still
 		// armed, or a bash job still running) -- wait for a hint (or the
-		// bounded same-process fallback inside WaitForHint) and re-check.
-		// This is a same-process wait; the cross-process fallback is the
-		// coordinator's own 60s pass re-evaluating parked delegations/
-		// recheck-set sessions independently (doc sec.3.5).
+		// bounded 5s fallback inside WaitForHint) and re-check. Hints are
+		// same-process; a job on another process's host is noticed by that
+		// bounded re-read (a `rush run` has no 60s pass).
 		//
 		// C17 fix: a periodic stderr heartbeat so a session stuck open on an
 		// `Unknown` host-liveness verdict (or a genuinely long-running job)
