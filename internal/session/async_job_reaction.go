@@ -141,11 +141,27 @@ func (d DebtSnapshot) Empty() bool {
 // BEFORE the turn runs (doc: "the id set is captured at the start of the
 // turn", so a notice arriving mid-retry is never silently absorbed by a
 // later settle).
-// Doc sec.3.4: debt is wake=1/reacted=0/delivery IN (pending, done) --
-// deliberately NOT ListPendingAsyncJobNoticesForOwner/
-// ListPendingSessionNoticesForOwner (those scope to delivery='pending' only,
-// the driver's PULL candidates; the far more common debt shape is
-// delivery='done', already pulled into history, just not yet reacted to).
+// Doc sec.3.4: "закрытие долга неудачей ... и только для строк, которые
+// были done на момент его начала" -- settle-by-failure (and the stuck-
+// progress success-path variant, checkStuckDrainProgress) may only ever act
+// on rows that were ALREADY VISIBLE (delivery='done') when the turn started,
+// never delivery='pending'. A pending row's pull has not (yet, or ever)
+// succeeded -- it was never in the model's prompt, so a failed/stuck-Drain
+// classification has no evidence about it at all; including it here would
+// let a permanently failing pull (a corrupt row, an unmarshalable payload,
+// whatever ReactionDebtExists' own pending branch worries about) get
+// wake_attempts bumped and eventually SETTLED BY FAILURE purely because a
+// same-owner turn kept failing/succeeding for an unrelated reason -- closing
+// debt the model never got a chance to react to. Review finding C18/B-dev1
+// (docs/reviews/2026-09-29-async-phase4-round1.md): this used to be
+// `Delivery != "void"` (pending+done), which is right for
+// VisibleReactionDebtExists' SIBLING predicates (deciding whether a turn is
+// NEEDED at all can and should count pending) but wrong for THIS capture,
+// whose whole contract is "what did the turn actually see". A permanently-
+// failing pull is instead bounded by checkStuckDrainProgress/
+// incrementThenSettleIfThreshold observing an EMPTY snapshot forever (no
+// done rows ever materialize) -- doc sec.6's "does not loop" is satisfied by
+// the turn making no progress at all, not by settling debt it never saw.
 // async_jobs also requires announced=1, matching AsyncReactionDebtExists'
 // own guard (DUR-7: an unannounced row can never produce a notice).
 func (s *AsyncJobStore) CaptureDebtSnapshot(ctx context.Context, owner string) (DebtSnapshot, error) {
@@ -159,16 +175,54 @@ func (s *AsyncJobStore) CaptureDebtSnapshot(ctx context.Context, owner string) (
 	}
 	var snap DebtSnapshot
 	for _, j := range jobs {
-		if j.Wake != 0 && j.Reacted == 0 && j.Delivery != "void" && j.Announced != 0 {
+		if j.Wake != 0 && j.Reacted == 0 && j.Delivery == "done" && j.Announced != 0 {
 			snap.JobIDs = append(snap.JobIDs, j.ToolCallID)
 		}
 	}
 	for _, n := range notices {
-		if n.Wake != 0 && n.Reacted == 0 && n.Delivery != "void" {
+		if n.Wake != 0 && n.Reacted == 0 && n.Delivery == "done" {
 			snap.NoticeIDs = append(snap.NoticeIDs, n.ID)
 		}
 	}
 	return snap, nil
+}
+
+// PendingInclusiveDebtSummary reports whether owner has ANY job-id debt row
+// (pending-inclusive: wake=1/reacted=0/delivery<>'void'/announced=1 -- the
+// SAME scope as ReactionDebtExists) and the Kind of every notice-debt row at
+// that same pending-inclusive scope. Unlike CaptureDebtSnapshot (settle-by-
+// failure's delivery='done'-only scope, "what did the failed/stuck turn
+// actually see"), this answers a DIFFERENT question a PRE-turn policy check
+// needs: "what is this session's ENTIRE current debt, right now, before any
+// turn has run" -- sessionDrainPolicy's bg-shell-only gate (coordinator_
+// drain_policy.go's sessionDebtIsBGShellOnly) runs at release-recheck/60s-
+// pass time, strictly BEFORE any Drain call is even submitted, so the notice
+// it needs to classify is normally still 'pending' (nothing has pulled it
+// yet) -- using the done-only scope there wrongly reported "no debt" for
+// the single most common case (a freshly-arrived, not-yet-pulled bg-shell
+// notice), silently skipping the AutoResumeOnJobDone=off refusal (found via
+// the full internal/agent suite after the C18/B-dev1 fix landed).
+func (s *AsyncJobStore) PendingInclusiveDebtSummary(ctx context.Context, owner string) (hasJobDebt bool, noticeKinds []string, err error) {
+	jobs, err := s.q.ListAsyncJobsForOwner(ctx, owner)
+	if err != nil {
+		return false, nil, fmt.Errorf("async job store: pending-inclusive debt summary: async_jobs: %w", err)
+	}
+	for _, j := range jobs {
+		if j.Wake != 0 && j.Reacted == 0 && j.Delivery != "void" && j.Announced != 0 {
+			hasJobDebt = true
+			break
+		}
+	}
+	notices, err := s.q.ListSessionNoticesForOwner(ctx, owner)
+	if err != nil {
+		return false, nil, fmt.Errorf("async job store: pending-inclusive debt summary: session_notices: %w", err)
+	}
+	for _, n := range notices {
+		if n.Wake != 0 && n.Reacted == 0 && n.Delivery != "void" {
+			noticeKinds = append(noticeKinds, n.Kind)
+		}
+	}
+	return hasJobDebt, noticeKinds, nil
 }
 
 // IncrementWakeAttempts bumps wake_attempts on exactly snap's captured rows

@@ -304,12 +304,33 @@ func TestWakeSession_RunErrorIsVisibleNotDebug(t *testing.T) {
 			return nil, &fantasy.ProviderError{StatusCode: http.StatusBadRequest, Message: "boom"}
 		},
 	}
+	env := testEnv(t)
 	coord := &coordinator{subAgentDrivers: newSubAgentDriverRegistry()}
 	coord.subAgentDrivers.register("sess-2", subAgentDriver{agent: agent})
 	coord.asyncJobs = newWorkLedger(nil)
 	coord.asyncJobs.store = newTestAsyncJobStore(t)
 	coord.asyncJobs.coord = coord
-	require.NoError(t, coord.asyncJobs.store.InsertSessionNotice(t.Context(), "sess-2", "supervision", "seeded debt", true, ""))
+	// A generic, unclassified kind -- deliberately NOT one of the four named
+	// NoticeKind* constants: "supervision"/"timeout_wake_only" would VOID on
+	// pull (sessionNoticeVoidCondition, notice_pull.go) since this fixture
+	// has no other running row in scope; "bg_shell_done" would instead be
+	// swept up by sessionDrainPolicy's OWN bg-shell-only refusal gate (this
+	// fixture's coordinator has no cfg, i.e. AutoResumeOnJobDone reads as
+	// off), refusing the turn before the mock ever runs -- neither is what
+	// this test is about (ASYNC-09's visible-marker guarantee, independent
+	// of notice kind).
+	require.NoError(t, coord.asyncJobs.store.InsertSessionNotice(t.Context(), "sess-2", "manual_test_notice", "seeded debt", true, ""))
+	// W-DRAIN task A (C18/B-dev1 fix): captureDebtSnapshot now scopes to
+	// delivery='done' only -- a real Drain's OWN turn-start pull always runs
+	// BEFORE the provider call that might then fail, so by the time a REAL
+	// attempt fails, a row it actually saw is already 'done'. A bare
+	// InsertSessionNotice alone leaves the row 'pending' (nothing pulled it
+	// yet), which this mock's runFunc never does either -- pre-pull it here
+	// to reproduce the realistic pre-attempt state a real turn's preamble
+	// would already have produced, matching every other settle-by-failure
+	// fixture in this package (see newSettleFixture).
+	_, pullErr := coord.asyncJobs.store.PullSessionNotices(t.Context(), env.messages, "sess-2", buildSessionNoticeMessageParams)
+	require.NoError(t, pullErr)
 
 	err := coord.wakeSession(t.Context(), jobIdentity{owner: "sess-2", toolCallID: "call-2"}, true)
 	require.Error(t, err)

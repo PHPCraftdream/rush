@@ -317,10 +317,16 @@ func TestWakeSession_ExternalDriver_HintOnlyNeverBuildsDrainCall(t *testing.T) {
 // half of this row (before any Stop) is already pinned by
 // TestWebAsyncJob_EndToEnd_OneNoticeOneTurn (internal/agent).
 //
-// REVERT CHECK: changed suspendAutoResume to a no-op (`func (c *coordinator)
-// suspendAutoResume(sessionID string) {}`) -- this test's post-Stop
-// `require.Zero(t, f.requests.Load())` FAILED (a turn ran despite Stop).
-// Restored the real body; re-ran, passed.
+// REVERT CHECK (re-verified live, W-DRAIN B1): changed suspendAutoResume to
+// a no-op (`func (c *coordinator) suspendAutoResume(sessionID string) {}`)
+// -- this test's post-Stop `require.Zero(t, f.requests.Load())` FAILED (a
+// turn ran despite Stop), while the SIBLING test
+// TestStop_OneSecondAfterNaturalFinish_NoNewTurn (coordinator_stop_tree_
+// test.go) stayed GREEN under the same change -- this test claimAndFinishes
+// AFTER Cancel, so the wake-zero pass has nothing to zero and cannot be what
+// is blocking the turn; only the suspended counter can be. Restored the
+// real body; re-ran, both passed. Two independent mechanisms, two
+// independent tests.
 func TestSessionDrainPolicy_StopSuspendsUntilHumanMessage(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

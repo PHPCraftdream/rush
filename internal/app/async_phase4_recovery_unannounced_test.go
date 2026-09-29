@@ -7,27 +7,32 @@
 // by interrupting it -- unlike scenario (а)'s announced=1 case, which gets a
 // visible "interrupted" notice.
 //
-// REVERT CHECK (re-run 2026-09-29 by the `drain` agent, docs/reviews/2026-
-// 09-29-async-phase4-round1.md's W-DRAIN item "TestTwoAppScenarioD ...
-// REVERT CHECK note impossible"): the note that used to be here claimed
-// disabling coordinator_reaction_source.go's ScopeOpen -> RecoverOwnerScope
-// call alone made this test fail. Re-ran that exact probe against the
-// current code (ScopeOpen's call commented out, agent_turn.go's own
-// turn-preamble call left intact): the test still PASSED. Also tried the
-// reverse (ScopeOpen's call intact, agent_turn.go's turn-preamble call
-// disabled) and BOTH disabled together: the test PASSED in every
-// combination. So neither of the two commonly-cited recovery call sites is
-// what actually deletes `call-unannounced` here -- this test does not
-// exercise agent_turn.go's turn-start recovery OR ScopeOpen's own recovery
-// call at all, and would not catch either one being silently broken. The
-// row disappears via a THIRD path this test never named: AsyncJobStore.
-// ensureHost's own first-registration sweep (internal/session/
-// async_job_store.go, "the process that actually performs registration
-// runs ONE sweep over every dead host right after") — internal/session is
-// outside this agent's file scope (store agent's), so tracing the exact
-// trigger further and re-anchoring this test to the mechanism it actually
-// intends to pin is left as follow-up, not done here. The old note's
-// specific factual claim is retracted as false for the current code.
+// REVERT CHECK (re-run 2026-09-29, W-DRAIN task D, docs/reviews/2026-09-29-
+// async-phase4-round1.md: "TestTwoAppScenarioD ... REVERT CHECK note
+// impossible"): the two previously-cited call sites -- agent_turn.go's
+// turn-preamble RecoverOwnerScope call, and coordinator.RunMaintenanceSweep's
+// SweepDeadHosts call -- were BOTH disabled (`if false &&`/`if false {}`)
+// simultaneously; this test still PASSED. AsyncJobStore.ensureHost's
+// first-registration sweep (internal/session/async_job_store.go) cannot be
+// it either: App B never calls Claim in this test at all, so ensureHost is
+// never reached on B's side. Isolated by ALSO disabling coordinator_reaction_
+// source.go's ScopeOpen method's own `RecoverOwnerScope` call (its line
+// ~204, distinct from the two above) with the other two still disabled --
+// THIS made the test FAIL (`errors.Is(err, sql.ErrNoRows)` false: the row
+// still existed). Re-enabling ONLY that one call (the other two still
+// disabled) made it PASS again. The mechanism is: app_run_async.go's CLI
+// loop calls waitForNextCLITurn after EVERY turn, including the first;
+// waitForNextCLITurn finds no reaction debt (an unannounced row produces no
+// notice at all, matching ASYNC-05) and falls through to source.ScopeOpen,
+// whose own body (coordinator_reaction_source.go's ScopeOpen method)
+// recovers the owner's scope (deleting this unannounced row) BEFORE
+// reporting whether anything is still open -- so the row is gone by the time
+// the loop decides "no next turn", never before the FIRST turn's own prompt
+// was built (confirmed live: the row still existed, via a direct Get, at the
+// moment the first and only HTTP request reached the provider). The old
+// note's specific factual claims (both the original "ScopeOpen call alone"
+// and the retraction's "ensureHost's sweep") are retracted; this is the
+// real, proven, isolated mechanism as of the current code.
 package app
 
 import (
@@ -87,7 +92,10 @@ func TestTwoAppScenarioD_AnnouncedZeroHostKilledBeforeAck(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, resB)
 	require.Equal(t, "end_turn", resB.ExitReason, "warnings=%v", resB.Warnings)
-	require.Equal(t, 1, requestsB, "B's own scope recovery (RecoverOwnerScope, called both from ScopeOpen and from the turn preamble) must have already deleted the row before the prompt was ever built")
+	// Exactly one turn: after it, the CLI loop's own waitForNextCLITurn ->
+	// ScopeOpen recovery call (see REVERT CHECK above) finds the row gone and
+	// reports scope closed, so no second (empty-prompt Drain) turn is needed.
+	require.Equal(t, 1, requestsB, "B's post-turn scope recovery (ScopeOpen's own RecoverOwnerScope call) must have deleted the row, closing the scope with no further turn needed")
 
 	_, err = appB.asyncJobStore.Get(ctx, sessionID, "call-unannounced")
 	require.True(t, errors.Is(err, sql.ErrNoRows), "an unannounced row from a dead host must be deleted without a trace, not interrupted")
