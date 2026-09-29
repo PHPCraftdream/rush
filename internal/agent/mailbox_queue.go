@@ -77,6 +77,37 @@ func mergeQueuedCall(queued []SessionAgentCall, call SessionAgentCall) []Session
 	return append(filtered, call)
 }
 
+// mergeQueuedCallAtHead applies mergeQueuedCall's SAME Drain-merge rule
+// (doc sec.3.4: "at most one Drain call in a session's queue ... on ANY
+// insertion path, including returning a displaced call to the head of the
+// queue") for a call that must be reinserted at the HEAD rather than
+// appended to the tail -- reclaimReplacementOrKeep's own case (B17 fix,
+// docs/reviews/2026-09-29-async-phase4-round1.md): a call already committed
+// as "next to run" before an interrupt's replacement preempted it goes back
+// in front of whatever was already queued, not behind it, but must still
+// never let two Drains coexist in the queue, and must still let an
+// incoming real call drop an already-queued Drain.
+func mergeQueuedCallAtHead(queued []SessionAgentCall, call SessionAgentCall) []SessionAgentCall {
+	if call.IsDrain {
+		if len(queued) > 0 {
+			// Whatever is already queued already pulls at its own turn
+			// start; the displaced Drain would only buy a redundant turn.
+			return queued
+		}
+		return append([]SessionAgentCall{call}, queued...)
+	}
+	if !hasQueuedDrain(queued) {
+		return append([]SessionAgentCall{call}, queued...)
+	}
+	filtered := make([]SessionAgentCall, 0, len(queued))
+	for _, q := range queued {
+		if !q.IsDrain {
+			filtered = append(filtered, q)
+		}
+	}
+	return append([]SessionAgentCall{call}, filtered...)
+}
+
 // hasQueuedDrain reports whether queued already holds a Drain call.
 func hasQueuedDrain(queued []SessionAgentCall) bool {
 	for _, q := range queued {

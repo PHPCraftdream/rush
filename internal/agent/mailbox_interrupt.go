@@ -292,7 +292,12 @@ func (mb *mailbox) reclaimReplacementOrKeep(call SessionAgentCall) SessionAgentC
 		next := *mb.replacement
 		mb.replacement = nil
 		next.replacementHandoff = true
-		mb.submitted = append([]SessionAgentCall{call}, mb.submitted...)
+		// B17 fix: apply the SAME Drain-merge rule every other insertion
+		// path already applies, instead of a bare prepend -- a bare prepend
+		// let a displaced Drain sit alongside an already-queued Drain (or
+		// an already-queued real call), and let a displaced real call leave
+		// a stale queued Drain in place instead of dropping it.
+		mb.submitted = mergeQueuedCallAtHead(mb.submitted, call)
 		return next
 	}
 	return call
