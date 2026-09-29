@@ -19,11 +19,21 @@ import (
 // Stop). Cancel's wake-zero pass must close that race: a late hint arriving
 // for the same row afterward must not produce a provider turn.
 //
-// REVERT CHECK: commented out the `store.SetWakeZeroForOwners` call inside
-// coordinator.Cancel (coordinator_interrupt.go) -- this test's
+// REVERT CHECK (re-verified live, W-DRAIN B1, docs/reviews/2026-09-29-
+// async-phase4-round1.md flagged this comment as possibly stale): gated the
+// `store.SetWakeZeroForOwners` call inside coordinator.Cancel
+// (coordinator_interrupt.go) behind `if false &&` -- this test's
 // `require.Zero(t, f.requests.Load())` FAILED (the probe server received a
 // request: the late hint still found wake=1 and ran an empty-prompt turn
-// over the notice). Restored the call; re-ran, passed.
+// over the notice), while the SIBLING test in this package,
+// TestSessionDrainPolicy_StopSuspendsUntilHumanMessage (coordinator_wake_
+// reaction_debt_test.go), stayed GREEN under the same change -- proving this
+// test pins the wake-zero pass specifically, independently of
+// suspendAutoResume (that test's own revert-check is the mirror: it fails
+// when suspendAutoResume is disabled while this mechanism is untouched, and
+// stays green when the wake-zero pass alone is disabled). Restored the
+// call; re-ran, both passed. Two independent mechanisms, two independent
+// tests, verified NOT stale.
 func TestStop_OneSecondAfterNaturalFinish_NoNewTurn(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
