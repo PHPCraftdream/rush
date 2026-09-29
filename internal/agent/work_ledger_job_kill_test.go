@@ -167,14 +167,14 @@ func TestWorkLedger_JobKillRaceAgainstFinishYieldsOneOutcome(t *testing.T) {
 		l.acknowledged("owner", "call")
 
 		var markText string
-		var markOK bool
+		var markVerdict tools.JobStopVerdict
 		start := make(chan struct{})
 		var wg sync.WaitGroup
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
 			<-start
-			markText, markOK = l.MarkJobStopped("owner", "call")
+			markText, markVerdict = l.MarkJobStopped("owner", "call")
 		}()
 		go func() {
 			defer wg.Done()
@@ -188,10 +188,11 @@ func TestWorkLedger_JobKillRaceAgainstFinishYieldsOneOutcome(t *testing.T) {
 		require.Len(t, got, 1, "exactly one terminal outcome must be delivered per race (iteration %d)", i)
 
 		if got[0].Stopped {
-			require.True(t, markOK, "iteration %d: job_kill won the race but reported ok=false", i)
+			require.Equal(t, tools.JobStopStopped, markVerdict, "iteration %d: job_kill won the race but did not report JobStopStopped", i)
 			require.Contains(t, markText, "was stopped (job_kill)", "iteration %d", i)
 		} else {
 			sawFinishWon = true
+			require.NotEqual(t, tools.JobStopStopped, markVerdict, "iteration %d: job_kill lost the race but reported JobStopStopped", i)
 			require.NotContains(t, markText, "was stopped (job_kill)",
 				"iteration %d: job_kill lost the race to natural finish but its own answer still claimed it stopped the job", i)
 		}
@@ -347,8 +348,8 @@ func TestWorkLedger_MarkJobStopped_RowGoesStraightToDoneNeitherDebtNorNotice(t *
 	require.NoError(t, err)
 	l.acknowledged("owner", "call")
 
-	text, ok := l.MarkJobStopped("owner", "call")
-	require.True(t, ok)
+	text, verdict := l.MarkJobStopped("owner", "call")
+	require.Equal(t, tools.JobStopStopped, verdict)
 	require.Contains(t, text, "job_kill")
 
 	ctx := context.Background()
@@ -408,8 +409,8 @@ func TestWorkLedger_MarkJobStopped_ConcurrentCallsYieldExactlyOneFreshStop(t *te
 			go func() {
 				defer wg.Done()
 				<-start
-				_, ok := l.MarkJobStopped("owner", "call")
-				results[g] = ok
+				_, verdict := l.MarkJobStopped("owner", "call")
+				results[g] = verdict == tools.JobStopStopped
 			}()
 		}
 		close(start)

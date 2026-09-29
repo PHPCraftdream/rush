@@ -652,19 +652,25 @@ func completionFromSnapshot(toolCallID, toolName string, snap jobOutcomeSnapshot
 // causeJobKill transition actually won the CAS -- a concurrent natural
 // finish/timeout/Stop can commit first in the window between the initial
 // guard above and commitAndDeliver's own store write (capturePartial's I/O
-// runs in between, unlocked). ok is false when jobID does not resolve to a
-// live, ledger-tracked job still running, OR when this call's own attempt
-// did not win: job_kill then falls back to its pre-existing bgManager-driven
-// flow/wording for the "not found" case, and for the "lost the race" case is
-// refused outright rather than answering "stopped" for an outcome this call
-// did not cause (job_kill.go, B11) -- the "already stopped"/idempotent shape
-// the doc's ASYNC-01 sibling rule (§1.5) requires either way. killRequested
-// (set before any of the DB/kill I/O below runs) closes the narrow window
-// where a truly concurrent second call could otherwise race ahead of the
-// first's own transitioning latch and be handed the same "proceed" verdict.
-func (l *workLedger) MarkJobStopped(owner, toolCallID string) (text string, ok bool) {
+// runs in between, unlocked). The verdict (tools.JobStopVerdict) tells
+// job_kill exactly what happened, so it never has to guess:
+//   - JobStopStopped: this call's own transition won; job_kill kills the
+//     shell and answers with text.
+//   - JobStopAlreadyTerminal: the row already reached a terminal state via
+//     another cause; text is worded from that COMMITTED row and job_kill must
+//     NOT touch bgManager.
+//   - JobStopNotFound: jobID is not a live tracked job (gone/delivered, a
+//     concurrent job_kill already claimed it via killRequested, or another
+//     transition is mid-flight); text is empty and job_kill refuses with the
+//     idempotent "already stopped" shape (§1.5), again without bgManager.
+//
+// killRequested (set before any of the DB/kill I/O below runs) closes the
+// narrow window where a truly concurrent second call could otherwise race
+// ahead of the first's own transitioning latch and be handed the same
+// "proceed" verdict.
+func (l *workLedger) MarkJobStopped(owner, toolCallID string) (text string, verdict tools.JobStopVerdict) {
 	if l == nil {
-		return "", false
+		return "", tools.JobStopNotFound
 	}
 	l.mu.Lock()
 	s := l.bySession[owner]
@@ -672,9 +678,17 @@ func (l *workLedger) MarkJobStopped(owner, toolCallID string) (text string, ok b
 	if s != nil {
 		job = s.jobs[toolCallID]
 	}
-	if job == nil || job.state.terminal() || job.transitioning || job.killRequested {
+	if job == nil || job.transitioning || job.killRequested {
 		l.mu.Unlock()
-		return "", false
+		return "", tools.JobStopNotFound
+	}
+	if job.state.terminal() {
+		// Already terminal via another cause but not yet delivered (e.g.
+		// still awaiting its ack): answer from the committed row.
+		snap := jobOutcomeSnapshot{found: true, state: job.state, result: job.result}
+		name, timeoutSeconds := job.toolName, job.timeoutSeconds
+		l.mu.Unlock()
+		return FormatAsyncCompletion(completionFromSnapshot(toolCallID, name, snap, timeoutSeconds)), tools.JobStopAlreadyTerminal
 	}
 	job.killRequested = true
 	sync := job.sync
@@ -694,19 +708,19 @@ func (l *workLedger) MarkJobStopped(owner, toolCallID string) (text string, ok b
 		return FormatAsyncCompletion(AsyncCompletion{
 			ToolCallID: toolCallID, ToolName: toolName,
 			Content: partial.content, IsError: partial.isError, Stopped: true,
-		}), true
+		}), tools.JobStopStopped
 	}
 	outcome, snap := l.commitAndDeliver(owner, toolCallID, causeJobKill, partial)
 	if outcome != commitWon {
 		if !snap.found {
-			return "", false
+			return "", tools.JobStopNotFound
 		}
-		return FormatAsyncCompletion(completionFromSnapshot(toolCallID, toolName, snap, timeoutSeconds)), true
+		return FormatAsyncCompletion(completionFromSnapshot(toolCallID, toolName, snap, timeoutSeconds)), tools.JobStopAlreadyTerminal
 	}
 	return FormatAsyncCompletion(AsyncCompletion{
 		ToolCallID: toolCallID, ToolName: toolName,
 		Content: partial.content, IsError: partial.isError, Stopped: true,
-	}), true
+	}), tools.JobStopStopped
 }
 
 // setRunCommandBuffer records a run_command job's live output sink, as soon

@@ -175,12 +175,13 @@ type asyncJob struct {
 	// closes the true-concurrency window where a second job_kill call could
 	// otherwise race ahead of the first's own transitioning flag and answer
 	// as if it, too, were the fresh stop. A racer that observes this already
-	// true gets ok=false from MarkJobStopped/an error from
+	// true gets JobStopNotFound from MarkJobStopped/an error from
 	// StopRunCommandJob. For run_command this also means no second kill
 	// attempt (StopRunCommandJob refuses before touching cancel()). For a
-	// bash job_id, job_kill.go's OWN caller still gates its
-	// bgManager.KillOwned call on this same ok/error (B11) -- so a racer
-	// here likewise performs no kill of its own on either path.
+	// bash job_id, job_kill.go acts on the verdict (B11): NotFound and
+	// AlreadyTerminal both return WITHOUT calling bgManager.KillOwned, only
+	// JobStopStopped kills -- so a racer performs no kill of its own on
+	// either path.
 	killRequested bool
 	// outputBuf is set by workLedger.setRunCommandBuffer once a run_command
 	// job's live output sink registers (async_tool.go, task #1023 §3):

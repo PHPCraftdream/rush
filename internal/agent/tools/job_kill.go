@@ -75,6 +75,48 @@ func NewJobKillTool(resolver JobShellResolver, runCtl RunCommandController, mana
 				return fantasy.NewTextErrorResponse(err.Error()), nil
 			}
 
+			// Task #1063: markText, on JobStopStopped, IS the tool's own
+			// final answer -- the real output snapshot taken BEFORE the kill
+			// below, already worded to distinguish this cause (stopped/
+			// job_kill) from Stop-cancel or a timeout. The pre-existing
+			// generic "terminated successfully" wording is reachable only
+			// when job_id was not given at all (a raw shell_id call, never
+			// ledger-tracked).
+			//
+			// B11: the ledger verdict is consulted BEFORE the shell manager
+			// is touched at all -- not even to look the shell up -- so a
+			// lost race or a gone job never surfaces the manager's generic
+			// "background shell not found" wording, and never kills a shell
+			// the ledger has already moved past.
+			var markText string
+			var marked bool
+			if resolver != nil && params.JobID != "" {
+				// Records the ledger's stop-on-request marker BEFORE the
+				// kill below, so the job's own finish() call (task #1023
+				// §2.2) produces a distinct "stopped (job_kill)" outcome
+				// instead of describing the killed process's own exit.
+				var verdict JobStopVerdict
+				markText, verdict = resolver.MarkJobStopped(sessionID, params.JobID)
+				switch verdict {
+				case JobStopAlreadyTerminal:
+					// This call lost the race -- the ledger row already
+					// reached a terminal state via another cause (natural
+					// finish, timeout, Stop). Answer from the COMMITTED row.
+					// No JobKillResponseMetadata on purpose: nothing for the
+					// A3 result fusion to record.
+					return fantasy.NewTextResponse(markText), nil
+				case JobStopStopped:
+					marked = true
+				default: // JobStopNotFound
+					// Not a live tracked job (already delivered, or a
+					// concurrent job_kill already claimed it): idempotent
+					// refusal (contract §1.5).
+					return fantasy.NewTextErrorResponse(fmt.Sprintf(
+						"job %s not found (not owned by this session, already delivered, or already stopped)", params.JobID,
+					)), nil
+				}
+			}
+
 			var bgShell *shell.BackgroundShell
 			var ok bool
 			if owned {
@@ -91,37 +133,6 @@ func NewJobKillTool(resolver JobShellResolver, runCtl RunCommandController, mana
 				ShellID:     shellID,
 				Command:     bgShell.Command,
 				Description: bgShell.Description,
-			}
-
-			// Task #1063: markText, when ok, IS the tool's own final answer
-			// -- the real output snapshot taken BEFORE the kill below,
-			// already worded to distinguish this cause (stopped/job_kill)
-			// from Stop-cancel or a timeout. !ok (checked just below, B11)
-			// refuses outright -- the pre-existing generic "terminated
-			// successfully" wording is now reachable only when job_id was
-			// not given at all (a raw shell_id call, never ledger-tracked).
-			var markText string
-			var marked bool
-			if resolver != nil && params.JobID != "" {
-				// Records the ledger's stop-on-request marker BEFORE the
-				// kill below, so the job's own finish() call (task #1023
-				// §2.2) produces a distinct "stopped (job_kill)" outcome
-				// instead of describing the killed process's own exit.
-				markText, marked = resolver.MarkJobStopped(sessionID, params.JobID)
-				if !marked {
-					// B11: the ledger says this job is no longer live to
-					// stop -- it already reached a terminal state via
-					// another cause (natural finish, timeout, Stop), or a
-					// concurrent job_kill call already claimed it. Do NOT
-					// fall through to bgManager: the shell entry may still
-					// be sitting there even though the ledger has already
-					// moved on, and killing it now (then claiming
-					// "terminated successfully") would fabricate credit for
-					// a stop this call did not actually cause.
-					return fantasy.NewTextErrorResponse(fmt.Sprintf(
-						"job %s not found (not owned by this session, already delivered, or already stopped)", params.JobID,
-					)), nil
-				}
 			}
 
 			if owned {
