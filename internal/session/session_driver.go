@@ -54,6 +54,11 @@ type SessionDriver struct {
 	Status    HostLockStatus
 }
 
+// sessionDriverBeforeTakeoverSeam is a test-only hook fired after a claim has
+// read a dead host's marker and before its takeover CAS, so a test can hold
+// N claimants at exactly the read-then-write gap. nil in production.
+var sessionDriverBeforeTakeoverSeam func()
+
 // claimSessionDriverAttempts bounds the read/CAS loop of a claim: each retry
 // follows a lost CAS (someone else changed the row between our read and write).
 const claimSessionDriverAttempts = 3
@@ -99,6 +104,9 @@ func (s *AsyncJobStore) ClaimSessionDriver(ctx context.Context, sessionID string
 				return &ErrSessionDrivenElsewhere{
 					SessionID: sessionID, HostID: row.HostID, PID: row.Pid, Status: status, ProbeErr: probeErr,
 				}
+			}
+			if sessionDriverBeforeTakeoverSeam != nil {
+				sessionDriverBeforeTakeoverSeam()
 			}
 			n, err := s.q.TakeOverSessionDriver(ctx, db.TakeOverSessionDriverParams{
 				HostID: hostID, Pid: int64(s.pid), ClaimedAt: now, SessionID: sessionID, ExpectedHostID: row.HostID,

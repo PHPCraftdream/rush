@@ -134,12 +134,28 @@ func TestClaimSessionDriver_LiveRefused_DeadTakenOver(t *testing.T) {
 // Revert-check: make TakeOverSessionDriver unconditional (drop the
 // `host_id = expected_host_id` predicate) -- several claims return nil.
 func TestClaimSessionDriver_ConcurrentTakeoverOneWinner(t *testing.T) {
-	t.Parallel()
+	// Not parallel: it owns the package-level seam.
 	const racers = 8
 	stores, _, ctx := nStores(t, racers+1, "s1")
 	dead := stores[0]
 	require.NoError(t, dead.ClaimSessionDriver(ctx, "s1"))
 	require.NoError(t, dead.SimulateCrashForTest())
+
+	// Hold every racer after it read the dead row and before it writes, so all
+	// of them really contend on the takeover CAS (without the seam the racers
+	// are serialized by their own host registration and never overlap).
+	var arrived atomic.Int32
+	allRead := make(chan struct{})
+	sessionDriverBeforeTakeoverSeam = func() {
+		if arrived.Add(1) == racers {
+			close(allRead)
+		}
+		select {
+		case <-allRead:
+		case <-time.After(10 * time.Second):
+		}
+	}
+	t.Cleanup(func() { sessionDriverBeforeTakeoverSeam = nil })
 
 	var wins atomic.Int32
 	var refused atomic.Int32
