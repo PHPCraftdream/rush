@@ -110,9 +110,13 @@ func TestAsyncPhase4Migration_DownDropsTables(t *testing.T) {
 	requireTableExists(t, ctx, conn, "async_hosts", true)
 	requireTableExists(t, ctx, conn, "session_notices", true)
 
-	// Step down exactly one migration -- this phase-4 migration is the most
-	// recently applied one (highest timestamp in internal/db/migrations).
-	_, err = provider.Down(ctx)
+	// Step down to the version immediately before the phase-4 core migration
+	// (20260928000002) by its own timestamp, not just "one migration" -- a
+	// LATER migration (20260929000001, the A9 session_notices.owner index)
+	// now sits on top of it, so "down exactly one" would only undo the
+	// index, not the phase-4 tables. DownTo is exact regardless of how many
+	// migrations have landed after phase-4 core since.
+	_, err = provider.DownTo(ctx, 20260928000001)
 	require.NoError(t, err)
 	requireTableExists(t, ctx, conn, "async_jobs", false)
 	requireTableExists(t, ctx, conn, "async_hosts", false)

@@ -11,8 +11,29 @@ import (
 	"strings"
 )
 
+const clearSessionNoticesReactedFailedForOwner = `-- name: ClearSessionNoticesReactedFailedForOwner :execrows
+UPDATE session_notices SET reacted_failed = 0, updated_at = ?
+WHERE owner = ? AND reacted_failed = 1
+`
+
+type ClearSessionNoticesReactedFailedForOwnerParams struct {
+	UpdatedAt int64  `json:"updated_at"`
+	Owner     string `json:"owner"`
+}
+
+// session_notices half of ClearReactedFailedForOwner (A1) -- see that
+// query's doc for the full rationale.
+func (q *Queries) ClearSessionNoticesReactedFailedForOwner(ctx context.Context, arg ClearSessionNoticesReactedFailedForOwnerParams) (int64, error) {
+	result, err := q.exec(ctx, q.clearSessionNoticesReactedFailedForOwnerStmt, clearSessionNoticesReactedFailedForOwner, arg.UpdatedAt, arg.Owner)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const countSessionNoticesOlderThan = `-- name: CountSessionNoticesOlderThan :one
 SELECT COUNT(*) FROM session_notices WHERE delivery IN ('done', 'void') AND updated_at < ?
+  AND NOT (delivery = 'done' AND wake = 1 AND reacted = 0)
 `
 
 func (q *Queries) CountSessionNoticesOlderThan(ctx context.Context, updatedAt int64) (int64, error) {
@@ -318,9 +339,12 @@ func (q *Queries) PullPendingSessionNotice(ctx context.Context, arg PullPendingS
 
 const purgeSessionNoticesOlderThan = `-- name: PurgeSessionNoticesOlderThan :execrows
 DELETE FROM session_notices WHERE delivery IN ('done', 'void') AND updated_at < ?
+  AND NOT (delivery = 'done' AND wake = 1 AND reacted = 0)
 `
 
-// Same retention pass as PurgeAsyncJobsOlderThan (doc sec.3.7).
+// Same retention pass as PurgeAsyncJobsOlderThan (doc sec.3.7), including
+// the A5 "never purge unreacted debt" guard, scoped to delivery='done'
+// exactly like the async_jobs twin -- see that query's doc.
 func (q *Queries) PurgeSessionNoticesOlderThan(ctx context.Context, updatedAt int64) (int64, error) {
 	result, err := q.exec(ctx, q.purgeSessionNoticesOlderThanStmt, purgeSessionNoticesOlderThan, updatedAt)
 	if err != nil {
@@ -330,8 +354,8 @@ func (q *Queries) PurgeSessionNoticesOlderThan(ctx context.Context, updatedAt in
 }
 
 const rependSessionNoticesByMessageIDs = `-- name: RependSessionNoticesByMessageIDs :execrows
-UPDATE session_notices SET delivery = 'pending', reacted = 0, updated_at = ?
-WHERE owner = ? AND notice_message_id IN (/*SLICE:message_ids*/?)
+UPDATE session_notices SET delivery = 'pending', reacted = 0, reacted_failed = 0, wake_attempts = 0, updated_at = ?
+WHERE owner = ? AND delivery = 'done' AND notice_message_id IN (/*SLICE:message_ids*/?)
 `
 
 type RependSessionNoticesByMessageIDsParams struct {
@@ -343,7 +367,10 @@ type RependSessionNoticesByMessageIDsParams struct {
 // Rerun undo-truncation, session_notices' counterpart to
 // RependAsyncJobsByNoticeMessageIDs (doc sec.3.8's "same for session_notices
 // rows whose messages were deleted"): a notice already delivered whose
-// message landed in the deleted tail is re-queued for the new branch.
+// message landed in the deleted tail is re-queued for the new branch. The
+// `delivery = 'done'` guard and the wake_attempts/reacted_failed reset
+// mirror RependAsyncJobsByNoticeMessageIDs's own A4/A1 fixes -- see that
+// query's doc.
 func (q *Queries) RependSessionNoticesByMessageIDs(ctx context.Context, arg RependSessionNoticesByMessageIDsParams) (int64, error) {
 	query := rependSessionNoticesByMessageIDs
 	var queryParams []interface{}

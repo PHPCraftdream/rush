@@ -86,13 +86,26 @@ SELECT * FROM session_notices WHERE owner = ? ORDER BY id ASC;
 -- Rerun undo-truncation, session_notices' counterpart to
 -- RependAsyncJobsByNoticeMessageIDs (doc sec.3.8's "same for session_notices
 -- rows whose messages were deleted"): a notice already delivered whose
--- message landed in the deleted tail is re-queued for the new branch.
-UPDATE session_notices SET delivery = 'pending', reacted = 0, updated_at = ?
-WHERE owner = ? AND notice_message_id IN (sqlc.slice('message_ids'));
+-- message landed in the deleted tail is re-queued for the new branch. The
+-- `delivery = 'done'` guard and the wake_attempts/reacted_failed reset
+-- mirror RependAsyncJobsByNoticeMessageIDs's own A4/A1 fixes -- see that
+-- query's doc.
+UPDATE session_notices SET delivery = 'pending', reacted = 0, reacted_failed = 0, wake_attempts = 0, updated_at = ?
+WHERE owner = ? AND delivery = 'done' AND notice_message_id IN (sqlc.slice('message_ids'));
 
 -- name: PurgeSessionNoticesOlderThan :execrows
--- Same retention pass as PurgeAsyncJobsOlderThan (doc sec.3.7).
-DELETE FROM session_notices WHERE delivery IN ('done', 'void') AND updated_at < ?;
+-- Same retention pass as PurgeAsyncJobsOlderThan (doc sec.3.7), including
+-- the A5 "never purge unreacted debt" guard, scoped to delivery='done'
+-- exactly like the async_jobs twin -- see that query's doc.
+DELETE FROM session_notices WHERE delivery IN ('done', 'void') AND updated_at < ?
+  AND NOT (delivery = 'done' AND wake = 1 AND reacted = 0);
 
 -- name: CountSessionNoticesOlderThan :one
-SELECT COUNT(*) FROM session_notices WHERE delivery IN ('done', 'void') AND updated_at < ?;
+SELECT COUNT(*) FROM session_notices WHERE delivery IN ('done', 'void') AND updated_at < ?
+  AND NOT (delivery = 'done' AND wake = 1 AND reacted = 0);
+
+-- name: ClearSessionNoticesReactedFailedForOwner :execrows
+-- session_notices half of ClearReactedFailedForOwner (A1) -- see that
+-- query's doc for the full rationale.
+UPDATE session_notices SET reacted_failed = 0, updated_at = ?
+WHERE owner = ? AND reacted_failed = 1;
