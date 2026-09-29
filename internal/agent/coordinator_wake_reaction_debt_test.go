@@ -213,6 +213,7 @@ func TestDrainTurn_PermanentPullFailure_NoProviderCallEver(t *testing.T) {
 	// exactly like a session-lock-busy refusal would prime it.
 	f.coord.addToRecheckSet(f.sessID)
 	f.coord.RecheckPass(ctx)
+	f.coord.waitRecheckWakes() // the pass's wakes are detached
 	require.Zero(t, f.requests.Load(), "the 60s pass must not force a provider call over permanently-pending debt either")
 
 	row, err = f.store.Get(ctx, f.sessID, "call-1")

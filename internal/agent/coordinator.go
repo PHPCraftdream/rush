@@ -346,6 +346,12 @@ type coordinator struct {
 	// shutdown path) observe the goroutine's real exit instead of the
 	// runtime's noisy, non-deterministic NumGoroutine() count.
 	recheckDone chan struct{}
+	// recheckWakeInFlight (guarded by recheckMu) is the set of sessions with
+	// a detached recheck-pass wake running right now: one per session, and
+	// its size is the concurrency bound. recheckWakes lets a caller wait for
+	// them to finish (waitRecheckWakes).
+	recheckWakeInFlight map[string]struct{}
+	recheckWakes        sync.WaitGroup
 
 	// modelCache caches resolved (smart, fast) Model pairs keyed by their
 	// combined provider+model+reasoning_effort tuple. Used by

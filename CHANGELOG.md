@@ -178,7 +178,10 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   purged. `running` rows, undelivered rows and unreacted debt never are, so
   a Rerun reaches back only as far as retention keeps a delivered row. The
   web server runs the purge every 60s together with the dead-host sweep, the
-  re-check of parked delegations and the re-check set. A CLI-only install
+  re-check of parked delegations and the re-check set. The re-check set's
+  wakes run detached (one per session, at most four at a time), so a slow
+  reaction turn never delays the next tick's sweep, purge or delegation
+  re-check. A CLI-only install
   has no ticker: `rush run` runs the dead-host sweep and the retention
   purge once when its loop starts (never the delegation or re-check-set
   halves), and a process that registers a host sweeps dead hosts once at
