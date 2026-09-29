@@ -200,11 +200,18 @@ func explainSessionStatus(ctx context.Context, a *app.App, dataDir, sessionID st
 	// Descendant work: this session's own lock says nothing about work
 	// still running in a DESCENDANT session. A parent that delegated to a
 	// sub-agent releases its per-turn lock the moment it yields, so the
-	// signal that the workflow is still alive lives on the child rows
-	// (parent_session_id linkage) and the children's own locks — both
-	// visible to any process. Same walk `sessions list` applies through
-	// markDelegatingLiveDescendants; see session.LiveDescendants.
-	liveDescendants, walkIncomplete := session.LiveDescendants(ctx, a.Sessions, dataDir, sessionID)
+	// signal that the workflow is still alive lives on live async_jobs
+	// delegation rows (child_session_id), each checked against its owning
+	// host's liveness — visible to any process. Same walk `sessions list`
+	// applies through markDelegatingLiveDescendants; see
+	// session.AsyncJobStore.LiveDescendantJobs.
+	var (
+		liveDescendants []session.LiveJob
+		walkIncomplete  bool
+	)
+	if store := a.AsyncJobStore(); store != nil {
+		liveDescendants, walkIncomplete = store.LiveDescendantJobs(ctx, sessionID)
+	}
 	descendantCaveat := ""
 	if walkIncomplete && len(liveDescendants) == 0 {
 		// A failed child listing means the tree could not be fully
@@ -376,32 +383,78 @@ func explainSessionStatus(ctx context.Context, a *app.App, dataDir, sessionID st
 		}
 	}
 
+	describeAsyncJobsAndDebt(ctx, a, sessionID, out)
+
 	return nil
 }
 
 // describeLiveDescendants renders the "why" clause naming every descendant
-// session that still holds a live lock, e.g.
+// session a live async_jobs delegation row points at, e.g.
 //
-//	"descendant session 8a3f0c2b holds a live lock (PID 4242, heartbeat 2s old, depth 1)"
+//	"descendant session 8a3f0c2b has live work (delegated by 1234abcd, tool call call-1, host xyz alive)"
 //
-// so the operator can see WHICH sub-agent is keeping the session alive and
-// how fresh its heartbeat is. Multiple live descendants are listed
+// so the operator can see WHICH sub-agent is keeping the session alive, WHO
+// delegated to it, and on which host. Multiple live descendants are listed
 // together rather than collapsing to a count — the whole point of the
 // command is to name the evidence.
-func describeLiveDescendants(live []session.LiveDescendant) string {
+func describeLiveDescendants(live []session.LiveJob) string {
 	items := make([]string, 0, len(live))
-	for _, d := range live {
-		holder := "holder PID unreadable"
-		if d.Lock.PID > 0 {
-			holder = fmt.Sprintf("holder PID %d", d.Lock.PID)
-		}
-		items = append(items, fmt.Sprintf("%s (%s, heartbeat %s old, depth %d)",
-			short(session.HashID(d.ID)), holder, formatDurationShort(d.Lock.Age), d.Depth))
+	for _, j := range live {
+		items = append(items, fmt.Sprintf("%s (delegated by %s, tool call %s, host %s %s)",
+			short(session.HashID(j.ChildSessionID)), short(session.HashID(j.SessionID)),
+			j.ToolCallID, short(j.HostID), strings.ToLower(j.HostStatus.String())))
 	}
 	if len(items) == 1 {
-		return "descendant session " + items[0] + " holds a live lock"
+		return "descendant session " + items[0] + " has live work"
 	}
-	return "descendant sessions " + strings.Join(items, ", ") + " still hold live locks"
+	return "descendant sessions " + strings.Join(items, ", ") + " still have live work"
+}
+
+// describeAsyncJobsAndDebt renders the plain-language jobs/debt section of
+// `sessions why` (doc sec.5 step 7): which jobs are running on which host,
+// whether a reaction debt is pending, and whether recovery already marked
+// something interrupted. Silent (writes nothing) when this App has no
+// AsyncJobStore (SkipAgentSetup, or an App built without one in a test).
+func describeAsyncJobsAndDebt(ctx context.Context, a *app.App, sessionID string, out io.Writer) {
+	store := a.AsyncJobStore()
+	if store == nil {
+		return
+	}
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Async jobs:")
+	jobs, err := store.ListAsyncJobsForOwner(ctx, sessionID)
+	if err != nil {
+		fmt.Fprintf(out, "  (could not read: %v)\n", err)
+		return
+	}
+	if len(jobs) == 0 {
+		fmt.Fprintln(out, "  (none)")
+	} else {
+		var running, interrupted int
+		for _, j := range jobs {
+			switch j.State {
+			case "running":
+				running++
+			case "interrupted":
+				interrupted++
+			}
+		}
+		fmt.Fprintf(out, "  %d total, %d running, %d marked interrupted by recovery\n", len(jobs), running, interrupted)
+		for _, j := range jobs {
+			if j.State != "running" {
+				continue
+			}
+			fmt.Fprintf(out, "  running: tool call %s (%s) on host %s [%s]\n",
+				j.ToolCallID, j.Kind, short(j.HostID), strings.ToLower(store.HostLiveness(j.HostID).String()))
+		}
+	}
+	if debt, err := store.VisibleReactionDebtExists(ctx, sessionID); err == nil {
+		if debt {
+			fmt.Fprintln(out, "  reaction debt: pending — a completed job's result is in history but no model turn has reacted to it yet")
+		} else {
+			fmt.Fprintln(out, "  reaction debt: none")
+		}
+	}
 }
 
 // finishReasonOrUnknown returns the finish reason string, or "(unknown)"

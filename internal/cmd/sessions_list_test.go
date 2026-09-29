@@ -210,23 +210,24 @@ func TestComputeSessionStatuses_PidAliveWithinMaxFallbackAgeIsRunning(t *testing
 // TestSessionsListCmdRun_LiveDescendantIsDelegatingNotDone is the regression
 // test for the observed production bug: `rush sessions list` classified the
 // parent/root session as done merely because its per-turn session lock was
-// released (stale lock) — while an implementation sub-agent session held a
-// LIVE lock and the outer `rush run` process was still alive waiting on
-// that sub-agent.
+// released (stale lock) — while an implementation sub-agent session was
+// still working and the outer `rush run` process was still alive waiting on
+// it.
 //
 // The fixture mirrors that sequence exactly:
 //   - a parent session whose lock file is stale (names a dead PID, aged
 //     past LockStaleDuration) and whose last assistant message finished
 //     with end_turn — the shape reclassifyCrashedAsDone turns into "done";
-//   - a child session (real parent_session_id linkage) holding a REAL
-//     exclusive lock, acquired in-process via TryAcquireSessionLock and
-//     released explicitly as soon as phase 1's output is captured (with a
-//     deferred Release as a safety net).
+//   - a REAL running async_jobs delegation row (owner=parent,
+//     child_session_id=child), claimed via the seed App's own
+//     AsyncJobStore -- step 7 replaced the session-lock-based descendant
+//     walk with this durable-state one (child_session_id, not
+//     parent_session_id).
 //
 // Pre-fix the parent's STATUS column read "done". With the cross-process
-// descendant walk (markDelegatingLiveDescendants → session.LiveDescendants)
-// it must read "delegating" instead — and fall back to "done" once the
-// child's lock is gone.
+// descendant walk (markDelegatingLiveDescendants →
+// session.AsyncJobStore.LiveDescendantJobs) it must read "delegating"
+// instead — and fall back to "done" once the delegation row is terminal.
 func TestSessionsListCmdRun_LiveDescendantIsDelegatingNotDone(t *testing.T) {
 	a, _, dataDir := isolatedListEnvWithConfiguredDataDir(t)
 
@@ -253,19 +254,26 @@ func TestSessionsListCmdRun_LiveDescendantIsDelegatingNotDone(t *testing.T) {
 	assistant.AddFinish(message.FinishReasonEndTurn, "", "")
 	require.NoError(t, a.Messages.Update(ctx, assistant))
 
-	// The child's lock is genuinely held (in-process) for the whole first
-	// phase, exactly like a sub-agent still working in another process.
-	childLock, err := session.TryAcquireSessionLock(dataDir, child.ID)
+	// A REAL running delegation row, claimed via the seed App's own
+	// AsyncJobStore (built unconditionally by app.New -- see AsyncJobStore's
+	// own doc) -- exactly like a sub-agent still working in another process.
+	store := a.AsyncJobStore()
+	require.NotNil(t, store, "app.New must build an AsyncJobStore for a data-dir'd App")
+	_, err = store.Claim(ctx, session.ClaimParams{
+		Owner: parent.ID, ToolCallID: "delegate-1", Kind: session.JobKindAgent,
+		Input: "delegate to " + child.ID, ChildSessionID: child.ID,
+	})
 	require.NoError(t, err)
-	// Safety net only: the explicit Release() right after phase 1's output is
-	// captured below is what normally frees the lock, well before t.Cleanup's
-	// waitForSQLiteHandleRelease runs. This defer covers the window between
-	// acquisition and that explicit release — an assertion aborting the test
-	// in between would otherwise strand the lock handle into cleanup, which
-	// would then burn waitForSQLiteHandleRelease's full 30s budget on Windows.
-	// SessionLock.Release is idempotent (sync.Once), so once the explicit call
-	// has run this deferred one is a no-op.
-	defer func() { _ = childLock.Release() }()
+
+	// Detach the store from the seed App BEFORE Shutdown: Shutdown's
+	// releaseResources Close()s app.asyncJobStore, which releases the OS
+	// host lock the delegation row's liveness depends on -- that would make
+	// the row look dead before sessionsListCmd.RunE (a brand-new App on the
+	// same data dir) ever gets to read it. Keep `store` itself alive (and
+	// its host lock held) for the rest of this test via an explicit,
+	// deferred Close.
+	a.SetAsyncJobStoreForTest(nil)
+	defer func() { _ = store.Close(context.Background()) }()
 
 	// SessionsListCmd.RunE creates its own full App. Release the seed App's
 	// process-wide MCP owner before invoking the command so the lifetimes
@@ -289,23 +297,16 @@ func TestSessionsListCmdRun_LiveDescendantIsDelegatingNotDone(t *testing.T) {
 		return ""
 	}
 
-	// Phase 1: child lock live → parent must NOT read done.
+	// Phase 1: delegation row running (host alive) → parent must NOT read done.
 	phase1 := runList()
-	t.Logf("sessions list (child lock live):\n%s", phase1)
-
-	// Release the child lock the moment phase 1's output exists: every
-	// assertion below only inspects the captured string, so the OS lock is
-	// no longer needed. Releasing here — not at function end — guarantees
-	// the handle is closed before t.Cleanup's waitForSQLiteHandleRelease
-	// runs, so cleanup never waits on the still-held lock file.
-	require.NoError(t, childLock.Release())
+	t.Logf("sessions list (delegation row running):\n%s", phase1)
 
 	parentRow := statusRowFor(phase1, parent.ID[:8])
 	require.NotEmpty(t, parentRow, "the parent session must be listed")
 	require.Contains(t, parentRow, "delegating",
-		"a parent with a live descendant lock must show delegating, never done — the observed bug")
+		"a parent with a live async_jobs delegation row must show delegating, never done — the observed bug")
 	require.NotContains(t, parentRow, "done",
-		"nothing may report done while a descendant session holds a live lock")
+		"nothing may report done while a descendant session has live work")
 	require.NotContains(t, parentRow, "crashed",
 		"the stale-lock + clean-finish parent is not a crash; it is waiting on its sub-agent")
 	// The sub-agent session itself is not a top-level row. Assert the CHILD's
@@ -315,16 +316,28 @@ func TestSessionsListCmdRun_LiveDescendantIsDelegatingNotDone(t *testing.T) {
 	require.NotContains(t, phase1, child.ID,
 		"child sessions are filtered out of sessions list")
 
-	// Phase 2: child lock released (above) and aged out → back to done.
-	releasedAgo := time.Now().Add(-(session.LockStaleDuration + 5*time.Second))
-	require.NoError(t, os.Chtimes(session.SessionLockPath(dataDir, child.ID), releasedAgo, releasedAgo))
+	// Phase 2: the delegation row reaches a terminal state → back to done.
+	// This can't reuse `store`: a.Shutdown() plus runList()'s own
+	// connect/release cycle already dropped the shared pool's refcount for
+	// dataDir to zero, closing that *sql.DB handle (sqlite itself, being
+	// file-backed, is unaffected on disk -- only the in-process pooled
+	// handle dies). A fresh connection does the write; Transition needs no
+	// host registration (unlike Claim), so no extra host lock is involved.
+	freshConn, err := db.Connect(ctx, dataDir)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Release(dataDir) })
+	writer := session.NewAsyncJobStore(freshConn, dataDir, 1001, "test-writer")
+	_, err = writer.Transition(ctx, session.TransitionParams{
+		Owner: parent.ID, ToolCallID: "delegate-1", State: "completed", NoticeKind: "completed", Wake: true,
+	})
+	require.NoError(t, err)
 
 	phase2 := runList()
-	t.Logf("sessions list (child lock released):\n%s", phase2)
+	t.Logf("sessions list (delegation row terminal):\n%s", phase2)
 	parentRow = statusRowFor(phase2, parent.ID[:8])
 	require.NotEmpty(t, parentRow)
 	require.Contains(t, parentRow, "done",
 		"with no live descendant the clean-exit reclassification must apply again")
 	require.NotContains(t, parentRow, "delegating",
-		"delegating must be driven by live descendant work, not by the mere existence of a child row")
+		"delegating must be driven by a LIVE row, not by the mere existence of a past delegation")
 }

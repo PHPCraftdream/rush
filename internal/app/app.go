@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
+	"os"
 	"sync"
 	"time"
 
@@ -99,7 +100,9 @@ type App struct {
 	// asyncJobStore is the phase-4 durable job store (docs/plans/2026-09-28-
 	// async-phase4-durable-core.md sec.5 step 2), built once in
 	// InitCoderAgent and handed to agent.NewCoordinator. Its host identity
-	// is released in releaseResources, after agent work is cancelled.
+	// is released in releaseResources, after agent work is cancelled. Read
+	// externally via AsyncJobStore(); nil under SkipAgentSetup or when
+	// dataDir=="".
 	asyncJobStore *session.AsyncJobStore
 
 	// RunQueuePump is the background pump for durable orphaned/detached calls (task #340).
@@ -282,6 +285,23 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, opts ...O
 		config:             store,
 		agentNotifications: pubsub.NewBroker[notify.Notification](),
 		events:             pubsub.NewBroker[any](),
+	}
+
+	// Phase-4 durable job store (docs/plans/2026-09-28-async-phase4-durable-
+	// core.md sec.5 step 7): constructed here, unconditionally (whenever
+	// this App has a data dir and isn't a config-only SkipAgentSetup
+	// command), NOT deferred to InitCoderAgent -- read-only status surfaces
+	// (`sessions jobs/why/list/gc`) must be able to read async_jobs/
+	// async_hosts/session_notices even when no provider is configured yet
+	// and InitCoderAgent therefore never runs (cfg.IsConfigured()==false
+	// below). Constructing the struct does no I/O and registers no host
+	// lock -- RegisterHost only happens lazily on this store's first Claim
+	// (see AsyncJobStore's own doc), so building it unconditionally here is
+	// free for every caller that never starts an async job. InitCoderAgent
+	// reuses this same instance (its own nil-guard already handles that).
+	if !o.skipAgentSetup && dataDir != "" {
+		app.asyncJobStore = session.NewAsyncJobStore(conn, dataDir, os.Getpid(), "app")
+		app.asyncJobStore.SetMessages(messages)
 	}
 
 	// NOTE: the restricted-run allowlist is deliberately NOT armed here.

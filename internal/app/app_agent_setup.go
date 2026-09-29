@@ -133,10 +133,13 @@ func (app *App) InitCoderAgent(ctx context.Context) error {
 		return fmt.Errorf("coder agent configuration is missing")
 	}
 	// Phase-4 durable job store (docs/plans/2026-09-28-async-phase4-durable-
-	// core.md sec.5 step 2): built once per App, over the App's own writer
-	// connection and resolved data dir. A pump-only App with no data dir
-	// (dataDir == "") gets no store -- InitCoderAgent is never called on
-	// that shape in production (it has no coder agent to init), but a test
+	// core.md sec.5 step 2/7): App.New already builds this unconditionally
+	// (step 7: read-only status surfaces need it even when no provider is
+	// configured and InitCoderAgent never runs) -- this is now just the
+	// fallback for a test fixture that constructed *App by hand without
+	// going through App.New. A pump-only App with no data dir (dataDir ==
+	// "") still gets no store -- InitCoderAgent is never called on that
+	// shape in production (it has no coder agent to init), but a test
 	// fixture reaching this with dataDir == "" would get a coordinator that
 	// fails closed on the first non-sync async tool call, not a crash.
 	if app.asyncJobStore == nil && app.dataDir != "" {

@@ -176,12 +176,17 @@ func TestLiveJobs_DelegationTreeTransitivity(t *testing.T) {
 	assert.Equal(t, 1, live[1].Depth)
 	assert.Equal(t, "grandchild", live[1].ChildSessionID)
 
+	// LiveDescendantJobs reports every DELEGATION link, at any depth: the
+	// root's own row already names "child" as a live descendant (that row
+	// IS the evidence, even though root itself owns it, Depth 0), and the
+	// child's own row names "grandchild" transitively.
 	descendants, incomplete2 := store.LiveDescendantJobs(ctx, "root")
 	require.False(t, incomplete2)
-	require.Len(t, descendants, 1)
-	assert.Equal(t, "child", descendants[0].SessionID)
+	require.Len(t, descendants, 2)
+	gotChildren := []string{descendants[0].ChildSessionID, descendants[1].ChildSessionID}
+	assert.ElementsMatch(t, []string{"child", "grandchild"}, gotChildren)
 	for _, d := range descendants {
-		assert.NotEqual(t, "root", d.SessionID, "LiveDescendantJobs must never name the root's own id")
+		assert.NotEqual(t, "root", d.ChildSessionID, "LiveDescendantJobs must never name the root's own id")
 	}
 }
 

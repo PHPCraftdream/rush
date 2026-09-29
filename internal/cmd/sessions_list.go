@@ -3,8 +3,9 @@ package cmd
 // The `sessions list` subcommand: table / NDJSON listing of top-level
 // sessions, plus the STATUS-column machinery that classifies each session
 // as running / crashed / done / delegating from the locks directory, the
-// shared call-tree activity signal, and the cross-process descendant-lock
-// walk (session.LiveDescendants).
+// shared call-tree activity signal, and the cross-process durable-state
+// walk over live async_jobs delegation rows (session.AsyncJobStore.
+// LiveDescendantJobs).
 
 import (
 	"context"
@@ -369,17 +370,18 @@ func markParkedDelegationSessions(
 // markParkedDelegationSessions: it promotes a session that would otherwise
 // read as finished ("done", via reclassifyCrashedAsDone) or at rest (blank
 // — no lock of its own) to "delegating" when at least one DESCENDANT
-// session still holds a live lock.
+// session still has live work.
 //
 // Why a second layer: markParkedDelegationSessions reads the coordinator's
 // in-process parked-delegation registry, which only the process that OWNS
 // the delegation can see. `sessions list` runs in whatever process the
 // operator typed it in — usually a different one — so the registry is empty
 // there and the parked-delegation shape reads as done/at rest. The durable
-// state is visible everywhere though: the child session rows (linked
-// through parent_session_id) and the children's own session locks.
-// session.LiveDescendants walks exactly that, so a parent waiting on a
-// sub-agent that lives in another process still shows "delegating" here.
+// state is visible everywhere though: live async_jobs delegation rows
+// (child_session_id), each checked against its owning host's liveness
+// (doc sec.3.6/3.8). AsyncJobStore.LiveDescendantJobs walks exactly that,
+// so a parent waiting on a sub-agent that lives in another process still
+// shows "delegating" here.
 //
 // Only terminal / at-rest verdicts are promoted. A session that is
 // genuinely "running" (its own live lock), "crashed" (dead holder, no
@@ -394,11 +396,11 @@ func markDelegatingLiveDescendants(
 	sessions []session.Session,
 	statusByID map[string]string,
 ) map[string]string {
-	if a == nil || a.Sessions == nil {
+	if a == nil {
 		return statusByID
 	}
-	dataDir := a.Config().Options.DataDirectory
-	if dataDir == "" {
+	store := a.AsyncJobStore()
+	if store == nil {
 		return statusByID
 	}
 	for _, s := range sessions {
@@ -409,7 +411,7 @@ func markDelegatingLiveDescendants(
 			// running / crashed / delegating keep their own signal.
 			continue
 		}
-		live, _ := session.LiveDescendants(ctx, a.Sessions, dataDir, s.ID)
+		live, _ := store.LiveDescendantJobs(ctx, s.ID)
 		if len(live) == 0 {
 			continue
 		}

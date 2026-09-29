@@ -234,33 +234,39 @@ func externalOwnershipDataDir(a *appPkg.App) string {
 // companion of the coordinator's in-process parked-delegation registry
 // (which this process cannot see for sessions owned by other processes). A
 // top-level session whose own lock is gone while a sub-agent session below
-// it still holds a live lock is NOT finished, and the UI must be able to
-// tell that apart from idle — otherwise a tab shows a session as done while
-// `rush run` is still waiting on its delegation.
+// it still holds a live delegation row is NOT finished, and the UI must be
+// able to tell that apart from idle — otherwise a tab shows a session as
+// done while `rush run` is still waiting on its delegation.
 //
 // Deliberately unconditional (not gated on the session otherwise looking
 // idle): this layer has no status map to gate on — re-deriving one here
 // would fork `sessions list`'s classifier — so it reports the raw durable
-// signal ("a descendant lock is live") and lets the client compose it with
-// the agent_busy / ownership state it already has.
+// signal ("a descendant has a live async_jobs row") and lets the client
+// compose it with the agent_busy / ownership state it already has.
 //
-// Cost is one indexed child listing per session (session.LiveDescendants),
-// paid only on the sessions_list reply and its periodic re-poll, never on
-// the per-event broadcast path.
+// Cost is one indexed child listing per BFS level per session
+// (session.AsyncJobStore.LiveDescendantJobs), paid only on the
+// sessions_list reply and its periodic re-poll, never on the per-event
+// broadcast path.
 func annotateLiveDescendantWork(ctx context.Context, a *appPkg.App, sessions []session.Session) {
-	dataDir := externalOwnershipDataDir(a)
-	if dataDir == "" || a.Sessions == nil {
+	store := a.AsyncJobStore()
+	if store == nil {
 		return
 	}
 	for i := range sessions {
-		live, _ := session.LiveDescendants(ctx, a.Sessions, dataDir, sessions[i].ID)
+		live, _ := store.LiveDescendantJobs(ctx, sessions[i].ID)
 		if len(live) == 0 {
 			continue
 		}
 		sessions[i].HasLiveDescendantWork = true
+		seen := make(map[string]struct{}, len(live))
 		ids := make([]string, 0, len(live))
-		for _, d := range live {
-			ids = append(ids, d.ID)
+		for _, j := range live {
+			if _, dup := seen[j.ChildSessionID]; dup {
+				continue
+			}
+			seen[j.ChildSessionID] = struct{}{}
+			ids = append(ids, j.ChildSessionID)
 		}
 		sessions[i].LiveDescendantIDs = ids
 	}

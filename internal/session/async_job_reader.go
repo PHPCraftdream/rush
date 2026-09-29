@@ -139,14 +139,26 @@ func (s *AsyncJobStore) LiveJobs(ctx context.Context, rootSessionID string) (liv
 	return live, walkIncomplete
 }
 
-// LiveDescendantJobs is LiveJobs with the root's OWN rows excluded -- the
-// direct replacement for the removed descendant_liveness.go's
-// LiveDescendants: "does some DESCENDANT session still have live work",
-// which must never name the root's own id (doc sec.5 step 7).
+// LiveDescendantJobs is LiveJobs filtered to DELEGATION rows only (non-empty
+// ChildSessionID) -- the direct replacement for the removed
+// descendant_liveness.go's LiveDescendants: "does some DESCENDANT session
+// still have live work".
+//
+// Filtering on ChildSessionID rather than Depth==0 matters: a single-level
+// delegation's evidence IS the root's own row (owner=root, Depth=0,
+// ChildSessionID=child) -- root itself claimed that job, so excluding every
+// Depth==0 entry would exclude the ONLY evidence a fresh (not yet
+// self-delegating) child ever produces. What must never appear is the
+// root's own id AS A DESCENDANT, so each qualifying entry's
+// ChildSessionID -- the actual named descendant, doc sec.5 step 7's
+// "LiveDescendantIDs-style results" -- is checked against rootSessionID
+// directly (belt-and-suspenders: a delegation row can never legitimately
+// name its own root, but a corrupt/cyclic chain must not surface it either
+// way).
 func (s *AsyncJobStore) LiveDescendantJobs(ctx context.Context, rootSessionID string) (live []LiveJob, walkIncomplete bool) {
 	all, walkIncomplete := s.LiveJobs(ctx, rootSessionID)
 	for _, j := range all {
-		if j.Depth == 0 {
+		if j.ChildSessionID == "" || j.ChildSessionID == rootSessionID {
 			continue
 		}
 		live = append(live, j)
