@@ -456,6 +456,20 @@ func lastNonEmptyLine(s string) string {
 // pushDeadlineOnTurnEnd) is unaffected and always runs.
 func (c *coordinator) onSessionIdleHook(sessionID string) {
 	c.noteSubAgentChildRunEnded(sessionID)
+	// B2/C2 fix (doc sec.3.4 rule (b)): a release caused by an admission
+	// refusal (runOwned could not acquire the session's OS lock -- another
+	// process already holds it) ran no turn at all and must never trigger an
+	// immediate relaunch: the foreign holder does not release just because
+	// this process re-checks, so an unconditional recheckDebtOnRelease here
+	// would hot-loop (claim, refuse, release, re-check, claim, ...) with no
+	// pause. Route to the 60s recheck pass instead, exactly like a session-
+	// lock-busy Drain submission already does via recordDrainOutcome's own
+	// turnAttemptRefused branch -- this closes the SAME gap for every other
+	// caller of Run() that hits the same refusal, not only wakeSession's own.
+	if c.asyncJobs != nil && c.asyncJobs.consumeAdmissionRefusedRelease(sessionID) {
+		c.addToRecheckSet(sessionID)
+		return
+	}
 	wasNoTurnDrain, hintUnchanged := false, false
 	if c.asyncJobs != nil {
 		wasNoTurnDrain, hintUnchanged = c.asyncJobs.consumeNoTurnDrainRelease(sessionID)

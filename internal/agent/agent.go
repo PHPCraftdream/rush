@@ -426,6 +426,18 @@ type SessionAgentCall struct {
 	// the waiter blocks forever.
 	onQueueResolved func(*fantasy.AgentResult, error) `json:"-"`
 
+	// onDrainTurnStarting, if non-nil, is invoked exactly once, synchronously
+	// in runTurn, the instant a Drain call (IsDrain) actually decides to
+	// reach the provider -- i.e. it passed decideDrainTurn's gate (or
+	// drainTurnCommitted was already true), NOT when it merely became the
+	// mailbox owner or sat queued behind one. B7 fix (docs/reviews/2026-09-
+	// 29-async-phase4-round1.md): wakeSession's consecutive-auto-turn-cap
+	// counter must count a Drain that actually ran a turn, never one that
+	// was only admitted/queued or took the no-turn branch -- neither of
+	// which this callback fires for. In-process only, never durable-queue-
+	// persisted (same rationale as OnUserMessageCreated above).
+	onDrainTurnStarting func() `json:"-"`
+
 	// FailIfSessionBusy rejects this call instead of queueing it when the
 	// session's mailbox is already owned (submit returns false): Run fails
 	// with an error wrapping ErrSessionBusy instead of the historical

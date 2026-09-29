@@ -99,6 +99,36 @@ func (l *workLedger) consumeNoTurnDrainRelease(owner string) (wasNoTurnDrain, hi
 	return true, s.hintSeq == s.noTurnDrainHintSeq
 }
 
+// markAdmissionRefusedRelease records that owner's upcoming mailbox release
+// is the result of an admission refusal (runOwned could not acquire the
+// session's OS lock -- another process already holds it) rather than any
+// turn attempt. Consulted by consumeAdmissionRefusedRelease at that same
+// release's onSessionIdle funnel (B2/C2 fix, doc sec.3.4 rule (b)).
+func (l *workLedger) markAdmissionRefusedRelease(owner string) {
+	if owner == "" {
+		return
+	}
+	l.mu.Lock()
+	l.sessionLocked(owner).admissionRefusedRelease = true
+	l.mu.Unlock()
+}
+
+// consumeAdmissionRefusedRelease reads-and-clears owner's admission-refused-
+// release marker. Unlike consumeNoTurnDrainRelease this is never hint-gated
+// -- an OS-lock refusal is certain to recur immediately if retried right
+// now, so onSessionIdleHook always skips the relaunch when this reports
+// true, relying on the 60s recheck pass (or a genuinely new hint) instead.
+func (l *workLedger) consumeAdmissionRefusedRelease(owner string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	s := l.bySession[owner]
+	if s == nil || !s.admissionRefusedRelease {
+		return false
+	}
+	s.admissionRefusedRelease = false
+	return true
+}
+
 // claimExternalDriver marks owner as driven by an external loop (the CLI
 // root of a live `rush run` process): wakeSession must hint it, never
 // submit a Drain turn (doc sec.3.4).

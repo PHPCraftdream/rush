@@ -19,6 +19,8 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime/debug"
+
+	"github.com/PHPCraftdream/rush/internal/session"
 )
 
 // jobIdentity is the (owner, toolCallID) pair a completion's wake hint is
@@ -44,9 +46,19 @@ type jobIdentity struct {
 // failure after the fact was already committed cannot lose the fact -- it
 // stays pending/pending-debt for the NEXT pull -- so this persists a durable
 // wake-failed marker (session_notices, wake=0) instead of just logging.
+// wakeSessionAttemptSeam is a test-only hook, called once per wakeSession
+// invocation (after the wake==false short-circuit). Lets a test count/bound
+// how many times a self-perpetuating release->recheck chain re-enters this
+// function without hanging the test on a genuinely unbounded recursion (B2/
+// C2 regression coverage). nil (a no-op) in every production path.
+var wakeSessionAttemptSeam func()
+
 func (c *coordinator) wakeSession(ctx context.Context, job jobIdentity, wake bool) (err error) {
 	if !wake {
 		return nil
+	}
+	if wakeSessionAttemptSeam != nil {
+		wakeSessionAttemptSeam()
 	}
 	if c.asyncJobs == nil {
 		return errors.New("wakeSession: async job ledger unavailable")
@@ -88,7 +100,38 @@ func (c *coordinator) wakeSession(ctx context.Context, job jobIdentity, wake boo
 	}
 
 	agent := c.agentFor(job.owner)
+
+	// B2/C2 fix (doc sec.3.4 rule (b)): probe the session's OS lock with a
+	// SHARED, non-blocking hold BEFORE ever attempting a Run. Winning it is
+	// kernel-attested proof no exclusive holder exists right now; contention
+	// means another process is genuinely mid-turn on this session, so
+	// submitting anyway would only fail identically to the last attempt and
+	// (via abandonOwnershipWithHandoff's release hook) invite an immediate
+	// re-check with no pause. Go straight to the recheck set instead of
+	// spending an attempt whose outcome is already known. A type-assertion
+	// miss (a mock SessionAgent in tests) or any non-contention probe error
+	// (permission, IO, ...) is not conclusive either way -- fall through to
+	// the ordinary Run attempt below, which remains the authoritative check.
+	if sa, ok := agent.(*sessionAgent); ok && sa.dataDir != "" {
+		probe, probeErr := session.TryHoldSessionLockShared(sa.dataDir, job.owner)
+		if probeErr != nil {
+			var busyErr *session.SessionLockBusyError
+			if errors.As(probeErr, &busyErr) {
+				c.addToRecheckSet(job.owner)
+				return nil
+			}
+		} else {
+			probe.Release()
+		}
+	}
+
 	admission := newTurnAdmission()
+	// B7 fix: wired so runTurn's onDrainTurnStarting call (agent_turn.go,
+	// fired only once the Drain actually commits to a provider turn -- never
+	// for a merely-queued or no-turn Drain) marks THIS invocation's own
+	// recorder, never an ancestor's (mirrors turnAdmission's existing
+	// queued-flag isolation).
+	call.onDrainTurnStarting = admission.markReachedProvider
 	snapshot, snapErr := c.asyncJobs.captureDebtSnapshot(ctx, job.owner)
 	if snapErr != nil {
 		slog.Warn("wakeSession: capture debt snapshot failed; settle-by-failure will see an empty set",
@@ -112,7 +155,15 @@ func (c *coordinator) wakeSession(ctx context.Context, job jobIdentity, wake boo
 	if runErr != nil {
 		return runErr
 	}
-	if counted {
+	// B7 fix: count only a Drain that ACTUALLY reached the provider -- never
+	// one that was merely admitted/queued (admission.wasQueued(), already
+	// excluded from recordDrainOutcome's accounting above but NOT previously
+	// excluded here) or took the no-turn branch (no debt, or policy forbade
+	// a turn -- decideDrainTurn returned false, so onDrainTurnStarting never
+	// fired). Before this fix EVERY successful wakeSession call incremented
+	// the counter regardless, so a queued or no-turn Drain could exhaust the
+	// cap purely by being re-submitted, never running a single real turn.
+	if counted && admission.didReachProvider() {
 		if already, _ := ctx.Value(capAlreadyCountedCtxKey{}).(bool); !already {
 			// Doc sec.3.4: "failed Drains do not consume the web auto-turn
 			// cap" -- only reached on runErr == nil, i.e. a genuinely

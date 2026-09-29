@@ -111,6 +111,16 @@ type sessionJobs struct {
 	// submit a Drain turn -- the loop re-evaluates its own scope/debt from
 	// the DB. Claimed/released by the loop itself (app_run_async.go).
 	externalDriver bool
+	// admissionRefusedRelease is set the instant runOwned refuses a call
+	// because another process already holds the session's OS lock (B2/C2
+	// fix, doc sec.3.4 rule (b)): the in-process mailbox reservation was
+	// claimed and immediately abandoned WITHOUT any turn (or even an
+	// attempt to run one) ever starting. Unlike noTurnDrainRelease this is
+	// never hint-gated: the refusal has nothing to do with reaction-debt
+	// hints, and retrying immediately is certain to fail identically (the
+	// foreign holder does not release just because our hint counter moved).
+	// Consumed (read-and-cleared) by consumeAdmissionRefusedRelease.
+	admissionRefusedRelease bool
 }
 
 // workLedger is the single owner of in-memory work state: plain async jobs

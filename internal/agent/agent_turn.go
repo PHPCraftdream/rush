@@ -415,6 +415,12 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 		}
 		return nil, next, true, nil
 	}
+	// B7 fix: past this point a Drain call is committed to reaching the
+	// provider (decideDrainTurn returned true, or drainTurnCommitted already
+	// was) -- the ONE point wakeSession's cap-counting callback fires.
+	if call.IsDrain && call.onDrainTurnStarting != nil {
+		call.onDrainTurnStarting()
+	}
 
 	msgs, err := a.getSessionMessages(preambleCtx, currentSession)
 	if err != nil {

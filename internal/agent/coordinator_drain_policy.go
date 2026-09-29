@@ -41,25 +41,95 @@ func (c *coordinator) sessionDrainPolicy(ctx context.Context, sessionID string) 
 			// delegation row stays running (doc sec.3.4).
 			return true, false, nil
 		}
-		// No RUNNING delegation row claims sessionID right now -- after Stop
-		// or the delegation ending, doc sec.3.4 says "no further turn, by
-		// construction, without a separate race against Stop": the
-		// construction is Stop's own suspendAutoResume call (coordinator_
-		// interrupt.go's Cancel, applied to every id in the cancelled tree)
-		// and the driver teardown on scope close (releaseDriverIfScopeClosed),
-		// not a second check here keyed on subAgentDrivers alone -- a
-		// registered driver with no currently-running row is also the
-		// ordinary shape of a bare test fixture that never modeled a real
-		// delegation row at all. Falls through to the generic policy below,
-		// which a Stop's suspension already caps to zero headroom.
+		// B3/C6 fix: no RUNNING delegation row claims sessionID right now.
+		// Before this fix, falling straight through to the generic
+		// web/default policy below let a released or expired child ride the
+		// SAME up-to-maxConsecutiveAutoResumes headroom as a real web
+		// session -- and by the time such a turn actually ran, agentFor's
+		// driver lookup (subAgentDrivers, already torn down by
+		// releaseDriverIfScopeClosed once scope closed) would fall back to
+		// c.currentAgent, the ROOT coder agent: full tool set, no
+		// RunAllowlist, no child system prompt (security-relevant). Key the
+		// refusal on DURABLE identity instead of the in-memory driver
+		// registry, which does not survive scope closing or a process
+		// restart: a session ever created as a delegation target carries
+		// ParentSessionID (session.CreateTaskSession) for its entire life.
+		// Known limitation (documented, not fixed here -- no new SQL/store
+		// query available in this wave): `sessions fork --parent X` ALSO
+		// sets ParentSessionID for a purpose unrelated to delegation, so a
+		// forked-with-parent session is (rarely, and only if it later owns
+		// its own async work) also refused further auto-turns by this
+		// check. See docs/reviews/2026-09-29-async-phase4-round1.md B3/C6.
+		isChild, childErr := c.isDurableDelegationChild(ctx, sessionID)
+		if childErr != nil {
+			return false, false, childErr
+		}
+		if isChild {
+			// A durable delegation child with no running delegation row:
+			// its delegation ended (or was stopped) and it gets no further
+			// Drain turn, by construction (doc sec.3.4's policy table) --
+			// never re-routed to whatever session currently answers
+			// agentFor(sessionID) once its driver is torn down.
+			return false, false, nil
+		}
+		// Not a delegation child at all (a bare test fixture, or a normal
+		// session that merely has no running delegation because it was
+		// never one) -- falls through to the generic policy below.
 	}
-	// Web/default (doc sec.3.4): the same consecutive-cap that already
-	// bounds SDK background-shell auto-resume, applied here to async-job/
-	// delegation notice wakes too, reset by the last human message
-	// (resetConsecutiveResume/ResetAutoResumeCounter) -- also what a Stop
-	// suspension (suspendAutoResume) rides on. wakeSession increments the
-	// counter itself, ONLY on a successful turn (never on a failed one).
+	// B7 design decision (docs/reviews/2026-09-29-async-phase4-round1.md,
+	// operator HARD RULES item 1): the consecutive-auto-turn cap applies
+	// ONLY to the SDK background-shell auto-resume path
+	// (notifyBackgroundJobDone's AutoResumeOnJobDone branch), matching
+	// pre-phase-4 behavior -- NOT to ordinary async-job/delegation/
+	// supervision/wake_only notice wakes, which were UNCAPPED before phase
+	// 4 and are UNCAPPED again here. Applying the cap to those too (phase
+	// 4's regression) meant a session with enough background bash/delegation
+	// completions could be silently starved of further auto-wakes even
+	// though nothing about that traffic is runaway-turn-shaped the way
+	// repeated bg-shell auto-resumes are. autoTurnCapAppliesCtxKey is set on
+	// ctx ONLY by notifyBackgroundJobDone (coordinator_background.go) --
+	// its presence is this function's only reliable signal that THIS
+	// specific wake is a capped bg-shell auto-resume, since a Drain call's
+	// own AutoResumed/BackgroundJobNotice FIELDS are unconditionally true
+	// for every Drain regardless of origin (newDrainCall) and cannot be used
+	// to discriminate; CHANGELOG-visible consequence documented in W-DOCS.
+	//
+	// "No cap" means no THROTTLE on volume (counted=false, never
+	// incremented) -- it does NOT mean Stop's own "automatic turns paused
+	// until the next human message" stops applying: suspendAutoResume
+	// (coordinator_interrupt.go's Cancel) forces this SAME counter to the
+	// cap on every id in a cancelled tree, deliberately reusing this
+	// machinery instead of a second flag that could drift out of sync with
+	// it (see suspendAutoResume's own doc) -- so the READ below must still
+	// run for the uncapped category too, or Stop's suspension would silently
+	// stop gating async-job/delegation wakes while continuing to gate
+	// bg-shell ones.
+	if _, capped := ctx.Value(autoTurnCapAppliesCtxKey{}).(bool); !capped {
+		return c.consecutiveResume(sessionID) < maxConsecutiveAutoResumes, false, nil
+	}
+	// Web/default, bg-shell auto-resume (doc sec.3.4): reset by the last
+	// human message (resetConsecutiveResume/ResetAutoResumeCounter) --
+	// also what a Stop suspension (suspendAutoResume) rides on. wakeSession
+	// increments the counter itself, ONLY on a successful turn that actually
+	// reached the provider (never a failed, queued, or no-turn one).
 	return c.consecutiveResume(sessionID) < maxConsecutiveAutoResumes, true, nil
+}
+
+// isDurableDelegationChild reports whether sessionID was EVER created as a
+// delegation target (session.CreateTaskSession sets ParentSessionID at
+// creation, durably, unlike the in-memory subAgentDriverRegistry which
+// releaseDriverIfScopeClosed tears down the instant scope closes). See
+// sessionDrainPolicy's own doc for the known `sessions fork --parent`
+// ambiguity this shares the same signal with.
+func (c *coordinator) isDurableDelegationChild(ctx context.Context, sessionID string) (bool, error) {
+	if c.sessions == nil {
+		return false, nil
+	}
+	sess, err := c.sessions.Get(ctx, sessionID)
+	if err != nil {
+		return false, err
+	}
+	return sess.ParentSessionID != "", nil
 }
 
 // recordDrainOutcome is the shared post-turn accounting for a Drain-context
