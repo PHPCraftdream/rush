@@ -534,23 +534,35 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 	// phase on the root session, which must not open while any descendant
 	// sub-agent or async command it owns is still live at any depth, or
 	// while the root itself still has a reaction debt. Phase-4 step 4 (doc
-	// sec.3.5/6): this now reads the SAME DB scope predicate the CLI loop's
-	// own exit condition uses (ScopeOpen), not the deleted in-memory
+	// sec.3.5/6): this reads the SAME DB scope predicate the CLI loop's own
+	// exit condition uses (ScopeOpen), not the deleted in-memory
 	// HasPendingAsyncJobs -- a delegation armed for sess.ID as its parent
 	// still shows up here because its async_jobs row stays 'running' until
 	// the child's scope drains (docs/plans/2026-09-28-async-phase3-spec.md
 	// §1.1), so this one check still covers both "root owns an undelivered
 	// async job" and "root's own delegation is still open", with no
-	// separate descendant walk needed. A DB read error is treated as "scope
-	// still open" (skip the reviewer pass) rather than silently proceeding.
-	asyncPending := false
-	if source, ok := app.AgentCoordinator.(agent.ReactionDebtSource); ok {
-		open, scopeErr := source.ScopeOpen(ctx, sess.ID)
-		asyncPending = scopeErr != nil || open
-	}
-	if resultErr == nil && req.Credentials == nil && !asyncPending &&
+	// separate descendant walk needed.
+	//
+	// C16 fix (docs/reviews/2026-09-29-async-phase4-round1.md): the cheap,
+	// in-memory checks below run FIRST, and ScopeOpen (reviewerPassScope-
+	// StillOpen) is only ever consulted once they all already pass -- it
+	// used to run unconditionally on EVERY ExecuteRun call, including SDK/
+	// credentialed runs and runs with no reviewer configured at all, paying
+	// for ScopeOpen's recovery writes and exclusive lock probes for a
+	// decision that was never going to matter. reviewerPassScopeStillOpen
+	// itself retries a DB read error with a pause instead of silently
+	// skipping the reviewer pass on the first one.
+	reviewerCandidate := resultErr == nil && req.Credentials == nil &&
 		!loop.canceledAfterCommit && loop.ctx.Err() == nil &&
-		shouldRunReviewerPass(overrides.ModelRole, app.config.Config()) {
+		shouldRunReviewerPass(overrides.ModelRole, app.config.Config())
+	if reviewerCandidate {
+		if source, ok := app.AgentCoordinator.(agent.ReactionDebtSource); ok {
+			if app.reviewerPassScopeStillOpen(ctx, source, sess.ID) {
+				reviewerCandidate = false
+			}
+		}
+	}
+	if reviewerCandidate {
 		reviewRunFn, reviewCtx := app.buildReviewerPassTurn(ctx, setup.callOpts)
 		loop.resetForReviewerPass(reviewCtx)
 		result, resultErr = loop.runTurnPhase(reviewerPassPrompt, reviewRunFn)

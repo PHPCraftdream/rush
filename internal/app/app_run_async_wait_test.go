@@ -25,8 +25,10 @@ package app
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
@@ -55,6 +57,18 @@ func (f *fakeStuckPendingReactionSource) ScopeOpen(context.Context, string) (boo
 	return true, nil
 }
 
+// alwaysErrorsReactionSource simulates a persistently unreadable DB: every
+// ReactionDebtExists call fails.
+type alwaysErrorsReactionSource struct {
+	fakeStuckPendingReactionSource
+	calls int32
+}
+
+func (f *alwaysErrorsReactionSource) ReactionDebtExists(context.Context, string) (bool, error) {
+	atomic.AddInt32(&f.calls, 1)
+	return false, errors.New("database is locked")
+}
+
 func (f *fakeStuckPendingReactionSource) WaitForHint(context.Context, string) {
 	atomic.AddInt32(&f.waitForHintCalls, 1)
 }
@@ -63,7 +77,7 @@ func (f *fakeStuckPendingReactionSource) CaptureDrainSnapshot(context.Context, s
 	return session.DebtSnapshot{}
 }
 
-func (f *fakeStuckPendingReactionSource) RecordDrainTurnOutcome(context.Context, string, session.DebtSnapshot, error) {
+func (f *fakeStuckPendingReactionSource) RecordDrainTurnOutcome(context.Context, string, session.DebtSnapshot, error, bool) {
 }
 
 // TestWaitForNextCLITurn_PendingDebt_ReturnsImmediately is the regression
@@ -104,4 +118,72 @@ func TestWaitAfterNoTurnDrain_OnlyWaitsWhenDrainWasNoTurn(t *testing.T) {
 
 	waitAfterNoTurnDrain(context.Background(), f, "sess-1", true)
 	require.EqualValues(t, 1, atomic.LoadInt32(&f.waitForHintCalls), "a no-turn Drain must pace itself via WaitForHint before the next check")
+}
+
+// TestPermanentPullFailure_EveryNoTurnIterationPaces is W-DRAIN item 2's
+// (C5b, docs/reviews/2026-09-29-async-phase4-round1.md) verification of
+// design doc sec.6's named test: "a Drain ... with a permanent pull error
+// does not loop" -- a row whose pull keeps failing stays 'pending' forever
+// (fakeStuckPendingReactionSource.ReactionDebtExists always true), so
+// waitForNextCLITurn always reports a turn owed and the loop always attempts
+// (and, per this simulation, always fails to visibly react to) it, exactly
+// the drainNoTurn=true shape app_run_async.go's loop produces for a stuck
+// pending row. Driving the loop's own two primitives together (as the real
+// loop body does, once per iteration) across many simulated iterations
+// proves EVERY one pays a WaitForHint pacing call -- the mechanism that
+// keeps this bounded to real wall-clock time instead of a tight CPU spin --
+// never a free ride through waitForNextCLITurn's fast pending-debt path
+// that bypasses it.
+//
+// Revert-check performed (against the REJECTED design this pins, not
+// current code): using the VISIBLE-only debt predicate in
+// waitForNextCLITurn (an earlier, rejected version of the B8/C5b,c fix)
+// broke this exact loop shape by routing the stuck row through ScopeOpen's
+// own WaitForHint instead of the no-turn-Drain one -- still paced, but by
+// the WRONG mechanism (see waitForNextCLITurn's own doc for the full
+// story); this test's iteration-count assertion below distinguishes the
+// two by requiring the no-turn-Drain wait specifically to fire every time,
+// which only the CURRENT (accepted) design routes through.
+func TestPermanentPullFailure_EveryNoTurnIterationPaces(t *testing.T) {
+	f := &fakeStuckPendingReactionSource{}
+	application := &App{}
+	const iterations = 25
+	for i := 0; i < iterations; i++ {
+		// Mirrors app_run_async.go's loop body shape for a Drain iteration
+		// that ran but found nothing VISIBLE to react to (ErrRunQueued) --
+		// a permanently 'pending' row reproduces this every single pass.
+		const drainNoTurn = true
+		waitAfterNoTurnDrain(context.Background(), f, "sess-1", drainNoTurn)
+		hasNext, err := application.waitForNextCLITurn(context.Background(), f, "sess-1")
+		require.NoError(t, err)
+		require.True(t, hasNext, "iteration %d: a permanently pending row must still be reported as owed", i)
+	}
+	require.EqualValues(t, iterations, atomic.LoadInt32(&f.waitForHintCalls),
+		"every no-turn iteration must pace itself through WaitForHint -- a permanent pull failure must never bypass it")
+}
+
+// TestWaitForNextCLITurn_PersistentDBError_BoundedWithVisibleError is C17's
+// fix (docs/reviews/2026-09-29-async-phase4-round1.md, W-DRAIN item 4): a
+// persistently unreadable DB must not retry forever with only a log WARN --
+// it must give up after a bound and return a visible error the caller can
+// surface (cmd/run.go's non-zero exit), not hang indefinitely.
+//
+// Revert-check performed: removed the `giveUpOnPersistentDBError` bound
+// check from waitForNextCLITurn (app_run_async.go), leaving the bare
+// `sleepOrCtxDone`-then-`continue` retry -- this test timed out (never
+// returned) instead of returning an error within the shrunk bound. Restored
+// the bound; re-ran, returned promptly with a non-nil error.
+func TestWaitForNextCLITurn_PersistentDBError_BoundedWithVisibleError(t *testing.T) {
+	origLimit, origPause := cliDBErrorRetryOverallLimit, cliDBRetryPause
+	cliDBErrorRetryOverallLimit = 50 * time.Millisecond
+	cliDBRetryPause = 5 * time.Millisecond
+	t.Cleanup(func() { cliDBErrorRetryOverallLimit, cliDBRetryPause = origLimit, origPause })
+
+	f := &alwaysErrorsReactionSource{}
+	application := &App{}
+
+	hasNext, err := application.waitForNextCLITurn(context.Background(), f, "sess-1")
+	require.Error(t, err, "a persistently unreadable DB must eventually surface as an error, not hang forever")
+	require.False(t, hasNext)
+	require.Greater(t, atomic.LoadInt32(&f.calls), int32(1), "must have actually retried, not failed on the first attempt")
 }
