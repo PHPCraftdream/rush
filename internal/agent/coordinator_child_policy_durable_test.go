@@ -86,6 +86,56 @@ func TestSessionDrainPolicy_DurableDelegationChildWithNoRunningDelegation_Refuse
 	require.False(t, counted)
 }
 
+// TestSessionDrainPolicy_ReleasedDelegationChildOfAnyKind_Refused: a durable
+// delegation child is recognised by ANY of its parent's job rows naming it as
+// child_session_id, not only Kind=agent -- a released agentic_fetch (fetch)
+// child, or any other kind claiming a child session, must be refused a Drain
+// turn just like a released agent child. A fork of the same parent, with no
+// row naming it, stays on the ordinary policy.
+//
+// Revert-check: restored the `&& job.Kind == string(session.JobKindAgent)`
+// clause in isDurableDelegationChild -- the fetch and command subtests FAILED
+// (allowed was true); the agent subtest and the fork check stayed green.
+func TestSessionDrainPolicy_ReleasedDelegationChildOfAnyKind_Refused(t *testing.T) {
+	for _, kind := range []session.JobKind{session.JobKindAgent, session.JobKindFetch, session.JobKindCommand} {
+		t.Run(string(kind), func(t *testing.T) {
+			coord, _, store, getEnv := newChildPolicyTestCoordinator(t)
+			env := getEnv(context.Background())
+			ctx := context.Background()
+
+			parent, err := env.sessions.Create(ctx, "parent")
+			require.NoError(t, err)
+			child, err := env.sessions.CreateTaskSession(ctx, "task-call-1", parent.ID, "child")
+			require.NoError(t, err)
+			fork, _, err := env.sessions.ForkSessionTx(ctx, parent.ID, session.ForkOptions{
+				NewID: "forked-child", ParentID: parent.ID,
+			})
+			require.NoError(t, err)
+
+			_, err = store.Claim(ctx, session.ClaimParams{
+				Owner: parent.ID, ToolCallID: "call-1", Kind: kind,
+				Input: "x", ChildSessionID: child.ID, ToolName: string(kind),
+			})
+			require.NoError(t, err)
+			require.NoError(t, store.MarkAnnounced(ctx, parent.ID, "call-1"))
+			_, err = store.Transition(ctx, session.TransitionParams{
+				Owner: parent.ID, ToolCallID: "call-1", State: "completed",
+				ResultSummary: "done", Wake: true,
+			})
+			require.NoError(t, err)
+
+			allowed, counted, err := coord.sessionDrainPolicy(ctx, child.ID)
+			require.NoError(t, err)
+			require.False(t, allowed, "a released %s delegation child must be refused a Drain turn", kind)
+			require.False(t, counted)
+
+			allowed, _, err = coord.sessionDrainPolicy(ctx, fork.ID)
+			require.NoError(t, err)
+			require.True(t, allowed, "a fork of the same parent (no row names it) stays on the ordinary policy")
+		})
+	}
+}
+
 // TestSessionDrainPolicy_ForkedChildWithParentSet_UsesWebPolicy is the item
 // 8 fix's regression guard: `sessions fork --child` sets ParentSessionID for
 // a purpose entirely unrelated to delegation (session.ForkOptions.ParentID)
