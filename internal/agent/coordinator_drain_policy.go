@@ -219,35 +219,43 @@ func (c *coordinator) isDurableDelegationChild(ctx context.Context, sessionID st
 }
 
 // sessionDebtIsBGShellOnly reports whether sessionID's ENTIRE current
-// reaction debt (doc sec.3.4's predicate, captureDebtSnapshot's own capture)
-// consists of bg-shell-done notices (session.NoticeKindBGShellDone) and
-// nothing else -- no outstanding async-job debt, no other notice kind. Used
-// by sessionDrainPolicy's B-dev6 fix (item 7) to re-apply the "Background
+// reaction debt (doc sec.3.4's predicate: wake=1/reacted=0/delivery<>'void',
+// PENDING-INCLUSIVE -- same scope as ReactionDebtExists, deliberately NOT
+// captureDebtSnapshot's delivery='done'-only scope, see below) consists of
+// bg-shell-done notices (session.NoticeKindBGShellDone) and nothing else --
+// no outstanding async-job debt, no other notice kind. Used by
+// sessionDrainPolicy's B-dev6 fix (item 7) to re-apply the "Background
 // shell: only with AutoResumeOnJobDone" policy-table row at release-recheck/
 // 60s-pass time, which (unlike the direct hint-time call) has no ctx-carried
-// signal of the debt's origin. false on an empty snapshot (nothing to gate)
-// or on any job-id debt or mixed/non-bg-shell notice kind.
+// signal of the debt's origin. false when there is no debt at all (nothing
+// to gate) or on any job-id debt or mixed/non-bg-shell notice kind.
+//
+// W-DRAIN task A regression (found via the full internal/agent suite after
+// narrowing captureDebtSnapshot to delivery='done' for C18/B-dev1): this
+// used to read captureDebtSnapshot directly, which is CORRECT for settle-
+// by-failure (only ever act on rows the failed/stuck turn actually saw) but
+// WRONG here -- a release-recheck's own bg-shell notice is typically still
+// delivery='pending' (not yet pulled by any turn) at the moment this policy
+// check runs, so the done-only snapshot reported it as no debt at all,
+// silently skipping the refusal gate and letting AutoResumeOnJobDone=off
+// sessions get a Drain turn anyway. Reads the two tables directly instead,
+// at the SAME pending-inclusive scope ReactionDebtExists uses.
 func (c *coordinator) sessionDebtIsBGShellOnly(ctx context.Context, sessionID string) (bool, error) {
 	if c.asyncJobs.store == nil {
 		return false, nil
 	}
-	snap, err := c.asyncJobs.captureDebtSnapshot(ctx, sessionID)
+	hasJobDebt, noticeKinds, err := c.asyncJobs.store.PendingInclusiveDebtSummary(ctx, sessionID)
 	if err != nil {
 		return false, err
 	}
-	if snap.Empty() || len(snap.JobIDs) > 0 {
+	if hasJobDebt || len(noticeKinds) == 0 {
+		// Any outstanding async-job debt at all disqualifies -- this gate
+		// only ever applies to a session whose ENTIRE debt is bg-shell
+		// notices. No debt at all (nothing to gate) also disqualifies.
 		return false, nil
 	}
-	notices, err := c.asyncJobs.store.ListSessionNotices(ctx, sessionID)
-	if err != nil {
-		return false, err
-	}
-	kindByID := make(map[int64]string, len(notices))
-	for _, n := range notices {
-		kindByID[n.ID] = n.Kind
-	}
-	for _, id := range snap.NoticeIDs {
-		if kindByID[id] != session.NoticeKindBGShellDone {
+	for _, k := range noticeKinds {
+		if k != session.NoticeKindBGShellDone {
 			return false, nil
 		}
 	}

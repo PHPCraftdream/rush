@@ -418,6 +418,79 @@ func TestSettleByFailure_ScopedIncrementAndSettle_GoLayer(t *testing.T) {
 	require.True(t, debt, "call-2's own debt must still be open")
 }
 
+// TestCaptureDebtSnapshot_ExcludesPendingIncludesDone is W-DRAIN task A's
+// (C18/B-dev1, docs/reviews/2026-09-29-async-phase4-round1.md) direct proof:
+// a row still delivery='pending' (its pull has not, or has not yet,
+// succeeded) must NEVER appear in CaptureDebtSnapshot's captured id set --
+// settle-by-failure may only ever act on rows the turn actually saw
+// (delivery='done') -- while an already-pulled, still-unreacted row (real
+// debt) DOES appear. One job and one notice of each state, so both tables'
+// filters are proven independently in one pass.
+//
+// REVERT CHECK: changed CaptureDebtSnapshot's two filters back to
+// `Delivery != "void"` (the pre-fix, pending-inclusive scope) -- this test's
+// `require.ElementsMatch(t, []string{"call-done"}, snap.JobIDs)` FAILED
+// (snap.JobIDs contained BOTH "call-done" AND "call-pending"), and the
+// notice-side assertion failed the same way (both notice ids present).
+// Restored the delivery='done' filters; re-ran, passed.
+func TestCaptureDebtSnapshot_ExcludesPendingIncludesDone(t *testing.T) {
+	t.Parallel()
+	store, q, ctx := newTestStore(t)
+	require.NoError(t, seedSession(ctx, q, "owner-1"))
+	messages := message.NewService(db.New(store.sqlDB))
+
+	// A job row that gets pulled (delivery='done') before the snapshot.
+	_, err := store.Claim(ctx, ClaimParams{Owner: "owner-1", ToolCallID: "call-done", Kind: JobKindCommand, Input: "x"})
+	require.NoError(t, err)
+	require.NoError(t, store.MarkAnnounced(ctx, "owner-1", "call-done"))
+	_, err = store.Transition(ctx, TransitionParams{Owner: "owner-1", ToolCallID: "call-done", State: "completed", ResultSummary: "ok", Wake: true})
+	require.NoError(t, err)
+	_, err = store.PullJobNotices(ctx, messages, "owner-1", buildTestJobNoticeParams)
+	require.NoError(t, err)
+
+	// A job row left at delivery='pending' -- nothing ever pulled it (the
+	// permanently-failing-pull shape C18 protects against).
+	_, err = store.Claim(ctx, ClaimParams{Owner: "owner-1", ToolCallID: "call-pending", Kind: JobKindCommand, Input: "y"})
+	require.NoError(t, err)
+	require.NoError(t, store.MarkAnnounced(ctx, "owner-1", "call-pending"))
+	_, err = store.Transition(ctx, TransitionParams{Owner: "owner-1", ToolCallID: "call-pending", State: "completed", ResultSummary: "unpulled", Wake: true})
+	require.NoError(t, err)
+
+	// Same shape on the session_notices side: one pulled (done), one not
+	// (pending). "bg_shell_done" has no void condition (notice_pull.go).
+	// PullSessionNotices pulls EVERY currently-pending row for the owner in
+	// one call, so the "pending" notice must be inserted AFTER the first
+	// pull, not alongside the "done" one.
+	require.NoError(t, store.InsertSessionNotice(ctx, "owner-1", NoticeKindBGShellDone, "notice done", true, ""))
+	pulledNotices, err := store.PullSessionNotices(ctx, messages, "owner-1", sessionNoticeParams)
+	require.NoError(t, err)
+	require.Len(t, pulledNotices, 1, "precondition: the first notice was pulled")
+	require.NoError(t, store.InsertSessionNotice(ctx, "owner-1", NoticeKindBGShellDone, "notice pending", true, ""))
+
+	allNotices, err := store.ListSessionNotices(ctx, "owner-1")
+	require.NoError(t, err)
+	var doneNoticeID, pendingNoticeID int64
+	for _, n := range allNotices {
+		row, getErr := q.GetSessionNotice(ctx, n.ID)
+		require.NoError(t, getErr)
+		if row.Delivery == "done" {
+			doneNoticeID = n.ID
+		} else {
+			require.Equal(t, "pending", row.Delivery, "precondition: the unpulled notice must still be pending")
+			pendingNoticeID = n.ID
+		}
+	}
+	require.NotZero(t, doneNoticeID)
+	require.NotZero(t, pendingNoticeID)
+
+	snap, err := store.CaptureDebtSnapshot(ctx, "owner-1")
+	require.NoError(t, err)
+	require.ElementsMatch(t, []string{"call-done"}, snap.JobIDs,
+		"the snapshot must include the pulled (done) job row and exclude the still-pending one")
+	require.ElementsMatch(t, []int64{doneNoticeID}, snap.NoticeIDs,
+		"the snapshot must include the pulled (done) notice row and exclude the still-pending one")
+}
+
 // TestSettleReactedFailedWithMarker_SettlesAndInsertsMarkerAtomically pins
 // A10's fix: settling both tables and inserting the wake_failed marker are
 // ONE transaction, and the marker is inserted ONLY when rows were actually
