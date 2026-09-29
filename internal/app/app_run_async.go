@@ -24,9 +24,20 @@ import (
 // exiting". Both are short enough that a real `rush run --timeout` still
 // has room to fire, long enough that a genuinely stuck DB/lock doesn't spin
 // the CPU.
-const (
+// cliLockBusyRetryPause/cliLockBusyRetryOverallLimit are vars (not consts) so
+// a test can shrink them and exercise the overall-limit branch at test
+// timescale instead of a real 30s wait.
+var (
 	cliDBRetryPause       = 500 * time.Millisecond
 	cliLockBusyRetryPause = 500 * time.Millisecond
+	// cliLockBusyRetryOverallLimit bounds a Drain-context retry's total
+	// budget for waiting out ANOTHER PROCESS's hold on this session's OS
+	// lock (C1 fix): unlike the first (real user) turn, which now fails
+	// fast on a busy lock, a Drain retry (this loop's own reaction-debt
+	// turn) may legitimately race a short-lived foreign holder (e.g. a web
+	// tab pulling notices) and is worth a bounded wait -- but never an
+	// unbounded one.
+	cliLockBusyRetryOverallLimit = 30 * time.Second
 )
 
 // sleepOrCtxDone sleeps for d, or returns false early if ctx is done first.
@@ -76,6 +87,12 @@ func (app *App) runNonInteractiveWithAsyncResults(ctx context.Context, output io
 	var totalTokens int64
 	var totalCost float64
 	firstTurn := true
+	// lockBusyRetryStart marks the beginning of the CURRENT run of
+	// consecutive session-lock-busy retries (C1 fix) -- reset to zero the
+	// instant a turn actually runs, so an overall bound applies to one
+	// contiguous busy streak, not the whole (possibly long-lived) rush run
+	// invocation.
+	var lockBusyRetryStart time.Time
 	// lastBuffered is the terse output of the last REAL turn (a no-turn Drain
 	// iteration prints nothing and must not blank it).
 	lastBuffered := &bytes.Buffer{}
@@ -130,13 +147,40 @@ func (app *App) runNonInteractiveWithAsyncResults(ctx context.Context, output io
 		// the ErrRunQueued/drainNoTurn classification below: this is a
 		// DIFFERENT, cross-process refusal, never the normal in-process
 		// "Drain queued behind an active call" signal.
+		//
+		// C1 fix: ExecuteRun is a per-invocation primitive that mutates the
+		// session on every call (UpdateSystemPrompt, UpdateReasoningEffort,
+		// ClearCancelRequest, SetBudget, SetEndedReason, ...) -- retrying it
+		// silently and without bound against a session another process
+		// currently owns repeats every one of those writes each pass,
+		// including erasing a `sessions cancel` request landed in the same
+		// window. The FIRST turn (the user's actual request; `rush run
+		// --session <busy>`) fails fast instead, matching pre-phase-4
+		// behavior and sessionBusyGuidance's own documented contract. Only a
+		// Drain-context retry (this loop's own reaction-debt turn, which can
+		// legitimately race a web tab mid-pull on the same session) keeps
+		// retrying -- bounded overall, and visibly (stderr), never silently
+		// forever.
 		var lockBusy *session.SessionLockBusyError
 		if errors.As(err, &lockBusy) {
+			if firstTurn {
+				return final, err
+			}
+			if lockBusyRetryStart.IsZero() {
+				lockBusyRetryStart = time.Now()
+			}
+			if elapsed := time.Since(lockBusyRetryStart); elapsed > cliLockBusyRetryOverallLimit {
+				fmt.Fprintf(os.Stderr, "rush run: session %q still locked by another process after %s; giving up\n",
+					sessionID, cliLockBusyRetryOverallLimit)
+				return final, err
+			}
+			fmt.Fprintf(os.Stderr, "rush run: session %q is locked by another process; retrying\n", sessionID)
 			if !sleepOrCtxDone(ctx, cliLockBusyRetryPause) {
 				return final, ctx.Err()
 			}
 			continue
 		}
+		lockBusyRetryStart = time.Time{}
 
 		// A Drain iteration that ran no provider turn -- nothing wake-worthy
 		// was pending (typically the notice was already pulled at a step
