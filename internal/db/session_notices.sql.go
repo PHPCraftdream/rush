@@ -68,33 +68,25 @@ func (q *Queries) GetSessionNotice(ctx context.Context, id int64) (SessionNotice
 	return i, err
 }
 
-const incrementSessionNoticeWakeAttempts = `-- name: IncrementSessionNoticeWakeAttempts :execrows
-UPDATE session_notices SET wake_attempts = wake_attempts + 1, updated_at = ?
-WHERE id IN (/*SLICE:ids*/?) AND wake = 1 AND reacted = 0
+const incrementSessionNoticeWakeAttemptsForSnapshotRow = `-- name: IncrementSessionNoticeWakeAttemptsForSnapshotRow :execrows
+UPDATE session_notices SET wake_attempts = wake_attempts + 1, updated_at = ?1
+WHERE id = ?2 AND delivery = 'done' AND COALESCE(notice_message_id, '') = CAST(?3 AS TEXT)
+  AND wake = 1 AND reacted = 0
 `
 
-type IncrementSessionNoticeWakeAttemptsParams struct {
-	UpdatedAt int64   `json:"updated_at"`
-	Ids       []int64 `json:"ids"`
+type IncrementSessionNoticeWakeAttemptsForSnapshotRowParams struct {
+	UpdatedAt       int64  `json:"updated_at"`
+	ID              int64  `json:"id"`
+	NoticeMessageID string `json:"notice_message_id"`
 }
 
-// Notices half of IncrementAsyncJobWakeAttempts (doc sec.3.4): keyed by id
-// (session_notices' own PK, unlike async_jobs' owner+tool_call_id pair)
-// because the settle-by-failure scope is the exact id set captured at the
-// start of the failed turn, not "every debt row of the owner now".
-func (q *Queries) IncrementSessionNoticeWakeAttempts(ctx context.Context, arg IncrementSessionNoticeWakeAttemptsParams) (int64, error) {
-	query := incrementSessionNoticeWakeAttempts
-	var queryParams []interface{}
-	queryParams = append(queryParams, arg.UpdatedAt)
-	if len(arg.Ids) > 0 {
-		for _, v := range arg.Ids {
-			queryParams = append(queryParams, v)
-		}
-		query = strings.Replace(query, "/*SLICE:ids*/?", strings.Repeat(",?", len(arg.Ids))[1:], 1)
-	} else {
-		query = strings.Replace(query, "/*SLICE:ids*/?", "NULL", 1)
-	}
-	result, err := q.exec(ctx, nil, query, queryParams...)
+// Notices half of IncrementAsyncJobWakeAttemptsForSnapshotRow (doc sec.3.4,
+// R2A-5): keyed by id (session_notices' own PK) because the settle-by-failure
+// scope is the exact set captured at the start of the failed turn, and still
+// the row the snapshot saw: delivery='done' and the snapshot's
+// notice_message_id (a Rerun re-pend/re-pull changes it), wake=1, reacted=0.
+func (q *Queries) IncrementSessionNoticeWakeAttemptsForSnapshotRow(ctx context.Context, arg IncrementSessionNoticeWakeAttemptsForSnapshotRowParams) (int64, error) {
+	result, err := q.exec(ctx, q.incrementSessionNoticeWakeAttemptsForSnapshotRowStmt, incrementSessionNoticeWakeAttemptsForSnapshotRow, arg.UpdatedAt, arg.ID, arg.NoticeMessageID)
 	if err != nil {
 		return 0, err
 	}
@@ -393,6 +385,32 @@ func (q *Queries) RependSessionNoticesByMessageIDs(ctx context.Context, arg Repe
 	return result.RowsAffected()
 }
 
+const repointSessionNoticesJobToolCallID = `-- name: RepointSessionNoticesJobToolCallID :execrows
+UPDATE session_notices SET job_tool_call_id = ?1
+WHERE owner = ?2 AND job_tool_call_id = ?3
+`
+
+type RepointSessionNoticesJobToolCallIDParams struct {
+	NewJobToolCallID sql.NullString `json:"new_job_tool_call_id"`
+	Owner            string         `json:"owner"`
+	OldJobToolCallID sql.NullString `json:"old_job_tool_call_id"`
+}
+
+// R2A-4: session_notices.job_tool_call_id names its async_jobs row by
+// tool_call_id text (the wake_only pull-time void reads that row). When the
+// archive rename above moves the row, its notices follow it: otherwise the
+// text would resolve to the NEW row a later claim put under the reused id
+// and a check-in about the old job would be delivered as if about the new
+// one. Runs in the archive's own transaction, before the fresh claim
+// inserts, so every notice matching the old text belongs to the old row.
+func (q *Queries) RepointSessionNoticesJobToolCallID(ctx context.Context, arg RepointSessionNoticesJobToolCallIDParams) (int64, error) {
+	result, err := q.exec(ctx, q.repointSessionNoticesJobToolCallIDStmt, repointSessionNoticesJobToolCallID, arg.NewJobToolCallID, arg.Owner, arg.OldJobToolCallID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const setSessionNoticeMessageID = `-- name: SetSessionNoticeMessageID :execrows
 UPDATE session_notices SET notice_message_id = ?, updated_at = ?
 WHERE id = ?
@@ -443,33 +461,24 @@ func (q *Queries) SetSessionNoticesWakeZeroPendingForOwners(ctx context.Context,
 	return result.RowsAffected()
 }
 
-const settleSessionNoticesReactedFailed = `-- name: SettleSessionNoticesReactedFailed :execrows
-UPDATE session_notices SET reacted = 1, reacted_failed = 1, updated_at = ?
-WHERE id IN (/*SLICE:ids*/?) AND wake = 1 AND reacted = 0
+const settleSessionNoticeReactedFailedForSnapshotRow = `-- name: SettleSessionNoticeReactedFailedForSnapshotRow :execrows
+UPDATE session_notices SET reacted = 1, reacted_failed = 1, updated_at = ?1
+WHERE id = ?2 AND delivery = 'done' AND COALESCE(notice_message_id, '') = CAST(?3 AS TEXT)
+  AND wake = 1 AND reacted = 0
 `
 
-type SettleSessionNoticesReactedFailedParams struct {
-	UpdatedAt int64   `json:"updated_at"`
-	Ids       []int64 `json:"ids"`
+type SettleSessionNoticeReactedFailedForSnapshotRowParams struct {
+	UpdatedAt       int64  `json:"updated_at"`
+	ID              int64  `json:"id"`
+	NoticeMessageID string `json:"notice_message_id"`
 }
 
-// Notices half of SettleAsyncJobsReactedFailed (doc sec.3.4): closes debt
-// on exactly the captured id set after K=3 failed passes. reacted_failed
-// distinguishes this from MarkSessionNoticesReactedForOwner's ordinary,
-// real-step reaction.
-func (q *Queries) SettleSessionNoticesReactedFailed(ctx context.Context, arg SettleSessionNoticesReactedFailedParams) (int64, error) {
-	query := settleSessionNoticesReactedFailed
-	var queryParams []interface{}
-	queryParams = append(queryParams, arg.UpdatedAt)
-	if len(arg.Ids) > 0 {
-		for _, v := range arg.Ids {
-			queryParams = append(queryParams, v)
-		}
-		query = strings.Replace(query, "/*SLICE:ids*/?", strings.Repeat(",?", len(arg.Ids))[1:], 1)
-	} else {
-		query = strings.Replace(query, "/*SLICE:ids*/?", "NULL", 1)
-	}
-	result, err := q.exec(ctx, nil, query, queryParams...)
+// Notices half of SettleAsyncJobReactedFailedForSnapshotRow (doc sec.3.4,
+// R2A-5): closes debt on ONE snapshot row after K=3 failed passes, under the
+// same still-the-row-the-snapshot-saw guard. reacted_failed distinguishes this
+// from MarkSessionNoticesReactedForOwner's ordinary, real-step reaction.
+func (q *Queries) SettleSessionNoticeReactedFailedForSnapshotRow(ctx context.Context, arg SettleSessionNoticeReactedFailedForSnapshotRowParams) (int64, error) {
+	result, err := q.exec(ctx, q.settleSessionNoticeReactedFailedForSnapshotRowStmt, settleSessionNoticeReactedFailedForSnapshotRow, arg.UpdatedAt, arg.ID, arg.NoticeMessageID)
 	if err != nil {
 		return 0, err
 	}

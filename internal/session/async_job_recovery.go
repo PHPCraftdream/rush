@@ -207,9 +207,9 @@ func recoveredDelegationText(ctx context.Context, messages message.Service, chil
 // skipping hosts this process itself owns. A single host's recovery error
 // is logged and skipped -- it never aborts the rest of the sweep.
 func (s *AsyncJobStore) SweepDeadHosts(ctx context.Context, messages message.Service) (map[string]RecoveryOutcome, error) {
-	hostIDs, err := s.q.ListDistinctRunningHostIDs(ctx)
+	hostIDs, err := s.q.ListDistinctRecoverableHostIDs(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("sweep dead hosts: list running host ids: %w", err)
+		return nil, fmt.Errorf("sweep dead hosts: list recoverable host ids: %w", err)
 	}
 	out := make(map[string]RecoveryOutcome)
 	for _, hostID := range hostIDs {

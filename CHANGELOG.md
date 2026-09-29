@@ -211,7 +211,10 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   recreated. From now on only new
   migration files are added.
 - **Web session-list re-polls read on a separate connection**, so they no
-  longer stall behind write transactions (up to the 30s busy timeout).
+  longer stall behind write transactions (up to the 30s busy timeout), and no
+  reader waits on a process's first host registration any more (registration no
+  longer holds a lock across its database write, which could also deadlock
+  against a notice pull).
 
 ### Removed
 

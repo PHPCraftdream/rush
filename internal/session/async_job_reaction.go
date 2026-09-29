@@ -121,19 +121,40 @@ func (s *AsyncJobStore) MarkReactedWithMessageUpdate(ctx context.Context, messag
 	return nil
 }
 
-// DebtSnapshot is the id set a Drain turn's failure handling (settle-by-
+// DebtJobRef names one async_jobs debt row exactly as the turn saw it
+// (R2A-4/R2A-5). Identity is the claim, not the tool_call_id text: a reused
+// tool_call_id archives the old row (renaming its key) and a later claim puts
+// a NEW row under the same text, so a text match would hit a row the model
+// never saw. NoticeMessageID is the history message the pull created for the
+// row; a Rerun re-pend followed by a re-pull gives the row a new one, which is
+// how a late settle recognises "not the delivery the turn reacted to".
+type DebtJobRef struct {
+	ToolCallID      string // only disambiguates legacy rows whose claim_id is empty
+	ClaimID         string
+	NoticeMessageID string
+}
+
+// DebtNoticeRef is DebtJobRef's session_notices counterpart (the row id is
+// AUTOINCREMENT, never reused).
+type DebtNoticeRef struct {
+	ID              int64
+	NoticeMessageID string
+}
+
+// DebtSnapshot is the row set a Drain turn's failure handling (settle-by-
 // failure, doc sec.3.4) acts on: "captured at the START of the turn", never
 // re-evaluated against whatever is pending by the time a failure is
-// classified.
+// classified. Every write made from it re-checks that the row is still the
+// one captured (see DebtJobRef).
 type DebtSnapshot struct {
-	JobIDs    []string // async_jobs.tool_call_id
-	NoticeIDs []int64  // session_notices.id
+	Jobs    []DebtJobRef
+	Notices []DebtNoticeRef
 }
 
 // Empty reports whether the snapshot captured nothing (no debt existed at
 // capture time, or the store is unavailable).
 func (d DebtSnapshot) Empty() bool {
-	return len(d.JobIDs) == 0 && len(d.NoticeIDs) == 0
+	return len(d.Jobs) == 0 && len(d.Notices) == 0
 }
 
 // CaptureDebtSnapshot reads owner's current debt row ids from both tables --
@@ -177,12 +198,12 @@ func (s *AsyncJobStore) CaptureDebtSnapshot(ctx context.Context, owner string) (
 	var snap DebtSnapshot
 	for _, j := range jobs {
 		if j.Wake != 0 && j.Reacted == 0 && j.Delivery == "done" && j.Announced != 0 {
-			snap.JobIDs = append(snap.JobIDs, j.ToolCallID)
+			snap.Jobs = append(snap.Jobs, DebtJobRef{ToolCallID: j.ToolCallID, ClaimID: j.ClaimID, NoticeMessageID: j.NoticeMessageID.String})
 		}
 	}
 	for _, n := range notices {
 		if n.Wake != 0 && n.Reacted == 0 && n.Delivery == "done" {
-			snap.NoticeIDs = append(snap.NoticeIDs, n.ID)
+			snap.Notices = append(snap.Notices, DebtNoticeRef{ID: n.ID, NoticeMessageID: n.NoticeMessageID.String})
 		}
 	}
 	return snap, nil
@@ -227,24 +248,26 @@ func (s *AsyncJobStore) PendingInclusiveDebtSummary(ctx context.Context, owner s
 }
 
 // IncrementWakeAttempts bumps wake_attempts on exactly snap's captured rows
-// (doc sec.3.4's settle-by-failure step 1), guarded server-side to rows
-// still wake=1/reacted=0 so a row that settled in the meantime (a real turn,
-// or an earlier settle) is left alone.
+// (doc sec.3.4's settle-by-failure step 1). Each row is bumped only while it
+// is still the row the snapshot saw (same claim, delivery='done', same notice
+// message, wake=1, reacted=0), so a row that settled, was re-pended or voided
+// by a Rerun, or was replaced by a later claim under a reused tool_call_id in
+// the meantime is left alone (R2A-4/R2A-5).
 func (s *AsyncJobStore) IncrementWakeAttempts(ctx context.Context, owner string, snap DebtSnapshot) error {
 	if snap.Empty() {
 		return nil
 	}
 	now := time.Now().Unix()
-	if len(snap.JobIDs) > 0 {
-		if _, err := s.q.IncrementAsyncJobWakeAttempts(ctx, db.IncrementAsyncJobWakeAttemptsParams{
-			UpdatedAt: now, OwnerSessionID: owner, ToolCallIds: snap.JobIDs,
+	for _, ref := range snap.Jobs {
+		if _, err := s.q.IncrementAsyncJobWakeAttemptsForSnapshotRow(ctx, db.IncrementAsyncJobWakeAttemptsForSnapshotRowParams{
+			UpdatedAt: now, Owner: owner, ClaimID: ref.ClaimID, ToolCallID: ref.ToolCallID, NoticeMessageID: ref.NoticeMessageID,
 		}); err != nil {
 			return fmt.Errorf("async job store: increment wake attempts: async_jobs: %w", err)
 		}
 	}
-	if len(snap.NoticeIDs) > 0 {
-		if _, err := s.q.IncrementSessionNoticeWakeAttempts(ctx, db.IncrementSessionNoticeWakeAttemptsParams{
-			UpdatedAt: now, Ids: snap.NoticeIDs,
+	for _, ref := range snap.Notices {
+		if _, err := s.q.IncrementSessionNoticeWakeAttemptsForSnapshotRow(ctx, db.IncrementSessionNoticeWakeAttemptsForSnapshotRowParams{
+			UpdatedAt: now, ID: ref.ID, NoticeMessageID: ref.NoticeMessageID,
 		}); err != nil {
 			return fmt.Errorf("async job store: increment wake attempts: session_notices: %w", err)
 		}
@@ -253,37 +276,40 @@ func (s *AsyncJobStore) IncrementWakeAttempts(ctx context.Context, owner string,
 }
 
 // MaxWakeAttempts reads the highest wake_attempts currently on snap's rows
-// that are STILL debt (wake=1/reacted=0) -- rows that settled independently
-// in the meantime (a real turn reacted, or an earlier pass already settled
-// them) are excluded, matching doc sec.3.4's "only for rows that were done
-// at the moment [the failed turn] started" scoping. Returns 0 if none of
+// that are STILL debt AND still the rows the snapshot saw (the same predicate
+// IncrementWakeAttempts/SettleReactedFailed write under) -- rows that settled
+// independently in the meantime, were re-pended/voided, or were replaced by a
+// later claim are excluded, matching doc sec.3.4's "only for rows that were
+// done at the moment [the failed turn] started" scoping. Returns 0 if none of
 // snap's rows are still debt (nothing left to settle).
 func (s *AsyncJobStore) MaxWakeAttempts(ctx context.Context, owner string, snap DebtSnapshot) (int, error) {
 	max := 0
-	for _, id := range snap.JobIDs {
-		row, err := s.q.GetAsyncJob(ctx, db.GetAsyncJobParams{OwnerSessionID: owner, ToolCallID: id})
+	for _, ref := range snap.Jobs {
+		row, err := s.q.GetAsyncJobByClaimID(ctx, db.GetAsyncJobByClaimIDParams{
+			Owner: owner, ClaimID: ref.ClaimID, ToolCallID: ref.ToolCallID,
+		})
 		if err == sql.ErrNoRows {
 			continue
 		}
 		if err != nil {
 			return 0, fmt.Errorf("async job store: max wake attempts: async_jobs: %w", err)
 		}
-		if row.Wake == 0 || row.Reacted != 0 {
+		if !snapshotRowStillDebt(row.Delivery, row.NoticeMessageID, row.Wake, row.Reacted, ref.NoticeMessageID) {
 			continue
 		}
 		if int(row.WakeAttempts) > max {
 			max = int(row.WakeAttempts)
 		}
 	}
-	for _, id := range snap.NoticeIDs {
-		row, err := s.q.GetSessionNotice(ctx, id)
+	for _, ref := range snap.Notices {
+		row, err := s.q.GetSessionNotice(ctx, ref.ID)
 		if err == sql.ErrNoRows {
 			continue
 		}
 		if err != nil {
 			return 0, fmt.Errorf("async job store: max wake attempts: session_notices: %w", err)
 		}
-		if row.Wake == 0 || row.Reacted != 0 {
+		if !snapshotRowStillDebt(row.Delivery, row.NoticeMessageID, row.Wake, row.Reacted, ref.NoticeMessageID) {
 			continue
 		}
 		if int(row.WakeAttempts) > max {
@@ -293,29 +319,49 @@ func (s *AsyncJobStore) MaxWakeAttempts(ctx context.Context, owner string, snap 
 	return max, nil
 }
 
+// snapshotRowStillDebt is the Go twin of the *ForSnapshotRow queries'
+// guard: delivery='done', wake=1, reacted=0 and the snapshot's notice message.
+func snapshotRowStillDebt(delivery string, noticeMessageID sql.NullString, wake, reacted int64, snapshotNoticeMessageID string) bool {
+	return delivery == "done" && wake != 0 && reacted == 0 && noticeMessageID.String == snapshotNoticeMessageID
+}
+
 // SettleReactedFailed closes debt by failure (doc sec.3.4) on exactly snap's
-// captured rows: reacted=1 AND reacted_failed=1, scoped server-side to
-// wake=1/reacted=0 so nothing outside the captured set is ever touched.
+// captured rows: reacted=1 AND reacted_failed=1, each row only while it is
+// still the row the snapshot saw (see IncrementWakeAttempts), so nothing
+// outside the captured set -- and no row a Rerun or a later claim replaced --
+// is ever touched.
 func (s *AsyncJobStore) SettleReactedFailed(ctx context.Context, owner string, snap DebtSnapshot) error {
 	if snap.Empty() {
 		return nil
 	}
-	now := time.Now().Unix()
-	if len(snap.JobIDs) > 0 {
-		if _, err := s.q.SettleAsyncJobsReactedFailed(ctx, db.SettleAsyncJobsReactedFailedParams{
-			UpdatedAt: now, OwnerSessionID: owner, ToolCallIds: snap.JobIDs,
-		}); err != nil {
-			return fmt.Errorf("async job store: settle reacted failed: async_jobs: %w", err)
+	_, err := settleSnapshotRows(ctx, s.q, owner, snap, time.Now().Unix())
+	return err
+}
+
+// settleSnapshotRows settles every snapshot row that is still the row the
+// snapshot saw, on q (a plain or transaction-bound Queries), and returns the
+// number of rows settled across both tables.
+func settleSnapshotRows(ctx context.Context, q *db.Queries, owner string, snap DebtSnapshot, now int64) (int64, error) {
+	var settled int64
+	for _, ref := range snap.Jobs {
+		rows, err := q.SettleAsyncJobReactedFailedForSnapshotRow(ctx, db.SettleAsyncJobReactedFailedForSnapshotRowParams{
+			UpdatedAt: now, Owner: owner, ClaimID: ref.ClaimID, ToolCallID: ref.ToolCallID, NoticeMessageID: ref.NoticeMessageID,
+		})
+		if err != nil {
+			return 0, fmt.Errorf("async job store: settle reacted failed: async_jobs: %w", err)
 		}
+		settled += rows
 	}
-	if len(snap.NoticeIDs) > 0 {
-		if _, err := s.q.SettleSessionNoticesReactedFailed(ctx, db.SettleSessionNoticesReactedFailedParams{
-			UpdatedAt: now, Ids: snap.NoticeIDs,
-		}); err != nil {
-			return fmt.Errorf("async job store: settle reacted failed: session_notices: %w", err)
+	for _, ref := range snap.Notices {
+		rows, err := q.SettleSessionNoticeReactedFailedForSnapshotRow(ctx, db.SettleSessionNoticeReactedFailedForSnapshotRowParams{
+			UpdatedAt: now, ID: ref.ID, NoticeMessageID: ref.NoticeMessageID,
+		})
+		if err != nil {
+			return 0, fmt.Errorf("async job store: settle reacted failed: session_notices: %w", err)
 		}
+		settled += rows
 	}
-	return nil
+	return settled, nil
 }
 
 // SettleReactedFailedWithMarker is A10's fix: SettleReactedFailed's two-table
@@ -326,9 +372,9 @@ func (s *AsyncJobStore) SettleReactedFailed(ctx context.Context, owner string, s
 // This does both in ONE transaction: settle snap's captured rows on both
 // tables, then insert the NoticeKindWakeFailed marker IFF at least one row
 // was actually settled (settling nothing means there was nothing to explain
-// a marker for -- e.g. a snapshot that already fully resolved by the time
-// the failure was classified). Returns the total row count settled across
-// both tables.
+// a marker for -- e.g. a snapshot that already fully resolved, or whose rows a
+// Rerun/a later claim replaced, by the time the failure was classified).
+// Returns the total row count settled across both tables.
 func (s *AsyncJobStore) SettleReactedFailedWithMarker(ctx context.Context, owner string, snap DebtSnapshot, markerText string) (int64, error) {
 	if snap.Empty() {
 		return 0, nil
@@ -341,24 +387,9 @@ func (s *AsyncJobStore) SettleReactedFailedWithMarker(ctx context.Context, owner
 	q := db.New(tx)
 	now := time.Now().Unix()
 
-	var settled int64
-	if len(snap.JobIDs) > 0 {
-		rows, err := q.SettleAsyncJobsReactedFailed(ctx, db.SettleAsyncJobsReactedFailedParams{
-			UpdatedAt: now, OwnerSessionID: owner, ToolCallIds: snap.JobIDs,
-		})
-		if err != nil {
-			return 0, fmt.Errorf("async job store: settle reacted failed with marker: async_jobs: %w", err)
-		}
-		settled += rows
-	}
-	if len(snap.NoticeIDs) > 0 {
-		rows, err := q.SettleSessionNoticesReactedFailed(ctx, db.SettleSessionNoticesReactedFailedParams{
-			UpdatedAt: now, Ids: snap.NoticeIDs,
-		})
-		if err != nil {
-			return 0, fmt.Errorf("async job store: settle reacted failed with marker: session_notices: %w", err)
-		}
-		settled += rows
+	settled, err := settleSnapshotRows(ctx, q, owner, snap, now)
+	if err != nil {
+		return 0, fmt.Errorf("async job store: settle reacted failed with marker: %w", err)
 	}
 	if settled > 0 {
 		if _, err := q.InsertSessionNotice(ctx, db.InsertSessionNoticeParams{
@@ -464,10 +495,16 @@ func (s *AsyncJobStore) ListRunningForOwners(ctx context.Context, owners []strin
 // crashed host "alive" for one evaluation. Recovery paths that must WIN the
 // lock keep ProbeHost.
 func (s *AsyncJobStore) HostNotDead(hostID string) bool {
+	return s.hostNotDeadFor(s.HostID(), hostID)
+}
+
+// hostNotDeadFor is HostNotDead with the caller's own host id supplied, for
+// code that runs inside a writer transaction and captured it beforehand.
+func (s *AsyncJobStore) hostNotDeadFor(ownHostID, hostID string) bool {
 	if hostID == "" {
 		return false
 	}
-	if hostID == s.HostID() {
+	if hostID == ownHostID {
 		return true
 	}
 	return s.HostLiveness(hostID) != HostStatusDead

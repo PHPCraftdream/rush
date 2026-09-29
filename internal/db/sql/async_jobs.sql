@@ -13,11 +13,46 @@ SELECT * FROM async_hosts WHERE id = ?;
 -- Reader for `sessions jobs`/`sessions hosts` display.
 SELECT * FROM async_hosts ORDER BY started_at ASC;
 
--- name: ListDistinctRunningHostIDs :many
--- Every host_id that currently owns a 'running' row -- the candidate set a
--- recovery sweep probes (doc sec.3.6/3.7). Liveness itself is decided by
--- the host lock module (OS lock probe), not by this query.
-SELECT DISTINCT host_id FROM async_jobs WHERE state = 'running';
+-- name: ListDistinctRecoverableHostIDs :many
+-- Every host_id that owns a row a dead host would leave behind -- the
+-- candidate set a recovery sweep probes (doc sec.3.6/3.7): a 'running' row,
+-- any unannounced row (a terminal announced=0 row is a leak of a host that
+-- died before its "started" result committed, R2A-7), or a job_kill row that
+-- is done but never got its result message (R2A-8). Liveness itself is
+-- decided by the host lock module (OS lock probe), not by this query.
+SELECT DISTINCT host_id FROM async_jobs
+WHERE state = 'running'
+   OR announced = 0
+   OR (delivery = 'done' AND notice_kind = 'job_kill' AND notice_message_id IS NULL);
+
+-- name: DeleteTerminalUnannouncedAsyncJobsForHost :execrows
+-- ASYNC-05 for a dead host (R2A-7): a job that reached a terminal state
+-- before its own "started" result committed (announced=0) never produces a
+-- notice and would otherwise leak forever and block its tool_call_id --
+-- recovery reads only state='running'. Deleted without a trace, like the
+-- running unannounced rows of the same host.
+DELETE FROM async_jobs WHERE host_id = ? AND announced = 0 AND state != 'running';
+
+-- name: RependJobKillRowsWithoutNoticeForHost :execrows
+-- DUR-11 for job_kill on a dead host (R2A-8): job_kill's transition commits
+-- delivery='done', reacted=1 first and the result message (which names
+-- notice_message_id) later; a host that died between left a 'done' row that
+-- is never pulled and that Rerun cannot re-pend. Back to a plain pending,
+-- wake=0 row (never debt, never a wake) so the next pull shows the result.
+UPDATE async_jobs SET delivery = 'pending', reacted = 0, wake = 0, reacted_failed = 0, wake_attempts = 0, updated_at = ?
+WHERE host_id = ? AND state != 'running' AND delivery = 'done' AND reacted = 1 AND wake = 0
+  AND notice_kind = 'job_kill' AND notice_message_id IS NULL;
+
+-- name: RependJobKillRowWithoutNotice :execrows
+-- Live-process twin of RependJobKillRowsWithoutNoticeForHost (R2A-8): the
+-- job_kill tool call finished without its fused result write (an error
+-- result, a cancelled context, a failed transaction), so the row this same
+-- call had just marked done/reacted names no message. Scoped to the caller's
+-- claim so a later claim under a reused tool_call_id is never touched.
+UPDATE async_jobs SET delivery = 'pending', reacted = 0, wake = 0, reacted_failed = 0, wake_attempts = 0, updated_at = @updated_at
+WHERE owner_session_id = @owner AND tool_call_id = @tool_call_id AND claim_id = @claim_id
+  AND state != 'running' AND delivery = 'done' AND reacted = 1 AND wake = 0
+  AND notice_kind = 'job_kill' AND notice_message_id IS NULL;
 
 -- name: DeleteAsyncHostIfNoJobs :execrows
 -- Owner deletes its own row at exit if it has no rows (doc sec.3.6); a
@@ -289,30 +324,45 @@ SELECT
 UPDATE async_jobs SET reacted = 1, updated_at = ?
 WHERE owner_session_id = ? AND wake = 1 AND reacted = 0 AND delivery = 'done';
 
--- name: IncrementAsyncJobWakeAttempts :execrows
--- Settle-by-failure step 1 (doc sec.3.4: "a temporary failure ... increments
--- the attempt counter in the row"): a temporary provider failure after a
--- wake-up call increments wake_attempts on the SPECIFIC rows the failed
--- turn was meant to react to, not every debt row of the owner (the doc is
--- explicit the closing/counting scope is fixed at the start of that turn,
--- not re-evaluated against whatever is pending now). Guarded by
--- wake=1 AND reacted=0 so a row that settled (by a real step, or by an
--- earlier failure closure) in the meantime is left alone.
-UPDATE async_jobs SET wake_attempts = wake_attempts + 1, updated_at = ?
-WHERE owner_session_id = ? AND tool_call_id IN (sqlc.slice('tool_call_ids')) AND wake = 1 AND reacted = 0;
+-- name: GetAsyncJobByClaimID :one
+-- Debt-snapshot row lookup (R2A-4): a snapshot names a row by its claim_id,
+-- which survives the archive-on-reuse rename of tool_call_id -- a lookup by
+-- tool_call_id text would find the NEW row a later claim put under the reused
+-- id. claim_id '' (rows from before migration 20260929000002) has no
+-- identity of its own, so those keep matching by tool_call_id too.
+SELECT * FROM async_jobs
+WHERE owner_session_id = @owner AND claim_id = @claim_id AND (claim_id <> '' OR tool_call_id = @tool_call_id);
 
--- name: SettleAsyncJobsReactedFailed :execrows
--- Settle-by-failure step 2, after K=3 (doc sec.3.4): closes debt on exactly
--- the id set captured at the start of the failed turn -- doc: "only for the
--- rows that were done at the moment it started" -- not every currently-pending
--- row of the owner (a notice that arrived mid-retry must get its own future
--- wake-up call, not be silently absorbed into this closure). reacted_failed
+-- name: IncrementAsyncJobWakeAttemptsForSnapshotRow :execrows
+-- Settle-by-failure step 1 (doc sec.3.4: "a temporary failure ... increments
+-- the attempt counter in the row") on ONE row of the failed turn's debt
+-- snapshot (R2A-4/R2A-5). The row must still be the row the snapshot saw:
+-- the same claim (claim_id, not tool_call_id text), still delivery='done'
+-- and still carrying the notice message the snapshot recorded -- a Rerun
+-- re-pend/re-pull changes notice_message_id, a void changes delivery -- and
+-- still wake=1/reacted=0, so a row that settled or was re-pended in the
+-- meantime is left alone.
+UPDATE async_jobs SET wake_attempts = wake_attempts + 1, updated_at = @updated_at
+WHERE owner_session_id = @owner AND claim_id = @claim_id AND (claim_id <> '' OR tool_call_id = @tool_call_id)
+  AND delivery = 'done' AND COALESCE(notice_message_id, '') = CAST(@notice_message_id AS TEXT)
+  AND wake = 1 AND reacted = 0;
+
+-- name: SettleAsyncJobReactedFailedForSnapshotRow :execrows
+-- Settle-by-failure step 2, after K=3 (doc sec.3.4): closes debt on ONE row of
+-- the snapshot captured at the start of the failed turn -- doc: "only for the
+-- rows that were done at the moment it started" -- under the same
+-- still-the-row-the-snapshot-saw guard as
+-- IncrementAsyncJobWakeAttemptsForSnapshotRow (R2A-4/R2A-5), so a late settle
+-- (after the turn's release) can never touch a row a Rerun re-pended or
+-- voided, or a later claim under a reused tool_call_id. reacted_failed
 -- distinguishes this from an ordinary step-persisted reaction
 -- (MarkAsyncJobsReactedForOwner): it is set ONLY here, never by a real
 -- step, so a child session can tell its parent the delegation failed
 -- instead of succeeded-with-no-output.
-UPDATE async_jobs SET reacted = 1, reacted_failed = 1, updated_at = ?
-WHERE owner_session_id = ? AND tool_call_id IN (sqlc.slice('tool_call_ids')) AND wake = 1 AND reacted = 0;
+UPDATE async_jobs SET reacted = 1, reacted_failed = 1, updated_at = @updated_at
+WHERE owner_session_id = @owner AND claim_id = @claim_id AND (claim_id <> '' OR tool_call_id = @tool_call_id)
+  AND delivery = 'done' AND COALESCE(notice_message_id, '') = CAST(@notice_message_id AS TEXT)
+  AND wake = 1 AND reacted = 0;
 
 -- name: ListReactedFailedAsyncJobsForOwner :many
 -- Reader for the parent-notification path (doc sec.3.4: "passes the parent
@@ -364,16 +414,43 @@ SELECT * FROM async_jobs WHERE owner_session_id = ? ORDER BY created_at ASC;
 -- reacted=0 from before it was voided -- that must not block its purge,
 -- since a void row will never produce a notice to react to in the first
 -- place).
+-- R2A-10: a DELEGATION row (child_session_id set) is also kept while its
+-- child session still has a running row or unreacted debt (async_jobs or
+-- session_notices, pending included): isDurableDelegationChild recognises a
+-- released delegation child only by this row, and a child whose row was
+-- purged mid-work would get an uncapped Drain on the parent's agent.
 DELETE FROM async_jobs
 WHERE state != 'running' AND delivery IN ('done', 'void') AND updated_at < ?
-  AND NOT (delivery = 'done' AND wake = 1 AND reacted = 0);
+  AND NOT (delivery = 'done' AND wake = 1 AND reacted = 0)
+  AND NOT (child_session_id IS NOT NULL AND (
+        EXISTS (
+            SELECT 1 FROM async_jobs c
+            WHERE c.owner_session_id = async_jobs.child_session_id
+              AND (c.state = 'running' OR (c.wake = 1 AND c.reacted = 0 AND c.delivery != 'void' AND c.announced = 1))
+        )
+        OR EXISTS (
+            SELECT 1 FROM session_notices n
+            WHERE n.owner = async_jobs.child_session_id AND n.wake = 1 AND n.reacted = 0 AND n.delivery != 'void'
+        )
+  ));
 
 -- name: CountAsyncJobsOlderThan :one
 -- Same predicate as PurgeAsyncJobsOlderThan, read-only, for
 -- `sessions gc --dry-run`.
 SELECT COUNT(*) FROM async_jobs
 WHERE state != 'running' AND delivery IN ('done', 'void') AND updated_at < ?
-  AND NOT (delivery = 'done' AND wake = 1 AND reacted = 0);
+  AND NOT (delivery = 'done' AND wake = 1 AND reacted = 0)
+  AND NOT (child_session_id IS NOT NULL AND (
+        EXISTS (
+            SELECT 1 FROM async_jobs c
+            WHERE c.owner_session_id = async_jobs.child_session_id
+              AND (c.state = 'running' OR (c.wake = 1 AND c.reacted = 0 AND c.delivery != 'void' AND c.announced = 1))
+        )
+        OR EXISTS (
+            SELECT 1 FROM session_notices n
+            WHERE n.owner = async_jobs.child_session_id AND n.wake = 1 AND n.reacted = 0 AND n.delivery != 'void'
+        )
+  ));
 
 -- name: ClearReactedFailedForOwner :execrows
 -- A1: a settle-by-failure closure ("this row's debt was closed by K=3
@@ -398,7 +475,12 @@ WHERE owner_session_id = ? AND reacted_failed = 1;
 -- numbers calls per response, e.g. "call_0") can claim a brand new row
 -- immediately instead of being refused for up to 7 days as "already started
 -- earlier"/"different input" (before phase 4 the id was freed at delivery;
--- phase 4's durable row otherwise outlives it). The archived row keeps its
+-- phase 4's durable row otherwise outlives it). R2A-6: a terminal row that is
+-- announced but not yet pulled (delivery='pending', announced=1) is archived
+-- too -- its notice stays pullable by the owner under the archived text, and
+-- it must not block the model's next call with the same id. An unannounced
+-- terminal row is left alone: its "started" result is still to be written by
+-- the caller that owns it. The archived row keeps its
 -- own primary key column but under a new, collision-free text -- it stays
 -- fully addressable by notice_message_id (Rerun's repend, readers) and by
 -- every owner-scoped query; only a lookup BY THE ORIGINAL tool_call_id text
@@ -411,4 +493,5 @@ WHERE owner_session_id = ? AND reacted_failed = 1;
 -- colliding with an unrelated NEW row later claimed under the freed text.
 UPDATE async_jobs SET tool_call_id = @new_tool_call_id, updated_at = @updated_at
 WHERE owner_session_id = @owner_session_id AND tool_call_id = @old_tool_call_id
-  AND state != 'running' AND delivery IN ('done', 'void');
+  AND state != 'running'
+  AND (delivery IN ('done', 'void') OR (delivery = 'pending' AND announced = 1));

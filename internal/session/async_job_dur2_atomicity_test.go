@@ -3,40 +3,33 @@
 // -- one transaction"). Transition (async_job_store.go) already proves the
 // WON direction (TestAsyncJobStore_TransitionWonThenLostThenGone: a
 // committed transition sets state/delivery/wake together). This file proves
-// the fault-injection direction the design doc's sec.6 asks for: a
-// transaction that runs the SAME single-statement CAS but is rolled back
-// instead of committed -- standing in for a crash/disk failure between the
-// UPDATE and the commit -- leaves ALL THREE fields (state, delivery, wake)
-// exactly as they were, never a partial write of one or two of them. Since
-// TransitionAsyncJobTerminalPreserveVoid sets state/delivery/wake/reacted in
-// one SQL UPDATE (internal/db/sql/async_jobs.sql), this is the only place a
-// partial write could ever come from; if the row is untouched. after a
-// rollback, then a WON commit and a LOST/GONE outcome are the only two
-// possible worlds, exactly as DUR-1/DUR-2 claim.
+// the fault direction through the REAL Transition: a database-level fault on
+// the wake write of the terminal transition (a trigger aborting any UPDATE
+// that sets wake) must leave state, delivery, wake and reacted exactly as they
+// were, and the row must still be transitionable afterwards. An
+// implementation that wrote state/delivery and wake in separate statements
+// (each committing on its own) would leave state='completed' behind.
 package session
 
 import (
-	"database/sql"
+	"context"
 	"testing"
 
-	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/stretchr/testify/require"
 )
 
-// TestTransitionAsyncJobTerminal_RolledBackTransactionChangesNothing is
-// DUR-2's fault-injection proof: run the exact CAS query Transition uses,
-// inside a transaction that is then rolled back (not committed) -- the row,
-// read back through a completely separate connection, must show its
-// ORIGINAL state/delivery/wake, not a mix where e.g. state changed but
-// delivery/wake did not (which would be possible only if these were
-// separate statements/transactions, which they are not).
+// TestTransition_InducedWakeWriteFailureChangesNothing is DUR-2's fault-
+// injection proof, driven through store.Transition itself (not a hand-copied
+// query): the fault fires on the write that sets wake=1 -- one of the fields
+// the terminal transition sets together with state/delivery -- and nothing of
+// the transition may be visible afterwards.
 //
-// REVERT CHECK: temporarily changed `tx.Rollback()` below to `tx.Commit()`
-// -- the test FAILED (`after.State` was "completed", not "running") because
-// the CAS's effects were then genuinely visible, proving the assertions
-// below actually observe whether the transaction committed. Restored
-// `tx.Rollback()`; re-ran, passed.
-func TestTransitionAsyncJobTerminal_RolledBackTransactionChangesNothing(t *testing.T) {
+// REVERT CHECK: Transition temporarily changed to apply the terminal state and
+// delivery in one committed statement and the wake bit in a second one -- the
+// induced failure then left state='completed'/delivery='pending' behind and
+// the `require.Equal(t, "running", after.State, ...)` assertion failed.
+// Restored the single CAS statement; re-ran, passed.
+func TestTransition_InducedWakeWriteFailureChangesNothing(t *testing.T) {
 	t.Parallel()
 	store, q, ctx := newTestStore(t)
 	require.NoError(t, seedSession(ctx, q, "owner-1"))
@@ -47,49 +40,26 @@ func TestTransitionAsyncJobTerminal_RolledBackTransactionChangesNothing(t *testi
 	require.Equal(t, "none", claimed.Row.Delivery)
 	require.EqualValues(t, 0, claimed.Row.Wake)
 
-	tx, err := store.sqlDB.BeginTx(ctx, nil)
-	require.NoError(t, err)
-	txq := db.New(tx)
-
-	_, err = txq.TransitionAsyncJobTerminalPreserveVoid(ctx, db.TransitionAsyncJobTerminalPreserveVoidParams{
-		State:          "completed",
-		NoticeKind:     "",
-		ResultSummary:  sql.NullString{String: "ok", Valid: true},
-		ResultIsError:  sql.NullInt64{Valid: true},
-		Delivery:       "pending",
-		Wake:           1,
-		Reacted:        0,
-		UpdatedAt:      claimed.Row.UpdatedAt + 1,
-		OwnerSessionID: "owner-1",
-		ToolCallID:     "call-1",
-		// A11: the CAS now also requires claim_id to match -- this raw query
-		// call bypasses Transition's own empty-ClaimID resolution (it exists
-		// specifically to call "the exact CAS query Transition uses" without
-		// going through the wrapper), so it must supply the row's real
-		// claim_id itself, exactly like Transition would.
-		ClaimID: claimed.Row.ClaimID,
+	abortingTrigger(t, store, "fail_terminal_wake", "UPDATE OF wake ON async_jobs WHEN NEW.wake = 1", "induced wake write failure")
+	_, err = store.Transition(ctx, TransitionParams{
+		Owner: "owner-1", ToolCallID: "call-1", State: "completed",
+		ResultSummary: "ok", ResultIsError: true, Wake: true,
 	})
-	require.NoError(t, err, "the CAS statement itself must succeed inside the transaction")
+	require.Error(t, err, "the induced failure must surface, not be swallowed")
+	require.Contains(t, err.Error(), "induced wake write failure")
 
-	// Simulate the commit never happening (crash/disk failure/process death
-	// right before it) -- roll back instead.
-	require.NoError(t, tx.Rollback())
-
-	// Read back through the store's own Get (a separate query, same
-	// connection pool but outside any transaction) -- if the UPDATE's
-	// effects were visible here, the rollback did not actually undo them.
 	after, err := store.Get(ctx, "owner-1", "call-1")
 	require.NoError(t, err)
-	require.Equal(t, "running", after.State, "an uncommitted transition must not change state")
-	require.Equal(t, "none", after.Delivery, "an uncommitted transition must not change delivery")
-	require.EqualValues(t, 0, after.Wake, "an uncommitted transition must not change wake")
-	require.EqualValues(t, 0, after.Reacted, "an uncommitted transition must not change reacted")
+	require.Equal(t, "running", after.State, "a failed transition must not change state")
+	require.Equal(t, "none", after.Delivery, "a failed transition must not change delivery")
+	require.EqualValues(t, 0, after.Wake, "a failed transition must not change wake")
+	require.EqualValues(t, 0, after.Reacted, "a failed transition must not change reacted")
+	require.False(t, after.ResultSummary.Valid, "a failed transition must not leave a result behind")
 
-	// A-b test fix: tie the fault-injection proof above to the REAL
-	// store.Transition, not just a hand-rolled duplicate of its query that
-	// could silently drift from the production statement -- the row is still
-	// 'running' (the rollback truly changed nothing), so the actual method
-	// must now succeed and commit the SAME three fields together.
+	// The fault is gone: the same transition now wins and commits the fields
+	// together.
+	_, err = store.sqlDB.ExecContext(context.Background(), "DROP TRIGGER fail_terminal_wake")
+	require.NoError(t, err)
 	result, err := store.Transition(ctx, TransitionParams{
 		Owner: "owner-1", ToolCallID: "call-1", State: "completed",
 		ResultSummary: "ok", ResultIsError: true, Wake: true,

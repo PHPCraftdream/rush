@@ -158,13 +158,16 @@ func (s *AsyncJobStore) pullOneJobNotice(ctx context.Context, messages message.S
 // sec.3.4) fails is marked void instead of delivered, in the same
 // transaction, and produces no message.
 func (s *AsyncJobStore) PullSessionNotices(ctx context.Context, messages message.Service, owner string, build func(SessionNoticeRow) message.CreateMessageParams) ([]PulledNotice, error) {
+	// Captured before any transaction opens (R2A-2): nothing a writer
+	// transaction runs may wait on store state.
+	ownHostID := s.HostID()
 	rows, err := s.q.ListPendingSessionNoticesForOwner(ctx, owner)
 	if err != nil {
 		return nil, err
 	}
 	var out []PulledNotice
 	for _, row := range rows {
-		pulled, ok, err := s.pullOneSessionNotice(ctx, messages, owner, row, build)
+		pulled, ok, err := s.pullOneSessionNotice(ctx, messages, owner, ownHostID, row, build)
 		if err != nil {
 			slog.Warn("async job store: pull session notice failed; row stays pending",
 				"session_id", owner, "notice_id", row.ID, "err", err)
@@ -177,7 +180,7 @@ func (s *AsyncJobStore) PullSessionNotices(ctx context.Context, messages message
 	return out, nil
 }
 
-func (s *AsyncJobStore) pullOneSessionNotice(ctx context.Context, messages message.Service, owner string, row db.SessionNotice, build func(SessionNoticeRow) message.CreateMessageParams) (PulledNotice, bool, error) {
+func (s *AsyncJobStore) pullOneSessionNotice(ctx context.Context, messages message.Service, owner, ownHostID string, row db.SessionNotice, build func(SessionNoticeRow) message.CreateMessageParams) (PulledNotice, bool, error) {
 	tx, err := s.sqlDB.BeginTx(ctx, nil)
 	if err != nil {
 		return PulledNotice{}, false, err
@@ -195,7 +198,7 @@ func (s *AsyncJobStore) pullOneSessionNotice(ctx context.Context, messages messa
 		return PulledNotice{}, false, err
 	}
 
-	void, err := s.sessionNoticeVoidCondition(ctx, q, owner, pulledRow)
+	void, err := s.sessionNoticeVoidCondition(ctx, q, owner, ownHostID, pulledRow)
 	if err != nil {
 		return PulledNotice{}, false, err
 	}
@@ -243,7 +246,7 @@ func (s *AsyncJobStore) pullOneSessionNotice(ctx context.Context, messages messa
 // its named job is no longer running; supervision voids if the owner's
 // scope (excluding supervision itself, which has no async_jobs row) has no
 // other running row. Every other kind has no condition and never voids.
-func (s *AsyncJobStore) sessionNoticeVoidCondition(ctx context.Context, q *db.Queries, owner string, row db.SessionNotice) (bool, error) {
+func (s *AsyncJobStore) sessionNoticeVoidCondition(ctx context.Context, q *db.Queries, owner, ownHostID string, row db.SessionNotice) (bool, error) {
 	switch row.Kind {
 	case NoticeKindWakeOnly:
 		if !row.JobToolCallID.Valid {
@@ -269,7 +272,12 @@ func (s *AsyncJobStore) sessionNoticeVoidCondition(ctx context.Context, q *db.Qu
 			return false, err
 		}
 		for _, r := range running {
-			if s.HostNotDead(r.HostID) {
+			// A job voided by a Rerun is not open scope either, even while its
+			// (possibly unreachable) executor still runs (R2A-9).
+			if r.Delivery == "void" {
+				continue
+			}
+			if s.hostNotDeadFor(ownHostID, r.HostID) {
 				return false, nil
 			}
 		}

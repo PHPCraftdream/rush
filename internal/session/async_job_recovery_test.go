@@ -320,7 +320,7 @@ func TestAsyncJobStore_CloseKeepLock_LeavesLockHeld(t *testing.T) {
 	hostID := store.HostID()
 	require.NotEmpty(t, hostID)
 
-	require.NotNil(t, store.host.lock)
+	require.NotNil(t, store.host.Load().lock)
 
 	store.CloseKeepLock()
 	t.Cleanup(func() {

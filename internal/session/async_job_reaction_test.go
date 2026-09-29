@@ -8,7 +8,6 @@ package session
 
 import (
 	"context"
-	"database/sql"
 	"os"
 	"strings"
 	"testing"
@@ -17,28 +16,6 @@ import (
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/stretchr/testify/require"
 )
-
-// failAfterUpdateMessages wraps a real message.Service so its UpdateTx
-// performs the REAL write through the given tx (proving it actually ran),
-// then deliberately corrupts the SAME transaction with invalid SQL. Used by
-// TestMarkReactedWithMessageUpdate_TransactionIsAtomic to prove
-// MarkReactedWithMessageUpdate's write is genuinely one atomic transaction,
-// not just "the async_jobs write happens to run after the message write":
-// if the already-executed message write is still visible after the induced
-// failure, they were never really one transaction.
-type failAfterUpdateMessages struct {
-	message.Service
-}
-
-func (f failAfterUpdateMessages) UpdateTx(ctx context.Context, tx *sql.Tx, msg message.Message) (func(), error) {
-	if _, err := f.Service.UpdateTx(ctx, tx, msg); err != nil {
-		return nil, err
-	}
-	if _, err := tx.ExecContext(ctx, "this is not valid sql"); err != nil {
-		return nil, err
-	}
-	return func() {}, nil
-}
 
 // buildTestJobNoticeParams mirrors agent_notice_pull.go's real formatter
 // closely enough for this test: a plain user-role notice message.
@@ -119,46 +96,89 @@ func TestMarkReactedWithMessageUpdate_OneTransactionClearsDebt(t *testing.T) {
 	require.Equal(t, "done", persisted.FullText(), "the message write half of the same transaction must be durable too")
 }
 
+// abortingTrigger installs a SQLite trigger that aborts the statement it
+// guards with the given message, so a test can make a LATER write of a
+// multi-write operation fail after the earlier ones already executed --
+// fault injection at the database, no seam in production code.
+func abortingTrigger(t *testing.T, store *AsyncJobStore, name, on, msg string) {
+	t.Helper()
+	_, err := store.sqlDB.ExecContext(context.Background(),
+		"CREATE TRIGGER "+name+" BEFORE "+on+" BEGIN SELECT RAISE(ABORT, '"+msg+"'); END")
+	require.NoError(t, err)
+}
+
+// pulledDebt seeds owner with one delivered (pulled), unreacted wake=1 job row
+// (call-1) and returns it, so the reacted-marker UPDATE has a row to touch.
+func pulledDebt(t *testing.T, ctx context.Context, store *AsyncJobStore, messages message.Service, owner string) {
+	t.Helper()
+	_, err := store.Claim(ctx, ClaimParams{Owner: owner, ToolCallID: "call-1", Kind: JobKindCommand, Input: "x"})
+	require.NoError(t, err)
+	require.NoError(t, store.MarkAnnounced(ctx, owner, "call-1"))
+	_, err = store.Transition(ctx, TransitionParams{Owner: owner, ToolCallID: "call-1", State: "completed", ResultSummary: "ok", Wake: true})
+	require.NoError(t, err)
+	pulled, err := store.PullJobNotices(ctx, messages, owner, buildTestJobNoticeParams)
+	require.NoError(t, err)
+	require.Len(t, pulled, 1)
+}
+
 // TestMarkReactedWithMessageUpdate_TransactionIsAtomic proves
-// MarkReactedWithMessageUpdate's write is genuinely ONE transaction, not two
-// writes that merely happen to run back to back (A-b test fix: the original
-// test's REVERT CHECK only proved the async_jobs write was NECESSARY, never
-// that a later failure rolls the earlier write back). The message write
-// (first statement) is made to actually execute via a real UpdateTx call,
-// then the SAME transaction is deliberately corrupted before the async_jobs/
-// session_notices writes ever run. If the two writes were not truly bound to
-// one transaction, the message write would survive; atomicity requires it
-// does not.
+// MarkReactedWithMessageUpdate's write is genuinely ONE transaction: the
+// message update has ALREADY executed (through the real UpdateTx) when a
+// later statement of the same operation -- the reacted-marker UPDATE of
+// async_jobs, then of session_notices -- is made to fail (a database trigger
+// aborts it). Both the message text and the debt rows must then be exactly as
+// before: a rolled-back message write and no reacted marker. A two-commit
+// implementation (message update committed on its own, marker second) leaves
+// the new text behind and fails the message assertion.
 //
-// REVERT CHECK: temporarily made MarkReactedWithMessageUpdate commit right
-// after messages.UpdateTx (before the corrupting statement had a chance to
-// run) -- this test's final `require.Equal(t, "before", ...)` FAILED (the
-// message showed "corrupted-write" instead), proving the assertion actually
-// distinguishes committed-early from rolled-back. Restored the real
-// production code (no early commit); re-ran, passed.
+// REVERT CHECK: MarkReactedWithMessageUpdate temporarily changed to commit
+// the transaction right after messages.UpdateTx and run the marker writes in
+// a second transaction -- the "corrupted-write" text then survived the induced
+// marker failure and the `require.Equal(t, "before", ...)` assertion failed
+// in both sub-cases. Restored the single transaction; re-ran, passed.
 func TestMarkReactedWithMessageUpdate_TransactionIsAtomic(t *testing.T) {
 	t.Parallel()
-	store, q, ctx := newTestStore(t)
-	require.NoError(t, seedSession(ctx, q, "owner-1"))
-	real := message.NewService(db.New(store.sqlDB))
+	for _, tc := range []struct {
+		name, trigger, on string
+	}{
+		{"async_jobs marker fails", "fail_jobs_marker", "UPDATE OF reacted ON async_jobs"},
+		{"session_notices marker fails", "fail_notices_marker", "UPDATE OF reacted ON session_notices"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			store, q, ctx := newTestStore(t)
+			require.NoError(t, seedSession(ctx, q, "owner-1"))
+			real := message.NewService(db.New(store.sqlDB))
+			pulledDebt(t, ctx, store, real, "owner-1")
+			require.NoError(t, store.InsertSessionNotice(ctx, "owner-1", NoticeKindBGShellDone, "bg done", true, ""))
+			_, err := store.PullSessionNotices(ctx, real, "owner-1", sessionNoticeParams)
+			require.NoError(t, err)
 
-	assistant, err := real.Create(ctx, "owner-1", message.CreateMessageParams{
-		Role: message.Assistant, Parts: []message.ContentPart{message.TextContent{Text: "before"}},
-	})
-	require.NoError(t, err)
+			assistant, err := real.Create(ctx, "owner-1", message.CreateMessageParams{
+				Role: message.Assistant, Parts: []message.ContentPart{message.TextContent{Text: "before"}},
+			})
+			require.NoError(t, err)
+			mutated := assistant
+			mutated.Parts = []message.ContentPart{message.TextContent{Text: "corrupted-write"}}
+			mutated.AddFinish(message.FinishReasonEndTurn, "", "")
 
-	mutated := assistant
-	mutated.Parts = []message.ContentPart{message.TextContent{Text: "corrupted-write"}}
-	mutated.AddFinish(message.FinishReasonEndTurn, "", "")
+			abortingTrigger(t, store, tc.trigger, tc.on, "induced marker failure")
+			err = store.MarkReactedWithMessageUpdate(ctx, real, "owner-1", mutated)
+			require.Error(t, err, "the induced failure after the message write must surface, not be swallowed")
+			require.Contains(t, err.Error(), "induced marker failure")
 
-	wrapped := failAfterUpdateMessages{Service: real}
-	err = store.MarkReactedWithMessageUpdate(ctx, wrapped, "owner-1", mutated)
-	require.Error(t, err, "the induced mid-transaction failure must surface, not be swallowed")
-
-	persisted, err := real.Get(ctx, assistant.ID)
-	require.NoError(t, err)
-	require.Equal(t, "before", persisted.FullText(),
-		"a write already executed inside a transaction that later fails must roll back, not partially commit")
+			persisted, err := real.Get(ctx, assistant.ID)
+			require.NoError(t, err)
+			require.Equal(t, "before", persisted.FullText(),
+				"a message write already executed inside a transaction whose marker write then fails must roll back")
+			debt, err := store.VisibleReactionDebtExists(ctx, "owner-1")
+			require.NoError(t, err)
+			require.True(t, debt, "no reacted marker may survive a failed reaction transaction")
+			job, err := store.Get(ctx, "owner-1", "call-1")
+			require.NoError(t, err)
+			require.EqualValues(t, 0, job.Reacted, "the async_jobs marker written before the failure must roll back too")
+		})
+	}
 }
 
 // TestMarkReactedWithMessageUpdate_SessionNoticesHalf is the session_notices
@@ -408,7 +428,7 @@ func TestSettleByFailure_ScopedIncrementAndSettle_GoLayer(t *testing.T) {
 
 	snap, err := store.CaptureDebtSnapshot(ctx, "owner-1")
 	require.NoError(t, err)
-	require.ElementsMatch(t, []string{"call-1"}, snap.JobIDs)
+	require.ElementsMatch(t, []string{"call-1"}, jobRefIDs(snap))
 
 	// A row that becomes debt AFTER the snapshot was captured must not be
 	// swept up by a settle scoped to the earlier snapshot.
@@ -455,8 +475,8 @@ func TestSettleByFailure_ScopedIncrementAndSettle_GoLayer(t *testing.T) {
 //
 // REVERT CHECK: changed CaptureDebtSnapshot's two filters back to
 // `Delivery != "void"` (the pre-fix, pending-inclusive scope) -- this test's
-// `require.ElementsMatch(t, []string{"call-done"}, snap.JobIDs)` FAILED
-// (snap.JobIDs contained BOTH "call-done" AND "call-pending"), and the
+// `require.ElementsMatch(t, []string{"call-done"}, jobRefIDs(snap))` FAILED
+// (jobRefIDs(snap) contained BOTH "call-done" AND "call-pending"), and the
 // notice-side assertion failed the same way (both notice ids present).
 // Restored the delivery='done' filters; re-ran, passed.
 func TestCaptureDebtSnapshot_ExcludesPendingIncludesDone(t *testing.T) {
@@ -511,23 +531,22 @@ func TestCaptureDebtSnapshot_ExcludesPendingIncludesDone(t *testing.T) {
 
 	snap, err := store.CaptureDebtSnapshot(ctx, "owner-1")
 	require.NoError(t, err)
-	require.ElementsMatch(t, []string{"call-done"}, snap.JobIDs,
+	require.ElementsMatch(t, []string{"call-done"}, jobRefIDs(snap),
 		"the snapshot must include the pulled (done) job row and exclude the still-pending one")
-	require.ElementsMatch(t, []int64{doneNoticeID}, snap.NoticeIDs,
+	require.ElementsMatch(t, []int64{doneNoticeID}, noticeRefIDs(snap),
 		"the snapshot must include the pulled (done) notice row and exclude the still-pending one")
 }
 
 // TestSettleReactedFailedWithMarker_SettlesAndInsertsMarkerAtomically pins
-// A10's fix: settling both tables and inserting the wake_failed marker are
-// ONE transaction, and the marker is inserted ONLY when rows were actually
-// settled.
+// A10's fix, happy path: settling both tables and inserting the wake_failed
+// marker happen together, and the marker is inserted ONLY when rows were
+// actually settled. The atomicity itself (a failing marker insert rolls the
+// settle back) is TestSettleReactedFailedWithMarker_MarkerInsertFailureRollsBackTheSettle.
 //
-// REVERT CHECK: temporarily returned settled=1 (a fabricated non-zero count)
-// without ever calling InsertSessionNotice in the "settled == 0" branch's
-// sibling path -- the marker-count assertion below FAILED (0 notices found,
-// not 1), proving the marker-only-if-settled gating is exercised. Separately
-// verified the empty-snapshot path returns (0, nil) with zero notices
-// inserted, proving the guard covers both directions.
+// REVERT CHECK: SettleReactedFailedWithMarker temporarily changed to insert
+// the marker even when nothing was settled -- the empty-snapshot half's
+// `require.Len(t, notices, 1, ...)` failed with 2 notices. Restored the
+// `settled > 0` gate; re-ran, passed.
 func TestSettleReactedFailedWithMarker_SettlesAndInsertsMarkerAtomically(t *testing.T) {
 	t.Parallel()
 	store, q, ctx := newTestStore(t)
@@ -544,7 +563,7 @@ func TestSettleReactedFailedWithMarker_SettlesAndInsertsMarkerAtomically(t *test
 
 	snap, err := store.CaptureDebtSnapshot(ctx, "owner-1")
 	require.NoError(t, err)
-	require.ElementsMatch(t, []string{"call-1"}, snap.JobIDs)
+	require.ElementsMatch(t, []string{"call-1"}, jobRefIDs(snap))
 
 	settled, err := store.SettleReactedFailedWithMarker(ctx, "owner-1", snap, "delegation failed after retries")
 	require.NoError(t, err)
@@ -563,7 +582,7 @@ func TestSettleReactedFailedWithMarker_SettlesAndInsertsMarkerAtomically(t *test
 
 	// A snapshot that settles NOTHING (every row already resolved by the
 	// time settle runs) must insert NO marker at all.
-	empty := DebtSnapshot{JobIDs: []string{"call-1"}} // already reacted/reacted_failed=1 -- the guarded UPDATE affects 0 rows
+	empty := snap // every row already reacted/reacted_failed=1 -- the guarded UPDATEs affect 0 rows
 	settled, err = store.SettleReactedFailedWithMarker(ctx, "owner-1", empty, "should never appear")
 	require.NoError(t, err)
 	require.EqualValues(t, 0, settled)
@@ -571,6 +590,166 @@ func TestSettleReactedFailedWithMarker_SettlesAndInsertsMarkerAtomically(t *test
 	notices, err = store.ListSessionNotices(ctx, "owner-1")
 	require.NoError(t, err)
 	require.Len(t, notices, 1, "settling zero rows must not insert a second marker")
+}
+
+// TestSettleReactedFailedWithMarker_MarkerInsertFailureRollsBackTheSettle
+// proves the settle and the marker are ONE transaction: the marker insert is
+// made to fail (a database trigger aborts INSERTs of wake_failed notices)
+// after both tables' settle UPDATEs already executed. Nothing may survive --
+// no reacted/reacted_failed on either row, no marker -- so a marker failure can
+// never close debt silently (ASYNC-09). A settle committed before the marker
+// insert (the pre-A10 two-step) leaves both rows closed and fails.
+//
+// REVERT CHECK: SettleReactedFailedWithMarker temporarily changed to run the
+// settle on s.q (its own commit) and the marker insert in a later step -- the
+// job row then stayed reacted=1 after the induced marker failure and the
+// `require.EqualValues(t, 0, job.Reacted, ...)` assertion failed. Restored
+// the single transaction; re-ran, passed.
+func TestSettleReactedFailedWithMarker_MarkerInsertFailureRollsBackTheSettle(t *testing.T) {
+	t.Parallel()
+	store, q, ctx := newTestStore(t)
+	require.NoError(t, seedSession(ctx, q, "owner-1"))
+	messages := message.NewService(db.New(store.sqlDB))
+	pulledDebt(t, ctx, store, messages, "owner-1")
+	require.NoError(t, store.InsertSessionNotice(ctx, "owner-1", NoticeKindBGShellDone, "bg done", true, ""))
+	_, err := store.PullSessionNotices(ctx, messages, "owner-1", sessionNoticeParams)
+	require.NoError(t, err)
+	snap, err := store.CaptureDebtSnapshot(ctx, "owner-1")
+	require.NoError(t, err)
+	require.Len(t, snap.Jobs, 1)
+	require.Len(t, snap.Notices, 1)
+
+	abortingTrigger(t, store, "fail_marker_insert", "INSERT ON session_notices WHEN NEW.kind = 'wake_failed'", "induced marker failure")
+	_, err = store.SettleReactedFailedWithMarker(ctx, "owner-1", snap, "delegation failed")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "induced marker failure")
+
+	job, err := store.Get(ctx, "owner-1", "call-1")
+	require.NoError(t, err)
+	require.EqualValues(t, 0, job.Reacted, "the async_jobs settle must roll back with the failed marker insert")
+	require.EqualValues(t, 0, job.ReactedFailed)
+	notice, err := q.GetSessionNotice(ctx, snap.Notices[0].ID)
+	require.NoError(t, err)
+	require.EqualValues(t, 0, notice.Reacted, "the session_notices settle must roll back with the failed marker insert")
+	all, err := store.ListSessionNotices(ctx, "owner-1")
+	require.NoError(t, err)
+	for _, n := range all {
+		require.NotEqual(t, NoticeKindWakeFailed, n.Kind, "no marker may exist after the failed transaction")
+	}
+	debt, err := store.ReactionDebtExists(ctx, "owner-1")
+	require.NoError(t, err)
+	require.True(t, debt, "the debt must stay open after a failed settle")
+}
+
+// TestDebtSnapshot_LateSettleNeverTouchesRowsTheTurnDidNotSee is R2A-4/R2A-5's
+// Go-layer proof, through the real claim/pull/rerun paths: a snapshot names
+// its rows by claim and notice message, and IncrementWakeAttempts/
+// MaxWakeAttempts/SettleReactedFailed(WithMarker) act only while a row is
+// still that row.
+//
+//   - reuse: the snapshot's row is archived by a reused tool_call_id and a NEW
+//     row (different claim, same key text) is pulled -- the settle must hit the
+//     archived row (the one the model saw), never the new one;
+//   - re-pend: the same row is re-pended and re-pulled (new notice message,
+//     as after a Rerun) -- a late settle must leave it alone, with no marker.
+//
+// REVERT CHECK: the *ForSnapshotRow queries temporarily changed to match by
+// (owner, tool_call_id) only (dropping claim_id and the notice_message_id/
+// delivery guards; regenerated) -- the reuse half settled the NEW row and the
+// re-pend half settled the re-pulled row, both assertions failed. Restored;
+// re-ran, passed.
+func TestDebtSnapshot_LateSettleNeverTouchesRowsTheTurnDidNotSee(t *testing.T) {
+	t.Parallel()
+	store, q, ctx := newTestStore(t)
+	require.NoError(t, seedSession(ctx, q, "owner-1"))
+	messages := message.NewService(db.New(store.sqlDB))
+
+	// --- reuse ---
+	first, err := store.Claim(ctx, ClaimParams{Owner: "owner-1", ToolCallID: "call_0", Kind: JobKindCommand, Input: "first"})
+	require.NoError(t, err)
+	require.NoError(t, store.MarkAnnounced(ctx, "owner-1", "call_0"))
+	_, err = store.Transition(ctx, TransitionParams{Owner: "owner-1", ToolCallID: "call_0", State: "completed", ResultSummary: "first out", Wake: true})
+	require.NoError(t, err)
+	_, err = store.PullJobNotices(ctx, messages, "owner-1", buildTestJobNoticeParams)
+	require.NoError(t, err)
+	snap, err := store.CaptureDebtSnapshot(ctx, "owner-1")
+	require.NoError(t, err)
+	require.Len(t, snap.Jobs, 1)
+	require.Equal(t, first.Row.ClaimID, snap.Jobs[0].ClaimID)
+
+	// The model reuses the id: the first row (done, unreacted) is archived and
+	// a NEW row with the same key text becomes debt too.
+	second, err := store.Claim(ctx, ClaimParams{Owner: "owner-1", ToolCallID: "call_0", Kind: JobKindCommand, Input: "second"})
+	require.NoError(t, err)
+	require.NotEqual(t, first.Row.ClaimID, second.Row.ClaimID)
+	require.NoError(t, store.MarkAnnounced(ctx, "owner-1", "call_0"))
+	_, err = store.Transition(ctx, TransitionParams{Owner: "owner-1", ToolCallID: "call_0", State: "completed", ResultSummary: "second out", Wake: true})
+	require.NoError(t, err)
+	_, err = store.PullJobNotices(ctx, messages, "owner-1", buildTestJobNoticeParams)
+	require.NoError(t, err)
+
+	for range 3 {
+		require.NoError(t, store.IncrementWakeAttempts(ctx, "owner-1", snap))
+	}
+	attempts, err := store.MaxWakeAttempts(ctx, "owner-1", snap)
+	require.NoError(t, err)
+	require.EqualValues(t, 3, attempts, "the count belongs to the archived row the snapshot saw")
+	newRow, err := store.Get(ctx, "owner-1", "call_0")
+	require.NoError(t, err)
+	require.EqualValues(t, 0, newRow.WakeAttempts, "the NEW row under the reused key must not be counted")
+
+	settled, err := store.SettleReactedFailedWithMarker(ctx, "owner-1", snap, "marker one")
+	require.NoError(t, err)
+	require.EqualValues(t, 1, settled)
+	newRow, err = store.Get(ctx, "owner-1", "call_0")
+	require.NoError(t, err)
+	require.EqualValues(t, 0, newRow.Reacted, "the NEW row must survive a settle of the archived one")
+	require.EqualValues(t, 0, newRow.ReactedFailed)
+
+	// --- re-pend + re-pull (Rerun) ---
+	snap2, err := store.CaptureDebtSnapshot(ctx, "owner-1")
+	require.NoError(t, err)
+	require.Len(t, snap2.Jobs, 1)
+	require.Equal(t, second.Row.ClaimID, snap2.Jobs[0].ClaimID)
+	_, err = store.sqlDB.ExecContext(ctx,
+		`UPDATE async_jobs SET delivery = 'pending', reacted = 0, wake_attempts = 0, notice_message_id = NULL WHERE owner_session_id = 'owner-1' AND tool_call_id = 'call_0'`)
+	require.NoError(t, err)
+	_, err = store.PullJobNotices(ctx, messages, "owner-1", buildTestJobNoticeParams)
+	require.NoError(t, err)
+	repulled, err := store.Get(ctx, "owner-1", "call_0")
+	require.NoError(t, err)
+	require.Equal(t, "done", repulled.Delivery)
+	require.NotEqual(t, snap2.Jobs[0].NoticeMessageID, repulled.NoticeMessageID.String, "precondition: the re-pull created a new notice message")
+
+	markers := func() int {
+		all, err := store.ListSessionNotices(ctx, "owner-1")
+		require.NoError(t, err)
+		n := 0
+		for _, x := range all {
+			if x.Kind == NoticeKindWakeFailed {
+				n++
+			}
+		}
+		return n
+	}
+	// The new delivery already carries a counter of its own (a later, legitimate
+	// pass); the old snapshot must neither read nor bump it.
+	_, err = store.sqlDB.ExecContext(ctx, `UPDATE async_jobs SET wake_attempts = 2 WHERE owner_session_id = 'owner-1' AND tool_call_id = 'call_0'`)
+	require.NoError(t, err)
+	staleMax, err := store.MaxWakeAttempts(ctx, "owner-1", snap2)
+	require.NoError(t, err)
+	require.EqualValues(t, 0, staleMax, "a stale snapshot must not read the counter of the row's new delivery")
+
+	before := markers()
+	require.NoError(t, store.IncrementWakeAttempts(ctx, "owner-1", snap2))
+	settled, err = store.SettleReactedFailedWithMarker(ctx, "owner-1", snap2, "marker two")
+	require.NoError(t, err)
+	require.EqualValues(t, 0, settled, "a late settle must not close a row that was re-pended and re-pulled")
+	after, err := store.Get(ctx, "owner-1", "call_0")
+	require.NoError(t, err)
+	require.EqualValues(t, 0, after.Reacted)
+	require.EqualValues(t, 2, after.WakeAttempts, "the re-pended row's counter must not be bumped by the old snapshot")
+	require.Equal(t, before, markers(), "no wake_failed marker may land for rows the turn did not see")
 }
 
 // ============================================================
@@ -683,4 +862,22 @@ func TestReactedFailed_NewDelegationClaimClearsStaleFailureFromPriorDelegation(t
 	failedAfter, err := store.ListReactedFailedText(ctx, "child-1")
 	require.NoError(t, err)
 	require.Empty(t, failedAfter, "a fresh delegation must not inherit the previous one's failure closure")
+}
+
+// jobRefIDs/noticeRefIDs reduce a snapshot to the tool_call_ids/notice ids it
+// names, for assertions about WHICH rows a capture picked.
+func jobRefIDs(snap DebtSnapshot) []string {
+	ids := make([]string, 0, len(snap.Jobs))
+	for _, j := range snap.Jobs {
+		ids = append(ids, j.ToolCallID)
+	}
+	return ids
+}
+
+func noticeRefIDs(snap DebtSnapshot) []int64 {
+	ids := make([]int64, 0, len(snap.Notices))
+	for _, n := range snap.Notices {
+		ids = append(ids, n.ID)
+	}
+	return ids
 }
