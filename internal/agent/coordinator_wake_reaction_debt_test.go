@@ -278,6 +278,15 @@ func TestOnSessionIdleHook_RuleA_SkipsRelaunchOnlyWhenHintUnchanged(t *testing.T
 // { return nil }` branch to `if false { ... }` -- this test's
 // `require.Zero(t, f.requests.Load())` FAILED (a Drain turn ran, the probe
 // server got a request). Restored the branch; re-ran, passed.
+//
+// C4 fix update: f.coord is a bare, non-persistent fixture (persistentMode
+// defaults false, matching `rush run`), so ReleaseExternalDriver is now
+// correctly a no-op for it (coordinator_reaction_source.go's own C4 fix --
+// see its doc: a non-persistent coordinator keeps its root hint-only for the
+// entire life of the process). The "release restores ordinary routing" half
+// this test used to assert here is still real for a PERSISTENT (web)
+// coordinator -- proven with TestReleaseExternalDriver_PersistentCoordinator_StillReleases
+// instead of on this same fixture.
 func TestWakeSession_ExternalDriver_HintOnlyNeverBuildsDrainCall(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -297,7 +306,8 @@ func TestWakeSession_ExternalDriver_HintOnlyNeverBuildsDrainCall(t *testing.T) {
 	f.coord.ReleaseExternalDriver(f.sessID)
 	err = f.coord.wakeSession(ctx, jobIdentity{owner: f.sessID, toolCallID: "call-1"}, true)
 	require.NoError(t, err)
-	require.NotZero(t, f.requests.Load(), "once released, the SAME session must go back to ordinary Drain-turn routing")
+	require.Zero(t, f.requests.Load(),
+		"a non-persistent coordinator must NEVER release its external-driver marker (C4 fix) -- routing must stay hint-only")
 }
 
 // TestSessionDrainPolicy_StopSuspendsUntilHumanMessage pins doc sec.3.4's

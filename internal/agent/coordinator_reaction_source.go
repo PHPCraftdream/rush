@@ -68,7 +68,25 @@ func (c *coordinator) ClaimExternalDriver(sessionID string) {
 }
 
 // ReleaseExternalDriver implements ReactionDebtSource.
+//
+// C4 fix (docs/reviews/2026-09-29-async-phase4-round1.md): a NON-persistent
+// coordinator (`rush run`, persistentMode never set true) keeps its root
+// hint-only for the entire life of the process instead of ever releasing
+// it. Before this fix, the CLI loop's own defer (app_run_async.go) released
+// the marker the instant runNonInteractiveWithAsyncResults returned --
+// strictly BEFORE the on-finish hook and before cmd/run.go's deferred
+// App.Shutdown() actually runs (or completes CancelAll) -- so a background
+// job finishing in that window found isExternalDriver false and started a
+// full, PAID Drain turn on context.Background() in a process that is
+// already shutting down. A one-shot CLI process has no "later web-driven
+// wake for the same session id" within its own lifetime to restore ordinary
+// routing FOR (a different process's coordinator has its own, separate
+// in-memory marker) -- so simply never releasing it here is both safe and
+// sufficient; the marker dies with the process either way.
 func (c *coordinator) ReleaseExternalDriver(sessionID string) {
+	if !c.persistentMode.Load() {
+		return
+	}
 	if c.asyncJobs != nil {
 		c.asyncJobs.releaseExternalDriver(sessionID)
 	}

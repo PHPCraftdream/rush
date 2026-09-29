@@ -12,6 +12,7 @@ package agent
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -72,19 +73,39 @@ func (c *coordinator) RecheckPass(ctx context.Context) {
 		}
 	}
 	if c.asyncJobs != nil {
-		for _, parent := range c.parkedParentSessions() {
-			c.asyncJobs.recheckChild(parent)
+		// B12/C14 fix: recheckChild indexes l.byChild by CHILD session id
+		// (never by parent/owner) -- parkedParentSessions() returns the
+		// PARENT ids, so calling recheckChild with those was always a
+		// byChild[parent] miss: no parked delegation was ever actually
+		// re-evaluated by this pass. parkedChildSessions() returns the ids
+		// recheckChild actually expects.
+		for _, child := range c.asyncJobs.parkedChildSessions() {
+			c.asyncJobs.recheckChild(child)
 		}
 	}
+	// B12/C14 fix: each wake runs in its OWN goroutine so a real Drain turn
+	// (which can take seconds) never serializes behind the others, or delays
+	// the NEXT tick's dead-host sweep/retention purge above (this whole
+	// RecheckPass call is one synchronous unit from StartRecheckTicker's own
+	// loop). wg bounds this call's own return to "every wake was at least
+	// SUBMITTED", matching every other fire-and-forget wakeSession call site
+	// in this package (coordinator_background.go, supervision.go) -- none of
+	// them wait for the turn to finish either.
+	var wg sync.WaitGroup
 	for _, sessionID := range c.drainRecheckSet() {
-		// wakeSession re-adds sessionID to the recheck set itself if this
-		// attempt is refused again (its own turnAttemptRefused branch) --
-		// this loop never needs to duplicate that decision.
-		id := jobIdentity{owner: sessionID, toolCallID: "recheck-pass"}
-		if err := c.wakeSession(ctx, id, true); err != nil {
-			slog.Debug("coordinator: recheck pass wake attempt did not complete", "session_id", sessionID, "err", err)
-		}
+		wg.Add(1)
+		go func(sessionID string) {
+			defer wg.Done()
+			// wakeSession re-adds sessionID to the recheck set itself if
+			// this attempt is refused again (its own turnAttemptRefused
+			// branch) -- this loop never needs to duplicate that decision.
+			id := jobIdentity{owner: sessionID, toolCallID: "recheck-pass"}
+			if err := c.wakeSession(ctx, id, true); err != nil {
+				slog.Debug("coordinator: recheck pass wake attempt did not complete", "session_id", sessionID, "err", err)
+			}
+		}(sessionID)
 	}
+	wg.Wait()
 }
 
 // StartRecheckTicker starts the 60s background pass exactly once per
