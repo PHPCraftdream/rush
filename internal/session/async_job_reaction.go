@@ -458,10 +458,11 @@ func (s *AsyncJobStore) ListRunningForOwners(ctx context.Context, owners []strin
 // HostNotDead reports whether hostID is not PROVABLY dead (doc sec.3.5/3.6:
 // "treat unknown as not-dead"; recovery of a dead host's rows is
 // RecoverDeadHost's job -- this is read-only liveness classification). Never
-// probes this store's own host id (ProbeHost's guard). A probe that WINS the
-// lock (status dead, lock non-nil) releases it immediately without deleting
-// the file -- this function only answers a liveness question, it never
-// performs recovery.
+// probes this store's own host id. Read-only question, so it uses the
+// SHARED, non-acquiring probe (HostLiveness): an exclusive probe would see a
+// concurrent shared prober's momentary hold as contention and report a
+// crashed host "alive" for one evaluation. Recovery paths that must WIN the
+// lock keep ProbeHost.
 func (s *AsyncJobStore) HostNotDead(hostID string) bool {
 	if hostID == "" {
 		return false
@@ -469,12 +470,5 @@ func (s *AsyncJobStore) HostNotDead(hostID string) bool {
 	if hostID == s.HostID() {
 		return true
 	}
-	status, lock, err := ProbeHost(s.dataDir, hostID)
-	if lock != nil {
-		_ = lock.Release()
-	}
-	if err != nil {
-		return true // unknown -> not dead (doc sec.3.6)
-	}
-	return status != HostStatusDead
+	return s.HostLiveness(hostID) != HostStatusDead
 }

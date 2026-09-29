@@ -182,6 +182,48 @@ func (s *AsyncJobStore) LiveDescendantJobs(ctx context.Context, rootSessionID st
 	return live, walkIncomplete
 }
 
+// LiveOwnJobs returns sessionID's OWN 'running' non-delegation rows (a
+// bash/run_command job the session itself waits on) whose host is not
+// provably dead -- the complement of LiveDescendantJobs, which reports only
+// delegation rows. A root whose scope is open because of such a job is not
+// finished even though it holds no lock between turns (the loop that waits
+// on it holds none), so status readers (`sessions list`/`why`, the web list)
+// must not report it done. One level only: a descendant's own jobs are
+// already covered by the live delegation row above them. walkIncomplete is
+// true if the query failed -- a short result never means "nothing running".
+func (s *AsyncJobStore) LiveOwnJobs(ctx context.Context, sessionID string) (live []LiveJob, walkIncomplete bool) {
+	if s == nil || sessionID == "" {
+		return nil, false
+	}
+	rows, err := s.readQuerier().ListRunningAsyncJobsForOwners(ctx, []string{sessionID})
+	if err != nil {
+		return nil, true
+	}
+	hostStatus := make(map[string]HostLockStatus)
+	for _, row := range rows {
+		if row.ChildSessionID.Valid && row.ChildSessionID.String != "" {
+			continue
+		}
+		status, cached := hostStatus[row.HostID]
+		if !cached {
+			status = s.HostLiveness(row.HostID)
+			hostStatus[row.HostID] = status
+		}
+		if status == HostStatusDead {
+			continue
+		}
+		live = append(live, LiveJob{
+			SessionID:  row.OwnerSessionID,
+			ToolCallID: row.ToolCallID,
+			Kind:       row.Kind,
+			HostID:     row.HostID,
+			HostStatus: status,
+			StartedAt:  time.Unix(row.CreatedAt, 0),
+		})
+	}
+	return live, false
+}
+
 // JobsInTree lists every async_jobs row (ANY state, not just 'running') at
 // or below rootSessionID -- root's own rows included at depth 0 -- for
 // `sessions jobs`'s full observation view. Unlike LiveJobs, every

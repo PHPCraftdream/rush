@@ -39,11 +39,11 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   completed job whose result no model turn has reacted to yet is reported
   as pending debt both when the result is already in history and when it
   has not been pulled into history yet (the latter used to print "none").
-  The section reads the session's own rows; the status headline above it
-  does not account for them, so a root that only waits on its own plain
-  background job can still be headlined "done" there and in `sessions
-  list` (which promotes a session to "delegating" only for live
-  delegation rows).
+  The section reads the session's own rows. A root that only waits on its
+  own live plain background job (bash/run_command, no delegation) is
+  reported "running", not "done"/"at rest", by `sessions why` (naming the
+  job), `sessions list`, and the web list (new optional `HasLiveOwnWork`
+  field on the session; a crashed root stays crashed).
 
 ### Changed
 
@@ -56,7 +56,19 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   is flushed on every exit path (lock-busy give-up, cancellation, a wait
   error, scope closed). While the loop waits on running work it prints a
   stderr heartbeat every 60s, and a persistently unreadable database ends
-  the wait after 30s instead of retrying forever.
+  the wait after 30s instead of retrying forever. A Ctrl-C or `--timeout`
+  that lands right after a turn finished cleanly ends the run with the
+  cancellation error and `exit_reason: "canceled"` (it used to exit 0 with a
+  canceled envelope).
+- **`rush run` no longer waits on debt it will not react to.** The loop asks
+  the same session policy the web wakes use whether a reaction turn is
+  allowed: a notice no automatic turn is allowed for (an SDK background-shell
+  completion while `auto_resume_on_job_done` is off, a released delegation
+  child, a session under a live foreign driver, a Stop-suspended session) is
+  neither waited on nor settled. The loop ends once nothing is running,
+  prints one line on stderr, and the notice stays for the next turn; the
+  exit reason is unaffected. Before, such a notice kept the loop re-checking
+  every 5s until `--timeout`/Ctrl-C.
 - **A second `rush run` on a session another live `rush run` loop already
   drives fails fast, before it changes anything, naming the pid** ("session
   X is already driven by another `rush run` (host H, pid P, alive); wait
@@ -80,10 +92,10 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   auto-resume** (`AutoResumeOnJobDone`), as before phase 4. Wakes for async
   jobs, delegations, supervision check-ins and `wake_only` timeouts are
   uncapped again (an intermediate phase-4 build had capped them). Stop still
-  pauses automatic turns until the next human message; it does so through
-  the same per-session counter, so once Stop (or five background-shell
-  auto-resumes) has filled it, async-job wakes for that session are paused
-  too until the next human message.
+  pauses every kind of automatic turn until the next human message, through
+  a per-session suspension state of its own; five background-shell
+  auto-resumes fill only the cap counter and no longer pause async-job,
+  delegation or supervision wakes. A human message clears both.
 - **Stop is transitive over the delegation tree and leaves a "cancelled"
   notice per stopped job.** Stopping a session cancels the live turn of the
   session and of every session below it through running delegation rows,
@@ -178,7 +190,10 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   purged. `running` rows, undelivered rows and unreacted debt never are, so
   a Rerun reaches back only as far as retention keeps a delivered row. The
   web server runs the purge every 60s together with the dead-host sweep, the
-  re-check of parked delegations and the re-check set. A CLI-only install
+  re-check of parked delegations and the re-check set. The re-check set's
+  wakes run detached (one per session, at most four at a time), so a slow
+  reaction turn never delays the next tick's sweep, purge or delegation
+  re-check. A CLI-only install
   has no ticker: `rush run` runs the dead-host sweep and the retention
   purge once when its loop starts (never the delegation or re-check-set
   halves), and a process that registers a host sweeps dead hosts once at

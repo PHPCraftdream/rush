@@ -186,11 +186,13 @@ func TestSettleByFailure_KThreeViaRealReleaseHookAndRecheckPass(t *testing.T) {
 	// Attempts 2 and 3: the 60s pass's own real path (RecheckPass ->
 	// wakeSession), exactly as a genuine background tick would deliver them.
 	coord.RecheckPass(ctx)
+	coord.waitRecheckWakes() // the pass's wakes are detached
 	debt, err = store.ReactionDebtExists(ctx, sess.ID)
 	require.NoError(t, err)
 	require.True(t, debt, "attempt 2: debt must still survive under K=3")
 
 	coord.RecheckPass(ctx)
+	coord.waitRecheckWakes()
 	debt, err = store.ReactionDebtExists(ctx, sess.ID)
 	require.NoError(t, err)
 	require.False(t, debt, "attempt 3 (K=3) via the real RecheckPass path must close the debt")

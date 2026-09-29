@@ -27,9 +27,13 @@ voided rows from the phase-4 durable async job ledger (async_jobs and
 session_notices) older than the given age. A 'running' row is NEVER purged
 regardless of age -- this only removes rows whose async command/delegation
 already finished (or was voided by a Rerun) and stayed in that state past
-the age. Without --jobs-older-than, job retention is left entirely to the
-background 60s pass's own fixed 7-day window -- this flag is a separate,
-opt-in, one-shot trigger, not a replacement for it.
+the age. Without --jobs-older-than, job retention runs only with its own
+fixed 7-day window, and only where a rush process is running: the web
+server purges every 60s (together with its dead-host sweep), and each
+"rush run" loop purges once when it starts. Nothing else purges in the
+background, so rows of a workspace used through neither wait for one of
+those. This flag is a separate, opt-in, one-shot trigger with its own age,
+not a replacement for either.
 
 Use --dry-run to print what would be deleted (or purged) without deleting.
 Use --max-sessions to cap the number of SESSION deletions per run (does not
@@ -87,9 +91,10 @@ func sessionsGcCmdRun(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--older-than: %w", err)
 	}
 	// "" means the flag was never passed: job retention stays entirely on
-	// the background 60s pass's own fixed 7-day window (doc sec.3.7) --
-	// this step is opt-in, not a second default-7d trigger every plain
-	// `sessions gc` invocation would also pay for.
+	// the fixed 7-day window run by the web server's 60s pass and once at
+	// each `rush run` loop start (doc sec.3.7) -- this step is opt-in, not a
+	// second default-7d trigger every plain `sessions gc` invocation would
+	// also pay for.
 	var (
 		jobsOlderThan time.Duration
 		purgeJobs     bool
@@ -284,7 +289,7 @@ func parseDurationDays(s string) (time.Duration, error) {
 func init() {
 	sessionsGcCmd.Flags().Bool("dry-run", false, "Print what would be deleted without deleting")
 	sessionsGcCmd.Flags().String("older-than", "7d", "Delete empty sessions older than this (e.g. 7d, 24h, 30m)")
-	sessionsGcCmd.Flags().String("jobs-older-than", "", "Also purge terminal async_jobs/session_notices rows (phase-4 ledger) older than this (e.g. 3d, 12h); empty = leave job retention to the background 7-day pass")
+	sessionsGcCmd.Flags().String("jobs-older-than", "", "Also purge terminal async_jobs/session_notices rows (phase-4 ledger) older than this (e.g. 3d, 12h); empty = only the fixed 7-day retention (web server every 60s, each rush run once at start)")
 	sessionsGcCmd.Flags().Int("max-sessions", 0, "Maximum number of sessions to delete (0 = unlimited)")
 	sessionsGcCmd.Flags().Bool("json", false, "Emit one JSON object per deleted session (plus a job-count summary line with --jobs-older-than)")
 }

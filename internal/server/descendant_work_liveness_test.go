@@ -134,3 +134,55 @@ func TestHandleListSessions_LiveDescendantWorkAnnotation(t *testing.T) {
 		"once the delegation row is terminal the parent must read as idle again")
 	require.Empty(t, parentRow.LiveDescendantIDs)
 }
+
+// TestHandleListSessions_LiveOwnWorkAnnotation: a top-level session whose
+// scope is open only because of its OWN running plain job (no delegation row,
+// no lock between turns) must not read as idle in the sessions_list reply --
+// the web half of the `sessions list`/`sessions why` "running, not done"
+// promotion. HasLiveDescendantWork stays false: nothing below it is working.
+//
+// Revert-check performed: dropped the annotateLiveOwnWork call from
+// handleListSessions -- the HasLiveOwnWork assertion FAILED.
+func TestHandleListSessions_LiveOwnWorkAnnotation(t *testing.T) {
+	// Cannot use t.Parallel() because newAttachmentsTestApp calls t.Setenv.
+	workingDir := t.TempDir()
+	dataDir := t.TempDir()
+	a := newAttachmentsTestApp(t, workingDir, dataDir)
+	ctx := t.Context()
+
+	root, err := a.Sessions.Create(ctx, "root waiting on its own job")
+	require.NoError(t, err)
+
+	hub := newHub()
+	go hub.Run(ctx)
+	client := newClient(hub, nil)
+	client.send = make(chan []byte, 100)
+	hub.register <- client
+
+	list := func() session.Session {
+		handleListSessions(ctx, a, client, WSMessage{ID: "req", Type: CmdListSessions})
+		replies := drainSessionsListReplies(t, client)
+		require.NotEmpty(t, replies, "handleListSessions must reply with a sessions_list event")
+		return findSessionRow(t, replies[len(replies)-1], root.ID)
+	}
+
+	require.False(t, list().HasLiveOwnWork, "no job: idle")
+
+	store := a.AsyncJobStore()
+	require.NotNil(t, store)
+	_, err = store.Claim(ctx, session.ClaimParams{
+		Owner: root.ID, ToolCallID: "bash-1", Kind: session.JobKindCommand, Input: "sleep 60", ToolName: "bash",
+	})
+	require.NoError(t, err)
+
+	row := list()
+	require.True(t, row.HasLiveOwnWork, "a running own plain job must reach the row: the session is not idle")
+	require.False(t, row.HasLiveDescendantWork, "no delegation, so nothing below the root is working")
+	require.Empty(t, row.LiveDescendantIDs)
+
+	_, err = store.Transition(ctx, session.TransitionParams{
+		Owner: root.ID, ToolCallID: "bash-1", State: "completed", NoticeKind: "completed", Wake: true,
+	})
+	require.NoError(t, err)
+	require.False(t, list().HasLiveOwnWork, "a terminal job no longer keeps the session working")
+}

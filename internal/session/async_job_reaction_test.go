@@ -299,6 +299,32 @@ func TestHostNotDead_SelfAliveDeadUnknown(t *testing.T) {
 	require.False(t, store.HostNotDead("host-id-never-registered"), "ENOENT counts as dead per doc sec.3.6, not merely unknown")
 }
 
+// TestHostNotDead_ConcurrentSharedProberDoesNotFlipVerdict pins the read-only
+// probe choice: a crashed host's file (no exclusive holder) must read as dead
+// even while another READER momentarily holds a shared lock on it. The
+// exclusive probe HostNotDead used before saw that shared hold as contention
+// and answered "alive" for the evaluation. A genuine exclusive holder (a live
+// foreign host) must still read as not dead.
+func TestHostNotDead_ConcurrentSharedProberDoesNotFlipVerdict(t *testing.T) {
+	t.Parallel()
+	store, _, _ := newTestStore(t)
+	require.NoError(t, os.MkdirAll(HostsDir(store.dataDir), 0o755))
+
+	crashed := "host-crashed-shared-prober"
+	f, err := os.OpenFile(HostLockPath(store.dataDir, crashed), os.O_CREATE|os.O_RDWR, 0o644)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = f.Close() })
+	require.NoError(t, tryLockFileShared(f), "a concurrent reader's shared hold")
+	require.False(t, store.HostNotDead(crashed),
+		"a crashed host must stay dead while another reader holds a shared lock on its file")
+
+	live := "host-live-foreign"
+	holder, err := TryAcquireFileLock(HostLockPath(store.dataDir, live))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = holder.Release() })
+	require.True(t, store.HostNotDead(live), "an exclusive holder is a live host")
+}
+
 // TestSessionNoticesOwnerIndex_UsedByListForOwner is A9's fix: session_notices
 // had no plain (owner) index, so ListSessionNoticesForOwner (no other
 // predicate to narrow it) fell back to a full table scan. Asserted via a

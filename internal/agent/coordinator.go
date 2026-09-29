@@ -322,8 +322,13 @@ type coordinator struct {
 	// SetPersistentMode call path — atomic.Bool costs nothing and keeps
 	// this field consistent with its neighbors under `go test -race`.
 	persistentMode         atomic.Bool
-	autoResumeMu           sync.Mutex     // guards consecutiveAutoResumes.
-	consecutiveAutoResumes map[string]int // sessionID -> consecutive auto-resumes since last human message.
+	autoResumeMu           sync.Mutex     // guards consecutiveAutoResumes and autoTurnsSuspended.
+	consecutiveAutoResumes map[string]int // sessionID -> consecutive bg-shell auto-resumes since last human message.
+	// autoTurnsSuspended is Stop's own per-session "automatic turns paused
+	// until the next human message" state, deliberately separate from the
+	// bg-shell cap counter above: filling that cap must not pause async-job/
+	// delegation/supervision wakes, and Stop must pause every kind.
+	autoTurnsSuspended map[string]struct{}
 
 	// recheckMu/recheckSet back doc sec.3.4 rule (b)/sec.3.5's 60s pass (web
 	// process only; a CLI coordinator never drains the set): a
@@ -341,6 +346,12 @@ type coordinator struct {
 	// shutdown path) observe the goroutine's real exit instead of the
 	// runtime's noisy, non-deterministic NumGoroutine() count.
 	recheckDone chan struct{}
+	// recheckWakeInFlight (guarded by recheckMu) is the set of sessions with
+	// a detached recheck-pass wake running right now: one per session, and
+	// its size is the concurrency bound. recheckWakes lets a caller wait for
+	// them to finish (waitRecheckWakes).
+	recheckWakeInFlight map[string]struct{}
+	recheckWakes        sync.WaitGroup
 
 	// modelCache caches resolved (smart, fast) Model pairs keyed by their
 	// combined provider+model+reasoning_effort tuple. Used by
@@ -538,8 +549,9 @@ func (c *coordinator) autonomyEnabled() bool {
 	return opts != nil && opts.AutoResumeOnJobDone != nil && *opts.AutoResumeOnJobDone
 }
 
-// consecutiveResume returns the number of auto-resumes for sessionID since the
-// last human message.
+// consecutiveResume returns the number of SDK background-shell auto-resumes
+// for sessionID since the last human message (the cap counter only; Stop's
+// suspension is autoResumeSuspended).
 func (c *coordinator) consecutiveResume(sessionID string) int {
 	c.autoResumeMu.Lock()
 	defer c.autoResumeMu.Unlock()
@@ -556,12 +568,14 @@ func (c *coordinator) bumpConsecutiveResume(sessionID string) {
 	c.consecutiveAutoResumes[sessionID]++
 }
 
-// resetConsecutiveResume clears the auto-resume counter for sessionID. Called
-// from the human send path so a human re-entering the loop re-arms autonomy.
+// resetConsecutiveResume clears both the bg-shell cap counter and Stop's
+// suspension for sessionID. Called from the human send path so a human
+// re-entering the loop re-arms autonomy.
 func (c *coordinator) resetConsecutiveResume(sessionID string) {
 	c.autoResumeMu.Lock()
 	defer c.autoResumeMu.Unlock()
 	delete(c.consecutiveAutoResumes, sessionID)
+	delete(c.autoTurnsSuspended, sessionID)
 }
 
 // ResetAutoResumeCounter is the exported wrapper around resetConsecutiveResume
@@ -571,30 +585,39 @@ func (c *coordinator) ResetAutoResumeCounter(sessionID string) {
 }
 
 // suspendAutoResume implements doc sec.3.4's "after Stop, automatic turns
-// are suspended until the next human message": forces sessionID's
-// consecutive-auto-resume counter to the cap so both autoResumeEligible and
-// sessionDrainPolicy's generic web-session branch refuse a further
-// automatic turn until a human message resets it (ResetAutoResumeCounter) --
-// reusing the existing cap/reset machinery instead of a second flag that
-// could drift out of sync with it.
+// are suspended until the next human message": marks sessionID suspended so
+// both autoResumeEligible and sessionDrainPolicy refuse EVERY kind of
+// automatic turn until a human message (ResetAutoResumeCounter) clears it.
+// Kept apart from the bg-shell cap counter: that counter bounds only the SDK
+// background-shell auto-resume and must not pause other wakes when full.
 func (c *coordinator) suspendAutoResume(sessionID string) {
 	c.autoResumeMu.Lock()
 	defer c.autoResumeMu.Unlock()
-	if c.consecutiveAutoResumes == nil {
-		c.consecutiveAutoResumes = make(map[string]int)
+	if c.autoTurnsSuspended == nil {
+		c.autoTurnsSuspended = make(map[string]struct{})
 	}
-	c.consecutiveAutoResumes[sessionID] = maxConsecutiveAutoResumes
+	c.autoTurnsSuspended[sessionID] = struct{}{}
+}
+
+// autoResumeSuspended reports whether Stop suspended automatic turns for
+// sessionID and no human message has lifted it yet.
+func (c *coordinator) autoResumeSuspended(sessionID string) bool {
+	c.autoResumeMu.Lock()
+	defer c.autoResumeMu.Unlock()
+	_, ok := c.autoTurnsSuspended[sessionID]
+	return ok
 }
 
 // autoResumeEligible reports whether a finished background job should
 // autonomously resume the (idle-or-busy; Run handles that) owning session.
-// Pure autonomy policy: opt-in config, persistent (web) coordinator only, and
-// under the consecutive-resume runaway bound. Per-turn cost/token caps are
+// Pure autonomy policy: opt-in config, persistent (web) coordinator only, not
+// Stop-suspended, and under the consecutive-resume runaway bound. Per-turn cost/token caps are
 // still enforced by the normal Run path; a Cancel aborts the auto-turn like any
 // other. NEVER eligible for rush run (persistentMode stays false there).
 func (c *coordinator) autoResumeEligible(sessionID string) bool {
 	return c.autonomyEnabled() &&
 		c.persistentMode.Load() &&
+		!c.autoResumeSuspended(sessionID) &&
 		c.consecutiveResume(sessionID) < maxConsecutiveAutoResumes
 }
 

@@ -4,8 +4,9 @@
 // may need to fire again if the child's own work was recovered by another
 // process), and every session a Drain submission was refused for (session-
 // lock held elsewhere, shutdown) -- see coordinator_wake.go's
-// turnAttemptRefused branch. Only the web process (SetPersistentMode) runs
-// it. A `rush run` has no ticker: it runs RunMaintenanceSweep once at loop
+// turnAttemptRefused branch. The wakes run detached (one per session, bounded
+// concurrency) so a slow turn never delays the next tick. Only the web
+// process (SetPersistentMode) runs it. A `rush run` has no ticker: it runs RunMaintenanceSweep once at loop
 // start and re-reads the DB itself (WaitForHint, at most every 5s) while its
 // scope is open; its recheck set is never drained.
 package agent
@@ -13,11 +14,27 @@ package agent
 import (
 	"context"
 	"log/slog"
-	"sync"
+	"sync/atomic"
 	"time"
 )
 
-const recheckPassInterval = 60 * time.Second
+// recheckPassIntervalNS is the ticker period in nanoseconds, atomic so a test
+// can drive the real ticker at test timescale while a never-stopped ticker of
+// an earlier test exists; production never changes it.
+var recheckPassIntervalNS atomic.Int64
+
+func init() { recheckPassIntervalNS.Store(int64(60 * time.Second)) }
+
+// maxConcurrentRecheckWakes bounds how many detached recheck-pass wakes run
+// at once. A wake that finds the bound full is put back in the recheck set
+// and retried by the next pass.
+const maxConcurrentRecheckWakes = 4
+
+// recheckPassSweepSeam is a test-only hook called once per RecheckPass, right
+// before the maintenance sweep. Empty in every production path; atomic
+// because a never-stopped ticker of an earlier test may tick while a later
+// test swaps it.
+var recheckPassSweepSeam atomic.Pointer[func()]
 
 // addToRecheckSet records sessionID so the next RecheckPass retries its
 // Drain submission instead of losing the wake (doc sec.3.4 rule (b)).
@@ -48,13 +65,19 @@ func (c *coordinator) drainRecheckSet() []string {
 	return out
 }
 
-// RecheckPass runs one iteration of the 60s host-level pass: re-evaluates
-// every parked delegation (recheckChild -- a child whose scope was recovered
-// or otherwise resolved by another process since it was parked) and every
-// session in the recheck set (a hint that could not be acted on
-// immediately). Exported and independently callable so tests can drive it
+// RecheckPass runs one iteration of the 60s host-level pass: the dead-host
+// sweep and retention purge, a re-evaluation of every parked delegation
+// (recheckChild -- a child whose scope was recovered or otherwise resolved by
+// another process since it was parked), and a wake for every session in the
+// recheck set (a hint that could not be acted on immediately). The wakes are
+// DETACHED (launchRecheckWake): a Drain turn can take minutes, and the pass
+// must return promptly so the next tick's sweep/purge/recheck run on
+// schedule. Exported and independently callable so tests can drive it
 // without waiting for the real ticker.
 func (c *coordinator) RecheckPass(ctx context.Context) {
+	if seam := recheckPassSweepSeam.Load(); seam != nil {
+		(*seam)()
+	}
 	c.RunMaintenanceSweep(ctx)
 	if c.asyncJobs != nil {
 		// B12/C14 fix: recheckChild indexes l.byChild by CHILD session id
@@ -67,27 +90,53 @@ func (c *coordinator) RecheckPass(ctx context.Context) {
 			c.asyncJobs.recheckChild(child)
 		}
 	}
-	// B12/C14 fix: each wake runs in its OWN goroutine so a real Drain turn
-	// (which can take seconds) never serializes behind the others. wakeSession
-	// returns only when its turn has finished, so wg.Wait() below still holds
-	// this whole RecheckPass -- and with it StartRecheckTicker's loop, and the
-	// next tick's dead-host sweep/retention purge -- until the slowest wake
-	// is done.
-	var wg sync.WaitGroup
 	for _, sessionID := range c.drainRecheckSet() {
-		wg.Add(1)
-		go func(sessionID string) {
-			defer wg.Done()
-			// wakeSession re-adds sessionID to the recheck set itself if
-			// this attempt is refused again (its own turnAttemptRefused
-			// branch) -- this loop never needs to duplicate that decision.
-			id := jobIdentity{owner: sessionID, toolCallID: "recheck-pass"}
-			if err := c.wakeSession(ctx, id, true); err != nil {
-				slog.Debug("coordinator: recheck pass wake attempt did not complete", "session_id", sessionID, "err", err)
-			}
-		}(sessionID)
+		if !c.launchRecheckWake(ctx, sessionID) {
+			// Already being woken, or the concurrency bound is full: keep the
+			// session for the next pass instead of forgetting the wake.
+			c.addToRecheckSet(sessionID)
+		}
 	}
-	wg.Wait()
+}
+
+// launchRecheckWake starts sessionID's wake on its own goroutine and returns
+// at once, or returns false without launching when a recheck wake for the
+// session is already in flight or maxConcurrentRecheckWakes are running. The
+// wake outlives the pass but not ctx (the ticker's context, cancelled by
+// StopRecheckTicker/CancelAll). wakeSession re-adds sessionID to the recheck
+// set itself if this attempt is refused again (its turnAttemptRefused
+// branch), so the launcher never duplicates that decision.
+func (c *coordinator) launchRecheckWake(ctx context.Context, sessionID string) bool {
+	c.recheckMu.Lock()
+	if _, busy := c.recheckWakeInFlight[sessionID]; busy || len(c.recheckWakeInFlight) >= maxConcurrentRecheckWakes {
+		c.recheckMu.Unlock()
+		return false
+	}
+	if c.recheckWakeInFlight == nil {
+		c.recheckWakeInFlight = make(map[string]struct{})
+	}
+	c.recheckWakeInFlight[sessionID] = struct{}{}
+	c.recheckWakes.Add(1)
+	c.recheckMu.Unlock()
+	go func() {
+		defer c.recheckWakes.Done()
+		defer func() {
+			c.recheckMu.Lock()
+			delete(c.recheckWakeInFlight, sessionID)
+			c.recheckMu.Unlock()
+		}()
+		id := jobIdentity{owner: sessionID, toolCallID: "recheck-pass"}
+		if err := c.wakeSession(ctx, id, true); err != nil {
+			slog.Debug("coordinator: recheck pass wake attempt did not complete", "session_id", sessionID, "err", err)
+		}
+	}()
+	return true
+}
+
+// waitRecheckWakes blocks until every detached recheck-pass wake launched so
+// far has returned.
+func (c *coordinator) waitRecheckWakes() {
+	c.recheckWakes.Wait()
 }
 
 // StartRecheckTicker starts the 60s background pass exactly once per
@@ -102,7 +151,7 @@ func (c *coordinator) StartRecheckTicker() {
 		c.recheckDone = done
 		go func() {
 			defer close(done)
-			ticker := time.NewTicker(recheckPassInterval)
+			ticker := time.NewTicker(time.Duration(recheckPassIntervalNS.Load()))
 			defer ticker.Stop()
 			for {
 				select {

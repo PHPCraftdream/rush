@@ -5,7 +5,8 @@ package cmd
 // as running / crashed / done / delegating from the locks directory, the
 // shared call-tree activity signal, and the cross-process durable-state
 // walk over live async_jobs delegation rows (session.AsyncJobStore.
-// LiveDescendantJobs).
+// LiveDescendantJobs) and the session's own running plain jobs
+// (LiveOwnJobs).
 
 import (
 	"context"
@@ -103,6 +104,10 @@ rush sessions list --json | jq 'select(.message_count > 0)'
 		// that is not provably dead, points at a DESCENDANT session -- any
 		// process can read that from the DB.
 		statusByID = markDelegatingLiveDescendants(cmd.Context(), a, sessions, statusByID)
+
+		// Own-job half: a root with no lock of its own that is waiting on
+		// its OWN running background job is working, not done.
+		statusByID = markRunningOwnJobs(cmd.Context(), a, sessions, statusByID)
 
 		if asJSON {
 			enc := json.NewEncoder(os.Stdout)
@@ -423,6 +428,49 @@ func markDelegatingLiveDescendants(
 			statusByID = make(map[string]string, len(sessions))
 		}
 		statusByID[s.ID] = "delegating"
+	}
+	return statusByID
+}
+
+// markRunningOwnJobs promotes a session that would otherwise read as
+// finished ("done") or at rest (blank) to "running" when it OWNS a running
+// plain background job (bash/run_command) on a host not provably dead --
+// the own-job counterpart of markDelegatingLiveDescendants, which only sees
+// delegation rows. A `rush run` waiting on such a job holds no session lock
+// between turns, so without this the root headlined "done" while the loop
+// was still going to react to the job. It runs AFTER the delegating layers
+// and never downgrades: running / crashed / delegating keep their own
+// signal, a crashed root stays crashed. The vocabulary is the existing one
+// ("running": the session has live work); `sessions why` gives the same
+// verdict with the job named.
+func markRunningOwnJobs(
+	ctx context.Context,
+	a *app.App,
+	sessions []session.Session,
+	statusByID map[string]string,
+) map[string]string {
+	if a == nil {
+		return statusByID
+	}
+	store := a.AsyncJobStore()
+	if store == nil {
+		return statusByID
+	}
+	for _, s := range sessions {
+		switch statusByID[s.ID] {
+		case "done", "":
+			// Terminal or at rest — a candidate for promotion.
+		default:
+			continue
+		}
+		live, _ := store.LiveOwnJobs(ctx, s.ID)
+		if len(live) == 0 {
+			continue
+		}
+		if statusByID == nil {
+			statusByID = make(map[string]string, len(sessions))
+		}
+		statusByID[s.ID] = "running"
 	}
 	return statusByID
 }

@@ -327,3 +327,66 @@ func TestJobsInTree_IncludesTerminalAndFollowsAllDelegations(t *testing.T) {
 	assert.True(t, sawTerminal, "the finished delegation row itself must be included")
 	assert.True(t, sawChildJob, "JobsInTree must follow into the child's own jobs even though the delegation is terminal")
 }
+
+// TestLiveOwnJobs pins the own-plain-job reader: only the session's OWN
+// running non-delegation rows on a host not provably dead count. A delegation
+// row (LiveDescendantJobs' business), a terminal row, a row on a dead host and
+// another owner's row do not.
+//
+// Revert-check performed: made LiveOwnJobs return nil -- the "own running job"
+// subtest FAILED (len 0).
+func TestLiveOwnJobs(t *testing.T) {
+	store, q, ctx := newTestStore(t)
+	require.NoError(t, seedSession(ctx, q, "owner-1"))
+	require.NoError(t, seedSession(ctx, q, "owner-2"))
+	require.NoError(t, seedSession(ctx, q, "child-1"))
+
+	t.Run("nothing", func(t *testing.T) {
+		live, incomplete := store.LiveOwnJobs(ctx, "owner-1")
+		require.False(t, incomplete)
+		require.Empty(t, live)
+	})
+
+	t.Run("own running job on this host", func(t *testing.T) {
+		_, err := store.Claim(ctx, ClaimParams{Owner: "owner-1", ToolCallID: "own-1", Kind: JobKindCommand, Input: "sleep"})
+		require.NoError(t, err)
+		live, incomplete := store.LiveOwnJobs(ctx, "owner-1")
+		require.False(t, incomplete)
+		require.Len(t, live, 1)
+		assert.Equal(t, "own-1", live[0].ToolCallID)
+		assert.Equal(t, HostStatusAlive, live[0].HostStatus)
+		assert.Equal(t, 0, live[0].Depth)
+	})
+
+	t.Run("delegation row and another owner's row are not own plain jobs", func(t *testing.T) {
+		_, err := store.Claim(ctx, ClaimParams{Owner: "owner-1", ToolCallID: "deleg-1", Kind: JobKindAgent, Input: "x", ChildSessionID: "child-1"})
+		require.NoError(t, err)
+		_, err = store.Claim(ctx, ClaimParams{Owner: "owner-2", ToolCallID: "other-1", Kind: JobKindCommand, Input: "x"})
+		require.NoError(t, err)
+		live, _ := store.LiveOwnJobs(ctx, "owner-1")
+		require.Len(t, live, 1, "only the plain own-1 row")
+		assert.Equal(t, "own-1", live[0].ToolCallID)
+	})
+
+	t.Run("terminal and dead-host rows are not live", func(t *testing.T) {
+		_, err := store.Transition(ctx, TransitionParams{Owner: "owner-1", ToolCallID: "own-1", State: "completed", NoticeKind: "completed", Wake: true})
+		require.NoError(t, err)
+		seed, err := TryAcquireFileLock(HostLockPath(store.dataDir, "own-dead-host"))
+		require.NoError(t, err)
+		require.NoError(t, seed.Release())
+		require.NoError(t, claimRunning(ctx, q, "owner-1", "dead-1", "command", "own-dead-host", ""))
+		live, incomplete := store.LiveOwnJobs(ctx, "owner-1")
+		require.False(t, incomplete)
+		require.Empty(t, live)
+	})
+
+	t.Run("nil store and empty id", func(t *testing.T) {
+		var nilStore *AsyncJobStore
+		live, incomplete := nilStore.LiveOwnJobs(ctx, "owner-1")
+		require.Empty(t, live)
+		require.False(t, incomplete)
+		live, incomplete = store.LiveOwnJobs(ctx, "")
+		require.Empty(t, live)
+		require.False(t, incomplete)
+	})
+}

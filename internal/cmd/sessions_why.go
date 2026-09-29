@@ -30,28 +30,35 @@ external log files or orchestrator redirect output — only the DB and the
 
 The five possible verdicts:
 
-  done     — last assistant message finished with end_turn, no descendant
-             session is still working.
+  done     — last assistant message finished with end_turn, no delegation
+             is live and no background job of its own is running.
   crashed  — lock file exists, holder is dead (PID dead AND heartbeat
              stale), and no assistant message with a clean finish.
              Likely died mid-turn.
   running  — lock file exists, holder PID is alive OR the heartbeat is
              still fresh (PID alone is not trusted — on Windows it reads
-             as unreadable for the entire lifetime of a live session).
-  delegating — this session's own lock is gone (or stale) but at least one
-             DESCENDANT session still holds a live lock: delegated
-             sub-agent work is still in progress, so the session is NOT
-             done even though its own turn yielded.
-  at rest  — no lock file. Not running, not crashed, and no descendant
-             session is still working.
+             as unreadable for the entire lifetime of a live session). Also
+             reported when the session has no live session lock (or a stale one with
+             a clean finish) but still owns a RUNNING background job
+             (bash/run_command) on a host that is not provably dead: the
+             session is waiting on its own job, so it is NOT done.
+  delegating — this session's own session lock is gone (or stale) but a
+             delegation is still live: a running async_jobs row names a
+             DESCENDANT session and its host (the process running it, which
+             holds a per-process host lock) is alive or cannot be probed.
+             Delegated sub-agent work is still in progress, so the session
+             is NOT done even though its own turn yielded.
+  at rest  — no session lock file. Not running, not crashed, no live
+             delegation and no running background job of its own.
 
 When the raw lock signal says "crashed" but the last assistant message
 finished cleanly (end_turn), the verdict says so explicitly and treats
 the session as done — this is the same reclassification "sessions list"
 applies via reclassifyCrashedAsDone, surfaced here in plain language.
-That reclassification is suppressed when a descendant session still holds a
-live lock: the parent's end_turn is its own yield before the delegation,
-not completion.`,
+That reclassification is suppressed while a delegation is live (a running
+delegation row on a host that is not provably dead) or the session's own
+background job is running: the end_turn is the session's own yield, not
+completion.`,
 	Args: cobra.ExactArgs(1),
 	Example: `
 # Why does sessions list show this one as crashed?
@@ -207,19 +214,30 @@ func explainSessionStatus(ctx context.Context, a *app.App, dataDir, sessionID st
 	// host's liveness — visible to any process. Same walk `sessions list`
 	// applies through markDelegatingLiveDescendants; see
 	// session.AsyncJobStore.LiveDescendantJobs.
+	//
+	// Own jobs: the same holds for the session's OWN running plain job
+	// (bash/run_command) -- LiveDescendantJobs only sees delegation rows, so
+	// a root waiting on its own job would read as done/at rest. Same
+	// promotion `sessions list` applies through markRunningOwnJobs.
 	var (
 		liveDescendants []session.LiveJob
 		walkIncomplete  bool
+		ownJobs         []session.LiveJob
+		ownIncomplete   bool
 	)
 	if store := a.AsyncJobStore(); store != nil {
 		liveDescendants, walkIncomplete = store.LiveDescendantJobs(ctx, sessionID)
+		ownJobs, ownIncomplete = store.LiveOwnJobs(ctx, sessionID)
 	}
 	descendantCaveat := ""
 	if walkIncomplete && len(liveDescendants) == 0 {
 		// A failed child listing means the tree could not be fully
 		// enumerated, so a terminal verdict below is only as trustworthy
 		// as that enumeration. Say so instead of asserting done flatly.
-		descendantCaveat = "WARNING: could not enumerate this session's descendant sessions; a live sub-agent lock may exist that this check could not see.\n"
+		descendantCaveat = "WARNING: could not enumerate this session's descendant sessions; a live delegation may exist that this check could not see.\n"
+	}
+	if ownIncomplete && len(ownJobs) == 0 {
+		descendantCaveat += "WARNING: could not read this session's own async jobs; a running job may exist that this check could not see.\n"
 	}
 
 	// Verdict + reason text. The cases match the Long help above; "at
@@ -243,6 +261,12 @@ func explainSessionStatus(ctx context.Context, a *app.App, dataDir, sessionID st
 			} else {
 				fmt.Fprintf(out, "last assistant message did not finish cleanly (%s).\n", finishReasonOrUnknown(finish))
 			}
+		} else if len(ownJobs) > 0 {
+			// At rest as far as locks go, but the session is waiting on its
+			// OWN running background job -- NOT done.
+			fmt.Fprintf(out, "status: running\n")
+			fmt.Fprintf(out, "reason: no lock file present for this session (idle between turns), but %s — the session is waiting on it, so it is NOT done.\n",
+				describeLiveOwnJobs(ownJobs))
 		} else {
 			fmt.Fprintf(out, "status: at rest\n")
 			fmt.Fprintf(out, "reason: no lock file present — not running, not crashed.\n")
@@ -341,6 +365,12 @@ func explainSessionStatus(ctx context.Context, a *app.App, dataDir, sessionID st
 				fmt.Fprintf(out, "status: delegating (stale lock)\n")
 				fmt.Fprintf(out, "reason: %s; %s — the end_turn above is this session's own yield before the delegation, so the session is NOT done.\n",
 					holderDeadReason, describeLiveDescendants(liveDescendants))
+			} else if len(ownJobs) > 0 {
+				// Same suppression for the session's own running job: the
+				// end_turn is its yield while the job runs, not completion.
+				fmt.Fprintf(out, "status: running (stale lock)\n")
+				fmt.Fprintf(out, "reason: %s; %s — the end_turn above is this session's own yield while the job runs, so the session is NOT done.\n",
+					holderDeadReason, describeLiveOwnJobs(ownJobs))
 			} else {
 				fmt.Fprintf(out, "status: done (stale lock)\n")
 				fmt.Fprintf(out, "reason: %s; last assistant message finished cleanly (end_turn).\n", holderDeadReason)
@@ -410,6 +440,22 @@ func describeLiveDescendants(live []session.LiveJob) string {
 		return "descendant session " + items[0] + " has live work"
 	}
 	return "descendant sessions " + strings.Join(items, ", ") + " still have live work"
+}
+
+// describeLiveOwnJobs renders the "why" clause naming the session's own
+// running plain jobs, e.g.
+//
+//	"its own background job call-1 (command, host xyz alive) is still running"
+func describeLiveOwnJobs(live []session.LiveJob) string {
+	items := make([]string, 0, len(live))
+	for _, j := range live {
+		items = append(items, fmt.Sprintf("%s (%s, host %s %s)",
+			j.ToolCallID, j.Kind, short(j.HostID), strings.ToLower(j.HostStatus.String())))
+	}
+	if len(items) == 1 {
+		return "its own background job " + items[0] + " is still running"
+	}
+	return "its own background jobs " + strings.Join(items, ", ") + " are still running"
 }
 
 // describeAsyncJobsAndDebt renders the plain-language jobs/debt section of

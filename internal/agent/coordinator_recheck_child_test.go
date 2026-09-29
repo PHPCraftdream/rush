@@ -6,6 +6,8 @@ package agent
 
 import (
 	"context"
+	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -79,35 +81,173 @@ func TestRecheckPass_DeliversParkedDelegationViaChildRecheck(t *testing.T) {
 	require.False(t, coord.asyncJobs.hasParked())
 }
 
-// TestRecheckPass_RecheckSetWakesRunConcurrentlyNotSerially pins the second
-// B12/C14 fix: each recheck-set wake must run in its own goroutine, so N
-// slow wakes finish in roughly ONE wake's duration, not their sum -- a real
-// Drain turn (which can take seconds) must never delay the sweep/purge of
-// the NEXT tick, or the processing of the OTHER sessions in this same pass,
-// by running serially.
+// TestRecheckPass_RecheckSetWakesRunConcurrentlyAndDetached pins the B12/C14
+// fix and its follow-up: the recheck-set wakes run concurrently (all in
+// flight before any finishes) and DETACHED (RecheckPass returns while they are
+// still blocked), so a real Drain turn (seconds to minutes) neither serialises
+// behind the others nor holds the ticker.
 //
-// Revert-check performed: changed the recheck-set loop back to a plain
-// synchronous `for _, sessionID := range c.drainRecheckSet() {
-// c.wakeSession(...) }` (no goroutine, no WaitGroup) -- this test's
-// `require.Less(t, elapsed, 2*perWakeDelay)` FAILED (elapsed was
-// ~2*perWakeDelay: the two wakes ran back to back). Restored the
-// goroutine+WaitGroup shape; re-ran, elapsed dropped back to ~1*perWakeDelay.
-func TestRecheckPass_RecheckSetWakesRunConcurrentlyNotSerially(t *testing.T) {
+// Revert-check performed: changed the launch back to a plain synchronous
+// `c.wakeSession(...)` loop -- the pass never returned while the first wake
+// blocked; with goroutines but a trailing WaitGroup.Wait() in RecheckPass, the
+// "must not wait for them" assertion FAILED (the pass blocked until the wakes
+// were released).
+func TestRecheckPass_RecheckSetWakesRunConcurrentlyAndDetached(t *testing.T) {
 	coord := &coordinator{subAgentDrivers: newSubAgentDriverRegistry()}
-	ledger := newWorkLedger(coord.notifyAsyncCompletion)
-	coord.asyncJobs = ledger
+	coord.asyncJobs = newWorkLedger(coord.notifyAsyncCompletion)
 
-	const perWakeDelay = 150 * time.Millisecond
-	wakeSessionAttemptSeam = func() { time.Sleep(perWakeDelay) }
+	release := make(chan struct{})
+	var entered atomic.Int32
+	wakeSessionAttemptSeam = func() {
+		entered.Add(1)
+		<-release
+	}
 	t.Cleanup(func() { wakeSessionAttemptSeam = nil })
 
 	coord.addToRecheckSet("sess-a")
 	coord.addToRecheckSet("sess-b")
 
-	start := time.Now()
-	coord.RecheckPass(context.Background())
-	elapsed := time.Since(start)
+	passDone := make(chan struct{})
+	go func() {
+		coord.RecheckPass(context.Background())
+		close(passDone)
+	}()
+	select {
+	case <-passDone:
+	case <-time.After(5 * time.Second):
+		close(release)
+		t.Fatal("RecheckPass returned only after the wakes finished: it must not wait for them")
+	}
+	require.Eventually(t, func() bool { return entered.Load() == 2 }, 5*time.Second, 5*time.Millisecond,
+		"both wakes must be in flight at once")
+	close(release)
+	coord.waitRecheckWakes()
+}
 
-	require.Less(t, elapsed, 2*perWakeDelay,
-		"two recheck-set wakes must run concurrently, not serially (elapsed %s, per-wake delay %s)", elapsed, perWakeDelay)
+// TestRecheckPass_SessionAlreadyBeingWoken_NotLaunchedTwice: a session whose
+// recheck wake is still in flight is not launched a second time by a later
+// pass; it stays in the recheck set and is woken again once the first wake
+// has finished.
+//
+// Revert-check performed: dropped the recheckWakeInFlight guard in
+// launchRecheckWake -- the second pass started a second wake (entered == 2
+// while the first was still blocked).
+func TestRecheckPass_SessionAlreadyBeingWoken_NotLaunchedTwice(t *testing.T) {
+	coord := &coordinator{subAgentDrivers: newSubAgentDriverRegistry()}
+	coord.asyncJobs = newWorkLedger(coord.notifyAsyncCompletion)
+
+	release := make(chan struct{})
+	var entered atomic.Int32
+	wakeSessionAttemptSeam = func() {
+		entered.Add(1)
+		<-release
+	}
+	t.Cleanup(func() { wakeSessionAttemptSeam = nil })
+
+	coord.addToRecheckSet("sess-a")
+	coord.RecheckPass(context.Background())
+	require.Eventually(t, func() bool { return entered.Load() == 1 }, 5*time.Second, 5*time.Millisecond)
+
+	coord.addToRecheckSet("sess-a")
+	coord.RecheckPass(context.Background())
+	require.Never(t, func() bool { return entered.Load() > 1 }, 200*time.Millisecond, 10*time.Millisecond,
+		"a session already being woken must not get a second concurrent wake")
+	coord.recheckMu.Lock()
+	_, kept := coord.recheckSet["sess-a"]
+	coord.recheckMu.Unlock()
+	require.True(t, kept, "the skipped session must stay in the recheck set for the next pass")
+
+	close(release)
+	coord.waitRecheckWakes()
+	coord.RecheckPass(context.Background())
+	coord.waitRecheckWakes()
+	require.EqualValues(t, 2, entered.Load(), "once the first wake finished the session is woken again")
+}
+
+// TestRecheckPass_WakeConcurrencyIsBounded: more sessions than
+// maxConcurrentRecheckWakes never run more than the bound at once; the rest
+// stay in the recheck set and are woken by later passes.
+//
+// Revert-check performed: removed the len(recheckWakeInFlight) bound -- all
+// sessions entered at once (entered > maxConcurrentRecheckWakes).
+func TestRecheckPass_WakeConcurrencyIsBounded(t *testing.T) {
+	coord := &coordinator{subAgentDrivers: newSubAgentDriverRegistry()}
+	coord.asyncJobs = newWorkLedger(coord.notifyAsyncCompletion)
+
+	release := make(chan struct{})
+	var entered atomic.Int32
+	wakeSessionAttemptSeam = func() {
+		entered.Add(1)
+		<-release
+	}
+	t.Cleanup(func() { wakeSessionAttemptSeam = nil })
+
+	const total = maxConcurrentRecheckWakes + 2
+	for i := range total {
+		coord.addToRecheckSet(fmt.Sprintf("sess-%d", i))
+	}
+	coord.RecheckPass(context.Background())
+	require.Eventually(t, func() bool { return entered.Load() == maxConcurrentRecheckWakes }, 5*time.Second, 5*time.Millisecond)
+	require.Never(t, func() bool { return entered.Load() > maxConcurrentRecheckWakes }, 200*time.Millisecond, 10*time.Millisecond,
+		"no more than maxConcurrentRecheckWakes wakes may run at once")
+	coord.recheckMu.Lock()
+	waiting := len(coord.recheckSet)
+	coord.recheckMu.Unlock()
+	require.Equal(t, total-maxConcurrentRecheckWakes, waiting, "sessions over the bound wait in the recheck set")
+
+	close(release)
+	coord.waitRecheckWakes()
+	coord.RecheckPass(context.Background())
+	coord.waitRecheckWakes()
+	require.EqualValues(t, total, entered.Load(), "the waiting sessions are woken by the next pass")
+}
+
+// TestRecheckTicker_SlowWakeDoesNotDelayNextSweep drives the REAL ticker: a
+// wake in the recheck set that blocks (a Drain turn taking minutes) must not
+// stop the following ticks from running their sweep/purge/recheck.
+//
+// Revert-check performed: made RecheckPass wait for its wakes again
+// (WaitGroup.Wait() at the end) -- sweeps stayed at 1 while the wake was
+// blocked and the Eventually below timed out.
+func TestRecheckTicker_SlowWakeDoesNotDelayNextSweep(t *testing.T) {
+	coord := &coordinator{currentAgent: &mockSessionAgent{}, subAgentDrivers: newSubAgentDriverRegistry()}
+	coord.asyncJobs = newWorkLedger(coord.notifyAsyncCompletion)
+
+	release := make(chan struct{})
+	wakeEntered := make(chan struct{}, 1)
+	wakeSessionAttemptSeam = func() {
+		select {
+		case wakeEntered <- struct{}{}:
+		default:
+		}
+		<-release
+	}
+	var sweeps atomic.Int32
+	sweepSeam := func() { sweeps.Add(1) }
+	recheckPassSweepSeam.Store(&sweepSeam)
+	oldInterval := recheckPassIntervalNS.Swap(int64(20 * time.Millisecond))
+	t.Cleanup(func() {
+		wakeSessionAttemptSeam = nil
+		recheckPassSweepSeam.Store(nil)
+		recheckPassIntervalNS.Store(oldInterval)
+	})
+
+	coord.addToRecheckSet("sess-slow")
+	coord.StartRecheckTicker()
+	done := coord.recheckDone
+	t.Cleanup(func() {
+		close(release)
+		coord.CancelAll()
+		<-done
+		coord.waitRecheckWakes()
+	})
+
+	select {
+	case <-wakeEntered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the recheck wake never started")
+	}
+	base := sweeps.Load()
+	require.Eventually(t, func() bool { return sweeps.Load() >= base+3 }, 5*time.Second, 5*time.Millisecond,
+		"later ticks must keep sweeping while a wake is still blocked")
 }

@@ -168,21 +168,21 @@ func (c *coordinator) sessionDrainPolicy(ctx context.Context, sessionID string) 
 	// "No cap" means no THROTTLE on volume (counted=false, never
 	// incremented) -- it does NOT mean Stop's own "automatic turns paused
 	// until the next human message" stops applying: suspendAutoResume
-	// (coordinator_interrupt.go's Cancel) forces this SAME counter to the
-	// cap on every id in a cancelled tree, deliberately reusing this
-	// machinery instead of a second flag that could drift out of sync with
-	// it (see suspendAutoResume's own doc) -- so the READ below must still
-	// run for the uncapped category too, or Stop's suspension would silently
-	// stop gating async-job/delegation wakes while continuing to gate
-	// bg-shell ones.
-	if _, capped := ctx.Value(autoTurnCapAppliesCtxKey{}).(bool); !capped {
-		return c.consecutiveResume(sessionID) < maxConsecutiveAutoResumes, false, nil
+	// (coordinator_interrupt.go's Cancel) marks every id in a cancelled tree
+	// suspended, a state of its own (autoTurnsSuspended) that gates EVERY
+	// kind of automatic turn, capped or not. The bg-shell cap counter is a
+	// separate thing: filling it never pauses the uncapped category.
+	if c.autoResumeSuspended(sessionID) {
+		return false, false, nil
 	}
-	// Web/default, bg-shell auto-resume (doc sec.3.4): reset by the last
-	// human message (resetConsecutiveResume/ResetAutoResumeCounter) --
-	// also what a Stop suspension (suspendAutoResume) rides on. wakeSession
-	// increments the counter itself, ONLY on a successful turn that actually
-	// reached the provider (never a failed, queued, or no-turn one).
+	if _, capped := ctx.Value(autoTurnCapAppliesCtxKey{}).(bool); !capped {
+		return true, false, nil
+	}
+	// Web/default, bg-shell auto-resume (doc sec.3.4): the cap counter is
+	// reset by the last human message (resetConsecutiveResume/
+	// ResetAutoResumeCounter, the same event that lifts Stop's suspension).
+	// wakeSession increments it itself, ONLY on a successful turn that
+	// actually reached the provider (never a failed, queued, or no-turn one).
 	return c.consecutiveResume(sessionID) < maxConsecutiveAutoResumes, true, nil
 }
 
@@ -199,15 +199,17 @@ func (c *coordinator) sessionDrainPolicy(ctx context.Context, sessionID string) 
 // ParentID). A forked child was, before this fix, refused Drain turns by
 // the SAME branch a real released delegation child hits.
 //
-// The real signal doesn't need a schema change: runSubAgent (coordinator_
-// subagents.go) claims the delegation's async_jobs row with
-// Owner=ParentSessionID, Kind=JobKindAgent, ChildSessionID=the exact new
-// session's id, independent of whether the job is still running -- the row
-// outlives the delegation ending, until retention purges it. A plain fork
-// never claims any async job at all, so no row naming it as ChildSessionID
-// ever exists. This reuses the pre-existing ListAsyncJobsForOwner (the same
-// query `sessions jobs`/`sessions why` already use -- no new SQL) instead
-// of the coarser ParentSessionID-only check.
+// The real signal doesn't need a schema change: every delegation claims an
+// async_jobs row with Owner=ParentSessionID and ChildSessionID=the exact
+// child session's id, independent of whether the job is still running -- the
+// row outlives the delegation ending, until retention purges it. The Kind is
+// deliberately NOT matched: runSubAgent claims JobKindAgent, agentic_fetch
+// claims JobKindFetch, and any future kind that names a child session is a
+// delegation target just the same. A plain fork never claims any async job
+// at all, so no row naming it as ChildSessionID ever exists. This reuses
+// the pre-existing ListAsyncJobsForOwner (the same query `sessions jobs`/
+// `sessions why` already use -- no new SQL) instead of the coarser
+// ParentSessionID-only check.
 //
 // The signal is durable only as long as retention keeps the row (7 days
 // past done+reacted, doc sec.3.7/A5) -- after that window a long-finished
@@ -236,7 +238,7 @@ func (c *coordinator) isDurableDelegationChild(ctx context.Context, sessionID st
 		return false, listErr
 	}
 	for _, job := range jobs {
-		if job.ChildSessionID.Valid && job.ChildSessionID.String == sessionID && job.Kind == string(session.JobKindAgent) {
+		if job.ChildSessionID.Valid && job.ChildSessionID.String == sessionID {
 			return true, nil
 		}
 	}

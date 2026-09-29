@@ -104,17 +104,27 @@ type Session struct {
 	OwnedByPID    int  `json:",omitempty"` // PID of the lock holder, 0 if free / stale
 
 	// HasLiveDescendantWork reports that at least one DESCENDANT session
-	// (a sub-agent this session delegated to) still holds a live lock, so
-	// this session is NOT finished even though its own lock is gone —
-	// cross-process "delegating", the same derivation `sessions list`
-	// applies through markDelegatingLiveDescendants (session.LiveDescendants).
+	// (a sub-agent this session delegated to) is named by a live async_jobs
+	// delegation row (running, host not provably dead), so this session is
+	// NOT finished even though its own lock is gone — cross-process
+	// "delegating", the same derivation `sessions list` applies through
+	// markDelegatingLiveDescendants (AsyncJobStore.LiveDescendantJobs).
 	// Wire-only, filled by the web server's session list. Complements
 	// OwnedExternal: that one is about THIS session's lock, this one about
 	// work happening below it.
 	HasLiveDescendantWork bool `json:",omitempty"`
-	// LiveDescendantIDs lists the descendant sessions that still hold live
-	// locks, so the UI can name the sub-agent it is waiting on. Wire-only.
+	// LiveDescendantIDs lists the descendant sessions named by those live
+	// delegation rows, so the UI can name the sub-agent it is waiting on.
+	// Wire-only.
 	LiveDescendantIDs []string `json:",omitempty"`
+	// HasLiveOwnWork reports that this session itself still owns a running
+	// plain background job (bash/run_command) on a host not provably dead,
+	// so it is NOT finished even with no lock of its own -- the counterpart
+	// of HasLiveDescendantWork for the session's own job rather than a
+	// sub-agent's. Wire-only, filled by the web server's session list; the
+	// same derivation as `sessions list`'s "running" promotion
+	// (AsyncJobStore.LiveOwnJobs).
+	HasLiveOwnWork bool `json:",omitempty"`
 }
 
 // ModelSlotUpdate is an explicit provider/model pair for one session model
