@@ -25,7 +25,7 @@ import (
 //
 // Revert-check performed: called SetAsyncJobNoticeMessageID (unguarded, no
 // AnnounceJobKillResult) directly instead, mimicking the pre-A3 state (row
-// stays delivery='done' with notice_message_id NULL) -- RerunTruncate's own
+// stays delivery='done' with notice_message_id NULL) -- TruncateForRerun's own
 // repend query then found NOTHING to re-pend (delivery stayed 'done'). Using
 // AnnounceJobKillResult as this test does, the repend fires; reverted the
 // production code's fix by removing the SetAsyncJobNoticeMessageIDIfDone call
@@ -66,7 +66,14 @@ func TestAnnounceJobKillResult_NamesTheRowAndSurvivesRerunRepend(t *testing.T) {
 	require.Equal(t, killMsg.ID, row.NoticeMessageID.String)
 
 	// Rerun truncates PAST job_kill's own tool-result message.
-	require.NoError(t, store.RerunTruncate(ctx, "owner-1", nil, []string{killMsg.ID}))
+	target, err := messages.Create(ctx, "owner-1", message.CreateMessageParams{
+		Role: message.User, Parts: []message.ContentPart{message.TextContent{Text: "rerun me"}},
+	})
+	require.NoError(t, err)
+	_, err = TruncateForRerun(ctx, store.sqlDB, messages, RerunTruncateParams{
+		Owner: "owner-1", TargetID: target.ID, TailIDs: []string{killMsg.ID},
+	})
+	require.NoError(t, err)
 
 	repent, err := store.Get(ctx, "owner-1", "call-1")
 	require.NoError(t, err)

@@ -201,8 +201,12 @@ type RunRequest struct {
 	Stdout            io.Writer // nil → io.Discard
 	Stderr            io.Writer // nil → io.Discard
 	HideSpinner       bool
-	// onSessionResolved lets the CLI wait for jobs even if this turn later fails.
-	onSessionResolved func(string)
+	// onSessionResolved lets the CLI wait for jobs even if this turn later fails,
+	// and claims the session's durable driver marker. It runs right after the
+	// session resolves, before draining pending work and before any session
+	// write, so a non-nil error (the session is driven by another live loop)
+	// aborts the run having changed nothing.
+	onSessionResolved func(string) error
 	// captureResult returns a structured outcome even in terse or stream mode.
 	captureResult bool
 

@@ -145,6 +145,15 @@ DELETE FROM messages
 WHERE id = ?
   AND (role != 'assistant' OR finished_at IS NOT NULL OR is_summary_message = 1);
 
+-- name: DeleteSessionMessagesByIDs :many
+-- Rerun truncation (message.Service.DeleteTx): unconditional delete of an
+-- explicit id set inside the caller's transaction. RETURNING is the exact
+-- set of rows this statement removed (an id someone else already deleted is
+-- simply absent), which the caller reconciles async_jobs against.
+DELETE FROM messages
+WHERE session_id = @session_id AND id IN (sqlc.slice('ids'))
+RETURNING *;
+
 -- name: DeleteSessionMessages :exec
 DELETE FROM messages
 WHERE session_id = ?;

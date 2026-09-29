@@ -34,7 +34,10 @@ opt-in, one-shot trigger, not a replacement for it.
 Use --dry-run to print what would be deleted (or purged) without deleting.
 Use --max-sessions to cap the number of SESSION deletions per run (does not
 bound --jobs-older-than's purge).
-Use --json to emit one JSON object per deleted (or would-be-deleted) session.`,
+Use --json to emit one JSON object per deleted (or would-be-deleted) session;
+with --jobs-older-than a first line {"kind":"async_jobs","dry_run":...,
+"async_jobs":N,"session_notices":M} reports the purged (or would-be-purged)
+row counts.`,
 	Example: `
 # Dry run: show what would be collected
 rush sessions gc --dry-run
@@ -59,6 +62,17 @@ type gcItem struct {
 	Title    string  `json:"title"`
 	AgeHours float64 `json:"age_hours"`
 	Reason   string  `json:"reason"`
+}
+
+// gcJobsSummary is the --json line for --jobs-older-than: how many terminal
+// async_jobs and session_notices rows were purged (or, with --dry-run, would
+// be).
+type gcJobsSummary struct {
+	Kind           string `json:"kind"`
+	DryRun         bool   `json:"dry_run"`
+	OlderThan      string `json:"older_than"`
+	AsyncJobs      int64  `json:"async_jobs"`
+	SessionNotices int64  `json:"session_notices"`
 }
 
 func sessionsGcCmdRun(cmd *cobra.Command, args []string) error {
@@ -153,6 +167,16 @@ func sessionsGcCmdRun(cmd *cobra.Command, args []string) error {
 		}
 		if err != nil {
 			return fmt.Errorf("--jobs-older-than: %w", err)
+		}
+		if asJSON {
+			// C19: --json used to report nothing for the job purge. One summary
+			// line (no "id"; "kind":"async_jobs") precedes the per-session lines.
+			if err := json.NewEncoder(os.Stdout).Encode(gcJobsSummary{
+				Kind: "async_jobs", DryRun: dryRun, OlderThan: jobsOlderThanStr,
+				AsyncJobs: jobsAffected, SessionNotices: noticesAffected,
+			}); err != nil {
+				return err
+			}
 		}
 		if !asJSON && (jobsAffected > 0 || noticesAffected > 0) {
 			verb := "would purge"
@@ -262,5 +286,5 @@ func init() {
 	sessionsGcCmd.Flags().String("older-than", "7d", "Delete empty sessions older than this (e.g. 7d, 24h, 30m)")
 	sessionsGcCmd.Flags().String("jobs-older-than", "", "Also purge terminal async_jobs/session_notices rows (phase-4 ledger) older than this (e.g. 3d, 12h); empty = leave job retention to the background 7-day pass")
 	sessionsGcCmd.Flags().Int("max-sessions", 0, "Maximum number of sessions to delete (0 = unlimited)")
-	sessionsGcCmd.Flags().Bool("json", false, "Emit one JSON object per deleted session")
+	sessionsGcCmd.Flags().Bool("json", false, "Emit one JSON object per deleted session (plus a job-count summary line with --jobs-older-than)")
 }

@@ -99,11 +99,20 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.deleteSessionStmt, err = db.PrepareContext(ctx, deleteSession); err != nil {
 		return nil, fmt.Errorf("error preparing query DeleteSession: %w", err)
 	}
+	if q.deleteSessionDriverStmt, err = db.PrepareContext(ctx, deleteSessionDriver); err != nil {
+		return nil, fmt.Errorf("error preparing query DeleteSessionDriver: %w", err)
+	}
+	if q.deleteSessionDriversForHostStmt, err = db.PrepareContext(ctx, deleteSessionDriversForHost); err != nil {
+		return nil, fmt.Errorf("error preparing query DeleteSessionDriversForHost: %w", err)
+	}
 	if q.deleteSessionFilesStmt, err = db.PrepareContext(ctx, deleteSessionFiles); err != nil {
 		return nil, fmt.Errorf("error preparing query DeleteSessionFiles: %w", err)
 	}
 	if q.deleteSessionMessagesStmt, err = db.PrepareContext(ctx, deleteSessionMessages); err != nil {
 		return nil, fmt.Errorf("error preparing query DeleteSessionMessages: %w", err)
+	}
+	if q.deleteSessionMessagesByIDsStmt, err = db.PrepareContext(ctx, deleteSessionMessagesByIDs); err != nil {
+		return nil, fmt.Errorf("error preparing query DeleteSessionMessagesByIDs: %w", err)
 	}
 	if q.deleteUnannouncedAsyncJobStmt, err = db.PrepareContext(ctx, deleteUnannouncedAsyncJob); err != nil {
 		return nil, fmt.Errorf("error preparing query DeleteUnannouncedAsyncJob: %w", err)
@@ -165,6 +174,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.getSessionCostAccountingStmt, err = db.PrepareContext(ctx, getSessionCostAccounting); err != nil {
 		return nil, fmt.Errorf("error preparing query GetSessionCostAccounting: %w", err)
 	}
+	if q.getSessionDriverStmt, err = db.PrepareContext(ctx, getSessionDriver); err != nil {
+		return nil, fmt.Errorf("error preparing query GetSessionDriver: %w", err)
+	}
 	if q.getSessionNoticeStmt, err = db.PrepareContext(ctx, getSessionNotice); err != nil {
 		return nil, fmt.Errorf("error preparing query GetSessionNotice: %w", err)
 	}
@@ -203,6 +215,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	}
 	if q.incrementSessionNoticeWakeAttemptsStmt, err = db.PrepareContext(ctx, incrementSessionNoticeWakeAttempts); err != nil {
 		return nil, fmt.Errorf("error preparing query IncrementSessionNoticeWakeAttempts: %w", err)
+	}
+	if q.insertSessionDriverStmt, err = db.PrepareContext(ctx, insertSessionDriver); err != nil {
+		return nil, fmt.Errorf("error preparing query InsertSessionDriver: %w", err)
 	}
 	if q.insertSessionNoticeStmt, err = db.PrepareContext(ctx, insertSessionNotice); err != nil {
 		return nil, fmt.Errorf("error preparing query InsertSessionNotice: %w", err)
@@ -285,6 +300,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.listRunningAsyncJobsForOwnersStmt, err = db.PrepareContext(ctx, listRunningAsyncJobsForOwners); err != nil {
 		return nil, fmt.Errorf("error preparing query ListRunningAsyncJobsForOwners: %w", err)
 	}
+	if q.listSessionDriverHostIDsStmt, err = db.PrepareContext(ctx, listSessionDriverHostIDs); err != nil {
+		return nil, fmt.Errorf("error preparing query ListSessionDriverHostIDs: %w", err)
+	}
 	if q.listSessionNoticesForOwnerStmt, err = db.PrepareContext(ctx, listSessionNoticesForOwner); err != nil {
 		return nil, fmt.Errorf("error preparing query ListSessionNoticesForOwner: %w", err)
 	}
@@ -357,6 +375,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.rependSessionNoticesByMessageIDsStmt, err = db.PrepareContext(ctx, rependSessionNoticesByMessageIDs); err != nil {
 		return nil, fmt.Errorf("error preparing query RependSessionNoticesByMessageIDs: %w", err)
 	}
+	if q.setAsyncJobAnnounceMessageIDStmt, err = db.PrepareContext(ctx, setAsyncJobAnnounceMessageID); err != nil {
+		return nil, fmt.Errorf("error preparing query SetAsyncJobAnnounceMessageID: %w", err)
+	}
 	if q.setAsyncJobNoticeMessageIDStmt, err = db.PrepareContext(ctx, setAsyncJobNoticeMessageID); err != nil {
 		return nil, fmt.Errorf("error preparing query SetAsyncJobNoticeMessageID: %w", err)
 	}
@@ -392,6 +413,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	}
 	if q.sumMessageUsageBySessionStmt, err = db.PrepareContext(ctx, sumMessageUsageBySession); err != nil {
 		return nil, fmt.Errorf("error preparing query SumMessageUsageBySession: %w", err)
+	}
+	if q.takeOverSessionDriverStmt, err = db.PrepareContext(ctx, takeOverSessionDriver); err != nil {
+		return nil, fmt.Errorf("error preparing query TakeOverSessionDriver: %w", err)
 	}
 	if q.terminalFailRunQueueEntryStmt, err = db.PrepareContext(ctx, terminalFailRunQueueEntry); err != nil {
 		return nil, fmt.Errorf("error preparing query TerminalFailRunQueueEntry: %w", err)
@@ -432,6 +456,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.visibleAsyncReactionDebtExistsStmt, err = db.PrepareContext(ctx, visibleAsyncReactionDebtExists); err != nil {
 		return nil, fmt.Errorf("error preparing query VisibleAsyncReactionDebtExists: %w", err)
 	}
+	if q.voidAsyncJobsByAnnounceMessageIDsStmt, err = db.PrepareContext(ctx, voidAsyncJobsByAnnounceMessageIDs); err != nil {
+		return nil, fmt.Errorf("error preparing query VoidAsyncJobsByAnnounceMessageIDs: %w", err)
+	}
 	if q.voidAsyncJobsByToolCallIDsStmt, err = db.PrepareContext(ctx, voidAsyncJobsByToolCallIDs); err != nil {
 		return nil, fmt.Errorf("error preparing query VoidAsyncJobsByToolCallIDs: %w", err)
 	}
@@ -440,6 +467,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	}
 	if q.voidPendingSessionNoticeStmt, err = db.PrepareContext(ctx, voidPendingSessionNotice); err != nil {
 		return nil, fmt.Errorf("error preparing query VoidPendingSessionNotice: %w", err)
+	}
+	if q.voidWakeFailedNoticesByMessageIDsStmt, err = db.PrepareContext(ctx, voidWakeFailedNoticesByMessageIDs); err != nil {
+		return nil, fmt.Errorf("error preparing query VoidWakeFailedNoticesByMessageIDs: %w", err)
 	}
 	if q.writeToOrphanOutboxStmt, err = db.PrepareContext(ctx, writeToOrphanOutbox); err != nil {
 		return nil, fmt.Errorf("error preparing query WriteToOrphanOutbox: %w", err)
@@ -574,6 +604,16 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing deleteSessionStmt: %w", cerr)
 		}
 	}
+	if q.deleteSessionDriverStmt != nil {
+		if cerr := q.deleteSessionDriverStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing deleteSessionDriverStmt: %w", cerr)
+		}
+	}
+	if q.deleteSessionDriversForHostStmt != nil {
+		if cerr := q.deleteSessionDriversForHostStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing deleteSessionDriversForHostStmt: %w", cerr)
+		}
+	}
 	if q.deleteSessionFilesStmt != nil {
 		if cerr := q.deleteSessionFilesStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing deleteSessionFilesStmt: %w", cerr)
@@ -582,6 +622,11 @@ func (q *Queries) Close() error {
 	if q.deleteSessionMessagesStmt != nil {
 		if cerr := q.deleteSessionMessagesStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing deleteSessionMessagesStmt: %w", cerr)
+		}
+	}
+	if q.deleteSessionMessagesByIDsStmt != nil {
+		if cerr := q.deleteSessionMessagesByIDsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing deleteSessionMessagesByIDsStmt: %w", cerr)
 		}
 	}
 	if q.deleteUnannouncedAsyncJobStmt != nil {
@@ -684,6 +729,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing getSessionCostAccountingStmt: %w", cerr)
 		}
 	}
+	if q.getSessionDriverStmt != nil {
+		if cerr := q.getSessionDriverStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing getSessionDriverStmt: %w", cerr)
+		}
+	}
 	if q.getSessionNoticeStmt != nil {
 		if cerr := q.getSessionNoticeStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing getSessionNoticeStmt: %w", cerr)
@@ -747,6 +797,11 @@ func (q *Queries) Close() error {
 	if q.incrementSessionNoticeWakeAttemptsStmt != nil {
 		if cerr := q.incrementSessionNoticeWakeAttemptsStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing incrementSessionNoticeWakeAttemptsStmt: %w", cerr)
+		}
+	}
+	if q.insertSessionDriverStmt != nil {
+		if cerr := q.insertSessionDriverStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing insertSessionDriverStmt: %w", cerr)
 		}
 	}
 	if q.insertSessionNoticeStmt != nil {
@@ -884,6 +939,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing listRunningAsyncJobsForOwnersStmt: %w", cerr)
 		}
 	}
+	if q.listSessionDriverHostIDsStmt != nil {
+		if cerr := q.listSessionDriverHostIDsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing listSessionDriverHostIDsStmt: %w", cerr)
+		}
+	}
 	if q.listSessionNoticesForOwnerStmt != nil {
 		if cerr := q.listSessionNoticesForOwnerStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing listSessionNoticesForOwnerStmt: %w", cerr)
@@ -1004,6 +1064,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing rependSessionNoticesByMessageIDsStmt: %w", cerr)
 		}
 	}
+	if q.setAsyncJobAnnounceMessageIDStmt != nil {
+		if cerr := q.setAsyncJobAnnounceMessageIDStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing setAsyncJobAnnounceMessageIDStmt: %w", cerr)
+		}
+	}
 	if q.setAsyncJobNoticeMessageIDStmt != nil {
 		if cerr := q.setAsyncJobNoticeMessageIDStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing setAsyncJobNoticeMessageIDStmt: %w", cerr)
@@ -1062,6 +1127,11 @@ func (q *Queries) Close() error {
 	if q.sumMessageUsageBySessionStmt != nil {
 		if cerr := q.sumMessageUsageBySessionStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing sumMessageUsageBySessionStmt: %w", cerr)
+		}
+	}
+	if q.takeOverSessionDriverStmt != nil {
+		if cerr := q.takeOverSessionDriverStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing takeOverSessionDriverStmt: %w", cerr)
 		}
 	}
 	if q.terminalFailRunQueueEntryStmt != nil {
@@ -1129,6 +1199,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing visibleAsyncReactionDebtExistsStmt: %w", cerr)
 		}
 	}
+	if q.voidAsyncJobsByAnnounceMessageIDsStmt != nil {
+		if cerr := q.voidAsyncJobsByAnnounceMessageIDsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing voidAsyncJobsByAnnounceMessageIDsStmt: %w", cerr)
+		}
+	}
 	if q.voidAsyncJobsByToolCallIDsStmt != nil {
 		if cerr := q.voidAsyncJobsByToolCallIDsStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing voidAsyncJobsByToolCallIDsStmt: %w", cerr)
@@ -1142,6 +1217,11 @@ func (q *Queries) Close() error {
 	if q.voidPendingSessionNoticeStmt != nil {
 		if cerr := q.voidPendingSessionNoticeStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing voidPendingSessionNoticeStmt: %w", cerr)
+		}
+	}
+	if q.voidWakeFailedNoticesByMessageIDsStmt != nil {
+		if cerr := q.voidWakeFailedNoticesByMessageIDsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing voidWakeFailedNoticesByMessageIDsStmt: %w", cerr)
 		}
 	}
 	if q.writeToOrphanOutboxStmt != nil {
@@ -1213,8 +1293,11 @@ type Queries struct {
 	deletePendingInjectStmt                        *sql.Stmt
 	deletePermissionStmt                           *sql.Stmt
 	deleteSessionStmt                              *sql.Stmt
+	deleteSessionDriverStmt                        *sql.Stmt
+	deleteSessionDriversForHostStmt                *sql.Stmt
 	deleteSessionFilesStmt                         *sql.Stmt
 	deleteSessionMessagesStmt                      *sql.Stmt
+	deleteSessionMessagesByIDsStmt                 *sql.Stmt
 	deleteUnannouncedAsyncJobStmt                  *sql.Stmt
 	enqueueRunQueueEntryStmt                       *sql.Stmt
 	getAsyncHostStmt                               *sql.Stmt
@@ -1235,6 +1318,7 @@ type Queries struct {
 	getRunningAsyncJobByChildSessionStmt           *sql.Stmt
 	getSessionByIDStmt                             *sql.Stmt
 	getSessionCostAccountingStmt                   *sql.Stmt
+	getSessionDriverStmt                           *sql.Stmt
 	getSessionNoticeStmt                           *sql.Stmt
 	getToolUsageStmt                               *sql.Stmt
 	getTotalStatsStmt                              *sql.Stmt
@@ -1248,6 +1332,7 @@ type Queries struct {
 	incrementSessionCostStmt                       *sql.Stmt
 	incrementSessionCostIfUnderMaxStmt             *sql.Stmt
 	incrementSessionNoticeWakeAttemptsStmt         *sql.Stmt
+	insertSessionDriverStmt                        *sql.Stmt
 	insertSessionNoticeStmt                        *sql.Stmt
 	leaseRunQueueEntryByIDStmt                     *sql.Stmt
 	listAllSessionPermissionsStmt                  *sql.Stmt
@@ -1275,6 +1360,7 @@ type Queries struct {
 	listReactedFailedSessionNoticesForOwnerStmt    *sql.Stmt
 	listRunningAsyncJobsForHostStmt                *sql.Stmt
 	listRunningAsyncJobsForOwnersStmt              *sql.Stmt
+	listSessionDriverHostIDsStmt                   *sql.Stmt
 	listSessionNoticesForOwnerStmt                 *sql.Stmt
 	listSessionPermissionsStmt                     *sql.Stmt
 	listSessionReadFilesStmt                       *sql.Stmt
@@ -1299,6 +1385,7 @@ type Queries struct {
 	renewRunQueueLeaseStmt                         *sql.Stmt
 	rependAsyncJobsByNoticeMessageIDsStmt          *sql.Stmt
 	rependSessionNoticesByMessageIDsStmt           *sql.Stmt
+	setAsyncJobAnnounceMessageIDStmt               *sql.Stmt
 	setAsyncJobNoticeMessageIDStmt                 *sql.Stmt
 	setAsyncJobNoticeMessageIDIfDoneStmt           *sql.Stmt
 	setAsyncJobsWakeZeroPendingForOwnersStmt       *sql.Stmt
@@ -1311,6 +1398,7 @@ type Queries struct {
 	sumMessageUsageByDayInRangeStmt                *sql.Stmt
 	sumMessageUsageByModelInRangeStmt              *sql.Stmt
 	sumMessageUsageBySessionStmt                   *sql.Stmt
+	takeOverSessionDriverStmt                      *sql.Stmt
 	terminalFailRunQueueEntryStmt                  *sql.Stmt
 	transitionAsyncJobTerminalPreserveVoidStmt     *sql.Stmt
 	updateMessageStmt                              *sql.Stmt
@@ -1324,9 +1412,11 @@ type Queries struct {
 	updateSessionWorkerReviewerModelsStmt          *sql.Stmt
 	updateSessionWorkerReviewerReasoningEffortStmt *sql.Stmt
 	visibleAsyncReactionDebtExistsStmt             *sql.Stmt
+	voidAsyncJobsByAnnounceMessageIDsStmt          *sql.Stmt
 	voidAsyncJobsByToolCallIDsStmt                 *sql.Stmt
 	voidPendingAsyncJobNoticeStmt                  *sql.Stmt
 	voidPendingSessionNoticeStmt                   *sql.Stmt
+	voidWakeFailedNoticesByMessageIDsStmt          *sql.Stmt
 	writeToOrphanOutboxStmt                        *sql.Stmt
 }
 
@@ -1359,8 +1449,11 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		deletePendingInjectStmt:                        q.deletePendingInjectStmt,
 		deletePermissionStmt:                           q.deletePermissionStmt,
 		deleteSessionStmt:                              q.deleteSessionStmt,
+		deleteSessionDriverStmt:                        q.deleteSessionDriverStmt,
+		deleteSessionDriversForHostStmt:                q.deleteSessionDriversForHostStmt,
 		deleteSessionFilesStmt:                         q.deleteSessionFilesStmt,
 		deleteSessionMessagesStmt:                      q.deleteSessionMessagesStmt,
+		deleteSessionMessagesByIDsStmt:                 q.deleteSessionMessagesByIDsStmt,
 		deleteUnannouncedAsyncJobStmt:                  q.deleteUnannouncedAsyncJobStmt,
 		enqueueRunQueueEntryStmt:                       q.enqueueRunQueueEntryStmt,
 		getAsyncHostStmt:                               q.getAsyncHostStmt,
@@ -1381,6 +1474,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		getRunningAsyncJobByChildSessionStmt:           q.getRunningAsyncJobByChildSessionStmt,
 		getSessionByIDStmt:                             q.getSessionByIDStmt,
 		getSessionCostAccountingStmt:                   q.getSessionCostAccountingStmt,
+		getSessionDriverStmt:                           q.getSessionDriverStmt,
 		getSessionNoticeStmt:                           q.getSessionNoticeStmt,
 		getToolUsageStmt:                               q.getToolUsageStmt,
 		getTotalStatsStmt:                              q.getTotalStatsStmt,
@@ -1394,6 +1488,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		incrementSessionCostStmt:                       q.incrementSessionCostStmt,
 		incrementSessionCostIfUnderMaxStmt:             q.incrementSessionCostIfUnderMaxStmt,
 		incrementSessionNoticeWakeAttemptsStmt:         q.incrementSessionNoticeWakeAttemptsStmt,
+		insertSessionDriverStmt:                        q.insertSessionDriverStmt,
 		insertSessionNoticeStmt:                        q.insertSessionNoticeStmt,
 		leaseRunQueueEntryByIDStmt:                     q.leaseRunQueueEntryByIDStmt,
 		listAllSessionPermissionsStmt:                  q.listAllSessionPermissionsStmt,
@@ -1421,6 +1516,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		listReactedFailedSessionNoticesForOwnerStmt:    q.listReactedFailedSessionNoticesForOwnerStmt,
 		listRunningAsyncJobsForHostStmt:                q.listRunningAsyncJobsForHostStmt,
 		listRunningAsyncJobsForOwnersStmt:              q.listRunningAsyncJobsForOwnersStmt,
+		listSessionDriverHostIDsStmt:                   q.listSessionDriverHostIDsStmt,
 		listSessionNoticesForOwnerStmt:                 q.listSessionNoticesForOwnerStmt,
 		listSessionPermissionsStmt:                     q.listSessionPermissionsStmt,
 		listSessionReadFilesStmt:                       q.listSessionReadFilesStmt,
@@ -1445,6 +1541,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		renewRunQueueLeaseStmt:                         q.renewRunQueueLeaseStmt,
 		rependAsyncJobsByNoticeMessageIDsStmt:          q.rependAsyncJobsByNoticeMessageIDsStmt,
 		rependSessionNoticesByMessageIDsStmt:           q.rependSessionNoticesByMessageIDsStmt,
+		setAsyncJobAnnounceMessageIDStmt:               q.setAsyncJobAnnounceMessageIDStmt,
 		setAsyncJobNoticeMessageIDStmt:                 q.setAsyncJobNoticeMessageIDStmt,
 		setAsyncJobNoticeMessageIDIfDoneStmt:           q.setAsyncJobNoticeMessageIDIfDoneStmt,
 		setAsyncJobsWakeZeroPendingForOwnersStmt:       q.setAsyncJobsWakeZeroPendingForOwnersStmt,
@@ -1457,6 +1554,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		sumMessageUsageByDayInRangeStmt:                q.sumMessageUsageByDayInRangeStmt,
 		sumMessageUsageByModelInRangeStmt:              q.sumMessageUsageByModelInRangeStmt,
 		sumMessageUsageBySessionStmt:                   q.sumMessageUsageBySessionStmt,
+		takeOverSessionDriverStmt:                      q.takeOverSessionDriverStmt,
 		terminalFailRunQueueEntryStmt:                  q.terminalFailRunQueueEntryStmt,
 		transitionAsyncJobTerminalPreserveVoidStmt:     q.transitionAsyncJobTerminalPreserveVoidStmt,
 		updateMessageStmt:                              q.updateMessageStmt,
@@ -1470,9 +1568,11 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		updateSessionWorkerReviewerModelsStmt:          q.updateSessionWorkerReviewerModelsStmt,
 		updateSessionWorkerReviewerReasoningEffortStmt: q.updateSessionWorkerReviewerReasoningEffortStmt,
 		visibleAsyncReactionDebtExistsStmt:             q.visibleAsyncReactionDebtExistsStmt,
+		voidAsyncJobsByAnnounceMessageIDsStmt:          q.voidAsyncJobsByAnnounceMessageIDsStmt,
 		voidAsyncJobsByToolCallIDsStmt:                 q.voidAsyncJobsByToolCallIDsStmt,
 		voidPendingAsyncJobNoticeStmt:                  q.voidPendingAsyncJobNoticeStmt,
 		voidPendingSessionNoticeStmt:                   q.voidPendingSessionNoticeStmt,
+		voidWakeFailedNoticesByMessageIDsStmt:          q.voidWakeFailedNoticesByMessageIDsStmt,
 		writeToOrphanOutboxStmt:                        q.writeToOrphanOutboxStmt,
 	}
 }

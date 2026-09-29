@@ -9,8 +9,10 @@ package cmd
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -124,6 +126,7 @@ func TestSessionsGcCmdRun_JobsOlderThan_PurgesTerminalOnly(t *testing.T) {
 	// Old terminal job: past the cutoff, delivered -- must be purged.
 	_, err = store.Claim(ctx, session.ClaimParams{Owner: sess.ID, ToolCallID: "old-terminal", Kind: session.JobKindCommand, Input: "a"})
 	require.NoError(t, err)
+	require.NoError(t, store.MarkAnnounced(ctx, sess.ID, "old-terminal"))
 	_, err = store.Transition(ctx, session.TransitionParams{Owner: sess.ID, ToolCallID: "old-terminal", State: "completed", NoticeKind: "completed", Wake: true, Delivery: "done"})
 	require.NoError(t, err)
 
@@ -141,6 +144,17 @@ func TestSessionsGcCmdRun_JobsOlderThan_PurgesTerminalOnly(t *testing.T) {
 	require.NoError(t, err)
 
 	backdateAsyncJob(t, conn, sess.ID, "old-terminal", time.Now().Add(-10*24*time.Hour))
+
+	// A5 twin, added AFTER the reacted marking above: an old, ANNOUNCED,
+	// delivered (done), wake=1, unreacted row is open debt -- it must SURVIVE
+	// the purge that removes "old-terminal", or a stuck owner loses its own
+	// obligation.
+	_, err = store.Claim(ctx, session.ClaimParams{Owner: sess.ID, ToolCallID: "old-debt", Kind: session.JobKindCommand, Input: "d"})
+	require.NoError(t, err)
+	require.NoError(t, store.MarkAnnounced(ctx, sess.ID, "old-debt"))
+	_, err = store.Transition(ctx, session.TransitionParams{Owner: sess.ID, ToolCallID: "old-debt", State: "completed", NoticeKind: "completed", Wake: true, Delivery: "done"})
+	require.NoError(t, err)
+	backdateAsyncJob(t, conn, sess.ID, "old-debt", time.Now().Add(-30*24*time.Hour))
 
 	// Old but STILL RUNNING job (own host, alive) -- must never be purged.
 	_, err = store.Claim(ctx, session.ClaimParams{Owner: sess.ID, ToolCallID: "old-running", Kind: session.JobKindCommand, Input: "c"})
@@ -169,6 +183,9 @@ func TestSessionsGcCmdRun_JobsOlderThan_PurgesTerminalOnly(t *testing.T) {
 	_, err = conn.ExecContext(ctx, `UPDATE session_notices SET reacted = 1 WHERE id = ?`, oldNoticeID)
 	require.NoError(t, err)
 	recentNoticeID := seedTerminalNotice(t, q, conn, sess.ID, "void", time.Now())
+	// Old delivered notice that is still unreacted debt (wake=1, reacted=0):
+	// must survive like the async_jobs twin above.
+	oldDebtNoticeID := seedTerminalNotice(t, q, conn, sess.ID, "done", time.Now().Add(-10*24*time.Hour))
 
 	shutdownSeed()
 
@@ -184,6 +201,8 @@ func TestSessionsGcCmdRun_JobsOlderThan_PurgesTerminalOnly(t *testing.T) {
 		"an old, delivered terminal job must be purged")
 	require.Equal(t, 1, countAsyncJobRows(t, verifyConn, sess.ID, "recent-terminal"),
 		"a terminal job still within the retention window must survive")
+	require.Equal(t, 1, countAsyncJobRows(t, verifyConn, sess.ID, "old-debt"),
+		"an old announced done wake=1 unreacted row is open debt and must survive the purge")
 	require.Equal(t, 1, countAsyncJobRows(t, verifyConn, sess.ID, "old-running"),
 		"a running job must never be purged regardless of age")
 	require.Equal(t, 1, countAsyncJobRows(t, verifyConn, sess.ID, "old-running-unknown-host"),
@@ -192,6 +211,8 @@ func TestSessionsGcCmdRun_JobsOlderThan_PurgesTerminalOnly(t *testing.T) {
 		"an old, delivered notice must be purged (the async_jobs twin)")
 	require.Equal(t, 1, countNoticeRows(t, verifyConn, recentNoticeID),
 		"a recent notice must survive")
+	require.Equal(t, 1, countNoticeRows(t, verifyConn, oldDebtNoticeID),
+		"an old delivered notice that is unreacted debt must survive")
 }
 
 // TestSessionsGcCmdRun_JobsOlderThan_DryRunCountsOnly proves --dry-run
@@ -275,4 +296,71 @@ func TestSessionsGcCmdRun_JobsOlderThan_NeverPurgesUnreactedDebt(t *testing.T) {
 
 	require.Equal(t, 1, countAsyncJobRows(t, verifyConn, sess.ID, "old-debt"),
 		"an old, announced, delivered-but-unreacted row must never be purged")
+}
+
+// TestSessionsGcCmdRun_JobsOlderThan_JSONPrintsCounts is C19: with --json the
+// job purge used to report nothing at all (the counts only went to stderr as
+// prose). It now emits one summary line with the async_jobs and
+// session_notices counts -- for --dry-run (would purge) and the real run
+// (purged) alike.
+//
+// Revert-check: drop the asJSON summary block from sessionsGcCmdRun -- no
+// "async_jobs" line is printed and the assertions below fail.
+func TestSessionsGcCmdRun_JobsOlderThan_JSONPrintsCounts(t *testing.T) {
+	a, shutdownSeed := isolatedGcEnv(t)
+	ctx := context.Background()
+	dataDir := a.Config().Options.DataDirectory
+
+	sess, err := a.Sessions.CreateWithID(ctx, "gc-jobs-json-sess", "gc json probe")
+	require.NoError(t, err)
+
+	store := a.AsyncJobStore()
+	require.NotNil(t, store)
+	conn := a.DB()
+	q := db.New(conn)
+
+	_, err = store.Claim(ctx, session.ClaimParams{Owner: sess.ID, ToolCallID: "json-terminal", Kind: session.JobKindCommand, Input: "a"})
+	require.NoError(t, err)
+	require.NoError(t, store.MarkAnnounced(ctx, sess.ID, "json-terminal"))
+	_, err = store.Transition(ctx, session.TransitionParams{Owner: sess.ID, ToolCallID: "json-terminal", State: "completed", NoticeKind: "completed", Wake: true, Delivery: "done"})
+	require.NoError(t, err)
+	_, err = q.MarkAsyncJobsReactedForOwner(ctx, db.MarkAsyncJobsReactedForOwnerParams{UpdatedAt: time.Now().Unix(), OwnerSessionID: sess.ID})
+	require.NoError(t, err)
+	backdateAsyncJob(t, conn, sess.ID, "json-terminal", time.Now().Add(-10*24*time.Hour))
+	noticeID := seedTerminalNotice(t, q, conn, sess.ID, "void", time.Now().Add(-10*24*time.Hour))
+
+	shutdownSeed()
+
+	summary := func(dryRun string) gcJobsSummary {
+		t.Helper()
+		require.NoError(t, sessionsGcCmd.Flags().Set("jobs-older-than", "7d"))
+		require.NoError(t, sessionsGcCmd.Flags().Set("dry-run", dryRun))
+		require.NoError(t, sessionsGcCmd.Flags().Set("json", "true"))
+		stdout := captureStdout(t, func() { require.NoError(t, sessionsGcCmdRun(sessionsGcCmd, nil)) })
+		for _, line := range strings.Split(strings.TrimSpace(stdout), "\n") {
+			var s gcJobsSummary
+			if json.Unmarshal([]byte(line), &s) == nil && s.Kind == "async_jobs" {
+				return s
+			}
+		}
+		t.Fatalf("no async_jobs summary line in --json output %q", stdout)
+		return gcJobsSummary{}
+	}
+
+	dry := summary("true")
+	require.True(t, dry.DryRun)
+	require.EqualValues(t, 1, dry.AsyncJobs, "dry-run must report the job it would purge")
+	require.EqualValues(t, 1, dry.SessionNotices, "dry-run must report the notice it would purge")
+	require.Equal(t, "7d", dry.OlderThan)
+
+	purged := summary("false")
+	require.False(t, purged.DryRun)
+	require.EqualValues(t, 1, purged.AsyncJobs, "the real run must report the job it purged")
+	require.EqualValues(t, 1, purged.SessionNotices)
+
+	verifyConn, err := db.Connect(ctx, dataDir)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Release(dataDir) })
+	require.Equal(t, 0, countAsyncJobRows(t, verifyConn, sess.ID, "json-terminal"))
+	require.Equal(t, 0, countNoticeRows(t, verifyConn, noticeID))
 }

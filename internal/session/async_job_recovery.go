@@ -267,6 +267,9 @@ func (s *AsyncJobStore) RecoverOwnerScope(ctx context.Context, owner string, mes
 func (s *AsyncJobStore) PurgeExpired(ctx context.Context, age time.Duration) error {
 	cutoff := time.Now().Add(-age).Unix()
 	var errs []error
+	if err := s.purgeDeadSessionDrivers(ctx); err != nil {
+		errs = append(errs, fmt.Errorf("purge expired: session drivers: %w", err))
+	}
 	if _, err := s.q.PurgeAsyncJobsOlderThan(ctx, cutoff); err != nil {
 		errs = append(errs, fmt.Errorf("purge expired: async_jobs: %w", err))
 	}

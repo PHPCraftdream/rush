@@ -233,18 +233,21 @@ type Coordinator interface {
 	// (task #340, ROUND 3 migration). This bypasses the normal buildCall path since the
 	// call is already fully reconstructed with all necessary data.
 	RunSessionAgentCall(ctx context.Context, call SessionAgentCall) (*fantasy.AgentResult, error)
-	// RerunTruncateAsyncJobs reconciles sessionID's async_jobs/session_notices
-	// rows against a Rerun's deleted message tail (doc sec.3.8, step 6):
-	// every RUNNING row named by deletedToolCallIDs is stopped with job_kill
-	// semantics (recursively through a delegation's tree, like Stop), then
-	// the whole affected set's delivery/reacted state is reconciled against
-	// deletedMessageIDs -- see work_ledger_rerun.go/
-	// internal/session/async_job_rerun.go for the exact rules. The caller
-	// (handleRerunMessage) must call this AFTER computing the deleted tail
-	// but BEFORE any replacement turn can start, so a deleted-tail notice
-	// can never be pulled in the window between truncation and the new
-	// turn.
-	RerunTruncateAsyncJobs(ctx context.Context, sessionID string, deletedToolCallIDs, deletedMessageIDs []string) error
+	// CancelTurn cancels ONLY sessionID's live generation (its own agent's
+	// Cancel): no job stop, no delegation-tree walk, no wake zeroing, no
+	// auto-resume suspension -- unlike Cancel, which is the full Stop. Rerun
+	// uses it so a kept history's running jobs, unreacted debt and autonomy
+	// survive the rerun (docs/reviews/2026-09-29-async-phase4-round1-rerun-
+	// design.md).
+	CancelTurn(sessionID string)
+	// StopRerunJobs stops the jobs a committed Rerun truncation voided
+	// (session.TruncateForRerun's Voided set): each still-running row this
+	// process executes is stopped with job_kill semantics, and every voided
+	// delegation's child tree is stopped like Stop (stopTree). Best effort,
+	// called strictly AFTER the truncation transaction committed -- a stop
+	// that fails or cannot reach a foreign host's executor is safe: the row
+	// is already void, so its completion commits void (no debt, never pulled).
+	StopRerunJobs(ctx context.Context, sessionID string, voided []session.VoidedAsyncJob)
 }
 
 type coordinator struct {

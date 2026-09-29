@@ -1,30 +1,29 @@
 package server
 
-// Task #630: bounding rerun cancellation to phase boundaries.
+// Task #630, reshaped by the atomic-Rerun design (docs/reviews/2026-09-29-
+// async-phase4-round1-rerun-design.md): a Rerun commits exactly once.
 //
-// Commit d4e64288 made the exclusive reservation hold interruptible:
-// ReserveExclusive returns holdCtx and handleRerunMessage checks
-// holdCtx.Err() between phases. But the tail-deletion loop ran its Delete
-// calls under holdCtx itself, so a Cancel landing BETWEEN two tail
-// deletions cancelled the remaining Delete calls and the post-loop check
-// bailed with "cancelled" — leaving the session's history PARTIALLY
-// truncated with no rerun in exchange. Before d4e64288 a Cancel at that
-// moment did nothing; after it, the user could lose part of their
-// transcript and get nothing back.
-//
-// The fix: the pre-loop phase check honours a Cancel BEFORE the loop (tail
-// untouched), and the loop plus step 3's target delete run under
-// context.WithoutCancel(holdCtx) so they complete once entered. The
-// invariant: the tail is either untouched or fully deleted — never half.
+// The tail, the target and the async-job bookkeeping are removed by ONE
+// transaction (session.TruncateForRerun), so a Cancel has exactly one place
+// to be honoured -- the last cancel point right before it, where nothing has
+// changed yet -- and from the commit on the handler is committed: it stops
+// the voided jobs and hands off into the replacement turn whatever the
+// hold's cancellation state. There is no "tail half-deleted" state and no
+// "target deleted separately, later" window any more.
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
+	"os"
 	"testing"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
+	appPkg "github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
 
@@ -33,8 +32,8 @@ var _ agent.Coordinator = (*cancellableHoldCoordinator)(nil)
 
 // cancellableHoldCoordinator wraps mailboxLikeCoordinator so that the
 // holdCtx handed to handleRerunMessage is genuinely cancellable and
-// Cancel(sessionID) actually cancels it — mirroring the real coordinator,
-// where Cancel reaches the reservation's holdCancel via the mailbox
+// Cancel/CancelTurn actually cancel it — mirroring the real coordinator,
+// where a cancel reaches the reservation's holdCancel via the mailbox
 // (sessionAgent.Cancel -> mb.current.cancel, populated by beginCompact for
 // a ReserveExclusive hold). The p614 fake returned the caller's ctx
 // unchanged with a no-op cancel, which cannot express "user pressed Cancel
@@ -60,12 +59,22 @@ func (m *cancellableHoldCoordinator) ReserveExclusive(ctx context.Context, sessi
 }
 
 func (m *cancellableHoldCoordinator) Cancel(sessionID string) {
+	m.mailboxLikeCoordinator.Cancel(sessionID)
+	m.cancelHold()
+}
+
+func (m *cancellableHoldCoordinator) cancelHold() {
 	m.mu.Lock()
 	cancel := m.holdCancel
 	m.mu.Unlock()
 	if cancel != nil {
 		cancel()
 	}
+}
+
+func (m *cancellableHoldCoordinator) CancelTurn(sessionID string) {
+	m.mailboxLikeCoordinator.CancelTurn(sessionID)
+	m.cancelHold()
 }
 
 func (m *cancellableHoldCoordinator) ReleaseExclusive(sessionID string, epoch uint64, cancel context.CancelFunc) {
@@ -78,268 +87,228 @@ func (m *cancellableHoldCoordinator) ReleaseExclusive(sessionID string, epoch ui
 	m.owned = false
 }
 
-// TestHandleRerunMessage_CancelBetweenTailDeletesLeavesTailAllOrNothing is
-// THE mechanism test for task #630: a Cancel landing precisely between the
-// first and second tail deletions must not leave the tail half-deleted.
-//
-// Sequence:
-//  1. handleRerunMessage runs on a goroutine with two finished tail
-//     messages and claims the reservation.
-//  2. rerunTailDeleteSeam fires at i==1 — i.e. strictly AFTER the first
-//     tail Delete succeeded and strictly BEFORE the second — and the test
-//     cancels the hold there, exactly like a user pressing Cancel in that
-//     window.
-//  3. Assertions: the reply is an error containing "cancelled" (no rerun
-//     runs — cancellation is still honoured), and BOTH tail messages are
-//     gone (the loop completed once entered).
-//
-// Revert-check: change the loop's Delete/ForceDelete back to holdCtx (i.e.
-// undo the context.WithoutCancel) and this test fails: the second tail
-// message survives while the first is gone — the half-truncated state.
-func TestHandleRerunMessage_CancelBetweenTailDeletesLeavesTailAllOrNothing(t *testing.T) {
-	// Cannot use t.Parallel() because newAttachmentsTestApp calls t.Setenv.
-	workingDir := t.TempDir()
-	dataDir := t.TempDir()
-	a := newAttachmentsTestApp(t, workingDir, dataDir)
-	sess, err := a.Sessions.Create(t.Context(), "test-630-cancel-mid-tail")
-	require.NoError(t, err)
-	sessionID := sess.ID
-	ctx := t.Context()
+// rerunHandlerFx is a real App/DB session with a target user message, a tail
+// assistant message carrying async tool call "call-rerun", and the durable
+// job row announced by a "started" tool-result message in the tail.
+type rerunHandlerFx struct {
+	a         *appPkg.App
+	sessionID string
+	target    message.Message
+	tail      message.Message
+	started   message.Message
+	store     *session.AsyncJobStore
+}
 
-	userMsg, err := a.Messages.Create(ctx, sessionID, message.CreateMessageParams{
+const rerunCallID = "call-rerun"
+
+func newRerunHandlerFx(t *testing.T, title string) *rerunHandlerFx {
+	t.Helper()
+	// Cannot use t.Parallel() because newAttachmentsTestApp calls t.Setenv.
+	a := newAttachmentsTestApp(t, t.TempDir(), t.TempDir())
+	ctx := t.Context()
+	sess, err := a.Sessions.Create(ctx, title)
+	require.NoError(t, err)
+	f := &rerunHandlerFx{a: a, sessionID: sess.ID}
+
+	f.target, err = a.Messages.Create(ctx, sess.ID, message.CreateMessageParams{
 		Role:  message.User,
 		Parts: []message.ContentPart{message.TextContent{Text: "rerun me"}},
 	})
 	require.NoError(t, err)
-
-	var tailIDs []string
-	for _, text := range []string{"old reply 1", "old reply 2"} {
-		m, err := a.Messages.Create(ctx, sessionID, message.CreateMessageParams{
-			Role:  message.Assistant,
-			Parts: []message.ContentPart{message.TextContent{Text: text}},
-		})
-		require.NoError(t, err)
-		m.AddFinish(message.FinishReasonEndTurn, "", "")
-		require.NoError(t, a.Messages.Update(ctx, m))
-		tailIDs = append(tailIDs, m.ID)
-	}
-
-	mockCoord := &cancellableHoldCoordinator{}
-	a.AgentCoordinator = mockCoord
-
-	// Cancel precisely between tail delete #0 (done) and tail delete #1
-	// (not yet attempted): the seam fires at the top of iteration 1.
-	cancelled := make(chan struct{})
-	rerunTailDeleteSeam = func(i int) {
-		if i == 1 {
-			mockCoord.Cancel(sessionID)
-			close(cancelled)
-		}
-	}
-	t.Cleanup(func() { rerunTailDeleteSeam = nil })
-
-	hub := newHub()
-	client := newClient(hub, nil)
-	client.send = make(chan []byte, 10)
-	payload, err := json.Marshal(RerunMessagePayload{MessageID: userMsg.ID})
+	f.tail, err = a.Messages.Create(ctx, sess.ID, message.CreateMessageParams{
+		Role: message.Assistant,
+		Parts: []message.ContentPart{
+			message.TextContent{Text: "old reply"},
+			message.ToolCall{ID: rerunCallID, Name: "bash", Input: "{}", Finished: true},
+		},
+	})
 	require.NoError(t, err)
+	f.tail.AddFinish(message.FinishReasonEndTurn, "", "")
+	require.NoError(t, a.Messages.Update(ctx, f.tail))
 
+	f.store = session.NewAsyncJobStore(a.DB(), t.TempDir(), os.Getpid(), "rerun-handler-test")
+	t.Cleanup(func() { _ = f.store.Close(context.Background()) })
+	_, err = f.store.Claim(ctx, session.ClaimParams{Owner: sess.ID, ToolCallID: rerunCallID, Kind: session.JobKindCommand, Input: "sleep 100", ToolName: "bash"})
+	require.NoError(t, err)
+	f.started, err = f.store.AnnounceStarted(ctx, a.Messages, sess.ID, rerunCallID, message.CreateMessageParams{
+		Role:  message.Tool,
+		Parts: []message.ContentPart{message.ToolResult{ToolCallID: rerunCallID, Name: "bash", Content: "started"}},
+	})
+	require.NoError(t, err)
+	return f
+}
+
+// run drives handleRerunMessage to completion and returns its single reply.
+func (f *rerunHandlerFx) run(t *testing.T) WSMessage {
+	t.Helper()
+	client := newClient(newHub(), nil)
+	client.send = make(chan []byte, 10)
+	payload, err := json.Marshal(RerunMessagePayload{MessageID: f.target.ID})
+	require.NoError(t, err)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		handleRerunMessage(ctx, a, client, WSMessage{ID: "req-1", Type: CmdRerunMessage, Payload: payload})
+		handleRerunMessage(t.Context(), f.a, client, WSMessage{ID: "req-1", Type: CmdRerunMessage, Payload: payload})
 	}()
-
 	select {
 	case <-done:
 	case <-time.After(10 * time.Second):
 		t.Fatal("rerun handler never returned — something blocked unboundedly")
 	}
-
-	select {
-	case <-cancelled:
-	default:
-		t.Fatal("seam never fired at i==1; the test did not exercise the between-deletes window")
-	}
-
-	env := decodeReply(t, client)
-	require.Equal(t, EventError, env.Type,
-		"a mid-loop Cancel must still abort the rerun — the handler must not proceed to the replacement turn")
-	require.Contains(t, env.Error, "cancelled")
-
-	// The decisive assertion: the tail is FULLY deleted, never half. Both
-	// tail messages must be gone even though the hold was cancelled between
-	// their deletions.
-	for idx, id := range tailIDs {
-		_, getErr := a.Messages.Get(ctx, id)
-		require.Error(t, getErr,
-			"tail message %d must be deleted: the loop must finish once entered, even if Cancel lands mid-loop (got half-truncated tail)", idx)
-	}
-
-	// The target user message must NOT have been deleted: the post-loop
-	// phase check bailed before step 3.
-	stillTarget, getErr := a.Messages.Get(ctx, userMsg.ID)
-	require.NoError(t, getErr, "target user message must survive when Cancel is honoured at the post-loop phase boundary")
-	require.Equal(t, "rerun me", stillTarget.Content().Text)
+	return decodeReply(t, client)
 }
 
-// TestHandleRerunMessage_CancelBeforeTailLoopLeavesTailUntouched covers the
-// other half of the invariant: a Cancel arriving while the handler holds
-// the reservation but BEFORE the loop is entered must be honoured at that
-// phase boundary — tail wholly intact, target intact, error reply
-// "cancelled".
+func (f *rerunHandlerFx) exists(t *testing.T, id string) bool {
+	t.Helper()
+	_, err := f.a.Messages.Get(t.Context(), id)
+	return err == nil
+}
+
+func (f *rerunHandlerFx) jobDelivery(t *testing.T) string {
+	t.Helper()
+	row, err := f.store.Get(t.Context(), f.sessionID, rerunCallID)
+	require.NoError(t, err)
+	return row.Delivery
+}
+
+func (m *mailboxLikeCoordinator) counters() (cancelTurn, stop, stopRerun int, voided []session.VoidedAsyncJob, owned bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.cancelTurnCalls, m.stopCalls, m.stopRerunCalls, append([]session.VoidedAsyncJob(nil), m.stopRerunVoided...), m.owned
+}
+
+// TestHandleRerunMessage_CancelAtLastPoint_NothingChanged: a Cancel landing
+// while the handler holds the reservation but BEFORE the truncation
+// transaction is honoured there and changes NOTHING: the tail, the target
+// and the job row are intact and no job is stopped.
 //
-// Revert-check: delete the pre-loop holdCtx.Err() check and this test
-// fails: the loop then runs (uncancellable) and deletes the whole tail
-// before the post-loop check notices the Cancel, so the tail assertions
-// below find the messages gone.
-func TestHandleRerunMessage_CancelBeforeTailLoopLeavesTailUntouched(t *testing.T) {
-	// Cannot use t.Parallel() because newAttachmentsTestApp calls t.Setenv.
-	workingDir := t.TempDir()
-	dataDir := t.TempDir()
-	a := newAttachmentsTestApp(t, workingDir, dataDir)
-	sess, err := a.Sessions.Create(t.Context(), "test-630-cancel-pre-loop")
-	require.NoError(t, err)
-	sessionID := sess.ID
-	ctx := t.Context()
-
-	userMsg, err := a.Messages.Create(ctx, sessionID, message.CreateMessageParams{
-		Role:  message.User,
-		Parts: []message.ContentPart{message.TextContent{Text: "rerun me"}},
-	})
-	require.NoError(t, err)
-
-	tailMsg, err := a.Messages.Create(ctx, sessionID, message.CreateMessageParams{
-		Role:  message.Assistant,
-		Parts: []message.ContentPart{message.TextContent{Text: "old reply"}},
-	})
-	require.NoError(t, err)
-	tailMsg.AddFinish(message.FinishReasonEndTurn, "", "")
-	require.NoError(t, a.Messages.Update(ctx, tailMsg))
-
+// Revert-check: run the truncation transaction before the last cancel check
+// -- the tail is gone and the job voided when the handler reports "cancelled".
+func TestHandleRerunMessage_CancelAtLastPoint_NothingChanged(t *testing.T) {
+	f := newRerunHandlerFx(t, "cancel-at-last-point")
 	mockCoord := &cancellableHoldCoordinator{}
-	a.AgentCoordinator = mockCoord
-
-	// Cancel while the handler is parked holding the reservation, strictly
-	// before the tail loop.
-	rerunHoldingReservationSeam = func() {
-		mockCoord.Cancel(sessionID)
-	}
+	f.a.AgentCoordinator = mockCoord
+	rerunHoldingReservationSeam = func() { mockCoord.Cancel(f.sessionID) }
 	t.Cleanup(func() { rerunHoldingReservationSeam = nil })
 
-	hub := newHub()
-	client := newClient(hub, nil)
-	client.send = make(chan []byte, 10)
-	payload, err := json.Marshal(RerunMessagePayload{MessageID: userMsg.ID})
-	require.NoError(t, err)
+	env := f.run(t)
 
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		handleRerunMessage(ctx, a, client, WSMessage{ID: "req-1", Type: CmdRerunMessage, Payload: payload})
-	}()
-
-	select {
-	case <-done:
-	case <-time.After(10 * time.Second):
-		t.Fatal("rerun handler never returned — something blocked unboundedly")
-	}
-
-	env := decodeReply(t, client)
 	require.Equal(t, EventError, env.Type)
 	require.Contains(t, env.Error, "cancelled")
-
-	_, getErr := a.Messages.Get(ctx, tailMsg.ID)
-	require.NoError(t, getErr, "tail message must be wholly intact when Cancel is honoured before the loop")
-	_, getErr = a.Messages.Get(ctx, userMsg.ID)
-	require.NoError(t, getErr, "target user message must be intact when Cancel is honoured before the loop")
+	require.True(t, f.exists(t, f.target.ID), "target must be intact when Cancel is honoured at the last point")
+	require.True(t, f.exists(t, f.tail.ID), "tail must be intact")
+	require.True(t, f.exists(t, f.started.ID), "the job's announce message must be intact")
+	require.Equal(t, "none", f.jobDelivery(t), "the job must not be voided by a cancelled rerun")
+	_, _, stopRerun, _, owned := mockCoord.counters()
+	require.Zero(t, stopRerun, "no job may be stopped by a cancelled rerun")
+	require.False(t, owned, "the reservation must be released")
 }
 
-// (end of file)
-
-// TestHandleRerunMessage_CancelDuringTargetDeleteCommitsToRerun covers the
-// commit point (task #630 follow-up). Step 3 deletes the user's own target
-// message; only the replacement turn's Run() recreates it. So a Cancel
-// landing during step 3 must NOT be honoured with an early return — that
-// would produce "target deleted, no rerun": the user's own prompt gone
-// with nothing recreating it. The handler must proceed to the handoff.
+// TestHandleRerunMessage_CancelAfterCommit_Proceeds: a Cancel arriving after
+// the truncation committed (the user's own message is gone) must NOT abort
+// the handler: it stops the voided jobs and hands off into the replacement
+// turn. Never "target deleted, no rerun".
 //
-// Revert-check: reinstate a holdCtx.Err() early-return between step 3 and
-// the handoff (the pre-follow-up code shape) and this test fails: the
-// reply is EventError "cancelled" while the target message is gone.
-func TestHandleRerunMessage_CancelDuringTargetDeleteCommitsToRerun(t *testing.T) {
-	// Cannot use t.Parallel() because newAttachmentsTestApp calls t.Setenv.
-	workingDir := t.TempDir()
-	dataDir := t.TempDir()
-	a := newAttachmentsTestApp(t, workingDir, dataDir)
-	sess, err := a.Sessions.Create(t.Context(), "test-630-cancel-during-target-delete")
-	require.NoError(t, err)
-	sessionID := sess.ID
-	ctx := t.Context()
-
-	userMsg, err := a.Messages.Create(ctx, sessionID, message.CreateMessageParams{
-		Role:  message.User,
-		Parts: []message.ContentPart{message.TextContent{Text: "rerun me"}},
-	})
-	require.NoError(t, err)
-
-	tailMsg, err := a.Messages.Create(ctx, sessionID, message.CreateMessageParams{
-		Role:  message.Assistant,
-		Parts: []message.ContentPart{message.TextContent{Text: "old reply"}},
-	})
-	require.NoError(t, err)
-	tailMsg.AddFinish(message.FinishReasonEndTurn, "", "")
-	require.NoError(t, a.Messages.Update(ctx, tailMsg))
-
+// Revert-check: reinstate a holdCtx.Err() early-return between the commit
+// and the handoff -- the reply is EventError "cancelled" and no run starts.
+func TestHandleRerunMessage_CancelAfterCommit_Proceeds(t *testing.T) {
+	f := newRerunHandlerFx(t, "cancel-after-commit")
 	mockCoord := &cancellableHoldCoordinator{}
-	a.AgentCoordinator = mockCoord
-
-	// Record that the replacement turn actually started.
+	f.a.AgentCoordinator = mockCoord
 	runStarted := make(chan struct{})
 	mockCoord.runSideEffect = func() { close(runStarted) }
+	rerunPostTruncateSeam = func() { mockCoord.Cancel(f.sessionID) }
+	t.Cleanup(func() { rerunPostTruncateSeam = nil })
 
-	// Cancel precisely during step 3: after the last honoured check, after
-	// the tail loop, immediately before the target delete.
-	rerunPreTargetDeleteSeam = func() {
-		mockCoord.Cancel(sessionID)
-	}
-	t.Cleanup(func() { rerunPreTargetDeleteSeam = nil })
+	env := f.run(t)
 
-	hub := newHub()
-	client := newClient(hub, nil)
-	client.send = make(chan []byte, 10)
-	payload, err := json.Marshal(RerunMessagePayload{MessageID: userMsg.ID})
-	require.NoError(t, err)
-
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		handleRerunMessage(ctx, a, client, WSMessage{ID: "req-1", Type: CmdRerunMessage, Payload: payload})
-	}()
-
-	select {
-	case <-done:
-	case <-time.After(10 * time.Second):
-		t.Fatal("rerun handler never returned — something blocked unboundedly")
-	}
-
-	// The decisive assertion, both halves: the target WAS deleted (step 3
-	// completed) AND the rerun proceeded (handoff reached). Never "target
-	// deleted, no rerun".
-	_, getErr := a.Messages.Get(ctx, userMsg.ID)
-	require.Error(t, getErr,
-		"step 3 must complete even when cancelled mid-delete — the target is deleted exactly once here")
-
+	require.Equal(t, EventResponse, env.Type, "past the commit point the handler must reply ok, not 'cancelled'")
 	select {
 	case <-runStarted:
 	default:
-		t.Fatal("target message was deleted but no replacement turn started — the handler returned with the user's own prompt gone and nothing recreating it")
+		t.Fatal("the truncation committed but no replacement turn started")
 	}
+	require.False(t, f.exists(t, f.target.ID), "the target is deleted by the committed rerun")
+	require.False(t, f.exists(t, f.tail.ID))
+	require.Equal(t, "void", f.jobDelivery(t))
+	_, _, stopRerun, voided, _ := mockCoord.counters()
+	require.Equal(t, 1, stopRerun, "the voided job must be stopped after the commit")
+	require.Len(t, voided, 1)
+	require.Equal(t, rerunCallID, voided[0].ToolCallID)
+}
 
-	env := decodeReply(t, client)
-	require.Equal(t, EventResponse, env.Type,
-		"past the commit point the handler must reply ok (rerun proceeded), not 'cancelled'")
+// TestHandleRerunMessage_TruncateFailure_ErrorNoStopNoRun: a failing
+// truncation transaction (rolled back by construction) replies with an
+// error, stops no job, starts no turn, leaves history and the job row as
+// they were, and releases the reservation so a retry can proceed.
+//
+// Revert-check: log the error and continue into the stop/handoff -- the
+// handler replies ok, stops the job and runs a turn over an untouched history.
+func TestHandleRerunMessage_TruncateFailure_ErrorNoStopNoRun(t *testing.T) {
+	f := newRerunHandlerFx(t, "truncate-failure")
+	mockCoord := &cancellableHoldCoordinator{}
+	f.a.AgentCoordinator = mockCoord
+	ran := false
+	mockCoord.runSideEffect = func() { ran = true }
+	prev := rerunTruncate
+	rerunTruncate = func(context.Context, *sql.DB, message.Service, session.RerunTruncateParams) (session.RerunTruncation, error) {
+		return session.RerunTruncation{}, errors.New("database is locked")
+	}
+	t.Cleanup(func() { rerunTruncate = prev })
 
-	_, getErr = a.Messages.Get(ctx, tailMsg.ID)
-	require.Error(t, getErr, "tail message must be deleted by the committed rerun")
+	env := f.run(t)
+
+	require.Equal(t, EventError, env.Type)
+	require.Contains(t, env.Error, "nothing was changed")
+	require.Contains(t, env.Error, "database is locked")
+	require.True(t, f.exists(t, f.target.ID))
+	require.True(t, f.exists(t, f.tail.ID))
+	require.Equal(t, "none", f.jobDelivery(t))
+	_, _, stopRerun, _, owned := mockCoord.counters()
+	require.Zero(t, stopRerun, "a failed truncation must stop no job")
+	require.False(t, ran, "a failed truncation must not start a turn")
+	require.False(t, owned, "the reservation must be released so a retry can proceed")
+}
+
+// TestHandleRerunMessage_TargetGoneAtTruncation_RefusesAndChangesNothing: the
+// target vanishes between the handler's listing and the transaction (a
+// concurrent rerun or delete): the real transaction refuses, the tail and
+// the job stay.
+//
+// Revert-check: drop the target-present check in TruncateForRerun.
+func TestHandleRerunMessage_TargetGoneAtTruncation_RefusesAndChangesNothing(t *testing.T) {
+	f := newRerunHandlerFx(t, "target-gone")
+	mockCoord := &cancellableHoldCoordinator{}
+	f.a.AgentCoordinator = mockCoord
+	rerunHoldingReservationSeam = func() {
+		require.NoError(t, f.a.Messages.Delete(t.Context(), f.target.ID))
+	}
+	t.Cleanup(func() { rerunHoldingReservationSeam = nil })
+
+	env := f.run(t)
+
+	require.Equal(t, EventError, env.Type)
+	require.Contains(t, env.Error, "target message not found")
+	require.True(t, f.exists(t, f.tail.ID), "the tail must survive a refused rerun")
+	require.Equal(t, "none", f.jobDelivery(t))
+	_, _, stopRerun, _, _ := mockCoord.counters()
+	require.Zero(t, stopRerun)
+}
+
+// TestHandleRerunMessage_UsesCancelTurnNotStop: the rerun cancels only the
+// live generation (CancelTurn), never the full Stop (Cancel).
+//
+// Revert-check: call Cancel instead of CancelTurn in the handler.
+func TestHandleRerunMessage_UsesCancelTurnNotStop(t *testing.T) {
+	f := newRerunHandlerFx(t, "uses-cancel-turn")
+	mockCoord := &cancellableHoldCoordinator{}
+	f.a.AgentCoordinator = mockCoord
+
+	env := f.run(t)
+
+	require.Equal(t, EventResponse, env.Type)
+	cancelTurn, stop, stopRerun, _, _ := mockCoord.counters()
+	require.GreaterOrEqual(t, cancelTurn, 1, "rerun must cancel the live generation")
+	require.Zero(t, stop, "rerun must not run the full Stop")
+	require.Equal(t, 1, stopRerun)
 }

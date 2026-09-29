@@ -448,12 +448,21 @@ func describeAsyncJobsAndDebt(ctx context.Context, a *app.App, sessionID string,
 				j.ToolCallID, j.Kind, short(j.HostID), strings.ToLower(store.HostLiveness(j.HostID).String()))
 		}
 	}
-	if debt, err := store.VisibleReactionDebtExists(ctx, sessionID); err == nil {
-		if debt {
-			fmt.Fprintln(out, "  reaction debt: pending — a completed job's result is in history but no model turn has reacted to it yet")
-		} else {
-			fmt.Fprintln(out, "  reaction debt: none")
-		}
+	// C12: DUR-4's debt predicate counts a completed job whose notice is still
+	// 'pending' (nothing has pulled it into history yet) exactly like one
+	// already delivered but unreacted -- reporting only the delivered half
+	// showed "none" for a session that still owes the model a turn.
+	anyDebt, anyErr := store.ReactionDebtExists(ctx, sessionID)
+	visible, visErr := store.VisibleReactionDebtExists(ctx, sessionID)
+	switch {
+	case anyErr != nil && visErr != nil:
+		// Both reads failed: say nothing rather than a wrong "none".
+	case visErr == nil && visible:
+		fmt.Fprintln(out, "  reaction debt: pending — a completed job's result is in history but no model turn has reacted to it yet")
+	case anyErr == nil && anyDebt:
+		fmt.Fprintln(out, "  reaction debt: pending — a completed job's result has not been delivered into history yet, and no model turn has reacted to it")
+	case anyErr == nil:
+		fmt.Fprintln(out, "  reaction debt: none")
 	}
 }
 

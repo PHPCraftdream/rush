@@ -1,6 +1,7 @@
 // stopToolCallsForRerun coverage (doc sec.3.8, step 6): Rerun-scoped stop
-// of RUNNING rows named by a deleted tail, recursively through a
-// delegation's tree, exactly like Stop.
+// of the RUNNING rows a committed truncation voided. It stops exactly the
+// named jobs; the delegation child tree is StopRerunJobs's stopTree (see
+// coordinator_rerun_test.go).
 package agent
 
 import (
@@ -22,8 +23,7 @@ func TestStopToolCallsForRerun_StopsPlainJobWithWakeZero(t *testing.T) {
 	require.NoError(t, err)
 	l.acknowledged("owner-1", "call-1")
 
-	affected := l.stopToolCallsForRerun("owner-1", []string{"call-1"})
-	require.Empty(t, affected, "a plain job has no child session to fold into the affected set")
+	l.stopToolCallsForRerun("owner-1", []string{"call-1"})
 
 	row, err := store.Get(context.Background(), "owner-1", "call-1")
 	require.NoError(t, err)
@@ -31,12 +31,11 @@ func TestStopToolCallsForRerun_StopsPlainJobWithWakeZero(t *testing.T) {
 	require.EqualValues(t, 0, row.Wake, "Rerun-stopped rows must never wake anyone (doc sec.3.8)")
 }
 
-// TestStopToolCallsForRerun_StopsDelegationTreeRecursively pins the
-// delegation case: stopping a delegation's tool call ALSO stops its whole
-// current tree (cancelTree), exactly like Stop -- a plain job the child
-// itself owns must be stopped too, and the child session id must appear in
-// the returned affected set.
-func TestStopToolCallsForRerun_StopsDelegationTreeRecursively(t *testing.T) {
+// TestStopToolCallsForRerun_DelegationStoppedChildTreeIsCallersJob pins the
+// split: the delegation's own job is stopped, but its child's jobs are NOT
+// touched here -- Coordinator.StopRerunJobs walks the tree with stopTree,
+// which also cancels the child's generation (cancelTree alone did neither).
+func TestStopToolCallsForRerun_DelegationStoppedChildTreeIsCallersJob(t *testing.T) {
 	t.Parallel()
 	l := newWorkLedger(nil)
 	store := newTestAsyncJobStore(t)
@@ -45,13 +44,11 @@ func TestStopToolCallsForRerun_StopsDelegationTreeRecursively(t *testing.T) {
 	_, _, err := l.Start("owner-1", "deleg-call", "", AgentToolName, "child-1", false, false, nil, func() {})
 	require.NoError(t, err)
 	l.acknowledged("owner-1", "deleg-call")
-
 	_, _, err = l.Start("child-1", "child-call", "", "bash", "", false, false, nil, func() {})
 	require.NoError(t, err)
 	l.acknowledged("child-1", "child-call")
 
-	affected := l.stopToolCallsForRerun("owner-1", []string{"deleg-call"})
-	require.Contains(t, affected, "child-1", "the delegation's child session must be folded into the affected set")
+	l.stopToolCallsForRerun("owner-1", []string{"deleg-call"})
 
 	delegRow, err := store.Get(context.Background(), "owner-1", "deleg-call")
 	require.NoError(t, err)
@@ -60,8 +57,7 @@ func TestStopToolCallsForRerun_StopsDelegationTreeRecursively(t *testing.T) {
 
 	childRow, err := store.Get(context.Background(), "child-1", "child-call")
 	require.NoError(t, err)
-	require.NotEqual(t, "running", childRow.State, "the child's own job must be stopped too, recursively")
-	require.EqualValues(t, 0, childRow.Wake)
+	require.Equal(t, "running", childRow.State, "the child tree is stopped by StopRerunJobs, not by the ledger-level stop")
 }
 
 // TestStopToolCallsForRerun_UnknownOrTerminalToolCallIDIsANoOp pins the
@@ -73,7 +69,6 @@ func TestStopToolCallsForRerun_UnknownOrTerminalToolCallIDIsANoOp(t *testing.T) 
 	l.store = newTestAsyncJobStore(t)
 
 	require.NotPanics(t, func() {
-		affected := l.stopToolCallsForRerun("owner-1", []string{"never-started"})
-		require.Empty(t, affected)
+		l.stopToolCallsForRerun("owner-1", []string{"never-started"})
 	})
 }

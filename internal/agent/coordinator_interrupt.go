@@ -38,7 +38,23 @@ const interruptInjectTick = 3 * time.Second
 // a genuinely stuck tick doesn't block shutdown for an unreasonable duration.
 const interruptTickOperationTimeout = 10 * time.Second
 
+// Cancel is the full Stop: stopTree(sessionID).
 func (c *coordinator) Cancel(sessionID string) {
+	c.stopTree(sessionID)
+}
+
+// CancelTurn cancels only sessionID's live generation -- no job stop, tree walk,
+// wake zeroing or auto-resume suspension. See Coordinator.CancelTurn.
+func (c *coordinator) CancelTurn(sessionID string) {
+	if ag := c.agentFor(sessionID); ag != nil {
+		ag.Cancel(sessionID)
+	}
+}
+
+// stopTree is the body of Stop for sessionID: jobs, delegation tree, mailboxes,
+// auto-resume suspension and wake zeroing. Rerun also uses it for the child
+// tree of a voided delegation.
+func (c *coordinator) stopTree(sessionID string) {
 	// Phase-4 step 4 (doc sec.3.8): Stop is transitive -- cancelTree walks
 	// sessionID's current delegation tree (via still-RUNNING delegation
 	// rows) and, for EACH id, runs the same "jobs it owns AND delegations
@@ -61,7 +77,9 @@ func (c *coordinator) Cancel(sessionID string) {
 		// that owns its mailbox instead of silently finding an untouched
 		// one on c.currentAgent (agent_control.go's genCancel == nil
 		// branch: no error, no log, just nothing happens).
-		c.agentFor(id).Cancel(id)
+		if ag := c.agentFor(id); ag != nil {
+			ag.Cancel(id)
+		}
 		// Doc sec.3.4's web session policy: after a Stop, automatic turns
 		// are suspended until the next human message. Reusing the
 		// consecutive-auto-resume counter's own cap value as the

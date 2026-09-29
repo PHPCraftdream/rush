@@ -12,6 +12,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent"
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/session"
 )
 
 // handleRerunMessage is an atomic "retry from this user message": it cancels
@@ -61,7 +62,10 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 	// ownership. The wait exists purely so the common case (an old turn that
 	// is already winding down) doesn't fail closed on step 1a just because
 	// cancellation hasn't finished propagating yet.
-	a.AgentCoordinator.Cancel(sessionID)
+	// CancelTurn, not Cancel: only the live generation is cancelled. Kept
+	// history's running jobs, unreacted debt and autonomy survive a rerun; only
+	// the deleted tail's jobs are stopped, after the truncation commits.
+	a.AgentCoordinator.CancelTurn(sessionID)
 	a.AgentCoordinator.ClearQueue(sessionID)
 	idle := false
 	for i := 0; i < 100; i++ {
@@ -174,7 +178,7 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 		}
 	}()
 
-	// 2. Delete every message AFTER the target, keep the target.
+	// 2. Find the target's position; everything after it is the tail truncated below.
 	//
 	// task #615: created_at is stored in whole SECONDS (see
 	// internal/db/sql/messages.sql), so a message inserted just before the
@@ -212,36 +216,16 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 		return
 	}
 
-	// Phase-4 step 6 (doc sec.3.8): reconcile async_jobs/session_notices
-	// against the deleted tail BEFORE any of it is actually deleted below --
-	// running tool calls in the tail are stopped (job_kill semantics,
-	// recursively through a delegation's tree), and the whole affected set's
-	// delivery/reacted state is fixed up in the same pass. This runs while
-	// this handler still holds exclusive ownership (step 1a) and the
-	// external-silence probe (step 1b), so no replacement turn -- and no
-	// notice pull -- can start until after it returns; the message deletion
-	// loop itself runs after, so a deleted-tail notice can never be pulled
-	// in the window between the two.
-	if a.AgentCoordinator != nil {
-		deletedToolCallIDs := make([]string, 0)
-		deletedMessageIDs := make([]string, 0, len(allMsgs)-targetIdx-1)
-		for _, m := range allMsgs[targetIdx+1:] {
-			deletedMessageIDs = append(deletedMessageIDs, m.ID)
-			for _, tc := range m.ToolCalls() {
-				deletedToolCallIDs = append(deletedToolCallIDs, tc.ID)
-			}
-		}
-		if err := a.AgentCoordinator.RerunTruncateAsyncJobs(holdCtx, sessionID, deletedToolCallIDs, deletedMessageIDs); err != nil {
-			slog.Warn("ws: rerun: async job truncation reconciliation failed",
-				"sessionID", sessionID, "messageID", p.MessageID, "err", err)
-		}
+	tailIDs := make([]string, 0, len(allMsgs)-targetIdx-1)
+	for _, m := range allMsgs[targetIdx+1:] {
+		tailIDs = append(tailIDs, m.ID)
 	}
 
 	// Test-only seam (task #614 regression test, reverse direction): fires
 	// strictly AFTER ReserveExclusive above claimed ownership and strictly
-	// BEFORE the tail-delete loop below runs. A test can pause here to prove
-	// that a concurrent Send/Rerun attempted WHILE this handler holds the
-	// reservation observes the session busy and cannot create a new
+	// BEFORE the truncation transaction below runs. A test can pause here to
+	// prove that a concurrent Send/Rerun attempted WHILE this handler holds
+	// the reservation observes the session busy and cannot create a new
 	// streaming message — the direction of the F5 race that actually matters
 	// (a new turn starting mid-deletion), as opposed to
 	// rerunPostIdlePollSeam's "someone else grabs the reservation before we
@@ -250,89 +234,54 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 		rerunHoldingReservationSeam()
 	}
 
-	// Final phase-boundary check before mutating history: once the loop
-	// below is entered it runs to completion (see deleteCtx), so a Cancel
-	// must be honoured HERE — tail untouched — rather than mid-loop, where
-	// honouring it would leave the tail half-deleted with no rerun in
-	// exchange (task #630).
+	// LAST cancellation point. A Rerun commits exactly once: the tail, the
+	// target and the async-job bookkeeping are removed by ONE transaction
+	// (session.TruncateForRerun), so a Cancel is honoured HERE — nothing has
+	// changed yet — and never afterwards (task #630's "tail is untouched or
+	// fully deleted, never half" now holds by construction, and the target
+	// is part of the same commit rather than a separate later delete).
 	if holdCtx.Err() != nil {
 		c.reply(msg.ID, EventError, nil, "cancelled")
 		return
 	}
 
-	// deleteCtx is the context the tail-deletion loop and step 3's target
-	// delete run under. It is holdCtx with cancellation stripped
-	// (context.WithoutCancel): a Cancel landing between two loop iterations
-	// must not kill the remaining Delete/ForceDelete calls, or the session's
-	// history is left partially truncated and the post-loop check replies
-	// "cancelled" with nothing to show for the lost messages (task #630).
-	// The invariant: the tail is either untouched (cancel honoured at a
-	// phase boundary above) or fully deleted — never half. WithoutCancel
-	// rather than context.Background() to keep holdCtx's values, matching
-	// the agentCtx idiom already used further down in this handler.
+	// deleteCtx is holdCtx with cancellation stripped (context.WithoutCancel)
+	// so a Cancel landing during or after the commit cannot abort the
+	// transaction, the post-commit job stops or the recreate-prompt check.
+	// WithoutCancel rather than context.Background() keeps holdCtx's values,
+	// matching the agentCtx idiom further down.
 	deleteCtx := context.WithoutCancel(holdCtx)
 
-	for i, m := range allMsgs[targetIdx+1:] {
-		// Test-only seam (task #630): see rerunTailDeleteSeam's declaration.
-		if rerunTailDeleteSeam != nil {
-			rerunTailDeleteSeam(i)
+	// 2a. Atomic truncation. The delete is unconditional — including a still
+	// streaming assistant row — and rests on three proofs: the session was
+	// cancelled and polled to idle (step 1), this handler holds the exclusive
+	// reservation (step 1a), and no OTHER process holds the session's OS lock
+	// (step 1b). Only under all three can such a row truly never receive a
+	// terminal Finish; force-deleting it keeps partial text out of LLM
+	// context forever. On any error the transaction rolled back: history,
+	// jobs and notices are exactly as before, no job was stopped, no turn is
+	// started, and the deferred releases free the reservation and the probe.
+	trunc, truncErr := rerunTruncate(deleteCtx, a.DB(), a.Messages, session.RerunTruncateParams{
+		Owner: sessionID, TargetID: targetMsg.ID, TailIDs: tailIDs,
+	})
+	if truncErr != nil {
+		if errors.Is(truncErr, session.ErrRerunTargetGone) {
+			slog.Warn("ws: rerun: target message no longer exists at truncation",
+				"sessionID", sessionID, "messageID", targetMsg.ID)
+			c.reply(msg.ID, EventError, nil, "target message not found in session")
+			return
 		}
-		if delErr := a.Messages.Delete(deleteCtx, m.ID); delErr != nil {
-			if errors.Is(delErr, message.ErrMessageStillStreaming) {
-				// The message is still streaming, but THREE separate proofs
-				// back the orphan claim: the session was cancelled and polled
-				// to idle (step 1), this handler holds the exclusive
-				// reservation (step 1a), and no OTHER process holds the
-				// session's OS lock (step 1b). Only under all three can this
-				// row truly never receive a terminal Finish — in-process idle
-				// alone would not prove that across processes. Force-delete
-				// it to avoid corrupting the transcript by including partial
-				// text in LLM context forever.
-				slog.Info("ws: rerun: orphaned streaming message, force-deleting",
-					"id", m.ID, "err", delErr)
-				if forceErr := a.Messages.ForceDelete(deleteCtx, m.ID); forceErr != nil {
-					slog.Warn("ws: rerun: failed to force-delete orphaned streaming message",
-						"id", m.ID, "err", forceErr)
-				}
-			} else {
-				slog.Warn("ws: rerun: failed to delete tail message", "id", m.ID, "err", delErr)
-			}
-		}
-	}
-
-	// Check if the hold was cancelled during tail deletion. This is the
-	// LAST cancellation point the handler honours (task #630): honouring
-	// here leaves the state "tail fully deleted, target intact, no rerun"
-	// — the operator's own prompt survives and a retry re-enters cleanly.
-	// Every step after this mutates the target itself; once step 3 has
-	// deleted it, only the replacement turn's Run() can recreate it, so
-	// from here on a Cancel is NOT honoured in this handler. It is already
-	// delivered to the mailbox (the holdCancel WAS the cancel target),
-	// where the agent layer rebinds and applies it to the replacement turn
-	// instead — the correct place for a mid-rerun Cancel to land.
-	if holdCtx.Err() != nil {
-		c.reply(msg.ID, EventError, nil, "cancelled")
+		slog.Error("ws: rerun: truncation failed, nothing was changed",
+			"sessionID", sessionID, "messageID", targetMsg.ID, "err", truncErr)
+		c.reply(msg.ID, EventError, nil, "rerun failed, nothing was changed — please retry: "+truncErr.Error())
 		return
 	}
-
-	// Test-only seam (task #630 follow-up): see rerunPreTargetDeleteSeam's
-	// declaration.
-	if rerunPreTargetDeleteSeam != nil {
-		rerunPreTargetDeleteSeam()
-	}
-
-	// 3. Delete the original user message — Run() will recreate it. Runs
-	// under deleteCtx (cancellation stripped) and is the COMMIT POINT: if
-	// this Delete succeeds and the handler returned early, the user's own
-	// words would be gone with nothing recreating them, so nothing below
-	// may return without first handing off into RunWithReservedOwnership.
-	// A Cancel arriving during or after this delete is left to the agent
-	// layer: RunWithReservedOwnership is invoked with agentCtx (derived
-	// from the request ctx, not holdCtx) and continues the same ownership
-	// era regardless of the hold's cancellation state.
-	if delErr := a.Messages.Delete(deleteCtx, targetMsg.ID); delErr != nil {
-		slog.Warn("ws: rerun: failed to delete original user message", "id", targetMsg.ID, "err", delErr)
-	}
+	// COMMIT POINT: the user's own message is deleted, so nothing below may
+	// return without first handing off into RunWithReservedOwnership (or
+	// recreating the prompt via the defer registered next). A Cancel arriving
+	// from here on is left to the agent layer: RunWithReservedOwnership runs
+	// with agentCtx (derived from the request ctx, not holdCtx) and continues
+	// the same ownership era regardless of the hold's cancellation state.
 
 	// Capture the SET of message IDs the recreate watermark compares
 	// against (task #655, fourteenth-review P2-1/P3-1; seeded from the
@@ -384,22 +333,11 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 	// writer BETWEEN the two listings: on this failed-List path it is in
 	// neither set, so a same-text foreign row could suppress the
 	// recreate — the same concurrent-writer tolerance the helper's doc
-	// documents. That window is not two adjacent statements: it spans
-	// the whole tail-delete loop plus step 3's target delete — one
-	// Messages.Delete (itself a get + delete-if-terminal + publish
-	// round trip) per tail row — so it is milliseconds for a short tail
-	// and hundreds of milliseconds for a long one.
+	// documents. That window is the truncation transaction plus the
+	// post-commit List.
 	baselineIDs := make(map[string]struct{}, len(allMsgs))
 	for _, m := range allMsgs {
 		baselineIDs[m.ID] = struct{}{}
-	}
-	if msgs, listErr := a.Messages.List(deleteCtx, sessionID); listErr == nil {
-		for _, m := range msgs {
-			baselineIDs[m.ID] = struct{}{}
-		}
-	} else {
-		slog.Warn("ws: rerun: failed to list messages after target delete; baseline ID set falls back to the pre-delete listing",
-			"sessionID", sessionID, "err", listErr)
 	}
 
 	// Task #645 (twelfth-review N-2): recreate the user prompt if it was
@@ -410,8 +348,8 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 	// the window where onHandoff has fired but the replacement turn's
 	// createUserMessage has not run yet (onHandoff fires before runOwned).
 	// Both unwind with runReturned still false, keeping this defer armed.
-	// Registered strictly AFTER the delete so it never fires for the early
-	// returns above (before step 3 there is nothing to recreate). It runs
+	// Registered strictly AFTER the commit so it never fires for the early
+	// returns above (before the commit there is nothing to recreate). It runs
 	// before the releaseOnBailout/probeHeld defers (LIFO), so on panic
 	// unwind it still runs while the reservation is held. On ordinary
 	// returns the agent layer has already released, so correctness does NOT
@@ -436,6 +374,28 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 			recreateRerunPromptIfLost(deleteCtx, a, sessionID, baselineIDs, targetMsg.ID, text)
 		}
 	}()
+
+	// Union the post-commit listing into the baseline set (the defer above
+	// already holds the map, seeded from allMsgs, so a panic anywhere from the
+	// commit on still restores the prompt).
+	if msgs, listErr := a.Messages.List(deleteCtx, sessionID); listErr == nil {
+		for _, m := range msgs {
+			baselineIDs[m.ID] = struct{}{}
+		}
+	} else {
+		slog.Warn("ws: rerun: failed to list messages after target delete; baseline ID set falls back to the pre-delete listing",
+			"sessionID", sessionID, "err", listErr)
+	}
+
+	// Stop the jobs the committed truncation voided (running executors of this
+	// process, and every voided delegation's child tree). Synchronous and best
+	// effort: the rows are already void, so a stop that misses only lets the
+	// executor finish and commit void. Runs under deleteCtx and after the
+	// recreate defer, so a panic here still restores the prompt.
+	if rerunPostTruncateSeam != nil {
+		rerunPostTruncateSeam()
+	}
+	a.AgentCoordinator.StopRerunJobs(deleteCtx, sessionID, trunc.Voided)
 
 	// 4. Re-arm Phase 4 autonomy.
 	a.AgentCoordinator.ResetAutoResumeCounter(sessionID)

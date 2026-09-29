@@ -336,8 +336,12 @@ func (p *panicWindowCoordinator) RunSessionAgentCall(ctx context.Context, call a
 	return p.coordinator.RunSessionAgentCall(ctx, call)
 }
 
-func (p *panicWindowCoordinator) RerunTruncateAsyncJobs(ctx context.Context, sessionID string, deletedToolCallIDs, deletedMessageIDs []string) error {
-	return p.coordinator.RerunTruncateAsyncJobs(ctx, sessionID, deletedToolCallIDs, deletedMessageIDs)
+func (p *panicWindowCoordinator) CancelTurn(sessionID string) {
+	p.coordinator.CancelTurn(sessionID)
+}
+
+func (p *panicWindowCoordinator) StopRerunJobs(ctx context.Context, sessionID string, voided []session.VoidedAsyncJob) {
+	p.coordinator.StopRerunJobs(ctx, sessionID, voided)
 }
 
 func (p *panicWindowCoordinator) ReserveExclusive(ctx context.Context, sessionID string) (context.Context, uint64, context.CancelFunc, bool) {

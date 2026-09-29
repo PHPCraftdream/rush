@@ -22,7 +22,8 @@ import (
 type fakeAlwaysBusyCoordinator struct {
 	runCalled        bool
 	runWithOverride  bool
-	cancelCalled     bool
+	cancelTurnCalled bool
+	stopCalled       bool
 	clearQueueCalled bool
 }
 
@@ -38,7 +39,7 @@ func (f *fakeAlwaysBusyCoordinator) RunWithOverrides(ctx context.Context, sessio
 }
 
 func (f *fakeAlwaysBusyCoordinator) Cancel(sessionID string) {
-	f.cancelCalled = true
+	f.stopCalled = true
 }
 
 func (f *fakeAlwaysBusyCoordinator) CancelAll() (stillBusy bool) {
@@ -93,8 +94,11 @@ func (f *fakeAlwaysBusyCoordinator) RunSessionAgentCall(ctx context.Context, cal
 	return nil, nil
 }
 
-func (f *fakeAlwaysBusyCoordinator) RerunTruncateAsyncJobs(ctx context.Context, sessionID string, deletedToolCallIDs, deletedMessageIDs []string) error {
-	return nil
+func (f *fakeAlwaysBusyCoordinator) CancelTurn(sessionID string) {
+	f.cancelTurnCalled = true
+}
+
+func (f *fakeAlwaysBusyCoordinator) StopRerunJobs(ctx context.Context, sessionID string, voided []session.VoidedAsyncJob) {
 }
 
 func (f *fakeAlwaysBusyCoordinator) CancelQueuedSummarize(sessionID string) {}
@@ -237,7 +241,8 @@ func TestP1_6_Rerun_FailsClosedWhenStillStopping(t *testing.T) {
 	require.False(t, fakeCoord.runCalled, "Run should not be called when session still busy after timeout")
 	require.False(t, fakeCoord.runWithOverride, "RunWithOverrides should not be called when session still busy after timeout")
 
-	// Cancel should have been called (that's step 1 of rerun, before polling).
-	require.True(t, fakeCoord.cancelCalled, "Cancel should be called before polling")
+	// CancelTurn (never the full Stop) is step 1 of rerun, before polling.
+	require.True(t, fakeCoord.cancelTurnCalled, "CancelTurn should be called before polling")
+	require.False(t, fakeCoord.stopCalled, "rerun must not run the full Stop (Cancel)")
 	require.True(t, fakeCoord.clearQueueCalled, "ClearQueue should be called before polling")
 }

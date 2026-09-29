@@ -90,6 +90,15 @@ SELECT * FROM async_jobs WHERE child_session_id = ? AND state = 'running';
 UPDATE async_jobs SET announced = 1, updated_at = ?
 WHERE owner_session_id = ? AND tool_call_id = ?;
 
+-- name: SetAsyncJobAnnounceMessageID :execrows
+-- Second half of the ack gate's fused transaction (AnnounceStarted): records
+-- the "started" tool-result message that announced this row, so a Rerun can
+-- void the row by the message it actually deleted instead of by
+-- tool_call_id (which a provider may reuse per response). See migration
+-- 20260929000003.
+UPDATE async_jobs SET announce_message_id = ?, updated_at = ?
+WHERE owner_session_id = ? AND tool_call_id = ?;
+
 -- name: DeleteUnannouncedAsyncJob :execrows
 -- Abort: the "started" tool-result write itself failed, so nothing durable
 -- should remain (ASYNC-05). Scoped to announced=0 so a row that won the
@@ -144,21 +153,36 @@ RETURNING *;
 -- back into 'pending'. wake_attempts/reacted_failed are reset (A1): a row
 -- re-entering the pending pool starts its settle-by-failure counters fresh,
 -- not with whatever an earlier, unrelated closure left behind. Must run
--- BEFORE VoidAsyncJobsByToolCallIDs in the same Rerun pass: a row whose OWN
+-- BEFORE the void queries in the same Rerun pass: a row whose OWN
 -- tool call is ALSO in the deleted tail matches both queries, and void must
 -- win for it.
 UPDATE async_jobs SET delivery = 'pending', reacted = 0, reacted_failed = 0, wake_attempts = 0, updated_at = ?
 WHERE owner_session_id = ? AND delivery = 'done' AND notice_message_id IN (sqlc.slice('message_ids'));
 
--- name: VoidAsyncJobsByToolCallIDs :execrows
--- Rerun truncation (doc sec.3.8): every row whose OWNING tool call is in the
--- deleted tail must never surface a notice, regardless of its current
+-- name: VoidAsyncJobsByAnnounceMessageIDs :many
+-- Rerun truncation (doc sec.3.8): every row whose "started" tool-result
+-- message (announce_message_id) is among the rows the truncation actually
+-- deleted must never surface a notice, regardless of its current
 -- delivery/state -- including a still-'running' row (its stop may have
 -- raced or failed): the terminal-transition CAS always preserves an
 -- existing 'void' (TransitionAsyncJobTerminalPreserveVoid), so writing void
 -- here first closes that race for a late-arriving terminal transition too.
+-- Keyed by the message id, not tool_call_id: a provider that numbers calls
+-- per response reuses "call_0", so a tool_call_id match could void a KEPT
+-- row (or miss an archived one). RETURNING hands the caller the rows to
+-- stop once the transaction commits.
+UPDATE async_jobs SET delivery = 'void', updated_at = @updated_at
+WHERE owner_session_id = @owner AND announce_message_id IN (sqlc.slice('message_ids'))
+RETURNING tool_call_id, state, child_session_id, host_id;
+
+-- name: VoidAsyncJobsByToolCallIDs :many
+-- Legacy arm of the Rerun void, for rows announced before migration
+-- 20260929000003 (announce_message_id IS NULL): matched by the deleted
+-- tail's tool_call_ids. Restricted to NULL so a row that DOES name its
+-- announce message is never matched by a possibly-reused tool_call_id.
 UPDATE async_jobs SET delivery = 'void', updated_at = ?
-WHERE owner_session_id = ? AND tool_call_id IN (sqlc.slice('tool_call_ids'));
+WHERE owner_session_id = ? AND announce_message_id IS NULL AND tool_call_id IN (sqlc.slice('tool_call_ids'))
+RETURNING tool_call_id, state, child_session_id, host_id;
 
 -- name: ListPendingAsyncJobNoticesForOwner :many
 -- Candidates for the drain's pull (doc sec.3.3): announced=1 is required --

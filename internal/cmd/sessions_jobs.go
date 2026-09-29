@@ -10,13 +10,16 @@ package cmd
 //
 // Deliberately observation-only: there is no job-level "kill" here. Killing
 // a job on a DIFFERENT, still-live host needs the OWNING process to act;
-// today's only lever is `rush sessions kill <session-id>`, which stops the
-// whole holder process. A live row on a foreign host prints that hint
-// instead of attempting an in-process stop it cannot safely perform.
+// `rush sessions kill` only ends a session's running turn and does nothing
+// between turns, so the only lever is stopping the host process itself. A
+// live row on a foreign host prints a hint naming that process and a kill
+// command for it instead of attempting an in-process stop it cannot safely
+// perform.
 import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"runtime"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -41,8 +44,9 @@ job(s) behind that verdict. Works from any process: a row is written by
 whichever process actually owns the job, not the one running this command.
 
 A 'running' row on a LIVE host owned by a DIFFERENT process prints a hint
-naming that host's PID and "rush sessions kill <session-id>" -- there is no
-job-level kill; stopping it means stopping the whole holder process.`,
+naming that host's PID and a kill command for that process -- there is no
+job-level kill, and "rush sessions kill" does nothing between turns, so
+stopping the job means stopping the holder process.`,
 	Args: cobra.ExactArgs(1),
 	Example: `
 # Everything this session and its sub-agents are/were doing
@@ -161,7 +165,7 @@ func sessionsJobsCmdRun(cmd *cobra.Command, args []string) error {
 			status := store.HostLiveness(j.HostID)
 			item.Liveness = strings.ToLower(status.String())
 			if status == session.HostStatusAlive && !session.IsOwnHostID(j.HostID) {
-				item.Hint = fmt.Sprintf("owned by a live host on another process (PID %d); use `rush sessions kill %s` to stop it", item.HostPID, j.OwnerSessionID)
+				item.Hint = foreignHostKillHint(item.HostPID)
 			}
 		}
 		items = append(items, item)
@@ -206,4 +210,19 @@ func sessionsJobsCmdRun(cmd *cobra.Command, args []string) error {
 		}
 	}
 	return w.Flush()
+}
+
+// foreignHostKillHint is the `sessions jobs` hint for a running row on a live
+// host of another process (C13): `rush sessions kill` ends a session's
+// running turn and does nothing between turns, so it cannot stop such a job;
+// stopping the host process can. pid 0 (host row missing) still says so.
+func foreignHostKillHint(pid int64) string {
+	if pid <= 0 {
+		return "owned by a live host on another process (PID unknown); stop that process to stop this job"
+	}
+	kill := fmt.Sprintf("kill %d", pid)
+	if runtime.GOOS == "windows" {
+		kill = fmt.Sprintf("taskkill /F /T /PID %d", pid)
+	}
+	return fmt.Sprintf("owned by a live host on another process (PID %d); stop that process to stop this job: `%s`", pid, kill)
 }

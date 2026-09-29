@@ -167,6 +167,13 @@ type Service interface {
 	// is truly orphaned before calling this method; otherwise it can corrupt
 	// the transcript by deleting a message a live turn is still writing to.
 	ForceDelete(ctx context.Context, id string) error
+	// DeleteTx is Rerun truncation's batch delete: it removes the given rows
+	// of sessionID on tx, UNCONDITIONALLY (no streaming guard -- the caller
+	// must hold the same proofs as for ForceDelete), and returns exactly the
+	// rows this statement deleted (an id already gone is absent). Nothing is
+	// published: call the returned publish func only AFTER tx commits (it
+	// bumps the delete generation and publishes one DeletedEvent per row).
+	DeleteTx(ctx context.Context, tx *sql.Tx, sessionID string, ids []string) (deleted []Message, publish func(), err error)
 	DeleteSessionMessages(ctx context.Context, sessionID string) error
 	SetPinned(ctx context.Context, id string, pinned bool) error
 	// SetUsage records this message's token accounting and prompt-cache

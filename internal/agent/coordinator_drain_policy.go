@@ -49,6 +49,31 @@ const drainFailureSettleThreshold = 3
 // applies at all. Callers must route external-driver (CLI root) sessions to
 // a hint-only path before ever reaching this -- see wakeSession.
 func (c *coordinator) sessionDrainPolicy(ctx context.Context, sessionID string) (allowed, counted bool, err error) {
+	// Durable external-driver marker (docs/reviews/2026-09-29-async-phase4-
+	// round1-rerun-design.md, Problem 2): a live `rush run` loop in ANOTHER
+	// process drives this session and reacts to its debt itself. This
+	// process never starts a reaction turn for it -- covers wakeSession
+	// before submit and decideDrainTurn at an already-admitted Drain's turn
+	// start (the latter then only transfers notices into history). The
+	// in-memory marker (own loop) skips the lookup.
+	if c.asyncJobs != nil && !c.asyncJobs.isExternalDriver(sessionID) {
+		foreign, drvErr := c.asyncJobs.foreignLiveDriver(ctx, sessionID)
+		switch {
+		case drvErr != nil && c.persistentMode.Load():
+			// Web coordinator: fail closed; the 60s pass retries.
+			slog.Warn("session drain policy: driver marker unreadable; refusing the turn for now",
+				"session_id", sessionID, "err", drvErr)
+			c.addToRecheckSet(sessionID)
+			return false, false, nil
+		case drvErr == nil && foreign:
+			if debt, _ := c.asyncJobs.reactionDebtExists(ctx, sessionID); debt {
+				c.addToRecheckSet(sessionID)
+			}
+			return false, false, nil
+		}
+		// A CLI coordinator (no recheck ticker) falls through on a read
+		// error: the existing fail-open.
+	}
 	if c.asyncJobs != nil {
 		running, runErr := c.asyncJobs.hasRunningDelegationFor(ctx, sessionID)
 		if runErr != nil {

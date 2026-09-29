@@ -16,31 +16,32 @@ type AsyncHost struct {
 }
 
 type AsyncJob struct {
-	OwnerSessionID  string         `json:"owner_session_id"`
-	ToolCallID      string         `json:"tool_call_id"`
-	Kind            string         `json:"kind"`
-	ToolName        string         `json:"tool_name"`
-	TimeoutSeconds  int64          `json:"timeout_seconds"`
-	InputHash       string         `json:"input_hash"`
-	ChildSessionID  sql.NullString `json:"child_session_id"`
-	OriginCli       int64          `json:"origin_cli"`
-	State           string         `json:"state"`
-	NoticeKind      string         `json:"notice_kind"`
-	HostID          string         `json:"host_id"`
-	Announced       int64          `json:"announced"`
-	Delivery        string         `json:"delivery"`
-	NoticeMessageID sql.NullString `json:"notice_message_id"`
-	Wake            int64          `json:"wake"`
-	Reacted         int64          `json:"reacted"`
-	WakeAttempts    int64          `json:"wake_attempts"`
-	ReactedFailed   int64          `json:"reacted_failed"`
-	DeadlineAt      sql.NullInt64  `json:"deadline_at"`
-	TimeoutKind     sql.NullString `json:"timeout_kind"`
-	ResultSummary   sql.NullString `json:"result_summary"`
-	ResultIsError   sql.NullInt64  `json:"result_is_error"`
-	CreatedAt       int64          `json:"created_at"`
-	UpdatedAt       int64          `json:"updated_at"`
-	ClaimID         string         `json:"claim_id"`
+	OwnerSessionID    string         `json:"owner_session_id"`
+	ToolCallID        string         `json:"tool_call_id"`
+	Kind              string         `json:"kind"`
+	ToolName          string         `json:"tool_name"`
+	TimeoutSeconds    int64          `json:"timeout_seconds"`
+	InputHash         string         `json:"input_hash"`
+	ChildSessionID    sql.NullString `json:"child_session_id"`
+	OriginCli         int64          `json:"origin_cli"`
+	State             string         `json:"state"`
+	NoticeKind        string         `json:"notice_kind"`
+	HostID            string         `json:"host_id"`
+	Announced         int64          `json:"announced"`
+	Delivery          string         `json:"delivery"`
+	NoticeMessageID   sql.NullString `json:"notice_message_id"`
+	Wake              int64          `json:"wake"`
+	Reacted           int64          `json:"reacted"`
+	WakeAttempts      int64          `json:"wake_attempts"`
+	ReactedFailed     int64          `json:"reacted_failed"`
+	DeadlineAt        sql.NullInt64  `json:"deadline_at"`
+	TimeoutKind       sql.NullString `json:"timeout_kind"`
+	ResultSummary     sql.NullString `json:"result_summary"`
+	ResultIsError     sql.NullInt64  `json:"result_is_error"`
+	CreatedAt         int64          `json:"created_at"`
+	UpdatedAt         int64          `json:"updated_at"`
+	ClaimID           string         `json:"claim_id"`
+	AnnounceMessageID sql.NullString `json:"announce_message_id"`
 }
 
 type File struct {
@@ -163,6 +164,13 @@ type Session struct {
 	ReviewerModelID              sql.NullString `json:"reviewer_model_id"`
 	ReviewerModelReasoningEffort sql.NullString `json:"reviewer_model_reasoning_effort"`
 	Origin                       string         `json:"origin"`
+}
+
+type SessionDriver struct {
+	SessionID string `json:"session_id"`
+	HostID    string `json:"host_id"`
+	Pid       int64  `json:"pid"`
+	ClaimedAt int64  `json:"claimed_at"`
 }
 
 type SessionNotice struct {

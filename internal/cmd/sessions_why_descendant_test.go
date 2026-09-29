@@ -346,6 +346,31 @@ func TestExplainSessionStatus_AsyncJobsAndDebtSection(t *testing.T) {
 	require.Contains(t, out, "running: tool call running-1")
 	require.Contains(t, out, "reaction debt: pending",
 		"done-1's result is delivered (delivery='done') but no model turn has reacted to it yet")
+
+	// C12: a completed job whose notice is still 'pending' (nothing has pulled
+	// it into history yet) is ALSO reaction debt (DUR-4) -- it used to be
+	// reported as "none" because only the delivered half was consulted.
+	// Revert-check: read VisibleReactionDebtExists only (the pre-fix code) and
+	// this case prints "reaction debt: none".
+	pendingSess, err := s.Create(ctx, "session with a not-yet-delivered completion")
+	require.NoError(t, err)
+	_, err = store.Claim(ctx, session.ClaimParams{
+		Owner: pendingSess.ID, ToolCallID: "pending-1", Kind: session.JobKindCommand, Input: "echo pending", ToolName: "bash",
+	})
+	require.NoError(t, err)
+	require.NoError(t, store.MarkAnnounced(ctx, pendingSess.ID, "pending-1"))
+	_, err = store.Transition(ctx, session.TransitionParams{
+		Owner: pendingSess.ID, ToolCallID: "pending-1", State: "completed", NoticeKind: "completed", Wake: true,
+	})
+	require.NoError(t, err)
+
+	var pendingBuf bytes.Buffer
+	require.NoError(t, explainSessionStatus(ctx, a, dataDir, pendingSess.ID, &pendingBuf))
+	pendingOut := pendingBuf.String()
+	require.Contains(t, pendingOut, "reaction debt: pending")
+	require.Contains(t, pendingOut, "not been delivered into history yet")
+	require.NotContains(t, pendingOut, "reaction debt: none",
+		"a pending (undelivered) completion is reaction debt, not none")
 }
 
 // TestExplainSessionStatus_AsyncJobsSection_NoDebtOnceReacted proves the
