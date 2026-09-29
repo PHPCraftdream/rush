@@ -102,7 +102,12 @@ func sessionsShowCmdRun(cmd *cobra.Command, args []string) error {
 		// delegation whose activity is fresher than this session's own —
 		// e.g. "assistant activity 3s ago (session abc12345)". Computed from
 		// the shared call-tree walk (sessions_activity.go).
-		SubAgentActivity string    `json:"sub_agent_activity,omitempty"`
+		SubAgentActivity string `json:"sub_agent_activity,omitempty"`
+		// AsyncJobsTotal/AsyncJobsRunning are this session's OWN async_jobs
+		// row counts (doc sec.5 step 7) -- 0/0, and omitted from JSON, when
+		// this App has no AsyncJobStore or the session owns no rows.
+		AsyncJobsTotal   int       `json:"async_jobs_total,omitempty"`
+		AsyncJobsRunning int       `json:"async_jobs_running,omitempty"`
 		SystemPrompt     string    `json:"system_prompt,omitempty"`
 		Messages         []msgItem `json:"messages,omitempty"`
 	}
@@ -154,6 +159,20 @@ func sessionsShowCmdRun(cmd *cobra.Command, args []string) error {
 	// isn't misread as idle. Baseline = the session's own updated_at; the
 	// note only appears when a descendant sub-agent session is fresher.
 	output.SubAgentActivity = subAgentActivityNote(cmd.Context(), a, sess.ID, sess.UpdatedAt, time.Now())
+
+	// Async job counts (doc sec.5 step 7): this session's OWN rows only --
+	// `sessions jobs <id>` is the place for the full delegation-tree view,
+	// this is just a summary line, not a second listing surface.
+	if store := a.AsyncJobStore(); store != nil {
+		if jobs, err := store.ListAsyncJobsForOwner(cmd.Context(), sess.ID); err == nil {
+			output.AsyncJobsTotal = len(jobs)
+			for _, j := range jobs {
+				if j.State == "running" {
+					output.AsyncJobsRunning++
+				}
+			}
+		}
+	}
 
 	if withMessages {
 		if msgErr != nil {
@@ -241,6 +260,9 @@ func sessionsShowCmdRun(cmd *cobra.Command, args []string) error {
 	}
 	if output.SubAgentActivity != "" {
 		fmt.Printf("Delegating:   %s\n", output.SubAgentActivity)
+	}
+	if output.AsyncJobsTotal > 0 {
+		fmt.Printf("Async jobs:   %d total, %d running (see `sessions jobs %s`)\n", output.AsyncJobsTotal, output.AsyncJobsRunning, sess.ID)
 	}
 	if output.Purpose != "" {
 		fmt.Printf("Purpose:      %s\n", output.Purpose)
