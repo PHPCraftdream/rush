@@ -390,12 +390,27 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 		// is VISIBLE-only (delivery='done'), so a pull that never succeeds
 		// leaves rows stuck at 'pending' and this branch is taken every
 		// time, never the provider-turn one.
+		//
+		// B13 fix: capture the hint snapshot here, but only WRITE the marker
+		// once drainOrReleaseMerged confirms the mailbox is actually going
+		// idle NOW (!ok). If a call was already queued behind this Drain
+		// (ok==true), that call runs next INSIDE THE SAME Run() loop, under
+		// the same epoch, with no onSessionIdle in between -- the eventual
+		// mailbox release belongs to THAT (possibly real, provider-reaching)
+		// turn, not to this no-turn Drain. Marking unconditionally let a
+		// stale marker suppress onSessionIdleHook's re-launch check after an
+		// unrelated later turn merely because the hint counter happened not
+		// to move in between.
+		hintSeqAtCheck := uint64(0)
 		if a.asyncJobs != nil {
-			a.asyncJobs.markNoTurnDrainRelease(call.SessionID, a.asyncJobs.hintSeqOf(call.SessionID))
+			hintSeqAtCheck = a.asyncJobs.hintSeqOf(call.SessionID)
 		}
 		preambleCancel()
 		next, ok := a.drainOrReleaseMerged(call.SessionID, epoch, lk, runCancel)
 		if !ok {
+			if a.asyncJobs != nil {
+				a.asyncJobs.markNoTurnDrainRelease(call.SessionID, hintSeqAtCheck)
+			}
 			return nil, SessionAgentCall{}, false, nil
 		}
 		return nil, next, true, nil
@@ -769,6 +784,16 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 			// which is correct: we're not releasing ownership yet, we're continuing.
 			continuationCall := call
 			continuationCall.Prompt = fmt.Sprintf("The previous session was interrupted because it got too long, the initial user request was: `%s`", call.Prompt)
+			// B4 fix: this continuation resumes a Drain turn that ALREADY
+			// committed to reaching the provider (its own turn-start pull ran
+			// above, before shouldSummarize could even be computed) -- it must
+			// never re-gate on decideDrainTurn at the top of the next runTurn
+			// call. Without this, a step's real content already marked the
+			// pulled notice reacted=1, so the re-gate finds no visible debt and
+			// takes the no-turn branch, ending the turn with the compaction's
+			// pending tool calls never answered (mirrors coordinator_run.go's
+			// own `trackCall.drainTurnCommitted = trackCall.IsDrain` retry rule).
+			continuationCall.drainTurnCommitted = continuationCall.IsDrain
 			return nil, continuationCall, true, nil
 		}
 	}

@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -436,4 +437,80 @@ func TestReminderBeforeTail(t *testing.T) {
 	require.Equal(t, plain, reminderBeforeTail(plain, 1), "no trailing reminder: untouched")
 	withReminder := []fantasy.Message{u("old"), reminder}
 	require.Equal(t, withReminder, reminderBeforeTail(withReminder, 0), "k=0: untouched")
+}
+
+// TestNoTurnDrainMarker_NotSetWhenARealTurnFollowsInTheSameLoop pins B13: a
+// no-turn Drain's markNoTurnDrainRelease must fire ONLY for the release that
+// is actually its own -- not when a real call was already queued behind it
+// and runs next inside the SAME Run() loop (drainOrReleaseMerged's ok==true
+// branch), before any onSessionIdle fires. Before the fix the marker was
+// written unconditionally, so it could still be sitting there (and,
+// depending on the hint counter, suppress onSessionIdleHook's re-launch
+// check) by the time the REAL turn's own eventual release consults it --
+// even though that release has nothing to do with the no-turn Drain.
+//
+// runTurnToolsSnapshotSeam fires synchronously inside runTurn, strictly
+// before the notice pull / decideDrainTurn gate, so it deterministically
+// queues the second call into the SAME mailbox generation without any
+// timing race.
+//
+// Revert-check performed: restored the old unconditional
+// `markNoTurnDrainRelease` call (before drainOrReleaseMerged, regardless of
+// ok) -- this test FAILED (wasNoTurnDrain reported true after the real turn
+// ran). Reapplied the fix; re-ran, passed.
+func TestNoTurnDrainMarker_NotSetWhenARealTurnFollowsInTheSameLoop(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		textFinishResponse(w, "real turn reply")
+	}))
+	t.Cleanup(srv.Close)
+	model := newProbeModel(t, srv)
+
+	env := testEnv(t)
+	store := session.NewAsyncJobStore(env.conn, env.workingDir, os.Getpid(), "test")
+	t.Cleanup(func() { _ = store.Close(context.Background()) })
+	ledger := newWorkLedger(nil)
+	ledger.store = store
+
+	sa := NewSessionAgent(SessionAgentOptions{
+		SmartModel: model, FastModel: model, SystemPrompt: "you are a probe",
+		DataDirectory: env.workingDir, Sessions: env.sessions, Messages: env.messages,
+		Tools: []fantasy.AgentTool{}, DisableAutoSummarize: true, AsyncJobs: ledger,
+	})
+	agent := sa.(*sessionAgent)
+
+	ctx := context.Background()
+	sess, err := env.sessions.Create(ctx, "no-turn-marker")
+	require.NoError(t, err)
+	// A non-default title PLUS a pre-existing message keep needsTitle false
+	// for the real call below (agent_turn.go's needsTitle is `len(msgs)==0 ||
+	// title in {"", default}`, so either alone is not enough) -- otherwise a
+	// concurrent title-generation call to the same probe server would inflate
+	// the provider-request assertion.
+	require.NoError(t, env.sessions.Rename(ctx, sess.ID, "already titled"))
+	_, err = env.messages.Create(ctx, sess.ID, message.CreateMessageParams{
+		Role: message.User, Parts: []message.ContentPart{message.TextContent{Text: "prior turn"}},
+	})
+	require.NoError(t, err)
+	// No debt at all: decideDrainTurn will take the no-turn branch.
+
+	orig := runTurnToolsSnapshotSeam
+	runTurnToolsSnapshotSeam = func() {
+		// Land a real, prompted call in the mailbox's queue BEFORE this
+		// turn's own decideDrainTurn/drainOrReleaseMerged run -- synchronous,
+		// no race.
+		agent.getMailbox(sess.ID).submit(SessionAgentCall{SessionID: sess.ID, Prompt: "are you there"}, nil)
+		runTurnToolsSnapshotSeam = orig // fire once
+	}
+	t.Cleanup(func() { runTurnToolsSnapshotSeam = orig })
+
+	drainCall := newDrainCall(SessionAgentCall{SessionID: sess.ID})
+	result, err := sa.Run(ctx, drainCall)
+	require.NoError(t, err)
+	require.NotNil(t, result, "the queued real call must run as the loop's next turn")
+	require.Equal(t, int32(1), atomic.LoadInt32(&calls), "the real call reached the provider exactly once")
+
+	wasNoTurnDrain, _ := ledger.consumeNoTurnDrainRelease(sess.ID)
+	require.False(t, wasNoTurnDrain, "the no-turn Drain's marker must not survive onto the real turn's own release")
 }
