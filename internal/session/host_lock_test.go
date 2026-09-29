@@ -149,11 +149,13 @@ func TestProbeHostLock_Alive(t *testing.T) {
 
 func TestProbeHostLock_Unknown(t *testing.T) {
 	dataDir := t.TempDir()
-	// A path that exists but is a DIRECTORY, not a lock file: opening it
-	// O_RDWR fails with a non-ENOENT, non-contention error on every
-	// platform this repo supports (EISDIR on POSIX; access denied on
-	// Windows) -- exactly the "some other error" case doc sec.3.6 requires
-	// to classify as unknown, never dead.
+	// A path that exists but is a DIRECTORY, not a lock file: A14 switched
+	// the probe to open O_RDONLY (see that fix's own doc), under which
+	// POSIX's open() on a directory SUCCEEDS (unlike O_RDWR, which EISDIRs
+	// immediately) -- so ProbeHostLock's explicit post-open directory check
+	// is what produces "unknown" here now, not the open() call itself. Same
+	// classification either way: doc sec.3.6's "some other error" case, never
+	// dead.
 	lockPath := HostLockPath(dataDir, "host-c")
 	require.NoError(t, os.MkdirAll(lockPath, 0o755))
 
@@ -161,6 +163,34 @@ func TestProbeHostLock_Unknown(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, HostStatusUnknown, status)
 	assert.Nil(t, lock)
+}
+
+// TestProbeHostLock_ReadOnlyFilePermissionsStillProbed is A14's fix: probes
+// open the lock file O_RDONLY now, not O_RDWR -- a lock file with no write
+// permission for this process (e.g. 0444, or owned by a different uid in a
+// shared data dir) must still be probeable, never EACCES-forever-Unknown.
+//
+// REVERT CHECK: temporarily reverted ProbeHostLock's open call to O_RDWR
+// (host_lock.go). On this OS this test's `require.NoError(t, err, ...)`
+// FAILED (permission denied opening the read-only file), proving the
+// assertion actually distinguishes the two open modes. Restored O_RDONLY;
+// re-ran, passed.
+func TestProbeHostLock_ReadOnlyFilePermissionsStillProbed(t *testing.T) {
+	dataDir := t.TempDir()
+	lockPath := HostLockPath(dataDir, "host-readonly")
+	seed, err := TryAcquireFileLock(lockPath)
+	require.NoError(t, err)
+	require.NoError(t, seed.Release())
+
+	require.NoError(t, os.Chmod(lockPath, 0o444))
+	t.Cleanup(func() { _ = os.Chmod(lockPath, 0o644) })
+
+	status, lock, err := ProbeHostLock(lockPath)
+	require.NoError(t, err, "A14: a read-only lock file must still be probeable, not EACCES")
+	assert.Equal(t, HostStatusDead, status)
+	if lock != nil {
+		_ = lock.Release()
+	}
 }
 
 func TestProbeHost_RefusesOwnHostID(t *testing.T) {
@@ -301,6 +331,30 @@ func TestProbeHostLockShared_AliveDoesNotDisturbHolder(t *testing.T) {
 
 	// And the holder itself can still release cleanly afterwards.
 	require.NoError(t, holder.Release())
+}
+
+// TestProbeHostLockShared_CoexistsWithAnotherSharedHolder is the A-b test
+// fix TestProbeHostLockShared_AliveDoesNotDisturbHolder's own doc admits it
+// cannot provide: racing an EXCLUSIVE holder, both a genuinely SHARED probe
+// and an (accidentally) EXCLUSIVE one report the same Alive/contention
+// outcome, so that test alone cannot tell the two implementations apart.
+// This scenario CAN: a probe that takes a real SHARED lock must coexist with
+// another SHARED holder and correctly report Dead (no exclusive holder
+// exists); an accidentally-exclusive implementation would instead contend
+// against the held shared lock and misreport Alive.
+func TestProbeHostLockShared_CoexistsWithAnotherSharedHolder(t *testing.T) {
+	dataDir := t.TempDir()
+	lockPath := HostLockPath(dataDir, "host-shared-coexist")
+	require.NoError(t, os.MkdirAll(HostsDir(dataDir), 0o755))
+
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = f.Close() })
+	require.NoError(t, tryLockFileShared(f), "hold our OWN shared lock throughout the probe")
+
+	status, err := ProbeHostLockShared(lockPath)
+	require.NoError(t, err)
+	assert.Equal(t, HostStatusDead, status, "a shared probe must coexist with another shared lock holder, not contend with it")
 }
 
 func TestProbeHostLockShared_DeadReleasedLockIsReusable(t *testing.T) {

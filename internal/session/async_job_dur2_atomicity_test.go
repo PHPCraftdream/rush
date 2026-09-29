@@ -78,4 +78,19 @@ func TestTransitionAsyncJobTerminal_RolledBackTransactionChangesNothing(t *testi
 	require.Equal(t, "none", after.Delivery, "an uncommitted transition must not change delivery")
 	require.EqualValues(t, 0, after.Wake, "an uncommitted transition must not change wake")
 	require.EqualValues(t, 0, after.Reacted, "an uncommitted transition must not change reacted")
+
+	// A-b test fix: tie the fault-injection proof above to the REAL
+	// store.Transition, not just a hand-rolled duplicate of its query that
+	// could silently drift from the production statement -- the row is still
+	// 'running' (the rollback truly changed nothing), so the actual method
+	// must now succeed and commit the SAME three fields together.
+	result, err := store.Transition(ctx, TransitionParams{
+		Owner: "owner-1", ToolCallID: "call-1", State: "completed",
+		ResultSummary: "ok", ResultIsError: true, Wake: true,
+	})
+	require.NoError(t, err)
+	require.Equal(t, TransitionWon, result.Outcome)
+	require.Equal(t, "completed", result.Row.State)
+	require.Equal(t, "pending", result.Row.Delivery)
+	require.EqualValues(t, 1, result.Row.Wake)
 }

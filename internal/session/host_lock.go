@@ -137,12 +137,25 @@ var ErrProbeOwnHost = errors.New("host lock: refusing to probe this process's ow
 //   - HostStatusUnknown: some other error. No lock returned; err carries
 //     the cause. Rows owned by this host must NOT be treated as reapable.
 func ProbeHostLock(lockPath string) (HostLockStatus, *FileLock, error) {
-	f, err := os.OpenFile(lockPath, os.O_RDWR, 0o644)
+	// A14: opened read-only -- flock/LockFileEx work on a read-only handle,
+	// and a 0644 lock file in a shared data dir (owned by another uid/process)
+	// would otherwise give EACCES on O_RDWR and report HostStatusUnknown
+	// forever, never recovering that host's rows.
+	f, err := os.OpenFile(lockPath, os.O_RDONLY, 0o644)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return HostStatusDead, nil, nil
 		}
 		return HostStatusUnknown, nil, fmt.Errorf("host lock probe: open %s: %w", lockPath, err)
+	}
+	// O_RDONLY opens a directory successfully on POSIX (unlike O_RDWR, which
+	// EISDIRs immediately) -- and flock(2) does not refuse a directory fd
+	// either, so without this guard a directory sitting at lockPath would
+	// silently report "dead, lock won" instead of the "something is wrong
+	// here" HostStatusUnknown a corrupt/unexpected path must produce.
+	if info, statErr := f.Stat(); statErr == nil && info.IsDir() {
+		_ = f.Close()
+		return HostStatusUnknown, nil, fmt.Errorf("host lock probe: %s is a directory", lockPath)
 	}
 	if err := tryLockFile(f); err != nil {
 		_ = f.Close()
@@ -186,7 +199,8 @@ type AsyncHostStore interface {
 // lock before returning in every case -- callers never receive a lock to
 // manage, and a genuine holder is never disturbed.
 func ProbeHostLockShared(lockPath string) (HostLockStatus, error) {
-	f, err := os.OpenFile(lockPath, os.O_RDWR, 0o644)
+	// A14: same read-only rationale as ProbeHostLock.
+	f, err := os.OpenFile(lockPath, os.O_RDONLY, 0o644)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return HostStatusDead, nil
@@ -194,6 +208,11 @@ func ProbeHostLockShared(lockPath string) (HostLockStatus, error) {
 		return HostStatusUnknown, fmt.Errorf("host lock probe (shared): open %s: %w", lockPath, err)
 	}
 	defer f.Close()
+	// See ProbeHostLock's identical guard for why this check matters now
+	// that both probes open read-only.
+	if info, statErr := f.Stat(); statErr == nil && info.IsDir() {
+		return HostStatusUnknown, fmt.Errorf("host lock probe (shared): %s is a directory", lockPath)
+	}
 	if err := tryLockFileShared(f); err != nil {
 		if isLockContentionError(err) {
 			return HostStatusAlive, nil

@@ -64,21 +64,21 @@ func (s *AsyncJobStore) HostLiveness(hostID string) HostLockStatus {
 // step 7): every 'running' row owned by one of ownerIDs, batched per BFS
 // level rather than one call per session.
 func (s *AsyncJobStore) ListRunningAsyncJobsForOwners(ctx context.Context, ownerIDs []string) ([]db.AsyncJob, error) {
-	return s.q.ListRunningAsyncJobsForOwners(ctx, ownerIDs)
+	return s.readQuerier().ListRunningAsyncJobsForOwners(ctx, ownerIDs)
 }
 
 // ListAsyncJobsForOwner exposes the query `sessions jobs`/`sessions why`
 // need: every async_jobs row (any state) owned by one session, oldest
 // first.
 func (s *AsyncJobStore) ListAsyncJobsForOwner(ctx context.Context, owner string) ([]db.AsyncJob, error) {
-	return s.q.ListAsyncJobsForOwner(ctx, owner)
+	return s.readQuerier().ListAsyncJobsForOwner(ctx, owner)
 }
 
 // GetAsyncHost exposes the display-only async_hosts row for `sessions
 // jobs`'s host/pid/label column (doc sec.3.6: async_hosts is display-only
 // bookkeeping, never consulted for liveness).
 func (s *AsyncJobStore) GetAsyncHost(ctx context.Context, id string) (db.AsyncHost, error) {
-	return s.q.GetAsyncHost(ctx, id)
+	return s.readQuerier().GetAsyncHost(ctx, id)
 }
 
 // LiveJobs returns every 'running' async_jobs row live at or below
@@ -97,11 +97,16 @@ func (s *AsyncJobStore) LiveJobs(ctx context.Context, rootSessionID string) (liv
 	}
 	visited := map[string]struct{}{rootSessionID: {}}
 	frontier := []string{rootSessionID}
+	// A8/C9: one probe per DISTINCT host per call, not per row -- a
+	// delegation tree routinely has several rows sharing the same host_id
+	// (a parent and its children all running on one process), and each OS
+	// lock probe is a real filesystem operation.
+	hostStatus := make(map[string]HostLockStatus)
 	for depth := 0; depth <= maxDescendantWalkDepth && len(frontier) > 0; depth++ {
 		if ctx != nil && ctx.Err() != nil {
 			return live, true
 		}
-		rows, err := s.q.ListRunningAsyncJobsForOwners(ctx, frontier)
+		rows, err := s.readQuerier().ListRunningAsyncJobsForOwners(ctx, frontier)
 		if err != nil {
 			// The durable state for this level is unknown -- a short result
 			// means "not fully enumerated", never "nothing running".
@@ -111,7 +116,11 @@ func (s *AsyncJobStore) LiveJobs(ctx context.Context, rootSessionID string) (liv
 		}
 		var next []string
 		for _, row := range rows {
-			status := s.HostLiveness(row.HostID)
+			status, cached := hostStatus[row.HostID]
+			if !cached {
+				status = s.HostLiveness(row.HostID)
+				hostStatus[row.HostID] = status
+			}
 			if status == HostStatusDead {
 				continue
 			}
@@ -135,6 +144,13 @@ func (s *AsyncJobStore) LiveJobs(ctx context.Context, rootSessionID string) (liv
 			live = append(live, job)
 		}
 		frontier = next
+	}
+	if len(frontier) > 0 {
+		// A13: the loop exited on the depth cap, not an exhausted frontier --
+		// there is live work still unexplored below maxDescendantWalkDepth.
+		// A short result here must never be read as "nothing deeper is
+		// running".
+		walkIncomplete = true
 	}
 	return live, walkIncomplete
 }
@@ -201,6 +217,10 @@ func (s *AsyncJobStore) JobsInTree(ctx context.Context, rootSessionID string) (j
 			}
 		}
 		queue = next
+	}
+	if len(queue) > 0 {
+		// A13: same depth-cap-vs-exhausted-frontier distinction as LiveJobs.
+		walkIncomplete = true
 	}
 	return jobs, walkIncomplete
 }

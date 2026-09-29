@@ -258,11 +258,20 @@ func (s *AsyncJobStore) sessionNoticeVoidCondition(ctx context.Context, q *db.Qu
 		}
 		return job.State != "running", nil
 	case NoticeKindSupervision:
+		// A15: a running row on a PROVABLY DEAD host is not open scope --
+		// reuse the same liveness predicate the rest of the scope logic uses
+		// (HostNotDead, doc sec.3.5/3.6), rather than counting any running
+		// row regardless of whether its host is still alive.
 		running, err := q.ListRunningAsyncJobsForOwners(ctx, []string{owner})
 		if err != nil {
 			return false, err
 		}
-		return len(running) == 0, nil
+		for _, r := range running {
+			if s.HostNotDead(r.HostID) {
+				return false, nil
+			}
+		}
+		return true, nil
 	default:
 		return false, nil
 	}

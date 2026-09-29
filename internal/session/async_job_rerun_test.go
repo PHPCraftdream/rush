@@ -125,6 +125,52 @@ func TestRerunTruncate_VoidWinsOverRependForTheSameRow(t *testing.T) {
 	require.Equal(t, "void", row.Delivery, "void must win when a row matches both the void and the repend condition")
 }
 
+// TestRerunTruncate_RetriedRependNeverResurrectsAnAlreadyVoidRow pins A4's
+// fix: void is TERMINAL -- every writer, including the repend-by-notice-
+// message-id query, must treat it as final. A retried/duplicate Rerun pass
+// (e.g. a caller retrying after a transient failure, re-issuing the SAME
+// deletedMessageIDs) must never turn an ALREADY-VOID row back into pending.
+//
+// REVERT CHECK: temporarily dropped the `AND delivery = 'done'` guard from
+// RependAsyncJobsByNoticeMessageIDs (internal/db/sql/async_jobs.sql),
+// regenerated, and re-ran -- this test's `require.Equal(t, "void", ...)`
+// FAILED (delivery was "pending" again). Restored the guard and regenerated;
+// re-ran, passed.
+func TestRerunTruncate_RetriedRependNeverResurrectsAnAlreadyVoidRow(t *testing.T) {
+	t.Parallel()
+	store, q, ctx := newTestStore(t)
+	require.NoError(t, seedSession(ctx, q, "owner-1"))
+
+	_, err := store.Claim(ctx, ClaimParams{Owner: "owner-1", ToolCallID: "call-1", Kind: JobKindCommand, Input: "echo hi"})
+	require.NoError(t, err)
+	require.NoError(t, store.MarkAnnounced(ctx, "owner-1", "call-1"))
+	_, err = store.Transition(ctx, TransitionParams{Owner: "owner-1", ToolCallID: "call-1", State: "completed", Wake: true})
+	require.NoError(t, err)
+	_, err = q.PullPendingAsyncJobNotice(ctx, db.PullPendingAsyncJobNoticeParams{UpdatedAt: 2, OwnerSessionID: "owner-1", ToolCallID: "call-1"})
+	require.NoError(t, err)
+	_, err = q.SetAsyncJobNoticeMessageID(ctx, db.SetAsyncJobNoticeMessageIDParams{
+		NoticeMessageID: sql.NullString{String: "msg-x", Valid: true}, UpdatedAt: 3, OwnerSessionID: "owner-1", ToolCallID: "call-1",
+	})
+	require.NoError(t, err)
+
+	// A prior Rerun pass already voided this row (e.g. via the same tool
+	// call's own id also being in that pass's deleted set).
+	_, err = q.VoidAsyncJobsByToolCallIDs(ctx, db.VoidAsyncJobsByToolCallIDsParams{
+		UpdatedAt: 4, OwnerSessionID: "owner-1", ToolCallIds: []string{"call-1"},
+	})
+	require.NoError(t, err)
+	row, err := store.Get(ctx, "owner-1", "call-1")
+	require.NoError(t, err)
+	require.Equal(t, "void", row.Delivery)
+
+	// A RETRIED Rerun re-issues the same repend-by-message-id call.
+	require.NoError(t, store.RerunTruncate(ctx, "owner-1", nil, []string{"msg-x"}))
+
+	row, err = store.Get(ctx, "owner-1", "call-1")
+	require.NoError(t, err)
+	require.Equal(t, "void", row.Delivery, "void is terminal -- a retried repend must never resurrect it to pending")
+}
+
 // TestRerunTruncate_UnrelatedRowsUntouched pins the negative control: a row
 // with no connection to either deleted-id set is left exactly as it was.
 func TestRerunTruncate_UnrelatedRowsUntouched(t *testing.T) {

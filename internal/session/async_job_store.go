@@ -19,6 +19,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/google/uuid"
 )
 
 // JobKind is the async_jobs.kind vocabulary this step writes: 'bash'/
@@ -158,6 +159,13 @@ type AsyncJobStore struct {
 	// recovered delegation just falls back to interruptedNoChildTextText
 	// instead of quoting the child's last message.
 	messages message.Service
+	// readQ is A8/C9's fix: a separate read-only connection pool for the
+	// cross-process readers (LiveJobs/JobsInTree/ReactionDebtExists/
+	// ListAsyncJobsForOwner), wired once via SetReadConn -- see that
+	// method's doc. Nil means "no reader pool wired": every reader method
+	// falls back to the writer's own *db.Queries (today's behavior),
+	// through readQuerier().
+	readQ *db.Queries
 }
 
 // SetMessages wires messages for the first-registration dead-host sweep
@@ -168,6 +176,38 @@ func (s *AsyncJobStore) SetMessages(messages message.Service) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.messages = messages
+}
+
+// SetReadConn wires a separate read-only connection pool for this store's
+// cross-process readers (A8/C9, docs/reviews/2026-09-29-async-phase4-round1.md):
+// LiveJobs/JobsInTree/ReactionDebtExists/VisibleReactionDebtExists/
+// ListAsyncJobsForOwner run on it instead of the single writer connection
+// (SetMaxOpenConns(1)), so a web session-list re-poll no longer stalls
+// behind a write transaction for up to busy_timeout (30s). Mirrors the same
+// pattern session.NewServiceWithReader/message.NewServiceWithReader already
+// use (internal/app/app.go): WAL mode guarantees a read on a separate
+// connection observes every write this same process already committed, so
+// this is purely a concurrency optimization, never a staleness risk. A nil
+// readDB is a no-op -- readers keep using the writer connection.
+func (s *AsyncJobStore) SetReadConn(readDB *sql.DB) {
+	if readDB == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.readQ = db.New(readDB)
+}
+
+// readQuerier returns the read-pool queries if SetReadConn wired one, else
+// the writer's own -- every read-only reader method funnels through this so
+// a store with no reader pool wired keeps working exactly as before.
+func (s *AsyncJobStore) readQuerier() *db.Queries {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.readQ != nil {
+		return s.readQ
+	}
+	return s.q
 }
 
 // NewAsyncJobStore builds a store bound to sqlDB (the App's writer
@@ -278,6 +318,30 @@ func (s *AsyncJobStore) claimOnce(ctx context.Context, p ClaimParams, hostID, in
 	existing, err := q.GetAsyncJob(ctx, db.GetAsyncJobParams{OwnerSessionID: p.Owner, ToolCallID: p.ToolCallID})
 	switch {
 	case err == nil:
+		// B14/A14b: an existing row that is already HISTORY (terminal state,
+		// delivery done/void) is not an in-flight claim -- a reused
+		// tool_call_id (a provider that numbers calls per response) must
+		// start a NEW row, not be refused for up to 7 days as "already
+		// started earlier"/"different input" (see ArchiveAsyncJobToolCallID's
+		// own doc for the state!='running' guard's importance). Archive the
+		// old row out of the active key, then fall through to the fresh-claim
+		// path below exactly as if no row existed.
+		if existing.State != "running" && (existing.Delivery == "done" || existing.Delivery == "void") {
+			archivedID := fmt.Sprintf("%s#reused#%s", p.ToolCallID, uuid.NewString())
+			rows, archErr := q.ArchiveAsyncJobToolCallID(ctx, db.ArchiveAsyncJobToolCallIDParams{
+				NewToolCallID: archivedID, UpdatedAt: time.Now().Unix(),
+				OwnerSessionID: p.Owner, OldToolCallID: p.ToolCallID,
+			})
+			if archErr != nil {
+				return ClaimResult{}, nil, fmt.Errorf("async job store: claim: archive reused tool_call_id: %w", archErr)
+			}
+			if rows > 0 {
+				break // fresh claim: child-conflict check + insert below
+			}
+			// Lost a race archiving this row (should not happen under the
+			// single-writer serialization this store relies on elsewhere) --
+			// fall back to treating it as still-active below.
+		}
 		if existing.InputHash != inputHash {
 			return ClaimResult{}, nil, &ErrAsyncJobInputMismatch{ToolCallID: p.ToolCallID}
 		}
@@ -328,6 +392,25 @@ func (s *AsyncJobStore) claimOnce(ctx context.Context, p ClaimParams, hostID, in
 	row, err := q.ClaimAsyncJob(ctx, params)
 	if err != nil {
 		return ClaimResult{}, nil, fmt.Errorf("async job store: claim: insert: %w", err)
+	}
+	if p.ChildSessionID != "" {
+		// A1 item 2: a FRESH delegation on this child starts with a clean
+		// slate -- any reacted_failed left over from an earlier, now-finished
+		// delegation to the SAME child must not leak into this one's verdict
+		// before this delegation has even produced a single reaction. Scoped
+		// by owner=child (async_jobs.owner_session_id/session_notices.owner
+		// for the CHILD's own rows), same tables/columns
+		// MarkReactedWithMessageUpdate clears on a real reaction.
+		if _, err := q.ClearReactedFailedForOwner(ctx, db.ClearReactedFailedForOwnerParams{
+			UpdatedAt: now, OwnerSessionID: p.ChildSessionID,
+		}); err != nil {
+			return ClaimResult{}, nil, fmt.Errorf("async job store: claim: clear stale reacted_failed (async_jobs): %w", err)
+		}
+		if _, err := q.ClearSessionNoticesReactedFailedForOwner(ctx, db.ClearSessionNoticesReactedFailedForOwnerParams{
+			UpdatedAt: now, Owner: p.ChildSessionID,
+		}); err != nil {
+			return ClaimResult{}, nil, fmt.Errorf("async job store: claim: clear stale reacted_failed (session_notices): %w", err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return ClaimResult{}, nil, fmt.Errorf("async job store: claim: commit: %w", err)
@@ -458,6 +541,24 @@ func (s *AsyncJobStore) Close(ctx context.Context) error {
 		return nil
 	}
 	return h.Close(ctx, s.q)
+}
+
+// CloseKeepLock is Close's forced-shutdown counterpart (A12): a forced
+// shutdown means live Run goroutines may still be writing through this store
+// when the App tears down -- releasing the host lock here (as Close does)
+// would let another process see this host as dead and recover its still-
+// in-flight rows out from under it (DUR-5's "process alive iff it holds the
+// lock" only holds for a process that has actually exited, not one whose
+// goroutines are merely uncooperative past the shutdown grace period). This
+// forgets the in-memory host handle WITHOUT releasing the OS lock, deleting
+// the async_hosts row, or touching the lock file -- the OS releases the lock
+// automatically when the process truly exits, same as an uncontrolled crash;
+// a later recoverer then sees exactly what DUR-6 expects. Safe to call on a
+// store that never claimed anything (no-op).
+func (s *AsyncJobStore) CloseKeepLock() {
+	s.mu.Lock()
+	s.host = nil
+	s.mu.Unlock()
 }
 
 // SimulateCrashForTest releases this store's own OS host lock and forgets

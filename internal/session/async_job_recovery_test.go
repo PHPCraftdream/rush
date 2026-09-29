@@ -223,6 +223,122 @@ func TestRecoverDeadHost_AnnouncedBashInterruptedFixedText(t *testing.T) {
 	require.Equal(t, interruptedBashText, row.ResultSummary.String)
 }
 
+// failingListMessages is a minimal message.Service stub whose List always
+// errors -- A6's transient-read-failure scenario. RecoverDeadHost/
+// recoveredDelegationText only ever call List; any other method being
+// reached here would panic via the nil embedded Service, which fails the
+// test loudly rather than silently doing the wrong thing.
+type failingListMessages struct {
+	message.Service
+}
+
+func (failingListMessages) List(ctx context.Context, sessionID string) ([]message.Message, error) {
+	return nil, fmt.Errorf("simulated transient read failure")
+}
+
+// TestRecoverDeadHost_TransientChildReadErrorSkipsRowLeavesRunning is A6's
+// fix: a TRANSIENT messages.List error (not "no messages") must never commit
+// a false "finished with no textual response" -- the row must stay
+// 'running' for a later sweep to retry.
+//
+// REVERT CHECK: temporarily made recoveredDelegationText ignore the read
+// error and fall back to interruptedNoChildTextText (the pre-fix behavior).
+// This test's `require.Equal(t, "running", ...)` FAILED (state was
+// "interrupted" instead), proving the assertion catches the false-completion
+// bug. Restored the skip-on-error fix; re-ran, passed.
+func TestRecoverDeadHost_TransientChildReadErrorSkipsRowLeavesRunning(t *testing.T) {
+	t.Parallel()
+	store, q, ctx := newTestStore(t)
+	require.NoError(t, seedSession(ctx, q, "parent-1"))
+	require.NoError(t, seedSession(ctx, q, "child-1"))
+
+	fabricateDeadHost(t, ctx, q, store.dataDir, "dead-host-1")
+	seedRunningJob(t, ctx, q, "parent-1", "call-1", "dead-host-1", "child-1", true)
+
+	outcome, err := store.RecoverDeadHost(ctx, "dead-host-1", failingListMessages{})
+	require.NoError(t, err, "a per-row transient read failure must not fail the whole recovery pass")
+	require.Equal(t, 0, outcome.Interrupted, "a row must not be committed to 'interrupted' off a transient read failure")
+
+	row, err := store.Get(ctx, "parent-1", "call-1")
+	require.NoError(t, err)
+	require.Equal(t, "running", row.State, "A6: the row must stay running for a later sweep to retry")
+}
+
+// TestPurgeOrphanHostLockFiles_ReapsFileWithNoRow is A7/C15's fix: a lock
+// file left behind by, e.g., a failed RegisterHost DB insert (lock acquired,
+// insert failed, lock released but the file never deleted) has NO
+// async_hosts row at all -- purgeEmptyDeadHostFiles (which only walks rows)
+// can never find it. The retention pass must also scan hosts/*.lock directly
+// and reap a dead, rowless file.
+func TestPurgeOrphanHostLockFiles_ReapsFileWithNoRow(t *testing.T) {
+	t.Parallel()
+	store, _, ctx := newTestStore(t)
+
+	lockPath := HostLockPath(store.dataDir, "orphan-host-1")
+	seed, err := TryAcquireFileLock(lockPath)
+	require.NoError(t, err)
+	require.NoError(t, seed.Release())
+
+	_, err = os.Stat(lockPath)
+	require.NoError(t, err, "sanity: the orphan file exists before the purge")
+
+	require.NoError(t, store.PurgeExpired(ctx, 7*24*time.Hour))
+
+	_, err = os.Stat(lockPath)
+	require.True(t, os.IsNotExist(err), "A7: an orphan lock file with no async_hosts row must be reaped by retention")
+}
+
+// TestPurgeOrphanHostLockFiles_NeverTouchesALiveOrphan proves the A7 fix is
+// still liveness-gated: a rowless lock file that is genuinely STILL HELD
+// must never be reaped, exactly like every other reaper in this file.
+func TestPurgeOrphanHostLockFiles_NeverTouchesALiveOrphan(t *testing.T) {
+	t.Parallel()
+	store, _, ctx := newTestStore(t)
+
+	lockPath := HostLockPath(store.dataDir, "orphan-host-live")
+	holder, err := TryAcquireFileLock(lockPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = holder.Release() })
+
+	require.NoError(t, store.PurgeExpired(ctx, 7*24*time.Hour))
+
+	_, err = os.Stat(lockPath)
+	require.NoError(t, err, "a live host's lock file, even with no row, must never be reaped")
+}
+
+// TestAsyncJobStore_CloseKeepLock_LeavesLockHeld is A12's fix: on a forced
+// shutdown, the host's OS lock must stay held (not released) so another
+// process cannot see this host as dead and recover its still-in-flight rows
+// while this process's own goroutines might still be writing.
+func TestAsyncJobStore_CloseKeepLock_LeavesLockHeld(t *testing.T) {
+	t.Parallel()
+	store, q, ctx := newTestStore(t)
+	require.NoError(t, seedSession(ctx, q, "owner-1"))
+	_, err := store.Claim(ctx, ClaimParams{Owner: "owner-1", ToolCallID: "call-1", Kind: JobKindCommand, Input: "x"})
+	require.NoError(t, err)
+	hostID := store.HostID()
+	require.NotEmpty(t, hostID)
+
+	// Keep our OWN reference to the OS lock purely for this test's cleanup --
+	// CloseKeepLock's whole point is that production code does NOT do this
+	// (process exit releases it instead).
+	heldLock := store.host.lock
+	require.NotNil(t, heldLock)
+
+	store.CloseKeepLock()
+	t.Cleanup(func() {
+		_ = heldLock.Release()
+		unmarkOwnHostID(hostID)
+	})
+
+	status, lock, err := ProbeHostLock(HostLockPath(store.dataDir, hostID))
+	if lock != nil {
+		_ = lock.Release()
+	}
+	require.NoError(t, err)
+	require.Equal(t, HostStatusAlive, status, "CloseKeepLock must leave the OS lock held, not release it")
+}
+
 // TestRecoverDeadHost_UnannouncedDeleted pins the recovery matrix's
 // unannounced branch (ASYNC-05): a running, announced=0 row on a dead host
 // is deleted without a trace, not transitioned.
@@ -288,9 +404,20 @@ func TestRecoverDeadHost_RowsRemainKeepsHostAndFile(t *testing.T) {
 
 // TestRecoverDeadHost_TwoRecoverersRace_ExactlyOneTransitionPerRow pins the
 // recovery matrix's concurrency requirement: two independent recoverers
-// racing the SAME dead host's SAME row must produce exactly one transition
-// -- guaranteed here at the OS-lock level (only one can ever win it) rather
-// than merely at the SQL CAS level.
+// racing the SAME dead host's SAME row must produce exactly one transition.
+//
+// A-b test fix: this does NOT isolate the OS-lock guarantee from the SQL
+// CAS guarantee -- with two real recoverers, the OS exclusive lock on
+// dead-host-1's lock file is what stops the LOSER from ever attempting
+// Transition at all (its own ProbeHost call sees HostStatusAlive, since the
+// winner is mid-recovery holding the lock), so this test cannot tell "only
+// one recoverer even tried" (OS-lock layer) apart from "both tried, but the
+// CAS let only one commit" (SQL layer) -- either layer alone would make this
+// exact assertion pass. Both layers exist and both are load-bearing in
+// production (the CAS also protects a recoverer racing the row's OWN
+// legitimate winner, which no host-lock probe is involved in at all); this
+// test proves the END-TO-END two-recoverer outcome, not one layer in
+// isolation.
 func TestRecoverDeadHost_TwoRecoverersRace_ExactlyOneTransitionPerRow(t *testing.T) {
 	t.Parallel()
 	storeA, q, ctx := newTestStore(t)
@@ -522,6 +649,22 @@ func TestPurgeExpired_OldDoneRowsPurged_RecentAndLiveKept(t *testing.T) {
 	})
 	require.NoError(t, err)
 
+	// A5 (A-b test fix): an OLD, terminal, delivered='done' row that is STILL
+	// UNREACTED DEBT (wake=1, reacted=0) must survive too -- it is not yet
+	// "just old history", it is an owed reaction the owner has not gotten to
+	// yet. Without the purge predicate's NOT(wake=1 AND reacted=0) guard, a
+	// slow/stuck owner would silently lose its own obligation forever.
+	_, err = q.ClaimAsyncJob(ctx, db.ClaimAsyncJobParams{
+		OwnerSessionID: "owner-1", ToolCallID: "old-debt", Kind: "command", ToolName: "bash",
+		InputHash: "h4", HostID: "gone-host", CreatedAt: old, UpdatedAt: old,
+	})
+	require.NoError(t, err)
+	_, err = q.TransitionAsyncJobTerminalPreserveVoid(ctx, db.TransitionAsyncJobTerminalPreserveVoidParams{
+		State: "completed", Delivery: "done", NoticeKind: "", ResultSummary: sql.NullString{String: "z", Valid: true},
+		ResultIsError: sql.NullInt64{Valid: true}, Wake: 1, Reacted: 0, UpdatedAt: old, OwnerSessionID: "owner-1", ToolCallID: "old-debt",
+	})
+	require.NoError(t, err)
+
 	require.NoError(t, store.PurgeExpired(ctx, 7*24*time.Hour))
 
 	_, err = store.Get(ctx, "owner-1", "old-done")
@@ -530,6 +673,8 @@ func TestPurgeExpired_OldDoneRowsPurged_RecentAndLiveKept(t *testing.T) {
 	require.NoError(t, err, "a recent delivered row must survive the same pass")
 	_, err = store.Get(ctx, "owner-1", "old-running")
 	require.NoError(t, err, "a still-running row must never be purged regardless of age")
+	_, err = store.Get(ctx, "owner-1", "old-debt")
+	require.NoError(t, err, "an old row that is still unreacted debt must never be purged")
 }
 
 // TestPurgeExpired_RemovesEmptyDeadHostFiles_KeepsLiveAndNonEmpty pins doc

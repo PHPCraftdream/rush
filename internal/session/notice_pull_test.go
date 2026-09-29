@@ -283,6 +283,34 @@ func TestPullSessionNotices_SupervisionDeliversWhileScopeOpen(t *testing.T) {
 	require.Len(t, pulled, 1, "a supervision check-in must be delivered while the scope still has a running row")
 }
 
+// TestPullSessionNotices_SupervisionVoidsWhenOnlyRunningRowIsOnADeadHost is
+// A15's fix: the supervision void condition must reuse the scope's own
+// liveness predicate, not count ANY running row regardless of whether its
+// host is provably dead. A running row on a confirmed-dead host is not open
+// scope.
+//
+// REVERT CHECK: temporarily reverted the void condition to
+// `len(running) == 0` (pre-fix, counting the dead-host row as open scope).
+// This test's `require.Empty(t, pulled, ...)` FAILED (a message was created
+// even though the only running row's host was dead). Restored the
+// liveness-checking fix; re-ran, passed.
+func TestPullSessionNotices_SupervisionVoidsWhenOnlyRunningRowIsOnADeadHost(t *testing.T) {
+	store, q, ctx := newTestStore(t)
+	require.NoError(t, seedSession(ctx, q, "owner-1"))
+
+	seed, err := TryAcquireFileLock(HostLockPath(store.dataDir, "dead-host-supervision"))
+	require.NoError(t, err)
+	require.NoError(t, seed.Release())
+	require.NoError(t, claimRunning(ctx, q, "owner-1", "call-1", "command", "dead-host-supervision", ""))
+
+	require.NoError(t, store.InsertSessionNotice(ctx, "owner-1", NoticeKindSupervision, "check-in", true, ""))
+
+	messages := message.NewService(store.q)
+	pulled, err := store.PullSessionNotices(ctx, messages, "owner-1", sessionNoticeParams)
+	require.NoError(t, err)
+	require.Empty(t, pulled, "a supervision check-in must void when the owner's only running row is on a provably dead host")
+}
+
 // TestPullJobNotices_InsertsMessageWithNoticeInvariant proves the pulled
 // job-notice message satisfies the web composer history filter's invariant
 // (BackgroundJobNotice=true or a non-empty NoticeKind) via the build

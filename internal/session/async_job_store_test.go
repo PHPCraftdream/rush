@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/stretchr/testify/require"
 )
 
@@ -67,6 +68,91 @@ func TestAsyncJobStore_ClaimDifferentInputIsRefused(t *testing.T) {
 	var mismatch *ErrAsyncJobInputMismatch
 	require.ErrorAs(t, err, &mismatch)
 	require.Equal(t, "call-1", mismatch.ToolCallID)
+}
+
+// TestAsyncJobStore_ClaimReusedToolCallIDAfterDoneStartsFreshRow is B14/A14b's
+// fix: a provider that reuses a tool_call_id text (numbering calls per
+// response, e.g. "call_0") after the OLD row under that id already reached
+// delivery='done' must be able to start immediately, with a brand new row --
+// not refused as "already started earlier"/"different input" until 7-day
+// retention purges the old row.
+//
+// REVERT CHECK: temporarily removed the `existing.State != "running" && ...`
+// archive branch from claimOnce (async_job_store.go), restoring the old
+// unconditional mismatch-or-idempotent logic. This test's second Claim then
+// returned `*ErrAsyncJobInputMismatch` instead of a fresh running row, and
+// the FAILED assertion below caught it. Restored the archive branch; re-ran,
+// passed.
+func TestAsyncJobStore_ClaimReusedToolCallIDAfterDoneStartsFreshRow(t *testing.T) {
+	t.Parallel()
+	store, q, ctx := newTestStore(t)
+	require.NoError(t, seedSession(ctx, q, "owner-1"))
+
+	_, err := store.Claim(ctx, ClaimParams{Owner: "owner-1", ToolCallID: "call_0", Kind: JobKindCommand, Input: "first"})
+	require.NoError(t, err)
+	require.NoError(t, store.MarkAnnounced(ctx, "owner-1", "call_0"))
+	_, err = store.Transition(ctx, TransitionParams{Owner: "owner-1", ToolCallID: "call_0", State: "completed", ResultSummary: "first result", Wake: true})
+	require.NoError(t, err)
+	messages := message.NewService(db.New(store.sqlDB))
+	pulled, err := store.PullJobNotices(ctx, messages, "owner-1", buildTestJobNoticeParams)
+	require.NoError(t, err)
+	require.Len(t, pulled, 1, "precondition: the first row's delivery must reach 'done' before it becomes reusable")
+
+	// A DIFFERENT input under the SAME literal tool_call_id text -- with the
+	// old row still active this would be ErrAsyncJobInputMismatch; now it
+	// must succeed as a brand new claim.
+	second, err := store.Claim(ctx, ClaimParams{Owner: "owner-1", ToolCallID: "call_0", Kind: JobKindCommand, Input: "second, unrelated"})
+	require.NoError(t, err, "a tool_call_id whose old row is already delivered history must be claimable again")
+	require.False(t, second.Existing)
+	require.Equal(t, "running", second.Row.State)
+	require.Equal(t, "call_0", second.Row.ToolCallID, "the fresh claim must be addressable by the plain, reused id")
+
+	// The OLD row must still exist (archived, not deleted) -- addressable by
+	// its own notice_message_id for Rerun/readers -- just no longer under the
+	// plain "call_0" key.
+	all, err := q.ListAsyncJobsForOwner(ctx, "owner-1")
+	require.NoError(t, err)
+	require.Len(t, all, 2, "the old row must survive, archived under a different key, alongside the fresh one")
+	var sawArchived bool
+	for _, row := range all {
+		if row.ToolCallID != "call_0" {
+			sawArchived = true
+			require.Equal(t, "first result", row.ResultSummary.String, "the archived row must keep its own history intact")
+			require.True(t, row.NoticeMessageID.Valid, "the archived row must stay addressable by its own notice message id")
+		}
+	}
+	require.True(t, sawArchived, "the old row must have been archived, not deleted, and not left under the reused key")
+}
+
+// TestAsyncJobStore_ClaimReusedToolCallIDStillRunningIsRefused proves the
+// archive-on-reuse fix (B14) does NOT apply to a row that is merely
+// delivery='void' while STILL running (Rerun can void a still-running row) --
+// archiving such a row would orphan its own in-flight executor's eventual
+// Transition call. The reused id must still be refused while the old row is
+// live, exactly like before this fix.
+func TestAsyncJobStore_ClaimReusedToolCallIDStillRunningIsRefused(t *testing.T) {
+	t.Parallel()
+	store, q, ctx := newTestStore(t)
+	require.NoError(t, seedSession(ctx, q, "owner-1"))
+
+	_, err := store.Claim(ctx, ClaimParams{Owner: "owner-1", ToolCallID: "call_0", Kind: JobKindCommand, Input: "first"})
+	require.NoError(t, err)
+	// Void it directly at the DB level while state stays 'running' -- the
+	// exact shape Rerun's VoidAsyncJobsByToolCallIDs produces for a stop that
+	// raced or failed.
+	_, err = q.VoidAsyncJobsByToolCallIDs(ctx, db.VoidAsyncJobsByToolCallIDsParams{
+		UpdatedAt: 2, OwnerSessionID: "owner-1", ToolCallIds: []string{"call_0"},
+	})
+	require.NoError(t, err)
+	row, err := store.Get(ctx, "owner-1", "call_0")
+	require.NoError(t, err)
+	require.Equal(t, "running", row.State)
+	require.Equal(t, "void", row.Delivery)
+
+	_, err = store.Claim(ctx, ClaimParams{Owner: "owner-1", ToolCallID: "call_0", Kind: JobKindCommand, Input: "different input"})
+	require.Error(t, err, "a still-running row (even voided) must not be archived out from under its own in-flight executor")
+	var mismatch *ErrAsyncJobInputMismatch
+	require.ErrorAs(t, err, &mismatch)
 }
 
 // TestAsyncJobStore_ClaimChildSessionConflictRefusedBeforeStarted pins
@@ -325,4 +411,78 @@ func TestAsyncJobStore_TransitionUnderBusyDBReturnsAnErrorNotSilentRetry(t *test
 
 	_, err = store.Transition(ctx, TransitionParams{Owner: "owner-1", ToolCallID: "call-1", State: "completed"})
 	require.Error(t, err, "a genuinely busy DB must surface as an error here, not block/retry silently")
+}
+
+// TestAsyncJobStore_ClaimFailsClosedAgainstAClosedDB is DUR-8's genuinely-
+// unavailable-but-configured-DB case (docs/async-invariants.md's own DUR-8
+// row: "a broken real *sql.DB is covered indirectly ... not a dedicated
+// Start-level test against a closed connection"; the review's Test fixes
+// list asks for exactly that at the store level, complementing
+// internal/agent's "no store wired" case which this package cannot reach).
+// A *sql.DB that is CLOSED mid-process (not merely "nil store") must make
+// Claim return a plain error immediately -- never panic, never silently
+// succeed, never hang -- so workLedger.Start's fail-closed propagation has
+// something real to propagate.
+func TestAsyncJobStore_ClaimFailsClosedAgainstAClosedDB(t *testing.T) {
+	t.Parallel()
+	dataDir := t.TempDir()
+	ctx := context.Background()
+	// db.Connect only creates+migrates the schema here (same pattern as
+	// TestAsyncJobStore_TransitionUnderBusyDBReturnsAnErrorNotSilentRetry
+	// above): the store's own connection below is a SEPARATE raw handle this
+	// test closes directly, not the shared pooled one db.Release manages.
+	conn, err := db.Connect(ctx, dataDir)
+	require.NoError(t, err)
+	require.NoError(t, seedSession(ctx, db.New(conn), "owner-1"))
+	require.NoError(t, db.Release(dataDir))
+
+	storeConn, err := sql.Open("sqlite", filepath.Join(dataDir, "rush.db"))
+	require.NoError(t, err)
+	store := NewAsyncJobStore(storeConn, dataDir, 1, "test")
+	t.Cleanup(func() { _ = store.Close(context.Background()) })
+	// One successful claim first, so the store's host identity is already
+	// registered -- isolating THIS test's failure to the closed-DB claim
+	// itself, not host registration.
+	_, err = store.Claim(ctx, ClaimParams{Owner: "owner-1", ToolCallID: "call-1", Kind: JobKindCommand, Input: "x"})
+	require.NoError(t, err)
+
+	require.NoError(t, storeConn.Close())
+
+	_, err = store.Claim(ctx, ClaimParams{Owner: "owner-1", ToolCallID: "call-2", Kind: JobKindCommand, Input: "y"})
+	require.Error(t, err, "Claim against a closed *sql.DB must fail closed with a plain error, never panic or hang")
+}
+
+// TestAsyncJobStore_SetReadConn_RoutesReadsToTheGivenConnection is A8/C9's
+// fix: the cross-process reader methods (LiveJobs/JobsInTree/
+// ReactionDebtExists/ListAsyncJobsForOwner) must actually run on the wired
+// read-pool connection, not silently keep using the writer.
+//
+// REVERT CHECK: temporarily made readQuerier always return s.q (ignoring
+// s.readQ). This test's final `require.Error` FAILED (the read succeeded
+// against the writer, seeing the row that only exists there) -- proving the
+// assertion actually distinguishes "routed to the given connection" from
+// "silently used the writer". Restored readQuerier's real body; re-ran,
+// passed.
+func TestAsyncJobStore_SetReadConn_RoutesReadsToTheGivenConnection(t *testing.T) {
+	t.Parallel()
+	store, q, ctx := newTestStore(t)
+	require.NoError(t, seedSession(ctx, q, "owner-1"))
+	_, err := store.Claim(ctx, ClaimParams{Owner: "owner-1", ToolCallID: "call-1", Kind: JobKindCommand, Input: "x"})
+	require.NoError(t, err)
+
+	rows, err := store.ListAsyncJobsForOwner(ctx, "owner-1")
+	require.NoError(t, err)
+	require.Len(t, rows, 1, "sanity: with no read pool wired, the reader falls back to the writer")
+
+	// A DIFFERENT, empty on-disk DB with none of async_jobs' schema -- if
+	// SetReadConn genuinely routes reads there, the SAME query must now
+	// fail (proving it did not silently keep using the writer).
+	otherDir := t.TempDir()
+	other, err := sql.Open("sqlite", filepath.Join(otherDir, "other.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = other.Close() })
+	store.SetReadConn(other)
+
+	_, err = store.ListAsyncJobsForOwner(ctx, "owner-1")
+	require.Error(t, err, "SetReadConn must actually route reader queries to the given connection")
 }

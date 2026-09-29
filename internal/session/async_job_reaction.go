@@ -26,7 +26,7 @@ import (
 // pull force an endless chain of empty-prompt turns, since 'pending' rows
 // never appear in the history the turn could actually react to.
 func (s *AsyncJobStore) ReactionDebtExists(ctx context.Context, owner string) (bool, error) {
-	has, err := s.q.AsyncReactionDebtExists(ctx, owner)
+	has, err := s.readQuerier().AsyncReactionDebtExists(ctx, owner)
 	if err != nil {
 		return false, fmt.Errorf("async job store: reaction debt check: %w", err)
 	}
@@ -38,7 +38,7 @@ func (s *AsyncJobStore) ReactionDebtExists(ctx context.Context, owner string) (b
 // not merely 'pending'. This is what a Drain's turn-start decision must use
 // to decide whether to run the provider -- see agent_turn.go.
 func (s *AsyncJobStore) VisibleReactionDebtExists(ctx context.Context, owner string) (bool, error) {
-	has, err := s.q.VisibleAsyncReactionDebtExists(ctx, owner)
+	has, err := s.readQuerier().VisibleAsyncReactionDebtExists(ctx, owner)
 	if err != nil {
 		return false, fmt.Errorf("async job store: visible reaction debt check: %w", err)
 	}
@@ -95,6 +95,22 @@ func (s *AsyncJobStore) MarkReactedWithMessageUpdate(ctx context.Context, messag
 		UpdatedAt: now, Owner: owner,
 	}); err != nil {
 		return fmt.Errorf("async job store: mark reacted: session_notices: %w", err)
+	}
+	// A1 item 1: a real reaction (this step's own finish carries real
+	// content) proves owner is alive and answering again -- any
+	// reacted_failed an earlier settle-by-failure closure left on owner's
+	// rows (same delegation, an earlier job; or a stale flag surviving from
+	// before) is superseded now, in the SAME transaction as the reaction
+	// itself, so a verdict reader never resurfaces it.
+	if _, err := q.ClearReactedFailedForOwner(ctx, db.ClearReactedFailedForOwnerParams{
+		UpdatedAt: now, OwnerSessionID: owner,
+	}); err != nil {
+		return fmt.Errorf("async job store: mark reacted: clear reacted_failed (async_jobs): %w", err)
+	}
+	if _, err := q.ClearSessionNoticesReactedFailedForOwner(ctx, db.ClearSessionNoticesReactedFailedForOwnerParams{
+		UpdatedAt: now, Owner: owner,
+	}); err != nil {
+		return fmt.Errorf("async job store: mark reacted: clear reacted_failed (session_notices): %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("async job store: mark reacted: commit: %w", err)
@@ -245,6 +261,62 @@ func (s *AsyncJobStore) SettleReactedFailed(ctx context.Context, owner string, s
 		}
 	}
 	return nil
+}
+
+// SettleReactedFailedWithMarker is A10's fix: SettleReactedFailed's two-table
+// settle and the wake_failed marker notice it implies were previously two
+// separate commits (coordinator.recordDrainOutcome calling SettleReactedFailed
+// then InsertSessionNotice) -- a marker-insert failure after the settle
+// committed closed debt SILENTLY (ASYNC-09), with no visible trace at all.
+// This does both in ONE transaction: settle snap's captured rows on both
+// tables, then insert the NoticeKindWakeFailed marker IFF at least one row
+// was actually settled (settling nothing means there was nothing to explain
+// a marker for -- e.g. a snapshot that already fully resolved by the time
+// the failure was classified). Returns the total row count settled across
+// both tables.
+func (s *AsyncJobStore) SettleReactedFailedWithMarker(ctx context.Context, owner string, snap DebtSnapshot, markerText string) (int64, error) {
+	if snap.Empty() {
+		return 0, nil
+	}
+	tx, err := s.sqlDB.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("async job store: settle reacted failed with marker: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // no-op once committed
+	q := db.New(tx)
+	now := time.Now().Unix()
+
+	var settled int64
+	if len(snap.JobIDs) > 0 {
+		rows, err := q.SettleAsyncJobsReactedFailed(ctx, db.SettleAsyncJobsReactedFailedParams{
+			UpdatedAt: now, OwnerSessionID: owner, ToolCallIds: snap.JobIDs,
+		})
+		if err != nil {
+			return 0, fmt.Errorf("async job store: settle reacted failed with marker: async_jobs: %w", err)
+		}
+		settled += rows
+	}
+	if len(snap.NoticeIDs) > 0 {
+		rows, err := q.SettleSessionNoticesReactedFailed(ctx, db.SettleSessionNoticesReactedFailedParams{
+			UpdatedAt: now, Ids: snap.NoticeIDs,
+		})
+		if err != nil {
+			return 0, fmt.Errorf("async job store: settle reacted failed with marker: session_notices: %w", err)
+		}
+		settled += rows
+	}
+	if settled > 0 {
+		if _, err := q.InsertSessionNotice(ctx, db.InsertSessionNoticeParams{
+			Owner: owner, Kind: NoticeKindWakeFailed, Text: markerText,
+			Wake: 0, CreatedAt: now, UpdatedAt: now,
+		}); err != nil {
+			return 0, fmt.Errorf("async job store: settle reacted failed with marker: insert marker: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("async job store: settle reacted failed with marker: commit: %w", err)
+	}
+	return settled, nil
 }
 
 // ReactedFailedText is one settle-by-failure-closed row's text, for the
