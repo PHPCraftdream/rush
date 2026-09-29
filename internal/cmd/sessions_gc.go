@@ -85,6 +85,14 @@ func sessionsGcCmdRun(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("--jobs-older-than: %w", err)
 		}
+		// A5: an age <= 0 makes the retention cutoff "now or later", purging
+		// terminal rows regardless of how recent -- including unreacted debt
+		// that just hasn't been read yet. Reject outright rather than letting
+		// an operator typo (or an intentional "purge everything now") nuke
+		// live obligations.
+		if jobsOlderThan <= 0 {
+			return fmt.Errorf("--jobs-older-than: must be a positive duration, got %q", jobsOlderThanStr)
+		}
 		purgeJobs = true
 	}
 

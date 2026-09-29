@@ -126,13 +126,21 @@ func TestSessionsGcCmdRun_JobsOlderThan_PurgesTerminalOnly(t *testing.T) {
 	require.NoError(t, err)
 	_, err = store.Transition(ctx, session.TransitionParams{Owner: sess.ID, ToolCallID: "old-terminal", State: "completed", NoticeKind: "completed", Wake: true, Delivery: "done"})
 	require.NoError(t, err)
-	backdateAsyncJob(t, conn, sess.ID, "old-terminal", time.Now().Add(-10*24*time.Hour))
 
 	// Recent terminal job: within the window -- must survive.
 	_, err = store.Claim(ctx, session.ClaimParams{Owner: sess.ID, ToolCallID: "recent-terminal", Kind: session.JobKindCommand, Input: "b"})
 	require.NoError(t, err)
 	_, err = store.Transition(ctx, session.TransitionParams{Owner: sess.ID, ToolCallID: "recent-terminal", State: "completed", NoticeKind: "completed", Wake: true, Delivery: "done"})
 	require.NoError(t, err)
+
+	// A5: purge/count exclude unreacted debt (wake=1, reacted=0) regardless
+	// of age -- mark both rows above already reacted so THIS test's fixture
+	// represents ordinary resolved history, not open debt (which has its own
+	// dedicated test, TestSessionsGcCmdRun_JobsOlderThan_NeverPurgesUnreactedDebt).
+	_, err = q.MarkAsyncJobsReactedForOwner(ctx, db.MarkAsyncJobsReactedForOwnerParams{UpdatedAt: time.Now().Unix(), OwnerSessionID: sess.ID})
+	require.NoError(t, err)
+
+	backdateAsyncJob(t, conn, sess.ID, "old-terminal", time.Now().Add(-10*24*time.Hour))
 
 	// Old but STILL RUNNING job (own host, alive) -- must never be purged.
 	_, err = store.Claim(ctx, session.ClaimParams{Owner: sess.ID, ToolCallID: "old-running", Kind: session.JobKindCommand, Input: "c"})
@@ -155,6 +163,11 @@ func TestSessionsGcCmdRun_JobsOlderThan_PurgesTerminalOnly(t *testing.T) {
 
 	// Old terminal ('done') and old pending ('void' twin coverage) notices.
 	oldNoticeID := seedTerminalNotice(t, q, conn, sess.ID, "done", time.Now().Add(-10*24*time.Hour))
+	// A5: already reacted, not open debt (wake=1/reacted=0 on a 'done' row IS
+	// debt and must survive retention -- that has its own dedicated test,
+	// TestSessionsGcCmdRun_JobsOlderThan_NeverPurgesUnreactedDebt).
+	_, err = conn.ExecContext(ctx, `UPDATE session_notices SET reacted = 1 WHERE id = ?`, oldNoticeID)
+	require.NoError(t, err)
 	recentNoticeID := seedTerminalNotice(t, q, conn, sess.ID, "void", time.Now())
 
 	shutdownSeed()
@@ -194,10 +207,14 @@ func TestSessionsGcCmdRun_JobsOlderThan_DryRunCountsOnly(t *testing.T) {
 	store := a.AsyncJobStore()
 	require.NotNil(t, store)
 	conn := a.DB()
+	q := db.New(conn)
 
 	_, err = store.Claim(ctx, session.ClaimParams{Owner: sess.ID, ToolCallID: "dry-run-terminal", Kind: session.JobKindCommand, Input: "a"})
 	require.NoError(t, err)
 	_, err = store.Transition(ctx, session.TransitionParams{Owner: sess.ID, ToolCallID: "dry-run-terminal", State: "completed", NoticeKind: "completed", Wake: true, Delivery: "done"})
+	require.NoError(t, err)
+	// A5: already-reacted, not open debt -- see the sibling test above.
+	_, err = q.MarkAsyncJobsReactedForOwner(ctx, db.MarkAsyncJobsReactedForOwnerParams{UpdatedAt: time.Now().Unix(), OwnerSessionID: sess.ID})
 	require.NoError(t, err)
 	backdateAsyncJob(t, conn, sess.ID, "dry-run-terminal", time.Now().Add(-10*24*time.Hour))
 
@@ -205,10 +222,14 @@ func TestSessionsGcCmdRun_JobsOlderThan_DryRunCountsOnly(t *testing.T) {
 
 	require.NoError(t, sessionsGcCmd.Flags().Set("jobs-older-than", "7d"))
 	require.NoError(t, sessionsGcCmd.Flags().Set("dry-run", "true"))
-	stdout := captureStdout(t, func() {
+	// A-b test fix: the count message is printed to STDERR (sessionsGcCmdRun's
+	// `fmt.Fprintf(os.Stderr, ...)`), not stdout -- the original test captured
+	// stdout and discarded it (`_ = stdout`), never actually checking the
+	// count was reported. Capture stderr and assert on it.
+	stderr := captureStderr(t, func() {
 		require.NoError(t, sessionsGcCmdRun(sessionsGcCmd, nil))
 	})
-	_ = stdout
+	require.Contains(t, stderr, "would purge 1 async job row")
 
 	verifyConn, err := db.Connect(ctx, dataDir)
 	require.NoError(t, err)
@@ -216,4 +237,42 @@ func TestSessionsGcCmdRun_JobsOlderThan_DryRunCountsOnly(t *testing.T) {
 
 	require.Equal(t, 1, countAsyncJobRows(t, verifyConn, sess.ID, "dry-run-terminal"),
 		"--dry-run must count the purge candidate without deleting it")
+}
+
+// TestSessionsGcCmdRun_JobsOlderThan_NeverPurgesUnreactedDebt is A5's CLI-
+// level proof (A-b test fix: the sibling PurgesTerminalOnly test above has no
+// announced/wake=1/done/unreacted row at all): an old, delivered, ANNOUNCED
+// row that is still unreacted debt (wake=1, reacted=0) must survive
+// `sessions gc --jobs-older-than`, same as any still-running row.
+func TestSessionsGcCmdRun_JobsOlderThan_NeverPurgesUnreactedDebt(t *testing.T) {
+	a, shutdownSeed := isolatedGcEnv(t)
+	ctx := context.Background()
+	dataDir := a.Config().Options.DataDirectory
+
+	sess, err := a.Sessions.CreateWithID(ctx, "gc-jobs-debt-sess", "gc debt probe")
+	require.NoError(t, err)
+
+	store := a.AsyncJobStore()
+	require.NotNil(t, store)
+	conn := a.DB()
+
+	_, err = store.Claim(ctx, session.ClaimParams{Owner: sess.ID, ToolCallID: "old-debt", Kind: session.JobKindCommand, Input: "a"})
+	require.NoError(t, err)
+	require.NoError(t, store.MarkAnnounced(ctx, sess.ID, "old-debt"))
+	_, err = store.Transition(ctx, session.TransitionParams{Owner: sess.ID, ToolCallID: "old-debt", State: "completed", NoticeKind: "completed", Wake: true, Delivery: "done"})
+	require.NoError(t, err)
+	backdateAsyncJob(t, conn, sess.ID, "old-debt", time.Now().Add(-30*24*time.Hour))
+
+	shutdownSeed()
+
+	require.NoError(t, sessionsGcCmd.Flags().Set("jobs-older-than", "7d"))
+	require.NoError(t, sessionsGcCmd.Flags().Set("dry-run", "false"))
+	require.NoError(t, sessionsGcCmdRun(sessionsGcCmd, nil))
+
+	verifyConn, err := db.Connect(ctx, dataDir)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Release(dataDir) })
+
+	require.Equal(t, 1, countAsyncJobRows(t, verifyConn, sess.ID, "old-debt"),
+		"an old, announced, delivered-but-unreacted row must never be purged")
 }
